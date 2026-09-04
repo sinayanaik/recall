@@ -195,6 +195,7 @@
     <link rel="modulepreload" href="src/format/ink-strokes.js?v=__BUILD__">
     <link rel="modulepreload" href="src/format/ink-svg.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/blank-pdf.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/documents/doc-slot.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/notebook.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/notebook-migrate.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/pdf-blocks.js?v=__BUILD__">
@@ -529,12 +530,16 @@
                drawing in a different section. -->
           <button class="tool-button" id="allCardsBtn" type="button">&#128450; Browse All Cards</button>
           <button class="tool-button" id="quickNotesBoardBtn" type="button" title="Skim every pinned note across all decks, sorted by subject">&#128209; Quick Notes</button>
-          <!-- Handwriting is a surface any deck can have, not a kind of deck you
-               have to decide on up front: a notebook beside your cards and your
-               note is the ordinary case. Pressing this on a deck with no pages
-               yet starts it with one, because there is no state of this surface
-               that is not a page. -->
-          <button class="tool-button" id="handwritingBtn" type="button" title="Write by hand on blank pages, with markdown text boxes you can drag">&#9998; Handwritten Notes</button>
+          <!-- No "✎ Handwritten Notes" row here any more, and the feature did
+               not go with it. It opened a full-page overlay for the deck you
+               happened to have open — which is a surface scoped to one deck, in
+               the menu that is supposed to hold what is true of the APP. The
+               same rule the removed "Attach a PDF…" row above answers to, and
+               stated in full a few lines below: what belongs to the deck or the
+               view you are looking at lives in that view's own chrome.
+               It is the Write tab now, beside Cards, Notes and Document, on
+               every open deck — and a deck with no pages yet opens it to the
+               offer of a notebook rather than to nothing. -->
           <!-- No "Study Notes" entry here. It ran setViewMode("notes") — byte for
                byte what the always-visible Cards / Notes toggle on
                the quiz panel already does — so the drawer held a second 📝 that
@@ -637,6 +642,15 @@
                    refreshDocumentTab) — it is not a third empty tab on every
                    deck in the library, it is the surface a PDF deck opens on. -->
               <button type="button" data-view-mode="document" hidden><span class="vm-ico" aria-hidden="true">&#128196;</span><span class="vm-label">Document</span></button>
+              <!-- Handwritten notes. Shown on every open deck, exactly as the
+                   Document tab is and for the same reason: a surface you have to
+                   be told exists is a surface most people never find. It used to
+                   be a full-page overlay opened from the ☰ drawer, which is the
+                   one place in this app that is supposed to hold what is true of
+                   the APP rather than of the deck in front of you.
+                   "Write", not "Handwriting": at 640px the glyphs drop and four
+                   words have to share the row. -->
+              <button type="button" data-view-mode="handwriting" hidden><span class="vm-ico" aria-hidden="true">&#9998;</span><span class="vm-label">Write</span></button>
               <!-- There is no Highlights tab. There was, and it showed exactly
                    the cards the side-by-side pane below shows — the same
                    renderHighlightsEditor, into a different box — in a place you
@@ -954,6 +968,40 @@
                   <span>Re-attach the PDF…</span>
                 </label>
               </div>
+            </div>
+            <!-- ── The notebook's own controls ────────────────────────────
+                 The Write tab is this same stage showing the deck's OTHER
+                 document — the blank paper it generated for itself — so the
+                 controls that only mean something there live in a head of their
+                 own, and are lifted into #viewModeRow at boot beside the
+                 document's, by the same liftNotesControlsIntoRow and for the
+                 same reason. CSS stands them down on every other view
+                 (styles/53-handwriting.css), exactly as it stands the document's
+                 down in Notes.
+
+                 They were the header of a full-page overlay until now. The
+                 overlay is gone: it had to MOVE #documentStage into itself to
+                 show anything, and a low-latency ink canvas re-parented into a
+                 fixed, z-indexed box is the flicker this feature was reported
+                 for. -->
+            <div class="handwriting-head" id="handwritingHead">
+              <div class="ink-rail-group handwriting-paper" id="handwritingPaperGroup" role="group" aria-label="Paper">
+                <button class="tool-button ink-rail-btn" type="button" data-hw-paper-kind="grid" aria-pressed="true" title="Grid paper" aria-label="Grid paper">&#9638;</button>
+                <button class="tool-button ink-rail-btn" type="button" data-hw-paper-kind="ruled" aria-pressed="false" title="Ruled paper" aria-label="Ruled paper">&#9776;</button>
+                <button class="tool-button ink-rail-btn" type="button" data-hw-paper-kind="blank" aria-pressed="false" title="Blank paper" aria-label="Blank paper">&#9633;</button>
+              </div>
+              <button class="tool-button handwriting-btn" id="handwritingTextBtn" type="button" data-hw-action="add-block" title="Add a markdown text block to the page you are looking at" aria-label="Add a text block">&#43;&#9998;</button>
+              <!-- Pictures go on the page as their own object, dragged and
+                   resized like a text block and stored in the page's own points
+                   beside it — not as markdown inside one. A photograph of a
+                   whiteboard next to the working you did from it is the case
+                   this is for. -->
+              <label class="tool-button handwriting-btn file-pick" id="handwritingImageBtn" title="Add an image to the page you are looking at" aria-label="Add an image">
+                <input id="handwritingImageInput" type="file" accept="image/*" hidden>
+                <span aria-hidden="true">&#43;&#128247;</span>
+              </label>
+              <button class="tool-button handwriting-btn" id="handwritingPageBtn" type="button" data-hw-action="add-page" title="Add a page at the end" aria-label="Add a page">&#43;&#9647;</button>
+              <button class="tool-button handwriting-btn is-danger" id="handwritingTearBtn" type="button" data-hw-action="delete-page" title="Tear out the page you are looking at" aria-label="Tear out this page">&#128465;</button>
             </div>
             <div class="document-scroll" id="documentView"></div>
             <!-- The pen's rail. Over the page like the pager, on the opposite
@@ -1307,6 +1355,7 @@
           <button class="reading-rail-btn" type="button" data-rail-group="Views" data-view-mode="cards" title="Cards" aria-label="Cards"><span class="rr-ico" aria-hidden="true">&#9634;</span><span class="rr-label">Cards</span></button>
           <button class="reading-rail-btn" type="button" data-rail-group="Views" data-view-mode="notes" title="Notes" aria-label="Notes"><span class="rr-ico" aria-hidden="true">&#128221;</span><span class="rr-label">Notes</span></button>
           <button class="reading-rail-btn" type="button" data-rail-group="Views" data-view-mode="document" hidden title="Document" aria-label="Document"><span class="rr-ico" aria-hidden="true">&#128196;</span><span class="rr-label">Document</span></button>
+          <button class="reading-rail-btn" type="button" data-rail-group="Views" data-view-mode="handwriting" hidden title="Handwritten notes" aria-label="Handwritten notes"><span class="rr-ico" aria-hidden="true">&#9998;</span><span class="rr-label">Write</span></button>
           <!-- ── What you can do to what is on screen ───────────────────-->
           <button class="reading-rail-btn" type="button" data-rail-group="This page" data-rail-action="contents" title="Contents" aria-label="Contents"><span class="rr-ico" aria-hidden="true">&#9776;</span><span class="rr-label">Contents</span></button>
           <!-- The ✎|👁 pill is in the row focus mode folds away, so the one thing
@@ -1490,41 +1539,13 @@
       </div>
     </section>
 
-    <!-- ── Handwritten notes ────────────────────────────────────────────────
-         This panel HOLDS the Document surface. #documentStage is moved in here
-         while it is open and moved back when it closes — moved, never cloned,
-         the same rule liftNotesControlsIntoRow follows and for the same reason:
-         every listener on that stage is bound to the real node.
-
-         So what you write on is a real PDF, laid out by pdf.js, with the pen
-         storing strokes in the document's own user space. A deck with no
-         document of its own gets a generated blank one
-         (src/documents/blank-pdf.js); a deck that already has a paper is simply
-         written on. -->
-    <section class="hw-board" id="handwritingBoard" hidden aria-label="Handwritten notes">
-      <div class="hw-shell">
-        <div class="hw-head">
-          <div class="hw-head-titles">
-            <h1 id="hwTitle">Handwritten notes</h1>
-            <p id="hwSummary">No pages yet</p>
-          </div>
-          <div class="hw-head-actions">
-            <div class="ink-rail-group" role="group" aria-label="Paper">
-              <button class="tool-button ink-rail-btn" type="button" data-hw-paper-kind="grid" aria-pressed="true" title="Grid paper" aria-label="Grid paper">&#9638;</button>
-              <button class="tool-button ink-rail-btn" type="button" data-hw-paper-kind="ruled" aria-pressed="false" title="Ruled paper" aria-label="Ruled paper">&#9776;</button>
-              <button class="tool-button ink-rail-btn" type="button" data-hw-paper-kind="blank" aria-pressed="false" title="Blank paper" aria-label="Blank paper">&#9633;</button>
-            </div>
-            <button class="tool-button" type="button" data-hw-action="add-block" title="Add a markdown text block to the page you are looking at">&#43; Text</button>
-            <button class="tool-button" type="button" data-hw-action="add-page" title="Add a page at the end">&#43; Page</button>
-            <button class="tool-button is-danger" type="button" data-hw-action="delete-page" title="Tear out the page you are looking at">&#128465;</button>
-            <button class="icon-button" type="button" data-hw-action="close" aria-label="Close handwritten notes">&#215;</button>
-          </div>
-        </div>
-        <!-- #documentStage lands here. Empty in the markup on purpose: what goes
-             in it is the real surface, taken at open and given back at close. -->
-        <div class="hw-stage" id="hwStage"></div>
-      </div>
-    </section>
+    <!-- The Handwritten Notes panel used to be a full-surface overlay here,
+         holding #documentStage while it was open. It is the Write tab now
+         (data-view-mode="handwriting"), which is the same stage in the same box
+         the Document tab uses, showing the deck's other document. Nothing moves,
+         so nothing has to be moved back — and the ink canvases keep the
+         compositing they were drawn on, which the overlay took away from them.
+         Its controls are #handwritingHead, above. -->
 
     <section class="quick-notes-board" id="quickNotesBoard" hidden aria-label="Quick notes board">
       <div class="qn-shell">
@@ -1889,7 +1910,7 @@
               <li><strong>It syncs and it backs up</strong> — ink merges between two devices the way your highlights and cards do, ink you delete stays deleted, and <strong>⋯ → Export → This paper, annotated</strong> prints the pages with your handwriting on them</li>
               <li><strong>Write in a note, or on a card</strong> — press <strong>✎</strong> in the editing toolbar and a drawing sheet opens. It is a real page rather than one screenful: it scrolls, <strong>+▢</strong> adds another page below, and Done drops one picture per page you drew on into the note where the caret was — each a block that reflows with the text, with the same corner grip to resize it and the same 🗑 to remove it. Press a drawing's own <strong>✎</strong> later to reopen it and add to it. It works with a finger and a mouse too, so a tablet without a stylus is not shut out</li>
               <li><strong>No connection needed</strong> — a drawing made offline is kept on the device and uploads itself when you are back, exactly as a pasted picture does</li>
-              <li><strong>A whole notebook</strong> — <strong>☰ → ✎ Handwritten Notes</strong> opens a full page for the deck you have open, and any deck can have one: a notebook beside your cards and your note is the ordinary case, not a different kind of deck. The paper is a <strong>real PDF</strong>, so writing on it is exactly writing on a paper — the same pen, the same strokes stored as coordinates into the page, the same zoom, the same dark page, the same export. <strong>+ Page</strong> adds one, <strong>&#128465;</strong> tears out the one you are looking at (everything after it moves up with it), and grid, ruled or blank changes the paper under what you have already written</li>
+              <li><strong>A whole notebook</strong> &mdash; the <strong>&#9998; Write</strong> tab, beside Cards, Notes and Document, on every deck you open. Any deck can have one, <em>including a deck that already has a PDF</em>: the paper you are reading and the pages you are writing on are two different documents on the same deck, so nothing you write lands on somebody else's page. The paper is a <strong>real PDF</strong>, so writing on it is exactly writing on a paper &mdash; the same pen, the same strokes stored as coordinates into the page, the same zoom, the same export. <strong>&#43;&#9998;</strong> drops in a markdown text block and <strong>&#43;&#128247;</strong> a picture, both of which you can drag and resize anywhere on the page &mdash; and a picture you paste or drop straight onto the page lands the same way. <strong>&#43;&#9647;</strong> adds a page, <strong>&#128465;</strong> tears out the one you are looking at (everything after it moves up with it), and grid, ruled or blank changes the paper under what you have already written. The page follows your theme &mdash; dark paper on a dark theme &mdash; and so does your ink, so nothing you have written can disappear when you change it</li>
               <li><strong>Type on the page too</strong> — <strong>+ Text</strong> drops a markdown block where you are looking, which you drag by its bar, resize from its corner and write in: the statement of a problem above a derivation in your own hand. Blocks work on <em>any</em> paper, not only a notebook's — a typed note over a figure in somebody's preprint is the same thing. They are positioned in the page's own points like a highlight, so they stay put through a zoom, a reload and a second device</li>
               <li><strong>On a laptop</strong> the pen rail is also how a mouse draws: a mouse has no way of saying whether a drag means ink or a selection, so it only inks while the rail is open</li>
             </ul>

@@ -19,6 +19,7 @@ import { currentDeckKey, currentReadingAnchor, currentReadingAnchorDeckKey } fro
 import { isQuickNotesDeck } from "../quick-notes/categories.js?v=__BUILD__";
 import { setDeckAutosaveStorageFailed } from "./quota.js?v=__BUILD__";
 import { setViewMode } from "../ui/view-mode.js?v=__BUILD__";
+import { documentTabForOpenDeck } from "../documents/doc-slot.js?v=__BUILD__";
 
 // Is there anything in this deck at all?
 //
@@ -42,11 +43,7 @@ import { setViewMode } from "../ui/view-mode.js?v=__BUILD__";
 export function deckPayloadHasContent({ cards, notes, meta } = {}) {
   if (Array.isArray(cards) ? cards.length : cards) return true;
   if (String(notes || "").trim()) return true;
-  // A notebook is a deck whose paper is a PDF this app generated
-  // (src/documents/notebook.js), so it is already covered by the `pdf` test
-  // below — which is most of the argument for having built it that way.
-  //
-  // `pages` is the notebook that came BEFORE that, and this line is not
+  // `pages` is the notebook that came before real paper, and this line is not
   // optional. Such a deck has no cards, an empty note and no document, so
   // without it this predicate calls it empty — and it is consulted on both
   // sides of the round trip, which means the deck would not merely stop
@@ -55,7 +52,13 @@ export function deckPayloadHasContent({ cards, notes, meta } = {}) {
   // intact in the file. It stays until a deck cannot be carrying that key any
   // more, which is not a date anyone can name.
   if (Array.isArray(meta?.pages) && meta.pages.length) return true;
-  return Boolean(meta?.pdf);
+  // Either document. A notebook is a deck's own generated paper and lives in a
+  // slot of its own (src/documents/doc-slot.js); a deck that has one and nothing
+  // else has no cards, an empty note and no meta.pdf, so testing only meta.pdf
+  // would call it empty — and this predicate is consulted on BOTH sides of the
+  // round trip, so such a deck would not merely stop autosaving, it would refuse
+  // to load and report itself corrupted.
+  return Boolean(meta?.pdf || meta?.notebook);
 }
 
 export function deckSnapshot() {
@@ -221,8 +224,11 @@ export function loadDeckSnapshot(payload, titleHint = "", append = false) {
     state.notes = payloadNotes;
     // A PDF deck opens on its Document tab: the document IS the deck, and
     // landing on an empty Notes tab would look like an import that lost the
-    // file. Every other deck opens on Notes exactly as before.
-    setViewMode(state.meta?.pdf ? "document" : "notes");
+    // file. A deck whose only document is a notebook it wrote itself opens on
+    // Write, by exactly the same argument — its pages are the deck. (A deck
+    // still carrying its notebook in the old `pdf` slot counts as one; it is
+    // moved the moment that tab paints.) Every other deck opens on Notes.
+    setViewMode(documentTabForOpenDeck());
     // Cross-device resume — see the identical call in loadWebDeck for why
     // flash/smooth are both off and why the local store is consulted alongside
     // the deck's meta. Only reached on this non-append branch, so

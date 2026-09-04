@@ -35,6 +35,8 @@ import { ensurePdfJs } from "../core/lib-loader.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { paintDocumentHighlights } from "./pdf-highlights.js?v=__BUILD__";
 import { buildDocumentOutline, clearDocumentOutline, setDocumentOutlinePage } from "./pdf-outline.js?v=__BUILD__";
+import { DOC_SLOT_NOTEBOOK, activeDocSlot, docSlotMeta, documentStoreKey, normalizeDocSlot, onDocumentSurface } from "./doc-slot.js?v=__BUILD__";
+import { isDarkThemeActive } from "../ui/theme-catalog.js?v=__BUILD__";
 import { getDocument, putDocument, sha256 } from "./pdf-store.js?v=__BUILD__";
 import { scheduleReadingPositionSave } from "../notes/reading-position.js?v=__BUILD__";
 import { currentDeckKey } from "../notes/scroll-anchor.js?v=__BUILD__";
@@ -237,8 +239,10 @@ export function pdfPageTextItems(pageNumber) {
 }
 
 // Whether the Document surface is the one a selection or a jump should act on.
+// Either tab that lands on it — the Write tab is this same surface with the
+// deck's other paper in it, and a selection there is a selection.
 export function isDocumentViewActive() {
-  return state.viewMode === "document" && Boolean(openPdf);
+  return onDocumentSurface() && Boolean(openPdf);
 }
 
 // ── Opening ─────────────────────────────────────────────────────────────────
@@ -274,7 +278,10 @@ export function tearDownDocumentView() {
 // whole of the mechanism — a heading, a sentence, a picker, a footnote — so this
 // builds that and the callers below supply the words and what to do with the
 // file. It replaces two copies that had already started to drift.
-function renderDocumentPickPrompt({ heading, body, pick = "Choose the PDF…", note = "", onFile }) {
+// `onFile` builds the picker; `onPress` builds a plain button instead, for the
+// one of the four that is not asking for a file at all — a deck with no notebook
+// yet has nothing to pick, it just has not been given its first page.
+function renderDocumentPickPrompt({ heading, body, pick = "Choose the PDF…", note = "", onFile = null, onPress = null }) {
   const view = el.documentView;
   if (!view) return;
   view.innerHTML = "";
@@ -284,21 +291,31 @@ function renderDocumentPickPrompt({ heading, body, pick = "Choose the PDF…", n
   head.textContent = heading;
   const text = document.createElement("p");
   text.textContent = body;
-  const label = document.createElement("label");
-  label.className = "pdf-missing-pick";
-  label.textContent = pick;
-  const input = document.createElement("input");
-  input.type = "file";
-  input.accept = ".pdf,application/pdf";
-  input.hidden = true;
-  label.appendChild(input);
-  input.addEventListener("change", async () => {
-    const file = input.files?.[0];
-    input.value = "";
-    if (!file) return;
-    await onFile(file);
-  });
-  panel.append(head, text, label);
+  let control;
+  if (onPress) {
+    control = document.createElement("button");
+    control.type = "button";
+    control.className = "pdf-missing-pick";
+    control.textContent = pick;
+    control.addEventListener("click", () => { onPress(); });
+  } else {
+    const label = document.createElement("label");
+    label.className = "pdf-missing-pick";
+    label.textContent = pick;
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".pdf,application/pdf";
+    input.hidden = true;
+    label.appendChild(input);
+    input.addEventListener("change", async () => {
+      const file = input.files?.[0];
+      input.value = "";
+      if (!file) return;
+      await onFile(file);
+    });
+    control = label;
+  }
+  panel.append(head, text, control);
   if (note) {
     const footnote = document.createElement("p");
     footnote.className = "pdf-missing-note";
@@ -352,6 +369,33 @@ function renderAttachDocumentPrompt() {
   });
 }
 
+// ── ...and the deck with no notebook yet ────────────────────────────────────
+//
+// The Write tab is on every open deck, the same way the Document tab is and for
+// the same reason: a surface you have to be told exists is a surface most people
+// never find. There is no state of a notebook that is not a page, so the offer is
+// a single press rather than a picker — the first page is made when it is asked
+// for, not when the deck is.
+//
+// The handler is REGISTERED rather than imported: src/documents/notebook.js
+// imports this module to reopen the surface after it regenerates the paper, and
+// importing it back would be a cycle.
+let onStartNotebook = null;
+
+export function setNotebookStartHandler(fn) {
+  onStartNotebook = typeof fn === "function" ? fn : null;
+}
+
+function renderStartNotebookPrompt() {
+  renderDocumentPickPrompt({
+    heading: "Start a handwritten notebook",
+    body: "Blank pages of your own, beside this deck's cards, notes and any PDF it already has. Write on them with a stylus, drop in text blocks and images, and add as many pages as you need.",
+    pick: "Start a notebook",
+    note: "Grid, ruled or blank — you can change the paper at any time, and what you have written stays where it is.",
+    onPress: () => { onStartNotebook?.(); }
+  });
+}
+
 // Take a picked file as this deck's document again, if it really is the same
 // file. Exported because the Document menu offers it too, for a deck whose PDF
 // is present but which the reader wants to re-point at a local copy.
@@ -370,6 +414,21 @@ export async function reattachDocument(file, pdfMeta) {
   showToast("PDF re-attached");
   await openDocumentView({ force: true });
   return true;
+}
+
+// Which document is on the surface right now — the deck, and which of its two
+// papers. Both halves matter: the deck alone would call a notebook and the paper
+// beside it the same document, and the slot alone would call two decks' notebooks
+// the same one.
+function documentOpenKey(slot) {
+  return `${currentDeckKey()}|${normalizeDocSlot(slot)}`;
+}
+
+// Which of the deck's documents the surface is currently showing, or null when
+// it is showing none. Read by the pen and the paper controls, which have to know
+// whether what is under them is a notebook they may regenerate.
+export function openDocumentSlot() {
+  return openPdf?.slot || null;
 }
 
 // Open the PDF for the deck in `state` into #documentView.
@@ -392,9 +451,14 @@ export async function openDocumentView(options = {}) {
 // "a newer open owns the surface" rather than "the surface was abandoned".
 let documentOpensInFlight = 0;
 
-async function openDocumentViewBody({ force = false } = {}) {
+// `slot` says WHICH of the deck's documents to open — its own paper, or the
+// notebook beside it (src/documents/doc-slot.js). Defaulted from the view the
+// reader is on rather than required, so every existing caller keeps meaning
+// what it meant.
+async function openDocumentViewBody({ force = false, slot = null } = {}) {
   const view = el.documentView;
-  const pdfMeta = state.meta?.pdf;
+  const openSlot = slot ? normalizeDocSlot(slot) : activeDocSlot();
+  const pdfMeta = docSlotMeta(openSlot);
   if (!view) return false;
   // ── A deck with no document opens to the offer of one ────────────────────
   //
@@ -410,11 +474,17 @@ async function openDocumentViewBody({ force = false } = {}) {
   // document this deck does not have.
   if (!pdfMeta) {
     tearDownDocumentView();
-    renderAttachDocumentPrompt();
+    if (openSlot === DOC_SLOT_NOTEBOOK) renderStartNotebookPrompt();
+    else renderAttachDocumentPrompt();
     return false;
   }
 
-  const deckKey = currentDeckKey();
+  // The slot is part of the key, not beside it. Two documents on one deck are
+  // two different files in the same surface, so "is this already open?" has to
+  // mean "is THIS one already open?" — without the slot, switching between the
+  // Document tab and the Write tab would be a no-op that left the reader
+  // looking at the other paper.
+  const deckKey = documentOpenKey(openSlot);
   if (!force && openPdf && openPdf.deckKey === deckKey) {
     // Already open: only the layout can have gone stale (a rotate, a resize
     // while the tab was hidden) — and `refit` is what makes that true. A bare
@@ -451,7 +521,7 @@ async function openDocumentViewBody({ force = false } = {}) {
   // way to tell it from a page. supersededOpen() draws the distinction.
   if (token !== pdfOpenToken) return supersededOpen();
 
-  const blob = await getDocument(state.localDeckId, pdfMeta);
+  const blob = await getDocument(documentStoreKey(state.localDeckId, openSlot), pdfMeta);
   if (token !== pdfOpenToken) return supersededOpen();
   if (!blob) {
     renderMissingDocumentPrompt(pdfMeta);
@@ -492,7 +562,8 @@ async function openDocumentViewBody({ force = false } = {}) {
     // file. On a 40MB paper on a phone that is seconds of worker time, and one
     // more trip through every path this fix is about, each time the reader
     // glances at their cards.
-    deckKey: currentDeckKey(),
+    deckKey: documentOpenKey(openSlot),
+    slot: openSlot,
     doc,
     pageCount: doc.numPages,
     // Every page starts out assumed to be the size of page 1 — which is true
@@ -519,7 +590,7 @@ async function openDocumentViewBody({ force = false } = {}) {
   buildPagePlaceholders();
   observePages();
   watchDocumentViewSize();
-  applyPdfInvert(readPdfInvertPreference());
+  applyPdfInvert(invertForDocumentSlot(openSlot), { remember: false });
   updatePageIndicator();
   // The pages exist now, so the printed notes have something to be inserted
   // after. Before the outline, which is deliberately off the critical path.
@@ -565,20 +636,42 @@ async function openDocumentViewBody({ force = false } = {}) {
 // pages measured against a viewport that was about to change and no way to hear
 // that it had. A width change re-fits (which re-lays out and sweeps); a
 // height-only change just sweeps, which is cheap and idempotent.
+//
+// ── ...and why the work is deferred a frame ──────────────────────────────
+//
+// Both branches below resize the pages INSIDE the observed element, which is
+// what "ResizeObserver loop completed with undelivered notifications" is
+// reported for. Harmless in itself — the browser simply delivers the rest next
+// frame — but it reaches window.onerror, and an app that cries wolf there is one
+// whose real errors stop being read. src/handwriting/paper.js defers its own
+// observer for exactly this reason and says so at length.
+//
+// It went unnoticed while the Document tab was the only thing on this stage: the
+// scroller's width changed on an open and then stayed put. It is a fourth tab
+// and a second document later, and switching between two papers changes the
+// controls in the row above the scroller, which changes the scroller.
 function watchDocumentViewSize() {
   const view = el.documentView;
   if (!view || typeof ResizeObserver !== "function") return;
   let lastWidth = view.clientWidth;
+  let frame = 0;
   openPdf.resizeObserver = new ResizeObserver(() => {
-    if (!openPdf) return;
-    const width = view.clientWidth;
-    const widthChanged = width !== lastWidth;
-    lastWidth = width;
-    if (widthChanged && openPdf.fitWidth) {
-      relayoutDocument({ refit: true });
-      return;
-    }
-    renderPagesNearViewport();
+    if (!openPdf || frame) return;
+    frame = requestAnimationFrame(() => {
+      frame = 0;
+      // Re-read here rather than trusting the measurement the callback took: a
+      // frame has passed, and the width this acts on has to be the width the
+      // pages will actually be laid out against.
+      if (!openPdf) return;
+      const width = view.clientWidth;
+      const widthChanged = width !== lastWidth;
+      lastWidth = width;
+      if (widthChanged && openPdf.fitWidth) {
+        relayoutDocument({ refit: true });
+        return;
+      }
+      renderPagesNearViewport();
+    });
   });
   openPdf.resizeObserver.observe(view);
 }
@@ -1824,6 +1917,33 @@ export function scheduleDocumentPositionSave() {
 // highlight into a blue one. Off by default, because a paper with photographs
 // or coloured figures in it looks wrong inverted and only the reader knows
 // which kind of document this is.
+//
+// ── ...except on paper this app wrote itself ──────────────────────────────
+//
+// The argument above is entirely about somebody else's document. A notebook's
+// page has nothing on it but what the reader put there, and the pen resolves per
+// theme — near-white on a dark theme, near-black on a light one — so a notebook
+// left permanently white means that on seven of this app's ten themes you write
+// in white ink on white paper and see nothing at all. Not a theme-switching bug:
+// the very first stroke is invisible.
+//
+// So the notebook's paper follows the theme, and the reader's saved preference
+// is left to the documents it was made about. A manual ◐ on a notebook still
+// works for the session — it is the class that moves, not the preference — and
+// the next theme change puts the paper back in step, which is what "follows the
+// theme" has to mean.
+export function invertForDocumentSlot(slot) {
+  return normalizeDocSlot(slot) === DOC_SLOT_NOTEBOOK ? isDarkThemeActive() : readPdfInvertPreference();
+}
+
+// Re-assert the paper for whatever is on the surface now. Called on a theme
+// change; a no-op when what is open is a document, whose paper is the reader's
+// to decide.
+export function refreshDocumentPaperForTheme() {
+  if (openPdf?.slot !== DOC_SLOT_NOTEBOOK) return;
+  applyPdfInvert(isDarkThemeActive(), { remember: false });
+}
+
 export function readPdfInvertPreference() {
   try {
     return localStorage.getItem(PDF_DARK_KEY) === "1";
@@ -1832,13 +1952,18 @@ export function readPdfInvertPreference() {
   }
 }
 
-export function applyPdfInvert(on) {
+export function applyPdfInvert(on, { remember = true } = {}) {
   el.documentStage?.classList.toggle(PDF_DARK_CLASS, Boolean(on));
   // The button says which way the mode is set without being pressed — the same
   // rule every other toggle in this app's chrome follows, and the reason this
   // moved out of the ⋯ menu in the first place: a mode nobody can see the state
   // of reads as a mode that is not there.
   el.documentDarkBtn?.setAttribute("aria-pressed", on ? "true" : "false");
+  // `remember: false` is the notebook, whose paper is decided by the theme. A
+  // dark theme would otherwise write "dark page: on" into the preference and
+  // hand it to the next PDF the reader opened, which is a document they never
+  // asked to have inverted.
+  if (!remember) return;
   try {
     localStorage.setItem(PDF_DARK_KEY, on ? "1" : "0");
   } catch (_) { /* private mode — the preference just doesn't persist */ }
@@ -1846,7 +1971,7 @@ export function applyPdfInvert(on) {
 
 export function togglePdfInvert() {
   const next = !el.documentStage?.classList.contains(PDF_DARK_CLASS);
-  applyPdfInvert(next);
+  applyPdfInvert(next, { remember: openPdf?.slot !== DOC_SLOT_NOTEBOOK });
   return next;
 }
 
@@ -1943,9 +2068,12 @@ export async function renderRegionThumbnail(record) {
 // The original bytes, straight to disk. Not a re-export and not a print: the
 // point of keeping the PDF as the document is that you still have the PDF.
 export async function saveDocumentCopy() {
-  const pdfMeta = state.meta?.pdf;
+  // The surface's own document, so "the original PDF" on the Write tab hands
+  // back the notebook's paper rather than a paper it is not showing.
+  const slot = activeDocSlot();
+  const pdfMeta = docSlotMeta(slot);
   if (!pdfMeta) return false;
-  const blob = await getDocument(state.localDeckId, pdfMeta);
+  const blob = await getDocument(documentStoreKey(state.localDeckId, slot), pdfMeta);
   if (!blob) {
     setStatus("This device doesn't have a copy of the PDF to save.", "error");
     return false;

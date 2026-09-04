@@ -83,13 +83,22 @@ export const BACKED_UP_META_KEYS = {
     + "bytes were uploaded to. Rides in the deck JSON; the bytes themselves are "
     + "packed under documents/ (see BACKUP_DOCUMENT_DIR), which is what makes a "
     + "restored paper readable when the project it came from is gone.",
+  notebook:
+    "The handwritten notebook's paper, in the same shape as `pdf` above and "
+    + "under a slot of its own so a deck can have both — somebody else's PDF to "
+    + "read, and blank pages to write on beside it. These bytes are GENERATED "
+    + "(src/documents/blank-pdf.js), so they are also the one document in this "
+    + "table that can be remade from its own record if the file is ever lost.",
   pdfHighlights:
     "Every highlight on the paper, as quads in PDF user space — and every mark "
     + "made with a pen, which is a record in this same array with kind:\"ink\" "
     + "and its strokes encoded on it, so handwriting is carried by this entry "
-    + "rather than by one of its own. Merged on restore by "
-    + "mergeDocumentAnnotations rather than taken wholesale, so a backup can "
-    + "repair a PARTIAL loss instead of only a total one.",
+    + "rather than by one of its own. A record's `doc` says which of the deck's "
+    + "two documents it is a coordinate into — absent means the deck's own "
+    + "paper, which is what every record written before notebooks had a slot of "
+    + "their own already meant. Merged on restore by mergeDocumentAnnotations "
+    + "rather than taken wholesale, so a backup can repair a PARTIAL loss "
+    + "instead of only a total one.",
   deletedHighlightIds:
     "Highlight tombstones. Carried and unioned on restore precisely so a "
     + "restore cannot resurrect a highlight the reader deleted on purpose — a "
@@ -113,11 +122,12 @@ export const BACKED_UP_META_KEYS = {
   noteAnchors:
     "Where each pinned note was pinned from, per card.",
   pdfBlocks:
-    "The markdown text blocks a reader has dropped onto a paper's pages — each "
-    + "with the page it is on, its rectangle in that page's own points, and its "
-    + "text. In points rather than pixels for the reason the highlights are: a "
-    + "position in the document survives a zoom and a second device and a "
-    + "position on the glass survives neither.",
+    "The blocks a reader has dropped onto a paper's pages — markdown text, or an "
+    + "image — each with the page it is on, its rectangle in that page's own "
+    + "points, and its content. In points rather than pixels for the reason the "
+    + "highlights are: a position in the document survives a zoom and a second "
+    + "device and a position on the glass survives neither. `doc` says which of "
+    + "the deck's two documents it sits on, exactly as it does on a highlight.",
   deletedBlockIds:
     "Block tombstones, carried for the reason deletedHighlightIds is: a restore "
     + "that unioned the live blocks alone would put back every block the reader "

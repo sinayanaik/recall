@@ -41,6 +41,7 @@ import { currentDeckKey, rawOffsetForCurrentNotesScroll } from "./scroll-anchor.
 import { trimNoteAnchor } from "../quick-notes/anchors.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { showConfirmModal, showToast } from "../ui/feedback.js?v=__BUILD__";
+import { onDocumentSurface } from "../documents/doc-slot.js?v=__BUILD__";
 
 // Roughly the span of the text snippet an anchor already carries (trimNoteAnchor
 // caps `text` at 300 chars) — "near" means the reader can already see the
@@ -80,7 +81,7 @@ let resumeSettledForKey = null;
 
 // ── Where the reader is, in whichever shape this surface uses ──────────────
 export function currentSpotAnchor() {
-  if (state.viewMode === "document") return documentSpotAnchor();
+  if (onDocumentSurface()) return documentSpotAnchor();
   if (state.viewMode === "notes") return notesSpotAnchor();
   return null;
 }

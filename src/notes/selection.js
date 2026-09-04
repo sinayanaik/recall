@@ -31,6 +31,7 @@ import { lineIndexAtOffset } from "./caret.js?v=__BUILD__";
 import { clearProgrammaticNotesSelection, isProgrammaticNotesSelection } from "./notes-view.js?v=__BUILD__";
 import { codeLanguageOrGeneric, inferCodeLanguage, normalizeCodeLanguage } from "../render/code-language.js?v=__BUILD__";
 import { styleMobileMedia } from "../ui/style-tokens.js?v=__BUILD__";
+import { onDocumentSurface } from "../documents/doc-slot.js?v=__BUILD__";
 
 // The three faces that support "select text → make a flashcard". Only one is
 // ever active at a time: notes while state.viewMode === "notes", question/
@@ -1556,7 +1557,7 @@ export function positionNotesSelectionButton() {
   // subtree in ahead of them for the sake of one boolean is exactly the kind of
   // reordering those notes exist to warn about. The two predicates agree on
   // everything the pill cares about.
-  if (state.viewMode === "document" && el.documentView && !el.documentView.hidden
+  if (onDocumentSurface() && el.documentView && !el.documentView.hidden
       && !noteEditorHoldsSelection()) {
     const documentRange = window.getSelection()?.rangeCount ? window.getSelection().getRangeAt(0) : null;
     const documentText = documentRange ? documentRange.toString().trim() : "";

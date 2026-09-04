@@ -205,9 +205,11 @@ export function createInkEngine({
     // the render window is torn back down to a placeholder and rebuilt later;
     // forgetting its ink here would mean re-reading and re-decoding every
     // stroke on it each time it came back past the viewport.
-    // The wet pair stays mounted between strokes now (see mountOverlay), so the
-    // host that is going away is the one that has to take them off — otherwise
-    // two canvases are left parented to an element nothing else is holding.
+    // handOverToDry takes the wet pair off at every pen lift, so in the ordinary
+    // case there is nothing here to unmount. This is for the case where there
+    // was no pen lift: a host torn down mid-stroke (a page scrolled out of the
+    // render window, a sheet closed under the nib) would otherwise leave two
+    // canvases parented to an element nothing else is holding.
     if (inkOverlay && entry.el && inkOverlay.parentNode === entry.el) unmountOverlay();
     // Optional chaining because this has to be idempotent: the entry deliberately
     // stays in `hosts` after a detach (that is what keeps the strokes), so a

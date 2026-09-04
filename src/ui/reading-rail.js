@@ -75,6 +75,7 @@ import { openStylePanel } from "../cloud/style-sync.js?v=__BUILD__";
 import { reconcileAllDecks } from "../sync/reconcile.js?v=__BUILD__";
 import { fitDocumentToWidth, togglePdfInvert } from "../documents/pdf-view.js?v=__BUILD__";
 import { toggleRegionSelect } from "../documents/pdf-region.js?v=__BUILD__";
+import { onDocumentSurface } from "../documents/doc-slot.js?v=__BUILD__";
 
 export function isReadingRailExpanded() {
   return el.readingRail?.dataset.expanded === "true";
@@ -187,17 +188,27 @@ export function refreshReadingRailRows() {
   // offer of one — so "the Document view is on screen" stopped being the same
   // question as "there is a document". Fit to width, dark page and select a
   // region all act on pages that do not exist there.
-  const hasDocument = Boolean(state.meta?.pdf);
+  //
+  // "document" as a SCOPE means the document surface, and the Write tab is that
+  // surface showing the deck's other paper — fit to width, dark page and select
+  // a region all mean exactly what they mean there. So the scope matches both
+  // tabs, and "is there something to act on" asks about whichever document the
+  // tab in front of the reader is showing.
+  const documentSurfaceUp = onDocumentSurface();
+  const hasDocument = Boolean(state.viewMode === "handwriting"
+    ? (state.meta?.notebook || state.meta?.pdf?.notebook)
+    : state.meta?.pdf);
   tray.querySelectorAll("[data-rail-scope]").forEach((node) => {
     const scope = node.dataset.railScope;
-    node.hidden = scope !== state.viewMode || (scope === "document" && !hasDocument);
+    const inScope = scope === "document" ? documentSurfaceUp : scope === state.viewMode;
+    node.hidden = !inScope || (scope === "document" && !hasDocument);
   });
   // Contents belongs to both reading surfaces, so it carries no scope — but on
   // the Document view with nothing attached it would open the PDF outline drawer
   // to "No contents in this PDF", which is a true sentence about a file that is
   // not there.
   const contentsRow = tray.querySelector('[data-rail-action="contents"]');
-  if (contentsRow) contentsRow.hidden = state.viewMode === "document" && !hasDocument;
+  if (contentsRow) contentsRow.hidden = documentSurfaceUp && !hasDocument;
   // "Go to bookmark" only once there is one to go to, exactly as
   // refreshBookmarkButtonUI hides the button this row stands in for — and only
   // on a reading surface, because jumping to a spot in a book from the middle of
@@ -221,7 +232,8 @@ export function refreshReadingRailRows() {
 const VIEW_NAMES = {
   cards: "Cards",
   notes: "Notes",
-  document: "Document"
+  document: "Document",
+  handwriting: "Handwritten notes"
 };
 
 // A heading with nothing under it is worse than no heading — "This page" over an
@@ -291,7 +303,7 @@ function toggleContents() {
   // revealed by an `.is-open` class (styles/12-notes.css:801). This row used to
   // flip `hidden` on the document drawer itself and got a fully transparent
   // panel parked off the left edge for its trouble — see openDocumentToc.
-  if (state.viewMode === "document") return toggleDocumentToc();
+  if (onDocumentSurface()) return toggleDocumentToc();
   toggleNotesToc();
 }
 

@@ -7,6 +7,7 @@ import { showCard } from "../cards/card-view.js?v=__BUILD__";
 import { themeStorageKey } from "../core/constants.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
+import { forgetInkColors } from "../render/ink-paint.js?v=__BUILD__";
 import { invalidateRenderedBlockCache } from "../render/block-cache.js?v=__BUILD__";
 import { themeAliases, themeCatalog } from "./theme-catalog.js?v=__BUILD__";
 
@@ -74,6 +75,24 @@ export function configureMermaid(themeId) {
   });
 }
 
+// ── Everything the theme changes that is a BITMAP ─────────────────────────
+//
+// A rendered block can be invalidated and rebuilt from its markdown. A canvas
+// cannot: it holds pixels in the colours they were painted, so a pen stroke made
+// on a dark theme stays near-white on a light one until something draws it
+// again. That is the whole of the "I wrote in white and it disappeared" report,
+// and it was true on every surface the pen writes on.
+//
+// A hook rather than an import, because the repainting lives in the document
+// surface and this module is reached from src/render/diagrams.js, which the
+// document surface's own markdown pipeline reaches — importing it here would
+// close that circle around a function that runs at boot.
+let themeRepaintHook = null;
+
+export function setThemeRepaintHook(fn) {
+  themeRepaintHook = typeof fn === "function" ? fn : null;
+}
+
 export function setTheme(theme) {
   const themeId = normalizeThemeId(theme);
   document.documentElement.dataset.theme = themeId;
@@ -82,6 +101,11 @@ export function setTheme(theme) {
   // Diagrams are drawn with the theme's colours baked into their SVG, so every
   // cached rendered block is now stale even though its markdown didn't change.
   invalidateRenderedBlockCache();
+  // The pens resolve per theme, so a colour cached under the previous one is now
+  // wrong — and the canvases that already hold it have to be drawn again. Both
+  // halves, in that order; either alone changes nothing.
+  forgetInkColors();
+  themeRepaintHook?.(themeId);
   const metaThemeColor = document.querySelector('meta[name="theme-color"]');
   if (metaThemeColor) metaThemeColor.setAttribute("content", themeById(themeId).colors.bg);
   if (state.cards[state.current]) showCard();

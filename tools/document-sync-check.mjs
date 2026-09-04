@@ -473,6 +473,43 @@ try {
       const pulled = docSync.mergeDeckMeta(cloudPage, { bookmark: { offset: 4200, at: 100 } }, { prefer: "cloud" });
       return pulled.bookmark?.pdfPage === 7 || `the pull kept ${JSON.stringify(pulled.bookmark)}`;
     });
+    // A deck can carry two documents now (src/documents/doc-slot.js), and the
+    // second one has to be as undeletable as the first. A device that has not
+    // opened the Write tab since the notebook moved out of meta.pdf sends a meta
+    // with no `notebook` key at all — and an absent key must never take a paper
+    // full of somebody's handwriting off the other device.
+    must("a notebook the other side has never heard of is not deleted by it", () => {
+      const notebook = { name: "handwritten-notes.pdf", pages: 4, paper: "grid", notebook: true };
+      const up = docSync.mergeDeckMeta({}, { notebook }, { prefer: "local" });
+      if (up.notebook?.pages !== 4) return `the push lost it: ${JSON.stringify(up.notebook)}`;
+      const down = docSync.mergeDeckMeta({}, { notebook }, { prefer: "cloud" });
+      if (down.notebook?.pages !== 4) return `the pull lost it: ${JSON.stringify(down.notebook)}`;
+      // ...and the two documents do not displace each other.
+      const both = docSync.mergeDeckMeta(
+        { pdf: { name: "preprint.pdf", sha256: "aaa" } }, { notebook }, { prefer: "local" });
+      return (both.pdf?.sha256 === "aaa" && both.notebook?.pages === 4)
+        || `a deck with both kept ${JSON.stringify({ pdf: both.pdf, notebook: both.notebook })}`;
+    });
+
+    // The strokes and blocks of both documents share one array each, told apart
+    // by a `doc` field. The merge is by id and knows nothing about the field,
+    // which is the whole reason a second array was not worth having — so what
+    // this asks is that the field SURVIVES a round trip through it.
+    must("...and each mark still says which of the two papers it is on", () => {
+      const merged = docSync.mergeDocumentAnnotations({
+        cloudNotes: "",
+        cloudMeta: { pdfHighlights: [{ id: "hn-cloud", page: 1, kind: "ink", doc: "notebook", at: 200 }] },
+        localNotes: "",
+        localMeta: { pdfHighlights: [{ id: "hn-local", page: 1, kind: "text", at: 100 }] },
+        body: "local"
+      });
+      const byId = new Map((merged.pdfHighlights || []).map((record) => [record.id, record]));
+      if (byId.size !== 2) return `${byId.size} record(s) after the merge`;
+      if (byId.get("hn-cloud")?.doc !== "notebook") return "the notebook's mark lost the paper it was on";
+      if ("doc" in (byId.get("hn-local") || {})) return "the deck's own mark was given a paper it is not on";
+      return true;
+    });
+
     must("...while a key only this device knows about still goes up", () => {
       const r = docSync.reconcileDeckBeforePush(
         { notes: "", meta: { pdf: { name: "mine.pdf", sha256: "zzz" } } }, { notes: "", meta: {} });

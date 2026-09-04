@@ -2,6 +2,7 @@
 
 import { syncResults, uncategorizedCards } from "./study.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
+import { deckHasHandwrittenPages } from "../documents/doc-slot.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { normalizeCardStatus } from "../export/markdown.js?v=__BUILD__";
 import { normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
@@ -98,6 +99,7 @@ export function updateMeta() {
   el.replayAllBtn.disabled = state.masterCards.length === 0;
   if (el.viewModeToggle) el.viewModeToggle.hidden = !hasDeck;
   refreshDocumentTab();
+  refreshHandwritingTab();
   // No second disable for the notes export. That line drove el.exportNotesBtn,
   // the drawer's own row, and the ⇓ that replaced it is not per-surface — it
   // carries the cards, the notes and the document, so greying it out for an
@@ -161,4 +163,30 @@ export function refreshDocumentTab() {
   // away underneath the open view (offloaded on another device and pulled down)
   // no longer needs this: it lands on the attach panel, which explains itself.
   if (!showTab && state.viewMode === "document") setViewMode("notes");
+}
+
+// ── ...and the Write tab, by the same rule ─────────────────────────────────
+//
+// On every open deck, for the reason above: handwriting used to be a row in the
+// ☰ drawer opening a full page, which is a surface you have to be TOLD is there.
+// A deck with no pages yet is not an empty surface either — it opens to the
+// offer of a notebook (renderStartNotebookPrompt in src/documents/pdf-view.js),
+// which is one press, because there is no state of this surface that is not a
+// page.
+export function refreshHandwritingTab() {
+  const button = el.viewModeToggle?.querySelector('[data-view-mode="handwriting"]');
+  if (!button) return;
+  const showTab = hasActiveDeck();
+  button.hidden = !showTab;
+  const railButton = el.readingRailTray?.querySelector('[data-view-mode="handwriting"]');
+  if (railButton) railButton.hidden = !showTab;
+  // The same published fact the Document surface uses for its own controls: a
+  // deck with no notebook has nothing to add a page to, nothing to tear out and
+  // no paper to change, so those controls stand down rather than sitting inert
+  // over the offer of a notebook. A deck still carrying its notebook in the
+  // document slot counts as having one — it is migrated the moment the tab is
+  // opened (ensureNotebookDocument), and a control that flickered off and back
+  // on across that would be worse than one that was simply right.
+  el.documentStage?.classList.toggle("has-no-notebook", !deckHasHandwrittenPages());
+  if (!showTab && state.viewMode === "handwriting") setViewMode("notes");
 }

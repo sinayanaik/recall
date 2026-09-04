@@ -42,6 +42,21 @@ const showName = showIdx !== -1 ? args[showIdx + 1] : null;
 // Declarations that are ALLOWED to differ, and why. Keep this short — every
 // entry is a place where the "pure movement" guarantee was deliberately spent.
 const ACCEPTED = {
+  // ── The theme changes bitmaps too ───────────────────────────────────────
+  setTheme:
+    "Clears the resolved ink colours and repaints every canvas the pen has " +
+    "written on (forgetInkColors, then a hook into the document surface and " +
+    "the drawing sheet). Everything else a theme touches is CSS or markdown " +
+    "that can be rebuilt from source; ink is a bitmap holding the colour it " +
+    "was painted in, and a pen resolves to a near-white on a dark theme and a " +
+    "near-black on a light one. So a note written in one theme kept being " +
+    "painted the other theme's colour on a page that had just become that " +
+    "colour — 'I wrote in white and it disappeared', with nothing lost and " +
+    "nothing visible. It also re-asks the notebook's paper, which follows the " +
+    "theme rather than the reader's dark-page preference (invertForDocumentSlot). " +
+    "This function still writes its moved binding through its setter, which is " +
+    "what it was accepted for before.",
+
   // ── A phone is a phone on its side too ──────────────────────────────────
   CHROME_MOBILE_QUERY:
     "Was `(max-width: 720px)`, which is a portrait-only reading of a phone: " +

@@ -339,6 +339,7 @@ const APP_SHELL = [
   `./src/documents/blank-pdf.js?v=${STAMP}`,
   `./src/documents/pdf-export.js?v=${STAMP}`,
   `./src/documents/pdf-blocks.js?v=${STAMP}`,
+  `./src/documents/doc-slot.js?v=${STAMP}`,
   `./src/documents/notebook.js?v=${STAMP}`,
   `./src/documents/notebook-migrate.js?v=${STAMP}`,
   `./src/documents/pdf-highlights.js?v=${STAMP}`,

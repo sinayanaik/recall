@@ -268,6 +268,23 @@ export function paintDocumentInk(pageNumber) {
   ensureInkLayer(pageNumber);
 }
 
+// Repaint every mounted page's ink, without re-reading a single record.
+//
+// One caller, and one reason: the theme changed. A stroke stores a pen TOKEN,
+// not a colour, and the token resolves per theme (styles/52-ink.css) so that
+// handwriting made on a dark page is legible on a light one. But the dry canvas
+// is a bitmap — it holds the colour the stroke was painted in, not the token —
+// so clearing the colour cache changes nothing anybody can see until the pixels
+// are drawn again. That is what this does, and its absence is what made
+// "I wrote in white on a dark theme and it vanished in a light one" true.
+//
+// Cheap by construction: the strokes are already in the engine, so this is a
+// clear and a re-fill per mounted page, with no decode and no allocation. Pages
+// that are not mounted have no canvas to be wrong.
+export function repaintDocumentInk() {
+  engine?.repaintAll();
+}
+
 // Every stroke on a page, in record order, each tagged with the mark it belongs
 // to. The tag is what makes the engine's flat array reversible: a lasso can
 // move strokes and an eraser can take one out of the middle of a mark, and

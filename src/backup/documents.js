@@ -23,6 +23,7 @@
 // restore drives both the same way and a cancelled restore leaves no trace of
 // either.
 
+import { DOC_SLOT_NOTEBOOK, DOC_SLOTS, docSlotMetaKey, documentStoreKey, normalizeDocSlot } from "../documents/doc-slot.js?v=__BUILD__";
 import { getDocument, putDocument, readDocument, sha256 } from "../documents/pdf-store.js?v=__BUILD__";
 import { BACKUP_DOCUMENT_INDEX, BACKUP_DOCUMENT_SCHEMA, backupDocumentFolderPath } from "./archive-format.js?v=__BUILD__";
 
@@ -50,27 +51,51 @@ export const DOCUMENT_MISSING_OFFLOADED = "offloaded";
 // one is fully resident while it is being hashed and written. Five of those in
 // flight is not five times faster, it is five times the peak memory, on the
 // device least able to spare it.
+// ── Two documents per deck, not one ────────────────────────────────────────
+//
+// A deck can carry the paper somebody gave it AND a handwritten notebook of its
+// own (src/documents/doc-slot.js), and both are files on the device that nothing
+// else in the archive holds. So the unit of this pass is a (deck, slot) pair
+// rather than a deck, and each index record says which slot it is — without
+// which a restore would put a notebook's pages back as the deck's document.
+//
+// A record written before this existed has no `slot` at all, and normalizeDocSlot
+// reads that as the document slot, which is exactly what it was.
+function backupDocumentJobs(entries) {
+  const jobs = [];
+  entries.forEach((entry) => {
+    DOC_SLOTS.forEach((slot) => {
+      const meta = entry.snapshot?.meta?.[docSlotMetaKey(slot)];
+      if (meta && typeof meta === "object") jobs.push({ entry, slot, meta });
+    });
+  });
+  return jobs;
+}
+
 export async function packBackupDocuments(zip, entries, onProgress, isCancelled = () => false) {
-  const papers = entries.filter((entry) => entry.snapshot?.meta?.pdf);
+  const papers = backupDocumentJobs(entries);
   const documents = [];
   const missing = [];
   if (!papers.length) return { documents, missing, bytes: 0 };
 
   let done = 0;
   onProgress?.(0, papers.length);
-  for (const entry of papers) {
+  for (const job of papers) {
     if (isCancelled()) break;
-    const meta = entry.snapshot.meta.pdf;
-    const name = String(meta.name || "document.pdf").replace(/[\\/]/g, "-");
-    const describe = { deckFile: entry.deckFile, deckId: entry.deckId || null, deckTitle: entry.title, name };
+    const { entry, slot, meta } = job;
+    // Prefixed for the notebook so a deck whose paper happens to be called
+    // handwritten-notes.pdf cannot have its two documents land on one path.
+    const name = `${slot === DOC_SLOT_NOTEBOOK ? "notebook--" : ""}${String(meta.name || "document.pdf").replace(/[\\/]/g, "-")}`;
+    const describe = { deckFile: entry.deckFile, deckId: entry.deckId || null, deckTitle: entry.title, name, slot };
     try {
       // The device copy first — it costs nothing, it is what the reader is
       // actually looking at, and it means a backup taken offline still carries
       // its papers. getDocument tries exactly that before reaching for the
       // cloud, and re-caches what it downloads on the way past, so a paper this
       // device had only ever synced is on it afterwards.
-      const local = await readDocument(entry.localId);
-      const blob = local?.blob || (await getDocument(entry.localId, meta));
+      const storeKey = documentStoreKey(entry.localId, slot);
+      const local = await readDocument(storeKey);
+      const blob = local?.blob || (await getDocument(storeKey, meta));
       if (!blob) {
         missing.push({ ...describe, reason: meta.offloaded ? DOCUMENT_MISSING_OFFLOADED : DOCUMENT_MISSING_UNREACHABLE });
       } else {
@@ -86,6 +111,7 @@ export async function packBackupDocuments(zip, entries, onProgress, isCancelled 
           deckId: entry.deckId || null,
           deckLocalId: entry.localId || null,
           deckTitle: entry.title,
+          slot,
           name,
           bytes: blob.size,
           sha256: await sha256(blob),
@@ -108,10 +134,12 @@ export async function packBackupDocuments(zip, entries, onProgress, isCancelled 
   zip.file(BACKUP_DOCUMENT_INDEX, `${JSON.stringify({
     schema: BACKUP_DOCUMENT_SCHEMA,
     version: 1,
-    note: "One PDF per paper deck, the file exactly as it was imported. A deck's "
-      + "highlights are coordinates into these bytes, so a restore refuses a file "
-      + "whose hash does not match the deck's own record — the same rule "
-      + "re-attaching a paper by hand already follows.",
+    note: "One PDF per document, the file exactly as it was imported — a deck can "
+      + "have two, its own paper and a handwritten notebook, and `slot` says which "
+      + "(a record with no slot is the deck's paper). A deck's highlights are "
+      + "coordinates into these bytes, so a restore refuses a file whose hash does "
+      + "not match the deck's own record — the same rule re-attaching a paper by "
+      + "hand already follows.",
     documents,
     missing
   }, null, 2)}\n`);
@@ -179,14 +207,16 @@ export async function planBackupDocumentRestore(zip, index, decks, localIdFor) {
     // exactly this test; a restore has no business being more permissive than
     // the reader is. Compared only when BOTH sides have a hash: a page served
     // over plain http has no crypto.subtle, and sha256 returns "" there.
-    const claimed = String(deck.meta?.pdf?.sha256 || entry.metaSha256 || "");
+    const slot = normalizeDocSlot(entry.slot);
+    const storeKey = documentStoreKey(localId, slot);
+    const claimed = String(deck.meta?.[docSlotMetaKey(slot)]?.sha256 || entry.metaSha256 || "");
     if (claimed && entry.sha256 && claimed !== entry.sha256) {
       plan.refused.push({ ...entry, deckTitle: deck.title });
       continue;
     }
 
     // Already here under the id the restore is going to use.
-    const existing = await readDocument(localId).catch(() => null);
+    const existing = await readDocument(storeKey).catch(() => null);
     if (existing?.blob && (!entry.sha256 || !existing.sha256 || existing.sha256 === entry.sha256)) {
       plan.present += 1;
       continue;
@@ -197,9 +227,10 @@ export async function planBackupDocumentRestore(zip, index, decks, localIdFor) {
     // between two rows of the same store; unpacking would read forty megabytes
     // out of the zip to arrive at bytes already on the disk.
     if (entry.deckLocalId && entry.deckLocalId !== localId) {
-      const sibling = await readDocument(entry.deckLocalId).catch(() => null);
+      const siblingKey = documentStoreKey(entry.deckLocalId, slot);
+      const sibling = await readDocument(siblingKey).catch(() => null);
       if (sibling?.blob && (!entry.sha256 || !sibling.sha256 || sibling.sha256 === entry.sha256)) {
-        plan.rebind.push({ localId, from: entry.deckLocalId, entry, blob: sibling.blob, sha256: sibling.sha256 || entry.sha256 });
+        plan.rebind.push({ localId: storeKey, from: siblingKey, entry, blob: sibling.blob, sha256: sibling.sha256 || entry.sha256 });
         continue;
       }
     }
@@ -209,7 +240,7 @@ export async function planBackupDocumentRestore(zip, index, decks, localIdFor) {
       plan.unmatched.push(entry);
       continue;
     }
-    plan.store.push({ localId, entry, file });
+    plan.store.push({ localId: storeKey, entry, file });
   }
   return plan;
 }

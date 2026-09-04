@@ -101,7 +101,17 @@ function allSources(dir = path.join(ROOT, "src"), out = []) {
 // added to the table with no fixture fails rather than passing vacuously.
 const META_FIXTURES = {
   pdf: { name: "paper.pdf", pages: 3, sha256: "", path: "u1/pdfs/paper--a1/paper.pdf" },
-  pdfHighlights: [{ id: "hn-h1", page: 1, quads: [[1, 2, 3, 4]], color: "yellow", at: 1_800_000_000_000 }],
+  // The deck's OTHER document — blank paper this app generated, in a slot of its
+  // own so a deck can carry a paper to read and a notebook to write in at the
+  // same time (src/documents/doc-slot.js). Same shape as `pdf` above plus the
+  // two facts only generated paper has: how many pages, and what is ruled on it.
+  notebook: { name: "handwritten-notes.pdf", pages: 2, paper: "grid", notebook: true, sha256: "", path: "u1/pdfs/notes--a1/notebook.pdf" },
+  // Two records, one per document, so a round trip that dropped either slot's
+  // marks fails here rather than passing on the half it kept.
+  pdfHighlights: [
+    { id: "hn-h1", page: 1, quads: [[1, 2, 3, 4]], color: "yellow", at: 1_800_000_000_000 },
+    { id: "hn-h2", page: 1, quads: [[5, 6, 7, 8]], color: "yellow", kind: "ink", doc: "notebook", ink: { v: 1, s: "1:20:ink:A" }, at: 1_800_000_000_000 }
+  ],
   deletedHighlightIds: { "hn-hz": "2027-01-01T00:00:00.000Z" },
   pdfToc: [{ title: "Intro", page: 1 }],
   bookmark: { offset: 10, text: "here", at: 1_800_000_000_000 },
@@ -109,7 +119,10 @@ const META_FIXTURES = {
   linkIds: ["lnk-one"],
   quickNoteCategories: [{ id: "q1", name: "Ideas", color: "#ff0" }],
   noteAnchors: { x: { offset: 3 } },
-  pdfBlocks: [{ id: "bk-b1", page: 2, x: 40, y: 700, w: 240, h: 90, z: 0, md: "**why** it matters", at: 1_800_000_000_000 }],
+  pdfBlocks: [
+    { id: "bk-b1", page: 2, x: 40, y: 700, w: 240, h: 90, z: 0, kind: "text", md: "**why** it matters", at: 1_800_000_000_000 },
+    { id: "bk-b2", page: 1, x: 60, y: 500, w: 200, h: 150, z: 1, kind: "image", src: "https://example.invalid/board.png", alt: "the whiteboard", doc: "notebook", at: 1_800_000_000_000 }
+  ],
   deletedBlockIds: { "bk-bz": "2027-01-01T00:00:00.000Z" },
   // The legacy notebook keys, which are carried precisely so that an archive
   // taken before the migration still restores something the migration can
@@ -327,7 +340,10 @@ try {
     lastDownload = null;
   }
 
-  async function seedDeck({ localId, deckId = null, title, category = "", notes = "", meta = {}, cards = [], updatedAt = T0, pdf = null }) {
+  // `notebook` is the deck's OTHER document — blank paper this app generated,
+  // filed under the same deck with a suffixed key (src/documents/doc-slot.js), so
+  // a deck can carry a paper to read and a notebook to write in at once.
+  async function seedDeck({ localId, deckId = null, title, category = "", notes = "", meta = {}, cards = [], updatedAt = T0, pdf = null, notebook = null }) {
     const snapshot = {
       app: "recall", version: 1, exportedAt: iso(updatedAt),
       deckTitle: title, deckCategory: category, notes,
@@ -343,6 +359,7 @@ try {
       updatedAt: iso(updatedAt), createdAt: iso(updatedAt), deckId, lastSyncedAt: null, accessedAt: null
     }]);
     if (pdf) await pdfStore.putDocument({ deckLocalId: localId, blob: new Blob([pdf], { type: "application/pdf" }), sha256: meta.pdf?.sha256 || "", name: meta.pdf?.name || "paper.pdf", at: updatedAt });
+    if (notebook) await pdfStore.putDocument({ deckLocalId: `${localId}#notebook`, blob: new Blob([notebook], { type: "application/pdf" }), sha256: meta.notebook?.sha256 || "", name: meta.notebook?.name || "handwritten-notes.pdf", at: updatedAt });
     return snapshot;
   }
 
@@ -433,13 +450,20 @@ try {
     bookmark: { offset: 120, text: "spindle", at: T0 + 5000 },
     linkIds: ["lnk-a"],
     noteAnchors: { c0: { offset: 4 } },
-    readingPosition: { offset: 240, text: "anaphase", at: T0 + 6000 }
+    readingPosition: { offset: 240, text: "anaphase", at: T0 + 6000 },
+    // ...and a notebook beside the paper. This is the shape that used to be
+    // impossible — one deck, one document slot, so a reader marking up a preprint
+    // was told "this deck already has a PDF" and got no pages of their own. The
+    // fixture carries both so every case below is asked of a deck with two
+    // documents, which is where a pack, a restore or a re-key that only ever
+    // considered one of them gives itself away.
+    notebook: { name: "handwritten-notes.pdf", pages: 2, paper: "grid", notebook: true, sha256: "", path: "" }
   };
   await seedDeck({
     localId: "ld_paper", deckId: "cloud-paper", title: "Mitosis", category: "Science/Cell Biology",
     notes: "Reading notes.\n\n<!--recall:highlight-notes-->\n<!--hn:hn-h0 page 1-->\nthe spindle forms here\n<!--hn:hn-h3 page 4-->\ncheck this figure\n<!--/recall:highlight-notes-->\n",
     meta: paperMeta, cards: [{ id: "c0", question: "What is anaphase?", answer: "Separation" }],
-    updatedAt: T0, pdf: pdfBytes(7)
+    updatedAt: T0, pdf: pdfBytes(7), notebook: pdfBytes(11)
   });
   await seedDeck({ localId: "ld_prose", deckId: null, title: "Reading list", category: "", notes: "# Books\n\n- one\n", cards: [], updatedAt: T0 });
   await seedDeck({ localId: "ld_deep", deckId: "cloud-deep", title: "Derivatives", category: "Math/Calculus/Rules", notes: "chain rule", cards: [{ id: "d0", question: "d/dx x^2", answer: "2x" }], updatedAt: T0 });
@@ -461,18 +485,26 @@ try {
     if (manifest.schema !== archiveFormat.BACKUP_SCHEMA) return `schema is ${manifest.schema}`;
     if (manifest.version !== archiveFormat.BACKUP_VERSION) return `version is ${manifest.version}`;
     if (manifest.deckCount !== 3) return `deckCount is ${manifest.deckCount}`;
-    if (manifest.documentCount !== 1) return `documentCount is ${manifest.documentCount}`;
+    // Two: the deck's paper and the notebook beside it. The manifest counts
+    // DOCUMENTS, not decks with documents, which is the distinction a deck that
+    // carries both is here to hold the check to.
+    if (manifest.documentCount !== 2) return `documentCount is ${manifest.documentCount}`;
     if (!Array.isArray(manifest.contents) || !manifest.contents.length) return "no contents inventory";
     if (!manifest.decks.some((deck) => deck.localId === "ld_paper")) return "the manifest does not record the source local ids";
     return true;
   });
 
-  await must("a paper's bytes are in the archive, not just its name", async () => {
+  await must("both of a deck's documents are in the archive, not just their names", async () => {
     const zip = await openArchive(archiveBytes);
     const pdfs = Object.keys(zip.files).filter((name) => name.startsWith("documents/") && name.endsWith(".pdf"));
-    if (pdfs.length !== 1) return `expected one packed PDF, found ${pdfs.length}`;
-    const bytes = await zip.files[pdfs[0]].async("uint8array");
-    return String(bytes) === String(pdfBytes(7)) || "the packed PDF is not the file that was imported";
+    if (pdfs.length !== 2) return `expected the paper AND the notebook, found ${pdfs.length}`;
+    const paperPath = pdfs.find((name) => !name.includes("notebook--"));
+    const notebookPath = pdfs.find((name) => name.includes("notebook--"));
+    if (!paperPath || !notebookPath) return `the two documents are not distinguishable by path: ${pdfs.join(", ")}`;
+    const packedPaper = await zip.files[paperPath].async("uint8array");
+    if (String(packedPaper) !== String(pdfBytes(7))) return "the packed PDF is not the file that was imported";
+    const packedNotebook = await zip.files[notebookPath].async("uint8array");
+    return String(packedNotebook) === String(pdfBytes(11)) || "the packed notebook is not the paper this app generated";
   });
 
   await must("the document index binds each paper to its deck file", async () => {
@@ -482,6 +514,16 @@ try {
     if (!entry.deckFile?.startsWith("decks/Science/Cell Biology/")) return `deckFile is ${entry.deckFile}`;
     if (entry.deckLocalId !== "ld_paper") return `deckLocalId is ${entry.deckLocalId}`;
     return Boolean(entry.sha256) || "the archive does not record the packed file's own hash";
+  });
+
+  // Both entries name the deck; only the slot tells them apart. A restore that
+  // ignored it would put a notebook's pages back as the deck's document.
+  await must("...and says which of the deck's two documents each one is", async () => {
+    const index = JSON.parse(await readEntry(archiveBytes, "documents/index.json"));
+    const forDeck = index.documents.filter((entry) => entry.deckLocalId === "ld_paper");
+    if (forDeck.length !== 2) return `expected two documents for the deck, found ${forDeck.length}`;
+    const slots = forDeck.map((entry) => entry.slot).sort();
+    return String(slots) === String(["doc", "notebook"]) || `slots are ${JSON.stringify(slots)}`;
   });
 
   await must("an empty folder and a reading position ride along", async () => {
@@ -509,6 +551,18 @@ try {
     if (!row?.blob) return "the restored paper has no document on this device";
     const bytes = new Uint8Array(await row.blob.arrayBuffer());
     return String(bytes) === String(pdfBytes(7)) || "the restored document is not the file that was backed up";
+  });
+
+  // The notebook is filed under the same deck with a suffixed key, so a restore
+  // that re-keys onto this device's new local id has to re-key BOTH. Getting it
+  // wrong is silent: the deck comes back, the paper comes back, and the pages
+  // somebody wrote on are unreachable under an id no deck has any more.
+  await must("...and so do the handwritten pages beside it", async () => {
+    const paper = localLibrary.readLocalDeckIndex().find((deck) => deck.title === "Mitosis");
+    const row = await pdfStore.readDocument(`${paper.id}#notebook`);
+    if (!row?.blob) return "the restored deck's notebook has no paper on this device";
+    const bytes = new Uint8Array(await row.blob.arrayBuffer());
+    return String(bytes) === String(pdfBytes(11)) || "the restored notebook is not the paper that was backed up";
   });
 
   await must("...and its highlights and their notes with it", async () => {

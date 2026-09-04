@@ -213,8 +213,14 @@ export function mergeDocumentAnnotations({
 //
 // The PAGES are not in this table, and that is the point of the rewrite behind
 // it: a notebook's pages are pages of a real PDF now (src/documents/notebook.js),
-// so they are carried by meta.pdf and the file itself like any other document's,
-// and there is nothing left here for them to be a second opinion about.
+// so they are carried by meta.notebook and the file itself like any other
+// document's, and there is nothing left here for them to be a second opinion
+// about.
+//
+// Nor is there a second table for the notebook's blocks. A deck's two documents
+// share these arrays and each record says which paper it is on
+// (src/documents/doc-slot.js), so mergeRecordsById — which merges by id and
+// carries fields it does not know about straight through — was already right.
 //
 // The tombstone bag is the half a union of live records alone cannot do: a block
 // deleted on one device is, to the other, simply a block it still has, and every
@@ -352,12 +358,19 @@ export function mergeDeckMeta(cloudMeta, localMeta, { prefer = "local" } = {}) {
   const loser = prefer === "cloud" ? local : cloud;
   const next = { ...loser, ...winner };
 
-  // meta.pdf — only ever written, never deleted: "Remove from cloud" sets
-  // offloaded:true and leaves the record (see offloadCurrentDocument), because
-  // the highlights are coordinates into that exact file and the deck has to keep
-  // knowing which file. So a side that has one always beats a side that has
-  // none, and the preferred side wins when both do.
+  // meta.pdf and meta.notebook — only ever written, never deleted: "Remove from
+  // cloud" sets offloaded:true and leaves the record (see
+  // offloadCurrentDocument), because the highlights are coordinates into that
+  // exact file and the deck has to keep knowing which file. So a side that has
+  // one always beats a side that has none, and the preferred side wins when both
+  // do.
+  //
+  // Both slots, by the same rule and for the same reason. A device that has not
+  // opened the Write tab since the notebook moved out of meta.pdf still sends a
+  // meta with no `notebook` key at all, and an absent key must never delete a
+  // paper full of somebody's handwriting.
   if (!winner.pdf && loser.pdf) next.pdf = loser.pdf;
+  if (!winner.notebook && loser.notebook) next.notebook = loser.notebook;
 
   // meta.bookmark and meta.readingPosition — { offset, source, text, at }, or
   // the document shape { offset, pdfPage, ratio, text, at }. Both carry their
@@ -437,7 +450,7 @@ export function mergeDeckMeta(cloudMeta, localMeta, { prefer = "local" } = {}) {
   // same time. Dropped on the merged result rather than on either input: the
   // question is what the deck is now, and that is not answerable until both
   // sides have been read.
-  if (next.pdf?.notebook) {
+  if (next.notebook || next.pdf?.notebook) {
     for (const key of LEGACY_NOTEBOOK_KEYS) delete next[key];
   }
 

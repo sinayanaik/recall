@@ -1,5 +1,5 @@
-/* The paper a drawing sheet writes on, the Handwritten Notes panel, and the
-   markdown blocks on a page.
+/* The paper a drawing sheet writes on, the Write tab's controls, and the blocks
+   on a page.
 
    A separate file from styles/52-ink.css for the reason every file above 13 is
    separate: the thirteen slices are compared byte for byte against the
@@ -8,9 +8,10 @@
 
    ── Two kinds of page, and only one of them is here ──────────────────────
 
-   The Handwritten Notes panel writes on a REAL PDF — it holds the Document
-   surface rather than imitating it (src/handwriting/board.js), so its pages are
-   pdf.js's pages and none of their rules are in this file.
+   The Write tab writes on a REAL PDF — it is the Document surface showing the
+   deck's other document (src/documents/doc-slot.js) rather than a second surface
+   imitating it, so its pages are pdf.js's pages and none of their rules are in
+   this file.
 
    What is here is the drawing SHEET's paper: the stack you get from the ✎ on an
    editing toolbar, which is not a document and never becomes one. Its pages are
@@ -123,99 +124,147 @@
   }
 }
 
-/* ── The Handwritten Notes panel ───────────────────────────────────────────
+/* ── The Write tab's controls ──────────────────────────────────────────────
 
-   A full-surface panel like the Quick Notes board, at the same z-index as the
-   drawing sheet and for the same reason spelled out in styles/52-ink.css: the
-   app's toolbar is 500 and its panels are 200-400, so anything below that puts
-   a full-surface drawing surface UNDERNEATH a row of somebody else's buttons.
-   Below the sign-in overlay (9999) and the toasts (99999), because a session
-   that lapses mid-page has to be able to interrupt and "saved here — uploads
-   when you're back online" has to be able to be read. */
-.hw-board {
-  position: fixed;
-  inset: 0;
-  z-index: 600;
-  display: flex;
-  background: var(--bg);
-}
+   There is no Handwritten Notes PANEL any more, and this is where it was.
 
-.hw-board[hidden] {
+   It was `position: fixed; inset: 0; z-index: 600` — a full-surface overlay
+   above the app's own toolbar — and to show anything at all it MOVED
+   #documentStage into itself and moved it back on close. Three things came of
+   that, and only the third is a matter of taste:
+
+     • it was opened from the ☰ drawer, which is the one place in this app that
+       holds what is true of the APP. Handwriting is true of the deck in front of
+       you, and the rule for that is written into the drawer's own markup: what
+       belongs to the deck or the view you are looking at lives in that view's
+       own chrome;
+     • the pen's live canvases are `desynchronized` (src/render/ink-engine.js) —
+       they ask to be taken out of the normal compositing path, which is the
+       whole reason the line keeps up with the nib. Re-parenting one into a
+       fixed, z-indexed box on every open is exactly the flicker this feature was
+       reported for, on a surface that is otherwise the same code as the PDF one
+       nobody reported anything about;
+     • and it had to force a refit on every open, because the stage really had
+       arrived in a box of a different width.
+
+   So handwriting is the fourth tab, showing the deck's OTHER document on the
+   same stage in the same box (src/documents/doc-slot.js). Nothing moves. What is
+   left here is the chrome — the paper, + Text, + Image, + Page and the tear-out
+   — lifted into #viewModeRow at boot exactly as the document's own controls are,
+   and stood down on the views where it means nothing. */
+
+/* #handwritingHead is only where the controls START. liftNotesControlsIntoRow
+   empties it at boot; this keeps an empty box from holding a row's worth of
+   padding open, and keeps the controls invisible in the frame before the lift.
+   The identical rule .document-head carries, for the identical reason. */
+.handwriting-head {
   display: none;
 }
 
-.hw-shell {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
+/* Hidden by default, because they live in the row for the whole session and are
+   shown by the view rather than moved by it — the same shape as the document's
+   controls in styles/37-document-chrome.css. */
+.view-mode-row > .handwriting-btn,
+.view-mode-row > .handwriting-paper {
+  display: none;
 }
 
-.hw-head {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--line);
-  background: var(--panel);
-}
-
-.hw-head-titles {
-  flex: 1;
-  min-width: 0;
-}
-
-.hw-head-titles h1 {
-  margin: 0;
-  font-size: 1rem;
-  font-weight: 600;
-  color: var(--text);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.hw-head-titles p {
-  margin: 2px 0 0;
-  font-size: 0.78rem;
-  color: color-mix(in srgb, var(--text) 60%, transparent);
-}
-
-.hw-head-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+/* [data-doc-slot] is written by setViewMode in the same pass that shows the
+   stage, so there is never a frame in which the row and the surface disagree
+   about which of the deck's two documents is on screen. */
+.quiz-panel.notes-mode:has(#documentStage[data-doc-slot="notebook"]:not([hidden])) .view-mode-row > .handwriting-btn {
+  display: inline-flex;
   flex: 0 0 auto;
 }
 
-/* The rail is a row here rather than a floating cluster, because unlike the
-   PDF's there is no page underneath it to get out of the way of — the whole
-   surface belongs to this. Wrapping rather than scrolling, the same call
-   styles/52-ink.css makes for the same set of controls on a phone: a
-   horizontal scroller hides controls behind a gesture. */
-/* ── The stage this panel borrows ──────────────────────────────────────────
-   #documentStage is MOVED in here while the panel is open (src/handwriting/
-   board.js). It brings its own layout with it — it is `position: relative` with
-   a scroller and a floating pager — so all this has to do is give it the room,
-   and `min-height: 0` so the scroller inside it can actually scroll rather than
-   growing the flex parent. */
-.hw-stage {
-  flex: 1;
-  min-height: 0;
+.quiz-panel.notes-mode:has(#documentStage[data-doc-slot="notebook"]:not([hidden])) .view-mode-row > .handwriting-paper {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+/* ...unless there is no notebook yet. The Write tab is on every open deck, so
+   the stage can be up with nothing in it but the offer of a notebook, and a
+   paper picker over that offer is four inert controls — the exact fault
+   .has-no-document answers on the Document tab, one view along. */
+.quiz-panel.notes-mode:has(#documentStage.has-no-notebook[data-doc-slot="notebook"]) .view-mode-row > .handwriting-btn,
+.quiz-panel.notes-mode:has(#documentStage.has-no-notebook[data-doc-slot="notebook"]) .view-mode-row > .handwriting-paper,
+#documentStage.has-no-notebook[data-doc-slot="notebook"] .document-pager {
+  display: none;
+}
+
+/* ── ...and the document's own controls, on a notebook ─────────────────────
+
+   Three of the four still mean something here: the contents drawer lists the
+   marks on the pages, dark page is the paper, and ✎ is the pen and its rail.
+
+   Two do not. Select a region drags a box round a figure in somebody's paper,
+   and there are no figures on paper you have not drawn on yet — the pen's own
+   lasso is what selects handwriting. The ⋯ menu is worse than useless: every row
+   in it is about a file somebody gave us — re-attach it, remove it from the
+   cloud, print notes under its pages — and "Re-attach the PDF" pointed at
+   generated paper would replace a notebook with somebody else's document. */
+.quiz-panel.notes-mode:has(#documentStage[data-doc-slot="notebook"]:not([hidden])) .view-mode-row > #documentRegionBtn,
+.quiz-panel.notes-mode:has(#documentStage[data-doc-slot="notebook"]:not([hidden])) .view-mode-row > .document-more-btn {
+  display: none;
+}
+
+/* The document's remaining controls answer to `.has-no-document`, which is about
+   meta.pdf and says nothing about a notebook — so on the Write tab of a deck
+   with no PDF they would all be hidden over a perfectly good page of
+   handwriting. Restated here against the fact that actually applies. */
+.quiz-panel.notes-mode:has(#documentStage[data-doc-slot="notebook"]:not(.has-no-notebook)) .view-mode-row > .document-toggle {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.quiz-panel.notes-mode:has(#documentStage[data-doc-slot="notebook"]:not(.has-no-notebook)) .view-mode-row > #documentTocBtn {
+  display: inline-flex;
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  min-height: 26px;
+}
+
+.quiz-panel.notes-mode:has(#documentStage[data-doc-slot="notebook"]:not(.has-no-notebook)) .view-mode-row > #documentRegionBtn {
+  display: none;
+}
+
+#documentStage[data-doc-slot="notebook"]:not(.has-no-notebook) .document-pager {
   display: flex;
-  position: relative;
 }
 
-.hw-stage > .document-stage {
-  flex: 1;
-  min-width: 0;
-  min-height: 0;
+/* ── The row on a phone ────────────────────────────────────────────────────
+
+   The Write tab asks more of this row than any other view does: four tabs, the
+   contents toggle, dark page, the pen, three paper buttons, four actions and the
+   ⇓. `.view-mode-row` is a nowrap flex line capped at 560px, so at 390px that is
+   not a tight fit, it is a squeeze that takes the tabs' labels with it.
+
+   So it wraps here, and only here. Wrapping rather than scrolling is the call
+   styles/52-ink.css already makes for the same set of controls on a phone, for
+   the same reason: a horizontal scroller hides controls behind a gesture nobody
+   is told about. The row's own height is measured with scrollHeight
+   (readChromeHeights), so a second line is a second line the chrome knows about
+   rather than one clipped by the clamp. */
+@media (max-width: 720px) {
+  .quiz-panel.notes-mode:has(#documentStage[data-doc-slot="notebook"]:not([hidden])) .view-mode-row {
+    flex-wrap: wrap;
+    row-gap: 4px;
+  }
+
+  /* The tabs keep a line of their own rather than sharing one: they are how you
+     leave this view, and a tab squeezed to three letters beside a paper picker
+     is the fault this rule is avoiding, not a smaller version of it. */
+  .quiz-panel.notes-mode:has(#documentStage[data-doc-slot="notebook"]:not([hidden])) .view-mode-row > #viewModeToggle {
+    flex: 1 0 100%;
+  }
 }
 
-/* The tabs and the appbar are not in this panel, so the stage's own reading
-   chrome should not be hiding from them either. */
-body.is-handwriting .document-stage {
-  height: 100%;
+/* A <label> cannot be disabled, so the + 📷 picker says so with a class instead
+   — matched to what a disabled .tool-button already looks like. */
+.view-mode-row > .handwriting-btn.is-disabled {
+  opacity: 0.45;
+  pointer-events: none;
 }
 
 /* ── Markdown blocks on a page ─────────────────────────────────────────────
@@ -247,9 +296,14 @@ body.is-handwriting .document-stage {
 }
 
 /* A block is a thing the reader put there, so it keeps its own colours when the
-   paper is inverted — the promise the ink already makes on a dark page. */
-.pdf-invert .pdf-block {
-  filter: invert(1) hue-rotate(180deg);
+   paper is inverted — the promise the ink already makes on a dark page.
+   No counter-invert is needed to keep it: dark page inverts the .pdf-canvas
+   alone (styles/36-document.css), not the page box, so a block laid over it was
+   never inverted in the first place. This rule named `.pdf-invert`, a class
+   nothing in the app has ever set, and it is stated as a fact rather than a
+   filter so the next person does not add the filter back. */
+.document-stage.is-pdf-inverted .pdf-block {
+  filter: none;
 }
 
 .pdf-block-bar {
@@ -302,6 +356,33 @@ body.is-handwriting .document-stage {
 .pdf-block-empty {
   color: color-mix(in srgb, var(--text) 45%, transparent);
   font-style: italic;
+}
+
+/* ── A picture on the page ─────────────────────────────────────────────────
+
+   The block IS the frame: it was sized from the image's own aspect ratio when it
+   was dropped and the reader can drag it to any shape after that, so the picture
+   fills what it is given rather than deciding for itself. `contain` rather than
+   `cover`, because a photograph of a whiteboard cropped to fit a box the reader
+   dragged is a photograph with half the working missing.
+
+   No padding and no scroll, unlike the text body above — both of those are for
+   type, and a picture inset six pixels inside a frame you positioned by hand
+   looks like a mistake. */
+[data-pdf-block-kind="image"] .pdf-block-body {
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+}
+
+.pdf-block-img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  /* The drag and the resize are routed from the block, and an image that answers
+     the browser's own drag would start a file drag out of the app instead. */
+  -webkit-user-drag: none;
+  user-select: none;
 }
 
 .pdf-block-edit {

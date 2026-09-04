@@ -13,6 +13,7 @@ import { el } from "../core/dom.js?v=__BUILD__";
 import { rawEditorValueFor } from "../notes/notes-edit-split.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { closeHighlightsEditor } from "../panels/highlights-editor.js?v=__BUILD__";
+import { activeDocSlot } from "../documents/doc-slot.js?v=__BUILD__";
 import { openDocumentView } from "../documents/pdf-view.js?v=__BUILD__";
 import { refreshHighlightBackdrop } from "../editor/highlight-mirror.js?v=__BUILD__";
 import { enterNotesEditing, isNotesEditing, notesScrolledSource, quizPanel, renderNotesView, resetNotesEditingUI } from "../notes/notes-view.js?v=__BUILD__";
@@ -43,6 +44,25 @@ export function setSplitViewHook(fn) {
   splitViewHook = fn;
 }
 
+// The Write tab's own paint step. A hook rather than an import, and for the
+// reason setDocumentAttachHandler is one: src/handwriting/board.js reaches
+// card-status, which reaches this module, and pulling it in here would close
+// that circle around the function every deck load calls.
+let handwritingViewHook = null;
+
+export function setHandwritingViewHook(fn) {
+  handwritingViewHook = typeof fn === "function" ? fn : null;
+}
+
+// Anything a leaving view has open and unsaved. A block being typed into on the
+// Write tab commits on the way out, exactly as the note in the highlights pane
+// does two lines below — leaving a view is not a reason to lose a sentence.
+let blockEditFlushHook = null;
+
+export function setBlockEditFlushHook(fn) {
+  blockEditFlushHook = typeof fn === "function" ? fn : null;
+}
+
 export function setViewMode(mode, options = {}) {
   // "highlights" is deliberately not a mode any more, and deliberately not
   // special-cased into an error either: it falls through to "cards" like any
@@ -58,14 +78,20 @@ export function setViewMode(mode, options = {}) {
   // The guard that remains is the one that always mattered: no deck, no
   // surface. A stale nav-history entry replayed against a closed deck must not
   // open a document panel with no toggle to leave it by.
+  // "handwriting" is the same #documentStage as "document", showing the deck's
+  // other document (src/documents/doc-slot.js) — which is why it is a view mode
+  // and not a panel: there is one surface, one render loop, one zoom and one
+  // coordinate system, and the tab chooses which paper is in it.
   const next = mode === "notes" ? "notes"
     : mode === "document" ? (hasActiveDeck() ? "document" : "cards")
-      : "cards";
+      : mode === "handwriting" ? (hasActiveDeck() ? "handwriting" : "cards")
+        : "cards";
   if (!el.notesStage || !el.viewModeToggle) {
     state.viewMode = next;
     return;
   }
   if (next === "cards") resetNotesEditingUI();
+  blockEditFlushHook?.();
   // A note being typed in the highlights pane commits on the way out, exactly
   // as the note popup flushes in closeHighlightNoteEditor: leaving a view is not
   // a reason to lose a sentence. A no-op when nothing is open.
@@ -77,13 +103,21 @@ export function setViewMode(mode, options = {}) {
   // after the visibility flip would lay the panel out twice.
   splitViewHook?.(next);
   const notesActive = next === "notes";
-  const documentActive = next === "document";
-  // The two reading surfaces share the notes-mode layout: deck and controls give
-  // way to a full-height stage. Document wants it most of all — a page of a
+  const handwritingActive = next === "handwriting";
+  // Both tabs that put a document on the stage. Everything below that asks "is
+  // the document surface up?" has to mean either of them, or the Write tab gets
+  // the cards layout with a PDF viewer inside it.
+  const documentActive = next === "document" || handwritingActive;
+  // The three reading surfaces share the notes-mode layout: deck and controls
+  // give way to a full-height stage. Document wants it most of all — a page of a
   // paper needs every pixel of height the chrome is not using.
   quizPanel?.classList.toggle("notes-mode", notesActive || documentActive);
   el.notesStage.hidden = !notesActive;
   if (el.documentStage) el.documentStage.hidden = !documentActive;
+  // Which of the deck's two documents is on the stage, published for CSS: the
+  // notebook's controls come up on one and the paper's on the other, and both
+  // sets live in the same row.
+  el.documentStage?.setAttribute("data-doc-slot", handwritingActive ? "notebook" : "doc");
   // Both containers, explicitly. The reading rail carries a second set of
   // [data-view-mode] buttons for focus mode (src/ui/reading-rail.js) and it must
   // never be a second opinion about where the reader is — but this is emphatically
@@ -159,11 +193,14 @@ export function setViewMode(mode, options = {}) {
       // a panel you cannot write in and cannot see why.
       if (!rawEditorValueFor(state.notes).trim()) enterNotesEditing();
     } else if (documentActive) {
-      // Idempotent for the deck already on screen — this runs on every switch
-      // into the tab, and re-parsing a 40MB paper because someone glanced at
-      // their cards is not a thing to do. Unawaited: the stage is already
-      // visible and shows its own "Opening the document…" line.
-      openDocumentView();
+      // Idempotent for the document already on screen — this runs on every
+      // switch into the tab, and re-parsing a 40MB paper because someone glanced
+      // at their cards is not a thing to do. The slot is part of what "already
+      // on screen" means, so switching between Document and Write is a real
+      // reopen and switching back into the one you were on is free. Unawaited:
+      // the stage is already visible and shows its own "Opening…" line.
+      if (handwritingActive) handwritingViewHook?.();
+      else openDocumentView({ slot: activeDocSlot() });
     } else if (changed) {
       showCard();
     }
@@ -258,6 +295,21 @@ const VIEW_EXPORT_MENUS = {
       // (#highlightCycleExportBtn) still opens it too — that one is reachable
       // without leaving the split.
       ["hl:open", "Highlights…", "Every line you marked, with its note"]
+    ]
+  },
+  // The same rows, because it is the same machinery pointed at the deck's other
+  // document — every one of these already exports "the pages on the stage", and
+  // the stage is the notebook here. Only the words change, and only where "the
+  // original PDF" would have been a lie: nobody handed us this file, this app
+  // wrote it.
+  handwriting: {
+    head: "Export handwritten pages",
+    rows: [
+      ["doc:annotated-pdf", "Pages you wrote on", "Only the pages that have something on them"],
+      ["doc:pages-pdf", "The whole notebook", "Every page, with your handwriting on it"],
+      ["doc:notes-pdf", "The notes on their own", "Every note, grouped by page"],
+      ["doc:original", "The blank paper", "The pages with nothing on them"],
+      ["hl:open", "Highlights…", "Every mark, with its note"]
     ]
   }
   // Still no `highlights` entry keyed by view: there is no Highlights VIEW, and

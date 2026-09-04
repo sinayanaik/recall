@@ -1,10 +1,29 @@
-// Typed blocks on a page you write on by hand.
+// Blocks on a page you write on by hand: typed markdown, and pictures.
 //
 // A page of working usually wants both: a derivation in your own hand, and the
 // statement of the problem typed above it. Handwriting is quick and unreadable
 // by anything; typed text is slower and readable by everything. So a block is
 // markdown, rendered through the same pipeline every other surface in this app
 // uses, dropped where you put it and moved and resized with a finger.
+//
+// ── ...and why a picture is one of these rather than a thing of its own ────
+//
+// A photograph of a whiteboard beside the working you did from it is the other
+// half of the same page, and it wants exactly what a text block wants: a
+// rectangle in the page's own points, a drag, a resize, a delete, a tombstone
+// when it goes, and a merge by id on the next sync. All of that is already here
+// and all of it is already checked, so an image is a block with `kind: "image"`
+// and a `src` instead of a `md`.
+//
+// It is deliberately NOT markdown-with-an-image-in-it, which would have needed
+// no new code at all. A block whose whole content is a picture would still be
+// sized as a paragraph, still be scrolled inside its own box, and still show the
+// reader a text editor when they pressed ✎ — three answers to questions nobody
+// asked about a photograph. The record is one field wider; the surface is a
+// picture you can pick up.
+//
+// A record with no `kind` is text, because that is what every record written
+// before this existed was.
 //
 // ── Why they live in PDF user space ───────────────────────────────────────
 //
@@ -30,13 +49,22 @@
 // inside a block (PDF_BLOCK_CLASS). Without that pair a pen press meant to move
 // a block would also draw a stroke, every time.
 
+import { activeDocSlot, recordsInSlot, recordsOutsideSlot, stampDocSlotAll } from "./doc-slot.js?v=__BUILD__";
 import { PDF_BLOCK_CLASS, PDF_BLOCK_LAYER_CLASS } from "../core/constants.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
+import { hydrateLocalImages, storeImageOrQueue } from "../images/outbox.js?v=__BUILD__";
 import { markdownToSafeHtml } from "../render/preprocess.js?v=__BUILD__";
+import { showToast } from "../ui/feedback.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { recordDeletedMetaId } from "../sync/document-sync.js?v=__BUILD__";
 import { pdfPageElement, pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
+
+// A block with no `kind` is text — see the header. Named constants rather than
+// bare strings so the record, the builder and the painter cannot drift.
+export const PDF_BLOCK_TEXT = "text";
+
+export const PDF_BLOCK_IMAGE = "image";
 
 // In PDF points. A block narrower than this cannot show a line of text, and one
 // shorter cannot be grabbed by its own bar.
@@ -52,8 +80,11 @@ export function setBlocksChangedHandler(fn) {
   onBlocksChanged = typeof fn === "function" ? fn : () => {};
 }
 
+// A deck can carry its own paper AND a notebook, and both keep their blocks in
+// this one array with a `doc` field saying which (src/documents/doc-slot.js).
+// This returns the surface's own, because that is what every caller means.
 export function documentBlocks(pageNumber = null) {
-  const list = Array.isArray(state.meta?.pdfBlocks) ? state.meta.pdfBlocks : [];
+  const list = recordsInSlot(state.meta?.pdfBlocks, activeDocSlot());
   const out = list
     .filter((block) => block && typeof block === "object" && block.id)
     .map((block) => ({
@@ -64,14 +95,30 @@ export function documentBlocks(pageNumber = null) {
       w: Math.max(PDF_BLOCK_MIN_WIDTH, Number(block.w) || PDF_BLOCK_DEFAULT_WIDTH),
       h: Math.max(PDF_BLOCK_MIN_HEIGHT, Number(block.h) || PDF_BLOCK_DEFAULT_HEIGHT),
       z: Number(block.z) || 0,
+      kind: block.kind === PDF_BLOCK_IMAGE ? PDF_BLOCK_IMAGE : PDF_BLOCK_TEXT,
       md: typeof block.md === "string" ? block.md : "",
+      src: typeof block.src === "string" ? block.src : "",
+      alt: typeof block.alt === "string" ? block.alt : "",
       at: Number(block.at) || 0
     }));
   return pageNumber === null ? out : out.filter((block) => block.page === Number(pageNumber));
 }
 
+// Both papers' blocks, for the callers that mean the DECK: the sync merge and
+// the backup, which read the array straight off meta and must never be handed
+// half of it.
+export function allDocumentBlocks() {
+  return Array.isArray(state.meta?.pdfBlocks) ? state.meta.pdfBlocks : [];
+}
+
+// The surface's blocks, stamped with the paper they are on, plus the other
+// paper's untouched. Without the second half, adding a text block to a notebook
+// would delete every block typed over the preprint beside it — see the same
+// argument spelled out on wholeHighlightArray in ./pdf-highlights.js.
 function writeBlocks(next, { removed = null } = {}) {
-  state.meta = { ...(state.meta && typeof state.meta === "object" ? state.meta : {}), pdfBlocks: next };
+  const slot = activeDocSlot();
+  const whole = recordsOutsideSlot(state.meta?.pdfBlocks, slot).concat(stampDocSlotAll(next, slot));
+  state.meta = { ...(state.meta && typeof state.meta === "object" ? state.meta : {}), pdfBlocks: whole };
   if (removed) state.meta.deletedBlockIds = recordDeletedMetaId(state.meta, "deletedBlockIds", removed);
   scheduleDeckAutosave();
   onBlocksChanged();
@@ -128,6 +175,7 @@ function buildBlock(block) {
   const node = document.createElement("div");
   node.className = PDF_BLOCK_CLASS;
   node.dataset.pdfBlock = block.id;
+  node.dataset.pdfBlockKind = block.kind;
 
   const bar = document.createElement("div");
   bar.className = "pdf-block-bar";
@@ -138,9 +186,14 @@ function buildBlock(block) {
   edit.type = "button";
   edit.className = "pdf-block-btn";
   edit.dataset.pdfBlockAction = "edit";
-  edit.title = "Edit this text";
-  edit.setAttribute("aria-label", "Edit this text");
-  edit.innerHTML = "&#9998;";
+  // On an image this edits the description, which is what a reader would type
+  // if the picture failed to load and what a screen reader reads out. A picture
+  // with a ✎ that opened a markdown editor would be a control lying about what
+  // it does.
+  const isImage = block.kind === PDF_BLOCK_IMAGE;
+  edit.title = isImage ? "Describe this image" : "Edit this text";
+  edit.setAttribute("aria-label", edit.title);
+  edit.innerHTML = isImage ? "&#9750;" : "&#9998;";
 
   const remove = document.createElement("button");
   remove.type = "button";
@@ -157,7 +210,7 @@ function buildBlock(block) {
   const area = document.createElement("textarea");
   area.className = "pdf-block-edit";
   area.hidden = true;
-  area.setAttribute("aria-label", "Block markdown");
+  area.setAttribute("aria-label", isImage ? "Image description" : "Block markdown");
 
   const grip = document.createElement("span");
   grip.className = "pdf-block-grip";
@@ -178,6 +231,23 @@ function paintBlock(node, block) {
   }
   area.hidden = true;
   body.hidden = false;
+  if (block.kind === PDF_BLOCK_IMAGE) {
+    // Rebuilt only when the source actually changed. This runs as every page
+    // paints and on every drag frame's repaint, and re-assigning an <img>'s src
+    // to the value it already holds is a decode and a flash of nothing on some
+    // engines — over a photograph the reader is dragging.
+    let img = body.querySelector("img");
+    if (!img) {
+      body.innerHTML = "";
+      img = document.createElement("img");
+      img.className = "pdf-block-img";
+      img.decoding = "async";
+      body.appendChild(img);
+    }
+    if (img.getAttribute("src") !== block.src) img.setAttribute("src", block.src);
+    img.alt = block.alt || "";
+    return;
+  }
   // An empty block says so. A transparent rectangle you cannot find again is
   // exactly what one added and not yet typed into would otherwise be.
   body.innerHTML = block.md.trim()
@@ -208,6 +278,10 @@ export function paintDocumentBlocks(pageNumber) {
     placeBlock(node, viewport, block);
     paintBlock(node, block);
   });
+  // An image added while offline is parked in the outbox under a recall-img:
+  // token; this is what turns that token into something the page can show,
+  // exactly as it does for a picture in a note. A no-op when there are none.
+  hydrateLocalImages(layer);
 }
 
 export function repaintDocumentBlocks() {
@@ -230,13 +304,17 @@ export function addDocumentBlock(pageNumber, at = null) {
   const blocks = documentBlocks();
   const wanted = at || { x: pageWidth / 2, y: pageHeight / 2 };
   const block = {
-    id: freshBlockId(new Set(blocks.map((b) => b.id))),
+    // Unique across the DECK, not the surface: a block id is a sync key, and a
+    // notebook minting the same one as a block over the paper beside it would
+    // make the two records one record on the next merge.
+    id: freshBlockId(new Set(allDocumentBlocks().map((b) => b?.id))),
     page: Number(pageNumber),
     x: Math.round(Math.max(12, Math.min(pageWidth - PDF_BLOCK_DEFAULT_WIDTH - 12, wanted.x - (PDF_BLOCK_DEFAULT_WIDTH / 2)))),
     y: Math.round(Math.max(12, Math.min(pageHeight - PDF_BLOCK_DEFAULT_HEIGHT - 12, wanted.y - (PDF_BLOCK_DEFAULT_HEIGHT / 2)))),
     w: PDF_BLOCK_DEFAULT_WIDTH,
     h: PDF_BLOCK_DEFAULT_HEIGHT,
     z: blocks.length,
+    kind: PDF_BLOCK_TEXT,
     md: "",
     at: Date.now()
   };
@@ -244,6 +322,83 @@ export function addDocumentBlock(pageNumber, at = null) {
   paintDocumentBlocks(pageNumber);
   beginBlockEdit(block.id);
   return block;
+}
+
+// ── ...and adding a picture ────────────────────────────────────────────────
+//
+// The upload goes through storeImageOrQueue, which is the one function in this
+// app that knows what "offline" means for an image: it uploads, and if it
+// cannot, it parks the bytes in the outbox under a `recall-img:` token that
+// paintDocumentBlocks hydrates into something the page can show. Reusing it is
+// what makes a photograph dropped on a page behave like one pasted into a note,
+// including the part where it uploads by itself later.
+//
+// The block is sized from the image's own aspect ratio, capped to fit the page
+// with a margin — an 8-megapixel photograph placed at a text block's default
+// 240x90 would be an unreadable letterbox that the reader then has to drag out
+// to something sensible before they can see what it is.
+export async function addDocumentImageBlock(pageNumber, file, at = null) {
+  const viewport = pdfPageViewport(pageNumber);
+  if (!viewport) return null;
+  if (!file || !String(file.type || "").startsWith("image/")) {
+    showToast("That file is not an image", "error");
+    return null;
+  }
+  const [pageWidth, pageHeight] = [viewport.viewBox[2] - viewport.viewBox[0], viewport.viewBox[3] - viewport.viewBox[1]];
+  const ratio = await imageAspectRatio(file);
+  const maxW = Math.max(PDF_BLOCK_MIN_WIDTH, pageWidth * 0.62);
+  const maxH = Math.max(PDF_BLOCK_MIN_HEIGHT, pageHeight * 0.42);
+  let w = maxW;
+  let h = w / ratio;
+  if (h > maxH) { h = maxH; w = h * ratio; }
+
+  const stored = await storeImageOrQueue(file);
+  if (stored.error) {
+    showToast(stored.error === "not-signed-in"
+      ? "Sign in to add pictures — they are stored with your deck"
+      : "Could not add that image", "error");
+    return null;
+  }
+  if (stored.queued) showToast("Image saved here — it uploads when you're back online", "info");
+
+  const blocks = documentBlocks();
+  const wanted = at || { x: pageWidth / 2, y: pageHeight / 2 };
+  const block = {
+    id: freshBlockId(new Set(allDocumentBlocks().map((b) => b?.id))),
+    page: Number(pageNumber),
+    x: Math.round(Math.max(12, Math.min(pageWidth - w - 12, wanted.x - (w / 2)))),
+    y: Math.round(Math.max(12, Math.min(pageHeight - h - 12, wanted.y - (h / 2)))),
+    w: Math.round(w),
+    h: Math.round(h),
+    z: blocks.length,
+    kind: PDF_BLOCK_IMAGE,
+    md: "",
+    src: stored.url,
+    alt: "",
+    at: Date.now()
+  };
+  writeBlocks([...blocks, block]);
+  paintDocumentBlocks(pageNumber);
+  return block;
+}
+
+// Width over height, from the file itself. 4/3 when the browser cannot decode it
+// — a shape rather than a failure, since the picture may still be perfectly
+// displayable and the reader can drag it to whatever they want anyway.
+async function imageAspectRatio(file) {
+  const url = URL.createObjectURL(file);
+  try {
+    const size = await new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => resolve({ w: img.naturalWidth, h: img.naturalHeight });
+      img.onerror = () => resolve(null);
+      img.src = url;
+    });
+    if (!size?.w || !size?.h) return 4 / 3;
+    return size.w / size.h;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 }
 
 // ── Editing ────────────────────────────────────────────────────────────────
@@ -260,7 +415,8 @@ function beginBlockEdit(id) {
   repaintDocumentBlocks();
   const area = document.querySelector(`[data-pdf-block="${id}"] .pdf-block-edit`);
   if (!area) return;
-  area.value = block.md;
+  // An image's editor holds its DESCRIPTION, not markdown — see buildBlock.
+  area.value = block.kind === PDF_BLOCK_IMAGE ? block.alt : block.md;
   area.focus();
   area.setSelectionRange(area.value.length, area.value.length);
 }
@@ -273,8 +429,9 @@ export function commitBlockEdit() {
   editingId = null;
   const blocks = documentBlocks();
   const block = blocks.find((entry) => entry.id === id);
-  if (next !== null && block && block.md !== next) {
-    writeBlocks(blocks.map((entry) => (entry.id === id ? { ...entry, md: next, at: Date.now() } : entry)));
+  const field = block?.kind === PDF_BLOCK_IMAGE ? "alt" : "md";
+  if (next !== null && block && block[field] !== next) {
+    writeBlocks(blocks.map((entry) => (entry.id === id ? { ...entry, [field]: next, at: Date.now() } : entry)));
   }
   repaintDocumentBlocks();
   return true;

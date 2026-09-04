@@ -85,7 +85,20 @@ export function resolveInkColor(token, root = null) {
   const pen = normalizeInkPen(token);
   const scope = root || (typeof document !== "undefined" ? document.documentElement : null);
   if (!scope || typeof getComputedStyle !== "function") return INK_PEN_HEX[pen];
-  const key = `${pen}`;
+  // The theme is IN the key, and that is the whole of the bug this once was.
+  //
+  // A pen is a token that resolves to a CSS custom property, and the property is
+  // defined per theme (styles/52-ink.css) precisely so that ink made on a dark
+  // page is legible on a light one. Cached under the token alone, the first
+  // answer of the session was the only answer of the session: switch from a dark
+  // theme to a light one and every stroke kept being painted the near-white it
+  // had been, on a page that was now white. "My notes are gone" is what that
+  // looks like, and the notes were never gone.
+  //
+  // The scope is in it too. pdf-export.js and the SVG writer resolve against a
+  // detached print document, and one of those asking first used to decide the
+  // colour for the live page as well.
+  const key = `${scope === document.documentElement ? (document.documentElement.dataset.theme || "") : "detached"}|${pen}`;
   const cached = inkColorCache.get(key);
   if (cached) return cached;
   let value = "";
@@ -99,9 +112,15 @@ export function resolveInkColor(token, root = null) {
   return resolved;
 }
 
-// Called when the theme changes. The pens are defined per theme, so a cached
-// near-black would stay near-black on a dark page — invisible ink, and the kind
-// of bug that reads as "my notes are gone".
+// Called when the theme changes — from setTheme (src/ui/theme.js), which is the
+// only caller and for a long time was not a caller at all. The key above makes
+// this belt-and-braces rather than load-bearing, and it is kept because a theme
+// whose pens are changed WITHOUT changing data-theme (a style edit, a
+// preference) would otherwise be invisible to the key.
+//
+// Clearing this is only half the fix, and the smaller half: the dry canvas is a
+// bitmap, so nothing changes on screen until something repaints it. See
+// repaintDocumentInk.
 export function forgetInkColors() {
   inkColorCache.clear();
 }

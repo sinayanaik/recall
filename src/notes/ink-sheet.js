@@ -277,6 +277,13 @@ export function dismissInkSheet() {
 // textarea, decided the press was for the note behind the sheet, and stepped
 // that note's history back instead — an undo that changed something the reader
 // could not even see.
+// The drawing sheet's half of the theme change. A no-op when no sheet is open,
+// which is almost always — see repaintDocumentInk for why a colour cache alone
+// is not enough.
+export function repaintInkSheet() {
+  if (sheetSession) sheetPaper?.engine?.repaintAll();
+}
+
 export function undoInkSheet() { return Boolean(sheetSession) && sheetPaper.engine.undo(); }
 
 export function redoInkSheet() { return Boolean(sheetSession) && sheetPaper.engine.redo(); }
