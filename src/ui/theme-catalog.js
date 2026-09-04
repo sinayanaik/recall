@@ -73,6 +73,24 @@ export const themeCatalog = [
   }
 ];
 
+// Is the theme in force a dark one?
+//
+// Here, in the leaf, rather than beside setTheme: the Document surface needs it
+// to decide whether a notebook's paper is a dark page, and it must not import
+// src/ui/theme.js to find out — that module reaches the card view and the block
+// cache, and the document surface is reached from both.
+//
+// Read off the catalog rather than off the id's prefix. Every theme today is
+// named "dark-…" or "light-…" and a prefix test would work; the day one is not,
+// a prefix test would silently give somebody a white page and a white pen.
+export function isDarkThemeActive() {
+  const id = typeof document !== "undefined" ? (document.documentElement?.dataset?.theme || "") : "";
+  const theme = themeCatalog.find((entry) => entry.id === (themeAliases[id] || id));
+  // No attribute yet is the app's own default, which is a dark theme
+  // (normalizeThemeId falls back to dark-amoled).
+  return theme ? theme.mode === "dark" : true;
+}
+
 export const themeAliases = {
   dark: "dark-amoled",
   light: "light-paper"

@@ -60,7 +60,7 @@ import { goToBookmark } from "./notes/bookmark.js?v=__BUILD__";
 import { initNotesCaretLine } from "./notes/caret-line.js?v=__BUILD__";
 import { scheduleNotesCaretCheck } from "./notes/caret.js?v=__BUILD__";
 import { closeNoteLinkPicker, commitNoteLinkPicker, isNoteLinkPickerOpen, moveNoteLinkPicker, updateNoteLinkPicker } from "./notes/link-picker.js?v=__BUILD__";
-import { isInkSheetOpen, redoInkSheet, undoInkSheet } from "./notes/ink-sheet.js?v=__BUILD__";
+import { isInkSheetOpen, redoInkSheet, repaintInkSheet, undoInkSheet } from "./notes/ink-sheet.js?v=__BUILD__";
 import { followNoteLink, revealNoteHeading } from "./notes/note-links.js?v=__BUILD__";
 import { initNotesHeadOverflow } from "./notes/notes-head-overflow.js?v=__BUILD__";
 import { commitNotesEditIfActive, enterNotesEditing, isNotesEditing, isProgrammaticNotesScroll, setNotesScrolledSource } from "./notes/notes-view.js?v=__BUILD__";
@@ -98,6 +98,7 @@ import { reconcileAllDecks } from "./sync/reconcile.js?v=__BUILD__";
 import { closeTopmostOverlay, initBackGesture } from "./ui/back-gesture.js?v=__BUILD__";
 import { showAuthenticatedUI, showLibraryFailedScreen, showLoginScreen, showSetupScreen } from "./ui/boot-screens.js?v=__BUILD__";
 import { applyChromeCollapse, chromeMobileMedia, chromeScrollFrame, hasStudyTextSelection, initImmersiveMode, isFocusModeActive, isMobileChrome, measureChromeHeights, setChromeCollapseHandler, setChromeFocusPinned, setChromeModesHandler, setChromeScrollFrame, setFocusMode, toggleImmersiveMode, trackChromeScroll } from "./ui/chrome.js?v=__BUILD__";
+import { DOC_SLOT_NOTEBOOK, activeDocSlot, onDocumentSurface } from "./documents/doc-slot.js?v=__BUILD__";
 import { captureDocumentSelection } from "./documents/pdf-selection.js?v=__BUILD__";
 import { closeImportPanel, closeMyDecksPanel, editCurrentDeckCategory, editCurrentDeckTitle, openImportPanel, openMyDecksPanel } from "./ui/deck-header.js?v=__BUILD__";
 import { addBlankCardAtCursor, flushWorkingDeck, toggleEditMode } from "./ui/edit-mode.js?v=__BUILD__";
@@ -109,15 +110,15 @@ import { chooseDeckCategory } from "./ui/pickers.js?v=__BUILD__";
 import { defaultStyleProfiles, styleDefaults } from "./ui/style-schema.js?v=__BUILD__";
 import { applyStyleDensity, detectStyleProfile, handleStyleControlChange, normalizeStyleValue, resetStyleField, resetStyleProfile, trackKeyboardInset } from "./ui/style-settings.js?v=__BUILD__";
 import { styleMobileMedia, styleProfiles } from "./ui/style-tokens.js?v=__BUILD__";
-import { setTheme, setThemeMenuOpen } from "./ui/theme.js?v=__BUILD__";
-import { FOCUS_MODE_KEY, closeViewExportMenu, paintViewExportMenu, setSplitViewHook, setViewMode } from "./ui/view-mode.js?v=__BUILD__";
+import { setTheme, setThemeMenuOpen, setThemeRepaintHook } from "./ui/theme.js?v=__BUILD__";
+import { FOCUS_MODE_KEY, closeViewExportMenu, paintViewExportMenu, setBlockEditFlushHook, setHandwritingViewHook, setSplitViewHook, setViewMode } from "./ui/view-mode.js?v=__BUILD__";
 import { DOCUMENT_NOTE_HANDLERS, documentHighlightNote, initDocumentMarkMenu, repairDocumentHighlightQuads, repairDocumentHighlightText } from "./documents/pdf-highlights.js?v=__BUILD__";
 import { closeDocumentToc, documentOutlineEntries, initDocumentOutlineFolding, isDocumentTocOpen, resolveOutlineEntryPage, toggleDocumentToc } from "./documents/pdf-outline.js?v=__BUILD__";
 import { deleteRemoteDocument } from "./documents/pdf-store.js?v=__BUILD__";
-import { currentPdfDocument, documentFittedWidth, fitDocumentToWidth, initDocumentPinchZoom, isDocumentFitWidth, reattachDocument, relayoutDocument, scheduleDocumentPositionSave, scrollToDocumentPage, setDocumentAttachHandler, setDocumentOpenedHook, setDocumentPagePaintedHook, togglePdfInvert, updatePageIndicator, zoomDocument } from "./documents/pdf-view.js?v=__BUILD__";
-import { canRedoInk, canUndoInk, initDocumentInk, inkMarkImageMarkdown, isInkMarkId, paintDocumentInk, redoInk, resetDocumentInk, setInkChangedHandler, undoInk } from "./documents/pdf-ink.js?v=__BUILD__";
-import { openHandwritingBoard, refreshHandwritingBoard } from "./handwriting/board.js?v=__BUILD__";
-import { handleBlockPointerDown, paintDocumentBlocks, repaintDocumentBlocks, setBlocksChangedHandler } from "./documents/pdf-blocks.js?v=__BUILD__";
+import { currentPdfDocument, documentFittedWidth, fitDocumentToWidth, initDocumentPinchZoom, isDocumentFitWidth, reattachDocument, relayoutDocument, scheduleDocumentPositionSave, scrollToDocumentPage, refreshDocumentPaperForTheme, setDocumentAttachHandler, setDocumentOpenedHook, setDocumentPagePaintedHook, setNotebookStartHandler, togglePdfInvert, updatePageIndicator, zoomDocument } from "./documents/pdf-view.js?v=__BUILD__";
+import { canRedoInk, canUndoInk, initDocumentInk, inkMarkImageMarkdown, isInkMarkId, paintDocumentInk, redoInk, repaintDocumentInk, resetDocumentInk, setInkChangedHandler, undoInk } from "./documents/pdf-ink.js?v=__BUILD__";
+import { addHandwritingImage, enterHandwritingView, refreshHandwritingBoard, startHandwritingNotebook } from "./handwriting/board.js?v=__BUILD__";
+import { commitBlockEdit, handleBlockPointerDown, paintDocumentBlocks, repaintDocumentBlocks, setBlocksChangedHandler } from "./documents/pdf-blocks.js?v=__BUILD__";
 import { initInkRail, refreshInkRail } from "./ui/ink-rail.js?v=__BUILD__";
 import { initDocumentRegionSelect, toggleRegionSelect } from "./documents/pdf-region.js?v=__BUILD__";
 import { paintPageNoteBadges, paintPdfPageNotesButton, readPdfPageNotesPreference, refreshPdfPageNotes, repaintPdfPageNotes, setDocumentNoteRevealHook, setPdfPageNotesFlag, togglePdfPageNotes } from "./documents/pdf-page-notes.js?v=__BUILD__";
@@ -1234,7 +1235,7 @@ onDomReady(() => {
   // the same gesture.
   el.documentView?.addEventListener("pointerdown", (event) => { handleBlockPointerDown(event); }, true);
   // A block moved, typed into or deleted: repaint the pages it is on, and let
-  // the Handwritten Notes panel re-count what it says in its header.
+  // the Write tab's controls re-read what there is to act on.
   setBlocksChangedHandler(() => {
     repaintDocumentBlocks();
     refreshHandwritingBoard();
@@ -1949,11 +1950,35 @@ el.allCardsBtn.addEventListener("click", openAllCardsPanel);
 // The toolbar button always opens a fresh board — pass no args, since a click
 // event object would otherwise arrive as the options argument.
 el.quickNotesBoardBtn?.addEventListener("click", () => openQuickNotesBoard());
-// Handwriting is a surface any deck can have, so this opens the notebook for
-// whatever deck is open — and starts it with a page if it has none, because
-// there is no state of this surface that is not a page. No args, for the same
-// reason the line above passes none: a click event would arrive as options.
-el.handwritingBtn?.addEventListener("click", () => openHandwritingBoard());
+// ── The Write tab ────────────────────────────────────────────────────────
+//
+// Three registrations rather than three imports, for the reason the document's
+// own attach handler is registered here: this file is the one that knows both
+// ends, and src/handwriting/board.js must not be pulled into view-mode.js or
+// pdf-view.js — both of which it reaches.
+setHandwritingViewHook(() => { enterHandwritingView(); });
+// ── What a theme change has to redraw ────────────────────────────────────
+//
+// Everything else the theme touches is CSS or markdown that can be rebuilt. Ink
+// is a bitmap: a stroke stores a pen token and the token resolves per theme, so
+// until the canvas is drawn again it keeps the colour it was painted in — which
+// on the other theme can be the colour of the paper. And a notebook's paper is
+// itself decided by the theme (invertForDocumentSlot), so it has to be re-asked
+// in the same pass or the ink and the page it is on disagree for a frame.
+setThemeRepaintHook(() => {
+  refreshDocumentPaperForTheme();
+  repaintDocumentInk();
+  repaintInkSheet();
+});
+setBlockEditFlushHook(() => commitBlockEdit());
+setNotebookStartHandler(() => { startHandwritingNotebook(); });
+// The + 📷 picker. The paste and drop paths land on the same function, so an
+// image arrives on the page the same way however it was offered.
+el.handwritingImageInput?.addEventListener("change", () => {
+  const file = el.handwritingImageInput.files?.[0];
+  el.handwritingImageInput.value = "";
+  if (file) addHandwritingImage(file);
+});
 el.appBackBtn?.addEventListener("click", goNavBack);
 el.qnCloseBtn?.addEventListener("click", closeQuickNotesBoard);
 el.qnManageBtn?.addEventListener("click", openQnCatModal);
@@ -2381,7 +2406,7 @@ document.addEventListener("keydown", (event) => {
     return;
   }
   if ((event.ctrlKey || event.metaKey) && (event.key === "z" || event.key === "Z")
-      && state.viewMode === "document" && !event.target.matches("input, textarea")
+      && onDocumentSurface() && !event.target.matches("input, textarea")
       && (event.shiftKey ? canRedoInk() : canUndoInk())) {
     event.preventDefault();
     event.shiftKey ? redoInk() : undoInk();
@@ -2804,9 +2829,30 @@ if (appInfoModal) {
 // flattened frame rather than losing the paste.
 
 
+// ── A picture pasted or dropped onto a page of handwriting ────────────────
+//
+// The three handlers below all begin "is this a TEXTAREA?", because every other
+// surface in this app that takes an image takes it into markdown at a caret. A
+// notebook page has no caret and no markdown: a picture lands on it as a block
+// of its own, where it was dropped. So this is checked first, on the Write tab
+// only, and hands the file to the same addHandwritingImage the + 📷 uses.
+function handwritingImageDrop(event, files) {
+  if (state.viewMode !== "handwriting") return false;
+  if (!el.documentView?.contains(event.target)) return false;
+  const list = Array.from(files || []);
+  if (!list.length) return false;
+  event.preventDefault();
+  // One at a time and in order, so a multi-file drop does not stack every
+  // picture in the middle of the page on top of the last.
+  list.reduce((chain, file) => chain.then(() => addHandwritingImage(file)), Promise.resolve());
+  return true;
+}
+
 // Convert rich text/HTML to Markdown on paste in all textareas
 document.addEventListener("paste", (event) => {
   const target = event.target;
+  const pastedImages = allImageFiles(event.clipboardData || window.clipboardData);
+  if (handwritingImageDrop(event, pastedImages)) return;
   if (target.tagName !== "TEXTAREA") return;
 
   const clipboardData = event.clipboardData || window.clipboardData;
@@ -2870,10 +2916,17 @@ document.addEventListener("paste", (event) => {
 document.addEventListener("dragover", (event) => {
   if (event.target.tagName === "TEXTAREA" && dragContainsImage(event.dataTransfer)) {
     event.preventDefault();
+    return;
+  }
+  // Without this the browser refuses the drop and navigates to the file instead.
+  if (state.viewMode === "handwriting" && el.documentView?.contains(event.target)
+      && dragContainsImage(event.dataTransfer)) {
+    event.preventDefault();
   }
 });
 
 document.addEventListener("drop", (event) => {
+  if (dragContainsImage(event.dataTransfer) && handwritingImageDrop(event, allImageFiles(event.dataTransfer))) return;
   if (event.target.tagName !== "TEXTAREA") return;
   // Only intercept file drops. Dragging text/URLs into the textarea keeps its
   // normal behavior (they get inserted as text).
@@ -3192,7 +3245,7 @@ el.documentView?.addEventListener("scroll", () => {
     // already declines on a torn-down document, so this is not a crash being
     // caught; it is one test in place of three, and a place to say why the frame
     // outlives its document at all.
-    if (state.viewMode !== "document") return;
+    if (!onDocumentSurface()) return;
     // READS first, together, off one geometry table.
     scheduleDocumentPositionSave();
     // ...then the writes.
@@ -3259,7 +3312,7 @@ const DOCUMENT_PAGER_WAKE_MS = 1200;
 let documentRefitTimer = 0;
 
 window.addEventListener("resize", () => {
-  if (state.viewMode !== "document") return;
+  if (!onDocumentSurface()) return;
   const width = el.documentView?.clientWidth || 0;
   if (!width || width === documentFittedWidth()) return;
   if (!isDocumentFitWidth()) return;

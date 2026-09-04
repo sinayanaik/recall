@@ -67,9 +67,14 @@ CREATE TABLE IF NOT EXISTS decks (
   --   deletedBlockIds      { id: iso } tombstones, so a block deleted on one
   --                        device stays deleted on the others
   --
-  -- A handwritten notebook needs no key of its own: it is a deck whose `pdf` is
-  -- blank paper this app generated (meta.pdf.notebook), so its pages ARE the
-  -- document's pages and its handwriting is pdfHighlights like any other.
+  -- A handwritten notebook is the deck's OTHER document: `notebook`, in the same
+  -- shape as `pdf` above, holding blank paper this app generated. Two slots
+  -- rather than one, because a deck reading somebody's preprint wants pages of
+  -- its own beside it — with one slot it was told "this deck already has a PDF".
+  -- Its pages are still a real document's pages and its handwriting is still
+  -- pdfHighlights like any other; a record's `doc` says which of the two it is a
+  -- coordinate into, and no `doc` means the deck's own paper, which is what
+  -- every record written before the second slot existed already meant.
   meta JSONB NOT NULL DEFAULT '{}'::jsonb,
   current_card_index INT DEFAULT 0,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),

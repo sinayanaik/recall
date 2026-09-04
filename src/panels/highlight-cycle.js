@@ -53,6 +53,7 @@ import {
   setHighlightJumpHook
 } from "./highlights-editor.js?v=__BUILD__";
 import { collectHighlightEntries } from "./highlights-panel.js?v=__BUILD__";
+import { onDocumentSurface } from "../documents/doc-slot.js?v=__BUILD__";
 
 // 3:2, which is what was asked for, and which is also about the narrowest a
 // fit-width PDF page stays readable at on a laptop.
@@ -271,7 +272,7 @@ function notePaneResized() {
   clearTimeout(splitResizeTimer);
   splitResizeTimer = setTimeout(() => {
     splitResizeTimer = 0;
-    if (state.viewMode === "document") {
+    if (onDocumentSurface()) {
       if (isDocumentFitWidth()) relayoutDocument({ refit: true });
     } else if (isNotesPaged()) {
       // Paged notes are laid out in columns measured against the stage's width,

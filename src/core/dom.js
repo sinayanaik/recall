@@ -275,14 +275,18 @@ export const el = {
   inkRailPens: document.querySelector("#inkRailPens"),
   inkRailWidths: document.querySelector("#inkRailWidths"),
   inkRailSelection: document.querySelector("#inkRailSelection"),
-  // The Handwritten Notes panel. A notebook is a deck whose meta carries the
-  // pages — see src/handwriting/board.js — so there is nothing here but the
-  // chrome around a scroller.
-  hwBoard: document.querySelector("#handwritingBoard"),
-  hwStage: document.querySelector("#hwStage"),
-  hwTitle: document.querySelector("#hwTitle"),
-  hwSummary: document.querySelector("#hwSummary"),
-  handwritingBtn: document.querySelector("#handwritingBtn"),
+  // The Write tab's own controls. There is no panel and no stage of its own:
+  // handwriting is #documentStage showing the deck's OTHER document (see
+  // src/documents/doc-slot.js), so all that is left here is the chrome that only
+  // means something on that view — and even that is lifted into #viewModeRow at
+  // boot, beside the document's own.
+  handwritingHead: document.querySelector("#handwritingHead"),
+  handwritingPaperGroup: document.querySelector("#handwritingPaperGroup"),
+  handwritingTextBtn: document.querySelector("#handwritingTextBtn"),
+  handwritingImageBtn: document.querySelector("#handwritingImageBtn"),
+  handwritingImageInput: document.querySelector("#handwritingImageInput"),
+  handwritingPageBtn: document.querySelector("#handwritingPageBtn"),
+  handwritingTearBtn: document.querySelector("#handwritingTearBtn"),
   documentMoreBtn: document.querySelector("#documentMoreBtn"),
   documentMoreMenu: document.querySelector("#documentMoreMenu"),
   documentReattachInput: document.querySelector("#documentReattachInput"),

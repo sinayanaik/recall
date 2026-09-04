@@ -360,7 +360,7 @@ export async function pullCloudDeckIntoLibraryLocked(cloud, cards) {
     cardCount: snapshot.cards.length,
     hasNotes: Boolean(snapshot.notes.trim()),
     // Kept in step with finishSaveDeckToLibrary's copy of this entry.
-    pageCount: snapshot.meta?.pdf?.notebook ? (Number(snapshot.meta.pdf.pages) || 0) : 0,
+    pageCount: Number(snapshot.meta?.notebook?.pages) || 0,
     // Persisted (not just in the one-off sync report) so the "Synced" pill and
     // the My Decks table keep reflecting it after the report modal is closed.
     // A pull recomputes notesConflicted authoritatively, but it says nothing

@@ -12,11 +12,18 @@
 // repository has one of those and does not want two.
 //
 // So the paper is a real file (src/documents/blank-pdf.js), attached to the deck
-// as `meta.pdf` like any other, with one extra key on it: `notebook`. That flag
-// is the whole difference. It is what says these bytes were generated rather
-// than given to us, which is what makes it safe to REGENERATE them when a page
-// is added, torn out, or the paper changed — none of which may ever happen to
-// somebody's actual document.
+// exactly as a document is — but in a slot of its own, `meta.notebook`
+// (src/documents/doc-slot.js), beside whatever paper the deck already carries in
+// `meta.pdf`. The slot is the whole difference. It is what says these bytes were
+// generated rather than given to us, which is what makes it safe to REGENERATE
+// them when a page is added, torn out, or the paper changed — none of which may
+// ever happen to somebody's actual document.
+//
+// It used to live in `meta.pdf` with a `notebook: true` flag on it, and that is
+// what made the app say "This deck already has a PDF — its handwriting goes on
+// that" to anybody who wanted to write beside a paper they were reading. One
+// shelf, two things that want to be on it. Decks in that state are moved here on
+// open (migrateNotebookSlot below).
 //
 // ── What regenerating costs ────────────────────────────────────────────────
 //
@@ -31,9 +38,10 @@
 // it is a renumbering: see remapDocumentHighlightPages.
 
 import { BLANK_PAPERS, BLANK_PAGE_HEIGHT, BLANK_PAGE_WIDTH, blankPdfFile, normalizeBlankPaper } from "./blank-pdf.js?v=__BUILD__";
-import { hasLegacyNotebook, migratedNotebookMeta, planLegacyNotebookMigration } from "./notebook-migrate.js?v=__BUILD__";
+import { DOC_SLOT_NOTEBOOK, documentStoreKey } from "./doc-slot.js?v=__BUILD__";
+import { hasLegacyNotebook, hasNotebookInPdfSlot, migratedNotebookMeta, movedNotebookSlotMeta, planLegacyNotebookMigration } from "./notebook-migrate.js?v=__BUILD__";
 import { freshDocumentHighlightId, remapDocumentHighlightPages } from "./pdf-highlights.js?v=__BUILD__";
-import { putDocument, readDocument, sha256, uploadDocument } from "./pdf-store.js?v=__BUILD__";
+import { deleteLocalDocument, putDocument, readDocument, sha256, uploadDocument } from "./pdf-store.js?v=__BUILD__";
 import { openDocumentView } from "./pdf-view.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { storageFolderSlug, storageGroupId } from "../images/upload.js?v=__BUILD__";
@@ -42,16 +50,22 @@ import { showToast } from "../ui/feedback.js?v=__BUILD__";
 
 export const NOTEBOOK_MAX_PAGES = 300;
 
-export function isNotebookDeck(meta = state.meta) {
-  return Boolean(meta?.pdf?.notebook);
+export function hasNotebook(meta = state.meta) {
+  return Boolean(meta?.notebook);
 }
 
 export function notebookPaper(meta = state.meta) {
-  return normalizeBlankPaper(meta?.pdf?.paper);
+  return normalizeBlankPaper(meta?.notebook?.paper);
 }
 
 export function notebookPageCount(meta = state.meta) {
-  return Number(meta?.pdf?.pages) || 0;
+  return Number(meta?.notebook?.pages) || 0;
+}
+
+// Where this deck's notebook bytes are filed on the device. One row per
+// document, so a deck with a paper AND a notebook has two.
+function notebookStoreKey() {
+  return documentStoreKey(state.localDeckId, DOC_SLOT_NOTEBOOK);
 }
 
 // Write a freshly generated file over the deck's document.
@@ -70,12 +84,13 @@ async function writeNotebookPdf({ pages, paper, reopen = true }) {
   // LOCAL id, a local id is minted by the first save, and a save is a silent
   // no-op for a deck with nothing in it (deckPayloadHasContent). A brand-new
   // notebook has no cards and no note, so its only content is the very document
-  // being attached: write meta.pdf first and the deck has something to save, and
-  // the save is what hands back the id the bytes are filed under.
+  // being attached: write meta.notebook first and the deck has something to save,
+  // and the save is what hands back the id the bytes are filed under.
+  // (deckPayloadHasContent counts a notebook for exactly this reason.)
   state.meta = {
     ...(state.meta && typeof state.meta === "object" ? state.meta : {}),
-    pdf: {
-      ...(state.meta?.pdf && typeof state.meta.pdf === "object" ? state.meta.pdf : {}),
+    notebook: {
+      ...(state.meta?.notebook && typeof state.meta.notebook === "object" ? state.meta.notebook : {}),
       name: file.name,
       size: file.size,
       pages,
@@ -85,7 +100,7 @@ async function writeNotebookPdf({ pages, paper, reopen = true }) {
       // The old path is not kept. It names bytes that no longer exist, and a
       // device that pulled this deck must not be handed the previous page count.
       path: null,
-      importedAt: state.meta?.pdf?.importedAt || new Date().toISOString()
+      importedAt: state.meta?.notebook?.importedAt || new Date().toISOString()
     }
   };
   if (!(await saveDeckToLibrary({ silent: true })) || !state.localDeckId) {
@@ -94,12 +109,12 @@ async function writeNotebookPdf({ pages, paper, reopen = true }) {
   }
   // The device copy before the upload, because it is the one the reader is about
   // to draw on and the one that survives being offline.
-  await putDocument({ deckLocalId: state.localDeckId, blob: file, sha256: hash, name: file.name, at: Date.now() });
+  await putDocument({ deckLocalId: notebookStoreKey(), blob: file, sha256: hash, name: file.name, at: Date.now() });
 
   try {
     const folder = `${storageFolderSlug(state.deckTitle || "notes", "notes")}--${storageGroupId()}`;
     const path = await uploadDocument(file, { folder, name: storageFolderSlug(file.name.replace(/\.pdf$/i, ""), "notebook") });
-    state.meta = { ...state.meta, pdf: { ...state.meta.pdf, path } };
+    state.meta = { ...state.meta, notebook: { ...state.meta.notebook, path } };
     await saveDeckToLibrary({ silent: true });
   } catch (error) {
     // Not fatal and not silent. The pages are on this device and drawable; what
@@ -108,7 +123,7 @@ async function writeNotebookPdf({ pages, paper, reopen = true }) {
     showToast("Pages saved here — they upload when you're back online", "info");
   }
 
-  if (reopen) await openDocumentView({ force: true });
+  if (reopen) await openDocumentView({ force: true, slot: DOC_SLOT_NOTEBOOK });
   return true;
 }
 
@@ -125,23 +140,11 @@ async function writeNotebookPdf({ pages, paper, reopen = true }) {
 // just re-made, or the pages that were just converted, are not on the screen and
 // nothing says why. So "wrote" is the caller's instruction to force the reopen.
 export async function ensureNotebookDocument({ paper = null } = {}) {
-  if (state.meta?.pdf) {
-    // A deck that already has a PAPER is not a notebook and must never be
-    // written over. The surface offers itself on any deck; this is the line
-    // that keeps that offer from being destructive.
-    if (!isNotebookDeck()) {
-      if (hasLegacyNotebook(state.meta)) {
-        // The one case the migration refuses. Those strokes are coordinates into
-        // a page this app generated, and this deck's pages belong to somebody
-        // else's document — there is nowhere honest to put them. Left completely
-        // alone rather than half-converted, and said out loud so it is a decision
-        // and not a silence.
-        showToast("This deck has its own PDF, so its older handwritten pages were left untouched", "info");
-      } else {
-        showToast("This deck already has a PDF — its handwriting goes on that", "info");
-      }
-      return false;
-    }
+  // Decks whose notebook is still in the document slot are moved first, so every
+  // branch below is asking about the same key on every deck. Idempotent, and a
+  // no-op for every deck that has never had a notebook.
+  if (hasNotebookInPdfSlot(state.meta)) await migrateNotebookSlot();
+  if (hasNotebook()) {
     // A notebook whose bytes have gone — a device that pulled the deck but never
     // the file, a store cleared to reclaim space. The paper is GENERATED, so it
     // can simply be made again from the record of what it was; that is a property
@@ -152,6 +155,13 @@ export async function ensureNotebookDocument({ paper = null } = {}) {
     }
     return "kept";
   }
+  // ── There is no refusal here any more ────────────────────────────────────
+  //
+  // This used to stop dead on a deck that already had a PDF — "This deck already
+  // has a PDF, its handwriting goes on that" — because there was one document
+  // slot and the paper was in it. There are two now, so a deck that is reading
+  // somebody's preprint can have blank pages of its own beside it, which is what
+  // anybody pressing this on such a deck meant in the first place.
   if (hasLegacyNotebook(state.meta)) return (await migrateLegacyNotebook()) && "wrote";
   return (await writeNotebookPdf({ pages: 1, paper: normalizeBlankPaper(paper), reopen: false })) && "wrote";
 }
@@ -159,7 +169,7 @@ export async function ensureNotebookDocument({ paper = null } = {}) {
 async function notebookBytesPresent() {
   if (!state.localDeckId) return false;
   try {
-    const entry = await readDocument(state.localDeckId);
+    const entry = await readDocument(notebookStoreKey());
     return Boolean(entry?.blob);
   } catch (_) {
     // An unreadable store is not the same as an absent file, and re-generating
@@ -206,11 +216,11 @@ export async function migrateLegacyNotebook() {
     return false;
   }
 
-  await putDocument({ deckLocalId: state.localDeckId, blob: file, sha256: hash, name: file.name, at: Date.now() });
+  await putDocument({ deckLocalId: notebookStoreKey(), blob: file, sha256: hash, name: file.name, at: Date.now() });
   try {
     const folder = `${storageFolderSlug(state.deckTitle || "notes", "notes")}--${storageGroupId()}`;
     const path = await uploadDocument(file, { folder, name: storageFolderSlug(file.name.replace(/\.pdf$/i, ""), "notebook") });
-    state.meta = { ...state.meta, pdf: { ...state.meta.pdf, path } };
+    state.meta = { ...state.meta, notebook: { ...state.meta.notebook, path } };
     await saveDeckToLibrary({ silent: true });
   } catch (error) {
     console.warn("Could not upload the migrated notebook", error);
@@ -228,8 +238,48 @@ export async function migrateLegacyNotebook() {
   return true;
 }
 
+// ── The move out of the document slot ──────────────────────────────────────
+//
+// The first real-paper notebooks put their generated PDF in `meta.pdf`, because
+// that was the only slot there was — which is exactly what made a deck able to
+// have a notebook or a paper and never both. This moves such a deck onto
+// `meta.notebook`, and the order is the same one every other write in this file
+// keeps, for the same reason:
+//
+//   • the meta is computed by a pure function that touches nothing
+//     (movedNotebookSlotMeta), so a failure before the save leaves the deck
+//     exactly as it was and the next open tries again;
+//   • ONE write swaps the slot and stamps the records in the same breath, so
+//     there is no moment at which the strokes belong to no paper;
+//   • the save is the commit point;
+//   • the bytes are moved after it, and a failure there costs nothing — the
+//     paper is GENERATED, so notebookBytesPresent will simply make it again.
+//
+// The old row is deleted only once the new one is written. A crash between the
+// two leaves the file under both keys, which is a few kilobytes, not a loss.
+export async function migrateNotebookSlot() {
+  if (!hasNotebookInPdfSlot(state.meta)) return false;
+  const wasLocalId = state.localDeckId;
+  state.meta = movedNotebookSlotMeta(state.meta);
+  if (!(await saveDeckToLibrary({ silent: true })) || !state.localDeckId) {
+    showToast("Could not save this deck on your device — your pages were left as they were", "error");
+    return false;
+  }
+  if (!wasLocalId) return true;
+  try {
+    const existing = await readDocument(wasLocalId);
+    if (existing?.blob) {
+      await putDocument({ ...existing, deckLocalId: notebookStoreKey() });
+      await deleteLocalDocument(wasLocalId);
+    }
+  } catch (error) {
+    console.warn("Could not move the notebook's paper on this device", error);
+  }
+  return true;
+}
+
 export async function addNotebookPage() {
-  if (!isNotebookDeck()) return false;
+  if (!hasNotebook()) return false;
   const pages = notebookPageCount();
   if (pages >= NOTEBOOK_MAX_PAGES) {
     showToast(`A notebook stops at ${NOTEBOOK_MAX_PAGES} pages — start another one`, "info");
@@ -246,7 +296,7 @@ export async function addNotebookPage() {
 // records on the torn-out page are buried in the SAME write, or a sync landing
 // between two writes would carry one half of the change.
 export async function deleteNotebookPage(pageNumber) {
-  if (!isNotebookDeck()) return false;
+  if (!hasNotebook()) return false;
   const pages = notebookPageCount();
   const n = Number(pageNumber);
   if (!(n >= 1 && n <= pages)) return false;
@@ -263,7 +313,7 @@ export async function deleteNotebookPage(pageNumber) {
 }
 
 export async function setNotebookPaper(kind) {
-  if (!isNotebookDeck()) return false;
+  if (!hasNotebook()) return false;
   const paper = normalizeBlankPaper(kind);
   if (paper === notebookPaper()) return false;
   // Only the paper under the ink changes. The page box is identical, so nothing

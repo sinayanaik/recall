@@ -20,6 +20,7 @@
 // `meta.pdfHighlights` — an array on the deck's existing JSONB meta bag, no new
 // table and no new column.
 
+import { activeDocSlot, recordsInSlot, recordsOutsideSlot, stampDocSlotAll } from "./doc-slot.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { stripInvalidUnicode } from "../core/text.js?v=__BUILD__";
@@ -43,13 +44,47 @@ export const PDF_MARK_FLASH_MS = 1400;
 
 // ── The records ─────────────────────────────────────────────────────────────
 
+// ── One array, two papers ──────────────────────────────────────────────────
+//
+// A deck can carry its own paper AND a notebook (src/documents/doc-slot.js), and
+// both keep their marks in this one array with a `doc` field saying which. Every
+// reader on a surface wants only the surface it is looking at, so that is what
+// this returns — the filter is here rather than at each of its callers because
+// there are dozens of them and one that forgot would paint a notebook's strokes
+// onto somebody's preprint.
 export function documentHighlights() {
+  return recordsInSlot(state.meta?.pdfHighlights, activeDocSlot());
+}
+
+// Both papers' records, for the callers that mean the DECK rather than the
+// surface: the sync merge, the backup, the reconcile, and the prune that asks
+// which highlight notes still have a highlight.
+export function allDocumentHighlights() {
   const list = state.meta?.pdfHighlights;
   return Array.isArray(list) ? list : [];
 }
 
+// The array as it must be STORED: the surface's records, stamped with the slot
+// they belong to, plus the other paper's untouched.
+//
+// Every write in this file assigns a whole array, because that is what makes one
+// autosave one consistent picture. With two papers sharing the array, a write
+// that assigned only its own records would silently delete the other paper's —
+// a preprint's highlights lost the first time somebody drew in the notebook
+// beside it. This is the one function that stops that, and it is idempotent, so
+// a caller that assigns through it and then commits through it again is fine.
+function wholeHighlightArray(next) {
+  const slot = activeDocSlot();
+  return recordsOutsideSlot(state.meta?.pdfHighlights, slot).concat(stampDocSlotAll(next, slot));
+}
+
+// "Does this deck have a document with marks on it?" — which is a different
+// question from "does this deck have a PDF", now that a deck can carry a
+// notebook and no paper at all. Asked by the Highlights panel and its export to
+// decide whether to look at documentHighlights(), so a deck whose only document
+// is one it wrote itself would otherwise have every mark in it left off both.
 export function isPdfDeck() {
-  return Boolean(state.meta?.pdf);
+  return Boolean(state.meta?.pdf || state.meta?.notebook);
 }
 
 // Reading order, which is also the order the Highlights panel lists them in:
@@ -117,11 +152,15 @@ export function documentHighlightById(id) {
   return documentHighlights().find((record) => record.id === id) || null;
 }
 
-// Every live id, for pruneOrphanHighlightNotes. A document highlight's id is a
-// highlight-note id, so the notes section has to count these as live or every
-// note written on a PDF would be pruned away the next time a <mark> was edited.
+// Every live id, for pruneOrphanHighlightNotes and for minting the next one.
+// A document highlight's id is a highlight-note id, so the notes section has to
+// count these as live or every note written on a PDF would be pruned away the
+// next time a <mark> was edited.
+//
+// The WHOLE deck, not the surface: ids are one namespace shared with the note
+// body, so a paper and the notebook beside it must never mint the same one.
 export function documentHighlightNoteIds() {
-  return documentHighlights().map((record) => record.id).filter(Boolean);
+  return allDocumentHighlights().map((record) => record.id).filter(Boolean);
 }
 
 // Ids are minted the same way format/highlight-notes.js mints them, and
@@ -174,12 +213,15 @@ export function freshDocumentHighlightId() {
 // decline it arrange for exactly one notify of their own afterwards.
 function commitDocumentHighlights(next, { notify = true } = {}) {
   state.meta = { ...(state.meta && typeof state.meta === "object" ? state.meta : {}) };
-  state.meta.pdfHighlights = next;
+  const whole = wholeHighlightArray(next);
+  state.meta.pdfHighlights = whole;
   // A highlight that is PRESENT is not deleted — the invariant
   // dropTombstonesForLiveCards keeps for cards, and for the same reason: an id
   // that comes back (an undo, a re-import of the same annotated file) would
   // otherwise keep a tombstone that quietly blocks it from ever syncing again.
-  const tombstones = dropHighlightTombstonesForLiveIds(state.meta, next);
+  // Asked of the WHOLE array: a tombstone is a deck-wide record, and testing it
+  // against one paper's marks would retire the other paper's ids on every write.
+  const tombstones = dropHighlightTombstonesForLiveIds(state.meta, whole);
   if (tombstones) state.meta.deletedHighlightIds = tombstones;
   else delete state.meta.deletedHighlightIds;
   scheduleDeckAutosave();
@@ -239,7 +281,7 @@ export function remapDocumentHighlightPages(move) {
     });
   });
   state.meta = { ...(state.meta && typeof state.meta === "object" ? state.meta : {}) };
-  state.meta.pdfHighlights = next;
+  state.meta.pdfHighlights = wholeHighlightArray(next);
   if (gone.length) {
     let tombstones = state.meta.deletedHighlightIds;
     gone.forEach((record) => { tombstones = recordDeletedHighlightId(state.meta, record.id); });
@@ -580,7 +622,7 @@ export function removeDocumentHighlight(id) {
   // live, so the records have to be in place first: assigned here, then
   // committed once, then everything told once.
   state.meta = { ...(state.meta && typeof state.meta === "object" ? state.meta : {}) };
-  state.meta.pdfHighlights = next;
+  state.meta.pdfHighlights = wholeHighlightArray(next);
   state.meta.deletedHighlightIds = tombstones;
   const pruned = pruneOrphanHighlightNotes(state.notes || "");
   if (pruned !== state.notes) state.notes = pruned;
@@ -886,7 +928,7 @@ export function setDocumentInkForPage(pageNumber, records, { notify = true } = {
   const next = rest.concat(records);
 
   state.meta = { ...(state.meta && typeof state.meta === "object" ? state.meta : {}) };
-  state.meta.pdfHighlights = next;
+  state.meta.pdfHighlights = wholeHighlightArray(next);
   if (gone.length) {
     let tombstones = state.meta.deletedHighlightIds;
     gone.forEach((record) => { tombstones = recordDeletedHighlightId(state.meta, record.id); });

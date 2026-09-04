@@ -42,7 +42,8 @@ import { decodeInkStrokes } from "../format/ink-strokes.js?v=__BUILD__";
 import { paintInkStrokes } from "../render/ink-paint.js?v=__BUILD__";
 import { markdownToSafeHtml } from "../render/preprocess.js?v=__BUILD__";
 import { setStatus } from "../ui/feedback.js?v=__BUILD__";
-import { annotatedDocumentHighlights, documentHighlightLabel } from "./pdf-highlights.js?v=__BUILD__";
+import { DOC_SLOT_NOTEBOOK, activeDocSlot, docSlotMeta } from "./doc-slot.js?v=__BUILD__";
+import { annotatedDocumentHighlights, documentHighlightLabel, documentHighlights } from "./pdf-highlights.js?v=__BUILD__";
 import { currentPdfDocument, currentPdfPageCount, pdfOpenToken } from "./pdf-view.js?v=__BUILD__";
 
 // The rendered width of a page in the print document, in device pixels. A4 at
@@ -183,7 +184,10 @@ export async function buildDocumentPrintDocument(title, { annotatedOnly = false 
   // a page in the export that is missing the highlight the facing note refers
   // to is worse than no export at all.
   const marksByPage = new Map();
-  (state.meta?.pdfHighlights || []).forEach((record) => {
+  // The surface's own marks. A deck can have two documents and the pages being
+  // printed are one of them, so the whole array would paint a notebook's strokes
+  // onto page 3 of somebody's preprint.
+  documentHighlights().forEach((record) => {
     (record.quads || []).forEach((quad) => {
       if (!quad?.page) return;
       if (!marksByPage.has(quad.page)) marksByPage.set(quad.page, new Set());
@@ -246,14 +250,14 @@ export function documentExportBaseName() {
 }
 
 export function documentHasPagesToPrint({ annotatedOnly = false } = {}) {
-  if (!state.meta?.pdf || !currentPdfDocument()) return false;
+  if (!docSlotMeta(activeDocSlot()) || !currentPdfDocument()) return false;
   return annotatedOnly ? annotatedDocumentHighlights().length > 0 : currentPdfPageCount() > 0;
 }
 
 // Whether the surface even has a document open to export. The ⋯ row is painted
 // from this, so pressing it can never reach the "nothing happened" branch.
 export function documentPrintPageCount({ annotatedOnly = false } = {}) {
-  if (!state.meta?.pdf) return 0;
+  if (!docSlotMeta(activeDocSlot())) return 0;
   if (!annotatedOnly) return currentPdfPageCount();
   const pages = new Set();
   annotatedDocumentHighlights().forEach(({ record }) => {
@@ -265,8 +269,13 @@ export function documentPrintPageCount({ annotatedOnly = false } = {}) {
 
 // A guard for the caller, so el.documentView is not the thing that decides.
 export function documentExportUnavailableReason() {
-  if (!state.meta?.pdf) return "This deck has no PDF to export.";
-  if (!currentPdfDocument()) return "Open the Document view first — the PDF isn't loaded yet.";
+  const slot = activeDocSlot();
+  if (!docSlotMeta(slot)) {
+    return slot === DOC_SLOT_NOTEBOOK
+      ? "This deck has no handwritten pages to export."
+      : "This deck has no PDF to export.";
+  }
+  if (!currentPdfDocument()) return "Open the document first — its pages aren't loaded yet.";
   if (!el.printRoot) return "This build has nowhere to print to.";
   return "";
 }

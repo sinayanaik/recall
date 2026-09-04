@@ -29,6 +29,7 @@ import { setStatus, showToast } from "../ui/feedback.js?v=__BUILD__";
 import { recordNavHistory, refreshNavBack } from "../ui/nav-history.js?v=__BUILD__";
 import { unlockPageScroll } from "../ui/overlays.js?v=__BUILD__";
 import { setViewMode } from "../ui/view-mode.js?v=__BUILD__";
+import { documentTabForOpenDeck } from "../documents/doc-slot.js?v=__BUILD__";
 
 // Whichever of two ISO timestamps (either may be null/undefined) is later,
 // or null if neither parses.
@@ -369,10 +370,10 @@ export async function loadWebDeck(deckId) {
     state.notes = String(deckData.notes || "");
     state.sourceTitle = deckData.title || "";
     state.importTitleHint = deckData.title || "";
-    // A PDF deck opens on its Document tab: the document IS the deck, and
-    // landing on an empty Notes tab would look like an import that lost the
-    // file. Every other deck opens on Notes exactly as before.
-    setViewMode(state.meta?.pdf ? "document" : "notes");
+    // A PDF deck opens on its Document tab, a notebook on Write, everything else
+    // on Notes — the same one answer loadDeckSnapshot uses, so the two routes
+    // into a deck cannot land on different surfaces.
+    setViewMode(documentTabForOpenDeck());
     // Cross-device resume: this deck's meta may carry a reading position
     // synced from another device, and this device has its own copy of wherever
     // it last got to (see src/notes/reading-position.js). The newer of the two

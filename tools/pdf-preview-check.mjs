@@ -70,17 +70,35 @@ const SHOT_TOC_SECTION = args.includes("--shot-toc-contents") ? "contents" : "hi
 // forgets is a control that is in the document and cannot be reached — which is
 // what happened to the pen. Reading the markup keeps this an independent
 // statement rather than a restatement of the list under test.
-function documentHeadControlIds() {
+// The ids authored inside one of the stage's control heads.
+//
+// There are two of them now — .document-head and .handwriting-head — because the
+// stage carries two documents (src/documents/doc-slot.js) and each has controls
+// the other view has no use for. Both are emptied into #viewModeRow at boot by
+// the same liftNotesControlsIntoRow, so both are asked the same two questions
+// below, each on the view it belongs to.
+function headControlIds(headClass, headId) {
   const html = readFileSync(path.join(ROOT, "index.html"), "utf8");
-  const open = html.indexOf('<div class="document-head"');
+  const open = html.indexOf(`<div class="${headClass}"`);
   if (open < 0) return [];
-  // The control row is a flat run of buttons and one menu; it ends at the
-  // scroller that follows it, which is the next sibling in the stage.
-  const end = html.indexOf('<div class="document-scroll"', open);
-  const block = html.slice(open, end < 0 ? html.length : end);
+  // A head is a flat run of buttons and one menu; it ends at whichever of its
+  // siblings comes next — the other head, or the scroller.
+  const ends = ['<div class="handwriting-head"', '<div class="document-scroll"']
+    .map((marker) => html.indexOf(marker, open + 1))
+    .filter((at) => at > 0);
+  const end = ends.length ? Math.min(...ends) : html.length;
+  const block = html.slice(open, end);
   return [...block.matchAll(/\sid="([A-Za-z0-9_-]+)"/g)]
     .map((m) => m[1])
-    .filter((id) => id !== "documentHead");
+    .filter((id) => id !== headId);
+}
+
+function documentHeadControlIds() {
+  return headControlIds("document-head", "documentHead");
+}
+
+function handwritingHeadControlIds() {
+  return headControlIds("handwriting-head", "handwritingHead");
 }
 
 function serveOn(dir) {
@@ -438,6 +456,67 @@ try {
   check("...and has a box on screen once it is there",
     invisible.length === 0,
     invisible.length ? `zero-sized: ${invisible.map((c) => "#" + c.id).join(", ")}` : `${controls.seen.length} control(s)`);
+
+  // ── ...and the same two questions of the OTHER head ────────────────────
+  //
+  // The Write tab's controls are authored in .handwriting-head and lifted by the
+  // same function into the same row, so they can be stranded in a display:none
+  // box in exactly the way the pen button once was — with the same symptom: a
+  // control that exists, has a handler and a tooltip, and cannot be seen or
+  // pressed. Asked ON that view, because that is the only place they are meant
+  // to have a box; on this one they are correctly display:none.
+  const writeIds = handwritingHeadControlIds();
+  check("the markup still authors the notebook's controls in .handwriting-head",
+    writeIds.length >= 4, `${writeIds.length} id(s): ${writeIds.join(" ")}`);
+
+  const writeControls = await page.evaluate(`async (authored) => {
+    const { api, settle } = window.__recall;
+    api.setViewMode("handwriting");
+    await settle(300);
+    // A deck with no notebook opens the tab to the offer of one; the controls
+    // have nothing to act on until it exists, and stand down until then.
+    document.querySelector("#documentView .pdf-missing-pick")?.click();
+    for (let i = 0; i < 80 && !document.querySelector("#documentStage .pdf-page canvas.pdf-canvas"); i += 1) await settle(100);
+    await settle(300);
+    const seen = authored.map((id) => {
+      const node = document.getElementById(id);
+      const box = node?.getBoundingClientRect();
+      return {
+        id,
+        inRow: Boolean(node?.closest("#viewModeRow")),
+        needsBox: node?.tagName === "BUTTON" || node?.tagName === "LABEL" || node?.tagName === "DIV",
+        visible: Boolean(box && box.width > 0 && box.height > 0)
+      };
+    });
+    const result = {
+      seen,
+      // The document's own ⋯ has nothing to offer here — every row in it is
+      // about a file somebody gave us — and select-a-region has no figures to
+      // draw a box round. Both stand down; contents, dark page and the pen do not.
+      moreShown: (document.getElementById("documentMoreBtn")?.getBoundingClientRect().width || 0) > 0,
+      regionShown: (document.getElementById("documentRegionBtn")?.getBoundingClientRect().width || 0) > 0,
+      inkShown: (document.getElementById("documentInkBtn")?.getBoundingClientRect().width || 0) > 0,
+      tocShown: (document.getElementById("documentTocBtn")?.getBoundingClientRect().width || 0) > 0
+    };
+    api.setViewMode("document");
+    await settle(400);
+    return result;
+  }`, writeIds);
+
+  const writeStranded = writeControls.seen.filter((c) => !c.inRow);
+  check("every control authored in .handwriting-head reaches #viewModeRow",
+    writeStranded.length === 0,
+    writeStranded.length ? `stranded in a display:none box: ${writeStranded.map((c) => "#" + c.id).join(", ")}`
+      : writeControls.seen.map((c) => "#" + c.id).join(" "));
+
+  const writeInvisible = writeControls.seen.filter((c) => c.needsBox && !c.visible);
+  check("...and has a box on screen on the Write tab",
+    writeInvisible.length === 0,
+    writeInvisible.length ? `zero-sized: ${writeInvisible.map((c) => "#" + c.id).join(", ")}` : `${writeControls.seen.length} control(s)`);
+
+  check("...while the document's own controls stand down where they mean nothing",
+    !writeControls.moreShown && !writeControls.regionShown && writeControls.inkShown && writeControls.tocShown,
+    `⋯=${writeControls.moreShown} region=${writeControls.regionShown} pen=${writeControls.inkShown} contents=${writeControls.tocShown}`);
 
   check("the pen button opens the rail", controls.railWasShut && controls.railOpen,
     controls.railOpen ? "shut, then open" : "the rail did not appear");
@@ -1006,10 +1085,14 @@ try {
       };
     }`);
     const oneLine = new Set(row.tabTops).size === 1;
-    // Three, not four: the Highlights tab is gone. Its cards are the
-    // side-by-side pane's, which is not a view mode — see
-    // src/panels/highlight-cycle.js.
-    check(`the three tabs sit on one line (${label})`, oneLine && row.tabTops.length === 3,
+    // Four: Cards, Notes, Document and Write. Not five — the Highlights tab is
+    // gone, and its cards are the side-by-side pane's, which is not a view mode
+    // (see src/panels/highlight-cycle.js). Write is on every open deck for the
+    // reason Document is: a surface you have to be told about is one most people
+    // never find. The toggle is `grid-auto-flow: column`, so the row takes an
+    // extra tab without anything counting anything — which is exactly what this
+    // is here to keep true.
+    check(`the four tabs sit on one line (${label})`, oneLine && row.tabTops.length === 4,
       `${row.tabTops.length} tab(s) at y = ${[...new Set(row.tabTops)].join(", ")}`);
     check(`...and the row is one tab tall (${label})`,
       row.tabHeight > 0 && row.rowHeight < row.tabHeight * 1.8,

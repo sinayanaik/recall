@@ -42,6 +42,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { findChrome, launchChrome, connect, openPage } from "./cdp.mjs";
 import { pdfjsSources } from "./pdfjs-source.mjs";
+import { buildFixturePdf } from "./pdf-fixture.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const WATCHDOG_MS = 180000;
@@ -85,6 +86,8 @@ const API_SRC = `async () => {
     "/src/ui/boot-screens.js?v=__BUILD__",
     "/src/cloud/supabase-client.js?v=__BUILD__",
     "/src/cards/new-deck.js?v=__BUILD__",
+    "/src/import/pdf.js?v=__BUILD__",
+    "/src/ui/theme.js?v=__BUILD__",
     "/src/boot.js?v=__BUILD__",
     "/src/core/state.js?v=__BUILD__",
     "/src/core/dom.js?v=__BUILD__"
@@ -188,11 +191,20 @@ try {
   const paused = await page.evaluate(`async (penSrc) => {
     const { api, settle } = window.__recall;
     const pen = (0, eval)(penSrc);
-    document.getElementById("handwritingBtn").click();
+    const openWrite = async () => {
+      // The Write TAB, beside Cards / Notes / Document — there is no ☰ row and no
+      // full-page panel any more. A deck with no notebook opens it to the offer
+      // of one, so the press below is the reader's "Start a notebook"; on a deck
+      // that already has one there is no prompt and the click finds nothing.
+      document.querySelector('#viewModeToggle [data-view-mode="handwriting"]').click();
+      await settle(250);
+      document.querySelector("#documentView .pdf-missing-pick")?.click();
+      for (let i = 0; i < 80 && !document.querySelector("#documentStage .pdf-page canvas.pdf-canvas"); i += 1) await settle(100);
+    };
     // Generating the paper, attaching it, and letting pdf.js lay it out. Longer
     // than a DOM settle because a real document is being opened.
-    for (let i = 0; i < 60 && !document.querySelector("#hwStage .pdf-page canvas.pdf-canvas"); i += 1) await settle(100);
-    const pageEl = document.querySelector("#hwStage .pdf-page[data-page-number='1']");
+    await openWrite();
+    const pageEl = document.querySelector("#documentStage .pdf-page[data-page-number='1']");
     const box = pageEl.getBoundingClientRect();
 
     // A straight, slow run — then a REST longer than the straightener's hold
@@ -218,7 +230,7 @@ try {
     const wanted = viewport ? viewport.convertToPdfPoint((halfway + 100) - box.left, 0)[0] : 0;
     return {
       strokes: strokes.length,
-      notebook: Boolean(api.state.meta.pdf?.notebook),
+      notebook: Boolean(api.state.meta.notebook),
       rendered: Boolean(pageEl.querySelector("canvas.pdf-canvas")),
       maxX: bounds ? bounds.maxX : 0,
       wanted,
@@ -240,7 +252,7 @@ try {
   const handover = await page.evaluate(`async (penSrc) => {
     const { api, settle } = window.__recall;
     const pen = (0, eval)(penSrc);
-    const pageEl = document.querySelector("#hwStage .pdf-page[data-page-number='1']");
+    const pageEl = document.querySelector("#documentStage .pdf-page[data-page-number='1']");
     const box = pageEl.getBoundingClientRect();
     const dry = pageEl.querySelector(".pdf-ink-layer .is-ink-dry");
     const inked = () => {
@@ -280,7 +292,7 @@ try {
   // so this asks the one question that actually distinguishes the two: after the
   // pen lifts, is anything of that pair still in the document?
   const mounted = await page.evaluate(`() => {
-    const page = document.querySelector("#hwStage .pdf-page[data-page-number='1']");
+    const page = document.querySelector("#documentStage .pdf-page[data-page-number='1']");
     return {
       wet: page.querySelectorAll(".is-ink-wet").length,
       tip: page.querySelectorAll(".is-ink-tip").length,
@@ -303,7 +315,7 @@ try {
   const cost = await page.evaluate(`async (penSrc) => {
     const { api, settle } = window.__recall;
     const pen = (0, eval)(penSrc);
-    const pageEl = document.querySelector("#hwStage .pdf-page[data-page-number='1']");
+    const pageEl = document.querySelector("#documentStage .pdf-page[data-page-number='1']");
     const box = pageEl.getBoundingClientRect();
     // One short stroke, timed from pointerdown to the return of pointerup —
     // which is where every one of the three O(page) faults was paid.
@@ -348,22 +360,22 @@ try {
   // disagreeing is exactly the failure — meta says three pages, the file has two.
   const pages = await page.evaluate(`async () => {
     const { api, settle } = window.__recall;
-    const board = document.getElementById("handwritingBoard");
+    const board = document.getElementById("viewModeRow");
     const inkOn = (n) => (api.state.meta.pdfHighlights || [])
       .filter((r) => r.kind === "ink" && Number(r.page) === n).length;
 
-    const before = { meta: api.state.meta.pdf.pages, doc: api.currentPdfPageCount(), inkPage1: inkOn(1) };
+    const before = { meta: api.state.meta.notebook.pages, doc: api.currentPdfPageCount(), inkPage1: inkOn(1) };
 
     board.querySelector('[data-hw-action="add-page"]').click();
     for (let i = 0; i < 60 && api.currentPdfPageCount() < before.doc + 1; i += 1) await settle(100);
-    const added = { meta: api.state.meta.pdf.pages, doc: api.currentPdfPageCount(), inkPage1: inkOn(1) };
+    const added = { meta: api.state.meta.notebook.pages, doc: api.currentPdfPageCount(), inkPage1: inkOn(1) };
 
     // Something on the NEW page, so the renumbering below has a record that has
     // to move and one that has to stay.
     api.scrollToDocumentPage(2, 0, { smooth: false });
     await api.whenDocumentPageReady(2);
     await settle(200);
-    const two = document.querySelector("#hwStage .pdf-page[data-page-number='2']");
+    const two = document.querySelector("#documentStage .pdf-page[data-page-number='2']");
     const box = two.getBoundingClientRect();
     const view = document.getElementById("documentView");
     const pen = (t, x, y, b) => view.dispatchEvent(new PointerEvent(t, { bubbles: true, pointerId: 3, pointerType: "pen", isPrimary: true, clientX: x, clientY: y, buttons: b, pressure: 0.6 }));
@@ -390,7 +402,7 @@ try {
     const savedInk = (snapshot.meta.pdfHighlights || []).filter((r) => r.kind === "ink");
     return {
       before, added, drawnOnTwo,
-      afterMeta: api.state.meta.pdf.pages,
+      afterMeta: api.state.meta.notebook.pages,
       afterDoc: api.currentPdfPageCount(),
       inkPage1: inkOn(1),
       inkPage2: inkOn(2),
@@ -436,7 +448,7 @@ try {
   // down.
   const blocks = await page.evaluate(`async () => {
     const { api, settle } = window.__recall;
-    const board = document.getElementById("handwritingBoard");
+    const board = document.getElementById("viewModeRow");
     board.querySelector('[data-hw-action="add-block"]').click();
     await settle(400);
     const node = document.querySelector(".pdf-block");
@@ -478,7 +490,7 @@ try {
     // Two devices, one notebook: this one moved and typed into a block while the
     // other added one of its own. Neither may take the other's work.
     const other = {
-      pdf: api.state.meta.pdf,
+      notebook: api.state.meta.notebook,
       pdfBlocks: [{ ...first, x: 999, y: 999, md: "stale", at: first.at - 5000 },
                   { id: "bk-other", page: 1, x: 30, y: 30, w: 120, h: 40, z: 0, md: "from elsewhere", at: Date.now() }]
     };
@@ -535,7 +547,7 @@ try {
   // with an afternoon of handwriting sitting intact in the file.
   const migrated = await page.evaluate(`async () => {
     const { api, settle } = window.__recall;
-    document.querySelector('#handwritingBoard [data-hw-action="close"]')?.click();
+    api.setViewMode("notes");
     await settle(200);
 
     // A deck exactly as the previous build wrote one: pages in meta, a typed box
@@ -574,8 +586,17 @@ try {
     const loadedPages = opened ? (api.state.meta?.pages || []).length : -1;
     const loadError = opened ? "" : (document.getElementById("statusText")?.textContent || "the open was refused");
 
-    document.getElementById("handwritingBtn").click();
-    for (let i = 0; i < 80 && !document.querySelector("#hwStage .pdf-page canvas.pdf-canvas"); i += 1) await settle(100);
+    const openWrite = async () => {
+      // The Write TAB, beside Cards / Notes / Document — there is no ☰ row and no
+      // full-page panel any more. A deck with no notebook opens it to the offer
+      // of one, so the press below is the reader's "Start a notebook"; on a deck
+      // that already has one there is no prompt and the click finds nothing.
+      document.querySelector('#viewModeToggle [data-view-mode="handwriting"]').click();
+      await settle(250);
+      document.querySelector("#documentView .pdf-missing-pick")?.click();
+      for (let i = 0; i < 80 && !document.querySelector("#documentStage .pdf-page canvas.pdf-canvas"); i += 1) await settle(100);
+    };
+    await openWrite();
     await settle(400);
 
     const marks = (api.state.meta.pdfHighlights || []).filter((r) => r.kind === "ink");
@@ -583,10 +604,9 @@ try {
     const pdfPages = api.currentPdfPageCount();
 
     // Once and only once: closing and re-opening must not convert again.
-    document.querySelector('#handwritingBoard [data-hw-action="close"]').click();
+    api.setViewMode("notes");
     await settle(300);
-    document.getElementById("handwritingBtn").click();
-    for (let i = 0; i < 80 && !document.querySelector("#hwStage .pdf-page canvas.pdf-canvas"); i += 1) await settle(100);
+    await openWrite();
     await settle(600);
     const marksAgain = (api.state.meta.pdfHighlights || []).filter((r) => r.kind === "ink");
     const pdfPagesAgain = api.currentPdfPageCount();
@@ -600,18 +620,18 @@ try {
     const ys = strokes.flatMap((st) => st.p.filter((_, i) => i % 3 === 1));
 
     // ...and a device that has NOT migrated pushing its legacy keys back.
-    const stale = { pages: first.pages || [{ id: "hp-one", order: 0, ink: [], at: 1 }], pdf: first.pdf };
+    const stale = { pages: first.pages || [{ id: "hp-one", order: 0, ink: [], at: 1 }], notebook: first.notebook };
     const merged = api.mergeDeckMeta(stale, api.state.meta, { prefer: "local" });
 
     return {
       saved: Boolean(saved),
       loadError,
       loadedPages,
-      notebook: Boolean(api.state.meta.pdf?.notebook),
+      notebook: Boolean(api.state.meta.notebook),
       pdfPages,
       pdfPagesAgain,
-      metaPages: api.state.meta.pdf?.pages,
-      paper: api.state.meta.pdf?.paper,
+      metaPages: api.state.meta.notebook?.pages,
+      paper: api.state.meta.notebook?.paper,
       marks: marks.length,
       marksAgain: marksAgain.length,
       blocks: (api.state.meta.pdfBlocks || []).length,
@@ -655,7 +675,7 @@ try {
   const sheet = await page.evaluate(`async (penSrc) => {
     const { api, settle } = window.__recall;
     const pen = (0, eval)(penSrc);
-    document.querySelector('#handwritingBoard [data-hw-action="close"]').click();
+    api.setViewMode("notes");
     await settle(200);
     api.setViewMode("notes");
     await settle(300);
@@ -710,7 +730,234 @@ try {
   check("...and Done puts one picture per drawn page into the note",
     sheet.images === 2, `${sheet.images} image(s) in the note, ${sheet.uploads} file(s) uploaded`);
   check("...and closes", sheet.closed);
-  check("nothing threw anywhere in this run", sheet.errs.length === 0, sheet.errs.join(" | "));
+  // ── 7. A paper to read AND pages to write on, on one deck ───────────────
+  //
+  // The report this exists for: "if a deck already had a pdf then if I'm open on
+  // Handwritten notes it says it already has pdf". It did — one deck, one
+  // document slot, and somebody else's paper was in it — so the app refused, and
+  // a reader marking up a preprint had nowhere to work.
+  //
+  // What has to be true now is not just that it stops refusing. The two
+  // documents have to be genuinely separate: separate files with their own page
+  // counts, and separate marks, so that a stroke made on notebook page 1 never
+  // appears on page 1 of somebody's preprint — which is exactly what one array
+  // of highlights shared by both would do if the `doc` field were not honoured.
+  const both = await page.evaluate(`async (bytes, penSrc) => {
+    const { api, settle } = window.__recall;
+    const pen = (0, eval)(penSrc);
+    api.setViewMode("notes");
+    await settle(150);
+    // The confirm is not optional — see the migration block above, which learned
+    // this the expensive way: without the press this is the PREVIOUS deck, and
+    // every assertion below is then made about a notebook that was already there.
+    api.createNewDeck({ title: "A paper and a notebook", notesMode: true });
+    await settle(150);
+    document.getElementById("confirmModalOkBtn")?.click();
+    await settle(400);
+    if (api.state.deckTitle !== "A paper and a notebook") throw new Error("the fixture deck was not created: still on " + api.state.deckTitle);
+
+    const file = new File([new Uint8Array(bytes)], "preprint.pdf", { type: "application/pdf" });
+    const attached = await api.attachPdfToOpenDeck(file);
+    api.setViewMode("document");
+    for (let i = 0; i < 80 && !document.querySelector("#documentStage .pdf-page[data-page-number='1'] canvas.pdf-canvas"); i += 1) await settle(100);
+    await settle(400);
+    const paperPages = api.currentPdfPageCount();
+
+    // "Attached" and "Saved here" both raise a toast, and a toast is a
+    // fixed-position box in the top corner — elementFromPoint finds IT, the pen
+    // never lands on a page, and the stroke this case is about is never made.
+    // Waited out rather than pressed around, because where the toast sits is not
+    // this check's business.
+    const untoasted = async () => {
+      for (let i = 0; i < 60 && document.querySelector(".toast"); i += 1) await settle(100);
+    };
+    const scribble = async (n) => {
+      await untoasted();
+      const view = document.getElementById("documentView");
+      const box = document.querySelector("#documentStage .pdf-page[data-page-number='" + n + "']").getBoundingClientRect();
+      pen(view, "pointerdown", box.left + 60, box.top + 120, 1);
+      for (let i = 1; i <= 12; i += 1) pen(view, "pointermove", box.left + 60 + (i * 7), box.top + 120 + (i * 3), 1);
+      await settle(120);
+      pen(view, "pointerup", box.left + 144, box.top + 156, 0);
+      await settle(200);
+    };
+    await scribble(1);
+    const onPaper = (api.state.meta.pdfHighlights || []).filter((r) => r.kind === "ink").length;
+
+    // ...and now the Write tab, on the same deck. There is no toast and no
+    // refusal: it opens to the offer of a notebook and one press makes it.
+    document.querySelector('#viewModeToggle [data-view-mode="handwriting"]').click();
+    await settle(300);
+    const offered = document.querySelector("#documentView .pdf-missing-pick")?.textContent || "";
+    document.querySelector("#documentView .pdf-missing-pick")?.click();
+    for (let i = 0; i < 80 && api.currentPdfPageCount() !== 1; i += 1) await settle(100);
+    await settle(300);
+    const notebookPages = api.currentPdfPageCount();
+    await scribble(1);
+
+    const ink = (api.state.meta.pdfHighlights || []).filter((r) => r.kind === "ink");
+    const mine = ink.filter((r) => r.doc === "notebook").length;
+    const theirs = ink.filter((r) => !r.doc).length;
+
+    // What each surface SHOWS, which is the half a doc field on the record does
+    // not settle on its own.
+    const paintedNow = document.querySelectorAll("#documentStage .pdf-ink-layer .is-ink-dry").length;
+    api.setViewMode("document");
+    for (let i = 0; i < 80 && api.currentPdfPageCount() !== paperPages; i += 1) await settle(100);
+    await settle(400);
+    // Ink only. The fixture PDF carries annotations of its own, which attaching
+    // it imports as highlights — real, wanted, and not what this is asking about.
+    const inkHere = () => api.documentHighlights().filter((r) => r.kind === "ink").length;
+    const backOnPaper = { pages: api.currentPdfPageCount(), marks: inkHere() };
+    api.setViewMode("handwriting");
+    for (let i = 0; i < 80 && api.currentPdfPageCount() !== 1; i += 1) await settle(100);
+    await settle(400);
+    const backOnNotebook = { pages: api.currentPdfPageCount(), marks: inkHere() };
+
+    return {
+      attached, offered, paperPages, notebookPages, onPaper, mine, theirs, paintedNow,
+      hasPdf: Boolean(api.state.meta.pdf), hasNotebook: Boolean(api.state.meta.notebook),
+      backOnPaper, backOnNotebook,
+      errs: window.__errs.slice(0, 4)
+    };
+  }`, Array.from(buildFixturePdf({ pages: 3 }).bytes), PEN_SRC);
+
+  check("a deck that already has a PDF is offered a notebook, not a refusal",
+    both.hasPdf && both.hasNotebook && /notebook/i.test(both.offered),
+    `pdf=${both.hasPdf}, notebook=${both.hasNotebook}, the surface offered "${both.offered}"`);
+  check("...and the two are different documents, with their own page counts",
+    both.paperPages === 3 && both.notebookPages === 1,
+    `the paper has ${both.paperPages} page(s), the notebook ${both.notebookPages}`);
+  check("...and a mark says which of them it is on",
+    both.onPaper === 1 && both.theirs === 1 && both.mine === 1,
+    `${both.theirs} on the paper, ${both.mine} in the notebook`);
+  check("...so neither surface shows the other's handwriting",
+    both.backOnPaper.marks === 1 && both.backOnNotebook.marks === 1
+      && both.backOnPaper.pages === 3 && both.backOnNotebook.pages === 1,
+    `Document: ${both.backOnPaper.marks} mark(s) over ${both.backOnPaper.pages} page(s); `
+    + `Write: ${both.backOnNotebook.marks} over ${both.backOnNotebook.pages}`);
+  check("...with nothing thrown while both were open", both.errs.length === 0, both.errs.join(" | "));
+
+  // ── 8. Ink that follows the theme ───────────────────────────────────────
+  //
+  // "I've written something in white in dark theme and it gets disappeared in
+  // light theme." A stroke stores a pen TOKEN and the token resolves per theme,
+  // so this was never a storage fault — but the dry canvas is a BITMAP, and it
+  // held the colour the stroke had been painted in. Nothing cleared the colour
+  // cache on a theme change and nothing repainted the canvases, so the ink
+  // stayed near-white on a page that had just become white.
+  //
+  // Read off the canvas's own pixels, because that is the thing that was wrong.
+  const themed = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const dry = document.querySelector("#documentStage .pdf-ink-layer .is-ink-dry");
+    // The brightness of the ink itself: the darkest pixel the stroke put down,
+    // ignoring everything transparent around it.
+    const darkest = () => {
+      const px = dry.getContext("2d").getImageData(0, 0, dry.width, dry.height).data;
+      let best = 255;
+      for (let i = 0; i < px.length; i += 4) {
+        if (px[i + 3] < 200) continue;
+        const lum = (px[i] + px[i + 1] + px[i + 2]) / 3;
+        if (lum < best) best = lum;
+      }
+      return best;
+    };
+    api.setTheme("dark-amoled");
+    await settle(400);
+    const onDark = darkest();
+    api.setTheme("light-paper");
+    await settle(400);
+    const onLight = darkest();
+    // ...and the paper under it, which is the other half: a notebook page is a
+    // white PDF page, so on a dark theme a near-white pen on it would be
+    // invisible before any theme was ever switched.
+    api.setTheme("dark-amoled");
+    await settle(400);
+    const darkPaper = document.getElementById("documentStage").classList.contains("is-pdf-inverted");
+    api.setTheme("light-paper");
+    await settle(400);
+    const lightPaper = document.getElementById("documentStage").classList.contains("is-pdf-inverted");
+    return { onDark, onLight, darkPaper, lightPaper, errs: window.__errs.slice(0, 4) };
+  }`);
+
+  check("ink drawn on a dark theme is repainted dark when the theme goes light",
+    themed.onLight < 120 && themed.onDark > 160,
+    `darkest inked pixel: ${themed.onDark.toFixed(0)} on dark, ${themed.onLight.toFixed(0)} on light`);
+  check("...and the paper under it follows the theme too",
+    themed.darkPaper && !themed.lightPaper,
+    `dark page on a dark theme=${themed.darkPaper}, on a light theme=${themed.lightPaper}`);
+  check("...with nothing thrown by the switch", themed.errs.length === 0, themed.errs.join(" | "));
+
+  // ── 9. A picture on the page ────────────────────────────────────────────
+  //
+  // "the handwritten note is something like one note where in a canvas multiple
+  // things can be there like markdown blocks, handwritten strokes, images". A
+  // picture is a block with a kind, so it inherits the geometry, the drag, the
+  // resize, the tombstone and the merge the text blocks already have — and what
+  // is worth asserting is the part that is NOT inherited: that it survives the
+  // round trip through the store as a picture rather than as a paragraph.
+  const picture = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const page = api.currentDocumentPage();
+    // A 2x1 PNG, so the block is sized from a real aspect ratio rather than a
+    // fallback.
+    const png = Uint8Array.from(atob("iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAYAAAD0In+KAAAAEklEQVR4nGP8//8/AzJgYkAFAB8FAv3EhrhCAAAAAElFTkSuQmCC"), (c) => c.charCodeAt(0));
+    const file = new File([png], "board.png", { type: "image/png" });
+    let failed = "";
+    let added = null;
+    try {
+      added = await api.addDocumentImageBlock(page, file, { x: 120, y: 500 });
+    } catch (error) {
+      failed = String(error?.message || error);
+    }
+    await settle(300);
+    if (!added) {
+      return { added: false, failed: failed || "addDocumentImageBlock returned nothing", errs: window.__errs.slice(0, 4) };
+    }
+    const node = document.querySelector('.pdf-block[data-pdf-block-kind="image"]');
+    const img = node?.querySelector("img.pdf-block-img");
+    const wide = added.w > added.h;
+
+    // Resized by its own grip, in the page's own points.
+    const grip = node.querySelector(".pdf-block-grip");
+    const box = grip.getBoundingClientRect();
+    const at = (t, x, y, b) => grip.dispatchEvent(new PointerEvent(t, { bubbles: true, pointerId: 21, pointerType: "mouse", isPrimary: true, clientX: x, clientY: y, buttons: b }));
+    at("pointerdown", box.left + 4, box.top + 4, 1);
+    document.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, pointerId: 21, clientX: box.left + 44, clientY: box.top + 34, buttons: 1 }));
+    await settle(120);
+    document.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, pointerId: 21, clientX: box.left + 44, clientY: box.top + 34, buttons: 0 }));
+    await settle(250);
+    const sized = api.documentBlocks().find((b) => b.id === added.id);
+
+    await api.flushPendingDeckAutosave();
+    await settle(400);
+    const entry = api.readLocalDeckIndex().find((row) => row.title === "A paper and a notebook");
+    const snapshot = await api.readDeckSnapshot(entry.id);
+    const stored = (snapshot.meta.pdfBlocks || []).find((b) => b.id === added.id);
+
+    return {
+      added: Boolean(added), wide,
+      mounted: Boolean(img && img.getAttribute("src")),
+      grew: sized ? sized.w > added.w : false,
+      stored: stored ? { kind: stored.kind, hasSrc: Boolean(stored.src), doc: stored.doc, w: stored.w } : null,
+      errs: window.__errs.slice(0, 4)
+    };
+  }`);
+
+  check("an image dropped on a page becomes a block of its own",
+    picture.added && picture.mounted,
+    `added=${picture.added}${picture.failed ? ` — ${picture.failed}` : ""}, <img> on the page=${picture.mounted}`);
+  check("...sized from the picture's own shape rather than a paragraph's",
+    picture.wide, "a 2:1 image came out wider than it is tall");
+  check("...and can be dragged out by its grip", picture.grew,
+    `${picture.stored ? picture.stored.w : "?"} points wide after the drag`);
+  check("...and comes back out of the store as a picture, on the notebook's pages",
+    picture.stored?.kind === "image" && picture.stored?.hasSrc && picture.stored?.doc === "notebook",
+    JSON.stringify(picture.stored));
+  check("nothing threw anywhere in this run",
+    sheet.errs.length === 0 && picture.errs.length === 0,
+    [...sheet.errs, ...picture.errs].join(" | "));
 } finally {
   clearTimeout(watchdog);
   try { client.close(); } catch (_) { /* already gone */ }

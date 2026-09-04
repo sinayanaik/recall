@@ -72,6 +72,20 @@ const ROW_TRAIL_SELECTORS = [
   ".document-head > #documentInkBtn",
   ".document-head > #documentMoreBtn",
   ".document-head > #documentMoreMenu",
+  // ── The notebook's controls ─────────────────────────────────────────────
+  //
+  // The Write tab is the same #documentStage showing the deck's other document,
+  // so its controls belong in the same one row as the document's — lifted the
+  // same way, hidden by CSS on the views where they mean nothing, and never
+  // cloned, because every one of them is wired by id.
+  //
+  // They were the header of a full-page overlay until now, which is what made
+  // handwriting a place you went rather than a view you were in.
+  ".handwriting-head > #handwritingPaperGroup",
+  ".handwriting-head > #handwritingTextBtn",
+  ".handwriting-head > #handwritingImageBtn",
+  ".handwriting-head > #handwritingPageBtn",
+  ".handwriting-head > #handwritingTearBtn",
 ];
 
 // In the order they appear in the menu. This USED to be the order they sat in

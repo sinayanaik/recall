@@ -115,7 +115,7 @@ try {
   const { fitInkShape, INK_SHAPE_MIN_SIZE } = shapesMod;
   const { INK_WIDTH_LOOKAHEAD, INK_WIDTH_LOOKBACK, inkStrokeWidths } = paintMod;
   const migrateMod = await import(path.join(stage, "src/documents/notebook-migrate.js"));
-  const { LEGACY_SCALE, hasLegacyNotebook, migratedNotebookMeta, planLegacyNotebookMigration } = migrateMod;
+  const { LEGACY_SCALE, hasLegacyNotebook, hasNotebookInPdfSlot, migratedNotebookMeta, movedNotebookSlotMeta, planLegacyNotebookMigration } = migrateMod;
 
   // ── 1. Does a stroke come back? ─────────────────────────────────────────
 
@@ -420,7 +420,57 @@ try {
     // ...and the original is untouched, because the caller may still need it if
     // the save that follows fails.
     if (!Array.isArray(meta.pages)) return "the plan mutated the meta it was given";
+    // ...and it lands in the notebook slot, not the document slot. A migration
+    // that wrote meta.pdf would be handing a deck's generated pages to the
+    // Document tab — and, on a deck that already had a paper, over the top of it.
+    if (!next.notebook) return "the migrated paper did not land in the notebook slot";
+    if (next.pdf) return "the migration wrote the deck's document slot";
+    // Every record it produced says which paper it is a coordinate into; the
+    // deck's own highlight is left alone, because it was never the notebook's.
+    if (next.pdfHighlights[1].doc !== "notebook") return "a migrated stroke does not say which paper it is on";
+    if ("doc" in next.pdfHighlights[0]) return "the deck's own highlight was re-attributed";
+    if (next.pdfBlocks[0].doc !== "notebook") return "a migrated block does not say which paper it is on";
     return true;
+  });
+
+  // ── The second migration: out of the document slot, into the notebook slot ──
+  //
+  // The first real-paper notebooks put their generated PDF in meta.pdf, because
+  // that was the only slot there was — which is exactly what made a deck able to
+  // have a notebook OR a paper and never both, and what made the app say "this
+  // deck already has a PDF" to somebody who wanted to write beside one.
+  must("an older notebook moves out of the document slot, whole", () => {
+    const meta = {
+      pdf: { name: "handwritten-notes.pdf", pages: 3, paper: "ruled", notebook: true, sha256: "abc" },
+      pdfHighlights: [{ id: "hn-a", page: 2, kind: "ink", at: 1 }],
+      pdfBlocks: [{ id: "bk-a", page: 1, md: "x", at: 1 }]
+    };
+    if (!hasNotebookInPdfSlot(meta)) return "the fixture did not read as a notebook in the document slot";
+    const next = movedNotebookSlotMeta(meta);
+    if (!next.notebook || next.notebook.pages !== 3 || next.notebook.paper !== "ruled") {
+      return "the paper did not arrive in the notebook slot intact";
+    }
+    if (next.pdf) return "the document slot still holds the generated paper";
+    // Everything measured against it comes too. A deck in this state has exactly
+    // ONE document, so there is nothing else these could be coordinates into.
+    if (next.pdfHighlights[0].doc !== "notebook") return "a stroke was left attributed to the deck's paper";
+    if (next.pdfBlocks[0].doc !== "notebook") return "a block was left attributed to the deck's paper";
+    // Idempotent, and it has to be: it runs on open, and an open can be
+    // interrupted between the meta write and the save.
+    if (hasNotebookInPdfSlot(next)) return "the moved meta still reads as needing the move";
+    const again = movedNotebookSlotMeta(next);
+    if (!again.notebook || again.pdf) return "running it twice undid it";
+    // ...and the deck it was handed is untouched, because the caller may still
+    // need it if the save that follows fails.
+    if (!meta.pdf) return "the move mutated the meta it was given";
+    return true;
+  });
+
+  // The case the old refusal existed for, and the reason there is no refusal any
+  // more: a deck reading somebody's preprint, which now gets pages of its own.
+  must("a deck with a real PDF is not a notebook in the document slot", () => {
+    const meta = { pdf: { name: "preprint.pdf", pages: 12, sha256: "def" } };
+    return hasNotebookInPdfSlot(meta) === false || "a deck's own paper was mistaken for a notebook";
   });
 
   must("a notebook whose every page was blank still becomes a notebook", () => {

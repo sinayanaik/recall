@@ -20,10 +20,12 @@
 //      Getting this wrong would duplicate every page on every open.
 //   3. IT NEEDS NO NETWORK. The paper is generated locally and the upload is
 //      best-effort, exactly as it is for a page added by hand.
-//   4. IT REFUSES WHAT IT CANNOT DO HONESTLY. A deck that already has somebody
-//      else's PDF cannot have generated pages folded into it — those strokes are
-//      coordinates into a different piece of paper. That deck is left completely
-//      alone and said so, rather than half-converted.
+//   4. IT REFUSES NOTHING ANY MORE, AND THAT IS THE FIX. It used to refuse a
+//      deck that already had somebody else's PDF, because there was one document
+//      slot and the deck's paper was in it — so those strokes, which are
+//      coordinates into a page this app generated, had nowhere honest to go. A
+//      deck has two slots now (src/documents/doc-slot.js), and the generated
+//      pages go in the one that was made for them.
 //
 // ── The coordinates ───────────────────────────────────────────────────────
 //
@@ -39,6 +41,7 @@
 // width is one number and cannot be scaled two ways.
 
 import { BLANK_PAGE_HEIGHT, BLANK_PAGE_WIDTH, normalizeBlankPaper } from "./blank-pdf.js?v=__BUILD__";
+import { DOC_SLOT_NOTEBOOK, stampDocSlotAll } from "./doc-slot.js?v=__BUILD__";
 import { decodeInkStrokes, encodeInkStrokes, inkStrokesBounds } from "../format/ink-strokes.js?v=__BUILD__";
 
 // 72 points per inch over 96 CSS pixels per inch. The old page model was A4 at
@@ -171,17 +174,55 @@ export function planLegacyNotebookMigration(meta, { mintId = null } = {}) {
 // them in the backup's coverage table cannot drift apart.
 export const LEGACY_NOTEBOOK_KEYS = ["pages", "textBoxes", "deletedPageIds", "deletedTextBoxIds"];
 
+// ── The second migration: out of the document slot, into the notebook slot ──
+//
+// The first version of the real-paper notebook put its generated PDF in
+// `meta.pdf`, because that was the only slot there was. That is what made a deck
+// able to have a notebook OR a paper and never both. `meta.notebook` is the slot
+// those bytes belong in, and this moves them.
+//
+// Pure, like everything else in this file: it computes the meta a deck should
+// have and touches nothing. The bytes are moved by the caller, in the order
+// src/documents/notebook.js keeps for every other write.
+export function hasNotebookInPdfSlot(meta) {
+  return Boolean(meta?.pdf?.notebook) && !meta?.notebook;
+}
+
+// Which records move. A deck in this state has exactly one document, so
+// everything measured against it is the notebook's — including highlights, which
+// on generated paper can only have come from a region drawn round somebody's own
+// handwriting. Records already stamped for a slot are left as they are, so this
+// is safe to run twice even though it never has to be.
+export function movedNotebookSlotMeta(meta) {
+  const next = { ...(meta && typeof meta === "object" ? meta : {}) };
+  next.notebook = { ...next.pdf };
+  delete next.pdf;
+  if (Array.isArray(next.pdfHighlights)) next.pdfHighlights = stampDocSlotAll(next.pdfHighlights, DOC_SLOT_NOTEBOOK);
+  if (Array.isArray(next.pdfBlocks)) next.pdfBlocks = stampDocSlotAll(next.pdfBlocks, DOC_SLOT_NOTEBOOK);
+  return next;
+}
+
 // The meta a migrated deck should have, given the plan and the paper that was
 // generated for it. Also pure — the caller does the writing.
 export function migratedNotebookMeta(meta, plan, pdf) {
   const next = { ...(meta && typeof meta === "object" ? meta : {}) };
   LEGACY_NOTEBOOK_KEYS.forEach((key) => { delete next[key]; });
-  next.pdf = pdf;
+  // The NOTEBOOK slot, not the document slot. A deck that also carries a paper
+  // of its own keeps it, which is the whole of what the old refusal was for.
+  next.notebook = pdf;
   // Merged, never assigned: a deck can already carry highlights of its own, and
-  // the ids minted here are from the same namespace.
-  next.pdfHighlights = [...(Array.isArray(meta?.pdfHighlights) ? meta.pdfHighlights : []), ...plan.ink];
+  // the ids minted here are from the same namespace. Everything coming out of
+  // the plan is a coordinate into the generated pages, so it is stamped as the
+  // notebook's; the deck's existing records are left exactly as they are.
+  next.pdfHighlights = [
+    ...(Array.isArray(meta?.pdfHighlights) ? meta.pdfHighlights : []),
+    ...stampDocSlotAll(plan.ink, DOC_SLOT_NOTEBOOK)
+  ];
   if (plan.blocks.length) {
-    next.pdfBlocks = [...(Array.isArray(meta?.pdfBlocks) ? meta.pdfBlocks : []), ...plan.blocks];
+    next.pdfBlocks = [
+      ...(Array.isArray(meta?.pdfBlocks) ? meta.pdfBlocks : []),
+      ...stampDocSlotAll(plan.blocks, DOC_SLOT_NOTEBOOK)
+    ];
   }
   return next;
 }

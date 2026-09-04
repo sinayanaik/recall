@@ -376,8 +376,11 @@ function handwritingSignature(meta) {
   const blocks = (Array.isArray(meta?.pdfBlocks) ? meta.pdfBlocks : [])
     .map((record) => `${record?.id || ""}:${record?.at || 0}`)
     .join(",");
-  const paper = meta?.pdf ? `${meta.pdf.pages || 0}:${meta.pdf.sha256 || ""}` : "";
-  return blocks || paper ? `${paper}|${blocks}` : "";
+  // Both documents: adding a page rewrites the notebook, and a deck can carry a
+  // notebook and a paper of its own at the same time.
+  const stamp = (record) => (record ? `${record.pages || 0}:${record.sha256 || ""}` : "");
+  const paper = `${stamp(meta?.pdf)}/${stamp(meta?.notebook)}`;
+  return blocks || paper.length > 1 ? `${paper}|${blocks}` : "";
 }
 
 export function deckContentMatches(a, b) {
@@ -532,7 +535,7 @@ export function finishSaveDeckToLibrary({ snapshot, localId, previousSnapshot, s
     // and nothing else — indistinguishable from a deck someone made and
     // abandoned. Only for paper this app GENERATED: the page count of somebody
     // else's PDF is a fact about their document, not a thing this deck is.
-    pageCount: snapshot.meta?.pdf?.notebook ? (Number(snapshot.meta.pdf.pages) || 0) : 0,
+    pageCount: Number(snapshot.meta?.notebook?.pages) || 0,
     updatedAt: resolvedUpdatedAt,
     createdAt: previousEntry?.createdAt || new Date().toISOString(),
     lastSyncedAt: lastSyncedAt !== undefined ? lastSyncedAt : (previousEntry?.lastSyncedAt || null),

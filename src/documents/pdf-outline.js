@@ -42,6 +42,7 @@ import {
   tocRowFor
 } from "../notes/toc-tree.js?v=__BUILD__";
 import { cachePdfContents, derivePdfContents, readCachedPdfContents } from "./pdf-toc.js?v=__BUILD__";
+import { DOC_SLOT_NOTEBOOK, activeDocSlot } from "./doc-slot.js?v=__BUILD__";
 
 // Nesting deeper than this is folded into its parent's level rather than
 // indented further. Books do go five deep, and at that point the indent is
@@ -184,6 +185,22 @@ export async function buildDocumentOutline(doc) {
     // running so a caller that wants the finished list gets it, and so the
     // token guard has one owner.
     await resolveOutlineTail(doc, token);
+    return outlineEntries;
+  }
+
+  // ── ...and a notebook has neither ────────────────────────────────────────
+  //
+  // Deriving a contents means reading the TYPE on the pages, and paper this app
+  // generated has none — a markdown block on it is DOM over the page, not text
+  // in the file. So the scan below can only ever find nothing, at the cost of a
+  // pass over every page; and `pdfToc` is one key on the deck, shared with
+  // whatever paper the deck is also carrying, which is not a cache to write an
+  // empty answer into. The drawer still opens: its Highlights half is the half
+  // that means something here.
+  if (activeDocSlot() === DOC_SLOT_NOTEBOOK) {
+    outlineEntries = [];
+    outlineDerived = true;
+    renderDocumentOutline();
     return outlineEntries;
   }
 
