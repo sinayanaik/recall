@@ -1105,10 +1105,21 @@ try {
     // it imports as highlights — real, wanted, and not what this is asking about.
     const inkHere = () => api.documentHighlights().filter((r) => r.kind === "ink").length;
     const backOnPaper = { pages: api.currentPdfPageCount(), marks: inkHere() };
+    // Stamped so the canvases can be recognised on the way back. Identity is the
+    // whole question below: a canvas that is the SAME ELEMENT was never
+    // rasterised again, and a set of fresh ones is a re-render however quickly
+    // it finishes.
+    const paperCanvases = [...document.querySelectorAll("#documentView .pdf-canvas")];
+    paperCanvases.forEach((c, i) => { c.dataset.wasHere = String(i); });
+    const paperCanvasCount = paperCanvases.length;
     api.setViewMode("handwriting");
     for (let i = 0; i < 80 && api.currentPdfPageCount() !== 1; i += 1) await settle(100);
     await settle(400);
     const backOnNotebook = { pages: api.currentPdfPageCount(), marks: inkHere() };
+    // The notebook was scribbled on above, so there is something to undo. An
+    // engine destroyed on the way out empties its history with its hosts, which
+    // is a reader who changed tabs and found Ctrl+Z had quietly stopped working.
+    const undoOnNotebook = api.canUndoInk();
 
     // ── ...and what the switch between them COSTS ────────────────────────
     //
@@ -1128,7 +1139,12 @@ try {
     api.setViewMode("document");
     const switched = {
       loading: Boolean(document.querySelector("#documentView .pdf-loading")),
-      pages: document.querySelectorAll("#documentView .pdf-page").length
+      pages: document.querySelectorAll("#documentView .pdf-page").length,
+      // Same tick again: the pages are back AND they are painted. A rebuild puts
+      // placeholders up first and fills them a frame or more later, which is the
+      // blink; a restore has the pixels before this line runs.
+      canvases: document.querySelectorAll("#documentView .pdf-canvas").length,
+      sameCanvases: document.querySelectorAll("#documentView .pdf-canvas[data-was-here]").length
     };
     for (let i = 0; i < 80 && api.currentPdfPageCount() !== paperPages; i += 1) await settle(100);
     await settle(300);
@@ -1142,6 +1158,8 @@ try {
     api.setViewMode("handwriting");
     for (let i = 0; i < 80 && api.currentPdfPageCount() !== 1; i += 1) await settle(100);
     await settle(300);
+    // ...and the notebook's own undo stack came back with its pages.
+    const undoAfterRoundTrip = api.canUndoInk();
 
     // ── Does drawing move the stamp the sync pushes on? ───────────────────
     //
@@ -1169,8 +1187,8 @@ try {
     return {
       attached, offered, paperPages, notebookPages, onPaper, mine, theirs, paintedNow,
       hasPdf: Boolean(api.state.meta.pdf), hasNotebook: Boolean(api.state.meta.notebook),
-      backOnPaper, backOnNotebook,
-      switched, switchedMarks,
+      backOnPaper, backOnNotebook, paperCanvasCount,
+      switched, switchedMarks, undoOnNotebook, undoAfterRoundTrip,
       stampBefore, stampAfter, stampIdle,
       errs: window.__errs.slice(0, 4)
     };
@@ -1657,6 +1675,21 @@ try {
   check("...and it comes back with what was written on it",
     both.switchedMarks === both.backOnPaper.marks && both.switchedMarks > 0,
     `${both.switchedMarks} mark(s), against ${both.backOnPaper.marks} before the switch`);
+  // The report the park was not enough for: "switching between write and document
+  // panel still takes a blink of transition, it should feel smooth not rerender".
+  // Keeping the parsed document took the seconds out; what was left was the
+  // rebuild — placeholders up, canvases rasterised again, ink decoded again,
+  // every block re-rendered — and a frame or two of empty paper while it ran.
+  check("...on the very same canvases, rather than freshly rasterised ones",
+    both.paperCanvasCount > 0 && both.switched.sameCanvases === both.paperCanvasCount
+      && both.switched.canvases === both.paperCanvasCount,
+    `${both.switched.sameCanvases} of ${both.paperCanvasCount} canvas(es) are the ones that were there before, `
+      + `out of ${both.switched.canvases} on screen in the same tick — a fresh set is a re-render, `
+      + `and none at all is the blink itself`);
+  check("...and an undo made before the switch still works after it",
+    both.undoOnNotebook && both.undoAfterRoundTrip,
+    `canUndoInk() was ${both.undoOnNotebook} on the notebook and ${both.undoAfterRoundTrip} after a round trip `
+      + `to the other paper — an engine destroyed on the way out takes its history with it`);
 
   check("nothing threw anywhere in this run",
     sheet.errs.length === 0 && picture.errs.length === 0,

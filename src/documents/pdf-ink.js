@@ -141,13 +141,13 @@ let onInkChanged = () => {};
 // REFERENCE. buildInkRecords returns an unchanged mark as the very same object
 // it read, so an identity compare over this array answers "has anything on this
 // page changed" without decoding a single stroke.
-const seededInk = new Map();
+let seededInk = new Map();
 
 // Per mark id, the strokes it was last encoded from and what came out. Same
 // argument, other direction: the engine holds every stroke as a stable object,
 // so a group whose members are the same objects in the same order cannot have
 // a different encoding than last time.
-const inkEncodeCache = new Map();
+let inkEncodeCache = new Map();
 
 function sameRefs(a, b) {
   if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
@@ -697,4 +697,76 @@ export function resetDocumentInk() {
   engine = null;
   press = null;
   activeRect = null;
+}
+
+// ── One engine per paper, so an undo does not stop at the tab ──────────────
+//
+// A deck has two documents and one stage (src/documents/doc-slot.js), and this
+// module held exactly one engine — so every switch between the Document tab and
+// the Write tab destroyed it. createInkEngine's destroy() empties its history
+// and its future along with its hosts, which meant a stroke made on the notebook
+// could not be undone after a glance at the paper beside it: the reader had done
+// nothing but change tabs and Ctrl+Z had quietly become a no-op. Re-seeding was
+// the other half of the same cost — every stroke on every painted page decoded
+// again out of its base64 on the way back.
+//
+// So the engine is PARKED, exactly as the parsed document beside it is
+// (parkedDocuments, ./pdf-view.js), under the same key: the deck, the slot and
+// the document's own hash. The hash is what makes this safe for a notebook,
+// which is the one document in this app whose bytes change — a page added or
+// torn out mints a new file under a new key, so its engine is not adopted and
+// its pages are decoded fresh, which is right, because they are different pages.
+const parkedEngines = new Map();
+
+// The key of the document the ACTIVE engine's hosts and strokes belong to.
+let engineKey = null;
+
+function releaseParkedEngine(key) {
+  const parked = parkedEngines.get(key);
+  if (!parked) return;
+  parkedEngines.delete(key);
+  parked.engine.destroy();
+}
+
+// Called as a document finishes opening, with the key of the document now on
+// screen and whether its PAGES came back out of the park rather than being
+// rebuilt. Those two answers together are the whole decision: an engine is only
+// worth adopting when the very elements it is attached to are the ones back on
+// the stage.
+export function adoptDocumentInk({ key = "", restored = false } = {}) {
+  // What is on screen belongs to a different document now. Park it rather than
+  // destroy it — the reader is one press away from coming back.
+  if (engine && engineKey && engineKey !== key) {
+    closeOpenMark();
+    releaseParkedEngine(engineKey);
+    parkedEngines.set(engineKey, { engine, seeded: seededInk, encoded: inkEncodeCache });
+    engine = null;
+    seededInk = new Map();
+    inkEncodeCache = new Map();
+    press = null;
+    activeRect = null;
+  }
+  // Nothing belonging to a deck that is no longer open may stay parked, by the
+  // rule drainParkedDocuments states for the documents themselves: this is the
+  // one moment the module knows for certain which deck it is being asked for.
+  const deck = `${String(key).split("|")[0]}|`;
+  [...parkedEngines.keys()].forEach((parkedKey) => {
+    if (parkedKey.startsWith(deck)) return;
+    releaseParkedEngine(parkedKey);
+  });
+  const parked = restored ? parkedEngines.get(key) : null;
+  if (parked) {
+    parkedEngines.delete(key);
+    engine = parked.engine;
+    seededInk = parked.seeded;
+    inkEncodeCache = parked.encoded;
+    press = null;
+    activeRect = null;
+  } else {
+    // A cold open of this document: its pages are new elements, so an engine
+    // parked for it is attached to nodes that are no longer in the tree.
+    releaseParkedEngine(key);
+    resetDocumentInk();
+  }
+  engineKey = key;
 }

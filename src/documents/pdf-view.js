@@ -171,6 +171,9 @@ export const PDF_DARK_KEY = "recall:pdfInvert";
 // both ends.
 let onPagePainted = () => {};
 
+// Called once a document is on the stage, with { key, slot, restored } — the
+// document's own key (deck + slot + hash), which slot it is, and whether its
+// pages came back out of the park rather than being rebuilt from placeholders.
 let onDocumentOpened = () => {};
 
 // ...and a third, for the same reason and registered the same way. The Document
@@ -281,6 +284,15 @@ function releaseParked(key) {
   const parked = parkedDocuments.get(key);
   if (!parked) return;
   parkedDocuments.delete(key);
+  // The pages go with the document they are pages OF. A detached subtree is
+  // collectable once nothing holds it, but a page of a paper is a canvas the
+  // size of the page — dropping them explicitly, here, is what keeps "a parked
+  // entry is released" a single statement rather than something the collector
+  // gets round to.
+  parked.pages?.forEach((entry) => clearTimeout(entry.deadline));
+  parked.pages = null;
+  parked.rendered = null;
+  parked.host = null;
   parked.doc.destroy().catch(() => {});
 }
 
@@ -298,13 +310,44 @@ function drainParkedDocuments(keep) {
 // meta.readingPosition is: a scroll offset is only meaningful at the scale it
 // was taken at, and the surface may well be re-fitted to a different one before
 // this is restored.
+//
+// ── ...and the pages themselves, which this used to throw away ─────────────
+//
+// The first version of this kept only the parsed document, on the stated ground
+// that "placeholders are a div per page and cost nothing beside a re-parse". The
+// arithmetic was right and the conclusion was wrong, because a placeholder is
+// not what the reader is looking at — a RASTERISED PAGE is, and a text layer,
+// and an ink canvas, and every markdown block re-parsed and re-rendered. So the
+// switch stopped costing seconds and started costing a frame or two of empty
+// paper, which is the "blink of transition, it should feel smooth not rerender"
+// that was reported next.
+//
+// So the whole box goes in the park. DETACHED rather than hidden in place:
+// everything outside this module finds a page by descendant query
+// (`document.querySelector('.pdf-page[data-page-number=…]')`), and a second host
+// left in the tree would let the notebook answer a question about the paper.
+//
+// The reason the first version gave for not doing this — "a detached subtree
+// kept alive is how a surface comes back holding stale canvases" — is a real
+// hazard and is answered rather than ignored. Three things can go stale, and
+// each has its own answer at the restore: the BYTES (the sha is compared, as it
+// already was), the SCALE (re-fitted, and a changed fit relayouts, which
+// re-renders), and the RECORDS (every rendered page's painted hook is replayed,
+// which re-seeds ink, blocks and badges from the arrays as they are now). What
+// is left is a canvas of the same page of the same file at the same scale, which
+// is not stale; it is the same picture.
 function parkOpenDocument() {
   if (!openPdf?.doc) return false;
   const key = documentParkKey(openPdf.slot);
   releaseParked(key);
+  const host = el.documentView?.querySelector(":scope > .pdf-pages") || null;
+  host?.remove();
   parkedDocuments.set(key, {
     sha: docSlotMeta(openPdf.slot)?.sha256 || "",
     doc: openPdf.doc,
+    host,
+    pages: openPdf.pages,
+    rendered: openPdf.rendered,
     pageCount: openPdf.pageCount,
     baseWidth: openPdf.baseWidth,
     baseHeight: openPdf.baseHeight,
@@ -611,7 +654,16 @@ async function openDocumentViewBody({ force = false, slot = null } = {}) {
     // The outgoing document is parked in its turn, which is what makes the
     // switch free in BOTH directions rather than only on the way back.
     tearDownDocumentView({ park: true });
+    // Only whatever was left beside the pages — the outgoing box has already
+    // been detached by parkOpenDocument, and this must not take the incoming one
+    // with it, so it happens BEFORE the box goes back on.
     view.innerHTML = "";
+    // The pages come back with their canvases, their text layers, their ink and
+    // their blocks — the whole subtree, still laid out, at the scale it was left
+    // at. `restored` is false only for an entry parked before this existed, or
+    // one whose host somehow did not survive; the cold rebuild below is what
+    // that falls back to, and it is the behaviour this replaced.
+    const restored = Boolean(parked.host);
     openPdf = {
       deckKey,
       slot: openSlot,
@@ -622,18 +674,38 @@ async function openDocumentViewBody({ force = false, slot = null } = {}) {
       scale: parked.scale,
       fitWidth: parked.fitWidth,
       fitScale: parked.fitScale,
-      pages: new Map(),
-      rendered: new Set(),
+      // The SAME entry objects, not fresh ones. They hold each page's element,
+      // its viewport, the scale it was rendered at and any render still in
+      // flight — and a render left in flight settles against pdfOpenToken, which
+      // the teardown above has already bumped, so it drops its own canvas rather
+      // than appending it to a page of the other paper.
+      pages: restored ? parked.pages : new Map(),
+      rendered: restored ? parked.rendered : new Set(),
       observer: null,
       resizeObserver: null,
       watchdog: 0
     };
+    if (restored) {
+      view.appendChild(parked.host);
+      // Every offsetTop in this file is about to be read against a subtree that
+      // was not in the document a moment ago.
+      bumpDocumentLayout();
+    }
     // Re-fitted rather than restored at the scale it was parked with: the reader
     // may have rotated the device or resized the window while they were on the
     // other tab, and the resize handler only listens while this surface is the
     // one on screen. A reader who had zoomed by hand keeps their zoom.
+    //
+    // With the pages restored this is also the one thing that can make them
+    // wrong, so it is asked rather than assumed: a fit scale that has not moved
+    // leaves the canvases exactly as they are, and one that has goes through
+    // relayoutDocument in finishDocumentOpen — which keeps the old pixels,
+    // stretched, while the fresh render lands. Either way there is never a frame
+    // of empty paper, which is the whole of what was reported.
+    const wasScale = openPdf.scale;
     if (openPdf.fitWidth) openPdf.scale = fitWidthScale();
-    finishDocumentOpen(view, pdfOpenToken, openSlot, { page: parked.page, ratio: parked.ratio });
+    finishDocumentOpen(view, pdfOpenToken, openSlot, { page: parked.page, ratio: parked.ratio },
+      { restored, refit: restored && openPdf.scale !== wasScale });
     return true;
   }
   if (parked) releaseParked(parkKey);
@@ -750,8 +822,19 @@ async function openDocumentViewBody({ force = false, slot = null } = {}) {
 // `at` is where to land: null on a cold open, which resumes from the deck's
 // stored reading position, and { page, ratio } coming back from the park, which
 // resumes where the reader actually was a moment ago.
-function finishDocumentOpen(view, token, openSlot, at) {
-  buildPagePlaceholders();
+//
+// `restored` says the pages are ALREADY on the stage, having come back out of
+// the park with their canvases on them. Everything below is then still exactly
+// what has to happen — the observers were disconnected on the way out and the
+// invert, the indicator, the outline and the resume are all facts about which
+// document is on screen — except for building placeholders for pages that are
+// already there, and except that the records painted onto those pages were
+// painted before the reader left and have to be brought up to date.
+//
+// `refit` says the window changed size while they were away, so the pages are
+// laid out at a scale that no longer fits.
+function finishDocumentOpen(view, token, openSlot, at, { restored = false, refit = false } = {}) {
+  if (!restored) buildPagePlaceholders();
   observePages();
   watchDocumentViewSize();
   applyPdfInvert(invertForDocumentSlot(openSlot), { remember: false });
@@ -766,7 +849,13 @@ function finishDocumentOpen(view, token, openSlot, at) {
   // resume scroll and the sweep below were simply skipped, silently, with the
   // pages left wherever the observer had got to.
   try {
-    onDocumentOpened();
+    // `restored` is what lets the ink engine be adopted rather than rebuilt: an
+    // engine is attached to the page elements it painted on, so it is only worth
+    // keeping when those very elements are the ones back on the stage. The key
+    // carries the document's hash (documentOpenKey), which is what stops a
+    // notebook regenerated by an added page from being handed the engine of the
+    // notebook it used to be.
+    onDocumentOpened({ key: openPdf.deckKey, slot: openSlot, restored });
   } catch (error) {
     console.warn("Could not build the document's page notes", error);
   }
@@ -779,6 +868,24 @@ function finishDocumentOpen(view, token, openSlot, at) {
     const resume = state.meta?.readingPosition;
     if (Number.isFinite(resume?.pdfPage)) scrollToDocumentPage(resume.pdfPage, resume.ratio || 0, { smooth: false });
   }
+  // ── What a restored page still has to be told ────────────────────────────
+  //
+  // The canvas is the same picture of the same page and needs nothing. What sits
+  // ON it does: the ink, the typed blocks and the numbered badges were painted
+  // from arrays that may have moved while the reader was on the other paper — a
+  // sync landed, a highlight was deleted from the pane, a block was torn out
+  // with its page. Every one of those is already handled, once, by the hook that
+  // runs as a page paints (setDocumentPagePaintedHook in src/main.js), so this
+  // replays that hook rather than growing a second opinion about what a page
+  // carries. Only for pages that actually have pixels: an unrendered one has no
+  // layers to bring up to date and will run the hook when it draws.
+  if (restored) openPdf.rendered.forEach((pageNumber) => onPagePainted(pageNumber));
+  // A refit is a re-layout and a re-render, so it subsumes the sweep below —
+  // and it keeps the old pixels stretched while the fresh ones land, rather than
+  // dropping to a placeholder (stalePageForRelayout). Only when the fit has
+  // actually moved; the common case is that nothing changed and the pages are
+  // simply back.
+  if (refit) relayoutDocument({ refit: true });
   // Ask for the pages outright rather than waiting to be told about them. The
   // IntersectionObserver above will usually get there first and this will find
   // every page already asked for — but "usually" is what this whole bug was:

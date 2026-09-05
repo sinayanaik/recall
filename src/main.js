@@ -116,7 +116,7 @@ import { DOCUMENT_NOTE_HANDLERS, documentHighlightNote, initDocumentMarkMenu, re
 import { closeDocumentToc, documentOutlineEntries, initDocumentOutlineFolding, isDocumentTocOpen, resolveOutlineEntryPage, toggleDocumentToc } from "./documents/pdf-outline.js?v=__BUILD__";
 import { deleteRemoteDocument } from "./documents/pdf-store.js?v=__BUILD__";
 import { currentPdfDocument, documentFittedWidth, fitDocumentToWidth, initDocumentPinchZoom, isDocumentFitWidth, reattachDocument, relayoutDocument, scheduleDocumentPositionSave, scrollToDocumentPage, refreshDocumentPaperForTheme, setDocumentAttachHandler, setDocumentOpenedHook, setDocumentPagePaintedHook, setNotebookStartHandler, togglePdfInvert, updatePageIndicator, zoomDocument } from "./documents/pdf-view.js?v=__BUILD__";
-import { canRedoInk, canUndoInk, initDocumentInk, inkMarkImageMarkdown, isInkMarkId, paintDocumentInk, redoInk, repaintDocumentInk, resetDocumentInk, setInkChangedHandler, undoInk } from "./documents/pdf-ink.js?v=__BUILD__";
+import { adoptDocumentInk, canRedoInk, canUndoInk, initDocumentInk, inkMarkImageMarkdown, isInkMarkId, paintDocumentInk, redoInk, repaintDocumentInk, setInkChangedHandler, undoInk } from "./documents/pdf-ink.js?v=__BUILD__";
 import { addHandwritingImage, enterHandwritingView, refreshHandwritingBoard, runHandwritingMenuAction, startHandwritingNotebook } from "./handwriting/board.js?v=__BUILD__";
 import { commitBlockEdit, handleBlockPointerDown, paintDocumentBlocks, repaintDocumentBlocks, setBlocksChangedHandler } from "./documents/pdf-blocks.js?v=__BUILD__";
 import { applyInkRailPreference, initInkRail, refreshInkRail } from "./ui/ink-rail.js?v=__BUILD__";
@@ -1217,12 +1217,17 @@ onDomReady(() => {
     // it, and only the pane knows which ones should have it back.
     repaintHighlightLink();
   });
-  setDocumentOpenedHook(() => {
+  setDocumentOpenedHook((opened) => {
     // The engine holds decoded strokes for every page it has painted, keyed by
-    // page number — and page 7 of the last paper is not page 7 of this one.
-    // Safe here: openDocumentViewBody has just emptied the view and rebuilt the
-    // placeholders, and no page has painted a layer yet.
-    resetDocumentInk();
+    // page number — and page 7 of the last paper is not page 7 of this one. So
+    // it is torn down on a cold open, where openDocumentViewBody has just
+    // emptied the view and rebuilt the placeholders and no page has painted a
+    // layer yet — and PARKED rather than torn down when the reader is only
+    // moving between the deck's two papers, which is what keeps an undo working
+    // across a tab switch. adoptDocumentInk decides which from the two facts
+    // pdf-view is in a position to know: the document's key, and whether its
+    // pages came back out of the park rather than being rebuilt.
+    adoptDocumentInk(opened);
     // The rail as THIS surface last left it. Here rather than in the Write tab's
     // own paint step because both slots need it and this hook is the one place
     // that fires for either: a notebook starts with the rail open (the pen is
