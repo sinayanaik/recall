@@ -15,7 +15,7 @@
 // tools/notes-menu-check.mjs gives: a check that skips itself wherever a package
 // is missing is a check that never catches anything.
 //
-// ── The five questions ────────────────────────────────────────────────────
+// ── The questions ─────────────────────────────────────────────────────────
 //
 //   1. A stroke held still mid-word and then continued. The straightener fires
 //      on a hold, and a hold is very often someone thinking; once it had fired
@@ -36,6 +36,27 @@
 //   5. A text box dragged, resized, typed into, and still where it was put
 //      after a reload; and the same notebook edited on two devices at once,
 //      merged.
+//   6. Whether switching between the deck's two papers RE-RENDERS. Keeping the
+//      parsed document took the seconds out of that switch and left a blink:
+//      the pages were still torn down and built again, so the same tick after a
+//      press had placeholders and no canvases. This stamps the canvases, goes
+//      away and comes back, and asks whether they are the SAME ELEMENTS — and
+//      whether an undo made before the switch still works after it, which it did
+//      not, because the ink engine was destroyed on every open.
+//   7. Whether everything the block editor opens opens IN FRONT of it. The
+//      compression dialog, the drawing sheet and the formatting pill were all
+//      painted underneath a sheet that covers the viewport, so pressing Image
+//      did nothing at all — no error, no toast, a promise that never resolved.
+//      Asked with elementFromPoint, because what was broken is which element
+//      takes the press.
+//   8. What a lasso can DO: recolour exactly what is selected and nothing else,
+//      duplicate as a mark of its own, copy from one page and paste onto
+//      another, nudge by a point with the arrow keys, and turn about its own
+//      centre. And whether the eraser can take PART of a stroke.
+//   9. Whether a picture on a page IS its frame. Every block body carried the
+//      `rendered` class, including a picture's, so `.rendered img` won on
+//      max-width — which is a Style setting for the notes reading column — and
+//      drew the picture at half the width of the box sized to its own shape.
 
 import { spawn } from "node:child_process";
 import path from "node:path";
@@ -75,6 +96,7 @@ const API_SRC = `async () => {
     "/src/documents/pdf-highlights.js?v=__BUILD__",
     "/src/documents/pdf-store.js?v=__BUILD__",
     "/src/images/outbox.js?v=__BUILD__",
+    "/src/images/compress-dialog.js?v=__BUILD__",
     "/src/notes/ink-sheet.js?v=__BUILD__",
     "/src/format/ink-strokes.js?v=__BUILD__",
     "/src/format/ink-svg.js?v=__BUILD__",
@@ -762,6 +784,69 @@ try {
     await settle(300);
     const sized = record(id);
 
+    // ── Everything the editor opens has to open IN FRONT of it ─────────────
+    //
+    // "If I click image, upload an image, it's not being placed in the textarea."
+    // Nothing about the wiring was wrong: the sheet is fixed at z-index 620 and
+    // covers the viewport, and the three things its toolbar reaches were all
+    // BELOW it — the compression dialog at 220, the drawing sheet at 600 and the
+    // formatting pill at 90. Each opened underneath, invisible and taking no
+    // presses, and the dialog's promise simply never resolved.
+    //
+    // Asserted with elementFromPoint rather than by reading z-index, because
+    // what was actually broken is which element takes the press.
+    // Through the block's own ✎, which is how a reader opens it — and which
+    // also confirms the delegated handler still finds the right block.
+    node.querySelector('[data-pdf-block-action="edit"]')
+      .dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 51, cancelable: true }));
+    await settle(500);
+    const topAt = (x, y) => {
+      const at = document.elementFromPoint(x, y);
+      return {
+        inDialog: Boolean(at?.closest(".image-compress-modal")),
+        inSheet: Boolean(at?.closest(".ink-sheet")),
+        inEditor: Boolean(at?.closest(".pdf-block-editor"))
+      };
+    };
+    const mid = { x: Math.round(window.innerWidth / 2), y: Math.round(window.innerHeight / 2) };
+
+    // A one-pixel PNG is enough: this is about which element is on top, not
+    // about what the dialog says.
+    const png = Uint8Array.from(atob(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+    ), (c) => c.charCodeAt(0));
+    const pick = api.chooseImageCompression([new File([png], "one.png", { type: "image/png" })]);
+    await settle(400);
+    const dialogOnTop = topAt(mid.x, mid.y);
+    document.querySelector(".image-compress-modal .category-choice-shell button")?.click();
+    // Cancelled either way — the dialog's own Cancel, or Escape if the first
+    // button was not it. What matters has already been read.
+    document.querySelector(".image-compress-modal")?.remove();
+    await pick.catch(() => null);
+    await settle(200);
+
+    // ...and the drawing sheet, through the real toolbar button, which also
+    // exercises handleToolbarClick resolving this kit's textarea.
+    sheet.querySelector('.edit-toolbar [data-action="insert-ink"]')?.click();
+    await settle(600);
+    const drawOnTop = topAt(mid.x, mid.y);
+    // Escape is the sheet's own way out and does not depend on which button is
+    // where in its footer.
+    document.getElementById("inkSheet")
+      ?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    await settle(500);
+
+    // ...and the pill, which is the one that is raised conditionally, so the
+    // class the sheet sets is what is asserted along with the order it buys.
+    const pillLayer = {
+      classOn: document.body.classList.contains("text-sheet-open"),
+      pill: Number(getComputedStyle(document.querySelector(".selection-float") || document.body).zIndex),
+      editor: Number(getComputedStyle(sheet).zIndex)
+    };
+    sheet.querySelector(".pdf-block-editor-done")?.click();
+    await settle(400);
+    const classOff = !document.body.classList.contains("text-sheet-open");
+
     await api.flushPendingDeckAutosave();
     await settle(300);
     const entry = api.readLocalDeckIndex()[0];
@@ -784,7 +869,8 @@ try {
       stored: stored ? { x: stored.x, y: stored.y, w: stored.w, h: stored.h, md: stored.md } : null,
       mergedIds: (merged.pdfBlocks || []).map((b) => b.id).sort(),
       mergedMine: (merged.pdfBlocks || []).find((b) => b.id === id)?.x,
-      editorTools, math, sheetClosed
+      editorTools, math, sheetClosed,
+      dialogOnTop, drawOnTop, pillLayer, classOff
     };
   }`);
 
@@ -1311,6 +1397,34 @@ try {
     const img = node?.querySelector("img.pdf-block-img");
     const wide = added.w > added.h;
 
+    // ── The picture, and nothing round it ──────────────────────────────────
+    //
+    // "There's a lot of buffer around the image — only image and no padding."
+    // Three things were making it, and the largest was a class name: every block
+    // body carried "rendered", including a picture's, so ".rendered img" beat
+    // .pdf-block-img on height, margin, radius and — worst — max-width, which is
+    // --visual-max-width, a Style setting for the notes reading column that
+    // defaults to 50% on a desktop. The picture was drawn at half the width of
+    // the frame sized to its own aspect ratio, and the rest showed through as
+    // the block's card background.
+    //
+    // Asserted as a comparison of the two boxes rather than as a list of
+    // properties: whatever the mechanism, a picture on a page has to BE its
+    // frame. The drag bar is measured too, since it used to take a row of the
+    // block's height above the picture and now floats over it.
+    const blockRect = node.getBoundingClientRect();
+    const imgRect = img.getBoundingClientRect();
+    const barRect = node.querySelector(".pdf-block-bar").getBoundingClientRect();
+    const fills = {
+      dw: Math.abs(imgRect.width - blockRect.width),
+      dh: Math.abs(imgRect.height - blockRect.height),
+      dtop: Math.abs(imgRect.top - blockRect.top),
+      // The bar overlapping the top of the picture is the POINT: out of the flow
+      // is what gives the picture the whole box back.
+      barOverlaps: barRect.top < imgRect.bottom && barRect.bottom > imgRect.top,
+      visualMax: getComputedStyle(document.documentElement).getPropertyValue("--visual-max-width").trim()
+    };
+
     // Resized by its own grip, in the page's own points.
     const grip = node.querySelector(".pdf-block-grip");
     const box = grip.getBoundingClientRect();
@@ -1329,7 +1443,7 @@ try {
     const stored = (snapshot.meta.pdfBlocks || []).find((b) => b.id === added.id);
 
     return {
-      added: Boolean(added), wide,
+      added: Boolean(added), wide, fills,
       mounted: Boolean(img && img.getAttribute("src")),
       grew: sized ? sized.w > added.w : false,
       stored: stored ? { kind: stored.kind, hasSrc: Boolean(stored.src), doc: stored.doc, w: stored.w } : null,
@@ -1342,6 +1456,14 @@ try {
     `added=${picture.added}${picture.failed ? ` — ${picture.failed}` : ""}, <img> on the page=${picture.mounted}`);
   check("...sized from the picture's own shape rather than a paragraph's",
     picture.wide, "a 2:1 image came out wider than it is tall");
+  // Two pixels of slack for the block's own 1px border, which is the only thing
+  // still drawn around a picture and only while the reader is at it.
+  check("...filling its frame, with no buffer round it",
+    picture.fills.dw <= 2 && picture.fills.dh <= 2 && picture.fills.dtop <= 2 && picture.fills.barOverlaps,
+    `the picture is ${picture.fills.dw.toFixed(1)}px narrower and ${picture.fills.dh.toFixed(1)}px shorter than `
+      + `its block, starting ${picture.fills.dtop.toFixed(1)}px below the top of it, with the drag bar `
+      + `${picture.fills.barOverlaps ? "over" : "ABOVE"} it — and --visual-max-width at `
+      + `${picture.fills.visualMax || "(unset)"}, which used to be the picture's width`);
   check("...and can be dragged out by its grip", picture.grew,
     `${picture.stored ? picture.stored.w : "?"} points wide after the drag`);
   check("...and comes back out of the store as a picture, on the notebook's pages",
@@ -1744,6 +1866,24 @@ try {
     `${reported.selected} stroke(s) selected`);
   check("...and offers what can be done with them", reported.selectionTools,
     `the selection group has a box=${reported.selectionTools}`);
+  // The report this is for: "if I click image, upload an image, it's not being
+  // placed in the textarea". Nothing about the wiring was wrong — the dialog was
+  // opening at z-index 220 underneath a sheet at 620, taking no presses and
+  // waiting for an answer that could not be given.
+  check("a dialog opened from the block editor opens in FRONT of it",
+    blocks.dialogOnTop.inDialog && !blocks.dialogOnTop.inEditor,
+    `the middle of the screen belongs to ${JSON.stringify(blocks.dialogOnTop)}`);
+  check("...and so does the drawing sheet its ✎ opens",
+    blocks.drawOnTop.inSheet && !blocks.drawOnTop.inEditor,
+    `the middle of the screen belongs to ${JSON.stringify(blocks.drawOnTop)}`);
+  // The pill is the one raised conditionally — its own rule puts it under the
+  // dialog band on purpose, so it is lifted by a class the sheet sets and
+  // dropped again when the last such sheet closes.
+  check("...and the one formatting surface the app has is above it too",
+    blocks.pillLayer.classOn && blocks.pillLayer.pill > blocks.pillLayer.editor && blocks.classOff,
+    `class on=${blocks.pillLayer.classOn}, pill at ${blocks.pillLayer.pill} against the editor's `
+      + `${blocks.pillLayer.editor}, class dropped on close=${blocks.classOff}`);
+
   check("nothing threw while the reported faults were exercised",
     reported.errs.length === 0, reported.errs.join(" | "));
 
