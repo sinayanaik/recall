@@ -236,7 +236,10 @@ const watchdog = setTimeout(() => {
 
 const failures = [];
 const notes = [];
+// Every assertion reached, for the tally at the end. See tools/check.mjs.
+let ran = 0;
 function check(label, ok, detail = "") {
+  ran += 1;
   if (ok) console.log(`  ok    ${label}${detail ? `  ${detail}` : ""}`);
   else {
     console.log(`  FAIL  ${label}${detail ? `  ${detail}` : ""}`);
@@ -4553,6 +4556,8 @@ try {
 notes.forEach((note) => console.log(`  note  ${note}`));
 if (failures.length) {
   console.log(`\npdf-preview-check: ${failures.length} failure(s) — ${failures.join(", ")}`);
+  console.log(`CHECK: ${ran} checks · ${failures.length} failed`);
   process.exit(1);
 }
 console.log(`\npdf-preview-check: ${fixture.pages || "?"} pages · text layers, anchors, quads and a reload round-trip all hold`);
+console.log(`CHECK: ${ran} checks · ${failures.length} failed`);

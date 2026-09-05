@@ -95,6 +95,8 @@ const DRIFT_PX = 120;
 const SHAKE_PX = 40;
 
 let failures = 0;
+// Every assertion reached, for the tally at the end. See tools/check.mjs.
+let ran = 0;
 function ok(name, detail = "") {
   console.log(`ok   ${name}${detail ? `  [${detail}]` : ""}`);
 }
@@ -103,6 +105,7 @@ function fail(name, detail) {
   console.log(`FAIL ${name}${detail ? `  [${detail}]` : ""}`);
 }
 function check(condition, name, detail) {
+  ran += 1;
   if (condition) ok(name, detail);
   else fail(name, detail);
 }
@@ -710,4 +713,5 @@ async function run() {
 
 const code = await run();
 console.log(failures ? `\n${failures} failed` : "\nall good");
+console.log(`CHECK: ${ran} checks · ${failures} failed`);
 process.exit(code);

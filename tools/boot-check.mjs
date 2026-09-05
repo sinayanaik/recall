@@ -36,6 +36,14 @@ import { findChrome, launch } from "./browser.mjs";
 // short, like split-parity's ACCEPTED — every entry is a place where "boots the
 // same as it always did" was deliberately spent.
 const ACCEPTED_DIFFS = {
+  toolbarButtons:
+    "24 -> 12. The same change as toolbarsFilled below, counted a different " +
+    "way: this is every <button> in #mainToolbar, and the controls that left " +
+    "the three raw-edit strips for the floating selection pill are exactly the " +
+    "twelve missing. It was not listed here because nothing ran this check on " +
+    "any machine but one, so the entry it needed was never noticed as missing " +
+    "— which is also why boot-check reported '1 problem(s)' for a change the " +
+    "two entries below already explain in full.",
   toolbarsFilled:
     "15/15/11 -> 3/3/3. The raw-edit toolbars keep only the three controls a " +
     "SELECTION cannot express (insert image, bullet, clear formatting). " +
@@ -205,8 +213,13 @@ try {
   console.log("── state ──");
   for (const [k, v] of Object.entries(now.state)) console.log(`  ${k}: ${v}`);
 
+  // Every state key this compared, plus the boot itself and the console being
+  // clean. Counted rather than written down: a key added to the probe must
+  // change the tally, or the tally is describing an older check.
+  let asserted = Object.keys(now.state).length + 2;
   if (baseline) {
     const before = await boot(baseline);
+    asserted += Object.keys(now.state).length;
     const changed = Object.keys(now.state).filter((k) => String(before.state[k]) !== String(now.state[k]));
     const fmt = (k) => `  ${k}\n    ${baselineRef}: ${before.state[k]}\n    now: ${now.state[k]}`;
     const diffs = changed.filter((k) => !(k in ACCEPTED_DIFFS)).map(fmt);
@@ -218,6 +231,9 @@ try {
   }
 
   console.log(`\n${problems.length} problem(s)`);
+  // The tally tools/check.mjs reads: every state key compared against the
+  // baseline, plus the boot itself and the console being clean.
+  console.log(`CHECK: ${asserted} checks · ${problems.length} failed`);
   process.exitCode = problems.length ? 1 : 0;
 } finally {
   for (const s of servers) s.kill();

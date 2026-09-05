@@ -1,0 +1,24 @@
+/* The code block's copy button draws its own label
+ * Added AFTER the 13-way split of styles.css, in a file of its own so that
+ * split stays byte-for-byte verifiable — see POST_SPLIT in tools/split-css.mjs.
+ *
+ * This rule belongs beside .code-copy-btn in 06-rendered.css and cannot live
+ * there. 06 is one of the thirteen frozen slices, and `node tools/split-css.mjs`
+ * re-cuts those from pre-modular:styles.css — so a rule written into one is
+ * deleted, silently, the next time anybody runs that tool without --check.
+ * af39740 is the receipt: it happened twice, to three load-bearing rules, while
+ * css-parity was red and nobody was reading it. css-parity caught this one the
+ * same day it was written.
+ *
+ * Why generated content rather than a text node: a text node in the button is
+ * SELECTABLE, whatever user-select it carries. `user-select: none` governs what
+ * a drag can start on, not what a range spanning the element contains — so a
+ * drag from the paragraph above a code block to the one below returned the
+ * badge's "JS" between the prose and the code. Generated content is not in the
+ * DOM and there is nothing for a range to pick up. The button keeps an
+ * aria-label, because ::before content is not reliably an accessible name.
+ * Both halves are asserted in tools/selection-check.mjs.
+ */
+.rendered pre .code-copy-btn::before {
+  content: attr(data-label);
+}

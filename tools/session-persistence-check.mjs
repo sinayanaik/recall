@@ -220,4 +220,5 @@ try {
   proc.kill();
 }
 console.log(`\n${problems} problem(s)`);
+console.log(`CHECK: ${CASES.length} checks · ${problems} failed`);
 process.exit(problems ? 1 : 0);

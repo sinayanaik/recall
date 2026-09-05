@@ -246,6 +246,11 @@ const FULL = process.argv.includes("--full");
 
 const checks = [
   ["split-parity  ", ["node", ["tools/split-parity.mjs"], ROOT]],
+  // Static, milliseconds, and it guards a class of bug that is invisible until
+  // it destroys a whole check: a single backslash in a probe template, which
+  // the template literal eats before the page ever sees it. See its header —
+  // one such escape took all seventy-one of highlight-check's cases with it.
+  ["probe-source  ", ["node", ["tools/probe-source-check.mjs"], ROOT]],
   ["scanner-audit ", ["node", ["tools/scanner-audit.mjs"], ROOT]],
   ["module-symbols", ["node", ["tools/module-symbols.mjs"], ROOT]],
   ["css-parity   ", ["node", ["tools/split-css.mjs", "--check"], ROOT]],
@@ -318,6 +323,10 @@ const checks = [
   // store appears that nobody has said belongs in a backup, or does not.
   ["backup        ", ["node", ["tools/backup-check.mjs"], ROOT]],
   ...(QUICK ? [] : [
+    // First of the browser checks, deliberately: every one below it reaches
+    // Chrome through tools/browser.mjs, so if that is broken this says so once
+    // rather than letting twenty checks fail for a reason none of them names.
+    ["browser       ", ["node", ["tools/browser-check.mjs"], ROOT]],
     ["boot-check    ", ["node", ["tools/boot-check.mjs", "--baseline", "pre-modular"], ROOT]],
     ["behaviour     ", ["node", ["tools/behaviour-parity.mjs"], ROOT]],
     ["sync          ", ["node", ["tools/sync-parity.mjs"], ROOT]],
@@ -369,6 +378,11 @@ const checks = [
     ["pdf-document  ", ["node", ["tools/pdf-preview-check.mjs"], ROOT]],
     ["epub-import   ", ["node", ["tools/epub-import-check.mjs"], ROOT]],
     ["offline       ", ["node", ["tools/offline-check.mjs"], ROOT]],
+    // Was in tools/ and in nothing's list: it drives the whole EPUB pipeline
+    // over a page, and it is the only check that exercises session persistence
+    // across a hanging refresh — the "is the login wall in my face or are my
+    // decks" question.
+    ["session       ", ["node", ["tools/session-persistence-check.mjs"], ROOT]],
     ...(FULL ? [["release-check ", ["node", ["tools/release-check.mjs"], ROOT]]] : [])
   ])
 ];
@@ -460,10 +474,13 @@ const TIMEOUT_MS = {
 const TALLY_PATTERNS = [
   // The canonical form, for checks written from here on.
   /^\s*CHECK:\s*(?<total>\d+)\s+(?:checks?|cases?|assertions?)\b[^\n]*?·\s*(?<failed>\d+)\s+failed/im,
-  // "N checks · … · M failed" / "N cases · … · M failed" / "N assertions · … · M failed"
-  /(?<total>\d+)\s+(?:checks?|cases?|assertions?|scale cases?)\b[^\n]*?·\s*(?<failed>\d+)\s+failed/i,
+  // The dialects already in use, which there is no value in retyping:
+  //   "184 paged cases · 0 failed"      one adjective before the noun
+  //   "150 probes · 0 differ · 0 threw" a different word for a failure
+  //   "26 interaction cases · 0 failed"
+  /(?<total>\d+)\s+(?:[a-z-]+\s+)?(?:checks?|cases?|assertions?|probes?|scenarios?|invariants?)\b[^\n]*?·\s*(?<failed>\d+)\s+(?:failed|differ|violated)/i,
   // "N baseline symbols · … · M problem(s)" and "N modules · … · M problem(s)"
-  /(?<total>\d+)\s+(?:symbols?|modules?|baseline symbols?)\b[^\n]*?·\s*(?<failed>\d+)\s+problem\(s\)/i
+  /(?<total>\d+)\s+(?:[a-z-]+\s+)?(?:symbols?|modules?)\b[^\n]*?·\s*(?<failed>\d+)\s+problem\(s\)/i
 ];
 
 // Read the tally out of the tail of the output. The tail, not the whole of it:

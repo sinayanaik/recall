@@ -397,6 +397,13 @@ const POST_SPLIT = {
     "resized before today. Keyed off the property rather than the class so it " +
     "fixes the widths already written into people's notes as well as the ones " +
     "written from now on.",
+  "55-code-copy-label.css":
+    "The code block's copy button draws its label from data-label with ::before, " +
+    "rather than carrying it as a text node — a text node there is selectable " +
+    "however much user-select: none it has, and turned up on the clipboard in " +
+    "the middle of any selection that crossed the block. Belongs beside " +
+    ".code-copy-btn in 06-rendered.css and cannot live there, for the reason " +
+    "this whole list exists. See tools/selection-check.mjs.",
   "54-stacking.css":
     "Where a control sits and what it sits above — and, more to the point, three " +
     "rules that had been written into frozen slices instead. .tool-button.file-pick " +

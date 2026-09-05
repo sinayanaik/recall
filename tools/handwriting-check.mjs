@@ -198,7 +198,10 @@ const watchdog = setTimeout(() => {
 }, WATCHDOG_MS);
 
 let failures = 0;
+// Every assertion reached, for the tally at the end. See tools/check.mjs.
+let ran = 0;
 function check(label, ok, detail = "") {
+  ran += 1;
   if (!ok) failures += 1;
   console.log(`  ${ok ? "ok  " : "FAIL"}  ${label}${detail ? `  ${detail}` : ""}`);
 }
@@ -2117,6 +2120,7 @@ try {
 
 if (failures) {
   console.log(`\nhandwriting-check: ${failures} failed`);
+  console.log(`CHECK: ${ran} checks · ${failures} failed`);
   process.exit(1);
 }
 console.log("\nhandwriting-check: the pen keeps writing through a pause, the lift does not blink, and a notebook keeps its pages");

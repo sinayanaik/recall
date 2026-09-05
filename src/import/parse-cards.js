@@ -8,7 +8,15 @@
 import { cardSideSeparatorPattern, delimitedCardBoundaryPattern } from "../core/constants.js?v=__BUILD__";
 
 export function normalizeMarkdown(text) {
-  return text.replace(/\r\n?/g, "\n").replace(/\u00a0/g, " ");
+  // String(), because this is the funnel. Twelve call sites in this file go
+  // through it and only three of them wrap their argument — extractNotesFromMarkdown,
+  // humanizeSourceTitle and sourceFileTitle — so the module already intended to
+  // tolerate a missing input and had the guard in three of the nine places that
+  // needed it. The other nine threw "Cannot read properties of undefined
+  // (reading 'replace')" straight out of an import, which is a stack trace
+  // where a deck should be. tools/import-check.mjs drives every exported entry
+  // point with undefined, null, 0 and false for exactly this.
+  return String(text ?? "").replace(/\r\n?/g, "\n").replace(/\u00a0/g, " ");
 }
 
 export function stripReaderMetadata(markdown) {
