@@ -23,6 +23,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "no
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { baselineTreeInto } from "./baseline.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 // The baseline is the TAG pre-modular, not a branch. It used to default to
@@ -325,7 +326,7 @@ let failures = 0;
 try {
   const baseDir = mkdtempSync(path.join(tmpdir(), "recall-rec-"));
   temps.push(baseDir);
-  execFileSync("bash", ["-c", `git archive ${BASE_REF} | tar -x -C ${baseDir}`], { cwd: ROOT });
+  baselineTreeInto(baseDir, BASE_REF);
   const NAMES = ["reconcileAllDecks", "initDeckStorage", "clearAllDeckSnapshots", "writeDeckSnapshot",
                  "readDeckSnapshot", "allDeckSnapshotIds", "writeLocalDeckIndex"];
   // The baseline's supabaseClient/isSignedIn are `let`s inside the script scope,

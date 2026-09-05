@@ -464,4 +464,8 @@ console.log(
   `${headingsSeen} headings over ${headingCases} shapes (${headingsInLists} in list items, out of scope) · ` +
   `${editCases} edits · ${editAccepted} patched locally · ${editBailed} re-planned · ${failures.length} failed`
 );
+// The line above is for a reader; this one is for tools/check.mjs. Every span
+// plan and every edit is an assertion, and the sum is what distinguishes a full
+// run from one that produced a corpus of nothing.
+console.log(`CHECK: ${planCases + editCases} checks · ${failures.length} failed`);
 process.exit(failures.length ? 1 : 0);

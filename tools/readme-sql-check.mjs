@@ -46,6 +46,10 @@ const embedded = readme.slice(bodyStart, end);
 
 if (embedded === sql) {
   console.log(`README's embedded SQL matches supabase_setup.sql (${sql.split("\n").length} lines)`);
+  // One assertion per line compared — the count is the point, not the 1: a run
+  // that found the block and compared 572 lines reads differently from one that
+  // never located the block at all.
+  console.log(`CHECK: ${sql.split("\n").length} checks · 0 failed`);
   process.exit(0);
 }
 
@@ -65,4 +69,5 @@ diffs.forEach((d) => {
   console.error(`    file:   ${d.file.slice(0, 100)}`);
 });
 console.error("  Fix by replacing the README's ```sql block with supabase_setup.sql verbatim.");
+console.log(`CHECK: ${Math.max(a.length, b.length)} checks · ${diffs.length} failed`);
 process.exit(1);

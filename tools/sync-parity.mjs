@@ -31,6 +31,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "no
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { baselineTreeInto } from "./baseline.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 // The baseline is the TAG pre-modular, not a branch. It used to default to
@@ -853,7 +854,7 @@ try {
   // Baseline: re-evaluate app.js inside a wrapper that hands the names back.
   const baseDir = mkdtempSync(path.join(tmpdir(), "recall-sync-"));
   temps.push(baseDir);
-  execFileSync("bash", ["-c", `git archive ${BASE_REF} | tar -x -C ${baseDir}`], { cwd: ROOT });
+  baselineTreeInto(baseDir, BASE_REF);
   const appJs = readFileSync(path.join(baseDir, "app.js"), "utf8");
   writeFileSync(path.join(baseDir, "probe.js"),
     `window.__recallApi = (function () {\n${appJs}\n;return { ${API.join(", ")} };\n})();\n`);

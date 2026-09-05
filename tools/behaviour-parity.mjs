@@ -23,6 +23,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "no
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { baselineTreeInto } from "./baseline.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
@@ -165,7 +166,7 @@ try {
   // only if it ran at top level. It did — that is what the restructure changed.
   const baseDir = mkdtempSync(path.join(tmpdir(), "recall-base-"));
   temps.push(baseDir);
-  execFileSync("bash", ["-c", `git archive ${BASE_REF} | tar -x -C ${baseDir}`], { cwd: ROOT });
+  baselineTreeInto(baseDir, BASE_REF);
   // app.js declares everything with `function`/`const` at top level of a classic
   // script, which lands on the global object for `function` but NOT for `const`.
   // Re-evaluate it inside a wrapper that hands the names back instead.

@@ -197,6 +197,41 @@
 //   release-check   (--full) does a release reach an existing install, and
 //                   does it work offline?
 
+//
+// ── What "ok" means, and what it used to mean ────────────────────────────────
+//
+// It used to mean exit code 0, and nothing else. That is not the same question
+// as "did this check verify anything", and for most of this list the two
+// answers disagreed. Twelve of the browser checks look for a globally installed
+// puppeteer at a path that exists on one laptop, do not find it, print
+// "… — skipping." and exit 0. The suite printed:
+//
+//     ok    ui-smoke      ui-smoke: no puppeteer/Chrome — skipping.
+//
+// with the word "ok" and the word "skipping" on the same line, and counted it
+// towards "All checks passed." Every end-to-end check in this file was in that
+// state: ui-smoke, selection, highlight, style, paged, ribbon, offline,
+// boot-check, behaviour, sync, reconcile, interaction. So was the check written
+// for the one failure this repo has shipped twice — offline.
+//
+// The same hole has a second mouth. tools/pdf-preview-check.mjs once called a
+// function it had never imported, and a third of the file died on a TypeError
+// (5ef409d). It exited 0. Thirty-odd assertions stopped running and the line
+// still read ok.
+//
+// So a check is no longer trusted to report itself with an exit code. Every one
+// of them must end with a RESULT LINE — a tally of what it actually asserted:
+//
+//     47 checks · 0 failed
+//
+// (`cases`/`assertions`/`problem(s)` are accepted too; several checks already
+// spoke one of those dialects and there is no value in retyping them.) The
+// runner below reads that line. No result line is a FAIL, whatever the exit
+// code says — because "printed no tally" is what BOTH failures above look like
+// from out here, and neither of them should ever have been green. A check with
+// nothing to say can say `0 checks · 0 failed`, and that fails too: a check
+// that asserts nothing is not passing, it is absent.
+//
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -352,33 +387,165 @@ const PORT_SYNC_EXPECTED_DRIFT = 2;
 // never go up again.
 const RENDER_SCALE_EXPECTED_FAILURES = 0;
 
-let failed = 0;
-for (const [label, [cmd, args, cwd]] of checks) {
-  const r = spawnSync(cmd, args, { cwd, encoding: "utf8" });
-  const out = (r.stdout || "") + (r.stderr || "");
-  let ok = r.status === 0;
-  let note = "";
+// A check that cannot run is not a check that passed. This is pinned at zero
+// for the same reason PORT_SYNC_EXPECTED_DRIFT is pinned at two: a number
+// somebody has to change deliberately, in a diff a reviewer can see, rather
+// than a silence nobody notices. If a check has to be skipped on some machine,
+// that is an argument for rewriting it so it cannot skip — which is what
+// tools/browser.mjs was written for, and what the pure-Node checks in the list
+// above already do.
+const SKIP_BUDGET = 0;
 
-  if (label.trim() === "port-sync") {
+// No check in this file has any business taking eight minutes. Two of them
+// carry their own watchdogs (pdf-preview, epub-import) precisely because this
+// did not exist: spawnSync with no timeout does not fail on a hung check, it
+// STOPS THE SUITE, with the cursor sitting under a line that has not printed
+// its verdict yet and no indication of which check is holding it.
+const DEFAULT_TIMEOUT_MS = 8 * 60 * 1000;
+const TIMEOUT_MS = {
+  // The two that drive a real browser through a real PDF, and the release cycle
+  // that installs two service workers, are given longer — they are slow on
+  // purpose, and a deadline tuned for the others would abort a passing run.
+  "pdf-document": 12 * 60 * 1000,
+  "handwriting": 12 * 60 * 1000,
+  "release-check": 12 * 60 * 1000,
+  "touch-select": 12 * 60 * 1000,
+  "interaction": 12 * 60 * 1000
+};
+
+// ── Reading a check's result line ────────────────────────────────────────────
+//
+// The dialects that already existed in this repo, unified. Two shapes:
+//
+//   "<n> checks · <m> failed"        backup, document-sync, ink, merged-notes,
+//                                    sync-reconcile, text-sanitize
+//   "<n> cases · … · <m> failed"     incremental, viewport, image-controls,
+//                                    toc-binding, render-scale
+//   "… <m> problem(s)"               module-symbols, precache, split-parity
+//
+// The count of ASSERTIONS is what makes this more than an exit code: it is the
+// number that goes to zero when a check dies half way through, and the number
+// that stays zero when a check decides it has nothing to run.
+const TALLY_PATTERNS = [
+  // The canonical form, for checks written from here on.
+  /^\s*CHECK:\s*(?<total>\d+)\s+(?:checks?|cases?|assertions?)\b[^\n]*?·\s*(?<failed>\d+)\s+failed/im,
+  // "N checks · … · M failed" / "N cases · … · M failed" / "N assertions · … · M failed"
+  /(?<total>\d+)\s+(?:checks?|cases?|assertions?|scale cases?)\b[^\n]*?·\s*(?<failed>\d+)\s+failed/i,
+  // "N baseline symbols · … · M problem(s)" and "N modules · … · M problem(s)"
+  /(?<total>\d+)\s+(?:symbols?|modules?|baseline symbols?)\b[^\n]*?·\s*(?<failed>\d+)\s+problem\(s\)/i
+];
+
+// Read the tally out of the tail of the output. The tail, not the whole of it:
+// several checks print per-case lines that contain the word "failed", and the
+// answer wanted here is the summary the check chose to end on.
+function readTally(out) {
+  const lines = out.split("\n").filter((l) => l.trim());
+  const tail = lines.slice(-6).join("\n");
+  for (const re of TALLY_PATTERNS) {
+    const m = tail.match(re);
+    if (m) return { total: Number(m.groups.total), failed: Number(m.groups.failed) };
+  }
+  return null;
+}
+
+const ONLY = (() => {
+  const i = process.argv.indexOf("--only");
+  return i !== -1 ? process.argv[i + 1] : null;
+})();
+
+if (process.argv.includes("--list")) {
+  for (const [label] of checks) console.log(label.trim());
+  process.exit(0);
+}
+
+const selected = ONLY ? checks.filter(([label]) => label.trim() === ONLY) : checks;
+if (ONLY && !selected.length) {
+  console.error(`No check named '${ONLY}'. Run with --list to see the names.`);
+  process.exit(2);
+}
+
+let failed = 0;
+let skipped = 0;
+const ledger = [];
+
+for (const [label, [cmd, args, cwd]] of selected) {
+  const name = label.trim();
+  const timeout = TIMEOUT_MS[name] || DEFAULT_TIMEOUT_MS;
+  const r = spawnSync(cmd, args, {
+    cwd,
+    encoding: "utf8",
+    timeout,
+    killSignal: "SIGKILL",
+    maxBuffer: 256 * 1024 * 1024
+  });
+  const out = (r.stdout || "") + (r.stderr || "");
+  const tally = readTally(out);
+
+  let state = "ok";
+  let note = out.trim().split("\n").filter(Boolean).pop() || "";
+
+  if (r.error && r.error.code === "ETIMEDOUT") {
+    // Previously this was the suite stopping dead. Now it is one red line with
+    // a name on it.
+    state = "FAIL";
+    note = `no verdict after ${Math.round(timeout / 1000)}s — killed (a hang, not a failure)`;
+  } else if (name === "port-sync") {
+    // port-sync exits 1 by design whenever anything has drifted, so its verdict
+    // is the NUMBER rather than the code. Keeping the -1 fallback matters: if
+    // the tool vanishes or crashes the regex misses, the drift reads -1, and
+    // this fails. That is the one place a disappearing check was ever caught.
     const drift = Number(out.match(/(\d+) drifted/)?.[1] ?? -1);
-    ok = drift === PORT_SYNC_EXPECTED_DRIFT;
-    note = ok ? `(${drift} known pre-existing drift)` : `expected ${PORT_SYNC_EXPECTED_DRIFT} drifted, got ${drift}`;
-  } else if (label.trim() === "render-scale") {
+    state = drift === PORT_SYNC_EXPECTED_DRIFT ? "ok" : "FAIL";
+    note = state === "ok"
+      ? `(${drift} known pre-existing drift)`
+      : `expected ${PORT_SYNC_EXPECTED_DRIFT} drifted, got ${drift}`;
+  } else if (name === "render-scale") {
     const failedCases = Number(out.match(/·\s*(\d+) failed/)?.[1] ?? -1);
-    ok = failedCases === RENDER_SCALE_EXPECTED_FAILURES;
-    note = ok
+    state = failedCases === RENDER_SCALE_EXPECTED_FAILURES ? "ok" : "FAIL";
+    note = state === "ok"
       ? `${out.trim().split("\n").filter(Boolean).pop()}${failedCases ? ` (${failedCases} known)` : ""}`
       : `expected ${RENDER_SCALE_EXPECTED_FAILURES} known failure(s), got ${failedCases}`;
-  } else {
-    note = out.trim().split("\n").filter(Boolean).pop() || "";
+  } else if (!tally) {
+    // The heart of it. No tally means the check did not get far enough to count
+    // anything — it skipped, it threw, or it was written without a result line.
+    // All three used to read as ok; none of them is.
+    const looksLikeSkip = /\bskipp?(?:ing|ed)\b/i.test(out.split("\n").slice(-4).join("\n"));
+    state = looksLikeSkip ? "SKIP" : "FAIL";
+    if (!looksLikeSkip) note = `no result line — ${note || "(no output)"}`;
+  } else if (tally.failed > 0) {
+    state = "FAIL";
+  } else if (tally.total === 0) {
+    state = "FAIL";
+    note = `ran, asserted nothing — ${note}`;
+  } else if (r.status !== 0) {
+    // A clean tally and a non-zero exit disagree; trust the exit code and say so.
+    state = "FAIL";
+    note = `exit ${r.status} despite a clean tally — ${note}`;
   }
 
-  console.log(`${ok ? "  ok  " : "  FAIL"}  ${label}  ${note}`);
-  if (!ok) {
-    failed++;
+  console.log(`  ${state === "ok" ? " ok " : state === "SKIP" ? "SKIP" : "FAIL"}  ${label}  ${note}`);
+  if (state === "FAIL") {
+    failed += 1;
     console.log(out.split("\n").map((l) => `        ${l}`).join("\n"));
+  }
+  if (state === "SKIP") {
+    skipped += 1;
+    ledger.push(`${name}: ${note}`);
   }
 }
 
-console.log(failed ? `\n${failed} check(s) failed.` : "\nAll checks passed.");
-process.exit(failed ? 1 : 0);
+if (skipped) {
+  console.log(`\n${skipped} check(s) SKIPPED — they ran nothing and asserted nothing:`);
+  for (const line of ledger) console.log(`  ${line}`);
+}
+
+const overBudget = skipped > SKIP_BUDGET;
+if (failed || overBudget) {
+  const parts = [];
+  if (failed) parts.push(`${failed} check(s) failed`);
+  if (overBudget) parts.push(`${skipped} skipped (budget ${SKIP_BUDGET})`);
+  console.log(`\n${parts.join(", ")}.`);
+} else {
+  console.log("\nAll checks passed.");
+}
+process.exit(failed || overBudget ? 1 : 0);

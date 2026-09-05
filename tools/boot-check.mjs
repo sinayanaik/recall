@@ -30,6 +30,7 @@ import { existsSync, mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { baselineTreeInto } from "./baseline.mjs";
 
 // State keys that are ALLOWED to differ from the baseline, and why. Keep this
 // short, like split-parity's ACCEPTED — every entry is a place where "boots the
@@ -195,7 +196,7 @@ try {
   if (baselineRef) {
     const dir = mkdtempSync(path.join(tmpdir(), "recall-baseline-"));
     temps.push(dir);
-    execFileSync("bash", ["-c", `git archive ${baselineRef} | tar -x -C ${dir}`], { cwd: ROOT });
+    baselineTreeInto(dir, baselineRef);
     const s1 = await serveOn(dir);
     servers.push(s1.proc);
     baseline = `${s1.base}/index.html`;
