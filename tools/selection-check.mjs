@@ -30,26 +30,24 @@
 //     are outside the shape and belong to the note behind it. Pressing one is
 //     a press on the note, and the selection is supposed to go away.
 
-import { createRequire } from "node:module";
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { findChrome, launch } from "./browser.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SHOT = process.argv.includes("--shot");
-const CHROME = [
-  "/usr/bin/google-chrome-stable", "/usr/bin/google-chrome",
-  "/usr/bin/chromium-browser", "/usr/bin/chromium", "/snap/bin/chromium",
-].find(existsSync);
-function loadPuppeteer() {
-  for (const base of [ROOT, "/home/san/.nvm/versions/node/v22.19.0/lib/node_modules/@mermaid-js/mermaid-cli/"]) {
-    try { return createRequire(path.join(base, "x.js"))("puppeteer"); } catch (_) { /* next */ }
-  }
-  return null;
+// Chrome comes from tools/browser.mjs, which drives it over the DevTools
+// protocol rather than through puppeteer — see that file for why.
+const CHROME = findChrome();
+if (!CHROME) {
+  // Not a skip: a check that cannot run has not passed. tools/check.mjs counts
+  // this as a failure and names it.
+  console.error("selection-check: no Chrome. Set CHROME_PATH — see tools/cdp.mjs.");
+  console.log("CHECK: 1 checks · 1 failed");
+  process.exit(1);
 }
-const puppeteer = loadPuppeteer();
-if (!puppeteer || !CHROME) { console.log("selection-check: no puppeteer/Chrome — skipping."); process.exit(0); }
 
 const VENDORED = [
   "recall-clipper/vendor/marked.min.js",
@@ -143,7 +141,7 @@ const READ_SELECTION = () => {
 
 const server = await serveOn(ROOT);
 await new Promise((r) => setTimeout(r, 900));
-const browser = await puppeteer.launch({ headless: "new", executablePath: CHROME, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
+const browser = await launch({ headless: "new", executablePath: CHROME, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
 const failures = [];
 // Counted, not written down. The summary line used to carry a literal "7", so
 // adding a case left it reporting the old number — a check whose own tally can
@@ -156,7 +154,12 @@ try {
   page.on("request", (r) => (r.url().includes("cdn.jsdelivr.net") ? r.abort() : r.continue()));
   for (const lib of VENDORED) if (existsSync(lib)) await page.evaluateOnNewDocument(readFileSync(lib, "utf8"));
   await page.goto(`${server.base}/index.html`, { waitUntil: "domcontentloaded", timeout: 90000 });
-  await page.waitForFunction(() => !document.documentElement.classList.contains("app-booting"), { timeout: 30000 }).catch(() => {});
+  // No .catch() here. A page that never boots is the loudest failure this
+  // check can find, and swallowing the rejection turned it into the quietest:
+  // the next line asks whether marked and DOMPurify are present, a dead page
+  // has neither, and the answer was "skipped" rather than "the app did not
+  // start".
+  await page.waitForFunction(() => !document.documentElement.classList.contains("app-booting"), { timeout: 30000 });
 
   await page.evaluate(async (apiSrc, fakeSrc, note) => {
     // Keep showing the app screen until it stops being taken away. Returns once

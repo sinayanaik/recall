@@ -20,17 +20,17 @@
 // is "is this the same as before the change", and that is a diff. --baseline
 // checks out a git ref into a temp dir, boots that too, and compares.
 //
-// Needs a Chrome and a puppeteer. It looks for puppeteer in the usual global
-// spots; if there is none, it says so and exits 0 rather than failing a run that
-// is otherwise fine.
+// Needs a Chrome, found by tools/browser.mjs. It used to also need a puppeteer
+// installed globally, and looked for it under one developer's nvm directory —
+// so on every other machine it printed "skipping." and exited 0.
 
-import { createRequire } from "node:module";
 import { spawn, execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { baselineTreeInto } from "./baseline.mjs";
+import { findChrome, launch } from "./browser.mjs";
 
 // State keys that are ALLOWED to differ from the baseline, and why. Keep this
 // short, like split-parity's ACCEPTED — every entry is a place where "boots the
@@ -57,28 +57,20 @@ const baselineIdx = args.indexOf("--baseline");
 const baselineRef = baselineIdx !== -1 ? args[baselineIdx + 1] : null;
 const explicitUrl = args.find((a) => a.startsWith("http"));
 
-const CHROME = [
-  "/usr/bin/google-chrome-stable", "/usr/bin/google-chrome",
-  "/usr/bin/chromium-browser", "/usr/bin/chromium", "/snap/bin/chromium"
-].find(existsSync);
+// Chrome comes from tools/browser.mjs, which drives it over the DevTools
+// protocol rather than through puppeteer. This used to be a hard-coded list of
+// five /usr/bin paths plus a puppeteer under one person's nvm directory, and on
+// any machine that matched neither — every container, every CI runner — the
+// guard below printed "skipping." and exited 0, which the suite scored as a
+// pass. See tools/browser.mjs for the whole story.
+const CHROME = findChrome();
 
-function loadPuppeteer() {
-  const candidates = [
-    ROOT,
-    "/home/san/.nvm/versions/node/v22.19.0/lib/node_modules/@mermaid-js/mermaid-cli/",
-    "/usr/lib/node_modules/@mermaid-js/mermaid-cli/"
-  ];
-  for (const base of candidates) {
-    try { return createRequire(path.join(base, "x.js"))("puppeteer"); } catch (_) { /* next */ }
-  }
-  return null;
-}
-
-const puppeteer = loadPuppeteer();
-if (!puppeteer || !CHROME) {
-  console.log("boot-check: no puppeteer and/or Chrome found — skipping.");
-  console.log("            (npm i -D puppeteer, or install Chrome, to enable it)");
-  process.exit(0);
+if (!CHROME) {
+  // Not a skip: a check that cannot run has not passed. tools/check.mjs counts
+  // this as a failure and names it.
+  console.error("boot-check: no Chrome. Set CHROME_PATH — see tools/cdp.mjs.");
+  console.log("CHECK: 1 checks · 1 failed");
+  process.exit(1);
 }
 
 // A tiny static server on a FREE port, so this works with no dev server running
@@ -105,7 +97,7 @@ const VENDORED = [
 ];
 
 async function boot(url) {
-  const browser = await puppeteer.launch({
+  const browser = await launch({
     headless: "new",
     executablePath: CHROME,
     args: ["--no-sandbox", "--disable-dev-shm-usage"]

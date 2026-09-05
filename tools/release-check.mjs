@@ -25,7 +25,6 @@
 // The app skips worker registration on localhost and 127.0.0.1, so this serves
 // under a hostname that is neither and tells Chrome to treat it as secure.
 
-import { createRequire } from "node:module";
 import { spawn, execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, readFileSync, writeFileSync, readdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -41,18 +40,20 @@ const HOST = "recall.test";
 let PORT = 0;
 let ORIGIN = "";
 
-const CHROME = [
-  "/usr/bin/google-chrome-stable", "/usr/bin/google-chrome",
-  "/usr/bin/chromium-browser", "/usr/bin/chromium", "/snap/bin/chromium"
-].find(existsSync);
-function loadPuppeteer() {
-  for (const base of [ROOT, "/home/san/.nvm/versions/node/v22.19.0/lib/node_modules/@mermaid-js/mermaid-cli/"]) {
-    try { return createRequire(path.join(base, "x.js"))("puppeteer"); } catch (_) { /* next */ }
-  }
-  return null;
+// Chrome comes from tools/browser.mjs, which drives it over the DevTools
+// protocol rather than through puppeteer. This used to be a hard-coded list of
+// five /usr/bin paths plus a puppeteer under one person's nvm directory, and on
+// any machine that matched neither — every container, every CI runner — the
+// guard below printed "skipping." and exited 0, which the suite scored as a
+// pass. See tools/browser.mjs for the whole story.
+const CHROME = findChrome();
+if (!CHROME) {
+  // Not a skip: a check that cannot run has not passed. tools/check.mjs counts
+  // this as a failure and names it.
+  console.error("release-check: no Chrome. Set CHROME_PATH — see tools/cdp.mjs.");
+  console.log("CHECK: 1 checks · 1 failed");
+  process.exit(1);
 }
-const puppeteer = loadPuppeteer();
-if (!puppeteer || !CHROME) { console.log("release-check: no puppeteer/Chrome — skipping."); process.exit(0); }
 
 function walk(dir, out = []) {
   for (const e of readdirSync(dir)) {
@@ -99,6 +100,7 @@ writeFileSync(serverJs, `
 import http from "node:http";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { findChrome, launch } from "./browser.mjs";
 let root = process.argv[2];
 const TYPES = { ".html":"text/html", ".js":"text/javascript", ".css":"text/css",
                 ".json":"application/json", ".png":"image/png", ".webmanifest":"application/manifest+json" };
@@ -130,7 +132,7 @@ const say = (ok, msg) => { console.log(`  ${ok ? "ok  " : "FAIL"}  ${msg}`); ret
 let failures = 0;
 const check = (ok, msg) => { if (!say(ok, msg)) failures++; };
 
-const browser = await puppeteer.launch({
+const browser = await launch({
   headless: "new",
   executablePath: CHROME,
   args: [

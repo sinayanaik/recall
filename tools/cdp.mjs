@@ -52,8 +52,14 @@ export function findChrome() {
 // --remote-debugging-port=0 asks the OS for a free port, so this line is the
 // only way to learn it — there is no fixed port to guess at and no race with a
 // second Chrome on the same machine.
-export function launchChrome(chromePath, extraArgs = []) {
-  const userDataDir = mkdtempSync(path.join(tmpdir(), "recall-cdp-"));
+// `profile` names a profile directory to REUSE rather than a fresh temporary
+// one — which is what the release and offline checks need, because the thing
+// they are asking about is what a second launch finds on disk (an installed
+// service worker, a filled cache). A reused profile is the caller's to delete;
+// only a temporary one is swept by close().
+export function launchChrome(chromePath, extraArgs = [], { profile, windowSize = "390,844" } = {}) {
+  const userDataDir = profile || mkdtempSync(path.join(tmpdir(), "recall-cdp-"));
+  const ownsProfile = !profile;
   const proc = spawn(chromePath, [
     "--headless=new",
     "--remote-debugging-port=0",
@@ -66,7 +72,7 @@ export function launchChrome(chromePath, extraArgs = []) {
     "--disable-background-timer-throttling",
     "--disable-renderer-backgrounding",
     "--disable-backgrounding-occluded-windows",
-    "--window-size=390,844",
+    `--window-size=${windowSize}`,
     ...extraArgs
   ], { stdio: ["ignore", "ignore", "pipe"] });
 
@@ -81,9 +87,12 @@ export function launchChrome(chromePath, extraArgs = []) {
       resolve({
         proc,
         wsUrl: match[1],
+        userDataDir,
         close() {
           try { proc.kill("SIGKILL"); } catch (_) { /* already gone */ }
-          try { rmSync(userDataDir, { recursive: true, force: true }); } catch (_) { /* best effort */ }
+          if (ownsProfile) {
+            try { rmSync(userDataDir, { recursive: true, force: true }); } catch (_) { /* best effort */ }
+          }
         }
       });
     };

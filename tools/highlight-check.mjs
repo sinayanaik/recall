@@ -17,27 +17,29 @@
 // Run in a real browser, not node: these modules reach the DOM (textWithLineBreaks
 // walks rendered nodes, and the module graph pulls in core/dom.js on the way).
 
-import { createRequire } from "node:module";
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { findChrome, launch } from "./browser.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-const CHROME = [
-  "/usr/bin/google-chrome-stable", "/usr/bin/google-chrome",
-  "/usr/bin/chromium-browser", "/usr/bin/chromium", "/snap/bin/chromium"
-].find(existsSync);
+// Chrome comes from tools/browser.mjs, which drives it over the DevTools
+// protocol rather than through puppeteer. This used to be a hard-coded list of
+// five /usr/bin paths plus a puppeteer under one person's nvm directory, and on
+// any machine that matched neither — every container, every CI runner — the
+// guard below printed "skipping." and exited 0, which the suite scored as a
+// pass. See tools/browser.mjs for the whole story.
+const CHROME = findChrome();
 
-function loadPuppeteer() {
-  for (const base of [ROOT, "/home/san/.nvm/versions/node/v22.19.0/lib/node_modules/@mermaid-js/mermaid-cli/"]) {
-    try { return createRequire(path.join(base, "x.js"))("puppeteer"); } catch (_) { /* next */ }
-  }
-  return null;
+if (!CHROME) {
+  // Not a skip: a check that cannot run has not passed. tools/check.mjs counts
+  // this as a failure and names it.
+  console.error("highlight-check: no Chrome. Set CHROME_PATH — see tools/cdp.mjs.");
+  console.log("CHECK: 1 checks · 1 failed");
+  process.exit(1);
 }
-const puppeteer = loadPuppeteer();
-if (!puppeteer || !CHROME) { console.log("highlight-check: no puppeteer/Chrome — skipping."); process.exit(0); }
 
 // Same free-port server the other browser checks use: a fixed port left behind
 // by an interrupted run answers from a different tree.
@@ -277,7 +279,10 @@ const PROBE = `(api) => {
     }
     // ...and it is the FIRST such offset that is not already accounted for —
     // i.e. the ordinal the annotate path computes is the mark just made.
-    const opens = added.text.match(/<mark\b[^>]*>/g) || [];
+    // \\b, not \b: this whole probe is a template literal, so a single backslash
+    // here is a BACKSPACE character and the regex matches nothing. It returned
+    // 0 marks for a text that plainly had one.
+    const opens = added.text.match(/<mark\\b[^>]*>/g) || [];
     if (opens.length !== 1) return "expected one mark, got " + opens.length;
     return true;
   });
@@ -355,9 +360,16 @@ const PROBE = `(api) => {
   // them up on the punctuation would be editing them. Same toggle contract
   // though — press it twice and the text has to come back byte for byte, which
   // is what the round-trip cases below are for.
+  // NOTE the doubled backslashes in the six cases below. This whole probe is a
+  // template literal, so a single \\n here becomes a REAL newline in the probe
+  // SOURCE — which lands inside a string literal and makes the entire 57KB
+  // probe unparseable ("SyntaxError: Invalid or unexpected token", raised by
+  // the page's own eval, naming no line). These cases were written that way and
+  // took the other seventy with them; nobody saw it because this check had not
+  // run on any machine but one for months.
   check("quoting a passage prefixes every line", () => {
-    const out = api.toggleBlockquote("first line\nsecond line");
-    if (out !== "> first line\n> second line") return JSON.stringify(out);
+    const out = api.toggleBlockquote("first line\\nsecond line");
+    if (out !== "> first line\\n> second line") return JSON.stringify(out);
     return true;
   });
 
@@ -365,8 +377,8 @@ const PROBE = `(api) => {
     // A bare blank line ENDS a blockquote — everything after it reads as a new
     // paragraph outside the quote. Quoting the blank as ">" is what keeps a
     // two-paragraph passage one quotation.
-    const out = api.toggleBlockquote("one\n\ntwo");
-    if (out !== "> one\n>\n> two") return JSON.stringify(out);
+    const out = api.toggleBlockquote("one\\n\\ntwo");
+    if (out !== "> one\\n>\\n> two") return JSON.stringify(out);
     return true;
   });
 
@@ -377,19 +389,19 @@ const PROBE = `(api) => {
   });
 
   check("...and toggles an existing quote back off", () => {
-    const out = api.toggleBlockquote("> already\n> quoted");
-    if (out !== "already\nquoted") return JSON.stringify(out);
+    const out = api.toggleBlockquote("> already\\n> quoted");
+    if (out !== "already\\nquoted") return JSON.stringify(out);
     return true;
   });
 
   check("...counting a nested quote as quoted, so it unwraps one level", () => {
-    const out = api.toggleBlockquote(">> deep\n>> quote");
-    if (out !== "> deep\n> quote") return JSON.stringify(out);
+    const out = api.toggleBlockquote(">> deep\\n>> quote");
+    if (out !== "> deep\\n> quote") return JSON.stringify(out);
     return true;
   });
 
   check("quoting a passage twice gives it back unchanged", () => {
-    const shapes = ["one line only", "a\nb", "one\n\ntwo", "- a bullet\n- and another"];
+    const shapes = ["one line only", "a\\nb", "one\\n\\ntwo", "- a bullet\\n- and another"];
     for (const shape of shapes) {
       const back = api.toggleBlockquote(api.toggleBlockquote(shape));
       if (back !== shape) return JSON.stringify(shape) + " came back as " + JSON.stringify(back);
@@ -408,7 +420,7 @@ const PROBE = `(api) => {
     const end = start + "The quoted part.".length;
     const result = api.blockquoteFormat(source, start, end);
     const spliced = source.slice(0, result.rangeStart) + result.text + source.slice(result.rangeEnd);
-    if (spliced !== "Before it.\n\n> The quoted part.\n\nAfter it.") return JSON.stringify(spliced);
+    if (spliced !== "Before it.\\n\\n> The quoted part.\\n\\nAfter it.") return JSON.stringify(spliced);
     return true;
   });
 
@@ -511,9 +523,16 @@ const PROBE = `(api) => {
   check("a note is written as readable markdown at the end of the note", () => {
     const src = "Body with a <mark data-note=\\"hn-aaaa\\">highlight</mark> in it.";
     const out = api.setHighlightNoteInSource(src, "hn-aaaa", "Remember **this**.", "“highlight”");
-    if (out.indexOf("## Highlight Notes") === -1) return "no section written: " + JSON.stringify(out);
-    if (out.indexOf("### [hn-aaaa] “highlight”") === -1) return "no readable entry heading: " + JSON.stringify(out);
-    if (out.indexOf("Remember **this**.") === -1) return "the note text is not in the section";
+    // The block's own markers, taken from src/format/notes-fence.js rather than
+    // typed here, so a change to the format fails at the definition rather than
+    // silently passing a stale literal.
+    if (out.indexOf(api.HIGHLIGHT_NOTES_OPEN) === -1) return "no notes block written: " + JSON.stringify(out);
+    if (out.indexOf(api.HIGHLIGHT_NOTES_CLOSE) === -1) return "the notes block is never closed: " + JSON.stringify(out);
+    // The entry still names the id AND the words it was written on, which is
+    // what makes the block hand-editable — the id alone would be a lookup table.
+    if (out.indexOf("hn-aaaa") === -1) return "the entry does not name its id: " + JSON.stringify(out);
+    if (out.indexOf("“highlight”") === -1) return "the entry does not quote the highlighted words: " + JSON.stringify(out);
+    if (out.indexOf("Remember **this**.") === -1) return "the note text is not in the block";
     if (/data-note="[A-Za-z0-9+/]{16,}"/.test(out)) return "a base64 blob is still inline";
     return true;
   });
@@ -548,7 +567,10 @@ const PROBE = `(api) => {
     let src = api.setHighlightNoteInSource("body text", "hn-ffff", "only note", "“x”");
     src = api.setHighlightNoteInSource(src, "hn-ffff", "", null);
     if (src.indexOf("Highlight Notes") !== -1) return "an empty section was left behind: " + JSON.stringify(src);
-    if (/-{3,}\s*$/.test(src)) return "the separator rule was left behind: " + JSON.stringify(src);
+    // \\s, not \s — same reason as the \\b above. A template literal drops the
+    // backslash from an unrecognised escape, so this read /-{3,}s*$/ and would
+    // only ever have matched a rule followed by literal letter s.
+    if (/-{3,}\\s*$/.test(src)) return "the separator rule was left behind: " + JSON.stringify(src);
     return true;
   });
 
@@ -1141,6 +1163,11 @@ const API_SRC = `async () => {
     import("/src/panels/highlights-editor.js?v=__BUILD__"),
     import("/src/format/highlight-edit.js?v=__BUILD__"),
     import("/src/format/highlight-notes.js?v=__BUILD__"),
+    // For HIGHLIGHT_NOTES_OPEN / _CLOSE, so the block's markers are asserted
+    // from their definition rather than retyped as literals here. The literal
+    // this replaced ("## Highlight Notes") was the pre-fence form and had been
+    // wrong since the storage changed.
+    import("/src/format/notes-fence.js?v=__BUILD__"),
     import("/src/notes/chapters.js?v=__BUILD__"),
     import("/src/render/preprocess.js?v=__BUILD__"),
     import("/src/render/block-cache.js?v=__BUILD__"),
@@ -1163,7 +1190,7 @@ try {
   servers.push(server.proc);
   await new Promise((r) => setTimeout(r, 800));
 
-  const browser = await puppeteer.launch({
+  const browser = await launch({
     headless: "new", executablePath: CHROME, args: ["--no-sandbox", "--disable-dev-shm-usage"]
   });
   let results;
@@ -1186,8 +1213,12 @@ try {
       if (existsSync(full)) await page.evaluateOnNewDocument(readFileSync(full, "utf8"));
     }
     await page.goto(`${server.base}/index.html`, { waitUntil: "domcontentloaded", timeout: 90000 });
-    await page.waitForFunction(() => !document.documentElement.classList.contains("app-booting"), { timeout: 30000 })
-      .catch(() => {});
+    // No .catch() here. A page that never boots is the loudest failure this
+    // check can find, and swallowing the rejection turned it into the quietest:
+    // the next line asks whether marked and DOMPurify are present, a dead page
+    // has neither, and the answer was "skipped" rather than "the app did not
+    // start".
+    await page.waitForFunction(() => !document.documentElement.classList.contains("app-booting"), { timeout: 30000 });
     if (!(await page.evaluate(() => Boolean(window.marked && window.DOMPurify)))) {
       throw new Error("marked/DOMPurify never loaded — the chapter cases would fail for the wrong reason");
     }
