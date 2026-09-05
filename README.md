@@ -1043,7 +1043,7 @@ face selects nothing, cause not isolated) and `PORT_SYNC_EXPECTED_DRIFT` (two
 pre-existing clipper drifts). A pinned number has to be changed deliberately,
 in a diff a reviewer can see.
 
-45 checks, each answering a different question, and none of them
+49 checks, each answering a different question, and none of them
 subsuming another:
 
 | Check | Question |
@@ -1052,6 +1052,9 @@ subsuming another:
 | `probe-source` | Do the probes these checks send into a page still say what they were written to say? Half of them are template literals, and a template literal EATS `\n`, `\b` and `\s` — one such escape once made a 57KB probe unparseable and silently took all seventy-one of `highlight-check`'s cases with it |
 | `browser` | Does `tools/browser.mjs` — the DevTools-protocol browser every check below reaches Chrome through — actually drive one? Twenty-six assertions over every wrapped method, each written so a stub returning `undefined` fails |
 | `import` | What does the app make of the text you give it? `parse-cards.js`, `mathml-to-tex.js` and `code-language.js`, driven in plain Node against `tools/adversarial-corpus.mjs` — the list of inputs this app has actually been broken by, from a NUL between every letter of a title to a fence marker inside a sentence |
+| `export` | ...and the same question backwards: export a deck, import the file back, is it the same deck? A card may contain a standalone `---`, which is also the separator the format puts between its two sides, so the escape and the unescape live in different modules and nothing compared them. Also the zip, read back through the app's own reader |
+| `theme` | Do the ten themes and the fifty-one style settings still agree with each other? Every theme defines every colour its siblings do, every setting has a default that is in range and appears in exactly one Style panel group, no two settings write the same CSS variable, and `isDarkThemeActive` answers correctly for every theme, both aliases, an unknown theme and no document at all |
+| `library` | A folder IS a deck's category — a `/`-delimited path — so every folder operation is string arithmetic in one leaf module. Every spelling normalises the same way, a rename moves everything nested under it and nothing that merely shares a prefix, and "Mathematics" is not inside "Math" |
 | `scanner-audit` | Does the identifier scanner the next check relies on actually *see* every reference? |
 | `module-symbols` | Does every cross-module reference resolve — imported, exported, not assigned, no dead-zone read across a cycle? |
 | `css-parity` | Do `styles/*.css` still reassemble to the original stylesheet byte for byte? |
