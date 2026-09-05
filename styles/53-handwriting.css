@@ -444,6 +444,114 @@
   user-select: none;
 }
 
+/* ── ...and the frame is the picture, not a window with a picture in it ────
+
+   "There's a lot of buffer around the image — I don't want this extra spacing,
+   only image and no padding." Three things were making that buffer, and the
+   third is the one nobody would guess:
+
+     • the drag bar was a flex ROW ABOVE the picture, so the body it had to fit
+       in was the block's height minus a bar — while the block's width was still
+       the one sized to the picture's own ratio. `object-fit: contain` then did
+       exactly what it is for and letterboxed the difference, in the block's card
+       background, on both sides;
+     • the block drew a card around it — an accent border, a 7px radius, a
+       background and a drop shadow — which is the right frame for a paragraph of
+       type dropped on somebody's paper and the wrong one for a photograph;
+     • `.rendered img` was winning outright over `.pdf-block-img`. That one is
+       fixed where it was caused, in buildBlock (src/documents/pdf-blocks.js) —
+       a picture block's body is not rendered markdown and no longer says it is.
+
+   So on a picture the bar LEAVES THE FLOW: it floats in the corner, over the
+   picture, and only while the reader is at it. What is left is the picture, at
+   the size the reader dragged it to, with nothing around it. */
+[data-pdf-block-kind="image"] {
+  border-color: transparent;
+  background: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/* Something has to say where the edge is while you are reaching for it, or a
+   picture on white paper has no grip and no delete button you can find. Shown
+   for the same three states the bar is, and no heavier than the outline a text
+   block carries all the time. */
+[data-pdf-block-kind="image"]:hover,
+[data-pdf-block-kind="image"]:focus-within,
+[data-pdf-block-kind="image"].is-editing {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+}
+
+[data-pdf-block-kind="image"] .pdf-block-bar {
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 1;
+  /* Not `transparent`: the two buttons sit on whatever the photograph happens to
+     be under them, and a white glyph on a white sky is no button at all. */
+  background: color-mix(in srgb, var(--panel) 82%, transparent);
+  border-bottom-left-radius: 6px;
+  opacity: 0;
+  /* Invisible AND out of the way. Opacity alone leaves a delete button nobody
+     can see still taking presses over the corner of the photograph. */
+  pointer-events: none;
+  transition: opacity 0.12s linear;
+}
+
+[data-pdf-block-kind="image"]:hover .pdf-block-bar,
+[data-pdf-block-kind="image"]:focus-within .pdf-block-bar,
+[data-pdf-block-kind="image"].is-editing .pdf-block-bar {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* A finger has no hover, so on a touch device the bar would be a control that
+   can only be revealed by pressing the thing it is meant to sit out of the way
+   of. It stays up there — quietly, at the opacity a resting control gets. */
+@media (pointer: coarse) {
+  [data-pdf-block-kind="image"] .pdf-block-bar {
+    opacity: 0.7;
+    pointer-events: auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-pdf-block-kind="image"] .pdf-block-bar {
+    transition: none;
+  }
+}
+
+/* ── A picture inside a TEXT block ────────────────────────────────────────
+
+   The other half of the same report, and a different mechanism. A `![](…)` in a
+   block's markdown goes through the app's ordinary render, which wraps every
+   <img> in a .diagram-shell for the zoom affordance — a border, a background and
+   `padding: 10px` (styles/06-rendered.css) — inside a block whose whole default
+   size is 240x90 POINTS. Ten pixels of shell padding plus a 1rem margin above
+   and below is most of the block.
+
+   Both rules are needed, and the second needs `!important`, for the reason
+   styles/27-highlight-notes.css and styles/44-highlights-editor.css each write
+   out where they do the same thing: `.diagram-shell img` sets width and
+   max-width with `!important` of its own, and only a more specific `!important`
+   beats it. */
+.pdf-block-body .diagram-shell {
+  border: 0;
+  background: none;
+  padding: 0;
+  border-radius: 0;
+}
+
+.pdf-block-body img {
+  margin: 0 auto;
+}
+
+.pdf-block-body .diagram-shell img {
+  width: 100% !important;
+  max-width: 100% !important;
+  margin: 0 !important;
+}
+
 /* ── The editor over the page ──────────────────────────────────────────────
 
    A block was edited in a bare <textarea> the size of the block, and .pdf-block-edit

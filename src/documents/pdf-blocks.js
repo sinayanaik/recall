@@ -249,7 +249,27 @@ function buildBlock(block) {
   bar.append(edit, remove);
 
   const body = document.createElement("div");
-  body.className = "pdf-block-body rendered";
+  // ── `rendered` on a PICTURE was costing the picture most of its own frame ──
+  //
+  // Both kinds of block used to carry it. On a text block it is right and load-
+  // bearing: the body holds markdown put through the same pipeline as a note, and
+  // every rule that styles that output is written against `.rendered`. On a
+  // picture block there is no markdown — paintBlock puts a bare <img class=
+  // "pdf-block-img"> in here — and the class dragged in `.rendered img`
+  // (styles/06-rendered.css), which at one class plus one type OUTRANKS a single
+  // class and so beat .pdf-block-img on four properties at once:
+  //
+  //   height: auto                    …killed the height: 100% that fills the frame
+  //   margin: 1rem auto               …the literal gap that was reported
+  //   border-radius                   …rounded a picture meant to fill its box
+  //   max-width: var(--visual-max-width)  …a Style setting for the notes reading
+  //                                       column, 50% on desktop — so the picture
+  //                                       was capped at HALF the block sized to its
+  //                                       own aspect ratio, and the rest was buffer
+  //
+  // The block is sized from the image's own ratio when it is dropped
+  // (addDocumentImageBlock), so with the class gone the picture fills it exactly.
+  body.className = isImage ? "pdf-block-body" : "pdf-block-body rendered";
 
   const grip = document.createElement("span");
   grip.className = "pdf-block-grip";
