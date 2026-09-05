@@ -435,6 +435,14 @@
   color: #fdba74;
 }
 
+/* The label is generated content, from data-label, and not a text node — see
+   the comment in src/render/enhance.js. A text node here is selectable however
+   much user-select: none it carries, so a drag across the block used to put
+   "JS" on the clipboard between the prose and the code. */
+.rendered pre .code-copy-btn::before {
+  content: attr(data-label);
+}
+
 .rendered pre .code-copy-btn {
   position: absolute;
   z-index: 2;

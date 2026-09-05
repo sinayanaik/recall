@@ -271,6 +271,13 @@ function serveOn(dir) {
   });
 }
 
+// The libraries both pages need before their own scripts run. The clipper
+// vendors them, so this needs no network.
+const VENDORED = [
+  path.join(ROOT, "recall-clipper/vendor/marked.min.js"),
+  path.join(ROOT, "recall-clipper/vendor/purify.min.js")
+];
+
 async function runAll(url, apiSrc) {
   const browser = await launch({ headless: "new", executablePath: CHROME, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
   const results = {};
@@ -282,6 +289,16 @@ async function runAll(url, apiSrc) {
       const page = await browser.newPage();
       page.on("pageerror", (e) => errors.push(scenario.name + ": " + e.message));
       page.on("dialog", (d) => d.dismiss().catch(() => {}));
+      // BEFORE the navigation. The baseline page is pre-modular:app.js wrapped
+      // as a classic script and it reaches for `marked` while it runs, so
+      // without this it died on a ReferenceError, window.__recallApi was never
+      // assigned, and every scenario came back as "TypeError: Cannot read
+      // properties of undefined (reading 'initDeckStorage')" — five reported
+      // parity failures, none of them about reconciliation.
+      for (const lib of VENDORED) {
+        if (!existsSync(lib)) continue;
+        await page.evaluateOnNewDocument(readFileSync(lib, "utf8"));
+      }
       await page.goto(url, { waitUntil: "domcontentloaded", timeout: 90000 });
       await new Promise((r) => setTimeout(r, 700));
       try {
@@ -363,7 +380,8 @@ try {
 
   // Outcome assertions — true whatever the backend does.
   console.log("\n── outcomes (current code) ──");
-  const outcome = (ok, msg) => { console.log(`  ${ok ? "ok  " : "FAIL"}  ${msg}`); if (!ok) failures++; };
+  let asserted = 0;
+  const outcome = (ok, msg) => { asserted++; console.log(`  ${ok ? "ok  " : "FAIL"}  ${msg}`); if (!ok) failures++; };
   const r = after.results;
   outcome(r["cloud-only deck is pulled down"]?.local?.length === 1,
     "a cloud-only deck arrives on the device");
@@ -383,6 +401,9 @@ try {
 
   if (after.errors.length) console.log(`\n  page errors: ${after.errors.slice(0, 4).join(" | ")}`);
   console.log(failures ? `\n${failures} reconcile problem(s).` : "\nreconcileAllDecks verified: identical on both builds, and no path loses data.");
+  // The tally tools/check.mjs reads: every scenario compared against the
+  // baseline, plus every outcome asserted about the current code.
+  console.log(`CHECK: ${Object.keys(after.results).length + asserted} checks · ${failures} failed`);
 } finally {
   for (const s of servers) s.kill();
   for (const d of temps) rmSync(d, { recursive: true, force: true });

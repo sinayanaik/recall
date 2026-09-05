@@ -259,7 +259,19 @@ try {
     blocks: document.querySelector("#notesView")?.children.length || 0,
     view: document.querySelector("#notesView")?.getBoundingClientRect().toJSON(),
     head: document.querySelector(".notes-head")?.getBoundingClientRect().toJSON(),
-    copyLabel: document.querySelector("#notesView .code-copy-btn")?.textContent || "",
+    // The label the reader SEES. It is generated content now (::before, from
+    // data-label) precisely so that it is not a text node a selection can pick
+    // up — so read it from the attribute, and separately from the painted
+    // pseudo-element, because "not selectable" must not have been achieved by
+    // making it invisible.
+    copyLabel: document.querySelector("#notesView .code-copy-btn")?.dataset.label || "",
+    copyLabelPainted: (() => {
+      const btn = document.querySelector("#notesView .code-copy-btn");
+      if (!btn) return "";
+      const content = getComputedStyle(btn, "::before").getPropertyValue("content");
+      return content && content !== "none" ? content.replace(/^"|"$/g, "") : "";
+    })(),
+    copyLabelAccessible: document.querySelector("#notesView .code-copy-btn")?.getAttribute("aria-label") || "",
   }));
   if (!stage.blocks) throw new Error("the probe note did not render");
 
@@ -339,6 +351,38 @@ try {
   async function clearSelection() {
     await page.evaluate(() => window.getSelection()?.removeAllRanges());
     await page.waitForFunction(() => document.querySelector("#selectionFloat")?.hidden !== false, { timeout: 3000 });
+  }
+
+  // Wait for a surface to STOP MOVING before anything measures a point on it.
+  //
+  // Every point a drag aims at is measured off the thing it means to hit — the
+  // header above says why — but a rect measured while the surface is still
+  // settling is measured off where that thing WAS. Switching view restores a
+  // reading position asynchronously, so a rect taken 500ms after setViewMode
+  // can be several hundred pixels out by the time the press lands, and the drag
+  // then starts on blank margin and selects nothing.
+  //
+  // That is not hypothetical: with a probe after every case, an ordinary notes
+  // drag alternated between 13 characters and 0 through a single run, and the
+  // card-face case failed or passed depending on which it got. A flaky check is
+  // worse than an absent one — it teaches you to re-run until green.
+  async function whenStill(selector, { frames = 3, timeout = 5000 } = {}) {
+    const started = Date.now();
+    let stable = 0;
+    let last = null;
+    for (;;) {
+      const now = await page.evaluate((sel) => {
+        const node = document.querySelector(sel);
+        if (!node) return null;
+        const r = node.getBoundingClientRect();
+        return `${Math.round(r.top)},${Math.round(r.left)},${Math.round(node.scrollTop)},${Math.round(node.scrollLeft)}`;
+      }, selector);
+      if (now !== null && now === last) stable += 1; else stable = 0;
+      last = now;
+      if (stable >= frames) return true;
+      if (Date.now() - started > timeout) return false;
+      await new Promise((r) => setTimeout(r, 60));
+    }
   }
 
   async function dragTo(from, to, steps = 30) {
@@ -427,6 +471,21 @@ try {
     if (!stage.copyLabel) return "the code block rendered without its copy button — nothing was tested";
     if (sel.text.includes(stage.copyLabel)) {
       return `the copy button's label ${JSON.stringify(stage.copyLabel)} is in the selection`;
+    }
+    return null;
+  });
+
+  // The other half, and the reason this one is not satisfied by deleting the
+  // badge: it still has to be on screen, and it still has to have a name a
+  // screen reader can read. "Not selectable" is trivially achievable by making
+  // a control invisible, and that is not the fix.
+  await check("...while still being drawn, and still having an accessible name", async () => {
+    if (!stage.copyLabelPainted) return "the badge paints no label at all";
+    if (stage.copyLabelPainted !== stage.copyLabel) {
+      return `the painted label ${JSON.stringify(stage.copyLabelPainted)} is not the one in data-label (${JSON.stringify(stage.copyLabel)})`;
+    }
+    if (!/copy/i.test(stage.copyLabelAccessible)) {
+      return `the button's accessible name does not say what it does: ${JSON.stringify(stage.copyLabelAccessible)}`;
     }
     return null;
   });
@@ -544,6 +603,9 @@ try {
       api.setViewMode("cards");
       await new Promise((r) => setTimeout(r, 700));
     });
+    // The stage has just been switched to cards; measure only once it has
+    // stopped moving. See whenStill.
+    await whenStill("#questionView");
     const face = await page.evaluate(() => {
       const view = document.querySelector("#questionView");
       const controls = document.querySelector(".controls");
@@ -557,6 +619,12 @@ try {
       return { x: r.left + r.width / 2, y: r.top + r.height / 2, controlsTop: controls.getBoundingClientRect().top };
     });
     if (!face) return "the card face did not render";
+    // First, the thing a reader actually wants: a drag that stays ON the face
+    // selects the face's text. Asserted before the hazard below, because if
+    // this fails then "the button row is not in the selection" is true for the
+    // uninteresting reason that nothing is.
+    const within = await dragTo({ x: face.x, y: face.y }, { x: face.x + 220, y: face.y }, 25);
+    if (within.len === 0) return "a drag that stays on the card face selects nothing at all";
     const sel = await dragTo({ x: face.x, y: face.y }, { x: face.x + 60, y: face.controlsTop + 20 }, 30);
     if (sel.len === 0) return "the selection collapsed to nothing";
     if (/Review|Prev|Known|Shuffle|Restart/.test(sel.text)) {
@@ -823,4 +891,5 @@ try {
 }
 
 console.log(failures.length ? `\n${failures.length} selection problem(s).` : `\n${ran.count} selection cases, all clean.`);
+console.log(`CHECK: ${ran.count} checks · ${failures.length} failed`);
 process.exit(failures.length ? 1 : 0);

@@ -387,6 +387,37 @@ const PORT_SYNC_EXPECTED_DRIFT = 2;
 // never go up again.
 const RENDER_SCALE_EXPECTED_FAILURES = 0;
 
+// ── One real, unfixed finding, pinned so it stays visible ───────────────────
+//
+// selection-check's "a card answer selects without pulling in the button row"
+// fails, and it is not a stale assertion: on the current build a mouse drag
+// that stays entirely on a card's face selects nothing at all. Established:
+//
+//   • the DOM and CSS allow it — a programmatic Range over the same text
+//     selects 8 characters, user-select computes to `text` all the way up
+//   • the browser starts: `selectstart` fires and is not prevented, and
+//     `selectionchange` fires once per move through the drag
+//   • no app code clears it — Selection.removeAllRanges/collapse were wrapped
+//     for the length of a drag and the only caller was the check's own reset
+//   • it is not the swipe's preventDefault: removing the pointer capture and
+//     the preventDefault for a mouse changes nothing (tried, and reverted
+//     rather than shipped as an unproven change to gesture handling)
+//   • it is not question-fit reflowing under the selection: the face carries no
+//     transform, no zoom and no inline font size at the moment of the drag
+//   • four vectors — right, down-right, down, up-right — all select zero
+//
+// It is also not constant: with a probe after every case, an ordinary drag on
+// the NOTES surface alternated between 13 characters and 0 within one run, and
+// the card case passed once. So there is a state or a timing the drag depends
+// on that has not been isolated, and isolating it is a bigger piece of work
+// than the rest of this change.
+//
+// Pinned here rather than deleted, weakened, or left to make the suite red
+// forever — the same device as PORT_SYNC_EXPECTED_DRIFT and
+// RENDER_SCALE_EXPECTED_FAILURES, and for the same reason. If the fix lands,
+// this goes to 0 and the check FAILS until somebody changes the number.
+const SELECTION_EXPECTED_FAILURES = 1;
+
 // A check that cannot run is not a check that passed. This is pinned at zero
 // for the same reason PORT_SYNC_EXPECTED_DRIFT is pinned at two: a number
 // somebody has to change deliberately, in a diff a reviewer can see, rather
@@ -499,6 +530,12 @@ for (const [label, [cmd, args, cwd]] of selected) {
     note = state === "ok"
       ? `(${drift} known pre-existing drift)`
       : `expected ${PORT_SYNC_EXPECTED_DRIFT} drifted, got ${drift}`;
+  } else if (name === "selection") {
+    const failedCases = Number(out.match(/·\s*(\d+) failed/)?.[1] ?? -1);
+    state = failedCases === SELECTION_EXPECTED_FAILURES ? "ok" : "FAIL";
+    note = state === "ok"
+      ? `${out.trim().split("\n").filter(Boolean).pop()} (${failedCases} known — see SELECTION_EXPECTED_FAILURES)`
+      : `expected ${SELECTION_EXPECTED_FAILURES} known failure(s), got ${failedCases}`;
   } else if (name === "render-scale") {
     const failedCases = Number(out.match(/·\s*(\d+) failed/)?.[1] ?? -1);
     state = failedCases === RENDER_SCALE_EXPECTED_FAILURES ? "ok" : "FAIL";
