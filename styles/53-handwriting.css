@@ -542,8 +542,14 @@
   border-radius: 0;
 }
 
+/* The margin is the visible gap; the max-width is the one that is easy to miss.
+   `.rendered img` caps at --visual-max-width, a Style setting for the notes
+   reading column that defaults to 50% on a desktop, and it INHERITS — so it
+   reached a block 240 points wide that it was never about. Equal specificity to
+   that rule, and this file loads after it. */
 .pdf-block-body img {
   margin: 0 auto;
+  max-width: 100%;
 }
 
 .pdf-block-body .diagram-shell img {

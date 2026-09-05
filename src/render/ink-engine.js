@@ -1102,10 +1102,16 @@ export function createInkEngine({
     const w = nextWidth === null ? null : normalizeInkWidth(nextWidth);
     if (c === null && w === null) return false;
     return mapSelection((stroke) => {
-      if (c !== null && stroke.c !== c && w !== null && stroke.w !== w) return { ...stroke, c, w };
-      if (c !== null && stroke.c !== c) return { ...stroke, c };
-      if (w !== null && stroke.w !== w) return { ...stroke, w };
-      return stroke;
+      // Returned UNCHANGED when it already says the right thing, so mapSelection's
+      // identity compare can refuse the whole gesture — a press on the colour a
+      // selection is already in must not cost an undo step or a write.
+      const recolour = c !== null && stroke.c !== c;
+      const renib = w !== null && stroke.w !== w;
+      if (!recolour && !renib) return stroke;
+      const next = { ...stroke };
+      if (recolour) next.c = c;
+      if (renib) next.w = w;
+      return next;
     }, "restyle");
   }
 
