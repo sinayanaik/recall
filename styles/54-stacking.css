@@ -1,0 +1,94 @@
+/* Where a control sits, and what it sits above.
+ *
+ * ── Why these three rules are in a file of their own ──────────────────────
+ *
+ * They are not new. Every one of them was written into styles/03-toolbar.css,
+ * styles/08-panels.css and styles/12-notes.css — three of the thirteen slices
+ * that tools/split-css.mjs cuts out of the pre-modular styles.css, and which it
+ * verifies by concatenating them back and comparing byte for byte.
+ *
+ * Which meant two things, and the second one is why this file exists at all:
+ *
+ *   • css-parity was RED, and had been for as long as the rules had been there.
+ *     A gate that is always red reports nothing, so it could no longer tell
+ *     anybody that the fourteenth edit to a frozen slice had just happened.
+ *   • `node tools/split-css.mjs`, run without --check, re-cuts those thirteen
+ *     files from `git show pre-modular:styles.css`. That is what the tool is
+ *     FOR — its own usage line says "split, then verify" — and it silently
+ *     deleted all three. Not a hypothetical: it deleted them here, and the
+ *     damage grew with each release that added another rule to a frozen slice.
+ *
+ * The convention this restores is the one styles/53-handwriting.css already
+ * states in its own header: "the thirteen slices are compared byte for byte
+ * against the stylesheet they were cut from, so anything written since the split
+ * lives on its own." These now do.
+ *
+ * Nothing about the cascade changes. 54 loads after 08 and after 12, and each
+ * override below is at the same specificity as the rule it replaces, so later
+ * wins — which is the same mechanism the thirteen slices themselves rely on.
+ */
+
+/* The drawer's "Attach a PDF" row is a <label> wrapping a hidden file input, the
+   same shape the library menu's importers use. .file-pick positions that input
+   absolutely, so the label has to be the box it is positioned against — without
+   this it escapes to the page and can land under a finger somewhere else. */
+.tool-button.file-pick { position: relative; }
+
+/* ── The app's one modal shape, and where it sits in the stack ─────────────
+ *
+ * Every dialog in the app borrows .category-choice-modal: the category picker,
+ * the image compression dialog, the confirm/prompt pair's siblings, the restore
+ * preview, the broken-images list, the backup progress and both EPUB import
+ * steps.
+ *
+ * styles/08-panels.css gives it 220, which was right when the only things above
+ * it were the toolbar and the update banner, and became wrong the moment a
+ * full-surface EDITING SHEET could open one. The drawing sheet is 640 and the
+ * block editor 620 — both `position: fixed; inset: 0` — so a dialog opened from
+ * inside either of them was painted UNDERNEATH it: invisible, unclickable, and
+ * awaiting an answer that could never be given. That is exactly what "I click
+ * image, upload an image, and it's not being placed in the textarea" was. No
+ * error, no toast, nothing in the console — the promise simply never resolved.
+ *
+ * So the order, once, for the whole app:
+ *
+ *     100-500   panels, banners, the toolbar          (unchanged)
+ *     620       an editing sheet over a surface       .pdf-block-editor
+ *     630       ...and the formatting pill it needs   .selection-float, while one is open
+ *     640       a sheet opened FROM one               .ink-sheet
+ *     660       a dialog opened from any of them      this
+ *     9999      sign-in, because a lapsed session must be able to interrupt
+ *     99999     toasts, because "saved here — uploads when you're online" has
+ *               to be able to reach the reader over anything
+ *
+ * The pill is the one that is conditional rather than fixed — see below. */
+.category-choice-modal {
+  z-index: 660;
+}
+
+/* ── ...except over a sheet that is itself a place to write ────────────────
+ *
+ * styles/12-notes.css puts .selection-float below every panel and modal, so an
+ * open confirm/help/category dialog is not left with this floater visible and
+ * clickable on top of it. That rule is about DIALOGS and it still holds.
+ *
+ * What it did not anticipate is a full-surface editing sheet: the block editor
+ * on a page of handwriting (.pdf-block-editor, 620) and the note popup on a
+ * highlight (.highlight-note-editor, 260) both host a real markdown textarea,
+ * and both register it as the pill's target (src/notes/note-editor-kit.js,
+ * attach()).
+ *
+ * This bar is the ONLY formatting surface in the app — styles/22-selection-bar.css
+ * says so at length; the persistent B/I/U strips were removed in its favour — so
+ * at its base z-index it was raised, correctly, behind the very text it was
+ * raised for. Selecting a word in a block and reaching to bold it did nothing
+ * visible.
+ *
+ * 630 keeps every part of the original reasoning: still under the dialog band
+ * (660), so a confirm opened over a sheet is not left with a floater on top of
+ * it, and still under the drawing sheet (640). The class is set by whichever
+ * sheet is open, so the pill is only lifted while there is something to lift it
+ * for. */
+body.text-sheet-open .selection-float {
+  z-index: 630;
+}

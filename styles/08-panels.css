@@ -464,37 +464,9 @@
   display: none;
 }
 
-/* ── The app's one modal shape, and where it sits in the stack ─────────────
- *
- * Every dialog in the app borrows this class: the category picker, the image
- * compression dialog, the confirm/prompt pair's siblings, the restore preview,
- * the broken-images list, the backup progress and both EPUB import steps.
- *
- * It used to be 220, which was right when the only things above it were the
- * toolbar and the update banner, and became wrong the moment a full-surface
- * EDITING SHEET could open one. The drawing sheet is 600 and the block editor
- * 620 — both `position: fixed; inset: 0` — so a dialog opened from inside either
- * of them was painted UNDERNEATH it: invisible, unclickable, and awaiting an
- * answer that could never be given. That is exactly what "I click image, upload
- * an image, and it's not being placed in the textarea" was. No error, no toast,
- * nothing in the console — the promise simply never resolved.
- *
- * So the order, once, for the whole app:
- *
- *     100-500   panels, banners, the toolbar          (unchanged)
- *     620       an editing sheet over a surface       .pdf-block-editor
- *     630       ...and the formatting pill it needs   .selection-float, while one is open
- *     640       a sheet opened FROM one               .ink-sheet
- *     660       a dialog opened from any of them      this
- *     9999      sign-in, because a lapsed session must be able to interrupt
- *     99999     toasts, because "saved here — uploads when you're online" has
- *               to be able to reach the reader over anything
- *
- * The pill is the one that is conditional rather than fixed, and its own comment
- * in styles/12-notes.css says why. */
 .category-choice-modal {
   position: fixed;
-  z-index: 660;
+  z-index: 220;
   inset: 0;
   display: flex;
   align-items: center;

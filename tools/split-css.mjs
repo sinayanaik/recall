@@ -2,6 +2,8 @@
 //
 //   node tools/split-css.mjs          # split, then verify
 //   node tools/split-css.mjs --check  # verify only
+//   node tools/split-css.mjs --force  # ...and re-cut a slice somebody has edited,
+//                                     #    losing whatever they wrote in it
 //
 // styles.css is 13,784 lines with three section comments in it, which makes
 // finding anything a scroll. Splitting it is worth doing, but a stylesheet is
@@ -394,6 +396,18 @@ const POST_SPLIT = {
     "resized before today. Keyed off the property rather than the class so it " +
     "fixes the widths already written into people's notes as well as the ones " +
     "written from now on.",
+  "54-stacking.css":
+    "Where a control sits and what it sits above — and, more to the point, three " +
+    "rules that had been written into frozen slices instead. .tool-button.file-pick " +
+    "was in 03-toolbar.css, the .category-choice-modal z-index in 08-panels.css, " +
+    "and the formatting pill's lift over an editing sheet in 12-notes.css. Each " +
+    "is load-bearing — the second is what lets a dialog opened from inside the " +
+    "block editor be visible at all — and each was silently deleted by a bare run " +
+    "of this very tool, which re-cuts those thirteen files out of " +
+    "pre-modular:styles.css. They also kept css-parity red, which is how the " +
+    "check that would have reported the next one stopped reporting anything. " +
+    "Moving them here is the convention 53-handwriting.css already states: " +
+    "anything written since the split lives on its own.",
   "53-handwriting.css":
     "Pages you can write on: the scrolling stack, the three papers (grid, ruled, " +
     "blank) and the notebook's own chrome. Separate from 52-ink.css because that " +
@@ -551,10 +565,51 @@ if (CHECK_ONLY) {
   process.exit(ok ? 0 : 1);
 }
 
+// ── The write, and why it now refuses ─────────────────────────────────────
+//
+// This re-cuts the thirteen files out of `pre-modular:styles.css`, which is what
+// the usage line above means by "split". It is therefore also a way to DELETE
+// anything anyone has written into one of them since, silently, with no diff to
+// read and nothing on stdout to say so — and it did exactly that, three times
+// over, before anybody noticed:
+//
+//   .tool-button.file-pick        the positioning box a hidden file input needs
+//   .category-choice-modal        the z-index that lets a dialog open over an
+//                                 editing sheet at all
+//   body.text-sheet-open …        the one that puts the formatting pill above
+//                                 the text it formats
+//
+// All three are load-bearing, all three were reverted by a single bare run, and
+// the only reason it was survivable is that the same edits also turned
+// css-parity red — which is a check that had then been red for months and so
+// could no longer report anything else either.
+//
+// So a slice that does not already hold what this would write is not
+// overwritten. That is not a check on WHAT changed, deliberately: any difference
+// at all means a human put something there, and this tool is not the thing that
+// should decide whether it mattered. --force is the way to say "yes, re-cut it",
+// which is what a genuine re-split wants and what nothing else does.
+const FORCE = process.argv.includes("--force");
 mkdirSync(OUT_DIR, { recursive: true });
+const refused = [];
 for (const p of parts) {
   const banner = `/* ${p.blurb}\n * Part of the split styles.css — see tools/split-css.mjs. Order matters.\n */\n`;
-  writeFileSync(path.join(OUT_DIR, p.name), banner + p.body);
+  const target = path.join(OUT_DIR, p.name);
+  const wanted = banner + p.body;
+  if (!FORCE && existsSync(target) && readFileSync(target, "utf8") !== wanted) {
+    refused.push(p.name);
+    continue;
+  }
+  writeFileSync(target, wanted);
   console.log(`  ${p.name.padEnd(20)} lines ${String(p.from).padStart(6)}–${String(p.to).padEnd(6)} (${p.to - p.from + 1})`);
+}
+if (refused.length) {
+  console.log(`\n${refused.length} file(s) NOT rewritten, because what is on disk is not what this would write:`);
+  for (const name of refused) console.log(`  styles/${name}`);
+  console.log("\nSomething has been written into a slice since it was cut. Move it to a");
+  console.log("file of its own above 13 (see styles/54-stacking.css, which is what three");
+  console.log("such rules turned into), or pass --force to re-cut and lose it.");
+  console.log("`node tools/split-css.mjs --check` says whether the slices still reassemble.");
+  process.exit(1);
 }
 console.log(`\n${parts.length} files, ${lines.length} lines, reassembly verified byte-for-byte.`);

@@ -2056,6 +2056,55 @@ try {
     `canUndoInk() was ${both.undoOnNotebook} on the notebook and ${both.undoAfterRoundTrip} after a round trip `
       + `to the other paper — an engine destroyed on the way out takes its history with it`);
 
+  // ── The stacking order, read off the elements themselves ────────────────
+  //
+  // Three rules had been written into slices 01-13, which tools/split-css.mjs
+  // re-cuts from pre-modular:styles.css — so a bare run of that tool deleted
+  // them, silently, and the check that would have said so (css-parity) had been
+  // red for long enough to stop reporting anything. They live in
+  // styles/54-stacking.css now, which loads after the slices and overrides them.
+  //
+  // That is a CASCADE argument, and a cascade argument is exactly the kind that
+  // reads as obviously correct and is wrong the day somebody reorders the <link>
+  // tags. So it is asked of the browser instead: put the element on the page and
+  // read what it actually computed to.
+  const stacking = await page.evaluate(`() => {
+    const probe = (cls, bodyClass) => {
+      if (bodyClass) document.body.classList.add(bodyClass);
+      const node = document.createElement("div");
+      node.className = cls;
+      document.body.appendChild(node);
+      const style = getComputedStyle(node);
+      const out = { z: style.zIndex, position: style.position };
+      node.remove();
+      if (bodyClass) document.body.classList.remove(bodyClass);
+      return out;
+    };
+    return {
+      modal: probe("category-choice-modal"),
+      pill: probe("selection-float"),
+      pillOverSheet: probe("selection-float", "text-sheet-open"),
+      filePick: probe("tool-button file-pick")
+    };
+  }`);
+
+  // 660: above the block editor (620) and the drawing sheet (640), so a dialog
+  // opened from inside either is visible at all. This is what "I click image,
+  // upload an image, and it's not being placed in the textarea" was.
+  check("a dialog outranks the editing sheets it can be opened from",
+    stacking.modal.z === "660",
+    `.category-choice-modal computed z-index ${stacking.modal.z}, wanted 660 — `
+      + `at 220 it is painted under the sheet and awaits an answer nobody can give`);
+  // ...and the pill is lifted only while a sheet is open, so an ordinary dialog
+  // still covers it.
+  check("...and the formatting pill is lifted only over a sheet",
+    stacking.pillOverSheet.z === "630" && stacking.pill.z !== "630",
+    `pill is ${stacking.pill.z} normally and ${stacking.pillOverSheet.z} over a sheet`);
+  check("...and a file-pick label is still its input's positioning box",
+    stacking.filePick.position === "relative",
+    `.tool-button.file-pick computed position ${stacking.filePick.position} — `
+      + `static lets the hidden input escape to the page`);
+
   check("nothing threw anywhere in this run",
     sheet.errs.length === 0 && picture.errs.length === 0,
     [...sheet.errs, ...picture.errs].join(" | "));
