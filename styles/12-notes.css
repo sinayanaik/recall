@@ -490,8 +490,8 @@
    only so it stays small and unobtrusive on both desktop and mobile. */
 .selection-float {
   position: fixed;
-  /* Below every panel/modal so an open confirm/help/category dialog isn't left
-     with this floater still visible and clickable on top of it. */
+  /* Below every panel/modal (100-240) so an open confirm/help/category dialog
+     isn't left with this floater still visible and clickable on top of it. */
   z-index: 90;
   display: inline-flex;
   align-items: center;
@@ -502,29 +502,6 @@
   background: color-mix(in srgb, var(--panel) 90%, var(--accent));
   box-shadow: 0 8px 26px rgba(0, 0, 0, 0.35);
   touch-action: manipulation;
-}
-
-/* ── ...except over a sheet that is itself a place to write ────────────────
- *
- * The rule above is about DIALOGS, and it still holds. What it did not
- * anticipate is a full-surface editing sheet: the block editor on a page of
- * handwriting (.pdf-block-editor, 620) and the note popup on a highlight
- * (.highlight-note-editor, 260) both host a real markdown textarea, and both
- * register it as the pill's target (src/notes/note-editor-kit.js, attach()).
- *
- * This bar is the ONLY formatting surface in the app — styles/22-selection-bar.css
- * says so at length; the persistent B/I/U strips were removed in its favour — so
- * at 90 it was raised, correctly, behind the very text it was raised for.
- * Selecting a word in a block and reaching to bold it did nothing visible.
- *
- * 630 keeps every part of the original reasoning: still under the dialog band
- * (660), so a confirm opened over a sheet is not left with a floater on top of
- * it, and still under the drawing sheet (640). The class is set by whichever
- * sheet is open, so the pill is only lifted while there is something to lift it
- * for. The whole order is written out once beside .category-choice-modal in
- * styles/08-panels.css. */
-body.text-sheet-open .selection-float {
-  z-index: 630;
 }
 
 .selection-float-btn {
@@ -609,15 +586,6 @@ body.text-sheet-open .selection-float {
   background: color-mix(in srgb, var(--panel-2) 82%, transparent);
   color: var(--accent);
   font-size: 0.7rem;
-}
-
-/* Highlight-and-annotate. It shares the swatch's tray tint because it shares
-   the swatch's colour — one preference drives both, and a control that looked
-   like a neighbour rather than a sibling would suggest a second one. Its icon is
-   a pen, so it is the same verb "plus what you write on it" at a glance. */
-.selection-float-btn.is-highlight-note {
-  background: color-mix(in srgb, var(--panel-2) 82%, transparent);
-  color: var(--accent);
 }
 
 .pill-swatch {
