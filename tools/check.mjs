@@ -299,6 +299,12 @@ const checks = [
   // for is ce9f73a's: a colour that resolves to nothing, and every drawing
   // comes out black.
   ["theme         ", ["node", ["tools/theme-check.mjs"], ROOT]],
+  // A folder IS a deck's category — a "/"-delimited path — so create, rename,
+  // move, nest, sort and "is this deck inside that folder" are all string
+  // arithmetic in one leaf module, and none of it was checked. Two data-loss
+  // bugs have already landed in this area (8e1a552, 9e0291b); merged-notes
+  // covers the document side and this covers the path side.
+  ["library       ", ["node", ["tools/library-check.mjs"], ROOT]],
   // Pure Node again, and for the same reason: the sanitizer and the repair are
   // string-and-object work with no imports worth speaking of. It asks the one
   // question a whole book's sync once turned on — can a character that came out
