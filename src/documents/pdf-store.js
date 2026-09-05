@@ -83,6 +83,30 @@ export async function sha256(blob) {
   }
 }
 
+// ── Is the copy on this device still the copy the deck means? ──────────────
+//
+// For a paper somebody handed us the answer is always yes, and that is the
+// assumption this store was built on: a highlight is a coordinate into THIS
+// file, so the bytes never change and a local copy can never go stale.
+//
+// A NOTEBOOK breaks it. Its pages are a PDF this app writes itself
+// (src/documents/notebook.js), and it is rewritten every time a page is added,
+// a page is torn out, or the paper changes — new bytes, new sha256, new upload
+// path, same store key. So "there is a blob under that key" stopped being the
+// same question as "there is the RIGHT blob under that key", and the difference
+// is a page somebody tore out on one device sitting there for ever on another.
+//
+// Both hashes have to be known for a mismatch to mean anything. An entry
+// written before this store recorded a hash, or a meta whose record carries
+// none, is not evidence of anything and is left alone — the old behaviour, for
+// the old rows it was correct for.
+export function documentEntryMatches(entry, pdfMeta) {
+  const wanted = String(pdfMeta?.sha256 || "");
+  const held = String(entry?.sha256 || "");
+  if (!wanted || !held) return true;
+  return wanted === held;
+}
+
 // The bytes for a deck, wherever they are. Device first — that is both the fast
 // path and the offline path — then the cloud, and a successful download is
 // written straight back into the local store so the next open is free.
@@ -95,7 +119,11 @@ export async function getDocument(deckLocalId, pdfMeta) {
   if (deckLocalId) {
     try {
       const local = await readDocument(deckLocalId);
-      if (local?.blob) return local.blob;
+      // ...and the copy has to be the copy this deck means. Without the second
+      // half, a notebook regenerated on another device opened here at whatever
+      // page count this one happened to be holding — for ever, since a local hit
+      // never falls through to the download that would have corrected it.
+      if (local?.blob && documentEntryMatches(local, pdfMeta)) return local.blob;
     } catch (error) {
       console.warn("Could not read the local document store", error);
     }

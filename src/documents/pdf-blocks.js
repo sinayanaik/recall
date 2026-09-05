@@ -54,7 +54,9 @@ import { PDF_BLOCK_CLASS, PDF_BLOCK_LAYER_CLASS } from "../core/constants.js?v=_
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { hydrateLocalImages, storeImageOrQueue } from "../images/outbox.js?v=__BUILD__";
-import { markdownToSafeHtml } from "../render/preprocess.js?v=__BUILD__";
+import { renderMarkdown } from "../render/block-cache.js?v=__BUILD__";
+import { enhanceRenderedMarkdown } from "../render/enhance.js?v=__BUILD__";
+import { closeBlockEditor, openBlockEditor } from "./pdf-block-editor.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { recordDeletedMetaId } from "../sync/document-sync.js?v=__BUILD__";
@@ -115,13 +117,55 @@ export function allDocumentBlocks() {
 // paper's untouched. Without the second half, adding a text block to a notebook
 // would delete every block typed over the preprint beside it — see the same
 // argument spelled out on wholeHighlightArray in ./pdf-highlights.js.
+// `removed` is one id or a list of them. A list, because tearing a page out of a
+// notebook buries every block that was on it in a single write — and a bury that
+// arrived in a second write could be carried by a sync on its own, which is the
+// half-a-change this whole path exists to avoid.
 function writeBlocks(next, { removed = null } = {}) {
   const slot = activeDocSlot();
   const whole = recordsOutsideSlot(state.meta?.pdfBlocks, slot).concat(stampDocSlotAll(next, slot));
   state.meta = { ...(state.meta && typeof state.meta === "object" ? state.meta : {}), pdfBlocks: whole };
-  if (removed) state.meta.deletedBlockIds = recordDeletedMetaId(state.meta, "deletedBlockIds", removed);
+  // Written back into the meta on every step. recordDeletedMetaId reads the bag
+  // off `meta` and returns a fresh one, so a loop that assigns only after its
+  // last iteration hands every step the same starting bag and keeps one id —
+  // see the identical rule spelled out in remapDocumentHighlightPages.
+  (Array.isArray(removed) ? removed : [removed]).filter(Boolean).forEach((id) => {
+    state.meta.deletedBlockIds = recordDeletedMetaId(state.meta, "deletedBlockIds", id);
+  });
   scheduleDeckAutosave();
   onBlocksChanged();
+}
+
+// ── Renumbering, when a page is removed from under them ────────────────────
+//
+// The exact twin of remapDocumentHighlightPages in ./pdf-highlights.js, and it
+// exists because tearing a page out of a notebook called that one and stopped.
+// A block is a rectangle on a numbered page in the same way a highlight is, so
+// every fault that function was written to prevent applied here unanswered: a
+// text block on the torn-out page SURVIVED, floating on whatever page inherited
+// its number, and every block after the gap went on describing a page that had
+// just moved down by one.
+//
+// `move` returns the new page number, or null to bury the record. The `at` bump
+// on a moved block is what makes the change win its own merge — a renumber that
+// kept its old stamp would lose to the other device's copy of the same block,
+// still on the page it used to be on.
+//
+// One write, like the highlights one: the moves and the burials land together or
+// a sync between them carries half a tear-out.
+export function remapDocumentBlockPages(move) {
+  const before = documentBlocks();
+  if (!before.length) return 0;
+  const next = [];
+  const gone = [];
+  before.forEach((block) => {
+    const to = move(block);
+    if (to === null || to === undefined) { gone.push(block); return; }
+    if (Number(block.page) === Number(to)) { next.push(block); return; }
+    next.push({ ...block, page: Number(to), at: Date.now() });
+  });
+  writeBlocks(next, { removed: gone.map((block) => block.id) });
+  return gone.length;
 }
 
 function freshBlockId(taken) {
@@ -207,30 +251,22 @@ function buildBlock(block) {
   const body = document.createElement("div");
   body.className = "pdf-block-body rendered";
 
-  const area = document.createElement("textarea");
-  area.className = "pdf-block-edit";
-  area.hidden = true;
-  area.setAttribute("aria-label", isImage ? "Image description" : "Block markdown");
-
   const grip = document.createElement("span");
   grip.className = "pdf-block-grip";
   grip.dataset.pdfBlockAction = "resize";
   grip.title = "Drag to resize";
 
-  node.append(bar, body, area, grip);
+  node.append(bar, body, grip);
   return node;
 }
 
 function paintBlock(node, block) {
   const body = node.querySelector(".pdf-block-body");
-  const area = node.querySelector(".pdf-block-edit");
-  if (editingId === block.id) {
-    area.hidden = false;
-    body.hidden = true;
-    return;
-  }
-  area.hidden = true;
-  body.hidden = false;
+  // While a block is being edited its text is in the sheet, not here. Said with
+  // a class rather than by hiding the body: the block has to keep its box on the
+  // page — it is what the reader is looking at the editor ABOUT — and a hidden
+  // body would collapse the frame to its bar.
+  node.classList.toggle("is-editing", editingId === block.id);
   if (block.kind === PDF_BLOCK_IMAGE) {
     // Rebuilt only when the source actually changed. This runs as every page
     // paints and on every drag frame's repaint, and re-assigning an <img>'s src
@@ -250,9 +286,60 @@ function paintBlock(node, block) {
   }
   // An empty block says so. A transparent rectangle you cannot find again is
   // exactly what one added and not yet typed into would otherwise be.
-  body.innerHTML = block.md.trim()
-    ? markdownToSafeHtml(block.md)
-    : '<p class="pdf-block-empty">Empty — press &#9998; to write</p>';
+  if (!block.md.trim()) {
+    renderedMarkdown.delete(body);
+    body.innerHTML = '<p class="pdf-block-empty">Empty — press &#9998; to write</p>';
+    return;
+  }
+  // ── The same renderer the Notes panel uses, and why it was not ──────────
+  //
+  // This was `markdownToSafeHtml`, which is marked + DOMPurify and nothing
+  // else: no KaTeX, no Prism, no mermaid, no clozes, no image or diagram
+  // controls. A block is markdown dropped on a page of working, and working is
+  // exactly where the mathematics is — so the one surface in this app most
+  // likely to hold `$…$` was the one surface that rendered it as the literal
+  // characters. renderMarkdown + enhanceRenderedMarkdown is the pair
+  // src/notes/note-editor-kit.js already uses for the same reason, and it is
+  // what "the full markdown ecosystem we have in the notes panel" means.
+  //
+  // Guarded on the markdown actually having CHANGED, which the old one-line
+  // innerHTML did not need to be. This runs as every page paints and on every
+  // frame of a drag, renderMarkdown is async and does real work (a lex, a
+  // sanitize, a KaTeX pass, possibly a mermaid render), and firing one per
+  // frame at a block being dragged would queue renders faster than they finish.
+  // Same argument, and the same shape, as the image branch above.
+  if (renderedMarkdown.get(body) === block.md) return;
+  renderedMarkdown.set(body, block.md);
+  renderBlockBody(body, block.md);
+}
+
+// What each block body was last rendered FROM. A WeakMap rather than a dataset
+// attribute: the markdown can be a page of text, and the entry goes when the
+// node does.
+const renderedMarkdown = new WeakMap();
+
+// The async tail of paintBlock. Separate so the paint itself stays synchronous —
+// every caller of paintDocumentBlocks is a paint loop, and none of them can
+// await.
+//
+// The re-check after the render is the ordinary hazard of an async paint: the
+// reader can drag, delete or retype a block while its markdown is being
+// rendered, and a late render must not put stale HTML back. `renderedMarkdown`
+// is the record of what this body is SUPPOSED to be showing, so a mismatch means
+// a newer render already owns it.
+async function renderBlockBody(body, md) {
+  try {
+    await renderMarkdown(body, md);
+    if (renderedMarkdown.get(body) !== md || !body.isConnected) return;
+    await enhanceRenderedMarkdown(body);
+    if (renderedMarkdown.get(body) !== md || !body.isConnected) return;
+    // The block's own images, which reach here as recall-img: tokens when they
+    // were added offline — the same hydrate paintDocumentBlocks does for the
+    // image blocks beside them.
+    await hydrateLocalImages(body);
+  } catch (error) {
+    console.warn("Could not render a block", error);
+  }
 }
 
 // Called as each page finishes painting, through the same hook the ink and the
@@ -407,33 +494,63 @@ export function isEditingBlock() {
   return Boolean(editingId);
 }
 
+// ── Opening the editor ─────────────────────────────────────────────────────
+//
+// The text goes into the sheet (./pdf-block-editor.js), which is the Notes
+// panel's own editor arranged as a window. `editingId` still says which block is
+// being edited — the paint reads it to hide the block's body while its text is
+// somewhere else — but the <textarea> it used to point at is gone.
+//
+// An IMAGE block's editor holds its description and not markdown, which is the
+// distinction its ✎ has always made (see buildBlock). It is the same sheet with
+// a different question at the top of it.
 function beginBlockEdit(id) {
   commitBlockEdit();
   const block = documentBlocks().find((entry) => entry.id === id);
   if (!block) return;
+  const isImage = block.kind === PDF_BLOCK_IMAGE;
   editingId = id;
   repaintDocumentBlocks();
-  const area = document.querySelector(`[data-pdf-block="${id}"] .pdf-block-edit`);
-  if (!area) return;
-  // An image's editor holds its DESCRIPTION, not markdown — see buildBlock.
-  area.value = block.kind === PDF_BLOCK_IMAGE ? block.alt : block.md;
-  area.focus();
-  area.setSelectionRange(area.value.length, area.value.length);
+  openBlockEditor({
+    value: isImage ? block.alt : block.md,
+    title: isImage ? "Describe this image" : "Edit this block",
+    placeholder: isImage
+      ? "What is in the picture — read out when it cannot be shown"
+      : "Markdown — the same as a note",
+    onDone: (text) => writeBlockText(id, text)
+  });
 }
 
-export function commitBlockEdit() {
-  if (!editingId) return false;
-  const id = editingId;
-  const area = document.querySelector(`[data-pdf-block="${id}"] .pdf-block-edit`);
-  const next = area ? area.value : null;
+// One place that turns "the editor closed" into a write, whichever way it
+// closed. `text` is null for a cancel, which is the one case that writes
+// nothing at all.
+function writeBlockText(id, text) {
   editingId = null;
+  if (text === null) { repaintDocumentBlocks(); return; }
   const blocks = documentBlocks();
   const block = blocks.find((entry) => entry.id === id);
   const field = block?.kind === PDF_BLOCK_IMAGE ? "alt" : "md";
-  if (next !== null && block && block[field] !== next) {
-    writeBlocks(blocks.map((entry) => (entry.id === id ? { ...entry, [field]: next, at: Date.now() } : entry)));
+  if (block && block[field] !== text) {
+    writeBlocks(blocks.map((entry) => (entry.id === id ? { ...entry, [field]: text, at: Date.now() } : entry)));
   }
   repaintDocumentBlocks();
+}
+
+// Anything open, committed. Called on the way out of the view, on a press
+// elsewhere on the page, and before a drag — every place that used to read the
+// textarea's value directly.
+//
+// The sheet's own close is what calls writeBlockText, so this does not write
+// anything itself: two paths into one write is how the two came to disagree
+// about what "the current text" was.
+export function commitBlockEdit() {
+  if (!editingId) return false;
+  if (!closeBlockEditor(true)) {
+    // The sheet is not up — an edit that was begun and then lost its window.
+    // Nothing to read, so the only thing owed is putting the block back.
+    editingId = null;
+    repaintDocumentBlocks();
+  }
   return true;
 }
 
@@ -502,8 +619,10 @@ export function handleBlockPointerDown(event) {
     return false;
   }
   const action = event.target.closest("[data-pdf-block-action]")?.dataset.pdfBlockAction;
-  // A press inside the text of a block being edited belongs to the textarea.
-  if (!action && editingId === node.dataset.pdfBlock) { event.stopPropagation(); return true; }
+  // The text of a block being edited is in the sheet over the page, not in the
+  // block — so a press on the block itself while its editor is open is a press
+  // on the page, and it commits like any other. The bar's own buttons still
+  // reach their actions below.
   event.preventDefault();
   event.stopPropagation();
   const id = node.dataset.pdfBlock;

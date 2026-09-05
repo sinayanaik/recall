@@ -38,10 +38,11 @@
 // it is a renumbering: see remapDocumentHighlightPages.
 
 import { BLANK_PAPERS, BLANK_PAGE_HEIGHT, BLANK_PAGE_WIDTH, BLANK_PAPER_VERSION, blankPdfFile, normalizeBlankPaper } from "./blank-pdf.js?v=__BUILD__";
-import { DOC_SLOT_NOTEBOOK, documentStoreKey } from "./doc-slot.js?v=__BUILD__";
+import { DOC_SLOT_NOTEBOOK, docSlotMeta, documentStoreKey } from "./doc-slot.js?v=__BUILD__";
 import { hasLegacyNotebook, hasNotebookInPdfSlot, migratedNotebookMeta, movedNotebookSlotMeta, planLegacyNotebookMigration } from "./notebook-migrate.js?v=__BUILD__";
+import { remapDocumentBlockPages } from "./pdf-blocks.js?v=__BUILD__";
 import { freshDocumentHighlightId, remapDocumentHighlightPages } from "./pdf-highlights.js?v=__BUILD__";
-import { deleteLocalDocument, putDocument, readDocument, sha256, uploadDocument } from "./pdf-store.js?v=__BUILD__";
+import { deleteLocalDocument, documentEntryMatches, putDocument, readDocument, sha256, uploadDocument } from "./pdf-store.js?v=__BUILD__";
 import { openDocumentView } from "./pdf-view.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { storageFolderSlug, storageGroupId } from "../images/upload.js?v=__BUILD__";
@@ -177,11 +178,27 @@ export async function ensureNotebookDocument({ paper = null } = {}) {
   return (await writeNotebookPdf({ pages: 1, paper: normalizeBlankPaper(paper), reopen: false })) && "wrote";
 }
 
+// Are the notebook's bytes on this device, AND are they the bytes the record
+// describes?
+//
+// The second half is not pedantry. This paper is REGENERATED — every added
+// page, every tear-out and every change of rule mints new bytes and a new hash
+// under the same store key (writeNotebookPdf) — so a device that pulls the
+// deck holds a file that used to be right. Asking only "is there a blob" is
+// what left a page torn out on the tablet still sitting in the phone's
+// notebook: the hit never falls through to a download, so nothing ever
+// corrected it.
+//
+// A mismatch is cheap to answer here in a way it is nowhere else in this app:
+// the caller's next move is to draw the paper again from the record, which
+// needs no network and cannot be wrong, because the record IS what the paper is
+// made of.
 async function notebookBytesPresent() {
   if (!state.localDeckId) return false;
   try {
     const entry = await readDocument(notebookStoreKey());
-    return Boolean(entry?.blob);
+    if (!entry?.blob) return false;
+    return documentEntryMatches(entry, docSlotMeta(DOC_SLOT_NOTEBOOK));
   } catch (_) {
     // An unreadable store is not the same as an absent file, and re-generating
     // over one would be writing on a guess. Treated as present so nothing is
@@ -306,6 +323,17 @@ export async function addNotebookPage() {
 // page 7 of a six-page document can never be painted or jumped to again. The
 // records on the torn-out page are buried in the SAME write, or a sync landing
 // between two writes would carry one half of the change.
+//
+// ── ...and there are TWO kinds of record on a page ────────────────────────
+//
+// This called the highlights half and stopped, which was true of the surface on
+// the day it was written and stopped being true when pages grew text and image
+// blocks (src/documents/pdf-blocks.js). A block is a rectangle on a numbered
+// page exactly as a mark is, so every word of the paragraph above applied to it
+// and nothing was doing it: a block on the torn-out page survived onto whichever
+// page inherited its number, and the blocks below the gap stayed one page too
+// far down. Both arrays are remapped by the same rule, stated once here and
+// applied twice, so the two can never answer the tear-out differently.
 export async function deleteNotebookPage(pageNumber) {
   if (!hasNotebook()) return false;
   const pages = notebookPageCount();
@@ -315,11 +343,13 @@ export async function deleteNotebookPage(pageNumber) {
     showToast("A notebook keeps at least one page", "info");
     return false;
   }
-  remapDocumentHighlightPages((record) => {
+  const afterTearOut = (record) => {
     const on = Number(record?.page) || 0;
     if (on === n) return null;
     return on > n ? on - 1 : on;
-  });
+  };
+  remapDocumentHighlightPages(afterTearOut);
+  remapDocumentBlockPages(afterTearOut);
   return writeNotebookPdf({ pages: pages - 1, paper: notebookPaper() });
 }
 

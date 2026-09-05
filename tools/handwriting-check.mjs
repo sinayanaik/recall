@@ -74,6 +74,7 @@ const API_SRC = `async () => {
     "/src/documents/pdf-ink.js?v=__BUILD__",
     "/src/documents/pdf-highlights.js?v=__BUILD__",
     "/src/documents/pdf-store.js?v=__BUILD__",
+    "/src/images/outbox.js?v=__BUILD__",
     "/src/notes/ink-sheet.js?v=__BUILD__",
     "/src/format/ink-strokes.js?v=__BUILD__",
     "/src/format/ink-svg.js?v=__BUILD__",
@@ -84,6 +85,7 @@ const API_SRC = `async () => {
     "/src/storage/deck-snapshot.js?v=__BUILD__",
     "/src/notes/notes-view.js?v=__BUILD__",
     "/src/ui/view-mode.js?v=__BUILD__",
+    "/src/ui/ink-rail.js?v=__BUILD__",
     "/src/ui/boot-screens.js?v=__BUILD__",
     "/src/cloud/supabase-client.js?v=__BUILD__",
     "/src/cards/new-deck.js?v=__BUILD__",
@@ -300,11 +302,220 @@ try {
       dry: page.querySelectorAll(".is-ink-dry").length
     };
   }`);
-  check("the low-latency pair comes off the page once the stroke is committed",
+  check("the low-latency layer comes off the page once the stroke is committed",
     mounted.wet === 0 && mounted.tip === 0,
-    `${mounted.wet} wet, ${mounted.tip} tip, ${mounted.dry} dry canvas(es) left mounted`);
+    `${mounted.wet} live, ${mounted.tip} tip, ${mounted.dry} dry canvas(es) left mounted`);
   check("...leaving the dry canvas to be the thing on top", mounted.dry === 1,
     `${mounted.dry} dry canvas(es)`);
+  // ── 2c. Is the whole stroke visible WHILE it is being drawn? ────────────
+  //
+  // "When I am writing, the tip of the stroke is visible, and when I release,
+  // the rest of it then shows."
+  //
+  // Every check above reads the dry canvas, which only ever holds committed ink
+  // — so all of them passed while the surface a reader actually looks at
+  // mid-stroke showed a stub under the nib and nothing behind it. Two causes,
+  // both of them live at once: a second desynchronized layer over the first, and
+  // an append-only layer that assumed a low-latency swap chain preserves what
+  // was drawn on it last frame.
+  //
+  // So this asks the question none of them could: with the pen still DOWN, is
+  // there ink on the live layer near where the stroke STARTED? Not near the nib
+  // — the nib is the half that never broke.
+  const midStroke = await page.evaluate(`async (penSrc) => {
+    const { api, settle } = window.__recall;
+    const pen = (0, eval)(penSrc);
+    const view = document.getElementById("documentView");
+    const pageEl = document.querySelector("#documentStage .pdf-page[data-page-number='1']");
+    const box = pageEl.getBoundingClientRect();
+
+    // A long, slow stroke across the page, with a settle between runs so several
+    // frames really do go by — the fault only shows once a frame boundary has
+    // been crossed, because everything up to the first one is "the tip".
+    const x0 = box.left + 40;
+    const y0 = box.top + 420;
+    pen(view, "pointerdown", x0, y0, 1);
+    for (let i = 1; i <= 10; i += 1) pen(view, "pointermove", x0 + (i * 10), y0 + (i * 2), 1);
+    await settle(120);
+    for (let i = 11; i <= 30; i += 1) pen(view, "pointermove", x0 + (i * 10), y0 + (i * 2), 1);
+    await settle(120);
+    for (let i = 31; i <= 50; i += 1) pen(view, "pointermove", x0 + (i * 10), y0 + (i * 2), 1);
+    await settle(200);
+
+    // Still down. Count what is stacked over the page at this instant, and read
+    // the live layer's own bitmap.
+    const live = pageEl.querySelector(".pdf-ink-layer .is-ink-wet");
+    const lowLatency = pageEl.querySelectorAll(".pdf-ink-layer .is-ink-wet, .pdf-ink-layer .is-ink-tip").length;
+    const layers = pageEl.querySelectorAll(".pdf-ink-layer canvas").length;
+    let head = 0;
+    let tail = 0;
+    let total = 0;
+    if (live) {
+      const ctx = live.getContext("2d");
+      const px = ctx.getImageData(0, 0, live.width, live.height).data;
+      const w = live.width;
+      // The stroke runs left to right across the page. "head" is the third of
+      // the canvas the stroke STARTED in, "tail" the third the nib is in now.
+      for (let i = 3, p = 0; i < px.length; i += 4, p += 1) {
+        if (px[i] <= 8) continue;
+        total += 1;
+        const x = p % w;
+        if (x < w / 3) head += 1;
+        else if (x > (w * 2) / 3) tail += 1;
+      }
+    }
+    pen(view, "pointerup", x0 + 500, y0 + 100, 0);
+    await settle(200);
+    return { hasLive: Boolean(live), lowLatency, layers, head, tail, total, errs: window.__errs.slice(0, 4) };
+  }`, PEN_SRC);
+
+  check("the live layer is on the page while the pen is down",
+    midStroke.hasLive && midStroke.total > 0,
+    `live canvas present=${midStroke.hasLive}, ${midStroke.total} inked pixel(s)`);
+  // ...and there is exactly ONE of it. This is the assertion that actually
+  // catches the reported fault, and it is structural rather than a bitmap read
+  // for a reason: the fault is a COMPOSITING one — desynchronized asks to be
+  // taken out of the normal path, and on Chrome/Android that can mean promotion
+  // to a hardware overlay plane, which does not blend with what is beneath it.
+  // Headless Chrome does not promote and does preserve, so it renders the old
+  // two-layer engine perfectly; the pixels below pass either way. What does not
+  // pass either way is the count. Two low-latency layers stacked is the bug, on
+  // any machine that promotes them, so the count is the thing to hold.
+  check("...and it is the ONLY low-latency layer over the page",
+    midStroke.lowLatency === 1 && midStroke.layers === 2,
+    `${midStroke.lowLatency} low-latency canvas(es) and ${midStroke.layers} in total mid-stroke — `
+      + `a plane over a plane hides the one beneath, which is "only the tip of the stroke is visible"`);
+  check("...carrying the START of the stroke, not only the nib",
+    midStroke.head > 0,
+    `${midStroke.head} inked pixel(s) where the stroke began, ${midStroke.tail} under the nib `
+      + `— zero at the head is exactly "only the tip is visible while writing"`);
+  check("...and the line is continuous rather than a stub",
+    midStroke.head > 0 && midStroke.tail > 0 && midStroke.total > midStroke.head + midStroke.tail,
+    `head ${midStroke.head}, middle ${midStroke.total - midStroke.head - midStroke.tail}, nib ${midStroke.tail}`);
+  check("...with nothing thrown mid-stroke", midStroke.errs.length === 0, midStroke.errs.join(" | "));
+
+  // ── 2d. A stroke longer than the live layer's bound ─────────────────────
+  //
+  // Repainting the stroke whole every frame is what makes the live layer immune
+  // to being hidden and to not being preserved, and it costs a fill over the
+  // whole stroke. Past INK_LIVE_MAX_POINTS samples the engine hands everything
+  // but the tail to the dry canvas and carries on with the rest, so the frame
+  // cost stops growing.
+  //
+  // That hand-off is the one piece of new machinery here, and it has two ways to
+  // be wrong that a reader would see: the stroke could commit in pieces, or the
+  // line could break at the seam. A thousand samples in one gesture crosses the
+  // bound comfortably.
+  const longStroke = await page.evaluate(`async (penSrc) => {
+    const { api, settle } = window.__recall;
+    const pen = (0, eval)(penSrc);
+    const view = document.getElementById("documentView");
+    const pageEl = document.querySelector("#documentStage .pdf-page[data-page-number='1']");
+    const box = pageEl.getBoundingClientRect();
+    // Counted in SAMPLES, not in marks. pdf-ink.js joins strokes drawn in quick
+    // succession into one mark (inkStrokesJoinMark), which is what it is for, so
+    // "did a new mark appear" is a question about the grouping rule rather than
+    // about the hand-off. How many samples reached the record is the question
+    // this case is actually asking.
+    const inkSamples = () => (api.state.meta.pdfHighlights || [])
+      .filter((r) => r.kind === "ink")
+      .reduce((n, r) => n + api.decodeInkStrokes(r.ink?.s || [])
+        .reduce((m, stroke) => m + Math.floor((stroke.p || []).length / 3), 0), 0);
+    const inkRuns = () => (api.state.meta.pdfHighlights || [])
+      .filter((r) => r.kind === "ink")
+      .reduce((n, r) => n + api.decodeInkStrokes(r.ink?.s || []).length, 0);
+    // The runs already on this page, keyed by their own points, so the one this
+    // gesture adds can be picked out afterwards. Measuring the bounds of ALL the
+    // ink on the page would let an earlier stroke satisfy the assertion below.
+    const decodedRuns = () => (api.state.meta.pdfHighlights || [])
+      .filter((r) => r.kind === "ink")
+      .flatMap((r) => api.decodeInkStrokes(r.ink?.s || []));
+    const keysBefore = new Set(decodedRuns().map((run) => JSON.stringify(run.p)));
+    const before = inkSamples();
+    const runsBefore = inkRuns();
+
+    // A long flat zig-zag inside the page, so a thousand samples stay on paper.
+    const inkedOn = (canvas) => {
+      if (!canvas) return 0;
+      const px = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data;
+      let n = 0;
+      for (let i = 3; i < px.length; i += 4) if (px[i] > 8) n += 1;
+      return n;
+    };
+    const liveInk = () => inkedOn(pageEl.querySelector(".pdf-ink-layer .is-ink-wet"));
+
+    const x0 = box.left + 30;
+    const y0 = box.top + 120;
+    const w = Math.max(60, box.width - 60);
+    const stepTo = async (n, from) => {
+      for (let i = from; i <= n; i += 1) {
+        const t = i / 1000;
+        pen(view, "pointermove", x0 + (w * t), y0 + (Math.sin(i / 6) * 24) + (t * 60), 1);
+        // A settle every so often, so real frames run and the hand-off is
+        // actually reached rather than everything arriving in one queue.
+        if (i % 100 === 0) await settle(40);
+      }
+      await settle(120);
+    };
+    pen(view, "pointerdown", x0, y0, 1);
+    // Read once BELOW the bound and once well above it. The live layer is
+    // repainted whole every frame, so without the hand-off its ink grows with
+    // the stroke without limit — which is the cost the bound exists to stop. A
+    // fifth of the samples should not be carrying a fifth of the pixels once the
+    // hand-off has run; past it the layer carries only the tail.
+    await stepTo(200, 1);
+    const liveEarly = liveInk();
+    await stepTo(1000, 201);
+    const liveLate = liveInk();
+    const dryMid = inkedOn(pageEl.querySelector(".pdf-ink-layer .is-ink-dry"));
+
+    pen(view, "pointerup", x0 + w, y0 + 60, 0);
+    await settle(300);
+
+    // Where the committed run actually reaches, in the page's own points, against
+    // where the pen actually went. This is the question the sample COUNT cannot
+    // answer: the stored format simplifies a stroke on the way in, so a thousand
+    // samples legitimately come back as a few hundred — but a hand-off that lost
+    // the front of the line shows as a stroke that starts halfway across.
+    const fresh = decodedRuns().filter((run) => !keysBefore.has(JSON.stringify(run.p)));
+    const bounds = api.inkStrokesBounds(fresh);
+    const viewport = api.pdfPageViewport(1);
+    const atX = (clientX) => (viewport ? viewport.convertToPdfPoint(clientX - box.left, 0)[0] : 0);
+    return {
+      dryMid,
+      liveEarly,
+      liveLate,
+      samples: inkSamples() - before,
+      runs: inkRuns() - runsBefore,
+      drawnFrom: atX(x0),
+      drawnTo: atX(x0 + w),
+      inkFrom: bounds ? bounds.minX : 0,
+      inkTo: bounds ? bounds.maxX : 0,
+      errs: window.__errs.slice(0, 4)
+    };
+  }`, PEN_SRC);
+
+  check("a stroke past the live layer's bound commits as ONE run, not several",
+    longStroke.runs === 1,
+    `the gesture added ${longStroke.runs} stroke(s) — the hand-off must not split what the reader drew`);
+  // Not a sample count: the stored format simplifies on the way in, so a
+  // thousand reported samples legitimately come back as a few hundred. What must
+  // survive is the LINE — a hand-off that dropped the part it handed to the dry
+  // canvas would commit a stroke that starts where the hand-off happened.
+  check("...spanning the whole line the pen drew, head included",
+    longStroke.inkFrom <= longStroke.drawnFrom + 12
+      && longStroke.inkTo >= longStroke.drawnTo - 12,
+    `the committed line runs ${longStroke.inkFrom.toFixed(0)}→${longStroke.inkTo.toFixed(0)} points `
+      + `where the pen ran ${longStroke.drawnFrom.toFixed(0)}→${longStroke.drawnTo.toFixed(0)} `
+      + `(${longStroke.samples} sample(s) after the format's own simplification)`);
+  check("...and the live layer stops growing once the bound is passed",
+    longStroke.liveLate > 0 && longStroke.liveLate < longStroke.liveEarly * 3,
+    `the live layer held ${longStroke.liveEarly} inked pixel(s) at 200 samples and ${longStroke.liveLate} at 1000 `
+      + `— growing in step with the stroke means the hand-off never ran, and the per-frame fill grows without limit`);
+  check("...with the handed-over head painted on the dry canvas beneath it",
+    longStroke.dryMid > 0,
+    `${longStroke.dryMid} inked pixel(s) on the dry canvas mid-stroke`);
+  check("...and nothing thrown by the hand-off", longStroke.errs.length === 0, longStroke.errs.join(" | "));
 
   check("the dry canvas has the finished stroke at the instant the pen lifts",
     handover.atLift > handover.before,
@@ -391,6 +602,22 @@ try {
     await settle(400);
     const drawnOnTwo = inkOn(2);
 
+    // ── ...and a BLOCK on each page, which is the half that was missing ────
+    //
+    // Tearing a page out renumbered the highlights and stopped, so a text block
+    // on the torn-out page survived onto whichever page inherited its number and
+    // every block below the gap stayed one page too far down. One block on the
+    // page about to go and one on the page that has to move, so the case can
+    // tell a renumber from a bury.
+    api.addDocumentBlock(2, { x: 120, y: 200 });
+    api.commitBlockEdit();
+    api.addDocumentBlock(1, { x: 120, y: 300 });
+    api.commitBlockEdit();
+    await settle(200);
+    const blockOnPage = (n) => api.documentBlocks().filter((b) => Number(b.page) === n).length;
+    const blocksBefore = { one: blockOnPage(1), two: blockOnPage(2) };
+    const blockIdOnTwo = (api.documentBlocks().find((b) => Number(b.page) === 2) || {}).id;
+
     // Tear out page 1. Everything on page 2 has to become page 2 - 1.
     api.scrollToDocumentPage(1, 0, { smooth: false });
     await settle(200);
@@ -416,7 +643,13 @@ try {
       buried: Object.keys(api.state.meta.deletedHighlightIds || {}).length,
       savedInkPages: savedInk.map((r) => Number(r.page)),
       savedQuadPages: savedInk.flatMap((r) => (r.quads || []).map((q) => Number(q.page))),
-      pageCount: entry.pageCount
+      pageCount: entry.pageCount,
+      blocksBefore,
+      blocksAfter: { one: blockOnPage(1), two: blockOnPage(2) },
+      // The block that WAS on page 2 has to be alive and on page 1 now.
+      movedBlockPage: Number((api.documentBlocks().find((b) => b.id === blockIdOnTwo) || {}).page || 0),
+      blocksBuried: Object.keys(api.state.meta.deletedBlockIds || {}).length,
+      savedBlockPages: (snapshot.meta.pdfBlocks || []).map((b) => Number(b.page))
     };
   }`);
 
@@ -436,6 +669,17 @@ try {
   check("...while what was AFTER it is renumbered onto the page it is now on",
     pages.inkPage1 === pages.drawnOnTwo && pages.inkPage2 === 0,
     `${pages.inkPage1} mark(s) on page 1, ${pages.inkPage2} on page 2`);
+  check("...and the blocks on the page go with it, exactly as the marks do",
+    pages.blocksBefore.one === 1 && pages.blocksBefore.two === 1
+      && pages.blocksAfter.one === 1 && pages.blocksAfter.two === 0
+      && pages.movedBlockPage === 1,
+    `blocks were ${JSON.stringify(pages.blocksBefore)}, are ${JSON.stringify(pages.blocksAfter)}, `
+      + `the one from page 2 is on page ${pages.movedBlockPage}`);
+  check("...with a tombstone for the one that was ON the torn-out page",
+    pages.blocksBuried > 0, `${pages.blocksBuried} block tombstone(s)`);
+  check("...and the saved snapshot says the same, not the page numbers it had",
+    pages.savedBlockPages.length === 1 && pages.savedBlockPages[0] === 1,
+    `saved block pages: ${JSON.stringify(pages.savedBlockPages)}`);
   check("...quads included, which are what a paint and a Go-to resolve against",
     pages.savedQuadPages.length > 0 && pages.savedQuadPages.every((n) => n === 1),
     `quad pages: ${pages.savedQuadPages.join(", ") || "none"}`);
@@ -456,20 +700,49 @@ try {
   const blocks = await page.evaluate(`async () => {
     const { api, settle } = window.__recall;
     const board = document.getElementById("documentInkRail");
+    // Which ids existed BEFORE the press, so the one this case is about can be
+    // named rather than assumed to be the only one. It used to reach for the
+    // first .pdf-block in the DOM and the first record in the array — true only
+    // while nothing else had ever put a block on this deck, and the tear-out
+    // case above now deliberately leaves a survivor behind.
+    const had = new Set((api.state.meta.pdfBlocks || []).map((b) => b.id));
     board.querySelector('[data-hw-action="add-block"]')
       .dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 32, cancelable: true }));
     await settle(400);
-    const node = document.querySelector(".pdf-block");
-    const id = node.dataset.pdfBlock;
-    const first = { ...api.state.meta.pdfBlocks[0] };
+    const record = (id) => ({ ...(api.state.meta.pdfBlocks || []).find((b) => b.id === id) });
+    const id = (api.state.meta.pdfBlocks || []).map((b) => b.id).find((b) => !had.has(b));
+    const node = document.querySelector('[data-pdf-block="' + id + '"]');
+    const first = record(id);
 
-    const area = node.querySelector(".pdf-block-edit");
-    const editorOpen = Boolean(area && !area.hidden);
-    if (area) area.value = "**Bernoulli** along a streamline";
-    document.getElementById("documentView").dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 8, pointerType: "mouse", isPrimary: true, clientX: 4, clientY: 4, buttons: 1 }));
-    await settle(300);
-    const typed = { ...api.state.meta.pdfBlocks[0] };
-    const rendered = document.querySelector(".pdf-block-body")?.innerHTML.includes("<strong>");
+    // ── The editor is the Notes panel's, in a window ───────────────────────
+    //
+    // It was a bare textarea the size of the block. The sheet carries the same
+    // kit the note popup and the Highlights tab use, so the assertions are about
+    // what a reader can actually reach: is there a Write/Preview switch, and is
+    // there a formatting strip.
+    const sheet = document.getElementById("pdfBlockEditor");
+    const editorOpen = Boolean(sheet && !sheet.hidden);
+    const sheetArea = sheet?.querySelector("[data-note-edit-value]");
+    const editorTools = {
+      modes: sheet?.querySelectorAll(".note-editor-mode").length || 0,
+      toolbarButtons: sheet?.querySelectorAll(".edit-toolbar button").length || 0
+    };
+    // $…$ and a fenced diagram alongside the bold, because "it doesn't support
+    // the full markdown ecosystem we have in the notes panel" is precisely about
+    // the parts a bare marked+DOMPurify pass drops on the floor.
+    const source = "**Bernoulli** along a streamline, $p + \\tfrac12 \\rho v^2 = C$";
+    if (sheetArea) {
+      sheetArea.value = source;
+      sheetArea.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    sheet?.querySelector(".pdf-block-editor-done")?.click();
+    await settle(700);
+    const typed = record(id);
+    const body = node.querySelector(".pdf-block-body");
+    const rendered = body?.innerHTML.includes("<strong>");
+    // KaTeX leaves .katex behind; a reduced pipeline leaves the literal $…$.
+    const math = Boolean(body?.querySelector(".katex"));
+    const sheetClosed = Boolean(sheet && sheet.hidden);
 
     const drag = (target, from, to) => {
       target.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 7, pointerType: "mouse", isPrimary: true, clientX: from.x, clientY: from.y, buttons: 1 }));
@@ -482,18 +755,18 @@ try {
     // away from the finger.
     drag(node.querySelector(".pdf-block-bar"), { x: barBox.left + 4, y: barBox.top + 4 }, { x: barBox.left + 64, y: barBox.top + 48 });
     await settle(300);
-    const moved = { ...api.state.meta.pdfBlocks[0] };
+    const moved = record(id);
 
     const gripBox = node.querySelector(".pdf-block-grip").getBoundingClientRect();
     drag(node.querySelector(".pdf-block-grip"), { x: gripBox.left + 2, y: gripBox.top + 2 }, { x: gripBox.left + 54, y: gripBox.top + 40 });
     await settle(300);
-    const sized = { ...api.state.meta.pdfBlocks[0] };
+    const sized = record(id);
 
     await api.flushPendingDeckAutosave();
     await settle(300);
     const entry = api.readLocalDeckIndex()[0];
     const snapshot = await api.readDeckSnapshot(entry.id);
-    const stored = (snapshot.meta.pdfBlocks || [])[0];
+    const stored = (snapshot.meta.pdfBlocks || []).find((b) => b.id === id);
 
     // Two devices, one notebook: this one moved and typed into a block while the
     // other added one of its own. Neither may take the other's work.
@@ -510,13 +783,28 @@ try {
       sized: { x: sized.x, y: sized.y, w: sized.w, h: sized.h },
       stored: stored ? { x: stored.x, y: stored.y, w: stored.w, h: stored.h, md: stored.md } : null,
       mergedIds: (merged.pdfBlocks || []).map((b) => b.id).sort(),
-      mergedMine: (merged.pdfBlocks || []).find((b) => b.id === id)?.x
+      mergedMine: (merged.pdfBlocks || []).find((b) => b.id === id)?.x,
+      editorTools, math, sheetClosed
     };
   }`);
 
   check("a markdown block can be added to a page and typed into",
-    blocks.editorOpen && blocks.md === "**Bernoulli** along a streamline" && blocks.rendered,
+    blocks.editorOpen && blocks.md.startsWith("**Bernoulli**") && blocks.rendered,
     `editor=${blocks.editorOpen}, rendered as markdown=${blocks.rendered}`);
+  // The whole of "the markdown boxes are utterly redundant, it doesn't support
+  // the full markdown ecosystem we have in the notes panel": the block was
+  // rendered with markdownToSafeHtml, which is marked + DOMPurify and nothing
+  // else, and edited in a bare textarea beside an app whose every other markdown
+  // surface shares one editor.
+  check("...in the editor the notes panel uses, not a bare textarea",
+    blocks.editorTools.modes === 2 && blocks.editorTools.toolbarButtons > 8,
+    `${blocks.editorTools.modes} mode button(s) and ${blocks.editorTools.toolbarButtons} toolbar button(s) `
+      + `— a bare textarea has neither`);
+  check("...and it renders through the notes pipeline, so the mathematics is typeset",
+    blocks.math,
+    "no .katex in the block body — a $…$ rendered as the literal characters is the reduced renderer");
+  check("...with the editor closed once it is done", blocks.sheetClosed,
+    `sheet still open=${!blocks.sheetClosed}`);
   check("...dragged, in the page's own points and in the right direction",
     blocks.moved.x > blocks.first.x && blocks.moved.y < blocks.first.y,
     `(${blocks.first.x}, ${blocks.first.y}) → (${blocks.moved.x}, ${blocks.moved.y}) — x up, y down the page`);
@@ -822,6 +1110,39 @@ try {
     await settle(400);
     const backOnNotebook = { pages: api.currentPdfPageCount(), marks: inkHere() };
 
+    // ── ...and what the switch between them COSTS ────────────────────────
+    //
+    // "There feels a discontinuity when I'm changing from a panel to another
+    // panel — I'm seeing (opening document) and it takes a few seconds to load
+    // that panel, which is creating a discontinuity in the reading flow."
+    //
+    // A deck has two papers and one stage, so switching tabs was always a real
+    // reopen: tear the surface down, destroy the parsed document, read the blob
+    // back out of IndexedDB, copy it, hand it to the worker again. The outgoing
+    // document is parked now, and a switch back finds it already parsed.
+    //
+    // Measured SYNCHRONOUSLY, with no settle, which is the whole assertion: a
+    // cold open cannot get past its first await in the same tick, so all it can
+    // have put on screen is the "Opening the document…" line. A parked one has
+    // no awaits at all and the pages are there before this next line runs.
+    api.setViewMode("document");
+    const switched = {
+      loading: Boolean(document.querySelector("#documentView .pdf-loading")),
+      pages: document.querySelectorAll("#documentView .pdf-page").length
+    };
+    for (let i = 0; i < 80 && api.currentPdfPageCount() !== paperPages; i += 1) await settle(100);
+    await settle(300);
+    // ...and the ink is still on it, which is what says the pages that came back
+    // are the document rather than a fresh set of empty placeholders.
+    const switchedMarks = inkHere();
+    // Left on the Write tab, which is where this section found the app and where
+    // everything after it expects to be: the slot decides which paper a block or
+    // a stroke is stamped for (src/documents/doc-slot.js), so a case that walks
+    // off leaving the other tab open silently changes what the next one writes.
+    api.setViewMode("handwriting");
+    for (let i = 0; i < 80 && api.currentPdfPageCount() !== 1; i += 1) await settle(100);
+    await settle(300);
+
     // ── Does drawing move the stamp the sync pushes on? ───────────────────
     //
     // The end of the pipe deckContentMatches sits in the middle of. A stroke is
@@ -849,6 +1170,7 @@ try {
       attached, offered, paperPages, notebookPages, onPaper, mine, theirs, paintedNow,
       hasPdf: Boolean(api.state.meta.pdf), hasNotebook: Boolean(api.state.meta.notebook),
       backOnPaper, backOnNotebook,
+      switched, switchedMarks,
       stampBefore, stampAfter, stampIdle,
       errs: window.__errs.slice(0, 4)
     };
@@ -1007,6 +1329,76 @@ try {
   check("...and comes back out of the store as a picture, on the notebook's pages",
     picture.stored?.kind === "image" && picture.stored?.hasSrc && picture.stored?.doc === "notebook",
     JSON.stringify(picture.stored));
+  // ── ...and the same picture, added with no connection ───────────────────
+  //
+  // The report: an image on a page of handwriting showed on the tablet it was
+  // added on and nowhere else. Not a rendering fault — a reference one.
+  //
+  // storeImageOrQueue parks the bytes in this device's outbox and hands back a
+  // recall-img token when it cannot upload, which is right. The pass that later
+  // uploads them then rewrites every reference to the real URL —
+  // rewriteLocalImageReferences — and that pass looked in the notes and in the
+  // cards and stopped. A block keeps its picture in a RECORD, in its own `src`
+  // field, so the token was never settled: on every other device that is an
+  // image whose bytes live in one browser's IndexedDB, permanently, because the
+  // upload that would have fixed it had already happened.
+  //
+  // The queueing half is driven through the real offline branch
+  // (navigator.onLine, which is what uploadImageToSupabase asks). The settling
+  // half is driven by handing rewriteLocalImageReferences the token->url map,
+  // which is exactly and only what flushPendingImageUploads does once an upload
+  // succeeds — deliberately, so this case is about the rewrite that was wrong
+  // rather than about this harness's stubbed bucket.
+  const offlinePicture = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const onLine = Object.getOwnPropertyDescriptor(Navigator.prototype, "onLine")
+      || Object.getOwnPropertyDescriptor(navigator, "onLine");
+    Object.defineProperty(navigator, "onLine", { configurable: true, get: () => false });
+
+    const png = Uint8Array.from(atob("iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAYAAAD0In+KAAAAEklEQVR4nGP8//8/AzJgYkAFAB8FAv3EhrhCAAAAAElFTkSuQmCC"), (c) => c.charCodeAt(0));
+    const file = new File([png], "whiteboard.png", { type: "image/png" });
+    const added = await api.addDocumentImageBlock(api.currentDocumentPage() || 1, file, { x: 140, y: 420 });
+    await settle(300);
+    if (onLine) Object.defineProperty(navigator, "onLine", onLine);
+    const srcWhileOffline = api.documentBlocks().find((b) => b.id === (added || {}).id)?.src || "";
+    const token = srcWhileOffline.startsWith("recall-img:") ? srcWhileOffline.slice("recall-img:".length) : "";
+
+    const url = "https://fixture.supabase.co/storage/v1/object/public/images/u1/decks/x/whiteboard.png";
+    if (token) await api.rewriteLocalImageReferences(new Map([[token, url]]));
+    await settle(300);
+    const settled = api.documentBlocks().find((b) => b.id === (added || {}).id)?.src || "";
+
+    await api.flushPendingDeckAutosave();
+    await settle(400);
+    const entry = api.readLocalDeckIndex().find((row) => row.title === "A paper and a notebook");
+    const snapshot = await api.readDeckSnapshot(entry.id);
+    const stored = (snapshot.meta.pdfBlocks || []).find((b) => b.id === (added || {}).id);
+    // Scoped to the token that was actually settled, not to "any token at all":
+    // earlier cases in this file queue images that this harness's stubbed bucket
+    // can never confirm, so the saved bag legitimately still holds theirs.
+    const tokensLeft = Boolean(token)
+      && JSON.stringify(snapshot.meta.pdfBlocks || []).includes("recall-img:" + token);
+
+    return {
+      added: Boolean(added),
+      queued: Boolean(token),
+      settled,
+      storedSrc: (stored || {}).src || "",
+      tokensLeft,
+      errs: window.__errs.slice(0, 4)
+    };
+  }`);
+
+  check("an image added with no connection is parked under a local token",
+    offlinePicture.added && offlinePicture.queued,
+    `added=${offlinePicture.added}, parked under a token=${offlinePicture.queued}`);
+  check("...and the upload that follows rewrites the BLOCK, not only the notes",
+    offlinePicture.settled.startsWith("http"),
+    `the block still points at "${offlinePicture.settled}" — on any other device that is a picture with no bytes`);
+  check("...in the saved snapshot too, which is what the other device is handed",
+    offlinePicture.storedSrc.startsWith("http") && !offlinePicture.tokensLeft,
+    `stored src "${offlinePicture.storedSrc}", this image's token still in the saved bag=${offlinePicture.tokensLeft}`);
+
   // ── 10. The four faults reported off a phone ────────────────────────────
   //
   // Every one of these was true of a shipped build, and three of them were
@@ -1170,6 +1562,101 @@ try {
   check("...and a heavier one every fourth square, which is what makes it legible small",
     paper.major >= paper.minor * 1.5,
     `major ${paper.major} vs minor ${paper.minor}`);
+
+  // ── The rail and the pager, at every width ──────────────────────────────
+  //
+  // Reported off a tablet: "the edit options and the page indicators are
+  // clashing". Both used to be absolutely positioned at the foot of the stage on
+  // the same z-index, and the rail WRAPS — so the wider it grows, the further it
+  // reaches into the pager's corner.
+  //
+  // There was a fix and it was `@media (max-width: 720px)`, which is to say it
+  // covered a phone and nothing else. A tablet is the width where the rail has
+  // room to wrap into a long band AND the pager is still in the corner, which is
+  // exactly why that is the device it was reported from.
+  //
+  // So this asks the question at three widths rather than at the one the old fix
+  // had thought about, and it asks it geometrically: do the two boxes intersect?
+  // A rule that moves one of them by the wrong amount still fails.
+  const railWidths = [];
+  for (const [label, width, height] of [["phone", 390, 844], ["tablet", 1024, 768], ["desktop", 1440, 900]]) {
+    await page.call("Emulation.setDeviceMetricsOverride", {
+      width, height, deviceScaleFactor: 1, mobile: width <= 720
+    });
+    railWidths.push(await page.evaluate(`async () => {
+      const { api, settle } = window.__recall;
+      // Open, which is the state that can collide — and the state a notebook
+      // starts in (RAIL_OPEN_DEFAULT).
+      api.toggleInkRail(true);
+      await settle(250);
+      const rail = document.getElementById("documentInkRail");
+      const pager = document.getElementById("documentPager");
+      const box = (node) => {
+        const r = node?.getBoundingClientRect();
+        return r && r.width > 0 && r.height > 0
+          ? { top: r.top, left: r.left, right: r.right, bottom: r.bottom, height: r.height }
+          : null;
+      };
+      const scroller = document.getElementById("documentView");
+      const topOf = (n) => {
+        const el = document.querySelector("#documentStage .pdf-page[data-page-number='" + n + "']");
+        return el ? el.getBoundingClientRect().top : null;
+      };
+      // At rest, and then after a JUMP. The two are different questions and only
+      // the first is answered by the scroller's padding: a jump lands the page
+      // flush with the scroller's own top edge, which is under the rail, so
+      // "go to page N and write on it" put the first line under the controls and
+      // a pen press meant for the paper hit the rail. See scrollerTopInset.
+      // Genuinely at rest: the previous width's iteration ends on a jump, and a
+      // jump leaves the scroller wherever it landed.
+      if (scroller) scroller.scrollTop = 0;
+      await settle(150);
+      const atRest = { top: topOf(1), scrollTop: scroller ? scroller.scrollTop : null };
+      const last = api.currentPdfPageCount ? api.currentPdfPageCount() : 1;
+      api.scrollToDocumentPage(last, 0, { smooth: false });
+      await settle(400);
+      const afterJump = topOf(last);
+      api.scrollToDocumentPage(1, 0, { smooth: false });
+      await settle(300);
+      return { rail: box(rail), pager: box(pager), atRest, afterJump, last };
+    }`));
+  }
+
+  ["phone", "tablet", "desktop"].forEach((label, i) => {
+    const { rail, pager } = railWidths[i];
+    const overlap = Boolean(rail && pager)
+      && rail.left < pager.right && rail.right > pager.left
+      && rail.top < pager.bottom && rail.bottom > pager.top;
+    check(`the pen's rail and the page indicator do not overlap on a ${label}`,
+      Boolean(rail) && Boolean(pager) && !overlap,
+      rail && pager
+        ? `rail ${rail.left.toFixed(0)},${rail.top.toFixed(0)}→${rail.right.toFixed(0)},${rail.bottom.toFixed(0)} `
+          + `vs pager ${pager.left.toFixed(0)},${pager.top.toFixed(0)}→${pager.right.toFixed(0)},${pager.bottom.toFixed(0)}`
+        : `rail box=${Boolean(rail)}, pager box=${Boolean(pager)}`);
+  });
+
+  ["phone", "tablet", "desktop"].forEach((label, i) => {
+    const { rail, atRest } = railWidths[i];
+    check(`...and the first line of the page is not under it on a ${label}`,
+      Boolean(rail) && atRest.top !== null && atRest.scrollTop === 0 && atRest.top >= rail.bottom,
+      `page 1 starts at ${atRest.top === null ? "?" : atRest.top.toFixed(0)}, the rail ends at ${rail ? rail.bottom.toFixed(0) : "?"}`);
+  });
+
+  ["phone", "tablet", "desktop"].forEach((label, i) => {
+    const { rail, afterJump, last } = railWidths[i];
+    check(`...nor after jumping to a page, on a ${label}`,
+      Boolean(rail) && afterJump !== null && afterJump >= rail.bottom - 1,
+      `page ${last} landed at ${afterJump === null ? "?" : afterJump.toFixed(0)} with the rail ending at `
+        + `${rail ? rail.bottom.toFixed(0) : "?"} — a press meant for that line would hit the rail`);
+  });
+
+  check("switching back to the other paper does not re-open it",
+    both.switched.pages > 0 && !both.switched.loading,
+    `${both.switched.pages} page(s) on screen in the same tick, "Opening the document…" showing=`
+      + `${both.switched.loading} — a re-parse cannot have pages up before its first await returns`);
+  check("...and it comes back with what was written on it",
+    both.switchedMarks === both.backOnPaper.marks && both.switchedMarks > 0,
+    `${both.switchedMarks} mark(s), against ${both.backOnPaper.marks} before the switch`);
 
   check("nothing threw anywhere in this run",
     sheet.errs.length === 0 && picture.errs.length === 0,

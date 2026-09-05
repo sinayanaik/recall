@@ -82,13 +82,58 @@
 
 /* ── The rail ──────────────────────────────────────────────────────────────
 
-   Over the page, opposite the pager, and quiet until reached for: the same
-   treatment .document-pager gets, because they are the same kind of thing and
-   two floating panels with different manners read as two different apps. */
+   Over the page and quiet until reached for: the same treatment
+   .document-pager gets, because they are the same kind of thing and two
+   floating panels with different manners read as two different apps.
+
+   ── Why it is at the TOP, and was at the bottom ─────────────────────────
+
+   Reported off a tablet: "the edit options and the page indicators are
+   clashing". They were. Both were absolutely positioned at `bottom: 14px` on
+   the same z-index — the rail from the left, the pager from the right — and the
+   rail WRAPS, with a `max-width` of the whole stage less its margins. Give it
+   five pens, four nibs, three tools, three undo controls and the notebook's own
+   three, and on a tablet it runs the width of the stage and straight under the
+   pager.
+
+   There was a fix for this and it only ever covered a phone: a `max-width:
+   720px` rule that stepped the pager up by the rail's measured height. A tablet
+   is not 720px wide, so above that breakpoint the two simply overlapped — and
+   the rail had grown the notebook's page group since, so it overlapped harder.
+
+   Moving the pager was the wrong half to move anyway. A rail that wraps grows,
+   and whatever it grows towards is what it will eventually reach; at the bottom
+   of the stage it grows UP, into the page, and the pager is only the first thing
+   in its way. At the top it grows down and away from everything, and the corner
+   the pager has had all along stays the pager's.
+
+   One position at every width, rather than one for a phone and another above it:
+   two answers to "where are the pen's controls" is how the phone rule came to be
+   the only one that had been thought about.
+
+   ── ...and why it takes its own space rather than floating there ─────────
+
+   It floated at the top first, which is a different control from the pager it
+   was copying. The pager sits over the FOOT of a page, and the foot of a page is
+   margin. The top of a page is the line you write first, so a floating rail sat
+   on it — and every way of clearing that fought the scroller. Padding the
+   scroller clears the first page and not a page you JUMP to. A scroll inset
+   clears a page you jump to and breaks "scroll so this page is at the top",
+   which is what a contents row, a highlight jump and the page indicator all mean
+   by a page: tools/pdf-preview-check.mjs failed in six places and was right in
+   all six.
+
+   So it is a flex item in the stage's own column, ordered above the scroller —
+   `order` because it is later in the markup, where it was written as an overlay.
+   Nothing can land under it because there is nothing under it: the scroller
+   starts where the rail ends, and not one piece of scroll arithmetic in the app
+   had to be told. It still reads as the same floating pill, and it still dims
+   to 0.2 while the nib is down. */
 .document-ink-rail {
-  position: absolute;
-  left: 14px;
-  bottom: 14px;
+  order: -1;
+  flex: 0 0 auto;
+  align-self: center;
+  margin: 10px 14px 0;
   z-index: 6;
   display: flex;
   flex-wrap: wrap;
@@ -382,9 +427,8 @@
      behind a gesture, which is the fault the selection bar was rebuilt to
      stop. */
   .document-ink-rail {
-    left: 8px;
-    right: 8px;
-    bottom: 8px;
+    align-self: stretch;
+    margin: 8px;
     max-width: none;
     justify-content: center;
   }

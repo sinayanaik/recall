@@ -247,7 +247,80 @@ export function isDocumentViewActive() {
 
 // ── Opening ─────────────────────────────────────────────────────────────────
 
-export function tearDownDocumentView() {
+// ── Documents kept alive across a tab switch ───────────────────────────────
+//
+// A deck has two papers and one stage: the Document tab and the Write tab are
+// the same #documentView showing different files (src/documents/doc-slot.js).
+// Which meant switching between them was always a real reopen — tear the
+// surface down, destroy the parsed document, read the blob back out of
+// IndexedDB, copy it, and hand it to the worker again. On a 40MB paper that is
+// the several seconds reported as "it takes a few seconds to load that panel,
+// which creates a discontinuity in the reading flow".
+//
+// Nothing about it was avoidable while exactly one document could be alive: the
+// two tabs are genuinely two files. So the outgoing one is PARKED instead of
+// destroyed, and a switch back finds it already parsed.
+//
+// What is kept is only what is expensive to rebuild — the parsed document and
+// the geometry read off page 1. The DOM is not: placeholders are a div per page
+// and cost nothing next to a re-parse, and keeping a detached subtree alive is
+// how a surface comes back holding stale canvases.
+//
+// Bounded to the current deck's two slots by construction: the key is the deck
+// and the slot, so re-parking a slot replaces its own entry, and every entry
+// belonging to a deck that is no longer open is destroyed on the next open. A
+// parked document is a worker's copy of a file — this must not become a way to
+// hold five of them.
+const parkedDocuments = new Map();
+
+function documentParkKey(slot) {
+  return `${currentDeckKey()}|${normalizeDocSlot(slot)}`;
+}
+
+function releaseParked(key) {
+  const parked = parkedDocuments.get(key);
+  if (!parked) return;
+  parkedDocuments.delete(key);
+  parked.doc.destroy().catch(() => {});
+}
+
+// Everything parked for a deck that is not the one on screen. Called on every
+// open, which is the one moment we know for certain which deck that is.
+function drainParkedDocuments(keep) {
+  [...parkedDocuments.keys()].forEach((key) => {
+    if (keep && key.startsWith(`${keep}|`)) return;
+    releaseParked(key);
+  });
+}
+
+// Park what is on the stage, with where the reader had got to in it. The
+// position is a PAGE and a ratio rather than a scrollTop, for the reason
+// meta.readingPosition is: a scroll offset is only meaningful at the scale it
+// was taken at, and the surface may well be re-fitted to a different one before
+// this is restored.
+function parkOpenDocument() {
+  if (!openPdf?.doc) return false;
+  const key = documentParkKey(openPdf.slot);
+  releaseParked(key);
+  parkedDocuments.set(key, {
+    sha: docSlotMeta(openPdf.slot)?.sha256 || "",
+    doc: openPdf.doc,
+    pageCount: openPdf.pageCount,
+    baseWidth: openPdf.baseWidth,
+    baseHeight: openPdf.baseHeight,
+    scale: openPdf.scale,
+    fitWidth: openPdf.fitWidth,
+    fitScale: openPdf.fitScale,
+    page: currentDocumentPage(),
+    ratio: currentDocumentRatio()
+  });
+  return true;
+}
+
+// `park` keeps the parsed document rather than destroying it — see above. Every
+// caller that means "this file is finished with" leaves it false.
+export function tearDownDocumentView({ park = false } = {}) {
+  const parked = park && parkOpenDocument();
   pdfOpenToken += 1;
   // The crops are of THIS document's pages; a deck swap or a re-attach makes
   // every one of them a picture of something else.
@@ -258,9 +331,11 @@ export function tearDownDocumentView() {
   // Every page's render deadline too. These outlive the document they were
   // armed for otherwise, and fire against an openPdf that is a different paper.
   openPdf?.pages?.forEach((entry) => clearTimeout(entry.deadline));
-  if (openPdf?.doc) {
+  if (openPdf?.doc && !parked) {
     // Releases the worker's copy of the file. Without this, opening five papers
-    // in a session keeps five parsed documents alive in the worker.
+    // in a session keeps five parsed documents alive in the worker. Skipped for
+    // a parked document, which is the one case where the whole point is that the
+    // worker keeps it.
     openPdf.doc.destroy().catch(() => {});
   }
   openPdf = null;
@@ -416,12 +491,24 @@ export async function reattachDocument(file, pdfMeta) {
   return true;
 }
 
-// Which document is on the surface right now — the deck, and which of its two
-// papers. Both halves matter: the deck alone would call a notebook and the paper
-// beside it the same document, and the slot alone would call two decks' notebooks
-// the same one.
+// Which document is on the surface right now — the deck, which of its two
+// papers, and which BYTES of that paper. All three matter: the deck alone would
+// call a notebook and the paper beside it the same document, the slot alone
+// would call two decks' notebooks the same one, and without the third a
+// notebook whose file was rewritten underneath an open surface is judged
+// "already open" and the reader keeps looking at the previous one.
+//
+// That third part is only ever load-bearing for a notebook, because a notebook
+// is the one document in this app whose bytes change: adding a page, tearing one
+// out and changing the rule each mint a new file under the same key
+// (writeNotebookPdf). An imported paper's hash never moves, so for every other
+// document this reads exactly as it did.
+//
+// Empty when the record carries no hash, which keeps the key stable for rows
+// written before the store recorded one.
 function documentOpenKey(slot) {
-  return `${currentDeckKey()}|${normalizeDocSlot(slot)}`;
+  const normalized = normalizeDocSlot(slot);
+  return `${currentDeckKey()}|${normalized}|${docSlotMeta(normalized)?.sha256 || ""}`;
 }
 
 // Which of the deck's documents the surface is currently showing, or null when
@@ -460,6 +547,12 @@ async function openDocumentViewBody({ force = false, slot = null } = {}) {
   const openSlot = slot ? normalizeDocSlot(slot) : activeDocSlot();
   const pdfMeta = docSlotMeta(openSlot);
   if (!view) return false;
+  // Nothing belonging to a deck that is not this one may stay parked. First,
+  // and before every branch below, because this is the one moment the module
+  // knows for certain which deck the surface is being asked for — there is no
+  // deck-swap hook here to hang it on, and a parked document is a worker's copy
+  // of a whole file.
+  drainParkedDocuments(currentDeckKey());
   // ── A deck with no document opens to the offer of one ────────────────────
   //
   // This used to `return false` here, because the Document tab did not exist
@@ -473,7 +566,12 @@ async function openDocumentViewBody({ force = false, slot = null } = {}) {
   // the previous paper's pages under an attach panel would be a picture of a
   // document this deck does not have.
   if (!pdfMeta) {
-    tearDownDocumentView();
+    // Parked only when what is on the stage is the deck's OTHER paper. Pressing
+    // Write on a deck with no notebook yet should not cost the reader the PDF
+    // they were reading — but a slot whose own document has just gone (an
+    // offload, a removal) must be let go, not kept warm for a file the deck no
+    // longer has.
+    tearDownDocumentView({ park: Boolean(openPdf) && openPdf.slot !== openSlot });
     if (openSlot === DOC_SLOT_NOTEBOOK) renderStartNotebookPrompt();
     else renderAttachDocumentPrompt();
     return false;
@@ -497,7 +595,59 @@ async function openDocumentViewBody({ force = false, slot = null } = {}) {
     return true;
   }
 
-  tearDownDocumentView();
+  // ── The switch back ──────────────────────────────────────────────────────
+  //
+  // The other tab's document, parsed, still in the worker, exactly as it was
+  // left. Everything below this — the blob read, the byte copy, the parse, the
+  // first page's viewport — is what the switch used to cost, and it is all
+  // skipped. The stale-bytes rule applies here as it applies to the device copy
+  // (documentEntryMatches, ./pdf-store.js): a notebook regenerated on another
+  // device while this one was on the Cards tab must not come back out of the
+  // park as the paper it used to be.
+  const parkKey = documentParkKey(openSlot);
+  const parked = force ? null : parkedDocuments.get(parkKey);
+  if (parked && parked.sha === (pdfMeta.sha256 || "")) {
+    parkedDocuments.delete(parkKey);
+    // The outgoing document is parked in its turn, which is what makes the
+    // switch free in BOTH directions rather than only on the way back.
+    tearDownDocumentView({ park: true });
+    view.innerHTML = "";
+    openPdf = {
+      deckKey,
+      slot: openSlot,
+      doc: parked.doc,
+      pageCount: parked.pageCount,
+      baseWidth: parked.baseWidth,
+      baseHeight: parked.baseHeight,
+      scale: parked.scale,
+      fitWidth: parked.fitWidth,
+      fitScale: parked.fitScale,
+      pages: new Map(),
+      rendered: new Set(),
+      observer: null,
+      resizeObserver: null,
+      watchdog: 0
+    };
+    // Re-fitted rather than restored at the scale it was parked with: the reader
+    // may have rotated the device or resized the window while they were on the
+    // other tab, and the resize handler only listens while this surface is the
+    // one on screen. A reader who had zoomed by hand keeps their zoom.
+    if (openPdf.fitWidth) openPdf.scale = fitWidthScale();
+    finishDocumentOpen(view, pdfOpenToken, openSlot, { page: parked.page, ratio: parked.ratio });
+    return true;
+  }
+  if (parked) releaseParked(parkKey);
+
+  // Park the outgoing document when it is the deck's OTHER paper. This is what
+  // makes the FIRST switch pay for the switch back, rather than the second: the
+  // fast path above can only hit something that was parked on the way out.
+  //
+  // The rule lives here rather than being passed in by callers, because it is a
+  // fact about this surface — a deck has two papers and one stage — and not
+  // about any of the five places that ask for a document. A reopen of the same
+  // slot (a re-attach, a regenerated notebook) is deliberately not parked: those
+  // are the cases where the bytes have changed underneath us.
+  tearDownDocumentView({ park: Boolean(openPdf) && openPdf.slot !== openSlot });
   const token = pdfOpenToken;
   view.innerHTML = "";
   const loading = document.createElement("p");
@@ -587,6 +737,20 @@ async function openDocumentViewBody({ force = false, slot = null } = {}) {
 
   view.innerHTML = "";
   openPdf.scale = fitWidthScale();
+  finishDocumentOpen(view, token, openSlot, null);
+  return true;
+}
+
+// Everything from "there is a parsed document in openPdf" to "the reader is
+// looking at it". Shared by the cold open above and the parked switch-back, so
+// the two cannot drift — a surface that came back from the park with a different
+// set of observers on it would be a bug nobody could see until a page failed to
+// render.
+//
+// `at` is where to land: null on a cold open, which resumes from the deck's
+// stored reading position, and { page, ratio } coming back from the park, which
+// resumes where the reader actually was a moment ago.
+function finishDocumentOpen(view, token, openSlot, at) {
   buildPagePlaceholders();
   observePages();
   watchDocumentViewSize();
@@ -608,10 +772,13 @@ async function openDocumentViewBody({ force = false, slot = null } = {}) {
   }
   // Off the critical path: the pages are already on screen and readable, and
   // an outline can need a fetch per entry on a long book.
-  buildDocumentOutline(doc).catch((error) => console.warn("Could not read the PDF outline", error));
+  buildDocumentOutline(openPdf.doc).catch((error) => console.warn("Could not read the PDF outline", error));
 
-  const resume = state.meta?.readingPosition;
-  if (Number.isFinite(resume?.pdfPage)) scrollToDocumentPage(resume.pdfPage, resume.ratio || 0, { smooth: false });
+  if (at && Number.isFinite(at.page)) scrollToDocumentPage(at.page, at.ratio || 0, { smooth: false });
+  else {
+    const resume = state.meta?.readingPosition;
+    if (Number.isFinite(resume?.pdfPage)) scrollToDocumentPage(resume.pdfPage, resume.ratio || 0, { smooth: false });
+  }
   // Ask for the pages outright rather than waiting to be told about them. The
   // IntersectionObserver above will usually get there first and this will find
   // every page already asked for — but "usually" is what this whole bug was:
@@ -620,7 +787,6 @@ async function openDocumentViewBody({ force = false, slot = null } = {}) {
   // observed. See renderPagesNearViewport.
   renderPagesNearViewport();
   armDocumentRenderWatchdog(token);
-  return true;
 }
 
 // ── Two nets under the observer ─────────────────────────────────────────────

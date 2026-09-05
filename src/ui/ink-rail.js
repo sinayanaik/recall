@@ -41,9 +41,7 @@ export function refreshInkRail() {
   const open = isInkArmed();
   rail.hidden = !open;
   pressed(el.documentInkBtn, open);
-  // A hidden element has no box, so the observer never fires for the shut case —
-  // this is the call that takes the variable back off.
-  if (!open) { railHeightPublisher?.(); return; }
+  if (!open) return;
 
   paintInkRailPressed(rail, { pen: inkPen(), width: inkWidth(), tool: inkTool() });
   rail.querySelector('[data-ink-action="undo"]')?.toggleAttribute("disabled", !canUndoInk());
@@ -128,33 +126,5 @@ export function initInkRail() {
     refreshInkRail();
   });
 
-  watchRailHeight(rail);
   refreshInkRail();
-}
-
-// ── How tall the rail is, published for the pager ──────────────────────────
-//
-// On a phone the rail stops being a corner cluster and becomes a full-width band
-// across the foot of the stage (styles/52-ink.css), and .document-pager sits in
-// that corner at the same z-index — so the two overlap, and how badly depends on
-// how many rows the rail has wrapped to, which no stylesheet can know. So it is
-// measured and written onto the stage, and the pager steps up by however much it
-// actually is.
-//
-// A ResizeObserver rather than a read inside refreshInkRail: that function runs
-// on every ink change, which includes every pen lift, and an offsetHeight there
-// is a forced layout at exactly the moment the surface is busiest. The rail
-// changes size when it opens, when the selection group appears and when the
-// window is resized — all of which this sees, and none of which is a stroke.
-let railHeightPublisher = null;
-
-function watchRailHeight(rail) {
-  railHeightPublisher = () => {
-    const stage = el.documentStage;
-    if (!stage) return;
-    if (rail.hidden) stage.style.removeProperty("--ink-rail-h");
-    else stage.style.setProperty("--ink-rail-h", `${Math.round(rail.getBoundingClientRect().height)}px`);
-  };
-  if (typeof ResizeObserver === "function") new ResizeObserver(() => railHeightPublisher()).observe(rail);
-  railHeightPublisher();
 }

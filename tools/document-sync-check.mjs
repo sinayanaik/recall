@@ -768,6 +768,111 @@ try {
     });
   }
 
+  // ── ...and what happens to the page's records when the page is torn out ─
+  //
+  // Three faults, all of which reach the other device as "I deleted this and it
+  // came back", and all of which are answered by the same two rules: renumber
+  // BOTH arrays, and write a tombstone for every record you bury rather than for
+  // the last one you looked at.
+  //
+  // Driven through the real modules. Both load in plain Node with the stubs
+  // above — they are array-and-object work over `state.meta`, and the pdf.js
+  // surface they import is only ever reached from a paint.
+  {
+    const state = (await load("src/core/state.js")).state;
+    const { remapDocumentBlockPages, documentBlocks } = await load("src/documents/pdf-blocks.js");
+    const { remapDocumentHighlightPages } = await load("src/documents/pdf-highlights.js");
+    const { documentEntryMatches } = await load("src/documents/pdf-store.js");
+
+    // Tearing out page 2 of a four-page notebook: page 2's records go, pages 3
+    // and 4 come down one, page 1 does not move. The same closure the app uses.
+    const afterTearOut = (record) => {
+      const on = Number(record?.page) || 0;
+      if (on === 2) return null;
+      return on > 2 ? on - 1 : on;
+    };
+
+    // The Write tab is the surface, so the notebook is the active slot — which is
+    // what decides whose records these are (src/documents/doc-slot.js).
+    const onNotebook = (records, key) => {
+      state.viewMode = "handwriting";
+      state.meta = { [key]: records.map((r) => ({ ...r, doc: "notebook" })) };
+    };
+    const block = (id, page) => ({ id, page, x: 10, y: 10, w: 200, h: 80, kind: "text", md: id, at: T1 });
+    const mark = (id, page) => ({
+      id, page, kind: "ink", color: "yellow", text: "",
+      ink: { v: 1, s: "AQID" }, quads: [{ page, rect: [0, 0, 10, 10] }], at: T1, doc: "notebook"
+    });
+
+    must("tearing out a page renumbers the BLOCKS on the pages below it", () => {
+      onNotebook([block("bk-a", 1), block("bk-b", 3), block("bk-c", 4)], "pdfBlocks");
+      remapDocumentBlockPages(afterTearOut);
+      const pages = Object.fromEntries(documentBlocks().map((b) => [b.id, b.page]));
+      return (pages["bk-a"] === 1 && pages["bk-b"] === 2 && pages["bk-c"] === 3)
+        || `blocks landed on ${JSON.stringify(pages)} — a block below the gap still names the page it used to be on`;
+    });
+
+    must("...and buries the blocks that were ON it", () => {
+      onNotebook([block("bk-a", 1), block("bk-gone", 2)], "pdfBlocks");
+      remapDocumentBlockPages(afterTearOut);
+      const live = documentBlocks().map((b) => b.id);
+      return (!live.includes("bk-gone") && live.includes("bk-a"))
+        || `blocks left alive: ${live.join(",")} — a block on the torn-out page survived onto the page that inherited its number`;
+    });
+
+    must("...with a tombstone for EVERY one of them, not just the last", () => {
+      // The bug this is for: recordDeletedMetaId reads the bag off `meta` and
+      // returns a fresh one, so a loop that kept its answer in a local and
+      // assigned after the last iteration handed every step the same starting
+      // bag. Three blocks on the torn page produced one tombstone, and the other
+      // two came back from the other device on the very next merge.
+      onNotebook([block("bk-x", 2), block("bk-y", 2), block("bk-z", 2), block("bk-keep", 1)], "pdfBlocks");
+      remapDocumentBlockPages(afterTearOut);
+      const buried = Object.keys(state.meta.deletedBlockIds || {}).sort();
+      return JSON.stringify(buried) === JSON.stringify(["bk-x", "bk-y", "bk-z"])
+        || `buried ${JSON.stringify(buried)} — the other blocks have no tombstone and will be re-adopted`;
+    });
+
+    must("the same is true of the marks on the page", () => {
+      onNotebook([mark("hn-x", 2), mark("hn-y", 2), mark("hn-z", 2), mark("hn-keep", 3)], "pdfHighlights");
+      remapDocumentHighlightPages(afterTearOut);
+      const buried = Object.keys(state.meta.deletedHighlightIds || {}).sort();
+      return JSON.stringify(buried) === JSON.stringify(["hn-x", "hn-y", "hn-z"])
+        || `buried ${JSON.stringify(buried)} — an erased or torn-out mark with no tombstone comes back on the next sync`;
+    });
+
+    must("a renumbered block's `at` moves, so the renumber wins its own merge", () => {
+      onNotebook([block("bk-b", 3)], "pdfBlocks");
+      remapDocumentBlockPages(afterTearOut);
+      // Compared against the clock rather than against T1: the fixtures' stamps
+      // are abstract and sit in the future, so "newer than T1" would be a
+      // question about the calendar. What the merge actually asks is whether the
+      // record was re-stamped when it moved.
+      const { at } = documentBlocks()[0];
+      return (at !== T1 && Math.abs(at - Date.now()) < 60_000)
+        || `the moved block still carries ${at} — the other device's copy, still on the old page, would win the merge`;
+    });
+
+    // ── ...and the bytes those page numbers are numbers INTO ────────────────
+    //
+    // A notebook is the one document this app rewrites: every add, tear-out and
+    // change of rule mints a new file under the same store key. A device holding
+    // the previous one has to notice, or it opens a page somebody tore out and
+    // never stops.
+    must("a local copy whose hash disagrees with the record is not the document", () =>
+      documentEntryMatches({ sha256: "aaa" }, { sha256: "bbb" }) === false
+      || "a stale notebook blob passed as the current one — the torn-out page stays for ever");
+
+    must("...and one that agrees is", () =>
+      documentEntryMatches({ sha256: "aaa" }, { sha256: "aaa" }) === true
+      || "the current bytes were refused");
+
+    must("...and a row from before hashing is left alone", () =>
+      (documentEntryMatches({ }, { sha256: "bbb" }) === true
+        && documentEntryMatches({ sha256: "aaa" }, { }) === true)
+      || "an unhashed row was thrown away on no evidence");
+  }
+
   console.log("── document sync ──");
   for (const [ok, name, detail] of results) {
     console.log(`  ${ok ? "ok  " : "FAIL"}  ${name}${ok ? "" : " — " + detail}`);
