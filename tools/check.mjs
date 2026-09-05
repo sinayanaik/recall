@@ -291,6 +291,14 @@ const checks = [
   // standalone "---", which is also the separator the format puts between its
   // two sides, and the escape and the unescape live in different modules.
   ["export        ", ["node", ["tools/export-check.mjs"], ROOT]],
+  // The two tables that decide what the app LOOKS like — ten themes and
+  // fifty-one style settings — asked whether they still agree with each other.
+  // style-check drives the panel in a browser and can only ever ask about the
+  // settings somebody thought to list; this asks about all of them, and about
+  // the themes, and needs neither a browser nor a list. The fault it is shaped
+  // for is ce9f73a's: a colour that resolves to nothing, and every drawing
+  // comes out black.
+  ["theme         ", ["node", ["tools/theme-check.mjs"], ROOT]],
   // Pure Node again, and for the same reason: the sanitizer and the repair are
   // string-and-object work with no imports worth speaking of. It asks the one
   // question a whole book's sync once turned on — can a character that came out
