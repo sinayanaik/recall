@@ -168,6 +168,40 @@ export function remapDocumentBlockPages(move) {
   return gone.length;
 }
 
+// ── An upload that landed after the editor closed ──────────────────────────
+//
+// insertPreparedImageUpload writes a `![uploading…](#upl-…)` token at the caret
+// and swaps it for the real URL when the bytes are stored. settleUploadToken
+// (src/images/outbox.js) does that swap against the textarea when it is still on
+// screen, and otherwise looks for the token in the open deck's NOTES and CARDS —
+// which is everywhere a token could be until a block on a page grew the same
+// editor. Press Done (or Escape, or the backdrop) before a slow upload lands and
+// the block kept the placeholder for ever: no image, no error, and a piece of
+// literal markdown in the middle of the working.
+//
+// Deliberately NOT slot-filtered, unlike every other writer here. The reader may
+// well be on the deck's other paper by the time the upload finishes — that is
+// the whole case this is for — so this takes the array whole and puts it back
+// whole. `at` is bumped on the blocks it changed, for the reason
+// remapDocumentBlockPages bumps it: a swap that kept its old stamp would lose to
+// the other device's copy of the same block, still holding the placeholder.
+export function settleBlockUploadToken(token, replacement) {
+  const blocks = Array.isArray(state.meta?.pdfBlocks) ? state.meta.pdfBlocks : [];
+  if (!blocks.length || !token) return false;
+  let touched = false;
+  const next = blocks.map((block) => {
+    const md = String(block?.md || "");
+    if (!md.includes(token)) return block;
+    touched = true;
+    return { ...block, md: md.split(token).join(replacement), at: Date.now() };
+  });
+  if (!touched) return false;
+  state.meta = { ...(state.meta && typeof state.meta === "object" ? state.meta : {}), pdfBlocks: next };
+  scheduleDeckAutosave();
+  onBlocksChanged();
+  return true;
+}
+
 function freshBlockId(taken) {
   for (;;) {
     const id = `bk-${Math.random().toString(36).slice(2, 8).padEnd(6, "0")}`;
@@ -249,7 +283,27 @@ function buildBlock(block) {
   bar.append(edit, remove);
 
   const body = document.createElement("div");
-  body.className = "pdf-block-body rendered";
+  // ── `rendered` on a PICTURE was costing the picture most of its own frame ──
+  //
+  // Both kinds of block used to carry it. On a text block it is right and load-
+  // bearing: the body holds markdown put through the same pipeline as a note, and
+  // every rule that styles that output is written against `.rendered`. On a
+  // picture block there is no markdown — paintBlock puts a bare <img class=
+  // "pdf-block-img"> in here — and the class dragged in `.rendered img`
+  // (styles/06-rendered.css), which at one class plus one type OUTRANKS a single
+  // class and so beat .pdf-block-img on four properties at once:
+  //
+  //   height: auto                    …killed the height: 100% that fills the frame
+  //   margin: 1rem auto               …the literal gap that was reported
+  //   border-radius                   …rounded a picture meant to fill its box
+  //   max-width: var(--visual-max-width)  …a Style setting for the notes reading
+  //                                       column, 50% on desktop — so the picture
+  //                                       was capped at HALF the block sized to its
+  //                                       own aspect ratio, and the rest was buffer
+  //
+  // The block is sized from the image's own ratio when it is dropped
+  // (addDocumentImageBlock), so with the class gone the picture fills it exactly.
+  body.className = isImage ? "pdf-block-body" : "pdf-block-body rendered";
 
   const grip = document.createElement("span");
   grip.className = "pdf-block-grip";

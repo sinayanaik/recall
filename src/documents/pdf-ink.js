@@ -88,7 +88,7 @@ import { setInkPenDown } from "../core/gesture.js?v=__BUILD__";
 import { QUAD_GEOMETRY_VERSION, documentInkMarks, freshDocumentHighlightId, setDocumentInkForPage } from "./pdf-highlights.js?v=__BUILD__";
 import { REGION_CLASS } from "./pdf-region.js?v=__BUILD__";
 import { currentDocumentPage, pdfPageElement, pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
-import { INK_PEN_DEFAULT, INK_TOOL_DEFAULT, INK_WIDTH_DEFAULT, normalizeInkPen, normalizeInkTool, normalizeInkWidth } from "../format/ink-colors.js?v=__BUILD__";
+import { INK_ERASER_SIZE_DEFAULT, INK_ERASE_MODE_DEFAULT, INK_PEN_DEFAULT, INK_TOOL_DEFAULT, INK_WIDTH_DEFAULT, normalizeInkEraseMode, normalizeInkEraserSize, normalizeInkPen, normalizeInkTool, normalizeInkWidth } from "../format/ink-colors.js?v=__BUILD__";
 import { INK_FORMAT_VERSION, INK_MARK_IDLE_MS, decodeInkStrokes, encodeInkStrokes, inkStrokesBounds, inkStrokesJoinMark, mergeInkBoxes } from "../format/ink-strokes.js?v=__BUILD__";
 import { notifyHighlightsChanged } from "../format/highlight-edit.js?v=__BUILD__";
 import { inkSvgFile } from "../format/ink-svg.js?v=__BUILD__";
@@ -141,13 +141,13 @@ let onInkChanged = () => {};
 // REFERENCE. buildInkRecords returns an unchanged mark as the very same object
 // it read, so an identity compare over this array answers "has anything on this
 // page changed" without decoding a single stroke.
-const seededInk = new Map();
+let seededInk = new Map();
 
 // Per mark id, the strokes it was last encoded from and what came out. Same
 // argument, other direction: the engine holds every stroke as a stable object,
 // so a group whose members are the same objects in the same order cannot have
 // a different encoding than last time.
-const inkEncodeCache = new Map();
+let inkEncodeCache = new Map();
 
 function sameRefs(a, b) {
   if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
@@ -587,8 +587,88 @@ export function setInkTool(tool) {
   onInkChanged();
 }
 
-export function setInkPen(pen) { ensureEngine().setPen(normalizeInkPen(pen)); onInkChanged(); }
-export function setInkWidth(width) { ensureEngine().setWidth(normalizeInkWidth(width)); onInkChanged(); }
+// ── A press on a swatch or a nib, with something lassoed ──────────────────
+//
+// It means "make THIS that", which is what it means in every tool anyone has
+// used — and it needed no new control on a rail that has no room for one. The
+// pen is set as well as the selection restyled, so the next stroke carries on in
+// the colour the reader just chose; setting only the selection would leave them
+// picking the same colour twice for "this bit red, and the rest of the line too".
+export function setInkPen(pen) {
+  const next = normalizeInkPen(pen);
+  const active = ensureEngine();
+  if (active.hasSelection()) { closeOpenMark(); active.restyleSelection({ pen: next }); }
+  active.setPen(next);
+  onInkChanged();
+}
+
+export function setInkWidth(width) {
+  const next = normalizeInkWidth(width);
+  const active = ensureEngine();
+  if (active.hasSelection()) { closeOpenMark(); active.restyleSelection({ width: next }); }
+  active.setWidth(next);
+  onInkChanged();
+}
+
+export function inkEraseMode() { return engine ? engine.getEraseMode() : INK_ERASE_MODE_DEFAULT; }
+export function setInkEraseMode(mode) { ensureEngine().setEraseMode(normalizeInkEraseMode(mode)); onInkChanged(); }
+export function inkEraserSize() { return engine ? engine.getEraserSize() : INK_ERASER_SIZE_DEFAULT; }
+export function setInkEraserSize(size) { ensureEngine().setEraserSize(normalizeInkEraserSize(size)); onInkChanged(); }
+export function inkSnapShapes() { return engine ? engine.getSnapShapes() : true; }
+export function setInkSnapShapes(on) { ensureEngine().setSnapShapes(on); onInkChanged(); }
+
+// ── Copy, cut, paste, duplicate and nudge ─────────────────────────────────
+//
+// Straight through to the engine, which owns the clipboard because the strokes
+// in it are engine objects and a page is one of its hosts. Nothing here has to
+// mint a mark id: the engine strips `m` from what it copies, and commitInkPage
+// already gives an untagged stroke a fresh mark of its own — the rule it grew
+// for the strokes an undo hands back.
+// ── The clipboard, held here rather than in the engine ────────────────────
+//
+// An engine lives as long as the document under it, and on a notebook that is
+// not very long: adding a page regenerates the file, which reopens the surface
+// and rebuilds the engine — and "add a page" is precisely the gesture somebody
+// makes BETWEEN copying a piece of working and pasting it. A buffer inside the
+// engine would be emptied by the act performed in order to use it. This module
+// outlives every document the deck has, so it is where the strokes wait.
+//
+// One buffer, not one per slot: copying working off a paper and pasting it into
+// the notebook beside it is the same gesture as copying within one of them, and
+// a clipboard that refused across the two would be a rule nobody asked for.
+let inkClipboard = null;
+
+export function copyInkSelection() {
+  const clip = ensureEngine().copySelection();
+  if (!clip) return false;
+  inkClipboard = clip;
+  return true;
+}
+
+export function cutInkSelection() {
+  closeOpenMark();
+  const clip = ensureEngine().cutSelection();
+  if (!clip) return false;
+  inkClipboard = clip;
+  return true;
+}
+
+export function duplicateInkSelection() { closeOpenMark(); return ensureEngine().duplicateSelection(); }
+
+export function hasInkClipboard() { return Boolean(inkClipboard?.strokes?.length); }
+
+// Pasted onto the page the reader is looking at, which is the point: copy on
+// page 1, scroll to page 4, paste. ensureInkLayer first, because that page may
+// never have been drawn on and so may have no host for the engine to paste into.
+export function pasteInkSelection(page = null) {
+  if (!hasInkClipboard()) return false;
+  const target = Number.isFinite(page) ? page : currentDocumentPage();
+  if (!ensureInkLayer(target)) return false;
+  closeOpenMark();
+  return ensureEngine().pasteStrokes(target, inkClipboard);
+}
+
+export function nudgeInkSelection(dx, dy) { closeOpenMark(); return ensureEngine().nudgeSelection(dx, dy); }
 
 export function undoInk() { closeOpenMark(); return ensureEngine().undo(); }
 export function redoInk() { closeOpenMark(); return ensureEngine().redo(); }
@@ -697,4 +777,76 @@ export function resetDocumentInk() {
   engine = null;
   press = null;
   activeRect = null;
+}
+
+// ── One engine per paper, so an undo does not stop at the tab ──────────────
+//
+// A deck has two documents and one stage (src/documents/doc-slot.js), and this
+// module held exactly one engine — so every switch between the Document tab and
+// the Write tab destroyed it. createInkEngine's destroy() empties its history
+// and its future along with its hosts, which meant a stroke made on the notebook
+// could not be undone after a glance at the paper beside it: the reader had done
+// nothing but change tabs and Ctrl+Z had quietly become a no-op. Re-seeding was
+// the other half of the same cost — every stroke on every painted page decoded
+// again out of its base64 on the way back.
+//
+// So the engine is PARKED, exactly as the parsed document beside it is
+// (parkedDocuments, ./pdf-view.js), under the same key: the deck, the slot and
+// the document's own hash. The hash is what makes this safe for a notebook,
+// which is the one document in this app whose bytes change — a page added or
+// torn out mints a new file under a new key, so its engine is not adopted and
+// its pages are decoded fresh, which is right, because they are different pages.
+const parkedEngines = new Map();
+
+// The key of the document the ACTIVE engine's hosts and strokes belong to.
+let engineKey = null;
+
+function releaseParkedEngine(key) {
+  const parked = parkedEngines.get(key);
+  if (!parked) return;
+  parkedEngines.delete(key);
+  parked.engine.destroy();
+}
+
+// Called as a document finishes opening, with the key of the document now on
+// screen and whether its PAGES came back out of the park rather than being
+// rebuilt. Those two answers together are the whole decision: an engine is only
+// worth adopting when the very elements it is attached to are the ones back on
+// the stage.
+export function adoptDocumentInk({ key = "", restored = false } = {}) {
+  // What is on screen belongs to a different document now. Park it rather than
+  // destroy it — the reader is one press away from coming back.
+  if (engine && engineKey && engineKey !== key) {
+    closeOpenMark();
+    releaseParkedEngine(engineKey);
+    parkedEngines.set(engineKey, { engine, seeded: seededInk, encoded: inkEncodeCache });
+    engine = null;
+    seededInk = new Map();
+    inkEncodeCache = new Map();
+    press = null;
+    activeRect = null;
+  }
+  // Nothing belonging to a deck that is no longer open may stay parked, by the
+  // rule drainParkedDocuments states for the documents themselves: this is the
+  // one moment the module knows for certain which deck it is being asked for.
+  const deck = `${String(key).split("|")[0]}|`;
+  [...parkedEngines.keys()].forEach((parkedKey) => {
+    if (parkedKey.startsWith(deck)) return;
+    releaseParkedEngine(parkedKey);
+  });
+  const parked = restored ? parkedEngines.get(key) : null;
+  if (parked) {
+    parkedEngines.delete(key);
+    engine = parked.engine;
+    seededInk = parked.seeded;
+    inkEncodeCache = parked.encoded;
+    press = null;
+    activeRect = null;
+  } else {
+    // A cold open of this document: its pages are new elements, so an engine
+    // parked for it is attached to nodes that are no longer in the tree.
+    releaseParkedEngine(key);
+    resetDocumentInk();
+  }
+  engineKey = key;
 }

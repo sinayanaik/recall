@@ -589,6 +589,12 @@ check("...with cloze still withheld, because a note is not a card face",
     // screen. A reader drawing in a note has a session.
     document.querySelectorAll(".login-overlay").forEach((n) => n.remove());
     const mod = await import("/src/notes/ink-sheet.js?v=__BUILD__");
+    // The palette itself, so the counts below can be compared against what the
+    // app actually offers rather than against a number typed here. This asked
+    // for exactly five pens and four nibs, which was true on the day it was
+    // written and stopped being true the moment the palette grew — a check that
+    // fails when a pen is ADDED is a check that has to be edited to add one.
+    const palette = await import("/src/format/ink-colors.js?v=__BUILD__");
     const ta = document.querySelector("#notesEdit");
     if (!ta) return { error: "no notes textarea" };
     ta.hidden = false;
@@ -610,6 +616,11 @@ check("...with cloze still withheld, because a note is not a card face",
       pens: el.querySelectorAll("[data-ink-pen]").length,
       nibs: el.querySelectorAll("[data-ink-width]").length,
       tools: el.querySelectorAll("[data-ink-tool]").length,
+      offers: {
+        pens: palette.INK_PEN_COLORS.length,
+        nibs: palette.INK_WIDTHS.length,
+        tools: palette.INK_TOOLS.length
+      },
       // The sheet must be ON TOP. The app's toolbar is z-index 500 and its
       // panels run to 400; a sheet below them is a drawing surface with a row
       // of the app's buttons floating in the middle of it, and — as this check
@@ -632,9 +643,15 @@ check("...with cloze still withheld, because a note is not a card face",
     check("the ✎ opens a drawing sheet", false, sheet.error);
   } else {
     check("the ✎ opens a drawing sheet", sheet.open, `open=${sheet.open}`);
-    check("...with the pens, the nibs and the three tools on it",
-      sheet.pens === 5 && sheet.nibs === 4 && sheet.tools === 3,
-      `${sheet.pens} pen(s), ${sheet.nibs} nib(s), ${sheet.tools} tool(s)`);
+    // Every pen the palette offers, every nib and every tool — which is the claim
+    // this was always making. Stated against the palette so that adding a colour
+    // is not a change this file has to be edited for, and so that a rail built
+    // from a STALE copy of the list still fails it.
+    check("...with every pen, every nib and every tool on it",
+      sheet.pens === sheet.offers.pens && sheet.nibs === sheet.offers.nibs
+        && sheet.tools === sheet.offers.tools,
+      `${sheet.pens}/${sheet.offers.pens} pen(s), ${sheet.nibs}/${sheet.offers.nibs} nib(s), `
+        + `${sheet.tools}/${sheet.offers.tools} tool(s)`);
     check("...above everything else on the screen", sheet.onTop, `topmost=${sheet.onTop}`);
     check("...opening on a page rather than a screenful", sheet.pages === 1, `${sheet.pages} page(s)`);
 

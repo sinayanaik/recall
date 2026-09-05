@@ -33,6 +33,12 @@
   --ink-pen-blue: #7aa7ff;
   --ink-pen-green: #4ade80;
   --ink-pen-amber: #fbbf24;
+  /* The three added to the five above. Lightened for a dark page like the rest,
+     and chosen to be told apart from those five and from each other there —
+     which is what ruled out a second blue and a second green. */
+  --ink-pen-violet: #c4a2ff;
+  --ink-pen-teal: #5eead4;
+  --ink-pen-pink: #f9a8d4;
 }
 
 :root[data-theme="light-ink"],
@@ -43,6 +49,9 @@
   --ink-pen-blue: #2563eb;
   --ink-pen-green: #15803d;
   --ink-pen-amber: #d97706;
+  --ink-pen-violet: #7c3aed;
+  --ink-pen-teal: #0d9488;
+  --ink-pen-pink: #db2777;
 }
 
 /* ── The layer on a PDF page ───────────────────────────────────────────────
@@ -288,6 +297,15 @@
   background: color-mix(in srgb, var(--accent) 16%, transparent);
 }
 
+/* The eraser's sizes are the same control asking about a different tool, so they
+   are the same button — except that a rubber takes ink AWAY, and a solid blob
+   the size of it would read as a very fat pen. A ring says the same thing about
+   the same size and says which tool it belongs to at a glance. */
+.ink-rail-nib.is-eraser::before {
+  background: transparent;
+  border: 2px solid var(--text);
+}
+
 /* ── The ✎ on a drawing in a note ──────────────────────────────────────────
 
    Beside the 🗑 the same shell already carries, and sized with it — see
@@ -347,11 +365,18 @@
    Above that, and deliberately below two things: the sign-in overlay at 9999,
    because a session that lapses mid-drawing has to be able to interrupt, and
    the toasts at 99999, because "saved here — uploads when you're back online"
-   is the one message a drawing made offline depends on being able to show. */
+   is the one message a drawing made offline depends on being able to show.
+
+   640 rather than the 600 it was, and for a third thing this now has to be above:
+   the block editor (.pdf-block-editor, 620) carries the ✎ Draw button, so the
+   sheet it opens has to land in FRONT of the window that opened it. At 600 it
+   opened behind, which looked from the reader's side exactly like the button
+   doing nothing. The whole order is written out once beside
+   .category-choice-modal in styles/08-panels.css. */
 .ink-sheet {
   position: fixed;
   inset: 0;
-  z-index: 600;
+  z-index: 640;
   display: flex;
   flex-direction: column;
   background: var(--bg);

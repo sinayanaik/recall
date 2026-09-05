@@ -1007,10 +1007,24 @@
             <div class="document-ink-rail" id="documentInkRail" hidden role="toolbar" aria-label="Pen">
               <div class="ink-rail-group" id="inkRailPens" role="group" aria-label="Pen colour"></div>
               <div class="ink-rail-group" id="inkRailWidths" role="group" aria-label="Nib"></div>
+              <!-- The eraser's own row, in the place the nibs were, because it
+                   is the same question about a different tool and the rail has
+                   no room to carry both at once. Built from the palette leaf
+                   like the swatches and the nibs, and shown only while the
+                   eraser is the armed tool (refreshInkRail). -->
+              <div class="ink-rail-group" id="inkRailEraser" role="group" aria-label="Eraser" hidden>
+                <button class="tool-button ink-rail-btn" type="button" data-ink-action="erase-mode" aria-pressed="false" title="Rub out part of a stroke, rather than all of it — cross one letter in the middle of a word and only that letter goes" aria-label="Rub out part of a stroke">&#9021;</button>
+              </div>
               <div class="ink-rail-group" role="group" aria-label="Tool">
                 <button class="tool-button ink-rail-btn" type="button" data-ink-tool="pen" aria-pressed="true" title="Pen" aria-label="Pen">&#9998;</button>
                 <button class="tool-button ink-rail-btn" type="button" data-ink-tool="eraser" aria-pressed="false" title="Eraser — cross a stroke to remove it. The eraser end or the side button of a stylus does this without leaving the pen." aria-label="Eraser">&#9003;</button>
-                <button class="tool-button ink-rail-btn" type="button" data-ink-tool="lasso" aria-pressed="false" title="Lasso — circle strokes to move, resize, join, split or delete them" aria-label="Lasso">&#9711;</button>
+                <button class="tool-button ink-rail-btn" type="button" data-ink-tool="lasso" aria-pressed="false" title="Lasso — circle strokes to move, turn, resize, restyle, copy, join, split or delete them" aria-label="Lasso">&#9711;</button>
+                <!-- Hold the pen still and a rough circle becomes a circle. It
+                     is a good default and it was a law: a fraction bar, a
+                     radical and a long-division rule are all held straight
+                     lines, and a page of them is a page of decisions somebody
+                     did not ask for. -->
+                <button class="tool-button ink-rail-btn" type="button" data-ink-action="snap" aria-pressed="true" title="Snap shapes — hold the pen still at the end of a stroke and a rough circle, box, line or arrow is offered as a neat one" aria-label="Snap shapes">&#9651;</button>
               </div>
               <div class="ink-rail-group" role="group" aria-label="Undo">
                 <button class="tool-button ink-rail-btn" type="button" data-ink-action="undo" title="Undo" aria-label="Undo">&#8630;</button>
@@ -1044,12 +1058,31 @@
                 </label>
                 <button class="tool-button ink-rail-btn" type="button" data-hw-action="add-page" title="Add a page at the end" aria-label="Add a page">&#43;&#9647;</button>
               </div>
-              <!-- Only while something is lassoed. Join and Split are the
-                   repair for the grouping rule guessing where one mark ended:
-                   see src/documents/pdf-ink.js. -->
+              <!-- While something is lassoed, or while something is on the
+                   clipboard — Paste is the one control here that is FOR the
+                   moment nothing is selected, since copying on page 1 and
+                   pasting on page 4 is the case it exists for.
+
+                   Join and Split are the repair for the grouping rule guessing
+                   where one mark ended: see src/documents/pdf-ink.js. The rest
+                   are what a selection could not do at all — a lasso that can
+                   only move, resize and delete is a tool for correcting a
+                   placement, and a page of working needs this bit in red, this
+                   bit thinner, and this diagram again over there.
+
+                   Refused rather than hidden, one by one, for the reason join
+                   already was: a row that changes width between one selection
+                   and the next moves the buttons under the reader's thumb.
+
+                   Recolouring and re-nibbing need no button at all — with a
+                   selection up, a press on a swatch or a nib acts on it. -->
               <div class="ink-rail-group ink-rail-selection" id="inkRailSelection" role="group" aria-label="Selection" hidden>
                 <button class="tool-button ink-rail-btn" type="button" data-ink-action="join" title="Join — make these strokes one mark, with one note and one card" aria-label="Join">&#8862;</button>
                 <button class="tool-button ink-rail-btn" type="button" data-ink-action="split" title="Split — take these strokes out into a mark of their own" aria-label="Split">&#8863;</button>
+                <button class="tool-button ink-rail-btn" type="button" data-ink-action="duplicate" title="Duplicate — a second copy beside this one, as its own mark" aria-label="Duplicate">&#10697;</button>
+                <button class="tool-button ink-rail-btn" type="button" data-ink-action="copy" title="Copy (Ctrl+C) — to paste on this page or any other" aria-label="Copy">&#10064;</button>
+                <button class="tool-button ink-rail-btn" type="button" data-ink-action="cut" title="Cut (Ctrl+X) — take these strokes away, to paste somewhere else" aria-label="Cut">&#9986;</button>
+                <button class="tool-button ink-rail-btn" type="button" data-ink-action="paste" title="Paste (Ctrl+V) — put what you copied on the page you are looking at, as a mark of its own" aria-label="Paste">&#128203;</button>
                 <button class="tool-button ink-rail-btn is-danger" type="button" data-ink-action="delete" title="Delete these strokes" aria-label="Delete">&#128465;</button>
               </div>
             </div>
@@ -1928,13 +1961,13 @@
               <li><strong>A tap still taps</strong> — press a numbered note badge, a highlight or a button with the pen and it does what it always did. Only a stroke is ink</li>
               <li><strong>Press ✎ beside the Cards / Notes / Document tabs</strong> for the rest of it: five pen colours, four nibs, an eraser and a lasso, with undo, redo and <strong>⌧ Clear the page</strong>. The colours are defined per theme, so a drawing made in daylight is still legible in a dark one, and your red pen stays red on an inverted page. <strong>Ctrl/⌘+Z</strong> takes back a stroke without reaching for the rail</li>
               <li><strong>Erase without changing tool</strong> — the eraser end of a stylus, or its side button, erases for as long as you hold it. Crossing a stroke removes that stroke, not a hole in it</li>
-              <li><strong>Hold still and a shape snaps</strong> — pause at the end of a stroke and a rough circle becomes a circle, a rough box a box, a line a line, and a line with a hook on the end an arrow. It refuses far more often than it accepts, and it will not touch anything the size of handwriting: turning your writing into a shape would be much worse than not offering. <strong>Keep writing and it takes the offer back</strong> — a pause in the middle of a word is you thinking, not you drawing a line, so the stroke carries on from where the nib actually is</li>
+              <li><strong>Hold still and a shape snaps</strong> — pause at the end of a stroke and a rough circle becomes a circle, a rough box a box, a line a line, and a line with a hook on the end an arrow. It refuses far more often than it accepts, and it will not touch anything the size of handwriting: turning your writing into a shape would be much worse than not offering. <strong>Keep writing and it takes the offer back</strong> — a pause in the middle of a word is you thinking, not you drawing a line, so the stroke carries on from where the nib actually is. <strong>&#9651;</strong> on the pen's panel turns it off entirely, which is what a page of fraction bars, radicals and long-division rules wants: every one of those is a held straight line</li>
               <li><strong>Lasso to fix, move or remove</strong> — circle some strokes to drag them, resize them from the corner, or delete them</li>
               <li><strong>Your writing is a mark like any other</strong> — a burst of strokes is listed in the <strong>Highlights</strong> pane with a picture of what you drew, takes a written note, wears a numbered badge on the page, and makes a flashcard whose answer is the drawing itself. Strokes made together become one mark and a pause of a second and a half starts the next; when that guesses wrong, lasso them and press <strong>⊞ Join</strong> or <strong>⊟ Split</strong></li>
               <li><strong>It syncs and it backs up</strong> — ink merges between two devices the way your highlights and cards do, ink you delete stays deleted, and <strong>⋯ → Export → This paper, annotated</strong> prints the pages with your handwriting on them</li>
               <li><strong>Write in a note, or on a card</strong> — press <strong>✎</strong> in the editing toolbar and a drawing sheet opens. It is a real page rather than one screenful: it scrolls, <strong>+▢</strong> adds another page below, and Done drops one picture per page you drew on into the note where the caret was — each a block that reflows with the text, with the same corner grip to resize it and the same 🗑 to remove it. Press a drawing's own <strong>✎</strong> later to reopen it and add to it. It works with a finger and a mouse too, so a tablet without a stylus is not shut out</li>
               <li><strong>No connection needed</strong> — a drawing made offline is kept on the device and uploads itself when you are back, exactly as a pasted picture does</li>
-              <li><strong>A whole notebook</strong> &mdash; the <strong>&#9998; Write</strong> tab, beside Cards, Notes and Document, on every deck you open. Any deck can have one, <em>including a deck that already has a PDF</em>: the paper you are reading and the pages you are writing on are two different documents on the same deck, so nothing you write lands on somebody else's page. The paper is a <strong>real PDF</strong>, so writing on it is exactly writing on a paper &mdash; the same pen, the same strokes stored as coordinates into the page, the same zoom, the same export. <strong>The pen's panel is already open</strong> when you arrive, in the corner of the page: the five colours, the four nib widths, the eraser, the <strong>lasso</strong> and undo. Circle some writing with the lasso and you get a box round it &mdash; drag inside to move it, drag the corner to make it bigger or smaller, and join, split or delete it from the same panel. The same panel adds things to the page: <strong>&#43;&#9998;</strong> a markdown text block, <strong>&#43;&#128247;</strong> a picture (or just paste or drop one), <strong>&#43;&#9647;</strong> another page. Text blocks and pictures drag by their bar and resize by their corner. Under <strong>&#8943;</strong> are the two you reach for less often: grid, ruled or blank paper &mdash; which changes the sheet under what you have already written &mdash; and tearing out the page you are on, which moves everything after it up. The page follows your theme, dark paper on a dark theme, and so does your ink, so nothing you have written can disappear when you change it</li>
+              <li><strong>A whole notebook</strong> &mdash; the <strong>&#9998; Write</strong> tab, beside Cards, Notes and Document, on every deck you open. Any deck can have one, <em>including a deck that already has a PDF</em>: the paper you are reading and the pages you are writing on are two different documents on the same deck, so nothing you write lands on somebody else's page. The paper is a <strong>real PDF</strong>, so writing on it is exactly writing on a paper &mdash; the same pen, the same strokes stored as coordinates into the page, the same zoom, the same export. <strong>The pen's panel is already open</strong> when you arrive, in the corner of the page: eight colours, four nib widths, the eraser, the <strong>lasso</strong> and undo. The eraser has a size of its own and two ways of working &mdash; cross a mark and all of it goes, or press <strong>&#9021;</strong> and it rubs out only what you pass over, so one letter in the middle of a line written without lifting is one letter. <strong>&#9651;</strong> turns off the shape snapping, for a page of fraction bars and radicals that are all meant to stay hand-drawn. Circle some writing with the lasso and you get a box round it &mdash; drag inside to move it, the bottom-right corner to resize, the round top-left one to <strong>turn</strong> it, and the arrow keys to nudge it a point at a time (hold Shift for ten). <strong>A press on a colour or a nib restyles what you have circled</strong> rather than only the next stroke. From the same panel: join, split, duplicate, copy, cut, paste and delete &mdash; and what you copy can be pasted onto <em>any</em> page, which is how a piece of working moves from the bottom of one page to the top of the next (Ctrl+C, Ctrl+X, Ctrl+V and Ctrl+D do the same). The same panel adds things to the page: <strong>&#43;&#9998;</strong> a markdown text block, <strong>&#43;&#128247;</strong> a picture (or just paste or drop one), <strong>&#43;&#9647;</strong> another page. Text blocks and pictures drag by their bar and resize by their corner. Under <strong>&#8943;</strong> are the two you reach for less often: grid, ruled or blank paper &mdash; which changes the sheet under what you have already written &mdash; and tearing out the page you are on, which moves everything after it up. The page follows your theme, dark paper on a dark theme, and so does your ink, so nothing you have written can disappear when you change it</li>
               <li><strong>Type on the page too</strong> — <strong>+ Text</strong> drops a markdown block where you are looking, which you drag by its bar, resize from its corner and write in: the statement of a problem above a derivation in your own hand. Blocks work on <em>any</em> paper, not only a notebook's — a typed note over a figure in somebody's preprint is the same thing. They are positioned in the page's own points like a highlight, so they stay put through a zoom, a reload and a second device</li>
               <li><strong>On a laptop</strong> the pen rail is also how a mouse draws: a mouse has no way of saying whether a drag means ink or a selection, so it only inks while the rail is open</li>
             </ul>

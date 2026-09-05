@@ -106,6 +106,14 @@ export function anyModalOpen() {
     // invisible to unlockPageScroll's owner test, and the card shortcuts
     // (Space/Enter/arrows/K/R) still acted on the card behind a drawing.
     Boolean(document.querySelector("#inkSheet:not([hidden])")) ||
+    // The block editor on a page of handwriting, for every word of the reason
+    // above and by the same means. It takes a scroll lock (openBlockEditor calls
+    // lockPageScroll) and was not listed here, so a dialog opened over it and
+    // then closed handed the page its scroll back — and jumped it to the pre-lock
+    // offset — with the editor still covering the screen. The card shortcuts
+    // were live behind it too, which is Space advancing a card nobody can see
+    // while somebody types a paragraph over the top of it.
+    Boolean(document.querySelector("#pdfBlockEditor:not([hidden])")) ||
     // The Cloze Review panel takes a scroll lock like the rest, so it has to be
     // listed here too — unlockPageScroll consults this to decide whether the
     // lock still has an owner.

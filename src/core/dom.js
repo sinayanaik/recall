@@ -274,6 +274,7 @@ export const el = {
   documentInkRail: document.querySelector("#documentInkRail"),
   inkRailPens: document.querySelector("#inkRailPens"),
   inkRailWidths: document.querySelector("#inkRailWidths"),
+  inkRailEraser: document.querySelector("#inkRailEraser"),
   inkRailSelection: document.querySelector("#inkRailSelection"),
   // The Write tab has no panel, no stage and — since the row that carried them
   // crushed its own tab labels — no chrome of its own either. Handwriting is

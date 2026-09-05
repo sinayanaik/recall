@@ -40,12 +40,21 @@ export const INK_PEN_DEFAULT = "ink";
 // "ink" rather than "black": on a dark theme this token resolves to a near-white
 // and calling it black in the source would make the next person fix the wrong
 // thing. It is the pen you write with, whatever the page is.
+// Eight rather than the five it started with. "The pen options are very limited"
+// is a fair reading of a palette that could not tell a correction from a heading
+// from a second worked example — three uses that a page of working has all at
+// once. The three added are chosen to be told apart from the five that were
+// already here AND from each other on a dark page, which is what ruled out a
+// second blue and a second green.
 export const INK_PEN_HEX = {
   ink: "#16181d",
   red: "#dc2626",
   blue: "#2563eb",
   green: "#15803d",
-  amber: "#d97706"
+  amber: "#d97706",
+  violet: "#7c3aed",
+  teal: "#0d9488",
+  pink: "#db2777"
 };
 
 export const INK_PEN_TOKENS = Object.keys(INK_PEN_HEX);
@@ -106,4 +115,51 @@ export const INK_TOOL_DEFAULT = "pen";
 
 export function normalizeInkTool(tool) {
   return INK_TOOLS.includes(String(tool || "")) ? String(tool) : INK_TOOL_DEFAULT;
+}
+
+// ── How the eraser works, and how big it is ────────────────────────────────
+//
+// "stroke" is what the eraser has always done: cross a mark anywhere and the
+// whole mark goes. It is the right answer for crossing out a word and the wrong
+// one for a single letter in the middle of a line of working written without
+// lifting — there, "cross it and it all goes" means redoing the sentence.
+//
+// "part" rubs out only what the nib passed over and leaves the rest standing,
+// splitting the stroke where it was cut (eraseFromInkStroke, ./ink-strokes.js).
+// Both halves keep the mark id, so a cut word still has one note and one card.
+//
+// Stroke-whole stays the DEFAULT because it is the one that cannot surprise
+// anybody: it removes exactly the thing you crossed.
+export const INK_ERASE_MODES = ["stroke", "part"];
+
+export const INK_ERASE_MODE_DEFAULT = "stroke";
+
+export function normalizeInkEraseMode(mode) {
+  return INK_ERASE_MODES.includes(String(mode || "")) ? String(mode) : INK_ERASE_MODE_DEFAULT;
+}
+
+// The eraser's own radius, in PDF points, on top of each stroke's half width —
+// the same units and the same reasoning as INK_WIDTHS. There was no size at all
+// before: a fixed 3 points of slack, chosen so that a stroke-eraser did not have
+// to be aimed, which is generous for crossing out a word and far too coarse to
+// rub out one letter now that "part" can.
+//
+// 3 stays in the middle of the set so nothing changes for anyone who never opens
+// the row, and snapping (rather than clamping) matches normalizeInkWidth for the
+// reason it gives: a size from a device with a different palette should become
+// one of ours rather than a fifth that no button ever lights up for.
+export const INK_ERASER_SIZES = [1.5, 3, 7, 14];
+
+export const INK_ERASER_SIZE_DEFAULT = 3;
+
+export function normalizeInkEraserSize(size) {
+  const value = Number(size);
+  if (!Number.isFinite(value)) return INK_ERASER_SIZE_DEFAULT;
+  let best = INK_ERASER_SIZES[0];
+  let bestGap = Math.abs(value - best);
+  INK_ERASER_SIZES.forEach((candidate) => {
+    const gap = Math.abs(value - candidate);
+    if (gap < bestGap) { best = candidate; bestGap = gap; }
+  });
+  return best;
 }

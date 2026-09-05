@@ -116,10 +116,21 @@ import { DOCUMENT_NOTE_HANDLERS, documentHighlightNote, initDocumentMarkMenu, re
 import { closeDocumentToc, documentOutlineEntries, initDocumentOutlineFolding, isDocumentTocOpen, resolveOutlineEntryPage, toggleDocumentToc } from "./documents/pdf-outline.js?v=__BUILD__";
 import { deleteRemoteDocument } from "./documents/pdf-store.js?v=__BUILD__";
 import { currentPdfDocument, documentFittedWidth, fitDocumentToWidth, initDocumentPinchZoom, isDocumentFitWidth, reattachDocument, relayoutDocument, scheduleDocumentPositionSave, scrollToDocumentPage, refreshDocumentPaperForTheme, setDocumentAttachHandler, setDocumentOpenedHook, setDocumentPagePaintedHook, setNotebookStartHandler, togglePdfInvert, updatePageIndicator, zoomDocument } from "./documents/pdf-view.js?v=__BUILD__";
-import { canRedoInk, canUndoInk, initDocumentInk, inkMarkImageMarkdown, isInkMarkId, paintDocumentInk, redoInk, repaintDocumentInk, resetDocumentInk, setInkChangedHandler, undoInk } from "./documents/pdf-ink.js?v=__BUILD__";
+import { adoptDocumentInk, canRedoInk, canUndoInk, copyInkSelection, cutInkSelection, duplicateInkSelection, hasInkClipboard, initDocumentInk, inkMarkImageMarkdown, inkSelectionCount, isInkMarkId, nudgeInkSelection, paintDocumentInk, pasteInkSelection, redoInk, repaintDocumentInk, setInkChangedHandler, undoInk } from "./documents/pdf-ink.js?v=__BUILD__";
 import { addHandwritingImage, enterHandwritingView, refreshHandwritingBoard, runHandwritingMenuAction, startHandwritingNotebook } from "./handwriting/board.js?v=__BUILD__";
 import { commitBlockEdit, handleBlockPointerDown, paintDocumentBlocks, repaintDocumentBlocks, setBlocksChangedHandler } from "./documents/pdf-blocks.js?v=__BUILD__";
 import { applyInkRailPreference, initInkRail, refreshInkRail } from "./ui/ink-rail.js?v=__BUILD__";
+import { INK_NUDGE_STEP, INK_NUDGE_STEP_COARSE } from "./render/ink-engine.js?v=__BUILD__";
+
+// Which way each arrow moves a lassoed selection, in model units before the step
+// is applied. A table rather than four branches in the keydown handler, which is
+// long enough already.
+const INK_NUDGE_KEYS = {
+  ArrowLeft: [-1, 0],
+  ArrowRight: [1, 0],
+  ArrowUp: [0, -1],
+  ArrowDown: [0, 1]
+};
 import { initDocumentRegionSelect, toggleRegionSelect } from "./documents/pdf-region.js?v=__BUILD__";
 import { paintPageNoteBadges, paintPdfPageNotesButton, readPdfPageNotesPreference, refreshPdfPageNotes, repaintPdfPageNotes, setDocumentNoteRevealHook, setPdfPageNotesFlag, togglePdfPageNotes } from "./documents/pdf-page-notes.js?v=__BUILD__";
 import { initReadingRail, refreshReadingRail, refreshReadingRailModes } from "./ui/reading-rail.js?v=__BUILD__";
@@ -1217,12 +1228,17 @@ onDomReady(() => {
     // it, and only the pane knows which ones should have it back.
     repaintHighlightLink();
   });
-  setDocumentOpenedHook(() => {
+  setDocumentOpenedHook((opened) => {
     // The engine holds decoded strokes for every page it has painted, keyed by
-    // page number — and page 7 of the last paper is not page 7 of this one.
-    // Safe here: openDocumentViewBody has just emptied the view and rebuilt the
-    // placeholders, and no page has painted a layer yet.
-    resetDocumentInk();
+    // page number — and page 7 of the last paper is not page 7 of this one. So
+    // it is torn down on a cold open, where openDocumentViewBody has just
+    // emptied the view and rebuilt the placeholders and no page has painted a
+    // layer yet — and PARKED rather than torn down when the reader is only
+    // moving between the deck's two papers, which is what keeps an undo working
+    // across a tab switch. adoptDocumentInk decides which from the two facts
+    // pdf-view is in a position to know: the document's key, and whether its
+    // pages came back out of the park rather than being rebuilt.
+    adoptDocumentInk(opened);
     // The rail as THIS surface last left it. Here rather than in the Write tab's
     // own paint step because both slots need it and this hook is the one place
     // that fires for either: a notebook starts with the rail open (the pen is
@@ -2418,6 +2434,50 @@ document.addEventListener("keydown", (event) => {
       && (event.shiftKey ? canRedoInk() : canUndoInk())) {
     event.preventDefault();
     event.shiftKey ? redoInk() : undoInk();
+    return;
+  }
+  // ── Copy, cut and paste, where the pen is ────────────────────────────────
+  //
+  // The same three keys everything else in the world uses, on the surface where
+  // the thing being copied is a piece of handwriting rather than a run of text.
+  // Guarded on there BEING a lassoed selection, so a reader copying words out of
+  // a paper still gets the browser's own copy — which is the common case on this
+  // surface and must not be taken away by a shortcut for the rarer one. Paste is
+  // the exception: it is guarded on this app's clipboard holding ink, since
+  // nothing else on this surface can take a paste anyway.
+  if ((event.ctrlKey || event.metaKey) && onDocumentSurface() && !event.target.matches("input, textarea")) {
+    const key = String(event.key).toLowerCase();
+    if ((key === "c" || key === "x") && inkSelectionCount() > 0) {
+      event.preventDefault();
+      key === "c" ? copyInkSelection() : cutInkSelection();
+      refreshInkRail();
+      return;
+    }
+    if (key === "v" && hasInkClipboard()) {
+      event.preventDefault();
+      pasteInkSelection();
+      refreshInkRail();
+      return;
+    }
+    if (key === "d" && inkSelectionCount() > 0) {
+      event.preventDefault();
+      duplicateInkSelection();
+      refreshInkRail();
+      return;
+    }
+  }
+  // ...and the arrows, which move a lassoed selection by a point at a time and
+  // by ten with Shift held. A pointer drag is the ordinary way to move ink and
+  // it is not a precise one — the last two points of a placement are a thing to
+  // tap out, not to wrestle a finger into. Only while something is lassoed, so
+  // the arrows still page through a document the rest of the time.
+  if (!event.ctrlKey && !event.metaKey && !event.altKey
+      && onDocumentSurface() && !event.target.matches("input, textarea")
+      && inkSelectionCount() > 0 && INK_NUDGE_KEYS[event.key]) {
+    event.preventDefault();
+    const [dx, dy] = INK_NUDGE_KEYS[event.key];
+    const step = event.shiftKey ? INK_NUDGE_STEP_COARSE : INK_NUDGE_STEP;
+    nudgeInkSelection(dx * step, dy * step);
     return;
   }
   const inNotesSurface = state.viewMode === "notes"

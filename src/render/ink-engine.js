@@ -70,8 +70,8 @@
 //     writes, which is layout thrash, and the report that produced was "a
 //     little unstable, a little flickering".
 
-import { INK_PEN_DEFAULT, INK_TOOL_DEFAULT, INK_WIDTH_DEFAULT, normalizeInkPen, normalizeInkTool, normalizeInkWidth } from "../format/ink-colors.js?v=__BUILD__";
-import { inkStrokeHitsPoint, inkStrokeInPolygon, inkStrokesBounds, transformInkStroke } from "../format/ink-strokes.js?v=__BUILD__";
+import { INK_ERASER_SIZE_DEFAULT, INK_ERASE_MODE_DEFAULT, INK_PEN_DEFAULT, INK_TOOL_DEFAULT, INK_WIDTH_DEFAULT, normalizeInkEraseMode, normalizeInkEraserSize, normalizeInkPen, normalizeInkTool, normalizeInkWidth } from "../format/ink-colors.js?v=__BUILD__";
+import { eraseFromInkStroke, inkStrokeHitsPoint, inkStrokeInPolygon, inkStrokesBounds, transformInkStroke } from "../format/ink-strokes.js?v=__BUILD__";
 import { INK_WIDTH_LOOKBACK, paintInkStroke, paintInkStrokes, resolveInkColor } from "./ink-paint.js?v=__BUILD__";
 import { INK_SHAPE_HOLD_MS, fitInkShape } from "./ink-shapes.js?v=__BUILD__";
 
@@ -120,9 +120,12 @@ const INK_LIVE_MAX_POINTS = 900;
 // race the nib.
 const INK_LIVE_TAIL = 180;
 
-// How near the nib a stroke has to pass to be erased, on top of its own half
-// width. A stroke-eraser that demands a direct hit is one people scrub at.
-const INK_ERASE_SLACK = 3;
+// How near the nib a stroke has to pass to be erased used to be this constant,
+// on top of the stroke's own half width — "a stroke-eraser that demands a direct
+// hit is one people scrub at", which is still true. It is a setting now
+// (INK_ERASER_SIZES, ../format/ink-colors.js) with this value in the middle of
+// the set, because 3 points is generous for crossing out a word and far too
+// coarse to rub out one letter, which the part-eraser can do.
 
 // The shortest interval between two re-arms of the straightener's hold timer.
 // A stylus reports up to 240 pointermoves a second and each one used to cost a
@@ -138,6 +141,19 @@ const INK_HISTORY_MAX = 40;
 
 // The corner grip on a lasso selection, in CSS pixels.
 const INK_GRIP_SIZE = 22;
+
+// How far a paste or a duplicate lands from where it was taken, in model units,
+// when the caller has not said where the reader is pointing. Enough to see the
+// copy is a copy; not so far that it arrives off the part of the page being
+// looked at. A copy that lands exactly on its original looks like nothing
+// happened, and then a drag moves the wrong one.
+const INK_PASTE_OFFSET = 16;
+
+// How far a selection moves per press of an arrow key, in model units, and with
+// Shift held. Ten points is about a line of handwriting.
+export const INK_NUDGE_STEP = 1;
+
+export const INK_NUDGE_STEP_COARSE = 10;
 
 function inkCanvasScale(width, height) {
   const wanted = Math.min(INK_MAX_CANVAS_SCALE, (typeof window !== "undefined" && window.devicePixelRatio) || 1);
@@ -183,6 +199,13 @@ export function createInkEngine({
   let tool = INK_TOOL_DEFAULT;
   let pen = INK_PEN_DEFAULT;
   let width = INK_WIDTH_DEFAULT;
+  let eraseMode = INK_ERASE_MODE_DEFAULT;
+  let eraserSize = INK_ERASER_SIZE_DEFAULT;
+  // Whether a hold offers to straighten the stroke into a shape. On by default,
+  // because it is what the feature is for — but refusable, which it was not:
+  // somebody writing mathematics draws a fraction bar and a radical and a long
+  // division rule, and every one of them is a held straight line.
+  let snapShapes = true;
 
   let inkOverlay = null;
   let overlayCtx = null;
@@ -479,6 +502,12 @@ export function createInkEngine({
     const grip = gripHalf(selection.key);
     ctx.fillStyle = resolveInkColor("blue", root);
     ctx.fillRect(box.maxX - grip, box.maxY - grip, grip * 2, grip * 2);
+    // The turn grip, on the opposite corner from the resize one so the two can
+    // never be reached for by mistake, and round rather than square so they do
+    // not have to be told apart by position alone.
+    ctx.beginPath();
+    ctx.arc(box.minX + grip, box.minY + grip, grip, 0, Math.PI * 2);
+    ctx.fill();
     ctx.restore();
   }
 
@@ -490,6 +519,14 @@ export function createInkEngine({
     const grip = gripHalf(key) * 1.4;
     return x >= selection.box.maxX - grip && x <= selection.box.maxX + grip
       && y >= selection.box.maxY - grip && y <= selection.box.maxY + grip;
+  }
+
+  // The turn grip, top-left, with the same slack for the same reason.
+  function turnGripHit(key, x, y) {
+    if (!selection || selection.key !== key || !selection.box) return false;
+    const grip = gripHalf(key) * 1.4;
+    return x >= selection.box.minX - grip && x <= selection.box.minX + grip
+      && y >= selection.box.minY - grip && y <= selection.box.minY + grip;
   }
 
   function insideSelection(key, x, y) {
@@ -511,6 +548,28 @@ export function createInkEngine({
 
     if (active === "lasso" && selection?.key === key) {
       const first = toModelPoint(key, samples[0]);
+      // Turn before resize, because the two grips are on opposite corners and a
+      // press can only be one of them — but the order still has to be stated, or
+      // a selection small enough for the two hit boxes to overlap answers to
+      // whichever test happens to be written first.
+      if (first && turnGripHit(key, first.x, first.y)) {
+        const box = { ...selection.box };
+        const originX = (box.minX + box.maxX) / 2;
+        const originY = (box.minY + box.maxY) / 2;
+        live = {
+          key,
+          mode: "turn",
+          origin: box,
+          centre: { x: originX, y: originY },
+          // The angle the press started at, so what the reader turns is the
+          // DIFFERENCE — a grip grabbed off-centre must not snap the drawing
+          // round to meet the finger.
+          from: Math.atan2(first.y - originY, first.x - originX),
+          base: captureSelected(key),
+          before: entry.strokes.slice()
+        };
+        return true;
+      }
       if (first && gripHit(key, first.x, first.y)) {
         live = { key, mode: "scale", from: first, origin: { ...selection.box }, base: captureSelected(key), before: entry.strokes.slice() };
         return true;
@@ -593,10 +652,35 @@ export function createInkEngine({
       if (point) points.push(point);
     });
     if (!points.length) return;
-    const kept = entry.strokes.filter((stroke) =>
-      !points.some((point) => inkStrokeHitsPoint(stroke, point.x, point.y, INK_ERASE_SLACK)));
-    if (kept.length === entry.strokes.length) return;
-    entry.strokes = kept;
+    // Whole strokes, which is what this always did — cross a mark anywhere and
+    // all of it goes.
+    if (eraseMode === "stroke") {
+      const kept = entry.strokes.filter((stroke) =>
+        !points.some((point) => inkStrokeHitsPoint(stroke, point.x, point.y, eraserSize)));
+      if (kept.length === entry.strokes.length) return;
+      entry.strokes = kept;
+      repaint(live.key);
+      return;
+    }
+    // ...and only what the nib passed over, leaving the rest of the stroke
+    // standing. eraseFromInkStroke returns the SAME stroke object when it took
+    // nothing, so `changed` is an identity compare and a scrub over empty paper
+    // costs one bounding-box test per stroke and no repaint.
+    let changed = false;
+    const next = [];
+    entry.strokes.forEach((stroke) => {
+      const left = eraseFromInkStroke(stroke, points, eraserSize);
+      if (left.length === 1 && left[0] === stroke) { next.push(stroke); return; }
+      changed = true;
+      left.forEach((piece) => next.push(piece));
+    });
+    if (!changed) return;
+    entry.strokes = next;
+    // The lasso's indices are positions in an array that has just changed length.
+    // Rubbing out part of a selected stroke and then dragging what was "selected"
+    // would move whatever now sits at those positions, which is somebody else's
+    // handwriting.
+    if (selection?.key === live.key) setSelection(null);
     repaint(live.key);
   }
 
@@ -619,7 +703,7 @@ export function createInkEngine({
     }
     if (live.mode === "erase") { queued.push(...samples); inkScheduleFrame(); return; }
     if (live.mode === "lasso") { samples.forEach(pushLasso); inkScheduleFrame(); return; }
-    if (live.mode === "move" || live.mode === "scale") {
+    if (live.mode === "move" || live.mode === "scale" || live.mode === "turn") {
       const point = toModelPoint(live.key, samples[samples.length - 1]);
       if (point) { live.to = point; inkScheduleFrame(); }
     }
@@ -631,6 +715,11 @@ export function createInkEngine({
     // ever used. The event object outlives the dispatch, so keeping it costs a
     // reference.
     live.lastEvent = event;
+    // Turned off entirely, which it could not be. The offer is a good default and
+    // a bad law: a fraction bar, a radical and a long-division rule are all held
+    // straight lines, and somebody working through a page of them wants a pen
+    // that does not keep making a decision for them.
+    if (!snapShapes) return;
     // A stroke that has already declined a shape is not asked again — see
     // revokeShape.
     if (live.snapDeclined) return;
@@ -717,7 +806,7 @@ export function createInkEngine({
     if (live.mode === "draw") { drawFrame(); return; }
     if (live.mode === "erase") { eraseFrame(); return; }
     if (live.mode === "lasso") { drawLassoFrame(); return; }
-    if (live.mode === "move" || live.mode === "scale") { drawTransformFrame(); return; }
+    if (live.mode === "move" || live.mode === "scale" || live.mode === "turn") { drawTransformFrame(); return; }
   }
 
   function drawFrame() {
@@ -825,6 +914,11 @@ export function createInkEngine({
       const dy = gesture.to.y - gesture.from.y;
       return gesture.base.map((stroke) => transformInkStroke(stroke, { dx, dy }));
     }
+    if (gesture.mode === "turn") {
+      const theta = Math.atan2(gesture.to.y - gesture.centre.y, gesture.to.x - gesture.centre.x) - gesture.from;
+      return gesture.base.map((stroke) =>
+        transformInkStroke(stroke, { theta, originX: gesture.centre.x, originY: gesture.centre.y }));
+    }
     const originX = gesture.origin.minX;
     const originY = gesture.origin.minY;
     const wasW = Math.max(1e-3, gesture.origin.maxX - originX);
@@ -889,10 +983,10 @@ export function createInkEngine({
       return;
     }
 
-    // Erase, move and scale all painted straight into the array as they went,
-    // so the only question left is whether anything actually changed. A scrub
-    // that hit nothing, or a drag of two pixels that ended where it started,
-    // must not cost an undo step or a write.
+    // Erase, move, scale and turn all painted straight into the array as they
+    // went, so the only question left is whether anything actually changed. A
+    // scrub that hit nothing, or a drag of two pixels that ended where it
+    // started, must not cost an undo step or a write.
     if (sameStrokes(gesture.before, entry.strokes)) { clearOverlay(); unmountOverlay(); return; }
     remember(gesture.key, gesture.before);
     if (selection?.key === gesture.key) selection.box = selectionBox(gesture.key, selection.indices);
@@ -962,6 +1056,159 @@ export function createInkEngine({
     return selection.indices.map((i) => entry.strokes[i]).filter(Boolean);
   }
 
+  // ── Everything else a selection is for ───────────────────────────────────
+  //
+  // The lasso could move a selection, resize it from one corner, and delete it.
+  // That is the shape of a tool you can only use to correct a placement, and
+  // "the selection contents options are very limited" is exactly right about it:
+  // the things a page of working actually needs — this bit in red, this bit
+  // thinner, this diagram again over here, this line onto the next page — were
+  // all a lasso away and none of them existed.
+  //
+  // All of them are the same three steps, which is why they are one function:
+  // snapshot for the undo stack, replace the selected strokes, repaint and
+  // commit. `make` is handed each selected stroke and returns its replacement.
+  // Nothing here has to know about mark ids: a replacement made by spreading the
+  // original carries `m` with it, and one built without a mark is given a fresh
+  // one by commitInkPage (../documents/pdf-ink.js), which already has that rule
+  // for the strokes an undo hands back.
+  function mapSelection(make, reason) {
+    if (!selection) return false;
+    const entry = hosts.get(selection.key);
+    if (!entry) return false;
+    const key = selection.key;
+    const before = entry.strokes.slice();
+    const next = entry.strokes.slice();
+    selection.indices.forEach((index) => {
+      const stroke = entry.strokes[index];
+      if (!stroke) return;
+      next[index] = make(stroke);
+    });
+    if (sameStrokes(before, next)) return false;
+    snapshot(key);
+    entry.strokes = next;
+    selection.box = selectionBox(key, selection.indices);
+    repaint(key);
+    onCommit(key, entry.strokes.slice(), { reason });
+    return true;
+  }
+
+  // The colour and the nib of what is already on the page. A press on a swatch
+  // or a nib while something is lassoed means "make THIS that", which is what
+  // anyone who has used a drawing tool expects it to mean — and the rail needed
+  // no new buttons for it, which is why it is the first of these.
+  function restyleSelection({ pen: nextPen = null, width: nextWidth = null } = {}) {
+    const c = nextPen === null ? null : normalizeInkPen(nextPen);
+    const w = nextWidth === null ? null : normalizeInkWidth(nextWidth);
+    if (c === null && w === null) return false;
+    return mapSelection((stroke) => {
+      // Returned UNCHANGED when it already says the right thing, so mapSelection's
+      // identity compare can refuse the whole gesture — a press on the colour a
+      // selection is already in must not cost an undo step or a write.
+      const recolour = c !== null && stroke.c !== c;
+      const renib = w !== null && stroke.w !== w;
+      if (!recolour && !renib) return stroke;
+      const next = { ...stroke };
+      if (recolour) next.c = c;
+      if (renib) next.w = w;
+      return next;
+    }, "restyle");
+  }
+
+  // Move by a fixed step, for the arrow keys. A drag is a pointer gesture and a
+  // pointer is not always what somebody has: this is the same transform, and one
+  // undo step per press, which is what makes a nudge correctable.
+  function nudgeSelection(dx, dy) {
+    if (!dx && !dy) return false;
+    return mapSelection((stroke) => transformInkStroke(stroke, { dx, dy }), "move");
+  }
+
+  // Turn what is selected about the middle of its own box. The grip drives this
+  // continuously; it is also what a "rotate 90°" would call if one is ever added.
+  function rotateSelection(theta, origin) {
+    if (!theta) return false;
+    const box = origin || selection?.box;
+    if (!box) return false;
+    const originX = (box.minX + box.maxX) / 2;
+    const originY = (box.minY + box.maxY) / 2;
+    return mapSelection((stroke) => transformInkStroke(stroke, { theta, originX, originY }), "rotate");
+  }
+
+  // ── Copying, which the engine does NOT keep ──────────────────────────────
+  //
+  // copySelection hands the strokes BACK rather than holding them, and paste
+  // takes them as an argument. That looks like a needlessly long way round until
+  // you ask how long an engine lives: it is destroyed and rebuilt whenever the
+  // document under it changes, and on a notebook that happens every time a page
+  // is added — which is exactly the gesture between "copy this working" and
+  // "paste it on the new page". A buffer inside the engine would be emptied by
+  // the very act the reader performed in order to use it. The caller that
+  // outlives the document holds it (src/documents/pdf-ink.js).
+  //
+  // The mark ids are stripped on the way out: a pasted copy is a new mark, with
+  // its own note and its own card, or the two pieces would share one and editing
+  // either would edit both. commitInkPage gives an untagged stroke a fresh mark.
+  function copySelection() {
+    const strokes = selectedStrokes();
+    if (!strokes.length) return null;
+    return {
+      box: inkStrokesBounds(strokes),
+      strokes: strokes.map((stroke) => { const { m, ...rest } = stroke; return { ...rest, p: stroke.p.slice() }; })
+    };
+  }
+
+  function cutSelection() {
+    const clip = copySelection();
+    if (!clip) return null;
+    return deleteSelection() ? clip : null;
+  }
+
+  // Pasted onto `key` — whichever page the reader is looking at, which is not
+  // necessarily the one it was copied from. Placed at `at` when the caller knows
+  // where the reader is pointing, and otherwise offset from where it was taken:
+  // a copy that lands exactly on top of its original looks like nothing
+  // happened, and then a drag moves the wrong one.
+  function pasteStrokes(key, clip, at = null) {
+    const entry = hosts.get(key);
+    if (!entry || !clip?.strokes?.length) return false;
+    const box = clip.box;
+    const dx = at && box ? at.x - ((box.minX + box.maxX) / 2) : INK_PASTE_OFFSET;
+    const dy = at && box ? at.y - ((box.minY + box.maxY) / 2) : INK_PASTE_OFFSET;
+    const added = clip.strokes.map((stroke) => transformInkStroke(stroke, { dx, dy }));
+    snapshot(key);
+    const first = entry.strokes.length;
+    entry.strokes = entry.strokes.concat(added);
+    // Selected on arrival, so the very next drag moves what was just pasted
+    // rather than making the reader find it and lasso it again.
+    setSelection({ key, indices: added.map((_, i) => first + i), box: selectionBox(key, added.map((_, i) => first + i)) });
+    repaint(key);
+    onCommit(key, entry.strokes.slice(), { reason: "paste" });
+    return true;
+  }
+
+  // A copy in place, which is the same thing without the round trip through the
+  // clipboard — and, unlike a paste, it leaves whatever the reader had copied
+  // earlier alone.
+  function duplicateSelection() {
+    if (!selection) return false;
+    const key = selection.key;
+    const entry = hosts.get(key);
+    const strokes = selectedStrokes();
+    if (!entry || !strokes.length) return false;
+    const added = strokes.map((stroke) => {
+      const { m, ...rest } = stroke;
+      return transformInkStroke({ ...rest, p: stroke.p.slice() }, { dx: INK_PASTE_OFFSET, dy: INK_PASTE_OFFSET });
+    });
+    snapshot(key);
+    const first = entry.strokes.length;
+    entry.strokes = entry.strokes.concat(added);
+    const indices = added.map((_, i) => first + i);
+    setSelection({ key, indices, box: selectionBox(key, indices) });
+    repaint(key);
+    onCommit(key, entry.strokes.slice(), { reason: "duplicate" });
+    return true;
+  }
+
   return {
     attachHost,
     detachHost,
@@ -977,6 +1224,13 @@ export function createInkEngine({
     clearHost,
     deleteSelection,
     selectedStrokes,
+    restyleSelection,
+    nudgeSelection,
+    rotateSelection,
+    duplicateSelection,
+    copySelection,
+    cutSelection,
+    pasteStrokes,
     clearSelection: () => setSelection(null),
     hasSelection: () => Boolean(selection),
     selectionKey: () => selection?.key ?? null,
@@ -992,6 +1246,12 @@ export function createInkEngine({
     setPen: (next) => { pen = normalizeInkPen(next); onToolChange({ tool, pen, width }); },
     getWidth: () => width,
     setWidth: (next) => { width = normalizeInkWidth(next); onToolChange({ tool, pen, width }); },
+    getEraseMode: () => eraseMode,
+    setEraseMode: (next) => { eraseMode = normalizeInkEraseMode(next); onToolChange({ tool, pen, width }); },
+    getEraserSize: () => eraserSize,
+    setEraserSize: (next) => { eraserSize = normalizeInkEraserSize(next); onToolChange({ tool, pen, width }); },
+    getSnapShapes: () => snapShapes,
+    setSnapShapes: (on) => { snapShapes = Boolean(on); onToolChange({ tool, pen, width }); },
     destroy: () => {
       cancel();
       unmountOverlay();
