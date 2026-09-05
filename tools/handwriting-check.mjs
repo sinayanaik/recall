@@ -2124,3 +2124,4 @@ if (failures) {
   process.exit(1);
 }
 console.log("\nhandwriting-check: the pen keeps writing through a pause, the lift does not blink, and a notebook keeps its pages");
+console.log(`CHECK: ${ran} checks · ${failures} failed`);
