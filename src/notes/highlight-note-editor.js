@@ -356,6 +356,11 @@ export function closeHighlightNoteEditor() {
   // a view change — so this is the one place that has to make the text safe.
   els.flushNoteSave();
   els.root.hidden = true;
+  // Only if the other surface that lifts the pill is not also up — see the same
+  // guard in src/documents/pdf-block-editor.js.
+  if (!document.querySelector("#pdfBlockEditor:not([hidden])")) {
+    document.body.classList.remove("text-sheet-open");
+  }
   // A registration outliving its textarea would leave the pill formatting
   // against a note nobody has open.
   els.kit.detach();
@@ -430,6 +435,11 @@ export function openHighlightNoteEditor(markIndex, anchorRect, existingNoteMarkd
   status.classList.remove("is-visible");
   deleteBtn.hidden = !existingNoteMarkdown;
   root.hidden = false;
+  // ...and it has to be able to REACH it. This popup is z-index 260 and the pill
+  // is 90, so the one formatting surface the app has was raised behind the note
+  // it was raised for. Same class, same rule (styles/12-notes.css) as the block
+  // editor on a page of handwriting, which had the identical bug at 620.
+  document.body.classList.add("text-sheet-open");
   // The pill acts on this editor from here until it closes — see the header of
   // src/notes/note-editor-kit.js. After `root.hidden = false`, because
   // `isActive()` on the registered target reads whether the editor is really on

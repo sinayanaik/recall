@@ -347,11 +347,18 @@
    Above that, and deliberately below two things: the sign-in overlay at 9999,
    because a session that lapses mid-drawing has to be able to interrupt, and
    the toasts at 99999, because "saved here — uploads when you're back online"
-   is the one message a drawing made offline depends on being able to show. */
+   is the one message a drawing made offline depends on being able to show.
+
+   640 rather than the 600 it was, and for a third thing this now has to be above:
+   the block editor (.pdf-block-editor, 620) carries the ✎ Draw button, so the
+   sheet it opens has to land in FRONT of the window that opened it. At 600 it
+   opened behind, which looked from the reader's side exactly like the button
+   doing nothing. The whole order is written out once beside
+   .category-choice-modal in styles/08-panels.css. */
 .ink-sheet {
   position: fixed;
   inset: 0;
-  z-index: 600;
+  z-index: 640;
   display: flex;
   flex-direction: column;
   background: var(--bg);

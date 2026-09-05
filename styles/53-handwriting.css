@@ -568,9 +568,15 @@
 .pdf-block-editor {
   position: fixed;
   inset: 0;
-  /* Over the document stage and its rail, under the sign-in overlay at 9999 and
-     the toasts at 99999 — the same reasoning, against the same stack, that
-     .ink-sheet states at length in styles/52-ink.css. */
+  /* Over the document stage and its rail, and under the three things this window
+     itself opens — the drawing sheet at 640, the dialog band at 660 and the
+     formatting pill at 630 while this is up. That last clause is the whole of a
+     reported bug: this comment used to claim the window was correctly placed
+     "under the sign-in overlay and the toasts", which was true and was not the
+     question. Every dialog and sheet reachable from the toolbar inside it was
+     BELOW it, so pressing Image, pressing Draw, or selecting a word to format it
+     each raised something nobody could see. The order is written out once beside
+     .category-choice-modal in styles/08-panels.css. */
   z-index: 620;
   display: flex;
   align-items: center;

@@ -15,6 +15,11 @@ import { scopedQueryAll } from "../render/deferred-work.js?v=__BUILD__";
 // block-cache is the case tools/module-symbols.mjs allows for hoisted function
 // declarations.
 import { renderNotesViewPinned } from "../notes/notes-view.js?v=__BUILD__";
+// Same rule, same reason: src/documents/pdf-blocks.js imports storeImageOrQueue
+// and hydrateLocalImages from here, so this arrow closes a cycle — and it is the
+// case tools/module-symbols.mjs allows, because both sides are hoisted function
+// declarations called from inside functions and neither is read at module scope.
+import { settleBlockUploadToken } from "../documents/pdf-blocks.js?v=__BUILD__";
 import { forEachDeckSnapshot, rewriteDeckSnapshot, scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
 
@@ -402,6 +407,15 @@ export function replaceUploadTokenInMemory(uploadToken, replacement) {
       card.answer = swap(card.answer);
     }
   }
+  // ...and the markdown blocks on a page of handwriting, which are a fourth
+  // place a caret can be and were not one of the three this knew about. A
+  // picture inserted into a block and committed before the upload landed kept
+  // its `![uploading…]` placeholder for ever: the token was in none of the
+  // fields above, so this returned false, and the deck-snapshot sweep below
+  // looks in `notes` and `cards` too. That is not a swap this function can do
+  // itself — a block array is written back under rules of its own (the other
+  // paper's blocks share the array) — so it asks the module that owns them.
+  if (settleBlockUploadToken(uploadToken, replacement)) touched = true;
   return touched;
 }
 
@@ -410,7 +424,21 @@ export function replaceUploadTokenInMemory(uploadToken, replacement) {
 // there — through rewriteDeckSnapshot, which re-reads under that deck's lock
 // rather than writing back what the cursor happened to hand over.
 export async function settleUploadToken(textarea, uploadToken, replacement) {
-  if (textarea && !textarea.hidden && textarea.isConnected) {
+  // ── "Still the surface the reader is looking at" is not `!hidden` ─────────
+  //
+  // It was, and it was right for the three fixed editors this was written for:
+  // each is hidden by having `hidden` set on IT. The block editor hides its
+  // textarea by hiding an ANCESTOR — closeBlockSheet sets `hidden` on the sheet
+  // root and leaves the sheet, and the textarea inside it, in the document for
+  // the next open. So this branch was taken for a textarea nobody could see, the
+  // swap went into a value already copied out into the block, and the block kept
+  // its `![uploading…]` for ever.
+  //
+  // offsetParent is null for anything with a `display: none` ancestor, which is
+  // exactly the question, and it is a cheap read rather than a getComputedStyle
+  // walk. (Safe here: none of these textareas is itself `position: fixed`, the
+  // one other way of getting a null answer.)
+  if (textarea && !textarea.hidden && textarea.isConnected && textarea.offsetParent !== null) {
     replaceInTextarea(textarea, uploadToken, replacement);
     return;
   }
@@ -423,10 +451,16 @@ export async function settleUploadToken(textarea, uploadToken, replacement) {
     return;
   }
   const candidates = [];
+  // The blocks half is here as well as in memory above, and for the same reason
+  // the notes and cards halves are in both: the reader may have moved to a
+  // different deck entirely while the bytes were going up.
+  const holdsInBlocks = (snapshot) => (snapshot?.meta?.pdfBlocks || [])
+    .some((block) => String(block?.md || "").includes(uploadToken));
   await forEachDeckSnapshot((id, snapshot) => {
     const holds = String(snapshot.notes || "").includes(uploadToken)
       || (snapshot.cards || []).some((card) =>
-        String(card.question || "").includes(uploadToken) || String(card.answer || "").includes(uploadToken));
+        String(card.question || "").includes(uploadToken) || String(card.answer || "").includes(uploadToken))
+      || holdsInBlocks(snapshot);
     if (holds) candidates.push(String(id));
   });
   const now = new Date().toISOString();
@@ -440,6 +474,20 @@ export async function settleUploadToken(textarea, uploadToken, replacement) {
         return value.split(uploadToken).join(replacement);
       };
       snapshot.notes = swap(snapshot.notes);
+      if (Array.isArray(snapshot.meta?.pdfBlocks)) {
+        snapshot.meta = {
+          ...snapshot.meta,
+          pdfBlocks: snapshot.meta.pdfBlocks.map((block) => {
+            const md = String(block?.md || "");
+            if (!md.includes(uploadToken)) return block;
+            changed = true;
+            // `at` bumped for the reason remapDocumentBlockPages bumps it: a
+            // swap that kept its old stamp would lose its own merge to another
+            // device's copy of the block, still holding the placeholder.
+            return { ...block, md: md.split(uploadToken).join(replacement), at: Date.now() };
+          })
+        };
+      }
       for (const card of snapshot.cards || []) {
         const question = swap(card.question);
         const answer = swap(card.answer);

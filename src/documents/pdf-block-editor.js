@@ -122,6 +122,12 @@ export function openBlockEditor({ value = "", title = "Edit this text", placehol
   if (placeholder) built.kit.textarea.placeholder = placeholder;
   built.root.hidden = false;
   built.kit.attach();
+  // The pill (src/notes/selection.js) is fixed-position at z-index 90 and this
+  // window is 620, so without this the ONLY formatting surface in the app raises
+  // itself behind the text it was raised for. See the rule in styles/12-notes.css;
+  // a class rather than an inline style so the value stays with the rest of the
+  // stack rather than being a number in a second place.
+  document.body.classList.add("text-sheet-open");
   lockPageScroll();
   // After the sheet is on screen, or the focus lands on a hidden element and the
   // caret is nowhere.
@@ -142,6 +148,13 @@ function closeBlockSheet(commit) {
   blockSession = null;
   blockSheet.kit.detach();
   blockSheet.root.hidden = true;
+  // Only if the OTHER surface that lifts the pill is not also up. A note popup
+  // opened over a page of handwriting is unusual and not impossible, and a class
+  // removed by whichever of the two closes first would drop the pill back behind
+  // the one still open.
+  if (!document.querySelector(".highlight-note-editor:not([hidden])")) {
+    document.body.classList.remove("text-sheet-open");
+  }
   unlockPageScroll();
   onDone(commit ? text : null);
   return true;
