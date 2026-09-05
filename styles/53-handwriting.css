@@ -444,14 +444,105 @@
   user-select: none;
 }
 
-.pdf-block-edit {
-  width: 100%;
-  border: 0;
-  outline: none;
-  resize: none;
-  background: transparent;
+/* ── The editor over the page ──────────────────────────────────────────────
+
+   A block was edited in a bare <textarea> the size of the block, and .pdf-block-edit
+   was that textarea. It is gone: a block is markdown, and the editor for markdown
+   in this app is src/notes/note-editor-kit.js — the same one the Notes panel, the
+   highlight popup and the Highlights tab share. What is here is the WINDOW it is
+   arranged in, because a default block is 240x90 points and the formatting strip
+   alone is wider than that at any zoom a reader writes at.
+
+   Modelled on .highlight-note-editor (styles/27-highlight-notes.css), which is
+   the same decision for a note attached to a highlight — but centred and with a
+   backdrop rather than a draggable box, because a block is somewhere you can see
+   on the page behind it and there is nothing to keep out of the way of. */
+.pdf-block-editor {
+  position: fixed;
+  inset: 0;
+  /* Over the document stage and its rail, under the sign-in overlay at 9999 and
+     the toasts at 99999 — the same reasoning, against the same stack, that
+     .ink-sheet states at length in styles/52-ink.css. */
+  z-index: 620;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: color-mix(in srgb, var(--bg) 62%, transparent);
+  backdrop-filter: blur(3px);
+}
+
+.pdf-block-editor[hidden] {
+  display: none;
+}
+
+/* The window itself is the flex CHILD, so the rule above can centre it and this
+   one can size it. Wide enough for the full toolbar not to wrap on a desktop and
+   clamped to the viewport for anything narrower, exactly as the note window is. */
+.pdf-block-editor > .note-editor-kit {
+  width: min(560px, 100%);
+  max-height: min(80vh, 620px);
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 12px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 0 12px 32px rgb(0 0 0 / 0.32);
+}
+
+.pdf-block-editor-head,
+.pdf-block-editor-foot {
+  flex: 0 0 auto;
+  width: min(560px, 100%);
+  display: flex;
+  align-items: center;
+}
+
+/* Head and foot sit OUTSIDE the card, above and below it, so the card is the
+   editor and nothing else. A flex column with the three of them stacked would
+   have been the obvious arrangement and is the wrong one: the kit is what has to
+   scroll, and it can only do that if it owns its own height. */
+.pdf-block-editor {
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pdf-block-editor-title {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
   color: var(--text);
-  font-family: inherit;
+}
+
+.pdf-block-editor-foot {
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.pdf-block-editor-done {
+  background: var(--accent);
+  color: var(--accent-contrast);
+  border-color: var(--accent);
+}
+
+/* The block stays on the page while its text is in the window — it is what the
+   reader is looking at the editor ABOUT. Lit rather than hidden, so it can be
+   found behind the sheet. */
+.pdf-block.is-editing {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+@media (max-width: 720px) {
+  .pdf-block-editor {
+    padding: 8px;
+  }
+
+  .pdf-block-editor > .note-editor-kit {
+    max-height: min(86vh, 620px);
+    padding: 8px;
+  }
 }
 
 .pdf-block-grip {

@@ -714,13 +714,35 @@ try {
     const node = document.querySelector('[data-pdf-block="' + id + '"]');
     const first = record(id);
 
-    const area = node.querySelector(".pdf-block-edit");
-    const editorOpen = Boolean(area && !area.hidden);
-    if (area) area.value = "**Bernoulli** along a streamline";
-    document.getElementById("documentView").dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 8, pointerType: "mouse", isPrimary: true, clientX: 4, clientY: 4, buttons: 1 }));
-    await settle(300);
+    // ── The editor is the Notes panel's, in a window ───────────────────────
+    //
+    // It was a bare textarea the size of the block. The sheet carries the same
+    // kit the note popup and the Highlights tab use, so the assertions are about
+    // what a reader can actually reach: is there a Write/Preview switch, and is
+    // there a formatting strip.
+    const sheet = document.getElementById("pdfBlockEditor");
+    const editorOpen = Boolean(sheet && !sheet.hidden);
+    const sheetArea = sheet?.querySelector("[data-note-edit-value]");
+    const editorTools = {
+      modes: sheet?.querySelectorAll(".note-editor-mode").length || 0,
+      toolbarButtons: sheet?.querySelectorAll(".edit-toolbar button").length || 0
+    };
+    // $…$ and a fenced diagram alongside the bold, because "it doesn't support
+    // the full markdown ecosystem we have in the notes panel" is precisely about
+    // the parts a bare marked+DOMPurify pass drops on the floor.
+    const source = "**Bernoulli** along a streamline, $p + \\tfrac12 \\rho v^2 = C$";
+    if (sheetArea) {
+      sheetArea.value = source;
+      sheetArea.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    sheet?.querySelector(".pdf-block-editor-done")?.click();
+    await settle(700);
     const typed = record(id);
-    const rendered = node.querySelector(".pdf-block-body")?.innerHTML.includes("<strong>");
+    const body = node.querySelector(".pdf-block-body");
+    const rendered = body?.innerHTML.includes("<strong>");
+    // KaTeX leaves .katex behind; a reduced pipeline leaves the literal $…$.
+    const math = Boolean(body?.querySelector(".katex"));
+    const sheetClosed = Boolean(sheet && sheet.hidden);
 
     const drag = (target, from, to) => {
       target.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 7, pointerType: "mouse", isPrimary: true, clientX: from.x, clientY: from.y, buttons: 1 }));
@@ -761,13 +783,28 @@ try {
       sized: { x: sized.x, y: sized.y, w: sized.w, h: sized.h },
       stored: stored ? { x: stored.x, y: stored.y, w: stored.w, h: stored.h, md: stored.md } : null,
       mergedIds: (merged.pdfBlocks || []).map((b) => b.id).sort(),
-      mergedMine: (merged.pdfBlocks || []).find((b) => b.id === id)?.x
+      mergedMine: (merged.pdfBlocks || []).find((b) => b.id === id)?.x,
+      editorTools, math, sheetClosed
     };
   }`);
 
   check("a markdown block can be added to a page and typed into",
-    blocks.editorOpen && blocks.md === "**Bernoulli** along a streamline" && blocks.rendered,
+    blocks.editorOpen && blocks.md.startsWith("**Bernoulli**") && blocks.rendered,
     `editor=${blocks.editorOpen}, rendered as markdown=${blocks.rendered}`);
+  // The whole of "the markdown boxes are utterly redundant, it doesn't support
+  // the full markdown ecosystem we have in the notes panel": the block was
+  // rendered with markdownToSafeHtml, which is marked + DOMPurify and nothing
+  // else, and edited in a bare textarea beside an app whose every other markdown
+  // surface shares one editor.
+  check("...in the editor the notes panel uses, not a bare textarea",
+    blocks.editorTools.modes === 2 && blocks.editorTools.toolbarButtons > 8,
+    `${blocks.editorTools.modes} mode button(s) and ${blocks.editorTools.toolbarButtons} toolbar button(s) `
+      + `— a bare textarea has neither`);
+  check("...and it renders through the notes pipeline, so the mathematics is typeset",
+    blocks.math,
+    "no .katex in the block body — a $…$ rendered as the literal characters is the reduced renderer");
+  check("...with the editor closed once it is done", blocks.sheetClosed,
+    `sheet still open=${!blocks.sheetClosed}`);
   check("...dragged, in the page's own points and in the right direction",
     blocks.moved.x > blocks.first.x && blocks.moved.y < blocks.first.y,
     `(${blocks.first.x}, ${blocks.first.y}) → (${blocks.moved.x}, ${blocks.moved.y}) — x up, y down the page`);
