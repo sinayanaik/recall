@@ -279,6 +279,18 @@ const checks = [
   // so this can drive it with no browser and no baseline tag — the sync checks
   // below need both, and a check that can only skip verifies nothing.
   ["document-sync ", ["node", ["tools/document-sync-check.mjs"], ROOT]],
+  // Everything a deck can be IMPORTED from, which had no live check at all:
+  // parse-cards.js (503 lines, five card syntaxes), mathml-to-tex.js (592 lines,
+  // zero imports) and code-language.js. Driven against tools/adversarial-corpus.mjs
+  // — the inputs this app has actually been broken by rather than inputs
+  // somebody imagined. Pure Node, no browser, no baseline: it cannot skip.
+  ["import        ", ["node", ["tools/import-check.mjs"], ROOT]],
+  // ...and the other direction, which is the same question asked backwards:
+  // export a deck, import the file back, is it the same deck? Nothing had ever
+  // asked. The escaping alone makes it a real question — a card may contain a
+  // standalone "---", which is also the separator the format puts between its
+  // two sides, and the escape and the unescape live in different modules.
+  ["export        ", ["node", ["tools/export-check.mjs"], ROOT]],
   // Pure Node again, and for the same reason: the sanitizer and the repair are
   // string-and-object work with no imports worth speaking of. It asks the one
   // question a whole book's sync once turned on — can a character that came out
@@ -432,6 +444,32 @@ const RENDER_SCALE_EXPECTED_FAILURES = 0;
 // this goes to 0 and the check FAILS until somebody changes the number.
 const SELECTION_EXPECTED_FAILURES = 1;
 
+// ── A second real finding, pinned the same way ──────────────────────────────
+//
+// export-check's "a card whose question leaves a code fence open survives the
+// round trip" fails: exporting a deck and importing the file back DELETES such
+// a card, and takes the rest of the file with it. Measured: two cards out, zero
+// back.
+//
+// Both sides track fences and they agree — escapeCardSideSeparator does not
+// escape a "---" inside one, and parseDelimitedCards does not read one as the
+// front/back separator inside one. That is symmetric and right, as long as the
+// fence closes. When it does not, the exporter writes its separator while the
+// importer is still inside the question's unterminated fence: the "---" is read
+// as content so `side` never becomes "back", flush() needs both sides and drops
+// the card, and the closing "::" is guarded by !inFence too, so the boundary is
+// missed and everything after it is swallowed into the card being thrown away.
+//
+// Not fixed, because every fix is a decision about the FORMAT rather than a bug
+// to correct. Making "::" a card boundary regardless of fence state breaks a
+// card whose content legitimately contains a bare "::" line inside a fence
+// (reStructuredText, Nim). Having the exporter close what the author left open
+// changes the card's content. Choosing between those is the format's owner's
+// call, and it affects every export file already written.
+//
+// Pinned at 1 so the number has to be changed deliberately when it is.
+const EXPORT_EXPECTED_FAILURES = 1;
+
 // A check that cannot run is not a check that passed. This is pinned at zero
 // for the same reason PORT_SYNC_EXPECTED_DRIFT is pinned at two: a number
 // somebody has to change deliberately, in a diff a reviewer can see, rather
@@ -547,6 +585,12 @@ for (const [label, [cmd, args, cwd]] of selected) {
     note = state === "ok"
       ? `(${drift} known pre-existing drift)`
       : `expected ${PORT_SYNC_EXPECTED_DRIFT} drifted, got ${drift}`;
+  } else if (name === "export") {
+    const failedCases = Number(out.match(/·\s*(\d+) failed/)?.[1] ?? -1);
+    state = failedCases === EXPORT_EXPECTED_FAILURES ? "ok" : "FAIL";
+    note = state === "ok"
+      ? `${out.trim().split("\n").filter(Boolean).pop()} (${failedCases} known — see EXPORT_EXPECTED_FAILURES)`
+      : `expected ${EXPORT_EXPECTED_FAILURES} known failure(s), got ${failedCases}`;
   } else if (name === "selection") {
     const failedCases = Number(out.match(/·\s*(\d+) failed/)?.[1] ?? -1);
     state = failedCases === SELECTION_EXPECTED_FAILURES ? "ok" : "FAIL";
