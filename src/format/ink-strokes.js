@@ -415,18 +415,95 @@ export function inkPointInPolygon(x, y, polygon) {
   return inside;
 }
 
-// Move and scale every point of a stroke, for the lasso's drag and its corner
-// grip. The nib width scales with the drawing: a diagram made smaller with the
-// lines left at their original weight reads as a different, coarser drawing.
-export function transformInkStroke(stroke, { dx = 0, dy = 0, scale = 1, originX = 0, originY = 0 } = {}) {
+// Move, scale and turn every point of a stroke, for the lasso's drag and its two
+// grips. The nib width scales with the drawing: a diagram made smaller with the
+// lines left at their original weight reads as a different, coarser drawing. It
+// does NOT change with `theta` — a pen held at a different angle is the same pen.
+//
+// The order is scale, then turn, then translate, all about (originX, originY),
+// because that is the order the grips mean: the corner grip resizes the box the
+// selection is in and the turn grip spins what is in it, both around the box the
+// reader can see.
+export function transformInkStroke(stroke, { dx = 0, dy = 0, scale = 1, theta = 0, originX = 0, originY = 0 } = {}) {
   const points = Array.isArray(stroke?.p) ? stroke.p : [];
   const out = new Array(points.length);
+  const cos = theta ? Math.cos(theta) : 1;
+  const sin = theta ? Math.sin(theta) : 0;
   for (let i = 0; i + 2 < points.length; i += 3) {
-    out[i] = originX + ((points[i] - originX) * scale) + dx;
-    out[i + 1] = originY + ((points[i + 1] - originY) * scale) + dy;
+    const x = (points[i] - originX) * scale;
+    const y = (points[i + 1] - originY) * scale;
+    out[i] = originX + (theta ? (x * cos) - (y * sin) : x) + dx;
+    out[i + 1] = originY + (theta ? (x * sin) + (y * cos) : y) + dy;
     out[i + 2] = points[i + 2];
   }
   return { ...stroke, w: (Number(stroke.w) || 1) * Math.abs(scale), p: out };
+}
+
+// ── Rubbing out part of a stroke rather than all of it ─────────────────────
+//
+// The eraser removed whole strokes and nothing else, which is right for crossing
+// out a word and wrong for the case people actually complain about: one letter
+// in the middle of a line of working, where the whole line is one stroke because
+// it was written without lifting. "Cross it and it all goes" is then a rule that
+// makes you redo the sentence.
+//
+// So this takes a stroke and the points the nib passed through, and returns what
+// is LEFT of it: zero, one or several strokes, each a run of the points that
+// survived. Everything else about the stroke is carried through untouched by the
+// spread — the nib width, the colour, and `m`, its mark id, so the halves of a
+// cut word stay in the same mark and keep the note and the card attached to it.
+//
+// Two ways a run can end, and the second is the one that is easy to miss: a
+// SAMPLE inside the eraser, which is the ordinary case for handwriting sampled
+// at 240Hz, and a SEGMENT that crosses the eraser between two samples that are
+// both outside it — which is what a straightened line is made of, sometimes with
+// only two points in the whole stroke. Testing points alone would let the eraser
+// pass straight through a snapped line without marking it.
+//
+// A fragment shorter than two points is dropped rather than kept. A single
+// leftover sample paints as a dot, and a page speckled with dots the eraser left
+// behind is worse than the line it was clearing.
+export function eraseFromInkStroke(stroke, points, radius = 0) {
+  const p = Array.isArray(stroke?.p) ? stroke.p : [];
+  if (p.length < 3 || !Array.isArray(points) || !points.length) return [stroke];
+  const reach = ((Number(stroke.w) || 1) / 2) + Math.max(0, radius);
+  const reachSq = reach * reach;
+  const box = inkStrokeBounds(stroke);
+  // The same early-out inkStrokeHitsPoint takes, and for the same reason: this
+  // runs once per stroke on the page, several times a second, while the nib moves.
+  if (!box || !points.some((q) => q.x >= box.minX - reach && q.x <= box.maxX + reach
+    && q.y >= box.minY - reach && q.y <= box.maxY + reach)) return [stroke];
+
+  const near = (x, y) => points.some((q) => {
+    const ex = x - q.x;
+    const ey = y - q.y;
+    return ((ex * ex) + (ey * ey)) <= reachSq;
+  });
+  const crosses = (ax, ay, bx, by) =>
+    points.some((q) => inkSegmentDistanceSq(q.x, q.y, ax, ay, bx, by) <= reachSq);
+
+  const runs = [];
+  let run = [];
+  let cut = false;
+  for (let i = 0; i + 2 < p.length; i += 3) {
+    if (near(p[i], p[i + 1])) {
+      cut = true;
+      if (run.length >= 6) runs.push(run);
+      run = [];
+      continue;
+    }
+    // Both ends outside and the segment between them inside: the run ends here
+    // and the next one starts at the point after.
+    if (run.length && crosses(run[run.length - 3], run[run.length - 2], p[i], p[i + 1])) {
+      cut = true;
+      if (run.length >= 6) runs.push(run);
+      run = [];
+    }
+    run.push(p[i], p[i + 1], p[i + 2]);
+  }
+  if (run.length >= 6) runs.push(run);
+  if (!cut) return [stroke];
+  return runs.map((kept) => ({ ...stroke, p: kept }));
 }
 
 // How many points a set of strokes carries. The Storage panel and the size

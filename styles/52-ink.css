@@ -33,6 +33,12 @@
   --ink-pen-blue: #7aa7ff;
   --ink-pen-green: #4ade80;
   --ink-pen-amber: #fbbf24;
+  /* The three added to the five above. Lightened for a dark page like the rest,
+     and chosen to be told apart from those five and from each other there —
+     which is what ruled out a second blue and a second green. */
+  --ink-pen-violet: #c4a2ff;
+  --ink-pen-teal: #5eead4;
+  --ink-pen-pink: #f9a8d4;
 }
 
 :root[data-theme="light-ink"],
@@ -43,6 +49,9 @@
   --ink-pen-blue: #2563eb;
   --ink-pen-green: #15803d;
   --ink-pen-amber: #d97706;
+  --ink-pen-violet: #7c3aed;
+  --ink-pen-teal: #0d9488;
+  --ink-pen-pink: #db2777;
 }
 
 /* ── The layer on a PDF page ───────────────────────────────────────────────
@@ -286,6 +295,15 @@
 .ink-rail-nib[aria-pressed="true"] {
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+/* The eraser's sizes are the same control asking about a different tool, so they
+   are the same button — except that a rubber takes ink AWAY, and a solid blob
+   the size of it would read as a very fat pen. A ring says the same thing about
+   the same size and says which tool it belongs to at a glance. */
+.ink-rail-nib.is-eraser::before {
+  background: transparent;
+  border: 2px solid var(--text);
 }
 
 /* ── The ✎ on a drawing in a note ──────────────────────────────────────────

@@ -14,7 +14,7 @@
 // have to be handed one, which is just the same duplication wearing a parameter.
 // What is shared is everything a reader can see.
 
-import { INK_PEN_COLORS, INK_WIDTHS, inkPenVar } from "../format/ink-colors.js?v=__BUILD__";
+import { INK_ERASER_SIZES, INK_PEN_COLORS, INK_WIDTHS, inkPenVar } from "../format/ink-colors.js?v=__BUILD__";
 
 export function inkRailButton(attribute, value, label, glyph, extraClass = "") {
   const button = document.createElement("button");
@@ -65,6 +65,31 @@ export function buildInkNibs(host) {
   });
 }
 
+// The eraser's sizes, drawn as the nibs are and for the same reason: "1.5 / 3 /
+// 7 / 14" is a list of numbers nobody can picture, and a ring the size of the
+// rubber is. A ring rather than the nibs' filled dot, because an eraser takes
+// ink away — a solid blob would read as a very fat pen.
+export function buildInkEraserSizes(host) {
+  if (!host || host.querySelector("[data-ink-eraser-size]")) return;
+  const widest = INK_ERASER_SIZES[INK_ERASER_SIZES.length - 1];
+  // Prepended, so the sizes come before the part/whole toggle that is already in
+  // the markup — the same order the pen's row has, size first and then what the
+  // tool does with it.
+  const frag = document.createDocumentFragment();
+  INK_ERASER_SIZES.forEach((size) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "ink-rail-nib is-eraser";
+    button.dataset.inkEraserSize = String(size);
+    button.title = `${size}pt eraser`;
+    button.setAttribute("aria-label", `${size} point eraser`);
+    button.setAttribute("aria-pressed", "false");
+    button.style.setProperty("--ink-nib", `${Math.round((size / widest) * 16) + 4}px`);
+    frag.appendChild(button);
+  });
+  host.insertBefore(frag, host.firstChild);
+}
+
 export function buildInkToolGroup() {
   const tools = document.createElement("div");
   tools.className = "ink-rail-group";
@@ -81,7 +106,7 @@ export function buildInkToolGroup() {
 // Which of the three tools is lit, which pen, which nib. Everything here follows
 // aria-pressed, which is what the CSS reads, so there is one statement of "this
 // is the current one" rather than a class and an attribute that can disagree.
-export function paintInkRailPressed(rail, { pen, width, tool }) {
+export function paintInkRailPressed(rail, { pen, width, tool, eraserSize = null, eraseMode = null, snapShapes = null }) {
   if (!rail) return;
   rail.querySelectorAll("[data-ink-pen]").forEach((node) =>
     node.setAttribute("aria-pressed", node.dataset.inkPen === pen ? "true" : "false"));
@@ -89,6 +114,21 @@ export function paintInkRailPressed(rail, { pen, width, tool }) {
     node.setAttribute("aria-pressed", Number(node.dataset.inkWidth) === width ? "true" : "false"));
   rail.querySelectorAll("[data-ink-tool]").forEach((node) =>
     node.setAttribute("aria-pressed", node.dataset.inkTool === tool ? "true" : "false"));
+  if (eraserSize !== null) {
+    rail.querySelectorAll("[data-ink-eraser-size]").forEach((node) =>
+      node.setAttribute("aria-pressed", Number(node.dataset.inkEraserSize) === eraserSize ? "true" : "false"));
+  }
+  // Both of these are a switch rather than one of a set, so they say "on" rather
+  // than "chosen" — but through the same aria-pressed the CSS already lights, so
+  // there is still one statement of what is current on this rail.
+  if (eraseMode !== null) {
+    rail.querySelector('[data-ink-action="erase-mode"]')
+      ?.setAttribute("aria-pressed", eraseMode === "part" ? "true" : "false");
+  }
+  if (snapShapes !== null) {
+    rail.querySelector('[data-ink-action="snap"]')
+      ?.setAttribute("aria-pressed", snapShapes ? "true" : "false");
+  }
 }
 
 // The button a press landed on, or null. Both rails bind pointerdown rather than
@@ -96,7 +136,7 @@ export function paintInkRailPressed(rail, { pen, width, tool }) {
 // must not travel on to the surface underneath and start a stroke, and on a
 // stylus the two are a few pixels apart.
 export function readInkRailPress(event) {
-  const button = event.target.closest?.("[data-ink-pen], [data-ink-width], [data-ink-tool], [data-ink-action]");
+  const button = event.target.closest?.("[data-ink-pen], [data-ink-width], [data-ink-eraser-size], [data-ink-tool], [data-ink-action]");
   if (!button || button.disabled) return null;
   event.preventDefault();
   event.stopPropagation();

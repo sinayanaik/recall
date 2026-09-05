@@ -25,8 +25,8 @@
 // follow: a control is a button with an attribute, not a binding.
 
 import { el } from "../core/dom.js?v=__BUILD__";
-import { canRedoInk, canUndoInk, clearInkPage, deleteInkSelection, inkPageHasStrokes, inkPageInView, inkPen, inkSelectionCount, inkTool, inkWidth, isInkArmed, joinInkSelection, redoInk, setInkArmed, setInkPen, setInkTool, setInkWidth, splitInkSelection, undoInk } from "../documents/pdf-ink.js?v=__BUILD__";
-import { buildInkNibs, buildInkPenSwatches, paintInkRailPressed, readInkRailPress } from "../handwriting/rail.js?v=__BUILD__";
+import { canRedoInk, canUndoInk, clearInkPage, copyInkSelection, cutInkSelection, deleteInkSelection, duplicateInkSelection, hasInkClipboard, inkEraseMode, inkEraserSize, inkPageHasStrokes, inkPageInView, inkPen, inkSelectionCount, inkSnapShapes, inkTool, inkWidth, isInkArmed, joinInkSelection, pasteInkSelection, redoInk, setInkArmed, setInkEraseMode, setInkEraserSize, setInkPen, setInkSnapShapes, setInkTool, setInkWidth, splitInkSelection, undoInk } from "../documents/pdf-ink.js?v=__BUILD__";
+import { buildInkEraserSizes, buildInkNibs, buildInkPenSwatches, paintInkRailPressed, readInkRailPress } from "../handwriting/rail.js?v=__BUILD__";
 import { inkPreferences, inkRailOpen, writeInkPreferences, writeInkRailOpen } from "../storage/ink-prefs.js?v=__BUILD__";
 import { activeDocSlot } from "../documents/doc-slot.js?v=__BUILD__";
 import { showConfirmModal } from "./feedback.js?v=__BUILD__";
@@ -43,7 +43,24 @@ export function refreshInkRail() {
   pressed(el.documentInkBtn, open);
   if (!open) return;
 
-  paintInkRailPressed(rail, { pen: inkPen(), width: inkWidth(), tool: inkTool() });
+  const tool = inkTool();
+  paintInkRailPressed(rail, {
+    pen: inkPen(),
+    width: inkWidth(),
+    tool,
+    eraserSize: inkEraserSize(),
+    eraseMode: inkEraseMode(),
+    snapShapes: inkSnapShapes()
+  });
+  // The eraser's row takes the place of the pen's, rather than sitting beside
+  // it: they answer the same question about whichever tool is armed, and the
+  // rail is already a wrapping panel over the page with no room to carry both.
+  // The COLOURS stay up whatever is armed, because with a lasso selection a
+  // press on one recolours what is selected — and because a reader who is about
+  // to swap back to the pen should be able to choose the colour first.
+  const erasing = tool === "eraser";
+  if (el.inkRailWidths) el.inkRailWidths.hidden = erasing;
+  if (el.inkRailEraser) el.inkRailEraser.hidden = !erasing;
   rail.querySelector('[data-ink-action="undo"]')?.toggleAttribute("disabled", !canUndoInk());
   rail.querySelector('[data-ink-action="redo"]')?.toggleAttribute("disabled", !canRedoInk());
   // Refused rather than hidden, for the reason join is below: a control that
@@ -51,11 +68,20 @@ export function refreshInkRail() {
   rail.querySelector('[data-ink-action="clear"]')?.toggleAttribute("disabled", !inkPageHasStrokes(inkPageInView()));
 
   const count = inkSelectionCount();
-  if (el.inkRailSelection) el.inkRailSelection.hidden = count < 1;
-  // Join needs two strokes to join. Shown but refused rather than hidden, so
-  // the row does not change width under the reader's thumb between one
-  // selection and the next.
+  const pasteable = hasInkClipboard();
+  // Up while there is a selection OR something to paste. Paste is the one
+  // control in this group that is FOR the moment nothing is selected: copying on
+  // page 1 and pasting on page 4 is the case it exists for, and a group that
+  // vanished with the selection would take the only way of finishing that with it.
+  if (el.inkRailSelection) el.inkRailSelection.hidden = count < 1 && !pasteable;
+  // Each one refused rather than hidden, so the row does not change width under
+  // the reader's thumb between one selection and the next. Join needs two
+  // strokes to join; the rest need one; paste needs only a clipboard.
   rail.querySelector('[data-ink-action="join"]')?.toggleAttribute("disabled", count < 2);
+  ["split", "duplicate", "copy", "cut", "delete"].forEach((action) => {
+    rail.querySelector(`[data-ink-action="${action}"]`)?.toggleAttribute("disabled", count < 1);
+  });
+  rail.querySelector('[data-ink-action="paste"]')?.toggleAttribute("disabled", !pasteable);
 }
 
 // The one control here that a stroke cannot put right, so it is the one that
@@ -94,6 +120,7 @@ export function initInkRail() {
   if (!rail) return;
   buildInkPenSwatches(el.inkRailPens);
   buildInkNibs(el.inkRailWidths);
+  buildInkEraserSizes(el.inkRailEraser);
 
   // The pen, the nib and the tool are remembered per device rather than per
   // deck: which colour you write in is a fact about you, not about the paper.
@@ -101,6 +128,9 @@ export function initInkRail() {
   setInkPen(saved.pen);
   setInkWidth(saved.width);
   setInkTool(saved.tool);
+  setInkEraserSize(saved.eraserSize);
+  setInkEraseMode(saved.eraseMode);
+  setInkSnapShapes(saved.snapShapes);
 
   el.documentInkBtn?.addEventListener("click", () => toggleInkRail());
 
@@ -110,18 +140,37 @@ export function initInkRail() {
   rail.addEventListener("pointerdown", (event) => {
     const button = readInkRailPress(event);
     if (!button) return;
-    const { inkPen: nextPen, inkWidth: nextWidth, inkTool: nextTool, inkAction: action } = button.dataset;
+    const {
+      inkPen: nextPen, inkWidth: nextWidth, inkEraserSize: nextEraser, inkTool: nextTool, inkAction: action
+    } = button.dataset;
     if (nextPen) setInkPen(nextPen);
     else if (nextWidth) setInkWidth(Number(nextWidth));
+    else if (nextEraser) setInkEraserSize(Number(nextEraser));
     else if (nextTool) setInkTool(nextTool);
     else if (action === "undo") undoInk();
     else if (action === "redo") redoInk();
     else if (action === "clear") askToClearPage();
     else if (action === "join") joinInkSelection();
     else if (action === "split") splitInkSelection();
+    else if (action === "duplicate") duplicateInkSelection();
+    else if (action === "copy") copyInkSelection();
+    else if (action === "cut") cutInkSelection();
+    else if (action === "paste") pasteInkSelection();
     else if (action === "delete") deleteInkSelection();
-    if (nextPen || nextWidth || nextTool) {
-      writeInkPreferences({ pen: inkPen(), width: inkWidth(), tool: inkTool() });
+    // The two switches. Read back off the engine rather than toggled from the
+    // button's own aria-pressed, so the rail cannot come to disagree with the
+    // thing it is describing.
+    else if (action === "erase-mode") setInkEraseMode(inkEraseMode() === "part" ? "stroke" : "part");
+    else if (action === "snap") setInkSnapShapes(!inkSnapShapes());
+    if (nextPen || nextWidth || nextTool || nextEraser || action === "erase-mode" || action === "snap") {
+      writeInkPreferences({
+        pen: inkPen(),
+        width: inkWidth(),
+        tool: inkTool(),
+        eraserSize: inkEraserSize(),
+        eraseMode: inkEraseMode(),
+        snapShapes: inkSnapShapes()
+      });
     }
     refreshInkRail();
   });

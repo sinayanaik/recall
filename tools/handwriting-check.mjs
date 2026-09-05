@@ -1491,10 +1491,184 @@ try {
     const selected = api.inkSelectionCount();
     const selectionTools = boxed(document.getElementById("inkRailSelection"));
 
+    // ── (d) What a selection can now be DONE to ─────────────────────────────
+    //
+    // "The eraser, stroke, pen options are very limited — there should be more
+    // features when selecting contents." A lasso that can only move, resize and
+    // delete is a tool for correcting a placement; a page of working wants this
+    // bit in red, this bit again over there, and this bit on the next page.
+    // Read back out of the RECORDS rather than off the engine: what is stored
+    // is what survives a reload and reaches the other device, which is the thing
+    // worth asserting.
+    const strokesOn = (page) => (api.documentInkMarks(page) || [])
+      .flatMap((record) => api.decodeInkStrokes(record.ink && record.ink.s) || []);
+    const colourOf = (page) => strokesOn(page).map((stroke) => stroke.c);
+    const before = colourOf(1);
+    // A press on a swatch with something lassoed means "make THIS that" — the
+    // whole point being that it needs no new control on a rail with no room.
+    rail.querySelector('[data-ink-pen="red"]')
+      .dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 42, cancelable: true }));
+    await settle(250);
+    const recoloured = colourOf(1);
+
+    const wasCount = strokesOn(1).length;
+    api.duplicateInkSelection();
+    await settle(250);
+    const afterDuplicate = strokesOn(1).length;
+    // ...and the copy is its own mark, or a note written on one would be a note
+    // on both and editing either would edit both.
+    const marksAfterDuplicate = new Set((api.state.meta.pdfHighlights || [])
+      .filter((r) => r.kind === "ink" && Number(r.page) === 1).map((r) => r.id)).size;
+
+    // Copy here, paste on a page that has never been drawn on — which is the
+    // case the clipboard exists for and the one a per-page selection cannot do.
+    api.copyInkSelection();
+    const clipboardHolds = api.hasInkClipboard();
+    await api.addNotebookPage();
+    for (let i = 0; i < 80 && api.currentPdfPageCount() < 2; i += 1) await settle(100);
+    await settle(400);
+    const pastedOk = api.pasteInkSelection(2);
+    await settle(300);
+    const onPageTwo = strokesOn(2).length;
+
+    // ── (e) Rubbing out PART of a stroke ────────────────────────────────────
+    //
+    // The eraser removed whole strokes and nothing else, which is right for
+    // crossing out a word and wrong for one letter in the middle of a line
+    // written without lifting.
+    api.setViewMode("handwriting");
+    await settle(200);
+    api.setInkTool("pen");
+    api.clearInkPage(1);
+    await settle(200);
+    // One long horizontal stroke, so there is an unambiguous middle to cross —
+    // and, being the only thing on the page, an unambiguous position too.
+    pen(view, "pointerdown", box.left + 40, box.top + 420, 1);
+    for (let i = 1; i <= 30; i += 1) pen(view, "pointermove", box.left + 40 + (i * 8), box.top + 420, 1);
+    await settle(120);
+    pen(view, "pointerup", box.left + 280, box.top + 420, 0);
+    await settle(300);
+    const beforeErase = strokesOn(1).length;
+    api.setInkEraseMode("part");
+    api.setInkEraserSize(7);
+    rail.querySelector('[data-ink-tool="eraser"]')
+      .dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 43, cancelable: true }));
+    await settle(150);
+    // Straight down through the middle of it.
+    pen(view, "pointerdown", box.left + 160, box.top + 400, 1);
+    for (let i = 1; i <= 8; i += 1) pen(view, "pointermove", box.left + 160, box.top + 400 + (i * 5), 1);
+    await settle(150);
+    pen(view, "pointerup", box.left + 160, box.top + 440, 0);
+    await settle(300);
+    const afterPartErase = strokesOn(1).length;
+
+    // ── (f) The arrows ──────────────────────────────────────────────────────
+    //
+    // The only way to place ink to the point: a finger drag is not a precise
+    // instrument, and the last two points of a placement are a thing to tap out
+    // rather than wrestle a finger into.
+    //
+    // On a page holding exactly ONE stroke, so the leftmost point of the page is
+    // the leftmost point of the thing being moved. Measured on the stored
+    // geometry, which is where the ink actually ended up rather than where the
+    // overlay drew it.
+    api.setInkTool("pen");
+    api.clearInkPage(1);
+    await settle(200);
+    pen(view, "pointerdown", box.left + 60, box.top + 500, 1);
+    for (let i = 1; i <= 16; i += 1) pen(view, "pointermove", box.left + 60 + (i * 6), box.top + 500 + (i * 2), 1);
+    await settle(120);
+    pen(view, "pointerup", box.left + 156, box.top + 532, 0);
+    await settle(300);
+    const leftmostOn = (page) => {
+      let minX = Infinity;
+      let minY = Infinity;
+      strokesOn(page).forEach((stroke) => {
+        for (let i = 0; i + 2 < stroke.p.length; i += 3) {
+          if (stroke.p[i] < minX) minX = stroke.p[i];
+          if (stroke.p[i + 1] < minY) minY = stroke.p[i + 1];
+        }
+      });
+      return { minX, minY };
+    };
+    rail.querySelector('[data-ink-tool="lasso"]')
+      .dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 44, cancelable: true }));
+    await settle(150);
+    pen(view, "pointerdown", box.left + 30, box.top + 470, 1);
+    [[260, 470], [260, 570], [30, 570], [30, 470]].forEach(([dx, dy]) => pen(view, "pointermove", box.left + dx, box.top + dy, 1));
+    await settle(120);
+    pen(view, "pointerup", box.left + 30, box.top + 470, 0);
+    await settle(250);
+    const nudgeSelected = api.inkSelectionCount();
+    const nudgeStrokes = strokesOn(1).length;
+    const beforeNudge = leftmostOn(1);
+    for (let i = 0; i < 3; i += 1) {
+      document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true }));
+      await settle(80);
+    }
+    await settle(300);
+    const afterNudge = leftmostOn(1);
+
+    // ── (g) The turn grip ───────────────────────────────────────────────────
+    //
+    // The lasso could resize from one corner and could not turn at all, so a
+    // diagram drawn at the wrong angle had to be drawn again. The grip is the
+    // OPPOSITE corner from the resize one, and round rather than square, so the
+    // two cannot be reached for by mistake.
+    //
+    // The stroke on the page is a shallow diagonal — wider than it is tall —
+    // and a quarter turn makes it taller than it is wide. That is the assertion:
+    // not that some number changed, but that the drawing is standing where it
+    // was lying down.
+    const modelBox = (page) => {
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      strokesOn(page).forEach((stroke) => {
+        for (let i = 0; i + 2 < stroke.p.length; i += 3) {
+          if (stroke.p[i] < minX) minX = stroke.p[i];
+          if (stroke.p[i] > maxX) maxX = stroke.p[i];
+          if (stroke.p[i + 1] < minY) minY = stroke.p[i + 1];
+          if (stroke.p[i + 1] > maxY) maxY = stroke.p[i + 1];
+        }
+      });
+      return { minX, minY, maxX, maxY, w: maxX - minX, h: maxY - minY };
+    };
+    const beforeTurn = modelBox(1);
+    const viewport = api.pdfPageViewport(1);
+    const pageBox = document.querySelector("#documentStage .pdf-page[data-page-number='1']").getBoundingClientRect();
+    const onGlass = (x, y) => {
+      const [vx, vy] = viewport.convertToViewportPoint(x, y);
+      return { x: pageBox.left + vx, y: pageBox.top + vy };
+    };
+    const centre = onGlass((beforeTurn.minX + beforeTurn.maxX) / 2, (beforeTurn.minY + beforeTurn.maxY) / 2);
+    const corner = onGlass(beforeTurn.minX, beforeTurn.minY);
+    // A quarter turn: from wherever the grip is, round to the same distance at
+    // ninety degrees to it. The engine turns by the CHANGE in angle, so where the
+    // grip was grabbed does not matter — only how far it is swung.
+    const armX = corner.x - centre.x;
+    const armY = corner.y - centre.y;
+    pen(view, "pointerdown", corner.x, corner.y, 1);
+    for (let i = 1; i <= 8; i += 1) {
+      const t = (Math.PI / 2) * (i / 8);
+      pen(view, "pointermove",
+        centre.x + (armX * Math.cos(t)) - (armY * Math.sin(t)),
+        centre.y + (armX * Math.sin(t)) + (armY * Math.cos(t)), 1);
+    }
+    await settle(150);
+    pen(view, "pointerup", centre.x - armY, centre.y + armX, 0);
+    await settle(400);
+    const afterTurn = modelBox(1);
+
     return {
       railOnArrival, pens, nibs, lasso, armedForMouse, shut, stayedShut,
       darkShown, invertedBefore, invertedAfter,
       drawn, selected, selectionTools,
+      before, recoloured, wasCount, afterDuplicate, marksAfterDuplicate,
+      clipboardHolds, pastedOk, onPageTwo,
+      nudgeSelected, nudgeStrokes, beforeNudge, afterNudge, beforeTurn, afterTurn,
+      beforeErase, afterPartErase,
       errs: window.__errs.slice(0, 4)
     };
   }`, PEN_SRC);
@@ -1514,6 +1688,57 @@ try {
   check("...and cannot be reached round the back of the missing button either",
     reported.invertedBefore === reported.invertedAfter,
     `togglePdfInvert took the page from ${reported.invertedBefore} to ${reported.invertedAfter}`);
+  // Exactly as many strokes change colour as were lassoed, and no more: a press
+  // on a swatch with a selection up must not repaint the page.
+  check("a press on a colour restyles what is lassoed, and only that",
+    reported.recoloured.filter((c) => c === "red").length === reported.selected
+      && reported.before.filter((c) => c === "red").length === 0
+      && reported.recoloured.length === reported.before.length,
+    `${JSON.stringify(reported.before)} became ${JSON.stringify(reported.recoloured)} `
+      + `with ${reported.selected} stroke(s) lassoed`);
+  check("...and a duplicate lands beside it as a mark of its own",
+    reported.afterDuplicate > reported.wasCount && reported.marksAfterDuplicate >= 2,
+    `${reported.wasCount} stroke(s) became ${reported.afterDuplicate} over ${reported.marksAfterDuplicate} mark(s) — `
+      + `one mark would mean a note written on the copy was a note on the original too`);
+  check("...and what is copied can be pasted onto a page that was never drawn on",
+    reported.clipboardHolds && reported.pastedOk && reported.onPageTwo > 0,
+    `clipboard=${reported.clipboardHolds}, paste returned ${reported.pastedOk}, `
+      + `${reported.onPageTwo} stroke(s) stored on page 2`);
+  check("the eraser can take PART of a stroke and leave the rest standing",
+    reported.beforeErase === 1 && reported.afterPartErase === 2,
+    `one stroke crossed in the middle became ${reported.afterPartErase} (from ${reported.beforeErase}) — `
+      + `1 means the whole thing went, which is the old behaviour`);
+
+  // Three presses of one point each, on a page holding one stroke. Asserted as a
+  // range rather than exactly 3: the stored geometry is a simplified round trip
+  // of the samples, and a sub-point difference either way is the encoder rather
+  // than the nudge.
+  check("...and the arrow keys move a selection by a point at a time",
+    reported.nudgeSelected > 0 && reported.nudgeStrokes === 1
+      && Number.isFinite(reported.afterNudge.minX) && Number.isFinite(reported.beforeNudge.minX)
+      && (reported.afterNudge.minX - reported.beforeNudge.minX) > 2.5
+      && (reported.afterNudge.minX - reported.beforeNudge.minX) < 3.5
+      && Math.abs(reported.afterNudge.minY - reported.beforeNudge.minY) < 0.5,
+    `three presses of → moved the one stroke on the page `
+      + `${(reported.afterNudge.minX - reported.beforeNudge.minX).toFixed(2)} across and `
+      + `${(reported.afterNudge.minY - reported.beforeNudge.minY).toFixed(2)} down, with `
+      + `${reported.nudgeSelected} of ${reported.nudgeStrokes} lassoed`);
+
+  // Wider than tall becomes taller than wide, and the middle stays where it was:
+  // a turn about the centre of the box, not a drag that happens to change it.
+  check("...and the corner grip turns a selection, rather than only resizing it",
+    reported.beforeTurn.w > reported.beforeTurn.h && reported.afterTurn.h > reported.afterTurn.w
+      && Math.abs(((reported.afterTurn.minX + reported.afterTurn.maxX) / 2)
+        - ((reported.beforeTurn.minX + reported.beforeTurn.maxX) / 2)) < 4
+      && Math.abs(((reported.afterTurn.minY + reported.afterTurn.maxY) / 2)
+        - ((reported.beforeTurn.minY + reported.beforeTurn.maxY) / 2)) < 4,
+    `${reported.beforeTurn.w.toFixed(0)}x${reported.beforeTurn.h.toFixed(0)} became `
+      + `${reported.afterTurn.w.toFixed(0)}x${reported.afterTurn.h.toFixed(0)}, `
+      + `its middle moving ${(((reported.afterTurn.minX + reported.afterTurn.maxX) / 2)
+        - ((reported.beforeTurn.minX + reported.beforeTurn.maxX) / 2)).toFixed(1)},`
+      + `${(((reported.afterTurn.minY + reported.afterTurn.maxY) / 2)
+        - ((reported.beforeTurn.minY + reported.beforeTurn.maxY) / 2)).toFixed(1)}`);
+
   check("a lasso selects the strokes it was drawn round",
     reported.drawn && reported.selected > 0,
     `${reported.selected} stroke(s) selected`);
