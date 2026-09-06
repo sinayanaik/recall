@@ -136,46 +136,33 @@
    `order` because it is later in the markup, where it was written as an overlay.
    Nothing can land under it because there is nothing under it: the scroller
    starts where the rail ends, and not one piece of scroll arithmetic in the app
-   had to be told. It still reads as the same floating pill, and it still dims
-   to 0.2 while the nib is down. */
+   had to be told. It still reads as the same floating pill.
+
+   ── ...at one constant strength ───────────────────────────────────────────
+
+   It used to fade to 0.55 at rest, brighten to 1 on hover/focus, and dim to
+   0.2 for as long as a stylus was in contact with the stage — meant to keep a
+   writing hand from sitting under a bright panel. Ordinary handwriting is
+   dozens of short strokes a minute, each one flipping that last state on and
+   off, so the 0.18s transition between them read as the rail flickering the
+   whole time someone wrote. It is one opacity now, always. */
 .document-ink-rail {
   order: -1;
   flex: 0 0 auto;
   align-self: center;
-  margin: 10px 14px 0;
+  margin: 8px 12px 0;
   z-index: 6;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
-  max-width: calc(100% - 28px);
-  padding: 5px 8px;
+  gap: 4px;
+  max-width: calc(100% - 24px);
+  padding: 4px 6px;
   border: 1px solid var(--line);
-  border-radius: 16px;
+  border-radius: 14px;
   background: color-mix(in srgb, var(--panel) 92%, transparent);
   backdrop-filter: blur(6px);
   box-shadow: 0 6px 20px rgb(0 0 0 / 0.25);
-  opacity: 0.55;
-  transition: opacity 0.18s linear;
-}
-
-.document-ink-rail:hover,
-.document-ink-rail:focus-within,
-.document-ink-rail:has(.ink-rail-swatch[aria-pressed="true"]:focus-visible) {
-  opacity: 1;
-}
-
-/* A stylus in contact anywhere on the stage. The rail is 14px from the corner
-   and a hand writing near it would otherwise sit under a panel at full opacity;
-   this gets it out of the way for as long as the pen is down. */
-.document-stage.is-inking .document-ink-rail {
-  opacity: 0.2;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .document-ink-rail {
-    transition: none;
-  }
 }
 
 /* No paper, no pen — but "no paper" has meant two different things since the
@@ -209,6 +196,8 @@
 .ink-rail-btn {
   width: 30px;
   height: 30px;
+  min-width: 30px;
+  min-height: 30px;
   padding: 0;
   display: inline-flex;
   align-items: center;
