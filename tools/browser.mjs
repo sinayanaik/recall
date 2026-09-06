@@ -279,14 +279,38 @@ async function makePage(client, browserState) {
         return evaluated.result?.value;
       }
       const declaration = typeof fn === "string" ? `(${fn})` : fn.toString();
-      const result = await call("Runtime.callFunctionOn", {
-        functionDeclaration: declaration,
-        executionContextId: await contextId(),
-        arguments: args.map(arg),
-        awaitPromise: true,
-        returnByValue: true,
-        userGesture: true
-      });
+      // The context id is READ, and then SENT, and a navigation landing between
+      // those two destroys the context the browser is being asked to call into.
+      // Nothing can bind them atomically — so notice and ask again. The error
+      // is specific and means exactly one thing, and the context to use after
+      // it is the new document's, which is the one every caller means when it
+      // evaluates something after a reload.
+      //
+      // Found by release-check under a full suite run, where the machine is
+      // busy enough for the reload onto release B to overtake the probe that
+      // follows it. Twice standalone it never happened; the rejection escaped
+      // as an unhandled one and killed the process mid-check.
+      let result;
+      for (let attempt = 0; ; attempt += 1) {
+        const id = await contextId();
+        try {
+          result = await call("Runtime.callFunctionOn", {
+            functionDeclaration: declaration,
+            executionContextId: id,
+            arguments: args.map(arg),
+            awaitPromise: true,
+            returnByValue: true,
+            userGesture: true
+          });
+          break;
+        } catch (error) {
+          if (attempt >= 2 || !/Cannot find context with specified id/i.test(String(error?.message))) throw error;
+          // Only if the listener has not already replaced it: nulling an id
+          // that is ALREADY the new document's would wait out the full timeout
+          // for a context that has arrived.
+          if (currentContextId === id) currentContextId = null;
+        }
+      }
       if (result.exceptionDetails) throw pageError(result.exceptionDetails);
       return result.result?.value;
     },
