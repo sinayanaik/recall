@@ -701,7 +701,11 @@ check("...with cloze still withheld, because a note is not a card face",
 
 } finally {
   await client.close?.();
-  launched.proc?.kill();
+  // close(), not proc.kill(): the kill leaves the profile directory behind,
+  // and cdp.mjs's close() is the thing that signals the process GROUP and then
+  // sweeps it. Four checks in this suite reached past it straight to the pid
+  // and left a Chrome profile in /tmp on every run.
+  await launched.close();
   server.proc?.kill();
 }
 

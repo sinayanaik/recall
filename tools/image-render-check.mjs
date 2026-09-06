@@ -672,7 +672,8 @@ async function run() {
 
     check(errors.length === 0, "no uncaught exceptions", errors.length ? errors[0] : "clean");
   } finally {
-    if (browser) browser.proc.kill();
+    // close(), not proc.kill() — see the note in note-editor-check.
+    if (browser) await browser.close();
     server.proc.kill();
   }
 

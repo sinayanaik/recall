@@ -610,7 +610,8 @@ async function run() {
     check(errors.length === 0, "the page threw nothing", errors.slice(0, 2).join(" | "));
   } finally {
     server.proc.kill();
-    browser?.proc?.kill?.();
+    // close(), not proc.kill() — see the note in note-editor-check.
+    await browser?.close?.();
   }
 
   console.log("");
