@@ -30,26 +30,24 @@
 //     are outside the shape and belong to the note behind it. Pressing one is
 //     a press on the note, and the selection is supposed to go away.
 
-import { createRequire } from "node:module";
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { findChrome, launch } from "./browser.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SHOT = process.argv.includes("--shot");
-const CHROME = [
-  "/usr/bin/google-chrome-stable", "/usr/bin/google-chrome",
-  "/usr/bin/chromium-browser", "/usr/bin/chromium", "/snap/bin/chromium",
-].find(existsSync);
-function loadPuppeteer() {
-  for (const base of [ROOT, "/home/san/.nvm/versions/node/v22.19.0/lib/node_modules/@mermaid-js/mermaid-cli/"]) {
-    try { return createRequire(path.join(base, "x.js"))("puppeteer"); } catch (_) { /* next */ }
-  }
-  return null;
+// Chrome comes from tools/browser.mjs, which drives it over the DevTools
+// protocol rather than through puppeteer — see that file for why.
+const CHROME = findChrome();
+if (!CHROME) {
+  // Not a skip: a check that cannot run has not passed. tools/check.mjs counts
+  // this as a failure and names it.
+  console.error("selection-check: no Chrome. Set CHROME_PATH — see tools/cdp.mjs.");
+  console.log("CHECK: 1 checks · 1 failed");
+  process.exit(1);
 }
-const puppeteer = loadPuppeteer();
-if (!puppeteer || !CHROME) { console.log("selection-check: no puppeteer/Chrome — skipping."); process.exit(0); }
 
 const VENDORED = [
   "recall-clipper/vendor/marked.min.js",
@@ -143,7 +141,7 @@ const READ_SELECTION = () => {
 
 const server = await serveOn(ROOT);
 await new Promise((r) => setTimeout(r, 900));
-const browser = await puppeteer.launch({ headless: "new", executablePath: CHROME, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
+const browser = await launch({ headless: "new", executablePath: CHROME, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
 const failures = [];
 // Counted, not written down. The summary line used to carry a literal "7", so
 // adding a case left it reporting the old number — a check whose own tally can
@@ -156,7 +154,12 @@ try {
   page.on("request", (r) => (r.url().includes("cdn.jsdelivr.net") ? r.abort() : r.continue()));
   for (const lib of VENDORED) if (existsSync(lib)) await page.evaluateOnNewDocument(readFileSync(lib, "utf8"));
   await page.goto(`${server.base}/index.html`, { waitUntil: "domcontentloaded", timeout: 90000 });
-  await page.waitForFunction(() => !document.documentElement.classList.contains("app-booting"), { timeout: 30000 }).catch(() => {});
+  // No .catch() here. A page that never boots is the loudest failure this
+  // check can find, and swallowing the rejection turned it into the quietest:
+  // the next line asks whether marked and DOMPurify are present, a dead page
+  // has neither, and the answer was "skipped" rather than "the app did not
+  // start".
+  await page.waitForFunction(() => !document.documentElement.classList.contains("app-booting"), { timeout: 30000 });
 
   await page.evaluate(async (apiSrc, fakeSrc, note) => {
     // Keep showing the app screen until it stops being taken away. Returns once
@@ -256,7 +259,19 @@ try {
     blocks: document.querySelector("#notesView")?.children.length || 0,
     view: document.querySelector("#notesView")?.getBoundingClientRect().toJSON(),
     head: document.querySelector(".notes-head")?.getBoundingClientRect().toJSON(),
-    copyLabel: document.querySelector("#notesView .code-copy-btn")?.textContent || "",
+    // The label the reader SEES. It is generated content now (::before, from
+    // data-label) precisely so that it is not a text node a selection can pick
+    // up — so read it from the attribute, and separately from the painted
+    // pseudo-element, because "not selectable" must not have been achieved by
+    // making it invisible.
+    copyLabel: document.querySelector("#notesView .code-copy-btn")?.dataset.label || "",
+    copyLabelPainted: (() => {
+      const btn = document.querySelector("#notesView .code-copy-btn");
+      if (!btn) return "";
+      const content = getComputedStyle(btn, "::before").getPropertyValue("content");
+      return content && content !== "none" ? content.replace(/^"|"$/g, "") : "";
+    })(),
+    copyLabelAccessible: document.querySelector("#notesView .code-copy-btn")?.getAttribute("aria-label") || "",
   }));
   if (!stage.blocks) throw new Error("the probe note did not render");
 
@@ -336,6 +351,38 @@ try {
   async function clearSelection() {
     await page.evaluate(() => window.getSelection()?.removeAllRanges());
     await page.waitForFunction(() => document.querySelector("#selectionFloat")?.hidden !== false, { timeout: 3000 });
+  }
+
+  // Wait for a surface to STOP MOVING before anything measures a point on it.
+  //
+  // Every point a drag aims at is measured off the thing it means to hit — the
+  // header above says why — but a rect measured while the surface is still
+  // settling is measured off where that thing WAS. Switching view restores a
+  // reading position asynchronously, so a rect taken 500ms after setViewMode
+  // can be several hundred pixels out by the time the press lands, and the drag
+  // then starts on blank margin and selects nothing.
+  //
+  // That is not hypothetical: with a probe after every case, an ordinary notes
+  // drag alternated between 13 characters and 0 through a single run, and the
+  // card-face case failed or passed depending on which it got. A flaky check is
+  // worse than an absent one — it teaches you to re-run until green.
+  async function whenStill(selector, { frames = 3, timeout = 5000 } = {}) {
+    const started = Date.now();
+    let stable = 0;
+    let last = null;
+    for (;;) {
+      const now = await page.evaluate((sel) => {
+        const node = document.querySelector(sel);
+        if (!node) return null;
+        const r = node.getBoundingClientRect();
+        return `${Math.round(r.top)},${Math.round(r.left)},${Math.round(node.scrollTop)},${Math.round(node.scrollLeft)}`;
+      }, selector);
+      if (now !== null && now === last) stable += 1; else stable = 0;
+      last = now;
+      if (stable >= frames) return true;
+      if (Date.now() - started > timeout) return false;
+      await new Promise((r) => setTimeout(r, 60));
+    }
   }
 
   async function dragTo(from, to, steps = 30) {
@@ -424,6 +471,21 @@ try {
     if (!stage.copyLabel) return "the code block rendered without its copy button — nothing was tested";
     if (sel.text.includes(stage.copyLabel)) {
       return `the copy button's label ${JSON.stringify(stage.copyLabel)} is in the selection`;
+    }
+    return null;
+  });
+
+  // The other half, and the reason this one is not satisfied by deleting the
+  // badge: it still has to be on screen, and it still has to have a name a
+  // screen reader can read. "Not selectable" is trivially achievable by making
+  // a control invisible, and that is not the fix.
+  await check("...while still being drawn, and still having an accessible name", async () => {
+    if (!stage.copyLabelPainted) return "the badge paints no label at all";
+    if (stage.copyLabelPainted !== stage.copyLabel) {
+      return `the painted label ${JSON.stringify(stage.copyLabelPainted)} is not the one in data-label (${JSON.stringify(stage.copyLabel)})`;
+    }
+    if (!/copy/i.test(stage.copyLabelAccessible)) {
+      return `the button's accessible name does not say what it does: ${JSON.stringify(stage.copyLabelAccessible)}`;
     }
     return null;
   });
@@ -541,6 +603,9 @@ try {
       api.setViewMode("cards");
       await new Promise((r) => setTimeout(r, 700));
     });
+    // The stage has just been switched to cards; measure only once it has
+    // stopped moving. See whenStill.
+    await whenStill("#questionView");
     const face = await page.evaluate(() => {
       const view = document.querySelector("#questionView");
       const controls = document.querySelector(".controls");
@@ -554,6 +619,12 @@ try {
       return { x: r.left + r.width / 2, y: r.top + r.height / 2, controlsTop: controls.getBoundingClientRect().top };
     });
     if (!face) return "the card face did not render";
+    // First, the thing a reader actually wants: a drag that stays ON the face
+    // selects the face's text. Asserted before the hazard below, because if
+    // this fails then "the button row is not in the selection" is true for the
+    // uninteresting reason that nothing is.
+    const within = await dragTo({ x: face.x, y: face.y }, { x: face.x + 220, y: face.y }, 25);
+    if (within.len === 0) return "a drag that stays on the card face selects nothing at all";
     const sel = await dragTo({ x: face.x, y: face.y }, { x: face.x + 60, y: face.controlsTop + 20 }, 30);
     if (sel.len === 0) return "the selection collapsed to nothing";
     if (/Review|Prev|Known|Shuffle|Restart/.test(sel.text)) {
@@ -820,4 +891,5 @@ try {
 }
 
 console.log(failures.length ? `\n${failures.length} selection problem(s).` : `\n${ran.count} selection cases, all clean.`);
+console.log(`CHECK: ${ran.count} checks · ${failures.length} failed`);
 process.exit(failures.length ? 1 : 0);

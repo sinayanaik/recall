@@ -20,21 +20,30 @@
 // is "is this the same as before the change", and that is a diff. --baseline
 // checks out a git ref into a temp dir, boots that too, and compares.
 //
-// Needs a Chrome and a puppeteer. It looks for puppeteer in the usual global
-// spots; if there is none, it says so and exits 0 rather than failing a run that
-// is otherwise fine.
+// Needs a Chrome, found by tools/browser.mjs. It used to also need a puppeteer
+// installed globally, and looked for it under one developer's nvm directory —
+// so on every other machine it printed "skipping." and exited 0.
 
-import { createRequire } from "node:module";
 import { spawn, execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { baselineTreeInto } from "./baseline.mjs";
+import { findChrome, launch } from "./browser.mjs";
 
 // State keys that are ALLOWED to differ from the baseline, and why. Keep this
 // short, like split-parity's ACCEPTED — every entry is a place where "boots the
 // same as it always did" was deliberately spent.
 const ACCEPTED_DIFFS = {
+  toolbarButtons:
+    "24 -> 12. The same change as toolbarsFilled below, counted a different " +
+    "way: this is every <button> in #mainToolbar, and the controls that left " +
+    "the three raw-edit strips for the floating selection pill are exactly the " +
+    "twelve missing. It was not listed here because nothing ran this check on " +
+    "any machine but one, so the entry it needed was never noticed as missing " +
+    "— which is also why boot-check reported '1 problem(s)' for a change the " +
+    "two entries below already explain in full.",
   toolbarsFilled:
     "15/15/11 -> 3/3/3. The raw-edit toolbars keep only the three controls a " +
     "SELECTION cannot express (insert image, bullet, clear formatting). " +
@@ -56,28 +65,20 @@ const baselineIdx = args.indexOf("--baseline");
 const baselineRef = baselineIdx !== -1 ? args[baselineIdx + 1] : null;
 const explicitUrl = args.find((a) => a.startsWith("http"));
 
-const CHROME = [
-  "/usr/bin/google-chrome-stable", "/usr/bin/google-chrome",
-  "/usr/bin/chromium-browser", "/usr/bin/chromium", "/snap/bin/chromium"
-].find(existsSync);
+// Chrome comes from tools/browser.mjs, which drives it over the DevTools
+// protocol rather than through puppeteer. This used to be a hard-coded list of
+// five /usr/bin paths plus a puppeteer under one person's nvm directory, and on
+// any machine that matched neither — every container, every CI runner — the
+// guard below printed "skipping." and exited 0, which the suite scored as a
+// pass. See tools/browser.mjs for the whole story.
+const CHROME = findChrome();
 
-function loadPuppeteer() {
-  const candidates = [
-    ROOT,
-    "/home/san/.nvm/versions/node/v22.19.0/lib/node_modules/@mermaid-js/mermaid-cli/",
-    "/usr/lib/node_modules/@mermaid-js/mermaid-cli/"
-  ];
-  for (const base of candidates) {
-    try { return createRequire(path.join(base, "x.js"))("puppeteer"); } catch (_) { /* next */ }
-  }
-  return null;
-}
-
-const puppeteer = loadPuppeteer();
-if (!puppeteer || !CHROME) {
-  console.log("boot-check: no puppeteer and/or Chrome found — skipping.");
-  console.log("            (npm i -D puppeteer, or install Chrome, to enable it)");
-  process.exit(0);
+if (!CHROME) {
+  // Not a skip: a check that cannot run has not passed. tools/check.mjs counts
+  // this as a failure and names it.
+  console.error("boot-check: no Chrome. Set CHROME_PATH — see tools/cdp.mjs.");
+  console.log("CHECK: 1 checks · 1 failed");
+  process.exit(1);
 }
 
 // A tiny static server on a FREE port, so this works with no dev server running
@@ -104,7 +105,7 @@ const VENDORED = [
 ];
 
 async function boot(url) {
-  const browser = await puppeteer.launch({
+  const browser = await launch({
     headless: "new",
     executablePath: CHROME,
     args: ["--no-sandbox", "--disable-dev-shm-usage"]
@@ -151,6 +152,32 @@ async function boot(url) {
     } catch (_) {
       bootTimedOut = true;
     }
+
+    // ...and then for the boot DECISION, which is a different moment.
+    //
+    // app-booting clears when the module graph finishes evaluating. Choosing
+    // between setup, login, app and library-failed happens after that, behind
+    // whatever the network does, and showBootScreen() is the only thing that
+    // takes down index.html's #bootSkeleton placeholder. So while that node is
+    // still in the DOM, nothing has been decided yet — and its "Still starting
+    // up" line is inside document.body.innerText the whole time, because that
+    // paragraph is hidden with opacity and innerText does not care about
+    // opacity.
+    //
+    // Sampling 500ms after the module graph was therefore a race, and one this
+    // machine always won and a CI runner with no network did not: the probe
+    // read the placeholder's text as the page's body text and reported a
+    // healthy boot as a state difference. The baseline has no #bootSkeleton at
+    // all, so this resolves immediately on that side.
+    let bootUndecided = false;
+    try {
+      await page.waitForFunction(
+        () => !document.getElementById("bootSkeleton"),
+        { timeout: 30000 }
+      );
+    } catch (_) {
+      bootUndecided = true;
+    }
     await new Promise((r) => setTimeout(r, 500));
 
     // Observable proof that the module evaluated to its LAST line and that the
@@ -159,7 +186,12 @@ async function boot(url) {
       // set by index.html's boot-click queue, cleared only by the replay IIFE
       // at the very bottom of main.js
       bootQueueDrained: !document.documentElement.classList.contains("app-booting"),
-      setupVisible: !document.getElementById("setupScreen")?.hasAttribute("hidden"),
+      // setupOverlay, not setupScreen: there is no #setupScreen in this tree OR
+      // in the baseline, so `!undefined?.hasAttribute(...)` was `!undefined`,
+      // and this key reported `true` on both sides of every comparison ever
+      // made. An assertion that cannot fail is the thing this whole branch is
+      // about, and it was sitting inside the check for it.
+      setupVisible: !document.getElementById("setupOverlay")?.hasAttribute("hidden"),
       toolbarButtons: document.querySelectorAll("#mainToolbar button").length,
       // initToolbars(): fills these from createToolbarHtml, then runs
       // enableSyntaxHighlighting, which builds one mirror backdrop per editor
@@ -169,7 +201,7 @@ async function boot(url) {
       renderToolbars: document.querySelectorAll("[class*=render-toolbar]").length,
       bodyText: (document.body.innerText || "").slice(0, 120).replace(/\s+/g, " ")
     }));
-    return { state, logs, bootTimedOut };
+    return { state, logs, bootTimedOut, bootUndecided };
   } finally {
     await browser.close();
   }
@@ -195,7 +227,7 @@ try {
   if (baselineRef) {
     const dir = mkdtempSync(path.join(tmpdir(), "recall-baseline-"));
     temps.push(dir);
-    execFileSync("bash", ["-c", `git archive ${baselineRef} | tar -x -C ${dir}`], { cwd: ROOT });
+    baselineTreeInto(dir, baselineRef);
     const s1 = await serveOn(dir);
     servers.push(s1.proc);
     baseline = `${s1.base}/index.html`;
@@ -205,6 +237,7 @@ try {
   const now = await boot(url);
   const problems = now.logs.filter(isOurs);
   if (now.bootTimedOut) problems.push(["BOOT", "the app never finished booting (app-booting never cleared)"]);
+  if (now.bootUndecided) problems.push(["BOOT", "the app never chose a boot screen (#bootSkeleton was never taken down)"]);
 
   console.log("── console ──");
   if (!now.logs.length) console.log("  (silent)");
@@ -212,8 +245,14 @@ try {
   console.log("── state ──");
   for (const [k, v] of Object.entries(now.state)) console.log(`  ${k}: ${v}`);
 
+  // Every state key this compared, plus the boot finishing, the boot deciding,
+  // and the console being clean. Counted rather than written down: a key added
+  // to the probe must change the tally, or the tally is describing an older
+  // check.
+  let asserted = Object.keys(now.state).length + 3;
   if (baseline) {
     const before = await boot(baseline);
+    asserted += Object.keys(now.state).length;
     const changed = Object.keys(now.state).filter((k) => String(before.state[k]) !== String(now.state[k]));
     const fmt = (k) => `  ${k}\n    ${baselineRef}: ${before.state[k]}\n    now: ${now.state[k]}`;
     const diffs = changed.filter((k) => !(k in ACCEPTED_DIFFS)).map(fmt);
@@ -225,6 +264,9 @@ try {
   }
 
   console.log(`\n${problems.length} problem(s)`);
+  // The tally tools/check.mjs reads: every state key compared against the
+  // baseline, plus the boot finishing, the boot deciding, and a clean console.
+  console.log(`CHECK: ${asserted} checks · ${problems.length} failed`);
   process.exitCode = problems.length ? 1 : 0;
 } finally {
   for (const s of servers) s.kill();

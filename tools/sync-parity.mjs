@@ -25,12 +25,13 @@
 // Everything runs in a real browser against the real modules, so the merge sees
 // the same JSON shapes it sees in production.
 
-import { createRequire } from "node:module";
 import { spawn, execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { baselineTreeInto } from "./baseline.mjs";
+import { findChrome, launch } from "./browser.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 // The baseline is the TAG pre-modular, not a branch. It used to default to
@@ -54,18 +55,20 @@ const ACCEPTED_DIFFS = {
     "something it had to call 'notes edited'."
 };
 
-const CHROME = [
-  "/usr/bin/google-chrome-stable", "/usr/bin/google-chrome",
-  "/usr/bin/chromium-browser", "/usr/bin/chromium", "/snap/bin/chromium"
-].find(existsSync);
-function loadPuppeteer() {
-  for (const base of [ROOT, "/home/san/.nvm/versions/node/v22.19.0/lib/node_modules/@mermaid-js/mermaid-cli/"]) {
-    try { return createRequire(path.join(base, "x.js"))("puppeteer"); } catch (_) { /* next */ }
-  }
-  return null;
+// Chrome comes from tools/browser.mjs, which drives it over the DevTools
+// protocol rather than through puppeteer. This used to be a hard-coded list of
+// five /usr/bin paths plus a puppeteer under one person's nvm directory, and on
+// any machine that matched neither — every container, every CI runner — the
+// guard below printed "skipping." and exited 0, which the suite scored as a
+// pass. See tools/browser.mjs for the whole story.
+const CHROME = findChrome();
+if (!CHROME) {
+  // Not a skip: a check that cannot run has not passed. tools/check.mjs counts
+  // this as a failure and names it.
+  console.error("sync-parity: no Chrome. Set CHROME_PATH — see tools/cdp.mjs.");
+  console.log("CHECK: 1 checks · 1 failed");
+  process.exit(1);
 }
-const puppeteer = loadPuppeteer();
-if (!puppeteer || !CHROME) { console.log("sync-parity: no puppeteer/Chrome — skipping."); process.exit(0); }
 
 // The names both sides must provide.
 const API = [
@@ -832,15 +835,40 @@ function serveOn(dir) {
   });
 }
 
+// The libraries both pages need before their own scripts run. The clipper
+// vendors them, so this needs no network.
+const VENDORED = [
+  path.join(ROOT, "recall-clipper/vendor/marked.min.js"),
+  path.join(ROOT, "recall-clipper/vendor/purify.min.js")
+];
+
 async function withPage(url, fn) {
-  const browser = await puppeteer.launch({ headless: "new", executablePath: CHROME, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
+  const browser = await launch({ headless: "new", executablePath: CHROME, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
   try {
     const page = await browser.newPage();
     const errors = [];
     page.on("pageerror", (e) => errors.push(e.message));
+    // BEFORE the navigation. The baseline page is pre-modular:app.js wrapped as
+    // a classic script, and it reaches for `marked` while it runs — so without
+    // this it died on "ReferenceError: marked is not defined", window.__recallApi
+    // was never assigned, and EVERY scenario came back as
+    // "THREW: Cannot read properties of undefined". Forty-two reported parity
+    // failures, none of them about parity.
+    for (const lib of VENDORED) {
+      if (!existsSync(lib)) continue;
+      await page.evaluateOnNewDocument(readFileSync(lib, "utf8"));
+    }
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 90000 });
     await new Promise((r) => setTimeout(r, 800));
-    return { value: await fn(page), errors };
+    const value = await fn(page);
+    // Reported rather than collected and dropped. A page that threw before it
+    // could build its probe is why this check spent months describing a healthy
+    // tree as forty-two divergences, and nothing printed the reason.
+    if (errors.length) {
+      console.log(`  page errors on ${url}:`);
+      for (const e of errors.slice(0, 4)) console.log(`    ${e}`);
+    }
+    return { value, errors };
   } finally {
     await browser.close();
   }
@@ -849,11 +877,14 @@ async function withPage(url, fn) {
 const servers = [];
 const temps = [];
 let failures = 0;
+// Counted rather than written down, so a case added here cannot leave the
+// summary reporting yesterday's number.
+let asserted = 0;
 try {
   // Baseline: re-evaluate app.js inside a wrapper that hands the names back.
   const baseDir = mkdtempSync(path.join(tmpdir(), "recall-sync-"));
   temps.push(baseDir);
-  execFileSync("bash", ["-c", `git archive ${BASE_REF} | tar -x -C ${baseDir}`], { cwd: ROOT });
+  baselineTreeInto(baseDir, BASE_REF);
   const appJs = readFileSync(path.join(baseDir, "app.js"), "utf8");
   writeFileSync(path.join(baseDir, "probe.js"),
     `window.__recallApi = (function () {\n${appJs}\n;return { ${API.join(", ")} };\n})();\n`);
@@ -915,6 +946,7 @@ try {
     }
   }
   console.log(`  ${keys.length} sync scenarios · ${diffs.length} differ · ${threw.length} threw`);
+  asserted += keys.length;
   failures += diffs.length + threw.length;
 
   const inv = await withPage(`${__s_ROOT.base}/index.html`, (p) =>
@@ -925,6 +957,7 @@ try {
     if (!ok) failures++;
   }
   const bad = inv.value.filter(([ok]) => !ok).length;
+  asserted += inv.value.length;
   console.log(`  ${inv.value.length} invariants · ${bad} violated`);
 
   const STORAGE_API = `async () => {
@@ -944,6 +977,7 @@ try {
     if (!ok) failures++;
   }
   const storeBad = store.value.filter(([ok]) => !ok).length;
+  asserted += store.value.length;
   console.log(`  ${store.value.length} storage checks · ${storeBad} violated`);
 
   const CONCURRENCY_API = `async () => {
@@ -962,10 +996,14 @@ try {
     if (!ok) failures++;
   }
   const concBad = conc.value.filter(([ok]) => !ok).length;
+  asserted += conc.value.length;
   console.log(`  ${conc.value.length} concurrency checks · ${concBad} violated`);
 
   if (after.errors.length) console.log(`\n  page errors: ${after.errors.slice(0, 3).join(" | ")}`);
   console.log(failures ? `\n${failures} sync problem(s).` : "\nSync verified: identical behaviour, and every data-loss invariant holds.");
+  // The tally tools/check.mjs reads: every parity scenario, every data-loss
+  // invariant and every storage/concurrency case this run actually reached.
+  console.log(`CHECK: ${asserted} checks · ${failures} failed`);
 } finally {
   for (const s of servers) s.kill();
   for (const d of temps) rmSync(d, { recursive: true, force: true });

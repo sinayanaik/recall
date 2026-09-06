@@ -25,12 +25,12 @@
 // The app skips worker registration on localhost and 127.0.0.1, so this serves
 // under a hostname that is neither and tells Chrome to treat it as secure.
 
-import { createRequire } from "node:module";
 import { spawn, execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, readFileSync, writeFileSync, readdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { findChrome, launch } from "./browser.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const HOST = "recall.test";
@@ -41,18 +41,20 @@ const HOST = "recall.test";
 let PORT = 0;
 let ORIGIN = "";
 
-const CHROME = [
-  "/usr/bin/google-chrome-stable", "/usr/bin/google-chrome",
-  "/usr/bin/chromium-browser", "/usr/bin/chromium", "/snap/bin/chromium"
-].find(existsSync);
-function loadPuppeteer() {
-  for (const base of [ROOT, "/home/san/.nvm/versions/node/v22.19.0/lib/node_modules/@mermaid-js/mermaid-cli/"]) {
-    try { return createRequire(path.join(base, "x.js"))("puppeteer"); } catch (_) { /* next */ }
-  }
-  return null;
+// Chrome comes from tools/browser.mjs, which drives it over the DevTools
+// protocol rather than through puppeteer. This used to be a hard-coded list of
+// five /usr/bin paths plus a puppeteer under one person's nvm directory, and on
+// any machine that matched neither — every container, every CI runner — the
+// guard below printed "skipping." and exited 0, which the suite scored as a
+// pass. See tools/browser.mjs for the whole story.
+const CHROME = findChrome();
+if (!CHROME) {
+  // Not a skip: a check that cannot run has not passed. tools/check.mjs counts
+  // this as a failure and names it.
+  console.error("release-check: no Chrome. Set CHROME_PATH — see tools/cdp.mjs.");
+  console.log("CHECK: 1 checks · 1 failed");
+  process.exit(1);
 }
-const puppeteer = loadPuppeteer();
-if (!puppeteer || !CHROME) { console.log("release-check: no puppeteer/Chrome — skipping."); process.exit(0); }
 
 function walk(dir, out = []) {
   for (const e of readdirSync(dir)) {
@@ -128,9 +130,13 @@ ORIGIN = `http://${HOST}:${PORT}`;
 
 const say = (ok, msg) => { console.log(`  ${ok ? "ok  " : "FAIL"}  ${msg}`); return ok; };
 let failures = 0;
-const check = (ok, msg) => { if (!say(ok, msg)) failures++; };
+// Counted, not just tallied at the end: the number tools/check.mjs reads has to
+// be the number of assertions actually REACHED, so a run that dies after the
+// fourth one prints 4 rather than looking, from outside, like a clean sweep.
+let ran = 0;
+const check = (ok, msg) => { ran++; if (!say(ok, msg)) failures++; };
 
-const browser = await puppeteer.launch({
+const browser = await launch({
   headless: "new",
   executablePath: CHROME,
   args: [
@@ -231,8 +237,37 @@ try {
   // skip-waiting and reloads. A test that just reloads twice is testing the
   // refusal, not the update — and would "pass" against an app that could never
   // update at all.
+  // Hold the app's OWN automatic reload off for the length of this section,
+  // using the app's own guard rather than anything invented here.
+  //
+  // sw.js calls skipWaiting() during install, so a new worker never sits in
+  // "waiting" — it activates as soon as it has precached, controllerchange
+  // fires, and src/pwa/service-worker-client.js reloads the page onto the new
+  // release by itself. That is the app working, and it is also a stopwatch:
+  // every observation below is of a page that is being replaced underneath it.
+  // Both of the assertions here failed that way — the banner never seen because
+  // the page carrying it was gone, and the held stamp read as B because by then
+  // the reload had happened. The check "passed" when it happened to be quicker.
+  //
+  // The client suppresses its own reload if one already happened inside a
+  // minute (recall:updateReloadAt in sessionStorage) and shows a toast instead,
+  // so writing that key here is asking the app for the state it already has a
+  // name for. Set BEFORE the switch, because htmlMatchesThisRelease starts the
+  // update from inside the very navigation below.
+  await page.evaluate(() => {
+    try { sessionStorage.setItem("recall:updateReloadAt", String(Date.now())); } catch (_) { /* nothing to do */ }
+  });
   await fetch(`http://127.0.0.1:${PORT}/__switch?to=${encodeURIComponent(dirB)}`);
-  await page.goto(`${ORIGIN}/index.html`, { waitUntil: "networkidle2", timeout: 60000 });
+  // domcontentloaded, not networkidle2: the new worker's install is 204 module
+  // requests, so "the network went quiet" is a point AFTER the handover rather
+  // than before it. What is being asked here is what the OLD worker answered
+  // this navigation with, and that is known the moment the document exists.
+  await page.goto(`${ORIGIN}/index.html`, { waitUntil: "domcontentloaded", timeout: 60000 });
+
+  const held = await page.evaluate(() =>
+    document.querySelector('script[type="module"]')?.getAttribute("src")?.match(/v=([^&"']+)/)?.[1]);
+  check(held === "aaaaaa1", `update: the old worker still serves its OWN release until told (?v=${held})`);
+
   await page.evaluate(async () => {
     const reg = await navigator.serviceWorker.getRegistration();
     if (reg) await reg.update();
@@ -240,10 +275,6 @@ try {
 
   const banner = await page.waitForSelector(".update-banner", { timeout: 30000 }).catch(() => null);
   check(Boolean(banner), "update: the new release is announced to the running page");
-
-  const held = await page.evaluate(() =>
-    document.querySelector('script[type="module"]')?.getAttribute("src")?.match(/v=([^&"']+)/)?.[1]);
-  check(held === "aaaaaa1", `update: the old worker still serves its OWN release until told (?v=${held})`);
 
   if (banner) {
     // Press like a person would, a beat after the banner appears — not in the
@@ -349,6 +380,11 @@ try {
   await cdp.send("Network.emulateNetworkConditions", { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
 
   console.log(failures ? `\n${failures} release check(s) failed.` : "\nRelease path verified: install, offline, update, and offline again after the update.");
+  // The result line every check in this suite owes tools/check.mjs. This one
+  // used to end without it, which under --full was scored exactly as a check
+  // that died on its first line — correctly, and only because nobody had run
+  // --full since the contract was written.
+  console.log(`CHECK: ${ran} checks · ${failures} failed`);
 } finally {
   await browser.close();
   server.kill();

@@ -501,6 +501,9 @@ async function run() {
       console.log(`  empty note   task ${c.task}ms   style ${c.style}ms   layout ${c.layout}ms   script ${c.script}ms`);
     }
     console.log(`  book open    task ${spent.task}ms   style ${spent.style}ms   layout ${spent.layout}ms   script ${spent.script}ms`);
+    // The tally tools/check.mjs reads. See its header for why an exit code on
+    // its own is not enough.
+    console.log(`CHECK: ${results.length} checks · ${failed.length} failed`);
     return failed.length ? 1 : 0;
   } finally {
     client?.close();

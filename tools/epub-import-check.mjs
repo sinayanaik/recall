@@ -228,7 +228,10 @@ const watchdog = setTimeout(() => {
 }, WATCHDOG_MS);
 
 const failures = [];
+// Every assertion reached, for the tally at the end. See tools/check.mjs.
+let ran = 0;
 function check(label, ok, detail = "") {
+  ran += 1;
   if (ok) console.log(`  ok    ${label}${detail ? `  ${detail}` : ""}`);
   else {
     console.log(`  FAIL  ${label}${detail ? `  ${detail}` : ""}`);
@@ -694,4 +697,5 @@ try {
 console.log(failures.length
   ? `\nepub-import-check: ${failures.length} failure(s) — ${failures.join("; ")}`
   : `\nepub-import-check: the preview, its figures, and both import modes all hold`);
+console.log(`CHECK: ${ran} checks · ${failures.length} failed`);
 process.exit(failures.length ? 1 : 0);

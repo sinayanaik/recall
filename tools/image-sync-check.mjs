@@ -60,6 +60,8 @@ const CANONICAL_PREFIX = "https://fixture.supabase.co/storage/v1/object/public/i
 const CANONICAL_HOST_BLOCK = "*fixture.supabase.co*";
 
 let failures = 0;
+// Every assertion reached, for the tally at the end. See tools/check.mjs.
+let ran = 0;
 function ok(name, detail = "") {
   console.log(`ok   ${name}${detail ? `  [${detail}]` : ""}`);
 }
@@ -68,6 +70,7 @@ function fail(name, detail) {
   console.log(`FAIL ${name}${detail ? `  [${detail}]` : ""}`);
 }
 function check(condition, name, detail) {
+  ran += 1;
   if (condition) ok(name, detail);
   else fail(name, detail);
 }
@@ -427,11 +430,13 @@ async function run() {
 
     check(errors.length === 0, "no uncaught exceptions", errors.length ? errors[0] : "clean");
   } finally {
-    if (browser) browser.proc.kill();
+    // close(), not proc.kill() — see the note in note-editor-check.
+    if (browser) await browser.close();
     server.proc.kill();
   }
 
   console.log(failures ? `\n${failures} problem(s)` : "\nall good");
+  console.log(`CHECK: ${ran} checks · ${failures} failed`);
   return failures ? 1 : 0;
 }
 

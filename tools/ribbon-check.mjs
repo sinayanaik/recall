@@ -22,27 +22,29 @@
 //   • `transition: top` turned any of that into continuous motion, and made the
 //     band lag a tenth of a second behind the text on every scroll frame.
 
-import { createRequire } from "node:module";
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { findChrome, launch } from "./browser.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-const CHROME = [
-  "/usr/bin/google-chrome-stable", "/usr/bin/google-chrome",
-  "/usr/bin/chromium-browser", "/usr/bin/chromium", "/snap/bin/chromium"
-].find(existsSync);
+// Chrome comes from tools/browser.mjs, which drives it over the DevTools
+// protocol rather than through puppeteer. This used to be a hard-coded list of
+// five /usr/bin paths plus a puppeteer under one person's nvm directory, and on
+// any machine that matched neither — every container, every CI runner — the
+// guard below printed "skipping." and exited 0, which the suite scored as a
+// pass. See tools/browser.mjs for the whole story.
+const CHROME = findChrome();
 
-function loadPuppeteer() {
-  for (const base of [ROOT, "/home/san/.nvm/versions/node/v22.19.0/lib/node_modules/@mermaid-js/mermaid-cli/"]) {
-    try { return createRequire(path.join(base, "x.js"))("puppeteer"); } catch (_) { /* next */ }
-  }
-  return null;
+if (!CHROME) {
+  // Not a skip: a check that cannot run has not passed. tools/check.mjs counts
+  // this as a failure and names it.
+  console.error("ribbon-check: no Chrome. Set CHROME_PATH — see tools/cdp.mjs.");
+  console.log("CHECK: 1 checks · 1 failed");
+  process.exit(1);
 }
-const puppeteer = loadPuppeteer();
-if (!puppeteer || !CHROME) { console.log("ribbon-check: no puppeteer/Chrome — skipping."); process.exit(0); }
 
 function serveOn(dir) {
   return new Promise((resolve, reject) => {
@@ -294,7 +296,7 @@ const API_SRC = `async () => {
 }`;
 
 async function attempt(base, errors) {
-  const browser = await puppeteer.launch({
+  const browser = await launch({
     headless: "new", executablePath: CHROME,
     args: ["--no-sandbox", "--disable-dev-shm-usage", "--window-size=1280,900"]
   });
@@ -319,9 +321,20 @@ async function attempt(base, errors) {
       if (existsSync(full)) await page.evaluateOnNewDocument(readFileSync(full, "utf8"));
     }
     await page.goto(`${base}/index.html`, { waitUntil: "domcontentloaded", timeout: 90000 });
-    await page.waitForFunction(() => !document.documentElement.classList.contains("app-booting"), { timeout: 30000 })
-      .catch(() => {});
-    if (!(await page.evaluate(() => Boolean(window.marked && window.DOMPurify)))) return null;
+    // No .catch() here. A page that never boots is the loudest failure this
+    // check can find, and swallowing the rejection turned it into the quietest:
+    // the next line asks whether marked and DOMPurify are present, a dead page
+    // has neither, and the answer was "skipped" rather than "the app did not
+    // start".
+    await page.waitForFunction(() => !document.documentElement.classList.contains("app-booting"), { timeout: 30000 });
+    // marked and DOMPurify are VENDORED and same-origin now (vendor/marked-14.1.2,
+    // vendor/dompurify-3.1.6) — that is the whole point of 3c4b8e2 and of
+    // tools/offline-check.mjs. "Unavailable" was a real possibility while they
+    // were CDN <script> tags; today it means the page is broken, so this fails
+    // rather than returning a null that reads as "nothing to report".
+    if (!(await page.evaluate(() => Boolean(window.marked && window.DOMPurify)))) {
+      throw new Error("marked/DOMPurify never loaded — they are vendored and same-origin, so the page is broken");
+    }
     await new Promise((r) => setTimeout(r, 2500));
     return await page.evaluate(
       async (probeSrc, apiSrc) => {
@@ -350,9 +363,12 @@ try {
     if (tries) await new Promise((r) => setTimeout(r, 1500));
     try {
       results = await attempt(server.base, errors);
+      // attempt() no longer returns null for a missing library — it throws, and
+      // the libraries are vendored same-origin so a miss means a broken page.
+      // A null here would be a bug in attempt() itself, and is reported as one
+      // rather than as a reason to stop quietly.
       if (results == null) {
-        console.log("  SKIPPED: marked/DOMPurify unavailable (no CDN and no vendored copy)");
-        process.exit(0);
+        throw new Error("the probe returned nothing — attempt() fell through without a result");
       }
     } catch (e) {
       launchError = e;

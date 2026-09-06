@@ -236,7 +236,10 @@ const watchdog = setTimeout(() => {
 
 const failures = [];
 const notes = [];
+// Every assertion reached, for the tally at the end. See tools/check.mjs.
+let ran = 0;
 function check(label, ok, detail = "") {
+  ran += 1;
   if (ok) console.log(`  ok    ${label}${detail ? `  ${detail}` : ""}`);
   else {
     console.log(`  FAIL  ${label}${detail ? `  ${detail}` : ""}`);
@@ -1148,6 +1151,22 @@ try {
     await settle(150);
     const pageEl = document.querySelector('.pdf-page[data-page-number="2"]');
     if (!pageEl) return { error: "page 2 did not render" };
+    // The text layer is built after whenDocumentPageReady resolves, not with
+    // it, so on a slower machine it is not there yet — and reading it without
+    // asking cost the remaining 196 assertions of this file on a CI runner:
+    //
+    //   FAIL  the check itself: TypeError: Failed to execute 'getComputedStyle'
+    //         on 'Window': parameter 1 is not of type 'Element'.
+    //
+    // Waited for, and scoped to page 2 the way the app scopes it itself (see
+    // src/documents/pdf-page-notes.js) rather than taking whichever text layer
+    // happens to be first in the document.
+    let textLayer = pageEl.querySelector(".pdf-text-layer");
+    for (let i = 0; i < 60 && !textLayer; i += 1) {
+      await settle(50);
+      textLayer = pageEl.querySelector(".pdf-text-layer");
+    }
+    if (!textLayer) return { error: "page 2 never built a text layer" };
     const box = pageEl.getBoundingClientRect();
     // A box over the middle of the page, well clear of its edges — the geometry
     // is what is under test, not which glyphs happen to fall inside it.
@@ -1155,7 +1174,7 @@ try {
     const to = { x: box.left + box.width * 0.7, y: box.top + box.height * 0.5 };
     api.setRegionSelect(true);
     const armedClass = document.getElementById("documentStage").classList.contains("is-region-select");
-    const textLayerInert = getComputedStyle(document.querySelector(".pdf-text-layer")).pointerEvents === "none";
+    const textLayerInert = getComputedStyle(textLayer).pointerEvents === "none";
     const view = document.getElementById("documentView");
     const send = (type, point) => view.dispatchEvent(new PointerEvent(type, {
       bubbles: true, cancelable: true, pointerId: 1, isPrimary: true, button: 0,
@@ -1180,6 +1199,10 @@ try {
     };
   }`);
 
+  // Named rather than left to cascade: without this, a probe that returned an
+  // error would fail the four cases below with `class=undefined`, which says
+  // nothing about which of the two preconditions was missing.
+  check("the region fixture is ready", !region.error, region.error || "page 2 rendered with a text layer");
   check("region select arms the surface", region.armedClass && region.textLayerInert,
     `class=${region.armedClass} textLayerInert=${region.textLayerInert}`);
   check("...and a drag draws a marquee", Boolean(region.marqueeDrawn));
@@ -3268,7 +3291,11 @@ try {
     // rather than being simply the last rows of it. On a landscape phone the
     // tray scrolls, and "the last two rows of sixteen" put focus mode and full
     // screen below the fold on the one screen shape that needs them most.
-    const modesStick = getComputedStyle(document.querySelector("#readingRailTray .rr-modes")).position === "sticky";
+    // Guarded for the same reason as the text layer above: a tray that has not
+    // been built yet is one failed assertion, not a TypeError that takes the
+    // rest of the file with it.
+    const modesEl = document.querySelector("#readingRailTray .rr-modes");
+    const modesStick = modesEl ? getComputedStyle(modesEl).position === "sticky" : false;
     const modesInView = (() => {
       const box = document.querySelector("#readingRailTray .rr-modes")?.getBoundingClientRect();
       const tray = document.getElementById("readingRailTray")?.getBoundingClientRect();
@@ -4553,6 +4580,8 @@ try {
 notes.forEach((note) => console.log(`  note  ${note}`));
 if (failures.length) {
   console.log(`\npdf-preview-check: ${failures.length} failure(s) — ${failures.join(", ")}`);
+  console.log(`CHECK: ${ran} checks · ${failures.length} failed`);
   process.exit(1);
 }
 console.log(`\npdf-preview-check: ${fixture.pages || "?"} pages · text layers, anchors, quads and a reload round-trip all hold`);
+console.log(`CHECK: ${ran} checks · ${failures.length} failed`);

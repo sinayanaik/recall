@@ -343,7 +343,6 @@ try {
 
 for (const line of failures.slice(0, 25)) console.log(`  ${line}`);
 if (failures.length > 25) console.log(`  …and ${failures.length - 25} more`);
-console.log(failures.length
-  ? `\n${cases} cases · ${rows} contents rows · ${failures.length} failed`
-  : `\n${cases} cases · ${rows} contents rows · 0 failed`);
+console.log(`\n${cases} cases · ${rows} contents rows · ${failures.length} failed`);
+console.log(`CHECK: ${rows} checks · ${failures.length} failed`);
 process.exit(failures.length ? 1 : 0);

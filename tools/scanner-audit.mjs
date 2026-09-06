@@ -82,4 +82,8 @@ if (findings.length) {
 } else {
   console.log(`scanner sees every cross-module reference (${owner.size} symbols over ${files.length} modules)`);
 }
+// The tally tools/check.mjs reads. Every symbol this walked is an assertion —
+// "does the scanner see this reference" — and the count is what tells a run
+// that audited 3,771 of them apart from one that fell over before the first.
+console.log(`CHECK: ${owner.size} checks · ${findings.length} failed`);
 process.exit(findings.length ? 1 : 0);

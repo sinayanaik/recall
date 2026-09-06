@@ -60,13 +60,23 @@ label {
    the copy button carries the language as real text ("JavaScript"), so they
    are the obvious candidates for turning up in a copied selection.
 
-   Stated honestly: measured, they did NOT. Chrome already keeps all three out
-   of Selection.toString() and out of the painted highlight, because each is
-   positioned out of flow. This is a guard, not a repair — the day one of them
-   becomes an ordinary inline span it would start being copied, and
-   tools/selection-check.mjs would catch that only for the copy button.
-   Buttons among them are covered by the rule above; these are the rest. */
-.code-lang-badge,
+   That paragraph used to end "measured, they did NOT — Chrome already keeps all
+   three out of Selection.toString(), because each is positioned out of flow."
+   Measured again, on the Chrome tools/selection-check.mjs runs against, that is
+   not true: a drag from the paragraph above a code block to the one below it
+   returned the badge's "JS" between the prose and the code, with
+   user-select: none and position: absolute both in force. `user-select: none`
+   governs what a drag can START on, not what a range that spans an element
+   CONTAINS.
+
+   So the copy button's label is drawn by CSS from data-label now (see
+   .code-copy-btn::before in 06-rendered.css and the comment in
+   src/render/enhance.js) — generated content is not in the DOM, so there is no
+   text node for a range to pick up. These rules stay as the guard they always
+   were, for the painted highlight and for the day one of them gains a text node
+   again. .code-lang-badge is gone from the list: the badge became a button when
+   it gained the copy action, and the class had not matched anything since. */
+.code-copy-btn,
 .notes-img-size-badge,
 .notes-img-resize-handle {
   -webkit-user-select: none;

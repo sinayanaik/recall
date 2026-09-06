@@ -17,12 +17,13 @@
 // card parsing, and the editor's text transforms. That is the code most likely
 // to be quietly broken by a move and least likely to be noticed if it is.
 
-import { createRequire } from "node:module";
 import { spawn, execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { baselineTreeInto } from "./baseline.mjs";
+import { findChrome, launch } from "./browser.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
@@ -33,19 +34,21 @@ const args = process.argv.slice(2);
 const BASE_REF = (args.find((a) => a.startsWith("--base=")) || "--base=pre-modular").slice(7);
 const CASES = JSON.parse(readFileSync(path.join(ROOT, "tools/behaviour-cases.json"), "utf8"));
 
-const CHROME = [
-  "/usr/bin/google-chrome-stable", "/usr/bin/google-chrome",
-  "/usr/bin/chromium-browser", "/usr/bin/chromium", "/snap/bin/chromium"
-].find(existsSync);
+// Chrome comes from tools/browser.mjs, which drives it over the DevTools
+// protocol rather than through puppeteer. This used to be a hard-coded list of
+// five /usr/bin paths plus a puppeteer under one person's nvm directory, and on
+// any machine that matched neither — every container, every CI runner — the
+// guard below printed "skipping." and exited 0, which the suite scored as a
+// pass. See tools/browser.mjs for the whole story.
+const CHROME = findChrome();
 
-function loadPuppeteer() {
-  for (const base of [ROOT, "/home/san/.nvm/versions/node/v22.19.0/lib/node_modules/@mermaid-js/mermaid-cli/"]) {
-    try { return createRequire(path.join(base, "x.js"))("puppeteer"); } catch (_) { /* next */ }
-  }
-  return null;
+if (!CHROME) {
+  // Not a skip: a check that cannot run has not passed. tools/check.mjs counts
+  // this as a failure and names it.
+  console.error("behaviour-parity: no Chrome. Set CHROME_PATH — see tools/cdp.mjs.");
+  console.log("CHECK: 1 checks · 1 failed");
+  process.exit(1);
 }
-const puppeteer = loadPuppeteer();
-if (!puppeteer || !CHROME) { console.log("behaviour-parity: no puppeteer/Chrome — skipping."); process.exit(0); }
 
 // The probe runs INSIDE the page, against whatever `api` the harness handed it.
 // Written as a string so both sides run byte-identical code.
@@ -124,26 +127,31 @@ function serveOn(dir) {
 }
 
 async function collect(url, buildApi) {
-  const browser = await puppeteer.launch({ headless: "new", executablePath: CHROME, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
+  const browser = await launch({ headless: "new", executablePath: CHROME, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
   try {
     const page = await browser.newPage();
     const errors = [];
     page.on("pageerror", (e) => errors.push(e.message));
-    await page.goto(url, { waitUntil: "networkidle2", timeout: 90000 });
-    // The render probes go through marked + DOMPurify. index.html pulls those
-    // from a CDN, which makes this check depend on the network being up and on
-    // jsdelivr not rate-limiting — neither of which says anything about whether
-    // the split is correct. Inject the copies the clipper already vendors, into
-    // BOTH pages, so the comparison is hermetic and both sides run identical
-    // library code.
+    // The render probes go through marked + DOMPurify. Inject the copies the
+    // clipper already vendors into BOTH pages, so the comparison is hermetic and
+    // both sides run identical library code.
+    //
+    // BEFORE the navigation, not after it. This used to be an addScriptTag once
+    // the page had loaded, which is too late for the baseline by construction:
+    // pre-modular:app.js is a CLASSIC script that reaches for `marked` while it
+    // runs, so the baseline page died on "ReferenceError: marked is not defined"
+    // before the probe existed. Every one of the 150 probes then differed, all
+    // for the same reason, and the check reported 150 real behavioural
+    // divergences where there were none.
     for (const lib of VENDORED) {
       if (!existsSync(lib)) continue;
-      await page.addScriptTag({ path: lib });
+      await page.evaluateOnNewDocument(readFileSync(lib, "utf8"));
     }
+    await page.goto(url, { waitUntil: "networkidle2", timeout: 90000 });
     try {
       await page.waitForFunction("window.marked && window.DOMPurify", { timeout: 15000 });
     } catch (_) {
-      return { result: null, errors: ["marked/DOMPurify unavailable (no CDN and no vendored copy)"] };
+      return { result: null, errors: ["marked/DOMPurify never became available in the page"] };
     }
     const result = await page.evaluate(
       async (probeSrc, apiSrc, cases) => {
@@ -165,7 +173,7 @@ try {
   // only if it ran at top level. It did — that is what the restructure changed.
   const baseDir = mkdtempSync(path.join(tmpdir(), "recall-base-"));
   temps.push(baseDir);
-  execFileSync("bash", ["-c", `git archive ${BASE_REF} | tar -x -C ${baseDir}`], { cwd: ROOT });
+  baselineTreeInto(baseDir, BASE_REF);
   // app.js declares everything with `function`/`const` at top level of a classic
   // script, which lands on the global object for `function` but NOT for `const`.
   // Re-evaluate it inside a wrapper that hands the names back instead.
@@ -198,9 +206,15 @@ try {
   );
 
   if (!before.result || !after.result) {
-    console.log(`  SKIPPED: ${(before.errors[0] || after.errors[0])}`);
-    console.log("  (the static checks still cover the code; this one needs cdn.jsdelivr.net)");
-    process.exit(0);
+    // This used to exit 0. The message it printed — "this one needs
+    // cdn.jsdelivr.net" — has not been true since marked and DOMPurify were
+    // vendored same-origin, and the branch it guarded is the one a page that
+    // failed to build its probe at all falls into. Whichever it is now, a run
+    // that produced no result for one of the two builds has not compared
+    // anything, and the honest word for that is failed.
+    console.log(`  the probe produced no result: ${(before.errors[0] || after.errors[0]) || "(no error reported)"}`);
+    console.log(`CHECK: 1 checks · 1 failed`);
+    process.exit(1);
   }
   const keys = [...new Set([...Object.keys(before.result), ...Object.keys(after.result)])].sort();
   const diffs = keys.filter((k) => before.result[k] !== after.result[k]);

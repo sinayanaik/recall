@@ -1,0 +1,167 @@
+// Inputs that have historically broken this app, in one place.
+//
+// Not a fuzzer. A fuzzer finds inputs nobody thought of; this is the list of
+// inputs somebody already hit, each one traceable to a commit, so that a check
+// written for one module gets the others' scars for free.
+//
+// Used by tools/import-check.mjs and tools/export-check.mjs, and shaped to be
+// usable by any check that takes a string: every entry is a plain object with a
+// `name` and a `text`, and nothing here needs a browser.
+//
+// The entries are grouped by the failure each one reproduces:
+//
+//   unicode   84f3051 - pdf.js decodes a UTF-16BE document string byte by byte,
+//             putting a U+0000 between every letter of a deck's title. Postgres
+//             answers 22P05 and the ENTIRE deck push fails, forever, invisibly,
+//             because PostgREST parses the whole request body as JSON
+//   fences    c6ea1e6 - an unanchored fence regex paired ``` markers by counting
+//             them, so a bare ``` written inside a sentence opened a fence and
+//             inverted code and prose for the rest of the note
+//   links     c6ea1e6 again - a URL scan that stopped at the first ")" cut every
+//             link whose target contained one
+//   images    2c51987 - marked's cleanUrl against a raw scan: an image whose
+//             path is percent-encoded in one and not the other was never
+//             paired, so it never got a resize grip or a delete button
+//   markers   9e0291b - a deck's notes may END with the fenced highlight-notes
+//             block, and the block is DEFINED to be last, so joining several
+//             annotated decks left all but one unfindable
+//   titles    slugified export names that collide
+//
+// Every invisible character below is written as an ESCAPE rather than pasted in
+// literally, so that reading this file tells you what is in the string. A NUL,
+// a lone surrogate and a right-to-left override are all indistinguishable from
+// nothing at all in an editor, and this corpus is worth being able to read.
+
+const NUL = "\u0000";
+const LONE_HIGH = "\uD83D";                        // the first half of a pair, alone
+const LONE_LOW = "\uDE80";                         // the second half, alone
+const ROCKET = "🚀";                     // both halves, in order
+const ZWJ_FAMILY = "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}";
+const RTL_OVERRIDE = "\u202E";
+const BOM = "\uFEFF";
+const COMBINING = "e\u0323\u0301\u0304";           // one base, three combining marks
+const LEFT_QUOTE = "“";
+const RIGHT_QUOTE = "”";
+const UMLAUT_U = "Ü";
+
+export const UNICODE_CASES = [
+  { name: "a NUL between every letter (pdf.js UTF-16BE)", text: `T${NUL}i${NUL}t${NUL}l${NUL}e` },
+  { name: "a bare NUL mid-word", text: `before${NUL}after` },
+  { name: "a lone high surrogate", text: `alpha ${LONE_HIGH} omega` },
+  { name: "a lone low surrogate", text: `alpha ${LONE_LOW} omega` },
+  { name: "a well-formed surrogate pair", text: `a rocket ${ROCKET} in prose` },
+  { name: "a ZWJ emoji sequence", text: `a family ${ZWJ_FAMILY} of glyphs` },
+  { name: "a right-to-left override", text: `plain ${RTL_OVERRIDE} reversed` },
+  { name: "a byte-order mark at the start", text: `${BOM}# Heading\n\nBody.` },
+  { name: "combining marks stacked on one base", text: `caf${COMBINING} au lait` },
+  { name: "CRLF line endings throughout", text: "# Title\r\n\r\nA paragraph.\r\n\r\n- one\r\n- two\r\n" },
+  { name: "a lone CR", text: "line one\rline two" },
+  { name: "CJK extension B, outside the BMP", text: "\u{20000}\u{2A6D6} characters" },
+  { name: "the C0 controls Postgres accepts", text: "tab\there\nnewline\rreturn\vvtab\fff" }
+];
+
+export const FENCE_CASES = [
+  { name: "a bare fence marker inside a sentence", text: "Wrap it in ``` fences and it renders.\n\nThen a paragraph." },
+  { name: "an unbalanced opening fence", text: "```js\nconst a = 1;\n\nand prose after it, forever" },
+  { name: "a four-tick fence wrapping a three-tick one", text: "````\n```js\nnested();\n```\n````\n" },
+  { name: "a tilde fence", text: "~~~python\nprint(1)\n~~~\n" },
+  { name: "a fence closed by a LONGER run", text: "```\ncode\n`````\n" },
+  { name: "an indented fence inside a list item", text: "- item\n\n  ```js\n  const a = 1;\n  ```\n\n- next\n" },
+  { name: "a fence whose info string carries a width", text: "```mermaid w=520\ngraph TD;\n```\n" },
+  { name: "a fence marker inside inline code", text: "Use `` ``` `` to open one.\n" }
+];
+
+export const LINK_CASES = [
+  { name: "a URL containing a closing paren", text: "See [the page](https://example.com/a_(b)_c) for more." },
+  { name: "a URL containing a space, percent-encoded", text: "![alt](images/quiet%20machine.png)" },
+  { name: "a path with a literal space", text: "![alt](images/quiet machine.png)" },
+  { name: "a non-ASCII image path", text: `![alt](images/${UMLAUT_U}ber note (final).gif)` },
+  { name: "the same image twice", text: "![one](pic.png)\n\nprose\n\n![two](pic.png)\n" },
+  { name: "an image inside a table cell", text: "| a | b |\n| --- | --- |\n| ![x](p.png) | text |\n" },
+  { name: "an image inside a link", text: "[![alt](p.png)](https://example.com)" },
+  { name: "a raw img tag beside a markdown one", text: "<img src=\"a.png\"> and ![b](b.png)\n" },
+  { name: "a reference-style link defined at the end", text: "See [the page][ref].\n\n[ref]: https://example.com\n" },
+  { name: "an autolink", text: "Mail <someone@example.com> or visit <https://example.com>.\n" }
+];
+
+export const MARKER_CASES = [
+  {
+    name: "a note ending with the fenced highlight-notes block",
+    text: [
+      "Body with a <mark class=\"hl\" data-note=\"hn-a1b2\">highlight</mark> in it.",
+      "",
+      "---",
+      "",
+      "<!--recall:highlight-notes-->",
+      "",
+      `<!--hn:hn-a1b2 ${LEFT_QUOTE}highlight${RIGHT_QUOTE}-->`,
+      "",
+      "The note itself.",
+      "<!--/recall:highlight-notes-->"
+    ].join("\n")
+  },
+  {
+    name: "the section marker quoted inside a code fence",
+    text: "```\n<!--recall:highlight-notes-->\n```\n\nOrdinary prose after it.\n"
+  },
+  {
+    name: "the legacy prose form",
+    text: `Body.\n\n## Highlight Notes\n\n### [hn-c3d4] ${LEFT_QUOTE}words${RIGHT_QUOTE}\n\nA note.\n`
+  }
+];
+
+export const SHAPE_CASES = [
+  { name: "a single very long line", text: `# T\n\n${"word ".repeat(20000)}\n` },
+  { name: "no trailing newline", text: "# Title\n\nA paragraph with no newline at the end." },
+  { name: "nothing but whitespace", text: "   \n\n\t\n" },
+  { name: "the empty string", text: "" },
+  { name: "an HTML block containing markdown", text: "<div>\n\n**not bold in an HTML block**\n\n</div>\n" },
+  { name: "a setext heading", text: "Title\n=====\n\nBody.\n" },
+  { name: "a heading inside a blockquote", text: "> ## Quoted heading\n>\n> Quoted body.\n" },
+  { name: "an ATX heading with no space", text: "#NotAHeading\n\n# A Heading\n" },
+  { name: "a table with a pipe inside a cell", text: "| a | b |\n| --- | --- |\n| x \\| y | z |\n" },
+  { name: "a list whose marker is doubled", text: "- - item\n- another\n" }
+];
+
+// Deck titles that collide once slugified, which is what an export writes as a
+// filename. Two decks, one file, and the second silently replaces the first.
+export const TITLE_CASES = [
+  { name: "punctuation only", text: "?!?" },
+  { name: "a title that slugifies to nothing", text: "   ---   " },
+  { name: "two that differ only by case", text: "My Deck" },
+  { name: "...and its twin", text: "my deck" },
+  { name: "two that differ only by punctuation", text: "Notes: Part 1" },
+  { name: "...and its twin", text: "Notes - Part 1" },
+  { name: "a title with a path separator in it", text: "chapter/one" },
+  { name: "a title with a NUL in it", text: `Deck${NUL}Title` },
+  { name: "a very long title", text: "T".repeat(400) },
+  { name: "a title that is only emoji", text: `${ROCKET}${ZWJ_FAMILY}` }
+];
+
+/** Everything, for a check that just wants to throw the lot at a function. */
+export const ALL_CASES = [
+  ...UNICODE_CASES, ...FENCE_CASES, ...LINK_CASES,
+  ...MARKER_CASES, ...SHAPE_CASES, ...TITLE_CASES
+];
+
+/** The groups, named, for a check that wants to report per area. */
+export const GROUPS = {
+  unicode: UNICODE_CASES,
+  fences: FENCE_CASES,
+  links: LINK_CASES,
+  markers: MARKER_CASES,
+  shapes: SHAPE_CASES,
+  titles: TITLE_CASES
+};
+
+/**
+ * Every case as a whole note: a title, some prose, and the case's text in the
+ * body - so a function that only ever sees complete notes gets a realistic one
+ * rather than a fragment.
+ */
+export function asNotes(cases = ALL_CASES) {
+  return cases.map((c) => ({
+    ...c,
+    text: `# Fixture: ${c.name}\n\nSome ordinary prose before it.\n\n${c.text}\n\nAnd some after.\n`
+  }));
+}

@@ -46,6 +46,8 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const THROTTLE = Number((process.argv.find((a) => a.startsWith("--throttle=")) || "--throttle=1").slice(11)) || 1;
 
 let failures = 0;
+// Every assertion reached, for the tally at the end. See tools/check.mjs.
+let ran = 0;
 function ok(name, detail = "") {
   console.log(`ok   ${name}${detail ? `  [${detail}]` : ""}`);
 }
@@ -54,6 +56,7 @@ function fail(name, detail) {
   console.log(`FAIL ${name}${detail ? `  [${detail}]` : ""}`);
 }
 function check(condition, name, detail) {
+  ran += 1;
   if (condition) ok(name, detail);
   else fail(name, detail);
 }
@@ -607,7 +610,8 @@ async function run() {
     check(errors.length === 0, "the page threw nothing", errors.slice(0, 2).join(" | "));
   } finally {
     server.proc.kill();
-    browser?.proc?.kill?.();
+    // close(), not proc.kill() — see the note in note-editor-check.
+    await browser?.close?.();
   }
 
   console.log("");
@@ -624,4 +628,6 @@ async function run() {
   return failures ? 1 : 0;
 }
 
-process.exit(await run());
+const code = await run();
+console.log(`CHECK: ${ran} checks · ${failures} failed`);
+process.exit(code);

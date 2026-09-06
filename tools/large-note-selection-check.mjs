@@ -95,6 +95,8 @@ const DRIFT_PX = 120;
 const SHAKE_PX = 40;
 
 let failures = 0;
+// Every assertion reached, for the tally at the end. See tools/check.mjs.
+let ran = 0;
 function ok(name, detail = "") {
   console.log(`ok   ${name}${detail ? `  [${detail}]` : ""}`);
 }
@@ -103,6 +105,7 @@ function fail(name, detail) {
   console.log(`FAIL ${name}${detail ? `  [${detail}]` : ""}`);
 }
 function check(condition, name, detail) {
+  ran += 1;
   if (condition) ok(name, detail);
   else fail(name, detail);
 }
@@ -517,21 +520,44 @@ async function run() {
           fail("a drag across a chunk boundary leaves the text where it was", "the press did not produce a selection");
           await touchEnd();
         } else {
-          const before = await page.evaluate((marker) => window.__blockTop(marker), aim.marker);
-          // Down to the bottom edge, which is where the controller's own
-          // auto-scroll takes over and carries the selection into fresh chunks.
+          // Both numbers, before and after. The scroll is not optional here and
+          // not a fault: the drag goes to the bottom edge ON PURPOSE, which is
+          // where the controller's own auto-scroll takes over and carries the
+          // selection into chunks the reader has not seen. That is the whole
+          // point of the case.
+          //
+          // Which means the raw movement on the glass is the WRONG measure.
+          // Auto-scrolling the view down by 133px moves every paragraph above
+          // the finger up by 133px, and this case reported exactly that as
+          // "the paragraph under the finger moved -133px" — a healthy app, over
+          // a 120px budget, every run. What the budget is for is the movement
+          // the scroll does NOT explain: a placeholder swapping its guessed
+          // height for a real one mid-gesture, which shifts the document under
+          // a finger that asked for nothing.
+          const before = await page.evaluate((marker) => ({
+            top: window.__blockTop(marker),
+            scrollTop: document.getElementById("notesView").scrollTop
+          }), aim.marker);
           await dragTo(aim.x, aim.y, aim.x + 120, 800, 12);
           await wait(400);
           const after = await page.evaluate((marker) => ({
             top: window.__blockTop(marker),
+            scrollTop: document.getElementById("notesView").scrollTop,
             chars: (() => { const s = window.getSelection(); return s && s.rangeCount ? s.getRangeAt(0).toString().length : 0; })(),
           }), aim.marker);
           await touchEnd();
           await wait(200);
           check(after.chars > 20, "the drag extended the selection", `${after.chars} chars`);
-          check(before != null && after.top != null && Math.abs(after.top - before) <= DRIFT_PX,
+          const scrolled = after.scrollTop - before.scrollTop;
+          const onGlass = before.top == null || after.top == null ? null : after.top - before.top;
+          // A scroll of +N should move a paragraph above the finger by -N. What
+          // is left over is drift.
+          const residual = onGlass == null ? null : onGlass + scrolled;
+          check(residual != null && Math.abs(residual) <= DRIFT_PX,
             "a drag across a chunk boundary leaves the text where it was",
-            `the paragraph under the finger moved ${before == null || after.top == null ? "?" : Math.round(after.top - before)}px`);
+            residual == null
+              ? "could not measure the paragraph"
+              : `${Math.round(residual)}px unexplained (moved ${Math.round(onGlass)}px on the glass, view scrolled ${Math.round(scrolled)}px)`);
         }
       }
     }
@@ -710,4 +736,5 @@ async function run() {
 
 const code = await run();
 console.log(failures ? `\n${failures} failed` : "\nall good");
+console.log(`CHECK: ${ran} checks · ${failures} failed`);
 process.exit(code);

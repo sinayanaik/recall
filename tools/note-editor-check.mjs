@@ -135,7 +135,10 @@ const client = await connect(launched.wsUrl);
 const page = await openPage(client);
 
 let failures = 0;
+// Every assertion reached, for the tally at the end. See tools/check.mjs.
+let ran = 0;
 function check(name, ok, detail = "") {
+  ran += 1;
   if (!ok) failures += 1;
   console.log(`  ${ok ? "ok  " : "FAIL"}  ${name}${detail ? `  ${detail}` : ""}`);
 }
@@ -698,11 +701,16 @@ check("...with cloze still withheld, because a note is not a card face",
 
 } finally {
   await client.close?.();
-  launched.proc?.kill();
+  // close(), not proc.kill(): the kill leaves the profile directory behind,
+  // and cdp.mjs's close() is the thing that signals the process GROUP and then
+  // sweeps it. Four checks in this suite reached past it straight to the pid
+  // and left a Chrome profile in /tmp on every run.
+  await launched.close();
   server.proc?.kill();
 }
 
 console.log(failures
   ? `\nnote-editor-check: ${failures} failure(s)`
   : "\nnote-editor-check: the note editors own their own keys");
+console.log(`CHECK: ${ran} checks · ${failures} failed`);
 process.exit(failures ? 1 : 0);

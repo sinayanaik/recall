@@ -24,6 +24,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from 
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { baselineFile } from "./baseline.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SOURCE = path.join(ROOT, "styles.css");
@@ -396,6 +397,13 @@ const POST_SPLIT = {
     "resized before today. Keyed off the property rather than the class so it " +
     "fixes the widths already written into people's notes as well as the ones " +
     "written from now on.",
+  "55-code-copy-label.css":
+    "The code block's copy button draws its label from data-label with ::before, " +
+    "rather than carrying it as a text node — a text node there is selectable " +
+    "however much user-select: none it has, and turned up on the clipboard in " +
+    "the middle of any selection that crossed the block. Belongs beside " +
+    ".code-copy-btn in 06-rendered.css and cannot live there, for the reason " +
+    "this whole list exists. See tools/selection-check.mjs.",
   "54-stacking.css":
     "Where a control sits and what it sits above — and, more to the point, three " +
     "rules that had been written into frozen slices instead. .tool-button.file-pick " +
@@ -453,9 +461,16 @@ const POST_SPLIT = {
 // there — main became the thing under test, and the comparison had nothing
 // left to compare against.
 const BASE_REF = (process.argv.find((a) => a.startsWith("--base=")) || "--base=pre-modular").slice(7);
-const source = existsSync(SOURCE)
-  ? readFileSync(SOURCE, "utf8")
-  : execFileSync("git", ["show", `${BASE_REF}:styles.css`], { cwd: ROOT, maxBuffer: 64 * 1024 * 1024 }).toString();
+let source;
+try {
+  source = existsSync(SOURCE) ? readFileSync(SOURCE, "utf8") : baselineFile("styles.css", BASE_REF);
+} catch (error) {
+  // This used to be an uncaught execFileSync throw at module top level: forty
+  // lines of Node stack, of which check.mjs printed the last one as this
+  // check's "summary". See tools/baseline.mjs.
+  console.error(error.message);
+  process.exit(2);
+}
 const lines = source.split("\n");
 
 // A boundary should carry the comment block sitting directly above it — that
@@ -537,13 +552,19 @@ if (rebuilt !== source) {
 }
 
 if (CHECK_ONLY) {
-  if (!existsSync(OUT_DIR)) { console.log("styles/ does not exist yet."); process.exit(0); }
+  if (!existsSync(OUT_DIR)) {
+    // Not a skip: styles/ not existing is the check's answer, and it is "no".
+    console.log("styles/ does not exist yet.");
+    console.log("CHECK: 1 checks · 1 failed");
+    process.exit(1);
+  }
   const onDisk = readdirSync(OUT_DIR).sort().filter((f) => f.endsWith(".css"));
   const slices = onDisk.filter((f) => !(f in POST_SPLIT));
   const added = onDisk.filter((f) => f in POST_SPLIT);
   const stray = slices.filter((f) => !SECTIONS.some(([, name]) => name === f));
   if (stray.length) {
     console.log(`styles/ has ${stray.length} file(s) that are neither a slice nor listed in POST_SPLIT: ${stray.join(", ")}`);
+    console.log(`CHECK: ${onDisk.length} checks · ${stray.length} failed`);
     process.exit(1);
   }
   // Each file carries a three-line banner that is not part of the stylesheet.
@@ -562,6 +583,9 @@ if (CHECK_ONLY) {
     console.log(`    expected: ${JSON.stringify(source.slice(i - 50, i + 50))}`);
     console.log(`    got     : ${JSON.stringify(joined.slice(i - 50, i + 50))}`);
   }
+  // One assertion per slice — each has to be byte-identical to its span of the
+  // baseline — plus the reassembly of the whole. See tools/check.mjs.
+  console.log(`CHECK: ${slices.length + 1} checks · ${ok ? 0 : 1} failed`);
   process.exit(ok ? 0 : 1);
 }
 

@@ -12,34 +12,29 @@
 // fails in each of those ways in turn, and asserts on the only thing the user
 // cares about: is the login overlay in my face, or are my decks?
 //
-// Needs a Chrome and a puppeteer, exactly like boot-check; skips if absent.
+// Needs a Chrome, found by tools/browser.mjs, exactly like boot-check.
 
-import { createRequire } from "node:module";
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { findChrome, launch } from "./browser.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const CHROME = [
-  "/usr/bin/google-chrome-stable", "/usr/bin/google-chrome",
-  "/usr/bin/chromium-browser", "/usr/bin/chromium", "/snap/bin/chromium"
-].find(existsSync);
+// Chrome comes from tools/browser.mjs, which drives it over the DevTools
+// protocol rather than through puppeteer. This used to be a hard-coded list of
+// five /usr/bin paths plus a puppeteer under one person's nvm directory, and on
+// any machine that matched neither — every container, every CI runner — the
+// guard below printed "skipping." and exited 0, which the suite scored as a
+// pass. See tools/browser.mjs for the whole story.
+const CHROME = findChrome();
 
-function loadPuppeteer() {
-  for (const base of [
-    ROOT,
-    "/home/san/.nvm/versions/node/v22.19.0/lib/node_modules/@mermaid-js/mermaid-cli/",
-    "/usr/lib/node_modules/@mermaid-js/mermaid-cli/"
-  ]) {
-    try { return createRequire(path.join(base, "x.js"))("puppeteer"); } catch (_) { /* next */ }
-  }
-  return null;
-}
-const puppeteer = loadPuppeteer();
-if (!puppeteer || !CHROME) {
-  console.log("session-persistence-check: no puppeteer and/or Chrome found — skipping.");
-  process.exit(0);
+if (!CHROME) {
+  // Not a skip: a check that cannot run has not passed. tools/check.mjs counts
+  // this as a failure and names it.
+  console.error("session-persistence-check: no Chrome. Set CHROME_PATH — see tools/cdp.mjs.");
+  console.log("CHECK: 1 checks · 1 failed");
+  process.exit(1);
 }
 
 function serveOn(dir) {
@@ -157,7 +152,7 @@ function stubScript(kase) {
 }
 
 async function run(base, kase) {
-  const browser = await puppeteer.launch({
+  const browser = await launch({
     headless: "new", executablePath: CHROME,
     args: ["--no-sandbox", "--disable-dev-shm-usage"]
   });
@@ -225,4 +220,5 @@ try {
   proc.kill();
 }
 console.log(`\n${problems} problem(s)`);
+console.log(`CHECK: ${CASES.length} checks · ${problems} failed`);
 process.exit(problems ? 1 : 0);

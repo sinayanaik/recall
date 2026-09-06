@@ -52,8 +52,14 @@ export function findChrome() {
 // --remote-debugging-port=0 asks the OS for a free port, so this line is the
 // only way to learn it — there is no fixed port to guess at and no race with a
 // second Chrome on the same machine.
-export function launchChrome(chromePath, extraArgs = []) {
-  const userDataDir = mkdtempSync(path.join(tmpdir(), "recall-cdp-"));
+// `profile` names a profile directory to REUSE rather than a fresh temporary
+// one — which is what the release and offline checks need, because the thing
+// they are asking about is what a second launch finds on disk (an installed
+// service worker, a filled cache). A reused profile is the caller's to delete;
+// only a temporary one is swept by close().
+export function launchChrome(chromePath, extraArgs = [], { profile, windowSize = "390,844" } = {}) {
+  const userDataDir = profile || mkdtempSync(path.join(tmpdir(), "recall-cdp-"));
+  const ownsProfile = !profile;
   const proc = spawn(chromePath, [
     "--headless=new",
     "--remote-debugging-port=0",
@@ -66,9 +72,15 @@ export function launchChrome(chromePath, extraArgs = []) {
     "--disable-background-timer-throttling",
     "--disable-renderer-backgrounding",
     "--disable-backgrounding-occluded-windows",
-    "--window-size=390,844",
+    `--window-size=${windowSize}`,
     ...extraArgs
-  ], { stdio: ["ignore", "ignore", "pipe"] });
+    // detached, so Chrome leads its own process GROUP. SIGKILL to the browser
+    // process does not reach the renderer, the GPU process or — the one that
+    // actually matters here — the Crashpad handler, and those go on writing
+    // into the profile directory after their parent is gone. close() below
+    // signals the group, which is the only way to have "the browser is gone"
+    // mean the profile directory has stopped moving.
+  ], { stdio: ["ignore", "ignore", "pipe"], detached: true });
 
   return new Promise((resolve, reject) => {
     let buf = "";
@@ -81,9 +93,43 @@ export function launchChrome(chromePath, extraArgs = []) {
       resolve({
         proc,
         wsUrl: match[1],
+        userDataDir,
+        // SIGKILL is instant; the process EXITING is not. Chrome goes on
+        // writing under its profile directory for a few milliseconds after the
+        // signal, and a caller that owns that directory — tools/offline-check
+        // is the only one — used to hit ENOTEMPTY removing it out from under a
+        // browser that was still alive. That is a race, so it landed on a busy
+        // CI runner and never here. So close() now waits for the exit it asked
+        // for. Awaiting the result is optional: the kill happens before the
+        // wait, so the callers that treat this as synchronous are unchanged.
         close() {
+          // The group first (see the spawn above), then the process itself as a
+          // fallback for a platform or a race where the group is already gone.
+          try { process.kill(-proc.pid, "SIGKILL"); } catch (_) { /* group gone */ }
           try { proc.kill("SIGKILL"); } catch (_) { /* already gone */ }
-          try { rmSync(userDataDir, { recursive: true, force: true }); } catch (_) { /* best effort */ }
+          const exited = proc.exitCode !== null || proc.signalCode !== null
+            ? Promise.resolve()
+            : new Promise((done) => {
+                const finish = () => { clearTimeout(giveUp); done(); };
+                // Bounded: a Chrome that will not die is not worth hanging the
+                // suite over, and the cleanup below tolerates a live one.
+                const giveUp = setTimeout(finish, 2000);
+                proc.once("exit", finish);
+              });
+          const sweep = () => {
+            if (!ownsProfile) return;
+            try { rmSync(userDataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); }
+            catch (_) { /* best effort: a stray profile under /tmp is not a result */ }
+          };
+          // Twice, and the first one SYNCHRONOUSLY, because most callers here
+          // do not await close() — they call it and let the process end, and a
+          // removal that only happened in a `.then()` would never run at all.
+          // SIGKILL to the group has already been delivered by this point, so
+          // the retries below are enough on their own almost every time; the
+          // awaited pass is the guarantee for a caller that needs the directory
+          // to be gone before its next statement.
+          sweep();
+          return exited.then(sweep);
         }
       });
     };

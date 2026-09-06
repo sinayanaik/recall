@@ -17,12 +17,13 @@
 // Scenarios are run in a fresh page each time (fresh IndexedDB, fresh
 // localStorage), because sync state persists by design.
 
-import { createRequire } from "node:module";
 import { spawn, execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { baselineTreeInto } from "./baseline.mjs";
+import { findChrome, launch } from "./browser.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 // The baseline is the TAG pre-modular, not a branch. It used to default to
@@ -31,18 +32,20 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 // left to compare against.
 const BASE_REF = (process.argv.find((a) => a.startsWith("--base=")) || "--base=pre-modular").slice(7);
 
-const CHROME = [
-  "/usr/bin/google-chrome-stable", "/usr/bin/google-chrome",
-  "/usr/bin/chromium-browser", "/usr/bin/chromium", "/snap/bin/chromium"
-].find(existsSync);
-function loadPuppeteer() {
-  for (const base of [ROOT, "/home/san/.nvm/versions/node/v22.19.0/lib/node_modules/@mermaid-js/mermaid-cli/"]) {
-    try { return createRequire(path.join(base, "x.js"))("puppeteer"); } catch (_) { /* next */ }
-  }
-  return null;
+// Chrome comes from tools/browser.mjs, which drives it over the DevTools
+// protocol rather than through puppeteer. This used to be a hard-coded list of
+// five /usr/bin paths plus a puppeteer under one person's nvm directory, and on
+// any machine that matched neither — every container, every CI runner — the
+// guard below printed "skipping." and exited 0, which the suite scored as a
+// pass. See tools/browser.mjs for the whole story.
+const CHROME = findChrome();
+if (!CHROME) {
+  // Not a skip: a check that cannot run has not passed. tools/check.mjs counts
+  // this as a failure and names it.
+  console.error("reconcile-parity: no Chrome. Set CHROME_PATH — see tools/cdp.mjs.");
+  console.log("CHECK: 1 checks · 1 failed");
+  process.exit(1);
 }
-const puppeteer = loadPuppeteer();
-if (!puppeteer || !CHROME) { console.log("reconcile-parity: no puppeteer/Chrome — skipping."); process.exit(0); }
 
 // ── The fake backend, injected into the page ───────────────────────────────
 const FAKE_SUPABASE = String.raw`(seedCloud) => {
@@ -268,8 +271,15 @@ function serveOn(dir) {
   });
 }
 
+// The libraries both pages need before their own scripts run. The clipper
+// vendors them, so this needs no network.
+const VENDORED = [
+  path.join(ROOT, "recall-clipper/vendor/marked.min.js"),
+  path.join(ROOT, "recall-clipper/vendor/purify.min.js")
+];
+
 async function runAll(url, apiSrc) {
-  const browser = await puppeteer.launch({ headless: "new", executablePath: CHROME, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
+  const browser = await launch({ headless: "new", executablePath: CHROME, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
   const results = {};
   const errors = [];
   try {
@@ -279,6 +289,16 @@ async function runAll(url, apiSrc) {
       const page = await browser.newPage();
       page.on("pageerror", (e) => errors.push(scenario.name + ": " + e.message));
       page.on("dialog", (d) => d.dismiss().catch(() => {}));
+      // BEFORE the navigation. The baseline page is pre-modular:app.js wrapped
+      // as a classic script and it reaches for `marked` while it runs, so
+      // without this it died on a ReferenceError, window.__recallApi was never
+      // assigned, and every scenario came back as "TypeError: Cannot read
+      // properties of undefined (reading 'initDeckStorage')" — five reported
+      // parity failures, none of them about reconciliation.
+      for (const lib of VENDORED) {
+        if (!existsSync(lib)) continue;
+        await page.evaluateOnNewDocument(readFileSync(lib, "utf8"));
+      }
       await page.goto(url, { waitUntil: "domcontentloaded", timeout: 90000 });
       await new Promise((r) => setTimeout(r, 700));
       try {
@@ -325,7 +345,7 @@ let failures = 0;
 try {
   const baseDir = mkdtempSync(path.join(tmpdir(), "recall-rec-"));
   temps.push(baseDir);
-  execFileSync("bash", ["-c", `git archive ${BASE_REF} | tar -x -C ${baseDir}`], { cwd: ROOT });
+  baselineTreeInto(baseDir, BASE_REF);
   const NAMES = ["reconcileAllDecks", "initDeckStorage", "clearAllDeckSnapshots", "writeDeckSnapshot",
                  "readDeckSnapshot", "allDeckSnapshotIds", "writeLocalDeckIndex"];
   // The baseline's supabaseClient/isSignedIn are `let`s inside the script scope,
@@ -360,7 +380,8 @@ try {
 
   // Outcome assertions — true whatever the backend does.
   console.log("\n── outcomes (current code) ──");
-  const outcome = (ok, msg) => { console.log(`  ${ok ? "ok  " : "FAIL"}  ${msg}`); if (!ok) failures++; };
+  let asserted = 0;
+  const outcome = (ok, msg) => { asserted++; console.log(`  ${ok ? "ok  " : "FAIL"}  ${msg}`); if (!ok) failures++; };
   const r = after.results;
   outcome(r["cloud-only deck is pulled down"]?.local?.length === 1,
     "a cloud-only deck arrives on the device");
@@ -380,6 +401,9 @@ try {
 
   if (after.errors.length) console.log(`\n  page errors: ${after.errors.slice(0, 4).join(" | ")}`);
   console.log(failures ? `\n${failures} reconcile problem(s).` : "\nreconcileAllDecks verified: identical on both builds, and no path loses data.");
+  // The tally tools/check.mjs reads: every scenario compared against the
+  // baseline, plus every outcome asserted about the current code.
+  console.log(`CHECK: ${Object.keys(after.results).length + asserted} checks · ${failures} failed`);
 } finally {
   for (const s of servers) s.kill();
   for (const d of temps) rmSync(d, { recursive: true, force: true });

@@ -1,0 +1,125 @@
+# Why this exists.
+#
+# `node tools/check.mjs` was local discipline and nothing else. The only
+# workflow in this repo stamped a build and published it — no setup-node, no
+# node invocation, not one assertion. README.md called it "Forty-one checks";
+# nothing anywhere ran them.
+#
+# What that cost is written into the history. af39740: css-parity "has been red
+# for months", and while nobody was reading it `tools/split-css.mjs` silently
+# deleted three load-bearing rules out of the frozen slices — twice. 27845d3, of
+# sync-parity and reconcile-parity: "On a machine with neither they report
+# success having verified nothing… Nothing in CI runs them either. So the logic
+# where all three bugs fixed in this branch actually lived had no executable
+# test at all."
+#
+# So: every push and every pull request runs the whole suite, browser checks
+# included. The runner is where the puppeteer-shaped hole was widest — a
+# hard-coded /home/san path and five /usr/bin candidates — so this is also the
+# environment tools/browser.mjs was written for.
+
+name: check
+
+on:
+  push:
+  pull_request:
+
+# A second push while the first is still checking tells you nothing new about
+# the first.
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      # fetch-depth 0 and tags, both load-bearing: six checks compare against
+      # the `pre-modular` TAG, and a shallow single-branch clone — which is what
+      # a default checkout is — fetches no tags at all. tools/baseline.mjs will
+      # fetch it on demand if this is ever changed, but doing it here means one
+      # fetch for the whole run rather than one per check.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      # Node 22 or newer, for the global WebSocket tools/cdp.mjs speaks the
+      # DevTools protocol over. There is nothing to install — this repo has no
+      # package.json and no dependencies, which is a property worth keeping.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # ubuntu-latest ships Google Chrome, and tools/cdp.mjs's findChrome()
+      # already looks in the right places. CHROME_PATH is set anyway, and
+      # verified, so that a runner image that drops Chrome fails HERE with one
+      # clear line rather than turning twenty checks into a puzzle.
+      - name: Find Chrome
+        run: |
+          set -euo pipefail
+          for candidate in \
+            "$(command -v google-chrome-stable || true)" \
+            "$(command -v google-chrome || true)" \
+            "$(command -v chromium-browser || true)" \
+            "$(command -v chromium || true)"; do
+            if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+              echo "CHROME_PATH=$candidate" >> "$GITHUB_ENV"
+              echo "Using $candidate"
+              "$candidate" --version || true
+              exit 0
+            fi
+          done
+          echo "::error::No Chrome on this runner. The browser checks cannot run, and a check that cannot run has not passed."
+          exit 1
+
+      # The baseline the parity checks compare against. Asserted rather than
+      # assumed: without it split-parity and css-parity exit 2 with one line,
+      # which is correct behaviour but a confusing way to learn that a checkout
+      # option regressed.
+      - name: Verify the pre-modular baseline is present
+        run: |
+          set -euo pipefail
+          if ! git rev-parse --verify --quiet pre-modular^{commit} > /dev/null; then
+            echo "::error::The 'pre-modular' tag was not fetched. actions/checkout needs fetch-tags: true."
+            exit 1
+          fi
+          echo "baseline: $(git rev-parse --short pre-modular)"
+
+      # Everything except the release cycle. SKIP_BUDGET is pinned at 0 inside
+      # tools/check.mjs, so a check that cannot run on this runner is a red
+      # build rather than a silent "ok".
+      - name: node tools/check.mjs
+        run: node tools/check.mjs
+
+  # The release cycle drives two real service-worker installs and takes ~40s on
+  # top of everything else, so it is its own job rather than a reason for the
+  # main one to be slower on every push.
+  release-cycle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Find Chrome
+        run: |
+          set -euo pipefail
+          candidate="$(command -v google-chrome-stable || command -v google-chrome || command -v chromium || true)"
+          if [ -z "$candidate" ]; then
+            echo "::error::No Chrome on this runner."
+            exit 1
+          fi
+          echo "CHROME_PATH=$candidate" >> "$GITHUB_ENV"
+      # The one check that exercises the failure this repo has actually shipped:
+      # a release that never reaches an existing install.
+      - name: node tools/release-check.mjs
+        run: node tools/release-check.mjs

@@ -18,12 +18,13 @@
 // A step that throws is recorded rather than aborting the run, so one broken
 // action does not hide the twenty after it.
 
-import { createRequire } from "node:module";
 import { spawn, execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { baselineTreeInto } from "./baseline.mjs";
+import { findChrome, launch } from "./browser.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 // The baseline is the TAG pre-modular, not a branch. It used to default to
@@ -33,18 +34,20 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const BASE_REF = (process.argv.find((a) => a.startsWith("--base=")) || "--base=pre-modular").slice(7);
 const SHOT = process.argv.includes("--shot");
 
-const CHROME = [
-  "/usr/bin/google-chrome-stable", "/usr/bin/google-chrome",
-  "/usr/bin/chromium-browser", "/usr/bin/chromium", "/snap/bin/chromium"
-].find(existsSync);
-function loadPuppeteer() {
-  for (const base of [ROOT, "/home/san/.nvm/versions/node/v22.19.0/lib/node_modules/@mermaid-js/mermaid-cli/"]) {
-    try { return createRequire(path.join(base, "x.js"))("puppeteer"); } catch (_) { /* next */ }
-  }
-  return null;
+// Chrome comes from tools/browser.mjs, which drives it over the DevTools
+// protocol rather than through puppeteer. This used to be a hard-coded list of
+// five /usr/bin paths plus a puppeteer under one person's nvm directory, and on
+// any machine that matched neither — every container, every CI runner — the
+// guard below printed "skipping." and exited 0, which the suite scored as a
+// pass. See tools/browser.mjs for the whole story.
+const CHROME = findChrome();
+if (!CHROME) {
+  // Not a skip: a check that cannot run has not passed. tools/check.mjs counts
+  // this as a failure and names it.
+  console.error("ui-smoke: no Chrome. Set CHROME_PATH — see tools/cdp.mjs.");
+  console.log("CHECK: 1 checks · 1 failed");
+  process.exit(1);
 }
-const puppeteer = loadPuppeteer();
-if (!puppeteer || !CHROME) { console.log("ui-smoke: no puppeteer/Chrome — skipping."); process.exit(0); }
 
 // Injected into both pages before any page script, so the CDN can be cut off
 // entirely and the two builds always run identical library code. KaTeX is
@@ -120,7 +123,25 @@ const SNAPSHOT = String.raw`() => {
     meta: txt("#meta"),
     question: txt("#question").slice(0, 60),
     answerShown: vis("#answer"),
-    view: document.body.dataset.view || (vis("#notesView") ? "notes" : "cards"),
+    // Two answers, because they can disagree and the disagreement is the
+    // interesting part. "view" is what the reader SEES — is the rendered notes
+    // surface on screen — and "stateView" is what the app believes
+    // (state.viewMode). A build where those differ has a tab that does not take.
+    // The document.body.dataset.view this used to consult first was never set
+    // by either build, so it silently always fell through to the element test.
+    // (No backticks in here: this whole snapshot is a String.raw template.)
+    // The app's OWN answer, which both builds have kept in state.viewMode since
+    // before the split. This used to be derived from whether #notesView had an
+    // offsetParent, which is a LAYOUT question — so the same run reported 1
+    // problem or 17 depending on whether the frame after the step had landed
+    // yet, and every one of those 17 was the same cascading phantom. A flaky
+    // check is worse than an absent one: it teaches you to re-run until green.
+    view: window.__api?.state?.viewMode || "",
+    // Kept beside it, and read off the hidden PROPERTY rather than the computed
+    // box, so it is still an independent answer without being a race: a build
+    // where the app believes it is in notes view and the stage is not on screen
+    // has a tab that does not take.
+    notesStageUp: document.querySelector("#notesStage") ? !document.querySelector("#notesStage").hidden : null,
     allCardsOpen: vis("#allCardsPanel"),
     allCardCount: document.querySelectorAll("#allCardsList .all-card").length,
     myDecksOpen: vis("#myDecksPanel"),
@@ -225,7 +246,19 @@ const STEPS = String.raw`[
     await new Promise((r) => setTimeout(r, 300));
   }],
   ["open the cloze panel", async (api) => { api.openClozePanel(); await new Promise((r) => setTimeout(r, 700)); }],
-  ["open the highlights panel", async (api) => { api.renderHighlightsPanel(); await new Promise((r) => setTimeout(r, 700)); }],
+  // The Highlights TAB (renderHighlightsPanel) was removed deliberately — see
+  // split-parity's REMOVED entry for it. What replaced it is a pane that opens
+  // BESIDE the note rather than instead of it, so the two builds cannot produce
+  // the same snapshot here however this is written. What they can both answer
+  // is "does the highlights surface open, and does it close again", so that is
+  // what this asks, through whichever entry point the build has.
+  ["open the highlights surface", async (api) => {
+    if (typeof api.renderHighlightsPanel === "function") api.renderHighlightsPanel();
+    else api.toggleHighlightSplit("notes");
+    await new Promise((r) => setTimeout(r, 700));
+    if (typeof api.closeHighlightSplit === "function") api.closeHighlightSplit();
+    await new Promise((r) => setTimeout(r, 300));
+  }],
   ["change theme", async (api) => { api.setTheme("light-paper"); await new Promise((r) => setTimeout(r, 500)); api.setTheme("dark-amoled"); await new Promise((r) => setTimeout(r, 400)); }],
   ["open the style panel", async (api) => { api.openStylePanel(); await new Promise((r) => setTimeout(r, 600)); api.closeStylePanel(); await new Promise((r) => setTimeout(r, 300)); }],
   ["open Help", async (api) => { api.openHelpModal(); await new Promise((r) => setTimeout(r, 500)); api.closeHelpModal(); await new Promise((r) => setTimeout(r, 250)); }],
@@ -259,7 +292,7 @@ const STEPS = String.raw`[
 ]`;
 
 async function drive(url, apiSrc, shotPrefix) {
-  const browser = await puppeteer.launch({ headless: "new", executablePath: CHROME, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
+  const browser = await launch({ headless: "new", executablePath: CHROME, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
   try {
     const page = await browser.newPage();
     await page.setViewport({ width: 1280, height: 900 });
@@ -269,8 +302,12 @@ async function drive(url, apiSrc, shotPrefix) {
     page.on("request", (r) => (r.url().includes("cdn.jsdelivr.net") ? r.abort() : r.continue()));
     for (const lib of VENDORED) if (existsSync(lib)) await page.evaluateOnNewDocument(readFileSync(lib, "utf8"));
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 90000 });
-    await page.waitForFunction(() => !document.documentElement.classList.contains("app-booting"), { timeout: 30000 })
-      .catch(() => {});
+    // No .catch() here. A page that never boots is the loudest failure this
+    // check can find, and swallowing the rejection turned it into the quietest:
+    // the next line asks whether marked and DOMPurify are present, a dead page
+    // has neither, and the answer was "skipped" rather than "the app did not
+    // start".
+    await page.waitForFunction(() => !document.documentElement.classList.contains("app-booting"), { timeout: 30000 });
 
     const transcript = [];
     const names = await page.evaluate((stepsSrc) => (0, eval)("(" + stepsSrc + ")").map((s) => s[0]), STEPS);
@@ -313,7 +350,13 @@ const MODULE_API = `async () => {
     import("/src/sync/reconcile.js?v=__BUILD__"), import("/src/core/state.js?v=__BUILD__"),
     import("/src/library/local-library.js?v=__BUILD__"), import("/src/cards/new-deck.js?v=__BUILD__"),
     import("/src/ui/edit-mode.js?v=__BUILD__"), import("/src/panels/cloze-panel.js?v=__BUILD__"),
-    import("/src/panels/highlights-panel.js?v=__BUILD__"), import("/src/ui/theme.js?v=__BUILD__"),
+    import("/src/panels/highlights-panel.js?v=__BUILD__"),
+    // The pane that replaced the Highlights TAB. Without it the highlights step
+    // has nothing to call on this build and throws — which is exactly what it
+    // did, because the tab's own entry point was removed and nothing here had
+    // been pointed at what took its place.
+    import("/src/panels/highlight-cycle.js?v=__BUILD__"),
+    import("/src/ui/theme.js?v=__BUILD__"),
     import("/src/cloud/style-sync.js?v=__BUILD__"), import("/src/ui/help.js?v=__BUILD__"),
     import("/src/quick-notes/board.js?v=__BUILD__"), import("/src/library/tombstones.js?v=__BUILD__"),
     import("/src/library/my-decks-render.js?v=__BUILD__")
@@ -335,6 +378,13 @@ const NAMES = ["showAuthenticatedUI", "initAppForUser",
   "saveDeckToLibrary", "loadDeckFromLibrary", "createNewDeck",
   "toggleEditMode", "commitEditIfActive", "deleteAllCard", "undoCardAction",
   "pushCardUndoSnapshot", "snapshotCardsState", "setAllCardsFilter", "openClozePanel",
+  // BASELINE names only — probe.js is built as `return { ...NAMES }` against a
+  // classic script, so a name the baseline does not declare is a ReferenceError
+  // that leaves the whole api undefined (the comment above says as much).
+  // renderHighlightsPanel is one of those: it exists here and NOT in the
+  // current tree. The current tree's surface comes from the module imports in
+  // API_SRC instead, which is where highlight-cycle.js was added for the
+  // replacement the step reaches for.
   "renderHighlightsPanel", "setTheme", "openStylePanel", "closeStylePanel",
   "openHelpModal", "closeHelpModal", "openQuickNotesBoard", "closeQuickNotesBoard",
   "exportJson", "renameDeckInLibrary", "repaintMyDecks", "deleteDeckFromLibrary"];
@@ -345,7 +395,7 @@ let failures = 0;
 try {
   const baseDir = mkdtempSync(path.join(tmpdir(), "recall-ui-"));
   temps.push(baseDir);
-  execFileSync("bash", ["-c", `git archive ${BASE_REF} | tar -x -C ${baseDir}`], { cwd: ROOT });
+  baselineTreeInto(baseDir, BASE_REF);
   writeFileSync(path.join(baseDir, "probe.js"),
     `window.__recallApi = (function () {\n${readFileSync(path.join(baseDir, "app.js"), "utf8")}\n;return {\n` +
     NAMES.map((n) => `  ${n},`).join("\n") +
@@ -389,6 +439,11 @@ try {
   if (realErrors.length) { failures += realErrors.length; console.log(`\n  page errors: ${realErrors.slice(0, 4).join(" | ")}`); }
 
   console.log(failures ? `\n${failures} UI problem(s).` : `\n${after.transcript.length} actions driven: identical on both builds, no errors.`);
+  // The tally tools/check.mjs reads: one assertion per driven step, plus the
+  // export comparison. Printed here rather than in the `finally` so that a run
+  // that died mid-way prints NO tally, which is how the runner tells "this
+  // check fell over" from "this check passed".
+  console.log(`CHECK: ${after.transcript.length + 1} checks · ${failures} failed`);
 } finally {
   for (const s of servers) s.kill();
   for (const d of temps) rmSync(d, { recursive: true, force: true });

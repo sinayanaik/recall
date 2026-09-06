@@ -349,7 +349,11 @@ export function cleanedSelectionFragment(range) {
   // clone would put a stray digit into the needle, and locateSelectionInSource
   // would miss every highlight, cloze and erase made over an annotated
   // paragraph.
-  container.querySelectorAll("button, .code-lang-badge, style, script").forEach((node) => node.remove());
+  // .code-copy-btn is redundant beside `button` — it IS one — but named for
+  // the same reason the others are: this list says what furniture is, and the
+  // stale .code-lang-badge it replaces had not matched anything since the badge
+  // gained its copy action.
+  container.querySelectorAll("button, .code-copy-btn, style, script").forEach((node) => node.remove());
   restoreSelectionTables(container, snapped);
   restoreSelectionListItems(container, snapped);
   return container;

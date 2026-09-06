@@ -60,16 +60,32 @@ export function enhanceCodeBlocks(roots) {
         const btn = document.createElement("button");
         btn.type = "button";
         btn.className = "code-copy-btn";
-        btn.textContent = label;
+        // The label is drawn by CSS from this attribute (see .code-copy-btn's
+        // ::before in styles/06-rendered.css) rather than being a text node in
+        // the button.
+        //
+        // Because a text node is SELECTABLE, and `user-select: none` does not
+        // change that. styles/14-selection.css says in prose that Chrome keeps
+        // out-of-flow furniture out of Selection.toString(); measured against
+        // the Chrome this is checked on, it does not — a drag from the
+        // paragraph above a code block to the one below it put the badge's
+        // "JS" on the clipboard, between the prose and the code. Generated
+        // content is not in the DOM, so there is nothing for a range to
+        // contain. tools/selection-check.mjs asserts both halves.
+        //
+        // aria-label rather than the text, so the button still has an
+        // accessible name — ::before content is not reliably one.
+        btn.dataset.label = label;
+        btn.setAttribute("aria-label", `Copy code${label ? ` (${label})` : ""}`);
         btn.title = inferred ? `Copy code · ${label} detected` : "Copy code";
         btn.addEventListener("click", async (event) => {
           event.stopPropagation();
           try {
             await navigator.clipboard.writeText(code.textContent ?? "");
-            btn.textContent = "✓";
+            btn.dataset.label = "✓";
             btn.classList.add("is-copied");
             setTimeout(() => {
-              btn.textContent = label;
+              btn.dataset.label = label;
               btn.classList.remove("is-copied");
             }, 1400);
           } catch {

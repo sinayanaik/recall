@@ -37,32 +37,36 @@
 // Served under a hostname that is neither localhost nor 127.0.0.1, because the
 // app deliberately unregisters its worker on those (see registerServiceWorker).
 
-import { createRequire } from "node:module";
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { findChrome, launch } from "./browser.mjs";
+
+// Chrome's profile directory, once the browser using it is gone.
+//
+// tools/cdp.mjs now waits for the process to exit before close() resolves, so
+// this should never have anything to retry. It retries anyway, and swallows
+// what it cannot remove: this check has already printed its answers by the time
+// it runs, and a temp directory left in /tmp is not one of them. Losing ten
+// green assertions to an ENOTEMPTY — which is what this file did on CI — is the
+// failure mode worth designing out.
+function discardProfile(dir) {
+  try { rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
+  catch (_) { /* deliberate: see above */ }
+}
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const HOST = "recall.test";
 
-const CHROME = [
-  "/usr/bin/google-chrome-stable", "/usr/bin/google-chrome",
-  "/usr/bin/chromium-browser", "/usr/bin/chromium", "/snap/bin/chromium"
-].find(existsSync);
-
-function loadPuppeteer() {
-  const candidates = [
-    ROOT,
-    "/home/san/.nvm/versions/node/v22.19.0/lib/node_modules/@mermaid-js/mermaid-cli/",
-    "/usr/lib/node_modules/@mermaid-js/mermaid-cli/"
-  ];
-  for (const base of candidates) {
-    try { return createRequire(path.join(base, "x.js"))("puppeteer"); } catch (_) { /* next */ }
-  }
-  return null;
-}
+// Chrome comes from tools/browser.mjs, which drives it over the DevTools
+// protocol rather than through puppeteer. This used to be a hard-coded list of
+// five /usr/bin paths plus a puppeteer under one person's nvm directory, and on
+// any machine that matched neither — every container, every CI runner — the
+// guard below printed "skipping." and exited 0, which the suite scored as a
+// pass. See tools/browser.mjs for the whole story.
+const CHROME = findChrome();
 
 function startServer(root) {
   return new Promise((resolve, reject) => {
@@ -138,18 +142,34 @@ async function goOffline(page) {
   });
 }
 
+// The CDN assets sw.js precaches, read out of the worker itself rather than
+// retyped here — a copy would drift exactly the way the two files it compares
+// already can.
+const CDN_ASSET_URLS = (() => {
+  const sw = readFileSync(path.join(ROOT, "sw.js"), "utf8");
+  const block = sw.slice(sw.indexOf("const CDN_ASSETS = ["));
+  const body = block.slice(0, block.indexOf("];"));
+  const base = sw.match(/const CDN = "([^"]+)"/)?.[1] || "";
+  return [...body.matchAll(/`\$\{CDN\}([^`]+)`|"([^"]+)"/g)]
+    .map((m) => (m[1] ? base + m[1] : m[2]))
+    .filter(Boolean);
+})();
+
 const problems = [];
+let ran = 0;
 function check(name, ok, detail) {
+  ran += 1;
   console.log(`  ${ok ? "ok  " : "FAIL"}  ${name}${detail ? ` — ${detail}` : ""}`);
   if (!ok) problems.push(`${name}${detail ? `: ${detail}` : ""}`);
 }
 
 async function main() {
-  const puppeteer = loadPuppeteer();
-  if (!puppeteer || !CHROME) {
-    console.log("offline-check: no puppeteer/chrome available — skipping");
-    return;
-  }
+  // The guard that used to live here returned from main() before a single
+  // assertion ran — and the `problems.length` report is AFTER the call, so the
+  // whole check printed one line and exited 0. On this check of all of them:
+  // the app has twice shipped unable to launch without a network, and this is
+  // the only thing that asks. The Chrome guard is now at the top of the file
+  // and fails rather than returns.
 
   const { child, port } = await startServer(ROOT);
   const origin = `http://${HOST}:${port}`;
@@ -157,7 +177,7 @@ async function main() {
   let browser;
 
   try {
-    browser = await puppeteer.launch({
+    browser = await launch({
       executablePath: CHROME,
       headless: "new",
       userDataDir: profile,
@@ -242,7 +262,7 @@ async function main() {
     // answered. A cache-first handler with no timeout waits forever on it.
     {
       const hangProfile = mkdtempSync(path.join(tmpdir(), "recall-hang-"));
-      const hangBrowser = await puppeteer.launch({
+      const hangBrowser = await launch({
         executablePath: CHROME,
         headless: "new",
         userDataDir: hangProfile,
@@ -269,7 +289,7 @@ async function main() {
           state.setup || state.login || state.app, `after ${seconds}s`);
       } finally {
         await hangBrowser.close();
-        rmSync(hangProfile, { recursive: true, force: true });
+        discardProfile(hangProfile);
       }
     }
     // ── 4. A signed-in device with a library, launched offline ────────────
@@ -424,8 +444,43 @@ async function main() {
       }).catch((error) => ({ error: String(error?.message || error) }));
       check("offline: ensurePdfJs still reports the library as usable",
         pdfjs.ok === true, JSON.stringify(pdfjs));
-      check("offline: it leaves workerSrc unset rather than pointing at a dead URL",
-        !pdfjs.workerSrc || pdfjs.workerSrc.startsWith("blob:"),
+      // This used to demand workerSrc be EMPTY or a blob:, on the belief that
+      // pdf.js falls back to a main-thread fake worker when it is unset. The app
+      // checked that against the build it pins (3.11.174, legacy) and found it
+      // false: PDFWorker.workerSrc reads GlobalWorkerOptions.workerSrc and, when
+      // it is empty, falls back to a URL derived from document.currentScript at
+      // library-evaluation time — throwing `No "GlobalWorkerOptions.workerSrc"
+      // specified.` when that is null too, from outside its own try/catch. See
+      // the long comment in src/core/lib-loader.js's ensurePdfJs.
+      //
+      // So an empty workerSrc is the FAILURE here, not the goal. What has to
+      // hold offline is that it names something this device can actually
+      // answer: a blob: from a fetch that succeeded, or the exact CDN worker URL
+      // sw.js precaches into recall-cdn-v1 (a worker made from a blob inherits
+      // this page's service worker, which is what makes that resolvable with no
+      // connection).
+      const precachedWorker = pdfjs.workerSrc && (
+        pdfjs.workerSrc.startsWith("blob:")
+        || /pdfjs-dist@[\d.]+\/legacy\/build\/pdf\.worker\.min\.js$/.test(pdfjs.workerSrc)
+      );
+      check("offline: workerSrc names something the precache can answer",
+        Boolean(precachedWorker),
+        `workerSrc = ${JSON.stringify(pdfjs.workerSrc)}`);
+      // And the half that would otherwise go unsaid: the URL it names has to be
+      // one the WORKER KNOWS ABOUT. sw.js's CDN_ASSETS carries the pdf.js worker
+      // with a comment saying it "must stay byte-identical to LIB_URLS.pdfjs /
+      // LIB_URLS.pdfjsWorker" — and nothing enforced that, so a version bump in
+      // src/core/lib-loader.js that sw.js did not follow would leave workerSrc
+      // naming a URL the precache has never held. It would pass the check above,
+      // which only asks about the SHAPE of the URL, and fail on a real device
+      // with no connection.
+      //
+      // Membership in the list, not presence in the cache: this scenario blocks
+      // the CDN outright, so recall-cdn-v1 is legitimately empty here. Whether
+      // the bytes arrive is a question for a device that has been online once;
+      // whether the two files agree about the URL is a fact about the tree.
+      check("...and that URL is one sw.js precaches, not one it has never heard of",
+        pdfjs.workerSrc.startsWith("blob:") || CDN_ASSET_URLS.includes(pdfjs.workerSrc),
         `workerSrc = ${JSON.stringify(pdfjs.workerSrc)}`);
 
       const images = await page.evaluate(async () => {
@@ -448,10 +503,14 @@ async function main() {
   } finally {
     if (browser) await browser.close();
     child.kill();
-    rmSync(profile, { recursive: true, force: true });
+    discardProfile(profile);
   }
 
   console.log(`\n${problems.length} problem(s)`);
+  // The tally tools/check.mjs reads. `ran` counts every check() that was
+  // reached, so a run that died after the third case prints 3 rather than
+  // looking, from outside, exactly like a clean run.
+  console.log(`CHECK: ${ran} checks · ${problems.length} failed`);
   if (problems.length) process.exit(1);
 }
 

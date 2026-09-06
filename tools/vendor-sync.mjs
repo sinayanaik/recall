@@ -171,13 +171,18 @@ async function main() {
     for (const rel of Object.keys(lock)) {
       if (!VENDOR_FILES[rel]) problems.push(`${rel} is in lock.json but not in the manifest — delete it`);
     }
+    // Two assertions per vendored file (present-and-hashed, fetched-from-the-
+    // manifest-URL) plus one per lock entry the manifest no longer names.
+    const asserted = Object.keys(VENDOR_FILES).length * 2 + Object.keys(lock).length;
     if (problems.length) {
       console.error("vendor-sync: FAIL");
       for (const p of problems) console.error(`  ${p}`);
+      console.log(`CHECK: ${asserted} checks · ${problems.length} failed`);
       process.exit(1);
     }
     const total = Object.values(lock).reduce((n, e) => n + (e.bytes || 0), 0);
     console.log(`vendor-sync: ${Object.keys(VENDOR_FILES).length} files · ${Math.round(total / 1024)}KB · OK`);
+    console.log(`CHECK: ${asserted} checks · 0 failed`);
     return;
   }
 

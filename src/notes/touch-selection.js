@@ -650,7 +650,11 @@ function textNodesIn(host, limit = 400) {
       if (!node.nodeValue || !node.nodeValue.length) return NodeFilter.FILTER_REJECT;
       const parent = node.parentElement;
       if (!parent) return NodeFilter.FILTER_REJECT;
-      if (parent.closest(".code-lang-badge, .notes-img-size-badge, .notes-img-resize-handle")) {
+      // .code-copy-btn, not .code-lang-badge. The badge became a real button
+      // when it gained the copy action, and this list was never updated — so
+      // the one piece of furniture inside a code block was walked as ordinary
+      // text by the touch selection controller.
+      if (parent.closest(".code-copy-btn, .notes-img-size-badge, .notes-img-resize-handle")) {
         return NodeFilter.FILTER_REJECT;
       }
       return NodeFilter.FILTER_ACCEPT;

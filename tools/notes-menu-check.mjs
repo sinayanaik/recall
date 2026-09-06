@@ -685,4 +685,5 @@ try {
 console.log(failures.length
   ? `\n${failures.length} of ${ran} notes-menu case(s) failed.`
   : `\n${ran} notes-menu cases, all clean.`);
+console.log(`CHECK: ${ran} checks · ${failures.length} failed`);
 process.exit(failures.length ? 1 : 0);
