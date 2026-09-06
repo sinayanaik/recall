@@ -1604,12 +1604,22 @@ async function run() {
     // spent here is a millisecond of PRESS_ESCAPE_MS gone before the first move
     // can be dispatched, and the CDP round trip already costs ~30 of them.
     await wait(260);
-    // 50px in five 10px steps with no wait of our own. The round trip alone
-    // paces them at roughly 30-40ms, so the second or third move is past
-    // PRESS_ESCAPE_PX while still inside PRESS_ESCAPE_MS — and 10px per 32ms is
-    // about 0.3px/ms, well under PRESS_ESCAPE_SPEED_PX_PER_MS. Both of those
-    // are asserted below rather than assumed.
-    await dragTo(crawlFrom.x, crawlFrom.y, crawlFrom.x + 50, crawlFrom.y, 5, 0);
+    // 50px in five 10px steps, paced by a wait of our own.
+    //
+    // This used to pass `0` and let the CDP round trip do the pacing, on the
+    // estimate that the trip alone costs "roughly 30-40ms". On a GitHub runner
+    // it costs 19.5, and 10px per 19.5ms is 0.51px/ms — over
+    // PRESS_ESCAPE_SPEED_PX_PER_MS by a hundredth, which made the fixture a
+    // flick and failed the assertion below. The assertion was right and the
+    // fixture was wrong: nothing here was ever measuring the app.
+    //
+    // 12ms is chosen against both bounds. The gap between moves becomes at
+    // least 12ms plus the trip — at the observed 19.5 that is 31.5ms, so 10px
+    // is 0.32px/ms, a third under the 0.5 floor. And the decisive move, the
+    // second, lands about 63ms after the press, half of PRESS_ESCAPE_MS. Both
+    // stay inside their bound even on a machine twice this slow, and both are
+    // asserted below rather than assumed.
+    await dragTo(crawlFrom.x, crawlFrom.y, crawlFrom.x + 50, crawlFrom.y, 5, 12);
     const crawlView = await page.evaluate(
       (x, y) => window.__escapeView(x, y, window.__press.selectedAt),
       crawlFrom.x, crawlFrom.y

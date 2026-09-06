@@ -152,6 +152,32 @@ async function boot(url) {
     } catch (_) {
       bootTimedOut = true;
     }
+
+    // ...and then for the boot DECISION, which is a different moment.
+    //
+    // app-booting clears when the module graph finishes evaluating. Choosing
+    // between setup, login, app and library-failed happens after that, behind
+    // whatever the network does, and showBootScreen() is the only thing that
+    // takes down index.html's #bootSkeleton placeholder. So while that node is
+    // still in the DOM, nothing has been decided yet — and its "Still starting
+    // up" line is inside document.body.innerText the whole time, because that
+    // paragraph is hidden with opacity and innerText does not care about
+    // opacity.
+    //
+    // Sampling 500ms after the module graph was therefore a race, and one this
+    // machine always won and a CI runner with no network did not: the probe
+    // read the placeholder's text as the page's body text and reported a
+    // healthy boot as a state difference. The baseline has no #bootSkeleton at
+    // all, so this resolves immediately on that side.
+    let bootUndecided = false;
+    try {
+      await page.waitForFunction(
+        () => !document.getElementById("bootSkeleton"),
+        { timeout: 30000 }
+      );
+    } catch (_) {
+      bootUndecided = true;
+    }
     await new Promise((r) => setTimeout(r, 500));
 
     // Observable proof that the module evaluated to its LAST line and that the
@@ -160,7 +186,12 @@ async function boot(url) {
       // set by index.html's boot-click queue, cleared only by the replay IIFE
       // at the very bottom of main.js
       bootQueueDrained: !document.documentElement.classList.contains("app-booting"),
-      setupVisible: !document.getElementById("setupScreen")?.hasAttribute("hidden"),
+      // setupOverlay, not setupScreen: there is no #setupScreen in this tree OR
+      // in the baseline, so `!undefined?.hasAttribute(...)` was `!undefined`,
+      // and this key reported `true` on both sides of every comparison ever
+      // made. An assertion that cannot fail is the thing this whole branch is
+      // about, and it was sitting inside the check for it.
+      setupVisible: !document.getElementById("setupOverlay")?.hasAttribute("hidden"),
       toolbarButtons: document.querySelectorAll("#mainToolbar button").length,
       // initToolbars(): fills these from createToolbarHtml, then runs
       // enableSyntaxHighlighting, which builds one mirror backdrop per editor
@@ -170,7 +201,7 @@ async function boot(url) {
       renderToolbars: document.querySelectorAll("[class*=render-toolbar]").length,
       bodyText: (document.body.innerText || "").slice(0, 120).replace(/\s+/g, " ")
     }));
-    return { state, logs, bootTimedOut };
+    return { state, logs, bootTimedOut, bootUndecided };
   } finally {
     await browser.close();
   }
@@ -206,6 +237,7 @@ try {
   const now = await boot(url);
   const problems = now.logs.filter(isOurs);
   if (now.bootTimedOut) problems.push(["BOOT", "the app never finished booting (app-booting never cleared)"]);
+  if (now.bootUndecided) problems.push(["BOOT", "the app never chose a boot screen (#bootSkeleton was never taken down)"]);
 
   console.log("── console ──");
   if (!now.logs.length) console.log("  (silent)");
@@ -213,10 +245,11 @@ try {
   console.log("── state ──");
   for (const [k, v] of Object.entries(now.state)) console.log(`  ${k}: ${v}`);
 
-  // Every state key this compared, plus the boot itself and the console being
-  // clean. Counted rather than written down: a key added to the probe must
-  // change the tally, or the tally is describing an older check.
-  let asserted = Object.keys(now.state).length + 2;
+  // Every state key this compared, plus the boot finishing, the boot deciding,
+  // and the console being clean. Counted rather than written down: a key added
+  // to the probe must change the tally, or the tally is describing an older
+  // check.
+  let asserted = Object.keys(now.state).length + 3;
   if (baseline) {
     const before = await boot(baseline);
     asserted += Object.keys(now.state).length;
@@ -232,7 +265,7 @@ try {
 
   console.log(`\n${problems.length} problem(s)`);
   // The tally tools/check.mjs reads: every state key compared against the
-  // baseline, plus the boot itself and the console being clean.
+  // baseline, plus the boot finishing, the boot deciding, and a clean console.
   console.log(`CHECK: ${asserted} checks · ${problems.length} failed`);
   process.exitCode = problems.length ? 1 : 0;
 } finally {
