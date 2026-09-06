@@ -237,8 +237,37 @@ try {
   // skip-waiting and reloads. A test that just reloads twice is testing the
   // refusal, not the update — and would "pass" against an app that could never
   // update at all.
+  // Hold the app's OWN automatic reload off for the length of this section,
+  // using the app's own guard rather than anything invented here.
+  //
+  // sw.js calls skipWaiting() during install, so a new worker never sits in
+  // "waiting" — it activates as soon as it has precached, controllerchange
+  // fires, and src/pwa/service-worker-client.js reloads the page onto the new
+  // release by itself. That is the app working, and it is also a stopwatch:
+  // every observation below is of a page that is being replaced underneath it.
+  // Both of the assertions here failed that way — the banner never seen because
+  // the page carrying it was gone, and the held stamp read as B because by then
+  // the reload had happened. The check "passed" when it happened to be quicker.
+  //
+  // The client suppresses its own reload if one already happened inside a
+  // minute (recall:updateReloadAt in sessionStorage) and shows a toast instead,
+  // so writing that key here is asking the app for the state it already has a
+  // name for. Set BEFORE the switch, because htmlMatchesThisRelease starts the
+  // update from inside the very navigation below.
+  await page.evaluate(() => {
+    try { sessionStorage.setItem("recall:updateReloadAt", String(Date.now())); } catch (_) { /* nothing to do */ }
+  });
   await fetch(`http://127.0.0.1:${PORT}/__switch?to=${encodeURIComponent(dirB)}`);
-  await page.goto(`${ORIGIN}/index.html`, { waitUntil: "networkidle2", timeout: 60000 });
+  // domcontentloaded, not networkidle2: the new worker's install is 204 module
+  // requests, so "the network went quiet" is a point AFTER the handover rather
+  // than before it. What is being asked here is what the OLD worker answered
+  // this navigation with, and that is known the moment the document exists.
+  await page.goto(`${ORIGIN}/index.html`, { waitUntil: "domcontentloaded", timeout: 60000 });
+
+  const held = await page.evaluate(() =>
+    document.querySelector('script[type="module"]')?.getAttribute("src")?.match(/v=([^&"']+)/)?.[1]);
+  check(held === "aaaaaa1", `update: the old worker still serves its OWN release until told (?v=${held})`);
+
   await page.evaluate(async () => {
     const reg = await navigator.serviceWorker.getRegistration();
     if (reg) await reg.update();
@@ -246,10 +275,6 @@ try {
 
   const banner = await page.waitForSelector(".update-banner", { timeout: 30000 }).catch(() => null);
   check(Boolean(banner), "update: the new release is announced to the running page");
-
-  const held = await page.evaluate(() =>
-    document.querySelector('script[type="module"]')?.getAttribute("src")?.match(/v=([^&"']+)/)?.[1]);
-  check(held === "aaaaaa1", `update: the old worker still serves its OWN release until told (?v=${held})`);
 
   if (banner) {
     // Press like a person would, a beat after the banner appears — not in the

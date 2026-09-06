@@ -116,11 +116,20 @@ export function launchChrome(chromePath, extraArgs = [], { profile, windowSize =
                 const giveUp = setTimeout(finish, 2000);
                 proc.once("exit", finish);
               });
-          return exited.then(() => {
+          const sweep = () => {
             if (!ownsProfile) return;
-            try { rmSync(userDataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
+            try { rmSync(userDataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); }
             catch (_) { /* best effort: a stray profile under /tmp is not a result */ }
-          });
+          };
+          // Twice, and the first one SYNCHRONOUSLY, because most callers here
+          // do not await close() — they call it and let the process end, and a
+          // removal that only happened in a `.then()` would never run at all.
+          // SIGKILL to the group has already been delivered by this point, so
+          // the retries below are enough on their own almost every time; the
+          // awaited pass is the guarantee for a caller that needs the directory
+          // to be gone before its next statement.
+          sweep();
+          return exited.then(sweep);
         }
       });
     };
