@@ -510,7 +510,9 @@ export async function launch({ executablePath, args = [], userDataDir } = {}) {
     async close() {
       for (const p of [...state.pages]) { try { await p.close(); } catch (_) { /* closing anyway */ } }
       try { client.close(); } catch (_) { /* already closed */ }
-      chrome.close();
+      // Awaited, not fired and forgotten: a caller that owns the profile — and
+      // offline-check does — removes the directory the moment this resolves.
+      await chrome.close();
     }
   };
 }

@@ -74,7 +74,13 @@ export function launchChrome(chromePath, extraArgs = [], { profile, windowSize =
     "--disable-backgrounding-occluded-windows",
     `--window-size=${windowSize}`,
     ...extraArgs
-  ], { stdio: ["ignore", "ignore", "pipe"] });
+    // detached, so Chrome leads its own process GROUP. SIGKILL to the browser
+    // process does not reach the renderer, the GPU process or — the one that
+    // actually matters here — the Crashpad handler, and those go on writing
+    // into the profile directory after their parent is gone. close() below
+    // signals the group, which is the only way to have "the browser is gone"
+    // mean the profile directory has stopped moving.
+  ], { stdio: ["ignore", "ignore", "pipe"], detached: true });
 
   return new Promise((resolve, reject) => {
     let buf = "";
@@ -88,11 +94,33 @@ export function launchChrome(chromePath, extraArgs = [], { profile, windowSize =
         proc,
         wsUrl: match[1],
         userDataDir,
+        // SIGKILL is instant; the process EXITING is not. Chrome goes on
+        // writing under its profile directory for a few milliseconds after the
+        // signal, and a caller that owns that directory — tools/offline-check
+        // is the only one — used to hit ENOTEMPTY removing it out from under a
+        // browser that was still alive. That is a race, so it landed on a busy
+        // CI runner and never here. So close() now waits for the exit it asked
+        // for. Awaiting the result is optional: the kill happens before the
+        // wait, so the callers that treat this as synchronous are unchanged.
         close() {
+          // The group first (see the spawn above), then the process itself as a
+          // fallback for a platform or a race where the group is already gone.
+          try { process.kill(-proc.pid, "SIGKILL"); } catch (_) { /* group gone */ }
           try { proc.kill("SIGKILL"); } catch (_) { /* already gone */ }
-          if (ownsProfile) {
-            try { rmSync(userDataDir, { recursive: true, force: true }); } catch (_) { /* best effort */ }
-          }
+          const exited = proc.exitCode !== null || proc.signalCode !== null
+            ? Promise.resolve()
+            : new Promise((done) => {
+                const finish = () => { clearTimeout(giveUp); done(); };
+                // Bounded: a Chrome that will not die is not worth hanging the
+                // suite over, and the cleanup below tolerates a live one.
+                const giveUp = setTimeout(finish, 2000);
+                proc.once("exit", finish);
+              });
+          return exited.then(() => {
+            if (!ownsProfile) return;
+            try { rmSync(userDataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
+            catch (_) { /* best effort: a stray profile under /tmp is not a result */ }
+          });
         }
       });
     };

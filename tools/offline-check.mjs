@@ -44,6 +44,19 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { findChrome, launch } from "./browser.mjs";
 
+// Chrome's profile directory, once the browser using it is gone.
+//
+// tools/cdp.mjs now waits for the process to exit before close() resolves, so
+// this should never have anything to retry. It retries anyway, and swallows
+// what it cannot remove: this check has already printed its answers by the time
+// it runs, and a temp directory left in /tmp is not one of them. Losing ten
+// green assertions to an ENOTEMPTY — which is what this file did on CI — is the
+// failure mode worth designing out.
+function discardProfile(dir) {
+  try { rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
+  catch (_) { /* deliberate: see above */ }
+}
+
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const HOST = "recall.test";
 
@@ -276,7 +289,7 @@ async function main() {
           state.setup || state.login || state.app, `after ${seconds}s`);
       } finally {
         await hangBrowser.close();
-        rmSync(hangProfile, { recursive: true, force: true });
+        discardProfile(hangProfile);
       }
     }
     // ── 4. A signed-in device with a library, launched offline ────────────
@@ -490,7 +503,7 @@ async function main() {
   } finally {
     if (browser) await browser.close();
     child.kill();
-    rmSync(profile, { recursive: true, force: true });
+    discardProfile(profile);
   }
 
   console.log(`\n${problems.length} problem(s)`);
