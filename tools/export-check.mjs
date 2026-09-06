@@ -258,7 +258,7 @@ try {
   });
 
   must("...and always returns the fallback rather than nothing", () => {
-    for (const value of ["", "   ", null, undefined, "///", " "]) {
+    for (const value of ["", "   ", null, undefined, "///", "\u0000"]) {
       const name = md.slugifyFileName(value, "recall");
       if (name !== "recall" && !name.trim()) return `${show(value)} produced ${show(name)}`;
       if (!name) return `${show(value)} produced an empty name`;
