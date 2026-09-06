@@ -1225,7 +1225,13 @@ async function run() {
     // surface that scrolls on the compositor. That swim is the flicker.
     const midScroll = await page.evaluate(() => ({
       scrolling: document.body.classList.contains("is-touch-scrolling"),
-      opacity: getComputedStyle(document.querySelector(".touch-select-handle.is-end")).opacity,
+      // The handle overlay is built by the controller and can be absent if the
+      // selection was lost — one failed assertion is the right answer to that,
+      // not a TypeError out of getComputedStyle(null) that ends the file.
+      opacity: (() => {
+        const handle = document.querySelector(".touch-select-handle.is-end");
+        return handle ? getComputedStyle(handle).opacity : "no handle";
+      })(),
       sel: window.__selection(),
     }));
     await touchEnd();
