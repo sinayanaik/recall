@@ -96,7 +96,7 @@ export function onDocumentSurface() {
 // and the two answering it differently is how a notebook opens on an empty
 // Notes tab by one route and not the other.
 //
-// A PDF deck opens on its Document tab: the document IS the deck. A deck whose
+// A PDF deck opens on its PDF tab: the document IS the deck. A deck whose
 // only document is paper it wrote itself opens on Write, by the same argument.
 // Everything else opens on Notes, exactly as it always has.
 export function documentTabForOpenDeck(meta = state.meta) {

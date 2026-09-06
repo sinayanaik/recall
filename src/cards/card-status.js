@@ -108,7 +108,7 @@ export function updateMeta() {
   if (!hasDeck && state.viewMode !== "cards") setViewMode("cards");
 }
 
-// The Document tab, on every deck that is open.
+// The PDF tab, on every deck that is open.
 //
 // It used to be shown from meta.pdf and nothing else, on the argument that a tab
 // present on every deck and empty on all but a handful is a worse answer than a

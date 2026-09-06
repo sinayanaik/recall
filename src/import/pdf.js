@@ -2,7 +2,7 @@
 //
 // Nothing is extracted. There is no markdown conversion step here and no OCR —
 // the deck's Notes tab starts empty, for the reader to write in, and the
-// Document tab is the file. That is the whole design: reconstructing display
+// PDF tab is the file. That is the whole design: reconstructing display
 // maths from glyph positions is unreliable, and cropping every equation to an
 // image would spend a 1GB budget on a few dozen papers.
 //
@@ -439,7 +439,7 @@ export async function attachPdfToOpenDeck(file) {
       console.warn("Could not upload the document", error);
     }
 
-    // The Document tab does not exist until meta.pdf does, so both of these have
+    // The PDF tab does not exist until meta.pdf does, so both of these have
     // to run before the view can be switched to it.
     updateMeta();
     setViewMode("document");

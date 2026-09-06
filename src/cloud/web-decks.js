@@ -370,7 +370,7 @@ export async function loadWebDeck(deckId) {
     state.notes = String(deckData.notes || "");
     state.sourceTitle = deckData.title || "";
     state.importTitleHint = deckData.title || "";
-    // A PDF deck opens on its Document tab, a notebook on Write, everything else
+    // A PDF deck opens on its PDF tab, a notebook on Write, everything else
     // on Notes — the same one answer loadDeckSnapshot uses, so the two routes
     // into a deck cannot land on different surfaces.
     setViewMode(documentTabForOpenDeck());

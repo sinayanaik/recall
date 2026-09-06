@@ -45,7 +45,7 @@ CREATE TABLE IF NOT EXISTS decks (
   --
   --   pdf                  the attached PDF's name, size, page count, sha256
   --                        and storage path — a deck with this key has a
-  --                        Document tab, and it is only ever written, never
+  --                        PDF tab, and it is only ever written, never
   --                        removed ("Remove from cloud" sets offloaded: true)
   --   pdfHighlights        one record per highlight on that PDF: page, colour,
   --                        quads, and two independent stamps (at, noteAt)

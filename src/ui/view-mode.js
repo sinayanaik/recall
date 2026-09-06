@@ -284,7 +284,7 @@ const VIEW_EXPORT_MENUS = {
     ]
   },
   document: {
-    head: "Export document",
+    head: "Export PDF",
     rows: [
       ["doc:annotated-pdf", "Annotated pages + notes", "Only the pages you wrote something about"],
       ["doc:pages-pdf", "The whole document + notes", "Every page, marked, notes underneath"],

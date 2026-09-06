@@ -515,7 +515,7 @@
                existed once meta.pdf did, so a deck whose notes were typed up
                before the paper was to hand had no way in at all. That is no
                longer true: refreshDocumentTab (src/cards/card-status.js) shows
-               the Document tab on EVERY open deck, and a deck with no paper
+               the PDF tab on EVERY open deck, and a deck with no paper
                opens it to "Attach a PDF to read it here"
                (renderAttachDocumentPrompt), whose picker calls the identical
                attachPdfToOpenDeck this row called.
@@ -540,7 +540,7 @@
                same rule the removed "Attach a PDF…" row above answers to, and
                stated in full a few lines below: what belongs to the deck or the
                view you are looking at lives in that view's own chrome.
-               It is the Write tab now, beside Cards, Notes and Document, on
+               It is the Write tab now, beside Cards, Notes and PDF, on
                every open deck — and a deck with no pages yet opens it to the
                offer of a notebook rather than to nothing. -->
           <!-- No "Study Notes" entry here. It ran setViewMode("notes") — byte for
@@ -622,7 +622,7 @@
       <section class="study-layout" aria-label="Flashcard study area">
         <section class="quiz-panel is-deck-empty" aria-label="Flashcard quiz">
           <!-- ONE control row for the whole notes view. The Cards/Notes/
-               Document tabs, plus the three notes controls that used to sit in
+               PDF tabs, plus the three notes controls that used to sit in
                a second row of their own inside .notes-stage: the table of
                contents, the ✎|👁 edit pill and the ⋯ menu. Those are moved in
                here at boot by initNotesHeadControls, so their handlers (wired by
@@ -644,9 +644,9 @@
               <!-- Only a deck with meta.pdf ever shows this (see
                    refreshDocumentTab) — it is not a third empty tab on every
                    deck in the library, it is the surface a PDF deck opens on. -->
-              <button type="button" data-view-mode="document" hidden><span class="vm-ico" aria-hidden="true">&#128196;</span><span class="vm-label">Document</span></button>
+              <button type="button" data-view-mode="document" hidden><span class="vm-ico" aria-hidden="true">&#128196;</span><span class="vm-label">PDF</span></button>
               <!-- Handwritten notes. Shown on every open deck, exactly as the
-                   Document tab is and for the same reason: a surface you have to
+                   PDF tab is and for the same reason: a surface you have to
                    be told exists is a surface most people never find. It used to
                    be a full-page overlay opened from the ☰ drawer, which is the
                    one place in this app that is supposed to hold what is true of
@@ -955,7 +955,7 @@
                    and it is also the only way a mouse can draw, because a mouse
                    has no other way of saying which it meant. -->
               <button class="tool-button document-toggle" id="documentInkBtn" type="button" aria-pressed="false" title="Pen — write on the page with a stylus. The pen always draws and a finger always scrolls; this opens the colours, the nib and the eraser (and lets a mouse draw)." aria-label="Pen">&#9998;</button>
-              <button class="tool-button document-more-btn" id="documentMoreBtn" type="button" aria-haspopup="true" aria-expanded="false" aria-label="Document options" title="Document options">&#8943;</button>
+              <button class="tool-button document-more-btn" id="documentMoreBtn" type="button" aria-haspopup="true" aria-expanded="false" aria-label="PDF options" title="PDF options">&#8943;</button>
               <div class="document-more-menu" id="documentMoreMenu" role="menu" hidden>
                 <!-- "Save a copy" is not here any more. It downloads the
                      original PDF, which is an EXPORT, and the ⇓ two buttons
@@ -977,13 +977,13 @@
                      repainted through a live querySelector, and the re-attach
                      row is a <label> whose input is bound by id at boot. A
                      rebuild would quietly break both. -->
-                <div class="md-menu-head" data-slot="doc"><span>Document</span></div>
+                <div class="md-menu-head" data-slot="doc"><span>PDF</span></div>
                 <div class="md-menu-head" data-slot="notebook"><span>Handwritten pages</span></div>
                 <button class="md-menu-item" type="button" data-slot="notebook" data-document-action="hw-paper-grid" title="Squared paper — 5mm, with a heavier line every 2cm"><span>Grid paper</span><span class="nhm-state" aria-hidden="true"><span class="nhm-switch"></span></span></button>
                 <button class="md-menu-item" type="button" data-slot="notebook" data-document-action="hw-paper-ruled" title="Ruled paper, with a margin"><span>Ruled paper</span><span class="nhm-state" aria-hidden="true"><span class="nhm-switch"></span></span></button>
                 <button class="md-menu-item" type="button" data-slot="notebook" data-document-action="hw-paper-blank" title="Plain paper, nothing printed on it"><span>Blank paper</span><span class="nhm-state" aria-hidden="true"><span class="nhm-switch"></span></span></button>
                 <button class="md-menu-item is-danger" type="button" data-slot="notebook" data-document-action="hw-tear-out" title="Tear out the page you are looking at — everything written on it goes with it"><span>Tear out this page<span class="nhm-hint">Everything written on it goes too</span></span></button>
-                <button class="md-menu-item" type="button" data-document-action="page-notes" title="Print every highlight's note under the page it is on, numbered — the Document surface's answer to the notes view's own inline notes"><span>Notes on the page<span class="nhm-hint">Print each highlight's note under its page</span></span><span class="nhm-state" aria-hidden="true"><span class="nhm-switch"></span></span></button>
+                <button class="md-menu-item" type="button" data-document-action="page-notes" title="Print every highlight's note under the page it is on, numbered — the PDF tab's answer to the notes view's own inline notes"><span>Notes on the page<span class="nhm-hint">Print each highlight's note under its page</span></span><span class="nhm-state" aria-hidden="true"><span class="nhm-switch"></span></span></button>
                 <button class="md-menu-item" type="button" data-slot="doc" data-document-action="offload" title="Delete the cloud copy to free space — highlights, notes and cards all stay"><span>Remove from cloud</span></button>
                 <label class="md-menu-item file-pick" data-slot="doc" data-document-action="reattach" title="Point this deck back at the PDF on this device">
                   <input id="documentReattachInput" type="file" accept=".pdf,application/pdf" hidden>
@@ -1103,7 +1103,7 @@
                  the type on its pages (src/documents/pdf-toc.js), which is why
                  the empty message below is now the case where even that found
                  nothing. -->
-            <nav class="notes-toc-drawer document-toc-drawer" id="documentOutlineDrawer" hidden aria-label="Document contents">
+            <nav class="notes-toc-drawer document-toc-drawer" id="documentOutlineDrawer" hidden aria-label="PDF contents">
               <div class="notes-toc-head">
                 <span class="notes-toc-title">Contents</span>
                 <button class="notes-toc-fold-all" id="documentTocFoldAllBtn" type="button" title="Expand all sections" aria-label="Expand all sections" hidden>&#8862;</button>
@@ -1406,7 +1406,7 @@
           </div>
           <button class="reading-rail-btn" type="button" data-rail-group="Views" data-view-mode="cards" title="Cards" aria-label="Cards"><span class="rr-ico" aria-hidden="true">&#9634;</span><span class="rr-label">Cards</span></button>
           <button class="reading-rail-btn" type="button" data-rail-group="Views" data-view-mode="notes" title="Notes" aria-label="Notes"><span class="rr-ico" aria-hidden="true">&#128221;</span><span class="rr-label">Notes</span></button>
-          <button class="reading-rail-btn" type="button" data-rail-group="Views" data-view-mode="document" hidden title="Document" aria-label="Document"><span class="rr-ico" aria-hidden="true">&#128196;</span><span class="rr-label">Document</span></button>
+          <button class="reading-rail-btn" type="button" data-rail-group="Views" data-view-mode="document" hidden title="PDF" aria-label="PDF"><span class="rr-ico" aria-hidden="true">&#128196;</span><span class="rr-label">PDF</span></button>
           <button class="reading-rail-btn" type="button" data-rail-group="Views" data-view-mode="handwriting" hidden title="Handwritten notes" aria-label="Handwritten notes"><span class="rr-ico" aria-hidden="true">&#9998;</span><span class="rr-label">Write</span></button>
           <!-- ── What you can do to what is on screen ───────────────────-->
           <button class="reading-rail-btn" type="button" data-rail-group="This page" data-rail-action="contents" title="Contents" aria-label="Contents"><span class="rr-ico" aria-hidden="true">&#9776;</span><span class="rr-label">Contents</span></button>
@@ -1599,7 +1599,7 @@
     <!-- The Handwritten Notes panel used to be a full-surface overlay here,
          holding #documentStage while it was open. It is the Write tab now
          (data-view-mode="handwriting"), which is the same stage in the same box
-         the Document tab uses, showing the deck's other document. Nothing moves,
+         the PDF tab uses, showing the deck's other document. Nothing moves,
          so nothing has to be moved back — and the ink canvases keep the
          compositing they were drawn on, which the overlay took away from them.
          Its controls are the Document surface's own, over the page: a group on
@@ -1780,7 +1780,7 @@
                     <input id="myDecksImportEpubInput" type="file" accept=".epub,application/epub+zip" hidden>
                     <span>Import EPUB</span>
                   </label>
-                  <!-- One deck per paper, opening on its Document tab. Nothing
+                  <!-- One deck per paper, opening on its PDF tab. Nothing
                        is extracted: the PDF stays the document and the deck's
                        Notes tab is yours to write in. -->
                   <label class="md-menu-item file-pick" id="myDecksImportPdfBtn" data-md-icon="book" title="Import a PDF as a deck you read, highlight and make cards from — the file itself, laid out as its author left it">
@@ -1935,9 +1935,9 @@
           </section>
 
           <section class="help-section">
-            <h3 class="help-section-title">Documents 📄 — read the PDF, not a translation of it</h3>
-            <p>Drop a <code>.pdf</code> into <strong>Import</strong> (or <strong>My Decks → ⋯ → Import PDF</strong>) and you get one deck per paper, opening on a third tab: <strong>Document</strong>, beside Notes and Cards. The page is the PDF itself, laid out exactly as its author left it — two columns, display maths, figures and all. Nothing is extracted and nothing is re-rendered to images, so nothing is lost on the way in.</p>
-            <p><strong>Already have the deck, and the paper turned up later?</strong> Open it and press its <strong>📄 Document</strong> tab. Every deck has one; on a deck with no paper it opens to <strong>Attach a PDF to read it here</strong>, and the file you pick becomes that deck's document — with any highlights already in it imported, exactly as an import would — while the deck's title, cards and notes are left as they are. (The side menu used to carry <strong>📄 Attach a PDF…</strong> as well; it did the identical thing, and the tab is the place you are already standing when you want it.) A deck that already <em>has</em> a document uses <strong>Document ⋯ → Re-attach the PDF…</strong> instead, which checks the file really is the same one first, because a highlight is a position in one exact file.</p>
+            <h3 class="help-section-title">PDFs 📄 — read the paper, not a translation of it</h3>
+            <p>Drop a <code>.pdf</code> into <strong>Import</strong> (or <strong>My Decks → ⋯ → Import PDF</strong>) and you get one deck per paper, opening on a third tab: <strong>PDF</strong>, beside Notes and Cards. The page is the PDF itself, laid out exactly as its author left it — two columns, display maths, figures and all. Nothing is extracted and nothing is re-rendered to images, so nothing is lost on the way in.</p>
+            <p><strong>Already have the deck, and the paper turned up later?</strong> Open it and press its <strong>📄 PDF</strong> tab. Every deck has one; on a deck with no paper it opens to <strong>Attach a PDF to read it here</strong>, and the file you pick becomes that deck's document — with any highlights already in it imported, exactly as an import would — while the deck's title, cards and notes are left as they are. (The side menu used to carry <strong>📄 Attach a PDF…</strong> as well; it did the identical thing, and the tab is the place you are already standing when you want it.) A deck that already <em>has</em> a document uses <strong>PDF ⋯ → Re-attach the PDF…</strong> instead, which checks the file really is the same one first, because a highlight is a position in one exact file.</p>
             <ul class="help-list">
               <li><strong>Select text on the page → the same selection bar you already know</strong> — <strong>Highlight</strong> in any of the four colours, <strong>Add note</strong>, or <strong>+ Make card</strong>. The card remembers the page and the exact passage, so "Go to notes" on that card brings you back to it. On a phone the press-and-slide is the app's own, the same one your notes use: it starts the moment you feel it rather than a second or two later, and the two grips stay on the words they mark however the page moves</li>
               <li><strong>Highlights already in the file are imported</strong> — a paper you have been annotating in Zotero, Preview or Okular arrives with those highlights in place, and any comment on one becomes a note on it</li>
@@ -1961,7 +1961,7 @@
             <ul class="help-list">
               <li><strong>Write straight onto a paper</strong> — open a PDF and draw. Strokes are stored as coordinates <em>into the page</em>, the same way a highlight is, so they stay on the words you drew them beside through every zoom, refit, rotation, reload and second device. Pressure varies the line, so a downstroke looks like a downstroke</li>
               <li><strong>A tap still taps</strong> — press a numbered note badge, a highlight or a button with the pen and it does what it always did. Only a stroke is ink</li>
-              <li><strong>Press ✎ beside the Cards / Notes / Document tabs</strong> for the rest of it: five pen colours, four nibs, an eraser and a lasso, with undo, redo and <strong>⌧ Clear the page</strong>. The colours are defined per theme, so a drawing made in daylight is still legible in a dark one, and your red pen stays red on an inverted page. <strong>Ctrl/⌘+Z</strong> takes back a stroke without reaching for the rail</li>
+              <li><strong>Press ✎ beside the Cards / Notes / PDF tabs</strong> for the rest of it: five pen colours, four nibs, an eraser and a lasso, with undo, redo and <strong>⌧ Clear the page</strong>. The colours are defined per theme, so a drawing made in daylight is still legible in a dark one, and your red pen stays red on an inverted page. <strong>Ctrl/⌘+Z</strong> takes back a stroke without reaching for the rail</li>
               <li><strong>Erase without changing tool</strong> — the eraser end of a stylus, or its side button, erases for as long as you hold it. Crossing a stroke removes that stroke, not a hole in it</li>
               <li><strong>Hold still and a shape snaps</strong> — pause at the end of a stroke and a rough circle becomes a circle, a rough box a box, a line a line, and a line with a hook on the end an arrow. It refuses far more often than it accepts, and it will not touch anything the size of handwriting: turning your writing into a shape would be much worse than not offering. <strong>Keep writing and it takes the offer back</strong> — a pause in the middle of a word is you thinking, not you drawing a line, so the stroke carries on from where the nib actually is. <strong>&#9651;</strong> on the pen's panel turns it off entirely, which is what a page of fraction bars, radicals and long-division rules wants: every one of those is a held straight line</li>
               <li><strong>Lasso to fix, move or remove</strong> — circle some strokes to drag them, resize them from the corner, or delete them</li>
@@ -1969,7 +1969,7 @@
               <li><strong>It syncs and it backs up</strong> — ink merges between two devices the way your highlights and cards do, ink you delete stays deleted, and <strong>⋯ → Export → This paper, annotated</strong> prints the pages with your handwriting on them</li>
               <li><strong>Write in a note, or on a card</strong> — press <strong>✎</strong> in the editing toolbar and a drawing sheet opens. It is a real page rather than one screenful: it scrolls, <strong>+▢</strong> adds another page below, and Done drops one picture per page you drew on into the note where the caret was — each a block that reflows with the text, with the same corner grip to resize it and the same 🗑 to remove it. Press a drawing's own <strong>✎</strong> later to reopen it and add to it. It works with a finger and a mouse too, so a tablet without a stylus is not shut out</li>
               <li><strong>No connection needed</strong> — a drawing made offline is kept on the device and uploads itself when you are back, exactly as a pasted picture does</li>
-              <li><strong>A whole notebook</strong> &mdash; the <strong>&#9998; Write</strong> tab, beside Cards, Notes and Document, on every deck you open. Any deck can have one, <em>including a deck that already has a PDF</em>: the paper you are reading and the pages you are writing on are two different documents on the same deck, so nothing you write lands on somebody else's page. The paper is a <strong>real PDF</strong>, so writing on it is exactly writing on a paper &mdash; the same pen, the same strokes stored as coordinates into the page, the same zoom, the same export. <strong>The pen's panel is already open</strong> when you arrive, in the corner of the page: eight colours, four nib widths, the eraser, the <strong>lasso</strong> and undo. The eraser has a size of its own and two ways of working &mdash; cross a mark and all of it goes, or press <strong>&#9021;</strong> and it rubs out only what you pass over, so one letter in the middle of a line written without lifting is one letter. <strong>&#9651;</strong> turns off the shape snapping, for a page of fraction bars and radicals that are all meant to stay hand-drawn. Circle some writing with the lasso and you get a box round it &mdash; drag inside to move it, the bottom-right corner to resize, the round top-left one to <strong>turn</strong> it, and the arrow keys to nudge it a point at a time (hold Shift for ten). <strong>A press on a colour or a nib restyles what you have circled</strong> rather than only the next stroke. From the same panel: join, split, duplicate, copy, cut, paste and delete &mdash; and what you copy can be pasted onto <em>any</em> page, which is how a piece of working moves from the bottom of one page to the top of the next (Ctrl+C, Ctrl+X, Ctrl+V and Ctrl+D do the same). The same panel adds things to the page: <strong>&#43;&#9998;</strong> a markdown text block, <strong>&#43;&#128247;</strong> a picture (or just paste or drop one), <strong>&#43;&#9647;</strong> another page. Text blocks and pictures drag by their bar and resize by their corner. Under <strong>&#8943;</strong> are the two you reach for less often: grid, ruled or blank paper &mdash; which changes the sheet under what you have already written &mdash; and tearing out the page you are on, which moves everything after it up. The page follows your theme, dark paper on a dark theme, and so does your ink, so nothing you have written can disappear when you change it</li>
+              <li><strong>A whole notebook</strong> &mdash; the <strong>&#9998; Write</strong> tab, beside Cards, Notes and PDF, on every deck you open. Any deck can have one, <em>including a deck that already has a PDF</em>: the paper you are reading and the pages you are writing on are two different documents on the same deck, so nothing you write lands on somebody else's page. The paper is a <strong>real PDF</strong>, so writing on it is exactly writing on a paper &mdash; the same pen, the same strokes stored as coordinates into the page, the same zoom, the same export. <strong>The pen's panel is already open</strong> when you arrive, in the corner of the page: eight colours, four nib widths, the eraser, the <strong>lasso</strong> and undo. The eraser has a size of its own and two ways of working &mdash; cross a mark and all of it goes, or press <strong>&#9021;</strong> and it rubs out only what you pass over, so one letter in the middle of a line written without lifting is one letter. <strong>&#9651;</strong> turns off the shape snapping, for a page of fraction bars and radicals that are all meant to stay hand-drawn. Circle some writing with the lasso and you get a box round it &mdash; drag inside to move it, the bottom-right corner to resize, the round top-left one to <strong>turn</strong> it, and the arrow keys to nudge it a point at a time (hold Shift for ten). <strong>A press on a colour or a nib restyles what you have circled</strong> rather than only the next stroke. From the same panel: join, split, duplicate, copy, cut, paste and delete &mdash; and what you copy can be pasted onto <em>any</em> page, which is how a piece of working moves from the bottom of one page to the top of the next (Ctrl+C, Ctrl+X, Ctrl+V and Ctrl+D do the same). The same panel adds things to the page: <strong>&#43;&#9998;</strong> a markdown text block, <strong>&#43;&#128247;</strong> a picture (or just paste or drop one), <strong>&#43;&#9647;</strong> another page. Text blocks and pictures drag by their bar and resize by their corner. Under <strong>&#8943;</strong> are the two you reach for less often: grid, ruled or blank paper &mdash; which changes the sheet under what you have already written &mdash; and tearing out the page you are on, which moves everything after it up. The page follows your theme, dark paper on a dark theme, and so does your ink, so nothing you have written can disappear when you change it</li>
               <li><strong>Type on the page too</strong> — <strong>+ Text</strong> drops a markdown block where you are looking, which you drag by its bar, resize from its corner and write in: the statement of a problem above a derivation in your own hand. Blocks work on <em>any</em> paper, not only a notebook's — a typed note over a figure in somebody's preprint is the same thing. They are positioned in the page's own points like a highlight, so they stay put through a zoom, a reload and a second device</li>
               <li><strong>On a laptop</strong> the pen rail is also how a mouse draws: a mouse has no way of saying whether a drag means ink or a selection, so it only inks while the rail is open</li>
             </ul>
@@ -2091,7 +2091,7 @@
             <ul class="help-list">
               <li><strong>Sync is automatic</strong> — every deck is mirrored to your account in the background; <strong>Sync Now</strong> forces an immediate two-way reconcile (newest copy of each deck wins). <strong>Auto-sync</strong>, under <strong>App</strong> in the same menu, is how often that happens on its own</li>
               <li><strong>My Decks</strong> — every deck, on this device and in the cloud, with a live sync-status column. Per deck: <strong>Load</strong>, <strong>Export</strong> (PDF / Markdown / JSON / SQL), <strong>Rename</strong>, <strong>Delete</strong>, and an inline <strong>category editor</strong>. Filter by category, select several decks for <strong>bulk Load / Categorize / Export / Delete</strong>, or <strong>Export All</strong> to back up the whole library. Deletes propagate to your other devices</li>
-              <li><strong>Exporting the deck you have open</strong> is not in this menu — it is the <strong>⇓</strong> beside the Cards / Notes / Document tabs, which always offers the formats for the tab you are on: the cards as Cornell PDF, Markdown, JSON or SQL; the notes as PDF, HTML, Word or Markdown; a paper as its annotated pages, all its pages, the notes alone or the original file. <strong>Highlights…</strong> sits at the bottom of that menu on Notes and Document</li>
+              <li><strong>Exporting the deck you have open</strong> is not in this menu — it is the <strong>⇓</strong> beside the Cards / Notes / PDF tabs, which always offers the formats for the tab you are on: the cards as Cornell PDF, Markdown, JSON or SQL; the notes as PDF, HTML, Word or Markdown; a paper as its annotated pages, all its pages, the notes alone or the original file. <strong>Highlights…</strong> sits at the bottom of that menu on Notes and PDF</li>
             </ul>
             <p>Every cloud action gives you instant feedback: a toast slides in at the top of the screen confirming it worked — for example <span class="help-toast-chip"><span class="help-toast-chip-icon">✓</span> Deck deleted everywhere</span> or <span class="help-toast-chip help-toast-chip-err"><span class="help-toast-chip-icon">✕</span> Sync failed</span> — so you never have to wonder whether your sync, load, or delete went through. Click a toast to dismiss it early.</p>
           </section>

@@ -142,7 +142,7 @@ export async function loadFiles(fileList, folderPath = null) {
     return;
   }
 
-  // A PDF becomes a deck outright — one per file, opening on its Document tab —
+  // A PDF becomes a deck outright — one per file, opening on its PDF tab —
   // so like an EPUB it has nothing to say in the review step (there is no
   // "notes or cards?" question to answer about a paper). Several at once is a
   // deck each, which is what picking five papers means.

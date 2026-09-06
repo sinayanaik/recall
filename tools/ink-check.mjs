@@ -422,7 +422,7 @@ try {
     if (!Array.isArray(meta.pages)) return "the plan mutated the meta it was given";
     // ...and it lands in the notebook slot, not the document slot. A migration
     // that wrote meta.pdf would be handing a deck's generated pages to the
-    // Document tab — and, on a deck that already had a paper, over the top of it.
+    // PDF tab — and, on a deck that already had a paper, over the top of it.
     if (!next.notebook) return "the migrated paper did not land in the notebook slot";
     if (next.pdf) return "the migration wrote the deck's document slot";
     // Every record it produced says which paper it is a coordinate into; the

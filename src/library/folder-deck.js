@@ -252,7 +252,7 @@ export async function openDecksAsOneDeck(entries, { title, path = null, key, lan
   // Emptied, not carried: the meta bag belongs to a DECK — its PDF, its reading
   // position, its quick-note categories — and this is not one. A bag left over
   // from the deck that was open before would put that deck's paper on this
-  // document's Document tab (refreshDocumentTab reads state.meta.pdf) and be
+  // document's PDF tab (refreshDocumentTab reads state.meta.pdf) and be
   // written into every member on the first save.
   state.meta = {};
   state.current = 0;

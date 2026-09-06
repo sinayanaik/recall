@@ -252,7 +252,7 @@ export function isDocumentViewActive() {
 
 // ── Documents kept alive across a tab switch ───────────────────────────────
 //
-// A deck has two papers and one stage: the Document tab and the Write tab are
+// A deck has two papers and one stage: the PDF tab and the Write tab are
 // the same #documentView showing different files (src/documents/doc-slot.js).
 // Which meant switching between them was always a real reopen — tear the
 // surface down, destroy the parsed document, read the blob back out of
@@ -340,6 +340,32 @@ function parkOpenDocument() {
   if (!openPdf?.doc) return false;
   const key = documentParkKey(openPdf.slot);
   releaseParked(key);
+  // ── Read the position BEFORE the pages leave the tree ────────────────────
+  //
+  // Both of these are geometry and nothing else: currentDocumentPage compares
+  // every page's offsetTop against the scroller's scrollTop, and
+  // currentDocumentRatio measures into the page that answer names. A DETACHED
+  // subtree reports 0 for every offsetTop and every offsetHeight, and the
+  // emptied scroller clamps its own scrollTop to 0 — so no page satisfied
+  // `bottoms[mid] > top + 4`, the binary search found nothing, and the answer
+  // fell through to its `answer = count` initialiser.
+  //
+  // Which is to say: every park recorded the LAST page of the document,
+  // whatever the reader was looking at, and every switch back scrolled them to
+  // the end of the paper. Three lines further down was one line too late.
+  //
+  // (The other shape it takes is page 1, and it is the same bug: the geometry
+  // table is memoised for a frame, so a park within 16ms of the last reading
+  // gets a table that is still CORRECT paired with a scrollTop that is now 0 —
+  // and the first page whose bottom is past 0 is page 1. Whichever of the two
+  // came out, the position recorded was never the one the reader was at.)
+  //
+  // It did not stop there either. The restore lands at the end, the scroll
+  // listener in src/main.js calls scheduleDocumentPositionSave, and that writes
+  // the end of the paper into meta.readingPosition — the position that resumes
+  // the deck on a cold open and travels to the reader's other devices.
+  const page = currentDocumentPage();
+  const ratio = currentDocumentRatio();
   const host = el.documentView?.querySelector(":scope > .pdf-pages") || null;
   host?.remove();
   parkedDocuments.set(key, {
@@ -354,8 +380,8 @@ function parkOpenDocument() {
     scale: openPdf.scale,
     fitWidth: openPdf.fitWidth,
     fitScale: openPdf.fitScale,
-    page: currentDocumentPage(),
-    ratio: currentDocumentRatio()
+    page,
+    ratio
   });
   return true;
 }
@@ -473,14 +499,14 @@ function renderMissingDocumentPrompt(pdfMeta) {
 // at the deck they want the paper beside, and the answer is in a drawer behind a
 // hamburger, under "Decks", between Import and Sync Now.
 //
-// So the Document tab is now on every open deck (see refreshDocumentTab) and
+// So the PDF tab is now on every open deck (see refreshDocumentTab) and
 // this is what it opens to when there is nothing to read yet. Same panel, same
 // picker, and it hands the file to attachPdfToOpenDeck — the identical function
 // the drawer row calls, so the two routes cannot drift.
 function renderAttachDocumentPrompt() {
   renderDocumentPickPrompt({
     heading: "Attach a PDF to read it here",
-    body: "This deck has no document yet. Pick a PDF and it becomes this deck's Document tab — read it, highlight it and make cards from it, with any highlights already in the file imported along with it.",
+    body: "This deck has no document yet. Pick a PDF and it becomes this deck's PDF tab — read it, highlight it and make cards from it, with any highlights already in the file imported along with it.",
     pick: "Choose a PDF…",
     note: "Your cards, notes and title are left exactly as they are — this adds a document to the deck, it does not import over it.",
     onFile: (file) => onAttachDocument(file)
@@ -489,7 +515,7 @@ function renderAttachDocumentPrompt() {
 
 // ── ...and the deck with no notebook yet ────────────────────────────────────
 //
-// The Write tab is on every open deck, the same way the Document tab is and for
+// The Write tab is on every open deck, the same way the PDF tab is and for
 // the same reason: a surface you have to be told exists is a surface most people
 // never find. There is no state of a notebook that is not a page, so the offer is
 // a single press rather than a picker — the first page is made when it is asked
@@ -564,7 +590,7 @@ export function openDocumentSlot() {
 // Open the PDF for the deck in `state` into #documentView.
 //
 // Idempotent for the deck already on screen — setViewMode calls this on every
-// switch into the Document tab, and re-parsing a 40MB paper because someone
+// switch into the PDF tab, and re-parsing a 40MB paper because someone
 // looked at their cards is not a thing to do. `force` is for the two cases where
 // the bytes themselves changed underneath us (a re-attach, a fresh import).
 export async function openDocumentView(options = {}) {
@@ -598,7 +624,7 @@ async function openDocumentViewBody({ force = false, slot = null } = {}) {
   drainParkedDocuments(currentDeckKey());
   // ── A deck with no document opens to the offer of one ────────────────────
   //
-  // This used to `return false` here, because the Document tab did not exist
+  // This used to `return false` here, because the PDF tab did not exist
   // without meta.pdf so nothing could reach this line — and that is precisely
   // what left "attach a PDF to the deck I am looking at" with no home except a
   // row in the ☰ drawer. The tab is on every open deck now (refreshDocumentTab)
@@ -623,7 +649,7 @@ async function openDocumentViewBody({ force = false, slot = null } = {}) {
   // The slot is part of the key, not beside it. Two documents on one deck are
   // two different files in the same surface, so "is this already open?" has to
   // mean "is THIS one already open?" — without the slot, switching between the
-  // Document tab and the Write tab would be a no-op that left the reader
+  // PDF tab and the Write tab would be a no-op that left the reader
   // looking at the other paper.
   const deckKey = documentOpenKey(openSlot);
   if (!force && openPdf && openPdf.deckKey === deckKey) {
@@ -773,14 +799,14 @@ async function openDocumentViewBody({ force = false, slot = null } = {}) {
   openPdf = {
     // Re-read HERE, not the `deckKey` captured before the first await.
     //
-    // A PDF deck opens on its Document tab, and the loader that does it
+    // A PDF deck opens on its PDF tab, and the loader that does it
     // (src/storage/deck-snapshot.js) sets `state.localDeckId = null` and then
     // calls setViewMode("document") synchronously, which lands here — while the
     // library loader sets the real local id only once the snapshot has been
     // applied. So the key captured up there is the key of a deck with no local
     // id, and it never matches currentDeckKey() again. What that cost was the
     // idempotence this whole function is built around: every later switch into
-    // the Document tab saw a mismatch, tore the document down and re-parsed the
+    // the PDF tab saw a mismatch, tore the document down and re-parsed the
     // file. On a 40MB paper on a phone that is seconds of worker time, and one
     // more trip through every path this fix is about, each time the reader
     // glances at their cards.
@@ -863,11 +889,22 @@ function finishDocumentOpen(view, token, openSlot, at, { restored = false, refit
   // an outline can need a fetch per entry on a long book.
   buildDocumentOutline(openPdf.doc).catch((error) => console.warn("Could not read the PDF outline", error));
 
-  if (at && Number.isFinite(at.page)) scrollToDocumentPage(at.page, at.ratio || 0, { smooth: false });
-  else {
-    const resume = state.meta?.readingPosition;
-    if (Number.isFinite(resume?.pdfPage)) scrollToDocumentPage(resume.pdfPage, resume.ratio || 0, { smooth: false });
-  }
+  // ── Where to land, and when it is safe to say so ─────────────────────────
+  //
+  // Hoisted into a function because a refit RE-SIZES every page, and a scroll
+  // offset is only meaningful at the size the pages had when it was set. Run
+  // before the relayout below, this landed the reader correctly and was then
+  // carried somewhere else by the resize — which is why relayoutDocument takes
+  // an `afterLayout` at all (see the note between its two passes, and
+  // setDocumentScale, which uses it for the identical reason on a zoom).
+  const landOnReadingPosition = () => {
+    if (at && Number.isFinite(at.page)) scrollToDocumentPage(at.page, at.ratio || 0, { smooth: false });
+    else {
+      const resume = state.meta?.readingPosition;
+      if (Number.isFinite(resume?.pdfPage)) scrollToDocumentPage(resume.pdfPage, resume.ratio || 0, { smooth: false });
+    }
+  };
+  if (!refit) landOnReadingPosition();
   // ── What a restored page still has to be told ────────────────────────────
   //
   // The canvas is the same picture of the same page and needs nothing. What sits
@@ -885,7 +922,11 @@ function finishDocumentOpen(view, token, openSlot, at, { restored = false, refit
   // dropping to a placeholder (stalePageForRelayout). Only when the fit has
   // actually moved; the common case is that nothing changed and the pages are
   // simply back.
-  if (refit) relayoutDocument({ refit: true });
+  // ...and on a refit it runs BETWEEN the relayout's two passes: the pages have
+  // their new heights by then, and the second pass decides which of them to
+  // render from the scroll offsets this sets — so the reader lands on their page
+  // AND that page is the one rasterised, rather than the one they were leaving.
+  if (refit) relayoutDocument({ refit: true, afterLayout: landOnReadingPosition });
   // Ask for the pages outright rather than waiting to be told about them. The
   // IntersectionObserver above will usually get there first and this will find
   // every page already asked for — but "usually" is what this whole bug was:
@@ -919,7 +960,7 @@ function finishDocumentOpen(view, token, openSlot, at, { restored = false, refit
 // whose real errors stop being read. src/handwriting/paper.js defers its own
 // observer for exactly this reason and says so at length.
 //
-// It went unnoticed while the Document tab was the only thing on this stage: the
+// It went unnoticed while the PDF tab was the only thing on this stage: the
 // scroller's width changed on an open and then stayed put. It is a fourth tab
 // and a second document later, and switching between two papers changes the
 // controls in the row above the scroller, which changes the scroller.
@@ -2011,6 +2052,20 @@ let lastPageAt = 0;
 export function currentDocumentPage() {
   const view = el.documentView;
   if (!view || !openPdf) return 1;
+  // ── Geometry read off a subtree that is not in the document is not geometry ─
+  //
+  // Every offsetTop and offsetHeight below reads 0 on a detached page, which
+  // does not make the scan fail — it makes it answer "the last page" with total
+  // confidence, because that is what `answer = count` falls through to when no
+  // page's bottom is past the top of the viewport. parkOpenDocument asked this
+  // question one line after detaching the pages and got exactly that, on every
+  // switch between the two tabs; the fix there is to ask first, and this is the
+  // net under the next caller who does not know they have to.
+  //
+  // isConnected forces no layout, and page 1 is enough: the pages are one
+  // subtree, so either the box is in the document or none of them are.
+  const first = openPdf.pages.get(1);
+  if (first && !first.el.isConnected) return lastPageAnswer || 1;
   // scrollTop alone, and deliberately: it is a scroll offset rather than a
   // geometric one, so reading it forces nothing. An earlier version of this memo
   // keyed on scrollHeight as well, to notice a relayout — and that read forced
