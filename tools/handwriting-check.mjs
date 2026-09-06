@@ -1201,6 +1201,15 @@ try {
     const paperCanvases = [...document.querySelectorAll("#documentView .pdf-canvas")];
     paperCanvases.forEach((c, i) => { c.dataset.wasHere = String(i); });
     const paperCanvasCount = paperCanvases.length;
+    // ── ...and WHERE on the paper the reader was ─────────────────────────
+    //
+    // "when I'm switching from write to document I'm always being taken to the
+    // very end of document pdf". Page 2 of 3, so neither the first page (which a
+    // scroll that was simply lost also lands on) nor the last (which is the
+    // answer the bug gave) can pass by accident.
+    api.scrollToDocumentPage(2, 0, { smooth: false });
+    await settle(300);
+    const pageBeforeSwitch = api.currentDocumentPage();
     api.setViewMode("handwriting");
     for (let i = 0; i < 80 && api.currentPdfPageCount() !== 1; i += 1) await settle(100);
     await settle(400);
@@ -1240,6 +1249,11 @@ try {
     // ...and the ink is still on it, which is what says the pages that came back
     // are the document rather than a fresh set of empty placeholders.
     const switchedMarks = inkHere();
+    // Where the switch actually put them. parkOpenDocument used to read this
+    // AFTER detaching the pages, and a detached subtree reports 0 for every
+    // offsetTop — so the page scan found nothing past the top of the viewport
+    // and fell through to its "the last page" floor, on every single park.
+    const pageAfterSwitch = api.currentDocumentPage();
     // Left on the Write tab, which is where this section found the app and where
     // everything after it expects to be: the slot decides which paper a block or
     // a stroke is stamped for (src/documents/doc-slot.js), so a case that walks
@@ -1278,6 +1292,7 @@ try {
       hasPdf: Boolean(api.state.meta.pdf), hasNotebook: Boolean(api.state.meta.notebook),
       backOnPaper, backOnNotebook, paperCanvasCount,
       switched, switchedMarks, undoOnNotebook, undoAfterRoundTrip,
+      pageBeforeSwitch, pageAfterSwitch,
       stampBefore, stampAfter, stampIdle,
       errs: window.__errs.slice(0, 4)
     };
@@ -2054,6 +2069,22 @@ try {
     `${both.switched.sameCanvases} of ${both.paperCanvasCount} canvas(es) are the ones that were there before, `
       + `out of ${both.switched.canvases} on screen in the same tick — a fresh set is a re-render, `
       + `and none at all is the blink itself`);
+  // ── ...and lands on the page the reader left ──────────────────────────
+  //
+  // The report: "when I'm switching from write to document I'm always being
+  // taken to the very end of document pdf". A park records a PAGE and a ratio
+  // rather than a scrollTop, and it used to record them one line after
+  // detaching the pages — at which point every offsetTop and every offsetHeight
+  // reads 0, the scroller clamps its own scrollTop to 0, no page's bottom is
+  // past the top of the viewport, and currentDocumentPage falls through to the
+  // `answer = count` it starts with. Every park recorded the LAST page.
+  //
+  // The `!== paperPages` half is the assertion that failed: it is the exact
+  // shape of the bug, and a check that only compared the two numbers would pass
+  // on a paper the reader happened to leave on its final page.
+  check("...and on the page the reader left, rather than the end of the paper",
+    both.pageAfterSwitch === both.pageBeforeSwitch && both.pageAfterSwitch !== both.paperPages,
+    `left page ${both.pageBeforeSwitch} of ${both.paperPages}, came back on page ${both.pageAfterSwitch}`);
   check("...and an undo made before the switch still works after it",
     both.undoOnNotebook && both.undoAfterRoundTrip,
     `canUndoInk() was ${both.undoOnNotebook} on the notebook and ${both.undoAfterRoundTrip} after a round trip `

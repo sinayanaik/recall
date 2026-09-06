@@ -222,7 +222,7 @@ export function loadDeckSnapshot(payload, titleHint = "", append = false) {
     // blob URLs are released here rather than held until pagehide.
     revokeLocalImageUrls();
     state.notes = payloadNotes;
-    // A PDF deck opens on its Document tab: the document IS the deck, and
+    // A PDF deck opens on its PDF tab: the document IS the deck, and
     // landing on an empty Notes tab would look like an import that lost the
     // file. A deck whose only document is a notebook it wrote itself opens on
     // Write, by exactly the same argument — its pages are the deck. (A deck

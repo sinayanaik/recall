@@ -37,7 +37,7 @@ import { styleMobileMedia } from "../ui/style-tokens.js?v=__BUILD__";
 // ...and the Document surface's controls, which start life in #documentHead and
 // land in the same two slots. A PDF deck used to carry a full-width
 // `.document-toolbar` of its own UNDER this row — a third stacked bar, captioned
-// "Document" directly beneath a lit tab reading DOCUMENT — while the three notes
+// with the name of the tab already lit directly above it — while the three notes
 // controls above it sat there inert, because a paper has no markdown headings to
 // list and no source to edit. Both halves of that are fixed by putting the
 // document's controls in the row and letting CSS show whichever set belongs to

@@ -1748,7 +1748,7 @@ document.getElementById("myDecksImportPdfBtn")?.addEventListener("click", () => 
 // body is touched — see attachPdfToOpenDeck.
 //
 // There used to be a second picker here, on the ☰ drawer's "📄 Attach a PDF…"
-// row (#attachPdfInput). It is gone with the row: the Document tab is on every
+// row (#attachPdfInput). It is gone with the row: the PDF tab is on every
 // open deck now (refreshDocumentTab), and a deck with no paper opens it to the
 // card below — same function, same crash reporter, on the surface the paper is
 // about to appear on rather than three rows into the app menu.

@@ -782,7 +782,7 @@ export function resetDocumentInk() {
 // ── One engine per paper, so an undo does not stop at the tab ──────────────
 //
 // A deck has two documents and one stage (src/documents/doc-slot.js), and this
-// module held exactly one engine — so every switch between the Document tab and
+// module held exactly one engine — so every switch between the PDF tab and
 // the Write tab destroyed it. createInkEngine's destroy() empties its history
 // and its future along with its hosts, which meant a stroke made on the notebook
 // could not be undone after a glance at the paper beside it: the reader had done

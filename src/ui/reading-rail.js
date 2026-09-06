@@ -54,7 +54,7 @@
 //   • It never becomes a second opinion about where the reader is. setViewMode
 //     paints `is-active` onto the rail's buttons in the same pass it paints the
 //     tabs, and refreshDocumentTab hides the Document icon on a deck with no PDF
-//     in the same pass it hides the Document tab.
+//     in the same pass it hides the PDF tab.
 //
 // ── The right edge, deliberately ───────────────────────────────────────────
 //
@@ -241,7 +241,10 @@ export function refreshReadingRailRows() {
 const VIEW_NAMES = {
   cards: "Cards",
   notes: "Notes",
-  document: "Document",
+  // The key is the view mode and the value is what the reader calls it. They
+  // stopped matching when the tab was renamed to PDF, and that is deliberate:
+  // "document" is the name of #documentStage, which a deck's notebook shares.
+  document: "PDF",
   handwriting: "Handwritten notes"
 };
 

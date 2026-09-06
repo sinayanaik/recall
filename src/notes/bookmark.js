@@ -201,7 +201,7 @@ export function maybePromptBookmarkJump() {
   resumeSettledForKey = currentDeckKey();
   // The other reliable per-deck moment. refreshBookmarkButtonUI's own call site
   // is the notes render (notes-view.js), which a PDF deck opening straight onto
-  // its Document tab never reaches — so without this the way back to a bookmark
+  // its PDF tab never reaches — so without this the way back to a bookmark
   // stayed hidden on exactly the surface that now has no other door to it.
   refreshBookmarkButtonUI();
   const bookmark = state.meta?.bookmark;

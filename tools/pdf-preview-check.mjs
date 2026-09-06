@@ -294,7 +294,7 @@ try {
   if (imported.error) throw new Error(imported.error);
   check("import creates one deck", imported.decks === 1, `${imported.decks} deck(s) · “${imported.title}”`);
   check("the deck carries meta.pdf", Boolean(imported.pdf), imported.pdf ? `${imported.pdf.pages} page(s), sha256 ${String(imported.pdf.sha256).slice(0, 12)}…` : "no meta.pdf");
-  check("the deck opens on its Document tab", imported.viewMode === "document", `viewMode = ${imported.viewMode}`);
+  check("the deck opens on its PDF tab", imported.viewMode === "document", `viewMode = ${imported.viewMode}`);
   if (fixture.pages) {
     check("the page count is read from the file", imported.pdf?.pages === fixture.pages, `${imported.pdf?.pages} vs ${fixture.pages}`);
     check("the title comes from the PDF's own metadata", imported.title === fixture.title, `“${imported.title}”`);
@@ -3443,7 +3443,7 @@ try {
 
   // ── 9b. A phone, an amoled theme, dark page, focus mode ──────────────────
   //
-  // The report this exists for: open a PDF deck's Document tab on an Android
+  // The report this exists for: open a PDF deck's PDF tab on an Android
   // phone and get a full-screen black rectangle where the paper should be, and
   // it never comes back — not by scrolling, not by pinching, not by leaving the
   // tab and coming back.
@@ -3879,7 +3879,7 @@ try {
       plainResult.loaded === true && !plainResult.loadError,
       plainResult.loadError || plainResult.status || "");
     check("...with its meta.pdf intact", plainResult.hasPdfMeta === true, String(plainResult.hasPdfMeta));
-    check("...and its Document tab on screen",
+    check("...and its PDF tab on screen",
       plainResult.viewMode === "document" && plainResult.tabHidden === false,
       `viewMode=${plainResult.viewMode} tabHidden=${plainResult.tabHidden}`);
   }
@@ -4086,7 +4086,7 @@ try {
   // whose notes were written before the file was to hand, had no way in at all.
   //
   // The first answer was a row in the ☰ drawer. The second — "the attach pdf
-  // needs to be inside the panels itself" — was the Document tab on every deck,
+  // needs to be inside the panels itself" — was the PDF tab on every deck,
   // opening to the offer of a paper. Both shipped, and for a while both stood.
   // The drawer row is gone now: it was the app menu carrying something scoped
   // to one open deck, calling the identical function the panel calls, and a
@@ -4110,7 +4110,7 @@ try {
     await api.saveDeckToLibrary({ silent: true });
     // Through the ordinary open path, so the chrome is painted from this deck
     // rather than from whatever the previous case left on screen —
-    // refreshDocumentTab is what hides the Document tab and shows the attach
+    // refreshDocumentTab is what hides the PDF tab and shows the attach
     // row, and it runs from updateMeta, which loading is what triggers.
     await api.loadDeckFromLibrary(api.state.localDeckId);
     await settle(300);
@@ -4121,7 +4121,7 @@ try {
     // ── ...and the panel that offers it ───────────────────────────────────
     //
     // "The attach pdf needs to be inside the panels itself." The drawer row
-    // above is a route you have to be told about; the Document tab is on every
+    // above is a route you have to be told about; the PDF tab is on every
     // deck now, and on one with no paper it opens to the offer of a paper. So:
     // press the tab the way a reader does, and read what is in the panel.
     document.querySelector('#viewModeToggle [data-view-mode="document"]')?.click();
@@ -4173,8 +4173,8 @@ try {
   // deck on screen. It is removed, and this is the case that keeps it removed.
   check("a deck created without a PDF is not offered a drawer row for it",
     attached.drawerRow === false,
-    `drawer row present=${attached.drawerRow}, Document tab hidden=${attached.tabBefore}`);
-  check("...including a Document tab, on a deck that has no document",
+    `drawer row present=${attached.drawerRow}, PDF tab hidden=${attached.tabBefore}`);
+  check("...including a PDF tab, on a deck that has no document",
     attached.tabBefore === false, `tab hidden=${attached.tabBefore}`);
   check("...which opens to the offer of one, inside the panel",
     attached.panelView === "document" && attached.panelPicks && /attach/i.test(attached.panelHeading),
@@ -4182,7 +4182,7 @@ try {
   check("...with no document controls hanging over it",
     attached.inertShown.length === 0 && attached.pagerShown === false,
     attached.inertShown.length ? `still shown: ${attached.inertShown.join(", ")}` : `pager=${attached.pagerShown}`);
-  check("...and attaching one gives that deck a Document tab", attached.ok && attached.tabAfter === false,
+  check("...and attaching one gives that deck a PDF tab", attached.ok && attached.tabAfter === false,
     `attached=${attached.ok}, tab hidden=${attached.tabAfter}, view=${attached.viewMode}`);
   check("...with the file's pages and hash on the deck", attached.pages > 0 && attached.sha === 64,
     `${attached.pages} page(s), sha256 ${attached.sha} chars`);
