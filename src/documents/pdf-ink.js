@@ -101,11 +101,6 @@ import { createInkEngine } from "../render/ink-engine.js?v=__BUILD__";
 export const INK_TAP_MS = 150;
 export const INK_TAP_SLOP = 4;
 
-// On the stage while a stroke is being drawn, so the rail can get out from
-// under the hand drawing it (styles/52-ink.css). Set when the press becomes a
-// stroke rather than when the pen lands — a tap must not make the rail flinch.
-export const INK_ACTIVE_CLASS = "is-inking";
-
 // How long after the last stroke everything else is told about it.
 //
 // The WRITE is never deferred — a record that is not written down is a record
@@ -494,9 +489,7 @@ function onInkPointerMove(event) {
   // Every sample taken while the app was still deciding is real ink and goes in
   // — without them a stroke visibly starts a few pixels after the nib landed.
   press.live = ensureEngine().begin(press.page, press.samples, event);
-  if (!press.live) { cancelInkPress(); return; }
-  // Only now, and not at pointerdown: a TAP must not make the rail flinch.
-  el.documentStage?.classList.add(INK_ACTIVE_CLASS);
+  if (!press.live) cancelInkPress();
 }
 
 function onInkPointerUp(event) {
@@ -523,7 +516,6 @@ function cancelInkPress() {
 }
 
 function releaseInkPress() {
-  el.documentStage?.classList.remove(INK_ACTIVE_CLASS);
   if (press) {
     try { el.documentView?.releasePointerCapture?.(press.pointerId); } catch (_) { /* already gone */ }
   }
