@@ -30,6 +30,7 @@ import { existsSync, mkdtempSync, rmSync, readFileSync, writeFileSync, readdirSy
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { findChrome, launch } from "./browser.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const HOST = "recall.test";
@@ -100,7 +101,6 @@ writeFileSync(serverJs, `
 import http from "node:http";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { findChrome, launch } from "./browser.mjs";
 let root = process.argv[2];
 const TYPES = { ".html":"text/html", ".js":"text/javascript", ".css":"text/css",
                 ".json":"application/json", ".png":"image/png", ".webmanifest":"application/manifest+json" };
@@ -130,7 +130,11 @@ ORIGIN = `http://${HOST}:${PORT}`;
 
 const say = (ok, msg) => { console.log(`  ${ok ? "ok  " : "FAIL"}  ${msg}`); return ok; };
 let failures = 0;
-const check = (ok, msg) => { if (!say(ok, msg)) failures++; };
+// Counted, not just tallied at the end: the number tools/check.mjs reads has to
+// be the number of assertions actually REACHED, so a run that dies after the
+// fourth one prints 4 rather than looking, from outside, like a clean sweep.
+let ran = 0;
+const check = (ok, msg) => { ran++; if (!say(ok, msg)) failures++; };
 
 const browser = await launch({
   headless: "new",
@@ -351,6 +355,11 @@ try {
   await cdp.send("Network.emulateNetworkConditions", { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
 
   console.log(failures ? `\n${failures} release check(s) failed.` : "\nRelease path verified: install, offline, update, and offline again after the update.");
+  // The result line every check in this suite owes tools/check.mjs. This one
+  // used to end without it, which under --full was scored exactly as a check
+  // that died on its first line — correctly, and only because nobody had run
+  // --full since the contract was written.
+  console.log(`CHECK: ${ran} checks · ${failures} failed`);
 } finally {
   await browser.close();
   server.kill();
