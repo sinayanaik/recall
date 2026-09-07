@@ -76,18 +76,30 @@
 //      the same lever touch-selection.js pulls for press-and-slide, for the
 //      same reason.
 //
-// Deliberately not relying on the ORDER those two families arrive in. Chrome
-// fires pointerdown before touchstart today; that is a detail of one engine's
-// implementation, it could not be verified in this repo's headless harness, and
-// this file works either way — the flag is set for the whole time the pen is in
-// contact, and the touchmove guard reads the same flag.
+// ── What this does and does not assume about event ORDER ──────────────────
+//
+// It used to assume nothing at all: both listeners were bound for the life of
+// the surface, the pen-down flag was set for the whole contact, and the touchmove
+// guard read that flag, so whichever family arrived first the answer was the
+// same. Chrome fires pointerdown before touchstart today, and that is a detail
+// of one engine that this repo's headless harness cannot verify.
+//
+// The guard is bound per stroke now (see attachInkScrollGuard), because a
+// permanently-bound non-passive touchmove takes the scroller off the browser's
+// fast path for every finger that ever scrolls the paper. That does introduce an
+// ordering assumption, and it is worth being exact about which one: NOT that
+// pointerdown precedes touchstart, only that it precedes the first touchMOVE of
+// its own sequence. pointerdown fires when the nib lands and a touchmove cannot
+// fire until it has travelled, so the two are separated by a hand moving rather
+// than by dispatch order. The flag and the guard's own `press?.live` test are
+// unchanged and still carry everything else.
 
 import { PDF_BLOCK_CLASS, PDF_INK_LAYER_CLASS } from "../core/constants.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { setInkPenDown } from "../core/gesture.js?v=__BUILD__";
 import { QUAD_GEOMETRY_VERSION, documentInkMarks, freshDocumentHighlightId, setDocumentInkForPage } from "./pdf-highlights.js?v=__BUILD__";
 import { REGION_CLASS } from "./pdf-region.js?v=__BUILD__";
-import { currentDocumentPage, pdfPageElement, pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
+import { currentDocumentPage, documentPageInViewCheap, pdfPageElement, pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
 import { INK_ERASER_SIZE_DEFAULT, INK_ERASE_MODE_DEFAULT, INK_PEN_DEFAULT, INK_TOOL_DEFAULT, INK_WIDTH_DEFAULT, normalizeInkEraseMode, normalizeInkEraserSize, normalizeInkPen, normalizeInkTool, normalizeInkWidth } from "../format/ink-colors.js?v=__BUILD__";
 import { INK_FORMAT_VERSION, INK_MARK_IDLE_MS, decodeInkStrokes, encodeInkStrokes, inkStrokesBounds, inkStrokesJoinMark, mergeInkBoxes } from "../format/ink-strokes.js?v=__BUILD__";
 import { notifyHighlightsChanged } from "../format/highlight-edit.js?v=__BUILD__";
@@ -461,10 +473,25 @@ function onInkPointerDown(event) {
   // Deliberately no preventDefault. That is what leaves the browser free to
   // fire a click if this turns out to be a tap.
   try { el.documentView?.setPointerCapture?.(event.pointerId); } catch (_) { /* synthetic event */ }
+  attachInkScrollGuard();
 }
 
 function onInkPointerMove(event) {
   if (!press || event.pointerId !== press.pointerId) return;
+  // A move reporting no button AND no pressure is a contact that has already
+  // ended — a hover, arriving after a pointerup this listener never saw.
+  // Believed rather than ignored: a press that outlives its own gesture refuses
+  // every stroke after it, for the rest of the session.
+  //
+  // Both halves, and deliberately. `buttons === 0` alone is the cleaner test and
+  // it is the one a digitiser is least reliable about — a pen in contact is
+  // required to report 1 and not every stylus does. A pen that is genuinely on
+  // the glass always reports SOME pressure, so the pair cannot be true of a
+  // stroke being drawn, and a wrong answer here would end strokes under the
+  // reader's hand, which is a far worse fault than the one being fixed. The
+  // events in initDocumentInk are the primary net; this is the one for a device
+  // that reports no end at all.
+  if (Number(event.buttons) === 0 && !Number(event.pressure)) { cancelInkPress(); return; }
   // A second contact is a pinch. The zoom handler in pdf-view.js is welcome to
   // it — the same concession pdf-region.js makes — and a stroke half drawn
   // while the page is scaling under it is not ink anyone wants kept.
@@ -515,21 +542,74 @@ function cancelInkPress() {
   releaseInkPress();
 }
 
+// ── The one way a press ends ───────────────────────────────────────────────
+//
+// Reported as "the handwriting stops unexpectedly and I cannot draw anything or
+// choose any stroke options", which is two symptoms of one leak.
+//
+// onInkPointerDown opens with `if (press || ...) return;`, so a press that is
+// never cleared refuses every stroke for the rest of the session. And the
+// capture it holds is worse than the flag: an unreleased pointer capture
+// RETARGETS every later event for that pointer id to #documentView — and a mouse
+// is always pointer id 1 — so a press on a swatch or a nib on the rail stops
+// arriving at the rail. That is the second half of the report exactly, and it is
+// why "cannot draw" and "cannot choose" arrive together.
+//
+// It leaked two ways. The listeners that end a press are bound on #documentView
+// and keyed on the pointer id, so a pointerup dispatched somewhere they never
+// see — the capture lost because the page was torn down under the nib, the tab
+// switched, the surface relaid out — never reached them. And the teardown paths
+// (resetDocumentInk, adoptDocumentInk) assigned `press = null` by hand, without
+// the capture release and without setInkPenDown(false), which additionally left
+// src/notes/touch-selection.js stood down for good.
+//
+// So this is the only place a press ends, every path calls it, and it is
+// idempotent. The nets that reach it are in initDocumentInk.
 function releaseInkPress() {
   if (press) {
     try { el.documentView?.releasePointerCapture?.(press.pointerId); } catch (_) { /* already gone */ }
+    detachInkScrollGuard();
   }
   press = null;
   activeRect = null;
   setInkPenDown(false);
 }
 
-// The scroll guard. Non-passive, and it costs two property reads when there is
-// no stroke of ours in flight — the same trade touch-selection.js makes on this
-// very element for the same reason.
+// ── The scroll guard, and why it is not bound until it is needed ──────────
+//
+// A stylus fires compatibility touch events, and the scroller would take them
+// and scroll the paper out from under a stroke. This refuses that, which it can
+// only do from a NON-PASSIVE listener.
+//
+// A non-passive touchmove is not free to have. It tells the browser that the
+// main thread might cancel the gesture, so a touch scroll cannot begin on the
+// compositor until the main thread has answered — every finger-scroll of the
+// paper pays a main-thread round trip before it moves, and pays it worst exactly
+// when the main thread is busy, which is when scrolling already feels bad. That
+// is "the scrolling never feels smooth, some lagging is always there".
+//
+// The guard has nothing to say unless a stroke of ours is live, so it is bound
+// when the nib lands and unbound when the press ends. A finger scrolling the
+// paper never meets it, and the pen still gets it for the whole of every stroke:
+// pointerdown precedes the touchmoves of its own sequence, which is the ordering
+// this relies on.
+let inkScrollGuardOn = false;
+
 function onInkTouchMove(event) {
   if (!press?.live) return;
   if (event.cancelable) event.preventDefault();
+}
+
+function attachInkScrollGuard() {
+  if (inkScrollGuardOn || !el.documentView) return;
+  el.documentView.addEventListener("touchmove", onInkTouchMove, { passive: false });
+  inkScrollGuardOn = true;
+}
+
+function detachInkScrollGuard() {
+  if (!inkScrollGuardOn || !el.documentView) return;
+  el.documentView.removeEventListener("touchmove", onInkTouchMove, { passive: false });
+  inkScrollGuardOn = false;
 }
 
 function onInkClick(event) {
@@ -548,8 +628,42 @@ export function initDocumentInk() {
   view.addEventListener("pointermove", onInkPointerMove, true);
   view.addEventListener("pointerup", onInkPointerUp, true);
   view.addEventListener("pointercancel", onInkPointerCancel, true);
-  view.addEventListener("touchmove", onInkTouchMove, { passive: false });
   view.addEventListener("click", onInkClick, true);
+  // The scroll guard is bound per press — see attachInkScrollGuard.
+
+  // ── The nets under the four listeners above ────────────────────────────────
+  //
+  // All four are bound on the scroller and keyed on the pointer id, so they only
+  // ever hear about a gesture that stays on the scroller. The three ways one does
+  // not are the three ways the pen used to die (see releaseInkPress):
+  //
+  //   • the capture is taken away — the page torn down under the nib, the tab
+  //     switched, the surface relaid out. lostpointercapture is the browser
+  //     saying so, and it is the only event that arrives for it.
+  //   • the contact ends off the scroller, so the pointerup is dispatched
+  //     somewhere the capture-phase listeners on this element never run.
+  //   • the tab goes away mid-stroke and nothing ends the gesture at all.
+  //
+  // Each costs one property read when there is no press of ours, which there
+  // almost always is not. A stroke in flight is cancelled rather than committed:
+  // none of these is a pen being lifted, and half a stroke that the reader did
+  // not finish is not ink they asked to keep.
+  view.addEventListener("lostpointercapture", (event) => {
+    if (!press || event.pointerId !== press.pointerId) return;
+    cancelInkPress();
+  });
+  const endStray = (event) => {
+    if (!press || event.pointerId !== press.pointerId) return;
+    // Reached only when the listener on the scroller did not — that one runs in
+    // the capture phase, so it has already had its chance by the time this does.
+    cancelInkPress();
+  };
+  window.addEventListener("pointerup", endStray);
+  window.addEventListener("pointercancel", endStray);
+  window.addEventListener("blur", () => { if (press) cancelInkPress(); });
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "visible" && press) cancelInkPress();
+  });
 }
 
 // ── What the rail drives ───────────────────────────────────────────────────
@@ -675,9 +789,18 @@ export function deleteInkSelection() { closeOpenMark(); return ensureEngine().de
 // question it asks first.
 export function inkPageInView() { return currentDocumentPage(); }
 
+// ...and the same question asked in a way that cannot cost a measurement, for
+// the rail, which asks it at every stroke. 0 means "not already known", and the
+// caller is expected to have something better to do than measure a whole
+// document for it. See documentPageInViewCheap.
+export function inkPageInViewCheap() { return documentPageInViewCheap(); }
+
 export function inkPageHasStrokes(page) {
   if (!engine) return false;
-  return engine.getStrokes(page).length > 0;
+  // strokeCount rather than getStrokes(...).length: the latter copies the whole
+  // array of every stroke on the page to find out how long it is, and this is
+  // asked once per pen lift.
+  return engine.strokeCount(page) > 0;
 }
 
 export function clearInkPage(page) {
@@ -764,11 +887,14 @@ export function resetDocumentInk() {
   // one, a mark id in the other — and neither means anything about the next one.
   seededInk.clear();
   inkEncodeCache.clear();
+  // Through releaseInkPress rather than by assigning `press = null`, which is
+  // what this did and which is half of why the pen could stop for good: the
+  // capture stayed held and the pen-down flag stayed set. The engine's own
+  // destroy() below cancels whatever gesture was in flight.
+  releaseInkPress();
   if (!engine) return;
   engine.destroy();
   engine = null;
-  press = null;
-  activeRect = null;
 }
 
 // ── One engine per paper, so an undo does not stop at the tab ──────────────
@@ -810,13 +936,17 @@ export function adoptDocumentInk({ key = "", restored = false } = {}) {
   // destroy it — the reader is one press away from coming back.
   if (engine && engineKey && engineKey !== key) {
     closeOpenMark();
+    // A gesture in flight is CANCELLED, not merely forgotten. The engine is
+    // about to be parked with a live stroke on it and its overlay mounted on a
+    // page that is being taken off the stage — and the press that owned it kept
+    // its pointer capture, which is the fault releaseInkPress exists to end.
+    // Before the park, so the engine that is cancelled is the one being parked.
+    cancelInkPress();
     releaseParkedEngine(engineKey);
     parkedEngines.set(engineKey, { engine, seeded: seededInk, encoded: inkEncodeCache });
     engine = null;
     seededInk = new Map();
     inkEncodeCache = new Map();
-    press = null;
-    activeRect = null;
   }
   // Nothing belonging to a deck that is no longer open may stay parked, by the
   // rule drainParkedDocuments states for the documents themselves: this is the
@@ -832,8 +962,11 @@ export function adoptDocumentInk({ key = "", restored = false } = {}) {
     engine = parked.engine;
     seededInk = parked.seeded;
     inkEncodeCache = parked.encoded;
-    press = null;
-    activeRect = null;
+    // Same rule as above, for the branch that comes BACK to a document. A press
+    // that belongs to whatever was on the stage a moment ago has no business
+    // still being open over this one, and if it were left open no stroke on this
+    // paper could ever start.
+    releaseInkPress();
   } else {
     // A cold open of this document: its pages are new elements, so an engine
     // parked for it is attached to nodes that are no longer in the tree.

@@ -465,6 +465,7 @@ const APP_SHELL = [
   `./src/render/enhance.js?v=${STAMP}`,
   `./src/render/ink-engine.js?v=${STAMP}`,
   `./src/render/ink-paint.js?v=${STAMP}`,
+  `./src/render/ink-predict.js?v=${STAMP}`,
   `./src/render/ink-shapes.js?v=${STAMP}`,
   `./src/render/inline.js?v=${STAMP}`,
   `./src/render/math-dom.js?v=${STAMP}`,

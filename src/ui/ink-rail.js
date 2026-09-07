@@ -25,7 +25,7 @@
 // follow: a control is a button with an attribute, not a binding.
 
 import { el } from "../core/dom.js?v=__BUILD__";
-import { canRedoInk, canUndoInk, clearInkPage, copyInkSelection, cutInkSelection, deleteInkSelection, duplicateInkSelection, hasInkClipboard, inkEraseMode, inkEraserSize, inkPageHasStrokes, inkPageInView, inkPen, inkSelectionCount, inkSnapShapes, inkTool, inkWidth, isInkArmed, joinInkSelection, pasteInkSelection, redoInk, setInkArmed, setInkEraseMode, setInkEraserSize, setInkPen, setInkSnapShapes, setInkTool, setInkWidth, splitInkSelection, undoInk } from "../documents/pdf-ink.js?v=__BUILD__";
+import { canRedoInk, canUndoInk, clearInkPage, copyInkSelection, cutInkSelection, deleteInkSelection, duplicateInkSelection, hasInkClipboard, inkEraseMode, inkEraserSize, inkPageHasStrokes, inkPageInView, inkPageInViewCheap, inkPen, inkSelectionCount, inkSnapShapes, inkTool, inkWidth, isInkArmed, joinInkSelection, pasteInkSelection, redoInk, setInkArmed, setInkEraseMode, setInkEraserSize, setInkPen, setInkSnapShapes, setInkTool, setInkWidth, splitInkSelection, undoInk } from "../documents/pdf-ink.js?v=__BUILD__";
 import { buildInkEraserSizes, buildInkNibs, buildInkPenSwatches, paintInkRailPressed, readInkRailPress } from "../handwriting/rail.js?v=__BUILD__";
 import { inkPreferences, inkRailOpen, writeInkPreferences, writeInkRailOpen } from "../storage/ink-prefs.js?v=__BUILD__";
 import { activeDocSlot } from "../documents/doc-slot.js?v=__BUILD__";
@@ -39,11 +39,39 @@ export function refreshInkRail() {
   const rail = el.documentInkRail;
   if (!rail) return;
   const open = isInkArmed();
-  rail.hidden = !open;
-  pressed(el.documentInkBtn, open);
-  if (!open) return;
+  if (!open) {
+    rail.hidden = true;
+    pressed(el.documentInkBtn, open);
+    return;
+  }
 
+  // ── Everything this needs to READ, read before anything is written ────────
+  //
+  // This function runs on every commit the engine makes — which is every pen
+  // lift, several times a second while somebody is handwriting — and it used to
+  // ask its last question after writing all of its answers. `rail.hidden`,
+  // aria-pressed on the button, a class on every swatch and every nib, two more
+  // hidden rows and two disabled toggles, and THEN
+  // `inkPageHasStrokes(inkPageInView())`. The writes invalidate style and layout;
+  // the read forces the browser to flush them there and then, and the thing it
+  // was reaching for was a scan of every page box in the document.
+  //
+  // So the reads come first and there is no layout read left among them.
+  // inkPageInViewCheap answers out of a memo or says it does not know, and never
+  // measures; if it does not know, the Clear button is left as it is rather than
+  // a whole document being measured to grey out one control. The rail is
+  // repainted on the very next stroke, and askToClearPage asks the authoritative
+  // question before it clears anything.
+  const page = inkPageInViewCheap();
+  const hasStrokes = page ? inkPageHasStrokes(page) : null;
+  const undoable = canUndoInk();
+  const redoable = canRedoInk();
+  const count = inkSelectionCount();
+  const pasteable = hasInkClipboard();
   const tool = inkTool();
+
+  rail.hidden = false;
+  pressed(el.documentInkBtn, open);
   paintInkRailPressed(rail, {
     pen: inkPen(),
     width: inkWidth(),
@@ -61,14 +89,15 @@ export function refreshInkRail() {
   const erasing = tool === "eraser";
   if (el.inkRailWidths) el.inkRailWidths.hidden = erasing;
   if (el.inkRailEraser) el.inkRailEraser.hidden = !erasing;
-  rail.querySelector('[data-ink-action="undo"]')?.toggleAttribute("disabled", !canUndoInk());
-  rail.querySelector('[data-ink-action="redo"]')?.toggleAttribute("disabled", !canRedoInk());
+  rail.querySelector('[data-ink-action="undo"]')?.toggleAttribute("disabled", !undoable);
+  rail.querySelector('[data-ink-action="redo"]')?.toggleAttribute("disabled", !redoable);
   // Refused rather than hidden, for the reason join is below: a control that
-  // comes and goes moves the ones beside it under the reader's thumb.
-  rail.querySelector('[data-ink-action="clear"]')?.toggleAttribute("disabled", !inkPageHasStrokes(inkPageInView()));
+  // comes and goes moves the ones beside it under the reader's thumb. Left
+  // exactly as it is when the page in view is not already known — see above.
+  if (hasStrokes !== null) {
+    rail.querySelector('[data-ink-action="clear"]')?.toggleAttribute("disabled", !hasStrokes);
+  }
 
-  const count = inkSelectionCount();
-  const pasteable = hasInkClipboard();
   // Up while there is a selection OR something to paste. Paste is the one
   // control in this group that is FOR the moment nothing is selected: copying on
   // page 1 and pasting on page 4 is the case it exists for, and a group that

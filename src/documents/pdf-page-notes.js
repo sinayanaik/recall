@@ -178,11 +178,17 @@ function openNoteFor(record, anchorEl) {
 // to DOM order, and the note there gives the two ways that went wrong. This
 // function's part of it is only to make sure the layer is a child of the page
 // and to keep it as the last one.
-export function paintPageNoteBadges(pageNumber) {
+//
+// `all` is the answer to annotatedDocumentHighlights(), when the caller already
+// has it. That function sorts every record on the paper into reading order and
+// re-parses the whole note to find which of them are annotated, and this used to
+// ask for it once per page — so a repaint across six rendered pages did the same
+// sort and the same parse seven times over. See repaintPdfPageNotes.
+export function paintPageNoteBadges(pageNumber, all = null) {
   const pageEl = pdfPageElement(pageNumber);
   if (!pageEl) return;
   let layer = pageEl.querySelector(`.${BADGE_LAYER_CLASS}`);
-  const annotated = annotatedDocumentHighlights()
+  const annotated = (all || annotatedDocumentHighlights())
     .filter(({ record }) => (record.quads || []).some((quad) => quad.page === pageNumber));
   if (!annotated.length) {
     layer?.remove();
@@ -322,7 +328,11 @@ function shortLabel(label) {
 // been read closely — so unlike the pages themselves these are not virtualized,
 // and a note is on screen the moment its page is scrolled to rather than a frame
 // later.
-export function refreshPdfPageNotes() {
+//
+// `annotated` is the answer to annotatedDocumentHighlights(), passed in by a
+// caller that has already worked it out — see repaintPdfPageNotes, which used to
+// make every one of its calls compute it again.
+export function refreshPdfPageNotes(annotated = null) {
   const view = el.documentView;
   if (!view) return;
   const existing = new Map();
@@ -332,7 +342,7 @@ export function refreshPdfPageNotes() {
     return;
   }
   const byPage = new Map();
-  annotatedDocumentHighlights().forEach((entry) => {
+  (annotated || annotatedDocumentHighlights()).forEach((entry) => {
     const page = Number(entry.record.page || entry.record.quads?.[0]?.page || 0);
     if (!page) return;
     if (!byPage.has(page)) byPage.set(page, []);
@@ -351,9 +361,22 @@ export function refreshPdfPageNotes() {
   // most of those calls are gone. This is the other half, for the ones that are
   // left: a highlight made or deleted anywhere renumbers the notes after it and
   // so has to reach every page, and almost every page's answer is unchanged.
-  let changed = false;
-  const anchorPage = currentDocumentPage();
-  const anchorRatio = currentDocumentRatio();
+  // ── ...decided in full BEFORE anything is touched ────────────────────────
+  //
+  // The two anchor reads below used to happen here, unconditionally, before this
+  // pass knew whether there was anything to do. Both go through the document's
+  // page geometry, and this function runs from notifyHighlightsChanged — which,
+  // while somebody is handwriting, is reached several times a second. So the
+  // common case, in which nothing has changed at all, was paying two geometry
+  // questions to find that out.
+  //
+  // The ordering they were written in is still load-bearing and is preserved
+  // exactly: the anchor has to be sampled BEFORE the DOM is mutated, or it
+  // records where the reader ended up rather than where they were. So the pass
+  // is split — this half only reads dataset.signature off nodes it does not
+  // touch, and the half below does every mutation, with the anchor taken in
+  // between and only when there is going to be one.
+  const plan = [];
   byPage.forEach((entries, pageNumber) => {
     const key = String(pageNumber);
     const previous = existing.get(key);
@@ -361,40 +384,65 @@ export function refreshPdfPageNotes() {
     const signature = pageNotesSignature(entries);
     if (previous && previous.dataset.signature === signature) return;
     const pageEl = pdfPageElement(pageNumber);
+    // A page that is not on the stage cannot carry a block; its old one goes.
     if (!pageEl) {
-      previous?.remove();
+      if (previous) plan.push({ previous, pageEl: null, entries, pageNumber, signature });
       return;
     }
+    plan.push({ previous, pageEl, entries, pageNumber, signature });
+  });
+  // Whatever is left over is a page that has no annotated highlight any more.
+  const stale = [...existing.values()];
+  if (!plan.length && !stale.length) return;
+
+  // Which of the planned steps count as a REBUILD, on exactly the terms the flag
+  // this replaces counted them: a block written or replaced does, and so does a
+  // leftover removed, but dropping the block of a page that has left the stage
+  // does not — that page is not on screen to have moved anything.
+  const rebuilds = plan.some(({ pageEl }) => pageEl) || stale.length > 0;
+  const anchorPage = rebuilds ? currentDocumentPage() : 0;
+  const anchorRatio = rebuilds ? currentDocumentRatio() : 0;
+  plan.forEach(({ previous, pageEl, entries, pageNumber, signature }) => {
+    if (!pageEl) { previous.remove(); return; }
     const block = noteBlockFor(pageNumber, entries);
     block.dataset.signature = signature;
-    changed = true;
     if (previous) previous.replaceWith(block);
     else pageEl.after(block);
   });
-  // Whatever is left over is a page that has no annotated highlight any more.
-  existing.forEach((node) => {
-    node.remove();
-    changed = true;
-  });
+  stale.forEach((node) => node.remove());
   // A block that changed height moved everything below it, and the reader may be
   // looking at any of that. Same correction applyPdfPageNotes makes around its
-  // own rebuild, made here so every caller gets it — and skipped entirely when
+  // own rebuild, made here so every caller gets it — and not reached at all when
   // nothing was rebuilt, which is now the common case.
-  if (changed && anchorPage) scrollToDocumentPage(anchorPage, anchorRatio, { smooth: false });
+  if (anchorPage) scrollToDocumentPage(anchorPage, anchorRatio, { smooth: false });
 }
 
 // Every page currently on screen, plus the printed blocks. The counterpart of
 // repaintDocumentHighlights, and called from the same places — any CRUD on a
 // highlight or its note can change a NUMBER, and a number changing means every
 // badge after it changes too.
+//
+// ── One reading of the annotations for the whole pass ──────────────────────
+//
+// annotatedDocumentHighlights() is not a lookup. It sorts every highlight the
+// paper has into reading order — ink marks included, and a page of handwriting
+// makes a great many of them — and parses the whole note to find which of them
+// have something written about them. Its own comment carries the measurement:
+// 3.9ms for four pages with 25 annotated highlights, 312ms with 300.
+//
+// This function called it once per rendered page and then once more inside
+// refreshPdfPageNotes, so a six-page window paid for it seven times. And it is
+// reached from notifyHighlightsChanged, which the pen reaches roughly four times
+// a second while somebody is writing. Asked once here and handed down.
 export function repaintPdfPageNotes() {
   const view = el.documentView;
   if (!view) return;
+  const annotated = annotatedDocumentHighlights();
   view.querySelectorAll(".pdf-page[data-page-number]").forEach((page) => {
     const pageNumber = Number(page.dataset.pageNumber);
-    if (pageNumber) paintPageNoteBadges(pageNumber);
+    if (pageNumber) paintPageNoteBadges(pageNumber, annotated);
   });
-  refreshPdfPageNotes();
+  refreshPdfPageNotes(annotated);
 }
 
 // ── The toggle ──────────────────────────────────────────────────────────────
