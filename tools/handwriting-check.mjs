@@ -101,6 +101,8 @@ const API_SRC = `async () => {
     "/src/format/ink-strokes.js?v=__BUILD__",
     "/src/format/ink-svg.js?v=__BUILD__",
     "/src/render/ink-paint.js?v=__BUILD__",
+    "/src/render/ink-predict.js?v=__BUILD__",
+    "/src/format/highlight-edit.js?v=__BUILD__",
     "/src/sync/document-sync.js?v=__BUILD__",
     "/src/library/local-library.js?v=__BUILD__",
     "/src/storage/deck-store.js?v=__BUILD__",
@@ -587,6 +589,243 @@ try {
   check("the 185th stroke on a page costs about what the 3rd did",
     ratio < 6,
     `${cost.early.toFixed(2)}ms → ${cost.late.toFixed(2)}ms (${ratio.toFixed(1)}x) over ${cost.strokes} stroke(s)`);
+
+  // ── 3b. What a pen lift and a scroll frame actually MEASURE ─────────────
+  //
+  // A ratio cannot see a constant factor that got worse for every stroke, and
+  // wall-clock on a shared runner cannot see anything at all. So this counts the
+  // thing instead: how many times the app reads a layout box off the document.
+  //
+  // What it is guarding. currentDocumentPage answers out of a table of every
+  // page's offsetTop and offsetHeight, and that table used to be rebuilt whenever
+  // it was more than a frame old — which is to say on essentially every call,
+  // because a frame is how often it is asked. It is asked from the scroll pass,
+  // from the page observer, from the printed notes, and from the pen's rail at
+  // every stroke. So both of the gestures this surface was reported slow in were
+  // measuring the whole document several times a second, and on a long paper
+  // that is hundreds of forced reads a frame.
+  //
+  // Counted through the prototype getter, which sees every reader including the
+  // ones inside pdf.js, and restored in a finally so a throw cannot leave the
+  // page instrumented for the checks after this one.
+  const boxes = await page.evaluate(`async (penSrc) => {
+    const { api, settle } = window.__recall;
+    const pen = (0, eval)(penSrc);
+    const view = document.getElementById("documentView");
+    const pageEl = document.querySelector("#documentStage .pdf-page[data-page-number='1']");
+    const box = pageEl.getBoundingClientRect();
+    const proto = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetTop");
+    let reads = 0;
+    Object.defineProperty(HTMLElement.prototype, "offsetTop", {
+      ...proto, get() { reads += 1; return proto.get.call(this); }
+    });
+    try {
+      // The rail OPEN, which is the case that pays: refreshInkRail returns on its
+      // second line when the rail is shut, and RAIL_OPEN_DEFAULT has it open on a
+      // notebook — so this is what the Write tab does by default on every stroke.
+      api.setInkArmed(true);
+      api.refreshInkRail();
+      await settle(30);
+
+      reads = 0;
+      const x = box.left + 40;
+      const y = box.top + 40;
+      pen(view, "pointerdown", x, y, 1);
+      for (let i = 1; i <= 6; i += 1) pen(view, "pointermove", x + (i * 4), y + i, 1);
+      pen(view, "pointerup", x + 24, y + 6, 0);
+      const perStroke = reads;
+
+      // ...and a scroll, which reaches the same table from the frame-coalesced
+      // pass and from the page observer.
+      await settle(60);
+      reads = 0;
+      for (let i = 1; i <= 6; i += 1) {
+        view.scrollTop += 40;
+        view.dispatchEvent(new Event("scroll", { bubbles: false }));
+        await new Promise((r) => requestAnimationFrame(() => r()));
+      }
+      const perScroll = reads;
+      // The document's own length, off the DOM rather than off meta — the stack
+      // holds one .pdf-page per page whether or not it has rendered, and this
+      // check has to say the same thing for a notebook as for a paper.
+      const pages = document.querySelectorAll("#documentStage .pdf-page[data-page-number]").length;
+      return { perStroke, perScroll, pages };
+    } finally {
+      Object.defineProperty(HTMLElement.prototype, "offsetTop", proto);
+    }
+  }`, PEN_SRC);
+
+  // Absolute, and small, and measured rather than guessed: with the frame-old
+  // net put back these read 2 and 28 on the one-page fixture, because the table
+  // costs two reads per page and was rebuilt on very nearly every call. A real
+  // paper multiplies both by its page count. So a pen lift may read no page box
+  // at all, and a scroll may read at most one frame's worth over six frames.
+  //
+  // Constants rather than a multiple of the page count, deliberately: a budget
+  // that grows with the document is a budget that permits exactly the fault,
+  // which is that this was ever per-page to begin with.
+  check("a pen lift does not measure the pages of the document",
+    boxes.perStroke <= 1,
+    `${boxes.perStroke} offsetTop read(s) for one stroke on a ${boxes.pages}-page document`);
+  check("...and a scroll does not measure them once per frame",
+    boxes.perScroll <= 6,
+    `${boxes.perScroll} offsetTop read(s) over six scroll frames on a ${boxes.pages}-page document`);
+
+  // ── 3c. What telling the app about a stroke costs ───────────────────────
+  //
+  // notifyHighlightsChanged rebuilds the badges on every rendered page and the
+  // notes printed under them, and every one of those used to ask
+  // annotatedDocumentHighlights() for itself — a sort of every record on the
+  // paper plus a parse of the whole note, once per page on screen. The pen
+  // reaches this about four times a second while somebody is writing.
+  //
+  // Counted as re-reads of state.notes, which is the parse, because that is the
+  // half that grows with the note rather than with the page count — and because
+  // a count is the same number on a fast machine as on a slow one.
+  const notify = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    await settle(30);
+    const was = Object.getOwnPropertyDescriptor(api.state, "notes");
+    let held = api.state.notes;
+    let reads = 0;
+    // A setter as well as a getter: a module is strict code, so an assignment to
+    // a getter-only property throws, and this must not change what the handler
+    // is allowed to do while it is being measured.
+    Object.defineProperty(api.state, "notes", {
+      configurable: true,
+      enumerable: was ? was.enumerable : true,
+      get: () => { reads += 1; return held; },
+      set: (next) => { held = next; }
+    });
+    try {
+      const rendered = document.querySelectorAll("#documentStage .pdf-page[data-page-number]").length;
+      reads = 0;
+      api.notifyHighlightsChanged();
+      await settle(0);
+      return { reads, rendered };
+    } finally {
+      delete api.state.notes;
+      if (was) Object.defineProperty(api.state, "notes", was);
+      else api.state.notes = held;
+    }
+  }`);
+
+  // Not a fixed number — the handler does other things with the note — but it
+  // must not scale with how many pages happen to be on screen, which is the
+  // fault. One page's worth of work, plus slack, whatever the window holds.
+  check("telling the app about a stroke does not cost a pass per page on screen",
+    notify.reads <= 4,
+    `${notify.reads} re-read(s) of the note for one notify with ${notify.rendered} page(s) rendered`);
+
+  // ── 3d. Adding to the dry canvas is the same as painting it again ───────
+  //
+  // A commit is additive, so the pen lift now paints only the stroke that was
+  // just made onto the canvas that already holds the rest, instead of clearing
+  // it and repainting every stroke on the page. That is what stops the two
+  // hundredth stroke costing what the first hundred and ninety-nine did — and
+  // it is the one change here that could quietly lose ink, because a canvas
+  // missing a stroke looks exactly like a canvas that was never told about it.
+  //
+  // So: draw a burst, photograph the canvas, then force the full repaint that
+  // the incremental path replaced and photograph it again. The two bitmaps have
+  // to be identical, pixel for pixel. Nothing else can catch this.
+  const equivalent = await page.evaluate(`async (penSrc) => {
+    const { api, settle } = window.__recall;
+    const pen = (0, eval)(penSrc);
+    const view = document.getElementById("documentView");
+    const pageEl = document.querySelector("#documentStage .pdf-page[data-page-number='1']");
+    const box = pageEl.getBoundingClientRect();
+    for (let n = 0; n < 8; n += 1) {
+      const x = box.left + 30 + ((n % 4) * 50);
+      const y = box.top + 200 + ((n % 5) * 20);
+      pen(view, "pointerdown", x, y, 1);
+      for (let i = 1; i <= 6; i += 1) pen(view, "pointermove", x + (i * 5), y + (i * 2), 1);
+      pen(view, "pointerup", x + 30, y + 12, 0);
+      await settle(20);
+    }
+    await settle(120);
+    const dry = pageEl.querySelector(".pdf-ink-layer .is-ink-dry");
+    if (!dry) return { drew: false };
+    const incremental = dry.toDataURL();
+    // The full repaint the incremental path stands in for.
+    api.repaintDocumentInk();
+    await settle(60);
+    const repainted = dry.toDataURL();
+    // Guard against both being an empty canvas, which would make the compare
+    // trivially true and the check worthless.
+    const blank = document.createElement("canvas");
+    blank.width = dry.width;
+    blank.height = dry.height;
+    return { drew: incremental !== blank.toDataURL(), same: incremental === repainted };
+  }`, PEN_SRC);
+
+  check("a page built stroke by stroke is the page a full repaint would paint",
+    equivalent.drew && equivalent.same,
+    !equivalent.drew
+      ? "nothing was drawn, so the compare proved nothing"
+      : (equivalent.same
+        ? "eight strokes added one at a time, pixel-identical to the full repaint"
+        : "the two bitmaps differ — the commit added something the repaint does not, or lost something it does"));
+
+  // ── 3e. A press that never ends must not end the pen ────────────────────
+  //
+  // Reported as "the handwriting stops unexpectedly and I cannot draw anything
+  // or choose any stroke options". onInkPointerDown refuses while a press is
+  // open, so a press that is never cleared refuses every stroke for the rest of
+  // the session — and the pointer capture it keeps holding retargets every later
+  // event for that id, which for a mouse is always id 1, so the rail stops
+  // hearing about presses too. That is both halves of the report from one leak.
+  //
+  // Provoked the way it actually happens: the capture is taken away mid-stroke
+  // and the pointerup is dispatched somewhere the listeners on the scroller
+  // never see it.
+  const recovers = await page.evaluate(`async (penSrc) => {
+    const { api, settle } = window.__recall;
+    const pen = (0, eval)(penSrc);
+    const view = document.getElementById("documentView");
+    const pageEl = document.querySelector("#documentStage .pdf-page[data-page-number='1']");
+    const box = pageEl.getBoundingClientRect();
+    const count = () => (api.state.meta.pdfHighlights || [])
+      .filter((r) => r.kind === "ink")
+      .flatMap((r) => api.decodeInkStrokes(r.ink?.s || [])).length;
+
+    const x = box.left + 50;
+    const y = box.top + 420;
+    pen(view, "pointerdown", x, y, 1);
+    for (let i = 1; i <= 6; i += 1) pen(view, "pointermove", x + (i * 5), y, 1);
+    await settle(40);
+    // ...and the gesture is taken away. No pointerup ever arrives.
+    view.dispatchEvent(new PointerEvent("lostpointercapture", { bubbles: true, pointerId: 1 }));
+    await settle(60);
+
+    const before = count();
+    const x2 = box.left + 160;
+    const y2 = box.top + 460;
+    pen(view, "pointerdown", x2, y2, 1);
+    for (let i = 1; i <= 6; i += 1) pen(view, "pointermove", x2 + (i * 5), y2 + i, 1);
+    pen(view, "pointerup", x2 + 30, y2 + 6, 0);
+    await settle(200);
+    const after = count();
+
+    // ...and the rail, which is the other half of the report: a capture nobody
+    // released means a press on a swatch never reaches it.
+    api.setInkArmed(true);
+    api.refreshInkRail();
+    await settle(20);
+    const swatch = document.querySelector("#documentInkRail [data-ink-pen='red']");
+    swatch?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 1, cancelable: true }));
+    await settle(20);
+    return { drew: after > before, pen: api.inkPen(), hadSwatch: Boolean(swatch) };
+  }`, PEN_SRC);
+
+  check("a stroke whose pointerup never arrives does not kill the pen",
+    recovers.drew,
+    recovers.drew
+      ? "the next stroke still reached the page after the capture was taken away"
+      : "the next stroke after a lost pointer capture never reached the page");
+  check("...nor the rail's stroke options",
+    !recovers.hadSwatch || recovers.pen === "red",
+    `a press on the red swatch left the pen as "${recovers.pen}"`);
 
   // ── 4. Pages, added and torn out of a real document ─────────────────────
   //

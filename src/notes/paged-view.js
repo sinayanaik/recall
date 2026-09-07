@@ -733,6 +733,8 @@ export function applyNotesPagedLayout() {
   const paged = isNotesPaged();
   const wasPaged = view.classList.contains("is-paged");
   view.classList.toggle("is-paged", paged);
+  // The wheel handler comes and goes with the mode — see bindNotesWheel.
+  if (paged) bindNotesWheel(); else unbindNotesWheel();
   // Chunk wrappers cannot exist in a columned layout — see
   // shouldChunkRenderedBlocks. The class above is what that gate reads, so this
   // has to follow it, and it moves the existing nodes rather than re-rendering.
@@ -969,14 +971,39 @@ export function handleNotesWheel(event) {
   turnNotesPage(delta > 0 ? 1 : -1);
 }
 
+// ── The wheel handler exists only while paged mode does ────────────────────
+//
+// Not passive: paging has to preventDefault, or a vertical wheel over a
+// horizontally-scrolling box scrolls the page behind it instead. That is the
+// right listener for paged mode and the wrong one to have in continuous mode,
+// where it no-ops on its first line — because a non-passive wheel listener takes
+// the note's scroller off the browser's fast path whether or not the handler
+// ever does anything. Every reader who has never turned paged mode on was paying
+// for it on every scroll of every note.
+//
+// So it is bound when the mode is entered and unbound when it is left, from
+// applyNotesPagedLayout, which is the one place that knows.
+let notesWheelOn = false;
+
+function bindNotesWheel() {
+  const view = el.notesView;
+  if (notesWheelOn || !view) return;
+  view.addEventListener("wheel", handleNotesWheel, { passive: false });
+  notesWheelOn = true;
+}
+
+function unbindNotesWheel() {
+  const view = el.notesView;
+  if (!notesWheelOn || !view) return;
+  view.removeEventListener("wheel", handleNotesWheel, { passive: false });
+  notesWheelOn = false;
+}
+
 export function initPagedNotes() {
   const view = el.notesView;
   if (!view) return;
   ensureNotesPageIndicator();
-
-  // Not passive: paging has to preventDefault, or a vertical wheel over a
-  // horizontally-scrolling box scrolls the page behind it instead.
-  view.addEventListener("wheel", handleNotesWheel, { passive: false });
+  if (isNotesPaged()) bindNotesWheel();
 
   // A touch that lands mid-tween takes over: the reader is doing something more
   // recent than the animation, and leaving the tween running would drag the page

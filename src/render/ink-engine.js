@@ -73,6 +73,7 @@
 import { INK_ERASER_SIZE_DEFAULT, INK_ERASE_MODE_DEFAULT, INK_PEN_DEFAULT, INK_TOOL_DEFAULT, INK_WIDTH_DEFAULT, normalizeInkEraseMode, normalizeInkEraserSize, normalizeInkPen, normalizeInkTool, normalizeInkWidth } from "../format/ink-colors.js?v=__BUILD__";
 import { eraseFromInkStroke, inkStrokeHitsPoint, inkStrokeInPolygon, inkStrokesBounds, transformInkStroke } from "../format/ink-strokes.js?v=__BUILD__";
 import { INK_WIDTH_LOOKBACK, paintInkStroke, paintInkStrokes, resolveInkColor } from "./ink-paint.js?v=__BUILD__";
+import { boundInkPrediction } from "./ink-predict.js?v=__BUILD__";
 import { INK_SHAPE_HOLD_MS, fitInkShape } from "./ink-shapes.js?v=__BUILD__";
 
 // A canvas is painted at devicePixelRatio so ink is sharp, capped for the same
@@ -169,8 +170,14 @@ function inkSizeCanvas(canvas, width, height) {
     canvas.width = w;
     canvas.height = h;
   }
-  canvas.style.width = `${Math.round(width)}px`;
-  canvas.style.height = `${Math.round(height)}px`;
+  // Only when they differ. Assigning an inline style parses the value and
+  // compares it whether or not anything changed, and this runs on every repaint
+  // of every canvas — including the one at every pen lift, where the answer is
+  // the same as it was for the whole of the reader's session.
+  const cssWidth = `${Math.round(width)}px`;
+  const cssHeight = `${Math.round(height)}px`;
+  if (canvas.style.width !== cssWidth) canvas.style.width = cssWidth;
+  if (canvas.style.height !== cssHeight) canvas.style.height = cssHeight;
   return scale;
 }
 
@@ -242,7 +249,7 @@ export function createInkEngine({
     if (existing) detachHost(key);
     const { canvas, ctx } = ensureCanvas("is-ink-dry", false);
     element.appendChild(canvas);
-    const entry = { key, el: element, canvas, ctx, scale: 1, strokes: existing?.strokes || [] };
+    const entry = { key, el: element, canvas, ctx, scale: 1, strokes: existing?.strokes || [], painted: null, unrecorded: false };
     hosts.set(key, entry);
     repaint(key);
     return entry;
@@ -271,6 +278,10 @@ export function createInkEngine({
     entry.canvas = null;
     entry.ctx = null;
     entry.el = null;
+    // The bitmap is gone, so nothing may be added to it. The next attachHost
+    // makes a fresh canvas and repaint() records what that one holds.
+    entry.painted = null;
+    entry.unrecorded = false;
     if (live?.key === key) cancel();
     if (selection?.key === key) setSelection(null);
   }
@@ -287,7 +298,7 @@ export function createInkEngine({
   }
 
   function setStrokes(key, strokes) {
-    const entry = hosts.get(key) || { key, el: null, canvas: null, ctx: null, scale: 1, strokes: [] };
+    const entry = hosts.get(key) || { key, el: null, canvas: null, ctx: null, scale: 1, strokes: [], painted: null, unrecorded: false };
     entry.strokes = Array.isArray(strokes) ? strokes.slice() : [];
     hosts.set(key, entry);
     repaint(key);
@@ -295,6 +306,15 @@ export function createInkEngine({
 
   function getStrokes(key) {
     return (hosts.get(key)?.strokes || []).slice();
+  }
+
+  // How many, without the copy. getStrokes hands out a slice so a caller cannot
+  // mutate the engine's array behind its back, which is right for the callers
+  // that want the strokes — and pure waste for the one that only wants to know
+  // whether there are any. That one (inkPageHasStrokes, ../documents/pdf-ink.js)
+  // is asked at every pen lift by the rail.
+  function strokeCount(key) {
+    return hosts.get(key)?.strokes.length || 0;
   }
 
   function repaint(key) {
@@ -317,7 +337,69 @@ export function createInkEngine({
     if (live?.key === key && live.settled?.length) {
       live.settled.forEach((run) => paintInkStroke(ctx, { w: live.width, c: live.pen, p: run }, { root }));
     }
+    // What this bitmap now holds, so paintAppendedToDry can tell whether adding
+    // to it is the same thing as painting it again.
+    //
+    // `count` describes entry.strokes and nothing else, so while a stroke in
+    // flight has handed runs to this canvas (the `settled` replay above) the
+    // bitmap holds MORE than `painted` says it does. That is the one window in
+    // which the invariant is untrue, and paintAppendedToDry refuses outright for
+    // the whole of it rather than trusting the count — which cannot notice,
+    // since committing the stroke grows entry.strokes by exactly the amount the
+    // count would expect.
+    entry.painted = { count: entry.strokes.length, width: size.width, height: size.height, matrix: m };
+    // ...and whether the replay above just put ink on it that `painted` does not
+    // account for. Recomputed here rather than merely set, so a repaint after
+    // reclaimSettled — which empties `settled` — clears it again.
+    entry.unrecorded = Boolean(live?.key === key && live.settled?.length);
     if (selection?.key === key) drawSelectionChrome();
+  }
+
+  // ── Adding to the dry canvas instead of painting it again ─────────────────
+  //
+  // A commit is additive. The strokes that were on the page a moment ago are
+  // still on it, in the same order, at the same size, under the same matrix, and
+  // they are already drawn — so the only thing the bitmap is missing is what was
+  // just added. repaint() cleared it and drew all of them anyway, at every
+  // single pen lift, which is several times a second while somebody is
+  // handwriting and which gets slower the more they have written: the two
+  // hundredth stroke on a page paid for the hundred and ninety-nine before it.
+  //
+  // Refuses unless it can prove the bitmap is exactly `painted.count` strokes
+  // deep and that `added` follows them by identity. Anything else — a page
+  // resized, a zoom, a rotation, an erase or a lasso having replaced strokes
+  // rather than appended them, a canvas that has never been painted — and the
+  // caller falls back to repaint(), which is merely the status quo. The
+  // invariant the two of them keep together is the one repaint() establishes
+  // unconditionally: the dry canvas is paintInkStrokes(entry.strokes) at
+  // `painted` size under `painted.matrix`. This may only preserve it.
+  function paintAppendedToDry(key, added) {
+    const entry = hosts.get(key);
+    if (!entry?.canvas || !entry.ctx || !entry.el || !entry.painted) return false;
+    if (!Array.isArray(added) || !added.length) return false;
+    // Ink on this canvas that `painted` does not describe: the head a stroke
+    // handed over mid-flight at INK_LIVE_MAX_POINTS. Those leading samples took
+    // their widths from a truncated pressure window (INK_WIDTH_LOOKBACK,
+    // ./ink-paint.js), and the full repaint is what clears them and replaces
+    // them with the finished stroke's own — painting over them instead leaves
+    // exactly the bead at the seam that INK_SEAM_OVERLAP exists to prevent.
+    //
+    // Read off the entry rather than off `live`, which is already null by the
+    // time a commit gets here.
+    if (entry.unrecorded) return false;
+    const size = getHostSize ? getHostSize(key) : null;
+    if (!size || size.width !== entry.painted.width || size.height !== entry.painted.height) return false;
+    const m = inkDeviceTransform(getMatrix ? getMatrix(key) : null, entry.scale);
+    const was = entry.painted.matrix;
+    for (let i = 0; i < 6; i += 1) { if (m[i] !== was[i]) return false; }
+    const count = entry.painted.count;
+    if (entry.strokes.length !== count + added.length) return false;
+    for (let i = 0; i < added.length; i += 1) { if (entry.strokes[count + i] !== added[i]) return false; }
+    const ctx = entry.ctx;
+    ctx.setTransform(m[0], m[1], m[2], m[3], m[4], m[5]);
+    paintInkStrokes(ctx, added, { root });
+    entry.painted.count = entry.strokes.length;
+    return true;
   }
 
   function repaintAll() {
@@ -371,8 +453,12 @@ export function createInkEngine({
   //
   // repaint() draws the selection chrome onto the very layer that is wiped a
   // line later, so the chrome is put back rather than lost.
-  function handOverToDry(key) {
-    repaint(key);
+  // `added`, when the caller has just appended exactly those strokes and nothing
+  // else has moved, lets the dry canvas take the ink by being ADDED to rather
+  // than painted again — see paintAppendedToDry. Everything else about this
+  // function, and above all the order of its three steps, is unchanged.
+  function handOverToDry(key, added = null) {
+    if (!(added && paintAppendedToDry(key, added))) repaint(key);
     clearOverlay();
     // ── ...and then the layer comes OFF the page ────────────────────────────
     //
@@ -850,6 +936,10 @@ export function createInkEngine({
         // from entry.strokes — which does not hold this stroke yet — and erase
         // the front of the line somebody is still drawing.
         live.settled.push(run);
+        // This canvas now carries ink that entry.strokes does not describe, so
+        // nothing may be ADDED to it until a full repaint has put it right —
+        // see paintAppendedToDry.
+        entry.unrecorded = true;
         live.from = Math.max(0, handOver - INK_SEAM_OVERLAP);
       }
     }
@@ -865,10 +955,33 @@ export function createInkEngine({
     const event = live.lastEvent;
     live.lastEvent = null;
     const predicted = typeof event?.getPredictedEvents === "function" ? event.getPredictedEvents() : null;
-    (predicted || []).forEach((sample) => {
-      const point = toModelPoint(live.key, sample);
-      if (point) run.push(point.x, point.y, Math.max(0, Math.min(1, Number.isFinite(sample.pressure) ? sample.pressure : 0.5)));
-    });
+    // ── The guess, and how much of it is worth drawing ─────────────────────
+    //
+    // Every predicted sample used to be appended here. See ./ink-predict.js for
+    // what that looks like on a real digitiser and why the answer is a bound
+    // rather than switching the prediction off: the tail the reader sees is the
+    // predictor carrying straight on through the end of a letter or round a
+    // corner the hand has already turned.
+    //
+    // Mapped into model space first, because the bound is stated in model units
+    // — it has to mean the same thing at every zoom and on a page turned on its
+    // side. `timeStamp` is the same clock the pointer events themselves use, so
+    // the horizon is measured against the event this frame was armed by.
+    let kept = 0;
+    if (predicted?.length) {
+      const guesses = [];
+      const ahead = [];
+      let timed = true;
+      predicted.forEach((sample) => {
+        const point = toModelPoint(live.key, sample);
+        if (!point) return;
+        guesses.push(point.x, point.y, Math.max(0, Math.min(1, Number.isFinite(sample.pressure) ? sample.pressure : 0.5)));
+        const at = Number(sample.timeStamp) - Number(event.timeStamp);
+        if (Number.isFinite(at)) ahead.push(at); else timed = false;
+      });
+      kept = boundInkPrediction(run, guesses, timed && ahead.length === (guesses.length / 3) ? ahead : null);
+      for (let i = 0; i < kept * 3; i += 1) run.push(guesses[i]);
+    }
     if (run.length < 3) return;
     overlayTransform(live.key, overlayCtx, overlayScale);
     paintInkStroke(overlayCtx, { w: live.width, c: live.pen, p: run }, { root });
@@ -877,7 +990,11 @@ export function createInkEngine({
     // a phantom stub of ink sitting ahead of the nib until the hand moved again.
     // One more frame repaints without it, and schedules nothing after itself
     // because by then there is no prediction left to clear.
-    if (predicted?.length) inkScheduleFrame();
+    //
+    // On `kept` rather than on what the browser offered: a frame that drew none
+    // of the guess has nothing to expire, and arming a frame for it would be one
+    // more repaint of the whole live stroke for no pixels at all.
+    if (kept) inkScheduleFrame();
   }
 
   function drawLassoFrame() {
@@ -978,7 +1095,12 @@ export function createInkEngine({
       if (!added.length) { clearOverlay(); unmountOverlay(); return; }
       entry.strokes = entry.strokes.concat(added);
       remember(gesture.key, gesture.before);
-      handOverToDry(gesture.key);
+      // Offered to the dry canvas as an ADDITION rather than a repaint of the
+      // page. Whether it can be taken is paintAppendedToDry's to decide — it
+      // refuses on anything it cannot prove, a stroke that handed its own head
+      // over mid-flight included, and falls back to the repaint this used to do
+      // unconditionally.
+      handOverToDry(gesture.key, added);
       onCommit(gesture.key, entry.strokes.slice(), { reason: "draw", added });
       return;
     }
@@ -1215,6 +1337,7 @@ export function createInkEngine({
     forgetHost,
     setStrokes,
     getStrokes,
+    strokeCount,
     repaint,
     repaintAll,
     begin,

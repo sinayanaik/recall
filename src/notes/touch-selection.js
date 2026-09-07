@@ -2126,11 +2126,26 @@ function onRootTouchStart(event) {
 
 // Non-passive, and it early-returns in two property reads when there is no
 // gesture of ours in flight. The cost of a non-passive touchmove listener is a
-// main-thread round trip on the FIRST move of a scroll, which this surface
-// already pays — every reading surface here has a non-passive scroll consumer
-// somewhere. The benefit is press-and-slide: without preventDefault the page
-// scrolls out from under a selection the reader is still making, which is the
-// single most common way a native selection gets lost.
+// main-thread round trip on the FIRST move of a scroll. The benefit is
+// press-and-slide: without preventDefault the page scrolls out from under a
+// selection the reader is still making, which is the single most common way a
+// native selection gets lost.
+//
+// ── It is now the ONLY one of these on the reading surfaces ────────────────
+//
+// This used to say the surface "already pays" the round trip because every
+// reading surface has a non-passive touch consumer somewhere. That was true and
+// is not any more: the pen's scroll guard (src/documents/pdf-ink.js) and the
+// pinch handler (src/documents/pdf-view.js) are both bound per gesture now, and
+// paged notes' wheel handler comes and goes with the mode. Each of those had
+// nothing to say until something was already happening, so binding them
+// permanently was a tax on scrolling for nothing.
+//
+// This one is different and stays. It cannot know whether it will need to refuse
+// the scroll until the gesture is well under way — a press that becomes a drag,
+// or a finger rescued off a selection it never meant to make — and by then the
+// browser has decided. So the round trip is bought deliberately, for the one
+// listener on these surfaces that genuinely cannot be bound later.
 function onRootTouchMove(event) {
   // The browser's own answer to "do we still own this gesture", read before
   // anything acts on it. Once false it stays false for the rest of the

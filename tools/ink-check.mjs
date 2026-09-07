@@ -113,6 +113,10 @@ try {
     simplifyInkStroke, transformInkStroke
   } = strokesMod;
   const { fitInkShape, INK_SHAPE_MIN_SIZE } = shapesMod;
+  const predictMod = await import(path.join(stage, "src/render/ink-predict.js"));
+  const {
+    INK_PREDICT_FALLBACK_MAX, INK_PREDICT_MAX_LEAD, INK_PREDICT_MAX_MS, boundInkPrediction
+  } = predictMod;
   const { INK_WIDTH_LOOKAHEAD, INK_WIDTH_LOOKBACK, inkStrokeWidths } = paintMod;
   const migrateMod = await import(path.join(stage, "src/documents/notebook-migrate.js"));
   const { LEGACY_SCALE, hasLegacyNotebook, hasNotebookInPdfSlot, migratedNotebookMeta, movedNotebookSlotMeta, planLegacyNotebookMigration } = migrateMod;
@@ -699,6 +703,83 @@ try {
     };
     return paintMod.inkStrokeOutline(ctx, { w: 3, c: "ink", p: [5, 5, 0.5, 5, 5, 0.5, 5, 5, 0.5, 9, 9, 0.5] })
       || "a held-still stroke drew nothing";
+  });
+
+  // ── 5. Does the guess stop where the hand does? ─────────────────────────
+  //
+  // Reported as "the tail of the strokes stays unnecessarily": ink drawn ahead
+  // of the nib by getPredictedEvents, which src/render/ink-engine.js used to
+  // draw all of. src/render/ink-predict.js decides how much of it is worth
+  // drawing, and this is the only place that can ask — headless Chrome does not
+  // synthesise predicted events for a dispatched PointerEvent, so no browser
+  // check can reach that code at all. Hence a pure function over numbers.
+  //
+  // Coordinates below are model units, the same units the engine converts to
+  // before it asks, and every case is one of the shapes handwriting is made of.
+
+  // A run travelling steadily right, four units per sample.
+  const straightRun = [0, 0, 0.5, 4, 0, 0.5, 8, 0, 0.5];
+  const carryOn = [12, 0, 0.5, 16, 0, 0.5];
+
+  must("a guess that carries on the way the pen was going is drawn", () => {
+    const kept = boundInkPrediction(straightRun, carryOn, [8, 16]);
+    return kept === 2 || `kept ${kept} of 2 guesses on a straight, timely run`;
+  });
+
+  must("...and no more of it than the horizon allows", () => {
+    // The third guess claims to be further ahead than a prediction may reach.
+    const kept = boundInkPrediction(straightRun, [...carryOn, 20, 0, 0.5], [8, 16, INK_PREDICT_MAX_MS + 8]);
+    return kept === 2 || `kept ${kept}; the guess past ${INK_PREDICT_MAX_MS}ms should have been dropped`;
+  });
+
+  must("...nor further than the hand itself just went", () => {
+    // Timely, straight, and absurdly far: a whole page in one frame, from a hand
+    // that moved four units in the last one.
+    const kept = boundInkPrediction(straightRun, [400, 0, 0.5], [8]);
+    return kept === 0 || `kept a guess ${400 / 4}x the last real step (cap is ${INK_PREDICT_MAX_LEAD}x)`;
+  });
+
+  must("a guess that turns back on itself is cut at the turn", () => {
+    // The shape at the bottom of an 'n': the hand has already come round, and
+    // the predictor carries on through the corner. The first guess still
+    // continues the stroke; the second doubles back.
+    const kept = boundInkPrediction(straightRun, [...carryOn.slice(0, 3), 8, 0, 0.5], [8, 16]);
+    return kept === 1 || `kept ${kept}; the reversal should have ended the guess`;
+  });
+
+  must("a pen that has stopped is not guessed for at all", () => {
+    // No movement between the last two real samples: there is nothing to
+    // extrapolate from, and this is the case the stray tail is most visible in
+    // because nothing overtakes it a moment later.
+    const still = [0, 0, 0.5, 4, 0, 0.5, 4, 0, 0.5];
+    const kept = boundInkPrediction(still, carryOn, [8, 16]);
+    return kept === 0 || `kept ${kept} guesses about a nib that was not moving`;
+  });
+
+  must("a browser that reports no timestamps still gets a bounded guess", () => {
+    // Safari has no predicted events at all and Chrome always timestamps them,
+    // so this is the net under a third engine rather than a case anyone is
+    // known to hit — and a net that let the whole list through would be no net.
+    const many = [];
+    for (let i = 1; i <= 6; i += 1) many.push(8 + (i * 0.5), 0, 0.5);
+    const kept = boundInkPrediction(straightRun, many, null);
+    return kept === INK_PREDICT_FALLBACK_MAX
+      || `kept ${kept} untimed guesses, expected ${INK_PREDICT_FALLBACK_MAX}`;
+  });
+
+  must("...and a stroke with nothing to compare against gets none", () => {
+    // One sample is a dot, and a dot has no direction to check a guess against.
+    return boundInkPrediction([0, 0, 0.5], carryOn, [8, 16]) === 0
+      || "guessed ahead of a single-sample stroke";
+  });
+
+  must("the answer is never more than what was offered", () => {
+    for (const n of [0, 1, 2, 3]) {
+      const offered = carryOn.slice(0, n * 3);
+      const kept = boundInkPrediction(straightRun, offered, null);
+      if (kept > n) return `offered ${n} guesses and kept ${kept}`;
+    }
+    return true;
   });
 
   console.log("── ink ──");

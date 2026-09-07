@@ -1928,13 +1928,32 @@ export async function buildTextLayer(page, viewport) {
   // Measured in one pass AFTER the whole layer is in the document: reading
   // offsetWidth per span while still appending would be a forced layout per
   // text item, which on a dense two-column page is hundreds of them.
+  //
+  // ── ...and then read and written in SEPARATE passes ──────────────────────
+  //
+  // Deferring the whole thing to a frame was only half of it, and the half that
+  // was left is the same fault one level down: this loop read offsetWidth and
+  // then wrote a custom property on the same element, over and over. The write
+  // dirties style — for the document, not merely for the span — so the next
+  // span's offsetWidth forced a fresh style recalculation and layout flush. One
+  // frame, one flush was the intent; one flush per text item is what it did, and
+  // a dense two-column page is several thousand of them — the same number
+  // buildPageLayers defers the whole layer build for. That is paid while the
+  // reader is scrolling, because that is when pages build their layers.
+  //
+  // So: every read first, into an array, and only then every write. The browser
+  // flushes once for the whole page instead of once per word. Nothing else about
+  // the measurement changes — the same spans get the same numbers.
   requestAnimationFrame(() => {
     if (!layer.isConnected) return;
-    layer.querySelectorAll("span[data-expected-width]").forEach((span) => {
-      const actual = span.offsetWidth;
-      if (!actual) return;
-      span.style.setProperty("--pdf-span-scale", String(Number(span.dataset.expectedWidth) / actual));
-    });
+    const spans = layer.querySelectorAll("span[data-expected-width]");
+    const widths = new Array(spans.length);
+    for (let i = 0; i < spans.length; i += 1) widths[i] = spans[i].offsetWidth;
+    for (let i = 0; i < spans.length; i += 1) {
+      const actual = widths[i];
+      if (!actual) continue;
+      spans[i].style.setProperty("--pdf-span-scale", String(Number(spans[i].dataset.expectedWidth) / actual));
+    }
   });
   // The items go back with the layer, so the one caller can keep them on the
   // page's entry. textForQuads() needs them to name a highlight from its quads
@@ -1975,12 +1994,36 @@ export async function buildTextLayer(page, viewport) {
 //
 // The table is rebuilt when the pages actually move (bumpDocumentLayout, called
 // from the four places that write a page element's box) and, as a net under
-// that, whenever it is more than a frame old. The net is what makes this safe to
-// reason about: a bump that somebody forgets to add later costs one frame of
-// staleness in a page number, not a wrong answer that persists.
+// that, whenever the SCROLLER'S OWN HEIGHT has changed since it was built. The
+// net is what makes this safe to reason about: a bump that somebody forgets to
+// add later costs nothing at all, not a wrong answer that persists.
+//
+// ── The net used to be a clock, and the clock was the whole cost ──────────
+//
+// It was `more than a frame old`, and a frame is exactly how often this is
+// asked: currentDocumentPage is reached from the rAF-coalesced scroll pass in
+// src/main.js, from the IntersectionObserver's trimRenderedPages and
+// updatePageIndicator, from src/documents/pdf-page-notes.js, and from the pen's
+// rail at every stroke. So the table missed on essentially every call and the
+// loop below ran — 2 x pageCount layout reads and three fresh typed arrays, per
+// frame, on a document that had not moved a pixel. On a three-hundred page paper
+// that is six hundred forced reads a frame, and it is paid in both of the
+// gestures this surface is reported slow in: scrolling it, and writing on it.
+//
+// scrollHeight answers the same question in ONE read. Every way a page can move
+// changes the height of the thing they are stacked in — a render replacing a
+// placeholder, a relayout at a new scale, a page added or torn out — so a total
+// that has not changed is a stack that has not moved. It is a strictly better
+// net than the clock as well as a cheaper one: it does not go stale while the
+// reader sits still, and it catches a miss immediately rather than a frame late.
+//
+// The read itself is nearly free where it matters. During a scroll nothing has
+// written to the DOM, so layout is clean and asking for scrollHeight flushes
+// nothing; and where something HAS written, one flush is the same flush the
+// loop would have forced anyway.
 let pageBottoms = null;
 let pageBottomsGeneration = -1;
-let pageBottomsAt = 0;
+let pageBottomsHeight = -1;
 let documentLayoutGeneration = 0;
 
 // The pages have moved. Called from every place that writes a .pdf-page's box.
@@ -1991,21 +2034,16 @@ export function bumpDocumentLayout() {
   lastPageGeneration = -1;
 }
 
-// How long a geometry table may be trusted without a bump. One frame: long
-// enough that a burst of scroll events shares one flush, short enough that
-// nothing the reader can see is ever a frame behind where the pages are.
-const PAGE_GEOMETRY_MAX_AGE_MS = 16;
-
 // Every page's bottom edge, in scroller coordinates — or null when the document
 // is not fully built, which is the one case the table cannot describe (a page
 // with no entry is SKIPPED by the scan this replaces, and "skip" is not
 // something a sorted array of bottoms can express). The caller falls back to the
 // scan for that, so the answer is identical either way.
 function documentPageGeometry() {
-  const now = performance.now();
+  const height = el.documentView?.scrollHeight ?? -1;
   if (pageBottoms
       && pageBottomsGeneration === documentLayoutGeneration
-      && now - pageBottomsAt < PAGE_GEOMETRY_MAX_AGE_MS) {
+      && pageBottomsHeight === height) {
     return pageBottoms;
   }
   const count = openPdf.pageCount;
@@ -2023,7 +2061,7 @@ function documentPageGeometry() {
   }
   pageBottoms = { tops, heights, bottoms };
   pageBottomsGeneration = documentLayoutGeneration;
-  pageBottomsAt = now;
+  pageBottomsHeight = height;
   return pageBottoms;
 }
 
@@ -2048,6 +2086,19 @@ let lastPageAnswer = 0;
 // box.
 let lastPageGeneration = -1;
 let lastPageAt = 0;
+
+// How long THIS memo may be trusted without a bump. It used to guard the
+// geometry table as well, and there it was the whole cost — see the note on
+// documentPageGeometry, which nets on the scroller's height instead now.
+//
+// Here the clock is still the right instrument and is now cheap. A reader
+// sitting perfectly still is the only case it fires for (any movement changes
+// scrollTop and misses the memo anyway), and what it costs on the far side is no
+// longer a rebuild of the whole table: it is one scrollHeight read, which
+// answers "have the pages moved" and hands back the same table when they have
+// not. So the staleness bound the comment above is about is kept, at a price
+// worth paying for it.
+const PAGE_MEMO_MAX_AGE_MS = 16;
 
 export function currentDocumentPage() {
   const view = el.documentView;
@@ -2074,7 +2125,7 @@ export function currentDocumentPage() {
   const top = view.scrollTop;
   if (top === lastPageTop && lastPageAnswer
       && lastPageGeneration === documentLayoutGeneration
-      && performance.now() - lastPageAt < PAGE_GEOMETRY_MAX_AGE_MS) {
+      && performance.now() - lastPageAt < PAGE_MEMO_MAX_AGE_MS) {
     return lastPageAnswer;
   }
 
@@ -2114,9 +2165,38 @@ export function currentDocumentPage() {
 export function forgetDocumentPageGuess() {
   pageBottoms = null;
   pageBottomsGeneration = -1;
+  pageBottomsHeight = -1;
   lastPageTop = -1;
   lastPageAnswer = 0;
   lastPageGeneration = -1;
+}
+
+// The same answer, but only when it is already known — and NEVER at the price of
+// a measurement.
+//
+// This is the memo above with the clock taken off and the fall-through removed,
+// so the only two things it can read are `scrollTop` (a scroll offset, not a
+// geometric one, so it forces nothing) and a number this module already had. It
+// returns 0 for "I do not know", and the caller decides what to do about that.
+//
+// It exists for one caller and must not grow others: the pen's rail, which asks
+// which page is in view at every single stroke in order to decide whether its
+// `Clear` button is greyed out. That question was reaching currentDocumentPage
+// — and reaching it AFTER the rail had already written half a dozen attributes,
+// so the read forced the style and layout those writes had just invalidated. A
+// stroke is not a scroll and the rail is not the page indicator; a disabled
+// attribute that is one generation behind is invisible, and askToClearPage asks
+// the authoritative question again before it does anything.
+//
+// Anything that the reader can SEE be wrong — the page indicator, the saved
+// reading position — keeps currentDocumentPage, whose clock is what bounds how
+// stale those are allowed to be.
+export function documentPageInViewCheap() {
+  const view = el.documentView;
+  if (!view || !openPdf) return 0;
+  if (!lastPageAnswer) return 0;
+  if (lastPageGeneration !== documentLayoutGeneration) return 0;
+  return view.scrollTop === lastPageTop ? lastPageAnswer : 0;
 }
 
 // How far into the current page the reader is, 0..1 — the second half of a
@@ -2571,9 +2651,10 @@ export function initDocumentPinchZoom() {
       origin: { x: focal.x - hostRect.left, y: focal.y - hostRect.top },
       ratio: 1
     };
+    attachPinchMove();
   }, { passive: true });
 
-  view.addEventListener("touchmove", (event) => {
+  const onPinchMove = (event) => {
     // A gesture that stops being two fingers is over, and it has to be ENDED
     // rather than merely ignored: returning here left the transform painted and
     // the pinch object live, so the next touchend committed a scale from a
@@ -2593,7 +2674,31 @@ export function initDocumentPinchZoom() {
     // not stretch to a size it is about to snap back from.
     pinch.ratio = clampScale(pinch.startScale * ratio) / pinch.startScale;
     paintPinch(pinch.origin, pinch.ratio);
-  }, { passive: false });
+  };
+
+  // ── ...and it is only BOUND while there are two fingers on the glass ──────
+  //
+  // A non-passive touchmove is a promise to the browser that the main thread
+  // might cancel this gesture, so a touch scroll cannot begin on the compositor
+  // until the main thread has answered. Bound permanently, that tax was paid by
+  // every one-finger scroll of every paper — for a handler whose first line is
+  // `event.touches.length !== 2`, which is to say for nothing at all, and worst
+  // exactly when the main thread is busy and scrolling already feels bad.
+  //
+  // touchstart precedes the touchmoves of its own sequence, so binding from
+  // there gives the pinch everything it had; and a pinch is not a scroll, so the
+  // round trip it does cost is one nobody is waiting on.
+  let pinchMoveOn = false;
+  function attachPinchMove() {
+    if (pinchMoveOn) return;
+    view.addEventListener("touchmove", onPinchMove, { passive: false });
+    pinchMoveOn = true;
+  }
+  function detachPinchMove() {
+    if (!pinchMoveOn) return;
+    view.removeEventListener("touchmove", onPinchMove, { passive: false });
+    pinchMoveOn = false;
+  }
 
   // One commit, when the fingers lift. `touchend` fires per finger, so this
   // runs on the first of the two leaving — which is right: the gesture is over
@@ -2601,6 +2706,7 @@ export function initDocumentPinchZoom() {
   const endPinch = () => {
     const gesture = pinch;
     pinch = null;
+    detachPinchMove();
     if (!gesture || !openPdf) { clearPinchPaint(); return; }
     // Paint dropped FIRST: pageAnchorAt measures with getBoundingClientRect,
     // and a box that is still scaled reports where the transform put it rather
