@@ -59,6 +59,9 @@ const VENDORED = [
 
 const PROJECT_URL = "https://demoproject.supabase.co";
 const SESSION_STORAGE_KEY = "sb-demoproject-auth-token";
+// Recall's own copy of the refresh token, kept because supabase-js DELETES the
+// record above whenever it decides a refresh has failed for good.
+const SESSION_BACKUP_KEY = "recall:session-backup-v1";
 
 // The scenarios, and what each one is standing in for.
 //
@@ -92,11 +95,69 @@ const CASES = [
     session: "hang", stored: true, library: false, expectLogin: false
   },
   {
+    // The case supabase-js's own eviction creates, and the one nothing could
+    // recover from: its session record is gone, so `hasRememberedSession` said
+    // no, so boot showed the wall — on a device that has a perfectly good
+    // refresh token sitting beside it. Two assertions, not one: the wall must
+    // stay away AND the sign-in must actually come back, or this is only a
+    // nicer way of being signed out.
+    name: "session evicted, a remembered refresh token",
+    real: "supabase-js gave up on the token; the copy kept beside it can still be spent",
+    session: "none", stored: false, library: false, backup: true,
+    expectLogin: false, expectRecovered: true
+  },
+  {
     name: "never signed in here",
     real: "a genuinely new device — the wall is CORRECT here",
     session: "none", stored: false, library: false, expectLogin: true
   }
 ];
+
+// A GoTrue token response, shaped as supabase-js will read it.
+//
+// The access token has to be a real JWT — three base64url segments — because the
+// client DECODES it to learn when it expires. Nothing verifies the signature on
+// this side, so the third segment is a placeholder; everything the client acts
+// on is in the payload.
+// The project is a different origin from the page, so every one of these needs
+// the header that lets the browser hand the reply to the app at all — and the
+// custom headers supabase-js sends (apikey, x-client-info) make Chrome ask
+// first, with an OPTIONS nobody would otherwise answer.
+const CORS = {
+  "access-control-allow-origin": "*",
+  "access-control-allow-headers": "*",
+  "access-control-allow-methods": "*"
+};
+
+function tokenResponse(method) {
+  if (String(method).toUpperCase() === "OPTIONS") {
+    return { status: 204, contentType: "text/plain", body: "", headers: CORS };
+  }
+  const b64 = (obj) => Buffer.from(JSON.stringify(obj)).toString("base64url");
+  const now = Math.floor(Date.now() / 1000);
+  const access = `${b64({ alg: "HS256", typ: "JWT" })}.`
+    + `${b64({ sub: "user-1111-2222", aud: "authenticated", role: "authenticated", iat: now, exp: now + 3600 })}`
+    + ".signature-not-checked-here";
+  return {
+    status: 200,
+    contentType: "application/json",
+    headers: CORS,
+    body: JSON.stringify({
+      access_token: access,
+      token_type: "bearer",
+      expires_in: 3600,
+      expires_at: now + 3600,
+      // Rotated, exactly as a real project rotates it — which is also what the
+      // app is expected to write back over its own remembered copy.
+      refresh_token: "rt-rotated",
+      user: {
+        id: "user-1111-2222", aud: "authenticated", role: "authenticated",
+        email: "reader@example.com", app_metadata: {}, user_metadata: {},
+        created_at: new Date(0).toISOString()
+      }
+    })
+  };
+}
 
 function stubScript(kase) {
   return `(() => {
@@ -142,6 +203,11 @@ function stubScript(kase) {
         expires_at: Math.floor(Date.now() / 1000) - 60
       }));
     }
+    if (CASE.backup) {
+      localStorage.setItem(${JSON.stringify(SESSION_BACKUP_KEY)}, JSON.stringify({
+        ref: "demoproject", userId: user.id, refreshToken: "rt", at: Date.now()
+      }));
+    }
     if (CASE.library) {
       localStorage.setItem("flashcards_last_user_id", user.id);
       localStorage.setItem("flashcards_local_decks_index_v1", JSON.stringify([
@@ -159,7 +225,21 @@ async function run(base, kase) {
   try {
     const page = await browser.newPage();
     await page.setRequestInterception(true);
-    page.on("request", (r) => (r.url().includes("cdn.jsdelivr.net") ? r.abort() : r.continue()));
+    page.on("request", (r) => {
+      if (r.url().includes("cdn.jsdelivr.net")) return r.abort();
+      // ── The project's token endpoint, answered ─────────────────────────
+      //
+      // supabase-js is VENDORED in this repo, so the script tag in index.html
+      // overwrites the stub above with the real library — which is the right
+      // thing for every case here and the reason they are worth running at all:
+      // what is under test is the app's behaviour against the real client. But
+      // the real client goes to the network for a refresh, and this project does
+      // not exist. Every other case wants that failure. This one wants the
+      // opposite, so the one request restoreSessionFromBackup makes is given the
+      // answer a live project would give it.
+      if (kase.backup && /\/auth\/v1\/token/.test(r.url())) return r.respond(tokenResponse(r.method()));
+      return r.continue();
+    });
     for (const lib of VENDORED) {
       if (existsSync(lib)) await page.evaluateOnNewDocument(readFileSync(lib, "utf8"));
     }
@@ -189,6 +269,10 @@ async function run(base, kase) {
         return {
           loginVisible: visible("loginOverlay"),
           setupVisible: visible("setupOverlay"),
+          // The chip is the standing "syncing is paused" mark. Down means the
+          // session came back, which is the half of a recovery that a login
+          // wall staying away does not by itself prove.
+          chipVisible: visible("signedOutIndicator"),
           syncPill: document.getElementById("syncIndicator")?.textContent?.trim() || "",
           pillAction: document.getElementById("syncIndicator")?.dataset.action || ""
         };
@@ -205,11 +289,14 @@ let problems = 0;
 try {
   for (const kase of CASES) {
     const got = await run(base, kase);
-    const ok = got.loginVisible === kase.expectLogin;
+    const recovered = !got.chipVisible;
+    const ok = got.loginVisible === kase.expectLogin
+      && (!kase.expectRecovered || recovered);
     if (!ok) problems++;
     console.log(`${ok ? "ok  " : "FAIL"}  ${kase.name}`);
     console.log(`        ${kase.real}`);
     console.log(`        login wall: ${got.loginVisible} (expected ${kase.expectLogin})` +
+      `${kase.expectRecovered ? `, signed back in: ${recovered} (expected true)` : ""}` +
       `${got.syncPill ? `, pill: "${got.syncPill}"${got.pillAction ? ` [${got.pillAction}]` : ""}` : ""}`);
     if (got.errors.length) {
       problems++;

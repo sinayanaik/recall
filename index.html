@@ -1017,7 +1017,7 @@
                    like the swatches and the nibs, and shown only while the
                    eraser is the armed tool (refreshInkRail). -->
               <div class="ink-rail-group" id="inkRailEraser" role="group" aria-label="Eraser" hidden>
-                <button class="tool-button ink-rail-btn" type="button" data-ink-action="erase-mode" aria-pressed="false" title="Rub out part of a stroke, rather than all of it — cross one letter in the middle of a word and only that letter goes" aria-label="Rub out part of a stroke">&#9021;</button>
+                <button class="tool-button ink-rail-btn is-switch" type="button" data-ink-action="erase-mode" aria-pressed="false" title="Rub out part of a stroke, rather than all of it — cross one letter in the middle of a word and only that letter goes" aria-label="Rub out part of a stroke">&#9021;</button>
               </div>
               <div class="ink-rail-group" role="group" aria-label="Tool">
                 <button class="tool-button ink-rail-btn" type="button" data-ink-tool="pen" aria-pressed="true" title="Pen" aria-label="Pen">&#9998;</button>
@@ -1030,12 +1030,24 @@
                      Drag across a line and the pill comes up with Highlight,
                      Cloze, Copy and the rest. A finger still scrolls. -->
                 <button class="tool-button ink-rail-btn" type="button" data-ink-tool="text" aria-pressed="false" title="Select text — the pen picks out words instead of drawing, so you can highlight them, make a cloze or copy them. Turn the stylus over and it still rubs out." aria-label="Select text">T</button>
-                <!-- Hold the pen still and a rough circle becomes a circle. It
-                     is a good default and it was a law: a fraction bar, a
-                     radical and a long-division rule are all held straight
-                     lines, and a page of them is a page of decisions somebody
-                     did not ask for. -->
-                <button class="tool-button ink-rail-btn" type="button" data-ink-action="snap" aria-pressed="true" title="Snap shapes — hold the pen still at the end of a stroke and a rough circle, box, line or arrow is offered as a neat one" aria-label="Snap shapes">&#9651;</button>
+              </div>
+              <!-- ── A switch, and NOT a fifth tool ─────────────────────────
+                   Hold the pen still and a rough circle becomes a circle. It
+                   is a good default and it was a law: a fraction bar, a
+                   radical and a long-division rule are all held straight
+                   lines, and a page of them is a page of decisions somebody
+                   did not ask for.
+
+                   It sat inside the Tool group above, wearing the same solid
+                   accent fill the armed tool wears — so the rail lit two
+                   buttons in the row that answers "which ONE tool is armed",
+                   and the reader's own tool was one of a pair. Its own group
+                   now, and `is-switch` for a pressed state that reads as ON
+                   rather than as CHOSEN (styles/52-ink.css). The eraser's
+                   part/whole toggle is the same kind of control and says so
+                   the same way. -->
+              <div class="ink-rail-group" role="group" aria-label="Shapes">
+                <button class="tool-button ink-rail-btn is-switch" type="button" data-ink-action="snap" aria-pressed="true" title="Snap shapes — hold the pen still at the end of a stroke and a rough circle, box, line or arrow is offered as a neat one" aria-label="Snap shapes">&#9651;</button>
               </div>
               <div class="ink-rail-group" role="group" aria-label="Undo">
                 <button class="tool-button ink-rail-btn" type="button" data-ink-action="undo" title="Undo" aria-label="Undo">&#8630;</button>
@@ -1045,7 +1057,7 @@
                      that a stroke cannot put right — and it still goes on the
                      undo stack, so the answer to a mistaken yes is the arrow
                      to its left. Disabled on a page with no ink on it. -->
-                <button class="tool-button ink-rail-btn is-danger" type="button" data-ink-action="clear" title="Clear the page — remove every mark from the page you are looking at" aria-label="Clear the page">&#9127;</button>
+                <button class="tool-button ink-rail-btn is-labelled is-danger" type="button" data-ink-action="clear" title="Clear the page — remove every mark from the page you are looking at" aria-label="Clear the page"><span class="ink-rail-word" aria-hidden="true">Clear</span></button>
               </div>
               <!-- ── What goes ON the page, as opposed to what draws on it ──
                    The three the reader reaches for constantly, on a notebook
@@ -1057,17 +1069,28 @@
                    Tearing a page out and changing the paper are not constant —
                    they are rows of ⋯. -->
               <div class="ink-rail-group ink-rail-page" role="group" aria-label="Add to this page">
-                <button class="tool-button ink-rail-btn" type="button" data-hw-action="add-block" title="Add a markdown text block to the page you are looking at" aria-label="Add a text block">&#43;&#9998;</button>
+                <!-- ── Words, where these three were two glyphs in a 30px box ──
+                     "+✎", "+📷" and "+▯": a plus jammed against a pencil, a
+                     full-colour camera emoji standing a head taller than every
+                     monochrome glyph beside it, and a rectangle that is tofu on
+                     any font without it. Three of the most-reached-for controls
+                     on the Write tab, and not one of them said what it did.
+                     styles/56-pen-text.css already put the rule into words for
+                     the button next door: there is no symbol for this that
+                     renders on Android, iOS and desktop alike. So these say it
+                     in letters. The pen, the eraser and the lasso keep their
+                     glyphs — those are iconic and pressed constantly. -->
+                <button class="tool-button ink-rail-btn is-labelled" type="button" data-hw-action="add-block" title="Add a markdown text block to the page you are looking at" aria-label="Add a text block"><span class="ink-rail-word" aria-hidden="true">&#43; Text</span></button>
                 <!-- Pictures go on the page as their own object, dragged and
                      resized like a text block and stored in the page's own
                      points beside it — not as markdown inside one. A photograph
                      of a whiteboard next to the working you did from it is the
                      case this is for. -->
-                <label class="tool-button ink-rail-btn file-pick" id="handwritingImageBtn" title="Add an image to the page you are looking at" aria-label="Add an image">
+                <label class="tool-button ink-rail-btn is-labelled file-pick" id="handwritingImageBtn" title="Add an image to the page you are looking at" aria-label="Add an image">
                   <input id="handwritingImageInput" type="file" accept="image/*" hidden>
-                  <span aria-hidden="true">&#43;&#128247;</span>
+                  <span class="ink-rail-word" aria-hidden="true">&#43; Image</span>
                 </label>
-                <button class="tool-button ink-rail-btn" type="button" data-hw-action="add-page" title="Add a page at the end" aria-label="Add a page">&#43;&#9647;</button>
+                <button class="tool-button ink-rail-btn is-labelled" type="button" data-hw-action="add-page" title="Add a page at the end" aria-label="Add a page"><span class="ink-rail-word" aria-hidden="true">&#43; Page</span></button>
               </div>
               <!-- While something is lassoed, or while something is on the
                    clipboard — Paste is the one control here that is FOR the
@@ -1088,13 +1111,13 @@
                    Recolouring and re-nibbing need no button at all — with a
                    selection up, a press on a swatch or a nib acts on it. -->
               <div class="ink-rail-group ink-rail-selection" id="inkRailSelection" role="group" aria-label="Selection" hidden>
-                <button class="tool-button ink-rail-btn" type="button" data-ink-action="join" title="Join — make these strokes one mark, with one note and one card" aria-label="Join">&#8862;</button>
-                <button class="tool-button ink-rail-btn" type="button" data-ink-action="split" title="Split — take these strokes out into a mark of their own" aria-label="Split">&#8863;</button>
-                <button class="tool-button ink-rail-btn" type="button" data-ink-action="duplicate" title="Duplicate — a second copy beside this one, as its own mark" aria-label="Duplicate">&#10697;</button>
-                <button class="tool-button ink-rail-btn" type="button" data-ink-action="copy" title="Copy (Ctrl+C) — to paste on this page or any other" aria-label="Copy">&#10064;</button>
-                <button class="tool-button ink-rail-btn" type="button" data-ink-action="cut" title="Cut (Ctrl+X) — take these strokes away, to paste somewhere else" aria-label="Cut">&#9986;</button>
-                <button class="tool-button ink-rail-btn" type="button" data-ink-action="paste" title="Paste (Ctrl+V) — put what you copied on the page you are looking at, as a mark of its own" aria-label="Paste">&#128203;</button>
-                <button class="tool-button ink-rail-btn is-danger" type="button" data-ink-action="delete" title="Delete these strokes" aria-label="Delete">&#128465;</button>
+                <button class="tool-button ink-rail-btn is-labelled" type="button" data-ink-action="join" title="Join — make these strokes one mark, with one note and one card" aria-label="Join"><span class="ink-rail-word" aria-hidden="true">Join</span></button>
+                <button class="tool-button ink-rail-btn is-labelled" type="button" data-ink-action="split" title="Split — take these strokes out into a mark of their own" aria-label="Split"><span class="ink-rail-word" aria-hidden="true">Split</span></button>
+                <button class="tool-button ink-rail-btn is-labelled" type="button" data-ink-action="duplicate" title="Duplicate — a second copy beside this one, as its own mark" aria-label="Duplicate"><span class="ink-rail-word" aria-hidden="true">Duplicate</span></button>
+                <button class="tool-button ink-rail-btn is-labelled" type="button" data-ink-action="copy" title="Copy (Ctrl+C) — to paste on this page or any other" aria-label="Copy"><span class="ink-rail-word" aria-hidden="true">Copy</span></button>
+                <button class="tool-button ink-rail-btn is-labelled" type="button" data-ink-action="cut" title="Cut (Ctrl+X) — take these strokes away, to paste somewhere else" aria-label="Cut"><span class="ink-rail-word" aria-hidden="true">Cut</span></button>
+                <button class="tool-button ink-rail-btn is-labelled" type="button" data-ink-action="paste" title="Paste (Ctrl+V) — put what you copied on the page you are looking at, as a mark of its own" aria-label="Paste"><span class="ink-rail-word" aria-hidden="true">Paste</span></button>
+                <button class="tool-button ink-rail-btn is-labelled is-danger" type="button" data-ink-action="delete" title="Delete these strokes" aria-label="Delete"><span class="ink-rail-word" aria-hidden="true">Delete</span></button>
               </div>
             </div>
             <!-- Over the page, not above it. Quiet until reached for, so a

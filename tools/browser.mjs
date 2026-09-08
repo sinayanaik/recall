@@ -166,13 +166,23 @@ async function makePage(client, browserState) {
             settled = true;
             return call("Fetch.failRequest", { requestId, errorReason: "Failed" }).catch(() => {});
           },
-          respond: ({ status = 200, contentType = "text/plain", body = "" } = {}) => {
+          // `headers` is optional and additive: a fulfilled response has always
+          // carried its content-type and nothing else, which is enough for a
+          // same-origin asset and not enough for a CROSS-origin API — the
+          // browser drops a reply with no access-control-allow-origin on it
+          // before the page ever sees it, and the caller is told only "failed to
+          // fetch". tools/session-persistence-check.mjs answers a Supabase
+          // project's token endpoint, which is exactly that case.
+          respond: ({ status = 200, contentType = "text/plain", body = "", headers = {} } = {}) => {
             if (settled) return Promise.resolve();
             settled = true;
             return call("Fetch.fulfillRequest", {
               requestId,
               responseCode: status,
-              responseHeaders: [{ name: "content-type", value: contentType }],
+              responseHeaders: [
+                { name: "content-type", value: contentType },
+                ...Object.entries(headers).map(([name, value]) => ({ name, value: String(value) }))
+              ],
               body: Buffer.from(body).toString("base64")
             }).catch(() => {});
           }

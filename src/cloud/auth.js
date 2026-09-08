@@ -9,7 +9,7 @@
 import { LAST_USER_STORAGE_KEY } from "../boot.js?v=__BUILD__";
 import { withTimeout } from "./net.js?v=__BUILD__";
 import { PENDING_STYLE_KEY } from "./style-sync.js?v=__BUILD__";
-import { hasRememberedSession, supabaseClient } from "./supabase-client.js?v=__BUILD__";
+import { clearSessionBackup, hasRememberedSession, readSessionBackup, rememberSessionForRecovery, supabaseClient } from "./supabase-client.js?v=__BUILD__";
 
 // How long boot will wait for a session before carrying on without one.
 // Much shorter than AUTH_TIMEOUT_MS because of what is on the other side of it:
@@ -64,7 +64,13 @@ export async function getSessionOutcome() {
       "restore session"
     );
     const session = data?.session ?? null;
-    if (session?.user) return { status: "session", session };
+    if (session?.user) {
+      // Every sighting of a live session refreshes the way back — see
+      // SESSION_BACKUP_STORAGE_KEY. The token supabase-js is holding right now
+      // is the only one that has not been spent yet.
+      rememberSessionForRecovery(session);
+      return { status: "session", session };
+    }
     // An error from getSession is never a sign-out — it is the refresh having
     // failed. Only an unambiguously empty store is.
     if (error) return { status: "unknown", session: null };
@@ -209,6 +215,81 @@ export async function refreshSessionOnce() {
   }
 }
 
+// The way back from a session supabase-js threw away.
+//
+// refreshSessionOnce above asks the client to refresh the session it HAS. This
+// is for the case where it no longer has one: a refresh that failed in a way
+// supabase-js reads as final clears its stored session outright, and from that
+// moment getSession() answers null forever, autoRefreshToken has nothing to
+// refresh, and nothing on the device can re-establish the sign-in. The user sees
+// a logout they did not ask for.
+//
+// A refresh token kept under our own key survives that (see
+// SESSION_BACKUP_STORAGE_KEY in ./supabase-client.js), and refreshSession is how
+// it is spent: handed that token it goes to the project, mints a new pair, and
+// puts the session back where supabase-js expects it — the auth listener fires,
+// the app marks itself signed in, and syncing resumes.
+//
+// Two failures, and they are not the same:
+//
+//   • the project says the token is not a token — revoked, already used and
+//     rotated past, or belonging to a user that is gone. That IS a sign-out,
+//     and the record is dropped so this stops being retried and the wall may
+//     legitimately show again.
+//   • anything else — offline, a timeout, a 5xx, a project asleep. Nothing has
+//     been learnt about the sign-in, so the record STAYS and the next attempt
+//     (an `online` event, a return to the tab, the backoff in boot.js) tries
+//     again. Forgetting here is exactly the bug this function exists for.
+export async function restoreSessionFromBackup() {
+  if (!supabaseClient || !navigator.onLine) return null;
+  const backup = readSessionBackup();
+  if (!backup?.refreshToken) return null;
+  try {
+    // refreshSession with a token of our own, not setSession: setSession takes
+    // an access token as well and DECODES it before it will do anything, so the
+    // one input this device is certain to still have — the refresh token — is
+    // not enough for it, and a stale access token beside it is refused outright
+    // ("Invalid JWT structure"). refreshSession spends the refresh token, which
+    // is the whole of what is wanted here, and stores the session it gets back
+    // where supabase-js expects it — so the auth listener fires and the app
+    // marks itself signed in through its ordinary path.
+    const { data, error } = await withTimeout(
+      supabaseClient.auth.refreshSession({ refresh_token: backup.refreshToken }),
+      AUTH_TIMEOUT_MS,
+      "restore sign-in"
+    );
+    if (error) {
+      if (isRevokedRefreshTokenError(error)) clearSessionBackup();
+      return null;
+    }
+    const session = data?.session ?? null;
+    if (!session?.user) return null;
+    rememberSessionForRecovery(session);
+    return session;
+  } catch (error) {
+    console.warn("Could not restore the remembered session", error);
+    return null;
+  }
+}
+
+// Is this the project saying the refresh token itself is no good — as opposed to
+// saying nothing at all?
+//
+// Deliberately narrower than isSessionExpiredError, which is about a request
+// whose JWT did not verify and is answered by refreshing. This is the answer to
+// a refresh, and the only one that means the sign-in is genuinely over. "Already
+// Used" is deliberately NOT in it: that is a rotation race between two tabs or a
+// PWA resuming into one, and the tab that won it has already stored a session
+// this device can use — which is why treating it as a sign-out threw people out
+// while they were signed in.
+function isRevokedRefreshTokenError(error) {
+  const code = String(error?.code || "");
+  if (code === "refresh_token_not_found" || code === "user_not_found") return true;
+  const message = String(error?.message || error || "");
+  return /refresh[_ ]token[_ ]not[_ ]found|invalid refresh token(?!: already used)|user (from sub claim in jwt )?does not exist/i
+    .test(message);
+}
+
 // Every cloud data call is wrapped in withTimeout; these three never were, and
 // they are the ones a user is actively waiting on. On a network that accepts a
 // connection and then answers nothing — the exact failure the service worker's
@@ -269,9 +350,27 @@ export async function handleLogout() {
   // on a shared device that uploaded one user's style into another's row. The
   // quick-note queues are deck-scoped and self-discard; this one never was.
   try { localStorage.removeItem(PENDING_STYLE_KEY); } catch (_) {}
+  // The way back, dropped. Pressing Sign out is the one statement that means
+  // this device should stop being able to re-establish the session by itself —
+  // every other route to a missing session is a failure to be recovered from.
+  clearSessionBackup();
   if (supabaseClient) {
     try {
-      await withTimeout(supabaseClient.auth.signOut(), AUTH_TIMEOUT_MS, "sign out");
+      // ── scope: "local" — sign THIS device out, not every device ──────────
+      //
+      // supabase-js defaults to a GLOBAL sign-out, which revokes every refresh
+      // token the user has anywhere. Nothing in this app asks for that and the
+      // button does not offer it: it says "Sign out", on one device, next to the
+      // decks on that device. What it actually did was sign the phone out of the
+      // laptop, silently and hours later — the laptop's next refresh comes back
+      // "Refresh Token Not Found", which is a real sign-out and correctly ends
+      // in the login wall, so the reader is asked for their password on a device
+      // they never touched. That is a large part of "it logs me out a lot".
+      //
+      // Local is also the only scope that is honest about what it can promise
+      // offline: the stored session is cleared here either way, and a device
+      // that is not on the network cannot be signed out by anybody.
+      await withTimeout(supabaseClient.auth.signOut({ scope: "local" }), AUTH_TIMEOUT_MS, "sign out");
     } catch (error) {
       // Offline sign-out still clears the local session below via the listener.
       console.warn("Sign-out network call failed (continuing locally)", error);

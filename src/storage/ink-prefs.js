@@ -1,4 +1,5 @@
-// Which pen you last wrote with, on this device.
+// Which pen you last wrote with, and what paper you last wrote it on — on this
+// device.
 //
 // A device preference and not a deck one, deliberately: the colour you write
 // corrections in is a fact about you, and having to choose it again on every
@@ -11,6 +12,7 @@
 // written by a build with a different palette becomes one of this build's
 // rather than a fifth pen nothing in the rail is ever shown as selected for.
 
+import { BLANK_PAPER_DEFAULT, normalizeBlankPaper } from "../documents/blank-pdf.js?v=__BUILD__";
 import { INK_ERASER_SIZE_DEFAULT, INK_ERASE_MODE_DEFAULT, INK_PEN_DEFAULT, INK_TOOL_DEFAULT, INK_WIDTH_DEFAULT, normalizeInkEraseMode, normalizeInkEraserSize, normalizeInkPen, normalizeInkTool, normalizeInkWidth } from "../format/ink-colors.js?v=__BUILD__";
 import { inkPreferencesKey } from "./keys.js?v=__BUILD__";
 
@@ -107,5 +109,53 @@ export function writeInkPreferences({ pen, width, tool, eraserSize, eraseMode, s
     // Quota or a private window. Losing the preference costs the reader one
     // press next time, never a stroke.
     console.warn("Could not remember the pen", error);
+  }
+}
+
+// ── ...and which paper, which is the same kind of fact ────────────────────
+//
+// Grid, ruled or blank is a choice about how somebody writes — the same kind of
+// statement as the colour and the nib above, and remembered for the same reason.
+// It was not: every notebook was made on the default grid, so a reader who works
+// on ruled paper chose it again on every deck they ever started, and the choice
+// they had just made on the last one counted for nothing. That is the whole of
+// "remember the page style too".
+//
+// Per device rather than in the deck's meta bag, exactly like the pen: the
+// notebook itself records the paper it is DRAWN on (meta.notebook.paper, which
+// syncs and must, or the same notebook would be ruled on one device and squared
+// on another). This is only the default a NEW one starts from, and a phone and a
+// laptop are allowed to disagree about that.
+//
+// Changing an existing notebook's paper writes here too — see
+// runHandwritingMenuAction. Choosing ruled on the notebook in front of you is
+// the clearest statement anybody can make about which paper they want, and
+// treating it as a fact about that one notebook is how the preference would go
+// on never learning anything.
+export function notebookPaperPreference() {
+  try {
+    const raw = localStorage.getItem(inkPreferencesKey);
+    const parsed = raw ? JSON.parse(raw) : null;
+    // Absent means the default, not an invalid value — normalizeBlankPaper
+    // already answers both the same way, which is what makes a build with a
+    // fourth paper safe to read a record written by this one.
+    return normalizeBlankPaper(parsed?.notebookPaper);
+  } catch (_) {
+    return BLANK_PAPER_DEFAULT;
+  }
+}
+
+export function writeNotebookPaperPreference(kind) {
+  try {
+    // Merged, like every other writer here: the pen, the rail and this share one
+    // bag and a bare write would forget the other two.
+    const raw = localStorage.getItem(inkPreferencesKey);
+    const parsed = (raw ? JSON.parse(raw) : null) || {};
+    localStorage.setItem(inkPreferencesKey, JSON.stringify({
+      ...parsed,
+      notebookPaper: normalizeBlankPaper(kind)
+    }));
+  } catch (error) {
+    console.warn("Could not remember the paper", error);
   }
 }

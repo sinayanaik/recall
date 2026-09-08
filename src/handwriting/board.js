@@ -46,6 +46,7 @@
 
 import { addNotebookPage, deleteNotebookPage, ensureNotebookDocument, hasNotebook, notebookPageCount, notebookPaper, setNotebookPaper } from "../documents/notebook.js?v=__BUILD__";
 import { BLANK_PAPERS } from "../documents/blank-pdf.js?v=__BUILD__";
+import { notebookPaperPreference, writeNotebookPaperPreference } from "../storage/ink-prefs.js?v=__BUILD__";
 import { addDocumentBlock, addDocumentImageBlock } from "../documents/pdf-blocks.js?v=__BUILD__";
 import { DOC_SLOT_NOTEBOOK, deckHasHandwrittenPages } from "../documents/doc-slot.js?v=__BUILD__";
 import { currentDocumentPage, openDocumentView, pdfPageViewport, scrollToDocumentPage } from "../documents/pdf-view.js?v=__BUILD__";
@@ -137,7 +138,11 @@ export async function enterHandwritingView({ create = false } = {}) {
     paintHandwritingControls();
     return true;
   }
-  const paperState = await ensureNotebookDocument();
+  // The paper this reader last chose, not the built-in default — see
+  // notebookPaperPreference. Only ever read on the branch that MAKES a notebook:
+  // ensureNotebookDocument ignores it for one that already exists, whose own
+  // paper is recorded on the deck and syncs.
+  const paperState = await ensureNotebookDocument({ paper: notebookPaperPreference() });
   // It said no — the device store refused the save, and it has already said so.
   // The surface still has to show something honest: the offer, not whatever
   // document happened to be on the stage before this tab was pressed.
@@ -162,6 +167,11 @@ export function runHandwritingMenuAction(action) {
   if (action.startsWith("hw-paper-")) {
     const kind = action.slice("hw-paper-".length);
     if (!BLANK_PAPERS.includes(kind)) return false;
+    // Remembered before the regeneration and regardless of it: choosing ruled on
+    // the notebook in front of you is the plainest statement anybody can make
+    // about which paper they want, and setNotebookPaper returns false for the
+    // paper that is already on — which is still the reader saying it.
+    writeNotebookPaperPreference(kind);
     setNotebookPaper(kind).then(() => paintHandwritingControls());
     return true;
   }

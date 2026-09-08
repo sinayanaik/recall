@@ -270,6 +270,97 @@ export function readStoredSessionRecord() {
 }
 
 // Has this device ever completed a sign-in that was never explicitly undone?
+//
+// Either record answers yes, and the second one is the point: supabase-js
+// deletes its own the moment it gives up on a refresh, and this question is
+// asked by the code that decides whether to show the login wall. Answering "no"
+// there because a refresh failed is the bug — see SESSION_BACKUP_STORAGE_KEY.
 export function hasRememberedSession() {
-  return Boolean(readStoredSessionRecord());
+  return Boolean(readStoredSessionRecord() || readSessionBackup());
+}
+
+// ── A refresh token of our own, kept beside supabase-js's ──────────────────
+//
+// readStoredSessionRecord above answers "is this a remembered install?" out of
+// supabase-js's own key — which works right up to the moment supabase-js
+// DELETES that key. It does exactly that when a refresh fails in a way it reads
+// as final: `refresh_token_not_found`, an `Already Used` rotation race between
+// two tabs or a PWA resuming into one, a 5xx from a project that was asleep. The
+// session record is gone, `hasRememberedSession()` says no, and from that point
+// on this device is indistinguishable from one nobody ever signed in on — so the
+// next launch shows the wall, and the launch after that, and nothing on the
+// device can put it right except typing the password again.
+//
+// That is the whole of "it logs me out for no reason". The session was never
+// revoked; the one thing that could have re-established it was thrown away
+// because a refresh failed once.
+//
+// So a copy of the refresh token is kept here, under our own key, and it is the
+// input to restoreSessionFromBackup() in ./auth.js. Nothing reads it as proof of
+// anything — a token in storage is not a session, and only verifiedCloudUserId()
+// may decide what a request runs as. It is a way BACK, tried against the
+// project, whose answer is authoritative either way: a session, or a refusal
+// naming the token, which is the one case that clears this record.
+//
+// Cleared on an explicit sign-out (handleLogout), and scoped to the project ref
+// so that "change Supabase project" cannot hand one project's token to another.
+export const SESSION_BACKUP_STORAGE_KEY = "recall:session-backup-v1";
+
+// The configured project's ref, or "". Shared by both readers below rather than
+// derived twice, since the two must agree about which project a record belongs
+// to or the scoping is decorative.
+function configuredProjectRef() {
+  const config = loadSupabaseConfig();
+  if (!config?.url) return "";
+  try {
+    return new URL(config.url).hostname.split(".")[0] || "";
+  } catch {
+    return "";
+  }
+}
+
+// Called wherever a live session is SEEN — the auth listener's every event, and
+// getSessionOutcome — rather than only at sign-in. supabase-js rotates the
+// refresh token on every refresh and fires TOKEN_REFRESHED when it does, so a
+// backup written once at sign-in would be a token that has since been spent, and
+// spending it twice is the "Already Used" failure this exists to recover from.
+export function rememberSessionForRecovery(session) {
+  const refreshToken = session?.refresh_token;
+  if (!refreshToken) return;
+  const ref = configuredProjectRef();
+  if (!ref) return;
+  try {
+    localStorage.setItem(SESSION_BACKUP_STORAGE_KEY, JSON.stringify({
+      ref,
+      userId: session?.user?.id ? String(session.user.id) : "",
+      refreshToken: String(refreshToken),
+      // The refresh token and nothing else. An access token is short-lived, is
+      // already in supabase-js's own record, and is not an input to the one
+      // call that spends this (refreshSession) — so keeping a second copy of a
+      // bearer credential in storage would buy nothing at all.
+      at: Date.now()
+    }));
+  } catch (error) {
+    // Quota, or a private window. Losing this costs a sign-in, never data.
+    console.warn("Could not remember the session for recovery", error);
+  }
+}
+
+export function readSessionBackup() {
+  const ref = configuredProjectRef();
+  if (!ref) return null;
+  try {
+    const raw = localStorage.getItem(SESSION_BACKUP_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed?.refreshToken || parsed.ref !== ref) return null;
+    return parsed;
+  } catch (error) {
+    console.warn("Could not read the remembered session", error);
+    return null;
+  }
+}
+
+export function clearSessionBackup() {
+  try { localStorage.removeItem(SESSION_BACKUP_STORAGE_KEY); } catch (_) {}
 }

@@ -110,6 +110,7 @@ const API_SRC = `async () => {
     "/src/notes/notes-view.js?v=__BUILD__",
     "/src/ui/view-mode.js?v=__BUILD__",
     "/src/ui/ink-rail.js?v=__BUILD__",
+    "/src/storage/ink-prefs.js?v=__BUILD__",
     "/src/ui/boot-screens.js?v=__BUILD__",
     "/src/cloud/supabase-client.js?v=__BUILD__",
     "/src/cards/new-deck.js?v=__BUILD__",
@@ -239,6 +240,16 @@ try {
       document.querySelector("#documentView .pdf-missing-pick")?.click();
       for (let i = 0; i < 80 && !document.querySelector("#documentStage .pdf-page canvas.pdf-canvas"); i += 1) await settle(100);
     };
+    // ── The paper this reader last chose ──────────────────────────────────
+    //
+    // Set BEFORE the first notebook is made, because that is the only moment it
+    // is read: every notebook was minted on the built-in grid however many times
+    // its owner had said they write on ruled paper, so the choice they made on
+    // the last deck counted for nothing on the next one. The colour and the nib
+    // have been remembered per device since the pen existed; this is the same
+    // kind of fact and was the one that was not.
+    api.writeNotebookPaperPreference("ruled");
+
     // Generating the paper, attaching it, and letting pdf.js lay it out. Longer
     // than a DOM settle because a real document is being opened.
     await openWrite();
@@ -269,6 +280,7 @@ try {
     return {
       strokes: strokes.length,
       notebook: Boolean(api.state.meta.notebook),
+      paper: api.state.meta.notebook?.paper || "",
       rendered: Boolean(pageEl.querySelector("canvas.pdf-canvas")),
       maxX: bounds ? bounds.maxX : 0,
       wanted,
@@ -279,6 +291,10 @@ try {
   check("the notebook's paper is a real PDF, laid out by pdf.js",
     paused.notebook && paused.rendered,
     `notebook=${paused.notebook}, page 1 rendered=${paused.rendered}`);
+  check("...on the paper this device last wrote on, not the built-in default",
+    paused.paper === "ruled",
+    `the new notebook came out on "${paused.paper}" after the reader chose ruled — `
+      + `"grid" is the default, and choosing again on every deck is what that means`);
   check("a stroke held still for 750ms keeps following the nib afterwards",
     paused.strokes > 0 && paused.maxX >= paused.wanted - 12,
     `reached ${paused.maxX.toFixed(0)} of ${paused.wanted.toFixed(0)} points across the page`);
@@ -2244,6 +2260,14 @@ try {
     api.setViewMode("handwriting");
     for (let i = 0; i < 80 && !document.querySelector("#documentStage .pdf-page canvas.pdf-canvas"); i += 1) await settle(100);
     await settle(400);
+    // ASKED for, rather than assumed. The grid is the built-in default, so this
+    // used to get one by doing nothing — which stopped being true the moment a
+    // new notebook started on the paper the device last chose (case 1 chooses
+    // ruled, which is the whole point of it). What is under test here is how a
+    // grid is DRAWN, so the grid is the thing to put on the page.
+    await api.setNotebookPaper("grid");
+    for (let i = 0; i < 80 && !document.querySelector("#documentStage .pdf-page canvas.pdf-canvas"); i += 1) await settle(100);
+    await settle(500);
     const canvas = document.querySelector("#documentStage .pdf-page[data-page-number='1'] canvas.pdf-canvas");
     if (!canvas) return { lines: 0 };
     const y = Math.floor(canvas.height / 2);
@@ -2675,9 +2699,24 @@ try {
     // lets through, because there is nothing else flipping a pen over could mean
     // — and the eraser button's own tooltip has always promised it works
     // "without leaving the pen".
+    // Where page 1 IS, read on each side of the mode change rather than once.
+    //
+    // The rail is a flex item above the scroller, not a panel floating over it
+    // (styles/52-ink.css), and refreshInkRail folds the colours and the nibs
+    // away in text mode — so the rail is a row or two shorter there and the page
+    // under it sits that much higher. A stroke drawn in pen mode and rubbed at
+    // the same SCREEN point in text mode is therefore rubbed at a different
+    // point on the PAPER, and how far out it is depends on how many rows the
+    // rail happens to wrap to at this width. The stroke is at a fixed place on
+    // the page; this is what converts that back into where it is on the glass.
+    const pageTop = () => {
+      const node = document.querySelector("#documentStage .pdf-page[data-page-number='1']");
+      return node ? node.getBoundingClientRect().top : 0;
+    };
     api.chooseInkTool("pen");
     await settle(100);
     const strokeBefore = inkCount();
+    const topWhenDrawn = pageTop();
     pen(view, "pointerdown", from + 10, y + 26, 1);
     for (let i = 1; i <= 10; i += 1) pen(view, "pointermove", from + 10 + (i * 6), y + 26, 1);
     await settle(80);
@@ -2687,17 +2726,101 @@ try {
 
     api.chooseInkTool("text");
     await settle(120);
+    const rubY = y + 26 + (pageTop() - topWhenDrawn);
     const beforeRub = inkCount();
-    nib(view, "pointerdown", from + 4, y + 26, 32, 5);
-    for (let i = 1; i <= 12; i += 1) nib(view, "pointermove", from + 4 + (i * 6), y + 26, 32, -1);
+    nib(view, "pointerdown", from + 4, rubY, 32, 5);
+    for (let i = 1; i <= 12; i += 1) nib(view, "pointermove", from + 4 + (i * 6), rubY, 32, -1);
     await settle(80);
-    nib(view, "pointerup", from + 76, y + 26, 0, 5);
+    nib(view, "pointerup", from + 76, rubY, 0, 5);
     await settle(300);
     const rubbedOut = beforeRub - inkCount();
 
+    // ── 5. The tool belongs to the SURFACE, not to the whole app ───────────
+    //
+    // "If I am in one panel using the stylus as handwriting and in another
+    // panel using it as a text selector, the switch is not seamless — it does
+    // not start draws sometimes."
+    //
+    // The Document tab and the Write tab are one #documentStage showing the
+    // deck's two documents, and they were one ink engine with ONE tool between
+    // them. So Text armed on the paper walked onto the notebook still armed: a
+    // stylus sweeping a selection across blank paper, drawing nothing, with the
+    // tool row shut and nothing on screen to say why.
+    //
+    // applyInkRailPreference is called by hand for the reason initTouchSelection
+    // was at the top of this case: main.js is not loaded here, and in the app it
+    // is the documentOpened hook — which fires for both slots — that calls it.
+    const drawOn = async (yOffset) => {
+      const pageEl = document.querySelector("#documentStage .pdf-page[data-page-number='1']");
+      if (!pageEl) return 0;
+      const box = pageEl.getBoundingClientRect();
+      const rail = document.getElementById("documentInkRail")?.getBoundingClientRect();
+      const top = Math.max(box.top + yOffset, (rail && rail.height ? rail.bottom : 0) + 30);
+      const before = inkCount();
+      pen(view, "pointerdown", box.left + 60, top, 1);
+      for (let i = 1; i <= 10; i += 1) pen(view, "pointermove", box.left + 60 + (i * 7), top + (i * 3), 1);
+      await settle(90);
+      pen(view, "pointerup", box.left + 130, top + 30, 0);
+      await settle(300);
+      return inkCount() - before;
+    };
+
+    api.chooseInkTool("text");
+    await settle(120);
+    api.setViewMode("handwriting");
+    for (let i = 0; i < 80 && api.currentPdfPageCount() !== 1; i += 1) await settle(100);
+    await settle(400);
+    api.applyInkRailPreference();
+    await settle(150);
+    const onNotebook = {
+      tool: api.inkTool(),
+      penText: document.getElementById("documentStage").classList.contains("is-pen-text"),
+      drew: await drawOn(120)
+    };
+
+    // ...and the paper still remembers what the reader left IT on, or this is
+    // not two surfaces, it is one surface being reset.
+    api.setViewMode("document");
+    for (let i = 0; i < 80 && api.currentPdfPageCount() < 2; i += 1) await settle(100);
+    await settle(400);
+    api.applyInkRailPreference();
+    await settle(150);
+    const backOnPaper = {
+      tool: api.inkTool(),
+      penText: document.getElementById("documentStage").classList.contains("is-pen-text")
+    };
+
+    // ── 6. ...and shutting the rail cannot leave it half-way out of Text ────
+    //
+    // setInkArmed(false) reached past setInkTool to the engine, so it wrote the
+    // engine's tool and left the flag the selection controller reads and the
+    // class the cursor is drawn from both saying "this stylus selects". The ink
+    // layer then started a stroke and touch-selection started a drag over it,
+    // from one contact — a pen that had stopped drawing with no lit button
+    // anywhere to explain it.
+    api.toggleInkRail(true);
+    await settle(120);
+    api.chooseInkTool("text");
+    await settle(120);
+    api.toggleInkRail(false);
+    await settle(150);
+    const afterShut = {
+      tool: api.inkTool(),
+      penText: document.getElementById("documentStage").classList.contains("is-pen-text")
+    };
+    // The rail is shut, which is also the state a mouse cannot draw in — so this
+    // is asked with the pen, exactly as a reader would.
+    const drewAfterShut = await drawOn(150);
+
+    api.toggleInkRail(true);
+    await settle(120);
     api.chooseInkTool("pen");
     await settle(100);
-    return { fatal: "", armed, textMode, highlighted, tap, drawnInPenMode, rubbedOut, errs: window.__errs.slice() };
+    return {
+      fatal: "", armed, textMode, highlighted, tap, drawnInPenMode, rubbedOut,
+      onNotebook, backOnPaper, afterShut, drewAfterShut,
+      errs: window.__errs.slice()
+    };
   }`, PEN_SRC);
 
   check("the stylus controller arms on a tablet, which is where a stylus is",
@@ -2740,6 +2863,25 @@ try {
   check("a stylus turned over still rubs out while Text is armed",
     !stylus.fatal && stylus.rubbedOut === 1,
     stylus.fatal || `${stylus.rubbedOut} mark(s) removed — the eraser end overrules the tool, and always has`);
+  // ── The two panels ─────────────────────────────────────────────────────
+  check("Text armed on the paper does not follow the pen onto the notebook",
+    !stylus.fatal && stylus.onNotebook?.tool === "pen" && stylus.onNotebook?.penText === false,
+    stylus.fatal || `the Write tab opened with the "${stylus.onNotebook?.tool}" tool armed, `
+      + `is-pen-text: ${stylus.onNotebook?.penText}`);
+  check("...so the first stroke on the notebook is a stroke",
+    !stylus.fatal && stylus.onNotebook?.drew === 1,
+    stylus.fatal || `${stylus.onNotebook?.drew} mark(s) — the pen has to draw the moment the tab opens`);
+  check("...and the paper still has Text armed when the reader goes back to it",
+    !stylus.fatal && stylus.backOnPaper?.tool === "text" && stylus.backOnPaper?.penText === true,
+    stylus.fatal || `the PDF tab came back on "${stylus.backOnPaper?.tool}", `
+      + `is-pen-text: ${stylus.backOnPaper?.penText}`);
+  check("shutting the pen's rail takes the stylus all the way out of Text",
+    !stylus.fatal && stylus.afterShut?.tool === "pen" && stylus.afterShut?.penText === false,
+    stylus.fatal || `tool "${stylus.afterShut?.tool}", is-pen-text: ${stylus.afterShut?.penText} — `
+      + `the engine and the selection controller must never disagree about the tool`);
+  check("...and the pen draws again with the rail shut",
+    !stylus.fatal && stylus.drewAfterShut === 1,
+    stylus.fatal || `${stylus.drewAfterShut} mark(s) — a stylus draws whether the rail is open or not`);
   check("...and nothing threw while the pen was selecting",
     !stylus.fatal && (stylus.errs || []).length === 0,
     stylus.fatal || (stylus.errs || []).join(" | "));

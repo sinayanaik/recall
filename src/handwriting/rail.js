@@ -16,15 +16,43 @@
 
 import { INK_ERASER_SIZES, INK_PEN_COLORS, INK_WIDTHS, inkPenVar } from "../format/ink-colors.js?v=__BUILD__";
 
-export function inkRailButton(attribute, value, label, glyph, extraClass = "") {
+// ── A glyph, and — where a glyph was never going to be enough — a word ─────
+//
+// The rail was built entirely out of symbols, and the ones that had to carry the
+// most meaning were the ones the fewest fonts agree about. "Clear the page" was
+// U+23A7, which is not a symbol for anything: it is the TOP HOOK OF A CURLY
+// BRACE, and it renders as one. "Add a text block" was a plus and a pencil
+// crammed into a 30px square, "add an image" a plus and a full-colour camera
+// emoji that sat a head taller than every monochrome glyph beside it, and "add a
+// page" a plus and a rectangle that is tofu on any font without it. Copy and
+// Duplicate were two squares nobody could tell apart. Reported, fairly, as
+// buttons that are "very much unintuitive and not properly styled".
+//
+// styles/56-pen-text.css already wrote the general rule down while solving the
+// same problem for one button: "There is no symbol for 'select text' that
+// renders on Android, iOS and desktop alike." So the controls that are reached
+// for constantly and ARE iconic — the pen, the eraser, the lasso, undo, redo —
+// stay glyphs, and everything a reader has to stop and decode gets the word.
+// `text` is that word; a button with one is laid out as a pill rather than a
+// square (styles/52-ink.css).
+export function inkRailButton(attribute, value, label, glyph, extraClass = "", text = "") {
   const button = document.createElement("button");
   button.type = "button";
-  button.className = `tool-button ink-rail-btn${extraClass ? ` ${extraClass}` : ""}`;
+  button.className = `tool-button ink-rail-btn${text ? " is-labelled" : ""}${extraClass ? ` ${extraClass}` : ""}`;
   button.dataset[attribute] = String(value);
   button.title = label;
+  // The full sentence stays on `title` and `aria-label` either way: the word on
+  // the button is short by necessity, and "Delete" is not "Delete the selected
+  // strokes". A screen reader must go on hearing the second one, so the visible
+  // word is marked away from it rather than added to it.
   button.setAttribute("aria-label", label);
   button.setAttribute("aria-pressed", "false");
-  if (glyph) button.innerHTML = glyph;
+  if (text) {
+    button.innerHTML = `${glyph ? `<span class="ink-rail-ico" aria-hidden="true">${glyph}</span>` : ""}`
+      + `<span class="ink-rail-word" aria-hidden="true">${text}</span>`;
+  } else if (glyph) {
+    button.innerHTML = glyph;
+  }
   return button;
 }
 

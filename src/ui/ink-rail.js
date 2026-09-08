@@ -26,6 +26,7 @@
 
 import { el } from "../core/dom.js?v=__BUILD__";
 import { canRedoInk, canUndoInk, clearInkPage, copyInkSelection, cutInkSelection, deleteInkSelection, duplicateInkSelection, hasInkClipboard, inkEraseMode, inkEraserSize, inkPageHasStrokes, inkPageInView, inkPageInViewCheap, inkPen, inkSelectionCount, inkSnapShapes, inkTool, inkWidth, isInkArmed, joinInkSelection, pasteInkSelection, redoInk, setInkArmed, setInkEraseMode, setInkEraserSize, setInkPen, setInkSnapShapes, setInkTool, setInkWidth, splitInkSelection, undoInk } from "../documents/pdf-ink.js?v=__BUILD__";
+import { INK_TOOL_DEFAULT } from "../format/ink-colors.js?v=__BUILD__";
 import { buildInkEraserSizes, buildInkNibs, buildInkPenSwatches, paintInkRailPressed, readInkRailPress } from "../handwriting/rail.js?v=__BUILD__";
 import { inkPreferences, inkRailOpen, writeInkPreferences, writeInkRailOpen } from "../storage/ink-prefs.js?v=__BUILD__";
 import { activeDocSlot } from "../documents/doc-slot.js?v=__BUILD__";
@@ -121,11 +122,43 @@ export function refreshInkRail() {
   rail.querySelector('[data-ink-action="paste"]')?.toggleAttribute("disabled", !pasteable);
 }
 
+// ── Which tool each of the deck's two papers was left on ──────────────────
+//
+// The Document tab and the Write tab are one #documentStage showing two
+// documents (src/documents/doc-slot.js) — and, until this, one ink engine with
+// ONE tool between them. So a reader who used the pen as a text selector on the
+// paper walked onto their notebook with the selector still armed: the stylus
+// swept a selection across blank paper and drew nothing, with the tool row shut
+// in the rail and nothing on screen saying why. Reported as "the switch is not
+// seamless — sometimes it just does not draw", and that is exactly what it is.
+//
+// The two tabs are two working surfaces and the tool belongs to the surface, so
+// it is kept per slot and restored when a document is opened. Deliberately in
+// memory rather than in ink-prefs: a tab switch is the same sitting and the
+// reader remembers what they armed a moment ago, but a LAUNCH is not, and a
+// session that opens with the pen unable to draw is the fault this is fixing
+// wearing different clothes. inkPreferences() goes on persisting only "pen" for
+// exactly that reason, and every launch starts both surfaces drawing.
+const slotTools = { doc: INK_TOOL_DEFAULT, notebook: INK_TOOL_DEFAULT };
+
+// Two of the four tools come back, and two do not — the same division
+// inkPreferences() makes for the same reason, and the same one the reading
+// rail's own row already states: "the two tools this switches between are the
+// two a reader means by draw and select". Coming back to a tab and finding the
+// ERASER armed, because that is what you were doing on it ten minutes ago, is
+// the first stroke of the visit silently deleting something; coming back to the
+// lasso is a stroke that does not appear. Both are the fault this is fixing
+// wearing a different hat, so both fall back to the pen.
+function rememberableInkTool(tool) {
+  return tool === "text" ? "text" : INK_TOOL_DEFAULT;
+}
+
 // Every setting the rail owns, read back off the engine rather than off the
 // button that was pressed, so what is remembered cannot come to disagree with
 // what is armed. One statement of it, because there are two doors to the tool
 // now — this rail, and the reading rail's own row.
 function rememberInkPreferences() {
+  slotTools[activeDocSlot()] = rememberableInkTool(inkTool());
   writeInkPreferences({
     pen: inkPen(),
     width: inkWidth(),
@@ -167,6 +200,10 @@ export function toggleInkRail(force = null) {
   // having opened it — see RAIL_OPEN_DEFAULT for why the two surfaces start in
   // different places.
   writeInkRailOpen(activeDocSlot(), isInkArmed());
+  // Shutting the rail puts the pen back to drawing (setInkArmed), so this slot
+  // is now on the pen whatever it was on before — recorded, or coming back to
+  // this tab would restore a tool the reader had already put down.
+  rememberInkPreferences();
   refreshInkRail();
 }
 
@@ -174,7 +211,13 @@ export function toggleInkRail(force = null) {
 // a document is opened; `setInkArmed` is also what lets a MOUSE draw, so on a
 // notebook this is not only about which panel is visible.
 export function applyInkRailPreference() {
-  setInkArmed(inkRailOpen(activeDocSlot()));
+  const slot = activeDocSlot();
+  setInkArmed(inkRailOpen(slot));
+  // AFTER setInkArmed, which resets the tool when it shuts the rail: this slot's
+  // tool is the last word on what the pen does here, open rail or shut. A stylus
+  // draws — or selects — whether the rail is up or not, so the tool cannot be a
+  // property of the rail's visibility.
+  setInkTool(slotTools[slot] || INK_TOOL_DEFAULT);
   refreshInkRail();
 }
 
@@ -191,6 +234,8 @@ export function initInkRail() {
   setInkPen(saved.pen);
   setInkWidth(saved.width);
   setInkTool(saved.tool);
+  slotTools.doc = saved.tool;
+  slotTools.notebook = saved.tool;
   setInkEraserSize(saved.eraserSize);
   setInkEraseMode(saved.eraseMode);
   setInkSnapShapes(saved.snapShapes);

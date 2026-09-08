@@ -7,10 +7,10 @@
 // an empty cache, repaired nothing, and marked itself done forever.
 
 import { showCard } from "./cards/card-view.js?v=__BUILD__";
-import { explicitLogout, getCachedSession, getSessionOutcome, setExplicitLogout } from "./cloud/auth.js?v=__BUILD__";
+import { explicitLogout, getCachedSession, getSessionOutcome, restoreSessionFromBackup, setExplicitLogout } from "./cloud/auth.js?v=__BUILD__";
 import { forgetSignedUrls } from "./cloud/storage-urls.js?v=__BUILD__";
 import { PENDING_STYLE_KEY } from "./cloud/style-sync.js?v=__BUILD__";
-import { initSupabaseClient, isSignedIn, loadSupabaseConfig, setSignedIn, setSigningPending, supabaseClient, waitForSupabaseLibrary } from "./cloud/supabase-client.js?v=__BUILD__";
+import { initSupabaseClient, isSignedIn, loadSupabaseConfig, rememberSessionForRecovery, setSignedIn, setSigningPending, supabaseClient, waitForSupabaseLibrary } from "./cloud/supabase-client.js?v=__BUILD__";
 import { deckStorageKey, themeStorageKey } from "./core/constants.js?v=__BUILD__";
 import { warmDeferredLibraries } from "./core/lib-loader.js?v=__BUILD__";
 import { state } from "./core/state.js?v=__BUILD__";
@@ -207,16 +207,59 @@ export async function ensureLocalLibraryOwner(userId) {
 // week in a pocket.
 export let sessionRecoveryInFlight = false;
 
+// ── ...and something has to try again when no event does ──────────────────
+//
+// The two events above are the cheap, obvious moments: the network came back, or
+// the reader came back to the tab. Neither fires for the case people actually
+// report — a phone left on one screen with the app open, on a connection that
+// is up but was briefly not, or a project that took a minute to wake. The
+// network never "returns" because it never left, the tab is never re-shown
+// because it was never hidden, and the app sits there signed out with a chip on
+// it until somebody reloads.
+//
+// So a failed attempt schedules the next one, doubling, and every success (or a
+// sign-in by hand) cancels the chain. The ceiling is generous on purpose: this
+// is a background repair nobody is waiting on, and a device that has been
+// offline for an hour should not be asking every thirty seconds.
+export const SESSION_RETRY_FIRST_MS = 30000;
+export const SESSION_RETRY_MAX_MS = 10 * 60 * 1000;
+let sessionRetryTimer = 0;
+let sessionRetryDelay = SESSION_RETRY_FIRST_MS;
+
+function cancelSessionRetry() {
+  if (sessionRetryTimer) clearTimeout(sessionRetryTimer);
+  sessionRetryTimer = 0;
+  sessionRetryDelay = SESSION_RETRY_FIRST_MS;
+}
+
+function scheduleSessionRetry() {
+  if (sessionRetryTimer) return;
+  const delay = sessionRetryDelay;
+  sessionRetryDelay = Math.min(sessionRetryDelay * 2, SESSION_RETRY_MAX_MS);
+  sessionRetryTimer = setTimeout(() => {
+    sessionRetryTimer = 0;
+    recoverSessionIfPossible();
+  }, delay);
+}
+
 export async function recoverSessionIfPossible() {
   if (sessionRecoveryInFlight) return;
-  if (isSignedIn || !supabaseClient || !navigator.onLine) return;
+  if (isSignedIn) { cancelSessionRetry(); return; }
+  if (!supabaseClient || !navigator.onLine) return;
   if (!loadSupabaseConfig()) return;
   sessionRecoveryInFlight = true;
   try {
     // getSession() refreshes an expired access token when the refresh token is
     // still good, which is exactly the case this exists for.
-    const session = await getCachedSession();
+    let session = await getCachedSession();
+    // ...and when supabase-js has nothing left to refresh, because a failure it
+    // read as final made it delete its own session record, the refresh token
+    // kept beside it still does (restoreSessionFromBackup, ./cloud/auth.js).
+    // That is the difference between "syncing is paused until you sign in again"
+    // and a logout the user never asked for and cannot undo without a password.
+    if (!session?.user) session = await restoreSessionFromBackup();
     if (session?.user) {
+      cancelSessionRetry();
       setSignedIn(true);
       await ensureLocalLibraryOwner(session.user.id);
       showAuthenticatedUI();
@@ -226,10 +269,19 @@ export async function recoverSessionIfPossible() {
       }
       setSignedOutChip(false);
       refreshSyncIndicatorBaseline();
+      // The point of getting the session back is the syncing it unblocks, and
+      // nothing else here starts one: autoSyncTick only fires on its own
+      // deadline, so a recovery a minute after launch used to leave the device
+      // holding its edits until then.
+      setTimeout(() => reconcileAllDecks({ explicit: false }), 1200);
       return;
     }
-    // Genuinely signed out, and now demonstrably online — so say so instead of
-    // leaving the app in a state that looks signed in and syncs nothing.
+    // Nothing came back. Whether that is a sign-out or a project that could not
+    // be reached is not decidable from here — restoreSessionFromBackup has
+    // already dropped the remembered token if the project said it was no good —
+    // so the state on screen stays the honest one (decks readable, syncing
+    // paused) and the chain above tries again.
+    scheduleSessionRetry();
     if (!document.getElementById("loginOverlay")?.hidden) return; // already there
     setSignedOutChip(true);
     setSyncIndicator("signedout");
@@ -239,6 +291,7 @@ export async function recoverSessionIfPossible() {
     );
   } catch (error) {
     console.warn("Session recovery attempt failed", error);
+    scheduleSessionRetry();
   } finally {
     sessionRecoveryInFlight = false;
   }
@@ -253,6 +306,13 @@ export function setupAuthListener() {
   }
   const { data } = supabaseClient.auth.onAuthStateChange(async (event, session) => {
     if (session?.user) {
+      // Every event that carries a session — the sign-in, the initial restore
+      // and, most of all, TOKEN_REFRESHED — writes the way back. supabase-js
+      // rotates the refresh token on each refresh, so the copy kept at sign-in
+      // is stale within the hour and spending a stale one is the "Already Used"
+      // failure that started this. See SESSION_BACKUP_STORAGE_KEY.
+      rememberSessionForRecovery(session);
+      cancelSessionRetry();
       setSignedIn(true);
       await ensureLocalLibraryOwner(session.user.id);
       showAuthenticatedUI();
@@ -286,6 +346,12 @@ export function setupAuthListener() {
       if (!wasExplicit && hasUsableLocalLibrary()) {
         setSignedOutChip(true);
         setSyncIndicator(navigator.onLine ? "signedout" : "offline");
+        // Forgiving the event is only half of it: something has to go and get
+        // the session back, or the app looks signed in and syncs nothing until
+        // the next reload. The first attempt is the cheap one — in a two-tab
+        // rotation race the tab that WON it has already stored a good session
+        // this one can simply read — and the backoff chain covers the rest.
+        recoverSessionIfPossible();
         return;
       }
       if (!wasExplicit && !navigator.onLine) return;
@@ -415,6 +481,11 @@ export async function bootApp() {
     openLocalLibraryOffline();
     setSignedOutChip(true);
     setSyncIndicator(navigator.onLine ? "signedout" : "offline");
+    // A remembered sign-in that getSession could not confirm. There is a way
+    // back from most of those and it costs one bounded request, so take it now
+    // rather than waiting for an `online` event that may never come — this is
+    // the launch where the reader is looking at the chip.
+    recoverSessionIfPossible();
     return;
   }
   setSigningPending(false);
@@ -508,4 +579,9 @@ export async function confirmSessionInBackground() {
     "signed-out",
     "Signed out — sign in again to resume syncing. Your decks are safe on this device."
   );
+  // ...and then try to make all of that untrue. recoverSessionIfPossible clears
+  // the chip and starts a sync if the sign-in can be re-established, which it
+  // usually can: the common cause of getting here is a refresh that failed once,
+  // not a session anybody ended.
+  recoverSessionIfPossible();
 }
