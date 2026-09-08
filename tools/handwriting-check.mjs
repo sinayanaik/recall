@@ -1441,13 +1441,30 @@ try {
     // it imports as highlights — real, wanted, and not what this is asking about.
     const inkHere = () => api.documentHighlights().filter((r) => r.kind === "ink").length;
     const backOnPaper = { pages: api.currentPdfPageCount(), marks: inkHere() };
-    // Stamped so the canvases can be recognised on the way back. Identity is the
-    // whole question below: a canvas that is the SAME ELEMENT was never
-    // rasterised again, and a set of fresh ones is a re-render however quickly
-    // it finishes.
-    const paperCanvases = [...document.querySelectorAll("#documentView .pdf-canvas")];
-    paperCanvases.forEach((c, i) => { c.dataset.wasHere = String(i); });
-    const paperCanvasCount = paperCanvases.length;
+    // ── Zoomed in, and panned onto the far side of the page ──────────────
+    //
+    // "when there's two columns and I'm zoomed in on the 2nd paragraph,
+    // switching to write and back does retain zoom level but takes to a
+    // different location."
+    //
+    // Past fit-width is the only state that HAS a horizontal position to lose:
+    // below it the page is narrower than the scroller, scrollLeft is pinned at
+    // 0, and the fault is invisible. Three presses of the toolbar's own +25% is
+    // 1.25^3 = 1.95x, so a Letter page is about twice the 390px scroller wide.
+    //
+    // BEFORE the canvas stamping below, deliberately, and before the scroll: a
+    // zoom relayouts, and stalePageForRelayout replaces every canvas. Stamping
+    // first would fail the identity assertion on the zoom rather than on the
+    // switch — and a zoomed page is taller, so which pages are near enough to
+    // the viewport to be rasterised at all changes with it. Stamped once the
+    // reader is finally where they are going, the assertion asks the stronger
+    // question: are the ZOOMED canvases the ones that come back?
+    api.zoomDocument(1.25);
+    api.zoomDocument(1.25);
+    api.zoomDocument(1.25);
+    await settle(600);
+    const scroller = document.getElementById("documentView");
+    const pageTwo = () => document.querySelector("#documentView .pdf-page[data-page-number='2']");
     // ── ...and WHERE on the paper the reader was ─────────────────────────
     //
     // "when I'm switching from write to document I'm always being taken to the
@@ -1456,7 +1473,35 @@ try {
     // answer the bug gave) can pass by accident.
     api.scrollToDocumentPage(2, 0, { smooth: false });
     await settle(300);
+    // Two thirds along the pannable range, so neither the left edge (where a
+    // dropped scrollLeft lands) nor the right edge (where a clamp lands) can
+    // pass by accident. After the jump above, which names no column and so must
+    // have left this axis alone — the pan is the reader's, not the page's.
+    scroller.scrollLeft = Math.round((scroller.scrollWidth - scroller.clientWidth) * 0.66);
+    await settle(200);
+    // Everything the assertions need, read the same way on both sides of the
+    // switch. pageLeft is the page's own left edge in the scroller's coordinates
+    // — it is 0 while the page overflows and half the slack when it does not —
+    // so the fraction below is one of the PAGE's width, not of the viewport's.
+    const pan = () => {
+      const box = pageTwo();
+      return {
+        left: scroller.scrollLeft,
+        pageWidth: box ? box.offsetWidth : 0,
+        pageLeft: (box ? box.offsetLeft : 0) - scroller.offsetLeft,
+        clientWidth: scroller.clientWidth,
+        overflow: scroller.scrollWidth - scroller.clientWidth
+      };
+    };
+    const panBefore = pan();
     const pageBeforeSwitch = api.currentDocumentPage();
+    // Stamped so the canvases can be recognised on the way back. Identity is the
+    // whole question below: a canvas that is the SAME ELEMENT was never
+    // rasterised again, and a set of fresh ones is a re-render however quickly
+    // it finishes.
+    const paperCanvases = [...document.querySelectorAll("#documentView .pdf-canvas")];
+    paperCanvases.forEach((c, i) => { c.dataset.wasHere = String(i); });
+    const paperCanvasCount = paperCanvases.length;
     api.setViewMode("handwriting");
     for (let i = 0; i < 80 && api.currentPdfPageCount() !== 1; i += 1) await settle(100);
     await settle(400);
@@ -1501,6 +1546,10 @@ try {
     // offsetTop — so the page scan found nothing past the top of the viewport
     // and fell through to its "the last page" floor, on every single park.
     const pageAfterSwitch = api.currentDocumentPage();
+    // ...and the same three numbers the park now records, read exactly as they
+    // were read before the switch. A park that carries only a page and a ratio
+    // brings this back at scrollLeft 0.
+    const panAfter = pan();
     // Left on the Write tab, which is where this section found the app and where
     // everything after it expects to be: the slot decides which paper a block or
     // a stroke is stamped for (src/documents/doc-slot.js), so a case that walks
@@ -1510,6 +1559,32 @@ try {
     await settle(300);
     // ...and the notebook's own undo stack came back with its pages.
     const undoAfterRoundTrip = api.canUndoInk();
+
+    // ── ...and what the tab press itself puts on screen, in the same tick ──
+    //
+    // "switching between write to pdf panel... I want a smooth transition."
+    //
+    // deferRender is what the real toolbar sends (the #viewModeToggle listener
+    // in src/main.js) and every setViewMode above this line omits it, which is
+    // why they can be read synchronously at all. So the deferred frame is a
+    // thing only THIS case can see: with the paint a frame late, data-doc-slot
+    // has already flipped to "doc" — flipping the paper's controls on and the
+    // pen's rail off — while the notebook's single page is still on the stage.
+    api.setViewMode("document", { deferRender: true });
+    const deferred = {
+      slot: document.getElementById("documentStage").getAttribute("data-doc-slot"),
+      pages: document.querySelectorAll("#documentView .pdf-page").length
+    };
+    for (let i = 0; i < 80 && api.currentPdfPageCount() !== paperPages; i += 1) await settle(100);
+    await settle(300);
+    // Back to fit, so a paper left at 1.95x is not what the cases after this one
+    // find on the stage — the same housekeeping, and the same reason, as the
+    // return to the Write tab above.
+    api.fitDocumentToWidth();
+    await settle(300);
+    api.setViewMode("handwriting");
+    for (let i = 0; i < 80 && api.currentPdfPageCount() !== 1; i += 1) await settle(100);
+    await settle(300);
 
     // ── Does drawing move the stamp the sync pushes on? ───────────────────
     //
@@ -1539,7 +1614,7 @@ try {
       hasPdf: Boolean(api.state.meta.pdf), hasNotebook: Boolean(api.state.meta.notebook),
       backOnPaper, backOnNotebook, paperCanvasCount,
       switched, switchedMarks, undoOnNotebook, undoAfterRoundTrip,
-      pageBeforeSwitch, pageAfterSwitch,
+      pageBeforeSwitch, pageAfterSwitch, panBefore, panAfter, deferred,
       stampBefore, stampAfter, stampIdle,
       errs: window.__errs.slice(0, 4)
     };
@@ -2332,6 +2407,53 @@ try {
   check("...and on the page the reader left, rather than the end of the paper",
     both.pageAfterSwitch === both.pageBeforeSwitch && both.pageAfterSwitch !== both.paperPages,
     `left page ${both.pageBeforeSwitch} of ${both.paperPages}, came back on page ${both.pageAfterSwitch}`);
+  // ── ...and at the same place ACROSS it ────────────────────────────────
+  //
+  // The next report from the same reader: "when there's two columns and I'm
+  // zoomed in on the 2nd paragraph, switching to write and then back to pdf
+  // does retain zoom level but takes to a different location."
+  //
+  // A park recorded a page and a ratio, which is a vertical position and
+  // nothing else, and every path that rebuilds this surface empties the
+  // scroller — so the browser clamped scrollLeft to 0 and nothing ever put it
+  // back. The zoom returned and the COLUMN did not: a reader on the right-hand
+  // column of a two-column paper was set down on the left-hand one.
+  //
+  // Compared as a fraction of the page rather than as a pixel offset, which is
+  // how the park now records it: pixels are only meaningful at one scale, and
+  // the point of the fraction is that it survives a re-fit.
+  const across = (m) => (m.pageWidth ? (m.left - m.pageLeft) / m.pageWidth : 0);
+  check("...and at the same place across the page, not back at its left edge",
+    Math.abs(across(both.panAfter) - across(both.panBefore)) < 0.005,
+    `left the page ${(across(both.panBefore) * 100).toFixed(1)}% of the way across `
+      + `(scrollLeft ${both.panBefore.left} of ${both.panBefore.overflow}), came back at `
+      + `${(across(both.panAfter) * 100).toFixed(1)}% (scrollLeft ${both.panAfter.left}) — `
+      + `a park that records only a page and a ratio returns a two-column reader to column one`);
+  // The load-bearing half. Without `pageWidth > clientWidth` a regression that
+  // quietly dropped the ZOOM would leave both scrollLefts at 0, and the
+  // assertion above would pass having asked nothing: there is no horizontal
+  // position to keep on a page that fits its scroller. Nothing else in this
+  // file asserts that the zoom survives a switch at all.
+  check("...with the zoom that made the far column reachable still on it",
+    both.panBefore.pageWidth > both.panBefore.clientWidth
+      && both.panAfter.pageWidth === both.panBefore.pageWidth,
+    `the page was ${both.panBefore.pageWidth}px wide in a ${both.panBefore.clientWidth}px scroller `
+      + `and came back ${both.panAfter.pageWidth}px`);
+  // ── ...and the tab press does not show one paper's chrome over the other's ─
+  //
+  // "I want ... a smooth transition." setViewMode defers its paint a frame for
+  // the user-facing toggle, which is right for the notes (a full marked +
+  // DOMPurify pass before the `is-active` pill could reach the screen) and pure
+  // cost between the two papers: #documentStage never hides, data-doc-slot is
+  // flipped synchronously, and styles/53-handwriting.css swaps whole control
+  // sets on that attribute with `display`. So the frame showed the paper's
+  // toolbar over the notebook's page. Read in the same tick as the press, which
+  // is the only place that frame exists.
+  check("...and pressing the tab does not show one paper's chrome over the other's pages",
+    both.deferred.slot === "doc" && both.deferred.pages === both.paperPages,
+    `the stage said "${both.deferred.slot}" with ${both.deferred.pages} page(s) under it, `
+      + `against the paper's ${both.paperPages} — a deferred paint flips the controls a frame `
+      + `before the pages`);
   check("...and an undo made before the switch still works after it",
     both.undoOnNotebook && both.undoAfterRoundTrip,
     `canUndoInk() was ${both.undoOnNotebook} on the notebook and ${both.undoAfterRoundTrip} after a round trip `
