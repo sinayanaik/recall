@@ -97,6 +97,10 @@ export function setViewMode(mode, options = {}) {
   // a reason to lose a sentence. A no-op when nothing is open.
   closeHighlightsEditor();
   const changed = state.viewMode !== next;
+  // Read before it is overwritten. The deferred paint at the foot of this
+  // function needs to know whether the reader is arriving at the document stage
+  // or merely swapping which paper is on it — see staysOnDocument.
+  const previous = state.viewMode;
   state.viewMode = next;
   // Before the stages are shown and hidden below: the split's own layout is a
   // class on the panel that decides which of them gets a column, and setting it
@@ -206,7 +210,28 @@ export function setViewMode(mode, options = {}) {
     }
   };
 
-  if (options.deferRender) {
+  // ── ...except between the two papers, where the frame is pure cost ────────
+  //
+  // The defer above is about renderNotesView. A switch between PDF and Write is
+  // not that: both are `documentActive`, so #documentStage never hides — it is
+  // already up and already laid out — and the work behind it is an appendChild
+  // of a subtree that is still rasterised, out of the park in pdf-view.js.
+  //
+  // What the frame bought instead was a mismatch. data-doc-slot is flipped in
+  // the synchronous block above, and styles/53-handwriting.css swaps whole
+  // control sets on that attribute with display, no transition — so for one
+  // whole frame the reader saw the INCOMING tab's chrome, at its new height,
+  // over the OUTGOING tab's pages: the pen's rail sitting on the paper they
+  // just left. The `is-active` pill is flipped in that same block either way,
+  // so painting here rather than a frame later shows it sooner, never later.
+  //
+  // This closes the Write → PDF direction, which is the one the switch is
+  // reported jumpy in. PDF → Write still crosses a microtask whatever happens
+  // here: enterHandwritingView awaits ensureNotebookDocument() before it opens
+  // the notebook (src/handwriting/board.js). Making THAT synchronous in the
+  // already-made case is a different change and is deliberately not this one.
+  const staysOnDocument = documentActive && (previous === "document" || previous === "handwriting");
+  if (options.deferRender && !staysOnDocument) {
     requestAnimationFrame(() => {
       if (token !== viewModePaintToken) return;
       paint();
