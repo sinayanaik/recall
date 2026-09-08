@@ -74,8 +74,9 @@ import { goToBookmark } from "../notes/bookmark.js?v=__BUILD__";
 import { openStylePanel } from "../cloud/style-sync.js?v=__BUILD__";
 import { reconcileAllDecks } from "../sync/reconcile.js?v=__BUILD__";
 import { fitDocumentToWidth, togglePdfInvert } from "../documents/pdf-view.js?v=__BUILD__";
-import { toggleInkRail } from "./ink-rail.js?v=__BUILD__";
+import { chooseInkTool, toggleInkRail } from "./ink-rail.js?v=__BUILD__";
 import { toggleRegionSelect } from "../documents/pdf-region.js?v=__BUILD__";
+import { inkTool } from "../documents/pdf-ink.js?v=__BUILD__";
 import { onDocumentSurface } from "../documents/doc-slot.js?v=__BUILD__";
 
 export function isReadingRailExpanded() {
@@ -286,6 +287,13 @@ export function refreshReadingRailModes() {
   // so this row needs nothing of its own to stay in step.
   mirrorMode("ink", el.documentInkBtn);
   mirrorMode("region", el.documentRegionBtn);
+  // Not mirrorMode: the tool is not a button's aria-pressed anywhere, it is the
+  // engine's own state, and refreshInkRail paints the rail's four tool buttons
+  // FROM it. Reading it directly is the same discipline — one statement of what
+  // is armed — and it works with the pen's rail shut, which mirroring a button
+  // inside a hidden panel would not.
+  const penTextRow = row("pen-text");
+  if (penTextRow) penTextRow.setAttribute("aria-pressed", inkTool() === "text" ? "true" : "false");
   mirrorMode("immersive", el.immersiveModeBtn);
   mirrorMode("focus", el.focusModeBtn);
   // The edit pill says which way it is set with a CLASS, not aria-pressed
@@ -399,6 +407,11 @@ export function initReadingRail() {
     else if (action === "dark-page") togglePdfInvert();
     else if (action === "ink") toggleInkRail();
     else if (action === "region") toggleRegionSelect();
+    // Back to the pen rather than to whatever was armed before it: the two
+    // tools this switches between are the two a reader means by "draw" and
+    // "select", and coming back to the eraser because that is where they had
+    // been an hour ago is a surprise nobody asked for.
+    else if (action === "pen-text") chooseInkTool(inkTool() === "text" ? "pen" : "text");
     // The pill's own click, not a copy of what it does. Everything else in this
     // tray calls an exported function; the edit toggle's behaviour lives in an
     // anonymous listener in src/main.js and has no name to import, and giving it

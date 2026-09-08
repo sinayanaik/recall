@@ -90,6 +90,11 @@ export function buildInkEraserSizes(host) {
   host.insertBefore(frag, host.firstChild);
 }
 
+// The three that MARK the page — INK_DRAW_TOOLS, not INK_TOOLS. The fourth,
+// "text", turns the stylus into a way of selecting words instead of drawing
+// them, and this rail is the drawing SHEET's: blank paper inside a note, with no
+// text on it to select. The paper and the notebook carry all four, in their own
+// markup in index.html.
 export function buildInkToolGroup() {
   const tools = document.createElement("div");
   tools.className = "ink-rail-group";

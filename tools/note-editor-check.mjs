@@ -622,7 +622,10 @@ check("...with cloze still withheld, because a note is not a card face",
       offers: {
         pens: palette.INK_PEN_COLORS.length,
         nibs: palette.INK_WIDTHS.length,
-        tools: palette.INK_TOOLS.length
+        // The three that mark the page, not all four: the rail's fourth is
+        // "text", which turns the stylus into a way of selecting words, and a
+        // blank drawing sheet has none to select. See INK_DRAW_TOOLS.
+        tools: palette.INK_DRAW_TOOLS.length
       },
       // The sheet must be ON TOP. The app's toolbar is z-index 500 and its
       // panels run to 400; a sheet below them is a drawing surface with a row

@@ -96,7 +96,7 @@
 
 import { PDF_BLOCK_CLASS, PDF_INK_LAYER_CLASS } from "../core/constants.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
-import { setInkPenDown } from "../core/gesture.js?v=__BUILD__";
+import { setInkPenDown, setPenTextMode } from "../core/gesture.js?v=__BUILD__";
 import { QUAD_GEOMETRY_VERSION, documentInkMarks, freshDocumentHighlightId, setDocumentInkForPage } from "./pdf-highlights.js?v=__BUILD__";
 import { REGION_CLASS } from "./pdf-region.js?v=__BUILD__";
 import { currentDocumentPage, documentPageInViewCheap, pdfPageElement, pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
@@ -105,7 +105,7 @@ import { INK_FORMAT_VERSION, INK_MARK_IDLE_MS, decodeInkStrokes, encodeInkStroke
 import { notifyHighlightsChanged } from "../format/highlight-edit.js?v=__BUILD__";
 import { inkSvgFile } from "../format/ink-svg.js?v=__BUILD__";
 import { storeImageOrQueue } from "../images/outbox.js?v=__BUILD__";
-import { createInkEngine } from "../render/ink-engine.js?v=__BUILD__";
+import { createInkEngine, isEraserEvent } from "../render/ink-engine.js?v=__BUILD__";
 
 // A press shorter and stiller than both of these was a tap, not a stroke.
 // 150ms is under the 240ms the touch controller waits for a press, so the two
@@ -429,6 +429,22 @@ function sameEncoding(a, b) {
 // ── Pointer plumbing ───────────────────────────────────────────────────────
 
 function inkTakesPointer(event) {
+  // ── The "text" tool, which is the ink layer standing down ────────────────
+  //
+  // With it armed the pen is not marking the page at all: it drives the
+  // selection controller instead (src/notes/touch-selection.js), which is the
+  // only way a stylus can reach the highlighter, the cloze, the copy and the
+  // rest of what the selection pill has always offered on a paper. Refused for
+  // the MOUSE as well as for the pen, or the rail being open would go on
+  // meaning "a drag inks" on a desktop while the reader had just said it does
+  // not.
+  //
+  // ...except a stylus turned over. isEraserEvent is the engine's own test and
+  // it already overrules whatever tool is armed for one stroke (see begin()),
+  // so the eraser end goes on rubbing out here exactly as the eraser button's
+  // own tooltip promises — "without leaving the pen" covers this mode too, and
+  // there is nothing else flipping a stylus over could mean.
+  if (inkTool() === "text" && !isEraserEvent(event)) return false;
   if (event.pointerType === "pen") return true;
   // A mouse only draws when the reader has opened the rail, because a mouse has
   // no way of saying which it meant and a click that inked instead of selecting
@@ -689,7 +705,19 @@ export function setInkTool(tool) {
   // deliberate break in what you were doing, and the strokes after it are about
   // something else.
   closeOpenMark();
-  ensureEngine().setTool(normalizeInkTool(tool));
+  const next = normalizeInkTool(tool);
+  // A stroke half drawn when the reader presses Text must not commit: they have
+  // just said the pen is not drawing, and the nib is still on the glass.
+  // cancelInkPress is idempotent and does nothing when no press is live.
+  if (next === "text") cancelInkPress();
+  ensureEngine().setTool(next);
+  // Stated for the selection controller, which cannot import this file — see
+  // src/core/gesture.js — and painted on the stage so the cursor can say what
+  // the mode is to a mouse. Both here rather than in refreshInkRail, because
+  // that returns early on a closed rail and this mode has to hold with the rail
+  // shut, exactly as drawing does.
+  setPenTextMode(next === "text");
+  el.documentStage?.classList.toggle("is-pen-text", next === "text");
   onInkChanged();
 }
 

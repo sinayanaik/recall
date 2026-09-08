@@ -109,3 +109,34 @@ export function setInkPenDown(active) {
 export function inkPenIsDown() {
   return penIsDown;
 }
+
+// ── ...and is the pen being used as a pen at all? ──────────────────────────
+//
+// The pen's rail has a fourth tool, "text" (src/format/ink-colors.js), and it
+// means the stylus stops drawing and starts selecting words instead — which is
+// the only way a stylus can reach the highlighter, the cloze and the rest of
+// what the selection pill already offers on a paper.
+//
+// The flag lives here for the same reason inkPenIsDown does, and for one more.
+// The pen gesture is in src/notes/touch-selection.js, because every private it
+// needs — setSelectionPoints, beginDrag, extendTo, the one-pass-per-frame
+// scheduler — is already in that file and exporting four drag internals to a
+// second controller would be two controllers answering to one name. But that
+// file must not import the document subtree: its own comment above the region
+// check in onRootTouchStart says so, and asks the DOM rather than
+// isRegionSelectArmed for exactly that reason. So the ink layer STATES which
+// tool is armed, here, where a leaf can be read from either side.
+//
+// Deliberately a fact about the TOOL and not about the rail. A stylus draws
+// whether the rail is open or shut — src/ui/ink-rail.js's header calls that the
+// whole promise of the feature — so a stylus must select whether it is open or
+// shut too, and refreshInkRail returns early on a closed rail.
+let penTextTool = false;
+
+export function setPenTextMode(active) {
+  penTextTool = Boolean(active);
+}
+
+export function penTextMode() {
+  return penTextTool;
+}

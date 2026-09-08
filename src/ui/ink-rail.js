@@ -86,8 +86,16 @@ export function refreshInkRail() {
   // The COLOURS stay up whatever is armed, because with a lasso selection a
   // press on one recolours what is selected — and because a reader who is about
   // to swap back to the pen should be able to choose the colour first.
+  //
+  // Text is the one tool that takes BOTH rows down, and the colours with them.
+  // Nothing is being drawn, so there is no nib and no ink colour to choose; and
+  // the swatches' other job — recolouring a lasso selection — has nothing to act
+  // on either, because setTool clears that selection on the way out of the lasso.
+  // The colour a highlight is made in is the pill's, chosen there.
   const erasing = tool === "eraser";
-  if (el.inkRailWidths) el.inkRailWidths.hidden = erasing;
+  const selectingText = tool === "text";
+  if (el.inkRailPens) el.inkRailPens.hidden = selectingText;
+  if (el.inkRailWidths) el.inkRailWidths.hidden = erasing || selectingText;
   if (el.inkRailEraser) el.inkRailEraser.hidden = !erasing;
   rail.querySelector('[data-ink-action="undo"]')?.toggleAttribute("disabled", !undoable);
   rail.querySelector('[data-ink-action="redo"]')?.toggleAttribute("disabled", !redoable);
@@ -111,6 +119,32 @@ export function refreshInkRail() {
     rail.querySelector(`[data-ink-action="${action}"]`)?.toggleAttribute("disabled", count < 1);
   });
   rail.querySelector('[data-ink-action="paste"]')?.toggleAttribute("disabled", !pasteable);
+}
+
+// Every setting the rail owns, read back off the engine rather than off the
+// button that was pressed, so what is remembered cannot come to disagree with
+// what is armed. One statement of it, because there are two doors to the tool
+// now — this rail, and the reading rail's own row.
+function rememberInkPreferences() {
+  writeInkPreferences({
+    pen: inkPen(),
+    width: inkWidth(),
+    tool: inkTool(),
+    eraserSize: inkEraserSize(),
+    eraseMode: inkEraseMode(),
+    snapShapes: inkSnapShapes()
+  });
+}
+
+// The tool, chosen from somewhere that is not this rail: the reading rail's
+// "Select text" row (src/ui/reading-rail.js), which in focus mode is the only
+// door to the pen at all — that mode folds #viewModeRow away and takes the ✎
+// with it. Exported from here rather than written there so there is one
+// statement of what changing the tool entails: set it, remember it, repaint.
+export function chooseInkTool(tool) {
+  setInkTool(tool);
+  rememberInkPreferences();
+  refreshInkRail();
 }
 
 // The one control here that a stroke cannot put right, so it is the one that
@@ -192,14 +226,7 @@ export function initInkRail() {
     else if (action === "erase-mode") setInkEraseMode(inkEraseMode() === "part" ? "stroke" : "part");
     else if (action === "snap") setInkSnapShapes(!inkSnapShapes());
     if (nextPen || nextWidth || nextTool || nextEraser || action === "erase-mode" || action === "snap") {
-      writeInkPreferences({
-        pen: inkPen(),
-        width: inkWidth(),
-        tool: inkTool(),
-        eraserSize: inkEraserSize(),
-        eraseMode: inkEraseMode(),
-        snapShapes: inkSnapShapes()
-      });
+      rememberInkPreferences();
     }
     refreshInkRail();
   });

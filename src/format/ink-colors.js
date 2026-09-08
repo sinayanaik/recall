@@ -109,7 +109,33 @@ export function normalizeInkWidth(width) {
 // deliberately no highlighter: this app already has a highlighter, it marks the
 // words you selected, and a second one that paints a band wherever the nib went
 // would be two features answering to one name.
-export const INK_TOOLS = ["pen", "eraser", "lasso"];
+//
+// Which left that highlighter unreachable with the very thing most people would
+// reach for it with. A stylus took every pointer it was given
+// (inkTakesPointer, src/documents/pdf-ink.js), so on a paper it could draw and
+// could not select — no highlight, no cloze, no copy, no phrase lifted out into
+// a note, all of which the Document surface has had all along and only a finger
+// or a mouse could get to.
+//
+// So "text" is the fourth, and it is deliberately not a fourth way of MARKING
+// the page. It is the statement that the pen is not marking it: the ink layer
+// stands down and the stylus drives the selection controller instead, which is
+// how it reaches the highlighter the paragraph above says this app already has.
+// It belongs in this list rather than in a mode flag of its own because the
+// pen's rail is where a reader already goes to say what the pen does — and
+// because everything that already reads a tool (the rail's pressed state, the
+// per-device preference, the engine's own switch) then needs no new concept.
+//
+// Split in two because two surfaces ask different questions of this list. The
+// three that MARK the page are every tool a surface with no text can offer: the
+// drawing sheet inside a note (src/notes/ink-sheet.js) is blank paper for
+// handwriting, and "select the words" there would be a button with nothing to
+// act on. A paper and a notebook have text under the nib, so they carry all four
+// — and their rail is markup rather than a loop, which is why the count is
+// stated here and checked against what is on screen (tools/note-editor-check.mjs).
+export const INK_DRAW_TOOLS = ["pen", "eraser", "lasso"];
+
+export const INK_TOOLS = [...INK_DRAW_TOOLS, "text"];
 
 export const INK_TOOL_DEFAULT = "pen";
 
