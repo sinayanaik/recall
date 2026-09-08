@@ -297,6 +297,7 @@ const APP_SHELL = [
   `./styles/54-stacking.css?v=${STAMP}`,
   `./styles/55-code-copy-label.css?v=${STAMP}`,
   `./styles/56-pen-text.css?v=${STAMP}`,
+  `./styles/57-note-link-browser.css?v=${STAMP}`,
   // The module entry point. Everything it imports is stamped with the same
   // ?v=, so those URLs change with every release too — which is what lets the
   // cache-first handler below serve them without revalidating and still never
@@ -427,6 +428,8 @@ const APP_SHELL = [
   `./src/notes/highlight-badges.js?v=${STAMP}`,
   `./src/notes/highlight-note-editor.js?v=${STAMP}`,
   `./src/notes/ink-sheet.js?v=${STAMP}`,
+  `./src/notes/link-browse.js?v=${STAMP}`,
+  `./src/notes/link-fuzzy.js?v=${STAMP}`,
   `./src/notes/link-picker.js?v=${STAMP}`,
   `./src/notes/mark-menu.js?v=${STAMP}`,
   `./src/notes/note-editor-kit.js?v=${STAMP}`,

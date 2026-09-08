@@ -5,6 +5,8 @@ import { state } from "../core/state.js?v=__BUILD__";
 import { escapeHtml } from "../core/text.js?v=__BUILD__";
 import { notesAnchorPlainText } from "./anchors.js?v=__BUILD__";
 import { caretRectInBackdrop } from "./caret.js?v=__BUILD__";
+import { browseRowsFor, folderCrumbs, noteLinkHomeFolder, parentFolder } from "./link-browse.js?v=__BUILD__";
+import { scoreNoteEntry } from "./link-fuzzy.js?v=__BUILD__";
 import { createLinkedNoteFlow, loadNoteLinkIndex } from "./note-links.js?v=__BUILD__";
 import { currentDeckKey } from "./scroll-anchor.js?v=__BUILD__";
 import { slugifyHeading } from "./toc.js?v=__BUILD__";
@@ -24,7 +26,53 @@ import { currentKeyboardInset } from "../ui/style-settings.js?v=__BUILD__";
 // that does not exist yet is the normal way to write — you name the idea while
 // it is in your head and fill it in later — so that has to be one keystroke,
 // not a trip to My Decks and back.
+//
+// With NOTHING typed it is a browser rather than a list: recents, the folder
+// tree, and what is in the folder you are standing in. Searching only helps
+// when you can remember the name — and "what was that note called?" is exactly
+// the moment you reach for a link. See src/notes/link-browse.js.
 export const NOTE_LINK_PICKER_LIMIT = 8;
+
+// Which folder the browse view is showing. "" is the root (every top-level
+// folder); it opens on the current note's own folder and is reset when the
+// picker closes, so a "[[" is never answered with wherever you happened to
+// wander last time.
+export let noteLinkBrowseCwd = "";
+
+export let noteLinkBrowseHome = "";
+
+// Which of the three modes drew the rows now on screen. Set by
+// updateNoteLinkPicker rather than inferred from the rows, because "no query
+// typed" is true of heading mode too ("[[#" lists this note's own headings) and
+// that must not sprout a breadcrumb.
+export let noteLinkBrowsingRows = false;
+
+// What was typed the last time rows were built. When it changes the rows are a
+// different list of different things, so the highlight goes back to the top —
+// carrying it over is how typing "chnrl" left the highlight sitting on "Create
+// chnrl as a new note" while the note it found sat unhighlighted above.
+export let noteLinkPickerQuery = null;
+
+// Is the picker showing the browser rather than search results? The arrow keys
+// mean different things in the two modes — see the keydown handler in main.js —
+// and this is what tells them apart.
+export function isNoteLinkBrowsing() {
+  if (!isNoteLinkPickerOpen()) return false;
+  const textarea = el.notesEdit;
+  if (!textarea) return false;
+  const typed = textarea.value.slice(noteLinkPickerStart + 2, textarea.selectionStart);
+  return !typed.includes("#") && !typed.trim();
+}
+
+// One level up, or false at the root. Backspace only steals the keystroke while
+// there is somewhere to go: at the root it has to fall through and delete a
+// "[", or the caret would be trapped inside a "[[" with no way out but the
+// mouse.
+export function noteLinkBrowseUp() {
+  if (!noteLinkBrowseCwd) return false;
+  noteLinkBrowseCwd = parentFolder(noteLinkBrowseCwd);
+  return true;
+}
 
 export let noteLinkPickerEl = null;
 
@@ -61,6 +109,10 @@ export function ensureNoteLinkPickerEl() {
 
 export function closeNoteLinkPicker() {
   noteLinkPickerStart = -1;
+  noteLinkBrowseCwd = "";
+  noteLinkBrowseHome = "";
+  noteLinkBrowsingRows = false;
+  noteLinkPickerQuery = null;
   noteLinkPickerRows = [];
   noteLinkPickerIndex = 0;
   if (noteLinkPickerEl) noteLinkPickerEl.hidden = true;
@@ -104,10 +156,49 @@ export function positionNoteLinkPicker(textarea, offset) {
   el2.style.visibility = "";
 }
 
+// A title with the characters the query matched wrapped in <mark>. Each segment
+// is escaped on its own — the ranges are offsets into the RAW title, so slicing
+// escaped HTML by them would cut an entity in half.
+export function markedTitle(title, ranges) {
+  const text = String(title || "");
+  if (!ranges || !ranges.length) return escapeHtml(text);
+  let out = "";
+  let at = 0;
+  for (const [start, end] of ranges) {
+    if (start > at) out += escapeHtml(text.slice(at, start));
+    out += `<mark>${escapeHtml(text.slice(start, end))}</mark>`;
+    at = end;
+  }
+  return out + escapeHtml(text.slice(at));
+}
+
+// The "you are here" bar above the browse rows. Not clickable: it sits over a
+// textarea whose caret is what every insert is measured against, and one more
+// thing that can move focus is one more way for that to go wrong. Walking back
+// out is ← / Backspace, or the ⤴ row that heads the list.
+export function renderNoteLinkCrumbs(host, cwd) {
+  const bar = document.createElement("div");
+  bar.className = "note-link-picker-crumbs";
+  const crumbs = folderCrumbs(cwd);
+  bar.textContent = crumbs.length ? `\u2302 ${crumbs.map((crumb) => crumb.name).join(" \u203a ")}` : "\u2302 All folders";
+  host.appendChild(bar);
+}
+
 export function renderNoteLinkPicker(query) {
   const el2 = ensureNoteLinkPickerEl();
   el2.innerHTML = "";
+  el2.classList.toggle("is-browsing", noteLinkBrowsingRows);
+  if (noteLinkBrowsingRows) renderNoteLinkCrumbs(el2, noteLinkBrowseCwd);
   noteLinkPickerRows.forEach((row, index) => {
+    // Section headings are drawn from the first row of each group rather than
+    // being rows themselves: commitNoteLinkPicker indexes this array by number,
+    // so anything unselectable in it would offset every choice below it.
+    if (row.sectionLabel) {
+      const label = document.createElement("div");
+      label.className = "note-link-picker-section";
+      label.textContent = row.sectionLabel;
+      el2.appendChild(label);
+    }
     const item = document.createElement("button");
     item.type = "button";
     item.className = "note-link-picker-row" + (index === noteLinkPickerIndex ? " is-active" : "");
@@ -120,11 +211,19 @@ export function renderNoteLinkPicker(query) {
         + `<span class="note-link-picker-path">heading in ${escapeHtml(row.entry.title)}</span>`;
     } else if (row.create) {
       item.classList.add("is-create");
-      item.innerHTML = `<span class="note-link-picker-title">Create “${escapeHtml(query)}” as a new note</span>`
+      item.innerHTML = `<span class="note-link-picker-title">Create \u201c${escapeHtml(query)}\u201d as a new note</span>`
         + `<span class="note-link-picker-path">You'll choose the folder</span>`;
-    } else {
+    } else if (row.kind === "up") {
+      item.classList.add("is-up");
+      item.innerHTML = `<span class="note-link-picker-title">\u2934 ${escapeHtml(row.title)}</span>`
+        + `<span class="note-link-picker-path">Back out one folder</span>`;
+    } else if (row.kind === "folder") {
+      item.classList.add("is-folder");
       item.innerHTML = `<span class="note-link-picker-title">${escapeHtml(row.title)}</span>`
-        + `<span class="note-link-picker-path">${escapeHtml(row.category)}${row.localId ? "" : " · in the cloud"}</span>`;
+        + `<span class="note-link-picker-path">${row.count === 1 ? "1 note" : `${row.count} notes`}</span>`;
+    } else {
+      item.innerHTML = `<span class="note-link-picker-title">${markedTitle(row.title, row.ranges)}</span>`
+        + `<span class="note-link-picker-path">${escapeHtml(row.category)}${row.localId ? "" : " \u00b7 in the cloud"}</span>`;
     }
     el2.appendChild(item);
   });
@@ -226,6 +325,11 @@ export async function updateNoteLinkPicker() {
       : index.find((e) => e.title.trim().toLowerCase() === noteName)
         || index.find((e) => e.title.toLowerCase().startsWith(noteName));
     const headingQuery = typed.slice(hash + 1).trim();
+    noteLinkBrowsingRows = false;
+    if (typed !== noteLinkPickerQuery) {
+      noteLinkPickerQuery = typed;
+      noteLinkPickerIndex = 0;
+    }
     noteLinkPickerRows = entry ? await headingRowsForEntry(entry, headingQuery) : [];
     if (noteLinkPickerContext(textarea.value, textarea.selectionStart) !== open) return closeNoteLinkPicker();
     if (!noteLinkPickerRows.length) return closeNoteLinkPicker();
@@ -237,30 +341,65 @@ export async function updateNoteLinkPicker() {
   }
 
   const query = typed.trim();
-  const needle = query.toLowerCase();
-  const matches = (needle
-    ? index.filter((entry) => entry.title.toLowerCase().includes(needle))
-    : index
-  )
+  if (query !== noteLinkPickerQuery) {
+    noteLinkPickerQuery = query;
+    noteLinkPickerIndex = 0;
+  }
+
+  // Nothing typed: browse. The library as folders you can walk, headed by what
+  // you had open recently — which is the answer often enough that most links
+  // never need a query at all.
+  if (!query) {
+    if (!isNoteLinkPickerOpen()) {
+      noteLinkBrowseHome = noteLinkHomeFolder();
+      noteLinkBrowseCwd = noteLinkBrowseHome;
+    }
+    noteLinkBrowsingRows = true;
+    noteLinkPickerRows = browseRowsFor(index, noteLinkBrowseCwd, { includeRecent: noteLinkBrowseCwd === noteLinkBrowseHome });
+    if (!noteLinkPickerRows.length) {
+      // A folder with nothing in it is still somewhere you can be — dropping
+      // back to the root beats closing the popup out from under the caret.
+      if (noteLinkBrowseCwd) {
+        noteLinkBrowseCwd = "";
+        noteLinkPickerRows = browseRowsFor(index, "", { includeRecent: true });
+      }
+      if (!noteLinkPickerRows.length) return closeNoteLinkPicker();
+    }
+    noteLinkPickerStart = open;
+    noteLinkPickerIndex = Math.min(noteLinkPickerIndex, noteLinkPickerRows.length - 1);
+    // Never open ON the "back out" row: it is a way out of somewhere you have
+    // not been yet, and pressing Enter on it would answer "[[" by doing nothing
+    // visible. Only when it is where the highlight LANDED by default — moving
+    // onto it deliberately is fine.
+    if (noteLinkPickerIndex === 0 && noteLinkPickerRows[0]?.kind === "up" && noteLinkPickerRows.length > 1) {
+      noteLinkPickerIndex = 1;
+    }
+    renderNoteLinkPicker("");
+    positionNoteLinkPicker(textarea, open);
+    return;
+  }
+
+  // Something typed: search, across the whole library rather than the folder
+  // being browsed. Half-remembering a name is the normal case, so the match is
+  // fuzzy — see scoreNoteEntry — where it used to be a strict substring, which
+  // returned nothing for one typo or one skipped word.
+  noteLinkBrowsingRows = false;
+  const matches = index
     // The note you are in is never a useful thing to link to.
     .filter((entry) => !(entry.localId && entry.localId === state.localDeckId))
+    .map((entry) => ({ entry, hit: scoreNoteEntry(entry, query) }))
+    .filter((row) => row.hit)
     .sort((a, b) => {
       // Whole notes before quick-note pins: a pin is a scrap, a note is a
       // destination, and there can be far more of the former.
-      const aPin = a.pinId ? 1 : 0;
-      const bPin = b.pinId ? 1 : 0;
-      // Then titles that START with what was typed — almost always the one
-      // meant, and it stops a short query burying it under substring matches
-      // from elsewhere in the library.
-      const aStarts = a.title.toLowerCase().startsWith(needle) ? 0 : 1;
-      const bStarts = b.title.toLowerCase().startsWith(needle) ? 0 : 1;
-      return aPin - bPin || aStarts - bStarts || a.title.localeCompare(b.title);
+      const aPin = a.entry.pinId ? 1 : 0;
+      const bPin = b.entry.pinId ? 1 : 0;
+      return aPin - bPin || b.hit.score - a.hit.score || a.entry.title.localeCompare(b.entry.title);
     })
     .slice(0, NOTE_LINK_PICKER_LIMIT);
 
-  noteLinkPickerRows = matches.map((entry) => ({ ...entry, create: false }));
-  if (query) noteLinkPickerRows.push({ create: true, title: query });
-  if (!noteLinkPickerRows.length) return closeNoteLinkPicker();
+  noteLinkPickerRows = matches.map(({ entry, hit }) => ({ ...entry, kind: "note", ranges: hit.ranges, create: false }));
+  noteLinkPickerRows.push({ create: true, title: query });
 
   noteLinkPickerStart = open;
   noteLinkPickerIndex = Math.min(noteLinkPickerIndex, noteLinkPickerRows.length - 1);
@@ -274,7 +413,8 @@ export function moveNoteLinkPicker(delta) {
   noteLinkPickerIndex = (noteLinkPickerIndex + delta + count) % count;
   const typed = el.notesEdit.value.slice(noteLinkPickerStart + 2, el.notesEdit.selectionStart);
   // In heading mode only the part after "#" is what the rows were matched on,
-  // and it is what renderNoteLinkPicker highlights.
+  // and it is what renderNoteLinkPicker highlights. In browse mode nothing was
+  // typed at all, so the query is empty and the rows keep their own marks.
   const hash = typed.indexOf("#");
   const query = (hash === -1 ? typed : typed.slice(hash + 1)).trim();
   renderNoteLinkPicker(query);
@@ -328,9 +468,32 @@ export function insertNoteLinkAtPicker(entry, headingSlug = "") {
   textarea.focus();
 }
 
+// Step into a folder (or back out of one) and redraw. Deliberately does not
+// touch the textarea: the row's pointerdown already called preventDefault, so
+// focus never left the editor and the caret the eventual insert is measured
+// against is still exactly where it was.
+// True when the highlighted row is a folder, so a key that means "open this"
+// can tell whether there is anything to open — pressing → on a NOTE row must
+// not quietly insert a link nobody asked for.
+export function noteLinkPickerRowIsFolder() {
+  const row = noteLinkPickerRows[noteLinkPickerIndex];
+  return Boolean(row && (row.kind === "folder" || row.kind === "up"));
+}
+
+export function enterNoteLinkFolder(path) {
+  noteLinkBrowseCwd = String(path || "");
+  noteLinkPickerIndex = 0;
+  updateNoteLinkPicker();
+}
+
 export async function commitNoteLinkPicker() {
   const row = noteLinkPickerRows[noteLinkPickerIndex];
   if (!row) return;
+  // A folder is a place, not a destination — choosing it opens it.
+  if (row.kind === "folder" || row.kind === "up") {
+    enterNoteLinkFolder(row.path);
+    return;
+  }
   if (row.heading) {
     // headingText rides along so the written label reads "Note › Heading"
     // rather than just the note's name, which would give two links to two

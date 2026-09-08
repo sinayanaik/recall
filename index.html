@@ -113,6 +113,7 @@
     <link rel="stylesheet" href="styles/54-stacking.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/55-code-copy-label.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/56-pen-text.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/57-note-link-browser.css?v=__BUILD__">
 
     <!-- ── Module preloads ────────────────────────────────────────────────
          The app is ~130 ES modules and the browser discovers them by PARSING
@@ -251,6 +252,8 @@
     <link rel="modulepreload" href="src/notes/highlight-badges.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/highlight-note-editor.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/ink-sheet.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/notes/link-browse.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/notes/link-fuzzy.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/link-picker.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/mark-menu.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/note-editor-kit.js?v=__BUILD__">
@@ -1962,7 +1965,7 @@
               <li><strong>Highlight → + Make card</strong> — select any fact (text, images, math) in the rendered notes; the floating button shows how much is captured. Tap it to preview the selection as the card's <em>answer</em> and frame the <em>question</em> that should bring it to mind (Ctrl+Enter to add)</li>
               <li><strong>Write about what you marked</strong> — every highlight takes a note, and the note takes the whole editor: the formatting strip, Write/Preview, images you can drag to resize, undo, and the same floating bar you get anywhere else when you select inside it. It is the same editor whether you open it from the mark itself or write it where the highlight is listed <strong>side by side</strong> with the note, so nothing you can do in one is missing from the other. A listed note reads the way a note reads everywhere else: click into it to select a phrase and format it where it stands, <strong>triple-click</strong> to drop into the raw markdown at that exact word, and <strong>Ctrl+E</strong> to flip between the two</li>
               <li><strong>Code survives the trip</strong> — highlight part of a code block and the card keeps it as a code block, in the same language as the block you took it from. A block whose fence never named a language gets one worked out from the code itself, falling back to <code>TEXT</code> when it isn't recognisably any language — so every block ends up with a badge and a copy button. A dashed pill means the language was detected rather than declared</li>
-              <li><strong>Link one note to another</strong> — type <code>[[</code> while editing and every note in your library becomes searchable from where the cursor already is; pick one and a <span class="note-link-sample">◈ link</span> drops in. Links stay pointed at the right note even if you rename it, and a <strong>↗</strong> marks anything that leaves for the web, so you always know where a tap will take you</li>
+              <li><strong>Link one note to another</strong> — type <code>[[</code> while editing and your library opens where the cursor already is: the notes you had open recently, then the folders, which you can walk into with <strong>→</strong> and back out of with <strong>←</strong>. Keep typing to search all of it instead, and a rough guess is enough — <code>chnrl</code> finds <em>Chain Rule</em>. Pick one and a <span class="note-link-sample">◈ link</span> drops in. Links stay pointed at the right note even if you rename it, and a <strong>↗</strong> marks anything that leaves for the web, so you always know where a tap will take you</li>
               <li><strong>Link to a section, not just a note</strong> — add <code>#</code> after the note's name (<code>[[Calculus#</code>) and the list switches to that note's headings; pick one and the link opens the note scrolled straight to it. Typing it by hand works too: <code>[[Calculus#The chain rule]]</code> jumps to that heading, and <code>[[#The chain rule]]</code> jumps to one in the note you're already in</li>
               <li><strong>Name a note that doesn't exist yet</strong> — type any name after <code>[[</code> and take <em>Create…</em>. You choose which folder it goes in, and you stay exactly where you were writing. Clicking a greyed-out link offers the same thing</li>
               <li><strong>Split a note that got too long</strong> — select the part that has outgrown its home and tap <strong>↪</strong> in the selection strip. It moves into a note of its own and leaves a link in its place</li>
