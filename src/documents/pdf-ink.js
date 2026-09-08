@@ -689,7 +689,21 @@ export function isInkArmed() { return inkRailArmed; }
 export function setInkArmed(next) {
   inkRailArmed = Boolean(next);
   if (!inkRailArmed) {
-    ensureEngine().setTool(INK_TOOL_DEFAULT);
+    // setInkTool, NOT engine.setTool — and that is the whole of a bug that took
+    // the pen away without saying so.
+    //
+    // Arming a tool is three statements, not one: the engine's tool, the flag
+    // the selection controller reads (setPenTextMode, src/core/gesture.js) and
+    // the class the cursor is drawn from. Reaching past setInkTool to the engine
+    // wrote the first and left the other two, so shutting the rail while "text"
+    // was armed left the engine saying "pen" and the controller still saying
+    // "this stylus selects". Both then claimed the same contact: the ink layer
+    // started a stroke and touch-selection started a drag over it, and what the
+    // reader saw was a pen that had stopped drawing for no reason they could
+    // point at — and no lit button anywhere to explain it.
+    //
+    // Every route out of the text tool goes through one statement now.
+    setInkTool(INK_TOOL_DEFAULT);
     ensureEngine().clearSelection();
     closeOpenMark();
   }

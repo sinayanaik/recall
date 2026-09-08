@@ -104,7 +104,11 @@ function buildSheet() {
   steps.append(
     inkRailButton("inkAction", "undo", "Undo", "&#8630;"),
     inkRailButton("inkAction", "redo", "Redo", "&#8631;"),
-    inkRailButton("inkAction", "delete", "Delete the selected strokes", "&#128465;", "is-danger")
+    // The word, for the same reason the document rail's copy of this button
+    // now carries one: 🗑 is a full-colour emoji sitting among monochrome
+    // glyphs, and the one control here that cannot be undrawn is the one worth
+    // being unambiguous about.
+    inkRailButton("inkAction", "delete", "Delete the selected strokes", "", "is-danger", "Delete")
   );
 
   // The paper's own controls, which is what a sheet with more than one page
@@ -116,7 +120,10 @@ function buildSheet() {
   paperGroup.append(
     inkRailButton("inkAction", "zoom-out", "Smaller", "&#8722;"),
     inkRailButton("inkAction", "zoom-in", "Larger", "&#43;"),
-    inkRailButton("inkAction", "add-page", "Add a page below", "&#43;&#9647;")
+    // − and + are as plain as a symbol gets and stay symbols; "+▯" was a plus
+    // against a rectangle that is tofu wherever the font has no glyph for it,
+    // and sat one press away from the + that means "zoom in".
+    inkRailButton("inkAction", "add-page", "Add a page below", "", "", "&#43; Page")
   );
 
   rail.append(pens, widths, buildInkToolGroup(), steps, paperGroup);

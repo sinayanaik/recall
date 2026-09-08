@@ -182,10 +182,26 @@
   display: none;
 }
 
+/* A group WRAPS, like the rail that holds it.
+
+   The rail has always wrapped, but a group inside it did not — so a single
+   group wider than the rail simply ran off both edges, with its first and last
+   controls sliced in half. Nothing hit that while every control was a 30px
+   square; the moment the selection group started saying "Duplicate" instead of
+   showing a square nobody could read, seven of them stopped fitting a phone.
+   Wrapping is the answer here for the reason it is the answer for the rail
+   itself (see the media query at the foot of this file): a horizontal scroller
+   would hide controls behind a gesture. */
 .ink-rail-group {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
   align-items: center;
   gap: 3px;
+  /* A flex item's min-width is `auto` — its content — which is what let a group
+     push past the rail's own max-width instead of wrapping inside it. */
+  min-width: 0;
+  max-width: 100%;
 }
 
 .ink-rail-group + .ink-rail-group {
@@ -218,8 +234,70 @@
   cursor: default;
 }
 
-.ink-rail-btn.is-danger[aria-pressed="false"]:hover {
+/* ── A tool is CHOSEN; a switch is ON, and they must not look the same ─────
+
+   Every control on this rail wore the same solid accent fill when pressed, and
+   two of them are not tools: Snap shapes and the eraser's part/whole toggle are
+   switches that stay on across every tool. So the row that answers "which ONE
+   thing is the pen doing" lit two buttons at once — the armed tool and the
+   shape-snapper beside it — and the reader's own tool was one of an apparent
+   pair. Snap has been moved out of the tool group (index.html); this is the
+   other half, so that a switch reads as lit rather than as selected. */
+.ink-rail-btn.is-switch[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+/* :not([aria-pressed="true"]) rather than [aria-pressed="false"], which is not
+   the same selector on this rail: Clear and Delete are actions, not modes, so
+   they carry no aria-pressed at all — and the rule that was written for them
+   therefore matched neither of them. */
+.ink-rail-btn.is-danger:not([aria-pressed="true"]):hover {
   color: var(--ink-pen-red);
+  border-color: color-mix(in srgb, var(--ink-pen-red) 45%, var(--line));
+}
+
+/* ── ...and the ones that say what they do in words ────────────────────────
+
+   A square 30px box is right for a glyph and wrong for a word, so a labelled
+   control is a PILL: it keeps the height of its neighbours — a row of controls
+   that do not line up reads as broken however good each one is — and takes
+   whatever width its word needs.
+
+   Which controls those are, and why, is argued in src/handwriting/rail.js:
+   briefly, the pen, the eraser, the lasso, undo and redo are iconic and pressed
+   constantly, and everything a reader had to stop and decode ("+✎", "+📷",
+   "+▯", a curly-brace hook meaning "clear the page", two identical squares
+   meaning Copy and Duplicate) now carries the word instead. */
+.ink-rail-btn.is-labelled {
+  width: auto;
+  min-width: 0;
+  padding: 0 10px;
+  gap: 5px;
+  /* Below the app's body size and above a caption: this is a control label, and
+     it sits beside 30px boxes it must not out-weigh. */
+  font-size: 0.74rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
+.ink-rail-word {
+  line-height: 1;
+}
+
+/* A glyph that shares its button with a word is set at the size of the word,
+   not of a solo icon, so the two sit on one baseline. */
+.ink-rail-btn.is-labelled .ink-rail-ico {
+  font-size: 1.05em;
+  line-height: 1;
+}
+
+/* The <label> that opens the image picker is one of these, and a label is not a
+   button: it takes the class but none of the button element's own centring. */
+.ink-rail-btn.file-pick {
+  cursor: pointer;
 }
 
 /* A swatch is the colour, not a button wearing a label. --ink-swatch is set
@@ -445,5 +523,53 @@
     margin: 8px;
     max-width: none;
     justify-content: center;
+  }
+
+  /* ── The words STAY on a phone; the SPACING around them gives way ────────
+
+     It is the device most likely to have a stylus on it and the one where a
+     mystery glyph costs most, and the rail already wraps rather than hiding
+     anything behind a gesture — see above. But a rail that wraps grows DOWN
+     into the page, and on a phone the page is what there is least of: words
+     wide enough to read cost a row, and a row here is a line of somebody's
+     notebook. So every gap and every box is taken in to pay for them, which
+     buys back about as much as the labels cost. */
+  .document-ink-rail {
+    gap: 3px;
+    padding: 3px 5px;
+  }
+
+  .ink-rail-group {
+    gap: 2px;
+  }
+
+  .ink-rail-group + .ink-rail-group {
+    padding-left: 4px;
+  }
+
+  .ink-rail-btn {
+    width: 28px;
+    height: 28px;
+    min-width: 28px;
+    min-height: 28px;
+    border-radius: 8px;
+  }
+
+  .ink-rail-btn.is-labelled {
+    padding: 0 8px;
+    font-size: 0.72rem;
+  }
+
+  /* The chip and the dot are the two controls whose SIZE is the information —
+     a swatch is the colour and a nib is the width — so they are trimmed least,
+     and their invisible 44px targets (the ::after insets) are untouched. */
+  .ink-rail-swatch {
+    width: 22px;
+    height: 22px;
+  }
+
+  .ink-rail-nib {
+    width: 24px;
+    height: 24px;
   }
 }
