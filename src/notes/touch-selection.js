@@ -104,11 +104,13 @@
 //      stylesheet cannot switch selection off on a machine whose JavaScript
 //      never took it over.
 
+import { PDF_BLOCK_CLASS } from "../core/constants.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
-import { inkPenIsDown, setTouchGestureHoldsSurface } from "../core/gesture.js?v=__BUILD__";
+import { inkPenIsDown, penTextMode, setInkPenDown, setTouchGestureHoldsSurface } from "../core/gesture.js?v=__BUILD__";
 import { resetCardDrag } from "../cards/swipe.js?v=__BUILD__";
 import { NOTES_BLOCK_SELECTOR, caretFromPoint } from "./raw-offset.js?v=__BUILD__";
 import { NOTES_CHUNK_CLASS, isTopLevelBlockParent } from "../render/block-cache.js?v=__BUILD__";
+import { isEraserEvent } from "../render/ink-engine.js?v=__BUILD__";
 // A hoisted `function` declaration, read only inside a call — the same discipline
 // every other crossing binding in this neighbourhood follows.
 import { isProgrammaticNotesScroll, markProgrammaticNotesScroll } from "./notes-view.js?v=__BUILD__";
@@ -373,6 +375,26 @@ let pressDriftTotal = 0;
 // "it forgets the previous selection" half of the report.
 let dismissPending = false;
 
+// ── The pen's own three, declared with the rest ──────────────────────────
+//
+// Up here rather than beside the pen section at the foot of the file, because
+// onRootTouchMove, onRootTouchEnd and touchSelectionIsDragging all read them and
+// all appear before it. Nothing calls those during module evaluation, so this is
+// not a live dead-zone read — it is the discipline src/core/gesture.js spells
+// out for the same shape of ordering, kept before it has to be.
+//
+// penPress: { pointerId, root, startX, startY, live } while a stylus is in
+// contact in text mode, null the rest of the time. `live` is false until the
+// slop is crossed — under it the contact may still turn out to be a tap.
+let penPress = null;
+// The drag flag, separate from pressDragging so a stylus's compatibility touch
+// events cannot find the finger state machine part-way through a gesture it
+// never started.
+let penDragging = false;
+// Until when the compatibility mouse sequence a pen DRAG produces is refused.
+// See PEN_GESTURE_TAIL_MS.
+let penGestureUntil = 0;
+
 let draggingHandle = "";   // "" | "start" | "end"
 // How far the finger is below the caret it is choosing, measured at the grab.
 // Zero for a press-drag, where the finger IS the caret.
@@ -500,7 +522,7 @@ function rangeStillLive() {
 }
 
 export function touchSelectionIsDragging() {
-  return Boolean(draggingHandle || pressDragging);
+  return Boolean(draggingHandle || pressDragging || penDragging);
 }
 
 // ── Hit-testing that survives the edges of a block ─────────────────────────
@@ -1369,6 +1391,7 @@ export function clearTouchSelection({ keepDocumentSelection = false } = {}) {
   focusPoint = null;
   draggingHandle = "";
   pressDragging = false;
+  penDragging = false;
   grabOffsetY = 0;
   setTouchSelectionDragging(false);
   // The selection is gone, so nothing is standing down for it any more —
@@ -1588,6 +1611,7 @@ function endDrag() {
   lastExtendY = NaN;
   draggingHandle = "";
   pressDragging = false;
+  penDragging = false;
   grabOffsetY = 0;
   // Re-contain BEFORE the dragging flag drops. clearSelectionStableRegion()
   // changes heights, the browser's scroll anchoring answers that by writing
@@ -2147,6 +2171,23 @@ function onRootTouchStart(event) {
 // browser has decided. So the round trip is bought deliberately, for the one
 // listener on these surfaces that genuinely cannot be bound later.
 function onRootTouchMove(event) {
+  // ── A stylus's compatibility touch events ────────────────────────────────
+  //
+  // A pen in contact fires these alongside its pointer events, and the pen drag
+  // is owned by onPenPointerMove. Refusing the default here is what stops the
+  // paper scrolling out from under it — and it costs nothing, because this
+  // listener is already non-passive on every root for its own reasons.
+  // src/documents/pdf-ink.js has to bind and unbind a guard per stroke
+  // precisely because the ink layer has no listener of its own to borrow; the
+  // header above attachInkScrollGuard sets out what that costs a finger.
+  //
+  // Only once the drag is LIVE. Under the slop the contact may still turn out
+  // to be a tap, and a tap that refused the scroll would be a paper that stutters
+  // whenever the pen touches it.
+  if (penPress) {
+    if (penPress.live && event.cancelable) event.preventDefault();
+    return;
+  }
   // The browser's own answer to "do we still own this gesture", read before
   // anything acts on it. Once false it stays false for the rest of the
   // sequence, so this is latched rather than sampled — a later move being
@@ -2283,6 +2324,20 @@ function onRootTouchMove(event) {
 // mouse events — every link, cloze, image control and highlight in a note is
 // reached by one.
 function onRootTouchEnd(event) {
+  // The stylus's compatibility touchend, and it is refused for exactly the
+  // reason the paragraph above gives: allowed its default it synthesises the
+  // mouse sequence, and Chrome answers that mousedown by COLLAPSING the
+  // selection the pen has just made — the pill flashes up and vanishes about
+  // 50ms later.
+  //
+  // Recognised by the stamp rather than by penPress, because pointerup precedes
+  // touchend and the press is already released by the time this runs. The same
+  // stamp swallows the click for the same gesture, and a pen TAP never sets it,
+  // so a tap keeps its mouse events and goes on opening a highlight's own menu.
+  if (penPress || Date.now() <= penGestureUntil) {
+    if (event.cancelable) event.preventDefault();
+    return;
+  }
   // A rescued scroll ends here, and it keeps the preventDefault a drag gets:
   // the finger travelled across the text, so the compatibility click that a
   // plain touchend would synthesise would land on whatever it finished over.
@@ -2330,6 +2385,221 @@ function releaseSurface() {
   setTouchGestureHoldsSurface(false);
 }
 
+// ── The pen, which is not a finger ─────────────────────────────────────────
+//
+// Everything above this line is about a FINGER: a 240ms press because a fingertip
+// covers several words and resting on one is how you say which, a word snap
+// because that is what a press can mean at that precision, an escape window
+// because a press that fires at 240ms sometimes catches somebody who was only
+// starting to scroll. None of it is a fact about selection. All of it is a fact
+// about the instrument.
+//
+// A stylus is the other instrument, and on the Document surface it could not
+// select at all. inkTakesPointer opened with `if (event.pointerType === "pen")
+// return true;` and onInkPointerDown said setInkPenDown(true) — which is the flag
+// onRootTouchStart reads to stand this controller down. Between those two lines a
+// pen on a paper could draw and could do nothing else: no highlight, no cloze, no
+// copy, no phrase lifted out into a note, every one of which that surface has had
+// all along and only a finger or a mouse could reach. src/format/ink-colors.js
+// says in as many words that this app's highlighter is the one that marks the
+// words you selected; the stylus simply had no way to select any.
+//
+// So the pen's rail has a fourth tool, "text", and while it is armed the ink
+// layer stands down (inkTakesPointer again) and a pen drag arrives here instead.
+//
+// ── What it does differently, and why each one ─────────────────────────────
+//
+//   • No dwell. A stylus is AIMED — the reader is already pointing at a word —
+//     so the drag begins at PEN_SELECT_SLOP_PX and not at 240ms. The whole
+//     complaint the header of this file opens with is that selection takes too
+//     long to arrive, and with a pen there is nothing to wait for.
+//   • No word snap. A finger presses and gets the word under it because a
+//     fingertip covers several; a reader dragging a stylus from the middle of a
+//     word means the middle of that word.
+//   • No escape window. It exists because a 240ms press can misread the start of
+//     a scroll, and there is no press here to misread.
+//   • No handle grab of its own. The two grips are already on the glass after
+//     the lift, and they are dragged with whichever instrument is nearest.
+//
+// Everything else is shared, deliberately and to the letter: caretInRoot does the
+// repaired hit-testing, setSelectionPoints owns the Range, the one-pass-per-frame
+// scheduler does the extending, updateEdgeScroll runs the view on past the bottom
+// of the screen, and endDrag puts the pill over the words. That is the payoff —
+// the pill's Highlight, Cloze, Copy and the rest all already resolve to
+// `kind: "document"` (src/format/selection-tools.js), so none of them had to be
+// told a stylus exists.
+//
+// ── ...and why it is in THIS file ──────────────────────────────────────────
+//
+// Because every private it needs is here. A controller of its own would have to
+// be handed setSelectionPoints, beginDrag, extendTo, endDrag and the frame
+// scheduler, and four exported drag internals is two controllers answering to one
+// name — which is what src/handwriting/rail.js's header describes cleaning up
+// after. This file already says it is one controller over two shapes of surface;
+// this is one controller over two instruments.
+//
+// The one thing it may not do is import the document subtree to ask which tool is
+// armed — see the comment above the region check in onRootTouchStart. So the ink
+// layer STATES it, in src/core/gesture.js, which is the leaf that exists for
+// exactly this crossing.
+
+// How far the nib travels before the contact is a drag rather than a tap. Small,
+// because a pen is steady and precise where a thumb is neither — PRESS_SLOP_PX is
+// 10 for a finger — but not zero, because a tap on this surface still has to open
+// a highlight's own menu and follow a link.
+export const PEN_SELECT_SLOP_PX = 4;
+
+// How long after a pen drag the compatibility mouse sequence it produces is
+// refused: the touchend that would otherwise collapse the selection, and the
+// click that would otherwise land on whatever the nib finished over. The same
+// 400ms src/documents/pdf-ink.js swallows a stroke's own click for, and for the
+// same reason. Zeroed by the click that spends it, so in practice the window is
+// a few milliseconds.
+export const PEN_GESTURE_TAIL_MS = 400;
+
+function penTakesPointer(event) {
+  if (event.pointerType !== "pen") return false;
+  if (!penTextMode()) return false;
+  // A second contact is a pinch, and the zoom handler in pdf-view.js owns it.
+  if (event.isPrimary === false) return false;
+  if (event.button !== undefined && event.button > 0) return false;
+  // A stylus turned over still rubs out: inkTakesPointer lets exactly that one
+  // through in text mode, because there is nothing else flipping a pen over
+  // could mean. This must not claim it back.
+  if (isEraserEvent(event)) return false;
+  return true;
+}
+
+function onPenPointerDown(event) {
+  if (penPress || !canTouchSelect() || !penTakesPointer(event)) return;
+  const root = event.currentTarget;
+  if (!root) return;
+  // The two stand-downs the ink layer makes on this surface, made the same way
+  // and for the same reasons (onInkPointerDown, src/documents/pdf-ink.js): a
+  // press that lands on a markdown block belongs to the block and its drag bar,
+  // and the region marquee is a drag of its own. Asked of the DOM rather than by
+  // importing either module, which is the discipline this file keeps everywhere
+  // it has to know something about the paper.
+  if (event.target?.closest?.(`.${PDF_BLOCK_CLASS}`)) return;
+  if (el.documentStage?.classList.contains("is-region-select")) return;
+  // Said before the touchstart of this same contact arrives — pointerdown
+  // precedes it — so onRootTouchStart stands its press timer down instead of
+  // timing a finger that is not there. The flag already means "a stylus is in
+  // contact and everything else should keep out of its way", which is exactly
+  // as true of a pen that is selecting as of one that is drawing.
+  setInkPenDown(true);
+  penPress = {
+    pointerId: event.pointerId,
+    root,
+    startX: event.clientX,
+    startY: event.clientY,
+    live: false
+  };
+  // Deliberately no preventDefault, the same call onInkPointerDown makes: it is
+  // what leaves the browser free to fire a click if this turns out to be a tap.
+  try { root.setPointerCapture?.(event.pointerId); } catch (_) { /* synthetic event */ }
+}
+
+function onPenPointerMove(event) {
+  if (!penPress || event.pointerId !== penPress.pointerId) return;
+  // A move reporting no button AND no pressure is a contact that has already
+  // ended — a hover arriving after a pointerup this listener never saw. Believed
+  // rather than ignored, for the reason onInkPointerMove gives at length: a press
+  // that outlives its own gesture refuses every one after it.
+  if (Number(event.buttons) === 0 && !Number(event.pressure)) { endPenPress(); return; }
+  if (event.isPrimary === false) { endPenPress(); return; }
+
+  if (penPress.live) {
+    framePoint = { x: event.clientX, y: event.clientY };
+    // Past the bottom of the screen the view comes to the nib, on the same dwell
+    // a finger's drag serves — a pen held at the edge is the same request.
+    updateEdgeScroll(event.clientX, event.clientY);
+    scheduleFrame(true);
+    return;
+  }
+
+  if (Math.hypot(event.clientX - penPress.startX, event.clientY - penPress.startY) < PEN_SELECT_SLOP_PX) return;
+
+  // The anchor is where the nib LANDED, not where it is now: the reader drew the
+  // first few pixels of this drag meaning to start from the character they aimed
+  // at, and starting from the current point would eat them.
+  const anchor = caretInRoot(penPress.startX, penPress.startY, penPress.root);
+  if (!anchor) { endPenPress(); return; }
+  const focus = caretInRoot(event.clientX, event.clientY, penPress.root);
+  if (!focus) return;
+  // A collapsed range is not a failure — four pixels can still be one character —
+  // so the drag has simply not begun yet and the next move asks again.
+  if (!setSelectionPoints(anchor, focus, penPress.root)) return;
+  penPress.live = true;
+  penDragging = true;
+  beginDrag();
+}
+
+function onPenPointerUp(event) {
+  if (!penPress || event.pointerId !== penPress.pointerId) return;
+  const live = penPress.live;
+  if (live) {
+    // The last point, extended in this pass rather than left to a frame that
+    // will never come: endDrag() below cancels the scheduler.
+    framePoint = { x: event.clientX, y: event.clientY };
+    frameWantsExtend = true;
+    runFrame();
+    penGestureUntil = Date.now() + PEN_GESTURE_TAIL_MS;
+  }
+  endPenPress();
+  if (!live) return;
+  // This is the whole point of the mode: endDrag() puts the pill over the words,
+  // and every button on it already knows what to do with a document selection.
+  endDrag();
+  // A drag that crossed four pixels of margin and resolved to nothing leaves no
+  // selection to offer. Take the caret away with it rather than leaving one on
+  // the page.
+  if (!touchSelectionRange()) clearTouchSelection();
+}
+
+function onPenPointerCancel(event) {
+  if (!penPress || event.pointerId !== penPress.pointerId) return;
+  const live = penPress.live;
+  endPenPress();
+  // The selection stays on the words it already had, exactly as it does when a
+  // finger's drag is taken away mid-gesture: losing it is the complaint, and
+  // there is nothing wrong with what was selected.
+  if (live) endDrag();
+}
+
+// The one way a pen press ends, and it is idempotent — the same discipline
+// releaseInkPress keeps, and for the same two failures its header records: a
+// press that is never cleared refuses every gesture after it, and an unreleased
+// pointer capture retargets every later event for that id.
+function endPenPress() {
+  if (!penPress) return;
+  try { penPress.root.releasePointerCapture?.(penPress.pointerId); } catch (_) { /* already gone */ }
+  penPress = null;
+  setInkPenDown(false);
+}
+
+function onPenClick(event) {
+  if (Date.now() > penGestureUntil) return;
+  penGestureUntil = 0;
+  event.stopPropagation();
+  event.preventDefault();
+}
+
+function bindPenRoot(root) {
+  root.addEventListener("pointerdown", onPenPointerDown);
+  root.addEventListener("pointermove", onPenPointerMove);
+  root.addEventListener("pointerup", onPenPointerUp);
+  root.addEventListener("pointercancel", onPenPointerCancel);
+  // The net for a capture taken away mid-drag — the page relaid out under the
+  // nib, the tab switched — where no pointerup or pointercancel this listener
+  // can see will ever arrive. After an ordinary release penPress is already null
+  // and this is a no-op.
+  root.addEventListener("lostpointercapture", onPenPointerCancel);
+  // Capture, so it runs before the mark menu's own click handler on this
+  // surface: a drag must not also press whatever it finished on top of.
+  root.addEventListener("click", onPenClick, true);
+}
+
 // ── Arming and disarming ───────────────────────────────────────────────────
 
 const boundRoots = new Set();
@@ -2355,6 +2625,12 @@ function bindRoot(root) {
     if (!canTouchSelect()) return;
     event.preventDefault();
   });
+  // The pen, on the paper only. A stylus on a note or a card face already
+  // reaches this controller — it arrives as a finger and long-presses like one,
+  // because nothing there takes its pointer first — and the Document surface is
+  // the one place the ink layer took every pen contact and left the text
+  // unreachable. Widening the mode to the other surfaces is this one condition.
+  if (root === el.documentView) bindPenRoot(root);
 }
 
 function arm() {

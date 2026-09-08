@@ -184,6 +184,26 @@ function inkSizeCanvas(canvas, width, height) {
 // Model -> device pixels, in one matrix. Handed straight to setTransform, so
 // everything downstream draws in model units and nothing in this file or in
 // ink-paint.js has to know about zoom, rotation or device pixels.
+// ── The eraser end, which overrules whatever tool is armed ────────────────
+//
+// The flipped end of a stylus, the dedicated eraser button, or a barrel button
+// held as the nib lands. Any of the three means erase for this stroke only —
+// the chosen tool is not changed under the reader (see begin(), which reads
+// this before it reads `tool`).
+//
+// Module scope and exported rather than a closure inside the engine, because
+// the ink layer has to ask the same question one step EARLIER than the engine
+// does: with the "text" tool armed a pen no longer reaches the engine at all
+// (inkTakesPointer, src/documents/pdf-ink.js), and a stylus turned over is the
+// one thing that must still get through. A pure function of the event, so there
+// is nothing to share but the answer.
+export function isEraserEvent(event) {
+  if (!event) return false;
+  if (event.button === 5) return true;
+  const buttons = Number(event.buttons) || 0;
+  return Boolean(buttons & 32) || Boolean(buttons & 2);
+}
+
 function inkDeviceTransform(matrix, scale) {
   const m = Array.isArray(matrix) && matrix.length === 6 ? matrix : [1, 0, 0, 1, 0, 0];
   return [m[0] * scale, m[1] * scale, m[2] * scale, m[3] * scale, m[4] * scale, m[5] * scale];
@@ -869,16 +889,6 @@ export function createInkEngine({
   function coalesced(event) {
     const list = typeof event?.getCoalescedEvents === "function" ? event.getCoalescedEvents() : null;
     return (list && list.length) ? list : [event];
-  }
-
-  function isEraserEvent(event) {
-    if (!event) return false;
-    // The flipped end of a stylus, the dedicated eraser button, or a barrel
-    // button held as the nib lands. Any of the three means erase for this
-    // stroke only — the chosen tool is not changed under the reader.
-    if (event.button === 5) return true;
-    const buttons = Number(event.buttons) || 0;
-    return Boolean(buttons & 32) || Boolean(buttons & 2);
   }
 
   function inkScheduleFrame() {

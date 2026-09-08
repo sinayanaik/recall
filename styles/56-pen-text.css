@@ -1,0 +1,35 @@
+/* ── The pen, used as a pointer instead of a nib ───────────────────────────
+   The pen's rail has a fourth tool, "text": while it is armed the ink layer
+   stands down (inkTakesPointer, src/documents/pdf-ink.js) and a stylus drag
+   over a paper makes a SELECTION instead of a stroke, which is the only way a
+   stylus can reach the highlighter, the cloze and the copy this app has always
+   had on that surface. The gesture is in src/notes/touch-selection.js.
+
+   Two things need saying in CSS and neither belongs in a frozen slice.
+
+   1. What the mode is, to a mouse. A crosshair says region-select two rules
+      up in 37-document-chrome.css; a text cursor says this. Deliberately NOT
+      `touch-action: none` beside it, which is what that mode uses: a finger
+      must go on scrolling the paper while the pen is selecting, and a pen drag
+      gets its own refusal per contact instead (onRootTouchMove).
+
+   2. The button. Its three siblings in the rail's tool row are symbol glyphs —
+      ✎ ⌫ ◯ — and this one is a letter, which the shared button font draws
+      lighter and smaller than the box around it expects. There is no symbol
+      for "select text" that renders on Android, iOS and desktop alike; the
+      I-beam ⌶ (U+2336) is missing from the default stack on all three. So it
+      is a T, set to look like it was chosen rather than typed. */
+
+.document-stage.is-pen-text .document-scroll {
+  cursor: text;
+}
+
+.ink-rail-btn[data-ink-tool="text"],
+.reading-rail-btn[data-rail-action="pen-text"] .rr-ico {
+  font-weight: 700;
+  /* Optical, not arbitrary: a capital in this stack has about 0.7em of ink
+     against a symbol glyph's full em, so it needs the difference back to sit at
+     the same weight on the row as the pen and the eraser beside it. */
+  font-size: 1.15em;
+  line-height: 1;
+}

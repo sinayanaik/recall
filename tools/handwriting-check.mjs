@@ -61,7 +61,7 @@
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { findChrome, launchChrome, connect, openPage } from "./cdp.mjs";
+import { findChrome, launchChrome, connect, openPage, emulatePhone } from "./cdp.mjs";
 import { pdfjsSources } from "./pdfjs-source.mjs";
 import { buildFixturePdf } from "./pdf-fixture.mjs";
 
@@ -117,7 +117,15 @@ const API_SRC = `async () => {
     "/src/ui/theme.js?v=__BUILD__",
     "/src/boot.js?v=__BUILD__",
     "/src/core/state.js?v=__BUILD__",
-    "/src/core/dom.js?v=__BUILD__"
+    "/src/core/dom.js?v=__BUILD__",
+    // Last, so a name these two share with anything above keeps the earlier
+    // module's copy — the loop below takes the first of each key.
+    // The pen's text tool lives in one and reaches the highlighter through the
+    // other; see "── The stylus that could not select" at the foot of this file.
+    "/src/notes/touch-selection.js?v=__BUILD__",
+    "/src/documents/pdf-selection.js?v=__BUILD__",
+    "/src/notes/selection.js?v=__BUILD__",
+    "/src/ui/reading-rail.js?v=__BUILD__"
   ];
   const mods = await Promise.all(paths.map((p) => import(p)));
   const api = {};
@@ -2378,6 +2386,242 @@ try {
     `.tool-button.file-pick computed position ${stacking.filePick.position} — `
       + `static lets the hidden input escape to the page`);
 
+  // ── The stylus that could not select ────────────────────────────────────
+  //
+  // Everything above this line asks whether the pen DRAWS. This asks the
+  // question that had no answer at all: `inkTakesPointer` opened with
+  // `if (event.pointerType === "pen") return true;` and `onInkPointerDown` said
+  // `setInkPenDown(true)`, which is the flag the selection controller reads to
+  // stand down — so on a paper a stylus could draw and could do nothing else.
+  // No highlight, no cloze, no copy, no phrase lifted into a note, every one of
+  // which that surface has had all along and only a finger or a mouse could
+  // reach. src/format/ink-colors.js says in as many words that this app's
+  // highlighter is the one that marks the words you SELECTED; the stylus had no
+  // way to select any.
+  //
+  // The rail has a fourth tool now, "text". It is asked HERE rather than in
+  // tools/touch-selection-check.mjs because that check is notes-only and never
+  // opens a paper, and because the two halves of the fault are one gesture: the
+  // ink that must not appear and the selection that must, from the same drag.
+  //
+  // Under emulation, deliberately. The controller arms on
+  // `(pointer: coarse) and (hover: none)` — a tablet, which is the machine a
+  // stylus is on — and refuses to take the gesture over anywhere the browser's
+  // own selection still works. Emulated last, so nothing above is measured
+  // through a viewport it was not written for.
+  await emulatePhone(page, { width: 1024, height: 1366 });
+  await new Promise((r) => setTimeout(r, 400));
+
+  const stylus = await page.evaluate(`async (penSrc) => {
+    const { api, settle } = window.__recall;
+    const pen = (0, eval)(penSrc);
+    // A stylus that names a BUTTON — the flipped end, which the engine's
+    // isEraserEvent recognises and which overrules whatever tool is armed.
+    const nib = (target, type, x, y, buttons, button) => target.dispatchEvent(new PointerEvent(type, {
+      bubbles: true, pointerId: 1, pointerType: "pen", isPrimary: true,
+      clientX: x, clientY: y, buttons, button, pressure: buttons ? 0.55 : 0
+    }));
+    const errs = [];
+
+    // main.js is not loaded in this harness, so the two wirings it does for
+    // this surface are done by hand: the controller itself, and the hook that
+    // lets the pill capture a DOCUMENT selection rather than a markdown one.
+    api.initTouchSelection();
+    api.setDocumentPillCaptureHook(api.captureDocumentSelection);
+    await settle(200);
+    const armed = document.body.classList.contains("has-touch-select");
+
+    api.setViewMode("document");
+    for (let i = 0; i < 80 && !document.querySelector("#documentStage .pdf-page[data-page-number='1'] .pdf-text-layer span"); i += 1) await settle(100);
+    await settle(400);
+    document.getElementById("documentView").scrollTop = 0;
+    await settle(300);
+    for (let i = 0; i < 60 && document.querySelector(".toast"); i += 1) await settle(100);
+
+    const view = document.getElementById("documentView");
+    const inkCount = () => api.documentHighlights().filter((r) => r.kind === "ink").length;
+
+    // The mode is armed through the rail, opened first, because that is the
+    // reader's own route: ✎ puts the rail up and T is one of the four tools on
+    // it. refreshInkRail returns early on a closed rail — deliberately, it is a
+    // repaint of a panel nobody can see — so a shut rail would say nothing
+    // about which tool is armed, and part of what is asked below is what the
+    // reader is SHOWN.
+    api.toggleInkRail(true);
+    await settle(150);
+    api.chooseInkTool("text");
+    // The reading rail mirrors the same answer for focus mode, where the pen's
+    // own rail is the thing that has been folded away. Painted on open in the
+    // app; called by hand here because main.js never ran.
+    api.refreshReadingRailModes();
+    await settle(200);
+
+    // A line of the fixture's own text, wide enough to drag across and on
+    // screen. Chosen from the text layer rather than from a page rectangle,
+    // because what is under test is whether the nib reaches the WORDS — and
+    // measured with the rail already up, because the rail floats OVER the page
+    // and a line under it is a line the nib cannot land on. That is the fault
+    // three cases higher up this file are about; here it would merely be a
+    // check measuring the wrong thing.
+    const railBox = document.getElementById("documentInkRail")?.getBoundingClientRect();
+    const railBottom = railBox && railBox.height ? railBox.bottom : 0;
+    const spans = [...document.querySelectorAll("#documentStage .pdf-page[data-page-number='1'] .pdf-text-layer span")];
+    const target = spans
+      .map((node) => ({ node, rect: node.getBoundingClientRect() }))
+      .filter((s) => s.rect.width > 80 && s.rect.height > 4
+        && s.rect.top > railBottom + 8 && s.rect.bottom < window.innerHeight - 8)
+      .sort((a, b) => a.rect.top - b.rect.top)[0];
+    if (!target) return { fatal: "no readable line in the text layer", errs };
+    const y = target.rect.top + (target.rect.height / 2);
+    const from = target.rect.left + 2;
+    const to = target.rect.right - 2;
+
+    const sweep = async (steps = 10) => {
+      pen(view, "pointerdown", from, y, 1);
+      await settle(30);
+      for (let i = 1; i <= steps; i += 1) pen(view, "pointermove", from + ((to - from) * (i / steps)), y, 1);
+      await settle(80);
+      pen(view, "pointerup", to, y, 0);
+      await settle(200);
+    };
+    const readSelection = () => {
+      const sel = window.getSelection();
+      if (!sel || !sel.rangeCount) return { chars: 0, page: 0 };
+      const range = sel.getRangeAt(0);
+      // Selection.toString() is "" over user-select:none content and the
+      // Range's is not — which is the measurement this whole controller was
+      // affordable because of. See the header of src/notes/touch-selection.js.
+      const span = (range.startContainer.nodeType === 3 ? range.startContainer.parentElement : range.startContainer)
+        ?.closest?.(".pdf-page");
+      return { chars: range.toString().trim().length, page: Number(span?.dataset.pageNumber || 0) };
+    };
+
+    // ── 1. Text mode: the drag must select and must not draw ───────────────
+    const inkBefore = inkCount();
+    await sweep();
+    const selected = readSelection();
+    const textMode = {
+      ink: inkCount() - inkBefore,
+      chars: selected.chars,
+      page: selected.page,
+      selecting: document.body.classList.contains("is-touch-selecting"),
+      // The rows the rail folds away when nothing is being drawn.
+      pensHidden: Boolean(document.getElementById("inkRailPens")?.hidden),
+      nibsHidden: Boolean(document.getElementById("inkRailWidths")?.hidden),
+      toolLit: document.querySelector('[data-ink-tool="text"]')?.getAttribute("aria-pressed") === "true",
+      railRow: document.querySelector('[data-rail-action="pen-text"]')?.getAttribute("aria-pressed") === "true"
+    };
+
+    // ── 2. ...and the selection is one the highlighter can act on ──────────
+    //
+    // The pill's own Highlight resolves to exactly this pair on this surface
+    // (pillActionTarget -> addDocumentHighlight, src/format/selection-tools.js).
+    // Asked through them rather than by pressing the button, because what was
+    // broken was never the button — it was that a stylus could not produce a
+    // selection for it to act on.
+    const capture = api.captureDocumentSelection();
+    const made = capture ? api.addDocumentHighlight(capture, "yellow") : null;
+    const highlighted = {
+      captured: Boolean(capture),
+      id: made ? made.id : "",
+      quads: made ? (made.quads || []).length : 0,
+      onPage: made && made.quads && made.quads[0] ? made.quads[0].page : 0,
+      words: made ? String(made.text || "").trim().length : 0
+    };
+    if (made) api.removeDocumentHighlight(made.id);
+    api.clearTouchSelection();
+    await settle(120);
+
+    // ── 3. A TAP in text mode is still a tap ───────────────────────────────
+    //
+    // Under PEN_SELECT_SLOP_PX nothing may happen at all: a pen tap on this
+    // surface opens a highlight's own menu, and it cannot if the first contact
+    // has already put a caret on the page.
+    const beforeTap = inkCount();
+    pen(view, "pointerdown", from + 20, y, 1);
+    await settle(40);
+    pen(view, "pointermove", from + 22, y, 1);
+    pen(view, "pointerup", from + 22, y, 0);
+    await settle(200);
+    const tap = { ink: inkCount() - beforeTap, chars: readSelection().chars };
+    api.clearTouchSelection();
+    await settle(100);
+
+    // ── 4. The eraser end overrules the mode ───────────────────────────────
+    //
+    // Still in text mode. A stylus turned over is the one contact inkTakesPointer
+    // lets through, because there is nothing else flipping a pen over could mean
+    // — and the eraser button's own tooltip has always promised it works
+    // "without leaving the pen".
+    api.chooseInkTool("pen");
+    await settle(100);
+    const strokeBefore = inkCount();
+    pen(view, "pointerdown", from + 10, y + 26, 1);
+    for (let i = 1; i <= 10; i += 1) pen(view, "pointermove", from + 10 + (i * 6), y + 26, 1);
+    await settle(80);
+    pen(view, "pointerup", from + 70, y + 26, 0);
+    await settle(300);
+    const drawnInPenMode = inkCount() - strokeBefore;
+
+    api.chooseInkTool("text");
+    await settle(120);
+    const beforeRub = inkCount();
+    nib(view, "pointerdown", from + 4, y + 26, 32, 5);
+    for (let i = 1; i <= 12; i += 1) nib(view, "pointermove", from + 4 + (i * 6), y + 26, 32, -1);
+    await settle(80);
+    nib(view, "pointerup", from + 76, y + 26, 0, 5);
+    await settle(300);
+    const rubbedOut = beforeRub - inkCount();
+
+    api.chooseInkTool("pen");
+    await settle(100);
+    return { fatal: "", armed, textMode, highlighted, tap, drawnInPenMode, rubbedOut, errs: window.__errs.slice() };
+  }`, PEN_SRC);
+
+  check("the stylus controller arms on a tablet, which is where a stylus is",
+    stylus.armed, stylus.fatal || `has-touch-select: ${stylus.armed}`);
+  // The two halves of the same drag, asked separately because they are two
+  // separate failures: "it still drew" and "it did not select".
+  check("with Text armed, a pen drag across a paper leaves no ink",
+    !stylus.fatal && stylus.textMode?.ink === 0,
+    stylus.fatal || `${stylus.textMode?.ink} ink mark(s) appeared — the ink layer did not stand down`);
+  check("...and selects the words it was dragged across",
+    !stylus.fatal && stylus.textMode?.chars > 0 && stylus.textMode?.selecting,
+    stylus.fatal || `${stylus.textMode?.chars} character(s) selected, is-touch-selecting: ${stylus.textMode?.selecting}`);
+  check("...on the page the nib was actually on",
+    !stylus.fatal && stylus.textMode?.page === 1,
+    stylus.fatal || `resolved to page ${stylus.textMode?.page}`);
+  // The point of the whole mode: this app's highlighter marks what you
+  // SELECTED, so a stylus that can select is a stylus that can highlight.
+  check("...and that selection is one the highlighter can act on",
+    !stylus.fatal && stylus.highlighted?.captured && stylus.highlighted?.quads > 0,
+    stylus.fatal || `captured: ${stylus.highlighted?.captured}, ${stylus.highlighted?.quads} quad(s)`);
+  check("...landing on the same page, with the words it covered",
+    !stylus.fatal && stylus.highlighted?.onPage === 1 && stylus.highlighted?.words > 0,
+    stylus.fatal || `page ${stylus.highlighted?.onPage}, ${stylus.highlighted?.words} character(s) of text`);
+  // A control that exists and cannot be understood is the fault this panel has
+  // been reported for twice. Both doors to the mode have to say it is on.
+  check("...with the rail saying which tool is armed, and the pen's rows folded",
+    !stylus.fatal && stylus.textMode?.toolLit && stylus.textMode?.railRow
+      && stylus.textMode?.pensHidden && stylus.textMode?.nibsHidden,
+    stylus.fatal || `tool lit: ${stylus.textMode?.toolLit}, reading rail row: ${stylus.textMode?.railRow}, `
+      + `colours hidden: ${stylus.textMode?.pensHidden}, nibs hidden: ${stylus.textMode?.nibsHidden}`);
+  check("a pen TAP in text mode neither draws nor selects",
+    !stylus.fatal && stylus.tap?.ink === 0 && stylus.tap?.chars === 0,
+    stylus.fatal || `${stylus.tap?.ink} ink mark(s), ${stylus.tap?.chars} character(s) — a tap must stay a tap, `
+      + `or a highlight's own menu can never be opened with the pen`);
+  // The regression the other half of this file exists for. Text mode must be a
+  // mode, not a removal.
+  check("...and with the pen armed again the same drag still draws",
+    !stylus.fatal && stylus.drawnInPenMode === 1,
+    stylus.fatal || `${stylus.drawnInPenMode} ink mark(s) — text mode must not be a one-way door out of drawing`);
+  check("a stylus turned over still rubs out while Text is armed",
+    !stylus.fatal && stylus.rubbedOut === 1,
+    stylus.fatal || `${stylus.rubbedOut} mark(s) removed — the eraser end overrules the tool, and always has`);
+  check("...and nothing threw while the pen was selecting",
+    !stylus.fatal && (stylus.errs || []).length === 0,
+    stylus.fatal || (stylus.errs || []).join(" | "));
+
   check("nothing threw anywhere in this run",
     sheet.errs.length === 0 && picture.errs.length === 0,
     [...sheet.errs, ...picture.errs].join(" | "));
@@ -2393,5 +2637,5 @@ if (failures) {
   console.log(`CHECK: ${ran} checks · ${failures} failed`);
   process.exit(1);
 }
-console.log("\nhandwriting-check: the pen keeps writing through a pause, the lift does not blink, and a notebook keeps its pages");
+console.log("\nhandwriting-check: the pen keeps writing through a pause, the lift does not blink, a notebook keeps its pages, and the stylus can pick out words as well as leave them");
 console.log(`CHECK: ${ran} checks · ${failures} failed`);

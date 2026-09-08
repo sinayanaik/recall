@@ -404,6 +404,15 @@ const POST_SPLIT = {
     "the middle of any selection that crossed the block. Belongs beside " +
     ".code-copy-btn in 06-rendered.css and cannot live there, for the reason " +
     "this whole list exists. See tools/selection-check.mjs.",
+  "56-pen-text.css":
+    "The pen's fourth tool, \"text\": a stylus that selects words instead of " +
+    "drawing them, which is the only way a stylus could ever reach this app's " +
+    "highlighter — it marks what you SELECTED, and on a paper a pen had no way " +
+    "to select anything (inkTakesPointer took every pen pointer). Two rules: " +
+    "the text cursor that says what the mode is to a mouse, beside the " +
+    "crosshair region-select uses in 37-document-chrome.css; and the tool " +
+    "button, whose three siblings are symbol glyphs where this one has to be a " +
+    "letter, because no I-beam renders on Android, iOS and desktop alike.",
   "54-stacking.css":
     "Where a control sits and what it sits above — and, more to the point, three " +
     "rules that had been written into frozen slices instead. .tool-button.file-pick " +
