@@ -90,6 +90,19 @@ const CASES = [
     session: "none", stored: false, library: true, expectLogin: false
   },
   {
+    // The other half of a lapsed session: not "was I thrown out", but "does
+    // signing back in actually take". It did not. isSignedIn flipped, the login
+    // form went away, and the pill went on reading "Signed out · tap to sign
+    // in" and on opening that same form when tapped — because setSyncIndicator
+    // only changes when something calls it, and the auth listener was the one
+    // path into the app that never did. From the reader's side that is
+    // indistinguishable from the password having been refused.
+    name: "signs in after the pill said signed out",
+    real: "the session lapsed, the pill offered a sign-in, and the reader took it",
+    session: "none", stored: false, library: true, signIn: true,
+    expectLogin: false, expectSignedIn: true
+  },
+  {
     name: "refresh hangs, no decks yet",
     real: "a fresh install that has synced nothing, on a bad connection",
     session: "hang", stored: true, library: false, expectLogin: false
@@ -225,7 +238,12 @@ async function run(base, kase) {
   try {
     const page = await browser.newPage();
     await page.setRequestInterception(true);
+    // Did anything actually go and sync after the sign-in? "The pill went
+    // quiet" is not the whole of the fix — the reason to sign in is the syncing
+    // it unblocks, and the path this check covers used to start none at all.
+    let restCalls = 0;
     page.on("request", (r) => {
+      if (/\/rest\/v1\//.test(r.url())) restCalls++;
       if (r.url().includes("cdn.jsdelivr.net")) return r.abort();
       // ── The project's token endpoint, answered ─────────────────────────
       //
@@ -237,7 +255,9 @@ async function run(base, kase) {
       // not exist. Every other case wants that failure. This one wants the
       // opposite, so the one request restoreSessionFromBackup makes is given the
       // answer a live project would give it.
-      if (kase.backup && /\/auth\/v1\/token/.test(r.url())) return r.respond(tokenResponse(r.method()));
+      // ...and the same answer for the sign-in case, whose one request is the
+      // password grant against that same endpoint.
+      if ((kase.backup || kase.signIn) && /\/auth\/v1\/token/.test(r.url())) return r.respond(tokenResponse(r.method()));
       return r.continue();
     });
     for (const lib of VENDORED) {
@@ -260,25 +280,61 @@ async function run(base, kase) {
     // timed out and boot has done whatever it is going to do about it.
     await new Promise((r) => setTimeout(r, 10000));
 
-    return {
-      ...(await page.evaluate(() => {
-        const visible = (id) => {
-          const node = document.getElementById(id);
-          return Boolean(node) && !node.hidden && getComputedStyle(node).display !== "none";
-        };
-        return {
-          loginVisible: visible("loginOverlay"),
-          setupVisible: visible("setupOverlay"),
-          // The chip is the standing "syncing is paused" mark. Down means the
-          // session came back, which is the half of a recovery that a login
-          // wall staying away does not by itself prove.
-          chipVisible: visible("signedOutIndicator"),
-          syncPill: document.getElementById("syncIndicator")?.textContent?.trim() || "",
-          pillAction: document.getElementById("syncIndicator")?.dataset.action || ""
-        };
-      })),
-      errors
-    };
+    const readState = () => page.evaluate(() => {
+      const visible = (id) => {
+        const node = document.getElementById(id);
+        return Boolean(node) && !node.hidden && getComputedStyle(node).display !== "none";
+      };
+      let bgProblem = null;
+      try { bgProblem = localStorage.getItem("recall:lastBackgroundSyncProblem"); } catch (_) {}
+      return {
+        loginVisible: visible("loginOverlay"),
+        setupVisible: visible("setupOverlay"),
+        // The chip is the standing "syncing is paused" mark. Down means the
+        // session came back, which is the half of a recovery that a login
+        // wall staying away does not by itself prove.
+        chipVisible: visible("signedOutIndicator"),
+        syncPill: document.getElementById("syncIndicator")?.textContent?.trim() || "",
+        pillAction: document.getElementById("syncIndicator")?.dataset.action || "",
+        // The signal with no pixels: set when syncing stopped, and cleared only
+        // by a sync that gets through. Left set, it swallows the next genuine
+        // report of the same problem.
+        bgProblem
+      };
+    });
+
+    const settled = await readState();
+    if (!kase.signIn) return { ...settled, errors };
+
+    // ── The reported sequence, driven ──────────────────────────────────────
+    //
+    // The pill is the deck-meta pill: it blanks itself when no deck is open
+    // (setSyncIndicator's first branch), and this harness boots to the home
+    // screen. So put a deck behind it first — a title is all hasActiveDeck()
+    // needs — and ask for the state the lapsed session leaves. That is the
+    // screen the reader taps.
+    await page.evaluate(async () => {
+      const { state } = await import("/src/core/state.js?v=__BUILD__");
+      const { setSyncIndicator } = await import("/src/sync/indicator.js?v=__BUILD__");
+      state.deckTitle = "Offline deck";
+      setSyncIndicator("signedout");
+    });
+    const offered = await readState();
+    // If the pill is not offering a sign-in, the case below is testing nothing
+    // and must say so rather than passing quietly.
+    if (offered.pillAction !== "signin") {
+      return { ...offered, errors, signInOffered: false, restCalls };
+    }
+    const before = restCalls;
+    await page.evaluate(() => {
+      document.getElementById("syncIndicator").click();
+      document.getElementById("loginEmail").value = "reader@example.com";
+      document.getElementById("loginPassword").value = "correct-horse-battery";
+      document.getElementById("loginForm").requestSubmit();
+    });
+    // Past the 1200ms the post-sign-in reconcile is scheduled at.
+    await new Promise((r) => setTimeout(r, 6000));
+    return { ...(await readState()), errors, signInOffered: true, restCalls: restCalls - before };
   } finally {
     await browser.close();
   }
@@ -290,13 +346,26 @@ try {
   for (const kase of CASES) {
     const got = await run(base, kase);
     const recovered = !got.chipVisible;
+    // Four things, because the sign-in that "did nothing" satisfied the first
+    // two: the wall went away and the chip came down, while the pill went on
+    // saying the opposite and nothing synced.
+    const signedIn = got.signInOffered
+      && !got.chipVisible
+      && got.pillAction !== "signin"
+      && !/signed out/i.test(got.syncPill)
+      && got.bgProblem === null
+      && got.restCalls > 0;
     const ok = got.loginVisible === kase.expectLogin
-      && (!kase.expectRecovered || recovered);
+      && (!kase.expectRecovered || recovered)
+      && (!kase.expectSignedIn || signedIn);
     if (!ok) problems++;
     console.log(`${ok ? "ok  " : "FAIL"}  ${kase.name}`);
     console.log(`        ${kase.real}`);
     console.log(`        login wall: ${got.loginVisible} (expected ${kase.expectLogin})` +
       `${kase.expectRecovered ? `, signed back in: ${recovered} (expected true)` : ""}` +
+      `${kase.expectSignedIn ? `, sign-in took: ${signedIn} (expected true)` +
+        ` — offered: ${got.signInOffered}, chip down: ${!got.chipVisible},` +
+        ` problem cleared: ${got.bgProblem === null}, sync requests: ${got.restCalls}` : ""}` +
       `${got.syncPill ? `, pill: "${got.syncPill}"${got.pillAction ? ` [${got.pillAction}]` : ""}` : ""}`);
     if (got.errors.length) {
       problems++;
