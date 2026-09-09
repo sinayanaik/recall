@@ -22,7 +22,7 @@ import { updateOnlineIndicator } from "./pwa/online.js?v=__BUILD__";
 import { installManifestLink, markUpdateAvailableInMenu, registerServiceWorker } from "./pwa/service-worker-client.js?v=__BUILD__";
 import { clearBrowserPersistence } from "./storage/deck-snapshot.js?v=__BUILD__";
 import { clearAllDeckSnapshots, initDeckStorage, requestPersistentStorage } from "./storage/deck-store.js?v=__BUILD__";
-import { LAST_BG_SYNC_PROBLEM_KEY, LAST_GLOBAL_SYNC_ERROR_KEY, LAST_GLOBAL_SYNC_KEY, LOCAL_DECKS_INDEX_KEY, LOCAL_DECK_TOMBSTONES_KEY, MISSING_DECK_WATCH_KEY, reportBackgroundSyncProblem } from "./storage/keys.js?v=__BUILD__";
+import { clearBackgroundSyncProblem, LAST_BG_SYNC_PROBLEM_KEY, LAST_GLOBAL_SYNC_ERROR_KEY, LAST_GLOBAL_SYNC_KEY, LOCAL_DECKS_INDEX_KEY, LOCAL_DECK_TOMBSTONES_KEY, MISSING_DECK_WATCH_KEY, reportBackgroundSyncProblem } from "./storage/keys.js?v=__BUILD__";
 import { refreshSyncIndicatorBaseline, setSignedOutChip, setSyncIndicator } from "./sync/indicator.js?v=__BUILD__";
 import { reconcileAllDecks } from "./sync/reconcile.js?v=__BUILD__";
 import { showAuthenticatedUI, showLibraryFailedScreen, showLoginScreen, showSetupScreen } from "./ui/boot-screens.js?v=__BUILD__";
@@ -242,6 +242,60 @@ function scheduleSessionRetry() {
   }, delay);
 }
 
+// ── One place where "this device now has a session" is acted on ───────────
+//
+// There were four, and each did a slightly different subset of the same six
+// things: bootApp's awaited path, confirmSessionInBackground,
+// recoverSessionIfPossible, and the auth listener. The listener — the one every
+// sign-in typed by hand goes through — was missing the two that repaint, and
+// nothing else covers for it: the login submit handler in main.js deliberately
+// does nothing on success, and setSyncIndicator only ever changes when it is
+// called. So entering the right password hid the login form and left the pill
+// still reading "Signed out · tap to sign in", still opening the login form
+// when tapped, with no sync started. Which is indistinguishable, from the
+// reader's side, from the password not having worked.
+//
+// Four copies of a sequence is how that happens, so there is one now.
+export async function adoptSignedInSession(session, { remember = false } = {}) {
+  if (!session?.user) return;
+  // Every event that carries a session — the sign-in, the initial restore and,
+  // most of all, TOKEN_REFRESHED — writes the way back. supabase-js rotates the
+  // refresh token on each refresh, so the copy kept at sign-in is stale within
+  // the hour and spending a stale one is the "Already Used" failure that
+  // started this. See SESSION_BACKUP_STORAGE_KEY.
+  if (remember) rememberSessionForRecovery(session);
+  cancelSessionRetry();
+  setSignedIn(true);
+  const ownerChanged = await ensureLocalLibraryOwner(session.user.id);
+  showAuthenticatedUI();
+  let startedApp = false;
+  if (!appInitialized) {
+    setAppInitialized(true);
+    initAppForUser();
+    startedApp = true;
+  } else if (ownerChanged) {
+    // A different account: the library on screen was just wiped out from under
+    // the view, so repaint before anything can be clicked on a deck that no
+    // longer exists. Only needed when the app was already running — the branch
+    // above repaints as part of starting.
+    showCard();
+  }
+  setSignedOutChip(false);
+  refreshSyncIndicatorBaseline();
+  // The other half of the signed-out signal, and the one with no pixels: the
+  // toast gate stays stuck on "signed-out" until a sync completes, and would
+  // otherwise swallow the next genuine report of it.
+  clearBackgroundSyncProblem();
+  // The point of getting the session back is the syncing it unblocks, and
+  // nothing else here starts one: autoSyncTick only fires on its own deadline —
+  // up to five minutes away, and never at all if the reader set auto-sync to
+  // Off. initAppForUser already asked for one on the branch that ran it; a
+  // sign-in into an app that was already open has nothing that will.
+  if (!startedApp && navigator.onLine) {
+    setTimeout(() => reconcileAllDecks({ explicit: false }), 1200);
+  }
+}
+
 export async function recoverSessionIfPossible() {
   if (sessionRecoveryInFlight) return;
   if (isSignedIn) { cancelSessionRetry(); return; }
@@ -259,21 +313,7 @@ export async function recoverSessionIfPossible() {
     // and a logout the user never asked for and cannot undo without a password.
     if (!session?.user) session = await restoreSessionFromBackup();
     if (session?.user) {
-      cancelSessionRetry();
-      setSignedIn(true);
-      await ensureLocalLibraryOwner(session.user.id);
-      showAuthenticatedUI();
-      if (!appInitialized) {
-        setAppInitialized(true);
-        initAppForUser();
-      }
-      setSignedOutChip(false);
-      refreshSyncIndicatorBaseline();
-      // The point of getting the session back is the syncing it unblocks, and
-      // nothing else here starts one: autoSyncTick only fires on its own
-      // deadline, so a recovery a minute after launch used to leave the device
-      // holding its edits until then.
-      setTimeout(() => reconcileAllDecks({ explicit: false }), 1200);
+      await adoptSignedInSession(session);
       return;
     }
     // Nothing came back. Whether that is a sign-out or a project that could not
@@ -306,21 +346,7 @@ export function setupAuthListener() {
   }
   const { data } = supabaseClient.auth.onAuthStateChange(async (event, session) => {
     if (session?.user) {
-      // Every event that carries a session — the sign-in, the initial restore
-      // and, most of all, TOKEN_REFRESHED — writes the way back. supabase-js
-      // rotates the refresh token on each refresh, so the copy kept at sign-in
-      // is stale within the hour and spending a stale one is the "Already Used"
-      // failure that started this. See SESSION_BACKUP_STORAGE_KEY.
-      rememberSessionForRecovery(session);
-      cancelSessionRetry();
-      setSignedIn(true);
-      await ensureLocalLibraryOwner(session.user.id);
-      showAuthenticatedUI();
-      if (!appInitialized) {
-        setAppInitialized(true);
-        initAppForUser();
-      }
-      setSignedOutChip(false);
+      await adoptSignedInSession(session, { remember: true });
     } else if (event === "SIGNED_OUT") {
       setSignedIn(false);
       const wasExplicit = explicitLogout;
@@ -460,13 +486,7 @@ export async function bootApp() {
   // getCachedSession), so the wait cannot be unbounded even here.
   const { status: sessionStatus, session } = await getSessionOutcome();
   if (session?.user) {
-    setSignedIn(true);
-    await ensureLocalLibraryOwner(session.user.id);
-    showAuthenticatedUI();
-    if (!appInitialized) {
-      setAppInitialized(true);
-      initAppForUser();
-    }
+    await adoptSignedInSession(session);
     // Only on the signed-in path: the setup, library-failed and login screens
     // have no diagrams to draw, no archives to write and nothing to paste into.
     warmDeferredLibraries();
@@ -541,17 +561,7 @@ export async function confirmSessionInBackground() {
   const session = outcome.session;
 
   if (session?.user) {
-    setSignedIn(true);
-    setSignedOutChip(false);
-    // A different account: the library on screen was just wiped out from under
-    // the view, so repaint before anything can be clicked on a deck that no
-    // longer exists.
-    if (await ensureLocalLibraryOwner(session.user.id)) showCard();
-    refreshSyncIndicatorBaseline();
-    // initAppForUser only schedules a sync when it runs while online AND the
-    // session was already known, which on this path it was not — so ask for one
-    // here rather than leaving the first sync until the auto-sync deadline.
-    if (navigator.onLine) setTimeout(() => reconcileAllDecks({ explicit: false }), 1200);
+    await adoptSignedInSession(session);
     return;
   }
 
