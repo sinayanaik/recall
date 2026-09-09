@@ -1,0 +1,101 @@
+/* The [[ picker as a browser: breadcrumb, section headings, folder rows and the
+   fuzzy-match marks.
+
+   Not in styles/12-notes.css, where the rest of .note-link-picker lives, for the
+   reason 53-handwriting.css and 54-stacking.css already state: that file is one
+   of the thirteen frozen slices, and tools/split-css.mjs --check requires it to
+   reassemble byte-for-byte against pre-modular:styles.css. Anything written
+   since the split lives on its own. */
+
+/* Browsing shows a directory rather than eight guesses, so it gets a little
+   more room. The scroll and the max-height are already on .note-link-picker —
+   this only raises the ceiling. */
+.note-link-picker.is-browsing {
+  width: min(380px, calc(100vw - 24px));
+  max-height: min(56vh, 420px);
+}
+
+/* The popup is a flex column, so its children shrink to fit before the box will
+   scroll — and a browse list is several times taller than a list of eight search
+   results, which is what made that visible: the breadcrumb was squeezed from
+   27px to 14px and its text spilled out over the popup's own top border, while
+   every row below lost a couple of pixels of padding. The overflow-y on
+   .note-link-picker is the intended answer to a list too long for the box; this
+   is what lets it be the one that happens. */
+.note-link-picker-crumbs,
+.note-link-picker-section,
+.note-link-picker-row {
+  flex: none;
+}
+
+/* Where you are. Sticky because the list scrolls under it and "which folder am
+   I in" is the one thing that must not scroll away. */
+.note-link-picker-crumbs {
+  /* top: 0, not -4px: the popup's own 4px of padding is inside the scroll port,
+     so a negative offset parks the bar above it and the first row scrolls over
+     the top of the words. */
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin: 0 -4px 2px;
+  padding: 7px 10px 6px;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* moveNoteLinkPicker scrolls the highlighted row into view with block:"nearest",
+   which stops at the scroll port's edge — and the breadcrumb is sticky over that
+   edge, so the top row would arrive tucked underneath it. This is the height of
+   the bar, reserved. */
+.note-link-picker.is-browsing .note-link-picker-row,
+.note-link-picker.is-browsing .note-link-picker-section {
+  scroll-margin-top: 30px;
+}
+
+/* "Recent" / "All folders" / the folder's own name. Drawn from the first row of
+   each group rather than being a row itself — see renderNoteLinkPicker, where
+   the row array must stay selectable-only. */
+.note-link-picker-section {
+  padding: 7px 9px 3px;
+  color: var(--muted);
+  font-size: 0.64rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* A folder is a place, not a destination: the glyph and the chevron say that
+   choosing it opens it rather than inserting a link. */
+.note-link-picker-row.is-folder .note-link-picker-title::before {
+  content: "\1F4C1\00a0";
+}
+
+.note-link-picker-row.is-folder .note-link-picker-title::after {
+  content: "\00a0\203A";
+  color: var(--muted);
+}
+
+.note-link-picker-row.is-up .note-link-picker-title,
+.note-link-picker-row.is-folder .note-link-picker-title {
+  color: var(--accent-strong);
+}
+
+/* Which characters the query actually matched. <mark>'s own yellow-on-black is
+   dropped outright — it ignores the theme — and what replaces it is a tint plus
+   an underline rather than colour alone, because on the darker themes the
+   accent and the title colour are close enough that colour alone said nothing.
+   Nothing here changes the glyphs' metrics, so the row cannot reflow as the
+   query grows. */
+.note-link-picker-title mark {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  border-radius: 2px;
+  box-shadow: inset 0 -1px 0 var(--accent-strong);
+  color: inherit;
+}

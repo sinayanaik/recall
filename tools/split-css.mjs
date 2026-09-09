@@ -65,6 +65,13 @@ const SECTIONS = [
 // Anything appearing in styles/ that is neither a slice nor listed here is
 // still a failure.
 const POST_SPLIT = {
+  "57-note-link-browser.css":
+    "The [[ picker as a BROWSER rather than a search box: the breadcrumb, the " +
+    "section headings, the folder rows and the marks over the characters a " +
+    "fuzzy query matched. The rest of .note-link-picker is drawn in " +
+    "12-notes.css, which is frozen — so this is the same rule this list exists " +
+    "for, and the same one 53-handwriting.css states: anything written since " +
+    "the split lives on its own.",
   "14-selection.css":
     "user-select on the app's own chrome. Without it a drag that left the note " +
     "it started in pulled the app's furniture in with it — 370 characters of " +

@@ -59,7 +59,7 @@ import { openHighlightNoteEditor } from "./notes/highlight-note-editor.js?v=__BU
 import { goToBookmark } from "./notes/bookmark.js?v=__BUILD__";
 import { initNotesCaretLine } from "./notes/caret-line.js?v=__BUILD__";
 import { scheduleNotesCaretCheck } from "./notes/caret.js?v=__BUILD__";
-import { closeNoteLinkPicker, commitNoteLinkPicker, isNoteLinkPickerOpen, moveNoteLinkPicker, updateNoteLinkPicker } from "./notes/link-picker.js?v=__BUILD__";
+import { closeNoteLinkPicker, commitNoteLinkPicker, isNoteLinkBrowsing, isNoteLinkPickerOpen, moveNoteLinkPicker, noteLinkBrowseUp, noteLinkPickerRowIsFolder, updateNoteLinkPicker } from "./notes/link-picker.js?v=__BUILD__";
 import { isInkSheetOpen, redoInkSheet, repaintInkSheet, undoInkSheet } from "./notes/ink-sheet.js?v=__BUILD__";
 import { followNoteLink, revealNoteHeading } from "./notes/note-links.js?v=__BUILD__";
 import { initNotesHeadOverflow } from "./notes/notes-head-overflow.js?v=__BUILD__";
@@ -581,6 +581,28 @@ el.notesEdit?.addEventListener("keydown", (event) => {
   if (event.key === "ArrowDown") { event.preventDefault(); moveNoteLinkPicker(1); return; }
   if (event.key === "ArrowUp") { event.preventDefault(); moveNoteLinkPicker(-1); return; }
   if (event.key === "Enter" || event.key === "Tab") { event.preventDefault(); commitNoteLinkPicker(); return; }
+  // Walking the folder tree. Only while BROWSING — with a query typed, the
+  // sideways arrows have to keep moving the caret through it, and Backspace has
+  // to keep deleting what was typed.
+  if (isNoteLinkBrowsing()) {
+    // → opens the highlighted folder. On a note row it is left alone rather
+    // than treated as "choose this": → is a navigation key, and inserting a
+    // link off it would be an edit nobody asked for.
+    if (event.key === "ArrowRight" && noteLinkPickerRowIsFolder()) {
+      event.preventDefault();
+      commitNoteLinkPicker();
+      return;
+    }
+    // ← and Backspace back out. Backspace falls through at the root, so it
+    // still deletes a "[" and the caret is never trapped inside a "[[" it
+    // cannot leave.
+    if (event.key === "ArrowLeft" || event.key === "Backspace") {
+      if (!noteLinkBrowseUp()) return;
+      event.preventDefault();
+      updateNoteLinkPicker();
+      return;
+    }
+  }
   if (event.key === "Escape") {
     event.preventDefault();
     // Stopped here so the global Escape handler doesn't also close whatever is

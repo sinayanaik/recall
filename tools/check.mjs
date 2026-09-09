@@ -113,6 +113,10 @@
 //                   runs wherever there is a Chrome rather than skipping
 //   style           does a Style panel setting reach the element it names?
 //   highlight       does highlighting mark the thing that was SELECTED?
+//   note-link-brws  can you find a note to link to WITHOUT remembering its
+//                   name? Walks the [[ picker's folder tree and asks a
+//                   half-remembered query of it, then checks that neither route
+//                   changed the id form the link is written in
 //   note-editor     can you format a highlight's note with the keyboard — and
 //                   does Ctrl+E flip the popup rather than the view behind it?
 //                   Nothing drove .highlight-note-editor at all before it, which
@@ -381,6 +385,11 @@ const checks = [
     ["style         ", ["node", ["tools/style-check.mjs"], ROOT]],
     ["highlight     ", ["node", ["tools/highlight-check.mjs"], ROOT]],
     ["note-editor   ", ["node", ["tools/note-editor-check.mjs"], ROOT]],
+    // ...and the other end of writing a note: finding the one you want to LINK
+    // to. The [[ picker had no check at all while it was a substring filter
+    // over eight alphabetical rows, which is the arrangement that made it worth
+    // replacing — see the file's header.
+    ["note-link-brws", ["node", ["tools/note-link-browser-check.mjs"], ROOT]],
     // The two halves of handwriting a browser is the only instrument for.
     // tools/ink-check.mjs can ask whether a stroke survives being stored; it
     // cannot ask whether the line follows the nib. So: a stroke held still
