@@ -12,6 +12,7 @@ import { loadSupabaseConfig, supabaseClient } from "../cloud/supabase-client.js?
 import { IS_DEV_BUILD } from "../core/build.js?v=__BUILD__";
 import { readLocalDeckIndex } from "../library/local-library.js?v=__BUILD__";
 import { probeLocalStorage } from "../storage/health.js?v=__BUILD__";
+import { SYNC_CLOCK_SKEW_TOLERANCE_MS, tsMs } from "../sync/stats.js?v=__BUILD__";
 import { GITHUB_REPO, compareCommits, fetchLiveRelease, fetchRepoRelease, releaseStampsIn, runningAppVersion, runningVersionLabel, setGithubReleaseCache } from "./release-info.js?v=__BUILD__";
 import { isMixedBuild, serviceWorkerRegistration, updateDownloadFailed, updateIsWaiting } from "./service-worker-client.js?v=__BUILD__";
 import { setButtonLoading } from "../ui/feedback.js?v=__BUILD__";
@@ -372,6 +373,82 @@ export async function renderSupabaseProjectDetails() {
 // list. Nothing is written, so running it can never make a broken project worse.
 export const HEALTH_TIMEOUT_MS = 12000;
 
+// The rows that mean "the check stopped here and proved nothing" — both are
+// early returns in checkProjectHealth. They are not schema problems and must
+// never be answered with "re-run the SQL": being signed out is not fixed by
+// running SQL, and neither is having no project connected. Exported because
+// announceProjectHealthOnce needs the same list to decide whether a background
+// run learnt anything worth remembering.
+export const HEALTH_BAILOUT_LABELS = ["Connection", "Signed in"];
+
+// ── Whose clock is actually wrong? ─────────────────────────────────────────
+//
+// reconcileAllDecks raises "Another device's clock is wrong" from a comparison
+// that cannot actually attribute the fault: clockSkewedAhead is true when a
+// cloud stamp is ahead of THIS device, and a laptop running slow looks exactly
+// like another device running fast. Naming the wrong culprit sends the reader
+// to check devices that are fine.
+//
+// The server's clock is the third opinion that settles it, and it costs one
+// header. Every HTTP response carries `Date`, and this page's own origin needs
+// no project, no session and no body to ask — release-info.js already fetches
+// the same file for the build stamp.
+//
+// Returns null rather than throwing: "we could not ask" is a different answer
+// from "the clock is fine", and the caller reports it as a skip rather than a
+// pass.
+export async function fetchServerTime() {
+  try {
+    const response = await withTimeout(
+      fetch("./index.html", { method: "HEAD", cache: "no-store" }),
+      HEALTH_TIMEOUT_MS,
+      "read the server's clock"
+    );
+    const header = response?.headers?.get("date");
+    const at = header ? new Date(header).getTime() : NaN;
+    return Number.isFinite(at) ? at : null;
+  } catch (error) {
+    console.warn("Could not read the server's clock", error);
+    return null;
+  }
+}
+
+// Well under SYNC_CLOCK_SKEW_TOLERANCE_MS, which is where the sync stops being
+// able to order edits at all: a clock drifting toward that line is worth saying
+// out loud before it crosses it, and a `Date` header is only second-accurate so
+// anything tighter would report noise.
+export const CLOCK_OFFSET_TOLERANCE_MS = 30 * 1000;
+
+// Whole units, largest that still reads as a quantity. "7200 seconds" is a
+// number the reader has to do arithmetic on before it means anything.
+export function describeDuration(ms) {
+  const abs = Math.abs(ms);
+  const unit = (value, name) => `${value} ${name}${value === 1 ? "" : "s"}`;
+  if (abs < 90 * 1000) return unit(Math.max(1, Math.round(abs / 1000)), "second");
+  if (abs < 90 * 60 * 1000) return unit(Math.round(abs / 60000), "minute");
+  if (abs < 48 * 60 * 60 * 1000) return unit(Math.round(abs / 3600000), "hour");
+  return unit(Math.round(abs / 86400000), "day");
+}
+
+// The worst stamp sitting in the future, and how many there are, measured
+// against whichever clock the caller could get. Same tolerance the sync itself
+// uses, so this row agrees with the warning it is trying to explain.
+export function summarizeFutureStamps(entries, referenceMs) {
+  let worstAt = 0;
+  let worstTitle = "";
+  let count = 0;
+  for (const entry of entries || []) {
+    const at = tsMs(entry?.at);
+    if (!at || at <= referenceMs + SYNC_CLOCK_SKEW_TOLERANCE_MS) continue;
+    count++;
+    if (at > worstAt) {
+      worstAt = at;
+      worstTitle = String(entry?.title || "Untitled deck");
+    }
+  }
+  return { count, worstTitle, aheadMs: worstAt ? worstAt - referenceMs : 0 };
+}
+
 // PostgREST rejects a select naming a column that doesn't exist, so asking for
 // the full column list is itself the column check — no information_schema
 // access required (the anon role doesn't have it anyway).
@@ -426,6 +503,60 @@ export async function checkProjectHealth() {
   } else {
     add("Browser storage", "fail",
       `Recall can't write to this browser's storage, so it can't stay signed in between loads. ${storage.reason}`);
+  }
+
+  // ── The clock, and the stamps that depend on it ───────────────────────────
+  //
+  // Placed with the storage row, ahead of every early return below, and for the
+  // same reason: the deck-stamp half needs no network, no project and no
+  // session, and the clock half needs only the origin this page came from.
+  // Behind the "Not signed in, so nothing below can be checked" return they
+  // would be missing from precisely the report trying to explain why.
+  const serverNow = navigator.onLine ? await fetchServerTime() : null;
+  const localNow = Date.now();
+  if (!navigator.onLine) {
+    add("Device clock", "skip", "You're offline — reconnect to compare this device's clock with the server's.");
+  } else if (serverNow === null) {
+    add("Device clock", "skip", "Couldn't read the server's clock to compare against.");
+  } else {
+    const offset = localNow - serverNow;
+    if (Math.abs(offset) <= CLOCK_OFFSET_TOLERANCE_MS) {
+      add("Device clock", "ok", "This device's clock agrees with the server's.");
+    } else if (offset < 0) {
+      add("Device clock", "fail",
+        `This device's clock is ${describeDuration(offset)} behind the server's. `
+        + "A slow clock makes every deck look as though some other device stamped it in the future, "
+        + "so fix the date and time here before suspecting another device.");
+    } else {
+      add("Device clock", "fail",
+        `This device's clock is ${describeDuration(offset)} ahead of the server's. `
+        + "A fast clock stamps this device's edits in every other device's future, which is what makes "
+        + "them report a clock problem.");
+    }
+  }
+
+  // Deliberately this device's own index rather than a cloud query: a pull
+  // writes the cloud row's stamp straight into the local index entry (see the
+  // two-clocks note in sync/stats.js), so a poisoned stamp is already here to be
+  // read — with no network, no session and no round trip.
+  const reference = serverNow === null ? localNow : serverNow;
+  const referenceName = serverNow === null ? "this device's clock" : "the server's clock";
+  const future = summarizeFutureStamps(
+    readLocalDeckIndex().map((meta) => ({ at: meta?.updatedAt, title: meta?.title })),
+    reference
+  );
+  if (!future.count) {
+    add("Deck timestamps", "ok", `No deck is stamped in the future, measured against ${referenceName}.`);
+  } else {
+    // A warning, not a failure: the project is fine and the decks are intact.
+    // What is degraded is the sync's ability to ORDER two edits against these
+    // decks, which is what raises the clock toast and keeps re-raising the
+    // notes conflict.
+    add("Deck timestamps", "warn",
+      `${future.count} deck${future.count === 1 ? " is" : "s are"} stamped ahead of ${referenceName} — `
+      + `"${future.worstTitle}" by ${describeDuration(future.aheadMs)}. `
+      + "Nothing is lost, but until those stamps come back to real time the sync can't order edits "
+      + "against those decks — which is what raises the clock warning and the repeating notes conflicts.");
   }
 
   if (!supabaseClient) {
@@ -551,11 +682,19 @@ export function renderProjectHealth(results) {
   if (!appInfoHealthSummary) return;
   const failed = results.filter((r) => r.status === "fail").length;
   const warned = results.filter((r) => r.status === "warn").length;
-  // A storage failure is not a schema failure, and the standing advice for
-  // everything on this list is "re-run the SQL" — which for this one row is
-  // both useless and misleading, since nothing about the project is wrong. It
-  // is also the row that explains the others, so it leads.
+  // The standing advice for everything on this list is "re-run the SQL", and
+  // for the rows about THIS DEVICE that is both useless and misleading —
+  // nothing about the project is wrong. They also explain the rows below them
+  // rather than joining them, so they lead and they are counted separately.
+  const isLocalRow = (r) => r.label === "Browser storage" || r.label === "Device clock";
+  const isBailout = (r) => HEALTH_BAILOUT_LABELS.includes(r.label);
   const storageFailed = results.some((r) => r.label === "Browser storage" && r.status === "fail");
+  const clockFailed = results.some((r) => r.label === "Device clock" && r.status === "fail");
+  const bailedOut = results.some((r) => r.status === "fail" && isBailout(r));
+  // Only the rows that actually describe the PROJECT. The bail-out rows used to
+  // be counted here, so a signed-out device was told its schema was broken and
+  // sent to re-run SQL that was never the problem.
+  const projectFailed = results.filter((r) => r.status === "fail" && !isLocalRow(r) && !isBailout(r)).length;
   if (storageFailed) {
     const others = failed - 1;
     appInfoHealthSummary.textContent =
@@ -564,13 +703,40 @@ export function renderProjectHealth(results) {
       + "try a normal (non-private) window, or free up disk space."
       + (others > 0 ? ` ${others} other check${others === 1 ? "" : "s"} could not be trusted while storage is failing.` : "");
     appInfoHealthSummary.hidden = false;
-  } else if (failed) {
+  } else if (clockFailed) {
     appInfoHealthSummary.textContent =
-      `${failed} problem${failed === 1 ? "" : "s"} will stop syncing from working properly. ${RERUN_SQL} It is safe to re-run and safe on a project that already holds decks.`;
+      "This device's own clock is wrong, and every sync comparison is made against it. "
+      + "Correct the date and time here first — until that is right, the app cannot tell which device is "
+      + "actually at fault, and \"another device's clock is wrong\" may well be about this one."
+      + (projectFailed > 0
+        ? ` ${projectFailed} project check${projectFailed === 1 ? "" : "s"} also failed. ${RERUN_SQL}`
+        : " Nothing is wrong with your project.");
+    appInfoHealthSummary.hidden = false;
+  } else if (projectFailed) {
+    appInfoHealthSummary.textContent =
+      `${projectFailed} problem${projectFailed === 1 ? "" : "s"} will stop syncing from working properly. ${RERUN_SQL} It is safe to re-run and safe on a project that already holds decks.`;
+    appInfoHealthSummary.hidden = false;
+  } else if (bailedOut) {
+    // Nothing below the bail-out ran, so there is no verdict on the project to
+    // give — and claiming one either way would be a guess. Say what is missing
+    // and what would fill it in.
+    appInfoHealthSummary.textContent =
+      "The project checks couldn't run — the rows above say why. Fix that and check again; "
+      + "nothing here says anything is wrong with your project yet.";
     appInfoHealthSummary.hidden = false;
   } else if (warned) {
-    appInfoHealthSummary.textContent =
-      `Syncing works, but ${warned} feature${warned === 1 ? " is" : "s are"} degraded. ${RERUN_SQL}`;
+    // Same split as the failures above: a deck stamped in the future is not a
+    // schema problem, so it must not carry the "re-run the SQL" advice. When it
+    // is the ONLY warning, that advice would be the whole message and would be
+    // entirely wrong.
+    const stampsWarned = results.some((r) => r.label === "Deck timestamps" && r.status === "warn");
+    const projectWarned = results.filter((r) => r.status === "warn" && r.label !== "Deck timestamps").length;
+    appInfoHealthSummary.textContent = stampsWarned && !projectWarned
+      ? "Syncing works and nothing is lost, but some decks carry timestamps from the future, so edits on them "
+        + "can't be ordered reliably. Check the date and time on every device that uses this project — "
+        + "your project itself is fine."
+      : `Syncing works, but ${projectWarned} feature${projectWarned === 1 ? " is" : "s are"} degraded. ${RERUN_SQL}`
+        + (stampsWarned ? " Some decks are also stamped in the future — check the date and time on your devices." : "");
     appInfoHealthSummary.hidden = false;
   } else {
     appInfoHealthSummary.hidden = true;

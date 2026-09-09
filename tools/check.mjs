@@ -418,6 +418,12 @@ const checks = [
     // across a hanging refresh — the "is the login wall in my face or are my
     // decks" question.
     ["session       ", ["node", ["tools/session-persistence-check.mjs"], ROOT]],
+    // The other half of "sync is behaving strangely and the app is blaming the
+    // wrong thing": every ordering decision the sync makes is a comparison
+    // between two client clocks, and the warning it raises names a culprit it
+    // has no evidence for. This asks whether App Info can tell the reader which
+    // clock is actually wrong — and how far a deck's stamp has drifted.
+    ["clock-health  ", ["node", ["tools/clock-health-check.mjs"], ROOT]],
     ...(FULL ? [["release-check ", ["node", ["tools/release-check.mjs"], ROOT]]] : [])
   ])
 ];

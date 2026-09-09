@@ -1044,7 +1044,7 @@ face selects nothing, cause not isolated) and `PORT_SYNC_EXPECTED_DRIFT` (two
 pre-existing clipper drifts). A pinned number has to be changed deliberately,
 in a diff a reviewer can see.
 
-49 checks, each answering a different question, and none of them
+50 checks, each answering a different question, and none of them
 subsuming another:
 
 | Check | Question |
@@ -1095,6 +1095,7 @@ subsuming another:
 | `precache` | Is every module, stylesheet and vendored file the app needs actually in the worker's precache — and preloaded? |
 | `vendor` | Are the vendored libraries present, unmodified, and precached? |
 | `session` | Does a launch keep the user **signed in**? The app asked for the password on almost every launch, and never because the session was gone: every way of FAILING to confirm one — a refresh that hangs behind a captive portal, a project that was asleep, a refresh token rotated out from under a resumed PWA — returned the same `null` as a deliberate sign-out, and boot read that null as "signed out". So this drives the real page with `getSession` failing in each of those ways in turn and asks the only thing the user cares about: is the login overlay in my face, or are my decks? Then the case none of those could reach, because it is not a failure to CONFIRM a session — it is supabase-js **deleting its own session record** when it decides a refresh has failed for good. From that moment `getSession` answers null for ever, `autoRefreshToken` has nothing to refresh, and no reload can put it right: the sign-in was never revoked, and the one thing that could have re-established it was thrown away. Recall keeps its own copy of the refresh token beside supabase-js's (`SESSION_BACKUP_STORAGE_KEY`), and this case spends it — against the real vendored client, with the project's token endpoint answered rather than stubbed away, so what is asserted is that the app is actually signed back IN and syncing, not merely that it was spared the wall |
+| `clock-health` | Does App Info say **whose clock is wrong**? Every ordering decision the sync makes is a comparison between two client clocks, and `clockSkewedAhead` is true whenever a cloud deck is stamped past THIS device — which a laptop running slow produces just as readily as another device running fast. The app asserted the second and sent people to check devices that were fine. Worse, `nextSyncStamp` writes `max(now, previous + 1ms)` on every push and every local edit, so a single episode of skew is carried forward by every device for ever and the warning never clears — while `unorderableClocks` stays true and re-raises the notes conflict on every sync. This hands the page a server clock of its own choosing through the `Date` header the answer actually comes from, seeds a deck stamped in the future, and asserts on the words the reader gets: which way this device is wrong and by how much, which deck is stamped ahead and by how far, and that neither is answered with "re-run supabase_setup.sql" |
 | `offline` | Does the app **start** with no network, a blocked CDN, or a CDN that hangs? |
 | `release-check` | Does a release reach an existing install, does it work offline — and does it still work offline *after* the update? |
 

@@ -17,7 +17,7 @@ import { state } from "./core/state.js?v=__BUILD__";
 import { discardIndexBatch, pruneOrphanedDeckSnapshots, readLocalDeckIndex, runEscapedMathRepair } from "./library/local-library.js?v=__BUILD__";
 import { discardNotesEditingForDeckSwap } from "./notes/notes-view.js?v=__BUILD__";
 import { forgetAllReadingPositions } from "./notes/reading-position.js?v=__BUILD__";
-import { checkProjectHealth } from "./pwa/app-info.js?v=__BUILD__";
+import { HEALTH_BAILOUT_LABELS, checkProjectHealth } from "./pwa/app-info.js?v=__BUILD__";
 import { updateOnlineIndicator } from "./pwa/online.js?v=__BUILD__";
 import { installManifestLink, markUpdateAvailableInMenu, registerServiceWorker } from "./pwa/service-worker-client.js?v=__BUILD__";
 import { clearBrowserPersistence } from "./storage/deck-snapshot.js?v=__BUILD__";
@@ -102,7 +102,16 @@ export async function announceProjectHealthOnce() {
   // Don't remember a run that couldn't reach the project — it proved nothing,
   // and marking it done would suppress the real check forever.
   if (results.some((r) => r.status === "skip")) return;
-  if (results.length === 1 && results[0].status === "fail") return;
+  // "The check bailed out and proved nothing" — which is what a failing
+  // Connection or Signed-in row means, since checkProjectHealth returns
+  // immediately on both. This used to test `results.length === 1`, and that
+  // stopped being true the moment the check grew rows that run BEFORE those
+  // early returns (browser storage, the clock, the deck stamps): a device with
+  // no session now returns several rows, so the count no longer identified the
+  // bail-out and a background run would announce "your project needs attention"
+  // on the strength of a check that never reached the project. Named, the test
+  // says what it means and survives the next row.
+  if (results.some((r) => r.status === "fail" && HEALTH_BAILOUT_LABELS.includes(r.label))) return;
 
   try { localStorage.setItem(HEALTH_CHECKED_KEY, signature); } catch (_) {}
 
