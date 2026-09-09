@@ -479,6 +479,7 @@ const APP_SHELL = [
   `./src/render/tables.js?v=${STAMP}`,
   `./src/storage/deck-snapshot.js?v=${STAMP}`,
   `./src/storage/deck-store.js?v=${STAMP}`,
+  `./src/storage/health.js?v=${STAMP}`,
   `./src/storage/ink-prefs.js?v=${STAMP}`,
   `./src/storage/keys.js?v=${STAMP}`,
   `./src/storage/quota.js?v=${STAMP}`,

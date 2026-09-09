@@ -31,6 +31,7 @@ import { flushPendingQuickNoteCategories } from "../quick-notes/categories.js?v=
 import { QUICK_NOTES_DECK_TITLE } from "../quick-notes/palette.js?v=__BUILD__";
 import { noteLinkAliasesFor } from "../render/note-links.js?v=__BUILD__";
 import { deckStoreUnreadable, deleteDeckSnapshot, readDeckSnapshot, withDeckLock, writeDeckSnapshot } from "../storage/deck-store.js?v=__BUILD__";
+import { describeSignedOutProblem } from "../storage/health.js?v=__BUILD__";
 import { ADOPT_DELETION_MAX_FRACTION, ADOPT_DELETION_MIN_CAP, LAST_GLOBAL_SYNC_ERROR_KEY, LAST_GLOBAL_SYNC_KEY, MISSING_DECK_MIN_AGE_MS, MISSING_DECK_MIN_SIGHTINGS, NOTES_CONFLICT_SUFFIX, clearBackgroundSyncProblem, clearMissingDeckWatch, readMissingDeckWatch, reportBackgroundSyncProblem, writeMissingDeckWatch } from "../storage/keys.js?v=__BUILD__";
 import { deckAutosaveTimer, describeSyncError, isQuotaExceededError, persistWorkingDeck, setDeckAutosaveTimer } from "../storage/quota.js?v=__BUILD__";
 import { rearmAutoSync } from "./auto-sync.js?v=__BUILD__";
@@ -970,10 +971,11 @@ export async function reconcileAllDecks({ explicit = false } = {}) {
         // Background runs used to say nothing at all here, so a session that
         // lapsed while the app was closed simply stopped syncing, silently,
         // until the user happened to press Sign Now. Reported once per lapse.
-        reportBackgroundSyncProblem(
-          "signed-out",
-          "Signed out — sign in again to resume syncing. Your decks are safe on this device."
-        );
+        // Which sentence depends on WHY there is no session — a lapse the
+        // reader can fix by signing in, or a browser that will not keep the
+        // sign-in at all. See describeSignedOutProblem.
+        const problem = describeSignedOutProblem();
+        reportBackgroundSyncProblem(problem.kind, problem.message);
       }
       return;
     }

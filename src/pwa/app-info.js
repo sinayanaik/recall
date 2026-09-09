@@ -11,6 +11,7 @@ import { abortable, withTimeout } from "../cloud/net.js?v=__BUILD__";
 import { loadSupabaseConfig, supabaseClient } from "../cloud/supabase-client.js?v=__BUILD__";
 import { IS_DEV_BUILD } from "../core/build.js?v=__BUILD__";
 import { readLocalDeckIndex } from "../library/local-library.js?v=__BUILD__";
+import { probeLocalStorage } from "../storage/health.js?v=__BUILD__";
 import { GITHUB_REPO, compareCommits, fetchLiveRelease, fetchRepoRelease, releaseStampsIn, runningAppVersion, runningVersionLabel, setGithubReleaseCache } from "./release-info.js?v=__BUILD__";
 import { isMixedBuild, serviceWorkerRegistration, updateDownloadFailed, updateIsWaiting } from "./service-worker-client.js?v=__BUILD__";
 import { setButtonLoading } from "../ui/feedback.js?v=__BUILD__";
@@ -409,6 +410,24 @@ export async function checkProjectHealth() {
   const results = [];
   const add = (label, status, detail) => results.push({ label, status, detail });
 
+  // ── Before anything that needs the network, and before every early return
+  // below ────────────────────────────────────────────────────────────────────
+  //
+  // This is the check that explains the other answers rather than joining them.
+  // supabase-js keeps the session in localStorage (persistSession, see
+  // initSupabaseClient), so a browser refusing writes cannot stay signed in —
+  // and the "Not signed in, so nothing below can be checked" return two blocks
+  // down is then a SYMPTOM being reported as the diagnosis. Asked first, it
+  // names the actual cause; asked after the early returns, it would never be
+  // reached on precisely the devices that need it.
+  const storage = probeLocalStorage();
+  if (storage.writable) {
+    add("Browser storage", "ok", "This browser lets Recall save your sign-in and your deck list.");
+  } else {
+    add("Browser storage", "fail",
+      `Recall can't write to this browser's storage, so it can't stay signed in between loads. ${storage.reason}`);
+  }
+
   if (!supabaseClient) {
     add("Connection", "fail", "No Supabase project is connected on this device.");
     return results;
@@ -532,7 +551,20 @@ export function renderProjectHealth(results) {
   if (!appInfoHealthSummary) return;
   const failed = results.filter((r) => r.status === "fail").length;
   const warned = results.filter((r) => r.status === "warn").length;
-  if (failed) {
+  // A storage failure is not a schema failure, and the standing advice for
+  // everything on this list is "re-run the SQL" — which for this one row is
+  // both useless and misleading, since nothing about the project is wrong. It
+  // is also the row that explains the others, so it leads.
+  const storageFailed = results.some((r) => r.label === "Browser storage" && r.status === "fail");
+  if (storageFailed) {
+    const others = failed - 1;
+    appInfoHealthSummary.textContent =
+      "This browser won't let Recall store anything, so your sign-in can't be kept and syncing can't run. "
+      + "Nothing is wrong with your decks or your project — check this site's cookie and site-data permissions, "
+      + "try a normal (non-private) window, or free up disk space."
+      + (others > 0 ? ` ${others} other check${others === 1 ? "" : "s"} could not be trusted while storage is failing.` : "");
+    appInfoHealthSummary.hidden = false;
+  } else if (failed) {
     appInfoHealthSummary.textContent =
       `${failed} problem${failed === 1 ? "" : "s"} will stop syncing from working properly. ${RERUN_SQL} It is safe to re-run and safe on a project that already holds decks.`;
     appInfoHealthSummary.hidden = false;

@@ -24,8 +24,29 @@ export function showToast(message, type = "success") {
     document.body.appendChild(container);
   }
 
+  // ── One message, one toast ────────────────────────────────────────────────
+  //
+  // Saying a thing five times does not make it five facts. Every caller here is
+  // some background loop reporting a condition, and a condition that persists
+  // is reported by more than one of them — so an identical message already on
+  // screen is the SAME event arriving again, not news. It renews the one that
+  // is up (the condition is still true, so it should stay visible for its full
+  // span) instead of stacking a duplicate.
+  //
+  // Defence in depth, deliberately. The signed-out storm that prompted this had
+  // its own cause and its own fix in reportBackgroundSyncProblem; this is the
+  // floor that stops the NEXT such loop from filling the screen, wherever it
+  // turns out to live.
+  const existing = [...container.querySelectorAll(".toast")]
+    .find((node) => node.dataset.message === message && !node.classList.contains("is-leaving"));
+  if (existing) {
+    existing.dispatchEvent(new CustomEvent("toast-renew"));
+    return;
+  }
+
   const toast = document.createElement("div");
   toast.className = `toast toast-${type}`;
+  toast.dataset.message = message;
   const icon = type === "error" ? "✕" : type === "info" ? "ℹ" : "✓";
   const iconEl = document.createElement("span");
   iconEl.className = "toast-icon";
@@ -40,13 +61,22 @@ export function showToast(message, type = "success") {
   requestAnimationFrame(() => toast.classList.add("is-visible"));
 
   const duration = type === "error" ? 4200 : 2600;
+  let timer = 0;
   const dismiss = () => {
     clearTimeout(timer);
     toast.classList.remove("is-visible");
     toast.classList.add("is-leaving");
     setTimeout(() => toast.remove(), 280);
   };
-  const timer = setTimeout(dismiss, duration);
+  // `let` and a named restart above, so the renewal path can push the deadline
+  // out without rebuilding the node — the toast the reader is mid-way through
+  // reading must not blink.
+  const restart = () => {
+    clearTimeout(timer);
+    timer = setTimeout(dismiss, duration);
+  };
+  restart();
+  toast.addEventListener("toast-renew", restart);
   toast.addEventListener("click", dismiss);
 }
 
