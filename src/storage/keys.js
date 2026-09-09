@@ -46,9 +46,29 @@ export const LAST_GLOBAL_SYNC_ERROR_KEY = "flashcards_last_global_sync_error";
 // staying silent look like the lesser evil in the first place.
 export const LAST_BG_SYNC_PROBLEM_KEY = "recall:lastBackgroundSyncProblem";
 
+// The same answer, held where nothing can refuse to store it.
+//
+// The gate below used to live ONLY in localStorage, and both halves of it sat
+// inside a `catch (_) {}`. So on a device where writes throw — a full quota, a
+// private window, site data blocked — `previous` never advanced, every call got
+// through, and "reported once per lapse" became "reported once per attempt".
+// Five paths can reach here inside one four-second toast lifetime (boot's two,
+// reconcile's, and recoverSessionIfPossible's `online` and visibilitychange
+// triggers), so the reader got a stack of five identical toasts telling them to
+// sign in again — on the one device where signing in again could not work.
+//
+// A gate that fails OPEN on the devices with the worst problem is worse than no
+// gate. This one is memory first: correct with no storage at all, and the
+// localStorage copy is now only what carries it across a reload.
+let lastReportedProblem = null;
+
 export function reportBackgroundSyncProblem(kind, message) {
+  if (lastReportedProblem === kind) return;
   let previous = null;
   try { previous = localStorage.getItem(LAST_BG_SYNC_PROBLEM_KEY); } catch (_) {}
+  // Set before the second gate, so a swallowed write cannot leave this call
+  // deciding the same thing again on the next attempt.
+  lastReportedProblem = kind;
   if (previous === kind) return;
   try { localStorage.setItem(LAST_BG_SYNC_PROBLEM_KEY, kind); } catch (_) {}
   showToast(message, "error");
@@ -57,6 +77,7 @@ export function reportBackgroundSyncProblem(kind, message) {
 // Called when a sync gets all the way through, so the next occurrence of the
 // same problem is reported again rather than suppressed forever.
 export function clearBackgroundSyncProblem() {
+  lastReportedProblem = null;
   try { localStorage.removeItem(LAST_BG_SYNC_PROBLEM_KEY); } catch (_) {}
 }
 

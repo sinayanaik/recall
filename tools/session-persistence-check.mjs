@@ -120,6 +120,19 @@ const CASES = [
     expectLogin: false, expectRecovered: true
   },
   {
+    // The screenshot that started this: five identical "Signed out — sign in
+    // again" toasts stacked on one screen. The gate that is supposed to make
+    // that impossible lived only in localStorage, inside a catch that swallowed
+    // the failure — so on a browser refusing writes it let EVERY caller through,
+    // and five can reach it inside one 4200ms toast lifetime. On that device
+    // "sign in again" is also the one instruction that cannot work, so the
+    // message has to change too.
+    name: "storage refuses writes",
+    real: "a private window, blocked site data, or a full quota",
+    session: "none", stored: false, library: true, blockStorage: true,
+    expectLogin: false, expectOneHonestToast: true
+  },
+  {
     name: "never signed in here",
     real: "a genuinely new device — the wall is CORRECT here",
     session: "none", stored: false, library: false, expectLogin: true
@@ -175,6 +188,32 @@ function tokenResponse(method) {
 function stubScript(kase) {
   return `(() => {
     const CASE = ${JSON.stringify(kase)};
+    // Installed before the seeding below, and letting the seed keys through:
+    // the device this stands for HAS a library and a project already stored,
+    // and only new writes fail. Ordering matters — an earlier version seeded
+    // first and threw on about:blank, so the override never got installed and
+    // the case silently tested nothing.
+    // Every toast the run produces, in order. Counting the nodes left on screen
+    // at the end would undercount: they expire after 4200ms, and the whole
+    // question here is how many were RAISED.
+    window.__toasts = [];
+    new MutationObserver((records) => {
+      for (const record of records) {
+        for (const node of record.addedNodes) {
+          if (node.nodeType === 1 && node.classList.contains("toast")) window.__toasts.push(node.textContent || "");
+        }
+      }
+    }).observe(document, { childList: true, subtree: true });
+    const SEED_KEYS = ["flashcards_supabase_config","flashcards_last_user_id","flashcards_local_decks_index_v1"];
+    if (CASE.blockStorage) {
+      const realSet = Storage.prototype.setItem;
+      Storage.prototype.setItem = function (k, v) {
+        if (SEED_KEYS.includes(String(k))) return realSet.call(this, k, v);
+        const err = new Error("The quota has been exceeded.");
+        err.name = "QuotaExceededError";
+        throw err;
+      };
+    }
     const user = { id: "user-1111-2222", email: "reader@example.com" };
     const live = {
       user, access_token: "at", refresh_token: "rt",
@@ -299,7 +338,8 @@ async function run(base, kase) {
         // The signal with no pixels: set when syncing stopped, and cleared only
         // by a sync that gets through. Left set, it swallows the next genuine
         // report of the same problem.
-        bgProblem
+        bgProblem,
+        toasts: window.__toasts || []
       };
     });
 
@@ -355,9 +395,16 @@ try {
       && !/signed out/i.test(got.syncPill)
       && got.bgProblem === null
       && got.restCalls > 0;
+    // Two things, and the second is the one that mattered to the reader: the
+    // storm is gone AND the sentence left standing is one they can act on.
+    const signedOutToasts = (got.toasts || []).filter((t) => /signed out|sign-in|sign in/i.test(t));
+    const honest = signedOutToasts.length === 1
+      && /can.t save your sign-in|storage/i.test(signedOutToasts[0])
+      && !/sign in again to resume/i.test(signedOutToasts[0]);
     const ok = got.loginVisible === kase.expectLogin
       && (!kase.expectRecovered || recovered)
-      && (!kase.expectSignedIn || signedIn);
+      && (!kase.expectSignedIn || signedIn)
+      && (!kase.expectOneHonestToast || honest);
     if (!ok) problems++;
     console.log(`${ok ? "ok  " : "FAIL"}  ${kase.name}`);
     console.log(`        ${kase.real}`);
@@ -366,6 +413,9 @@ try {
       `${kase.expectSignedIn ? `, sign-in took: ${signedIn} (expected true)` +
         ` — offered: ${got.signInOffered}, chip down: ${!got.chipVisible},` +
         ` problem cleared: ${got.bgProblem === null}, sync requests: ${got.restCalls}` : ""}` +
+      `${kase.expectOneHonestToast ? `, honest single toast: ${honest} (expected true)` +
+        ` — sign-in toasts raised: ${signedOutToasts.length} (expected 1)` +
+        `${signedOutToasts[0] ? `, said: "${signedOutToasts[0].slice(0, 90)}"` : ""}` : ""}` +
       `${got.syncPill ? `, pill: "${got.syncPill}"${got.pillAction ? ` [${got.pillAction}]` : ""}` : ""}`);
     if (got.errors.length) {
       problems++;

@@ -22,6 +22,7 @@ import { updateOnlineIndicator } from "./pwa/online.js?v=__BUILD__";
 import { installManifestLink, markUpdateAvailableInMenu, registerServiceWorker } from "./pwa/service-worker-client.js?v=__BUILD__";
 import { clearBrowserPersistence } from "./storage/deck-snapshot.js?v=__BUILD__";
 import { clearAllDeckSnapshots, initDeckStorage, requestPersistentStorage } from "./storage/deck-store.js?v=__BUILD__";
+import { describeSignedOutProblem } from "./storage/health.js?v=__BUILD__";
 import { clearBackgroundSyncProblem, LAST_BG_SYNC_PROBLEM_KEY, LAST_GLOBAL_SYNC_ERROR_KEY, LAST_GLOBAL_SYNC_KEY, LOCAL_DECKS_INDEX_KEY, LOCAL_DECK_TOMBSTONES_KEY, MISSING_DECK_WATCH_KEY, reportBackgroundSyncProblem } from "./storage/keys.js?v=__BUILD__";
 import { refreshSyncIndicatorBaseline, setSignedOutChip, setSyncIndicator } from "./sync/indicator.js?v=__BUILD__";
 import { reconcileAllDecks } from "./sync/reconcile.js?v=__BUILD__";
@@ -325,10 +326,11 @@ export async function recoverSessionIfPossible() {
     if (!document.getElementById("loginOverlay")?.hidden) return; // already there
     setSignedOutChip(true);
     setSyncIndicator("signedout");
-    reportBackgroundSyncProblem(
-      "signed-out",
-      "Signed out — sign in again to resume syncing. Your decks are safe on this device."
-    );
+    // Not always the same problem, so not always the same sentence: on a
+    // browser that will not store the session, "sign in again" is an
+    // instruction that cannot succeed. See describeSignedOutProblem.
+    const problem = describeSignedOutProblem();
+    reportBackgroundSyncProblem(problem.kind, problem.message);
   } catch (error) {
     console.warn("Session recovery attempt failed", error);
     scheduleSessionRetry();
@@ -585,10 +587,9 @@ export async function confirmSessionInBackground() {
   setSignedIn(false);
   setSignedOutChip(true);
   setSyncIndicator("signedout");
-  reportBackgroundSyncProblem(
-    "signed-out",
-    "Signed out — sign in again to resume syncing. Your decks are safe on this device."
-  );
+  // Same reasoning as the recovery path above: say the true thing.
+  const settledProblem = describeSignedOutProblem();
+  reportBackgroundSyncProblem(settledProblem.kind, settledProblem.message);
   // ...and then try to make all of that untrue. recoverSessionIfPossible clears
   // the chip and starts a sync if the sign-in can be re-established, which it
   // usually can: the common cause of getting here is a refresh that failed once,
