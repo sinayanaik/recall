@@ -15,6 +15,17 @@
   max-height: min(56vh, 420px);
 }
 
+/* Vertical drags belong to this list, not to whatever is behind it. The popup
+   already had overflow-y and overscroll-behavior; what it did not have was a
+   finger, because the rows' pointerdown handler called preventDefault() on
+   touch and so cancelled the scroll before it began. That is fixed in
+   ensureNoteLinkPickerEl — this states the intent to the compositor as well, so
+   the first frame of the drag does not wait on the main thread. */
+.note-link-picker {
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+}
+
 /* The popup is a flex column, so its children shrink to fit before the box will
    scroll — and a browse list is several times taller than a list of eight search
    results, which is what made that visible: the breadcrumb was squeezed from
@@ -37,6 +48,9 @@
   position: sticky;
   top: 0;
   z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   margin: 0 -4px 2px;
   padding: 7px 10px 6px;
   border-bottom: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
@@ -45,9 +59,38 @@
   font-size: 0.7rem;
   font-weight: 600;
   letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+/* The path itself takes whatever the sort chip leaves, and truncates rather
+   than pushing it off the edge. */
+.note-link-picker-where {
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* How the notes below are ordered, and the switch for it. Small, quiet, and
+   never focusable: the caret in the textarea is what an insert is measured
+   against, so nothing in this popup may take focus away from it. */
+.note-link-picker-sort {
+  flex: none;
+  padding: 2px 7px;
+  border: 1px solid color-mix(in srgb, var(--line) 80%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.64rem;
+  letter-spacing: 0.02em;
   white-space: nowrap;
+  cursor: pointer;
+}
+
+.note-link-picker-sort:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+  color: var(--text);
 }
 
 /* moveNoteLinkPicker scrolls the highlighted row into view with block:"nearest",

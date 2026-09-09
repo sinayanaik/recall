@@ -59,7 +59,13 @@ export async function loadNoteLinkIndex() {
         // the note-reference header.
         aliasIds: Array.isArray(meta.linkIds) ? meta.linkIds : [],
         title: String(meta.title || "Untitled"),
-        category: normalizeDeckCategory(meta.category)
+        category: normalizeDeckCategory(meta.category),
+        // When this note last changed. Carried for the picker's browse order,
+        // which is newest-first by default: alphabetical only helps if you know
+        // the name, and the whole reason to browse is that you do not. Missing
+        // on an index entry written before this field existed, which sorts to
+        // the bottom rather than erroring.
+        updatedAt: meta.updatedAt || null
       });
     }
     // Then anything that exists only in the account — a note written on another
@@ -77,7 +83,7 @@ export async function loadNoteLinkIndex() {
       try {
         // `meta` comes back for the alias set — a cloud-only deck still has to
         // answer to the ids other devices wrote into their links for it.
-        const { data, error } = await supabaseClient.from("decks").select("id, title, category, meta");
+        const { data, error } = await supabaseClient.from("decks").select("id, title, category, meta, updated_at");
         if (error) throw error;
         for (const deck of data || []) {
           if (!deck || seenCloud.has(String(deck.id))) continue;
@@ -86,7 +92,8 @@ export async function loadNoteLinkIndex() {
             deckId: String(deck.id),
             aliasIds: Array.isArray(deck.meta?.linkIds) ? deck.meta.linkIds : [],
             title: String(deck.title || "Untitled"),
-            category: normalizeDeckCategory(deck.category)
+            category: normalizeDeckCategory(deck.category),
+            updatedAt: deck.updated_at || null
           });
         }
         cloudComplete = true;
@@ -384,11 +391,15 @@ export function rewriteNoteLinkTarget(title, entry) {
 // week. chooseDeckCategory is the same picker "Move to folder…" uses, so the
 // folder list and the "new category" affordance are already whatever the user
 // expects them to be; it just opens on the current note's folder.
-export async function createLinkedNoteFlow(rawTitle, body = "") {
+// `into` is the folder the chooser opens on. The [[ picker passes the folder
+// you were BROWSING when you asked for a new note — that is where you were
+// standing and almost always where it belongs — and everything else falls back
+// to the folder of the note doing the linking.
+export async function createLinkedNoteFlow(rawTitle, body = "", { into = "" } = {}) {
   const title = String(rawTitle || "").trim();
   if (!title) return null;
 
-  const category = await chooseDeckCategory(normalizeDeckCategory(state.deckCategory));
+  const category = await chooseDeckCategory(normalizeDeckCategory(into || state.deckCategory));
   if (category === null) return null; // cancelled
 
   try {

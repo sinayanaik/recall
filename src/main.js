@@ -59,7 +59,7 @@ import { openHighlightNoteEditor } from "./notes/highlight-note-editor.js?v=__BU
 import { goToBookmark } from "./notes/bookmark.js?v=__BUILD__";
 import { initNotesCaretLine } from "./notes/caret-line.js?v=__BUILD__";
 import { scheduleNotesCaretCheck } from "./notes/caret.js?v=__BUILD__";
-import { closeNoteLinkPicker, commitNoteLinkPicker, isNoteLinkBrowsing, isNoteLinkPickerOpen, moveNoteLinkPicker, noteLinkBrowseUp, noteLinkPickerRowIsFolder, updateNoteLinkPicker } from "./notes/link-picker.js?v=__BUILD__";
+import { closeNoteLinkPicker, commitNoteLinkPicker, isNoteLinkBrowsing, isNoteLinkPickerOpen, moveNoteLinkPicker, noteLinkBrowseUp, noteLinkPickerRowIsFolder, toggleNoteLinkPickerSort, updateNoteLinkPicker } from "./notes/link-picker.js?v=__BUILD__";
 import { isInkSheetOpen, redoInkSheet, repaintInkSheet, undoInkSheet } from "./notes/ink-sheet.js?v=__BUILD__";
 import { followNoteLink, revealNoteHeading } from "./notes/note-links.js?v=__BUILD__";
 import { initNotesHeadOverflow } from "./notes/notes-head-overflow.js?v=__BUILD__";
@@ -581,6 +581,13 @@ el.notesEdit?.addEventListener("keydown", (event) => {
   if (event.key === "ArrowDown") { event.preventDefault(); moveNoteLinkPicker(1); return; }
   if (event.key === "ArrowUp") { event.preventDefault(); moveNoteLinkPicker(-1); return; }
   if (event.key === "Enter" || event.key === "Tab") { event.preventDefault(); commitNoteLinkPicker(); return; }
+  // Alt+S re-orders the browse list: most recently edited (the default) ⇄ A–Z.
+  // Modified, because every unmodified key is part of the query being typed.
+  if (event.altKey && (event.key === "s" || event.key === "S")) {
+    event.preventDefault();
+    toggleNoteLinkPickerSort();
+    return;
+  }
   // Walking the folder tree. Only while BROWSING — with a query typed, the
   // sideways arrows have to keep moving the caret through it, and Backspace has
   // to keep deleting what was typed.

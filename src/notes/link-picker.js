@@ -5,14 +5,14 @@ import { state } from "../core/state.js?v=__BUILD__";
 import { escapeHtml } from "../core/text.js?v=__BUILD__";
 import { notesAnchorPlainText } from "./anchors.js?v=__BUILD__";
 import { caretRectInBackdrop } from "./caret.js?v=__BUILD__";
-import { browseRowsFor, folderCrumbs, noteLinkHomeFolder, parentFolder } from "./link-browse.js?v=__BUILD__";
+import { browseRowsFor, folderCrumbs, noteLinkBrowseSort, noteLinkHomeFolder, noteLinkSortLabel, parentFolder, toggleNoteLinkBrowseSort } from "./link-browse.js?v=__BUILD__";
 import { scoreNoteEntry } from "./link-fuzzy.js?v=__BUILD__";
 import { createLinkedNoteFlow, loadNoteLinkIndex } from "./note-links.js?v=__BUILD__";
 import { currentDeckKey } from "./scroll-anchor.js?v=__BUILD__";
 import { slugifyHeading } from "./toc.js?v=__BUILD__";
 import { noteLinkIdFor } from "../render/note-links.js?v=__BUILD__";
 import { readDeckSnapshot } from "../storage/deck-store.js?v=__BUILD__";
-import { showToast } from "../ui/feedback.js?v=__BUILD__";
+import { showPromptModal, showToast } from "../ui/feedback.js?v=__BUILD__";
 import { currentKeyboardInset } from "../ui/style-settings.js?v=__BUILD__";
 
 // ── The [[ picker ───────────────────────────────────────────────────────────
@@ -22,15 +22,17 @@ import { currentKeyboardInset } from "../ui/style-settings.js?v=__BUILD__";
 // writes the id form of a link, which is what makes picked links survive a
 // rename while hand-typed ones do not.
 //
-// The last row is always "create what you just typed". A reference to something
-// that does not exist yet is the normal way to write — you name the idea while
-// it is in your head and fill it in later — so that has to be one keystroke,
-// not a trip to My Decks and back.
+// The last row is always "create what you just typed" — and, when nothing was
+// typed, "＋ New note…", which asks for a name and files it in the folder being
+// browsed. A reference to something that does not exist yet is the normal way to
+// write — you name the idea while it is in your head and fill it in later — so
+// that has to be one keystroke from either view, not a trip to My Decks and back.
 //
 // With NOTHING typed it is a browser rather than a list: recents, the folder
-// tree, and what is in the folder you are standing in. Searching only helps
-// when you can remember the name — and "what was that note called?" is exactly
-// the moment you reach for a link. See src/notes/link-browse.js.
+// tree, and what is in the folder you are standing in, newest first. Searching
+// only helps when you can remember the name — and "what was that note called?"
+// is exactly the moment you reach for a link. See src/notes/link-browse.js for
+// the rows and their order, and Alt+S (or the chip in the breadcrumb) for A–Z.
 export const NOTE_LINK_PICKER_LIMIT = 8;
 
 // Which folder the browse view is showing. "" is the root (every top-level
@@ -86,6 +88,28 @@ export function isNoteLinkPickerOpen() {
   return noteLinkPickerStart >= 0 && noteLinkPickerEl && !noteLinkPickerEl.hidden;
 }
 
+// How far a finger may travel and still have meant "this row". Beyond it the
+// gesture was a scroll of the list.
+export const NOTE_LINK_TAP_SLOP = 10;
+
+// The touch that is being watched to see whether it becomes a tap or a scroll.
+let noteLinkPickerTap = null;
+
+// A row or the sort chip was chosen, by whichever pointer got there.
+export function activateNoteLinkPickerTarget(hit) {
+  if (!hit) return;
+  if (hit.dataset.pickerSort !== undefined) {
+    toggleNoteLinkBrowseSort();
+    // Redraw from the index rather than re-sorting the rows in place: the order
+    // lives in browseRowsFor, so there is one implementation of it.
+    noteLinkPickerIndex = 0;
+    updateNoteLinkPicker();
+    return;
+  }
+  noteLinkPickerIndex = Number(hit.dataset.pickerIndex);
+  commitNoteLinkPicker();
+}
+
 export function ensureNoteLinkPickerEl() {
   if (noteLinkPickerEl) return noteLinkPickerEl;
   noteLinkPickerEl = document.createElement("div");
@@ -96,13 +120,49 @@ export function ensureNoteLinkPickerEl() {
   noteLinkPickerEl.setAttribute("aria-label", "Link a note");
   // pointerdown, not click: clicking moves focus out of the textarea and the
   // selection/caret is what the insert is measured against.
+  //
+  // ── Except under a finger ────────────────────────────────────────────────
+  //
+  // preventDefault() on a touch pointerdown cancels the gesture the browser was
+  // about to turn into a scroll — and every pixel of this popup is a row, so
+  // there was nowhere left to put a finger that could scroll it. A browse list
+  // is up to NOTE_LINK_BROWSE_LIMIT rows in a box that holds six: "the items
+  // are not scrollable" was this one line. So touch keeps its default (the list
+  // scrolls) and commits on pointerup instead, only if the finger stayed put.
   noteLinkPickerEl.addEventListener("pointerdown", (event) => {
-    const row = event.target.closest("[data-picker-index]");
-    if (!row) return;
+    const hit = event.target.closest("[data-picker-index], [data-picker-sort]");
+    if (!hit) return;
+    if (event.pointerType === "touch") {
+      noteLinkPickerTap = { id: event.pointerId, x: event.clientX, y: event.clientY, hit };
+      return;
+    }
     event.preventDefault();
-    noteLinkPickerIndex = Number(row.dataset.pickerIndex);
-    commitNoteLinkPicker();
+    activateNoteLinkPickerTarget(hit);
   });
+  noteLinkPickerEl.addEventListener("pointerup", (event) => {
+    const tap = noteLinkPickerTap;
+    noteLinkPickerTap = null;
+    if (!tap || tap.id !== event.pointerId) return;
+    // A drag is a scroll, not a choice.
+    if (Math.hypot(event.clientX - tap.x, event.clientY - tap.y) > NOTE_LINK_TAP_SLOP) return;
+    if (!event.target.closest("[data-picker-index], [data-picker-sort]")) return;
+    // The tap may have taken focus off the textarea on the way in; the caret it
+    // left behind is still recorded there, so putting focus back restores
+    // exactly what the insert is measured against. Also cancels the deferred
+    // close the editor's blur handler armed.
+    const textarea = el.notesEdit;
+    if (textarea && document.activeElement !== textarea) {
+      const at = textarea.selectionStart;
+      textarea.focus();
+      textarea.setSelectionRange(at, at);
+    }
+    activateNoteLinkPickerTarget(tap.hit);
+  });
+  noteLinkPickerEl.addEventListener("pointercancel", () => { noteLinkPickerTap = null; });
+  // A scroll that starts under the finger is the browser telling us this was
+  // never a tap, on the platforms that do not move the pointer enough to trip
+  // the slop test above.
+  noteLinkPickerEl.addEventListener("scroll", () => { noteLinkPickerTap = null; }, { passive: true });
   document.body.appendChild(noteLinkPickerEl);
   return noteLinkPickerEl;
 }
@@ -115,6 +175,8 @@ export function closeNoteLinkPicker() {
   noteLinkPickerQuery = null;
   noteLinkPickerRows = [];
   noteLinkPickerIndex = 0;
+  noteLinkPickerDrawn = "";
+  noteLinkPickerTap = null;
   if (noteLinkPickerEl) noteLinkPickerEl.hidden = true;
 }
 
@@ -180,12 +242,39 @@ export function renderNoteLinkCrumbs(host, cwd) {
   const bar = document.createElement("div");
   bar.className = "note-link-picker-crumbs";
   const crumbs = folderCrumbs(cwd);
-  bar.textContent = crumbs.length ? `\u2302 ${crumbs.map((crumb) => crumb.name).join(" \u203a ")}` : "\u2302 All folders";
+  const where = document.createElement("span");
+  where.className = "note-link-picker-where";
+  where.textContent = crumbs.length ? `\u2302 ${crumbs.map((crumb) => crumb.name).join(" \u203a ")}` : "\u2302 All folders";
+  bar.appendChild(where);
+  // The one thing in this popup that is clickable and is not a destination.
+  // Rendered as a button so it can be tapped, but it never takes focus (its
+  // pointerdown is prevented, exactly as a row's is) — the caret in the
+  // textarea is what every insert is measured against.
+  const sort = document.createElement("button");
+  sort.type = "button";
+  sort.className = "note-link-picker-sort";
+  sort.dataset.pickerSort = noteLinkBrowseSort();
+  sort.tabIndex = -1;
+  sort.textContent = `\u21c5 ${noteLinkSortLabel()}`;
+  sort.title = noteLinkBrowseSort() === "title"
+    ? "Sorted A\u2013Z \u00b7 Alt+S for most recently edited"
+    : "Sorted by most recently edited \u00b7 Alt+S for A\u2013Z";
+  sort.setAttribute("aria-label", sort.title);
+  bar.appendChild(sort);
   host.appendChild(bar);
 }
 
+// The rows the popup was last drawn with, as one string. A redraw of the SAME
+// list (an arrow key, a re-render on a caret move) must not throw away how far
+// down it the reader had scrolled; a redraw of a different list must start at
+// the top.
+export let noteLinkPickerDrawn = "";
+
 export function renderNoteLinkPicker(query) {
   const el2 = ensureNoteLinkPickerEl();
+  const signature = JSON.stringify(noteLinkPickerRows.map((row) => `${row.kind || ""}:${row.create ? "new" : ""}:${row.path || ""}:${row.title}`));
+  const keepScroll = signature === noteLinkPickerDrawn ? el2.scrollTop : 0;
+  noteLinkPickerDrawn = signature;
   el2.innerHTML = "";
   el2.classList.toggle("is-browsing", noteLinkBrowsingRows);
   if (noteLinkBrowsingRows) renderNoteLinkCrumbs(el2, noteLinkBrowseCwd);
@@ -211,8 +300,18 @@ export function renderNoteLinkPicker(query) {
         + `<span class="note-link-picker-path">heading in ${escapeHtml(row.entry.title)}</span>`;
     } else if (row.create) {
       item.classList.add("is-create");
-      item.innerHTML = `<span class="note-link-picker-title">Create \u201c${escapeHtml(query)}\u201d as a new note</span>`
-        + `<span class="note-link-picker-path">You'll choose the folder</span>`;
+      // Browsing, so there is no typed name to offer: the row asks for one.
+      // Creating has to be reachable from the browser too — you go looking for
+      // the note you meant to link to, find it does not exist yet, and that is
+      // the moment to make it, not a trip to My Decks and back.
+      const where = row.browseCreate
+        ? (folderCrumbs(row.path).map((crumb) => crumb.name).join(" \u203a ") || "you'll choose the folder")
+        : "";
+      item.innerHTML = row.browseCreate
+        ? `<span class="note-link-picker-title">\uff0b New note\u2026</span>`
+          + `<span class="note-link-picker-path">In ${escapeHtml(where)}</span>`
+        : `<span class="note-link-picker-title">Create \u201c${escapeHtml(query)}\u201d as a new note</span>`
+          + `<span class="note-link-picker-path">You'll choose the folder</span>`;
     } else if (row.kind === "up") {
       item.classList.add("is-up");
       item.innerHTML = `<span class="note-link-picker-title">\u2934 ${escapeHtml(row.title)}</span>`
@@ -227,6 +326,7 @@ export function renderNoteLinkPicker(query) {
     }
     el2.appendChild(item);
   });
+  if (keepScroll) el2.scrollTop = keepScroll;
 }
 
 // Is the caret sitting inside an unclosed "[[…"? Returns the offset of the "["
@@ -365,6 +465,10 @@ export async function updateNoteLinkPicker() {
       }
       if (!noteLinkPickerRows.length) return closeNoteLinkPicker();
     }
+    // Last, the way to make something that is not there yet — the same offer
+    // the search view ends on, in the browser's own terms: it has no typed name
+    // to use, so it asks for one and files it where you were standing.
+    noteLinkPickerRows.push({ create: true, browseCreate: true, path: noteLinkBrowseCwd, title: "" });
     noteLinkPickerStart = open;
     noteLinkPickerIndex = Math.min(noteLinkPickerIndex, noteLinkPickerRows.length - 1);
     // Never open ON the "back out" row: it is a way out of somewhere you have
@@ -510,10 +614,19 @@ export async function commitNoteLinkPicker() {
   const textarea = el.notesEdit;
   const start = noteLinkPickerStart;
   const caret = textarea.selectionStart;
-  const title = row.title;
+  const into = row.browseCreate ? row.path : "";
   const startedIn = currentDeckKey();
   closeNoteLinkPicker();
-  const created = await createLinkedNoteFlow(title);
+  // Browsing had nothing typed to name the note with, so ask. Cancelling here
+  // is a no-op that puts the caret back, exactly as cancelling the folder
+  // chooser below is.
+  const title = row.browseCreate ? await askForNewNoteTitle(into) : row.title;
+  if (!title) {
+    textarea.focus();
+    textarea.setSelectionRange(caret, caret);
+    return;
+  }
+  const created = await createLinkedNoteFlow(title, "", { into });
   if (!created) {
     textarea.focus();
     textarea.setSelectionRange(caret, caret);
@@ -534,4 +647,31 @@ export async function commitNoteLinkPicker() {
   noteLinkPickerStart = start;
   textarea.setSelectionRange(caret, caret);
   insertNoteLinkAtPicker(created);
+}
+
+// Alt+S while browsing: newest-first ⇄ A–Z. A bare letter cannot do it — every
+// unmodified key belongs to the query being typed — and the chip in the
+// breadcrumb is the same switch for a pointer.
+export function toggleNoteLinkPickerSort() {
+  if (!isNoteLinkPickerOpen()) return false;
+  toggleNoteLinkBrowseSort();
+  noteLinkPickerIndex = 0;
+  updateNoteLinkPicker();
+  return true;
+}
+
+// The name for a note being created from the browser. Resolves to "" on a
+// cancel — showPromptModal's onCancel exists for exactly this, so an awaited
+// prompt cannot leave its caller hanging on a dismissed modal.
+export function askForNewNoteTitle(into) {
+  const where = folderCrumbs(into).map((crumb) => crumb.name).join(" \u203a ");
+  return new Promise((resolve) => {
+    showPromptModal(
+      "New note",
+      where ? `It will be filed in ${where}, and linked from here.` : "You'll choose the folder next.",
+      "",
+      (value) => resolve(String(value || "").trim()),
+      { placeholder: "Note title", onCancel: () => resolve("") }
+    );
+  });
 }
