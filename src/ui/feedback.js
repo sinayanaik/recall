@@ -80,12 +80,16 @@ export function showConfirmModal(message, onConfirm, { confirmLabel = "Confirm",
   el.confirmModalCancelBtn.onclick = () => cleanup(false);
 }
 
-export function showPromptModal(title, hint, defaultValue, onConfirm, { placeholder = "" } = {}) {
+// `onCancel` is optional and exists for callers that are AWAITING an answer —
+// the [[ picker wraps this in a promise, and a modal that resolves only when
+// confirmed would leave that promise pending forever on a dismissal.
+export function showPromptModal(title, hint, defaultValue, onConfirm, { placeholder = "", onCancel = null } = {}) {
   if (!el.promptModal) {
     // Native prompt has no placeholder, so surface the indicative name as the
     // (rare) fallback's default text.
     const result = prompt(title, defaultValue || placeholder);
     if (result !== null) onConfirm(result);
+    else onCancel?.();
     return;
   }
   el.promptModalTitle.textContent = title;
@@ -105,6 +109,7 @@ export function showPromptModal(title, hint, defaultValue, onConfirm, { placehol
     el.promptModalCancelBtn.onclick = null;
     el.promptModalInput.onkeydown = null;
     if (confirmed) onConfirm(el.promptModalInput.value);
+    else onCancel?.();
   };
   el.promptModalOkBtn.onclick = () => cleanup(true);
   el.promptModalCancelBtn.onclick = () => cleanup(false);

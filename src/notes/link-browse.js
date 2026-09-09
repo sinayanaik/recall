@@ -24,6 +24,64 @@ export const NOTE_LINK_BROWSE_LIMIT = 60;
 
 export const NOTE_LINK_RECENT_LIMIT = 5;
 
+// ── How the notes in a folder are ordered ──────────────────────────────────
+//
+// Newest first by default. A folder listing sorted by name is a phone book, and
+// a phone book is only useful to someone who knows the name — which is the one
+// thing the person who just typed "[[" does not have. What they DO have is a
+// sense of when: the note they are reaching for is nearly always one they were
+// writing this week. Alphabetical stays one keystroke away (Alt+S, or the chip
+// in the breadcrumb) for when the library is large and the name IS known.
+//
+// Per device, like every other view preference — see my-decks-prefs.js.
+export const NOTE_LINK_SORT_KEY = "flashcards_note_link_sort_v1";
+
+export const NOTE_LINK_SORT_OPTIONS = ["modified", "title"];
+
+let noteLinkSort = null;
+
+export function noteLinkBrowseSort() {
+  if (noteLinkSort) return noteLinkSort;
+  let stored = null;
+  try { stored = localStorage.getItem(NOTE_LINK_SORT_KEY); } catch (_) {}
+  noteLinkSort = NOTE_LINK_SORT_OPTIONS.includes(stored) ? stored : "modified";
+  return noteLinkSort;
+}
+
+export function setNoteLinkBrowseSort(sort) {
+  if (!NOTE_LINK_SORT_OPTIONS.includes(sort)) return noteLinkBrowseSort();
+  noteLinkSort = sort;
+  try { localStorage.setItem(NOTE_LINK_SORT_KEY, sort); } catch (_) {}
+  return noteLinkSort;
+}
+
+export function toggleNoteLinkBrowseSort() {
+  return setNoteLinkBrowseSort(noteLinkBrowseSort() === "modified" ? "title" : "modified");
+}
+
+export function noteLinkSortLabel(sort = noteLinkBrowseSort()) {
+  return sort === "title" ? "A\u2013Z" : "Recent";
+}
+
+// Newest first, falling back to the title so two notes saved in the same second
+// (an import, a first sync) never swap places between two draws of the same
+// list. A missing timestamp sorts last for the same reason it is tolerated at
+// all: an old index entry is still a note you may want to link to.
+export function compareNotesByModified(a, b) {
+  const at = String(a.updatedAt || "");
+  const bt = String(b.updatedAt || "");
+  if (at !== bt) {
+    if (!at) return 1;
+    if (!bt) return -1;
+    return bt.localeCompare(at);
+  }
+  return a.title.localeCompare(b.title);
+}
+
+export function compareBrowseNotes(a, b) {
+  return noteLinkBrowseSort() === "title" ? a.title.localeCompare(b.title) : compareNotesByModified(a, b);
+}
+
 // Where the picker opens. The note you are writing is far more likely to link to
 // one of its neighbours than to something across the library, so browsing starts
 // in its own folder with the breadcrumb offering the way out — rather than at a
@@ -97,7 +155,7 @@ export function notesIn(entries, cwd) {
   if (!String(cwd || "").trim()) return [];
   return entries
     .filter((entry) => normalizeDeckCategory(entry.category) === here)
-    .sort((a, b) => a.title.localeCompare(b.title))
+    .sort(compareBrowseNotes)
     .map((entry) => ({ ...entry, kind: "note" }));
 }
 
