@@ -1273,10 +1273,10 @@ function openStyleFor(id, node) {
 
 // ── Which page, and where on it, a point on the glass is ───────────────────
 //
-// For the two callers that have a pointer and want a block there: the
-// double-click that makes one, and a picture dropped or pasted onto the page.
-// Both used to be able to say only "the middle of whatever page is in view",
-// which is how a multi-file drop put four photographs in one pile.
+// For src/main.js's drop and paste handler, which wants a picture landing where
+// it was actually dropped rather than in the middle of whichever page is in
+// view — which is how a multi-file drop used to put four photographs in one
+// pile.
 export function pdfPointAt(clientX, clientY) {
   const pageEl = document.elementFromPoint(clientX, clientY)?.closest?.(".pdf-page[data-page-number]");
   const page = Number(pageEl?.dataset.pageNumber);
@@ -1288,15 +1288,3 @@ export function pdfPointAt(clientX, clientY) {
   return { page, x, y };
 }
 
-// A double-click on bare paper makes a block there and opens it. Returns true
-// when it did, so the caller knows the press was spent.
-//
-// Guarded on the press NOT being inside a block, which is the whole of the rule:
-// a double-click on a block is a reader selecting a word inside it, and on the
-// deck's other paper it is a reader selecting a word of somebody's preprint.
-// src/main.js is what decides this only happens on the Write tab.
-export function addBlockAtPoint(clientX, clientY) {
-  const at = pdfPointAt(clientX, clientY);
-  if (!at) return false;
-  return Boolean(addDocumentBlock(at.page, at));
-}

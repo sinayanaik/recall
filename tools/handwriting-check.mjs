@@ -1208,11 +1208,9 @@ try {
     const box = pageEl.getBoundingClientRect();
     const record = (id) => ({ ...(api.state.meta.pdfBlocks || []).find((b) => b.id === id) });
 
-    // ── Made where the pointer is ────────────────────────────────────────
-    //
-    // Somewhere inside the page AND inside the window — the page is taller than
-    // the viewport, so its own box is not enough — and on bare paper rather than
-    // on top of the block the case above left behind.
+    // A point on bare paper — inside the page AND inside the window, since the
+    // page is taller than the viewport — used below for a stroke made after the
+    // block exists, to ask which of the two undo rings a keystroke there means.
     const top = Math.max(box.top, 0);
     const bottom = Math.min(box.bottom, window.innerHeight);
     let spot = null;
@@ -1223,11 +1221,16 @@ try {
       }
       if (spot) break;
     }
-    const had = new Set(api.documentBlocks().map((b) => b.id));
-    const wanted = api.pdfPointAt(spot.x, spot.y);
-    view.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true, clientX: spot.x, clientY: spot.y }));
+
+    // ── Made at a point on the page ──────────────────────────────────────
+    //
+    // addDocumentBlock is what + Text in the rail calls, and what a double-click
+    // on bare paper used to call as well — that door is shut now: writing with a
+    // pen is a great many quick, close-together taps, and the browser's own
+    // dblclick synthesis cannot tell two of those from two deliberate clicks. It
+    // fired mid-stroke and popped this very editor open under the nib.
+    const made = api.addDocumentBlock(pageNumber, api.pdfPointAt(spot.x, spot.y));
     await settle(500);
-    const made = api.documentBlocks().find((b) => !had.has(b.id)) || null;
     const sheet = document.getElementById("pdfBlockEditor");
     const openedOnIt = Boolean(sheet && !sheet.hidden);
     // The style controls are in the WINDOW as well, and outside the kit — which
@@ -1245,13 +1248,6 @@ try {
     };
     sheet?.querySelector(".pdf-block-editor-done")?.click();
     await settle(300);
-    // Centred on the press, so the comparison is against the middle of the box —
-    // and against the middle of the PAGE, which is where every one of these used
-    // to land whatever the reader was looking at.
-    const centre = made ? { x: made.x + (made.w / 2), y: made.y + (made.h / 2) } : null;
-    const pageMiddle = {
-      x: (pageEl && api.pdfPageViewport(pageNumber)) ? (api.pdfPageViewport(pageNumber).viewBox[2] - api.pdfPageViewport(pageNumber).viewBox[0]) / 2 : 0
-    };
 
     const node = () => document.querySelector('[data-pdf-block="' + made.id + '"]');
     const plain = {
@@ -1372,7 +1368,7 @@ try {
 
     return {
       spotFound: Boolean(spot), made: Boolean(made), openedOnIt, rowInSheet,
-      wanted, centre, pageMiddle, madeBox: made ? { w: made.w, h: made.h } : null,
+      madeBox: made ? { w: made.w, h: made.h } : null,
       plain, painted, styledRecord: styledRecord.style || null, storedStyle, untouched, bare,
       overflowing, beforeFit: { h: beforeFit.h, y: beforeFit.y }, afterFit: { h: afterFit.h, y: afterFit.y },
       ring, gone, buried, backAgain: Boolean(backAgain), stillBuried,
@@ -1382,17 +1378,9 @@ try {
     };
   }`);
 
-  check("a double-click on bare paper makes a block there",
+  check("a block can be made and opens for typing",
     styling.made && styling.openedOnIt,
     `made=${styling.made}, editor opened on it=${styling.openedOnIt}${styling.errs?.length ? ` — ${styling.errs.join(" | ")}` : ""}`);
-  // The number that matters: the middle of the new block against the point that
-  // was pressed, in the page's own units. Ten points of slack for the clamp that
-  // keeps a block from being created half off the edge of the page.
-  check("...at the point that was pressed, not in the middle of the page",
-    Math.abs(styling.centre.x - styling.wanted.x) < 10 && Math.abs(styling.centre.y - styling.wanted.y) < 10,
-    `pressed (${Math.round(styling.wanted.x)}, ${Math.round(styling.wanted.y)}), block centred on `
-      + `(${Math.round(styling.centre.x)}, ${Math.round(styling.centre.y)}); the middle of the page is `
-      + `x=${Math.round(styling.pageMiddle.x)}`);
   check("...and the editor window carries the style controls, outside the kit",
     styling.rowInSheet.present && styling.rowInSheet.outsideKit,
     `present=${styling.rowInSheet.present}, outside the kit=${styling.rowInSheet.outsideKit} — inside it they go `
