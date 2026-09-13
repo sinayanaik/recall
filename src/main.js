@@ -45,7 +45,7 @@ import { clearImportStaging, commitStagedImport, importDestinationFolder, import
 import { fetchUrl } from "./import/url.js?v=__BUILD__";
 import { closeAllDeckTileMenus, createFolder, setAllFoldersExpanded } from "./library/folder-tree.js?v=__BUILD__";
 import { normalizeDeckCategory } from "./library/folders.js?v=__BUILD__";
-import { flushIndexBatch, readLocalDeckIndex, setDeckReloadedInPlaceHook } from "./library/local-library.js?v=__BUILD__";
+import { flushIndexBatch, readLocalDeckIndex, setDeckContentSavedHook, setDeckReloadedInPlaceHook } from "./library/local-library.js?v=__BUILD__";
 import { categorizeSelectedMyDecks, deleteSelectedMyDecks, loadSelectedMyDecks } from "./library/my-decks-actions.js?v=__BUILD__";
 import { hydrateMyDecksIcons } from "./library/my-decks-icons.js?v=__BUILD__";
 import { closeMyDecksMoreMenu, currentMyDecksFolder, importIntoFolder, myDecksImportFolder, myDecksSearchTimer, setMyDecksSearchTimer, toggleMyDecksMoreMenu } from "./library/my-decks-menu.js?v=__BUILD__";
@@ -91,7 +91,7 @@ import { scheduleMarkdownTableFit } from "./render/tables.js?v=__BUILD__";
 import { deckSnapshotCache, deckStoreChannel, deckStoreRequest, indexedDbUnavailable, pendingDeckWrites, scheduleDeckAutosave, setDeckStoreChannel, touchDeckSnapshotCache } from "./storage/deck-store.js?v=__BUILD__";
 import { isQuotaExceededError } from "./storage/quota.js?v=__BUILD__";
 import { closeStoragePanel, offloadStorageDocument, openStoragePanel, refreshStorageReport, runStorageAction } from "./storage/storage-panel.js?v=__BUILD__";
-import { applyAutoSyncInterval, autoSyncTick, setAutoSyncMinutes } from "./sync/auto-sync.js?v=__BUILD__";
+import { applyAutoSyncInterval, autoSyncTick, schedulePostEditSync, setAutoSyncMinutes } from "./sync/auto-sync.js?v=__BUILD__";
 import { updateDeckEmptyStatus } from "./sync/indicator.js?v=__BUILD__";
 import { showNotesConflictModal } from "./sync/notes-conflict.js?v=__BUILD__";
 import { reconcileAllDecks } from "./sync/reconcile.js?v=__BUILD__";
@@ -1736,6 +1736,12 @@ el.autoSyncSelect?.addEventListener("change", (e) => {
 // Reflect the saved cadence in the dropdown and start the timer on boot. The
 // timer's ticks self-gate on sign-in/online, so it's safe to arm before login.
 applyAutoSyncInterval();
+// ...and bring that deadline forward when an edit settles, so work reaches the
+// other device in about half a minute rather than whenever the cadence comes
+// round. Content changes only — a scroll or a navigation save is not work
+// anybody is waiting for — and it refuses outright while auto-sync is off. See
+// schedulePostEditSync.
+setDeckContentSavedHook(schedulePostEditSync);
 // Every static [data-md-icon] button gets its SVG once, at startup.
 hydrateMyDecksIcons();
 

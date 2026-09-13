@@ -565,11 +565,6 @@ export function finishSaveDeckToLibrary({ snapshot, localId, previousSnapshot, s
       ? nextSyncStamp(nowIso, previousEntry?.updatedAt)
       : (previousEntry?.updatedAt || nowIso));
 
-  // Mark exactly the cards this save changed, so a later pull can tell "I edited
-  // this and haven't pushed it" apart from "this is just what the cloud gave me"
-  // and merge instead of overwrite. Must run AFTER contentChanged is computed —
-  // it mutates snapshot.cards, and deckContentMatches ignores these fields but
-  // there's no reason to depend on that.
   // ── The notes body the cloud is known to hold ────────────────────────────
   //
   // Carried forward from the copy being replaced, for exactly the reason
@@ -588,6 +583,12 @@ export function finishSaveDeckToLibrary({ snapshot, localId, previousSnapshot, s
   // shape — a reader's .json of their own deck should not carry a copy of an
   // older revision of its notes.
   if (previousSnapshot?.syncedNotesBase !== undefined) snapshot.syncedNotesBase = previousSnapshot.syncedNotesBase;
+
+  // Mark exactly the cards this save changed, so a later pull can tell "I edited
+  // this and haven't pushed it" apart from "this is just what the cloud gave me"
+  // and merge instead of overwrite. Must run AFTER contentChanged is computed —
+  // it mutates snapshot.cards, and deckContentMatches ignores these fields but
+  // there's no reason to depend on that.
   stampCardSyncState(snapshot, previousSnapshot, updatedAt || nowIso, { synced });
   // Every local card deletion funnels through here (the delete handlers mutate
   // state and let the autosave persist it), so this diff is where a deletion
@@ -675,7 +676,27 @@ export function finishSaveDeckToLibrary({ snapshot, localId, previousSnapshot, s
     state.localDeckId = localId;
     persistWorkingDeck();
   }
+  // ── An edit that settled ─────────────────────────────────────────────────
+  //
+  // Only when the CONTENT changed: a navigation or a position save is not work
+  // anybody else is waiting for, and arming on those would mean a sync every
+  // time the reader scrolled. deckContentMatches has already answered exactly
+  // that question a few lines up.
+  //
+  // A hook rather than a call, because src/sync/auto-sync.js reaches
+  // reconcileAllDecks, which imports THIS module — and unlike the function
+  // declarations this codebase happily cycles through, that path runs real work
+  // at module scope. main.js registers it, as it does for every other crossing
+  // of this kind.
+  if (contentChanged) deckContentSaved?.();
   return meta;
+}
+
+// See the call above. Registered from src/main.js.
+let deckContentSaved = null;
+
+export function setDeckContentSavedHook(fn) {
+  deckContentSaved = typeof fn === "function" ? fn : null;
 }
 
 // Whether there is genuinely nothing here to write.

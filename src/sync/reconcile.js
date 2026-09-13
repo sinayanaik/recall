@@ -504,6 +504,36 @@ export async function pullCloudDeckIntoLibraryLocked(cloud, cards) {
 // Pushes one library deck (by its local metadata) to the cloud, WITHOUT
 // disturbing the active in-memory deck. Mints a stable cloud id if the deck has
 // never been synced, then records it locally and aligns the timestamp.
+// ── The invariant every one of the merges above rests on ──────────────────
+//
+// A deck is one cloud row plus its cards, and one deck-level `updatedAt` decides
+// the direction — so a device NEVER pushes and pulls the same deck in one run.
+// Any device with a local change of any kind takes the push branch, which means:
+//
+//     A PUSH IS A MERGE OF EVERY CLASS OF CONTENT, NEVER A REPLACE.
+//
+// A push from a device that did not touch class C must leave the cloud's copy of
+// C exactly as it found it — for C in: the cards, the notes body, the fenced
+// highlight-note tail, the highlights and ink, the typed blocks, the notebook's
+// pages, the attached paper, the reading position, the bookmark, the link ids,
+// the quick-note categories and the note anchors.
+//
+// That sentence is what "different panels of one deck, edited on different
+// devices" means in practice — cards on the laptop, the notebook on the phone,
+// the paper's margins on the tablet — and every one of those classes has a
+// mechanism behind it: reconcileCardsBeforePush, mergeDeckMeta key by key,
+// mergeRecordsById for the id'd records, mergeHighlightNoteTails for the fenced
+// block, and mergeNoteBodies for the prose. The notes body was the one class
+// where it was NOT true, which is what made it worth writing down.
+//
+// tools/sync-reconcile-check.mjs asserts it once per class, so the next key
+// somebody adds to the meta bag without a rule fails there rather than in
+// somebody's library.
+//
+// Convergence takes TWO rounds, by construction and not by accident: a push
+// adopts the other device's work into the local copy and sends the union, and
+// the other device adopts that union on its next sync.
+//
 // ── Losing the race, and doing the whole merge again ──────────────────────
 //
 // pushDeckRowsToCloud writes the deck row only if the cloud still holds the row

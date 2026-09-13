@@ -1434,6 +1434,125 @@ try {
       lost === null || lost);
   }
 
+  // ══ F14. A push is a merge of every class, never a replace ═══════════════
+  //
+  // A deck is one cloud row plus its cards, and one deck-level updatedAt decides
+  // the direction — so a device never pushes AND pulls the same deck in one run.
+  // Any device with a local change of any kind pushes, which makes this the
+  // invariant everything else rests on:
+  //
+  //     a push from a device that did not touch class C must leave the cloud's
+  //     copy of C exactly as it found it.
+  //
+  // That sentence is what "different panels of one deck, on different devices"
+  // means in practice, and it is asserted once per class here so that the next
+  // key added to the meta bag without a rule fails in this file rather than in
+  // somebody's library.
+  //
+  // Each case is the same shape: B changes ONLY class C, A changes something
+  // else and pushes first, B pushes second — and A's change must survive.
+  {
+    const classes = [
+      ["the cards", (dev, at) => addCard(dev, at, "c-new", "a card"),
+        (cloud) => cloudIds(cloud).includes("c-new")],
+      ["the notes body", (dev, at) => editNotes(dev, at, "the body A wrote"),
+        (cloud) => fence.splitHighlightNotesTail(cloud.deck.notes).body === "the body A wrote"],
+      ["a highlight", (dev, at) => editLocally(dev, at, (s) => {
+        s.meta = { ...s.meta, pdfHighlights: [...(s.meta?.pdfHighlights || []), { id: "hl-a", page: 1, color: "yellow", at: at }] };
+      }), (cloud) => (cloud.deck.meta?.pdfHighlights || []).some((r) => r.id === "hl-a")],
+      ["an ink stroke", (dev, at) => editLocally(dev, at, (s) => {
+        s.meta = { ...s.meta, pdfHighlights: [...(s.meta?.pdfHighlights || []), { id: "ink-a", kind: "ink", doc: "notebook", page: 1, at: at }] };
+      }), (cloud) => (cloud.deck.meta?.pdfHighlights || []).some((r) => r.id === "ink-a")],
+      ["a typed block", (dev, at) => editLocally(dev, at, (s) => {
+        s.meta = { ...s.meta, pdfBlocks: [...(s.meta?.pdfBlocks || []), { id: "blk-a", page: 1, text: "A's block", at: at }] };
+      }), (cloud) => (cloud.deck.meta?.pdfBlocks || []).some((r) => r.id === "blk-a")],
+      ["the notebook's pages", (dev, at) => editLocally(dev, at, (s) => {
+        s.meta = { ...s.meta, notebook: { pages: 4, sha256: "notebook-a" } };
+      }), (cloud) => cloud.deck.meta?.notebook?.sha256 === "notebook-a"],
+      ["the attached paper", (dev, at) => editLocally(dev, at, (s) => {
+        s.meta = { ...s.meta, pdf: { name: "paper.pdf", pages: 9, sha256: "paper-a" } };
+      }), (cloud) => cloud.deck.meta?.pdf?.sha256 === "paper-a"],
+      ["the reading position", (dev, at) => editLocally(dev, at, (s) => {
+        s.meta = { ...s.meta, readingPosition: { offset: 42, pdfPage: 3, ratio: 0.5, at: at } };
+      }), (cloud) => cloud.deck.meta?.readingPosition?.offset === 42],
+      ["the bookmark", (dev, at) => editLocally(dev, at, (s) => {
+        s.meta = { ...s.meta, bookmark: { offset: 7, text: "here", at: at } };
+      }), (cloud) => cloud.deck.meta?.bookmark?.offset === 7],
+      ["the link ids", (dev, at) => editLocally(dev, at, (s) => {
+        s.meta = { ...s.meta, linkIds: ["from-a"] };
+      }), (cloud) => (cloud.deck.meta?.linkIds || []).includes("from-a")],
+      ["the quick-note categories", (dev, at) => editLocally(dev, at, (s) => {
+        s.meta = { ...s.meta, quickNoteCategories: [{ id: "cat-a", name: "A's subject", color: "red" }] };
+      }), (cloud) => (cloud.deck.meta?.quickNoteCategories || []).some((c) => c.id === "cat-a")],
+      ["a note anchor", (dev, at) => editLocally(dev, at, (s) => {
+        s.meta = { ...s.meta, noteAnchors: { "card-a": { offset: 5 } } };
+      }), (cloud) => Boolean(cloud.deck.meta?.noteAnchors?.["card-a"])]
+    ];
+
+    for (const [name, changeOnA, survivedInCloud] of classes) {
+      const cloud = makeCloud();
+      const A = makeDevice("A");
+      const B = makeDevice("B");
+      // One agreed starting point, so both carry a baseline and a merge base.
+      editNotes(A, T0 + MIN, "shared");
+      push(A, cloud, T0 + MIN);
+      pull(B, cloud, T0 + 2 * MIN);
+
+      // A moves this class. B moves a DIFFERENT one — a card status, which no
+      // case above uses — so B is genuinely a device that did not touch C.
+      changeOnA(A, T0 + 3 * MIN);
+      push(A, cloud, T0 + 4 * MIN);
+      addCard(B, T0 + 5 * MIN, "c-b", "B's own card");
+      push(B, cloud, T0 + 6 * MIN);
+
+      must(`a push from a device that did not touch ${name} leaves it alone`, () =>
+        survivedInCloud(cloud) || `the cloud lost it: ${JSON.stringify(cloud.deck.meta)} / ${cloudIds(cloud)} / ${JSON.stringify(cloud.deck.notes)}`);
+      must(`...while still carrying that device's own work up (${name})`, () =>
+        cloudIds(cloud).includes("c-b") || `the cloud holds ${cloudIds(cloud)}`);
+    }
+  }
+
+  // ══ F15. The sync that follows an edit rather than a clock ═══════════════
+  //
+  // Five minutes is the whole complaint when two devices are open on one deck.
+  // An edit that settles brings the deadline forward — but an explicit "off" is
+  // a stored preference, and a helpful sync that ignored it would be a worse bug
+  // than the one it fixes.
+  {
+    const auto = await load("src/sync/auto-sync.js");
+    must("the settle delay is short enough to be useful and long enough to coalesce", () =>
+      (auto.POST_EDIT_SYNC_MS >= 5000 && auto.POST_EDIT_SYNC_MS <= 60000)
+      || `POST_EDIT_SYNC_MS is ${auto.POST_EDIT_SYNC_MS}`);
+    must("...and a long editing session is rate-limited to at most a sync a minute", () =>
+      auto.POST_EDIT_SYNC_MIN_GAP_MS >= 60000 || `POST_EDIT_SYNC_MIN_GAP_MS is ${auto.POST_EDIT_SYNC_MIN_GAP_MS}`);
+    // Arming it with auto-sync off must not even set a timer: the refusal is at
+    // the door, not at fire time, so nothing is left pending across the setting
+    // being turned back on.
+    must("auto-sync off means no settle sync is armed at all", () => {
+      localStorage.setItem(auto.AUTOSYNC_KEY, "0");
+      let armed = false;
+      const realSetTimeout = globalThis.setTimeout;
+      globalThis.setTimeout = (...args) => { armed = true; return realSetTimeout(() => {}, 0); };
+      try { auto.schedulePostEditSync(); } finally { globalThis.setTimeout = realSetTimeout; }
+      localStorage.removeItem(auto.AUTOSYNC_KEY);
+      return armed === false || "a timer was armed with auto-sync explicitly off";
+    });
+    must("...while a device with a cadence set does arm one", () => {
+      localStorage.setItem(auto.AUTOSYNC_KEY, "5");
+      let armed = false;
+      const realSetTimeout = globalThis.setTimeout;
+      const realClearTimeout = globalThis.clearTimeout;
+      globalThis.setTimeout = () => { armed = true; return 1; };
+      globalThis.clearTimeout = () => {};
+      try { auto.schedulePostEditSync(); } finally {
+        globalThis.setTimeout = realSetTimeout;
+        globalThis.clearTimeout = realClearTimeout;
+      }
+      localStorage.removeItem(auto.AUTOSYNC_KEY);
+      return armed === true || "no timer was armed for a device with auto-sync on";
+    });
+  }
+
   console.log("── sync reconcile ──");
   for (const [ok, name, detail] of results) {
     console.log(`  ${ok ? "ok  " : "FAIL"}  ${name}${detail ? `\n          ${detail}` : ""}`);
