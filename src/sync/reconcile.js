@@ -896,10 +896,35 @@ async function pushLibraryDeckToCloudOnce(localMeta, { cloudExists = false, clou
     stats.documentPagesChanged = docs.pagesChanged;
     stats.documentRemovedHere = docs.removed;
   }
-  // `localCardsChanged` tells the caller the on-device card list moved under the
-  // user's feet, so an open deck has to be reloaded to show it (the same reason
-  // a pull reloads the active deck).
-  return { now, stats, localId: localMeta.id, localCardsChanged: cardsRemovedHere > 0 || cardsAdoptedHere > 0 };
+  // ── Did this push move the copy on disk under the reader? ────────────────
+  //
+  // `localCardsChanged` has always meant the card list moved — the pre-push
+  // reconcile adopted cards another device added, or dropped ones it deleted, so
+  // the in-memory copy is now the stale one and the next autosave would write it
+  // straight back.
+  //
+  // reconcileDeckBeforePush does exactly the same thing to the notes and to
+  // every key of the meta bag — the highlights, the ink, the blocks, the paper,
+  // the bookmark, the reader's place, the link ids, the categories, the anchors —
+  // and NONE of it reached the caller. So the open deck was never reloaded, the
+  // adopted annotations were never shown, and the next autosave wrote state.meta
+  // back over the merge and pushed it: the other device's afternoon, undone by a
+  // sync that reported success.
+  //
+  // And this is the common path, not a corner: a deck being edited has the newer
+  // updatedAt, so the deck on screen almost always PUSHES rather than pulls.
+  //
+  // One flag is enough for all of it. documentPush.changed is a key-sorted
+  // stableJson compare over the whole merged bag, so it already covers every key
+  // above; a second "highlights adopted" test beside it would be the same
+  // question asked less well.
+  return {
+    now,
+    stats,
+    localId: localMeta.id,
+    localCardsChanged: cardsRemovedHere > 0 || cardsAdoptedHere > 0,
+    localDocumentChanged: Boolean(documentPush?.changed)
+  };
 }
 
 export let reconcileInFlight = false;
@@ -1087,7 +1112,11 @@ export async function reconcileAllDecks({ explicit = false } = {}) {
   }
 
   const activeDeckId = state.deckId;
-  let activePulledLocalId = null;
+  // The open deck's copy on disk moved under the reader — pulled, or merged into
+  // by its own push. Named for the fact and not for the direction: the deck on
+  // screen almost always pushes (its updatedAt is the newest thing anywhere), so
+  // "pulled" described the rarer half of the cases it now covers.
+  let activeDeckMovedLocalId = null;
   let pulled = 0, pushed = 0, failed = 0;
   // Decks whose timestamp said "newer" but whose content already matched the
   // cloud. Not nothing: it's what a live write (e.g. recategorising a quick
@@ -1629,7 +1658,7 @@ export async function reconcileAllDecks({ explicit = false } = {}) {
           // artifact, with identical cards/notes) must NOT reload — doing so
           // would reset the user's live study position to the cloud's index
           // for no real reason.
-          if (activeDeckId && String(cloud.id) === String(activeDeckId)) activePulledLocalId = res.localId;
+          if (activeDeckId && String(cloud.id) === String(activeDeckId)) activeDeckMovedLocalId = res.localId;
         } else {
           alreadyMatched.push(cloud.title || "Untitled deck");
         }
@@ -1756,8 +1785,9 @@ export async function reconcileAllDecks({ explicit = false } = {}) {
         // it's the deck on screen, the in-memory copy is now the stale one — and
         // the next autosave would write it straight back, undoing the merge. Same
         // reload a pull does, for the same reason.
-        if (res.localCardsChanged && state.localDeckId && res.localId === state.localDeckId) {
-          activePulledLocalId = res.localId;
+        if ((res.localCardsChanged || res.localDocumentChanged)
+            && state.localDeckId && res.localId === state.localDeckId) {
+          activeDeckMovedLocalId = res.localId;
         }
       } catch (e) {
         failed++;
@@ -1791,11 +1821,21 @@ export async function reconcileAllDecks({ explicit = false } = {}) {
       }
     }
 
-    // If the on-screen deck was refreshed from the cloud, reload it so the user
-    // sees the newer content. (Local edits bump the timestamp, so this only
-    // happens when the cloud copy genuinely won the last-write-wins.)
-    if (activePulledLocalId) {
-      await loadDeckFromLibrary(activePulledLocalId);
+    // ── The on-screen deck's copy on disk moved: show it, and stay put ──────
+    //
+    // keepPlace is the whole of the difference from a plain open. The reader did
+    // not ask to go anywhere: they are mid-page on the Write tab, or half way
+    // down a note. A bare loadDeckFromLibrary would record a nav-history door,
+    // reset the chrome, jump to the deck's saved reading position and — through
+    // loadDeckSnapshot's own setViewMode(documentTabForOpenDeck()) — put them on
+    // the Notes tab, which is what "when sync is happening i am being moved to
+    // always Notes panel" is.
+    //
+    // What it still does, and what this is FOR, is re-seed state.notes,
+    // state.meta and the cards from the snapshot the sync just wrote. Without
+    // that the next autosave writes the pre-merge copy back over the merge.
+    if (activeDeckMovedLocalId) {
+      await loadDeckFromLibrary(activeDeckMovedLocalId, { keepPlace: true });
     } else {
       refreshSyncIndicatorBaseline();
     }

@@ -752,7 +752,35 @@ export function saveDeckToLibrarySync({ id = null, silent = true } = {}) {
   return finishSaveDeckToLibrary({ snapshot, localId, previousSnapshot, silent, updatedAt: null, lastSyncedAt: undefined, synced: false });
 }
 
-export async function loadDeckFromLibrary(id) {
+// ── Reloading a deck the reader is still standing in ───────────────────────
+//
+// `keepPlace` is the sync's door into this function, and everything it changes
+// it changes by NOT doing something. A background sync that rewrote the deck on
+// disk has to get the new content into `state` — otherwise the next autosave
+// writes the pre-merge copy back over it — but the reader did not ask to go
+// anywhere, and every one of the four steps below would move them:
+//
+//   recordNavHistory      a sync is not a navigation, and leaving a door behind
+//                         means Back walks into the deck the reader is already in
+//   setViewMode(default)  loadDeckSnapshot's own, which answers "notes" for any
+//                         deck without a paper. This is the reported "when sync
+//                         is happening i am being moved to always Notes panel"
+//   the resume jump       scrolls to wherever the deck's saved position is,
+//                         which is not where the reader is now
+//   resetChromeAutoHide   "a new deck starts at the top, header showing"
+//
+// The hook at the end is how the surfaces hear about it. A hook and not an
+// import because src/documents/notebook.js already imports THIS module, so a
+// library/ → documents/ edge would close that circle; src/main.js is where this
+// codebase composes crossings like it (setDocumentPagePaintedHook,
+// setDocumentOpenedHook, setInkChangedHandler).
+let deckReloadedInPlace = null;
+
+export function setDeckReloadedInPlaceHook(fn) {
+  deckReloadedInPlace = typeof fn === "function" ? fn : null;
+}
+
+export async function loadDeckFromLibrary(id, { keepPlace = false } = {}) {
   // Opening a saved deck is never an import, so it must not adopt a folder left
   // over from an "Import here" whose file picker was dismissed — that would
   // silently refile an existing deck.
@@ -795,13 +823,16 @@ export async function loadDeckFromLibrary(id) {
     // A navigation door: remember where the user was before this deck replaces
     // it. Recorded only once the deck is known to exist — a failed open doesn't
     // move anyone.
-    recordNavHistory();
-    loadDeckSnapshot(payload, payload.sourceTitle || payload.deckTitle || "");
+    if (!keepPlace) recordNavHistory();
+    loadDeckSnapshot(payload, payload.sourceTitle || payload.deckTitle || "", false, { keepPlace, deckKey: id });
     state.localDeckId = id;
     persistWorkingDeck();
     refreshSyncIndicatorBaseline();
     refreshNavBack(); // arrived — now the button knows where "here" is
-    resetChromeAutoHide(); // a new deck starts at the top, header showing
+    if (!keepPlace) resetChromeAutoHide(); // a new deck starts at the top, header showing
+    // The pages on screen were painted from arrays that have just been replaced.
+    // Only the surface knows what it is showing, so it is told rather than asked.
+    if (keepPlace) deckReloadedInPlace?.();
     return true;
   } catch (error) {
     console.warn("Could not load saved deck", error);

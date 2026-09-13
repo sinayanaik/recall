@@ -605,6 +605,44 @@ export function openDocumentSlot() {
   return openPdf?.slot || null;
 }
 
+// ── Are the pages on screen still pages of the file the deck names? ────────
+//
+// documentOpenKey is deckKey|slot|sha256, and currentDeckKey() does not move
+// when a deck is reloaded in place — so the only part of it that can differ
+// after a sync is the HASH. Which makes this the direct answer to "did the bytes
+// change under the reader": pages added or torn out on another device rewrite
+// the notebook, and a paper attached or re-attached there is a different file
+// entirely. Nothing short of reopening can show pages this device has never
+// parsed.
+export function openDocumentIsCurrent() {
+  return !openPdf || openPdf.deckKey === documentOpenKey(openPdf.slot);
+}
+
+// Everything a rendered page carries, brought up to date against arrays that
+// have been replaced underneath it.
+//
+// The loop is the one finishDocumentOpen already runs for a restored park, and
+// it is extracted rather than copied so there is one answer to "what does a page
+// have to be told". Its comment there names a sync landing as one of the reasons
+// — this is that reason, arriving by the other route.
+//
+// Replaying the painted hook rather than calling four repaint functions is not
+// tidiness: this module must not import pdf-ink.js or pdf-blocks.js, both of
+// which import IT, and the hook (setDocumentPagePaintedHook, registered in
+// src/main.js) is this codebase's standing answer to that edge. It also genuinely
+// re-seeds adopted ink, because ensureInkLayer decides by comparing record
+// REFERENCES and a reload hands it a freshly parsed array.
+//
+// paintDocumentHighlights beside it because the hook does not cover the marks —
+// the two together are exactly the pair a fresh page render runs.
+export function repaintOpenDocumentPages() {
+  if (!openPdf) return;
+  openPdf.rendered.forEach((pageNumber) => {
+    paintDocumentHighlights(pageNumber);
+    onPagePainted(pageNumber);
+  });
+}
+
 // Open the PDF for the deck in `state` into #documentView.
 //
 // Idempotent for the deck already on screen — setViewMode calls this on every

@@ -85,7 +85,11 @@ export function clearNotesConflictFlag(localId, { touch = false } = {}) {
 }
 
 export async function refreshAfterNotesConflictResolved(localId, { reload = true } = {}) {
-  if (reload && state.localDeckId === localId) await loadDeckFromLibrary(localId);
+  // keepPlace, for the reason the sync's own reload uses it: answering a
+  // conflict is not a navigation. The reader pressed a button in a modal over
+  // the deck they are reading, and a bare reload would take them to the top of
+  // whichever tab documentTabForOpenDeck names.
+  if (reload && state.localDeckId === localId) await loadDeckFromLibrary(localId, { keepPlace: true });
   if (el.myDecksPanel && !el.myDecksPanel.hidden) renderMyDecksList();
   refreshSyncIndicatorBaseline();
 }
