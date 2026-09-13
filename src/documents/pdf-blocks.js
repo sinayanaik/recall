@@ -59,7 +59,9 @@ import { enhanceRenderedMarkdown } from "../render/enhance.js?v=__BUILD__";
 import { closeBlockEditor, openBlockEditor } from "./pdf-block-editor.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
-import { recordDeletedMetaId } from "../sync/document-sync.js?v=__BUILD__";
+import { dropMetaTombstonesForLiveIds, recordDeletedMetaId } from "../sync/document-sync.js?v=__BUILD__";
+import { blockFillVar, blockInkVar, blockSizeScale, isDefaultBlockStyle, normalizeBlockStyle } from "./block-style.js?v=__BUILD__";
+import { openBlockStylePopover, closeBlockStylePopover } from "./block-style-bar.js?v=__BUILD__";
 import { pdfPageElement, pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
 
 // A block with no `kind` is text — see the header. Named constants rather than
@@ -76,6 +78,16 @@ const PDF_BLOCK_DEFAULT_WIDTH = 240;
 const PDF_BLOCK_DEFAULT_HEIGHT = 90;
 
 let editingId = null;
+// Which block the keyboard is talking about. A separate thing from `editingId`:
+// a block being TYPED into is in the sheet, and a block that is merely selected
+// is one the reader has picked up so that Delete, the arrows or Ctrl+D mean it.
+let selectedId = null;
+// True for the length of a drag or a resize. Read by the height-fitter, which
+// must not fight a finger that is already sizing the box.
+let gestureLive = false;
+// Which block the floating style panel is describing, so a second press on the
+// same button shuts it rather than rebuilding it in place.
+let styleOpenFor = null;
 let onBlocksChanged = () => {};
 
 export function setBlocksChangedHandler(fn) {
@@ -101,9 +113,31 @@ export function documentBlocks(pageNumber = null) {
       md: typeof block.md === "string" ? block.md : "",
       src: typeof block.src === "string" ? block.src : "",
       alt: typeof block.alt === "string" ? block.alt : "",
-      at: Number(block.at) || 0
+      at: Number(block.at) || 0,
+      // ── Carried through, and deliberately NOT normalised here ────────────
+      //
+      // Every other field above is normalised into a value the painter can use
+      // without asking twice. `style` cannot be, and the reason is that THIS
+      // ARRAY IS WRITTEN BACK: a drag, a delete and a page renumber all do
+      // `writeBlocks(documentBlocks().map(…))`, so anything this function
+      // invents becomes a field on the record the next time anything moves.
+      // Normalising here would therefore stamp a full default style bag onto
+      // every block in every deck the first time one of them was nudged — in an
+      // array that is re-sent whole on every push, for ever, saying nothing.
+      //
+      // So the key is passed on when it is there and absent when it is not, and
+      // blockStyle() below is what the painter asks. writeBlockStyle is the only
+      // thing that ever creates the key, and it removes it again the moment the
+      // reader puts every control back where it started.
+      ...(block.style && typeof block.style === "object" ? { style: { ...block.style } } : {})
     }));
   return pageNumber === null ? out : out.filter((block) => block.page === Number(pageNumber));
+}
+
+// A block's style, filled in. The one door between the record's optional bag and
+// everything that draws it.
+export function blockStyle(block) {
+  return normalizeBlockStyle(block?.style);
 }
 
 // Both papers' blocks, for the callers that mean the DECK: the sync merge and
@@ -121,8 +155,11 @@ export function allDocumentBlocks() {
 // notebook buries every block that was on it in a single write — and a bury that
 // arrived in a second write could be carried by a sync on its own, which is the
 // half-a-change this whole path exists to avoid.
-function writeBlocks(next, { removed = null } = {}) {
+function writeBlocks(next, { removed = null, revive = null, undoable = true } = {}) {
   const slot = activeDocSlot();
+  // Before anything is written, and only for the changes a reader MADE — see the
+  // ring below for why a page renumber and a late upload are not among them.
+  if (undoable) pushBlockUndo(documentBlocks());
   const whole = recordsOutsideSlot(state.meta?.pdfBlocks, slot).concat(stampDocSlotAll(next, slot));
   state.meta = { ...(state.meta && typeof state.meta === "object" ? state.meta : {}), pdfBlocks: whole };
   // Written back into the meta on every step. recordDeletedMetaId reads the bag
@@ -132,8 +169,107 @@ function writeBlocks(next, { removed = null } = {}) {
   (Array.isArray(removed) ? removed : [removed]).filter(Boolean).forEach((id) => {
     state.meta.deletedBlockIds = recordDeletedMetaId(state.meta, "deletedBlockIds", id);
   });
+  // ...and the other direction, which only an undo asks for: a block that has
+  // come BACK must lose its tombstone, or the next merge reads a live record and
+  // a note saying it was deleted and honours the note. dropMetaTombstonesForLiveIds
+  // returns null for "nothing left", and a key holding an empty bag is a key the
+  // sync still carries — so it is removed rather than emptied.
+  if (revive?.length) {
+    // Ids in, records out: `removed` above is a list of ids and this is its
+    // mirror, but dropMetaTombstonesForLiveIds takes the RECORDS that are alive
+    // and reads an id off each — so the two are made to agree here rather than
+    // by giving one of them a different shape from the other.
+    const kept = dropMetaTombstonesForLiveIds(state.meta, "deletedBlockIds", revive.map((id) => ({ id })));
+    if (kept) state.meta.deletedBlockIds = kept;
+    else delete state.meta.deletedBlockIds;
+  }
   scheduleDeckAutosave();
   onBlocksChanged();
+}
+
+// ── Undo, which this surface owed and did not have ─────────────────────────
+//
+// The pen has had undo since it was written; a block had none. Adding one was
+// optional while the only way to lose a block was to press 🗑 and mean it, and it
+// stopped being optional the moment Delete on the keyboard could do the same
+// thing to whatever happened to be selected. And a block does not merely
+// disappear when it goes: writeBlocks TOMBSTONES it, so the loss is pushed to
+// every other device on the next sync. There is nowhere to get it back from.
+//
+// A snapshot of the surface's whole block list per step, rather than a diff.
+// This is at most a few dozen small records — the array the sync sends whole
+// anyway — and a diff would have to describe five kinds of change to save bytes
+// nobody is counting.
+//
+// Deliberately NOT covering two of the writers above. remapDocumentBlockPages is
+// half of tearing a page out of a notebook, and putting its blocks back on a page
+// that no longer exists is not an undo of anything; settleBlockUploadToken is an
+// upload landing by itself, minutes later, which is not a thing the reader did.
+const BLOCK_UNDO_DEPTH = 20;
+
+const blockUndoRing = [];
+const blockRedoRing = [];
+// Which deck and which paper the rings are about. Two documents share this
+// module, and a deck can be closed and another opened without it ever being torn
+// down — so without this, Ctrl+Z on the second deck would restore the first one's
+// blocks onto it.
+let blockHistoryKey = "";
+
+function currentHistoryKey() {
+  return `${state.localDeckId || ""}:${activeDocSlot()}`;
+}
+
+function pushBlockUndo(before) {
+  const key = currentHistoryKey();
+  if (key !== blockHistoryKey) {
+    blockUndoRing.length = 0;
+    blockRedoRing.length = 0;
+    blockHistoryKey = key;
+  }
+  blockUndoRing.push(before);
+  if (blockUndoRing.length > BLOCK_UNDO_DEPTH) blockUndoRing.shift();
+  // A new change is a new future, the rule every undo stack in this app follows.
+  blockRedoRing.length = 0;
+}
+
+// Put the surface back to `list`, and return what it was — which is the entry the
+// opposite ring gets. The two id sets are compared rather than assumed, because a
+// step can have added AND removed (an undo of a duplicate, a redo of a delete),
+// and each direction owes the tombstones the other one wrote.
+function restoreBlocks(list) {
+  const before = documentBlocks();
+  const beforeIds = new Set(before.map((block) => block.id));
+  const afterIds = new Set(list.map((block) => block.id));
+  writeBlocks(list, {
+    undoable: false,
+    removed: before.filter((block) => !afterIds.has(block.id)).map((block) => block.id),
+    revive: list.filter((block) => !beforeIds.has(block.id)).map((block) => block.id)
+  });
+  return before;
+}
+
+export function canUndoBlocks() {
+  return blockUndoRing.length > 0 && currentHistoryKey() === blockHistoryKey;
+}
+
+export function canRedoBlocks() {
+  return blockRedoRing.length > 0 && currentHistoryKey() === blockHistoryKey;
+}
+
+export function undoBlocks() {
+  if (!canUndoBlocks()) return false;
+  commitBlockEdit();
+  blockRedoRing.push(restoreBlocks(blockUndoRing.pop()));
+  repaintDocumentBlocks();
+  return true;
+}
+
+export function redoBlocks() {
+  if (!canRedoBlocks()) return false;
+  commitBlockEdit();
+  blockUndoRing.push(restoreBlocks(blockRedoRing.pop()));
+  repaintDocumentBlocks();
+  return true;
 }
 
 // ── Renumbering, when a page is removed from under them ────────────────────
@@ -164,7 +300,8 @@ export function remapDocumentBlockPages(move) {
     if (Number(block.page) === Number(to)) { next.push(block); return; }
     next.push({ ...block, page: Number(to), at: Date.now() });
   });
-  writeBlocks(next, { removed: gone.map((block) => block.id) });
+  // Not undoable — see the ring: half of a tear-out is not a step of its own.
+  writeBlocks(next, { removed: gone.map((block) => block.id), undoable: false });
   return gone.length;
 }
 
@@ -269,9 +406,29 @@ function buildBlock(block) {
   // with a ✎ that opened a markdown editor would be a control lying about what
   // it does.
   const isImage = block.kind === PDF_BLOCK_IMAGE;
-  edit.title = isImage ? "Describe this image" : "Edit this text";
+  // The same words the window it opens puts at the top of itself. They were
+  // "Edit this text" and "Edit this block", which is one control and one heading
+  // disagreeing about what the reader is about to work on.
+  edit.title = isImage ? "Describe this image" : "Edit this block";
   edit.setAttribute("aria-label", edit.title);
   edit.innerHTML = isImage ? "&#9750;" : "&#9998;";
+
+  // ── The third button, and why it is a word-ish glyph rather than a palette ─
+  //
+  // 🎨 is what this control is called everywhere else in the world and it is the
+  // one thing it must not be: a full-colour emoji standing a head taller than the
+  // two monochrome glyphs beside it, which is the fault README already records
+  // against the old + 📷. "Aa" is the same two characters the editor's own font
+  // menu uses for the same question, renders on every platform, and says which
+  // kind of block it belongs to — a picture's frame is ▣, because "Aa" on a
+  // photograph would be a control lying about what it does.
+  const style = document.createElement("button");
+  style.type = "button";
+  style.className = "pdf-block-btn";
+  style.dataset.pdfBlockAction = "style";
+  style.title = isImage ? "Frame this picture" : "Style this block";
+  style.setAttribute("aria-label", style.title);
+  style.innerHTML = isImage ? "&#9635;" : "Aa";
 
   const remove = document.createElement("button");
   remove.type = "button";
@@ -280,7 +437,7 @@ function buildBlock(block) {
   remove.title = "Delete this block";
   remove.setAttribute("aria-label", "Delete this block");
   remove.innerHTML = "&#128465;";
-  bar.append(edit, remove);
+  bar.append(style, edit, remove);
 
   const body = document.createElement("div");
   // ── `rendered` on a PICTURE was costing the picture most of its own frame ──
@@ -314,8 +471,39 @@ function buildBlock(block) {
   return node;
 }
 
+// Everything a reader chose about how this block looks, onto the node — as data
+// attributes and two custom properties, with every actual value in
+// styles/58-block-style.css. Nothing here picks a colour: a fill and an ink are
+// TOKENS resolved per theme (see ./block-style.js), so the same block reads
+// correctly on ten themes and on an inverted page, which a hex written into an
+// inline style could not do.
+function paintBlockStyle(node, block) {
+  const style = blockStyle(block);
+  node.dataset.blockFill = style.fill;
+  node.dataset.blockFrame = style.frame;
+  node.dataset.blockAlign = style.align;
+  node.dataset.blockFont = style.font;
+  node.classList.toggle("is-fit", style.fit);
+  node.style.setProperty("--pdf-block-fill", `var(${blockFillVar(style.fill)})`);
+  // The multiplier, not a size: the body's type is already `0.82rem *
+  // --pdf-block-scale` so that it follows the page through a pinch, and a rem
+  // chosen here would be the one property that stopped following it.
+  node.style.setProperty("--pdf-block-text", String(blockSizeScale(style.size)));
+  const ink = blockInkVar(style.ink);
+  // Removed rather than set to a fallback: with no property the body inherits
+  // the theme's own text colour, which is what "default" means and what a block
+  // has always done.
+  if (ink) node.style.setProperty("--pdf-block-ink", `var(${ink})`);
+  else node.style.removeProperty("--pdf-block-ink");
+}
+
 function paintBlock(node, block) {
   const body = node.querySelector(".pdf-block-body");
+  paintBlockStyle(node, block);
+  // A block the keyboard is talking about. Said with a class for the reason
+  // is-editing is: the ring is drawn in CSS beside every other state this block
+  // can be in, rather than as an inline style that would have to be unset.
+  node.classList.toggle("is-selected", selectedId === block.id);
   // While a block is being edited its text is in the sheet, not here. Said with
   // a class rather than by hiding the body: the block has to keep its box on the
   // page — it is what the reader is looking at the editor ABOUT — and a hidden
@@ -362,9 +550,91 @@ function paintBlock(node, block) {
   // sanitize, a KaTeX pass, possibly a mermaid render), and firing one per
   // frame at a block being dragged would queue renders faster than they finish.
   // Same argument, and the same shape, as the image branch above.
-  if (renderedMarkdown.get(body) === block.md) return;
+  if (renderedMarkdown.get(body) === block.md) {
+    // Same words, possibly a different box: a block whose height follows its
+    // text has to be re-measured when the page zooms or the reader drags it
+    // narrower, and neither of those changes the markdown.
+    fitBlockHeight(node, block);
+    return;
+  }
   renderedMarkdown.set(body, block.md);
-  renderBlockBody(body, block.md);
+  renderBlockBody(body, block.md, node, block);
+}
+
+// ── A block that is as tall as what is in it ───────────────────────────────
+//
+// The box is dragged to a size and the text inside it is whatever length it is,
+// so the two disagree constantly: type three more words into a block sized to
+// two lines and the third line is behind `overflow: auto`, in a 90pt rectangle
+// on a page nobody scrolls inside. `fit` says the height is not the reader's to
+// choose — the words decide it, and the corner grip sets the WIDTH.
+//
+// ── Why the measurement takes the box apart first ──────────────────────────
+//
+// The obvious read is body.scrollHeight, and it can only ever make a block
+// TALLER: the body is a flex child stretched to whatever height the block has,
+// so once the box is bigger than the text, scrollHeight is the box and the block
+// can never come back down. Asking a stretched box how tall its contents are is
+// asking the wrong element. So the stretch is taken off for the length of one
+// synchronous measurement and put straight back — two forced layouts, on the few
+// blocks that asked for this, and never during a gesture.
+function fitBlockHeight(node, block) {
+  if (gestureLive || block.kind === PDF_BLOCK_IMAGE || !blockStyle(block).fit) return false;
+  const viewport = pdfPageViewport(block.page);
+  const body = node.querySelector(".pdf-block-body");
+  if (!viewport || !body) return false;
+  const scale = viewport.scale || 1;
+  // The bar, the borders — everything of the block that is not the body.
+  const chrome = node.offsetHeight - body.clientHeight;
+  body.style.flex = "none";
+  body.style.height = "auto";
+  const content = body.scrollHeight;
+  body.style.flex = "";
+  body.style.height = "";
+  const wanted = Math.max(PDF_BLOCK_MIN_HEIGHT, Math.round((chrome + content) / scale));
+  // A point of slack, because the round trip through points and back is not
+  // exact and a block that rewrote itself by a pixel on every paint would be an
+  // autosave and a sync push per repaint.
+  if (Math.abs(wanted - block.h) <= 1) return false;
+  queueFit(block.id, wanted);
+  return true;
+}
+
+// ── ...and why the write is a frame away ───────────────────────────────────
+//
+// fitBlockHeight is called from inside the paint, and writeBlocks calls
+// onBlocksChanged, which repaints. Writing where it is measured would therefore
+// re-enter the paint loop that is still running — from inside its own forEach —
+// on the way to a value the next pass agrees with anyway. Deferred by a frame it
+// is an ordinary change made from outside, and the map collapses a page of
+// blocks that all grew at once into one write, one autosave and one push.
+const pendingFits = new Map();
+let fitFrame = 0;
+
+function queueFit(id, height) {
+  pendingFits.set(id, height);
+  if (fitFrame) return;
+  fitFrame = requestAnimationFrame(() => {
+    fitFrame = 0;
+    const wanted = new Map(pendingFits);
+    pendingFits.clear();
+    if (gestureLive) return;
+    const blocks = documentBlocks();
+    let touched = false;
+    const next = blocks.map((entry) => {
+      const h = wanted.get(entry.id);
+      if (!h || Math.abs(h - entry.h) <= 1) return entry;
+      touched = true;
+      // The TOP edge is what stays still, which in a coordinate space whose y
+      // runs up the page means moving the origin — the same arithmetic the
+      // resize grip does, and for the same reason: a block that grew downwards
+      // from its own bottom edge would walk up the page as somebody typed.
+      return { ...entry, h, y: entry.y + (entry.h - h), at: Date.now() };
+    });
+    // Not undoable: this is the block agreeing with its own text, not a step the
+    // reader took. Ctrl+Z after typing should take back the typing.
+    if (touched) writeBlocks(next, { undoable: false });
+  });
 }
 
 // What each block body was last rendered FROM. A WeakMap rather than a dataset
@@ -381,12 +651,19 @@ const renderedMarkdown = new WeakMap();
 // rendered, and a late render must not put stale HTML back. `renderedMarkdown`
 // is the record of what this body is SUPPOSED to be showing, so a mismatch means
 // a newer render already owns it.
-async function renderBlockBody(body, md) {
+async function renderBlockBody(body, md, node = null, block = null) {
   try {
     await renderMarkdown(body, md);
     if (renderedMarkdown.get(body) !== md || !body.isConnected) return;
     await enhanceRenderedMarkdown(body);
     if (renderedMarkdown.get(body) !== md || !body.isConnected) return;
+    // The words are on the page now, so this is the first moment a block that
+    // follows its text can be measured. Before the images below, which is a
+    // compromise: a picture that has not decoded yet has no height to include,
+    // and hydrateLocalImages does not report when one arrives. The next paint
+    // catches it, and the alternative is a load listener per image on a path
+    // that repaints on every drag frame.
+    if (node && block) fitBlockHeight(node, block);
     // The block's own images, which reach here as recall-img: tokens when they
     // were added offline — the same hydrate paintDocumentBlocks does for the
     // image blocks beside them.
@@ -460,6 +737,7 @@ export function addDocumentBlock(pageNumber, at = null) {
     at: Date.now()
   };
   writeBlocks([...blocks, block]);
+  selectedId = block.id;
   paintDocumentBlocks(pageNumber);
   beginBlockEdit(block.id);
   return block;
@@ -519,6 +797,7 @@ export async function addDocumentImageBlock(pageNumber, file, at = null) {
     at: Date.now()
   };
   writeBlocks([...blocks, block]);
+  selectedId = block.id;
   paintDocumentBlocks(pageNumber);
   return block;
 }
@@ -571,8 +850,47 @@ function beginBlockEdit(id) {
     placeholder: isImage
       ? "What is in the picture — read out when it cannot be shown"
       : "Markdown — the same as a note",
+    kind: block.kind,
+    style: blockStyle(block),
+    // Live, and that is the point of putting the controls in the window at all:
+    // the block stays on the page behind the sheet (.pdf-block.is-editing keeps
+    // it lit rather than hiding it), so a fill or a size chosen here is seen on
+    // the paper where it will live, at the size it will be, rather than guessed
+    // at and checked after pressing Done.
+    onStyle: (patch) => writeBlockStyle(id, patch),
     onDone: (text) => writeBlockText(id, text)
   });
+}
+
+// ── Restyling ──────────────────────────────────────────────────────────────
+//
+// `patch` is whichever controls were touched, so a picker can send one key
+// without holding the other six.
+//
+// The write is the whole normalised bag or NO KEY AT ALL — see documentBlocks on
+// why a default style must never be written. Putting every control back where it
+// started genuinely removes the field, so a block that has been styled and
+// unstyled is the same record as one that never was.
+export function writeBlockStyle(id, patch) {
+  const blocks = documentBlocks();
+  const block = blocks.find((entry) => entry.id === id);
+  if (!block) return null;
+  const next = normalizeBlockStyle({ ...blockStyle(block), ...(patch || {}) });
+  const bare = isDefaultBlockStyle(next);
+  const was = blockStyle(block);
+  // Nothing to do only when the VALUES agree and the record already says so the
+  // same way — a block still carrying a bag of defaults from an older write has
+  // the same values and still owes the removal.
+  const sameValues = Object.keys(next).every((key) => next[key] === was[key]);
+  const sameShape = Boolean(block.style) === !bare;
+  if (sameValues && sameShape) return next;
+  writeBlocks(blocks.map((entry) => {
+    if (entry.id !== id) return entry;
+    const { style: _drop, ...rest } = entry;
+    return bare ? { ...rest, at: Date.now() } : { ...rest, style: next, at: Date.now() };
+  }));
+  repaintDocumentBlocks();
+  return next;
 }
 
 // One place that turns "the editor closed" into a write, whichever way it
@@ -620,8 +938,14 @@ function beginGesture(event, node, mode) {
   // same distance on the page at every zoom.
   const perPixel = 1 / (viewport.scale || 1);
   const start = { x: event.clientX, y: event.clientY };
+  // A block whose height follows its text is resized in one dimension: the grip
+  // still sets the width, and the words still set the height. A grip that
+  // dragged the height to a number the very next paint overwrote would be a
+  // control that visibly does not work.
+  const widthOnly = mode === "resize" && blockStyle(block).fit;
   let live = { ...block };
   let frame = 0;
+  gestureLive = true;
 
   const apply = () => { frame = 0; placeBlock(node, viewport, live); };
 
@@ -637,13 +961,14 @@ function beginGesture(event, node, mode) {
       // The grip is the bottom-right on screen, which is the bottom-right in
       // points too — so it grows the width and moves the origin DOWN.
       const w = Math.max(PDF_BLOCK_MIN_WIDTH, block.w + dx);
-      const h = Math.max(PDF_BLOCK_MIN_HEIGHT, block.h - dy);
+      const h = widthOnly ? block.h : Math.max(PDF_BLOCK_MIN_HEIGHT, block.h - dy);
       live = { ...block, w: Math.round(w), h: Math.round(h), y: Math.round(block.y + (block.h - h)) };
     }
     if (!frame) frame = requestAnimationFrame(apply);
   };
 
   const finish = () => {
+    gestureLive = false;
     if (frame) { cancelAnimationFrame(frame); frame = 0; }
     document.removeEventListener("pointermove", move);
     document.removeEventListener("pointerup", finish);
@@ -668,8 +993,14 @@ export function handleBlockPointerDown(event) {
   const node = event.target.closest?.(`.${PDF_BLOCK_CLASS}`);
   if (!node) {
     // A press anywhere else finishes an edit in progress, which is how every
-    // other editor in this app commits.
+    // other editor in this app commits — and puts down whatever was picked up,
+    // for the same reason: the keyboard must not still be pointing at a block
+    // the reader has visibly moved on from.
     if (editingId) commitBlockEdit();
+    // ...unless the press was inside the style popover, which floats OVER the
+    // page and is about the very block that is selected. Dismissing the
+    // selection there would close the popover on its own first press.
+    if (!event.target.closest?.(".pdf-block-style-pop")) selectBlock(null);
     return false;
   }
   const action = event.target.closest("[data-pdf-block-action]")?.dataset.pdfBlockAction;
@@ -680,13 +1011,177 @@ export function handleBlockPointerDown(event) {
   event.preventDefault();
   event.stopPropagation();
   const id = node.dataset.pdfBlock;
+  // Picked up by any press on it, whatever else that press goes on to do. This
+  // is what the keyboard verbs below are about, and it costs nothing to be wrong
+  // about — a selection is a ring around a box, not a mode.
+  selectBlock(id);
+  // Anything but pressing the style button again puts the popover away: it is
+  // anchored to ONE block and pinned to where that block was, so a press that
+  // moves the reader on to another block — or moves this one — leaves a panel
+  // hanging over the page describing something else.
+  if (action !== "style") closeBlockStylePopover();
   if (action === "edit") beginBlockEdit(id);
-  else if (action === "delete") {
-    writeBlocks(documentBlocks().filter((entry) => entry.id !== id), { removed: id });
-    repaintDocumentBlocks();
-  } else if (action === "drag" || action === "resize") {
+  else if (action === "style") openStyleFor(id, node);
+  else if (action === "delete") deleteBlock(id);
+  else if (action === "drag" || action === "resize") {
     commitBlockEdit();
     beginGesture(event, node, action);
   }
   return true;
+}
+
+// ── What the keyboard can do with the block it is pointing at ──────────────
+//
+// Everything below is one verb, exported for the key map in src/main.js — which
+// is where every other shortcut on this surface is already dispatched, and the
+// one place that can see the pen's claims on the same keys.
+
+export function selectedBlockId() {
+  return selectedId;
+}
+
+export function selectBlock(id) {
+  const next = id && documentBlocks().some((block) => block.id === id) ? id : null;
+  if (next === selectedId) return next;
+  selectedId = next;
+  if (!next) closeBlockStylePopover();
+  repaintDocumentBlocks();
+  return next;
+}
+
+export function deleteBlock(id = selectedId) {
+  if (!id) return false;
+  const blocks = documentBlocks();
+  if (!blocks.some((block) => block.id === id)) return false;
+  if (editingId === id) commitBlockEdit();
+  if (selectedId === id) { selectedId = null; closeBlockStylePopover(); }
+  writeBlocks(blocks.filter((entry) => entry.id !== id), { removed: id });
+  repaintDocumentBlocks();
+  return true;
+}
+
+// Offset, rather than placed exactly on top of the original: two identical boxes
+// at identical coordinates are one box as far as anybody looking at the page can
+// tell, and the copy is the one that ends up being dragged away from a stack
+// nobody knew was there. The same reason ink's paste offsets itself.
+const BLOCK_DUPLICATE_OFFSET = 14;
+
+export function duplicateBlock(id = selectedId) {
+  if (!id) return null;
+  const blocks = documentBlocks();
+  const block = blocks.find((entry) => entry.id === id);
+  if (!block) return null;
+  const copy = {
+    ...block,
+    id: freshBlockId(new Set(allDocumentBlocks().map((entry) => entry?.id))),
+    x: block.x + BLOCK_DUPLICATE_OFFSET,
+    y: block.y - BLOCK_DUPLICATE_OFFSET,
+    z: blocks.length,
+    at: Date.now()
+  };
+  writeBlocks([...blocks, copy]);
+  selectedId = copy.id;
+  repaintDocumentBlocks();
+  return copy;
+}
+
+// In points, and the same two steps a lassoed stroke moves by — a block and the
+// handwriting around it have to be nudgeable to the same places or they cannot
+// be lined up with each other.
+export const BLOCK_NUDGE_STEP = 1;
+
+export const BLOCK_NUDGE_STEP_COARSE = 10;
+
+export function nudgeBlock(dx, dy, { coarse = false, id = selectedId } = {}) {
+  if (!id || (!dx && !dy)) return false;
+  const step = coarse ? BLOCK_NUDGE_STEP_COARSE : BLOCK_NUDGE_STEP;
+  const blocks = documentBlocks();
+  if (!blocks.some((block) => block.id === id)) return false;
+  writeBlocks(blocks.map((entry) => (entry.id === id
+    // dy is given the way the SCREEN means it — down is positive — and turned
+    // over here, because every caller is a key press and no key press should
+    // have to know which way a PDF's y runs.
+    ? { ...entry, x: entry.x + (dx * step), y: entry.y - (dy * step), at: Date.now() }
+    : entry)));
+  repaintDocumentBlocks();
+  return true;
+}
+
+// ── Stacking ───────────────────────────────────────────────────────────────
+//
+// `z` has been on the record since blocks were written and has been set exactly
+// once, at creation, from the length of the list — so two blocks that overlap
+// have always been stacked in the order they were made, with no way to say
+// otherwise. This is that way: the pressed block swaps places with its nearest
+// neighbour in the stack, which is what "bring it forward" means and is stable
+// in a way that "z += 1" is not.
+export function restackBlock(direction, id = selectedId) {
+  if (!id) return false;
+  const blocks = documentBlocks();
+  const order = [...blocks].sort((a, b) => (a.z - b.z) || (a.at - b.at));
+  const index = order.findIndex((block) => block.id === id);
+  const swap = index + (direction > 0 ? 1 : -1);
+  if (index < 0 || swap < 0 || swap >= order.length) return false;
+  [order[index], order[swap]] = [order[swap], order[index]];
+  const z = new Map(order.map((block, index) => [block.id, index]));
+  writeBlocks(blocks.map((entry) => (entry.z === z.get(entry.id)
+    ? entry
+    : { ...entry, z: z.get(entry.id), at: Date.now() })));
+  repaintDocumentBlocks();
+  return true;
+}
+
+export function editBlock(id = selectedId) {
+  if (!id) return false;
+  beginBlockEdit(id);
+  return true;
+}
+
+// The style controls, over the block rather than in the editor window. The same
+// bar the sheet carries (./block-style-bar.js) — one builder, two homes, which is
+// the arrangement src/notes/note-editor-kit.js already uses to serve three.
+function openStyleFor(id, node) {
+  // A toggle, because the button stays under the reader's finger while the panel
+  // it opened is up and pressing it again is the plainest way to say "done".
+  if (closeBlockStylePopover() && styleOpenFor === id) { styleOpenFor = null; return; }
+  const block = documentBlocks().find((entry) => entry.id === id);
+  if (!block) return;
+  styleOpenFor = id;
+  commitBlockEdit();
+  openBlockStylePopover({
+    anchor: node,
+    kind: block.kind,
+    style: blockStyle(block),
+    onChange: (patch) => writeBlockStyle(id, patch)
+  });
+}
+
+// ── Which page, and where on it, a point on the glass is ───────────────────
+//
+// For the two callers that have a pointer and want a block there: the
+// double-click that makes one, and a picture dropped or pasted onto the page.
+// Both used to be able to say only "the middle of whatever page is in view",
+// which is how a multi-file drop put four photographs in one pile.
+export function pdfPointAt(clientX, clientY) {
+  const pageEl = document.elementFromPoint(clientX, clientY)?.closest?.(".pdf-page[data-page-number]");
+  const page = Number(pageEl?.dataset.pageNumber);
+  if (!page) return null;
+  const viewport = pdfPageViewport(page);
+  const box = pageEl.getBoundingClientRect();
+  if (!viewport || !box.width || !box.height) return null;
+  const [x, y] = viewport.convertToPdfPoint(clientX - box.left, clientY - box.top);
+  return { page, x, y };
+}
+
+// A double-click on bare paper makes a block there and opens it. Returns true
+// when it did, so the caller knows the press was spent.
+//
+// Guarded on the press NOT being inside a block, which is the whole of the rule:
+// a double-click on a block is a reader selecting a word inside it, and on the
+// deck's other paper it is a reader selecting a word of somebody's preprint.
+// src/main.js is what decides this only happens on the Write tab.
+export function addBlockAtPoint(clientX, clientY) {
+  const at = pdfPointAt(clientX, clientY);
+  if (!at) return false;
+  return Boolean(addDocumentBlock(at.page, at));
 }

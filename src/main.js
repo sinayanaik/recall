@@ -117,10 +117,28 @@ import { closeDocumentToc, documentOutlineEntries, initDocumentOutlineFolding, i
 import { deleteRemoteDocument } from "./documents/pdf-store.js?v=__BUILD__";
 import { currentPdfDocument, documentFittedWidth, fitDocumentToWidth, initDocumentPinchZoom, isDocumentFitWidth, openDocumentIsCurrent, openDocumentView, reattachDocument, relayoutDocument, repaintOpenDocumentPages, scheduleDocumentPositionSave, scrollToDocumentPage, refreshDocumentPaperForTheme, setDocumentAttachHandler, setDocumentOpenedHook, setDocumentPagePaintedHook, setNotebookStartHandler, togglePdfInvert, updatePageIndicator, zoomDocument } from "./documents/pdf-view.js?v=__BUILD__";
 import { adoptDocumentInk, canRedoInk, canUndoInk, copyInkSelection, cutInkSelection, duplicateInkSelection, hasInkClipboard, initDocumentInk, inkMarkImageMarkdown, inkSelectionCount, isInkMarkId, nudgeInkSelection, paintDocumentInk, pasteInkSelection, redoInk, repaintDocumentInk, setInkChangedHandler, undoInk } from "./documents/pdf-ink.js?v=__BUILD__";
-import { addHandwritingImage, enterHandwritingView, refreshHandwritingBoard, runHandwritingMenuAction, startHandwritingNotebook } from "./handwriting/board.js?v=__BUILD__";
-import { commitBlockEdit, handleBlockPointerDown, paintDocumentBlocks, repaintDocumentBlocks, setBlocksChangedHandler } from "./documents/pdf-blocks.js?v=__BUILD__";
+import { addHandwritingImage, enterHandwritingView, isHandwritingView, refreshHandwritingBoard, runHandwritingMenuAction, startHandwritingNotebook } from "./handwriting/board.js?v=__BUILD__";
+import { PDF_BLOCK_CLASS } from "./core/constants.js?v=__BUILD__";
+import { closeBlockStylePopover, isBlockStylePopoverOpen } from "./documents/block-style-bar.js?v=__BUILD__";
+import { addBlockAtPoint, canRedoBlocks, canUndoBlocks, commitBlockEdit, deleteBlock, duplicateBlock, editBlock, handleBlockPointerDown, nudgeBlock, paintDocumentBlocks, pdfPointAt, redoBlocks, repaintDocumentBlocks, restackBlock, selectBlock, selectedBlockId, setBlocksChangedHandler, undoBlocks } from "./documents/pdf-blocks.js?v=__BUILD__";
 import { applyInkRailPreference, initInkRail, refreshInkRail } from "./ui/ink-rail.js?v=__BUILD__";
 import { INK_NUDGE_STEP, INK_NUDGE_STEP_COARSE } from "./render/ink-engine.js?v=__BUILD__";
+
+// ── Which of the two undo rings on this surface Ctrl+Z means ───────────────
+//
+// A page of handwriting now has two: the pen's, and the blocks'. Each knows only
+// its own history, so each would happily claim the key — and the reader would
+// get whichever branch happened to be written first, which is how somebody ends
+// up undoing a stroke they cannot see instead of the block they just deleted.
+// The comment above the pen's own branch records that exact fault from the last
+// time this surface grew a second claim on Ctrl+Z.
+//
+// So the two are ordered by what actually happened last. Both handlers already
+// meet in this file, so this is the one place that can see both; and each ring
+// still falls through when it is empty, so the key reaches the other one — and
+// then the note and card stacks — rather than being swallowed by whichever moved
+// last.
+let lastDocumentEdit = "ink";
 
 // Which way each arrow moves a lassoed selection, in model units before the step
 // is applied. A table rather than four branches in the keydown handler, which is
@@ -1287,9 +1305,28 @@ onDomReady(() => {
   // this wrong is a pen that moves a block and draws a line across the page in
   // the same gesture.
   el.documentView?.addEventListener("pointerdown", (event) => { handleBlockPointerDown(event); }, true);
+  // ── A double-click on bare paper makes a block there ─────────────────────
+  //
+  // The only way to make one was + Text in the rail, which drops it in the
+  // middle of whichever page is in view — so writing a label beside something
+  // was: press the button, then drag the block from the centre of the page to
+  // the thing it is about. Every canvas-shaped surface in the world answers a
+  // double-click on empty space by making something there, and this one has the
+  // point already (pdfPointAt).
+  //
+  // The Write tab only, and that is not caution: on the deck's other paper a
+  // double-click is somebody selecting a word of a preprint, and inside a block
+  // it is somebody selecting a word of their own text. Both must keep it.
+  el.documentView?.addEventListener("dblclick", (event) => {
+    if (!isHandwritingView()) return;
+    if (event.target.closest(`.${PDF_BLOCK_CLASS}`)) return;
+    if (window.getSelection?.()?.toString()) return;
+    if (addBlockAtPoint(event.clientX, event.clientY)) event.preventDefault();
+  });
   // A block moved, typed into or deleted: repaint the pages it is on, and let
   // the Write tab's controls re-read what there is to act on.
   setBlocksChangedHandler(() => {
+    lastDocumentEdit = "blocks";
     repaintDocumentBlocks();
     refreshHandwritingBoard();
   });
@@ -1302,7 +1339,10 @@ onDomReady(() => {
   // already fires notifyHighlightsChanged for everything else that cares — the
   // pane, the badges and the printed page notes — so doing it again here would
   // rebuild all three twice for every stroke.
-  setInkChangedHandler(refreshInkRail);
+  setInkChangedHandler(() => {
+    lastDocumentEdit = "ink";
+    refreshInkRail();
+  });
 
   // ── A sync rewrote the deck the reader is standing in ────────────────────
   //
@@ -2492,12 +2532,79 @@ document.addEventListener("keydown", (event) => {
     event.shiftKey ? redoInkSheet() : undoInkSheet();
     return;
   }
+  // ── ...and the other ring on the same surface ────────────────────────────
+  //
+  // Before the pen's, and only when the blocks are what moved last (or when the
+  // pen has nothing left to take back). See lastDocumentEdit for why the two are
+  // ordered at all rather than each grabbing the key.
+  if ((event.ctrlKey || event.metaKey) && (event.key === "z" || event.key === "Z")
+      && onDocumentSurface() && !event.target.matches("input, textarea")) {
+    const wantRedo = event.shiftKey;
+    const blocksCan = wantRedo ? canRedoBlocks() : canUndoBlocks();
+    const inkCan = wantRedo ? canRedoInk() : canUndoInk();
+    if (blocksCan && (lastDocumentEdit === "blocks" || !inkCan)) {
+      event.preventDefault();
+      wantRedo ? redoBlocks() : undoBlocks();
+      return;
+    }
+  }
   if ((event.ctrlKey || event.metaKey) && (event.key === "z" || event.key === "Z")
       && onDocumentSurface() && !event.target.matches("input, textarea")
       && (event.shiftKey ? canRedoInk() : canUndoInk())) {
     event.preventDefault();
     event.shiftKey ? redoInk() : undoInk();
     return;
+  }
+  // ── The block the reader picked up ───────────────────────────────────────
+  //
+  // A press on a block picks it up (handleBlockPointerDown), and this is what
+  // being picked up is FOR: the five things a pointer is bad at.
+  // Delete, because dragging a block to the bin is not a gesture that exists;
+  // the arrows, because the last two points of lining a caption up with a figure
+  // are a thing to tap out rather than wrestle a finger into; Ctrl+D, because
+  // the alternative is retyping it; [ and ], because two overlapping blocks have
+  // been stacked in the order they were made since blocks were written, with no
+  // way at all to say otherwise; and Enter, because the ✎ is a 20px target.
+  //
+  // Ahead of the pen's own copy/duplicate/arrow keys, and safe to be: any press
+  // on the paper — which is how a lasso starts — puts the block down first (see
+  // handleBlockPointerDown), so the two selections cannot both be live.
+  if (onDocumentSurface() && !event.target.matches("input, textarea")) {
+    if (event.key === "Escape" && (isBlockStylePopoverOpen() || selectedBlockId())) {
+      event.preventDefault();
+      closeBlockStylePopover();
+      selectBlock(null);
+      return;
+    }
+    if (selectedBlockId()) {
+      const bare = !event.ctrlKey && !event.metaKey && !event.altKey;
+      if (bare && (event.key === "Delete" || event.key === "Backspace")) {
+        event.preventDefault();
+        deleteBlock();
+        return;
+      }
+      if (bare && event.key === "Enter") {
+        event.preventDefault();
+        editBlock();
+        return;
+      }
+      if (bare && (event.key === "[" || event.key === "]")) {
+        event.preventDefault();
+        restackBlock(event.key === "]" ? 1 : -1);
+        return;
+      }
+      if (bare && INK_NUDGE_KEYS[event.key]) {
+        event.preventDefault();
+        const [dx, dy] = INK_NUDGE_KEYS[event.key];
+        nudgeBlock(dx, dy, { coarse: event.shiftKey });
+        return;
+      }
+      if ((event.ctrlKey || event.metaKey) && String(event.key).toLowerCase() === "d") {
+        event.preventDefault();
+        duplicateBlock();
+        return;
+      }
+    }
   }
   // ── Copy, cut and paste, where the pen is ────────────────────────────────
   //
@@ -2973,11 +3080,26 @@ function handwritingImageDrop(event, files) {
   const list = Array.from(files || []);
   if (!list.length) return false;
   event.preventDefault();
+  // Where the pointer was, in the page's own points. A paste has no coordinates
+  // of its own, so it falls back to the middle of the page in view — which is
+  // where every one of these used to land, drop included.
+  const at = Number.isFinite(event.clientX) && Number.isFinite(event.clientY)
+    ? pdfPointAt(event.clientX, event.clientY)
+    : null;
   // One at a time and in order, so a multi-file drop does not stack every
-  // picture in the middle of the page on top of the last.
-  list.reduce((chain, file) => chain.then(() => addHandwritingImage(file)), Promise.resolve());
+  // picture in the middle of the page on top of the last — and each one a step
+  // further down and to the right, because four photographs dropped together
+  // land on one point and the pile looks like a single picture until it is
+  // dragged apart.
+  list.reduce((chain, file, index) => chain.then(() => addHandwritingImage(
+    file,
+    at ? { ...at, x: at.x + (index * IMAGE_DROP_CASCADE), y: at.y - (index * IMAGE_DROP_CASCADE) } : null
+  )), Promise.resolve());
   return true;
 }
+
+// In PDF points, and the same offset a duplicated block takes.
+const IMAGE_DROP_CASCADE = 14;
 
 // Convert rich text/HTML to Markdown on paste in all textareas
 document.addEventListener("paste", (event) => {

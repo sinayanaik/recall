@@ -65,6 +65,15 @@ const SECTIONS = [
 // Anything appearing in styles/ that is neither a slice nor listed here is
 // still a failure.
 const POST_SPLIT = {
+  "58-block-style.css":
+    "What a block on a page of handwriting looks like: the eight fills (each a " +
+    "tint of the theme's own card, so eight colours work across ten themes with " +
+    "no per-theme table), the three frames, the type multiplier, the four faces, " +
+    "alignment, the ring on a selected block, and the two places the controls " +
+    "themselves are arranged — a popover over the page and a row in the editor " +
+    "window. The single look it replaces is in 53-handwriting.css, which is a " +
+    "post-split file too; these are separate for the same reason the pen's " +
+    "palette is not in 01-tokens.css.",
   "57-note-link-browser.css":
     "The [[ picker as a BROWSER rather than a search box: the breadcrumb, the " +
     "section headings, the folder rows and the marks over the characters a " +
