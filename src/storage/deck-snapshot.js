@@ -286,7 +286,23 @@ export function loadDeckSnapshot(payload, titleHint = "", append = false, { keep
     if (!keepPlace) {
       queueMicrotask(() => {
         const resumeAt = betterReadingPosition(state.meta?.readingPosition, currentDeckKey());
-        if (resumeAt) {
+        // ── ...but it must not choose the tab ──────────────────────────────
+        //
+        // scheduleNoteJump's document branch switches to the Document view by
+        // itself when the anchor carries a pdfPage — which was right while the
+        // tab a deck opened on was derived from its contents, and is wrong now
+        // that the reader's own last choice decides. A paper deck left on the
+        // cards was dragged onto the paper a moment after opening, by the
+        // resume rather than by the loader, which is a hard thing to see and
+        // exactly what the check for this caught.
+        //
+        // Nothing is lost by skipping it: a document position is resumed by
+        // landOnReadingPosition when that document opens, which is the path
+        // every other route onto the surface already takes.
+        const documentAnchor = Number.isFinite(resumeAt?.pdfPage);
+        if (documentAnchor && !onDocumentSurface()) {
+          maybePromptBookmarkJump();
+        } else if (resumeAt) {
           scheduleNoteJump(resumeAt, { flash: false, smooth: false, resume: true, onSettled: () => maybePromptBookmarkJump() });
         } else {
           maybePromptBookmarkJump();

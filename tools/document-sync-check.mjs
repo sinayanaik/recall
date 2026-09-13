@@ -439,6 +439,73 @@ try {
       return (r?.meta?.readingPosition?.offset === 900 && back?.meta?.readingPosition?.offset === 10)
         || `kept ${r?.meta?.readingPosition?.offset} then ${back?.meta?.readingPosition?.offset}`;
     });
+
+    // ── ...and the paper and the notebook each keep their own ──────────────
+    //
+    // A deck has TWO documents with two page counts, and they had one
+    // readingPosition between them: scrolling the PDF wrote over the notebook's
+    // page and scrolling the notebook wrote over the paper's, so a cold open
+    // landed on whichever surface was scrolled last. The sibling keys are the
+    // fix, and this is the case that fails under the obvious alternative — one
+    // nested bag under readingPosition — because mergeDeckMeta settles that key
+    // by its single `at` and does not look inside the anchor.
+    must("two devices moving DIFFERENT documents' positions do not lose each other's", () => {
+      // The laptop read the paper; the phone wrote in the notebook.
+      const cloud = { notes: "", meta: { readingPositionPdf: { offset: 12, pdfPage: 12, at: 300 } } };
+      const phone = { notes: "", meta: { readingPositionNotebook: { offset: 4, pdfPage: 4, at: 200 } } };
+      const r = docSync.reconcileDeckBeforePush(phone, cloud);
+      return (r?.meta?.readingPositionPdf?.pdfPage === 12 && r?.meta?.readingPositionNotebook?.pdfPage === 4)
+        || `pdf=${JSON.stringify(r?.meta?.readingPositionPdf)} notebook=${JSON.stringify(r?.meta?.readingPositionNotebook)}`;
+    });
+    must("...and each is settled by its own stamp, exactly as the shared one is", () => {
+      const cloud = { notes: "", meta: { readingPositionNotebook: { offset: 9, at: 300 } } };
+      const older = docSync.reconcileDeckBeforePush({ notes: "", meta: { readingPositionNotebook: { offset: 1, at: 100 } } }, cloud);
+      const newer = docSync.reconcileDeckBeforePush({ notes: "", meta: { readingPositionNotebook: { offset: 1, at: 400 } } }, cloud);
+      return (older?.meta?.readingPositionNotebook?.offset === 9 && newer?.meta?.readingPositionNotebook?.offset === 1)
+        || `kept ${older?.meta?.readingPositionNotebook?.offset} then ${newer?.meta?.readingPositionNotebook?.offset}`;
+    });
+    // The rule that is easy to lose: a key with no entry in mergeDeckMeta's loop
+    // falls through to `prefer`, which on the push is "local" — so the pushing
+    // device would always win, silently, which is the fault that loop exists to
+    // fix. Asked by giving the CLOUD the only copy.
+    must("...and a device with no position of its own does not erase the other's", () => {
+      const cloud = { notes: "", meta: { readingPositionPdf: { offset: 20, at: 500 }, readingPositionNotebook: { offset: 3, at: 500 } } };
+      const r = docSync.reconcileDeckBeforePush({ notes: "", meta: {} }, cloud);
+      return (r?.meta?.readingPositionPdf?.offset === 20 && r?.meta?.readingPositionNotebook?.offset === 3)
+        || `got ${JSON.stringify(r?.meta)}`;
+    });
+    must("...and a deck that has never had one grows no empty key", () => {
+      const r = docSync.reconcileDeckBeforePush({ notes: "", meta: {} }, { notes: "", meta: {} });
+      return (!("readingPositionPdf" in (r?.meta || {})) && !("readingPositionNotebook" in (r?.meta || {})))
+        || `got ${JSON.stringify(r?.meta)}`;
+    });
+
+    // ── The rule two places now share ──────────────────────────────────────
+    //
+    // deckSnapshot() takes meta.readingPosition from the in-memory NOTES anchor
+    // whenever the deck key matches — and nothing clears that anchor when the
+    // reader leaves the notes, so a deck read in the notes and then in the
+    // document kept writing the stale notes anchor over the document position on
+    // every autosave, and so on every sync. Settled by `at` now, through the
+    // rule betterReadingPosition already applied between the two stores.
+    {
+      const readingPosition = await load("src/notes/reading-position.js");
+      must("the later of two positions wins", () =>
+        readingPosition.newerReadingPosition({ offset: 1, at: 100 }, { offset: 2, at: 200 })?.offset === 2
+        || "the older position won");
+      must("...whichever side it is given on", () =>
+        readingPosition.newerReadingPosition({ offset: 2, at: 200 }, { offset: 1, at: 100 })?.offset === 2
+        || "the answer depended on argument order");
+      must("...a position with no stamp loses to one that has one", () =>
+        readingPosition.newerReadingPosition({ offset: 1 }, { offset: 2, at: 1 })?.offset === 2
+        || "an unstamped position beat a stamped one");
+      must("...and either one alone is the answer", () =>
+        (readingPosition.newerReadingPosition(null, { offset: 5, at: 1 })?.offset === 5
+          && readingPosition.newerReadingPosition({ offset: 6, at: 1 }, null)?.offset === 6
+          && readingPosition.newerReadingPosition(null, null) === null)
+        || "a lone position was dropped");
+    }
+
     // ── A bookmark on a paper is the same key, a different shape ──────────
     //
     // The bookmark stopped being notes-only when the sync took over saving it:

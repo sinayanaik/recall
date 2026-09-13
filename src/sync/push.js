@@ -80,6 +80,12 @@ export class DeckRowMovedError extends Error {
     super(`Deck ${deckId} was written by another device between the read and the push`);
     this.name = "DeckRowMovedError";
     this.deckRowMoved = true;
+    // A code, so withRetry can never read this as transient. Its second test is
+    // `!error.code && /network|connection|socket|…/`, which today's message does
+    // not match — but a message is prose and this is a contract, and replaying a
+    // compare-and-swap that has already been told the row moved would be a retry
+    // that can only fail again.
+    this.code = "DECK_ROW_MOVED";
   }
 }
 

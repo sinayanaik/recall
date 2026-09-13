@@ -52,7 +52,23 @@ const ACCEPTED_DIFFS = {
     "for the same reason — highlightsMerged, highlightsRemovedHere and " +
     "highlightNotesMerged — since a sync whose only news is that a paper's " +
     "annotations merged is now something the report can name rather than " +
-    "something it had to call 'notes edited'."
+    "something it had to call 'notes edited'. " +
+    "And seven more, all of them the same argument one more time: isNoOpStats is " +
+    "DERIVED from describeSyncStats, so a change with no sentence is a change the " +
+    "sync calls 'already up to date' over a snapshot it has just rewritten on " +
+    "disk. blocksMerged and blocksRemovedHere are the typed blocks dropped onto a " +
+    "paper's pages; documentAttached, documentPagesChanged and documentRemovedHere " +
+    "are the paper itself arriving, having pages added or torn out on another " +
+    "device, or going away — three flags and not one, because they are three " +
+    "different pieces of news and the middle one is what a notebook's reader sees " +
+    "most. notesMerged says two devices' notes were put together by the three-way " +
+    "merge rather than one being chosen, which is worth saying out loud: a merge " +
+    "nobody was told about is indistinguishable from a sync that did nothing until " +
+    "the reader notices a sentence they did not write. pushRetried counts the " +
+    "pushes that lost a race with another device and re-merged instead of " +
+    "overwriting it — zero on every ordinary sync, and the only evidence there " +
+    "will ever be that concurrent editing is being handled rather than silently " +
+    "resolved in somebody's favour."
 };
 
 // Chrome comes from tools/browser.mjs, which drives it over the DevTools

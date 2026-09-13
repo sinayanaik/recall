@@ -469,6 +469,13 @@ try {
   await seedDeck({ localId: "ld_deep", deckId: "cloud-deep", title: "Derivatives", category: "Math/Calculus/Rules", notes: "chain rule", cards: [{ id: "d0", question: "d/dx x^2", answer: "2x" }], updatedAt: T0 });
   folders.addKnownFolder("Papers/Unread");
   readingPosition.writeStoredReadingPosition(JSON.stringify(["cloud-paper", "ld_paper", null]), { offset: 900, text: "telophase", at: T0 + 9000 });
+  // ...and one per DOCUMENT SLOT, which is the shape a position has taken since
+  // a deck grew two documents. A fourth element on the same JSON array rather
+  // than a suffixed string, precisely so that splitDeckKey can still parse it:
+  // it drops what it cannot parse, silently, so a pipe-joined key would have
+  // stopped being backed up and nobody would have found out until a restore.
+  readingPosition.writeStoredReadingPosition(JSON.stringify(["cloud-paper", "ld_paper", null, "doc"]), { offset: 3, pdfPage: 3, ratio: 0.25, at: T0 + 9100 });
+  readingPosition.writeStoredReadingPosition(JSON.stringify(["cloud-paper", "ld_paper", null, "notebook"]), { offset: 2, pdfPage: 2, ratio: 0.5, at: T0 + 9200 });
 
   const archiveBytes = await takeBackup();
 
@@ -581,6 +588,28 @@ try {
     const key = libraryState.buildDeckKey({ deckId: "cloud-paper", localDeckId: paper.id, folderKey: null });
     const stored = readingPosition.readStoredReadingPosition(key);
     return stored?.offset === 900 || `no position under ${key} — stored keys are ${JSON.stringify(Object.keys(readingPosition.readAllReadingPositions()))}`;
+  });
+
+  await must("...and so does each document slot's own position", () => {
+    const paper = localLibrary.readLocalDeckIndex().find((deck) => deck.title === "Mitosis");
+    const doc = readingPosition.readStoredReadingPosition(
+      libraryState.buildDeckKey({ deckId: "cloud-paper", localDeckId: paper.id, folderKey: null, slot: "doc" }));
+    const notebook = readingPosition.readStoredReadingPosition(
+      libraryState.buildDeckKey({ deckId: "cloud-paper", localDeckId: paper.id, folderKey: null, slot: "notebook" }));
+    // The two must come back DIFFERENT: one shared number for both documents is
+    // the fault the slot exists to fix, so a restore that collapsed them would
+    // pass a check that only asked whether something came back.
+    return (doc?.pdfPage === 3 && notebook?.pdfPage === 2)
+      || `doc=${JSON.stringify(doc)} notebook=${JSON.stringify(notebook)}`;
+  });
+
+  await must("...while a three-element key from an older archive still restores", () => {
+    const paper = localLibrary.readLocalDeckIndex().find((deck) => deck.title === "Mitosis");
+    const key = libraryState.buildDeckKey({ deckId: "cloud-paper", localDeckId: paper.id, folderKey: null });
+    // buildDeckKey must append nothing when there is no slot, or every key
+    // already on a device stops matching what wrote it.
+    return key === JSON.stringify(["cloud-paper", paper.id, null])
+      || `built ${key}`;
   });
 
   await must("restoring the same archive twice changes nothing the second time", async () => {
