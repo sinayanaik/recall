@@ -117,10 +117,9 @@ import { closeDocumentToc, documentOutlineEntries, initDocumentOutlineFolding, i
 import { deleteRemoteDocument } from "./documents/pdf-store.js?v=__BUILD__";
 import { currentPdfDocument, documentFittedWidth, fitDocumentToWidth, initDocumentPinchZoom, isDocumentFitWidth, openDocumentIsCurrent, openDocumentView, reattachDocument, relayoutDocument, repaintOpenDocumentPages, scheduleDocumentPositionSave, scrollToDocumentPage, refreshDocumentPaperForTheme, setDocumentAttachHandler, setDocumentOpenedHook, setDocumentPagePaintedHook, setNotebookStartHandler, togglePdfInvert, updatePageIndicator, zoomDocument } from "./documents/pdf-view.js?v=__BUILD__";
 import { adoptDocumentInk, canRedoInk, canUndoInk, copyInkSelection, cutInkSelection, duplicateInkSelection, hasInkClipboard, initDocumentInk, inkMarkImageMarkdown, inkSelectionCount, isInkMarkId, nudgeInkSelection, paintDocumentInk, pasteInkSelection, redoInk, repaintDocumentInk, setInkChangedHandler, undoInk } from "./documents/pdf-ink.js?v=__BUILD__";
-import { addHandwritingImage, enterHandwritingView, isHandwritingView, refreshHandwritingBoard, runHandwritingMenuAction, startHandwritingNotebook } from "./handwriting/board.js?v=__BUILD__";
-import { PDF_BLOCK_CLASS } from "./core/constants.js?v=__BUILD__";
+import { addHandwritingImage, enterHandwritingView, refreshHandwritingBoard, runHandwritingMenuAction, startHandwritingNotebook } from "./handwriting/board.js?v=__BUILD__";
 import { closeBlockStylePopover, isBlockStylePopoverOpen } from "./documents/block-style-bar.js?v=__BUILD__";
-import { addBlockAtPoint, canRedoBlocks, canUndoBlocks, commitBlockEdit, deleteBlock, duplicateBlock, editBlock, handleBlockPointerDown, nudgeBlock, paintDocumentBlocks, pdfPointAt, redoBlocks, repaintDocumentBlocks, restackBlock, selectBlock, selectedBlockId, setBlocksChangedHandler, undoBlocks } from "./documents/pdf-blocks.js?v=__BUILD__";
+import { canRedoBlocks, canUndoBlocks, commitBlockEdit, deleteBlock, duplicateBlock, editBlock, handleBlockPointerDown, nudgeBlock, paintDocumentBlocks, pdfPointAt, redoBlocks, repaintDocumentBlocks, restackBlock, selectBlock, selectedBlockId, setBlocksChangedHandler, undoBlocks } from "./documents/pdf-blocks.js?v=__BUILD__";
 import { applyInkRailPreference, initInkRail, refreshInkRail } from "./ui/ink-rail.js?v=__BUILD__";
 import { INK_NUDGE_STEP, INK_NUDGE_STEP_COARSE } from "./render/ink-engine.js?v=__BUILD__";
 
@@ -1305,24 +1304,15 @@ onDomReady(() => {
   // this wrong is a pen that moves a block and draws a line across the page in
   // the same gesture.
   el.documentView?.addEventListener("pointerdown", (event) => { handleBlockPointerDown(event); }, true);
-  // ── A double-click on bare paper makes a block there ─────────────────────
+  // ── A double-click used to make a block on bare paper — and does not ────
   //
-  // The only way to make one was + Text in the rail, which drops it in the
-  // middle of whichever page is in view — so writing a label beside something
-  // was: press the button, then drag the block from the centre of the page to
-  // the thing it is about. Every canvas-shaped surface in the world answers a
-  // double-click on empty space by making something there, and this one has the
-  // point already (pdfPointAt).
-  //
-  // The Write tab only, and that is not caution: on the deck's other paper a
-  // double-click is somebody selecting a word of a preprint, and inside a block
-  // it is somebody selecting a word of their own text. Both must keep it.
-  el.documentView?.addEventListener("dblclick", (event) => {
-    if (!isHandwritingView()) return;
-    if (event.target.closest(`.${PDF_BLOCK_CLASS}`)) return;
-    if (window.getSelection?.()?.toString()) return;
-    if (addBlockAtPoint(event.clientX, event.clientY)) event.preventDefault();
-  });
+  // Writing with a pen is a great many quick, close-together taps (dotting an
+  // "i", crossing a "t"), and the browser's own dblclick synthesis does not
+  // know the difference between two of those and two deliberate clicks. It fired
+  // mid-stroke and popped the block editor open under the nib, which is a far
+  // worse cost than the one press this saved. + Text in the rail is the door
+  // again — see addDocumentBlock, called from there.
+
   // A block moved, typed into or deleted: repaint the pages it is on, and let
   // the Write tab's controls re-read what there is to act on.
   setBlocksChangedHandler(() => {

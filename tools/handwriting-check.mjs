@@ -1208,11 +1208,9 @@ try {
     const box = pageEl.getBoundingClientRect();
     const record = (id) => ({ ...(api.state.meta.pdfBlocks || []).find((b) => b.id === id) });
 
-    // ── Made where the pointer is ────────────────────────────────────────
-    //
-    // Somewhere inside the page AND inside the window — the page is taller than
-    // the viewport, so its own box is not enough — and on bare paper rather than
-    // on top of the block the case above left behind.
+    // A point on bare paper — inside the page AND inside the window, since the
+    // page is taller than the viewport — used below for a stroke made after the
+    // block exists, to ask which of the two undo rings a keystroke there means.
     const top = Math.max(box.top, 0);
     const bottom = Math.min(box.bottom, window.innerHeight);
     let spot = null;
@@ -1223,28 +1221,33 @@ try {
       }
       if (spot) break;
     }
-    const had = new Set(api.documentBlocks().map((b) => b.id));
-    const wanted = api.pdfPointAt(spot.x, spot.y);
-    view.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true, clientX: spot.x, clientY: spot.y }));
+
+    // ── Made at a point on the page ──────────────────────────────────────
+    //
+    // addDocumentBlock is what + Text in the rail calls, and what a double-click
+    // on bare paper used to call as well — that door is shut now: writing with a
+    // pen is a great many quick, close-together taps, and the browser's own
+    // dblclick synthesis cannot tell two of those from two deliberate clicks. It
+    // fired mid-stroke and popped this very editor open under the nib.
+    const made = api.addDocumentBlock(pageNumber, api.pdfPointAt(spot.x, spot.y));
     await settle(500);
-    const made = api.documentBlocks().find((b) => !had.has(b.id)) || null;
     const sheet = document.getElementById("pdfBlockEditor");
     const openedOnIt = Boolean(sheet && !sheet.hidden);
-    // The style row is in the WINDOW as well, and outside the kit — which is the
-    // whole of "I pressed Preview and there was nothing there to style with".
+    // The style controls are in the WINDOW as well, and outside the kit — which
+    // is the whole of "I pressed Preview and there was nothing there to style
+    // with". And they are SHORT: the panel was seven rows of pills on screen at
+    // once, so what is asserted is the shape that replaced it — a visible tier
+    // of three things, and everything else behind one fold that starts shut.
+    const bar = sheet?.querySelector(".pdf-block-editor-style .bstyle");
     const rowInSheet = {
-      rows: sheet?.querySelectorAll(".pdf-block-editor-style .bstyle-row").length || 0,
-      outsideKit: !sheet?.querySelector(".note-editor-kit .bstyle")
+      present: Boolean(bar),
+      outsideKit: !sheet?.querySelector(".note-editor-kit .bstyle"),
+      visible: bar ? [...bar.children].filter((child) => child.tagName !== "DETAILS").length : 0,
+      foldedShut: bar?.querySelector(".bstyle-more")?.open === false,
+      inTheFold: bar?.querySelectorAll(".bstyle-more .bstyle-row").length || 0
     };
     sheet?.querySelector(".pdf-block-editor-done")?.click();
     await settle(300);
-    // Centred on the press, so the comparison is against the middle of the box —
-    // and against the middle of the PAGE, which is where every one of these used
-    // to land whatever the reader was looking at.
-    const centre = made ? { x: made.x + (made.w / 2), y: made.y + (made.h / 2) } : null;
-    const pageMiddle = {
-      x: (pageEl && api.pdfPageViewport(pageNumber)) ? (api.pdfPageViewport(pageNumber).viewBox[2] - api.pdfPageViewport(pageNumber).viewBox[0]) / 2 : 0
-    };
 
     const node = () => document.querySelector('[data-pdf-block="' + made.id + '"]');
     const plain = {
@@ -1253,7 +1256,7 @@ try {
     };
 
     // ── Styled ───────────────────────────────────────────────────────────
-    api.writeBlockStyle(made.id, { fill: "yellow", size: "xl", align: "center", frame: "none", ink: "red" });
+    api.writeBlockStyle(made.id, { fill: "yellow", size: 28, align: "center", frame: "none", ink: "red" });
     await settle(300);
     const styledNode = node();
     const bodyStyle = getComputedStyle(styledNode.querySelector(".pdf-block-body"));
@@ -1282,7 +1285,9 @@ try {
 
     // Every control back where it started removes the key rather than storing a
     // bag of defaults on a record that is re-sent whole on every push.
-    api.writeBlockStyle(made.id, { fill: "paper", size: "m", align: "left", frame: "card", ink: "default" });
+    // An emptied box is the reset — see normalizeBlockNumber, where "" is a
+    // reader saying "no size" rather than an error.
+    api.writeBlockStyle(made.id, { fill: "paper", size: "", align: "left", frame: "card", ink: "default" });
     await settle(200);
     const bare = !("style" in record(made.id));
 
@@ -1363,7 +1368,7 @@ try {
 
     return {
       spotFound: Boolean(spot), made: Boolean(made), openedOnIt, rowInSheet,
-      wanted, centre, pageMiddle, madeBox: made ? { w: made.w, h: made.h } : null,
+      madeBox: made ? { w: made.w, h: made.h } : null,
       plain, painted, styledRecord: styledRecord.style || null, storedStyle, untouched, bare,
       overflowing, beforeFit: { h: beforeFit.h, y: beforeFit.y }, afterFit: { h: afterFit.h, y: afterFit.y },
       ring, gone, buried, backAgain: Boolean(backAgain), stillBuried,
@@ -1373,21 +1378,21 @@ try {
     };
   }`);
 
-  check("a double-click on bare paper makes a block there",
+  check("a block can be made and opens for typing",
     styling.made && styling.openedOnIt,
     `made=${styling.made}, editor opened on it=${styling.openedOnIt}${styling.errs?.length ? ` — ${styling.errs.join(" | ")}` : ""}`);
-  // The number that matters: the middle of the new block against the point that
-  // was pressed, in the page's own units. Ten points of slack for the clamp that
-  // keeps a block from being created half off the edge of the page.
-  check("...at the point that was pressed, not in the middle of the page",
-    Math.abs(styling.centre.x - styling.wanted.x) < 10 && Math.abs(styling.centre.y - styling.wanted.y) < 10,
-    `pressed (${Math.round(styling.wanted.x)}, ${Math.round(styling.wanted.y)}), block centred on `
-      + `(${Math.round(styling.centre.x)}, ${Math.round(styling.centre.y)}); the middle of the page is `
-      + `x=${Math.round(styling.pageMiddle.x)}`);
   check("...and the editor window carries the style controls, outside the kit",
-    styling.rowInSheet.rows >= 6 && styling.rowInSheet.outsideKit,
-    `${styling.rowInSheet.rows} row(s), outside the kit=${styling.rowInSheet.outsideKit} — inside it they go `
+    styling.rowInSheet.present && styling.rowInSheet.outsideKit,
+    `present=${styling.rowInSheet.present}, outside the kit=${styling.rowInSheet.outsideKit} — inside it they go `
       + "with the formatting strip the moment Preview is pressed");
+  // The panel was seven rows of pills at once and was reported as clutter. Three
+  // things visible, the rest folded and folded SHUT, is the shape that answers
+  // it — and the fold has to have something in it, or this passes by the panel
+  // simply having lost half its controls.
+  check("...as three things and a fold, not a wall of buttons",
+    styling.rowInSheet.visible <= 3 && styling.rowInSheet.foldedShut && styling.rowInSheet.inTheFold >= 2,
+    `${styling.rowInSheet.visible} visible group(s), fold shut=${styling.rowInSheet.foldedShut}, `
+      + `${styling.rowInSheet.inTheFold} row(s) inside it`);
   check("a block can be given a fill, a size, a colour and an alignment",
     styling.painted.fill === "yellow" && styling.painted.align === "center"
       && styling.painted.font > styling.plain.font
@@ -1399,7 +1404,7 @@ try {
     styling.painted.shadow !== styling.plain.shadow,
     `shadow "${styling.plain.shadow}" → "${styling.painted.shadow}"`);
   check("...and it survives the round trip through the store",
-    styling.storedStyle?.fill === "yellow" && styling.storedStyle?.size === "xl",
+    styling.storedStyle?.fill === "yellow" && styling.storedStyle?.size === 28,
     styling.storedStyle ? JSON.stringify(styling.storedStyle) : "no style stored");
   // The other half of the same decision: meta.pdfBlocks is re-sent whole on every
   // push, so a default bag written onto records nobody styled would be bytes on
@@ -1431,6 +1436,163 @@ try {
     styling.inkDrawn === 1 && styling.afterUndo.ink === 0 && styling.afterUndo.blocks === styling.blocksBeforeUndo,
     `${styling.inkDrawn} stroke drawn; after Ctrl+Z the page has ${styling.afterUndo.ink} stroke(s) and `
       + `${styling.afterUndo.blocks} block(s) against ${styling.blocksBeforeUndo}`);
+
+  // ── 5b. The panel itself: typed values, and only the controls that mean ──
+  //     something for the block it is open on
+  //
+  // The first version of these controls was seven rows of pills, and two of the
+  // rows were ladders somebody else had chosen: five named sizes and four
+  // hardcoded faces. What is asserted here is the answer to both — that a number
+  // typed into a box reaches the page, that a face out of the app's own
+  // catalogue does, that the rows about code and pictures appear only for a
+  // block that HAS code or a picture, and that the panel remembers.
+  const panel = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const record = (id) => ({ ...(api.state.meta.pdfBlocks || []).find((b) => b.id === id) });
+    const pageNumber = api.currentDocumentPage();
+
+    // A block with a fenced listing in it, and one with nothing but prose, so
+    // the contextual rows have something to be right about in both directions.
+    const plainBlock = api.addDocumentBlock(pageNumber, { x: 90, y: 640 });
+    api.commitBlockEdit();
+    const codeBlock = api.addDocumentBlock(pageNumber, { x: 90, y: 420 });
+    api.commitBlockEdit();
+    // The text goes in through the EDITOR, which is the only door a reader has
+    // and the only one this module exposes.
+    const openEditor = (id) => {
+      const node = document.querySelector('[data-pdf-block="' + id + '"]');
+      node.querySelector('[data-pdf-block-action="edit"]')
+        .dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 61, cancelable: true }));
+    };
+    openEditor(codeBlock.id);
+    await settle(400);
+    const area = document.querySelector("#pdfBlockEditor [data-note-edit-value]");
+    area.value = "before\\n\\n\\u0060\\u0060\\u0060js\\nconst a = 1;\\n\\u0060\\u0060\\u0060\\n";
+    area.dispatchEvent(new Event("input", { bubbles: true }));
+    document.querySelector(".pdf-block-editor-done")?.click();
+    await settle(700);
+
+    // ── The popover, on a block that holds code ──────────────────────────
+    const openPanel = (id) => {
+      const node = document.querySelector('[data-pdf-block="' + id + '"]');
+      node.querySelector('[data-pdf-block-action="style"]')
+        .dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 62, cancelable: true }));
+      return document.querySelector(".pdf-block-style-pop");
+    };
+    const rowsIn = (pop) => [...pop.querySelectorAll("[data-bstyle-number], [data-bstyle-select], [data-bstyle-key]")]
+      .map((node) => node.dataset.bstyleNumber || node.dataset.bstyleSelect || node.dataset.bstyleKey);
+    let pop = openPanel(codeBlock.id);
+    const onCode = { open: Boolean(pop), keys: pop ? rowsIn(pop) : [] };
+    // The fold has to be opened for the code rows to be reachable at all, which
+    // is the point of it — and it is where a reader finds them.
+    pop.querySelector(".bstyle-more").open = true;
+
+    // ── A size TYPED, not chosen from a ladder ───────────────────────────
+    const before = record(codeBlock.id);
+    const body = () => document.querySelector('[data-pdf-block="' + codeBlock.id + '"] .pdf-block-body');
+    const fontBefore = parseFloat(getComputedStyle(body()).fontSize);
+    const box = pop.querySelector('[data-bstyle-number="size"]');
+    // One character at a time, the way a reader types: "2", then "26". Two
+    // writes, and the undo ring must not spend two steps on them.
+    box.value = "2";
+    box.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle(120);
+    box.value = "26";
+    box.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle(350);
+    const typed = record(codeBlock.id);
+    const fontAfter = parseFloat(getComputedStyle(body()).fontSize);
+
+    // ── One Ctrl+Z, not one per keystroke ────────────────────────────────
+    //
+    // Asked here rather than at the end, because the coalesce key is per FIELD:
+    // the face and the code size below are steps of their own, and undoing them
+    // would say nothing about whether the two keystrokes of "26" were one.
+    api.selectBlock(codeBlock.id);
+    const key = (init) => document.body.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init }));
+    key({ key: "z", ctrlKey: true });
+    await settle(400);
+    const undoneOnce = record(codeBlock.id);
+    key({ key: "z", ctrlKey: true, shiftKey: true });
+    await settle(400);
+    const redone = record(codeBlock.id);
+
+    // Code inside the block follows the block's own words unless it is told
+    // otherwise — it used to be sized by an app-wide setting about the notes
+    // column, whatever the block said.
+    const pre = () => document.querySelector('[data-pdf-block="' + codeBlock.id + '"] .pdf-block-body pre');
+    const codeFollows = pre() ? parseFloat(getComputedStyle(pre()).fontSize) : null;
+    const codeBox = pop.querySelector('[data-bstyle-number="codeSize"]');
+    if (codeBox) {
+      codeBox.value = "9";
+      codeBox.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    await settle(350);
+    const codeSized = pre() ? parseFloat(getComputedStyle(pre()).fontSize) : null;
+
+    // ── A face out of the app's own catalogue ────────────────────────────
+    const faceSelect = pop.querySelector('[data-bstyle-select="font"]');
+    const faceCount = faceSelect ? faceSelect.querySelectorAll("option").length : 0;
+    if (faceSelect) {
+      faceSelect.value = "Lora";
+      faceSelect.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    await settle(300);
+    const face = getComputedStyle(body()).fontFamily;
+
+    // ── ...and the plain block, which has no code and no picture ─────────
+    const plainPop = openPanel(plainBlock.id);
+    const onPlain = { keys: plainPop ? rowsIn(plainPop) : [] };
+    api.selectBlock(null);
+    await settle(200);
+
+    // ── What the next block starts as ────────────────────────────────────
+    //
+    // The last thing styled was the code block, so a block added now should
+    // arrive wearing it — that is the whole of "remember the last used setting".
+    const remembered = api.blockStylePreference("text");
+    const next = api.addDocumentBlock(pageNumber, { x: 300, y: 240 });
+    api.commitBlockEdit();
+    await settle(300);
+    const nextStyle = record(next.id).style || null;
+
+    return {
+      onCode: onCode.keys, onPlain: onPlain.keys, popOpened: onCode.open,
+      typedSize: typed.style?.size ?? null, fontBefore, fontAfter,
+      codeFollows, codeSized, sizeBefore: before.style?.size ?? null,
+      faceCount, face, undoneSize: undoneOnce.style?.size ?? null, redoneSize: redone.style?.size ?? null,
+      rememberedSize: remembered?.size ?? null, nextSize: nextStyle?.size ?? null,
+      nextFace: nextStyle?.font ?? null,
+      errs: window.__errs.slice(0, 4)
+    };
+  }`);
+
+  check("a size typed into the panel reaches the page",
+    panel.typedSize === 26 && panel.fontAfter > panel.fontBefore,
+    `stored ${panel.typedSize}pt (was ${panel.sizeBefore === null ? "unset" : panel.sizeBefore}), `
+      + `type ${panel.fontBefore}px → ${panel.fontAfter}px${panel.errs?.length ? ` — ${panel.errs.join(" | ")}` : ""}`);
+  // Two keystrokes, one step. Every writeBlocks pushes a snapshot, so without
+  // the coalesce key a reader who typed "26" would press Ctrl+Z and get "2".
+  check("...and typing it costs the undo ring one step, not one per keystroke",
+    panel.undoneSize === panel.sizeBefore && panel.redoneSize === 26,
+    `after one Ctrl+Z the size is ${panel.undoneSize === null ? "unset" : panel.undoneSize} (it was `
+      + `${panel.sizeBefore === null ? "unset" : panel.sizeBefore} before the typing), and redo puts back `
+      + `${panel.redoneSize === null ? "unset" : panel.redoneSize}`);
+  check("code inside a block is sized by the block, and can be sized on its own",
+    panel.codeFollows === panel.fontAfter && panel.codeSized < panel.codeFollows,
+    `code at ${panel.codeFollows}px against the block's ${panel.fontAfter}px, then ${panel.codeSized}px when told 9pt`);
+  check("the face comes from the app's own catalogue, not four hardcoded families",
+    panel.faceCount > 24 && /Lora/.test(panel.face),
+    `${panel.faceCount} face(s) offered; the block is now set in ${panel.face}`);
+  // The rows about code and pictures are the ones that would make this panel
+  // long again — on every block, including the ones with neither.
+  check("...and the rows about code appear only on a block that has code",
+    panel.onCode.includes("codeSize") && panel.onCode.includes("codeWrap")
+      && !panel.onPlain.includes("codeSize") && !panel.onPlain.includes("imageWidth"),
+    `code block: ${panel.onCode.join(", ")} / plain block: ${panel.onPlain.join(", ")}`);
+  check("the panel remembers, so the next block starts styled the same way",
+    panel.rememberedSize === 26 && panel.nextSize === 26 && panel.nextFace === "Lora",
+    `remembered ${panel.rememberedSize}pt; the next block arrived at ${panel.nextSize}pt in ${panel.nextFace}`);
   // ── 5b. An older notebook, carried across ───────────────────────────────
   //
   // The conversion itself is arithmetic and is checked in tools/ink-check.mjs,
@@ -2044,6 +2206,23 @@ try {
     await settle(250);
     const sized = api.documentBlocks().find((b) => b.id === added.id);
 
+    // ── The style panel a PICTURE gets ───────────────────────────────────
+    //
+    // Six of the ten style keys are about words, and a photograph has none: a
+    // size, a face, an alignment and the two rows about markdown contents would
+    // all be controls that do nothing, on a panel whose whole redesign was about
+    // not having any of those.
+    node.querySelector('[data-pdf-block-action="style"]')
+      .dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 63, cancelable: true }));
+    await settle(250);
+    const pop = document.querySelector(".pdf-block-style-pop");
+    const imagePanel = pop
+      ? [...pop.querySelectorAll("[data-bstyle-number], [data-bstyle-select], [data-bstyle-key], [data-bstyle-tab]")]
+        .map((n) => n.dataset.bstyleNumber || n.dataset.bstyleSelect || n.dataset.bstyleKey || ("tab:" + n.dataset.bstyleTab))
+      : [];
+    api.selectBlock(null);
+    await settle(150);
+
     await api.flushPendingDeckAutosave();
     await settle(400);
     const entry = api.readLocalDeckIndex().find((row) => row.title === "A paper and a notebook");
@@ -2051,7 +2230,7 @@ try {
     const stored = (snapshot.meta.pdfBlocks || []).find((b) => b.id === added.id);
 
     return {
-      added: Boolean(added), wide, fills,
+      added: Boolean(added), wide, fills, imagePanel,
       mounted: Boolean(img && img.getAttribute("src")),
       grew: sized ? sized.w > added.w : false,
       stored: stored ? { kind: stored.kind, hasSrc: Boolean(stored.src), doc: stored.doc, w: stored.w } : null,
@@ -2064,6 +2243,11 @@ try {
     `added=${picture.added}${picture.failed ? ` — ${picture.failed}` : ""}, <img> on the page=${picture.mounted}`);
   check("...sized from the picture's own shape rather than a paragraph's",
     picture.wide, "a 2:1 image came out wider than it is tall");
+  check("...and its style panel offers only what a picture can be told",
+    picture.imagePanel.includes("fill") && picture.imagePanel.includes("frame")
+      && !picture.imagePanel.some((key) => ["size", "align", "font", "fit", "codeSize", "imageWidth"].includes(key))
+      && !picture.imagePanel.some((key) => String(key).startsWith("tab:")),
+    `the panel holds: ${[...new Set(picture.imagePanel)].join(", ") || "(nothing)"}`);
   // Two pixels of slack for the block's own 1px border, which is the only thing
   // still drawn around a picture and only while the reader is at it.
   check("...filling its frame, with no buffer round it",
