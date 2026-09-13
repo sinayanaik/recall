@@ -97,6 +97,10 @@ try {
   };
   globalThis.window = globalThis;
   globalThis.addEventListener = () => {};
+  // src/cloud/net.js reads navigator.onLine, and in Node `navigator` is a getter
+  // on globalThis rather than a plain property. Only the push cases below reach
+  // it; every other case in this file is pure object arithmetic.
+  Object.defineProperty(globalThis, "navigator", { value: { onLine: true }, configurable: true });
 
   // The blank-read cases below deliberately drive the paths that warn ("Cloud
   // returned 0 cards…"), and several do it hundreds of times inside the property
@@ -1016,6 +1020,175 @@ try {
       const d = stats.documentSlotsChanged({}, { notebook: { pages: 1, sha256: "n1" } });
       return (d.attached && !d.pagesChanged) || JSON.stringify(d);
     });
+  }
+
+  // ══ F11. A push that cannot silently overwrite the row it merged against ══
+  //
+  // Everything the reconcile merges — the cards, the highlights, the ink, the
+  // blocks, the notes, every key of the meta bag — is merged against a cloud row
+  // read ONCE, up front, before three decks begin pushing at a time. Between
+  // that read and the write another device's push can land, and the write used
+  // to be a plain upsert: the second writer took the whole notes and meta
+  // column, discarding a merge that was correct when it was computed. The
+  // comment on `meta` in push.js said so out loud and called it accepted risk.
+  //
+  // Driven against the REAL pushDeckRowsToCloud rather than a restatement of it,
+  // because the thing under test is the shape of the query it builds — the
+  // predicate and the .select() — and a paraphrase of that would pass whatever
+  // the module did. The fake below is a PostgREST-shaped recorder: it answers
+  // what Supabase answers for the four calls this function makes, and nothing
+  // else.
+  {
+    const pushMod = await load("src/sync/push.js");
+    const clientMod = await load("src/cloud/supabase-client.js");
+
+    // One deck row, and a spy on every write. `select()` decides whether a body
+    // comes back, exactly as PostgREST does — that distinction is the whole
+    // mechanism by which "matched nothing" is told from "wrote one row".
+    function fakeSupabase({ rowUpdatedAt, onDeckUpdate = null, insertError = null }) {
+      const calls = [];
+      const row = { id: "d1", updated_at: rowUpdatedAt };
+      const make = (table) => {
+        const q = { table, op: "select", filters: [], payload: null, cols: null };
+        const api = {
+          select: (cols) => { q.cols = cols || "*"; return api; },
+          insert: (rows) => { q.op = "insert"; q.payload = rows; return api; },
+          upsert: (rows) => { q.op = "upsert"; q.payload = rows; return api; },
+          update: (patch) => { q.op = "update"; q.payload = patch; return api; },
+          delete: () => { q.op = "delete"; return api; },
+          eq: (col, val) => { q.filters.push([col, val]); return api; },
+          in: () => api,
+          abortSignal: () => api,
+          then: (resolve, reject) => Promise.resolve(run()).then(resolve, reject)
+        };
+        function run() {
+          calls.push({ table, op: q.op, filters: q.filters.slice(), payload: q.payload, selected: q.cols });
+          if (table === "cards") return { data: [], error: null };
+          if (q.op === "insert") return insertError ? { data: null, error: insertError } : { data: [{ id: "d1" }], error: null };
+          if (q.op === "update") {
+            // Another device writing in the gap, if the case asked for one.
+            if (onDeckUpdate) onDeckUpdate(row, calls.length);
+            const matched = q.filters.every(([col, val]) => String(row[col]) === String(val));
+            if (matched) Object.assign(row, q.payload);
+            return { data: q.cols ? (matched ? [{ id: "d1" }] : []) : null, error: null };
+          }
+          Object.assign(row, [].concat(q.payload || [])[0] || {});
+          return { data: null, error: null };
+        }
+        return api;
+      };
+      return { client: { from: make }, calls, row };
+    }
+
+    const pushOnce = async (fake, extra = {}) => {
+      clientMod.setSupabaseClient(fake.client);
+      try {
+        return { stats: await pushMod.pushDeckRowsToCloud({
+          deckId: "d1", title: "Deck", category: "C", notes: "body", meta: {},
+          currentIndex: 0, cards: [], isNewDeck: false, overwrite: false,
+          now: iso(T0 + 10 * MIN), webCards: [], ...extra
+        }) };
+      } catch (error) {
+        return { error };
+      } finally {
+        clientMod.setSupabaseClient(null);
+      }
+    };
+
+    // The row is where the merge left it, so the write lands.
+    {
+      const fake = fakeSupabase({ rowUpdatedAt: iso(T0) });
+      const out = await pushOnce(fake, { expectedUpdatedAt: iso(T0) });
+      must("a push whose row has not moved lands", () =>
+        !out.error || `threw ${out.error.message}`);
+      const deckWrites = fake.calls.filter((c) => c.table === "decks");
+      must("...as an update predicated on the stamp it merged against", () =>
+        deckWrites.every((c) => c.op === "update")
+        && deckWrites[0].filters.some(([col, val]) => col === "updated_at" && val === iso(T0))
+        || JSON.stringify(deckWrites.map((c) => [c.op, c.filters])));
+      // Without .select() PostgREST answers with no body, and a write that
+      // matched nothing is then indistinguishable from one that landed — every
+      // push a silent no-op reporting success.
+      must("...asking for the affected rows back, so a no-op cannot pass as a write", () =>
+        deckWrites.every((c) => Boolean(c.selected)) || "a deck write went up without select()");
+      must("...and the finalize bump is predicated on this push's own sentinel", () => {
+        const bump = deckWrites[deckWrites.length - 1];
+        return bump.filters.some(([col, val]) => col === "updated_at" && val === new Date(0).toISOString())
+          || JSON.stringify(bump.filters);
+      });
+    }
+
+    // Another device wrote first. The row no longer matches, and the push must
+    // say so rather than overwrite it.
+    {
+      const fake = fakeSupabase({ rowUpdatedAt: iso(T0 + 5 * MIN) });
+      // With a card in hand, deliberately: an empty deck writes no card rows at
+      // all, so "never reaches the cards" would pass without asking anything.
+      const out = await pushOnce(fake, {
+        expectedUpdatedAt: iso(T0),
+        cards: [{ id: "c1", question: "q", answer: "a", status: null, category: null }]
+      });
+      must("a push whose row moved underneath it raises the race, not a write", () =>
+        out.error?.deckRowMoved === true || `got ${out.error?.name || "no error"}`);
+      must("...and leaves the other device's row exactly as it found it", () =>
+        fake.row.updated_at === iso(T0 + 5 * MIN) || `row is now ${fake.row.updated_at}`);
+      must("...and never reaches the cards", () =>
+        fake.calls.every((c) => c.table !== "cards") || "cards were written against a row we had lost");
+    }
+
+    // The race that opens BETWEEN the sentinel write and the bump: another
+    // device saw the epoch stamp, concluded the cloud was ancient, and pushed a
+    // whole deck of its own. Bumping unconditionally would stamp THEIR row with
+    // OUR timestamp and hide their write from every device for ever.
+    {
+      const fake = fakeSupabase({
+        rowUpdatedAt: iso(T0),
+        onDeckUpdate: (row, callNumber) => { if (callNumber > 1) row.updated_at = iso(T0 + 7 * MIN); }
+      });
+      const out = await pushOnce(fake, { expectedUpdatedAt: iso(T0) });
+      must("a row rewritten between the sentinel and the bump raises the race too", () =>
+        out.error?.deckRowMoved === true || `got ${out.error?.name || "no error"}`);
+    }
+
+    // A deck this device believes is new, that another device created first.
+    // 23505 is unique_violation. Answered as a lost race and NOT retried as an
+    // upsert: this push's content was computed as if the cloud held nothing.
+    {
+      const fake = fakeSupabase({ rowUpdatedAt: iso(T0), insertError: { code: "23505", message: "duplicate key" } });
+      const out = await pushOnce(fake, { isNewDeck: true, expectedUpdatedAt: null });
+      must("a new deck another device created first is a race, not a failure", () =>
+        out.error?.deckRowMoved === true || `got ${out.error?.name || "no error"}`);
+    }
+
+    // No expectation to compare against — an overwrite, a repair — is the old
+    // unconditional write, because refusing on evidence nobody has would strand
+    // the deck for ever.
+    {
+      const fake = fakeSupabase({ rowUpdatedAt: iso(T0 + 5 * MIN) });
+      const out = await pushOnce(fake, { expectedUpdatedAt: null });
+      must("a push with nothing to compare against still writes", () =>
+        !out.error || `threw ${out.error.message}`);
+    }
+
+    // ── Where the reader is in the CARDS is a position, not content ─────────
+    {
+      const fake = fakeSupabase({ rowUpdatedAt: iso(T0) });
+      const out = await pushOnce(fake, { expectedUpdatedAt: iso(T0), currentIndex: 7, sendCurrentIndex: false });
+      const first = fake.calls.find((c) => c.table === "decks");
+      must("a device that did not move its place omits current_card_index", () =>
+        (!out.error && !("current_card_index" in (first.payload || {})))
+        || JSON.stringify(Object.keys(first.payload || {})));
+      must("...and says so, so no baseline is recorded for a column it did not send", () =>
+        out.stats?.currentIndexSent === false || `currentIndexSent=${out.stats?.currentIndexSent}`);
+    }
+    {
+      const fake = fakeSupabase({ rowUpdatedAt: iso(T0) });
+      const out = await pushOnce(fake, { expectedUpdatedAt: iso(T0), currentIndex: 7, sendCurrentIndex: true });
+      const first = fake.calls.find((c) => c.table === "decks");
+      must("...while the device that did move it sends it", () =>
+        (!out.error && first.payload?.current_card_index === 7 && out.stats?.currentIndexSent === true)
+        || JSON.stringify(first.payload));
+    }
   }
 
   console.log("── sync reconcile ──");

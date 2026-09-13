@@ -619,6 +619,10 @@ export function finishSaveDeckToLibrary({ snapshot, localId, previousSnapshot, s
     // timestamp fallback 400ms after every keystroke, which is the fault it
     // exists to fix.
     syncedNotesFingerprint: previousEntry?.syncedNotesFingerprint || null,
+    // Carried for the same reason, and it is a number that can legitimately be
+    // 0 — so `??` and not `||`, or every deck the reader has never paged past
+    // the first card of reads as having no baseline at all.
+    syncedCurrentIndex: previousEntry?.syncedCurrentIndex ?? null,
     deckId: snapshot.deckId || null,
     // Mirrored out of the snapshot's meta bag purely so the link index can see
     // it: loadNoteLinkIndex is built from this index (localStorage) and never

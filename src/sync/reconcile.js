@@ -427,6 +427,12 @@ export async function pullCloudDeckIntoLibraryLocked(cloud, cards) {
     // alone — the fenced highlight-note block is merged per entry and is not an
     // edit to the reader's prose.
     syncedNotesFingerprint: syncTextFingerprint(newBody),
+    // ...and the card position the cloud holds, for the same reason and read by
+    // the same kind of gate: a device that has not moved its own place in the
+    // cards must not push it over the place another device set. Without a
+    // baseline the only test available is "mine differs from theirs", which is
+    // true on the device that never moved as often as on the one that did.
+    syncedCurrentIndex: Number.isFinite(cloud.current_card_index) ? cloud.current_card_index : 0,
     // Take whichever "last opened" is more recent — this device's own record,
     // or the cloud's (another device may have opened it more recently).
     accessedAt: laterIsoTimestamp(existing?.accessedAt, cloud.last_accessed_at),
@@ -447,7 +453,65 @@ export async function pullCloudDeckIntoLibraryLocked(cloud, cards) {
 // Pushes one library deck (by its local metadata) to the cloud, WITHOUT
 // disturbing the active in-memory deck. Mints a stable cloud id if the deck has
 // never been synced, then records it locally and aligns the timestamp.
-export async function pushLibraryDeckToCloud(localMeta, { cloudExists = false, cloudDeck = null, webCards = null } = {}) {
+// ── Losing the race, and doing the whole merge again ──────────────────────
+//
+// pushDeckRowsToCloud writes the deck row only if the cloud still holds the row
+// the merge was computed against, and raises DeckRowMovedError when it does not.
+// The answer to that is NOT to write again: the notes, the meta bag and the card
+// list this push is holding were all merged against a row that no longer exists,
+// so re-sending them is the overwrite the compare-and-swap exists to refuse.
+//
+// So the retry is of the merge, not of the write. Re-read the deck's real row
+// and its real cards, hand them back to pushLibraryDeckToCloud, and let it
+// reconcile against what is actually there now. The second attempt sees the
+// other device's work and sends the union.
+//
+// Bounded at three, and the third failure is reported as a failed deck like any
+// other. A deck that cannot win a race in three tries has something else wrong
+// with it — a device in a tight sync loop, a clock that makes every stamp
+// unorderable — and an unbounded retry against that is a sync that never ends
+// and never says why. A retry is not an error and is not logged as one: it is
+// counted, and only the exhaustion is reported.
+export const PUSH_RACE_MAX_ATTEMPTS = 3;
+
+export async function pushLibraryDeckToCloud(localMeta, options = {}) {
+  let attempt = 0;
+  let attemptOptions = options;
+  for (;;) {
+    try {
+      const result = await pushLibraryDeckToCloudOnce(localMeta, attemptOptions);
+      if (attempt) result.stats.pushRetried = attempt;
+      return result;
+    } catch (error) {
+      attempt += 1;
+      if (!error?.deckRowMoved || attempt >= PUSH_RACE_MAX_ATTEMPTS) throw error;
+      console.warn(`Deck ${localMeta.deckId} was written by another device mid-push — re-merging (attempt ${attempt + 1} of ${PUSH_RACE_MAX_ATTEMPTS})`);
+      // The row AND the cards, because the other device may have added, edited
+      // or deleted either. Read together, so the pair the next attempt merges
+      // against is one moment's worth of cloud rather than two.
+      const [rows, cardsByDeck] = await withSessionRetry("re-read a deck after a push race", () => Promise.all([
+        withRetry(() => fetchCloudDeckRows([localMeta.deckId]), { label: "deck body" }),
+        withRetry(() => fetchCardsForDecks([localMeta.deckId]), { label: "deck cards" })
+      ]));
+      const freshDeck = rows.get(String(localMeta.deckId));
+      // Gone entirely, between our read and now: another device deleted the
+      // deck. Not a race to retry — the next reconcile's tombstone pass is what
+      // answers a deletion, and re-creating the row here would resurrect it.
+      if (!freshDeck) throw error;
+      attemptOptions = {
+        ...attemptOptions,
+        cloudExists: true,
+        cloudDeck: freshDeck,
+        webCards: cardsByDeck.get(String(localMeta.deckId)) || []
+      };
+      // The local index entry moved too — the previous attempt's own writes to
+      // it are what the next merge's baselines read.
+      localMeta = readLocalDeckIndex().find((entry) => entry.id === localMeta.id) || localMeta;
+    }
+  }
+}
+
+async function pushLibraryDeckToCloudOnce(localMeta, { cloudExists = false, cloudDeck = null, webCards = null } = {}) {
   const snapshot = await readDeckSnapshot(localMeta.id);
   if (!snapshot) throw new Error("Local deck snapshot missing");
 
@@ -671,7 +735,20 @@ export async function pushLibraryDeckToCloud(localMeta, { cloudExists = false, c
     isNewDeck,
     overwrite: false,
     now,
-    webCards
+    webCards,
+    // The row every merge above was computed against. pushDeckRowsToCloud writes
+    // only if the cloud still holds it, and raises DeckRowMovedError if another
+    // device got there first — see the retry loop in pushLibraryDeckToCloudSafely.
+    expectedUpdatedAt: cloudExists ? (cloudDeck?.updated_at || null) : null,
+    // Where the reader is in the CARDS is this device's position, not the deck's
+    // content, so a device that did not move it must not push its own over
+    // somebody else's. Sent when the cloud has no opinion yet, or when ours
+    // differs from what the cloud holds AND we are the device that moved it —
+    // which, for a value with no stamp of its own, is as close as this can get
+    // without giving it one.
+    sendCurrentIndex: !cloudExists
+      || !Number.isFinite(cloudDeck?.current_card_index)
+      || Number(snapshot.current || 0) !== Number(localMeta.syncedCurrentIndex ?? cloudDeck.current_card_index)
   });
 
   // Re-read rather than writing back the copy captured before the push. The
@@ -745,6 +822,11 @@ export async function pushLibraryDeckToCloud(localMeta, { cloudExists = false, c
     // next sync's gate has to compare against, not what this device held before
     // the merge.
     entry.syncedNotesFingerprint = syncTextFingerprint(splitHighlightNotesTail(String(snapshot.notes || "")).body);
+    // Only when this push actually sent it. A push that omitted the column left
+    // the cloud's value alone, so the baseline is still whatever the last device
+    // to move it wrote, and claiming ours would make the next sync think we had
+    // agreed to a number we never saw.
+    if (pushStats.currentIndexSent) entry.syncedCurrentIndex = Number(snapshot.current) || 0;
     // Persisted onto the index (not just the one-off sync report) so the
     // "Synced" pill and the My Decks table still reflect it the next time
     // this deck is opened or listed, long after the toast is gone.
