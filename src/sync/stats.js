@@ -116,6 +116,42 @@ export function emptySyncStats() {
     // copy instead of re-uploading it. A deck-level flag, not a card count —
     // there is no card detail to report once the deck is gone.
     deckRemovedHere: false,
+    // The typed blocks dropped onto a paper's pages — markdown and pictures,
+    // meta.pdfBlocks. Merged by id exactly as the highlights beside them are
+    // (mergeRecordsById, ./diff.js), and until now with nothing to report it by:
+    // a sync whose only news was "somebody added a paragraph to page 4 on the
+    // other device" scored all-zero, and isNoOpStats — which is derived from
+    // describeSyncStats — therefore called it a no-op. The deck was pushed onto
+    // `alreadyMatched`, the active deck was never reloaded, and the summary said
+    // "Already up to date — everything already matches the cloud" over a snapshot
+    // that had just changed on disk. The reported "it says synced but it is not
+    // displaying the correct content", exactly.
+    blocksMerged: 0,
+    blocksRemovedHere: 0,
+    // ...and the PAPER those blocks and marks are positions in. Three separate
+    // things, because they are three different pieces of news and the middle one
+    // is the one a reader of a notebook sees most: a document arriving, a
+    // document's pages changing under them (a page added or torn out on another
+    // device rewrites the file and its sha256), and a document going away.
+    //
+    // Flags rather than counts: a deck has two document slots and neither of them
+    // is a quantity. `documentRemovedHere` is also what tells the surface to move
+    // the reader off a tab whose paper no longer exists — see loadDeckSnapshot.
+    documentAttached: false,
+    documentPagesChanged: false,
+    documentRemovedHere: false,
+    // Two devices genuinely edited the notes body and the three-way merge put
+    // them together without asking. Reported for the same reason a silent pull
+    // is: a merge nobody was told about is indistinguishable from a sync that
+    // did nothing, right up until the reader notices a sentence they did not
+    // write. Distinct from notesConflicted, which means the merge could NOT do
+    // it and the reader has to choose.
+    notesMerged: false,
+    // A push that lost a race with another device and re-merged rather than
+    // overwriting it. Zero on every ordinary sync; when it is not zero it is the
+    // only evidence the reader will ever have that concurrent editing is being
+    // handled rather than silently resolved in somebody's favour.
+    pushRetried: 0,
     // meta.readingPosition (where paged/continuous reading last left off) moved.
     // This can be the ONLY thing a push actually changed — reading a book edits
     // no card and no note text — and without its own flag that push's stats
@@ -128,9 +164,13 @@ export function emptySyncStats() {
 
 // The counted stats (summed across decks), as opposed to the deck-level
 // booleans below them, which are counted as "how many decks".
-export const SYNC_COUNT_STATS = ["cardsAdded", "cardsDeleted", "cardsEdited", "statusChanges", "cardsMoved", "categoryChanges", "cardsKeptLocal", "cardsRemovedHere", "cardsAdoptedHere", "highlightsMerged", "highlightsRemovedHere", "highlightNotesMerged"];
+export const SYNC_COUNT_STATS = ["cardsAdded", "cardsDeleted", "cardsEdited", "statusChanges", "cardsMoved", "categoryChanges", "cardsKeptLocal", "cardsRemovedHere", "cardsAdoptedHere", "highlightsMerged", "highlightsRemovedHere", "highlightNotesMerged", "blocksMerged", "blocksRemovedHere", "pushRetried"];
 
-export const SYNC_FLAG_STATS = ["notesChanged", "titleChanged", "deckCategoryChanged", "noteCategoriesChanged", "notesConflicted", "notesSyncFailed", "deckRemovedHere", "readingPositionSynced"];
+// Every field of emptySyncStats belongs to exactly one of these two lists, and a
+// field in neither is dropped silently by totalSyncStats — reported per deck and
+// then missing from the summary, which is how a stat ends up half-wired. There
+// is an assertion for exactly that in tools/sync-reconcile-check.mjs.
+export const SYNC_FLAG_STATS = ["notesChanged", "titleChanged", "deckCategoryChanged", "noteCategoriesChanged", "notesConflicted", "notesMerged", "notesSyncFailed", "deckRemovedHere", "documentAttached", "documentPagesChanged", "documentRemovedHere", "readingPositionSynced"];
 
 // Human phrases for a diff, most consequential first. Returns an array so
 // callers can join, count, or truncate it. With `asTotals`, the deck-level
@@ -150,6 +190,12 @@ export function describeSyncStats(stats = {}, { asTotals = false } = {}) {
   if (stats.highlightsMerged) parts.push(`${plural(stats.highlightsMerged, "highlight", "highlights")} merged in from another device`);
   if (stats.highlightsRemovedHere) parts.push(`${plural(stats.highlightsRemovedHere, "highlight", "highlights")} removed here (deleted on another device)`);
   if (stats.highlightNotesMerged) parts.push(`${plural(stats.highlightNotesMerged, "highlight note", "highlight notes")} merged`);
+  // "text block" is the app's own word for a meta.pdfBlocks record — the + Text
+  // button's own tooltip says "Add a markdown text block to the page you are
+  // looking at" — so the report calls it what the control that made it calls it.
+  if (stats.blocksMerged) parts.push(`${plural(stats.blocksMerged, "text block", "text blocks")} added on another device`);
+  if (stats.blocksRemovedHere) parts.push(`${plural(stats.blocksRemovedHere, "text block", "text blocks")} removed here (deleted on another device)`);
+  if (stats.pushRetried) parts.push(`${plural(stats.pushRetried, "deck", "decks")} re-merged because another device wrote first`);
   const flag = (value, label) => {
     if (!value) return;
     parts.push(asTotals && value > 1 ? `${label} on ${value} decks` : label);
@@ -159,6 +205,10 @@ export function describeSyncStats(stats = {}, { asTotals = false } = {}) {
   flag(stats.deckCategoryChanged, "deck category changed");
   flag(stats.noteCategoriesChanged, "note categories added/renamed/removed");
   flag(stats.notesConflicted, "your notes edit was replaced by a newer one (a copy was kept)");
+  flag(stats.notesMerged, "your notes and another device's were merged");
+  flag(stats.documentAttached, "a document was attached on another device");
+  flag(stats.documentPagesChanged, "the document's pages changed on another device");
+  flag(stats.documentRemovedHere, "the document was removed on another device");
   flag(stats.notesSyncFailed, "notes could NOT be synced — run supabase_setup.sql in Supabase");
   flag(stats.deckRemovedHere, "removed here (deleted on another device)");
   flag(stats.readingPositionSynced, "reading position synced");
@@ -172,6 +222,63 @@ export function describeSyncStats(stats = {}, { asTotals = false } = {}) {
 export function quickNoteCategoriesDiffer(metaA, metaB) {
   const key = (meta) => JSON.stringify(quickNoteCategoriesFromMeta(meta).map((c) => [c.id, c.name, c.color]));
   return key(metaA) !== key(metaB);
+}
+
+// ── What moved in the meta bag, in words the report already speaks ─────────
+//
+// Both of these are the same kind of question quickNoteCategoriesDiffer above
+// asks, about two other keys, and they live here for the same reason: they are
+// plain object arithmetic with no surface behind them, so a Node check can drive
+// them, and the pull and the push both need the identical answer from opposite
+// directions.
+//
+// Deliberately NOT counters threaded out of mergeDeckMeta. That function returns
+// a meta bag, both of its callers depend on that shape and so does
+// tools/document-sync-check.mjs; and the pull already answers "what changed"
+// by diffing against oldSnapshot, which is the same shape of comparison.
+
+// Records merged by id (meta.pdfBlocks today, and anything else that grows the
+// same shape). Positional order is not a change — mergeRecordsById rebuilds the
+// array — and neither is a record whose BODY moved under the same id: that is an
+// edit, which the record's own `at` already settles, and calling it "added" would
+// report a paragraph somebody retyped as a paragraph somebody else wrote.
+export function metaRecordDelta(metaBefore, metaAfter, key) {
+  const ids = (meta) => new Set(
+    (Array.isArray(meta?.[key]) ? meta[key] : [])
+      .map((record) => String(record?.id || ""))
+      .filter(Boolean)
+  );
+  const before = ids(metaBefore);
+  const after = ids(metaAfter);
+  let adopted = 0;
+  let removed = 0;
+  for (const id of after) if (!before.has(id)) adopted += 1;
+  for (const id of before) if (!after.has(id)) removed += 1;
+  return { adopted, removed };
+}
+
+// The two document slots — the paper somebody gave us and the notebook this app
+// wrote (src/documents/doc-slot.js). Answered over both at once, because the
+// report's sentence is about "the document" the reader is looking at and the
+// surface only ever has one of them on it.
+//
+// A missing sha256 on EITHER side is not a change. Rows written before the store
+// recorded one are the reason, and it is the same rule documentOpenKey states in
+// src/documents/pdf-view.js — an unhashed record must not read as a different
+// file every time it is compared, or every sync claims the pages moved.
+export function documentSlotsChanged(metaBefore, metaAfter) {
+  const out = { attached: false, removed: false, pagesChanged: false };
+  for (const key of ["pdf", "notebook"]) {
+    const before = metaBefore?.[key] && typeof metaBefore[key] === "object" ? metaBefore[key] : null;
+    const after = metaAfter?.[key] && typeof metaAfter[key] === "object" ? metaAfter[key] : null;
+    if (!before && after) { out.attached = true; continue; }
+    if (before && !after) { out.removed = true; continue; }
+    if (!before || !after) continue;
+    const a = String(before.sha256 || "");
+    const b = String(after.sha256 || "");
+    if (a && b && a !== b) out.pagesChanged = true;
+  }
+  return out;
 }
 
 // A pull/push whose diff stats are all-zero is just a timestamp-alignment

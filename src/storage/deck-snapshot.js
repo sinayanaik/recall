@@ -14,7 +14,7 @@ import { normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
 import { scheduleNoteJump } from "../notes/anchors.js?v=__BUILD__";
 import { maybePromptBookmarkJump } from "../notes/bookmark.js?v=__BUILD__";
 import { discardNotesEditingForDeckSwap } from "../notes/notes-view.js?v=__BUILD__";
-import { betterReadingPosition } from "../notes/reading-position.js?v=__BUILD__";
+import { betterReadingPosition, newerReadingPosition } from "../notes/reading-position.js?v=__BUILD__";
 import { currentDeckKey, currentReadingAnchor, currentReadingAnchorDeckKey } from "../notes/scroll-anchor.js?v=__BUILD__";
 import { isQuickNotesDeck } from "../quick-notes/categories.js?v=__BUILD__";
 import { setDeckAutosaveStorageFailed } from "./quota.js?v=__BUILD__";
@@ -90,8 +90,18 @@ export function deckSnapshot() {
       // write schedule: this only ever rides along when a save is already
       // happening for some other reason, per the deliberately simple sync
       // strategy — "whenever the sync happens just sync the current location."
+      //
+      // ...and only when it is the LATER of the two. captureCurrentReadingAnchor
+      // only runs while state.viewMode is "notes", but nothing CLEARS the
+      // in-memory anchor when the reader leaves that tab — so a deck read in the
+      // notes and then in the document kept writing the stale notes anchor over
+      // the document position scheduleDocumentPositionSave had just recorded, on
+      // every autosave and therefore on every sync. Settled by `at`, through the
+      // same rule betterReadingPosition applies between the two stores, rather
+      // than by asking which view is up: the pagehide flush legitimately writes
+      // this after the reader has already left the view.
       if (currentReadingAnchor && currentReadingAnchorDeckKey === currentDeckKey()) {
-        metaBag.readingPosition = currentReadingAnchor;
+        metaBag.readingPosition = newerReadingPosition(currentReadingAnchor, metaBag.readingPosition);
       }
       return Object.keys(metaBag).length ? { meta: metaBag } : {};
     })(),

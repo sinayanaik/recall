@@ -41,7 +41,7 @@ import { mergeDeckMeta, mergeDocumentAnnotations, reconcileDeckBeforePush } from
 import { refreshSyncIndicatorBaseline, renderDeckEmptyState, setSyncIndicator, updateDeckEmptyStatus } from "./indicator.js?v=__BUILD__";
 import { pushDeckRowsToCloud } from "./push.js?v=__BUILD__";
 import { showSyncReport } from "./report.js?v=__BUILD__";
-import { clockSkewedAhead, describeSyncStats, emptySyncStats, isNoOpStats, nextSyncStamp, quickNoteCategoriesDiffer, totalSyncStats, tsMs } from "./stats.js?v=__BUILD__";
+import { clockSkewedAhead, describeSyncStats, documentSlotsChanged, emptySyncStats, isNoOpStats, metaRecordDelta, nextSyncStamp, quickNoteCategoriesDiffer, totalSyncStats, tsMs } from "./stats.js?v=__BUILD__";
 import { repairSnapshotText } from "./text-repair.js?v=__BUILD__";
 import { commitEditIfActive } from "../ui/edit-mode.js?v=__BUILD__";
 import { setButtonLoading, setStatus, showConfirmModal, showToast } from "../ui/feedback.js?v=__BUILD__";
@@ -346,7 +346,24 @@ export async function pullCloudDeckIntoLibraryLocked(cloud, cards) {
       // Compared by offset, not `at` — `at` is a fresh timestamp on every
       // capture even when the position didn't actually move.
       readingPositionSynced: Boolean(snapshot.meta?.readingPosition)
-        && snapshot.meta.readingPosition.offset !== oldSnapshot.meta?.readingPosition?.offset
+        && snapshot.meta.readingPosition.offset !== oldSnapshot.meta?.readingPosition?.offset,
+      // The typed blocks and the paper itself. Neither touches a card, the notes
+      // body or a highlight, so none of the diffs above can see either — and a
+      // pull whose only news was one of them scored all-zero, which isNoOpStats
+      // reads as "nothing happened". The deck was then reported as already
+      // matching the cloud and the open copy was never reloaded, over a snapshot
+      // this function had just rewritten.
+      ...(() => {
+        const blocks = metaRecordDelta(oldSnapshot.meta, snapshot.meta, "pdfBlocks");
+        const docs = documentSlotsChanged(oldSnapshot.meta, snapshot.meta);
+        return {
+          blocksMerged: blocks.adopted,
+          blocksRemovedHere: blocks.removed,
+          documentAttached: docs.attached,
+          documentPagesChanged: docs.pagesChanged,
+          documentRemovedHere: docs.removed
+        };
+      })()
     };
   } else {
     stats = { ...emptySyncStats(), cardsAdded: snapshot.cards.length, notesChanged: Boolean(newBody.trim()) };
@@ -555,6 +572,10 @@ export async function pushLibraryDeckToCloud(localMeta, { cloudExists = false, c
       notesToStash = String(cloudDeck.notes || "");
     }
   }
+  // The bag as it was before the merge overwrote it, for the stats at the foot of
+  // this function. mergeDeckMeta builds a NEW object rather than mutating either
+  // input, so holding the old reference across the assignment below is safe.
+  const metaBeforePush = snapshot.meta;
   if (documentPush) {
     snapshot.notes = documentPush.notes;
     snapshot.meta = documentPush.meta;
@@ -724,6 +745,18 @@ export async function pushLibraryDeckToCloud(localMeta, { cloudExists = false, c
     const cloudPosition = cloudDeck?.meta?.readingPosition;
     stats.readingPositionSynced = Boolean(localPosition)
       && localPosition.offset !== cloudPosition?.offset;
+    // What the pre-push merge ADOPTED from the cloud, by the same reading the
+    // pull takes of the same two bags. A push is a merge and not a replace (see
+    // reconcileDeckBeforePush), so a block typed on the other device arrives on
+    // this one down THIS path far more often than down the pull's — an open,
+    // edited deck has the newer updatedAt and therefore always pushes.
+    const blocks = metaRecordDelta(metaBeforePush, snapshot.meta, "pdfBlocks");
+    const docs = documentSlotsChanged(metaBeforePush, snapshot.meta);
+    stats.blocksMerged = blocks.adopted;
+    stats.blocksRemovedHere = blocks.removed;
+    stats.documentAttached = docs.attached;
+    stats.documentPagesChanged = docs.pagesChanged;
+    stats.documentRemovedHere = docs.removed;
   }
   // `localCardsChanged` tells the caller the on-device card list moved under the
   // user's feet, so an open deck has to be reloaded to show it (the same reason
