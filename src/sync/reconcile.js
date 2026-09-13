@@ -18,7 +18,7 @@ import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { normalizeCardStatus, slugifyFileName } from "../export/markdown.js?v=__BUILD__";
 import { flushPendingImageUploads } from "../images/outbox.js?v=__BUILD__";
-import { splitHighlightNotesTail } from "../format/notes-fence.js?v=__BUILD__";
+import { joinHighlightNotesTail, splitHighlightNotesTail } from "../format/notes-fence.js?v=__BUILD__";
 import { normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
 import { beginIndexBatch, deleteDeckFromLibrary, endIndexBatch, loadDeckFromLibrary, readLocalDeckIndex, saveDeckToLibrary, writeLocalDeckIndex } from "../library/local-library.js?v=__BUILD__";
 import { renderMyDecksList } from "../library/my-decks-render.js?v=__BUILD__";
@@ -38,6 +38,7 @@ import { rearmAutoSync } from "./auto-sync.js?v=__BUILD__";
 import { cardIsDirty, cardSyncSignature, mergeCloudCardsIntoSnapshot, readCardTombstones, reconcileCardsBeforePush } from "./cards.js?v=__BUILD__";
 import { calculateSyncDiff, syncTextChanged, syncTextFingerprint } from "./diff.js?v=__BUILD__";
 import { mergeDeckMeta, mergeDocumentAnnotations, reconcileDeckBeforePush } from "./document-sync.js?v=__BUILD__";
+import { mergeNoteBodies } from "./notes-merge3.js?v=__BUILD__";
 import { refreshSyncIndicatorBaseline, renderDeckEmptyState, setSyncIndicator, updateDeckEmptyStatus } from "./indicator.js?v=__BUILD__";
 import { pushDeckRowsToCloud } from "./push.js?v=__BUILD__";
 import { showSyncReport } from "./report.js?v=__BUILD__";
@@ -196,7 +197,31 @@ export async function pullCloudDeckIntoLibraryLocked(cloud, cards) {
     // existing resolver in src/sync/notes-conflict.js.
     extraTails: stashed?.notes ? [splitHighlightNotesTail(String(stashed.notes)).tail] : []
   });
-  const incomingNotes = documentMerge.notes;
+  // ── Both devices typed: put the two together rather than choosing ─────────
+  //
+  // documentMerge took the cloud's body, which is right when only the cloud
+  // moved and is a coin toss when both did. With the body they last agreed on,
+  // both edits can be applied — and only where the two touched the SAME lines is
+  // there a question left for the resolver below.
+  //
+  // The tail is untouched by any of this: it is merged entry by entry above, and
+  // is simply re-joined to whichever body wins.
+  // The body this device and the cloud last agreed on. Absent on a deck that
+  // has not synced since this existed, and mergeNoteBodies declines on that
+  // rather than guessing an ancestor.
+  const notesBase = typeof oldSnapshot?.syncedNotesBase === "string" ? oldSnapshot.syncedNotesBase : null;
+  const cloudBodyForMerge = splitHighlightNotesTail(cloudNotes).body;
+  const localBodyForMerge = splitHighlightNotesTail(String(oldSnapshot?.notes || "")).body;
+  const threeWay = (oldSnapshot && syncTextChanged(cloudBodyForMerge, localBodyForMerge))
+    ? mergeNoteBodies(notesBase, localBodyForMerge, cloudBodyForMerge)
+    : null;
+  const mergedBody = threeWay?.ok && !threeWay.conflicts && threeWay.merged !== cloudBodyForMerge
+    ? threeWay.merged
+    : null;
+  const notesWereMerged = Boolean(mergedBody);
+  const incomingNotes = mergedBody
+    ? joinHighlightNotesTail(mergedBody, splitHighlightNotesTail(documentMerge.notes).tail)
+    : documentMerge.notes;
   if (documentMerge.pdfHighlights) incomingMeta.pdfHighlights = documentMerge.pdfHighlights;
   if (Object.keys(documentMerge.deletedHighlightIds).length) incomingMeta.deletedHighlightIds = documentMerge.deletedHighlightIds;
   else delete incomingMeta.deletedHighlightIds;
@@ -224,7 +249,11 @@ export async function pullCloudDeckIntoLibraryLocked(cloud, cards) {
     // knew the name or colour of.
     meta: incomingMeta,
     cards: mergedCards,
-    localDeckId: localId
+    localDeckId: localId,
+    // See the fingerprint on the index entry below: the CLOUD's body, which is
+    // both what the cloud is known to hold and the right common ancestor for the
+    // next merge — a merged body is that body plus this device's own edits.
+    syncedNotesBase: cloudBodyForMerge
   };
   // Deletions this device made and the cloud hasn't honoured yet. Dropping them
   // here would let the very next pull adopt the cards straight back.
@@ -256,7 +285,10 @@ export async function pullCloudDeckIntoLibraryLocked(cloud, cards) {
   const oldBody = splitHighlightNotesTail(String(oldSnapshot?.notes || "")).body;
   const newBody = splitHighlightNotesTail(snapshot.notes).body;
   let notesConflicted = false;
-  if (oldSnapshot && syncTextChanged(oldBody, newBody)) {
+  // A clean three-way merge is not a conflict, and must not stash: nothing was
+  // replaced, both edits are in the body below, and asking about it would be the
+  // resolver firing on a merge that had nothing to resolve.
+  if (oldSnapshot && !notesWereMerged && syncTextChanged(oldBody, newBody)) {
     // ── Did THIS device edit the note, or did something else about the deck
     //    move? ──────────────────────────────────────────────────────────────
     //
@@ -357,6 +389,7 @@ export async function pullCloudDeckIntoLibraryLocked(cloud, cards) {
       highlightsRemovedHere: documentMerge.highlightsRemoved,
       highlightNotesMerged: documentMerge.highlightNotesMerged + documentMerge.highlightNotesAdopted,
       notesConflicted,
+      notesMerged: notesWereMerged,
       titleChanged: syncTextChanged(oldSnapshot.deckTitle || "", snapshot.deckTitle || ""),
       deckCategoryChanged: normalizeDeckCategory(oldSnapshot.deckCategory) !== normalizeDeckCategory(snapshot.deckCategory),
       // The quick-note category DEFINITIONS live in decks.meta, so a rename or
@@ -415,7 +448,12 @@ export async function pullCloudDeckIntoLibraryLocked(cloud, cards) {
     // rescued cards would sit here forever, never reaching the other devices.
     // Same for a blocked resurrection: the cloud still holds a card this device
     // deleted, and only a push will remove it there.
-    updatedAt: (keptLocal || blockedResurrections) ? new Date().toISOString() : cloudIso,
+    // ...and a merged notes body is the third: the text this pull produced is in
+    // neither the cloud's copy nor the one this device had, so the deck still
+    // owes the cloud a push. Stamping it aligned would leave the merge sitting
+    // on one device for ever, which is what two assertions in
+    // tools/sync-reconcile-check.mjs said before this clause existed.
+    updatedAt: (keptLocal || blockedResurrections || notesWereMerged) ? new Date().toISOString() : cloudIso,
     createdAt: cloud.created_at || existing?.createdAt || cloudIso,
     // Distinct from updatedAt (which also bumps on plain local edits) — this
     // specifically means "last confirmed match with the cloud", surfaced in
@@ -426,7 +464,20 @@ export async function pullCloudDeckIntoLibraryLocked(cloud, cards) {
     // syncTextFingerprint. Written on every pull and every push, and of the body
     // alone — the fenced highlight-note block is merged per entry and is not an
     // edit to the reader's prose.
-    syncedNotesFingerprint: syncTextFingerprint(newBody),
+    // ── The CLOUD's body, not the one this device now holds ─────────────────
+    //
+    // The baseline means "the body the cloud is known to hold", and after a
+    // three-way merge those are two different strings: the merged text lives
+    // only here until it is pushed. Recording the merged text would make the
+    // next push read as "this device did not edit the note" — because its body
+    // would match its own baseline — and adopt the cloud's copy straight back
+    // over the merge. Two assertions in tools/sync-reconcile-check.mjs said so.
+    //
+    // The merged text is a descendant of the cloud's body (it is that body plus
+    // this device's own edits), so the cloud's copy is also the right common
+    // ancestor for the next merge. When nothing was merged the two are the same
+    // string anyway — the pull takes the cloud's body.
+    syncedNotesFingerprint: syncTextFingerprint(cloudBodyForMerge),
     // ...and the card position the cloud holds, for the same reason and read by
     // the same kind of gate: a device that has not moved its own place in the
     // cards must not push it over the place another device set. Without a
@@ -600,8 +651,16 @@ async function pushLibraryDeckToCloudOnce(localMeta, { cloudExists = false, clou
   // The merged result is written back into the snapshot too, not just sent: a
   // device that only ever pushes would otherwise never hold the other's work,
   // since its own push makes it the newest and the next sync pushes again.
+  // The body this device and the cloud last agreed on, for the three-way merge.
+  // Read before the await-free critical section below rather than inside it, and
+  // absent for a deck that has not synced since this existed — mergeNoteBodies
+  // declines on a null base and everything falls back to what it did before.
+  const notesBase = typeof snapshot.syncedNotesBase === "string" ? snapshot.syncedNotesBase : null;
   const documentPush = cloudExists
-    ? reconcileDeckBeforePush(snapshot, cloudDeck, { notesBaseline: localMeta.syncedNotesFingerprint || null })
+    ? reconcileDeckBeforePush(snapshot, cloudDeck, {
+      notesBaseline: localMeta.syncedNotesFingerprint || null,
+      notesBase
+    })
     : null;
   // ── A cloud row we cannot read from is not a cloud row we may write over ──
   //
@@ -797,6 +856,11 @@ async function pushLibraryDeckToCloudOnce(localMeta, { cloudExists = false, clou
     for (const id of documentTombstonesBeingPruned) delete liveSnapshot.meta.deletedHighlightIds[id];
     if (!Object.keys(liveSnapshot.meta.deletedHighlightIds).length) delete liveSnapshot.meta.deletedHighlightIds;
   }
+  // The body the cloud now holds, which is what this push just sent — and
+  // therefore the ancestor the next merge reasons from. Onto the RE-READ
+  // snapshot with everything else, so an edit made while the push was in flight
+  // keeps its own text and only this field is patched.
+  liveSnapshot.syncedNotesBase = splitHighlightNotesTail(String(snapshot.notes || "")).body;
   writeDeckSnapshot(localMeta.id, liveSnapshot);
 
   const index = readLocalDeckIndex();
@@ -838,6 +902,21 @@ async function pushLibraryDeckToCloudOnce(localMeta, { cloudExists = false, clou
     // unreachable. Only ever set, never cleared here: the pull recomputes it
     // authoritatively and the resolver clears it when the reader answers.
     if (notesStashed) entry.notesConflicted = true;
+    // ...and cleared when this push established there is nothing contested. It
+    // used to be "only ever set, never cleared here: the pull recomputes it
+    // authoritatively" — but a deck that pushes every sync (which is any deck
+    // being edited) is never pulled, so a flag set once stayed up for good. That
+    // has already cost this app one permanently stuck warning; see the header on
+    // resolveNotesConflict.
+    //
+    // Only on the evidence this push actually has: the cloud's body is the one
+    // we last agreed on, so nobody else has moved it and there is nothing to
+    // rescue. Without a fingerprint the push still knows nothing and says
+    // nothing, exactly as before.
+    else if (localMeta.syncedNotesFingerprint && !documentPush?.bodyConflicted
+             && syncTextFingerprint(splitHighlightNotesTail(String(cloudDeck?.notes || "")).body) === localMeta.syncedNotesFingerprint) {
+      entry.notesConflicted = false;
+    }
     // The push wrote every card in the snapshot, so the count is authoritative
     // — and a quick note pinned into a stub deck would otherwise keep the 0 it
     // was created with.
@@ -865,6 +944,7 @@ async function pushLibraryDeckToCloudOnce(localMeta, { cloudExists = false, clou
   // it back — the reader has just overwritten something another device wrote,
   // which is worth being told about whichever direction the sync was going.
   stats.notesConflicted = notesStashed;
+  stats.notesMerged = Boolean(documentPush?.notesMerged);
   if (isNewDeck) {
     stats.notesChanged = Boolean(splitHighlightNotesTail(String(snapshot.notes || "")).body.trim());
     stats.readingPositionSynced = Boolean(snapshot.meta?.readingPosition);

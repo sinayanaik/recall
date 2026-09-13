@@ -570,6 +570,24 @@ export function finishSaveDeckToLibrary({ snapshot, localId, previousSnapshot, s
   // and merge instead of overwrite. Must run AFTER contentChanged is computed —
   // it mutates snapshot.cards, and deckContentMatches ignores these fields but
   // there's no reason to depend on that.
+  // ── The notes body the cloud is known to hold ────────────────────────────
+  //
+  // Carried forward from the copy being replaced, for exactly the reason
+  // notesConflicted is carried on the index entry: deckSnapshot() rebuilds this
+  // object from `state` on every autosave and names only what the app is
+  // editing, so a field the SYNC wrote would be gone 400ms after the next
+  // keystroke — and with it the common ancestor that lets two devices' edits
+  // merge instead of raising a question (src/sync/notes-merge3.js).
+  //
+  // On the snapshot rather than in a row of its own, which was the first
+  // attempt: a sibling key doubles the deck store and every sweep that walks it
+  // then has to learn to skip one more suffix. tools/reconcile-parity.mjs caught
+  // that immediately, reporting the base rows as extra decks on the device.
+  //
+  // Deliberately not added to deckSnapshot() itself, which is also the EXPORT
+  // shape — a reader's .json of their own deck should not carry a copy of an
+  // older revision of its notes.
+  if (previousSnapshot?.syncedNotesBase !== undefined) snapshot.syncedNotesBase = previousSnapshot.syncedNotesBase;
   stampCardSyncState(snapshot, previousSnapshot, updatedAt || nowIso, { synced });
   // Every local card deletion funnels through here (the delete handlers mutate
   // state and let the autosave persist it), so this diff is where a deletion

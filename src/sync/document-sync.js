@@ -44,6 +44,7 @@ import { LEGACY_NOTEBOOK_KEYS } from "../documents/notebook-migrate.js?v=__BUILD
 import { mergeHighlightNoteTails } from "../format/highlight-notes-merge.js?v=__BUILD__";
 import { CARD_TOMBSTONE_MAX_AGE_MS } from "./cards.js?v=__BUILD__";
 import { mergePdfHighlights, mergeRecordsById, syncTextChanged, syncTextFingerprint } from "./diff.js?v=__BUILD__";
+import { mergeNoteBodies } from "./notes-merge3.js?v=__BUILD__";
 import { tsMs } from "./stats.js?v=__BUILD__";
 
 // ── Deleted-highlight tombstones ────────────────────────────────────────────
@@ -502,7 +503,7 @@ export function mergeDeckMeta(cloudMeta, localMeta, { prefer = "local" } = {}) {
 // the answer is the old one, unconditionally. Guessing "unedited" about a deck
 // we know nothing about would hand the reader's own writing to whichever device
 // synced last, which is the fault, not the fix.
-export function reconcileDeckBeforePush(snapshot, cloudDeck, { notesBaseline = null } = {}) {
+export function reconcileDeckBeforePush(snapshot, cloudDeck, { notesBaseline = null, notesBase = null } = {}) {
   if (!snapshot || !cloudDeck) return null;
   // A row that arrived without a notes column tells us nothing about the cloud's
   // annotations, and merging against "" would delete every one of them. Same
@@ -531,6 +532,21 @@ export function reconcileDeckBeforePush(snapshot, cloudDeck, { notesBaseline = n
   // cloud has. Take theirs. Everything else keeps the behaviour it had.
   const bodySide = (!localBodyEdited && cloudBodyMoved) ? "cloud" : "local";
 
+  // ── Both of them typed ────────────────────────────────────────────────────
+  //
+  // The case the gates above finally isolate, and the one where "keep mine and
+  // file theirs under a question" is a poor answer: two edits three paragraphs
+  // apart are two independent changes to a common ancestor, and applying both is
+  // the only reading that loses nothing. Only where they touched the SAME lines
+  // is there anything to ask, and there this declines and the caller's stash and
+  // resolver are exactly what happens.
+  //
+  // Attempted only when there is a base to reason from. Without one — a deck
+  // last synced by an older build — mergeNoteBodies says so and nothing changes.
+  const bothMovedTheBody = localBodyEdited && cloudBodyMoved && syncTextChanged(cloudBody, localBody);
+  const threeWay = bothMovedTheBody ? mergeNoteBodies(notesBase, localBody, cloudBody) : null;
+  const mergedBody = threeWay?.ok && !threeWay.conflicts ? threeWay.merged : null;
+
   const merged = hasAnnotations
     ? mergeDocumentAnnotations({
       cloudNotes: String(cloudDeck.notes || ""),
@@ -557,9 +573,13 @@ export function reconcileDeckBeforePush(snapshot, cloudDeck, { notesBaseline = n
   // The no-annotations path has to make the same choice. A plain deck's notes
   // are all body, so "send mine regardless" is the whole fault here rather than
   // a corner of it.
+  // Which body actually goes up, in one place. mergeDocumentAnnotations chose
+  // between the two whole strings; a merged body is neither of them, so the tail
+  // it built is re-joined to the text this decided on.
+  const finalBody = bodySide === "cloud" ? cloudBody : (mergedBody ?? localBody);
   const notes = merged
-    ? merged.notes
-    : (bodySide === "cloud" ? String(cloudDeck.notes || "") : String(snapshot.notes || ""));
+    ? joinHighlightNotesTail(finalBody, merged.tail)
+    : finalBody;
 
   return {
     notes,
@@ -568,10 +588,15 @@ export function reconcileDeckBeforePush(snapshot, cloudDeck, { notesBaseline = n
     // Whether the body going up is the cloud's rather than this device's, so the
     // caller knows there is nothing here to stash and nothing to ask about.
     adoptedCloudBody: bodySide === "cloud",
-    // ...and whether the two really did diverge, which is the only case that is
-    // a conflict at all.
-    bodyConflicted: Boolean(notesBaseline) && localBodyEdited && cloudBodyMoved
-      && syncTextChanged(cloudBody, localBody),
+    // ...and whether the two were put together rather than one being chosen,
+    // which the report has a sentence for: a merge nobody was told about is
+    // indistinguishable from a sync that did nothing, until the reader notices a
+    // sentence they did not write.
+    notesMerged: Boolean(mergedBody),
+    // ...and whether the two really did diverge in a way nothing could settle,
+    // which is the only case that is a conflict at all. A clean three-way merge
+    // is emphatically not one.
+    bodyConflicted: bothMovedTheBody && !mergedBody,
     highlightsAdopted: merged?.highlightsAdopted || 0,
     highlightsRemoved: merged?.highlightsRemoved || 0,
     highlightNotesMerged: merged?.highlightNotesMerged || 0,
