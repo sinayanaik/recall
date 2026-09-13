@@ -507,6 +507,7 @@ const APP_SHELL = [
   `./src/ui/deck-header.js?v=${STAMP}`,
   `./src/ui/edit-mode.js?v=${STAMP}`,
   `./src/ui/feedback.js?v=${STAMP}`,
+  `./src/ui/fonts.js?v=${STAMP}`,
   `./src/ui/help.js?v=${STAMP}`,
   `./src/ui/ink-rail.js?v=${STAMP}`,
   `./src/ui/nav-history.js?v=${STAMP}`,

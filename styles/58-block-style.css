@@ -80,42 +80,67 @@
 
 /* ── The type ──────────────────────────────────────────────────────────────
  *
- * A MULTIPLIER over the size the body already computes, never a size of its own.
- * The block's type is `0.82rem * --pdf-block-scale` precisely so that it follows
- * the page through a pinch (styles/53-handwriting.css), and a rem written here
- * would be the one property that stopped following it.
+ * Two rules, and which one applies is decided by whether the block carries a
+ * size at all. The first is what every block has always been. The second is a
+ * size the reader typed, in POINTS: on this surface one CSS pixel at scale 1 is
+ * one PDF point, so multiplying by the viewport's own scale is what makes 18pt
+ * mean 18pt at every zoom, in an export, and on the next device.
+ *
+ * Presence of the attribute rather than a var() fallback, so an unstyled block
+ * matches the rule it matched before any of this existed.
  */
 .pdf-block-body {
-  font-size: calc(0.82rem * var(--pdf-block-scale, 1) * var(--pdf-block-text, 1));
   color: var(--pdf-block-ink, inherit);
   text-align: var(--pdf-block-align, left);
+  /* Code inside a block, unless the reader says otherwise, is the size of the
+     words around it. `.rendered pre` reads --code-font-size and it defaults to
+     the app's content size (styles/06-rendered.css:332) — which is a setting
+     about the notes column, so a listing in a 24pt block came out at whatever
+     the app font happened to be, ignoring the block entirely. 1em is the block's
+     own size, whatever that has been set to. */
+  --code-font-size: 1em;
+}
+
+.pdf-block[data-block-size] .pdf-block-body {
+  font-size: calc(var(--pdf-block-size) * 1px * var(--pdf-block-scale, 1));
 }
 
 .pdf-block[data-block-align="center"] { --pdf-block-align: center; }
 .pdf-block[data-block-align="right"] { --pdf-block-align: right; }
 
-/* The four faces, against the editor's own sixteen. That menu sets a run of
-   markdown in a face for its own sake; this says what kind of thing the whole
-   block is. `hand` is a real request on a page of handwriting — a typed note
-   that wants to sit with the writing around it rather than against it. */
-.pdf-block[data-block-font="serif"] .pdf-block-body {
-  font-family: Georgia, "Times New Roman", serif;
+/* The face, as a value rather than a rule per family. It is one of the app's own
+   thirty-two (src/ui/theme-catalog.js), resolved to its stack — and its webfont
+   fetched — by the one function every font choice in the app goes through. */
+.pdf-block[data-block-font] .pdf-block-body {
+  font-family: var(--pdf-block-font);
 }
 
-.pdf-block[data-block-font="mono"] .pdf-block-body {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+/* ── ...and the two things INSIDE a block that can be told something ───────
+ *
+ * A fenced listing and a picture. Both are drawn by rules the app already has,
+ * so both of these are one line of override each, scoped to the one block.
+ */
+.pdf-block[data-block-code-size] .pdf-block-body {
+  --code-font-size: calc(var(--pdf-block-code-size) * 1px * var(--pdf-block-scale, 1));
 }
 
-.pdf-block[data-block-font="hand"] .pdf-block-body {
-  font-family: "Segoe Print", "Bradley Hand", "Comic Sans MS", cursive;
+/* `.rendered pre code` is `white-space: pre` with the <pre> scrolling, which is
+   right in a reading column and is a horizontal scroller inside a rectangle on a
+   page. Both properties are needed: pre-wrap breaks at spaces, and a URL or a
+   long identifier has none. */
+.pdf-block[data-block-code-wrap] .pdf-block-body pre code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
-/* A block whose height follows its text has nothing to scroll: the box is
-   measured to the words on every paint (fitBlockHeight). `hidden` rather than
-   `auto` so the scrollbar does not flash in and out during the one frame between
-   the text growing and the box catching up. */
-.pdf-block.is-fit .pdf-block-body {
-  overflow: hidden;
+/* A picture in a text block fills the block's width (styles/53-handwriting.css),
+   which is the right default and was the only answer. `!important` and the extra
+   attribute for the reason written there: `.diagram-shell img` sets width with
+   !important of its own, and only a more specific !important beats it. */
+.pdf-block[data-block-image-width] .pdf-block-body img,
+.pdf-block[data-block-image-width] .pdf-block-body .diagram-shell img {
+  width: calc(var(--pdf-block-image-width) * 1%) !important;
+  max-width: 100% !important;
 }
 
 /* ── Picked up ─────────────────────────────────────────────────────────────
@@ -135,10 +160,15 @@
 
 /* ── The controls themselves ───────────────────────────────────────────────
  *
- * One row per question, the question named on the left. Named rather than left
- * to eight coloured chips and five letters to explain themselves: this panel is
- * opened once in a while, not held open, and a control nobody can read is a
- * control nobody presses twice.
+ * This was seven labelled rows of pills and swatches, all on screen at once, in
+ * a panel that floats over a page. "Too cluttered", and it was.
+ *
+ * The app had already answered this for its own settings and written the answer
+ * down above styleControlGroups (src/ui/style-schema.js): a short always-visible
+ * tier, everything else behind one disclosure. So: a two-tab switch over ONE row
+ * of colour chips instead of two rows of them, a typed size beside three
+ * alignment icons, and More. Four rows against seven, and the folded half now
+ * holds things the block could not say at all before.
  */
 .bstyle {
   display: flex;
@@ -147,16 +177,53 @@
   min-width: 0;
 }
 
+/* The switch that says what the one chip row below it paints. Two segments, the
+   same shape and the same aria-pressed as the editor's Write/Preview — a reader
+   who has met one has met the other. */
+.bstyle-tabs {
+  display: flex;
+  gap: 4px;
+}
+
+.bstyle-tab {
+  flex: 1 1 auto;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 0.74rem;
+  font-weight: 600;
+  line-height: 1;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.bstyle-swatches {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+/* The size box and the alignment icons share a line: neither fills one, and two
+   half-empty rows is what "cluttered" looks like from the inside. */
+.bstyle-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
 .bstyle-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   min-width: 0;
 }
 
 .bstyle-label {
   flex: 0 0 auto;
-  width: 46px;
   font-size: 0.72rem;
   font-weight: 600;
   color: var(--muted);
@@ -170,7 +237,57 @@
   min-width: 0;
 }
 
-.bstyle-pill {
+/* ── The typed values ──────────────────────────────────────────────────────
+ *
+ * A textbox and a unit, which is the Style panel's own shape for every number
+ * it holds — and, per the rule written there, no spinner, no slider and no
+ * clamp. Narrow on purpose: the answers are two or three characters, and a box
+ * sized for what goes in it is a box that leaves room for the control beside it.
+ */
+.bstyle-number {
+  flex: 0 0 auto;
+}
+
+.bstyle-input {
+  /* Wide enough for the longest thing it ever holds, which is not a number:
+     "as text" is what the code box says when it has none. */
+  width: 5.4em;
+  min-width: 0;
+  padding: 5px 7px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.76rem;
+  text-align: right;
+}
+
+.bstyle-unit {
+  flex: 0 0 auto;
+  font-size: 0.7rem;
+  color: var(--muted);
+}
+
+.bstyle-select {
+  gap: 8px;
+}
+
+.bstyle-select select {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 5px 7px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.76rem;
+}
+
+/* ── The pressable ones ────────────────────────────────────────────────────*/
+.bstyle-pill,
+.bstyle-switch {
   border: 1px solid var(--line);
   border-radius: 999px;
   background: var(--panel-2);
@@ -182,9 +299,27 @@
   cursor: pointer;
 }
 
-.bstyle-pill[data-bstyle-font-sample="serif"] { font-family: Georgia, "Times New Roman", serif; }
-.bstyle-pill[data-bstyle-font-sample="mono"] { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-.bstyle-pill[data-bstyle-font-sample="hand"] { font-family: "Segoe Print", "Bradley Hand", "Comic Sans MS", cursive; }
+/* Alignment is the one control here that is genuinely iconic, so it carries the
+   icon — drawn on the app's own 24x24 grid (src/library/my-decks-icons.js), in
+   currentColor, so it picks up the accent when it is the one that is on. */
+.bstyle-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.bstyle-icon .md-ico {
+  width: 15px;
+  height: 15px;
+}
 
 .bstyle-swatch {
   width: 22px;
@@ -205,7 +340,9 @@
     var(--panel-2);
 }
 
+.bstyle-tab[aria-pressed="true"],
 .bstyle-pill[aria-pressed="true"],
+.bstyle-icon[aria-pressed="true"],
 .bstyle-switch[aria-pressed="true"] {
   background: var(--accent);
   border-color: var(--accent);
@@ -217,6 +354,62 @@
 .bstyle-swatch[aria-pressed="true"] {
   border-color: var(--accent);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+/* ── The one disclosure ────────────────────────────────────────────────────
+ *
+ * Scaled down from .style-advanced (styles/08-panels.css:1405), which is the
+ * same control doing the same job for the app's own settings — the marker
+ * removed and drawn as a caret that turns, so the row is one legible line
+ * rather than a triangle the browser draws differently on each platform.
+ */
+.bstyle-more {
+  border-top: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+  padding-top: 6px;
+}
+
+.bstyle-more > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  list-style: none;
+  cursor: pointer;
+  color: var(--accent);
+  font-size: 0.7rem;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  user-select: none;
+}
+
+.bstyle-more > summary::-webkit-details-marker {
+  display: none;
+}
+
+.bstyle-more > summary::after {
+  content: "▾";
+  flex-shrink: 0;
+  transition: transform 0.12s linear;
+}
+
+.bstyle-more[open] > summary::after {
+  transform: rotate(180deg);
+}
+
+.bstyle-more[open] > summary {
+  margin-bottom: 6px;
+}
+
+.bstyle-more > .bstyle-row,
+.bstyle-more > .bstyle-line {
+  margin-top: 6px;
+}
+
+/* The rows inside the fold are label-then-control, and the labels line up: a
+   column of ragged left edges is what makes six controls read as sixteen. */
+.bstyle-more .bstyle-label {
+  width: 54px;
 }
 
 /* ── ...where they float over the page ─────────────────────────────────────
@@ -286,16 +479,13 @@
 }
 
 @media (max-width: 720px) {
-  /* The label column is 46px of a 340px panel on a desktop and 46px of a phone,
-     which is a fifth of it. The rows stack instead, which costs height on the
-     axis a popover has room in. */
-  .bstyle-row {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 3px;
-  }
-
-  .bstyle-label {
-    width: auto;
+  /* The visible tier is a switch, a row of chips and one line holding the size
+     and the alignment. Only that last line can run out of room, and it wraps
+     rather than stacking every row in the panel — the fold below it is
+     label-then-control at 54px, which fits the narrowest phone this app
+     supports and reads worse broken over two lines. */
+  .bstyle-line {
+    flex-wrap: wrap;
+    row-gap: 6px;
   }
 }

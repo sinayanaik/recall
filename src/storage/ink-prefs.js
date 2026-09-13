@@ -13,6 +13,7 @@
 // rather than a fifth pen nothing in the rail is ever shown as selected for.
 
 import { BLANK_PAPER_DEFAULT, normalizeBlankPaper } from "../documents/blank-pdf.js?v=__BUILD__";
+import { normalizeBlockStyle } from "../documents/block-style.js?v=__BUILD__";
 import { INK_ERASER_SIZE_DEFAULT, INK_ERASE_MODE_DEFAULT, INK_PEN_DEFAULT, INK_TOOL_DEFAULT, INK_WIDTH_DEFAULT, normalizeInkEraseMode, normalizeInkEraserSize, normalizeInkPen, normalizeInkTool, normalizeInkWidth } from "../format/ink-colors.js?v=__BUILD__";
 import { inkPreferencesKey } from "./keys.js?v=__BUILD__";
 
@@ -157,5 +158,80 @@ export function writeNotebookPaperPreference(kind) {
     }));
   } catch (error) {
     console.warn("Could not remember the paper", error);
+  }
+}
+
+// ── ...and how the last block was styled ───────────────────────────────────
+//
+// The same argument as the pen's colour, one surface over: styling a block
+// yellow, 18pt and centred and then having to say all three again for the next
+// one is exactly the friction that stops people using the controls at all. So
+// the last bag a reader chose is remembered, and a new block starts from it.
+//
+// PER KIND, which is the one thing that is not obvious. A picture is styled with
+// two of the ten keys and a paragraph with all of them, and handing a photograph
+// the yellow fill of the last caption written would be the preference confidently
+// answering a question nobody asked. Two bags, one each.
+//
+// Normalised on the way out through normalizeBlockStyle for the reason the pen's
+// values go through theirs: a bag written by a build whose defaults have moved
+// becomes one of THIS build's, rather than a set of values no control is ever
+// shown as holding.
+export function blockStylePreference(kind) {
+  const slot = kind === "image" ? "image" : "text";
+  try {
+    const raw = localStorage.getItem(inkPreferencesKey);
+    const parsed = raw ? JSON.parse(raw) : null;
+    return normalizeBlockStyle(parsed?.blockStyle?.[slot]);
+  } catch (_) {
+    return normalizeBlockStyle(null);
+  }
+}
+
+export function writeBlockStylePreference(kind, style) {
+  const slot = kind === "image" ? "image" : "text";
+  try {
+    const raw = localStorage.getItem(inkPreferencesKey);
+    const parsed = (raw ? JSON.parse(raw) : null) || {};
+    const blockStyle = (parsed.blockStyle && typeof parsed.blockStyle === "object") ? parsed.blockStyle : {};
+    blockStyle[slot] = normalizeBlockStyle(style);
+    localStorage.setItem(inkPreferencesKey, JSON.stringify({ ...parsed, blockStyle }));
+  } catch (error) {
+    console.warn("Could not remember the block style", error);
+  }
+}
+
+// ── ...and how the panel itself was left ───────────────────────────────────
+//
+// Which of Fill/Text the one swatch row was showing, and whether More was open.
+// Not part of the style bag above and deliberately not on the block: it is a
+// fact about how this reader works, not about any block, and it would be a
+// strange thing to sync to their other device mid-sentence.
+const BLOCK_PANEL_DEFAULT = { swatch: "fill", more: false };
+
+export function blockPanelPreference() {
+  try {
+    const raw = localStorage.getItem(inkPreferencesKey);
+    const parsed = raw ? JSON.parse(raw) : null;
+    const stored = parsed?.blockPanel;
+    return {
+      swatch: stored?.swatch === "ink" ? "ink" : BLOCK_PANEL_DEFAULT.swatch,
+      more: typeof stored?.more === "boolean" ? stored.more : BLOCK_PANEL_DEFAULT.more
+    };
+  } catch (_) {
+    return { ...BLOCK_PANEL_DEFAULT };
+  }
+}
+
+export function writeBlockPanelPreference(next) {
+  try {
+    const raw = localStorage.getItem(inkPreferencesKey);
+    const parsed = (raw ? JSON.parse(raw) : null) || {};
+    localStorage.setItem(inkPreferencesKey, JSON.stringify({
+      ...parsed,
+      blockPanel: { ...blockPanelPreference(), ...next }
+    }));
+  } catch (error) {
+    console.warn("Could not remember the style panel", error);
   }
 }

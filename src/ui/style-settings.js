@@ -10,7 +10,6 @@ import { showCard } from "../cards/card-view.js?v=__BUILD__";
 import { scheduleLiveQuestionFit } from "../cards/question-fit.js?v=__BUILD__";
 import { styleStorageKey } from "../core/constants.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
-import { ensureWebfont } from "../core/lib-loader.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { escapeRegExp } from "../core/text.js?v=__BUILD__";
 import { scheduleNotesCaretCheck } from "../notes/caret.js?v=__BUILD__";
@@ -20,18 +19,8 @@ import { scheduleMarkdownTableFit } from "../render/tables.js?v=__BUILD__";
 import { showConfirmModal, showToast } from "./feedback.js?v=__BUILD__";
 import { defaultStyleProfiles, styleControlGroups, styleCssVariables, styleDefaults, styleDensityPresets, styleFieldByKey } from "./style-schema.js?v=__BUILD__";
 import { styleMobileMedia, styleProfiles } from "./style-tokens.js?v=__BUILD__";
-import { fontFamilyChoices } from "./theme-catalog.js?v=__BUILD__";
+import { resolveFontFamily } from "./fonts.js?v=__BUILD__";
 import { currentThemeId } from "./theme.js?v=__BUILD__";
-
-export function resolveFontFamily(value) {
-  // Fires the network fetch (idempotent, cached by URL) for a choice that
-  // names a real webfont; a no-op for "system"/"serif"/"mono"/"rounded"/
-  // "inherit". Belongs here rather than at each call site because this is the
-  // one function every font CHOICE — Basics or Notes — passes through on its
-  // way to becoming a CSS value.
-  ensureWebfont(value);
-  return fontFamilyChoices[value] || value;
-}
 
 export function styleValue(source, key, defaults = styleDefaults) {
   return Object.prototype.hasOwnProperty.call(source, key) ? String(source[key]) : defaults[key];
