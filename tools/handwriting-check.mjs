@@ -126,6 +126,14 @@ const API_SRC = `async () => {
     "/src/notes/touch-selection.js?v=__BUILD__",
     "/src/documents/pdf-selection.js?v=__BUILD__",
     "/src/notes/selection.js?v=__BUILD__",
+    // The highlight's own popup, so the cases about a pen tap can ask whether it
+    // came up and put it away again between them.
+    "/src/notes/mark-menu.js?v=__BUILD__",
+    // Which surface a deck opens on, and the store behind it — the cases at the
+    // foot of this file ask that question directly rather than only through a
+    // reload, so that "it fell back" can be told from "it was never remembered".
+    "/src/documents/doc-slot.js?v=__BUILD__",
+    "/src/storage/deck-tab.js?v=__BUILD__",
     "/src/ui/reading-rail.js?v=__BUILD__"
   ];
   const mods = await Promise.all(paths.map((p) => import(p)));
@@ -2885,6 +2893,335 @@ try {
   check("...and nothing threw while the pen was selecting",
     !stylus.fatal && (stylus.errs || []).length === 0,
     stylus.fatal || (stylus.errs || []).join(" | "));
+
+
+  // ── The menu that opened once per dotted i ───────────────────────────────
+  //
+  // A press shorter than INK_TAP_MS and stiller than INK_TAP_SLOP is a TAP: no
+  // ink, and — deliberately — no preventDefault, so the browser's own click
+  // happens and a pen can press a note badge or a button. Writing is made of
+  // those. Every i-dot, comma, tick and accent is a tap by that measure and
+  // lands within INK_TAP_SLACK of ink already on the page, so
+  // documentHighlightAtPoint found that ink and opened its menu, mid-word.
+  //
+  // Driven with real events at the element the surface listens on, because what
+  // is under test is which handler wins.
+  const menus = await page.evaluate(`async (penSrc) => {
+    const { api, settle } = window.__recall;
+    const pen = (0, eval)(penSrc);
+    const errs = [];
+    window.addEventListener("error", (e) => errs.push(String(e.message)));
+    const view = document.getElementById("documentView");
+    if (!view) return { fatal: "no #documentView" };
+
+    api.setViewMode("handwriting");
+    await settle(500);
+    api.toggleInkRail(true);
+    api.chooseInkTool("pen");
+    await settle(200);
+
+    const pageEl = document.querySelector("#documentStage .pdf-page[data-page-number='1']");
+    if (!pageEl) return { fatal: "no page on the notebook", errs };
+    const box = pageEl.getBoundingClientRect();
+    const railBox = document.getElementById("documentInkRail")?.getBoundingClientRect();
+    const railBottom = railBox && railBox.height ? railBox.bottom : 0;
+    // Well clear of the rail, which floats over the page: a nib landing under it
+    // is a nib that never reaches the paper.
+    const y = Math.max(box.top + 140, railBottom + 60);
+    const x0 = box.left + 80;
+
+    const marks = () => (api.state.meta?.pdfHighlights || []).length;
+    const menuUp = () => {
+      const m = document.querySelector(".mark-menu");
+      return Boolean(m) && !m.hidden && m.getBoundingClientRect().height > 0;
+    };
+    const closeMenus = () => { api.closeMarkMenu(); };
+
+    // A real stroke, so there is ink under the taps below.
+    const before = marks();
+    pen(view, "pointerdown", x0, y, 1);
+    for (let i = 1; i <= 12; i += 1) { pen(view, "pointermove", x0 + i * 6, y + (i % 3), 1); await settle(16); }
+    pen(view, "pointerup", x0 + 72, y, 0);
+    await settle(400);
+    const drew = marks() - before;
+    closeMenus();
+    await settle(80);
+
+    // ── The dotted i: short, still, and right on top of that stroke ────────
+    const penTapX = x0 + 36;
+    pen(view, "pointerdown", penTapX, y, 1);
+    await settle(30);
+    pen(view, "pointerup", penTapX, y, 0);
+    // The click a real tap produces. A synthesised PointerEvent sequence does
+    // NOT generate one — the browser only does that for real input — and the
+    // mark menu listens on click, so without this the case would dispatch a
+    // perfect little gesture that no handler under test ever hears. Verified by
+    // removing the fix and watching this fail.
+    //
+    // Dispatched bare, exactly as the browser sends it: the refusal reads which
+    // instrument last touched the surface (src/core/gesture.js), which the
+    // pointerdown above has already recorded, and not anything on the click.
+    view.dispatchEvent(new PointerEvent("click", { bubbles: true, cancelable: true, clientX: penTapX, clientY: y, pointerType: "pen" }));
+    await settle(350);
+    const penTap = { menu: menuUp(), inked: marks() - before - drew };
+    closeMenus();
+    await settle(120);
+
+    // ── ...and the same contact from a FINGER, which must still open it ────
+    //
+    // Touch never draws — that is this app's palm rejection — so a finger is
+    // always free to mean "that one", and the refusal must not have taken the
+    // last route to an ink mark's menu away.
+    const finger = (type, x, yy, buttons) => view.dispatchEvent(new PointerEvent(type, {
+      bubbles: true, pointerId: 7, pointerType: "touch", isPrimary: true,
+      clientX: x, clientY: yy, buttons, pressure: buttons ? 0.5 : 0
+    }));
+    finger("pointerdown", penTapX, y, 1);
+    await settle(30);
+    finger("pointerup", penTapX, y, 0);
+    // A click is what the mark menu listens on, and a synthetic pointer
+    // sequence does not produce one — so it is dispatched, which is exactly what
+    // the browser does after a real touch that was not consumed.
+    view.dispatchEvent(new PointerEvent("click", { bubbles: true, clientX: penTapX, clientY: y, pointerType: "touch" }));
+    await settle(300);
+    const fingerTap = { menu: menuUp() };
+    closeMenus();
+    await settle(120);
+
+    // The palm-then-pen race is NOT here: it needs a real touch, which only
+    // Input.dispatchTouchEvent produces. A synthesised TouchEvent reaches no
+    // handler that matters and the case passed on every build — see the block
+    // after this one.
+    return { drew, penTap, fingerTap, errs };
+  }`, PEN_SRC);
+
+  check("a stroke lands on the notebook before any of this is asked",
+    !menus.fatal && menus.drew === 1,
+    menus.fatal || `${menus.drew} mark(s) — the taps below would be asking nothing without ink under them`);
+  // The report, in one line.
+  check("a pen tap on your own handwriting does not open its menu",
+    !menus.fatal && menus.penTap?.menu === false,
+    menus.fatal || "the mark menu came up under a tap that was part of writing");
+  check("...and the tap still leaves no ink, as a tap always did",
+    !menus.fatal && menus.penTap?.inked === 0,
+    menus.fatal || `${menus.penTap?.inked} mark(s) — a tap must not become a stroke`);
+  // ...and the other half, which is what stops the fix being "the menu never
+  // opens": touch never draws, so a finger is always free to mean "that one".
+  check("...while a FINGER on the same ink still opens it",
+    !menus.fatal && menus.fingerTap?.menu === true,
+    menus.fatal || "the refusal took the last route to an ink mark's menu away");
+  // ── The palm that lands a frame before the nib ───────────────────────────
+  //
+  // onRootTouchStart reads the pen flag at TOUCHSTART, and the reported sequence
+  // is the other order: a palm or a knuckle settles one frame before the nib, so
+  // the touch arms the 240ms press first and the pen's own pointerdown has no
+  // way to cancel it. 240ms into a stroke a word is selected under the writing
+  // and the pill comes up over it.
+  //
+  // Through Input.dispatchTouchEvent, the way tools/touch-selection-check.mjs
+  // drives every one of its own presses. A synthesised TouchEvent is not enough
+  // — it reaches no handler that matters, and a first draft of this case passed
+  // on a build with the guard deleted. And on the PAPER, not the notebook: a
+  // press selects a WORD, and a notebook's pages are blank by construction.
+  const touchStart = (x, y) => page.call("Input.dispatchTouchEvent", {
+    type: "touchStart", touchPoints: [{ x, y, radiusX: 14, radiusY: 14, force: 1, id: 1 }]
+  });
+  const touchEnd = () => page.call("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+
+  const spot = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    api.setViewMode("document");
+    await settle(700);
+    api.clearTouchSelection();
+    const line = [...document.querySelectorAll("#documentStage .pdf-page[data-page-number='1'] .pdf-text-layer span")]
+      .map((node) => node.getBoundingClientRect())
+      .filter((r) => r.width > 60 && r.height > 4 && r.top > 90 && r.bottom < window.innerHeight - 20)
+      .sort((a, b) => a.top - b.top)[0];
+    return line ? { x: Math.round(line.left + line.width / 2), y: Math.round(line.top + line.height / 2) } : null;
+  }`);
+
+  // The controller's OWN signal, not the pill: body.is-touch-selecting is what
+  // firePress sets when a press wins, and it is what
+  // tools/touch-selection-check.mjs watches for the same reason — the pill is a
+  // consequence a frame or two later and can be styled away. Either it or a live
+  // selection means a word was taken.
+  //
+  // page.evaluate wraps its argument as `(fn)(args)`, so this is the bare arrow —
+  // calling it here as well would invoke the result of the call.
+  const pressTook = `() => {
+    const selection = window.getSelection();
+    const chars = selection && selection.rangeCount ? selection.getRangeAt(0).toString().trim().length : 0;
+    return document.body.classList.contains("is-touch-selecting") || chars > 0;
+  }`;
+
+  let palmAlone = null;
+  let palmThenPen = null;
+  if (spot) {
+    // The control. Without it the assertion below is "nothing happened" in a
+    // fixture where nothing could have happened either way.
+    await touchStart(spot.x, spot.y);
+    await new Promise((r) => setTimeout(r, 600));
+    palmAlone = await page.evaluate(pressTook);
+    await touchEnd();
+    await page.evaluate(`async () => { window.__recall.api.clearTouchSelection(); await window.__recall.settle(200); }`);
+
+    // ...and the same press with a nib arriving one frame later.
+    await touchStart(spot.x, spot.y);
+    await page.evaluate(`async (penSrc) => {
+      const pen = (0, eval)(penSrc);
+      await window.__recall.settle(30);
+      pen(document.getElementById("documentView"), "pointerdown", ${spot.x}, ${spot.y}, 1);
+    }`, PEN_SRC);
+    await new Promise((r) => setTimeout(r, 600));
+    palmThenPen = await page.evaluate(pressTook);
+    await page.evaluate(`async (penSrc) => {
+      const pen = (0, eval)(penSrc);
+      pen(document.getElementById("documentView"), "pointerup", ${spot.x}, ${spot.y}, 0);
+    }`, PEN_SRC);
+    await touchEnd();
+    await page.evaluate(`async () => { window.__recall.api.clearTouchSelection(); await window.__recall.settle(200); }`);
+  }
+
+  check("a long press on the paper with no pen near it does select a word",
+    palmAlone === true,
+    spot ? "no press ever wins here, so the case below would ask nothing" : "no readable line on the paper");
+  check("...but a palm that lands a frame before the nib does not",
+    palmThenPen === false,
+    "a word was selected under the writing, 240ms into the stroke");
+  check("...and nothing threw while the menus were being asked about",
+    !menus.fatal && (menus.errs || []).length === 0,
+    menus.fatal || (menus.errs || []).join(" | "));
+
+
+  // ── Where the reader was, per panel ──────────────────────────────────────
+  //
+  // A deck has TWO documents and had one meta.readingPosition between them, so
+  // the PDF tab and the Write tab overwrote each other's page on every scroll —
+  // and which tab a deck opened on came from its CONTENTS, which is right the
+  // first time and wrong every time after.
+  const place = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const errs = [];
+    window.addEventListener("error", (e) => errs.push(String(e.message)));
+
+    const pageOf = () => api.currentDocumentPage();
+    const waitForPages = async (want) => {
+      for (let i = 0; i < 40; i += 1) {
+        if (api.currentPdfPageCount() >= want) return true;
+        await settle(100);
+      }
+      return false;
+    };
+
+    // The paper has several pages; the notebook is given a second so the two
+    // can genuinely be on different ones.
+    api.setViewMode("document");
+    await settle(500);
+    if (!(await waitForPages(2))) return { fatal: "the paper has too few pages for this case", errs };
+    api.scrollToDocumentPage(3, 0, { smooth: false });
+    await settle(400);
+    const paperPage = pageOf();
+
+    api.setViewMode("handwriting");
+    await settle(600);
+    await api.addNotebookPage();
+    await settle(500);
+    api.scrollToDocumentPage(2, 0, { smooth: false });
+    await settle(400);
+    const notebookPage = pageOf();
+
+    // ...and back. The park already keeps this in memory; what is asked here is
+    // that the two surfaces are not writing over each other's record on the way.
+    api.setViewMode("document");
+    await settle(600);
+    const paperAgain = pageOf();
+    api.setViewMode("handwriting");
+    await settle(600);
+    const notebookAgain = pageOf();
+
+    // The two stored records, which is where the sharing actually happened: one
+    // field for two documents meant a cold open applied whichever surface was
+    // scrolled last to whichever surface opened.
+    const stored = {
+      doc: api.state.meta?.readingPositionPdf?.pdfPage ?? null,
+      notebook: api.state.meta?.readingPositionNotebook?.pdfPage ?? null
+    };
+
+    // ── The tab a deck opens on ────────────────────────────────────────────
+    const index = api.readLocalDeckIndex();
+    const entry = index.find((m) => m.id === api.state.localDeckId) || index[0];
+    // Left on the NOTES tab, deliberately: this deck has a paper, so the
+    // content-derived answer is "document" and anything that comes back "notes"
+    // can only have come from the memory.
+    //
+    // Away first, because setViewMode records only on a real CHANGE — arriving
+    // at the tab you are already on writes nothing, and a first draft of this
+    // case asserted against a memory it had never written.
+    api.setViewMode("cards");
+    await settle(200);
+    api.setViewMode("notes");
+    await settle(300);
+    for (let i = 0; i < 60 && api.deckAutosaveTimer; i += 1) await settle(100);
+    await settle(200);
+    const contentSays = api.documentTabForOpenDeck(api.state.meta, null);
+    await api.loadDeckFromLibrary(entry.id);
+    await settle(700);
+    const reopenedOn = api.state.viewMode;
+
+    // ...and the same deck left on the cards comes back on the cards, so the
+    // answer is the remembered tab and not a constant.
+    api.setViewMode("cards");
+    await settle(300);
+    await api.loadDeckFromLibrary(entry.id);
+    await settle(700);
+    const reopenedOnCards = api.state.viewMode;
+
+    // ...and a remembered tab that is no longer possible falls back rather than
+    // opening a surface with nothing on it: a paper removed on another device
+    // leaves "document" pointing at a document this deck does not have.
+    localStorage.setItem("recall:deckTab-v1", JSON.stringify({
+      [entry.id]: { mode: "handwriting", at: Date.now() }
+    }));
+    const strandedFallsBackTo = api.documentTabForOpenDeck({ pdf: { name: "p.pdf" } }, entry.id);
+    const honouredWhenReal = api.documentTabForOpenDeck({ pdf: { name: "p.pdf" }, notebook: { pages: 1 } }, entry.id);
+
+    return { paperPage, notebookPage, paperAgain, notebookAgain, stored, contentSays, reopenedOn, reopenedOnCards,
+      strandedFallsBackTo, honouredWhenReal, errs };
+  }`);
+
+  check("the paper and the notebook can be on different pages at once",
+    !place.fatal && place.paperPage === 3 && place.notebookPage === 2,
+    place.fatal || `paper on ${place.paperPage}, notebook on ${place.notebookPage}`);
+  check("...and each comes back to its own page, not the other's",
+    !place.fatal && place.paperAgain === 3 && place.notebookAgain === 2,
+    place.fatal || `paper came back on ${place.paperAgain}, notebook on ${place.notebookAgain}`);
+  // The record behind it. One field for two documents is the fault; two fields
+  // holding two different numbers is the fix, and a check that only looked at
+  // the in-session park would not see the difference.
+  check("...because each document now records a position of its own",
+    !place.fatal && place.stored?.doc === 3 && place.stored?.notebook === 2,
+    place.fatal || `stored pdf=${place.stored?.doc} notebook=${place.stored?.notebook}`);
+  // The control: without it "reopened on notes" could just be what this deck
+  // opens on anyway, and the case would assert nothing.
+  check("this deck's contents say it should open on the document",
+    !place.fatal && place.contentSays === "document",
+    place.fatal || `the content-derived answer is "${place.contentSays}", so the two cases below ask nothing`);
+  check("...but a deck left on the Notes tab reopens there instead",
+    !place.fatal && place.reopenedOn === "notes",
+    place.fatal || `reopened on "${place.reopenedOn}"`);
+  check("...and one left on the cards reopens on the cards",
+    !place.fatal && place.reopenedOnCards === "cards",
+    place.fatal || `reopened on "${place.reopenedOnCards}"`);
+  // A remembered tab can outlive the thing it named.
+  check("a remembered Write tab on a deck with no pages falls back to its contents",
+    !place.fatal && place.strandedFallsBackTo === "document",
+    place.fatal || `opened "${place.strandedFallsBackTo}" — a surface with nothing on it`);
+  check("...and is honoured again as soon as there are pages",
+    !place.fatal && place.honouredWhenReal === "handwriting",
+    place.fatal || `opened "${place.honouredWhenReal}"`);
+  check("...and nothing threw while the reader's place was being asked about",
+    !place.fatal && (place.errs || []).length === 0,
+    place.fatal || (place.errs || []).join(" | "));
 
   check("nothing threw anywhere in this run",
     sheet.errs.length === 0 && picture.errs.length === 0,

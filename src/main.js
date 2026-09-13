@@ -45,7 +45,7 @@ import { clearImportStaging, commitStagedImport, importDestinationFolder, import
 import { fetchUrl } from "./import/url.js?v=__BUILD__";
 import { closeAllDeckTileMenus, createFolder, setAllFoldersExpanded } from "./library/folder-tree.js?v=__BUILD__";
 import { normalizeDeckCategory } from "./library/folders.js?v=__BUILD__";
-import { flushIndexBatch, readLocalDeckIndex } from "./library/local-library.js?v=__BUILD__";
+import { flushIndexBatch, readLocalDeckIndex, setDeckContentSavedHook, setDeckReloadedInPlaceHook } from "./library/local-library.js?v=__BUILD__";
 import { categorizeSelectedMyDecks, deleteSelectedMyDecks, loadSelectedMyDecks } from "./library/my-decks-actions.js?v=__BUILD__";
 import { hydrateMyDecksIcons } from "./library/my-decks-icons.js?v=__BUILD__";
 import { closeMyDecksMoreMenu, currentMyDecksFolder, importIntoFolder, myDecksImportFolder, myDecksSearchTimer, setMyDecksSearchTimer, toggleMyDecksMoreMenu } from "./library/my-decks-menu.js?v=__BUILD__";
@@ -63,7 +63,7 @@ import { closeNoteLinkPicker, commitNoteLinkPicker, isNoteLinkBrowsing, isNoteLi
 import { isInkSheetOpen, redoInkSheet, repaintInkSheet, undoInkSheet } from "./notes/ink-sheet.js?v=__BUILD__";
 import { followNoteLink, revealNoteHeading } from "./notes/note-links.js?v=__BUILD__";
 import { initNotesHeadOverflow } from "./notes/notes-head-overflow.js?v=__BUILD__";
-import { commitNotesEditIfActive, enterNotesEditing, isNotesEditing, isProgrammaticNotesScroll, setNotesScrolledSource } from "./notes/notes-view.js?v=__BUILD__";
+import { commitNotesEditIfActive, enterNotesEditing, isNotesEditing, isProgrammaticNotesScroll, renderNotesViewPinned, setNotesScrolledSource } from "./notes/notes-view.js?v=__BUILD__";
 import { sourceFromRawEditor } from "./notes/notes-edit-split.js?v=__BUILD__";
 import { initPagedNotes } from "./notes/paged-view.js?v=__BUILD__";
 import { findRawOffsetForRenderedPoint } from "./notes/raw-offset.js?v=__BUILD__";
@@ -79,7 +79,7 @@ import { cycleToLocator, initHighlightCycle, isHighlightSplitOpen, openHighlight
 // Imported HERE, not by the mark menu, which is reached from the document
 // surface this module's own subtree imports — see setMarkMenuActions.
 import { documentHighlightEntries, noteHighlightEntries } from "./panels/highlight-index.js?v=__BUILD__";
-import { setHighlightsChangedHandler } from "./format/highlight-edit.js?v=__BUILD__";
+import { notifyHighlightsChanged, setHighlightsChangedHandler } from "./format/highlight-edit.js?v=__BUILD__";
 import { closeNotesToc, ensureNotesTocBuilt, flashNotesHeading, initNotesTocFolding, isNotesTocOpen, notesTocHeadings, notesTocScrollFrame, scrollNotesEditToHeadingIndex, scrollNotesHeadingIntoView, setNotesTocScrollFrame, tocPushesNotes, toggleNotesToc, updateNotesTocActive } from "./notes/toc.js?v=__BUILD__";
 import { closeClozePanel, openClozePanel, toggleClozePanelAll } from "./panels/cloze-panel.js?v=__BUILD__";
 import { appInfoBtn, appInfoCheckBtn, appInfoCloseBtn, appInfoHealthBtn, appInfoModal, appInfoReloadBtn, closeAppInfoModal, forceRefreshAppInfo, openAppInfoModal, runProjectHealthCheck } from "./pwa/app-info.js?v=__BUILD__";
@@ -91,7 +91,7 @@ import { scheduleMarkdownTableFit } from "./render/tables.js?v=__BUILD__";
 import { deckSnapshotCache, deckStoreChannel, deckStoreRequest, indexedDbUnavailable, pendingDeckWrites, scheduleDeckAutosave, setDeckStoreChannel, touchDeckSnapshotCache } from "./storage/deck-store.js?v=__BUILD__";
 import { isQuotaExceededError } from "./storage/quota.js?v=__BUILD__";
 import { closeStoragePanel, offloadStorageDocument, openStoragePanel, refreshStorageReport, runStorageAction } from "./storage/storage-panel.js?v=__BUILD__";
-import { applyAutoSyncInterval, autoSyncTick, setAutoSyncMinutes } from "./sync/auto-sync.js?v=__BUILD__";
+import { applyAutoSyncInterval, autoSyncTick, schedulePostEditSync, setAutoSyncMinutes } from "./sync/auto-sync.js?v=__BUILD__";
 import { updateDeckEmptyStatus } from "./sync/indicator.js?v=__BUILD__";
 import { showNotesConflictModal } from "./sync/notes-conflict.js?v=__BUILD__";
 import { reconcileAllDecks } from "./sync/reconcile.js?v=__BUILD__";
@@ -115,7 +115,7 @@ import { FOCUS_MODE_KEY, closeViewExportMenu, paintViewExportMenu, setBlockEditF
 import { DOCUMENT_NOTE_HANDLERS, documentHighlightNote, initDocumentMarkMenu, repairDocumentHighlightQuads, repairDocumentHighlightText } from "./documents/pdf-highlights.js?v=__BUILD__";
 import { closeDocumentToc, documentOutlineEntries, initDocumentOutlineFolding, isDocumentTocOpen, resolveOutlineEntryPage, toggleDocumentToc } from "./documents/pdf-outline.js?v=__BUILD__";
 import { deleteRemoteDocument } from "./documents/pdf-store.js?v=__BUILD__";
-import { currentPdfDocument, documentFittedWidth, fitDocumentToWidth, initDocumentPinchZoom, isDocumentFitWidth, reattachDocument, relayoutDocument, scheduleDocumentPositionSave, scrollToDocumentPage, refreshDocumentPaperForTheme, setDocumentAttachHandler, setDocumentOpenedHook, setDocumentPagePaintedHook, setNotebookStartHandler, togglePdfInvert, updatePageIndicator, zoomDocument } from "./documents/pdf-view.js?v=__BUILD__";
+import { currentPdfDocument, documentFittedWidth, fitDocumentToWidth, initDocumentPinchZoom, isDocumentFitWidth, openDocumentIsCurrent, openDocumentView, reattachDocument, relayoutDocument, repaintOpenDocumentPages, scheduleDocumentPositionSave, scrollToDocumentPage, refreshDocumentPaperForTheme, setDocumentAttachHandler, setDocumentOpenedHook, setDocumentPagePaintedHook, setNotebookStartHandler, togglePdfInvert, updatePageIndicator, zoomDocument } from "./documents/pdf-view.js?v=__BUILD__";
 import { adoptDocumentInk, canRedoInk, canUndoInk, copyInkSelection, cutInkSelection, duplicateInkSelection, hasInkClipboard, initDocumentInk, inkMarkImageMarkdown, inkSelectionCount, isInkMarkId, nudgeInkSelection, paintDocumentInk, pasteInkSelection, redoInk, repaintDocumentInk, setInkChangedHandler, undoInk } from "./documents/pdf-ink.js?v=__BUILD__";
 import { addHandwritingImage, enterHandwritingView, refreshHandwritingBoard, runHandwritingMenuAction, startHandwritingNotebook } from "./handwriting/board.js?v=__BUILD__";
 import { commitBlockEdit, handleBlockPointerDown, paintDocumentBlocks, repaintDocumentBlocks, setBlocksChangedHandler } from "./documents/pdf-blocks.js?v=__BUILD__";
@@ -1303,6 +1303,34 @@ onDomReady(() => {
   // pane, the badges and the printed page notes — so doing it again here would
   // rebuild all three twice for every stroke.
   setInkChangedHandler(refreshInkRail);
+
+  // ── A sync rewrote the deck the reader is standing in ────────────────────
+  //
+  // loadDeckFromLibrary({ keepPlace: true }) has just replaced state.notes,
+  // state.meta and the cards from the snapshot the sync wrote — without moving
+  // the reader's tab or their place. What it cannot do is repaint, because only
+  // the surface knows what it is showing. Registered here for the reason every
+  // hook in this block is: src/documents/notebook.js imports local-library.js,
+  // so that module must not import back into documents/, and this file is the
+  // one that knows both ends.
+  setDeckReloadedInPlaceHook(() => {
+    if (onDocumentSurface()) {
+      // The bytes moved — pages added or torn out on another device, or a paper
+      // attached there. openDocumentView takes the full path on its own for
+      // that, because documentOpenKey carries the sha256 and the park's own
+      // sha test rejects the stale entry. Deliberately no `force`: that would
+      // throw away a still-valid park on every sync, which is the cost the
+      // switch between the two papers exists to avoid.
+      if (!openDocumentIsCurrent()) { openDocumentView({ slot: activeDocSlot() }); return; }
+      // ...and when the file is the same, only what sits ON the pages can have
+      // moved: the marks, the ink, the blocks, the badges.
+      repaintOpenDocumentPages();
+      notifyHighlightsChanged();
+      return;
+    }
+    if (state.viewMode === "notes") renderNotesViewPinned();
+    // Cards need nothing — loadDeckSnapshot ends in showCard() either way.
+  });
 });
 // So an edit made on a mark in the note refreshes the highlights pane, without
 // highlight-edit.js having to import the panel that owns it.
@@ -1708,6 +1736,12 @@ el.autoSyncSelect?.addEventListener("change", (e) => {
 // Reflect the saved cadence in the dropdown and start the timer on boot. The
 // timer's ticks self-gate on sign-in/online, so it's safe to arm before login.
 applyAutoSyncInterval();
+// ...and bring that deadline forward when an edit settles, so work reaches the
+// other device in about half a minute rather than whenever the cadence comes
+// round. Content changes only — a scroll or a navigation save is not work
+// anybody is waiting for — and it refuses outright while auto-sync is off. See
+// schedulePostEditSync.
+setDeckContentSavedHook(schedulePostEditSync);
 // Every static [data-md-icon] button gets its SVG once, at startup.
 hydrateMyDecksIcons();
 

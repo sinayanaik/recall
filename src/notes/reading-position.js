@@ -132,6 +132,20 @@ export function flushReadingPositionSave() {
   return { key, anchor };
 }
 
+// Which of two positions is the later one — the rule betterReadingPosition
+// applies between the two stores, lifted out so the one other place that has to
+// choose between two positions applies the SAME rule rather than a second one
+// that can drift from it.
+//
+// "No stamp loses to a stamp" is the half that matters: a position written by a
+// build from before `at` existed is older than one that has it, and treating an
+// absent stamp as 0 says exactly that.
+export function newerReadingPosition(a, b) {
+  if (!a) return b || null;
+  if (!b) return a;
+  return (Number(a.at) || 0) >= (Number(b.at) || 0) ? a : b;
+}
+
 // Which of the two positions for a deck is the one to reopen at.
 //
 // `meta.readingPosition` is what the last device to push knew; the local store
@@ -144,5 +158,5 @@ export function betterReadingPosition(metaPosition, key) {
   const stored = readStoredReadingPosition(key);
   if (!stored) return metaPosition || null;
   if (!metaPosition || !Number.isFinite(metaPosition.offset)) return stored;
-  return (stored.at || 0) >= (metaPosition.at || 0) ? stored : metaPosition;
+  return newerReadingPosition(stored, metaPosition);
 }

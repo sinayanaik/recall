@@ -97,6 +97,56 @@ export function applyAutoSyncInterval() {
   if (!autoSyncTicker) autoSyncTicker = setInterval(autoSyncTick, AUTOSYNC_TICK_MS);
 }
 
+// ── ...and the sync that follows an edit rather than a clock ──────────────
+//
+// The schedule above answers "has it been five minutes". With two devices open
+// on one deck that is the whole complaint: work sat on the device that made it
+// until a deadline nobody could see came round. The other triggers do not help —
+// boot, reconnect, and a foreground return after a MINUTE away, which is not
+// what "I am typing on the laptop with the tablet beside me" looks like.
+//
+// So an edit that settles brings the deadline forward. A trailing debounce, not
+// a sync per keystroke: POST_EDIT_SYNC_MS after the last save, one sync carries
+// the whole paragraph, and a further edit re-arms it rather than adding a second.
+//
+// Three refusals, and the first is the important one:
+//
+//   • auto-sync OFF means off. An explicit 0 is a stored preference this
+//     module's own header is emphatic about, and a "helpful" sync that ignored
+//     it would be a worse bug than the one this fixes.
+//   • never more than once a minute, so a long editing session is a sync a
+//     minute rather than one every twenty seconds.
+//   • nothing while a sync is already running, offline, or signed out — the same
+//     conditions the ticker checks, and for the same reasons.
+//
+// It brings the existing deadline forward rather than running beside it: it
+// calls the same reconcileAllDecks, which re-arms in its finally, so there is
+// one scheduler and not two.
+export const POST_EDIT_SYNC_MS = 20000;
+
+export const POST_EDIT_SYNC_MIN_GAP_MS = 60000;
+
+let postEditTimer = null;
+
+let lastPostEditSyncAt = 0;
+
+export function schedulePostEditSync() {
+  if (!getAutoSyncMinutes()) return;
+  if (postEditTimer) clearTimeout(postEditTimer);
+  postEditTimer = setTimeout(() => {
+    postEditTimer = null;
+    // Re-asked at fire time, not at arm time: twenty seconds is long enough for
+    // the reader to have gone offline, signed out, turned auto-sync off, or
+    // started a sync by hand.
+    if (!getAutoSyncMinutes()) return;
+    if (!supabaseClient || !isSignedIn || !navigator.onLine || reconcileInFlight) return;
+    if (Date.now() - lastPostEditSyncAt < POST_EDIT_SYNC_MIN_GAP_MS) return;
+    lastPostEditSyncAt = Date.now();
+    rearmAutoSync();
+    reconcileAllDecks({ explicit: false });
+  }, POST_EDIT_SYNC_MS);
+}
+
 export function setAutoSyncMinutes(mins) {
   const clean = AUTOSYNC_ALLOWED.has(mins) ? mins : 0;
   try {
@@ -105,5 +155,7 @@ export function setAutoSyncMinutes(mins) {
     /* storage unavailable (private mode) — timer still applies for this session */
   }
   applyAutoSyncInterval();
+  // Turning it off has to mean off NOW, not after whatever was already armed.
+  if (!clean && postEditTimer) { clearTimeout(postEditTimer); postEditTimer = null; }
   showToast(clean ? `Auto-sync on — every ${clean} min${clean === 1 ? "" : "s"}` : "Auto-sync off", "info");
 }

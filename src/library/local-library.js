@@ -565,6 +565,25 @@ export function finishSaveDeckToLibrary({ snapshot, localId, previousSnapshot, s
       ? nextSyncStamp(nowIso, previousEntry?.updatedAt)
       : (previousEntry?.updatedAt || nowIso));
 
+  // ── The notes body the cloud is known to hold ────────────────────────────
+  //
+  // Carried forward from the copy being replaced, for exactly the reason
+  // notesConflicted is carried on the index entry: deckSnapshot() rebuilds this
+  // object from `state` on every autosave and names only what the app is
+  // editing, so a field the SYNC wrote would be gone 400ms after the next
+  // keystroke — and with it the common ancestor that lets two devices' edits
+  // merge instead of raising a question (src/sync/notes-merge3.js).
+  //
+  // On the snapshot rather than in a row of its own, which was the first
+  // attempt: a sibling key doubles the deck store and every sweep that walks it
+  // then has to learn to skip one more suffix. tools/reconcile-parity.mjs caught
+  // that immediately, reporting the base rows as extra decks on the device.
+  //
+  // Deliberately not added to deckSnapshot() itself, which is also the EXPORT
+  // shape — a reader's .json of their own deck should not carry a copy of an
+  // older revision of its notes.
+  if (previousSnapshot?.syncedNotesBase !== undefined) snapshot.syncedNotesBase = previousSnapshot.syncedNotesBase;
+
   // Mark exactly the cards this save changed, so a later pull can tell "I edited
   // this and haven't pushed it" apart from "this is just what the cloud gave me"
   // and merge instead of overwrite. Must run AFTER contentChanged is computed —
@@ -611,6 +630,18 @@ export function finishSaveDeckToLibrary({ snapshot, localId, previousSnapshot, s
     // the notes were still missing from the cloud.
     notesConflicted: previousEntry?.notesConflicted || false,
     notesSyncFailed: previousEntry?.notesSyncFailed || false,
+    // Carried over for exactly the reason those two are, and it matters more:
+    // this is the body the cloud is known to hold (src/sync/diff.js,
+    // syncTextFingerprint), and the two conflict gates read it to tell "I edited
+    // the note" from "the other device did". Only a sync can establish it.
+    // Dropping it here would send both gates back to their old deck-level
+    // timestamp fallback 400ms after every keystroke, which is the fault it
+    // exists to fix.
+    syncedNotesFingerprint: previousEntry?.syncedNotesFingerprint || null,
+    // Carried for the same reason, and it is a number that can legitimately be
+    // 0 — so `??` and not `||`, or every deck the reader has never paged past
+    // the first card of reads as having no baseline at all.
+    syncedCurrentIndex: previousEntry?.syncedCurrentIndex ?? null,
     deckId: snapshot.deckId || null,
     // Mirrored out of the snapshot's meta bag purely so the link index can see
     // it: loadNoteLinkIndex is built from this index (localStorage) and never
@@ -645,7 +676,27 @@ export function finishSaveDeckToLibrary({ snapshot, localId, previousSnapshot, s
     state.localDeckId = localId;
     persistWorkingDeck();
   }
+  // ── An edit that settled ─────────────────────────────────────────────────
+  //
+  // Only when the CONTENT changed: a navigation or a position save is not work
+  // anybody else is waiting for, and arming on those would mean a sync every
+  // time the reader scrolled. deckContentMatches has already answered exactly
+  // that question a few lines up.
+  //
+  // A hook rather than a call, because src/sync/auto-sync.js reaches
+  // reconcileAllDecks, which imports THIS module — and unlike the function
+  // declarations this codebase happily cycles through, that path runs real work
+  // at module scope. main.js registers it, as it does for every other crossing
+  // of this kind.
+  if (contentChanged) deckContentSaved?.();
   return meta;
+}
+
+// See the call above. Registered from src/main.js.
+let deckContentSaved = null;
+
+export function setDeckContentSavedHook(fn) {
+  deckContentSaved = typeof fn === "function" ? fn : null;
 }
 
 // Whether there is genuinely nothing here to write.
@@ -740,7 +791,35 @@ export function saveDeckToLibrarySync({ id = null, silent = true } = {}) {
   return finishSaveDeckToLibrary({ snapshot, localId, previousSnapshot, silent, updatedAt: null, lastSyncedAt: undefined, synced: false });
 }
 
-export async function loadDeckFromLibrary(id) {
+// ── Reloading a deck the reader is still standing in ───────────────────────
+//
+// `keepPlace` is the sync's door into this function, and everything it changes
+// it changes by NOT doing something. A background sync that rewrote the deck on
+// disk has to get the new content into `state` — otherwise the next autosave
+// writes the pre-merge copy back over it — but the reader did not ask to go
+// anywhere, and every one of the four steps below would move them:
+//
+//   recordNavHistory      a sync is not a navigation, and leaving a door behind
+//                         means Back walks into the deck the reader is already in
+//   setViewMode(default)  loadDeckSnapshot's own, which answers "notes" for any
+//                         deck without a paper. This is the reported "when sync
+//                         is happening i am being moved to always Notes panel"
+//   the resume jump       scrolls to wherever the deck's saved position is,
+//                         which is not where the reader is now
+//   resetChromeAutoHide   "a new deck starts at the top, header showing"
+//
+// The hook at the end is how the surfaces hear about it. A hook and not an
+// import because src/documents/notebook.js already imports THIS module, so a
+// library/ → documents/ edge would close that circle; src/main.js is where this
+// codebase composes crossings like it (setDocumentPagePaintedHook,
+// setDocumentOpenedHook, setInkChangedHandler).
+let deckReloadedInPlace = null;
+
+export function setDeckReloadedInPlaceHook(fn) {
+  deckReloadedInPlace = typeof fn === "function" ? fn : null;
+}
+
+export async function loadDeckFromLibrary(id, { keepPlace = false } = {}) {
   // Opening a saved deck is never an import, so it must not adopt a folder left
   // over from an "Import here" whose file picker was dismissed — that would
   // silently refile an existing deck.
@@ -783,13 +862,16 @@ export async function loadDeckFromLibrary(id) {
     // A navigation door: remember where the user was before this deck replaces
     // it. Recorded only once the deck is known to exist — a failed open doesn't
     // move anyone.
-    recordNavHistory();
-    loadDeckSnapshot(payload, payload.sourceTitle || payload.deckTitle || "");
+    if (!keepPlace) recordNavHistory();
+    loadDeckSnapshot(payload, payload.sourceTitle || payload.deckTitle || "", false, { keepPlace, deckKey: id });
     state.localDeckId = id;
     persistWorkingDeck();
     refreshSyncIndicatorBaseline();
     refreshNavBack(); // arrived — now the button knows where "here" is
-    resetChromeAutoHide(); // a new deck starts at the top, header showing
+    if (!keepPlace) resetChromeAutoHide(); // a new deck starts at the top, header showing
+    // The pages on screen were painted from arrays that have just been replaced.
+    // Only the surface knows what it is showing, so it is told rather than asked.
+    if (keepPlace) deckReloadedInPlace?.();
     return true;
   } catch (error) {
     console.warn("Could not load saved deck", error);

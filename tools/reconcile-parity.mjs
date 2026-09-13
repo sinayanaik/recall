@@ -101,8 +101,23 @@ const FAKE_SUPABASE = String.raw`(seedCloud) => {
         return { data: null, error: null };
       }
       if (q.op === "update") {
-        for (const r of rows) if (matches(r, q.filters)) Object.assign(r, q.payload);
-        return { data: null, error: null };
+        // ── The predicate is enforced, and the affected rows come back ───────
+        //
+        // src/sync/push.js writes the deck row as a compare-and-swap: an UPDATE
+        // filtered on the updated_at the merge was computed against, with
+        // .select("id") so that "matched nothing" can be told from "wrote one
+        // row". A fake that assigned unconditionally and answered a null body
+        // would let every one of those pass while proving nothing — and would
+        // hide the one failure that matters most, a push that silently writes
+        // nowhere and reports success.
+        const hit = rows.filter((r) => matches(r, q.filters));
+        for (const r of hit) Object.assign(r, q.payload);
+        // PostgREST returns a body only when the caller asked for one. The op is
+        // still "update" here precisely because select() does not overwrite a
+        // non-select op (see the api above), so the columns it recorded are how
+        // we know it was asked for.
+        const asked = q.cols && q.cols !== "*";
+        return { data: asked ? hit.map((r) => ({ id: r.id })) : null, error: null };
       }
       // insert / upsert, keyed by the table's primary key
       const key = q.table === "cards" ? "id" : q.table === "deleted_decks" ? "deck_id" : "id";

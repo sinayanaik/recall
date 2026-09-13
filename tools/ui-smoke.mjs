@@ -389,6 +389,29 @@ const NAMES = ["showAuthenticatedUI", "initAppForUser",
   "openHelpModal", "closeHelpModal", "openQuickNotesBoard", "closeQuickNotesBoard",
   "exportJson", "renameDeckInLibrary", "repaintMyDecks", "deleteDeckFromLibrary"];
 
+// ── Steps whose state is EXPECTED to differ from the baseline ──────────────
+//
+// The same idea as sync-parity.mjs's and boot-check.mjs's ACCEPTED_DIFFS, and
+// the same rule: one entry per intentional change, each with the "why" a diff
+// alone cannot say. A behavioural change that is not written down here is
+// indistinguishable from a regression, and a check that goes red and stays red
+// reports nothing.
+//
+// `fields` is what makes this narrow rather than a mute button. Only a
+// divergence confined to those keys is accepted; anything else on the same step
+// still fails, so a real regression cannot hide behind a deliberate one.
+const ACCEPTED_DIFFS = {
+  "LOAD the saved deck back": {
+    fields: ["view", "notesStageUp"],
+    why: "a deck reopens on the tab it was last left on. The baseline derived that "
+      + "from the deck's CONTENTS — notes, for a deck with no paper — which is right "
+      + "the first time and wrong every time after: a reader studying the cards of a "
+      + "paper deck was put back on the paper on every open. This run leaves the deck "
+      + "on Cards (\"back to cards\", then shuffle, then save), so Cards is where it "
+      + "comes back. See src/storage/deck-tab.js."
+  }
+};
+
 const servers = [];
 const temps = [];
 let failures = 0;
@@ -416,12 +439,22 @@ try {
     const a = before.transcript[i], b = after.transcript[i];
     const sameState = JSON.stringify(a?.state) === JSON.stringify(b?.state);
     const sameError = String(a?.error) === String(b?.error);
+    // Which keys actually moved, so an accepted change can be pinned to the ones
+    // it is about rather than to the whole state blob.
+    const moved = Object.keys({ ...(a?.state || {}), ...(b?.state || {}) })
+      .filter((key) => JSON.stringify(a?.state?.[key]) !== JSON.stringify(b?.state?.[key]));
+    const accepted = ACCEPTED_DIFFS[b.step];
+    const expectedChange = Boolean(accepted) && moved.length > 0
+      && moved.every((key) => accepted.fields.includes(key));
     const ok = sameState && sameError && !b?.error;
-    console.log(`  ${ok ? "ok  " : (sameState && sameError ? "both" : "DIFF")}  ${b.step}${b.error ? " — threw: " + b.error : ""}`);
-    if (!sameState) {
+    console.log(`  ${ok ? "ok  " : (expectedChange && sameError && !b?.error ? "note" : (sameState && sameError ? "both" : "DIFF"))}  ${b.step}${b.error ? " — threw: " + b.error : ""}`);
+    if (expectedChange && sameError && !b?.error) {
+      console.log(`        expected: ${moved.join(", ")} — ${accepted.why}`);
+    } else if (!sameState) {
       failures++;
       console.log(`        was: ${JSON.stringify(a?.state)}`);
       console.log(`        now: ${JSON.stringify(b?.state)}`);
+      if (accepted) console.log(`        (an accepted change on this step covers ${accepted.fields.join(", ")} — this moved ${moved.join(", ")})`);
     } else if (b?.error) {
       failures++;   // identical failure on both builds is still a broken step
     }

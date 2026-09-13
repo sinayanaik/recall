@@ -14,12 +14,13 @@ import { normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
 import { scheduleNoteJump } from "../notes/anchors.js?v=__BUILD__";
 import { maybePromptBookmarkJump } from "../notes/bookmark.js?v=__BUILD__";
 import { discardNotesEditingForDeckSwap } from "../notes/notes-view.js?v=__BUILD__";
-import { betterReadingPosition } from "../notes/reading-position.js?v=__BUILD__";
+import { betterReadingPosition, newerReadingPosition } from "../notes/reading-position.js?v=__BUILD__";
 import { currentDeckKey, currentReadingAnchor, currentReadingAnchorDeckKey } from "../notes/scroll-anchor.js?v=__BUILD__";
 import { isQuickNotesDeck } from "../quick-notes/categories.js?v=__BUILD__";
 import { setDeckAutosaveStorageFailed } from "./quota.js?v=__BUILD__";
 import { setViewMode } from "../ui/view-mode.js?v=__BUILD__";
-import { documentTabForOpenDeck } from "../documents/doc-slot.js?v=__BUILD__";
+import { activeDocSlot, documentTabForOpenDeck, hasDocSlot, onDocumentSurface } from "../documents/doc-slot.js?v=__BUILD__";
+import { deckTabKey } from "../storage/deck-tab.js?v=__BUILD__";
 
 // Is there anything in this deck at all?
 //
@@ -90,8 +91,18 @@ export function deckSnapshot() {
       // write schedule: this only ever rides along when a save is already
       // happening for some other reason, per the deliberately simple sync
       // strategy — "whenever the sync happens just sync the current location."
+      //
+      // ...and only when it is the LATER of the two. captureCurrentReadingAnchor
+      // only runs while state.viewMode is "notes", but nothing CLEARS the
+      // in-memory anchor when the reader leaves that tab — so a deck read in the
+      // notes and then in the document kept writing the stale notes anchor over
+      // the document position scheduleDocumentPositionSave had just recorded, on
+      // every autosave and therefore on every sync. Settled by `at`, through the
+      // same rule betterReadingPosition applies between the two stores, rather
+      // than by asking which view is up: the pagehide flush legitimately writes
+      // this after the reader has already left the view.
       if (currentReadingAnchor && currentReadingAnchorDeckKey === currentDeckKey()) {
-        metaBag.readingPosition = currentReadingAnchor;
+        metaBag.readingPosition = newerReadingPosition(currentReadingAnchor, metaBag.readingPosition);
       }
       return Object.keys(metaBag).length ? { meta: metaBag } : {};
     })(),
@@ -128,7 +139,14 @@ export function clearBrowserPersistence() {
   }
 }
 
-export function loadDeckSnapshot(payload, titleHint = "", append = false) {
+// `keepPlace` and `deckKey` are both the sync's, and both are inert for every
+// other caller — see loadDeckFromLibrary for what keepPlace suppresses and why.
+// `deckKey` exists because this function cannot work out the deck's identity for
+// itself: state.localDeckId is assigned on the line AFTER this returns, which is
+// the same reason the resume below is in a microtask. Passed in rather than
+// read, so that the one thing needing it does not depend on an ordering the rest
+// of the function is deliberately free of.
+export function loadDeckSnapshot(payload, titleHint = "", append = false, { keepPlace = false, deckKey = null } = {}) {
   setDeckAutosaveStorageFailed(false);
   if (!payload || !Array.isArray(payload.cards)) {
     throw new Error("Invalid flashcard JSON");
@@ -228,7 +246,27 @@ export function loadDeckSnapshot(payload, titleHint = "", append = false) {
     // Write, by exactly the same argument — its pages are the deck. (A deck
     // still carrying its notebook in the old `pdf` slot counts as one; it is
     // moved the moment that tab paints.) Every other deck opens on Notes.
-    setViewMode(documentTabForOpenDeck());
+    // ── Which surface the reader ends up on ────────────────────────────────
+    //
+    // Not moved at all on a keepPlace refresh: the sync rewrote the deck under
+    // somebody who is reading it, and documentTabForOpenDeck answers "notes" for
+    // any deck without a paper — which is the whole of the reported "when sync is
+    // happening i am being moved to always Notes panel". Calling setViewMode with
+    // the mode already in state.viewMode is what repaints the surface they ARE
+    // on: `changed` comes out false, so resetChromeAutoHide and
+    // measureChromeHeights stand down and it degenerates to the paint.
+    //
+    // The one exception is the case where moving them is the correct answer:
+    // they are looking at a document that the other device has just removed.
+    // Deliberately narrow — a deck whose paper is gone has nothing to show on
+    // that tab — and it is exactly the new documentRemovedHere stat.
+    // deckKey, not currentDeckKey(): state.localDeckId is assigned on the line
+    // AFTER this function returns — the same reason the resume below is in a
+    // microtask — so reading it here asks about a deck with no local id and
+    // finds nothing remembered, on every library deck.
+    if (!keepPlace) setViewMode(documentTabForOpenDeck(state.meta, deckTabKey(state.deckId, deckKey)));
+    else if (onDocumentSurface() && !hasDocSlot(activeDocSlot(), state.meta)) setViewMode(documentTabForOpenDeck(state.meta, deckTabKey(state.deckId, deckKey)));
+    else setViewMode(state.viewMode);
     // Cross-device resume — see the identical call in loadWebDeck for why
     // flash/smooth are both off and why the local store is consulted alongside
     // the deck's meta. Only reached on this non-append branch, so
@@ -240,14 +278,37 @@ export function loadDeckSnapshot(payload, titleHint = "", append = false) {
     // a deck with no local id and found nothing, on every library deck — the
     // common case. A microtask runs after the caller's own synchronous block,
     // which is exactly when the identity is complete.
-    queueMicrotask(() => {
-      const resumeAt = betterReadingPosition(state.meta?.readingPosition, currentDeckKey());
-      if (resumeAt) {
-        scheduleNoteJump(resumeAt, { flash: false, smooth: false, resume: true, onSettled: () => maybePromptBookmarkJump() });
-      } else {
-        maybePromptBookmarkJump();
-      }
-    });
+    //
+    // Not on a keepPlace refresh. The reader is already somewhere in this deck
+    // and a background sync is not a reason to scroll them to wherever the
+    // saved position happens to be — nor to raise a bookmark prompt, which is a
+    // question about opening a deck and not about syncing one.
+    if (!keepPlace) {
+      queueMicrotask(() => {
+        const resumeAt = betterReadingPosition(state.meta?.readingPosition, currentDeckKey());
+        // ── ...but it must not choose the tab ──────────────────────────────
+        //
+        // scheduleNoteJump's document branch switches to the Document view by
+        // itself when the anchor carries a pdfPage — which was right while the
+        // tab a deck opened on was derived from its contents, and is wrong now
+        // that the reader's own last choice decides. A paper deck left on the
+        // cards was dragged onto the paper a moment after opening, by the
+        // resume rather than by the loader, which is a hard thing to see and
+        // exactly what the check for this caught.
+        //
+        // Nothing is lost by skipping it: a document position is resumed by
+        // landOnReadingPosition when that document opens, which is the path
+        // every other route onto the surface already takes.
+        const documentAnchor = Number.isFinite(resumeAt?.pdfPage);
+        if (documentAnchor && !onDocumentSurface()) {
+          maybePromptBookmarkJump();
+        } else if (resumeAt) {
+          scheduleNoteJump(resumeAt, { flash: false, smooth: false, resume: true, onSettled: () => maybePromptBookmarkJump() });
+        } else {
+          maybePromptBookmarkJump();
+        }
+      });
+    }
   }
   syncResults();
   closeAllCardsPanel();

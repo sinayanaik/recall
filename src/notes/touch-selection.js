@@ -1956,6 +1956,17 @@ function firePress(root, x, y) {
   // what produced a buzz with no selection behind it. The move handler normally
   // cancels the press before this runs; this is the frame where the two race.
   if (gestureStolen) { pressAnchor = null; setTouchGestureHoldsSurface(false); return; }
+  // A nib landed after this press was armed. onRootTouchStart already reads this
+  // flag — but it reads it at TOUCHSTART, and the sequence that produced the
+  // report is the other order: a palm or a knuckle settles on the glass one frame
+  // before the pen does, so the touch arrives first, arms the 240ms timer, and
+  // the pen's own pointerdown has no way to cancel it. 240ms into a stroke a word
+  // is selected under the writing and the pill comes up over it.
+  //
+  // Exactly the "this is the frame where the two race" shape as the two guards
+  // either side of it, and the same answer: the press is dropped rather than
+  // fired, and the surface is handed back.
+  if (inkPenIsDown()) { pressAnchor = null; setTouchGestureHoldsSurface(false); return; }
   // The surface is moving under the finger right now, so the reader is watching
   // the page move rather than choosing a word on a still one. Measured against
   // the last frame's reference rather than against touchdown — see

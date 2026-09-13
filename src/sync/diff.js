@@ -17,6 +17,50 @@ export function syncTextChanged(localValue, webValue) {
   return normalizeSyncText(localValue) !== normalizeSyncText(webValue);
 }
 
+// ── The same question, asked of a copy that is no longer in hand ───────────
+//
+// syncTextChanged compares two strings. The conflict gates need to compare a
+// string against one that is GONE: the notes body as it stood at this device's
+// last confirmed sync, which is the only thing that can answer "did I edit the
+// note, or did the other device?".
+//
+// Without it both gates ask about the DECK instead. The pull's is
+// `updatedAt > lastSyncedAt` and the push's is
+// `cloud.updated_at > lastSyncedAt`, and both are true when the OTHER thing
+// changed — one ink stroke, one card flipped, one highlight. So a device that
+// had only drawn on a page reported a notes conflict it did not cause, stashed
+// the other device's text where its author would never see it, and pushed its
+// own untouched older body over the edit. "Constantly notes conflict", and a
+// lost paragraph behind it.
+//
+// A fingerprint rather than the text, because that is all a gate needs and it
+// costs eight bytes on an index entry that is already in memory. (The three-way
+// merge does need the text, and keeps its own copy — see syncedNotesBase.)
+//
+// Synchronous, deliberately, and therefore not sha256: the push's
+// read-modify-write is await-free by design — "what makes that read-modify-write
+// atomic under JS's single thread" — and SubtleCrypto is a promise. This is a
+// change detector and not a signature; a collision costs one wrongly-skipped
+// stash on a deck whose text also happens to hash the same, which is not a risk
+// of the kind a cryptographic hash is for.
+//
+// Composed with normalizeSyncText so the fingerprint can never disagree with
+// syncTextChanged about the same pair of strings.
+export function syncTextFingerprint(value) {
+  const text = normalizeSyncText(value);
+  // FNV-1a, 32 bits, in the >>> 0 arithmetic that keeps it unsigned in JS.
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  // The length alongside it. A 32-bit hash on its own is one collision in four
+  // billion; pairing it with a number that a real edit almost always moves makes
+  // the coincidence that matters here — two DIFFERENT bodies reading as the same
+  // one — vanishingly unlikely, for one more character in the stored value.
+  return `${text.length}:${hash.toString(36)}`;
+}
+
 export function sameSyncContent(localCard, webCard) {
   return !syncTextChanged(localCard.question, webCard.question)
     && !syncTextChanged(localCard.answer, webCard.answer);

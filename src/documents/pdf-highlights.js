@@ -22,6 +22,7 @@
 
 import { activeDocSlot, recordsInSlot, recordsOutsideSlot, stampDocSlotAll } from "./doc-slot.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
+import { lastInkContactWasPen, msSinceLastInkStroke } from "../core/gesture.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { stripInvalidUnicode } from "../core/text.js?v=__BUILD__";
 import { quadToPageBox, textForAnchorRange, textItemBox } from "./pdf-selection.js?v=__BUILD__";
@@ -887,6 +888,21 @@ export function documentHighlightAtPoint(clientX, clientY) {
 // and nothing happening.
 export const INK_TAP_SLACK = 6;
 
+// ── How long after a stroke the surface is still "being written on" ────────
+//
+// Only ever consulted for a PEN, and only by the mark menu below. Past the gap
+// between two words, and past the gap between a word and a retouch of the letter
+// before it; short enough that a reader who stops, looks at a mark and then taps
+// it is asking a deliberate question and gets an answer.
+//
+// It exists because the instrument test on its own has a hole. A pen tap never
+// opens an INK mark's menu — that rule needs no window, because a stroke is not
+// something you tap to inspect while you are drawing more of them. But writing
+// in the margin of a HIGHLIGHTED paragraph puts every i-dot inside a text mark's
+// quad, and a text mark is exactly the thing a pen tap should still be able to
+// open once the writing has stopped. So the window is what tells those two apart.
+export const INK_WRITING_QUIET_MS = 1500;
+
 // A point in the page element's own pixel space, back into PDF user space,
 // where the strokes live. The inverse of what quadToPageBox does for a quad;
 // written here rather than in pdf-selection.js because that module's job is
@@ -1204,6 +1220,37 @@ export function initDocumentMarkMenu() {
         && selection.getRangeAt(0).toString().trim()) return;
     const record = documentHighlightAtPoint(event.clientX, event.clientY);
     if (!record) {
+      closeMarkMenu();
+      return;
+    }
+    // ── ...and not from under a writing hand ──────────────────────────────
+    //
+    // src/documents/pdf-ink.js calls a press shorter than INK_TAP_MS and stiller
+    // than INK_TAP_SLOP a TAP: it commits no ink and deliberately does not
+    // preventDefault, so the browser's click happens and a pen can press a note
+    // badge or a button. Writing is made of those. An i-dot, a comma, a tick, an
+    // accent, a retouch — each one is a tap by that measure, each one lands
+    // within INK_TAP_SLACK of ink already on the page, and each one opened this
+    // menu. "The more menu keeps popping up while I am writing", once per dotted i.
+    //
+    // Two refusals, both for the pen alone:
+    //
+    //   • an INK mark never opens from a pen at all. There is no moment while
+    //     holding a stylus when tapping your own handwriting means "recolour
+    //     this", and the menu stays one finger tap away — touch never draws, so
+    //     a finger is always free to mean exactly that — or a mouse click, or
+    //     the lasso, or the Highlights pane.
+    //   • anything else — a text run, a dragged region — is refused only while
+    //     the writing is still going on, because writing beside a highlighted
+    //     paragraph is inside its quads. Past the window it opens as it always did.
+    //
+    // A finger and a mouse are untouched in both cases: nothing here removes a
+    // route to a mark, it only stops a nib taking one by accident.
+    //
+    // closeMarkMenu rather than a bare return, so a stroke that begins over a
+    // menu somebody left open still dismisses it.
+    if (lastInkContactWasPen()
+        && (record.kind === "ink" || msSinceLastInkStroke() < INK_WRITING_QUIET_MS)) {
       closeMarkMenu();
       return;
     }

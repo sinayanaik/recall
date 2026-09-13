@@ -3763,6 +3763,96 @@ try {
       Math.abs(wideResult.ratio - 1280 / 720) < 0.02,
       `page is ${wideResult.ratio.toFixed(3)}:1 (16:9 is ${(1280 / 720).toFixed(3)})`);
 
+
+  // ── A sync that rewrote the deck under the reader ────────────────────────
+  //
+  // Two reports, one line of code. reconcileAllDecks reloads the open deck when
+  // its copy on disk moved — and used to do it with a bare loadDeckFromLibrary,
+  // whose loadDeckSnapshot calls setViewMode(documentTabForOpenDeck()). That
+  // answers "notes" for any deck without a paper and "document" for one with,
+  // regardless of where the reader actually is: "when sync is happening i am
+  // being moved to always Notes panel".
+  //
+  // And it did not even work. openDocumentView early-returns when
+  // documentOpenKey matches — deckKey|slot|sha256, none of which an annotation
+  // merge moves — and relayoutDocument never repaints marks, so the new
+  // highlights were on disk and not on the page: "it says synced but not
+  // displaying correct content".
+  //
+  // Driven the way the sync drives it: a snapshot written straight to the store
+  // (which is what pullCloudDeckIntoLibraryLocked does) and then the same
+  // keepPlace reload reconcileAllDecks now performs.
+  {
+    const refreshed = await page.evaluate(`async () => {
+      const { api, settle } = window.__recall;
+      const index = api.readLocalDeckIndex();
+      const entry = index.find((m) => m.pdfPages || true);
+      if (!entry) return { error: "no deck in the library" };
+      await api.loadDeckFromLibrary(entry.id);
+      api.setViewMode("document");
+      await api.openDocumentView({ force: true });
+      await settle(500);
+      // Stand somewhere that is NOT where a reopen would land: the Notes tab of
+      // a PDF deck is the tab documentTabForOpenDeck would take us OFF, and a
+      // scroll position is the thing a resume would throw away.
+      api.setViewMode("notes");
+      await settle(200);
+      const notesView = document.getElementById("notesView");
+      if (notesView) notesView.scrollTop = 120;
+      const scrollBefore = notesView ? notesView.scrollTop : -1;
+
+      // What a sync does: the merged snapshot lands on disk, carrying a
+      // highlight this device has never seen. Written through the store rather
+      // than through state, exactly as the pull does — the point of the case is
+      // that state is STALE until the reload re-seeds it.
+      const snapshot = await api.readDeckSnapshot(entry.id);
+      const arrived = {
+        id: "hl-from-another-device",
+        page: 1,
+        color: "yellow",
+        quads: [{ page: 1, x: 40, y: 60, w: 120, h: 14 }],
+        at: Date.now()
+      };
+      snapshot.meta = { ...(snapshot.meta || {}), pdfHighlights: [...(snapshot.meta?.pdfHighlights || []), arrived] };
+      snapshot.notes = String(snapshot.notes || "") + "\\n\\nA paragraph from the other device.";
+      api.writeDeckSnapshot(entry.id, snapshot);
+
+      const staleBefore = (api.state.meta?.pdfHighlights || []).some((r) => r.id === arrived.id);
+
+      await api.loadDeckFromLibrary(entry.id, { keepPlace: true });
+      await settle(400);
+
+      return {
+        staleBefore,
+        modeAfter: api.state.viewMode,
+        scrollBefore,
+        scrollAfter: notesView ? notesView.scrollTop : -1,
+        adopted: (api.state.meta?.pdfHighlights || []).some((r) => r.id === arrived.id),
+        notesAdopted: String(api.state.notes || "").includes("A paragraph from the other device.")
+      };
+    }`);
+    if (refreshed.error) throw new Error(refreshed.error);
+
+    check("a snapshot written by a sync is not yet in state",
+      refreshed.staleBefore === false,
+      "the fixture did not actually simulate a stale in-memory copy");
+    // The reported symptom, asserted directly.
+    check("a keepPlace reload leaves the reader on the tab they were on",
+      refreshed.modeAfter === "notes",
+      `moved to ${refreshed.modeAfter}`);
+    check("...and does not throw away where they were on it",
+      refreshed.scrollAfter === refreshed.scrollBefore,
+      `${refreshed.scrollBefore} -> ${refreshed.scrollAfter}`);
+    // ...and the half that makes the reload worth doing at all: without it the
+    // next autosave writes the pre-merge state.meta back over the merge.
+    check("...while the arriving highlight reaches the in-memory copy",
+      refreshed.adopted === true,
+      "state.meta.pdfHighlights is still the pre-sync array");
+    check("...and so does the arriving note",
+      refreshed.notesAdopted === true,
+      "state.notes is still the pre-sync body");
+  }
+
     const fits = [];
     for (const width of [360, 390, 430]) {
       await emulatePhone(page, { width, height: 780 });

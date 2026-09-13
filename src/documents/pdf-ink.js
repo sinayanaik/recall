@@ -96,7 +96,7 @@
 
 import { PDF_BLOCK_CLASS, PDF_INK_LAYER_CLASS } from "../core/constants.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
-import { setInkPenDown, setPenTextMode } from "../core/gesture.js?v=__BUILD__";
+import { inkPenIsDown, noteInkContact, noteInkStrokeCommitted, setInkPenDown, setPenTextMode } from "../core/gesture.js?v=__BUILD__";
 import { QUAD_GEOMETRY_VERSION, documentInkMarks, freshDocumentHighlightId, setDocumentInkForPage } from "./pdf-highlights.js?v=__BUILD__";
 import { REGION_CLASS } from "./pdf-region.js?v=__BUILD__";
 import { currentDocumentPage, documentPageInViewCheap, pdfPageElement, pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
@@ -453,24 +453,44 @@ function inkTakesPointer(event) {
   return false;
 }
 
+// ── Two lines, because two different questions are being answered ─────────
+//
+// The `press` guard is first and stays outside the report below: a second
+// contact arriving while a stroke is live is a palm or a pinch, and letting one
+// say "the last thing that touched this paper was a finger" would unlock the
+// menus src/core/gesture.js's noteInkContact exists to keep shut, in the middle
+// of the very stroke they must stay shut for.
+//
+// Everything else is reported, refusals included, and `took` means the contact
+// actually became a press — not merely that inkTakesPointer would have had it.
+// A pen aimed at a markdown block, or at a page that is not there, is not a pen
+// that is writing, and a context menu over editable text is wanted.
 function onInkPointerDown(event) {
-  if (press || !inkTakesPointer(event)) return;
-  if (event.button !== undefined && event.button > 0 && event.button !== 5) return;
+  if (press) return;
+  noteInkContact(event.pointerType, beginInkPress(event));
+}
+
+// The body of the above, returning whether it took the contact. Split out only
+// so there is exactly one place that answers that, rather than a flag set again
+// at each of the six stand-downs below.
+function beginInkPress(event) {
+  if (!inkTakesPointer(event)) return false;
+  if (event.button !== undefined && event.button > 0 && event.button !== 5) return false;
   // The marquee is a drag of its own, and it is inkRailArmed deliberately. Asked of
   // the DOM rather than by calling isRegionSelectArmed so this file does not
   // have to be evaluated before that one.
-  if (el.documentStage?.classList.contains(REGION_CLASS)) return;
+  if (el.documentStage?.classList.contains(REGION_CLASS)) return false;
   // A press that landed on a markdown block belongs to the block. Recognised by
   // class rather than by importing src/documents/pdf-blocks.js, for the reason
   // the line above does the same: this listener is in the capture phase and runs
   // before anything else on the page, so it has to be able to stand down without
   // a dependency on what it is standing down FOR. Without this a pen aimed at a
   // block's drag bar moved the block and drew a stroke across the page.
-  if (event.target?.closest?.(`.${PDF_BLOCK_CLASS}`)) return;
+  if (event.target?.closest?.(`.${PDF_BLOCK_CLASS}`)) return false;
   const pageEl = document.elementFromPoint(event.clientX, event.clientY)?.closest(".pdf-page");
-  if (!pageEl) return;
+  if (!pageEl) return false;
   const page = Number(pageEl.dataset.pageNumber);
-  if (!page || !pdfPageViewport(page)) return;
+  if (!page || !pdfPageViewport(page)) return false;
 
   // Set for the whole contact, tap included: a press timer allowed to run under
   // a pen that has not yet decided is a word selected mid-stroke.
@@ -490,6 +510,7 @@ function onInkPointerDown(event) {
   // fire a click if this turns out to be a tap.
   try { el.documentView?.setPointerCapture?.(event.pointerId); } catch (_) { /* synthetic event */ }
   attachInkScrollGuard();
+  return true;
 }
 
 function onInkPointerMove(event) {
@@ -544,6 +565,11 @@ function onInkPointerUp(event) {
     // A stroke must not also press whatever it started on top of. A tap does
     // not reach here with `live` set, so its click is left alone.
     swallowClickUntil = Date.now() + 400;
+    // ...and the NEXT tap's click, which this one cannot see. The line above
+    // covers the click this stroke is about to fire; the stamp covers the gap
+    // before the following mark, which while somebody is writing is a fraction
+    // of a second and is full of taps. See src/core/gesture.js.
+    noteInkStrokeCommitted();
   }
   releaseInkPress();
 }
@@ -646,6 +672,31 @@ export function initDocumentInk() {
   view.addEventListener("pointercancel", onInkPointerCancel, true);
   view.addEventListener("click", onInkClick, true);
   // The scroll guard is bound per press — see attachInkScrollGuard.
+
+  // ── The OS menu, over the one surface it must never open on ───────────────
+  //
+  // src/notes/touch-selection.js already refuses `contextmenu`, and refuses it
+  // for the right reason — a long press over a link or a picture would otherwise
+  // put Chrome's menu on top of a selection it just made. But it refuses only
+  // under canTouchSelect(), which is `(pointer: coarse) and (hover: none)`: false
+  // on precisely the machines this matters most on. A Surface, an iPad with a
+  // trackpad, an Android tablet with a mouse, a desktop with a Wacom — every one
+  // of them reports hover, so nothing suppressed the menu over the paper.
+  //
+  // And on those machines a barrel-button press is not a right-click at all:
+  // isEraserEvent (src/render/ink-engine.js) reads `buttons & 2` as ERASE, which
+  // is what makes the button on the side of the stylus rub out. So the reader
+  // holds the button, rubs out a word, and the operating system opens a menu
+  // over the gap they just made.
+  //
+  // Gated on the flag rather than on event.pointerType, which is not portable
+  // here: `contextmenu` is a PointerEvent in Chromium and a MouseEvent
+  // elsewhere, and a MouseEvent has no pointerType to read. The flag is exact,
+  // and it is false for a mouse with no pen anywhere near — so a right-click to
+  // copy a line of the paper still gets the browser's own menu.
+  view.addEventListener("contextmenu", (event) => {
+    if (inkPenIsDown()) event.preventDefault();
+  });
 
   // ── The nets under the four listeners above ────────────────────────────────
   //
