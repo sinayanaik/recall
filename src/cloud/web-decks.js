@@ -30,6 +30,7 @@ import { recordNavHistory, refreshNavBack } from "../ui/nav-history.js?v=__BUILD
 import { unlockPageScroll } from "../ui/overlays.js?v=__BUILD__";
 import { setViewMode } from "../ui/view-mode.js?v=__BUILD__";
 import { documentTabForOpenDeck } from "../documents/doc-slot.js?v=__BUILD__";
+import { deckTabKey } from "../storage/deck-tab.js?v=__BUILD__";
 
 // Whichever of two ISO timestamps (either may be null/undefined) is later,
 // or null if neither parses.
@@ -371,9 +372,13 @@ export async function loadWebDeck(deckId) {
     state.sourceTitle = deckData.title || "";
     state.importTitleHint = deckData.title || "";
     // A PDF deck opens on its PDF tab, a notebook on Write, everything else
-    // on Notes — the same one answer loadDeckSnapshot uses, so the two routes
-    // into a deck cannot land on different surfaces.
-    setViewMode(documentTabForOpenDeck());
+    // on Notes — or, if this device has opened this deck before, the tab it was
+    // left on. The same one answer loadDeckSnapshot uses, so the two routes into
+    // a deck cannot land on different surfaces. deckTabKey rather than
+    // currentDeckKey(): state.localDeckId is not assigned until saveDeckToLibrary
+    // runs further down, so a composite key here would still carry the
+    // PREVIOUS deck's local id. See its own comment.
+    setViewMode(documentTabForOpenDeck(state.meta, deckTabKey(state.deckId, null)));
     // Cross-device resume: this deck's meta may carry a reading position
     // synced from another device, and this device has its own copy of wherever
     // it last got to (see src/notes/reading-position.js). The newer of the two

@@ -20,6 +20,7 @@ import { isQuickNotesDeck } from "../quick-notes/categories.js?v=__BUILD__";
 import { setDeckAutosaveStorageFailed } from "./quota.js?v=__BUILD__";
 import { setViewMode } from "../ui/view-mode.js?v=__BUILD__";
 import { activeDocSlot, documentTabForOpenDeck, hasDocSlot, onDocumentSurface } from "../documents/doc-slot.js?v=__BUILD__";
+import { deckTabKey } from "../storage/deck-tab.js?v=__BUILD__";
 
 // Is there anything in this deck at all?
 //
@@ -259,8 +260,12 @@ export function loadDeckSnapshot(payload, titleHint = "", append = false, { keep
     // they are looking at a document that the other device has just removed.
     // Deliberately narrow — a deck whose paper is gone has nothing to show on
     // that tab — and it is exactly the new documentRemovedHere stat.
-    if (!keepPlace) setViewMode(documentTabForOpenDeck());
-    else if (onDocumentSurface() && !hasDocSlot(activeDocSlot(), state.meta)) setViewMode(documentTabForOpenDeck());
+    // deckKey, not currentDeckKey(): state.localDeckId is assigned on the line
+    // AFTER this function returns — the same reason the resume below is in a
+    // microtask — so reading it here asks about a deck with no local id and
+    // finds nothing remembered, on every library deck.
+    if (!keepPlace) setViewMode(documentTabForOpenDeck(state.meta, deckTabKey(state.deckId, deckKey)));
+    else if (onDocumentSurface() && !hasDocSlot(activeDocSlot(), state.meta)) setViewMode(documentTabForOpenDeck(state.meta, deckTabKey(state.deckId, deckKey)));
     else setViewMode(state.viewMode);
     // Cross-device resume — see the identical call in loadWebDeck for why
     // flash/smooth are both off and why the local store is consulted alongside

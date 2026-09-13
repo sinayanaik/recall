@@ -45,6 +45,9 @@
 // `state` is the one import, and `state` imports nothing.
 
 import { state } from "../core/state.js?v=__BUILD__";
+// A leaf that imports nothing, for the reason stated above: this module is read
+// from a top-level initialiser and must not take part in a cycle.
+import { rememberedDeckTab } from "../storage/deck-tab.js?v=__BUILD__";
 
 export const DOC_SLOT_DOC = "doc";
 
@@ -60,6 +63,29 @@ export function normalizeDocSlot(value) {
 // spelled out at each call site so that renaming one is a single edit.
 export function docSlotMetaKey(slot) {
   return normalizeDocSlot(slot) === DOC_SLOT_NOTEBOOK ? "notebook" : "pdf";
+}
+
+// ── ...and the key its reading position lives under ────────────────────────
+//
+// A deck has two documents and had ONE meta.readingPosition between them, so the
+// PDF tab and the Write tab overwrote each other's page on every scroll — and a
+// cold open applied whichever surface was scrolled last to whichever surface
+// happened to open. The notebook and the paper are different documents with
+// different page counts; there was never a sense in which one number described
+// both.
+//
+// Sibling keys rather than a nested bag, because mergeDeckMeta settles
+// readingPosition by the bag's single `at` and deliberately does not look inside
+// the anchor — so nesting the two slots under one key would mean a scroll on one
+// device dropping the other device's position for the OTHER surface wholesale.
+//
+// meta.readingPosition itself is untouched and still written beside these, so a
+// device running an older build still resumes.
+//
+// Here beside docSlotMetaKey for the reason that one is here: "kept here rather
+// than spelled out at each call site so that renaming one is a single edit".
+export function docSlotReadingPositionKey(slot) {
+  return normalizeDocSlot(slot) === DOC_SLOT_NOTEBOOK ? "readingPositionNotebook" : "readingPositionPdf";
 }
 
 export function docSlotMeta(slot, meta = state.meta) {
@@ -99,7 +125,26 @@ export function onDocumentSurface() {
 // A PDF deck opens on its PDF tab: the document IS the deck. A deck whose
 // only document is paper it wrote itself opens on Write, by the same argument.
 // Everything else opens on Notes, exactly as it always has.
-export function documentTabForOpenDeck(meta = state.meta) {
+//
+// ── ...unless this device has been here before ─────────────────────────────
+//
+// The answer above is right the FIRST time a deck is opened and wrong every time
+// after it: a reader studying the cards of a paper deck was put back on the
+// paper on every open, and a reader writing in a notebook beside a paper was put
+// back on the paper too. So the tab this device last left the deck on wins, and
+// the content-derived answer becomes the fallback for a deck it has never seen.
+//
+// Validated against the deck being opened, because a remembered tab can outlive
+// the thing it named: a paper removed on another device leaves "document"
+// pointing at a surface with nothing on it. `deckKey` is passed in rather than
+// read here for the reason this module imports almost nothing — and because at
+// the moment the library loader asks, state.localDeckId has not been assigned
+// yet (see loadDeckSnapshot).
+export function documentTabForOpenDeck(meta = state.meta, deckKey = null) {
+  const remembered = deckKey ? rememberedDeckTab(deckKey) : null;
+  if (remembered === "cards" || remembered === "notes") return remembered;
+  if (remembered === "document" && hasDocSlot(DOC_SLOT_DOC, meta)) return "document";
+  if (remembered === "handwriting" && deckHasHandwrittenPages(meta)) return "handwriting";
   if (meta?.pdf && !meta.pdf.notebook) return "document";
   // Pages that are already on real paper, in either slot — the deck's own
   // document, or the one it has not been moved out of yet. Moving it is a rename

@@ -381,7 +381,13 @@ export function mergeDeckMeta(cloudMeta, localMeta, { prefer = "local" } = {}) {
   // the Document view without a line changing here. Same rule
   // betterReadingPosition applies between the meta and the local store: a record
   // with no stamp reads as older than one that has one.
-  for (const key of ["bookmark", "readingPosition"]) {
+  //
+  // The two per-slot positions settle by the identical rule and are listed here
+  // rather than left to the spread above, which is NOT optional: a key with no
+  // rule falls to `prefer`, which on the push is "local" — so the pushing device
+  // would always win, which is the exact fault this loop exists to fix. See
+  // docSlotReadingPositionKey for why a deck's two documents need one each.
+  for (const key of ["bookmark", "readingPosition", "readingPositionPdf", "readingPositionNotebook"]) {
     const a = cloud[key];
     const b = local[key];
     if (a && b) next[key] = (Number(b.at) || 0) >= (Number(a.at) || 0) ? b : a;

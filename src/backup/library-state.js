@@ -41,18 +41,35 @@ import { BACKUP_LIBRARY_FILE, BACKUP_LIBRARY_SCHEMA } from "./archive-format.js?
 // that will never be asked about again, and every restored position would be
 // dead weight. Splitting the key on the way out and rebuilding it on the way in
 // is the whole of the remap.
+//
+// ── ...and the fourth element, which is why this is still one JSON array ───
+//
+// A document's position is per SLOT now — a deck's paper and its notebook are
+// two documents and had one position between them — so those entries carry a
+// fourth element naming the slot. Deliberately not a `key|slot` string, even
+// though that is what documentParkKey does for its own in-memory map: THIS
+// function JSON.parses every reading-position key on the way into a backup and
+// silently drops anything that does not parse, so a pipe-joined key would have
+// quietly stopped being backed up and nobody would have found out until a
+// restore.
+//
+// buildDeckKey appends the element only when there is one, so every
+// three-element key already on a device round-trips byte for byte. A note has no
+// slot and keeps the bare key.
 export function splitDeckKey(key) {
   try {
     const parts = JSON.parse(key);
     if (!Array.isArray(parts)) return null;
-    return { deckId: parts[0] || null, localDeckId: parts[1] || null, folderKey: parts[2] || null };
+    return { deckId: parts[0] || null, localDeckId: parts[1] || null, folderKey: parts[2] || null, slot: parts[3] || null };
   } catch {
     return null;
   }
 }
 
-export function buildDeckKey({ deckId = null, localDeckId = null, folderKey = null } = {}) {
-  return JSON.stringify([deckId || null, localDeckId || null, folderKey || null]);
+export function buildDeckKey({ deckId = null, localDeckId = null, folderKey = null, slot = null } = {}) {
+  return slot
+    ? JSON.stringify([deckId || null, localDeckId || null, folderKey || null, slot])
+    : JSON.stringify([deckId || null, localDeckId || null, folderKey || null]);
 }
 
 function splitKeyedBag(bag, valueName) {
@@ -131,7 +148,8 @@ export function applyBackupLibraryState(libraryState, { localIdByArchiveId = new
   const remap = (entry) => buildDeckKey({
     deckId: entry.deckId,
     localDeckId: localIdByArchiveId.get(String(entry.localDeckId || "")) || entry.localDeckId,
-    folderKey: entry.folderKey
+    folderKey: entry.folderKey,
+    slot: entry.slot
   });
 
   const existingPositions = readAllReadingPositions();

@@ -35,10 +35,11 @@ import { ensurePdfJs } from "../core/lib-loader.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { paintDocumentHighlights } from "./pdf-highlights.js?v=__BUILD__";
 import { buildDocumentOutline, clearDocumentOutline, setDocumentOutlinePage } from "./pdf-outline.js?v=__BUILD__";
-import { DOC_SLOT_NOTEBOOK, activeDocSlot, docSlotMeta, documentStoreKey, normalizeDocSlot, onDocumentSurface } from "./doc-slot.js?v=__BUILD__";
+import { inkPenIsDown } from "../core/gesture.js?v=__BUILD__";
+import { DOC_SLOT_NOTEBOOK, activeDocSlot, docSlotMeta, docSlotReadingPositionKey, documentStoreKey, normalizeDocSlot, onDocumentSurface } from "./doc-slot.js?v=__BUILD__";
 import { isDarkThemeActive } from "../ui/theme-catalog.js?v=__BUILD__";
 import { getDocument, putDocument, sha256 } from "./pdf-store.js?v=__BUILD__";
-import { scheduleReadingPositionSave } from "../notes/reading-position.js?v=__BUILD__";
+import { betterReadingPosition, scheduleReadingPositionSave } from "../notes/reading-position.js?v=__BUILD__";
 import { currentDeckKey } from "../notes/scroll-anchor.js?v=__BUILD__";
 import { setStatus, showToast } from "../ui/feedback.js?v=__BUILD__";
 
@@ -716,7 +717,41 @@ async function openDocumentViewBody({ force = false, slot = null } = {}) {
     // never heard about the change, because it only listens while the Document
     // view is the one on screen. So a phone rotated in the notes and switched
     // back arrived with the portrait scale still on the page.
-    relayoutDocument({ refit: true });
+    //
+    // ── ...and holding the reader while it does ────────────────────────────
+    //
+    // A refit moves every page, so a fit-width reader drifted: they pressed
+    // Notes, pressed Document again, and came back somewhere else down the
+    // paper. Commit 4f44b74 wrote this fix and then took it back out, and its
+    // reasons are exact — it turned pdf-document from 263/0 to 263/10, because
+    // a programmatic scroll while the pen is down cancels the stroke and
+    // watchDocumentViewSize's observer can fire mid-gesture, and because
+    // currentDocumentRatio clamps to 0..1 so at the top of a document it answers
+    // 0 and the "restore" MOVES the reader to pageOffsetTop(1) instead of
+    // holding them.
+    //
+    // Neither applies here, and this is a different call site from the two the
+    // revert was about. watchDocumentViewSize and the debounced window resize in
+    // src/main.js are deliberately left exactly as they are: they are the ones
+    // that fire mid-gesture. THIS one runs on a tab press, so the pen cannot be
+    // down — and it is asked anyway, because Part 1 of this branch makes
+    // inkPenIsDown authoritative. The pages were never detached either, only
+    // #documentStage hidden, so every offsetTop and scrollTop is intact.
+    //
+    // Cause (2) becomes the do-not-restore-if-unchanged guard the commit itself
+    // asked for: a reader at the very top of the document has nothing to hold,
+    // and re-landing them is the move the clamp made wrong.
+    const heldPage = currentDocumentPage();
+    const heldRatio = currentDocumentRatio();
+    const heldAcross = currentDocumentAcross();
+    const atTheVeryTop = heldPage <= 1 && heldRatio <= 0 && !(heldAcross > 0);
+    const holdTheReader = !atTheVeryTop && !inkPenIsDown();
+    relayoutDocument({
+      refit: true,
+      afterLayout: holdTheReader
+        ? () => scrollToDocumentPage(heldPage, heldRatio, { smooth: false, across: heldAcross })
+        : null
+    });
     return true;
   }
 
@@ -892,6 +927,30 @@ async function openDocumentViewBody({ force = false, slot = null } = {}) {
 
   view.innerHTML = "";
   openPdf.scale = fitWidthScale();
+  // ── The zoom the reader left this document at ────────────────────────────
+  //
+  // A cold open was always fit-to-width, so a paper somebody had zoomed into to
+  // read one column came back as a whole page every time the app was reloaded.
+  // The scale lives in the device's own store beside the position (see
+  // scheduleDocumentPositionSave) and never in meta: a phone and a laptop must
+  // not share a magnification.
+  //
+  // Applied ONLY when the stored record says the reader had left fit-width. A
+  // reader who was at fit-width gets fit-width — which is also the right answer
+  // if the window has changed size since — and that keeps the default path byte
+  // for byte what it was, so the risk here is confined to readers who had
+  // deliberately zoomed.
+  //
+  // A scale outside the bounds is ignored rather than clamped: out of range
+  // means the record was written by a build with different limits, and honouring
+  // half of it would be worse than honouring none.
+  const storedView = documentResumePosition(openSlot);
+  if (storedView && storedView.fitWidth === false
+      && Number.isFinite(storedView.scale)
+      && storedView.scale >= PDF_MIN_SCALE && storedView.scale <= PDF_MAX_SCALE) {
+    openPdf.scale = storedView.scale;
+    openPdf.fitWidth = false;
+  }
   finishDocumentOpen(view, token, openSlot, null);
   return true;
 }
@@ -971,8 +1030,16 @@ function finishDocumentOpen(view, token, openSlot, at, { restored = false, refit
     // the stored position had an opinion about it.
     if (at && Number.isFinite(at.page)) scrollToDocumentPage(at.page, at.ratio || 0, { smooth: false, across: at.across });
     else {
-      const resume = state.meta?.readingPosition;
-      if (Number.isFinite(resume?.pdfPage)) scrollToDocumentPage(resume.pdfPage, resume.ratio || 0, { smooth: false });
+      // This slot's own record, not the deck's one shared field — the paper and
+      // the notebook used to overwrite each other, so a cold open landed on
+      // whichever page the OTHER surface was scrolled to. documentResumePosition
+      // falls back to the shared field for a deck last read by an older build.
+      //
+      // `across` rides along when the record has one: it is a fraction of the
+      // page, so it is re-found at whatever scale comes back, and an absent one
+      // is how scrollToDocumentPage is told to leave that axis alone.
+      const resume = documentResumePosition(openSlot);
+      if (Number.isFinite(resume?.pdfPage)) scrollToDocumentPage(resume.pdfPage, resume.ratio || 0, { smooth: false, across: resume.across });
     }
   };
   if (!refit) landOnReadingPosition();
@@ -2453,11 +2520,47 @@ export function updatePageIndicator() {
 // character index but because writeStoredReadingPosition requires a finite
 // `offset` to accept the entry at all; `pdfPage`/`ratio` are what the document
 // branch of scheduleNoteJump actually uses.
+// The local store's key for one of a deck's two documents. A fourth element on
+// the array currentDeckKey() already builds, rather than a suffixed string —
+// src/backup/library-state.js JSON.parses these on the way into a backup and
+// drops what it cannot parse, so a `key|slot` would have stopped being backed up
+// silently. An entry written before this existed has three elements and means
+// the deck's own paper, which is what it always meant.
+export function documentPositionKey(slot) {
+  const parts = JSON.parse(currentDeckKey());
+  return JSON.stringify([...parts, normalizeDocSlot(slot)]);
+}
+
+// Which position to resume THIS slot at, across the two stores and the two
+// generations of key.
+//
+// The per-slot record first, then the shared meta.readingPosition — and that
+// fallback IS the compatibility rule: a deck last read by a build without
+// per-slot keys has only the shared bag, which is exactly today's behaviour,
+// until the first scroll on each surface writes a record of its own.
+function documentResumePosition(slot) {
+  return betterReadingPosition(state.meta?.[docSlotReadingPositionKey(slot)], documentPositionKey(slot))
+    || betterReadingPosition(state.meta?.readingPosition, currentDeckKey());
+}
+
 export function scheduleDocumentPositionSave() {
   if (!openPdf) return;
   const page = currentDocumentPage();
+  const slot = openPdf.slot;
   const position = { offset: page, pdfPage: page, ratio: currentDocumentRatio(), at: Date.now() };
-  scheduleReadingPositionSave(currentDeckKey(), position);
+  // ── The local copy carries two things the cloud's must not ───────────────
+  //
+  // `across` — how far across the page, as a fraction of the PAGE (see
+  // currentDocumentAcross) — and the zoom. Both are facts about THIS screen: a
+  // phone and a laptop must not share a magnification, which is the argument
+  // src/storage/ink-prefs.js makes at length for the nib. So they ride in the
+  // device's own store and are stripped from the copy that travels.
+  scheduleReadingPositionSave(documentPositionKey(slot), {
+    ...position,
+    across: currentDocumentAcross(),
+    scale: openPdf.scale,
+    fitWidth: Boolean(openPdf.fitWidth)
+  });
   // ...and into the deck's own meta, which is what travels between devices.
   //
   // deckSnapshot picks meta.readingPosition up from scroll-anchor.js's
@@ -2467,7 +2570,15 @@ export function scheduleDocumentPositionSave() {
   // reach the phone. Written straight onto meta rather than scheduling a save:
   // it rides along on whichever save happens next, which is the same
   // deliberately simple strategy the notes position uses.
-  if (state.meta && typeof state.meta === "object") state.meta.readingPosition = position;
+  if (state.meta && typeof state.meta === "object") {
+    // Per slot, because a deck's paper and its notebook are two documents with
+    // two page counts and there was never a sense in which one number described
+    // both — the two tabs used to overwrite each other on every scroll. The
+    // shared key is still written beside them, unchanged, so a device on an
+    // older build still resumes.
+    state.meta[docSlotReadingPositionKey(slot)] = position;
+    state.meta.readingPosition = position;
+  }
 }
 
 // ── Dark themes ─────────────────────────────────────────────────────────────

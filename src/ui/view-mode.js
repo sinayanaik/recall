@@ -12,6 +12,7 @@ import { hasActiveDeck } from "../cards/card-status.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { rawEditorValueFor } from "../notes/notes-edit-split.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
+import { deckTabKey, rememberDeckTab } from "../storage/deck-tab.js?v=__BUILD__";
 import { closeHighlightsEditor } from "../panels/highlights-editor.js?v=__BUILD__";
 import { activeDocSlot } from "../documents/doc-slot.js?v=__BUILD__";
 import { openDocumentView } from "../documents/pdf-view.js?v=__BUILD__";
@@ -140,6 +141,13 @@ export function setViewMode(mode, options = {}) {
   // view the reader has already left. (The save carries the deck key it was
   // captured with, so this is safe even mid-deck-swap.)
   if (changed && !notesActive && !documentActive) flushReadingPositionSave();
+  // ...and remembered, so the deck opens here next time. Only on a real switch
+  // and only with a deck open: documentTabForOpenDeck answers from the deck's
+  // CONTENTS, which is right the first time and wrong every time after — a
+  // reader studying the cards of a paper deck was put back on the paper on every
+  // open. A keepPlace refresh passes the mode it is already on, so `changed` is
+  // false and this records nothing, which is correct by construction.
+  if (changed && hasActiveDeck()) rememberDeckTab(deckTabKey(state.deckId, state.localDeckId), next);
   // Switching views is navigation, not reading — start with the header visible.
   if (changed) resetChromeAutoHide();
   // The appbar is a different height in each view — the card counters are
