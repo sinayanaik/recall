@@ -28,6 +28,7 @@
 // the same answer src/notes/highlight-note-editor.js reached for a note that is
 // attached to a highlight sitting in a line of text.
 
+import { createBlockStyleBar } from "./block-style-bar.js?v=__BUILD__";
 import { createNoteEditorKit } from "../notes/note-editor-kit.js?v=__BUILD__";
 import { lockPageScroll, unlockPageScroll } from "../ui/overlays.js?v=__BUILD__";
 
@@ -56,6 +57,18 @@ function buildBlockSheet() {
   // that makes the floating selection pill work over this text.
   const kit = createNoteEditorKit({ placeholder: "Markdown — the same as a note" });
 
+  // ── The style row, and why it is NOT inside the kit ──────────────────────
+  //
+  // The kit's own formatting strip is hidden in Preview (setMode), and rightly:
+  // there is no caret to act on. That is also exactly what a reader who opened
+  // this window, pressed Preview and found nothing there to change was looking
+  // at — a markdown editor with two tabs and no way to say how the block itself
+  // should read. These controls are about the BLOCK and not about the text under
+  // a caret, so they belong outside the kit, on screen in both modes, where they
+  // stay true whichever tab is up.
+  const styleHost = document.createElement("div");
+  styleHost.className = "pdf-block-editor-style";
+
   const foot = document.createElement("div");
   foot.className = "pdf-block-editor-foot";
   const cancel = document.createElement("button");
@@ -68,9 +81,9 @@ function buildBlockSheet() {
   done.textContent = "Done";
   foot.append(cancel, done);
 
-  root.append(head, kit.root, foot);
+  root.append(head, kit.root, styleHost, foot);
   document.body.appendChild(root);
-  blockSheet = { root, title, kit, cancel, done };
+  blockSheet = { root, title, kit, styleHost, cancel, done };
 
   cancel.addEventListener("click", () => closeBlockSheet(false));
   done.addEventListener("click", () => closeBlockSheet(true));
@@ -109,7 +122,15 @@ export function isBlockEditorOpen() {
 
 // `value` is the text to edit — a block's markdown, or an image block's
 // description. `onDone` is handed the new text, or null when it was cancelled.
-export function openBlockEditor({ value = "", title = "Edit this text", placeholder = "", onDone = () => {} } = {}) {
+export function openBlockEditor({
+  value = "",
+  title = "Edit this text",
+  placeholder = "",
+  kind = "text",
+  style = null,
+  onStyle = null,
+  onDone = () => {}
+} = {}) {
   const built = buildBlockSheet();
   // A second open with one already up commits the first, the way beginBlockEdit
   // has always committed whatever was open before it.
@@ -119,7 +140,19 @@ export function openBlockEditor({ value = "", title = "Edit this text", placehol
   built.kit.setValue(value);
   built.kit.clearHistory();
   built.kit.setMode("write");
-  if (placeholder) built.kit.textarea.placeholder = placeholder;
+  // Unconditionally, INCLUDING the empty string. Set only when truthy, an image
+  // block's "What is in the picture…" stayed on the textarea of the next text
+  // block opened after it — a window asking one question while prompting for
+  // the answer to another.
+  built.kit.textarea.placeholder = placeholder;
+  // Rebuilt per open rather than kept and re-valued: a picture's bar carries two
+  // rows and a paragraph's carries seven, so the two are not the same control
+  // wearing different values.
+  built.styleHost.replaceChildren();
+  built.styleHost.hidden = !onStyle;
+  if (onStyle) {
+    built.styleHost.appendChild(createBlockStyleBar({ style, kind, onChange: onStyle }).root);
+  }
   built.root.hidden = false;
   built.kit.attach();
   // The pill (src/notes/selection.js) is fixed-position at z-index 90 and this

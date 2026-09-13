@@ -1187,6 +1187,250 @@ try {
     blocks.mergedIds.includes("bk-other"), `merged: ${blocks.mergedIds.join(", ")}`);
   check("...and this device's newer copy wins over the other's older one",
     blocks.mergedMine === blocks.moved.x, `x = ${blocks.mergedMine}, this device had ${blocks.moved.x}`);
+
+  // ── 5a. What a block LOOKS like, and picking one up ──────────────────────
+  //
+  // A block was one look — a card, an accent hairline, 0.82rem of the app font,
+  // left-aligned — and the only gesture that made one was a button in the rail
+  // that drops it in the middle of whichever page is in view. So the two halves
+  // asserted here are the two a reader asked for: controls over the block
+  // itself, and a way to put one where they are looking.
+  //
+  // The style is a bag of TOKENS on the record and every value it resolves to is
+  // in CSS, so these read the painted result rather than the record wherever
+  // they can: a token written faithfully into a data attribute that no rule
+  // matches is a control that does nothing, and the record cannot tell.
+  const styling = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const view = document.getElementById("documentView");
+    const pageNumber = api.currentDocumentPage();
+    const pageEl = document.querySelector('.pdf-page[data-page-number="' + pageNumber + '"]');
+    const box = pageEl.getBoundingClientRect();
+    const record = (id) => ({ ...(api.state.meta.pdfBlocks || []).find((b) => b.id === id) });
+
+    // ── Made where the pointer is ────────────────────────────────────────
+    //
+    // Somewhere inside the page AND inside the window — the page is taller than
+    // the viewport, so its own box is not enough — and on bare paper rather than
+    // on top of the block the case above left behind.
+    const top = Math.max(box.top, 0);
+    const bottom = Math.min(box.bottom, window.innerHeight);
+    let spot = null;
+    for (const fx of [0.22, 0.42, 0.62, 0.8]) {
+      for (const fy of [0.3, 0.5, 0.7]) {
+        const at = { x: Math.round(box.left + (box.width * fx)), y: Math.round(top + ((bottom - top) * fy)) };
+        if (!document.elementFromPoint(at.x, at.y)?.closest(".pdf-block")) { spot = at; break; }
+      }
+      if (spot) break;
+    }
+    const had = new Set(api.documentBlocks().map((b) => b.id));
+    const wanted = api.pdfPointAt(spot.x, spot.y);
+    view.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true, clientX: spot.x, clientY: spot.y }));
+    await settle(500);
+    const made = api.documentBlocks().find((b) => !had.has(b.id)) || null;
+    const sheet = document.getElementById("pdfBlockEditor");
+    const openedOnIt = Boolean(sheet && !sheet.hidden);
+    // The style row is in the WINDOW as well, and outside the kit — which is the
+    // whole of "I pressed Preview and there was nothing there to style with".
+    const rowInSheet = {
+      rows: sheet?.querySelectorAll(".pdf-block-editor-style .bstyle-row").length || 0,
+      outsideKit: !sheet?.querySelector(".note-editor-kit .bstyle")
+    };
+    sheet?.querySelector(".pdf-block-editor-done")?.click();
+    await settle(300);
+    // Centred on the press, so the comparison is against the middle of the box —
+    // and against the middle of the PAGE, which is where every one of these used
+    // to land whatever the reader was looking at.
+    const centre = made ? { x: made.x + (made.w / 2), y: made.y + (made.h / 2) } : null;
+    const pageMiddle = {
+      x: (pageEl && api.pdfPageViewport(pageNumber)) ? (api.pdfPageViewport(pageNumber).viewBox[2] - api.pdfPageViewport(pageNumber).viewBox[0]) / 2 : 0
+    };
+
+    const node = () => document.querySelector('[data-pdf-block="' + made.id + '"]');
+    const plain = {
+      font: parseFloat(getComputedStyle(node().querySelector(".pdf-block-body")).fontSize),
+      shadow: getComputedStyle(node()).boxShadow
+    };
+
+    // ── Styled ───────────────────────────────────────────────────────────
+    api.writeBlockStyle(made.id, { fill: "yellow", size: "xl", align: "center", frame: "none", ink: "red" });
+    await settle(300);
+    const styledNode = node();
+    const bodyStyle = getComputedStyle(styledNode.querySelector(".pdf-block-body"));
+    const painted = {
+      fill: styledNode.dataset.blockFill,
+      align: bodyStyle.textAlign,
+      font: parseFloat(bodyStyle.fontSize),
+      // A colour that is neither the theme's text nor unset: the pen token
+      // resolved through a custom property, which is the mechanism that makes
+      // one choice work on ten themes.
+      colour: bodyStyle.color,
+      themeColour: getComputedStyle(document.body).color,
+      background: getComputedStyle(styledNode).backgroundColor,
+      shadow: getComputedStyle(styledNode).boxShadow
+    };
+    const styledRecord = record(made.id);
+
+    await api.flushPendingDeckAutosave();
+    await settle(300);
+    const entry = api.readLocalDeckIndex().find((row) => row.title === "A paper and a notebook") || api.readLocalDeckIndex()[0];
+    const snapshot = await api.readDeckSnapshot(entry.id);
+    const storedStyle = (snapshot.meta.pdfBlocks || []).find((b) => b.id === made.id)?.style || null;
+    // ...and the block the case above dragged, typed into and resized, which
+    // nobody has styled: it must not have grown the key on any of that.
+    const untouched = (snapshot.meta.pdfBlocks || []).filter((b) => b.id !== made.id && !b.style).length;
+
+    // Every control back where it started removes the key rather than storing a
+    // bag of defaults on a record that is re-sent whole on every push.
+    api.writeBlockStyle(made.id, { fill: "paper", size: "m", align: "left", frame: "card", ink: "default" });
+    await settle(200);
+    const bare = !("style" in record(made.id));
+
+    // ── Height follows the text ──────────────────────────────────────────
+    //
+    // Typed through the block's own ✎ rather than written into the record, so
+    // this exercises the path a reader takes: the sheet, Done, the re-render,
+    // and the measurement that follows it.
+    const edit = node().querySelector('[data-pdf-block-action="edit"]');
+    edit.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 41, cancelable: true }));
+    await settle(400);
+    const area = document.querySelector("#pdfBlockEditor [data-note-edit-value]");
+    area.value = "One line, and then a great many more of them. " .repeat(12);
+    area.dispatchEvent(new Event("input", { bubbles: true }));
+    document.querySelector(".pdf-block-editor-done")?.click();
+    await settle(600);
+    const beforeFit = record(made.id);
+    const overflowing = (() => {
+      const body = node().querySelector(".pdf-block-body");
+      return body.scrollHeight > body.clientHeight + 2;
+    })();
+    api.writeBlockStyle(made.id, { fit: true });
+    await settle(700);
+    const afterFit = record(made.id);
+
+    // ── Picked up, deleted, and put back ─────────────────────────────────
+    api.selectBlock(made.id);
+    await settle(150);
+    const ring = node()?.classList.contains("is-selected");
+    const key = (init) => document.body.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init }));
+    key({ key: "Delete" });
+    await settle(300);
+    const gone = !api.documentBlocks().some((b) => b.id === made.id);
+    const buried = Boolean((api.state.meta.deletedBlockIds || {})[made.id]);
+    key({ key: "z", ctrlKey: true });
+    await settle(400);
+    const backAgain = api.documentBlocks().find((b) => b.id === made.id) || null;
+    // The tombstone has to go with it. A record that is live locally and marked
+    // deleted in the same meta is one sync away from being deleted again, on
+    // every device.
+    const stillBuried = Boolean((api.state.meta.deletedBlockIds || {})[made.id]);
+
+    // ── ...and the arrows, the duplicate and the stacking ────────────────
+    api.selectBlock(made.id);
+    key({ key: "ArrowRight", shiftKey: true });
+    await settle(250);
+    const nudged = record(made.id);
+    const before = api.documentBlocks().length;
+    key({ key: "d", ctrlKey: true });
+    await settle(300);
+    const copies = api.documentBlocks().length - before;
+    const copy = api.documentBlocks().find((b) => b.id !== made.id && b.md === nudged.md && b.id !== made.id);
+    api.selectBlock(made.id);
+    const zWas = record(made.id).z;
+    key({ key: "]" });
+    await settle(250);
+    const zNow = record(made.id).z;
+
+    // ── Which ring Ctrl+Z means ──────────────────────────────────────────
+    //
+    // Two undo stacks now answer on this surface. A stroke made AFTER a block
+    // change must be what Ctrl+Z takes back, or the reader is undoing something
+    // they cannot see — the fault the pen's own branch in src/main.js was
+    // written to fix, one ring later.
+    const inkCount = () => (api.state.meta.pdfHighlights || []).filter((h) => h.kind === "ink").length;
+    const inkBefore = inkCount();
+    const pen = (t, x, y, b) => view.dispatchEvent(new PointerEvent(t, { bubbles: true, pointerId: 44, pointerType: "pen", isPrimary: true, clientX: x, clientY: y, buttons: b, pressure: 0.6 }));
+    pen("pointerdown", spot.x, spot.y + 90, 1);
+    for (let i = 1; i <= 10; i += 1) pen("pointermove", spot.x + (i * 6), spot.y + 90 + (i * 3), 1);
+    await settle(150);
+    pen("pointerup", spot.x + 60, spot.y + 120, 0);
+    await settle(400);
+    const inkDrawn = inkCount() - inkBefore;
+    const blocksBeforeUndo = api.documentBlocks().length;
+    key({ key: "z", ctrlKey: true });
+    await settle(400);
+    const afterUndo = { ink: inkCount() - inkBefore, blocks: api.documentBlocks().length };
+
+    return {
+      spotFound: Boolean(spot), made: Boolean(made), openedOnIt, rowInSheet,
+      wanted, centre, pageMiddle, madeBox: made ? { w: made.w, h: made.h } : null,
+      plain, painted, styledRecord: styledRecord.style || null, storedStyle, untouched, bare,
+      overflowing, beforeFit: { h: beforeFit.h, y: beforeFit.y }, afterFit: { h: afterFit.h, y: afterFit.y },
+      ring, gone, buried, backAgain: Boolean(backAgain), stillBuried,
+      nudgedBy: nudged.x - (backAgain ? backAgain.x : 0), copies, copyOffset: copy ? copy.x - nudged.x : null,
+      zWas, zNow, inkDrawn, blocksBeforeUndo, afterUndo,
+      errs: window.__errs.slice(0, 4)
+    };
+  }`);
+
+  check("a double-click on bare paper makes a block there",
+    styling.made && styling.openedOnIt,
+    `made=${styling.made}, editor opened on it=${styling.openedOnIt}${styling.errs?.length ? ` — ${styling.errs.join(" | ")}` : ""}`);
+  // The number that matters: the middle of the new block against the point that
+  // was pressed, in the page's own units. Ten points of slack for the clamp that
+  // keeps a block from being created half off the edge of the page.
+  check("...at the point that was pressed, not in the middle of the page",
+    Math.abs(styling.centre.x - styling.wanted.x) < 10 && Math.abs(styling.centre.y - styling.wanted.y) < 10,
+    `pressed (${Math.round(styling.wanted.x)}, ${Math.round(styling.wanted.y)}), block centred on `
+      + `(${Math.round(styling.centre.x)}, ${Math.round(styling.centre.y)}); the middle of the page is `
+      + `x=${Math.round(styling.pageMiddle.x)}`);
+  check("...and the editor window carries the style controls, outside the kit",
+    styling.rowInSheet.rows >= 6 && styling.rowInSheet.outsideKit,
+    `${styling.rowInSheet.rows} row(s), outside the kit=${styling.rowInSheet.outsideKit} — inside it they go `
+      + "with the formatting strip the moment Preview is pressed");
+  check("a block can be given a fill, a size, a colour and an alignment",
+    styling.painted.fill === "yellow" && styling.painted.align === "center"
+      && styling.painted.font > styling.plain.font
+      && styling.painted.colour !== styling.painted.themeColour,
+    `fill=${styling.painted.fill}, align=${styling.painted.align}, `
+      + `type ${styling.plain.font}px → ${styling.painted.font}px, colour ${styling.painted.colour} `
+      + `against the theme's ${styling.painted.themeColour}`);
+  check("...with the frame a separate question from the fill",
+    styling.painted.shadow !== styling.plain.shadow,
+    `shadow "${styling.plain.shadow}" → "${styling.painted.shadow}"`);
+  check("...and it survives the round trip through the store",
+    styling.storedStyle?.fill === "yellow" && styling.storedStyle?.size === "xl",
+    styling.storedStyle ? JSON.stringify(styling.storedStyle) : "no style stored");
+  // The other half of the same decision: meta.pdfBlocks is re-sent whole on every
+  // push, so a default bag written onto records nobody styled would be bytes on
+  // every sync of every device, saying nothing.
+  check("...while a block nobody styled carries no style at all",
+    styling.untouched >= 1 && styling.bare,
+    `${styling.untouched} unstyled record(s) with no key; putting every control back removed it again=${styling.bare}`);
+  check("a block can be told to take its height from its text",
+    styling.overflowing && styling.afterFit.h > styling.beforeFit.h,
+    `${styling.beforeFit.h} → ${styling.afterFit.h} points, from text that overflowed=${styling.overflowing}`);
+  check("...growing downward, with its top edge held still",
+    styling.afterFit.y === styling.beforeFit.y - (styling.afterFit.h - styling.beforeFit.h),
+    `y ${styling.beforeFit.y} → ${styling.afterFit.y} as the height went `
+      + `${styling.beforeFit.h} → ${styling.afterFit.h}`);
+  check("a selected block is deleted by the keyboard",
+    styling.ring && styling.gone && styling.buried,
+    `ring=${styling.ring}, gone=${styling.gone}, tombstoned=${styling.buried}`);
+  // Deleting a block used to be the one thing on this surface that could not be
+  // taken back — and it is tombstoned, so the loss reaches every other device on
+  // the next sync. A Delete key without an undo would have made that easy.
+  check("...and Ctrl+Z puts it back, tombstone and all",
+    styling.backAgain && !styling.stillBuried,
+    `back=${styling.backAgain}, still marked deleted=${styling.stillBuried}`);
+  check("...the arrows move it, Ctrl+D copies it and ] restacks it",
+    styling.nudgedBy === 10 && styling.copies === 1 && styling.copyOffset === 14 && styling.zNow > styling.zWas,
+    `Shift+→ moved it ${styling.nudgedBy}pt, Ctrl+D added ${styling.copies} at +${styling.copyOffset}pt, `
+      + `z ${styling.zWas} → ${styling.zNow}`);
+  check("...and a stroke made after all that is what Ctrl+Z takes back",
+    styling.inkDrawn === 1 && styling.afterUndo.ink === 0 && styling.afterUndo.blocks === styling.blocksBeforeUndo,
+    `${styling.inkDrawn} stroke drawn; after Ctrl+Z the page has ${styling.afterUndo.ink} stroke(s) and `
+      + `${styling.afterUndo.blocks} block(s) against ${styling.blocksBeforeUndo}`);
   // ── 5b. An older notebook, carried across ───────────────────────────────
   //
   // The conversion itself is arithmetic and is checked in tools/ink-check.mjs,

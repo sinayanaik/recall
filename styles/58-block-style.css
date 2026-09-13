@@ -1,0 +1,301 @@
+/* What a block on a page of handwriting LOOKS like
+ *
+ * A block was one look: a card, an accent hairline, a shadow, 0.82rem of the app
+ * font, left-aligned, in the theme's own text colour. That is a good annotation
+ * on somebody else's paper and it is one of about six things a page of working
+ * wants — a heading, a caption, a warning, a sticky note, a label beside a
+ * figure, a quotation — and there was no control anywhere that could say which.
+ *
+ * The tokens are here rather than in styles/01-tokens.css for the reason
+ * tools/split-css.mjs states: the thirteen slices are compared byte for byte
+ * against the stylesheet they were cut from, so anything written since the split
+ * lives on its own file. Same convention as 52-ink.css, which keeps the pen's
+ * palette beside the pen.
+ *
+ * Loaded after 53-handwriting.css, so every rule here at equal specificity wins
+ * over the single look it replaces — which is the same mechanism 54-stacking.css
+ * relies on and why the image exceptions at the bottom are restated rather than
+ * left to the file above.
+ */
+
+/* ── The fills ─────────────────────────────────────────────────────────────
+ *
+ * Each one is a TINT OF THE THEME'S OWN CARD and not a colour of its own, which
+ * is what makes eight fills work across ten themes with no per-theme table: the
+ * mix is dark on a dark theme and pale on a light one, and the type over it is
+ * the theme's own text either way. A flat #fde68a would be a yellow sticky in
+ * the light themes and a glare in the seven dark ones.
+ *
+ * `paper` is the mix the block has always had, so a block nobody has styled is
+ * unchanged to the pixel. `clear` is the way out of the card altogether: type
+ * straight on the page, which is what a label beside a diagram wants.
+ */
+:root {
+  --block-fill-paper: color-mix(in srgb, var(--card, var(--panel)) 95%, transparent);
+  --block-fill-clear: transparent;
+  --block-fill-yellow: color-mix(in srgb, #f2c400 20%, var(--card, var(--panel)));
+  --block-fill-green: color-mix(in srgb, #22c55e 18%, var(--card, var(--panel)));
+  --block-fill-blue: color-mix(in srgb, #3b82f6 18%, var(--card, var(--panel)));
+  --block-fill-pink: color-mix(in srgb, #ec4899 16%, var(--card, var(--panel)));
+  --block-fill-violet: color-mix(in srgb, #8b5cf6 18%, var(--card, var(--panel)));
+  --block-fill-grey: color-mix(in srgb, var(--text) 12%, var(--card, var(--panel)));
+}
+
+.pdf-block {
+  background: var(--pdf-block-fill, var(--block-fill-paper));
+}
+
+/* ── The frame ─────────────────────────────────────────────────────────────
+ *
+ * Kept apart from the fill because a reader wants them in every combination — a
+ * yellow sticky with no border, a clear block with a hairline, a plain card with
+ * a shadow. One "look" control would have been half as many buttons and could
+ * not have said what most of its own results were.
+ */
+.pdf-block[data-block-frame="outline"] {
+  box-shadow: none;
+}
+
+.pdf-block[data-block-frame="none"] {
+  border-color: transparent;
+  box-shadow: none;
+}
+
+/* ── Room for the third button ─────────────────────────────────────────────
+ *
+ * The bar carried two 20px buttons and now carries three, and a block may be as
+ * narrow as PDF_BLOCK_MIN_WIDTH — 90 points, which on a phone at fit-width is
+ * about 58 CSS pixels. Three fixed buttons plus their gaps do not fit in that,
+ * and because the bar is justified to the END what overflows is cut off the
+ * LEFT: the new one, silently, on exactly the blocks a reader is most likely to
+ * be squinting at.
+ *
+ * So they are allowed to shrink instead of being clipped. A squashed Aa is still
+ * a button; one behind `overflow: hidden` is not.
+ */
+.pdf-block-btn {
+  flex: 0 1 auto;
+  min-width: 14px;
+}
+
+/* ── The type ──────────────────────────────────────────────────────────────
+ *
+ * A MULTIPLIER over the size the body already computes, never a size of its own.
+ * The block's type is `0.82rem * --pdf-block-scale` precisely so that it follows
+ * the page through a pinch (styles/53-handwriting.css), and a rem written here
+ * would be the one property that stopped following it.
+ */
+.pdf-block-body {
+  font-size: calc(0.82rem * var(--pdf-block-scale, 1) * var(--pdf-block-text, 1));
+  color: var(--pdf-block-ink, inherit);
+  text-align: var(--pdf-block-align, left);
+}
+
+.pdf-block[data-block-align="center"] { --pdf-block-align: center; }
+.pdf-block[data-block-align="right"] { --pdf-block-align: right; }
+
+/* The four faces, against the editor's own sixteen. That menu sets a run of
+   markdown in a face for its own sake; this says what kind of thing the whole
+   block is. `hand` is a real request on a page of handwriting — a typed note
+   that wants to sit with the writing around it rather than against it. */
+.pdf-block[data-block-font="serif"] .pdf-block-body {
+  font-family: Georgia, "Times New Roman", serif;
+}
+
+.pdf-block[data-block-font="mono"] .pdf-block-body {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.pdf-block[data-block-font="hand"] .pdf-block-body {
+  font-family: "Segoe Print", "Bradley Hand", "Comic Sans MS", cursive;
+}
+
+/* A block whose height follows its text has nothing to scroll: the box is
+   measured to the words on every paint (fitBlockHeight). `hidden` rather than
+   `auto` so the scrollbar does not flash in and out during the one frame between
+   the text growing and the box catching up. */
+.pdf-block.is-fit .pdf-block-body {
+  overflow: hidden;
+}
+
+/* ── Picked up ─────────────────────────────────────────────────────────────
+ *
+ * Distinct from .is-editing, which is a block whose text is in the window over
+ * the page: this one is a block the KEYBOARD is pointing at. A ring outside the
+ * border rather than a border colour, because a selected block can also be an
+ * outlined or a frameless one and there would be nothing to colour.
+ */
+.pdf-block.is-selected {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+.pdf-block.is-selected[data-block-frame="card"] {
+  box-shadow: 0 2px 8px rgb(0 0 0 / 0.16), 0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+/* ── The controls themselves ───────────────────────────────────────────────
+ *
+ * One row per question, the question named on the left. Named rather than left
+ * to eight coloured chips and five letters to explain themselves: this panel is
+ * opened once in a while, not held open, and a control nobody can read is a
+ * control nobody presses twice.
+ */
+.bstyle {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.bstyle-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.bstyle-label {
+  flex: 0 0 auto;
+  width: 46px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.bstyle-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.bstyle-pill {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 0.72rem;
+  font-weight: 600;
+  line-height: 1;
+  padding: 5px 9px;
+  cursor: pointer;
+}
+
+.bstyle-pill[data-bstyle-font-sample="serif"] { font-family: Georgia, "Times New Roman", serif; }
+.bstyle-pill[data-bstyle-font-sample="mono"] { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.bstyle-pill[data-bstyle-font-sample="hand"] { font-family: "Segoe Print", "Bradley Hand", "Comic Sans MS", cursive; }
+
+.bstyle-swatch {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--bstyle-swatch, var(--panel-2));
+  cursor: pointer;
+}
+
+/* "No fill" is the one swatch with nothing to show, and an empty circle reads as
+   a control that failed to load. The stroke through it is what every drawing app
+   means by none. */
+.bstyle-swatch[data-bstyle-value="clear"] {
+  background:
+    linear-gradient(to bottom right, transparent calc(50% - 1px), var(--danger, #c33f3f) 50%, transparent calc(50% + 1px)),
+    var(--panel-2);
+}
+
+.bstyle-pill[aria-pressed="true"],
+.bstyle-switch[aria-pressed="true"] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-contrast, #fff);
+}
+
+/* A swatch cannot fill itself with the accent to say it is on — the fill IS the
+   answer — so it says it with a ring, the same way the ink rail's pens do. */
+.bstyle-swatch[aria-pressed="true"] {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+/* ── ...where they float over the page ─────────────────────────────────────
+ *
+ * 610: over the document stage and everything in it (the pen's rail is 6 inside
+ * that stage) and under the editing sheet at 620 and the dialog band at 660.
+ * The order for the whole app is written out once in styles/54-stacking.css.
+ */
+.pdf-block-style-pop {
+  position: fixed;
+  /* Written over by place() in the same task it is appended in, so nothing is
+     ever painted here — but a fixed box with no offsets falls back to where it
+     would have been in the flow, which is the foot of <body>, and one missed
+     frame there is a panel that flashes at the bottom of the window. */
+  top: 0;
+  left: 0;
+  z-index: 610;
+  max-width: min(340px, calc(100vw - 16px));
+  padding: 10px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgb(0 0 0 / 0.32);
+}
+
+/* ── ...and where they sit in the editor window ────────────────────────────
+ *
+ * Below the editor and above Cancel/Done, outside the kit — so they stay on
+ * screen in Preview, where the kit hides its own formatting strip and where a
+ * reader looking for a way to style the block found an empty window.
+ */
+.pdf-block-editor-style {
+  flex: 0 0 auto;
+  width: min(560px, 100%);
+  padding: 10px 12px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.pdf-block-editor-style[hidden] {
+  display: none;
+}
+
+/* ── The image exceptions, restated ────────────────────────────────────────
+ *
+ * styles/53-handwriting.css strips the card off a picture — no border, no
+ * radius, no shadow, no background — because the block IS the frame and a
+ * photograph inset inside a card is a photograph with a mount around it. That
+ * rule is an attribute selector and so is the fill rule at the top of this file,
+ * which loads later and would win. So the exception is restated here, scoped to
+ * the DEFAULTS: a picture the reader has not styled looks exactly as it does
+ * today, and one they have asked for a yellow mount or a hairline around gets it.
+ */
+[data-pdf-block-kind="image"][data-block-fill="paper"] {
+  background: none;
+}
+
+[data-pdf-block-kind="image"][data-block-frame="card"] {
+  border-color: transparent;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+[data-pdf-block-kind="image"][data-block-frame="card"].is-selected {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+@media (max-width: 720px) {
+  /* The label column is 46px of a 340px panel on a desktop and 46px of a phone,
+     which is a fifth of it. The rows stack instead, which costs height on the
+     axis a popover has room in. */
+  .bstyle-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 3px;
+  }
+
+  .bstyle-label {
+    width: auto;
+  }
+}

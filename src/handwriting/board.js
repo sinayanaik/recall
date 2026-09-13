@@ -240,10 +240,16 @@ function addBlock() {
 }
 
 // The + 📷 picker, and the paste/drop path in src/main.js, both land here.
-export async function addHandwritingImage(file) {
-  const page = currentDocumentPage();
+//
+// `at` is a point on a page ({ page, x, y }, from pdfPointAt) when the caller has
+// one, and only a drop or a paste does: the picker in the rail has no position to
+// speak of, so it keeps the middle of the page in view. A drop that ignored the
+// place it was dropped is the reason four pictures dragged in together used to
+// land in one pile in the centre of the page.
+export async function addHandwritingImage(file, at = null) {
+  const page = Number(at?.page) || currentDocumentPage();
   if (!pdfPageViewport(page)) return false;
-  const added = await addDocumentImageBlock(page, file, handwritingDropPoint(page));
+  const added = await addDocumentImageBlock(page, file, at || handwritingDropPoint(page));
   if (added) paintHandwritingControls();
   return added;
 }
