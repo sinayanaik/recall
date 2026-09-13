@@ -36,7 +36,7 @@ import { ADOPT_DELETION_MAX_FRACTION, ADOPT_DELETION_MIN_CAP, LAST_GLOBAL_SYNC_E
 import { deckAutosaveTimer, describeSyncError, isQuotaExceededError, persistWorkingDeck, setDeckAutosaveTimer } from "../storage/quota.js?v=__BUILD__";
 import { rearmAutoSync } from "./auto-sync.js?v=__BUILD__";
 import { cardIsDirty, cardSyncSignature, mergeCloudCardsIntoSnapshot, readCardTombstones, reconcileCardsBeforePush } from "./cards.js?v=__BUILD__";
-import { calculateSyncDiff, syncTextChanged } from "./diff.js?v=__BUILD__";
+import { calculateSyncDiff, syncTextChanged, syncTextFingerprint } from "./diff.js?v=__BUILD__";
 import { mergeDeckMeta, mergeDocumentAnnotations, reconcileDeckBeforePush } from "./document-sync.js?v=__BUILD__";
 import { refreshSyncIndicatorBaseline, renderDeckEmptyState, setSyncIndicator, updateDeckEmptyStatus } from "./indicator.js?v=__BUILD__";
 import { pushDeckRowsToCloud } from "./push.js?v=__BUILD__";
@@ -257,7 +257,30 @@ export async function pullCloudDeckIntoLibraryLocked(cloud, cards) {
   const newBody = splitHighlightNotesTail(snapshot.notes).body;
   let notesConflicted = false;
   if (oldSnapshot && syncTextChanged(oldBody, newBody)) {
-    const localNotesEdited = tsMs(existing?.updatedAt) > tsMs(existing?.lastSyncedAt);
+    // ── Did THIS device edit the note, or did something else about the deck
+    //    move? ──────────────────────────────────────────────────────────────
+    //
+    // This used to be `updatedAt > lastSyncedAt`, which is a question about the
+    // DECK. deckContentMatches bumps updatedAt for a card, a status, a title, a
+    // highlight, an ink stroke, a page — so a reader who had only drawn on the
+    // paper read as a reader who had rewritten the note, and every arriving edit
+    // from the other device stashed their untouched body and raised a conflict
+    // they did not cause. Two devices with one note open therefore conflicted on
+    // every single sync.
+    //
+    // The fingerprint answers the question that was actually meant. Of the BODY
+    // alone, because the fenced highlight-note block below it is merged entry by
+    // entry (mergeHighlightNoteTails) and an annotation arriving must never read
+    // as the reader rewriting their own prose.
+    //
+    // No fingerprint means a deck that has not synced since this landed, and
+    // there the old test stands: guessing "unchanged" for a deck we know nothing
+    // about would discard a real edit. It retires itself — the write below
+    // stamps one on this very sync.
+    const baseline = existing?.syncedNotesFingerprint;
+    const localNotesEdited = baseline
+      ? syncTextFingerprint(oldBody) !== baseline
+      : tsMs(existing?.updatedAt) > tsMs(existing?.lastSyncedAt);
     // The same refusal as the push's, and the more important of the two: this is
     // the gate a device with a slow clock hits on every single sync, and it is
     // false for exactly the reason the edit is at risk — the deck's baseline was
@@ -398,6 +421,12 @@ export async function pullCloudDeckIntoLibraryLocked(cloud, cards) {
     // specifically means "last confirmed match with the cloud", surfaced in
     // the sync indicator pill.
     lastSyncedAt: cloudIso,
+    // The body this device and the cloud now agree on, so the next sync can ask
+    // which of them moved rather than guessing from the deck's timestamp. See
+    // syncTextFingerprint. Written on every pull and every push, and of the body
+    // alone — the fenced highlight-note block is merged per entry and is not an
+    // edit to the reader's prose.
+    syncedNotesFingerprint: syncTextFingerprint(newBody),
     // Take whichever "last opened" is more recent — this device's own record,
     // or the cloud's (another device may have opened it more recently).
     accessedAt: laterIsoTimestamp(existing?.accessedAt, cloud.last_accessed_at),
@@ -507,7 +536,9 @@ export async function pushLibraryDeckToCloud(localMeta, { cloudExists = false, c
   // The merged result is written back into the snapshot too, not just sent: a
   // device that only ever pushes would otherwise never hold the other's work,
   // since its own push makes it the newest and the next sync pushes again.
-  const documentPush = cloudExists ? reconcileDeckBeforePush(snapshot, cloudDeck) : null;
+  const documentPush = cloudExists
+    ? reconcileDeckBeforePush(snapshot, cloudDeck, { notesBaseline: localMeta.syncedNotesFingerprint || null })
+    : null;
   // ── A cloud row we cannot read from is not a cloud row we may write over ──
   //
   // reconcileDeckBeforePush returns null for a `cloudDeck` with no `notes` key,
@@ -561,14 +592,34 @@ export async function pushLibraryDeckToCloud(localMeta, { cloudExists = false, c
   if (documentPush && cloudDeck) {
     const cloudBody = splitHighlightNotesTail(String(cloudDeck.notes || "")).body;
     const pushedBody = splitHighlightNotesTail(String(documentPush.notes || "")).body;
-    const cloudMovedSinceWeSynced = tsMs(cloudDeck.updated_at) > tsMs(localMeta.lastSyncedAt);
+    // ── Whose body is going up, and is there anything to rescue ────────────
+    //
+    // reconcileDeckBeforePush has already answered the first half: handed the
+    // fingerprint of the body this device and the cloud last agreed on, it takes
+    // the CLOUD's body when this device never touched the note. That is the
+    // commonest push in a two-device library — a deck pushes because a card, a
+    // status, a highlight or an ink stroke moved its updatedAt, not because the
+    // note did — and it used to put an untouched older body over the other
+    // device's edit while stashing their text here, where its author could never
+    // find it. There is nothing to stash on that path, by construction.
+    //
+    // What remains is the genuine conflict: both sides moved the body since they
+    // last agreed, and they moved it to different text.
+    const unorderable = clockSkewedAhead(cloudDeck.updated_at);
     // ...or the two clocks cannot order the two edits at all. Every gate here is
     // a comparison between this device's clock and another's, so a row stamped
     // well beyond our own present makes all of them meaningless — and this one
     // fails CLOSED, silently replacing a body with nothing kept. When nothing
-    // can say which edit came last, keeping a copy is the only safe answer.
-    const unorderable = clockSkewedAhead(cloudDeck.updated_at);
-    if (cloudBody.trim() && (cloudMovedSinceWeSynced || unorderable) && syncTextChanged(cloudBody, pushedBody)) {
+    // can say which edit came last, keeping a copy is the only safe answer. It
+    // is also the fallback for a deck with no fingerprint yet: bodyConflicted is
+    // false without one, and the timestamp test below is what covers that deck
+    // for the one sync it takes to earn one.
+    const noBaseline = !localMeta.syncedNotesFingerprint;
+    const cloudMovedByTheClock = tsMs(cloudDeck.updated_at) > tsMs(localMeta.lastSyncedAt);
+    const worthKeeping = documentPush.bodyConflicted
+      || (unorderable || (noBaseline && cloudMovedByTheClock));
+    if (!documentPush.adoptedCloudBody && cloudBody.trim() && worthKeeping
+        && syncTextChanged(cloudBody, pushedBody)) {
       notesToStash = String(cloudDeck.notes || "");
     }
   }
@@ -689,6 +740,11 @@ export async function pushLibraryDeckToCloud(localMeta, { cloudExists = false, c
     const untouchedDuringPush = entry.updatedAt === localMeta.updatedAt;
     if (!stillDirty && untouchedDuringPush) entry.updatedAt = now;
     entry.lastSyncedAt = now;
+    // See the pull's copy of this line. `snapshot.notes` is what the push
+    // actually sent, so this is the body the cloud holds — which is what the
+    // next sync's gate has to compare against, not what this device held before
+    // the merge.
+    entry.syncedNotesFingerprint = syncTextFingerprint(splitHighlightNotesTail(String(snapshot.notes || "")).body);
     // Persisted onto the index (not just the one-off sync report) so the
     // "Synced" pill and the My Decks table still reflect it the next time
     // this deck is opened or listed, long after the toast is gone.

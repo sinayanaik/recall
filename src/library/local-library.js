@@ -611,6 +611,14 @@ export function finishSaveDeckToLibrary({ snapshot, localId, previousSnapshot, s
     // the notes were still missing from the cloud.
     notesConflicted: previousEntry?.notesConflicted || false,
     notesSyncFailed: previousEntry?.notesSyncFailed || false,
+    // Carried over for exactly the reason those two are, and it matters more:
+    // this is the body the cloud is known to hold (src/sync/diff.js,
+    // syncTextFingerprint), and the two conflict gates read it to tell "I edited
+    // the note" from "the other device did". Only a sync can establish it.
+    // Dropping it here would send both gates back to their old deck-level
+    // timestamp fallback 400ms after every keystroke, which is the fault it
+    // exists to fix.
+    syncedNotesFingerprint: previousEntry?.syncedNotesFingerprint || null,
     deckId: snapshot.deckId || null,
     // Mirrored out of the snapshot's meta bag purely so the link index can see
     // it: loadNoteLinkIndex is built from this index (localStorage) and never

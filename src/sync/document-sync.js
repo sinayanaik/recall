@@ -43,7 +43,7 @@ import {
 import { LEGACY_NOTEBOOK_KEYS } from "../documents/notebook-migrate.js?v=__BUILD__";
 import { mergeHighlightNoteTails } from "../format/highlight-notes-merge.js?v=__BUILD__";
 import { CARD_TOMBSTONE_MAX_AGE_MS } from "./cards.js?v=__BUILD__";
-import { mergePdfHighlights, mergeRecordsById } from "./diff.js?v=__BUILD__";
+import { mergePdfHighlights, mergeRecordsById, syncTextChanged, syncTextFingerprint } from "./diff.js?v=__BUILD__";
 import { tsMs } from "./stats.js?v=__BUILD__";
 
 // ── Deleted-highlight tombstones ────────────────────────────────────────────
@@ -475,7 +475,34 @@ export function mergeDeckMeta(cloudMeta, localMeta, { prefer = "local" } = {}) {
 // mergeDeckMeta for what that costs. It runs for every deck now and
 // returns null only when the cloud row cannot be read from, in which case the
 // caller must not push the column at all.
-export function reconcileDeckBeforePush(snapshot, cloudDeck) {
+//
+// ── ...and which side's BODY it sends ──────────────────────────────────────
+//
+// It used to send this device's, always, because a push is by definition the
+// newer copy of the deck. That is true of the DECK and false of the note. A
+// device pushes because its updatedAt moved, and deckContentMatches moves that
+// for a card, a status, a title, a highlight, an ink stroke or a page — so the
+// commonest push in a two-device library is one whose notes body has not been
+// touched at all, and sending it whole put an untouched older body over the
+// other device's edit and stashed their text here, where its author could never
+// see it. "Constantly notes conflict", with a lost paragraph behind it.
+//
+// `notesBaseline` is the fingerprint of the body this device and the cloud last
+// agreed on (src/sync/diff.js). With it the three cases separate cleanly:
+//
+//   this device did not edit the body  →  take the cloud's. Nothing to stash,
+//                                         nothing to ask, and the other device's
+//                                         edit survives.
+//   the cloud has not moved            →  send this device's, as always.
+//   both moved                         →  send this device's and stash the
+//                                         cloud's, which is the genuine conflict
+//                                         and the only one worth a question.
+//
+// Without a baseline — a deck last synced by a build from before this existed —
+// the answer is the old one, unconditionally. Guessing "unedited" about a deck
+// we know nothing about would hand the reader's own writing to whichever device
+// synced last, which is the fault, not the fix.
+export function reconcileDeckBeforePush(snapshot, cloudDeck, { notesBaseline = null } = {}) {
   if (!snapshot || !cloudDeck) return null;
   // A row that arrived without a notes column tells us nothing about the cloud's
   // annotations, and merging against "" would delete every one of them. Same
@@ -492,13 +519,25 @@ export function reconcileDeckBeforePush(snapshot, cloudDeck) {
   // categories belong to ordinary decks and were being lost on ordinary syncs.
   const nextMeta = mergeDeckMeta(cloudMeta, localMeta, { prefer: "local" });
 
+  // Asked of the BODY, never of the whole string: the fenced highlight-note
+  // block below it is merged entry by entry a few lines down, so an annotation
+  // arriving from another device must not read as this reader rewriting their
+  // own prose.
+  const cloudBody = splitHighlightNotesTail(String(cloudDeck.notes || "")).body;
+  const localBody = splitHighlightNotesTail(String(snapshot.notes || "")).body;
+  const localBodyEdited = notesBaseline ? syncTextFingerprint(localBody) !== notesBaseline : true;
+  const cloudBodyMoved = notesBaseline ? syncTextFingerprint(cloudBody) !== notesBaseline : false;
+  // The only case that changes: this device has not touched the note and the
+  // cloud has. Take theirs. Everything else keeps the behaviour it had.
+  const bodySide = (!localBodyEdited && cloudBodyMoved) ? "cloud" : "local";
+
   const merged = hasAnnotations
     ? mergeDocumentAnnotations({
       cloudNotes: String(cloudDeck.notes || ""),
       cloudMeta,
       localNotes: String(snapshot.notes || ""),
       localMeta,
-      body: "local"
+      body: bodySide
     })
     : null;
 
@@ -515,12 +554,24 @@ export function reconcileDeckBeforePush(snapshot, cloudDeck) {
     ? Object.keys(merged.deletedHighlightIds).filter((id) => cloudIds.has(id))
     : [];
 
-  const notes = merged ? merged.notes : String(snapshot.notes || "");
+  // The no-annotations path has to make the same choice. A plain deck's notes
+  // are all body, so "send mine regardless" is the whole fault here rather than
+  // a corner of it.
+  const notes = merged
+    ? merged.notes
+    : (bodySide === "cloud" ? String(cloudDeck.notes || "") : String(snapshot.notes || ""));
 
   return {
     notes,
     meta: nextMeta,
     tombstonesBeingPruned,
+    // Whether the body going up is the cloud's rather than this device's, so the
+    // caller knows there is nothing here to stash and nothing to ask about.
+    adoptedCloudBody: bodySide === "cloud",
+    // ...and whether the two really did diverge, which is the only case that is
+    // a conflict at all.
+    bodyConflicted: Boolean(notesBaseline) && localBodyEdited && cloudBodyMoved
+      && syncTextChanged(cloudBody, localBody),
     highlightsAdopted: merged?.highlightsAdopted || 0,
     highlightsRemoved: merged?.highlightsRemoved || 0,
     highlightNotesMerged: merged?.highlightNotesMerged || 0,

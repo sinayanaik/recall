@@ -139,7 +139,11 @@ try {
     name,
     clockOffsetMs,
     snapshot: { deckTitle: "Deck", notes: "", meta: {}, cards: [] },
-    entry: { deckId: "d1", updatedAt: iso(T0), lastSyncedAt: iso(T0) },
+    // syncedNotesFingerprint starts null on purpose: that is a deck synced by a
+    // build from before it existed, and the two gates below must fall back to
+    // their old timestamp test for it. Every case that wants the new behaviour
+    // syncs once first, exactly as a real device would.
+    entry: { deckId: "d1", updatedAt: iso(T0), lastSyncedAt: iso(T0), syncedNotesFingerprint: null },
     stash: null,
     conflicted: false
   });
@@ -199,7 +203,15 @@ try {
     // the skew clause, which is what stops a cloud row stamped in this device's
     // future from replacing a local edit with no copy kept.
     if (diff.syncTextChanged(oldBody, newBody) && oldBody.trim()) {
-      const localNotesEdited = stats.tsMs(dev.entry.updatedAt) > stats.tsMs(dev.entry.lastSyncedAt);
+      // Of the BODY, through the fingerprint of the copy this device and the
+      // cloud last agreed on — not of the DECK. The old test was
+      // `updatedAt > lastSyncedAt`, which is true when anything at all changed
+      // here, so one ink stroke made an arriving note edit look like a conflict.
+      // A device with no fingerprint yet keeps the old test; see makeDevice.
+      const baseline = dev.entry.syncedNotesFingerprint;
+      const localNotesEdited = baseline
+        ? diff.syncTextFingerprint(oldBody) !== baseline
+        : stats.tsMs(dev.entry.updatedAt) > stats.tsMs(dev.entry.lastSyncedAt);
       const unorderable = stats.clockSkewedAhead(cloudIso, nowOn(dev, wallMs));
       const notesBeingEmptied = oldBody.trim() && !newBody.trim();
       if (localNotesEdited || notesBeingEmptied || unorderable) {
@@ -223,6 +235,7 @@ try {
       ? stats.nextSyncStamp(nowOn(dev, wallMs), cloudIso)
       : cloudIso;
     dev.entry.lastSyncedAt = cloudIso;
+    dev.entry.syncedNotesFingerprint = diff.syncTextFingerprint(newBody);
     return merged;
   }
 
@@ -234,14 +247,22 @@ try {
     if (tombstonesBeingPruned.length) dev.snapshot.deletedCardIds = reconciled.deletedCardIds;
     else delete dev.snapshot.deletedCardIds;
 
-    const documentPush = docSync.reconcileDeckBeforePush(dev.snapshot, cloud.deck);
+    const notesBaseline = dev.entry.syncedNotesFingerprint || null;
+    const documentPush = docSync.reconcileDeckBeforePush(dev.snapshot, cloud.deck, { notesBaseline });
     if (!documentPush) throw new Error("refused to push against a row with no notes column");
 
     const cloudBody = fence.splitHighlightNotesTail(String(cloud.deck.notes || "")).body;
     const pushedBody = fence.splitHighlightNotesTail(String(documentPush.notes || "")).body;
-    const cloudMoved = stats.tsMs(cloud.deck.updated_at) > stats.tsMs(dev.entry.lastSyncedAt);
+    // The push side of the same correction — see the pull's copy, and
+    // reconcileDeckBeforePush, which now decides WHOSE body goes up as well as
+    // whether there is anything to keep. A device that never touched the note
+    // sends the cloud's body back unchanged: nothing to stash, nothing to ask.
     const unorderable = stats.clockSkewedAhead(cloud.deck.updated_at, nowOn(dev, wallMs));
-    if (cloudBody.trim() && (cloudMoved || unorderable) && diff.syncTextChanged(cloudBody, pushedBody)) {
+    const cloudMovedByTheClock = stats.tsMs(cloud.deck.updated_at) > stats.tsMs(dev.entry.lastSyncedAt);
+    const worthKeeping = documentPush.bodyConflicted
+      || (unorderable || (!notesBaseline && cloudMovedByTheClock));
+    if (!documentPush.adoptedCloudBody && cloudBody.trim() && worthKeeping
+        && diff.syncTextChanged(cloudBody, pushedBody)) {
       dev.stash = String(cloud.deck.notes || "");
       dev.conflicted = true;
     }
@@ -288,6 +309,7 @@ try {
 
     dev.entry.updatedAt = now;
     dev.entry.lastSyncedAt = now;
+    dev.entry.syncedNotesFingerprint = diff.syncTextFingerprint(pushedBody);
     return reconciled;
   }
 
@@ -763,6 +785,237 @@ try {
 
     must(`${ROUNDS} randomised two-device runs lose no committed card`, () => broken === null || broken);
     must("...and resurrect no deleted one", () => broken === null || "see the line above");
+  }
+
+  // ══ F7. A notes conflict only when the notes conflict ═════════════════════
+  //
+  // Reported as "if the same note is open on two devices in parallel I am
+  // seeing constantly Notes conflict". It is worse than a nag, and it is one
+  // wrong question asked twice.
+  //
+  // Both gates were about the DECK. The pull's was
+  // `updatedAt > lastSyncedAt` and the push's was
+  // `cloud.updated_at > lastSyncedAt`, and deckContentMatches bumps updatedAt
+  // for a card, a status, a title, a highlight, an ink stroke or a page. So a
+  // device that had only DRAWN read as a device that had rewritten the note.
+  {
+    const cloud = makeCloud();
+    const A = makeDevice("A");
+    const B = makeDevice("B");
+    // Both start from one agreed body, and both have synced once — which is
+    // what gives them a fingerprint at all.
+    editNotes(A, T0 + MIN, "shared paragraph");
+    push(A, cloud, T0 + MIN);
+    pull(B, cloud, T0 + 2 * MIN);
+
+    must("two devices that have synced once agree on the notes body", () =>
+      fence.splitHighlightNotesTail(B.snapshot.notes).body === "shared paragraph"
+      || `B has ${JSON.stringify(B.snapshot.notes)}`);
+
+    // A edits the note. B does not touch the note — it draws, which is what a
+    // Write tab does, and that is enough to bump B's deck-level updatedAt.
+    editNotes(A, T0 + 3 * MIN, "shared paragraph\n\nA's new sentence");
+    push(A, cloud, T0 + 3 * MIN);
+    addCard(B, T0 + 4 * MIN, "c-b", "a card B added");
+
+    // B's deck is newer than the cloud's row, so B takes the PUSH branch. That
+    // is the ordinary case and not an exotic one: an open, edited deck always
+    // does.
+    must("a device that edited something else still takes the push branch", () =>
+      direction(B, cloud) === "push" || `B would ${direction(B, cloud)}`);
+
+    push(B, cloud, T0 + 5 * MIN);
+
+    must("...and raises no notes conflict, having not touched the notes", () =>
+      B.conflicted === false || "B stashed a copy of a note it never edited");
+    must("...and does not stash the other device's text where its author cannot see it", () =>
+      B.stash === null || `B stashed ${JSON.stringify(B.stash)}`);
+    // The one that was actually losing work: B's push used to send its own
+    // untouched older body over A's edit, and the only copy of A's paragraph
+    // ended up in a stash on B.
+    must("...and does not push its own older body over the other device's edit", () =>
+      fence.splitHighlightNotesTail(cloud.deck.notes).body === "shared paragraph\n\nA's new sentence"
+      || `the cloud now holds ${JSON.stringify(cloud.deck.notes)}`);
+    must("...while still carrying its own work up", () =>
+      cloudIds(cloud) === "c-b" || `the cloud holds ${cloudIds(cloud)}`);
+    must("...and the arriving edit reaches it", () =>
+      fence.splitHighlightNotesTail(B.snapshot.notes).body === "shared paragraph\n\nA's new sentence"
+      || `B has ${JSON.stringify(B.snapshot.notes)}`);
+  }
+
+  // The pull side of the same fault: B has local changes of some other kind and
+  // the cloud's newer row carries the other device's note edit.
+  {
+    const cloud = makeCloud();
+    const A = makeDevice("A");
+    const B = makeDevice("B");
+    editNotes(A, T0 + MIN, "the shared note");
+    push(A, cloud, T0 + MIN);
+    pull(B, cloud, T0 + 2 * MIN);
+
+    // B changes a card and pushes it, so both sides are level again...
+    addCard(B, T0 + 3 * MIN, "c-b", "B's card");
+    push(B, cloud, T0 + 4 * MIN);
+    // ...then A edits the note and pushes, leaving the cloud strictly newer.
+    pull(A, cloud, T0 + 5 * MIN);
+    editNotes(A, T0 + 6 * MIN, "the shared note, extended");
+    push(A, cloud, T0 + 6 * MIN);
+
+    must("the second device pulls when only the cloud has moved", () =>
+      direction(B, cloud) === "pull" || `B would ${direction(B, cloud)}`);
+    pull(B, cloud, T0 + 7 * MIN);
+    must("...and takes the arriving note without calling it a conflict", () =>
+      (B.conflicted === false && fence.splitHighlightNotesTail(B.snapshot.notes).body === "the shared note, extended")
+      || `conflicted=${B.conflicted} body=${JSON.stringify(B.snapshot.notes)}`);
+  }
+
+  // The fallback, which is what keeps the first sync after this change honest:
+  // a deck with no fingerprint has to behave exactly as it did before, because
+  // "I know nothing about this deck" must not be read as "nothing was edited".
+  {
+    const cloud = makeCloud();
+    const A = makeDevice("A");
+    const B = makeDevice("B");
+    editNotes(A, T0 + MIN, "from A");
+    push(A, cloud, T0 + MIN);
+    // B has a note of its own and has never synced, so it carries no
+    // fingerprint — and its updatedAt is past its lastSyncedAt.
+    editNotes(B, T0 + 2 * MIN, "from B, never synced");
+    B.entry.updatedAt = iso(T0 + 2 * MIN);
+    B.entry.lastSyncedAt = iso(T0);
+    B.entry.syncedNotesFingerprint = null;
+    // Force the pull direction: the cloud is the newer row here.
+    cloud.deck.updated_at = iso(T0 + 3 * MIN);
+    pull(B, cloud, T0 + 4 * MIN);
+
+    must("a deck with no fingerprint still stashes a genuinely unsynced edit", () =>
+      (B.conflicted === true && fence.splitHighlightNotesTail(B.stash).body === "from B, never synced")
+      || `conflicted=${B.conflicted} stash=${JSON.stringify(B.stash)}`);
+    must("...and the pull leaves it one, so the fallback retires itself", () =>
+      Boolean(B.entry.syncedNotesFingerprint) || "no fingerprint was written");
+  }
+
+  // The fingerprint itself, against the normaliser it is composed with. If the
+  // two ever disagree a gate says "edited" about text syncTextChanged calls the
+  // same, and the conflict comes back for a reason nobody can see.
+  {
+    must("the fingerprint agrees with syncTextChanged about trailing whitespace", () =>
+      (diff.syncTextFingerprint("a line   \nand another")
+        === diff.syncTextFingerprint("a line\nand another"))
+      || "two bodies syncTextChanged calls identical fingerprinted differently");
+    must("...and about blank-line runs", () =>
+      (diff.syncTextFingerprint("one\n\n\n\ntwo") === diff.syncTextFingerprint("one\n\ntwo"))
+      || "collapsed blank lines changed the fingerprint");
+    must("...and separates two bodies that really differ", () =>
+      (diff.syncTextFingerprint("one") !== diff.syncTextFingerprint("two"))
+      || "two different bodies share a fingerprint");
+    must("...and an empty body has one too", () =>
+      Boolean(diff.syncTextFingerprint("")) || "an empty body fingerprinted to nothing falsy");
+  }
+
+  // ══ F8. A stat that exists in only one of the two lists ═══════════════════
+  //
+  // totalSyncStats walks SYNC_COUNT_STATS and SYNC_FLAG_STATS. A field in
+  // neither is reported per deck and then silently missing from the summary,
+  // which is how a stat ends up half-wired — and a field in BOTH would be
+  // counted twice. Asked of every field emptySyncStats declares, so the next
+  // one added cannot skip it.
+  {
+    const empty = stats.emptySyncStats();
+    const counts = new Set(stats.SYNC_COUNT_STATS);
+    const flags = new Set(stats.SYNC_FLAG_STATS);
+    const orphans = Object.keys(empty).filter((key) => !counts.has(key) && !flags.has(key));
+    const both = Object.keys(empty).filter((key) => counts.has(key) && flags.has(key));
+    must("every field of emptySyncStats is in exactly one of the two stat lists", () =>
+      (orphans.length === 0 && both.length === 0)
+      || `in neither: ${orphans.join(", ") || "none"}; in both: ${both.join(", ") || "none"}`);
+    const declared = new Set(Object.keys(empty));
+    const stray = [...counts, ...flags].filter((key) => !declared.has(key));
+    must("...and neither list names a field emptySyncStats does not declare", () =>
+      stray.length === 0 || `named but not declared: ${stray.join(", ")}`);
+  }
+
+  // ══ F9. A pull whose only news is invisible ═══════════════════════════════
+  //
+  // isNoOpStats is derived from describeSyncStats, so a change with no sentence
+  // is a change the sync reports as "Already up to date — everything already
+  // matches the cloud" — over a snapshot it has just rewritten on disk. That is
+  // the "it says synced but is not displaying the correct content" report.
+  {
+    const only = (field, value = 1) => ({ ...stats.emptySyncStats(), [field]: value });
+    for (const field of ["blocksMerged", "blocksRemovedHere", "pushRetried"]) {
+      must(`a sync whose only news is ${field} is not a no-op`, () =>
+        stats.isNoOpStats(only(field)) === false || "reported as already up to date");
+    }
+    for (const field of ["documentAttached", "documentPagesChanged", "documentRemovedHere", "notesMerged"]) {
+      must(`a sync whose only news is ${field} is not a no-op`, () =>
+        stats.isNoOpStats(only(field, true)) === false || "reported as already up to date");
+    }
+    must("...and an untouched deck still is one", () =>
+      stats.isNoOpStats(stats.emptySyncStats()) === true || "an empty diff was reported as activity");
+    must("...and every new field reaches the summary through totalSyncStats", () => {
+      const totals = stats.totalSyncStats([
+        { direction: "pulled", ...only("blocksMerged", 2) },
+        { direction: "pulled", ...only("documentPagesChanged", true) }
+      ]);
+      return (totals.blocksMerged === 2 && totals.documentPagesChanged === 1)
+        || `blocksMerged=${totals.blocksMerged} documentPagesChanged=${totals.documentPagesChanged}`;
+    });
+  }
+
+  // ══ F10. What moved in the meta bag ═══════════════════════════════════════
+  {
+    const withBlocks = (ids) => ({ pdfBlocks: ids.map((id) => ({ id, at: 1, text: id })) });
+
+    must("a block added on another device is adopted", () => {
+      const d = stats.metaRecordDelta(withBlocks(["b1"]), withBlocks(["b1", "b2"]), "pdfBlocks");
+      return (d.adopted === 1 && d.removed === 0) || JSON.stringify(d);
+    });
+    must("...one that is gone is removed", () => {
+      const d = stats.metaRecordDelta(withBlocks(["b1", "b2"]), withBlocks(["b1"]), "pdfBlocks");
+      return (d.adopted === 0 && d.removed === 1) || JSON.stringify(d);
+    });
+    // mergeRecordsById rebuilds the array, so order is not news.
+    must("...and reordering the same blocks is not a change", () => {
+      const d = stats.metaRecordDelta(withBlocks(["b1", "b2"]), withBlocks(["b2", "b1"]), "pdfBlocks");
+      return (d.adopted === 0 && d.removed === 0) || JSON.stringify(d);
+    });
+    // An edit is settled by the record's own `at`. Calling it an addition would
+    // report a paragraph somebody retyped as one somebody else wrote.
+    must("...and a block whose text changed under the same id is not an addition", () => {
+      const before = { pdfBlocks: [{ id: "b1", at: 1, text: "before" }] };
+      const after = { pdfBlocks: [{ id: "b1", at: 2, text: "after" }] };
+      const d = stats.metaRecordDelta(before, after, "pdfBlocks");
+      return (d.adopted === 0 && d.removed === 0) || JSON.stringify(d);
+    });
+    must("...and a bag with no blocks at all reports nothing", () => {
+      const d = stats.metaRecordDelta({}, {}, "pdfBlocks");
+      return (d.adopted === 0 && d.removed === 0) || JSON.stringify(d);
+    });
+
+    const doc = (sha) => ({ pdf: { name: "p.pdf", pages: 3, sha256: sha } });
+    must("a paper arriving is an attachment", () => {
+      const d = stats.documentSlotsChanged({}, doc("aaa"));
+      return (d.attached && !d.removed && !d.pagesChanged) || JSON.stringify(d);
+    });
+    must("...a paper going away is a removal", () => {
+      const d = stats.documentSlotsChanged(doc("aaa"), {});
+      return (!d.attached && d.removed && !d.pagesChanged) || JSON.stringify(d);
+    });
+    must("...a different hash is the pages changing", () => {
+      const d = stats.documentSlotsChanged(doc("aaa"), doc("bbb"));
+      return (!d.attached && !d.removed && d.pagesChanged) || JSON.stringify(d);
+    });
+    // The rule documentOpenKey states: an unhashed record must not read as a
+    // different file every time it is compared.
+    must("...and a record from before hashing is not a change", () => {
+      const d = stats.documentSlotsChanged({ pdf: { name: "p.pdf" } }, doc("bbb"));
+      return (!d.attached && !d.removed && !d.pagesChanged) || JSON.stringify(d);
+    });
+    must("...and the notebook slot is read as well as the paper", () => {
+      const d = stats.documentSlotsChanged({}, { notebook: { pages: 1, sha256: "n1" } });
+      return (d.attached && !d.pagesChanged) || JSON.stringify(d);
+    });
   }
 
   console.log("── sync reconcile ──");
