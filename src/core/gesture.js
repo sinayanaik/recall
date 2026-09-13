@@ -110,6 +110,64 @@ export function inkPenIsDown() {
   return penIsDown;
 }
 
+// ── Was the last thing that touched the paper a pen, and how long ago did it
+//    stop drawing? ────────────────────────────────────────────────────────
+//
+// The flag above answers "is a nib on the glass RIGHT NOW", and that is the
+// wrong question for the fault these two are here for. Writing a sentence is a
+// shower of contacts that are each over in well under the 150ms
+// src/documents/pdf-ink.js calls a TAP — an i-dot, a comma, a tick, an accent,
+// a retouch of the letter before — and a tap deliberately commits no ink and
+// deliberately lets the browser's click through, which is what lets a pen press
+// a numbered note badge or a button at all. The click then lands on the page,
+// within six PDF points of ink already on it, and opens that stroke's highlight
+// menu. Reported as "the more menu keeps popping up while I am writing", and it
+// is one of these per dotted i.
+//
+// So two more facts, and they are deliberately different shapes:
+//
+//   • WHICH instrument last touched the surface. A refusal aimed at the pen must
+//     not cost a finger or a mouse anything — touch never draws (that is the
+//     palm rejection), so a finger tap stays the route to a stroke's menu on a
+//     tablet, and a mouse does not write words so it never produces the shower.
+//   • WHEN a stroke last ended, so the refusal can widen to text highlights for
+//     as long as somebody is actually writing. Writing in the margin of a
+//     highlighted paragraph puts every i-dot inside a text mark's quad, which
+//     the instrument test alone cannot see; and a reader who pauses and then
+//     taps a mark deliberately is past the window and gets their menu.
+//
+// Here rather than in pdf-ink.js for the reason inkPenIsDown is here, stated
+// once more because it is the whole argument for this module: pdf-ink.js
+// imports pdf-highlights.js, so pdf-highlights.js — which owns the menu and
+// therefore owns the refusal — cannot import the file that knows about the pen.
+// A leaf both sides may read is the answer, and this is the leaf.
+let lastContactWasInkingPen = false;
+
+let lastInkStrokeAt = 0;
+
+// Called for EVERY contact the ink layer sees, taken or refused, and that is
+// load-bearing rather than tidy. A refused contact (the `text` tool is armed, a
+// press that landed on a markdown block, a finger) must CLEAR the flag, or the
+// previous stroke's answer stands and a finger tap inherits the pen's refusal.
+export function noteInkContact(pointerType, took) {
+  lastContactWasInkingPen = pointerType === "pen" && Boolean(took);
+}
+
+export function lastInkContactWasPen() {
+  return lastContactWasInkingPen;
+}
+
+// Stamped where the stroke ENDS rather than where it begins: the window this
+// feeds measures the gap between one mark and the next, and a stroke that took
+// two seconds to draw has not left a two-second gap behind it.
+export function noteInkStrokeCommitted() {
+  lastInkStrokeAt = Date.now();
+}
+
+export function msSinceLastInkStroke() {
+  return lastInkStrokeAt ? Date.now() - lastInkStrokeAt : Infinity;
+}
+
 // ── ...and is the pen being used as a pen at all? ──────────────────────────
 //
 // The pen's rail has a fourth tool, "text" (src/format/ink-colors.js), and it
