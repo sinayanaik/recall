@@ -145,6 +145,124 @@ export function createCardFromNotesSelection(markdown, noteAnchor = null) {
   el.frameCardAnswerInput.onkeydown = confirmOrCancel;
 }
 
+// The panel's own answer preview (see updatePreview above) is often the
+// whole reason to open this modal in the first place — a region card's
+// answer face IS a picture of a spot on the page — so pinning it dead
+// centre with a dimmed backdrop hides the very thing being carded from.
+// This lets the reader move it aside and resize it instead, keeping the
+// page behind visible and interactable-by-eye while they write.
+//
+// Registered once, at boot (called from main.js), not per modal-open: a
+// pointerdown on a hidden titlebar/handle can't fire, so there's nothing to
+// re-arm each time createCardFromNotesSelection runs. Position/size are left
+// on the element between opens deliberately — once dragged or resized, it
+// stays that way for the rest of the session rather than snapping back to
+// centre every time, which would undo the whole point of moving it.
+const FRAME_CARD_MIN_WIDTH = 320;
+const FRAME_CARD_MIN_HEIGHT = 260;
+// A margin kept on screen at all times, on every edge — so a panel dragged
+// toward a corner can still be grabbed back rather than stranding itself
+// off-screen with no visible titlebar left to drag.
+const FRAME_CARD_EDGE_MARGIN = 40;
+
+function clamp(value, low, high) {
+  return Math.min(high, Math.max(low, value));
+}
+
+function beginFrameCardDrag(event) {
+  const panel = el.frameCardPanel;
+  if (!panel || event.button !== undefined && event.button !== 0) return;
+  const rect = panel.getBoundingClientRect();
+  // Detach from the centred flex layout .confirm-modal (11-chrome.css,
+  // frozen) applies — fixed positioning is what makes the panel draggable
+  // at all, and pinning left/top/width/height to where it already visually
+  // sits is what keeps this switch from jumping it anywhere. Width matters
+  // as much as position here: the frozen rule's `width: 100%` resolves
+  // against the flex container while the panel is a flex item, but against
+  // the VIEWPORT the instant it becomes `position: fixed` — so without
+  // pinning it explicitly, switching to fixed alone silently snapped the
+  // panel to full viewport width.
+  panel.style.position = "fixed";
+  panel.style.margin = "0";
+  panel.style.left = `${rect.left}px`;
+  panel.style.top = `${rect.top}px`;
+  panel.style.width = `${rect.width}px`;
+  panel.style.height = `${rect.height}px`;
+
+  const startX = event.clientX;
+  const startY = event.clientY;
+  const startLeft = rect.left;
+  const startTop = rect.top;
+  try { el.frameCardTitlebar.setPointerCapture(event.pointerId); } catch (_) { /* synthetic event */ }
+
+  const onMove = (moveEvent) => {
+    const width = panel.offsetWidth;
+    const height = panel.offsetHeight;
+    const maxLeft = window.innerWidth - FRAME_CARD_EDGE_MARGIN;
+    const maxTop = window.innerHeight - FRAME_CARD_EDGE_MARGIN;
+    const left = clamp(startLeft + (moveEvent.clientX - startX), FRAME_CARD_EDGE_MARGIN - width, maxLeft);
+    const top = clamp(startTop + (moveEvent.clientY - startY), 0, maxTop);
+    panel.style.left = `${left}px`;
+    panel.style.top = `${top}px`;
+  };
+  const onUp = (upEvent) => {
+    try { el.frameCardTitlebar.releasePointerCapture(upEvent.pointerId); } catch (_) { /* already gone */ }
+    el.frameCardTitlebar.removeEventListener("pointermove", onMove);
+    el.frameCardTitlebar.removeEventListener("pointerup", onUp);
+    el.frameCardTitlebar.removeEventListener("pointercancel", onUp);
+  };
+  el.frameCardTitlebar.addEventListener("pointermove", onMove);
+  el.frameCardTitlebar.addEventListener("pointerup", onUp);
+  el.frameCardTitlebar.addEventListener("pointercancel", onUp);
+}
+
+function beginFrameCardResize(event) {
+  const panel = el.frameCardPanel;
+  if (!panel || event.button !== undefined && event.button !== 0) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const rect = panel.getBoundingClientRect();
+  const startX = event.clientX;
+  const startY = event.clientY;
+  const startWidth = rect.width;
+  const startHeight = rect.height;
+  // The frozen class rule's max-width (11-chrome.css, raised to 560px in
+  // 62-frame-card-draggable.css) still caps the USED width even once an
+  // inline style sets a bigger one — max-width and width are separate
+  // properties, and the smaller of the two wins regardless of which one is
+  // inline. Cleared here, once resizing actually starts, so the class rule
+  // still sets a sane default size but never fights a deliberate resize.
+  panel.style.maxWidth = "none";
+  try { el.frameCardResizeHandle.setPointerCapture(event.pointerId); } catch (_) { /* synthetic event */ }
+
+  const onMove = (moveEvent) => {
+    // Never below where it already was: the reader is dragging OUTWARD from
+    // a size the panel is already at, and a small viewport clamping the
+    // upper bound must not also retroactively shrink it below its start —
+    // that read as the corner fighting the drag on a narrow window.
+    const maxWidth = Math.max(startWidth, Math.min(window.innerWidth - FRAME_CARD_EDGE_MARGIN * 2, 900));
+    const maxHeight = Math.max(startHeight, window.innerHeight - FRAME_CARD_EDGE_MARGIN * 2);
+    const width = clamp(startWidth + (moveEvent.clientX - startX), FRAME_CARD_MIN_WIDTH, maxWidth);
+    const height = clamp(startHeight + (moveEvent.clientY - startY), FRAME_CARD_MIN_HEIGHT, maxHeight);
+    panel.style.width = `${width}px`;
+    panel.style.height = `${height}px`;
+  };
+  const onUp = (upEvent) => {
+    try { el.frameCardResizeHandle.releasePointerCapture(upEvent.pointerId); } catch (_) { /* already gone */ }
+    el.frameCardResizeHandle.removeEventListener("pointermove", onMove);
+    el.frameCardResizeHandle.removeEventListener("pointerup", onUp);
+    el.frameCardResizeHandle.removeEventListener("pointercancel", onUp);
+  };
+  el.frameCardResizeHandle.addEventListener("pointermove", onMove);
+  el.frameCardResizeHandle.addEventListener("pointerup", onUp);
+  el.frameCardResizeHandle.addEventListener("pointercancel", onUp);
+}
+
+export function initFrameCardPanelControls() {
+  el.frameCardTitlebar?.addEventListener("pointerdown", beginFrameCardDrag);
+  el.frameCardResizeHandle?.addEventListener("pointerdown", beginFrameCardResize);
+}
+
 // Strip markdown syntax down to the plain text a reader sees — used both to
 // build a searchable anchor snippet and to match a card's answer against the
 // rendered notes for the content fallback.

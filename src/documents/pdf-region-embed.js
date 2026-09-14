@@ -14,6 +14,10 @@
 
 import { state } from "../core/state.js?v=__BUILD__";
 import { ensurePdfJs } from "../core/lib-loader.js?v=__BUILD__";
+import { MARK_HIGHLIGHT_HEX } from "../format/highlight-colors.js?v=__BUILD__";
+import { decodeInkStrokes } from "../format/ink-strokes.js?v=__BUILD__";
+import { paintInkStrokes } from "../render/ink-paint.js?v=__BUILD__";
+import { documentHighlights, documentInkMarks } from "./pdf-highlights.js?v=__BUILD__";
 import { getDocument } from "./pdf-store.js?v=__BUILD__";
 import { buildTextLayer, clampScale } from "./pdf-view.js?v=__BUILD__";
 
@@ -93,6 +97,70 @@ function buildWrapper(rect) {
   return wrapper;
 }
 
+// ── Marks the page itself doesn't carry ─────────────────────────────────────
+//
+// page.render() draws only the PDF's own content. A highlight is an
+// absolutely-positioned div over the canvas (.pdf-mark, styles/36-document.css
+// and styles/37-document-chrome.css) and ink is its own canvas layer
+// (pdf-ink.js) — neither exists in the rendered pixels, so an embed built from
+// page.render() alone shows the UNMARKED page, not what the reader actually
+// marked up. Repainted here directly onto the embed's own canvas instead,
+// matching those CSS rules' colours/opacities/blend modes exactly.
+const HIGHLIGHT_FILL_ALPHA = { yellow: 0.35, green: 0.33, blue: 0.32, pink: 0.3 };
+
+const AREA_FILL_ALPHA = 0.12;
+
+function hexWithAlpha(hex, alpha) {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+function paintHighlightsOnCanvas(ctx, pageNumber, viewport) {
+  documentHighlights().forEach((record) => {
+    if (record.kind === "ink") return; // painted separately, below
+    const hex = MARK_HIGHLIGHT_HEX[record.color] || MARK_HIGHLIGHT_HEX.yellow;
+    (record.quads || []).forEach((quad) => {
+      if (quad.page !== pageNumber) return;
+      const [vx0, vy0, vx1, vy1] = viewport.convertToViewportRectangle(quad.rect);
+      const left = Math.min(vx0, vx1);
+      const top = Math.min(vy0, vy1);
+      const width = Math.abs(vx1 - vx0);
+      const height = Math.abs(vy1 - vy0);
+      ctx.save();
+      if (record.kind === "area") {
+        // Outlined with a faint wash rather than tinted — a filled multiply
+        // over a photograph would wash out the figure being highlighted, the
+        // same reason the live page draws a region this way.
+        ctx.fillStyle = hexWithAlpha(hex, AREA_FILL_ALPHA);
+        ctx.fillRect(left, top, width, height);
+        ctx.strokeStyle = hex;
+        ctx.lineWidth = 2;
+        ctx.strokeRect(left + 1, top + 1, Math.max(0, width - 2), Math.max(0, height - 2));
+      } else {
+        ctx.globalCompositeOperation = "multiply";
+        ctx.fillStyle = hexWithAlpha(hex, HIGHLIGHT_FILL_ALPHA[record.color] ?? 0.35);
+        ctx.fillRect(left, top, width, height);
+      }
+      ctx.restore();
+    });
+  });
+}
+
+function paintInkOnCanvas(ctx, pageNumber, viewport) {
+  const marks = documentInkMarks(pageNumber);
+  if (!marks.length) return;
+  // Ink strokes are stored in PDF user-space points, same as everything else
+  // here — paintInkStrokes expects the context already carrying that
+  // transform, the same way the live page's own ink layer applies it.
+  const t = viewport.transform;
+  ctx.save();
+  ctx.setTransform(t[0], t[1], t[2], t[3], t[4], t[5]);
+  marks.forEach((record) => paintInkStrokes(ctx, decodeInkStrokes(record.ink?.s), { root: null }));
+  ctx.restore();
+}
+
 function showFallback(wrapper, page) {
   wrapper.classList.remove("is-loading");
   wrapper.classList.add("is-fallback");
@@ -130,7 +198,14 @@ export async function mountPdfRegionEmbed(img) {
     canvas.className = "pdf-canvas";
     canvas.width = Math.ceil(viewport.width);
     canvas.height = Math.ceil(viewport.height);
-    await page.render({ canvasContext: canvas.getContext("2d", { alpha: false }), viewport }).promise;
+    const ctx = canvas.getContext("2d", { alpha: false });
+    await page.render({ canvasContext: ctx, viewport }).promise;
+    // What the reader actually marked up on this page — highlights and ink —
+    // composited onto the same canvas the PDF itself just rendered to. See
+    // the note above paintHighlightsOnCanvas for why page.render() alone
+    // can't already carry them.
+    paintHighlightsOnCanvas(ctx, parsed.page, viewport);
+    paintInkOnCanvas(ctx, parsed.page, viewport);
 
     // Real, positioned, selectable text — the exact function the Document
     // surface itself renders every page's text layer with. Nothing here is
