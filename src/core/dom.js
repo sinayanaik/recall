@@ -307,7 +307,9 @@ export const el = {
   // paper opens it to a card carrying the same picker and calling the same
   // attachPdfToOpenDeck — see renderAttachDocumentPrompt.
   frameCardModal: document.querySelector("#frameCardModal"),
-  frameCardAnswerPreview: document.querySelector("#frameCardAnswerPreview"),
+  frameCardAnswerLabel: document.querySelector("#frameCardAnswerLabel"),
+  frameCardAnswerToolbar: document.querySelector("#frameCardAnswerToolbar"),
+  frameCardAnswerInput: document.querySelector("#frameCardAnswerInput"),
   frameCardQuestionInput: document.querySelector("#frameCardQuestionInput"),
   frameCardAddBtn: document.querySelector("#frameCardAddBtn"),
   frameCardCancelBtn: document.querySelector("#frameCardCancelBtn"),

@@ -90,6 +90,8 @@ export function handleToolbarClick(event) {
     textarea = el.answerEdit;
   } else if (toolbar.id === "notesEditToolbar") {
     textarea = el.notesEdit;
+  } else if (toolbar.id === "frameCardAnswerToolbar") {
+    textarea = el.frameCardAnswerInput;
   } else {
     // Inside dynamic "All cards" editor
     const container = toolbar.closest(".all-card-editor");

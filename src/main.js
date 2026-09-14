@@ -1213,7 +1213,11 @@ onDomReady(() => {
           .catch(() => createCardFromNotesSelection(text, anchor));
         return;
       }
-      createCardFromNotesSelection(text, anchor);
+      // A region/area highlight with no real text under it arrives here as a
+      // fallback label ("Region · page 12") rather than empty, so the modal
+      // opens with something to show — but that label is not useful flashcard
+      // content and would otherwise become the card's answer unedited.
+      createCardFromNotesSelection(entry?.hasCapturedText === false ? "" : text, anchor);
     },
     // deckLocalId is added HERE and not in the index: a Quick Note is stored in
     // a different deck from the one it came from, so its anchor is the only

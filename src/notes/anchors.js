@@ -23,7 +23,7 @@ import { estimateNotesPageForFraction, isNotesPaged, notesPageCount, notesPageFo
 import { NOTES_BLOCK_SELECTOR, approximateRawOffsetForBlock, notesBlockForRawOffset } from "./raw-offset.js?v=__BUILD__";
 import { notesReadingLineOffset } from "./scroll-anchor.js?v=__BUILD__";
 import { SELECTION_TARGETS, isTargetEditing, notesSelectionRange } from "./selection.js?v=__BUILD__";
-import { ensureNotesLazyFractionBuilt, ensureNotesLazyOffsetBuilt, isNotesStreamBusy, notesLazyPlan, notesLazySpanAt, notesTopLevelBlocks, renderMarkdown, withChunkRendered } from "../render/block-cache.js?v=__BUILD__";
+import { ensureNotesLazyFractionBuilt, ensureNotesLazyOffsetBuilt, isNotesStreamBusy, notesLazyPlan, notesLazySpanAt, notesTopLevelBlocks, withChunkRendered } from "../render/block-cache.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { setStatus, showToast } from "../ui/feedback.js?v=__BUILD__";
 import { lockPageScroll, unlockPageScroll } from "../ui/overlays.js?v=__BUILD__";
@@ -54,17 +54,29 @@ export function addCardFromNotes(question, answer, noteAnchor = null) {
 
 export function createCardFromNotesSelection(markdown, noteAnchor = null) {
   // The highlighted fact is what you want to recall — it becomes the ANSWER;
-  // the user frames the question that should bring it to mind. The modal
-  // shows exactly what was captured (rendered, images included) so there's
-  // no doubt about the selection, and gives a proper textarea to write in.
-  const answer = String(markdown || "").trim();
-  if (!answer || !el.frameCardModal) return;
+  // the user frames the question that should bring it to mind. The answer
+  // starts pre-filled with whatever was captured, but is a real editable
+  // field: an area/region drawn on a PDF figure or diagram often captures no
+  // text at all, and the only way to get a useful card out of one is to let
+  // the reader type what it shows.
+  if (!el.frameCardModal) return;
+  const captured = String(markdown || "").trim();
+  const hasCapturedText = Boolean(captured);
 
   el.frameCardModal.hidden = false;
   lockPageScroll();
-  renderMarkdown(el.frameCardAnswerPreview, answer, true);
+  el.frameCardAnswerLabel.textContent = hasCapturedText
+    ? "Answer — captured from your notes"
+    : "Answer";
+  el.frameCardAnswerInput.value = captured;
+  el.frameCardAnswerInput.placeholder = hasCapturedText
+    ? ""
+    : "No text found here — describe what this shows (a figure, table, equation…)";
+  el.frameCardAnswerInput.dispatchEvent(new Event("input", { bubbles: true }));
   el.frameCardQuestionInput.value = "";
-  requestAnimationFrame(() => el.frameCardQuestionInput.focus());
+  // Focus whichever field still needs typing: the question when the answer
+  // already arrived captured, the answer itself when it's starting blank.
+  requestAnimationFrame(() => (hasCapturedText ? el.frameCardQuestionInput : el.frameCardAnswerInput).focus());
 
   const cleanup = (confirmed) => {
     el.frameCardModal.hidden = true;
@@ -72,24 +84,32 @@ export function createCardFromNotesSelection(markdown, noteAnchor = null) {
     el.frameCardAddBtn.onclick = null;
     el.frameCardCancelBtn.onclick = null;
     el.frameCardQuestionInput.onkeydown = null;
+    el.frameCardAnswerInput.onkeydown = null;
     if (!confirmed) return;
     const question = el.frameCardQuestionInput.value.trim();
+    const answer = el.frameCardAnswerInput.value.trim();
     if (!question) {
       // Blank-question cards are dropped by loadDeckSnapshot on the next
       // load, so keeping one would silently lose it anyway.
       setStatus("Card not added — a question is required.", "error");
       return;
     }
+    if (!answer) {
+      setStatus("Card not added — an answer is required.", "error");
+      return;
+    }
     addCardFromNotes(question, answer, noteAnchor);
   };
   el.frameCardAddBtn.onclick = () => cleanup(true);
   el.frameCardCancelBtn.onclick = () => cleanup(false);
-  el.frameCardQuestionInput.onkeydown = (e) => {
-    // Plain Enter inserts a newline (questions can be multi-line);
+  const confirmOrCancel = (e) => {
+    // Plain Enter inserts a newline (both fields can be multi-line);
     // Ctrl/Cmd+Enter confirms, Escape cancels.
     if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); cleanup(true); }
     if (e.key === "Escape") { e.preventDefault(); cleanup(false); }
   };
+  el.frameCardQuestionInput.onkeydown = confirmOrCancel;
+  el.frameCardAnswerInput.onkeydown = confirmOrCancel;
 }
 
 // Strip markdown syntax down to the plain text a reader sees — used both to
