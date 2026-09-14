@@ -300,6 +300,8 @@ const APP_SHELL = [
   `./styles/57-note-link-browser.css?v=${STAMP}`,
   `./styles/58-block-style.css?v=${STAMP}`,
   `./styles/59-block-actions.css?v=${STAMP}`,
+  `./styles/60-pdf-region-embed.css?v=${STAMP}`,
+  `./styles/61-frame-card-answer-editable.css?v=${STAMP}`,
   // The module entry point. Everything it imports is stamped with the same
   // ?v=, so those URLs change with every release too — which is what lets the
   // cache-first handler below serve them without revalidating and still never
@@ -356,6 +358,7 @@ const APP_SHELL = [
   `./src/documents/pdf-ink.js?v=${STAMP}`,
   `./src/documents/pdf-outline.js?v=${STAMP}`,
   `./src/documents/pdf-page-notes.js?v=${STAMP}`,
+  `./src/documents/pdf-region-embed.js?v=${STAMP}`,
   `./src/documents/pdf-region.js?v=${STAMP}`,
   `./src/documents/pdf-selection.js?v=${STAMP}`,
   `./src/documents/pdf-store.js?v=${STAMP}`,

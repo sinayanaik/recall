@@ -65,6 +65,18 @@ const SECTIONS = [
 // Anything appearing in styles/ that is neither a slice nor listed here is
 // still a failure.
 const POST_SPLIT = {
+  "61-frame-card-answer-editable.css":
+    "The \"Make a flashcard\" modal's answer face as an editable textarea + " +
+    "toolbar instead of the read-only rendered preview it used to be — see " +
+    "src/notes/anchors.js's createCardFromNotesSelection. Written since the " +
+    "split; the frozen .frame-card-answer rule it replaced stays in " +
+    "12-notes.css, unused but byte-identical to pre-modular.",
+  "60-pdf-region-embed.css":
+    "A card's reference to a PDF location, rendered live from the deck's own " +
+    "stored PDF instead of a screenshot or extracted text — see " +
+    "src/documents/pdf-region-embed.js and src/documents/pdf-region.js. " +
+    "Written since the split, so it lives on its own rather than in the " +
+    "frozen 06-rendered.css slice its content used to sit in.",
   "59-block-actions.css":
     "The box .pdf-block-actions-pop floats in, and its buttons — see " +
     "src/documents/block-actions-popover.js for why these six verbs (Style, " +

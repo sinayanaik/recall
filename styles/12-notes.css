@@ -1334,11 +1334,19 @@ body.chrome-collapsed:not(:has(#mainToolbar.mobile-open)) .quiz-panel .view-mode
   color: var(--muted);
 }
 
-.frame-card-answer-input {
-  min-height: 120px;
+.frame-card-answer {
+  max-height: 34vh;
+  overflow-y: auto;
+  overflow-x: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--input-radius);
+  background: var(--card);
   padding: 10px 12px;
-  resize: vertical;
-  line-height: 1.45;
+}
+
+.frame-card-answer img {
+  max-width: 100%;
+  height: auto;
 }
 
 .frame-card-question {
