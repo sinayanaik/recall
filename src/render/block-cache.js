@@ -14,7 +14,7 @@ import { markBrokenImages } from "../images/broken.js?v=__BUILD__";
 import { hydrateLocalImages } from "../images/outbox.js?v=__BUILD__";
 import { enhanceSurfaceDiagramControls, enhanceSurfaceImageControls, findSourceImages, imageMatchKey, imageSurfaceForView } from "../images/surface-controls.js?v=__BUILD__";
 import { bindNotesHeadingElements, markNotesTocDirty, refreshNotesTocAvailability } from "../notes/toc.js?v=__BUILD__";
-import { pagedSpanStarts } from "../notes/chapters.js?v=__BUILD__";
+import { foldableMaskFor, pagedSpanStarts } from "../notes/chapters.js?v=__BUILD__";
 import { readerNotesBody } from "../format/notes-fence.js?v=__BUILD__";
 import { enhanceRenderedMarkdown, promoteNotesHeadings } from "./enhance.js?v=__BUILD__";
 import { markdownLibrariesReady } from "../core/lib-guard.js?v=__BUILD__";
@@ -168,6 +168,7 @@ export function finalizeRenderedSurface(container) {
     refreshNotesTocAvailability();
     scheduleNotesBlockEstimate(container);
     scheduleNotesChunkEstimates(container);
+    applyNotesFoldState(container);
   }
 }
 
@@ -1030,6 +1031,42 @@ export function chunkAncestor(node, container) {
   const chunk = node?.parentElement;
   if (!chunk || chunk === container) return null;
   return chunk.classList?.contains(NOTES_CHUNK_CLASS) && chunk.parentNode === container ? chunk : null;
+}
+
+// ── Folding every section at once ───────────────────────────────────────────
+//
+// One flag for the whole note, not a set of folded headings — the feature is
+// "fold all sections" / "unfold all sections", nothing narrower, so there is
+// nothing per-heading to remember. Module-level rather than on `state`: this is
+// a viewing preference for the surface on screen, not a fact about the note,
+// and it resets on every genuinely different note the same way the cloze
+// reveal-all button already does (see resetClozeButton in editor/toolbars.js).
+export let notesBodyFolded = false;
+
+export function setNotesBodyFolded(value) {
+  notesBodyFolded = Boolean(value);
+}
+
+// Hides or shows every top-level block that foldableMaskFor says sits under a
+// heading. Uses notesTopLevelBlocks — see its own comment on why that is the
+// one correct way to walk a note's blocks — so this hides individual
+// paragraphs and lists rather than whole 40-block .notes-chunk wrappers.
+//
+// Always runs, folded or not: unfolding has to clear a `hidden` a previous
+// fold set, and a freshly built lazy span has to pick up whichever state is
+// current the moment it lands (see finishNotesLazySpan below) rather than
+// arrive unhidden and stay that way until the next unrelated repaint.
+export function applyNotesFoldState(container) {
+  if (container !== el.notesView || container.classList.contains("is-paged")) return;
+  // The identical prepared string block-cache itself renders from (see
+  // renderMarkdown's own `prepared = preprocessSpecialBlocks(displayMarkdown)`)
+  // — not raw state.notes, which still carries the trailing highlight-notes
+  // fence and would put every block index one section out of step with what
+  // is actually on screen.
+  const mask = notesBodyFolded ? foldableMaskFor(readerNotesBody(state.notes)) : null;
+  notesTopLevelBlocks(container).forEach((node, index) => {
+    node.hidden = Boolean(mask && mask[index]);
+  });
 }
 
 // Force `node`'s chunk to lay out, run `read`, then put the containment back.
@@ -2518,6 +2555,11 @@ export function finishNotesLazySpan(container, index) {
       if (surface && pending) {
         enhanceSurfaceImageControls(surface, { scope: flat, builtImages: () => notesLazyBuiltImages(container) });
       }
+      // Unconditional, not only when nothing else is left to build: a span that
+      // lands while other spans are still pending must still come in hidden (or
+      // shown) correctly, rather than sitting unfolded until the very last span
+      // triggers finalizeRenderedSurface's own call.
+      applyNotesFoldState(container);
       if (!pending) scheduleSurfaceFinalize(container);
     })
     .catch((error) => console.warn("Deferred note span failed", error));

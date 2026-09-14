@@ -20,7 +20,8 @@
 // `meta.pdfHighlights` — an array on the deck's existing JSONB meta bag, no new
 // table and no new column.
 
-import { activeDocSlot, recordsInSlot, recordsOutsideSlot, stampDocSlotAll } from "./doc-slot.js?v=__BUILD__";
+import { activeDocSlot, DOC_SLOT_DOC, stampDocSlotAll } from "./doc-slot.js?v=__BUILD__";
+import { activePdfId, recordsForSurface, recordsOutsideSurface, stampRecordPdfIdAll } from "./pdf-multi.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { lastInkContactWasPen, msSinceLastInkStroke } from "../core/gesture.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
@@ -54,7 +55,8 @@ export const PDF_MARK_FLASH_MS = 1400;
 // there are dozens of them and one that forgot would paint a notebook's strokes
 // onto somebody's preprint.
 export function documentHighlights() {
-  return recordsInSlot(state.meta?.pdfHighlights, activeDocSlot());
+  const slot = activeDocSlot();
+  return recordsForSurface(state.meta?.pdfHighlights, slot, slot === DOC_SLOT_DOC ? activePdfId(state.meta) : null);
 }
 
 // Both papers' records, for the callers that mean the DECK rather than the
@@ -76,7 +78,9 @@ export function allDocumentHighlights() {
 // a caller that assigns through it and then commits through it again is fine.
 function wholeHighlightArray(next) {
   const slot = activeDocSlot();
-  return recordsOutsideSlot(state.meta?.pdfHighlights, slot).concat(stampDocSlotAll(next, slot));
+  const pdfId = slot === DOC_SLOT_DOC ? activePdfId(state.meta) : null;
+  const stamped = stampRecordPdfIdAll(stampDocSlotAll(next, slot), pdfId);
+  return recordsOutsideSurface(state.meta?.pdfHighlights, slot, pdfId).concat(stamped);
 }
 
 // "Does this deck have a document with marks on it?" — which is a different

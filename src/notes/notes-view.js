@@ -31,7 +31,7 @@ import { notesBlockForRawOffset } from "./raw-offset.js?v=__BUILD__";
 import { notesBlockAtReadingLineGeometric } from "./scroll-anchor.js?v=__BUILD__";
 import { hideNotesSelectionButton, touchSelectionDragActive } from "./selection.js?v=__BUILD__";
 import { blockAtNotesReadingLine, closeNotesToc } from "./toc.js?v=__BUILD__";
-import { releaseNotesChunkEstimateObserver, releaseNotesLazyBuildObserver, renderMarkdown, setNotesBlockEstimateSource, syncNotesBlockEstimateSource, withChunkRendered } from "../render/block-cache.js?v=__BUILD__";
+import { applyNotesFoldState, releaseNotesChunkEstimateObserver, releaseNotesLazyBuildObserver, renderMarkdown, setNotesBlockEstimateSource, setNotesBodyFolded, syncNotesBlockEstimateSource, withChunkRendered } from "../render/block-cache.js?v=__BUILD__";
 import { releaseDeferredWork } from "../render/deferred-work.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 
@@ -168,6 +168,16 @@ export function renderNotesView({ sameNote = false } = {}) {
   // continuous editor of them, and this tab is a note like any other note.
   return renderMarkdown(el.notesView, source, true)
     .then(() => resetClozeButton(el.clozeToggleNotesBtn))
+    // A genuinely different note starts unfolded, same rule as the cloze
+    // reveal-all button just above. `sameNote` (an edit to the note that is
+    // already open) leaves the fold as the reader left it, then re-applies it
+    // — the render just rebuilt every block, so whatever was hidden a moment
+    // ago is unhidden again until this runs.
+    .then(() => {
+      if (!sameNote) resetNotesFoldButton(el.notesFoldAllBtn);
+      applyNotesFoldState(el.notesView);
+      refreshNotesFoldButtonAvailability(el.notesFoldAllBtn);
+    })
     // Every repaint of the rendered notes comes through here, so this is the
     // one place paged mode has to re-count its pages — the note may have grown
     // a paragraph, lost a block, or be a different note entirely. No-op when
@@ -187,6 +197,41 @@ export function renderNotesView({ sameNote = false } = {}) {
     // runs, but every entry into notes view — cache hit or not — comes
     // through here.
     .then(() => refreshBookmarkButtonUI());
+}
+
+// ── Fold / unfold every section at once ─────────────────────────────────────
+// The note-body twin of setClozeButtonState/toggleClozes/resetClozeButton in
+// editor/toolbars.js — same shape, one flag rather than a per-item set,
+// because "fold all sections" has nothing narrower to remember.
+export function setNotesFoldButtonState(button, folded) {
+  if (!button) return;
+  button.setAttribute("aria-pressed", folded ? "true" : "false");
+  const label = button.querySelector(".notes-fold-label");
+  if (label) label.textContent = folded ? "Unfold all sections" : "Fold all sections";
+  button.title = folded ? "Show the text under every heading" : "Hide the text under every heading";
+}
+
+export function toggleNotesFold(button) {
+  if (isNotesPaged()) return;
+  const folded = !(button?.getAttribute("aria-pressed") === "true");
+  setNotesBodyFolded(folded);
+  applyNotesFoldState(el.notesView);
+  setNotesFoldButtonState(button, folded);
+}
+
+// A different note opens unfolded, same rule renderNotesView already applies
+// to the cloze reveal-all button.
+export function resetNotesFoldButton(button) {
+  setNotesBodyFolded(false);
+  setNotesFoldButtonState(button, false);
+}
+
+// Paged mode lays out every block up front and applyNotesFoldState already
+// declines to touch it — so the button is put away rather than left clickable
+// and silently doing nothing.
+export function refreshNotesFoldButtonAvailability(button) {
+  if (!button) return;
+  button.hidden = isNotesPaged();
 }
 
 // Repaint the open note without the reader appearing to move at all.

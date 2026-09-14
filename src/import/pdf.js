@@ -20,7 +20,9 @@ import { el } from "../core/dom.js?v=__BUILD__";
 import { ensurePdfJs } from "../core/lib-loader.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { stripInvalidUnicode } from "../core/text.js?v=__BUILD__";
+import { DOC_SLOT_DOC } from "../documents/doc-slot.js?v=__BUILD__";
 import { QUAD_GEOMETRY_VERSION, annotationQuads, nearestHighlightColor } from "../documents/pdf-highlights.js?v=__BUILD__";
+import { deckPdfs, mintPdfId, PDF_PRIMARY_ID, pdfStoreKey, stampRecordPdfIdAll, withDeckPdfs } from "../documents/pdf-multi.js?v=__BUILD__";
 import { textForQuads } from "../documents/pdf-selection.js?v=__BUILD__";
 import { MAX_DOCUMENT_BYTES, putDocument, sha256, uploadDocument } from "../documents/pdf-store.js?v=__BUILD__";
 import { MARK_HIGHLIGHT_DEFAULT } from "../format/highlight-colors.js?v=__BUILD__";
@@ -362,12 +364,6 @@ export async function attachPdfToOpenDeck(file) {
     showToast("Open or create a deck first, then attach its PDF", "error");
     return false;
   }
-  if (state.meta?.pdf) {
-    // The Document surface's own row is the right control for this, and it is
-    // the one that checks the hash.
-    showToast("This deck already has a PDF — use Document ⋯ → Re-attach the PDF", "info");
-    return false;
-  }
   if (file.size > MAX_DOCUMENT_BYTES) {
     const message = `${file.name} is larger than the ${Math.round(MAX_DOCUMENT_BYTES / (1024 * 1024))}MB limit for a document.`;
     setStatus(message, "error");
@@ -395,25 +391,41 @@ export async function attachPdfToOpenDeck(file) {
     progress.update("Hashing the file…", 0.65);
     const hash = await sha256(file);
 
+    // The first PDF a deck ever gets is its PRIMARY — the fixed id every
+    // device agrees to synthesize for a bare meta.pdf, so a deck attaching
+    // its first paper still writes exactly what it always wrote (withDeckPdfs
+    // mirrors the primary entry back onto meta.pdf). Every one after that
+    // mints a fresh id: this is what "attach ANOTHER PDF" means.
+    const existingPdfs = deckPdfs(state.meta);
+    const pdfId = existingPdfs.length ? mintPdfId() : PDF_PRIMARY_ID;
+
     // Written into the deck BEFORE the save, so the save is what persists them —
     // one write, and no window in which the deck claims a document it has not
     // stored the bytes for.
     let deckNotes = state.notes || "";
     notes.forEach((note) => { deckNotes = setHighlightNoteInSource(deckNotes, note.id, note.text, note.label); });
     state.notes = deckNotes;
+    const newEntry = {
+      id: pdfId,
+      name: file.name,
+      size: file.size,
+      pages: pageCount,
+      sha256: hash,
+      path: null,
+      importedAt: new Date().toISOString(),
+      at: Date.now()
+    };
     state.meta = {
-      ...(state.meta && typeof state.meta === "object" ? state.meta : {}),
-      pdf: {
-        name: file.name,
-        size: file.size,
-        pages: pageCount,
-        sha256: hash,
-        path: null,
-        importedAt: new Date().toISOString()
-      },
+      ...withDeckPdfs(state.meta, [...existingPdfs, newEntry]),
+      pdfActiveId: pdfId,
       // Merged rather than assigned: a deck can already carry highlights from
       // its own <mark>s, and an id minted here is from the same namespace.
-      pdfHighlights: [...(Array.isArray(state.meta?.pdfHighlights) ? state.meta.pdfHighlights : []), ...records]
+      // Tagged with this PDF's id (a no-op tag for the primary) so a second
+      // paper's highlights are never mixed up with the first's.
+      pdfHighlights: [
+        ...(Array.isArray(state.meta?.pdfHighlights) ? state.meta.pdfHighlights : []),
+        ...stampRecordPdfIdAll(records, pdfId)
+      ]
     };
 
     progress.update("Saving the deck…", 0.7);
@@ -425,14 +437,16 @@ export async function attachPdfToOpenDeck(file) {
     // The device copy first, and before the upload: it is the copy the reader is
     // about to open, and the one that survives being offline.
     progress.update("Storing the document on this device…", 0.75);
-    await putDocument({ deckLocalId, blob: file, sha256: hash, name: file.name, at: Date.now() });
+    await putDocument({ deckLocalId: pdfStoreKey(deckLocalId, pdfId), blob: file, sha256: hash, name: file.name, at: Date.now() });
 
     let uploadError = "";
     try {
       progress.update("Uploading the document…", 0.85);
       const folder = `${storageFolderSlug(state.deckTitle || "paper", "paper")}--${storageGroupId()}`;
       const path = await uploadDocument(file, { folder, name: storageFolderSlug(file.name.replace(/\.pdf$/i, ""), "document") }, progress);
-      state.meta = { ...state.meta, pdf: { ...state.meta.pdf, path } };
+      state.meta = withDeckPdfs(state.meta, deckPdfs(state.meta).map((entry) => (
+        entry.id === pdfId ? { ...entry, path, at: Date.now() } : entry
+      )));
       await saveDeckToLibrary({ silent: true });
     } catch (error) {
       uploadError = describePdfUploadFailure(error);
@@ -443,7 +457,7 @@ export async function attachPdfToOpenDeck(file) {
     // to run before the view can be switched to it.
     updateMeta();
     setViewMode("document");
-    await openDocumentView({ force: true });
+    await openDocumentView({ force: true, slot: DOC_SLOT_DOC, pdfId });
 
     const imported = records.length
       ? ` · ${records.length} existing highlight${records.length === 1 ? "" : "s"} imported`

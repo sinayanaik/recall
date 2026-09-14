@@ -55,7 +55,8 @@ import { state } from "../core/state.js?v=__BUILD__";
 import { closeBlockActionsPopover, openBlockActionsPopover } from "./block-actions-popover.js?v=__BUILD__";
 import { closeBlockStylePopover, openBlockStylePopover } from "./block-style-bar.js?v=__BUILD__";
 import { blockFillVar, blockInkVar, isDefaultBlockStyle, normalizeBlockStyle } from "./block-style.js?v=__BUILD__";
-import { activeDocSlot, recordsInSlot, recordsOutsideSlot, stampDocSlotAll } from "./doc-slot.js?v=__BUILD__";
+import { activeDocSlot, DOC_SLOT_DOC, stampDocSlotAll } from "./doc-slot.js?v=__BUILD__";
+import { activePdfId, recordsForSurface, recordsOutsideSurface, stampRecordPdfIdAll } from "./pdf-multi.js?v=__BUILD__";
 import { closeBlockEditor, openBlockEditor } from "./pdf-block-editor.js?v=__BUILD__";
 import { pdfPageElement, pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
 import { hydrateLocalImages, storeImageOrQueue } from "../images/outbox.js?v=__BUILD__";
@@ -163,7 +164,8 @@ function syncBlockActionsPopover() {
 // this one array with a `doc` field saying which (src/documents/doc-slot.js).
 // This returns the surface's own, because that is what every caller means.
 export function documentBlocks(pageNumber = null) {
-  const list = recordsInSlot(state.meta?.pdfBlocks, activeDocSlot());
+  const slot = activeDocSlot();
+  const list = recordsForSurface(state.meta?.pdfBlocks, slot, slot === DOC_SLOT_DOC ? activePdfId(state.meta) : null);
   const out = list
     .filter((block) => block && typeof block === "object" && block.id)
     .map((block) => ({
@@ -222,10 +224,12 @@ export function allDocumentBlocks() {
 // half-a-change this whole path exists to avoid.
 function writeBlocks(next, { removed = null, revive = null, undoable = true, coalesce = "" } = {}) {
   const slot = activeDocSlot();
+  const pdfId = slot === DOC_SLOT_DOC ? activePdfId(state.meta) : null;
   // Before anything is written, and only for the changes a reader MADE — see the
   // ring below for why a page renumber and a late upload are not among them.
   if (undoable) pushBlockUndo(documentBlocks(), coalesce);
-  const whole = recordsOutsideSlot(state.meta?.pdfBlocks, slot).concat(stampDocSlotAll(next, slot));
+  const stamped = stampRecordPdfIdAll(stampDocSlotAll(next, slot), pdfId);
+  const whole = recordsOutsideSurface(state.meta?.pdfBlocks, slot, pdfId).concat(stamped);
   state.meta = { ...(state.meta && typeof state.meta === "object" ? state.meta : {}), pdfBlocks: whole };
   // Written back into the meta on every step. recordDeletedMetaId reads the bag
   // off `meta` and returns a fresh one, so a loop that assigns only after its
@@ -281,7 +285,12 @@ const blockRedoRing = [];
 let blockHistoryKey = "";
 
 function currentHistoryKey() {
-  return `${state.localDeckId || ""}:${activeDocSlot()}`;
+  const slot = activeDocSlot();
+  // The pdfId, when there is more than one PDF on this shelf — otherwise a
+  // switch between two PDFs on the same deck would leave Ctrl+Z restoring the
+  // WRONG paper's blocks, because both would answer with the identical key.
+  const pdfId = slot === DOC_SLOT_DOC ? activePdfId(state.meta) : "";
+  return `${state.localDeckId || ""}:${slot}:${pdfId || ""}`;
 }
 
 // ── ...and why one of these takes a `coalesce` key ────────────────────────

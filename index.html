@@ -172,6 +172,8 @@
     <link rel="modulepreload" href="src/documents/pdf-export.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/pdf-highlights.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/pdf-ink.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/documents/pdf-multi-actions.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/documents/pdf-multi.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/pdf-outline.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/pdf-page-notes.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/pdf-region-embed.js?v=__BUILD__">
@@ -878,6 +880,12 @@
                    Where the Fullscreen API is missing (iOS Safari) this
                    degrades to focus mode and says so in its title. -->
               <button class="edit-card-btn immersive-mode-btn" id="immersiveModeBtn" data-nhm-group="While you read" type="button" aria-pressed="false" title="Full screen (Ctrl + Q) — hide the browser as well" aria-label="Toggle full screen"><span class="nhm-ico" aria-hidden="true">&#9974;</span><span class="nhm-label">Full screen<span class="nhm-hint">Hide the browser too · Ctrl+Q</span></span><span class="nhm-state" aria-hidden="true"><span class="nhm-switch"></span></span></button>
+              <!-- Folds every section's body text away, headings left standing
+                   — a note-wide twin of clozeToggleNotesBtn's reveal-all: one
+                   flag, no per-heading memory, reset on every different note.
+                   Hidden in paged mode, which lays out every block up front
+                   and has nothing here to fold. -->
+              <button class="edit-card-btn notes-fold-all-btn" id="notesFoldAllBtn" data-nhm-group="While you read" type="button" aria-pressed="false" title="Hide the text under every heading" aria-label="Fold or unfold every section"><span class="nhm-ico" aria-hidden="true">&#9776;</span><span class="nhm-label notes-fold-label">Fold all sections</span></button>
               <!-- Every low-frequency button above moves INTO the menu below —
                    the cloze trio, make-card, pin, the two bookmark controls,
                    focus, full screen and the highlight-notes toggle: ten at
@@ -973,6 +981,13 @@
                    and it is also the only way a mouse can draw, because a mouse
                    has no other way of saying which it meant. -->
               <button class="tool-button document-toggle" id="documentInkBtn" type="button" aria-pressed="false" title="Pen — write on the page with a stylus. The pen draws and a finger scrolls; this opens the colours, the nib, the eraser and T, which turns the pen into a way of selecting words instead (and lets a mouse draw)." aria-label="Pen">&#9998;</button>
+              <!-- Which of the deck's PDFs is on screen, when it has more than
+                   one — hidden outright otherwise (renderDocumentPdfSwitcher,
+                   src/documents/pdf-view.js), so an ordinary single-PDF deck's
+                   toolbar looks exactly as it always has. Lives beside the
+                   other doc-slot tools rather than in the ⋯ menu: which paper
+                   you are on is not a low-frequency setting. -->
+              <select class="autosync-select document-pdf-switcher" id="documentPdfSwitcher" aria-label="Switch PDF" title="Switch which of this deck's PDFs you're reading" hidden></select>
               <button class="tool-button document-more-btn" id="documentMoreBtn" type="button" aria-haspopup="true" aria-expanded="false" aria-label="PDF options" title="PDF options">&#8943;</button>
               <div class="document-more-menu" id="documentMoreMenu" role="menu" hidden>
                 <!-- "Save a copy" is not here any more. It downloads the
@@ -1002,11 +1017,17 @@
                 <button class="md-menu-item" type="button" data-slot="notebook" data-document-action="hw-paper-blank" title="Plain paper, nothing printed on it"><span>Blank paper</span><span class="nhm-state" aria-hidden="true"><span class="nhm-switch"></span></span></button>
                 <button class="md-menu-item is-danger" type="button" data-slot="notebook" data-document-action="hw-tear-out" title="Tear out the page you are looking at — everything written on it goes with it"><span>Tear out this page<span class="nhm-hint">Everything written on it goes too</span></span></button>
                 <button class="md-menu-item" type="button" data-document-action="page-notes" title="Print every highlight's note under the page it is on, numbered — the PDF tab's answer to the notes view's own inline notes"><span>Notes on the page<span class="nhm-hint">Print each highlight's note under its page</span></span><span class="nhm-state" aria-hidden="true"><span class="nhm-switch"></span></span></button>
+                <label class="md-menu-item file-pick" data-slot="doc" data-document-action="add-pdf" title="Attach another PDF to this deck">
+                  <input id="documentAddPdfInput" type="file" accept=".pdf,application/pdf" hidden>
+                  <span>Add another PDF…</span>
+                </label>
                 <button class="md-menu-item" type="button" data-slot="doc" data-document-action="offload" title="Delete the cloud copy to free space — highlights, notes and cards all stay"><span>Remove from cloud</span></button>
                 <label class="md-menu-item file-pick" data-slot="doc" data-document-action="reattach" title="Point this deck back at the PDF on this device">
                   <input id="documentReattachInput" type="file" accept=".pdf,application/pdf" hidden>
                   <span>Re-attach the PDF…</span>
                 </label>
+                <button class="md-menu-item" type="button" data-slot="doc" data-document-action="rename-pdf" title="Rename this PDF's tab"><span>Rename this PDF…</span></button>
+                <button class="md-menu-item is-danger" type="button" data-slot="doc" data-document-action="remove-pdf" title="Remove this PDF from the deck — its highlights go with it"><span>Remove this PDF<span class="nhm-hint">Its highlights and bookmark go too</span></span></button>
               </div>
             </div>
             <!-- The notebook's own controls used to be a .handwriting-head here,

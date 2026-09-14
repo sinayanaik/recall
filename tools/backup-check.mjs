@@ -114,6 +114,17 @@ const META_FIXTURES = {
   ],
   deletedHighlightIds: { "hn-hz": "2027-01-01T00:00:00.000Z" },
   pdfToc: [{ title: "Intro", page: 1 }],
+  // A deck with more than one PDF on its doc slot (src/documents/pdf-multi.js)
+  // — one entry per fixture below, so a round trip that dropped the second
+  // paper, its tombstone, its own reading position or its own contents cache
+  // fails on the fixture it broke rather than passing on the one it kept.
+  pdfs: [
+    { id: "primary", name: "paper.pdf", size: 12345, pages: 3, sha256: "", path: "u1/pdfs/paper--a1/paper.pdf", importedAt: "2027-01-01T00:00:00.000Z", at: 1_800_000_000_000 },
+    { id: "pdf-b2", name: "supplement.pdf", size: 6789, pages: 2, sha256: "", path: "u1/pdfs/supplement--a2/supplement.pdf", label: "Supplement", importedAt: "2027-01-01T00:00:00.000Z", at: 1_800_000_000_000 }
+  ],
+  deletedPdfIds: { "pdf-bz": "2027-01-01T00:00:00.000Z" },
+  pdfReadingPositions: { "pdf-b2": { offset: 4, pdfPage: 4, ratio: 0.5, text: "over there", at: 1_800_000_000_000 } },
+  pdfTocByPdfId: { "pdf-b2": { v: 1, pages: 2, entries: [{ t: "Appendix", p: 1, d: 0 }] } },
   bookmark: { offset: 10, text: "here", at: 1_800_000_000_000 },
   readingPosition: { offset: 20, text: "there", at: 1_800_000_000_000 },
   linkIds: ["lnk-one"],

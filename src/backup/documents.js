@@ -23,7 +23,8 @@
 // restore drives both the same way and a cancelled restore leaves no trace of
 // either.
 
-import { DOC_SLOT_NOTEBOOK, DOC_SLOTS, docSlotMetaKey, documentStoreKey, normalizeDocSlot } from "../documents/doc-slot.js?v=__BUILD__";
+import { DOC_SLOT_DOC, DOC_SLOT_NOTEBOOK, docSlotMetaKey, documentStoreKey, normalizeDocSlot } from "../documents/doc-slot.js?v=__BUILD__";
+import { deckPdfById, deckPdfs, PDF_PRIMARY_ID, pdfStoreKey } from "../documents/pdf-multi.js?v=__BUILD__";
 import { getDocument, putDocument, readDocument, sha256 } from "../documents/pdf-store.js?v=__BUILD__";
 import { BACKUP_DOCUMENT_INDEX, BACKUP_DOCUMENT_SCHEMA, backupDocumentFolderPath } from "./archive-format.js?v=__BUILD__";
 
@@ -61,15 +62,37 @@ export const DOCUMENT_MISSING_OFFLOADED = "offloaded";
 //
 // A record written before this existed has no `slot` at all, and normalizeDocSlot
 // reads that as the document slot, which is exactly what it was.
+//
+// ── ...and the doc slot can now be more than one job ───────────────────────
+//
+// A deck's PAPER used to be exactly one job, `meta.pdf`. It can be several
+// now (src/documents/pdf-multi.js), so the doc half of this walks
+// deckPdfs(meta) — which still answers with the one bare meta.pdf as a
+// single-entry list for every deck that has never had a second PDF — instead
+// of reading the one key directly. Each job carries the pdf's own id so the
+// rest of the pipeline can build the right store key and index record; a job
+// for the PRIMARY carries PDF_PRIMARY_ID, same as everywhere else in the app.
 function backupDocumentJobs(entries) {
   const jobs = [];
   entries.forEach((entry) => {
-    DOC_SLOTS.forEach((slot) => {
-      const meta = entry.snapshot?.meta?.[docSlotMetaKey(slot)];
-      if (meta && typeof meta === "object") jobs.push({ entry, slot, meta });
+    deckPdfs(entry.snapshot?.meta).forEach((meta) => {
+      jobs.push({ entry, slot: DOC_SLOT_DOC, pdfId: meta.id, meta });
     });
+    const notebook = entry.snapshot?.meta?.[docSlotMetaKey(DOC_SLOT_NOTEBOOK)];
+    if (notebook && typeof notebook === "object") {
+      jobs.push({ entry, slot: DOC_SLOT_NOTEBOOK, pdfId: null, meta: notebook });
+    }
   });
   return jobs;
+}
+
+// The store key a job's bytes live under — pdfStoreKey for a doc-slot job
+// (bare for the primary, suffixed for any other), documentStoreKey unchanged
+// for the notebook.
+function jobStoreKey(deckLocalId, job) {
+  return job.slot === DOC_SLOT_DOC
+    ? pdfStoreKey(deckLocalId, job.pdfId || PDF_PRIMARY_ID)
+    : documentStoreKey(deckLocalId, job.slot);
 }
 
 export async function packBackupDocuments(zip, entries, onProgress, isCancelled = () => false) {
@@ -82,18 +105,21 @@ export async function packBackupDocuments(zip, entries, onProgress, isCancelled 
   onProgress?.(0, papers.length);
   for (const job of papers) {
     if (isCancelled()) break;
-    const { entry, slot, meta } = job;
-    // Prefixed for the notebook so a deck whose paper happens to be called
-    // handwritten-notes.pdf cannot have its two documents land on one path.
-    const name = `${slot === DOC_SLOT_NOTEBOOK ? "notebook--" : ""}${String(meta.name || "document.pdf").replace(/[\\/]/g, "-")}`;
-    const describe = { deckFile: entry.deckFile, deckId: entry.deckId || null, deckTitle: entry.title, name, slot };
+    const { entry, slot, pdfId, meta } = job;
+    // Prefixed for the notebook, and for any PDF beyond the primary, so a deck
+    // whose second paper happens to be called handwritten-notes.pdf — or the
+    // same filename as its first paper — cannot land two documents on one
+    // path.
+    const prefix = slot === DOC_SLOT_NOTEBOOK ? "notebook--" : (pdfId && pdfId !== PDF_PRIMARY_ID ? `${pdfId}--` : "");
+    const name = `${prefix}${String(meta.name || "document.pdf").replace(/[\\/]/g, "-")}`;
+    const describe = { deckFile: entry.deckFile, deckId: entry.deckId || null, deckTitle: entry.title, name, slot, pdfId: pdfId || null };
     try {
       // The device copy first — it costs nothing, it is what the reader is
       // actually looking at, and it means a backup taken offline still carries
       // its papers. getDocument tries exactly that before reaching for the
       // cloud, and re-caches what it downloads on the way past, so a paper this
       // device had only ever synced is on it afterwards.
-      const storeKey = documentStoreKey(entry.localId, slot);
+      const storeKey = jobStoreKey(entry.localId, job);
       const local = await readDocument(storeKey);
       const blob = local?.blob || (await getDocument(storeKey, meta));
       if (!blob) {
@@ -112,6 +138,7 @@ export async function packBackupDocuments(zip, entries, onProgress, isCancelled 
           deckLocalId: entry.localId || null,
           deckTitle: entry.title,
           slot,
+          pdfId: pdfId || null,
           name,
           bytes: blob.size,
           sha256: await sha256(blob),
@@ -135,8 +162,10 @@ export async function packBackupDocuments(zip, entries, onProgress, isCancelled 
     schema: BACKUP_DOCUMENT_SCHEMA,
     version: 1,
     note: "One PDF per document, the file exactly as it was imported — a deck can "
-      + "have two, its own paper and a handwritten notebook, and `slot` says which "
-      + "(a record with no slot is the deck's paper). A deck's highlights are "
+      + "have several papers plus a handwritten notebook, and `slot` says which "
+      + "shelf a document is on (a record with no slot is the deck's paper); "
+      + "`pdfId` says which paper on that shelf, for a deck with more than one "
+      + "(absent or \"primary\" is the first). A deck's highlights are "
       + "coordinates into these bytes, so a restore refuses a file whose hash does "
       + "not match the deck's own record — the same rule re-attaching a paper by "
       + "hand already follows.",
@@ -208,8 +237,12 @@ export async function planBackupDocumentRestore(zip, index, decks, localIdFor) {
     // the reader is. Compared only when BOTH sides have a hash: a page served
     // over plain http has no crypto.subtle, and sha256 returns "" there.
     const slot = normalizeDocSlot(entry.slot);
-    const storeKey = documentStoreKey(localId, slot);
-    const claimed = String(deck.meta?.[docSlotMetaKey(slot)]?.sha256 || entry.metaSha256 || "");
+    const pdfId = slot === DOC_SLOT_DOC ? (entry.pdfId || PDF_PRIMARY_ID) : null;
+    const storeKey = slot === DOC_SLOT_DOC ? pdfStoreKey(localId, pdfId) : documentStoreKey(localId, slot);
+    const claimed = String(
+      (slot === DOC_SLOT_DOC ? deckPdfById(deck.meta, pdfId)?.sha256 : deck.meta?.[docSlotMetaKey(slot)]?.sha256)
+      || entry.metaSha256 || ""
+    );
     if (claimed && entry.sha256 && claimed !== entry.sha256) {
       plan.refused.push({ ...entry, deckTitle: deck.title });
       continue;
@@ -227,7 +260,7 @@ export async function planBackupDocumentRestore(zip, index, decks, localIdFor) {
     // between two rows of the same store; unpacking would read forty megabytes
     // out of the zip to arrive at bytes already on the disk.
     if (entry.deckLocalId && entry.deckLocalId !== localId) {
-      const siblingKey = documentStoreKey(entry.deckLocalId, slot);
+      const siblingKey = slot === DOC_SLOT_DOC ? pdfStoreKey(entry.deckLocalId, pdfId) : documentStoreKey(entry.deckLocalId, slot);
       const sibling = await readDocument(siblingKey).catch(() => null);
       if (sibling?.blob && (!entry.sha256 || !sibling.sha256 || sibling.sha256 === entry.sha256)) {
         plan.rebind.push({ localId: storeKey, from: siblingKey, entry, blob: sibling.blob, sha256: sibling.sha256 || entry.sha256 });

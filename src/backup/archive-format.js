@@ -107,6 +107,24 @@ export const BACKED_UP_META_KEYS = {
     "The contents read out of the type on the paper's pages, cached on the "
     + "deck. Derivable again from the file, but it costs a full pass over every "
     + "page to rebuild, so it is worth the bytes.",
+  pdfs:
+    "Every PDF the doc slot carries, when there is more than one — id, name, "
+    + "size, page count, sha256, Storage path and an optional label. Absent "
+    + "for the ordinary deck that has only ever had one PDF, whose identity "
+    + "still rides in `pdf` above (the entry here whose id is \"primary\" is "
+    + "always a live mirror of that same key). The bytes themselves are "
+    + "packed under documents/ per PDF, exactly as a single PDF's already are.",
+  deletedPdfIds:
+    "PDF tombstones, carried for the reason deletedHighlightIds is: a restore "
+    + "that unioned the live PDFs alone would put back one the reader removed "
+    + "from the deck on purpose.",
+  pdfReadingPositions:
+    "Where the reader had got to in each PDF beyond the primary, one entry "
+    + "per pdf id. The primary's own position still rides in "
+    + "readingPositionPdf below, which this does not replace.",
+  pdfTocByPdfId:
+    "The contents read out of each PDF beyond the primary, cached the same "
+    + "way pdfToc above caches the primary's, and for the same reason.",
   bookmark:
     "The place the reader marked. Settled on restore by its own `at`, never by "
     + "which side is newer as a whole.",

@@ -191,6 +191,54 @@ export function chapterIndexFor(source) {
   return cachedIndex;
 }
 
+// ── Foldable sections: every block under EVERY heading, not just the ─────────
+// shallowest one ────────────────────────────────────────────────────────────
+//
+// chapterIndexForBlocks answers "where does a PAGE break", which only cares
+// about the shallowest heading level and merges thin sections into their
+// neighbour so a one-line "Keywords" section doesn't get a page of its own.
+// Folding wants the opposite of both: a "###" needs its own boundary exactly
+// as much as a "#" does, and a one-line section still has a body worth hiding.
+//
+// The level a block itself opens at, or 0 when it is not a heading block at
+// all. Same walk blockStartsChapter makes (the block's first non-blank line,
+// tested against CHAPTER_HEADING_RE), minus that function's filter down to one
+// specific level — this wants to know which level, not whether it matches one.
+export function blockHeadingLevel(block) {
+  const first = block.split("\n").find((line) => line.trim());
+  if (!first) return 0;
+  const heading = CHAPTER_HEADING_RE.exec(first);
+  return heading ? heading[1].length : 0;
+}
+
+// One boolean per block: true for a block that sits under some heading (any
+// level) and is itself not a heading. False for a heading block — its own line
+// stays visible when its section folds — and false for anything before the
+// note's first heading, which has no heading to fold it under.
+export function foldableBlockMask(blocks) {
+  let sawHeading = false;
+  return blocks.map((block) => {
+    if (blockHeadingLevel(block)) { sawHeading = true; return false; }
+    return sawHeading;
+  });
+}
+
+// One cached answer, keyed on the source string — same shape as chapterIndexFor
+// above, for the same reason: every caller asks per render over a note that can
+// be a few hundred thousand characters long.
+let cachedFoldSource = null;
+let cachedFoldMask = null;
+
+export function foldableMaskFor(source) {
+  const text = String(source || "");
+  if (cachedFoldSource === text && cachedFoldMask) return cachedFoldMask;
+  const split = splitPreparedBlocks(preprocessSpecialBlocks(text));
+  const blocks = split ? split.blocks : [];
+  cachedFoldMask = foldableBlockMask(blocks);
+  cachedFoldSource = text;
+  return cachedFoldMask;
+}
+
 // ── Spans: what the columns are actually given ──────────────────────────────
 //
 // A chapter was the unit of layout, and that is what put a page break after
