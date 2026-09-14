@@ -310,6 +310,8 @@ export const el = {
   frameCardAnswerLabel: document.querySelector("#frameCardAnswerLabel"),
   frameCardAnswerToolbar: document.querySelector("#frameCardAnswerToolbar"),
   frameCardAnswerInput: document.querySelector("#frameCardAnswerInput"),
+  frameCardAnswerPreviewLabel: document.querySelector("#frameCardAnswerPreviewLabel"),
+  frameCardAnswerPreview: document.querySelector("#frameCardAnswerPreview"),
   frameCardQuestionInput: document.querySelector("#frameCardQuestionInput"),
   frameCardAddBtn: document.querySelector("#frameCardAddBtn"),
   frameCardCancelBtn: document.querySelector("#frameCardCancelBtn"),
