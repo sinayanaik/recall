@@ -24,7 +24,7 @@ import { estimateNotesPageForFraction, isNotesPaged, notesPageCount, notesPageFo
 import { NOTES_BLOCK_SELECTOR, approximateRawOffsetForBlock, notesBlockForRawOffset } from "./raw-offset.js?v=__BUILD__";
 import { notesReadingLineOffset } from "./scroll-anchor.js?v=__BUILD__";
 import { SELECTION_TARGETS, isTargetEditing, notesSelectionRange } from "./selection.js?v=__BUILD__";
-import { ensureNotesLazyFractionBuilt, ensureNotesLazyOffsetBuilt, isNotesStreamBusy, notesLazyPlan, notesLazySpanAt, notesTopLevelBlocks, withChunkRendered } from "../render/block-cache.js?v=__BUILD__";
+import { ensureNotesLazyFractionBuilt, ensureNotesLazyOffsetBuilt, isNotesStreamBusy, notesLazyPlan, notesLazySpanAt, notesTopLevelBlocks, renderMarkdown, withChunkRendered } from "../render/block-cache.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { setStatus, showToast } from "../ui/feedback.js?v=__BUILD__";
 import { lockPageScroll, unlockPageScroll } from "../ui/overlays.js?v=__BUILD__";
@@ -80,6 +80,31 @@ export function createCardFromNotesSelection(markdown, noteAnchor = null) {
   enableSyntaxHighlighting(el.frameCardAnswerInput);
   el.frameCardAnswerInput.dispatchEvent(new Event("input", { bubbles: true }));
   el.frameCardQuestionInput.value = "";
+
+  // A live preview of the answer, not just its raw markdown — the one thing
+  // the raw textarea can't show is a region card's whole point: a `pdfref:`
+  // reference (src/documents/pdf-region-embed.js) reads on the page as its
+  // literal source text, not the boxed figure it points at. Rendered exactly
+  // the way the card's own answer face renders it later (same renderMarkdown
+  // call), so what's previewed here is what studying the card will show.
+  let previewTimer = null;
+  const updatePreview = () => {
+    const value = el.frameCardAnswerInput.value.trim();
+    const show = Boolean(value);
+    el.frameCardAnswerPreviewLabel.hidden = !show;
+    el.frameCardAnswerPreview.hidden = !show;
+    if (show) renderMarkdown(el.frameCardAnswerPreview, value);
+  };
+  const schedulePreviewUpdate = () => {
+    clearTimeout(previewTimer);
+    // Debounced rather than on every keystroke: a region embed reopens and
+    // re-renders a page of the PDF (see mountPdfRegionEmbed), which is real
+    // work worth coalescing while the reader is still typing beside it.
+    previewTimer = setTimeout(updatePreview, 300);
+  };
+  updatePreview();
+  el.frameCardAnswerInput.oninput = schedulePreviewUpdate;
+
   // Focus whichever field still needs typing: the question when the answer
   // already arrived captured, the answer itself when it's starting blank.
   requestAnimationFrame(() => (hasCapturedText ? el.frameCardQuestionInput : el.frameCardAnswerInput).focus());
@@ -87,10 +112,12 @@ export function createCardFromNotesSelection(markdown, noteAnchor = null) {
   const cleanup = (confirmed) => {
     el.frameCardModal.hidden = true;
     unlockPageScroll();
+    clearTimeout(previewTimer);
     el.frameCardAddBtn.onclick = null;
     el.frameCardCancelBtn.onclick = null;
     el.frameCardQuestionInput.onkeydown = null;
     el.frameCardAnswerInput.onkeydown = null;
+    el.frameCardAnswerInput.oninput = null;
     if (!confirmed) return;
     const question = el.frameCardQuestionInput.value.trim();
     const answer = el.frameCardAnswerInput.value.trim();

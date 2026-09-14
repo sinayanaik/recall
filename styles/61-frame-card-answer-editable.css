@@ -13,3 +13,28 @@
   resize: vertical;
   line-height: 1.45;
 }
+
+/* A live preview of the answer, below the textarea rather than beside it —
+ * this modal is already two stacked fields, and a region card's whole point
+ * (see pdf-region-embed.js) only shows up here: the raw textarea reads as a
+ * `pdfref:` URL, this shows the boxed figure it actually points at. Hidden
+ * (see the `hidden` attributes in index.html) whenever the answer is blank —
+ * nothing to preview yet, and a region card's answer never starts blank
+ * anyway (see createCardFromNotesSelection). */
+.frame-card-preview-label {
+  margin-top: 4px;
+  font-size: 0.72rem;
+  font-weight: 900;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.frame-card-answer-preview {
+  max-height: 40vh;
+  overflow-y: auto;
+  overflow-x: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--input-radius);
+  background: var(--card);
+  padding: 10px 12px;
+}
