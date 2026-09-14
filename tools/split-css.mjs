@@ -65,6 +65,13 @@ const SECTIONS = [
 // Anything appearing in styles/ that is neither a slice nor listed here is
 // still a failure.
 const POST_SPLIT = {
+  "59-block-actions.css":
+    "The box .pdf-block-actions-pop floats in, and its buttons — see " +
+    "src/documents/block-actions-popover.js for why these six verbs (Style, " +
+    "Edit, Duplicate, the two restacks, Delete) needed a home at the block " +
+    "itself and not only in #inkRailBlock's top-bar rail. Separate from " +
+    "58-block-style.css for the same reason that file gives for standing " +
+    "apart from 53-handwriting.css: this is written since the split.",
   "58-block-style.css":
     "What a block on a page of handwriting looks like: the eight fills (each a " +
     "tint of the theme's own card, so eight colours work across ten themes with " +

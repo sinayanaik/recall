@@ -66,9 +66,25 @@ body.has-touch-select .card-face .rendered {
 
    (0,2,0), matching the notes rule and enough to clear `.pdf-text-layer span`
    at (0,1,1) in styles/36-document.css. The spans are what the value has to
-   reach: `user-select` inherits, and nothing on them declares their own. */
+   reach: `user-select` inherits, and nothing on them declares their own.
+
+   ── ...and `has-pen-text-select`, which is not `has-touch-select` ─────────
+
+   A hover-capable stylus (a Surface Pen, many S-Pens, a Wacom tablet) reports
+   `hover: hover`, so `has-touch-select` never arrives on that hardware — the
+   finger controller correctly never arms there, since there is no finger. But
+   a pen driving this same selector by the "T" tool now works on exactly that
+   hardware too (src/notes/touch-selection.js's canPenSelect()), and without
+   this it would be drawing its own Range/Highlight selection alongside a
+   still-live NATIVE one over the same spans — two selections painted at once.
+   `has-pen-text-select` is added only while a pen drag is actually live
+   (onPenPointerMove/onPenPointerUp/onPenPointerCancel), narrower than
+   `has-touch-select` on purpose: it must not suppress native selection on this
+   hardware the rest of the time, where a mouse or trackpad still owns it. */
 body.has-touch-select .pdf-text-layer,
-body.has-touch-select .pdf-text-layer span {
+body.has-touch-select .pdf-text-layer span,
+body.has-pen-text-select .pdf-text-layer,
+body.has-pen-text-select .pdf-text-layer span {
   -webkit-user-select: none;
   user-select: none;
   -webkit-touch-callout: none;

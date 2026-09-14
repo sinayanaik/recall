@@ -206,6 +206,17 @@ export function normalizeBlockFrame(token) {
 // has (see paintBlockStyle). They are in the same bag because they are the same
 // kind of statement — how this one block should read — and a second bag would be
 // a second thing to merge, migrate and forget.
+// `fit` used to default to false — a block held whatever height it was dragged
+// to, and a reader who typed past the bottom of it got an `overflow: auto`
+// scrollbar inside a rectangle on a page nobody scrolls. "Instead of having a
+// predefined size, dynamically set the size so it encompasses all the text
+// inside" is that fault stated as the fix: the height a block starts at should
+// be the height of what is written in it, not a guess made before anything was
+// typed. `fitBlockHeight` already did this correctly on request; the only
+// change is that no request should be needed. A block that has been
+// deliberately resized carries an explicit `fit: false` in its own stored
+// style (see writeBlockStyle) and keeps the height it was given — this default
+// only reaches a block nobody has touched.
 export const BLOCK_STYLE_DEFAULT = {
   fill: BLOCK_FILL_DEFAULT,
   ink: BLOCK_INK_DEFAULT,
@@ -213,11 +224,29 @@ export const BLOCK_STYLE_DEFAULT = {
   font: BLOCK_FONT_DEFAULT,
   align: BLOCK_ALIGN_DEFAULT,
   frame: BLOCK_FRAME_DEFAULT,
-  fit: false,
+  fit: true,
   codeSize: null,
   codeWrap: false,
   imageWidth: null
 };
+
+// `fit` and `codeWrap` are the only two boolean fields in the bag, and unlike
+// every field above — which falls back to its own named `_DEFAULT` when the
+// key is missing — a bare `Boolean(from.x)` treats "missing" as `false`
+// unconditionally, whatever `BLOCK_STYLE_DEFAULT` actually says. That was
+// invisible for as long as both defaults WERE false: `Boolean(undefined)` and
+// `BLOCK_STYLE_DEFAULT.fit` agreed by coincidence, not by construction. The
+// moment `fit` stopped being false by default (see the comment on
+// BLOCK_STYLE_DEFAULT), the coincidence broke: a block with no key at all
+// normalised to `fit: false` here while `isDefaultBlockStyle` — which compares
+// against `BLOCK_STYLE_DEFAULT.fit` directly — called that same absence
+// "default", i.e. `fit: true`. Two functions disagreeing about what "no key"
+// means is exactly the contract this whole file states at the top: "absent is
+// not zero, it is whatever a block has always been" — and only the DEFAULT
+// constant is allowed to say what that is.
+function normalizeBlockFlag(value, fallback) {
+  return value === undefined || value === null ? Boolean(fallback) : Boolean(value);
+}
 
 export function normalizeBlockStyle(style) {
   const from = style && typeof style === "object" ? style : {};
@@ -228,9 +257,9 @@ export function normalizeBlockStyle(style) {
     font: normalizeBlockFont(from.font),
     align: normalizeBlockAlign(from.align),
     frame: normalizeBlockFrame(from.frame),
-    fit: Boolean(from.fit),
+    fit: normalizeBlockFlag(from.fit, BLOCK_STYLE_DEFAULT.fit),
     codeSize: normalizeBlockSize(from.codeSize),
-    codeWrap: Boolean(from.codeWrap),
+    codeWrap: normalizeBlockFlag(from.codeWrap, BLOCK_STYLE_DEFAULT.codeWrap),
     // A percent of the block's width, so its ceiling is not the type ceiling.
     imageWidth: normalizeBlockNumber(from.imageWidth, 100)
   };

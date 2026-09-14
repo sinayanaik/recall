@@ -104,16 +104,17 @@
 //      stylesheet cannot switch selection off on a machine whose JavaScript
 //      never took it over.
 
+import { resetCardDrag } from "../cards/swipe.js?v=__BUILD__";
 import { PDF_BLOCK_CLASS } from "../core/constants.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { inkPenIsDown, penTextMode, setInkPenDown, setTouchGestureHoldsSurface } from "../core/gesture.js?v=__BUILD__";
-import { resetCardDrag } from "../cards/swipe.js?v=__BUILD__";
+import { isProgrammaticNotesScroll, markProgrammaticNotesScroll } from "./notes-view.js?v=__BUILD__";
 import { NOTES_BLOCK_SELECTOR, caretFromPoint } from "./raw-offset.js?v=__BUILD__";
 import { NOTES_CHUNK_CLASS, isTopLevelBlockParent } from "../render/block-cache.js?v=__BUILD__";
 import { isEraserEvent } from "../render/ink-engine.js?v=__BUILD__";
+
 // A hoisted `function` declaration, read only inside a call — the same discipline
 // every other crossing binding in this neighbourhood follows.
-import { isProgrammaticNotesScroll, markProgrammaticNotesScroll } from "./notes-view.js?v=__BUILD__";
 import {
   clearSelectionStableRegion,
   hideNotesSelectionButton,
@@ -274,14 +275,49 @@ export const touchSelectMedia = typeof window !== "undefined" && window.matchMed
   ? window.matchMedia("(pointer: coarse) and (hover: none)")
   : null;
 
+// The takeover is only safe if we can paint what we took over. Without the
+// Custom Highlight API a selection would be invisible, which is worse than
+// the bug being fixed — so an older browser keeps whichever native gesture it
+// had and everything the surface's own stylesheet does for it.
+function highlightApiAvailable() {
+  return Boolean(window.CSS && window.CSS.highlights && typeof window.Highlight === "function");
+}
+
 export function canTouchSelect() {
   if (!touchSelectMedia?.matches) return false;
   if (!(navigator.maxTouchPoints > 0)) return false;
-  // The takeover is only safe if we can paint what we took over. Without the
-  // Custom Highlight API a selection would be invisible, which is worse than
-  // the bug being fixed — so an older browser keeps the native gesture and
-  // everything styles/31-touch-selection.css does for it.
-  return Boolean(window.CSS && window.CSS.highlights && typeof window.Highlight === "function");
+  return highlightApiAvailable();
+}
+
+// ── ...and the pen's own gate, which is not this one ───────────────────────
+//
+// `canTouchSelect()` answers "should a FINGER's press-and-slide take over
+// native selection", and `(pointer: coarse) and (hover: none)` is the right
+// question for that — it is what keeps this controller off a laptop with a
+// touchscreen, where a finger is a rare, deliberate visitor and the trackpad
+// still owns selecting text the ordinary way.
+//
+// A pen with the "T" tool armed is a different question with a different
+// answer, and this file used to ask the finger's question and get the
+// finger's answer: `onPenPointerDown` was gated on `canTouchSelect()` too,
+// which made the whole of the pen's text-selector DEAD on exactly the
+// hardware a stylus reader is most likely to be holding — a Surface, an iPad
+// with a trackpad nearby, an Android tablet with a mouse, a desktop with a
+// Wacom tablet. Every one of them reports `hover: hover` (the same fact
+// src/documents/pdf-ink.js's own contextmenu guard already ran into and
+// named, elsewhere, for a different feature: "false on precisely the
+// machines this matters most on"), so `canTouchSelect()` was false on all of
+// them and the pen path was refused before it ever asked whether a PEN was
+// doing the pressing.
+//
+// `penTakesPointer` (below) already asks the only question that actually
+// matters — `event.pointerType === "pen"` — which is a fact reported by the
+// contact itself, not a guess about the device it arrived on; the same idiom
+// src/core/gesture.js's `setInkPenDown`/`inkPenIsDown` already uses for the
+// identical reason. So the pen only needs the ability check, never the
+// finger's device heuristic.
+function canPenSelect() {
+  return highlightApiAvailable();
 }
 
 // ── State ──────────────────────────────────────────────────────────────────
@@ -2079,6 +2115,30 @@ function onRootTouchStart(event) {
     return;
   }
 
+  // A press that landed on a markdown block belongs to the block, the same
+  // stand-down onPenPointerDown already makes a few hundred lines down (and
+  // the same one onInkPointerDown/handleBlockPointerDown make on this exact
+  // press, in the two OTHER listeners that see it first). This one was
+  // missing, and a finger is the pointer type that reaches this controller
+  // FIRST and MOST — src/documents/pdf-blocks.js's own handler runs at
+  // pointerdown and picks the block up immediately and synchronously, but
+  // this listener is bound separately on touchstart, and nothing here knew a
+  // block was already under the finger. A press that rested on a freshly
+  // selected block for the ordinary length of a glance at what was just
+  // selected — the 240ms this controller waits before deciding a touch is a
+  // press and not a scroll, LONG_PRESS_MS below — fired anyway: it hit-tested
+  // straight through the block to the rendered text inside it, snapped a
+  // word, buzzed and painted a second, unrelated selection on top of the tap
+  // that was only ever meant to select the block. Whether that second
+  // gesture won depended on nothing the reader did — how long the finger
+  // happened to rest, how far it happened to drift — which is exactly
+  // "sometimes it starts a selection and sometimes not".
+  if (event.target?.closest?.(`.${PDF_BLOCK_CLASS}`)) {
+    cancelPress();
+    dismissPending = false;
+    return;
+  }
+
   // Region select is a drag of its own: the reader is drawing a box round a
   // figure, and a press that armed a text selection underneath it would buzz,
   // select a word and fight the marquee for the same finger. Asked of the DOM
@@ -2482,9 +2542,16 @@ function penTakesPointer(event) {
 }
 
 function onPenPointerDown(event) {
-  if (penPress || !canTouchSelect() || !penTakesPointer(event)) return;
+  if (penPress || !canPenSelect() || !penTakesPointer(event)) return;
   const root = event.currentTarget;
   if (!root) return;
+  // On a device whose finger controller never arms (a hover-capable stylus
+  // reports hover, so canTouchSelect() is false and arm()/buildOverlay() never
+  // ran) this is the first and only place that knows a text-selecting pen
+  // contact is actually happening — so it is what has to bring the overlay and
+  // its two handles into being. Idempotent, so a device where the finger
+  // controller DID already arm just gets a no-op here.
+  buildOverlay();
   // The two stand-downs the ink layer makes on this surface, made the same way
   // and for the same reasons (onInkPointerDown, src/documents/pdf-ink.js): a
   // press that lands on a markdown block belongs to the block and its drag bar,
@@ -2543,6 +2610,13 @@ function onPenPointerMove(event) {
   if (!setSelectionPoints(anchor, focus, penPress.root)) return;
   penPress.live = true;
   penDragging = true;
+  // Scoped to the pen's own live drag rather than folded into beginDrag()
+  // (shared with the finger path, which already gets this suppression from
+  // `has-touch-select`): on the hover-capable hardware this mode exists FOR,
+  // arm() never ran and native selection over the text layer is still live —
+  // see the class's own rule in styles/32-touch-select.css for why a second,
+  // narrower class is what this needs rather than widening the finger's.
+  document.body.classList.add("has-pen-text-select");
   beginDrag();
 }
 
@@ -2559,6 +2633,7 @@ function onPenPointerUp(event) {
   }
   endPenPress();
   if (!live) return;
+  document.body.classList.remove("has-pen-text-select");
   // This is the whole point of the mode: endDrag() puts the pill over the words,
   // and every button on it already knows what to do with a document selection.
   endDrag();
@@ -2572,6 +2647,7 @@ function onPenPointerCancel(event) {
   if (!penPress || event.pointerId !== penPress.pointerId) return;
   const live = penPress.live;
   endPenPress();
+  if (live) document.body.classList.remove("has-pen-text-select");
   // The selection stays on the words it already had, exactly as it does when a
   // finger's drag is taken away mid-gesture: losing it is the complaint, and
   // there is nothing wrong with what was selected.
@@ -2636,12 +2712,6 @@ function bindRoot(root) {
     if (!canTouchSelect()) return;
     event.preventDefault();
   });
-  // The pen, on the paper only. A stylus on a note or a card face already
-  // reaches this controller — it arrives as a finger and long-presses like one,
-  // because nothing there takes its pointer first — and the Document surface is
-  // the one place the ink layer took every pen contact and left the text
-  // unreachable. Widening the mode to the other surfaces is this one condition.
-  if (root === el.documentView) bindPenRoot(root);
 }
 
 function arm() {
@@ -2683,6 +2753,23 @@ export function initTouchSelection() {
   // emulation — hands native selection straight back rather than leaving the
   // reader on a surface where user-select is off and nothing has replaced it.
   touchSelectMedia?.addEventListener?.("change", syncGate);
+
+  // The pen, on the paper only — bound HERE rather than from inside bindRoot,
+  // which only ever runs from arm(), which only ever runs when canTouchSelect()
+  // is true. That gate is the finger's device heuristic and it is wrong for a
+  // pen: `(pointer: coarse) and (hover: none)` is false on precisely the
+  // hardware a stylus reader is most likely holding (a Surface, an iPad with a
+  // trackpad, an Android tablet with a mouse, a desktop Wacom tablet — every
+  // one reports hover), so a pen's own "T" tool had NO listeners bound at all
+  // on that hardware, not merely a refused gesture. The listeners themselves
+  // are cheap no-ops for anything that is not an armed pen contact
+  // (penTakesPointer), so binding them unconditionally costs nothing on a
+  // device that never sees a stylus. A stylus on a note or a card face already
+  // reaches this controller as a finger and long-presses like one, because
+  // nothing there takes its pointer first — the Document surface is the one
+  // place the ink layer claims every pen contact and leaves the text
+  // unreachable, which is the one condition that widens the mode there.
+  if (el.documentView) bindPenRoot(el.documentView);
 
   // Anything that drops the document selection drops ours with it. Every pill
   // action ends in removeAllRanges(), so this is the one listener that keeps the

@@ -1142,7 +1142,7 @@ try {
     return {
       editorOpen, rendered, md: typed.md,
       first: { x: first.x, y: first.y, w: first.w, h: first.h },
-      moved: { x: moved.x, y: moved.y },
+      moved: { x: moved.x, y: moved.y, h: moved.h },
       sized: { x: sized.x, y: sized.y, w: sized.w, h: sized.h },
       stored: stored ? { x: stored.x, y: stored.y, w: stored.w, h: stored.h, md: stored.md } : null,
       mergedIds: (merged.pdfBlocks || []).map((b) => b.id).sort(),
@@ -1172,8 +1172,16 @@ try {
   check("...dragged, in the page's own points and in the right direction",
     blocks.moved.x > blocks.first.x && blocks.moved.y < blocks.first.y,
     `(${blocks.first.x}, ${blocks.first.y}) → (${blocks.moved.x}, ${blocks.moved.y}) — x up, y down the page`);
-  check("...and resized", blocks.sized.w > blocks.first.w && blocks.sized.h > blocks.first.h,
-    `${blocks.first.w}x${blocks.first.h} → ${blocks.sized.w}x${blocks.sized.h} points`);
+  // A block follows its own text height by default now (see block-style.js),
+  // and a block that follows its text is resized in one dimension only: the
+  // grip still sets the width, and the words — not the finger — set the
+  // height (beginGesture's `widthOnly`). So a diagonal drag on this freshly
+  // made, never-restyled block grows the width exactly as it always did, and
+  // the height it lands on is whatever its one line of typed markdown needs,
+  // not the distance the corner travelled — which for a short equation is
+  // usually SHORTER than the 90pt default, not taller.
+  check("...and resized", blocks.sized.w > blocks.first.w && blocks.sized.h !== blocks.first.h,
+    `${blocks.first.w}x${blocks.first.h} → ${blocks.sized.w}x${blocks.sized.h} points — height follows the text, not the grip`);
   // Compared against the state AFTER the resize, and the y is the reason this is
   // worth spelling out: growing a block downward on the screen grows it downward
   // on the page, and because PDF y runs UP, that moves the origin down by exactly
@@ -1184,9 +1192,17 @@ try {
       && blocks.stored.w === blocks.sized.w && blocks.stored.h === blocks.sized.h
       && blocks.stored.md === blocks.md,
     blocks.stored ? `(${blocks.stored.x}, ${blocks.stored.y}) ${blocks.stored.w}x${blocks.stored.h}` : "nothing stored");
-  check("...with the top edge of the block held still as it grew taller",
-    blocks.sized.y === blocks.moved.y - (blocks.sized.h - blocks.first.h),
-    `y ${blocks.moved.y} → ${blocks.sized.y} as the height went ${blocks.first.h} → ${blocks.sized.h}`);
+  // Against `moved`, not `first`: the block already carries typed text by
+  // this point and follows it by default, so its height may already have
+  // settled away from the untouched 90pt of `first` before the grip is ever
+  // touched — `moved` is the state immediately BEFORE this specific resize,
+  // which is the one baseline this delta is actually about. The invariant
+  // itself is the same top-anchor rule either way the height moves: queueFit
+  // keeps it exactly as the grip always did (see the identical arithmetic in
+  // each).
+  check("...with the top edge of the block held still as its height changed",
+    blocks.sized.y === blocks.moved.y - (blocks.sized.h - blocks.moved.h),
+    `y ${blocks.moved.y} → ${blocks.sized.y} as the height went ${blocks.moved.h} → ${blocks.sized.h}`);
   check("a block added on the other device survives this one's push",
     blocks.mergedIds.includes("bk-other"), `merged: ${blocks.mergedIds.join(", ")}`);
   check("...and this device's newer copy wins over the other's older one",
@@ -1297,6 +1313,13 @@ try {
 
     // ── Height follows the text ──────────────────────────────────────────
     //
+    // A block follows its text HEIGHT by default now — "predefined size" was
+    // the complaint this answers — so the "before" half of this case needs an
+    // explicit fit:false to still mean what it always meant: a box that has
+    // NOT yet been told to follow its content, so the transition below (fit
+    // turned on) is the one actually being exercised rather than a no-op.
+    api.writeBlockStyle(made.id, { fit: false });
+    await settle(200);
     // Typed through the rail's own Edit rather than written into the record, so
     // this exercises the path a reader takes: the sheet, Done, the re-render,
     // and the measurement that follows it.

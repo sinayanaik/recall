@@ -49,22 +49,23 @@
 // inside a block (PDF_BLOCK_CLASS). Without that pair a pen press meant to move
 // a block would also draw a stroke, every time.
 
-import { activeDocSlot, recordsInSlot, recordsOutsideSlot, stampDocSlotAll } from "./doc-slot.js?v=__BUILD__";
 import { PDF_BLOCK_CLASS, PDF_BLOCK_LAYER_CLASS } from "../core/constants.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
+import { closeBlockActionsPopover, openBlockActionsPopover } from "./block-actions-popover.js?v=__BUILD__";
+import { closeBlockStylePopover, openBlockStylePopover } from "./block-style-bar.js?v=__BUILD__";
+import { blockFillVar, blockInkVar, isDefaultBlockStyle, normalizeBlockStyle } from "./block-style.js?v=__BUILD__";
+import { activeDocSlot, recordsInSlot, recordsOutsideSlot, stampDocSlotAll } from "./doc-slot.js?v=__BUILD__";
+import { closeBlockEditor, openBlockEditor } from "./pdf-block-editor.js?v=__BUILD__";
+import { pdfPageElement, pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
 import { hydrateLocalImages, storeImageOrQueue } from "../images/outbox.js?v=__BUILD__";
 import { renderMarkdown } from "../render/block-cache.js?v=__BUILD__";
 import { enhanceRenderedMarkdown } from "../render/enhance.js?v=__BUILD__";
-import { closeBlockEditor, openBlockEditor } from "./pdf-block-editor.js?v=__BUILD__";
-import { showToast } from "../ui/feedback.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
-import { dropMetaTombstonesForLiveIds, recordDeletedMetaId } from "../sync/document-sync.js?v=__BUILD__";
-import { blockFillVar, blockInkVar, isDefaultBlockStyle, normalizeBlockStyle } from "./block-style.js?v=__BUILD__";
 import { blockStylePreference, writeBlockStylePreference } from "../storage/ink-prefs.js?v=__BUILD__";
+import { dropMetaTombstonesForLiveIds, recordDeletedMetaId } from "../sync/document-sync.js?v=__BUILD__";
+import { showToast } from "../ui/feedback.js?v=__BUILD__";
 import { resolveFontFamily } from "../ui/fonts.js?v=__BUILD__";
-import { openBlockStylePopover, closeBlockStylePopover } from "./block-style-bar.js?v=__BUILD__";
-import { pdfPageElement, pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
 
 // A block with no `kind` is text — see the header. Named constants rather than
 // bare strings so the record, the builder and the painter cannot drift.
@@ -78,6 +79,18 @@ export const PDF_BLOCK_MIN_WIDTH = 90;
 export const PDF_BLOCK_MIN_HEIGHT = 34;
 const PDF_BLOCK_DEFAULT_WIDTH = 240;
 const PDF_BLOCK_DEFAULT_HEIGHT = 90;
+
+// In CSS pixels, not points — this is about a finger or a mouse, not the page.
+// Every press on a block used to become a drag gesture on the spot: pointer
+// capture taken and the block re-placed on the very first pointermove,
+// whatever its distance. A tap that trembled by a pixel while landing still
+// read as a drag started and (harmlessly, per the no-op guard in `finish`)
+// abandoned — but the capture and the live re-placement happened regardless,
+// which is jitter a plain "select this block" press was never asking for.
+// Below this many pixels of travel, `beginGesture`'s drag mode treats the
+// press as what it still visibly is: a tap. The resize grip is exempt — a
+// press on the grip is unambiguously always a resize, never a tap.
+const PDF_BLOCK_DRAG_SLOP_PX = 4;
 
 let editingId = null;
 // Which block the keyboard is talking about. A separate thing from `editingId`:
@@ -114,6 +127,36 @@ function setSelectedId(id) {
   if (id === selectedId) return;
   selectedId = id;
   onSelectionChanged(selectedId);
+}
+
+// ── Bringing the quick-actions popover into agreement with the selection ───
+//
+// Deliberately NOT called from setSelectedId itself, unlike onSelectionChanged
+// above it: duplicateBlock sets the id of a block whose DOM node does not
+// exist yet (setSelectedId runs before repaintDocumentBlocks paints it), and
+// a lookup here at that instant would find nothing and close a popover that
+// was never open. So every caller below runs this AFTER its own repaint —
+// selectBlock, duplicateBlock, writeBlockText, openStyleFor's toggle-off, and
+// beginGesture's finish() — which is also exactly the set of moments a
+// gesture is not still live and the node's current position is settled.
+function syncBlockActionsPopover() {
+  if (!selectedId || editingId || gestureLive) { closeBlockActionsPopover(); return; }
+  const node = document.querySelector(`[data-pdf-block="${selectedId}"]`);
+  const block = node && documentBlocks().find((entry) => entry.id === selectedId);
+  if (!node || !block) { closeBlockActionsPopover(); return; }
+  openBlockActionsPopover({
+    anchor: node,
+    kind: block.kind,
+    // Toggling the STYLE popover already means "I am done with the quick
+    // actions for a moment" — openStyleFor closes this one itself, so there
+    // is nothing to duplicate here.
+    onStyle: () => openSelectedBlockStyle(),
+    onEdit: () => editBlock(selectedId),
+    onDuplicate: () => duplicateBlock(selectedId),
+    onRestackForward: () => restackBlock(1, selectedId),
+    onRestackBack: () => restackBlock(-1, selectedId),
+    onDelete: () => deleteBlock(selectedId)
+  });
 }
 
 // A deck can carry its own paper AND a notebook, and both keep their blocks in
@@ -726,6 +769,68 @@ function queueFit(id, height) {
   });
 }
 
+// ── The width, once, on the way in ─────────────────────────────────────────
+//
+// Height follows the text continuously (fitBlockHeight, above) — width does
+// not, and cannot: markdown reflows at whatever width it is given, so there is
+// no "natural width" for a paragraph the way there is a natural height for one
+// at a fixed width. But the STARTING width is a different question, and a
+// short answer — a label, a single equation, one word typed into a block that
+// defaults to 240pt — sitting in a box sized for a paragraph is exactly the
+// "predefined size" the height fix above does not reach.
+//
+// So this runs once: the first time a block goes from no text to some, and
+// only while its width is still the untouched default. It measures how wide
+// the words actually want to be and shrinks to that, clamped so it can never
+// make a block WIDER than the default it started at — a real paragraph, whose
+// unwrapped width would exceed 240pt, always clamps straight back to
+// unchanged, so this never fights the common case and only ever helps the
+// short one. A block a reader has dragged the corner of no longer has the
+// default width and this never runs on it again.
+function shouldShrinkBlockWidth(block) {
+  return block.kind !== PDF_BLOCK_IMAGE && block.w === PDF_BLOCK_DEFAULT_WIDTH;
+}
+
+// One-shot per block, consumed the first time its render finishes — not a
+// style the block carries, so it lives here rather than on the record.
+const awaitingWidthShrink = new Set();
+
+function shrinkBlockWidthToContent(node, block) {
+  if (gestureLive || !shouldShrinkBlockWidth(block)) return false;
+  const viewport = pdfPageViewport(block.page);
+  const body = node.querySelector(".pdf-block-body");
+  if (!viewport || !body) return false;
+  const scale = viewport.scale || 1;
+  // The bar, the borders, the padding — everything of the block that is not
+  // the body's own content box — measured the same way fitBlockHeight measures
+  // its chrome, one axis over.
+  const chrome = node.offsetWidth - body.clientWidth;
+  // The exact same escape fitBlockHeight uses, one axis over: the body is a
+  // flex child stretched to the block's own width, so `scrollWidth` as-is just
+  // answers with the block's width back. `flex: none` takes the stretch off
+  // and `width: max-content` is what lets the browser compute the content's
+  // own preferred width — the width it would take with nothing forcing it to
+  // wrap — for the length of one synchronous measurement, put straight back.
+  body.style.flex = "none";
+  body.style.width = "max-content";
+  const content = body.scrollWidth;
+  body.style.flex = "";
+  body.style.width = "";
+  const wanted = Math.min(
+    PDF_BLOCK_DEFAULT_WIDTH,
+    Math.max(PDF_BLOCK_MIN_WIDTH, Math.round((chrome + content) / scale))
+  );
+  // Nothing shorter than the default was found — the common case for any real
+  // paragraph — so there is nothing to shrink and nothing to write.
+  if (wanted >= PDF_BLOCK_DEFAULT_WIDTH) return false;
+  // Not undoable, for the same reason queueFit's height write is not: this is
+  // the block agreeing with its own first words, not a step the reader took.
+  writeBlocks(documentBlocks().map((entry) => (
+    entry.id === block.id ? { ...entry, w: wanted, at: Date.now() } : entry
+  )), { undoable: false });
+  return true;
+}
+
 // What each block body was last rendered FROM. A WeakMap rather than a dataset
 // attribute: the markdown can be a page of text, and the entry goes when the
 // node does.
@@ -753,6 +858,15 @@ async function renderBlockBody(body, md, node = null, block = null) {
     // catches it, and the alternative is a load listener per image on a path
     // that repaints on every drag frame.
     if (node && block) fitBlockHeight(node, block);
+    // The one-shot width measurement rides the same first render: the words
+    // have to be on the page to ask how wide they want to be, and this is the
+    // only place that is ever true for a block whose text just went from
+    // nothing to something. Consumed here whether or not it actually shrinks
+    // anything, so a paragraph that clamped back to unchanged is not measured
+    // again on its next edit.
+    if (node && block && awaitingWidthShrink.delete(block.id)) {
+      shrinkBlockWidthToContent(node, block);
+    }
     // The block's own images, which reach here as recall-img: tokens when they
     // were added offline — the same hydrate paintDocumentBlocks does for the
     // image blocks beside them.
@@ -936,6 +1050,13 @@ function beginBlockEdit(id) {
   if (!block) return;
   const isImage = block.kind === PDF_BLOCK_IMAGE;
   editingId = id;
+  // The quick-actions popover is about a block sitting on the page; the text
+  // is about to leave it for the sheet, and a strip of action buttons under a
+  // window that has just buried the thing they act on is clutter with nothing
+  // to point at. beginBlockEdit does not go through setSelectedId — selection
+  // and editing are deliberately separate facts — so this is the one place
+  // that has to say so.
+  closeBlockActionsPopover();
   repaintDocumentBlocks();
   openBlockEditor({
     value: isImage ? block.alt : block.md,
@@ -1012,14 +1133,23 @@ function freshBlockStyle(kind) {
 // nothing at all.
 function writeBlockText(id, text) {
   editingId = null;
-  if (text === null) { repaintDocumentBlocks(); return; }
+  if (text === null) { repaintDocumentBlocks(); syncBlockActionsPopover(); return; }
   const blocks = documentBlocks();
   const block = blocks.find((entry) => entry.id === id);
   const field = block?.kind === PDF_BLOCK_IMAGE ? "alt" : "md";
   if (block && block[field] !== text) {
+    // The one width-shrink pass this block ever gets is armed here, off the
+    // OLD value: going from nothing typed to something is what "a block's
+    // first words" means, and it is the one transition renderBlockBody can
+    // tell apart from every later edit of the same block.
+    if (field === "md" && !block.md.trim() && text.trim()) awaitingWidthShrink.add(id);
     writeBlocks(blocks.map((entry) => (entry.id === id ? { ...entry, [field]: text, at: Date.now() } : entry)));
   }
   repaintDocumentBlocks();
+  // The block was still selected going into the sheet — editing does not
+  // change that — so it is still selected coming out, and its quick actions
+  // belong back at it, whether the sheet was committed or cancelled.
+  syncBlockActionsPopover();
 }
 
 // Anything open, committed. Called on the way out of the view, on a press
@@ -1081,8 +1211,42 @@ function beginGesture(event, node, mode) {
   // second pointer into `live` as this block's own move.
   const pointerId = event.pointerId;
 
+  // ── Claimed immediately, or claimed on proof ────────────────────────────
+  //
+  // A resize is unambiguous the instant it starts — the grip IS the drag, and
+  // there is no tap reading of a press on a corner handle — so it takes the
+  // pointer the way every gesture here always has. A press on the block's own
+  // body is not unambiguous: it is what "select this block" looks like right
+  // up until it has moved PDF_BLOCK_DRAG_SLOP_PX, and claiming the pointer —
+  // and repainting the block — before that point is what turned a plain tap
+  // into a gesture that merely undid itself rather than one that never
+  // started. `captured` stays false until the proof arrives, and nothing
+  // below moves the block or holds the pointer while it is.
+  let captured = mode === "resize";
+  if (captured) {
+    try { node.setPointerCapture(pointerId); } catch (_) { /* synthetic */ }
+    // A resize is a drag from the first pixel — see above — so the quick
+    // actions popover, which is about a block sitting still to be acted on,
+    // has nothing to float over here either. finish() below brings it back.
+    closeBlockActionsPopover();
+  }
+
   const move = (moveEvent) => {
     if (moveEvent.pointerId !== pointerId) return;
+    if (!captured) {
+      const travelled = Math.hypot(moveEvent.clientX - start.x, moveEvent.clientY - start.y);
+      if (travelled < PDF_BLOCK_DRAG_SLOP_PX) return;
+      captured = true;
+      // Only now, on the same move that proved this is a drag — the earlier
+      // pointerdown deliberately left it alone so a plain tap still reaches
+      // the browser's own click and everything bound to it.
+      moveEvent.preventDefault();
+      try { node.setPointerCapture(pointerId); } catch (_) { /* synthetic */ }
+      // The instant a body press proves itself a drag, for the same reason
+      // the resize branch above closes it immediately rather than on its own
+      // first move.
+      closeBlockActionsPopover();
+    }
     const dx = (moveEvent.clientX - start.x) * perPixel;
     // PDF y runs UP the page and the screen's runs down, so a downward drag is a
     // decreasing y. Getting this backwards is the classic way a box drifts the
@@ -1107,14 +1271,24 @@ function beginGesture(event, node, mode) {
     document.removeEventListener("pointermove", move);
     document.removeEventListener("pointerup", finish);
     document.removeEventListener("pointercancel", finish);
-    try { node.releasePointerCapture(pointerId); } catch (_) { /* already gone */ }
-    placeBlock(node, viewport, live);
+    // A press that never crossed the slop was never captured and never moved
+    // `live` off the block's own values — nothing to release and nothing to
+    // re-place.
+    if (captured) {
+      try { node.releasePointerCapture(pointerId); } catch (_) { /* already gone */ }
+      placeBlock(node, viewport, live);
+    }
+    // The gesture is over, however it resolved — a tap that never crossed the
+    // slop (the popover was never closed for it), a drag that settled the
+    // block somewhere new, or a resize — and in every one of those the block
+    // is still selected. Its quick actions belong back at it, anchored to
+    // wherever it now sits.
+    syncBlockActionsPopover();
     // A press that ended where it started must not cost an autosave and a push.
     if (live.x === block.x && live.y === block.y && live.w === block.w && live.h === block.h) return;
     writeBlocks(documentBlocks().map((entry) => (entry.id === id ? { ...entry, ...live, at: Date.now() } : entry)));
   };
 
-  try { node.setPointerCapture(pointerId); } catch (_) { /* synthetic */ }
   document.addEventListener("pointermove", move);
   document.addEventListener("pointerup", finish);
   document.addEventListener("pointercancel", finish);
@@ -1135,7 +1309,7 @@ export function handleBlockPointerDown(event) {
     // actions on the rail, both of which are ABOUT the selected block and float
     // OUTSIDE it. Dismissing the selection there would close either on its own
     // first press.
-    if (!event.target.closest?.(".pdf-block-style-pop, #inkRailBlock")) selectBlock(null);
+    if (!event.target.closest?.(".pdf-block-style-pop, .pdf-block-actions-pop, #inkRailBlock")) selectBlock(null);
     return false;
   }
   // Resize is the one action a block still keeps on itself, because the grip
@@ -1146,8 +1320,23 @@ export function handleBlockPointerDown(event) {
   // The text of a block being edited is in the sheet over the page, not in the
   // block — so a press on the block itself while its editor is open is a press
   // on the page, and it commits like any other.
-  event.preventDefault();
+  //
+  // stopPropagation is unconditional and stays that way: it is what stands
+  // the ink layer, the lasso and the pen's text tool down for this press (see
+  // the block stand-downs in src/documents/pdf-ink.js and
+  // src/notes/touch-selection.js), a concern that has nothing to do with
+  // whether this press turns out to be a tap or a drag.
+  //
+  // preventDefault is NOT unconditional any more. A resize is always a drag
+  // from the first pixel, so it is claimed here exactly as it always was; a
+  // press on the block's body is, until proven otherwise, a plain tap meant
+  // to select the block — and calling preventDefault on every one of those
+  // discarded the browser's own click for a gesture that beginGesture's own
+  // no-op guard was about to throw away anyway. beginGesture defers the call
+  // to the moment a body press actually crosses PDF_BLOCK_DRAG_SLOP_PX, which
+  // is the only moment it is actually true.
   event.stopPropagation();
+  if (resizing) event.preventDefault();
   const id = node.dataset.pdfBlock;
   // Picked up by any press on it, whatever else that press goes on to do. This
   // is what the keyboard verbs and the rail's own actions are for, and it costs
@@ -1187,6 +1376,10 @@ export function selectBlock(id) {
   setSelectedId(next);
   if (!next) closeBlockStylePopover();
   repaintDocumentBlocks();
+  // After the repaint, so a freshly selected block's node already exists to
+  // anchor to; closeBlockActionsPopover on deselect needs no such wait.
+  if (next) syncBlockActionsPopover();
+  else closeBlockActionsPopover();
   return next;
 }
 
@@ -1195,7 +1388,7 @@ export function deleteBlock(id = selectedId) {
   const blocks = documentBlocks();
   if (!blocks.some((block) => block.id === id)) return false;
   if (editingId === id) commitBlockEdit();
-  if (selectedId === id) { setSelectedId(null); closeBlockStylePopover(); }
+  if (selectedId === id) { setSelectedId(null); closeBlockStylePopover(); closeBlockActionsPopover(); }
   writeBlocks(blocks.filter((entry) => entry.id !== id), { removed: id });
   repaintDocumentBlocks();
   return true;
@@ -1223,6 +1416,9 @@ export function duplicateBlock(id = selectedId) {
   writeBlocks([...blocks, copy]);
   setSelectedId(copy.id);
   repaintDocumentBlocks();
+  // After the repaint: the copy's node does not exist until this paints it,
+  // and syncBlockActionsPopover's lookup would find nothing before that.
+  syncBlockActionsPopover();
   return copy;
 }
 
@@ -1289,11 +1485,24 @@ export function editBlock(id = selectedId) {
 function openStyleFor(id, node) {
   // A toggle, because the button stays under the reader's finger while the panel
   // it opened is up and pressing it again is the plainest way to say "done".
-  if (closeBlockStylePopover() && styleOpenFor === id) { styleOpenFor = null; return; }
+  if (closeBlockStylePopover() && styleOpenFor === id) {
+    styleOpenFor = null;
+    // The style popover just closed and the block is still selected — the
+    // quick actions belong back at it, the same as after any other popover
+    // exchange here.
+    syncBlockActionsPopover();
+    return;
+  }
   const block = documentBlocks().find((entry) => entry.id === id);
   if (!block) return;
   styleOpenFor = id;
+  // commitBlockEdit, below, can itself reopen the quick-actions popover — its
+  // own writeBlockText ends in syncBlockActionsPopover, for the ordinary case
+  // of Done/Escape leaving the block selected. That would land AFTER a close
+  // called any earlier in this function, so the close belongs here, once
+  // everything above it that could reopen it has already run.
   commitBlockEdit();
+  closeBlockActionsPopover();
   openBlockStylePopover({
     anchor: node,
     kind: block.kind,

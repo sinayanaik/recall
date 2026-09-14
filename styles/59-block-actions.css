@@ -1,0 +1,46 @@
+/* The block's own actions, floating at the block — see
+ * src/documents/block-actions-popover.js for why this exists beside
+ * #inkRailBlock rather than instead of it, and why the box below is a
+ * deliberate near-copy of .pdf-block-style-pop (styles/58-block-style.css)
+ * rather than a shared class: two popovers that are never open at once, each
+ * already small, are not worth coupling over a handful of shared properties.
+ */
+.pdf-block-actions-pop {
+  position: fixed;
+  /* Written over by place() in the same task it is appended in — see the
+     identical comment on .pdf-block-style-pop for why the box still needs an
+     explicit fallback here rather than none at all. */
+  top: 0;
+  left: 0;
+  /* The same tier as .pdf-block-style-pop: the two are mutually exclusive
+     (src/documents/pdf-blocks.js closes one before opening the other) and
+     never contend for the same space. */
+  z-index: 610;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-width: min(280px, calc(100vw - 16px));
+  padding: 8px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgb(0 0 0 / 0.32);
+}
+
+.block-actions-btn {
+  min-height: 0;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  line-height: 1;
+  padding: 6px 10px;
+}
+
+/* Delete is the one destructive verb here — the same red-on-hover treatment
+   #inkRailBlock's own Delete already uses (styles/52-ink.css), restated for
+   this button rather than shared with it: the two never appear in the same
+   markup, so there is nothing to share a selector with. */
+.block-actions-btn.is-danger:hover {
+  color: var(--ink-pen-red);
+  border-color: color-mix(in srgb, var(--ink-pen-red) 45%, var(--line));
+}

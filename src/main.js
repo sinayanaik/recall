@@ -120,6 +120,7 @@ import { currentPdfDocument, documentFittedWidth, fitDocumentToWidth, initDocume
 import { adoptDocumentInk, canRedoInk, canUndoInk, copyInkSelection, cutInkSelection, duplicateInkSelection, hasInkClipboard, initDocumentInk, inkMarkImageMarkdown, inkSelectionCount, isInkMarkId, nudgeInkSelection, paintDocumentInk, pasteInkSelection, redoInk, repaintDocumentInk, setInkChangedHandler, undoInk } from "./documents/pdf-ink.js?v=__BUILD__";
 import { addHandwritingImage, enterHandwritingView, refreshHandwritingBoard, runHandwritingMenuAction, startHandwritingNotebook } from "./handwriting/board.js?v=__BUILD__";
 import { closeBlockStylePopover, isBlockStylePopoverOpen } from "./documents/block-style-bar.js?v=__BUILD__";
+import { closeBlockActionsPopover, isBlockActionsPopoverOpen } from "./documents/block-actions-popover.js?v=__BUILD__";
 import { canRedoBlocks, canUndoBlocks, commitBlockEdit, deleteBlock, duplicateBlock, editBlock, handleBlockPointerDown, nudgeBlock, paintDocumentBlocks, pdfPointAt, redoBlocks, repaintDocumentBlocks, restackBlock, selectBlock, selectedBlockId, setBlocksChangedHandler, undoBlocks } from "./documents/pdf-blocks.js?v=__BUILD__";
 import { applyInkRailPreference, initInkRail, refreshInkRail } from "./ui/ink-rail.js?v=__BUILD__";
 import { INK_NUDGE_STEP, INK_NUDGE_STEP_COARSE } from "./render/ink-engine.js?v=__BUILD__";
@@ -2569,9 +2570,10 @@ document.addEventListener("keydown", (event) => {
   // on the paper — which is how a lasso starts — puts the block down first (see
   // handleBlockPointerDown), so the two selections cannot both be live.
   if (onDocumentSurface() && !event.target.matches("input, textarea")) {
-    if (event.key === "Escape" && (isBlockStylePopoverOpen() || selectedBlockId())) {
+    if (event.key === "Escape" && (isBlockStylePopoverOpen() || isBlockActionsPopoverOpen() || selectedBlockId())) {
       event.preventDefault();
       closeBlockStylePopover();
+      closeBlockActionsPopover();
       selectBlock(null);
       return;
     }
