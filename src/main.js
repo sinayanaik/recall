@@ -2215,6 +2215,17 @@ el.allCardsList.addEventListener("click", (event) => {
     return;
   }
 
+  const gotoSourceButton = event.target.closest("[data-all-goto-source]");
+  if (gotoSourceButton) {
+    event.stopPropagation();
+    // The same jump the single-card view's 📄 button makes — goToCard first
+    // so state.current actually points at the row that was clicked, which is
+    // what jumpToNoteForCurrentCard reads.
+    goToCard(gotoSourceButton.closest(".all-card").dataset.cardId);
+    jumpToNoteForCurrentCard();
+    return;
+  }
+
   const deleteButton = event.target.closest("[data-all-delete]");
   if (deleteButton) {
     event.stopPropagation();
