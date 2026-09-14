@@ -117,6 +117,12 @@ export function initToolbars() {
   if (el.questionEdit) enableSyntaxHighlighting(el.questionEdit);
   if (el.answerEdit) enableSyntaxHighlighting(el.answerEdit);
   if (el.notesEdit) enableSyntaxHighlighting(el.notesEdit);
+
+  // The frame-card modal's answer field isn't one of SELECTION_TARGETS, so it
+  // never gets the floating pill's formatting controls the way notes/question/
+  // answer do — same situation the All Cards editor is in, hence the full strip.
+  if (el.frameCardAnswerToolbar) el.frameCardAnswerToolbar.innerHTML = createToolbarHtml();
+  if (el.frameCardAnswerInput) enableSyntaxHighlighting(el.frameCardAnswerInput);
   // The All Cards editor's strips still carry their own copy of the highlight
   // glyph (RENDER_HIGHLIGHT_GLYPH, inside the Highlight dropdown toggle), and
   // they are built after this runs — but painting here costs nothing and keeps

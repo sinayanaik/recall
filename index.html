@@ -2326,8 +2326,9 @@ What year was the Eiffel Tower built?
       <div class="confirm-modal-content frame-card-content">
         <h3 class="prompt-modal-title">Make a flashcard</h3>
         <div class="frame-card-field">
-          <span class="frame-card-label">Answer — captured from your notes</span>
-          <div class="rendered frame-card-answer" id="frameCardAnswerPreview"></div>
+          <span class="frame-card-label" id="frameCardAnswerLabel">Answer — captured from your notes</span>
+          <div class="edit-toolbar" id="frameCardAnswerToolbar"></div>
+          <textarea id="frameCardAnswerInput" class="prompt-modal-input frame-card-answer-input" rows="5" spellcheck="false"></textarea>
         </div>
         <div class="frame-card-field">
           <span class="frame-card-label">Question — what should bring it to mind?</span>
