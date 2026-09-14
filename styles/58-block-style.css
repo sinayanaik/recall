@@ -61,23 +61,6 @@
   box-shadow: none;
 }
 
-/* ── Room for the third button ─────────────────────────────────────────────
- *
- * The bar carried two 20px buttons and now carries three, and a block may be as
- * narrow as PDF_BLOCK_MIN_WIDTH — 90 points, which on a phone at fit-width is
- * about 58 CSS pixels. Three fixed buttons plus their gaps do not fit in that,
- * and because the bar is justified to the END what overflows is cut off the
- * LEFT: the new one, silently, on exactly the blocks a reader is most likely to
- * be squinting at.
- *
- * So they are allowed to shrink instead of being clipped. A squashed Aa is still
- * a button; one behind `overflow: hidden` is not.
- */
-.pdf-block-btn {
-  flex: 0 1 auto;
-  min-width: 14px;
-}
-
 /* ── The type ──────────────────────────────────────────────────────────────
  *
  * Two rules, and which one applies is decided by whether the block carries a

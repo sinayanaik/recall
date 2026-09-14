@@ -1078,6 +1078,23 @@
                    already gets out of the way while the pen is down.
                    Tearing a page out and changing the paper are not constant —
                    they are rows of ⋯. -->
+              <!-- ── A block's own actions, once one is picked up ────────────
+                   Style / Edit / Delete used to be a header drawn on EVERY
+                   block, permanently — three buttons' worth of height taken
+                   off the block's own text for controls that act on at most
+                   one block at a time. They live here now, the way a lassoed
+                   stroke's own actions already live in Selection below:
+                   hidden until src/documents/pdf-blocks.js says a block is
+                   selected (a click on it, same as a lasso), painted by
+                   refreshBlockRail in src/ui/ink-rail.js. Style and Edit read
+                   differently for a picture — "Frame" and "Describe" — the
+                   same distinction their glyphs always made when they sat on
+                   the block itself. -->
+              <div class="ink-rail-group ink-rail-block" id="inkRailBlock" role="group" aria-label="Block" hidden>
+                <button class="tool-button ink-rail-btn is-labelled" type="button" data-block-rail-action="style" title="Style this block" aria-label="Style this block"><span class="ink-rail-word" aria-hidden="true">Style</span></button>
+                <button class="tool-button ink-rail-btn is-labelled" type="button" data-block-rail-action="edit" title="Edit this block" aria-label="Edit this block"><span class="ink-rail-word" aria-hidden="true">Edit</span></button>
+                <button class="tool-button ink-rail-btn is-labelled is-danger" type="button" data-block-rail-action="delete" title="Delete this block" aria-label="Delete this block"><span class="ink-rail-word" aria-hidden="true">Delete</span></button>
+              </div>
               <div class="ink-rail-group ink-rail-page" role="group" aria-label="Add to this page">
                 <!-- ── Words, where these three were two glyphs in a 30px box ──
                      "+✎", "+📷" and "+▯": a plus jammed against a pencil, a

@@ -26,6 +26,7 @@
 
 import { el } from "../core/dom.js?v=__BUILD__";
 import { canRedoInk, canUndoInk, clearInkPage, copyInkSelection, cutInkSelection, deleteInkSelection, duplicateInkSelection, hasInkClipboard, inkEraseMode, inkEraserSize, inkPageHasStrokes, inkPageInView, inkPageInViewCheap, inkPen, inkSelectionCount, inkSnapShapes, inkTool, inkWidth, isInkArmed, joinInkSelection, pasteInkSelection, redoInk, setInkArmed, setInkEraseMode, setInkEraserSize, setInkPen, setInkSnapShapes, setInkTool, setInkWidth, splitInkSelection, undoInk } from "../documents/pdf-ink.js?v=__BUILD__";
+import { deleteBlock, editBlock, openSelectedBlockStyle, selectedBlockKind, setBlockSelectionChangedHandler } from "../documents/pdf-blocks.js?v=__BUILD__";
 import { INK_TOOL_DEFAULT } from "../format/ink-colors.js?v=__BUILD__";
 import { buildInkEraserSizes, buildInkNibs, buildInkPenSwatches, paintInkRailPressed, readInkRailPress } from "../handwriting/rail.js?v=__BUILD__";
 import { inkPreferences, inkRailOpen, writeInkPreferences, writeInkRailOpen } from "../storage/ink-prefs.js?v=__BUILD__";
@@ -34,6 +35,40 @@ import { showConfirmModal } from "./feedback.js?v=__BUILD__";
 
 function pressed(node, on) {
   if (node) node.setAttribute("aria-pressed", on ? "true" : "false");
+}
+
+// ── A block's own actions, once one is picked up ───────────────────────────
+//
+// Style / Edit / Delete used to be a header drawn on every block, permanently,
+// whether or not the reader was doing anything with it — chrome that earns its
+// keep only the moment a block is selected. #inkRailSelection already answers
+// the same question for a lassoed stroke, so a selected BLOCK gets the same
+// answer here: hidden until src/documents/pdf-blocks.js says something is
+// picked up, and painted off exactly that — never off refreshInkRail's own
+// loop, which runs on every ink commit (several times a second while somebody
+// writes) and would repaint a group that almost never changed.
+function refreshBlockRail() {
+  const group = el.inkRailBlock;
+  if (!group) return;
+  const kind = selectedBlockKind();
+  group.hidden = !kind;
+  if (!kind) return;
+  // The one thing that still differs by kind, exactly as it did on the block's
+  // own buttons: a picture has no words to style and no markdown to edit — it
+  // has a frame, and a description read out when it cannot be shown.
+  const isImage = kind === "image";
+  const style = group.querySelector('[data-block-rail-action="style"]');
+  const edit = group.querySelector('[data-block-rail-action="edit"]');
+  if (style) {
+    style.title = isImage ? "Frame this picture" : "Style this block";
+    style.setAttribute("aria-label", style.title);
+  }
+  if (edit) {
+    edit.title = isImage ? "Describe this image" : "Edit this block";
+    edit.setAttribute("aria-label", edit.title);
+    const word = edit.querySelector(".ink-rail-word");
+    if (word) word.textContent = isImage ? "Describe" : "Edit";
+  }
 }
 
 export function refreshInkRail() {
@@ -275,6 +310,22 @@ export function initInkRail() {
     }
     refreshInkRail();
   });
+
+  // A second delegated listener on the same rail, over a different attribute
+  // namespace — the pattern src/handwriting/board.js already uses for the
+  // +Text/+Image/+Page group on this element: each acts on a different engine,
+  // so what a press MEANS stays local to the module that owns it.
+  el.inkRailBlock?.addEventListener("pointerdown", (event) => {
+    const button = event.target.closest("[data-block-rail-action]");
+    if (!button) return;
+    event.preventDefault();
+    const action = button.dataset.blockRailAction;
+    if (action === "style") openSelectedBlockStyle();
+    else if (action === "edit") editBlock();
+    else if (action === "delete") deleteBlock();
+  });
+  setBlockSelectionChangedHandler(refreshBlockRail);
+  refreshBlockRail();
 
   refreshInkRail();
 }
