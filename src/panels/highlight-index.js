@@ -132,10 +132,6 @@ export function documentHighlightEntries() {
     // "Region · page 12" rather than as a blank row — which in a list is
     // indistinguishable from a bug.
     text: documentHighlightLabel(record),
-    // Whether `text` above is the highlight's own words or just a fallback
-    // label ("Region · page 12") — makeCard (src/main.js) uses this to decide
-    // whether the flashcard modal should pre-fill its answer or start blank.
-    hasCapturedText: Boolean(String(record?.text || "").trim()),
     color: record.color,
     note: Boolean(notes.get(record.id)),
     noteText: clipDrawerNote(notes.get(record.id)),

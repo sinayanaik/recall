@@ -1,0 +1,15 @@
+/* The "Make a flashcard" modal's answer face, as an editable textarea +
+ * formatting toolbar instead of the read-only rendered preview
+ * .frame-card-answer (12-notes.css, frozen — still present there but no
+ * longer matched by any element in the markup) used to be. See
+ * src/notes/anchors.js's createCardFromNotesSelection and the editable-
+ * toolbar wiring in src/editor/toolbars.js / toolbar-actions.js. Written
+ * since the split, so it lives on its own rather than editing the frozen
+ * slice in place.
+ */
+.frame-card-answer-input {
+  min-height: 120px;
+  padding: 10px 12px;
+  resize: vertical;
+  line-height: 1.45;
+}

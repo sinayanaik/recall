@@ -444,8 +444,11 @@ export const SANITIZE_CONFIG = {
   // DATA_URI_TAGS path, and listing it here would additionally allow
   // `data:text/html` in an href, which is a script-execution vector.
   // recall-img: resolves only to a blob this app itself put in IndexedDB
-  // (see hydrateLocalImages) and can't reference anything remote.
-  ALLOWED_URI_REGEXP: /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|sms|cid|xmpp|recall-img):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i
+  // (see hydrateLocalImages) and can't reference anything remote. pdfref:
+  // (src/documents/pdf-region-embed.js) is never fetched at all — it's a
+  // marker for a live PDF-region render, intercepted and swapped before the
+  // browser would otherwise try to load it as an image.
+  ALLOWED_URI_REGEXP: /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|sms|cid|xmpp|recall-img|pdfref):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i
 };
 
 // Second half of the pipeline, split out so the incremental renderer can run it

@@ -14,6 +14,7 @@ import { sourceWithNomnomlTheme } from "./diagrams.js?v=__BUILD__";
 import { noteLinkEntryMatchesId } from "./note-links.js?v=__BUILD__";
 import { normalizeImageUrl } from "./preprocess.js?v=__BUILD__";
 import { fitMarkdownTables } from "./tables.js?v=__BUILD__";
+import { PDFREF_SCHEME, mountPdfRegionEmbed } from "../documents/pdf-region-embed.js?v=__BUILD__";
 
 export function enhanceCodeBlocks(roots) {
   configurePrismLanguages();
@@ -172,6 +173,15 @@ export async function enhanceRenderedMarkdown(container, roots = null) {
   });
 
   enhanceCodeBlocks(scope);
+
+  // A card answer's reference to a PDF location — see pdf-region-embed.js
+  // for why this is a marker rather than a real fetchable URL. Swapped for a
+  // live render before the browser has a chance to show it as a broken
+  // image; fire-and-forget like the diagram batch below, since it resolves
+  // asynchronously (opening the deck's PDF, rendering a page).
+  scopedQueryAll(scope, `img[src^="${PDFREF_SCHEME}"]`).forEach((img) => {
+    mountPdfRegionEmbed(img);
+  });
 
   scopedQueryAll(scope, ".math-display[data-tex], .math-inline[data-tex]").forEach((node) => {
     try {

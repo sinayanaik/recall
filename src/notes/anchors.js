@@ -13,6 +13,7 @@ import { el } from "../core/dom.js?v=__BUILD__";
 import { wheelGestureActive } from "../core/gesture.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { flashDocumentHighlight } from "../documents/pdf-highlights.js?v=__BUILD__";
+import { enableSyntaxHighlighting } from "../editor/highlight-mirror.js?v=__BUILD__";
 import { captureDocumentSelection, resolveDocumentAnchor } from "../documents/pdf-selection.js?v=__BUILD__";
 import { isDocumentViewActive, scrollToDocumentPage } from "../documents/pdf-view.js?v=__BUILD__";
 import { locateSelectionInSource, renderedSelectionStrings } from "../format/locate-selection.js?v=__BUILD__";
@@ -72,6 +73,11 @@ export function createCardFromNotesSelection(markdown, noteAnchor = null) {
   el.frameCardAnswerInput.placeholder = hasCapturedText
     ? ""
     : "No text found here — describe what this shows (a figure, table, equation…)";
+  // Built here rather than at boot (see the comment in initToolbars,
+  // src/editor/toolbars.js): this modal opens rarely, so the backdrop is
+  // worth building only once it actually does. A no-op on the second and
+  // later opens — enableSyntaxHighlighting checks dataset.highlighted first.
+  enableSyntaxHighlighting(el.frameCardAnswerInput);
   el.frameCardAnswerInput.dispatchEvent(new Event("input", { bubbles: true }));
   el.frameCardQuestionInput.value = "";
   // Focus whichever field still needs typing: the question when the answer
