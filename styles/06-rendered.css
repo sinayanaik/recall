@@ -582,6 +582,42 @@
   border-radius: var(--diagram-radius);
 }
 
+/* ── A card's reference to a PDF location, rendered live ────────────────────
+ *
+ * See src/documents/pdf-region-embed.js. The outer box is the clip window: a
+ * dragged region's full page is rendered normally (canvas + a real, selectable
+ * .pdf-text-layer, see styles/36-document.css) into `.pdf-region-embed-page`
+ * at whatever size the page comes out to, then shifted so the boxed quad's
+ * corner sits at this wrapper's origin — everything outside the wrapper's own
+ * bounds is simply clipped, not re-rendered or cropped as a bitmap.
+ */
+.pdf-region-embed {
+  position: relative;
+  overflow: hidden;
+  display: block;
+  max-width: 100%;
+  margin: 1rem auto;
+  border-radius: var(--diagram-radius);
+  background: #fff;
+  box-shadow: 0 1px 4px rgb(0 0 0 / 0.18);
+}
+
+.pdf-region-embed-page {
+  position: relative;
+}
+
+.pdf-region-embed.is-loading,
+.pdf-region-embed-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 60px;
+  padding: 12px;
+  color: var(--muted);
+  font-size: 0.8rem;
+  text-align: center;
+}
+
 .diagram-shell {
   position: relative;
   overflow: auto;

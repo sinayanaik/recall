@@ -113,7 +113,8 @@ import { applyStyleDensity, detectStyleProfile, handleStyleControlChange, normal
 import { styleMobileMedia, styleProfiles } from "./ui/style-tokens.js?v=__BUILD__";
 import { setTheme, setThemeMenuOpen, setThemeRepaintHook } from "./ui/theme.js?v=__BUILD__";
 import { FOCUS_MODE_KEY, closeViewExportMenu, paintViewExportMenu, setBlockEditFlushHook, setHandwritingViewHook, setSplitViewHook, setViewMode } from "./ui/view-mode.js?v=__BUILD__";
-import { DOCUMENT_NOTE_HANDLERS, documentHighlightNote, initDocumentMarkMenu, repairDocumentHighlightQuads, repairDocumentHighlightText } from "./documents/pdf-highlights.js?v=__BUILD__";
+import { DOCUMENT_NOTE_HANDLERS, documentHighlightById, documentHighlightNote, initDocumentMarkMenu, repairDocumentHighlightQuads, repairDocumentHighlightText } from "./documents/pdf-highlights.js?v=__BUILD__";
+import { pdfRegionRefMarkdown } from "./documents/pdf-region-embed.js?v=__BUILD__";
 import { closeDocumentToc, documentOutlineEntries, initDocumentOutlineFolding, isDocumentTocOpen, resolveOutlineEntryPage, toggleDocumentToc } from "./documents/pdf-outline.js?v=__BUILD__";
 import { deleteRemoteDocument } from "./documents/pdf-store.js?v=__BUILD__";
 import { currentPdfDocument, documentFittedWidth, fitDocumentToWidth, initDocumentPinchZoom, isDocumentFitWidth, openDocumentIsCurrent, openDocumentView, reattachDocument, relayoutDocument, repaintOpenDocumentPages, scheduleDocumentPositionSave, scrollToDocumentPage, refreshDocumentPaperForTheme, setDocumentAttachHandler, setDocumentOpenedHook, setDocumentPagePaintedHook, setNotebookStartHandler, togglePdfInvert, updatePageIndicator, zoomDocument } from "./documents/pdf-view.js?v=__BUILD__";
@@ -1213,11 +1214,17 @@ onDomReady(() => {
           .catch(() => createCardFromNotesSelection(text, anchor));
         return;
       }
-      // A region/area highlight with no real text under it arrives here as a
-      // fallback label ("Region · page 12") rather than empty, so the modal
-      // opens with something to show — but that label is not useful flashcard
-      // content and would otherwise become the card's answer unedited.
-      createCardFromNotesSelection(entry?.hasCapturedText === false ? "" : text, anchor);
+      // A region/area highlight carries no words (see pdf-region.js) — the box
+      // marks a LOCATION, and the card gets a reference that renders that spot
+      // live from the deck's own stored PDF (pdf-region-embed.js) rather than
+      // extracted text or a baked screenshot. Synchronous, unlike ink: nothing
+      // is rendered or uploaded until the card is actually shown.
+      const record = id ? documentHighlightById(id) : null;
+      if (record?.kind === "area" && record.quads?.[0]?.rect) {
+        createCardFromNotesSelection(pdfRegionRefMarkdown(record.page, record.quads[0].rect), anchor);
+        return;
+      }
+      createCardFromNotesSelection(text, anchor);
     },
     // deckLocalId is added HERE and not in the index: a Quick Note is stored in
     // a different deck from the one it came from, so its anchor is the only

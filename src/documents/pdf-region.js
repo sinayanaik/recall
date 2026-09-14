@@ -39,7 +39,7 @@ import { MARK_HIGHLIGHT_DEFAULT } from "../format/highlight-colors.js?v=__BUILD_
 import { renderFormatDefaults } from "../format/render-toolbar.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
 import { addDocumentHighlight, DOCUMENT_MARK_HANDLERS, PDF_MARK_CLASS } from "./pdf-highlights.js?v=__BUILD__";
-import { pageNumberForRect, rectToPdfQuad, TEXT_ITEM_ATTR } from "./pdf-selection.js?v=__BUILD__";
+import { pageNumberForRect, rectToPdfQuad } from "./pdf-selection.js?v=__BUILD__";
 import { openMarkMenuWith } from "../notes/mark-menu.js?v=__BUILD__";
 
 export const REGION_CLASS = "is-region-select";
@@ -99,28 +99,6 @@ function regionBoxFromPoints(pageEl, from, to) {
     width: Math.min(Math.abs(to.x - from.x), rect.width),
     height: Math.min(Math.abs(to.y - from.y), rect.height)
   };
-}
-
-// Any text the region happens to cover. A boxed equation, a table rendered as
-// text, a figure with a caption inside the box: all of those DO have spans over
-// them, and taking their words costs one pass over the page's own text layer.
-// A photograph gives "" and is named by its page instead (documentHighlightLabel).
-//
-// Read off the live text layer rather than through page.getTextContent(),
-// because the spans are already laid out and already carry their item index —
-// which is also where the anchor comes from, so both halves come out of one walk.
-function regionTextUnderBox(pageEl, clientRect) {
-  const spans = pageEl.querySelectorAll(`.pdf-text-layer [${TEXT_ITEM_ATTR}]`);
-  const parts = [];
-  let item = null;
-  spans.forEach((span) => {
-    const box = span.getBoundingClientRect();
-    if (box.right < clientRect.left || box.left > clientRect.right) return;
-    if (box.bottom < clientRect.top || box.top > clientRect.bottom) return;
-    if (item === null) item = Number(span.dataset.itemIndex) || 0;
-    if (span.textContent) parts.push(span.textContent);
-  });
-  return { text: parts.join(" ").replace(/\s+/g, " ").trim(), item: item === null ? 0 : item };
 }
 
 function beginRegionDrag(event) {
@@ -184,14 +162,20 @@ function endRegionDrag() {
     return;
   }
 
-  const { text, item } = regionTextUnderBox(pageEl, clientRect);
-  const anchor = { page: pageNumber, item, ch: 0 };
+  // No text is captured for a region: the box marks a LOCATION, not a run of
+  // glyphs, and a dragged box has no reliable idea what belongs to it (a
+  // multi-column layout, a table, a figure with a caption underneath all give
+  // pdf.js text items in an order and a hit-test that don't agree with what
+  // the box visually contains). A card made from this quad renders it live
+  // instead of reading words out of it — see mountPdfRegionEmbed in
+  // src/documents/pdf-region-embed.js, wired from main.js's makeCard verb.
+  const anchor = { page: pageNumber, item: 0, ch: 0 };
   const record = addDocumentHighlight({
     kind: "area",
     page: pageNumber,
     anchor,
     focus: anchor,
-    text,
+    text: "",
     quads: [quad]
   }, renderFormatDefaults.highlight || MARK_HIGHLIGHT_DEFAULT);
 

@@ -1,0 +1,156 @@
+// A card's answer can hold a REFERENCE to a spot on a PDF page — see
+// pdf-region.js for why a dragged region carries a quad and no text — and
+// this is what turns that reference into something a reader actually sees:
+// a live render of exactly that box, re-drawn from the deck's own already-
+// stored PDF each time it's shown, with a real (selectable) text layer over
+// it. Not a screenshot: nothing is rasterised and kept. Not text extraction
+// either: the box was never a reliable way to say which words belong to it.
+//
+// The reference travels as an ordinary markdown image whose `src` is never
+// meant to be fetched — `![](pdfref:<page>:<x0>,<y0>,<x1>,<y1>)` — the same
+// idea as `recall-img:<token>` (src/images/outbox.js) for an image still
+// queued for upload: a marker intercepted before the browser tries to load
+// it, not a real URL.
+
+import { state } from "../core/state.js?v=__BUILD__";
+import { ensurePdfJs } from "../core/lib-loader.js?v=__BUILD__";
+import { getDocument } from "./pdf-store.js?v=__BUILD__";
+import { buildTextLayer, clampScale } from "./pdf-view.js?v=__BUILD__";
+
+export const PDFREF_SCHEME = "pdfref:";
+
+// Wide enough to read a figure's fine print on a card face; not so wide that
+// it overflows a phone-width answer column before the (deferred) zoom/expand
+// affordance exists to compensate.
+export const EMBED_TARGET_WIDTH = 420;
+
+export function pdfRegionRefMarkdown(page, rect) {
+  return `![](${PDFREF_SCHEME}${page}:${rect.join(",")})`;
+}
+
+export function parsePdfRef(src) {
+  const value = String(src || "");
+  if (!value.startsWith(PDFREF_SCHEME)) return null;
+  const body = value.slice(PDFREF_SCHEME.length);
+  const sep = body.indexOf(":");
+  if (sep === -1) return null;
+  const page = Number(body.slice(0, sep));
+  const rect = body.slice(sep + 1).split(",").map(Number);
+  if (!Number.isInteger(page) || page < 1) return null;
+  if (rect.length !== 4 || rect.some((n) => !Number.isFinite(n))) return null;
+  return { page, rect };
+}
+
+// ── One open PDF per deck, independent of the Document surface's own
+//    `openPdf` ──────────────────────────────────────────────────────────────
+//
+// A deck can have many region-embedded cards pointing at the same PDF, shown
+// one after another in Study or listed together in All Cards — each asking
+// for this again would reopen and re-parse the same file every time. Cached
+// for the session, keyed by deck; deliberately NOT the Document surface's own
+// document object, so switching tabs/decks there can't tear an embed down
+// out from under a card that's still showing it, and vice versa.
+const embedDocs = new Map();
+
+function openEmbedDoc(deckLocalId, pdfMeta) {
+  const key = deckLocalId || "";
+  const cached = embedDocs.get(key);
+  if (cached) return cached;
+  const promise = (async () => {
+    if (!(await ensurePdfJs())) return null;
+    const blob = await getDocument(deckLocalId, pdfMeta);
+    if (!blob) return null;
+    // A copy of the bytes: pdf.js transfers the buffer it's given to its
+    // worker, which detaches it, and the blob in the store must survive —
+    // same reasoning as the Document surface's own open (pdf-view.js).
+    const data = new Uint8Array(await blob.arrayBuffer());
+    return window.pdfjsLib.getDocument({ data, isEvalSupported: false }).promise;
+  })().catch((error) => {
+    console.warn("Could not open the PDF for a region embed", error);
+    return null;
+  }).then((doc) => {
+    // A failure (offline, not yet on this device) is never cached — the next
+    // embed asked for gets a fresh attempt, in case connectivity returns
+    // later in the same session. Only a real, open document is worth
+    // remembering, which is the whole point of caching (see above).
+    if (!doc) embedDocs.delete(key);
+    return doc;
+  });
+  embedDocs.set(key, promise);
+  return promise;
+}
+
+function buildWrapper(rect) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "pdf-region-embed is-loading";
+  // An immediate aspect-ratio guess from the quad itself (scale-invariant —
+  // PDF user-space points, not pixels) so the surrounding text doesn't jump
+  // once the real render lands.
+  const w = Math.abs(rect[2] - rect[0]) || 1;
+  const h = Math.abs(rect[3] - rect[1]) || 1;
+  wrapper.style.width = `${EMBED_TARGET_WIDTH}px`;
+  wrapper.style.height = `${Math.round((EMBED_TARGET_WIDTH * h) / w)}px`;
+  return wrapper;
+}
+
+function showFallback(wrapper, page) {
+  wrapper.classList.remove("is-loading");
+  wrapper.classList.add("is-fallback");
+  wrapper.replaceChildren();
+  const note = document.createElement("div");
+  note.className = "pdf-region-embed-fallback";
+  note.textContent = page ? `Region · page ${page}` : "Region";
+  wrapper.appendChild(note);
+}
+
+// Replaces `img` in place with a live-rendered crop of the PDF location it
+// points at. Fire-and-forget: called from enhanceRenderedMarkdown for every
+// `img[src^="pdfref:"]` a render pass finds.
+export async function mountPdfRegionEmbed(img) {
+  const parsed = parsePdfRef(img.getAttribute("src"));
+  if (!parsed) return;
+  const wrapper = buildWrapper(parsed.rect);
+  img.replaceWith(wrapper);
+
+  try {
+    const doc = await openEmbedDoc(state.localDeckId, state.meta?.pdf);
+    if (!doc || parsed.page > doc.numPages) return showFallback(wrapper, parsed.page);
+    const page = await doc.getPage(parsed.page);
+    const [x0, y0, x1, y1] = parsed.rect;
+    const quadWidth = Math.max(1, Math.abs(x1 - x0));
+    const scale = clampScale(EMBED_TARGET_WIDTH / quadWidth);
+    const viewport = page.getViewport({ scale });
+    const [vx0, vy0, vx1, vy1] = viewport.convertToViewportRectangle(parsed.rect);
+    const left = Math.min(vx0, vx1);
+    const top = Math.min(vy0, vy1);
+    const width = Math.max(1, Math.round(Math.abs(vx1 - vx0)));
+    const height = Math.max(1, Math.round(Math.abs(vy1 - vy0)));
+
+    const canvas = document.createElement("canvas");
+    canvas.className = "pdf-canvas";
+    canvas.width = Math.ceil(viewport.width);
+    canvas.height = Math.ceil(viewport.height);
+    await page.render({ canvasContext: canvas.getContext("2d", { alpha: false }), viewport }).promise;
+
+    // Real, positioned, selectable text — the exact function the Document
+    // surface itself renders every page's text layer with. Nothing here is
+    // re-measured or re-derived: the whole page's spans are correct as they
+    // are, and clipping a correctly-positioned thing to a window is free.
+    const { layer: textLayer } = await buildTextLayer(page, viewport);
+
+    const pageGroup = document.createElement("div");
+    pageGroup.className = "pdf-region-embed-page";
+    pageGroup.style.width = `${viewport.width}px`;
+    pageGroup.style.height = `${viewport.height}px`;
+    pageGroup.style.transform = `translate(${-left}px, ${-top}px)`;
+    pageGroup.append(canvas, textLayer);
+
+    wrapper.classList.remove("is-loading");
+    wrapper.style.width = `${width}px`;
+    wrapper.style.height = `${height}px`;
+    wrapper.replaceChildren(pageGroup);
+  } catch (error) {
+    console.warn("Could not render a PDF region embed", error);
+    showFallback(wrapper, parsed.page);
+  }
+}
