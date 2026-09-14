@@ -6,7 +6,7 @@
 
 import { updateMeta } from "../cards/card-status.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
-import { touchGestureHoldsSurface } from "../core/gesture.js?v=__BUILD__";
+import { touchGestureHoldsSurface, wheelGestureActive } from "../core/gesture.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { refreshHighlightBackdrop } from "../editor/highlight-mirror.js?v=__BUILD__";
 // A cycle — highlight-edit.js imports renderNotesViewPinned from here — and the
@@ -395,7 +395,12 @@ export async function settleNotesPin(view, anchors) {
     // touchGestureHoldsSurface() covers both, and lives in core/ so that
     // block-cache.js can ask the same question without closing a cycle. See
     // src/core/gesture.js.
-    if (touchSelectionDragActive() || touchGestureHoldsSurface()) return;
+    //
+    // wheelGestureActive() stands this down for the desktop equivalent: a
+    // correction landing mid-wheel-scroll moves the content out from under the
+    // reader's own scroll input, which reads as the view resisting and then
+    // snapping back.
+    if (touchSelectionDragActive() || touchGestureHoldsSurface() || wheelGestureActive()) return;
     // Paged mode never gets here: renderNotesViewPinned handles it by restoring
     // scrollLeft directly, because re-deriving a page from a block anchor is
     // what made a highlight in the first column turn the page backwards. If the

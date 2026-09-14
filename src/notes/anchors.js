@@ -10,6 +10,7 @@ import { syncResults } from "../cards/study.js?v=__BUILD__";
 import { supabaseClient } from "../cloud/supabase-client.js?v=__BUILD__";
 import { loadWebDeck } from "../cloud/web-decks.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
+import { wheelGestureActive } from "../core/gesture.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { flashDocumentHighlight } from "../documents/pdf-highlights.js?v=__BUILD__";
 import { captureDocumentSelection, resolveDocumentAnchor } from "../documents/pdf-selection.js?v=__BUILD__";
@@ -575,6 +576,12 @@ export async function convergeNotesScroll(residual, budgetMs) {
     // A frame first so the scroll and any chunk that just realised are laid out,
     // then a short settle for the smooth scroll and lazily-arriving content.
     await new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, NOTES_AIM_SETTLE_MS)));
+    // Never fight a wheel/trackpad scroll the reader is actively driving — a
+    // correction here would move the content out from under it, which reads
+    // as the view resisting and snapping back. The initial `aim` above is the
+    // deliberate navigation (opening a note, a TOC/highlight jump) and still
+    // runs regardless; only these follow-up corrections back off.
+    if (wheelGestureActive()) return;
     const delta = residual();
     if (delta == null) return;
     const left = Math.abs(delta);

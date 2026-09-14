@@ -21,6 +21,7 @@ import { resolveUnresolvedStorageImages } from "./cloud/storage-urls.js?v=__BUIL
 import { clearSupabaseConfig, initSupabaseClient, isSignedIn, onSigningReadyChange, reloadSupabaseLibrary, saveSupabaseConfig, setSignedIn, setSupabaseClient } from "./cloud/supabase-client.js?v=__BUILD__";
 import { closeWebDeckExportMenus } from "./cloud/web-decks.js?v=__BUILD__";
 import { deckEmptyImportBtn2, deckEmptyNewBtn, deckEmptyWebBtn, el, onDomReady } from "./core/dom.js?v=__BUILD__";
+import { noteWheelActivity } from "./core/gesture.js?v=__BUILD__";
 import { assertBootLibraries } from "./core/lib-guard.js?v=__BUILD__";
 import { ensureTurndown } from "./core/lib-loader.js?v=__BUILD__";
 import { state } from "./core/state.js?v=__BUILD__";
@@ -313,6 +314,14 @@ el.notesView?.addEventListener("scroll", () => {
   // re-measure the position we were asked to go to.
   if (isProgrammaticNotesScroll()) return;
   scheduleReadingAnchorCapture();
+}, { passive: true });
+
+// Purely observational — never preventDefault, never touch scrollTop here.
+// Lets settleNotesPin and convergeNotesScroll (src/notes/notes-view.js,
+// src/notes/anchors.js) know a wheel/trackpad gesture is live so their
+// drift-correction loops stand down instead of fighting it.
+el.notesView?.addEventListener("wheel", () => {
+  noteWheelActivity();
 }, { passive: true });
 
 el.notesView?.addEventListener("click", (event) => {
