@@ -10,6 +10,7 @@ import { enableSyntaxHighlighting } from "../editor/highlight-mirror.js?v=__BUIL
 import { createToolbarHtml } from "../editor/toolbars.js?v=__BUILD__";
 import { normalizeCardStatus } from "../export/markdown.js?v=__BUILD__";
 import { cornellCardHtml } from "../export/pdf.js?v=__BUILD__";
+import { cardHasNoteLink } from "../notes/anchors.js?v=__BUILD__";
 import { renderMarkdown } from "../render/block-cache.js?v=__BUILD__";
 import { enhanceRenderedMarkdown } from "../render/enhance.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
@@ -348,7 +349,7 @@ export async function renderAllCards() {
     if (renderId !== allCardsRenderId) return;
 
     const template = document.createElement("template");
-    template.innerHTML = cornellCardHtml(card, index, { answerVisible: allCardsAnswersVisible });
+    template.innerHTML = cornellCardHtml(card, index, { answerVisible: allCardsAnswersVisible, hasSourceLink: cardHasNoteLink(card) });
     const item = template.content.firstElementChild;
     item.cardData = card;
     const dragHandle = document.createElement("div");

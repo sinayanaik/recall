@@ -123,7 +123,7 @@ export function cornellDeckDividerHtml(entry) {
   `;
 }
 
-export function cornellCardHtml(card, index, { answerVisible = false, print = false, statusById = state.statusById } = {}) {
+export function cornellCardHtml(card, index, { answerVisible = false, print = false, statusById = state.statusById, hasSourceLink = false } = {}) {
   const status = normalizeCardStatus(statusById[card.id] || card.status);
   const statusLabel = cardStatusLabel(status);
   const rowClass = print ? "cornell-print-row" : "all-card cornell-card";
@@ -147,6 +147,7 @@ export function cornellCardHtml(card, index, { answerVisible = false, print = fa
           ${print ? "" : `
             <div class="all-card-actions" aria-label="Card controls">
               <button class="all-card-goto" type="button" data-all-goto title="Go to card in main view" aria-label="Go to card in main view">&#128065;</button>
+              ${hasSourceLink ? `<button class="all-card-goto-source" type="button" data-all-goto-source title="Go to this card's source in the notes" aria-label="Go to this card's source in the notes">&#128196;</button>` : ""}
               <button class="all-card-add" type="button" data-all-add-after title="Insert card after this one" aria-label="Insert card after this one">+</button>
               <button class="all-card-edit" type="button" data-all-edit-current title="Edit question" aria-label="Edit question">&#9998;</button>
               <button class="all-card-review" type="button" data-all-status="review">Review</button>
