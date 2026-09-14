@@ -1,0 +1,61 @@
+/* Move and resize the "Make a flashcard" modal instead of pinning it dead
+ * centre over a dimmed backdrop — a region card's whole answer face is
+ * often a picture of a spot on the page (src/documents/pdf-region-embed.js),
+ * so hiding that page behind the very modal that's carding it defeats the
+ * point. See initFrameCardPanelControls in src/notes/anchors.js for the drag/
+ * resize pointer handling; this is only the geometry and the affordances.
+ */
+#frameCardModal {
+  /* Still fixed/inset:0 (.confirm-modal, 11-chrome.css, frozen), so the
+   * backdrop area keeps intercepting clicks for the page behind it — only
+   * the DIMMING is dropped, for this one dialog, so that page stays visible
+   * around and (once dragged) behind the panel. */
+  background: transparent;
+}
+
+.frame-card-content {
+  position: relative;
+  min-width: 320px;
+  min-height: 260px;
+  /* Wider than the frozen 380px cap (11-chrome.css) — this modal now holds a
+   * toolbar and a rendered preview neither of the other dialogs sharing that
+   * rule carry — but still a comfortable DEFAULT, not "as wide as the
+   * viewport": `width: 100%` (also frozen) needs a real cap or it fills the
+   * window on anything wider than a phone. Manual resize (inline style,
+   * higher specificity than this) overrides it freely past this point. */
+  max-width: 560px;
+}
+
+.frame-card-titlebar {
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+
+.frame-card-titlebar:active {
+  cursor: grabbing;
+}
+
+.frame-card-resize-handle {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  width: 18px;
+  height: 18px;
+  cursor: nwse-resize;
+  touch-action: none;
+  opacity: 0.5;
+}
+
+.frame-card-resize-handle:hover {
+  opacity: 0.85;
+}
+
+.frame-card-resize-handle::before {
+  content: "";
+  position: absolute;
+  inset: 3px;
+  border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted);
+  border-radius: 0 0 2px 0;
+}

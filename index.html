@@ -118,6 +118,7 @@
     <link rel="stylesheet" href="styles/59-block-actions.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/60-pdf-region-embed.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/61-frame-card-answer-editable.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/62-frame-card-draggable.css?v=__BUILD__">
 
     <!-- ── Module preloads ────────────────────────────────────────────────
          The app is ~130 ES modules and the browser discovers them by PARSING
@@ -2326,8 +2327,8 @@ What year was the Eiffel Tower built?
     </section>
 
     <section class="confirm-modal" id="frameCardModal" hidden aria-label="Make a flashcard from notes">
-      <div class="confirm-modal-content frame-card-content">
-        <h3 class="prompt-modal-title">Make a flashcard</h3>
+      <div class="confirm-modal-content frame-card-content" id="frameCardPanel">
+        <h3 class="prompt-modal-title frame-card-titlebar" id="frameCardTitlebar" title="Drag to move">Make a flashcard</h3>
         <div class="frame-card-field">
           <span class="frame-card-label" id="frameCardAnswerLabel">Answer — captured from your notes</span>
           <div class="edit-toolbar" id="frameCardAnswerToolbar"></div>
@@ -2343,6 +2344,7 @@ What year was the Eiffel Tower built?
           <button id="frameCardCancelBtn" type="button" class="sync-modal-btn">Cancel</button>
           <button id="frameCardAddBtn" type="button" class="sync-modal-btn is-primary">Add card</button>
         </div>
+        <div class="frame-card-resize-handle" id="frameCardResizeHandle" aria-hidden="true"></div>
       </div>
     </section>
 

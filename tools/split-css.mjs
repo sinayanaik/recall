@@ -65,6 +65,12 @@ const SECTIONS = [
 // Anything appearing in styles/ that is neither a slice nor listed here is
 // still a failure.
 const POST_SPLIT = {
+  "62-frame-card-draggable.css":
+    "The \"Make a flashcard\" modal, movable and resizable instead of pinned " +
+    "centre over a dimmed backdrop — a region card's answer is often a " +
+    "picture of a spot on the page (pdf-region-embed.js), so hiding that page " +
+    "behind the modal carding it defeats the point. See " +
+    "initFrameCardPanelControls in src/notes/anchors.js.",
   "61-frame-card-answer-editable.css":
     "The \"Make a flashcard\" modal's answer face as an editable textarea + " +
     "toolbar instead of the read-only rendered preview it used to be — see " +

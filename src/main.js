@@ -53,7 +53,7 @@ import { closeMyDecksMoreMenu, currentMyDecksFolder, importIntoFolder, myDecksIm
 import { setMyDecksDisplay, setMyDecksSort, setMyDecksView } from "./library/my-decks-prefs.js?v=__BUILD__";
 import { renderMyDecksList, repaintMyDecks } from "./library/my-decks-render.js?v=__BUILD__";
 import { selectedMyDecks, selectedMyFolders, updateMyDecksBulkBar } from "./library/my-decks-selection.js?v=__BUILD__";
-import { captureNotesAnchor, captureSourceAnchor, createCardFromNotesSelection, jumpToNoteForCurrentCard } from "./notes/anchors.js?v=__BUILD__";
+import { captureNotesAnchor, captureSourceAnchor, createCardFromNotesSelection, initFrameCardPanelControls, jumpToNoteForCurrentCard } from "./notes/anchors.js?v=__BUILD__";
 import { markOpenOffsets, noteMarkNode, sourceMarkIndexFor } from "./notes/anchors.js?v=__BUILD__";
 import { refreshHighlightBadges, setHighlightBadgeHandler } from "./notes/highlight-badges.js?v=__BUILD__";
 import { openHighlightNoteEditor } from "./notes/highlight-note-editor.js?v=__BUILD__";
@@ -1104,6 +1104,7 @@ onDomReady(initMarkMenu);
 onDomReady(initDocumentMarkMenu);
 onDomReady(initDocumentPinchZoom);
 onDomReady(initDocumentRegionSelect);
+onDomReady(initFrameCardPanelControls);
 onDomReady(() => {
   initReadingRail();
   // Two things care that the chrome just folded or unfolded, and only one of
