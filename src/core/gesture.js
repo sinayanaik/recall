@@ -198,3 +198,30 @@ export function setPenTextMode(active) {
 export function penTextMode() {
   return penTextTool;
 }
+
+// ── Is the reader actively driving a wheel/trackpad scroll? ────────────────
+//
+// A settle loop that writes scrollTop while a wheel gesture is live fights the
+// reader's own scroll input, which reads as the view resisting and then
+// snapping back — the desktop equivalent of the touch case
+// touchGestureHoldsSurface() exists for, and read by the same two callers
+// (settleNotesPin, convergeNotesScroll).
+let wheelIdleTimer = null;
+let wheelActive = false;
+
+// How long after the last wheel event to keep treating the gesture as live. A
+// wheel/trackpad scroll fires a burst of events with short gaps between them,
+// not one; too short a window and the flag drops between events in the same
+// gesture, too long and a settle loop is held off well after the reader has
+// actually stopped.
+const WHEEL_IDLE_MS = 150;
+
+export function noteWheelActivity() {
+  wheelActive = true;
+  clearTimeout(wheelIdleTimer);
+  wheelIdleTimer = setTimeout(() => { wheelActive = false; }, WHEEL_IDLE_MS);
+}
+
+export function wheelGestureActive() {
+  return wheelActive;
+}
