@@ -746,9 +746,13 @@ export function applyNotesPagedLayout() {
   if (pageIndicator) pageIndicator.hidden = !paged || view.hidden;
 
   if (paged) {
-    // Leaving continuous mode, scrollTop is whatever the reader had; it means
-    // nothing here and a non-zero value would offset every column.
-    view.scrollTop = 0;
+    // Only on the transition INTO paged mode: continuous's scrollTop means
+    // nothing once columned and a non-zero value would offset every column.
+    // Gated on wasPaged because this runs on every notes render (including a
+    // style-panel change that touches nothing about pagination), and resetting
+    // unconditionally snapped an already-paged reader back to page one on
+    // every one of those.
+    if (!wasPaged) view.scrollTop = 0;
     // Before the filler and the indicator: both read the flow's width, and the
     // flow is only this span.
     applyActiveChapter();

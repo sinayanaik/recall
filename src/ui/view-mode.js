@@ -17,6 +17,7 @@ import { closeHighlightsEditor } from "../panels/highlights-editor.js?v=__BUILD_
 import { activeDocSlot } from "../documents/doc-slot.js?v=__BUILD__";
 import { openDocumentView } from "../documents/pdf-view.js?v=__BUILD__";
 import { refreshHighlightBackdrop } from "../editor/highlight-mirror.js?v=__BUILD__";
+import { readerNotesBody } from "../format/notes-fence.js?v=__BUILD__";
 import { enterNotesEditing, isNotesEditing, notesScrolledSource, quizPanel, renderNotesView, resetNotesEditingUI } from "../notes/notes-view.js?v=__BUILD__";
 import { applyNotesPagedLayout } from "../notes/paged-view.js?v=__BUILD__";
 import { flushReadingPositionSave } from "../notes/reading-position.js?v=__BUILD__";
@@ -166,7 +167,12 @@ export function setViewMode(mode, options = {}) {
     // scrollLeft too: in paged mode the note runs sideways, so "the first line"
     // is page 0, and leaving scrollLeft where the previous note ended would
     // open a different note somewhere in its middle.
-    if (el.notesView && state.notes !== notesScrolledSource) {
+    // Compared against the reader-facing body, not the raw source: a note with
+    // an annotated highlight carries a trailing highlight-notes fenced block
+    // that notesScrolledSource never holds (see readerNotesBody), so comparing
+    // the raw string here made this condition true on every switch into Notes
+    // for any such deck — zeroing the scroll even when it's the same note.
+    if (el.notesView && readerNotesBody(state.notes) !== notesScrolledSource) {
       el.notesView.scrollTop = 0;
       el.notesView.scrollLeft = 0;
     }
