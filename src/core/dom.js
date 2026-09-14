@@ -276,6 +276,7 @@ export const el = {
   inkRailWidths: document.querySelector("#inkRailWidths"),
   inkRailEraser: document.querySelector("#inkRailEraser"),
   inkRailSelection: document.querySelector("#inkRailSelection"),
+  inkRailBlock: document.querySelector("#inkRailBlock"),
   // The Write tab has no panel, no stage and — since the row that carried them
   // crushed its own tab labels — no chrome of its own either. Handwriting is
   // #documentStage showing the deck's OTHER document (src/documents/doc-slot.js);

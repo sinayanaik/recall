@@ -1045,11 +1045,14 @@ try {
       document.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, pointerId: 7, clientX: to.x, clientY: to.y, buttons: 1 }));
       document.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, pointerId: 7, clientX: to.x, clientY: to.y, buttons: 0 }));
     };
-    const barBox = node.querySelector(".pdf-block-bar").getBoundingClientRect();
+    // The whole block is the drag handle now — there is no bar drawn across
+    // its top any more (see handleBlockPointerDown) — so the press lands a few
+    // points inside the block's own box rather than on a strip within it.
+    const blockBox = node.getBoundingClientRect();
     // Right and DOWN the screen, which is right and DOWN the page — so x goes up
     // and y goes down in points. A sign error here reads as a block that runs
     // away from the finger.
-    drag(node.querySelector(".pdf-block-bar"), { x: barBox.left + 4, y: barBox.top + 4 }, { x: barBox.left + 64, y: barBox.top + 48 });
+    drag(node, { x: blockBox.left + 10, y: blockBox.top + 10 }, { x: blockBox.left + 70, y: blockBox.top + 54 });
     await settle(300);
     const moved = record(id);
 
@@ -1069,9 +1072,10 @@ try {
     //
     // Asserted with elementFromPoint rather than by reading z-index, because
     // what was actually broken is which element takes the press.
-    // Through the block's own ✎, which is how a reader opens it — and which
-    // also confirms the delegated handler still finds the right block.
-    node.querySelector('[data-pdf-block-action="edit"]')
+    // Through the rail's own Edit — #inkRailBlock, which is where a block's
+    // actions live now that it has no header of its own — which also confirms
+    // the block dragged a moment ago is still the one selected.
+    document.querySelector('#inkRailBlock [data-block-rail-action="edit"]')
       .dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 51, cancelable: true }));
     await settle(500);
     const topAt = (x, y) => {
@@ -1293,11 +1297,11 @@ try {
 
     // ── Height follows the text ──────────────────────────────────────────
     //
-    // Typed through the block's own ✎ rather than written into the record, so
+    // Typed through the rail's own Edit rather than written into the record, so
     // this exercises the path a reader takes: the sheet, Done, the re-render,
     // and the measurement that follows it.
-    const edit = node().querySelector('[data-pdf-block-action="edit"]');
-    edit.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 41, cancelable: true }));
+    document.querySelector('#inkRailBlock [data-block-rail-action="edit"]')
+      .dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 41, cancelable: true }));
     await settle(400);
     const area = document.querySelector("#pdfBlockEditor [data-note-edit-value]");
     area.value = "One line, and then a great many more of them. " .repeat(12);
@@ -1457,14 +1461,24 @@ try {
     api.commitBlockEdit();
     const codeBlock = api.addDocumentBlock(pageNumber, { x: 90, y: 420 });
     api.commitBlockEdit();
+    // A press on the block selects it — there is no header of its own any
+    // more to press instead — and its actions then live on the rail
+    // (#inkRailBlock), the same place a lassoed stroke's already do.
+    const selectBlockNode = (node, id) => {
+      const box = node.getBoundingClientRect();
+      const at = { x: box.left + 10, y: box.top + 10 };
+      node.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: id, clientX: at.x, clientY: at.y, cancelable: true }));
+      document.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, pointerId: id, clientX: at.x, clientY: at.y }));
+    };
     // The text goes in through the EDITOR, which is the only door a reader has
     // and the only one this module exposes.
-    const openEditor = (id) => {
+    const openEditor = (id, pointerId) => {
       const node = document.querySelector('[data-pdf-block="' + id + '"]');
-      node.querySelector('[data-pdf-block-action="edit"]')
-        .dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 61, cancelable: true }));
+      selectBlockNode(node, pointerId);
+      document.querySelector('#inkRailBlock [data-block-rail-action="edit"]')
+        .dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: pointerId + 1, cancelable: true }));
     };
-    openEditor(codeBlock.id);
+    openEditor(codeBlock.id, 60);
     await settle(400);
     const area = document.querySelector("#pdfBlockEditor [data-note-edit-value]");
     area.value = "before\\n\\n\\u0060\\u0060\\u0060js\\nconst a = 1;\\n\\u0060\\u0060\\u0060\\n";
@@ -1473,15 +1487,16 @@ try {
     await settle(700);
 
     // ── The popover, on a block that holds code ──────────────────────────
-    const openPanel = (id) => {
+    const openPanel = (id, pointerId) => {
       const node = document.querySelector('[data-pdf-block="' + id + '"]');
-      node.querySelector('[data-pdf-block-action="style"]')
-        .dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 62, cancelable: true }));
+      selectBlockNode(node, pointerId);
+      document.querySelector('#inkRailBlock [data-block-rail-action="style"]')
+        .dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: pointerId + 1, cancelable: true }));
       return document.querySelector(".pdf-block-style-pop");
     };
     const rowsIn = (pop) => [...pop.querySelectorAll("[data-bstyle-number], [data-bstyle-select], [data-bstyle-key]")]
       .map((node) => node.dataset.bstyleNumber || node.dataset.bstyleSelect || node.dataset.bstyleKey);
-    let pop = openPanel(codeBlock.id);
+    let pop = openPanel(codeBlock.id, 62);
     const onCode = { open: Boolean(pop), keys: pop ? rowsIn(pop) : [] };
     // The fold has to be opened for the code rows to be reachable at all, which
     // is the point of it — and it is where a reader finds them.
@@ -1541,7 +1556,7 @@ try {
     const face = getComputedStyle(body()).fontFamily;
 
     // ── ...and the plain block, which has no code and no picture ─────────
-    const plainPop = openPanel(plainBlock.id);
+    const plainPop = openPanel(plainBlock.id, 70);
     const onPlain = { keys: plainPop ? rowsIn(plainPop) : [] };
     api.selectBlock(null);
     await settle(200);
@@ -2180,18 +2195,15 @@ try {
     //
     // Asserted as a comparison of the two boxes rather than as a list of
     // properties: whatever the mechanism, a picture on a page has to BE its
-    // frame. The drag bar is measured too, since it used to take a row of the
-    // block's height above the picture and now floats over it.
+    // frame. There is no bar to measure any more — Style/Edit/Delete moved to
+    // #inkRailBlock over the page — so what is left to check is the picture
+    // filling the block exactly, with nothing of its own drawn over it.
     const blockRect = node.getBoundingClientRect();
     const imgRect = img.getBoundingClientRect();
-    const barRect = node.querySelector(".pdf-block-bar").getBoundingClientRect();
     const fills = {
       dw: Math.abs(imgRect.width - blockRect.width),
       dh: Math.abs(imgRect.height - blockRect.height),
       dtop: Math.abs(imgRect.top - blockRect.top),
-      // The bar overlapping the top of the picture is the POINT: out of the flow
-      // is what gives the picture the whole box back.
-      barOverlaps: barRect.top < imgRect.bottom && barRect.bottom > imgRect.top,
       visualMax: getComputedStyle(document.documentElement).getPropertyValue("--visual-max-width").trim()
     };
 
@@ -2212,8 +2224,14 @@ try {
     // size, a face, an alignment and the two rows about markdown contents would
     // all be controls that do nothing, on a panel whose whole redesign was about
     // not having any of those.
-    node.querySelector('[data-pdf-block-action="style"]')
-      .dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 63, cancelable: true }));
+    //
+    // A press on the block itself selects it — there is no header of its own to
+    // press instead — and its actions are #inkRailBlock's from there.
+    const pictureBox = node.getBoundingClientRect();
+    node.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 63, clientX: pictureBox.left + 10, clientY: pictureBox.top + 10, cancelable: true }));
+    document.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, pointerId: 63, clientX: pictureBox.left + 10, clientY: pictureBox.top + 10 }));
+    document.querySelector('#inkRailBlock [data-block-rail-action="style"]')
+      .dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 64, cancelable: true }));
     await settle(250);
     const pop = document.querySelector(".pdf-block-style-pop");
     const imagePanel = pop
@@ -2251,10 +2269,9 @@ try {
   // Two pixels of slack for the block's own 1px border, which is the only thing
   // still drawn around a picture and only while the reader is at it.
   check("...filling its frame, with no buffer round it",
-    picture.fills.dw <= 2 && picture.fills.dh <= 2 && picture.fills.dtop <= 2 && picture.fills.barOverlaps,
+    picture.fills.dw <= 2 && picture.fills.dh <= 2 && picture.fills.dtop <= 2,
     `the picture is ${picture.fills.dw.toFixed(1)}px narrower and ${picture.fills.dh.toFixed(1)}px shorter than `
-      + `its block, starting ${picture.fills.dtop.toFixed(1)}px below the top of it, with the drag bar `
-      + `${picture.fills.barOverlaps ? "over" : "ABOVE"} it — and --visual-max-width at `
+      + `its block, starting ${picture.fills.dtop.toFixed(1)}px below the top of it — and --visual-max-width at `
       + `${picture.fills.visualMax || "(unset)"}, which used to be the picture's width`);
   check("...and can be dragged out by its grip", picture.grew,
     `${picture.stored ? picture.stored.w : "?"} points wide after the drag`);
@@ -2386,7 +2403,9 @@ try {
     // behind the rail nobody could open. A lasso round a stroke gives a dashed
     // box with a corner grip: inside it drags, on it scales.
     const view = document.getElementById("documentView");
-    const box = document.querySelector("#documentStage .pdf-page[data-page-number='1']").getBoundingClientRect();
+    const pageRect = () => document.querySelector("#documentStage .pdf-page[data-page-number='1']").getBoundingClientRect();
+    // A LET, not a const — see the note beside (f), where it is read again.
+    let box = pageRect();
     for (let i = 0; i < 60 && document.querySelector(".toast"); i += 1) await settle(100);
     pen(view, "pointerdown", box.left + 80, box.top + 260, 1);
     for (let i = 1; i <= 12; i += 1) pen(view, "pointermove", box.left + 80 + (i * 6), box.top + 260 + (i * 3), 1);
@@ -2489,6 +2508,25 @@ try {
     api.setInkTool("pen");
     api.clearInkPage(1);
     await settle(200);
+    // ── Scrolled into room ────────────────────────────────────────────────
+    //
+    // This stroke and its lasso reach 570px down from the page's own top, and
+    // page 1 was starting far enough down the window (measured, not assumed —
+    // this is exactly what turned up chasing the failure below) that 570px
+    // past it landed outside the browser's own height. Ordinary drawing and
+    // lassoing do not care — they are dispatched straight onto "view" rather
+    // than hit-tested — which is why only the ONE check that follows, the
+    // corner-grip turn in (g), noticed: it reads its target back through
+    // document.elementFromPoint, and a coordinate below the window's own
+    // height finds nothing there to press, so the grip was never found and the
+    // gesture was a no-op from its first sample. Scrolling the page's own top
+    // OFF the glass, upward, buys the same room below without moving a single
+    // one of the pixel offsets every step from here on already assumes — and
+    // "box" is re-measured right after, since scrolling is exactly the kind of
+    // thing that makes the one taken in (c) stale.
+    view.scrollTop += box.top;
+    await settle(150);
+    box = pageRect();
     pen(view, "pointerdown", box.left + 60, box.top + 500, 1);
     for (let i = 1; i <= 16; i += 1) pen(view, "pointermove", box.left + 60 + (i * 6), box.top + 500 + (i * 2), 1);
     await settle(120);

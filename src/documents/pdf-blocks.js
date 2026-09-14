@@ -91,9 +91,29 @@ let gestureLive = false;
 // same button shuts it rather than rebuilding it in place.
 let styleOpenFor = null;
 let onBlocksChanged = () => {};
+// Told whenever the block the keyboard is pointing at changes — including to
+// nothing. What this is FOR: src/ui/ink-rail.js paints #inkRailBlock (Style /
+// Edit / Delete) off exactly this, the way a lassoed stroke already paints
+// #inkRailSelection off its own count. Selection itself lives here rather than
+// in the rail because it is a fact about the BLOCK, asked by the keyboard map
+// in src/main.js as much as by any rail.
+let onSelectionChanged = () => {};
 
 export function setBlocksChangedHandler(fn) {
   onBlocksChanged = typeof fn === "function" ? fn : () => {};
+}
+
+export function setBlockSelectionChangedHandler(fn) {
+  onSelectionChanged = typeof fn === "function" ? fn : () => {};
+}
+
+// The one place `selectedId` is written. Every other assignment in this file
+// goes through this, so the rail can never miss a change — five separate call
+// sites each remembering to say so themselves is five chances to forget one.
+function setSelectedId(id) {
+  if (id === selectedId) return;
+  selectedId = id;
+  onSelectionChanged(selectedId);
 }
 
 // A deck can carry its own paper AND a notebook, and both keep their blocks in
@@ -412,58 +432,38 @@ function placeBlock(node, viewport, block) {
   node.style.zIndex = String(1 + (Number(block.z) || 0));
 }
 
+// ── No header any more ──────────────────────────────────────────────────
+//
+// A block used to carry Aa / ✎ / 🗑 on a bar across its own top, on EVERY
+// block, whether or not the reader was doing anything with it — chrome that
+// earns its keep only the moment a block is selected, and was permanent for
+// all of them regardless. "Doesn't need to have Aa, edit and delete header,
+// it's unnecessarily taking space" is exactly that: three buttons' worth of
+// height taken off the block's own text, on every block on the page, for
+// controls that act on at most one of them at a time.
+//
+// The three actions did not go away — they moved to the one place on this
+// surface that already answers "what can I do with the thing I picked up":
+// #inkRailBlock, over the page, wired in src/ui/ink-rail.js and painted the
+// moment selectBlock (below) says something is selected. A lassoed stroke
+// already worked this way (see #inkRailSelection) — a block picked up by a
+// click is the same idea, one level up.
+//
+// What is left on the block itself is the resize grip, because a corner you
+// drag to resize is not chrome to click through — it is the shape of the box
+// you are changing, in the box you are changing it. Everything else about
+// the block IS the drag handle now: see handleBlockPointerDown, which begins
+// a move on any press that does not land on the grip.
 function buildBlock(block) {
   const node = document.createElement("div");
   node.className = PDF_BLOCK_CLASS;
   node.dataset.pdfBlock = block.id;
   node.dataset.pdfBlockKind = block.kind;
 
-  const bar = document.createElement("div");
-  bar.className = "pdf-block-bar";
-  bar.dataset.pdfBlockAction = "drag";
-  bar.title = "Drag to move";
-
-  const edit = document.createElement("button");
-  edit.type = "button";
-  edit.className = "pdf-block-btn";
-  edit.dataset.pdfBlockAction = "edit";
-  // On an image this edits the description, which is what a reader would type
-  // if the picture failed to load and what a screen reader reads out. A picture
-  // with a ✎ that opened a markdown editor would be a control lying about what
-  // it does.
+  // Still asked for the body's own class below — a picture's body is not
+  // rendered markdown and must not say it is (see the comment on that class
+  // a few lines down).
   const isImage = block.kind === PDF_BLOCK_IMAGE;
-  // The same words the window it opens puts at the top of itself. They were
-  // "Edit this text" and "Edit this block", which is one control and one heading
-  // disagreeing about what the reader is about to work on.
-  edit.title = isImage ? "Describe this image" : "Edit this block";
-  edit.setAttribute("aria-label", edit.title);
-  edit.innerHTML = isImage ? "&#9750;" : "&#9998;";
-
-  // ── The third button, and why it is a word-ish glyph rather than a palette ─
-  //
-  // 🎨 is what this control is called everywhere else in the world and it is the
-  // one thing it must not be: a full-colour emoji standing a head taller than the
-  // two monochrome glyphs beside it, which is the fault README already records
-  // against the old + 📷. "Aa" is the same two characters the editor's own font
-  // menu uses for the same question, renders on every platform, and says which
-  // kind of block it belongs to — a picture's frame is ▣, because "Aa" on a
-  // photograph would be a control lying about what it does.
-  const style = document.createElement("button");
-  style.type = "button";
-  style.className = "pdf-block-btn";
-  style.dataset.pdfBlockAction = "style";
-  style.title = isImage ? "Frame this picture" : "Style this block";
-  style.setAttribute("aria-label", style.title);
-  style.innerHTML = isImage ? "&#9635;" : "Aa";
-
-  const remove = document.createElement("button");
-  remove.type = "button";
-  remove.className = "pdf-block-btn is-danger";
-  remove.dataset.pdfBlockAction = "delete";
-  remove.title = "Delete this block";
-  remove.setAttribute("aria-label", "Delete this block");
-  remove.innerHTML = "&#128465;";
-  bar.append(style, edit, remove);
 
   const body = document.createElement("div");
   // ── `rendered` on a PICTURE was costing the picture most of its own frame ──
@@ -493,7 +493,7 @@ function buildBlock(block) {
   grip.dataset.pdfBlockAction = "resize";
   grip.title = "Drag to resize";
 
-  node.append(bar, body, grip);
+  node.append(body, grip);
   return node;
 }
 
@@ -828,7 +828,7 @@ export function addDocumentBlock(pageNumber, at = null) {
     ...(inherited ? { style: inherited } : {})
   };
   writeBlocks([...blocks, block]);
-  selectedId = block.id;
+  setSelectedId(block.id);
   paintDocumentBlocks(pageNumber);
   beginBlockEdit(block.id);
   return block;
@@ -890,7 +890,7 @@ export async function addDocumentImageBlock(pageNumber, file, at = null) {
     ...(inherited ? { style: inherited } : {})
   };
   writeBlocks([...blocks, block]);
-  selectedId = block.id;
+  setSelectedId(block.id);
   paintDocumentBlocks(pageNumber);
   return block;
 }
@@ -1063,7 +1063,26 @@ function beginGesture(event, node, mode) {
 
   const apply = () => { frame = 0; placeBlock(node, viewport, live); };
 
+  // ── Whose pointer this gesture is ───────────────────────────────────────
+  //
+  // Both listeners below go on `document`, because a drag has to keep tracking
+  // the pointer once it leaves the block — but `document` hears every pointer
+  // in the app, pen and mouse and every finger of a multi-touch gesture alike,
+  // and neither listener checked which one was theirs. `finish` did not even
+  // take the event it was called with; it read the ORIGINAL pointerdown's id
+  // for releasePointerCapture and otherwise ignored the argument outright. The
+  // one pointer this surface used to see at a time was the mouse or the one
+  // stylus in a reader's hand, so the bug had nothing else to fire on. It
+  // stopped being harmless the moment every press on a block — not just its
+  // bar and grip — could start one of these: a block picked up and immediately
+  // let go (a plain click, to select it) still opens this gesture, and ANY
+  // unrelated pointerup anywhere else in the document — a pen stroke lifting,
+  // a lasso closing — ended it early and could feed a stray pointermove from a
+  // second pointer into `live` as this block's own move.
+  const pointerId = event.pointerId;
+
   const move = (moveEvent) => {
+    if (moveEvent.pointerId !== pointerId) return;
     const dx = (moveEvent.clientX - start.x) * perPixel;
     // PDF y runs UP the page and the screen's runs down, so a downward drag is a
     // decreasing y. Getting this backwards is the classic way a box drifts the
@@ -1081,20 +1100,21 @@ function beginGesture(event, node, mode) {
     if (!frame) frame = requestAnimationFrame(apply);
   };
 
-  const finish = () => {
+  const finish = (upEvent) => {
+    if (upEvent && upEvent.pointerId !== pointerId) return;
     gestureLive = false;
     if (frame) { cancelAnimationFrame(frame); frame = 0; }
     document.removeEventListener("pointermove", move);
     document.removeEventListener("pointerup", finish);
     document.removeEventListener("pointercancel", finish);
-    try { node.releasePointerCapture(event.pointerId); } catch (_) { /* already gone */ }
+    try { node.releasePointerCapture(pointerId); } catch (_) { /* already gone */ }
     placeBlock(node, viewport, live);
     // A press that ended where it started must not cost an autosave and a push.
     if (live.x === block.x && live.y === block.y && live.w === block.w && live.h === block.h) return;
     writeBlocks(documentBlocks().map((entry) => (entry.id === id ? { ...entry, ...live, at: Date.now() } : entry)));
   };
 
-  try { node.setPointerCapture(event.pointerId); } catch (_) { /* synthetic */ }
+  try { node.setPointerCapture(pointerId); } catch (_) { /* synthetic */ }
   document.addEventListener("pointermove", move);
   document.addEventListener("pointerup", finish);
   document.addEventListener("pointercancel", finish);
@@ -1111,36 +1131,34 @@ export function handleBlockPointerDown(event) {
     // for the same reason: the keyboard must not still be pointing at a block
     // the reader has visibly moved on from.
     if (editingId) commitBlockEdit();
-    // ...unless the press was inside the style popover, which floats OVER the
-    // page and is about the very block that is selected. Dismissing the
-    // selection there would close the popover on its own first press.
-    if (!event.target.closest?.(".pdf-block-style-pop")) selectBlock(null);
+    // ...unless the press was inside the style popover or the block's own
+    // actions on the rail, both of which are ABOUT the selected block and float
+    // OUTSIDE it. Dismissing the selection there would close either on its own
+    // first press.
+    if (!event.target.closest?.(".pdf-block-style-pop, #inkRailBlock")) selectBlock(null);
     return false;
   }
-  const action = event.target.closest("[data-pdf-block-action]")?.dataset.pdfBlockAction;
+  // Resize is the one action a block still keeps on itself, because the grip
+  // IS the shape of the box being changed, in the box being changed — every
+  // other action lives in #inkRailBlock now (src/ui/ink-rail.js), reached once
+  // the block below has been picked up.
+  const resizing = event.target.closest("[data-pdf-block-action]")?.dataset.pdfBlockAction === "resize";
   // The text of a block being edited is in the sheet over the page, not in the
   // block — so a press on the block itself while its editor is open is a press
-  // on the page, and it commits like any other. The bar's own buttons still
-  // reach their actions below.
+  // on the page, and it commits like any other.
   event.preventDefault();
   event.stopPropagation();
   const id = node.dataset.pdfBlock;
   // Picked up by any press on it, whatever else that press goes on to do. This
-  // is what the keyboard verbs below are about, and it costs nothing to be wrong
-  // about — a selection is a ring around a box, not a mode.
+  // is what the keyboard verbs and the rail's own actions are for, and it costs
+  // nothing to be wrong about — a selection is a ring around a box, not a mode.
   selectBlock(id);
-  // Anything but pressing the style button again puts the popover away: it is
-  // anchored to ONE block and pinned to where that block was, so a press that
-  // moves the reader on to another block — or moves this one — leaves a panel
-  // hanging over the page describing something else.
-  if (action !== "style") closeBlockStylePopover();
-  if (action === "edit") beginBlockEdit(id);
-  else if (action === "style") openStyleFor(id, node);
-  else if (action === "delete") deleteBlock(id);
-  else if (action === "drag" || action === "resize") {
-    commitBlockEdit();
-    beginGesture(event, node, action);
-  }
+  // A press that moves the reader on to another block — or moves this one — is
+  // not the popover's own block any more, and it floats OVER the page pinned to
+  // where that block WAS.
+  closeBlockStylePopover();
+  commitBlockEdit();
+  beginGesture(event, node, resizing ? "resize" : "drag");
   return true;
 }
 
@@ -1154,10 +1172,19 @@ export function selectedBlockId() {
   return selectedId;
 }
 
+// The kind of the block the keyboard is pointing at, or null for none — what
+// src/ui/ink-rail.js asks to decide whether #inkRailBlock's Style/Edit buttons
+// say "Style"/"Edit" or "Frame"/"Describe", the same distinction their labels
+// always made when they lived on the block itself.
+export function selectedBlockKind() {
+  if (!selectedId) return null;
+  return documentBlocks().find((block) => block.id === selectedId)?.kind || null;
+}
+
 export function selectBlock(id) {
   const next = id && documentBlocks().some((block) => block.id === id) ? id : null;
   if (next === selectedId) return next;
-  selectedId = next;
+  setSelectedId(next);
   if (!next) closeBlockStylePopover();
   repaintDocumentBlocks();
   return next;
@@ -1168,7 +1195,7 @@ export function deleteBlock(id = selectedId) {
   const blocks = documentBlocks();
   if (!blocks.some((block) => block.id === id)) return false;
   if (editingId === id) commitBlockEdit();
-  if (selectedId === id) { selectedId = null; closeBlockStylePopover(); }
+  if (selectedId === id) { setSelectedId(null); closeBlockStylePopover(); }
   writeBlocks(blocks.filter((entry) => entry.id !== id), { removed: id });
   repaintDocumentBlocks();
   return true;
@@ -1194,7 +1221,7 @@ export function duplicateBlock(id = selectedId) {
     at: Date.now()
   };
   writeBlocks([...blocks, copy]);
-  selectedId = copy.id;
+  setSelectedId(copy.id);
   repaintDocumentBlocks();
   return copy;
 }
@@ -1254,6 +1281,11 @@ export function editBlock(id = selectedId) {
 // The style controls, over the block rather than in the editor window. The same
 // bar the sheet carries (./block-style-bar.js) — one builder, two homes, which is
 // the arrangement src/notes/note-editor-kit.js already uses to serve three.
+//
+// Takes the node rather than finding it itself, because the one internal caller
+// (openSelectedBlockStyle, below) already has the DOM element the popover has
+// to anchor to — resolving it twice would be two places that could disagree
+// about which node "the selected block" means.
 function openStyleFor(id, node) {
   // A toggle, because the button stays under the reader's finger while the panel
   // it opened is up and pressing it again is the plainest way to say "done".
@@ -1269,6 +1301,17 @@ function openStyleFor(id, node) {
     has: blockHolds(block),
     onChange: (patch) => writeBlockStyle(id, patch)
   });
+}
+
+// What #inkRailBlock's Style button calls (src/ui/ink-rail.js) — the rail knows
+// only that SOMETHING is selected, not which DOM node it is, so this is the one
+// place that looks the node up before handing off to the toggle above.
+export function openSelectedBlockStyle() {
+  if (!selectedId) return false;
+  const node = document.querySelector(`[data-pdf-block="${selectedId}"]`);
+  if (!node) return false;
+  openStyleFor(selectedId, node);
+  return true;
 }
 
 // ── Which page, and where on it, a point on the glass is ───────────────────
