@@ -84,6 +84,7 @@
    They are lifted into the row at boot and live there for the whole session, so
    the default has to be hidden rather than shown. */
 .view-mode-row > .document-toggle,
+.view-mode-row > .document-pdf-switcher,
 .view-mode-row > .document-more-btn,
 .view-mode-row > .document-more-menu,
 .view-mode-row > #documentTocBtn {
@@ -91,6 +92,7 @@
 }
 
 .quiz-panel.notes-mode:has(#documentStage:not([hidden])) .view-mode-row > .document-toggle,
+.quiz-panel.notes-mode:has(#documentStage:not([hidden])) .view-mode-row > .document-pdf-switcher,
 .quiz-panel.notes-mode:has(#documentStage:not([hidden])) .view-mode-row > .document-more-btn {
   display: inline-flex;
   flex: 0 0 auto;
@@ -178,6 +180,7 @@
    tab itself, so there is no second opinion about whether meta.pdf is set. The
    pager goes with them: a page number and a zoom over a panel with no pages. */
 .quiz-panel.notes-mode:has(#documentStage.has-no-document) .view-mode-row > .document-toggle,
+.quiz-panel.notes-mode:has(#documentStage.has-no-document) .view-mode-row > .document-pdf-switcher,
 .quiz-panel.notes-mode:has(#documentStage.has-no-document) .view-mode-row > .document-more-btn,
 .quiz-panel.notes-mode:has(#documentStage.has-no-document) .view-mode-row > #documentTocBtn,
 #documentStage.has-no-document .document-pager {

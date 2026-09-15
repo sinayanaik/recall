@@ -1197,12 +1197,44 @@ try {
     await settle(120);
     const records = api.state.meta?.pdfHighlights || [];
     const record = records.filter((r) => r.kind === "area").pop() || null;
+    const stillArmedAfterFirst = api.isRegionSelectArmed();
+
+    // The mode is sticky: a reader pulling several regions out of one paper
+    // drags one after another without re-tapping the button each time. Proved
+    // here by immediately dragging a SECOND box, with no re-arm in between —
+    // before this, the first capture silently turned the mode off and a second
+    // drag right after it fell through to an ordinary text selection instead.
+    // A page taller than the viewport (as this one is) puts most of its own
+    // height off-screen even though it renders fine — same band as the first
+    // drag's press point (which is known to land on-screen) but shifted over
+    // in x, so the two regions do not overlap.
+    const from2 = { x: box.left + box.width * 0.15, y: from.y };
+    const to2 = { x: box.left + box.width * 0.55, y: to.y };
+    send("pointerdown", from2);
+    send("pointermove", { x: (from2.x + to2.x) / 2, y: (from2.y + to2.y) / 2 });
+    send("pointermove", to2);
+    send("pointerup", to2);
+    await settle(120);
+    const records2 = api.state.meta?.pdfHighlights || [];
+    const areaRecords2 = records2.filter((r) => r.kind === "area");
+    const record2 = areaRecords2[areaRecords2.length - 1] || null;
+    const secondIsNewRegion = Boolean(record2 && record2.id !== record?.id);
+
+    // ...and the toolbar's own toggle — the only thing that should turn it
+    // off now — still works. Left OFF on the way out so later checks in this
+    // file (which assume the text layer is selectable again) see the surface
+    // the way a reader who tapped the button off would leave it.
+    api.setRegionSelect(false);
+    const disarmedAfterToggle = !api.isRegionSelectArmed();
+
     return {
       armedClass,
       textLayerInert,
       marqueeDrawn,
       marqueeCleared: !pageEl.querySelector(".pdf-region-marquee"),
-      disarmed: !api.isRegionSelectArmed(),
+      stillArmedAfterFirst,
+      secondIsNewRegion,
+      disarmedAfterToggle,
       record: record ? { id: record.id, page: record.page, kind: record.kind, quads: record.quads } : null,
       painted: document.querySelectorAll('.pdf-mark[data-kind="area"]').length
     };
@@ -1219,9 +1251,13 @@ try {
     region.record?.kind === "area" && region.record?.quads?.length === 1,
     region.record ? `page ${region.record.page} · ${JSON.stringify(region.record.quads[0].rect.map((n) => Math.round(n)))}` : "no record");
   check("...painted as an outline, not a tint", region.painted > 0, `${region.painted} mark div(s)`);
-  check("...and the mode disarms itself after one capture",
-    region.disarmed && region.marqueeCleared,
-    `disarmed=${region.disarmed} marqueeCleared=${region.marqueeCleared}`);
+  check("...and the mode stays armed after one capture",
+    region.stillArmedAfterFirst && region.marqueeCleared,
+    `stillArmed=${region.stillArmedAfterFirst} marqueeCleared=${region.marqueeCleared}`);
+  check("...so a second drag right after it also makes a region, not a text selection",
+    region.secondIsNewRegion, `secondIsNewRegion=${region.secondIsNewRegion}`);
+  check("...and the toolbar toggle still turns it off",
+    region.disarmedAfterToggle, `disarmedAfterToggle=${region.disarmedAfterToggle}`);
 
   const regionReloaded = region.record
     ? await page.evaluate(`async (id) => {
