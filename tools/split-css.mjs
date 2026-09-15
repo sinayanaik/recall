@@ -65,6 +65,14 @@ const SECTIONS = [
 // Anything appearing in styles/ that is neither a slice nor listed here is
 // still a failure.
 const POST_SPLIT = {
+  "64-notes-tight-padding.css":
+    "Tighter left/right padding for the Notes reading column, as a horizontal-" +
+    "only --notes-stage-pad-x token plus property-level overrides of the same " +
+    "selectors .notes-stage and .notes-rendered use in the frozen 11-chrome.css " +
+    "and 12-notes.css slices. --notes-stage-pad itself cannot shrink in place: " +
+    "it is shared with .highlights-stage and matched deliberately by " +
+    ".document-stage (36-document.css), and both consuming rules sit inside " +
+    "frozen slices anyway. See the file's own header comment.",
   "63-notes-fold-twisty.css":
     "The per-heading fold arrow in the notes body — see " +
     "applyNotesFoldState/toggleNotesHeadingFold in src/render/block-cache.js. " +

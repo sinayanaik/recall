@@ -120,6 +120,7 @@
     <link rel="stylesheet" href="styles/61-frame-card-answer-editable.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/62-frame-card-draggable.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/63-notes-fold-twisty.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/64-notes-tight-padding.css?v=__BUILD__">
 
     <!-- ── Module preloads ────────────────────────────────────────────────
          The app is ~130 ES modules and the browser discovers them by PARSING
@@ -705,6 +706,14 @@
                  the way in, not a second one. -->
             <button class="tool-button view-export-btn" id="viewExportBtn" type="button" aria-haspopup="true" aria-expanded="false" aria-label="Export" title="Export what you are looking at">&#8659;</button>
             <div class="view-export-menu" id="viewExportMenu" role="menu" hidden></div>
+            <!-- A PDF deck's document controls (TOC, dark page, region, ink, the
+                 PDF switcher, ⋯) are lifted into this row too (see
+                 notes-head-overflow.js), and on the Document tab that is six-plus
+                 controls sharing one line with the four view tabs. This break
+                 forces them onto a second line instead — see styles/37-document-
+                 chrome.css for the flex-wrap/order rules that use it. Zero-size
+                 and inert everywhere else. -->
+            <div class="view-mode-row-break" aria-hidden="true"></div>
           </div>
 
           <div class="progress-track" aria-hidden="true">

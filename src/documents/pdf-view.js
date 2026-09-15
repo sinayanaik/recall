@@ -1228,6 +1228,11 @@ function armDocumentRenderWatchdog(token) {
     renderPagesNearViewport();
     setTimeout(() => {
       if (!openPdf || token !== pdfOpenToken || openPdf.rendered.size) return;
+      // A scanned page's raster can still be decoding at this point — that is
+      // slow, not damaged, and forceRenderPage above already owns it with its
+      // own much longer deadline (PDF_RENDER_DEADLINE_MS × PDF_RENDER_ATTEMPTS).
+      // Only declare the file damaged when NOTHING is even trying any more.
+      if (openPdf.pages.get(1)?.task) return;
       showDocumentViewError("This document's pages did not render. Reopen the deck, and if it keeps happening the file may be damaged.");
     }, PDF_RENDER_WATCHDOG_MS);
   }, PDF_RENDER_WATCHDOG_MS);
@@ -1253,10 +1258,17 @@ function supersededOpen() {
 
 // One place that puts a message where the pages should be, so every failure
 // path says something rather than three of them saying nothing.
+//
+// Tears the document down first (tearDownDocumentView is a no-op when openPdf
+// is already null). Without this, an error raised after openPdf existed left
+// it in place while wiping the view underneath it — so the "already open" fast
+// path at the top of openDocumentView (deckKey still matches) would relayout a
+// Map of now-detached page nodes instead of doing a real reopen, and pressing
+// back into the deck after an error never brought anything back.
 function showDocumentViewError(message) {
+  tearDownDocumentView();
   const view = el.documentView;
   if (!view) return;
-  view.innerHTML = "";
   const failed = document.createElement("p");
   failed.className = "pdf-loading is-error";
   failed.textContent = message;

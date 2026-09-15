@@ -1104,14 +1104,23 @@ try {
       `${row.tabTops.length} tab(s) at y = ${[...new Set(row.tabTops)].join(", ")}`);
     check(`...and no tab label is cut off (${label})`, row.clipped.length === 0,
       row.clipped.length ? `clipped: ${row.clipped.join(", ")}` : `${row.tabTops.length} tab(s), all whole`);
-    // One line on a desktop; TWO on a phone, deliberately — the tabs take a
-    // line of their own there rather than share one with six controls, because
-    // sharing is what cut "DOCUMENT" in half (styles/53-handwriting.css). Two is
-    // the ceiling either way: a third line means something is wrapping that was
-    // not meant to, and --view-toggle-h grows with it.
-    const lines = label === "phone" ? 2.9 : 1.8;
-    check(`...and the row is ${label === "phone" ? "at most two tabs" : "one tab"} tall (${label})`,
-      row.tabHeight > 0 && row.rowHeight < row.tabHeight * lines,
+    // Two lines on a phone, deliberately — the tabs take a line of their own
+    // there rather than share one with six controls, because sharing is what
+    // cut "DOCUMENT" in half (styles/53-handwriting.css). Desktop and tablet
+    // used to hold everything on one line instead, squeezed down by nothing
+    // but text-overflow: ellipsis on the tab labels — 37-document-chrome.css
+    // now wraps the document controls onto a second line there too, above
+    // 720px, once a multi-PDF deck's switcher joined the row and made that
+    // one line genuinely crowded. So every width is now "the tabs, then the
+    // document controls" — two real lines, forced apart by .view-mode-row-
+    // break (a flex-basis: 100% item), which — because nothing can share a
+    // line with a 100%-wide item — always claims one small zero-height line
+    // of its own between them, gap included on both sides of it. 3.0 leaves
+    // room for that harmless third (invisible) line without room for an
+    // actual unwanted one: a real third line of controls measures far taller
+    // than one more row-gap.
+    check(`...and the row is at most two tabs tall (${label})`,
+      row.tabHeight > 0 && row.rowHeight < row.tabHeight * 3.0,
       `row ${row.rowHeight}px vs tab ${row.tabHeight}px`);
     check(`the inert notes controls stand down (${label})`,
       row.notesTocHidden && row.editPillHidden && row.notesMoreHidden,
