@@ -303,6 +303,7 @@ const APP_SHELL = [
   `./styles/60-pdf-region-embed.css?v=${STAMP}`,
   `./styles/61-frame-card-answer-editable.css?v=${STAMP}`,
   `./styles/62-frame-card-draggable.css?v=${STAMP}`,
+  `./styles/63-notes-fold-twisty.css?v=${STAMP}`,
   // The module entry point. Everything it imports is stamped with the same
   // ?v=, so those URLs change with every release too — which is what lets the
   // cache-first handler below serve them without revalidating and still never
