@@ -104,6 +104,66 @@
   min-height: 26px;
 }
 
+/* ── One row of tabs, one row of document tools — desktop and tablet ────────
+   Mobile already does this: 53-handwriting.css's `@media (max-width: 720px)`
+   block wraps this row and puts #documentTocBtn/#notesTocBtn at `order: 1` so
+   they land beside the rest of the lifted controls instead of stranded alone
+   with the tabs — written for the notebook, but (per its own comment) already
+   covering the Document tab too, since both carry the same four tabs. That
+   block is left untouched here.
+
+   Above 720px the row never wrapped at all — the four tabs plus ⇓ export was
+   already a full nowrap row (see the width comment above), and the Document
+   tab's TOC button, three tool toggles, the multi-PDF switcher and ⋯ all
+   joined it, squeezed down by nothing but text-overflow: ellipsis on the tab
+   labels. This is that same wrap, scoped to widths the mobile rule does not
+   reach, and built the same way: .view-mode-row-break is the ONLY new
+   element, kept as a plain sibling in the DOM exactly where notes-head-
+   overflow.js already puts everything else, and `order` puts it — and the
+   document controls after it — on a second line however the browser actually
+   laid the nodes out. Nothing here changes which controls are IN the row,
+   only where each one sits once it is, so tools/pdf-preview-check.mjs's
+   #viewModeRow assertions do not move.
+
+   The break defaults to display:none — not just zero size — so it takes no
+   part in the row's flex layout (and adds none of its `gap`) on every other
+   view, where it has nothing to do. */
+.view-mode-row-break {
+  display: none;
+}
+
+@media (min-width: 721px) {
+  .quiz-panel.notes-mode:has(#documentStage:not([hidden])) .view-mode-row {
+    flex-wrap: wrap;
+  }
+
+  /* .view-mode-toggle's own flex-basis is `auto` (16-mobile-reading.css:353,
+     frozen) — fine under nowrap, where flex-shrink alone decides its width,
+     but with wrap enabled the browser decides which line each item lands on
+     using its UNSHRUNK content size, not its shrunk rendered one. Overriding
+     only flex-basis (a longhand; flex-grow/shrink from the frozen shorthand
+     are untouched) makes the toggle's line-packing size 0, so it always fits
+     line 1 regardless of viewport width — flex-grow still expands it to fill
+     the line afterward, so what actually renders is unchanged. */
+  .quiz-panel.notes-mode:has(#documentStage:not([hidden])) .view-mode-row > .view-mode-toggle {
+    flex-basis: 0;
+  }
+
+  .quiz-panel.notes-mode:has(#documentStage:not([hidden])) .view-mode-row > .view-mode-row-break {
+    display: block;
+    flex-basis: 100%;
+    order: 5;
+  }
+
+  .quiz-panel.notes-mode:has(#documentStage:not([hidden])) .view-mode-row > #documentTocBtn,
+  .quiz-panel.notes-mode:has(#documentStage:not([hidden])) .view-mode-row > .document-toggle,
+  .quiz-panel.notes-mode:has(#documentStage:not([hidden])) .view-mode-row > .document-pdf-switcher,
+  .quiz-panel.notes-mode:has(#documentStage:not([hidden])) .view-mode-row > .document-more-btn,
+  .quiz-panel.notes-mode:has(#documentStage:not([hidden])) .view-mode-row > .document-more-menu {
+    order: 10;
+  }
+}
+
 /* ── ...unless there is no document to control ─────────────────────────────
    The Document tab is on every open deck now (refreshDocumentTab), because it
    is the only surface that can offer to ATTACH a paper and a deck without one

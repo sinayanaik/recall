@@ -1,0 +1,54 @@
+/* Tighter left/right padding for the Notes reading column.
+ *
+ * .notes-stage's own padding (11-chrome.css) and .notes-rendered's
+ * bleed-and-repad trick (12-notes.css) both use the single --notes-stage-pad
+ * token for every side, uniform with the vertical spacing. That token is
+ * shared with .highlights-stage and matched deliberately by .document-stage
+ * (see 36-document.css), so shrinking it there would also narrow the
+ * highlights list and the PDF page's own chrome — not what was asked for.
+ * --notes-stage-pad is also read inside a frozen slice (11-chrome.css,
+ * 12-notes.css), so it cannot be edited in place either — see
+ * tools/split-css.mjs.
+ *
+ * So this is a horizontal-only companion token, and three property-level
+ * overrides — same selectors, same specificity as the frozen rules they
+ * follow, winning purely on load order (this file is the last one loaded) —
+ * that swap just the horizontal padding/margin terms over to it. Nothing
+ * else in those rules changes, and every other surface that reads
+ * --notes-stage-pad (Cards, the Document/PDF view, Write, Highlights) is
+ * untouched.
+ */
+:root {
+  --notes-stage-pad-x: 8px;
+}
+
+@media (max-width: 720px) {
+  :root {
+    --notes-stage-pad-x: 6px;
+  }
+}
+
+/* Was: padding: var(--notes-stage-pad); — see 11-chrome.css. */
+.quiz-panel.notes-mode .notes-stage:not([hidden]) {
+  padding-left: var(--notes-stage-pad-x);
+  padding-right: var(--notes-stage-pad-x);
+}
+
+/* Was: margin/padding built entirely from --notes-stage-pad — see
+   .notes-rendered in 12-notes.css. Only the horizontal (left/right) terms
+   move to the tighter token; the vertical terms (--notes-stage-gap, the
+   bottom +8px) are untouched. */
+.notes-rendered {
+  margin-left: calc(-1 * var(--notes-stage-pad-x));
+  margin-right: calc(-1 * var(--notes-stage-pad-x));
+  padding-left: calc(var(--notes-padding) + var(--notes-stage-pad-x));
+  padding-right: calc(var(--notes-padding) + var(--notes-stage-pad-x));
+}
+
+/* Was: padding-left built from --notes-stage-pad — see the TOC-open push in
+   12-notes.css, kept consistent with the tighter left inset above. */
+@media (min-width: 721px) {
+  .notes-stage.is-toc-open > .notes-rendered {
+    padding-left: calc(var(--notes-padding) + var(--notes-stage-pad-x) + var(--toc-width));
+  }
+}
