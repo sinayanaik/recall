@@ -176,8 +176,7 @@ export function renderNotesView({ sameNote = false } = {}) {
     // whatever was hidden a moment ago is unhidden again until this runs.
     .then(() => {
       if (!sameNote) resetNotesFoldedHeadings();
-      applyNotesFoldState(el.notesView);
-      refreshNotesFoldButtonAvailability(el.notesFoldAllBtn);
+      refreshNotesFoldButtonAvailability(el.notesFoldAllBtn, applyNotesFoldState(el.notesView));
     })
     // Every repaint of the rendered notes comes through here, so this is the
     // one place paged mode has to re-count its pages — the note may have grown
@@ -235,9 +234,21 @@ export function toggleAllNotesHeadings() {
 // declines to touch it, and a note with no foldable heading has nothing for
 // this button to do — either way it is put away rather than left clickable
 // and silently doing nothing.
-export function refreshNotesFoldButtonAvailability(button) {
+//
+// `foldableCount` is applyNotesFoldState's own return value — its one caller
+// (renderNotesView's render tail) already just paid for that count by
+// walking the rendered DOM, so this takes it rather than asking again via
+// foldableSectionsFor(source), which means re-parsing the note's whole
+// markdown source from scratch. On a large book that re-parse, run on every
+// single repaint (an edit anywhere, a highlight, an autosave), was measured
+// costing as much as the highlight action's entire response-time budget —
+// see tools/interaction-scale-check.mjs's "highlighting a sentence does not
+// block the app". Only the button's own click handler (toggleAllNotesHeadings)
+// still asks from source, because that IS a source-of-truth question asked
+// once per click, not once per repaint.
+export function refreshNotesFoldButtonAvailability(button, foldableCount) {
   if (!button) return;
-  button.hidden = isNotesPaged() || foldableSectionsFor(readerNotesBody(state.notes)).length === 0;
+  button.hidden = isNotesPaged() || !foldableCount;
 }
 
 // Repaint the open note without the reader appearing to move at all.

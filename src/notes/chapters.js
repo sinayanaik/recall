@@ -225,7 +225,14 @@ function headingBlockText(block) {
 // imported: that module already imports THIS one indirectly (via
 // block-cache.js's notesHeadingScan), and pulling a heading-only helper back
 // across that edge is not worth what it would risk.
-function foldKeyFor(text, used) {
+//
+// Exported so block-cache.js's per-render fold-twisty painting can build the
+// same keys straight from the rendered DOM (see domHeadingSectionsFor there)
+// without re-parsing the note's whole markdown source on every repaint —
+// which is what applyNotesFoldState used to do here, unconditionally, before
+// a 2.6MB-note interaction check caught the cost (tools/interaction-scale-check.mjs's
+// "highlighting a sentence does not block the app").
+export function foldKeyFor(text, used) {
   const base = text.toLowerCase().replace(/[^\w\s-]/g, "").trim().replace(/\s+/g, "-") || "section";
   let key = base;
   let n = 2;

@@ -14,7 +14,7 @@ import { markBrokenImages } from "../images/broken.js?v=__BUILD__";
 import { hydrateLocalImages } from "../images/outbox.js?v=__BUILD__";
 import { enhanceSurfaceDiagramControls, enhanceSurfaceImageControls, findSourceImages, imageMatchKey, imageSurfaceForView } from "../images/surface-controls.js?v=__BUILD__";
 import { bindNotesHeadingElements, markNotesTocDirty, refreshNotesTocAvailability } from "../notes/toc.js?v=__BUILD__";
-import { headingSectionsFor, hiddenBlockMaskFor, pagedSpanStarts } from "../notes/chapters.js?v=__BUILD__";
+import { foldKeyFor, hiddenBlockMaskFor, pagedSpanStarts } from "../notes/chapters.js?v=__BUILD__";
 import { readerNotesBody } from "../format/notes-fence.js?v=__BUILD__";
 import { enhanceRenderedMarkdown, promoteNotesHeadings } from "./enhance.js?v=__BUILD__";
 import { markdownLibrariesReady } from "../core/lib-guard.js?v=__BUILD__";
@@ -1058,6 +1058,17 @@ export function toggleNotesHeadingFold(key) {
 
 const NOTES_FOLD_TWISTY_CLASS = "notes-fold-twisty";
 
+// A heading node keeps the SAME DOM node across renders for as long as its
+// own markdown block is byte-identical (that is the whole premise of
+// renderedBlockCache) — so a heading's twisty, once created, can be found
+// again for free instead of re-querying the DOM for it on every repaint. On
+// a book with thousands of headings, all foldable, this is what keeps
+// applyNotesFoldState off the interaction-scale budget: an edit anywhere
+// else in the note used to still cost every heading a querySelector plus
+// four attribute writes, on every render, whether or not that heading's own
+// fold state had changed.
+const foldTwistyByHeading = new WeakMap();
+
 // Inserted as the heading's own FIRST CHILD rather than as an absolutely-
 // positioned sibling the way the TOC drawer's twisty is (see toc-tree.js) —
 // that one has to sit outside its row's <a> because a <button> nested inside
@@ -1065,16 +1076,25 @@ const NOTES_FOLD_TWISTY_CLASS = "notes-fold-twisty";
 // not a link, so nesting the button directly inside it is fine and needs no
 // extra layout math for indentation.
 function paintFoldTwisty(headingNode, key, collapsed) {
-  let twisty = headingNode.querySelector(`:scope > .${NOTES_FOLD_TWISTY_CLASS}`);
-  if (!twisty) {
-    twisty = document.createElement("button");
-    twisty.type = "button";
-    twisty.className = NOTES_FOLD_TWISTY_CLASS;
-    twisty.innerHTML = '<span class="notes-fold-twisty-glyph" aria-hidden="true">&#9656;</span>';
-    headingNode.prepend(twisty);
+  let twisty = foldTwistyByHeading.get(headingNode);
+  if (!twisty || twisty.parentNode !== headingNode) {
+    twisty = headingNode.querySelector(`:scope > .${NOTES_FOLD_TWISTY_CLASS}`);
+    if (!twisty) {
+      twisty = document.createElement("button");
+      twisty.type = "button";
+      twisty.className = NOTES_FOLD_TWISTY_CLASS;
+      twisty.innerHTML = '<span class="notes-fold-twisty-glyph" aria-hidden="true">&#9656;</span>';
+      headingNode.prepend(twisty);
+    }
+    foldTwistyByHeading.set(headingNode, twisty);
   }
+  const collapsedAttr = collapsed ? "true" : "false";
+  // The common case on any render that didn't touch fold state at all (which
+  // is most of them — an edit three chapters away, an autosave, a highlight):
+  // every one of these already matches, so there is nothing left to write.
+  if (twisty.dataset.foldKey === key && headingNode.dataset.foldCollapsed === collapsedAttr) return;
   twisty.dataset.foldKey = key;
-  headingNode.dataset.foldCollapsed = collapsed ? "true" : "false";
+  headingNode.dataset.foldCollapsed = collapsedAttr;
   twisty.setAttribute("aria-expanded", collapsed ? "false" : "true");
   twisty.setAttribute("aria-label", collapsed ? "Expand this section" : "Collapse this section");
 }
@@ -1083,9 +1103,58 @@ function paintFoldTwisty(headingNode, key, collapsed) {
 // deleted, or an edit merged it with the next heading) — a stray arrow on a
 // heading with nothing to hide is worse than no arrow.
 function removeFoldTwisty(headingNode) {
-  const twisty = headingNode.querySelector(`:scope > .${NOTES_FOLD_TWISTY_CLASS}`);
+  const twisty = foldTwistyByHeading.get(headingNode) || headingNode.querySelector(`:scope > .${NOTES_FOLD_TWISTY_CLASS}`);
   if (twisty) twisty.remove();
+  foldTwistyByHeading.delete(headingNode);
   delete headingNode.dataset.foldCollapsed;
+}
+
+// A heading node's own text, with any twisty this function itself already
+// painted into it (see paintFoldTwisty) excluded — otherwise the arrow glyph
+// would leak into the key computed below the moment a heading is repainted a
+// second time, drifting the very identity foldKeyFor exists to keep stable.
+function headingNodeText(node) {
+  let text = "";
+  for (const child of node.childNodes) {
+    if (child.nodeType === 1 && child.classList?.contains(NOTES_FOLD_TWISTY_CLASS)) continue;
+    text += child.textContent || "";
+  }
+  return text.trim();
+}
+
+// headingSectionsForBlocks's algorithm (chapters.js), but over the notes
+// container's ALREADY-RENDERED top-level nodes rather than markdown block
+// strings — same "one block, one node" correspondence notesTopLevelBlocks
+// relies on elsewhere, so a node's tagName ("H1".."H6") stands in exactly for
+// that block's heading level.
+//
+// This exists so applyNotesFoldState never has to re-parse the note's whole
+// markdown source on a repaint: it used to call headingSectionsFor(source),
+// unconditionally, on every render — including the one after every single
+// highlight — which cost a full preprocessSpecialBlocks + splitPreparedBlocks
+// pass over the entire note just to find which headings have arrows. On the
+// 2.6MB / ~24,000-block fixture tools/interaction-scale-check.mjs measures
+// against, that alone blew the "highlighting a sentence does not block the
+// app" budget. Working from the DOM nodes already in hand (the render already
+// built them) costs one more linear pass over blocks.length, the same order
+// as the hide/show pass right after it — not one more pass over the note's
+// character count.
+function domHeadingSectionsFor(blocks) {
+  const levels = blocks.map((node) => {
+    const match = /^H([1-6])$/.exec(node.tagName || "");
+    return match ? Number(match[1]) : 0;
+  });
+  const used = new Set();
+  const sections = [];
+  levels.forEach((level, index) => {
+    if (!level) return;
+    let end = blocks.length;
+    for (let j = index + 1; j < levels.length; j += 1) {
+      if (levels[j] && levels[j] <= level) { end = j; break; }
+    }
+    sections.push({ blockIndex: index, level, blockEnd: end, key: foldKeyFor(headingNodeText(blocks[index]), used) });
+  });
+  return sections;
 }
 
 // Hides or shows every top-level block inside a currently-collapsed heading's
@@ -1099,15 +1168,16 @@ function removeFoldTwisty(headingNode) {
 // currently collapsed the moment it lands (see finishNotesLazySpan below)
 // rather than arrive unhidden and stay that way until the next unrelated
 // repaint.
+// Returns how many sections were foldable — null when the container isn't
+// the notes view or is paged (the two cases this bails out of entirely),
+// otherwise a number, 0 included. The render tail (notes-view.js) uses this
+// to decide whether the global fold-all button has anything to do at all,
+// rather than asking again itself: see refreshNotesFoldButtonAvailability's
+// own comment for why asking again used to be expensive.
 export function applyNotesFoldState(container) {
-  if (container !== el.notesView || container.classList.contains("is-paged")) return;
-  // The identical prepared string block-cache itself renders from (see
-  // renderMarkdown's own `prepared = preprocessSpecialBlocks(displayMarkdown)`)
-  // — not raw state.notes, which still carries the trailing highlight-notes
-  // fence and would put every block index one section out of step with what
-  // is actually on screen.
-  const sections = headingSectionsFor(readerNotesBody(state.notes));
+  if (container !== el.notesView || container.classList.contains("is-paged")) return null;
   const blocks = notesTopLevelBlocks(container);
+  const sections = domHeadingSectionsFor(blocks);
   const mask = hiddenBlockMaskFor(blocks.length, sections, notesFoldedHeadings);
   const sectionByBlock = new Map(sections.map((section) => [section.blockIndex, section]));
   const foldable = sections.filter((section) => section.blockEnd > section.blockIndex + 1);
@@ -1121,6 +1191,7 @@ export function applyNotesFoldState(container) {
     }
   });
   syncNotesFoldAllButton(foldable);
+  return foldable.length;
 }
 
 // The global "Fold all sections" button, kept honest after EVERY fold change
