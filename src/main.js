@@ -64,7 +64,7 @@ import { closeNoteLinkPicker, commitNoteLinkPicker, isNoteLinkBrowsing, isNoteLi
 import { isInkSheetOpen, redoInkSheet, repaintInkSheet, undoInkSheet } from "./notes/ink-sheet.js?v=__BUILD__";
 import { followNoteLink, revealNoteHeading } from "./notes/note-links.js?v=__BUILD__";
 import { initNotesHeadOverflow } from "./notes/notes-head-overflow.js?v=__BUILD__";
-import { commitNotesEditIfActive, enterNotesEditing, isNotesEditing, isProgrammaticNotesScroll, renderNotesViewPinned, setNotesScrolledSource } from "./notes/notes-view.js?v=__BUILD__";
+import { commitNotesEditIfActive, enterNotesEditing, isNotesEditing, isProgrammaticNotesScroll, renderNotesViewPinned, setNotesScrolledSource, toggleNotesFold } from "./notes/notes-view.js?v=__BUILD__";
 import { sourceFromRawEditor } from "./notes/notes-edit-split.js?v=__BUILD__";
 import { initPagedNotes } from "./notes/paged-view.js?v=__BUILD__";
 import { findRawOffsetForRenderedPoint } from "./notes/raw-offset.js?v=__BUILD__";
@@ -103,7 +103,7 @@ import { DOC_SLOT_NOTEBOOK, activeDocSlot, onDocumentSurface } from "./documents
 import { captureDocumentSelection } from "./documents/pdf-selection.js?v=__BUILD__";
 import { closeImportPanel, closeMyDecksPanel, editCurrentDeckCategory, editCurrentDeckTitle, openImportPanel, openMyDecksPanel } from "./ui/deck-header.js?v=__BUILD__";
 import { addBlankCardAtCursor, flushWorkingDeck, toggleEditMode } from "./ui/edit-mode.js?v=__BUILD__";
-import { setStatus, showConfirmModal, showToast } from "./ui/feedback.js?v=__BUILD__";
+import { setStatus, showConfirmModal, showPromptModal, showToast } from "./ui/feedback.js?v=__BUILD__";
 import { closeHelpModal, helpBtn, helpModal, helpModalCloseBtn, helpModalCloseFootBtn, openHelpModal } from "./ui/help.js?v=__BUILD__";
 import { goNavBack } from "./ui/nav-history.js?v=__BUILD__";
 import { anyModalOpen, lockPageScroll, unlockPageScroll } from "./ui/overlays.js?v=__BUILD__";
@@ -117,7 +117,9 @@ import { DOCUMENT_NOTE_HANDLERS, documentHighlightById, documentHighlightNote, i
 import { pdfRegionRefMarkdown } from "./documents/pdf-region-embed.js?v=__BUILD__";
 import { closeDocumentToc, documentOutlineEntries, initDocumentOutlineFolding, isDocumentTocOpen, resolveOutlineEntryPage, toggleDocumentToc } from "./documents/pdf-outline.js?v=__BUILD__";
 import { deleteRemoteDocument } from "./documents/pdf-store.js?v=__BUILD__";
-import { currentPdfDocument, documentFittedWidth, fitDocumentToWidth, initDocumentPinchZoom, isDocumentFitWidth, openDocumentIsCurrent, openDocumentView, reattachDocument, relayoutDocument, repaintOpenDocumentPages, scheduleDocumentPositionSave, scrollToDocumentPage, refreshDocumentPaperForTheme, setDocumentAttachHandler, setDocumentOpenedHook, setDocumentPagePaintedHook, setNotebookStartHandler, togglePdfInvert, updatePageIndicator, zoomDocument } from "./documents/pdf-view.js?v=__BUILD__";
+import { activePdfId, deckPdfById, deckPdfs, withDeckPdfs } from "./documents/pdf-multi.js?v=__BUILD__";
+import { removePdfFromDeck, renamePdf } from "./documents/pdf-multi-actions.js?v=__BUILD__";
+import { currentPdfDocument, documentFittedWidth, fitDocumentToWidth, initDocumentPinchZoom, isDocumentFitWidth, openDocumentIsCurrent, openDocumentPdfId, openDocumentView, reattachDocument, relayoutDocument, repaintOpenDocumentPages, scheduleDocumentPositionSave, scrollToDocumentPage, refreshDocumentPaperForTheme, setDocumentAttachHandler, setDocumentOpenedHook, setDocumentPagePaintedHook, setNotebookStartHandler, switchToPdf, togglePdfInvert, updatePageIndicator, zoomDocument } from "./documents/pdf-view.js?v=__BUILD__";
 import { adoptDocumentInk, canRedoInk, canUndoInk, copyInkSelection, cutInkSelection, duplicateInkSelection, hasInkClipboard, initDocumentInk, inkMarkImageMarkdown, inkSelectionCount, isInkMarkId, nudgeInkSelection, paintDocumentInk, pasteInkSelection, redoInk, repaintDocumentInk, setInkChangedHandler, undoInk } from "./documents/pdf-ink.js?v=__BUILD__";
 import { addHandwritingImage, enterHandwritingView, refreshHandwritingBoard, runHandwritingMenuAction, startHandwritingNotebook } from "./handwriting/board.js?v=__BUILD__";
 import { closeBlockStylePopover, isBlockStylePopoverOpen } from "./documents/block-style-bar.js?v=__BUILD__";
@@ -3242,6 +3244,8 @@ document.addEventListener("click", (e) => {
 el.clozeToggleBtn?.addEventListener("click", () => toggleClozes(el.card, el.clozeToggleBtn));
 el.clozeToggleNotesBtn?.addEventListener("click", () => toggleClozes(el.notesStage, el.clozeToggleNotesBtn));
 
+el.notesFoldAllBtn?.addEventListener("click", () => toggleNotesFold(el.notesFoldAllBtn));
+
 // Keyboard activation for clozes (they carry role="button").
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Enter" && e.key !== " ") return;
@@ -3694,9 +3698,10 @@ el.documentMoreMenu?.addEventListener("click", async (event) => {
   const button = event.target.closest("[data-document-action]");
   if (!button) return;
   const action = button.dataset.documentAction;
-  // The re-attach row is a <label> wrapping a file input — closing the menu on
-  // its own click would remove the input before the picker opened.
-  if (action === "reattach") return;
+  // The re-attach and add-pdf rows are <label>s wrapping a file input —
+  // closing the menu on its own click would remove the input before the
+  // picker opened.
+  if (action === "reattach" || action === "add-pdf") return;
   // A mode row stays put: flipping it and watching the switch move is the
   // feedback, and a menu that closed underneath the press would take that away.
   // The paper rows are the same kind of thing — three rows of one choice, and
@@ -3715,6 +3720,8 @@ el.documentMoreMenu?.addEventListener("click", async (event) => {
   // took the press.
   if (runHandwritingMenuAction(action)) return;
   if (action === "offload") await offloadCurrentDocument();
+  if (action === "rename-pdf") renameCurrentPdf();
+  if (action === "remove-pdf") removeCurrentPdf();
 });
 
 el.documentReattachInput?.addEventListener("change", async (event) => {
@@ -3722,8 +3729,47 @@ el.documentReattachInput?.addEventListener("change", async (event) => {
   event.target.value = "";
   if (el.documentMoreMenu) el.documentMoreMenu.hidden = true;
   el.documentMoreBtn?.setAttribute("aria-expanded", "false");
-  if (file) await reattachDocument(file, state.meta?.pdf);
+  // Whichever PDF is on screen — not always the primary, now that a deck can
+  // carry more than one.
+  const pdfId = openDocumentPdfId() || activePdfId(state.meta);
+  if (file) await reattachDocument(file, deckPdfById(state.meta, pdfId), pdfId);
 });
+
+el.documentAddPdfInput?.addEventListener("change", async (event) => {
+  const file = event.target.files?.[0];
+  event.target.value = "";
+  if (el.documentMoreMenu) el.documentMoreMenu.hidden = true;
+  el.documentMoreBtn?.setAttribute("aria-expanded", "false");
+  if (file) await attachPdfToOpenDeck(file).catch(reportPdfImportCrash);
+});
+
+el.documentPdfSwitcher?.addEventListener("change", (event) => {
+  switchToPdf(event.target.value);
+});
+
+function renameCurrentPdf() {
+  const pdfId = openDocumentPdfId() || activePdfId(state.meta);
+  const entry = deckPdfById(state.meta, pdfId);
+  if (!entry) return;
+  showPromptModal("Rename this PDF", "", entry.label || entry.name || "", (label) => {
+    renamePdf(pdfId, label);
+  }, { placeholder: entry.name || "PDF" });
+}
+
+function removeCurrentPdf() {
+  const pdfId = openDocumentPdfId() || activePdfId(state.meta);
+  const entry = deckPdfById(state.meta, pdfId);
+  if (!entry) return;
+  if (deckPdfs(state.meta).length < 2) {
+    showToast("This is the deck's only PDF — offload it or attach a different one instead", "info");
+    return;
+  }
+  showConfirmModal(
+    `“${entry.label || entry.name || "This PDF"}” will be removed from this deck, along with its highlights and bookmark. Your other PDFs, notes and cards are untouched.`,
+    () => removePdfFromDeck(pdfId),
+    { confirmLabel: "Remove", danger: true }
+  );
+}
 
 // "Remove from cloud" — the offload half of the finish-a-paper loop.
 //
@@ -3732,7 +3778,10 @@ el.documentReattachInput?.addEventListener("change", async (event) => {
 // are untouched, and the device copy is untouched. What goes is the megabytes
 // in the bucket, which is the only part that costs anything.
 async function offloadCurrentDocument() {
-  const pdfMeta = state.meta?.pdf;
+  // Whichever PDF is on screen — not always the primary, now that a deck can
+  // carry more than one.
+  const pdfId = openDocumentPdfId() || activePdfId(state.meta);
+  const pdfMeta = deckPdfById(state.meta, pdfId);
   if (!pdfMeta?.path || pdfMeta.offloaded) {
     showToast("This document isn't in the cloud", "error");
     return false;
@@ -3748,7 +3797,9 @@ async function offloadCurrentDocument() {
       // `path` is kept, not cleared: it records where the object USED to live,
       // so an offloaded deck that is later re-uploaded lands in the same place
       // rather than accumulating a second folder.
-      state.meta = { ...state.meta, pdf: { ...pdfMeta, offloaded: true } };
+      state.meta = withDeckPdfs(state.meta, deckPdfs(state.meta).map((entry) => (
+        entry.id === pdfId ? { ...entry, offloaded: true, at: Date.now() } : entry
+      )));
       scheduleDeckAutosave();
       showToast(`Removed from cloud · ${formatStorageBytes(pdfMeta.size || 0)} freed`);
     },

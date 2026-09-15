@@ -36,11 +36,13 @@ import { state } from "../core/state.js?v=__BUILD__";
 import { paintDocumentHighlights } from "./pdf-highlights.js?v=__BUILD__";
 import { buildDocumentOutline, clearDocumentOutline, setDocumentOutlinePage } from "./pdf-outline.js?v=__BUILD__";
 import { inkPenIsDown } from "../core/gesture.js?v=__BUILD__";
-import { DOC_SLOT_NOTEBOOK, activeDocSlot, docSlotMeta, docSlotReadingPositionKey, documentStoreKey, normalizeDocSlot, onDocumentSurface } from "./doc-slot.js?v=__BUILD__";
+import { DOC_SLOT_DOC, DOC_SLOT_NOTEBOOK, activeDocSlot, docSlotMeta, docSlotReadingPositionKey, documentStoreKey, normalizeDocSlot, onDocumentSurface } from "./doc-slot.js?v=__BUILD__";
+import { activePdfId, deckPdfById, deckPdfs, PDF_PRIMARY_ID, pdfStoreKey } from "./pdf-multi.js?v=__BUILD__";
 import { isDarkThemeActive } from "../ui/theme-catalog.js?v=__BUILD__";
 import { getDocument, putDocument, sha256 } from "./pdf-store.js?v=__BUILD__";
 import { betterReadingPosition, scheduleReadingPositionSave } from "../notes/reading-position.js?v=__BUILD__";
 import { currentDeckKey } from "../notes/scroll-anchor.js?v=__BUILD__";
+import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { setStatus, showToast } from "../ui/feedback.js?v=__BUILD__";
 
 // How many pages either side of the visible run keep their canvas. Two is
@@ -387,7 +389,7 @@ function parkOpenDocument() {
   // teardown before the two innerHTML = "" that were the obvious suspects.
   host?.remove();
   parkedDocuments.set(key, {
-    sha: docSlotMeta(openPdf.slot)?.sha256 || "",
+    sha: (openPdf.slot === DOC_SLOT_DOC ? deckPdfById(state.meta, openPdf.pdfId) : docSlotMeta(openPdf.slot))?.sha256 || "",
     doc: openPdf.doc,
     host,
     pages: openPdf.pages,
@@ -493,7 +495,7 @@ function renderDocumentPickPrompt({ heading, body, pick = "Choose the PDF…", n
 // cleared. Everything else about the deck — highlights, notes, cards — is
 // intact, which is exactly what the message has to say, or "re-attach" reads
 // as "start again".
-function renderMissingDocumentPrompt(pdfMeta) {
+function renderMissingDocumentPrompt(pdfMeta, pdfId = null) {
   renderDocumentPickPrompt({
     heading: "Re-attach the PDF to read it",
     body: pdfMeta?.offloaded
@@ -505,7 +507,7 @@ function renderMissingDocumentPrompt(pdfMeta) {
     note: pdfMeta?.sha256
       ? "It has to be the same file — the highlights are positions in it, and a different copy would put them over the wrong words."
       : "",
-    onFile: (file) => reattachDocument(file, pdfMeta)
+    onFile: (file) => reattachDocument(file, pdfMeta, pdfId)
   });
 }
 
@@ -562,7 +564,7 @@ function renderStartNotebookPrompt() {
 // Take a picked file as this deck's document again, if it really is the same
 // file. Exported because the Document menu offers it too, for a deck whose PDF
 // is present but which the reader wants to re-point at a local copy.
-export async function reattachDocument(file, pdfMeta) {
+export async function reattachDocument(file, pdfMeta, pdfId = PDF_PRIMARY_ID) {
   const hash = await sha256(file);
   if (pdfMeta?.sha256 && hash && hash !== pdfMeta.sha256) {
     showToast("That's a different file — the highlights would land in the wrong places", "error");
@@ -573,9 +575,9 @@ export async function reattachDocument(file, pdfMeta) {
     showToast("Save this deck before re-attaching its PDF", "error");
     return false;
   }
-  await putDocument({ deckLocalId, blob: file, sha256: hash, name: file.name, at: Date.now() });
+  await putDocument({ deckLocalId: pdfStoreKey(deckLocalId, pdfId), blob: file, sha256: hash, name: file.name, at: Date.now() });
   showToast("PDF re-attached");
-  await openDocumentView({ force: true });
+  await openDocumentView({ force: true, slot: DOC_SLOT_DOC, pdfId });
   return true;
 }
 
@@ -594,9 +596,17 @@ export async function reattachDocument(file, pdfMeta) {
 //
 // Empty when the record carries no hash, which keeps the key stable for rows
 // written before the store recorded one.
-function documentOpenKey(slot) {
+// `pdfId` only means anything on the doc slot, where a deck can now carry more
+// than one paper — the notebook shelf still has exactly one document and reads
+// off docSlotMeta exactly as it always has. The suffix is left off entirely for
+// the primary PDF, so a deck that has never had a second one gets the identical
+// key it always got.
+function documentOpenKey(slot, pdfId = null) {
   const normalized = normalizeDocSlot(slot);
-  return `${currentDeckKey()}|${normalized}|${docSlotMeta(normalized)?.sha256 || ""}`;
+  if (normalized !== DOC_SLOT_DOC) return `${currentDeckKey()}|${normalized}|${docSlotMeta(normalized)?.sha256 || ""}`;
+  const id = pdfId || activePdfId(state.meta) || PDF_PRIMARY_ID;
+  const suffix = id === PDF_PRIMARY_ID ? "" : `|${id}`;
+  return `${currentDeckKey()}|${normalized}${suffix}|${deckPdfById(state.meta, id)?.sha256 || ""}`;
 }
 
 // Which of the deck's documents the surface is currently showing, or null when
@@ -604,6 +614,14 @@ function documentOpenKey(slot) {
 // whether what is under them is a notebook they may regenerate.
 export function openDocumentSlot() {
   return openPdf?.slot || null;
+}
+
+// Which PDF, when the slot is the doc slot and the deck has more than one —
+// null on the notebook slot, and PDF_PRIMARY_ID for an ordinary single-PDF
+// deck. Read by the dropdown switcher and anything that has to say which of a
+// deck's papers is on screen right now.
+export function openDocumentPdfId() {
+  return openPdf?.slot === DOC_SLOT_DOC ? (openPdf?.pdfId || PDF_PRIMARY_ID) : null;
 }
 
 // ── Are the pages on screen still pages of the file the deck names? ────────
@@ -616,7 +634,50 @@ export function openDocumentSlot() {
 // entirely. Nothing short of reopening can show pages this device has never
 // parsed.
 export function openDocumentIsCurrent() {
-  return !openPdf || openPdf.deckKey === documentOpenKey(openPdf.slot);
+  return !openPdf || openPdf.deckKey === documentOpenKey(openPdf.slot, openPdf.pdfId);
+}
+
+// ── Switching between a deck's PDFs ─────────────────────────────────────────
+//
+// A dropdown selection, not a tab press — the reader stays on the PDF tab, and
+// the doc slot opens a different one of the deck's papers. Which one is
+// active is written to the deck's own meta before the open, not after, so a
+// reload or a sync mid-open still lands on the reader's choice rather than on
+// whichever paper happened to finish opening.
+export async function switchToPdf(pdfId) {
+  if (!pdfId || activeDocSlot() !== DOC_SLOT_DOC) return false;
+  if (!deckPdfById(state.meta, pdfId)) return false;
+  if (pdfId === (openPdf?.pdfId || activePdfId(state.meta))) return true;
+  state.meta = { ...state.meta, pdfActiveId: pdfId };
+  scheduleDeckAutosave();
+  await openDocumentView({ slot: DOC_SLOT_DOC, pdfId });
+  return true;
+}
+
+// The dropdown itself — rebuilt from the deck's own list each time it might
+// have changed (an attach, a remove, a rename), and hidden outright when
+// there is only one PDF, so an ordinary single-PDF deck's toolbar looks
+// exactly as it always has.
+export function renderDocumentPdfSwitcher() {
+  const picker = el.documentPdfSwitcher;
+  if (!picker) return;
+  if (activeDocSlot() !== DOC_SLOT_DOC) { picker.hidden = true; return; }
+  const list = deckPdfs(state.meta);
+  if (list.length < 2) {
+    picker.hidden = true;
+    picker.innerHTML = "";
+    return;
+  }
+  const activeId = openPdf?.pdfId || activePdfId(state.meta);
+  picker.innerHTML = "";
+  list.forEach((entry) => {
+    const option = document.createElement("option");
+    option.value = entry.id;
+    option.textContent = entry.label || entry.name || "PDF";
+    if (entry.id === activeId) option.selected = true;
+    picker.appendChild(option);
+  });
+  picker.hidden = false;
 }
 
 // Everything a rendered page carries, brought up to date against arrays that
@@ -668,10 +729,15 @@ let documentOpensInFlight = 0;
 // notebook beside it (src/documents/doc-slot.js). Defaulted from the view the
 // reader is on rather than required, so every existing caller keeps meaning
 // what it meant.
-async function openDocumentViewBody({ force = false, slot = null } = {}) {
+async function openDocumentViewBody({ force = false, slot = null, pdfId = null } = {}) {
   const view = el.documentView;
   const openSlot = slot ? normalizeDocSlot(slot) : activeDocSlot();
-  const pdfMeta = docSlotMeta(openSlot);
+  // Only means anything on the doc slot — the notebook shelf still has exactly
+  // one document. Defaulted to whichever PDF the deck says is active, so every
+  // existing caller (a tab press, a deck open) that has never heard of a
+  // second PDF keeps meaning what it meant.
+  const openPdfId = openSlot === DOC_SLOT_DOC ? (pdfId || activePdfId(state.meta)) : null;
+  const pdfMeta = openSlot === DOC_SLOT_DOC ? deckPdfById(state.meta, openPdfId) : docSlotMeta(openSlot);
   if (!view) return false;
   // Nothing belonging to a deck that is not this one may stay parked. First,
   // and before every branch below, because this is the one moment the module
@@ -708,7 +774,7 @@ async function openDocumentViewBody({ force = false, slot = null } = {}) {
   // mean "is THIS one already open?" — without the slot, switching between the
   // PDF tab and the Write tab would be a no-op that left the reader
   // looking at the other paper.
-  const deckKey = documentOpenKey(openSlot);
+  const deckKey = documentOpenKey(openSlot, openPdfId);
   if (!force && openPdf && openPdf.deckKey === deckKey) {
     // Already open: only the layout can have gone stale (a rotate, a resize
     // while the tab was hidden) — and `refit` is what makes that true. A bare
@@ -784,6 +850,7 @@ async function openDocumentViewBody({ force = false, slot = null } = {}) {
     openPdf = {
       deckKey,
       slot: openSlot,
+      pdfId: openPdfId,
       doc: parked.doc,
       pageCount: parked.pageCount,
       baseWidth: parked.baseWidth,
@@ -861,10 +928,13 @@ async function openDocumentViewBody({ force = false, slot = null } = {}) {
   // way to tell it from a page. supersededOpen() draws the distinction.
   if (token !== pdfOpenToken) return supersededOpen();
 
-  const blob = await getDocument(documentStoreKey(state.localDeckId, openSlot), pdfMeta);
+  const storeKey = openSlot === DOC_SLOT_DOC
+    ? pdfStoreKey(state.localDeckId, openPdfId)
+    : documentStoreKey(state.localDeckId, openSlot);
+  const blob = await getDocument(storeKey, pdfMeta);
   if (token !== pdfOpenToken) return supersededOpen();
   if (!blob) {
-    renderMissingDocumentPrompt(pdfMeta);
+    renderMissingDocumentPrompt(pdfMeta, openPdfId);
     return false;
   }
 
@@ -902,8 +972,9 @@ async function openDocumentViewBody({ force = false, slot = null } = {}) {
     // file. On a 40MB paper on a phone that is seconds of worker time, and one
     // more trip through every path this fix is about, each time the reader
     // glances at their cards.
-    deckKey: documentOpenKey(openSlot),
+    deckKey: documentOpenKey(openSlot, openPdfId),
     slot: openSlot,
+    pdfId: openPdfId,
     doc,
     pageCount: doc.numPages,
     // Every page starts out assumed to be the size of page 1 — which is true
@@ -944,7 +1015,7 @@ async function openDocumentViewBody({ force = false, slot = null } = {}) {
   // A scale outside the bounds is ignored rather than clamped: out of range
   // means the record was written by a build with different limits, and honouring
   // half of it would be worse than honouring none.
-  const storedView = documentResumePosition(openSlot);
+  const storedView = documentResumePosition(openSlot, openPdfId);
   if (storedView && storedView.fitWidth === false
       && Number.isFinite(storedView.scale)
       && storedView.scale >= PDF_MIN_SCALE && storedView.scale <= PDF_MAX_SCALE) {
@@ -1012,7 +1083,8 @@ function finishDocumentOpen(view, token, openSlot, at, { restored = false, refit
   }
   // Off the critical path: the pages are already on screen and readable, and
   // an outline can need a fetch per entry on a long book.
-  buildDocumentOutline(openPdf.doc).catch((error) => console.warn("Could not read the PDF outline", error));
+  buildDocumentOutline(openPdf.doc, openPdf.pdfId || PDF_PRIMARY_ID).catch((error) => console.warn("Could not read the PDF outline", error));
+  renderDocumentPdfSwitcher();
 
   // ── Where to land, and when it is safe to say so ─────────────────────────
   //
@@ -2526,9 +2598,22 @@ export function updatePageIndicator() {
 // drops what it cannot parse, so a `key|slot` would have stopped being backed up
 // silently. An entry written before this existed has three elements and means
 // the deck's own paper, which is what it always meant.
-export function documentPositionKey(slot) {
+// `pdfId` rides INSIDE the fourth element for a PDF beyond the primary
+// ("doc:pdf-xyz" rather than a bare "doc"), not as a fifth array element.
+// src/backup/library-state.js's splitDeckKey/buildDeckKey carry this element
+// through a backup verbatim as an opaque string — they never parse it — so a
+// compound value here round-trips correctly through a restore, where a fifth
+// element would have been silently truncated back down to four (dropping
+// which PDF it was) and could then collide with the primary's own key. An
+// ordinary single-PDF deck's key is unchanged: this only differs from
+// normalizeDocSlot's bare answer once there is a second PDF to disambiguate.
+export function documentPositionKey(slot, pdfId = null) {
   const parts = JSON.parse(currentDeckKey());
-  return JSON.stringify([...parts, normalizeDocSlot(slot)]);
+  const normalized = normalizeDocSlot(slot);
+  const slotValue = normalized === DOC_SLOT_DOC && pdfId && pdfId !== PDF_PRIMARY_ID
+    ? `${normalized}:${pdfId}`
+    : normalized;
+  return JSON.stringify([...parts, slotValue]);
 }
 
 // Which position to resume THIS slot at, across the two stores and the two
@@ -2538,7 +2623,14 @@ export function documentPositionKey(slot) {
 // fallback IS the compatibility rule: a deck last read by a build without
 // per-slot keys has only the shared bag, which is exactly today's behaviour,
 // until the first scroll on each surface writes a record of its own.
-function documentResumePosition(slot) {
+function documentResumePosition(slot, pdfId = null) {
+  const normalized = normalizeDocSlot(slot);
+  if (normalized === DOC_SLOT_DOC && pdfId && pdfId !== PDF_PRIMARY_ID) {
+    // A PDF beyond the primary has no shared meta.readingPosition fallback to
+    // reach for — it never existed before this PDF did — so its only synced
+    // record is meta.pdfReadingPositions[pdfId].
+    return betterReadingPosition(state.meta?.pdfReadingPositions?.[pdfId], documentPositionKey(slot, pdfId));
+  }
   return betterReadingPosition(state.meta?.[docSlotReadingPositionKey(slot)], documentPositionKey(slot))
     || betterReadingPosition(state.meta?.readingPosition, currentDeckKey());
 }
@@ -2547,6 +2639,7 @@ export function scheduleDocumentPositionSave() {
   if (!openPdf) return;
   const page = currentDocumentPage();
   const slot = openPdf.slot;
+  const extraPdfId = slot === DOC_SLOT_DOC && openPdf.pdfId && openPdf.pdfId !== PDF_PRIMARY_ID ? openPdf.pdfId : null;
   const position = { offset: page, pdfPage: page, ratio: currentDocumentRatio(), at: Date.now() };
   // ── The local copy carries two things the cloud's must not ───────────────
   //
@@ -2555,7 +2648,7 @@ export function scheduleDocumentPositionSave() {
   // phone and a laptop must not share a magnification, which is the argument
   // src/storage/ink-prefs.js makes at length for the nib. So they ride in the
   // device's own store and are stripped from the copy that travels.
-  scheduleReadingPositionSave(documentPositionKey(slot), {
+  scheduleReadingPositionSave(documentPositionKey(slot, extraPdfId), {
     ...position,
     across: currentDocumentAcross(),
     scale: openPdf.scale,
@@ -2571,13 +2664,20 @@ export function scheduleDocumentPositionSave() {
   // it rides along on whichever save happens next, which is the same
   // deliberately simple strategy the notes position uses.
   if (state.meta && typeof state.meta === "object") {
-    // Per slot, because a deck's paper and its notebook are two documents with
-    // two page counts and there was never a sense in which one number described
-    // both — the two tabs used to overwrite each other on every scroll. The
-    // shared key is still written beside them, unchanged, so a device on an
-    // older build still resumes.
-    state.meta[docSlotReadingPositionKey(slot)] = position;
-    state.meta.readingPosition = position;
+    if (extraPdfId) {
+      // A PDF beyond the primary — its own entry in meta.pdfReadingPositions,
+      // beside (not instead of) the flat keys below, which stay exactly what
+      // the primary and the notebook have always written.
+      state.meta.pdfReadingPositions = { ...(state.meta.pdfReadingPositions || {}), [extraPdfId]: position };
+    } else {
+      // Per slot, because a deck's paper and its notebook are two documents with
+      // two page counts and there was never a sense in which one number described
+      // both — the two tabs used to overwrite each other on every scroll. The
+      // shared key is still written beside them, unchanged, so a device on an
+      // older build still resumes.
+      state.meta[docSlotReadingPositionKey(slot)] = position;
+      state.meta.readingPosition = position;
+    }
   }
 }
 
@@ -2749,9 +2849,11 @@ export async function saveDocumentCopy() {
   // The surface's own document, so "the original PDF" on the Write tab hands
   // back the notebook's paper rather than a paper it is not showing.
   const slot = activeDocSlot();
-  const pdfMeta = docSlotMeta(slot);
+  const pdfId = slot === DOC_SLOT_DOC ? (openPdf?.pdfId || activePdfId(state.meta)) : null;
+  const pdfMeta = slot === DOC_SLOT_DOC ? deckPdfById(state.meta, pdfId) : docSlotMeta(slot);
   if (!pdfMeta) return false;
-  const blob = await getDocument(documentStoreKey(state.localDeckId, slot), pdfMeta);
+  const key = slot === DOC_SLOT_DOC ? pdfStoreKey(state.localDeckId, pdfId) : documentStoreKey(state.localDeckId, slot);
+  const blob = await getDocument(key, pdfMeta);
   if (!blob) {
     setStatus("This device doesn't have a copy of the PDF to save.", "error");
     return false;

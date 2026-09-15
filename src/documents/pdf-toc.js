@@ -44,6 +44,7 @@
 import { state } from "../core/state.js?v=__BUILD__";
 import { stripInvalidUnicode } from "../core/text.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
+import { PDF_PRIMARY_ID } from "./pdf-multi.js?v=__BUILD__";
 import { cleanPdfItemText, textItemGap } from "./pdf-selection.js?v=__BUILD__";
 
 // Bumped when the rules below change enough that an old cached list would be
@@ -139,8 +140,16 @@ export const PDF_TOC_JUNK_RE = /^[\s\d.,;:()[\]{}·•—–-]*$/;
 
 // ── The cache on the deck ──────────────────────────────────────────────────
 
-export function readCachedPdfContents(pageCount) {
-  const cached = state.meta?.pdfToc;
+// `pdfId` beyond the primary reads/writes meta.pdfTocByPdfId[pdfId] instead of
+// the flat meta.pdfToc — the primary keeps the original key untouched, so a
+// deck that has never had a second PDF never grows this second bag.
+function pdfTocCacheFor(meta, pdfId) {
+  if (!pdfId || pdfId === PDF_PRIMARY_ID) return meta?.pdfToc;
+  return meta?.pdfTocByPdfId?.[pdfId];
+}
+
+export function readCachedPdfContents(pageCount, pdfId = PDF_PRIMARY_ID) {
+  const cached = pdfTocCacheFor(state.meta, pdfId);
   if (!cached || cached.v !== PDF_TOC_VERSION) return null;
   // The page count is the cheap proof that this cache belongs to this file. A
   // re-attach already checks the sha256, so a document that is the same length
@@ -155,24 +164,26 @@ export function readCachedPdfContents(pageCount) {
   })).filter((entry) => entry.title && entry.page);
 }
 
-export function cachePdfContents(entries, pageCount) {
+export function cachePdfContents(entries, pageCount, pdfId = PDF_PRIMARY_ID) {
   if (!state.meta || typeof state.meta !== "object") return;
   // Stored with one-letter keys, deliberately. This rides in the deck's JSONB
   // meta and is synced with it; four hundred rows of { title, page, depth } is
   // about three times the size of the same rows as { t, p, d }, for a bag that
   // every other field in is a handful of bytes.
-  state.meta = {
-    ...state.meta,
-    pdfToc: {
-      v: PDF_TOC_VERSION,
-      pages: pageCount,
-      // Stripped as it is written, not only where the titles are built: this is
-      // the point at which contents entries become part of the deck's synced
-      // meta, and a title from the file's own outline dictionary comes through
-      // pdf.js's string decoder, which is where the NULs come from.
-      entries: entries.map((entry) => ({ t: stripInvalidUnicode(entry.title), p: entry.page, d: entry.depth }))
-    }
+  const cache = {
+    v: PDF_TOC_VERSION,
+    pages: pageCount,
+    // Stripped as it is written, not only where the titles are built: this is
+    // the point at which contents entries become part of the deck's synced
+    // meta, and a title from the file's own outline dictionary comes through
+    // pdf.js's string decoder, which is where the NULs come from.
+    entries: entries.map((entry) => ({ t: stripInvalidUnicode(entry.title), p: entry.page, d: entry.depth }))
   };
+  if (!pdfId || pdfId === PDF_PRIMARY_ID) {
+    state.meta = { ...state.meta, pdfToc: cache };
+  } else {
+    state.meta = { ...state.meta, pdfTocByPdfId: { ...(state.meta.pdfTocByPdfId || {}), [pdfId]: cache } };
+  }
   scheduleDeckAutosave();
 }
 

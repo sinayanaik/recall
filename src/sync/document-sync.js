@@ -41,6 +41,7 @@ import {
   splitHighlightNotesTail
 } from "../format/notes-fence.js?v=__BUILD__";
 import { LEGACY_NOTEBOOK_KEYS } from "../documents/notebook-migrate.js?v=__BUILD__";
+import { deckPdfs, PDF_PRIMARY_ID } from "../documents/pdf-multi.js?v=__BUILD__";
 import { mergeHighlightNoteTails } from "../format/highlight-notes-merge.js?v=__BUILD__";
 import { CARD_TOMBSTONE_MAX_AGE_MS } from "./cards.js?v=__BUILD__";
 import { mergePdfHighlights, mergeRecordsById, syncTextChanged, syncTextFingerprint } from "./diff.js?v=__BUILD__";
@@ -359,19 +360,59 @@ export function mergeDeckMeta(cloudMeta, localMeta, { prefer = "local" } = {}) {
   const loser = prefer === "cloud" ? local : cloud;
   const next = { ...loser, ...winner };
 
-  // meta.pdf and meta.notebook — only ever written, never deleted: "Remove from
-  // cloud" sets offloaded:true and leaves the record (see
-  // offloadCurrentDocument), because the highlights are coordinates into that
-  // exact file and the deck has to keep knowing which file. So a side that has
-  // one always beats a side that has none, and the preferred side wins when both
-  // do.
-  //
-  // Both slots, by the same rule and for the same reason. A device that has not
+  // meta.notebook — only ever written, never deleted: "Remove from cloud" sets
+  // offloaded:true and leaves the record (see offloadCurrentDocument), because
+  // the highlights are coordinates into that exact file and the deck has to
+  // keep knowing which file. So a side that has one always beats a side that
+  // has none, and the preferred side wins when both do. A device that has not
   // opened the Write tab since the notebook moved out of meta.pdf still sends a
   // meta with no `notebook` key at all, and an absent key must never delete a
   // paper full of somebody's handwriting.
-  if (!winner.pdf && loser.pdf) next.pdf = loser.pdf;
   if (!winner.notebook && loser.notebook) next.notebook = loser.notebook;
+
+  // meta.pdf / meta.pdfs — the deck's own paper(s). Two regimes:
+  //
+  //   • neither side has ever written meta.pdfs (still the ordinary, single-
+  //     PDF deck): the OLD rule, unchanged and untouched by any of the
+  //     multi-PDF machinery below — a side that has one always beats a side
+  //     that has none. This deck was never offered a "remove" action (see
+  //     removePdfFromDeck, which refuses on a deck's only PDF), so there is
+  //     nothing here that legitimately needs to disappear.
+  //   • either side HAS meta.pdfs (a second PDF was attached on some device,
+  //     ever): the collection merges by id, exactly as pdfBlocks does just
+  //     above — an add on either side is a genuine add, and a removal is
+  //     honoured through its own tombstone bag rather than by "whoever has
+  //     none loses", which is what makes removing a PDF possible at all.
+  //     deckPdfs synthesizes a one-entry list for a side that still carries
+  //     only the bare meta.pdf, under the fixed PDF_PRIMARY_ID every device
+  //     agrees on, so a deck mid-migration merges correctly with one that has
+  //     already written meta.pdfs.
+  if (Array.isArray(cloud.pdfs) || Array.isArray(local.pdfs)) {
+    const mergedPdfs = mergeRecordsById(deckPdfs(cloud), deckPdfs(local), {
+      tombstones: metaTombstoneMs("deletedPdfIds", cloud, local)
+    }) || [];
+    if (mergedPdfs.length) next.pdfs = mergedPdfs;
+    else delete next.pdfs;
+    // The mirror every old-cached client still reads as "this deck's PDF" —
+    // see pdf-multi.js's own header for why this id is fixed rather than
+    // minted.
+    const primary = mergedPdfs.find((entry) => entry.id === PDF_PRIMARY_ID);
+    if (primary) {
+      const { id: _drop, ...rest } = primary;
+      next.pdf = rest;
+    } else {
+      delete next.pdf;
+    }
+    // A stale pointer at a PDF removed on another device must fall back to
+    // something the deck still has (see activePdfId) rather than name nothing
+    // — dropped here so every reader downstream can trust it or ignore it.
+    if (!mergedPdfs.some((entry) => entry.id === next.pdfActiveId)) delete next.pdfActiveId;
+    const pdfTombstones = mergeMetaTombstones("deletedPdfIds", cloud, local);
+    if (pdfTombstones) next.deletedPdfIds = pdfTombstones;
+    else delete next.deletedPdfIds;
+  } else if (!winner.pdf && loser.pdf) {
+    next.pdf = loser.pdf;
+  }
 
   // meta.bookmark and meta.readingPosition — { offset, source, text, at }, or
   // the document shape { offset, pdfPage, ratio, text, at }. Both carry their
@@ -393,6 +434,28 @@ export function mergeDeckMeta(cloudMeta, localMeta, { prefer = "local" } = {}) {
     if (a && b) next[key] = (Number(b.at) || 0) >= (Number(a.at) || 0) ? b : a;
     else next[key] = b || a || undefined;
     if (!next[key]) delete next[key];
+  }
+
+  // meta.pdfReadingPositions — { [pdfId]: {offset,pdfPage,ratio,text,at} },
+  // one entry per PDF beyond the primary (whose position stays in the flat
+  // readingPositionPdf key above, unchanged). A plain key union, each entry
+  // settled by its own `at` — the identical rule the flat keys just above
+  // apply, one level deeper because there can now be more than one document
+  // on this shelf.
+  if ((cloud.pdfReadingPositions && typeof cloud.pdfReadingPositions === "object")
+      || (local.pdfReadingPositions && typeof local.pdfReadingPositions === "object")) {
+    const merged = {};
+    new Set([
+      ...Object.keys(cloud.pdfReadingPositions || {}),
+      ...Object.keys(local.pdfReadingPositions || {})
+    ]).forEach((id) => {
+      const a = cloud.pdfReadingPositions?.[id];
+      const b = local.pdfReadingPositions?.[id];
+      const picked = a && b ? ((Number(b.at) || 0) >= (Number(a.at) || 0) ? b : a) : (b || a);
+      if (picked) merged[id] = picked;
+    });
+    if (Object.keys(merged).length) next.pdfReadingPositions = merged;
+    else delete next.pdfReadingPositions;
   }
 
   // meta.linkIds — a sorted array of the ids this deck answers to, one minted per

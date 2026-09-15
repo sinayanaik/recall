@@ -4233,9 +4233,13 @@ try {
     const file = new File([new Uint8Array(bytes)], name, { type: "application/pdf" });
     const ok = await api.attachPdfToOpenDeck(file);
     await settle(700);
-    // Refused a second time, so the two controls are never both on offer.
-    const twice = await api.attachPdfToOpenDeck(file);
-    await settle(200);
+    // Attached AGAIN, deliberately — a deck can carry more than one PDF now,
+    // and this is the case that keeps a second attach welcomed rather than
+    // refused.
+    const secondName = "attached-again.pdf";
+    const file2 = new File([new Uint8Array(bytes)], secondName, { type: "application/pdf" });
+    const twice = await api.attachPdfToOpenDeck(file2);
+    await settle(700);
 
     return {
       ok, twice,
@@ -4250,7 +4254,14 @@ try {
       highlights: (api.state.meta?.pdfHighlights || []).length,
       viewMode: api.state.viewMode,
       stored: Boolean(await api.readDocument(api.state.localDeckId).then((e) => e?.blob).catch(() => null)),
-      painted: document.querySelectorAll(".pdf-page").length
+      painted: document.querySelectorAll(".pdf-page").length,
+      // ── After the second attach ─────────────────────────────────────────
+      pdfsCount: api.state.meta?.pdfs?.length || 0,
+      primaryStillFirst: api.state.meta?.pdfs?.[0]?.id === "primary",
+      secondName: api.state.meta?.pdfs?.[1]?.name || "",
+      activeIsSecond: api.state.meta?.pdfActiveId === api.state.meta?.pdfs?.[1]?.id,
+      switcherHidden: document.getElementById("documentPdfSwitcher")?.hidden !== false,
+      switcherOptionCount: document.getElementById("documentPdfSwitcher")?.options?.length || 0
     };
   }`, Array.from(fixture.bytes), "attached.pdf");
 
@@ -4283,14 +4294,25 @@ try {
     `title "${attached.title}", notes ${attached.notesKept ? "kept" : "LOST"}`);
   check("...and highlights already in the file imported with it", attached.highlights >= (fixture.annotation ? 1 : 0),
     `${attached.highlights} record(s)`);
-  // ...and a deck that HAS a paper is not offered a second one. The check that
-  // used to stand here read the drawer row's `hidden` for this; with the row
-  // gone, the refusal itself is the assertion — attachPdfToOpenDeck is what
-  // both routes call, and it is where "this deck already has one, use
-  // Re-attach" lives.
-  check("a deck that already has a document refuses a second attach",
-    attached.drawerRowAfter === false && attached.twice === false,
-    `drawer row present=${attached.drawerRowAfter}, second attach refused=${attached.twice === false}`);
+  // ...and a deck that HAS a paper is now offered a second one, rather than
+  // refused. This check used to assert the opposite — a deck could carry
+  // exactly one PDF, and attachPdfToOpenDeck refused every attach after the
+  // first. src/documents/pdf-multi.js is what lifted that ceiling: the first
+  // PDF stays the PRIMARY (meta.pdf's mirror, first in meta.pdfs), the second
+  // becomes the deck's active PDF, and the dropdown switcher comes on once
+  // there is more than one to choose between.
+  check("a deck that already has a document welcomes a second attach",
+    attached.twice === true && attached.pdfsCount === 2,
+    `second attach ok=${attached.twice}, meta.pdfs has ${attached.pdfsCount} entr(y/ies)`);
+  check("...with the first PDF kept as the primary, unchanged",
+    attached.primaryStillFirst && attached.pages > 0 && attached.sha === 64,
+    `primary first=${attached.primaryStillFirst}, ${attached.pages} page(s), sha256 ${attached.sha} chars`);
+  check("...and the newly attached one made the deck's active PDF",
+    attached.activeIsSecond && attached.secondName === "attached-again.pdf",
+    `active is second=${attached.activeIsSecond}, name="${attached.secondName}"`);
+  check("...with a dropdown to switch between them now on screen",
+    attached.switcherHidden === false && attached.switcherOptionCount === 2,
+    `switcher hidden=${attached.switcherHidden}, ${attached.switcherOptionCount} option(s)`);
 
   // ── A phone on its side ──────────────────────────────────────────────────
   //

@@ -43,6 +43,7 @@ import {
 } from "../notes/toc-tree.js?v=__BUILD__";
 import { cachePdfContents, derivePdfContents, readCachedPdfContents } from "./pdf-toc.js?v=__BUILD__";
 import { DOC_SLOT_NOTEBOOK, activeDocSlot } from "./doc-slot.js?v=__BUILD__";
+import { PDF_PRIMARY_ID } from "./pdf-multi.js?v=__BUILD__";
 
 // Nesting deeper than this is folded into its parent's level rather than
 // indented further. Books do go five deep, and at that point the indent is
@@ -163,7 +164,7 @@ export function flattenOutline(items, depth = 0, out = []) {
   return out;
 }
 
-export async function buildDocumentOutline(doc) {
+export async function buildDocumentOutline(doc, pdfId = PDF_PRIMARY_ID) {
   const token = (outlineToken += 1);
   const outline = await doc.getOutline();
   outlineEntries = flattenOutline(outline).filter((entry) => entry.title);
@@ -209,7 +210,7 @@ export async function buildDocumentOutline(doc) {
   // The cache first, because it is free and because the file it was derived
   // from cannot have changed. Only then the scan, which is minutes of worker
   // time on a big book and is why the result is worth keeping.
-  const cached = readCachedPdfContents(doc.numPages);
+  const cached = readCachedPdfContents(doc.numPages, pdfId);
   if (cached?.length) {
     outlineEntries = cached;
     outlineDerived = true;
@@ -232,7 +233,7 @@ export async function buildDocumentOutline(doc) {
   outlineScanning = false;
   outlineEntries = found;
   renderDocumentOutline();
-  if (found.length) cachePdfContents(found, doc.numPages);
+  if (found.length) cachePdfContents(found, doc.numPages, pdfId);
   return outlineEntries;
 }
 

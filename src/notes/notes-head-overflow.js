@@ -70,6 +70,7 @@ const ROW_TRAIL_SELECTORS = [
   // asserting this one button, because the fault was the list and not the
   // button.
   ".document-head > #documentInkBtn",
+  ".document-head > #documentPdfSwitcher",
   ".document-head > #documentMoreBtn",
   ".document-head > #documentMoreMenu",
   // ── The notebook's controls are NOT in this list ────────────────────────
@@ -100,6 +101,7 @@ const ROW_TRAIL_SELECTORS = [
 const OVERFLOW_SELECTORS = [
   ".notes-head > #focusModeBtn",
   ".notes-head > #immersiveModeBtn",
+  ".notes-head > #notesFoldAllBtn",
   ".notes-head > #bookmarkGoBtn",
   ".notes-head > .notes-make-card",
   ".notes-head > .notes-quick-note",
