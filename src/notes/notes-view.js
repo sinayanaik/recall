@@ -31,7 +31,8 @@ import { notesBlockForRawOffset } from "./raw-offset.js?v=__BUILD__";
 import { notesBlockAtReadingLineGeometric } from "./scroll-anchor.js?v=__BUILD__";
 import { hideNotesSelectionButton, touchSelectionDragActive } from "./selection.js?v=__BUILD__";
 import { blockAtNotesReadingLine, closeNotesToc } from "./toc.js?v=__BUILD__";
-import { applyNotesFoldState, releaseNotesChunkEstimateObserver, releaseNotesLazyBuildObserver, renderMarkdown, setNotesBlockEstimateSource, setNotesBodyFolded, syncNotesBlockEstimateSource, withChunkRendered } from "../render/block-cache.js?v=__BUILD__";
+import { applyNotesFoldState, notesFoldedHeadings, releaseNotesChunkEstimateObserver, releaseNotesLazyBuildObserver, renderMarkdown, resetNotesFoldedHeadings, setNotesBlockEstimateSource, syncNotesBlockEstimateSource, withChunkRendered } from "../render/block-cache.js?v=__BUILD__";
+import { headingSectionsFor } from "./chapters.js?v=__BUILD__";
 import { releaseDeferredWork } from "../render/deferred-work.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 
@@ -168,13 +169,13 @@ export function renderNotesView({ sameNote = false } = {}) {
   // continuous editor of them, and this tab is a note like any other note.
   return renderMarkdown(el.notesView, source, true)
     .then(() => resetClozeButton(el.clozeToggleNotesBtn))
-    // A genuinely different note starts unfolded, same rule as the cloze
-    // reveal-all button just above. `sameNote` (an edit to the note that is
-    // already open) leaves the fold as the reader left it, then re-applies it
-    // — the render just rebuilt every block, so whatever was hidden a moment
-    // ago is unhidden again until this runs.
+    // A genuinely different note opens with every section unfolded, same rule
+    // as the cloze reveal-all button just above. `sameNote` (an edit to the
+    // note that is already open) leaves each heading's own fold as the reader
+    // left it, then re-applies it — the render just rebuilt every block, so
+    // whatever was hidden a moment ago is unhidden again until this runs.
     .then(() => {
-      if (!sameNote) resetNotesFoldButton(el.notesFoldAllBtn);
+      if (!sameNote) resetNotesFoldedHeadings();
       applyNotesFoldState(el.notesView);
       refreshNotesFoldButtonAvailability(el.notesFoldAllBtn);
     })
@@ -200,38 +201,43 @@ export function renderNotesView({ sameNote = false } = {}) {
 }
 
 // ── Fold / unfold every section at once ─────────────────────────────────────
-// The note-body twin of setClozeButtonState/toggleClozes/resetClozeButton in
-// editor/toolbars.js — same shape, one flag rather than a per-item set,
-// because "fold all sections" has nothing narrower to remember.
-export function setNotesFoldButtonState(button, folded) {
-  if (!button) return;
-  button.setAttribute("aria-pressed", folded ? "true" : "false");
-  const label = button.querySelector(".notes-fold-label");
-  if (label) label.textContent = folded ? "Unfold all sections" : "Fold all sections";
-  button.title = folded ? "Show the text under every heading" : "Hide the text under every heading";
+//
+// Individual sections fold from their own arrow (see block-cache.js's
+// applyNotesFoldState/toggleNotesHeadingFold) — this button is the
+// convenience for "all of them", following the exact same "is everything
+// already in the state I'm about to set it to" shape
+// src/library/folder-tree.js's allFoldersExpanded/setAllFoldersExpanded uses
+// for the identical kind of button elsewhere in this app.
+//
+// Only sections with something under them count — a heading immediately
+// followed by another of an equal-or-shallower level has nothing to fold, so
+// it is never part of "is everything folded" and never gets added by "fold
+// everything".
+function foldableSectionsFor(source) {
+  return headingSectionsFor(source).filter((section) => section.blockEnd > section.blockIndex + 1);
 }
 
-export function toggleNotesFold(button) {
+export function allNotesHeadingsFolded(source) {
+  const sections = foldableSectionsFor(source);
+  return sections.length > 0 && sections.every((section) => notesFoldedHeadings.has(section.key));
+}
+
+export function toggleAllNotesHeadings() {
   if (isNotesPaged()) return;
-  const folded = !(button?.getAttribute("aria-pressed") === "true");
-  setNotesBodyFolded(folded);
+  const source = readerNotesBody(state.notes);
+  const sections = foldableSectionsFor(source);
+  if (allNotesHeadingsFolded(source)) resetNotesFoldedHeadings();
+  else sections.forEach((section) => notesFoldedHeadings.add(section.key));
   applyNotesFoldState(el.notesView);
-  setNotesFoldButtonState(button, folded);
-}
-
-// A different note opens unfolded, same rule renderNotesView already applies
-// to the cloze reveal-all button.
-export function resetNotesFoldButton(button) {
-  setNotesBodyFolded(false);
-  setNotesFoldButtonState(button, false);
 }
 
 // Paged mode lays out every block up front and applyNotesFoldState already
-// declines to touch it — so the button is put away rather than left clickable
+// declines to touch it, and a note with no foldable heading has nothing for
+// this button to do — either way it is put away rather than left clickable
 // and silently doing nothing.
 export function refreshNotesFoldButtonAvailability(button) {
   if (!button) return;
-  button.hidden = isNotesPaged();
+  button.hidden = isNotesPaged() || foldableSectionsFor(readerNotesBody(state.notes)).length === 0;
 }
 
 // Repaint the open note without the reader appearing to move at all.

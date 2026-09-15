@@ -211,32 +211,95 @@ export function blockHeadingLevel(block) {
   return heading ? heading[1].length : 0;
 }
 
-// One boolean per block: true for a block that sits under some heading (any
-// level) and is itself not a heading. False for a heading block — its own line
-// stays visible when its section folds — and false for anything before the
-// note's first heading, which has no heading to fold it under.
-export function foldableBlockMask(blocks) {
-  let sawHeading = false;
-  return blocks.map((block) => {
-    if (blockHeadingLevel(block)) { sawHeading = true; return false; }
-    return sawHeading;
-  });
+// A heading's own text, for the key below — the first non-blank line with its
+// leading "#"s and one space stripped.
+function headingBlockText(block) {
+  const first = block.split("\n").find((line) => line.trim()) || "";
+  return first.replace(/^[ \t]{0,3}#{1,6}[ \t]+/, "").trim();
 }
 
-// One cached answer, keyed on the source string — same shape as chapterIndexFor
-// above, for the same reason: every caller asks per render over a note that can
-// be a few hundred thousand characters long.
-let cachedFoldSource = null;
-let cachedFoldMask = null;
+// A short, stable-per-render identity for a heading, so fold state keyed by it
+// survives a re-render of the SAME text untouched and goes quietly inert (not
+// wrong) the moment that one heading's own words change. Same idea as
+// notes/toc.js's slugifyHeading, reimplemented here in a few lines rather than
+// imported: that module already imports THIS one indirectly (via
+// block-cache.js's notesHeadingScan), and pulling a heading-only helper back
+// across that edge is not worth what it would risk.
+function foldKeyFor(text, used) {
+  const base = text.toLowerCase().replace(/[^\w\s-]/g, "").trim().replace(/\s+/g, "-") || "section";
+  let key = base;
+  let n = 2;
+  while (used.has(key)) { key = `${base}-${n}`; n += 1; }
+  used.add(key);
+  return key;
+}
 
-export function foldableMaskFor(source) {
+// ── Every heading's own section, not just the shallowest level's ───────────
+//
+// [{ blockIndex, level, blockEnd, key }], one entry per heading block.
+// `blockEnd` is exclusive: the next block that opens a heading of level <=
+// this one's own, or blocks.length — so it reaches past any of the heading's
+// OWN sub-headings and their content, which is exactly the range folding that
+// heading has to hide. A heading immediately followed by another of an
+// equal-or-shallower level (blockEnd === blockIndex + 1) has nothing under it
+// to fold; callers use that to decide whether a heading gets an arrow at all.
+export function headingSectionsForBlocks(blocks) {
+  const levels = blocks.map((block) => blockHeadingLevel(block));
+  const used = new Set();
+  const sections = [];
+  levels.forEach((level, index) => {
+    if (!level) return;
+    let end = blocks.length;
+    for (let j = index + 1; j < levels.length; j += 1) {
+      if (levels[j] && levels[j] <= level) { end = j; break; }
+    }
+    sections.push({ blockIndex: index, level, blockEnd: end, key: foldKeyFor(headingBlockText(blocks[index]), used) });
+  });
+  return sections;
+}
+
+// One cached answer, keyed on the source string — same shape chapterIndexFor
+// and the old foldableMaskFor kept, for the same reason: every caller asks per
+// render over a note that can be a few hundred thousand characters long. Only
+// the SECTIONS are cached — which blocks are collapsed changes on every click
+// and does not belong in a cache keyed on the note's text.
+let cachedSectionsSource = null;
+let cachedSections = null;
+
+export function headingSectionsFor(source) {
   const text = String(source || "");
-  if (cachedFoldSource === text && cachedFoldMask) return cachedFoldMask;
+  if (cachedSectionsSource === text && cachedSections) return cachedSections;
   const split = splitPreparedBlocks(preprocessSpecialBlocks(text));
   const blocks = split ? split.blocks : [];
-  cachedFoldMask = foldableBlockMask(blocks);
-  cachedFoldSource = text;
-  return cachedFoldMask;
+  cachedSections = headingSectionsForBlocks(blocks);
+  cachedSectionsSource = text;
+  return cachedSections;
+}
+
+// One boolean per block: is it inside some CURRENTLY COLLAPSED heading's
+// range. A single forward sweep with a stack of the collapsed ranges still
+// open at each block, rather than asking "is block i inside any collapsed
+// section" per block (which would be O(blocks × sections)): sections nest
+// properly (a child's range sits entirely inside its parent's), so pushing a
+// collapsed section's end when its heading is reached and popping whatever
+// has closed by the current index is enough to answer for arbitrary nesting
+// depth in one O(blocks + sections) pass. A block is never hidden by its OWN
+// heading's fold state, only an ancestor's — the stack only starts affecting
+// blocks AFTER the section's own heading block.
+export function hiddenBlockMaskFor(blockCount, sections, collapsedKeys) {
+  const mask = new Array(blockCount).fill(false);
+  const openEnds = [];
+  let cursor = 0;
+  for (let i = 0; i < blockCount; i += 1) {
+    while (openEnds.length && openEnds[openEnds.length - 1] <= i) openEnds.pop();
+    mask[i] = openEnds.length > 0;
+    while (cursor < sections.length && sections[cursor].blockIndex === i) {
+      const section = sections[cursor];
+      if (collapsedKeys.has(section.key)) openEnds.push(section.blockEnd);
+      cursor += 1;
+    }
+  }
+  return mask;
 }
 
 // ── Spans: what the columns are actually given ──────────────────────────────

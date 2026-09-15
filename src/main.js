@@ -64,7 +64,8 @@ import { closeNoteLinkPicker, commitNoteLinkPicker, isNoteLinkBrowsing, isNoteLi
 import { isInkSheetOpen, redoInkSheet, repaintInkSheet, undoInkSheet } from "./notes/ink-sheet.js?v=__BUILD__";
 import { followNoteLink, revealNoteHeading } from "./notes/note-links.js?v=__BUILD__";
 import { initNotesHeadOverflow } from "./notes/notes-head-overflow.js?v=__BUILD__";
-import { commitNotesEditIfActive, enterNotesEditing, isNotesEditing, isProgrammaticNotesScroll, renderNotesViewPinned, setNotesScrolledSource, toggleNotesFold } from "./notes/notes-view.js?v=__BUILD__";
+import { initNotesFoldTwisties } from "./render/block-cache.js?v=__BUILD__";
+import { commitNotesEditIfActive, enterNotesEditing, isNotesEditing, isProgrammaticNotesScroll, renderNotesViewPinned, setNotesScrolledSource, toggleAllNotesHeadings } from "./notes/notes-view.js?v=__BUILD__";
 import { sourceFromRawEditor } from "./notes/notes-edit-split.js?v=__BUILD__";
 import { initPagedNotes } from "./notes/paged-view.js?v=__BUILD__";
 import { findRawOffsetForRenderedPoint } from "./notes/raw-offset.js?v=__BUILD__";
@@ -1100,6 +1101,7 @@ onDomReady(initRenderToolbars);
 // overflow menu records what it is moving, and both want the markup settled.
 onDomReady(initNotesHeadOverflow);
 onDomReady(initNotesTocFolding);
+onDomReady(initNotesFoldTwisties);
 onDomReady(initPagedNotes);
 onDomReady(initNotesCaretLine);
 onDomReady(initMarkMenu);
@@ -3244,7 +3246,7 @@ document.addEventListener("click", (e) => {
 el.clozeToggleBtn?.addEventListener("click", () => toggleClozes(el.card, el.clozeToggleBtn));
 el.clozeToggleNotesBtn?.addEventListener("click", () => toggleClozes(el.notesStage, el.clozeToggleNotesBtn));
 
-el.notesFoldAllBtn?.addEventListener("click", () => toggleNotesFold(el.notesFoldAllBtn));
+el.notesFoldAllBtn?.addEventListener("click", () => toggleAllNotesHeadings());
 
 // Keyboard activation for clozes (they carry role="button").
 document.addEventListener("keydown", (e) => {

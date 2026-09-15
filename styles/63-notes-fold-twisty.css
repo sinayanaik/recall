@@ -1,0 +1,43 @@
+/* One small arrow per heading with something under it, in the note body —
+ * see src/render/block-cache.js's applyNotesFoldState/toggleNotesHeadingFold.
+ * Written since the split, so it lives on its own rather than in the frozen
+ * 06-rendered.css slice its heading rules sit in.
+ *
+ * Prepended as the heading's own first child rather than an absolutely-
+ * positioned sibling the way the notes-TOC drawer's twisty is (see
+ * 17-toc-fold.css) — that one has to sit outside its row's <a> because a
+ * <button> nested in an anchor is invalid HTML; a heading is not a link, so
+ * nesting it directly is fine and needs no separate indentation math. Same
+ * single-glyph-rotates idiom as the drawer's twisty, for visual consistency.
+ */
+.notes-fold-twisty {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 0.9em;
+  height: 0.9em;
+  margin: 0 0.3em 0 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: color-mix(in srgb, var(--accent) 60%, var(--muted));
+  cursor: pointer;
+  vertical-align: middle;
+  line-height: 0;
+}
+.notes-fold-twisty-glyph {
+  display: block;
+  font-size: 0.7em;
+  transition: transform 0.15s ease, color 0.15s ease;
+}
+:is(h1, h2, h3, h4, h5, h6)[data-fold-collapsed="false"] > .notes-fold-twisty .notes-fold-twisty-glyph {
+  transform: rotate(90deg);
+}
+:is(h1, h2, h3, h4, h5, h6)[data-fold-collapsed="true"] > .notes-fold-twisty {
+  color: var(--accent);
+}
+@media (prefers-reduced-motion: reduce) {
+  .notes-fold-twisty-glyph {
+    transition: none;
+  }
+}

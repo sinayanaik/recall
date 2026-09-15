@@ -65,6 +65,11 @@ const SECTIONS = [
 // Anything appearing in styles/ that is neither a slice nor listed here is
 // still a failure.
 const POST_SPLIT = {
+  "63-notes-fold-twisty.css":
+    "The per-heading fold arrow in the notes body — see " +
+    "applyNotesFoldState/toggleNotesHeadingFold in src/render/block-cache.js. " +
+    "Written since the split, so it lives on its own rather than in the frozen " +
+    "06-rendered.css slice the heading rules it decorates sit in.",
   "62-frame-card-draggable.css":
     "The \"Make a flashcard\" modal, movable and resizable instead of pinned " +
     "centre over a dimmed backdrop — a region card's answer is often a " +

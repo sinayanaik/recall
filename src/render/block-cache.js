@@ -14,7 +14,7 @@ import { markBrokenImages } from "../images/broken.js?v=__BUILD__";
 import { hydrateLocalImages } from "../images/outbox.js?v=__BUILD__";
 import { enhanceSurfaceDiagramControls, enhanceSurfaceImageControls, findSourceImages, imageMatchKey, imageSurfaceForView } from "../images/surface-controls.js?v=__BUILD__";
 import { bindNotesHeadingElements, markNotesTocDirty, refreshNotesTocAvailability } from "../notes/toc.js?v=__BUILD__";
-import { foldableMaskFor, pagedSpanStarts } from "../notes/chapters.js?v=__BUILD__";
+import { headingSectionsFor, hiddenBlockMaskFor, pagedSpanStarts } from "../notes/chapters.js?v=__BUILD__";
 import { readerNotesBody } from "../format/notes-fence.js?v=__BUILD__";
 import { enhanceRenderedMarkdown, promoteNotesHeadings } from "./enhance.js?v=__BUILD__";
 import { markdownLibrariesReady } from "../core/lib-guard.js?v=__BUILD__";
@@ -1033,29 +1033,72 @@ export function chunkAncestor(node, container) {
   return chunk.classList?.contains(NOTES_CHUNK_CLASS) && chunk.parentNode === container ? chunk : null;
 }
 
-// ── Folding every section at once ───────────────────────────────────────────
+// ── Folding one section at a time ───────────────────────────────────────────
 //
-// One flag for the whole note, not a set of folded headings — the feature is
-// "fold all sections" / "unfold all sections", nothing narrower, so there is
-// nothing per-heading to remember. Module-level rather than on `state`: this is
-// a viewing preference for the surface on screen, not a fact about the note,
-// and it resets on every genuinely different note the same way the cloze
-// reveal-all button already does (see resetClozeButton in editor/toolbars.js).
-export let notesBodyFolded = false;
+// A Set of collapsed heading keys, not one flag for the whole note — folding
+// is per heading here (Notion/Obsidian-style): a nested heading collapses
+// along with whichever ancestor is folded without losing its OWN entry in the
+// set, so re-expanding the ancestor brings it back exactly as folded or open
+// as it was left. Module-level rather than on `state`: this is a viewing
+// preference for the surface on screen, not a fact about the note, and it
+// resets on every genuinely different note the same way the cloze reveal-all
+// button already does (see resetClozeButton in editor/toolbars.js).
+export let notesFoldedHeadings = new Set();
 
-export function setNotesBodyFolded(value) {
-  notesBodyFolded = Boolean(value);
+export function resetNotesFoldedHeadings() {
+  notesFoldedHeadings = new Set();
 }
 
-// Hides or shows every top-level block that foldableMaskFor says sits under a
-// heading. Uses notesTopLevelBlocks — see its own comment on why that is the
-// one correct way to walk a note's blocks — so this hides individual
-// paragraphs and lists rather than whole 40-block .notes-chunk wrappers.
+export function toggleNotesHeadingFold(key) {
+  if (!key) return;
+  if (notesFoldedHeadings.has(key)) notesFoldedHeadings.delete(key);
+  else notesFoldedHeadings.add(key);
+  applyNotesFoldState(el.notesView);
+}
+
+const NOTES_FOLD_TWISTY_CLASS = "notes-fold-twisty";
+
+// Inserted as the heading's own FIRST CHILD rather than as an absolutely-
+// positioned sibling the way the TOC drawer's twisty is (see toc-tree.js) —
+// that one has to sit outside its row's <a> because a <button> nested inside
+// an anchor is invalid HTML and gets reparented by the browser; a heading is
+// not a link, so nesting the button directly inside it is fine and needs no
+// extra layout math for indentation.
+function paintFoldTwisty(headingNode, key, collapsed) {
+  let twisty = headingNode.querySelector(`:scope > .${NOTES_FOLD_TWISTY_CLASS}`);
+  if (!twisty) {
+    twisty = document.createElement("button");
+    twisty.type = "button";
+    twisty.className = NOTES_FOLD_TWISTY_CLASS;
+    twisty.innerHTML = '<span class="notes-fold-twisty-glyph" aria-hidden="true">&#9656;</span>';
+    headingNode.prepend(twisty);
+  }
+  twisty.dataset.foldKey = key;
+  headingNode.dataset.foldCollapsed = collapsed ? "true" : "false";
+  twisty.setAttribute("aria-expanded", collapsed ? "false" : "true");
+  twisty.setAttribute("aria-label", collapsed ? "Expand this section" : "Collapse this section");
+}
+
+// For a heading that no longer has anything under it to fold (its content was
+// deleted, or an edit merged it with the next heading) — a stray arrow on a
+// heading with nothing to hide is worse than no arrow.
+function removeFoldTwisty(headingNode) {
+  const twisty = headingNode.querySelector(`:scope > .${NOTES_FOLD_TWISTY_CLASS}`);
+  if (twisty) twisty.remove();
+  delete headingNode.dataset.foldCollapsed;
+}
+
+// Hides or shows every top-level block inside a currently-collapsed heading's
+// range, and keeps every foldable heading's own arrow in step. Uses
+// notesTopLevelBlocks — see its own comment on why that is the one correct way
+// to walk a note's blocks — so this hides individual paragraphs and lists
+// rather than whole 40-block .notes-chunk wrappers.
 //
-// Always runs, folded or not: unfolding has to clear a `hidden` a previous
-// fold set, and a freshly built lazy span has to pick up whichever state is
-// current the moment it lands (see finishNotesLazySpan below) rather than
-// arrive unhidden and stay that way until the next unrelated repaint.
+// Always runs: unfolding one heading has to clear a `hidden` a previous fold
+// set, and a freshly built lazy span has to pick up whichever headings are
+// currently collapsed the moment it lands (see finishNotesLazySpan below)
+// rather than arrive unhidden and stay that way until the next unrelated
+// repaint.
 export function applyNotesFoldState(container) {
   if (container !== el.notesView || container.classList.contains("is-paged")) return;
   // The identical prepared string block-cache itself renders from (see
@@ -1063,9 +1106,51 @@ export function applyNotesFoldState(container) {
   // — not raw state.notes, which still carries the trailing highlight-notes
   // fence and would put every block index one section out of step with what
   // is actually on screen.
-  const mask = notesBodyFolded ? foldableMaskFor(readerNotesBody(state.notes)) : null;
-  notesTopLevelBlocks(container).forEach((node, index) => {
-    node.hidden = Boolean(mask && mask[index]);
+  const sections = headingSectionsFor(readerNotesBody(state.notes));
+  const blocks = notesTopLevelBlocks(container);
+  const mask = hiddenBlockMaskFor(blocks.length, sections, notesFoldedHeadings);
+  const sectionByBlock = new Map(sections.map((section) => [section.blockIndex, section]));
+  const foldable = sections.filter((section) => section.blockEnd > section.blockIndex + 1);
+  blocks.forEach((node, index) => {
+    node.hidden = Boolean(mask[index]);
+    const section = sectionByBlock.get(index);
+    if (section && section.blockEnd > section.blockIndex + 1) {
+      paintFoldTwisty(node, section.key, notesFoldedHeadings.has(section.key));
+    } else if (node.dataset.foldCollapsed !== undefined) {
+      removeFoldTwisty(node);
+    }
+  });
+  syncNotesFoldAllButton(foldable);
+}
+
+// The global "Fold all sections" button, kept honest after EVERY fold change
+// — an individual heading's own twisty included, not only its own click —
+// since folding or unfolding one section can just as easily make "is
+// everything folded" true or false as pressing this button does. Lives here
+// rather than in notes-view.js so the one function that ever changes fold
+// state (applyNotesFoldState) is also the one place that can never forget to
+// call it.
+function syncNotesFoldAllButton(foldable) {
+  const button = el.notesFoldAllBtn;
+  if (!button) return;
+  const allFolded = foldable.length > 0 && foldable.every((section) => notesFoldedHeadings.has(section.key));
+  button.setAttribute("aria-pressed", allFolded ? "true" : "false");
+  const label = button.querySelector(".notes-fold-label");
+  if (label) label.textContent = allFolded ? "Unfold all sections" : "Fold all sections";
+  button.title = allFolded ? "Show the text under every heading" : "Hide the text under every heading";
+}
+
+// One delegated listener for every twisty a note ever grows, rather than one
+// per heading per render — headings come and go on every edit, and a fresh
+// listener per heading would mean tracking and detaching as many as it
+// attaches. Registered once, from main.js's boot wiring.
+export function initNotesFoldTwisties() {
+  el.notesView?.addEventListener("click", (event) => {
+    const twisty = event.target.closest(`.${NOTES_FOLD_TWISTY_CLASS}`);
+    if (!twisty) return;
+    event.preventDefault();
+    event.stopPropagation();
+    toggleNotesHeadingFold(twisty.dataset.foldKey);
   });
 }
 
