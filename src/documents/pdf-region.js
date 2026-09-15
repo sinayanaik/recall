@@ -25,14 +25,19 @@
 // no migration: a region is a highlight whose quad happens not to have come from
 // a run of glyphs.
 //
-// ── Why the mode is one-shot ────────────────────────────────────────────────
+// ── Why the mode is sticky ───────────────────────────────────────────────────
 //
 // While it is armed the text layer stops taking pointer events and the scroller
 // gives up `touch-action` (styles/37-document-chrome.css), which is what makes a
-// drag a marquee rather than a text selection or a scroll. Both are real
-// takeaways — armed and forgotten, the surface is one you cannot select text in
-// and, on a phone, cannot scroll. So it disarms itself after one capture, the
-// way a shape tool in a drawing app does, and Escape gets out of it at any time.
+// drag a marquee rather than a text selection or a scroll. It stays armed across
+// captures — a reader pulling several figures out of one paper drags one region
+// after another without re-tapping the button each time — and disarms only on
+// the button's own toggle or on Escape, both at any time. A one-shot version of
+// this used to disarm itself after every capture, on the reasoning that "armed
+// and forgotten" leaves the surface unable to select text or (on a phone)
+// scroll — but a reader who dragged a second region right after the first,
+// without noticing the mode had already turned itself off, got an ordinary text
+// selection instead, which is exactly the mistake staying armed avoids.
 
 import { el } from "../core/dom.js?v=__BUILD__";
 import { MARK_HIGHLIGHT_DEFAULT } from "../format/highlight-colors.js?v=__BUILD__";
@@ -40,7 +45,7 @@ import { renderFormatDefaults } from "../format/render-toolbar.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
 import { addDocumentHighlight, DOCUMENT_MARK_HANDLERS, PDF_MARK_CLASS } from "./pdf-highlights.js?v=__BUILD__";
 import { pageNumberForRect, rectToPdfQuad } from "./pdf-selection.js?v=__BUILD__";
-import { openMarkMenuWith } from "../notes/mark-menu.js?v=__BUILD__";
+import { closeMarkMenu, openMarkMenuWith } from "../notes/mark-menu.js?v=__BUILD__";
 
 export const REGION_CLASS = "is-region-select";
 
@@ -102,6 +107,13 @@ function regionBoxFromPoints(pageEl, from, to) {
 }
 
 function beginRegionDrag(event) {
+  // The mode being sticky means a new drag can start while the previous
+  // region's mark menu is still open. Closed BEFORE the hit-test below, not
+  // after: the menu is positioned over the highlight it belongs to, which is
+  // exactly where a reader is likely to drag next, and left open it is what
+  // elementFromPoint finds instead of the page underneath it — so a drag
+  // starting there would silently fail to arm at all.
+  closeMarkMenu();
   const pageEl = regionPageUnder(event.clientX, event.clientY);
   if (!pageEl) return;
   const box = document.createElement("div");
@@ -156,8 +168,9 @@ function endRegionDrag() {
   // No viewport for the page means it has never been laid out, which cannot
   // happen for a page the reader just dragged across — but a null quad painted
   // as a highlight would be a record with no position, and those are forever.
+  // Mode stays armed: this is a transient failure, not a reason to make the
+  // reader re-arm before trying the same drag again.
   if (!quad) {
-    setRegionSelect(false);
     showToast("Could not place that region — try again once the page has finished drawing", "error");
     return;
   }
@@ -179,7 +192,6 @@ function endRegionDrag() {
     quads: [quad]
   }, renderFormatDefaults.highlight || MARK_HIGHLIGHT_DEFAULT);
 
-  setRegionSelect(false);
   if (!record) return;
 
   // Straight into the highlight's own menu, anchored on what was just drawn: a

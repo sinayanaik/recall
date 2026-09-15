@@ -17,7 +17,8 @@ import { ensurePdfJs } from "../core/lib-loader.js?v=__BUILD__";
 import { MARK_HIGHLIGHT_HEX } from "../format/highlight-colors.js?v=__BUILD__";
 import { decodeInkStrokes } from "../format/ink-strokes.js?v=__BUILD__";
 import { paintInkStrokes } from "../render/ink-paint.js?v=__BUILD__";
-import { documentHighlights, documentInkMarks } from "./pdf-highlights.js?v=__BUILD__";
+import { documentHighlightsForPdf, documentInkMarksForPdf } from "./pdf-highlights.js?v=__BUILD__";
+import { deckPdfById, PDF_PRIMARY_ID, pdfStoreKey } from "./pdf-multi.js?v=__BUILD__";
 import { getDocument } from "./pdf-store.js?v=__BUILD__";
 import { buildTextLayer, clampScale } from "./pdf-view.js?v=__BUILD__";
 
@@ -28,8 +29,13 @@ export const PDFREF_SCHEME = "pdfref:";
 // affordance exists to compensate.
 export const EMBED_TARGET_WIDTH = 420;
 
-export function pdfRegionRefMarkdown(page, rect) {
-  return `![](${PDFREF_SCHEME}${page}:${rect.join(",")})`;
+// `pdfId` is appended only for a non-primary PDF, so a card made before a
+// deck ever had more than one PDF keeps the exact ref it always had — every
+// existing card, and every client that has not seen this change, still parses
+// it exactly as before (implicit primary).
+export function pdfRegionRefMarkdown(page, rect, pdfId) {
+  const suffix = pdfId && pdfId !== PDF_PRIMARY_ID ? `:${pdfId}` : "";
+  return `![](${PDFREF_SCHEME}${page}:${rect.join(",")}${suffix})`;
 }
 
 export function parsePdfRef(src) {
@@ -39,10 +45,12 @@ export function parsePdfRef(src) {
   const sep = body.indexOf(":");
   if (sep === -1) return null;
   const page = Number(body.slice(0, sep));
-  const rect = body.slice(sep + 1).split(",").map(Number);
+  const rest = body.slice(sep + 1);
+  const [rectPart, pdfId = null] = rest.split(":");
+  const rect = rectPart.split(",").map(Number);
   if (!Number.isInteger(page) || page < 1) return null;
   if (rect.length !== 4 || rect.some((n) => !Number.isFinite(n))) return null;
-  return { page, rect };
+  return { page, rect, pdfId };
 }
 
 // ── One open PDF per deck, independent of the Document surface's own
@@ -51,18 +59,19 @@ export function parsePdfRef(src) {
 // A deck can have many region-embedded cards pointing at the same PDF, shown
 // one after another in Study or listed together in All Cards — each asking
 // for this again would reopen and re-parse the same file every time. Cached
-// for the session, keyed by deck; deliberately NOT the Document surface's own
-// document object, so switching tabs/decks there can't tear an embed down
+// for the session, keyed by the deck AND which of its PDFs (a deck can have
+// several now — see pdf-multi.js) — deliberately NOT the Document surface's
+// own document object, so switching tabs/decks there can't tear an embed down
 // out from under a card that's still showing it, and vice versa.
 const embedDocs = new Map();
 
-function openEmbedDoc(deckLocalId, pdfMeta) {
-  const key = deckLocalId || "";
+function openEmbedDoc(storeKey, pdfMeta) {
+  const key = storeKey || "";
   const cached = embedDocs.get(key);
   if (cached) return cached;
   const promise = (async () => {
     if (!(await ensurePdfJs())) return null;
-    const blob = await getDocument(deckLocalId, pdfMeta);
+    const blob = await getDocument(storeKey, pdfMeta);
     if (!blob) return null;
     // A copy of the bytes: pdf.js transfers the buffer it's given to its
     // worker, which detaches it, and the blob in the store must survive —
@@ -117,8 +126,8 @@ function hexWithAlpha(hex, alpha) {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
-function paintHighlightsOnCanvas(ctx, pageNumber, viewport) {
-  documentHighlights().forEach((record) => {
+function paintHighlightsOnCanvas(ctx, pageNumber, viewport, pdfId) {
+  documentHighlightsForPdf(pdfId).forEach((record) => {
     if (record.kind === "ink") return; // painted separately, below
     const hex = MARK_HIGHLIGHT_HEX[record.color] || MARK_HIGHLIGHT_HEX.yellow;
     (record.quads || []).forEach((quad) => {
@@ -148,8 +157,8 @@ function paintHighlightsOnCanvas(ctx, pageNumber, viewport) {
   });
 }
 
-function paintInkOnCanvas(ctx, pageNumber, viewport) {
-  const marks = documentInkMarks(pageNumber);
+function paintInkOnCanvas(ctx, pageNumber, viewport, pdfId) {
+  const marks = documentInkMarksForPdf(pdfId, pageNumber);
   if (!marks.length) return;
   // Ink strokes are stored in PDF user-space points, same as everything else
   // here — paintInkStrokes expects the context already carrying that
@@ -181,7 +190,10 @@ export async function mountPdfRegionEmbed(img) {
   img.replaceWith(wrapper);
 
   try {
-    const doc = await openEmbedDoc(state.localDeckId, state.meta?.pdf);
+    const pdfId = parsed.pdfId || PDF_PRIMARY_ID;
+    const pdfMeta = deckPdfById(state.meta, pdfId);
+    const storeKey = pdfStoreKey(state.localDeckId, pdfId);
+    const doc = await openEmbedDoc(storeKey, pdfMeta);
     if (!doc || parsed.page > doc.numPages) return showFallback(wrapper, parsed.page);
     const page = await doc.getPage(parsed.page);
     const [x0, y0, x1, y1] = parsed.rect;
@@ -204,8 +216,8 @@ export async function mountPdfRegionEmbed(img) {
     // composited onto the same canvas the PDF itself just rendered to. See
     // the note above paintHighlightsOnCanvas for why page.render() alone
     // can't already carry them.
-    paintHighlightsOnCanvas(ctx, parsed.page, viewport);
-    paintInkOnCanvas(ctx, parsed.page, viewport);
+    paintHighlightsOnCanvas(ctx, parsed.page, viewport, pdfId);
+    paintInkOnCanvas(ctx, parsed.page, viewport, pdfId);
 
     // Real, positioned, selectable text — the exact function the Document
     // surface itself renders every page's text layer with. Nothing here is

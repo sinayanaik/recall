@@ -21,7 +21,7 @@
 // table and no new column.
 
 import { activeDocSlot, DOC_SLOT_DOC, stampDocSlotAll } from "./doc-slot.js?v=__BUILD__";
-import { activePdfId, recordsForSurface, recordsOutsideSurface, stampRecordPdfIdAll } from "./pdf-multi.js?v=__BUILD__";
+import { activePdfId, PDF_PRIMARY_ID, recordsForSurface, recordsOutsideSurface, stampRecordPdfIdAll } from "./pdf-multi.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { lastInkContactWasPen, msSinceLastInkStroke } from "../core/gesture.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
@@ -57,6 +57,16 @@ export const PDF_MARK_FLASH_MS = 1400;
 export function documentHighlights() {
   const slot = activeDocSlot();
   return recordsForSurface(state.meta?.pdfHighlights, slot, slot === DOC_SLOT_DOC ? activePdfId(state.meta) : null);
+}
+
+// The doc-slot's records for an EXPLICIT PDF, regardless of which one is
+// currently open in the live Document view. documentHighlights() answers "what
+// the reader is looking at right now", which is the wrong question for
+// something like a region-embedded card (pdf-region-embed.js): the card can be
+// shown while a different PDF — or a different deck's tab entirely — is open,
+// and it always means the one PDF it was made from.
+export function documentHighlightsForPdf(pdfId) {
+  return recordsForSurface(state.meta?.pdfHighlights, DOC_SLOT_DOC, pdfId || PDF_PRIMARY_ID);
 }
 
 // Both papers' records, for the callers that mean the DECK rather than the
@@ -930,6 +940,12 @@ function inkPagePoint(pageNumber, x, y) {
 
 export function documentInkMarks(pageNumber = null) {
   return documentHighlights().filter((record) => record.kind === "ink"
+    && (pageNumber === null || Number(record.page) === Number(pageNumber)));
+}
+
+// documentInkMarks's own explicit-pdfId twin — see documentHighlightsForPdf.
+export function documentInkMarksForPdf(pdfId, pageNumber = null) {
+  return documentHighlightsForPdf(pdfId).filter((record) => record.kind === "ink"
     && (pageNumber === null || Number(record.page) === Number(pageNumber)));
 }
 

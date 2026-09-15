@@ -1226,7 +1226,7 @@ onDomReady(() => {
       // is rendered or uploaded until the card is actually shown.
       const record = id ? documentHighlightById(id) : null;
       if (record?.kind === "area" && record.quads?.[0]?.rect) {
-        createCardFromNotesSelection(pdfRegionRefMarkdown(record.page, record.quads[0].rect), anchor);
+        createCardFromNotesSelection(pdfRegionRefMarkdown(record.page, record.quads[0].rect, record.pdfId), anchor);
         return;
       }
       createCardFromNotesSelection(text, anchor);
