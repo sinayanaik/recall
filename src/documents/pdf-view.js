@@ -2672,9 +2672,7 @@ export function scheduleDocumentPositionSave() {
   // in-memory tracker, and that tracker only ever watches #notesView — a
   // surface a PDF deck's reader never touches. So without this line the local
   // store above would resume correctly on this device and nothing would ever
-  // reach the phone. Written straight onto meta rather than scheduling a save:
-  // it rides along on whichever save happens next, which is the same
-  // deliberately simple strategy the notes position uses.
+  // reach the phone.
   if (state.meta && typeof state.meta === "object") {
     if (extraPdfId) {
       // A PDF beyond the primary — its own entry in meta.pdfReadingPositions,
@@ -2690,6 +2688,14 @@ export function scheduleDocumentPositionSave() {
       state.meta[docSlotReadingPositionKey(slot)] = position;
       state.meta.readingPosition = position;
     }
+    // Flushed rather than left to ride along on whichever save happens next:
+    // a long stretch of pure reading triggers no other edit, so this field
+    // could sit unflushed in memory for the deck's entire session while a
+    // periodic sync reconciled against the stale copy still on disk — merged
+    // that stale page back over this one, and landed the reader there on the
+    // next reopen. Debounced, so a fling during active scrolling still
+    // coalesces into one write once it settles (see scheduleDeckAutosave).
+    scheduleDeckAutosave();
   }
 }
 
