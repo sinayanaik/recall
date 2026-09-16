@@ -1262,6 +1262,10 @@ try {
   const regionReloaded = region.record
     ? await page.evaluate(`async (id) => {
         const { api, settle } = window.__recall;
+        // Long enough to cover the 400ms autosave debounce and the async save it
+        // starts — see the identical comment on the text-highlight reload case
+        // above; api.deckAutosaveTimer is a stale snapshot and cannot be polled.
+        await settle(900);
         for (let i = 0; i < 60 && api.deckAutosaveTimer; i += 1) await settle(100);
         await settle(300);
         api.tearDownDocumentView();
