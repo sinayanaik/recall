@@ -634,7 +634,19 @@ export function openDocumentPdfId() {
 // entirely. Nothing short of reopening can show pages this device has never
 // parsed.
 export function openDocumentIsCurrent() {
-  return !openPdf || openPdf.deckKey === documentOpenKey(openPdf.slot, openPdf.pdfId);
+  if (!openPdf) return true;
+  // A missing entry on the doc slot is not automatically the same fact as a
+  // changed one. A genuine removal — here or on another device — always
+  // leaves a tombstone in deletedPdfIds (removePdfFromDeck, pdf-multi-actions.js),
+  // which is the one signal actually worth tearing the reader off their page
+  // for. Without a tombstone, a missing entry is an ordinary multi-PDF
+  // union-by-id merge that simply hasn't caught this PDF's own entry up yet —
+  // nothing really changed — and falling through to the sha comparison below
+  // with `|| ""` forced a full, jarring reopen for no real reason.
+  if (openPdf.slot === DOC_SLOT_DOC && !deckPdfById(state.meta, openPdf.pdfId)) {
+    return !state.meta?.deletedPdfIds?.[openPdf.pdfId];
+  }
+  return openPdf.deckKey === documentOpenKey(openPdf.slot, openPdf.pdfId);
 }
 
 // ── Switching between a deck's PDFs ─────────────────────────────────────────
