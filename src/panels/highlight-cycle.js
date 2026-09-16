@@ -39,7 +39,7 @@
 
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
-import { currentDocumentPage, isDocumentFitWidth, relayoutDocument } from "../documents/pdf-view.js?v=__BUILD__";
+import { currentDocumentPage, isDocumentFitWidth, relayoutDocumentHoldingReader } from "../documents/pdf-view.js?v=__BUILD__";
 import { documentHighlightMarks } from "../documents/pdf-highlights.js?v=__BUILD__";
 import { noteMarkNode, scheduleNoteJump, sourceMarkIndexFor } from "../notes/anchors.js?v=__BUILD__";
 import { quizPanel } from "../notes/notes-view.js?v=__BUILD__";
@@ -273,7 +273,7 @@ function notePaneResized() {
   splitResizeTimer = setTimeout(() => {
     splitResizeTimer = 0;
     if (onDocumentSurface()) {
-      if (isDocumentFitWidth()) relayoutDocument({ refit: true });
+      if (isDocumentFitWidth()) relayoutDocumentHoldingReader({ refit: true });
     } else if (isNotesPaged()) {
       // Paged notes are laid out in columns measured against the stage's width,
       // so a narrower stage is a different number of pages.

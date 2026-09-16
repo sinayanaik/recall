@@ -634,7 +634,19 @@ export function openDocumentPdfId() {
 // entirely. Nothing short of reopening can show pages this device has never
 // parsed.
 export function openDocumentIsCurrent() {
-  return !openPdf || openPdf.deckKey === documentOpenKey(openPdf.slot, openPdf.pdfId);
+  if (!openPdf) return true;
+  // A missing entry on the doc slot is not automatically the same fact as a
+  // changed one. A genuine removal — here or on another device — always
+  // leaves a tombstone in deletedPdfIds (removePdfFromDeck, pdf-multi-actions.js),
+  // which is the one signal actually worth tearing the reader off their page
+  // for. Without a tombstone, a missing entry is an ordinary multi-PDF
+  // union-by-id merge that simply hasn't caught this PDF's own entry up yet —
+  // nothing really changed — and falling through to the sha comparison below
+  // with `|| ""` forced a full, jarring reopen for no real reason.
+  if (openPdf.slot === DOC_SLOT_DOC && !deckPdfById(state.meta, openPdf.pdfId)) {
+    return !state.meta?.deletedPdfIds?.[openPdf.pdfId];
+  }
+  return openPdf.deckKey === documentOpenKey(openPdf.slot, openPdf.pdfId);
 }
 
 // ── Switching between a deck's PDFs ─────────────────────────────────────────
@@ -1495,6 +1507,30 @@ export function relayoutDocument({ refit = false, afterLayout = null } = {}) {
   updatePageIndicator();
 }
 
+// The same hold-the-reader guard openDocumentViewBody's tab-switch path
+// proved safe for a refit (commit fbbc785): capture where the reader is
+// before every page moves, put them back after, unless there is nothing to
+// hold (already at the very top — see currentDocumentRatio's 0-at-top clamp)
+// or a stroke is mid-draw (a programmatic scroll cancels it). Every OTHER
+// refit trigger — a window resize, a split-pane drag, the Fit width button —
+// used to relayout bare and let scrollTop drift onto whatever page it now
+// falls on, landing the reader on an unrelated page (page 1 if the view
+// widened) with no gesture of their own to explain it.
+export function relayoutDocumentHoldingReader({ refit = false } = {}) {
+  if (!openPdf) return;
+  const heldPage = currentDocumentPage();
+  const heldRatio = currentDocumentRatio();
+  const heldAcross = currentDocumentAcross();
+  const atTheVeryTop = heldPage <= 1 && heldRatio <= 0 && !(heldAcross > 0);
+  const holdTheReader = !atTheVeryTop && !inkPenIsDown();
+  relayoutDocument({
+    refit,
+    afterLayout: holdTheReader
+      ? () => scrollToDocumentPage(heldPage, heldRatio, { smooth: false, across: heldAcross })
+      : null
+  });
+}
+
 export function setDocumentScale(scale, { fitWidth = false, afterLayout = null } = {}) {
   if (!openPdf) return;
   openPdf.fitWidth = fitWidth;
@@ -1518,7 +1554,7 @@ export function fitDocumentToWidth() {
   if (!openPdf) return;
   openPdf.fitWidth = true;
   openPdf.scale = fitWidthScale();
-  relayoutDocument();
+  relayoutDocumentHoldingReader();
 }
 
 // Is the page still tracking the width of the window, or has the reader set a
