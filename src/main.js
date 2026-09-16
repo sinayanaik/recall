@@ -1382,6 +1382,12 @@ onDomReady(() => {
       // moved: the marks, the ink, the blocks, the badges.
       repaintOpenDocumentPages();
       notifyHighlightsChanged();
+      // The merge just wrote over meta.readingPositionPdf with whichever side's
+      // copy carried the newer `at` — which can be a copy on-disk still made
+      // before the reader's most recent scroll on THIS device. Re-stamping the
+      // reader's actual current page over it now is what stops that staleness
+      // from surviving to the next device's pull or this device's next reopen.
+      scheduleDocumentPositionSave();
       return;
     }
     if (state.viewMode === "notes") renderNotesViewPinned();
