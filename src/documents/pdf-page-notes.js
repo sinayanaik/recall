@@ -65,12 +65,15 @@ import {
 } from "./pdf-highlights.js?v=__BUILD__";
 import { quadToPageBox } from "./pdf-selection.js?v=__BUILD__";
 import {
+  currentDocumentAcross,
   currentDocumentPage,
-  currentDocumentRatio,
+  currentDocumentResidual,
   pdfPageElement,
   pdfPageViewport,
+  recordReaderMove,
   scrollToDocumentPage
 } from "./pdf-view.js?v=__BUILD__";
+import { inkPenIsDown } from "../core/gesture.js?v=__BUILD__";
 
 export const PDF_PAGE_NOTES_KEY = "recall:pdfPageNotes";
 
@@ -400,8 +403,29 @@ export function refreshPdfPageNotes(annotated = null) {
   // leftover removed, but dropping the block of a page that has left the stage
   // does not — that page is not on screen to have moved anything.
   const rebuilds = plan.some(({ pageEl }) => pageEl) || stale.length > 0;
-  const anchorPage = rebuilds ? currentDocumentPage() : 0;
-  const anchorRatio = rebuilds ? currentDocumentRatio() : 0;
+  // ── ...and never when re-landing is itself the move ──────────────────────
+  //
+  // This pass is reachable without a gesture: notifyHighlightsChanged runs off
+  // the ink module's idle timer, the highlight repair timer, and the deck
+  // reloaded-in-place hook that the background sync drives every few minutes.
+  // So the two guards every other programmatic scroll on this surface carries
+  // apply here too (relayoutDocumentHoldingReader, pdf-view.js):
+  //
+  //   • a stroke mid-draw — a programmatic scroll cancels it, and the pen is
+  //     precisely what makes this pass run several times a second;
+  //   • a reader at the very top, who has nothing to hold. currentDocumentRatio
+  //     clamps to 0..1, so above page 1's own top it answers 0 and the
+  //     "restore" lands at page 1's top: it moves them rather than holding
+  //     them. currentDocumentResidual is the unclamped half, and is what the
+  //     restore below is given.
+  //
+  // scrollToDocumentPage's own do-not-write-if-unchanged guard takes care of
+  // the ordinary case, where the blocks rebuilt to exactly the height they had.
+  const holdable = rebuilds && !inkPenIsDown();
+  const anchorPage = holdable ? currentDocumentPage() : 0;
+  const anchorRatio = holdable ? currentDocumentResidual() : 0;
+  const anchorAcross = holdable ? currentDocumentAcross() : 0;
+  const atTheVeryTop = anchorPage <= 1 && anchorRatio <= 0 && !(anchorAcross > 0);
   plan.forEach(({ previous, pageEl, entries, pageNumber, signature }) => {
     if (!pageEl) { previous.remove(); return; }
     const block = noteBlockFor(pageNumber, entries);
@@ -414,7 +438,10 @@ export function refreshPdfPageNotes(annotated = null) {
   // looking at any of that. Same correction applyPdfPageNotes makes around its
   // own rebuild, made here so every caller gets it — and not reached at all when
   // nothing was rebuilt, which is now the common case.
-  if (anchorPage) scrollToDocumentPage(anchorPage, anchorRatio, { smooth: false });
+  if (anchorPage && !atTheVeryTop) {
+    recordReaderMove("land:page-notes-rebuilt", { page: anchorPage, ratio: anchorRatio });
+    scrollToDocumentPage(anchorPage, anchorRatio, { smooth: false });
+  }
 }
 
 // Every page currently on screen, plus the printed blocks. The counterpart of

@@ -133,10 +133,15 @@ export function lineRect(lineIndex, width = 380) {
 // carries an outline can never reach.
 // `headingSize` sets the first line of each page in larger type, so there is
 // something for that derivation to find.
+// `heightForPage` makes a paper whose pages are NOT all one size — a scan, a
+// plate section, a landscape figure. It matters because the viewer lays every
+// page out at page 1's size until that page is itself parsed, and the real size
+// arriving later moves everything below it. A fixture where every page is
+// identical cannot see that happen: the correction's delta is exactly 0.
 export function buildFixturePdf({
   pages = 4, linesPerPage = 12, annotate = true,
   width = PAGE_WIDTH, height = PAGE_HEIGHT,
-  outline = true, headingSize = 0
+  outline = true, headingSize = 0, heightForPage = null
 } = {}) {
   const objects = [];       // 1-based; objects[i] is object i+1
   const push = (body) => { objects.push(body); return objects.length; };
@@ -166,8 +171,9 @@ export function buildFixturePdf({
     const stream = contentStreamFor(fixturePageLines(pageNumber, linesPerPage, { headingSize }));
     const contentId = push(`<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`);
     const annots = pageNumber === annotatedPage ? ` /Annots [${annotationId} 0 R]` : "";
+    const pageHeight = typeof heightForPage === "function" ? (heightForPage(pageNumber) || height) : height;
     pageIds.push(push(
-      `<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 ${width} ${height}] `
+      `<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 ${width} ${pageHeight}] `
       + `/Resources << /Font << /F1 ${fontId} 0 R >> >> /Contents ${contentId} 0 R${annots} >>`
     ));
   }

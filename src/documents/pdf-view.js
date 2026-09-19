@@ -380,7 +380,11 @@ function parkOpenDocument() {
   // sitting a few lines above it. The check drives a zoomed, panned round trip
   // through the switch so that a move like that is loud rather than silent.
   const page = currentDocumentPage();
-  const ratio = currentDocumentRatio();
+  // Unclamped: a park is a hold with a tab press in the middle of it, not a
+  // position written down for another device, so the reader comes back to the
+  // gap between two pages if that is where they left off rather than being
+  // nudged onto the top of the one below it.
+  const ratio = currentDocumentResidual();
   const across = currentDocumentAcross();
   const host = el.documentView?.querySelector(":scope > .pdf-pages") || null;
   // ...and this is the line all of the above is about. Emptying the scroller
@@ -626,27 +630,121 @@ export function openDocumentPdfId() {
 
 // ── Are the pages on screen still pages of the file the deck names? ────────
 //
-// documentOpenKey is deckKey|slot|sha256, and currentDeckKey() does not move
-// when a deck is reloaded in place — so the only part of it that can differ
-// after a sync is the HASH. Which makes this the direct answer to "did the bytes
-// change under the reader": pages added or torn out on another device rewrite
-// the notebook, and a paper attached or re-attached there is a different file
-// entirely. Nothing short of reopening can show pages this device has never
-// parsed.
+// This used to compare the whole of documentOpenKey — a string baked at open
+// time against one recomputed from live state — on the reasoning that
+// currentDeckKey() "does not move when a deck is reloaded in place", so the
+// only part that could differ was the hash.
+//
+// Every component of that key moves. state.deckId flips null → uuid the first
+// time a deck is pushed to the cloud (src/sync/reconcile.js), and is re-seeded
+// from the on-disk snapshot on every keepPlace reload (deck-snapshot.js), so
+// the two are not even written in the same order. activePdfId() re-reads a
+// merged meta.pdfActiveId. `?.sha256 || ""` collapses "this record has no hash"
+// and "this record is gone" into the same empty string, on the notebook slot
+// still. Any one of those flipping told the ONE caller of this function
+// (src/main.js's deck-reloaded-in-place hook) that the bytes had changed, and
+// it answered with a full cold reopen that resumed from the STORED reading
+// position — which is the reader being thrown onto a page they left minutes
+// ago, in the middle of reading, with no gesture of their own to explain it.
+// Three rounds of fixes each patched one more way for the key to flip; this
+// asks the question the caller actually means instead.
+//
+// The question is "are the pages on screen still pages of the file the deck
+// names", and it has exactly three parts: the same shelf, the same paper on
+// that shelf, and bytes we can POSITIVELY say are different. An unknown hash
+// is not evidence of anything — it is a record written before the store kept
+// one, or a merge that has not carried this entry forward yet — so it reads as
+// still-current, on both slots. Only a hash that is present, known and
+// different is worth tearing the reader off their page for.
 export function openDocumentIsCurrent() {
   if (!openPdf) return true;
-  // A missing entry on the doc slot is not automatically the same fact as a
-  // changed one. A genuine removal — here or on another device — always
-  // leaves a tombstone in deletedPdfIds (removePdfFromDeck, pdf-multi-actions.js),
-  // which is the one signal actually worth tearing the reader off their page
-  // for. Without a tombstone, a missing entry is an ordinary multi-PDF
-  // union-by-id merge that simply hasn't caught this PDF's own entry up yet —
-  // nothing really changed — and falling through to the sha comparison below
-  // with `|| ""` forced a full, jarring reopen for no real reason.
-  if (openPdf.slot === DOC_SLOT_DOC && !deckPdfById(state.meta, openPdf.pdfId)) {
-    return !state.meta?.deletedPdfIds?.[openPdf.pdfId];
+  // The shelf. A slot change is a different document entirely, and the tab
+  // press that causes one opens it directly rather than coming through here.
+  if (normalizeDocSlot(openPdf.slot) !== normalizeDocSlot(activeDocSlot())) {
+    recordReaderMove("reopen:slot-changed", { was: openPdf.slot, now: activeDocSlot() });
+    return false;
   }
-  return openPdf.deckKey === documentOpenKey(openPdf.slot, openPdf.pdfId);
+  if (openPdf.slot === DOC_SLOT_DOC) {
+    // A missing entry on the doc slot is not automatically the same fact as a
+    // changed one. A genuine removal — here or on another device — always
+    // leaves a tombstone in deletedPdfIds (removePdfFromDeck,
+    // pdf-multi-actions.js), which is the one signal actually worth tearing the
+    // reader off their page for. Without a tombstone, a missing entry is an
+    // ordinary multi-PDF union-by-id merge that simply hasn't caught this PDF's
+    // own entry up yet — nothing really changed.
+    const entry = deckPdfById(state.meta, openPdf.pdfId);
+    if (!entry) {
+      const removed = Boolean(state.meta?.deletedPdfIds?.[openPdf.pdfId]);
+      if (removed) recordReaderMove("reopen:pdf-removed", { pdfId: openPdf.pdfId });
+      return !removed;
+    }
+    // ...and which of the deck's papers the deck now says is active. Deliberately
+    // NOT compared: another device switching papers is not this device's reader
+    // asking to be moved, and switchToPdf opens the new one directly when they do.
+    const same = sameDocumentBytes(openPdf.sha256, entry.sha256);
+    if (!same) recordReaderMove("reopen:bytes-changed", { slot: openPdf.slot, was: openPdf.sha256, now: entry.sha256 });
+    return same;
+  }
+  const same = sameDocumentBytes(openPdf.sha256, docSlotMeta(openPdf.slot)?.sha256);
+  if (!same) recordReaderMove("reopen:bytes-changed", { slot: openPdf.slot, was: openPdf.sha256, now: docSlotMeta(openPdf.slot)?.sha256 });
+  return same;
+}
+
+// ── A record of every time the reader was moved for them ──────────────────
+//
+// Three fixes have shipped against "the PDF jumps while I am reading" and the
+// report survived all three, because each one was a hypothesis about WHICH
+// mechanism fires and none of them could be checked against a real reading
+// session. This is how the next report arrives with an answer in it instead of
+// another hypothesis.
+//
+// A ring of the last few programmatic moves — what moved the reader, from where
+// to where — on window, readable from a console after the jump happens. No UI,
+// no storage, no network, and nothing is written unless the reader was actually
+// moved by something other than their own hand.
+const READER_MOVE_LOG_MAX = 40;
+
+export function recordReaderMove(cause, detail = {}) {
+  try {
+    const log = (window.__recallReaderMoves = window.__recallReaderMoves || []);
+    log.push({ cause, at: new Date().toISOString(), ...detail });
+    if (log.length > READER_MOVE_LOG_MAX) log.splice(0, log.length - READER_MOVE_LOG_MAX);
+  } catch (_) { /* a diagnostic that throws is worse than no diagnostic */ }
+}
+
+// Where the reader is right now, in the three numbers finishDocumentOpen's `at`
+// is made of — or null when there is nothing worth holding.
+//
+// The guards are the pair relayoutDocumentHoldingReader uses, for the reasons
+// commits 4f44b74 and 097869c set out: a programmatic scroll while the pen is
+// down cancels the stroke, and a reader who is already at the very top has no
+// place to be put back into — re-landing them is itself the move.
+//
+// `slot`/`pdfId` are asked because a hold only means anything when the document
+// coming back is the one being measured. An open that switches papers has a
+// reader's gesture behind it and resumes that paper's own stored position.
+function heldReaderPosition(slot, pdfId) {
+  if (!openPdf) return null;
+  if (normalizeDocSlot(openPdf.slot) !== normalizeDocSlot(slot)) return null;
+  if ((openPdf.pdfId || null) !== (pdfId || null)) return null;
+  if (inkPenIsDown()) return null;
+  const page = currentDocumentPage();
+  const ratio = currentDocumentResidual();
+  const across = currentDocumentAcross();
+  if (page <= 1 && ratio <= 0 && !(across > 0)) return null;
+  return { page, ratio, across };
+}
+
+// Two content hashes, where "I do not know" is never "they differ".
+//
+// The whole cost of getting this wrong is a reopen, and a reopen is the most
+// disruptive thing this surface can do to somebody who is reading. So the bar
+// is a positive answer on both sides: two hashes that both exist and disagree.
+function sameDocumentBytes(open, current) {
+  const a = open ? String(open) : "";
+  const b = current ? String(current) : "";
+  if (!a || !b) return true;
+  return a === b;
 }
 
 // ── Switching between a deck's PDFs ─────────────────────────────────────────
@@ -741,7 +839,19 @@ let documentOpensInFlight = 0;
 // notebook beside it (src/documents/doc-slot.js). Defaulted from the view the
 // reader is on rather than required, so every existing caller keeps meaning
 // what it meant.
-async function openDocumentViewBody({ force = false, slot = null, pdfId = null } = {}) {
+// `holdReader` says: whatever this open has to do to the surface, put the reader
+// back where they are now rather than where the deck's stored position says they
+// once were.
+//
+// It exists for one caller — the deck-reloaded-in-place hook in src/main.js,
+// which runs off the background sync every few minutes — and it is the whole
+// answer to "I am reading and it throws me onto a page from ten minutes ago".
+// A cold open resumes from documentResumePosition, which is correct when
+// somebody OPENS a deck and wrong every other time; a sync is every other time.
+// openDocumentIsCurrent below is what decides whether that reopen happens at
+// all, and it has been wrong in three different ways so far. This makes being
+// wrong about it cost a re-parse the reader cannot see, instead of their page.
+async function openDocumentViewBody({ force = false, slot = null, pdfId = null, holdReader = false } = {}) {
   const view = el.documentView;
   const openSlot = slot ? normalizeDocSlot(slot) : activeDocSlot();
   // Only means anything on the doc slot — the notebook shelf still has exactly
@@ -751,6 +861,13 @@ async function openDocumentViewBody({ force = false, slot = null, pdfId = null }
   const openPdfId = openSlot === DOC_SLOT_DOC ? (pdfId || activePdfId(state.meta)) : null;
   const pdfMeta = openSlot === DOC_SLOT_DOC ? deckPdfById(state.meta, openPdfId) : docSlotMeta(openSlot);
   if (!view) return false;
+  // Read HERE, at the top, and never below. Every teardown path in this
+  // function detaches the pages, and a detached subtree reports 0 for every
+  // offsetTop and offsetHeight while the emptied scroller clamps its own
+  // scrollTop and scrollLeft to 0 — which is not an error, it is three
+  // perfectly plausible numbers naming the wrong place. parkOpenDocument's
+  // header says this at length and pays for having learned it twice.
+  const held = holdReader ? heldReaderPosition(openSlot, openPdfId) : null;
   // Nothing belonging to a deck that is not this one may stay parked. First,
   // and before every branch below, because this is the one moment the module
   // knows for certain which deck the surface is being asked for — there is no
@@ -819,8 +936,15 @@ async function openDocumentViewBody({ force = false, slot = null, pdfId = null }
     // Cause (2) becomes the do-not-restore-if-unchanged guard the commit itself
     // asked for: a reader at the very top of the document has nothing to hold,
     // and re-landing them is the move the clamp made wrong.
+    // The UNCLAMPED residual, not currentDocumentRatio. The commit that wrote
+    // this guard named the clamp as one of the two reasons a hold could move
+    // the reader it was holding, and worked around it with atTheVeryTop alone —
+    // which covers the top of the document and not the 16px gap between every
+    // other pair of pages. currentDocumentResidual is that reason removed
+    // rather than routed around; atTheVeryTop stays, because "nothing to hold"
+    // is still a real answer and is still cheaper than holding nothing.
     const heldPage = currentDocumentPage();
-    const heldRatio = currentDocumentRatio();
+    const heldRatio = currentDocumentResidual();
     const heldAcross = currentDocumentAcross();
     const atTheVeryTop = heldPage <= 1 && heldRatio <= 0 && !(heldAcross > 0);
     const holdTheReader = !atTheVeryTop && !inkPenIsDown();
@@ -863,6 +987,10 @@ async function openDocumentViewBody({ force = false, slot = null, pdfId = null }
       deckKey,
       slot: openSlot,
       pdfId: openPdfId,
+      // Whatever the deck says NOW, which the park has just been matched
+      // against on the line above — so the surface carries the hash of the
+      // bytes it is actually showing either way it was built.
+      sha256: pdfMeta?.sha256 || "",
       doc: parked.doc,
       pageCount: parked.pageCount,
       baseWidth: parked.baseWidth,
@@ -901,7 +1029,7 @@ async function openDocumentViewBody({ force = false, slot = null, pdfId = null }
     const wasScale = openPdf.scale;
     if (openPdf.fitWidth) openPdf.scale = fitWidthScale();
     finishDocumentOpen(view, pdfOpenToken, openSlot,
-      { page: parked.page, ratio: parked.ratio, across: parked.across },
+      held || { page: parked.page, ratio: parked.ratio, across: parked.across },
       { restored, refit: restored && openPdf.scale !== wasScale });
     return true;
   }
@@ -987,6 +1115,12 @@ async function openDocumentViewBody({ force = false, slot = null, pdfId = null }
     deckKey: documentOpenKey(openSlot, openPdfId),
     slot: openSlot,
     pdfId: openPdfId,
+    // The content hash of the bytes actually parsed into this surface, kept
+    // beside them rather than re-derived from the key. openDocumentIsCurrent
+    // compares THIS against whatever the deck says now: a hash is a fact about
+    // a file, and the deck id, the local id, the folder key and the active-PDF
+    // id that also live in deckKey are not.
+    sha256: pdfMeta?.sha256 || "",
     doc,
     pageCount: doc.numPages,
     // Every page starts out assumed to be the size of page 1 — which is true
@@ -1034,7 +1168,9 @@ async function openDocumentViewBody({ force = false, slot = null, pdfId = null }
     openPdf.scale = storedView.scale;
     openPdf.fitWidth = false;
   }
-  finishDocumentOpen(view, token, openSlot, null);
+  // `held` over the stored position: a reopen the reader did not ask for must
+  // put them back, and it is null unless this open was asked to hold them.
+  finishDocumentOpen(view, token, openSlot, held);
   return true;
 }
 
@@ -1112,7 +1248,10 @@ function finishDocumentOpen(view, token, openSlot, at, { restored = false, refit
     // horizontal axis to lose — and passing undefined here is what tells
     // scrollToDocumentPage to leave the reader's pan alone rather than to pretend
     // the stored position had an opinion about it.
-    if (at && Number.isFinite(at.page)) scrollToDocumentPage(at.page, at.ratio || 0, { smooth: false, across: at.across });
+    if (at && Number.isFinite(at.page)) {
+      recordReaderMove("land:held", { page: at.page, ratio: at.ratio });
+      scrollToDocumentPage(at.page, at.ratio || 0, { smooth: false, across: at.across });
+    }
     else {
       // This slot's own record, not the deck's one shared field — the paper and
       // the notebook used to overwrite each other, so a cold open landed on
@@ -1122,8 +1261,19 @@ function finishDocumentOpen(view, token, openSlot, at, { restored = false, refit
       // `across` rides along when the record has one: it is a fraction of the
       // page, so it is re-found at whatever scale comes back, and an absent one
       // is how scrollToDocumentPage is told to leave that axis alone.
-      const resume = documentResumePosition(openSlot);
-      if (Number.isFinite(resume?.pdfPage)) scrollToDocumentPage(resume.pdfPage, resume.ratio || 0, { smooth: false, across: resume.across });
+      // ...and WHICH of the slot's papers, which this had never asked. The
+      // sibling read that picks the stored zoom back up (in the cold open
+      // above) passes the id; this one did not, so a deck with more than one
+      // PDF resumed every paper on whichever page was last recorded for the
+      // primary one.
+      const resume = documentResumePosition(openSlot, openPdf?.pdfId || null);
+      if (Number.isFinite(resume?.pdfPage)) {
+        // The one land that puts the reader somewhere they were not: the deck's
+        // stored position, on a cold open. Correct when a deck is opened, and
+        // the signature of this whole class of bug anywhere else.
+        recordReaderMove("land:stored", { page: resume.pdfPage, ratio: resume.ratio, storedAt: resume.at });
+        scrollToDocumentPage(resume.pdfPage, resume.ratio || 0, { smooth: false, across: resume.across });
+      }
     }
   };
   if (!refit) landOnReadingPosition();
@@ -1406,7 +1556,20 @@ function buildPagePlaceholders() {
     label.className = "pdf-page-label";
     label.textContent = String(pageNumber);
     page.appendChild(label);
-    openPdf.pages.set(pageNumber, { el: page, viewport: null, markLayer: null, textLayer: null, task: null });
+    openPdf.pages.set(pageNumber, {
+      el: page,
+      viewport: null,
+      markLayer: null,
+      textLayer: null,
+      task: null,
+      // The height this box is currently laid out at, remembered rather than
+      // measured. resizePageBox needs the OLD height to know how far the pages
+      // below just moved, and offsetHeight would be a forced layout read in the
+      // middle of a render — on a document where every page is about to ask the
+      // same question. It is written by the three places that size a box and
+      // read by no one else.
+      boxHeight: Math.round(openPdf.baseHeight * openPdf.scale)
+    });
     frag.appendChild(page);
   }
   view.appendChild(frag);
@@ -1473,6 +1636,7 @@ export function relayoutDocument({ refit = false, afterLayout = null } = {}) {
     const height = (entry.viewport ? entry.viewport.height / (entry.renderScale || 1) : openPdf.baseHeight) * openPdf.scale;
     entry.el.style.width = `${Math.round(width)}px`;
     entry.el.style.height = `${Math.round(height)}px`;
+    entry.boxHeight = Math.round(height);
     bumpDocumentLayout();
     if (pageNumber === 1) publishPageWidth(width);
     if (openPdf.rendered.has(pageNumber)) entry.pendingSize = { width, height };
@@ -1519,7 +1683,8 @@ export function relayoutDocument({ refit = false, afterLayout = null } = {}) {
 export function relayoutDocumentHoldingReader({ refit = false } = {}) {
   if (!openPdf) return;
   const heldPage = currentDocumentPage();
-  const heldRatio = currentDocumentRatio();
+  // Unclamped, for the reason the tab-switch hold above gives at length.
+  const heldRatio = currentDocumentResidual();
   const heldAcross = currentDocumentAcross();
   const atTheVeryTop = heldPage <= 1 && heldRatio <= 0 && !(heldAcross > 0);
   const holdTheReader = !atTheVeryTop && !inkPenIsDown();
@@ -1649,6 +1814,62 @@ export function renderPagesNearViewport() {
   return asked;
 }
 
+// ── Re-sizing a page's box without taking the reader with it ───────────────
+//
+// Every page of a freshly opened document is laid out at PAGE 1's size, because
+// asking the worker for all 400 pages' viewports before drawing anything is a
+// document that does not open. The real size arrives later, one page at a time,
+// the moment that page is parsed — and writing it is a layout change in the
+// middle of a column of pages, which moves everything BELOW it.
+//
+// "Below it" includes the reader. isPageNearViewport renders a whole viewport
+// height ABOVE the scroll position (half of one on a touch device), so a page
+// the reader has already scrolled past — or has never seen — can be parsed at
+// any moment and silently push the paper up or down under them. Nothing
+// compensated for it: the comment on baseWidth/baseHeight called the placeholder
+// "self-correcting", and it is, for the LAYOUT. For the reader it was an abrupt
+// jump with no gesture behind it.
+//
+// So the pages below a resize are moved and the viewport is moved with them.
+// Three cases, and the arithmetic is the same one:
+//
+//   • the page is entirely above the reader → everything they are looking at
+//     shifted by the whole delta, so scrollTop shifts by the whole delta;
+//   • the reader is inside the page → only the part of it above them moved, so
+//     they move by that fraction of the delta, which is what keeps them the
+//     same distance into the page they are reading;
+//   • the page is below them → nothing they can see moved, and the fraction is
+//     0, so nothing is written.
+//
+// On a document whose pages are all one size — which is most of them — the
+// delta is exactly 0 and this costs one comparison.
+function resizePageBox(entry, width, height) {
+  const view = el.documentView;
+  const nextHeight = Math.round(height);
+  const previousHeight = Number.isFinite(entry.boxHeight) ? entry.boxHeight : nextHeight;
+  const delta = nextHeight - previousHeight;
+  // The reads happen BEFORE the writes, and both of them are about the page's
+  // own box: a box's offsetTop is decided by the boxes above it, so changing
+  // this one's height cannot move it. One forced layout, not two.
+  const pageTop = delta && view ? pageOffsetTop(entry.el) : 0;
+  const scrollTop = view ? view.scrollTop : 0;
+  entry.el.style.width = `${Math.round(width)}px`;
+  entry.el.style.height = `${nextHeight}px`;
+  entry.boxHeight = nextHeight;
+  bumpDocumentLayout();
+  if (!delta || !view || previousHeight <= 0) return;
+  // A stroke in progress is the one case where correcting this is worse than
+  // living with it: a programmatic scroll cancels the stroke (4f44b74), and a
+  // page being drawn on has been rendered for some time, so the correction it
+  // would be skipping has almost certainly already happened.
+  if (inkPenIsDown()) return;
+  const above = Math.min(Math.max(scrollTop - pageTop, 0), previousHeight);
+  const shift = Math.round(delta * (above / previousHeight));
+  if (!shift) return;
+  recordReaderMove("compensate:page-resized", { page: Number(entry.el.dataset.pageNumber) || 0, delta, shift });
+  view.scrollTop = Math.max(0, scrollTop + shift);
+}
+
 // ── Rendering one page ──────────────────────────────────────────────────────
 
 async function renderPage(pageNumber) {
@@ -1718,11 +1939,10 @@ async function renderPage(pageNumber) {
     if (stale()) return;
     const viewport = page.getViewport({ scale });
     // The placeholder was sized from page 1's dimensions; this is where a page
-    // that is genuinely a different size (a landscape figure, an appendix)
-    // corrects itself.
-    entry.el.style.width = `${Math.round(viewport.width)}px`;
-    entry.el.style.height = `${Math.round(viewport.height)}px`;
-    bumpDocumentLayout();
+    // that is genuinely a different size (a landscape figure, an appendix, a
+    // scanner that did not produce two identical pages in a row) corrects
+    // itself — and where, until now, it took the reader with it.
+    resizePageBox(entry, viewport.width, viewport.height);
     entry.viewport = viewport;
     entry.renderScale = scale;
 
@@ -2491,6 +2711,48 @@ export function currentDocumentRatio() {
   return Math.min(1, Math.max(0, (view.scrollTop - pageOffsetTop(entry.el)) / entry.el.offsetHeight));
 }
 
+// The same fraction, UNCLAMPED — and that is the whole difference.
+//
+// currentDocumentRatio clamps to 0..1 because what it feeds is the SAVED
+// reading position: a number that is written to meta, travels to the reader's
+// other devices and is re-found there at another scale, in another window, on
+// another paper size. A negative fraction of a page means nothing on the far
+// side of that trip, so it is clamped, and rightly.
+//
+// A hold is the opposite journey: the same document, the same pages, a few
+// milliseconds apart. There the clamp is a lie that MOVES the reader. The
+// pages sit in a column with a 16px gap between them, and scrollTop lands in
+// that gap constantly — currentDocumentPage answers with the page below
+// (the first whose bottom is past the top of the viewport), so the fraction
+// into that page is slightly NEGATIVE, and clamping it to 0 turns "just above
+// page 12" into "the top of page 12". Restore that and the reader has been
+// nudged down the paper by a gesture they did not make. The same thing happens
+// at the very top of the document, where scrollTop 0 is above page 1's own top
+// by the scroller's own padding.
+//
+// Both commits that tried and reverted a hold on the resize paths named this
+// as the missing half — "an unclamped residual and a do-not-write-if-unchanged
+// guard, with an assertion of their own" (4f44b74, repeated by 097869c). This
+// is the residual; scrollToDocumentPage carries the guard.
+//
+// scrollToDocumentPage needs no change to accept it: it multiplies the ratio by
+// the page's height and adds it to the page's top, so a small negative lands
+// back in the gap, which is exactly where the reader was.
+export function currentDocumentResidual() {
+  const view = el.documentView;
+  if (!view || !openPdf) return 0;
+  const page = currentDocumentPage();
+  const geometry = documentPageGeometry();
+  if (geometry) {
+    const height = geometry.heights[page - 1];
+    if (!height) return 0;
+    return (view.scrollTop - geometry.tops[page - 1]) / height;
+  }
+  const entry = openPdf.pages.get(page);
+  if (!entry?.el.offsetHeight) return 0;
+  return (view.scrollTop - pageOffsetTop(entry.el)) / entry.el.offsetHeight;
+}
+
 // ...and how far ACROSS that page they are, which is the third number a position
 // on this surface needs and the one it did not have.
 //
@@ -2606,6 +2868,32 @@ export function scrollToDocumentPage(pageNumber, ratio = 0, { smooth = true, ali
   // that makes scrollWidth, and so the browser's own clamp on `left`, describe
   // the document as it now is rather than as it was.
   if (Number.isFinite(across)) to.left = Math.max(0, pageOffsetLeft(entry.el) + entry.el.offsetWidth * across);
+  // ── The do-not-write-if-unchanged guard ──────────────────────────────────
+  //
+  // Named by 4f44b74 and again by 097869c as one of the two things a hold on
+  // this surface was missing. Almost every caller of this is a RESTORE — put
+  // the reader back where the numbers say they already are — and on a restore
+  // the correct write is usually no write at all.
+  //
+  // Writing it anyway is not free. It dispatches a scroll event, which wakes
+  // the rAF pass in src/main.js (a position save, the indicator, the pager),
+  // and it interrupts whatever the browser was doing with the scroller — a
+  // momentum fling on a touch device is simply stopped. Worse, a "restore" to
+  // a position half a pixel off the current one is a real, visible nudge when
+  // it happens several times in a row, which is exactly what the printed notes
+  // and the sync reload do.
+  //
+  // A pixel of tolerance, because these numbers are the product of a page top,
+  // a height and a fraction, and the round trip through them does not land on
+  // the integer it started from. Sub-pixel is not a place the reader can be.
+  const movesDown = Math.abs(to.top - view.scrollTop) > 1;
+  const movesAcross = Number.isFinite(to.left) && Math.abs(to.left - view.scrollLeft) > 1;
+  if (!movesDown && !movesAcross) {
+    // Still true: the reader IS where they were asked to be. The indicator is
+    // refreshed anyway because a caller may have changed the pages under it.
+    updatePageIndicator();
+    return true;
+  }
   view.scrollTo(to);
   updatePageIndicator();
   return true;
