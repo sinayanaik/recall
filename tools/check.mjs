@@ -166,6 +166,20 @@
 //                   is not passing the other)
 //   reconcile       does the whole two-way sync behave identically end to end,
 //                   driven against a stand-in backend?
+//   s3-sign         is the AWS SigV4 signature RIGHT? Pinned to AWS's own
+//                   published presigned-URL vector, and cross-checked against a
+//                   second implementation written from the spec with
+//                   node:crypto. It gets a check of its own because of how it
+//                   fails: a bad signature is refused cross-origin, so the
+//                   browser hands the app an opaque TypeError that looks
+//                   exactly like a missing CORS policy or a dead network. Here
+//                   is the only place the difference can be seen
+//   s3-store        does a paper still come back, now that the bytes live in
+//                   the reader's own S3 bucket? Resolution order (device, then
+//                   the bucket, then Drive, then the old Supabase bucket), the
+//                   recomputed key that survives a field-losing merge, and both
+//                   ways the migration can be interrupted — including the one
+//                   where a re-run would upload a second 100MB copy
 //   ui-smoke        does the APP still work? 18 real actions — import, flip,
 //                   mark known, All Cards, notes, export, sync — driven through
 //                   the DOM on both builds and compared step by step
@@ -283,14 +297,32 @@ const checks = [
   // so this can drive it with no browser and no baseline tag — the sync checks
   // below need both, and a check that can only skip verifies nothing.
   ["document-sync ", ["node", ["tools/document-sync-check.mjs"], ROOT]],
-  // Where a paper's BYTES live, now that they live in the reader's own Google
-  // Drive rather than a Supabase bucket. getDocument is the one place those
-  // bytes are resolved and four surfaces sit on it, so the resolution order —
-  // device, then Drive, then the old bucket for everything uploaded before the
-  // move — is the difference between a library that opens and one that does
-  // not. Every Drive request goes through one `driveFetch`, which is what lets
-  // this run with no network and no Google account: CI has neither.
+  // Where a paper's BYTES live. getDocument is the one place those bytes are
+  // resolved and four surfaces sit on it, so the resolution order — device,
+  // then the reader's bucket, then Drive, then the old Supabase bucket for
+  // everything uploaded before either move — is the difference between a
+  // library that opens and one that does not.
+  //
+  // Two files, because there are now two backends worth keeping honest and
+  // they fail differently. drive-store covers the Drive path, which is
+  // READ-ONLY now and exists solely so a paper uploaded before the move still
+  // opens on a device that never held it. s3-store covers the current one,
+  // including both ways a migration can be interrupted.
+  //
+  // Each backend's requests go through a single replaceable transport, which
+  // is what lets these run with no network, no Google account and no bucket:
+  // CI has none of them.
   ["drive-store   ", ["node", ["tools/drive-store-check.mjs"], ROOT]],
+  ["s3-store      ", ["node", ["tools/s3-store-check.mjs"], ROOT]],
+  // The signature itself, against AWS's own published presigned-URL vector and
+  // against a second implementation written from the spec with node:crypto.
+  //
+  // It is separated from s3-store because of how a wrong signature FAILS: the
+  // bucket refuses it, the browser withholds the refused cross-origin
+  // response, and the app is handed an opaque TypeError indistinguishable from
+  // a missing CORS policy or a dead network. This is the only place the
+  // difference is legible, so it is pinned to a string that cannot drift.
+  ["s3-sign       ", ["node", ["tools/s3-sign-check.mjs"], ROOT]],
   // Everything a deck can be IMPORTED from, which had no live check at all:
   // parse-cards.js (503 lines, five card syntaxes), mathml-to-tex.js (592 lines,
   // zero imports) and code-language.js. Driven against tools/adversarial-corpus.mjs

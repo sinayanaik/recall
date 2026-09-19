@@ -166,8 +166,18 @@ export async function readExistingHighlights(doc, progress) {
 // which they can only decide what to do about if they are told.
 export function describePdfUploadFailure(error) {
   if (error?.message === "OFFLINE") return "you're offline";
+  // These two were the hole this function had from the day the backend first
+  // changed: NO_DRIVE was thrown and never mapped, so the reader was shown the
+  // raw token — "Could not upload the document — NO_DRIVE" — for the ONE case
+  // that has a clear answer and a page in the README explaining it.
+  if (error?.message === "NO_STORAGE") return "no cloud storage is set up yet — add a bucket in Storage & Data";
+  if (error?.message === "NO_DRIVE") return "no cloud storage is set up yet — add a bucket in Storage & Data";
   if (error?.message === "NOT_SIGNED_IN") return "you're not signed in";
   if (error?.message === "CANCELLED") return "you cancelled it";
+  // A CORS refusal names itself, because "the upload failed" would send the
+  // reader to check their keys when the keys are fine and the bucket's policy
+  // is not. See s3NetworkError in src/cloud/s3-files.js.
+  if (error?.corsLikely) return error.message;
   if (/timed out/i.test(error?.message || "")) return "the connection timed out";
   if (/bucket/i.test(error?.message || "")) return "the documents bucket is missing — re-run supabase_setup.sql";
   return error?.message || "the upload failed";

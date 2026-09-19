@@ -479,14 +479,16 @@ const POST_SPLIT = {
     "check that would have reported the next one stopped reporting anything. " +
     "Moving them here is the convention 53-handwriting.css already states: " +
     "anything written since the split lives on its own.",
-  "65-drive-settings.css":
-    "The Google Drive card in Storage & Data — the Client ID field and its " +
-    "label, and nothing else, because every other part of that card is " +
-    "furniture 08-panels.css already owns. PDFs moved out of the Supabase " +
-    "`documents` bucket and into the reader's own Drive, since one paper can " +
-    "outweigh a hundred figures and a handful of them spend the free tier's " +
-    "whole gigabyte. A Client ID is public, so this is a plain text input " +
-    "and not a secret field.",
+  "65-bucket-settings.css":
+    "The PDF storage card in Storage & Data — the five credential fields, their " +
+    "labels and the disclosure that hides them once they work, and nothing " +
+    "else, because every other part of that card is furniture 08-panels.css " +
+    "already owns. PDFs moved out of the Supabase `documents` bucket because " +
+    "one paper can outweigh a hundred figures and a handful of them spend the " +
+    "free tier's whole gigabyte; they moved on from Google Drive because its " +
+    "consent screen blocked readers outright. One of these five fields IS a " +
+    "secret, which is why it is a password input where the Client ID it " +
+    "replaced was plain text.",
   "53-handwriting.css":
     "Pages you can write on: the scrolling stack, the three papers (grid, ruled, " +
     "blank) and the notebook's own chrome. Separate from 52-ink.css because that " +

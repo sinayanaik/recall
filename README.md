@@ -21,7 +21,7 @@ Recall is a static flashcard and study-notes web app backed by **your own Supaba
 - [Verify the setup](#verify-the-setup)
 - [Troubleshooting](#troubleshooting)
 - [Upgrading an existing install](#upgrading-an-existing-install)
-- [PDF storage — Google Drive](#pdf-storage--google-drive)
+- [PDF storage — your own S3 bucket](#pdf-storage--your-own-s3-bucket)
 - [More than one person on one project](#more-than-one-person-on-one-project)
 - [Notes for self-hosters](#notes-for-self-hosters)
 - [Reference — what the SQL creates](#reference--what-the-sql-creates)
@@ -591,10 +591,11 @@ BEGIN
     );
 
   -- Two, not three, for the documents bucket -- and the missing one is the
-  -- point. PDFs are no longer uploaded here. They go to the reader's own
-  -- Google Drive (src/cloud/drive-files.js), because one paper can outweigh a
-  -- hundred figures and a handful of them will spend the free tier's whole
-  -- gigabyte; Drive is 15GB, costs nothing, and needs no secret kept.
+  -- point. PDFs are no longer uploaded here. They go to an S3-compatible
+  -- bucket the reader supplies (src/cloud/s3-files.js), because one paper can
+  -- outweigh a hundred figures and a handful of them will spend the free
+  -- tier's whole gigabyte; Cloudflare R2 is 10GB, costs nothing, and asks for
+  -- no sign-in.
   --
   -- The bucket itself STAYS, and so do read and delete, because the papers
   -- uploaded before that change are still in it. They are still filed as
@@ -786,7 +787,7 @@ So there is nothing to migrate for the folders themselves, and **nothing about t
 
 **⚠️ Order matters for the private-bucket change: deploy the app FIRST, then run the SQL.** Section 7 now sets `images` to private. On a build that predates the signed-URL resolver, that statement makes every image in every note go blank the moment it lands — the markdown still holds a public URL, and there is no longer anything at it. Upload the new files, hard-reload once so the service worker takes them, *then* run the SQL. Nothing in your data changes either way: the same objects stay at the same paths under the same names, and the URLs already written into your notes are byte-identical afterwards.
 
-**The `documents` bucket is now read-only**, and holds only the PDFs uploaded before Recall moved PDF hosting to Google Drive. It keeps owner-scoped **read** and **delete** policies — read is what keeps those decks opening, delete is what lets **☰ → Storage & Data** move them into Drive — but it no longer has an INSERT policy, so nothing can add to it. Re-running this file drops the old upload policy. A project that never imported a PDF simply has an empty bucket, and can ignore it entirely.
+**The `documents` bucket is now read-only**, and holds only the PDFs uploaded before Recall moved PDF hosting out of Supabase. It keeps owner-scoped **read** and **delete** policies — read is what keeps those decks opening, delete is what lets **☰ → Storage & Data** move them across — but it no longer has an INSERT policy, so nothing can add to it. Re-running this file drops the old upload policy. A project that never imported a PDF simply has an empty bucket, and can ignore it entirely.
 
 **Re-running is still worth it for the storage policies.** Section 7 now drops and recreates its three policies by name, the way section 6 has always done for the table policies, instead of skipping them when they already exist. That guard made re-running a no-op for every project that was already set up — so a project that had run the older `supabase_image_storage.sql` kept that file's bare `auth.uid()` policy bodies indefinitely and never picked up the `(select auth.uid())` form, which Postgres hoists into an InitPlan and evaluates once per statement rather than once per row. An EPUB import is where that bites: it inserts one storage object per figure, hundreds in a row, each one re-running `auth.uid()` under the old bodies. Policies aren't data, so recreating them loses nothing, and if the role running the file isn't allowed to alter `storage.objects`, the whole block rolls back to whatever was already there and prints a `NOTICE` — an upgrade that can't be applied leaves image uploads working rather than stripping their policies.
 
@@ -903,79 +904,144 @@ SELECT count(*) AS decks_with_no_owner FROM decks WHERE user_id IS NULL;
 
 ---
 
-## PDF storage — Google Drive
+## PDF storage — your own S3 bucket
 
-PDFs do not go to Supabase. They go to **your own Google Drive**, into a folder
-called `Recall Documents` that the app creates the first time it needs it.
+PDFs do not go to Supabase. They go to **an S3-compatible bucket you supply** —
+[Cloudflare R2](https://developers.cloudflare.com/r2/) (10 GB free, no charge for
+downloads), Backblaze B2, or anything else that speaks the S3 API. You paste four
+values once and you are never asked to sign in to anything again.
 
 This is optional in the sense that nothing else breaks without it: a paper you
 import is written to the device *before* it is uploaded, so it opens, renders,
-highlights and exports on the machine you imported it on whether or not Drive is
-connected. What Drive buys is the second device — the phone that has never seen
-the file — and a backup of the bytes that is not this one laptop.
+highlights and exports on the machine you imported it on whether or not a bucket
+is set up. What the bucket buys is the second device — the phone that has never
+seen the file — and a copy of the bytes that is not this one laptop.
 
 **Why not the `documents` bucket any more.** One paper can outweigh a hundred
 figures, and the file is stored whole and unmodified because a highlight is a
-coordinate into *those exact bytes*. A handful of papers will spend the free
-tier's entire gigabyte. A free Google account has 15 GB, deleting a file gives
-the space straight back, and — the part that decided it — **there is no secret
-to store**. An OAuth Client ID is public by design. Every other candidate wanted
-a service-account key or an API secret sitting in `localStorage` on a static
-site, which is the one thing this app has never asked anybody to do.
+coordinate into *those exact bytes*. A handful of papers will spend the Supabase
+free tier's entire gigabyte.
+
+**Why not Google Drive any more.** Drive was the answer to that, and on paper it
+was a good one: 15 GB, no billing account, and an OAuth Client ID is public by
+design so there was no secret to store. What it did not survive was the consent
+screen. A new Google Cloud project starts in **Testing** publishing status, which
+admits only a hand-listed set of test users and turns everybody else away with:
+
+> Access blocked: … has not completed the Google verification process.
+> The app is currently being tested and can only be accessed by
+> developer-approved testers. **Error 403: access_denied**
+
+Publishing the project clears that (and `drive.file` needs no verification to be
+published — see below if you are still on Drive). But even a published app still
+needs a Google session and a consent window, and the silent token renewal that
+was supposed to make that a once-ever event depends on third-party cookies, which
+Safari, Firefox in strict mode and every private window refuse. So the popup
+comes back, once per session, for ever. Someone opening a paper should not be
+negotiating with an identity provider.
+
+A bucket has no session and no consent screen. Every request is signed locally
+from the keys you pasted.
+
+**What this gives up, stated plainly.** Unlike a Google Client ID, an S3 secret
+key really is a secret, and it lives in your browser's `localStorage` on each
+device you paste it into. It is never synced, never sent anywhere except your own
+bucket, and never written into a deck or a backup — but anyone who can use that
+browser profile can read it. Mint the token **scoped to the one bucket, with
+object read & write and nothing else**, and the worst a leaked key reaches is the
+papers it was minted for.
 
 ### Setting it up
 
-About five minutes, once, in the [Google Cloud Console](https://console.cloud.google.com/).
+About five minutes, once. These are the Cloudflare R2 steps; B2 and the rest
+differ only in where the buttons are.
 
-1. **Create a project.** Any name.
-2. **Enable the Drive API** — *APIs & Services → Library → Google Drive API → Enable*.
-3. **Configure the consent screen** — *APIs & Services → OAuth consent screen*.
-   Choose **External**, fill in the app name and your email, and add
-   **`.../auth/drive.file`** as the only scope.
-4. **Create the credentials** — *Credentials → Create credentials → OAuth client ID →
-   Web application*. Under **Authorized JavaScript origins**, add the origin you
-   serve Recall from, exactly — `https://yourname.github.io`, with no path and no
-   trailing slash. Localhost needs its port: `http://localhost:8080`.
-5. **Copy the Client ID** (it ends `.apps.googleusercontent.com`) and paste it into
-   Recall under **☰ → Storage & Data → Google Drive**, then press **Connect Drive**.
+1. **Create a bucket.** *R2 → Create bucket*. Any name — `recall-papers` will do.
+2. **Create an API token.** *R2 → Manage API tokens → Create User API Token*.
+   Give it **Object Read & Write**, and scope it to **just this bucket**. Copy the
+   **Access Key ID**, the **Secret Access Key** and the **S3 endpoint**
+   (`https://<account-id>.r2.cloudflarestorage.com`). The secret is shown once.
+3. **Allow this site to reach the bucket.** In Recall, open
+   **☰ → Storage & Data → PDF storage** and press **Copy the CORS policy** — that
+   puts the exact JSON on your clipboard, already filled in with the origin you
+   are serving Recall from. Paste it into the bucket's CORS settings
+   (*R2 → your bucket → Settings → CORS policy*). It looks like this:
 
-There is no client *secret* to copy. If the page offers you one, you do not need it.
+   ```json
+   [
+     {
+       "AllowedOrigins": ["https://yourname.github.io"],
+       "AllowedMethods": ["GET", "PUT", "DELETE", "HEAD"],
+       "AllowedHeaders": ["*"],
+       "ExposeHeaders": ["ETag"],
+       "MaxAgeSeconds": 3600
+     }
+   ]
+   ```
+
+4. **Paste the four values** into the same panel — endpoint, bucket, access key
+   ID, secret — and press **Save and test**. Leave **Region** as `auto` for R2;
+   B2 wants its real one, like `us-west-004`.
+
+Recall files everything under a `recall/` prefix, so a bucket you already use for
+something else is fine.
 
 > [!NOTE]
-> **You do not need to verify the app, and you do not need a billing account.**
-> `drive.file` is a **non-sensitive** scope — it grants access only to files the
-> app itself created — so Google's verification process and its security
-> assessment do not apply. You will see an "unverified app" interstitial for your
-> own project; that is expected, and you are the only user.
+> **Step 3 cannot be skipped and cannot be automated.** Installing a CORS policy
+> is itself an S3 call, so the browser would have to make a cross-origin request
+> to set up the very permission that would allow it — it is refused before it is
+> sent. Until the policy is in place every request fails, and **Save and test**
+> will tell you so in those words rather than blaming your keys.
 
-### Moving the PDFs you already uploaded
+> [!IMPORTANT]
+> Recall must be served over **https** for this to work at all. Signing needs
+> `crypto.subtle`, which browsers withhold from pages on plain `http`.
+> `localhost` counts as secure; a LAN IP over `http` does not.
 
-Existing papers keep working exactly as they did — their Storage path is never
-cleared, and the bucket keeps its read policy for precisely that reason. But they
-are still spending your Supabase quota, and only you can decide to move them.
+**On every other device**, paste the same four values. That is the whole of
+"signing in" — there is no account, no popup, and nothing to renew.
 
-**☰ → Storage & Data → Documents still in Supabase** lists them biggest-first with
-**Move all to Drive**. Each paper is copied to Drive and its deck updated *before*
-the old copy is deleted, so an interrupted move leaves a duplicate rather than a
-hole, and running it again finishes the job. Your highlights, notes and cards are
-untouched, and so is every copy already on a device.
+### If you are still on Google Drive
+
+Papers already in Drive keep opening: `driveId` is never cleared, and the Drive
+read path is still there for exactly this reason. Two things to know.
+
+**If you are hitting Error 403 right now**, you do not need to wait for the move.
+Go to *Google Cloud Console → APIs & Services → OAuth consent screen* and press
+**Publish app** to put it **In production**. `drive.file` is a **non-sensitive**
+scope — it reaches only files the app itself created — so Google's verification
+process and its security assessment do not apply to it, and publishing takes
+effect immediately with no review. That unblocks the account today.
+
+**Then move the papers across.** **☰ → Storage & Data → Papers still elsewhere**
+lists everything still in Drive or in the old Supabase bucket, biggest first, with
+**Move them to the bucket**. Each paper is copied across and its deck updated
+*before* the old copy is deleted, so an interrupted move leaves a duplicate rather
+than a hole, and running it again finishes the job. Your highlights, notes and
+cards are untouched, and so is every copy already on a device.
+
+Reading a paper out of Drive still needs the Google account that holds it, so run
+the move on a device that can still reach it. On a device that never could, the
+re-attach prompt says so and takes the file by hand.
 
 Take a backup first if you want a belt as well as braces —
 **My Decks → ⋯ → Export All → Backup (.zip)** packs the PDF bytes themselves, so
-it stands on its own whatever happens to either cloud.
+it stands on its own whatever happens to any cloud.
 
-### What happens when Drive is not reachable
+### What happens when the bucket is not reachable
 
 The same thing that happens when Supabase is not: the device copy serves, and
 nothing is lost.
 
 | | |
 |---|---|
-| Never connected | Papers import and open, kept on that device only. You are told so at import. |
-| Signed out, or the token lapsed | Papers already on the device open. One silent renewal is tried first. |
+| Never set up | Papers import and open, kept on that device only. You are told so at import. |
+| The CORS policy is missing | The upload fails and names the policy as the likely cause, rather than blaming your keys. |
+| The keys are wrong | The upload fails with the bucket's own refusal code. It is not retried — four more attempts do not fix a credential. |
+| Served over plain http | The panel says so. Papers stay on the device until it is https. |
 | Offline | Device copy, as always. |
-| You deleted the file in Drive by hand | Device copy, and failing that the re-attach prompt. Drive is the authority; the app will not fight you over it. |
-| Your Google account is full | The upload fails and says so. Remember the 15 GB is shared with Gmail and Photos — **Storage & Data** shows the whole account's usage for this reason. |
+| You deleted the object by hand | Device copy, and failing that the re-attach prompt. The bucket is the authority; the app will not fight you over it. |
+| The bucket is full | The upload fails and says so. **Storage & Data** shows what Recall is using; your provider's dashboard has the allowance. |
 
 ---
 
@@ -1045,7 +1111,7 @@ Everything else is per-account. To keep libraries fully separate, give each pers
 
 Do the storage half here rather than in SQL — Supabase blocks it outright (`ERROR: 42501: Direct deletion from storage tables is not allowed. Use the Storage API instead.`), because rows deleted that way would leave the files themselves orphaned. The panel goes through the Storage API, so the files actually go. Take a backup first (**My Decks → ⋯ → Export All → Backup (.zip)**) — none of it is undoable, and a cloud wipe propagates: every device that had synced those decks drops its copy on its next sync.
 
-**Storage limits.** The free tier's 500 MB database is far more than text decks will ever need; the 1 GB storage quota used to be the one to watch — and **PDF decks were what actually spent it**, since a paper is stored whole and unmodified where a figure is a downscaled WebP. That is why **PDFs are no longer stored in Supabase at all**: they go to your own Google Drive instead (see [PDF storage — Google Drive](#pdf-storage--google-drive) below), which is 15 GB rather than 1 GB, costs nothing, and gives the space straight back when you delete one. The `images` bucket still uses your Supabase quota, and images are small. **☰ → Storage & Data** has a Documents section listing every stored PDF biggest-first, with a one-tap **Offload** on each: that deletes the cloud copy and keeps the highlights, the notes, the cards and the copy on this device, which makes "finish a paper, download it, offload it" a two-tap loop. If you paste a lot of images, every upload stops at a dialog first: pick a compression level (Original / High / Balanced / Small / Tiny, or your own quality and longest side), see each file's real before and after size, then confirm. **Balanced** — 1600 px, WebP at 82% — is the default and is what every image already in your notes was uploaded at, so typical screenshots land well under 100 KB. A bulk pick, a multi-file drop and a whole EPUB import each ask once, for all of their images together. GIFs and SVGs are passed through untouched to keep them animated/vector.
+**Storage limits.** The free tier's 500 MB database is far more than text decks will ever need; the 1 GB storage quota used to be the one to watch — and **PDF decks were what actually spent it**, since a paper is stored whole and unmodified where a figure is a downscaled WebP. That is why **PDFs are no longer stored in Supabase at all**: they go to an S3-compatible bucket you supply instead (see [PDF storage — your own S3 bucket](#pdf-storage--your-own-s3-bucket) below), which is 10 GB rather than 1 GB on Cloudflare R2's free tier, needs no sign-in, and gives the space straight back when you delete one. The `images` bucket still uses your Supabase quota, and images are small. **☰ → Storage & Data** has a Documents section listing every stored PDF biggest-first, with a one-tap **Offload** on each: that deletes the cloud copy and keeps the highlights, the notes, the cards and the copy on this device, which makes "finish a paper, download it, offload it" a two-tap loop. If you paste a lot of images, every upload stops at a dialog first: pick a compression level (Original / High / Balanced / Small / Tiny, or your own quality and longest side), see each file's real before and after size, then confirm. **Balanced** — 1600 px, WebP at 82% — is the default and is what every image already in your notes was uploaded at, so typical screenshots land well under 100 KB. A bulk pick, a multi-file drop and a whole EPUB import each ask once, for all of their images together. GIFs and SVGs are passed through untouched to keep them animated/vector.
 
 **Device storage.** Decks are also kept in `localStorage`, which browsers cap at roughly 5–10 MB per origin. Large libraries can hit it; the app then warns and stops auto-saving rather than corrupting anything. Images never go there — only their URLs do.
 
@@ -1071,7 +1137,7 @@ Inside that per-user folder, uploads are filed by where they came from, so a buc
 | `{uid}/books/{book-slug}--{importId}/{NNNN}-{figure}.webp` | EPUB import — one folder per import **run**, keeping the book's own image filenames |
 | `{uid}/decks/{deck-slug}--{localDeckId}/{ts}-{rand}.webp` | Image pasted or dropped into a deck's notes |
 | `{uid}/unfiled/{ts}-{rand}.webp` | No owning deck yet (pasted before the deck's first save) |
-| `{uid}/pdfs/{paper-slug}--{importId}/{name}.pdf` | PDF imports made **before** the move to Drive — in the separate `documents` bucket, one folder per paper. Read-only now; new papers go to Google Drive |
+| `{uid}/pdfs/{paper-slug}--{importId}/{name}.pdf` | PDF imports made **before** PDFs left Supabase — in the separate `documents` bucket, one folder per paper. Read-only now; new papers go to your own S3 bucket |
 
 The `--{id}` suffix is what makes each folder unique: two imports of the same book, or two decks sharing a title, never share a folder. Because the id comes last, renaming a deck starts a new folder but every folder for that deck is still findable by its `localDeckId`. Only the RLS-checked first segment has to be the auth uid, so this nesting needs no policy change, and images already stored flat at `{uid}/{ts}-{rand}.ext` stay readable and deletable.
 

@@ -490,10 +490,11 @@ BEGIN
     );
 
   -- Two, not three, for the documents bucket -- and the missing one is the
-  -- point. PDFs are no longer uploaded here. They go to the reader's own
-  -- Google Drive (src/cloud/drive-files.js), because one paper can outweigh a
-  -- hundred figures and a handful of them will spend the free tier's whole
-  -- gigabyte; Drive is 15GB, costs nothing, and needs no secret kept.
+  -- point. PDFs are no longer uploaded here. They go to an S3-compatible
+  -- bucket the reader supplies (src/cloud/s3-files.js), because one paper can
+  -- outweigh a hundred figures and a handful of them will spend the free
+  -- tier's whole gigabyte; Cloudflare R2 is 10GB, costs nothing, and asks for
+  -- no sign-in.
   --
   -- The bucket itself STAYS, and so do read and delete, because the papers
   -- uploaded before that change are still in it. They are still filed as

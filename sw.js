@@ -305,7 +305,7 @@ const APP_SHELL = [
   `./styles/62-frame-card-draggable.css?v=${STAMP}`,
   `./styles/63-notes-fold-twisty.css?v=${STAMP}`,
   `./styles/64-notes-tight-padding.css?v=${STAMP}`,
-  `./styles/65-drive-settings.css?v=${STAMP}`,
+  `./styles/65-bucket-settings.css?v=${STAMP}`,
   // The module entry point. Everything it imports is stamped with the same
   // ?v=, so those URLs change with every release too — which is what lets the
   // cache-first handler below serve them without revalidating and still never
@@ -338,6 +338,9 @@ const APP_SHELL = [
   `./src/cloud/drive-client.js?v=${STAMP}`,
   `./src/cloud/drive-files.js?v=${STAMP}`,
   `./src/cloud/net.js?v=${STAMP}`,
+  `./src/cloud/s3-config.js?v=${STAMP}`,
+  `./src/cloud/s3-files.js?v=${STAMP}`,
+  `./src/cloud/s3-sign.js?v=${STAMP}`,
   `./src/cloud/storage-urls.js?v=${STAMP}`,
   `./src/cloud/style-sync.js?v=${STAMP}`,
   `./src/cloud/supabase-client.js?v=${STAMP}`,
