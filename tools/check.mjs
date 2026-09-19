@@ -283,6 +283,14 @@ const checks = [
   // so this can drive it with no browser and no baseline tag — the sync checks
   // below need both, and a check that can only skip verifies nothing.
   ["document-sync ", ["node", ["tools/document-sync-check.mjs"], ROOT]],
+  // Where a paper's BYTES live, now that they live in the reader's own Google
+  // Drive rather than a Supabase bucket. getDocument is the one place those
+  // bytes are resolved and four surfaces sit on it, so the resolution order —
+  // device, then Drive, then the old bucket for everything uploaded before the
+  // move — is the difference between a library that opens and one that does
+  // not. Every Drive request goes through one `driveFetch`, which is what lets
+  // this run with no network and no Google account: CI has neither.
+  ["drive-store   ", ["node", ["tools/drive-store-check.mjs"], ROOT]],
   // Everything a deck can be IMPORTED from, which had no live check at all:
   // parse-cards.js (503 lines, five card syntaxes), mathml-to-tex.js (592 lines,
   // zero imports) and code-language.js. Driven against tools/adversarial-corpus.mjs

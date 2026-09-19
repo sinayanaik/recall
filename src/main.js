@@ -3800,21 +3800,22 @@ async function offloadCurrentDocument() {
   // carry more than one.
   const pdfId = openDocumentPdfId() || activePdfId(state.meta);
   const pdfMeta = deckPdfById(state.meta, pdfId);
-  if (!pdfMeta?.path || pdfMeta.offloaded) {
+  if ((!pdfMeta?.path && !pdfMeta?.driveId) || pdfMeta.offloaded) {
     showToast("This document isn't in the cloud", "error");
     return false;
   }
   showConfirmModal(
     `“${pdfMeta.name || "This document"}” will be deleted from your cloud storage, freeing ${formatStorageBytes(pdfMeta.size || 0)}. Your highlights, notes and cards all stay, and so does the copy on this device — but other devices will need the file re-attached to read it.`,
     async () => {
-      const removed = await deleteRemoteDocument(pdfMeta.path);
+      const removed = await deleteRemoteDocument(pdfMeta);
       if (!removed) {
         showToast("Could not remove the document from the cloud", "error");
         return;
       }
-      // `path` is kept, not cleared: it records where the object USED to live,
-      // so an offloaded deck that is later re-uploaded lands in the same place
-      // rather than accumulating a second folder.
+      // The locator is kept, not cleared: it records where the bytes USED to
+      // live, so an offloaded deck that is later re-uploaded lands in the same
+      // place rather than accumulating a second folder. It is also what lets
+      // getDocument tell "removed on purpose" from "never had one".
       state.meta = withDeckPdfs(state.meta, deckPdfs(state.meta).map((entry) => (
         entry.id === pdfId ? { ...entry, offloaded: true, at: Date.now() } : entry
       )));

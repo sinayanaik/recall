@@ -489,18 +489,22 @@ BEGIN
       AND (storage.foldername(name))[1] = (select auth.uid())::text
     );
 
-  -- The same three, for the documents bucket. Uploads are filed as
+  -- Two, not three, for the documents bucket -- and the missing one is the
+  -- point. PDFs are no longer uploaded here. They go to the reader's own
+  -- Google Drive (src/cloud/drive-files.js), because one paper can outweigh a
+  -- hundred figures and a handful of them will spend the free tier's whole
+  -- gigabyte; Drive is 15GB, costs nothing, and needs no secret kept.
+  --
+  -- The bucket itself STAYS, and so do read and delete, because the papers
+  -- uploaded before that change are still in it. They are still filed as
   --   {uid}/pdfs/{paper-slug}--{importId}/{name}.pdf
-  -- so the first-segment check below covers them exactly as it does images, and
-  -- one paper's folder can be inspected or removed as a unit.
-  CREATE POLICY "Authenticated users can upload their own documents"
-    ON storage.objects FOR INSERT
-    TO authenticated
-    WITH CHECK (
-      bucket_id = 'documents'
-      AND (storage.foldername(name))[1] = (select auth.uid())::text
-    );
-
+  -- so the first-segment check covers them exactly as it does images. SELECT is
+  -- what keeps those decks opening; DELETE is what lets Storage & Data move
+  -- them into Drive and give the space back. Dropping INSERT is what stops the
+  -- bucket growing again in the meantime.
+  --
+  -- An INSERT policy left over from an older run of this file is removed by the
+  -- DROP block above, so re-running this is what actually closes it.
   CREATE POLICY "Authenticated users can delete their own documents"
     ON storage.objects FOR DELETE
     TO authenticated

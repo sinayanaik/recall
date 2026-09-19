@@ -42,10 +42,10 @@ import { DOC_SLOT_NOTEBOOK, docSlotMeta, documentStoreKey } from "./doc-slot.js?
 import { hasLegacyNotebook, hasNotebookInPdfSlot, migratedNotebookMeta, movedNotebookSlotMeta, planLegacyNotebookMigration } from "./notebook-migrate.js?v=__BUILD__";
 import { remapDocumentBlockPages } from "./pdf-blocks.js?v=__BUILD__";
 import { freshDocumentHighlightId, remapDocumentHighlightPages } from "./pdf-highlights.js?v=__BUILD__";
-import { deleteLocalDocument, documentEntryMatches, putDocument, readDocument, sha256, uploadDocument } from "./pdf-store.js?v=__BUILD__";
+import { deleteLocalDocument, deleteRemoteDocument, documentEntryMatches, putDocument, readDocument, sha256, uploadDocument } from "./pdf-store.js?v=__BUILD__";
 import { openDocumentView } from "./pdf-view.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
-import { storageFolderSlug, storageGroupId } from "../images/upload.js?v=__BUILD__";
+import { storageFolderSlug } from "../images/upload.js?v=__BUILD__";
 import { saveDeckToLibrary } from "../library/local-library.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
 
@@ -88,6 +88,16 @@ async function writeNotebookPdf({ pages, paper, reopen = true }) {
   // being attached: write meta.notebook first and the deck has something to save,
   // and the save is what hands back the id the bytes are filed under.
   // (deckPayloadHasContent counts a notebook for exactly this reason.)
+  // Where the PREVIOUS pages live, captured before the record naming them is
+  // overwritten. A notebook is rewritten whole every time a page is added, so
+  // without this the file it replaces is simply abandoned in the cloud — which
+  // is exactly what used to happen, once per page, for the life of the
+  // notebook. Storage had no way to delete it afterwards because nothing
+  // remembered it. Drive does, so it gets cleaned up below.
+  const previous = {
+    driveId: state.meta?.notebook?.driveId || "",
+    path: state.meta?.notebook?.path || ""
+  };
   state.meta = {
     ...(state.meta && typeof state.meta === "object" ? state.meta : {}),
     notebook: {
@@ -101,9 +111,11 @@ async function writeNotebookPdf({ pages, paper, reopen = true }) {
       // notebook drawn at an older one is redrawn on the next open.
       paperV: BLANK_PAPER_VERSION,
       sha256: hash,
-      // The old path is not kept. It names bytes that no longer exist, and a
-      // device that pulled this deck must not be handed the previous page count.
+      // Neither locator is kept. They name bytes that no longer exist, and a
+      // device that pulled this deck must not be handed the previous page
+      // count.
       path: null,
+      driveId: null,
       importedAt: state.meta?.notebook?.importedAt || new Date().toISOString()
     }
   };
@@ -116,10 +128,18 @@ async function writeNotebookPdf({ pages, paper, reopen = true }) {
   await putDocument({ deckLocalId: notebookStoreKey(), blob: file, sha256: hash, name: file.name, at: Date.now() });
 
   try {
-    const folder = `${storageFolderSlug(state.deckTitle || "notes", "notes")}--${storageGroupId()}`;
-    const path = await uploadDocument(file, { folder, name: storageFolderSlug(file.name.replace(/\.pdf$/i, ""), "notebook") });
-    state.meta = { ...state.meta, notebook: { ...state.meta.notebook, path } };
+    const locator = await uploadDocument(file, {
+      name: storageFolderSlug(file.name.replace(/\.pdf$/i, ""), "notebook"),
+      pdfId: DOC_SLOT_NOTEBOOK,
+      sha256: hash
+    });
+    state.meta = { ...state.meta, notebook: { ...state.meta.notebook, ...locator } };
     await saveDeckToLibrary({ silent: true });
+    // Only once the replacement is safely up. Deleting first would open a
+    // window where a device that has neither copy has no pages at all.
+    if (previous.driveId || previous.path) {
+      deleteRemoteDocument(previous).catch(() => {});
+    }
   } catch (error) {
     // Not fatal and not silent. The pages are on this device and drawable; what
     // is not true yet is that they are anywhere else.
@@ -246,9 +266,12 @@ export async function migrateLegacyNotebook() {
 
   await putDocument({ deckLocalId: notebookStoreKey(), blob: file, sha256: hash, name: file.name, at: Date.now() });
   try {
-    const folder = `${storageFolderSlug(state.deckTitle || "notes", "notes")}--${storageGroupId()}`;
-    const path = await uploadDocument(file, { folder, name: storageFolderSlug(file.name.replace(/\.pdf$/i, ""), "notebook") });
-    state.meta = { ...state.meta, notebook: { ...state.meta.notebook, path } };
+    const locator = await uploadDocument(file, {
+      name: storageFolderSlug(file.name.replace(/\.pdf$/i, ""), "notebook"),
+      pdfId: DOC_SLOT_NOTEBOOK,
+      sha256: hash
+    });
+    state.meta = { ...state.meta, notebook: { ...state.meta.notebook, ...locator } };
     await saveDeckToLibrary({ silent: true });
   } catch (error) {
     console.warn("Could not upload the migrated notebook", error);

@@ -27,7 +27,7 @@ import { textForQuads } from "../documents/pdf-selection.js?v=__BUILD__";
 import { MAX_DOCUMENT_BYTES, putDocument, sha256, uploadDocument } from "../documents/pdf-store.js?v=__BUILD__";
 import { MARK_HIGHLIGHT_DEFAULT } from "../format/highlight-colors.js?v=__BUILD__";
 import { setHighlightNoteInSource } from "../format/highlight-notes.js?v=__BUILD__";
-import { storageFolderSlug, storageGroupId } from "../images/upload.js?v=__BUILD__";
+import { storageFolderSlug } from "../images/upload.js?v=__BUILD__";
 import { showImportProgress } from "./epub.js?v=__BUILD__";
 import { normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
 import { saveDeckToLibrary } from "../library/local-library.js?v=__BUILD__";
@@ -286,9 +286,15 @@ export async function importPdfFile(file, folderPath = null) {
     let uploadError = "";
     try {
       progress.update("Uploading the document…", 0.85);
-      const folder = `${storageFolderSlug(title, "paper")}--${storageGroupId()}`;
-      const path = await uploadDocument(file, { folder, name: storageFolderSlug(file.name.replace(/\.pdf$/i, ""), "document") }, progress);
-      state.meta = { ...state.meta, pdf: { ...state.meta.pdf, path } };
+      // The hash goes up with the file. It is what lets the paper be found
+      // again if a sync ever takes the id off this record — see
+      // driveFileMetadata in src/cloud/drive-files.js.
+      const locator = await uploadDocument(file, {
+        name: storageFolderSlug(file.name.replace(/\.pdf$/i, ""), "document"),
+        pdfId: PDF_PRIMARY_ID,
+        sha256: hash
+      }, progress);
+      state.meta = { ...state.meta, pdf: { ...state.meta.pdf, ...locator } };
       await saveDeckToLibrary({ silent: true });
     } catch (error) {
       // Deliberately not fatal, and deliberately said out loud. The deck is
@@ -442,10 +448,13 @@ export async function attachPdfToOpenDeck(file) {
     let uploadError = "";
     try {
       progress.update("Uploading the document…", 0.85);
-      const folder = `${storageFolderSlug(state.deckTitle || "paper", "paper")}--${storageGroupId()}`;
-      const path = await uploadDocument(file, { folder, name: storageFolderSlug(file.name.replace(/\.pdf$/i, ""), "document") }, progress);
+      const locator = await uploadDocument(file, {
+        name: storageFolderSlug(file.name.replace(/\.pdf$/i, ""), "document"),
+        pdfId,
+        sha256: hash
+      }, progress);
       state.meta = withDeckPdfs(state.meta, deckPdfs(state.meta).map((entry) => (
-        entry.id === pdfId ? { ...entry, path, at: Date.now() } : entry
+        entry.id === pdfId ? { ...entry, ...locator, at: Date.now() } : entry
       )));
       await saveDeckToLibrary({ silent: true });
     } catch (error) {
