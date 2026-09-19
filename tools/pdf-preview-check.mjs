@@ -3902,6 +3902,278 @@ try {
       "state.notes is still the pre-sync body");
   }
 
+  // ── The reopen that threw a reader off their page ────────────────────────
+  //
+  // "I am reading and it randomly throws me to a different page" — page 1, or
+  // wherever they were some minutes ago — on every PDF, on desktop and on
+  // Android. Three fixes shipped against that report and it survived all three,
+  // because each one narrowed WHEN the reopen fires and none of them changed
+  // what a reopen DOES.
+  //
+  // What it does is land on documentResumePosition: the deck's stored reading
+  // position, which is right when somebody opens a deck and is "wherever I was
+  // some minutes ago" every other time. The background sync reaches it through
+  // main.js's deck-reloaded-in-place hook, which reopens whenever
+  // openDocumentIsCurrent() says the bytes moved — and that test has now been
+  // wrong in three different ways, because it compared a whole string key baked
+  // out of state.deckId, state.localDeckId, the folder key, the active-PDF id
+  // and the hash, every one of which a sync can rewrite with nothing having
+  // changed.
+  //
+  // So this asks both halves. First that a reopen HOLDS the reader (the fix
+  // that makes being wrong about the test survivable), and second that the test
+  // itself no longer answers "changed" to things that are not a change.
+  //
+  // force: true is how the cold path is reached here, and it is faithful: the
+  // hook calls without it, but it only calls at all when openDocumentIsCurrent
+  // is false, and every way that can now happen also moves documentOpenKey —
+  // so the idempotent early-return is not on the hook's path either.
+  {
+    const reopened = await page.evaluate(`async () => {
+      const { api, settle } = window.__recall;
+      const index = api.readLocalDeckIndex();
+      const entry = index[0];
+      if (!entry) return { error: "no deck in the library" };
+      await api.loadDeckFromLibrary(entry.id);
+      api.setViewMode("document");
+      await api.openDocumentView({ force: true });
+      await settle(600);
+      const view = document.getElementById("documentView");
+      if (!view) return { error: "no document scroller" };
+      // openDocumentSlot rather than activeDocSlot: doc-slot.js is not in this
+      // check's module list, and the surface can say which shelf it is showing
+      // perfectly well on its own.
+      const slot = api.openDocumentSlot();
+      if (!slot) return { error: "no document open" };
+      // docSlotReadingPositionKey's answer, written out rather than imported,
+      // for the same reason. A drift here would show up as case 1 below failing
+      // to land on the stored page, which is exactly what that control is for.
+      const positionKey = slot === "notebook" ? "readingPositionNotebook" : "readingPositionPdf";
+
+      // A stored position that is NOT where the reader will be standing. This
+      // is the "page I was on ten minutes ago" in the report, made explicit —
+      // without it a reopen could land correctly by accident and this case
+      // would be asking nothing.
+      const stampStoredPage1 = () => {
+        api.state.meta = {
+          ...(api.state.meta || {}),
+          [positionKey]: { offset: 1, pdfPage: 1, ratio: 0, at: Date.now() + 5000 }
+        };
+      };
+
+      const standOffTheStoredPage = async () => {
+        api.scrollToDocumentPage(3, 0.25, { smooth: false });
+        await settle(350);
+        return { page: api.currentDocumentPage(), scroll: view.scrollTop };
+      };
+
+      // ── 1. A reopen with no hold resumes from storage ──────────────────
+      //
+      // Today's behaviour, asserted so the case below cannot pass vacuously: if
+      // this ever stops landing on page 1, the fixture has stopped telling the
+      // two apart and the real assertion is worthless.
+      const before = await standOffTheStoredPage();
+      stampStoredPage1();
+      await api.openDocumentView({ force: true, slot });
+      await settle(600);
+      const bare = { page: api.currentDocumentPage(), scroll: view.scrollTop };
+
+      // ── 2. ...and one asked to hold does not ───────────────────────────
+      const again = await standOffTheStoredPage();
+      stampStoredPage1();
+      await api.openDocumentView({ force: true, slot, holdReader: true });
+      await settle(600);
+      const heldAfter = { page: api.currentDocumentPage(), scroll: view.scrollTop };
+
+      // ── 3. What openDocumentIsCurrent answers to a sync's noise ────────
+      //
+      // Each of these is a real thing a reconcile does to the open deck, and
+      // each of them used to read as "the bytes changed" and force the reopen
+      // above.
+      const currentWhenUntouched = api.openDocumentIsCurrent();
+
+      const deckIdBefore = api.state.deckId;
+      api.state.deckId = "cloud-" + Math.random().toString(36).slice(2, 10);
+      const currentAfterDeckId = api.openDocumentIsCurrent();
+      api.state.deckId = deckIdBefore;
+
+      const metaBefore = api.state.meta;
+      // A merged entry that arrived without a hash — an older client's row, or
+      // a union-by-id merge that has not carried this PDF's own entry forward.
+      // "I do not know" is not "they differ".
+      const pdfBefore = api.state.meta?.pdf ? { ...api.state.meta.pdf } : null;
+      if (pdfBefore) {
+        const { sha256: _drop, ...noHash } = pdfBefore;
+        api.state.meta = { ...api.state.meta, pdf: noHash, pdfs: undefined };
+      }
+      const currentAfterMissingHash = api.openDocumentIsCurrent();
+
+      // ...and a hash that is present, known and genuinely different, which is
+      // the one case worth tearing a reader off their page for.
+      if (pdfBefore) api.state.meta = { ...api.state.meta, pdf: { ...pdfBefore, sha256: "0".repeat(64) }, pdfs: undefined };
+      const currentAfterRealChange = api.openDocumentIsCurrent();
+      api.state.meta = metaBefore;
+
+      return {
+        beforePage: before.page,
+        barePage: bare.page,
+        againPage: again.page,
+        againScroll: again.scroll,
+        heldPage: heldAfter.page,
+        heldScroll: heldAfter.scroll,
+        currentWhenUntouched,
+        currentAfterDeckId,
+        currentAfterMissingHash,
+        currentAfterRealChange,
+        hadPdfMeta: Boolean(pdfBefore)
+      };
+    }`);
+    if (reopened.error) throw new Error(reopened.error);
+
+    // Whatever page the scroll actually lands on — asked of the surface rather
+    // than assumed from the fixture's geometry, because the only property this
+    // case needs is that it is not the stored one. A four-page paper in a tall
+    // scroller clamps, and hard-coding the answer would make this fail for a
+    // reason that has nothing to do with the bug.
+    check("the fixture really does stand the reader off the stored page",
+      reopened.beforePage > 1 && reopened.againPage > 1 && reopened.beforePage === reopened.againPage,
+      `stood on ${reopened.beforePage} then ${reopened.againPage}, wanted the same page, above 1`);
+    // The control. Without this the assertion below could pass having proved
+    // only that a reopen does nothing at all.
+    check("a reopen with no hold resumes from the stored position",
+      reopened.barePage === 1,
+      `landed on page ${reopened.barePage}, wanted the stored page 1`);
+    // The reported symptom, asserted directly. Fails without the fix: the
+    // reader is on page 3 and the reopen puts them on page 1.
+    check("...and a reopen asked to hold leaves the reader where they were",
+      reopened.heldPage === reopened.againPage,
+      `landed on page ${reopened.heldPage}, wanted ${reopened.againPage}`);
+    check("...within a pixel of the offset they were at",
+      Math.abs(reopened.heldScroll - reopened.againScroll) <= 1,
+      `${reopened.againScroll} -> ${reopened.heldScroll}`);
+
+    check("an untouched document reads as current",
+      reopened.currentWhenUntouched === true,
+      "openDocumentIsCurrent() is false with nothing changed at all");
+    check("...and a deck picking up its cloud id is not the bytes changing",
+      reopened.currentAfterDeckId === true,
+      "a state.deckId flip still forces a reopen");
+    check("...nor is an entry that arrived without a hash",
+      reopened.hadPdfMeta === false || reopened.currentAfterMissingHash === true,
+      "a missing sha256 still reads as a changed file");
+    check("...while a hash that is known and different still does",
+      reopened.hadPdfMeta === false || reopened.currentAfterRealChange === false,
+      "a genuinely different sha256 no longer forces a reopen");
+  }
+
+  // ── A page above the reader that discovers it is a different size ────────
+  //
+  // Opening a paper does not ask the worker for 400 pages' dimensions before
+  // drawing anything, so every page is laid out at PAGE 1's size and corrects
+  // itself when it is parsed. On a paper whose pages are all one size that
+  // correction is a no-op. On a scan, a plate section or anything with a
+  // landscape figure in it, it is a real height change in the middle of a
+  // column of pages — and isPageNearViewport renders a whole viewport height
+  // ABOVE the scroll position, so the page that changes size is regularly one
+  // the reader has already gone past.
+  //
+  // Nothing compensated for that. Jumping to page 8 rendered pages 6 and 7
+  // behind the reader, each of them grew, and the paper slid out from under
+  // them with no gesture to explain it.
+  //
+  // The jump is the case rather than a contrived scroll because it is the one
+  // that happens constantly: a contents row, the pager, a highlight, and the
+  // resume on every single open.
+  if (!OWN_PDF) {
+    const uneven = buildFixturePdf({
+      pages: 10,
+      annotate: false,
+      outline: false,
+      // Page 1 is the one every placeholder is sized from, so it is the odd one
+      // out on purpose: every OTHER page is half as tall again, which makes the
+      // uncompensated shift several hundred pixels rather than a few.
+      heightForPage: (n) => (n === 1 ? 792 : 1188)
+    });
+    const shifted = await page.evaluate(`async (bytes) => {
+      const { api, settle } = window.__recall;
+      const before = api.readLocalDeckIndex().map((m) => m.id);
+      const file = new File([new Uint8Array(bytes)], "uneven.pdf", { type: "application/pdf" });
+      await api.importPdfFile(file, null);
+      await settle(400);
+      const index = api.readLocalDeckIndex();
+      const entry = index.find((m) => !before.includes(m.id));
+      if (!entry) return { error: "no deck was created for the uneven PDF" };
+      for (let i = 0; i < 60 && api.deckAutosaveTimer; i += 1) await settle(100);
+      await api.loadDeckFromLibrary(entry.id);
+      api.setViewMode("document");
+      await api.openDocumentView({ force: true });
+      await settle(700);
+      const view = document.getElementById("documentView");
+      if (!view) return { error: "no document scroller" };
+
+      // Straight to a page deep enough that the pages behind it have never been
+      // parsed, and far enough from the end that nothing is clamped.
+      api.scrollToDocumentPage(8, 0, { smooth: false });
+      const landedPage = api.currentDocumentPage();
+      const landedScroll = view.scrollTop;
+      // Long enough for the sweep to have parsed the pages around the landing,
+      // which is when their real heights arrive.
+      await settle(1200);
+
+      const heights = [];
+      for (const n of [1, 2, 7, 8]) {
+        const box = document.querySelector('.pdf-page[data-page-number="' + n + '"]');
+        heights.push(box ? Math.round(box.getBoundingClientRect().height) : 0);
+      }
+      return {
+        landedPage,
+        landedScroll,
+        settledPage: api.currentDocumentPage(),
+        settledScroll: view.scrollTop,
+        heights,
+        moves: JSON.stringify((window.__recallReaderMoves || []).slice(-12))
+      };
+    }`, [...uneven.bytes]);
+    if (shifted.error) throw new Error(shifted.error);
+
+    // The fixture really is uneven, and the pages really did re-size. Without
+    // this the assertion below could pass on a paper where nothing moved.
+    check("a paper whose pages are not all one size lays them out unevenly",
+      shifted.heights[0] > 0 && shifted.heights[1] > shifted.heights[0] * 1.2,
+      `page 1 is ${shifted.heights[0]}px, page 2 is ${shifted.heights[1]}px`);
+    check("a jump to page 8 lands on page 8",
+      shifted.landedPage === 8,
+      `landed on ${shifted.landedPage}`);
+    // The symptom. Without the compensation, pages 6 and 7 growing behind the
+    // reader pushed page 8 down past them.
+    check("...and the pages behind it growing does not take the reader with them",
+      shifted.settledPage === 8,
+      `drifted from page 8 to ${shifted.settledPage}`);
+    // ── ...and asserted on OUR arithmetic, not on the offset ───────────────
+    //
+    // The offset cannot tell this apart in Chrome. Chrome implements scroll
+    // anchoring, so with the compensation taken out the scroller still ends up
+    // 788px further down — the browser having done exactly the same sum. Both
+    // runs measure +788 and the assertion above passes either way.
+    //
+    // That is not a reason to leave it to the browser. Safari implements no
+    // scroll anchoring at all, anchoring is suppressed in cases the spec lists
+    // (and silently by any `overflow-anchor: none` a later stylesheet adds),
+    // and a surface that relies on it is a surface whose behaviour is decided
+    // elsewhere. So the check asks the question the offset cannot: did THIS
+    // code account for the growth, and for the whole of it?
+    //
+    // It reads the reader-move log, which exists for this and for the next
+    // report of a jump that gets this far without a cause attached to it.
+    const compensations = JSON.parse(shifted.moves).filter((m) => m.cause === "compensate:page-resized");
+    check("...because the resize behind them was compensated for here",
+      compensations.length > 0,
+      "no page above the reader reported a compensated resize");
+    check("...by exactly the height the page gained",
+      compensations.every((m) => m.shift === m.delta),
+      compensations.map((m) => `p${m.page}: ${m.shift} of ${m.delta}`).join(", ") || "none");
+  }
+
     const fits = [];
     for (const width of [360, 390, 430]) {
       await emulatePhone(page, { width, height: 780 });

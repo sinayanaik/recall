@@ -279,7 +279,26 @@ export function registerServiceWorker() {
     }
   });
 
+  // Is the reader inside a document, and past the top of it?
+  //
+  // Asked of the DOM rather than of src/documents/, deliberately. This module is
+  // registered from the boot path and must not pull the PDF surface and its
+  // whole import graph in behind it — and the question is a shallow one: is the
+  // document scroller on screen, and has it been scrolled. #documentView is the
+  // scroller for both papers (the deck's PDF and the notebook beside it), and a
+  // hidden one reports offsetParent null.
+  const readerIsMidDocument = () => {
+    try {
+      const view = document.getElementById("documentView");
+      if (!view || view.hidden || !view.offsetParent) return false;
+      return view.scrollTop > 0;
+    } catch (_) {
+      return false;
+    }
+  };
+
   let hadController = Boolean(navigator.serviceWorker.controller);
+
   navigator.serviceWorker.addEventListener("controllerchange", () => {
     if (!hadController) {
       hadController = true; // first-ever install: this page is already current
@@ -289,6 +308,26 @@ export function registerServiceWorker() {
     try { lastReload = Number(sessionStorage.getItem("recall:updateReloadAt")) || 0; } catch (_) {}
     if (Date.now() - lastReload < 60_000) {
       showToast("Recall updated — reload to finish", "info");
+      return;
+    }
+    // ...and not while somebody is reading a document.
+    //
+    // A reload is the one event that genuinely does put the reader back on the
+    // deck's STORED reading position, which is wherever it was last written
+    // down and not where they are. This repo publishes on every push to main,
+    // so a release landing mid-page is not a rare event, and "I was thrown to
+    // a different page for no reason" is what it looks like from the reader's
+    // chair — indistinguishable from the bug this branch is about.
+    //
+    // Deferred rather than cancelled: the banner and the menu marker already
+    // exist for a release that is waiting, and the next deck change, tab
+    // change or app launch takes it. Only while they are actually IN a
+    // document and have actually scrolled — a reader at the top of page 1
+    // loses nothing by reloading, and this must not become "the app never
+    // updates for anyone who once opened a PDF".
+    if (readerIsMidDocument()) {
+      showToast("Recall updated — reload to finish", "info");
+      markUpdateAvailableInMenu();
       return;
     }
     try { sessionStorage.setItem("recall:updateReloadAt", String(Date.now())); } catch (_) {}

@@ -1377,7 +1377,17 @@ onDomReady(() => {
       // sha test rejects the stale entry. Deliberately no `force`: that would
       // throw away a still-valid park on every sync, which is the cost the
       // switch between the two papers exists to avoid.
-      if (!openDocumentIsCurrent()) { openDocumentView({ slot: activeDocSlot() }); return; }
+      // holdReader, and this is the only call site that passes it. A reopen from
+      // here is not a reader opening a deck — it is a background sync that
+      // happened to land while somebody was on page 240 — so it must put them
+      // back on page 240 rather than resume from the deck's stored position,
+      // which is where they were whenever it was last written down.
+      //
+      // That is the report this is for: "I am reading and it throws me to a
+      // different page", on every PDF, on desktop and on Android. Three fixes
+      // have narrowed WHEN this branch fires wrongly; this one makes firing
+      // wrongly cost a re-parse nobody can see.
+      if (!openDocumentIsCurrent()) { openDocumentView({ slot: activeDocSlot(), holdReader: true }); return; }
       // ...and when the file is the same, only what sits ON the pages can have
       // moved: the marks, the ink, the blocks, the badges.
       repaintOpenDocumentPages();
