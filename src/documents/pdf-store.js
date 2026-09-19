@@ -8,19 +8,20 @@
 //     (a PDF is fetched by the app as an ArrayBuffer, not by the browser as a
 //     subresource, so the service worker's caches never see it).
 //   • the CLOUD copy, so the same paper opens on a phone that has never seen
-//     the file. That copy lives in the reader's own Google Drive now. It used
-//     to live in a private `documents` bucket in their Supabase project, and
-//     PDFs are what filled the free tier's 1GB — one paper outweighs a hundred
-//     figures. Drive is 15GB, costs nothing, and needs no secret kept (see
-//     src/cloud/drive-client.js).
+//     the file. That copy now lives in an S3-compatible bucket the reader
+//     supplies — see src/cloud/s3-config.js for why it moved off Google Drive,
+//     which in turn had moved off a private `documents` bucket in the reader's
+//     Supabase project when PDFs filled the free tier's 1GB.
 //
-//     Both are read. Nothing already uploaded was rewritten or moved: a record
-//     written before this change still carries its Storage `path` and still
-//     opens from it, exactly as it did. `path` is never cleared, for the same
-//     reason offloadCurrentDocument does not clear it — it is the record of
-//     where those bytes are. New uploads carry a `driveId` instead, and
-//     getDocument below prefers it. The Storage panel is where a reader moves
-//     the old ones across and gets their Supabase quota back.
+//     ALL THREE are read, and that is the whole design of getDocument below.
+//     Nothing already uploaded was rewritten or moved by either change: a
+//     record written before Drive still carries its Storage `path`, a record
+//     written during Drive still carries its `driveId`, and both still open
+//     from where they are. Neither field is ever cleared, for the same reason
+//     offloadCurrentDocument does not clear one — it is the record of where
+//     those bytes actually are. New uploads carry an `s3Key`, which getDocument
+//     prefers. The Storage panel is where a reader moves the older ones across
+//     and gets the space back.
 //
 // Modelled on src/images/outbox.js, which solves the same shape of problem for
 // images pasted offline — same IndexedDB idiom, same one-store-one-database
@@ -33,8 +34,10 @@
 
 import { getCachedSession } from "../cloud/auth.js?v=__BUILD__";
 import { canReachDrive, isDriveConfigured, requestDriveToken } from "../cloud/drive-client.js?v=__BUILD__";
-import { deleteDriveFile, downloadDriveFile, findDriveFileByProperties, uploadDriveFile } from "../cloud/drive-files.js?v=__BUILD__";
+import { deleteDriveFile, downloadDriveFile, findDriveFileByProperties } from "../cloud/drive-files.js?v=__BUILD__";
 import { CLOUD_TIMEOUT_MS, withTimeout } from "../cloud/net.js?v=__BUILD__";
+import { canReachS3, isS3Configured } from "../cloud/s3-config.js?v=__BUILD__";
+import { deleteS3File, downloadS3File, s3DocumentKey, uploadS3File } from "../cloud/s3-files.js?v=__BUILD__";
 import { canSignStorageUrls, signedUrlFor } from "../cloud/storage-urls.js?v=__BUILD__";
 import { isSignedIn, supabaseClient } from "../cloud/supabase-client.js?v=__BUILD__";
 
@@ -144,17 +147,47 @@ export async function getDocument(deckLocalId, pdfMeta) {
   }
   if (pdfMeta?.offloaded) return null;
 
-  // Drive first, and the Storage bucket only for a record that predates it.
-  // Both branches end the same way — the bytes are written into the device
+  // The bucket first, then Drive, then Supabase Storage — newest backend to
+  // oldest, which is also most-likely-to-answer to least. Each branch returns
+  // null rather than throwing when its backend is not configured, so a record
+  // naming only one of them costs nothing for the other two.
+  //
+  // All three branches end the same way: the bytes are written into the device
   // store on the way past, so a download happens once per device rather than
-  // once per open.
-  const blob = (await driveDocumentBlob(pdfMeta)) || (await storageDocumentBlob(pdfMeta));
+  // once per open. That write-back is also what makes the migration cheap — a
+  // paper the reader has opened since the change is already local when the move
+  // comes to read it.
+  const blob = (await s3DocumentBlob(pdfMeta))
+    || (await driveDocumentBlob(pdfMeta))
+    || (await storageDocumentBlob(pdfMeta));
   if (!blob) return null;
   if (deckLocalId) {
     await putDocument({ deckLocalId, blob, sha256: pdfMeta.sha256 || "", name: pdfMeta.name || "", at: Date.now() })
       .catch((error) => console.warn("Could not cache the document on this device", error));
   }
   return blob;
+}
+
+// The bucket half of getDocument, and the way home when a sync has taken the
+// key off the record.
+//
+// meta.pdfs merges by whole record, last writer wins (mergeRecordsById in
+// src/sync/diff.js) — it does not merge fields. So a device that rewrites its
+// copy of a PDF record while holding an older version of it carries the s3Key
+// away with it, and the record is left naming nothing.
+//
+// Drive answered this with a metadata search. Here there is nothing to search:
+// the key is `recall/<pdfId>/<sha256>.pdf` and both halves are ON the record
+// already, so a missing key is simply recomputed. That is the practical payoff
+// of content-addressing — the lookup that cost Drive a query and an index costs
+// this one string concatenation, and it cannot go stale.
+async function s3DocumentBlob(pdfMeta) {
+  if (!pdfMeta) return null;
+  if (!canReachS3()) return null;
+  if (!navigator.onLine) return null;
+  const key = pdfMeta.s3Key || s3DocumentKey({ pdfId: pdfMeta.id, sha256: pdfMeta.sha256 });
+  if (!key) return null;
+  return downloadS3File(key);
 }
 
 // The Drive half of getDocument, including the way home when a sync has taken
@@ -175,8 +208,13 @@ export async function getDocument(deckLocalId, pdfMeta) {
 // one extra request on each open of a record in that state — and only when
 // the device has no copy, since the device is tried first. The paper opens
 // either way, which is the part that matters.
+// Read-only, exactly as storageDocumentBlob below is: nothing uploads to Drive
+// any more. It stays because a paper that is in Drive and not on THIS device
+// has nowhere else to come from until the reader runs the migration — and on a
+// second device, they have not run it yet.
 async function driveDocumentBlob(pdfMeta) {
   if (!pdfMeta) return null;
+  if (!pdfMeta.driveId && !pdfMeta.sha256 && !pdfMeta.id) return null;
   if (!isDriveConfigured()) return null;
   if (!navigator.onLine) return null;
   // A token this device has not been given yet is worth asking for once,
@@ -243,40 +281,42 @@ export function documentStoragePath(userId, folder, name) {
   return `${userId}/pdfs/${folder}/${name}.pdf`;
 }
 
-// One attempt, into the reader's Drive.
+// One attempt, into the reader's bucket.
 //
 // The thrown errors are the same vocabulary the retry loop below already spoke
-// — OFFLINE and NOT_SIGNED_IN by name, `authFailed` for a refusal that trying
-// again cannot fix — so uploadDocument did not have to learn a new one when the
-// backend changed. NOT_SIGNED_IN now means "no Drive token", which is the same
-// situation from the reader's side: the paper is on this device and nowhere
-// else, and they are told exactly that.
+// — OFFLINE by name, `authFailed` for a refusal that trying again cannot fix —
+// so uploadDocument did not have to learn a new one when the backend changed
+// for the second time. NO_STORAGE replaces NO_DRIVE and means the same thing
+// from the reader's side: nothing is set up, so the paper is on this device and
+// nowhere else, and they are told exactly that.
+//
+// There is no NOT_SIGNED_IN any more. Nothing here has a session to be signed
+// out of — that condition simply stopped existing, which was the point.
 export async function uploadDocumentOnce(file, { name, deckId, pdfId, sha256 }) {
   if (!navigator.onLine) throw new Error("OFFLINE");
-  if (!isDriveConfigured()) throw new Error("NO_DRIVE");
-  // Asked for up front rather than inside driveFetch, so an upload that is
-  // going to fail for want of a credential fails before the bytes move.
-  if (!(await requestDriveToken({ interactive: false }))) throw new Error("NOT_SIGNED_IN");
-  const driveId = await withTimeout(
-    uploadDriveFile(file, { name: `${name || "document"}.pdf`, deckId, pdfId, sha256 }),
+  // Checked up front rather than inside s3Fetch, so an upload that is going to
+  // fail for want of a credential fails before the bytes move.
+  if (!canReachS3()) throw new Error("NO_STORAGE");
+  const s3Key = await withTimeout(
+    uploadS3File(file, { pdfId, sha256 }),
     // A paper is megabytes where an image is kilobytes, so the ordinary cloud
     // timeout — tuned for a row read — would fail a perfectly healthy upload on
     // a slow connection. See UPLOAD_TIMEOUT_MS.
     Math.max(CLOUD_TIMEOUT_MS, UPLOAD_TIMEOUT_MS),
     "upload document"
   );
-  if (!driveId) throw new Error("Upload failed");
-  return { driveId };
+  if (!s3Key) throw new Error("Upload failed");
+  return { s3Key };
 }
 
 export function documentUploadDelay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// Returns a LOCATOR — `{ driveId }` — rather than a path string, because the
-// record it is written into now names a file rather than an object in a
-// bucket. Callers spread it into the meta entry, which is what keeps a
-// pre-existing `path` on that entry untouched.
+// Returns a LOCATOR — `{ s3Key }` — rather than a path string. Callers spread
+// it into the meta entry, which is what keeps a pre-existing `path` or
+// `driveId` on that entry untouched: a record can name all three at once while
+// a migration is half done, and getDocument reads them newest-first.
 export async function uploadDocument(file, destination, progress = null) {
   for (let attempt = 1; ; attempt++) {
     // Checked before the attempt as well as after it: a reader who pressed
@@ -293,8 +333,11 @@ export async function uploadDocument(file, destination, progress = null) {
       const timedOut = /timed out/i.test(error?.message || "");
       const worthRetrying = error?.message !== "NOT_SIGNED_IN"
         && error?.message !== "OFFLINE"
-        // Drive was never set up, or the account is full. Neither is a
-        // transient refusal and neither improves on the fourth go.
+        // The bucket was never set up, or it is full, or the CORS policy does
+        // not admit this site. None is a transient refusal and none improves on
+        // the fourth go. NO_DRIVE is kept in the list because a record written
+        // before the move can still reach the Drive path through the migration.
+        && error?.message !== "NO_STORAGE"
         && error?.message !== "NO_DRIVE"
         && !error?.quotaExceeded
         && !error?.authFailed
@@ -311,17 +354,18 @@ export async function uploadDocument(file, destination, progress = null) {
 // the offload half of the finish-a-paper loop — the device copy, the
 // highlights, the notes and the cards all stay exactly where they are.
 //
-// Takes the RECORD rather than a path, because a record can name either
-// backend and only it knows which. A record carrying both — one that has been
-// moved to Drive but whose Storage object has not been swept yet — has both
-// removed, which is what makes the move safe to interrupt: the duplicate is
-// cleaned up by whichever pass gets there second.
+// Takes the RECORD rather than a path, because a record can name any of three
+// backends and only it knows which. A record carrying more than one — moved to
+// the bucket but not yet swept from Drive, say — has every copy removed, which
+// is what makes a move safe to interrupt: the duplicate is cleaned up by
+// whichever pass gets there second.
 export async function deleteRemoteDocument(pdfMeta) {
   // A bare path is still accepted. Callers written against the old signature
   // are the reason, and an object in the bucket is still an object in the
   // bucket.
   const entry = typeof pdfMeta === "string" ? { path: pdfMeta } : (pdfMeta || {});
   let removed = false;
+  if (entry.s3Key) removed = (await deleteS3File(entry.s3Key)) || removed;
   if (entry.driveId) removed = (await deleteDriveFile(entry.driveId)) || removed;
   if (entry.path) removed = (await deleteStorageDocument(entry.path)) || removed;
   return removed;

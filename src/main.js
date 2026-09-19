@@ -3800,7 +3800,7 @@ async function offloadCurrentDocument() {
   // carry more than one.
   const pdfId = openDocumentPdfId() || activePdfId(state.meta);
   const pdfMeta = deckPdfById(state.meta, pdfId);
-  if ((!pdfMeta?.path && !pdfMeta?.driveId) || pdfMeta.offloaded) {
+  if ((!pdfMeta?.s3Key && !pdfMeta?.path && !pdfMeta?.driveId) || pdfMeta.offloaded) {
     showToast("This document isn't in the cloud", "error");
     return false;
   }

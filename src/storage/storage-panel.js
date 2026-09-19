@@ -11,10 +11,10 @@ import { CLOUD_TIMEOUT_MS, withTimeout } from "../cloud/net.js?v=__BUILD__";
 import { isSignedIn, supabaseClient } from "../cloud/supabase-client.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { escapeHtml, formatStorageBytes } from "../core/text.js?v=__BUILD__";
-import { canReachDrive, clearDriveConfig, connectDrive, isDriveConfigured, loadDriveConfig, saveDriveConfig } from "../cloud/drive-client.js?v=__BUILD__";
-import { driveQuota, listDriveFiles } from "../cloud/drive-files.js?v=__BUILD__";
+import { S3_DEFAULT_REGION, canReachS3, canSignS3Requests, clearS3Config, isS3Configured, loadS3Config, s3CorsPolicy, saveS3Config } from "../cloud/s3-config.js?v=__BUILD__";
+import { s3Usage, testS3Connection } from "../cloud/s3-files.js?v=__BUILD__";
 import { clearAllLocalDocuments, deleteRemoteDocument, documentUsage, localDocumentUsage } from "../documents/pdf-store.js?v=__BUILD__";
-import { migrateDocumentsToDrive, planDocumentMigration } from "./document-migration.js?v=__BUILD__";
+import { migrateDocumentsToS3, planDocumentMigration } from "./document-migration.js?v=__BUILD__";
 import { LOCAL_IMAGE_SCHEME, allOutboxImages, deleteOutboxImage, revokeLocalImageUrls } from "../images/outbox.js?v=__BUILD__";
 import { findSourceImages, sourceMayHaveImages } from "../images/surface-controls.js?v=__BUILD__";
 import { IMAGE_BUCKET, IMAGE_STORAGE_EXT, OFFLINE_IMAGE_CACHE, supabaseImagePathFromUrl } from "../images/upload.js?v=__BUILD__";
@@ -237,7 +237,25 @@ export async function deviceStorageStats() {
 // One pass over everything, so the panel's numbers all describe the same
 // moment. Cloud-side failures are captured per section rather than thrown:
 // being offline should still show what this device holds.
-export async function buildStorageReport(onProgress) {
+//
+// ── Why this splits in two ─────────────────────────────────────────────────
+//
+// It used to be one pass, and opening the panel cost all of it. The expensive
+// half is the Supabase CENSUS: a recursive listing of every object in the
+// images bucket, then a second walk of every deck snapshot plus every
+// decks.notes and cards.question/answer row at 500 a page, running two regex
+// scanners over each field. That is O(everything) and it ran twice — once on
+// open, and again after any action that called refreshStorageReport.
+//
+// Pressing a button in the storage card therefore paid for a full image census
+// before the storage card could redraw, which is the single slowest thing in
+// the app and had nothing whatsoever to do with what was pressed.
+//
+// So `census: false` returns everything that is cheap — what this device holds,
+// what is in the bucket, what is still waiting to be migrated — and the caller
+// paints that first. The census follows on its own, quietly, and lands
+// underneath. Nothing that touches the credential card waits on it at all.
+export async function buildStorageReport(onProgress, { census = true } = {}) {
   const report = {
     at: new Date(),
     signedIn: Boolean(supabaseClient && isSignedIn),
@@ -246,8 +264,33 @@ export async function buildStorageReport(onProgress) {
     cloudError: "",
     storage: null,
     storageError: "",
+    censusPending: !census,
+    s3: null,
+    s3Error: "",
+    migration: [],
     device: await deviceStorageStats()
   };
+
+  // The bucket, and what is still waiting to leave an older backend. BEFORE
+  // the sign-in and offline checks below, because neither applies to it: the
+  // bucket has no Supabase session, and planDocumentMigration reads local deck
+  // snapshots rather than the network. A reader who is signed out of Supabase,
+  // or on a train, must still be able to see and fix their PDF storage.
+  try {
+    if (canReachS3()) {
+      onProgress?.("Reading the bucket…");
+      report.s3 = await s3Usage();
+    }
+  } catch (error) {
+    report.s3Error = error?.message || "Could not read the bucket.";
+  }
+  try {
+    report.migration = await planDocumentMigration();
+  } catch (error) {
+    console.warn("Could not plan the document migration", error);
+  }
+
+  if (!census) return report;
 
   if (!report.signedIn) {
     report.cloudError = "Not signed in — cloud figures unavailable.";
@@ -341,24 +384,6 @@ export async function buildStorageReport(onProgress) {
     report.documents = await documentUsage();
   } catch (error) {
     report.documentsError = error?.message || "Could not read the documents bucket.";
-  }
-
-  // Drive last, and in a try of its own for the same reason the bucket is: an
-  // install that has never set Drive up is the ordinary case for a while yet,
-  // and it must not cost the rest of the panel its numbers.
-  try {
-    if (canReachDrive()) {
-      onProgress?.("Reading Google Drive…");
-      const [quota, files] = await Promise.all([driveQuota(), listDriveFiles()]);
-      report.drive = {
-        quota,
-        files,
-        count: files.length,
-        bytes: files.reduce((sum, file) => sum + (file.size || 0), 0)
-      };
-    }
-  } catch (error) {
-    report.driveError = error?.message || "Could not read Google Drive.";
   }
 
   return report;
@@ -535,11 +560,22 @@ export async function wipeLocalLibrary() {
   return snapshotCount + 1;
 }
 
+// Opening is now three paints rather than one wait:
+//
+//   1. whatever was read last time, immediately — a slightly stale number the
+//      reader can see beats a spinner while it is recounted;
+//   2. the cheap half — this device, the bucket, what is left to migrate;
+//   3. the census, quietly, landing underneath.
+//
+// Only the first open of a session shows a spinner at all, and even then only
+// for step 2, which touches no Supabase table and lists no images.
 export function openStoragePanel() {
   lockPageScroll();
   el.storagePanel.hidden = false;
   renderStoragePanel();
-  refreshStorageReport();
+  const quiet = Boolean(storageReport);
+  refreshStorageReport({ census: false, quiet })
+    .then(() => refreshStorageReport({ census: true, quiet: true }));
 }
 
 export function closeStoragePanel() {
@@ -547,17 +583,31 @@ export function closeStoragePanel() {
   unlockPageScroll();
 }
 
-export async function refreshStorageReport() {
+// `quiet` is what makes the second pass invisible: without it every refresh
+// blanks the panel back to a progress bar, so the census landing would rip
+// away the card the reader was already reading. With it, the numbers simply
+// appear.
+export async function refreshStorageReport({ census = true, quiet = false } = {}) {
   if (storageBusy) return;
   storageBusy = true;
-  renderStoragePanel("Reading…");
+  if (!quiet) renderStoragePanel("Reading…");
   try {
-    storageReport = await buildStorageReport((text) => renderStoragePanel(text));
+    storageReport = await buildStorageReport((text) => { if (!quiet) renderStoragePanel(text); }, { census });
   } catch (error) {
     console.error("Storage report failed", error);
+    storageBusy = false;
+    // A report already on screen is KEPT. Since opening the panel is two
+    // passes, throwing away the first one's numbers because the census behind
+    // it failed would blank a card the reader was already reading — and the
+    // cheap pass is the one that answers "is my PDF storage working", which is
+    // exactly what they would be looking at when it happened.
+    if (storageReport) {
+      renderStoragePanel();
+      showToast(`Could not finish counting: ${error?.message || "unknown error"}`, "error");
+      return;
+    }
     storageReport = null;
     renderStoragePanel(`Could not read storage: ${error?.message || "unknown error"}`);
-    storageBusy = false;
     return;
   }
   storageBusy = false;
@@ -650,74 +700,115 @@ export function renderStoragePanel(busyText = "") {
         : `<p class="storage-note">No documents stored. Import a PDF and the file itself lands here.</p>`}`
     : `<p class="storage-note is-warning">${escapeHtml(report.documentsError || report.storageError || "No document data.")}</p>`;
 
-  // ── Drive ────────────────────────────────────────────────────────────────
+  // ── The bucket ───────────────────────────────────────────────────────────
   //
-  // Shows the account's WHOLE quota, not just what Recall put there. The 15GB
-  // is shared with Gmail and Photos, so a reader whose uploads start failing
-  // has usually not filled it with papers — and this panel is the only place
-  // in the app that can tell them so.
-  const drive = report.drive;
-  const driveConfigured = isDriveConfigured();
-  const driveQuotaTiles = drive?.quota?.limit
-    ? `${storageStatTile(formatStorageBytes(drive.quota.usage), "Used in Google")}
-       ${storageStatTile(formatStorageBytes(drive.quota.limit), "Google total")}
-       ${storageStatTile(`${Math.round((drive.quota.usage / drive.quota.limit) * 100)}%`, "Of your Drive", drive.quota.usage > drive.quota.limit * 0.9 ? "is-warn" : "")}`
-    : "";
-  // The field is shown whenever Drive is NOT actually reachable, prefilled with
-  // whatever is saved — not only when nothing is configured. Hiding it the
-  // moment a Client ID is stored was a trap: paste one with a typo, watch the
-  // connect fail, and there is no longer anywhere to correct it.
-  const driveReachable = canReachDrive();
-  const savedClientId = loadDriveConfig()?.clientId || "";
-  const driveForm = `
-    <label class="storage-field" for="driveClientId">OAuth Client ID</label>
-    <input id="driveClientId" class="storage-input" type="text" autocomplete="off" spellcheck="false"
-           placeholder="000000000000-xxxxxxxx.apps.googleusercontent.com" value="${escapeHtml(savedClientId)}">
-    <button type="button" class="storage-action" data-storage-action="drive-connect">${driveConfigured ? "Reconnect" : "Connect Drive"}</button>
-    ${driveConfigured ? `<button type="button" class="storage-action" data-storage-action="drive-forget">Forget this Client ID</button>` : ""}
-    <p class="storage-note">The Client ID is public — there is no secret to paste here, and none is stored. See the README for the five-minute setup.</p>`;
-  const driveSection = driveReachable
+  // The form is shown whenever the bucket is NOT actually reachable, prefilled
+  // with whatever is saved — not only when nothing is configured. Hiding it the
+  // moment a value is stored was a trap the Drive card fell into: paste one
+  // with a typo, watch the connect fail, and there is no longer anywhere to
+  // correct it.
+  //
+  // The secret is rendered into a password field and never into the panel's
+  // prose. It is not much of a defence — anything that can read the DOM can
+  // read localStorage too — but it does cover the case this panel is genuinely
+  // likely to meet, which is a screenshot or a shared screen.
+  const s3 = report.s3;
+  const s3Config = loadS3Config();
+  const s3Reachable = canReachS3();
+  const saved = s3Config || { endpoint: "", bucket: "", region: "", accessKeyId: "", secretAccessKey: "" };
+  const s3Form = `
+    <label class="storage-field" for="s3Endpoint">Endpoint</label>
+    <input id="s3Endpoint" class="storage-input" type="text" autocomplete="off" spellcheck="false"
+           placeholder="https://<account>.r2.cloudflarestorage.com" value="${escapeHtml(saved.endpoint)}">
+    <label class="storage-field" for="s3Bucket">Bucket</label>
+    <input id="s3Bucket" class="storage-input" type="text" autocomplete="off" spellcheck="false"
+           placeholder="recall-papers" value="${escapeHtml(saved.bucket)}">
+    <label class="storage-field" for="s3Region">Region</label>
+    <input id="s3Region" class="storage-input" type="text" autocomplete="off" spellcheck="false"
+           placeholder="${escapeHtml(S3_DEFAULT_REGION)}" value="${escapeHtml(saved.region || "")}">
+    <label class="storage-field" for="s3KeyId">Access key ID</label>
+    <input id="s3KeyId" class="storage-input" type="text" autocomplete="off" spellcheck="false"
+           placeholder="" value="${escapeHtml(saved.accessKeyId)}">
+    <label class="storage-field" for="s3Secret">Secret access key</label>
+    <input id="s3Secret" class="storage-input" type="password" autocomplete="new-password" spellcheck="false"
+           placeholder="" value="${escapeHtml(saved.secretAccessKey)}">
+    <button type="button" class="storage-action" data-storage-action="s3-save">${isS3Configured() ? "Save and test again" : "Save and test"}</button>
+    <button type="button" class="storage-action" data-storage-action="s3-cors">Copy the CORS policy</button>
+    ${isS3Configured() ? `<button type="button" class="storage-action" data-storage-action="s3-forget">Forget these keys</button>` : ""}
+    <p class="storage-note">Cloudflare R2 gives 10GB free with no charge for downloads; Backblaze B2 and anything else speaking S3 work the same way. Mint the token for <strong>this one bucket</strong> with object read &amp; write and nothing else.</p>
+    <p class="storage-note is-warning">Unlike the Google Client ID this replaced, the secret key really is a secret. It is kept in this browser's storage on this device only — never synced, never sent anywhere but your bucket — but anyone who can use this browser profile can read it.</p>
+    <p class="storage-note">Before the first upload works, the bucket needs a CORS policy allowing this site. <strong>Copy the CORS policy</strong> puts the exact JSON on your clipboard; paste it into the bucket's settings.</p>`;
+  const s3Section = !canSignS3Requests()
+    ? `<p class="storage-note is-warning">This page is not being served over https, so the browser will not let it sign bucket requests. Papers stay on this device until it is.</p>`
+    : s3Reachable
+      ? `<div class="storage-stats">
+           ${storageStatTile(s3 ? s3.count : "—", "Papers in the bucket")}
+           ${storageStatTile(s3 ? formatStorageBytes(s3.bytes) : "—", "Used by Recall")}
+           ${storageStatTile(s3Config.bucket, "Bucket")}
+         </div>
+         <p class="storage-note">Set up. New papers go here, deleting one gives the space straight back, and no sign-in is ever asked for.</p>
+         ${report.s3Error ? `<p class="storage-note is-warning">${escapeHtml(report.s3Error)}</p>` : ""}
+         <details class="storage-details"><summary>Change the keys</summary>${s3Form}</details>`
+      : `<p class="storage-note">Not set up. Papers you import are kept on this device and nowhere else until a bucket is added.</p>
+         ${s3Form}`;
+
+  // ── What has not moved across yet ────────────────────────────────────────
+  //
+  // Counted from the LOCAL deck snapshots, not from either old backend. That
+  // is deliberate and it is why this line is free: it needs no Drive token, no
+  // Supabase session and no network, so it is honest on a train and honest on
+  // a device that was never connected to the Google account in question.
+  const pending = report.migration || [];
+  const pendingBytes = pending.reduce((sum, job) => sum + (job.bytes || 0), 0);
+  const fromDrive = pending.filter((job) => job.source === "drive").length;
+  const migrationSection = pending.length
     ? `<div class="storage-stats">
-         ${storageStatTile(drive ? drive.count : "—", "Papers in Drive")}
-         ${storageStatTile(drive ? formatStorageBytes(drive.bytes) : "—", "Used by Recall")}
-         ${driveQuotaTiles}
+         ${storageStatTile(pending.length, "Papers to move")}
+         ${storageStatTile(formatStorageBytes(pendingBytes), "Still elsewhere")}
+         ${storageStatTile(`${fromDrive} · ${pending.length - fromDrive}`, "Drive · Supabase")}
        </div>
-       <p class="storage-note">Connected. New papers go here, and deleting one gives the space straight back.</p>
-       ${report.driveError ? `<p class="storage-note is-warning">${escapeHtml(report.driveError)}</p>` : ""}`
-    : `<p class="storage-note${driveConfigured ? " is-warning" : ""}">${driveConfigured
-         ? "Set up, but not signed in right now. Papers already on this device still open."
-         : "Not connected. Papers you import are kept on this device and nowhere else until Drive is set up."}</p>
-       ${driveForm}`;
+       <button type="button" class="storage-action" data-storage-action="migrate" ${s3Reachable ? "" : "disabled"}>
+         Move them to the bucket${s3Reachable ? "" : " — add a bucket first"}
+       </button>
+       <p class="storage-note">Each paper is copied across and its deck updated <em>before</em> the old copy is deleted, so an interrupted move leaves a duplicate rather than a hole. Take a backup first if you want a belt as well as braces.</p>
+       ${fromDrive ? `<p class="storage-note is-warning">${fromDrive} of these ${fromDrive === 1 ? "is" : "are"} in Google Drive. Reading them needs the Google account that holds them, so run this on a device that can still reach it — or re-attach the file by hand.</p>` : ""}`
+    : `<p class="storage-note">Nothing left to move. Every paper in this library is either in the bucket or on this device alone.</p>`;
+
+  // The three cards below are the CENSUS, and on a first open they are not
+  // read yet — see buildStorageReport. They say so rather than showing a zero,
+  // because a zero is a claim and "still counting" is the truth.
+  const counting = `<div class="job-progress-track is-indeterminate"><div class="job-progress-fill"></div></div>
+    <p class="storage-note">Counting… this walks every image, deck and card, so it takes a moment. Nothing above is waiting on it.</p>`;
 
   body.innerHTML = `
     <div class="storage-card">
-      <h2>Google Drive</h2>
-      <p class="storage-sub">Where papers are kept now. Your own Drive, 15GB free, and no secret to store.</p>
-      ${driveSection}
+      <h2>PDF storage</h2>
+      <p class="storage-sub">Where papers are kept. Your own S3-compatible bucket — four values, pasted once, and no sign-in ever again.</p>
+      ${s3Section}
+    </div>
+
+    <div class="storage-card">
+      <h2>Papers still elsewhere</h2>
+      <p class="storage-sub">PDFs uploaded before the bucket, in Google Drive or the old Supabase <code>documents</code> bucket.</p>
+      ${migrationSection}
     </div>
 
     <div class="storage-card">
       <h2>Cloud database</h2>
       <p class="storage-sub">Your decks, cards and cross-device delete records.</p>
-      ${cloudSection}
+      ${report.censusPending ? counting : cloudSection}
     </div>
 
     <div class="storage-card">
       <h2>Image storage</h2>
       <p class="storage-sub">Files in the <code>images</code> bucket, under your own folder.</p>
-      ${storageSection}
+      ${report.censusPending ? counting : storageSection}
     </div>
 
     <div class="storage-card">
       <h2>Documents still in Supabase</h2>
-      <p class="storage-sub">PDFs uploaded before the move to Drive, in the private <code>documents</code> bucket. These are the big files — one paper can outweigh a hundred figures — and they are what is filling the 1GB.</p>
-      ${documentsSection}
-      ${documents && documents.count
-        ? `<button type="button" class="storage-action" data-storage-action="drive-migrate" ${canReachDrive() ? "" : "disabled"}>
-             Move all to Drive${canReachDrive() ? "" : " — connect Drive first"}
-           </button>
-           <p class="storage-note">Each paper is copied to Drive and its deck updated <em>before</em> the old copy is deleted, so an interrupted move leaves a duplicate rather than a hole. Take a backup first if you want a belt as well as braces.</p>`
-        : ""}
+      <p class="storage-sub">The objects themselves, as the bucket sees them. These are the big files — one paper can outweigh a hundred figures — and they are what filled the 1GB.</p>
+      ${report.censusPending ? counting : documentsSection}
     </div>
 
     <div class="storage-card">
@@ -829,36 +920,77 @@ export async function runStorageAction(action) {
     }
   };
 
-  // Connecting is the one action that must NOT go through `run`: it opens
-  // Google's consent window, and a browser only allows that inside the gesture
-  // that asked for it. A render in between loses the gesture and the window is
-  // blocked.
-  if (action === "drive-connect") {
-    const typed = document.getElementById("driveClientId")?.value?.trim();
-    if (typed) saveDriveConfig(typed);
-    if (!isDriveConfigured()) {
-      showToast("Paste the OAuth Client ID first", "error");
+  // Saving the keys does NOT go through `run`, and does not refresh the whole
+  // report either. This is the fix for the complaint that started all of this:
+  // the old drive-connect handler ended in a bare refreshStorageReport(), so
+  // pressing Connect paid for a full recursive listing of every image in the
+  // bucket, plus a scan of every deck and card, before the card the reader had
+  // just used could redraw. It listed the entire library to tell you whether
+  // four values were correct.
+  //
+  // Now it tests the credential, which is one HEAD-sized LIST against the
+  // reader's own bucket, and re-renders. The census is not involved.
+  if (action === "s3-save") {
+    const typed = {
+      endpoint: document.getElementById("s3Endpoint")?.value || "",
+      bucket: document.getElementById("s3Bucket")?.value || "",
+      region: document.getElementById("s3Region")?.value || "",
+      accessKeyId: document.getElementById("s3KeyId")?.value || "",
+      secretAccessKey: document.getElementById("s3Secret")?.value || ""
+    };
+    saveS3Config(typed);
+    if (!isS3Configured()) {
+      showToast("Fill in the endpoint, bucket, key ID and secret", "error");
+      renderStoragePanel();
       return;
     }
-    const connected = await connectDrive({ interactive: true });
-    showToast(
-      connected ? "Drive connected" : "Could not connect to Drive",
-      connected ? "success" : "error"
-    );
-    await refreshStorageReport();
+    renderStoragePanel("Testing the bucket…");
+    const result = await testS3Connection();
+    if (!result.ok) {
+      // The config is deliberately LEFT SAVED on a failure. A reader who has
+      // one field wrong needs the other four still in the form to fix it, and
+      // clearing them on a bad test is how the Drive card used to lose a
+      // Client ID that was one character out.
+      showToast(result.reason, "error");
+      // Only the bucket's own numbers are re-read; the census, which may have
+      // landed already, is left exactly as it was.
+      await refreshStorageReport({ census: false, quiet: true });
+      return;
+    }
+    showToast("Bucket connected — no sign-in needed from here on", "success");
+    await refreshStorageReport({ census: false, quiet: true });
     return;
   }
 
-  if (action === "drive-forget") {
-    clearDriveConfig();
-    showToast("Drive disconnected — papers already here still open", "info");
-    await refreshStorageReport();
+  if (action === "s3-cors") {
+    const policy = JSON.stringify(s3CorsPolicy(), null, 2);
+    try {
+      await navigator.clipboard.writeText(policy);
+      showToast("CORS policy copied — paste it into the bucket's settings", "success");
+    } catch {
+      // A clipboard the browser will not hand over is not a dead end: the
+      // policy is short, and a prompt the reader can select from beats a toast
+      // saying it failed.
+      showPromptModal(
+        "Copy this into the bucket's CORS settings",
+        "Your browser would not let the page write to the clipboard, so here it is to select and copy.",
+        policy,
+        () => {}
+      );
+    }
     return;
   }
 
-  if (action === "drive-migrate") {
-    if (!canReachDrive()) {
-      showToast("Connect Drive first", "error");
+  if (action === "s3-forget") {
+    clearS3Config();
+    showToast("Keys forgotten — papers already on this device still open", "info");
+    await refreshStorageReport({ census: false, quiet: true });
+    return;
+  }
+
+  if (action === "migrate") {
+    if (!canReachS3()) {
+      showToast("Add a bucket first", "error");
       return;
     }
     const jobs = await planDocumentMigration();
@@ -868,9 +1000,9 @@ export async function runStorageAction(action) {
     }
     const total = jobs.reduce((sum, job) => sum + job.bytes, 0);
     showConfirmModal(
-      `${jobs.length} paper${jobs.length === 1 ? "" : "s"} (${formatStorageBytes(total)}) will be copied to your Google Drive, and removed from Supabase once each one is safely across. Your highlights, notes and cards are untouched, and so is every copy on this device.`,
-      () => run("Moving papers to Drive…", async (say) => {
-        const summary = await migrateDocumentsToDrive(jobs, {
+      `${jobs.length} paper${jobs.length === 1 ? "" : "s"} (${formatStorageBytes(total)}) will be copied to your bucket, and removed from Google Drive or Supabase once each one is safely across. Your highlights, notes and cards are untouched, and so is every copy on this device.`,
+      () => run("Moving papers to the bucket…", async (say) => {
+        const summary = await migrateDocumentsToS3(jobs, {
           onProgress: (done, count, name) => say(`Moving ${done + 1} of ${count} — ${name}`)
         });
         if (summary.failed) {
@@ -881,7 +1013,7 @@ export async function runStorageAction(action) {
         }
         return { message: `Moved ${summary.moved} · ${formatStorageBytes(summary.bytes)} freed`, tone: "success" };
       }),
-      { confirmLabel: "Move to Drive" }
+      { confirmLabel: "Move to the bucket" }
     );
     return;
   }
