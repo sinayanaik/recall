@@ -1,0 +1,48 @@
+/* The Google Drive panel in Storage & Data.
+ *
+ * Written since the split, so it lives on its own rather than in
+ * 08-panels.css — the convention 53-handwriting.css states and
+ * 54-stacking.css was created to correct: a rule added to a frozen slice
+ * keeps css-parity red and is silently deleted by the next bare run of
+ * tools/split-css.mjs.
+ *
+ * Only two elements are new. Everything else in the card — the stat tiles,
+ * .storage-action, .storage-note — is furniture 08-panels.css already owns,
+ * because a reader should not be able to tell that this section talks to a
+ * different company than the one above it.
+ *
+ * Why the field is here at all, and not in the first-run setup overlay: Drive
+ * is something an install adds when its papers outgrow the free tier, not a
+ * thing the app refuses to open without. Papers import and read perfectly
+ * well with no Drive at all; they just stay on the device that imported them.
+ */
+
+.storage-field {
+  display: block;
+  margin: 10px 0 4px;
+  font-size: 0.78rem;
+  font-weight: 800;
+  opacity: 0.75;
+}
+
+.storage-input {
+  width: 100%;
+  box-sizing: border-box;
+  margin-bottom: 8px;
+  min-height: var(--action-button-height, 40px);
+  border: 1px solid var(--line);
+  border-radius: var(--toolbar-button-radius);
+  background: var(--bg);
+  color: var(--text);
+  padding: 8px 12px;
+  /* A Client ID is seventy-odd characters of it-must-be-exact, so it is worth
+     the tabular face and the smaller size to see a whole one at phone width
+     rather than have it scroll under the caret. */
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 0.76rem;
+}
+
+.storage-input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}

@@ -27,6 +27,7 @@
 // torn back down to its placeholder. Opening a 300-page thesis is therefore one
 // screenful of work, not three hundred.
 
+import { isDriveConfigured } from "../cloud/drive-client.js?v=__BUILD__";
 import { PDF_BADGE_LAYER_CLASS, PDF_INK_LAYER_CLASS } from "../core/constants.js?v=__BUILD__";
 import { decodeInkStrokes } from "../format/ink-strokes.js?v=__BUILD__";
 import { paintInkStrokes } from "../render/ink-paint.js?v=__BUILD__";
@@ -502,9 +503,16 @@ function renderDocumentPickPrompt({ heading, body, pick = "Choose the PDF…", n
 function renderMissingDocumentPrompt(pdfMeta, pdfId = null) {
   renderDocumentPickPrompt({
     heading: "Re-attach the PDF to read it",
+    // Three situations now, not two. "Drive was never connected" is a
+    // different sentence from "the download failed" because the reader can
+    // actually do something about the first one, and being told to check their
+    // connection when the truth is that this install has no cloud for papers
+    // at all sends them looking in the wrong place.
     body: pdfMeta?.offloaded
       ? `“${pdfMeta.name || "This document"}” was removed from the cloud to save space, and this device doesn't have a copy. Your highlights, notes and cards are all still here — pick the same file to read it again.`
-      : `This device doesn't have a copy of “${pdfMeta?.name || "the document"}” yet, and it can't be downloaded right now. Your highlights, notes and cards are all still here.`,
+      : (pdfMeta?.driveId && !isDriveConfigured())
+        ? `“${pdfMeta.name || "This document"}” is in a Google Drive this device hasn't been connected to. Connect it in Storage & Data, or pick the file here. Your highlights, notes and cards are all still here.`
+        : `This device doesn't have a copy of “${pdfMeta?.name || "the document"}” yet, and it can't be downloaded right now. Your highlights, notes and cards are all still here.`,
     // Not a formality. A highlight is a coordinate into one exact file; painted
     // over a different edition of the same paper it would sit over the wrong
     // words, silently. Refusing a mismatch is the only honest option.

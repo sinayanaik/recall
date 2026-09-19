@@ -81,7 +81,7 @@ export async function removePdfFromDeck(pdfId) {
   state.meta = meta;
   scheduleDeckAutosave();
 
-  if (entry.path && !entry.offloaded) deleteRemoteDocument(entry.path).catch(() => {});
+  if ((entry.driveId || entry.path) && !entry.offloaded) deleteRemoteDocument(entry).catch(() => {});
   deleteLocalDocument(pdfStoreKey(state.localDeckId, pdfId)).catch(() => {});
 
   await switchToPdf(nextActive);

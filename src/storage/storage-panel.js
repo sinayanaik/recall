@@ -11,7 +11,10 @@ import { CLOUD_TIMEOUT_MS, withTimeout } from "../cloud/net.js?v=__BUILD__";
 import { isSignedIn, supabaseClient } from "../cloud/supabase-client.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { escapeHtml, formatStorageBytes } from "../core/text.js?v=__BUILD__";
+import { canReachDrive, clearDriveConfig, connectDrive, isDriveConfigured, loadDriveConfig, saveDriveConfig } from "../cloud/drive-client.js?v=__BUILD__";
+import { driveQuota, listDriveFiles } from "../cloud/drive-files.js?v=__BUILD__";
 import { clearAllLocalDocuments, deleteRemoteDocument, documentUsage, localDocumentUsage } from "../documents/pdf-store.js?v=__BUILD__";
+import { migrateDocumentsToDrive, planDocumentMigration } from "./document-migration.js?v=__BUILD__";
 import { LOCAL_IMAGE_SCHEME, allOutboxImages, deleteOutboxImage, revokeLocalImageUrls } from "../images/outbox.js?v=__BUILD__";
 import { findSourceImages, sourceMayHaveImages } from "../images/surface-controls.js?v=__BUILD__";
 import { IMAGE_BUCKET, IMAGE_STORAGE_EXT, OFFLINE_IMAGE_CACHE, supabaseImagePathFromUrl } from "../images/upload.js?v=__BUILD__";
@@ -340,6 +343,24 @@ export async function buildStorageReport(onProgress) {
     report.documentsError = error?.message || "Could not read the documents bucket.";
   }
 
+  // Drive last, and in a try of its own for the same reason the bucket is: an
+  // install that has never set Drive up is the ordinary case for a while yet,
+  // and it must not cost the rest of the panel its numbers.
+  try {
+    if (canReachDrive()) {
+      onProgress?.("Reading Google Drive…");
+      const [quota, files] = await Promise.all([driveQuota(), listDriveFiles()]);
+      report.drive = {
+        quota,
+        files,
+        count: files.length,
+        bytes: files.reduce((sum, file) => sum + (file.size || 0), 0)
+      };
+    }
+  } catch (error) {
+    report.driveError = error?.message || "Could not read Google Drive.";
+  }
+
   return report;
 }
 
@@ -629,7 +650,52 @@ export function renderStoragePanel(busyText = "") {
         : `<p class="storage-note">No documents stored. Import a PDF and the file itself lands here.</p>`}`
     : `<p class="storage-note is-warning">${escapeHtml(report.documentsError || report.storageError || "No document data.")}</p>`;
 
+  // ── Drive ────────────────────────────────────────────────────────────────
+  //
+  // Shows the account's WHOLE quota, not just what Recall put there. The 15GB
+  // is shared with Gmail and Photos, so a reader whose uploads start failing
+  // has usually not filled it with papers — and this panel is the only place
+  // in the app that can tell them so.
+  const drive = report.drive;
+  const driveConfigured = isDriveConfigured();
+  const driveQuotaTiles = drive?.quota?.limit
+    ? `${storageStatTile(formatStorageBytes(drive.quota.usage), "Used in Google")}
+       ${storageStatTile(formatStorageBytes(drive.quota.limit), "Google total")}
+       ${storageStatTile(`${Math.round((drive.quota.usage / drive.quota.limit) * 100)}%`, "Of your Drive", drive.quota.usage > drive.quota.limit * 0.9 ? "is-warn" : "")}`
+    : "";
+  // The field is shown whenever Drive is NOT actually reachable, prefilled with
+  // whatever is saved — not only when nothing is configured. Hiding it the
+  // moment a Client ID is stored was a trap: paste one with a typo, watch the
+  // connect fail, and there is no longer anywhere to correct it.
+  const driveReachable = canReachDrive();
+  const savedClientId = loadDriveConfig()?.clientId || "";
+  const driveForm = `
+    <label class="storage-field" for="driveClientId">OAuth Client ID</label>
+    <input id="driveClientId" class="storage-input" type="text" autocomplete="off" spellcheck="false"
+           placeholder="000000000000-xxxxxxxx.apps.googleusercontent.com" value="${escapeHtml(savedClientId)}">
+    <button type="button" class="storage-action" data-storage-action="drive-connect">${driveConfigured ? "Reconnect" : "Connect Drive"}</button>
+    ${driveConfigured ? `<button type="button" class="storage-action" data-storage-action="drive-forget">Forget this Client ID</button>` : ""}
+    <p class="storage-note">The Client ID is public — there is no secret to paste here, and none is stored. See the README for the five-minute setup.</p>`;
+  const driveSection = driveReachable
+    ? `<div class="storage-stats">
+         ${storageStatTile(drive ? drive.count : "—", "Papers in Drive")}
+         ${storageStatTile(drive ? formatStorageBytes(drive.bytes) : "—", "Used by Recall")}
+         ${driveQuotaTiles}
+       </div>
+       <p class="storage-note">Connected. New papers go here, and deleting one gives the space straight back.</p>
+       ${report.driveError ? `<p class="storage-note is-warning">${escapeHtml(report.driveError)}</p>` : ""}`
+    : `<p class="storage-note${driveConfigured ? " is-warning" : ""}">${driveConfigured
+         ? "Set up, but not signed in right now. Papers already on this device still open."
+         : "Not connected. Papers you import are kept on this device and nowhere else until Drive is set up."}</p>
+       ${driveForm}`;
+
   body.innerHTML = `
+    <div class="storage-card">
+      <h2>Google Drive</h2>
+      <p class="storage-sub">Where papers are kept now. Your own Drive, 15GB free, and no secret to store.</p>
+      ${driveSection}
+    </div>
+
     <div class="storage-card">
       <h2>Cloud database</h2>
       <p class="storage-sub">Your decks, cards and cross-device delete records.</p>
@@ -643,9 +709,15 @@ export function renderStoragePanel(busyText = "") {
     </div>
 
     <div class="storage-card">
-      <h2>Documents</h2>
-      <p class="storage-sub">PDFs in the private <code>documents</code> bucket. These are the big files — one paper can outweigh a hundred figures.</p>
+      <h2>Documents still in Supabase</h2>
+      <p class="storage-sub">PDFs uploaded before the move to Drive, in the private <code>documents</code> bucket. These are the big files — one paper can outweigh a hundred figures — and they are what is filling the 1GB.</p>
       ${documentsSection}
+      ${documents && documents.count
+        ? `<button type="button" class="storage-action" data-storage-action="drive-migrate" ${canReachDrive() ? "" : "disabled"}>
+             Move all to Drive${canReachDrive() ? "" : " — connect Drive first"}
+           </button>
+           <p class="storage-note">Each paper is copied to Drive and its deck updated <em>before</em> the old copy is deleted, so an interrupted move leaves a duplicate rather than a hole. Take a backup first if you want a belt as well as braces.</p>`
+        : ""}
     </div>
 
     <div class="storage-card">
@@ -756,6 +828,63 @@ export async function runStorageAction(action) {
       showToast("Cleanup failed", "error");
     }
   };
+
+  // Connecting is the one action that must NOT go through `run`: it opens
+  // Google's consent window, and a browser only allows that inside the gesture
+  // that asked for it. A render in between loses the gesture and the window is
+  // blocked.
+  if (action === "drive-connect") {
+    const typed = document.getElementById("driveClientId")?.value?.trim();
+    if (typed) saveDriveConfig(typed);
+    if (!isDriveConfigured()) {
+      showToast("Paste the OAuth Client ID first", "error");
+      return;
+    }
+    const connected = await connectDrive({ interactive: true });
+    showToast(
+      connected ? "Drive connected" : "Could not connect to Drive",
+      connected ? "success" : "error"
+    );
+    await refreshStorageReport();
+    return;
+  }
+
+  if (action === "drive-forget") {
+    clearDriveConfig();
+    showToast("Drive disconnected — papers already here still open", "info");
+    await refreshStorageReport();
+    return;
+  }
+
+  if (action === "drive-migrate") {
+    if (!canReachDrive()) {
+      showToast("Connect Drive first", "error");
+      return;
+    }
+    const jobs = await planDocumentMigration();
+    if (!jobs.length) {
+      showToast("Nothing left to move", "info");
+      return;
+    }
+    const total = jobs.reduce((sum, job) => sum + job.bytes, 0);
+    showConfirmModal(
+      `${jobs.length} paper${jobs.length === 1 ? "" : "s"} (${formatStorageBytes(total)}) will be copied to your Google Drive, and removed from Supabase once each one is safely across. Your highlights, notes and cards are untouched, and so is every copy on this device.`,
+      () => run("Moving papers to Drive…", async (say) => {
+        const summary = await migrateDocumentsToDrive(jobs, {
+          onProgress: (done, count, name) => say(`Moving ${done + 1} of ${count} — ${name}`)
+        });
+        if (summary.failed) {
+          return {
+            message: `Moved ${summary.moved}, freed ${formatStorageBytes(summary.bytes)} · ${summary.failed} could not be moved`,
+            tone: "info"
+          };
+        }
+        return { message: `Moved ${summary.moved} · ${formatStorageBytes(summary.bytes)} freed`, tone: "success" };
+      }),
+      { confirmLabel: "Move to Drive" }
+    );
+    return;
+  }
 
   if (action === "repair") {
     if (!store?.missingRefs.length) return;

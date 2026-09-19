@@ -7,8 +7,20 @@
 //     readable with no connection, which the Cache API could not give us
 //     (a PDF is fetched by the app as an ArrayBuffer, not by the browser as a
 //     subresource, so the service worker's caches never see it).
-//   • the CLOUD copy, in a private `documents` bucket, so the same paper opens
-//     on a phone that has never seen the file.
+//   • the CLOUD copy, so the same paper opens on a phone that has never seen
+//     the file. That copy lives in the reader's own Google Drive now. It used
+//     to live in a private `documents` bucket in their Supabase project, and
+//     PDFs are what filled the free tier's 1GB — one paper outweighs a hundred
+//     figures. Drive is 15GB, costs nothing, and needs no secret kept (see
+//     src/cloud/drive-client.js).
+//
+//     Both are read. Nothing already uploaded was rewritten or moved: a record
+//     written before this change still carries its Storage `path` and still
+//     opens from it, exactly as it did. `path` is never cleared, for the same
+//     reason offloadCurrentDocument does not clear it — it is the record of
+//     where those bytes are. New uploads carry a `driveId` instead, and
+//     getDocument below prefers it. The Storage panel is where a reader moves
+//     the old ones across and gets their Supabase quota back.
 //
 // Modelled on src/images/outbox.js, which solves the same shape of problem for
 // images pasted offline — same IndexedDB idiom, same one-store-one-database
@@ -20,6 +32,8 @@
 // whose hash does not match.
 
 import { getCachedSession } from "../cloud/auth.js?v=__BUILD__";
+import { canReachDrive, isDriveConfigured, requestDriveToken } from "../cloud/drive-client.js?v=__BUILD__";
+import { deleteDriveFile, downloadDriveFile, findDriveFileByProperties, uploadDriveFile } from "../cloud/drive-files.js?v=__BUILD__";
 import { CLOUD_TIMEOUT_MS, withTimeout } from "../cloud/net.js?v=__BUILD__";
 import { canSignStorageUrls, signedUrlFor } from "../cloud/storage-urls.js?v=__BUILD__";
 import { isSignedIn, supabaseClient } from "../cloud/supabase-client.js?v=__BUILD__";
@@ -128,21 +142,71 @@ export async function getDocument(deckLocalId, pdfMeta) {
       console.warn("Could not read the local document store", error);
     }
   }
+  if (pdfMeta?.offloaded) return null;
+
+  // Drive first, and the Storage bucket only for a record that predates it.
+  // Both branches end the same way — the bytes are written into the device
+  // store on the way past, so a download happens once per device rather than
+  // once per open.
+  const blob = (await driveDocumentBlob(pdfMeta)) || (await storageDocumentBlob(pdfMeta));
+  if (!blob) return null;
+  if (deckLocalId) {
+    await putDocument({ deckLocalId, blob, sha256: pdfMeta.sha256 || "", name: pdfMeta.name || "", at: Date.now() })
+      .catch((error) => console.warn("Could not cache the document on this device", error));
+  }
+  return blob;
+}
+
+// The Drive half of getDocument, including the way home when a sync has taken
+// the id off the record.
+//
+// meta.pdfs merges by whole record, last writer wins (mergeRecordsById in
+// src/sync/diff.js) — it does not merge fields. So a device that rewrites its
+// copy of a PDF record while holding an older version of it carries the
+// driveId away with it, and the record is left naming a file it can no longer
+// find. The file itself still knows: every upload stamps the deck id, the pdf
+// id and the content hash onto it as appProperties. So a missing id is looked
+// up rather than mourned.
+//
+// The recovered id is NOT written back from here, and that is deliberate
+// rather than unfinished. This runs inside a render and the deck may not be
+// the open one, so a write would have to reach the whole autosave path from a
+// code path whose only job is handing back bytes. The cost of not doing it is
+// one extra request on each open of a record in that state — and only when
+// the device has no copy, since the device is tried first. The paper opens
+// either way, which is the part that matters.
+async function driveDocumentBlob(pdfMeta) {
+  if (!pdfMeta) return null;
+  if (!isDriveConfigured()) return null;
+  if (!navigator.onLine) return null;
+  // A token this device has not been given yet is worth asking for once,
+  // silently: the reader has a Google session more often than not, and the
+  // alternative is a re-attach prompt for a paper that is sitting right there.
+  if (!canReachDrive() && !(await requestDriveToken({ interactive: false }))) return null;
+  let driveId = pdfMeta.driveId || "";
+  if (!driveId) {
+    if (!pdfMeta.sha256 && !pdfMeta.id) return null;
+    driveId = await findDriveFileByProperties({
+      deckId: pdfMeta.deckId || null,
+      pdfId: pdfMeta.id || null,
+      sha256: pdfMeta.sha256 || null
+    });
+    if (!driveId) return null;
+  }
+  return downloadDriveFile(driveId);
+}
+
+// The Storage half: read-only, and only for the records that still point at it.
+// Nothing uploads here any more.
+async function storageDocumentBlob(pdfMeta) {
   const path = pdfMeta?.path;
-  if (!path || pdfMeta.offloaded) return null;
+  if (!path) return null;
   if (!canSignStorageUrls()) return null;
   try {
     const url = await signedUrlFor(DOCUMENT_BUCKET, path);
     const response = await fetch(url);
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const blob = await response.blob();
-    // Re-cached under the deck's local id, so this download happens once per
-    // device rather than once per open.
-    if (deckLocalId) {
-      await putDocument({ deckLocalId, blob, sha256: pdfMeta.sha256 || "", name: pdfMeta.name || "", at: Date.now() })
-        .catch((error) => console.warn("Could not cache the document on this device", error));
-    }
-    return blob;
+    return await response.blob();
   } catch (error) {
     console.warn("Could not download the document", error);
     return null;
@@ -172,45 +236,47 @@ export const MAX_DOCUMENT_BYTES = 100 * 1024 * 1024;
 // past, which is indistinguishable from the app being broken.
 export const UPLOAD_TIMEOUT_MS = 15 * 60 * 1000;
 
+// Kept because the records written before the move to Drive were built with
+// it, and storageDocumentBlob still reads them. Nothing calls it to WRITE a
+// path any more.
 export function documentStoragePath(userId, folder, name) {
   return `${userId}/pdfs/${folder}/${name}.pdf`;
 }
 
-export async function uploadDocumentOnce(file, { folder, name }) {
+// One attempt, into the reader's Drive.
+//
+// The thrown errors are the same vocabulary the retry loop below already spoke
+// — OFFLINE and NOT_SIGNED_IN by name, `authFailed` for a refusal that trying
+// again cannot fix — so uploadDocument did not have to learn a new one when the
+// backend changed. NOT_SIGNED_IN now means "no Drive token", which is the same
+// situation from the reader's side: the paper is on this device and nowhere
+// else, and they are told exactly that.
+export async function uploadDocumentOnce(file, { name, deckId, pdfId, sha256 }) {
   if (!navigator.onLine) throw new Error("OFFLINE");
-  if (!supabaseClient || !isSignedIn) throw new Error("NOT_SIGNED_IN");
-  const session = await getCachedSession();
-  const userId = session?.user?.id;
-  if (!userId) throw new Error("NOT_SIGNED_IN");
-  // The first segment stays the raw auth.uid(): the storage RLS policies match
-  // on (storage.foldername(name))[1], so anything else here is rejected.
-  const path = documentStoragePath(userId, folder, name);
-  const { error } = await withTimeout(
-    supabaseClient.storage.from(DOCUMENT_BUCKET).upload(path, file, {
-      contentType: "application/pdf",
-      // The path carries a per-import id and is never overwritten, so the bytes
-      // at it cannot change and the cache can be permanent.
-      cacheControl: "31536000, immutable",
-      upsert: false
-    }),
+  if (!isDriveConfigured()) throw new Error("NO_DRIVE");
+  // Asked for up front rather than inside driveFetch, so an upload that is
+  // going to fail for want of a credential fails before the bytes move.
+  if (!(await requestDriveToken({ interactive: false }))) throw new Error("NOT_SIGNED_IN");
+  const driveId = await withTimeout(
+    uploadDriveFile(file, { name: `${name || "document"}.pdf`, deckId, pdfId, sha256 }),
     // A paper is megabytes where an image is kilobytes, so the ordinary cloud
     // timeout — tuned for a row read — would fail a perfectly healthy upload on
     // a slow connection. See UPLOAD_TIMEOUT_MS.
     Math.max(CLOUD_TIMEOUT_MS, UPLOAD_TIMEOUT_MS),
     "upload document"
   );
-  if (error) {
-    const err = new Error(error.message || "Upload failed");
-    err.authFailed = /permission|policy|not.*authoriz|row-level security/i.test(error.message || "");
-    throw err;
-  }
-  return path;
+  if (!driveId) throw new Error("Upload failed");
+  return { driveId };
 }
 
 export function documentUploadDelay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Returns a LOCATOR — `{ driveId }` — rather than a path string, because the
+// record it is written into now names a file rather than an object in a
+// bucket. Callers spread it into the meta entry, which is what keeps a
+// pre-existing `path` on that entry untouched.
 export async function uploadDocument(file, destination, progress = null) {
   for (let attempt = 1; ; attempt++) {
     // Checked before the attempt as well as after it: a reader who pressed
@@ -227,6 +293,10 @@ export async function uploadDocument(file, destination, progress = null) {
       const timedOut = /timed out/i.test(error?.message || "");
       const worthRetrying = error?.message !== "NOT_SIGNED_IN"
         && error?.message !== "OFFLINE"
+        // Drive was never set up, or the account is full. Neither is a
+        // transient refusal and neither improves on the fourth go.
+        && error?.message !== "NO_DRIVE"
+        && !error?.quotaExceeded
         && !error?.authFailed
         && !timedOut;
       if (!worthRetrying || attempt >= DOCUMENT_UPLOAD_ATTEMPTS) throw error;
@@ -240,7 +310,24 @@ export async function uploadDocument(file, destination, progress = null) {
 // Best-effort removal of the cloud copy. Used by "Remove from cloud", which is
 // the offload half of the finish-a-paper loop — the device copy, the
 // highlights, the notes and the cards all stay exactly where they are.
-export async function deleteRemoteDocument(path) {
+//
+// Takes the RECORD rather than a path, because a record can name either
+// backend and only it knows which. A record carrying both — one that has been
+// moved to Drive but whose Storage object has not been swept yet — has both
+// removed, which is what makes the move safe to interrupt: the duplicate is
+// cleaned up by whichever pass gets there second.
+export async function deleteRemoteDocument(pdfMeta) {
+  // A bare path is still accepted. Callers written against the old signature
+  // are the reason, and an object in the bucket is still an object in the
+  // bucket.
+  const entry = typeof pdfMeta === "string" ? { path: pdfMeta } : (pdfMeta || {});
+  let removed = false;
+  if (entry.driveId) removed = (await deleteDriveFile(entry.driveId)) || removed;
+  if (entry.path) removed = (await deleteStorageDocument(entry.path)) || removed;
+  return removed;
+}
+
+export async function deleteStorageDocument(path) {
   if (!path || !supabaseClient || !isSignedIn) return false;
   try {
     const { error } = await withTimeout(

@@ -305,6 +305,7 @@ const APP_SHELL = [
   `./styles/62-frame-card-draggable.css?v=${STAMP}`,
   `./styles/63-notes-fold-twisty.css?v=${STAMP}`,
   `./styles/64-notes-tight-padding.css?v=${STAMP}`,
+  `./styles/65-drive-settings.css?v=${STAMP}`,
   // The module entry point. Everything it imports is stamped with the same
   // ?v=, so those URLs change with every release too — which is what lets the
   // cache-first handler below serve them without revalidating and still never
@@ -334,6 +335,8 @@ const APP_SHELL = [
   `./src/cards/swipe.js?v=${STAMP}`,
   `./src/cloud/auth.js?v=${STAMP}`,
   `./src/cloud/deck-list.js?v=${STAMP}`,
+  `./src/cloud/drive-client.js?v=${STAMP}`,
+  `./src/cloud/drive-files.js?v=${STAMP}`,
   `./src/cloud/net.js?v=${STAMP}`,
   `./src/cloud/storage-urls.js?v=${STAMP}`,
   `./src/cloud/style-sync.js?v=${STAMP}`,
@@ -493,6 +496,7 @@ const APP_SHELL = [
   `./src/storage/deck-snapshot.js?v=${STAMP}`,
   `./src/storage/deck-store.js?v=${STAMP}`,
   `./src/storage/deck-tab.js?v=${STAMP}`,
+  `./src/storage/document-migration.js?v=${STAMP}`,
   `./src/storage/health.js?v=${STAMP}`,
   `./src/storage/ink-prefs.js?v=${STAMP}`,
   `./src/storage/keys.js?v=${STAMP}`,
