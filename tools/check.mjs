@@ -174,6 +174,12 @@
 //                   browser hands the app an opaque TypeError that looks
 //                   exactly like a missing CORS policy or a dead network. Here
 //                   is the only place the difference can be seen
+//   s3-browser      ...and does a real browser SEND what was signed? The other
+//                   two both replace the transport, so neither can see a URL
+//                   the browser normalised or a request it refused. Chrome
+//                   against a bucket that recomputes the signature — and the
+//                   place the no-preflight claim behind the whole signing
+//                   design is actually measured rather than asserted
 //   s3-store        does a paper still come back, now that the bytes live in
 //                   the reader's own S3 bucket? Resolution order (device, then
 //                   the bucket, then Drive, then the old Supabase bucket), the
@@ -417,6 +423,14 @@ const checks = [
     // Everything above renders on a device that is already signed in, which is
     // exactly the state the failure cannot occur in.
     ["image-sync    ", ["node", ["tools/image-sync-check.mjs"], ROOT]],
+    // The part s3-sign and s3-store between them cannot reach: both of those
+    // replace the thing that actually sends the request, so neither can say
+    // whether the BROWSER sends what was signed. This drives a real Chrome
+    // against a bucket that recomputes the signature and refuses a mismatch,
+    // and it is also where the claim s3-sign.js rests on is kept honest — that
+    // a presigned read is a simple request and costs no preflight, which is
+    // the reason opening a paper is one round trip rather than two.
+    ["s3-browser    ", ["node", ["tools/s3-browser-check.mjs"], ROOT]],
     ["large-select  ", ["node", ["tools/large-note-selection-check.mjs"], ROOT]],
     ["render-scale  ", ["node", ["tools/render-scale-check.mjs"], ROOT]],
     ["interaction   ", ["node", ["tools/interaction-scale-check.mjs"], ROOT]],

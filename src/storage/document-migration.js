@@ -43,7 +43,7 @@ import { mapWithConcurrency } from "../cloud/net.js?v=__BUILD__";
 import { headS3File, s3DocumentKey } from "../cloud/s3-files.js?v=__BUILD__";
 import { DOC_SLOT_DOC, DOC_SLOT_NOTEBOOK, documentStoreKey } from "../documents/doc-slot.js?v=__BUILD__";
 import { deckPdfs, PDF_PRIMARY_ID, pdfStoreKey, withDeckPdfs } from "../documents/pdf-multi.js?v=__BUILD__";
-import { deleteRemoteDocument, getDocument, putDocument, uploadDocument } from "../documents/pdf-store.js?v=__BUILD__";
+import { deleteRemoteDocument, getDocument, putDocument, sha256, uploadDocument } from "../documents/pdf-store.js?v=__BUILD__";
 import { storageFolderSlug } from "../images/upload.js?v=__BUILD__";
 import { forEachDeckSnapshot, rewriteDeckSnapshot } from "./deck-store.js?v=__BUILD__";
 
@@ -123,20 +123,20 @@ export async function planDocumentMigration() {
 // to have carried on working. rewriteDeckSnapshot re-reads inside the lock,
 // so what gets written back is the current deck with one field changed, not
 // the plan's copy of it.
-async function recordS3Key(job, s3Key) {
+async function recordS3Key(job, s3Key, hash) {
   return rewriteDeckSnapshot(job.deckLocalId, (snapshot) => {
     const meta = snapshot?.meta;
     if (!meta || typeof meta !== "object") return null;
     if (job.slot === DOC_SLOT_NOTEBOOK) {
       if (!meta.notebook) return null;
-      snapshot.meta = { ...meta, notebook: { ...meta.notebook, s3Key, at: Date.now() } };
+      snapshot.meta = { ...meta, notebook: { ...meta.notebook, s3Key, sha256: hash, at: Date.now() } };
       return snapshot;
     }
     const wanted = job.pdfId || PDF_PRIMARY_ID;
     const entries = deckPdfs(meta);
     if (!entries.some((entry) => (entry.id || PDF_PRIMARY_ID) === wanted)) return null;
     snapshot.meta = withDeckPdfs(meta, entries.map((entry) => (
-      (entry.id || PDF_PRIMARY_ID) === wanted ? { ...entry, s3Key, at: Date.now() } : entry
+      (entry.id || PDF_PRIMARY_ID) === wanted ? { ...entry, s3Key, sha256: hash, at: Date.now() } : entry
     )));
     return snapshot;
   });
@@ -176,10 +176,23 @@ export async function migrateDocumentToS3(job) {
   });
   if (!blob) return { moved: false, bytes: 0, reason: "could not read the file" };
 
+  // A record written before this store recorded hashes has none, and the key
+  // IS the hash — so without this, those papers could not be moved at all.
+  // They are the OLDEST records in a library, which makes them exactly the
+  // ones most likely to still be sitting in Supabase.
+  //
+  // Hashing here is safe in a way computing one from the record would not be:
+  // it is taken from the bytes actually being uploaded, so it describes the
+  // object the key names rather than asserting something about a file nobody
+  // has read. It is written onto the record alongside the key at step 3, which
+  // is what lets the lookup in pdf-store.js rebuild the key later if a merge
+  // carries it off.
+  const hash = job.sha256 || (await sha256(blob));
+
   // Written back to the device store on the way past. A migration that had to
   // download the file should not then throw it away — the next open would
   // fetch the very same bytes again, now from the bucket.
-  await putDocument({ deckLocalId: storeKey, blob, sha256: job.sha256, name: job.name, at: Date.now() })
+  await putDocument({ deckLocalId: storeKey, blob, sha256: hash, name: job.name, at: Date.now() })
     .catch((error) => console.warn("Could not cache the document on this device", error));
 
   // 2. Up to the bucket — unless it is already there.
@@ -193,13 +206,13 @@ export async function migrateDocumentToS3(job) {
   // (s3DocumentKey), so the question is one HEAD against a key computed from
   // the job itself — and a hit is proof it is the same bytes, not merely a
   // file with the same name.
-  let s3Key = s3DocumentKey({ pdfId: job.pdfId, sha256: job.sha256 });
+  let s3Key = s3DocumentKey({ pdfId: job.pdfId, sha256: hash });
   if (!s3Key || !(await headS3File(s3Key))) {
     try {
       const locator = await uploadDocument(blob, {
         name: storageFolderSlug(job.name.replace(/\.pdf$/i, ""), "document"),
         pdfId: job.pdfId,
-        sha256: job.sha256
+        sha256: hash
       });
       s3Key = locator?.s3Key || "";
     } catch (error) {
@@ -209,7 +222,7 @@ export async function migrateDocumentToS3(job) {
   if (!s3Key) return { moved: false, bytes: 0, reason: "upload failed" };
 
   // 3 & 4. Into the deck, and saved — BEFORE anything is deleted.
-  if (!(await recordS3Key(job, s3Key))) {
+  if (!(await recordS3Key(job, s3Key, hash))) {
     // The upload succeeded and the deck could not be told. Leaving the old
     // copy exactly where it is is the only safe answer: the record still
     // points at it, so the paper still opens. The object now in the bucket is

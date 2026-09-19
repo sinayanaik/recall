@@ -562,6 +562,33 @@ try {
       || "the deck was not told about the object that was already there";
   });
 
+  await must("a paper from before hashing existed is hashed on the way, not refused", async () => {
+    // The oldest records in a library carry no sha256, and the key IS the
+    // hash — so without hashing here they could not be moved at all, which is
+    // exactly backwards: they are the ones most likely to still be sitting in
+    // Supabase.
+    objects.clear();
+    await deckStore.writeDeckSnapshot("deck-unhashed", {
+      id: "deck-unhashed", title: "A deck", cards: [],
+      meta: { pdfs: [{ id: "pdf-old", name: "paper.pdf", size: 11, path: "uid/pdfs/x/old.pdf" }] }
+    });
+    const [job] = (await migration.planDocumentMigration()).filter((j) => j.deckLocalId === "deck-unhashed");
+    if (!job) return "an unhashed paper was not planned";
+    // A real Blob here, not the string the other cases use: this is the one
+    // path that HASHES the bytes, and sha256() reaches for arrayBuffer().
+    await pdfStore.putDocument({
+      deckLocalId: migration.migrationStoreKey(job),
+      blob: new Blob(["OLDPAPER-NO-HASH"]), sha256: "", name: "paper.pdf", at: Date.now()
+    });
+    const result = await migration.migrateDocumentToS3(job);
+    if (!result.moved) return `it refused: ${result.reason}`;
+    const entry = (await deckStore.readDeckSnapshot("deck-unhashed"))?.meta?.pdfs?.[0] || {};
+    if (!/^[a-f0-9]{64}$/.test(entry.sha256 || "")) return `no hash was recorded: ${entry.sha256}`;
+    // And the recorded hash has to be the one in the key, or the rebuild in
+    // pdf-store.js would name an object that does not exist.
+    return entry.s3Key === `recall/pdf-old/${entry.sha256}.pdf` || `key and hash disagree: ${entry.s3Key}`;
+  });
+
   await must("a move that cannot read the bytes changes nothing", async () => {
     objects.clear();
     await deckWith("deck-unreadable", { path: "uid/pdfs/gone/paper.pdf" });

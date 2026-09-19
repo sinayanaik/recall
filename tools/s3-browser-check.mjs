@@ -1,0 +1,269 @@
+// Does the browser send what we signed?
+//
+//   node tools/s3-browser-check.mjs
+//
+// tools/s3-sign-check.mjs proves the signature is the string AWS says it
+// should be. tools/s3-store-check.mjs proves the modules call the right verb on
+// the right key in the right order. Neither can prove the part in between,
+// because both of them replace the thing that actually sends the request —
+// and between a correct URL and a served object sit a real fetch, a real
+// cross-origin hop, and a browser that is entitled to normalise a path, re-
+// encode a query or refuse a preflight.
+//
+// So this runs a real Chrome against a bucket that VERIFIES the signature it
+// is handed: it recomputes SigV4 server-side from the same secret and answers
+// 403 SignatureDoesNotMatch on any disagreement. Nothing here is stubbed except
+// the storage backend's identity.
+//
+// ── The claim this exists to keep honest ─────────────────────────────────
+//
+// src/cloud/s3-sign.js gives up header-form SigV4 — the form every server-side
+// SDK uses — on the grounds that a presigned URL signs only `host`, so a GET
+// carries no custom headers and is therefore a SIMPLE cross-origin request
+// with no preflight at all. That is an argument about browser behaviour, and
+// it is the reason the reading path is one round trip rather than two. An
+// argument like that belongs in a check, not in a comment: so the bucket logs
+// every OPTIONS it is asked for, and this asserts that reads produce none.
+//
+// ── Why it needs a browser when the others do not ────────────────────────
+//
+// Node's fetch is not the client under test. It does not preflight, it does not
+// apply CORS, and it would pass this check while a browser failed it — which is
+// precisely the failure mode the whole signing design was chosen to avoid.
+
+import { createHash, createHmac } from "node:crypto";
+import { createServer } from "node:http";
+import { spawn } from "node:child_process";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { findChrome, launch } from "./browser.mjs";
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+const CHROME = findChrome();
+if (!CHROME) {
+  // Not a skip: a check that cannot run has not passed. See tools/browser.mjs.
+  console.error("s3-browser-check: no Chrome. Set CHROME_PATH — see tools/cdp.mjs.");
+  console.log("CHECK: 1 checks · 1 failed");
+  process.exit(1);
+}
+
+const KEY_ID = "AKIAIOSFODNN7EXAMPLE";
+const SECRET = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+const BUCKET = "recall-papers";
+
+// ── The bucket ────────────────────────────────────────────────────────────
+//
+// The signature check is written from the specification with node:crypto, the
+// same way tools/s3-sign-check.mjs writes its reference implementation and for
+// the same reason: sharing code with the module under test would make an
+// agreement between them prove nothing.
+function enc(value, slash = true) {
+  let out = "";
+  for (const b of Buffer.from(String(value), "utf8")) {
+    const c = String.fromCharCode(b);
+    if (/[A-Za-z0-9\-_.~]/.test(c)) out += c;
+    else if (c === "/" && !slash) out += c;
+    else out += `%${b.toString(16).toUpperCase().padStart(2, "0")}`;
+  }
+  return out;
+}
+
+function expectedSignature(method, pathname, params, host) {
+  const scope = params.get("X-Amz-Credential").split("/").slice(1).join("/");
+  const [dateStamp, region, service] = scope.split("/");
+  const signed = [...params.entries()]
+    .filter(([key]) => key !== "X-Amz-Signature")
+    .map(([key, value]) => [enc(key), enc(value)])
+    .sort((a, b) => (a[0] === b[0] ? (a[1] < b[1] ? -1 : 1) : a[0] < b[0] ? -1 : 1))
+    .map(([key, value]) => `${key}=${value}`).join("&");
+  const canonical = `${method}\n${enc(decodeURIComponent(pathname), false)}\n${signed}\nhost:${host}\n\nhost\nUNSIGNED-PAYLOAD`;
+  const sts = `AWS4-HMAC-SHA256\n${params.get("X-Amz-Date")}\n${scope}\n${createHash("sha256").update(canonical, "utf8").digest("hex")}`;
+  let key = createHmac("sha256", `AWS4${SECRET}`).update(dateStamp).digest();
+  key = createHmac("sha256", key).update(region).digest();
+  key = createHmac("sha256", key).update(service).digest();
+  key = createHmac("sha256", key).update("aws4_request").digest();
+  return createHmac("sha256", key).update(sts).digest("hex");
+}
+
+function startBucket(origin) {
+  const objects = new Map();
+  const seen = [];
+  const cors = {
+    "Access-Control-Allow-Origin": origin,
+    "Access-Control-Allow-Methods": "GET,PUT,DELETE,HEAD",
+    "Access-Control-Allow-Headers": "*",
+    "Access-Control-Expose-Headers": "ETag"
+  };
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    if (req.method === "OPTIONS") {
+      seen.push({ method: "OPTIONS", path: url.pathname });
+      res.writeHead(204, cors); res.end(); return;
+    }
+    seen.push({ method: req.method, path: url.pathname });
+    const params = url.searchParams;
+    if (params.get("X-Amz-Credential")?.split("/")[0] !== KEY_ID) {
+      res.writeHead(403, cors); res.end("<Error><Code>InvalidAccessKeyId</Code></Error>"); return;
+    }
+    if (expectedSignature(req.method, url.pathname, params, req.headers.host) !== params.get("X-Amz-Signature")) {
+      seen.push({ method: "MISMATCH", path: `${req.method} ${url.pathname}` });
+      res.writeHead(403, cors); res.end("<Error><Code>SignatureDoesNotMatch</Code></Error>"); return;
+    }
+    const key = decodeURIComponent(url.pathname).replace(new RegExp(`^/${BUCKET}/?`), "");
+    if (req.method === "PUT") {
+      const chunks = []; for await (const chunk of req) chunks.push(chunk);
+      objects.set(key, Buffer.concat(chunks));
+      res.writeHead(200, { ...cors, ETag: '"x"' }); res.end(); return;
+    }
+    if (req.method === "DELETE") {
+      res.writeHead(objects.delete(key) ? 204 : 404, cors); res.end(); return;
+    }
+    if (req.method === "HEAD") { res.writeHead(objects.has(key) ? 200 : 404, cors); res.end(); return; }
+    if (key) {
+      if (!objects.has(key)) { res.writeHead(404, cors); res.end("<Error><Code>NoSuchKey</Code></Error>"); return; }
+      res.writeHead(200, { ...cors, "Content-Type": "application/pdf" }); res.end(objects.get(key)); return;
+    }
+    const rows = [...objects.entries()].map(([name, body]) =>
+      `<Contents><Key>${name}</Key><Size>${body.length}</Size><LastModified>2026-09-19T00:00:00.000Z</LastModified></Contents>`).join("");
+    res.writeHead(200, { ...cors, "Content-Type": "application/xml" });
+    res.end(`<?xml version="1.0"?><ListBucketResult><IsTruncated>false</IsTruncated>${rows}</ListBucketResult>`);
+  });
+  return new Promise((resolve) => server.listen(0, "127.0.0.1", () =>
+    resolve({ server, port: server.address().port, objects, seen })));
+}
+
+function serveApp(dir) {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(process.execPath, [path.join(ROOT, "tools/static-server.mjs"), dir, "0"],
+      { stdio: ["ignore", "pipe", "ignore"] });
+    let buf = "";
+    proc.stdout.on("data", (chunk) => {
+      buf += chunk;
+      const nl = buf.indexOf("\n");
+      if (nl !== -1) resolve({ proc, base: `http://127.0.0.1:${buf.slice(0, nl).trim()}` });
+    });
+    proc.on("error", reject);
+    setTimeout(() => reject(new Error("static server did not start")), 10000);
+  });
+}
+
+const results = [];
+let failures = 0;
+function must(name, detail) {
+  const ok = detail === true;
+  results.push([ok, name, ok ? "" : String(detail)]);
+  if (!ok) failures += 1;
+}
+
+const app = await serveApp(ROOT);
+await new Promise((r) => setTimeout(r, 800));
+const bucket = await startBucket(app.base);
+const browser = await launch({
+  headless: "new", executablePath: CHROME,
+  args: ["--no-sandbox", "--disable-dev-shm-usage"]
+});
+
+try {
+  const page = await browser.newPage();
+  const pageErrors = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  await page.evaluateOnNewDocument((endpoint, bucketName, keyId, secret) => {
+    localStorage.setItem("flashcards_supabase_config", JSON.stringify({ url: "https://example.supabase.co", key: "anon" }));
+    localStorage.setItem("recall:s3Config", JSON.stringify({
+      endpoint, bucket: bucketName, region: "auto", accessKeyId: keyId, secretAccessKey: secret
+    }));
+  }, `http://127.0.0.1:${bucket.port}`, BUCKET, KEY_ID, SECRET);
+  await page.setRequestInterception(true);
+  page.on("request", (request) => (
+    request.url().includes("cdn.jsdelivr.net") || request.url().includes("supabase.co")
+      ? request.abort()
+      : request.continue()));
+  await page.goto(`${app.base}/index.html`, { waitUntil: "domcontentloaded", timeout: 90000 });
+  await page.waitForFunction(() => !document.documentElement.classList.contains("app-booting"), { timeout: 30000 });
+  await new Promise((r) => setTimeout(r, 1200));
+
+  const out = await page.evaluate(async () => {
+    const files = await import("./src/cloud/s3-files.js?v=__BUILD__");
+    const store = await import("./src/documents/pdf-store.js?v=__BUILD__");
+    const steps = {};
+    // A name with an apostrophe in it, because that is the character
+    // encodeURIComponent leaves alone and AWS does not — it would be signed one
+    // way and requested another, and only a real round trip would show it.
+    const body = new Blob([new Uint8Array([37, 80, 68, 70, 45, 49, 46, 52, 10, 1, 2, 3])], { type: "application/pdf" });
+    const hash = await store.sha256(body);
+    steps.locator = await store.uploadDocumentOnce(body, { name: "O'Neill's review", pdfId: "pdf-e2e", sha256: hash });
+    const back = await files.downloadS3File(steps.locator.s3Key);
+    steps.bytes = back ? [...new Uint8Array(await back.arrayBuffer())] : null;
+    steps.head = await files.headS3File(steps.locator.s3Key);
+    steps.usage = await files.s3Usage().then((usage) => ({ count: usage.count, bytes: usage.bytes, pdfId: usage.files[0]?.pdfId }));
+    steps.test = await files.testS3Connection();
+    // The way home, with no s3Key on the record at all.
+    const recovered = await store.getDocument("", { id: "pdf-e2e", sha256: hash });
+    steps.recovered = recovered ? recovered.size : null;
+    steps.deleted = await files.deleteS3File(steps.locator.s3Key);
+    steps.goneAfter = await files.headS3File(steps.locator.s3Key);
+    return steps;
+  });
+
+  const mismatches = bucket.seen.filter((row) => row.method === "MISMATCH");
+  must("every request the browser sent verified against a recomputed signature",
+    mismatches.length === 0 || `${mismatches.length}: ${mismatches.map((m) => m.path).join(", ")}`);
+
+  must("the app booted with no page error",
+    pageErrors.length === 0 || pageErrors.join(" · "));
+
+  must("an upload lands under the content-addressed key",
+    /^recall\/pdf-e2e\/[a-f0-9]{64}\.pdf$/.test(out.locator?.s3Key || "") || `key was ${out.locator?.s3Key}`);
+
+  must("the bytes come back byte for byte",
+    String(out.bytes) === String([37, 80, 68, 70, 45, 49, 46, 52, 10, 1, 2, 3]) || `got ${out.bytes}`);
+
+  must("a HEAD finds it", out.head === true || "HEAD said no");
+
+  must("the listing parses, totals and reads the pdf id back off the key",
+    (out.usage?.count === 1 && out.usage?.bytes === 12 && out.usage?.pdfId === "pdf-e2e")
+      || JSON.stringify(out.usage));
+
+  must("the connection test passes against a bucket that is actually working",
+    out.test?.ok === true || out.test?.reason);
+
+  must("a record that lost its s3Key still resolves, over the real network",
+    out.recovered === 12 || `got ${out.recovered}`);
+
+  must("a delete frees it", (out.deleted === true && out.goneAfter === false)
+    || `deleted=${out.deleted} stillThere=${out.goneAfter}`);
+
+  // ── The claim s3-sign.js rests on ───────────────────────────────────────
+  // Which verbs the browser asked permission for first. An OPTIONS is always
+  // immediately followed by the request it was asked about, so the pairing is
+  // positional rather than inferred.
+  const preflighted = new Set();
+  bucket.seen.forEach((row, index) => {
+    if (row.method === "OPTIONS" && bucket.seen[index + 1]) preflighted.add(bucket.seen[index + 1].method);
+  });
+
+  must("reads do not preflight — the whole reason the signature is in the URL",
+    (!preflighted.has("GET") && !preflighted.has("HEAD"))
+      || `a read was preflighted: ${[...preflighted].join(", ")}`);
+
+  must("...and writes do, which is what the bucket's CORS policy is for",
+    (preflighted.has("PUT") && preflighted.has("DELETE"))
+      || `only ${[...preflighted].join(", ")} preflighted`);
+
+  const optionsCount = bucket.seen.filter((row) => row.method === "OPTIONS").length;
+  const readCount = bucket.seen.filter((row) => row.method === "GET" || row.method === "HEAD").length;
+  must(`${readCount} reads cost ${optionsCount} preflights in total`,
+    optionsCount < readCount || `${optionsCount} preflights for ${readCount} reads`);
+} finally {
+  await browser.close().catch(() => {});
+  app.proc.kill();
+  bucket.server.close();
+}
+
+console.log("── s3 in a browser ──");
+for (const [ok, name, detail] of results) {
+  console.log(`  ${ok ? "ok  " : "FAIL"}  ${name}${ok ? "" : " — " + detail}`);
+}
+console.log(`\n  ${results.length} checks · ${failures} failed`);
+process.exit(failures ? 1 : 0);
