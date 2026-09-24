@@ -41,7 +41,7 @@ import {
   splitHighlightNotesTail
 } from "../format/notes-fence.js?v=__BUILD__";
 import { LEGACY_NOTEBOOK_KEYS } from "../documents/notebook-migrate.js?v=__BUILD__";
-import { deckPdfs, PDF_PRIMARY_ID } from "../documents/pdf-multi.js?v=__BUILD__";
+import { deckPdfs, LEGACY_LOCATOR_FIELDS, PDF_PRIMARY_ID } from "../documents/pdf-multi.js?v=__BUILD__";
 import { mergeHighlightNoteTails } from "../format/highlight-notes-merge.js?v=__BUILD__";
 import { CARD_TOMBSTONE_MAX_AGE_MS } from "./cards.js?v=__BUILD__";
 import { mergePdfHighlights, mergeRecordsById, syncTextChanged, syncTextFingerprint } from "./diff.js?v=__BUILD__";
@@ -368,18 +368,96 @@ const DOCUMENT_LOCATOR_FIELDS = ["s3Key", "driveId", "path"];
 // records describe the same file (the hashes match), so a locator either one
 // knows is true of both. Records with different hashes are different files,
 // and are left exactly as the merge chose them.
+//
+// ── Two more things carried, for the move into the bucket ─────────────────
+//
+// `retiredLocators` (see LEGACY_LOCATOR_FIELDS in documents/pdf-multi.js) is
+// what says an old Drive or Supabase copy has been dealt with. It is carried
+// the same way and for the same reason: a device that never saw the move still
+// holds the record without it, and if that copy wins the merge the paper would
+// be offered for moving again — harmlessly, but for ever. Unioned per field; a
+// marker only ever means something while it names the value the field holds,
+// so carrying one onto a record naming different bytes could not retire them.
+//
+// And the same-file test is widened by exactly one case. A record written
+// before this app hashed papers has no sha256, and the move is what gives it
+// one. If a stale device's copy of that record — still hashless — wins the
+// merge whole (the single-PDF regime below takes the preferred side whole), the
+// new hash and key were simply dropped, and once the old copy is deleted that
+// record names nothing any device can open. So two records that share an old
+// locator VALUE are the same file too: a Supabase path or a Drive id names one
+// immutable object, and so both records describe the same bytes. In that case
+// the hash is carried as well. Two records with DIFFERENT hashes are still
+// different files, whatever else they share.
+//
+// Two guards on that second case. A notebook is never matched by locator: its
+// pages are rewritten in place and an older build may have left the previous
+// pages' path on the record. And two records that both state a size must agree
+// on it — a cheap, independent check that they really are one file.
+function sameDocumentFile(record, other) {
+  const a = String(record.sha256 || "");
+  const b = String(other.sha256 || "");
+  if (a && b) return a === b;
+  if (record.notebook || other.notebook) return false;
+  const sizeA = Number(record.size || 0);
+  const sizeB = Number(other.size || 0);
+  if (sizeA && sizeB && sizeA !== sizeB) return false;
+  return LEGACY_LOCATOR_FIELDS.some((field) => record[field] && record[field] === other[field]);
+}
+
 export function withCarriedLocators(record, other) {
   if (!record || typeof record !== "object" || !other || typeof other !== "object") return record;
-  const hash = String(record.sha256 || "");
-  if (!hash || hash !== String(other.sha256 || "")) return record;
+  if (!sameDocumentFile(record, other)) return record;
   let next = record;
+  const fill = (field, value) => {
+    if (next === record) next = { ...record };
+    next[field] = value;
+  };
   for (const field of DOCUMENT_LOCATOR_FIELDS) {
-    if (!record[field] && other[field]) {
-      if (next === record) next = { ...record };
-      next[field] = other[field];
+    if (!record[field] && other[field]) fill(field, other[field]);
+  }
+  if (!record.sha256 && other.sha256) fill("sha256", other.sha256);
+  const theirs = other.retiredLocators && typeof other.retiredLocators === "object" ? other.retiredLocators : null;
+  if (theirs) {
+    const ours = record.retiredLocators && typeof record.retiredLocators === "object" ? record.retiredLocators : {};
+    const added = Object.keys(theirs).filter((field) => LEGACY_LOCATOR_FIELDS.includes(field) && theirs[field] && !ours[field]);
+    if (added.length) {
+      const merged = { ...ours };
+      for (const field of added) merged[field] = theirs[field];
+      fill("retiredLocators", merged);
     }
   }
   return next;
+}
+
+// Does the merged meta know something about WHERE a paper is that the cloud's
+// copy does not — a bucket key, the hash the key is made of, an old location
+// retired? Only ever true because withCarriedLocators put it there from this
+// device's side, and when it is, the deck owes the cloud a push: otherwise a
+// device whose stale copy of a record overwrote the cloud's (an older build,
+// a rename made before it pulled) would leave the cloud short of the one fact
+// every other device needs to find the paper in the bucket, until somebody
+// happened to edit that deck again. Read by the pull (sync/reconcile.js).
+export function documentLocatorsAhead(mergedMeta, cloudMeta) {
+  const records = (meta) => {
+    const out = new Map();
+    if (!meta || typeof meta !== "object") return out;
+    deckPdfs(meta).forEach((entry) => out.set(`pdf:${entry.id || PDF_PRIMARY_ID}`, entry));
+    if (meta.notebook && typeof meta.notebook === "object") out.set("notebook", meta.notebook);
+    return out;
+  };
+  const theirs = records(cloudMeta);
+  for (const [key, entry] of records(mergedMeta)) {
+    const other = theirs.get(key);
+    if (!other) continue;
+    if (entry.sha256 && other.sha256 && entry.sha256 !== other.sha256) continue;
+    if (entry.sha256 && !other.sha256) return true;
+    if (entry.s3Key && !other.s3Key) return true;
+    for (const field of LEGACY_LOCATOR_FIELDS) {
+      if (entry.retiredLocators?.[field] && !other.retiredLocators?.[field]) return true;
+    }
+  }
+  return false;
 }
 
 export function mergeDeckMeta(cloudMeta, localMeta, { prefer = "local" } = {}) {

@@ -122,6 +122,9 @@ async function writeNotebookPdf({ pages, paper, reopen = true }) {
       path: null,
       driveId: null,
       s3Key: null,
+      // ...and nor is the note that an old location was retired: it was about
+      // the previous pages, and these pages were never anywhere but here.
+      retiredLocators: null,
       importedAt: state.meta?.notebook?.importedAt || new Date().toISOString()
     }
   };

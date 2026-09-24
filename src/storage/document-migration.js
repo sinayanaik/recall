@@ -11,45 +11,75 @@
 // Papers have moved twice: Supabase Storage → Google Drive → an S3-compatible
 // bucket. So a library can hold records naming either of the older two, and a
 // reader who never ran the first migration would be stranded by a tool that
-// only understood the second. Both are planned and both are moved; a job says
-// which source it came from, and everything after that is identical, because
-// the five steps below never cared where the bytes started.
+// only understood the second. Both are planned and both are moved.
 //
-// Deliberately MANUAL, and deliberately per-paper. An automatic sweep was the
-// obvious design and the wrong one: it would delete things out of a bucket
-// while nobody was looking, on a schedule nobody chose, and the first time it
-// got something wrong it would have got it wrong in bulk. This runs when a
-// reader presses a button, on files they can see and sort, and it says what it
-// is going to free before it frees it.
+// Deliberately MANUAL. An automatic sweep was the obvious design and the wrong
+// one: it would delete things out of a bucket while nobody was looking, on a
+// schedule nobody chose, and the first time it got something wrong it would
+// have got it wrong in bulk. This runs when a reader presses a button, and says
+// what it did with every paper.
 //
-// ── The order of the five steps is the whole design ────────────────────────
+// ── Why "Papers still elsewhere" never emptied ─────────────────────────────
 //
-// A move is: read the bytes, upload them to the bucket, write the new key into
-// the deck, SAVE the deck, and only then delete the copy at the old source.
+// The first version of this file moved papers perfectly well and could not
+// tell that it had. The old locator (`path`, `driveId`) is never cleared — it
+// is the record of where the bytes were, and the sync's merge refills a
+// cleared one from the other side anyway — and the planner offered every
+// record that still named one. So every moved paper came back as a "sweep
+// only" job, on every press, for ever: a Supabase sweep "succeeded" again on
+// an object that was already gone, and a Drive sweep failed again because
+// Google no longer lets this app delete anything. The count never moved.
 //
-// Saving before deleting is what makes this safe to interrupt. Crash between
-// the save and the delete and the paper exists in both places — wasteful for
-// as long as it takes to run the move again, and completely harmless, because
-// getDocument prefers the bucket copy and the next run finds the orphan and
-// finishes the job. Do it the other way round, and a crash in the same window
-// loses the file: the bytes are gone from the old source and no record anywhere
-// names where they went.
+// A record now says which old locators are DONE, by value, in
+// `retiredLocators` (see documents/pdf-multi.js), and the planner skips those.
+// The sync carries that marker the same way it carries the locators.
 //
-// Every step is also idempotent. Step one finds the device copy before it asks
-// the network, and step five is a no-op on an object that is already gone —
-// so a half-finished move is re-run rather than repaired.
+// ── Two phases, and the second is the only one that deletes ───────────────
+//
+// COPY, per paper: read the bytes (this device first), hash THEM — never trust
+// the record's hash for bytes nobody has checked — put them in the bucket
+// unless the bucket already holds exactly that many bytes under that key, check
+// the bucket's answer, and write the key and hash into the deck.
+//
+// Then the panel runs an ordinary sync, so the deck carrying the new key and
+// hash reaches the cloud.
+//
+// RETIRE, per paper, and only when every one of these holds:
+//
+//   • the bucket still holds the object, at the size of the bytes copied;
+//   • the deck's row IN THE CLOUD already carries the hash. That hash is what
+//     lets every other device find the paper in the bucket. Deleting the old
+//     copy while only this device knew it — a record from before hashing, a
+//     device that dies before its next push — would leave every other device
+//     holding a record that names nothing it can open;
+//   • no other record in the library still relies on the same old copy. Two
+//     decks can name one object (a copied deck); the old copy goes only when
+//     the last of them has moved.
+//
+// Anything short of that is "moved, waiting" — the paper is already safe in the
+// bucket, nothing has been deleted, and the next press finishes it. Drive is
+// the one source that is retired WITHOUT a delete when the delete is refused:
+// Google turns this app away now, so the file is left in the reader's Drive
+// and the panel names it, for the reader to remove by hand if they want the
+// space. Nothing about that can lose a paper; there are simply two copies.
+//
+// Every step is idempotent. A copy that finds its object already there does not
+// upload again; a retire that finds nothing left to delete still writes the
+// marker. A half-finished move is re-run rather than repaired.
 
-import { mapWithConcurrency } from "../cloud/net.js?v=__BUILD__";
+import { CLOUD_TIMEOUT_MS, mapWithConcurrency, withTimeout } from "../cloud/net.js?v=__BUILD__";
+import { deleteDriveFile } from "../cloud/drive-files.js?v=__BUILD__";
 import { canReachS3 } from "../cloud/s3-config.js?v=__BUILD__";
-import { headS3File, s3DocumentKey } from "../cloud/s3-files.js?v=__BUILD__";
+import { downloadS3File, headS3File, s3DocumentKey, s3FileHasSize, statS3File } from "../cloud/s3-files.js?v=__BUILD__";
+import { isSignedIn, supabaseClient } from "../cloud/supabase-client.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { DOC_SLOT_DOC, DOC_SLOT_NOTEBOOK, documentStoreKey } from "../documents/doc-slot.js?v=__BUILD__";
-import { deckPdfs, PDF_PRIMARY_ID, pdfStoreKey, withDeckPdfs } from "../documents/pdf-multi.js?v=__BUILD__";
-import { deleteRemoteDocument, documentEntryMatches, documentS3Key, getDocument, putDocument, readDocument, sha256, uploadDocument } from "../documents/pdf-store.js?v=__BUILD__";
+import { deckPdfs, isLocatorRetired, LEGACY_LOCATOR_FIELDS, liveLegacyLocators, PDF_PRIMARY_ID, pdfStoreKey, withDeckPdfs, withRetiredLocator } from "../documents/pdf-multi.js?v=__BUILD__";
+import { deleteRemoteDocument, deleteStorageDocument, documentEntryMatches, documentS3Key, getDocument, readDocument, sha256, storedDocumentSize, uploadDocument } from "../documents/pdf-store.js?v=__BUILD__";
 import { storageFolderSlug } from "../images/upload.js?v=__BUILD__";
 import { readLocalDeckIndex, writeLocalDeckIndex } from "../library/local-library.js?v=__BUILD__";
 import { nextSyncStamp } from "../sync/stats.js?v=__BUILD__";
-import { forEachDeckSnapshot, rewriteDeckSnapshot } from "./deck-store.js?v=__BUILD__";
+import { deckWriteSettled, flushPendingDeckAutosave, forEachDeckSnapshot, pendingDeckWrites, readDeckSnapshot, rewriteDeckSnapshot } from "./deck-store.js?v=__BUILD__";
 import { NOTES_CONFLICT_SUFFIX } from "./keys.js?v=__BUILD__";
 
 // One at a time. A paper is tens of megabytes and is fully resident while it
@@ -59,26 +89,29 @@ import { NOTES_CONFLICT_SUFFIX } from "./keys.js?v=__BUILD__";
 // and said so.
 export const MIGRATION_CONCURRENCY = 1;
 
-// A paper that still lives in the bucket and has nowhere else to be.
+// A notes-conflict stash is a second copy of a real deck's snapshot, meta and
+// all (in the shape older builds wrote it). Planned as a job of its own it was
+// a paper counted twice — and a stash job could retire, and delete, the old copy
+// the REAL deck's record still pointed at.
+function isConflictStashId(id) {
+  return String(id).includes(NOTES_CONFLICT_SUFFIX);
+}
+
+// A paper that still names an old location this app owes a move.
 //
 // `offloaded` entries are skipped: the reader has already said they do not
 // want that file in the cloud, and quietly putting it in a different cloud is
-// not what they asked for. Entries that already carry an `s3Key` are skipped
-// too — apart from the ones that still name an older source as well, which are
-// the half-finished moves described above and are exactly what needs finishing.
-//
-// A record can name a `path`, a `driveId`, or both (a library that went through
-// the first migration but was interrupted). Either is a source, and `source`
-// records which one is being moved so the sweep at step five knows what to
-// remove — the record itself keeps every locator it had, because each one is
-// the honest record of where those bytes actually were.
+// not what they asked for. Retired locators are skipped: those are done. What
+// is left is `sources` — the old locators still live on this record — which is
+// exactly what the retire step deals with.
 function migrationJobsFromSnapshot(deckLocalId, snapshot) {
   const jobs = [];
   const meta = snapshot?.meta;
   if (!meta || typeof meta !== "object") return jobs;
   const consider = (entry, slot, pdfId) => {
-    if (entry?.offloaded) return;
-    if (!entry?.path && !entry?.driveId) return;
+    if (!entry || typeof entry !== "object" || entry.offloaded) return;
+    const sources = liveLegacyLocators(entry);
+    if (!sources.length) return;
     jobs.push({
       deckLocalId: String(deckLocalId),
       deckTitle: snapshot?.title || snapshot?.deckTitle || "Untitled",
@@ -88,11 +121,11 @@ function migrationJobsFromSnapshot(deckLocalId, snapshot) {
       bytes: Number(entry.size || 0),
       path: entry.path || "",
       driveId: entry.driveId || "",
-      // Drive is the newer of the two old backends, so a record naming both is
-      // read from there — it is the copy the first migration already proved.
-      source: entry.driveId ? "drive" : "storage",
+      sources,
+      // For the panel's "Drive · Supabase" tile: a record naming both is
+      // counted where the harder half of it lives.
+      source: sources.includes("driveId") ? "drive" : "storage",
       sha256: entry.sha256 || "",
-      // Set when the upload already happened and only the sweep is left.
       s3Key: entry.s3Key || ""
     });
   };
@@ -109,11 +142,12 @@ export function migrationStoreKey(job) {
   return pdfStoreKey(job.deckLocalId, job.pdfId || PDF_PRIMARY_ID);
 }
 
-// Every paper in the library that is still at an older backend, biggest first
-// — which is the order the question "what do I move" is actually asked in.
+// Every paper in the library that still owes a move, biggest first — which is
+// the order the question "what do I move" is actually asked in.
 export async function planDocumentMigration() {
   const jobs = [];
   await forEachDeckSnapshot((id, snapshot) => {
+    if (isConflictStashId(id)) return;
     migrationJobsFromSnapshot(id, snapshot).forEach((job) => jobs.push(job));
   });
   return jobs.sort((a, b) => b.bytes - a.bytes);
@@ -127,31 +161,23 @@ function entryForJob(meta, job) {
   return deckPdfs(meta).find((entry) => (entry.id || PDF_PRIMARY_ID) === wanted) || null;
 }
 
-// The meta with this job's entry pointing at `s3Key`, or null when there is
-// nothing to write: the entry is gone, it already says exactly this, or it now
-// names DIFFERENT bytes. The last one is a notebook rewritten while its old
-// pages were uploading — tagging the new record with the old pages' key would
-// hand every other device the page count this one just replaced.
-function metaWithS3Key(meta, job, s3Key, hash) {
+// The meta with this job's entry replaced by what `stamp` makes of it, or null
+// when `stamp` says there is nothing to write.
+function metaWithJobEntry(meta, job, stamp) {
   if (!meta || typeof meta !== "object") return null;
-  const stamped = (entry) => {
-    if (!entry || typeof entry !== "object") return null;
-    if (entry.sha256 && entry.sha256 !== hash) return null;
-    if (entry.s3Key === s3Key && entry.sha256 === hash) return null;
-    return { ...entry, s3Key, sha256: hash, at: Date.now() };
-  };
   if (job.slot === DOC_SLOT_NOTEBOOK) {
-    const notebook = stamped(meta.notebook);
+    const notebook = stamp(meta.notebook);
     return notebook ? { ...meta, notebook } : null;
   }
   const wanted = job.pdfId || PDF_PRIMARY_ID;
-  const next = stamped(entryForJob(meta, job));
+  const next = stamp(entryForJob(meta, job));
   if (!next) return null;
   return withDeckPdfs(meta, deckPdfs(meta).map((entry) => ((entry.id || PDF_PRIMARY_ID) === wanted ? next : entry)));
 }
 
-// Writes the new locator onto the one entry this job names, under the deck's
-// own lock and against a FRESH read of the snapshot.
+// Writes one change onto the one entry this job names, under the deck's own
+// lock and against a FRESH read of the snapshot. Resolves true when something
+// was written.
 //
 // The lock matters more than it looks. forEachDeckSnapshot reads the object
 // store directly, so the copy the plan was built from may already be stale by
@@ -160,32 +186,25 @@ function metaWithS3Key(meta, job, s3Key, hash) {
 // so what gets written back is the current deck with one field changed, not
 // the plan's copy of it.
 //
-// Two more things, both of which this used to skip, and both of which meant the
-// key it wrote never left the device:
+// Two more things, both of which an earlier version skipped, and both of which
+// meant what it wrote never left the device:
 //
 //   • the deck's updatedAt is BUMPED, the same way the image outbox bumps a deck
 //     it rewrote. The push gate reads updatedAt and nothing else, so a snapshot
 //     that changed without it is a snapshot the cloud never hears about.
 //   • the OPEN deck is patched in memory too. Its next autosave rebuilds the
-//     snapshot from `state`, so a key written only to the store was reverted
+//     snapshot from `state`, so a change written only to the store was reverted
 //     400ms after the reader's next keystroke.
-async function recordS3Key(job, s3Key, hash) {
-  let alreadyRecorded = false;
+async function rewriteJobEntry(job, stamp) {
   const wrote = await rewriteDeckSnapshot(job.deckLocalId, (snapshot) => {
-    const next = metaWithS3Key(snapshot?.meta, job, s3Key, hash);
-    if (!next) {
-      // Nothing to write is a success when the entry already names this very
-      // object — another pass (the backfill, or an earlier run of this one) got
-      // there first — and a refusal otherwise.
-      alreadyRecorded = entryForJob(snapshot?.meta, job)?.s3Key === s3Key;
-      return null;
-    }
+    const next = metaWithJobEntry(snapshot?.meta, job, stamp);
+    if (!next) return null;
     snapshot.meta = next;
     return snapshot;
   });
-  if (!wrote) return alreadyRecorded;
+  if (!wrote) return false;
   if (state.localDeckId && String(state.localDeckId) === String(job.deckLocalId)) {
-    const live = metaWithS3Key(state.meta, job, s3Key, hash);
+    const live = metaWithJobEntry(state.meta, job, stamp);
     if (live) state.meta = live;
   }
   try {
@@ -196,128 +215,484 @@ async function recordS3Key(job, s3Key, hash) {
       writeLocalDeckIndex(index);
     }
   } catch (error) {
-    // The key is on the snapshot either way; what is lost is only the prompt to
-    // push it, and the next edit to this deck supplies that.
-    console.warn("Could not mark the deck for sync after recording its bucket key", error);
+    // The change is on the snapshot either way; what is lost is only the
+    // prompt to push it, and the next edit to this deck supplies that.
+    console.warn("Could not mark the deck for sync after recording its bucket copy", error);
   }
   return true;
 }
 
-// Which locator this job is sweeping, and nothing else. Passing the whole
-// record to deleteRemoteDocument would remove every copy it names — including
-// the one at the source this job did NOT read from, which a second job may
-// still be relying on.
-function migrationSourceLocator(job) {
-  return job.source === "drive" ? { driveId: job.driveId } : { path: job.path };
+// The entry pointing at `s3Key`, or null when there is nothing to write: the
+// entry is gone, it already says exactly this, or it now names DIFFERENT bytes.
+// The last one is a notebook rewritten while its old pages were uploading —
+// tagging the new record with the old pages' key would hand every other device
+// the page count this one just replaced.
+function entryWithS3Key(entry, s3Key, hash) {
+  if (!entry || typeof entry !== "object") return null;
+  if (entry.sha256 && entry.sha256 !== hash) return null;
+  if (entry.s3Key === s3Key && entry.sha256 === hash) return null;
+  return { ...entry, s3Key, sha256: hash, at: Date.now() };
 }
 
-// One paper, moved. Returns { moved, bytes, reason }.
-export async function migrateDocumentToS3(job) {
-  const storeKey = migrationStoreKey(job);
-
-  // Step 5 on its own, for a move that was interrupted after the deck was
-  // saved. The bytes are already in the bucket; all that is left is the sweep.
-  if (job.s3Key) {
-    const swept = await deleteRemoteDocument(migrationSourceLocator(job));
-    return swept
-      ? { moved: true, bytes: job.bytes, reason: "" }
-      : { moved: false, bytes: 0, reason: "could not remove the old copy" };
+async function readJobEntry(job) {
+  try {
+    return entryForJob((await readDeckSnapshot(job.deckLocalId))?.meta, job);
+  } catch (error) {
+    console.warn("Could not read the deck back", error);
+    return null;
   }
+}
 
-  // 1. The bytes. getDocument tries this device first and only then the
-  //    network, so a paper the reader has open costs no download at all. It is
-  //    handed BOTH old locators plus the id, because it resolves them
-  //    newest-first and only the record knows which one will answer.
-  const blob = await getDocument(storeKey, {
-    id: job.pdfId,
-    path: job.path,
-    driveId: job.driveId,
-    sha256: job.sha256,
-    name: job.name
-  });
-  if (!blob) return { moved: false, bytes: 0, reason: "could not read the file" };
+// Resolves true when the entry names this very object afterwards — written now,
+// or already written by another pass (the backfill, or an earlier run).
+async function recordS3Key(job, s3Key, hash) {
+  if (await rewriteJobEntry(job, (entry) => entryWithS3Key(entry, s3Key, hash))) return true;
+  const entry = await readJobEntry(job);
+  return Boolean(entry && entry.s3Key === s3Key && (!entry.sha256 || entry.sha256 === hash));
+}
 
-  // A record written before this store recorded hashes has none, and the key
-  // IS the hash — so without this, those papers could not be moved at all.
-  // They are the OLDEST records in a library, which makes them exactly the
-  // ones most likely to still be sitting in Supabase.
-  //
-  // Hashing here is safe in a way computing one from the record would not be:
-  // it is taken from the bytes actually being uploaded, so it describes the
-  // object the key names rather than asserting something about a file nobody
-  // has read. It is written onto the record alongside the key at step 3, which
-  // is what lets the lookup in pdf-store.js rebuild the key later if a merge
-  // carries it off.
-  const hash = job.sha256 || (await sha256(blob));
+// ── Phase 1: copy ───────────────────────────────────────────────────────────
 
-  // Written back to the device store on the way past. A migration that had to
-  // download the file should not then throw it away — the next open would
-  // fetch the very same bytes again, now from the bucket.
-  await putDocument({ deckLocalId: storeKey, blob, sha256: hash, name: job.name, at: Date.now() })
-    .catch((error) => console.warn("Could not cache the document on this device", error));
+// The bytes this job means, and their hash — from this device when it holds
+// them, from the bucket when the record already names a key there, and from
+// the old location otherwise. Resolves { blob, hash } or { reason }.
+//
+// Nothing read from the network is written to this device. A move of a whole
+// library would otherwise fill a phone with every paper in it, most of which
+// the reader will never open there.
+async function readJobBytes(job) {
+  // This device first: the fast path, and usually the only one needed.
+  try {
+    const local = await readDocument(migrationStoreKey(job));
+    if (local?.blob && documentEntryMatches(local, { sha256: job.sha256 })) {
+      const hash = await sha256(local.blob);
+      // A device copy that turns out not to be this file is passed over, not
+      // trusted and not refused for ever: the copies in the cloud get a turn.
+      if (hash && (!job.sha256 || hash === job.sha256)) return { blob: local.blob, hash };
+    }
+  } catch (error) {
+    console.warn("Could not read the local document store", error);
+  }
+  // The bucket, when the record already names bytes there — read and HASHED,
+  // which proves the object is the file rather than inferring it from a size.
+  const key = job.sha256 ? s3DocumentKey({ pdfId: job.pdfId, sha256: job.sha256 }) : "";
+  if (key) {
+    const fromBucket = await downloadS3File(key);
+    if (fromBucket) {
+      const hash = await sha256(fromBucket);
+      if (hash && hash === job.sha256) return { blob: fromBucket, hash };
+    }
+  }
+  // The old locations. No device key, so getDocument neither reads nor writes
+  // this device's store; no hash or key, so it does not ask the bucket again;
+  // and no pdf id, so Drive is asked for THIS record's file by its id and never
+  // searched by properties — a search by pdf id alone ("primary") can answer
+  // with a different deck's paper, and for a record with no hash to check it
+  // against, that paper would be moved in under this deck's name.
+  const blob = await getDocument(null, { path: job.path, driveId: job.driveId, name: job.name });
+  if (!blob) {
+    return {
+      reason: job.sources.includes("driveId") && !job.sources.includes("path")
+        ? "it is in Google Drive, which this device cannot reach. Move it from a device that has the file, or re-attach the file here"
+        : job.sources.includes("path") && !isSignedIn
+          ? "sign in to read the copy in Supabase"
+          : "could not read the file"
+    };
+  }
+  const hash = await sha256(blob);
+  if (!hash) return { reason: "could not check the file's contents" };
+  // An old copy that is not the file this deck means (a notebook's previous
+  // pages, say) is refused here — before anything is uploaded under a key it
+  // has no right to, and long before anything is deleted.
+  if (job.sha256 && hash !== job.sha256) {
+    return { reason: "the copy found is not the version this deck uses, so nothing was changed" };
+  }
+  return { blob, hash };
+}
 
-  // 2. Up to the bucket — unless it is already there.
-  //
-  // The one case this catches: an earlier run uploaded the file and then
-  // failed to write the key into the deck, so the record still looks
-  // unmigrated and the plan offers it again. Without this check that second
-  // run uploads a second copy, and a third run a third.
-  //
-  // Drive needed a metadata query for this. Here the key IS the content hash
-  // (s3DocumentKey), so the question is one HEAD against a key computed from
-  // the job itself — and a hit is proof it is the same bytes, not merely a
-  // file with the same name.
-  let s3Key = s3DocumentKey({ pdfId: job.pdfId, sha256: hash });
-  if (!s3Key || !(await headS3File(s3Key))) {
+// One paper into the bucket, checked, and recorded. Deletes nothing.
+// Resolves { copied: true, s3Key, hash, size } or { copied: false, reason }.
+export async function copyDocumentToS3(job) {
+  if (!canReachS3()) return { copied: false, reason: "the bucket is not set up on this device" };
+
+  // 1 & 2. The bytes, and the hash OF THOSE BYTES. A record written before this
+  //    store hashed papers has none, and the key IS the hash; a record that has
+  //    one is believed only once the bytes agree with it.
+  const read = await readJobBytes(job);
+  if (!read.blob) return { copied: false, reason: read.reason || "could not read the file" };
+  const { blob, hash } = read;
+  const size = Number(blob.size);
+  if (!Number.isFinite(size) || size <= 0) return { copied: false, reason: "the file read back empty" };
+
+  // 3. Up to the bucket — unless it already holds exactly this many bytes
+  //    under the key these bytes' hash names. An object there at a DIFFERENT
+  //    size is not this file (an earlier build could upload under a record's
+  //    hash without checking the bytes), and is overwritten with the bytes
+  //    just proved.
+  const key = s3DocumentKey({ pdfId: job.pdfId, sha256: hash });
+  if (!key) return { copied: false, reason: "no key" };
+  const before = await statS3File(key);
+  if (!(before.exists && before.size === size)) {
     try {
-      const locator = await uploadDocument(blob, {
+      await uploadDocument(blob, {
         name: storageFolderSlug(job.name.replace(/\.pdf$/i, ""), "document"),
         pdfId: job.pdfId,
         sha256: hash
       });
-      s3Key = locator?.s3Key || "";
     } catch (error) {
-      return { moved: false, bytes: 0, reason: error?.message || "upload failed" };
+      return { copied: false, reason: error?.message || "upload failed" };
+    }
+    // 4. ...and checked. "The PUT came back 200" and "the bucket holds this
+    //    file" are two different facts, and only the second may ever justify
+    //    deleting another copy.
+    if (!(await s3FileHasSize(key, size))) {
+      return { copied: false, reason: "the bucket copy did not check out, so nothing was deleted" };
     }
   }
-  if (!s3Key) return { moved: false, bytes: 0, reason: "upload failed" };
 
-  // 3 & 4. Into the deck, and saved — BEFORE anything is deleted.
-  if (!(await recordS3Key(job, s3Key, hash))) {
-    // The upload succeeded and the deck could not be told. Leaving the old
-    // copy exactly where it is is the only safe answer: the record still
-    // points at it, so the paper still opens. The object now in the bucket is
-    // not orphaned either — the next run finds it by its hash at step 2 and
-    // carries on from here rather than uploading it again.
-    return { moved: false, bytes: 0, reason: "could not update the deck" };
+  // 5. Into the deck.
+  if (!(await recordS3Key(job, key, hash))) {
+    // Nothing is lost: the record still names the old copy, so the paper
+    // still opens, and the object in the bucket is found by its hash on the
+    // next run rather than uploaded again.
+    return { copied: false, reason: "could not update the deck" };
   }
-
-  // 5. And only now.
-  const swept = await deleteRemoteDocument(migrationSourceLocator(job));
-  return swept
-    ? { moved: true, bytes: job.bytes, reason: "" }
-    : { moved: true, bytes: 0, reason: "moved, but the old copy could not be removed" };
+  return { copied: true, s3Key: key, hash, size };
 }
 
-// The whole library, or whatever of it the reader picked.
-export async function migrateDocumentsToS3(jobs, { onProgress = null, isCancelled = () => false } = {}) {
-  const summary = { moved: 0, failed: 0, bytes: 0, failures: [] };
-  let done = 0;
-  await mapWithConcurrency(jobs, MIGRATION_CONCURRENCY, async (job) => {
-    if (isCancelled()) return;
-    onProgress?.(done, jobs.length, job.name);
-    const result = await migrateDocumentToS3(job);
-    done += 1;
-    if (result.moved) {
-      summary.moved += 1;
-      summary.bytes += result.bytes;
-    } else {
-      summary.failed += 1;
-      summary.failures.push({ name: job.name, reason: result.reason });
+// ── Between the phases: what the CLOUD knows ────────────────────────────────
+
+// The deck rows' document records, straight from the cloud — for the named
+// decks, or with no ids for EVERY deck in the account (paged, in a stable
+// order, so no row is skipped between pages). A Map(cloud deck id →
+// { pdf, pdfs, notebook }), or null when this device cannot ask (signed out,
+// offline, a refusal) — which the retire step treats as "not yet", never "yes".
+//
+// A light select: only the three document fields, never the notes, which can
+// be megabytes a deck.
+export const CLOUD_DOCUMENT_PAGE = 500;
+
+export async function readCloudDocumentMeta(deckIds = null) {
+  const out = new Map();
+  if (!supabaseClient || !isSignedIn || !navigator.onLine) return null;
+  const columns = "id, pdf:meta->pdf, pdfs:meta->pdfs, notebook:meta->notebook";
+  const keep = (rows) => {
+    for (const row of rows || []) {
+      out.set(String(row.id), { pdf: row.pdf || undefined, pdfs: row.pdfs || undefined, notebook: row.notebook || undefined });
     }
-    onProgress?.(done, jobs.length, job.name);
+  };
+  try {
+    if (Array.isArray(deckIds)) {
+      const ids = [...new Set(deckIds.filter(Boolean).map(String))];
+      for (let i = 0; i < ids.length; i += 50) {
+        const { data, error } = await withTimeout(
+          supabaseClient.from("decks").select(columns).in("id", ids.slice(i, i + 50)),
+          CLOUD_TIMEOUT_MS,
+          "read deck documents"
+        );
+        if (error) throw error;
+        keep(data);
+      }
+      return out;
+    }
+    for (let from = 0; ; from += CLOUD_DOCUMENT_PAGE) {
+      const { data, error } = await withTimeout(
+        supabaseClient.from("decks").select(columns).order("id", { ascending: true })
+          .range(from, from + CLOUD_DOCUMENT_PAGE - 1),
+        CLOUD_TIMEOUT_MS,
+        "read deck documents"
+      );
+      if (error) throw error;
+      keep(data);
+      if ((data || []).length < CLOUD_DOCUMENT_PAGE) break;
+    }
+  } catch (error) {
+    console.warn("Could not read the decks' document records from the cloud", error);
+    return null;
+  }
+  return out;
+}
+
+function cloudDeckIdFor(deckLocalId) {
+  try {
+    return readLocalDeckIndex().find((row) => String(row.id) === String(deckLocalId))?.deckId || "";
+  } catch {
+    return "";
+  }
+}
+
+// Every deck write this device still has in flight, landed — so the scan below
+// sees what the reader last did rather than the version before it.
+async function settleDeckWrites() {
+  try {
+    await flushPendingDeckAutosave();
+  } catch (error) {
+    console.warn("Could not flush the open deck before the move", error);
+  }
+  await Promise.all([...pendingDeckWrites.keys()].map((id) => deckWriteSettled(id).catch(() => {})));
+}
+
+// ── Phase 2: retire the old copy ────────────────────────────────────────────
+
+// Every live old locator, by value, and who names it — so the retire step can
+// tell whether an old object is still somebody else's only way home. From this
+// device's library, and from the CLOUD for every deck this device does not
+// hold: a deck that exists only on another device names its old copies too,
+// and deleting one out from under it would leave that deck unopenable there.
+// Offloaded records count: they still NAME the object, and this step never
+// deletes out from under a record. `cloudMeta` null means the cloud could not
+// be read, and the answer is marked incomplete — nothing may be deleted on it.
+async function legacyLocatorHolders(cloudMeta) {
+  const holders = new Map();
+  const note = (holder, entry) => {
+    for (const field of liveLegacyLocators(entry)) {
+      const key = `${field}\n${entry[field]}`;
+      const list = holders.get(key) || [];
+      list.push(holder);
+      holders.set(key, list);
+    }
+  };
+  const visitMeta = (prefix, meta) => {
+    if (!meta || typeof meta !== "object") return;
+    deckPdfs(meta).forEach((entry) => note(`${prefix}\n${DOC_SLOT_DOC}\n${entry.id || PDF_PRIMARY_ID}`, entry));
+    note(`${prefix}\n${DOC_SLOT_NOTEBOOK}\n${DOC_SLOT_NOTEBOOK}`, meta.notebook);
+  };
+  await forEachDeckSnapshot((id, snapshot) => {
+    if (isConflictStashId(id)) return;
+    visitMeta(String(id), snapshot?.meta);
   });
+  if (cloudMeta) {
+    const heldHere = new Set();
+    try {
+      for (const row of readLocalDeckIndex()) if (row?.deckId) heldHere.add(String(row.deckId));
+    } catch { /* an unreadable index: every cloud deck counts, which only keeps more */ }
+    for (const [deckId, meta] of cloudMeta) {
+      if (!heldHere.has(String(deckId))) visitMeta(`cloud:${deckId}`, meta);
+    }
+  }
+  holders.complete = Boolean(cloudMeta);
+  return holders;
+}
+
+function jobHolderId(job) {
+  return `${job.deckLocalId}\n${job.slot}\n${job.slot === DOC_SLOT_NOTEBOOK ? DOC_SLOT_NOTEBOOK : (job.pdfId || PDF_PRIMARY_ID)}`;
+}
+
+// One paper's old copies, retired — after the checks in the header. Resolves
+// { status, reason, freed, leftInDrive } where status is:
+//   "moved"    every old locator is retired, and every old copy this app could
+//              safely delete is gone (or kept because something else needs it)
+//   "left"     as moved, but the Drive file was left where it is
+//   "waiting"  nothing deleted yet; the paper is safe in the bucket and the
+//              next run finishes it (reason says what it is waiting for)
+export async function retireDocumentSources(job, copied, { cloudMeta = null, holders = null } = {}) {
+  // Against the record as it is NOW, not as it was planned.
+  const entry = await readJobEntry(job);
+  if (!entry || entry.sha256 !== copied.hash) return { status: "waiting", reason: "the deck changed while it was moving" };
+  const sources = liveLegacyLocators(entry);
+  if (!sources.length) return { status: "moved", reason: "", freed: 0 };
+
+  // The bucket still holds it, whole.
+  if (!(await s3FileHasSize(copied.s3Key, copied.size))) {
+    return { status: "waiting", reason: "the bucket copy could not be confirmed just now" };
+  }
+
+  // Every other device can find it: the cloud's copy of this record carries
+  // the hash the bucket key is made of. A deck with no cloud row has no other
+  // device to tell.
+  const deckId = cloudDeckIdFor(job.deckLocalId);
+  if (deckId) {
+    if (!cloudMeta) return { status: "waiting", reason: isSignedIn ? "waiting for the deck to sync" : "sign in so your other devices hear where it went" };
+    const row = cloudMeta.get(String(deckId));
+    const cloudEntry = row ? entryForJob(row, job) : null;
+    if (!cloudEntry || cloudEntry.sha256 !== copied.hash) return { status: "waiting", reason: "waiting for the deck to sync" };
+  }
+
+  const complete = Boolean(holders?.complete);
+  let retired = entry;
+  let freed = 0;
+  let leftInDrive = "";
+  let kept = "";
+  const waiting = [];
+  for (const field of sources) {
+    const value = entry[field];
+    const others = (holders?.get(`${field}\n${value}`) || []).filter((holder) => holder !== jobHolderId(job));
+    if (others.length) {
+      // Another record still names this object and has not moved. This one no
+      // longer needs it; the object stays until the last of them goes.
+      retired = withRetiredLocator(retired, field);
+      continue;
+    }
+    if (field === "path") {
+      if (!complete) {
+        waiting.push(isSignedIn ? "the other decks in the cloud could not be checked, so the old Supabase copy was kept for now" : "sign in to remove the old Supabase copy");
+        continue;
+      }
+      // The object has to BE this file. For a record that was never hashed,
+      // nothing else has ever compared the two.
+      const stored = await storedDocumentSize(value);
+      if (stored === undefined) {
+        waiting.push("the old Supabase copy could not be checked just now");
+        continue;
+      }
+      if (stored === null) {
+        retired = withRetiredLocator(retired, field);
+        continue;
+      }
+      if (stored !== copied.size) {
+        kept = "the old Supabase copy was not the same file, so it was kept";
+        retired = withRetiredLocator(retired, field);
+        continue;
+      }
+      if (await deleteStorageDocument(value)) {
+        retired = withRetiredLocator(retired, field);
+        freed = job.bytes || copied.size;
+      } else {
+        waiting.push(isSignedIn ? "the old Supabase copy could not be removed" : "sign in to remove the old Supabase copy");
+      }
+    } else if (field === "driveId") {
+      // Only for a record that named its bytes before the move: then the Drive
+      // file was uploaded as exactly those bytes, and this is a copy. For one
+      // that did not, nothing proves it, and a file left in the reader's Drive
+      // costs nothing but space.
+      const deleted = complete && job.sha256 ? await deleteDriveFile(value) : false;
+      if (deleted) freed = job.bytes || copied.size;
+      else leftInDrive = value;
+      // Retired either way: the paper is in the bucket and the cloud says so.
+      // A Drive file this app is no longer allowed to delete is the reader's
+      // to remove, and is named for them rather than offered again for ever.
+      retired = withRetiredLocator(retired, field);
+    }
+  }
+
+  const retiredNow = legacyFieldsRetiredBy(retired, entry);
+  if (retiredNow.length) {
+    // No new `at`: the merge carries this marker whichever copy of the record
+    // wins (withCarriedLocators), and bumping `at` would let this device's copy
+    // beat an offload or a rename made on another device since the last pull.
+    const wrote = await rewriteJobEntry(job, (current) => {
+      if (!current || current.sha256 !== copied.hash) return null;
+      let next = current;
+      for (const field of retiredNow) if (current[field] === entry[field]) next = withRetiredLocator(next, field);
+      return next === current ? null : next;
+    });
+    if (!wrote) {
+      // Whatever was deleted is deleted, and the bucket copy is confirmed and
+      // known to the cloud — so the paper is safe. The marker is what failed,
+      // and the next run finds nothing left to delete and writes it then.
+      return { status: "waiting", reason: "could not update the deck", freed };
+    }
+    for (const field of retiredNow) {
+      const key = `${field}\n${entry[field]}`;
+      holders?.set(key, (holders.get(key) || []).filter((holder) => holder !== jobHolderId(job)));
+    }
+  }
+  if (waiting.length) return { status: "waiting", reason: waiting[0], freed };
+  if (leftInDrive) return { status: "left", reason: kept, freed, leftInDrive };
+  return { status: "moved", reason: kept, freed };
+}
+
+// The fields `after` has retired that `before` had not.
+function legacyFieldsRetiredBy(after, before) {
+  return liveLegacyLocators(before).filter((field) => isLocatorRetired(after, field));
+}
+
+// ── The whole run ───────────────────────────────────────────────────────────
+
+// Syncs, copies everything, syncs again, then retires what may be retired.
+// `sync` is the panel's: an ordinary sync, run BEFORE the copy so this device
+// starts from what the other devices last did (an offload, a rename), and
+// again BETWEEN the phases so the decks carrying the new keys reach the cloud
+// before the cloud is asked about them. It is passed in rather than imported,
+// because the sync imports this module.
+//
+// Resolves a summary with one row per paper:
+//   { moved, left, waiting, failed, bytes, results: [{ name, deckTitle, status, reason, driveId }] }
+export async function migrateDocumentsToS3(jobs, {
+  onProgress = null,
+  isCancelled = () => false,
+  sync = null,
+  readCloudMeta = readCloudDocumentMeta
+} = {}) {
+  const summary = { moved: 0, left: 0, waiting: 0, failed: 0, bytes: 0, results: [] };
+  const runSync = async () => {
+    if (!sync || isCancelled()) return;
+    onProgress?.("sync", 0, 1, "");
+    try {
+      await sync();
+    } catch (error) {
+      console.warn("The sync around the move failed", error);
+    }
+  };
+  await runSync();
+
+  // Re-read after the sync: it may have brought a paper that another device
+  // already moved, or an offload that means this one must not be.
+  const planned = new Set(jobs.map(jobHolderId));
+  const current = (await planDocumentMigration()).filter((job) => planned.has(jobHolderId(job)));
+
+  const copies = [];
+  let done = 0;
+  await mapWithConcurrency(current, MIGRATION_CONCURRENCY, async (job) => {
+    if (isCancelled()) return;
+    onProgress?.("copy", done, current.length, job.name);
+    const copied = await copyDocumentToS3(job);
+    done += 1;
+    if (copied.copied) copies.push({ job, copied });
+    else {
+      summary.failed += 1;
+      summary.results.push({ name: job.name, deckTitle: job.deckTitle, status: "failed", reason: copied.reason });
+    }
+  });
+  if (!copies.length) return summary;
+
+  await runSync();
+  await settleDeckWrites();
+  const cloudMeta = await readCloudMeta(null);
+  const holders = await legacyLocatorHolders(cloudMeta);
+  let retiredCount = 0;
+  for (const { job, copied } of copies) {
+    if (isCancelled()) {
+      summary.waiting += 1;
+      summary.results.push({ name: job.name, deckTitle: job.deckTitle, status: "waiting", reason: "stopped before the old copy was removed" });
+      continue;
+    }
+    onProgress?.("retire", retiredCount, copies.length, job.name);
+    const outcome = await retireDocumentSources(job, copied, { cloudMeta, holders });
+    retiredCount += 1;
+    summary.bytes += outcome.freed || 0;
+    if (outcome.status === "moved") summary.moved += 1;
+    else if (outcome.status === "left") summary.left += 1;
+    else summary.waiting += 1;
+    summary.results.push({
+      name: job.name,
+      deckTitle: job.deckTitle,
+      status: outcome.status,
+      reason: outcome.reason || "",
+      driveId: outcome.leftInDrive || ""
+    });
+  }
   return summary;
+}
+
+// One paper, both phases, for a caller holding a single job. The same checks:
+// nothing is retired unless the cloud already knows where the paper went.
+export async function migrateDocumentToS3(job, options = {}) {
+  const summary = await migrateDocumentsToS3([job], options);
+  const row = summary.results[0] || { status: "failed", reason: "not planned any more" };
+  return { ...row, moved: row.status === "moved" || row.status === "left", bytes: summary.bytes };
+}
+
+// The last run's per-paper outcome, for the panel — so a paper that is waiting
+// on a sync, or left in Drive, is named rather than summed into a toast.
+let lastMigrationSummary = null;
+
+export function rememberMigrationSummary(summary) {
+  lastMigrationSummary = summary ? { ...summary, at: Date.now() } : null;
+}
+
+export function migrationSummary() {
+  return lastMigrationSummary ? { ...lastMigrationSummary } : null;
 }
 
 // ── Papers that never went up ───────────────────────────────────────────────
@@ -398,8 +773,10 @@ function backfillJobsFromSnapshot(deckLocalId, snapshot) {
       // device copy, and records the hash beside the key.
       sha256: hash,
       // Still readable from Drive or the old Supabase bucket, so not "only on
-      // one device" — the panel counts those under the migration instead.
-      legacy: Boolean(entry.path || entry.driveId)
+      // one device" — the panel counts those under the migration instead. A
+      // RETIRED old locator does not count: that copy is gone, or is no
+      // longer this app's to rely on.
+      legacy: liveLegacyLocators(entry).length > 0
     });
   };
   deckPdfs(meta).forEach((entry) => consider(entry, DOC_SLOT_DOC, entry.id || PDF_PRIMARY_ID));
@@ -617,10 +994,43 @@ export async function s3KeyInUseElsewhere(key, { deckLocalId = "", slot = DOC_SL
 // { removed, shared }: `removed` is true when this record no longer holds any
 // cloud copy of its own — including when the object was KEPT because another
 // deck shares it, since from this deck's side that is exactly what was asked.
+//
+// The same question is asked of the OLD locators too. A copied deck names the
+// same Supabase path or Drive file as the deck it was copied from, and
+// "Remove from cloud" on one of them used to delete that object out from under
+// the other — which, for a paper not yet moved into the bucket, was its only
+// copy in any cloud.
+async function legacyLocatorsInUseElsewhere(record, { deckLocalId = "", slot = DOC_SLOT_DOC, pdfId = PDF_PRIMARY_ID } = {}) {
+  const wanted = LEGACY_LOCATOR_FIELDS.filter((field) => record[field]);
+  const used = new Set();
+  if (!wanted.length) return used;
+  await forEachDeckSnapshot((id, snapshot) => {
+    if (String(id).includes(NOTES_CONFLICT_SUFFIX)) return;
+    const meta = snapshot?.meta;
+    if (!meta || typeof meta !== "object") return;
+    const check = (other, entrySlot, entryPdfId) => {
+      if (!other || typeof other !== "object" || other.offloaded) return;
+      if (String(id) === String(deckLocalId) && entrySlot === slot && entryPdfId === pdfId) return;
+      for (const field of wanted) {
+        if (other[field] && other[field] === record[field] && !isLocatorRetired(other, field)) used.add(field);
+      }
+    };
+    deckPdfs(meta).forEach((other) => check(other, DOC_SLOT_DOC, other.id || PDF_PRIMARY_ID));
+    check(meta.notebook, DOC_SLOT_NOTEBOOK, DOC_SLOT_NOTEBOOK);
+    return used.size === wanted.length ? false : undefined;
+  });
+  return used;
+}
+
 export async function deleteDocumentCopies(entry, { deckLocalId = "", slot = DOC_SLOT_DOC, pdfId = PDF_PRIMARY_ID } = {}) {
   const record = entry && typeof entry === "object" ? entry : {};
   const key = String(record.s3Key || "");
-  const shared = key ? await s3KeyInUseElsewhere(key, { deckLocalId, slot, pdfId }) : false;
-  const removed = await deleteRemoteDocument(shared ? { ...record, s3Key: "" } : record);
+  const sharedKey = key ? await s3KeyInUseElsewhere(key, { deckLocalId, slot, pdfId }) : false;
+  const sharedLegacy = await legacyLocatorsInUseElsewhere(record, { deckLocalId, slot, pdfId });
+  const target = { ...record };
+  if (sharedKey) target.s3Key = "";
+  for (const field of sharedLegacy) target[field] = "";
+  const shared = sharedKey || sharedLegacy.size > 0;
+  const removed = await deleteRemoteDocument(target);
   return { removed: removed || shared, shared };
 }

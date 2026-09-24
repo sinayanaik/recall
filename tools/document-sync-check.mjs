@@ -975,6 +975,68 @@ try {
       return merged.notebook?.s3Key === "recall/notebook/k.pdf" || `dropped: ${JSON.stringify(merged.notebook)}`;
     });
 
+    // ── The move into the bucket, as the merge sees it ─────────────────────
+    //
+    // `retiredLocators` says an old Drive or Supabase copy is done. A device
+    // that never saw the move holds the record without it; if that copy wins,
+    // the marker has to come across anyway, or the paper is offered for moving
+    // again for ever.
+    const oldPath = "uid/pdfs/x/paper.pdf";
+
+    must("a retired old location survives the merge whichever copy wins", () => {
+      const moved = { ...paper, id: "primary", at: 5, path: oldPath, s3Key: KEY, retiredLocators: { path: oldPath } };
+      const stale = { ...paper, id: "primary", at: 9, path: oldPath, label: "renamed" };
+      const merged = docSync.mergeDeckMeta({ pdfs: [moved] }, { pdfs: [stale] }, { prefer: "local" });
+      const entry = merged.pdfs.find((row) => row.id === "primary");
+      if (entry?.label !== "renamed") return "the newer record did not win the rest";
+      return entry?.retiredLocators?.path === oldPath || `the marker was dropped: ${JSON.stringify(entry)}`;
+    });
+
+    must("...in the single-paper form and the notebook too", () => {
+      const single = docSync.mergeDeckMeta(
+        { pdf: { ...paper, path: oldPath, retiredLocators: { path: oldPath } } },
+        { pdf: { ...paper, path: oldPath } },
+        { prefer: "local" }
+      );
+      if (single.pdf?.retiredLocators?.path !== oldPath) return `meta.pdf lost it: ${JSON.stringify(single.pdf)}`;
+      const nb = { name: "n.pdf", pages: 2, notebook: true, sha256: "c".repeat(64), driveId: "d-1" };
+      const notebook = docSync.mergeDeckMeta(
+        { notebook: { ...nb, retiredLocators: { driveId: "d-1" } } },
+        { notebook: { ...nb } },
+        { prefer: "local" }
+      );
+      return notebook.notebook?.retiredLocators?.driveId === "d-1" || `the notebook lost it: ${JSON.stringify(notebook.notebook)}`;
+    });
+
+    must("a record from before hashing gets the hash and key back from a copy sharing its old location", () => {
+      const moved = { name: "p.pdf", size: 11, path: oldPath, sha256: "e".repeat(64), s3Key: "recall/primary/e.pdf" };
+      const stale = { name: "p.pdf", size: 11, path: oldPath };
+      const merged = docSync.mergeDeckMeta({ pdf: moved }, { pdf: stale }, { prefer: "local" });
+      if (merged.pdf?.sha256 !== "e".repeat(64)) return `the hash was dropped: ${JSON.stringify(merged.pdf)}`;
+      return merged.pdf?.s3Key === "recall/primary/e.pdf" || "the key was dropped";
+    });
+
+    must("...but not when the sizes disagree, and never for a notebook", () => {
+      const moved = { name: "p.pdf", size: 11, path: oldPath, sha256: "e".repeat(64), s3Key: "recall/primary/e.pdf" };
+      const other = { name: "p.pdf", size: 99, path: oldPath };
+      const merged = docSync.mergeDeckMeta({ pdf: moved }, { pdf: other }, { prefer: "local" });
+      if (merged.pdf?.sha256) return "a hash was carried onto a record of a different size";
+      const nbMerged = docSync.mergeDeckMeta(
+        { notebook: { notebook: true, path: oldPath, sha256: "e".repeat(64), s3Key: "recall/notebook/e.pdf" } },
+        { notebook: { notebook: true, path: oldPath } },
+        { prefer: "local" }
+      );
+      return !nbMerged.notebook?.sha256 || "a notebook was matched by its old path";
+    });
+
+    must("a pull that put back a key the cloud lacks says the deck owes a push", () => {
+      const cloud = { pdfs: [{ ...paper, id: "primary", at: 9 }] };
+      const local = { pdfs: [{ ...paper, id: "primary", at: 5, s3Key: KEY }] };
+      const merged = docSync.mergeDeckMeta(cloud, local, { prefer: "cloud" });
+      if (!docSync.documentLocatorsAhead(merged, cloud)) return "the repaired key would sit on this device only";
+      return !docSync.documentLocatorsAhead(cloud, cloud) || "an unchanged deck read as owing a push";
+    });
+
     must("a key for DIFFERENT bytes is never carried onto a record", () => {
       const merged = docSync.mergeDeckMeta(
         { notebook: { notebook: true, sha256: "new", pages: 3 } },

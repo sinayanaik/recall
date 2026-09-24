@@ -9,76 +9,29 @@ import { backupNudgeDue, describeLastBackup, readLastBackup } from "../backup/hi
 import { getCachedSession } from "../cloud/auth.js?v=__BUILD__";
 import { CLOUD_TIMEOUT_MS, withTimeout } from "../cloud/net.js?v=__BUILD__";
 import { isSignedIn, supabaseClient } from "../cloud/supabase-client.js?v=__BUILD__";
+import { canReachS3 } from "../cloud/s3-config.js?v=__BUILD__";
+import { s3DocumentKey, s3FileHasSize } from "../cloud/s3-files.js?v=__BUILD__";
+import { listS3Images, noteS3Image, s3ImageHasSize, uploadS3Image } from "../cloud/s3-images.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { escapeHtml, formatStorageBytes } from "../core/text.js?v=__BUILD__";
-import { S3_DEFAULT_REGION, canReachS3, canSignS3Requests, clearS3Config, isS3Configured, loadS3Config, markS3ConfigVerified, readS3ConfigRecord, s3CorsPolicy, saveS3Config } from "../cloud/s3-config.js?v=__BUILD__";
-import { pushS3ConfigNow, s3ConfigSyncStatus } from "../cloud/s3-config-sync.js?v=__BUILD__";
-import { s3Usage, testS3Connection } from "../cloud/s3-files.js?v=__BUILD__";
+import { deckPdfs, PDF_PRIMARY_ID } from "../documents/pdf-multi.js?v=__BUILD__";
 import { clearAllLocalDocuments, deleteRemoteDocument, documentUsage, localDocumentUsage } from "../documents/pdf-store.js?v=__BUILD__";
-import { countBackfillOnDevice, documentBackfillStatus, migrateDocumentsToS3, planDocumentBackfill, planDocumentMigration, scheduleDocumentBackfill } from "./document-migration.js?v=__BUILD__";
-import { cachedUserId } from "../quick-notes/categories.js?v=__BUILD__";
 import { LOCAL_IMAGE_SCHEME, allOutboxImages, deleteOutboxImage, revokeLocalImageUrls } from "../images/outbox.js?v=__BUILD__";
 import { findSourceImages, sourceMayHaveImages } from "../images/surface-controls.js?v=__BUILD__";
-import { IMAGE_BUCKET, IMAGE_STORAGE_EXT, OFFLINE_IMAGE_CACHE, supabaseImagePathFromUrl } from "../images/upload.js?v=__BUILD__";
+import { IMAGE_BUCKET, IMAGE_STORAGE_EXT, OFFLINE_IMAGE_CACHE, imageStorageHost, supabaseImagePathFromUrl } from "../images/upload.js?v=__BUILD__";
 import { readLocalDeckIndex } from "../library/local-library.js?v=__BUILD__";
 import { renderMyDecksList } from "../library/my-decks-render.js?v=__BUILD__";
 import { resetActiveDeckAfterDelete } from "../library/tombstones.js?v=__BUILD__";
 import { allDeckSnapshotIds, clearAllDeckSnapshots, forEachDeckSnapshot, storagePersisted } from "./deck-store.js?v=__BUILD__";
-import { LOCAL_DECKS_INDEX_KEY } from "./keys.js?v=__BUILD__";
+import { canonicalImageUrl, claimImageStorage, deleteStorageObjects, imageStorageBusyLabel, listStorageObjects, releaseImageStorage } from "./image-storage.js?v=__BUILD__";
+import { LOCAL_DECKS_INDEX_KEY, NOTES_CONFLICT_SUFFIX } from "./keys.js?v=__BUILD__";
 import { setDeckAutosaveStorageFailed } from "./quota.js?v=__BUILD__";
 import { showConfirmModal, showPromptModal, showToast } from "../ui/feedback.js?v=__BUILD__";
 import { lockPageScroll, unlockPageScroll } from "../ui/overlays.js?v=__BUILD__";
 
-export const STORAGE_LIST_PAGE = 100;
-
-// Storage's remove() takes a path array; keep each request modest so one slow
-// batch can't stall the whole cleanup.
-export const STORAGE_DELETE_BATCH = 100;
-
 export let storageReport = null;
 
 export let storageBusy = false;
-
-// Every object under one prefix, walking into subfolders. Storage's list() is
-// one level at a time and pages at `limit`, and a folder entry is distinguished
-// from a file by having no `id` — an EPUB import alone can nest hundreds of
-// figures under books/<slug>--<run>/, so the recursion is not optional.
-export async function listStorageObjects(prefix, onProgress, out = []) {
-  for (let offset = 0; ; offset += STORAGE_LIST_PAGE) {
-    const { data, error } = await withTimeout(
-      supabaseClient.storage.from(IMAGE_BUCKET).list(prefix, {
-        limit: STORAGE_LIST_PAGE,
-        offset,
-        sortBy: { column: "name", order: "asc" }
-      }),
-      CLOUD_TIMEOUT_MS,
-      "list images"
-    );
-    if (error) throw error;
-    const rows = data || [];
-    for (const row of rows) {
-      const path = prefix ? `${prefix}/${row.name}` : row.name;
-      if (row.id) {
-        out.push({
-          path,
-          name: row.name,
-          size: Number(row.metadata?.size) || 0,
-          mimetype: row.metadata?.mimetype || "",
-          updatedAt: row.updated_at || row.created_at || null
-        });
-        onProgress?.(out.length);
-      } else {
-        // A folder. `.emptyFolderPlaceholder` rows come back as files with a
-        // real id and are counted like any other object — they're tiny, and
-        // pretending they don't exist would make the count disagree with the
-        // dashboard.
-        await listStorageObjects(path, onProgress, out);
-      }
-    }
-    if (rows.length < STORAGE_LIST_PAGE) break;
-  }
-  return out;
-}
 
 // ── Two scanners, unioned, because a MISS here deletes a live picture ──────
 //
@@ -132,6 +85,21 @@ export async function collectReferencedStoragePaths(onProgress) {
     }
   };
 
+  // A PDF deck's image blocks (`src`) and text blocks (`md`) point at figures
+  // too, and this scan used to read neither — so every picture placed on a
+  // page read as referenced by nothing, sat in the Unused tile, and went with
+  // the next "Delete unused images". Read here and from the cloud below.
+  const addBlocks = (blocks) => {
+    for (const block of Array.isArray(blocks) ? blocks : []) {
+      if (!block || typeof block !== "object") continue;
+      if (typeof block.src === "string" && block.src && !block.src.startsWith(LOCAL_IMAGE_SCHEME)) {
+        const path = supabaseImagePathFromUrl(decodeImageRefEntities(block.src));
+        if (path) paths.add(path);
+      }
+      add(block.md);
+    }
+  };
+
   // Streamed via a cursor (see forEachDeckSnapshot), not the index: this also
   // catches a stashed notes-conflict copy (see NOTES_CONFLICT_SUFFIX), which
   // has its own `notes` field and isn't listed in the index at all — a real
@@ -140,26 +108,34 @@ export async function collectReferencedStoragePaths(onProgress) {
   await forEachDeckSnapshot((id, snapshot) => {
     add(snapshot.notes);
     for (const card of snapshot.cards || []) { add(card.question); add(card.answer); }
+    addBlocks(snapshot.meta?.pdfBlocks);
   });
 
+  // Ordered by id, every page. Without an order Postgres is free to return the
+  // rows of consecutive pages in different orders, so a row can fall between
+  // two pages and never be read — and a row not read is a picture that looks
+  // unused, which this list exists to prevent.
   onProgress?.("Reading decks in the cloud…");
   const pageSize = 500;
   for (let from = 0; ; from += pageSize) {
     const { data, error } = await withTimeout(
-      supabaseClient.from("decks").select("id, notes").range(from, from + pageSize - 1),
+      supabaseClient.from("decks").select("id, notes, pdfBlocks:meta->pdfBlocks").order("id", { ascending: true }).range(from, from + pageSize - 1),
       CLOUD_TIMEOUT_MS,
       "read deck notes"
     );
     if (error) throw error;
     const rows = data || [];
-    for (const row of rows) add(row.notes);
+    for (const row of rows) {
+      add(row.notes);
+      addBlocks(row.pdfBlocks);
+    }
     if (rows.length < pageSize) break;
   }
 
   onProgress?.("Reading cards in the cloud…");
   for (let from = 0; ; from += pageSize) {
     const { data, error } = await withTimeout(
-      supabaseClient.from("cards").select("id, question, answer").range(from, from + pageSize - 1),
+      supabaseClient.from("cards").select("id, question, answer").order("id", { ascending: true }).range(from, from + pageSize - 1),
       CLOUD_TIMEOUT_MS,
       "read cards"
     );
@@ -267,42 +243,14 @@ export async function buildStorageReport(onProgress, { census = true } = {}) {
     storage: null,
     storageError: "",
     censusPending: !census,
-    s3: null,
-    s3Error: "",
-    migration: [],
-    // Papers with no key in the bucket: how many this device could send up,
-    // and how many are waiting on the device that imported them.
-    backfill: { here: 0, elsewhere: 0, unknown: 0 },
     device: await deviceStorageStats()
   };
 
-  // The bucket, and what is still waiting to leave an older backend. BEFORE
-  // the sign-in and offline checks below, because neither applies to it: the
-  // bucket has no Supabase session, and planDocumentMigration reads local deck
-  // snapshots rather than the network. A reader who is signed out of Supabase,
-  // or on a train, must still be able to see and fix their PDF storage.
-  try {
-    if (canReachS3()) {
-      onProgress?.("Reading the bucket…");
-      report.s3 = await s3Usage();
-    }
-  } catch (error) {
-    report.s3Error = error?.message || "Could not read the bucket.";
-  }
-  try {
-    report.migration = await planDocumentMigration();
-  } catch (error) {
-    console.warn("Could not plan the document migration", error);
-  }
-  try {
-    // Papers still in Drive or the old Supabase bucket are already counted by
-    // the card below, and can already be read from there; these are the ones
-    // that are in NO cloud, which is what "only on one device" means.
-    const unsent = (await planDocumentBackfill()).filter((job) => !job.legacy);
-    report.backfill = await countBackfillOnDevice(unsent);
-  } catch (error) {
-    console.warn("Could not count the papers waiting to upload", error);
-  }
+  // The bucket used to be read here too, and that is the coupling this split
+  // removed: the bucket, its keys, the papers still elsewhere and the figures
+  // in it are the Cloud bucket panel's (storage/bucket-panel.js), which reads
+  // and refreshes on its own and never waits for — or is blocked by — the
+  // census below.
 
   if (!census) return report;
 
@@ -363,12 +311,28 @@ export async function buildStorageReport(onProgress, { census = true } = {}) {
     // network. Reported, never acted on: the fix is to remove the reference or
     // re-add the picture, and only the reader knows which.
     let missingRefs = [];
+    let missingError = "";
     try {
       onProgress?.("Checking which images are still used…");
       const referenced = await collectReferencedStoragePaths(onProgress);
       orphans = objects.filter((object) => !referenced.has(object.path));
       const objectPaths = new Set(objects.map((object) => object.path));
       missingRefs = [...referenced].filter((path) => !objectPaths.has(path));
+      // A figure the reader's bucket holds is not missing — it simply lives
+      // there now. Read in full or not at all: a partial listing would call
+      // figures the bucket DOES hold missing, and offer to "restore" them.
+      if (missingRefs.length && canReachS3()) {
+        onProgress?.("Checking the bucket…");
+        const host = imageStorageHost();
+        const inBucket = host ? await listS3Images({ strict: true, host, dir: userId }) : null;
+        if (!inBucket) {
+          missingError = "Could not read the bucket, so which images are missing is not known.";
+          missingRefs = [];
+        } else {
+          const held = new Set(inBucket.map((object) => object.path));
+          missingRefs = missingRefs.filter((path) => !held.has(path));
+        }
+      }
     } catch (error) {
       // Never guess here: an incomplete reference scan would present live
       // images as deletable.
@@ -384,7 +348,8 @@ export async function buildStorageReport(onProgress, { census = true } = {}) {
       orphans,
       orphanBytes: orphans.reduce((sum, object) => sum + object.size, 0),
       orphanError,
-      missingRefs
+      missingRefs,
+      missingError
     };
   } catch (error) {
     report.storageError = error?.message || "Could not read the image bucket.";
@@ -423,44 +388,9 @@ export function missingRefPreview(paths) {
 // rather than a number with nothing to compare it to.
 export const FREE_TIER_BYTES = 1024 * 1024 * 1024;
 
-export async function deleteStorageObjects(paths, onProgress) {
-  let deleted = 0;
-  for (let i = 0; i < paths.length; i += STORAGE_DELETE_BATCH) {
-    const batch = paths.slice(i, i + STORAGE_DELETE_BATCH);
-    const { error } = await withTimeout(
-      supabaseClient.storage.from(IMAGE_BUCKET).remove(batch),
-      CLOUD_TIMEOUT_MS,
-      "delete images"
-    );
-    if (error) throw error;
-    deleted += batch.length;
-    onProgress?.(`Deleting images ${deleted}/${paths.length}…`);
-  }
-  // The offline cache still holds copies of files that no longer exist.
-  try {
-    if (typeof caches !== "undefined") {
-      const cache = await caches.open(OFFLINE_IMAGE_CACHE);
-      // Built with getPublicUrl per path rather than by joining a prefix: the
-      // cache is keyed by the URL, and getPublicUrl percent-encodes it, so a
-      // name holding a space or an accent is stored under a key the raw join
-      // never produces and its copy outlived the delete.
-      for (const path of paths) await cache.delete(canonicalImageUrl(path), { ignoreVary: true });
-    }
-  } catch (error) {
-    console.warn("Could not drop deleted images from the offline cache", error);
-  }
-  return deleted;
-}
-
-// The canonical URL for one object path — the string a note holds, and the key
-// both the service worker's image cache and cacheUploadedImageOffline use.
-export function canonicalImageUrl(path) {
-  try {
-    return supabaseClient.storage.from(IMAGE_BUCKET).getPublicUrl(path).data?.publicUrl || "";
-  } catch (_) {
-    return "";
-  }
-}
+// deleteStorageObjects and canonicalImageUrl live in ./image-storage.js now,
+// beside the listing, so the Cloud bucket panel can use them without reaching
+// into this one.
 
 // ── Putting back an image the bucket has lost ───────────────────────────────
 //
@@ -486,6 +416,10 @@ export async function repairMissingStorageObjects(paths, onProgress) {
   const cache = typeof caches !== "undefined" ? await caches.open(OFFLINE_IMAGE_CACHE).catch(() => null) : null;
   const mimeByExt = new Map(Object.entries(IMAGE_STORAGE_EXT).map(([type, ext]) => [ext, type]));
 
+  // Into the reader's bucket when there is one — where every new figure goes
+  // now — at the same path, so the identifier in every note that names it
+  // resolves there. Into Supabase otherwise, exactly as before.
+  const host = canReachS3() ? imageStorageHost() : "";
   for (let i = 0; i < paths.length; i++) {
     const path = paths[i];
     onProgress?.(`Restoring images ${i + 1}/${paths.length}…`);
@@ -502,6 +436,18 @@ export async function repairMissingStorageObjects(paths, onProgress) {
     if (!blob?.size) { unrecoverable.push(path); continue; }
     const ext = path.split(".").pop()?.toLowerCase() || "";
     const contentType = blob.type || mimeByExt.get(ext) || "application/octet-stream";
+    if (host) {
+      try {
+        await uploadS3Image(host, path, blob, { contentType });
+        if (!(await s3ImageHasSize(host, path, blob.size))) throw new Error("the bucket copy did not check out");
+        noteS3Image(host, path);
+        repaired.push(path);
+      } catch (error) {
+        console.warn("Could not restore a missing image into the bucket", path, error);
+        unrecoverable.push(path);
+      }
+      continue;
+    }
     try {
       const { error } = await withTimeout(
         supabaseClient.storage.from(IMAGE_BUCKET).upload(path, blob, {
@@ -632,39 +578,6 @@ export function storageStatTile(value, label, tone = "") {
   return `<div class="storage-stat${tone ? ` ${tone}` : ""}"><strong>${escapeHtml(String(value))}</strong><span>${escapeHtml(label)}</span></div>`;
 }
 
-// One sentence on whether the bucket keys have reached the account. Nothing at
-// all when there are no keys anywhere to talk about.
-export function bucketKeysSyncLine(report) {
-  const record = readS3ConfigRecord();
-  const sync = s3ConfigSyncStatus();
-  if (!record.config && sync.state !== "unavailable") return "";
-  const note = (text, warn = false) => `<p class="storage-note${warn ? " is-warning" : ""}">${text}</p>`;
-  if (record.config && record.verified === false) {
-    return note("These keys have not passed <strong>Save and test</strong> yet, so they stay on this device and are not sent to your other devices.", true);
-  }
-  if (!report?.signedIn) return note("The keys are on this device only until you sign in — then every device on your account gets them.");
-  switch (sync.state) {
-    case "synced":
-      return note("Keys synced to your account — every device you sign in on can open these papers.");
-    case "unavailable":
-      return note("The keys are on this device only: your Supabase project has no <code>app_storage_settings</code> table yet. Re-run <code>supabase_setup.sql</code> and they sync to your other devices.", true);
-    case "offline":
-      return note("The keys sync to your other devices when you are back online.");
-    case "failed":
-      return note(`The keys could not be synced to your account${sync.detail ? ` — ${escapeHtml(sync.detail)}` : ""}. They are still used on this device.`, true);
-    default:
-      return note("The keys sync to your account at the next sync.");
-  }
-}
-
-// A backfill run's stop reason, in the reader's terms. The raw tokens are what
-// the upload path throws; a CORS or refusal message is already a sentence.
-export function describeBackfillStop(reason) {
-  if (reason === "NO_STORAGE") return "the bucket is not set up on this device.";
-  if (reason === "OFFLINE") return "this device went offline.";
-  return reason;
-}
-
 export function renderStoragePanel(busyText = "") {
   const body = el.storageBody;
   if (!body) return;
@@ -704,7 +617,7 @@ export function renderStoragePanel(busyText = "") {
          ${storageStatTile(store.count, "Images")}
          ${storageStatTile(formatStorageBytes(store.bytes), "Used")}
          ${storageStatTile(store.orphanError ? "?" : store.orphans.length, "Unused", store.orphans.length ? "is-warn" : "")}
-         ${storageStatTile(store.orphanError ? "?" : store.missingRefs.length, "Missing", store.missingRefs?.length ? "is-warn" : "")}
+         ${storageStatTile(store.orphanError || store.missingError ? "?" : store.missingRefs.length, "Missing", store.missingRefs?.length ? "is-warn" : "")}
        </div>
        ${store.groups.length ? `<ul class="storage-groups">${store.groups.map((group) => `
          <li><span class="storage-group-name">${escapeHtml(group.label)}</span>
@@ -715,8 +628,9 @@ export function renderStoragePanel(busyText = "") {
         : `${store.orphans.length
           ? `<p class="storage-note">${store.orphans.length} image${store.orphans.length === 1 ? " is" : "s are"} no longer referenced by any deck or note (${escapeHtml(formatStorageBytes(store.orphanBytes))}). These are what deleting an image or a deck leaves behind.</p>`
           : `<p class="storage-note">Every stored image is still in use.</p>`}
+       ${store.missingError ? `<p class="storage-note is-warning">${escapeHtml(store.missingError)}</p>` : ""}
        ${store.missingRefs.length
-          ? `<p class="storage-note is-warning">${store.missingRefs.length} image${store.missingRefs.length === 1 ? "" : "s"} referenced by your decks ${store.missingRefs.length === 1 ? "is" : "are"} no longer in storage, so ${store.missingRefs.length === 1 ? "it" : "they"} can't be shown or backed up. Deleting unused images will not help — this is the opposite problem. <strong>Restore missing images</strong> below puts back any this device still has a copy of; My Decks → More → Check for broken images shows which decks they're in.</p>
+          ? `<p class="storage-note is-warning">${store.missingRefs.length} image${store.missingRefs.length === 1 ? "" : "s"} referenced by your decks ${store.missingRefs.length === 1 ? "is" : "are"} in neither Supabase nor your bucket, so ${store.missingRefs.length === 1 ? "it" : "they"} can't be shown or backed up. Deleting unused images will not help — this is the opposite problem. <strong>Restore missing images</strong> below puts back any this device still has a copy of; My Decks → More → Check for broken images shows which decks they're in.</p>
              <ul class="storage-groups">${missingRefPreview(store.missingRefs).map((name) => `
                <li><span class="storage-group-name">${escapeHtml(name)}</span></li>`).join("")}${
               store.missingRefs.length > MISSING_REF_PREVIEW
@@ -747,105 +661,6 @@ export function renderStoragePanel(busyText = "") {
         : `<p class="storage-note">No documents stored. Import a PDF and the file itself lands here.</p>`}`
     : `<p class="storage-note is-warning">${escapeHtml(report.documentsError || report.storageError || "No document data.")}</p>`;
 
-  // ── The bucket ───────────────────────────────────────────────────────────
-  //
-  // The form is shown whenever the bucket is NOT actually reachable, prefilled
-  // with whatever is saved — not only when nothing is configured. Hiding it the
-  // moment a value is stored was a trap the Drive card fell into: paste one
-  // with a typo, watch the connect fail, and there is no longer anywhere to
-  // correct it.
-  //
-  // The secret is rendered into a password field and never into the panel's
-  // prose. It is not much of a defence — anything that can read the DOM can
-  // read localStorage too — but it does cover the case this panel is genuinely
-  // likely to meet, which is a screenshot or a shared screen.
-  const s3 = report.s3;
-  const s3Config = loadS3Config();
-  const s3Reachable = canReachS3();
-  const saved = s3Config || { endpoint: "", bucket: "", region: "", accessKeyId: "", secretAccessKey: "" };
-  const s3Form = `
-    <label class="storage-field" for="s3Endpoint">Endpoint</label>
-    <input id="s3Endpoint" class="storage-input" type="text" autocomplete="off" spellcheck="false"
-           placeholder="https://<account>.r2.cloudflarestorage.com" value="${escapeHtml(saved.endpoint)}">
-    <label class="storage-field" for="s3Bucket">Bucket</label>
-    <input id="s3Bucket" class="storage-input" type="text" autocomplete="off" spellcheck="false"
-           placeholder="recall-papers" value="${escapeHtml(saved.bucket)}">
-    <label class="storage-field" for="s3Region">Region</label>
-    <input id="s3Region" class="storage-input" type="text" autocomplete="off" spellcheck="false"
-           placeholder="${escapeHtml(S3_DEFAULT_REGION)}" value="${escapeHtml(saved.region || "")}">
-    <label class="storage-field" for="s3KeyId">Access key ID</label>
-    <input id="s3KeyId" class="storage-input" type="text" autocomplete="off" spellcheck="false"
-           placeholder="" value="${escapeHtml(saved.accessKeyId)}">
-    <label class="storage-field" for="s3Secret">Secret access key</label>
-    <input id="s3Secret" class="storage-input" type="password" autocomplete="new-password" spellcheck="false"
-           placeholder="" value="${escapeHtml(saved.secretAccessKey)}">
-    <button type="button" class="storage-action" data-storage-action="s3-save">${isS3Configured() ? "Save and test again" : "Save and test"}</button>
-    <button type="button" class="storage-action" data-storage-action="s3-cors">Copy the CORS policy</button>
-    ${isS3Configured() ? `<button type="button" class="storage-action" data-storage-action="s3-forget">Forget these keys everywhere</button>` : ""}
-    <p class="storage-note">Cloudflare R2 gives 10GB free with no charge for downloads; Backblaze B2 and anything else speaking S3 work the same way. Mint the token for <strong>this one bucket</strong> with object read &amp; write and nothing else.</p>
-    <p class="storage-note is-warning">The secret key really is a secret. Once it passes the test it is kept in this browser <em>and</em> in your own Supabase project, so every device you sign in on gets it without pasting it again. Row Level Security keeps it to your account; whoever administers the Supabase project can still read it, and so can anyone using this browser profile — which is why the token should reach this one bucket and nothing else.</p>
-    <p class="storage-note">Before the first upload works, the bucket needs a CORS policy allowing this site. <strong>Copy the CORS policy</strong> puts the exact JSON on your clipboard; paste it into the bucket's settings.</p>`;
-  // Whether the keys have reached the account, which is the whole of whether a
-  // second device can open anything. Said in one line, and said as a warning
-  // when the answer is "no" — that was the silent half of "connected, but the
-  // papers are not on my phone".
-  const keysLine = bucketKeysSyncLine(report);
-  const backfill = report.backfill || { here: 0, elsewhere: 0, unknown: 0 };
-  const backfillRun = documentBackfillStatus();
-  const backfillFailure = backfillRun.last?.stopped || backfillRun.last?.failures?.[0]?.reason || "";
-  const one = backfill.here === 1;
-  const backfillLine = backfill.here
-    ? `<p class="storage-note${s3Reachable ? "" : " is-warning"}">${backfill.here} paper${one ? " is" : "s are"} on this device and not in the bucket yet, so no other device can open ${one ? "it" : "them"}. ${s3Reachable
-        ? (backfillRun.running ? "Uploading now…" : `${one ? "It uploads by itself" : "They upload by themselves"} at every sync.`)
-        : `${one ? "It uploads by itself" : "They upload by themselves"} once the bucket is set up.`}</p>
-       ${s3Reachable && !backfillRun.running ? `<button type="button" class="storage-action" data-storage-action="s3-backfill">Upload ${one ? "it" : "them"} now</button>` : ""}
-       ${backfillFailure && s3Reachable ? `<p class="storage-note is-warning">The last attempt stopped: ${escapeHtml(describeBackfillStop(backfillFailure))}</p>` : ""}`
-    : "";
-  const waitingLine = backfill.elsewhere
-    ? `<p class="storage-note">${backfill.elsewhere} paper${backfill.elsewhere === 1 ? " is" : "s are"} not in the bucket and not on this device either. ${backfill.elsewhere === 1 ? "It uploads" : "They upload"} from the device that imported ${backfill.elsewhere === 1 ? "it" : "them"}, the next time that device syncs with the bucket set up.</p>`
-    : "";
-  const s3Section = !canSignS3Requests()
-    ? `<p class="storage-note is-warning">This page is not being served over https, so the browser will not let it sign bucket requests. Papers stay on this device until it is.</p>`
-    : s3Reachable
-      ? `<div class="storage-stats">
-           ${storageStatTile(s3 ? s3.count : "—", "Papers in the bucket")}
-           ${storageStatTile(s3 ? formatStorageBytes(s3.bytes) : "—", "Used by Recall")}
-           ${storageStatTile(s3Config.bucket, "Bucket")}
-         </div>
-         <p class="storage-note">Set up. New papers go here, deleting one gives the space straight back, and no sign-in is ever asked for.</p>
-         ${keysLine}
-         ${backfillLine}
-         ${waitingLine}
-         ${report.s3Error ? `<p class="storage-note is-warning">${escapeHtml(report.s3Error)}</p>` : ""}
-         <details class="storage-details"><summary>Change the keys</summary>${s3Form}</details>`
-      : `<p class="storage-note">Not set up. Papers you import are kept on this device and nowhere else until a bucket is added. If you already set one up on another device, sign in and sync — the keys come across by themselves.</p>
-         ${keysLine}
-         ${backfillLine}
-         ${waitingLine}
-         ${s3Form}`;
-
-  // ── What has not moved across yet ────────────────────────────────────────
-  //
-  // Counted from the LOCAL deck snapshots, not from either old backend. That
-  // is deliberate and it is why this line is free: it needs no Drive token, no
-  // Supabase session and no network, so it is honest on a train and honest on
-  // a device that was never connected to the Google account in question.
-  const pending = report.migration || [];
-  const pendingBytes = pending.reduce((sum, job) => sum + (job.bytes || 0), 0);
-  const fromDrive = pending.filter((job) => job.source === "drive").length;
-  const migrationSection = pending.length
-    ? `<div class="storage-stats">
-         ${storageStatTile(pending.length, "Papers to move")}
-         ${storageStatTile(formatStorageBytes(pendingBytes), "Still elsewhere")}
-         ${storageStatTile(`${fromDrive} · ${pending.length - fromDrive}`, "Drive · Supabase")}
-       </div>
-       <button type="button" class="storage-action" data-storage-action="migrate" ${s3Reachable ? "" : "disabled"}>
-         Move them to the bucket${s3Reachable ? "" : " — add a bucket first"}
-       </button>
-       <p class="storage-note">Each paper is copied across and its deck updated <em>before</em> the old copy is deleted, so an interrupted move leaves a duplicate rather than a hole. Take a backup first if you want a belt as well as braces.</p>
-       ${fromDrive ? `<p class="storage-note is-warning">${fromDrive} of these ${fromDrive === 1 ? "is" : "are"} in Google Drive. Reading them needs the Google account that holds them, so run this on a device that can still reach it — or re-attach the file by hand.</p>` : ""}`
-    : `<p class="storage-note">Nothing left to move. Every paper in this library is either in the bucket or on this device alone.</p>`;
-
   // The three cards below are the CENSUS, and on a first open they are not
   // read yet — see buildStorageReport. They say so rather than showing a zero,
   // because a zero is a claim and "still counting" is the truth.
@@ -854,15 +669,9 @@ export function renderStoragePanel(busyText = "") {
 
   body.innerHTML = `
     <div class="storage-card">
-      <h2>PDF storage</h2>
-      <p class="storage-sub">Where papers are kept. Your own S3-compatible bucket — four values, pasted once on any device, and every device you sign in on gets them.</p>
-      ${s3Section}
-    </div>
-
-    <div class="storage-card">
-      <h2>Papers still elsewhere</h2>
-      <p class="storage-sub">PDFs uploaded before the bucket, in Google Drive or the old Supabase <code>documents</code> bucket.</p>
-      ${migrationSection}
+      <h2>Your Cloud bucket</h2>
+      <p class="storage-sub">Papers and images in your own S3-compatible bucket, the keys for it, and moving what is still in Supabase or Google Drive into it, are in their own panel: <strong>☰ → Cloud bucket</strong>. It loads and works on its own, so nothing there waits for the counting below.</p>
+      <button type="button" class="storage-action" data-storage-action="open-bucket">Open the Cloud bucket panel</button>
     </div>
 
     <div class="storage-card">
@@ -872,8 +681,8 @@ export function renderStoragePanel(busyText = "") {
     </div>
 
     <div class="storage-card">
-      <h2>Image storage</h2>
-      <p class="storage-sub">Files in the <code>images</code> bucket, under your own folder.</p>
+      <h2>Images in Supabase</h2>
+      <p class="storage-sub">Files in the Supabase <code>images</code> bucket, under your own folder. Images you add now go to your Cloud bucket when one is set up; the ones already here move across from the Cloud bucket panel.</p>
       ${report.censusPending ? counting : storageSection}
     </div>
 
@@ -945,6 +754,31 @@ export function confirmByTyping(word, title, hint) {
   });
 }
 
+// What the library knows about one object in the old `documents` bucket:
+// which records name it, and whether each of those is safely in the bucket.
+async function describeDocumentObject(path) {
+  const records = [];
+  await forEachDeckSnapshot((id, snapshot) => {
+    if (String(id).includes(NOTES_CONFLICT_SUFFIX)) return;
+    const meta = snapshot?.meta;
+    if (!meta || typeof meta !== "object") return;
+    const consider = (entry, pdfId) => {
+      if (entry && typeof entry === "object" && entry.path === path) records.push({ entry, pdfId, title: snapshot.deckTitle || snapshot.title || "Untitled" });
+    };
+    deckPdfs(meta).forEach((entry) => consider(entry, entry.id || PDF_PRIMARY_ID));
+    consider(meta.notebook, "notebook");
+  });
+  let inBucket = records.length > 0;
+  for (const { entry, pdfId } of records) {
+    const key = entry.sha256 ? (entry.s3Key || s3DocumentKey({ pdfId, sha256: entry.sha256 })) : "";
+    if (!key || !canReachS3() || !(Number(entry.size) > 0 && await s3FileHasSize(key, Number(entry.size)))) {
+      inBucket = false;
+      break;
+    }
+  }
+  return { records, inBucket };
+}
+
 // One document's cloud copy, deleted from the panel rather than from the deck.
 //
 // The deck's own meta.pdf.offloaded is NOT flipped here — this panel does not
@@ -952,182 +786,120 @@ export function confirmByTyping(word, title, hint) {
 // getDocument already treats a 404 exactly as it treats an offloaded document:
 // it falls back to the device copy, and to the re-attach prompt if there is
 // none. The flag is a hint for the reader, not the mechanism.
+//
+// It used to delete on one click. For a paper not yet moved into the bucket,
+// that object is the only copy in any cloud, and every device without the file
+// would ask for it to be re-attached — so it now says which case this is, and
+// asks.
 export async function offloadStorageDocument(path) {
-  if (storageBusy || !path) return;
-  storageBusy = true;
-  renderStoragePanel("Removing the document from the cloud…");
-  const removed = await deleteRemoteDocument(path);
-  storageBusy = false;
-  if (!removed) {
-    showToast("Could not remove that document", "error");
-    renderStoragePanel();
+  if (!path) return;
+  if (storageBusy) {
+    showToast("Still counting — try again in a moment", "info");
     return;
   }
-  showToast("Removed from cloud", "success");
-  await refreshStorageReport();
+  const { records, inBucket } = await describeDocumentObject(path);
+  const names = records.map((row) => row.entry.name || row.title).filter(Boolean);
+  const which = names.length ? `“${names[0]}”${names.length > 1 ? ` (and ${names.length - 1} more)` : ""}` : "This file";
+  const message = inBucket
+    ? `${which} is safely in your Cloud bucket, so removing this Supabase copy frees its space and nothing else. Highlights, notes and cards stay.`
+    : records.length
+      ? `${which} is NOT in your Cloud bucket yet, so this may be the only copy in any cloud. Devices that do not already hold the file will ask for it to be re-attached. Move it from ☰ → Cloud bucket first to keep a copy. Remove it anyway?`
+      : "No deck on this device names this file, so it may belong to a deck that is only on another device. Removing it cannot be undone. Remove it anyway?";
+  showConfirmModal(message, async () => {
+    if (storageBusy) return;
+    storageBusy = true;
+    renderStoragePanel("Removing the document from the cloud…");
+    let removed = false;
+    try {
+      removed = await deleteRemoteDocument(path);
+    } finally {
+      storageBusy = false;
+    }
+    if (!removed) {
+      showToast("Could not remove that document", "error");
+      renderStoragePanel();
+      return;
+    }
+    showToast("Removed from cloud", "success");
+    await refreshStorageReport();
+  }, { confirmLabel: "Remove", danger: !inBucket });
+}
+
+// Set by main.js: the Cloud bucket panel is opened from here without this
+// module importing it (and so without the two panels' modules depending on
+// each other).
+let bucketPanelOpener = null;
+
+export function setBucketPanelOpener(open) {
+  bucketPanelOpener = typeof open === "function" ? open : null;
 }
 
 export async function runStorageAction(action) {
-  if (storageBusy) return;
+  if (action !== "open-bucket" && storageBusy) {
+    // Said, not swallowed: a button that does nothing when pressed reads as
+    // broken, and pressing it again does nothing again.
+    showToast("Still counting — try again in a moment", "info");
+    return;
+  }
   const report = storageReport;
   const store = report?.storage;
   const device = report?.device;
 
-  const run = async (label, work) => {
+  // `touchesImages`: the run changes Supabase image objects, and so takes the
+  // image lock the Cloud bucket panel's copy and clean-up take too (see
+  // storage/image-storage.js). Checked again here, after whatever confirmation
+  // came first, because the other panel may have started something while the
+  // dialog was open — and a second press of the same button may have too.
+  const run = async (label, work, { touchesImages = false } = {}) => {
+    if (storageBusy) {
+      showToast("Still working — try again in a moment", "info");
+      return;
+    }
+    if (touchesImages && !claimImageStorage(label)) {
+      showToast(`Images are busy: ${imageStorageBusyLabel()}. Try again when that finishes.`, "info");
+      return;
+    }
     storageBusy = true;
     renderStoragePanel(label);
+    let outcome;
     try {
       // What `work` returns, when it returns anything, replaces the flat
       // "Done": a repair's outcome is a count and a remainder, and "Done" over
       // the top of it would bury the only part a reader has to act on.
-      const outcome = await work((text) => renderStoragePanel(text));
-      storageBusy = false;
-      await refreshStorageReport();
-      showToast(outcome?.message || "Done", outcome?.tone || "success");
+      outcome = await work((text) => renderStoragePanel(text));
     } catch (error) {
       console.error("Storage cleanup failed", error);
       storageBusy = false;
+      if (touchesImages) releaseImageStorage();
       renderStoragePanel(`Failed: ${error?.message || "unknown error"}`);
       showToast("Cleanup failed", "error");
+      return;
     }
+    // Released exactly once, and before the recount: the recount can take a
+    // while, and the lock is for CHANGING images, which is over.
+    storageBusy = false;
+    if (touchesImages) releaseImageStorage();
+    await refreshStorageReport();
+    showToast(outcome?.message || "Done", outcome?.tone || "success");
   };
 
-  // Saving the keys does NOT go through `run`, and does not refresh the whole
-  // report either. This is the fix for the complaint that started all of this:
-  // the old drive-connect handler ended in a bare refreshStorageReport(), so
-  // pressing Connect paid for a full recursive listing of every image in the
-  // bucket, plus a scan of every deck and card, before the card the reader had
-  // just used could redraw. It listed the entire library to tell you whether
-  // four values were correct.
-  //
-  // Now it tests the credential, which is one HEAD-sized LIST against the
-  // reader's own bucket, and re-renders. The census is not involved.
-  if (action === "s3-save") {
-    const typed = {
-      endpoint: document.getElementById("s3Endpoint")?.value || "",
-      bucket: document.getElementById("s3Bucket")?.value || "",
-      region: document.getElementById("s3Region")?.value || "",
-      accessKeyId: document.getElementById("s3KeyId")?.value || "",
-      secretAccessKey: document.getElementById("s3Secret")?.value || ""
-    };
-    // Saved UNVERIFIED: kept here so a failed test leaves every field in the
-    // form, but not fit to publish to the other devices until it passes.
-    saveS3Config(typed, { ownerId: cachedUserId() || "", verified: false });
-    if (!isS3Configured()) {
-      showToast("Fill in the endpoint, bucket, key ID and secret", "error");
-      renderStoragePanel();
-      return;
-    }
-    renderStoragePanel("Testing the bucket…");
-    const result = await testS3Connection();
-    if (!result.ok) {
-      // The config is deliberately LEFT SAVED on a failure. A reader who has
-      // one field wrong needs the other four still in the form to fix it, and
-      // clearing them on a bad test is how the Drive card used to lose a
-      // Client ID that was one character out.
-      showToast(result.reason, "error");
-      // Only the bucket's own numbers are re-read; the census, which may have
-      // landed already, is left exactly as it was.
-      await refreshStorageReport({ census: false, quiet: true });
-      return;
-    }
-    markS3ConfigVerified(cachedUserId() || "");
-    renderStoragePanel("Sharing the keys with your other devices…");
-    const shared = await pushS3ConfigNow();
-    const where = shared.status === "synced"
-      ? "your other devices get the keys at their next sync"
-      : shared.status === "unavailable"
-        ? "on this device only until supabase_setup.sql is re-run"
-        : shared.status === "signed-out"
-          ? "on this device only until you sign in"
-          : "the keys reach your other devices at the next sync";
-    showToast(`Bucket connected — ${where}`, shared.status === "unavailable" ? "info" : "success");
-    if (result.warning) showToast(result.warning, "info");
-    // Anything imported before this moment is still only on this device.
-    scheduleDocumentBackfill({ force: true });
-    await refreshStorageReport({ census: false, quiet: true });
-    return;
-  }
+  // The bucket's copies of these figures, for the deletes below: a figure the
+  // bucket holds keeps its offline copy when its Supabase object goes, because
+  // it is still a live figure. Null when there is no bucket or it cannot be
+  // read in full — then every offline copy is kept, which only ever costs space.
+  const bucketHeldPaths = async () => {
+    if (!canReachS3()) return new Set();
+    const host = imageStorageHost();
+    const listed = host && store?.userId ? await listS3Images({ strict: true, host, dir: store.userId }) : null;
+    return listed ? new Set(listed.map((object) => object.path)) : null;
+  };
 
-  if (action === "s3-backfill") {
-    if (!canReachS3()) {
-      showToast("Add a bucket first", "error");
-      return;
-    }
-    // Not through `run`: a paper can take minutes, and the panel should not
-    // sit behind a progress bar for it. The run reports back when it lands
-    // (see onDocumentBackfillDone in main.js).
-    scheduleDocumentBackfill({ force: true });
-    showToast("Uploading in the background — you can carry on", "info");
-    renderStoragePanel();
-    return;
-  }
-
-  if (action === "s3-cors") {
-    const policy = JSON.stringify(s3CorsPolicy(), null, 2);
-    try {
-      await navigator.clipboard.writeText(policy);
-      showToast("CORS policy copied — paste it into the bucket's settings", "success");
-    } catch {
-      // A clipboard the browser will not hand over is not a dead end: the
-      // policy is short, and a prompt the reader can select from beats a toast
-      // saying it failed.
-      showPromptModal(
-        "Copy this into the bucket's CORS settings",
-        "Your browser would not let the page write to the clipboard, so here it is to select and copy.",
-        policy,
-        () => {}
-      );
-    }
-    return;
-  }
-
-  if (action === "s3-forget") {
-    // Everywhere, now that the keys are the account's rather than this
-    // device's: forgetting them here alone would last until the next sync
-    // brought them straight back.
-    showConfirmModal(
-      "Forget the bucket keys on every device? Papers already downloaded keep opening, and nothing in the bucket is deleted — but new papers stay on the device they were imported on until keys are added again.",
-      async () => {
-        clearS3Config({ ownerId: cachedUserId() || "" });
-        const shared = await pushS3ConfigNow();
-        showToast(shared.status === "synced"
-          ? "Keys forgotten on every device — papers already downloaded still open"
-          : "Keys forgotten here — your other devices drop them once this one syncs", "info");
-        await refreshStorageReport({ census: false, quiet: true });
-      },
-      { confirmLabel: "Forget everywhere", danger: true }
-    );
-    return;
-  }
-
-  if (action === "migrate") {
-    if (!canReachS3()) {
-      showToast("Add a bucket first", "error");
-      return;
-    }
-    const jobs = await planDocumentMigration();
-    if (!jobs.length) {
-      showToast("Nothing left to move", "info");
-      return;
-    }
-    const total = jobs.reduce((sum, job) => sum + job.bytes, 0);
-    showConfirmModal(
-      `${jobs.length} paper${jobs.length === 1 ? "" : "s"} (${formatStorageBytes(total)}) will be copied to your bucket, and removed from Google Drive or Supabase once each one is safely across. Your highlights, notes and cards are untouched, and so is every copy on this device.`,
-      () => run("Moving papers to the bucket…", async (say) => {
-        const summary = await migrateDocumentsToS3(jobs, {
-          onProgress: (done, count, name) => say(`Moving ${done + 1} of ${count} — ${name}`)
-        });
-        if (summary.failed) {
-          return {
-            message: `Moved ${summary.moved}, freed ${formatStorageBytes(summary.bytes)} · ${summary.failed} could not be moved`,
-            tone: "info"
-          };
-        }
-        return { message: `Moved ${summary.moved} · ${formatStorageBytes(summary.bytes)} freed`, tone: "success" };
-      }),
-      { confirmLabel: "Move to the bucket" }
-    );
+  // The bucket's own actions — its keys, the backfill, the paper move and the
+  // figures — are the Cloud bucket panel's (storage/bucket-panel.js), with a
+  // busy state of their own, so nothing here can hold them up.
+  if (action === "open-bucket") {
+    closeStoragePanel();
+    bucketPanelOpener?.();
     return;
   }
 
@@ -1152,7 +924,7 @@ export async function runStorageAction(action) {
             : "No copies of those images are held on this device",
           tone: repaired.length ? "success" : "info"
         };
-      }),
+      }, { touchesImages: true }),
       { confirmLabel: "Restore" }
     );
     return;
@@ -1163,7 +935,7 @@ export async function runStorageAction(action) {
     const paths = store.orphans.map((object) => object.path);
     showConfirmModal(
       `Delete ${paths.length} unused image${paths.length === 1 ? "" : "s"} (${formatStorageBytes(store.orphanBytes)})? No deck or note points at ${paths.length === 1 ? "it" : "them"}.`,
-      () => run("Deleting unused images…", (progress) => deleteStorageObjects(paths, progress)),
+      () => run("Deleting unused images…", (progress) => deleteStorageObjects(paths, progress), { touchesImages: true }),
       { confirmLabel: "Delete", danger: true }
     );
     return;
@@ -1171,9 +943,12 @@ export async function runStorageAction(action) {
 
   if (action === "images") {
     if (!store?.count) return;
-    if (!await confirmByTyping("DELETE", "Delete every image?",
-      `All ${store.count} images (${formatStorageBytes(store.bytes)}) will be removed from your storage. Decks and notes stay, but the pictures in them become broken links. Type DELETE to confirm.`)) return;
-    await run("Deleting images…", (progress) => deleteStorageObjects(store.objects.map((object) => object.path), progress));
+    if (!await confirmByTyping("DELETE", "Delete every image in Supabase?",
+      `All ${store.count} images (${formatStorageBytes(store.bytes)}) will be removed from your Supabase storage. Decks and notes stay; any picture that is not also in your Cloud bucket becomes a broken link. Your Cloud bucket is not touched. Type DELETE to confirm.`)) return;
+    await run("Deleting images…", async (progress) => {
+      const keepCached = await bucketHeldPaths();
+      return deleteStorageObjects(store.objects.map((object) => object.path), progress, { keepCached: keepCached || true });
+    }, { touchesImages: true });
     return;
   }
 
@@ -1202,7 +977,7 @@ export async function runStorageAction(action) {
 
   if (action === "everything") {
     if (!await confirmByTyping("RESET", "Reset everything?",
-      "Deletes every deck, card and image in your account AND this device's copy. Tables, buckets, policies and your login all stay, so the app keeps working — it just starts empty. This cannot be undone. Type RESET to confirm.")) return;
+      "Deletes every deck, card and image in your Supabase account AND this device's copy. Tables, buckets, policies and your login all stay, so the app keeps working — it just starts empty. Your Cloud bucket is not touched. This cannot be undone. Type RESET to confirm.")) return;
     await run("Resetting…", async (progress) => {
       if (store?.objects.length) await deleteStorageObjects(store.objects.map((object) => object.path), progress);
       if (report.documents?.objects.length) {
@@ -1215,7 +990,7 @@ export async function runStorageAction(action) {
       await deleteAllCloudTombstones().catch((error) => console.warn("Could not clear tombstones", error));
       progress("Clearing this device…");
       await wipeLocalLibrary();
-    });
+    }, { touchesImages: true });
     return;
   }
 }

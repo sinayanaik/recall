@@ -150,6 +150,35 @@ function isSupabaseImageUrl(url) {
       || url.pathname.includes("/storage/v1/object/sign/"));
 }
 
+// ...and a figure the page is loading out of the reader's OWN bucket (see
+// src/cloud/s3-images.js). Recognised by its shape alone, deliberately: this
+// worker is stopped and restarted whenever the browser likes, and anything the
+// page told it would be gone by the next request. A bucket image is a
+// path-style presigned GET whose key starts `recall-images/<host>/`, and the
+// host in the key is the host of the figure's canonical identifier — which is
+// what lets imageCacheKey below rebuild that identifier with nothing stored.
+const BUCKET_IMAGE_PATH_RE = /^\/[^/]+\/recall-images\/([^/]+)\/(.+)$/;
+
+function bucketImageParts(url) {
+  if (!url.searchParams.has("X-Amz-Signature")) return null;
+  const match = BUCKET_IMAGE_PATH_RE.exec(url.pathname);
+  if (!match) return null;
+  let path;
+  try {
+    // The signer encodes each segment (s3UriEncode); the canonical identifier
+    // is encodeURI over the raw path (supabase-js getPublicUrl). Decoded here,
+    // re-encoded below, so the two spellings meet on one string.
+    path = match[2].split("/").map((segment) => decodeURIComponent(segment)).join("/");
+  } catch (_) {
+    return null;
+  }
+  return { host: match[1], path };
+}
+
+function isBucketImageUrl(url) {
+  return Boolean(bucketImageParts(url));
+}
+
 // ONE cache entry per image, whatever signature happens to be on the request.
 //
 // A signed URL carries a `?token=…` JWT and re-signing mints a different one, so
@@ -164,6 +193,13 @@ function isSupabaseImageUrl(url) {
 function imageCacheKey(rawUrl) {
   try {
     const url = new URL(rawUrl);
+    // A figure from the reader's bucket is filed under the SAME entry as the
+    // Supabase copy of it: the canonical identifier, rebuilt from the key.
+    // One entry per figure whichever storage it came from — which is what lets
+    // a figure cached before it moved still show offline after, and what the
+    // page's offline fallback (the canonical URL) finds.
+    const bucket = bucketImageParts(url);
+    if (bucket) return `https://${bucket.host}/storage/v1/object/public/images/${encodeURI(bucket.path)}`;
     url.search = "";
     url.hash = "";
     url.pathname = url.pathname.replace("/storage/v1/object/sign/", "/storage/v1/object/public/");
@@ -341,6 +377,7 @@ const APP_SHELL = [
   `./src/cloud/s3-config.js?v=${STAMP}`,
   `./src/cloud/s3-config-sync.js?v=${STAMP}`,
   `./src/cloud/s3-files.js?v=${STAMP}`,
+  `./src/cloud/s3-images.js?v=${STAMP}`,
   `./src/cloud/s3-sign.js?v=${STAMP}`,
   `./src/cloud/storage-urls.js?v=${STAMP}`,
   `./src/cloud/style-sync.js?v=${STAMP}`,
@@ -497,11 +534,13 @@ const APP_SHELL = [
   `./src/render/note-links.js?v=${STAMP}`,
   `./src/render/preprocess.js?v=${STAMP}`,
   `./src/render/tables.js?v=${STAMP}`,
+  `./src/storage/bucket-panel.js?v=${STAMP}`,
   `./src/storage/deck-snapshot.js?v=${STAMP}`,
   `./src/storage/deck-store.js?v=${STAMP}`,
   `./src/storage/deck-tab.js?v=${STAMP}`,
   `./src/storage/document-migration.js?v=${STAMP}`,
   `./src/storage/health.js?v=${STAMP}`,
+  `./src/storage/image-storage.js?v=${STAMP}`,
   `./src/storage/ink-prefs.js?v=${STAMP}`,
   `./src/storage/keys.js?v=${STAMP}`,
   `./src/storage/quota.js?v=${STAMP}`,
@@ -940,7 +979,7 @@ self.addEventListener("fetch", (event) => {
   const isSameOrigin = url.origin === self.location.origin;
   const isVendorAsset = isSameOrigin && /(^|\/)vendor\//.test(url.pathname);
   const isCdnAsset = url.hostname === "cdn.jsdelivr.net";
-  const isImage = !isSameOrigin && isSupabaseImageUrl(url);
+  const isImage = !isSameOrigin && (isSupabaseImageUrl(url) || isBucketImageUrl(url));
 
   // Never intercept the service worker itself
   if (url.pathname.endsWith("/sw.js")) return;

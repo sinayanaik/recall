@@ -27,6 +27,8 @@
 // link. My Decks -> More -> Check for broken images is where a deliberate
 // clean-up belongs.
 
+import { canReachS3 } from "../cloud/s3-config.js?v=__BUILD__";
+import { canonicalImageParts, isS3ImageUrl, s3ImageUrl } from "../cloud/s3-images.js?v=__BUILD__";
 import { CANONICAL_SRC_ATTR, STORAGE_UNRESOLVED_ATTR, canSignStorageUrls, forgetSignedUrl, signedUrlsFor, storagePathFromUrl } from "../cloud/storage-urls.js?v=__BUILD__";
 import { isSigningPending } from "../cloud/supabase-client.js?v=__BUILD__";
 import { scopedQueryAll } from "../render/deferred-work.js?v=__BUILD__";
@@ -119,15 +121,19 @@ export function clearBrokenImageState(img) {
   shell.removeAttribute("title");
 }
 
-// One forced re-sign, for an image of the user's own that failed. Returns true
-// when a fresh URL was actually put on the element — the caller then leaves the
-// placeholder off and waits for the load or the second failure.
-export async function retrySignedImage(img) {
-  if (!img || img.dataset.signRetried) return false;
-  const canonical = img.getAttribute(CANONICAL_SRC_ATTR);
-  if (!canonical || !canSignStorageUrls()) return false;
-  const path = storagePathFromUrl(IMAGE_BUCKET, canonical);
-  if (!path) return false;
+// One more try for an image of the user's own that failed — from the OTHER
+// storage first, then the same one re-signed. Returns true when a fresh URL was
+// actually put on the element — the caller then leaves the placeholder off and
+// waits for the load or the next failure.
+//
+// A figure can now live in the reader's bucket as well as in Supabase (see
+// src/cloud/s3-images.js), and the index that says which is a hint that can be
+// stale: a figure copied into the bucket and then removed from Supabase on
+// another device, or one the bucket was handed after this device last listed
+// it. So each storage gets one attempt, tracked separately, and a failure on
+// one moves to the other before anything is said to the reader.
+async function retryFromSupabase(img, path) {
+  if (img.dataset.signRetried || !path || !canSignStorageUrls()) return false;
   // Marked before the await, not after: a second error can arrive while this
   // one is in flight, and two retries for one image is the loop this guards.
   img.dataset.signRetried = "1";
@@ -136,6 +142,31 @@ export async function retrySignedImage(img) {
   if (!signed || signed === img.getAttribute("src")) return false;
   img.setAttribute("src", signed);
   return true;
+}
+
+async function retryFromBucket(img, canonical) {
+  if (img.dataset.bucketRetried || !canReachS3() || navigator.onLine === false) return false;
+  const parts = canonicalImageParts(canonical);
+  if (!parts) return false;
+  img.dataset.bucketRetried = "1";
+  const url = await s3ImageUrl(parts.host, parts.path);
+  if (!url || url === img.getAttribute("src")) return false;
+  img.setAttribute("src", url);
+  return true;
+}
+
+export async function retrySignedImage(img) {
+  if (!img) return false;
+  const canonical = img.getAttribute(CANONICAL_SRC_ATTR);
+  if (!canonical) return false;
+  const path = storagePathFromUrl(IMAGE_BUCKET, canonical);
+  if (!path && !canonicalImageParts(canonical)) return false;
+  if (isS3ImageUrl(img.getAttribute("src"))) {
+    // The bucket did not have it after all (or not any more): Supabase, once.
+    img.dataset.bucketRetried = "1";
+    return retryFromSupabase(img, path);
+  }
+  return (await retryFromBucket(img, canonical)) || retryFromSupabase(img, path);
 }
 
 // ── When a verdict is allowed to be reached ────────────────────────────────

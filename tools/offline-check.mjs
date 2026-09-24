@@ -498,6 +498,34 @@ async function main() {
         images.src === images.canonical, JSON.stringify(images));
       check("offline: signing is correctly reported as impossible",
         images.signable === false, String(images.signable));
+
+      // ...and the same with the reader's own bucket configured. Signing a
+      // bucket URL is local HMAC and would succeed with no connection at all,
+      // so this is the case that could quietly hand an <img> a URL nothing can
+      // answer: the worker's cache is keyed by the canonical identifier, and
+      // offline the canonical identifier is what has to stay on the element.
+      const withBucket = await page.evaluate(async () => {
+        localStorage.setItem("recall:s3Config", JSON.stringify({
+          endpoint: "https://abc123.r2.cloudflarestorage.com", bucket: "recall-papers", region: "auto",
+          accessKeyId: "AKIAIOSFODNN7EXAMPLE", secretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+          updatedAt: new Date().toISOString(), verified: true
+        }));
+        try {
+          const mod = await import("/src/cloud/storage-urls.js?v=__BUILD__");
+          const canonical = "https://offlinecheck.supabase.co/storage/v1/object/public/images/u1/decks/d--1/pic.webp";
+          const root = document.createElement("div");
+          root.innerHTML = `<img src="${canonical}">`;
+          document.body.appendChild(root);
+          await mod.resolveStorageImages(root);
+          const src = root.querySelector("img").getAttribute("src");
+          root.remove();
+          return { src, canonical };
+        } finally {
+          localStorage.removeItem("recall:s3Config");
+        }
+      }).catch((error) => ({ error: String(error?.message || error) }));
+      check("offline, with a bucket set up: the image still keeps its canonical URL for the worker's cache",
+        withBucket.src === withBucket.canonical, JSON.stringify(withBucket));
       await page.close();
     }
   } finally {

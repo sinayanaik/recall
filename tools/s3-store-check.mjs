@@ -45,6 +45,7 @@
 // against AWS's published vector. What this file cares about is that the right
 // verb reached the right key in the right order.
 
+import { createHash } from "node:crypto";
 import { cpSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -207,12 +208,12 @@ try {
   let failNext = null;
   const BUCKET = "recall-papers";
 
-  const reply = (status, body = "") => ({
+  const reply = (status, body = "", headers = {}) => ({
     ok: status >= 200 && status < 300,
     status,
     text: async () => body,
-    blob: async () => body,
-    headers: { get: () => null }
+    blob: async () => new Blob([body]),
+    headers: { get: (name) => headers[String(name).toLowerCase()] ?? null }
   });
 
   function keyFromUrl(url) {
@@ -239,7 +240,7 @@ try {
       objects.set(key, typeof init.body?.text === "function" ? await init.body.text() : String(init.body));
       return reply(200);
     }
-    if (method === "HEAD") return objects.has(key) ? reply(200) : reply(404);
+    if (method === "HEAD") return objects.has(key) ? reply(200, "", { "content-length": String(objects.get(key).length) }) : reply(404);
     if (method === "DELETE") {
       const had = objects.delete(key);
       return reply(had ? 204 : 404);
@@ -291,6 +292,9 @@ try {
   const HASH = "a".repeat(64);
   const OTHER_HASH = "b".repeat(64);
   const blobOf = (text) => ({ size: text.length, text: async () => text, arrayBuffer: async () => new TextEncoder().encode(text).buffer });
+  // What a read handed back, as text. The bucket answers with a real Blob, as
+  // a browser's fetch does; a device copy put by a case below may be a string.
+  const textOf = async (value) => (value && typeof value.text === "function" ? value.text() : value);
 
   // ── Nothing configured ──────────────────────────────────────────────────
 
@@ -347,18 +351,18 @@ try {
 
   await must("a download returns the bytes that went up", async () => {
     const blob = await s3Files.downloadS3File(locator.s3Key);
-    return blob === "PDFBYTES" || `got ${blob}`;
+    return (await textOf(blob)) === "PDFBYTES" || `got ${blob}`;
   });
 
   await must("getDocument reaches the bucket when the device has no copy", async () => {
     const blob = await pdfStore.getDocument("deck-missing", { id: "pdf-1", sha256: HASH, s3Key: locator.s3Key });
-    return blob === "PDFBYTES" || `got ${blob}`;
+    return (await textOf(blob)) === "PDFBYTES" || `got ${blob}`;
   });
 
   await must("...and caches it on the device, so the next open costs nothing", async () => {
     const before = requests.length;
     const blob = await pdfStore.getDocument("deck-missing", { id: "pdf-1", sha256: HASH, s3Key: locator.s3Key });
-    if (blob !== "PDFBYTES") return `got ${blob}`;
+    if ((await textOf(blob)) !== "PDFBYTES") return `got ${blob}`;
     return requests.length === before || `it went back to the bucket: ${requests.slice(before).join(", ")}`;
   });
 
@@ -368,7 +372,7 @@ try {
     // No s3Key on the record and no device copy: the key has to be rebuilt
     // from the pdf id and the hash, both of which survived the merge.
     const blob = await pdfStore.getDocument("deck-never-seen", { id: "pdf-1", sha256: HASH });
-    return blob === "PDFBYTES" || `got ${blob}`;
+    return (await textOf(blob)) === "PDFBYTES" || `got ${blob}`;
   });
 
   await must("...but a record with neither an id nor a hash is not guessed at", async () => {
@@ -382,7 +386,7 @@ try {
     await pdfStore.putDocument({ deckLocalId: "deck-stale", blob: "OLDBYTES", sha256: OTHER_HASH, name: "paper", at: Date.now() });
     objects.set(`recall/pdf-9/${HASH}.pdf`, "NEWBYTES");
     const blob = await pdfStore.getDocument("deck-stale", { id: "pdf-9", sha256: HASH });
-    return blob === "NEWBYTES" || `the stale copy was served: ${blob}`;
+    return (await textOf(blob)) === "NEWBYTES" || `the stale copy was served: ${blob}`;
   });
 
   // ── Offline, and the other degradations ─────────────────────────────────
@@ -511,58 +515,254 @@ try {
     return jobs.length === 0 || "a migrated paper was offered again";
   });
 
-  await must("a move uploads, records the key, and only THEN sweeps the old copy", async () => {
-    await deckWith("deck-legacy", { path: "uid/pdfs/x/paper.pdf" });
-    const [job] = (await migration.planDocumentMigration()).filter((j) => j.deckLocalId === "deck-legacy");
-    // The device holds the bytes, which is the ordinary case — the reader has
-    // been reading this paper — so the move costs no download. It is filed
-    // under migrationStoreKey rather than the bare deck id: a second PDF in a
-    // deck lives under a composed key, and putting it anywhere else here would
-    // test a lookup the app never performs.
-    await pdfStore.putDocument({
-      deckLocalId: migration.migrationStoreKey(job),
-      blob: "LEGACYBYTES", sha256: HASH, name: "paper.pdf", at: Date.now()
+  // ── The move, with an old Supabase bucket that answers ──────────────────
+  //
+  // Everything below runs against a stand-in Supabase: the old `documents`
+  // bucket (list with a search, and remove), and the `decks` table's document
+  // fields — which is what the move asks before it deletes anything. Real
+  // bytes and real hashes from here on, because the move now hashes what it
+  // reads rather than believing the record.
+  const hexOf = (text) => createHash("sha256").update(text).digest("hex");
+  const LEGACY = "LEGACYBYTES";
+  const LEGACY_HASH = hexOf(LEGACY);
+  const legacyKey = (pdfId = "pdf-m", hash = LEGACY_HASH) => `recall/${pdfId}/${hash}.pdf`;
+  const oldBucket = new Map();
+  const cloudDecks = new Map();
+  const removedPaths = [];
+  const clientMod = await load("src/cloud/supabase-client.js");
+  const fakeSupabase = {
+    storage: {
+      from: (bucket) => ({
+        list: async (dir, { search } = {}) => ({
+          data: [...oldBucket.entries()]
+            .filter(([p]) => p.startsWith(`${dir}/`) && !p.slice(dir.length + 1).includes("/"))
+            .filter(([p]) => !search || p.slice(dir.length + 1).startsWith(search))
+            .map(([p, body]) => ({ name: p.slice(dir.length + 1), id: `obj-${p}`, metadata: { size: body.length } })),
+          error: null
+        }),
+        remove: async (paths) => {
+          for (const p of paths) { oldBucket.delete(p); removedPaths.push(p); }
+          return { data: [], error: null };
+        },
+        getPublicUrl: (p) => ({ data: { publicUrl: `https://ref.supabase.co/storage/v1/object/public/${bucket}/${encodeURI(p)}` } }),
+        createSignedUrls: async () => ({ data: [], error: null })
+      })
+    },
+    from: () => {
+      const query = { ids: null };
+      const builder = {
+        select() { return builder; },
+        in(_column, ids) { query.ids = ids.map(String); return builder; },
+        order() { return builder; },
+        range() { return builder; },
+        then(resolve, reject) {
+          const rows = [...cloudDecks.entries()]
+            .filter(([id]) => !query.ids || query.ids.includes(id))
+            .map(([id, meta]) => ({ id, pdf: meta.pdf ?? null, pdfs: meta.pdfs ?? null, notebook: meta.notebook ?? null }));
+          return Promise.resolve({ data: rows, error: null }).then(resolve, reject);
+        }
+      };
+      return builder;
+    },
+    auth: { getSession: async () => ({ data: { session: null }, error: null }) }
+  };
+  clientMod.setSupabaseClient(fakeSupabase);
+  clientMod.setSignedIn(true);
+  const indexLib = await load("src/library/local-library.js");
+  const indexDeck = (id, deckId = "") => {
+    const index = indexLib.readLocalDeckIndex().filter((row) => row.id !== id);
+    index.push({ id, title: id, updatedAt: new Date(0).toISOString(), ...(deckId ? { deckId } : {}) });
+    indexLib.writeLocalDeckIndex(index);
+  };
+  // What a sync would have pushed: the deck's own document records, as the
+  // cloud row now holds them.
+  const pushDeck = async (id, deckId) => {
+    const meta = (await deckStore.readDeckSnapshot(id))?.meta || {};
+    cloudDecks.set(deckId, { pdf: meta.pdf, pdfs: meta.pdfs, notebook: meta.notebook });
+  };
+  const legacyDeck = async (id, entry, { bytes = LEGACY, onDevice = true } = {}) => {
+    await deckStore.writeDeckSnapshot(id, {
+      id, title: id, cards: [],
+      meta: { pdfs: [{ id: "pdf-m", name: "paper.pdf", size: bytes.length, sha256: LEGACY_HASH, ...entry }] }
     });
+    if (onDevice) {
+      // Filed where a second paper lives — under its pdf id — because that is
+      // where the move looks (migrationStoreKey).
+      await pdfStore.putDocument({ deckLocalId: `${id}#pdf:pdf-m`, blob: new Blob([bytes]), sha256: entry.sha256 ?? LEGACY_HASH, name: "paper.pdf", at: Date.now() });
+    }
+  };
+  const planned = async (id) => (await migration.planDocumentMigration()).filter((job) => job.deckLocalId === id);
+
+  await must("a move copies, checks the bucket, and only THEN removes the old copy — which it can see the bucket matches", async () => {
+    objects.clear();
+    oldBucket.set("uid/pdfs/first/paper.pdf", LEGACY);
+    await legacyDeck("deck-legacy", { path: "uid/pdfs/first/paper.pdf" });
+    const [job] = await planned("deck-legacy");
     requests.length = 0;
+    removedPaths.length = 0;
     const result = await migration.migrateDocumentToS3(job);
     if (!result.moved) return `it did not move: ${result.reason}`;
     const entry = await entryOf("deck-legacy");
-    if (!entry.s3Key) return "the deck was not told where the paper went";
-    // The legacy sweep is a Supabase call, not an S3 one, so what this proves
-    // is the half that belongs to the bucket: the PUT happened, and the deck
-    // carries the key it wrote.
+    if (entry.s3Key !== legacyKey()) return `the deck was not told where the paper went: ${entry.s3Key}`;
     const put = requests.findIndex((line) => line.startsWith("PUT"));
     if (put === -1) return `nothing was uploaded: ${requests.join(", ")}`;
-    return entry.path === "uid/pdfs/x/paper.pdf"
+    if (objects.get(legacyKey()) !== LEGACY) return "the bucket does not hold the paper";
+    if (!removedPaths.includes("uid/pdfs/first/paper.pdf")) return "the old Supabase copy was not removed";
+    return entry.path === "uid/pdfs/first/paper.pdf"
       || "the old locator was erased — it is the record of where those bytes were";
   });
 
-  await must("interrupted after the save, the next run only sweeps — it does not re-upload", async () => {
-    await deckWith("deck-half", { path: "uid/pdfs/x/paper.pdf", s3Key: `recall/pdf-m/${HASH}.pdf` });
-    const [job] = (await migration.planDocumentMigration()).filter((j) => j.deckLocalId === "deck-half");
-    if (!job) return "the half-finished move was not offered again";
+  await must("...and a moved paper is never planned again — the card empties", async () => {
+    const again = await planned("deck-legacy");
+    if (again.length) return `planned again: ${JSON.stringify(again[0])}`;
+    const entry = await entryOf("deck-legacy");
+    return entry.retiredLocators?.path === "uid/pdfs/first/paper.pdf" || `no retired marker: ${JSON.stringify(entry)}`;
+  });
+
+  await must("a deck in the cloud is not swept until the CLOUD carries the new hash", async () => {
+    objects.clear();
+    oldBucket.set("uid/pdfs/y/paper.pdf", LEGACY);
+    await legacyDeck("deck-cloud", { path: "uid/pdfs/y/paper.pdf", sha256: "" });
+    indexDeck("deck-cloud", "cloud-1");
+    cloudDecks.set("cloud-1", { pdfs: [{ id: "pdf-m", name: "paper.pdf", size: LEGACY.length, path: "uid/pdfs/y/paper.pdf" }] });
+    const [job] = await planned("deck-cloud");
+    removedPaths.length = 0;
+    // No sync is passed, so the cloud row stays as it was: hashless.
+    const result = await migration.migrateDocumentToS3(job);
+    if (result.status !== "waiting") return `expected waiting, got ${result.status}: ${result.reason}`;
+    if (removedPaths.length) return `it deleted the only copy other devices can find: ${removedPaths.join(", ")}`;
+    if (!oldBucket.has("uid/pdfs/y/paper.pdf")) return "the old copy is gone";
+    return objects.has(legacyKey()) || "the paper did not even reach the bucket";
+  });
+
+  await must("...and once the sync has carried it, the next run finishes the job", async () => {
+    const [job] = await planned("deck-cloud");
+    if (!job) return "the waiting paper was not offered again";
+    removedPaths.length = 0;
+    const result = await migration.migrateDocumentToS3(job, { sync: () => pushDeck("deck-cloud", "cloud-1") });
+    if (result.status !== "moved") return `expected moved, got ${result.status}: ${result.reason}`;
+    return removedPaths.includes("uid/pdfs/y/paper.pdf") || "the old copy was not removed";
+  });
+
+  await must("signed out, nothing is deleted — the paper waits in the bucket, safe", async () => {
+    objects.clear();
+    oldBucket.set("uid/pdfs/z/paper.pdf", LEGACY);
+    await legacyDeck("deck-signedout", { path: "uid/pdfs/z/paper.pdf" });
+    const [job] = await planned("deck-signedout");
+    clientMod.setSignedIn(false);
+    removedPaths.length = 0;
+    const result = await migration.migrateDocumentToS3(job);
+    clientMod.setSignedIn(true);
+    if (removedPaths.length) return "it deleted with no way to check the other decks in the cloud";
+    if (result.status !== "waiting") return `expected waiting, got ${result.status}`;
+    return objects.has(legacyKey()) || "the copy did not happen";
+  });
+
+  await must("a Drive copy that cannot be deleted is left in Drive, retired, and named", async () => {
+    objects.clear();
+    await legacyDeck("deck-drive-left", { driveId: "drive-file-1" });
+    const [job] = await planned("deck-drive-left");
+    const result = await migration.migrateDocumentToS3(job);
+    if (result.status !== "left") return `expected left, got ${result.status}: ${result.reason}`;
+    if (result.driveId !== "drive-file-1") return `the Drive file was not named: ${JSON.stringify(result)}`;
+    const again = await planned("deck-drive-left");
+    return again.length === 0 || "a paper safely in the bucket was offered again for ever";
+  });
+
+  await must("a notes-conflict stash is not planned, so it can never delete the real deck's copy", async () => {
+    await deckStore.writeDeckSnapshot("deck-real:notes-conflict", {
+      id: "deck-real:notes-conflict", title: "stash", cards: [],
+      meta: { pdfs: [{ id: "pdf-m", name: "paper.pdf", size: 8, sha256: HASH, path: "uid/pdfs/stash/paper.pdf" }] }
+    });
+    const jobs = (await migration.planDocumentMigration()).filter((job) => job.deckLocalId.includes("notes-conflict"));
+    return jobs.length === 0 || `planned ${jobs.length} stash job(s)`;
+  });
+
+  await must("bytes that do not match the record's hash are refused, and nothing is deleted", async () => {
+    objects.clear();
+    oldBucket.set("uid/pdfs/m/paper.pdf", "SOMEOTHERFILE");
+    await legacyDeck("deck-mismatch", { path: "uid/pdfs/m/paper.pdf" }, { bytes: "SOMEOTHERFILE", onDevice: true });
+    // The device copy is labelled with the record's hash but is not those
+    // bytes — and the old Supabase copy is the same wrong file.
+    const [job] = await planned("deck-mismatch");
+    removedPaths.length = 0;
+    const result = await migration.migrateDocumentToS3(job);
+    if (result.moved) return "it moved bytes the deck does not mean";
+    if (removedPaths.length) return "it deleted something";
+    if ([...objects.keys()].length) return `it uploaded: ${[...objects.keys()].join(", ")}`;
+    return !(await entryOf("deck-mismatch")).s3Key || "the deck was pointed at the wrong bytes";
+  });
+
+  await must("a recorded key whose object is gone is copied again before anything is deleted", async () => {
+    objects.clear();
+    oldBucket.set("uid/pdfs/h/paper.pdf", LEGACY);
+    await legacyDeck("deck-half", { path: "uid/pdfs/h/paper.pdf", s3Key: legacyKey() });
+    const [job] = await planned("deck-half");
     requests.length = 0;
-    await migration.migrateDocumentToS3(job);
-    return !requests.some((line) => line.startsWith("PUT"))
-      || `it uploaded a second copy: ${requests.join(", ")}`;
+    removedPaths.length = 0;
+    const result = await migration.migrateDocumentToS3(job);
+    if (!result.moved) return `it did not finish: ${result.reason}`;
+    const put = requests.findIndex((line) => line.startsWith("PUT"));
+    if (put === -1) return "it swept the old copy with nothing in the bucket";
+    return objects.get(legacyKey()) === LEGACY || "the bucket does not hold the paper";
   });
 
   await must("interrupted before the save, the next run finds the object and does not upload twice", async () => {
-    objects.set(`recall/pdf-m/${HASH}.pdf`, "LEGACYBYTES");
-    await deckWith("deck-orphan", { path: "uid/pdfs/x/paper.pdf" });
-    const [job] = (await migration.planDocumentMigration()).filter((j) => j.deckLocalId === "deck-orphan");
-    await pdfStore.putDocument({
-      deckLocalId: migration.migrationStoreKey(job),
-      blob: "LEGACYBYTES", sha256: HASH, name: "paper.pdf", at: Date.now()
-    });
+    objects.clear();
+    objects.set(legacyKey(), LEGACY);
+    oldBucket.set("uid/pdfs/o/paper.pdf", LEGACY);
+    await legacyDeck("deck-orphan", { path: "uid/pdfs/o/paper.pdf" });
+    const [job] = await planned("deck-orphan");
     requests.length = 0;
     await migration.migrateDocumentToS3(job);
     const head = requests.filter((line) => line.startsWith("HEAD")).length;
     const put = requests.filter((line) => line.startsWith("PUT")).length;
     if (!head) return `it never checked whether the object was there: ${requests.join(", ")}`;
     if (put) return `it uploaded a duplicate: ${requests.join(", ")}`;
-    return (await entryOf("deck-orphan")).s3Key === `recall/pdf-m/${HASH}.pdf`
+    return (await entryOf("deck-orphan")).s3Key === legacyKey()
       || "the deck was not told about the object that was already there";
+  });
+
+  await must("an old copy another deck still relies on is kept until that deck has moved too", async () => {
+    objects.clear();
+    oldBucket.set("uid/pdfs/shared/paper.pdf", LEGACY);
+    await legacyDeck("deck-share-a", { path: "uid/pdfs/shared/paper.pdf" });
+    await legacyDeck("deck-share-b", { path: "uid/pdfs/shared/paper.pdf" }, { onDevice: false });
+    const [jobA] = await planned("deck-share-a");
+    removedPaths.length = 0;
+    const first = await migration.migrateDocumentToS3(jobA);
+    if (!first.moved) return `the first deck did not move: ${first.reason}`;
+    if (removedPaths.length) return "the copy the second deck still needs was deleted";
+    const [jobB] = await planned("deck-share-b");
+    if (!jobB) return "the second deck was not offered";
+    const second = await migration.migrateDocumentToS3(jobB);
+    if (!second.moved) return `the second deck did not move: ${second.reason}`;
+    return removedPaths.includes("uid/pdfs/shared/paper.pdf") || "the last deck to move did not free the old copy";
+  });
+
+  await must("...and one only a deck in the cloud names is never deleted from here", async () => {
+    objects.clear();
+    oldBucket.set("uid/pdfs/remote/paper.pdf", LEGACY);
+    await legacyDeck("deck-here", { path: "uid/pdfs/remote/paper.pdf" });
+    cloudDecks.set("cloud-elsewhere", { pdfs: [{ id: "pdf-m", name: "paper.pdf", path: "uid/pdfs/remote/paper.pdf" }] });
+    const [job] = await planned("deck-here");
+    removedPaths.length = 0;
+    const result = await migration.migrateDocumentToS3(job);
+    cloudDecks.delete("cloud-elsewhere");
+    if (!result.moved) return `it did not move: ${result.reason}`;
+    return !removedPaths.length || "it deleted a copy a deck on another device still names";
+  });
+
+  await must("an old Supabase copy that is not the same size as the file moved is kept", async () => {
+    objects.clear();
+    oldBucket.set("uid/pdfs/s/paper.pdf", "A DIFFERENT, LONGER FILE");
+    await legacyDeck("deck-size", { path: "uid/pdfs/s/paper.pdf", sha256: "" });
+    const [job] = await planned("deck-size");
+    removedPaths.length = 0;
+    const result = await migration.migrateDocumentToS3(job);
+    if (!result.moved) return `it did not move: ${result.reason}`;
+    if (removedPaths.length) return "it deleted a Supabase copy that was not the file it moved";
+    return (await planned("deck-size")).length === 0 || "offered again for ever";
   });
 
   await must("a paper from before hashing existed is hashed on the way, not refused", async () => {
@@ -571,14 +771,13 @@ try {
     // exactly backwards: they are the ones most likely to still be sitting in
     // Supabase.
     objects.clear();
+    oldBucket.set("uid/pdfs/x/old.pdf", "OLDPAPER-NO-HASH");
     await deckStore.writeDeckSnapshot("deck-unhashed", {
       id: "deck-unhashed", title: "A deck", cards: [],
-      meta: { pdfs: [{ id: "pdf-old", name: "paper.pdf", size: 11, path: "uid/pdfs/x/old.pdf" }] }
+      meta: { pdfs: [{ id: "pdf-old", name: "paper.pdf", size: 16, path: "uid/pdfs/x/old.pdf" }] }
     });
-    const [job] = (await migration.planDocumentMigration()).filter((j) => j.deckLocalId === "deck-unhashed");
+    const [job] = await planned("deck-unhashed");
     if (!job) return "an unhashed paper was not planned";
-    // A real Blob here, not the string the other cases use: this is the one
-    // path that HASHES the bytes, and sha256() reaches for arrayBuffer().
     await pdfStore.putDocument({
       deckLocalId: migration.migrationStoreKey(job),
       blob: new Blob(["OLDPAPER-NO-HASH"]), sha256: "", name: "paper.pdf", at: Date.now()
@@ -586,7 +785,7 @@ try {
     const result = await migration.migrateDocumentToS3(job);
     if (!result.moved) return `it refused: ${result.reason}`;
     const entry = (await deckStore.readDeckSnapshot("deck-unhashed"))?.meta?.pdfs?.[0] || {};
-    if (!/^[a-f0-9]{64}$/.test(entry.sha256 || "")) return `no hash was recorded: ${entry.sha256}`;
+    if (entry.sha256 !== hexOf("OLDPAPER-NO-HASH")) return `the wrong hash was recorded: ${entry.sha256}`;
     // And the recorded hash has to be the one in the key, or the rebuild in
     // pdf-store.js would name an object that does not exist.
     return entry.s3Key === `recall/pdf-old/${entry.sha256}.pdf` || `key and hash disagree: ${entry.s3Key}`;
@@ -595,12 +794,37 @@ try {
   await must("a move that cannot read the bytes changes nothing", async () => {
     objects.clear();
     await deckWith("deck-unreadable", { path: "uid/pdfs/gone/paper.pdf" });
-    const [job] = (await migration.planDocumentMigration()).filter((j) => j.deckLocalId === "deck-unreadable");
+    const [job] = await planned("deck-unreadable");
     const result = await migration.migrateDocumentToS3(job);
     if (result.moved) return "it claimed to move a paper it could not read";
     const entry = await entryOf("deck-unreadable");
     return entry.path === "uid/pdfs/gone/paper.pdf" && !entry.s3Key
       || "a failed move still edited the deck";
+  });
+
+  await must("\"Remove from cloud\" keeps an old copy another deck still names", async () => {
+    oldBucket.set("uid/pdfs/twin/paper.pdf", LEGACY);
+    await legacyDeck("deck-rm-a", { path: "uid/pdfs/twin/paper.pdf" });
+    await legacyDeck("deck-rm-b", { path: "uid/pdfs/twin/paper.pdf" });
+    removedPaths.length = 0;
+    const result = await migration.deleteDocumentCopies(
+      { name: "paper.pdf", sha256: LEGACY_HASH, path: "uid/pdfs/twin/paper.pdf" },
+      { deckLocalId: "deck-rm-a", slot: "doc", pdfId: "pdf-m" }
+    );
+    if (removedPaths.length) return "the other deck's only cloud copy was deleted";
+    return (result.removed && result.shared) || `result ${JSON.stringify(result)}`;
+  });
+
+  // Back to a device with no Supabase, for the cases below.
+  clientMod.setSignedIn(false);
+  clientMod.setSupabaseClient(null);
+
+  await must("the paper count leaves the figures' prefix out", async () => {
+    objects.clear();
+    objects.set(`recall/pdf-a/${HASH}.pdf`, "PAPER");
+    objects.set("recall-images/ref.supabase.co/uid/decks/d--1/pic.webp", "PICTURE");
+    const usage = await s3Files.s3Usage();
+    return usage.count === 1 || `counted ${usage.count}`;
   });
 
   // ── Which key a record means ────────────────────────────────────────────
@@ -630,7 +854,7 @@ try {
     const blob = await pdfStore.getDocument("deck-notebook-stale#notebook", {
       notebook: true, sha256: HASH, s3Key: `recall/notebook/${OTHER_HASH}.pdf`
     });
-    return blob === "NEWPAGES" || `got ${blob} — old pages cached under the new hash`;
+    return (await textOf(blob)) === "NEWPAGES" || `got ${blob} — old pages cached under the new hash`;
   });
 
   // ── The write half of the connection test ───────────────────────────────

@@ -188,6 +188,10 @@
 //                   where a re-run would upload a second 100MB copy. Also the
 //                   backfill that uploads papers no cloud has yet, and a
 //                   connection test that has to prove UPLOADS work, not reads
+//   s3-images       ...and the figures: identifier → bucket key → identifier
+//                   (the service worker's half included), where a new figure
+//                   goes, where one is loaded from, and a move that deletes a
+//                   Supabase copy only when the bucket provably holds it
 //   s3-keys-sync    ...and do the bucket keys reach the reader's other devices
 //                   through their Supabase row — and only theirs?
 //   ui-smoke        does the APP still work? 18 real actions — import, flip,
@@ -324,6 +328,14 @@ const checks = [
   // CI has none of them.
   ["drive-store   ", ["node", ["tools/drive-store-check.mjs"], ROOT]],
   ["s3-store      ", ["node", ["tools/s3-store-check.mjs"], ROOT]],
+  // ...and the figures, which followed the papers into the same bucket without
+  // the URL in any note changing. The identifier-to-key mapping (and the
+  // service worker's rebuild of it, read out of sw.js itself), where a new
+  // figure goes and how a failure is reported — the outbox throws away a
+  // figure whose upload failed "for good" — which storage a figure is loaded
+  // from, and a move whose clean-up deletes only what the bucket provably
+  // holds.
+  ["s3-images     ", ["node", ["tools/s3-images-check.mjs"], ROOT]],
   // ...and whether the KEYS to that bucket reach the reader's other devices.
   // They used to live in the localStorage of whichever device they were typed
   // into, so a second device had every paper's record and could fetch none of

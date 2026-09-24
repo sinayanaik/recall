@@ -171,7 +171,7 @@ export function describePdfUploadFailure(error) {
   // raw token — "Could not upload the document — NO_DRIVE" — for the ONE case
   // that has a clear answer and a page in the README explaining it.
   if (error?.message === "NO_STORAGE" || error?.message === "NO_DRIVE") {
-    return "this device has no bucket keys yet — add them in Storage & Data, or sign in and sync if you set a bucket up on another device";
+    return "this device has no bucket keys yet — add them in ☰ → Cloud bucket, or sign in and sync if you set a bucket up on another device";
   }
   if (error?.message === "NOT_SIGNED_IN") return "you're not signed in";
   if (error?.message === "CANCELLED") return "you cancelled it";
@@ -183,7 +183,7 @@ export function describePdfUploadFailure(error) {
   // Nothing uploads to Supabase any more, so this is the reader's own bucket
   // answering. It used to be matched on the bare word "bucket" and blamed on
   // supabase_setup.sql — for a bucket that lives at Cloudflare.
-  if (/NoSuchBucket/i.test(error?.message || "")) return "the bucket named in Storage & Data doesn't exist at that endpoint";
+  if (/NoSuchBucket/i.test(error?.message || "")) return "the bucket named in ☰ → Cloud bucket doesn't exist at that endpoint";
   return error?.message || "the upload failed";
 }
 

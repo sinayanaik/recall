@@ -529,13 +529,13 @@ function renderMissingDocumentPrompt(pdfMeta, pdfId = null) {
     body: pdfMeta?.offloaded
       ? `“${pdfMeta.name || "This document"}” was removed from the cloud to save space, and this device doesn't have a copy. Your highlights, notes and cards are all still here — pick the same file to read it again.`
       : (pdfMeta?.driveId && !pdfMeta?.s3Key && !isDriveConfigured())
-        ? `“${pdfMeta.name || "This document"}” is still in a Google Drive this device hasn't been connected to. Move your papers across in Storage & Data, or pick the file here. Your highlights, notes and cards are all still here.`
+        ? `“${pdfMeta.name || "This document"}” is still in a Google Drive this device hasn't been connected to. Move it into your bucket from a device that holds the file (☰ → Cloud bucket), or pick the file here. Your highlights, notes and cards are all still here.`
         // No keys here, whether or not the record names a key: a record whose
         // s3Key a merge carried off is in the bucket just the same, and it was
         // exactly that case that fell through to "can't be downloaded right
         // now" and sent the reader to check a connection that was fine.
         : !isS3Configured()
-          ? `“${pdfMeta?.name || "This document"}” is in your PDF bucket, and this device hasn't been given the keys yet. Sign in and sync — keys set up on another device come across by themselves — or paste them in Storage & Data, or pick the file here. Your highlights, notes and cards are all still here.`
+          ? `“${pdfMeta?.name || "This document"}” is in your PDF bucket, and this device hasn't been given the keys yet. Sign in and sync — keys set up on another device come across by themselves — or paste them in ☰ → Cloud bucket, or pick the file here. Your highlights, notes and cards are all still here.`
           : `This device doesn't have a copy of “${pdfMeta?.name || "the document"}” yet, and the bucket doesn't either — or it can't be reached right now. A paper goes up from the device it was imported on, the next time that device syncs. Your highlights, notes and cards are all still here.`,
     // Not a formality. A highlight is a coordinate into one exact file; painted
     // over a different edition of the same paper it would sit over the wrong

@@ -4,9 +4,9 @@
 // Deliberately unregistered on localhost: a cache-first worker there masks
 // every edit behind the previously cached bundle.
 
-import { canSignStorageUrls, signedUrlsFor, storagePathFromUrl } from "../cloud/storage-urls.js?v=__BUILD__";
+import { canReachS3 } from "../cloud/s3-config.js?v=__BUILD__";
+import { canSignStorageUrls, resolveImageUrls } from "../cloud/storage-urls.js?v=__BUILD__";
 import { BUILD_STAMP } from "../core/build.js?v=__BUILD__";
-import { IMAGE_BUCKET } from "../images/upload.js?v=__BUILD__";
 import { requestedAppVersion } from "./release-info.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
 
@@ -25,6 +25,12 @@ export function collectDeckImageUrls(snapshot) {
   for (const card of snapshot?.cards || []) {
     scan(card.question);
     scan(card.answer);
+  }
+  // A PDF deck's image and text blocks hold figures of their own, which a note
+  // scan never sees.
+  for (const block of Array.isArray(snapshot?.meta?.pdfBlocks) ? snapshot.meta.pdfBlocks : []) {
+    scan(block?.src);
+    scan(block?.md);
   }
   return Array.from(seen);
 }
@@ -52,19 +58,15 @@ export async function warmDeckImageCache(snapshot) {
   const urls = collectDeckImageUrls(snapshot);
   if (!urls.length) return;
   // Nothing signable means nothing fetchable. Skip rather than post URLs that
-  // are certain to 400 — the next pull, or the render, warms them instead.
-  if (!canSignStorageUrls()) return;
+  // are certain to 400 — the next pull, or the render, warms them instead. The
+  // reader's bucket counts: its URLs are signed on this device, no session
+  // needed, and the worker files what they fetch under the canonical key.
+  if (!canSignStorageUrls() && !(canReachS3() && navigator.onLine !== false)) return;
   try {
-    const byPath = new Map();
-    for (const url of urls) {
-      const path = storagePathFromUrl(IMAGE_BUCKET, url);
-      if (path) byPath.set(path, url);
-    }
-    if (!byPath.size) return;
     // Batched and cached inside signedUrlsFor, so a pull of many decks that
     // share images pays for each signature once.
-    const signed = await signedUrlsFor(IMAGE_BUCKET, [...byPath.keys()]);
-    const fetchable = [...byPath.keys()].map((path) => signed.get(path)).filter(Boolean);
+    const resolved = await resolveImageUrls(urls);
+    const fetchable = urls.map((url) => resolved.get(url)).filter(Boolean);
     if (!fetchable.length) return;
     // Re-read: signing is a round trip, and a controller can be replaced by an
     // update taking over while it is in flight.

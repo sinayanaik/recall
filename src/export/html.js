@@ -37,7 +37,11 @@ export async function embedImagesAsDataUris(container) {
   const images = Array.from(container.querySelectorAll("img[src]"));
   let failedCount = 0;
   await Promise.all(images.map(async (img) => {
-    const src = img.getAttribute("src");
+    // The figure's identifier when the render already swapped in a signed
+    // URL: it is what gets signed afresh below, and — more to the point — what
+    // the fallback link names. A signed URL in an exported file is a bearer
+    // credential that outlives the export by up to a week.
+    const src = img.getAttribute("data-canonical-src") || img.getAttribute("src");
     if (!src || src.startsWith("data:")) return;
     try {
       // The images bucket is private, so a canonical `.../object/public/…`

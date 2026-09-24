@@ -7,6 +7,8 @@
 
 import { getCachedSession } from "../cloud/auth.js?v=__BUILD__";
 import { CLOUD_TIMEOUT_MS, withTimeout } from "../cloud/net.js?v=__BUILD__";
+import { canReachS3 } from "../cloud/s3-config.js?v=__BUILD__";
+import { canonicalImageParts, noteS3Image, statS3Image, uploadS3Image } from "../cloud/s3-images.js?v=__BUILD__";
 import { isSignedIn, supabaseClient } from "../cloud/supabase-client.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 
@@ -369,6 +371,108 @@ export async function uploadImageToSupabase(file, { folder = null, name = null, 
   const { data } = supabaseClient.storage.from(IMAGE_BUCKET).getPublicUrl(storedPath);
   await cacheUploadedImageOffline(data.publicUrl, file);
   return data.publicUrl;
+}
+
+// ── Into the reader's bucket ────────────────────────────────────────────────
+//
+// Figures follow the papers into the reader's own S3-compatible bucket when
+// one is set up — see src/cloud/s3-images.js for why the identifier in the
+// note does not change. The object is filed under exactly the path a Supabase
+// upload would have used, and the canonical URL for that path is what comes
+// back, so every other part of the app sees the same string it always did.
+//
+// The path is built the same way (the uid first, then the folder), for the
+// same reasons: a figure's identity must not depend on which storage took it,
+// and a later copy between the two needs one name for both.
+export async function uploadImageToS3(file, { folder = null, name = null, verify = true } = {}) {
+  if (!navigator.onLine) throw new Error("OFFLINE");
+  if (!supabaseClient) throw new Error("NOT_SIGNED_IN");
+  const session = await getCachedSession();
+  const userId = session?.user?.id;
+  if (!userId) throw new Error("NOT_SIGNED_IN");
+  const ext = IMAGE_STORAGE_EXT[file.type] || "img";
+  const dir = `${userId}/${folder || UNFILED_IMAGE_FOLDER}`;
+  const base = name || `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+  const path = `${dir}/${base}.${ext}`;
+  const canonical = supabaseClient.storage.from(IMAGE_BUCKET).getPublicUrl(path)?.data?.publicUrl || "";
+  const parts = canonicalImageParts(canonical);
+  if (!parts || parts.path !== path) throw new Error("NO_IMAGE_PATH");
+  await uploadS3Image(parts.host, path, file, { contentType: file.type || "application/octet-stream" });
+  if (verify) {
+    // The same read-back uploadImageToSupabase does, for the same reason: the
+    // uploading device renders the figure from its own cache whatever the
+    // bucket holds, so a write that did not land would look perfect here and
+    // broken everywhere else. `answered: false` is silence, not a failure.
+    const stat = await statS3Image(parts.host, path);
+    if (stat.answered && !(stat.exists && (stat.size < 0 || !file.size || stat.size === file.size))) {
+      const err = new Error(stat.exists
+        ? `The image reached the bucket incomplete (${stat.size} of ${file.size} bytes)`
+        : "The image did not reach the bucket");
+      err.notStored = true;
+      throw err;
+    }
+  }
+  noteS3Image(parts.host, path);
+  await cacheUploadedImageOffline(canonical, file);
+  return canonical;
+}
+
+// A bucket refusal that trying again will not fix: the keys were refused, the
+// bucket is full. A request the browser blocked before it was sent (corsLikely)
+// is NOT one of these — it is also exactly what a dropped connection looks like.
+function bucketRefusedForGood(error) {
+  return Boolean(error?.quotaExceeded || (error?.authFailed && !error?.corsLikely));
+}
+
+// Where a new figure goes. The bucket when there is one; Supabase otherwise —
+// exactly as before, errors and all — and Supabase too when the bucket turns
+// the upload away, so a misconfigured bucket costs a figure's location, never
+// the figure.
+//
+// ── What a failure says, and why it matters ────────────────────────────────
+//
+// The image outbox DELETES a queued figure whose upload fails with
+// `authFailed` — that is how a permanently forbidden upload stops being tried
+// on every sync. But the bucket code sets `authFailed` on a request the
+// browser blocked, which is also what a dropped connection looks like. Passed
+// through, a flaky network would have cost the reader a pasted picture. So
+// when both storages were tried, `authFailed` is reported only if BOTH refused
+// for good; anything else is `retryable`, which the outbox keeps.
+export async function uploadImage(file, options = {}) {
+  if (!navigator.onLine) throw new Error("OFFLINE");
+  let bucketError = null;
+  if (canReachS3()) {
+    try {
+      return await uploadImageToS3(file, options);
+    } catch (error) {
+      if (error?.message === "OFFLINE" || error?.message === "NOT_SIGNED_IN") throw error;
+      console.warn("The bucket did not take the image; trying Supabase instead", error);
+      bucketError = error;
+    }
+  }
+  try {
+    return await uploadImageToSupabase(file, options);
+  } catch (error) {
+    if (!bucketError) throw error;
+    if (error?.message === "OFFLINE") throw error;
+    const err = new Error(error?.message || bucketError?.message || "Upload failed");
+    err.bucketError = bucketError;
+    err.supabaseError = error;
+    if (bucketRefusedForGood(bucketError) && error?.authFailed) err.authFailed = true;
+    else err.retryable = true;
+    throw err;
+  }
+}
+
+// The host part of every canonical image URL on this install, or "" before
+// the client is set up.
+export function imageStorageHost() {
+  if (!supabaseClient) return "";
+  try {
+    return canonicalImageParts(`${supabaseClient.storage.from(IMAGE_BUCKET).getPublicUrl("x")?.data?.publicUrl || ""}`)?.host || "";
+  } catch (_) {
+    return "";
+  }
 }
 
 // The service worker's image cache is populated by FETCHING images — which

@@ -32,6 +32,7 @@
 import {
   S3_URL_TTL_SECONDS, canReachS3, canSignS3Requests, loadS3Config
 } from "./s3-config.js?v=__BUILD__";
+import { CLOUD_TIMEOUT_MS, withTimeout } from "./net.js?v=__BUILD__";
 import { presignS3Url } from "./s3-sign.js?v=__BUILD__";
 
 // Objects are listed a thousand at a time, which is the S3 maximum and covers
@@ -146,6 +147,28 @@ export function s3DocumentKey({ pdfId, sha256 }) {
 
 // ── Write ───────────────────────────────────────────────────────────────────
 
+// One PUT of any object. Returns nothing and throws if the bucket did not take
+// it — every caller records the result somewhere, so a silent failure here
+// would mean a record pointing at nothing.
+//
+// The headers are not signed — only `host` is — so the bucket stores them as
+// the object's own metadata without them touching the signature. Content-Type
+// is what makes a paper open as a PDF and a figure render as a picture if
+// either is ever fetched directly; Cache-Control is what lets a browser keep an
+// image whose key, like every key here, never names different bytes.
+export async function putS3Object(key, body, { contentType = "application/octet-stream", cacheControl = "" } = {}) {
+  const headers = { "Content-Type": contentType };
+  if (cacheControl) headers["Cache-Control"] = cacheControl;
+  let response;
+  try {
+    response = await s3Fetch("PUT", key, { body, headers });
+  } catch (error) {
+    if (error?.message === "NO_STORAGE") throw error;
+    throw s3NetworkError(error, "The upload");
+  }
+  if (!response.ok) throw await s3Error(response, "The upload");
+}
+
 // One PUT. Returns the key it wrote, and throws if it did not — the caller
 // records the result, so a silent failure here would mean a deck pointing at
 // nothing.
@@ -155,20 +178,7 @@ export async function uploadS3File(file, { pdfId, sha256 }) {
   // nothing could ever find again. pdf-store hashes before it uploads; this is
   // the guard for the path where crypto.subtle was missing and it could not.
   if (!key) throw Object.assign(new Error("NO_DOCUMENT_HASH"), { authFailed: true });
-  let response;
-  try {
-    response = await s3Fetch("PUT", key, {
-      body: file,
-      // Not a signed header — only `host` is signed — so the bucket takes it as
-      // the object's stored type without it affecting the signature. It is what
-      // makes the object open as a PDF if the reader ever fetches it directly.
-      headers: { "Content-Type": "application/pdf" }
-    });
-  } catch (error) {
-    if (error?.message === "NO_STORAGE") throw error;
-    throw s3NetworkError(error, "The upload");
-  }
-  if (!response.ok) throw await s3Error(response, "The upload");
+  await putS3Object(key, file, { contentType: "application/pdf" });
   return key;
 }
 
@@ -210,6 +220,50 @@ export async function headS3File(key) {
   }
 }
 
+// The object's size, as the bucket reports it — for the checks that come before
+// anything is DELETED somewhere else. "Is it there" is not enough for those:
+// a PUT cut short can leave an object that exists and is not the file, and the
+// whole point of the check is that the copy about to become the only copy is
+// the complete one.
+//
+// Three answers, and they are kept apart on purpose:
+//   { exists: true,  size, answered: true }   the bucket says so
+//   { exists: false, answered: true }         the bucket says it is not there
+//   { exists: false, answered: false }        nobody could ask (offline, CORS,
+//                                             a refusal) — which is NOT "absent"
+// A caller deciding whether to delete a second copy treats the last as "no".
+//
+// Content-Length is a CORS-safelisted response header, so a HEAD from the page
+// can read it without the bucket exposing anything. A provider that answers a
+// HEAD without it gets asked once more through a listing, whose <Size> is the
+// same number from the bucket's own index.
+export async function statS3File(key) {
+  if (!key) return { exists: false, size: 0, answered: true };
+  let response;
+  try {
+    response = await withTimeout(s3Fetch("HEAD", key), CLOUD_TIMEOUT_MS, "check the bucket");
+  } catch (error) {
+    console.warn("Could not look for the object in the bucket", error);
+    return { exists: false, size: 0, answered: false };
+  }
+  if (response.status === 404) return { exists: false, size: 0, answered: true };
+  if (!response.ok) return { exists: false, size: 0, answered: false, status: response.status };
+  const header = response.headers?.get?.("Content-Length");
+  const length = header === null || header === undefined || header === "" ? NaN : Number(header);
+  if (Number.isFinite(length)) return { exists: true, size: length, answered: true };
+  const listed = (await listS3Objects(key)).find((file) => file.key === key);
+  return listed
+    ? { exists: true, size: listed.size, answered: true }
+    : { exists: true, size: -1, answered: true };
+}
+
+// True only when the bucket holds exactly `bytes` bytes under `key`. The test
+// every "the other copy may now go" decision is made on.
+export async function s3FileHasSize(key, bytes) {
+  const stat = await statS3File(key);
+  return Boolean(stat.exists && stat.size >= 0 && Number(bytes) >= 0 && stat.size === Number(bytes));
+}
+
 // ── Delete ──────────────────────────────────────────────────────────────────
 
 // A 404 counts as success — the object is not there, which is what was asked
@@ -233,7 +287,7 @@ export async function deleteS3File(key) {
 // notice.
 function parseListing(text) {
   const doc = new DOMParser().parseFromString(text, "application/xml");
-  if (doc.querySelector("parsererror")) return { files: [], token: "" };
+  if (doc.querySelector("parsererror")) return { files: [], token: "", unreadable: true };
   const files = Array.from(doc.querySelectorAll("Contents")).map((node) => {
     const key = node.querySelector("Key")?.textContent || "";
     return {
@@ -249,25 +303,43 @@ function parseListing(text) {
   return { files, token: truncated ? (doc.querySelector("NextContinuationToken")?.textContent || "") : "" };
 }
 
-export async function listS3Files() {
+// Every object under one prefix, a thousand at a time. Resolves the objects,
+// or — with `strict` — null when any page could not be read in full, for the
+// callers that must not mistake "the listing failed" for "the bucket is
+// empty". Those are the ones about to delete something, or to decide that an
+// upload did not land; a short list there is data loss, not a smaller number.
+// Each page is bounded by the ordinary cloud timeout, so a stalled request
+// cannot hold a panel's busy state for ever.
+export async function listS3Objects(prefix, { strict = false } = {}) {
   const out = [];
-  if (!canReachS3()) return out;
+  if (!canReachS3()) return strict ? null : out;
   try {
     let token = "";
     for (;;) {
-      const query = { "list-type": "2", prefix: `${S3_PREFIX}/`, "max-keys": String(S3_LIST_PAGE) };
+      const query = { "list-type": "2", prefix, "max-keys": String(S3_LIST_PAGE) };
       if (token) query["continuation-token"] = token;
-      const response = await s3Fetch("GET", "", { query });
-      if (!response.ok) break;
-      const { files, token: next } = parseListing(await response.text());
+      const response = await withTimeout(s3Fetch("GET", "", { query }), CLOUD_TIMEOUT_MS, "list the bucket");
+      if (!response.ok) {
+        if (strict) return null;
+        break;
+      }
+      const { files, token: next, unreadable } = parseListing(await response.text());
+      if (unreadable && strict) return null;
       out.push(...files);
       token = next;
       if (!token) break;
     }
   } catch (error) {
-    console.warn("Could not list the documents in the bucket", error);
+    console.warn("Could not list the bucket", error);
+    if (strict) return null;
   }
   return out;
+}
+
+// The papers — everything under recall/. Figures live under a prefix of their
+// own (see src/cloud/s3-images.js), so this never has to page past them.
+export async function listS3Files() {
+  return listS3Objects(`${S3_PREFIX}/`);
 }
 
 // { count, bytes } for what Recall has put in the bucket.

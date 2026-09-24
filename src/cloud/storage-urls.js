@@ -22,6 +22,8 @@
 // is cached under its canonical URL) is load-bearing rather than tidiness.
 
 import { isSignedIn, supabaseClient } from "./supabase-client.js?v=__BUILD__";
+import { canReachS3 } from "./s3-config.js?v=__BUILD__";
+import { canonicalImageParts, isS3ImageUrl, s3ImageIndexHas, s3ImageIndexReady, s3ImageUrl } from "./s3-images.js?v=__BUILD__";
 import { IMAGE_BUCKET, decodeStoragePath } from "../images/upload.js?v=__BUILD__";
 import { scopedQueryAll } from "../render/deferred-work.js?v=__BUILD__";
 
@@ -290,14 +292,83 @@ export function absoluteSignedUrl(bucket, signedUrl) {
   }
 }
 
+// ── Which storage a figure comes from ───────────────────────────────────────
+//
+// Figures can now be in the reader's own bucket as well as in Supabase — see
+// src/cloud/s3-images.js. The identifier in the note is the same either way,
+// so the choice is made here, per figure, just before it is loaded:
+//
+//   1. the bucket, when the bucket's index says it holds the figure;
+//   2. otherwise Supabase, signed as before;
+//   3. and when Supabase has no signature to give — it said the object is not
+//      there, or this device is signed out — the bucket after all, because a
+//      figure another device put there since the index was read is still a
+//      figure the bucket holds.
+//
+// Offline, the bucket is not consulted at all: the canonical URL (or a cached
+// Supabase signature) is left for the service worker, whose cache is keyed by
+// the canonical identifier whichever storage the bytes first came from.
+export async function resolveImageUrls(canonicalUrls) {
+  const urls = new Map();
+  const bucket = canReachS3() && navigator.onLine !== false;
+  if (bucket) await s3ImageIndexReady();
+  const viaSupabase = new Map();
+  for (const url of new Set(canonicalUrls)) {
+    // `parts` is null for an identifier outside the usual shape — a
+    // self-hosted Supabase served under a path prefix, say. The bucket never
+    // held those (its keys are made from the usual shape), but Supabase still
+    // signs them exactly as it always did.
+    const parts = canonicalImageParts(url);
+    if (bucket && parts && s3ImageIndexHas(parts.host, parts.path)) {
+      const signed = await s3ImageUrl(parts.host, parts.path);
+      if (signed) {
+        urls.set(url, signed);
+        continue;
+      }
+    }
+    const path = storagePathFromUrl(IMAGE_BUCKET, url);
+    if (path) viaSupabase.set(url, path);
+    else if (bucket && parts) {
+      // A figure whose identifier this device's Supabase client does not
+      // recognise (no client yet, or never): the bucket is the only place left.
+      const signed = await s3ImageUrl(parts.host, parts.path);
+      if (signed) urls.set(url, signed);
+    }
+  }
+  if (viaSupabase.size) {
+    const signed = await signedUrlsFor(IMAGE_BUCKET, [...viaSupabase.values()]);
+    for (const [url, path] of viaSupabase) {
+      const hit = signed.get(path);
+      if (hit) {
+        urls.set(url, hit);
+        continue;
+      }
+      if (!bucket) continue;
+      const parts = canonicalImageParts(url);
+      const fallback = parts ? await s3ImageUrl(parts.host, parts.path) : "";
+      if (fallback) urls.set(url, fallback);
+    }
+  }
+  return urls;
+}
+
 // A URL that can actually be fetched right now for one canonical image URL:
-// the signed form when we can mint one, the canonical form otherwise. Used by
-// the exports, which fetch bytes rather than handing a URL to an <img>.
-export async function fetchableStorageUrl(url) {
-  const path = storagePathFromUrl(IMAGE_BUCKET, url);
-  if (!path) return url; // not ours — an ImgBB/Drive/external link, or a data: URI
-  const signed = await signedUrlsFor(IMAGE_BUCKET, [path]);
-  return signed.get(path) || url;
+// the bucket's or Supabase's signed form when one can be had, the canonical
+// form otherwise. Used by the exports, the backup and the broken-image scan,
+// which fetch bytes rather than handing a URL to an <img>.
+//
+// `method` matters for the bucket only. A bucket URL is signed for one verb —
+// SigV4 signs the method — so a HEAD sent to a URL signed for GET is refused
+// with 403, and the broken-image scan would call every figure there gone. So
+// the storage is chosen exactly as a GET would choose it, and only a BUCKET
+// answer is signed again for the verb actually being sent. A Supabase signed
+// URL answers either verb as it is.
+export async function fetchableStorageUrl(url, { method = "GET" } = {}) {
+  if (!canonicalImageParts(url) && !storagePathFromUrl(IMAGE_BUCKET, url)) return url; // not ours — an ImgBB/Drive/external link, or a data: URI
+  const resolved = (await resolveImageUrls([url])).get(url) || url;
+  if (method === "GET" || !isS3ImageUrl(resolved)) return resolved;
+  const parts = canonicalImageParts(url);
+  return (parts && await s3ImageUrl(parts.host, parts.path, { method })) || resolved;
 }
 
 // ── The render-time swap ────────────────────────────────────────────────────
@@ -326,34 +397,45 @@ export const CANONICAL_SRC_ATTR = "data-canonical-src";
 // below when the answer finally lands.
 export const STORAGE_UNRESOLVED_ATTR = "data-storage-unresolved";
 
+// Every canonical image URL contains this, whatever host it names — the
+// selector's fallback for a device whose Supabase client cannot say its own
+// prefix, which can still load every figure the bucket holds.
+const CANONICAL_IMAGE_SELECTOR = "/storage/v1/object/public/images/";
+
 export async function resolveStorageImages(root = document) {
   const prefix = canonicalStoragePrefix(IMAGE_BUCKET);
-  if (!prefix) return;
-  const selector = `img[src^="${prefix}"], img[${CANONICAL_SRC_ATTR}]`;
+  // Nothing to resolve with: no Supabase client to recognise or sign, and no
+  // bucket either. Exactly the old early return.
+  if (!prefix && !canReachS3()) return;
+  const selector = prefix
+    ? `img[src^="${prefix}"], img[${CANONICAL_SRC_ATTR}]`
+    : `img[src*="${CANONICAL_IMAGE_SELECTOR}"], img[${CANONICAL_SRC_ATTR}]`;
   const nodes = Array.isArray(root)
     ? scopedQueryAll(root, selector)
     : root.querySelectorAll?.(selector);
   if (!nodes || !nodes.length) return;
 
-  const byPath = new Map();
+  const byUrl = new Map();
   Array.from(nodes).forEach((node) => {
     const canonical = node.getAttribute(CANONICAL_SRC_ATTR) || node.getAttribute("src") || "";
-    const path = storagePathFromUrl(IMAGE_BUCKET, canonical);
-    if (!path) return;
+    if (!storagePathFromUrl(IMAGE_BUCKET, canonical) && !canonicalImageParts(canonical)) return;
     node.setAttribute(CANONICAL_SRC_ATTR, canonical);
-    const list = byPath.get(path) || [];
+    const list = byUrl.get(canonical) || [];
     list.push(node);
-    byPath.set(path, list);
+    byUrl.set(canonical, list);
   });
-  if (!byPath.size) return;
+  if (!byUrl.size) return;
 
   // Read ONCE, before the await: whether this device could ask at all is a fact
   // about the attempt, and re-reading it after the round trip would attribute a
   // sign-out that happened meanwhile to the images this pass was resolving.
-  const couldAsk = canSignStorageUrls() && storageSigningAvailable(IMAGE_BUCKET);
-  const signed = await signedUrlsFor(IMAGE_BUCKET, [...byPath.keys()]);
-  byPath.forEach((elements, path) => {
-    const url = signed.get(path);
+  // The bucket counts as asking: its URLs are signed on this device, so a
+  // figure it could serve is never left "waiting for a signature".
+  const couldAsk = (canSignStorageUrls() && storageSigningAvailable(IMAGE_BUCKET))
+    || (canReachS3() && navigator.onLine !== false);
+  const resolved = await resolveImageUrls([...byUrl.keys()]);
+  byUrl.forEach((elements, canonical) => {
+    const url = resolved.get(canonical);
     elements.forEach((node) => {
       if (!url) {
         // No signature. If we never got to ask, this is unresolved and will be
@@ -392,7 +474,10 @@ export async function resolveUnresolvedStorageImages(root = document) {
   // returns at its own canSignStorageUrls() guard before marking — but an image
   // that failed for some other reason earlier in the session may have spent it.
   // A fresh signature is a fresh chance, so give it back.
-  for (const node of waiting) delete node.dataset.signRetried;
+  for (const node of waiting) {
+    delete node.dataset.signRetried;
+    delete node.dataset.bucketRetried;
+  }
   await resolveStorageImages(waiting);
   return waiting;
 }
