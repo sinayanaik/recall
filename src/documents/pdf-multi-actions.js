@@ -14,10 +14,11 @@ import {
   recordsOutsideSurface,
   withDeckPdfs
 } from "./pdf-multi.js?v=__BUILD__";
-import { deleteLocalDocument, deleteRemoteDocument } from "./pdf-store.js?v=__BUILD__";
+import { deleteLocalDocument } from "./pdf-store.js?v=__BUILD__";
 import { renderDocumentPdfSwitcher, switchToPdf } from "./pdf-view.js?v=__BUILD__";
 import { recordDeletedMetaId } from "../sync/document-sync.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
+import { deleteDocumentCopies } from "../storage/document-migration.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
 
 // Fully remove one PDF: the entry, its highlights and typed blocks (each with
@@ -81,7 +82,12 @@ export async function removePdfFromDeck(pdfId) {
   state.meta = meta;
   scheduleDeckAutosave();
 
-  if ((entry.driveId || entry.path) && !entry.offloaded) deleteRemoteDocument(entry).catch(() => {});
+  // The bucket copy too. It used to be only Drive and Supabase, so every paper
+  // removed from a deck since the move to a bucket stayed in it for good —
+  // unreachable, since no record named it any more, and still billed.
+  if ((entry.s3Key || entry.driveId || entry.path) && !entry.offloaded) {
+    deleteDocumentCopies(entry, { deckLocalId: state.localDeckId, slot: DOC_SLOT_DOC, pdfId }).catch(() => {});
+  }
   deleteLocalDocument(pdfStoreKey(state.localDeckId, pdfId)).catch(() => {});
 
   await switchToPdf(nextActive);

@@ -18,6 +18,7 @@ import { handleDiagramPointerDown, handleDiagramPointerEnd, handleDiagramPointer
 import { describeAuthError, getCachedSession, handleLogin, handleLogout, handleSignup } from "./cloud/auth.js?v=__BUILD__";
 import { closeStylePanel, handleStyleEnvironmentChange, loadStyleFromWeb, openStylePanel, switchStyleEditProfile, syncStyleToWeb } from "./cloud/style-sync.js?v=__BUILD__";
 import { resolveUnresolvedStorageImages } from "./cloud/storage-urls.js?v=__BUILD__";
+import { onS3ConfigAdopted } from "./cloud/s3-config-sync.js?v=__BUILD__";
 import { clearSupabaseConfig, initSupabaseClient, isSignedIn, onSigningReadyChange, reloadSupabaseLibrary, saveSupabaseConfig, setSignedIn, setSupabaseClient } from "./cloud/supabase-client.js?v=__BUILD__";
 import { closeWebDeckExportMenus } from "./cloud/web-decks.js?v=__BUILD__";
 import { deckEmptyImportBtn2, deckEmptyNewBtn, deckEmptyWebBtn, el, onDomReady } from "./core/dom.js?v=__BUILD__";
@@ -92,6 +93,7 @@ import { closeDiagramModal, zoomDiagramBy } from "./render/diagram-zoom.js?v=__B
 import { scheduleMarkdownTableFit } from "./render/tables.js?v=__BUILD__";
 import { deckSnapshotCache, deckStoreChannel, deckStoreRequest, indexedDbUnavailable, pendingDeckWrites, scheduleDeckAutosave, setDeckStoreChannel, touchDeckSnapshotCache } from "./storage/deck-store.js?v=__BUILD__";
 import { isQuotaExceededError } from "./storage/quota.js?v=__BUILD__";
+import { deleteDocumentCopies, onDocumentBackfillDone, scheduleDocumentBackfill } from "./storage/document-migration.js?v=__BUILD__";
 import { closeStoragePanel, offloadStorageDocument, openStoragePanel, refreshStorageReport, runStorageAction } from "./storage/storage-panel.js?v=__BUILD__";
 import { applyAutoSyncInterval, autoSyncTick, schedulePostEditSync, setAutoSyncMinutes } from "./sync/auto-sync.js?v=__BUILD__";
 import { updateDeckEmptyStatus } from "./sync/indicator.js?v=__BUILD__";
@@ -100,7 +102,7 @@ import { reconcileAllDecks } from "./sync/reconcile.js?v=__BUILD__";
 import { closeTopmostOverlay, initBackGesture } from "./ui/back-gesture.js?v=__BUILD__";
 import { showAuthenticatedUI, showLibraryFailedScreen, showLoginScreen, showSetupScreen } from "./ui/boot-screens.js?v=__BUILD__";
 import { applyChromeCollapse, chromeMobileMedia, chromeScrollFrame, hasStudyTextSelection, initImmersiveMode, isFocusModeActive, isMobileChrome, measureChromeHeights, setChromeCollapseHandler, setChromeFocusPinned, setChromeModesHandler, setChromeScrollFrame, setFocusMode, toggleImmersiveMode, trackChromeScroll } from "./ui/chrome.js?v=__BUILD__";
-import { DOC_SLOT_NOTEBOOK, activeDocSlot, onDocumentSurface } from "./documents/doc-slot.js?v=__BUILD__";
+import { DOC_SLOT_DOC, DOC_SLOT_NOTEBOOK, activeDocSlot, onDocumentSurface } from "./documents/doc-slot.js?v=__BUILD__";
 import { captureDocumentSelection } from "./documents/pdf-selection.js?v=__BUILD__";
 import { closeImportPanel, closeMyDecksPanel, editCurrentDeckCategory, editCurrentDeckTitle, openImportPanel, openMyDecksPanel } from "./ui/deck-header.js?v=__BUILD__";
 import { addBlankCardAtCursor, flushWorkingDeck, toggleEditMode } from "./ui/edit-mode.js?v=__BUILD__";
@@ -117,10 +119,9 @@ import { FOCUS_MODE_KEY, closeViewExportMenu, paintViewExportMenu, setBlockEditF
 import { DOCUMENT_NOTE_HANDLERS, documentHighlightById, documentHighlightNote, initDocumentMarkMenu, repairDocumentHighlightQuads, repairDocumentHighlightText } from "./documents/pdf-highlights.js?v=__BUILD__";
 import { pdfRegionRefMarkdown } from "./documents/pdf-region-embed.js?v=__BUILD__";
 import { closeDocumentToc, documentOutlineEntries, initDocumentOutlineFolding, isDocumentTocOpen, resolveOutlineEntryPage, toggleDocumentToc } from "./documents/pdf-outline.js?v=__BUILD__";
-import { deleteRemoteDocument } from "./documents/pdf-store.js?v=__BUILD__";
 import { activePdfId, deckPdfById, deckPdfs, withDeckPdfs } from "./documents/pdf-multi.js?v=__BUILD__";
 import { removePdfFromDeck, renamePdf } from "./documents/pdf-multi-actions.js?v=__BUILD__";
-import { currentPdfDocument, documentFittedWidth, fitDocumentToWidth, initDocumentPinchZoom, isDocumentFitWidth, openDocumentIsCurrent, openDocumentPdfId, openDocumentView, reattachDocument, relayoutDocument, repaintOpenDocumentPages, scheduleDocumentPositionSave, scrollToDocumentPage, refreshDocumentPaperForTheme, setDocumentAttachHandler, setDocumentOpenedHook, setDocumentPagePaintedHook, setNotebookStartHandler, switchToPdf, togglePdfInvert, updatePageIndicator, zoomDocument } from "./documents/pdf-view.js?v=__BUILD__";
+import { currentPdfDocument, documentFittedWidth, fitDocumentToWidth, initDocumentPinchZoom, isDocumentFitWidth, openDocumentIsCurrent, openDocumentPdfId, openDocumentView, reattachDocument, relayoutDocument, repaintOpenDocumentPages, scheduleDocumentPositionSave, scrollToDocumentPage, refreshDocumentPaperForTheme, setDocumentAttachHandler, setDocumentOpenedHook, setDocumentPagePaintedHook, setNotebookStartHandler, switchToPdf, togglePdfInvert, updatePageIndicator, zoomDocument, retryMissingDocumentOpen } from "./documents/pdf-view.js?v=__BUILD__";
 import { adoptDocumentInk, canRedoInk, canUndoInk, copyInkSelection, cutInkSelection, duplicateInkSelection, hasInkClipboard, initDocumentInk, inkMarkImageMarkdown, inkSelectionCount, isInkMarkId, nudgeInkSelection, paintDocumentInk, pasteInkSelection, redoInk, repaintDocumentInk, setInkChangedHandler, undoInk } from "./documents/pdf-ink.js?v=__BUILD__";
 import { addHandwritingImage, enterHandwritingView, refreshHandwritingBoard, runHandwritingMenuAction, startHandwritingNotebook } from "./handwriting/board.js?v=__BUILD__";
 import { closeBlockStylePopover, isBlockStylePopoverOpen } from "./documents/block-style-bar.js?v=__BUILD__";
@@ -2953,6 +2954,27 @@ async function resolveImagesAwaitingSignature() {
 
 onSigningReadyChange(() => { resolveImagesAwaitingSignature(); });
 window.addEventListener("online", () => { resolveImagesAwaitingSignature(); });
+
+// ── The PDF bucket, when its keys or its contents change under a device ──────
+//
+// Keys arriving from another device are the moment a paper that showed "this
+// device hasn't been given the keys" can open, and the moment any paper this
+// device imported before the keys existed can finally go up. Neither waits for
+// the reader to leave the tab and come back.
+onS3ConfigAdopted(() => {
+  if (el.storagePanel && !el.storagePanel.hidden) refreshStorageReport({ census: false, quiet: true });
+  retryMissingDocumentOpen().catch((error) => console.warn("Could not reopen the document", error));
+  scheduleDocumentBackfill({ force: true });
+});
+
+// Said once per paper that actually went up, not once per sync: a run that had
+// nothing to do is silent, and a run that stopped says why in the panel.
+onDocumentBackfillDone((summary) => {
+  if (el.storagePanel && !el.storagePanel.hidden) refreshStorageReport({ census: false, quiet: true });
+  if (summary.uploaded) {
+    showToast(`Uploaded ${summary.uploaded} paper${summary.uploaded === 1 ? "" : "s"} to your bucket — your other devices can open ${summary.uploaded === 1 ? "it" : "them"} now`, "success");
+  }
+});
 // ...and once now. bootApp() is started higher up this file, and two of its
 // paths settle the session question synchronously — before this line has run
 // and there is a listener to hear it. Costs one querySelectorAll that normally
@@ -3807,7 +3829,11 @@ async function offloadCurrentDocument() {
   showConfirmModal(
     `“${pdfMeta.name || "This document"}” will be deleted from your cloud storage, freeing ${formatStorageBytes(pdfMeta.size || 0)}. Your highlights, notes and cards all stay, and so does the copy on this device — but other devices will need the file re-attached to read it.`,
     async () => {
-      const removed = await deleteRemoteDocument(pdfMeta);
+      // Not the object itself when another deck in the library still names it
+      // — the same paper in two decks is ONE object in the bucket, and
+      // deleting it here would take it away from the other deck on every
+      // device. This deck lets go of it all the same.
+      const { removed, shared } = await deleteDocumentCopies(pdfMeta, { deckLocalId: state.localDeckId, slot: DOC_SLOT_DOC, pdfId });
       if (!removed) {
         showToast("Could not remove the document from the cloud", "error");
         return;
@@ -3820,7 +3846,9 @@ async function offloadCurrentDocument() {
         entry.id === pdfId ? { ...entry, offloaded: true, at: Date.now() } : entry
       )));
       scheduleDeckAutosave();
-      showToast(`Removed from cloud · ${formatStorageBytes(pdfMeta.size || 0)} freed`);
+      showToast(shared
+        ? "Removed from this deck's cloud copy — another deck uses the same file, so it stays in the bucket"
+        : `Removed from cloud · ${formatStorageBytes(pdfMeta.size || 0)} freed`);
     },
     { confirmLabel: "Remove", danger: true }
   );

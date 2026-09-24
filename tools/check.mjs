@@ -185,7 +185,11 @@
 //                   the bucket, then Drive, then the old Supabase bucket), the
 //                   recomputed key that survives a field-losing merge, and both
 //                   ways the migration can be interrupted — including the one
-//                   where a re-run would upload a second 100MB copy
+//                   where a re-run would upload a second 100MB copy. Also the
+//                   backfill that uploads papers no cloud has yet, and a
+//                   connection test that has to prove UPLOADS work, not reads
+//   s3-keys-sync    ...and do the bucket keys reach the reader's other devices
+//                   through their Supabase row — and only theirs?
 //   ui-smoke        does the APP still work? 18 real actions — import, flip,
 //                   mark known, All Cards, notes, export, sync — driven through
 //                   the DOM on both builds and compared step by step
@@ -320,6 +324,13 @@ const checks = [
   // CI has none of them.
   ["drive-store   ", ["node", ["tools/drive-store-check.mjs"], ROOT]],
   ["s3-store      ", ["node", ["tools/s3-store-check.mjs"], ROOT]],
+  // ...and whether the KEYS to that bucket reach the reader's other devices.
+  // They used to live in the localStorage of whichever device they were typed
+  // into, so a second device had every paper's record and could fetch none of
+  // them. Two devices and one account's row, driven through the real module:
+  // nothing untested is published, Forget reaches everywhere and stays, and one
+  // account's secret never lands in another's row on a shared device.
+  ["s3-keys-sync  ", ["node", ["tools/s3-config-sync-check.mjs"], ROOT]],
   // The signature itself, against AWS's own published presigned-URL vector and
   // against a second implementation written from the spec with node:crypto.
   //

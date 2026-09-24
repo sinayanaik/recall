@@ -442,6 +442,32 @@ function annotationsMatch(a, b) {
   return true;
 }
 
+// Which documents the deck holds, and where each one is — the part of a PDF
+// record handwritingSignature does not look at.
+//
+// That one stamps meta.pdf and meta.notebook by page count and hash, because
+// what it was written for was pages being added. Everything else about a
+// document record was invisible here, so every change that touched nothing
+// else never moved updatedAt and never reached the cloud:
+//
+//   • a SECOND PDF attached to a deck (meta.pdfs grows; meta.pdf is untouched),
+//     unless the file happened to carry annotations of its own — so the other
+//     device never heard the deck had it, and "the pdfs are not syncing"
+//   • the bucket key recorded once an upload lands, which is the one fact a
+//     device without that key would otherwise have to derive
+//   • "Remove from cloud", a PDF removed from a deck, or one renamed
+//
+// Every one of those stamps the entry's `at` or changes a field listed here.
+// Cheap for the same reason the handwriting signature is: a deck carries a
+// handful of documents at most.
+function documentLocatorSignature(meta) {
+  const stamp = (entry) => (entry && typeof entry === "object"
+    ? `${entry.id || ""}:${entry.at || 0}:${entry.sha256 || ""}:${entry.s3Key || ""}:${entry.offloaded ? 1 : 0}:${entry.label || ""}`
+    : "");
+  const list = Array.isArray(meta?.pdfs) ? meta.pdfs.map(stamp).join(",") : "";
+  return `${list}|${stamp(meta?.pdf)}|${stamp(meta?.notebook)}`;
+}
+
 export function deckContentMatches(a, b) {
   if (!a || !b) return false;
   if (normalizeSyncText(a.deckTitle) !== normalizeSyncText(b.deckTitle)) return false;
@@ -464,6 +490,7 @@ export function deckContentMatches(a, b) {
   // missing entirely.
   if (!annotationsMatch(a, b)) return false;
   if (handwritingSignature(a.meta) !== handwritingSignature(b.meta)) return false;
+  if (documentLocatorSignature(a.meta) !== documentLocatorSignature(b.meta)) return false;
   const aCards = a.cards || [];
   const bCards = b.cards || [];
   if (aCards.length !== bCards.length) return false;

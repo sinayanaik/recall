@@ -241,6 +241,47 @@ CREATE TRIGGER set_app_style_settings_updated_at
 
 
 -- ============================================================================
+-- 4b. app_storage_settings — one row PER USER: the keys to their PDF bucket
+-- ============================================================================
+-- PDFs live in an S3-compatible bucket the reader supplies (README → PDF
+-- storage). Its four values used to be pasted into each device separately and
+-- kept in that browser alone, so a phone that had never been given them could
+-- not open a single paper the laptop had uploaded. This row is what carries
+-- them to every device the account signs in on.
+--
+-- s3_config is { endpoint, bucket, region, accessKeyId, secretAccessKey }, or
+-- NULL, which means "forgotten": the reader pressed Forget on some device, and
+-- every other device drops its copy on its next sync. A missing row means the
+-- account never set a bucket up.
+--
+-- The secret key is a real secret. Row Level Security below confines the row
+-- to its own account; anyone who administers this project can still read it,
+-- which is why the README asks for a token scoped to the one bucket.
+CREATE TABLE IF NOT EXISTS app_storage_settings (
+  user_id UUID PRIMARY KEY DEFAULT auth.uid() REFERENCES auth.users(id) ON DELETE CASCADE,
+  s3_config JSONB,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'app_storage_settings_object' AND conrelid = 'app_storage_settings'::regclass
+  ) THEN
+    ALTER TABLE app_storage_settings
+      ADD CONSTRAINT app_storage_settings_object
+      CHECK (s3_config IS NULL OR jsonb_typeof(s3_config) = 'object');
+  END IF;
+END $$;
+
+-- No updated_at trigger here, unlike app_style_settings above: devices COMPARE
+-- this value to decide whose keys are newer, and the client writes it
+-- deliberately — the same reason decks and cards have none (see section 5).
+
+
+-- ============================================================================
 -- 5. Indexes
 -- ============================================================================
 -- Chosen from the queries the app actually issues. Note that RLS means EVERY
@@ -296,6 +337,7 @@ ALTER TABLE decks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE cards ENABLE ROW LEVEL SECURITY;
 ALTER TABLE deleted_decks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE app_style_settings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_storage_settings ENABLE ROW LEVEL SECURITY;
 
 -- Postgres has no CREATE POLICY IF NOT EXISTS, so each policy is dropped first
 -- — which is also what lets re-running this file repair a deployment whose
@@ -320,6 +362,7 @@ DROP POLICY IF EXISTS "Users manage own decks" ON decks;
 DROP POLICY IF EXISTS "Users manage own cards" ON cards;
 DROP POLICY IF EXISTS "Users manage own deck tombstones" ON deleted_decks;
 DROP POLICY IF EXISTS "Users manage own app style settings" ON app_style_settings;
+DROP POLICY IF EXISTS "Users manage own storage settings" ON app_storage_settings;
 
 -- auth.uid() is wrapped in a scalar subquery in every policy below. Called
 -- bare, it is re-evaluated once PER ROW; as `(select auth.uid())` the planner
@@ -362,6 +405,13 @@ CREATE POLICY "Users manage own app style settings" ON app_style_settings
   FOR ALL TO authenticated
   USING (id = (select auth.uid())::text OR id = 'global')
   WITH CHECK (id = (select auth.uid())::text);
+
+-- Strictly one's own row: unlike the style table there is no shared fallback,
+-- because what is in here is a credential.
+CREATE POLICY "Users manage own storage settings" ON app_storage_settings
+  FOR ALL TO authenticated
+  USING (user_id = (select auth.uid()))
+  WITH CHECK (user_id = (select auth.uid()));
 
 
 -- ============================================================================
@@ -575,3 +625,4 @@ COMMENT ON TABLE decks IS 'One row per deck. `category` is a "/"-delimited folde
 COMMENT ON TABLE cards IS 'One row per flashcard, ordered within its deck by `position`. `status` is known/review/NULL; `category` is the quick_notes subject label. `updated_at` drives the per-card sync merge.';
 COMMENT ON TABLE deleted_decks IS 'Durable cross-device delete tombstones. Never pruned automatically — a deletion must outlive any device still holding a stale copy.';
 COMMENT ON TABLE app_style_settings IS 'Per-user layout/typography settings (row id = auth.uid()), plus a legacy shared ''global'' row that accounts with no style of their own inherit. The theme is stored here too, as a `theme` key holding a theme ID (e.g. ''dark-amoled'') alongside the ''desktop''/''mobile'' profiles, so a device that syncs its style down also gets the theme that went with it. Colour VALUES are still not included — those live in CSS, keyed off that ID.';
+COMMENT ON TABLE app_storage_settings IS 'Per-user keys to the S3-compatible bucket that holds PDFs (row key = auth.uid()), so they are pasted once per account rather than once per device. s3_config NULL means the reader pressed Forget; updated_at is written by the client and compared, so it has no trigger.';

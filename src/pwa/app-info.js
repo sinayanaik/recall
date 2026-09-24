@@ -401,6 +401,15 @@ export const HEALTH_TABLES = [
     columns: "id",
     label: "Style settings",
     soft: true
+  },
+  {
+    table: "app_storage_settings",
+    columns: "user_id, s3_config, updated_at",
+    label: "Bucket keys sync",
+    // Soft for the same reason tombstones are: PDFs still upload and open
+    // without it — the keys just have to be pasted into every device by hand,
+    // which is the exact complaint this table exists to answer.
+    soft: true
   }
 ];
 

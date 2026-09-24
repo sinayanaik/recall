@@ -170,8 +170,9 @@ export function describePdfUploadFailure(error) {
   // changed: NO_DRIVE was thrown and never mapped, so the reader was shown the
   // raw token — "Could not upload the document — NO_DRIVE" — for the ONE case
   // that has a clear answer and a page in the README explaining it.
-  if (error?.message === "NO_STORAGE") return "no cloud storage is set up yet — add a bucket in Storage & Data";
-  if (error?.message === "NO_DRIVE") return "no cloud storage is set up yet — add a bucket in Storage & Data";
+  if (error?.message === "NO_STORAGE" || error?.message === "NO_DRIVE") {
+    return "this device has no bucket keys yet — add them in Storage & Data, or sign in and sync if you set a bucket up on another device";
+  }
   if (error?.message === "NOT_SIGNED_IN") return "you're not signed in";
   if (error?.message === "CANCELLED") return "you cancelled it";
   // A CORS refusal names itself, because "the upload failed" would send the
@@ -179,7 +180,10 @@ export function describePdfUploadFailure(error) {
   // is not. See s3NetworkError in src/cloud/s3-files.js.
   if (error?.corsLikely) return error.message;
   if (/timed out/i.test(error?.message || "")) return "the connection timed out";
-  if (/bucket/i.test(error?.message || "")) return "the documents bucket is missing — re-run supabase_setup.sql";
+  // Nothing uploads to Supabase any more, so this is the reader's own bucket
+  // answering. It used to be matched on the bare word "bucket" and blamed on
+  // supabase_setup.sql — for a bucket that lives at Cloudflare.
+  if (/NoSuchBucket/i.test(error?.message || "")) return "the bucket named in Storage & Data doesn't exist at that endpoint";
   return error?.message || "the upload failed";
 }
 
@@ -330,7 +334,7 @@ export async function importPdfFile(file, folderPath = null) {
     const summary = `Imported "${title}" — ${pageCount} page${pageCount === 1 ? "" : "s"}${highlightNote}`;
     progress.update(summary, 1);
     if (uploadError) {
-      const message = `${summary}. It's on this device, but not in the cloud — ${uploadError}. Sync once you're back to read it elsewhere.`;
+      const message = `${summary}. It's on this device, but not in the cloud yet — ${uploadError}. It uploads by itself at the next sync once that's sorted.`;
       setStatus(message, "error");
       showToast(message, "error");
     } else {
@@ -484,7 +488,7 @@ export async function attachPdfToOpenDeck(file) {
     const summary = `Attached "${file.name}" — ${pageCount} page${pageCount === 1 ? "" : "s"}${imported}`;
     progress.update(summary, 1);
     if (uploadError) {
-      const message = `${summary}. It's on this device, but not in the cloud — ${uploadError}. Sync once you're back to read it elsewhere.`;
+      const message = `${summary}. It's on this device, but not in the cloud yet — ${uploadError}. It uploads by itself at the next sync once that's sorted.`;
       setStatus(message, "error");
       showToast(message, "error");
     } else {

@@ -42,11 +42,12 @@ import { DOC_SLOT_NOTEBOOK, docSlotMeta, documentStoreKey } from "./doc-slot.js?
 import { hasLegacyNotebook, hasNotebookInPdfSlot, migratedNotebookMeta, movedNotebookSlotMeta, planLegacyNotebookMigration } from "./notebook-migrate.js?v=__BUILD__";
 import { remapDocumentBlockPages } from "./pdf-blocks.js?v=__BUILD__";
 import { freshDocumentHighlightId, remapDocumentHighlightPages } from "./pdf-highlights.js?v=__BUILD__";
-import { deleteLocalDocument, deleteRemoteDocument, documentEntryMatches, putDocument, readDocument, sha256, uploadDocument } from "./pdf-store.js?v=__BUILD__";
+import { deleteLocalDocument, documentEntryMatches, putDocument, readDocument, sha256, uploadDocument } from "./pdf-store.js?v=__BUILD__";
 import { openDocumentView } from "./pdf-view.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { storageFolderSlug } from "../images/upload.js?v=__BUILD__";
 import { saveDeckToLibrary } from "../library/local-library.js?v=__BUILD__";
+import { deleteDocumentCopies } from "../storage/document-migration.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
 
 export const NOTEBOOK_MAX_PAGES = 300;
@@ -93,10 +94,13 @@ async function writeNotebookPdf({ pages, paper, reopen = true }) {
   // without this the file it replaces is simply abandoned in the cloud — which
   // is exactly what used to happen, once per page, for the life of the
   // notebook. Storage had no way to delete it afterwards because nothing
-  // remembered it. Drive does, so it gets cleaned up below.
+  // remembered it. Drive does, so it gets cleaned up below — and so does the
+  // bucket, which this used to leave out: every page added since the move to a
+  // bucket left the previous whole notebook sitting in it.
   const previous = {
     driveId: state.meta?.notebook?.driveId || "",
-    path: state.meta?.notebook?.path || ""
+    path: state.meta?.notebook?.path || "",
+    s3Key: state.meta?.notebook?.s3Key || ""
   };
   state.meta = {
     ...(state.meta && typeof state.meta === "object" ? state.meta : {}),
@@ -111,11 +115,13 @@ async function writeNotebookPdf({ pages, paper, reopen = true }) {
       // notebook drawn at an older one is redrawn on the next open.
       paperV: BLANK_PAPER_VERSION,
       sha256: hash,
-      // Neither locator is kept. They name bytes that no longer exist, and a
+      // No locator is kept. They name bytes that no longer exist, and a
       // device that pulled this deck must not be handed the previous page
-      // count.
+      // count. The s3Key was the one that used to survive this: an upload
+      // that then failed left the new hash beside the OLD key.
       path: null,
       driveId: null,
+      s3Key: null,
       importedAt: state.meta?.notebook?.importedAt || new Date().toISOString()
     }
   };
@@ -136,15 +142,20 @@ async function writeNotebookPdf({ pages, paper, reopen = true }) {
     state.meta = { ...state.meta, notebook: { ...state.meta.notebook, ...locator } };
     await saveDeckToLibrary({ silent: true });
     // Only once the replacement is safely up. Deleting first would open a
-    // window where a device that has neither copy has no pages at all.
-    if (previous.driveId || previous.path) {
-      deleteRemoteDocument(previous).catch(() => {});
+    // window where a device that has neither copy has no pages at all. An
+    // unchanged key (the same pages written again) is the object just
+    // uploaded, and is left alone.
+    const stale = { ...previous, s3Key: previous.s3Key && previous.s3Key !== locator?.s3Key ? previous.s3Key : "" };
+    if (stale.driveId || stale.path || stale.s3Key) {
+      deleteDocumentCopies(stale, { deckLocalId: state.localDeckId, slot: DOC_SLOT_NOTEBOOK, pdfId: DOC_SLOT_NOTEBOOK }).catch(() => {});
     }
   } catch (error) {
     // Not fatal and not silent. The pages are on this device and drawable; what
-    // is not true yet is that they are anywhere else.
+    // is not true yet is that they are anywhere else — and they get there by
+    // themselves, at the next sync that can reach the bucket (the backfill in
+    // src/storage/document-migration.js).
     console.warn("Could not upload the notebook", error);
-    showToast("Pages saved here — they upload when you're back online", "info");
+    showToast("Pages saved here — they upload at the next sync", "info");
   }
 
   if (reopen) await openDocumentView({ force: true, slot: DOC_SLOT_NOTEBOOK });
