@@ -4,6 +4,18 @@
 // collapse is deliberately not a tween over the header's height: animating
 // 300px of content against a 60px header stalls, and the scroll anchor has to
 // be frozen or the page re-expands the header the moment it settles.
+//
+// ── Folding the header is a manual act now, full stop ──────────────────────
+//
+// This used to also fold on its own: scrolling down on a phone past a small
+// threshold "locked" the chrome away without the reader pressing anything
+// (chromeFocusLocked/trackChromeScroll, plus the mobile-only scroll listener
+// in main.js that drove them). It read as intrusive — the header vanishing
+// mid-read because of an ordinary scroll, not because anyone asked for it —
+// so it is gone. The only ways in now are the ones a reader actually presses:
+// the ⤢ button, Ctrl+., the reading rail's Focus row, and (for the browser's
+// own chrome) the ⛶ button / Ctrl+Q for full screen. isFocusModeActive() is
+// just the pin; there is no second, scroll-driven half to OR it with any more.
 
 import { adjustCornellRows } from "../cards/all-cards.js?v=__BUILD__";
 import { scheduleLiveQuestionFit } from "../cards/question-fit.js?v=__BUILD__";
@@ -12,35 +24,6 @@ import { state } from "../core/state.js?v=__BUILD__";
 import { isNotesStreamBusy } from "../render/block-cache.js?v=__BUILD__";
 import { scheduleMarkdownTableFit } from "../render/tables.js?v=__BUILD__";
 import { FOCUS_MODE_KEY } from "./view-mode.js?v=__BUILD__";
-
-// ── What counts as "a phone" for the scroll-driven half ────────────────────
-//
-// This was `(max-width: 720px)` alone, and that is a portrait-only reading of a
-// phone. Rotate one and the viewport is about 844x390 — WIDER than the
-// breakpoint — so `isMobileChrome()` answered false on the exact device the
-// scroll-driven collapse was written for. Two things followed, and both were
-// reported as "the focus button does nothing in landscape":
-//
-//   • the scroll listener in src/main.js bails on !isMobileChrome(), so a
-//     landscape phone could not enter focus mode by reading at all;
-//   • applyChromeCollapse used to AND the lock with this query, so rotating a
-//     phone that was already in focus mode dropped it mid-sentence — the header
-//     came back, and the reading rail (which exists while the chrome is folded)
-//     went with it.
-//
-// The second clause is the same device the other way up: a short viewport with a
-// coarse pointer. `pointer: coarse` is what keeps it off a desktop window that
-// happens to be short — a mouse flicking the header in and out reads as a bug on
-// a big screen, which is the whole reason this half is gated in the first place.
-export const CHROME_MOBILE_QUERY = "(max-width: 720px), ((max-height: 560px) and (pointer: coarse))";
-
-export const CHROME_HIDE_DELTA = 10;
-
-export const CHROME_SHOW_DELTA = 28;
-
-                              // larger, so overscroll bounce and the odd
-                              // thumb wobble don't flap the header
-export const CHROME_TOP_ZONE = 24;
 
 export const CHROME_SETTLE_MS = 260;
 
@@ -78,56 +61,7 @@ export function setChromeFocusPinned(value) {
   chromeFocusPinned = value;
 }
 
-// ── The lock, which replaced the auto-hide ─────────────────────────────────
-//
-// There used to be a `chromeAutoHidden` beside the pin, and it was reversible:
-// scrolling down folded the header away and scrolling up — by
-// CHROME_SHOW_DELTA, twenty-eight pixels — brought it straight back. Which
-// reads as focus mode leaking away while you read, because nobody scrolls in
-// one direction for a whole chapter: a thumb correcting past a figure, a tap
-// that nudges the page, and the header is back over the text.
-//
-// So scrolling down does not HIDE the chrome any more. It LOCKS it away, and it
-// stays away until the reader says otherwise — through the reading rail's Leave
-// focus, Escape, the phone's Back key, or Ctrl+. Everything that already meant
-// "the reader is done with focus mode" clears this, and so does navigating
-// somewhere new (resetChromeAutoHide, which kept its name because that is still
-// exactly what it does).
-//
-// Deliberately NOT written to localStorage[FOCUS_MODE_KEY]. That key means "the
-// reader pressed the focus button", and it decides what the app starts up in;
-// one scroll in one note should not be the reason a deck opens with no header
-// three days later. This lasts as long as the reading does.
-//
-// "As long as the reading does" includes turning the phone over — see
-// applyChromeCollapse. Rotating used to clear this by the side door, because the
-// collapse ANDed it with the phone breakpoint and a landscape phone is not
-// inside it.
-export let chromeFocusLocked = false;
-
-export let chromeAnchorEl = null;
-
-export let chromeAnchorTop = 0;
-
-export let chromeScrollFrame = 0;
-
-// Setter: an imported binding is read-only, and the scroll listener in main.js drives this rAF handle.
-export function setChromeScrollFrame(value) {
-  chromeScrollFrame = value;
-}
-
 export let chromeSettleUntil = 0;
-
-// Cached, like styleMobileMedia at the top of the file. This is read from the
-// document-wide scroll handler below, and building a fresh MediaQueryList per
-// scroll event — which is faster than 60Hz on a fling — is pure garbage.
-export const chromeMobileMedia = typeof window !== "undefined" && window.matchMedia
-  ? window.matchMedia(CHROME_MOBILE_QUERY)
-  : null;
-
-export function isMobileChrome() {
-  return Boolean(chromeMobileMedia?.matches);
-}
 
 // Any live (non-collapsed) selection in the study area — a rendered surface or
 // one of the raw-edit textareas. Broader than hasCardTextSelection(), which is
@@ -179,12 +113,11 @@ function naturalHeight(node) {
 // on a 2.5MB / 19,380-block book at a 6x CPU throttle (a mid-range phone), one
 // `--appbar-h` write on :root costs ~600ms, and this function writes two.
 //
-// It runs far more often than it looks. On a phone the chrome auto-hides as you
-// scroll (see trackChromeScroll — phone-only), every fold and unfold animates
-// the appbar's height, and main.js watches that box with a ResizeObserver that
-// calls straight back in here. So a reader scrolling a book was paying hundreds
-// of milliseconds of whole-document work per direction change, for two numbers
-// that only three elements read.
+// It runs far more often than it looks. Every focus-mode fold and unfold
+// animates the appbar's height, and main.js watches that box with a
+// ResizeObserver that calls straight back in here. So a reader toggling focus
+// mode was paying hundreds of milliseconds of whole-document work per press,
+// for two numbers that only three elements read.
 //
 // Grepped before moving them: `--appbar-h` is read by `.appbar` alone
 // (styles/12-notes.css:1209), and `--view-toggle-h` by `.quiz-panel
@@ -263,22 +196,11 @@ export function scheduleChromeRefit() {
 export let focusBtnShowsPinned = null;
 
 export function applyChromeCollapse() {
-  // ── Neither half is width-gated any more ─────────────────────────────────
-  //
-  // This used to be `chromeFocusPinned || (isMobileChrome() && chromeFocusLocked)`
-  // — the lock only counted while the viewport was still phone-shaped. Which
-  // means a mode the reader was in went away because they turned the phone
-  // sideways: chromeMobileMedia's `change` listener (src/main.js) calls straight
-  // in here on the rotation, `isMobileChrome()` flips, and the header the reader
-  // had scrolled away comes back over the paper. That is not a mode, and a
-  // control that unpresses itself is not a control.
-  //
-  // Only the way IN stays phone-gated — the isMobileChrome() test in main.js's
-  // scroll listener — which is all the gate was ever for: a mouse wheel must not
-  // fold the header on a desktop. Once a reader is in focus mode, by whichever
-  // route, they stay in it until they leave it. Exactly what the note above
-  // chromeFocusLocked says the lock means.
-  const collapsed = chromeFocusPinned || chromeFocusLocked;
+  // Purely the pin now — there is no scroll-driven lock any more. Focus mode
+  // folds the chrome if and only if the reader pressed something that means
+  // "fold it": the ⤢ button, Ctrl+., the reading rail's Focus row, or Escape/
+  // Back to leave. Scrolling never changes this.
+  const collapsed = chromeFocusPinned;
   const changed = document.body.classList.contains("chrome-collapsed") !== collapsed;
   // Measured while still expanded — after the class flip the guard in
   // measureChromeHeights (correctly) refuses to read anything.
@@ -295,20 +217,10 @@ export function applyChromeCollapse() {
     chromeSettleUntil = performance.now() + CHROME_SETTLE_MS;
     scheduleChromeRefit();
   }
-  // Gated on the ANSWER changing, not on `changed`. This used to run on every
-  // call, which on a phone means every scroll-driven auto-hide tick rewriting
-  // three attributes on a button that is hidden in Cards view anyway — but it
-  // cannot be gated on `collapsed` changing either: pinning while the phone
-  // has already auto-hidden the chrome leaves `collapsed` true throughout, and
-  // the button would keep showing ⤢ for a mode that is now on.
-  //
-  // The answer is isFocusModeActive() — pin OR lock — and not the pin alone,
-  // which is what it used to be. The button's click handler has always read
-  // pin-or-lock (src/main.js), so the two disagreed for the whole of the state
-  // the lock exists to describe: scroll down on a phone, chromeFocusLocked goes
-  // true, the header folds away, and the toggle still reads Off. Pressing an
-  // Off-looking toggle then turned focus mode off, which is not a thing a
-  // toggle is allowed to do. One reading, used by both.
+  // Gated on the ANSWER changing, not on `changed` — cheap either way now that
+  // isFocusModeActive() is just the pin, but there is no reason to rewrite
+  // three attributes on a button that is hidden in Cards view anyway when
+  // nothing about it actually changed.
   const active = isFocusModeActive();
   if (active !== focusBtnShowsPinned && el.focusModeBtn) {
     focusBtnShowsPinned = active;
@@ -327,98 +239,25 @@ export function applyChromeCollapse() {
   }
 }
 
-// Called when the user navigates rather than reads (deck load, Cards⇄Notes):
-// arriving somewhere new should start from the top, with the header visible.
-export function resetChromeAutoHide() {
-  chromeFocusLocked = false;
-  chromeAnchorEl = null;
-  chromeAnchorTop = 0;
-  applyChromeCollapse();
-}
-
-export function trackChromeScroll(target) {
-  const top = target.scrollTop;
-  // Never fold or unfold the chrome while text is selected. Extending a
-  // selection past the visible edge means dragging a handle until the surface
-  // auto-scrolls — and collapsing the appbar mid-drag changes the viewport
-  // height underneath the selection, which is what made the handles jump and the
-  // selection collapse on a phone. The anchor is still advanced so the first
-  // real scroll after the selection is dropped doesn't read as one huge jump.
-  if (hasStudyTextSelection()) {
-    chromeAnchorEl = target;
-    chromeAnchorTop = top;
-    return;
-  }
-  if (chromeAnchorEl !== target) {
-    chromeAnchorEl = target;
-    chromeAnchorTop = top;
-    return;
-  }
-  if (performance.now() < chromeSettleUntil) {
-    chromeAnchorTop = top;
-    return;
-  }
-  // Defensive: the listener in main.js already bails while the mode is on, and
-  // this is the second half of that fact rather than a second opinion about it.
-  if (chromeFocusLocked) return;
-  // Reaching the top of the note used to bring the header back, and so did any
-  // upward scroll past CHROME_SHOW_DELTA. Both are gone — see chromeFocusLocked:
-  // the lock is what makes focus mode a mode rather than something that leaks
-  // away the first time a thumb corrects past a figure.
-  if (top <= CHROME_TOP_ZONE) {
-    chromeAnchorTop = top;
-    return;
-  }
-  const delta = top - chromeAnchorTop;
-  if (delta > CHROME_HIDE_DELTA) {
-    chromeAnchorTop = top;
-    chromeFocusLocked = true;
-    applyChromeCollapse();
-  }
-}
-
-// Is the header folded because the reader wants it folded — by the button, or
-// by having scrolled into the lock? The two are one question everywhere the
-// answer is acted on (Escape, the phone's Back key, Ctrl+.), and only
-// setFocusMode below cares which of them it was.
+// Is the header folded because the reader asked for it? There is only one way
+// in now — the pin — so this is a thin, stable name for the callers that used
+// to have to think about "pin OR lock" (Escape, the phone's Back key, Ctrl+.,
+// the reading rail).
 export function isFocusModeActive() {
-  return Boolean(chromeFocusPinned || chromeFocusLocked);
+  return Boolean(chromeFocusPinned);
 }
 
 // One path for all four ways in and out — the ⤢ button, Escape, the keyboard
 // shortcut, and the reading rail's Leave focus — so they can't drift on what
 // "off" means.
 export function setFocusMode(pinned) {
-  // Not `chromeFocusPinned === pinned` on its own. The lock folds the chrome
-  // without touching the pin, so turning focus mode OFF has real work to do
-  // even when the pin is already off — which is exactly the state the rail's
-  // Leave focus is pressed in. Only a call that would change nothing returns.
-  if (chromeFocusPinned === pinned && !chromeFocusLocked) return;
+  if (chromeFocusPinned === pinned) return;
   setChromeFocusPinned(pinned);
   try {
     localStorage.setItem(FOCUS_MODE_KEY, chromeFocusPinned ? "1" : "0");
   } catch (_) {
     /* private mode — the toggle still works for this session */
   }
-  // Leaving focus mode should actually show the header, even mid-scroll — and
-  // it has to stay shown.
-  //
-  // Resetting the scroll-driven flag alone was not enough, and this was the
-  // single biggest reason the toggle read as "broken". The listener bails on
-  // `chromeFocusPinned` BEFORE it updates the anchor, so chromeAnchorTop stays
-  // frozen at wherever you were when focus mode was switched on. Read 2000px
-  // further down the note, tap ⤡, then nudge the page: delta comes out as
-  // ~2000, sails past CHROME_HIDE_DELTA, and the header you just asked for
-  // folds straight back away. Drop the anchor with it, exactly as
-  // resetChromeAutoHide does — the next scroll then re-anchors from where you
-  // actually are.
-  // The lock is a second way INTO the same state, so leaving has to clear it as
-  // well as the pin — otherwise pressing "Leave focus" would turn the pin off
-  // and leave the chrome folded by the lock, which is the toggle reading as
-  // broken all over again.
-  chromeFocusLocked = false;
-  chromeAnchorEl = null;
-  chromeAnchorTop = 0;
   applyChromeCollapse();
 }
 

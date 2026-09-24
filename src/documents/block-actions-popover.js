@@ -34,6 +34,10 @@
 
 let actionsPopover = null;
 
+// The scroll listener's rAF handle — see scrollHandler in
+// openBlockActionsPopover for why this exists at all.
+let actionsScrollFrame = 0;
+
 export function isBlockActionsPopoverOpen() {
   return Boolean(actionsPopover);
 }
@@ -44,7 +48,14 @@ export function closeBlockActionsPopover() {
   // Capture, because what moves this is the document scroller — not the
   // window — and a scroll event does not bubble. The same reason
   // openBlockStylePopover's own listener is capture too.
-  document.removeEventListener("scroll", actionsPopover.place, true);
+  document.removeEventListener("scroll", actionsPopover.scrollHandler, true);
+  // A frame can already be in flight (a scroll landed, the rAF is queued, then
+  // a row press or Escape closes the popover before it fires) — drop it, or it
+  // calls place() against a root that has just been removed from the document.
+  if (actionsScrollFrame) {
+    cancelAnimationFrame(actionsScrollFrame);
+    actionsScrollFrame = 0;
+  }
   actionsPopover.root.remove();
   actionsPopover = null;
   return true;
@@ -140,9 +151,23 @@ export function openBlockActionsPopover({
     else if (action === "delete") onDelete();
   });
 
-  actionsPopover = { root, place };
+  // Coalesced into one rAF per frame, the same fix (and the same reason)
+  // documentScrollFrame in main.js applies to the document view's own scroll
+  // handler: a fling delivers scroll events faster than it delivers frames, and
+  // `place` forces two getBoundingClientRect() reads plus two style writes —
+  // paying that on every raw event instead of once per frame is exactly the
+  // kind of per-scroll layout thrash that fix was measured against.
+  const scrollHandler = () => {
+    if (actionsScrollFrame) return;
+    actionsScrollFrame = requestAnimationFrame(() => {
+      actionsScrollFrame = 0;
+      place();
+    });
+  };
+
+  actionsPopover = { root, place, scrollHandler };
   place();
   window.addEventListener("resize", place);
-  document.addEventListener("scroll", place, true);
+  document.addEventListener("scroll", scrollHandler, true);
   return actionsPopover;
 }

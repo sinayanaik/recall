@@ -26,7 +26,6 @@ import { repairSnapshotText } from "../sync/text-repair.js?v=__BUILD__";
 // so neither is touched at module-evaluation time in either order.
 import { nextSyncStamp } from "../sync/stats.js?v=__BUILD__";
 import { refreshSyncIndicatorBaseline } from "../sync/indicator.js?v=__BUILD__";
-import { resetChromeAutoHide } from "../ui/chrome.js?v=__BUILD__";
 import { setStatus } from "../ui/feedback.js?v=__BUILD__";
 import { recordNavHistory, refreshNavBack } from "../ui/nav-history.js?v=__BUILD__";
 
@@ -827,7 +826,7 @@ export function saveDeckToLibrarySync({ id = null, silent = true } = {}) {
 // it changes by NOT doing something. A background sync that rewrote the deck on
 // disk has to get the new content into `state` — otherwise the next autosave
 // writes the pre-merge copy back over it — but the reader did not ask to go
-// anywhere, and every one of the four steps below would move them:
+// anywhere, and every one of the three steps below would move them:
 //
 //   recordNavHistory      a sync is not a navigation, and leaving a door behind
 //                         means Back walks into the deck the reader is already in
@@ -836,7 +835,6 @@ export function saveDeckToLibrarySync({ id = null, silent = true } = {}) {
 //                         is happening i am being moved to always Notes panel"
 //   the resume jump       scrolls to wherever the deck's saved position is,
 //                         which is not where the reader is now
-//   resetChromeAutoHide   "a new deck starts at the top, header showing"
 //
 // The hook at the end is how the surfaces hear about it. A hook and not an
 // import because src/documents/notebook.js already imports THIS module, so a
@@ -898,7 +896,6 @@ export async function loadDeckFromLibrary(id, { keepPlace = false } = {}) {
     persistWorkingDeck();
     refreshSyncIndicatorBaseline();
     refreshNavBack(); // arrived — now the button knows where "here" is
-    if (!keepPlace) resetChromeAutoHide(); // a new deck starts at the top, header showing
     // The pages on screen were painted from arrays that have just been replaced.
     // Only the surface knows what it is showing, so it is told rather than asked.
     if (keepPlace) deckReloadedInPlace?.();

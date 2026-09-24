@@ -165,6 +165,15 @@
   box-shadow: 0 6px 20px rgb(0 0 0 / 0.25);
 }
 
+/* This rail sits over a page a stylus is actively drawing/scrolling under —
+   coarse pointer is the exact case that costs the most to keep re-blurring.
+   Drop it there, keep the tint. */
+@media (pointer: coarse) {
+  .document-ink-rail {
+    backdrop-filter: none;
+  }
+}
+
 /* No paper, no pen — but "no paper" has meant two different things since the
    stage grew a second document slot, and this rule only knew one of them.
    `.has-no-document` is written from `!state.meta.pdf` alone

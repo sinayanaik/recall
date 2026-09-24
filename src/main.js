@@ -103,7 +103,7 @@ import { showNotesConflictModal } from "./sync/notes-conflict.js?v=__BUILD__";
 import { reconcileAllDecks, syncAllDecksAndWait } from "./sync/reconcile.js?v=__BUILD__";
 import { closeTopmostOverlay, initBackGesture } from "./ui/back-gesture.js?v=__BUILD__";
 import { showAuthenticatedUI, showLibraryFailedScreen, showLoginScreen, showSetupScreen } from "./ui/boot-screens.js?v=__BUILD__";
-import { applyChromeCollapse, chromeMobileMedia, chromeScrollFrame, hasStudyTextSelection, initImmersiveMode, isFocusModeActive, isMobileChrome, measureChromeHeights, setChromeCollapseHandler, setChromeFocusPinned, setChromeModesHandler, setChromeScrollFrame, setFocusMode, toggleImmersiveMode, trackChromeScroll } from "./ui/chrome.js?v=__BUILD__";
+import { applyChromeCollapse, hasStudyTextSelection, initImmersiveMode, isFocusModeActive, measureChromeHeights, setChromeCollapseHandler, setChromeFocusPinned, setChromeModesHandler, setFocusMode, toggleImmersiveMode } from "./ui/chrome.js?v=__BUILD__";
 import { DOC_SLOT_DOC, DOC_SLOT_NOTEBOOK, activeDocSlot, onDocumentSurface } from "./documents/doc-slot.js?v=__BUILD__";
 import { captureDocumentSelection } from "./documents/pdf-selection.js?v=__BUILD__";
 import { closeImportPanel, closeMyDecksPanel, editCurrentDeckCategory, editCurrentDeckTitle, openImportPanel, openMyDecksPanel } from "./ui/deck-header.js?v=__BUILD__";
@@ -465,37 +465,6 @@ if (typeof ResizeObserver === "function") {
 }
 
 
-// Capture phase on document, because `scroll` doesn't bubble: this one listener
-// covers every scroller in the study area (rendered notes, the raw-notes
-// textarea, both card faces) without each needing to be wired up — and stays
-// correct when a new one is added. Scoped to .study-layout so the full-screen
-// overlays (All Cards, Quick Notes board), which cover the appbar anyway, don't
-// leave the chrome collapsed behind them.
-document.addEventListener(
-  "scroll",
-  (event) => {
-    // Frame gate FIRST. A fling delivers scroll events faster than it delivers
-    // frames, and every one of the extra ones used to pay for a closest() walk
-    // up the tree before being thrown away here anyway.
-    if (chromeScrollFrame) return;
-    // isFocusModeActive, not chromeFocusPinned: once a scroll down has locked
-    // the chrome away there is nothing further for this listener to decide, and
-    // a reader who spends the next twenty minutes scrolling should not pay a
-    // closest() walk and a rAF per frame to be told so. Both ways out of the
-    // mode reset the anchor (setFocusMode, resetChromeAutoHide), so the next
-    // scroll after one re-anchors from wherever the reader actually is.
-    if (isFocusModeActive() || !isMobileChrome()) return;
-    const target = event.target;
-    if (!(target instanceof Element) || !target.closest(".study-layout")) return;
-    setChromeScrollFrame(requestAnimationFrame(() => {
-      setChromeScrollFrame(0);
-      trackChromeScroll(target);
-    }));
-  },
-  true,
-);
-
-
 el.focusModeBtn?.addEventListener("click", () => setFocusMode(!isFocusModeActive()));
 
 // A click, not a pointerdown: requestFullscreen needs a user gesture and a
@@ -503,10 +472,6 @@ el.focusModeBtn?.addEventListener("click", () => setFocusMode(!isFocusModeActive
 // apply to a button in the ⋯ menu.
 el.immersiveModeBtn?.addEventListener("click", () => toggleImmersiveMode());
 initImmersiveMode();
-
-// Rotating to landscape (or resizing a desktop window down) crosses the mobile
-// breakpoint, which turns the scroll-driven half on or off; re-evaluate.
-chromeMobileMedia?.addEventListener("change", applyChromeCollapse);
 
 // Restore a remembered focus-mode pin before the first paint, then arm the CSS
 // transitions a frame later — otherwise every launch in focus mode would open

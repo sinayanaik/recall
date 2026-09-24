@@ -108,11 +108,67 @@ const REMOVED = {
     "down folded the header away, scrolling up by twenty-eight pixels brought " +
     "it straight back. Which reads as focus mode leaking away while you read, " +
     "because nobody scrolls in one direction for a whole chapter — a thumb " +
-    "correcting past a figure and the header is over the text again. Scrolling " +
-    "down now LOCKS the chrome away until the reader says otherwise (the " +
-    "reading rail's Leave focus, Escape, Back, Ctrl+.). See the comment it " +
-    "left behind in src/ui/chrome.js; resetChromeAutoHide kept its name " +
-    "because that is still exactly what it does.",
+    "correcting past a figure and the header is over the text again. Replaced " +
+    "by a one-way LOCK (chromeFocusLocked — added after the baseline, so it " +
+    "carries no entry of its own here) that stayed away until the reader said " +
+    "otherwise. That lock is gone too now — see the group below.",
+
+  // ── ...and then the lock itself, because scrolling still folded it ───────
+  //
+  // chromeFocusLocked replaced chromeAutoHidden above but kept its one real
+  // fault: the header still folded on its own, from an ordinary scroll,
+  // without the reader pressing anything. Reported as intrusive, and removed
+  // — see the note at the top of src/ui/chrome.js. Folding the chrome is a
+  // manual act now: the ⤢ button, Ctrl+., the reading rail's Focus row, or
+  // (for the browser's own chrome) the ⛶ button / Ctrl+Q. Everything below
+  // existed only to drive or measure the scroll-driven half of that lock.
+  CHROME_MOBILE_QUERY:
+    "`(max-width: 720px), ((max-height: 560px) and (pointer: coarse))` — the " +
+    "breakpoint that gated the SCROLL LISTENER'S entry into the lock, not the " +
+    "lock itself (once in, focus mode stayed on at any width). With no scroll " +
+    "entry point left, nothing reads this query any more.",
+  chromeMobileMedia:
+    "The cached `matchMedia(CHROME_MOBILE_QUERY)`, read once per scroll frame " +
+    "so the listener wasn't building a fresh MediaQueryList at 60Hz. Gone with " +
+    "the query above.",
+  isMobileChrome:
+    "`Boolean(chromeMobileMedia?.matches)` — the scroll listener's own gate " +
+    "in src/main.js (\"a mouse wheel must not fold the header on a desktop\"). " +
+    "No scroll listener, no gate to read.",
+  trackChromeScroll:
+    "The document-scroll handler that set chromeFocusLocked: past " +
+    "CHROME_HIDE_DELTA down it locked, at or under CHROME_TOP_ZONE it stood " +
+    "down, and it tracked its own anchor (chromeAnchorEl/chromeAnchorTop) " +
+    "between calls to measure the delta. Folding the header is the reader's " +
+    "own act now — see the note at the top of src/ui/chrome.js.",
+  chromeAnchorEl:
+    "trackChromeScroll's anchor element — which scroller it was last measuring " +
+    "against. Gone with it.",
+  chromeAnchorTop:
+    "trackChromeScroll's anchor position — the scrollTop the current fold/ " +
+    "unfold decision was measured from. Gone with it.",
+  chromeScrollFrame:
+    "The rAF handle main.js's document-scroll listener used to coalesce a " +
+    "fling's many scroll events into one trackChromeScroll call per frame. " +
+    "No listener, no handle.",
+  CHROME_HIDE_DELTA:
+    "10px — how far down you had to scroll before trackChromeScroll locked " +
+    "the chrome away. Gone with it.",
+  CHROME_SHOW_DELTA:
+    "28px — what used to bring the header back on an upward scroll, from " +
+    "BEFORE the reversible chromeAutoHidden became the one-way lock. Already " +
+    "dead under the lock, which never read it; removed for good now that the " +
+    "lock is gone too.",
+  CHROME_TOP_ZONE:
+    "24px — the dead zone at the top of a scroller where trackChromeScroll " +
+    "stood down, so overscroll bounce and thumb wobble near the top couldn't " +
+    "flap the header. Gone with it.",
+  resetChromeAutoHide:
+    "Cleared chromeFocusLocked (and its anchor) on navigation — \"a new deck " +
+    "starts at the top, header showing\". With no lock left to clear its body " +
+    "was empty, so it was removed along with its three call sites " +
+    "(src/ui/view-mode.js, src/cloud/web-decks.js, src/library/local-library.js) " +
+    "rather than kept as a function that does nothing.",
 
   // ── A toast that named the action ───────────────────────────────────────
   highlightToastMessage:

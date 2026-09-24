@@ -533,6 +533,14 @@
   backdrop-filter: blur(3px);
 }
 
+/* A full-viewport backdrop on a coarse-pointer device is the most pixels this
+   filter ever has to cover; drop it there and keep the tint. */
+@media (pointer: coarse) {
+  .pdf-block-editor {
+    backdrop-filter: none;
+  }
+}
+
 .pdf-block-editor[hidden] {
   display: none;
 }

@@ -31,8 +31,9 @@
 //
 // That argument holds for the CONTENTS of the tray and does not hold for the
 // tray itself, because it leaves the rail unable to be the way in. On a phone
-// the routes into focus mode were: scroll down (portrait only — see
-// CHROME_MOBILE_QUERY), Ctrl+. (no keyboard), or the ⤢ row inside the notes ⋯
+// the routes into focus mode were: scroll down (portrait only, back when
+// folding was scroll-driven — since removed, see the note at the top of
+// src/ui/chrome.js), Ctrl+. (no keyboard), or the ⤢ row inside the notes ⋯
 // menu. So on a landscape phone, which is the shape where the app's own header
 // costs the largest fraction of the screen, focus mode was three presses deep
 // inside a menu and full screen was beside it. "There should be some dedicated

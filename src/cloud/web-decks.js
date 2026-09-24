@@ -23,7 +23,6 @@ import { discardNotesEditingForDeckSwap } from "../notes/notes-view.js?v=__BUILD
 import { isQuickNotesDeck, quickNoteCategoriesFromMeta, readCachedQuickNoteCategories, writeCachedQuickNoteCategories } from "../quick-notes/categories.js?v=__BUILD__";
 import { flushPendingDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { refreshSyncIndicatorBaseline } from "../sync/indicator.js?v=__BUILD__";
-import { resetChromeAutoHide } from "../ui/chrome.js?v=__BUILD__";
 import { closeImportPanel } from "../ui/deck-header.js?v=__BUILD__";
 import { setStatus, showToast } from "../ui/feedback.js?v=__BUILD__";
 import { recordNavHistory, refreshNavBack } from "../ui/nav-history.js?v=__BUILD__";
@@ -416,7 +415,6 @@ export async function loadWebDeck(deckId) {
         if (mirroredMeta) touchLocalDeckAccess(mirroredMeta.id);
         refreshSyncIndicatorBaseline();
         refreshNavBack(); // arrived — now the button knows where "here" is
-        resetChromeAutoHide(); // a new deck starts at the top, header showing
       }
     }
   } catch (error) {

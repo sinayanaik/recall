@@ -493,6 +493,18 @@ body.chrome-collapsed:not(:has(#mainToolbar.mobile-open)) .view-mode-row {
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.22);
 }
 
+/* Blur is one of the most GPU-expensive filters there is, and this bar sits
+   over a note that is actively scrolling under a finger. On a coarse pointer
+   (phones, most tablets — the exact devices this bar is FOR) drop it and keep
+   only the tint above: still translucent and legible, just not recomposited
+   every frame. Fine-pointer devices (a mouse, a trackpad) keep the blur. */
+@media (pointer: coarse) {
+  .selection-float.is-pinned-bottom {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
 /* ── What used to be here, and why it is not ──────────────────────────────
    Three rules: one that showed the ⋯ disclosure (phone-only), one that
    collapsed the formatting group behind it until pressed, and one that turned
