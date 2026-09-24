@@ -212,6 +212,7 @@ try {
   const requests = [];
   const objects = new Map();   // key -> { body, type }
   let failPut = null;
+  let failListOnce = false;
   const reply = (status, body = "", headers = {}) => ({
     ok: status >= 200 && status < 300,
     status,
@@ -243,6 +244,7 @@ try {
     if (method === "HEAD") return objects.has(key) ? reply(200, "", { "content-length": String(objects.get(key).body.length) }) : reply(404);
     if (method === "DELETE") return reply(objects.delete(key) ? 204 : 404);
     if (method === "GET" && key) return objects.has(key) ? reply(200, objects.get(key).body) : reply(404);
+    if (failListOnce) { failListOnce = false; throw new TypeError("Failed to fetch"); }
     const prefix = new URL(url).searchParams.get("prefix") || "";
     const rows = [...objects.entries()].filter(([name]) => name.startsWith(prefix)).map(([name, object]) => `
       <Contents><Key>${name}</Key><Size>${object.body.length}</Size></Contents>`).join("");
@@ -263,6 +265,7 @@ try {
   const supabaseRemoved = [];
   let supabaseUploadError = null;
   let signable = true;
+  let failSupabaseListOnce = false;
   const publicUrl = (bucket, p) => `https://${HOST}/storage/v1/object/public/${bucket}/${encodeURI(p)}`;
   const fakeSupabase = {
     storage: {
@@ -274,6 +277,7 @@ try {
           return { data: { path: p }, error: null };
         },
         list: async (dir, { search, limit = 100, offset = 0 } = {}) => {
+          if (failSupabaseListOnce) { failSupabaseListOnce = false; throw new Error("Load failed — request timed out (list images)"); }
           const names = new Map();
           for (const [p, body] of supabaseImages) {
             if (!p.startsWith(`${dir}/`)) continue;
@@ -471,6 +475,26 @@ try {
     if (survey.supabase.count !== 3) return `Supabase ${survey.supabase.count}`;
     if (survey.toCopy.length !== 2) return `to copy ${survey.toCopy.length}`;
     return survey.inBoth.length === 1 || `in both ${survey.inBoth.length}`;
+  });
+
+  await must("a transient hiccup while listing images in Supabase is retried, not fatal", async () => {
+    failSupabaseListOnce = true;
+    try {
+      const survey = await imageStorage.surveyImageStorage();
+      return survey.supabase.count === 3 || `Supabase ${survey.supabase.count}`;
+    } finally {
+      failSupabaseListOnce = false;
+    }
+  });
+
+  await must("a transient hiccup while listing images in the bucket is retried, not fatal", async () => {
+    failListOnce = true;
+    try {
+      const survey = await imageStorage.surveyImageStorage();
+      return survey.bucket.count === 1 || `bucket ${survey.bucket.count}`;
+    } finally {
+      failListOnce = false;
+    }
   });
 
   await must("the copy puts each figure in the bucket, checked, and deletes nothing anywhere", async () => {
