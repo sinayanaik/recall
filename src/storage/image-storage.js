@@ -22,7 +22,7 @@
 // canonical identifier, which the bucket copy shares.
 
 import { getCachedSession } from "../cloud/auth.js?v=__BUILD__";
-import { CLOUD_TIMEOUT_MS, mapWithConcurrency, withTimeout } from "../cloud/net.js?v=__BUILD__";
+import { CLOUD_TIMEOUT_MS, mapWithConcurrency, withRetry, withTimeout } from "../cloud/net.js?v=__BUILD__";
 import { canReachS3 } from "../cloud/s3-config.js?v=__BUILD__";
 import { listS3Images, noteS3Image, s3ImageHasSize, uploadS3Image } from "../cloud/s3-images.js?v=__BUILD__";
 import { forgetSignedUrl } from "../cloud/storage-urls.js?v=__BUILD__";
@@ -64,16 +64,24 @@ export const STORAGE_DELETE_BATCH = 100;
 // figures under books/<slug>--<run>/, so the recursion is not optional.
 export async function listStorageObjects(prefix, onProgress, out = []) {
   for (let offset = 0; ; offset += STORAGE_LIST_PAGE) {
-    const { data, error } = await withTimeout(
-      supabaseClient.storage.from(IMAGE_BUCKET).list(prefix, {
-        limit: STORAGE_LIST_PAGE,
-        offset,
-        sortBy: { column: "name", order: "asc" }
-      }),
-      CLOUD_TIMEOUT_MS,
-      "list images"
-    );
-    if (error) throw error;
+    // A stalled connection or a transient Supabase hiccup on one page used to
+    // fail the whole survey outright. Retried like every other idempotent
+    // cloud read in this codebase (see net.js) — the error is checked and
+    // thrown INSIDE the retried operation so a Supabase-returned error object,
+    // not just a timeout, gets the same second chance.
+    const { data } = await withRetry(async () => {
+      const result = await withTimeout(
+        supabaseClient.storage.from(IMAGE_BUCKET).list(prefix, {
+          limit: STORAGE_LIST_PAGE,
+          offset,
+          sortBy: { column: "name", order: "asc" }
+        }),
+        CLOUD_TIMEOUT_MS,
+        "list images"
+      );
+      if (result.error) throw result.error;
+      return result;
+    }, { label: "list images" });
     const rows = data || [];
     for (const row of rows) {
       const path = prefix ? `${prefix}/${row.name}` : row.name;
@@ -119,12 +127,18 @@ export async function deleteStorageObjects(paths, onProgress, { keepCached = nul
   let deleted = 0;
   for (let i = 0; i < paths.length; i += STORAGE_DELETE_BATCH) {
     const batch = paths.slice(i, i + STORAGE_DELETE_BATCH);
-    const { error } = await withTimeout(
-      supabaseClient.storage.from(IMAGE_BUCKET).remove(batch),
-      CLOUD_TIMEOUT_MS,
-      "delete images"
-    );
-    if (error) throw error;
+    // Retried, like the listing above — a delete-by-path is idempotent (see
+    // this module's header), so replaying it after a transient failure lands
+    // in the same final state.
+    await withRetry(async () => {
+      const result = await withTimeout(
+        supabaseClient.storage.from(IMAGE_BUCKET).remove(batch),
+        CLOUD_TIMEOUT_MS,
+        "delete images"
+      );
+      if (result.error) throw result.error;
+      return result;
+    }, { label: "delete images" });
     deleted += batch.length;
     onProgress?.(`Deleting images ${deleted}/${paths.length}…`);
   }
@@ -209,12 +223,15 @@ const imageMimeByExt = new Map(Object.entries(IMAGE_STORAGE_EXT).map(([type, ext
 // copy of the whole library reads nothing through, and evicts nothing from,
 // the offline image cache the reader relies on.
 async function downloadSupabaseImage(path) {
-  const { data, error } = await withTimeout(
-    supabaseClient.storage.from(IMAGE_BUCKET).download(path),
-    CLOUD_TIMEOUT_MS,
-    "download image"
-  );
-  if (error) throw error;
+  const { data } = await withRetry(async () => {
+    const result = await withTimeout(
+      supabaseClient.storage.from(IMAGE_BUCKET).download(path),
+      CLOUD_TIMEOUT_MS,
+      "download image"
+    );
+    if (result.error) throw result.error;
+    return result;
+  }, { label: "download image" });
   return data || null;
 }
 
