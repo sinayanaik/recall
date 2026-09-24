@@ -32,7 +32,7 @@
 import {
   S3_URL_TTL_SECONDS, canReachS3, canSignS3Requests, loadS3Config
 } from "./s3-config.js?v=__BUILD__";
-import { CLOUD_TIMEOUT_MS, withRetry, withTimeout } from "./net.js?v=__BUILD__";
+import { CLOUD_LIST_TIMEOUT_MS, CLOUD_TIMEOUT_MS, withRetry, withTimeout } from "./net.js?v=__BUILD__";
 import { presignS3Url } from "./s3-sign.js?v=__BUILD__";
 
 // Objects are listed a thousand at a time, which is the S3 maximum and covers
@@ -324,10 +324,13 @@ export async function listS3Objects(prefix, { strict = false } = {}) {
       // A single dropped connection on one page used to fail the whole
       // listing. Retried like every other idempotent cloud read (net.js) —
       // an HTTP-level refusal (see !response.ok below) is left alone; only a
-      // request that never got an answer is replayed.
+      // request that never got an answer is replayed. A wider budget and an
+      // extra attempt than the defaults, same reasoning as listStorageObjects
+      // in image-storage.js: on a bucket with many thousands of objects a
+      // page can legitimately take longer than an ordinary read.
       const response = await withRetry(
-        () => withTimeout(s3Fetch("GET", "", { query }), CLOUD_TIMEOUT_MS, "list the bucket"),
-        { label: "list the bucket" }
+        () => withTimeout(s3Fetch("GET", "", { query }), CLOUD_LIST_TIMEOUT_MS, "list the bucket"),
+        { tries: 3, baseMs: 1000, label: "list the bucket" }
       );
       if (!response.ok) {
         if (strict) return null;

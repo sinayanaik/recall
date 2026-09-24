@@ -11,6 +11,15 @@
 // Cancel only polls between steps, not during a hung await).
 export const CLOUD_TIMEOUT_MS = 20000;
 
+// A page of a LIST is not an ordinary read: on a library with many thousands
+// of objects under one prefix (an EPUB import's figures, chiefly) a single
+// page can genuinely take longer than CLOUD_TIMEOUT_MS to answer even with
+// nothing wrong — and one retry at the same 20s budget was still not enough
+// for readers with large libraries to ever finish a survey. Listing writes
+// nothing and risks nothing by waiting longer, so it gets a wider budget and
+// an extra attempt (withRetry's defaults are still used for everything else).
+export const CLOUD_LIST_TIMEOUT_MS = 60000;
+
 // Where withTimeout looks for the AbortController belonging to a request (see
 // abortable() below).
 export const CLOUD_ABORT = Symbol("cloudAbort");

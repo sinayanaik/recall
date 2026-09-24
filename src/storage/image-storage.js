@@ -22,7 +22,7 @@
 // canonical identifier, which the bucket copy shares.
 
 import { getCachedSession } from "../cloud/auth.js?v=__BUILD__";
-import { CLOUD_TIMEOUT_MS, mapWithConcurrency, withRetry, withTimeout } from "../cloud/net.js?v=__BUILD__";
+import { CLOUD_LIST_TIMEOUT_MS, CLOUD_TIMEOUT_MS, mapWithConcurrency, withRetry, withTimeout } from "../cloud/net.js?v=__BUILD__";
 import { canReachS3 } from "../cloud/s3-config.js?v=__BUILD__";
 import { listS3Images, noteS3Image, s3ImageHasSize, uploadS3Image } from "../cloud/s3-images.js?v=__BUILD__";
 import { forgetSignedUrl } from "../cloud/storage-urls.js?v=__BUILD__";
@@ -68,7 +68,11 @@ export async function listStorageObjects(prefix, onProgress, out = []) {
     // fail the whole survey outright. Retried like every other idempotent
     // cloud read in this codebase (see net.js) — the error is checked and
     // thrown INSIDE the retried operation so a Supabase-returned error object,
-    // not just a timeout, gets the same second chance.
+    // not just a timeout, gets the same second chance. A wider budget and an
+    // extra attempt than withRetry's defaults: on a library with many
+    // thousands of figures a page can legitimately take longer than an
+    // ordinary read, and one retry at CLOUD_TIMEOUT_MS was not enough room
+    // for that to ever finish (see CLOUD_LIST_TIMEOUT_MS).
     const { data } = await withRetry(async () => {
       const result = await withTimeout(
         supabaseClient.storage.from(IMAGE_BUCKET).list(prefix, {
@@ -76,12 +80,12 @@ export async function listStorageObjects(prefix, onProgress, out = []) {
           offset,
           sortBy: { column: "name", order: "asc" }
         }),
-        CLOUD_TIMEOUT_MS,
+        CLOUD_LIST_TIMEOUT_MS,
         "list images"
       );
       if (result.error) throw result.error;
       return result;
-    }, { label: "list images" });
+    }, { tries: 3, baseMs: 1000, label: "list images" });
     const rows = data || [];
     for (const row of rows) {
       const path = prefix ? `${prefix}/${row.name}` : row.name;
