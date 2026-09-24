@@ -285,13 +285,27 @@ export async function s3Usage() {
 // ── The connection test ─────────────────────────────────────────────────────
 //
 // What "Save and test" runs, and the only place in the app that tries to tell
-// the four failure modes apart. Ordered by how early they fail:
+// the failure modes apart. Ordered by how early they fail:
 //
 //   not configured → cannot sign (plain http) → blocked (CORS) → refused (keys)
+//   → can read but cannot WRITE
 //
-// A LIST rather than a PUT, deliberately. It proves the endpoint, the bucket
-// name, the region, both halves of the credential and the CORS policy, and it
-// writes nothing into a bucket the reader has not yet decided to keep using.
+// A LIST first. It proves the endpoint, the bucket name, the region and both
+// halves of the credential, and it writes nothing.
+//
+// ...and then a WRITE, because a LIST proves less than it looks like it does.
+// It is a GET with no custom headers: a simple CORS request, sent with no
+// preflight at all. An upload is a PUT carrying Content-Type, which the
+// browser will not send until an OPTIONS preflight says both the method and
+// the header are allowed. So a CORS policy that allowed only GET, or a token
+// minted read-only, passed this test, printed "Bucket connected" — and then
+// failed every single upload, leaving each paper on the device it was
+// imported on. That is how "it says connected but nothing syncs" happened.
+//
+// The probe object lives at the bucket root, outside the recall/ prefix, so
+// if its delete is refused it is never counted as a paper.
+export const S3_PROBE_KEY = ".recall-connection-test";
+
 export async function testS3Connection() {
   if (!loadS3Config()) return { ok: false, reason: "Fill in all four values first." };
   if (!canSignS3Requests()) {
@@ -303,7 +317,7 @@ export async function testS3Connection() {
   } catch (error) {
     return { ok: false, reason: s3NetworkError(error, "The test request").message, corsLikely: true };
   }
-  if (response.ok) return { ok: true, reason: "" };
+  if (response.ok) return testS3Write();
   const error = await s3Error(response, "The test request");
   if (response.status === 403) {
     return { ok: false, reason: "The bucket refused the key — check the access key, the secret and that the token can read this bucket." };
@@ -312,4 +326,50 @@ export async function testS3Connection() {
     return { ok: false, reason: "That bucket does not exist at this endpoint — check the bucket name and the endpoint." };
   }
   return { ok: false, reason: error.message };
+}
+
+// The write half of the test: PUT a few bytes exactly the way an upload does,
+// then DELETE them. Returns the same { ok, reason } shape, plus `warning` when
+// everything that matters works and only the delete was refused.
+async function testS3Write() {
+  const origin = globalThis.location?.origin || "this site";
+  let put;
+  try {
+    put = await s3Fetch("PUT", S3_PROBE_KEY, {
+      body: new Blob(["recall connection test"], { type: "application/pdf" }),
+      // The same header a real upload sends, so the same preflight is asked.
+      headers: { "Content-Type": "application/pdf" }
+    });
+  } catch (error) {
+    if (error?.message === "NO_STORAGE") return { ok: false, reason: "Fill in all four values first." };
+    const blocked = s3NetworkError(error, "The upload test");
+    return {
+      ok: false,
+      corsLikely: blocked.corsLikely,
+      reason: blocked.corsLikely
+        ? `Reading works, but uploads are blocked — the bucket's CORS policy has to allow PUT and the Content-Type header from ${origin}. Press Copy the CORS policy and paste it in again.`
+        : blocked.message
+    };
+  }
+  if (!put.ok) {
+    const error = await s3Error(put, "The upload test");
+    if (put.status === 401 || put.status === 403) {
+      return { ok: false, reason: "The key can read this bucket but not write to it — give the token Object Read & Write." };
+    }
+    return { ok: false, reason: error.message };
+  }
+  let removed = false;
+  try {
+    const del = await s3Fetch("DELETE", S3_PROBE_KEY);
+    removed = del.ok || del.status === 204 || del.status === 404;
+  } catch {
+    removed = false;
+  }
+  return removed
+    ? { ok: true, reason: "" }
+    : {
+      ok: true,
+      reason: "",
+      warning: `Uploads work, but the bucket refused a delete — removing a paper from the cloud will not free space. Allow DELETE in the CORS policy and the token. (A tiny ${S3_PROBE_KEY} file was left in the bucket.)`
+    };
 }

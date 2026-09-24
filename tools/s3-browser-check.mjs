@@ -86,12 +86,15 @@ function expectedSignature(method, pathname, params, host) {
   return createHmac("sha256", key).update(sts).digest("hex");
 }
 
-function startBucket(origin) {
+// `methods` is what the bucket's CORS policy allows. The default is the policy
+// the app hands out; a narrower one is the misconfiguration that used to test
+// clean and then fail every upload.
+function startBucket(origin, { methods = "GET,PUT,DELETE,HEAD" } = {}) {
   const objects = new Map();
   const seen = [];
   const cors = {
     "Access-Control-Allow-Origin": origin,
-    "Access-Control-Allow-Methods": "GET,PUT,DELETE,HEAD",
+    "Access-Control-Allow-Methods": methods,
     "Access-Control-Allow-Headers": "*",
     "Access-Control-Expose-Headers": "ETag"
   };
@@ -159,6 +162,7 @@ function must(name, detail) {
 const app = await serveApp(ROOT);
 await new Promise((r) => setTimeout(r, 800));
 const bucket = await startBucket(app.base);
+const readOnlyBucket = await startBucket(app.base, { methods: "GET,HEAD" });
 const browser = await launch({
   headless: "new", executablePath: CHROME,
   args: ["--no-sandbox", "--disable-dev-shm-usage"]
@@ -251,6 +255,127 @@ try {
     (preflighted.has("PUT") && preflighted.has("DELETE"))
       || `only ${[...preflighted].join(", ")} preflighted`);
 
+  // ── Two devices, one account, end to end ────────────────────────────────
+  //
+  // The report this all answers: "it says connected, but the pdfs are not
+  // syncing multi device". Driven here against the real signing bucket:
+  //
+  //   device A  a paper imported while no upload could happen, keys that were
+  //             pasted before key sync existed
+  //   the sync  uploads the paper from A, and publishes A's keys to the account
+  //   device B  no keys, no copy of the file — only the deck record and the
+  //             account — opens the paper anyway
+  //
+  // B is the same page with A's keys and bytes wiped, which is all a second
+  // device is as far as these modules can tell. The account is a stand-in
+  // Supabase client holding one row.
+  const twoDevices = await page.evaluate(async () => {
+    const deckStore = await import("./src/storage/deck-store.js?v=__BUILD__");
+    const store = await import("./src/documents/pdf-store.js?v=__BUILD__");
+    const migration = await import("./src/storage/document-migration.js?v=__BUILD__");
+    const keySync = await import("./src/cloud/s3-config-sync.js?v=__BUILD__");
+    const clientMod = await import("./src/cloud/supabase-client.js?v=__BUILD__");
+    const USER = "e2e-user";
+    let row = null;
+    const account = {
+      from() {
+        const query = { op: "select", payload: null };
+        const builder = {
+          select() { return builder; },
+          eq() { return builder; },
+          upsert(payload) { query.op = "upsert"; query.payload = payload; return builder; },
+          abortSignal() { return builder; },
+          then(resolve, reject) {
+            return Promise.resolve().then(() => {
+              if (query.op === "upsert") {
+                row = { s3_config: query.payload.s3_config, updated_at: query.payload.updated_at };
+                return { data: null, error: null };
+              }
+              return { data: row ? [row] : [], error: null };
+            }).then(resolve, reject);
+          }
+        };
+        return builder;
+      },
+      auth: {
+        getSession: async () => ({
+          data: { session: { user: { id: USER }, access_token: "t", expires_at: Math.floor(Date.now() / 1000) + 3600 } },
+          error: null
+        })
+      }
+    };
+    const appClient = clientMod.supabaseClient;
+    clientMod.setSupabaseClient(account);
+    try {
+      // ── Device A ──
+      const body = new Blob([new Uint8Array([37, 80, 68, 70, 45, 49, 46, 55, 10, 7, 7, 7])], { type: "application/pdf" });
+      const hash = await store.sha256(body);
+      const record = { name: "e2e.pdf", size: 12, pages: 1, sha256: hash, path: null };
+      deckStore.writeDeckSnapshot("e2e-deck", { id: "e2e-deck", title: "E2E", cards: [], meta: { pdf: record } });
+      await store.putDocument({ deckLocalId: "e2e-deck", blob: body, sha256: hash, name: "e2e.pdf", at: Date.now() });
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      const keys = await keySync.syncS3ConfigWithCloud(USER);
+      const summary = await migration.scheduleDocumentBackfill({ force: true });
+      const recorded = (await deckStore.readDeckSnapshot("e2e-deck"))?.meta?.pdf?.s3Key || "";
+
+      // ── Device B ──
+      localStorage.removeItem("recall:s3Config");
+      await store.deleteLocalDocument("e2e-deck");
+      const hadKeys = Boolean(localStorage.getItem("recall:s3Config"));
+      // The record as B's sync might have left it: no s3Key at all.
+      const opened = await store.getDocument("e2e-deck", record);
+      return {
+        keys: keys.status,
+        published: Boolean(row?.s3_config?.secretAccessKey),
+        uploaded: summary?.uploaded || 0,
+        recorded,
+        hash,
+        hadKeys,
+        openedBytes: opened ? [...new Uint8Array(await opened.arrayBuffer())] : null,
+        keysAfter: Boolean(localStorage.getItem("recall:s3Config"))
+      };
+    } finally {
+      clientMod.setSupabaseClient(appClient);
+    }
+  });
+
+  must("device A publishes keys it had before key sync, after testing them against the bucket",
+    (twoDevices.keys === "synced" && twoDevices.published) || JSON.stringify(twoDevices));
+
+  must("...and uploads the paper it imported while no upload could happen",
+    (twoDevices.uploaded === 1 && twoDevices.recorded === `recall/primary/${twoDevices.hash}.pdf`)
+      || `uploaded ${twoDevices.uploaded}, recorded ${twoDevices.recorded}`);
+
+  must("device B, with no keys and no copy, opens the paper from the account's keys",
+    (!twoDevices.hadKeys && twoDevices.keysAfter
+      && String(twoDevices.openedBytes) === String([37, 80, 68, 70, 45, 49, 46, 55, 10, 7, 7, 7]))
+      || JSON.stringify(twoDevices));
+
+  // ── A CORS policy that allows reading and nothing else ──────────────────
+  //
+  // The LIST the connection test used to stop at is a simple request — no
+  // preflight — so it sailed through a policy like this one, the panel said
+  // "Bucket connected", and every upload after that was refused by the browser
+  // before it was sent. The test has to try a real PUT to see it.
+  const narrow = await page.evaluate(async (endpoint) => {
+    const stored = JSON.parse(localStorage.getItem("recall:s3Config"));
+    localStorage.setItem("recall:s3Config", JSON.stringify({ ...stored, endpoint }));
+    try {
+      const files = await import("./src/cloud/s3-files.js?v=__BUILD__");
+      const listing = await files.s3Fetch("GET", "", { query: { "list-type": "2", "max-keys": "1" } });
+      return { listed: listing.ok, test: await files.testS3Connection() };
+    } finally {
+      localStorage.setItem("recall:s3Config", JSON.stringify(stored));
+    }
+  }, `http://127.0.0.1:${readOnlyBucket.port}`);
+
+  must("a bucket whose CORS policy allows only reads still LISTS — which is why a list proved nothing",
+    narrow.listed === true || "the list was refused, so this case tests nothing");
+
+  must("...and the connection test now FAILS it, naming PUT, instead of saying connected",
+    (narrow.test?.ok === false && /PUT/.test(narrow.test?.reason || ""))
+      || `test said ${JSON.stringify(narrow.test)}`);
+
   const optionsCount = bucket.seen.filter((row) => row.method === "OPTIONS").length;
   const readCount = bucket.seen.filter((row) => row.method === "GET" || row.method === "HEAD").length;
   must(`${readCount} reads cost ${optionsCount} preflights in total`,
@@ -259,6 +384,7 @@ try {
   await browser.close().catch(() => {});
   app.proc.kill();
   bucket.server.close();
+  readOnlyBucket.server.close();
 }
 
 console.log("── s3 in a browser ──");

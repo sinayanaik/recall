@@ -353,6 +353,35 @@ function stableJson(value) {
   ));
 }
 
+// Where a document's bytes can be fetched from — the three backends a record
+// can name. See getDocument in src/documents/pdf-store.js.
+const DOCUMENT_LOCATOR_FIELDS = ["s3Key", "driveId", "path"];
+
+// A document record, with any locator it lacks filled in from the OTHER side's
+// record of the SAME bytes.
+//
+// The merges below take a document record whole from one side, and that is
+// right for everything a record says about the paper — its name, its label,
+// whether it was offloaded. It is wrong for where the paper is: a device that
+// never saw the upload finish holds a record with no s3Key, and when its copy
+// won, the key the other device had just recorded was simply dropped. Both
+// records describe the same file (the hashes match), so a locator either one
+// knows is true of both. Records with different hashes are different files,
+// and are left exactly as the merge chose them.
+export function withCarriedLocators(record, other) {
+  if (!record || typeof record !== "object" || !other || typeof other !== "object") return record;
+  const hash = String(record.sha256 || "");
+  if (!hash || hash !== String(other.sha256 || "")) return record;
+  let next = record;
+  for (const field of DOCUMENT_LOCATOR_FIELDS) {
+    if (!record[field] && other[field]) {
+      if (next === record) next = { ...record };
+      next[field] = other[field];
+    }
+  }
+  return next;
+}
+
 export function mergeDeckMeta(cloudMeta, localMeta, { prefer = "local" } = {}) {
   const cloud = cloudMeta && typeof cloudMeta === "object" ? cloudMeta : {};
   const local = localMeta && typeof localMeta === "object" ? localMeta : {};
@@ -369,6 +398,7 @@ export function mergeDeckMeta(cloudMeta, localMeta, { prefer = "local" } = {}) {
   // meta with no `notebook` key at all, and an absent key must never delete a
   // paper full of somebody's handwriting.
   if (!winner.notebook && loser.notebook) next.notebook = loser.notebook;
+  else if (winner.notebook && loser.notebook) next.notebook = withCarriedLocators(winner.notebook, loser.notebook);
 
   // meta.pdf / meta.pdfs — the deck's own paper(s). Two regimes:
   //
@@ -388,9 +418,15 @@ export function mergeDeckMeta(cloudMeta, localMeta, { prefer = "local" } = {}) {
   //     agrees on, so a deck mid-migration merges correctly with one that has
   //     already written meta.pdfs.
   if (Array.isArray(cloud.pdfs) || Array.isArray(local.pdfs)) {
-    const mergedPdfs = mergeRecordsById(deckPdfs(cloud), deckPdfs(local), {
+    const cloudPdfs = deckPdfs(cloud);
+    const localPdfs = deckPdfs(local);
+    const counterpart = (list, id) => list.find((entry) => entry.id === id) || null;
+    const mergedPdfs = (mergeRecordsById(cloudPdfs, localPdfs, {
       tombstones: metaTombstoneMs("deletedPdfIds", cloud, local)
-    }) || [];
+    }) || []).map((entry) => withCarriedLocators(
+      withCarriedLocators(entry, counterpart(cloudPdfs, entry.id)),
+      counterpart(localPdfs, entry.id)
+    ));
     if (mergedPdfs.length) next.pdfs = mergedPdfs;
     else delete next.pdfs;
     // The mirror every old-cached client still reads as "this deck's PDF" —
@@ -412,6 +448,8 @@ export function mergeDeckMeta(cloudMeta, localMeta, { prefer = "local" } = {}) {
     else delete next.deletedPdfIds;
   } else if (!winner.pdf && loser.pdf) {
     next.pdf = loser.pdf;
+  } else if (winner.pdf && loser.pdf) {
+    next.pdf = withCarriedLocators(winner.pdf, loser.pdf);
   }
 
   // meta.bookmark and meta.readingPosition — { offset, source, text, at }, or

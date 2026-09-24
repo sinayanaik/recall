@@ -501,6 +501,21 @@ function renderDocumentPickPrompt({ heading, body, pick = "Choose the PDF…", n
 // cleared. Everything else about the deck — highlights, notes, cards — is
 // intact, which is exactly what the message has to say, or "re-attach" reads
 // as "start again".
+// Which open ended at the re-attach prompt, so it can be tried again when the
+// reason it failed goes away — the bucket keys arriving from another device, or
+// that device finishing the upload. Without this the prompt stayed up until the
+// reader left the tab and came back, which reads as "still broken".
+let missingDocumentOpen = null;
+
+export async function retryMissingDocumentOpen() {
+  const wanted = missingDocumentOpen;
+  if (!wanted) return false;
+  if (!el.documentView?.querySelector(".pdf-missing[data-missing]")) return false;
+  if (String(wanted.deck) !== String(state.localDeckId || "")) return false;
+  missingDocumentOpen = null;
+  return openDocumentView({ force: true, slot: wanted.slot, pdfId: wanted.pdfId });
+}
+
 function renderMissingDocumentPrompt(pdfMeta, pdfId = null) {
   renderDocumentPickPrompt({
     heading: "Re-attach the PDF to read it",
@@ -515,9 +530,13 @@ function renderMissingDocumentPrompt(pdfMeta, pdfId = null) {
       ? `“${pdfMeta.name || "This document"}” was removed from the cloud to save space, and this device doesn't have a copy. Your highlights, notes and cards are all still here — pick the same file to read it again.`
       : (pdfMeta?.driveId && !pdfMeta?.s3Key && !isDriveConfigured())
         ? `“${pdfMeta.name || "This document"}” is still in a Google Drive this device hasn't been connected to. Move your papers across in Storage & Data, or pick the file here. Your highlights, notes and cards are all still here.`
-        : (pdfMeta?.s3Key && !isS3Configured())
-          ? `“${pdfMeta.name || "This document"}” is in a bucket this device hasn't been given the keys to. Paste them in Storage & Data, or pick the file here. Your highlights, notes and cards are all still here.`
-          : `This device doesn't have a copy of “${pdfMeta?.name || "the document"}” yet, and it can't be downloaded right now. Your highlights, notes and cards are all still here.`,
+        // No keys here, whether or not the record names a key: a record whose
+        // s3Key a merge carried off is in the bucket just the same, and it was
+        // exactly that case that fell through to "can't be downloaded right
+        // now" and sent the reader to check a connection that was fine.
+        : !isS3Configured()
+          ? `“${pdfMeta?.name || "This document"}” is in your PDF bucket, and this device hasn't been given the keys yet. Sign in and sync — keys set up on another device come across by themselves — or paste them in Storage & Data, or pick the file here. Your highlights, notes and cards are all still here.`
+          : `This device doesn't have a copy of “${pdfMeta?.name || "the document"}” yet, and the bucket doesn't either — or it can't be reached right now. A paper goes up from the device it was imported on, the next time that device syncs. Your highlights, notes and cards are all still here.`,
     // Not a formality. A highlight is a coordinate into one exact file; painted
     // over a different edition of the same paper it would sit over the wrong
     // words, silently. Refusing a mismatch is the only honest option.
@@ -526,6 +545,9 @@ function renderMissingDocumentPrompt(pdfMeta, pdfId = null) {
       : "",
     onFile: (file) => reattachDocument(file, pdfMeta, pdfId)
   });
+  // Marks THIS prompt, as opposed to the attach and start-a-notebook ones that
+  // share its markup, as the one a retry may replace.
+  el.documentView?.querySelector(".pdf-missing")?.setAttribute("data-missing", "");
 }
 
 // ── ...and the deck that has never had a document ───────────────────────────
@@ -1088,6 +1110,7 @@ async function openDocumentViewBody({ force = false, slot = null, pdfId = null, 
   if (token !== pdfOpenToken) return supersededOpen();
   if (!blob) {
     renderMissingDocumentPrompt(pdfMeta, openPdfId);
+    missingDocumentOpen = { deck: state.localDeckId || "", slot: openSlot, pdfId: openPdfId };
     return false;
   }
 

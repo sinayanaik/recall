@@ -11,10 +11,12 @@ import { CLOUD_TIMEOUT_MS, withTimeout } from "../cloud/net.js?v=__BUILD__";
 import { isSignedIn, supabaseClient } from "../cloud/supabase-client.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { escapeHtml, formatStorageBytes } from "../core/text.js?v=__BUILD__";
-import { S3_DEFAULT_REGION, canReachS3, canSignS3Requests, clearS3Config, isS3Configured, loadS3Config, s3CorsPolicy, saveS3Config } from "../cloud/s3-config.js?v=__BUILD__";
+import { S3_DEFAULT_REGION, canReachS3, canSignS3Requests, clearS3Config, isS3Configured, loadS3Config, markS3ConfigVerified, readS3ConfigRecord, s3CorsPolicy, saveS3Config } from "../cloud/s3-config.js?v=__BUILD__";
+import { pushS3ConfigNow, s3ConfigSyncStatus } from "../cloud/s3-config-sync.js?v=__BUILD__";
 import { s3Usage, testS3Connection } from "../cloud/s3-files.js?v=__BUILD__";
 import { clearAllLocalDocuments, deleteRemoteDocument, documentUsage, localDocumentUsage } from "../documents/pdf-store.js?v=__BUILD__";
-import { migrateDocumentsToS3, planDocumentMigration } from "./document-migration.js?v=__BUILD__";
+import { countBackfillOnDevice, documentBackfillStatus, migrateDocumentsToS3, planDocumentBackfill, planDocumentMigration, scheduleDocumentBackfill } from "./document-migration.js?v=__BUILD__";
+import { cachedUserId } from "../quick-notes/categories.js?v=__BUILD__";
 import { LOCAL_IMAGE_SCHEME, allOutboxImages, deleteOutboxImage, revokeLocalImageUrls } from "../images/outbox.js?v=__BUILD__";
 import { findSourceImages, sourceMayHaveImages } from "../images/surface-controls.js?v=__BUILD__";
 import { IMAGE_BUCKET, IMAGE_STORAGE_EXT, OFFLINE_IMAGE_CACHE, supabaseImagePathFromUrl } from "../images/upload.js?v=__BUILD__";
@@ -268,6 +270,9 @@ export async function buildStorageReport(onProgress, { census = true } = {}) {
     s3: null,
     s3Error: "",
     migration: [],
+    // Papers with no key in the bucket: how many this device could send up,
+    // and how many are waiting on the device that imported them.
+    backfill: { here: 0, elsewhere: 0, unknown: 0 },
     device: await deviceStorageStats()
   };
 
@@ -288,6 +293,15 @@ export async function buildStorageReport(onProgress, { census = true } = {}) {
     report.migration = await planDocumentMigration();
   } catch (error) {
     console.warn("Could not plan the document migration", error);
+  }
+  try {
+    // Papers still in Drive or the old Supabase bucket are already counted by
+    // the card below, and can already be read from there; these are the ones
+    // that are in NO cloud, which is what "only on one device" means.
+    const unsent = (await planDocumentBackfill()).filter((job) => !job.legacy);
+    report.backfill = await countBackfillOnDevice(unsent);
+  } catch (error) {
+    console.warn("Could not count the papers waiting to upload", error);
   }
 
   if (!census) return report;
@@ -618,6 +632,39 @@ export function storageStatTile(value, label, tone = "") {
   return `<div class="storage-stat${tone ? ` ${tone}` : ""}"><strong>${escapeHtml(String(value))}</strong><span>${escapeHtml(label)}</span></div>`;
 }
 
+// One sentence on whether the bucket keys have reached the account. Nothing at
+// all when there are no keys anywhere to talk about.
+export function bucketKeysSyncLine(report) {
+  const record = readS3ConfigRecord();
+  const sync = s3ConfigSyncStatus();
+  if (!record.config && sync.state !== "unavailable") return "";
+  const note = (text, warn = false) => `<p class="storage-note${warn ? " is-warning" : ""}">${text}</p>`;
+  if (record.config && record.verified === false) {
+    return note("These keys have not passed <strong>Save and test</strong> yet, so they stay on this device and are not sent to your other devices.", true);
+  }
+  if (!report?.signedIn) return note("The keys are on this device only until you sign in — then every device on your account gets them.");
+  switch (sync.state) {
+    case "synced":
+      return note("Keys synced to your account — every device you sign in on can open these papers.");
+    case "unavailable":
+      return note("The keys are on this device only: your Supabase project has no <code>app_storage_settings</code> table yet. Re-run <code>supabase_setup.sql</code> and they sync to your other devices.", true);
+    case "offline":
+      return note("The keys sync to your other devices when you are back online.");
+    case "failed":
+      return note(`The keys could not be synced to your account${sync.detail ? ` — ${escapeHtml(sync.detail)}` : ""}. They are still used on this device.`, true);
+    default:
+      return note("The keys sync to your account at the next sync.");
+  }
+}
+
+// A backfill run's stop reason, in the reader's terms. The raw tokens are what
+// the upload path throws; a CORS or refusal message is already a sentence.
+export function describeBackfillStop(reason) {
+  if (reason === "NO_STORAGE") return "the bucket is not set up on this device.";
+  if (reason === "OFFLINE") return "this device went offline.";
+  return reason;
+}
+
 export function renderStoragePanel(busyText = "") {
   const body = el.storageBody;
   if (!body) return;
@@ -734,10 +781,29 @@ export function renderStoragePanel(busyText = "") {
            placeholder="" value="${escapeHtml(saved.secretAccessKey)}">
     <button type="button" class="storage-action" data-storage-action="s3-save">${isS3Configured() ? "Save and test again" : "Save and test"}</button>
     <button type="button" class="storage-action" data-storage-action="s3-cors">Copy the CORS policy</button>
-    ${isS3Configured() ? `<button type="button" class="storage-action" data-storage-action="s3-forget">Forget these keys</button>` : ""}
+    ${isS3Configured() ? `<button type="button" class="storage-action" data-storage-action="s3-forget">Forget these keys everywhere</button>` : ""}
     <p class="storage-note">Cloudflare R2 gives 10GB free with no charge for downloads; Backblaze B2 and anything else speaking S3 work the same way. Mint the token for <strong>this one bucket</strong> with object read &amp; write and nothing else.</p>
-    <p class="storage-note is-warning">Unlike the Google Client ID this replaced, the secret key really is a secret. It is kept in this browser's storage on this device only — never synced, never sent anywhere but your bucket — but anyone who can use this browser profile can read it.</p>
+    <p class="storage-note is-warning">The secret key really is a secret. Once it passes the test it is kept in this browser <em>and</em> in your own Supabase project, so every device you sign in on gets it without pasting it again. Row Level Security keeps it to your account; whoever administers the Supabase project can still read it, and so can anyone using this browser profile — which is why the token should reach this one bucket and nothing else.</p>
     <p class="storage-note">Before the first upload works, the bucket needs a CORS policy allowing this site. <strong>Copy the CORS policy</strong> puts the exact JSON on your clipboard; paste it into the bucket's settings.</p>`;
+  // Whether the keys have reached the account, which is the whole of whether a
+  // second device can open anything. Said in one line, and said as a warning
+  // when the answer is "no" — that was the silent half of "connected, but the
+  // papers are not on my phone".
+  const keysLine = bucketKeysSyncLine(report);
+  const backfill = report.backfill || { here: 0, elsewhere: 0, unknown: 0 };
+  const backfillRun = documentBackfillStatus();
+  const backfillFailure = backfillRun.last?.stopped || backfillRun.last?.failures?.[0]?.reason || "";
+  const one = backfill.here === 1;
+  const backfillLine = backfill.here
+    ? `<p class="storage-note${s3Reachable ? "" : " is-warning"}">${backfill.here} paper${one ? " is" : "s are"} on this device and not in the bucket yet, so no other device can open ${one ? "it" : "them"}. ${s3Reachable
+        ? (backfillRun.running ? "Uploading now…" : `${one ? "It uploads by itself" : "They upload by themselves"} at every sync.`)
+        : `${one ? "It uploads by itself" : "They upload by themselves"} once the bucket is set up.`}</p>
+       ${s3Reachable && !backfillRun.running ? `<button type="button" class="storage-action" data-storage-action="s3-backfill">Upload ${one ? "it" : "them"} now</button>` : ""}
+       ${backfillFailure && s3Reachable ? `<p class="storage-note is-warning">The last attempt stopped: ${escapeHtml(describeBackfillStop(backfillFailure))}</p>` : ""}`
+    : "";
+  const waitingLine = backfill.elsewhere
+    ? `<p class="storage-note">${backfill.elsewhere} paper${backfill.elsewhere === 1 ? " is" : "s are"} not in the bucket and not on this device either. ${backfill.elsewhere === 1 ? "It uploads" : "They upload"} from the device that imported ${backfill.elsewhere === 1 ? "it" : "them"}, the next time that device syncs with the bucket set up.</p>`
+    : "";
   const s3Section = !canSignS3Requests()
     ? `<p class="storage-note is-warning">This page is not being served over https, so the browser will not let it sign bucket requests. Papers stay on this device until it is.</p>`
     : s3Reachable
@@ -747,9 +813,15 @@ export function renderStoragePanel(busyText = "") {
            ${storageStatTile(s3Config.bucket, "Bucket")}
          </div>
          <p class="storage-note">Set up. New papers go here, deleting one gives the space straight back, and no sign-in is ever asked for.</p>
+         ${keysLine}
+         ${backfillLine}
+         ${waitingLine}
          ${report.s3Error ? `<p class="storage-note is-warning">${escapeHtml(report.s3Error)}</p>` : ""}
          <details class="storage-details"><summary>Change the keys</summary>${s3Form}</details>`
-      : `<p class="storage-note">Not set up. Papers you import are kept on this device and nowhere else until a bucket is added.</p>
+      : `<p class="storage-note">Not set up. Papers you import are kept on this device and nowhere else until a bucket is added. If you already set one up on another device, sign in and sync — the keys come across by themselves.</p>
+         ${keysLine}
+         ${backfillLine}
+         ${waitingLine}
          ${s3Form}`;
 
   // ── What has not moved across yet ────────────────────────────────────────
@@ -783,7 +855,7 @@ export function renderStoragePanel(busyText = "") {
   body.innerHTML = `
     <div class="storage-card">
       <h2>PDF storage</h2>
-      <p class="storage-sub">Where papers are kept. Your own S3-compatible bucket — four values, pasted once, and no sign-in ever again.</p>
+      <p class="storage-sub">Where papers are kept. Your own S3-compatible bucket — four values, pasted once on any device, and every device you sign in on gets them.</p>
       ${s3Section}
     </div>
 
@@ -938,7 +1010,9 @@ export async function runStorageAction(action) {
       accessKeyId: document.getElementById("s3KeyId")?.value || "",
       secretAccessKey: document.getElementById("s3Secret")?.value || ""
     };
-    saveS3Config(typed);
+    // Saved UNVERIFIED: kept here so a failed test leaves every field in the
+    // form, but not fit to publish to the other devices until it passes.
+    saveS3Config(typed, { ownerId: cachedUserId() || "", verified: false });
     if (!isS3Configured()) {
       showToast("Fill in the endpoint, bucket, key ID and secret", "error");
       renderStoragePanel();
@@ -957,8 +1031,35 @@ export async function runStorageAction(action) {
       await refreshStorageReport({ census: false, quiet: true });
       return;
     }
-    showToast("Bucket connected — no sign-in needed from here on", "success");
+    markS3ConfigVerified(cachedUserId() || "");
+    renderStoragePanel("Sharing the keys with your other devices…");
+    const shared = await pushS3ConfigNow();
+    const where = shared.status === "synced"
+      ? "your other devices get the keys at their next sync"
+      : shared.status === "unavailable"
+        ? "on this device only until supabase_setup.sql is re-run"
+        : shared.status === "signed-out"
+          ? "on this device only until you sign in"
+          : "the keys reach your other devices at the next sync";
+    showToast(`Bucket connected — ${where}`, shared.status === "unavailable" ? "info" : "success");
+    if (result.warning) showToast(result.warning, "info");
+    // Anything imported before this moment is still only on this device.
+    scheduleDocumentBackfill({ force: true });
     await refreshStorageReport({ census: false, quiet: true });
+    return;
+  }
+
+  if (action === "s3-backfill") {
+    if (!canReachS3()) {
+      showToast("Add a bucket first", "error");
+      return;
+    }
+    // Not through `run`: a paper can take minutes, and the panel should not
+    // sit behind a progress bar for it. The run reports back when it lands
+    // (see onDocumentBackfillDone in main.js).
+    scheduleDocumentBackfill({ force: true });
+    showToast("Uploading in the background — you can carry on", "info");
+    renderStoragePanel();
     return;
   }
 
@@ -982,9 +1083,21 @@ export async function runStorageAction(action) {
   }
 
   if (action === "s3-forget") {
-    clearS3Config();
-    showToast("Keys forgotten — papers already on this device still open", "info");
-    await refreshStorageReport({ census: false, quiet: true });
+    // Everywhere, now that the keys are the account's rather than this
+    // device's: forgetting them here alone would last until the next sync
+    // brought them straight back.
+    showConfirmModal(
+      "Forget the bucket keys on every device? Papers already downloaded keep opening, and nothing in the bucket is deleted — but new papers stay on the device they were imported on until keys are added again.",
+      async () => {
+        clearS3Config({ ownerId: cachedUserId() || "" });
+        const shared = await pushS3ConfigNow();
+        showToast(shared.status === "synced"
+          ? "Keys forgotten on every device — papers already downloaded still open"
+          : "Keys forgotten here — your other devices drop them once this one syncs", "info");
+        await refreshStorageReport({ census: false, quiet: true });
+      },
+      { confirmLabel: "Forget everywhere", danger: true }
+    );
     return;
   }
 

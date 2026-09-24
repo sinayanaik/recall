@@ -40,12 +40,17 @@
 // so a half-finished move is re-run rather than repaired.
 
 import { mapWithConcurrency } from "../cloud/net.js?v=__BUILD__";
+import { canReachS3 } from "../cloud/s3-config.js?v=__BUILD__";
 import { headS3File, s3DocumentKey } from "../cloud/s3-files.js?v=__BUILD__";
+import { state } from "../core/state.js?v=__BUILD__";
 import { DOC_SLOT_DOC, DOC_SLOT_NOTEBOOK, documentStoreKey } from "../documents/doc-slot.js?v=__BUILD__";
 import { deckPdfs, PDF_PRIMARY_ID, pdfStoreKey, withDeckPdfs } from "../documents/pdf-multi.js?v=__BUILD__";
-import { deleteRemoteDocument, getDocument, putDocument, sha256, uploadDocument } from "../documents/pdf-store.js?v=__BUILD__";
+import { deleteRemoteDocument, documentEntryMatches, documentS3Key, getDocument, putDocument, readDocument, sha256, uploadDocument } from "../documents/pdf-store.js?v=__BUILD__";
 import { storageFolderSlug } from "../images/upload.js?v=__BUILD__";
+import { readLocalDeckIndex, writeLocalDeckIndex } from "../library/local-library.js?v=__BUILD__";
+import { nextSyncStamp } from "../sync/stats.js?v=__BUILD__";
 import { forEachDeckSnapshot, rewriteDeckSnapshot } from "./deck-store.js?v=__BUILD__";
+import { NOTES_CONFLICT_SUFFIX } from "./keys.js?v=__BUILD__";
 
 // One at a time. A paper is tens of megabytes and is fully resident while it
 // is being read, uploaded and hashed; running five of those at once is not
@@ -114,6 +119,37 @@ export async function planDocumentMigration() {
   return jobs.sort((a, b) => b.bytes - a.bytes);
 }
 
+// The record a job names, on whichever shelf it lives.
+function entryForJob(meta, job) {
+  if (!meta || typeof meta !== "object") return null;
+  if (job.slot === DOC_SLOT_NOTEBOOK) return meta.notebook || null;
+  const wanted = job.pdfId || PDF_PRIMARY_ID;
+  return deckPdfs(meta).find((entry) => (entry.id || PDF_PRIMARY_ID) === wanted) || null;
+}
+
+// The meta with this job's entry pointing at `s3Key`, or null when there is
+// nothing to write: the entry is gone, it already says exactly this, or it now
+// names DIFFERENT bytes. The last one is a notebook rewritten while its old
+// pages were uploading — tagging the new record with the old pages' key would
+// hand every other device the page count this one just replaced.
+function metaWithS3Key(meta, job, s3Key, hash) {
+  if (!meta || typeof meta !== "object") return null;
+  const stamped = (entry) => {
+    if (!entry || typeof entry !== "object") return null;
+    if (entry.sha256 && entry.sha256 !== hash) return null;
+    if (entry.s3Key === s3Key && entry.sha256 === hash) return null;
+    return { ...entry, s3Key, sha256: hash, at: Date.now() };
+  };
+  if (job.slot === DOC_SLOT_NOTEBOOK) {
+    const notebook = stamped(meta.notebook);
+    return notebook ? { ...meta, notebook } : null;
+  }
+  const wanted = job.pdfId || PDF_PRIMARY_ID;
+  const next = stamped(entryForJob(meta, job));
+  if (!next) return null;
+  return withDeckPdfs(meta, deckPdfs(meta).map((entry) => ((entry.id || PDF_PRIMARY_ID) === wanted ? next : entry)));
+}
+
 // Writes the new locator onto the one entry this job names, under the deck's
 // own lock and against a FRESH read of the snapshot.
 //
@@ -123,23 +159,48 @@ export async function planDocumentMigration() {
 // to have carried on working. rewriteDeckSnapshot re-reads inside the lock,
 // so what gets written back is the current deck with one field changed, not
 // the plan's copy of it.
+//
+// Two more things, both of which this used to skip, and both of which meant the
+// key it wrote never left the device:
+//
+//   • the deck's updatedAt is BUMPED, the same way the image outbox bumps a deck
+//     it rewrote. The push gate reads updatedAt and nothing else, so a snapshot
+//     that changed without it is a snapshot the cloud never hears about.
+//   • the OPEN deck is patched in memory too. Its next autosave rebuilds the
+//     snapshot from `state`, so a key written only to the store was reverted
+//     400ms after the reader's next keystroke.
 async function recordS3Key(job, s3Key, hash) {
-  return rewriteDeckSnapshot(job.deckLocalId, (snapshot) => {
-    const meta = snapshot?.meta;
-    if (!meta || typeof meta !== "object") return null;
-    if (job.slot === DOC_SLOT_NOTEBOOK) {
-      if (!meta.notebook) return null;
-      snapshot.meta = { ...meta, notebook: { ...meta.notebook, s3Key, sha256: hash, at: Date.now() } };
-      return snapshot;
+  let alreadyRecorded = false;
+  const wrote = await rewriteDeckSnapshot(job.deckLocalId, (snapshot) => {
+    const next = metaWithS3Key(snapshot?.meta, job, s3Key, hash);
+    if (!next) {
+      // Nothing to write is a success when the entry already names this very
+      // object — another pass (the backfill, or an earlier run of this one) got
+      // there first — and a refusal otherwise.
+      alreadyRecorded = entryForJob(snapshot?.meta, job)?.s3Key === s3Key;
+      return null;
     }
-    const wanted = job.pdfId || PDF_PRIMARY_ID;
-    const entries = deckPdfs(meta);
-    if (!entries.some((entry) => (entry.id || PDF_PRIMARY_ID) === wanted)) return null;
-    snapshot.meta = withDeckPdfs(meta, entries.map((entry) => (
-      (entry.id || PDF_PRIMARY_ID) === wanted ? { ...entry, s3Key, sha256: hash, at: Date.now() } : entry
-    )));
+    snapshot.meta = next;
     return snapshot;
   });
+  if (!wrote) return alreadyRecorded;
+  if (state.localDeckId && String(state.localDeckId) === String(job.deckLocalId)) {
+    const live = metaWithS3Key(state.meta, job, s3Key, hash);
+    if (live) state.meta = live;
+  }
+  try {
+    const index = readLocalDeckIndex();
+    const entry = index.find((row) => String(row.id) === String(job.deckLocalId));
+    if (entry) {
+      entry.updatedAt = nextSyncStamp(new Date().toISOString(), entry.updatedAt);
+      writeLocalDeckIndex(index);
+    }
+  } catch (error) {
+    // The key is on the snapshot either way; what is lost is only the prompt to
+    // push it, and the next edit to this deck supplies that.
+    console.warn("Could not mark the deck for sync after recording its bucket key", error);
+  }
+  return true;
 }
 
 // Which locator this job is sweeping, and nothing else. Passing the whole
@@ -257,4 +318,309 @@ export async function migrateDocumentsToS3(jobs, { onProgress = null, isCancelle
     onProgress?.(done, jobs.length, job.name);
   });
   return summary;
+}
+
+// ── Papers that never went up ───────────────────────────────────────────────
+//
+// The migration above moves papers that are in an OLDER cloud. This is for the
+// ones that are in no cloud at all: imported before the bucket was set up,
+// imported offline, or imported while the upload could not get through (a CORS
+// policy missing PUT was the common one). Each of those was told "Sync once
+// you're back to read it elsewhere" — and nothing, at any sync, ever uploaded
+// it. The paper stayed on the device that imported it for good, and every
+// other device showed the re-attach prompt for a file that was sitting in
+// somebody's other hand.
+//
+// Unlike the migration this runs by itself, on every sync, and that is safe for
+// the one reason the migration is not: it deletes NOTHING. It reads the device
+// copy, puts it in the bucket if the bucket does not already have it, and
+// records the key. The worst an interrupted run can leave is an object nobody
+// has recorded yet — which the next run finds with a HEAD and records rather
+// than uploading again.
+//
+// Only the device that HOLDS the bytes can do this, so a job whose bytes are
+// not here is skipped without a request; some other device owns it. That is
+// also what keeps this cheap on the devices that have nothing to do: a paper
+// already recorded is never planned, and one that is not here costs one
+// IndexedDB read.
+
+// How long a paper that failed to go up is left alone before it is tried
+// again. Short enough that a dropped connection costs one sync interval, long
+// enough that a paper the connection genuinely cannot carry does not restart a
+// fifteen-minute upload every time the app syncs.
+export const DOCUMENT_BACKFILL_RETRY_MS = 10 * 60 * 1000;
+
+const documentBackfillFailedAt = new Map();
+
+let documentBackfillRun = null;
+
+let documentBackfillSummary = null;
+
+const documentBackfillListeners = new Set();
+
+// The last run, for the Storage panel. Null until one has finished.
+export function documentBackfillStatus() {
+  return {
+    running: Boolean(documentBackfillRun),
+    last: documentBackfillSummary ? { ...documentBackfillSummary } : null
+  };
+}
+
+// Told when a run finishes, with its summary — the panel redraws its count.
+export function onDocumentBackfillDone(listener) {
+  if (typeof listener !== "function") return () => {};
+  documentBackfillListeners.add(listener);
+  return () => documentBackfillListeners.delete(listener);
+}
+
+function backfillJobsFromSnapshot(deckLocalId, snapshot) {
+  const jobs = [];
+  const meta = snapshot?.meta;
+  if (!meta || typeof meta !== "object") return jobs;
+  const consider = (entry, slot, pdfId) => {
+    if (!entry || typeof entry !== "object") return;
+    // The reader removed it from the cloud on purpose. Putting it back behind
+    // their back is not what "Remove from cloud" means.
+    if (entry.offloaded) return;
+    const hash = String(entry.sha256 || "");
+    // Already recorded under the key its bytes would get — nothing owed. A
+    // record naming a DIFFERENT key (a notebook rewritten since, say) is owed
+    // the new one.
+    if (hash && entry.s3Key && entry.s3Key === s3DocumentKey({ pdfId, sha256: hash })) return;
+    jobs.push({
+      deckLocalId: String(deckLocalId),
+      deckTitle: snapshot?.title || snapshot?.deckTitle || "Untitled",
+      slot,
+      pdfId,
+      name: entry.name || "document.pdf",
+      bytes: Number(entry.size || 0),
+      // May be empty for a record from before hashing: the run hashes the
+      // device copy, and records the hash beside the key.
+      sha256: hash,
+      // Still readable from Drive or the old Supabase bucket, so not "only on
+      // one device" — the panel counts those under the migration instead.
+      legacy: Boolean(entry.path || entry.driveId)
+    });
+  };
+  deckPdfs(meta).forEach((entry) => consider(entry, DOC_SLOT_DOC, entry.id || PDF_PRIMARY_ID));
+  consider(meta.notebook, DOC_SLOT_NOTEBOOK, DOC_SLOT_NOTEBOOK);
+  return jobs;
+}
+
+// Every paper in the library that has no key in the bucket yet, smallest
+// first: several papers across beat one large one half-way.
+export async function planDocumentBackfill() {
+  const jobs = [];
+  await forEachDeckSnapshot((id, snapshot) => {
+    // A notes-conflict stash is a second copy of a real deck's snapshot, meta
+    // and all. Its bytes are filed under the real deck, so as a job of its own
+    // it could only ever be "not on this device" — a paper counted twice, the
+    // second time as missing.
+    if (String(id).includes(NOTES_CONFLICT_SUFFIX)) return;
+    backfillJobsFromSnapshot(id, snapshot).forEach((job) => jobs.push(job));
+  });
+  return jobs.sort((a, b) => a.bytes - b.bytes);
+}
+
+// The bytes this device holds for a job, or null when they are not here or are
+// not the bytes the record means.
+async function backfillLocalCopy(job) {
+  try {
+    const local = await readDocument(migrationStoreKey(job));
+    if (!local?.blob) return null;
+    if (!documentEntryMatches(local, { sha256: job.sha256 })) return null;
+    return local;
+  } catch (error) {
+    console.warn("Could not read the local document store", error);
+    return null;
+  }
+}
+
+// How many of the planned papers this device could upload, and how many are
+// waiting on a device that holds them. For the panel — a sentence saying "3
+// papers are only on this device" is the difference between a reader knowing
+// why their phone is empty and guessing.
+//
+// A planned paper is one whose RECORD names no key, which is not the same as
+// one the bucket lacks: the device that has it may have uploaded it with the
+// key not yet recorded on this device's copy of the deck. So when the bucket
+// can be asked, it is, and a paper already there is not counted at all. When
+// it cannot be asked (no keys here yet, offline), a paper this device does not
+// hold is `unknown` rather than called missing — a phone waiting on its keys
+// must not be told its whole library is lost.
+export const BACKFILL_COUNT_HEAD_LIMIT = 50;
+
+export async function countBackfillOnDevice(jobs) {
+  let here = 0;
+  let elsewhere = 0;
+  let unknown = 0;
+  let asked = 0;
+  const canAsk = canReachS3() && navigator.onLine;
+  for (const job of jobs || []) {
+    const local = await backfillLocalCopy(job);
+    const hash = job.sha256 || local?.sha256 || "";
+    const key = hash ? s3DocumentKey({ pdfId: job.pdfId, sha256: hash }) : "";
+    if (canAsk && key && asked < BACKFILL_COUNT_HEAD_LIMIT) {
+      asked += 1;
+      if (await headS3File(key)) continue;
+      if (local) here += 1;
+      else elsewhere += 1;
+      continue;
+    }
+    if (local) here += 1;
+    else unknown += 1;
+  }
+  return { here, elsewhere, unknown };
+}
+
+// A failure that says nothing about the next paper stops only this one; one
+// that will fail every paper the same way stops the run.
+function backfillStopsRun(error) {
+  const message = error?.message || "";
+  return message === "NO_STORAGE" || message === "OFFLINE"
+    || Boolean(error?.authFailed || error?.corsLikely || error?.quotaExceeded);
+}
+
+// One paper. Returns { status: "uploaded" | "recorded" | "skipped" | "failed",
+// reason, stopsRun }.
+export async function backfillDocumentToS3(job) {
+  const local = await backfillLocalCopy(job);
+  if (!local) return { status: "skipped", reason: "not on this device" };
+  const hash = job.sha256 || local.sha256 || (await sha256(local.blob));
+  if (!hash) return { status: "skipped", reason: "could not hash the file" };
+  const key = s3DocumentKey({ pdfId: job.pdfId, sha256: hash });
+  if (!key) return { status: "skipped", reason: "no key" };
+  const failedAt = documentBackfillFailedAt.get(key) || 0;
+  if (failedAt && Date.now() - failedAt < DOCUMENT_BACKFILL_RETRY_MS) {
+    return { status: "skipped", reason: "waiting to retry" };
+  }
+
+  // Already there — uploaded by another device that holds the same paper, or
+  // by an earlier run that could not record it. A HEAD, not a second copy.
+  let uploaded = false;
+  if (!(await headS3File(key))) {
+    try {
+      await uploadDocument(local.blob, {
+        name: storageFolderSlug(String(job.name).replace(/\.pdf$/i, ""), job.slot === DOC_SLOT_NOTEBOOK ? "notebook" : "document"),
+        pdfId: job.pdfId,
+        sha256: hash
+      });
+      uploaded = true;
+    } catch (error) {
+      documentBackfillFailedAt.set(key, Date.now());
+      return { status: "failed", reason: error?.message || "upload failed", stopsRun: backfillStopsRun(error) };
+    }
+  }
+  documentBackfillFailedAt.delete(key);
+  const recorded = await recordS3Key(job, key, hash);
+  // An object in the bucket whose deck could not be told is still reachable:
+  // other devices derive the key from the id and hash they already hold.
+  return { status: uploaded ? "uploaded" : "recorded", reason: recorded ? "" : "could not update the deck" };
+}
+
+export async function backfillDocumentsToS3(jobs, { onProgress = null, isCancelled = () => false } = {}) {
+  const summary = { at: 0, planned: jobs.length, uploaded: 0, recorded: 0, skipped: 0, failed: 0, stopped: "", failures: [] };
+  let done = 0;
+  for (const job of jobs) {
+    if (isCancelled()) break;
+    if (!canReachS3()) { summary.stopped = "NO_STORAGE"; break; }
+    if (!navigator.onLine) { summary.stopped = "OFFLINE"; break; }
+    onProgress?.(done, jobs.length, job.name);
+    const result = await backfillDocumentToS3(job);
+    done += 1;
+    if (result.status === "uploaded") summary.uploaded += 1;
+    else if (result.status === "recorded") summary.recorded += 1;
+    else if (result.status === "skipped") summary.skipped += 1;
+    else {
+      summary.failed += 1;
+      summary.failures.push({ name: job.name, reason: result.reason });
+      if (result.stopsRun) { summary.stopped = result.reason; break; }
+    }
+  }
+  summary.at = Date.now();
+  return summary;
+}
+
+// How often the SYNC may start a run. Planning one reads every deck snapshot
+// on the device, which is cheap once and not cheap on every background sync of
+// a large library — and a paper that did not need uploading five minutes ago
+// almost never needs it now. The moments that DO change the answer (keys
+// saved or arriving, the panel's button) pass `force` and skip the wait.
+export const DOCUMENT_BACKFILL_MIN_INTERVAL_MS = 10 * 60 * 1000;
+
+let documentBackfillStartedAt = 0;
+
+// Start a run unless one is going, or the bucket cannot be reached from here.
+// Resolves with the summary (or null when nothing ran). Callers that are not
+// waiting for it — the sync, the panel's save — simply drop the promise; it
+// never rejects.
+export function scheduleDocumentBackfill({ force = false } = {}) {
+  if (documentBackfillRun) return documentBackfillRun;
+  if (!canReachS3() || (typeof navigator !== "undefined" && navigator.onLine === false)) return Promise.resolve(null);
+  if (!force && Date.now() - documentBackfillStartedAt < DOCUMENT_BACKFILL_MIN_INTERVAL_MS) return Promise.resolve(null);
+  documentBackfillStartedAt = Date.now();
+  documentBackfillRun = (async () => {
+    try {
+      const jobs = await planDocumentBackfill();
+      const summary = jobs.length
+        ? await backfillDocumentsToS3(jobs)
+        : { at: Date.now(), planned: 0, uploaded: 0, recorded: 0, skipped: 0, failed: 0, stopped: "", failures: [] };
+      documentBackfillSummary = summary;
+      return summary;
+    } catch (error) {
+      console.warn("Could not upload the papers waiting on this device", error);
+      return null;
+    } finally {
+      documentBackfillRun = null;
+    }
+  })();
+  documentBackfillRun.then((summary) => {
+    if (!summary) return;
+    for (const listener of documentBackfillListeners) {
+      try { listener(summary); } catch (error) { console.warn("A backfill listener failed", error); }
+    }
+  });
+  return documentBackfillRun;
+}
+
+// ── One file, two decks ─────────────────────────────────────────────────────
+//
+// The key is recall/<pdfId>/<sha256>.pdf, and a deck's first paper is always
+// pdfId "primary" — so two decks holding the same paper (imported twice, or a
+// copy of a deck) name ONE object. "Remove from cloud" on either used to delete
+// it out from under the other, which then showed the re-attach prompt on every
+// device without a copy. Whether any other record still names the object is a
+// question the library on this device can answer, so it is asked first.
+
+// Does any record OTHER than the one named still point at this object?
+// Offloaded records do not count: they have already let go of it.
+export async function s3KeyInUseElsewhere(key, { deckLocalId = "", slot = DOC_SLOT_DOC, pdfId = PDF_PRIMARY_ID } = {}) {
+  if (!key) return false;
+  let used = false;
+  await forEachDeckSnapshot((id, snapshot) => {
+    if (String(id).includes(NOTES_CONFLICT_SUFFIX)) return;
+    const meta = snapshot?.meta;
+    if (!meta || typeof meta !== "object") return;
+    const check = (entry, entrySlot, entryPdfId) => {
+      if (used || !entry || typeof entry !== "object" || entry.offloaded) return;
+      if (String(id) === String(deckLocalId) && entrySlot === slot && entryPdfId === pdfId) return;
+      if (documentS3Key({ ...entry, id: entryPdfId }) === key) used = true;
+    };
+    deckPdfs(meta).forEach((entry) => check(entry, DOC_SLOT_DOC, entry.id || PDF_PRIMARY_ID));
+    check(meta.notebook, DOC_SLOT_NOTEBOOK, DOC_SLOT_NOTEBOOK);
+    return used ? false : undefined;
+  });
+  return used;
+}
+
+// deleteRemoteDocument, minus an S3 object another deck still needs. Resolves
+// { removed, shared }: `removed` is true when this record no longer holds any
+// cloud copy of its own — including when the object was KEPT because another
+// deck shares it, since from this deck's side that is exactly what was asked.
+export async function deleteDocumentCopies(entry, { deckLocalId = "", slot = DOC_SLOT_DOC, pdfId = PDF_PRIMARY_ID } = {}) {
+  const record = entry && typeof entry === "object" ? entry : {};
+  const key = String(record.s3Key || "");
+  const shared = key ? await s3KeyInUseElsewhere(key, { deckLocalId, slot, pdfId }) : false;
+  const removed = await deleteRemoteDocument(shared ? { ...record, s3Key: "" } : record);
+  return { removed: removed || shared, shared };
 }

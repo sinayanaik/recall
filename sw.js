@@ -339,6 +339,7 @@ const APP_SHELL = [
   `./src/cloud/drive-files.js?v=${STAMP}`,
   `./src/cloud/net.js?v=${STAMP}`,
   `./src/cloud/s3-config.js?v=${STAMP}`,
+  `./src/cloud/s3-config-sync.js?v=${STAMP}`,
   `./src/cloud/s3-files.js?v=${STAMP}`,
   `./src/cloud/s3-sign.js?v=${STAMP}`,
   `./src/cloud/storage-urls.js?v=${STAMP}`,

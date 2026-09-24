@@ -940,6 +940,72 @@ try {
       || "an unhashed row was thrown away on no evidence");
   }
 
+  // ── Where a paper's bytes are, across a merge ─────────────────────────────
+  //
+  // "The pdfs are not syncing multi device." Two of the reasons were here. A
+  // document record is taken whole from one side of a merge, so a device that
+  // never saw an upload finish carried the bucket key away with its copy. And
+  // the change detector fingerprinted only the first paper's page count and
+  // hash, so a second paper attached to a deck — or a key recorded once an
+  // upload landed — never moved updatedAt and never left the device at all.
+  {
+    const { deckContentMatches } = await load("src/library/local-library.js");
+    const KEY = "recall/primary/" + "a".repeat(64) + ".pdf";
+    const paper = { name: "p.pdf", pages: 4, sha256: "a".repeat(64) };
+
+    must("a key the other side recorded survives the merge when both describe the same bytes", () => {
+      const merged = docSync.mergeDeckMeta({ pdf: { ...paper, s3Key: KEY } }, { pdf: { ...paper } }, { prefer: "local" });
+      return merged.pdf?.s3Key === KEY || `the key was dropped: ${JSON.stringify(merged.pdf)}`;
+    });
+
+    must("...in the multi-PDF regime too, for each paper by id", () => {
+      const cloud = { pdfs: [{ ...paper, id: "primary", at: 5 }, { id: "pdf-2", name: "q.pdf", sha256: "b".repeat(64), s3Key: "recall/pdf-2/x.pdf", at: 5 }] };
+      const local = { pdfs: [{ ...paper, id: "primary", at: 9, label: "renamed" }, { id: "pdf-2", name: "q.pdf", sha256: "b".repeat(64), at: 9 }] };
+      local.pdfs[0].s3Key = KEY;
+      const merged = docSync.mergeDeckMeta(cloud, local, { prefer: "cloud" });
+      const second = merged.pdfs.find((entry) => entry.id === "pdf-2");
+      if (second?.s3Key !== "recall/pdf-2/x.pdf") return `pdf-2 lost its key: ${JSON.stringify(second)}`;
+      if (merged.pdfs.find((entry) => entry.id === "primary")?.label !== "renamed") return "the newer record did not win the rest";
+      return merged.pdf?.s3Key === KEY || "the meta.pdf mirror did not carry the primary's key";
+    });
+
+    must("...and for a notebook", () => {
+      const nb = { name: "n.pdf", pages: 2, notebook: true, sha256: "c".repeat(64) };
+      const merged = docSync.mergeDeckMeta({ notebook: { ...nb } }, { notebook: { ...nb, s3Key: "recall/notebook/k.pdf" } }, { prefer: "cloud" });
+      return merged.notebook?.s3Key === "recall/notebook/k.pdf" || `dropped: ${JSON.stringify(merged.notebook)}`;
+    });
+
+    must("a key for DIFFERENT bytes is never carried onto a record", () => {
+      const merged = docSync.mergeDeckMeta(
+        { notebook: { notebook: true, sha256: "new", pages: 3 } },
+        { notebook: { notebook: true, sha256: "old", pages: 2, s3Key: "recall/notebook/old.pdf" } },
+        { prefer: "cloud" }
+      );
+      return !merged.notebook?.s3Key || "the old pages' key was attached to the new pages";
+    });
+
+    const deck = (meta) => ({ deckTitle: "A deck", deckCategory: null, notes: "", cards: [], meta });
+
+    must("attaching a second PDF counts as a change to the deck", () => {
+      const before = deck({ pdf: paper });
+      const after = deck({ pdf: paper, pdfs: [{ ...paper, id: "primary" }, { id: "pdf-2", name: "q.pdf", sha256: "b".repeat(64), at: 7 }] });
+      return deckContentMatches(before, after) === false
+        || "a second paper read as no change — the other device would never hear of it";
+    });
+
+    must("recording the bucket key counts as a change, so it is pushed", () =>
+      deckContentMatches(deck({ pdf: paper }), deck({ pdf: { ...paper, s3Key: KEY } })) === false
+      || "a recorded key read as no change");
+
+    must("offloading counts as a change", () =>
+      deckContentMatches(deck({ pdf: { ...paper, s3Key: KEY } }), deck({ pdf: { ...paper, s3Key: KEY, offloaded: true } })) === false
+      || "an offload read as no change");
+
+    must("...while an untouched deck still reads as unchanged", () =>
+      deckContentMatches(deck({ pdf: { ...paper, s3Key: KEY } }), deck({ pdf: { ...paper, s3Key: KEY } })) === true
+      || "an identical deck read as changed — every autosave would push");
+  }
+
   console.log("── document sync ──");
   for (const [ok, name, detail] of results) {
     console.log(`  ${ok ? "ok  " : "FAIL"}  ${name}${ok ? "" : " — " + detail}`);

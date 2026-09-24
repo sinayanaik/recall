@@ -11,6 +11,7 @@ import { showCard } from "../cards/card-view.js?v=__BUILD__";
 import { SESSION_EXPIRED_MESSAGE, isSessionExpiredError, refreshSessionOnce, verifiedCloudUserId } from "../cloud/auth.js?v=__BUILD__";
 import { CARD_FETCH_DECK_CHUNK, DECK_SYNC_INDEX_COLUMNS, deckTombstoneTableMissing, fetchCardsForDecks, fetchCloudDeckIndex, fetchCloudDeckRows, fetchDeletedDeckIds, isMissingNotesColumnError, isMissingRelationError } from "../cloud/deck-list.js?v=__BUILD__";
 import { CLOUD_TIMEOUT_MS, abortable, isTransientCloudError, mapWithConcurrency, withRetry, withTimeout } from "../cloud/net.js?v=__BUILD__";
+import { syncS3ConfigWithCloud } from "../cloud/s3-config-sync.js?v=__BUILD__";
 import { flushPendingStyleSync } from "../cloud/style-sync.js?v=__BUILD__";
 import { isSignedIn, supabaseClient } from "../cloud/supabase-client.js?v=__BUILD__";
 import { laterIsoTimestamp } from "../cloud/web-decks.js?v=__BUILD__";
@@ -31,6 +32,7 @@ import { flushPendingQuickNoteCategories } from "../quick-notes/categories.js?v=
 import { QUICK_NOTES_DECK_TITLE } from "../quick-notes/palette.js?v=__BUILD__";
 import { noteLinkAliasesFor } from "../render/note-links.js?v=__BUILD__";
 import { deckStoreUnreadable, deleteDeckSnapshot, readDeckSnapshot, withDeckLock, writeDeckSnapshot } from "../storage/deck-store.js?v=__BUILD__";
+import { scheduleDocumentBackfill } from "../storage/document-migration.js?v=__BUILD__";
 import { describeSignedOutProblem } from "../storage/health.js?v=__BUILD__";
 import { ADOPT_DELETION_MAX_FRACTION, ADOPT_DELETION_MIN_CAP, LAST_GLOBAL_SYNC_ERROR_KEY, LAST_GLOBAL_SYNC_KEY, MISSING_DECK_MIN_AGE_MS, MISSING_DECK_MIN_SIGHTINGS, NOTES_CONFLICT_SUFFIX, clearBackgroundSyncProblem, clearMissingDeckWatch, readMissingDeckWatch, reportBackgroundSyncProblem, writeMissingDeckWatch } from "../storage/keys.js?v=__BUILD__";
 import { deckAutosaveTimer, describeSyncError, isQuotaExceededError, persistWorkingDeck, setDeckAutosaveTimer } from "../storage/quota.js?v=__BUILD__";
@@ -1330,6 +1332,15 @@ export async function reconcileAllDecks({ explicit = false } = {}) {
       console.warn("Could not deliver the queued style", error);
       return false;
     });
+    // The keys to the reader's PDF bucket, which used to stay on whichever
+    // device they were typed into — so a second device had every paper's record
+    // and no way to fetch a single one. Independent of the deck data, like the
+    // style, and the backfill below waits on it: a device that has just been
+    // handed the keys may be holding papers that never went up.
+    const bucketKeysSync = syncS3ConfigWithCloud(cloudUserId).catch((error) => {
+      console.warn("Could not sync the bucket keys", error);
+      return null;
+    });
     // Images queued while offline. Awaited BEFORE the deck list is read: each
     // upload rewrites its recall-img: placeholder in the owning deck's snapshot
     // and bumps that deck's updatedAt, and the push pass below is what carries
@@ -1909,6 +1920,15 @@ export async function reconcileAllDecks({ explicit = false } = {}) {
       pushDone++;
       progress(`Uploading decks… (${pushDone} of ${toPush.length})`, "Uploading decks");
     });
+
+    // Papers this device holds that the bucket does not — imported before the
+    // bucket was set up, or while an upload could not get through. Started, not
+    // awaited: one paper can be a hundred megabytes, and the deck sync must not
+    // sit behind it. It records each key onto its deck and bumps that deck, so
+    // the next sync carries the record up; the other devices do not wait for
+    // that, because the key is derived from the id and hash they already have.
+    await bucketKeysSync;
+    scheduleDocumentBackfill();
 
     // A flushed meta edit (categories or source anchors) is real sync work and
     // has to show up in the report. Fold it into the quick_notes deck's own row

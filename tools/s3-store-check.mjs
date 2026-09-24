@@ -247,8 +247,11 @@ try {
     if (method === "GET" && key) {
       return objects.has(key) ? reply(200, objects.get(key)) : reply(404, "<Error><Code>NoSuchKey</Code></Error>");
     }
-    // A listing. XML, because that is what the module parses.
-    const rows = [...objects.entries()].map(([name, body]) => `
+    // A listing. XML, because that is what the module parses — and filtered
+    // by `prefix` the way a real bucket filters it, or nothing about what the
+    // app lists OUTSIDE recall/ could be asserted.
+    const prefix = new URL(url).searchParams.get("prefix") || "";
+    const rows = [...objects.entries()].filter(([name]) => name.startsWith(prefix)).map(([name, body]) => `
       <Contents><Key>${name}</Key><Size>${String(body).length}</Size>
       <LastModified>2026-09-19T00:00:00.000Z</LastModified></Contents>`).join("");
     return reply(200, `<?xml version="1.0"?><ListBucketResult><IsTruncated>false</IsTruncated>${rows}</ListBucketResult>`);
@@ -598,6 +601,250 @@ try {
     const entry = await entryOf("deck-unreadable");
     return entry.path === "uid/pdfs/gone/paper.pdf" && !entry.s3Key
       || "a failed move still edited the deck";
+  });
+
+  // ── Which key a record means ────────────────────────────────────────────
+  //
+  // The rebuild that runs when a record has lost its s3Key, or never had one.
+  // A bare meta.pdf has no id and a notebook never has one; both were uploaded
+  // under a fixed id, and the rebuild used to say "unfiled" for both.
+
+  await must("a record with no id rebuilds the key the import uploaded under", () => {
+    const key = pdfStore.documentS3Key({ name: "paper.pdf", sha256: HASH });
+    return key === `recall/primary/${HASH}.pdf` || `got ${key}`;
+  });
+
+  await must("...and a notebook's rebuilds under notebook, not unfiled", () => {
+    const key = pdfStore.documentS3Key({ notebook: true, pages: 3, sha256: HASH });
+    return key === `recall/notebook/${HASH}.pdf` || `got ${key}`;
+  });
+
+  await must("a stored key naming OTHER bytes than the record's hash is not believed", () => {
+    const key = pdfStore.documentS3Key({ notebook: true, sha256: HASH, s3Key: `recall/notebook/${OTHER_HASH}.pdf` });
+    return key === `recall/notebook/${HASH}.pdf` || `followed the stale key: ${key}`;
+  });
+
+  await must("...so a rewritten notebook opens its NEW pages, not the ones the stale key names", async () => {
+    objects.set(`recall/notebook/${OTHER_HASH}.pdf`, "OLDPAGES");
+    objects.set(`recall/notebook/${HASH}.pdf`, "NEWPAGES");
+    const blob = await pdfStore.getDocument("deck-notebook-stale#notebook", {
+      notebook: true, sha256: HASH, s3Key: `recall/notebook/${OTHER_HASH}.pdf`
+    });
+    return blob === "NEWPAGES" || `got ${blob} — old pages cached under the new hash`;
+  });
+
+  // ── The write half of the connection test ───────────────────────────────
+
+  await must("a bucket that reads but blocks uploads FAILS the connection test and names the policy", async () => {
+    failNext = { method: "PUT", throws: true };
+    const result = await s3Files.testS3Connection();
+    if (result.ok) return "a bucket nobody can upload to tested clean — the 'connected but nothing syncs' bug";
+    if (!result.corsLikely) return "the CORS flag was not set";
+    return /PUT/.test(result.reason) || `the reason does not say what to allow: ${result.reason}`;
+  });
+
+  await must("...and a read-only token fails it too, saying so", async () => {
+    failNext = { method: "PUT", status: 403, body: "<Error><Code>AccessDenied</Code></Error>" };
+    const result = await s3Files.testS3Connection();
+    if (result.ok) return "a read-only token tested clean";
+    return /write/i.test(result.reason) || `the reason was: ${result.reason}`;
+  });
+
+  await must("...while a refused delete passes with a warning, and the probe never counts as a paper", async () => {
+    failNext = { method: "DELETE", status: 403, body: "<Error><Code>AccessDenied</Code></Error>" };
+    const result = await s3Files.testS3Connection();
+    if (!result.ok) return `it failed outright: ${result.reason}`;
+    if (!/delete/i.test(result.warning || "")) return `no warning: ${JSON.stringify(result)}`;
+    const usage = await s3Files.s3Usage();
+    objects.delete(s3Files.S3_PROBE_KEY);
+    return !usage.files.some((file) => file.key === s3Files.S3_PROBE_KEY) || "the probe object was counted as a paper";
+  });
+
+  await must("a clean connection test leaves nothing behind", async () => {
+    const result = await s3Files.testS3Connection();
+    if (!result.ok) return `it failed: ${result.reason}`;
+    return !objects.has(s3Files.S3_PROBE_KEY) || "the probe object was left in the bucket";
+  });
+
+  // ── Papers that never went up ───────────────────────────────────────────
+
+  const lib = await load("src/library/local-library.js");
+  const { state } = await load("src/core/state.js");
+  const docSlot = await load("src/documents/doc-slot.js");
+  const backfillOf = async (id) => (await migration.planDocumentBackfill()).filter((job) => job.deckLocalId === id);
+
+  await must("a paper imported with no bucket is planned for upload", async () => {
+    objects.clear();
+    // Exactly what importPdfFile writes when the upload cannot happen: a bare
+    // meta.pdf with a hash and no locator at all.
+    await deckStore.writeDeckSnapshot("deck-local", {
+      id: "deck-local", title: "A paper", cards: [],
+      meta: { pdf: { name: "paper.pdf", size: 10, pages: 3, sha256: HASH, path: null } }
+    });
+    const jobs = await backfillOf("deck-local");
+    if (jobs.length !== 1) return `planned ${jobs.length}`;
+    return jobs[0].pdfId === "primary" || `pdfId ${jobs[0].pdfId}`;
+  });
+
+  await must("...and the migration still does not plan it, so the two never fight over one paper", async () => {
+    const jobs = (await migration.planDocumentMigration()).filter((job) => job.deckLocalId === "deck-local");
+    return jobs.length === 0 || "the migration planned a paper that has no old source";
+  });
+
+  await must("the backfill uploads it from this device, records the key, and bumps the deck for the push", async () => {
+    await pdfStore.putDocument({ deckLocalId: "deck-local", blob: "LOCALBYTES", sha256: HASH, name: "paper.pdf", at: Date.now() });
+    lib.writeLocalDeckIndex([{ id: "deck-local", title: "A paper", updatedAt: "2026-01-01T00:00:00.000Z", lastSyncedAt: "2026-01-01T00:00:00.000Z" }]);
+    requests.length = 0;
+    const summary = await migration.backfillDocumentsToS3(await backfillOf("deck-local"));
+    if (summary.uploaded !== 1) return `uploaded ${summary.uploaded}: ${JSON.stringify(summary)}`;
+    if (objects.get(`recall/primary/${HASH}.pdf`) !== "LOCALBYTES") return "the bytes are not in the bucket under the key other devices derive";
+    const snapshot = await deckStore.readDeckSnapshot("deck-local");
+    if (snapshot?.meta?.pdf?.s3Key !== `recall/primary/${HASH}.pdf`) return `recorded ${snapshot?.meta?.pdf?.s3Key}`;
+    const entry = lib.readLocalDeckIndex().find((row) => row.id === "deck-local");
+    return entry.updatedAt > "2026-01-01T00:00:00.000Z" || "updatedAt did not move, so the key would never be pushed";
+  });
+
+  await must("...after which it is not planned again", async () => {
+    const jobs = await backfillOf("deck-local");
+    return jobs.length === 0 || "a recorded paper was planned a second time";
+  });
+
+  await must("a paper already in the bucket is recorded with a HEAD, not uploaded twice", async () => {
+    objects.set(`recall/pdf-there/${HASH}.pdf`, "ALREADY");
+    await deckStore.writeDeckSnapshot("deck-there", {
+      id: "deck-there", title: "A deck", cards: [],
+      meta: { pdfs: [{ id: "pdf-there", name: "paper.pdf", size: 7, sha256: HASH }] }
+    });
+    await pdfStore.putDocument({ deckLocalId: "deck-there#pdf:pdf-there", blob: "ALREADY", sha256: HASH, name: "paper.pdf", at: Date.now() });
+    requests.length = 0;
+    const summary = await migration.backfillDocumentsToS3(await backfillOf("deck-there"));
+    if (requests.some((line) => line.startsWith("PUT"))) return `it uploaded again: ${requests.join(", ")}`;
+    return summary.recorded === 1 || `summary ${JSON.stringify(summary)}`;
+  });
+
+  await must("a paper that is not on this device is skipped without a single request", async () => {
+    await deckStore.writeDeckSnapshot("deck-elsewhere", {
+      id: "deck-elsewhere", title: "A deck", cards: [],
+      meta: { pdf: { name: "far.pdf", size: 5, sha256: OTHER_HASH } }
+    });
+    requests.length = 0;
+    const summary = await migration.backfillDocumentsToS3(await backfillOf("deck-elsewhere"));
+    if (requests.length) return `it asked the bucket: ${requests.join(", ")}`;
+    return summary.skipped === 1 || `summary ${JSON.stringify(summary)}`;
+  });
+
+  await must("...and the panel counts it as waiting on another device, not as on this one", async () => {
+    const counts = await migration.countBackfillOnDevice(await backfillOf("deck-elsewhere"));
+    return (counts.here === 0 && counts.elsewhere === 1) || `counted ${JSON.stringify(counts)}`;
+  });
+
+  await must("an offloaded paper is never put back behind the reader's back", async () => {
+    await deckStore.writeDeckSnapshot("deck-gone", {
+      id: "deck-gone", title: "A deck", cards: [],
+      meta: { pdf: { name: "done.pdf", size: 5, sha256: HASH, offloaded: true } }
+    });
+    return (await backfillOf("deck-gone")).length === 0 || "an offloaded paper was planned";
+  });
+
+  await must("a notes-conflict stash is not planned as a second, missing copy of its deck", async () => {
+    await deckStore.writeDeckSnapshot("deck-local:notes-conflict", {
+      id: "deck-local:notes-conflict", title: "A paper", cards: [],
+      meta: { pdf: { name: "paper.pdf", size: 10, sha256: OTHER_HASH } }
+    });
+    return (await backfillOf("deck-local:notes-conflict")).length === 0 || "the stash was planned";
+  });
+
+  await must("a notebook goes up under notebook, from its own slot on the device", async () => {
+    await deckStore.writeDeckSnapshot("deck-nb", {
+      id: "deck-nb", title: "Notes", cards: [],
+      meta: { notebook: { name: "nb.pdf", size: 6, pages: 2, notebook: true, sha256: OTHER_HASH } }
+    });
+    await pdfStore.putDocument({
+      deckLocalId: docSlot.documentStoreKey("deck-nb", docSlot.DOC_SLOT_NOTEBOOK),
+      blob: "NBBYTES", sha256: OTHER_HASH, name: "nb.pdf", at: Date.now()
+    });
+    const summary = await migration.backfillDocumentsToS3(await backfillOf("deck-nb"));
+    if (summary.uploaded !== 1) return `summary ${JSON.stringify(summary)}`;
+    return objects.get(`recall/notebook/${OTHER_HASH}.pdf`) === "NBBYTES" || "the notebook is not where other devices look";
+  });
+
+  await must("the open deck is patched in memory, so its next autosave cannot revert the key", async () => {
+    await deckStore.writeDeckSnapshot("deck-open", {
+      id: "deck-open", title: "Open", cards: [],
+      meta: { pdf: { name: "open.pdf", size: 4, sha256: OTHER_HASH } }
+    });
+    await pdfStore.putDocument({ deckLocalId: "deck-open", blob: "OPENBYTES", sha256: OTHER_HASH, name: "open.pdf", at: Date.now() });
+    const was = { id: state.localDeckId, meta: state.meta };
+    state.localDeckId = "deck-open";
+    state.meta = { pdf: { name: "open.pdf", size: 4, sha256: OTHER_HASH } };
+    try {
+      await migration.backfillDocumentsToS3(await backfillOf("deck-open"));
+      return state.meta?.pdf?.s3Key === `recall/primary/${OTHER_HASH}.pdf` || `state.meta.pdf is ${JSON.stringify(state.meta?.pdf)}`;
+    } finally {
+      state.localDeckId = was.id;
+      state.meta = was.meta;
+    }
+  });
+
+  await must("a refused upload stops the run rather than failing every paper the same way", async () => {
+    objects.clear();
+    for (const id of ["deck-r1", "deck-r2"]) {
+      await deckStore.writeDeckSnapshot(id, {
+        id, title: id, cards: [], meta: { pdfs: [{ id: `pdf-${id}`, name: "p.pdf", size: 3, sha256: HASH }] }
+      });
+      await pdfStore.putDocument({ deckLocalId: `${id}#pdf:pdf-${id}`, blob: "RBYTES", sha256: HASH, name: "p.pdf", at: Date.now() });
+    }
+    const jobs = [...(await backfillOf("deck-r1")), ...(await backfillOf("deck-r2"))];
+    failNext = { method: "PUT", status: 403, body: "<Error><Code>AccessDenied</Code></Error>" };
+    requests.length = 0;
+    const summary = await migration.backfillDocumentsToS3(jobs);
+    const puts = requests.filter((line) => line.startsWith("PUT")).length;
+    if (puts !== 1) return `${puts} uploads were attempted after a refusal`;
+    return Boolean(summary.stopped) || `the run did not stop: ${JSON.stringify(summary)}`;
+  });
+
+  await must("...and the refused paper waits before it is tried again", async () => {
+    requests.length = 0;
+    const summary = await migration.backfillDocumentsToS3(await backfillOf("deck-r1"));
+    if (requests.some((line) => line.startsWith("PUT"))) return "it retried straight away";
+    return summary.skipped === 1 || `summary ${JSON.stringify(summary)}`;
+  });
+
+  // ── One file, two decks ─────────────────────────────────────────────────
+
+  // Its own hash: other decks above already share recall/primary/<HASH>, and
+  // the guard is right to keep that one.
+  const TWIN_HASH = "d".repeat(64);
+
+  await must("removing one deck's copy keeps an object another deck still names", async () => {
+    objects.clear();
+    const key = `recall/primary/${TWIN_HASH}.pdf`;
+    objects.set(key, "SHARED");
+    for (const id of ["deck-twin-a", "deck-twin-b"]) {
+      await deckStore.writeDeckSnapshot(id, {
+        id, title: id, cards: [], meta: { pdf: { name: "same.pdf", size: 6, sha256: TWIN_HASH, s3Key: key } }
+      });
+    }
+    const result = await migration.deleteDocumentCopies(
+      { name: "same.pdf", sha256: TWIN_HASH, s3Key: key },
+      { deckLocalId: "deck-twin-a", slot: docSlot.DOC_SLOT_DOC, pdfId: "primary" }
+    );
+    if (!objects.has(key)) return "the other deck's paper was deleted out from under it";
+    return (result.removed && result.shared) || `result ${JSON.stringify(result)}`;
+  });
+
+  await must("...and deletes it once no other deck needs it", async () => {
+    const key = `recall/primary/${TWIN_HASH}.pdf`;
+    await deckStore.writeDeckSnapshot("deck-twin-b", {
+      id: "deck-twin-b", title: "deck-twin-b", cards: [],
+      meta: { pdf: { name: "same.pdf", size: 6, sha256: TWIN_HASH, s3Key: key, offloaded: true } }
+    });
+    const result = await migration.deleteDocumentCopies(
+      { name: "same.pdf", sha256: TWIN_HASH, s3Key: key },
+      { deckLocalId: "deck-twin-a", slot: docSlot.DOC_SLOT_DOC, pdfId: "primary" }
+    );
+    if (objects.has(key)) return "an object nothing needs was kept";
+    return (result.removed && !result.shared) || `result ${JSON.stringify(result)}`;
   });
 
   console.warn = realWarn;

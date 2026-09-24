@@ -37,9 +37,12 @@ import { canReachDrive, isDriveConfigured, requestDriveToken } from "../cloud/dr
 import { deleteDriveFile, downloadDriveFile, findDriveFileByProperties } from "../cloud/drive-files.js?v=__BUILD__";
 import { CLOUD_TIMEOUT_MS, withTimeout } from "../cloud/net.js?v=__BUILD__";
 import { canReachS3, isS3Configured } from "../cloud/s3-config.js?v=__BUILD__";
+import { ensureS3ConfigFromCloud } from "../cloud/s3-config-sync.js?v=__BUILD__";
 import { deleteS3File, downloadS3File, s3DocumentKey, uploadS3File } from "../cloud/s3-files.js?v=__BUILD__";
 import { canSignStorageUrls, signedUrlFor } from "../cloud/storage-urls.js?v=__BUILD__";
 import { isSignedIn, supabaseClient } from "../cloud/supabase-client.js?v=__BUILD__";
+import { DOC_SLOT_NOTEBOOK } from "./doc-slot.js?v=__BUILD__";
+import { PDF_PRIMARY_ID } from "./pdf-multi.js?v=__BUILD__";
 
 // Separate from `images` so a paper is never anonymously readable (the images
 // bucket was public until this change, and old objects in it are the reason
@@ -181,12 +184,40 @@ export async function getDocument(deckLocalId, pdfMeta) {
 // already, so a missing key is simply recomputed. That is the practical payoff
 // of content-addressing — the lookup that cost Drive a query and an index costs
 // this one string concatenation, and it cannot go stale.
+//
+// Two things about WHICH key, both of which were wrong:
+//
+//   • A record with no `id` is not "unfiled". The deck's first paper is written
+//     as a bare meta.pdf with no id, and the notebook never has one; they were
+//     uploaded under "primary" and "notebook" respectively, so that is what the
+//     rebuild has to say too — or a notebook whose key a merge carried off was
+//     looked for at recall/unfiled/…, where nothing has ever been put.
+//   • A stored s3Key that names DIFFERENT bytes from the record's hash is not
+//     believed. A notebook rewritten while its upload could not get through
+//     kept the previous pages' key, and following it downloaded the old pages
+//     and cached them on the device labelled with the NEW hash — which then
+//     passed every check that exists to catch exactly that.
+//
+// And one thing about WHETHER: a device that has not been given the bucket
+// keys yet asks the account for them once before giving up. That is the first
+// open on a new phone, before its first sync has run.
+export function documentS3Key(pdfMeta) {
+  if (!pdfMeta) return "";
+  const hash = String(pdfMeta.sha256 || "");
+  const pdfId = pdfMeta.id || (pdfMeta.notebook ? DOC_SLOT_NOTEBOOK : PDF_PRIMARY_ID);
+  const derived = hash ? s3DocumentKey({ pdfId, sha256: hash }) : "";
+  const stored = String(pdfMeta.s3Key || "");
+  if (stored && (!hash || stored.endsWith(`/${hash}.pdf`))) return stored;
+  return derived;
+}
+
 async function s3DocumentBlob(pdfMeta) {
   if (!pdfMeta) return null;
-  if (!canReachS3()) return null;
   if (!navigator.onLine) return null;
-  const key = pdfMeta.s3Key || s3DocumentKey({ pdfId: pdfMeta.id, sha256: pdfMeta.sha256 });
+  const key = documentS3Key(pdfMeta);
   if (!key) return null;
+  if (!canReachS3() && !(await ensureS3ConfigFromCloud())) return null;
+  if (!canReachS3()) return null;
   return downloadS3File(key);
 }
 
