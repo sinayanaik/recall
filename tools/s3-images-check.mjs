@@ -212,7 +212,7 @@ try {
   const requests = [];
   const objects = new Map();   // key -> { body, type }
   let failPut = null;
-  let failListOnce = false;
+  let failListTimes = 0;
   const reply = (status, body = "", headers = {}) => ({
     ok: status >= 200 && status < 300,
     status,
@@ -244,7 +244,7 @@ try {
     if (method === "HEAD") return objects.has(key) ? reply(200, "", { "content-length": String(objects.get(key).body.length) }) : reply(404);
     if (method === "DELETE") return reply(objects.delete(key) ? 204 : 404);
     if (method === "GET" && key) return objects.has(key) ? reply(200, objects.get(key).body) : reply(404);
-    if (failListOnce) { failListOnce = false; throw new TypeError("Failed to fetch"); }
+    if (failListTimes > 0) { failListTimes -= 1; throw new TypeError("Failed to fetch"); }
     const prefix = new URL(url).searchParams.get("prefix") || "";
     const rows = [...objects.entries()].filter(([name]) => name.startsWith(prefix)).map(([name, object]) => `
       <Contents><Key>${name}</Key><Size>${object.body.length}</Size></Contents>`).join("");
@@ -265,7 +265,7 @@ try {
   const supabaseRemoved = [];
   let supabaseUploadError = null;
   let signable = true;
-  let failSupabaseListOnce = false;
+  let failSupabaseListTimes = 0;
   const publicUrl = (bucket, p) => `https://${HOST}/storage/v1/object/public/${bucket}/${encodeURI(p)}`;
   const fakeSupabase = {
     storage: {
@@ -277,7 +277,7 @@ try {
           return { data: { path: p }, error: null };
         },
         list: async (dir, { search, limit = 100, offset = 0 } = {}) => {
-          if (failSupabaseListOnce) { failSupabaseListOnce = false; throw new Error("Load failed — request timed out (list images)"); }
+          if (failSupabaseListTimes > 0) { failSupabaseListTimes -= 1; throw new Error("Load failed — request timed out (list images)"); }
           const names = new Map();
           for (const [p, body] of supabaseImages) {
             if (!p.startsWith(`${dir}/`)) continue;
@@ -478,22 +478,48 @@ try {
   });
 
   await must("a transient hiccup while listing images in Supabase is retried, not fatal", async () => {
-    failSupabaseListOnce = true;
+    failSupabaseListTimes = 1;
     try {
       const survey = await imageStorage.surveyImageStorage();
       return survey.supabase.count === 3 || `Supabase ${survey.supabase.count}`;
     } finally {
-      failSupabaseListOnce = false;
+      failSupabaseListTimes = 0;
     }
   });
 
   await must("a transient hiccup while listing images in the bucket is retried, not fatal", async () => {
-    failListOnce = true;
+    failListTimes = 1;
     try {
       const survey = await imageStorage.surveyImageStorage();
       return survey.bucket.count === 1 || `bucket ${survey.bucket.count}`;
     } finally {
-      failListOnce = false;
+      failListTimes = 0;
+    }
+  });
+
+  // The bug report this guards: one retry (two attempts total, both at
+  // CLOUD_TIMEOUT_MS) was not enough for a reader whose listing consistently
+  // took longer than that on some page — it failed the same way every time.
+  // listStorageObjects now gets three attempts at CLOUD_LIST_TIMEOUT_MS, so
+  // two failures in a row — which the old defaults could not survive — must
+  // still recover on the third.
+  await must("two hiccups in a row while listing images in Supabase still recover on the third attempt", async () => {
+    failSupabaseListTimes = 2;
+    try {
+      const survey = await imageStorage.surveyImageStorage();
+      return survey.supabase.count === 3 || `Supabase ${survey.supabase.count}`;
+    } finally {
+      failSupabaseListTimes = 0;
+    }
+  });
+
+  await must("...and the same for the bucket side of the same survey", async () => {
+    failListTimes = 2;
+    try {
+      const survey = await imageStorage.surveyImageStorage();
+      return survey.bucket.count === 1 || `bucket ${survey.bucket.count}`;
+    } finally {
+      failListTimes = 0;
     }
   });
 
