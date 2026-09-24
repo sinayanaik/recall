@@ -349,7 +349,9 @@ export async function openPage(client) {
 
 // A phone. deviceScaleFactor 2 and mobile:true matter for more than pixel
 // density — they are what puts the page under the mobile media queries this
-// app changes behaviour on (CHROME_MOBILE_QUERY is max-width: 720px).
+// app changes behaviour on (styles/16-mobile-reading.css's own breakpoint is
+// max-width: 720px) and under `pointer: coarse`, which several styles now key
+// off directly (see the note at the top of src/ui/chrome.js).
 export async function emulatePhone(page, { width = 390, height = 844, cpuThrottle = 1 } = {}) {
   await page.call("Emulation.setDeviceMetricsOverride", {
     width, height, deviceScaleFactor: 2, mobile: true

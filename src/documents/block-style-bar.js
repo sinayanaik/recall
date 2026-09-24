@@ -391,6 +391,10 @@ export function createBlockStyleBar({ style = null, kind = "text", has = null, o
 
 let popover = null;
 
+// The scroll listener's rAF handle — see scrollHandler in openBlockStylePopover
+// for why this exists at all.
+let styleBarScrollFrame = 0;
+
 export function isBlockStylePopoverOpen() {
   return Boolean(popover);
 }
@@ -400,7 +404,14 @@ export function closeBlockStylePopover() {
   window.removeEventListener("resize", popover.place);
   // Capture, because what moves this is the document scroller — not the window —
   // and a scroll event does not bubble.
-  document.removeEventListener("scroll", popover.place, true);
+  document.removeEventListener("scroll", popover.scrollHandler, true);
+  // A frame can already be in flight (a scroll landed, the rAF is queued, then
+  // Escape or a row press closes the popover before it fires) — drop it, or it
+  // calls place() against a root that has just been removed from the document.
+  if (styleBarScrollFrame) {
+    cancelAnimationFrame(styleBarScrollFrame);
+    styleBarScrollFrame = 0;
+  }
   popover.root.remove();
   popover = null;
   return true;
@@ -452,13 +463,27 @@ export function openBlockStylePopover({ anchor, kind = "text", style = null, has
     closeBlockStylePopover();
   });
 
-  popover = { root, place, bar };
+  // Coalesced into one rAF per frame, the same fix (and the same reason)
+  // documentScrollFrame in main.js applies to the document view's own scroll
+  // handler: a fling delivers scroll events faster than it delivers frames, and
+  // `place` forces two getBoundingClientRect() reads plus two style writes —
+  // paying that on every raw event instead of once per frame is exactly the
+  // kind of per-scroll layout thrash that fix was measured against.
+  const scrollHandler = () => {
+    if (styleBarScrollFrame) return;
+    styleBarScrollFrame = requestAnimationFrame(() => {
+      styleBarScrollFrame = 0;
+      place();
+    });
+  };
+
+  popover = { root, place, bar, scrollHandler };
   place();
   // Re-placed rather than closed on a scroll: the panel is about the block, the
   // block is on a page that scrolls under it, and a control that vanishes when
   // the surface moves an inch is one nobody trusts. `place` also closes it if
   // the block it is about has gone.
   window.addEventListener("resize", place);
-  document.addEventListener("scroll", place, true);
+  document.addEventListener("scroll", scrollHandler, true);
   return popover;
 }

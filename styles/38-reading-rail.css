@@ -33,8 +33,9 @@
  *
  * That is true of the tray's CONTENTS and false of the rail itself, because it
  * left the rail unable to be the way IN. The routes into focus mode on a phone
- * were: scroll down (portrait only, until CHROME_MOBILE_QUERY was widened),
- * Ctrl+. (no keyboard), and the ⤢ row inside the notes ⋯ menu. So on a landscape
+ * were: scroll down (portrait only, back when folding was scroll-driven —
+ * since removed, see the note at the top of src/ui/chrome.js), Ctrl+. (no
+ * keyboard), and the ⤢ row inside the notes ⋯ menu. So on a landscape
  * phone — the shape where the app's own header costs the largest share of the
  * screen — focus mode and full screen were three presses deep inside a menu.
  *
@@ -159,6 +160,17 @@ body:not(.chrome-collapsed) .reading-rail[data-expanded="false"] .reading-rail-g
   transition: background 0.16s linear, border-color 0.16s linear, opacity 0.22s linear;
 }
 
+/* This rail exists for touch — a mouse user has the row above instead — so
+   "coarse pointer" here is the overwhelming common case, not an edge case.
+   Blur is GPU-expensive and this grip sits pinned over a note that scrolls
+   underneath it; drop the recompositing cost and keep the tint, which is
+   already legible on its own. */
+@media (pointer: coarse) {
+  .reading-rail-grip {
+    backdrop-filter: none;
+  }
+}
+
 /* The chevron, from the one span that used to be the middle of three bars. Two
    borders of a square, rotated — no extra markup and no pseudo-elements, so
    #readingRailGrip stays exactly the node src/ui/reading-rail.js and
@@ -259,6 +271,15 @@ body:not(.chrome-collapsed) .reading-rail[data-expanded="false"] .reading-rail-g
   backdrop-filter: blur(8px);
   box-shadow: 0 10px 30px rgb(0 0 0 / 0.34);
   pointer-events: auto;
+}
+
+/* Same trade as the grip above: drop the blur on a coarse pointer, keep the
+   tint. The tray can itself scroll (its rows), so this is the same "don't
+   re-blur every frame" cost, just for longer. */
+@media (pointer: coarse) {
+  .reading-rail[data-expanded="true"] .reading-rail-tray {
+    backdrop-filter: none;
+  }
 }
 
 /* ── The head: where you are, and the way out ──────────────────────────────

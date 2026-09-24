@@ -475,6 +475,18 @@
   transition: opacity 0.18s linear;
 }
 
+/* The worst case for this filter: .is-active means the reader is actively
+   scrolling/flinging the page RIGHT NOW, which is exactly when a blur behind
+   this pill has to be recomputed against moving content on every composited
+   frame. Coarse-pointer devices are where that fling actually happens at
+   speed, so drop the blur there and keep the tint — legible, and no longer
+   fighting the scroll for GPU time. */
+@media (pointer: coarse) {
+  .document-pager {
+    backdrop-filter: none;
+  }
+}
+
 .document-pager:hover,
 .document-pager:focus-within,
 .document-pager.is-active {

@@ -3278,11 +3278,12 @@ try {
   // It used to be asserted OFF screen while the chrome was expanded — a second
   // copy of a visible control. That is no longer the contract, and the reason is
   // the report this section now covers: the rail could never be the way IN. On a
-  // landscape phone the routes into focus mode were a scroll (portrait-gated
-  // until CHROME_MOBILE_QUERY was widened), Ctrl+. (no keyboard) and a row three
-  // presses deep in the notes ⋯ menu. So the rail is on screen whenever a deck
-  // is open, and what body.chrome-collapsed decides is how LOUD it is: the two
-  // assertions are now "always there" and "louder once the chrome folds".
+  // landscape phone the routes into focus mode were a scroll (portrait-gated,
+  // back when folding was scroll-driven — since removed, see the note at the
+  // top of src/ui/chrome.js), Ctrl+. (no keyboard) and a row three presses deep
+  // in the notes ⋯ menu. So the rail is on screen whenever a deck is open, and
+  // what body.chrome-collapsed decides is how LOUD it is: the two assertions
+  // are now "always there" and "louder once the chrome folds".
   //
   // Read through getComputedStyle rather than the hidden attribute, because the
   // fact is decided by a :has() rule from <body> and an element that is merely
@@ -4642,52 +4643,44 @@ try {
   // reliable button for full / focus screen in even mobile screen landscape
   // mode."
   //
-  // Every rail assertion above ran at a desktop-shaped viewport, and the two
-  // faults were both about the OTHER shape:
+  // Every rail assertion above ran at a desktop-shaped viewport, and this is
+  // the other shape: does the rail actually work on a phone turned sideways.
   //
-  //   * CHROME_MOBILE_QUERY was `(max-width: 720px)` alone. A phone in landscape
-  //     is ~844x390 — wider than that — so isMobileChrome() answered false on
-  //     the exact device the whole scroll-driven collapse was written for. The
-  //     scroll listener in src/main.js bails on it, so a landscape phone could
-  //     not enter focus mode by reading at all;
-  //   * applyChromeCollapse ANDed the scroll LOCK with the same query, so
-  //     rotating a phone that was already in focus mode dropped the mode
-  //     mid-sentence — the header came back, and the rail (display:none unless
-  //     the chrome was folded) went with it. That is the missing hamburger.
-  //
-  // The rotation is a real one: the metrics change, and whether a `change` event
-  // fires on chromeMobileMedia is up to the browser evaluating the query. The
-  // point of the widened query is that it does NOT fire, because both shapes of
-  // the same phone match it.
+  // The scroll-driven half of this that used to matter here — a phone
+  // rotating in or out of a `(max-width: 720px)` query, and a scroll-driven
+  // lock riding along with it — is gone: folding the chrome is a manual act
+  // now, full stop (see the note at the top of src/ui/chrome.js), so there is
+  // no portrait/landscape distinction left to test on that front. What is
+  // worth guarding instead is the inverse of the old bug: that scrolling a
+  // phone-sized document no longer folds anything on its own, and that focus
+  // mode entered explicitly still survives a rotation and still gives the
+  // rail its way in.
   await emulatePhone(page, { width: 390, height: 844 });
-  const landscape = await page.evaluate(`async () => {
+  const portrait = await page.evaluate(`async () => {
     const { api, settle } = window.__recall;
     api.setFocusMode(false);
     await settle(200);
-    const portraitIsMobile = api.isMobileChrome();
-    // Into focus mode by READING, not by pressing the button — the pin has always
-    // survived a rotation and the lock is the half that did not. trackChromeScroll
-    // is what the document-level scroll listener calls once per frame; two calls
-    // are an anchor and a downward scroll past CHROME_HIDE_DELTA.
+    // A fling down a long paper used to lock the chrome away by itself; now
+    // nothing should happen at all.
     const scroller = document.getElementById("documentView");
     scroller.scrollTop = 0;
-    api.trackChromeScroll(scroller);
     scroller.scrollTop = 400;
-    api.trackChromeScroll(scroller);
     await settle(400);
-    const lockedInPortrait = document.body.classList.contains("chrome-collapsed");
-    return { portraitIsMobile, lockedInPortrait };
+    const stayedOpenOnScroll = !document.body.classList.contains("chrome-collapsed");
+    // Into focus mode explicitly, still in portrait — the only way in now —
+    // so the next phase can check it survives the rotation that follows.
+    api.setFocusMode(true);
+    await settle(300);
+    return { stayedOpenOnScroll };
   }`);
 
   await emulatePhone(page, { width: 844, height: 390 });
   const rotated = await page.evaluate(`async () => {
     const { api, settle } = window.__recall;
-    // Long enough for a matchMedia change listener to have fired if the query
-    // flipped, and for the 220ms fold transition either way.
+    // Long enough for the 220ms fold transition and any resize-driven layout
+    // to have settled.
     await settle(500);
-    const stillLocked = document.body.classList.contains("chrome-collapsed");
-    const landscapeIsMobile = api.isMobileChrome();
-    const railBox = document.getElementById("readingRail").getBoundingClientRect();
+    const entered = document.body.classList.contains("chrome-collapsed");
     const grip = document.getElementById("readingRailGrip");
     const gripRect = grip.getBoundingClientRect();
     const gripOnScreen = getComputedStyle(document.getElementById("readingRail")).display !== "none"
@@ -4728,16 +4721,13 @@ try {
     document.getElementById("readingRail").dataset.expanded = "false";
     api.setFocusMode(false);
     await settle(300);
-    return { stillLocked, landscapeIsMobile, gripOnScreen, gripIsHit, trayFits, modesReachable, focusSaysOn, leftFocus, trayStayedOpen, focusSaysOff, backIn, railW: Math.round(railBox.width) };
+    return { entered, gripOnScreen, gripIsHit, trayFits, modesReachable, focusSaysOn, leftFocus, trayStayedOpen, focusSaysOff, backIn };
   }`);
 
-  check("a phone counts as a phone in portrait", landscape.portraitIsMobile, `isMobileChrome=${landscape.portraitIsMobile}`);
-  check("...and scrolling down a paper locks the chrome away", landscape.lockedInPortrait,
-    `chrome-collapsed=${landscape.lockedInPortrait}`);
-  check("...and it is still a phone once it is turned on its side",
-    rotated.landscapeIsMobile, `isMobileChrome=${rotated.landscapeIsMobile} at 844x390`);
-  check("...so rotating does not throw focus mode away", rotated.stillLocked,
-    `chrome-collapsed after rotate=${rotated.stillLocked}`);
+  check("scrolling a phone-sized document never folds the chrome by itself",
+    portrait.stayedOpenOnScroll, `chrome-collapsed after scroll=${!portrait.stayedOpenOnScroll}`);
+  check("focus mode entered explicitly still works after rotating to landscape",
+    rotated.entered, `chrome-collapsed=${rotated.entered}`);
   check("...and the hamburger is on the landscape screen, hittable",
     rotated.gripOnScreen && rotated.gripIsHit,
     `onScreen=${rotated.gripOnScreen} hit=${rotated.gripIsHit}`);

@@ -22,7 +22,7 @@ import { enterNotesEditing, isNotesEditing, notesScrolledSource, quizPanel, rend
 import { applyNotesPagedLayout } from "../notes/paged-view.js?v=__BUILD__";
 import { flushReadingPositionSave } from "../notes/reading-position.js?v=__BUILD__";
 import { hideNotesSelectionButton } from "../notes/selection.js?v=__BUILD__";
-import { measureChromeHeights, resetChromeAutoHide } from "./chrome.js?v=__BUILD__";
+import { measureChromeHeights } from "./chrome.js?v=__BUILD__";
 
 // `options.deferRender` yields one frame between flipping the toggle's own
 // classes and doing the work behind them. Only the user-facing toggle passes
@@ -149,8 +149,6 @@ export function setViewMode(mode, options = {}) {
   // open. A keepPlace refresh passes the mode it is already on, so `changed` is
   // false and this records nothing, which is correct by construction.
   if (changed && hasActiveDeck()) rememberDeckTab(deckTabKey(state.deckId, state.localDeckId), next);
-  // Switching views is navigation, not reading — start with the header visible.
-  if (changed) resetChromeAutoHide();
   // The appbar is a different height in each view — the card counters are
   // hidden on a phone while reading — and its own ResizeObserver cannot see it
   // GROW, because the box that observer watches is clamped to the last height

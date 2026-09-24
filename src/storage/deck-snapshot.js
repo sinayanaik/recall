@@ -253,8 +253,8 @@ export function loadDeckSnapshot(payload, titleHint = "", append = false, { keep
     // any deck without a paper — which is the whole of the reported "when sync is
     // happening i am being moved to always Notes panel". Calling setViewMode with
     // the mode already in state.viewMode is what repaints the surface they ARE
-    // on: `changed` comes out false, so resetChromeAutoHide and
-    // measureChromeHeights stand down and it degenerates to the paint.
+    // on: `changed` comes out false, so measureChromeHeights stands down and it
+    // degenerates to the paint.
     //
     // The one exception is the case where moving them is the correct answer:
     // they are looking at a document that the other device has just removed.
