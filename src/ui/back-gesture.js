@@ -22,6 +22,7 @@ import { closeClozePanel } from "../panels/cloze-panel.js?v=__BUILD__";
 import { closeAppInfoModal } from "../pwa/app-info.js?v=__BUILD__";
 import { closeQnCatMenu, closeQnCatModal, closeQuickNotesBoard } from "../quick-notes/board.js?v=__BUILD__";
 import { closeDiagramModal } from "../render/diagram-zoom.js?v=__BUILD__";
+import { closeBucketPanel } from "../storage/bucket-panel.js?v=__BUILD__";
 import { closeStoragePanel } from "../storage/storage-panel.js?v=__BUILD__";
 import { isFocusModeActive, isImmersive, setFocusMode, setImmersiveMode } from "./chrome.js?v=__BUILD__";
 import { closeImportPanel, closeMyDecksPanel } from "./deck-header.js?v=__BUILD__";
@@ -121,6 +122,7 @@ export const OVERLAY_LAYERS = [
   { isOpen: () => Boolean(el.allCardsPanel && !el.allCardsPanel.hidden), close: () => closeAllCardsPanel() },
   { isOpen: () => Boolean(el.stylePanel && !el.stylePanel.hidden), close: () => closeStylePanel() },
   { isOpen: () => Boolean(el.storagePanel && !el.storagePanel.hidden), close: () => closeStoragePanel() },
+  { isOpen: () => Boolean(el.bucketPanel && !el.bucketPanel.hidden), close: () => closeBucketPanel() },
   { isOpen: () => Boolean(el.myDecksPanel && !el.myDecksPanel.hidden), close: () => closeMyDecksPanel() },
   { isOpen: () => Boolean(el.importPanel && el.importPanel.classList.contains("is-open")), close: () => closeImportPanel() },
 

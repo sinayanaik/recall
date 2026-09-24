@@ -59,6 +59,7 @@ import { activeDocSlot, DOC_SLOT_DOC, stampDocSlotAll } from "./doc-slot.js?v=__
 import { activePdfId, recordsForSurface, recordsOutsideSurface, stampRecordPdfIdAll } from "./pdf-multi.js?v=__BUILD__";
 import { closeBlockEditor, openBlockEditor } from "./pdf-block-editor.js?v=__BUILD__";
 import { pdfPageElement, pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
+import { resolveStorageImages } from "../cloud/storage-urls.js?v=__BUILD__";
 import { hydrateLocalImages, storeImageOrQueue } from "../images/outbox.js?v=__BUILD__";
 import { renderMarkdown } from "../render/block-cache.js?v=__BUILD__";
 import { enhanceRenderedMarkdown } from "../render/enhance.js?v=__BUILD__";
@@ -663,7 +664,18 @@ function paintBlock(node, block) {
       img.decoding = "async";
       body.appendChild(img);
     }
-    if (img.getAttribute("src") !== block.src) img.setAttribute("src", block.src);
+    // Compared with the SOURCE this element was last given, not with its live
+    // src: the resolve pass below swaps a canonical Storage URL for a signed
+    // one (and hydrateLocalImages a recall-img: token for a blob), and putting
+    // the canonical URL back on every paint — every drag frame — would throw
+    // that away each time, and show a private bucket's refusal in its place.
+    if (img.dataset.blockSrc !== block.src) {
+      img.dataset.blockSrc = block.src || "";
+      img.removeAttribute("data-canonical-src");
+      delete img.dataset.signRetried;
+      delete img.dataset.bucketRetried;
+      img.setAttribute("src", block.src || "");
+    }
     img.alt = block.alt || "";
     return;
   }
@@ -880,6 +892,10 @@ async function renderBlockBody(body, md, node = null, block = null) {
     // were added offline — the same hydrate paintDocumentBlocks does for the
     // image blocks beside them.
     await hydrateLocalImages(body);
+    // ...and the ones already uploaded, which reach here as canonical URLs the
+    // private bucket will not serve as they stand — the same swap a note's
+    // pictures get (cloud/storage-urls.js).
+    await resolveStorageImages(body);
   } catch (error) {
     console.warn("Could not render a block", error);
   }
@@ -912,6 +928,11 @@ export function paintDocumentBlocks(pageNumber) {
   // token; this is what turns that token into something the page can show,
   // exactly as it does for a picture in a note. A no-op when there are none.
   hydrateLocalImages(layer);
+  // And an uploaded one is given a URL that loads — from the reader's bucket or
+  // a Supabase signature, whichever holds it. Image blocks were never given one
+  // before, and showed only when the service worker happened to have cached
+  // the picture.
+  resolveStorageImages(layer).catch((error) => console.warn("Could not resolve the block images", error));
 }
 
 export function repaintDocumentBlocks() {

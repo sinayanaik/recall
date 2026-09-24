@@ -351,6 +351,53 @@ try {
       && String(twoDevices.openedBytes) === String([37, 80, 68, 70, 45, 49, 46, 55, 10, 7, 7, 7]))
       || JSON.stringify(twoDevices));
 
+  // ── A figure, through the real browser ──────────────────────────────────
+  //
+  // Images follow the papers into the bucket (src/cloud/s3-images.js). Two
+  // things a stubbed transport cannot see: that a PUT carrying Cache-Control
+  // as well as Content-Type still passes the preflight and the signature, and
+  // that the GET URL — deliberately dated to the start of the UTC day so a
+  // figure keeps one src all day — is one the bucket accepts. And a HEAD has
+  // to be signed as a HEAD, or the broken-image scan calls every figure gone.
+  const figure = await page.evaluate(async () => {
+    const images = await import("./src/cloud/s3-images.js?v=__BUILD__");
+    // Not a *.supabase.co host: this page aborts every request whose URL
+    // mentions supabase.co (see the interception above), and a figure's key
+    // carries its identifier's host.
+    const host = "fixture-project.test";
+    const path = "user-1/decks/a deck--ld_1/0001 fig.webp";
+    const bytes = new Uint8Array([82, 73, 70, 70, 1, 2, 3, 4, 87, 69, 66, 80]);
+    try {
+      await images.uploadS3Image(host, path, new Blob([bytes], { type: "image/webp" }), { contentType: "image/webp" });
+    } catch (error) {
+      return { uploadError: String(error?.message || error), key: images.s3ImageKey(host, path), config: Boolean(localStorage.getItem("recall:s3Config")) };
+    }
+    const getUrl = await images.s3ImageUrl(host, path);
+    const got = await fetch(getUrl);
+    const headUrl = await images.s3ImageUrl(host, path, { method: "HEAD" });
+    const head = await fetch(headUrl, { method: "HEAD" });
+    const headWithGetSignature = await fetch(getUrl, { method: "HEAD" });
+    return {
+      getStatus: got.status,
+      bytes: got.ok ? [...new Uint8Array(await got.arrayBuffer())] : null,
+      headStatus: head.status,
+      mismatchedHead: headWithGetSignature.status,
+      dated: new URL(getUrl).searchParams.get("X-Amz-Date") || "",
+      key: images.s3ImageKey(host, path)
+    };
+  });
+
+  must("a figure PUT with Content-Type and Cache-Control passes the preflight and the signature",
+    Boolean(bucket.objects.get(figure.key))
+      || `nothing stored at ${figure.key}: ${JSON.stringify(figure)} · bucket saw ${JSON.stringify(bucket.seen.slice(-6))}`);
+
+  must("...and its day-dated GET URL is accepted, bytes intact",
+    (figure.getStatus === 200 && String(figure.bytes) === String([82, 73, 70, 70, 1, 2, 3, 4, 87, 69, 66, 80])
+      && /T000000Z$/.test(figure.dated)) || JSON.stringify(figure));
+
+  must("...and a HEAD signed as a HEAD is answered, where a GET signature is refused",
+    (figure.headStatus === 200 && figure.mismatchedHead === 403) || JSON.stringify(figure));
+
   // ── A CORS policy that allows reading and nothing else ──────────────────
   //
   // The LIST the connection test used to stop at is a simple request — no

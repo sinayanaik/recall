@@ -17,7 +17,7 @@ export function createToolbarHtml(options = {}) {
   // clear-formatting act on whole lines.
   const lineTools = `
     <button type="button" data-action="bullet" title="Toggle Bullet List">-</button>
-    <button type="button" data-action="insert-image" title="Insert image (upload to Supabase Storage)">🖼️</button>
+    <button type="button" data-action="insert-image" title="Insert image (uploaded to your Cloud bucket, or to Supabase if there is none)">🖼️</button>
     <button type="button" data-action="insert-ink" title="Draw — write or sketch with a stylus, and drop it into the note here">✎</button>
     <button type="button" data-action="clear-all" title="Clear Formatting">Tx</button>`;
   // Everything else this toolbar used to carry — B I U S </>, font, colour,

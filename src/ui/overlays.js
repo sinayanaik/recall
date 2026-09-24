@@ -90,6 +90,7 @@ export function anyModalOpen() {
     (typeof appInfoModal !== "undefined" && appInfoModal && !appInfoModal.hidden) ||
     (el.stylePanel && !el.stylePanel.hidden) ||
     (el.storagePanel && !el.storagePanel.hidden) ||
+    (el.bucketPanel && !el.bucketPanel.hidden) ||
     (el.diagramModal && !el.diagramModal.hidden) ||
     (el.syncModal && !el.syncModal.hidden) ||
     (el.allCardsPanel && !el.allCardsPanel.hidden) ||

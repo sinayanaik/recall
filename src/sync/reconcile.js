@@ -39,7 +39,7 @@ import { deckAutosaveTimer, describeSyncError, isQuotaExceededError, persistWork
 import { rearmAutoSync } from "./auto-sync.js?v=__BUILD__";
 import { cardIsDirty, cardSyncSignature, mergeCloudCardsIntoSnapshot, readCardTombstones, reconcileCardsBeforePush } from "./cards.js?v=__BUILD__";
 import { calculateSyncDiff, syncTextChanged, syncTextFingerprint } from "./diff.js?v=__BUILD__";
-import { mergeDeckMeta, mergeDocumentAnnotations, reconcileDeckBeforePush } from "./document-sync.js?v=__BUILD__";
+import { documentLocatorsAhead, mergeDeckMeta, mergeDocumentAnnotations, reconcileDeckBeforePush } from "./document-sync.js?v=__BUILD__";
 import { mergeNoteBodies } from "./notes-merge3.js?v=__BUILD__";
 import { refreshSyncIndicatorBaseline, renderDeckEmptyState, setSyncIndicator, updateDeckEmptyStatus } from "./indicator.js?v=__BUILD__";
 import { pushDeckRowsToCloud } from "./push.js?v=__BUILD__";
@@ -164,6 +164,7 @@ export async function pullCloudDeckIntoLibraryLocked(cloud, cards) {
   // right now, and sorting and capping so all devices converge on one array.
   const incomingMeta = mergeDeckMeta(cloudMeta, oldSnapshot?.meta, { prefer: "cloud" });
   incomingMeta.linkIds = noteLinkAliasesFor(incomingMeta, localId);
+  const locatorsAhead = cloudCarriesBody && documentLocatorsAhead(incomingMeta, cloudMeta);
   // ── The document's annotations ──────────────────────────────────────────
   //
   // The second place where every device holds part of the truth. Highlighting a
@@ -455,7 +456,10 @@ export async function pullCloudDeckIntoLibraryLocked(cloud, cards) {
     // owes the cloud a push. Stamping it aligned would leave the merge sitting
     // on one device for ever, which is what two assertions in
     // tools/sync-reconcile-check.mjs said before this clause existed.
-    updatedAt: (keptLocal || blockedResurrections || notesWereMerged) ? new Date().toISOString() : cloudIso,
+    // And a fourth: the merge carried a paper's bucket key, hash or retired
+    // old location back from this device's copy (documentLocatorsAhead). The
+    // cloud lacks it, and every other device needs it to find the paper.
+    updatedAt: (keptLocal || blockedResurrections || notesWereMerged || locatorsAhead) ? new Date().toISOString() : cloudIso,
     createdAt: cloud.created_at || existing?.createdAt || cloudIso,
     // Distinct from updatedAt (which also bumps on plain local edits) — this
     // specifically means "last confirmed match with the cloud", surfaced in
@@ -1049,6 +1053,26 @@ export let lastStartupSyncReport = null;
 // lands during a background sync can wait for it and then run, instead of
 // hitting the in-flight guard and silently doing nothing at all.
 export let reconcilePromise = null;
+
+// One ordinary, quiet sync, run to completion — waiting first for any sync
+// already in flight, which reconcileAllDecks({ explicit: false }) would
+// otherwise return straight past. For a caller whose next step depends on this
+// device's decks having reached the cloud: the Cloud bucket panel's paper move,
+// which asks the cloud afterwards whether they did, and deletes nothing unless
+// they have. Never throws; the proof is in that later read, not in this.
+export async function syncAllDecksAndWait() {
+  for (let spins = 0; reconcileInFlight && spins < 5; spins++) {
+    try { await reconcilePromise; } catch (_) { /* its own handler reported it */ }
+  }
+  try {
+    await reconcileAllDecks({ explicit: false });
+  } catch (error) {
+    console.warn("The sync did not finish", error);
+  }
+  if (reconcileInFlight) {
+    try { await reconcilePromise; } catch (_) { /* as above */ }
+  }
+}
 
 // The full bidirectional sync. Pulls every cloud deck that's missing locally or
 // newer in the cloud; pushes every local deck that's new or newer locally.

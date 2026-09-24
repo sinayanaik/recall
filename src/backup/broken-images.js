@@ -57,10 +57,13 @@ async function checkRefReachable(ref) {
   const abort = new AbortController();
   const timer = setTimeout(() => abort.abort(), CHECK_TIMEOUT_MS);
   try {
-    const target = await fetchableStorageUrl(ref);
+    // Signed for the verb actually sent. A figure in the reader's bucket gets
+    // a presigned URL, and SigV4 signs the method: a GET signature answers a
+    // HEAD with 403, which would call every figure there "gone".
+    const target = await fetchableStorageUrl(ref, { method: "HEAD" });
     let response = await fetch(target, { method: "HEAD", mode: "cors", credentials: "omit", signal: abort.signal });
     if (response.status === 405) {
-      response = await fetch(target, {
+      response = await fetch(await fetchableStorageUrl(ref), {
         method: "GET", mode: "cors", credentials: "omit",
         headers: { Range: "bytes=0-0" }, signal: abort.signal
       });

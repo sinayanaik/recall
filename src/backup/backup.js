@@ -357,6 +357,14 @@ export function collectBackupImageRefs(snapshot, into = new Set()) {
     scan(card.question);
     scan(card.answer);
   }
+  // A PDF deck's image blocks (`src`) and text blocks (`md`) hold figures of
+  // their own. Left out, a backup quietly lacked them — and a backup is what
+  // the reader is told to take before anything in the cloud is removed.
+  for (const block of Array.isArray(snapshot?.meta?.pdfBlocks) ? snapshot.meta.pdfBlocks : []) {
+    if (!block || typeof block !== "object") continue;
+    if (typeof block.src === "string" && isPackableImageRef(block.src)) into.add(block.src);
+    scan(block.md);
+  }
   return into;
 }
 

@@ -8,7 +8,7 @@
 import { isSignedIn, supabaseClient } from "../cloud/supabase-client.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { chooseImageCompression } from "./compress-dialog.js?v=__BUILD__";
-import { deckImageFolder, insertAtCursor, replaceInTextarea, uploadImageToSupabase } from "./upload.js?v=__BUILD__";
+import { deckImageFolder, insertAtCursor, replaceInTextarea, uploadImage } from "./upload.js?v=__BUILD__";
 import { readLocalDeckIndex, writeLocalDeckIndex } from "../library/local-library.js?v=__BUILD__";
 import { scopedQueryAll } from "../render/deferred-work.js?v=__BUILD__";
 // Only ever CALLED, never read at module scope — the cycle back through
@@ -220,7 +220,7 @@ export async function flushPendingImageUploads(onProgress = null) {
   for (const entry of queued) {
     let url;
     try {
-      url = await uploadImageToSupabase(entry.blob, { folder: entry.folder || null });
+      url = await uploadImage(entry.blob, { folder: entry.folder || null });
     } catch (error) {
       // A permanent rejection (RLS) would fail identically forever, and holding
       // the blob would re-attempt it on every single sync. Anything else is
@@ -541,9 +541,12 @@ export async function storeImageOrQueue(file) {
   // was actually in, even if they switch decks while it uploads.
   const folder = deckImageFolder();
   try {
-    return { url: await uploadImageToSupabase(file, { folder }) };
+    return { url: await uploadImage(file, { folder }) };
   } catch (err) {
-    if (err.message !== "OFFLINE" && !err.notStored) {
+    // `retryable`: the bucket and Supabase were both tried and neither refused
+    // for good — a dropped connection, most likely. Kept, like OFFLINE, rather
+    // than handed back as a failure the reader has to redo by hand.
+    if (err.message !== "OFFLINE" && !err.notStored && !err.retryable) {
       return { error: err.message === "NOT_SIGNED_IN" ? "not-signed-in" : "failed", cause: err };
     }
     if (err.notStored) console.warn("An upload came back clean but left nothing in the bucket", err);

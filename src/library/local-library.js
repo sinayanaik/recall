@@ -456,13 +456,16 @@ function annotationsMatch(a, b) {
 //   • the bucket key recorded once an upload lands, which is the one fact a
 //     device without that key would otherwise have to derive
 //   • "Remove from cloud", a PDF removed from a deck, or one renamed
+//   • an old Drive or Supabase copy retired after the move into the bucket
+//     (retiredLocators, documents/pdf-multi.js) — which every other device has
+//     to hear about, or it offers the same paper for moving again
 //
 // Every one of those stamps the entry's `at` or changes a field listed here.
 // Cheap for the same reason the handwriting signature is: a deck carries a
 // handful of documents at most.
 function documentLocatorSignature(meta) {
   const stamp = (entry) => (entry && typeof entry === "object"
-    ? `${entry.id || ""}:${entry.at || 0}:${entry.sha256 || ""}:${entry.s3Key || ""}:${entry.offloaded ? 1 : 0}:${entry.label || ""}`
+    ? `${entry.id || ""}:${entry.at || 0}:${entry.sha256 || ""}:${entry.s3Key || ""}:${entry.offloaded ? 1 : 0}:${entry.label || ""}:${entry.retiredLocators?.path || ""}:${entry.retiredLocators?.driveId || ""}`
     : "");
   const list = Array.isArray(meta?.pdfs) ? meta.pdfs.map(stamp).join(",") : "";
   return `${list}|${stamp(meta?.pdf)}|${stamp(meta?.notebook)}`;

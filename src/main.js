@@ -17,7 +17,8 @@ import { questionFitDeferredBySelection, scheduleLiveQuestionFit } from "./cards
 import { handleDiagramPointerDown, handleDiagramPointerEnd, handleDiagramPointerMove, handleDiagramWheel, handlePointerCancel, handlePointerDown, handlePointerMove, handlePointerUp, handleStylePanelTouchMove, handleStylePanelTouchStart, handleStylePanelWheel, handleTouchCancel, handleTouchEnd, handleTouchMove, handleTouchStart, hasCardTextSelection, isCardActionTarget } from "./cards/swipe.js?v=__BUILD__";
 import { describeAuthError, getCachedSession, handleLogin, handleLogout, handleSignup } from "./cloud/auth.js?v=__BUILD__";
 import { closeStylePanel, handleStyleEnvironmentChange, loadStyleFromWeb, openStylePanel, switchStyleEditProfile, syncStyleToWeb } from "./cloud/style-sync.js?v=__BUILD__";
-import { resolveUnresolvedStorageImages } from "./cloud/storage-urls.js?v=__BUILD__";
+import { onS3ImageIndexChange, refreshS3ImageIndex } from "./cloud/s3-images.js?v=__BUILD__";
+import { resolveStorageImages, resolveUnresolvedStorageImages } from "./cloud/storage-urls.js?v=__BUILD__";
 import { onS3ConfigAdopted } from "./cloud/s3-config-sync.js?v=__BUILD__";
 import { clearSupabaseConfig, initSupabaseClient, isSignedIn, onSigningReadyChange, reloadSupabaseLibrary, saveSupabaseConfig, setSignedIn, setSupabaseClient } from "./cloud/supabase-client.js?v=__BUILD__";
 import { closeWebDeckExportMenus } from "./cloud/web-decks.js?v=__BUILD__";
@@ -94,11 +95,12 @@ import { scheduleMarkdownTableFit } from "./render/tables.js?v=__BUILD__";
 import { deckSnapshotCache, deckStoreChannel, deckStoreRequest, indexedDbUnavailable, pendingDeckWrites, scheduleDeckAutosave, setDeckStoreChannel, touchDeckSnapshotCache } from "./storage/deck-store.js?v=__BUILD__";
 import { isQuotaExceededError } from "./storage/quota.js?v=__BUILD__";
 import { deleteDocumentCopies, onDocumentBackfillDone, scheduleDocumentBackfill } from "./storage/document-migration.js?v=__BUILD__";
-import { closeStoragePanel, offloadStorageDocument, openStoragePanel, refreshStorageReport, runStorageAction } from "./storage/storage-panel.js?v=__BUILD__";
+import { bucketPanelOpen, closeBucketPanel, openBucketPanel, refreshBucketReport, runBucketAction, setBucketKeysChanged, setBucketSyncRunner } from "./storage/bucket-panel.js?v=__BUILD__";
+import { closeStoragePanel, offloadStorageDocument, openStoragePanel, refreshStorageReport, runStorageAction, setBucketPanelOpener } from "./storage/storage-panel.js?v=__BUILD__";
 import { applyAutoSyncInterval, autoSyncTick, schedulePostEditSync, setAutoSyncMinutes } from "./sync/auto-sync.js?v=__BUILD__";
 import { updateDeckEmptyStatus } from "./sync/indicator.js?v=__BUILD__";
 import { showNotesConflictModal } from "./sync/notes-conflict.js?v=__BUILD__";
-import { reconcileAllDecks } from "./sync/reconcile.js?v=__BUILD__";
+import { reconcileAllDecks, syncAllDecksAndWait } from "./sync/reconcile.js?v=__BUILD__";
 import { closeTopmostOverlay, initBackGesture } from "./ui/back-gesture.js?v=__BUILD__";
 import { showAuthenticatedUI, showLibraryFailedScreen, showLoginScreen, showSetupScreen } from "./ui/boot-screens.js?v=__BUILD__";
 import { applyChromeCollapse, chromeMobileMedia, chromeScrollFrame, hasStudyTextSelection, initImmersiveMode, isFocusModeActive, isMobileChrome, measureChromeHeights, setChromeCollapseHandler, setChromeFocusPinned, setChromeModesHandler, setChromeScrollFrame, setFocusMode, toggleImmersiveMode, trackChromeScroll } from "./ui/chrome.js?v=__BUILD__";
@@ -2021,6 +2023,17 @@ document.getElementById("myDecksBulkDeleteBtn")?.addEventListener("click", () =>
 }
 el.styleBtn.addEventListener("click", openStylePanel);
 el.closeStyleBtn.addEventListener("click", closeStylePanel);
+el.bucketBtn?.addEventListener("click", openBucketPanel);
+el.closeBucketBtn?.addEventListener("click", closeBucketPanel);
+el.bucketRefreshBtn?.addEventListener("click", () => refreshBucketReport());
+el.bucketBody?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-bucket-action]");
+  if (button && !button.disabled) runBucketAction(button.dataset.bucketAction);
+});
+// Storage & Data points here rather than importing this panel, and the move
+// runs an ordinary sync between copying and deleting (see bucket-panel.js).
+setBucketPanelOpener(openBucketPanel);
+setBucketSyncRunner(syncAllDecksAndWait);
 el.storageBtn?.addEventListener("click", openStoragePanel);
 el.closeStorageBtn?.addEventListener("click", closeStoragePanel);
 el.storageRefreshBtn?.addEventListener("click", () => refreshStorageReport());
@@ -2955,6 +2968,26 @@ async function resolveImagesAwaitingSignature() {
 onSigningReadyChange(() => { resolveImagesAwaitingSignature(); });
 window.addEventListener("online", () => { resolveImagesAwaitingSignature(); });
 
+// ── Figures in the reader's bucket ───────────────────────────────────────────
+//
+// Which figures the bucket holds is an index read with one LIST (see
+// cloud/s3-images.js). When it changes — first read at boot, keys arriving,
+// a copy finishing — every figure already on screen is resolved again, so one
+// that was sent to Supabase first (because the index had not landed yet) is
+// moved onto the bucket's URL without waiting for the next render.
+async function resolveImagesAfterBucketChange() {
+  try {
+    await resolveStorageImages(document);
+  } catch (error) {
+    console.warn("Could not re-resolve images after the bucket changed", error);
+  }
+}
+onS3ImageIndexChange(() => { resolveImagesAfterBucketChange(); });
+setBucketKeysChanged(() => {
+  refreshS3ImageIndex({ force: true });
+  resolveImagesAfterBucketChange();
+});
+
 // ── The PDF bucket, when its keys or its contents change under a device ──────
 //
 // Keys arriving from another device are the moment a paper that showed "this
@@ -2962,7 +2995,9 @@ window.addEventListener("online", () => { resolveImagesAwaitingSignature(); });
 // device imported before the keys existed can finally go up. Neither waits for
 // the reader to leave the tab and come back.
 onS3ConfigAdopted(() => {
-  if (el.storagePanel && !el.storagePanel.hidden) refreshStorageReport({ census: false, quiet: true });
+  if (bucketPanelOpen()) refreshBucketReport();
+  refreshS3ImageIndex({ force: true });
+  resolveImagesAfterBucketChange();
   retryMissingDocumentOpen().catch((error) => console.warn("Could not reopen the document", error));
   scheduleDocumentBackfill({ force: true });
 });
@@ -2970,7 +3005,7 @@ onS3ConfigAdopted(() => {
 // Said once per paper that actually went up, not once per sync: a run that had
 // nothing to do is silent, and a run that stopped says why in the panel.
 onDocumentBackfillDone((summary) => {
-  if (el.storagePanel && !el.storagePanel.hidden) refreshStorageReport({ census: false, quiet: true });
+  if (bucketPanelOpen()) refreshBucketReport();
   if (summary.uploaded) {
     showToast(`Uploaded ${summary.uploaded} paper${summary.uploaded === 1 ? "" : "s"} to your bucket — your other devices can open ${summary.uploaded === 1 ? "it" : "them"} now`, "success");
   }

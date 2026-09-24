@@ -169,3 +169,49 @@ export function splitPdfStoreKey(key) {
   if (at > 0) return { deckLocalId: value.slice(0, at), pdfId: value.slice(at + marker.length) };
   return { deckLocalId: value, pdfId: PDF_PRIMARY_ID };
 }
+
+// ── Old backends a record can still name ────────────────────────────────
+//
+// A PDF record carries where its bytes were ever put: `s3Key` for the bucket,
+// and the two backends before it — `driveId` (Google Drive) and `path` (the
+// Supabase `documents` bucket). Those two are never cleared, because each is
+// the honest record of where the bytes WERE, and because the sync's merge
+// (withCarriedLocators, sync/document-sync.js) refills a missing one from the
+// other side's copy of the record anyway — so clearing one only lasts until
+// the next sync.
+//
+// What changes when a paper has been moved into the bucket is not the field
+// but whether the app still owes it anything. `retiredLocators` says so, per
+// field, by VALUE:
+//
+//   { ..., path: "uid/pdfs/x/p.pdf", retiredLocators: { path: "uid/pdfs/x/p.pdf" } }
+//
+// A field is retired only while the marker names the same value the field
+// holds. A record that later names a DIFFERENT path (a paper re-imported over
+// the same slot, say) is owed a move again, because nothing has been said about
+// those bytes.
+//
+// Retired means: the bucket holds this paper, every device has been given what
+// it needs to find it there, and the old copy has been deleted — or, for Drive,
+// which will no longer let this app delete anything, deliberately left where it
+// is for the reader to remove by hand. It does NOT stop getDocument trying the
+// old location as a last resort; nothing is lost by asking.
+export const LEGACY_LOCATOR_FIELDS = ["path", "driveId"];
+
+export function isLocatorRetired(entry, field) {
+  const value = entry?.[field];
+  return Boolean(value) && entry?.retiredLocators?.[field] === value;
+}
+
+// The old locations this record still owes a move — present and not retired.
+export function liveLegacyLocators(entry) {
+  if (!entry || typeof entry !== "object") return [];
+  return LEGACY_LOCATOR_FIELDS.filter((field) => entry[field] && !isLocatorRetired(entry, field));
+}
+
+// The record with `field` marked retired at the value it holds now.
+export function withRetiredLocator(entry, field) {
+  if (!entry || typeof entry !== "object" || !entry[field]) return entry;
+  if (isLocatorRetired(entry, field)) return entry;
+  return { ...entry, retiredLocators: { ...(entry.retiredLocators || {}), [field]: entry[field] } };
+}

@@ -13,7 +13,9 @@ import { state } from "../core/state.js?v=__BUILD__";
 import { formatStorageBytes } from "../core/text.js?v=__BUILD__";
 import { compressImageToPreset, normalizeImageCompressionChoice, readImageCompressionChoice, writeImageCompressionChoice } from "../images/compress.js?v=__BUILD__";
 import { compressionSavingLabel, imageCompressionLevels } from "../images/compress-dialog.js?v=__BUILD__";
-import { storageFolderSlug, storageGroupId, storedImageNames, supabaseImagePathFromUrl, uploadImageToSupabase } from "../images/upload.js?v=__BUILD__";
+import { storageFolderSlug, storageGroupId, storedImageNames, supabaseImagePathFromUrl, uploadImage } from "../images/upload.js?v=__BUILD__";
+import { canReachS3 } from "../cloud/s3-config.js?v=__BUILD__";
+import { canonicalImageParts, storedS3ImageNames } from "../cloud/s3-images.js?v=__BUILD__";
 import { htmlToMarkdown } from "./html-to-markdown.js?v=__BUILD__";
 import { decksUnderFolder } from "../library/folder-tree.js?v=__BUILD__";
 import { FOLDER_SEP, addKnownFolder, normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
@@ -336,7 +338,7 @@ export function cancellableDelay(ms, progress) {
 export async function uploadEpubImageWithRetry(file, progress, destination = {}) {
   for (let attempt = 1; ; attempt++) {
     try {
-      return await uploadImageToSupabase(file, destination);
+      return await uploadImage(file, destination);
     } catch (error) {
       const worthRetrying = error?.message !== "NOT_SIGNED_IN" && !error?.authFailed;
       if (!worthRetrying || attempt >= EPUB_IMAGE_UPLOAD_ATTEMPTS) throw error;
@@ -443,7 +445,7 @@ export async function estimateEpubImageCompression(zip, imageEntries, choice) {
 export async function dropUnstoredEpubImages(urlMap, progress) {
   if (!urlMap.size) return null;
   // The folder every figure went into, taken from a URL rather than rebuilt:
-  // uploadImageToSupabase owns the path scheme and the uid, and re-deriving
+  // the upload (uploadImage) owns the path scheme and the uid, and re-deriving
   // either here is how the two drift apart.
   const [firstUrl] = urlMap.values();
   const samplePath = supabaseImagePathFromUrl(firstUrl);
@@ -451,8 +453,20 @@ export async function dropUnstoredEpubImages(urlMap, progress) {
   if (cut === -1) return null;
   const dir = samplePath.slice(0, cut);
   progress?.update("Checking the figures reached storage…", 1);
+  // Both storages, because a figure goes to the reader's bucket when there is
+  // one and to Supabase when there is not — or when the bucket turned it away
+  // (uploadImage). A figure is "stored" if EITHER holds it. And both have to
+  // ANSWER: a listing that failed is no evidence about anything, and reading
+  // one storage's silence as "the other one is all there is" would drop
+  // figures that landed perfectly well in the storage nobody heard from.
   const stored = await storedImageNames(dir);
   if (!stored) return null;
+  if (canReachS3()) {
+    const host = canonicalImageParts(firstUrl)?.host || "";
+    const inBucket = host ? await storedS3ImageNames(host, dir) : null;
+    if (!inBucket) return null;
+    for (const name of inBucket) stored.add(name);
+  }
   // A folder that lists as completely empty right after a run wrote figures
   // into it is far more likely to be a listing that did not work than a bucket
   // that swallowed every single upload — an older project whose policies refuse

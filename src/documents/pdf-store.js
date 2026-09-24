@@ -418,6 +418,34 @@ export async function deleteStorageDocument(path) {
   }
 }
 
+// The size of one object in the old `documents` bucket: a number when the
+// bucket says, null when it says the object is not there, and undefined when
+// nobody could ask (signed out, offline, a refusal). The move into the reader's
+// bucket asks this before it deletes a paper's Supabase copy, so that a copy
+// that is not the same file as the one now in the bucket — possible only for a
+// record that was never hashed — is kept rather than deleted.
+export async function storedDocumentSize(path) {
+  if (!path || !supabaseClient || !isSignedIn || !navigator.onLine) return undefined;
+  const cut = path.lastIndexOf("/");
+  const dir = cut === -1 ? "" : path.slice(0, cut);
+  const name = cut === -1 ? path : path.slice(cut + 1);
+  try {
+    const { data, error } = await withTimeout(
+      supabaseClient.storage.from(DOCUMENT_BUCKET).list(dir, { limit: 100, search: name }),
+      CLOUD_TIMEOUT_MS,
+      "check document"
+    );
+    if (error) throw error;
+    const row = (data || []).find((entry) => entry.name === name && entry.id);
+    if (!row) return null;
+    const size = Number(row.metadata?.size);
+    return Number.isFinite(size) ? size : undefined;
+  } catch (error) {
+    console.warn("Could not check the document in storage", error);
+    return undefined;
+  }
+}
+
 // ── Accounting, for the Storage panel ───────────────────────────────────────
 
 export const DOCUMENT_LIST_PAGE = 100;
