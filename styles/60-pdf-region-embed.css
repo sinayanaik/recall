@@ -22,6 +22,11 @@
 
 .pdf-region-embed-page {
   position: relative;
+  /* Scaled from pdf-region-resize.js/mountPdfRegionEmbed's own `scale(k)` —
+   * origin has to stay the crop's own top-left corner (where the preceding
+   * `translate` already put it), or scaling would grow around the middle of
+   * the FULL rendered page this sits inside of, not the visible crop. */
+  transform-origin: 0 0;
 }
 
 .pdf-region-embed.is-loading,
@@ -34,4 +39,33 @@
   color: var(--muted);
   font-size: 0.8rem;
   text-align: center;
+}
+
+/* A drag-corner handle, only mounted where a resize can be saved against a
+ * card (see the allow-list in src/render/enhance.js) — same idiom as
+ * .frame-card-resize-handle (62-frame-card-draggable.css), for a reader who
+ * already knows that gesture from the "Make a flashcard" modal.
+ */
+.pdf-region-resize-handle {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  width: 18px;
+  height: 18px;
+  cursor: nwse-resize;
+  touch-action: none;
+  opacity: 0.5;
+}
+
+.pdf-region-resize-handle:hover {
+  opacity: 0.85;
+}
+
+.pdf-region-resize-handle::before {
+  content: "";
+  position: absolute;
+  inset: 3px;
+  border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted);
+  border-radius: 0 0 2px 0;
 }

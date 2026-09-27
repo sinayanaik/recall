@@ -21,20 +21,31 @@ import { documentHighlightsForPdf, documentInkMarksForPdf } from "./pdf-highligh
 import { deckPdfById, PDF_PRIMARY_ID, pdfStoreKey } from "./pdf-multi.js?v=__BUILD__";
 import { getDocument } from "./pdf-store.js?v=__BUILD__";
 import { buildTextLayer, clampScale } from "./pdf-view.js?v=__BUILD__";
+import { attachRegionResizeHandle } from "./pdf-region-resize.js?v=__BUILD__";
 
 export const PDFREF_SCHEME = "pdfref:";
 
 // Wide enough to read a figure's fine print on a card face; not so wide that
-// it overflows a phone-width answer column before the (deferred) zoom/expand
-// affordance exists to compensate.
+// it overflows a phone-width answer column before a reader resizes it. A ref
+// can override this with its own stored width (see `width` below) once a
+// reader has dragged the resize handle on a card — see pdf-region-resize.js.
 export const EMBED_TARGET_WIDTH = 420;
 
-// `pdfId` is appended only for a non-primary PDF, so a card made before a
-// deck ever had more than one PDF keeps the exact ref it always had — every
-// existing card, and every client that has not seen this change, still parses
-// it exactly as before (implicit primary).
-export function pdfRegionRefMarkdown(page, rect, pdfId) {
-  const suffix = pdfId && pdfId !== PDF_PRIMARY_ID ? `:${pdfId}` : "";
+// `pdfId` and `width` are both appended only when they differ from the
+// implicit default (the primary PDF, EMBED_TARGET_WIDTH), so a card made
+// before either existed keeps the exact ref it always had — every existing
+// card, and every client that has not seen this change, still parses it
+// exactly as before. A width with no pdfId still needs a placeholder in the
+// pdfId slot (an empty segment) so position alone tells the two apart:
+//
+//   page:rect                  — neither set (unchanged)
+//   page:rect:pdfB             — pdfId only (unchanged)
+//   page:rect::480             — width only, primary PDF
+//   page:rect:pdfB:480         — both set
+export function pdfRegionRefMarkdown(page, rect, pdfId, width) {
+  const idPart = pdfId && pdfId !== PDF_PRIMARY_ID ? pdfId : "";
+  const widthPart = width ? String(Math.round(width)) : "";
+  const suffix = widthPart ? `:${idPart}:${widthPart}` : (idPart ? `:${idPart}` : "");
   return `![](${PDFREF_SCHEME}${page}:${rect.join(",")}${suffix})`;
 }
 
@@ -46,11 +57,17 @@ export function parsePdfRef(src) {
   if (sep === -1) return null;
   const page = Number(body.slice(0, sep));
   const rest = body.slice(sep + 1);
-  const [rectPart, pdfId = null] = rest.split(":");
+  const parts = rest.split(":");
+  const rectPart = parts[0];
+  const pdfId = parts[1] || null;
+  const widthNum = parts[2] ? Number(parts[2]) : null;
+  // A malformed width doesn't invalidate the ref — it just falls back to the
+  // default render width, the same as a ref written before widths existed.
+  const width = Number.isFinite(widthNum) && widthNum > 0 ? widthNum : null;
   const rect = rectPart.split(",").map(Number);
   if (!Number.isInteger(page) || page < 1) return null;
   if (rect.length !== 4 || rect.some((n) => !Number.isFinite(n))) return null;
-  return { page, rect, pdfId };
+  return { page, rect, pdfId, width };
 }
 
 // ── One open PDF per deck, independent of the Document surface's own
@@ -93,7 +110,7 @@ function openEmbedDoc(storeKey, pdfMeta) {
   return promise;
 }
 
-function buildWrapper(rect) {
+function buildWrapper(rect, targetWidth) {
   const wrapper = document.createElement("div");
   wrapper.className = "pdf-region-embed is-loading";
   // An immediate aspect-ratio guess from the quad itself (scale-invariant —
@@ -101,8 +118,8 @@ function buildWrapper(rect) {
   // once the real render lands.
   const w = Math.abs(rect[2] - rect[0]) || 1;
   const h = Math.abs(rect[3] - rect[1]) || 1;
-  wrapper.style.width = `${EMBED_TARGET_WIDTH}px`;
-  wrapper.style.height = `${Math.round((EMBED_TARGET_WIDTH * h) / w)}px`;
+  wrapper.style.width = `${targetWidth}px`;
+  wrapper.style.height = `${Math.round((targetWidth * h) / w)}px`;
   return wrapper;
 }
 
@@ -182,11 +199,15 @@ function showFallback(wrapper, page) {
 
 // Replaces `img` in place with a live-rendered crop of the PDF location it
 // points at. Fire-and-forget: called from enhanceRenderedMarkdown for every
-// `img[src^="pdfref:"]` a render pass finds.
-export async function mountPdfRegionEmbed(img) {
+// `img[src^="pdfref:"]` a render pass finds. `resizable` is true only on the
+// interactive card surfaces enhanceRenderedMarkdown allows it for (Study,
+// All Cards) — see the allow-list there — and adds a drag-corner handle that
+// persists a new width back into the card via pdf-region-resize.js.
+export async function mountPdfRegionEmbed(img, { resizable = false } = {}) {
   const parsed = parsePdfRef(img.getAttribute("src"));
   if (!parsed) return;
-  const wrapper = buildWrapper(parsed.rect);
+  const targetWidth = parsed.width || EMBED_TARGET_WIDTH;
+  const wrapper = buildWrapper(parsed.rect, targetWidth);
   img.replaceWith(wrapper);
 
   try {
@@ -198,13 +219,23 @@ export async function mountPdfRegionEmbed(img) {
     const page = await doc.getPage(parsed.page);
     const [x0, y0, x1, y1] = parsed.rect;
     const quadWidth = Math.max(1, Math.abs(x1 - x0));
-    const scale = clampScale(EMBED_TARGET_WIDTH / quadWidth);
+    // Render pdf.js itself at whatever resolution the TARGET width asks for —
+    // crisp even for a reader's enlarged resize, right up to clampScale's
+    // PDF_MAX_SCALE ceiling. Past that ceiling `k` below makes up the rest by
+    // scaling the already-rendered canvas, rather than this silently staying
+    // at the default resolution regardless of what was actually requested.
+    const scale = clampScale(targetWidth / quadWidth);
     const viewport = page.getViewport({ scale });
     const [vx0, vy0, vx1, vy1] = viewport.convertToViewportRectangle(parsed.rect);
     const left = Math.min(vx0, vx1);
     const top = Math.min(vy0, vy1);
-    const width = Math.max(1, Math.round(Math.abs(vx1 - vx0)));
-    const height = Math.max(1, Math.round(Math.abs(vy1 - vy0)));
+    // The crop's NATIVE rendered size — independent of targetWidth, which can
+    // ask for more than this (a reader's saved resize, or a request past what
+    // clampScale's PDF_MAX_SCALE ceiling allows for a small region). The
+    // difference is made up by scaling the whole page group up, below, rather
+    // than re-rendering at an ever-higher resolution.
+    const nativeWidth = Math.max(1, Math.round(Math.abs(vx1 - vx0)));
+    const nativeHeight = Math.max(1, Math.round(Math.abs(vy1 - vy0)));
 
     const canvas = document.createElement("canvas");
     canvas.className = "pdf-canvas";
@@ -225,17 +256,27 @@ export async function mountPdfRegionEmbed(img) {
     // are, and clipping a correctly-positioned thing to a window is free.
     const { layer: textLayer } = await buildTextLayer(page, viewport);
 
+    // k=1 when targetWidth is at (or below) the native crop resolution — the
+    // common case, unchanged from before this scaled at all. k>1 is a reader's
+    // resize asking for more pixels than clampScale rendered — the browser
+    // upscales the canvas via this transform, same trade-off as any raster
+    // image enlarged past its native size.
+    const k = targetWidth / nativeWidth;
     const pageGroup = document.createElement("div");
     pageGroup.className = "pdf-region-embed-page";
     pageGroup.style.width = `${viewport.width}px`;
     pageGroup.style.height = `${viewport.height}px`;
-    pageGroup.style.transform = `translate(${-left}px, ${-top}px)`;
+    pageGroup.style.transform = `scale(${k}) translate(${-left}px, ${-top}px)`;
     pageGroup.append(canvas, textLayer);
 
     wrapper.classList.remove("is-loading");
-    wrapper.style.width = `${width}px`;
-    wrapper.style.height = `${height}px`;
+    wrapper.style.width = `${Math.round(targetWidth)}px`;
+    wrapper.style.height = `${Math.round(nativeHeight * k)}px`;
     wrapper.replaceChildren(pageGroup);
+
+    if (resizable) {
+      attachRegionResizeHandle(wrapper, pageGroup, parsed, { nativeWidth, nativeHeight, left, top });
+    }
   } catch (error) {
     console.warn("Could not render a PDF region embed", error);
     showFallback(wrapper, parsed.page);
