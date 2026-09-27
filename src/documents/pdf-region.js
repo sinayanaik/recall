@@ -25,19 +25,23 @@
 // no migration: a region is a highlight whose quad happens not to have come from
 // a run of glyphs.
 //
-// ── Why the mode is sticky ───────────────────────────────────────────────────
+// ── Why a capture disarms the mode ──────────────────────────────────────────
 //
 // While it is armed the text layer stops taking pointer events and the scroller
 // gives up `touch-action` (styles/37-document-chrome.css), which is what makes a
-// drag a marquee rather than a text selection or a scroll. It stays armed across
-// captures — a reader pulling several figures out of one paper drags one region
-// after another without re-tapping the button each time — and disarms only on
-// the button's own toggle or on Escape, both at any time. A one-shot version of
-// this used to disarm itself after every capture, on the reasoning that "armed
-// and forgotten" leaves the surface unable to select text or (on a phone)
-// scroll — but a reader who dragged a second region right after the first,
-// without noticing the mode had already turned itself off, got an ordinary text
-// selection instead, which is exactly the mistake staying armed avoids.
+// drag a marquee rather than a text selection or a scroll. Every *successful*
+// capture disarms it again — a reader pulling several figures out of one paper
+// has to tap Select before each one, not just the first. A one-shot version of
+// this once had a bug (fixed in d76d007): a reader who dragged a second region
+// right after the first, without noticing the button had already turned itself
+// off, got an ordinary text selection instead of a new marquee. That is the
+// exact, known cost of disarming on every capture — accepted here on purpose
+// rather than traded away for a mode that stays armed until told otherwise.
+//
+// It only disarms on a capture, though: endRegionDrag's own bailouts — a
+// slipped press below REGION_MIN_SIZE, or a transient failure to resolve a
+// drag into a quad — captured nothing, so neither one should cost the reader
+// a mode they deliberately turned on for a press that didn't count.
 
 import { el } from "../core/dom.js?v=__BUILD__";
 import { MARK_HIGHLIGHT_DEFAULT } from "../format/highlight-colors.js?v=__BUILD__";
@@ -199,6 +203,11 @@ function endRegionDrag() {
   // making the reader find the box again to tap it is a step for nothing.
   const mark = el.documentView?.querySelector(`.${PDF_MARK_CLASS}[data-highlight-id="${CSS.escape(record.id)}"]`);
   if (mark) openMarkMenuWith(mark, record.id, DOCUMENT_MARK_HANDLERS, record.color);
+
+  // A capture is the one thing that disarms the mode — see the header comment.
+  // Every early return above this line means nothing was actually captured,
+  // so none of them reach here.
+  setRegionSelect(false);
 }
 
 export function initDocumentRegionSelect() {

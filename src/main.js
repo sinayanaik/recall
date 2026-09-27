@@ -9,7 +9,7 @@ import { runBrokenImageScan } from "./backup/broken-images.js?v=__BUILD__";
 import { runRestoreFlow } from "./backup/restore.js?v=__BUILD__";
 import { appInitialized, bootApp, ensureLocalLibraryOwner, initAppForUser, recoverSessionIfPossible, resetLocalLibrary, setAppInitialized, setupAuthListener } from "./boot.js?v=__BUILD__";
 import { clearAllCardDropTargets, closeAllCardsPanel, deleteAllCard, goToCard, handleAllCardDragOver, handleAllCardDragStart, handleAllCardDrop, insertCardAfter, pushCardUndoSnapshot, redoCardAction, setAllCardStatus, snapshotCardsState, undoCardAction } from "./cards/all-cards-edit.js?v=__BUILD__";
-import { allCardsAnswersVisible, allCardsCompact, flipAllCard, handleAllCardDragEnd, openAllCardsPanel, setAllCardsAnswersVisible, setAllCardsCompact, setAllCardsFilter, toggleAllCardEditor } from "./cards/all-cards.js?v=__BUILD__";
+import { adjustCornellRowHeight, allCardsAnswersVisible, allCardsCompact, flipAllCard, handleAllCardDragEnd, openAllCardsPanel, setAllCardsAnswersVisible, setAllCardsCompact, setAllCardsFilter, toggleAllCardEditor } from "./cards/all-cards.js?v=__BUILD__";
 import { showCard } from "./cards/card-view.js?v=__BUILD__";
 import { flipCard, moveCard, navigateCard, replayDeck, resetQuiz, shuffleCards } from "./cards/deck-actions.js?v=__BUILD__";
 import { createNewDeck, newDeckInFolder } from "./cards/new-deck.js?v=__BUILD__";
@@ -2275,6 +2275,15 @@ el.allCardsList.addEventListener("click", (event) => {
 });
 el.allCardsList.addEventListener("input", (event) => {
   if (event.target.closest(".all-card-editor")) event.stopPropagation();
+});
+// A region embed's resize handle (src/documents/pdf-region-resize.js) commits
+// straight into state, bypassing the normal edit-and-save path that would
+// otherwise resize this row — dispatched here instead so the row's height
+// still catches up to its new picture without pulling all-cards.js into an
+// import cycle through render/enhance.js.
+el.allCardsList.addEventListener("pdfregionresize", (event) => {
+  const item = event.target.closest(".all-card");
+  if (item) adjustCornellRowHeight(item);
 });
 el.allCardsList.addEventListener("dragstart", handleAllCardDragStart);
 el.allCardsList.addEventListener("dragover", handleAllCardDragOver);
