@@ -123,12 +123,15 @@
 //                   is how a key bound to "toggle raw/rendered" came to flip a
 //                   surface the reader was not looking at while they typed into
 //                   one floating over it
-//   frame-card      can you WRITE in the "Make a flashcard" modal, and does
-//                   everything in it scroll? Its answer's mirror painted over
-//                   the textarea it mirrored, and the panel ran off both ends
-//                   of the screen with nothing scrolling — at desktop and phone
-//                   sizes, the editor, the preview and the panel body each
-//                   scroll, the keys format, and Ctrl+Enter adds one card
+//   frame-card      can you WRITE in a "Make a flashcard" panel, does
+//                   everything in it scroll, and is the page behind it still
+//                   usable? Its answer's mirror painted over the textarea it
+//                   mirrored, the panel ran off both ends of the screen, and as
+//                   a modal it swallowed every scroll meant for the PDF or the
+//                   notes — at desktop and phone (bottom-sheet) sizes: the
+//                   editor, preview and body each scroll, the page behind
+//                   scrolls, several drafts stay open side by side, and each
+//                   Add adds its own card
 //   paged           can you reach the end of a note in paged reading mode?
 //   ribbon          does the caret band sit where the caret is, and stay still
 //                   when it should?
@@ -469,7 +472,7 @@ const checks = [
     ["highlight     ", ["node", ["tools/highlight-check.mjs"], ROOT]],
     ["note-editor   ", ["node", ["tools/note-editor-check.mjs"], ROOT]],
     // ...and the other place a note-shaped answer is written: the "Make a
-    // flashcard" modal, which is the same editor since it stopped being a
+    // flashcard" panels, the same editor since the answer stopped being a
     // textarea its own mirror painted over.
     ["frame-card    ", ["node", ["tools/frame-card-check.mjs"], ROOT]],
     // ...and the other end of writing a note: finding the one you want to LINK

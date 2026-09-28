@@ -483,6 +483,7 @@ const APP_SHELL = [
   `./src/notes/caret-line.js?v=${STAMP}`,
   `./src/notes/caret.js?v=${STAMP}`,
   `./src/notes/chapters.js?v=${STAMP}`,
+  `./src/notes/frame-card.js?v=${STAMP}`,
   `./src/notes/highlight-badges.js?v=${STAMP}`,
   `./src/notes/highlight-note-editor.js?v=${STAMP}`,
   `./src/notes/ink-sheet.js?v=${STAMP}`,

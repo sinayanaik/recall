@@ -271,6 +271,7 @@
     <link rel="modulepreload" href="src/notes/caret-line.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/caret.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/chapters.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/notes/frame-card.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/highlight-badges.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/highlight-note-editor.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/ink-sheet.js?v=__BUILD__">
@@ -2391,28 +2392,32 @@ What year was the Eiffel Tower built?
       </div>
     </section>
 
-    <section class="confirm-modal" id="frameCardModal" hidden aria-label="Make a flashcard from notes">
-      <div class="confirm-modal-content frame-card-content" id="frameCardPanel">
-        <h3 class="prompt-modal-title frame-card-titlebar" id="frameCardTitlebar" title="Drag to move">Make a flashcard</h3>
-        <div class="frame-card-body" id="frameCardBody">
+    <!-- "Make a flashcard": one panel per request, cloned from the template into
+         the layer by src/notes/frame-card.js. The layer passes every event
+         through to the page behind; only the panels take them. -->
+    <div class="frame-card-layer" id="frameCardLayer"></div>
+    <template id="frameCardTemplate">
+      <div class="confirm-modal-content frame-card-content frame-card-panel" role="dialog" aria-label="Make a flashcard">
+        <h3 class="prompt-modal-title frame-card-titlebar" title="Drag to move">Make a flashcard</h3>
+        <div class="frame-card-body">
           <div class="frame-card-field frame-card-answer-field">
-            <span class="frame-card-label" id="frameCardAnswerLabel">Answer — captured from your notes</span>
-            <div class="frame-card-answer-editor" id="frameCardAnswerEditor"></div>
-            <button type="button" class="frame-card-preview-label" id="frameCardAnswerPreviewLabel" aria-expanded="true" aria-controls="frameCardAnswerPreview" title="Show or hide the preview (Ctrl+E)" hidden>Preview</button>
-            <div class="rendered frame-card-answer-preview" id="frameCardAnswerPreview" hidden></div>
+            <span class="frame-card-label frame-card-answer-label">Answer — captured from your notes</span>
+            <div class="frame-card-answer-editor"></div>
+            <button type="button" class="frame-card-preview-label" aria-expanded="true" title="Show or hide the preview (Ctrl+E)" hidden>Preview</button>
+            <div class="rendered frame-card-answer-preview" hidden></div>
           </div>
           <div class="frame-card-field">
             <span class="frame-card-label">Question — what should bring it to mind?</span>
-            <textarea id="frameCardQuestionInput" class="prompt-modal-input frame-card-question" rows="3" autocomplete="off" placeholder="e.g. What happens in the thylakoid membranes?"></textarea>
+            <textarea class="prompt-modal-input frame-card-question" rows="3" autocomplete="off" placeholder="e.g. What happens in the thylakoid membranes?"></textarea>
           </div>
         </div>
         <div class="sync-modal-actions">
-          <button id="frameCardCancelBtn" type="button" class="sync-modal-btn">Cancel</button>
-          <button id="frameCardAddBtn" type="button" class="sync-modal-btn is-primary">Add card</button>
+          <button type="button" class="sync-modal-btn frame-card-cancel">Cancel</button>
+          <button type="button" class="sync-modal-btn is-primary frame-card-add">Add card</button>
         </div>
-        <div class="frame-card-resize-handle" id="frameCardResizeHandle" aria-hidden="true"></div>
+        <div class="frame-card-resize-handle" aria-hidden="true"></div>
       </div>
-    </section>
+    </template>
 
     <section class="confirm-modal" id="exportHighlightsModal" hidden aria-label="Export highlighted lines">
       <div class="confirm-modal-content export-highlights-content">

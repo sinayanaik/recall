@@ -12,7 +12,8 @@ import { MARK_HIGHLIGHT_COLORS, MARK_HIGHLIGHT_DEFAULT, MARK_HIGHLIGHT_HEX } fro
 import { makeHighlightFromSelection, selectionForRenderTarget } from "./highlight.js?v=__BUILD__";
 import { locateSelectionInSource, renderedSelectionStrings } from "./locate-selection.js?v=__BUILD__";
 import { applyFormatToTextarea, clozeTextareaSelection } from "./selection-tools.js?v=__BUILD__";
-import { captureNotesAnchor, captureSourceAnchor, createCardFromNotesSelection } from "../notes/anchors.js?v=__BUILD__";
+import { captureNotesAnchor, captureSourceAnchor } from "../notes/anchors.js?v=__BUILD__";
+import { createCardFromNotesSelection } from "../notes/frame-card.js?v=__BUILD__";
 import { isNotesEditing, renderNotesViewPinned } from "../notes/notes-view.js?v=__BUILD__";
 import { activeEditingTarget, hideNotesSelectionButton } from "../notes/selection.js?v=__BUILD__";
 import { saveQuickNote } from "../quick-notes/board.js?v=__BUILD__";

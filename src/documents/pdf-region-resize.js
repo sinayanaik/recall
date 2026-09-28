@@ -2,8 +2,8 @@
 //
 // pdf-region.js captures a region; pdf-region-embed.js renders it. This is
 // the third leg: a drag-corner handle on the rendered picture, the same
-// pointer-drag idiom already built for the "Make a flashcard" modal itself
-// (initFrameCardPanelControls, src/notes/anchors.js), and the plumbing to
+// pointer-drag idiom already built for the "Make a flashcard" panels
+// (beginFrameCardResize, src/notes/frame-card.js), and the plumbing to
 // write the chosen width back into whichever card the picture came from —
 // so it holds the next time that card is shown, not just for this viewing.
 //

@@ -8,7 +8,8 @@ import { setRenderDefault } from "../format/render-toolbar.js?v=__BUILD__";
 import { applyFormatToTextarea } from "../format/selection-tools.js?v=__BUILD__";
 import { openImagePicker } from "../images/paste.js?v=__BUILD__";
 import { insertInkDrawing } from "../notes/ink-sheet.js?v=__BUILD__";
-import { captureNotesAnchor, captureSourceAnchor, createCardFromNotesSelection } from "../notes/anchors.js?v=__BUILD__";
+import { captureNotesAnchor, captureSourceAnchor } from "../notes/anchors.js?v=__BUILD__";
+import { createCardFromNotesSelection } from "../notes/frame-card.js?v=__BUILD__";
 import { saveQuickNote } from "../quick-notes/board.js?v=__BUILD__";
 import { setStatus } from "../ui/feedback.js?v=__BUILD__";
 

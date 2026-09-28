@@ -1,43 +1,96 @@
-/* Move and resize the "Make a flashcard" modal instead of pinning it dead
- * centre over a dimmed backdrop — a region card's whole answer face is
- * often a picture of a spot on the page (src/documents/pdf-region-embed.js),
- * so hiding that page behind the very modal that's carding it defeats the
- * point. See initFrameCardPanelControls in src/notes/anchors.js for the drag/
- * resize pointer handling; this is only the geometry and the affordances.
+/* The "Make a flashcard" panels: where they sit, and why the page behind them
+ * stays usable. See src/notes/frame-card.js for the panels themselves (one per
+ * request, several at once) and their drag/resize pointer handling; this is
+ * only the geometry and the affordances.
  */
-#frameCardModal {
-  /* Still fixed/inset:0 (.confirm-modal, 11-chrome.css, frozen), so the
-   * backdrop area keeps intercepting clicks for the page behind it — only
-   * the DIMMING is dropped, for this one dialog, so that page stays visible
-   * around and (once dragged) behind the panel. */
-  background: transparent;
+
+/* The layer every panel is cloned into. Fixed over the whole screen, so the
+ * panels stack together above the page — but it passes every event through.
+ * That is the fix for "I can't scroll the PDF or the notes while a flashcard
+ * is open": this used to be a .confirm-modal (11-chrome.css, frozen), which,
+ * even once its dimming was dropped, still caught every click, wheel and touch
+ * aimed at the page behind it. Only the panels take events now. */
+.frame-card-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 230;
+  pointer-events: none;
+}
+
+.frame-card-panel {
+  pointer-events: auto;
+  /* Centred by default, and nudged along by --frame-card-offset for each
+   * panel already open (placeFrameCardPanel), so a new draft never lands
+   * exactly over an old one. A drag or a remembered box replaces all of this
+   * with explicit left/top/width, and `transform: none`, inline. */
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  transform: translate(
+    calc(-50% + var(--frame-card-offset, 0px)),
+    calc(-50% + var(--frame-card-offset, 0px))
+  );
+  /* The frozen `width: 100%` (11-chrome.css) resolves against the viewport
+   * for a fixed box, so a real width — the default, not a cap on resizing:
+   * an inline width (and max-width: none) from a resize overrides it. */
+  width: min(560px, calc(100vw - 36px));
 }
 
 .frame-card-content {
-  position: relative;
+  /* No `position` here: .frame-card-panel (the same element) is fixed, which
+   * is also what the absolutely-placed resize handle below measures from. */
   /* Never wider than the screen it is on — a flat 320px overflowed sideways
-   * on the narrowest phones, inside .confirm-modal's 18px padding. */
+   * on the narrowest phones. */
   min-width: min(320px, 100%);
   min-height: 260px;
   /* A column, not the frozen rule's grid (11-chrome.css): the title and the
    * buttons keep their size and the body between them takes the rest and
    * scrolls. As a grid with no height cap, a long answer plus its preview
-   * grew the panel past the top and bottom of the screen, where the centred
-   * overlay clipped it — nothing scrolled and "Add card" could be out of
-   * reach. */
+   * grew the panel past the top and bottom of the screen — nothing scrolled
+   * and "Add card" could be out of reach. */
   display: flex;
   flex-direction: column;
-  /* The viewport minus .confirm-modal's padding. dvh where it exists, so a
-   * phone's on-screen keyboard shrinks the panel rather than covering it. */
-  max-height: calc(100vh - 36px);
-  max-height: calc(100dvh - 36px);
-  /* Wider than the frozen 380px cap (11-chrome.css) — this modal now holds a
+  /* The viewport less an 18px margin at each end, and less twice the cascade
+   * offset — a centred panel pushed down by it would otherwise run off the
+   * bottom by exactly that much. dvh where it exists, so a phone's on-screen
+   * keyboard shrinks the panel rather than covering it. */
+  max-height: calc(100vh - 36px - 2 * var(--frame-card-offset, 0px));
+  max-height: calc(100dvh - 36px - 2 * var(--frame-card-offset, 0px));
+  /* Wider than the frozen 380px cap (11-chrome.css) — this panel holds a
    * toolbar and a rendered preview neither of the other dialogs sharing that
-   * rule carry — but still a comfortable DEFAULT, not "as wide as the
-   * viewport": `width: 100%` (also frozen) needs a real cap or it fills the
-   * window on anything wider than a phone. Manual resize (inline style,
-   * higher specificity than this) overrides it freely past this point. */
+   * rule carry — but still a comfortable DEFAULT. Manual resize clears it
+   * inline (beginFrameCardResize) and sets its own width. */
   max-width: 560px;
+}
+
+/* Phones: a bottom sheet. Centred, a panel is the whole of a phone's screen
+ * less an 18px border, which leaves no page to scroll; docked to the bottom at
+ * about 60% height, the top of the PDF or the notes stays visible and live
+ * above it. The same breakpoint as the app's mobile style profile
+ * (styleMobileQuery, src/ui/style-tokens.js). Still draggable and resizable:
+ * those write left/top/width/height inline, and a top plus a height overrides
+ * the `bottom: 0` below. */
+@media (max-width: 720px) {
+  .frame-card-panel {
+    left: 0;
+    right: 0;
+    top: auto;
+    bottom: 0;
+    width: auto;
+    transform: none;
+  }
+
+  .frame-card-content {
+    min-width: 0;
+    max-width: none;
+    min-height: min(260px, 62vh);
+    max-height: 62vh;
+    max-height: 62dvh;
+    border-radius: var(--modal-radius) var(--modal-radius) 0 0;
+    border-bottom: 0;
+    padding: 14px 16px calc(14px + var(--safe-bottom, 0px));
+    gap: 10px;
+  }
 }
 
 .frame-card-titlebar,

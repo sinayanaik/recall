@@ -3,8 +3,8 @@
  * formatting keys) with a live rendered preview under it, instead of the
  * read-only rendered preview .frame-card-answer (12-notes.css, frozen — still
  * present there but no longer matched by any element in the markup) used to
- * be. See ensureFrameCardEditor / createCardFromNotesSelection in
- * src/notes/anchors.js. Written since the split, so it lives on its own rather
+ * be. See frameCardPanel / createCardFromNotesSelection in
+ * src/notes/frame-card.js. Written since the split, so it lives on its own rather
  * than editing the frozen slice in place.
  *
  * Everything here is about HEIGHT, because that is what went wrong: the panel
@@ -119,13 +119,13 @@
 }
 
 /* Once the reader has resized the panel (beginFrameCardResize in
- * src/notes/anchors.js marks it .is-resized), the editor and the preview share
+ * src/notes/frame-card.js marks it .is-resized), the editor and the preview share
  * its height between them instead of keeping their default boxes, so making
  * the panel bigger makes both of them bigger. A class rather than the
  * `[style*="height"]` idiom .highlight-note-editor uses: a plain DRAG pins an
  * inline height too (it has to, to leave the centred layout), and moving the
  * panel must not re-split the editor and the preview under the reader. */
-#frameCardPanel.is-resized .frame-card-answer-editor {
+.frame-card-panel.is-resized .frame-card-answer-editor {
   flex: 1 1 auto;
   min-height: 150px;
 }
@@ -134,12 +134,21 @@
  * height as its flex basis, and the preview is given the same one), not split
  * evenly from zero — an even split made the editor jump smaller the moment a
  * resize began, before the reader had made the panel any smaller at all. */
-#frameCardPanel.is-resized .frame-card-answer-editor .highlight-textarea-wrapper {
+.frame-card-panel.is-resized .frame-card-answer-editor .highlight-textarea-wrapper {
   flex: 1 1 auto;
 }
 
-#frameCardPanel.is-resized .frame-card-answer-preview {
+.frame-card-panel.is-resized .frame-card-answer-preview {
   flex: 1 1 var(--frame-card-editor-h);
   min-height: 80px;
   max-height: none;
+}
+
+/* On a phone the panel is a bottom sheet about 60% of the screen tall
+ * (62-frame-card-draggable.css), so the editor's default box gives a little
+ * back — the sheet's body still scrolls for anything that does not fit. */
+@media (max-width: 720px) {
+  .frame-card-answer-field {
+    --frame-card-editor-h: clamp(110px, 22vh, 280px);
+  }
 }

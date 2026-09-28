@@ -13,6 +13,7 @@ import { el } from "../core/dom.js?v=__BUILD__";
 import { closeMainMenu, isMainMenuOpen } from "../editor/toolbars.js?v=__BUILD__";
 import { closeAllDeckTileMenus } from "../library/folder-tree.js?v=__BUILD__";
 import { closeMyDecksMoreMenu } from "../library/my-decks-menu.js?v=__BUILD__";
+import { cancelFrontFrameCard, isFrameCardOpen } from "../notes/frame-card.js?v=__BUILD__";
 import { dismissInkSheet, isInkSheetOpen } from "../notes/ink-sheet.js?v=__BUILD__";
 import { closeHighlightNoteEditor, isHighlightNoteEditorOpen } from "../notes/highlight-note-editor.js?v=__BUILD__";
 import { closeNotesHeadMore, isNotesHeadMoreOpen } from "../notes/notes-head-overflow.js?v=__BUILD__";
@@ -100,7 +101,10 @@ export const OVERLAY_LAYERS = [
   // what to do with it.
   { isOpen: () => Boolean(el.confirmModal && !el.confirmModal.hidden), close: () => el.confirmModalCancelBtn?.click() },
   { isOpen: () => Boolean(el.promptModal && !el.promptModal.hidden), close: () => el.promptModalCancelBtn?.click() },
-  { isOpen: () => Boolean(el.frameCardModal && !el.frameCardModal.hidden), close: () => el.frameCardCancelBtn?.click() },
+  // Flashcard panels are windows over the page, not dialogs (see
+  // src/notes/frame-card.js) — several can be open, and one press takes the
+  // frontmost draft, the same one-layer-per-press rule as everything here.
+  { isOpen: () => isFrameCardOpen(), close: () => cancelFrontFrameCard() },
   { isOpen: () => Boolean(el.exportHighlightsModal && !el.exportHighlightsModal.hidden), close: () => el.exportHighlightsCancelBtn?.click() },
   { isOpen: () => Boolean(el.qnCatModal && !el.qnCatModal.hidden), close: () => closeQnCatModal() },
   // These two are read off the DOM rather than through their `helpModal` /
