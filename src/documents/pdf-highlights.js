@@ -33,7 +33,7 @@ import { decodeInkStrokes, inkStrokeHitsPoint } from "../format/ink-strokes.js?v
 import { notifyHighlightsChanged } from "../format/highlight-edit.js?v=__BUILD__";
 import { pruneOrphanHighlightNotes, readHighlightNotes, setHighlightNoteInSource } from "../format/highlight-notes.js?v=__BUILD__";
 import { openHighlightNoteEditor } from "../notes/highlight-note-editor.js?v=__BUILD__";
-import { closeMarkMenu, openMarkMenuWith } from "../notes/mark-menu.js?v=__BUILD__";
+import { closeMarkMenu, closeMarkMenuOnScroll, openMarkMenuWith } from "../notes/mark-menu.js?v=__BUILD__";
 import { pushNotesUndo } from "../notes/notes-history.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { dropHighlightTombstonesForLiveIds, recordDeletedHighlightId } from "../sync/document-sync.js?v=__BUILD__";
@@ -1282,5 +1282,10 @@ export function initDocumentMarkMenu() {
   });
 
   // The menu is positioned against a rect that scrolling invalidates.
-  view.addEventListener("scroll", closeMarkMenu, { passive: true });
+  // Guarded (see closeMarkMenuOnScroll) rather than a bare closeMarkMenu —
+  // opening the menu right after a fresh capture repaints this page's own
+  // mark layer, and that layout churn can trigger a native scroll adjustment
+  // with nothing to do with the reader scrolling — which, ungated, closed a
+  // region's menu before there was ever a chance to press "Make a flashcard".
+  view.addEventListener("scroll", closeMarkMenuOnScroll, { passive: true });
 }
