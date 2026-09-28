@@ -1,40 +1,145 @@
-/* The "Make a flashcard" modal's answer face, as an editable textarea +
- * formatting toolbar instead of the read-only rendered preview
- * .frame-card-answer (12-notes.css, frozen — still present there but no
- * longer matched by any element in the markup) used to be. See
- * src/notes/anchors.js's createCardFromNotesSelection and the editable-
- * toolbar wiring in src/editor/toolbars.js / toolbar-actions.js. Written
- * since the split, so it lives on its own rather than editing the frozen
- * slice in place.
+/* The "Make a flashcard" modal's answer face: the shared note editor
+ * (src/notes/note-editor-kit.js — toolbar, syntax-highlight mirror, undo ring,
+ * formatting keys) with a live rendered preview under it, instead of the
+ * read-only rendered preview .frame-card-answer (12-notes.css, frozen — still
+ * present there but no longer matched by any element in the markup) used to
+ * be. See ensureFrameCardEditor / createCardFromNotesSelection in
+ * src/notes/anchors.js. Written since the split, so it lives on its own rather
+ * than editing the frozen slice in place.
+ *
+ * Everything here is about HEIGHT, because that is what went wrong: the panel
+ * is a flex column (62-frame-card-draggable.css) whose middle scrolls, and
+ * inside it the editor and the preview are each their own scroller — so a long
+ * answer scrolls inside its box, a tall figure scrolls inside the preview, and
+ * neither pushes the Add button off the screen.
  */
-.frame-card-answer-input {
-  min-height: 120px;
-  padding: 10px 12px;
-  resize: vertical;
-  line-height: 1.45;
+.frame-card-answer-field {
+  /* The editor's default height, shared with the floor below. */
+  --frame-card-editor-h: clamp(140px, 28vh, 320px);
+  /* .frame-card-field is a grid in the frozen 12-notes.css; a column flex box
+   * is what lets the editor and preview below share the panel's height. */
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1 1 auto;
+  /* A floor rather than the automatic minimum. The automatic one is this
+   * field's full content height, so a long preview could never give way and
+   * the whole body scrolled instead — and focusing the question on open then
+   * scrolled the answer's own label and toolbar out of sight. With a floor,
+   * the preview (a scroller of its own) shrinks first, down to its 60px, and
+   * only then does the body scroll. The floor covers the editor, both labels,
+   * the gaps and that 60px, so nothing inside ever spills onto the question
+   * field below it. */
+  min-height: calc(var(--frame-card-editor-h) + 170px);
 }
 
-/* A live preview of the answer, below the textarea rather than beside it —
- * this modal is already two stacked fields, and a region card's whole point
- * (see pdf-region-embed.js) only shows up here: the raw textarea reads as a
+/* With no preview showing (a blank answer, or folded away with Ctrl+E) there
+ * is nothing that needs to give way, and the floor would only leave a gap. */
+.frame-card-answer-field:has(> .frame-card-answer-preview[hidden]) {
+  min-height: auto;
+}
+
+.frame-card-answer-editor {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 auto;
+}
+
+.frame-card-answer-editor .note-editor-kit {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* The wrapper carries the height — .edit-textarea and its backdrop are both
+ * `height: 100% !important` so the two can never disagree about a metric
+ * (styles/10-editor.css), and the textarea scrolls inside it, with the mirror
+ * kept in step by syncScroll (src/editor/highlight-mirror.js). A definite
+ * height by default: the panel sizes to its content until the reader resizes
+ * it, and a percentage against a content-sized box has nothing to resolve to. */
+.frame-card-answer-editor .highlight-textarea-wrapper {
+  flex: 0 0 auto;
+  height: var(--frame-card-editor-h);
+  min-height: 110px;
+}
+
+/* A live preview of the answer, below the editor rather than beside it — this
+ * modal is already two stacked fields, and a region card's whole point (see
+ * pdf-region-embed.js) only shows up here: the raw textarea reads as a
  * `pdfref:` URL, this shows the boxed figure it actually points at. Hidden
  * (see the `hidden` attributes in index.html) whenever the answer is blank —
  * nothing to preview yet, and a region card's answer never starts blank
- * anyway (see createCardFromNotesSelection). */
+ * anyway (see createCardFromNotesSelection).
+ *
+ * The label is a button: it folds the preview away (so does Ctrl+E), which on
+ * a phone is the difference between an editor you can see and one you can't. */
 .frame-card-preview-label {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   margin-top: 4px;
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  font: inherit;
   font-size: 0.72rem;
   font-weight: 900;
   text-transform: uppercase;
   color: var(--muted);
+  cursor: pointer;
+}
+
+.frame-card-preview-label::after {
+  content: "▾";
+  font-size: 0.9em;
+}
+
+.frame-card-preview-label.is-collapsed::after {
+  content: "▸";
+}
+
+.frame-card-preview-label:hover,
+.frame-card-preview-label:focus-visible {
+  color: var(--text);
 }
 
 .frame-card-answer-preview {
+  flex: 0 1 auto;
+  min-height: 60px;
   max-height: 40vh;
   overflow-y: auto;
   overflow-x: hidden;
+  /* A scroll that reaches the end of the preview stops there, rather than
+   * carrying on into the panel body (or the page) behind it. */
+  overscroll-behavior: contain;
   border: 1px solid var(--line);
   border-radius: var(--input-radius);
   background: var(--card);
   padding: 10px 12px;
+}
+
+/* Once the reader has resized the panel (beginFrameCardResize in
+ * src/notes/anchors.js marks it .is-resized), the editor and the preview share
+ * its height between them instead of keeping their default boxes, so making
+ * the panel bigger makes both of them bigger. A class rather than the
+ * `[style*="height"]` idiom .highlight-note-editor uses: a plain DRAG pins an
+ * inline height too (it has to, to leave the centred layout), and moving the
+ * panel must not re-split the editor and the preview under the reader. */
+#frameCardPanel.is-resized .frame-card-answer-editor {
+  flex: 1 1 auto;
+  min-height: 150px;
+}
+
+/* Grown and shrunk FROM their default sizes (the wrapper keeps its default
+ * height as its flex basis, and the preview is given the same one), not split
+ * evenly from zero — an even split made the editor jump smaller the moment a
+ * resize began, before the reader had made the panel any smaller at all. */
+#frameCardPanel.is-resized .frame-card-answer-editor .highlight-textarea-wrapper {
+  flex: 1 1 auto;
+}
+
+#frameCardPanel.is-resized .frame-card-answer-preview {
+  flex: 1 1 var(--frame-card-editor-h);
+  min-height: 80px;
+  max-height: none;
 }

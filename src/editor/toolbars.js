@@ -118,15 +118,9 @@ export function initToolbars() {
   if (el.answerEdit) enableSyntaxHighlighting(el.answerEdit);
   if (el.notesEdit) enableSyntaxHighlighting(el.notesEdit);
 
-  // The frame-card modal's answer field isn't one of SELECTION_TARGETS, so it
-  // never gets the floating pill's formatting controls the way notes/question/
-  // answer do — same situation the All Cards editor is in, hence the full strip.
-  // Its syntax-highlighting backdrop is NOT built here, unlike the three
-  // above: this field exists on every boot but the modal it lives in opens
-  // rarely, and the other three are always-visible surfaces the reader is
-  // looking at from the moment the app is up. createCardFromNotesSelection
-  // (src/notes/anchors.js) builds it lazily, the first time the modal opens.
-  if (el.frameCardAnswerToolbar) el.frameCardAnswerToolbar.innerHTML = createToolbarHtml();
+  // No strip for the "Make a flashcard" modal's answer here: that field is the
+  // shared note editor (src/notes/note-editor-kit.js), which builds its own
+  // full toolbar — see ensureFrameCardEditor in src/notes/anchors.js.
   // The All Cards editor's strips still carry their own copy of the highlight
   // glyph (RENDER_HIGHLIGHT_GLYPH, inside the Highlight dropdown toggle), and
   // they are built after this runs — but painting here costs nothing and keeps

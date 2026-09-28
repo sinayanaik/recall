@@ -2514,7 +2514,7 @@ document.addEventListener("keydown", (event) => {
   // against the next surface someone adds and forgets: the handler below
   // catches Ctrl+E wherever it lands, deliberately, which is how it came to
   // flip the notes view behind a popup somebody was typing into.
-  if (event.target.closest?.(".highlight-note-editor, .hl-note")) return;
+  if (event.target.closest?.(".highlight-note-editor, .hl-note, #frameCardModal")) return;
   // Ctrl/Cmd+E toggles raw/rendered view — checked first so it still fires
   // while focus is inside the question/answer/notes edit textareas.
   if ((event.ctrlKey || event.metaKey) && (event.key === "e" || event.key === "E")) {

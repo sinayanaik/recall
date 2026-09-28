@@ -90,8 +90,6 @@ export function handleToolbarClick(event) {
     textarea = el.answerEdit;
   } else if (toolbar.id === "notesEditToolbar") {
     textarea = el.notesEdit;
-  } else if (toolbar.id === "frameCardAnswerToolbar") {
-    textarea = el.frameCardAnswerInput;
   } else {
     // Inside dynamic "All cards" editor
     const container = toolbar.closest(".all-card-editor");
@@ -102,9 +100,9 @@ export function handleToolbarClick(event) {
       // "dynamic container, textarea marked by a data attribute" idiom as the
       // All Cards editor above, since it is likewise outside the three fixed
       // editing surfaces. The KIT is what is matched, not the popup: the same
-      // editor is now built inline in the Highlights tab as well, and a
-      // selector naming one of its two homes would give the other a toolbar
-      // whose buttons resolved to nothing.
+      // editor is built inline in the Highlights tab and as the "Make a
+      // flashcard" modal's answer as well, and a selector naming one of its
+      // homes would give the others a toolbar whose buttons resolved to nothing.
       const noteEditor = toolbar.closest(".note-editor-kit");
       if (noteEditor) textarea = noteEditor.querySelector("[data-note-edit-value]");
     }

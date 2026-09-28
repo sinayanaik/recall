@@ -15,8 +15,22 @@
 
 .frame-card-content {
   position: relative;
-  min-width: 320px;
+  /* Never wider than the screen it is on — a flat 320px overflowed sideways
+   * on the narrowest phones, inside .confirm-modal's 18px padding. */
+  min-width: min(320px, 100%);
   min-height: 260px;
+  /* A column, not the frozen rule's grid (11-chrome.css): the title and the
+   * buttons keep their size and the body between them takes the rest and
+   * scrolls. As a grid with no height cap, a long answer plus its preview
+   * grew the panel past the top and bottom of the screen, where the centred
+   * overlay clipped it — nothing scrolled and "Add card" could be out of
+   * reach. */
+  display: flex;
+  flex-direction: column;
+  /* The viewport minus .confirm-modal's padding. dvh where it exists, so a
+   * phone's on-screen keyboard shrinks the panel rather than covering it. */
+  max-height: calc(100vh - 36px);
+  max-height: calc(100dvh - 36px);
   /* Wider than the frozen 380px cap (11-chrome.css) — this modal now holds a
    * toolbar and a rendered preview neither of the other dialogs sharing that
    * rule carry — but still a comfortable DEFAULT, not "as wide as the
@@ -24,6 +38,30 @@
    * window on anything wider than a phone. Manual resize (inline style,
    * higher specificity than this) overrides it freely past this point. */
   max-width: 560px;
+}
+
+.frame-card-titlebar,
+.frame-card-content > .sync-modal-actions {
+  flex: 0 0 auto;
+}
+
+/* Everything between the title and the buttons. The fallback scroller: when
+ * the panel is smaller than the editor, preview and question need, this is
+ * what scrolls — the editor and the preview inside it still scroll on their
+ * own (61-frame-card-answer-editable.css). */
+.frame-card-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  /* Room for a focus ring on the fields at the edges, which overflow clipping
+   * would otherwise cut off. */
+  margin: -4px;
+  padding: 4px;
 }
 
 .frame-card-titlebar {

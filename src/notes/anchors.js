@@ -13,12 +13,13 @@ import { el } from "../core/dom.js?v=__BUILD__";
 import { wheelGestureActive } from "../core/gesture.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { flashDocumentHighlight } from "../documents/pdf-highlights.js?v=__BUILD__";
-import { enableSyntaxHighlighting } from "../editor/highlight-mirror.js?v=__BUILD__";
+import { installMarkdownKeys, installModeKeys } from "../editor/markdown-keys.js?v=__BUILD__";
 import { captureDocumentSelection, resolveDocumentAnchor } from "../documents/pdf-selection.js?v=__BUILD__";
 import { isDocumentViewActive, scrollToDocumentPage } from "../documents/pdf-view.js?v=__BUILD__";
 import { locateSelectionInSource, renderedSelectionStrings } from "../format/locate-selection.js?v=__BUILD__";
 import { loadDeckFromLibrary } from "../library/local-library.js?v=__BUILD__";
 import { scrollTextareaToOffset } from "./caret.js?v=__BUILD__";
+import { createNoteEditorKit } from "./note-editor-kit.js?v=__BUILD__";
 import { NOTES_PROGRAMMATIC_SCROLL_MS, markProgrammaticNotesScroll, markProgrammaticNotesSelection } from "./notes-view.js?v=__BUILD__";
 import { estimateNotesPageForFraction, isNotesPaged, notesPageCount, notesPageForElement, revealInPagedNotes, revealRangeInPagedNotes } from "./paged-view.js?v=__BUILD__";
 import { NOTES_BLOCK_SELECTOR, approximateRawOffsetForBlock, notesBlockForRawOffset } from "./raw-offset.js?v=__BUILD__";
@@ -53,6 +54,125 @@ export function addCardFromNotes(question, answer, noteAnchor = null) {
   setStatus(state.deckId ? "Card added from notes locally. Sync to update the web deck." : "Card added from notes.");
 }
 
+// ── The answer editor ───────────────────────────────────────────────────────
+//
+// The same editor a highlight's note is written in (src/notes/note-editor-kit.js)
+// rather than a textarea of its own. It used to be a `.prompt-modal-input` with
+// the syntax-highlight mirror bolted on, and the two disagreed about everything:
+// the mirror's backdrop is absolutely positioned and opaque, and without the
+// `.edit-textarea` class the textarea it mirrors stayed statically positioned —
+// so the backdrop painted OVER it, in a different font size and padding. The
+// caret and the selection were hidden underneath, the visible text drifted away
+// from where typing actually landed, and the two scrolled out of step. On top of
+// that there was no Ctrl+B/I/U/K, no undo past a toolbar press, Ctrl+E flipped
+// the notes view BEHIND the modal, and the toolbar's dropdowns never closed.
+// The kit brings all of that — the toolbar, the mirror with matching metrics,
+// the undo ring and the formatting keys — exactly as the note popup has it.
+//
+// Two things are deliberately left off:
+//   - The kit's own Write/Preview switch. This modal keeps a LIVE preview under
+//     the editor instead, because a region card's answer is a `pdfref:` line
+//     whose whole point is the figure it points at, and seeing that while
+//     writing is what the preview is for. Ctrl+E folds it away instead.
+//   - kit.attach(). That registers the editor with the floating selection pill,
+//     whose "+ Make card" would open this very modal over itself, and whose
+//     one note-editor slot belongs to the highlight-note popup. The kit's own
+//     toolbar already carries every format the pill would offer.
+//
+// Built once, the first time the modal opens — this modal opens rarely, so
+// there is nothing to gain from building an editor at boot that most sessions
+// never show.
+const FRAME_CARD_BLANK_PLACEHOLDER = "No text found here — describe what this shows (a figure, table, equation…)";
+
+// Debounced rather than on every keystroke: a region embed reopens and
+// re-renders a page of the PDF (see mountPdfRegionEmbed), which is real work
+// worth coalescing while the reader is still typing beside it.
+const FRAME_CARD_PREVIEW_DEBOUNCE_MS = 300;
+
+let frameCardKit = null;
+// The open modal's two ways out, for the keys bound once on the panel (see
+// ensureFrameCardEditor). Null while the modal is closed.
+let frameCardSession = null;
+let frameCardPreviewTimer = 0;
+// What the preview last rendered, so a fold/unfold or an undo back to the same
+// text does not re-render a PDF page for nothing. Reset on every open.
+let frameCardPreviewValue = null;
+// The reader's choice, kept for the session: someone who folded the preview
+// away to get room on a phone does not want it back on the next card.
+let frameCardPreviewOpen = true;
+
+// A live preview of the answer, not just its raw markdown — the one thing the
+// raw textarea can't show is a region card's whole point: a `pdfref:`
+// reference (src/documents/pdf-region-embed.js) reads on the page as its
+// literal source text, not the boxed figure it points at. Rendered exactly the
+// way the card's own answer face renders it later (same renderMarkdown call),
+// so what's previewed here is what studying the card will show.
+function updateFrameCardPreview() {
+  clearTimeout(frameCardPreviewTimer);
+  frameCardPreviewTimer = 0;
+  if (!frameCardKit) return;
+  const value = frameCardKit.textarea.value.trim();
+  const show = Boolean(value);
+  el.frameCardAnswerPreviewLabel.hidden = !show;
+  // Unhidden BEFORE rendering: a diagram in the answer needs real layout to
+  // size against, which a `hidden` (display:none) container has none of.
+  el.frameCardAnswerPreview.hidden = !show || !frameCardPreviewOpen;
+  if (!show || !frameCardPreviewOpen || value === frameCardPreviewValue) return;
+  frameCardPreviewValue = value;
+  renderMarkdown(el.frameCardAnswerPreview, value);
+}
+
+function scheduleFrameCardPreview() {
+  clearTimeout(frameCardPreviewTimer);
+  frameCardPreviewTimer = setTimeout(updateFrameCardPreview, FRAME_CARD_PREVIEW_DEBOUNCE_MS);
+}
+
+function setFrameCardPreviewOpen(open) {
+  frameCardPreviewOpen = open;
+  el.frameCardAnswerPreviewLabel.setAttribute("aria-expanded", String(open));
+  el.frameCardAnswerPreviewLabel.classList.toggle("is-collapsed", !open);
+  updateFrameCardPreview();
+}
+
+function ensureFrameCardEditor() {
+  if (frameCardKit) return frameCardKit;
+  frameCardKit = createNoteEditorKit({ placeholder: "", onInput: scheduleFrameCardPreview });
+  // See the header above: the live preview below the editor replaces it.
+  frameCardKit.modes.hidden = true;
+  el.frameCardAnswerEditor.appendChild(frameCardKit.root);
+
+  // Bound on the PANEL, not on either textarea, so they work with the focus
+  // anywhere in it — on a toolbar button, the preview, or the question.
+  // Ctrl+E has to be claimed here in particular: left alone it reaches the
+  // global handler in src/main.js and flips the notes view behind the modal.
+  installModeKeys(el.frameCardPanel, {
+    toggleMode: () => setFrameCardPreviewOpen(!frameCardPreviewOpen),
+    done: () => frameCardSession?.confirm()
+  });
+  el.frameCardPanel.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || !frameCardSession) return;
+    event.preventDefault();
+    // Stopped so the global Escape handler doesn't also close whatever is
+    // behind the modal.
+    event.stopPropagation();
+    frameCardSession.cancel();
+  });
+  // The question is markdown too, and a card's question face renders it the
+  // same way — so the same four formatting keys. Scoped to the panel, whose
+  // mode keys above already own Ctrl+E and Ctrl+Enter.
+  installMarkdownKeys(el.frameCardQuestionInput, { scope: el.frameCardPanel });
+  // The kit closes its toolbar's dropdowns on a click inside the kit only, and
+  // the global closer (closeAllEditToolbarDropdowns) knows only the three
+  // fixed toolbars — so a colour menu left open while the reader clicks into
+  // the question would otherwise stay open over it.
+  el.frameCardPanel.addEventListener("click", (event) => {
+    if (event.target.closest(".toolbar-dropdown")) return;
+    frameCardKit.toolbar.querySelectorAll(".toolbar-dropdown.is-open").forEach((d) => d.classList.remove("is-open"));
+  });
+  el.frameCardAnswerPreviewLabel.addEventListener("click", () => setFrameCardPreviewOpen(!frameCardPreviewOpen));
+  return frameCardKit;
+}
+
 export function createCardFromNotesSelection(markdown, noteAnchor = null) {
   // The highlighted fact is what you want to recall — it becomes the ANSWER;
   // the user frames the question that should bring it to mind. The answer
@@ -60,7 +180,8 @@ export function createCardFromNotesSelection(markdown, noteAnchor = null) {
   // field: an area/region drawn on a PDF figure or diagram often captures no
   // text at all, and the only way to get a useful card out of one is to let
   // the reader type what it shows.
-  if (!el.frameCardModal) return;
+  if (!el.frameCardModal || !el.frameCardAnswerEditor) return;
+  const kit = ensureFrameCardEditor();
   const captured = String(markdown || "").trim();
   const hasCapturedText = Boolean(captured);
 
@@ -69,58 +190,44 @@ export function createCardFromNotesSelection(markdown, noteAnchor = null) {
   el.frameCardAnswerLabel.textContent = hasCapturedText
     ? "Answer — captured from your notes"
     : "Answer";
-  el.frameCardAnswerInput.value = captured;
-  el.frameCardAnswerInput.placeholder = hasCapturedText
-    ? ""
-    : "No text found here — describe what this shows (a figure, table, equation…)";
-  // Built here rather than at boot (see the comment in initToolbars,
-  // src/editor/toolbars.js): this modal opens rarely, so the backdrop is
-  // worth building only once it actually does. A no-op on the second and
-  // later opens — enableSyntaxHighlighting checks dataset.highlighted first.
-  enableSyntaxHighlighting(el.frameCardAnswerInput);
-  el.frameCardAnswerInput.dispatchEvent(new Event("input", { bubbles: true }));
+  kit.textarea.placeholder = hasCapturedText ? "" : FRAME_CARD_BLANK_PLACEHOLDER;
+  // setValue, not a bare `.value =`: a programmatic write fires no "input"
+  // event, which is what the syntax-highlight backdrop syncs itself from.
+  kit.setValue(captured);
+  // Stepping back out of THIS card's answer into the last one's would be a
+  // worse answer than not stepping back at all.
+  kit.clearHistory();
   el.frameCardQuestionInput.value = "";
-
-  // A live preview of the answer, not just its raw markdown — the one thing
-  // the raw textarea can't show is a region card's whole point: a `pdfref:`
-  // reference (src/documents/pdf-region-embed.js) reads on the page as its
-  // literal source text, not the boxed figure it points at. Rendered exactly
-  // the way the card's own answer face renders it later (same renderMarkdown
-  // call), so what's previewed here is what studying the card will show.
-  let previewTimer = null;
-  const updatePreview = () => {
-    const value = el.frameCardAnswerInput.value.trim();
-    const show = Boolean(value);
-    el.frameCardAnswerPreviewLabel.hidden = !show;
-    el.frameCardAnswerPreview.hidden = !show;
-    if (show) renderMarkdown(el.frameCardAnswerPreview, value);
-  };
-  const schedulePreviewUpdate = () => {
-    clearTimeout(previewTimer);
-    // Debounced rather than on every keystroke: a region embed reopens and
-    // re-renders a page of the PDF (see mountPdfRegionEmbed), which is real
-    // work worth coalescing while the reader is still typing beside it.
-    previewTimer = setTimeout(updatePreview, 300);
-  };
-  updatePreview();
-  el.frameCardAnswerInput.oninput = schedulePreviewUpdate;
+  // The editor outlives each open, and so would every scroll position in it —
+  // a new card starts at the top of its own text.
+  kit.textarea.scrollTop = 0;
+  el.frameCardAnswerPreview.scrollTop = 0;
+  if (el.frameCardBody) el.frameCardBody.scrollTop = 0;
+  frameCardPreviewValue = null;
+  updateFrameCardPreview();
 
   // Focus whichever field still needs typing: the question when the answer
   // already arrived captured, the answer itself when it's starting blank.
-  requestAnimationFrame(() => (hasCapturedText ? el.frameCardQuestionInput : el.frameCardAnswerInput).focus());
+  requestAnimationFrame(() => (hasCapturedText ? el.frameCardQuestionInput : kit.textarea).focus());
 
+  // Once per open, whichever way out comes first. There are four of them now
+  // (both buttons, Ctrl+Enter and Escape on the panel), and a second pass
+  // through here — a key and a click landing together — would add the card
+  // twice.
+  let closed = false;
   const cleanup = (confirmed) => {
+    if (closed) return;
+    closed = true;
+    if (frameCardSession === session) frameCardSession = null;
     el.frameCardModal.hidden = true;
     unlockPageScroll();
-    clearTimeout(previewTimer);
+    clearTimeout(frameCardPreviewTimer);
+    frameCardPreviewTimer = 0;
     el.frameCardAddBtn.onclick = null;
     el.frameCardCancelBtn.onclick = null;
-    el.frameCardQuestionInput.onkeydown = null;
-    el.frameCardAnswerInput.onkeydown = null;
-    el.frameCardAnswerInput.oninput = null;
     if (!confirmed) return;
     const question = el.frameCardQuestionInput.value.trim();
-    const answer = el.frameCardAnswerInput.value.trim();
+    const answer = kit.textarea.value.trim();
     if (!question) {
       // Blank-question cards are dropped by loadDeckSnapshot on the next
       // load, so keeping one would silently lose it anyway.
@@ -133,19 +240,16 @@ export function createCardFromNotesSelection(markdown, noteAnchor = null) {
     }
     addCardFromNotes(question, answer, noteAnchor);
   };
-  el.frameCardAddBtn.onclick = () => cleanup(true);
-  el.frameCardCancelBtn.onclick = () => cleanup(false);
-  const confirmOrCancel = (e) => {
-    // Plain Enter inserts a newline (both fields can be multi-line);
-    // Ctrl/Cmd+Enter confirms, Escape cancels.
-    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); cleanup(true); }
-    if (e.key === "Escape") { e.preventDefault(); cleanup(false); }
-  };
-  el.frameCardQuestionInput.onkeydown = confirmOrCancel;
-  el.frameCardAnswerInput.onkeydown = confirmOrCancel;
+  // Plain Enter inserts a newline (both fields can be multi-line); Ctrl/Cmd+
+  // Enter confirms and Escape cancels — see the panel keys in
+  // ensureFrameCardEditor, which call through here.
+  const session = { confirm: () => cleanup(true), cancel: () => cleanup(false) };
+  frameCardSession = session;
+  el.frameCardAddBtn.onclick = session.confirm;
+  el.frameCardCancelBtn.onclick = session.cancel;
 }
 
-// The panel's own answer preview (see updatePreview above) is often the
+// The panel's own answer preview (see updateFrameCardPreview above) is often the
 // whole reason to open this modal in the first place — a region card's
 // answer face IS a picture of a spot on the page — so pinning it dead
 // centre with a dimmed backdrop hides the very thing being carded from.
@@ -233,6 +337,11 @@ function beginFrameCardResize(event) {
   // inline. Cleared here, once resizing actually starts, so the class rule
   // still sets a sane default size but never fights a deliberate resize.
   panel.style.maxWidth = "none";
+  // From here the editor and the preview share whatever height the reader
+  // gives the panel, rather than keeping their default boxes — see
+  // 61-frame-card-answer-editable.css. Only a resize does this; a drag pins an
+  // inline height too, and merely moving the panel must not re-split them.
+  panel.classList.add("is-resized");
   try { el.frameCardResizeHandle.setPointerCapture(event.pointerId); } catch (_) { /* synthetic event */ }
 
   const onMove = (moveEvent) => {

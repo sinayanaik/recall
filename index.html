@@ -2394,16 +2394,17 @@ What year was the Eiffel Tower built?
     <section class="confirm-modal" id="frameCardModal" hidden aria-label="Make a flashcard from notes">
       <div class="confirm-modal-content frame-card-content" id="frameCardPanel">
         <h3 class="prompt-modal-title frame-card-titlebar" id="frameCardTitlebar" title="Drag to move">Make a flashcard</h3>
-        <div class="frame-card-field">
-          <span class="frame-card-label" id="frameCardAnswerLabel">Answer — captured from your notes</span>
-          <div class="edit-toolbar" id="frameCardAnswerToolbar"></div>
-          <textarea id="frameCardAnswerInput" class="prompt-modal-input frame-card-answer-input" rows="5" spellcheck="false"></textarea>
-          <span class="frame-card-preview-label" id="frameCardAnswerPreviewLabel" hidden>Preview</span>
-          <div class="rendered frame-card-answer-preview" id="frameCardAnswerPreview" hidden></div>
-        </div>
-        <div class="frame-card-field">
-          <span class="frame-card-label">Question — what should bring it to mind?</span>
-          <textarea id="frameCardQuestionInput" class="prompt-modal-input frame-card-question" rows="3" autocomplete="off" placeholder="e.g. What happens in the thylakoid membranes?"></textarea>
+        <div class="frame-card-body" id="frameCardBody">
+          <div class="frame-card-field frame-card-answer-field">
+            <span class="frame-card-label" id="frameCardAnswerLabel">Answer — captured from your notes</span>
+            <div class="frame-card-answer-editor" id="frameCardAnswerEditor"></div>
+            <button type="button" class="frame-card-preview-label" id="frameCardAnswerPreviewLabel" aria-expanded="true" aria-controls="frameCardAnswerPreview" title="Show or hide the preview (Ctrl+E)" hidden>Preview</button>
+            <div class="rendered frame-card-answer-preview" id="frameCardAnswerPreview" hidden></div>
+          </div>
+          <div class="frame-card-field">
+            <span class="frame-card-label">Question — what should bring it to mind?</span>
+            <textarea id="frameCardQuestionInput" class="prompt-modal-input frame-card-question" rows="3" autocomplete="off" placeholder="e.g. What happens in the thylakoid membranes?"></textarea>
+          </div>
         </div>
         <div class="sync-modal-actions">
           <button id="frameCardCancelBtn" type="button" class="sync-modal-btn">Cancel</button>
