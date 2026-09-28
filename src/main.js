@@ -55,7 +55,8 @@ import { closeMyDecksMoreMenu, currentMyDecksFolder, importIntoFolder, myDecksIm
 import { setMyDecksDisplay, setMyDecksSort, setMyDecksView } from "./library/my-decks-prefs.js?v=__BUILD__";
 import { renderMyDecksList, repaintMyDecks } from "./library/my-decks-render.js?v=__BUILD__";
 import { selectedMyDecks, selectedMyFolders, updateMyDecksBulkBar } from "./library/my-decks-selection.js?v=__BUILD__";
-import { captureNotesAnchor, captureSourceAnchor, createCardFromNotesSelection, initFrameCardPanelControls, jumpToNoteForCurrentCard } from "./notes/anchors.js?v=__BUILD__";
+import { captureNotesAnchor, captureSourceAnchor, jumpToNoteForCurrentCard } from "./notes/anchors.js?v=__BUILD__";
+import { createCardFromNotesSelection } from "./notes/frame-card.js?v=__BUILD__";
 import { markOpenOffsets, noteMarkNode, sourceMarkIndexFor } from "./notes/anchors.js?v=__BUILD__";
 import { refreshHighlightBadges, setHighlightBadgeHandler } from "./notes/highlight-badges.js?v=__BUILD__";
 import { openHighlightNoteEditor } from "./notes/highlight-note-editor.js?v=__BUILD__";
@@ -1076,7 +1077,6 @@ onDomReady(initMarkMenu);
 onDomReady(initDocumentMarkMenu);
 onDomReady(initDocumentPinchZoom);
 onDomReady(initDocumentRegionSelect);
-onDomReady(initFrameCardPanelControls);
 onDomReady(() => {
   initReadingRail();
   // Two things care that the chrome just folded or unfolded, and only one of
@@ -2514,7 +2514,7 @@ document.addEventListener("keydown", (event) => {
   // against the next surface someone adds and forgets: the handler below
   // catches Ctrl+E wherever it lands, deliberately, which is how it came to
   // flip the notes view behind a popup somebody was typing into.
-  if (event.target.closest?.(".highlight-note-editor, .hl-note, #frameCardModal")) return;
+  if (event.target.closest?.(".highlight-note-editor, .hl-note, #frameCardLayer")) return;
   // Ctrl/Cmd+E toggles raw/rendered view — checked first so it still fires
   // while focus is inside the question/answer/notes edit textareas.
   if ((event.ctrlKey || event.metaKey) && (event.key === "e" || event.key === "E")) {

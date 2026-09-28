@@ -314,21 +314,11 @@ export const el = {
   // did. It is on every open deck now (refreshDocumentTab), and a deck with no
   // paper opens it to a card carrying the same picker and calling the same
   // attachPdfToOpenDeck — see renderAttachDocumentPrompt.
-  frameCardModal: document.querySelector("#frameCardModal"),
-  frameCardPanel: document.querySelector("#frameCardPanel"),
-  frameCardTitlebar: document.querySelector("#frameCardTitlebar"),
-  frameCardResizeHandle: document.querySelector("#frameCardResizeHandle"),
-  frameCardBody: document.querySelector("#frameCardBody"),
-  frameCardAnswerLabel: document.querySelector("#frameCardAnswerLabel"),
-  // Where the shared note editor (src/notes/note-editor-kit.js) is mounted the
-  // first time the modal opens — see ensureFrameCardEditor in anchors.js.
-  // There is no static answer textarea or toolbar any more; the kit builds both.
-  frameCardAnswerEditor: document.querySelector("#frameCardAnswerEditor"),
-  frameCardAnswerPreviewLabel: document.querySelector("#frameCardAnswerPreviewLabel"),
-  frameCardAnswerPreview: document.querySelector("#frameCardAnswerPreview"),
-  frameCardQuestionInput: document.querySelector("#frameCardQuestionInput"),
-  frameCardAddBtn: document.querySelector("#frameCardAddBtn"),
-  frameCardCancelBtn: document.querySelector("#frameCardCancelBtn"),
+  // "Make a flashcard" is a panel per request now, several at once — each one
+  // cloned from the template into the layer by src/notes/frame-card.js, so
+  // there are no fixed ids for the parts of one to be looked up by here.
+  frameCardLayer: document.querySelector("#frameCardLayer"),
+  frameCardTemplate: document.querySelector("#frameCardTemplate"),
   syncModal: document.querySelector("#syncModal"),
   syncDetailsContent: document.querySelector("#syncDetailsContent"),
   logoutBtn: document.querySelector("#logoutBtn"),

@@ -79,11 +79,12 @@ const POST_SPLIT = {
     "Written since the split, so it lives on its own rather than in the frozen " +
     "06-rendered.css slice the heading rules it decorates sit in.",
   "62-frame-card-draggable.css":
-    "The \"Make a flashcard\" modal, movable and resizable instead of pinned " +
-    "centre over a dimmed backdrop — a region card's answer is often a " +
-    "picture of a spot on the page (pdf-region-embed.js), so hiding that page " +
-    "behind the modal carding it defeats the point. See " +
-    "initFrameCardPanelControls in src/notes/anchors.js.",
+    "The \"Make a flashcard\" panels — several at once, movable and " +
+    "resizable, in a layer that passes every event through so the PDF or " +
+    "notes behind them stay scrollable, and a bottom sheet on phones. A " +
+    "region card's answer is often a picture of a spot on the page " +
+    "(pdf-region-embed.js), so hiding that page behind the panel carding it " +
+    "defeats the point. See src/notes/frame-card.js.",
   "61-frame-card-answer-editable.css":
     "The \"Make a flashcard\" modal's answer face as the shared note editor " +
     "(src/notes/note-editor-kit.js) with a live preview under it, each its " +

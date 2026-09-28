@@ -82,7 +82,6 @@ export function anyModalOpen() {
   return Boolean(
     (el.confirmModal && !el.confirmModal.hidden) ||
     (el.promptModal && !el.promptModal.hidden) ||
-    (el.frameCardModal && !el.frameCardModal.hidden) ||
     (el.exportHighlightsModal && !el.exportHighlightsModal.hidden) ||
     isHighlightNoteEditorOpen() ||
     (el.myDecksPanel && !el.myDecksPanel.hidden) ||
