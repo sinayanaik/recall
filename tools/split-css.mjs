@@ -85,9 +85,10 @@ const POST_SPLIT = {
     "behind the modal carding it defeats the point. See " +
     "initFrameCardPanelControls in src/notes/anchors.js.",
   "61-frame-card-answer-editable.css":
-    "The \"Make a flashcard\" modal's answer face as an editable textarea + " +
-    "toolbar instead of the read-only rendered preview it used to be — see " +
-    "src/notes/anchors.js's createCardFromNotesSelection. Written since the " +
+    "The \"Make a flashcard\" modal's answer face as the shared note editor " +
+    "(src/notes/note-editor-kit.js) with a live preview under it, each its " +
+    "own scroller, instead of the read-only rendered preview it used to be — " +
+    "see ensureFrameCardEditor in src/notes/anchors.js. Written since the " +
     "split; the frozen .frame-card-answer rule it replaced stays in " +
     "12-notes.css, unused but byte-identical to pre-modular.",
   "60-pdf-region-embed.css":

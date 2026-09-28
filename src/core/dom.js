@@ -318,9 +318,12 @@ export const el = {
   frameCardPanel: document.querySelector("#frameCardPanel"),
   frameCardTitlebar: document.querySelector("#frameCardTitlebar"),
   frameCardResizeHandle: document.querySelector("#frameCardResizeHandle"),
+  frameCardBody: document.querySelector("#frameCardBody"),
   frameCardAnswerLabel: document.querySelector("#frameCardAnswerLabel"),
-  frameCardAnswerToolbar: document.querySelector("#frameCardAnswerToolbar"),
-  frameCardAnswerInput: document.querySelector("#frameCardAnswerInput"),
+  // Where the shared note editor (src/notes/note-editor-kit.js) is mounted the
+  // first time the modal opens — see ensureFrameCardEditor in anchors.js.
+  // There is no static answer textarea or toolbar any more; the kit builds both.
+  frameCardAnswerEditor: document.querySelector("#frameCardAnswerEditor"),
   frameCardAnswerPreviewLabel: document.querySelector("#frameCardAnswerPreviewLabel"),
   frameCardAnswerPreview: document.querySelector("#frameCardAnswerPreview"),
   frameCardQuestionInput: document.querySelector("#frameCardQuestionInput"),
