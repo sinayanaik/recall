@@ -25,6 +25,10 @@ let menuEl = null;
 let openForIndex = null;
 let openForMark = null;
 
+// When the menu was last opened — see closeMarkMenuOnScroll below, the only
+// reader of this.
+let openedAt = 0;
+
 // ── Whose highlight is this? ────────────────────────────────────────────────
 //
 // What differs between a note's <mark> and a paper's record is what "recolour"
@@ -365,6 +369,25 @@ export function openMarkMenuWith(mark, key, handlerSet, currentColor = null) {
   );
   menu.style.top = `${Math.max(margin, top)}px`;
   menu.style.left = `${left}px`;
+  openedAt = Date.now();
+}
+
+// Scrolling genuinely invalidates the menu's position, once the reader
+// actually scrolls — but OPENING the menu can itself trigger a native scroll
+// adjustment with nothing to do with the reader's intent: repainting a
+// highlight layer or inserting the menu shifts layout, and the browser's own
+// scroll-anchoring (or similar) nudges the container to compensate, firing a
+// "scroll" event even though nothing the reader did asked for one. Left
+// ungated, a menu opened by a fresh capture could close itself within the
+// same tick it opened in — before there was ever a chance to press anything
+// on it. A brief grace window after every open is what tells the two apart
+// without weakening "scrolling invalidates this" for a scroll the reader
+// actually makes a moment later.
+const SCROLL_CLOSE_GRACE_MS = 250;
+
+export function closeMarkMenuOnScroll() {
+  if (Date.now() - openedAt < SCROLL_CLOSE_GRACE_MS) return;
+  closeMarkMenu();
 }
 
 export function initMarkMenu() {
@@ -419,6 +442,8 @@ export function initMarkMenu() {
   });
 
   // The menu is positioned against a rect that scrolling invalidates, and a
-  // paged note moves sideways under it.
-  view.addEventListener("scroll", closeMarkMenu, { passive: true });
+  // paged note moves sideways under it. Guarded (see closeMarkMenuOnScroll)
+  // rather than a bare closeMarkMenu — opening the menu can itself trigger a
+  // native scroll adjustment.
+  view.addEventListener("scroll", closeMarkMenuOnScroll, { passive: true });
 }
