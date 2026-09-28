@@ -491,6 +491,12 @@ const POST_SPLIT = {
     "consent screen blocked readers outright. One of these five fields IS a " +
     "secret, which is why it is a password input where the Client ID it " +
     "replaced was plain text.",
+  "66-code-marks.css":
+    "Highlights inside a code block. The code panel is a fixed near-black in " +
+    "every theme, so the prose tints (mixed for the theme's own ground) read as " +
+    "a smudge under Prism's token colours; a mark in code gets a stronger wash " +
+    "and a bar along the bottom of the line instead. Separate because the marks " +
+    "only started rendering in code when src/render/code-marks.js was written.",
   "53-handwriting.css":
     "Pages you can write on: the scrolling stack, the three papers (grid, ruled, " +
     "blank) and the notebook's own chrome. Separate from 52-ink.css because that " +

@@ -68,6 +68,7 @@ import { isInkSheetOpen, redoInkSheet, repaintInkSheet, undoInkSheet } from "./n
 import { followNoteLink, revealNoteHeading } from "./notes/note-links.js?v=__BUILD__";
 import { initNotesHeadOverflow } from "./notes/notes-head-overflow.js?v=__BUILD__";
 import { initNotesFoldTwisties } from "./render/block-cache.js?v=__BUILD__";
+import { installCodeCopyCleaner } from "./render/code-marks.js?v=__BUILD__";
 import { commitNotesEditIfActive, enterNotesEditing, isNotesEditing, isProgrammaticNotesScroll, renderNotesViewPinned, setNotesScrolledSource, toggleAllNotesHeadings } from "./notes/notes-view.js?v=__BUILD__";
 import { sourceFromRawEditor } from "./notes/notes-edit-split.js?v=__BUILD__";
 import { initPagedNotes } from "./notes/paged-view.js?v=__BUILD__";
@@ -3175,6 +3176,10 @@ function handwritingImageDrop(event, files) {
 
 // In PDF points, and the same offset a duplicated block takes.
 const IMAGE_DROP_CASCADE = 14;
+
+// Copying out of a highlighted code block copies the code — not its marks, not
+// the digit on a note badge. See src/render/code-marks.js.
+installCodeCopyCleaner();
 
 // Convert rich text/HTML to Markdown on paste in all textareas
 document.addEventListener("paste", (event) => {

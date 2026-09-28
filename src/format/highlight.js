@@ -11,6 +11,10 @@ import { MARK_HIGHLIGHT_COLORS, MARK_HIGHLIGHT_DEFAULT } from "./highlight-color
 // `function` declaration called at runtime, never a top-level `const` read while
 // either module body is still evaluating.
 import { notifyHighlightsChanged } from "./highlight-edit.js?v=__BUILD__";
+// Another cycle of the same kind: code-highlight.js takes markOpenTag and
+// MARK_CLOSE_TAG from here, and every binding either side uses is read inside a
+// call, never while a module body is evaluating.
+import { codeFenceAt, codeFences, highlightCodeSelectionInSource } from "./code-highlight.js?v=__BUILD__";
 import { locateSelectionInSource, renderedSelectionStrings } from "./locate-selection.js?v=__BUILD__";
 import { renderFormatDefaults } from "./render-toolbar.js?v=__BUILD__";
 import { ensurePillSelectionCapture, pillSelectionCapture, selectionTargets } from "../notes/selection.js?v=__BUILD__";
@@ -117,13 +121,19 @@ export const CELL_TEXT_RE = /^([ \t]*)([\s\S]*?)([ \t]*)$/;
 
 // Fenced code is walked line by line rather than split on blank lines: a fence
 // with an empty line in the middle is ONE block that a blank-line split would
-// cut in two, and a <mark> dropped into the back half shows up as literal
-// "<mark>" text in the rendered code (marked escapes HTML inside a fence, and
-// no highlight is possible there at all).
-export function wrapAcrossBlocks(source, color) {
+// cut in two. Code lines are left verbatim: a drag that runs from prose into a
+// code block (or out of one) highlights the prose, and the code keeps its own
+// highlights, made inside it (see src/format/code-highlight.js).
+//
+// `openFence` is the marker of a fence the slice STARTS inside. Without it the
+// walk only knew it was in code if the slice held the opening line, so a drag
+// from the middle of a block into the paragraph after it read the block's
+// CLOSING line as an opener — and left the paragraph after it unhighlighted,
+// as "code".
+export function wrapAcrossBlocks(source, color, { openFence = null } = {}) {
   const out = [];
   let group = [];
-  let fence = null;
+  let fence = openFence;
   // Whether the NEXT indented line would open an indented code block, i.e.
   // whether we are at a block boundary. True at the very start of the slice,
   // and again after every blank line; any content line clears it, so an indented
@@ -277,7 +287,11 @@ export function wrapKeepingPrefix(text, color) {
 // Turndown rule (see htmlToMarkdown) round-trips both back out of a
 // selection, so no render/sanitize change is needed for this to display or to
 // survive being lifted into a card/cloze/quick-note.
-export function highlightToggleInSource(source, sel, color) {
+// `literal` is for a selection the DOM says is code but that could not be
+// matched to its fence by position (see makeHighlightFromSelection): wrap the
+// hit in one mark, with none of wrapAcrossBlocks' prefix handling — in code a
+// leading `# ` is a comment, not a heading.
+export function highlightToggleInSource(source, sel, color, { literal = false } = {}) {
   const loc = locateSelectionInSource(source, sel, { fuzzy: true });
   if (!loc) return null;
   const { idx, end, needle } = loc;
@@ -306,7 +320,14 @@ export function highlightToggleInSource(source, sel, color) {
   if (before.lastIndexOf("<mark") > before.lastIndexOf(MARK_CLOSE_TAG) && source.indexOf(MARK_CLOSE_TAG, end) !== -1) {
     return { text: source, action: "already", idx };
   }
-  return { text: source.slice(0, idx) + wrapAcrossBlocks(needle, color) + source.slice(end), action: "added", idx };
+  // Wholly inside one code block: one mark, exactly around the words. Starting
+  // inside one: the walk has to be told, or it reads the closing fence as an
+  // opener (see wrapAcrossBlocks).
+  const fences = codeFences(source);
+  const wrapped = literal || codeFenceAt(fences, idx, end)
+    ? markOpenTag(color) + needle + MARK_CLOSE_TAG
+    : wrapAcrossBlocks(needle, color, { openFence: codeFenceAt(fences, idx)?.marker || null });
+  return { text: source.slice(0, idx) + wrapped + source.slice(end), action: "added", idx };
 }
 
 export function highlightInfoMessage(action) {
@@ -318,7 +339,11 @@ export function highlightInfoMessage(action) {
 // just wrap, recolour, or strip the substring directly. Used by the raw
 // notes/card editor's Highlight dropdown (handleToolbarClick's data-highlight
 // branch), the edit-mode equivalent of the rendered-view highlight button.
-export function toggleMarkColorInText(text, color) {
+//
+// `inCode`: the selection lies inside one fence body — one mark, no prefix
+// handling (a `# ` there is a comment). `openFence`: it starts inside one and
+// runs out of it — see wrapAcrossBlocks. codeSelectionContext works out both.
+export function toggleMarkColorInText(text, color, { inCode = false, openFence = null } = {}) {
   const whole = /^<mark(?:\s+data-color="([a-z]+)")?(?:\s+data-note="([A-Za-z0-9+/=-]*)")?>([\s\S]*)<\/mark>$/.exec(text);
   if (whole) {
     const existingColor = whole[1] || MARK_HIGHLIGHT_DEFAULT;
@@ -327,7 +352,19 @@ export function toggleMarkColorInText(text, color) {
     return markOpenTag(color, whole[2]) + whole[3] + MARK_CLOSE_TAG;
   }
   if (color === "clear") return text;
-  return wrapAcrossBlocks(text, color);
+  if (inCode) return markOpenTag(color) + text + MARK_CLOSE_TAG;
+  return wrapAcrossBlocks(text, color, { openFence });
+}
+
+// Where a raw-editor selection [start, end) of `text` sits relative to code:
+// the second argument toggleMarkColorInText wants.
+export function codeSelectionContext(text, start, end) {
+  const fences = codeFences(text);
+  if (!fences.length) return {};
+  return {
+    inCode: Boolean(codeFenceAt(fences, start, end)),
+    openFence: codeFenceAt(fences, start)?.marker || null
+  };
 }
 
 // The selection an action should run against, in priority order: a snapshot the
@@ -411,6 +448,22 @@ export function highlightToggleByOverlap(source, markIndex, color) {
   };
 }
 
+// The text search's view of a code selection: the code itself, as the block
+// holds it. asMarkdown is dropped — Turndown escapes code as if it were prose
+// (`\#`, `\*`), which is never what the fence says.
+function codeFallbackSelection(sel) {
+  const { text, start, end } = sel.code;
+  return {
+    asText: text.slice(start, end).replace(/^\n+|\n+$/g, ""),
+    asMarkdown: "",
+    view: sel.view,
+    anchorNode: sel.anchorNode,
+    get occurrence() {
+      return sel.occurrence;
+    }
+  };
+}
+
 // Driver for the highlight button — same shape as makeClozeFromSelection.
 // `color` defaults to the shared last-used swatch (renderFormatDefaults.highlight)
 // so a plain tap of the floating pill applies/toggles that colour; the render
@@ -448,9 +501,15 @@ export function makeHighlightFromSelection({ view, label, getSource, setSource, 
     showToast(`Select some text in the ${label} first, then tap the highlight button to mark it.`, "error");
     return null;
   }
-  const result = highlightToggleInSource(getSource(), sel, color);
+  // Inside one code block, by position (see src/format/code-highlight.js).
+  // When the block cannot be matched to its fence — one nested deep in a list
+  // or a quote — the text search still runs, told that this is code.
+  const result = (sel.code && highlightCodeSelectionInSource(getSource(), sel, color))
+    || highlightToggleInSource(getSource(), sel.code ? codeFallbackSelection(sel) : sel, color, { literal: Boolean(sel.code) });
   if (!result) {
-    showToast("Couldn't match that selection in the source — try selecting whole words.", "error");
+    showToast(sel.code
+      ? "Couldn't place that highlight in this code block — try selecting within a single line."
+      : "Couldn't match that selection in the source — try selecting whole words.", "error");
     return null;
   }
   if (result.action === "already" || result.action === "not-highlighted") {

@@ -8,6 +8,7 @@ import { annotateHighlightBadges } from "../notes/highlight-badges.js?v=__BUILD_
 import { loadNoteLinkIndex, noteLinkEntriesByTitle, parseNoteLinkTarget } from "../notes/note-links.js?v=__BUILD__";
 import { isTopLevelBlockParent } from "./block-cache.js?v=__BUILD__";
 import { codeLanguageLabel, codeLanguageOrGeneric, configurePrismLanguages, declaredCodeLanguage, inferCodeLanguage, normalizeCodeLanguage } from "./code-language.js?v=__BUILD__";
+import { codeCleanText, extractCodeMarks, installCodeMarkHooks, paintCodeMarks } from "./code-marks.js?v=__BUILD__";
 import { EAGER_IMAGE_COUNT, deferrableRenderRoot, runNearViewportAndDefer, scopedQueryAll } from "./deferred-work.js?v=__BUILD__";
 import { addDiagramZoomControl } from "./diagram-zoom.js?v=__BUILD__";
 import { sourceWithNomnomlTheme } from "./diagrams.js?v=__BUILD__";
@@ -18,96 +19,110 @@ import { PDFREF_SCHEME, mountPdfRegionEmbed } from "../documents/pdf-region-embe
 
 export function enhanceCodeBlocks(roots) {
   configurePrismLanguages();
+  installCodeMarkHooks();
 
   scopedQueryAll(roots, "pre code").forEach((code) => {
-    const pre = code.closest("pre");
-    const declared = declaredCodeLanguage(code);
-    // No ```lang on the fence? Guess one from the body (see
-    // inferCodeLanguage) so the block still highlights, still gets a badge,
-    // and — via code.dataset.codeLanguage below — so anything selected out of
-    // it can be re-fenced with a real language. The guess is cached on the
-    // element: enhancement passes run again on re-render, and the answer can't
-    // change for a body that hasn't changed. Rendering never rewrites the
-    // user's markdown; the fence in the source stays exactly as they wrote it.
-    let inferred = "";
-    if (!declared) {
-      if (code.dataset.inferredLanguage === undefined) {
-        code.dataset.inferredLanguage = inferCodeLanguage(code.textContent);
-      }
-      // Falls back to `text` when the guess came up empty — a block with no
-      // language at all is what left some blocks flat and badge-less.
-      inferred = codeLanguageOrGeneric(code.dataset.inferredLanguage);
-    }
-    const declaredLanguage = declared || inferred;
-    const normalizedLanguage = normalizeCodeLanguage(declaredLanguage);
-
-    pre?.classList.add("code-block");
-    // Single source of truth for "what language is this block", read back by
-    // the selection→fence path on both the rendered and raw sides.
-    if (normalizedLanguage) code.dataset.codeLanguage = normalizedLanguage;
-
-    if (declaredLanguage && pre) {
-      pre.classList.add("has-code-language");
-      pre.dataset.language = codeLanguageLabel(declaredLanguage);
-      // Marks the badge as a guess rather than something the note declared —
-      // used for the tooltip, and available to CSS if it should ever look
-      // different.
-      if (inferred) pre.dataset.languageInferred = "1";
-
-      // Inject a real button for the language badge so it can be clicked to copy.
-      // Guard against double-injection when the block is re-rendered.
-      if (!pre.querySelector(".code-copy-btn")) {
-        const label = codeLanguageLabel(declaredLanguage);
-        const btn = document.createElement("button");
-        btn.type = "button";
-        btn.className = "code-copy-btn";
-        // The label is drawn by CSS from this attribute (see .code-copy-btn's
-        // ::before in styles/06-rendered.css) rather than being a text node in
-        // the button.
-        //
-        // Because a text node is SELECTABLE, and `user-select: none` does not
-        // change that. styles/14-selection.css says in prose that Chrome keeps
-        // out-of-flow furniture out of Selection.toString(); measured against
-        // the Chrome this is checked on, it does not — a drag from the
-        // paragraph above a code block to the one below it put the badge's
-        // "JS" on the clipboard, between the prose and the code. Generated
-        // content is not in the DOM, so there is nothing for a range to
-        // contain. tools/selection-check.mjs asserts both halves.
-        //
-        // aria-label rather than the text, so the button still has an
-        // accessible name — ::before content is not reliably one.
-        btn.dataset.label = label;
-        btn.setAttribute("aria-label", `Copy code${label ? ` (${label})` : ""}`);
-        btn.title = inferred ? `Copy code · ${label} detected` : "Copy code";
-        btn.addEventListener("click", async (event) => {
-          event.stopPropagation();
-          try {
-            await navigator.clipboard.writeText(code.textContent ?? "");
-            btn.dataset.label = "✓";
-            btn.classList.add("is-copied");
-            setTimeout(() => {
-              btn.dataset.label = label;
-              btn.classList.remove("is-copied");
-            }, 1400);
-          } catch {
-            // clipboard unavailable — silent fail
-          }
-        });
-        pre.appendChild(btn);
-      }
-    }
-
-    if (!normalizedLanguage) return;
-
-    // Set the class even when Prism isn't around: it's what Turndown reads to
-    // put the language on the fence when a selection spanning the whole block
-    // goes through the HTML→Markdown path.
-    code.classList.add(`language-${normalizedLanguage}`);
-    pre?.classList.add(`language-${normalizedLanguage}`);
-
-    if (!window.Prism || code.dataset.highlighted === "yes") return;
-    Prism.highlightElement(code);
+    // Highlights first, before anything reads the block's text: the fence body
+    // arrives with its <mark> tags in it as TEXT, and both the language guess
+    // below and Prism must see the code alone. See src/render/code-marks.js.
+    extractCodeMarks(code);
+    enhanceCodeBlock(code);
+    // Prism's after-highlight hook has already painted them if it ran; this
+    // covers a block it did not (no Prism loaded, no language).
+    paintCodeMarks(code);
   });
+}
+
+function enhanceCodeBlock(code) {
+  const pre = code.closest("pre");
+  const declared = declaredCodeLanguage(code);
+  // No ```lang on the fence? Guess one from the body (see
+  // inferCodeLanguage) so the block still highlights, still gets a badge,
+  // and — via code.dataset.codeLanguage below — so anything selected out of
+  // it can be re-fenced with a real language. The guess is cached on the
+  // element: enhancement passes run again on re-render, and the answer can't
+  // change for a body that hasn't changed. Rendering never rewrites the
+  // user's markdown; the fence in the source stays exactly as they wrote it.
+  let inferred = "";
+  if (!declared) {
+    if (code.dataset.inferredLanguage === undefined) {
+      code.dataset.inferredLanguage = inferCodeLanguage(code.textContent);
+    }
+    // Falls back to `text` when the guess came up empty — a block with no
+    // language at all is what left some blocks flat and badge-less.
+    inferred = codeLanguageOrGeneric(code.dataset.inferredLanguage);
+  }
+  const declaredLanguage = declared || inferred;
+  const normalizedLanguage = normalizeCodeLanguage(declaredLanguage);
+
+  pre?.classList.add("code-block");
+  // Single source of truth for "what language is this block", read back by
+  // the selection→fence path on both the rendered and raw sides.
+  if (normalizedLanguage) code.dataset.codeLanguage = normalizedLanguage;
+
+  if (declaredLanguage && pre) {
+    pre.classList.add("has-code-language");
+    pre.dataset.language = codeLanguageLabel(declaredLanguage);
+    // Marks the badge as a guess rather than something the note declared —
+    // used for the tooltip, and available to CSS if it should ever look
+    // different.
+    if (inferred) pre.dataset.languageInferred = "1";
+
+    // Inject a real button for the language badge so it can be clicked to copy.
+    // Guard against double-injection when the block is re-rendered.
+    if (!pre.querySelector(".code-copy-btn")) {
+      const label = codeLanguageLabel(declaredLanguage);
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "code-copy-btn";
+      // The label is drawn by CSS from this attribute (see .code-copy-btn's
+      // ::before in styles/06-rendered.css) rather than being a text node in
+      // the button.
+      //
+      // Because a text node is SELECTABLE, and `user-select: none` does not
+      // change that. styles/14-selection.css says in prose that Chrome keeps
+      // out-of-flow furniture out of Selection.toString(); measured against
+      // the Chrome this is checked on, it does not — a drag from the
+      // paragraph above a code block to the one below it put the badge's
+      // "JS" on the clipboard, between the prose and the code. Generated
+      // content is not in the DOM, so there is nothing for a range to
+      // contain. tools/selection-check.mjs asserts both halves.
+      //
+      // aria-label rather than the text, so the button still has an
+      // accessible name — ::before content is not reliably one.
+      btn.dataset.label = label;
+      btn.setAttribute("aria-label", `Copy code${label ? ` (${label})` : ""}`);
+      btn.title = inferred ? `Copy code · ${label} detected` : "Copy code";
+      btn.addEventListener("click", async (event) => {
+        event.stopPropagation();
+        try {
+          // The code as written — not textContent, which would carry the
+          // digit of every note badge sitting on a highlight in the block.
+          await navigator.clipboard.writeText(codeCleanText(code));
+          btn.dataset.label = "✓";
+          btn.classList.add("is-copied");
+          setTimeout(() => {
+            btn.dataset.label = label;
+            btn.classList.remove("is-copied");
+          }, 1400);
+        } catch {
+          // clipboard unavailable — silent fail
+        }
+      });
+      pre.appendChild(btn);
+    }
+  }
+
+  if (!normalizedLanguage) return;
+
+  // Set the class even when Prism isn't around: it's what Turndown reads to
+  // put the language on the fence when a selection spanning the whole block
+  // goes through the HTML→Markdown path.
+  code.classList.add(`language-${normalizedLanguage}`);
+  pre?.classList.add(`language-${normalizedLanguage}`);
+
+  if (!window.Prism || code.dataset.highlighted === "yes") return;
+  Prism.highlightElement(code);
 }
 
 // Flags every display equation that carries an equation number, because two

@@ -13,6 +13,7 @@ import { cleanedSelectionFragment, countRenderedTextBefore, textWithLineBreaks }
 // NOTES_BLOCK_SELECTOR is only ever read inside a call — never while either
 // module body is still evaluating.
 import { NOTES_BLOCK_SELECTOR, approximateRawOffsetForBlock, rawOffsetForRenderedBlock } from "../notes/raw-offset.js?v=__BUILD__";
+import { codeCleanText, codeRangeOffsets, rangeCodeBlock } from "../render/code-marks.js?v=__BUILD__";
 
 // The current selection inside `view`, captured both as markdown (so inline
 // bold/math/etc. survive) and as plain text — either may be the string that
@@ -66,6 +67,22 @@ export function renderedSelectionStrings(view) {
     view,
     anchorNode: startNode?.nodeType === Node.ELEMENT_NODE ? startNode : startNode?.parentElement || null,
   };
+  // ── ...and, inside a code block, exactly where ──────────────────────────
+  //
+  // A selection that starts and ends in one rendered code block is addressed by
+  // position rather than by its words: the block's clean text and the [start,
+  // end) the selection covers in it. Code repeats itself — `}` and `return x`
+  // are on every other line — so a text search is the wrong tool there, and the
+  // highlight path (src/format/code-highlight.js) matches the whole block to its
+  // fence instead. Taken now, with the rest of the description, so the pill's
+  // position-time capture carries it to a touch screen's later button press.
+  const code = rangeCodeBlock(range);
+  if (code && view.contains(code)) {
+    const offsets = codeRangeOffsets(code, range);
+    if (offsets && offsets.end > offsets.start) {
+      result.code = { element: code, text: codeCleanText(code), start: offsets.start, end: offsets.end };
+    }
+  }
   Object.defineProperty(result, "occurrence", {
     enumerable: true,
     configurable: true,

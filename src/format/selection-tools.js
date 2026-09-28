@@ -8,7 +8,7 @@ import { captureDocumentSelection } from "../documents/pdf-selection.js?v=__BUIL
 import { isDocumentViewActive } from "../documents/pdf-view.js?v=__BUILD__";
 import { toggleWrapPair } from "../editor/text-transforms.js?v=__BUILD__";
 import { MARK_HIGHLIGHT_COLORS } from "./highlight-colors.js?v=__BUILD__";
-import { makeHighlightFromSelection, toggleMarkColorInText } from "./highlight.js?v=__BUILD__";
+import { codeSelectionContext, makeHighlightFromSelection, toggleMarkColorInText } from "./highlight.js?v=__BUILD__";
 import { locateSelectionInSource, renderedSelectionStrings } from "./locate-selection.js?v=__BUILD__";
 import { renderFormatDefaults, renderTargetConfig } from "./render-toolbar.js?v=__BUILD__";
 import { createLinkedNoteFlow } from "../notes/note-links.js?v=__BUILD__";
@@ -164,7 +164,7 @@ export function highlightTextareaSelection(target, color = renderFormatDefaults.
   if (start === end) return;
   if (ta === el.notesEdit) pushNotesUndo("highlight");
   const selected = ta.value.slice(start, end);
-  const wrapped = toggleMarkColorInText(selected, color);
+  const wrapped = toggleMarkColorInText(selected, color, codeSelectionContext(ta.value, start, end));
   ta.value = ta.value.slice(0, start) + wrapped + ta.value.slice(end);
   ta.setSelectionRange(start, start + wrapped.length);
   ta.focus();

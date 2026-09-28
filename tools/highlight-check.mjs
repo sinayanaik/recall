@@ -60,11 +60,21 @@ function serveOn(dir) {
 }
 
 // Runs INSIDE the page. Returns [{ name, ok, detail }].
-const PROBE = `(api) => {
+const PROBE = `async (api) => {
   const results = [];
   const check = (name, fn) => {
     try {
       const detail = fn();
+      results.push({ name, ok: detail === true, detail: detail === true ? "" : String(detail) });
+    } catch (e) {
+      results.push({ name, ok: false, detail: "THREW: " + e.message });
+    }
+  };
+  // The same, for the few cases that have to wait on something (a grammar the
+  // Prism autoloader fetches, a library pulled in for one case).
+  const checkAsync = async (name, fn) => {
+    try {
+      const detail = await fn();
       results.push({ name, ok: detail === true, detail: detail === true ? "" : String(detail) });
     } catch (e) {
       results.push({ name, ok: false, detail: "THREW: " + e.message });
@@ -1147,6 +1157,252 @@ const PROBE = `(api) => {
     }
   });
 
+  // ── Highlights inside a code block ───────────────────────────────────────
+  //
+  // src/render/code-marks.js (the render) and src/format/code-highlight.js (the
+  // write). A mark in a fence used to be written into the code and rendered as
+  // the literal TEXT "<mark>", with any line starting "# " or "- " split in two
+  // as though it were a heading or a list item. F is a fence, spelled with
+  // \x60 so this template literal needs no escaped backticks.
+  const F = "\x60\x60\x60";
+  const CODE_NOTE = ["Intro.", "", F + "python", "# compute area", "def area(r):", "    return 3.14 * r ** 2", F, "", "After."].join("\\n");
+  const CODE_TEXT = "# compute area\\ndef area(r):\\n    return 3.14 * r ** 2\\n";
+  const MARKED_NOTE = CODE_NOTE.replace("def area(r):", 'def <mark data-color="green">area(r)</mark>:');
+  const codeSel = (text, start, end, view = null, element = null) => ({ code: { text, start, end, element }, view });
+  const renderCode = (markdown) => {
+    const host = document.createElement("div");
+    host.className = "rendered";
+    host.innerHTML = api.markdownToSafeHtml(markdown);
+    document.body.appendChild(host);
+    api.enhanceCodeBlocks([host]);
+    return host;
+  };
+  const addBadge = (mark, digit) => {
+    const badge = document.createElement("button");
+    badge.className = "hl-note-badge";
+    badge.textContent = digit;
+    mark.appendChild(badge);
+    return badge;
+  };
+  // A DOM position for a clean-text offset in a rendered <code>.
+  const codePoint = (root, offset) => {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    let node;
+    let pos = 0;
+    while ((node = walker.nextNode())) {
+      if (offset <= pos + node.data.length) return [node, offset - pos];
+      pos += node.data.length;
+    }
+    return [root, root.childNodes.length];
+  };
+
+  check("code: a '# ' line is marked whole, not split as a heading", () => {
+    const r = api.highlightCodeSelectionInSource(CODE_NOTE, codeSel(CODE_TEXT, 0, 14), "green");
+    if (!r || r.action !== "added") return "no result: " + JSON.stringify(r);
+    if (!r.text.includes('<mark data-color="green"># compute area</mark>')) return JSON.stringify(r.text);
+    if (r.text.slice(r.idx, r.idx + 5) !== "<mark") return "idx does not point at the new mark";
+    return true;
+  });
+
+  check("code: a multi-line selection is ONE mark", () => {
+    const start = CODE_TEXT.indexOf("def");
+    const end = CODE_TEXT.indexOf("** 2") + 4;
+    const r = api.highlightCodeSelectionInSource(CODE_NOTE, codeSel(CODE_TEXT, start, end), "blue");
+    const marks = ((r && r.text).match(/<mark/g) || []).length;
+    if (marks !== 1) return "expected one mark, got " + marks + ": " + JSON.stringify(r && r.text);
+    if (!r.text.includes('<mark data-color="blue">def area(r):\\n    return 3.14 * r ** 2</mark>')) return JSON.stringify(r.text);
+    return true;
+  });
+
+  check("code: same colour again removes, another recolours and keeps the note", () => {
+    const once = api.highlightCodeSelectionInSource(CODE_NOTE, codeSel(CODE_TEXT, 2, 14), "green").text;
+    const noted = once.replace('<mark data-color="green">', '<mark data-color="green" data-note="hn-abcd">');
+    const recoloured = api.highlightCodeSelectionInSource(noted, codeSel(CODE_TEXT, 2, 14), "blue");
+    if (recoloured.action !== "recolored" || !recoloured.text.includes('<mark data-color="blue" data-note="hn-abcd">compute area</mark>')) {
+      return "recolour: " + JSON.stringify(recoloured);
+    }
+    const removed = api.highlightCodeSelectionInSource(recoloured.text, codeSel(CODE_TEXT, 2, 14), "blue");
+    if (removed.action !== "removed" || removed.text !== CODE_NOTE) return "remove: " + JSON.stringify(removed);
+    return true;
+  });
+
+  check("code: a selection across two highlights is refused", () => {
+    let src = api.highlightCodeSelectionInSource(CODE_NOTE, codeSel(CODE_TEXT, 2, 9), "green").text;
+    src = api.highlightCodeSelectionInSource(src, codeSel(CODE_TEXT, 10, 14), "green").text;
+    const r = api.highlightCodeSelectionInSource(src, codeSel(CODE_TEXT, 0, 14), "blue");
+    return r.action === "already" && r.text === src ? true : JSON.stringify(r);
+  });
+
+  check("code: a fence indented under a list item maps back through the indent", () => {
+    const src = ["- step one", "", "  " + F + "js", "  const a = 1;", "  const b = a;", "  " + F].join("\\n");
+    const text = "const a = 1;\\nconst b = a;\\n";
+    const start = text.indexOf("b = a");
+    const r = api.highlightCodeSelectionInSource(src, codeSel(text, start, start + 5), "green");
+    if (!r) return "no fence matched";
+    return r.text.includes('  const <mark data-color="green">b = a</mark>;') ? true : JSON.stringify(r.text);
+  });
+
+  check("drag from code into prose: the prose after the fence is still marked", () => {
+    const out = api.wrapAcrossBlocks("return x\\n" + F + "\\n\\nProse after.", "green", { openFence: F });
+    if (/<mark[^>]*>return/.test(out)) return "the code was wrapped as prose: " + JSON.stringify(out);
+    if (!/<mark data-color="green">Prose after\\.<\\/mark>/.test(out)) return "the prose was not marked: " + JSON.stringify(out);
+    return true;
+  });
+
+  check("text search inside a fence: one mark, a list-looking line left whole", () => {
+    const src = [F + "yaml", "- item one", "- item two", F].join("\\n");
+    const r = api.highlightToggleInSource(src, { asText: "- item two", asMarkdown: "" }, "green");
+    if (!r) return "not located";
+    return r.text.includes('<mark data-color="green">- item two</mark>') ? true : JSON.stringify(r.text);
+  });
+
+  check("raw editor: a selection inside a fence gets one mark", () => {
+    const src = [F + "bash", "# install", "npm i", F].join("\\n");
+    const s = src.indexOf("# install");
+    const e = src.indexOf("npm i") + 5;
+    const out = api.toggleMarkColorInText(src.slice(s, e), "green", api.codeSelectionContext(src, s, e));
+    return out === '<mark data-color="green"># install\\nnpm i</mark>' ? true : JSON.stringify(out);
+  });
+
+  check("render: a mark in a fence is one element over Prism's tokens", () => {
+    const host = renderCode(MARKED_NOTE);
+    try {
+      const code = host.querySelector("pre code");
+      const marks = code.querySelectorAll("mark");
+      if (marks.length !== 1) return "expected 1 mark element, got " + marks.length + ": " + code.innerHTML;
+      if (code.textContent.includes("<mark")) return "tag text left in the code: " + code.textContent;
+      if (marks[0].textContent !== "area(r)") return "the mark holds " + JSON.stringify(marks[0].textContent);
+      if (marks[0].getAttribute("data-color") !== "green") return "colour lost";
+      if (!code.querySelector(".token")) return "Prism did not run (no tokens)";
+      if (!marks[0].querySelector(".token")) return "the mark holds no token spans: " + marks[0].innerHTML;
+      if (api.codeCleanText(code) !== CODE_TEXT) return "clean text: " + JSON.stringify(api.codeCleanText(code));
+      return true;
+    } finally {
+      host.remove();
+    }
+  });
+
+  check("render: a second Prism pass keeps the mark, its identity and its badge", () => {
+    const host = renderCode(MARKED_NOTE);
+    try {
+      const code = host.querySelector("pre code");
+      const mark = code.querySelector("mark");
+      const badge = addBadge(mark, "7");
+      Prism.highlightElement(code);
+      const after = code.querySelectorAll("mark");
+      if (after.length !== 1) return "marks after re-highlight: " + after.length;
+      if (after[0] !== mark) return "the mark element was replaced";
+      if (!mark.contains(badge)) return "the badge was lost";
+      if (api.codeCleanText(code) !== CODE_TEXT) return "clean text picked up the badge: " + JSON.stringify(api.codeCleanText(code));
+      if (mark.textContent !== "area(r)7") return "mark text: " + JSON.stringify(mark.textContent);
+      return true;
+    } finally {
+      host.remove();
+    }
+  });
+
+  check("code: identical blocks — the second one's selection marks the second fence", () => {
+    const twin = [F + "python", "i += 1", F, "", "between", "", F + "python", "i += 1", F].join("\\n");
+    const host = renderCode(twin);
+    try {
+      const codes = host.querySelectorAll("pre code");
+      const r = api.highlightCodeSelectionInSource(twin, codeSel(api.codeCleanText(codes[1]), 0, 1, host, codes[1]), "green");
+      if (!r) return "no fence matched";
+      return r.text.indexOf("<mark") > r.text.indexOf("between") ? true : "marked the first block: " + JSON.stringify(r.text);
+    } finally {
+      host.remove();
+    }
+  });
+
+  check("copy: Ctrl+C in a highlighted block puts only the code on the clipboard", () => {
+    const host = renderCode(MARKED_NOTE);
+    const selection = window.getSelection();
+    try {
+      const code = host.querySelector("pre code");
+      addBadge(code.querySelector("mark"), "5");
+      const range = document.createRange();
+      range.selectNodeContents(code);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      const data = new DataTransfer();
+      const event = new ClipboardEvent("copy", { clipboardData: data, bubbles: true, cancelable: true });
+      host.dispatchEvent(event);
+      if (!event.defaultPrevented) return "the copy was left to the browser";
+      const got = data.getData("text/plain");
+      return got === CODE_TEXT ? true : "copied " + JSON.stringify(got);
+    } finally {
+      selection.removeAllRanges();
+      host.remove();
+    }
+  });
+
+  check("card from a code selection keeps the highlight, clipped to the selection", () => {
+    const host = renderCode(MARKED_NOTE);
+    try {
+      const code = host.querySelector("pre code");
+      addBadge(code.querySelector("mark"), "4");
+      const text = api.codeCleanText(code);
+      const range = document.createRange();
+      range.setStart(...codePoint(code, text.indexOf("def")));
+      range.setEnd(...codePoint(code, text.indexOf("(r)")));
+      const out = api.notesSelectionCodeFence(range, { view: host });
+      const want = F + 'python\\ndef <mark data-color="green">area</mark>\\n' + F;
+      return out === want ? true : JSON.stringify(out);
+    } finally {
+      host.remove();
+    }
+  });
+
+  check("highlight entries: a code mark carries its fenced lines and its exact code", () => {
+    const saved = api.state.notes;
+    api.state.notes = MARKED_NOTE;
+    try {
+      const entry = api.noteHighlightEntries()[0];
+      if (!entry) return "no entry";
+      if (entry.codeText !== "area(r)") return "codeText " + JSON.stringify(entry.codeText);
+      const want = F + 'python\\ndef <mark data-color="green">area(r)</mark>:\\n' + F;
+      if (entry.codeMarkdown !== want) return "codeMarkdown " + JSON.stringify(entry.codeMarkdown);
+      const row = api.collectHighlightEntries().find((e) => e.markIndex === 0);
+      if (!row || row.markdown !== want) return "pane row: " + JSON.stringify(row && row.markdown);
+      return true;
+    } finally {
+      api.state.notes = saved;
+    }
+  });
+
+  await checkAsync("paste/Turndown: a highlighted code block keeps its marks, not its badge", async () => {
+    if (typeof TurndownService === "undefined") {
+      (0, eval)(await (await fetch("/recall-clipper/vendor/turndown.js")).text());
+    }
+    const host = renderCode(MARKED_NOTE);
+    try {
+      addBadge(host.querySelector("pre code mark"), "3");
+      const md = api.buildTurndownService({ preserveInlineStyles: true }).turndown(host.querySelector("pre").outerHTML);
+      if (!md.includes(F + "python")) return "no fence: " + JSON.stringify(md);
+      if (!md.includes('def <mark data-color="green">area(r)</mark>:')) return JSON.stringify(md);
+      if (/area\\(r\\)3/.test(md)) return "the badge digit leaked: " + JSON.stringify(md);
+      return true;
+    } finally {
+      host.remove();
+    }
+  });
+
+  await checkAsync("render: marks survive the autoloader's second pass", async () => {
+    const note = [F + "rust", 'fn main() { let <mark data-color="blue">total</mark> = 1; }', F].join("\\n");
+    const host = renderCode(note);
+    try {
+      const code = host.querySelector("pre code");
+      const deadline = Date.now() + 8000;
+      while (!code.querySelector(".token") && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+      if (!code.querySelector(".token")) return "rust was never highlighted";
+      const marks = code.querySelectorAll("mark");
+      if (marks.length !== 1 || marks[0].textContent !== "total") return "after the autoloader: " + code.innerHTML;
+      return true;
+    } finally {
+      host.remove();
+    }
+  });
+
   return results;
 }`;
 
@@ -1177,7 +1433,14 @@ const API_SRC = `async () => {
     import("/src/format/cloze.js?v=__BUILD__"),
     // ...and setDocumentHighlightNote, the other half of the pair whose
     // { rerender, notify } contract the two verbs now share.
-    import("/src/documents/pdf-highlights.js?v=__BUILD__")
+    import("/src/documents/pdf-highlights.js?v=__BUILD__"),
+    // Highlights inside a code block: the render, the write, and everything a
+    // highlighted block has to survive on its way into a card.
+    import("/src/render/code-marks.js?v=__BUILD__"),
+    import("/src/format/code-highlight.js?v=__BUILD__"),
+    import("/src/render/enhance.js?v=__BUILD__"),
+    import("/src/panels/highlight-index.js?v=__BUILD__"),
+    import("/src/import/html-to-markdown.js?v=__BUILD__")
   ]);
   const api = {};
   for (const m of mods) for (const k of Object.keys(m)) if (!(k in api)) api[k] = m[k];

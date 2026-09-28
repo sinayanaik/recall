@@ -34,6 +34,7 @@
 
 import { state } from "../core/state.js?v=__BUILD__";
 import { readerNotesBody } from "../format/notes-fence.js?v=__BUILD__";
+import { codeHighlightSnippet } from "../format/code-highlight.js?v=__BUILD__";
 import { readHighlightNotes } from "../format/highlight-notes.js?v=__BUILD__";
 import { headingForOffset, headingIndexFor } from "../notes/chapters.js?v=__BUILD__";
 import { notesAnchorPlainText } from "../notes/anchors.js?v=__BUILD__";
@@ -77,7 +78,7 @@ export function noteHighlightEntries() {
   const source = readerNotesBody(notes);
   // Scanned over the body, resolved against the whole note — the notes live in
   // the tail the body has just had sliced off it. See scanHighlightGroups.
-  const { raw, groups } = scanHighlightGroups(source, notes);
+  const { raw, groups, fences } = scanHighlightGroups(source, notes);
   const headings = headingIndexFor(source);
   const entries = [];
   groups.forEach((group) => {
@@ -88,7 +89,13 @@ export function noteHighlightEntries() {
     const text = notesAnchorPlainText(group.pieces[0].inner);
     if (!text) return;
     const heading = headingForOffset(headings, group.offset);
+    // A highlight inside a code block leaves it as CODE: a card or a pin made
+    // from it gets the lines it sits on as a fenced block, in the block's
+    // language, with the highlights still on them; Copy gets exactly the code
+    // that was marked. Absent for every highlight in prose.
+    const snippet = fences.length ? codeHighlightSnippet(source, fences, group.pieces[0].start, group.end) : null;
     entries.push({
+      ...(snippet ? { codeMarkdown: snippet.markdown, codeText: snippet.text } : {}),
       key: `mark-${group.pieces[0].markIndex}`,
       text,
       color: group.color,
