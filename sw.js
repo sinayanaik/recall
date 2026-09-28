@@ -342,6 +342,7 @@ const APP_SHELL = [
   `./styles/63-notes-fold-twisty.css?v=${STAMP}`,
   `./styles/64-notes-tight-padding.css?v=${STAMP}`,
   `./styles/65-bucket-settings.css?v=${STAMP}`,
+  `./styles/66-code-marks.css?v=${STAMP}`,
   // The module entry point. Everything it imports is stamped with the same
   // ?v=, so those URLs change with every release too — which is what lets the
   // cache-first handler below serve them without revalidating and still never
@@ -430,6 +431,7 @@ const APP_SHELL = [
   `./src/export/sql.js?v=${STAMP}`,
   `./src/export/zip.js?v=${STAMP}`,
   `./src/format/cloze.js?v=${STAMP}`,
+  `./src/format/code-highlight.js?v=${STAMP}`,
   `./src/format/highlight-colors.js?v=${STAMP}`,
   `./src/format/highlight-edit.js?v=${STAMP}`,
   `./src/format/highlight-notes-merge.js?v=${STAMP}`,
@@ -522,6 +524,7 @@ const APP_SHELL = [
   `./src/render/block-cache.js?v=${STAMP}`,
   `./src/render/cloze-markup.js?v=${STAMP}`,
   `./src/render/code-language.js?v=${STAMP}`,
+  `./src/render/code-marks.js?v=${STAMP}`,
   `./src/render/deferred-work.js?v=${STAMP}`,
   `./src/render/diagram-zoom.js?v=${STAMP}`,
   `./src/render/diagrams.js?v=${STAMP}`,

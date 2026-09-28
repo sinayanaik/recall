@@ -2,7 +2,9 @@
 
 import { ensureTurndown } from "../core/lib-loader.js?v=__BUILD__";
 import { MARK_CLOSE_TAG, markOpenTag } from "../format/highlight.js?v=__BUILD__";
+import { fenceFor } from "../format/code-highlight.js?v=__BUILD__";
 import { RAW_MATH_ATTR, protectMathInDom, relaxEscapedBrackets } from "../render/math-dom.js?v=__BUILD__";
+import { codeTextWithMarks, stripCodeMarks } from "../render/code-marks.js?v=__BUILD__";
 import { repairEscapedMathMarkdown } from "../render/math.js?v=__BUILD__";
 import { mathmlToTex, sanitizeMathTex } from "./mathml-to-tex.js?v=__BUILD__";
 
@@ -428,6 +430,25 @@ export function buildTurndownService(options = {}) {
       const language = ((code.getAttribute("class") || "").match(/language-([\w+-]+)/) || [])[1] || "";
       const text = code.textContent.replace(/\n$/, "");
       return `\n\n\`\`\`${language}\n${text}\n\`\`\`\n\n`;
+    }
+  });
+
+  // A code block with highlights in it (see src/render/code-marks.js) — a
+  // selection that runs from prose into one, or HTML copied out of one. Every
+  // other code rule reads the <code>'s textContent, which drops the marks and
+  // keeps the digit of any note badge sitting on one. This writes the
+  // highlights back out as source inside the fence, so they arrive in the card
+  // the way they looked in the note, and leaves the badges behind. Added after
+  // the rules above so it is consulted before them (Turndown checks the most
+  // recently added rule first).
+  turndownService.addRule("fenced-code-marks", {
+    filter: (node) => node.nodeName === "PRE" && Boolean(node.querySelector("code mark, code button")),
+    replacement: (content, node) => {
+      const code = node.querySelector("code");
+      const language = ((code.getAttribute("class") || "").match(/language-([\w+-]+)/) || [])[1] || "";
+      const text = codeTextWithMarks(code).replace(/\n$/, "");
+      const fence = fenceFor(stripCodeMarks(text).text);
+      return `\n\n${fence}${language}\n${text}\n${fence}\n\n`;
     }
   });
 

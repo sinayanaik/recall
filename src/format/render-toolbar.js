@@ -15,7 +15,7 @@ import { applyFormatToTextarea, clozeTextareaSelection } from "./selection-tools
 import { captureNotesAnchor, captureSourceAnchor } from "../notes/anchors.js?v=__BUILD__";
 import { createCardFromNotesSelection } from "../notes/frame-card.js?v=__BUILD__";
 import { isNotesEditing, renderNotesViewPinned } from "../notes/notes-view.js?v=__BUILD__";
-import { activeEditingTarget, hideNotesSelectionButton } from "../notes/selection.js?v=__BUILD__";
+import { activeEditingTarget, hideNotesSelectionButton, renderedSelectionStudyMarkdown } from "../notes/selection.js?v=__BUILD__";
 import { saveQuickNote } from "../quick-notes/board.js?v=__BUILD__";
 import { renderMarkdown } from "../render/block-cache.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
@@ -614,9 +614,11 @@ export function handleRenderToolbarAction(btn, toolbar) {
       return;
     }
     const anchor = captureNotesAnchor();
+    // Before the selection is cleared: a code selection is read off the live range.
+    const markdown = renderedSelectionStudyMarkdown(config.view, sel);
     hideNotesSelectionButton();
     window.getSelection()?.removeAllRanges();
-    createCardFromNotesSelection(sel.asMarkdown || sel.asText, anchor);
+    createCardFromNotesSelection(markdown, anchor);
     return;
   }
 
@@ -639,7 +641,7 @@ export function handleRenderToolbarAction(btn, toolbar) {
     }
     // Capture the source location while the selection is still live so the
     // quick_notes card can offer a "Go to notes" jump back here.
-    saveQuickNote(sel.asMarkdown || sel.asText, btn, captureSourceAnchor());
+    saveQuickNote(renderedSelectionStudyMarkdown(config.view, sel), btn, captureSourceAnchor());
     return;
   }
 

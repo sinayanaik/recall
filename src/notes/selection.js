@@ -21,6 +21,7 @@ import { HIGHLIGHT_MIRROR_MAX_CHARS } from "../editor/highlight-mirror.js?v=__BU
 // top-level `const X = somethingImported` in this file, and there is none.
 import { NOTES_CHUNK_PENDING_CLASS, measureNotesChunkEstimate } from "../render/block-cache.js?v=__BUILD__";
 import { renderedSelectionStrings } from "../format/locate-selection.js?v=__BUILD__";
+import { codeCleanText, codeRangeOffsets, codeTextWithMarks, stripCodeMarks } from "../render/code-marks.js?v=__BUILD__";
 import { htmlToMarkdown } from "../import/html-to-markdown.js?v=__BUILD__";
 import { lineIndexAtOffset } from "./caret.js?v=__BUILD__";
 // notes-view.js imports hideNotesSelectionButton from here, so this is a cycle.
@@ -692,17 +693,17 @@ export function notesSelectionCodeFence(range, target) {
   // the fence anyway because the <pre> is cloned intact.
   const endPre = boundaryCodeBlock(range.endContainer, range.endOffset);
   if (endPre !== startPre) return null;
-  const raw = range.toString();
-  if (!raw.trim()) return null;
+  const code = startPre.querySelector("code");
+  if (!code) return null;
+  // The code as source, highlights included: a card made from a highlighted
+  // line shows the same highlight, clipped to what was selected (see
+  // codeTextWithMarks). Read from the block's own text nodes rather than
+  // range.toString(), so neither the copy button's label nor the digit on a
+  // note badge can ride along into the card.
+  const raw = codeTextWithMarks(code, range);
+  const trimmed = raw.replace(/^\n+|\n+$/g, "");
+  if (!stripCodeMarks(trimmed).text.trim()) return null;
   const lang = renderedCodeBlockLanguage(startPre);
-  // The copy button is the <pre>'s last child, so its label rides along at the
-  // END of range.toString() once the selection reaches the block's edge. Strip
-  // it there only — a bare replace would also eat a legitimate "SQL" sitting
-  // in a comment somewhere in the middle of the code.
-  const label = startPre.querySelector(".code-copy-btn")?.textContent || "";
-  const body = label && raw.endsWith(label) ? raw.slice(0, -label.length) : raw;
-  const trimmed = body.replace(/^\n+|\n+$/g, "");
-  if (!trimmed.trim()) return null;
   return `\`\`\`${lang}\n${leadingCodeIndent(startPre, range)}${trimmed}\n\`\`\``;
 }
 
@@ -715,16 +716,27 @@ export function notesSelectionCodeFence(range, target) {
 export function leadingCodeIndent(pre, range) {
   const code = pre.querySelector("code");
   if (!code) return "";
-  const before = document.createRange();
-  try {
-    before.selectNodeContents(code);
-    before.setEnd(range.startContainer, range.startOffset);
-  } catch (_) {
-    return "";
-  }
-  const text = before.toString();
+  const offsets = codeRangeOffsets(code, range);
+  if (!offsets) return "";
+  const text = codeCleanText(code).slice(0, offsets.start);
   const prefix = text.slice(text.lastIndexOf("\n") + 1);
   return /^[ \t]+$/.test(prefix) ? prefix : "";
+}
+
+// What a rendered selection should become when it is turned into study
+// material (a card, a Quick Note) straight from a toolbar button, with the
+// description renderedSelectionStrings already gave. A selection inside one
+// code block goes through notesSelectionCodeFence — the fence, its language and
+// its highlights — rather than asMarkdown, which is Turndown's escaped prose
+// reading of the code (`\#`, `\*`, one line). Everything else is unchanged.
+export function renderedSelectionStudyMarkdown(view, described) {
+  if (described?.code) {
+    const selection = window.getSelection();
+    const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+    const fenced = range ? notesSelectionCodeFence(range, { view }) : null;
+    if (fenced) return fenced;
+  }
+  return described?.asMarkdown || described?.asText || "";
 }
 
 // Serialize the notes selection back to MARKDOWN, so images, math, bold text

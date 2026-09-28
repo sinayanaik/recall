@@ -731,12 +731,14 @@ export function revealRenderedNoteRange(range, { flash = true, smooth = true, al
 // highlighted words inside a several-thousand-pixel window, so highlighting a
 // phrase that recurs nearby landed on the wrong copy of it.
 //
-// `markCount` is the gate. Marks are only produced from a selection, which never
-// wraps fenced code — but nothing stops a reader typing <mark> inside a fence in
-// the raw editor, and that one renders as literal TEXT rather than an element.
-// The source scan counts it and the DOM doesn't, so every ordinal after it would
-// be off by one. When the two counts disagree we know nothing about the mapping
-// and hand back false so the caller falls back to the text search.
+// `markCount` is the gate. A canonical <mark> inside a fenced code block is an
+// element too (src/render/code-marks.js lifts it out of the escaped fence text
+// and paints it over Prism's tokens as ONE <mark>), so the two counts agree
+// there. What can still disagree is a mark the renderer never makes an element
+// of — one typed by hand in a non-canonical form, or inside an inline `code`
+// span — which the source scan counts and the DOM doesn't, so every ordinal after
+// it would be off by one. When the two counts disagree we know nothing about the
+// mapping and hand back false so the caller falls back to the text search.
 // Every `<mark …>` open tag in `text`, by character offset. The highlights
 // panel addresses a highlight by its ORDINAL in state.notes, and preprocess
 // leaves a mark tag exactly as it found it, so the same ordinals index the

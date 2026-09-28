@@ -272,14 +272,19 @@ function ensureMarkMenu() {
     if (index == null) return;
     const entry = markActions.resolveHighlightEntry?.(surface, index);
     if (!entry) return;
-    if (action === "copy") markActions.copy?.(entry.text);
+    // A highlight inside a code block carries two more strings (see
+    // noteHighlightEntries): the code exactly as written, for Copy — the plain
+    // passage text is flattened for reading, which code cannot survive — and a
+    // fenced snippet with the highlights still in it, for anything that turns it
+    // into study material.
+    if (action === "copy") markActions.copy?.(entry.codeText ?? entry.text);
     // The entry rides along with the card verb, and only that one. A card is
     // the single verb whose answer is not always the WORDS: an ink mark has
     // none, and what it should hold is the drawing. Copy, share and search are
     // still handed the passage and nothing else, because there is nothing about
     // which mark this was for any of them to do anything with.
-    else if (action === "card") markActions.makeCard?.(entry.text, entry.anchor, entry);
-    else if (action === "pin") markActions.pin?.(entry.text, entry.anchor, button);
+    else if (action === "card") markActions.makeCard?.(entry.codeMarkdown ?? entry.text, entry.anchor, entry);
+    else if (action === "pin") markActions.pin?.(entry.codeMarkdown ?? entry.text, entry.anchor, button);
     else if (action === "highlights") markActions.showInHighlights?.(surface, entry.locator);
     // The two that take the words out of the app entirely. Each is handed the
     // passage and nothing else — neither has any business with an anchor, a

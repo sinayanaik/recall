@@ -1,0 +1,39 @@
+/* Highlights inside a code block.
+ *
+ * Written since the split, so it lives on its own — see POST_SPLIT in
+ * tools/split-css.mjs.
+ *
+ * A code block is its own surface: `.rendered pre` is a fixed near-black panel
+ * (#0b1110) in every theme, light ones included, with Prism's token colours on
+ * top. The prose tints in styles/12-notes.css are mixed for the THEME's ground
+ * at 30–35%, and over that panel they read as a faint smudge that the token
+ * colours drown out. So a mark here gets a stronger wash of its colour plus a
+ * solid bar along the bottom of the line — the bar is what still says "this
+ * one" when the wash sits under a bright string or keyword.
+ *
+ * `color: inherit` on the mark (from 12-notes.css) is what keeps Prism's
+ * colours: the mark holds whole token spans (see src/render/code-marks.js),
+ * and each span keeps its own colour inside it.
+ *
+ * The rule is listed twice on purpose. 12-notes.css colours a mark with
+ * `.rendered mark[data-color="green"]` — a class AND an attribute — which
+ * outranks a bare `.rendered pre code mark` however many element names follow
+ * it, so every coloured highlight in code kept the faint prose wash. The
+ * `[data-color]` twin carries the same weight and comes later.
+ */
+
+.rendered pre code mark,
+.rendered pre code mark[data-color] {
+  --code-mark: #e0b400;
+  background: color-mix(in srgb, var(--code-mark) 30%, transparent);
+  box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--code-mark) 85%, transparent);
+  border-radius: 2px;
+}
+
+.rendered pre code mark[data-color="yellow"] { --code-mark: #e0b400; }
+.rendered pre code mark[data-color="green"]  { --code-mark: #22c55e; }
+.rendered pre code mark[data-color="blue"]   { --code-mark: #3b82f6; }
+.rendered pre code mark[data-color="pink"]   { --code-mark: #ec4899; }
+.rendered pre code mark[data-color="orange"] { --code-mark: #f97316; }
+.rendered pre code mark[data-color="purple"] { --code-mark: #8b5cf6; }
+

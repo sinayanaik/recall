@@ -14,6 +14,7 @@ import { MARK_HIGHLIGHT_DEFAULT } from "../format/highlight-colors.js?v=__BUILD_
 import { HIGHLIGHT_GROUP_GAP_RE, HIGHLIGHT_SCAN_RE, LIST_MARKER_RE, MARK_CLOSE_TAG, markOpenTag } from "../format/highlight.js?v=__BUILD__";
 import { highlightNoteResolver, readHighlightNotes } from "../format/highlight-notes.js?v=__BUILD__";
 import { readerNotesBody } from "../format/notes-fence.js?v=__BUILD__";
+import { codeFences, codeHighlightSnippet } from "../format/code-highlight.js?v=__BUILD__";
 import { notesAnchorPlainText } from "../notes/anchors.js?v=__BUILD__";
 import { headingForOffset, headingIndexFor } from "../notes/chapters.js?v=__BUILD__";
 import { highlightNoteIndex } from "../notes/highlight-badges.js?v=__BUILD__";
@@ -73,8 +74,22 @@ export function precedingListMarker(source, start) {
 //
 // Returns null when no unit covers the highlight (all-whitespace, or a
 // dropped table rule), and the caller falls back to the bare marked fragment.
-export function highlightUnitSpan(units, source, group) {
+//
+// A highlight inside a code block is the exception: its row is the lines it
+// sits on as a fenced block in the block's own language, highlights and all
+// (codeHighlightSnippet) — a code line pulled out of its fence and rendered as
+// prose turns `__init__` bold and `a * b` italic. `code: true` tells the export
+// not to add prose context lines around it, and `cur` never equals the raw
+// slice, so the pane's in-place image resize (which checks exactly that) leaves
+// it alone.
+export function highlightUnitSpan(units, source, group, fences = null) {
   const first = clozeUnitAt(units, group.pieces[0].start);
+  if (fences?.length) {
+    const snippet = codeHighlightSnippet(source, fences, group.pieces[0].start, group.end);
+    if (snippet) {
+      return { cur: snippet.markdown, first, last: first, rawStart: group.pieces[0].start, rawEnd: group.end, code: true };
+    }
+  }
   if (first === -1) return null;
   // A highlight can run past the end of its own line (a drag across two of
   // them, or across a block boundary), so the closing unit is looked up
@@ -211,8 +226,11 @@ export function scanHighlightGroups(source, noteSource = source) {
   // highlightUnitSpan, and clozeUnitIndex's own comment for why this is built
   // once rather than per highlight.
   const units = clozeUnitIndex(source);
+  // Same once-per-scan rule for the code blocks: a highlight in one is shown as
+  // code (see highlightUnitSpan). Empty, and free, for a note with no fences.
+  const fences = codeFences(source);
 
-  return { source, raw, groups, units };
+  return { source, raw, groups, units, fences };
 }
 
 // ── A PDF deck's highlights, in the same shapes ─────────────────────────────
@@ -309,7 +327,7 @@ export function collectDeckHighlightsForExport({ contextLines = 0, includeChapte
   // document, and exporting it as one puts a note's fragment in a list of
   // passages from the paper.
   const notes = state.notes || "";
-  const { source, groups, units } = scanHighlightGroups(readerNotesBody(notes), notes);
+  const { source, groups, units, fences } = scanHighlightGroups(readerNotesBody(notes), notes);
   const headings = includeChapter ? headingIndexFor(source) : null;
   const items = [];
   // A PDF deck's highlights come first, in reading order, and carry their page
@@ -338,15 +356,18 @@ export function collectDeckHighlightsForExport({ contextLines = 0, includeChapte
     });
   }
   groups.forEach((group) => {
-    const span = highlightUnitSpan(units, source, group);
+    const span = highlightUnitSpan(units, source, group, fences);
     const markdown = span ? span.cur : group.pieces.reduce((acc, piece, i) => {
       const markedPiece = markOpenTag(group.color) + piece.inner + MARK_CLOSE_TAG;
       const rendered = piece.marker ? piece.marker + markedPiece : markedPiece;
       if (i === 0) return rendered;
       return acc + (piece.marker ? "\n" : "\n\n") + rendered;
     }, "");
-    const before = span && contextLines > 0 ? highlightContextUnits(units, span.first, -1, contextLines) : [];
-    const after = span && contextLines > 0 ? highlightContextUnits(units, span.last, 1, contextLines) : [];
+    // A code row already shows its whole lines, fenced; the units around it are
+    // more code, which would come out as prose.
+    const withContext = span && !span.code && contextLines > 0;
+    const before = withContext ? highlightContextUnits(units, span.first, -1, contextLines) : [];
+    const after = withContext ? highlightContextUnits(units, span.last, 1, contextLines) : [];
     const chapter = headings ? headingForOffset(headings, group.offset) : null;
     const note = group.pieces[0].note || null;
     if (annotatedOnly && !note) return;
@@ -425,14 +446,14 @@ export function collectHighlightEntries() {
     });
   }
   const notes = state.notes || "";
-  const { source, raw, groups, units } = scanHighlightGroups(readerNotesBody(notes), notes);
+  const { source, raw, groups, units, fences } = scanHighlightGroups(readerNotesBody(notes), notes);
   const headings = headingIndexFor(source);
   // ...and the note's own badge numbers, from the index the badges themselves
   // are painted out of. Keyed on the <mark>'s data-note reference, which is why
   // scanHighlightGroups carries it.
   const noteNumbers = highlightNoteIndex(notes).byAttr;
   groups.forEach((group) => {
-    const span = highlightUnitSpan(units, source, group);
+    const span = highlightUnitSpan(units, source, group, fences);
     const markdown = span ? span.cur : group.pieces.reduce((acc, piece, i) => {
       const markedPiece = markOpenTag(group.color) + piece.inner + MARK_CLOSE_TAG;
       const rendered = piece.marker ? piece.marker + markedPiece : markedPiece;
