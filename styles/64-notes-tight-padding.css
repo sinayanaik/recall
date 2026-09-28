@@ -52,3 +52,23 @@
     padding-left: calc(var(--notes-padding) + var(--notes-stage-pad-x) + var(--toc-width));
   }
 }
+
+/* ── ...and no dead band either side of the page on a wide window ─────────
+   --quiz-panel-max-width is `min(99vw, 1800px)` (styles/01-tokens.css, a frozen
+   slice). Below 1818px wide that is just 99vw — a hairline either side — and
+   the 1800px half never comes into play, which is why this looked fine for so
+   long. It comes into play on a big monitor, and on an ordinary 1920px one
+   read at 90% zoom: the viewport is then ~2127 CSS px, the panel stops at 1800,
+   and ~160px of empty background sits on each side of the note, reported as
+   "too much empty gap on both the left and right side".
+
+   A cap belongs on the text MEASURE, not on the frame — and the notes view has
+   one of its own (--notes-max-width, the "Notes reading width %" style setting)
+   that the reader can narrow. So while reading, the panel keeps only the 99vw
+   gutter it has at every other width. Set on the panel itself, which is where
+   .quiz-panel's `max-width: var(--quiz-panel-max-width)` (05-study.css) reads
+   it. `.notes-mode` covers all three reading surfaces — Notes, PDF and Write;
+   the Cards view, a single card face with its own measure, keeps the cap. */
+.quiz-panel.notes-mode {
+  --quiz-panel-max-width: 99vw;
+}

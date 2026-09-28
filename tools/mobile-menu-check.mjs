@@ -71,7 +71,13 @@ const BUDGET = {
   // 40ms is far above what either should ever cost again, and far below the
   // 550-690ms they cost before.
   scrollLockMs: 40,
-  chromeMeasureMs: 40
+  chromeMeasureMs: 40,
+  // Focus mode, in and out, with the book open. The fold used to tween the
+  // header's max-height/margins/gap — layout properties — so every frame of it
+  // re-laid out the note: 6-9 layouts a press and a run of 33-100ms frames, the
+  // "going into focus mode feels very laggy" report. It now changes height once
+  // (styles/67-focus-fold.css), which measures 2-3.
+  focusFoldLayouts: 4
 };
 
 function serveOn(dir) {
@@ -347,8 +353,40 @@ async function metrics(page) {
     script: pick("ScriptDuration"),
     style: pick("RecalcStyleDuration"),
     layout: pick("LayoutDuration"),
-    task: pick("TaskDuration")
+    task: pick("TaskDuration"),
+    layouts: pick("LayoutCount")
   };
+}
+
+// ── Focus mode's fold ─────────────────────────────────────────────────────
+//
+// Two halves. What the fold ANIMATES, read off the computed styles — the
+// deterministic half, and the one that names the cause: any layout property in
+// a transition on these boxes means a relayout of the note on every frame.
+// And what a press actually COSTS, as renderer layouts counted across it.
+const FOLD_LAYOUT_PROPS = ["max-height", "height", "margin", "padding", "border", "gap", "row-gap", "all"];
+const FOLD_STYLE_SRC = `() => [".appbar", "#viewModeToggle", "#viewModeRow", ".app-shell"]
+  .map((sel) => {
+    const node = document.querySelector(sel);
+    if (!node) return null;
+    const props = getComputedStyle(node).transitionProperty.split(",").map((p) => p.trim());
+    const durations = getComputedStyle(node).transitionDuration.split(",").map((d) => parseFloat(d) || 0);
+    const moving = props.filter((p, i) => (durations[i % durations.length] || 0) > 0
+      && ${JSON.stringify(FOLD_LAYOUT_PROPS)}.some((q) => p === q || p.startsWith(q + "-")));
+    return moving.length ? sel + " tweens " + moving.join("/") : null;
+  })
+  .filter(Boolean)`;
+
+async function pressFocus(page, on) {
+  await page.evaluate(`() => new Promise((r) => setTimeout(r, 300))`);
+  const before = await metrics(page);
+  const collapsed = await page.evaluate(`async () => {
+    window.__recall.api.setFocusMode(${on});
+    await new Promise((r) => setTimeout(r, 700));
+    return document.body.classList.contains("chrome-collapsed");
+  }`);
+  const after = await metrics(page);
+  return { collapsed, layouts: Math.round(after.layouts - before.layouts) };
 }
 
 async function run() {
@@ -434,6 +472,11 @@ async function run() {
     stage("timing the shared overlay/chrome plumbing");
     const plumbing = await page.evaluate(new Function(`return (${PLUMBING_SRC})`)());
 
+    stage("folding focus mode in and out with the book open");
+    const foldTweens = await page.evaluate(FOLD_STYLE_SRC);
+    const foldIn = await pressFocus(page, true);
+    const foldOut = await pressFocus(page, false);
+
     const results = [];
     const push = (name, ok, detail, measured) => results.push({ name, ok, detail, measured });
     const m = loaded.measured;
@@ -484,6 +527,19 @@ async function run() {
       plumbing.measure <= BUDGET.chromeMeasureMs,
       `readChromeHeights ${plumbing.measure}ms — this runs on every chrome fold and every ResizeObserver tick while a phone scrolls`,
       `${plumbing.measure}ms`);
+
+    push("focus mode folds without tweening a layout property",
+      foldTweens.length === 0,
+      `${foldTweens.join("; ")} — each frame of that re-lays out the note underneath`,
+      "");
+
+    push("focus mode lands in a couple of layouts, in and out",
+      foldIn.collapsed && !foldOut.collapsed
+        && foldIn.layouts <= BUDGET.focusFoldLayouts && foldOut.layouts <= BUDGET.focusFoldLayouts,
+      !foldIn.collapsed || foldOut.collapsed
+        ? `the fold did not happen (in: collapsed=${foldIn.collapsed}, out: collapsed=${foldOut.collapsed})`
+        : `${foldIn.layouts} layouts going in, ${foldOut.layouts} coming out (budget ${BUDGET.focusFoldLayouts})`,
+      `in ${foldIn.layouts}, out ${foldOut.layouts} layouts`);
 
     push("the page threw nothing", errors.length === 0, errors[0] || "", "");
 

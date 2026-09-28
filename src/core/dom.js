@@ -238,6 +238,7 @@ export const el = {
   selectionFloat: document.querySelector("#selectionFloat"),
   selectionFloatFormat: document.querySelector("#selectionFloatFormat"),
   immersiveModeBtn: document.querySelector("#immersiveModeBtn"),
+  rotateScreenBtn: document.querySelector("#rotateScreenBtn"),
   // Side by side — the reading surface keeps its own place in the panel's grid
   // and these take the column (or, on a phone, the row) beside it. See
   // src/panels/highlight-cycle.js.

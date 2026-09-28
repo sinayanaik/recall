@@ -162,6 +162,7 @@ const INK_NUDGE_KEYS = {
 import { initDocumentRegionSelect, toggleRegionSelect } from "./documents/pdf-region.js?v=__BUILD__";
 import { paintPageNoteBadges, paintPdfPageNotesButton, readPdfPageNotesPreference, refreshPdfPageNotes, repaintPdfPageNotes, setDocumentNoteRevealHook, setPdfPageNotesFlag, togglePdfPageNotes } from "./documents/pdf-page-notes.js?v=__BUILD__";
 import { initReadingRail, refreshReadingRail, refreshReadingRailModes } from "./ui/reading-rail.js?v=__BUILD__";
+import { initScreenOrientation, setOrientationModesHandler, toggleLandscape } from "./ui/orientation.js?v=__BUILD__";
 import { attachPdfToOpenDeck, importPdfFile, reportPdfImportCrash } from "./import/pdf.js?v=__BUILD__";
 
 // The two index builders the contents drawer's Highlights half already uses.
@@ -448,12 +449,28 @@ setPdfPageNotesFlag(readPdfPageNotesPreference());
 // and the way out.
 //
 // So measure it. The observer below publishes the live heights as custom
-// properties and the CSS animates between the real value and 0, which makes
-// the 220ms buy 220ms of visible motion.
-
+// properties, which the CSS clamps the two bars with.
+//
+// The fold no longer animates at all (styles/67-focus-fold.css — a tween of a
+// layout property re-laid out the note on every frame), and that moved one
+// thing here: the measurement is taken a frame LATER than the resize that
+// prompted it. Publishing --appbar-h changes the appbar's own max-height, so it
+// can resize the very box being observed. While that change was eased over
+// 220ms the box moved on later frames; with no transition it moves inside this
+// callback, and a ResizeObserver whose callback resizes what it observes is
+// what "ResizeObserver loop completed with undelivered notifications" reports —
+// to window.onerror, where every check that asserts "nothing threw" reads it.
+// Deferred to the next frame, the new size is simply the next observation.
+let chromeMeasureFrame = 0;
 
 if (typeof ResizeObserver === "function") {
-  const chromeSizeObserver = new ResizeObserver(() => measureChromeHeights());
+  const chromeSizeObserver = new ResizeObserver(() => {
+    if (chromeMeasureFrame) return;
+    chromeMeasureFrame = requestAnimationFrame(() => {
+      chromeMeasureFrame = 0;
+      measureChromeHeights();
+    });
+  });
   const appbarEl = document.querySelector(".appbar");
   if (appbarEl) chromeSizeObserver.observe(appbarEl);
   // The ROW, matching what readChromeHeights measures. The row also holds the
@@ -474,6 +491,12 @@ el.focusModeBtn?.addEventListener("click", () => setFocusMode(!isFocusModeActive
 // apply to a button in the ⋯ menu.
 el.immersiveModeBtn?.addEventListener("click", () => toggleImmersiveMode());
 initImmersiveMode();
+
+// Landscape ⇄ portrait, for a reader who keeps the phone's auto-rotate off.
+// Also a click for the gesture: in a browser tab the lock needs full screen,
+// and full screen needs the press. See src/ui/orientation.js.
+el.rotateScreenBtn?.addEventListener("click", () => { toggleLandscape(); });
+initScreenOrientation();
 
 // Restore a remembered focus-mode pin before the first paint, then arm the CSS
 // transitions a frame later — otherwise every launch in focus mode would open
@@ -1099,6 +1122,8 @@ onDomReady(() => {
   // reason the collapse handler above is — src/ui/chrome.js sits low in the
   // import graph and the rail sits high; this file is the one that knows both.
   setChromeModesHandler(refreshReadingRailModes);
+  // ...and the Landscape row, which is a copy in the same way.
+  setOrientationModesHandler(refreshReadingRailModes);
 });
 // The pill's Highlight and ✕ need a description of the PDF selection taken
 // while it is still alive, and src/notes/selection.js cannot import the module

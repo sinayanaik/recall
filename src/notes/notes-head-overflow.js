@@ -101,6 +101,7 @@ const ROW_TRAIL_SELECTORS = [
 const OVERFLOW_SELECTORS = [
   ".notes-head > #focusModeBtn",
   ".notes-head > #immersiveModeBtn",
+  ".notes-head > #rotateScreenBtn",
   ".notes-head > #notesFoldAllBtn",
   ".notes-head > #bookmarkGoBtn",
   ".notes-head > .notes-make-card",

@@ -63,12 +63,34 @@
    file has already been made to answer. */
 .hl-note-badge {
   position: absolute;
-  /* High enough to read as a superscript, low enough to stay inside the block it
-     is in: a chip that clears the paragraph's own box is clipped by the
-     scrolling notes surface on the first line of a note, and painted over by
-     whatever sits above it everywhere else. */
-  top: -0.5em;
-  right: -0.24em;
+  /* ── AFTER the last character, not on top of it ─────────────────────────
+     This was `top: -0.5em; right: -0.24em` — pinned to the mark's right edge
+     and pulled back over it — and the chip sat squarely on the highlight's last
+     letter: "messagebo▣", "FigureCanvasTkA▣". The number was legible; the word
+     it was about was not.
+
+     No offsets at all now. An absolutely positioned box with `top`/`left` left
+     at `auto` is drawn at its STATIC position — where it would have been in
+     the flow — and the badge is the mark's last child (annotateMark appends
+     it), so that is exactly the point just past the final glyph. Still out of
+     flow, so still not a pixel of advance (tools/highlight-check.mjs asserts
+     both halves).
+
+     It also fixes a highlight that wraps. An abs-pos child of a multi-line
+     inline takes the FIRST line box as its containing block, so the old offsets
+     put the number at the end of the mark's first line — mid-highlight, with
+     the real end a line further down. The static position follows the text to
+     wherever it actually finishes.
+
+     The margins are the nudge from there, in the chip's own (half-size) em: a
+     hair of clearance from the glyph, and up by just under a line of the chip
+     so it reads as a superscript — clear of this line's letters, and still
+     inside the block, since a chip that clears the paragraph's own box is
+     clipped by the scrolling notes surface on the first line of a note. */
+  top: auto;
+  right: auto;
+  margin-left: 0.1em;
+  margin-top: -0.9em;
   /* Over the line above it rather than under it, on the rare line where the two
      meet — a half-covered number is worse than one that slightly overlaps. */
   z-index: 1;

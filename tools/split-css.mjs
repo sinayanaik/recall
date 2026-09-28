@@ -497,6 +497,14 @@ const POST_SPLIT = {
     "a smudge under Prism's token colours; a mark in code gets a stronger wash " +
     "and a bar along the bottom of the line instead. Separate because the marks " +
     "only started rendering in code when src/render/code-marks.js was written.",
+  "67-focus-fold.css":
+    "Focus mode folds the header with no transition. The fold used to tween " +
+    "max-height, margin, padding, border-width and the shell's gap — layout " +
+    "properties, so every frame re-laid out the note under them, and on a " +
+    "phone with a long note the 220ms fold ran at 10-20fps. It now changes " +
+    "height once, with no transition (a compositor slide was measured and was " +
+    "slower). The transitions it switches off are in the frozen 12-notes.css " +
+    "slice, hence a file of its own.",
   "53-handwriting.css":
     "Pages you can write on: the scrolling stack, the three papers (grid, ruled, " +
     "blank) and the notebook's own chrome. Separate from 52-ink.css because that " +

@@ -343,6 +343,7 @@ const APP_SHELL = [
   `./styles/64-notes-tight-padding.css?v=${STAMP}`,
   `./styles/65-bucket-settings.css?v=${STAMP}`,
   `./styles/66-code-marks.css?v=${STAMP}`,
+  `./styles/67-focus-fold.css?v=${STAMP}`,
   // The module entry point. Everything it imports is stamped with the same
   // ?v=, so those URLs change with every release too — which is what lets the
   // cache-first handler below serve them without revalidating and still never
@@ -573,6 +574,7 @@ const APP_SHELL = [
   `./src/ui/help.js?v=${STAMP}`,
   `./src/ui/ink-rail.js?v=${STAMP}`,
   `./src/ui/nav-history.js?v=${STAMP}`,
+  `./src/ui/orientation.js?v=${STAMP}`,
   `./src/ui/overlays.js?v=${STAMP}`,
   `./src/ui/pickers.js?v=${STAMP}`,
   `./src/ui/reading-rail.js?v=${STAMP}`,

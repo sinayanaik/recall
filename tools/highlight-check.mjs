@@ -1071,6 +1071,78 @@ const PROBE = `async (api) => {
     } finally { host.remove(); }
   });
 
+  // The box of the last real character in a mark — the badge's own digits
+  // skipped, since they are a text node inside the mark too.
+  const lastGlyphRect = (mark) => {
+    const walker = document.createTreeWalker(mark, NodeFilter.SHOW_TEXT, {
+      acceptNode: (node) => (node.parentElement.closest(".hl-note-badge") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT)
+    });
+    let last = null;
+    while (walker.nextNode()) if (walker.currentNode.data.trim()) last = walker.currentNode;
+    const end = last.data.replace(/\\s+$/, "").length;
+    const range = document.createRange();
+    range.setStart(last, end - 1);
+    range.setEnd(last, end);
+    return range.getBoundingClientRect();
+  };
+
+  check("...and it never covers the highlight's last letter", () => {
+    // The report: "they are always masking the last character of the
+    // highlighted content". The chip was pinned to the mark's right edge and
+    // pulled back over it ("right: -0.24em"), so "messagebox" read as
+    // "messagebo" plus a number. It now sits at its static position, just past
+    // the final glyph — so the two boxes must not share a single pixel.
+    api.state.notes = NOTED;
+    const host = renderNoted();
+    try {
+      api.annotateHighlightBadges(host);
+      const marks = [...host.querySelectorAll("mark.has-note")];
+      if (marks.length !== 2) return marks.length + " annotated mark(s), expected 2";
+      for (const mark of marks) {
+        const glyph = lastGlyphRect(mark);
+        const chip = mark.querySelector(".hl-note-badge").getBoundingClientRect();
+        const w = Math.min(glyph.right, chip.right) - Math.max(glyph.left, chip.left);
+        const h = Math.min(glyph.bottom, chip.bottom) - Math.max(glyph.top, chip.top);
+        if (w > 0.5 && h > 0.5) {
+          return JSON.stringify(mark.firstChild.textContent) + ": the badge covers " + w.toFixed(1) + "x" + h.toFixed(1) + "px of its last letter";
+        }
+        // ...and it is still AT the end, not floated off somewhere clear of it.
+        if (chip.left < glyph.right - 0.5 || chip.left - glyph.right > 6) {
+          return "the badge starts " + (chip.left - glyph.right).toFixed(1) + "px from the last letter";
+        }
+        // Raised like a superscript: its top above the letters' own top.
+        if (chip.top >= glyph.top) return "the badge is not raised above the line it ends";
+      }
+      return true;
+    } finally { host.remove(); }
+  });
+
+  check("...and on a highlight that wraps, it is where the highlight ENDS", () => {
+    // An abs-pos child of a multi-line inline is positioned against the FIRST
+    // line box, so offsets from the mark's edges put the number at the end of
+    // the first line — mid-highlight, with the real end a line further down.
+    api.state.notes = NOTED;
+    const host = renderNoted();
+    host.style.width = "180px";
+    try {
+      api.annotateHighlightBadges(host);
+      const mark = [...host.querySelectorAll("mark.has-note")].find((m) => m.getClientRects().length > 1);
+      if (!mark) return "no annotated highlight wrapped at 180px, so this proves nothing";
+      const lines = mark.getClientRects();
+      const lastLine = lines[lines.length - 1];
+      const chip = mark.querySelector(".hl-note-badge").getBoundingClientRect();
+      const glyph = lastGlyphRect(mark);
+      const midY = (chip.top + chip.bottom) / 2;
+      if (midY < lastLine.top - chip.height || midY > lastLine.bottom) {
+        return "the badge is at y=" + chip.top.toFixed(0) + ", the highlight's last line is y=" + lastLine.top.toFixed(0) + "-" + lastLine.bottom.toFixed(0);
+      }
+      if (Math.abs(chip.left - glyph.right) > 6) {
+        return "the badge is at x=" + chip.left.toFixed(0) + ", the highlight ends at x=" + glyph.right.toFixed(0);
+      }
+      return true;
+    } finally { host.remove(); }
+  });
+
   check("...and the source matcher never reads its digits", () => {
     // The failure this guards is silent and total: a stray "1" in the needle
     // means locateSelectionInSource cannot find the paragraph in the markdown,
