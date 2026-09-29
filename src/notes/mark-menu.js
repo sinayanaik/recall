@@ -111,6 +111,8 @@ export function setMarkMenuActions(actions) {
 // `color`, and this menu's icons take the row's ink.
 const SEARCH_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" width="15" height="15"><circle cx="10.8" cy="10.8" r="6.6"/><path d="m15.7 15.7 4.6 4.6"/></svg>';
 
+const LOCATION_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" width="15" height="15"><path d="M12 21s-6.5-6.2-6.5-11.2a6.5 6.5 0 0 1 13 0C18.5 14.8 12 21 12 21z"/><circle cx="12" cy="9.8" r="2.3"/></svg>';
+
 const PIN_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" width="15" height="15"><path d="M9.5 3.5h5l-.7 5.2 3.4 3.1v1.7H6.8v-1.7l3.4-3.1z"/><path d="M12 13.5v7"/></svg>';
 
 // ── ...and the order they come in ──────────────────────────────────────────
@@ -137,6 +139,9 @@ const MARK_MENU_ACTIONS = [
   { id: "pin", verb: "pin", label: "Pin to Quick Notes", icon: PIN_ICON, run: "keep" },
   { id: "highlights", verb: "showInHighlights", label: "Show in Highlights", icon: "&#9776;", run: "keep" },
   { id: "copy", verb: "copy", label: "Copy", icon: "&#10697;", run: "send" },
+  // A PDF highlight's SPOT rather than its words — a `pdfref:` that renders as
+  // a live picture of it wherever it is pasted (src/documents/pdf-region-embed.js).
+  { id: "location", verb: "copyLocation", label: "Copy location", icon: LOCATION_ICON, run: "send" },
   { id: "share", verb: "share", label: "Share", icon: "&#8599;", run: "send" },
   { id: "search", verb: "search", label: "Search the web", icon: SEARCH_ICON, run: "send" }
 ];
@@ -278,6 +283,7 @@ function ensureMarkMenu() {
     // fenced snippet with the highlights still in it, for anything that turns it
     // into study material.
     if (action === "copy") markActions.copy?.(entry.codeText ?? entry.text);
+    else if (action === "location") markActions.copyLocation?.(entry);
     // The entry rides along with the card verb, and only that one. A card is
     // the single verb whose answer is not always the WORDS: an ink mark has
     // none, and what it should hold is the drawing. Copy, share and search are
@@ -410,7 +416,7 @@ export function initMarkMenu() {
     // and tapping the corner of an image inside a highlight opened this menu
     // instead of starting the drag. Named the way src/cards/swipe.js already
     // names it for the same reason.
-    if (event.target.closest("a, button, .cloze, .notes-img-controls, .notes-img-resize-handle, .notes-img-size-badge")) return;
+    if (event.target.closest("a, button, .cloze, .notes-img-controls, .notes-img-resize-handle, .notes-img-size-badge, .pdf-region-resize-handle")) return;
     const mark = event.target.closest("mark");
     if (!mark || !view.contains(mark)) {
       closeMarkMenu();

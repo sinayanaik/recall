@@ -196,13 +196,14 @@ export async function enhanceRenderedMarkdown(container, roots = null) {
   // asynchronously (opening the deck's PDF, rendering a page).
   //
   // A resize handle is only worth drawing where a resize can be SAVED
-  // against something — Study's live question/answer faces, or an All Cards
-  // row, both of which have a stable card id to write a new width back into
-  // (see pdf-region-resize.js). Deliberately an allow-list, not a skip-list:
+  // against something — Study's live question/answer faces or an All Cards
+  // row, both of which have a stable card id to write a new width back into,
+  // or the Notes view, which writes into the note (see pdf-region-resize.js). Deliberately an allow-list, not a skip-list:
   // the frame-card modal's own unsaved preview, and every export/print
   // render into el.printRoot, simply never match one of these and so never
   // get a handle, with nothing here needing to name them individually.
   const allowRegionResize = container === el.questionView || container === el.answerView
+    || container === el.notesView
     || Boolean(container.closest?.(".all-card-question, .all-card-answer"));
   scopedQueryAll(scope, `img[src^="${PDFREF_SCHEME}"]`).forEach((img) => {
     mountPdfRegionEmbed(img, { resizable: allowRegionResize });

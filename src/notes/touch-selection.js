@@ -2109,7 +2109,9 @@ function onRootTouchStart(event) {
   // text press over the image at the same time as the resize. The grip is a
   // bare <div>, so it has to be named — the same reason src/cards/swipe.js and
   // src/notes/mark-menu.js name it.
-  if (event.target?.closest?.(".notes-img-resize-handle, .notes-img-delete-btn, .notes-img-size-badge, .diagram-zoom")) {
+  // A PDF region's own grip (src/documents/pdf-region-resize.js) is the same
+  // bare-<div> case.
+  if (event.target?.closest?.(".notes-img-resize-handle, .notes-img-delete-btn, .notes-img-size-badge, .diagram-zoom, .pdf-region-resize-handle")) {
     cancelPress();
     dismissPending = false;
     return;

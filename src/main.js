@@ -119,9 +119,10 @@ import { defaultStyleProfiles, styleDefaults } from "./ui/style-schema.js?v=__BU
 import { applyStyleDensity, detectStyleProfile, handleStyleControlChange, normalizeStyleValue, resetStyleField, resetStyleProfile, trackKeyboardInset } from "./ui/style-settings.js?v=__BUILD__";
 import { styleMobileMedia, styleProfiles } from "./ui/style-tokens.js?v=__BUILD__";
 import { setTheme, setThemeMenuOpen, setThemeRepaintHook } from "./ui/theme.js?v=__BUILD__";
-import { FOCUS_MODE_KEY, closeViewExportMenu, paintViewExportMenu, setBlockEditFlushHook, setHandwritingViewHook, setSplitViewHook, setViewMode } from "./ui/view-mode.js?v=__BUILD__";
+import { FOCUS_MODE_KEY, closeViewExportMenu, paintViewExportMenu, setBlockEditFlushHook, setHandwritingViewHook, setSplitViewHook, setViewMode, switchToPreviousView } from "./ui/view-mode.js?v=__BUILD__";
 import { DOCUMENT_NOTE_HANDLERS, documentHighlightById, documentHighlightNote, initDocumentMarkMenu, repairDocumentHighlightQuads, repairDocumentHighlightText } from "./documents/pdf-highlights.js?v=__BUILD__";
-import { pdfRegionRefMarkdown } from "./documents/pdf-region-embed.js?v=__BUILD__";
+import { pdfRegionRefForRecord, pdfRegionRefMarkdown } from "./documents/pdf-region-embed.js?v=__BUILD__";
+import { setRegionResizeNotesSurface } from "./documents/pdf-region-resize.js?v=__BUILD__";
 import { closeDocumentToc, documentOutlineEntries, initDocumentOutlineFolding, isDocumentTocOpen, resolveOutlineEntryPage, toggleDocumentToc } from "./documents/pdf-outline.js?v=__BUILD__";
 import { activePdfId, deckPdfById, deckPdfs, withDeckPdfs } from "./documents/pdf-multi.js?v=__BUILD__";
 import { removePdfFromDeck, renamePdf } from "./documents/pdf-multi-actions.js?v=__BUILD__";
@@ -932,7 +933,10 @@ el.extractNoteFromSelectionBtn?.addEventListener("pointerdown", (event) => {
 // are two callers now: this button, and the mark menu's "Copy" row — which
 // copies a highlight nobody has selected, and would otherwise have needed its
 // own copy of the fallback and its own way of getting it subtly wrong.
-function copyTextToClipboard(text) {
+// `successMessage` lets a caller say WHAT was copied when the words alone would
+// not tell the reader what to do with it — "Copy location" copies a reference,
+// not the passage.
+function copyTextToClipboard(text, successMessage = "Copied") {
   const value = String(text || "");
   if (!value) return;
   const fallback = () => {
@@ -945,10 +949,10 @@ function copyTextToClipboard(text) {
     let ok = false;
     try { ok = document.execCommand("copy"); } catch (_) { ok = false; }
     scratch.remove();
-    showToast(ok ? "Copied" : "Couldn't copy — your browser refused clipboard access.", ok ? "success" : "error");
+    showToast(ok ? successMessage : "Couldn't copy — your browser refused clipboard access.", ok ? "success" : "error");
   };
   if (navigator.clipboard?.writeText) {
-    navigator.clipboard.writeText(value).then(() => showToast("Copied"), fallback);
+    navigator.clipboard.writeText(value).then(() => showToast(successMessage), fallback);
   } else {
     fallback();
   }
@@ -1180,6 +1184,11 @@ onDomReady(() => {
   // Notes and Document moves it.
   setSplitViewHook((next) => splitFollowsViewMode(next));
 
+  // A PDF region pasted into the note gets the same drag-corner resize a card
+  // face does, written back through the notes surface — see
+  // setRegionResizeNotesSurface for why it is registered from here.
+  setRegionResizeNotesSurface(() => renderTargetConfig("notes"));
+
   // ── What a highlight can be turned into ─────────────────────────────────
   //
   // "After a highlight is done, when I'm clicking that, there's not much
@@ -1201,6 +1210,18 @@ onDomReady(() => {
       ? documentHighlightEntries().find((entry) => entry.locator.highlightId === key)
       : noteHighlightEntries().find((entry) => entry.locator.markIndex === key)),
     copy: (text) => copyTextToClipboard(text),
+    // Where the highlight IS, as a `pdfref:` — pasted into the notes or a card
+    // it renders as a live picture of that spot (pdf-region-embed.js). Only the
+    // Document surface lists the row (see DOCUMENT_MARK_HANDLERS).
+    copyLocation: (entry) => {
+      const record = documentHighlightById(entry?.locator?.highlightId);
+      const ref = record ? pdfRegionRefForRecord(record) : null;
+      if (!ref) {
+        showToast("Couldn't work out where this highlight is", "error");
+        return;
+      }
+      copyTextToClipboard(ref, "Location copied — paste it into your notes or a card");
+    },
     makeCard: (text, anchor, entry) => {
       const id = entry?.locator?.highlightId;
       // Ink has no words. The card gets a picture of what was drawn instead,
@@ -2532,6 +2553,68 @@ el.card.addEventListener("touchstart", handleTouchStart, { passive: true });
 el.card.addEventListener("touchmove", handleTouchMove, { passive: false });
 el.card.addEventListener("touchend", handleTouchEnd);
 el.card.addEventListener("touchcancel", handleTouchCancel);
+
+// ── Ctrl Ctrl: back to the view you were just on ─────────────────────────
+//
+// Two quick taps of Ctrl on their own flip to the previous tab — Notes ↔ PDF,
+// or whichever two the reader was last between (switchToPreviousView). A bare
+// double Ctrl is bound by neither Chrome nor Firefox, and nothing in this app
+// reads Ctrl alone, so it cannot shadow a browser shortcut or one of ours.
+//
+// A tap is a Ctrl press and release with NOTHING in between: any other key
+// (Ctrl+C), a click (Ctrl+click) or a wheel turn (Ctrl+wheel zoom) spoils the
+// press and forgets a first tap already counted, so a copy followed by a lone
+// Ctrl is never read as a double tap. Capture phase, so an editor that stops
+// its own keys still lets the spoiling keydown be seen here.
+const CTRL_TAP_MAX_MS = 350;
+const CTRL_DOUBLE_TAP_MS = 400;
+let ctrlDownAt = 0;
+let ctrlPressClean = false;
+let ctrlFirstTapAt = 0;
+
+function spoilCtrlTap() {
+  ctrlPressClean = false;
+  ctrlFirstTapAt = 0;
+}
+
+window.addEventListener("keydown", (event) => {
+  if (event.key !== "Control") {
+    spoilCtrlTap();
+    return;
+  }
+  if (event.repeat) return;
+  ctrlDownAt = Date.now();
+  ctrlPressClean = !event.shiftKey && !event.altKey && !event.metaKey;
+}, true);
+
+window.addEventListener("keyup", (event) => {
+  if (event.key !== "Control") return;
+  const now = Date.now();
+  const tapped = ctrlPressClean && now - ctrlDownAt <= CTRL_TAP_MAX_MS;
+  ctrlPressClean = false;
+  if (!tapped) {
+    ctrlFirstTapAt = 0;
+    return;
+  }
+  if (!ctrlFirstTapAt || now - ctrlFirstTapAt > CTRL_DOUBLE_TAP_MS) {
+    ctrlFirstTapAt = now;
+    return;
+  }
+  ctrlFirstTapAt = 0;
+  if (anyModalOpen()) return;
+  // A field in the stage being left must not keep the caret: keystrokes would
+  // go on landing in an editor the reader can no longer see.
+  const active = document.activeElement;
+  if (active?.matches?.("input, textarea, [contenteditable]")
+      && (el.notesStage?.contains(active) || el.documentStage?.contains(active))) {
+    active.blur();
+  }
+  switchToPreviousView();
+}, true);
+
+window.addEventListener("pointerdown", spoilCtrlTap, { capture: true, passive: true });
+window.addEventListener("wheel", spoilCtrlTap, { capture: true, passive: true });
+window.addEventListener("blur", spoilCtrlTap);
 
 document.addEventListener("keydown", (event) => {
   // An editor that owns a key stops the event on its own element, so nothing

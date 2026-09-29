@@ -65,6 +65,33 @@ export function setBlockEditFlushHook(fn) {
   blockEditFlushHook = typeof fn === "function" ? fn : null;
 }
 
+// ── The view before this one ───────────────────────────────────────────────
+//
+// What Ctrl Ctrl (src/main.js) goes back to: the reader flips Notes ↔ PDF, or
+// whichever two they were last between, without reaching for the tabs.
+// Recorded on every real switch, programmatic ones included — a deck opening on
+// its remembered tab is still a place the reader was.
+let previousViewMode = null;
+
+function viewTabAvailable(mode) {
+  const button = el.viewModeToggle?.querySelector(`[data-view-mode="${mode}"]`);
+  return Boolean(button && !button.hidden);
+}
+
+export function switchToPreviousView() {
+  if (!hasActiveDeck()) return false;
+  const current = state.viewMode;
+  let target = previousViewMode && previousViewMode !== current && viewTabAvailable(previousViewMode)
+    ? previousViewMode
+    : null;
+  // Nothing to go back to yet (or it is a tab this deck no longer has): the
+  // pair the shortcut exists for, Notes and the paper.
+  if (!target) target = current === "notes" && viewTabAvailable("document") ? "document" : "notes";
+  if (target === current) return false;
+  setViewMode(target, { deferRender: true });
+  return true;
+}
+
 export function setViewMode(mode, options = {}) {
   // "highlights" is deliberately not a mode any more, and deliberately not
   // special-cased into an error either: it falls through to "cards" like any
@@ -103,6 +130,7 @@ export function setViewMode(mode, options = {}) {
   // function needs to know whether the reader is arriving at the document stage
   // or merely swapping which paper is on it — see staysOnDocument.
   const previous = state.viewMode;
+  if (changed) previousViewMode = previous;
   state.viewMode = next;
   // Before the stages are shown and hidden below: the split's own layout is a
   // class on the panel that decides which of them gets a column, and setting it

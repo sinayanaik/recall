@@ -1200,7 +1200,16 @@ export const DOCUMENT_MARK_HANDLERS = {
   // about a paper for them to lose. A region drawn round a figure resolves to
   // documentHighlightLabel's "Region · page 12", which is the same string the
   // drawer already shows for it.
-  actions: ["card", "highlights", "copy", "share", "search"],
+  //
+  // "Copy location" is a `pdfref:` (src/documents/pdf-region-embed.js), which
+  // resolves against the deck's PDFs and nothing else — so it is offered on the
+  // paper and not on the Write tab's notebook, where it would paste a picture
+  // that can never render. A getter because the slot is only known on open.
+  get actions() {
+    return activeDocSlot() === DOC_SLOT_DOC
+      ? ["card", "highlights", "copy", "location", "share", "search"]
+      : ["card", "highlights", "copy", "share", "search"];
+  },
   recolour: (id, color) => recolourDocumentHighlight(id, color),
   remove: (id) => removeDocumentHighlight(id),
   noteText: (id) => documentHighlightNote(id),
