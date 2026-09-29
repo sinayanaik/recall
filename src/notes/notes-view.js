@@ -30,7 +30,7 @@ import { applyNotesPagedLayout, firstVisibleNotesBlock, isNotesPaged, notesPageC
 import { notesBlockForRawOffset } from "./raw-offset.js?v=__BUILD__";
 import { notesBlockAtReadingLineGeometric } from "./scroll-anchor.js?v=__BUILD__";
 import { hideNotesSelectionButton, touchSelectionDragActive } from "./selection.js?v=__BUILD__";
-import { blockAtNotesReadingLine, closeNotesToc } from "./toc.js?v=__BUILD__";
+import { blockAtNotesReadingLine, markNotesTocDirty } from "./toc.js?v=__BUILD__";
 import { applyNotesFoldState, notesFoldedHeadings, releaseNotesChunkEstimateObserver, releaseNotesLazyBuildObserver, renderMarkdown, resetNotesFoldedHeadings, setNotesBlockEstimateSource, syncNotesBlockEstimateSource, withChunkRendered } from "../render/block-cache.js?v=__BUILD__";
 import { headingSectionsFor } from "./chapters.js?v=__BUILD__";
 import { releaseDeferredWork } from "../render/deferred-work.js?v=__BUILD__";
@@ -517,6 +517,8 @@ export function resetNotesEditingUI() {
   el.editNotesBtn.classList.remove("is-editing");
   el.editNotesBtn.title = "Edit notes";
   hideNotesSelectionButton();
+  // Back to the rendered note's own headings.
+  markNotesTocDirty();
 }
 
 // Leave raw edit mode because the note underneath is being REPLACED, not
@@ -632,7 +634,10 @@ export function enterNotesEditing(cursorOffset = null) {
   el.notesEditToolbar.hidden = false;
   el.editNotesBtn.classList.add("is-editing");
   el.editNotesBtn.title = "Back to preview";
-  if (el.notesTocDrawer?.classList.contains("is-open")) closeNotesToc();
+  // The contents stays open across the switch: its rows are rebuilt from the
+  // textarea now (rawNotesHeadings in ./toc.js), and a row pressed in raw mode
+  // moves the caret rather than scrolling the hidden rendered view.
+  markNotesTocDirty();
   hideNotesSelectionButton();
   // Paint the highlight mirror directly rather than faking an "input": the text
   // hasn't changed, and the input listener would mark the deck dirty and queue a

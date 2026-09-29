@@ -1640,6 +1640,141 @@ try {
       location.afterCopy === location.afterSecond, `after=${location.afterCopy}`);
   }
 
+  // ── 7c. A region embed on a phone: its buttons, its fit, Zoom and go-to ──
+  //
+  // "There is no option to go to that PDF location", and "the captured region
+  // looks too small on mobile". Both are about the rendered picture of a
+  // pdfref:, so both are asserted on one: it carries a "p. N ↗" and a "Zoom";
+  // at a phone's width it fills the column with its whole box visible — width
+  // and height both follow the box's REAL width, which is what a fixed 420px
+  // and a fixed height got wrong — and each button does what it says.
+  const embedPhone = region.record ? await (async () => {
+    // The phone first, so the embed is painted at the phone's own density.
+    await emulatePhone(page, { width: 375, height: 812 });
+    const setup = await page.evaluate(`async (id) => {
+      const { api, settle } = window.__recall;
+      const embed = await import("/src/documents/pdf-region-embed.js?v=__BUILD__");
+      const record = (api.state.meta?.pdfHighlights || []).find((r) => r.id === id) || null;
+      const ref = record ? embed.pdfRegionRefForRecord(record) : null;
+      window.__regionOriginalNotes = api.state.notes || "";
+      api.state.notes = "A figure:\\n\\n" + ref + "\\n\\n" + window.__regionOriginalNotes;
+      if (api.isNotesEditing()) api.resetNotesEditingUI();
+      api.setViewMode("notes");
+      let wrapper = null;
+      for (let i = 0; i < 100; i += 1) {
+        wrapper = document.querySelector("#notesView .pdf-region-embed:not(.is-loading)");
+        if (wrapper?.querySelector(".pdf-region-embed-btn")) break;
+        await settle(50);
+      }
+      const buttons = wrapper ? Array.from(wrapper.querySelectorAll(".pdf-region-embed-btn")).map((b) => b.textContent) : [];
+      return { ref, buttons, page: record?.page || null };
+    }`, region.record.id);
+    const measured = await page.evaluate(`async (ref) => {
+      const { api, settle } = window.__recall;
+      const embed = await import("/src/documents/pdf-region-embed.js?v=__BUILD__");
+      await settle(500);
+      const wrapper = document.querySelector("#notesView .pdf-region-embed:not(.is-loading)");
+      if (!wrapper) return { error: "no embed on the phone" };
+      wrapper.scrollIntoView({ block: "center" });
+      await settle(200);
+      const parsed = embed.parsePdfRef(ref.slice(4, -1));
+      const quadW = Math.abs(parsed.rect[2] - parsed.rect[0]);
+      const quadH = Math.abs(parsed.rect[3] - parsed.rect[1]);
+      const box = wrapper.getBoundingClientRect();
+      const column = wrapper.parentElement.getBoundingClientRect().width;
+      const group = wrapper.querySelector(".pdf-region-embed-page");
+      const canvas = group?.querySelector("canvas");
+      const k = Number((group?.style.transform.match(/scale\\(([^)]+)\\)/) || [])[1]);
+      // The page's own width in points, off pdf.js — the render scale is the
+      // page group's CSS width over it, and the crop's rendered width is the
+      // quad's width at that scale.
+      const doc = api.currentPdfDocument();
+      const pdfPage = doc ? await doc.getPage(parsed.page) : null;
+      const pageW = pdfPage ? pdfPage.getViewport({ scale: 1 }).width : 0;
+      const renderScale = pageW ? parseFloat(group.style.width) / pageW : 0;
+      const shownCropWidth = k * quadW * renderScale;
+      return {
+        defaultWidth: wrapper.classList.contains("is-default-width"),
+        width: Math.round(box.width), height: Math.round(box.height), column: Math.round(column),
+        aspectWanted: quadH / quadW, aspectShown: box.height / box.width,
+        shownCropWidth: Math.round(shownCropWidth), innerWidth: wrapper.clientWidth,
+        sharp: canvas ? canvas.width > parseFloat(canvas.style.width) : false
+      };
+    }`, setup.ref);
+    const zoom = await page.evaluate(`async () => {
+      const { settle } = window.__recall;
+      const wrapper = document.querySelector("#notesView .pdf-region-embed:not(.is-loading)");
+      const button = Array.from(wrapper?.querySelectorAll(".pdf-region-embed-btn") || []).find((b) => b.textContent === "Zoom");
+      if (!button) return { opened: false };
+      button.click();
+      const modal = document.getElementById("diagramModal");
+      for (let i = 0; i < 100 && modal.hidden; i += 1) await settle(50);
+      await settle(150);
+      const img = document.querySelector("#diagramModalBody img");
+      const result = { opened: !modal.hidden, natural: img?.naturalWidth || 0, shown: wrapper.clientWidth };
+      document.getElementById("diagramModal").querySelector("[data-diagram-close], .diagram-modal-close, #closeDiagramBtn")?.click();
+      if (!modal.hidden) { const m = await import("/src/render/diagram-zoom.js?v=__BUILD__"); m.closeDiagramModal(); }
+      await settle(100);
+      result.closed = modal.hidden;
+      return result;
+    }`);
+    const goTo = await page.evaluate(`async () => {
+      const { api, settle } = window.__recall;
+      const wrapper = document.querySelector("#notesView .pdf-region-embed:not(.is-loading)");
+      const button = Array.from(wrapper?.querySelectorAll(".pdf-region-embed-btn") || []).find((b) => b.textContent.startsWith("p. "));
+      if (!button) return { pressed: false };
+      button.click();
+      let flash = null;
+      for (let i = 0; i < 120; i += 1) {
+        flash = document.querySelector(".pdf-page .pdf-region-flash");
+        if (api.state.viewMode === "document" && flash) break;
+        await settle(50);
+      }
+      const pageEl = flash?.closest(".pdf-page");
+      const view = document.getElementById("documentView").getBoundingClientRect();
+      const box = flash?.getBoundingClientRect();
+      const onScreen = Boolean(box && box.bottom > view.top && box.top < view.bottom);
+      api.state.notes = window.__regionOriginalNotes;
+      return {
+        pressed: true, viewMode: api.state.viewMode, flashed: Boolean(flash),
+        flashPage: pageEl ? Number(pageEl.dataset.pageNumber) : null, onScreen
+      };
+    }`);
+    await page.call("Emulation.setTouchEmulationEnabled", { enabled: false });
+    await page.call("Emulation.setDeviceMetricsOverride", {
+      width: 1280, height: 900, deviceScaleFactor: 1, mobile: false
+    });
+    await page.evaluate(`async () => {
+      const { api, settle } = window.__recall;
+      api.setViewMode("document");
+      await settle(300);
+    }`);
+    return { setup, measured, zoom, goTo };
+  })() : null;
+
+  if (embedPhone) {
+    const { setup, measured, zoom, goTo } = embedPhone;
+    check("a region embed carries a go-to and a Zoom button",
+      setup.buttons.length === 2 && setup.buttons[0] === `p. ${setup.page} \u2197` && setup.buttons[1] === "Zoom",
+      JSON.stringify(setup.buttons));
+    check("...on a phone, an unresized region fills the column",
+      !measured.error && measured.defaultWidth && Math.abs(measured.width - measured.column) <= 2,
+      measured.error || `width=${measured.width} column=${measured.column}`);
+    check("...its height follows that width (the whole box, not a clipped one)",
+      !measured.error && Math.abs(measured.aspectShown / measured.aspectWanted - 1) < 0.03,
+      measured.error || `shown=${measured.aspectShown?.toFixed(3)} wanted=${measured.aspectWanted?.toFixed(3)}`);
+    check("...and the render is scaled to the box's real width",
+      !measured.error && Math.abs(measured.shownCropWidth - measured.innerWidth) <= 2,
+      measured.error || `crop=${measured.shownCropWidth} box=${measured.innerWidth}`);
+    check("...painted at the screen's pixel density", Boolean(measured.sharp));
+    check("Zoom opens the region full screen, at more than its on-page resolution",
+      zoom.opened && zoom.natural > zoom.shown && zoom.closed,
+      `opened=${zoom.opened} natural=${zoom.natural} shown=${zoom.shown} closed=${zoom.closed}`);
+    check("\"p. N ↗\" opens the PDF on that page and shows the region there",
+      goTo.pressed && goTo.viewMode === "document" && goTo.flashed && goTo.flashPage === setup.page && goTo.onScreen,
+      `view=${goTo.viewMode} flashed=${goTo.flashed} page=${goTo.flashPage} onScreen=${goTo.onScreen}`);
+  }
+
   // ── 8. A note printed under the page it belongs to ───────────────────────
   //
   // The Document surface's answer to the notes view's inline highlight notes.

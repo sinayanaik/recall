@@ -409,11 +409,14 @@ body.chrome-collapsed:not(:has(#mainToolbar.mobile-open)) .view-mode-row {
   display: none;
 }
 
-/* Raw-edit mode: the TOC button hid itself through a selector rooted at
-   .notes-stage (styles/10-editor.css:598), which stopped matching the moment
-   the button left that subtree. Rooted at the panel instead. */
-.quiz-panel:has(#notesEdit:not([hidden])) .view-mode-row > .notes-toc-toggle {
-  display: none;
+/* Raw-edit mode KEEPS the contents. It used to hide the button here and in
+   styles/10-editor.css (a frozen slice), which took the one way around a long
+   note away exactly while editing it. The list now comes from the textarea in
+   raw mode and a row moves the caret (rawNotesHeadings and
+   scrollNotesEditToHeadingIndex in src/notes/toc.js). The frozen rule is out-
+   specified here rather than edited; an extra class is enough to beat it. */
+.notes-stage:has(> .edit-textarea:not([hidden])) .notes-toc-toggle.notes-toc-toggle {
+  display: inline-flex;
 }
 
 /* ── Give the note the rest of the room ───────────────────────────────────

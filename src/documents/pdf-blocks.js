@@ -79,6 +79,11 @@ export const PDF_BLOCK_IMAGE = "image";
 // shorter cannot be grabbed by its own bar.
 export const PDF_BLOCK_MIN_WIDTH = 90;
 export const PDF_BLOCK_MIN_HEIGHT = 34;
+// A picture has no line of text to protect and no bar to grab, and its frame is
+// always the picture's own shape (see fitImageBlockFrame) — so a wide, short
+// photograph held to a text block's 34pt floor was a letterbox the reader could
+// not drag away. Its floor only has to leave the corner grip reachable.
+export const PDF_BLOCK_IMAGE_MIN_SIDE = 24;
 const PDF_BLOCK_DEFAULT_WIDTH = 240;
 const PDF_BLOCK_DEFAULT_HEIGHT = 90;
 
@@ -174,8 +179,8 @@ export function documentBlocks(pageNumber = null) {
       page: Number(block.page) || 1,
       x: Number(block.x) || 0,
       y: Number(block.y) || 0,
-      w: Math.max(PDF_BLOCK_MIN_WIDTH, Number(block.w) || PDF_BLOCK_DEFAULT_WIDTH),
-      h: Math.max(PDF_BLOCK_MIN_HEIGHT, Number(block.h) || PDF_BLOCK_DEFAULT_HEIGHT),
+      w: Math.max(block.kind === PDF_BLOCK_IMAGE ? PDF_BLOCK_IMAGE_MIN_SIDE : PDF_BLOCK_MIN_WIDTH, Number(block.w) || PDF_BLOCK_DEFAULT_WIDTH),
+      h: Math.max(block.kind === PDF_BLOCK_IMAGE ? PDF_BLOCK_IMAGE_MIN_SIDE : PDF_BLOCK_MIN_HEIGHT, Number(block.h) || PDF_BLOCK_DEFAULT_HEIGHT),
       z: Number(block.z) || 0,
       kind: block.kind === PDF_BLOCK_IMAGE ? PDF_BLOCK_IMAGE : PDF_BLOCK_TEXT,
       md: typeof block.md === "string" ? block.md : "",
@@ -583,7 +588,10 @@ function paintBlockStyle(node, block) {
   // this surface one CSS pixel at scale 1 IS one PDF point.
   setBlockNumber(node, "blockSize", "--pdf-block-size", style.size);
   setBlockNumber(node, "blockCodeSize", "--pdf-block-code-size", style.codeSize);
-  setBlockNumber(node, "blockImageWidth", "--pdf-block-image-width", style.imageWidth);
+  // "Picture %" is about a picture INSIDE a text block. On a picture block it
+  // would shrink the image inside a frame that stays the same size — the empty
+  // frame this app's picture blocks exist not to have.
+  setBlockNumber(node, "blockImageWidth", "--pdf-block-image-width", block.kind === PDF_BLOCK_IMAGE ? null : style.imageWidth);
   if (style.codeWrap) node.dataset.blockCodeWrap = "";
   else delete node.dataset.blockCodeWrap;
 
@@ -677,6 +685,14 @@ function paintBlock(node, block) {
       img.setAttribute("src", block.src || "");
     }
     img.alt = block.alt || "";
+    // The frame follows the picture's own shape — see fitImageBlockFrame. Once
+    // per element for the listener, and on every paint for a picture that has
+    // already decoded (a check that costs one division when it already fits).
+    if (!img.dataset.frameFitBound) {
+      img.dataset.frameFitBound = "1";
+      img.addEventListener("load", () => fitImageBlockFrame(node, img));
+    }
+    if (img.complete && img.naturalWidth) fitImageBlockFrame(node, img);
     return;
   }
   // An empty block says so. A transparent rectangle you cannot find again is
@@ -786,6 +802,66 @@ function queueFit(id, height) {
     });
     // Not undoable: this is the block agreeing with its own text, not a step the
     // reader took. Ctrl+Z after typing should take back the typing.
+    if (touched) writeBlocks(next, { undoable: false });
+  });
+}
+
+// ── A picture's frame is the picture's shape ───────────────────────────────
+//
+// The picture is drawn `object-fit: contain` inside its block, so a block whose
+// shape disagrees with the picture's shows the picture at the size of its short
+// side and EMPTY FRAME along the long one. That is what a free two-axis resize
+// used to leave behind: drag the grip in to make a photograph smaller and the
+// picture shrank while the frame stayed as tall as it was — "resized, but it is
+// still taking the space". The grip is now locked to the picture's ratio (see
+// beginGesture), and this repairs every block that was sized before it was:
+// once the picture has decoded, the frame's long side is brought in to fit it.
+//
+// Only ever SHRINKS — the side that was empty is the one that moves, and the
+// picture is exactly as big afterwards as it was before. The top-left corner
+// stays still, the same edge queueFit keeps.
+const IMAGE_FRAME_RATIO_TOLERANCE = 0.02;
+
+export function imageBlockFrameFor(block, ratio) {
+  if (!block || !(ratio > 0) || !(block.w > 0) || !(block.h > 0)) return null;
+  const current = block.w / block.h;
+  if (Math.abs(current / ratio - 1) <= IMAGE_FRAME_RATIO_TOLERANCE) return null;
+  let { w, h } = block;
+  if (current < ratio) h = w / ratio; // too tall for the picture
+  else w = h * ratio; // too wide for it
+  w = Math.max(PDF_BLOCK_IMAGE_MIN_SIDE, Math.round(w));
+  h = Math.max(PDF_BLOCK_IMAGE_MIN_SIDE, Math.round(h));
+  if (Math.abs(w - block.w) <= 1 && Math.abs(h - block.h) <= 1) return null;
+  return { w, h };
+}
+
+const pendingFrames = new Map();
+let frameFitFrame = 0;
+
+function fitImageBlockFrame(node, img) {
+  if (gestureLive || !img.naturalWidth || !img.naturalHeight) return;
+  const id = node.dataset.pdfBlock;
+  const block = documentBlocks().find((entry) => entry.id === id);
+  if (!block || block.kind !== PDF_BLOCK_IMAGE) return;
+  if (!imageBlockFrameFor(block, img.naturalWidth / img.naturalHeight)) return;
+  // Deferred a frame and batched, for the reason queueFit gives: this is called
+  // from inside the paint loop, and a write re-enters it.
+  pendingFrames.set(id, img.naturalWidth / img.naturalHeight);
+  if (frameFitFrame) return;
+  frameFitFrame = requestAnimationFrame(() => {
+    frameFitFrame = 0;
+    const ratios = new Map(pendingFrames);
+    pendingFrames.clear();
+    if (gestureLive) return;
+    let touched = false;
+    const next = documentBlocks().map((entry) => {
+      const frame = ratios.has(entry.id) ? imageBlockFrameFor(entry, ratios.get(entry.id)) : null;
+      if (!frame) return entry;
+      touched = true;
+      return { ...entry, w: frame.w, h: frame.h, y: entry.y + (entry.h - frame.h), at: Date.now() };
+    });
+    // Not undoable, like queueFit: the frame agreeing with its own picture is
+    // not a step the reader took.
     if (touched) writeBlocks(next, { undoable: false });
   });
 }
@@ -1217,6 +1293,16 @@ function beginGesture(event, node, mode) {
   // dragged the height to a number the very next paint overwrote would be a
   // control that visibly does not work.
   const widthOnly = mode === "resize" && blockStyle(block).fit;
+  // A picture is resized as a picture: one size, its own shape. A free corner
+  // left the frame one shape and the picture (object-fit: contain) another, and
+  // the difference was empty frame — see fitImageBlockFrame. The picture's own
+  // ratio when it has decoded; the frame's when it has not, which after
+  // fitImageBlockFrame is the same thing.
+  const isImage = block.kind === PDF_BLOCK_IMAGE;
+  const pictureEl = isImage ? node.querySelector("img.pdf-block-img") : null;
+  const ratio = pictureEl?.naturalWidth && pictureEl?.naturalHeight
+    ? pictureEl.naturalWidth / pictureEl.naturalHeight
+    : block.w / block.h;
   let live = { ...block };
   let frame = 0;
   gestureLive = true;
@@ -1287,9 +1373,23 @@ function beginGesture(event, node, mode) {
     } else {
       // The grip is the bottom-right on screen, which is the bottom-right in
       // points too — so it grows the width and moves the origin DOWN.
-      const w = Math.max(PDF_BLOCK_MIN_WIDTH, block.w + dx);
-      const h = widthOnly ? block.h : Math.max(PDF_BLOCK_MIN_HEIGHT, block.h - dy);
-      live = { ...block, w: Math.round(w), h: Math.round(h), y: Math.round(block.y + (block.h - h)) };
+      let w;
+      let h;
+      if (isImage) {
+        // Whichever axis the finger moved further along decides the size, so
+        // the grip follows a mostly-sideways drag and a mostly-downward one
+        // equally, and the other side follows the picture's shape. The height's
+        // change is put in width terms (× ratio) so the two are comparable.
+        const growW = dx;
+        const growH = -dy * ratio;
+        w = block.w + (Math.abs(growW) >= Math.abs(growH) ? growW : growH);
+        w = Math.max(PDF_BLOCK_IMAGE_MIN_SIDE, PDF_BLOCK_IMAGE_MIN_SIDE * ratio, w);
+        h = w / ratio;
+      } else {
+        w = Math.max(PDF_BLOCK_MIN_WIDTH, block.w + dx);
+        h = widthOnly ? block.h : Math.max(PDF_BLOCK_MIN_HEIGHT, block.h - dy);
+      }
+      live = { ...block, w: Math.round(w), h: Math.round(h), y: Math.round(block.y + (block.h - Math.round(h))) };
     }
     if (!frame) frame = requestAnimationFrame(apply);
   };

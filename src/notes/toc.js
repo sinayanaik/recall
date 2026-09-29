@@ -11,6 +11,7 @@ import { normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
 import { loadDeckFromLibrary, readLocalDeckIndex } from "../library/local-library.js?v=__BUILD__";
 import { convergeNotesScroll, scrollNotesBlockToReadingLine } from "./anchors.js?v=__BUILD__";
 import { revealNotesCaretAt } from "./caret-line.js?v=__BUILD__";
+import { textareaOffsetFromScroll } from "./caret.js?v=__BUILD__";
 import { parseNoteLinkTarget } from "./note-links.js?v=__BUILD__";
 import { activeChapterIndex, firstVisibleNotesBlock, isNotesPaged, notesCurrentPage, notesPageForElement, revealInPagedNotes } from "./paged-view.js?v=__BUILD__";
 import { NOTES_BLOCK_SELECTOR } from "./raw-offset.js?v=__BUILD__";
@@ -540,10 +541,56 @@ export function initNotesTocFolding() {
   foldAll?.addEventListener("click", () => { setAllNotesTocBranches(!allNotesTocBranchesCollapsed()); });
 }
 
+// ── The contents while the raw editor is open ──────────────────────────────
+//
+// The raw editor used to hide the ☰ button outright, which took the contents
+// away exactly when a long note is hardest to move around in. The jump itself
+// already existed (scrollNotesEditToHeadingIndex, below), so what was missing is
+// a list that agrees with it: the rendered note's headings are the headings of
+// the note as it was when the editor OPENED, and a heading typed since then
+// shifted every row after it onto the wrong section. So in raw mode the rows are
+// scanned out of the textarea itself — by scanPreparedHeadings, the same scanner
+// the jump counts with — and are rebuilt as the reader types (see
+// markNotesTocDirtyFromEditor).
+export function notesTocShowsRaw() {
+  return Boolean(el.notesEdit && !el.notesEdit.hidden);
+}
+
+let rawTocSource = null;
+
+let rawTocHeadings = [];
+
+export function rawNotesHeadings() {
+  const value = el.notesEdit?.value ?? "";
+  if (value === rawTocSource) return rawTocHeadings;
+  const used = new Set();
+  rawTocHeadings = scanPreparedHeadings(value).map((entry) => ({
+    level: entry.level,
+    text: entry.text,
+    offset: entry.offset,
+    id: slugifyHeading(entry.text, used),
+    el: null
+  }));
+  rawTocSource = value;
+  return rawTocHeadings;
+}
+
+// Typing in the raw editor fires this on every keystroke, so it waits for a
+// pause: a rescan of a book-length textarea per character would be felt.
+let rawTocTimer = 0;
+
+export function markNotesTocDirtyFromEditor() {
+  clearTimeout(rawTocTimer);
+  rawTocTimer = setTimeout(() => {
+    rawTocTimer = 0;
+    markNotesTocDirty();
+  }, 250);
+}
+
 export function buildNotesToc() {
   if (!el.notesView || !el.notesTocList) return;
   notesTocDirty = false;
-  notesTocHeadings = ensureNotesHeadingIds();
+  notesTocHeadings = notesTocShowsRaw() ? rawNotesHeadings() : ensureNotesHeadingIds();
 
   el.notesTocList.innerHTML = "";
   notesTocItems = [];
@@ -771,6 +818,18 @@ export function updateNotesTocActive() {
   ensureNotesTocBuilt();
   if (!notesTocHeadings.length) return;
 
+  // Raw editor: the headings are character offsets into the textarea (see
+  // rawNotesHeadings), so "the section being read" is the last one starting at
+  // or before the character on the textarea's reading line.
+  if (notesTocShowsRaw()) {
+    const at = textareaOffsetFromScroll(el.notesEdit);
+    let rawIndex = firstNotesHeadingAtOrAfter(notesTocHeadings, at + 1) - 1;
+    if (rawIndex < 0) rawIndex = 0;
+    while (rawIndex > 0 && isNotesTocRowHidden(rawIndex)) rawIndex = notesTocParent[rawIndex];
+    lightNotesTocRow(rawIndex);
+    return;
+  }
+
   // The active section is the last heading whose top has scrolled to (or above)
   // a line a little below the viewport top — or, in paged mode, the last one
   // whose page is at or before the page being read. Same "last one at or above
@@ -843,6 +902,10 @@ export function updateNotesTocActive() {
   // which is the opposite of what folding it was for.
   while (activeIndex > 0 && isNotesTocRowHidden(activeIndex)) activeIndex = notesTocParent[activeIndex];
 
+  lightNotesTocRow(activeIndex);
+}
+
+function lightNotesTocRow(activeIndex) {
   if (activeIndex === notesTocActiveIndex) return;
   const previous = notesTocLinks[notesTocActiveIndex];
   if (previous) {

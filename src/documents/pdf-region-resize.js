@@ -16,7 +16,7 @@
 
 import { state } from "../core/state.js?v=__BUILD__";
 import { scheduleLiveQuestionFit } from "../cards/question-fit.js?v=__BUILD__";
-import { mountPdfRegionEmbed, pdfRegionRefMarkdown } from "./pdf-region-embed.js?v=__BUILD__";
+import { EMBED_TARGET_WIDTH, layoutPdfRegionEmbed, mountPdfRegionEmbed, pdfRegionRefMarkdown } from "./pdf-region-embed.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
 
@@ -192,18 +192,22 @@ function commitResize(wrapper, target, originalRef, parsed, newWidth) {
   mountPdfRegionEmbed(img, { resizable: true });
 }
 
-function beginResizeDrag(handle, event, wrapper, pageGroup, renderInfo, target, originalRef, parsed) {
-  const { nativeWidth, nativeHeight, left, top } = renderInfo;
+function beginResizeDrag(handle, event, wrapper, target, originalRef, parsed) {
   const startX = event.clientX;
   const startWidth = wrapper.getBoundingClientRect().width;
   try { handle.setPointerCapture(event.pointerId); } catch (_) { /* synthetic event */ }
   wrapper.classList.add("is-resizing");
+  // A region nobody had sized fills a phone's column by CSS; the drag is the
+  // reader choosing a width, so that default stands down for it.
+  const wasDefault = wrapper.classList.contains("is-default-width");
+  wrapper.classList.remove("is-default-width");
 
+  // Only the width is written. The height follows from the box's aspect-ratio
+  // and the render's scale from its real width — both owned by
+  // layoutPdfRegionEmbed, so a drag and a first paint cannot disagree.
   const apply = (widthPx) => {
-    const k = widthPx / nativeWidth;
     wrapper.style.width = `${Math.round(widthPx)}px`;
-    wrapper.style.height = `${Math.round(nativeHeight * k)}px`;
-    pageGroup.style.transform = `scale(${k}) translate(${-left}px, ${-top}px)`;
+    layoutPdfRegionEmbed(wrapper);
   };
 
   let finalWidth = startWidth;
@@ -224,18 +228,24 @@ function beginResizeDrag(handle, event, wrapper, pageGroup, renderInfo, target, 
   };
   const onCancel = () => {
     cleanup();
-    apply(startWidth);
+    if (wasDefault) {
+      wrapper.style.width = `${parsed.width || EMBED_TARGET_WIDTH}px`;
+      wrapper.classList.add("is-default-width");
+      layoutPdfRegionEmbed(wrapper);
+    } else {
+      apply(startWidth);
+    }
   };
   handle.addEventListener("pointermove", onMove);
   handle.addEventListener("pointerup", onUp);
   handle.addEventListener("pointercancel", onCancel);
 }
 
-// `renderInfo` is `{ nativeWidth, nativeHeight, left, top }` — the crop's own
-// rendered pixel size and its offset within the full page render, exactly
-// what mountPdfRegionEmbed already computed to place it; the resize math
-// only ever scales uniformly from there, never re-deriving either.
-export function attachRegionResizeHandle(wrapper, pageGroup, parsed, renderInfo) {
+// The render itself (the page group, the crop's native size and offset) is
+// registered with layoutPdfRegionEmbed by mountPdfRegionEmbed; a drag only
+// changes the box's width and asks that to refit. The two trailing arguments
+// are kept for the caller's sake and are not needed here any more.
+export function attachRegionResizeHandle(wrapper, _pageGroup, parsed, _renderInfo) {
   const target = resolveRegionEmbedTarget(wrapper);
   if (!target) return; // nowhere to persist a resize against
 
@@ -251,6 +261,6 @@ export function attachRegionResizeHandle(wrapper, pageGroup, parsed, renderInfo)
     if (event.button !== undefined && event.button !== 0) return;
     event.preventDefault();
     event.stopPropagation();
-    beginResizeDrag(handle, event, wrapper, pageGroup, renderInfo, target, originalRef, parsed);
+    beginResizeDrag(handle, event, wrapper, target, originalRef, parsed);
   });
 }

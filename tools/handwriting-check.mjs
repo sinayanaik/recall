@@ -2241,6 +2241,37 @@ try {
     await settle(250);
     const sized = api.documentBlocks().find((b) => b.id === added.id);
 
+    // ── ...and the frame stays the picture's shape ────────────────────────
+    //
+    // "Even if I resize the image it is taking extra space — the frame is over
+    // extending." The picture is drawn object-fit: contain, so a frame dragged
+    // to a different shape from the picture's is empty frame along its long
+    // side. The grip is locked to the picture's ratio now: drag it in, mostly
+    // sideways, and the frame comes in on BOTH sides.
+    const box2 = grip.getBoundingClientRect();
+    const at2 = (t, x, y, b) => (t === "pointerdown" ? grip : document).dispatchEvent(new PointerEvent(t, { bubbles: true, pointerId: 22, pointerType: "mouse", isPrimary: true, clientX: x, clientY: y, buttons: b }));
+    at2("pointerdown", box2.left + 4, box2.top + 4, 1);
+    at2("pointermove", box2.left - 36, box2.top + 2, 1);
+    await settle(120);
+    at2("pointerup", box2.left - 36, box2.top + 2, 0);
+    await settle(250);
+    const shrunk = api.documentBlocks().find((b) => b.id === added.id);
+    const shrunkRect = node.getBoundingClientRect();
+    const shrunkImg = img.getBoundingClientRect();
+
+    // A block saved before the lock, as tall as the one in the report: three
+    // times the height its 2:1 picture needs. The frame comes in to fit the
+    // picture once it has decoded, keeping its top edge where it was.
+    const records = api.state.meta.pdfBlocks;
+    const raw = records.find((b) => b.id === added.id);
+    const topBefore = raw.y + raw.h;
+    const tallH = Math.round(raw.w * 1.5);
+    raw.y = topBefore - tallH;
+    raw.h = tallH;
+    api.repaintDocumentBlocks();
+    await settle(300);
+    const repaired = api.documentBlocks().find((b) => b.id === added.id);
+
     // ── The style panel a PICTURE gets ───────────────────────────────────
     //
     // Six of the ten style keys are about words, and a photograph has none: a
@@ -2274,6 +2305,10 @@ try {
       added: Boolean(added), wide, fills, imagePanel,
       mounted: Boolean(img && img.getAttribute("src")),
       grew: sized ? sized.w > added.w : false,
+      grownRatio: sized ? sized.w / sized.h : 0,
+      shrunk: shrunk ? { w: shrunk.w, h: shrunk.h, ratio: shrunk.w / shrunk.h, smaller: shrunk.w < sized.w && shrunk.h < sized.h } : null,
+      shrunkEmpty: Math.abs(shrunkRect.height - shrunkImg.height) + Math.abs(shrunkRect.width - shrunkImg.width),
+      repaired: repaired ? { ratio: repaired.w / repaired.h, top: repaired.y + repaired.h, topBefore, h: repaired.h, tallH } : null,
       stored: stored ? { kind: stored.kind, hasSrc: Boolean(stored.src), doc: stored.doc, w: stored.w } : null,
       errs: window.__errs.slice(0, 4)
     };
@@ -2298,6 +2333,16 @@ try {
       + `${picture.fills.visualMax || "(unset)"}, which used to be the picture's width`);
   check("...and can be dragged out by its grip", picture.grew,
     `${picture.stored ? picture.stored.w : "?"} points wide after the drag`);
+  check("...keeping the picture's own shape while it is dragged",
+    Math.abs(picture.grownRatio / 2 - 1) < 0.03, `${picture.grownRatio.toFixed(3)}:1 for a 2:1 picture`);
+  // Four pixels of slack in all: the block's own 1px border on each side, as
+  // in the "filling its frame" check above.
+  check("...and dragged smaller, the frame comes in on both sides with no empty frame left",
+    picture.shrunk?.smaller && Math.abs(picture.shrunk.ratio / 2 - 1) < 0.03 && picture.shrunkEmpty <= 4,
+    `${JSON.stringify(picture.shrunk)} · ${picture.shrunkEmpty.toFixed(1)}px of frame beyond the picture`);
+  check("a picture saved with an over-tall frame is brought back to its own shape, top edge kept",
+    picture.repaired && Math.abs(picture.repaired.ratio / 2 - 1) < 0.03 && Math.abs(picture.repaired.top - picture.repaired.topBefore) <= 1,
+    JSON.stringify(picture.repaired));
   check("...and comes back out of the store as a picture, on the notebook's pages",
     picture.stored?.kind === "image" && picture.stored?.hasSrc && picture.stored?.doc === "notebook",
     JSON.stringify(picture.stored));

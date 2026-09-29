@@ -855,6 +855,32 @@ export function flashDocumentHighlight(id) {
   return marks.length > 0;
 }
 
+// A jump to a captured REGION (the "p. N ↗" on a region embed, see
+// src/documents/pdf-region-embed.js) has no highlight record to flash — the
+// region may never have been kept as one, or it was copied from a location — so
+// the box itself is drawn over the page for the length of a flash and removed.
+// Returns false when the page is not laid out yet (the caller tried too early).
+export const PDF_REGION_FLASH_CLASS = "pdf-region-flash";
+
+export function flashDocumentRegion(pageNumber, rect) {
+  const layer = pdfMarkLayer(pageNumber);
+  if (!layer || !Array.isArray(rect) || rect.length !== 4) return false;
+  const box = quadToPageBox({ page: pageNumber, rect });
+  if (!box) return false;
+  layer.querySelectorAll(`.${PDF_REGION_FLASH_CLASS}`).forEach((node) => node.remove());
+  const flash = document.createElement("div");
+  flash.className = PDF_REGION_FLASH_CLASS;
+  flash.style.left = `${box.left}px`;
+  flash.style.top = `${box.top}px`;
+  flash.style.width = `${box.width}px`;
+  flash.style.height = `${box.height}px`;
+  layer.appendChild(flash);
+  // Twice the mark's own pulse: a region is usually a figure, and the reader's
+  // eye has further to travel to find its edges than a highlighted phrase's.
+  setTimeout(() => flash.remove(), PDF_MARK_FLASH_MS * 2);
+  return true;
+}
+
 // The highlight under a tap, if any.
 //
 // Hit-tested against the RECORDS, geometrically — not by letting the mark divs
