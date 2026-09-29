@@ -871,6 +871,11 @@ export function documentHighlightAtPoint(clientX, clientY) {
   const x = clientX - box.left;
   const y = clientY - box.top;
   const pageNumber = Number(page.dataset.pageNumber);
+  // A region is a box round a figure, and the text inside it can be highlighted
+  // too — so a point inside both is a point on BOTH, and the smaller, more
+  // deliberate one is what the reader is pointing at. The region only answers
+  // for a point nothing else claims, which is still every bare part of it.
+  let region = null;
   for (const record of documentHighlights()) {
     // An ink mark is tested against the STROKES, not against the box round
     // them. A margin note and an arrow across a column share one large mostly
@@ -890,10 +895,13 @@ export function documentHighlightAtPoint(clientX, clientY) {
       const quadBox = quadToPageBox(quad);
       if (!quadBox) continue;
       if (x >= quadBox.left && x <= quadBox.left + quadBox.width
-          && y >= quadBox.top && y <= quadBox.top + quadBox.height) return record;
+          && y >= quadBox.top && y <= quadBox.top + quadBox.height) {
+        if (record.kind !== "area") return record;
+        region = region || record;
+      }
     }
   }
-  return null;
+  return region;
 }
 
 // How near a stroke a tap has to land to count as being on it, in PDF points.
@@ -1005,7 +1013,17 @@ export function setDocumentInkForPage(pageNumber, records, { notify = true } = {
 //
 // Intersection rather than containment, because a reader dragging across a
 // highlight rarely covers it exactly and always means it.
-export function documentHighlightsUnderRects(rects) {
+//
+// `textOnly` is for the selection pill, which acts on a run of SELECTED TEXT.
+// A region (or ink) is geometry the reader drew, not glyphs: a selection inside
+// a region's box touches it and is covered by it, and without this every colour
+// pressed over text in a figure recoloured the figure's box instead of
+// highlighting the words — and ✕ deleted the box. The region has its own menu.
+function selectableByText(record, textOnly) {
+  return !textOnly || (record.kind !== "area" && record.kind !== "ink");
+}
+
+export function documentHighlightsUnderRects(rects, { textOnly = false } = {}) {
   const found = [];
   if (!Array.isArray(rects) || !rects.length) return found;
   // Which page each rect is on, resolved GEOMETRICALLY rather than by
@@ -1039,6 +1057,7 @@ export function documentHighlightsUnderRects(rects) {
   });
   if (!targets.length) return found;
   documentHighlightsInReadingOrder().forEach((record) => {
+    if (!selectableByText(record, textOnly)) return;
     const hit = (record.quads || []).some((quad) => {
       const quadBox = quadToPageBox(quad);
       if (!quadBox) return false;
@@ -1067,8 +1086,8 @@ export function documentHighlightsUnderRects(rects) {
 // about that.
 export const COVER_TOLERANCE = 2;
 
-export function documentHighlightsCovering(rects) {
-  const touching = documentHighlightsUnderRects(rects);
+export function documentHighlightsCovering(rects, { textOnly = false } = {}) {
+  const touching = documentHighlightsUnderRects(rects, { textOnly });
   if (!touching.length) return [];
   const boxes = [];
   touching.forEach((record) => {
@@ -1249,6 +1268,14 @@ export function initDocumentMarkMenu() {
         && selection.getRangeAt(0).toString().trim()) return;
     const record = documentHighlightAtPoint(event.clientX, event.clientY);
     if (!record) {
+      closeMarkMenu();
+      return;
+    }
+    // A double or triple click inside a region is the reader selecting a word
+    // or a line of the text under it, not asking about the box — and the menu
+    // opened by the first click of it would sit over the very words being
+    // picked up. The single click still opens the region's menu.
+    if (record.kind === "area" && event.detail > 1) {
       closeMarkMenu();
       return;
     }

@@ -150,6 +150,8 @@ const API_SRC = `async () => {
     "/src/ui/boot-screens.js?v=__BUILD__",
     "/src/cloud/supabase-client.js?v=__BUILD__",
     "/src/core/state.js?v=__BUILD__",
+    // applyPillHighlight — what a colour pressed on the selection pill runs.
+    "/src/format/selection-tools.js?v=__BUILD__",
     // Last, so nothing here can shadow a name one of the modules above owns —
     // the flatten keeps the FIRST module to export a key.
     "/src/notes/touch-selection.js?v=__BUILD__",
@@ -1321,6 +1323,107 @@ try {
     `kind=${regionReloaded.kind}`);
   check("...and repaints on the page", regionReloaded.painted > 0,
     `${regionReloaded.painted} mark div(s)`);
+
+  // ── 7a. The text under a region is still the reader's to highlight ───────
+  //
+  // A region's box covers every line inside it, so the pill's "is this already
+  // highlighted?" answered yes for any selection in a figure: a colour pressed
+  // there recoloured the REGION and ✕ deleted it, and the words themselves
+  // could never be highlighted. And a relayout at the scale the pages already
+  // have — which every background sync ends in — used to drop and re-rasterise
+  // every rendered page: the periodic blink.
+  const underRegion = region.record
+    ? await page.evaluate(`async (regionId) => {
+        const { api, settle } = window.__recall;
+        const pageEl = document.querySelector('.pdf-page[data-page-number="2"]');
+        const mark = pageEl?.querySelector('.pdf-mark[data-highlight-id="' + regionId + '"]');
+        if (!mark) return { error: "the region is not painted on page 2" };
+        const box = mark.getBoundingClientRect();
+        // The region is a box over the middle of the page and the fixture's
+        // lines run the full measure, so the words are picked out character by
+        // character: the run of a line that lies wholly inside the box.
+        const charRect = (node, i) => {
+          const r = document.createRange();
+          r.setStart(node, i);
+          r.setEnd(node, i + 1);
+          return r.getBoundingClientRect();
+        };
+        let range = null;
+        for (const span of pageEl.querySelectorAll(".pdf-text-layer span")) {
+          const node = span.firstChild;
+          if (node?.nodeType !== 3) continue;
+          const sr = span.getBoundingClientRect();
+          if (sr.top < box.top || sr.bottom > box.bottom) continue;
+          let from = -1;
+          let to = -1;
+          for (let i = 0; i < node.length; i += 1) {
+            const c = charRect(node, i);
+            if (c.left >= box.left && c.right <= box.right) {
+              if (from < 0) from = i;
+              to = i + 1;
+            }
+          }
+          if (from < 0 || !node.data.slice(from, to).trim() || to - from < 3) continue;
+          range = document.createRange();
+          range.setStart(node, from);
+          range.setEnd(node, to);
+          break;
+        }
+        if (!range) return { error: "no text item inside the region" };
+        const rects = Array.from(range.getClientRects());
+        const out = {
+          coveredByRegion: api.documentHighlightsCovering(rects).some((r) => r.id === regionId),
+          coveringText: api.documentHighlightsCovering(rects, { textOnly: true }).length
+        };
+        const before = (api.state.meta?.pdfHighlights || []).map((r) => r.id);
+        const regionColour = api.documentHighlightById(regionId)?.color;
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        api.applyPillHighlight(regionColour === "green" ? "pink" : "green");
+        await settle(100);
+        const made = (api.state.meta?.pdfHighlights || []).filter((r) => !before.includes(r.id));
+        out.madeText = made.length === 1 && made[0].kind === "text";
+        out.regionKeptColour = api.documentHighlightById(regionId)?.color === regionColour;
+        // A tap on those words opens THEIR menu, not the region's.
+        const r0 = rects[0];
+        out.tapFinds = api.documentHighlightAtPoint((r0.left + r0.right) / 2, (r0.top + r0.bottom) / 2)?.id === made[0]?.id;
+        made.forEach((r) => api.removeDocumentHighlight(r.id));
+
+        // ── A relayout that changes nothing redraws nothing ────────────────
+        //
+        // One refit first, so the scale really is the fitted one — the scroller
+        // here may have gained a scrollbar since the page was last fitted, and
+        // that refit is a real change that SHOULD redraw. The one after it is
+        // the one every background sync makes, and must not.
+        api.relayoutDocument({ refit: true });
+        await api.whenDocumentPageReady(2);
+        for (let i = 0; i < 60 && !pageEl.querySelector(".pdf-text-layer"); i += 1) await settle(50);
+        await settle(150);
+        const canvas = pageEl.querySelector(".pdf-canvas");
+        const textLayer = pageEl.querySelector(".pdf-text-layer");
+        api.relayoutDocument({ refit: true });
+        await settle(200);
+        out.canvasKept = Boolean(canvas) && pageEl.querySelector(".pdf-canvas") === canvas && !canvas.classList.contains("is-stale");
+        out.textLayerKept = pageEl.querySelector(".pdf-text-layer") === textLayer;
+        return out;
+      }`, region.record.id)
+    : { error: "no region was made" };
+
+  check("text inside a region is found by the region's box", !underRegion.error && underRegion.coveredByRegion,
+    underRegion.error || `coveredByRegion=${underRegion.coveredByRegion}`);
+  check("...but the pill does not treat it as already highlighted", underRegion.coveringText === 0,
+    `${underRegion.coveringText} covering text record(s)`);
+  check("...so a colour pressed on it highlights the words", underRegion.madeText === true,
+    `madeText=${underRegion.madeText}`);
+  check("...and leaves the region's own colour alone", underRegion.regionKeptColour === true,
+    `regionKeptColour=${underRegion.regionKeptColour}`);
+  check("...and a tap on those words finds the words, not the region", underRegion.tapFinds === true,
+    `tapFinds=${underRegion.tapFinds}`);
+  check("a relayout at the same scale keeps the page's canvas", underRegion.canvasKept === true,
+    `canvasKept=${underRegion.canvasKept}`);
+  check("...and its text layer", underRegion.textLayerKept === true,
+    `textLayerKept=${underRegion.textLayerKept}`);
 
   // ── 7b. Copy location, a region resized in the Notes, and Ctrl Ctrl ──────
   //
