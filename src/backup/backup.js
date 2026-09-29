@@ -459,7 +459,7 @@ export async function packBackupAssets(zip, entries, onProgress, isCancelled = (
   // order not to record one in the manifest's inventory. It did exactly that,
   // and an archive from a library with no images then failed its own
   // verification for a file nobody had ever written.
-  if (!refs.length) return { assets: [], missing: [], missingHosted: [], missingExternal: [], indexBytes: 0, indexJson: "" };
+  if (!refs.length) return { assets: [], missing: [], missingHosted: [], missingExternal: [], missingQueued: [], indexBytes: 0, indexJson: "" };
 
   let done = 0;
   onProgress?.(0, refs.length);
@@ -521,14 +521,19 @@ export async function packBackupAssets(zip, entries, onProgress, isCancelled = (
     // the deck text still carries the link, so those images keep working
     // wherever the original host is reachable.
     missingHosted: missing.filter(isSupabaseStorageRef),
-    missingExternal: missing.filter((ref) => !isSupabaseStorageRef(ref))
+    missingExternal: missing.filter((ref) => !isSupabaseStorageRef(ref) && !ref.startsWith(LOCAL_IMAGE_SCHEME)),
+    missingQueued: missing.filter((ref) => ref.startsWith(LOCAL_IMAGE_SCHEME))
   }, null, 2)}\n`;
   zip.file(BACKUP_ASSET_INDEX, indexJson, { compression: "DEFLATE" });
   return {
     assets,
     missing,
     missingHosted: missing.filter(isSupabaseStorageRef),
-    missingExternal: missing.filter((ref) => !isSupabaseStorageRef(ref)),
+    missingExternal: missing.filter((ref) => !isSupabaseStorageRef(ref) && !ref.startsWith(LOCAL_IMAGE_SCHEME)),
+    // A picture pasted offline on ANOTHER device and never uploaded from it:
+    // its placeholder synced here, its bytes never did. Not a website refusing
+    // a download, which is what it used to be reported as.
+    missingQueued: missing.filter((ref) => ref.startsWith(LOCAL_IMAGE_SCHEME)),
     // BYTES, not characters. This was `indexJson.length`, which counts UTF-16
     // units — so an index naming one figure called "Größe.png" declared itself
     // shorter than it is, and the restore called the archive damaged.
@@ -856,7 +861,7 @@ export async function writeRecallPackage({
   progress?.stepDone?.("decks", `${payloads.length} deck${payloads.length === 1 ? "" : "s"}, ${cardTotal} cards`);
 
   const deckLabel = `${payloads.length} deck${payloads.length === 1 ? "" : "s"}`;
-  let packed = { assets: [], missing: [], missingHosted: [], missingExternal: [], indexBytes: 0, indexJson: "" };
+  let packed = { assets: [], missing: [], missingHosted: [], missingExternal: [], missingQueued: [], indexBytes: 0, indexJson: "" };
   if (includeImages) {
     progress?.step?.("images", "Looking for images…");
     const sourceLabel = { device: "from this device", cache: "from the offline cache", network: "downloaded from storage" };
@@ -869,7 +874,10 @@ export async function writeRecallPackage({
     }, () => Boolean(progress?.cancelled()), ({ ref, source, bytes, missing, index, total }) => {
       const name = shortImageName(ref);
       if (missing) {
-        progress?.warn?.(`Image ${index}/${total} could not be read: ${name}${isSupabaseStorageRef(ref) ? " (missing from your storage)" : " (the site does not allow downloading)"}`);
+        const why = ref.startsWith(LOCAL_IMAGE_SCHEME)
+          ? " (pasted on another device and never uploaded from it)"
+          : isSupabaseStorageRef(ref) ? " (missing from your storage)" : " (the site does not allow downloading)";
+        progress?.warn?.(`Image ${index}/${total} could not be read: ${name}${why}`);
       } else {
         progress?.current?.(`Image ${index}/${total} · ${name} · ${formatJobBytes(bytes)} · ${sourceLabel[source] || ""}`);
         if (source === "network" || total <= 200) progress?.log?.(`Image ${index}/${total} · ${name} · ${formatJobBytes(bytes)} · ${sourceLabel[source] || ""}`);
@@ -1061,6 +1069,13 @@ export async function writeRecallPackage({
     warnings.push(
       `${hosted} image${plural(hosted, "", "s")} you uploaded ${plural(hosted, "is", "are")} no longer in your storage, so ${plural(hosted, "it", "they")} could not be packed. `
       + "Use More → Check for broken images to see which decks they're in."
+    );
+  }
+  const queued = (packed.missingQueued || []).length;
+  if (queued) {
+    warnings.push(
+      `${queued} image${plural(queued, " was", "s were")} pasted on another device while offline and never uploaded from it, so ${plural(queued, "it is", "they are")} not here to pack. `
+      + "Open the app on that device while online and back up again."
     );
   }
   if (external) {

@@ -194,3 +194,79 @@
     max-height: 140px;
   }
 }
+
+/* ── The questions asked around a package ─────────────────────────────────
+ * The share dialog (src/backup/share-dialog.js), the import preview
+ * (src/backup/share-import.js) and the restore preview's settings box. The
+ * app's global input styles make a bare checkbox a full-width block; these are
+ * a box and its sentence, on one line. */
+
+.share-options-shell {
+  width: min(520px, 100%);
+}
+
+.share-options-field,
+.package-import-folder {
+  display: grid;
+  gap: 6px;
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
+.share-options-check,
+.restore-settings-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 0.86rem;
+  line-height: 1.35;
+  cursor: pointer;
+}
+
+.share-options-check input[type="checkbox"],
+.restore-settings-toggle input[type="checkbox"] {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  min-height: 0;
+  margin: 1px 0 0;
+  padding: 0;
+  accent-color: var(--accent);
+}
+
+.package-import-shell {
+  width: min(640px, 100%);
+  max-height: min(92vh, 860px);
+  overflow: auto;
+}
+
+.package-import-shell .restore-row {
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+}
+
+.package-import-choice select {
+  min-height: 32px;
+  border: 1px solid var(--line);
+  border-radius: var(--toolbar-button-radius);
+  background: var(--panel);
+  color: var(--text);
+  padding: 4px 8px;
+  font: inherit;
+  font-size: 0.8rem;
+}
+
+.package-import-shell .restore-detail small {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+@media (max-width: 560px) {
+  .package-import-shell .restore-row {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .package-import-shell .restore-detail,
+  .package-import-choice {
+    grid-column: 1 / -1;
+  }
+}

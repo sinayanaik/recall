@@ -33,6 +33,7 @@ import { normalizeSyncText, syncTextChanged } from "../sync/diff.js?v=__BUILD__"
 import { mergeDocumentAnnotations } from "../sync/document-sync.js?v=__BUILD__";
 import { repairSnapshotText } from "../sync/text-repair.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
+import { flushWorkingDeck } from "../ui/edit-mode.js?v=__BUILD__";
 import { setStatus, showToast } from "../ui/feedback.js?v=__BUILD__";
 
 // A parsed JSON node is either a multi-deck bundle ({decks:[...]}) or a single
@@ -1007,6 +1008,11 @@ export const RESTORE_STEPS = [
 ];
 
 export async function applyRestore(report, { autoBackup = true, progress = null, includeSettings = false } = {}) {
+  // Whatever is being typed into the open deck goes to disk FIRST. The merges
+  // below read each deck fresh, and the open one is reloaded afterwards if it
+  // was written — an edit still in memory would otherwise be merged against
+  // nothing and then replaced by the reload.
+  try { flushWorkingDeck(); } catch (error) { console.warn("Could not save the open deck before restoring", error); }
   // Nothing on the device, nothing to protect. Worth checking BEFORE the panel
   // is opened rather than letting the backup discover it: on a fresh install —
   // the single most common place a restore is run — the safety step used to

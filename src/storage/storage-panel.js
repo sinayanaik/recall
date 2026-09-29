@@ -710,7 +710,7 @@ export function renderStoragePanel(busyText = "") {
       <h2>Backups</h2>
       <p class="storage-sub">A backup <code>.zip</code> is the only copy that does not depend on this device or on your cloud project still being there.</p>
       <p class="storage-note">${escapeHtml(describeLastBackup())}${lastBackup?.bytes ? ` · ${escapeHtml(formatStorageBytes(lastBackup.bytes))}` : ""}.</p>
-      ${backupDue ? `<p class="storage-note is-warning">Your library has changed since then. My Decks → ⋯ → Export All → Backup (.zip) writes a new one — decks, notes, images and the PDFs themselves.</p>` : ""}
+      ${backupDue ? `<p class="storage-note is-warning">Your library has changed since then. My Decks → ⋯ → Back up library (.recall) writes a new one — decks, notes, images, the PDFs themselves and your settings.</p>` : ""}
     </div>
 
     <div class="storage-card is-danger">
@@ -738,7 +738,7 @@ export function renderStoragePanel(busyText = "") {
           Reset everything
         </button>
       </div>
-      <p class="storage-note">Take a backup first — <strong>My Decks → ⋯ → Export All → Backup (.zip)</strong> holds every deck, note and image.</p>
+      <p class="storage-note">Take a backup first — <strong>My Decks → ⋯ → Back up library (.recall)</strong> holds every deck, note, image and PDF.</p>
     </div>
 
     <p class="storage-timestamp">Counted ${escapeHtml(report.at.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", second: "2-digit" }))}${report.online ? "" : " · offline"}</p>

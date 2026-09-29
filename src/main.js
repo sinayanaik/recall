@@ -277,7 +277,7 @@ if (window.Prism?.plugins?.autoloader) {
 
 
 // ══════════════════════════════════════════════════════════════════════════
-// Library Backup (.zip) + Safe Restore
+// Library Backup (.recall) + Safe Restore
 //
 // Backup packs every deck (cards, statuses, notes, category, timestamps) into a
 // versioned, self-describing zip. Restore reads that archive (or a legacy JSON

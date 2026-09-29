@@ -356,9 +356,46 @@ export const BACKED_UP_SETTINGS_KEYS = {
 };
 
 export const NOT_BACKED_UP_SETTINGS_KEYS = {
-  flashcards_supabase_config: "A credential. A backup is a file people mail to themselves.",
-  "recall:driveConfig": "A credential, the same way.",
-  "recall:lastBackup": "The record of the last backup — this device's history, not a preference."
+  // Credentials. A backup is a file people mail to themselves.
+  flashcards_supabase_config: "A credential.",
+  "recall:driveConfig": "A credential.",
+  "recall:s3Config": "A credential — the bucket's keys.",
+  "recall:s3ConfigForgotten": "Whether this device was told to forget the bucket's keys: about the keys, so not carried either.",
+  flashcards_last_user_id: "Which account this device last signed in as.",
+  "recall:session-backup-v1": "A copy of the sign-in session.",
+  // Carried, but not here: library.json holds them, split so a restore can
+  // re-key them onto the decks it writes (src/backup/library-state.js).
+  flashcards_folders_v1: "In library.json — folders that hold no decks yet.",
+  flashcards_folder_collapsed_v1: "In library.json — which folds are closed.",
+  flashcards_folder_expanded_v1: "In library.json — which folds are open.",
+  "swipe-notes-reading-positions-v1": "In library.json — where you were in each note.",
+  "swipe-notes-bookmark-prompts-v1": "In library.json — which bookmark prompts were answered.",
+  // The library itself, or pieces of it, which the deck files carry.
+  flashcards_local_decks_index_v1: "The deck index. Rebuilt from the decks a restore writes.",
+  flashcards_deck_write_journal_v1: "Deck writes still in flight on this device.",
+  "recall:quickNoteCategories": "A cache of the quick-notes deck's categories, which its meta carries.",
+  "recall:pendingQuickNoteCategories": "Queued writes; folded into the deck they belong to.",
+  "recall:pendingQuickNoteAnchors": "Queued writes; folded into the quick-notes deck's anchors when it is packed.",
+  // Sync bookkeeping — "what THIS device has seen", wrong on any other.
+  flashcards_deleted_deck_ids_v1: "Deck tombstones; a restore retires the ones it brings back.",
+  flashcards_missing_deck_watch_v1: "Sync bookkeeping.",
+  flashcards_last_global_sync_at: "Sync bookkeeping.",
+  flashcards_last_global_sync_error: "Sync bookkeeping.",
+  "recall:lastBackgroundSyncProblem": "Sync bookkeeping.",
+  "recall:pendingUntombstone": "Sync bookkeeping.",
+  "recall:pendingStyleSync": "Sync bookkeeping; the style itself is carried.",
+  flashcards_style_cache: "A cache of the synced style; the style itself is carried.",
+  flashcards_math_escape_repair_v1: "A one-off repair's done-marker.",
+  "recall:projectHealthCheckedFor": "A check's done-marker.",
+  "recall:signedUrls": "Signed links that expire within the hour.",
+  "recall:storage-probe": "A write used to test whether storage works.",
+  "recall:lastBackup": "The record of the last backup — this device's history, not a preference.",
+  // Where this device was, a moment ago.
+  "swipe-notes-current-deck-v1": "The deck open on this device.",
+  "recall:deckTab-v1": "Which tab each deck was on, on this device.",
+  flashcards_mydecks_cwd_v1: "The folder My Decks was showing.",
+  flashcards_last_import_folder_v1: "The folder the last import went to.",
+  "swipe-hint-seen": "Whether this device has seen the swipe hint."
 };
 
 // The settings a library backup carries, read off this device. Values are

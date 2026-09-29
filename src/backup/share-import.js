@@ -45,6 +45,7 @@ import { NOTE_LINK_PATTERN } from "../render/note-links.js?v=__BUILD__";
 import { deckWriteSettled, forEachDeckSnapshot, readDeckSnapshot, withDeckLock, writeDeckSnapshot } from "../storage/deck-store.js?v=__BUILD__";
 import { scheduleDocumentBackfill } from "../storage/document-migration.js?v=__BUILD__";
 import { repairSnapshotText } from "../sync/text-repair.js?v=__BUILD__";
+import { flushWorkingDeck } from "../ui/edit-mode.js?v=__BUILD__";
 import { setStatus, showToast } from "../ui/feedback.js?v=__BUILD__";
 import {
   PACKAGE_KIND_SHARE, SHARE_META_POLICY, SHARE_POLICY_PROGRESS, stripAccountLocators
@@ -439,6 +440,9 @@ function mergeImportUpdate(fresh, reminted, { backupNewer, keepIdentity = true }
 }
 
 export async function applyPackageImport(plan, archive, { progress = null } = {}) {
+  // The open deck's unsaved edits reach disk before anything is merged into it
+  // (see applyRestore for why).
+  try { flushWorkingDeck(); } catch (error) { console.warn("Could not save the open deck before importing", error); }
   const uid = plan.uid || importingUserId();
   const importedAt = new Date().toISOString();
   const active = plan.entries.filter((entry) => entry.choice !== IMPORT_CHOICE_SKIP);
