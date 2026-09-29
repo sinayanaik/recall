@@ -428,14 +428,14 @@ try {
     return null;
   });
 
-  // ── The number on an annotated highlight ────────────────────────────────
+  // ── The dot on an annotated highlight ────────────────────────────────
   //
   // These three cases used to be about the printed inline notes. The mode is
   // gone and the badge replaced it, but the QUESTIONS are the same three and
   // they are the reason the badge was rebuilt: can you see it, can you read it,
   // and can it leak into a selection.
 
-  await check("an annotated highlight wears a number you can actually see", async () => {
+  await check("an annotated highlight wears a dot you can actually see", async () => {
     const seen = await page.evaluate(`() => {
       const badges = [...document.querySelectorAll("#notesView .hl-note-badge")];
       if (!badges.length) return { error: "no badges on screen" };
@@ -477,10 +477,11 @@ try {
     for (const badge of seen.drawn) {
       if (badge.tag !== "BUTTON") return `the badge is a ${badge.tag}, which cannot be pressed or focused`;
       if (badge.position !== "absolute") return `the badge is ${badge.position}, so it is in flow and moves the text`;
-      if (badge.alpha < 0.99) return `the badge's chip is ${badge.alpha} opaque — the tint under it shows through`;
+      if (badge.alpha < 0.5) return `the badge's dot is ${badge.alpha} opaque — too faint to notice`;
       if (!badge.near) return "the badge is not drawn on the highlight it belongs to";
-      // Small, but a target you can hit. Below this it is decoration.
-      if (badge.wide < 10 || badge.tall < 10) return `the badge is ${Math.round(badge.wide)}x${Math.round(badge.tall)}px`;
+      // A quiet dot, not a chip — but not a speck either. (Its press target is
+      // larger than what is drawn: see the ::before in 42-highlight-badge.css.)
+      if (badge.wide < 4 || badge.tall < 4 || badge.wide > 12) return `the badge is ${Math.round(badge.wide)}x${Math.round(badge.tall)}px`;
     }
     return null;
   });
@@ -491,7 +492,7 @@ try {
   // hexes over whatever the page behind it is. This measures the pair that
   // actually decides it — the badge's own ink on the badge's own chip — plus
   // the chip against the tint it sits on, in a light theme and a dark one.
-  await check("...and it is readable in every theme, over every highlight colour", async () => {
+  await check("...and it shows against every theme, over every highlight colour", async () => {
     const seen = await page.evaluate(`() => {
       // Two serialisations, and they are on DIFFERENT scales. A plain colour
       // comes back as "rgb(244, 242, 236)"; anything that went through
@@ -545,13 +546,9 @@ try {
     }`);
     if (!seen.length) return "no annotated highlight to measure";
     for (const one of seen) {
-      // The digits on their own chip. This is the pair --accent-contrast is
-      // DEFINED as answering, so anything below 4.5 means a theme was added
-      // without it.
-      if (one.readable < 4.5) return `${one.colour} on ${one.theme}: the number is ${one.readable}:1 on its own chip`;
       // ...and the chip against the highlight under it. A filled shape is read
       // at a lower threshold than text, and the ring is carrying the rest.
-      if (one.fromTint < 1.35) return `${one.colour} on ${one.theme}: the chip is ${one.fromTint}:1 against the highlight — invisible`;
+      if (one.fromTint < 1.35) return `${one.colour} on ${one.theme}: the dot is ${one.fromTint}:1 against the highlight — invisible`;
     }
     return null;
   });
