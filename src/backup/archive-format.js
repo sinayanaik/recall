@@ -30,7 +30,34 @@ export const BACKUP_SCHEMA = "recall-backup";
 // written by a build that does not exist yet degrades to the parts this build
 // understands. The number is what a person reads when something has gone wrong,
 // and what the check pins so the format cannot change without someone saying so.
-export const BACKUP_VERSION = 3;
+//
+// 4: the `.recall` package. Same layout as 3 — every reader of a v3 archive
+// reads a v4 one — plus a `kind` ("library" for a whole-library backup, "share"
+// for decks handed to someone else), a real UTF-8 size and a sha256 for every
+// file in `contents`, the identity each deck travels under (`origin`, `ids`)
+// so a recipient can recognise it the second time, `skipped` for the decks the
+// writer could not read, and `settings.json` beside library.json.
+export const BACKUP_VERSION = 4;
+
+// The file a package travels as. A zip underneath, so any zip tool can open one
+// by hand and every reader this app has ever had can read it — the extension is
+// what lets the app, the OS and the person holding it tell a Recall package
+// apart from any other zip.
+export const PACKAGE_EXT = ".recall";
+
+export const PACKAGE_MIME = "application/vnd.recall+zip";
+
+// What a package is FOR. A library backup is restored into the library it came
+// from (merged by deck id, additive); a share is imported by somebody else, as
+// decks of their own. The kind picks the default; the person importing can
+// always choose the other.
+export const PACKAGE_KIND_LIBRARY = "library";
+
+export const PACKAGE_KIND_SHARE = "share";
+
+export const BACKUP_SETTINGS_FILE = "settings.json";
+
+export const BACKUP_SETTINGS_SCHEMA = "recall-backup-settings";
 
 export const BACKUP_MANIFEST_FILE = "manifest.json";
 
@@ -150,6 +177,20 @@ export const BACKED_UP_META_KEYS = {
     "Block tombstones, carried for the reason deletedHighlightIds is: a restore "
     + "that unioned the live blocks alone would put back every block the reader "
     + "had deleted.",
+  readingPositionPdf:
+    "Where the reader had got to in the deck's primary PDF, as it travels "
+    + "between devices. Named by a computed key (docSlotPositionKey), which is "
+    + "why the scan below never saw it and it rode in every archive unlisted.",
+  readingPositionNotebook:
+    "The same, for the handwritten notebook.",
+  pdfActiveId:
+    "Which of a deck's several PDFs was open. Validated on every read, so a "
+    + "value naming a PDF that did not come back is simply ignored.",
+  importedFrom:
+    "Where a deck that arrived in somebody's .recall package came from — the "
+    + "package it was in and the identity it travelled under. It is how a "
+    + "second copy of the same package is recognised as an UPDATE to decks "
+    + "already here rather than a second set of them.",
 
   // ── The four keys of an older notebook ───────────────────────────────────
   //
@@ -204,6 +245,107 @@ export const NOT_BACKED_UP_STORES = {
   // Same rule as the meta table: empty is a claim, not an oversight.
 };
 
+// ── What a SHARE does with each key ─────────────────────────────────────────
+//
+// A backup carries the bag as it is, because it goes back to the person it came
+// from. A share goes to somebody else, and every key has to answer a different
+// question: is this the deck, is this the sender's own progress through it, or
+// is this a pointer into the sender's ACCOUNT that means nothing — or worse,
+// something wrong — anywhere else? A key in BACKED_UP_META_KEYS with no answer
+// here fails tools/backup-check.mjs, for the reason the table above exists.
+//
+//   keep      the deck's content; travels as it is.
+//   progress  the sender's place in the deck. Travels only when the sender
+//             ticked "include my progress".
+//   account   a record whose IDENTITY travels (name, pages, sha256) but whose
+//             storage locators — a path in the sender's bucket, their Drive
+//             file id, their S3 key — are stripped. The recipient's own device
+//             uploads the bytes to the recipient's own storage.
+//   remap     ids that name things in the sender's library, rewritten by the
+//             importer to name the same things in the recipient's.
+export const SHARE_POLICY_KEEP = "keep";
+
+export const SHARE_POLICY_PROGRESS = "progress";
+
+export const SHARE_POLICY_ACCOUNT = "account";
+
+export const SHARE_POLICY_REMAP = "remap";
+
+export const SHARE_META_POLICY = {
+  pdf: SHARE_POLICY_ACCOUNT,
+  notebook: SHARE_POLICY_ACCOUNT,
+  pdfs: SHARE_POLICY_ACCOUNT,
+  pdfHighlights: SHARE_POLICY_KEEP,
+  deletedHighlightIds: SHARE_POLICY_KEEP,
+  pdfToc: SHARE_POLICY_KEEP,
+  deletedPdfIds: SHARE_POLICY_KEEP,
+  pdfTocByPdfId: SHARE_POLICY_KEEP,
+  pdfActiveId: SHARE_POLICY_KEEP,
+  pdfReadingPositions: SHARE_POLICY_PROGRESS,
+  readingPositionPdf: SHARE_POLICY_PROGRESS,
+  readingPositionNotebook: SHARE_POLICY_PROGRESS,
+  bookmark: SHARE_POLICY_PROGRESS,
+  readingPosition: SHARE_POLICY_PROGRESS,
+  linkIds: SHARE_POLICY_REMAP,
+  noteAnchors: SHARE_POLICY_REMAP,
+  importedFrom: SHARE_POLICY_REMAP,
+  quickNoteCategories: SHARE_POLICY_KEEP,
+  pdfBlocks: SHARE_POLICY_KEEP,
+  deletedBlockIds: SHARE_POLICY_KEEP,
+  pages: SHARE_POLICY_KEEP,
+  textBoxes: SHARE_POLICY_KEEP,
+  deletedPageIds: SHARE_POLICY_KEEP,
+  deletedTextBoxIds: SHARE_POLICY_KEEP
+};
+
+// The fields of a document record that point into ONE account's storage. What
+// SHARE_POLICY_ACCOUNT strips.
+export const ACCOUNT_LOCATOR_FIELDS = ["path", "driveId", "s3Key", "retiredLocators", "offloaded"];
+
+// A copy of a document record without the sender's locators.
+export function stripAccountLocators(record) {
+  if (!record || typeof record !== "object" || Array.isArray(record)) return record;
+  const out = { ...record };
+  for (const field of ACCOUNT_LOCATOR_FIELDS) delete out[field];
+  return out;
+}
+
+// One deck's meta bag, as a SHARE carries it. Pure: the caller's bag is not
+// touched. `remap` keys are left for the importer, which is the only side that
+// knows what they should become.
+export function shareMetaBag(meta, { includeProgress = false } = {}) {
+  const out = {};
+  for (const [key, value] of Object.entries(meta && typeof meta === "object" ? meta : {})) {
+    const policy = SHARE_META_POLICY[key] || SHARE_POLICY_KEEP;
+    if (policy === SHARE_POLICY_PROGRESS && !includeProgress) continue;
+    if (policy === SHARE_POLICY_ACCOUNT) {
+      out[key] = Array.isArray(value) ? value.map(stripAccountLocators) : stripAccountLocators(value);
+      continue;
+    }
+    out[key] = value;
+  }
+  return out;
+}
+
+// ── Settings ────────────────────────────────────────────────────────────────
+//
+// The device's own preferences, in a library backup only — a share never
+// carries them, because nobody wants a friend's theme. The same rule as the
+// tables above: a localStorage key the app writes and neither table names is a
+// decision nobody has made yet.
+export const BACKED_UP_SETTINGS_KEYS = {
+  "swipe-notes-style-settings-v1": "Fonts, sizes, spacing and every other reading-surface choice.",
+  "swipe-notes-theme": "The theme.",
+  "recall:ink-prefs-v1": "Pens, colours and widths.",
+  "recall:imageCompression": "How pasted images are compressed before upload.",
+  "recall:pdfPageNotes": "Whether a paper's page notes are shown."
+};
+
+export const NOT_BACKED_UP_SETTINGS_KEYS = {
+  flashcards_supabase_config: "A credential. A backup is a file people mail to themselves.",
+  "recall:lastBackup": "The record of the last backup — this device's history, not a preference."
+};
+
 // ── Paths ───────────────────────────────────────────────────────────────────
 
 // A deck's asset and document folders are named the same way (`<slug>--<id>`),
@@ -223,7 +365,53 @@ export function isBackupIndexPath(path) {
   return lower.endsWith(`/${BACKUP_MANIFEST_FILE}`) || lower === BACKUP_MANIFEST_FILE
     || lower.endsWith(`/${BACKUP_ASSET_INDEX}`) || lower === BACKUP_ASSET_INDEX
     || lower.endsWith(`/${BACKUP_DOCUMENT_INDEX}`) || lower === BACKUP_DOCUMENT_INDEX
-    || lower.endsWith(`/${BACKUP_LIBRARY_FILE}`) || lower === BACKUP_LIBRARY_FILE;
+    || lower.endsWith(`/${BACKUP_LIBRARY_FILE}`) || lower === BACKUP_LIBRARY_FILE
+    || lower.endsWith(`/${BACKUP_SETTINGS_FILE}`) || lower === BACKUP_SETTINGS_FILE;
+}
+
+// Where the archive actually starts. A zip that was extracted and zipped up
+// again by hand usually gains a folder around everything — `backup/manifest.json`
+// — and every lookup that asked for `assets/index.json` by its exact path then
+// found nothing: the decks came back (they were found by suffix) and every image
+// and paper quietly did not. Worked out once, from where the manifest sits (or,
+// for an archive with none, where the first decks/ folder does), so every lookup
+// after it can use the path the writer used.
+export function archiveRootPrefix(names) {
+  const list = Array.from(names || []);
+  // The shallowest one: a folder of deck files that happens to hold a file of
+  // that name further down must not move the root into itself.
+  const manifest = list.filter((name) => {
+    const lower = name.toLowerCase();
+    return lower === BACKUP_MANIFEST_FILE || lower.endsWith(`/${BACKUP_MANIFEST_FILE}`);
+  }).sort((a, b) => a.length - b.length)[0];
+  if (manifest) return manifest.slice(0, manifest.length - BACKUP_MANIFEST_FILE.length);
+  const deck = list.find((name) => /(^|\/)decks\//i.test(name));
+  if (!deck) return "";
+  const at = deck.toLowerCase().search(/(^|\/)decks\//);
+  return at <= 0 ? "" : deck.slice(0, at + 1);
+}
+
+// A view of a loaded zip whose `files` are keyed as if the prefix were not
+// there. Everything else — the entries themselves — is the same objects, so a
+// read through the view is a read of the archive.
+export function rootedArchive(zip) {
+  const names = Object.keys(zip?.files || {});
+  const prefix = archiveRootPrefix(names);
+  if (!prefix) return zip;
+  const files = {};
+  for (const name of names) {
+    if (name.startsWith(prefix)) files[name.slice(prefix.length)] = zip.files[name];
+    else if (!(name in files)) files[name] = zip.files[name];
+  }
+  return { files, prefix, source: zip };
+}
+
+// A random id, good enough to tell two packages apart.
+export function newPackageId() {
+  const bytes = new Uint8Array(9);
+  if (globalThis.crypto?.getRandomValues) globalThis.crypto.getRandomValues(bytes);
+  else for (let i = 0; i < bytes.length; i += 1) bytes[i] = Math.floor(Math.random() * 256);
+  return `pkg-${Array.from(bytes, (b) => b.toString(36).padStart(2, "0")).join("").slice(0, 16)}`;
 }
 
 // Some zip tools nest the whole archive one level deeper on extract-and-rezip,
@@ -255,12 +443,21 @@ export function buildBackupManifest({
   documents = [],
   documentsMissing = 0,
   folders = [],
-  contents = []
+  contents = [],
+  kind = PACKAGE_KIND_LIBRARY,
+  packageId = "",
+  includesProgress = true,
+  skipped = [],
+  title = ""
 } = {}) {
   return {
     schema: BACKUP_SCHEMA,
     version: BACKUP_VERSION,
     app: "recall",
+    kind: kind === PACKAGE_KIND_SHARE ? PACKAGE_KIND_SHARE : PACKAGE_KIND_LIBRARY,
+    packageId: String(packageId || ""),
+    title: String(title || ""),
+    includesProgress: Boolean(includesProgress),
     // Which build wrote this. Nothing had one before, so an archive that
     // restores strangely could not be tied to the code that produced it — and
     // that is exactly the moment you want to know. Empty in an unstamped
@@ -274,6 +471,10 @@ export function buildBackupManifest({
     documentBytes: documents.reduce((sum, entry) => sum + (Number(entry.bytes) || 0), 0),
     documentsMissing,
     folders: Array.from(new Set(folders)).sort(),
+    // Decks the writer could not read. A package that says "40 decks" when the
+    // library had 42 is a package that has lied by omission; this is the part
+    // that says so, and the preview repeats it.
+    skipped: Array.isArray(skipped) ? skipped : [],
     decks,
     contents
   };
