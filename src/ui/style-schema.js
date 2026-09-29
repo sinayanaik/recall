@@ -77,7 +77,8 @@ export const defaultStyleProfiles = {
     // stored value for it is noise — see migrateLegacyStyleSettings, which
     // rewrites it rather than letting anyone's code blocks suddenly shrink.
     "codeFontSize": "12px",
-    "codeLineHeight": "1.17"
+    "codeLineHeight": "1.17",
+    "codeHighlightStrength": "medium"
   },
   "desktop": {
     // Basics
@@ -137,7 +138,8 @@ export const defaultStyleProfiles = {
     "modalPadding": "18px",
     "rawMarkdownFontSize": "18px",
     "codeFontSize": "18px",
-    "codeLineHeight": "1.55"
+    "codeLineHeight": "1.55",
+    "codeHighlightStrength": "medium"
   },
   "version": 2
 };
@@ -291,7 +293,8 @@ export const styleControlGroups = [
       { key: "modalPadding", label: "Modal padding", type: "text", unit: "px", probe: "width", hint: "Inside spacing for the import and My Decks panels." },
       { key: "rawMarkdownFontSize", label: "Raw Markdown font size", type: "text", unit: "px", probe: "font-size", hint: "Text size inside Markdown edit boxes." },
       { key: "codeFontSize", label: "Code font size", type: "text", unit: "px", probe: "font-size", hint: "Text size inside code blocks." },
-      { key: "codeLineHeight", label: "Code line spacing", type: "text", probe: "line-height", hint: "Line spacing inside code blocks." }
+      { key: "codeLineHeight", label: "Code line spacing", type: "text", probe: "line-height", hint: "Line spacing inside code blocks." },
+      { key: "codeHighlightStrength", label: "Code highlight strength", type: "select", options: ["subtle", "medium", "strong"], hint: "How strongly a highlight shows on code blocks. Each theme sets its own base; this scales it." }
     ]
   }
 ];

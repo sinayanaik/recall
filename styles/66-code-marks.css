@@ -7,9 +7,11 @@
  * (#0b1110) in every theme, light ones included, with Prism's token colours on
  * top. The prose tints in styles/12-notes.css are mixed for the THEME's ground
  * at 30–35%, and over that panel they read as a faint smudge that the token
- * colours drown out. So a mark here gets a stronger wash of its colour plus a
- * solid bar along the bottom of the line — the bar is what still says "this
- * one" when the wash sits under a bright string or keyword.
+ * colours drown out; a heavy wash plus an underline bar was the other extreme
+ * and competed with the code. So a mark here is a moderate wash of its colour
+ * with a thin ring round it — no underline — which still says "this one" under
+ * a bright string or keyword without making the code harder to read. How strong
+ * is a per-theme token times a user setting; see below.
  *
  * `color: inherit` on the mark (from 12-notes.css) is what keeps Prism's
  * colours: the mark holds whole token spans (see src/render/code-marks.js),
@@ -22,11 +24,36 @@
  * `[data-color]` twin carries the same weight and comes later.
  */
 
+/* ── Strength: per-theme base × the user's setting ────────────────────────
+   --code-mark-wash and --code-mark-edge are the theme's own figures (percent of
+   the highlight colour), tuned below per theme. --code-mark-scale is the
+   "Code highlight strength" setting (Subtle 0.7 / Medium 1 / Strong 1.5), written
+   on the root by applyStyleSettings in src/ui/style-settings.js. The var()
+   fallbacks make a page that has not booted yet, or an HTML export, render at
+   the medium figures. */
+:root {
+  --code-mark-wash: 22%;
+  --code-mark-edge: 40%;
+}
+
+:root[data-theme="light-paper"]          { --code-mark-wash: 24%; --code-mark-edge: 44%; }
+:root[data-theme="light-snow"]           { --code-mark-wash: 24%; --code-mark-edge: 44%; }
+:root[data-theme="light-ink"]            { --code-mark-wash: 24%; --code-mark-edge: 44%; }
+:root[data-theme="dark-amoled"]          { --code-mark-wash: 22%; --code-mark-edge: 38%; }
+:root[data-theme="dark-amoled-emerald"]  { --code-mark-wash: 22%; --code-mark-edge: 38%; }
+:root[data-theme="dark-amoled-violet"]   { --code-mark-wash: 22%; --code-mark-edge: 38%; }
+:root[data-theme="dark-forest"]          { --code-mark-wash: 22%; --code-mark-edge: 40%; }
+:root[data-theme="dark-graphite"]        { --code-mark-wash: 23%; --code-mark-edge: 40%; }
+:root[data-theme="dark-navy"]            { --code-mark-wash: 23%; --code-mark-edge: 40%; }
+:root[data-theme="dark-bronze"]          { --code-mark-wash: 22%; --code-mark-edge: 40%; }
+
 .rendered pre code mark,
 .rendered pre code mark[data-color] {
   --code-mark: #e0b400;
-  background: color-mix(in srgb, var(--code-mark) 17%, transparent);
-  box-shadow: none;
+  background: color-mix(in srgb, var(--code-mark) min(100%, calc(var(--code-mark-wash) * var(--code-mark-scale, 1))), transparent);
+  /* A thin ring all the way round — not an underline. It edges the highlight so
+     it reads over a bright token without a bar under the line. */
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--code-mark) min(100%, calc(var(--code-mark-edge) * var(--code-mark-scale, 1))), transparent);
   text-decoration: none;
   border-radius: 2px;
 }
@@ -38,9 +65,3 @@
 .rendered pre code mark[data-color="orange"] { --code-mark: #f97316; }
 .rendered pre code mark[data-color="purple"] { --code-mark: #8b5cf6; }
 
-
-/* The note dot's hairline ring is the page's colour (styles/42-highlight-
-   badge.css); on this always-dark panel that would be a white halo. */
-.rendered pre code mark .hl-note-badge {
-  box-shadow: 0 0 0 1.5px #0b1110;
-}
