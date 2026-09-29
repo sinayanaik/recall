@@ -65,6 +65,13 @@ const SECTIONS = [
 // Anything appearing in styles/ that is neither a slice nor listed here is
 // still a failure.
 const POST_SPLIT = {
+  "68-job-console.css":
+    "The panel every long job shows — backup, share, restore, import: the " +
+    "steps, the item in hand, the counters and an activity log. See " +
+    "src/backup/job-console.js for why a backup that said one sentence for " +
+    "minutes needed all of it. Also the questions asked around a .recall " +
+    "package: the share dialog, the import preview's rows and folder box, and " +
+    "the restore preview's settings checkbox.",
   "64-notes-tight-padding.css":
     "Tighter left/right padding for the Notes reading column, as a horizontal-" +
     "only --notes-stage-pad-x token plus property-level overrides of the same " +

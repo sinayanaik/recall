@@ -135,6 +135,10 @@ const META_FIXTURES = {
     { id: "bk-b2", page: 1, x: 60, y: 500, w: 200, h: 150, z: 1, kind: "image", src: "https://example.invalid/board.png", alt: "the whiteboard", doc: "notebook", at: 1_800_000_000_000 }
   ],
   deletedBlockIds: { "bk-bz": "2027-01-01T00:00:00.000Z" },
+  readingPositionPdf: { offset: 7, pdfPage: 2, ratio: 0.4, text: "in the paper", at: 1_800_000_000_000 },
+  readingPositionNotebook: { offset: 1, pdfPage: 1, ratio: 0.1, at: 1_800_000_000_000 },
+  pdfActiveId: "pdf-b2",
+  importedFrom: { origin: "cloud-elsewhere", packageId: "pkg-fixture", importedAt: "2027-01-01T00:00:00.000Z" },
   // The legacy notebook keys, which are carried precisely so that an archive
   // taken before the migration still restores something the migration can
   // convert. A fixture in the shape the old build actually wrote.
@@ -325,6 +329,9 @@ try {
   const localLibrary = await load("src/library/local-library.js");
   const readingPosition = await load("src/notes/reading-position.js");
   const keys = await load("src/storage/keys.js");
+  const shareImport = await load("src/backup/share-import.js");
+  const outbox = await load("src/images/outbox.js");
+  const jobConsole = await load("src/backup/job-console.js");
 
   const sources = allSources();
 
@@ -436,11 +443,16 @@ try {
   // `generateInternalStream` or `zip.folder()` and this goes red, which is the
   // signal to teach zip-lite about it rather than to quietly stop testing the
   // round trip.
-  const ZIP_SURFACE = new Set(["file", "files", "async", "dir", "loadAsync", "generateAsync", "name"]);
+  // `size` is zip-lite's own: the uncompressed length from the archive's index,
+  // read without the member. Only verifyWrittenPackage uses it, and only ever
+  // on an archive zip-lite itself just wrote.
+  const ZIP_SURFACE = new Set(["file", "files", "async", "dir", "loadAsync", "generateAsync", "name", "size"]);
   await must("the backup uses no zip member the fallback lacks", () => {
     const used = new Set();
-    for (const [rel, text] of sources) {
+    for (let [rel, text] of sources) {
       if (!rel.startsWith("src/backup/") || rel.endsWith("zip-lite.js")) continue;
+      // Module specifiers are not member accesses: `"../export/zip.js"` is a path.
+      text = text.replace(/^import[^;]*;$/gm, "");
       for (const match of text.matchAll(/\b(?:zip|Zip|JSZip)\.([A-Za-z_$][\w$]*)/g)) used.add(match[1]);
       for (const match of text.matchAll(/zip\.files\[[^\]]+\]\??\.([A-Za-z_$][\w$]*)/g)) used.add(match[1]);
     }
@@ -1072,6 +1084,476 @@ try {
     if (!busy) return "a library that changed weeks ago is not mentioned at all";
     return history.backupNudgeDue({ record: null, changedAt: T0, deckCount: 3, now: T0 })
       || "a library that has never been backed up is not mentioned";
+  });
+
+  // ── K. The package is what it says it is ────────────────────────────────
+
+  const USER_KEY = "flashcards_last_user_id";
+  const tokenBlob = (seed) => new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47, seed, seed, seed, 1, 2, 3])], { type: "image/png" });
+
+  await must("a deck written in real prose (em-dashes, umlauts, emoji, math) verifies clean", async () => {
+    resetWorld();
+    await seedDeck({
+      localId: "ld_prose", deckId: "cloud-prose", title: "Größenordnung — “quotes” ✓",
+      notes: "Zellbiologie ünd Größe — 𝛼 + β ≈ γ 🧬\n\n$\\int_0^1 x\\,dx$ “fin”",
+      cards: [{ id: "p0", question: "Was ist Größe?", answer: "Ausmaß — ✓" }], updatedAt: T0
+    });
+    const bytes = await takeBackup();
+    const archive = await restore.readBackupArchive(archiveFile(bytes, "library.recall"));
+    if (!archive.verification?.checked) return "the package was not checked at all";
+    if (!archive.verification.ok) return `a perfectly good package reported: ${archive.verification.notes.join(" ")} ${JSON.stringify(archive.verification.mismatched)}`;
+    if (!archive.verification.hashedFiles) return "no file was checked by hash";
+    return true;
+  });
+
+  await must("every file in the manifest carries its real byte size and a sha256", async () => {
+    const bytes = await takeBackup();
+    const manifest = JSON.parse(await readEntry(bytes, "manifest.json"));
+    if (manifest.version !== 4) return `version is ${manifest.version}`;
+    if (manifest.kind !== "library") return `kind is ${manifest.kind}`;
+    const zip = await openArchive(bytes);
+    for (const entry of manifest.contents) {
+      if (!entry.sha256) return `${entry.file} has no sha256`;
+      const real = (await zip.files[entry.file].async("uint8array")).length;
+      if (real !== entry.bytes) return `${entry.file} declares ${entry.bytes} bytes and holds ${real}`;
+    }
+    return true;
+  });
+
+  await must("a file with the right size and the wrong bytes is caught by its hash", async () => {
+    const bytes = await takeBackup();
+    const damaged = await rewriteArchive(bytes, async (name, entry) => {
+      if (!name.startsWith("decks/")) return undefined;
+      const text = await entry.async("string");
+      // Same length, different bytes: only a hash can tell.
+      return text.replace("Was ist", "Wax ist");
+    });
+    const archive = await restore.readBackupArchive(archiveFile(damaged, "library.recall"));
+    return (archive.verification && !archive.verification.ok && archive.verification.mismatched.some((m) => m.reason === "hash"))
+      || `a tampered deck file passed: ${JSON.stringify(archive.verification?.mismatched)}`;
+  });
+
+  await must("a flipped byte inside a stored member is caught by its CRC", async () => {
+    resetWorld();
+    await seedDeck({ localId: "ld_crc", deckId: "cloud-crc", title: "Paper", meta: { pdf: { name: "p.pdf", pages: 1, sha256: "" } }, cards: [{ id: "c", question: "q" }], pdf: pdfBytes(42), updatedAt: T0 });
+    const bytes = new Uint8Array(await takeBackup());
+    const needle = pdfBytes(42);
+    let at = -1;
+    for (let i = 0; i < bytes.length - needle.length; i += 1) {
+      if (needle.every((b, k) => bytes[i + k] === b)) { at = i; break; }
+    }
+    if (at < 0) return "the paper's bytes are not in the archive as stored bytes";
+    bytes[at + 9] ^= 0x55;
+    const zip = await openArchive(bytes);
+    const name = Object.keys(zip.files).find((n) => n.endsWith("p.pdf"));
+    try {
+      await zip.files[name].async("uint8array");
+      return "a damaged member read back without complaint";
+    } catch (error) {
+      return /checksum|damaged/i.test(error.message) || `failed for the wrong reason: ${error.message}`;
+    }
+  });
+
+  await must("a package re-zipped inside a folder still restores its images and papers", async () => {
+    resetWorld();
+    await outbox.putOutboxImage({ token: "tokA", blob: tokenBlob(1), folder: null, savedAt: iso(T0) });
+    await seedDeck({
+      localId: "ld_nest", deckId: "cloud-nest", title: "Nested",
+      notes: "Figure: ![](recall-img:tokA)", meta: { pdf: { name: "n.pdf", pages: 1, sha256: "" } },
+      cards: [{ id: "n0", question: "q" }], pdf: pdfBytes(5), updatedAt: T0
+    });
+    const bytes = await takeBackup();
+    const zip = await openArchive(bytes);
+    const out = new zipLite.LiteZip();
+    for (const name of Object.keys(zip.files)) out.file(`My Backup/${name}`, await zip.files[name].async("uint8array"));
+    const nested = await out.generateAsync({ type: "uint8array" });
+    resetWorld();
+    const report = await restoreArchive(nested);
+    if (!report.verification?.ok) return `the nested package failed verification: ${report.verification?.notes?.join(" ")}`;
+    const deck = localLibrary.readLocalDeckIndex()[0];
+    const doc = deck ? await pdfStore.readDocument(deck.id) : null;
+    if (!doc?.blob) return "the paper did not come back from a nested package";
+    const snapshot = await deckStore.readDeckSnapshot(deck.id);
+    const token = /recall-img:([\w-]+)/.exec(snapshot.notes)?.[1];
+    if (!token || !(await outbox.getOutboxImage(token))) return `the image did not come back: ${snapshot.notes}`;
+    return true;
+  });
+
+  await must("a restore that only brings back highlights can be confirmed", async () => {
+    resetWorld();
+    const marks = [{ id: "hn-m1", page: 1, quads: [[1, 1, 2, 2]], color: "yellow", at: T0 }];
+    await seedDeck({ localId: "ld_mark", deckId: "cloud-mark", title: "Marks", notes: "n", meta: { pdfHighlights: marks }, cards: [{ id: "m", question: "q" }], updatedAt: T0 });
+    const bytes = await takeBackup();
+    const snapshot = await deckStore.readDeckSnapshot("ld_mark");
+    snapshot.meta = {};
+    deckStore.writeDeckSnapshot("ld_mark", snapshot);
+    await deckStore.deckWriteSettled("ld_mark");
+    const report = await restoreArchive(bytes, { confirm: false });
+    const made = [];
+    const realCreate = globalThis.document.createElement;
+    globalThis.document.createElement = (tag) => { const node = realCreate(tag); made.push(node); return node; };
+    try {
+      restore.showRestorePreview(report);
+    } finally {
+      globalThis.document.createElement = realCreate;
+    }
+    const shell = made.find((node) => String(node.className).includes("restore-preview-shell"));
+    if (!shell) return "no preview was built";
+    return !/data-restore-confirm\s+disabled/.test(shell.innerHTML) || "the confirm button is disabled on a restore that brings back highlights";
+  });
+
+  await must("an archive in the older v3 shape (no hashes, no kind) still restores", async () => {
+    resetWorld();
+    await seedDeck({ localId: "ld_old", deckId: "cloud-old", title: "Old", notes: "old notes", cards: [{ id: "o", question: "q" }], updatedAt: T0 });
+    const bytes = await takeBackup();
+    const older = await rewriteArchive(bytes, async (name, entry) => {
+      if (name !== "manifest.json") return undefined;
+      const manifest = JSON.parse(await entry.async("string"));
+      manifest.version = 3;
+      delete manifest.kind;
+      delete manifest.packageId;
+      manifest.contents = manifest.contents.map(({ file, bytes: size }) => ({ file, bytes: size }));
+      manifest.decks = manifest.decks.map(({ origin, ids, ...rest }) => rest);
+      return JSON.stringify(manifest);
+    });
+    resetWorld();
+    await restoreArchive(older);
+    const deck = localLibrary.readLocalDeckIndex()[0];
+    const snapshot = deck ? await deckStore.readDeckSnapshot(deck.id) : null;
+    return snapshot?.notes === "old notes" || `got ${JSON.stringify(snapshot?.notes)}`;
+  });
+
+  await must("a plain {decks:[…]} JSON bundle still restores", async () => {
+    resetWorld();
+    const json = JSON.stringify({ app: "recall", version: 1, decks: [
+      { deckTitle: "A", notes: "a", cards: [{ id: "1", question: "q1" }] },
+      { deckTitle: "B", notes: "b", cards: [{ id: "2", question: "q2" }] }
+    ] });
+    const file = { name: "decks.json", type: "application/json", size: json.length, text: async () => json, arrayBuffer: async () => new TextEncoder().encode(json).buffer, slice: () => new Blob([json]) };
+    const archive = await restore.readBackupArchive(file);
+    const report = await restore.planRestore(archive.decks);
+    report.assetPlan = { keep: [], adopt: [], rewrites: new Map(), missing: 0 };
+    await restore.applyRestore(report, { autoBackup: false });
+    return localLibrary.readLocalDeckIndex().length === 2 || `${localLibrary.readLocalDeckIndex().length} decks`;
+  });
+
+  // ── L. Sharing: somebody else's decks, as decks of your own ─────────────
+
+  async function seedShareLibrary() {
+    resetWorld();
+    localStorage.setItem(USER_KEY, "user-A");
+    await outbox.putOutboxImage({ token: "tokFig", blob: tokenBlob(7), folder: null, savedAt: iso(T0) });
+    await outbox.putOutboxImage({ token: "tokBlock", blob: tokenBlob(9), folder: null, savedAt: iso(T0) });
+    await seedDeck({
+      localId: "ld_a1", deckId: "cloud-bio", title: "Biology", category: "Science/Bio",
+      notes: "See [[Chemistry|cloud-chem#acids]] and ![](recall-img:tokFig).",
+      meta: {
+        pdf: { name: "cell.pdf", pages: 2, sha256: "", path: "user-A/pdfs/cell.pdf", s3Key: "recall/primary/xyz.pdf", driveId: "drv1" },
+        pdfHighlights: [{ id: "hn-b1", page: 1, quads: [[1, 1, 2, 2]], color: "yellow", at: T0 }, { id: "hn-b2", page: 2, kind: "ink", ink: { v: 1, s: "1:20:ink:A" }, quads: [[0, 0, 1, 1]], at: T0 }],
+        pdfBlocks: [{ id: "bk-1", page: 1, x: 1, y: 1, w: 10, h: 10, kind: "image", src: "recall-img:tokBlock", at: T0 }],
+        bookmark: { offset: 5, text: "here", at: T0 },
+        linkIds: ["ld_a1"]
+      },
+      cards: [{ id: "bio-1", question: "Cell?", answer: "Unit of life", status: "known" }, { id: "bio-2", question: "DNA?", answer: "[[Chemistry|ld_a2]]" }],
+      pdf: pdfBytes(21), updatedAt: T0
+    });
+    await seedDeck({
+      localId: "ld_a2", deckId: "cloud-chem", title: "Chemistry", category: "Science",
+      notes: "Back to [[Biology|cloud-bio]]", cards: [{ id: "chem-1", question: "pH?", answer: "acidity" }], updatedAt: T0
+    });
+  }
+
+  async function makeSharePackage(options = {}) {
+    lastDownload = null;
+    const ok = await backup.runLibraryBackup({
+      packageKind: "share",
+      selections: [{ localId: "ld_a1", deckId: "cloud-bio" }, { localId: "ld_a2", deckId: "cloud-chem" }],
+      includeImages: true, includeDocuments: true, progress: null, ...options
+    });
+    if (!ok || !lastDownload) throw new Error("no package was produced");
+    return new Uint8Array(await lastDownload.arrayBuffer());
+  }
+
+  async function importPackage(bytes, choose = null) {
+    const archive = await restore.readRecallPackage(archiveFile(bytes, "shared.recall"));
+    const plan = await shareImport.planPackageImport(archive);
+    if (choose) choose(plan);
+    const result = await shareImport.applyPackageImport(plan, archive, { progress: null });
+    return { archive, plan, result };
+  }
+
+  await seedShareLibrary();
+  const sharedBytes = await makeSharePackage();
+
+  await must("a share carries no account locators and, by default, no progress", async () => {
+    const manifest = JSON.parse(await readEntry(sharedBytes, "manifest.json"));
+    if (manifest.kind !== "share") return `kind is ${manifest.kind}`;
+    if (manifest.includesProgress !== false) return "the manifest claims progress is included";
+    const zip = await openArchive(sharedBytes);
+    const names = Object.keys(zip.files);
+    if (names.some((n) => n.endsWith("library.json") || n.endsWith("settings.json"))) return "a share carries the sender's library state or settings";
+    const bioPath = names.find((n) => n.startsWith("decks/") && n.includes("Biology"));
+    const deck = JSON.parse(await zip.files[bioPath].async("string"));
+    if (deck.meta.pdf.path || deck.meta.pdf.s3Key || deck.meta.pdf.driveId) return `the sender's locators travelled: ${JSON.stringify(deck.meta.pdf)}`;
+    if (deck.meta.bookmark) return "the sender's bookmark travelled";
+    if (deck.cards.some((card) => card.status)) return "the sender's card statuses travelled";
+    if (!deck.meta.pdfHighlights?.length) return "the highlights did not travel";
+    if (!names.some((n) => n.startsWith("documents/") && n.endsWith("cell.pdf"))) return "the paper did not travel";
+    return true;
+  });
+
+  const bobImport = await (async () => {
+    resetWorld();
+    localStorage.setItem(USER_KEY, "user-B");
+    return importPackage(sharedBytes);
+  })();
+
+  await must("an imported deck belongs to the recipient: no cloud id, new deck and card ids", async () => {
+    if (!bobImport.result.ok) return `the import reported problems: ${bobImport.result.problems.join("; ")}`;
+    const index = localLibrary.readLocalDeckIndex();
+    if (index.length !== 2) return `${index.length} decks after importing two`;
+    for (const entry of index) {
+      if (entry.deckId) return `"${entry.title}" kept the sender's cloud id ${entry.deckId}`;
+      if (!entry.id.startsWith("ld_imp_")) return `"${entry.title}" has local id ${entry.id}`;
+      const snapshot = await deckStore.readDeckSnapshot(entry.id);
+      if (snapshot.cards.some((card) => ["bio-1", "bio-2", "chem-1"].includes(card.id))) return `"${entry.title}" kept the sender's card ids`;
+      if (snapshot.meta.importedFrom?.origin !== (entry.title === "Biology" ? "cloud-bio" : "cloud-chem")) return `"${entry.title}" does not record where it came from`;
+    }
+    return true;
+  });
+
+  await must("links between the shared decks point at the recipient's copies", async () => {
+    const index = localLibrary.readLocalDeckIndex();
+    const bio = index.find((entry) => entry.title === "Biology");
+    const chem = index.find((entry) => entry.title === "Chemistry");
+    const bioSnap = await deckStore.readDeckSnapshot(bio.id);
+    const chemSnap = await deckStore.readDeckSnapshot(chem.id);
+    if (!bioSnap.notes.includes(`[[Chemistry|${chem.id}#acids]]`)) return `Biology's link was not rewritten: ${bioSnap.notes}`;
+    if (!bioSnap.cards.some((card) => card.answer === `[[Chemistry|${chem.id}]]`)) return "a card's link by local id was not rewritten";
+    if (!chemSnap.notes.includes(`[[Biology|${bio.id}]]`)) return `Chemistry's link was not rewritten: ${chemSnap.notes}`;
+    return true;
+  });
+
+  await must("the paper, the highlights, the ink and the pictures come with it", async () => {
+    const bio = localLibrary.readLocalDeckIndex().find((entry) => entry.title === "Biology");
+    const snapshot = await deckStore.readDeckSnapshot(bio.id);
+    const doc = await pdfStore.readDocument(bio.id);
+    if (!doc?.blob) return "the paper was not stored under the recipient's deck";
+    if (snapshot.meta.pdf.path || snapshot.meta.pdf.s3Key) return "the sender's locators reached the recipient's deck";
+    if (snapshot.meta.pdfHighlights?.length !== 2) return `${snapshot.meta.pdfHighlights?.length} marks`;
+    const fig = /recall-img:([\w-]+)/.exec(snapshot.notes)?.[1];
+    if (!fig || fig === "tokFig" || !(await outbox.getOutboxImage(fig))) return `the figure was not adopted: ${snapshot.notes}`;
+    const block = snapshot.meta.pdfBlocks?.[0]?.src || "";
+    const blockToken = block.startsWith("recall-img:") ? block.slice("recall-img:".length) : "";
+    if (!blockToken || blockToken === "tokBlock" || !(await outbox.getOutboxImage(blockToken))) return `the block's picture was not adopted: ${block}`;
+    return true;
+  });
+
+  await must("importing the same package again updates, keeps the recipient's progress, and duplicates nothing", async () => {
+    const bio = localLibrary.readLocalDeckIndex().find((entry) => entry.title === "Biology");
+    const snapshot = await deckStore.readDeckSnapshot(bio.id);
+    const ids = snapshot.cards.map((card) => card.id).sort();
+    snapshot.cards[0].status = "review";
+    deckStore.writeDeckSnapshot(bio.id, snapshot);
+    await deckStore.deckWriteSettled(bio.id);
+    const again = await importPackage(sharedBytes);
+    const planned = again.plan.entries.map((entry) => entry.choice);
+    if (planned.some((choice) => choice !== "update")) return `the second import was planned as ${planned.join(", ")}`;
+    const index = localLibrary.readLocalDeckIndex();
+    if (index.length !== 2) return `${index.length} decks after importing the same two twice`;
+    const after = await deckStore.readDeckSnapshot(bio.id);
+    const idsAfter = after.cards.map((card) => card.id).sort();
+    if (JSON.stringify(ids) !== JSON.stringify(idsAfter)) return `cards changed from ${ids} to ${idsAfter}`;
+    if (after.cards.find((card) => card.id === snapshot.cards[0].id)?.status !== "review") return "the recipient's own mark was overwritten";
+    return true;
+  });
+
+  await must("\"Add as a copy\" makes a second, separate deck", async () => {
+    await importPackage(sharedBytes, (plan) => plan.entries.forEach((entry) => { entry.choice = entry.title === "Biology" ? "copy" : "skip"; }));
+    const bios = localLibrary.readLocalDeckIndex().filter((entry) => entry.title === "Biology");
+    if (bios.length !== 2) return `${bios.length} Biology decks`;
+    const [one, two] = await Promise.all(bios.map((entry) => deckStore.readDeckSnapshot(entry.id)));
+    const shared = one.cards.filter((card) => two.cards.some((other) => other.id === card.id));
+    return shared.length === 0 || "the copy shares card ids with the original";
+  });
+
+  await must("two recipients of one package mint different ids", async () => {
+    resetWorld();
+    localStorage.setItem(USER_KEY, "user-C");
+    await importPackage(sharedBytes);
+    const carol = localLibrary.readLocalDeckIndex().map((entry) => entry.id).sort();
+    resetWorld();
+    localStorage.setItem(USER_KEY, "user-B");
+    await importPackage(sharedBytes);
+    const bob = localLibrary.readLocalDeckIndex().map((entry) => entry.id).sort();
+    return carol.every((id) => !bob.includes(id)) || "two accounts would push the same deck ids";
+  });
+
+  await must("\"Include my progress\" carries the sender's marks and bookmark", async () => {
+    await seedShareLibrary();
+    const bytes = await makeSharePackage({ includeProgress: true });
+    const zip = await openArchive(bytes);
+    const bioPath = Object.keys(zip.files).find((n) => n.startsWith("decks/") && n.includes("Biology"));
+    const deck = JSON.parse(await zip.files[bioPath].async("string"));
+    if (!deck.cards.some((card) => card.status === "known")) return "the marks did not travel";
+    return Boolean(deck.meta.bookmark) || "the bookmark did not travel";
+  });
+
+  await must("a shared quick-notes deck is merged into the recipient's own", async () => {
+    resetWorld();
+    localStorage.setItem(USER_KEY, "user-A");
+    await seedDeck({
+      localId: "ld_qa", deckId: "quick-notes-user-A", title: "quick_notes",
+      meta: { quickNoteCategories: [{ id: "qc_idea", name: "Ideas", color: "#ffcc00" }], noteAnchors: { "qa-1": { offset: 3, text: "x", deckId: "cloud-bio", deckTitle: "Biology" } } },
+      cards: [{ id: "qa-1", question: "a pinned thought" }], updatedAt: T0
+    });
+    lastDownload = null;
+    await backup.runLibraryBackup({ packageKind: "share", selections: [{ localId: "ld_qa", deckId: "quick-notes-user-A" }], progress: null });
+    const bytes = new Uint8Array(await lastDownload.arrayBuffer());
+    resetWorld();
+    localStorage.setItem(USER_KEY, "user-B");
+    await importPackage(bytes);
+    const index = localLibrary.readLocalDeckIndex();
+    const quick = index.filter((entry) => String(entry.deckId || "").startsWith("quick-notes-") || entry.title === "quick_notes");
+    if (quick.length !== 1) return `${quick.length} quick-notes decks: ${JSON.stringify(index.map((e) => [e.id, e.deckId, e.title]))}`;
+    const snapshot = await deckStore.readDeckSnapshot(quick[0].id);
+    if (!snapshot.cards.some((card) => card.question === "a pinned thought")) return "the note did not arrive";
+    if (!snapshot.meta.quickNoteCategories?.some((cat) => cat.name === "Ideas")) return "the category did not arrive";
+    const anchorKey = Object.keys(snapshot.meta.noteAnchors || {})[0];
+    if (!anchorKey || anchorKey === "qa-1") return "the anchor was not re-keyed to the new card id";
+    return !snapshot.meta.noteAnchors[anchorKey].deckId || "the anchor still names the sender's deck";
+  });
+
+  // ── M. The job says what it is doing ────────────────────────────────────
+
+  function progressSink({ cancelAfterImages = 0 } = {}) {
+    const events = [];
+    let images = 0;
+    let cancel = false;
+    return {
+      events,
+      step: (key) => events.push(["step", key]),
+      stepDone: (key) => events.push(["done", key]),
+      stepSkipped: (key) => events.push(["skip", key]),
+      update: () => {},
+      count: () => {},
+      current: (text) => {
+        if (/^Image /.test(text)) {
+          images += 1;
+          if (cancelAfterImages && images >= cancelAfterImages) cancel = true;
+        }
+      },
+      setStat: () => {},
+      log: (text) => events.push(["log", text]),
+      warn: (text) => events.push(["warn", text]),
+      error: (text) => events.push(["error", text]),
+      wait: () => () => {},
+      note: () => {},
+      finish: (text) => events.push(["finish", text]),
+      close: () => events.push(["close"]),
+      cancelled: () => cancel,
+      onCancel: () => () => {}
+    };
+  }
+
+  await must("a backup walks every step, in order, and logs every deck and paper", async () => {
+    await seedShareLibrary();
+    const sink = progressSink();
+    lastDownload = null;
+    await backup.runLibraryBackup({ includeImages: true, includeDocuments: true, progress: sink });
+    const steps = sink.events.filter(([kind]) => kind === "step").map(([, key]) => key);
+    const want = ["scan", "decks", "images", "papers", "library", "write", "verify", "save"];
+    if (JSON.stringify(steps) !== JSON.stringify(want)) return `steps were ${steps.join(" → ")}`;
+    const logs = sink.events.filter(([kind]) => kind === "log").map(([, text]) => text);
+    if (!logs.some((text) => text.includes("Biology")) || !logs.some((text) => text.includes("Chemistry"))) return "a deck was read without a log line";
+    if (!logs.some((text) => /Paper 1\/1 · cell\.pdf/.test(text))) return `the paper was not logged: ${logs.join(" | ")}`;
+    if (!logs.some((text) => /^Verified \d+ files/.test(text))) return "the verify step did not report";
+    return true;
+  });
+
+  await must("the zip writer reports every file as it goes", async () => {
+    const zip = new zipLite.LiteZip();
+    zip.file("a.json", "{}", { compression: "DEFLATE" });
+    zip.file("b.pdf", new Blob([new Uint8Array(3 * 1024 * 1024)]));
+    zip.file("c.txt", "c");
+    const seen = new Set();
+    await zip.generateAsync({ type: "uint8array" }, (meta) => seen.add(meta.currentFile));
+    return ["a.json", "b.pdf", "c.txt"].every((name) => seen.has(name)) || `reported ${[...seen].join(", ")}`;
+  });
+
+  await must("Cancel during the images stops the backup and saves nothing", async () => {
+    await seedShareLibrary();
+    const sink = progressSink({ cancelAfterImages: 1 });
+    lastDownload = null;
+    const ok = await backup.runLibraryBackup({ includeImages: true, includeDocuments: true, progress: sink });
+    if (ok) return "a cancelled backup reported success";
+    return lastDownload === null || "a cancelled backup still downloaded a file";
+  });
+
+  await must("the job console's log keeps every line for Copy log", () => {
+    const made = [];
+    const realCreate = globalThis.document.createElement;
+    globalThis.document.createElement = (tag) => { const node = realCreate(tag); made.push(node); return node; };
+    try {
+      const job = jobConsole.showJobConsole("t", { steps: [["a", "A"]] });
+      for (let i = 0; i < 5; i += 1) job.log(`line ${i}`);
+      job.warn("careful");
+      const text = job.logText();
+      job.close();
+      return (text.split("\n").length === 6 && text.includes("WARN: careful")) || text;
+    } finally {
+      globalThis.document.createElement = realCreate;
+    }
+  });
+
+  // ── N. Coverage for the new tables ──────────────────────────────────────
+
+  await must("every carried meta key says what a share does with it", () => {
+    const carried = Object.keys(archiveFormat.BACKED_UP_META_KEYS);
+    const policy = Object.keys(archiveFormat.SHARE_META_POLICY);
+    const missing = carried.filter((key) => !policy.includes(key));
+    const stray = policy.filter((key) => !carried.includes(key));
+    if (missing.length) return `no share policy for: ${missing.join(", ")} — add each to SHARE_META_POLICY in src/backup/archive-format.js`;
+    return stray.length === 0 || `share policy for keys the backup does not carry: ${stray.join(", ")}`;
+  });
+
+  await must("every localStorage key the app uses is named in the settings tables", () => {
+    const consts = {};
+    for (const [, text] of sources) {
+      for (const match of text.matchAll(/(?:export )?const ([A-Za-z_$][\w$]*) = "([^"]+)"/g)) consts[match[1]] = match[2];
+    }
+    const found = new Set();
+    for (const [, text] of sources) {
+      for (const match of text.matchAll(/localStorage\.(?:getItem|setItem|removeItem)\(\s*"([^"]+)"/g)) found.add(match[1]);
+      for (const match of text.matchAll(/localStorage\.(?:getItem|setItem|removeItem)\(\s*([A-Za-z_$][\w$]*)\s*[,)]/g)) {
+        if (consts[match[1]]) found.add(consts[match[1]]);
+      }
+    }
+    const known = new Set([...Object.keys(archiveFormat.BACKED_UP_SETTINGS_KEYS), ...Object.keys(archiveFormat.NOT_BACKED_UP_SETTINGS_KEYS)]);
+    const unnamed = [...found].filter((key) => !known.has(key));
+    if (found.size < 20) return `the scan found only ${found.size} keys, which means it has stopped working`;
+    return unnamed.length === 0
+      || `localStorage key(s) nobody has decided about: ${unnamed.join(", ")}. `
+        + "Add each to BACKED_UP_SETTINGS_KEYS or NOT_BACKED_UP_SETTINGS_KEYS in src/backup/archive-format.js, with the reason.";
+  });
+
+  await must("a library backup carries the settings, and restores them only when asked", async () => {
+    resetWorld();
+    localStorage.setItem("swipe-notes-theme", "midnight");
+    localStorage.setItem("flashcards_supabase_config", JSON.stringify({ anonKey: "SECRET" }));
+    await seedDeck({ localId: "ld_s", deckId: "cloud-s", title: "S", notes: "n", cards: [{ id: "s", question: "q" }], updatedAt: T0 });
+    const bytes = await takeBackup();
+    const settings = JSON.parse(await readEntry(bytes, "settings.json"));
+    if (settings.values["swipe-notes-theme"] !== "midnight") return "the theme was not carried";
+    if (JSON.stringify(settings).includes("SECRET")) return "a credential was carried";
+    resetWorld();
+    await restoreArchive(bytes);
+    if (localStorage.getItem("swipe-notes-theme")) return "settings were restored without being asked for";
+    resetWorld();
+    const report = await restoreArchive(bytes, { confirm: false });
+    report.settings = (await restore.readBackupArchive(archiveFile(bytes))).settings;
+    await restore.applyRestore(report, { autoBackup: false, includeSettings: true });
+    return localStorage.getItem("swipe-notes-theme") === "midnight" || "the settings did not come back when asked for";
   });
 
   console.warn = realWarn;

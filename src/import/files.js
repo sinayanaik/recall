@@ -1,6 +1,7 @@
 // Getting importable text out of whatever the user dropped in: a file, a zip,
 // a paste, or the sample deck.
 
+import { isRecallPackageFile, openRecallPackage } from "../backup/share-import.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { ensureJsZip } from "../core/lib-loader.js?v=__BUILD__";
 import { importEpubFile, isEpubName, isJsonName, isMarkdownName, isZipName, reportEpubImportCrash } from "./epub.js?v=__BUILD__";
@@ -114,9 +115,26 @@ export async function readImportSources(file) {
 // review step, where you say whether the files become notes, cards, or both,
 // and whether they land as separate decks, one merged deck, or the open one.
 export async function loadFiles(fileList, folderPath = null) {
-  const files = Array.from(fileList || []).filter(Boolean);
-  if (!files.length) return;
+  const picked = Array.from(fileList || []).filter(Boolean);
+  if (!picked.length) return;
   setPendingImportFolder(null);
+
+  // A .recall package — or a backup zip, or a JSON bundle of several decks —
+  // is not text to be split into notes and cards: it is decks, whole, with
+  // their papers and pictures. It goes to its own preview (see
+  // src/backup/share-import.js), one file at a time. A backup zip used to come
+  // through here and report "No Markdown file found"; a bundle of decks was
+  // read as one deck with no cards and dropped.
+  const packages = [];
+  const files = [];
+  for (const file of picked) {
+    if (await isRecallPackageFile(file)) packages.push(file);
+    else files.push(file);
+  }
+  for (const file of packages) {
+    await openRecallPackage(file, { prefer: "import", destination: folderPath || "" });
+  }
+  if (!files.length) return;
 
   // An EPUB *is* a zip, and its "application/epub+zip" type matches the /zip/i
   // test, so it has to be split off before anything else looks at the list.

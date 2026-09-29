@@ -124,6 +124,7 @@
     <link rel="stylesheet" href="styles/65-bucket-settings.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/66-code-marks.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/67-focus-fold.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/68-job-console.css?v=__BUILD__">
 
     <!-- ── Module preloads ────────────────────────────────────────────────
          The app is ~130 ES modules and the browser discovers them by PARSING
@@ -146,8 +147,11 @@
     <link rel="modulepreload" href="src/backup/broken-images.js?v=__BUILD__">
     <link rel="modulepreload" href="src/backup/documents.js?v=__BUILD__">
     <link rel="modulepreload" href="src/backup/history.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/backup/job-console.js?v=__BUILD__">
     <link rel="modulepreload" href="src/backup/library-state.js?v=__BUILD__">
     <link rel="modulepreload" href="src/backup/restore.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/backup/share-dialog.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/backup/share-import.js?v=__BUILD__">
     <link rel="modulepreload" href="src/backup/zip-lite.js?v=__BUILD__">
     <link rel="modulepreload" href="src/boot.js?v=__BUILD__">
     <link rel="modulepreload" href="src/cards/all-cards-edit.js?v=__BUILD__">
@@ -303,6 +307,7 @@
     <link rel="modulepreload" href="src/panels/highlights-editor.js?v=__BUILD__">
     <link rel="modulepreload" href="src/panels/highlights-panel.js?v=__BUILD__">
     <link rel="modulepreload" href="src/pwa/app-info.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/pwa/incoming-files.js?v=__BUILD__">
     <link rel="modulepreload" href="src/pwa/online.js?v=__BUILD__">
     <link rel="modulepreload" href="src/pwa/release-info.js?v=__BUILD__">
     <link rel="modulepreload" href="src/pwa/service-worker-client.js?v=__BUILD__">
@@ -1613,7 +1618,7 @@
 
           <div class="import-source-row">
             <label class="file-pick import-action-btn" id="importFilePick">
-              <input id="fileInput" type="file" multiple accept=".md,.markdown,.txt,.json,.zip,.epub,.pdf,text/markdown,text/plain,application/json,application/zip,application/x-zip-compressed,application/epub+zip,application/pdf">
+              <input id="fileInput" type="file" multiple accept=".recall,.md,.markdown,.txt,.json,.zip,.epub,.pdf,application/vnd.recall+zip,application/octet-stream,text/markdown,text/plain,application/json,application/zip,application/x-zip-compressed,application/epub+zip,application/pdf">
               <span class="import-icon" aria-hidden="true">📁</span>
               <span>Choose files</span>
             </label>
@@ -1910,8 +1915,8 @@
                    way to put something in the folder you're looking at. The
                    picker below is shared with every folder row's own Import
                    button; myDecksImportFolder records which one opened it. -->
-              <button class="web-decks-refresh" id="myDecksImportBtn" type="button" data-md-icon="importDeck" title="Import one or more files (.md, .txt, .json, .zip, .epub, .pdf) into this folder — you choose whether they become notes or cards, and whether each file gets its own deck"><span class="md-btn-label">Import</span></button>
-              <input id="myDecksImportInput" type="file" multiple accept=".md,.markdown,.txt,.json,.zip,.epub,.pdf,text/markdown,text/plain,application/json,application/zip,application/epub+zip,application/pdf" hidden>
+              <button class="web-decks-refresh" id="myDecksImportBtn" type="button" data-md-icon="importDeck" title="Import one or more files (.recall, .md, .txt, .json, .zip, .epub, .pdf) into this folder — you choose whether they become notes or cards, and whether each file gets its own deck"><span class="md-btn-label">Import</span></button>
+              <input id="myDecksImportInput" type="file" multiple accept=".recall,.md,.markdown,.txt,.json,.zip,.epub,.pdf,application/vnd.recall+zip,application/octet-stream,text/markdown,text/plain,application/json,application/zip,application/epub+zip,application/pdf" hidden>
               <!-- Everything else lives behind one "⋯" so the toolbar is a single
                    row at every width. Ids are unchanged, so the existing
                    listeners (and syncMyDecksChrome's hidden/label handling for
@@ -1937,8 +1942,8 @@
                     <input id="myDecksImportPdfInput" type="file" multiple accept=".pdf,application/pdf" hidden>
                     <span>Import PDF</span>
                   </label>
-                  <button class="md-menu-item" id="myDecksRestoreBtn" type="button" data-md-icon="upload" title="Restore decks &amp; notes from a backup archive (.zip or .json)"><span>Restore backup</span></button>
-                  <input id="restoreFileInput" type="file" accept=".zip,.json,application/zip,application/x-zip-compressed,application/json" hidden>
+                  <button class="md-menu-item" id="myDecksRestoreBtn" type="button" data-md-icon="upload" title="Restore your library from a backup (.recall, or an older .zip / .json)"><span>Restore backup</span></button>
+                  <input id="restoreFileInput" type="file" accept=".recall,.zip,.json,application/vnd.recall+zip,application/zip,application/x-zip-compressed,application/json,application/octet-stream" hidden>
                   <button class="md-menu-item" id="myDecksCheckImagesBtn" type="button" data-md-icon="search" title="Check every deck for image references that no longer resolve"><span>Check for broken images</span></button>
                   <div class="md-menu-group" id="myDecksBackupStatus">Never backed up</div>
                   <div class="md-menu-group">Export all decks</div>
@@ -1949,7 +1954,7 @@
                     <button class="md-menu-item" type="button" data-export-all="markdown"><span>Markdown</span></button>
                     <button class="md-menu-item" type="button" data-export-all="json"><span>JSON</span></button>
                     <button class="md-menu-item" type="button" data-export-all="sql"><span>SQL</span></button>
-                    <button class="md-menu-item" type="button" data-export-all="backup" title="Everything: decks, notes, images and the PDFs themselves, in one archive that stands on its own"><span>Backup (.zip — everything)</span></button>
+                    <button class="md-menu-item" type="button" data-export-all="backup" title="Everything: decks, notes, images, the PDFs themselves, folders, reading positions and settings, in one .recall file that stands on its own"><span>Back up library (.recall — everything)</span></button>
                   </div>
                 </div>
               </div>
@@ -2020,6 +2025,7 @@
             <div class="bulk-export-dropdown">
               <button id="myDecksBulkExportBtn" class="bulk-action-btn bulk-export" type="button" aria-haspopup="true" aria-expanded="false">Export</button>
               <div class="bulk-export-menu" id="myDecksBulkExportMenu" hidden>
+                <button type="button" id="myDecksBulkShareBtn" title="One .recall file with the chosen decks and everything in them — cards, notes, PDFs, highlights, ink and pictures — for someone else to import">Share (.recall — everything)</button>
                 <button type="button" data-bulk-export="pdf">Cornell PDF</button>
                 <button type="button" data-bulk-export="html">Standalone HTML</button>
                 <button type="button" data-bulk-export="doc">Word (.docx)</button>
@@ -2246,6 +2252,7 @@
             <ul class="help-list">
               <li><strong>Sync is automatic</strong> — every deck is mirrored to your account in the background; <strong>Sync Now</strong> forces an immediate two-way reconcile (newest copy of each deck wins). <strong>Auto-sync</strong>, under <strong>App</strong> in the same menu, is how often that happens on its own</li>
               <li><strong>My Decks</strong> — every deck, on this device and in the cloud, with a live sync-status column. Per deck: <strong>Load</strong>, <strong>Export</strong> (PDF / Markdown / JSON / SQL), <strong>Rename</strong>, <strong>Delete</strong>, and an inline <strong>category editor</strong>. Filter by category, select several decks for <strong>bulk Load / Categorize / Export / Delete</strong>, or <strong>Export All</strong> to back up the whole library. Deletes propagate to your other devices</li>
+              <li><strong>Back up &amp; share with .recall files</strong> — <strong>⋯ → Back up library (.recall)</strong> saves everything (decks, notes, PDFs, highlights, ink, pictures, folders, reading positions and settings) in one file, with a live panel showing every deck, image and paper as it goes; <strong>⋯ → Restore backup</strong> merges it back. To give decks to someone else, select them and choose <strong>Export → Share (.recall — everything)</strong>: they open the file with <strong>Import</strong> (or drop it on the app) and get the decks as their own, papers and all. Your study progress stays out unless you tick it in, and importing the same file again offers to <strong>update</strong> the decks instead of duplicating them</li>
               <li><strong>Exporting the deck you have open</strong> is not in this menu — it is the <strong>⇓</strong> beside the Cards / Notes / PDF tabs, which always offers the formats for the tab you are on: the cards as Cornell PDF, Markdown, JSON or SQL; the notes as PDF, HTML, Word or Markdown; a paper as its annotated pages, all its pages, the notes alone or the original file. <strong>Highlights…</strong> sits at the bottom of that menu on Notes and PDF</li>
             </ul>
             <p>Every cloud action gives you instant feedback: a toast slides in at the top of the screen confirming it worked — for example <span class="help-toast-chip"><span class="help-toast-chip-icon">✓</span> Deck deleted everywhere</span> or <span class="help-toast-chip help-toast-chip-err"><span class="help-toast-chip-icon">✕</span> Sync failed</span> — so you never have to wonder whether your sync, load, or delete went through. Click a toast to dismiss it early.</p>
@@ -2262,7 +2269,7 @@
               <li>An <strong>Offline</strong> badge appears bottom-left when you lose connection.</li>
             </ul>
             <p>A first-time login needs internet. Edits made offline (including deletes) sync automatically once the connection returns.</p>
-            <p>Two things do need a connection the first time you use them: <strong>diagrams</strong> and <strong>backup/export archives</strong> load a library on demand. Until then a diagram shows its source text and export asks you to go online; once fetched, both keep working offline through every future update.</p>
+            <p>A few things need a connection the first time you use them: <strong>diagrams</strong> and <strong>importing an EPUB or a zip of Markdown files</strong> load a library on demand. Until then a diagram shows its source text; once fetched, both keep working offline through every future update. <strong>Backups, restores and .recall packages</strong> never need the network for the file itself.</p>
           </section>
 
           <section class="help-section">

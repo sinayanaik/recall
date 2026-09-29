@@ -1,0 +1,272 @@
+/* A long job's panel: backup, share, restore, import.
+ *
+ * See src/backup/job-console.js for why it says so much. The shape: steps down
+ * the side of the job, the one item in hand, the counters, and a log that
+ * scrolls inside the panel rather than making the panel scroll. */
+
+.job-console-shell {
+  width: min(560px, 100%);
+  max-height: min(92vh, 860px);
+  overflow: auto;
+}
+
+.job-steps {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 4px 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.8rem;
+}
+
+.job-step {
+  display: grid;
+  grid-template-columns: 12px 1fr;
+  align-items: center;
+  column-gap: 6px;
+  color: var(--muted);
+  min-width: 0;
+}
+
+.job-step-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 2px solid var(--line);
+  box-sizing: border-box;
+}
+
+.job-step-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.job-step-time {
+  grid-column: 2;
+  font-size: 0.72rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  min-height: 0;
+}
+
+.job-step-time:empty {
+  display: none;
+}
+
+.job-step.is-active {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.job-step.is-active .job-step-dot {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+  animation: job-step-pulse 1.2s ease-in-out infinite;
+}
+
+.job-step.is-done {
+  color: var(--text);
+}
+
+.job-step.is-done .job-step-dot {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.job-step.is-skipped {
+  opacity: 0.55;
+}
+
+.job-step.is-skipped .job-step-dot {
+  border-style: dashed;
+}
+
+@keyframes job-step-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(0.7); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .job-step.is-active .job-step-dot {
+    animation: none;
+  }
+}
+
+.job-current {
+  margin: 0;
+  min-height: 1.3em;
+  font-size: 0.8rem;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.job-progress-track.is-failed .job-progress-fill {
+  background: var(--danger);
+}
+
+.job-console-shell .epub-preview-stat {
+  flex: 1 1 28%;
+  min-width: 0;
+}
+
+.job-console-shell .epub-preview-stat strong {
+  font-size: 1.05rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.job-log {
+  border: 1px solid var(--line);
+  border-radius: var(--toolbar-button-radius);
+  font-size: 0.76rem;
+}
+
+.job-log summary {
+  cursor: pointer;
+  padding: 6px 10px;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.job-log-count {
+  display: inline-block;
+  min-width: 1.6em;
+  margin-left: 4px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--text);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.job-log-list {
+  max-height: 180px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0 10px 8px;
+  list-style: none;
+  overscroll-behavior: contain;
+}
+
+.job-log-row {
+  display: grid;
+  grid-template-columns: 4.2em 1fr;
+  gap: 6px;
+  padding: 2px 0;
+  border-top: 1px solid color-mix(in srgb, var(--line) 50%, transparent);
+}
+
+.job-log-row:first-child {
+  border-top: 0;
+}
+
+.job-log-time {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.job-log-text {
+  overflow-wrap: anywhere;
+}
+
+.job-log-row.is-warn .job-log-text {
+  color: color-mix(in srgb, #b45309 80%, var(--text));
+}
+
+.job-log-row.is-error .job-log-text {
+  color: var(--danger);
+  font-weight: 700;
+}
+
+.job-actions {
+  flex-wrap: wrap;
+}
+
+@media (max-width: 520px) {
+  .job-steps {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .job-log-list {
+    max-height: 140px;
+  }
+}
+
+/* ── The questions asked around a package ─────────────────────────────────
+ * The share dialog (src/backup/share-dialog.js), the import preview
+ * (src/backup/share-import.js) and the restore preview's settings box. The
+ * app's global input styles make a bare checkbox a full-width block; these are
+ * a box and its sentence, on one line. */
+
+.share-options-shell {
+  width: min(520px, 100%);
+}
+
+.share-options-field,
+.package-import-folder {
+  display: grid;
+  gap: 6px;
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
+.share-options-check,
+.restore-settings-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 0.86rem;
+  line-height: 1.35;
+  cursor: pointer;
+}
+
+.share-options-check input[type="checkbox"],
+.restore-settings-toggle input[type="checkbox"] {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  min-height: 0;
+  margin: 1px 0 0;
+  padding: 0;
+  accent-color: var(--accent);
+}
+
+.package-import-shell {
+  width: min(640px, 100%);
+  max-height: min(92vh, 860px);
+  overflow: auto;
+}
+
+.package-import-shell .restore-row {
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+}
+
+.package-import-choice select {
+  min-height: 32px;
+  border: 1px solid var(--line);
+  border-radius: var(--toolbar-button-radius);
+  background: var(--panel);
+  color: var(--text);
+  padding: 4px 8px;
+  font: inherit;
+  font-size: 0.8rem;
+}
+
+.package-import-shell .restore-detail small {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+@media (max-width: 560px) {
+  .package-import-shell .restore-row {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .package-import-shell .restore-detail,
+  .package-import-choice {
+    grid-column: 1 / -1;
+  }
+}

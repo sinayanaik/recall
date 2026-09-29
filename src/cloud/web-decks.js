@@ -172,7 +172,12 @@ export function normalizeWebDeckPayload(deckData, cardsData = []) {
     // Free subject label for quick_notes cards; null on regular study cards.
     category: card.category ? String(card.category) : null,
     created_at: card.created_at || null,
-    updated_at: card.updated_at || null
+    updated_at: card.updated_at || null,
+    // Where a quick note was pinned from. Local only — the cards table has no
+    // column for it — so it is only ever here for a deck read off this device,
+    // and a backup that went through this function without it lost every
+    // anchor not yet folded into meta.noteAnchors.
+    ...(card.noteAnchor && typeof card.noteAnchor === "object" ? { noteAnchor: card.noteAnchor } : {})
   }));
 
   return { deck, cards };
@@ -206,7 +211,8 @@ export function deckPayloadSnapshot(payload) {
       category: card.category || null,
       // Per-card last-edited time when known, so card-level conflicts can also
       // resolve newest-wins instead of blindly overwriting a newer local edit.
-      updatedAt: card.updated_at || null
+      updatedAt: card.updated_at || null,
+      ...(card.noteAnchor ? { noteAnchor: card.noteAnchor } : {})
     }))
   };
 }

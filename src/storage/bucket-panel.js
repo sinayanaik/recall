@@ -643,7 +643,7 @@ export async function runBucketAction(action) {
     }
     const bytes = (imageSurvey?.inBoth || []).reduce((sum, object) => sum + (Number(object.size) || 0), 0);
     if (!await confirmByTyping("DELETE", "Remove the Supabase copies?",
-      `${confirmed.size} image${confirmed.size === 1 ? "" : "s"} (${formatStorageBytes(bytes)}) are in your bucket at the same size, so their Supabase copies can go. Each is checked again at the moment of deleting, and anything that no longer matches is kept. Before you do this: take a backup (My Decks → ⋯ → Export All → Backup), and open Recall once on your other devices so they are on this version — an older version only knows how to load images from Supabase. Type DELETE to confirm.`)) return;
+      `${confirmed.size} image${confirmed.size === 1 ? "" : "s"} (${formatStorageBytes(bytes)}) are in your bucket at the same size, so their Supabase copies can go. Each is checked again at the moment of deleting, and anything that no longer matches is kept. Before you do this: take a backup (My Decks → ⋯ → Back up library), and open Recall once on your other devices so they are on this version — an older version only knows how to load images from Supabase. Type DELETE to confirm.`)) return;
     await runBucketWork("Removing the Supabase copies…", async (say) => {
       const result = await removeSupabaseImageCopies(confirmed, { onProgress: say });
       try {

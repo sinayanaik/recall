@@ -3,6 +3,7 @@
 
 import { closeWebDeckExportMenus, loadWebDeck, touchLocalDeckAccess } from "../cloud/web-decks.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
+import { shareDecksAsPackage } from "../backup/share-dialog.js?v=__BUILD__";
 import { exportMyDeck } from "../export/decks.js?v=__BUILD__";
 import { openSelectionAsOneDeck } from "./folder-deck.js?v=__BUILD__";
 import { decksUnderFolder } from "./folder-tree.js?v=__BUILD__";
@@ -59,6 +60,18 @@ export function createDeckExportControl(sel, deckTitle, { compact = false } = {}
     });
     menu.appendChild(item);
   });
+  // The whole deck — papers, pictures, highlights and all — as one file for
+  // somebody else to import. See src/backup/share-dialog.js.
+  const share = document.createElement("button");
+  share.type = "button";
+  share.textContent = "Share (.recall — everything)";
+  share.addEventListener("click", (event) => {
+    event.stopPropagation();
+    menu.hidden = true;
+    button.setAttribute("aria-expanded", "false");
+    shareDecksAsPackage([sel], [deckTitle]);
+  });
+  menu.prepend(share);
 
   button.addEventListener("click", (event) => {
     event.stopPropagation();
