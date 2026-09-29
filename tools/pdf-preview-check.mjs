@@ -4980,6 +4980,43 @@ try {
     attached.switcherHidden === false && attached.switcherOptionCount === 2,
     `switcher hidden=${attached.switcherHidden}, ${attached.switcherOptionCount} option(s)`);
 
+  // ── ...and that dropdown fits a phone, whatever the paper is called ──────
+  //
+  // "Something got broken in mobile view, the PDF view is broken": the tools
+  // row ran off the right edge and the pages sat cropped to one side. The
+  // switcher is a <select> as wide as its longest option, capped only by a
+  // percentage of the row it was widening, so a long paper title took the row
+  // — and .quiz-panel's grid track, and the stage, and every page fitted to
+  // it — to 618px inside a 378px panel. See styles/37-document-chrome.css.
+  await emulatePhone(page, { width: 390, height: 844 });
+  const longTitle = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const second = api.state.meta.pdfs[1];
+    const before = second.label;
+    second.label = "B-star - Efficient and Optimal Base Placement for Fixed-Base Manipulators (IEEE RA-L preprint)";
+    api.renderDocumentPdfSwitcher();
+    await settle(500);
+    const width = (sel) => Math.round(document.querySelector(sel).getBoundingClientRect().width);
+    const out = {
+      panel: width(".quiz-panel"),
+      row: width("#viewModeRow"),
+      stage: width("#documentStage"),
+      switcher: width("#documentPdfSwitcher"),
+      scrollWidth: document.documentElement.scrollWidth,
+      viewWidth: window.innerWidth
+    };
+    second.label = before;
+    api.renderDocumentPdfSwitcher();
+    await settle(200);
+    return out;
+  }`);
+  check("a long PDF title keeps the tools row inside a phone's panel",
+    longTitle.row <= longTitle.panel + 1 && longTitle.switcher < longTitle.panel,
+    `row ${longTitle.row}px, switcher ${longTitle.switcher}px, panel ${longTitle.panel}px`);
+  check("...and the pages' stage with it, with nothing to scroll sideways",
+    longTitle.stage <= longTitle.panel + 1 && longTitle.scrollWidth <= longTitle.viewWidth,
+    `stage ${longTitle.stage}px in a ${longTitle.panel}px panel, page ${longTitle.scrollWidth}px in a ${longTitle.viewWidth}px viewport`);
+
   // ── A phone on its side ──────────────────────────────────────────────────
   //
   // "In mobile view the hamburger in full screen / focus mode is not there, and

@@ -98,6 +98,28 @@
   flex: 0 0 auto;
 }
 
+/* ── The multi-PDF switcher takes what is left, never more ─────────────────
+   A <select> is as wide as its longest option, and the one it inherits a cap
+   from — .autosync-select's `max-width: 55%` (styles/03-toolbar.css) — is a
+   percentage of the ROW. The row sizes itself to its contents, so on a phone
+   the two fed each other: a paper titled "B-star - Efficient and Optimal Base
+   Placement…" made a 340px select, the row grew to 618px to hold it, 55% of
+   that was the 340px again, and .quiz-panel's grid track followed the row —
+   the stage, and every page fitted to it, came out 618px wide inside a 378px
+   panel that clips. The tab labels ran off the right edge and the pages sat
+   cropped to one side.
+
+   `width: 0` gives the select a definite size, so it contributes nothing to
+   the row's min-content; `flex: 1 1 0` then hands it the rest of its line,
+   and the caps are lengths, not percentages of the box it is sizing. */
+.quiz-panel.notes-mode:has(#documentStage:not([hidden])) .view-mode-row > .document-pdf-switcher {
+  flex: 1 1 0;
+  width: 0;
+  min-width: 6rem;
+  max-width: 20rem;
+  text-overflow: ellipsis;
+}
+
 .quiz-panel.notes-mode:has(#documentStage:not([hidden])) .view-mode-row > #documentTocBtn {
   display: inline-flex;
   flex: 0 0 auto;
