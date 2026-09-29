@@ -9,10 +9,10 @@
 //
 // Only mounted where a resize can actually be saved against something: a
 // card already has a stable id and field to write into on the Study face and
-// in All Cards (see enhanceRenderedMarkdown's allow-list). The "Make a
-// flashcard" modal's own unsaved preview, and every export/print render, get
-// no handle — there is nothing yet, or nothing interactive, to persist a
-// resize against.
+// in All Cards, and the Notes view has the note itself (see
+// enhanceRenderedMarkdown's allow-list). The "Make a flashcard" modal's own
+// unsaved preview, and every export/print render, get no handle — there is
+// nothing yet, or nothing interactive, to persist a resize against.
 
 import { state } from "../core/state.js?v=__BUILD__";
 import { scheduleLiveQuestionFit } from "../cards/question-fit.js?v=__BUILD__";
@@ -29,6 +29,20 @@ export const REGION_RESIZE_MIN_WIDTH = 160;
 // visually overflowing regardless of what's stored — this ceiling is only
 // about not persisting an absurd request.
 export const REGION_RESIZE_MAX_WIDTH = 1200;
+
+// ── The Notes view ──────────────────────────────────────────────────────────
+//
+// The note is written through renderTargetConfig("notes") — the one choke
+// point for a rendered-view edit to it (undo snapshot, an open raw editor kept
+// in step, the history baseline, the pinned re-render). Registered by
+// src/main.js rather than imported: render-toolbar.js reaches this module back
+// through render/enhance.js, the same reason the All Cards row height is told
+// by an event below rather than by an import.
+let notesSurfaceProvider = null;
+
+export function setRegionResizeNotesSurface(fn) {
+  notesSurfaceProvider = typeof fn === "function" ? fn : null;
+}
 
 function clampWidth(value) {
   return Math.min(REGION_RESIZE_MAX_WIDTH, Math.max(REGION_RESIZE_MIN_WIDTH, value));
@@ -49,34 +63,53 @@ function resolveRegionEmbedTarget(wrapper) {
     const side = fieldContainer.classList.contains("card-question") ? "question" : "answer";
     return { scope: "study", side, fieldContainer };
   }
+  const notesView = wrapper.closest("#notesView");
+  if (notesView && notesSurfaceProvider) return { scope: "notes", fieldContainer: notesView };
   return null;
 }
 
+// The part of a ref that is searched for in the source: `](pdfref:…)`, not
+// the whole `![](…)`, so a ref the reader gave alt text to is still found — and
+// with its closing paren, so `pdfref:12:a,b,c,d` never matches the front of a
+// longer ref (`…:pdfB`, `…::480`) that happens to start the same way.
+function refNeedle(markdownRef) {
+  return `](${markdownRef.slice(4, -1)})`;
+}
+
+function refOffsets(text, needle) {
+  const offsets = [];
+  let cursor = 0;
+  for (;;) {
+    const found = text.indexOf(needle, cursor);
+    if (found === -1) return offsets;
+    offsets.push(found);
+    cursor = found + needle.length;
+  }
+}
+
 // A card's question/answer is always rendered from one whole string in one
-// pass — never partially built — so replacing the Nth occurrence in the DOM
-// really is replacing the Nth occurrence in the source text. The common case
-// (one region, once) never reaches the counting loop at all.
+// pass, so replacing the Nth occurrence in the DOM is replacing the Nth
+// occurrence in the source. A long note is NOT — it is built span by span, and
+// copies sitting in unbuilt spans are not on screen to be counted — so a DOM
+// ordinal is only applied when the screen holds exactly as many copies as the
+// source does (the same guard sourceImageAt keeps for images). Otherwise the
+// answer is null and the caller says so, rather than resizing a different copy.
+// The common case (one region, once) never reaches the ordinal at all.
 function replaceRefOccurrence(text, originalRef, newRef, wrapper, fieldContainer) {
-  if (!text || !text.includes(originalRef)) return null;
+  if (!text) return null;
+  const needle = refNeedle(originalRef);
+  const offsets = refOffsets(text, needle);
+  if (!offsets.length) return null;
+  const splice = (at) => text.slice(0, at) + refNeedle(newRef) + text.slice(at + needle.length);
+  if (offsets.length === 1) return splice(offsets[0]);
+
   const duplicates = fieldContainer
     ? Array.from(fieldContainer.querySelectorAll(".pdf-region-embed[data-pdf-ref]"))
       .filter((node) => node.dataset.pdfRef === originalRef)
     : [wrapper];
-  if (duplicates.length <= 1) return text.replace(originalRef, newRef);
-
+  if (duplicates.length !== offsets.length) return null;
   const at = duplicates.indexOf(wrapper);
-  if (at === -1) return null;
-  let occurrence = 0;
-  let cursor = 0;
-  for (;;) {
-    const found = text.indexOf(originalRef, cursor);
-    if (found === -1) return null;
-    if (occurrence === at) {
-      return text.slice(0, found) + newRef + text.slice(found + originalRef.length);
-    }
-    occurrence += 1;
-    cursor = found + originalRef.length;
-  }
+  return at === -1 ? null : splice(offsets[at]);
 }
 
 // Writes the new text into whichever of state.cards/state.masterCards hold
@@ -84,6 +117,13 @@ function replaceRefOccurrence(text, originalRef, newRef, wrapper, fieldContainer
 // masterCards), but written into both by id regardless, the same safety net
 // saveAllCardEditor (src/cards/all-cards.js) already uses for a text edit.
 function commitCardField(target, newText) {
+  if (target.scope === "notes") {
+    const surface = notesSurfaceProvider?.();
+    if (!surface) return false;
+    surface.setSource(newText);
+    scheduleDeckAutosave();
+    return true;
+  }
   const cardId = target.scope === "study" ? state.cards[state.current]?.id : target.cardId;
   if (!cardId) return false;
   const masterCard = state.masterCards.find((card) => card.id === cardId);
@@ -96,6 +136,7 @@ function commitCardField(target, newText) {
 }
 
 function readCardField(target) {
+  if (target.scope === "notes") return notesSurfaceProvider?.()?.getSource?.() ?? null;
   if (target.scope === "study") {
     const card = state.cards[state.current];
     return card ? card[target.side] : null;
@@ -130,6 +171,14 @@ function commitResize(wrapper, target, originalRef, parsed, newWidth) {
   // render/enhance.js into this module.
   if (target.scope === "all-cards") {
     target.item.dispatchEvent(new CustomEvent("pdfregionresize", { bubbles: true }));
+  }
+
+  // The note re-renders through its own surface, pinned where the reader is —
+  // the same path an image resize takes (replaceSourceImage), so the notes
+  // block cache and the DOM can never disagree about which ref is on screen.
+  if (target.scope === "notes") {
+    notesSurfaceProvider?.()?.rerender?.();
+    return;
   }
 
   // Re-render just this one embed at its new size, in place. A full

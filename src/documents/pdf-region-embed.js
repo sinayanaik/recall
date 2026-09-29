@@ -49,6 +49,34 @@ export function pdfRegionRefMarkdown(page, rect, pdfId, width) {
   return `![](${PDFREF_SCHEME}${page}:${rect.join(",")}${suffix})`;
 }
 
+// The location of ANY document highlight, as a ref — what the mark menu's
+// "Copy location" puts on the clipboard, to be pasted into the notes or a card
+// and rendered there as a live picture of that spot. A region is the box the
+// reader drew, written exactly as makeCard writes it (src/main.js) so the two
+// refs for one region are the same string. A text run or ink mark has no box
+// of its own, so it gets the bounds of its quads on its page, padded a little
+// so the glyphs' edges are not shaved off.
+const LOCATION_PAD = 3;
+
+export function pdfRegionRefForRecord(record) {
+  const quads = (record?.quads || []).filter((quad) => Array.isArray(quad?.rect) && quad.rect.length === 4
+    && quad.rect.every((n) => Number.isFinite(Number(n))));
+  if (!quads.length) return null;
+  const page = Number(record.page || quads[0].page);
+  if (!Number.isInteger(page) || page < 1) return null;
+  if (record.kind === "area") return pdfRegionRefMarkdown(page, quads[0].rect, record.pdfId);
+  const onPage = quads.filter((quad) => !quad.page || Number(quad.page) === page);
+  const boxes = (onPage.length ? onPage : quads).map((quad) => quad.rect.map(Number));
+  const round = (n) => Math.round(n * 100) / 100;
+  const rect = [
+    Math.min(...boxes.map((r) => Math.min(r[0], r[2]))) - LOCATION_PAD,
+    Math.min(...boxes.map((r) => Math.min(r[1], r[3]))) - LOCATION_PAD,
+    Math.max(...boxes.map((r) => Math.max(r[0], r[2]))) + LOCATION_PAD,
+    Math.max(...boxes.map((r) => Math.max(r[1], r[3]))) + LOCATION_PAD
+  ].map(round);
+  return pdfRegionRefMarkdown(page, rect, record.pdfId);
+}
+
 export function parsePdfRef(src) {
   const value = String(src || "");
   if (!value.startsWith(PDFREF_SCHEME)) return null;

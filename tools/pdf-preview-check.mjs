@@ -1322,6 +1322,135 @@ try {
   check("...and repaints on the page", regionReloaded.painted > 0,
     `${regionReloaded.painted} mark div(s)`);
 
+  // ── 7b. Copy location, a region resized in the Notes, and Ctrl Ctrl ──────
+  //
+  // Three things a reader does moving between the paper and the note: take a
+  // spot on the page with them (the mark menu's "Copy location", a pdfref:),
+  // size the picture it becomes once pasted into the note — written back into
+  // the note, the way a card face already wrote it back into the card — and
+  // flip between the two surfaces from the keyboard.
+  const location = region.record ? await page.evaluate(`async (id) => {
+    const { api, settle } = window.__recall;
+    const embed = await import("/src/documents/pdf-region-embed.js?v=__BUILD__");
+    const menu = await import("/src/notes/mark-menu.js?v=__BUILD__");
+    const records = api.state.meta?.pdfHighlights || [];
+    const record = records.find((r) => r.id === id) || null;
+    const ref = record ? embed.pdfRegionRefForRecord(record) : null;
+    const parsed = ref ? embed.parsePdfRef(ref.slice(4, -1)) : null;
+    const regionRefMatches = Boolean(parsed && parsed.page === record.page
+      && JSON.stringify(parsed.rect) === JSON.stringify(record.quads[0].rect.map(Number)));
+
+    // A text highlight's location has to CONTAIN every quad it has on its page.
+    const text = records.find((r) => r.kind !== "area" && r.kind !== "ink" && r.quads?.length) || null;
+    const textRef = text ? embed.pdfRegionRefForRecord(text) : null;
+    const textParsed = textRef ? embed.parsePdfRef(textRef.slice(4, -1)) : null;
+    const textRefContains = Boolean(textParsed && textParsed.page === text.page
+      && text.quads.filter((q) => !q.page || q.page === text.page).every((q) =>
+        Math.min(q.rect[0], q.rect[2]) >= textParsed.rect[0] && Math.min(q.rect[1], q.rect[3]) >= textParsed.rect[1]
+        && Math.max(q.rect[0], q.rect[2]) <= textParsed.rect[2] && Math.max(q.rect[1], q.rect[3]) <= textParsed.rect[3]));
+
+    const anchor = document.querySelector('.pdf-mark[data-highlight-id="' + id + '"]');
+    let rowShown = false;
+    if (anchor) {
+      menu.openMarkMenuWith(anchor, id, api.DOCUMENT_MARK_HANDLERS, record?.color);
+      const row = document.querySelector(".mark-menu .mark-menu-location");
+      rowShown = Boolean(row && !row.hidden);
+      menu.closeMarkMenu();
+    }
+
+    // Pasted into the note, it renders — and carries a grip.
+    const originalNotes = api.state.notes || "";
+    // In FRONT of what is there: this deck's note is its highlight-notes block
+    // and nothing else, and text after that block is not part of the body the
+    // Notes view reads (see readerNotesBody).
+    api.state.notes = "A figure:\\n\\n" + ref + "\\n\\n" + originalNotes;
+    if (api.isNotesEditing()) api.resetNotesEditingUI();
+    api.setViewMode("notes");
+    let wrapper = null;
+    for (let i = 0; i < 100; i += 1) {
+      wrapper = document.querySelector("#notesView .pdf-region-embed:not(.is-loading)");
+      if (wrapper?.querySelector(".pdf-region-resize-handle")) break;
+      await settle(50);
+    }
+    const handle = wrapper?.querySelector(".pdf-region-resize-handle") || null;
+    let startWidth = 0;
+    let savedWidth = null;
+    let renderedWidth = 0;
+    if (handle) {
+      wrapper.scrollIntoView({ block: "center" });
+      await settle(50);
+      startWidth = Math.round(wrapper.getBoundingClientRect().width);
+      const h = handle.getBoundingClientRect();
+      const at = (dx) => ({ clientX: h.left + h.width / 2 + dx, clientY: h.top + h.height / 2 });
+      const send = (type, dx) => handle.dispatchEvent(new PointerEvent(type, {
+        bubbles: true, cancelable: true, pointerId: 7, isPrimary: true, button: 0, ...at(dx)
+      }));
+      send("pointerdown", 0);
+      send("pointermove", -60);
+      send("pointerup", -60);
+      await settle(100);
+      const match = (api.state.notes || "").match(/pdfref:[^)]*::(\\d+)\\)/);
+      savedWidth = match ? Number(match[1]) : null;
+      for (let i = 0; i < 100; i += 1) {
+        const next = document.querySelector("#notesView .pdf-region-embed:not(.is-loading)");
+        renderedWidth = next ? Math.round(next.getBoundingClientRect().width) : 0;
+        if (next && next !== wrapper && renderedWidth) break;
+        await settle(50);
+      }
+    }
+    api.state.notes = originalNotes;
+
+    // Ctrl Ctrl: from the Notes back to the paper, and back again. A Ctrl+C
+    // in between two lone Ctrl presses is not a double tap.
+    // Dispatched at the window, where the detector listens — a document-level
+    // shortcut never sees these, so the stray "c" copies nothing.
+    const key = (type, k) => window.dispatchEvent(new KeyboardEvent(type, { key: k, ctrlKey: type === "keydown", bubbles: true }));
+    const tap = () => { key("keydown", "Control"); key("keyup", "Control"); };
+    await settle(450);
+    const before = api.state.viewMode;
+    tap(); tap();
+    await settle(150);
+    const afterFirst = api.state.viewMode;
+    await settle(450);
+    tap(); tap();
+    await settle(150);
+    const afterSecond = api.state.viewMode;
+    await settle(450);
+    key("keydown", "Control"); key("keydown", "c"); key("keyup", "Control");
+    tap();
+    await settle(150);
+    const afterCopy = api.state.viewMode;
+    await settle(450);
+    api.setViewMode("document");
+    await settle(100);
+
+    return {
+      ref, regionRefMatches, textRef, textRefContains, rowShown,
+      embedShown: Boolean(wrapper), gripShown: Boolean(handle),
+      startWidth, savedWidth, renderedWidth,
+      before, afterFirst, afterSecond, afterCopy
+    };
+  }`, region.record.id) : null;
+
+  if (location) {
+    check("\"Copy location\" on a region gives its own box as a pdfref:",
+      location.regionRefMatches, location.ref || "no ref");
+    check("...a text highlight's location contains every quad it has",
+      location.textRefContains, location.textRef || "no text highlight to test");
+    check("...and the row is offered on the paper's mark menu", location.rowShown);
+    check("a location pasted into the Notes renders with a resize grip",
+      location.embedShown && location.gripShown,
+      `embed=${location.embedShown} grip=${location.gripShown}`);
+    check("...and a drag on the grip is written back into the note",
+      location.savedWidth === location.startWidth - 60 && Math.abs(location.renderedWidth - location.savedWidth) <= 1,
+      `start=${location.startWidth} saved=${location.savedWidth} rendered=${location.renderedWidth}`);
+    check("Ctrl Ctrl flips to the previous view and back",
+      location.before === "notes" && location.afterFirst === "document" && location.afterSecond === "notes",
+      `${location.before} → ${location.afterFirst} → ${location.afterSecond}`);
+    check("...but a Ctrl+C before a lone Ctrl is not a double tap",
+      location.afterCopy === location.afterSecond, `after=${location.afterCopy}`);
+  }
+
   // ── 8. A note printed under the page it belongs to ───────────────────────
   //
   // The Document surface's answer to the notes view's inline highlight notes.
