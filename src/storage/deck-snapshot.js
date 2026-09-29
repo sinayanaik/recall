@@ -266,7 +266,19 @@ export function loadDeckSnapshot(payload, titleHint = "", append = false, { keep
     // finds nothing remembered, on every library deck.
     if (!keepPlace) setViewMode(documentTabForOpenDeck(state.meta, deckTabKey(state.deckId, deckKey)));
     else if (onDocumentSurface() && !hasDocSlot(activeDocSlot(), state.meta)) setViewMode(documentTabForOpenDeck(state.meta, deckTabKey(state.deckId, deckKey)));
-    else setViewMode(state.viewMode);
+    // keepDocument, and this is the whole of "the pages blank and blink every
+    // few minutes while I read". Painting the document surface from here asks
+    // openDocumentView whether the paper is already open, and it answers by
+    // comparing a key built from currentDeckKey() — whose localDeckId was set
+    // to null a few lines up and is only put back by loadDeckFromLibrary AFTER
+    // this returns. So the answer was always no: every sync that touched the
+    // open deck tore the document down, showed "Opening the document…",
+    // re-parsed the file and re-rasterised every page, then landed the reader
+    // back roughly where they were. The surface is not this function's to
+    // repaint: loadDeckFromLibrary's deckReloadedInPlace hook (src/main.js)
+    // reopens only when the file's hash actually moved, and otherwise repaints
+    // the marks, ink, blocks and badges onto the pages already there.
+    else setViewMode(state.viewMode, { keepDocument: true });
     // Cross-device resume — see the identical call in loadWebDeck for why
     // flash/smooth are both off and why the local store is consulted alongside
     // the deck's meta. Only reached on this non-append branch, so

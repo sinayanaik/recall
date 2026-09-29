@@ -1386,6 +1386,12 @@ onDomReady(() => {
   // one that knows both ends.
   setDeckReloadedInPlaceHook(() => {
     if (onDocumentSurface()) {
+      // No paper on the stage at all — the offer to attach one, a notebook not
+      // started yet, an open that failed. loadDeckSnapshot no longer paints the
+      // surface on an in-place reload (it tore a perfectly good document down
+      // every time it did), so this is where a paper the sync has just brought
+      // in gets opened: the ordinary paint of the tab the reader is already on.
+      if (!currentPdfDocument()) { setViewMode(state.viewMode); return; }
       // The bytes moved — pages added or torn out on another device, or a paper
       // attached there. openDocumentView takes the full path on its own for
       // that, because documentOpenKey carries the sha256 and the park's own

@@ -243,6 +243,10 @@ export function setViewMode(mode, options = {}) {
       // on screen" means, so switching between Document and Write is a real
       // reopen and switching back into the one you were on is free. Unawaited:
       // the stage is already visible and shows its own "Opening…" line.
+      //
+      // ...except on a sync's in-place reload (`keepDocument`), where the
+      // document is the one thing this must not touch — see loadDeckSnapshot.
+      if (options.keepDocument) return;
       if (handwritingActive) handwritingViewHook?.();
       else openDocumentView({ slot: activeDocSlot() });
     } else if (changed) {
