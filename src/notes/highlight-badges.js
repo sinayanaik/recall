@@ -156,13 +156,12 @@ function badgeNode(info) {
   badge.className = MARK_BADGE_CLASS;
   badge.dataset.hnKey = `${info.n}`;
   badge.dataset.hnSig = hash32(info.text);
-  // No digit: the badge is a quiet dot. `n` stays in data-hn-key so the passes
-  // can still tell a moved badge from an unchanged one.
-  // The first words of the note, for a pointer — the dot itself says nothing,
-  // so hovering it is how you find out what is under it.
+  badge.textContent = `${info.n}`;
+  // The first words of the note, for a pointer. A badge that says only "3" is a
+  // footnote marker; one that says what is under it is worth hovering.
   const flat = info.text.replace(/\s+/g, " ").trim();
   badge.title = flat.length > MARK_BADGE_TITLE_CHARS ? `${flat.slice(0, MARK_BADGE_TITLE_CHARS)}…` : flat;
-  badge.setAttribute("aria-label", "Note on this highlight");
+  badge.setAttribute("aria-label", `Note ${info.n} on this highlight`);
   badge.addEventListener("click", (event) => {
     // The notes view's own click handler opens the MARK menu for whatever
     // highlight was pressed. mark-menu.js already declines a press on a

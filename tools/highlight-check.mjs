@@ -1016,7 +1016,7 @@ const PROBE = `async (api) => {
     return host;
   };
 
-  check("a note gives its highlight a numberless badge, a plain highlight none", () => {
+  check("a note gives its highlight a numbered badge, a plain highlight none", () => {
     api.state.notes = NOTED;
     const host = renderNoted();
     try {
@@ -1029,11 +1029,9 @@ const PROBE = `async (api) => {
       if (got !== want) return got;
       const badges = [...host.querySelectorAll(".hl-note-badge")];
       if (badges.length !== 2) return badges.length + " badge(s), expected 2";
-      // Keyed from the SOURCE, in document order — the property that has to
-      // survive a note being built lazily, chunk by chunk. The badge shows no
-      // digit; the key is what the passes compare.
-      if (badges.some((b) => b.textContent !== "")) return "a badge still shows text: " + badges.map((b) => JSON.stringify(b.textContent)).join(",");
-      if (badges.map((b) => b.dataset.hnKey).join(",") !== "1,2") return "keyed " + badges.map((b) => b.dataset.hnKey).join(",");
+      // Numbered from the SOURCE, in document order — the property that has to
+      // survive a note being built lazily, chunk by chunk.
+      if (badges.map((b) => b.textContent).join(",") !== "1,2") return "numbered " + badges.map((b) => b.textContent).join(",");
       // Only where there is something to read. An id whose section entry was
       // deleted by hand is not a note, and must not be offered as one.
       const dangling = marks.find((m) => m.firstChild.textContent === "a dangling id");
@@ -1336,6 +1334,35 @@ const PROBE = `async (api) => {
     const e = src.indexOf("npm i") + 5;
     const out = api.toggleMarkColorInText(src.slice(s, e), "green", api.codeSelectionContext(src, s, e));
     return out === '<mark data-color="green"># install\\nnpm i</mark>' ? true : JSON.stringify(out);
+  });
+
+  check("render: a code mark is a wash and a ring — no underline — and the strength setting scales it", () => {
+    const host = renderCode(MARKED_NOTE);
+    try {
+      const mark = host.querySelector("pre code mark");
+      const root = document.documentElement;
+      const alphaOf = () => {
+        const m = getComputedStyle(mark).backgroundColor.match(/[\\d.]+/g).map(Number);
+        return m.length > 3 ? m[3] : 1;
+      };
+      const was = root.style.getPropertyValue("--code-mark-scale");
+      const seen = {};
+      try {
+        for (const [level, scale] of [["subtle", "0.7"], ["medium", "1"], ["strong", "1.5"]]) {
+          root.style.setProperty("--code-mark-scale", scale);
+          seen[level] = alphaOf();
+        }
+      } finally {
+        if (was) root.style.setProperty("--code-mark-scale", was); else root.style.removeProperty("--code-mark-scale");
+      }
+      if (!(seen.subtle < seen.medium && seen.medium < seen.strong)) return "wash does not grow with the setting: " + JSON.stringify(seen);
+      const css = getComputedStyle(mark);
+      if (css.textDecorationLine !== "none") return "the code mark is underlined: " + css.textDecorationLine;
+      if (!/inset/.test(css.boxShadow) || /0px -2px/.test(css.boxShadow)) return "expected an all-round ring, got " + css.boxShadow;
+      return true;
+    } finally {
+      host.remove();
+    }
   });
 
   check("render: a mark in a fence is one element over Prism's tokens", () => {

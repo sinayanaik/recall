@@ -171,6 +171,10 @@ export function styleProfileLabel(profile) {
 // controls (cardTextPadding, markdownBoxHeightPercent) were removed. Carried
 // on the stored blob (not just the cloud payload) so one-shot migrations run
 // exactly once per device rather than on every load.
+// codeHighlightStrength -> the multiplier applyStyleSettings writes as
+// --code-mark-scale. Not exported: nothing else reads it.
+const CODE_MARK_SCALES = { subtle: "0.7", medium: "1", strong: "1.5" };
+
 export const STYLE_SETTINGS_VERSION = 4;
 
 export function normalizeStyleProfiles(raw = {}) {
@@ -561,6 +565,10 @@ export function applyStyleSettings(rawSettings, options = {}) {
   // generic loop writes a setting's value verbatim, and "74" is not a colour
   // stop. Consumed by .hl-note-quote's color-mix.
   root.style.setProperty("--hl-quote-ink", `${numericStyleValue(settings.hlQuoteInkPercent) ?? numericStyleValue(profileDefaults.hlQuoteInkPercent) ?? 74}%`);
+  // An enum in storage, a multiplier on the page — absent from styleCssVariables
+  // for the same reason as the line above. Scales the per-theme --code-mark-wash
+  // and --code-mark-edge tokens in styles/66-code-marks.css.
+  root.style.setProperty("--code-mark-scale", CODE_MARK_SCALES[settings.codeHighlightStrength] || CODE_MARK_SCALES.medium);
   // Deliberately not in styleCssVariables above: this setting selects a
   // different LAYOUT for the notes view (a class plus a repagination), not a
   // different value for one of its properties. See src/notes/paged-view.js.
