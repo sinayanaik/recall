@@ -440,11 +440,16 @@ try {
   // `generateInternalStream` or `zip.folder()` and this goes red, which is the
   // signal to teach zip-lite about it rather than to quietly stop testing the
   // round trip.
-  const ZIP_SURFACE = new Set(["file", "files", "async", "dir", "loadAsync", "generateAsync", "name"]);
+  // `size` is zip-lite's own: the uncompressed length from the archive's index,
+  // read without the member. Only verifyWrittenPackage uses it, and only ever
+  // on an archive zip-lite itself just wrote.
+  const ZIP_SURFACE = new Set(["file", "files", "async", "dir", "loadAsync", "generateAsync", "name", "size"]);
   await must("the backup uses no zip member the fallback lacks", () => {
     const used = new Set();
-    for (const [rel, text] of sources) {
+    for (let [rel, text] of sources) {
       if (!rel.startsWith("src/backup/") || rel.endsWith("zip-lite.js")) continue;
+      // Module specifiers are not member accesses: `"../export/zip.js"` is a path.
+      text = text.replace(/^import[^;]*;$/gm, "");
       for (const match of text.matchAll(/\b(?:zip|Zip|JSZip)\.([A-Za-z_$][\w$]*)/g)) used.add(match[1]);
       for (const match of text.matchAll(/zip\.files\[[^\]]+\]\??\.([A-Za-z_$][\w$]*)/g)) used.add(match[1]);
     }

@@ -25,7 +25,7 @@
 
 import { DOC_SLOT_DOC, DOC_SLOT_NOTEBOOK, docSlotMetaKey, documentStoreKey, normalizeDocSlot } from "../documents/doc-slot.js?v=__BUILD__";
 import { deckPdfById, deckPdfs, PDF_PRIMARY_ID, pdfStoreKey } from "../documents/pdf-multi.js?v=__BUILD__";
-import { getDocument, putDocument, readDocument, sha256 } from "../documents/pdf-store.js?v=__BUILD__";
+import { documentEntryMatches, getDocument, putDocument, readDocument, sha256 } from "../documents/pdf-store.js?v=__BUILD__";
 import { BACKUP_DOCUMENT_INDEX, BACKUP_DOCUMENT_SCHEMA, backupDocumentFolderPath } from "./archive-format.js?v=__BUILD__";
 
 // A paper is packed STORED rather than deflated. A PDF is already a compressed
@@ -95,16 +95,23 @@ function jobStoreKey(deckLocalId, job) {
     : documentStoreKey(deckLocalId, job.slot);
 }
 
-export async function packBackupDocuments(zip, entries, onProgress, isCancelled = () => false) {
+//
+// `onItem`, when given, hears about each paper as it moves through the pass —
+// `{ phase: "reading" | "downloading" | "hashing" | "packed" | "missing",
+// name, deckTitle, bytes, source, reason, index, total }` — which is what the
+// job console shows. A paper is the one item in a backup big enough to take
+// visible time on its own, so it is the one that most needs narrating.
+export async function packBackupDocuments(zip, entries, onProgress, isCancelled = () => false, onItem = null) {
   const papers = backupDocumentJobs(entries);
   const documents = [];
   const missing = [];
-  if (!papers.length) return { documents, missing, bytes: 0 };
+  if (!papers.length) return { documents, missing, bytes: 0, indexJson: "" };
 
   let done = 0;
   onProgress?.(0, papers.length);
   for (const job of papers) {
     if (isCancelled()) break;
+    const position = { index: done + 1, total: papers.length };
     const { entry, slot, pdfId, meta } = job;
     // Prefixed for the notebook, and for any PDF beyond the primary, so a deck
     // whose second paper happens to be called handwritten-notes.pdf — or the
@@ -113,20 +120,40 @@ export async function packBackupDocuments(zip, entries, onProgress, isCancelled 
     const prefix = slot === DOC_SLOT_NOTEBOOK ? "notebook--" : (pdfId && pdfId !== PDF_PRIMARY_ID ? `${pdfId}--` : "");
     const name = `${prefix}${String(meta.name || "document.pdf").replace(/[\\/]/g, "-")}`;
     const describe = { deckFile: entry.deckFile, deckId: entry.deckId || null, deckTitle: entry.title, name, slot, pdfId: pdfId || null };
+    const tell = (phase, extra = {}) => onItem?.({ phase, name, deckTitle: entry.title, bytes: Number(meta.size) || 0, ...position, ...extra });
     try {
       // The device copy first — it costs nothing, it is what the reader is
       // actually looking at, and it means a backup taken offline still carries
       // its papers. getDocument tries exactly that before reaching for the
       // cloud, and re-caches what it downloads on the way past, so a paper this
       // device had only ever synced is on it afterwards.
-      const storeKey = jobStoreKey(entry.localId, job);
-      const local = await readDocument(storeKey);
-      const blob = local?.blob || (await getDocument(storeKey, meta));
+      //
+      // Two holes this used to have. A deck that is only in the cloud has no
+      // local id, and `pdfStoreKey(null)` asked the store for key null — which
+      // IndexedDB refuses, so every cloud-only deck's paper was reported
+      // "unreachable" while online. And a local copy was packed without asking
+      // whether it is the copy the deck MEANS: a notebook rewritten on another
+      // device left its old pages here, and the restore then refused them for
+      // a hash mismatch — a paper in the archive that could never come back.
+      tell("reading");
+      const storeKey = entry.localId ? jobStoreKey(entry.localId, job) : null;
+      const local = storeKey ? await readDocument(storeKey).catch(() => null) : null;
+      const usable = local?.blob && documentEntryMatches(local, meta) ? local.blob : null;
+      let source = "device";
+      if (!usable) {
+        source = "cloud";
+        tell("downloading");
+      }
+      const blob = usable || (await getDocument(storeKey, meta));
       if (!blob) {
-        missing.push({ ...describe, reason: meta.offloaded ? DOCUMENT_MISSING_OFFLOADED : DOCUMENT_MISSING_UNREACHABLE });
+        const reason = meta.offloaded ? DOCUMENT_MISSING_OFFLOADED : DOCUMENT_MISSING_UNREACHABLE;
+        missing.push({ ...describe, reason });
+        tell("missing", { reason });
       } else {
         const path = `${backupDocumentFolderPath(entry.pathSegment, entry.idPart)}/${name}`;
         zip.file(path, blob, BACKUP_DOCUMENT_COMPRESSION);
+        tell("hashing", { bytes: blob.size });
+        const hash = await sha256(blob);
         // Hashed HERE rather than trusted from meta.pdf. The two are supposed to
         // be the same file and the restore refuses them when they are not, so
         // the archive has to record what it actually holds — copying the deck's
@@ -141,7 +168,7 @@ export async function packBackupDocuments(zip, entries, onProgress, isCancelled 
           pdfId: pdfId || null,
           name,
           bytes: blob.size,
-          sha256: await sha256(blob),
+          sha256: hash,
           // The deck's own claim, kept beside it. Where the two disagree the
           // archive is the record of a file that had already drifted from the
           // highlights measured against it, and that is worth being able to see.
@@ -149,16 +176,18 @@ export async function packBackupDocuments(zip, entries, onProgress, isCancelled 
           pages: Number(meta.pages) || 0,
           path: String(meta.path || "")
         });
+        tell("packed", { bytes: blob.size, source });
       }
     } catch (error) {
       console.warn("Could not pack a document into the backup", entry.title, error);
       missing.push({ ...describe, reason: DOCUMENT_MISSING_UNREACHABLE });
+      tell("missing", { reason: DOCUMENT_MISSING_UNREACHABLE });
     }
     done += 1;
     onProgress?.(done, papers.length);
   }
 
-  zip.file(BACKUP_DOCUMENT_INDEX, `${JSON.stringify({
+  const indexJson = `${JSON.stringify({
     schema: BACKUP_DOCUMENT_SCHEMA,
     version: 1,
     note: "One PDF per document, the file exactly as it was imported — a deck can "
@@ -171,9 +200,10 @@ export async function packBackupDocuments(zip, entries, onProgress, isCancelled 
       + "hand already follows.",
     documents,
     missing
-  }, null, 2)}\n`);
+  }, null, 2)}\n`;
+  zip.file(BACKUP_DOCUMENT_INDEX, indexJson, { compression: "DEFLATE" });
 
-  return { documents, missing, bytes: documents.reduce((sum, doc) => sum + doc.bytes, 0) };
+  return { documents, missing, bytes: documents.reduce((sum, doc) => sum + doc.bytes, 0), indexJson };
 }
 
 // ── The restore side ────────────────────────────────────────────────────────

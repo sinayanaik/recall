@@ -338,13 +338,67 @@ export const BACKED_UP_SETTINGS_KEYS = {
   "swipe-notes-theme": "The theme.",
   "recall:ink-prefs-v1": "Pens, colours and widths.",
   "recall:imageCompression": "How pasted images are compressed before upload.",
-  "recall:pdfPageNotes": "Whether a paper's page notes are shown."
+  "recall:pdfPageNotes": "Whether a paper's page notes are shown.",
+  "recall:pdfInvert": "Whether papers are shown inverted for dark reading.",
+  "recall:focusMode": "Focus mode.",
+  "recall:screenOrientation": "The orientation lock.",
+  "recall:splitRatio": "Where the split view's divider sits.",
+  "recall:highlightNoteBox": "The size of the highlight-note editor.",
+  "recall:renderHighlightDefault": "The default highlight colour.",
+  "recall:renderColorDefault": "The default text colour.",
+  "recall:allCardsFilter": "The All Cards panel's filter.",
+  "recall:allCardsCompact": "The All Cards panel's density.",
+  recall_autosync_minutes: "How often the library syncs by itself.",
+  flashcards_mydecks_view_v1: "My Decks' view (list or folders).",
+  flashcards_mydecks_sort_v1: "My Decks' sort order.",
+  flashcards_mydecks_display_v1: "My Decks' display density.",
+  flashcards_note_link_sort_v1: "How the note-link picker sorts."
 };
 
 export const NOT_BACKED_UP_SETTINGS_KEYS = {
   flashcards_supabase_config: "A credential. A backup is a file people mail to themselves.",
+  "recall:driveConfig": "A credential, the same way.",
   "recall:lastBackup": "The record of the last backup — this device's history, not a preference."
 };
+
+// The settings a library backup carries, read off this device. Values are
+// carried as the raw strings localStorage holds, so a restore writes back
+// exactly what was read and no setting's own format has to be known here.
+export function collectBackupSettings(storage = globalThis.localStorage) {
+  const values = {};
+  for (const key of Object.keys(BACKED_UP_SETTINGS_KEYS)) {
+    try {
+      const value = storage?.getItem(key);
+      if (value !== null && value !== undefined) values[key] = String(value);
+    } catch {
+      // A storage that throws (private mode) has no settings to carry.
+    }
+  }
+  return {
+    schema: BACKUP_SETTINGS_SCHEMA,
+    version: 1,
+    note: "This device's preferences — theme, fonts, pens, and how the panels are laid out. "
+      + "Restored only when asked to, and never part of a shared package.",
+    values
+  };
+}
+
+// Write a settings file back. Only keys the table names are ever written: a
+// hand-edited file cannot be used to plant a credential or anything else.
+export function applyBackupSettings(settings, storage = globalThis.localStorage) {
+  const values = settings && typeof settings === "object" && settings.values && typeof settings.values === "object" ? settings.values : {};
+  let applied = 0;
+  for (const [key, value] of Object.entries(values)) {
+    if (!Object.hasOwn(BACKED_UP_SETTINGS_KEYS, key) || typeof value !== "string") continue;
+    try {
+      storage?.setItem(key, value);
+      applied += 1;
+    } catch {
+      // Out of space: a setting is the first thing worth losing.
+    }
+  }
+  return applied;
+}
 
 // ── Paths ───────────────────────────────────────────────────────────────────
 

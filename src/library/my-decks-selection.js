@@ -75,7 +75,8 @@ export async function localDeckPayload(localId) {
       // (whose UPDATE sets category = EXCLUDED.category) would clear the
       // labels outright if it were ever run against a live database.
       category: card.category || null,
-      updated_at: card.updatedAt || null
+      updated_at: card.updatedAt || null,
+      noteAnchor: card.noteAnchor || null
     })));
   } catch (error) {
     console.warn("Could not read local deck snapshot", localId, error);

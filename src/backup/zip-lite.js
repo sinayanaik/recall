@@ -265,7 +265,7 @@ class LiteZipEntry {
   }
 }
 
-function localHeader({ crc, compressedSize, size, method, nameBytes }) {
+function liteLocalHeader({ crc, compressedSize, size, method, nameBytes }) {
   const local = new DataView(new ArrayBuffer(30));
   local.setUint32(0, LOCAL_HEADER_SIG, true);
   local.setUint16(4, 20, true);
@@ -283,7 +283,7 @@ function localHeader({ crc, compressedSize, size, method, nameBytes }) {
   return new Uint8Array(local.buffer);
 }
 
-function centralHeader({ crc, compressedSize, size, method, nameBytes, offset }) {
+function liteCentralHeader({ crc, compressedSize, size, method, nameBytes, offset }) {
   const dir = new DataView(new ArrayBuffer(46));
   dir.setUint32(0, CENTRAL_HEADER_SIG, true);
   dir.setUint16(4, 20, true);
@@ -427,8 +427,8 @@ export class LiteZip {
         }
       }
 
-      parts.push(localHeader({ crc, compressedSize, size, method, nameBytes }), nameBytes, payload);
-      central.push(centralHeader({ crc, compressedSize, size, method, nameBytes, offset }), nameBytes);
+      parts.push(liteLocalHeader({ crc, compressedSize, size, method, nameBytes }), nameBytes, payload);
+      central.push(liteCentralHeader({ crc, compressedSize, size, method, nameBytes, offset }), nameBytes);
 
       offset += 30 + nameBytes.length + compressedSize;
       if (offset > ZIP_LITE_MAX_BYTES) {

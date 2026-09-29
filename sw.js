@@ -344,6 +344,7 @@ const APP_SHELL = [
   `./styles/65-bucket-settings.css?v=${STAMP}`,
   `./styles/66-code-marks.css?v=${STAMP}`,
   `./styles/67-focus-fold.css?v=${STAMP}`,
+  `./styles/68-job-console.css?v=${STAMP}`,
   // The module entry point. Everything it imports is stamped with the same
   // ?v=, so those URLs change with every release too — which is what lets the
   // cache-first handler below serve them without revalidating and still never
@@ -358,6 +359,7 @@ const APP_SHELL = [
   `./src/backup/broken-images.js?v=${STAMP}`,
   `./src/backup/documents.js?v=${STAMP}`,
   `./src/backup/history.js?v=${STAMP}`,
+  `./src/backup/job-console.js?v=${STAMP}`,
   `./src/backup/library-state.js?v=${STAMP}`,
   `./src/backup/restore.js?v=${STAMP}`,
   `./src/backup/zip-lite.js?v=${STAMP}`,
