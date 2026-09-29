@@ -29,6 +29,13 @@
   transform-origin: 0 0;
 }
 
+/* The canvas is the crop alone (see mountPdfRegionEmbed), placed at the crop's
+ * corner inside the full-size page group so the page's text layer over it
+ * lines up. */
+.pdf-region-embed-canvas {
+  position: absolute;
+}
+
 .pdf-region-embed.is-loading,
 .pdf-region-embed-fallback {
   display: flex;
@@ -68,4 +75,121 @@
   border-right: 2px solid var(--muted);
   border-bottom: 2px solid var(--muted);
   border-radius: 0 0 2px 0;
+}
+
+/* ── Sized by its width alone ──────────────────────────────────────────────
+ *
+ * mountPdfRegionEmbed writes a width and an aspect-ratio and never a height, so
+ * whatever width the box ends up with — its own, or the column's when
+ * max-width cuts it down on a phone — it is exactly as tall as the region needs.
+ * The render inside is scaled to that real width by layoutPdfRegionEmbed.
+ */
+.pdf-region-embed {
+  height: auto;
+}
+
+/* A region nobody has resized fills a phone's column, the way a picture on a
+ * card face does: at the 420px default it was a shrunk, clipped figure on a
+ * 360px screen. A saved width (a reader's resize) is left to max-width as
+ * before. 560px is the Document surface's own narrow breakpoint
+ * (PDF_NARROW_WIDTH in src/documents/pdf-view.js). */
+@media (max-width: 560px) {
+  .pdf-region-embed.is-default-width {
+    width: 100% !important;
+  }
+}
+
+/* ── "p. N ↗" and "Zoom" ────────────────────────────────────────────────────
+ *
+ * Bottom-left, clear of the resize grip at the bottom-right. Same pill as an
+ * image's Zoom (.diagram-zoom, 06-rendered.css) so a reader who knows one knows
+ * the other. */
+.pdf-region-embed-tools {
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  z-index: 3;
+  display: flex;
+  gap: 6px;
+  pointer-events: none;
+}
+
+.pdf-region-embed-btn {
+  pointer-events: auto;
+  min-height: 26px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel-2) 92%, transparent);
+  color: var(--text);
+  padding: 0 10px;
+  font-size: 0.72rem;
+  font-weight: 800;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.18);
+  opacity: 0.8;
+  transition: opacity 0.15s linear;
+}
+
+.pdf-region-embed:hover .pdf-region-embed-btn,
+.pdf-region-embed-btn:focus-visible {
+  opacity: 1;
+}
+
+.pdf-region-embed-btn:hover {
+  border-color: var(--accent);
+}
+
+/* The fallback box is words, not a picture: it takes its own height rather
+ * than the region's shape (a thin strip of a region would clip it), and its
+ * buttons sit under the words rather than over them. */
+.pdf-region-embed.is-fallback {
+  aspect-ratio: auto !important;
+  padding-bottom: 38px;
+}
+
+/* A phone has no hover, so every embed would carry its buttons at full
+ * strength at once — dimmed, not hidden, for the reason 16-mobile-reading.css
+ * (d) gives for an image's own controls. */
+@media (hover: none), (pointer: coarse) {
+  .pdf-region-embed-btn {
+    opacity: 0.6;
+  }
+
+  .pdf-region-embed.is-resizing .pdf-region-embed-btn {
+    opacity: 1;
+  }
+}
+
+/* An export or a print is paper: nothing to press. (The buttons are not added
+ * there to begin with — this is the belt to that brace.) */
+@media print {
+  .pdf-region-embed-tools {
+    display: none;
+  }
+}
+
+/* ── Where "p. N ↗" landed ──────────────────────────────────────────────────
+ *
+ * The region's own box, drawn over the page for a moment on arrival by
+ * flashDocumentRegion (src/documents/pdf-highlights.js) and then removed. Lives
+ * in the page's mark layer, which takes no pointer events. */
+.pdf-region-flash {
+  position: absolute;
+  border-radius: 3px;
+  border: 2px solid var(--accent-strong, var(--accent));
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  animation: pdf-region-flash 2.8s ease-out forwards;
+}
+
+@keyframes pdf-region-flash {
+  0% { opacity: 0; box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent-strong, var(--accent)) 50%, transparent); }
+  12% { opacity: 1; box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent-strong, var(--accent)) 35%, transparent); }
+  70% { opacity: 1; box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-strong, var(--accent)) 15%, transparent); }
+  100% { opacity: 0; box-shadow: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pdf-region-flash { animation: none; }
 }

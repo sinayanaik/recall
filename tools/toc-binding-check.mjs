@@ -249,6 +249,44 @@ function caretLinesForRows(source) {
   return out;
 }
 
+// ── The contents is THERE in raw mode, and lists the textarea ───────────────
+//
+// "In raw note mode the TOC is missing." The button was hidden by CSS the
+// moment the editor opened, and the list it would have shown was the RENDERED
+// note's — the note as it was when the editor opened, so a heading typed since
+// shifted every row after it. Asserted: the button is not display:none with the
+// editor showing, and the rows buildNotesToc makes are the textarea's own,
+// including a heading that exists only there.
+function rawContentsRows(source) {
+  const api = window.__tocApi;
+  const textarea = api.el.notesEdit;
+  const wasHidden = textarea.hidden;
+  const wasValue = textarea.value;
+  textarea.hidden = false;
+  textarea.value = source;
+  api.buildNotesToc();
+  const listed = Array.from(api.el.notesTocList?.querySelectorAll(".notes-toc-link") || [])
+    .map((link) => link.textContent.trim());
+  const button = api.el.notesTocBtn;
+  // Measured as the Notes view has it: no deck is open in this harness, and
+  // Cards view (rightly) hides the notes' own controls whatever the editor does.
+  const panel = button?.closest(".quiz-panel");
+  const hadNotesMode = panel?.classList.contains("notes-mode");
+  const hadEmpty = panel?.classList.contains("is-deck-empty");
+  panel?.classList.add("notes-mode");
+  panel?.classList.remove("is-deck-empty");
+  const display = button ? getComputedStyle(button).display : "missing";
+  const where = button ? `${button.parentElement?.className} in ${panel?.className || "(no quiz panel)"}` : "";
+  if (panel && !hadNotesMode) panel.classList.remove("notes-mode");
+  if (panel && hadEmpty) panel.classList.add("is-deck-empty");
+  textarea.value = wasValue;
+  textarea.hidden = wasHidden;
+  api.markNotesTocDirty();
+  return { listed, display, where };
+}
+
+const RAW_ONLY_SOURCE = "# Alpha\n\n## Typed just now\n\nText.\n\n## Beta\n";
+
 const failures = [];
 let cases = 0;
 let rows = 0;
@@ -334,6 +372,17 @@ try {
         );
       }
     }
+  }
+
+  cases += 1;
+  rows += 1;
+  const raw = await page.evaluate(rawContentsRows, RAW_ONLY_SOURCE);
+  const wanted = ["Alpha", "Typed just now", "Beta"];
+  if (raw.display === "none" || raw.display === "missing") {
+    failures.push(`raw / contents button: display is ${raw.display} with the editor open (${raw.where})`);
+  }
+  if (JSON.stringify(raw.listed) !== JSON.stringify(wanted)) {
+    failures.push(`raw / contents rows: ${JSON.stringify(raw.listed)}, wanted the textarea's ${JSON.stringify(wanted)}`);
   }
 } finally {
   client.close();

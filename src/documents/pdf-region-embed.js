@@ -12,15 +12,17 @@
 // queued for upload: a marker intercepted before the browser tries to load
 // it, not a real URL.
 
+import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { ensurePdfJs } from "../core/lib-loader.js?v=__BUILD__";
 import { MARK_HIGHLIGHT_HEX } from "../format/highlight-colors.js?v=__BUILD__";
 import { decodeInkStrokes } from "../format/ink-strokes.js?v=__BUILD__";
+import { centerDiagramContent, openDiagramModal } from "../render/diagram-zoom.js?v=__BUILD__";
 import { paintInkStrokes } from "../render/ink-paint.js?v=__BUILD__";
 import { documentHighlightsForPdf, documentInkMarksForPdf } from "./pdf-highlights.js?v=__BUILD__";
 import { deckPdfById, PDF_PRIMARY_ID, pdfStoreKey } from "./pdf-multi.js?v=__BUILD__";
 import { getDocument } from "./pdf-store.js?v=__BUILD__";
-import { buildTextLayer, clampScale } from "./pdf-view.js?v=__BUILD__";
+import { buildTextLayer, canvasOutputScale, clampScale, PDF_MAX_SCALE } from "./pdf-view.js?v=__BUILD__";
 import { attachRegionResizeHandle } from "./pdf-region-resize.js?v=__BUILD__";
 
 export const PDFREF_SCHEME = "pdfref:";
@@ -138,17 +140,169 @@ function openEmbedDoc(storeKey, pdfMeta) {
   return promise;
 }
 
-function buildWrapper(rect, targetWidth) {
+function buildWrapper(parsed, targetWidth) {
+  const { rect } = parsed;
   const wrapper = document.createElement("div");
   wrapper.className = "pdf-region-embed is-loading";
+  // A region nobody has resized is free to take the whole column on a phone
+  // (styles/60-pdf-region-embed.css), the way a picture on a card face does —
+  // 420px of a 360px screen was the "too small on mobile" report, since the old
+  // fixed height and scale then clipped or shrank it further.
+  if (!parsed.width) wrapper.classList.add("is-default-width");
+  wrapper.dataset.pdfRef = pdfRegionRefMarkdown(parsed.page, rect, parsed.pdfId, parsed.width);
+  wrapper.dataset.pdfPage = String(parsed.page);
+  if (parsed.pdfId) wrapper.dataset.pdfId = parsed.pdfId;
   // An immediate aspect-ratio guess from the quad itself (scale-invariant —
   // PDF user-space points, not pixels) so the surrounding text doesn't jump
-  // once the real render lands.
+  // once the real render lands. The HEIGHT is never written: the box is as
+  // wide as it is allowed to be (its own width, capped at the column by
+  // max-width) and the ratio makes it exactly as tall as that width needs.
   const w = Math.abs(rect[2] - rect[0]) || 1;
   const h = Math.abs(rect[3] - rect[1]) || 1;
   wrapper.style.width = `${targetWidth}px`;
-  wrapper.style.height = `${Math.round((targetWidth * h) / w)}px`;
+  wrapper.style.aspectRatio = `${w} / ${h}`;
   return wrapper;
+}
+
+// ── Fitting the render to whatever width the box actually got ──────────────
+//
+// The rendered page is a fixed-size group, scaled so the crop exactly fills the
+// wrapper. That scale used to be worked out once from the width ASKED for, so
+// whenever the box came out narrower — every phone, where max-width: 100% cuts
+// 420px down to the column — the crop kept its desktop scale and height and was
+// cut off at the right edge. It is now read off the box's real width, and read
+// again whenever that width changes: a rotation, the contents drawer pushing
+// the column, split view, a card face growing.
+const regionLayouts = new WeakMap();
+
+let regionResizeObserver = null;
+
+export function layoutPdfRegionEmbed(wrapper) {
+  const info = regionLayouts.get(wrapper);
+  if (!info) return;
+  const width = wrapper.clientWidth;
+  if (!width) return; // not laid out (a hidden face) — the observer will call back
+  const k = width / info.nativeWidth;
+  info.pageGroup.style.transform = `scale(${k}) translate(${-info.left}px, ${-info.top}px)`;
+}
+
+function observeRegionLayout(wrapper, info) {
+  regionLayouts.set(wrapper, info);
+  wrapper.style.aspectRatio = `${info.nativeWidth} / ${info.nativeHeight}`;
+  layoutPdfRegionEmbed(wrapper);
+  if (typeof ResizeObserver !== "function") return;
+  if (!regionResizeObserver) {
+    regionResizeObserver = new ResizeObserver((entries) => {
+      entries.forEach(({ target }) => {
+        // Taken off the page by a re-render: nothing will show it again, and
+        // an observer keeps what it observes alive.
+        if (!target.isConnected) {
+          regionResizeObserver.unobserve(target);
+          return;
+        }
+        layoutPdfRegionEmbed(target);
+      });
+    });
+  }
+  regionResizeObserver.observe(wrapper);
+}
+
+// ── Where the region came from, and a closer look at it ────────────────────
+//
+// Two small buttons on every embed, in every place one is rendered — the notes,
+// a card face in Study, an All Cards row, a quick note, a highlight's note:
+//
+//   "p. N ↗"  opens the PDF at this exact spot. The picture is a REFERENCE to a
+//             place in a paper, and a reference you cannot follow back to its
+//             source is half of one.
+//   "Zoom"    the same full-screen pinch-and-pan view a picture's Zoom pill
+//             opens (src/render/diagram-zoom.js), with the crop rendered afresh
+//             at a resolution worth zooming into.
+//
+// The go-to is registered rather than imported: it has to close panels, change
+// views and switch between a deck's PDFs, and every module that does those
+// things reaches this one back through render/enhance.js — the same reason the
+// resize module's notes surface is registered (setRegionResizeNotesSurface).
+let goToRegion = null;
+
+export function setPdfRegionGoToHandler(fn) {
+  goToRegion = typeof fn === "function" ? fn : null;
+}
+
+let zoomObjectUrl = null;
+
+// The pixel budget for the zoom render — of the CROP alone, which is all that
+// is rasterised (an offset viewport, as mountPdfRegionEmbed paints its own).
+const ZOOM_MAX_CROP_PIXELS = 12_000_000;
+
+async function openRegionZoom(parsed) {
+  const pdfId = parsed.pdfId || PDF_PRIMARY_ID;
+  const doc = await openEmbedDoc(pdfStoreKey(state.localDeckId, pdfId), deckPdfById(state.meta, pdfId));
+  if (!doc || parsed.page > doc.numPages) return;
+  const page = await doc.getPage(parsed.page);
+  const quadWidth = Math.max(1, Math.abs(parsed.rect[2] - parsed.rect[0]));
+  const quadHeight = Math.max(1, Math.abs(parsed.rect[3] - parsed.rect[1]));
+  // Wide enough to still be sharp a couple of pinches in on this screen.
+  const wanted = (Math.max(window.innerWidth || 0, 800) * 2.5) / quadWidth;
+  const affordable = Math.sqrt(ZOOM_MAX_CROP_PIXELS / (quadWidth * quadHeight));
+  const scale = Math.max(0.5, Math.min(wanted, affordable, PDF_MAX_SCALE * 3));
+  const viewport = page.getViewport({ scale });
+  const [vx0, vy0, vx1, vy1] = viewport.convertToViewportRectangle(parsed.rect);
+  const left = Math.min(vx0, vx1);
+  const top = Math.min(vy0, vy1);
+  const cropViewport = page.getViewport({ scale, offsetX: -left, offsetY: -top });
+  const crop = document.createElement("canvas");
+  crop.width = Math.max(1, Math.round(Math.abs(vx1 - vx0)));
+  crop.height = Math.max(1, Math.round(Math.abs(vy1 - vy0)));
+  const ctx = crop.getContext("2d", { alpha: false });
+  await page.render({ canvasContext: ctx, viewport: cropViewport }).promise;
+  paintHighlightsOnCanvas(ctx, parsed.page, cropViewport, pdfId);
+  paintInkOnCanvas(ctx, parsed.page, cropViewport, pdfId);
+  const blob = await new Promise((resolve) => crop.toBlob(resolve, "image/png"));
+  if (!blob) return;
+  if (zoomObjectUrl) URL.revokeObjectURL(zoomObjectUrl);
+  zoomObjectUrl = URL.createObjectURL(blob);
+  const img = new Image();
+  img.alt = `Region · page ${parsed.page}`;
+  img.src = zoomObjectUrl;
+  try { await img.decode(); } catch (_) { /* still shown; the modal re-centres on load */ }
+  openDiagramModal(img);
+  const shown = el.diagramModalBody?.querySelector("img");
+  if (shown && !shown.complete) shown.addEventListener("load", () => centerDiagramContent(shown), { once: true });
+}
+
+function regionButton(label, title, onPress) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "pdf-region-embed-btn";
+  button.textContent = label;
+  button.title = title;
+  button.setAttribute("aria-label", title);
+  // A card face and a note both listen for presses on what they contain (a
+  // flip, a selection, a swipe); this press is only ever the button's.
+  button.addEventListener("pointerdown", (event) => event.stopPropagation());
+  button.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    onPress();
+  });
+  return button;
+}
+
+function attachRegionTools(wrapper, parsed, { zoom = true } = {}) {
+  // Nothing to press on paper: an export or a print gets the picture alone.
+  if (wrapper.closest("#printRoot, .print-root")) return;
+  const tools = document.createElement("div");
+  tools.className = "pdf-region-embed-tools";
+  tools.appendChild(regionButton(`p. ${parsed.page} \u2197`, `Open page ${parsed.page} of the PDF at this spot`, () => {
+    if (goToRegion) goToRegion({ page: parsed.page, rect: parsed.rect, pdfId: parsed.pdfId || null });
+  }));
+  if (zoom) {
+    tools.appendChild(regionButton("Zoom", "Zoom into this region", () => {
+      openRegionZoom(parsed).catch((error) => console.warn("Could not zoom into a PDF region", error));
+    }));
+  }
+  wrapper.appendChild(tools);
 }
 
 // ── Marks the page itself doesn't carry ─────────────────────────────────────
@@ -215,7 +369,8 @@ function paintInkOnCanvas(ctx, pageNumber, viewport, pdfId) {
   ctx.restore();
 }
 
-function showFallback(wrapper, page) {
+function showFallback(wrapper, parsed) {
+  const page = parsed?.page;
   wrapper.classList.remove("is-loading");
   wrapper.classList.add("is-fallback");
   wrapper.replaceChildren();
@@ -223,6 +378,9 @@ function showFallback(wrapper, page) {
   note.className = "pdf-region-embed-fallback";
   note.textContent = page ? `Region · page ${page}` : "Region";
   wrapper.appendChild(note);
+  // Nothing to zoom into, but the page is still somewhere the PDF can be
+  // opened at — once it is on this device, the Document tab says so itself.
+  if (parsed) attachRegionTools(wrapper, parsed, { zoom: false });
 }
 
 // Replaces `img` in place with a live-rendered crop of the PDF location it
@@ -235,7 +393,7 @@ export async function mountPdfRegionEmbed(img, { resizable = false } = {}) {
   const parsed = parsePdfRef(img.getAttribute("src"));
   if (!parsed) return;
   const targetWidth = parsed.width || EMBED_TARGET_WIDTH;
-  const wrapper = buildWrapper(parsed.rect, targetWidth);
+  const wrapper = buildWrapper(parsed, targetWidth);
   img.replaceWith(wrapper);
 
   try {
@@ -243,40 +401,59 @@ export async function mountPdfRegionEmbed(img, { resizable = false } = {}) {
     const pdfMeta = deckPdfById(state.meta, pdfId);
     const storeKey = pdfStoreKey(state.localDeckId, pdfId);
     const doc = await openEmbedDoc(storeKey, pdfMeta);
-    if (!doc || parsed.page > doc.numPages) return showFallback(wrapper, parsed.page);
+    if (!doc || parsed.page > doc.numPages) return showFallback(wrapper, parsed);
     const page = await doc.getPage(parsed.page);
     const [x0, y0, x1, y1] = parsed.rect;
     const quadWidth = Math.max(1, Math.abs(x1 - x0));
-    // Render pdf.js itself at whatever resolution the TARGET width asks for —
-    // crisp even for a reader's enlarged resize, right up to clampScale's
-    // PDF_MAX_SCALE ceiling. Past that ceiling `k` below makes up the rest by
-    // scaling the already-rendered canvas, rather than this silently staying
-    // at the default resolution regardless of what was actually requested.
-    const scale = clampScale(targetWidth / quadWidth);
+    // Rendered for whichever is wider: the width asked for, or the width the
+    // box actually has on this screen (a phone's default fills the column, and
+    // that can be more than the 420px default) — crisp either way, right up to
+    // clampScale's PDF_MAX_SCALE ceiling. Anything past that is made up by
+    // layoutPdfRegionEmbed scaling the rendered group, below.
+    const renderWidth = Math.max(targetWidth, wrapper.clientWidth || 0);
+    const scale = clampScale(renderWidth / quadWidth);
     const viewport = page.getViewport({ scale });
     const [vx0, vy0, vx1, vy1] = viewport.convertToViewportRectangle(parsed.rect);
     const left = Math.min(vx0, vx1);
     const top = Math.min(vy0, vy1);
-    // The crop's NATIVE rendered size — independent of targetWidth, which can
-    // ask for more than this (a reader's saved resize, or a request past what
-    // clampScale's PDF_MAX_SCALE ceiling allows for a small region). The
-    // difference is made up by scaling the whole page group up, below, rather
-    // than re-rendering at an ever-higher resolution.
+    // The crop's NATIVE rendered size in CSS pixels. What is shown is this,
+    // scaled to the box's real width (layoutPdfRegionEmbed).
     const nativeWidth = Math.max(1, Math.round(Math.abs(vx1 - vx0)));
     const nativeHeight = Math.max(1, Math.round(Math.abs(vy1 - vy0)));
 
+    // ── Only the crop is rasterised, at the screen's pixel density ────────
+    //
+    // This used to paint the WHOLE page at the crop's scale and let the
+    // wrapper clip it — for a small figure that is a page several thousand
+    // pixels across to show a few hundred, and it had to be painted at 1x to
+    // stay affordable, which is what made a figure's small print a blur on a
+    // phone. pdf.js can render any window of a page through an offset viewport,
+    // so the canvas is now exactly the crop, at canvasOutputScale's density
+    // (the same cap the Document surface paints its own pages with), placed at
+    // the crop's corner inside the full-size page group so the text layer over
+    // it still lines up with the CSS-pixel viewport it was built from.
+    const outputScale = canvasOutputScale(nativeWidth, nativeHeight);
+    const paintViewport = page.getViewport({
+      scale: scale * outputScale,
+      offsetX: -left * outputScale,
+      offsetY: -top * outputScale
+    });
     const canvas = document.createElement("canvas");
-    canvas.className = "pdf-canvas";
-    canvas.width = Math.ceil(viewport.width);
-    canvas.height = Math.ceil(viewport.height);
+    canvas.className = "pdf-canvas pdf-region-embed-canvas";
+    canvas.width = Math.ceil(nativeWidth * outputScale);
+    canvas.height = Math.ceil(nativeHeight * outputScale);
+    canvas.style.left = `${left}px`;
+    canvas.style.top = `${top}px`;
+    canvas.style.width = `${nativeWidth}px`;
+    canvas.style.height = `${nativeHeight}px`;
     const ctx = canvas.getContext("2d", { alpha: false });
-    await page.render({ canvasContext: ctx, viewport }).promise;
+    await page.render({ canvasContext: ctx, viewport: paintViewport }).promise;
     // What the reader actually marked up on this page — highlights and ink —
     // composited onto the same canvas the PDF itself just rendered to. See
     // the note above paintHighlightsOnCanvas for why page.render() alone
     // can't already carry them.
-    paintHighlightsOnCanvas(ctx, parsed.page, viewport, pdfId);
-    paintInkOnCanvas(ctx, parsed.page, viewport, pdfId);
+    paintHighlightsOnCanvas(ctx, parsed.page, paintViewport, pdfId);
+    paintInkOnCanvas(ctx, parsed.page, paintViewport, pdfId);
 
     // Real, positioned, selectable text — the exact function the Document
     // surface itself renders every page's text layer with. Nothing here is
@@ -284,29 +461,24 @@ export async function mountPdfRegionEmbed(img, { resizable = false } = {}) {
     // are, and clipping a correctly-positioned thing to a window is free.
     const { layer: textLayer } = await buildTextLayer(page, viewport);
 
-    // k=1 when targetWidth is at (or below) the native crop resolution — the
-    // common case, unchanged from before this scaled at all. k>1 is a reader's
-    // resize asking for more pixels than clampScale rendered — the browser
-    // upscales the canvas via this transform, same trade-off as any raster
-    // image enlarged past its native size.
-    const k = targetWidth / nativeWidth;
     const pageGroup = document.createElement("div");
     pageGroup.className = "pdf-region-embed-page";
     pageGroup.style.width = `${viewport.width}px`;
     pageGroup.style.height = `${viewport.height}px`;
-    pageGroup.style.transform = `scale(${k}) translate(${-left}px, ${-top}px)`;
     pageGroup.append(canvas, textLayer);
 
     wrapper.classList.remove("is-loading");
     wrapper.style.width = `${Math.round(targetWidth)}px`;
-    wrapper.style.height = `${Math.round(nativeHeight * k)}px`;
     wrapper.replaceChildren(pageGroup);
+    const renderInfo = { pageGroup, nativeWidth, nativeHeight, left, top };
+    observeRegionLayout(wrapper, renderInfo);
+    attachRegionTools(wrapper, parsed);
 
     if (resizable) {
-      attachRegionResizeHandle(wrapper, pageGroup, parsed, { nativeWidth, nativeHeight, left, top });
+      attachRegionResizeHandle(wrapper, pageGroup, parsed, renderInfo);
     }
   } catch (error) {
     console.warn("Could not render a PDF region embed", error);
-    showFallback(wrapper, parsed.page);
+    showFallback(wrapper, parsed);
   }
 }

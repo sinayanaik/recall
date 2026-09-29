@@ -56,11 +56,11 @@ import { closeMyDecksMoreMenu, currentMyDecksFolder, importIntoFolder, myDecksIm
 import { setMyDecksDisplay, setMyDecksSort, setMyDecksView } from "./library/my-decks-prefs.js?v=__BUILD__";
 import { renderMyDecksList, repaintMyDecks } from "./library/my-decks-render.js?v=__BUILD__";
 import { selectedMyDecks, selectedMyFolders, updateMyDecksBulkBar } from "./library/my-decks-selection.js?v=__BUILD__";
-import { captureNotesAnchor, captureSourceAnchor, jumpToNoteForCurrentCard } from "./notes/anchors.js?v=__BUILD__";
+import { captureNotesAnchor, captureSourceAnchor, jumpToNoteForCurrentCard, scheduleNoteJump } from "./notes/anchors.js?v=__BUILD__";
 import { createCardFromNotesSelection } from "./notes/frame-card.js?v=__BUILD__";
 import { markOpenOffsets, noteMarkNode, sourceMarkIndexFor } from "./notes/anchors.js?v=__BUILD__";
 import { refreshHighlightBadges, setHighlightBadgeHandler } from "./notes/highlight-badges.js?v=__BUILD__";
-import { openHighlightNoteEditor } from "./notes/highlight-note-editor.js?v=__BUILD__";
+import { closeHighlightNoteEditor, isHighlightNoteEditorOpen, openHighlightNoteEditor } from "./notes/highlight-note-editor.js?v=__BUILD__";
 import { goToBookmark } from "./notes/bookmark.js?v=__BUILD__";
 import { initNotesCaretLine } from "./notes/caret-line.js?v=__BUILD__";
 import { scheduleNotesCaretCheck } from "./notes/caret.js?v=__BUILD__";
@@ -87,7 +87,7 @@ import { cycleToLocator, initHighlightCycle, isHighlightSplitOpen, openHighlight
 // surface this module's own subtree imports — see setMarkMenuActions.
 import { documentHighlightEntries, noteHighlightEntries } from "./panels/highlight-index.js?v=__BUILD__";
 import { notifyHighlightsChanged, setHighlightsChangedHandler } from "./format/highlight-edit.js?v=__BUILD__";
-import { closeNotesToc, ensureNotesTocBuilt, flashNotesHeading, initNotesTocFolding, isNotesTocOpen, notesTocHeadings, notesTocScrollFrame, scrollNotesEditToHeadingIndex, scrollNotesHeadingIntoView, setNotesTocScrollFrame, tocPushesNotes, toggleNotesToc, updateNotesTocActive } from "./notes/toc.js?v=__BUILD__";
+import { closeNotesToc, ensureNotesTocBuilt, flashNotesHeading, initNotesTocFolding, isNotesTocOpen, markNotesTocDirtyFromEditor, notesTocHeadings, notesTocScrollFrame, rawNotesHeadings, scrollNotesEditToHeadingIndex, scrollNotesHeadingIntoView, setNotesTocScrollFrame, tocPushesNotes, toggleNotesToc, updateNotesTocActive } from "./notes/toc.js?v=__BUILD__";
 import { closeClozePanel, openClozePanel, toggleClozePanelAll } from "./panels/cloze-panel.js?v=__BUILD__";
 import { appInfoBtn, appInfoCheckBtn, appInfoCloseBtn, appInfoHealthBtn, appInfoModal, appInfoReloadBtn, closeAppInfoModal, forceRefreshAppInfo, openAppInfoModal, runProjectHealthCheck } from "./pwa/app-info.js?v=__BUILD__";
 import { FOREGROUND_SYNC_IDLE_MS, lastHiddenAt, onlineReconcileTimer, setLastHiddenAt, setOnlineReconcileTimer, updateOnlineIndicator } from "./pwa/online.js?v=__BUILD__";
@@ -114,7 +114,7 @@ import { closeImportPanel, closeMyDecksPanel, editCurrentDeckCategory, editCurre
 import { addBlankCardAtCursor, flushWorkingDeck, toggleEditMode } from "./ui/edit-mode.js?v=__BUILD__";
 import { setStatus, showConfirmModal, showPromptModal, showToast } from "./ui/feedback.js?v=__BUILD__";
 import { closeHelpModal, helpBtn, helpModal, helpModalCloseBtn, helpModalCloseFootBtn, openHelpModal } from "./ui/help.js?v=__BUILD__";
-import { goNavBack } from "./ui/nav-history.js?v=__BUILD__";
+import { goNavBack, recordNavHistory, refreshNavBack } from "./ui/nav-history.js?v=__BUILD__";
 import { anyModalOpen, lockPageScroll, unlockPageScroll } from "./ui/overlays.js?v=__BUILD__";
 import { chooseDeckCategory } from "./ui/pickers.js?v=__BUILD__";
 import { defaultStyleProfiles, styleDefaults } from "./ui/style-schema.js?v=__BUILD__";
@@ -122,13 +122,14 @@ import { applyStyleDensity, detectStyleProfile, handleStyleControlChange, normal
 import { styleMobileMedia, styleProfiles } from "./ui/style-tokens.js?v=__BUILD__";
 import { setTheme, setThemeMenuOpen, setThemeRepaintHook } from "./ui/theme.js?v=__BUILD__";
 import { FOCUS_MODE_KEY, closeViewExportMenu, paintViewExportMenu, setBlockEditFlushHook, setHandwritingViewHook, setSplitViewHook, setViewMode, switchToPreviousView } from "./ui/view-mode.js?v=__BUILD__";
-import { DOCUMENT_NOTE_HANDLERS, documentHighlightById, documentHighlightNote, initDocumentMarkMenu, repairDocumentHighlightQuads, repairDocumentHighlightText } from "./documents/pdf-highlights.js?v=__BUILD__";
+import { DOCUMENT_NOTE_HANDLERS, documentHighlightById, documentHighlightNote, flashDocumentRegion, initDocumentMarkMenu, repairDocumentHighlightQuads, repairDocumentHighlightText } from "./documents/pdf-highlights.js?v=__BUILD__";
 import { pdfRegionRefForRecord, pdfRegionRefMarkdown } from "./documents/pdf-region-embed.js?v=__BUILD__";
 import { setRegionResizeNotesSurface } from "./documents/pdf-region-resize.js?v=__BUILD__";
+import { setPdfRegionGoToHandler } from "./documents/pdf-region-embed.js?v=__BUILD__";
 import { closeDocumentToc, documentOutlineEntries, initDocumentOutlineFolding, isDocumentTocOpen, resolveOutlineEntryPage, toggleDocumentToc } from "./documents/pdf-outline.js?v=__BUILD__";
-import { activePdfId, deckPdfById, deckPdfs, withDeckPdfs } from "./documents/pdf-multi.js?v=__BUILD__";
+import { activePdfId, deckPdfById, deckPdfs, PDF_PRIMARY_ID, withDeckPdfs } from "./documents/pdf-multi.js?v=__BUILD__";
 import { removePdfFromDeck, renamePdf } from "./documents/pdf-multi-actions.js?v=__BUILD__";
-import { currentPdfDocument, documentFittedWidth, fitDocumentToWidth, initDocumentPinchZoom, isDocumentFitWidth, openDocumentIsCurrent, openDocumentPdfId, openDocumentView, reattachDocument, relayoutDocument, repaintOpenDocumentPages, scheduleDocumentPositionSave, scrollToDocumentPage, refreshDocumentPaperForTheme, setDocumentAttachHandler, setDocumentOpenedHook, setDocumentPagePaintedHook, setNotebookStartHandler, switchToPdf, togglePdfInvert, updatePageIndicator, zoomDocument, retryMissingDocumentOpen } from "./documents/pdf-view.js?v=__BUILD__";
+import { currentPdfDocument, currentPdfPageCount, documentFittedWidth, fitDocumentToWidth, initDocumentPinchZoom, isDocumentFitWidth, openDocumentIsCurrent, openDocumentPdfId, openDocumentView, reattachDocument, relayoutDocument, repaintOpenDocumentPages, scheduleDocumentPositionSave, scrollToDocumentPage, refreshDocumentPaperForTheme, setDocumentAttachHandler, setDocumentOpenedHook, setDocumentPagePaintedHook, setNotebookStartHandler, switchToPdf, togglePdfInvert, updatePageIndicator, zoomDocument, retryMissingDocumentOpen } from "./documents/pdf-view.js?v=__BUILD__";
 import { adoptDocumentInk, canRedoInk, canUndoInk, copyInkSelection, cutInkSelection, duplicateInkSelection, hasInkClipboard, initDocumentInk, inkMarkImageMarkdown, inkSelectionCount, isInkMarkId, nudgeInkSelection, paintDocumentInk, pasteInkSelection, redoInk, repaintDocumentInk, setInkChangedHandler, undoInk } from "./documents/pdf-ink.js?v=__BUILD__";
 import { addHandwritingImage, enterHandwritingView, refreshHandwritingBoard, runHandwritingMenuAction, startHandwritingNotebook } from "./handwriting/board.js?v=__BUILD__";
 import { closeBlockStylePopover, isBlockStylePopoverOpen } from "./documents/block-style-bar.js?v=__BUILD__";
@@ -395,6 +396,8 @@ el.notesEdit?.addEventListener("input", () => {
   scheduleNotesCaretCheck();
   // "[[" anywhere on the current line opens the note picker.
   updateNoteLinkPicker();
+  // The contents lists the textarea's own headings while it is open.
+  markNotesTocDirtyFromEditor();
   scheduleDeckAutosave();
 });
 
@@ -518,7 +521,12 @@ el.notesTocList?.addEventListener("click", (event) => {
   const index = Number(link.dataset.tocIndex);
   // In raw/edit mode the rendered view is hidden — scroll the textarea instead.
   if (isNotesEditing()) {
-    scrollNotesEditToHeadingIndex(index);
+    // By slug when the row's heading is still in the textarea: a row pressed
+    // inside the pause before a rebuild (markNotesTocDirtyFromEditor) was
+    // numbered against the text as it was a keystroke ago.
+    const slug = (link.getAttribute("href") || "").slice(1);
+    const bySlug = slug ? rawNotesHeadings().findIndex((heading) => heading.id === slug) : -1;
+    scrollNotesEditToHeadingIndex(bySlug === -1 ? index : bySlug);
   } else {
     // Built if it is stale, before the index is used to address it. A render
     // that landed while the drawer was open only MARKS the list dirty and
@@ -539,6 +547,21 @@ el.notesTocList?.addEventListener("click", (event) => {
   // you are working through.
   if (!tocPushesNotes()) closeNotesToc();
 });
+
+// The raw editor scrolls itself rather than #notesView, and the open contents
+// follows it the same way. Gated before any frame is spent, like the listener
+// below — the drawer is closed for almost all typing.
+el.notesEdit?.addEventListener(
+  "scroll",
+  () => {
+    if (!isNotesTocOpen() || notesTocScrollFrame) return;
+    setNotesTocScrollFrame(requestAnimationFrame(() => {
+      setNotesTocScrollFrame(0);
+      updateNotesTocActive();
+    }));
+  },
+  { passive: true }
+);
 
 el.notesView?.addEventListener(
   "scroll",
@@ -1190,6 +1213,11 @@ onDomReady(() => {
   // face does, written back through the notes surface — see
   // setRegionResizeNotesSurface for why it is registered from here.
   setRegionResizeNotesSurface(() => renderTargetConfig("notes"));
+  // ...and every region embed's "p. N ↗", wherever it is shown. Registered for
+  // the same reason: it closes panels, changes views and switches PDFs, and
+  // every module that does those reaches pdf-region-embed.js back through
+  // render/enhance.js.
+  setPdfRegionGoToHandler((target) => { goToPdfRegion(target); });
 
   // ── What a highlight can be turned into ─────────────────────────────────
   //
@@ -3672,6 +3700,57 @@ el.documentPageInput?.addEventListener("change", () => {
   if (Number.isFinite(page) && page > 0) scrollToDocumentPage(page, 0);
   el.documentPageInput.value = "";
 });
+
+// ── Following a captured region back to its page ────────────────────────────
+//
+// The "p. N ↗" on a region embed (src/documents/pdf-region-embed.js), from a
+// note, a card face, an All Cards row, a quick note or a highlight's note. The
+// region's quad is its own anchor: scheduleNoteJump's document branch already
+// knows how to put a page-space box in the middle of the screen, so all that is
+// left here is getting OUT of whatever the embed was shown in, onto the right
+// one of the deck's PDFs, and showing the reader which box on the page it was.
+async function goToPdfRegion({ page, rect, pdfId }) {
+  if (!state.meta?.pdf) {
+    setStatus("This deck has no PDF attached to open that region in.", "error");
+    return;
+  }
+  // A ref with no pdfId is the primary paper (see pdfRegionRefMarkdown).
+  const wantedPdf = pdfId || PDF_PRIMARY_ID;
+  if (!deckPdfById(state.meta, wantedPdf)) {
+    setStatus("The PDF this region came from is no longer attached to this deck.", "error");
+    return;
+  }
+  // Back returns to the card or the note the press came from.
+  recordNavHistory();
+  if (isHighlightNoteEditorOpen()) closeHighlightNoteEditor();
+  if (el.diagramModal && !el.diagramModal.hidden) closeDiagramModal();
+  if (el.allCardsPanel && !el.allCardsPanel.hidden) closeAllCardsPanel();
+  if (el.quickNotesBoard && !el.quickNotesBoard.hidden) closeQuickNotesBoard();
+  if (state.viewMode !== "document") setViewMode("document");
+  // Another of the deck's papers: open that one first. switchToPdf is a no-op
+  // when it is already the open one.
+  if (deckPdfs(state.meta).length > 1) await switchToPdf(wantedPdf);
+  // Coming from Cards or the notes, the paper may not have been opened yet this
+  // session — it is read out of the device's store and parsed first. The jump
+  // below measures against laid-out pages, so it waits for the right paper to
+  // be on the stage (a few seconds at most; after that it tries anyway).
+  const until = performance.now() + 8000;
+  while (performance.now() < until
+    && !(openDocumentPdfId() === wantedPdf && currentPdfPageCount() >= page)) {
+    await new Promise((resolve) => setTimeout(resolve, 80));
+  }
+  if (state.viewMode !== "document") return; // the reader went somewhere else meanwhile
+  scheduleNoteJump({ pdf: { page }, page, quads: [{ page, rect }] }, {
+    patient: true,
+    flash: false,
+    onSettled: () => {
+      // The page may still be laying out the first time round; one more try a
+      // moment later covers a slow first render of a big page.
+      if (!flashDocumentRegion(page, rect)) setTimeout(() => flashDocumentRegion(page, rect), 300);
+      refreshNavBack();
+    }
+  });
+}
 
 // The page indicator and the saved reading position both follow the scroller.
 //

@@ -2111,7 +2111,7 @@ function onRootTouchStart(event) {
   // src/notes/mark-menu.js name it.
   // A PDF region's own grip (src/documents/pdf-region-resize.js) is the same
   // bare-<div> case.
-  if (event.target?.closest?.(".notes-img-resize-handle, .notes-img-delete-btn, .notes-img-size-badge, .diagram-zoom, .pdf-region-resize-handle")) {
+  if (event.target?.closest?.(".notes-img-resize-handle, .notes-img-delete-btn, .notes-img-size-badge, .diagram-zoom, .pdf-region-resize-handle, .pdf-region-embed-btn")) {
     cancelPress();
     dismissPending = false;
     return;
