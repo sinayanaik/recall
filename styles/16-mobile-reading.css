@@ -321,18 +321,13 @@
    beside it and stayed on screen with the chrome supposedly hidden. That is
    what "the focus toggle does nothing" was.
 
-   Same variable and the same 220ms curve as the appbar, so the two bars read as
-   one panel folding away; --view-toggle-h is measured from the ROW now (see
-   readChromeHeights). No `transform`, for the reason the appbar has none. */
+   Same variable as the appbar, so the two bars fold as one panel;
+   --view-toggle-h is measured from the ROW now (see readChromeHeights). The fold
+   itself no longer animates the row's height: it folds in one step, because a
+   height tween re-lays out the note on every frame. See
+   styles/67-focus-fold.css. */
 .view-mode-row {
   max-height: var(--view-toggle-h, 300px);
-}
-
-body.chrome-ready .view-mode-row {
-  transition:
-    max-height 0.22s cubic-bezier(0.4, 0, 0.2, 1),
-    opacity 0.16s linear,
-    margin 0.22s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 body.chrome-collapsed:not(:has(#mainToolbar.mobile-open)) .view-mode-row {
@@ -341,12 +336,6 @@ body.chrome-collapsed:not(:has(#mainToolbar.mobile-open)) .view-mode-row {
   opacity: 0;
   overflow: hidden;
   pointer-events: none;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  body.chrome-ready .view-mode-row {
-    transition: none;
-  }
 }
 
 /* The toggle keeps its own sizing; it just no longer owns the row's margin. */

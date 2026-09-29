@@ -1,0 +1,48 @@
+/* Focus mode folds the header in one step
+ *
+ * Written since the split, so it lives on its own — see POST_SPLIT in
+ * tools/split-css.mjs. The rules it overrides are in the frozen 12-notes.css
+ * slice, so they are overridden here (same selectors, same specificity, later
+ * in the load order) rather than edited in place. The tab row's own tween, in
+ * styles/16-mobile-reading.css, was simply deleted.
+ *
+ * ── What was wrong ────────────────────────────────────────────────────────
+ *
+ * "In the mobile app, going from normal mode to focus mode feels very laggy."
+ *
+ * The fold was a 220ms tween of `max-height`, `margin`, `padding`,
+ * `border-width` and the shell's `gap`, on the appbar, the tab row and the
+ * shell. Every one of those is a LAYOUT property, and every frame of the tween
+ * changed the height of the reading surface underneath them — so every frame
+ * re-laid out the note. Measured on a 390x844 phone at a 4x CPU throttle with a
+ * long note open: 7-15 layouts per press, and 33-100ms between frames for the
+ * whole ~400ms it took to land. The animation meant to make the fold look
+ * smooth ran at 10-20fps, and was the lag.
+ *
+ * ── What this does ────────────────────────────────────────────────────────
+ *
+ * No transition. The class flip changes the header's height once, the note is
+ * laid out once, and the next frame is the finished fold. Same phone, same
+ * note: 2 layouts per press, one frame of work, then steady 16ms frames.
+ *
+ * ── ...and why not a slide instead ───────────────────────────────────────
+ *
+ * Tried: a FLIP, measuring the page before and after the flip and sliding it
+ * into place with a compositor-only `transform`. It measured WORSE than no
+ * motion at all — ~30% longer before the first frame (the before/after reads
+ * force layouts inside the press), 5-6 layouts instead of 2, and janky frames
+ * during the slide. The note is full of IntersectionObserver targets (the lazy
+ * chunk builder, deferred enhancement), and moving them by a transform makes
+ * every observer recompute on every frame of the slide; the chunk builder then
+ * reacts to the moved geometry with layouts of its own. A reading surface that
+ * is watched this closely is one that should not be moved for decoration.
+ *
+ * Unconditional rather than phone-only: the cost scales with the note, not the
+ * screen. Reduced motion needs nothing of its own — there is no motion left.
+ */
+
+body.chrome-ready .appbar,
+body.chrome-ready .quiz-panel .view-mode-toggle:not([hidden]),
+body.chrome-ready .app-shell {
+  transition: none;
+}

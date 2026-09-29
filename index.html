@@ -123,6 +123,7 @@
     <link rel="stylesheet" href="styles/64-notes-tight-padding.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/65-bucket-settings.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/66-code-marks.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/67-focus-fold.css?v=__BUILD__">
 
     <!-- ── Module preloads ────────────────────────────────────────────────
          The app is ~130 ES modules and the browser discovers them by PARSING
@@ -361,6 +362,7 @@
     <link rel="modulepreload" href="src/ui/help.js?v=__BUILD__">
     <link rel="modulepreload" href="src/ui/ink-rail.js?v=__BUILD__">
     <link rel="modulepreload" href="src/ui/nav-history.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/ui/orientation.js?v=__BUILD__">
     <link rel="modulepreload" href="src/ui/overlays.js?v=__BUILD__">
     <link rel="modulepreload" href="src/ui/pickers.js?v=__BUILD__">
     <link rel="modulepreload" href="src/ui/reading-rail.js?v=__BUILD__">
@@ -907,6 +909,13 @@
                    Where the Fullscreen API is missing (iOS Safari) this
                    degrades to focus mode and says so in its title. -->
               <button class="edit-card-btn immersive-mode-btn" id="immersiveModeBtn" data-nhm-group="While you read" type="button" aria-pressed="false" title="Full screen (Ctrl + Q) — hide the browser as well" aria-label="Toggle full screen"><span class="nhm-ico" aria-hidden="true">&#9974;</span><span class="nhm-label">Full screen<span class="nhm-hint">Hide the browser too · Ctrl+Q</span></span><span class="nhm-state" aria-hidden="true"><span class="nhm-switch"></span></span></button>
+              <!-- Portrait or landscape, chosen here instead of by the phone's
+                   auto-rotate: on locks the screen sideways, off locks it
+                   upright. Android only (screen.orientation.lock), so it stays
+                   hidden until src/ui/orientation.js finds a lock to call on a
+                   touch screen. In a browser tab it enters full screen first,
+                   because that is the only place a tab may lock. -->
+              <button class="edit-card-btn rotate-screen-btn" id="rotateScreenBtn" data-nhm-group="While you read" type="button" aria-pressed="false" title="Landscape — turn the screen sideways" aria-label="Landscape" hidden><span class="nhm-ico" aria-hidden="true">&#10227;</span><span class="nhm-label">Landscape<span class="nhm-hint">Turn the screen sideways</span></span><span class="nhm-state" aria-hidden="true"><span class="nhm-switch"></span></span></button>
               <!-- Folds every section's body text away, headings left standing
                    — a note-wide twin of clozeToggleNotesBtn's reveal-all: one
                    flag, no per-heading memory, reset on every different note.
@@ -1576,6 +1585,7 @@
           <div class="rr-modes">
             <button class="reading-rail-btn" type="button" data-rail-action="focus" aria-pressed="false" title="Focus mode (Ctrl + .) — keep the header hidden while you read" aria-label="Focus mode"><span class="rr-ico" aria-hidden="true">&#10530;</span><span class="rr-label">Focus mode</span></button>
             <button class="reading-rail-btn" type="button" data-rail-action="immersive" aria-pressed="false" title="Full screen (Ctrl + Q) — hide the browser as well" aria-label="Full screen"><span class="rr-ico" aria-hidden="true">&#9974;</span><span class="rr-label">Full screen</span></button>
+            <button class="reading-rail-btn" type="button" data-rail-action="rotate" aria-pressed="false" title="Landscape — turn the screen sideways" aria-label="Landscape" hidden><span class="rr-ico" aria-hidden="true">&#10227;</span><span class="rr-label">Landscape</span></button>
           </div>
         </div>
       </div>
@@ -2072,6 +2082,7 @@
               <li><strong>...and what you marked, beside what you marked it in</strong> — that drawer's <strong>Highlights</strong> half lists every highlight in this note, and <strong>Side by side</strong> at the top of it splits the panel: the note on one side, its highlights with their notes on the other, <strong>◀ ▶</strong> to walk through them. Drag the divider to resize the two — they start at 3:2 and stack top-and-bottom on a phone</li>
               <li>Notes save, sync, and export together with the deck — or skip notes entirely and make cards directly, as before</li>
               <li><strong>On a phone, the header gets out of your way</strong> — scroll down and the deck title bar and Cards/Notes toggle fold away; scroll back up and they return. Tap <strong>⤢</strong> in the notes header to keep them hidden for good, and <strong>⤡</strong> to bring them back</li>
+              <li><strong>Turn the screen from the app</strong> — on an Android phone or tablet, <strong>&#10227; Landscape</strong> in the notes <strong>⋯</strong> menu (and on the <strong>‹</strong> tab at the right edge) turns the screen sideways, and switching it off turns it back upright, so you can leave the phone's own auto-rotate off. In a browser tab it goes full screen first, because that is the only place a browser lets a page turn the screen; leaving full screen hands rotation back to the phone. The installed app remembers which way you left it</li>
             </ul>
           </section>
 

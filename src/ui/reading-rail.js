@@ -69,6 +69,7 @@ import { toggleDocumentToc } from "../documents/pdf-outline.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { openMyDecksPanel } from "./deck-header.js?v=__BUILD__";
 import { isFocusModeActive, setFocusMode, toggleImmersiveMode } from "./chrome.js?v=__BUILD__";
+import { toggleLandscape } from "./orientation.js?v=__BUILD__";
 import { setViewMode } from "./view-mode.js?v=__BUILD__";
 import { toggleNotesToc } from "../notes/toc.js?v=__BUILD__";
 import { goToBookmark } from "../notes/bookmark.js?v=__BUILD__";
@@ -297,6 +298,12 @@ export function refreshReadingRailModes() {
   if (penTextRow) penTextRow.setAttribute("aria-pressed", inkTool() === "text" ? "true" : "false");
   mirrorMode("immersive", el.immersiveModeBtn);
   mirrorMode("focus", el.focusModeBtn);
+  // Landscape is offered only where the screen can actually be locked
+  // (src/ui/orientation.js unhides the original), so the copy follows the
+  // original's hidden as well as its pressed state.
+  mirrorMode("rotate", el.rotateScreenBtn);
+  const rotateRow = row("rotate");
+  if (rotateRow) rotateRow.hidden = !el.rotateScreenBtn || el.rotateScreenBtn.hidden;
   // The edit pill says which way it is set with a CLASS, not aria-pressed
   // (enterNotesEditing/resetNotesEditingUI toggle `is-editing` on it), so this
   // one cannot go through mirrorMode. Same principle though: the answer is read
@@ -404,6 +411,7 @@ export function initReadingRail() {
     else if (action === "style") openStylePanel();
     else if (action === "sync") reconcileAllDecks({ explicit: true });
     else if (action === "immersive") toggleImmersiveMode();
+    else if (action === "rotate") toggleLandscape();
     else if (action === "fit-width") fitDocumentToWidth();
     else if (action === "dark-page") togglePdfInvert();
     else if (action === "ink") toggleInkRail();
@@ -435,7 +443,7 @@ export function initReadingRail() {
     // For the two rows this whole redesign is about — "some dedicated reliable
     // button for full / focus screen" — that is the difference between a switch
     // and a trapdoor.
-    if (action !== "focus" && action !== "immersive") setReadingRailExpanded(false);
+    if (action !== "focus" && action !== "immersive" && action !== "rotate") setReadingRailExpanded(false);
     // The modes among these say which way they are set, and the functions that
     // own that state paint their ORIGINAL buttons — which are in the folded row,
     // not here. So the rail reads the answer back off them.

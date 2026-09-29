@@ -449,7 +449,11 @@ try {
         drawn: badges.map((n) => {
           const css = getComputedStyle(n);
           const mark = n.closest("mark");
-          const markRect = mark.getBoundingClientRect();
+          // The LAST line of the mark, not its bounding box: the number sits where
+          // the highlight ends, and on a highlight that wraps the box's right edge
+          // is the end of its first line.
+          const lines = mark.getClientRects();
+          const markRect = lines[lines.length - 1];
           const box = n.getBoundingClientRect();
           return {
             tag: n.tagName,
@@ -458,9 +462,10 @@ try {
             // not something a single ink can be guaranteed to read on, which is
             // what the ::after this replaced kept discovering per theme.
             alpha: parse(css.backgroundColor).a,
-            // ...and it has to be ON the highlight it belongs to, not floating
+            // ...and it has to be AT THE END of the highlight it belongs to —
+            // just past its last letter, never over it, and not floating
             // somewhere near it.
-            near: Math.abs(box.right - markRect.right) < 24 && box.top < markRect.top + 4,
+            near: box.left >= markRect.right - 4 && box.left - markRect.right < 12 && box.top < markRect.top + 4,
             wide: box.width,
             tall: box.height
           };
@@ -604,6 +609,31 @@ try {
     await new Promise((r) => setTimeout(r, 250));
   }
 
+  // ── The page's own frame, on a wide window ──────────────────────────────
+  //
+  // "Too much empty gap on both the left and right side." Measured on a 1920px
+  // monitor at 90% zoom, which is a ~2127 CSS px viewport: the panel stopped at
+  // --quiz-panel-max-width's 1800px and left ~160px of background either side.
+  // While reading it keeps only the 99vw gutter it has at every other width.
+  await check("a wide window is not framed by empty bands either side", async () => {
+    await page.call("Emulation.setDeviceMetricsOverride", {
+      width: 2127, height: 945, deviceScaleFactor: 1, mobile: false
+    });
+    await new Promise((r) => setTimeout(r, 300));
+    const seen = await page.evaluate(`() => {
+      const panel = document.querySelector(".quiz-panel.notes-mode");
+      if (!panel) return { error: "the notes view is not up" };
+      const box = panel.getBoundingClientRect();
+      return { left: box.left, right: innerWidth - box.right, width: innerWidth };
+    }`);
+    if (seen.error) return seen.error;
+    const most = seen.width * 0.012;
+    if (seen.left > most || seen.right > most) {
+      return `${Math.round(seen.left)}px of empty band on the left and ${Math.round(seen.right)}px on the right of a ${seen.width}px window`;
+    }
+    return null;
+  });
+
   await check("tapping a highlight offers more than a colour and an ✕", async () => {
     await emulateDesktop();
     await new Promise((r) => setTimeout(r, 300));
@@ -676,6 +706,84 @@ try {
   });
 
   if (SHOT) await shoot(SHOT.replace(/(\.png)?$/, "-phone.png"));
+
+  // ── Landscape ⇄ portrait, from the app ─────────────────────────────────
+  //
+  // "A landscape and portrait mode toggle which I can use instead of the
+  // phone's built-in auto rotate." screen.orientation.lock() is stubbed: a
+  // headless browser has no screen to turn, and what is being checked is the
+  // app's half — which lock it asks for, and that both copies of the switch
+  // say so.
+  await check("a phone offers Landscape, and it turns the screen both ways", async () => {
+    await emulatePhone(page, { width: 390, height: 844 });
+    await new Promise((r) => setTimeout(r, 400));
+    const seen = await page.evaluate(`async () => {
+      const settle = (ms) => new Promise((r) => setTimeout(r, ms));
+      const btn = document.getElementById("rotateScreenBtn");
+      const railRow = document.querySelector('#readingRailTray [data-rail-action="rotate"]');
+      if (!btn || !railRow) return { error: "no Landscape control in the page" };
+      if (btn.hidden) return { error: "a phone (coarse pointer, screen.orientation.lock) was not offered Landscape" };
+      if (!btn.closest("#notesHeadMoreMenu")) return { error: "Landscape is not in the notes ⋯ menu" };
+      const calls = [];
+      const real = Object.getOwnPropertyDescriptor(screen.orientation, "lock");
+      screen.orientation.lock = (target) => { calls.push(target); return Promise.resolve(); };
+      const state = () => ({ pressed: btn.getAttribute("aria-pressed"), rail: railRow.getAttribute("aria-pressed"), railHidden: railRow.hidden, fullscreen: Boolean(document.fullscreenElement) });
+      try {
+        btn.click();
+        await settle(300);
+        const first = state();
+        btn.click();
+        await settle(300);
+        const second = state();
+        // ...and a browser that refuses. The switch must not claim a turn that
+        // did not happen, and full screen — entered by THIS press only as the
+        // way to the lock — must be handed back rather than left on. So the
+        // window leaves the full screen the first press put it in, and the
+        // refused press is the one that has to enter it.
+        if (document.fullscreenElement) await document.exitFullscreen();
+        await settle(300);
+        screen.orientation.lock = () => Promise.reject(new DOMException("refused", "NotSupportedError"));
+        btn.click();
+        await settle(500);
+        const refused = state();
+        return { calls, first, second, refused };
+      } finally {
+        if (real) Object.defineProperty(screen.orientation, "lock", real);
+        else delete screen.orientation.lock;
+        if (document.fullscreenElement) await document.exitFullscreen().catch(() => {});
+        document.getElementById("notesHeadMoreMenu").hidden = true;
+      }
+    }`);
+    if (seen.error) return seen.error;
+    if (seen.calls.join(",") !== "landscape,portrait") return `asked the screen for ${JSON.stringify(seen.calls)}, expected landscape then portrait`;
+    if (seen.first.pressed !== "true" || seen.second.pressed !== "false") {
+      return `the switch read ${seen.first.pressed} then ${seen.second.pressed}, expected true then false`;
+    }
+    // In a tab the lock is only allowed in full screen, so the first press has
+    // to have gone there — which is also what makes the refusal case below
+    // mean something.
+    if (!seen.first.fullscreen) return "a press in a browser tab did not enter full screen, which a tab needs to lock";
+    if (seen.first.railHidden) return "the reading rail has no Landscape row on a phone";
+    if (seen.first.rail !== "true" || seen.second.rail !== "false") {
+      return `the rail's copy read ${seen.first.rail} then ${seen.second.rail} — it is not mirroring the switch`;
+    }
+    if (seen.refused.pressed !== "false") return "a refused lock left the switch saying Landscape is on";
+    if (seen.refused.fullscreen) return "a refused lock left the window in full screen";
+    return null;
+  });
+
+  await check("...and a desktop is not offered a screen it cannot turn", async () => {
+    await emulateDesktop();
+    await page.call("Emulation.setTouchEmulationEnabled", { enabled: false });
+    await new Promise((r) => setTimeout(r, 400));
+    const hidden = await page.evaluate(`() => [
+      document.getElementById("rotateScreenBtn")?.hidden,
+      document.querySelector('#readingRailTray [data-rail-action="rotate"]')?.hidden
+    ]`);
+    if (hidden[0] !== true) return "Landscape is in the ⋯ menu on a desktop";
+    if (hidden[1] !== true) return "Landscape is on the reading rail on a desktop";
+    return null;
+  });
 } finally {
   client.close();
   launched.close();

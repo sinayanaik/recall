@@ -5,6 +5,14 @@
 // 300px of content against a 60px header stalls, and the scroll anchor has to
 // be frozen or the page re-expands the header the moment it settles.
 //
+// ...nor, any more, a tween over its REAL height. That was the fix for the
+// 300px stall, and it was still a per-frame change to a layout property, so
+// every frame of it re-laid out the note underneath: on a phone with a long
+// note the fold ran at 10-20fps ("going into focus mode feels very laggy").
+// The class flip below now changes the header's height once, with no
+// transition — see styles/67-focus-fold.css for the measurements, including
+// why a compositor slide was tried and dropped.
+//
 // ── Folding the header is a manual act now, full stop ──────────────────────
 //
 // This used to also fold on its own: scrolling down on a phone past a small

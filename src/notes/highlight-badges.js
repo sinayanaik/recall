@@ -40,6 +40,12 @@
 // (a click on one is a click on the mark, which opens the mark menu) and cannot
 // be reached by keyboard at all.
 //
+// Where it lands is the stylesheet's business, but it depends on one fact from
+// here: the badge is APPENDED, so it is the mark's last child. It carries no
+// offsets and sits at its static position — just past the final glyph, on
+// whichever line the highlight actually ends — rather than being pinned over
+// the last letter (styles/42-highlight-badge.css).
+//
 // ── ...and why the source matcher must never see it ───────────────────────
 //
 // locateSelectionInSource finds a rendered selection in the raw markdown by
