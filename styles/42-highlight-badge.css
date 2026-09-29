@@ -1,4 +1,4 @@
-/* The number on a highlight that has something written about it
+/* The dot on a highlight that has something written about it
  *
  * Added AFTER the 13-way split of styles.css, in a file of its own so that
  * split stays byte-for-byte verifiable — see POST_SPLIT in tools/split-css.mjs.
@@ -19,8 +19,8 @@
  *
  * The badge keeps that rule by being OUT OF FLOW: `position: absolute` inside a
  * mark that is already `position: relative`. An absolutely positioned box
- * contributes nothing to the line box, so it can carry a background, a ring and
- * two digits of padding and still move no glyph. That is also the difference
+ * contributes nothing to the line box, so it can carry a background and a ring
+ * and still move no glyph. That is also the difference
  * from the ::after this replaces — a pseudo-element could not be pressed or
  * focused, and a click on one is a click on the mark, which opens the mark menu
  * instead of the note.
@@ -42,98 +42,67 @@
   position: relative;
 }
 
-/* ── Layer 2: the number ──────────────────────────────────────────────────
-   At the END of the mark: a highlight can be a single word or half a page, and
-   its start is where the eye already is when it reaches one — the end is where
-   it is looking for what comes next.
+/* ── Layer 2: the dot ─────────────────────────────────────────────────────
+   A small dot at the END of the mark — no number. A highlight can be a single
+   word or half a page, and its start is where the eye already is when it
+   reaches one; the end is where it is looking for what comes next. What the
+   note says is in the tooltip and behind the press; the dot only says "there is
+   one", so it is kept quiet: accent at partial strength, a hairline ring in the
+   page's own ground so it stays a separate object over any highlight tint.
 
-   ── Why an opaque chip rather than coloured digits ──────────────────────
-   This was `color: var(--accent-strong)` painted straight onto the mark, and it
-   disappeared. A <mark>'s tint is a colour-mix over whatever the theme's surface
-   is (styles/12-notes.css), so there is no background a text colour can be
-   guaranteed to read against: yellow over a light theme and pink over an amoled
-   one are not the same problem and no single ink solves both. An opaque chip
-   hides the tint underneath it entirely, and the contrast question stops being
-   conditional on the theme AND the highlight colour at once.
-
-   --accent-contrast is the one pair in the token set that already carries a
-   contrast guarantee — it is defined in every one of the ten themes as the ink
-   that reads on --accent-strong (white on the light themes, near-black on the
-   dark ones). Deriving it by eye here would be re-deriving something the theme
-   file has already been made to answer. */
+   It is still a <button>, still out of flow (`position: absolute` at its STATIC
+   position, so it sits just past the final glyph and follows a wrapped
+   highlight to wherever it really ends), and so still not a pixel of advance.
+   Because a dot this small is a poor target, a transparent ::before extends
+   what a pointer or finger can hit without changing what is drawn. */
 .hl-note-badge {
   position: absolute;
-  /* ── AFTER the last character, not on top of it ─────────────────────────
-     This was `top: -0.5em; right: -0.24em` — pinned to the mark's right edge
-     and pulled back over it — and the chip sat squarely on the highlight's last
-     letter: "messagebo▣", "FigureCanvasTkA▣". The number was legible; the word
-     it was about was not.
-
-     No offsets at all now. An absolutely positioned box with `top`/`left` left
-     at `auto` is drawn at its STATIC position — where it would have been in
-     the flow — and the badge is the mark's last child (annotateMark appends
-     it), so that is exactly the point just past the final glyph. Still out of
-     flow, so still not a pixel of advance (tools/highlight-check.mjs asserts
-     both halves).
-
-     It also fixes a highlight that wraps. An abs-pos child of a multi-line
-     inline takes the FIRST line box as its containing block, so the old offsets
-     put the number at the end of the mark's first line — mid-highlight, with
-     the real end a line further down. The static position follows the text to
-     wherever it actually finishes.
-
-     The margins are the nudge from there, in the chip's own (half-size) em: a
-     hair of clearance from the glyph, and up by just under a line of the chip
-     so it reads as a superscript — clear of this line's letters, and still
-     inside the block, since a chip that clears the paragraph's own box is
-     clipped by the scrolling notes surface on the first line of a note. */
   top: auto;
   right: auto;
-  margin-left: 0.1em;
-  margin-top: -0.9em;
-  /* Over the line above it rather than under it, on the rare line where the two
-     meet — a half-covered number is worse than one that slightly overlaps. */
+  margin-left: 0.18em;
+  margin-top: -0.35em;
   z-index: 1;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  /* Sized for the digit rather than the other way round. At 1.05em the glyph
-     filled the chip corner to corner and touched the ring, which reads as a
-     number that has been cut off rather than one sitting in a badge. */
-  min-width: 1.4em;
-  height: 1.4em;
-  padding: 0 0.22em;
+  display: inline-block;
+  box-sizing: border-box;
+  width: 0.4em;
+  height: 0.4em;
+  min-width: 0;
+  padding: 0;
   border: 0;
-  border-radius: 999px;
-  background: var(--accent-strong);
-  color: var(--accent-contrast);
-  font: inherit;
-  font-size: 0.5em;
-  font-weight: 800;
-  font-variant-numeric: tabular-nums;
-  line-height: 1;
-  letter-spacing: 0;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--accent) 72%, transparent);
+  font-size: 1em;
+  line-height: 0;
   cursor: pointer;
-  /* A hairline in the page's own ground, so the chip is still a separate object
-     on the themes where the accent and a highlight colour are neighbours — a
-     blue tint under a navy theme, a green one under emerald. */
   box-shadow: 0 0 0 1.5px var(--panel);
-  /* Never part of a selection, and never part of what the source matcher reads.
-     This is belt to the braces of the two JS skips (see cleanedSelectionFragment
-     and emitTextWithLineBreaks in src/notes/selection.js): even where those are
-     bypassed — a native double-click extending a selection through it, say —
-     the browser will not carry this digit into the range. */
+  /* Never part of a selection, and never part of what the source matcher reads
+     (see cleanedSelectionFragment and emitTextWithLineBreaks in
+     src/notes/selection.js for the JS half of that). */
   -webkit-user-select: none;
   user-select: none;
 }
 
+.hl-note-badge::before {
+  content: "";
+  position: absolute;
+  inset: -0.5em;
+}
+
 .hl-note-badge:hover,
 .hl-note-badge:focus-visible {
+  background: var(--accent);
   outline: 2px solid var(--accent);
-  outline-offset: 1px;
+  outline-offset: 2px;
 }
 
 /* The Document surface's page badge is the same feature on the other surface and
    is fixed the same way, but in the file that DEFINES it (styles/37-document-
    chrome.css) rather than overridden from here: two files setting one rule is a
    cascade question nobody should have to answer twice. */
+
+/* Inside a code block the dotted underline goes: it cuts across the descenders
+   of the code being read, and the dot is cue enough there. Same weight as the
+   rule above (id + class + element) and later, so it wins. */
+#notesView pre code mark.has-note {
+  text-decoration: none;
+}

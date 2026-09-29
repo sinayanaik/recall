@@ -45,7 +45,7 @@
   padding: 0;
   border: none;
   background: transparent;
-  color: color-mix(in srgb, var(--accent) 60%, var(--muted));
+  color: var(--accent);
   cursor: pointer;
   /* Above the link it overlaps, or the press would jump to the heading instead
      of folding the branch. */
@@ -54,7 +54,8 @@
 
 .notes-toc-twisty-glyph {
   display: block;
-  font-size: 0.7rem;
+  font-size: 0.9rem;
+  font-weight: 700;
   line-height: 1;
   transition: transform 0.15s ease, color 0.15s ease;
 }
@@ -66,7 +67,7 @@
 }
 
 .notes-toc-twisty:hover .notes-toc-twisty-glyph {
-  color: var(--accent);
+  color: var(--accent-strong);
 }
 
 .notes-toc-twisty:focus-visible {
@@ -78,7 +79,7 @@
 /* A folded branch's own row reads as a closed folder: the glyph carries full
    accent so the fold is visible without opening it. */
 .notes-toc-item[data-toc-collapsed="true"] .notes-toc-twisty {
-  color: var(--accent);
+  color: var(--accent-strong);
 }
 
 /* Expand-all / collapse-all, in the drawer head. margin-left:auto rather than
@@ -93,9 +94,9 @@
   height: 24px;
   border: none;
   border-radius: 7px;
-  background: transparent;
-  color: var(--muted);
-  font-size: 0.95rem;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--accent);
+  font-size: 1.05rem;
   line-height: 1;
   cursor: pointer;
   transition: background-color 0.15s ease, color 0.15s ease;

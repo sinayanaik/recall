@@ -14,29 +14,48 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 0.9em;
-  height: 0.9em;
-  margin: 0 0.3em 0 0;
+  width: 1.3em;
+  height: 1.3em;
+  margin: 0 0.4em 0 0;
   padding: 0;
   border: none;
-  background: transparent;
-  color: color-mix(in srgb, var(--accent) 60%, var(--muted));
+  border-radius: 0.3em;
+  /* A soft accent tile behind the arrow: the bare 0.7em glyph at 60% strength
+     was easy to miss next to a large heading. */
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
   cursor: pointer;
   vertical-align: middle;
   line-height: 0;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+.notes-fold-twisty:hover {
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
+}
+.notes-fold-twisty:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 .notes-fold-twisty-glyph {
   display: block;
-  font-size: 0.7em;
+  font-size: 1em;
+  font-weight: 700;
   transition: transform 0.15s ease, color 0.15s ease;
 }
 :is(h1, h2, h3, h4, h5, h6)[data-fold-collapsed="false"] > .notes-fold-twisty .notes-fold-twisty-glyph {
   transform: rotate(90deg);
 }
+/* Folded reads as "closed" at a glance: a filled accent tile with the
+   contrast ink, where an open one is only tinted. */
 :is(h1, h2, h3, h4, h5, h6)[data-fold-collapsed="true"] > .notes-fold-twisty {
-  color: var(--accent);
+  background: var(--accent-strong);
+  color: var(--accent-contrast);
+}
+:is(h1, h2, h3, h4, h5, h6)[data-fold-collapsed="true"] > .notes-fold-twisty:hover {
+  background: var(--accent);
 }
 @media (prefers-reduced-motion: reduce) {
+  .notes-fold-twisty,
   .notes-fold-twisty-glyph {
     transition: none;
   }

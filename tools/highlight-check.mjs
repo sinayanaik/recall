@@ -1016,7 +1016,7 @@ const PROBE = `async (api) => {
     return host;
   };
 
-  check("a note gives its highlight a numbered badge, a plain highlight none", () => {
+  check("a note gives its highlight a numberless badge, a plain highlight none", () => {
     api.state.notes = NOTED;
     const host = renderNoted();
     try {
@@ -1029,9 +1029,11 @@ const PROBE = `async (api) => {
       if (got !== want) return got;
       const badges = [...host.querySelectorAll(".hl-note-badge")];
       if (badges.length !== 2) return badges.length + " badge(s), expected 2";
-      // Numbered from the SOURCE, in document order — the property that has to
-      // survive a note being built lazily, chunk by chunk.
-      if (badges.map((b) => b.textContent).join(",") !== "1,2") return "numbered " + badges.map((b) => b.textContent).join(",");
+      // Keyed from the SOURCE, in document order — the property that has to
+      // survive a note being built lazily, chunk by chunk. The badge shows no
+      // digit; the key is what the passes compare.
+      if (badges.some((b) => b.textContent !== "")) return "a badge still shows text: " + badges.map((b) => JSON.stringify(b.textContent)).join(",");
+      if (badges.map((b) => b.dataset.hnKey).join(",") !== "1,2") return "keyed " + badges.map((b) => b.dataset.hnKey).join(",");
       // Only where there is something to read. An id whose section entry was
       // deleted by hand is not a note, and must not be offered as one.
       const dangling = marks.find((m) => m.firstChild.textContent === "a dangling id");
