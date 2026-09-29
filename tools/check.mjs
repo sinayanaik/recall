@@ -464,6 +464,12 @@ const checks = [
     // the reason opening a paper is one round trip rather than two.
     ["s3-browser    ", ["node", ["tools/s3-browser-check.mjs"], ROOT]],
     ["large-select  ", ["node", ["tools/large-note-selection-check.mjs"], ROOT]],
+    // Whether the words stay where they were while a highlight lands: on the
+    // glass, frame by frame, in a tall code block, a code line and a table cell
+    // scrolled sideways, a quote and a long paragraph. A jump that snaps back
+    // 150ms later nets out to zero, so nothing that compares before with after
+    // could see the one this was written for.
+    ["repaint-stab  ", ["node", ["tools/repaint-stability-check.mjs"], ROOT]],
     ["render-scale  ", ["node", ["tools/render-scale-check.mjs"], ROOT]],
     ["interaction   ", ["node", ["tools/interaction-scale-check.mjs"], ROOT]],
     ["mobile-menu   ", ["node", ["tools/mobile-menu-check.mjs"], ROOT]],
