@@ -1675,7 +1675,7 @@ export function relayoutDocument({ refit = false, afterLayout = null } = {}) {
     entry.boxHeight = Math.round(height);
     bumpDocumentLayout();
     if (pageNumber === 1) publishPageWidth(width);
-    if (openPdf.rendered.has(pageNumber)) entry.pendingSize = { width, height };
+    if (openPdf.rendered.has(pageNumber) && pageNeedsRerender(entry, width, height)) entry.pendingSize = { width, height };
   });
   // Between the two passes, deliberately. A zoom moves the scroll offsets so the
   // point the reader was looking at stays where it was (restorePageAnchor), and
@@ -1705,6 +1705,27 @@ export function relayoutDocument({ refit = false, afterLayout = null } = {}) {
   // passes above so every page has its new height first.
   renderPagesNearViewport();
   updatePageIndicator();
+}
+
+// Whether a rendered page's pixels are wrong for the layout it is about to get.
+//
+// A relayout used to answer "yes" for every rendered page, whatever changed —
+// and the commonest relayout is the one where NOTHING changed. Every background
+// sync that touches the open deck reloads it in place, which goes through
+// setViewMode → openDocumentView's already-open path → relayoutDocument({ refit:
+// true }) at the width the page already fits. Each rendered page then dropped
+// its text, mark, badge and ink layers, stretched its canvas as "stale" and
+// rasterised itself again: "the pages blink and go blank every so often while I
+// am just reading", on a five-minute clock and once a minute while annotating.
+//
+// So a page keeps its canvas and every layer on it unless the scale it was drawn
+// at, or the density it was drawn for, is no longer the one it will be shown at.
+// A zoom, a real refit and a move to a screen of a different pixel ratio all
+// still re-render exactly as before.
+function pageNeedsRerender(entry, width, height) {
+  if (entry.renderScale !== openPdf.scale) return true;
+  if (!entry.renderOutputScale) return true;
+  return canvasOutputScale(width, height) !== entry.renderOutputScale;
 }
 
 // The same hold-the-reader guard openDocumentViewBody's tab-switch path
@@ -1985,6 +2006,9 @@ async function renderPage(pageNumber) {
     const canvas = document.createElement("canvas");
     canvas.className = "pdf-canvas";
     const outputScale = canvasOutputScale(viewport.width, viewport.height);
+    // Remembered so relayoutDocument can tell "these pixels are still exactly
+    // right" from "the screen's density changed under them" without a redraw.
+    entry.renderOutputScale = outputScale;
     canvas.width = Math.floor(viewport.width * outputScale);
     canvas.height = Math.floor(viewport.height * outputScale);
     canvas.style.width = `${Math.floor(viewport.width)}px`;

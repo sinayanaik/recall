@@ -248,7 +248,7 @@ export function applyPillHighlight(color) {
       // them asks the question the reader meant: un-highlight what I have
       // selected. Every record the selection touches goes, because a selection
       // that covers two highlights meant both.
-      const under = documentHighlightsUnderRects(selectionRects(target));
+      const under = documentHighlightsUnderRects(selectionRects(target), { textOnly: true });
       under.forEach((record) => removeDocumentHighlight(record.id));
       const removed = under.length;
       if (!removed) showToast("Nothing highlighted there", "error");
@@ -270,7 +270,9 @@ export function applyPillHighlight(color) {
       // green means "make that one green". So: recolour when the selection adds
       // nothing new, and add a highlight when it does.
       const rects = selectionRects(target);
-      const covering = documentHighlightsCovering(rects);
+      // Text highlights only: a region drawn round this passage is not "already
+      // highlighting" it — see documentHighlightsUnderRects.
+      const covering = documentHighlightsCovering(rects, { textOnly: true });
       if (covering.length) {
         covering.forEach((record) => recolourDocumentHighlight(record.id, color));
         // The one the reader was pointing at, when the press covered several.
