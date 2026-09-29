@@ -1,0 +1,38 @@
+/* An edit repaint must not move the page.
+ *
+ * Written since the split, so it lives on its own — see POST_SPLIT in
+ * tools/split-css.mjs.
+ *
+ * ── A freshly rebuilt block is laid out for real ─────────────────────────
+ *
+ * Every top-level notes block is `content-visibility: auto` with
+ * `contain-intrinsic-size: auto <estimate>` (styles/12-notes.css:255). A block an
+ * edit rebuilt is a NEW element, so it has no remembered size, and where it
+ * replaced a block whose top was above the viewport — any code block taller than
+ * the part of it on screen — the browser's scroll anchoring made a wrong
+ * adjustment on the first frame (its anchor had been inside the node just
+ * removed) and settleNotesPin took it back a confirm-pass later. Highlighting a
+ * line of code dropped the text 15px and put it back; on a wide block it was
+ * over 1,600px for a frame. patchRenderedBlocks marks the fresh block
+ * data-fresh-block for its first two frames (see markFreshBlocks in
+ * src/render/block-cache.js); here that means "lay it out now".
+ *
+ * An id selector because 12-notes.css:255 is (0,3,0) — the trap
+ * 19-notes-chunks.css documents. Paged mode already has containment off, and a
+ * block inside a chunk is never contained on its own, so neither matches or
+ * needs to. */
+#notesView > [data-fresh-block] {
+  content-visibility: visible;
+}
+
+/* ── A missing note link keeps its glyph widths ───────────────────────────
+ *
+ * markMissingNoteLinks (src/render/enhance.js) is fire-and-forget: it can answer
+ * after the rebuilt paragraph has painted — after a round trip, when an autosave
+ * has just cleared the deck index. `.is-missing` used to drop the weight from
+ * 600 to 500, which re-wraps the paragraph under the reader when it lands. The
+ * dashed underline and the muted colour already say "missing"; the weight stays
+ * what 12-notes.css gives every note link. */
+.rendered a.note-link.is-missing {
+  font-weight: 600;
+}

@@ -331,6 +331,13 @@ export function notesAnchorTop(node, view) {
 // drift correction ran at all (the "highlighting jumps the note" report).
 // Knowing exactly where the edit happened removes the guess entirely for the
 // case that matters most here.
+//
+// The pin is the backstop, not the mechanism. What keeps a repaint still in the
+// first place is patchRenderedBlocks: only the edited block is swapped (the ones
+// after it are no longer detached and re-inserted), the rebuilt block inherits
+// its predecessor's sideways scroll, and it is laid out for real on its first
+// frame rather than at an estimated height — see placeBlockNodes and
+// markFreshBlocks in src/render/block-cache.js.
 export function renderNotesViewPinned(offsetHint) {
   const view = el.notesView;
   if (!view || view.hidden) return renderNotesView({ sameNote: true });
@@ -429,6 +436,7 @@ export async function settleNotesPin(view, anchors) {
     // and returns. Later passes wait for lazily-arriving content.
     await new Promise((resolve) =>
       requestAnimationFrame(() => (settleMs ? setTimeout(resolve, settleMs) : resolve())));
+    const firstPass = settleMs === 0;
     settleMs = NOTES_PIN_SETTLE_MS;
     const anchor = anchors.find((entry) => entry.node.isConnected && view.contains(entry.node));
     if (!anchor) return;
@@ -478,7 +486,14 @@ export async function settleNotesPin(view, anchors) {
     const sign = Math.sign(drift);
     confirmed = sign === confirmedSign ? confirmed + 1 : 1;
     confirmedSign = sign;
-    if (confirmed < NOTES_PIN_CONFIRM_PASSES) {
+    // ...except on the FIRST pass. That one runs in the animation frame before
+    // the patched blocks have ever been painted, so a drift seen there is the
+    // repaint's own doing, and correcting it now is invisible. Waiting a
+    // confirm-pass for it is what turned a drift into something the reader
+    // watched happen: highlighting in a code block dropped the text 15px and
+    // put it back 150ms later. Transient late content (a diagram, a chunk's
+    // estimate) arrives on the later passes, which still have to see it twice.
+    if (!firstPass && confirmed < NOTES_PIN_CONFIRM_PASSES) {
       if (performance.now() >= until) return;
       continue;
     }

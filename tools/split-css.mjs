@@ -65,6 +65,12 @@ const SECTIONS = [
 // Anything appearing in styles/ that is neither a slice nor listed here is
 // still a failure.
 const POST_SPLIT = {
+  "69-repaint-stability.css":
+    "What keeps an edit repaint from moving the page: a block an edit just " +
+    "rebuilt is laid out for real on its first frames instead of standing in " +
+    "at an estimated height (the highlight-in-a-code-block jump), and a missing " +
+    "note link keeps its weight so the late check cannot re-wrap a paragraph. " +
+    "See placeBlockNodes and markFreshBlocks in src/render/block-cache.js.",
   "68-job-console.css":
     "The panel every long job shows — backup, share, restore, import: the " +
     "steps, the item in hand, the counters and an activity log. See " +

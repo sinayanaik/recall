@@ -1810,9 +1810,160 @@ export async function streamRenderedBlocks(container, blocks, prelude, sequenceO
   return groups;
 }
 
+// ── An edit repaint must not move the page ─────────────────────────────────
+//
+// Highlighting a line of code made the note jump: up 15px and back 150ms later
+// on a tall block, over 1,600px for a frame on a wide one, and a block that had
+// been scrolled sideways snapped back to its left edge. Three separate causes,
+// each answered by one of the helpers below — tools/repaint-stability-check.mjs
+// asserts all three frame by frame.
+
+// Up to this many freshly built blocks is an EDIT (a highlight, a cloze, a
+// formatting action — one block, occasionally a handful). More than that is a
+// note being opened or restructured, where none of the carrying below means
+// anything and all of it would cost a layout read per stale node.
+export const EDIT_REPAINT_MAX_FRESH = 200;
+
+// Everything inside a rendered block that scrolls on its own. A block rebuilt
+// by an edit is a NEW element, and a new element starts at scroll 0 — so a code
+// line or a table cell highlighted while scrolled sideways jumped back to the
+// left edge the moment the highlight landed.
+export const NESTED_SCROLLER_SELECTOR = "pre, .markdown-table-wrap, .math-display, .mermaid, .d2-diagram, .diagram-shell";
+
+function nestedScrollers(root) {
+  if (!root || root.nodeType !== 1) return [];
+  const inside = Array.from(root.querySelectorAll(NESTED_SCROLLER_SELECTOR));
+  return root.matches(NESTED_SCROLLER_SELECTOR) ? [root, ...inside] : inside;
+}
+
+// The non-zero scroll offsets inside `node`, by position in nestedScrollers().
+function scrollSnapshot(node) {
+  const saved = [];
+  nestedScrollers(node).forEach((scroller, index) => {
+    if (scroller.scrollLeft || scroller.scrollTop) saved.push({ index, left: scroller.scrollLeft, top: scroller.scrollTop });
+  });
+  return saved.length ? saved : null;
+}
+
+// Puts `groups` (arrays of nodes, in document order) into `parent` in that
+// order, and returns the element nodes it had to throw away.
+//
+// ── Stale nodes go FIRST, not last ────────────────────────────────────────
+//
+// This used to step over a node already in place and insertBefore everything
+// else, sweeping whatever was left over at the end. The edited block's old node
+// is never in the new list, so the cursor stopped on it — and every block AFTER
+// the edit then failed `node === cursor` and was detached and re-inserted in
+// front of it. Highlighting block 10 of 1,000 moved 990 blocks, and each one
+// lost what a detach costs: its own scroll position, and on the next layout its
+// place in the browser's scroll anchoring. Dropping a node the new list does not
+// want the moment the cursor reaches it means the blocks after an edit are
+// simply stepped over.
+//
+// `beforeRemove` sees each discarded element while it is still in the document
+// (a scroll offset cannot be read off a detached node).
+export function placeBlockNodes(parent, groups, { beforeRemove = null } = {}) {
+  const wanted = new Set();
+  groups.forEach((nodes) => nodes.forEach((node) => wanted.add(node)));
+  const removed = [];
+  const drop = (node) => {
+    const next = node.nextSibling;
+    if (node.nodeType === 1) {
+      beforeRemove?.(node);
+      removed.push(node);
+    }
+    parent.removeChild(node);
+    return next;
+  };
+  let cursor = parent.firstChild;
+  groups.forEach((nodes) => {
+    nodes.forEach((node) => {
+      while (cursor && !wanted.has(cursor)) cursor = drop(cursor);
+      if (node === cursor) {
+        cursor = cursor.nextSibling;
+        return;
+      }
+      parent.insertBefore(node, cursor);
+    });
+  });
+  while (cursor) cursor = drop(cursor);
+  return removed;
+}
+
+// Places `groups` into `parent` and, on an edit repaint, works out which fresh
+// block took the place of which discarded one so their inner scroll offsets can
+// follow (see applyScrollCarry). Paired one for one, in order, and only when the
+// counts agree — a highlight replaces exactly one block with exactly one block;
+// anything that split or merged blocks has no honest pairing to offer.
+function placeAndCarry(parent, groups, fresh, isEdit) {
+  const snapshots = new Map();
+  const removed = placeBlockNodes(parent, groups, {
+    beforeRemove: isEdit ? (node) => {
+      const saved = scrollSnapshot(node);
+      if (saved) snapshots.set(node, saved);
+    } : null
+  });
+  if (!isEdit || !snapshots.size) return [];
+  const freshElements = fresh.filter((node) => node.nodeType === 1);
+  if (freshElements.length !== removed.length) return [];
+  const carry = [];
+  removed.forEach((node, i) => {
+    const saved = snapshots.get(node);
+    if (saved) carry.push({ node: freshElements[i], saved });
+  });
+  return carry;
+}
+
+// Puts the carried scroll offsets back. Run AFTER enhancement, not at insertion:
+// Prism and the code marks rebuild a <code>'s contents and fitMarkdownTables
+// wraps a table in its scroller, so before enhancement neither the geometry nor
+// (for a table) the element being restored exists yet. Enhancement of an edited
+// block settles in microtasks, so this still lands before the first paint.
+export function applyScrollCarry(container, carry) {
+  if (!carry || !carry.length) return;
+  carry.forEach(({ node, saved }) => {
+    if (!node.isConnected) return;
+    // The fresh node may since have been wrapped (a table), so restore from
+    // whatever now stands at the top level in its place.
+    let root = node;
+    while (root.parentNode && !isTopLevelBlockParent(root.parentNode, container)) root = root.parentNode;
+    const scrollers = nestedScrollers(root);
+    saved.forEach(({ index, left, top }) => {
+      const scroller = scrollers[index];
+      if (!scroller) return;
+      if (left) scroller.scrollLeft = left;
+      if (top) scroller.scrollTop = top;
+    });
+  });
+}
+
+// A freshly built block is a new element: `content-visibility: auto` (styles/
+// 12-notes.css:255) with no remembered size. Where it replaces a block whose top
+// is above the viewport — any code block taller than the part of it on screen —
+// the browser's scroll anchoring, whose anchor was inside the node just removed,
+// made a wrong adjustment on the first frame and settleNotesPin took it back a
+// confirm-pass later: the text visibly dropped and returned. Measured: making
+// the fresh block `content-visibility: visible` for its first frames removes it
+// entirely. data-fresh-block does that (styles/69-repaint-stability.css), and
+// comes off two frames later — by then the block has been laid out for real,
+// so `contain-intrinsic-size: auto` remembers its true height, and the DOM is
+// again identical to a cold render's.
+const FRESH_BLOCK_ATTR = "data-fresh-block";
+
+function markFreshBlocks(fresh) {
+  const marked = fresh.filter((node) => node.nodeType === 1);
+  if (!marked.length) return;
+  marked.forEach((node) => node.setAttribute(FRESH_BLOCK_ATTR, ""));
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    marked.forEach((node) => node.removeAttribute(FRESH_BLOCK_ATTR));
+  }));
+}
+
 // Rebuilds `container`'s children to match `blocks`, reusing the DOM of every
 // block whose source is unchanged. Returns the new block list plus the nodes
-// that were freshly built, which are the only ones needing enhancement.
+// that were freshly built, which are the only ones needing enhancement, and —
+// on an edit — the scroll offsets the rebuilt blocks should inherit (see
+// applyScrollCarry).
 export async function patchRenderedBlocks(container, blocks, prelude, cached, sequenceOk = () => true) {
   const pool = new Map(); // block source -> reusable node groups, in document order
   if (cached) {
@@ -1879,6 +2030,10 @@ export async function patchRenderedBlocks(container, blocks, prelude, cached, se
     });
   }
 
+  // Something was reused and only a little is new: an edit to the note on
+  // screen rather than a note being opened. See EDIT_REPAINT_MAX_FRESH.
+  const isEdit = missing.length > 0 && missing.length < blocks.length && missing.length <= EDIT_REPAINT_MAX_FRESH;
+  let scrollCarry = [];
   if (shouldChunkRenderedBlocks(container, blocks.length)) {
     // Chunked: rebuild the wrapper structure and re-home every block into it.
     // The cursor walk below cannot be used here — it steps over
@@ -1890,32 +2045,23 @@ export async function patchRenderedBlocks(container, blocks, prelude, cached, se
   } else {
     // Walk the target order once: a node already in the right place is stepped
     // over, anything else is moved (reused) or inserted (fresh) in front of the
-    // cursor. Whatever is left after the last block never made it into the new
-    // document and is dropped.
+    // cursor, and anything the new document does not contain is dropped.
     //
-    // This also un-chunks correctly when a note shrinks below the threshold: the
-    // blocks are moved out to the top level one by one, and the emptied chunks
-    // are what the trailing sweep removes.
-    let cursor = container.firstChild;
-    groups.forEach((nodes) => {
-      nodes.forEach((node) => {
-        if (node === cursor) {
-          cursor = cursor.nextSibling;
-          return;
-        }
-        container.insertBefore(node, cursor);
-      });
-    });
-    while (cursor) {
-      const next = cursor.nextSibling;
-      container.removeChild(cursor);
-      cursor = next;
-    }
+    // This also un-chunks correctly when a note shrinks below the threshold:
+    // each chunk is dropped when the cursor reaches it, and its blocks are moved
+    // out to the top level one by one as the walk asks for them.
+    //
+    // A node the new list does not want is dropped as soon as the cursor meets
+    // it, so the blocks after an edit are stepped over rather than moved — see
+    // placeBlockNodes.
+    scrollCarry = placeAndCarry(container, groups, fresh, isEdit);
   }
+  if (isEdit && container === el.notesView) markFreshBlocks(fresh);
 
   return {
     blocks: blocks.map((key, index) => ({ key, nodes: groups[index] })),
-    fresh
+    fresh,
+    scrollCarry
   };
 }
 
@@ -3188,21 +3334,11 @@ export function rebuildNotesLazySpan(container, plan, index, blocks) {
     });
   }
 
-  let cursor = chunk.firstChild;
-  groups.forEach((nodes) => {
-    nodes.forEach((node) => {
-      if (node === cursor) {
-        cursor = cursor.nextSibling;
-        return;
-      }
-      chunk.insertBefore(node, cursor);
-    });
-  });
-  while (cursor) {
-    const next = cursor.nextSibling;
-    chunk.removeChild(cursor);
-    cursor = next;
-  }
+  // The same edit test and the same walk as patchRenderedBlocks: the blocks of
+  // this span after the edited one stay where they are, and a rebuilt block
+  // inherits the sideways scroll of the one it replaced.
+  const isEdit = missing.length > 0 && missing.length < blocks.length && missing.length <= EDIT_REPAINT_MAX_FRESH;
+  const scrollCarry = placeAndCarry(chunk, groups, fresh, isEdit);
 
   plan.blocks[index] = blocks;
   plan.groups[index] = groups;
@@ -3211,7 +3347,11 @@ export function rebuildNotesLazySpan(container, plan, index, blocks) {
   bindNotesHeadingElements(container, plan.spans[index].start, plan.spans[index].end, chunk);
   if (fresh.length) {
     Promise.resolve()
-      .then(() => enhanceRenderedMarkdown(container, fresh))
+      .then(() => {
+        const enhancing = enhanceRenderedMarkdown(container, fresh);
+        applyScrollCarry(container, scrollCarry);
+        return enhancing;
+      })
       .then(() => hydrateLocalImages(fresh))
       .then(() => { markNotesLazyChunkContainment(chunk); })
       .then(() => resolveStorageImages(fresh))
@@ -3508,6 +3648,7 @@ export async function renderMarkdown(container, markdown, allowPlaceholder = fal
   forgetNotesLazyPlan(container);
 
   let roots = null;
+  let scrollCarry = null;
   if (split) {
     // Every block is parsed behind the document's link reference definitions, so
     // a change to those changes what any block could render to: start over.
@@ -3538,6 +3679,7 @@ export async function renderMarkdown(container, markdown, allowPlaceholder = fal
     }
     if (!patched) return; // superseded mid-stream
     roots = patched.fresh;
+    scrollCarry = patched.scrollCarry;
     resetRenderedClozes(container);
     // Committed before the awaits below: another render can start while mermaid
     // is drawing, and it must see the DOM as it actually is, not as it was.
@@ -3570,7 +3712,14 @@ export async function renderMarkdown(container, markdown, allowPlaceholder = fal
       if (i + ENHANCE_BATCH_BLOCKS < roots.length) await yieldToEventLoop();
     }
   } else {
-    await enhanceRenderedMarkdown(container, roots);
+    // Not awaited before the carry: everything that shapes a rebuilt block —
+    // Prism, the code marks, a table's scroll wrapper — happens in the
+    // synchronous part of enhancement, and only a diagram's drawing is awaited
+    // at its end. Putting a code block's sideways scroll back has no reason to
+    // wait for a mermaid render elsewhere in the same block.
+    const enhancing = enhanceRenderedMarkdown(container, roots);
+    applyScrollCarry(container, scrollCarry);
+    await enhancing;
   }
   // Images still waiting to upload live in IndexedDB behind a recall-img: URL,
   // which no browser can load directly — swap in a blob URL so they're visible
