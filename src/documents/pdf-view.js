@@ -844,6 +844,14 @@ export function renderDocumentPdfSwitcher() {
 // the two together are exactly the pair a fresh page render runs.
 export function repaintOpenDocumentPages() {
   if (!openPdf) return;
+  // Only ever reached once openDocumentIsCurrent has said these are still the
+  // pages of the file the deck names — so whatever else in the open key has
+  // moved since (state.deckId goes null → uuid on a deck's first push, and a
+  // sync is what brings that) is not a reason for the next tab press to
+  // rebuild the paper from scratch. Re-stamped here, against the deck as it
+  // now stands, so openDocumentView's already-open test keeps meaning "same
+  // document".
+  openPdf.deckKey = documentOpenKey(openPdf.slot, openPdf.pdfId);
   openPdf.rendered.forEach((pageNumber) => {
     paintDocumentHighlights(pageNumber);
     onPagePainted(pageNumber);

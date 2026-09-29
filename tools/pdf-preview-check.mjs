@@ -1425,6 +1425,92 @@ try {
   check("...and its text layer", underRegion.textLayerKept === true,
     `textLayerKept=${underRegion.textLayerKept}`);
 
+  // ── 7a'. A sync that reloads the deck leaves the paper exactly as it is ────
+  //
+  // Every background sync that touches the open deck reloads it in place
+  // (loadDeckFromLibrary with keepPlace). That used to reach openDocumentView
+  // while state.localDeckId was transiently null, miss its already-open test,
+  // and rebuild the whole document: "Opening the document…", a re-parse and a
+  // re-raster of every page, every few minutes — the blank-and-blink a reader
+  // saw without ever leaving their page. Watched here the way it looked: which
+  // nodes left the scroller, and whether the loading line ever appeared.
+  const syncReload = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const view = document.getElementById("documentView");
+    const deckId = api.state.localDeckId;
+    if (!deckId) return { error: "no library deck is open" };
+    api.setViewMode("document");
+    await api.openDocumentView();
+    api.scrollToDocumentPage(2, 0.3, { smooth: false });
+    await api.whenDocumentPageReady(2);
+    await settle(400);
+    // A highlight that is on disk but not on screen, so the reload has
+    // something to deliver: made (which autosaves), then dropped from memory
+    // only. After the reload it has to be painted — the in-place repaint is
+    // still how synced content reaches the page.
+    const pageEl = document.querySelector('.pdf-page[data-page-number="2"]');
+    const span = pageEl?.querySelector(".pdf-text-layer span");
+    if (!span?.firstChild) return { error: "page 2 has no text layer" };
+    const range = document.createRange();
+    range.setStart(span.firstChild, 0);
+    range.setEnd(span.firstChild, Math.min(4, span.firstChild.length));
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    const record = api.addDocumentHighlight(api.captureDocumentSelection(), "blue");
+    sel.removeAllRanges();
+    if (!record) return { error: "could not make a highlight" };
+    await settle(900);
+    for (let i = 0; i < 60 && api.deckAutosaveTimer; i += 1) await settle(100);
+    await settle(300);
+    api.state.meta = { ...api.state.meta, pdfHighlights: (api.state.meta.pdfHighlights || []).filter((r) => r.id !== record.id) };
+    api.repaintDocumentHighlights();
+    const hiddenBefore = !document.querySelector('.pdf-mark[data-highlight-id="' + record.id + '"]');
+
+    const events = [];
+    const observer = new MutationObserver((mutations) => mutations.forEach((m) => {
+      m.removedNodes.forEach((n) => { if (n.nodeType === 1 && n.matches(".pdf-pages, .pdf-page, .pdf-canvas")) events.push("removed " + n.className); });
+      m.addedNodes.forEach((n) => { if (n.nodeType === 1 && n.matches(".pdf-loading")) events.push("loading"); });
+    }));
+    observer.observe(view, { childList: true, subtree: true });
+    const canvases = Array.from(view.querySelectorAll(".pdf-canvas"));
+    const top = view.scrollTop;
+    await api.loadDeckFromLibrary(deckId, { keepPlace: true });
+    await settle(1200);
+    const afterReload = {
+      events: events.slice(),
+      canvasesKept: canvases.length > 0 && canvases.every((c) => c.isConnected && !c.classList.contains("is-stale")),
+      topHeld: Math.abs(view.scrollTop - top) <= 1,
+      top: top + "→" + view.scrollTop,
+      synced: Boolean(document.querySelector('.pdf-mark[data-highlight-id="' + record.id + '"]'))
+    };
+    // ...and the next tab press is still the already-open path.
+    api.setViewMode("notes");
+    await settle(200);
+    api.setViewMode("document");
+    await api.openDocumentView();
+    await settle(600);
+    observer.disconnect();
+    const afterTabs = canvases.every((c) => c.isConnected && !c.classList.contains("is-stale")) && !events.includes("loading");
+    api.removeDocumentHighlight(record.id);
+    return { hiddenBefore, ...afterReload, afterTabs };
+  }`);
+
+  check("a sync's in-place reload never shows \"Opening the document…\"",
+    !syncReload.error && !syncReload.events.includes("loading"),
+    syncReload.error || syncReload.events.join(", ") || "no loading line");
+  check("...and never takes the pages off the screen",
+    !syncReload.error && !syncReload.events.some((e) => e.startsWith("removed")),
+    syncReload.error || syncReload.events.join(", ") || "nothing removed");
+  check("...keeping every canvas that was there", syncReload.canvasesKept === true,
+    `canvasesKept=${syncReload.canvasesKept}`);
+  check("...and the reader exactly where they were", syncReload.topHeld === true, `scrollTop ${syncReload.top}`);
+  check("...while what the sync brought is painted onto those pages",
+    syncReload.hiddenBefore === true && syncReload.synced === true,
+    `hiddenBefore=${syncReload.hiddenBefore} synced=${syncReload.synced}`);
+  check("...and the next Notes → PDF tab press still keeps them", syncReload.afterTabs === true,
+    `afterTabs=${syncReload.afterTabs}`);
+
   // ── 7b. Copy location, a region resized in the Notes, and Ctrl Ctrl ──────
   //
   // Three things a reader does moving between the paper and the note: take a
