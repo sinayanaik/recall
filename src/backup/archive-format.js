@@ -588,10 +588,16 @@ export function verifyBackupArchive(fileNames, manifest) {
     }
   }
 
-  const countIn = (prefix, suffix) => names.filter((name) => {
+  // Under a top-level folder of that name — or one level in, for a zip that
+  // was re-zipped with a folder around it. Never a folder of that name inside
+  // decks/: a deck folder called "Documents" is not the archive's papers.
+  const under = (name, prefix) => {
     const path = name.toLowerCase();
-    return path.includes(`${prefix}/`) && path.endsWith(suffix) && !isBackupIndexPath(name);
-  }).length;
+    if (path.startsWith(`${prefix}/`)) return true;
+    const at = path.indexOf(`/${prefix}/`);
+    return at > 0 && !path.slice(0, at + 1).includes(`${BACKUP_DECK_DIR}/`);
+  };
+  const countIn = (prefix, suffix) => names.filter((name) => under(name, prefix) && name.toLowerCase().endsWith(suffix) && !isBackupIndexPath(name)).length;
 
   const declared = {
     decks: Number(bag.deckCount) || 0,
@@ -599,7 +605,7 @@ export function verifyBackupArchive(fileNames, manifest) {
   };
   const found = {
     decks: countIn(BACKUP_DECK_DIR, ".json"),
-    documents: names.filter((name) => name.toLowerCase().includes(`${BACKUP_DOCUMENT_DIR}/`) && !isBackupIndexPath(name)).length
+    documents: names.filter((name) => under(name, BACKUP_DOCUMENT_DIR) && !isBackupIndexPath(name)).length
   };
   result.counts = { declared, found };
 

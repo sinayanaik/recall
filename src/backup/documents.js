@@ -316,17 +316,22 @@ export async function commitBackupDocuments(plan, onProgress) {
   if (!plan) return result;
   const total = plan.rebind.length + plan.store.length;
   let done = 0;
-  const tick = () => onProgress?.(++done, total);
+  // The third argument names the paper and what became of it, for the job
+  // console's log: a restore of forty papers is otherwise forty silent steps.
+  const tick = (item = null, outcome = "") => onProgress?.(++done, total, item
+    ? { name: item.entry?.name || "", bytes: Number(item.entry?.bytes) || 0, outcome }
+    : null);
 
   for (const item of plan.rebind) {
     try {
       await putDocument({ deckLocalId: item.localId, blob: item.blob, sha256: item.sha256 || "", name: item.entry.name || "", at: Date.now() });
       result.rebound += 1;
+      tick(item, "re-keyed");
     } catch (error) {
       console.warn("Could not re-key a document onto the restored deck", item.localId, error);
       result.failed += 1;
+      tick(item, "could not be stored");
     }
-    tick();
   }
   for (const item of plan.store) {
     try {
@@ -344,16 +349,17 @@ export async function commitBackupDocuments(plan, onProgress) {
       if (item.entry.sha256 && actual && actual !== item.entry.sha256) {
         console.warn("A document in this archive is damaged and was not stored", item.entry.file);
         result.refused += 1;
-        tick();
+        tick(item, "damaged in the file — not stored");
         continue;
       }
       await putDocument({ deckLocalId: item.localId, blob, sha256: item.entry.sha256 || "", name: item.entry.name || "", at: Date.now() });
       result.stored += 1;
+      tick(item, "stored");
     } catch (error) {
       console.warn("Could not store a restored document on this device", item.entry.file, error);
       result.failed += 1;
+      tick(item, "could not be stored");
     }
-    tick();
   }
   return result;
 }

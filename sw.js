@@ -87,6 +87,17 @@ const VENDOR_CACHE_NAME = "recall-vendor-v1";
 // train afterwards.
 const CDN_CACHE_NAME = "recall-cdn-v1";
 
+// A .recall file shared to the installed app from the system share sheet
+// (manifest.webmanifest → share_target). The share arrives as a POST, which a
+// static site cannot answer — so the worker answers it: the file is parked
+// here, the page is sent to `./?share-target=1`, and src/pwa/incoming-files.js
+// takes it from here and deletes it. Spared on activate like the caches below,
+// because a share that lands in the moment an update activates must not be
+// thrown away with the old release.
+const SHARE_TARGET_CACHE_NAME = "recall-share-target-v1";
+
+const SHARE_TARGET_PREFIX = "./__share-target/";
+
 // Objects are written at immutable, randomly-named paths (see
 // uploadImageToSupabase), so a cache hit is always correct and there is no
 // revalidation to do. Keep a ceiling anyway — an image-heavy EPUB import is
@@ -362,6 +373,8 @@ const APP_SHELL = [
   `./src/backup/job-console.js?v=${STAMP}`,
   `./src/backup/library-state.js?v=${STAMP}`,
   `./src/backup/restore.js?v=${STAMP}`,
+  `./src/backup/share-dialog.js?v=${STAMP}`,
+  `./src/backup/share-import.js?v=${STAMP}`,
   `./src/backup/zip-lite.js?v=${STAMP}`,
   `./src/boot.js?v=${STAMP}`,
   `./src/cards/all-cards-edit.js?v=${STAMP}`,
@@ -517,6 +530,7 @@ const APP_SHELL = [
   `./src/panels/highlights-editor.js?v=${STAMP}`,
   `./src/panels/highlights-panel.js?v=${STAMP}`,
   `./src/pwa/app-info.js?v=${STAMP}`,
+  `./src/pwa/incoming-files.js?v=${STAMP}`,
   `./src/pwa/online.js?v=${STAMP}`,
   `./src/pwa/release-info.js?v=${STAMP}`,
   `./src/pwa/service-worker-client.js?v=${STAMP}`,
@@ -907,7 +921,8 @@ self.addEventListener("activate", (event) => {
           .filter((key) => key !== CACHE_NAME
             && key !== IMAGE_CACHE_NAME
             && key !== VENDOR_CACHE_NAME
-            && key !== CDN_CACHE_NAME)
+            && key !== CDN_CACHE_NAME
+            && key !== SHARE_TARGET_CACHE_NAME)
           .map((key) => caches.delete(key))
       ))
       .then(() => trimImageCache())
@@ -980,8 +995,36 @@ self.addEventListener("message", (event) => {
   );
 });
 
+async function receiveSharedFiles(request) {
+  try {
+    const form = await request.formData();
+    const files = form.getAll("packages").filter((value) => value && typeof value === "object" && "size" in value);
+    const cache = await caches.open(SHARE_TARGET_CACHE_NAME);
+    const stamp = Date.now();
+    await Promise.all(files.map((file, index) => cache.put(
+      new Request(new URL(`${SHARE_TARGET_PREFIX}${stamp}-${index}`, self.registration.scope).href),
+      new Response(file, {
+        headers: {
+          "content-type": file.type || "application/octet-stream",
+          "x-recall-file-name": encodeURIComponent(file.name || `shared-${index + 1}.recall`)
+        }
+      })
+    )));
+  } catch (error) {
+    // Nothing to hand over; the page still opens, and says nothing arrived.
+  }
+  return Response.redirect(new URL("./?share-target=1", self.registration.scope).href, 303);
+}
+
 self.addEventListener("fetch", (event) => {
   const { request } = event;
+  if (request.method === "POST") {
+    const target = new URL(request.url);
+    if (target.origin === self.location.origin && target.pathname.endsWith("/share-target")) {
+      event.respondWith(receiveSharedFiles(request));
+    }
+    return;
+  }
   if (request.method !== "GET") return;
 
   const url = new URL(request.url);

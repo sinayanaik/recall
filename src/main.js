@@ -7,6 +7,7 @@
 import { exportLibraryBackupZip } from "./backup/backup.js?v=__BUILD__";
 import { runBrokenImageScan } from "./backup/broken-images.js?v=__BUILD__";
 import { runRestoreFlow } from "./backup/restore.js?v=__BUILD__";
+import { shareDecksAsPackage } from "./backup/share-dialog.js?v=__BUILD__";
 import { appInitialized, bootApp, ensureLocalLibraryOwner, initAppForUser, recoverSessionIfPossible, resetLocalLibrary, setAppInitialized, setupAuthListener } from "./boot.js?v=__BUILD__";
 import { clearAllCardDropTargets, closeAllCardsPanel, deleteAllCard, goToCard, handleAllCardDragOver, handleAllCardDragStart, handleAllCardDrop, insertCardAfter, pushCardUndoSnapshot, redoCardAction, setAllCardStatus, snapshotCardsState, undoCardAction } from "./cards/all-cards-edit.js?v=__BUILD__";
 import { adjustCornellRowHeight, allCardsAnswersVisible, allCardsCompact, flipAllCard, handleAllCardDragEnd, openAllCardsPanel, setAllCardsAnswersVisible, setAllCardsCompact, setAllCardsFilter, toggleAllCardEditor } from "./cards/all-cards.js?v=__BUILD__";
@@ -90,6 +91,7 @@ import { closeNotesToc, ensureNotesTocBuilt, flashNotesHeading, initNotesTocFold
 import { closeClozePanel, openClozePanel, toggleClozePanelAll } from "./panels/cloze-panel.js?v=__BUILD__";
 import { appInfoBtn, appInfoCheckBtn, appInfoCloseBtn, appInfoHealthBtn, appInfoModal, appInfoReloadBtn, closeAppInfoModal, forceRefreshAppInfo, openAppInfoModal, runProjectHealthCheck } from "./pwa/app-info.js?v=__BUILD__";
 import { FOREGROUND_SYNC_IDLE_MS, lastHiddenAt, onlineReconcileTimer, setLastHiddenAt, setOnlineReconcileTimer, updateOnlineIndicator } from "./pwa/online.js?v=__BUILD__";
+import { installIncomingFiles } from "./pwa/incoming-files.js?v=__BUILD__";
 import { installManifestLink, registerServiceWorker } from "./pwa/service-worker-client.js?v=__BUILD__";
 import { addQuickNoteCategory, assignQuickNoteCategory, closeQnCatMenu, closeQnCatModal, closeQuickNotesBoard, copyQuickNote, deleteQuickNoteCategory, jumpToQuickNoteSource, layoutQuickNotesGrid, openQnCatMenu, openQnCatModal, openQnRecolorMenu, openQuickNotesBoard, qnBoard, qnNewColor, renameQuickNoteCategory, renderQnColorPicker, renderQuickNotesBoard, saveQuickNote, setQnNewColor } from "./quick-notes/board.js?v=__BUILD__";
 import { closeDiagramModal, zoomDiagramBy } from "./render/diagram-zoom.js?v=__BUILD__";
@@ -1998,6 +2000,17 @@ document.getElementById("myDecksBulkDeleteBtn")?.addEventListener("click", () =>
       bulkExportMenu.hidden = !shouldOpen;
       bulkExportBtn.setAttribute("aria-expanded", String(shouldOpen));
     });
+    // Share the selection as one .recall package — see src/backup/share-dialog.js.
+    document.getElementById("myDecksBulkShareBtn")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      bulkExportMenu.hidden = true;
+      bulkExportBtn.setAttribute("aria-expanded", "false");
+      const selections = selectedMyDecks();
+      if (!selections.length) return;
+      const index = readLocalDeckIndex();
+      const titles = selections.map((sel) => index.find((entry) => (sel.localId && entry.id === sel.localId) || (sel.deckId && String(entry.deckId) === String(sel.deckId)))?.title || "");
+      shareDecksAsPackage(selections, titles);
+    });
     bulkExportMenu.querySelectorAll("[data-bulk-export]").forEach((btn) => {
       btn.addEventListener("click", (e) => {
         e.stopPropagation();
@@ -2942,6 +2955,10 @@ trackKeyboardInset();
 // Must run before the first navigation, so history.replaceState stamps OUR
 // entry as the base rather than leaving whatever the page loaded with.
 initBackGesture();
+// A .recall dropped on the window, opened with the installed app, or sent from
+// another app's share sheet. After initBackGesture: the share-target flag is
+// taken off the URL with a replaceState, which must stamp over OUR base entry.
+installIncomingFiles();
 
 // The service worker is registered above regardless, and deliberately: if a
 // library really is missing, the single most useful thing this load can do is
