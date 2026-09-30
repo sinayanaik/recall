@@ -65,6 +65,15 @@ const SECTIONS = [
 // Anything appearing in styles/ that is neither a slice nor listed here is
 // still a failure.
 const POST_SPLIT = {
+  "71-dialog-fit.css":
+    "Small dialogs that fit a phone: a <select> as wide as its longest folder " +
+    "path pushed the Deck Category dialog, its close button and its actions " +
+    "off the right edge of the screen. Bounded columns, an ellipsis, a height " +
+    "cap, and actions that share the width on a phone.",
+  "70-selection-compact.css":
+    "The phone selection bar as one compact row placed beside the selection, " +
+    "with a ⋯ that opens a second row holding every other action. See " +
+    "placeTouchSelectionBar in src/notes/selection.js.",
   "69-repaint-stability.css":
     "What keeps an edit repaint from moving the page: a block an edit just " +
     "rebuilt is laid out for real on its first frames instead of standing in " +

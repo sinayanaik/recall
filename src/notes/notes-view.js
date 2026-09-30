@@ -92,17 +92,45 @@ export const NOTES_PROGRAMMATIC_SELECTION_MS = 1500;
 
 export let notesProgrammaticSelectionUntil = 0;
 
-export function markProgrammaticNotesSelection(ms = NOTES_PROGRAMMATIC_SELECTION_MS) {
+// ...and WHICH selection it was. The window alone was not enough: the first
+// finger down after a jump ended it (clearProgrammaticNotesSelection), and the
+// jump's selection was still standing — so the pointerup of that very touch, or
+// of a scroll that began with it, raised the bar over a span the reader never
+// chose, a second or a minute after the jump. Remembering the range itself
+// means the bar stays away for as long as the selection is still the app's,
+// however long that is, and comes back the moment the reader selects anything
+// else.
+let notesProgrammaticSelectionRange = null;
+
+export function markProgrammaticNotesSelection(ms = NOTES_PROGRAMMATIC_SELECTION_MS, range = null) {
   notesProgrammaticSelectionUntil = Math.max(notesProgrammaticSelectionUntil, performance.now() + ms);
+  notesProgrammaticSelectionRange = range
+    ? { startContainer: range.startContainer, startOffset: range.startOffset, endContainer: range.endContainer, endOffset: range.endOffset }
+    : null;
+}
+
+function liveSelectionIsProgrammatic() {
+  const at = notesProgrammaticSelectionRange;
+  if (!at) return false;
+  const selection = window.getSelection?.();
+  const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+  if (range && range.startContainer === at.startContainer && range.startOffset === at.startOffset
+      && range.endContainer === at.endContainer && range.endOffset === at.endOffset) {
+    return true;
+  }
+  // The reader has selected something else (or nothing): the app's selection
+  // is gone for good, and forgetting it here keeps the test above to one read.
+  notesProgrammaticSelectionRange = null;
+  return false;
 }
 
 export function isProgrammaticNotesSelection() {
-  return performance.now() < notesProgrammaticSelectionUntil;
+  return performance.now() < notesProgrammaticSelectionUntil || liveSelectionIsProgrammatic();
 }
 
-// The reader touching anything ends it early: a jump's selection is theirs to
-// act on the moment they reach for it, and waiting out the rest of the window
-// would make the pill feel broken instead of merely quiet.
+// The reader touching anything ends the WINDOW early — but not the range above:
+// a touch that leaves the jump's selection exactly as it was has not made it
+// theirs. Selecting anything else does, and the bar is back for that at once.
 export function clearProgrammaticNotesSelection() {
   notesProgrammaticSelectionUntil = 0;
 }

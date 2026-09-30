@@ -137,6 +137,15 @@ export const HIGHLIGHT_NAME = "recall-touch-selection";
 // that fired this early turns out to have been the start of a scroll.
 export const LONG_PRESS_MS = 240;
 
+// ...except on a highlight. A tap on a <mark> opens its menu (src/notes/
+// mark-menu.js), and a reader's tap is not always quick: a finger that rested
+// 240ms selected the word under it instead, raised the selection bar over the
+// highlight, and — because a fired press swallows the click — never opened the
+// menu at all. That is the bar "randomly popping" on a highlighted page. Half a
+// second there, which is the platform's own long-press time: a tap is a tap,
+// and a real press still selects.
+export const MARK_LONG_PRESS_MS = 500;
+
 // How far the finger may wander in that time and still be pressing. A real
 // touch slop — a thumb resting on glass moves several pixels — and the same
 // value swipe.js settled on for its own dwell test (dwellSlopPx).
@@ -2218,7 +2227,8 @@ function onRootTouchStart(event) {
   setTouchGestureHoldsSurface(true);
   watchPressDrift();
   if (pressTimer) clearTimeout(pressTimer);
-  pressTimer = setTimeout(() => firePress(root, pressX, pressY), LONG_PRESS_MS);
+  const onMark = Boolean(event.target?.closest?.("mark"));
+  pressTimer = setTimeout(() => firePress(root, pressX, pressY), onMark ? MARK_LONG_PRESS_MS : LONG_PRESS_MS);
 }
 
 // Non-passive, and it early-returns in two property reads when there is no

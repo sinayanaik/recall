@@ -1,0 +1,72 @@
+/* Small dialogs that fit a phone
+ * Added after the 13-way split of styles.css, in a file of its own so that
+ * split stays byte-for-byte verifiable — see POST_SPLIT in tools/split-css.mjs.
+ *
+ * "Deck Category": on a phone its CATEGORY field ran off the right edge of the
+ * screen, taking the dialog's ✕ and its Cancel / Apply buttons with it — what
+ * was left on screen was an empty band where the buttons should have been.
+ *
+ * The field is a <select>, and a <select> is as wide as its longest option.
+ * The options are full folder paths ("Books/Physics/Feynman/…"), and nothing
+ * stopped one from widening the whole dialog: .category-choice-shell and
+ * .category-choice-field are grids with the default `auto` column, whose items
+ * default to `min-width: auto` — so the column could not be narrower than the
+ * longest path, and every row in it (the head's ✕, the space-between actions
+ * row) was laid out across that too-wide column and off the screen. The global
+ * `input { width: 100%; min-width: 0 }` in 08-panels.css never covered select.
+ *
+ * The same fix this app already made twice for the same cause — the My Decks
+ * row select (11-chrome.css) and the document-slot select (37-document-chrome
+ * .css) — applied to the shell every small dialog shares: share, restore,
+ * package import, compress, broken images, the job console, EPUB import and the
+ * two pickers in src/ui/pickers.js.
+ */
+
+.category-choice-shell,
+.category-choice-field {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.category-choice-shell > *,
+.category-choice-field > * {
+  min-width: 0;
+}
+
+.category-choice-field select {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A long title or description wraps instead of pushing the ✕ away. */
+.category-choice-head > :first-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.category-choice-head button {
+  flex: 0 0 auto;
+}
+
+/* Never taller than the screen: a dialog whose buttons are below the fold of a
+   fixed, centred overlay cannot be scrolled to. */
+.category-choice-shell {
+  max-height: calc(100dvh - 36px);
+  overflow-y: auto;
+}
+
+/* On a phone the two actions share the width, so each is a full thumb target
+   and neither can be pushed past the edge by the other. */
+@media (max-width: 560px) {
+  .category-choice-actions {
+    flex-wrap: wrap;
+  }
+
+  .category-choice-actions button {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+}

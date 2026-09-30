@@ -76,7 +76,7 @@ import { initPagedNotes } from "./notes/paged-view.js?v=__BUILD__";
 import { findRawOffsetForRenderedPoint } from "./notes/raw-offset.js?v=__BUILD__";
 import { flushReadingPositionSave } from "./notes/reading-position.js?v=__BUILD__";
 import { rawOffsetForCurrentNotesScroll, scheduleReadingAnchorCapture } from "./notes/scroll-anchor.js?v=__BUILD__";
-import { beginSelectionGesture, currentNotesSelectionMarkdown, currentSelectionPlainText, endSelectionGesture, hideNotesSelectionButton, noteSelectionChanged, pillSelectionCapture, scheduleNotesSelectionCheck, setDocumentPillCaptureHook } from "./notes/selection.js?v=__BUILD__";
+import { beginSelectionGesture, currentNotesSelectionMarkdown, currentSelectionPlainText, endSelectionGesture, hideNotesSelectionButton, noteSelectionChanged, pillSelectionCapture, scheduleNotesSelectionCheck, setDocumentPillCaptureHook, setSelectionBarExpanded, suspendSelectionBarForScroll } from "./notes/selection.js?v=__BUILD__";
 import { clearTouchSelection, initTouchSelection } from "./notes/touch-selection.js?v=__BUILD__";
 import { recordNotesTyping, redoNotes, undoNotes } from "./notes/notes-history.js?v=__BUILD__";
 import { initMarkMenu, setMarkMenuActions } from "./notes/mark-menu.js?v=__BUILD__";
@@ -992,7 +992,7 @@ el.copySelectionBtn?.addEventListener("pointerdown", (event) => {
     return;
   }
   copyTextToClipboard(text);
-  hideNotesSelectionButton();
+  dismissSelectionAfterUse();
 });
 
 // Named for the reason copyTextToClipboard above is: there are two callers now,
@@ -1029,7 +1029,7 @@ el.shareSelectionBtn?.addEventListener("pointerdown", (event) => {
     return;
   }
   shareText(text);
-  hideNotesSelectionButton();
+  dismissSelectionAfterUse();
 });
 
 el.searchSelectionBtn?.addEventListener("pointerdown", (event) => {
@@ -1041,7 +1041,7 @@ el.searchSelectionBtn?.addEventListener("pointerdown", (event) => {
     return;
   }
   openWebSearchFor(text);
-  hideNotesSelectionButton();
+  dismissSelectionAfterUse();
 });
 
 // ── "Done" ────────────────────────────────────────────────────────────────
@@ -1062,9 +1062,25 @@ el.searchSelectionBtn?.addEventListener("pointerdown", (event) => {
 el.dismissSelectionBtn?.addEventListener("pointerdown", (event) => {
   event.preventDefault();
   event.stopPropagation();
+  dismissSelectionAfterUse();
+});
+
+// Copy, Share and Search are finished with the selection the moment they have
+// its words. They used to put only the BAR away and leave the selection
+// standing — so the very next scroll or tap brought the bar straight back over
+// a passage the reader had already copied. Same exit as "Done".
+function dismissSelectionAfterUse() {
   hideNotesSelectionButton();
   clearTouchSelection();
   try { window.getSelection()?.removeAllRanges(); } catch (_) { /* nothing selected */ }
+}
+
+// ⋯ — the second row of the phone bar. pointerdown and preventDefault like
+// every other button here, so the selection it is about survives the press.
+el.selectionMoreBtn?.addEventListener("pointerdown", (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  setSelectionBarExpanded(!el.selectionFloat?.classList.contains("is-expanded"));
 });
 
 // A button that cannot do anything is worse than an absent one, and there is no
@@ -1087,6 +1103,12 @@ initTouchSelection();
 [el.notesView, el.questionView, el.answerView].forEach((view) => {
   view?.addEventListener("scroll", hideNotesSelectionButtonUnlessPinned, { passive: true });
 });
+
+// The paper too, on a phone: the bar sits beside the selection there as well,
+// so it steps aside while the pages scroll and comes back beside the passage.
+// Only the phone bar — suspendSelectionBarForScroll is a no-op for the desktop
+// pill, which this surface has never hidden on scroll.
+el.documentView?.addEventListener("scroll", suspendSelectionBarForScroll, { passive: true });
 
 // The persistent "make a card" control (the floating pill only exists while a
 // selection is live) used to be a ➕ in each face header, beside the mode

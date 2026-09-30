@@ -15,20 +15,23 @@ import { createLinkedNoteFlow } from "../notes/note-links.js?v=__BUILD__";
 import { pushNotesUndo } from "../notes/notes-history.js?v=__BUILD__";
 import { renderNotesViewPinned } from "../notes/notes-view.js?v=__BUILD__";
 import { currentDeckKey } from "../notes/scroll-anchor.js?v=__BUILD__";
-import { activeEditingTarget, activeRenderedTarget, ensurePillSelectionCapture, hideNotesSelectionButton, noteEditorHoldsSelection, pillSelectionCapture } from "../notes/selection.js?v=__BUILD__";
+import { activeEditingTarget, activeRenderedTarget, ensurePillSelectionCapture, hideNotesSelectionButton, noteEditorHoldsSelection, pillSelectionCapture, suspendSelectionBarForScroll } from "../notes/selection.js?v=__BUILD__";
 import { noteLinkMarkupFor } from "../render/note-links.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { showPromptModal, showToast } from "../ui/feedback.js?v=__BUILD__";
 import { styleMobileMedia } from "../ui/style-tokens.js?v=__BUILD__";
 
-// On mobile the button is pinned to a fixed spot at the bottom of the screen
-// (see pinSelectionButtonToBottom) rather than tracking the selection's own
-// position, precisely so that scrolling — the normal way to extend a
-// selection past the visible edge — doesn't make it disappear. Desktop keeps
-// hiding it on scroll, since there its position is tied to the selection rect
-// and would otherwise go stale.
+// On a phone the bar sits beside the selection (placeTouchSelectionBar), so a
+// scroll moves the selection out from under it. It steps aside for the scroll
+// and comes back beside the selection once the scroll stops — without being
+// torn down, so extending a selection by scrolling to its other end costs
+// nothing. Desktop keeps hiding it outright: its pill is placed afresh by the
+// next selection, and a mouse reader scrolling away has usually finished with it.
 export function hideNotesSelectionButtonUnlessPinned() {
-  if (styleMobileMedia?.matches) return;
+  if (styleMobileMedia?.matches) {
+    suspendSelectionBarForScroll();
+    return;
+  }
   hideNotesSelectionButton();
 }
 

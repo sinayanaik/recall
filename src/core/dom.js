@@ -235,6 +235,8 @@ export const el = {
   // "Done" — the phone bar's own way out. See the handler in src/main.js and
   // the outside-press listener in src/notes/touch-selection.js.
   dismissSelectionBtn: document.querySelector("#dismissSelectionBtn"),
+  // ⋯ on the phone bar: opens the second row. See setSelectionBarExpanded.
+  selectionMoreBtn: document.querySelector("#selectionMoreBtn"),
   selectionFloat: document.querySelector("#selectionFloat"),
   selectionFloatFormat: document.querySelector("#selectionFloatFormat"),
   immersiveModeBtn: document.querySelector("#immersiveModeBtn"),

@@ -126,6 +126,8 @@
     <link rel="stylesheet" href="styles/67-focus-fold.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/68-job-console.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/69-repaint-stability.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/70-selection-compact.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/71-dialog-fit.css?v=__BUILD__">
 
     <!-- ── Module preloads ────────────────────────────────────────────────
          The app is ~130 ES modules and the browser discovers them by PARSING
@@ -1436,6 +1438,21 @@
                  exact pairing .sel-group ordering exists to avoid. Phone only —
                  on a desktop the pill follows the selection and clicking away
                  has always dismissed it. -->
+            <!-- ── ⋯ — the rest of the bar, on a phone ────────────────────
+                 "The highlight menu is too intrusive; it needs to be concise
+                 and compact — but I don't want to lose any functionality."
+
+                 On a phone the bar is ONE row beside the selection: highlight
+                 (with its colour ▾), highlight-and-note, make a card, copy. This
+                 opens the second row with everything else — cloze, pin, move
+                 into a note, bulletify, quote, Aa, share, search, delete, done.
+                 Nothing is removed; nothing moves between groups either, so
+                 every handler in src/main.js is untouched. CSS decides which
+                 buttons the collapsed row shows (styles/70-selection-compact.css).
+                 Hidden on a desktop, where the pill shows everything in a row. -->
+            <span class="sel-group" data-sel-group="more">
+              <button class="selection-float-btn is-more" id="selectionMoreBtn" type="button" title="More actions" aria-label="More actions" aria-expanded="false"><svg class="cz-ico" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5.5" cy="12" r="1.9"/><circle cx="12" cy="12" r="1.9"/><circle cx="18.5" cy="12" r="1.9"/></svg></button>
+            </span>
             <span class="sel-group" data-sel-group="dismiss">
               <button class="selection-float-btn is-dismiss" id="dismissSelectionBtn" type="button" title="Done" aria-label="Dismiss the selection">&#215;</button>
             </span>

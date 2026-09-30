@@ -226,8 +226,47 @@ export function currentDeckKey() {
   return JSON.stringify([state.deckId || null, state.localDeckId || null, state.folderDeck?.key || null]);
 }
 
-export function captureCurrentReadingAnchor() {
+// ── While a resume is landing, nothing here is the reader's position ────────
+//
+// A resume moves the note for up to eight seconds on a long book: a first aim,
+// corrections, blocks streaming in above it and chunks swapping estimated
+// heights for real ones. Every one of those fires `scroll`, most of them outside
+// the 250ms programmatic window, and each was captured as where the reader had
+// got to — stamped with the time of capture, so it beat the real position on
+// every later comparison (this device's next open, and every other device via
+// meta.readingPosition). Set by scheduleNoteJump for as long as a resume owns
+// the scroller; cleared when it lands, gives up, or the reader takes over.
+let resumeLanding = false;
+
+export function setResumeLanding(value) {
+  resumeLanding = Boolean(value);
+}
+
+// ── A resume held for the tab it belongs to ────────────────────────────────
+//
+// A deck left on Cards (or on its paper) reopens there — the reader's own last
+// choice. Its notes position used to be landed anyway, by switching to Notes to
+// do it, which dragged the reader off the tab they had chosen. It is held here
+// instead and landed by setViewMode when they do go to Notes.
+let deferredNotesResume = null;
+
+export function deferNotesResume(key, anchor) {
+  deferredNotesResume = key && anchor ? { key, anchor } : null;
+}
+
+export function takeDeferredNotesResume(key) {
+  const held = deferredNotesResume;
+  deferredNotesResume = null;
+  return held && held.key === key ? held.anchor : null;
+}
+
+export function captureCurrentReadingAnchor(expectedKey = null) {
   if (!el.notesView || el.notesView.hidden || state.viewMode !== "notes") return;
+  if (resumeLanding) return;
+  // The scroll that armed this capture happened in a deck that is no longer the
+  // open one — a deck swap landed inside the debounce. Measuring the NEW deck's
+  // scroll and filing it under either key would be wrong both ways.
+  if (expectedKey && expectedKey !== currentDeckKey()) return;
   const offset = rawOffsetForCurrentNotesScroll();
   if (offset == null) return;
   const notes = state.notes || "";
@@ -264,17 +303,20 @@ export let readingAnchorCaptureTimer = 0;
 export let readingAnchorIdleHandle = 0;
 
 export function scheduleReadingAnchorCapture() {
+  if (resumeLanding) return;
+  // The deck the scroll happened in, taken NOW — see captureCurrentReadingAnchor.
+  const key = currentDeckKey();
   if (readingAnchorCaptureTimer) clearTimeout(readingAnchorCaptureTimer);
   readingAnchorCaptureTimer = setTimeout(() => {
     readingAnchorCaptureTimer = 0;
     if (typeof requestIdleCallback !== "function") {
-      captureCurrentReadingAnchor();
+      captureCurrentReadingAnchor(key);
       return;
     }
     if (readingAnchorIdleHandle) cancelIdleCallback(readingAnchorIdleHandle);
     readingAnchorIdleHandle = requestIdleCallback(() => {
       readingAnchorIdleHandle = 0;
-      captureCurrentReadingAnchor();
+      captureCurrentReadingAnchor(key);
     }, { timeout: 1000 });
   }, READING_ANCHOR_IDLE_MS);
 }

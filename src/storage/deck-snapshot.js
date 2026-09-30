@@ -11,7 +11,7 @@ import { revokeLocalImageUrls } from "../images/outbox.js?v=__BUILD__";
 import { humanizeSourceTitle, sourceFileTitle } from "../import/parse-cards.js?v=__BUILD__";
 import { importTargetCategory } from "../import/staging.js?v=__BUILD__";
 import { normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
-import { scheduleNoteJump } from "../notes/anchors.js?v=__BUILD__";
+import { resumeOpenedDeck } from "../notes/anchors.js?v=__BUILD__";
 import { maybePromptBookmarkJump } from "../notes/bookmark.js?v=__BUILD__";
 import { discardNotesEditingForDeckSwap } from "../notes/notes-view.js?v=__BUILD__";
 import { betterReadingPosition, newerReadingPosition } from "../notes/reading-position.js?v=__BUILD__";
@@ -278,7 +278,9 @@ export function loadDeckSnapshot(payload, titleHint = "", append = false, { keep
     // repaint: loadDeckFromLibrary's deckReloadedInPlace hook (src/main.js)
     // reopens only when the file's hash actually moved, and otherwise repaints
     // the marks, ink, blocks and badges onto the pages already there.
-    else setViewMode(state.viewMode, { keepDocument: true });
+    // keepPlace too: the note is repainted pinned to where the reader is by the
+    // same hook, and must not be scrolled to its top first — see setViewMode.
+    else setViewMode(state.viewMode, { keepDocument: true, keepPlace: true });
     // Cross-device resume — see the identical call in loadWebDeck for why
     // flash/smooth are both off and why the local store is consulted alongside
     // the deck's meta. Only reached on this non-append branch, so
@@ -298,27 +300,9 @@ export function loadDeckSnapshot(payload, titleHint = "", append = false, { keep
     if (!keepPlace) {
       queueMicrotask(() => {
         const resumeAt = betterReadingPosition(state.meta?.readingPosition, currentDeckKey());
-        // ── ...but it must not choose the tab ──────────────────────────────
-        //
-        // scheduleNoteJump's document branch switches to the Document view by
-        // itself when the anchor carries a pdfPage — which was right while the
-        // tab a deck opened on was derived from its contents, and is wrong now
-        // that the reader's own last choice decides. A paper deck left on the
-        // cards was dragged onto the paper a moment after opening, by the
-        // resume rather than by the loader, which is a hard thing to see and
-        // exactly what the check for this caught.
-        //
-        // Nothing is lost by skipping it: a document position is resumed by
-        // landOnReadingPosition when that document opens, which is the path
-        // every other route onto the surface already takes.
-        const documentAnchor = Number.isFinite(resumeAt?.pdfPage);
-        if (documentAnchor && !onDocumentSurface()) {
-          maybePromptBookmarkJump();
-        } else if (resumeAt) {
-          scheduleNoteJump(resumeAt, { flash: false, smooth: false, resume: true, onSettled: () => maybePromptBookmarkJump() });
-        } else {
-          maybePromptBookmarkJump();
-        }
+        // ...and it must not choose the tab, nor land a paper twice. See
+        // resumeOpenedDeck for the rule, which loadWebDeck shares.
+        resumeOpenedDeck(resumeAt, () => maybePromptBookmarkJump());
       });
     }
   }

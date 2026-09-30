@@ -86,6 +86,14 @@ const showName = showIdx !== -1 ? args[showIdx + 1] : null;
 // (the old name) and in the ADDED list (the new one), which is the honest way
 // to show it — the tool matches by name and cannot know the two are related.
 const REMOVED = {
+  // ── The phone selection bar, pinned to the bottom of the screen ─────────
+  pinSelectionButtonToBottom:
+    "Parked the phone selection bar at one fixed spot ~76px above the bottom " +
+    "edge, as two rows of chips over whatever the reader was about to read " +
+    "next — reported as intrusive. Replaced by placeTouchSelectionBar in " +
+    "src/notes/selection.js, which places a one-row bar beside the selection's " +
+    "visible lines and falls back to the bottom edge only when the selection " +
+    "fills the screen.",
   // ── The fence regex that paired ``` markers by counting them ────────────
   FENCE_PATTERN_SOURCE:
     "One regex — ```[ \\t]*([^\\n]*)\\n([\\s\\S]*?)``` — used for every fenced " +

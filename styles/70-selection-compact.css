@@ -1,0 +1,218 @@
+/* The phone selection bar: one compact row beside the selection
+ * Added after the 13-way split of styles.css, in a file of its own so that
+ * split stays byte-for-byte verifiable — see POST_SPLIT in tools/split-css.mjs.
+ *
+ * "The highlight menu is randomly popping and too intrusive — it needs to be
+ * concise and clean and compact. But I don't want to lose any functionality."
+ *
+ * The bar used to be pinned about 76px above the bottom of the screen, as two
+ * rows of 36px chips — fourteen controls, over whatever the reader was about to
+ * read next. It is now `.is-touch-bar`: placed by placeTouchSelectionBar
+ * (src/notes/selection.js) just above the selection (or just below it when
+ * there is no room above), and ONE row of the five things a reader actually
+ * does to a passage:
+ *
+ *     [■▾ highlight + colour]  [✎ highlight + note]  [+ card]  [copy]  [⋯]
+ *
+ * ⋯ opens the second row, which holds everything else — cloze, pin, move into
+ * its own note, bulletify, quote, Aa, share, search, delete, done. Every button
+ * is the SAME element it always was, still inside its .sel-group in index.html;
+ * the groups are `display: contents` here so their buttons can be ordered into
+ * the two rows individually. No handler moved, and the desktop pill (which
+ * never carries .is-touch-bar) is untouched by anything in this file.
+ *
+ * Everything is scoped to .is-touch-bar, and the older phone rules in
+ * 16-mobile-reading.css, 31-touch-selection.css, 32-touch-select.css and
+ * 48-reading-chrome.css are all scoped to .is-pinned-bottom, which the phone bar
+ * no longer carries — so the two sets never meet.
+ */
+
+.selection-float.is-touch-bar {
+  bottom: auto;
+  translate: none;
+  width: max-content;
+  max-width: calc(100vw - 16px);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--line));
+  border-radius: 14px;
+  background: var(--panel);
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.32);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  transition: opacity 110ms ease;
+}
+
+/* Stepping aside while the view scrolls (suspendSelectionBarForScroll), and
+   while the selection is scrolled clean off the screen. `visibility` rather than
+   `display` so the bar keeps its box: placement measures it on the way back. */
+.selection-float.is-touch-bar.is-scrolling,
+.selection-float.is-touch-bar.is-offscreen {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: none;
+}
+
+/* The groups stop being boxes, so their buttons can be ordered into the two
+   rows one by one. (0,3,0) — above the "hide an empty group" rule in
+   22-selection-bar.css, which has nothing to do on a box that is not drawn. */
+.selection-float.is-touch-bar .sel-group,
+.selection-float.is-touch-bar .selection-float-format {
+  display: contents;
+}
+
+/* ── The buttons: flat, quiet, one size ───────────────────────────────────
+   No per-button fills and no borders: on a bar this small, fourteen tinted
+   chips read as a keyboard. The swatch is the one spot of colour, and it is
+   the colour the highlight will be. 34px is still comfortably above the
+   ~28px a thumb needs. */
+.selection-float.is-touch-bar .selection-float-btn,
+.selection-float.is-touch-bar .render-btn {
+  width: 34px;
+  min-width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text);
+  font-size: 1rem;
+  font-weight: 700;
+  box-shadow: none;
+}
+
+.selection-float.is-touch-bar .selection-float-btn:active,
+.selection-float.is-touch-bar .render-btn:active {
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
+.selection-float.is-touch-bar .selection-float-btn > .cz-ico,
+.selection-float.is-touch-bar .render-btn > .cz-ico {
+  width: 18px;
+  height: 18px;
+}
+
+.selection-float.is-touch-bar .selection-float-highlight {
+  gap: 0;
+}
+
+.selection-float.is-touch-bar .pill-swatch {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+}
+
+/* The ▾ belongs to the swatch — narrow, and quieter than a peer. */
+.selection-float.is-touch-bar .selection-float-btn.is-highlight-menu {
+  width: 16px;
+  min-width: 16px;
+  color: var(--muted);
+  font-size: 0.7rem;
+}
+
+.selection-float.is-touch-bar .selection-float-btn.is-erase {
+  color: var(--danger);
+}
+
+.selection-float.is-touch-bar .selection-float-btn.is-dismiss {
+  color: var(--muted);
+}
+
+.selection-float.is-touch-bar .selection-float-btn.is-more[aria-expanded="true"] {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent);
+}
+
+/* ── Row one ──────────────────────────────────────────────────────────── */
+.selection-float.is-touch-bar .selection-float-highlight { order: 1; }
+.selection-float.is-touch-bar #highlightAnnotateSelectionBtn { order: 2; }
+.selection-float.is-touch-bar #makeCardFromSelectionBtn { order: 3; }
+.selection-float.is-touch-bar #copySelectionBtn { order: 4; }
+.selection-float.is-touch-bar #selectionMoreBtn { order: 5; }
+
+/* ── Row two, behind ⋯ ────────────────────────────────────────────────────
+   A zero-height, full-width flex item is the line break: everything ordered
+   after it starts a row of its own, however much room row one had left. */
+.selection-float.is-touch-bar.is-expanded::after {
+  content: "";
+  order: 10;
+  flex-basis: 100%;
+  height: 0;
+}
+
+.selection-float.is-touch-bar #makeClozeFromSelectionBtn { order: 21; }
+.selection-float.is-touch-bar #pinQuickNoteFromSelectionBtn { order: 22; }
+.selection-float.is-touch-bar #extractNoteFromSelectionBtn { order: 23; }
+.selection-float.is-touch-bar .render-bulletify { order: 24; }
+.selection-float.is-touch-bar .render-blockquote { order: 25; }
+.selection-float.is-touch-bar .render-split[data-render-split="font"] { order: 26; }
+.selection-float.is-touch-bar #shareSelectionBtn { order: 27; }
+.selection-float.is-touch-bar #searchSelectionBtn { order: 28; }
+.selection-float.is-touch-bar #eraseNotesSelectionBtn { order: 29; }
+.selection-float.is-touch-bar #dismissSelectionBtn { order: 30; }
+
+.selection-float.is-touch-bar:not(.is-expanded) :is(
+  #makeClozeFromSelectionBtn,
+  #pinQuickNoteFromSelectionBtn,
+  #extractNoteFromSelectionBtn,
+  .render-bulletify,
+  .render-blockquote,
+  .render-split[data-render-split="font"],
+  #shareSelectionBtn,
+  #searchSelectionBtn,
+  #eraseNotesSelectionBtn,
+  #dismissSelectionBtn
+) {
+  display: none;
+}
+
+/* "Done" is hidden off the pinned bar by 48-reading-chrome.css at (0,4,0); on
+   the expanded touch bar it is the last thing in row two. */
+.selection-float.is-touch-bar.is-expanded .sel-group[data-sel-group="dismiss"] {
+  display: contents;
+}
+
+/* ⋯ is the phone bar's alone. The desktop pill shows every control in a row. */
+.selection-float:not(.is-touch-bar) .sel-group[data-sel-group="more"] {
+  display: none;
+}
+
+/* ── The menus hanging off it ─────────────────────────────────────────────
+   Anchored to the BAR rather than to the button that opened them, so a menu
+   opened from the right-hand end of the bar cannot run off the screen: their
+   wrappers stop being containing blocks, and the fixed bar becomes theirs.
+   Upward when placeTouchSelectionBar found room above (.menus-up), downward
+   otherwise. */
+.selection-float.is-touch-bar .selection-float-highlight,
+.selection-float.is-touch-bar .render-split {
+  position: static;
+}
+
+.selection-float.is-touch-bar .selection-float-menu,
+.selection-float.is-touch-bar .render-color-menu {
+  top: calc(100% + 6px);
+  bottom: auto;
+  left: 0;
+  right: auto;
+  transform: none;
+  max-width: calc(100vw - 16px);
+}
+
+.selection-float.is-touch-bar.menus-up .selection-float-menu,
+.selection-float.is-touch-bar.menus-up .render-color-menu {
+  top: auto;
+  bottom: calc(100% + 6px);
+}
+
+/* The text-style menu's own buttons keep their menu look, not the bar's. */
+.selection-float.is-touch-bar .render-text-style-menu .render-btn {
+  width: auto;
+  flex: 1 1 auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
