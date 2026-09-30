@@ -21,7 +21,7 @@ import { scrollTextareaToOffset } from "./caret.js?v=__BUILD__";
 import { NOTES_PROGRAMMATIC_SCROLL_MS, markProgrammaticNotesScroll, markProgrammaticNotesSelection } from "./notes-view.js?v=__BUILD__";
 import { estimateNotesPageForFraction, isNotesPaged, notesPageCount, notesPageForElement, revealInPagedNotes, revealRangeInPagedNotes } from "./paged-view.js?v=__BUILD__";
 import { NOTES_BLOCK_SELECTOR, approximateRawOffsetForBlock, notesBlockForRawOffset } from "./raw-offset.js?v=__BUILD__";
-import { notesReadingLineOffset } from "./scroll-anchor.js?v=__BUILD__";
+import { currentDeckKey, deferNotesResume, notesReadingLineOffset, setCurrentReadingAnchor, setCurrentReadingAnchorDeckKey, setResumeLanding } from "./scroll-anchor.js?v=__BUILD__";
 import { SELECTION_TARGETS, isTargetEditing, notesSelectionRange } from "./selection.js?v=__BUILD__";
 import { ensureNotesLazyFractionBuilt, ensureNotesLazyOffsetBuilt, isNotesStreamBusy, notesLazyPlan, notesLazySpanAt, notesTopLevelBlocks, withChunkRendered } from "../render/block-cache.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
@@ -518,7 +518,25 @@ export const NOTES_AIM_SETTLE_PX = 4;
 
 export const NOTES_AIM_SETTLE_MS = 110;
 
-export async function convergeNotesScroll(residual, budgetMs) {
+const READER_INPUT_EVENTS = ["pointerdown", "touchstart", "wheel", "keydown"];
+
+// When the reader last put a finger, a wheel or a key to the page. One
+// listener for the whole app rather than one per convergence: several can be in
+// flight at once (a resume, then a heading jump), and each only needs to know
+// whether the reader has acted SINCE it began.
+let readerInputAt = 0;
+
+if (typeof document !== "undefined") {
+  READER_INPUT_EVENTS.forEach((type) => document.addEventListener(type, () => {
+    readerInputAt = performance.now();
+  }, { capture: true, passive: true }));
+}
+
+export function readerActedSince(time) {
+  return readerInputAt > time;
+}
+
+export async function convergeNotesScroll(residual, budgetMs, { smooth = true } = {}) {
   const view = el.notesView;
   if (!view) return;
   const aim = (delta, behavior) => {
@@ -527,7 +545,12 @@ export async function convergeNotesScroll(residual, budgetMs) {
   };
   const first = residual();
   if (first == null) return;
-  aim(first, "smooth");
+  const startedAt = performance.now();
+  // A resume asks for no animation, and it used to get one anyway: this
+  // opened with a smooth scroll unconditionally, so a reopened note glided to
+  // the saved block and then snapped the rest of the way with the corrections
+  // below — two movements for one landing.
+  aim(first, smooth ? "smooth" : "auto");
   const until = performance.now() + budgetMs;
   let best = Infinity;
   let stalled = 0;
@@ -541,6 +564,12 @@ export async function convergeNotesScroll(residual, budgetMs) {
     // deliberate navigation (opening a note, a TOC/highlight jump) and still
     // runs regardless; only these follow-up corrections back off.
     if (wheelGestureActive()) return;
+    // ...nor a finger. On a phone the reader scrolls by touch, which the wheel
+    // test above never sees, so a correction arriving 110ms into their swipe
+    // pulled the note back to where the jump had aimed — "I'm going to some
+    // place and then to some other place". Any input since this began means the
+    // reader has taken the scroller back.
+    if (readerActedSince(startedAt)) return;
     const delta = residual();
     if (delta == null) return;
     const left = Math.abs(delta);
@@ -699,7 +728,7 @@ export function revealRenderedNoteRange(range, { flash = true, smooth = true, al
     // caller reads the boolean to decide whether to keep retrying, and the aim
     // has already been issued synchronously by the time this returns.
     const residual = align === "reading-line" ? noteRangeReadingLineResidual : noteRangeCenterResidual;
-    convergeNotesScroll(() => residual(range, block, el.notesView), NOTE_JUMP_BUDGET_MS);
+    convergeNotesScroll(() => residual(range, block, el.notesView), NOTE_JUMP_BUDGET_MS, { smooth });
   }
   if (!flash) return true;
   // The browser's own selection highlight makes the exact span obvious; the
@@ -930,13 +959,14 @@ export const NOTE_RESUME_SETTLED_RETRY_MS = 600;
 // A resume is the app moving the reader somewhere they did not ask to go. That
 // is welcome as an opening position and unwelcome the moment they start reading,
 // so anything that says "I am here now" ends it.
-export const READER_INTERRUPTION_EVENTS = ["pointerdown", "touchstart", "wheel", "keydown"];
+export const READER_INTERRUPTION_EVENTS = READER_INPUT_EVENTS;
 
-export function watchForReaderInterruption() {
+export function watchForReaderInterruption(onInterrupt = null) {
   let interrupted = false;
   const stop = () => {
     interrupted = true;
     cancel();
+    onInterrupt?.();
   };
   const cancel = () => {
     READER_INTERRUPTION_EVENTS.forEach((type) => document.removeEventListener(type, stop, true));
@@ -978,6 +1008,15 @@ let cancelResume = null;
 // Patience is what lets the exact path win once streaming catches up instead
 // of settling for that guess after ~1s.
 export function scheduleNoteJump(anchor, options, locator = null) {
+  // ── One opinion about where the reader is ─────────────────────────────────
+  //
+  // A jump the reader ASKED for — Go to, back, a [[link]], a card's "go to
+  // notes" — ends any resume still landing. The resume is patient (up to eight
+  // seconds while a book streams in) and its interruption watcher only arms
+  // after the tap that started the navigation, so the two used to share the
+  // scroller: the jump landed, then the resume moved the note to the old
+  // reading position, or the other way round.
+  if (!options?.resume) cancelResume?.();
   // ── Jumping into the document ────────────────────────────────────────────
   //
   // Everything below this branch is the notes machinery: a text search over
@@ -1028,7 +1067,10 @@ export function scheduleNoteJump(anchor, options, locator = null) {
   const patient = resume || Boolean(options?.patient);
   let estimatedOnce = false;
   const until = performance.now() + NOTE_RESUME_BUDGET_MS;
-  const reader = resume ? watchForReaderInterruption() : null;
+  // The reader taking over ends the resume there and then — including the
+  // "a resume is landing" gate on reading-position captures, which would
+  // otherwise hold until the eight-second budget ran out.
+  const reader = resume ? watchForReaderInterruption(() => finishResume()) : null;
   // At most one ambient resume, ever. Nobody asks for a resume — two of them
   // are two different opinions about where the reader is, both moving the same
   // scroller for up to eight seconds. There are two schedulers (loadDeckSnapshot
@@ -1040,14 +1082,33 @@ export function scheduleNoteJump(anchor, options, locator = null) {
   // the in-app back button) is something the reader asked for, and asking twice
   // is allowed.
   let cancelled = false;
+  let self = null;
+  const finishResume = () => {
+    if (self && cancelResume === self) {
+      cancelResume = null;
+      setResumeLanding(false);
+    }
+  };
   if (resume) {
     cancelResume?.();
-    cancelResume = () => { cancelled = true; reader?.cancel(); };
+    cancelResume = () => {
+      cancelled = true;
+      reader?.cancel();
+      finishResume();
+    };
+    self = cancelResume;
+    setResumeLanding(true);
   }
-  const self = resume ? cancelResume : null;
   const done = () => {
     reader?.cancel();
-    if (self && cancelResume === self) cancelResume = null;
+    // Landed without the reader taking over: the place it landed IS the
+    // reading position, and the in-memory copy a deck save folds into meta
+    // says so — rather than whatever was last captured before the deck opened.
+    if (resume && !cancelled && !reader?.interrupted()) {
+      setCurrentReadingAnchor(anchor);
+      setCurrentReadingAnchorDeckKey(currentDeckKey());
+    }
+    finishResume();
     options?.onSettled?.();
   };
   const attempt = (retries) => {
@@ -1134,7 +1195,7 @@ export function scheduleNoteJump(anchor, options, locator = null) {
         // and there is no vertical residual to chase.
         if (resume && block) {
           if (!isNotesPaged()) {
-            convergeNotesScroll(() => noteRangeReadingLineResidual(null, block, el.notesView), NOTE_JUMP_BUDGET_MS);
+            convergeNotesScroll(() => noteRangeReadingLineResidual(null, block, el.notesView), NOTE_JUMP_BUDGET_MS, { smooth: false });
           }
           done();
           return;
@@ -1167,6 +1228,34 @@ export function scheduleNoteJump(anchor, options, locator = null) {
     }
   };
   requestAnimationFrame(() => requestAnimationFrame(() => attempt(8)));
+}
+
+// ── Landing a just-opened deck where the reader left it ────────────────────
+//
+// The one rule both deck loaders (loadDeckSnapshot and loadWebDeck) follow, so
+// the two routes into a deck cannot resume differently:
+//
+//   • A PAPER position is never landed from here. The document lands it itself
+//     (landOnReadingPosition, from its own per-slot record) when it opens; doing
+//     it here as well was a second landing, from the shared record, at 0ms and
+//     again at 260ms — the paper opened on one page and then jumped to another.
+//   • A NOTES position is landed now if the deck opened on Notes, and otherwise
+//     held until the reader goes there (see deferNotesResume). It used to switch
+//     to Notes to land, taking the reader off the tab the deck had reopened on.
+export function resumeOpenedDeck(resumeAt, onSettled = null) {
+  // Whatever was held for a deck opened before this one is not this deck's.
+  deferNotesResume(null, null);
+  const isDocumentPosition = Boolean(resumeAt?.pdf) || Number.isFinite(resumeAt?.pdfPage);
+  if (!resumeAt || isDocumentPosition) {
+    onSettled?.();
+    return;
+  }
+  if (state.viewMode === "notes") {
+    scheduleNoteJump(resumeAt, { flash: false, smooth: false, resume: true, onSettled });
+    return;
+  }
+  deferNotesResume(currentDeckKey(), resumeAt);
+  onSettled?.();
 }
 
 // True when the currently-loaded deck is the one this anchor came from (so no

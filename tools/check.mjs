@@ -472,6 +472,12 @@ const checks = [
     ["repaint-stab  ", ["node", ["tools/repaint-stability-check.mjs"], ROOT]],
     ["render-scale  ", ["node", ["tools/render-scale-check.mjs"], ROOT]],
     ["interaction   ", ["node", ["tools/interaction-scale-check.mjs"], ROOT]],
+    // ...and whether anything ELSE moves the reader once they are there: a sync
+    // rewriting the note under them, a jump's corrections under their finger, a
+    // resume racing a jump they asked for, a deck dragged off the tab it
+    // reopened on. "Randomly I'm going to some place and then randomly to some
+    // other place" — each case is one way two of those used to disagree.
+    ["reading-pos   ", ["node", ["tools/reading-position-check.mjs"], ROOT]],
     ["mobile-menu   ", ["node", ["tools/mobile-menu-check.mjs"], ROOT]],
     ["notes-menu    ", ["node", ["tools/notes-menu-check.mjs"], ROOT]],
     ["style         ", ["node", ["tools/style-check.mjs"], ROOT]],

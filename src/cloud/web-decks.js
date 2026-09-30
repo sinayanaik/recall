@@ -15,7 +15,7 @@ import { notesExportBlock } from "../import/parse-cards.js?v=__BUILD__";
 import { setKnownWebDeckCategories, webDeckCategories } from "../library/categories.js?v=__BUILD__";
 import { normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
 import { readLocalDeckIndex, saveDeckToLibrary, syncLocalLibraryMetaForDeck, writeLocalDeckIndex } from "../library/local-library.js?v=__BUILD__";
-import { scheduleNoteJump } from "../notes/anchors.js?v=__BUILD__";
+import { readerActedSince, resumeOpenedDeck } from "../notes/anchors.js?v=__BUILD__";
 import { maybePromptBookmarkJump } from "../notes/bookmark.js?v=__BUILD__";
 import { betterReadingPosition } from "../notes/reading-position.js?v=__BUILD__";
 import { currentDeckKey } from "../notes/scroll-anchor.js?v=__BUILD__";
@@ -384,19 +384,6 @@ export async function loadWebDeck(deckId) {
     // runs further down, so a composite key here would still carry the
     // PREVIOUS deck's local id. See its own comment.
     setViewMode(documentTabForOpenDeck(state.meta, deckTabKey(state.deckId, null)));
-    // Cross-device resume: this deck's meta may carry a reading position
-    // synced from another device, and this device has its own copy of wherever
-    // it last got to (see src/notes/reading-position.js). The newer of the two
-    // wins. Ambient landing, not a deliberate jump — no flash, no animated
-    // scroll. scheduleNoteJump no-ops quietly if the anchor can't be found
-    // (notes changed since, or this deck has never had a position saved).
-    const resumeAt = betterReadingPosition(state.meta?.readingPosition, currentDeckKey());
-    if (resumeAt) {
-      scheduleNoteJump(resumeAt, { flash: false, smooth: false, resume: true, onSettled: () => maybePromptBookmarkJump() });
-    } else {
-      maybePromptBookmarkJump();
-    }
-
     syncResults();
     touchWebDeckAccess(deckData.id).catch((error) => console.error("Failed to touch deck access", error));
     closeAllCardsPanel();
@@ -414,6 +401,7 @@ export async function loadWebDeck(deckId) {
     // as a side effect, and running that for a deck the user has since navigated
     // away from would yank state.localDeckId back to it out from under whatever
     // deck is actually on screen now.
+    const shownAt = performance.now();
     if (loadToken === activeDeckLoadToken) {
       state.localDeckId = null;
       const mirroredMeta = await saveDeckToLibrary({ silent: true, updatedAt: deckData.updated_at, lastSyncedAt: deckData.updated_at, synced: true });
@@ -422,6 +410,26 @@ export async function loadWebDeck(deckId) {
         refreshSyncIndicatorBaseline();
         refreshNavBack(); // arrived — now the button knows where "here" is
       }
+    }
+    // Cross-device resume: this deck's meta may carry a reading position
+    // synced from another device, and this device has its own copy of wherever
+    // it last got to (see src/notes/reading-position.js). The newer of the two
+    // wins. Ambient landing, not a deliberate jump — no flash, no animated
+    // scroll.
+    //
+    // HERE, after the mirror, and not where the tab is chosen above. The local
+    // store is keyed [deckId, localDeckId, folder], and state.localDeckId is
+    // only this deck's once saveDeckToLibrary has assigned it — asked any
+    // earlier, it still named the PREVIOUS deck, so the lookup missed on every
+    // deck opened from the cloud and the resume fell back to whatever the cloud
+    // copy said, however stale. Same rule as loadDeckSnapshot: resumeOpenedDeck.
+    //
+    // ...unless the reader has already started reading in the moment the mirror
+    // took: the note has been on screen since the tab was chosen, and a resume
+    // landing after they have scrolled would move it out from under them.
+    if (loadToken === activeDeckLoadToken) {
+      const resumeAt = betterReadingPosition(state.meta?.readingPosition, currentDeckKey());
+      resumeOpenedDeck(readerActedSince(shownAt) ? null : resumeAt, () => maybePromptBookmarkJump());
     }
   } catch (error) {
     setStatus("Failed to load deck from web.", "error");

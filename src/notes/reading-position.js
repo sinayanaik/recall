@@ -109,6 +109,13 @@ export function forgetStoredReadingPosition(key) {
 // writes the position against the deck it was measured in.
 export function scheduleReadingPositionSave(key, anchor) {
   if (!key || !anchor) return;
+  // One pending slot, so a position for ANOTHER deck still waiting on its timer
+  // is written now rather than replaced. Read a deck, open the next within two
+  // seconds, and the first deck's last position used to be thrown away by the
+  // second deck's first capture — reopening it landed somewhere older.
+  if (pendingReadingPosition && pendingReadingPosition.key !== key) {
+    writeStoredReadingPosition(pendingReadingPosition.key, pendingReadingPosition.anchor);
+  }
   pendingReadingPosition = { key, anchor };
   if (readingPositionTimer) clearTimeout(readingPositionTimer);
   readingPositionTimer = setTimeout(() => {

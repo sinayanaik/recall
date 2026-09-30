@@ -18,9 +18,14 @@ import { activeDocSlot } from "../documents/doc-slot.js?v=__BUILD__";
 import { openDocumentView } from "../documents/pdf-view.js?v=__BUILD__";
 import { refreshHighlightBackdrop } from "../editor/highlight-mirror.js?v=__BUILD__";
 import { readerNotesBody } from "../format/notes-fence.js?v=__BUILD__";
-import { enterNotesEditing, isNotesEditing, notesScrolledSource, quizPanel, renderNotesView, resetNotesEditingUI } from "../notes/notes-view.js?v=__BUILD__";
+import { enterNotesEditing, isNotesEditing, markProgrammaticNotesScroll, notesScrolledSource, quizPanel, renderNotesView, resetNotesEditingUI } from "../notes/notes-view.js?v=__BUILD__";
 import { applyNotesPagedLayout } from "../notes/paged-view.js?v=__BUILD__";
 import { flushReadingPositionSave } from "../notes/reading-position.js?v=__BUILD__";
+// anchors.js imports this module (setViewMode), so this closes a cycle. Safe for
+// the reason the others are: scheduleNoteJump is a hoisted function declaration,
+// called at runtime inside setViewMode, never read while a module body runs.
+import { scheduleNoteJump } from "../notes/anchors.js?v=__BUILD__";
+import { currentDeckKey, takeDeferredNotesResume } from "../notes/scroll-anchor.js?v=__BUILD__";
 import { hideNotesSelectionButton } from "../notes/selection.js?v=__BUILD__";
 import { measureChromeHeights } from "./chrome.js?v=__BUILD__";
 
@@ -169,7 +174,15 @@ export function setViewMode(mode, options = {}) {
   // an armed-but-unfired save now rather than letting its timer fire against a
   // view the reader has already left. (The save carries the deck key it was
   // captured with, so this is safe even mid-deck-swap.)
-  if (changed && !notesActive && !documentActive) flushReadingPositionSave();
+  //
+  // On ANY real switch, not only into Cards. Notes -> Document left an armed
+  // save pending for up to two seconds, and the next capture (on the paper, or
+  // on the next deck) used to overwrite it — the last place read in the note was
+  // lost and the note reopened somewhere older. (A save pending for another
+  // deck is also written through now rather than replaced — see
+  // scheduleReadingPositionSave — but a switch is still the moment the position
+  // is final.)
+  if (changed) flushReadingPositionSave();
   // ...and remembered, so the deck opens here next time. Only on a real switch
   // and only with a deck open: documentTabForOpenDeck answers from the deck's
   // CONTENTS, which is right the first time and wrong every time after — a
@@ -185,6 +198,14 @@ export function setViewMode(mode, options = {}) {
   // then spilled out over the tabs below it. This is the one place that knows
   // the view just changed.
   if (changed) measureChromeHeights();
+  if (notesActive && changed) {
+    // A deck opened on Cards has its reading position held back rather than
+    // dragged onto the Notes tab to land it (see deferNotesResume); the reader
+    // coming here is the moment to use it. After the reset below has run, so it
+    // lands on the note rather than being zeroed out from under it.
+    const deferred = takeDeferredNotesResume(currentDeckKey());
+    if (deferred) queueMicrotask(() => scheduleNoteJump(deferred, { flash: false, smooth: false, resume: true }));
+  }
   if (notesActive) {
     // A note you haven't been reading opens at its first line. Done BEFORE the
     // render rather than after it: scheduleNoteJump() calls setViewMode() and
@@ -198,7 +219,21 @@ export function setViewMode(mode, options = {}) {
     // that notesScrolledSource never holds (see readerNotesBody), so comparing
     // the raw string here made this condition true on every switch into Notes
     // for any such deck — zeroing the scroll even when it's the same note.
-    if (el.notesView && readerNotesBody(state.notes) !== notesScrolledSource) {
+    //
+    // NOT on a sync's in-place reload (`keepPlace`). The sync rewrote the note
+    // under somebody reading it — a highlight or an edit made on another device
+    // — so the body differs, and this used to throw them to the top before
+    // renderNotesViewPinned (the reload's own repaint, which pins the block they
+    // were reading) could measure where they were. It then pinned the top, and
+    // the scroll listener wrote "the top" down as their reading position and
+    // synced it to every other device. "Randomly I'm going to some place and
+    // then randomly to some other place."
+    //
+    // Marked as the app's own scroll when it does run: the top of a note just
+    // opened is not a place anyone read, and captured as one it was stamped
+    // newer than the real position the resume was about to land on.
+    if (el.notesView && !options.keepPlace && readerNotesBody(state.notes) !== notesScrolledSource) {
+      markProgrammaticNotesScroll();
       el.notesView.scrollTop = 0;
       el.notesView.scrollLeft = 0;
     }
@@ -226,6 +261,13 @@ export function setViewMode(mode, options = {}) {
   const token = ++viewModePaintToken;
   const paint = () => {
     if (notesActive) {
+      // A sync's in-place reload repaints the note itself, pinned to the block
+      // the reader is on (deckReloadedInPlace -> renderNotesViewPinned). A
+      // plain render here as well would be a second, unpinned repaint racing it.
+      if (options.keepPlace) {
+        if (!rawEditorValueFor(state.notes).trim()) enterNotesEditing();
+        return;
+      }
       renderNotesView();
       // After the render, so the columns are laid out against the note that is
       // actually on screen — and so the page indicator can count its pages.
