@@ -643,7 +643,7 @@ try {
   // ⋯ disclosure used to hide half of them. The phone check is the load-bearing
   // one — the disclosure was shown ONLY on the bottom-pinned bar, so the
   // surface with the least room was the one where bold cost two taps.
-  await check("every selection tool is one press away, in categories", async () => {
+  await check("every selection tool is on the bar, in categories", async () => {
     const read = () => page.evaluate(() => {
       const float = document.getElementById("selectionFloat");
       if (!float) return null;
@@ -693,19 +693,41 @@ try {
     // touch controller puts `user-select: none` on the reading surfaces
     // (styles/32-touch-select.css) and a synthetic mouse drag selects nothing.
     // `is-pinned-bottom` is the class pinSelectionButtonToBottom() adds.
-    const show = (pinned) => page.evaluate((pin) => {
+    // `is-touch-bar` is the class placeTouchSelectionBar() adds on a phone.
+    const show = (touch) => page.evaluate((isTouch) => {
       const float = document.getElementById("selectionFloat");
       float.hidden = false;
-      float.classList.toggle("is-pinned-bottom", pin);
-      if (!pin) { float.style.top = "300px"; float.style.left = "40px"; }
-      else { float.style.top = ""; float.style.left = ""; }
-    }, pinned);
+      float.classList.toggle("is-touch-bar", isTouch);
+      float.style.top = "300px";
+      float.style.left = "8px";
+    }, touch);
     const hide = () => page.evaluate(() => {
       const float = document.getElementById("selectionFloat");
       float.hidden = true;
-      float.classList.remove("is-pinned-bottom");
+      float.classList.remove("is-touch-bar", "is-expanded");
       float.style.top = "";
       float.style.left = "";
+    });
+    // On the phone bar the groups are `display: contents` — the buttons are
+    // ordered into rows one by one — so rows and reach are counted by BUTTON.
+    const readPhone = () => page.evaluate(() => {
+      const float = document.getElementById("selectionFloat");
+      const visible = (node) => {
+        const style = getComputedStyle(node);
+        return style.display !== "none" && style.visibility !== "hidden" && node.getBoundingClientRect().width > 0;
+      };
+      const all = [...float.querySelectorAll("button")]
+        .filter((b) => !b.closest("[hidden]") && !b.closest(".render-color-menu, .selection-float-menu"));
+      const reachable = all.filter(visible);
+      const box = float.getBoundingClientRect();
+      return {
+        touchBar: float.classList.contains("is-touch-bar"),
+        buttons: all.length,
+        reachable: reachable.length,
+        rows: new Set(reachable.map((b) => Math.round(b.getBoundingClientRect().top))).size,
+        unreachable: all.filter((b) => !visible(b)).map((b) => b.id || b.dataset.renderAction || b.className),
+        overflows: box.left < -1 || box.right > window.innerWidth + 1,
+      };
     });
 
     await page.evaluate(() => window.__api.setViewMode("notes"));
@@ -726,8 +748,10 @@ try {
     // anywhere but the reading surface itself did nothing at all. On a desktop
     // the pill tracks the selection and clicking away has always dismissed it,
     // so a button for that would be a fourteenth control earning nothing.
-    const expected = ["capture", "mark", "style", "use", "cut", "dismiss"];
-    const PHONE_ONLY = ["dismiss"];
+    // "more" is the ⋯ that opens the phone bar's second row — phone only too:
+    // the desktop pill has room for every control in one row.
+    const expected = ["capture", "mark", "style", "use", "cut", "more", "dismiss"];
+    const PHONE_ONLY = ["more", "dismiss"];
     if (wide.order.join(",") !== expected.join(",")) {
       return `groups are ${wide.order.join(",")}, expected ${expected.join(",")}`;
     }
@@ -745,24 +769,29 @@ try {
     if (wide.rows !== 1) return `the desktop pill wrapped onto ${wide.rows} rows`;
 
     // ...and now the width that actually had the problem. 390px is the phone
-    // this file's other cases use, and where .is-pinned-bottom applies.
+    // this file's other cases use, and where .is-touch-bar applies.
+    //
+    // "The highlight menu is too intrusive — it needs to be concise and compact,
+    // but I don't want to lose any functionality." So the phone bar is ONE row
+    // of the everyday actions, and ⋯ opens a second row holding the rest: every
+    // control is still on the bar, at most one extra tap away.
     await page.setViewport({ width: 390, height: 844 });
     await new Promise((r) => setTimeout(r, 400));
     await show(true);
-    const phone = await read();
+    const phone = await readPhone();
+    await page.evaluate(() => document.getElementById("selectionFloat").classList.add("is-expanded"));
+    const phoneOpen = await readPhone();
     await hide();
     await page.setViewport({ width: 900, height: 800 });
     await new Promise((r) => setTimeout(r, 400));
 
-    if (!phone.pinned) return "the phone bar is not pinned to the bottom — this case measured the wrong layout";
-    if (phone.hidden.length) return `still hidden on a phone: ${phone.hidden.join(", ")}`;
-    if (phone.reachable !== phone.buttons) {
-      return `${phone.buttons - phone.reachable} of ${phone.buttons} controls need a second tap on a phone`;
+    if (!phone.touchBar) return "the phone bar is not the touch bar — this case measured the wrong layout";
+    if (phone.rows !== 1) return `the collapsed phone bar took ${phone.rows} rows`;
+    if (phone.overflows || phoneOpen.overflows) return "the phone bar hangs off the edge of the screen";
+    if (phoneOpen.reachable !== phoneOpen.buttons) {
+      return `not reachable on a phone even behind ⋯: ${phoneOpen.unreachable.join(", ")}`;
     }
-    // Two rows is the design (see the arithmetic in styles/22-selection-bar.css);
-    // three would mean a group had to be split and the bar covers more of the
-    // sentence than it is about.
-    if (phone.rows > 2) return `the phone bar took ${phone.rows} rows`;
+    if (phoneOpen.rows > 3) return `the expanded phone bar took ${phoneOpen.rows} rows`;
     return null;
   });
 

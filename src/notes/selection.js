@@ -174,7 +174,13 @@ export function hideNotesSelectionButton() {
       && el.highlightSelectionMenu?.hidden !== false) {
     return;
   }
-  if (el.selectionFloat) el.selectionFloat.hidden = true;
+  if (el.selectionFloat) {
+    el.selectionFloat.hidden = true;
+    // Each selection opens on the one compact row — ⋯ is a choice made about
+    // one selection, not a setting.
+    el.selectionFloat.classList.remove("is-expanded", "is-scrolling", "is-offscreen");
+    el.selectionMoreBtn?.setAttribute("aria-expanded", "false");
+  }
   if (el.makeCardFromSelectionBtn) el.makeCardFromSelectionBtn.dataset.selectionText = "";
   // The colour menu is a child of the pill, so hiding the pill hides it too —
   // but it would come back open on the next selection without this.
@@ -926,9 +932,23 @@ export function selectionGestureIsLive() {
   return true;
 }
 
+// What was selected when the gesture began. A press that ends with the SAME
+// selection standing, while the bar is down, is not a request for the bar: it is
+// a scroll, a tap on the chrome, a swipe between tabs — and each of those used
+// to bring back a bar that had been put away, over a selection the reader had
+// stopped thinking about. "The highlight menu is randomly popping."
+let gestureStartSelection = null;
+
+function liveSelectionBoundaries() {
+  const selection = window.getSelection?.();
+  if (!selection || !selection.rangeCount || selection.isCollapsed) return null;
+  return rangeBoundaries(selection.getRangeAt(0));
+}
+
 export function beginSelectionGesture() {
   selectionGestureActive = true;
   gestureStartedAt = performance.now();
+  gestureStartSelection = liveSelectionBoundaries();
   // The reader has put a finger down, so whatever the app had selected on their
   // behalf is no longer "ours" — see markProgrammaticNotesSelection.
   clearProgrammaticNotesSelection();
@@ -942,8 +962,16 @@ export function endSelectionGesture() {
   if (!selectionGestureActive) return;
   selectionGestureActive = false;
   if (gestureReleaseTimer) clearTimeout(gestureReleaseTimer);
+  const startedWith = gestureStartSelection;
+  gestureStartSelection = null;
   gestureReleaseTimer = setTimeout(() => {
     gestureReleaseTimer = null;
+    const bar = el.selectionFloat;
+    if (bar?.hidden && startedWith) {
+      const selection = window.getSelection?.();
+      const range = selection?.rangeCount && !selection.isCollapsed ? selection.getRangeAt(0) : null;
+      if (range && sameRangeBoundaries(startedWith, range)) return;
+    }
     positionNotesSelectionButton();
   }, SELECTION_GESTURE_SETTLE_MS);
 }
@@ -1493,19 +1521,138 @@ export function textareaSelectionRect(textarea) {
   };
 }
 
-// On narrow/touch screens, reaching past the visible edge of a big selection
-// means dragging a handle until the view auto-scrolls (or scrolling by hand
-// mid-selection) — the selection's bounding rect then spans more than one
-// screen, and pinning the button to its top/bottom edge can put it anywhere
-// from the very top of the screen to the very bottom depending on which edge
-// is currently on-screen. Anchor it to a fixed spot instead: always the same
-// thumb-reachable place, regardless of how big the selection is or where it
-// scrolled to. Desktop keeps the precise follow-the-selection positioning
-// below, since dragging with a mouse doesn't hit the same problem.
-export function pinSelectionButtonToBottom(button) {
-  button.style.top = "";
-  button.style.left = "";
-  button.classList.add("is-pinned-bottom");
+// ── The phone bar: one compact row, beside the selection ────────────────────
+//
+// It used to be pinned to one fixed spot near the bottom of the screen, so that
+// a selection too big for the screen could not throw it from one edge to the
+// other. The price was a two-row slab of 36px buttons parked over whatever the
+// reader was about to read next, whether the selection was there or not —
+// "randomly popping and too intrusive".
+//
+// So it sits where the system's own selection menu would: just above the first
+// VISIBLE line of the selection, or just below the last visible one when there
+// is no room above. Only visible rects count, because a selection that runs off
+// the screen has a bounding box that does. When the selection covers the whole
+// visible band there is nowhere beside it, and the bottom edge is the least bad
+// place left. While the view scrolls the bar steps aside (suspendSelectionBarFor
+// Scroll) and is placed again from the live range once the scroll stops.
+//
+// `rectsOf` is a function rather than a list so a later re-placement — after a
+// scroll, or after ⋯ changes the bar's height — measures the selection where it
+// is THEN, not where it was when the bar first appeared.
+const TOUCH_BAR_GAP_ABOVE = 10;
+// The end handle's bulb hangs ~30px below its line with a grab skirt under it
+// (styles/32-touch-select.css), and a bar on top of it would eat the reader's
+// reach for it.
+const TOUCH_BAR_GAP_BELOW = 44;
+const TOUCH_BAR_EDGE = 8;
+
+let touchBarRectsOf = null;
+let touchBarSurface = null;
+
+// The band the bar may occupy: below the chrome above the reading surface (the
+// appbar and the tab row are not the bar's to cover), above the bottom of the
+// visible viewport.
+function touchBarBand() {
+  const surfaceRect = touchBarSurface?.isConnected ? touchBarSurface.getBoundingClientRect() : null;
+  const viewport = window.visualViewport;
+  const viewportBottom = viewport ? viewport.offsetTop + viewport.height : window.innerHeight;
+  const hasSurface = Boolean(surfaceRect && surfaceRect.height > 0);
+  const top = Math.max(TOUCH_BAR_EDGE, hasSurface ? surfaceRect.top + 4 : TOUCH_BAR_EDGE);
+  const bottom = Math.min(viewportBottom, hasSurface ? surfaceRect.bottom : viewportBottom) - TOUCH_BAR_EDGE;
+  return { top, bottom: Math.max(top, bottom) };
+}
+
+export function placeTouchSelectionBar(button, rectsOf, surface = null) {
+  if (typeof rectsOf === "function") {
+    touchBarRectsOf = rectsOf;
+    touchBarSurface = surface;
+  }
+  button.classList.add("is-touch-bar");
+  button.classList.remove("is-pinned-bottom");
+  const rects = (touchBarRectsOf ? touchBarRectsOf() : []) || [];
+  const band = touchBarBand();
+  const visible = rects.filter((r) => r && r.bottom > band.top && r.top < band.bottom && (r.width > 0 || r.height > 0));
+  if (!visible.length) {
+    // Scrolled right off: out of the way until a scroll brings it back.
+    button.classList.add("is-offscreen");
+    return;
+  }
+  button.classList.remove("is-offscreen");
+  const btnRect = button.getBoundingClientRect();
+  const first = visible[0];
+  const last = visible[visible.length - 1];
+  let top = first.top - btnRect.height - TOUCH_BAR_GAP_ABOVE;
+  let anchor = first;
+  if (top < band.top) {
+    top = last.bottom + TOUCH_BAR_GAP_BELOW;
+    anchor = last;
+    // Selected from top to bottom of the screen: nowhere beside it is left,
+    // and the bottom edge covers the least of what is being read.
+    if (top + btnRect.height > band.bottom) top = band.bottom - btnRect.height;
+  }
+  top = Math.max(band.top, top);
+  const anchorX = anchor.left + (anchor.right - anchor.left) / 2;
+  const left = Math.min(
+    Math.max(TOUCH_BAR_EDGE, anchorX - btnRect.width / 2),
+    Math.max(TOUCH_BAR_EDGE, window.innerWidth - btnRect.width - TOUCH_BAR_EDGE)
+  );
+  button.style.top = `${Math.round(top)}px`;
+  button.style.left = `${Math.round(left)}px`;
+  // The colour and text-style menus hang off the bar: upward when there is room
+  // for them in the reading band above it, downward otherwise, so neither ends
+  // up under the tab row or off the top of the screen.
+  button.classList.toggle("menus-up", top - band.top >= TOUCH_BAR_MENU_ROOM);
+}
+
+// Tall enough for the text-style menu, the larger of the two.
+const TOUCH_BAR_MENU_ROOM = 170;
+
+function rangeRectsOf(range) {
+  return () => Array.from(range.getClientRects());
+}
+
+// Put the bar back beside the selection it belongs to — after ⋯ changed its
+// height, or once a scroll has stopped. A no-op on a desktop, where the pill is
+// hidden on scroll and placed afresh by the next selection.
+export function replaceTouchSelectionBar() {
+  const button = el.selectionFloat;
+  if (!button || button.hidden || !button.classList.contains("is-touch-bar")) return;
+  placeTouchSelectionBar(button, null);
+}
+
+// ── Scrolling, on the phone ─────────────────────────────────────────────────
+//
+// Hidden visually but NOT torn down: the capture the buttons act on stays, so
+// the bar comes back the moment the scroll stops without re-describing the
+// selection (which is the expensive half — see ensurePillSelectionCapture).
+export const TOUCH_BAR_SCROLL_QUIET_MS = 180;
+
+let touchBarScrollTimer = 0;
+
+export function touchBarScrolling() {
+  return Boolean(touchBarScrollTimer);
+}
+
+export function suspendSelectionBarForScroll() {
+  const button = el.selectionFloat;
+  if (!button || button.hidden || !button.classList.contains("is-touch-bar")) return;
+  button.classList.add("is-scrolling");
+  if (touchBarScrollTimer) clearTimeout(touchBarScrollTimer);
+  touchBarScrollTimer = setTimeout(() => {
+    touchBarScrollTimer = 0;
+    button.classList.remove("is-scrolling");
+    replaceTouchSelectionBar();
+  }, TOUCH_BAR_SCROLL_QUIET_MS);
+}
+
+// ⋯ — the rest of the bar. One row by default; this opens the second.
+export function setSelectionBarExpanded(expanded) {
+  const button = el.selectionFloat;
+  if (!button) return;
+  button.classList.toggle("is-expanded", Boolean(expanded));
+  el.selectionMoreBtn?.setAttribute("aria-expanded", expanded ? "true" : "false");
+  replaceTouchSelectionBar();
 }
 
 export function positionNotesSelectionButton() {
@@ -1550,7 +1697,7 @@ export function positionNotesSelectionButton() {
     return;
   }
   const mobile = Boolean(styleMobileMedia?.matches);
-  if (!mobile) button.classList.remove("is-pinned-bottom");
+  if (!mobile) button.classList.remove("is-pinned-bottom", "is-touch-bar", "is-offscreen", "is-scrolling", "is-expanded");
 
   // ── The Document surface ─────────────────────────────────────────────────
   //
@@ -1607,7 +1754,7 @@ export function positionNotesSelectionButton() {
     // pin's round-trip through the note; neither has a home on a document.
     if (el.makeClozeFromSelectionBtn) el.makeClozeFromSelectionBtn.hidden = true;
     button.hidden = false;
-    if (mobile) return pinSelectionButtonToBottom(button);
+    if (mobile) return placeTouchSelectionBar(button, rangeRectsOf(documentRange), el.documentView);
     return placeSelectionPillNearRange(button, documentRange);
   }
 
@@ -1670,7 +1817,10 @@ export function positionNotesSelectionButton() {
       el.makeClozeFromSelectionBtn.hidden = true;
     }
     button.hidden = false;
-    if (mobile) return pinSelectionButtonToBottom(button);
+    if (mobile) {
+      const edit = editingTarget.edit;
+      return placeTouchSelectionBar(button, () => [textareaSelectionRect(edit)], edit);
+    }
     // Track the actual selection (same approach as the rendered-view branch
     // below) instead of parking in the textarea's corner regardless of where
     // the selection actually is.
@@ -1771,7 +1921,7 @@ export function positionNotesSelectionButton() {
     el.makeClozeFromSelectionBtn.hidden = true;
   }
   button.hidden = false;
-  if (mobile) return pinSelectionButtonToBottom(button);
+  if (mobile) return placeTouchSelectionBar(button, rangeRectsOf(range), renderedTarget.view);
   placeSelectionPillNearRange(button, range);
 }
 

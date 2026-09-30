@@ -1516,68 +1516,110 @@ async function run() {
       "...and the pill is up, describing it",
       `hidden: ${captures.hidden}, title: "${captures.title}"`);
 
-    // ── ...and it is still two honest rows of related buttons ─────────────
+    // ── ...and it is ONE compact row, beside the selection ────────────────
     //
-    // The bar is one flex container of .sel-group wrappers, and where it folds
-    // is left to the arithmetic rather than forced onto a group — see the sum
-    // in styles/22-selection-bar.css. That sum is a measurement, so it goes
-    // stale the moment a button is added to it, and it has been added to twice
-    // (highlight-and-annotate in `mark`, quote-it in `style`).
+    // "The highlight menu is randomly popping and too intrusive — it needs to
+    // be concise and clean and compact. But I don't want to lose any
+    // functionality."
     //
-    // What must hold is not the sum but its two conclusions: the bar wraps to
-    // at most two rows on the narrowest phone the app supports, and no GROUP is
-    // ever broken across a fold — a group is `flex: 0 0 auto` precisely so that
-    // "capture" cannot end up half on one line and half on the next.
-    const pillBar = await page.evaluate(() => {
+    // The phone bar used to be two rows of chips pinned near the bottom of the
+    // screen, over whatever came next. It is one row of the everyday actions,
+    // placed just above (or below) the selection's visible lines, with ⋯
+    // opening a second row that holds everything else. So three things hold:
+    // collapsed, it is one row, on screen, and next to the words; expanded,
+    // every action the bar has ever carried is on screen; and nothing it shows
+    // is covering the selection itself.
+    const barLayout = () => page.evaluate(() => {
       const pill = document.getElementById("selectionFloat");
       if (!pill || pill.hidden) return { error: "the pill is not up" };
-      const groups = [...pill.querySelectorAll(":scope > .sel-group")]
-        .filter((g) => g.getBoundingClientRect().height > 0);
-      // A row is a distinct top edge, rounded so sub-pixel baselines do not
-      // read as extra rows.
-      const rowsOf = (nodes) => [...new Set(nodes.map((n) => Math.round(n.getBoundingClientRect().top)))];
-      const split = groups.filter((g) => {
-        const kids = [...g.children].filter((k) => k.getBoundingClientRect().height > 0);
-        return rowsOf(kids).length > 1;
-      }).map((g) => g.dataset.selGroup);
-      const box = pill.getBoundingClientRect();
-      // The two verbs the bar grew, and the reason the sum above had to be
-      // restated. One is markup (#highlightAnnotateSelectionBtn, beside the
-      // swatch it extends); the other is built into the formatting slot by
-      // initRenderToolbars, so its presence is also a check that that slot was
-      // filled at all.
-      const onScreen = (sel) => {
-        const node = pill.querySelector(sel);
+      const shown = (node) => {
         if (!node || node.hidden) return false;
         const r = node.getBoundingClientRect();
-        return r.width > 0 && r.height > 0;
+        return r.width > 0 && r.height > 0 && getComputedStyle(node).visibility !== "hidden";
       };
+      const buttons = [...pill.querySelectorAll(".selection-float-btn, .selection-float-format .render-btn:not(.render-color-menu *)")]
+        .filter(shown);
+      const rows = [...new Set(buttons.map((b) => Math.round(b.getBoundingClientRect().top)))];
+      const box = pill.getBoundingClientRect();
+      const sel = window.getSelection();
+      const rects = sel && sel.rangeCount ? [...sel.getRangeAt(0).getClientRects()] : [];
+      const visible = rects.filter((r) => r.bottom > 0 && r.top < window.innerHeight && r.width > 0);
+      const covers = visible.some((r) => r.left < box.right && r.right > box.left && r.top < box.bottom && r.bottom > box.top);
+      const gap = visible.length
+        ? Math.min(...visible.map((r) => Math.max(r.top - box.bottom, box.top - r.bottom)))
+        : Infinity;
+      const on = (selector) => shown(pill.querySelector(selector));
       return {
-        rows: rowsOf(groups).length,
-        groups: groups.length,
-        split,
-        annotate: onScreen("#highlightAnnotateSelectionBtn"),
-        blockquote: onScreen('[data-render-action="blockquote"]'),
-        overflows: box.left < -1 || box.right > window.innerWidth + 1,
+        touchBar: pill.classList.contains("is-touch-bar"),
+        pinned: pill.classList.contains("is-pinned-bottom"),
+        rows: rows.length,
+        count: buttons.length,
+        overflows: box.left < -1 || box.right > window.innerWidth + 1 || box.top < -1 || box.bottom > window.innerHeight + 1,
         width: Math.round(box.width),
-        viewport: window.innerWidth
+        viewport: window.innerWidth,
+        covers,
+        gap: Math.round(gap),
+        primary: {
+          highlight: on("#highlightSelectionBtn"),
+          colour: on("#highlightSelectionMenuBtn"),
+          annotate: on("#highlightAnnotateSelectionBtn"),
+          card: on("#makeCardFromSelectionBtn"),
+          copy: on("#copySelectionBtn"),
+          more: on("#selectionMoreBtn"),
+        },
+        secondary: {
+          cloze: on("#makeClozeFromSelectionBtn"),
+          pin: on("#pinQuickNoteFromSelectionBtn"),
+          extract: on("#extractNoteFromSelectionBtn"),
+          bulletify: on('[data-render-action="bulletify"]'),
+          blockquote: on('[data-render-action="blockquote"]'),
+          textStyle: on('[data-render-action="font-menu"]'),
+          search: on("#searchSelectionBtn"),
+          erase: on("#eraseNotesSelectionBtn"),
+          done: on("#dismissSelectionBtn"),
+        },
       };
     });
-    if (pillBar.error) {
-      fail("the selection bar still folds into two rows on a phone", pillBar.error);
+    const pressMore = () => page.evaluate(() => {
+      const more = document.getElementById("selectionMoreBtn");
+      more?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerType: "touch" }));
+      return document.getElementById("selectionFloat")?.classList.contains("is-expanded");
+    });
+    const collapsed = await barLayout();
+    if (collapsed.error) {
+      fail("the selection bar is one compact row on a phone", collapsed.error);
     } else {
-      check(pillBar.rows > 0 && pillBar.rows <= 2,
-        "the selection bar still folds into two rows on a phone",
-        `${pillBar.groups} group(s) over ${pillBar.rows} row(s), ${pillBar.width}px in a ${pillBar.viewport}px viewport`);
-      check(pillBar.split.length === 0,
-        "...with no group broken across the fold",
-        pillBar.split.length ? `split: ${pillBar.split.join(", ")}` : "every group whole");
-      check(!pillBar.overflows,
+      const missing = Object.entries(collapsed.primary).filter(([, v]) => !v).map(([k]) => k);
+      const extra = Object.entries(collapsed.secondary).filter(([, v]) => v).map(([k]) => k);
+      check(collapsed.touchBar && !collapsed.pinned && collapsed.rows === 1,
+        "the selection bar is one compact row on a phone",
+        `${collapsed.count} button(s) over ${collapsed.rows} row(s), ${collapsed.width}px in a ${collapsed.viewport}px viewport`);
+      check(!missing.length && !extra.length,
+        "...holding exactly the everyday actions, with the rest behind ⋯",
+        missing.length || extra.length ? `missing: ${missing.join(", ") || "none"}; extra: ${extra.join(", ") || "none"}` : "highlight, colour, note, card, copy, ⋯");
+      check(!collapsed.overflows,
         "...and nothing hanging off the edge of the screen",
-        `${pillBar.width}px of ${pillBar.viewport}px`);
-      check(pillBar.annotate && pillBar.blockquote,
-        "...with both of the verbs the bar was missing on it",
-        `highlight-and-annotate=${pillBar.annotate} quote-it=${pillBar.blockquote}`);
+        `${collapsed.width}px of ${collapsed.viewport}px`);
+      check(!collapsed.covers && collapsed.gap >= 0 && collapsed.gap <= 60,
+        "...sitting beside the selection, not over it and not across the screen from it",
+        `covers: ${collapsed.covers}, ${collapsed.gap}px from the nearest selected line`);
+      const opened = await pressMore();
+      const expanded = await barLayout();
+      const unreachable = expanded.error ? ["the bar"] : [
+        ...Object.entries(expanded.primary),
+        ...Object.entries(expanded.secondary),
+      ].filter(([, v]) => !v).map(([k]) => k);
+      check(opened && !unreachable.length,
+        "⋯ opens a second row with every other action on it",
+        unreachable.length ? `not reachable: ${unreachable.join(", ")}` : `${expanded.count} button(s) over ${expanded.rows} row(s)`);
+      check(!expanded.error && !expanded.overflows && !expanded.covers,
+        "...still on screen and still clear of the selection",
+        expanded.error || `${expanded.width}px wide, covers: ${expanded.covers}`);
+      const closed = await pressMore();
+      const again = await barLayout();
+      check(!closed && again.rows === 1,
+        "...and ⋯ again folds it back to one row",
+        `expanded: ${closed}, rows: ${again.rows}`);
     }
 
     // ── 6d. A SLOW slide inside the escape window keeps its selection ──────
@@ -1778,6 +1820,154 @@ async function run() {
     check(duringBrush === beforeBrush,
       "...and a finger passing through it does not take the page away",
       `${beforeBrush} -> ${duringBrush}`);
+
+    // ── 17. The bar comes when asked for, and not otherwise ─────────────────
+    //
+    // "The highlight menu is randomly popping." Four ways it did, each reached
+    // for here with the same selection machinery a reader drives:
+    //
+    //   a. a scroll — the bar now sits beside the selection, so it steps aside
+    //      while the view moves and comes back beside the words afterwards;
+    //   b. Copy — it put the bar away and left the selection standing, so the
+    //      next scroll or tap brought the bar straight back;
+    //   c. a "Go to" — the jump selects its target to show where it landed, and
+    //      once the 1.5s quiet window ran out, the next selectionchange raised
+    //      the bar over a span nobody had chosen;
+    //   d. a tap on a highlight that rested 240ms — it selected the word under
+    //      it and raised the bar instead of opening the highlight's menu.
+    const pressWord = async (marker, index, holdMs = 520) => {
+      await page.evaluate((m) => window.__reveal(m), marker);
+      await wait(250);
+      const at = await page.evaluate((m, i) => window.__wordRect(m, i), marker, index);
+      await touchStart(at.x, at.y);
+      await wait(holdMs);
+      await touchEnd();
+      await wait(450);
+      return at;
+    };
+    const barState = () => page.evaluate(() => {
+      const pill = document.getElementById("selectionFloat");
+      const sel = window.getSelection();
+      return {
+        hidden: pill.hidden,
+        scrolling: pill.classList.contains("is-scrolling"),
+        offscreen: pill.classList.contains("is-offscreen"),
+        // Range.toString, not Selection.toString: the latter skips text under
+        // `user-select: none`, which is the whole reading surface here.
+        selected: sel && sel.rangeCount && !sel.isCollapsed ? sel.getRangeAt(0).toString() : "",
+        top: Math.round(pill.getBoundingClientRect().top),
+      };
+    });
+
+    // a. Scroll.
+    await page.evaluate(() => window.getSelection().removeAllRanges());
+    await wait(200);
+    await pressWord("P0030", 2);
+    const barBeforeScroll = await barState();
+    await page.evaluate(() => { document.getElementById("notesView").scrollTop += 40; });
+    await wait(30);
+    const barMidScroll = await barState();
+    await wait(450);
+    const barAfterScroll = await barState();
+    check(!barBeforeScroll.hidden && Boolean(barBeforeScroll.selected),
+      "a selection to scroll with the bar up", `"${barBeforeScroll.selected}"`);
+    check(barMidScroll.scrolling && !barMidScroll.hidden,
+      "the bar steps aside while the view scrolls, without being torn down",
+      `is-scrolling: ${barMidScroll.scrolling}, hidden: ${barMidScroll.hidden}`);
+    check(!barAfterScroll.scrolling && !barAfterScroll.hidden && Math.abs((barBeforeScroll.top - 40) - barAfterScroll.top) <= 2,
+      "...and comes back beside the selection once the scroll stops",
+      `top ${barBeforeScroll.top} -> ${barAfterScroll.top} after a 40px scroll`);
+
+    // b. Copy.
+    await page.evaluate(() => {
+      document.getElementById("copySelectionBtn")
+        .dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerType: "touch" }));
+    });
+    await wait(150);
+    const afterCopy = await barState();
+    const copyScrollFrom = await page.evaluate(() => window.__wordRect("P0032", 1));
+    await touchStart(copyScrollFrom.x, copyScrollFrom.y);
+    await dragTo(copyScrollFrom.x, copyScrollFrom.y, copyScrollFrom.x, copyScrollFrom.y - 120, 6, 16);
+    await touchEnd();
+    await wait(500);
+    const afterCopyScroll = await barState();
+    check(afterCopy.hidden && !afterCopy.selected,
+      "Copy puts the bar away AND lets the selection go",
+      `hidden: ${afterCopy.hidden}, still selected: "${afterCopy.selected}"`);
+    check(afterCopyScroll.hidden,
+      "...so the next scroll does not bring the bar back",
+      `hidden: ${afterCopyScroll.hidden}`);
+
+    // c. A "Go to"'s selection, after its quiet window has run out.
+    await page.evaluate(() => window.__reveal("P0036"));
+    await wait(250);
+    await page.evaluate(() => {
+      const target = Array.from(document.querySelectorAll("#notesView p")).find((p) => p.textContent.startsWith("P0036"));
+      const range = document.createRange();
+      range.setStart(target.firstChild, 6);
+      range.setEnd(target.firstChild, 19);
+      window.__recall.api.markProgrammaticNotesSelection(undefined, range);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+    });
+    await wait(1800);
+    const gotoStanding = await barState();
+    check(gotoStanding.hidden && gotoStanding.selected === "alpha bravo c",
+      "a Go-to's selection is standing, with no bar over it", `hidden: ${gotoStanding.hidden}, "${gotoStanding.selected}"`);
+    // Anything that re-runs the check now — a late selectionchange, a
+    // re-render, a pointerup anywhere — asks about the SAME selection.
+    await page.evaluate(() => window.__recall.api.scheduleNotesSelectionCheck());
+    await wait(600);
+    const afterGoto = await barState();
+    check(afterGoto.hidden,
+      "a Go-to's own selection never raises the bar, even after its quiet window",
+      `hidden: ${afterGoto.hidden}, selection: "${afterGoto.selected}"`);
+    await page.evaluate(() => window.getSelection().removeAllRanges());
+    await wait(200);
+    await pressWord("P0040", 3);
+    const afterRealPress = await barState();
+    check(!afterRealPress.hidden && Boolean(afterRealPress.selected),
+      "...while a selection the reader makes afterwards still gets it",
+      `hidden: ${afterRealPress.hidden}, "${afterRealPress.selected}"`);
+
+    // d. A slow tap on a highlight.
+    await page.evaluate(() => {
+      window.getSelection().removeAllRanges();
+      window.__recall.api.clearTouchSelection?.();
+    });
+    await wait(200);
+    await page.evaluate(() => {
+      window.__reveal("P0044");
+      const target = Array.from(document.querySelectorAll("#notesView p")).find((p) => p.textContent.startsWith("P0044"));
+      const text = target.firstChild;
+      const range = document.createRange();
+      range.setStart(text, 6);
+      range.setEnd(text, 25);
+      const mark = document.createElement("mark");
+      range.surroundContents(mark);
+    });
+    await wait(250);
+    const markRect = await page.evaluate(() => {
+      const r = document.querySelector("#notesView mark").getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    });
+    await touchStart(markRect.x, markRect.y);
+    await wait(320);
+    await touchEnd();
+    await wait(450);
+    const afterSlowTap = await barState();
+    check(afterSlowTap.hidden && !afterSlowTap.selected,
+      "a slow tap on a highlight is a tap — no word selected, no bar",
+      `hidden: ${afterSlowTap.hidden}, selection: "${afterSlowTap.selected}"`);
+    await touchStart(markRect.x, markRect.y);
+    await wait(700);
+    await touchEnd();
+    await wait(450);
+    const afterMarkPress = await barState();
+    check(!afterMarkPress.hidden && Boolean(afterMarkPress.selected),
+      "...while a real long press on it still selects",
+      `hidden: ${afterMarkPress.hidden}, "${afterMarkPress.selected}"`);
 
     // ── 16. None of this exists on a desktop ───────────────────────────────
     //

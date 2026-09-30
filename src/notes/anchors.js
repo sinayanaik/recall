@@ -710,7 +710,7 @@ export function revealRenderedNoteRange(range, { flash = true, smooth = true, al
   // appear over a span the reader never selected — every "Go to" from the
   // Highlights panel, every card's "Go to notes", every Quick Notes jump ended
   // with a toolbar in the way of the thing you had just asked to be shown.
-  markProgrammaticNotesSelection();
+  markProgrammaticNotesSelection(undefined, range);
   const sel = window.getSelection();
   sel?.removeAllRanges();
   try { sel?.addRange(range); } catch (_) {}
