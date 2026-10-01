@@ -543,6 +543,19 @@ async function run() {
         await wait(stepMs);
       }
     };
+    // The same slide, but with the moves a fixed `gapMs` apart by the CLOCK
+    // rather than by a wait added to whatever the CDP round trip happens to
+    // cost. A fixed wait plus the trip is a gap that varies with the machine,
+    // which is no use to a case asserting a speed: see case 6d below.
+    const dragPaced = async (fromX, fromY, toX, toY, steps, gapMs) => {
+      let last = performance.now();
+      for (let i = 1; i <= steps; i += 1) {
+        const due = last + gapMs - performance.now();
+        if (due > 0) await wait(due);
+        last = performance.now();
+        await touchMove(fromX + ((toX - fromX) * i) / steps, fromY + ((toY - fromY) * i) / steps);
+      }
+    };
     // A touchmove the browser has already stopped letting the page cancel.
     // CDP will not synthesise one — cancelability is decided by the compositor,
     // not by the dispatcher — so the page is told to treat the next N moves as
@@ -1652,22 +1665,25 @@ async function run() {
     // spent here is a millisecond of PRESS_ESCAPE_MS gone before the first move
     // can be dispatched, and the CDP round trip already costs ~30 of them.
     await wait(260);
-    // 50px in five 10px steps, paced by a wait of our own.
+    // 50px in five 10px steps, 30ms apart by the clock (dragPaced).
     //
     // This used to pass `0` and let the CDP round trip do the pacing, on the
     // estimate that the trip alone costs "roughly 30-40ms". On a GitHub runner
     // it costs 19.5, and 10px per 19.5ms is 0.51px/ms — over
     // PRESS_ESCAPE_SPEED_PX_PER_MS by a hundredth, which made the fixture a
-    // flick and failed the assertion below. The assertion was right and the
-    // fixture was wrong: nothing here was ever measuring the app.
+    // flick and failed the assertion below. Then it passed a 12ms wait ON TOP
+    // of the trip, which fixed the slow runner and broke the fast machine: with
+    // a ~6ms trip the gap was ~18.5ms, 0.54px/ms, a flick again. Both times the
+    // assertion was right and the fixture was wrong — nothing here was ever
+    // measuring the app, only how long the trip took.
     //
-    // 12ms is chosen against both bounds. The gap between moves becomes at
-    // least 12ms plus the trip — at the observed 19.5 that is 31.5ms, so 10px
-    // is 0.32px/ms, a third under the 0.5 floor. And the decisive move, the
-    // second, lands about 63ms after the press, half of PRESS_ESCAPE_MS. Both
-    // stay inside their bound even on a machine twice this slow, and both are
-    // asserted below rather than assumed.
-    await dragTo(crawlFrom.x, crawlFrom.y, crawlFrom.x + 50, crawlFrom.y, 5, 12);
+    // So the gap is now set by the clock, not by the trip, and 30ms is chosen
+    // against both bounds: 10px per 30ms is 0.33px/ms, a third under the 0.5
+    // floor on any machine; and the decisive move, the second, lands about
+    // 20 + 2 × 30 = 80ms after the press, inside PRESS_ESCAPE_MS (120). A trip
+    // slower than 30ms only widens the gap, which slows the slide further,
+    // and both bounds are asserted below rather than assumed.
+    await dragPaced(crawlFrom.x, crawlFrom.y, crawlFrom.x + 50, crawlFrom.y, 5, 30);
     const crawlView = await page.evaluate(
       (x, y) => window.__escapeView(x, y, window.__press.selectedAt),
       crawlFrom.x, crawlFrom.y
