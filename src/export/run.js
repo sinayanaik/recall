@@ -18,8 +18,9 @@ import { escapeHtml } from "../core/text.js?v=__BUILD__";
 import { buildDocxBytes } from "./docx.js?v=__BUILD__";
 import { prepareExportHtml, wrapStandaloneHtmlDocument } from "./html.js?v=__BUILD__";
 import { exportBaseName, slugifyFileName } from "./markdown.js?v=__BUILD__";
-import { buildCornellFlatDocument, buildCornellPrintDocument, buildHighlightsExportBody, buildHighlightsExportMarkdown, buildHighlightsPrintDocument, buildNotesExportBody, buildNotesPrintDocument, cardsForScope, closePrintPreview, exportJson, exportMarkdown, pdfPrintStyleId, printableCardCount, scopeTitle, setPrintTitleBeforeExport } from "./pdf.js?v=__BUILD__";
+import { buildCornellFlatDocument, buildCornellPrintDocument, buildHighlightsExportBody, buildHighlightsExportMarkdown, buildHighlightsPrintDocument, buildNotesExportBody, HIGHLIGHT_EXPORT_REGION_WIDTH, buildNotesPrintDocument, cardsForScope, closePrintPreview, exportJson, exportMarkdown, pdfPrintStyleId, printableCardCount, scopeTitle, setPrintTitleBeforeExport } from "./pdf.js?v=__BUILD__";
 import { collectDeckHighlightsForExport } from "../panels/highlights-panel.js?v=__BUILD__";
+import { preloadRegionImages } from "../documents/pdf-region-embed.js?v=__BUILD__";
 import { exportSql } from "./sql.js?v=__BUILD__";
 import { enhanceRenderedMarkdown } from "../render/enhance.js?v=__BUILD__";
 import { setStatus } from "../ui/feedback.js?v=__BUILD__";
@@ -133,6 +134,16 @@ export async function exportNotesFlat(format) {
   }
 }
 
+// Every region and ink mark's picture, rendered before the export's markup is
+// built — that markup is built synchronously, and a picture still on its way
+// when it is serialised would be missing from the file. Never fatal: a region
+// that cannot be pictured exports as its "Region · page N" label.
+async function preloadHighlightRegionImages(items) {
+  const regions = items.map((item) => item.region).filter(Boolean);
+  if (!regions.length) return;
+  await preloadRegionImages(regions, { width: HIGHLIGHT_EXPORT_REGION_WIDTH }).catch(() => {});
+}
+
 export function highlightsExportBaseName() {
   return `${slugifyFileName(state.deckTitle || state.sourceTitle || "recall")} - highlights`;
 }
@@ -160,6 +171,7 @@ export async function exportHighlightsFlat(format, options = {}) {
 
   setStatus("Preparing highlights standalone HTML export...");
   try {
+    await preloadHighlightRegionImages(items);
     const rawBodyHtml = buildHighlightsExportBody(title, options);
     const { html: bodyHtml, failedImageCount } = await prepareExportHtml(rawBodyHtml);
     const html = await wrapStandaloneHtmlDocument(bodyHtml, docTitle);
@@ -188,6 +200,7 @@ export async function exportHighlightsPdf(options = {}) {
   document.title = highlightsExportBaseName();
   try {
     await afterPaint();
+    await preloadHighlightRegionImages(items);
     el.printRoot.innerHTML = buildHighlightsPrintDocument(title, options);
     // Must precede configureMermaid("print") — see exportNotesPdf's own
     // comment: an unloaded mermaid makes that call a silent no-op, and the

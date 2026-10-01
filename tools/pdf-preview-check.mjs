@@ -140,6 +140,10 @@ const API_SRC = `async () => {
     "/src/panels/highlights-editor.js?v=__BUILD__",
     "/src/panels/drawer-highlights.js?v=__BUILD__",
     "/src/panels/highlight-cycle.js?v=__BUILD__",
+    "/src/panels/highlight-index.js?v=__BUILD__",
+    "/src/documents/pdf-region-embed.js?v=__BUILD__",
+    "/src/documents/pdf-arrange.js?v=__BUILD__",
+    "/src/documents/pdf-multi.js?v=__BUILD__",
     "/src/notes/notes-edit-split.js?v=__BUILD__",
     "/src/notes/notes-view.js?v=__BUILD__",
     "/src/ui/view-mode.js?v=__BUILD__",
@@ -1323,6 +1327,78 @@ try {
     `kind=${regionReloaded.kind}`);
   check("...and repaints on the page", regionReloaded.painted > 0,
     `${regionReloaded.painted} mark div(s)`);
+
+  // ── 7b. A region is listed as a picture of itself ───────────────────────
+  //
+  // "The selected regions are being shown as 'Region #' instead of the actual
+  // region." Three causes, each asserted: the Highlights pane put the picture
+  // INSIDE the quote that renderMarkdown then overwrote; nothing was pictured
+  // unless the Document view had that very paper open; and the drawer and the
+  // page notes only ever had the words to show.
+  const regionPictures = region.record
+    ? await page.evaluate(`async (id) => {
+        const { api, settle } = window.__recall;
+        const record = (api.state.meta?.pdfHighlights || []).find((r) => r.id === id);
+        const pixelsOf = async (url) => {
+          const img = new Image();
+          img.src = url;
+          await img.decode();
+          const canvas = document.createElement("canvas");
+          canvas.width = img.naturalWidth;
+          canvas.height = img.naturalHeight;
+          const ctx = canvas.getContext("2d");
+          ctx.drawImage(img, 0, 0);
+          const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+          let inked = 0;
+          for (let i = 0; i < data.length; i += 4) if (data[i] < 160) inked += 1;
+          return { w: img.naturalWidth, h: img.naturalHeight, inked };
+        };
+        const url = await api.renderRegionImage(record);
+        const pixels = url ? await pixelsOf(url) : null;
+
+        api.setViewMode("document");
+        await settle(300);
+        api.openHighlightSplit("document");
+        await settle(600);
+        const cardOf = () => document.querySelector('#highlightCycleBody .hl-note[data-highlight-key="doc:' + id + '"]');
+        for (let i = 0; i < 40 && !cardOf()?.querySelector(".hl-note-region img"); i += 1) await settle(100);
+        const card = cardOf();
+        const pane = {
+          card: Boolean(card),
+          img: Boolean(card?.querySelector(".hl-note-region img.highlight-region-thumb")),
+          quoteHidden: card?.querySelector(".hl-note-quote")?.hidden === true,
+          saysRegion: /Region · page/.test(card?.textContent || "")
+        };
+        api.closeHighlightSplit();
+
+        const entry = api.documentHighlightEntries().find((e) => e.key === "doc-" + id);
+
+        // No Document view at all, and a stamp no memo has seen — so this is a
+        // fresh render, from the paper on the device, not from the viewer.
+        api.tearDownDocumentView();
+        const box = document.createElement("div");
+        document.body.appendChild(box);
+        api.addRegionPreview(box, { ...record, at: (record.at || 0) + 1 });
+        for (let i = 0; i < 60 && !box.querySelector("img"); i += 1) await settle(100);
+        const detached = Boolean(box.querySelector("img.highlight-region-thumb"));
+        box.remove();
+
+        await api.openDocumentView({ force: true });
+        await settle(300);
+        return { pixels, pane, drawerRegion: Boolean(entry?.region), detached };
+      }`, region.record.id)
+    : null;
+
+  check("a region renders as a picture of what it holds",
+    regionPictures?.pixels?.w > 0 && regionPictures?.pixels?.inked > 0,
+    regionPictures?.pixels ? `${regionPictures.pixels.w}×${regionPictures.pixels.h}, ${regionPictures.pixels.inked} inked pixel(s)` : "no picture");
+  check("...which the Highlights pane shows, instead of \"Region · page N\"",
+    regionPictures?.pane?.img && regionPictures.pane.quoteHidden && !regionPictures.pane.saysRegion,
+    JSON.stringify(regionPictures?.pane));
+  check("...and the outline drawer is handed the record to picture",
+    regionPictures?.drawerRegion === true);
+  check("...even with no Document view open to render it from",
+    regionPictures?.detached === true);
 
   // ── 7a. The text under a region is still the reader's to highlight ───────
   //
@@ -5062,7 +5138,9 @@ try {
       secondName: api.state.meta?.pdfs?.[1]?.name || "",
       activeIsSecond: api.state.meta?.pdfActiveId === api.state.meta?.pdfs?.[1]?.id,
       switcherHidden: document.getElementById("documentPdfSwitcher")?.hidden !== false,
-      switcherOptionCount: document.getElementById("documentPdfSwitcher")?.options?.length || 0
+      // The papers, not the "Arrange PDFs…" row that always closes the list.
+      switcherOptionCount: [...(document.getElementById("documentPdfSwitcher")?.options || [])].filter((o) => o.value !== "__arrange").length,
+      switcherArrangeLast: document.getElementById("documentPdfSwitcher")?.lastElementChild?.value === "__arrange"
     };
   }`, Array.from(fixture.bytes), "attached.pdf");
 
@@ -5112,8 +5190,68 @@ try {
     attached.activeIsSecond && attached.secondName === "attached-again.pdf",
     `active is second=${attached.activeIsSecond}, name="${attached.secondName}"`);
   check("...with a dropdown to switch between them now on screen",
-    attached.switcherHidden === false && attached.switcherOptionCount === 2,
-    `switcher hidden=${attached.switcherHidden}, ${attached.switcherOptionCount} option(s)`);
+    attached.switcherHidden === false && attached.switcherOptionCount === 2 && attached.switcherArrangeLast,
+    `switcher hidden=${attached.switcherHidden}, ${attached.switcherOptionCount} paper option(s), arrange row last=${attached.switcherArrangeLast}`);
+
+  // ── ...and the reader can put the papers in their own order ─────────────
+  //
+  // "Currently the PDFs are organised in chronological order; I want to drag
+  // and arrange them." A native select cannot be dragged, so the switcher's
+  // last row opens a sheet whose rows are dragged by a grip — with POINTER
+  // events, since that is what a finger on a phone produces.
+  const arranged = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const picker = document.getElementById("documentPdfSwitcher");
+    const papers = () => [...picker.options].filter((o) => o.value !== "__arrange").map((o) => o.value);
+    const before = papers();
+    const openedOn = picker.value;
+    picker.value = "__arrange";
+    picker.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle(100);
+    const sheet = document.querySelector(".pdf-arrange-modal");
+    const selectionKept = picker.value === openedOn;
+    const rows = () => [...(sheet?.querySelectorAll(".pdf-arrange-row") || [])];
+    const sheetOrder = rows().map((row) => row.dataset.pdfId);
+    // Drag the LAST row's grip to above the first row.
+    const last = rows()[rows().length - 1];
+    const grip = last?.querySelector(".pdf-arrange-grip");
+    const first = rows()[0].getBoundingClientRect();
+    const from = grip.getBoundingClientRect();
+    const fire = (type, y) => grip.dispatchEvent(new PointerEvent(type, {
+      bubbles: true, cancelable: true, pointerId: 7, pointerType: "touch", isPrimary: true, button: 0,
+      clientX: from.left + from.width / 2, clientY: y
+    }));
+    fire("pointerdown", from.top + from.height / 2);
+    for (let y = from.top + from.height / 2; y > first.top + 2; y -= 6) fire("pointermove", y);
+    fire("pointermove", first.top + 2);
+    fire("pointerup", first.top + 2);
+    const afterDrag = rows().map((row) => row.dataset.pdfId);
+    // ...and the arrows: the (new) second row up one, back to where it was.
+    rows()[1].querySelector('[data-arrange-move="-1"]').click();
+    const afterArrow = rows().map((row) => row.dataset.pdfId);
+    rows()[0].querySelector('[data-arrange-move="1"]').click();
+    sheet.querySelector("[data-arrange-save]").click();
+    await settle(100);
+    return {
+      before, sheetOrder, afterDrag, afterArrow, selectionKept,
+      after: papers(),
+      stored: api.state.meta?.pdfOrder?.ids || null,
+      listed: api.deckPdfs(api.state.meta).map((entry) => entry.id),
+      closed: !document.querySelector(".pdf-arrange-modal")
+    };
+  }`);
+  const reversed = [...arranged.before].reverse();
+  check("the switcher's last row opens the arranging sheet, listing the papers in their order",
+    arranged.sheetOrder.join(",") === arranged.before.join(",") && arranged.selectionKept,
+    `sheet=${arranged.sheetOrder.join(",")} switcher=${arranged.before.join(",")} selectionKept=${arranged.selectionKept}`);
+  check("...where dragging a paper's grip moves it",
+    arranged.afterDrag.join(",") === reversed.join(","), `${arranged.before.join(",")} → ${arranged.afterDrag.join(",")}`);
+  check("...as the arrows do",
+    arranged.afterArrow.join(",") === arranged.before.join(","), `→ ${arranged.afterArrow.join(",")}`);
+  check("...and Done puts the switcher, and the deck, in that order",
+    arranged.closed && arranged.after.join(",") === reversed.join(",")
+      && arranged.listed.join(",") === reversed.join(",") && arranged.stored?.join(",") === reversed.join(","),
+    `switcher=${arranged.after.join(",")} deck=${arranged.listed.join(",")} stored=${JSON.stringify(arranged.stored)}`);
 
   // ── ...and that dropdown fits a phone, whatever the paper is called ──────
   //

@@ -85,6 +85,17 @@
   color: var(--print-text, #17201c);
 }
 
+/* A region or ink mark off a PDF, exported as the picture of what it holds. */
+.highlight-export-region {
+  display: block;
+  max-width: min(520px, 100%);
+  height: auto;
+  margin: 2px 0 6px;
+  border: 1px solid color-mix(in srgb, var(--print-text, #17201c) 18%, transparent);
+  border-radius: 4px;
+  break-inside: avoid;
+}
+
 .highlight-export-note {
   margin-top: 8px;
   padding: 6px 10px;

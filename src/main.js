@@ -129,7 +129,8 @@ import { setPdfRegionGoToHandler } from "./documents/pdf-region-embed.js?v=__BUI
 import { closeDocumentToc, documentOutlineEntries, initDocumentOutlineFolding, isDocumentTocOpen, resolveOutlineEntryPage, toggleDocumentToc } from "./documents/pdf-outline.js?v=__BUILD__";
 import { activePdfId, deckPdfById, deckPdfs, PDF_PRIMARY_ID, withDeckPdfs } from "./documents/pdf-multi.js?v=__BUILD__";
 import { removePdfFromDeck, renamePdf } from "./documents/pdf-multi-actions.js?v=__BUILD__";
-import { currentPdfDocument, currentPdfPageCount, documentFittedWidth, fitDocumentToWidth, initDocumentPinchZoom, isDocumentFitWidth, openDocumentIsCurrent, openDocumentPdfId, openDocumentView, reattachDocument, relayoutDocument, repaintOpenDocumentPages, scheduleDocumentPositionSave, scrollToDocumentPage, refreshDocumentPaperForTheme, setDocumentAttachHandler, setDocumentOpenedHook, setDocumentPagePaintedHook, setNotebookStartHandler, switchToPdf, togglePdfInvert, updatePageIndicator, zoomDocument, retryMissingDocumentOpen } from "./documents/pdf-view.js?v=__BUILD__";
+import { openPdfArrangeSheet } from "./documents/pdf-arrange.js?v=__BUILD__";
+import { currentPdfDocument, currentPdfPageCount, documentFittedWidth, fitDocumentToWidth, initDocumentPinchZoom, isDocumentFitWidth, openDocumentIsCurrent, openDocumentPdfId, openDocumentView, reattachDocument, relayoutDocument, repaintOpenDocumentPages, scheduleDocumentPositionSave, scrollToDocumentPage, refreshDocumentPaperForTheme, setDocumentAttachHandler, setDocumentOpenedHook, setDocumentPagePaintedHook, setNotebookStartHandler, switchToPdf, PDF_ARRANGE_OPTION, togglePdfInvert, updatePageIndicator, zoomDocument, retryMissingDocumentOpen } from "./documents/pdf-view.js?v=__BUILD__";
 import { adoptDocumentInk, canRedoInk, canUndoInk, copyInkSelection, cutInkSelection, duplicateInkSelection, hasInkClipboard, initDocumentInk, inkMarkImageMarkdown, inkSelectionCount, isInkMarkId, nudgeInkSelection, paintDocumentInk, pasteInkSelection, redoInk, repaintDocumentInk, setInkChangedHandler, undoInk } from "./documents/pdf-ink.js?v=__BUILD__";
 import { addHandwritingImage, enterHandwritingView, refreshHandwritingBoard, runHandwritingMenuAction, startHandwritingNotebook } from "./handwriting/board.js?v=__BUILD__";
 import { closeBlockStylePopover, isBlockStylePopoverOpen } from "./documents/block-style-bar.js?v=__BUILD__";
@@ -4007,6 +4008,7 @@ el.documentMoreMenu?.addEventListener("click", async (event) => {
   if (runHandwritingMenuAction(action)) return;
   if (action === "offload") await offloadCurrentDocument();
   if (action === "rename-pdf") renameCurrentPdf();
+  if (action === "arrange-pdfs") openPdfArrangeSheet();
   if (action === "remove-pdf") removeCurrentPdf();
 });
 
@@ -4030,6 +4032,14 @@ el.documentAddPdfInput?.addEventListener("change", async (event) => {
 });
 
 el.documentPdfSwitcher?.addEventListener("change", (event) => {
+  // The last row is not a paper but the way to rearrange them (see
+  // renderDocumentPdfSwitcher) — put the selection back on the open paper
+  // before the sheet opens, so the dropdown never claims to be showing it.
+  if (event.target.value === PDF_ARRANGE_OPTION) {
+    event.target.value = openDocumentPdfId() || activePdfId(state.meta) || "";
+    openPdfArrangeSheet();
+    return;
+  }
   switchToPdf(event.target.value);
 });
 

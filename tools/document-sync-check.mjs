@@ -969,6 +969,52 @@ try {
       return merged.pdf?.s3Key === KEY || "the meta.pdf mirror did not carry the primary's key";
     });
 
+    // ── The order the reader arranged the papers in ────────────────────────
+    //
+    // meta.pdfOrder, written by the "Arrange PDFs" sheet. The merge rebuilds
+    // meta.pdfs in whichever side's order it met first, so the arrangement
+    // has to be its own stamped value, settled by which was made last.
+    const multi = await load("src/documents/pdf-multi.js");
+    const twoPapers = () => [{ ...paper, id: "primary", at: 5 }, { id: "pdf-2", name: "q.pdf", sha256: "b".repeat(64), at: 5 }, { id: "pdf-3", name: "r.pdf", sha256: "d".repeat(64), at: 5 }];
+
+    must("deckPdfs lists the papers in the arranged order, with any it does not name after them", () => {
+      const ids = multi.deckPdfs({ pdfs: twoPapers(), pdfOrder: { ids: ["pdf-3", "gone", "primary"], at: 7 } }).map((entry) => entry.id).join(",");
+      return ids === "pdf-3,primary,pdf-2" || `got ${ids}`;
+    });
+
+    must("...and in attach order when nobody has arranged them", () => {
+      const ids = multi.deckPdfs({ pdfs: twoPapers() }).map((entry) => entry.id).join(",");
+      return ids === "primary,pdf-2,pdf-3" || `got ${ids}`;
+    });
+
+    must("the newer arrangement wins the merge, from either side and whichever side is preferred", () => {
+      const older = { ids: ["pdf-2", "primary", "pdf-3"], at: T1 };
+      const newer = { ids: ["pdf-3", "pdf-2", "primary"], at: T2 };
+      for (const prefer of ["local", "cloud"]) {
+        const a = docSync.mergeDeckMeta({ pdfs: twoPapers(), pdfOrder: newer }, { pdfs: twoPapers(), pdfOrder: older }, { prefer });
+        const b = docSync.mergeDeckMeta({ pdfs: twoPapers(), pdfOrder: older }, { pdfs: twoPapers(), pdfOrder: newer }, { prefer });
+        if (a.pdfOrder?.at !== T2 || b.pdfOrder?.at !== T2) return `prefer=${prefer}: ${JSON.stringify([a.pdfOrder, b.pdfOrder])}`;
+        const listed = multi.deckPdfs(a).map((entry) => entry.id).join(",");
+        if (listed !== "pdf-3,pdf-2,primary") return `merged deck lists ${listed}`;
+      }
+      return true;
+    });
+
+    must("...and an arrangement on one device survives a rename on the other", () => {
+      const cloud = { pdfs: twoPapers().map((entry) => entry.id === "pdf-2" ? { ...entry, label: "Chapter 2", at: T3 } : entry) };
+      const local = { pdfs: twoPapers(), pdfOrder: { ids: ["pdf-2", "pdf-3", "primary"], at: T2 } };
+      const merged = docSync.mergeDeckMeta(cloud, local, { prefer: "cloud" });
+      const listed = multi.deckPdfs(merged).map((entry) => `${entry.id}${entry.label ? `=${entry.label}` : ""}`).join(",");
+      return listed === "pdf-2=Chapter 2,pdf-3,primary" || `got ${listed}`;
+    });
+
+    must("a reorder alone counts as a change to sync", () => {
+      const base = { deckTitle: "t", notes: "", cards: [], meta: { pdfs: twoPapers() } };
+      const moved = { ...base, meta: multi.withPdfOrder(base.meta, ["pdf-2", "primary", "pdf-3"]) };
+      if (!deckContentMatches(base, { ...base, meta: { ...base.meta } })) return "the fixture does not even match itself";
+      return deckContentMatches(base, moved) === false || "the reordered deck matched the old one, so it would never be pushed";
+    });
+
     must("...and for a notebook", () => {
       const nb = { name: "n.pdf", pages: 2, notebook: true, sha256: "c".repeat(64) };
       const merged = docSync.mergeDeckMeta({ notebook: { ...nb } }, { notebook: { ...nb, s3Key: "recall/notebook/k.pdf" } }, { prefer: "cloud" });

@@ -164,6 +164,13 @@
   overflow: hidden;
 }
 
+/* A region's row is its picture (src/documents/pdf-region-embed.js
+   mountRegionPreview), and a two-line clamp would cut a picture off at two
+   lines' height — so the clamp is the text's alone. */
+.drawer-highlight-text.has-region {
+  display: block;
+}
+
 /* What was written about it, on the row below the words and in the same column.
    Quieter and smaller: the highlight is what you are scanning for, the note is
    what tells you which one it was.

@@ -138,6 +138,7 @@ const META_FIXTURES = {
   readingPositionPdf: { offset: 7, pdfPage: 2, ratio: 0.4, text: "in the paper", at: 1_800_000_000_000 },
   readingPositionNotebook: { offset: 1, pdfPage: 1, ratio: 0.1, at: 1_800_000_000_000 },
   pdfActiveId: "pdf-b2",
+  pdfOrder: { ids: ["pdf-b2", "primary"], at: 1_800_000_000_000 },
   importedFrom: { origin: "cloud-elsewhere", packageId: "pkg-fixture", importedAt: "2027-01-01T00:00:00.000Z" },
   // The legacy notebook keys, which are carried precisely so that an archive
   // taken before the migration still restores something the migration can

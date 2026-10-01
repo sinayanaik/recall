@@ -521,6 +521,17 @@ export function mergeDeckMeta(cloudMeta, localMeta, { prefer = "local" } = {}) {
     // something the deck still has (see activePdfId) rather than name nothing
     // — dropped here so every reader downstream can trust it or ignore it.
     if (!mergedPdfs.some((entry) => entry.id === next.pdfActiveId)) delete next.pdfActiveId;
+    // The reader's arrangement (pdf-arrange.js) — one stamped value for the
+    // whole list, so the arrangement made last wins outright, whichever side
+    // the merge otherwise prefers. Kept apart from the entries so a rename on
+    // one device does not carry an older order along with it.
+    const cloudOrderAt = Number(cloud.pdfOrder?.at) || 0;
+    const localOrderAt = Number(local.pdfOrder?.at) || 0;
+    const newerOrder = cloudOrderAt > localOrderAt ? cloud.pdfOrder
+      : localOrderAt > cloudOrderAt ? local.pdfOrder
+        : winner.pdfOrder || loser.pdfOrder;
+    if (newerOrder) next.pdfOrder = newerOrder;
+    else delete next.pdfOrder;
     const pdfTombstones = mergeMetaTombstones("deletedPdfIds", cloud, local);
     if (pdfTombstones) next.deletedPdfIds = pdfTombstones;
     else delete next.deletedPdfIds;

@@ -52,6 +52,7 @@ import { createNoteEditorKit } from "../notes/note-editor-kit.js?v=__BUILD__";
 import { renderMarkdown } from "../render/block-cache.js?v=__BUILD__";
 import { registerRenderTarget, renderTargetConfig } from "../format/render-toolbar.js?v=__BUILD__";
 import { addRegionPreview } from "./highlights-panel.js?v=__BUILD__";
+import { REGION_IMAGE_WIDTH, regionImageRect } from "../documents/pdf-region-embed.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
 import { documentHighlightNote, setDocumentHighlightNote } from "../documents/pdf-highlights.js?v=__BUILD__";
 
@@ -173,7 +174,9 @@ const entryKey = highlightEntryKey;
 // showing the new ones. The same reason pageNotesSignature carries `n`.
 export function editorSignature(entries) {
   return entries
-    .map((entry) => `${entryKey(entry)}:${entry.n || 0}:${entry.color || ""}:${hash32(entry.markdown || "")}:${hash32(entry.note || "")}`)
+    // A pictured entry's edit stamp too: an ink mark grows stroke by stroke
+    // with no words changing, and its picture has to follow.
+    .map((entry) => `${entryKey(entry)}:${entry.n || 0}:${entry.color || ""}:${hash32(entry.markdown || "")}:${hash32(entry.note || "")}:${entry.region?.at || ""}`)
     .join("|");
 }
 
@@ -331,8 +334,23 @@ export const HL_ENTRY_LINE_PX = 28;
 // 24px per entry puts the scrollbar out by a screenful over a marked-up book.
 export const HL_ENTRY_CHROME_PX = 64;
 
+function regionPreviewHeight(record) {
+  const rect = regionImageRect(record);
+  if (!rect) return 48;
+  const w = Math.max(1, Math.abs(rect[2] - rect[0]));
+  const h = Math.max(1, Math.abs(rect[3] - rect[1]));
+  return Math.min(REGION_PREVIEW_MAX_HEIGHT, REGION_IMAGE_WIDTH * (h / w));
+}
+
+// The cap styles/44-highlights-editor.css puts on a picture in this pane.
+const REGION_PREVIEW_MAX_HEIGHT = 320;
+
 export function estimateEntryHeight(entry) {
-  const quoteLines = Math.max(1, Math.ceil((entry.markdown || "").length / HL_ENTRY_LINE_CHARS));
+  // A pictured entry is roughly its picture's height (REGION_IMAGE_WIDTH wide,
+  // at the box's own shape, capped by the stylesheet), not a line of text.
+  const quoteLines = entry.region
+    ? Math.ceil(regionPreviewHeight(entry.region) / 24) + (entry.markdown ? Math.ceil(entry.markdown.length / HL_ENTRY_LINE_CHARS) : 0)
+    : Math.max(1, Math.ceil((entry.markdown || "").length / HL_ENTRY_LINE_CHARS));
   // Zero for a highlight with no note, not one. It used to be one, because the
   // empty note was a line of placeholder text; it is a collapsed box now (see
   // .hl-note-body.is-empty in styles/44-highlights-editor.css) and contributes
@@ -451,11 +469,22 @@ function articleFor(entry) {
   // has not been written yet — see there.
   body.setAttribute("aria-label", "This highlight's note — press Enter to edit");
 
-  article.append(head, quote, body);
-  // A region drawn round a figure is a picture, so it is listed as one —
-  // appended above the quote, which for a region is the words the box happened
-  // to cover (or "Region · page N" when it covered none).
-  if (entry.region) addRegionPreview(quote, entry.region);
+  // A region drawn round a figure is a picture, so it is listed as one — in an
+  // element of its OWN above the quote, never inside it. The quote is painted
+  // later by renderMarkdown (paintQuote), which replaces everything in it: a
+  // picture put there was wiped the moment the entry was painted, which is
+  // why the pane only ever showed "Region · page N". The quote under it is
+  // the words the box happened to cover, and goes unshown when it covered
+  // none.
+  if (entry.region) {
+    const region = document.createElement("div");
+    region.className = "hl-note-region";
+    addRegionPreview(region, entry.region);
+    if (!String(entry.markdown || "").trim()) quote.hidden = true;
+    article.append(head, region, quote, body);
+  } else {
+    article.append(head, quote, body);
+  }
   return article;
 }
 

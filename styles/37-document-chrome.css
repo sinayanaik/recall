@@ -650,30 +650,60 @@
    page keeps its own colour and needs no counterpart to the `screen` blend that
    36-document.css gives the tinted kind. */
 
-/* A region row in the Highlights panel: the picture, because "Region · page 12"
-   is not something anyone recognises a figure by. Capped rather than sized to
-   the quad — a full-width table and a small inset plot have to sit in the same
-   list without one of them being a wall. */
-.highlight-region-thumb {
+/* A region (or ink) mark wherever a list shows one — the Highlights pane, the
+   outline drawer, the notes under a page: the picture, because "Region · page
+   12" is not something anyone recognises a figure by. The box is put in at the
+   picture's own shape (aspect-ratio, set inline by mountRegionPreview) before
+   the picture arrives, so a list does not jump as forty of them land; it is
+   capped rather than sized to the quad, so a full-width table and a small
+   inset plot sit in one list without one of them being a wall. */
+.highlight-region-preview {
   display: block;
-  max-width: min(260px, 100%);
+  width: 100%;
   max-height: 180px;
   margin: 0 0 6px;
+  overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 6px;
   background: #fff;
 }
 
-/* ...and its stand-in, for a deck whose PDF is offloaded or simply not open:
-   the record is still real, there is just nothing to render it from. */
+.highlight-region-preview.is-loading {
+  background: var(--panel-2);
+}
+
+.highlight-region-preview .highlight-region-thumb {
+  display: block;
+  width: 100%;
+  height: 100%;
+  max-height: inherit;
+  object-fit: contain;
+  object-position: left top;
+}
+
+/* ...and its stand-in, when there is nothing to render it from — the PDF
+   offloaded and not on this device, or offline before it ever was. The record
+   is still real; it is just named instead of pictured. */
+.highlight-region-preview.is-fallback,
 .highlight-region-label {
   display: inline-block;
+  width: auto;
+  max-height: none;
   margin-bottom: 4px;
   padding: 1px 8px;
   border: 1px dashed var(--line);
   border-radius: 999px;
+  background: none;
   font-size: 0.72rem;
   color: var(--muted);
+}
+
+/* In the outline drawer and under a page the picture IS the row's text, and a
+   row there is a line, not a card — so it is kept small. */
+.drawer-highlight-text .highlight-region-preview,
+.pdf-page-note-excerpt .highlight-region-preview {
+  max-height: 110px;
+  margin: 2px 0;
 }
 
 /* ── Highlight notes, on the page ──────────────────────────────────────────
@@ -956,4 +986,93 @@
   color: var(--muted);
   font-size: 0.88em;
   font-style: italic;
+}
+
+/* A region's excerpt is a picture of it, which a two-line clamp would cut off
+   at two lines' height. */
+.pdf-page-note-excerpt:has(.highlight-region-preview) {
+  display: block;
+}
+
+/* ── Arranging a deck's PDFs (src/documents/pdf-arrange.js) ───────────────
+   The frame is .category-choice-modal's; these are the rows inside it. The
+   grip is the only thing a drag starts from, and it owns its touches outright
+   (touch-action: none) so a finger on it drags the row instead of scrolling
+   the sheet — everywhere else on the row still scrolls a long list. */
+.pdf-arrange-list {
+  display: grid;
+  gap: 6px;
+  max-height: min(60vh, 28rem);
+  margin: 0;
+  overflow-y: auto;
+  padding: 0;
+  list-style: none;
+}
+
+.pdf-arrange-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  border: 1px solid var(--line);
+  border-radius: var(--input-radius);
+  background: var(--card);
+  padding: 4px 6px 4px 0;
+}
+
+.pdf-arrange-row.is-dragging {
+  z-index: 1;
+  border-color: var(--accent, var(--line));
+  box-shadow: var(--shadow);
+  opacity: 0.96;
+}
+
+.pdf-arrange-list.is-arranging {
+  user-select: none;
+}
+
+.pdf-arrange-grip {
+  display: grid;
+  align-self: stretch;
+  width: 36px;
+  flex: 0 0 auto;
+  place-items: center;
+  color: var(--muted);
+  cursor: grab;
+  font-size: 1.15rem;
+  touch-action: none;
+  user-select: none;
+}
+
+.pdf-arrange-row.is-dragging .pdf-arrange-grip {
+  cursor: grabbing;
+}
+
+.pdf-arrange-name {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pdf-arrange-move {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  min-height: 34px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: var(--toolbar-button-radius);
+  background: var(--panel-2);
+  color: var(--text);
+  font-weight: 900;
+  padding: 0;
+}
+
+.pdf-arrange-move:disabled {
+  opacity: 0.35;
 }

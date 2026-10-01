@@ -304,11 +304,16 @@
 .hl-note-quote > :first-child { margin-top: 0; }
 .hl-note-quote > :last-child { margin-bottom: 0; }
 
-/* A picture from a region highlight, and the label it falls back to when the
-   document is not open to render one. */
-.hl-note-quote .highlight-region-label {
-  display: block;
+/* A picture of a region or ink mark, in its own element above the quote (see
+   articleFor) — larger here than in a drawer row, since in this pane the
+   picture is the card's whole subject. Keep the cap in step with
+   REGION_PREVIEW_MAX_HEIGHT in src/panels/highlights-editor.js. */
+.hl-note-region {
   margin-bottom: 0.3em;
+}
+
+.hl-note-region .highlight-region-preview {
+  max-height: 320px;
 }
 
 /* The note itself. Padded and rounded so the hit region for "press to edit" is

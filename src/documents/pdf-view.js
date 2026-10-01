@@ -30,8 +30,6 @@
 import { isDriveConfigured } from "../cloud/drive-client.js?v=__BUILD__";
 import { isS3Configured } from "../cloud/s3-config.js?v=__BUILD__";
 import { PDF_BADGE_LAYER_CLASS, PDF_INK_LAYER_CLASS } from "../core/constants.js?v=__BUILD__";
-import { decodeInkStrokes } from "../format/ink-strokes.js?v=__BUILD__";
-import { paintInkStrokes } from "../render/ink-paint.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { ensurePdfJs } from "../core/lib-loader.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
@@ -418,9 +416,6 @@ function parkOpenDocument() {
 export function tearDownDocumentView({ park = false } = {}) {
   const parked = park && parkOpenDocument();
   pdfOpenToken += 1;
-  // The crops are of THIS document's pages; a deck swap or a re-attach makes
-  // every one of them a picture of something else.
-  regionThumbnails.clear();
   if (openPdf?.observer) openPdf.observer.disconnect();
   if (openPdf?.resizeObserver) openPdf.resizeObserver.disconnect();
   clearTimeout(openPdf?.watchdog);
@@ -803,6 +798,13 @@ export async function switchToPdf(pdfId) {
 // have changed (an attach, a remove, a rename), and hidden outright when
 // there is only one PDF, so an ordinary single-PDF deck's toolbar looks
 // exactly as it always has.
+//
+// Its last row is not a paper: it opens the arranging sheet (pdf-arrange.js),
+// because a native select's own rows cannot be dragged. A value no paper id
+// can take (they are all "primary" or "pdf-…"), so it can never be mistaken
+// for one.
+export const PDF_ARRANGE_OPTION = "__arrange";
+
 export function renderDocumentPdfSwitcher() {
   const picker = el.documentPdfSwitcher;
   if (!picker) return;
@@ -822,6 +824,10 @@ export function renderDocumentPdfSwitcher() {
     if (entry.id === activeId) option.selected = true;
     picker.appendChild(option);
   });
+  const arrange = document.createElement("option");
+  arrange.value = PDF_ARRANGE_OPTION;
+  arrange.textContent = "⇅ Arrange PDFs…";
+  picker.appendChild(arrange);
   picker.hidden = false;
 }
 
@@ -3161,94 +3167,6 @@ export function togglePdfInvert() {
   const next = !el.documentStage?.classList.contains(PDF_DARK_CLASS);
   applyPdfInvert(next);
   return next;
-}
-
-// ── A picture of a region ───────────────────────────────────────────────────
-//
-// A region highlight round a photograph has no text in it, so in the Highlights
-// panel it would be a row saying "Region · page 12" — which is not something
-// anyone recognises a figure by. This renders the crop instead.
-//
-// Rendered on demand and NEVER stored. The obvious alternative — keeping a data
-// URL on the record — would put a few kilobytes per region into meta, which is a
-// JSONB column that syncs to every device on every save; a closely-read paper
-// would carry a gallery around with it forever. The bytes are already on the
-// device (that is the whole premise of this feature), so the picture can always
-// be made again.
-//
-// Memoized per record id for the session, because the panel re-renders on every
-// highlight change and a page render is not free.
-const regionThumbnails = new Map();
-
-// Wide enough to read a small plot's axis labels on a laptop, small enough that
-// twenty of them in a list are not a scroll.
-export const REGION_THUMB_WIDTH = 260;
-
-export async function renderRegionThumbnail(record) {
-  const id = record?.id;
-  const quad = (record?.quads || [])[0];
-  if (!id || !quad || !openPdf?.doc) return null;
-  // Keyed by the record's own edit stamp as well as its id. A region never
-  // changes once drawn, which is why the id alone was enough — but an ink mark
-  // grows: every stroke added to the one you are still writing is the same
-  // record with more in it, and a memo keyed on the id alone would show the
-  // first stroke of a margin note for the rest of the session.
-  const key = `${id}:${record.at || 0}`;
-  if (regionThumbnails.has(key)) return regionThumbnails.get(key);
-  const token = pdfOpenToken;
-  try {
-    const page = await openPdf.doc.getPage(quad.page);
-    if (token !== pdfOpenToken) return null;
-    // Scale chosen so the CROP comes out at the target width, not the page — a
-    // fixed page scale would give a thumbnail of a figure in a corner of an A4
-    // sheet a few pixels across.
-    const [x0, y0, x1, y1] = quad.rect;
-    const quadWidth = Math.max(1, Math.abs(x1 - x0));
-    const scale = clampScale(REGION_THUMB_WIDTH / quadWidth);
-    const viewport = page.getViewport({ scale });
-    const [vx0, vy0, vx1, vy1] = viewport.convertToViewportRectangle(quad.rect);
-    const left = Math.min(vx0, vx1);
-    const top = Math.min(vy0, vy1);
-    const width = Math.max(1, Math.round(Math.abs(vx1 - vx0)));
-    const height = Math.max(1, Math.round(Math.abs(vy1 - vy0)));
-
-    // The whole page is rasterised and then cropped, rather than rendered
-    // through an offset transform: pdf.js renders a page, and a transform that
-    // moved the origin would also move anything the page draws outside its own
-    // media box. One page at a modest scale is a few milliseconds.
-    const full = document.createElement("canvas");
-    full.width = Math.ceil(viewport.width);
-    full.height = Math.ceil(viewport.height);
-    const fullCtx = full.getContext("2d", { alpha: false });
-    await page.render({ canvasContext: fullCtx, viewport }).promise;
-    if (token !== pdfOpenToken) return null;
-
-    // An ink mark's thumbnail has to have the ink IN it. The crop is a picture
-    // of the page underneath, and the page underneath a margin note is blank
-    // paper — so without this the Highlights pane lists handwriting as an empty
-    // white rectangle, which is indistinguishable from a bug.
-    //
-    // Painted through the same viewport transform the strokes are stored
-    // against, before the crop, so it lands wherever the reader put it.
-    if (record.kind === "ink") {
-      const t = viewport.transform;
-      fullCtx.save();
-      fullCtx.setTransform(t[0], t[1], t[2], t[3], t[4], t[5]);
-      paintInkStrokes(fullCtx, decodeInkStrokes(record.ink?.s), { root: null });
-      fullCtx.restore();
-    }
-
-    const crop = document.createElement("canvas");
-    crop.width = width;
-    crop.height = height;
-    crop.getContext("2d").drawImage(full, Math.round(left), Math.round(top), width, height, 0, 0, width, height);
-    const url = crop.toDataURL("image/jpeg", 0.72);
-    regionThumbnails.set(key, url);
-    return url;
-  } catch (error) {
-    console.warn("Could not render a region thumbnail", error);
-    return null;
-  }
 }
 
 // ── Save a copy ─────────────────────────────────────────────────────────────

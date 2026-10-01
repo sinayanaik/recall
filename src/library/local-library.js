@@ -467,7 +467,10 @@ function documentLocatorSignature(meta) {
     ? `${entry.id || ""}:${entry.at || 0}:${entry.sha256 || ""}:${entry.s3Key || ""}:${entry.offloaded ? 1 : 0}:${entry.label || ""}:${entry.retiredLocators?.path || ""}:${entry.retiredLocators?.driveId || ""}`
     : "");
   const list = Array.isArray(meta?.pdfs) ? meta.pdfs.map(stamp).join(",") : "";
-  return `${list}|${stamp(meta?.pdf)}|${stamp(meta?.notebook)}`;
+  // The arrangement is its own stamp (pdf-multi.js's withPdfOrder): a reorder
+  // touches no entry, so without it a drag would never reach the cloud.
+  const order = Number(meta?.pdfOrder?.at) || 0;
+  return `${list}|${order}|${stamp(meta?.pdf)}|${stamp(meta?.notebook)}`;
 }
 
 export function deckContentMatches(a, b) {
