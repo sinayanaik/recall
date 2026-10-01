@@ -113,10 +113,24 @@
   font-style: italic;
 }
 
+/* A region or ink mark's note, printed beside the picture of what it holds. */
+.doc-print-note-region {
+  display: block;
+  max-width: min(240px, 100%);
+  max-height: 160px;
+  height: auto;
+  margin: 0 0 4px;
+  border: 1px solid rgb(0 0 0 / 0.15);
+  border-radius: 4px;
+  object-fit: contain;
+  object-position: left top;
+}
+
 /* A printer draws neither the page images nor the note tint unless background
    graphics are on. Both are content here, not decoration. */
 @media print {
   .doc-print-page img,
+  .doc-print-note-region,
   .doc-print-notes {
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;

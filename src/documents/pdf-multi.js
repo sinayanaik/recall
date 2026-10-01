@@ -24,6 +24,11 @@
 //                     see deckPdfs, which synthesizes this list from the bare
 //                     meta.pdf when it is missing, so an ordinary deck's JSONB
 //                     never grows a byte for a feature it does not use.
+//   meta.pdfOrder    { ids, at } — the order the reader arranged them in
+//                     (pdf-arrange.js). Kept OFF the entries, with its own
+//                     stamp, so a rename on one device and a reorder on
+//                     another both survive the merge; see deckPdfs for how an
+//                     id missing from it (attached since) is placed.
 //   meta.pdfActiveId which one is open. Validated on every read (activePdfId)
 //                     rather than trusted, because a stale id left over from a
 //                     PDF removed on another device must fall back to
@@ -52,12 +57,40 @@ export function mintPdfId() {
 // meta.pdfs. A deck whose only PDF is still the bare meta.pdf object reads as
 // a one-entry list here, under PDF_PRIMARY_ID, so every caller below can ask
 // "which PDFs does this deck have" without first asking which shape it is in.
+//
+// In the reader's own order (meta.pdfOrder) when they have arranged them, and
+// in attach order otherwise. The array itself is never trusted for order: the
+// sync merge rebuilds it in whichever side's order it met first, so a reorder
+// written only as array position would be undone by the next pull.
 export function deckPdfs(meta) {
   if (Array.isArray(meta?.pdfs) && meta.pdfs.length) {
-    return meta.pdfs.filter((entry) => entry && typeof entry === "object" && entry.id);
+    return sortByPdfOrder(meta.pdfs.filter((entry) => entry && typeof entry === "object" && entry.id), meta.pdfOrder);
   }
   if (meta?.pdf && typeof meta.pdf === "object") return [{ ...meta.pdf, id: PDF_PRIMARY_ID }];
   return [];
+}
+
+// Ids the order names come first, in its order; anything it does not name — a
+// PDF attached after the reader last arranged them, here or on another device —
+// follows in the order it was attached, which puts a new paper at the end where
+// the reader expects to find it. An id the order names that the deck no longer
+// has (removed since) simply matches nothing.
+function sortByPdfOrder(list, order) {
+  const ids = Array.isArray(order?.ids) ? order.ids.map(String) : [];
+  if (!ids.length) return list;
+  const rank = new Map(ids.map((id, index) => [id, index]));
+  return list
+    .map((entry, index) => ({ entry, index, rank: rank.has(entry.id) ? rank.get(entry.id) : ids.length + index }))
+    .sort((a, b) => a.rank - b.rank || a.index - b.index)
+    .map((item) => item.entry);
+}
+
+// The one write path for the order — the whole list at once, stamped, so the
+// merge can settle two devices' arrangements by which was made last.
+export function withPdfOrder(meta, ids) {
+  const base = meta && typeof meta === "object" ? meta : {};
+  const list = (Array.isArray(ids) ? ids : []).map(String).filter(Boolean);
+  return { ...base, pdfOrder: { ids: list, at: Date.now() } };
 }
 
 export function deckPdfById(meta, id) {

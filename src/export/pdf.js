@@ -15,6 +15,7 @@ import { exportBaseName, formatCardList, normalizeCardStatus } from "./markdown.
 import { installPdfPrintStyle, printPreparedDocument, revealPrintRootClozes } from "./run.js?v=__BUILD__";
 import { notesExportBlock } from "../import/parse-cards.js?v=__BUILD__";
 import { collectDeckHighlightsForExport } from "../panels/highlights-panel.js?v=__BUILD__";
+import { cachedRegionImage } from "../documents/pdf-region-embed.js?v=__BUILD__";
 import { normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
 import { enhanceRenderedMarkdown } from "../render/enhance.js?v=__BUILD__";
 import { markdownToSafeHtml } from "../render/preprocess.js?v=__BUILD__";
@@ -424,6 +425,11 @@ export function buildNotesPrintDocument(title, notesMarkdown) {
 // between highlights" complaint: a flat wall of unstyled paragraphs read as
 // one undifferentiated block, with nothing marking where one highlight ends
 // and the next begins.
+// How wide a region's picture is rendered for an export — wider than the
+// pane's, since a printed page has the room and a figure's small print should
+// survive it.
+export const HIGHLIGHT_EXPORT_REGION_WIDTH = 520;
+
 function highlightExportEntryHtml(item, groupedByPage = false) {
   const context = (units) => units.map((u) => `<p class="highlight-export-context">${markdownToSafeHtml(u)}</p>`).join("");
   const note = item.note
@@ -439,11 +445,26 @@ function highlightExportEntryHtml(item, groupedByPage = false) {
   const page = item.page && !groupedByPage
     ? `<p class="highlight-export-page">p. ${escapeHtml(String(item.page))}</p>`
     : "";
+  // A region or ink mark off a PDF, as a picture of what it holds — rendered
+  // ahead of time by the export runner (preloadRegionImages), so it is a data
+  // URL here and travels inside the exported file. A label only when there is
+  // no picture to be had (the paper not on this device), or under the picture
+  // when the box covered words.
+  const picture = item.region ? cachedRegionImage(item.region, { width: HIGHLIGHT_EXPORT_REGION_WIDTH }) : null;
+  const pictureHtml = picture
+    ? `<img class="highlight-export-region" src="${escapeHtml(picture)}" alt="${escapeHtml(item.markdown)}">`
+    : "";
+  const markHtml = picture && !item.hasWords
+    ? ""
+    : picture
+      ? `<div class="highlight-export-mark rendered"><p>${escapeHtml(String(item.region.text || "").trim())}</p></div>`
+      : `<div class="highlight-export-mark rendered">${markdownToSafeHtml(item.markdown)}</div>`;
   return `
     <div class="highlight-export-entry" data-color="${escapeHtml(item.color)}">
       ${page}
       ${context(item.before)}
-      <div class="highlight-export-mark rendered">${markdownToSafeHtml(item.markdown)}</div>
+      ${pictureHtml}
+      ${markHtml}
       ${context(item.after)}
       ${note}
     </div>

@@ -45,6 +45,7 @@ import { setStatus } from "../ui/feedback.js?v=__BUILD__";
 import { DOC_SLOT_NOTEBOOK, activeDocSlot, docSlotMeta } from "./doc-slot.js?v=__BUILD__";
 import { annotatedDocumentHighlights, documentHighlightLabel, documentHighlights } from "./pdf-highlights.js?v=__BUILD__";
 import { currentPdfDocument, currentPdfPageCount, pdfOpenToken } from "./pdf-view.js?v=__BUILD__";
+import { renderRegionImage } from "./pdf-region-embed.js?v=__BUILD__";
 
 // The rendered width of a page in the print document, in device pixels. A4 at
 // 14mm margins (installPdfPrintStyle) is ~182mm of content, which is ~688 CSS
@@ -153,13 +154,35 @@ function excerptFor(record) {
   return flat.length > PRINT_EXCERPT_CHARS ? `${flat.slice(0, PRINT_EXCERPT_CHARS).trimEnd()}…` : flat;
 }
 
-function pageNotesHtml(entries) {
+// A region or ink mark's note is printed beside a picture of what the mark
+// holds, not its "Region · page 12" name — the same picture the Highlights pane
+// shows (renderRegionImage), awaited before the markup is written so it is in
+// the file. The label stays the answer when there is nothing to picture it
+// from.
+export const PRINT_REGION_WIDTH = 240;
+
+async function excerptHtmlFor(record) {
+  if (record?.kind === "area" || record?.kind === "ink") {
+    const url = await renderRegionImage(record, { width: PRINT_REGION_WIDTH }).catch(() => null);
+    if (url) {
+      const words = String(record.text || "").replace(/\s+/g, " ").trim();
+      const caption = words
+        ? `<span class="doc-print-note-excerpt">${escapeHtml(words.length > PRINT_EXCERPT_CHARS ? `${words.slice(0, PRINT_EXCERPT_CHARS).trimEnd()}…` : words)}</span>`
+        : "";
+      return `<img class="doc-print-note-region" src="${escapeHtml(url)}" alt="${escapeHtml(documentHighlightLabel(record))}">${caption}`;
+    }
+  }
+  return `<span class="doc-print-note-excerpt">${escapeHtml(excerptFor(record))}</span>`;
+}
+
+async function pageNotesHtml(entries) {
   if (!entries.length) return "";
-  const rows = entries.map(({ record, note, n }) => `
+  const excerpts = await Promise.all(entries.map(({ record }) => excerptHtmlFor(record)));
+  const rows = entries.map(({ note, n }, index) => `
     <li class="doc-print-note">
       <span class="doc-print-note-num">${n}</span>
       <span class="doc-print-note-body">
-        <span class="doc-print-note-excerpt">${escapeHtml(excerptFor(record))}</span>
+        ${excerpts[index]}
         ${markdownToSafeHtml(note)}
       </span>
     </li>
@@ -218,7 +241,7 @@ export async function buildDocumentPrintDocument(title, { annotatedOnly = false 
           <img src="${image}" alt="Page ${pageNumber}">
           <figcaption>Page ${pageNumber}</figcaption>
         </figure>
-        ${pageNotesHtml(notesByPage.get(pageNumber) || [])}
+        ${await pageNotesHtml(notesByPage.get(pageNumber) || [])}
       </section>
     `);
   }

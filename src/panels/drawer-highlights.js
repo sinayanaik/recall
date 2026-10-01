@@ -45,11 +45,16 @@
 import { el } from "../core/dom.js?v=__BUILD__";
 import { scheduleNoteJump } from "../notes/anchors.js?v=__BUILD__";
 import { documentHighlightEntries, noteHighlightEntries } from "./highlight-index.js?v=__BUILD__";
+import { mountRegionPreview } from "../documents/pdf-region-embed.js?v=__BUILD__";
 
 // How many rows are built before the list offers to show the rest. Comfortably
 // more than a drawer's worth of scrolling, and far short of the thousands a
 // marked-up textbook carries.
 export const DRAWER_ROW_LIMIT = 300;
+
+// A region's picture in a drawer row — the drawer is ~300px, and the chip
+// beside the picture needs its column too.
+const DRAWER_REGION_WIDTH = 220;
 
 export const DRAWER_SECTION_ATTR = "data-drawer-section";
 
@@ -258,7 +263,18 @@ function drawerRowFor(drawer, entry) {
 
   const text = document.createElement("span");
   text.className = "drawer-highlight-text";
-  text.textContent = entry.text;
+  // A region round a figure, or a margin note in ink, has no words to list it
+  // by: the row shows what the box holds, with the words it covered (if any)
+  // under the picture, and keeps "Region · page N" as the button's name.
+  if (entry.region) {
+    text.classList.add("has-region");
+    mountRegionPreview(text, entry.region, { width: DRAWER_REGION_WIDTH });
+    const words = String(entry.region.text || "").trim();
+    if (words) text.append(words);
+    jump.setAttribute("aria-label", entry.text);
+  } else {
+    text.textContent = entry.text;
+  }
 
   jump.append(chip, text);
   // ── The two small things, on a line of their own under the words ─────────

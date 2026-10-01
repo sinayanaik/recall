@@ -139,6 +139,9 @@ export function documentHighlightEntries() {
     // "Region · page 12" rather than as a blank row — which in a list is
     // indistinguishable from a bug.
     text: documentHighlightLabel(record),
+    // A region or ink mark is listed as a picture of itself (drawerRowFor);
+    // `text` stays its label, for the row's accessible name and for search.
+    region: (record.kind === "area" || record.kind === "ink") ? record : null,
     color: record.color,
     note: Boolean(notes.get(record.id)),
     noteText: clipDrawerNote(notes.get(record.id)),

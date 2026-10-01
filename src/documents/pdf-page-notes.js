@@ -64,6 +64,7 @@ import {
   documentHighlightNote
 } from "./pdf-highlights.js?v=__BUILD__";
 import { quadToPageBox } from "./pdf-selection.js?v=__BUILD__";
+import { mountRegionPreview } from "./pdf-region-embed.js?v=__BUILD__";
 import {
   currentDocumentAcross,
   currentDocumentPage,
@@ -136,7 +137,7 @@ export function readPdfPageNotesPreference() {
 // every note after it), and what the note says.
 function pageNotesSignature(entries) {
   return entries
-    .map(({ record, note, n }) => `${n}:${record.id}:${record.color || ""}:${hash32(documentHighlightLabel(record))}:${hash32(note)}`)
+    .map(({ record, note, n }) => `${n}:${record.id}:${record.color || ""}:${hash32(documentHighlightLabel(record))}:${hash32(note)}:${isPictured(record) ? record.at || 0 : ""}`)
     .join("|");
 }
 
@@ -309,7 +310,15 @@ function noteBlockFor(pageNumber, entries) {
     body.className = "pdf-page-note-body";
     const excerpt = document.createElement("span");
     excerpt.className = "pdf-page-note-excerpt";
-    excerpt.textContent = shortLabel(documentHighlightLabel(record));
+    // A region or ink mark is shown as what it holds, not named — see
+    // mountRegionPreview. Its words, if the box covered any, follow it.
+    if (isPictured(record)) {
+      mountRegionPreview(excerpt, record, { width: PAGE_NOTE_REGION_WIDTH });
+      const words = shortLabel(record.text || "");
+      if (words) excerpt.append(words);
+    } else {
+      excerpt.textContent = shortLabel(documentHighlightLabel(record));
+    }
     const text = document.createElement("span");
     text.innerHTML = markdownToSafeHtml(note);
     body.append(excerpt, text);
@@ -319,6 +328,14 @@ function noteBlockFor(pageNumber, entries) {
   });
   return block;
 }
+
+function isPictured(record) {
+  return record?.kind === "area" || record?.kind === "ink";
+}
+
+// Narrower than the pane's picture: this sits under a page, beside a number,
+// with the note itself still to come under it.
+const PAGE_NOTE_REGION_WIDTH = 200;
 
 function shortLabel(label) {
   const flat = String(label || "").replace(/\s+/g, " ").trim();

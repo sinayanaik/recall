@@ -807,6 +807,7 @@ export const META_KEY_LABELS = {
   deletedBlockIds: "deleted blocks",
   deletedPdfIds: "removed papers",
   pdfActiveId: "open paper",
+  pdfOrder: "paper order",
   bookmark: "bookmark",
   readingPosition: "reading position",
   readingPositionPdf: "place in the paper",

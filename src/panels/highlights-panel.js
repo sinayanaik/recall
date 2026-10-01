@@ -21,7 +21,7 @@ import { highlightNoteIndex } from "../notes/highlight-badges.js?v=__BUILD__";
 import { clozeCleanUnit, clozeUnitAt, clozeUnitIndex } from "./cloze-panel.js?v=__BUILD__";
 import { trimNoteAnchor } from "../quick-notes/anchors.js?v=__BUILD__";
 import { annotatedDocumentHighlightNumbers, documentHighlightLabel, documentHighlightsInReadingOrder, isPdfDeck } from "../documents/pdf-highlights.js?v=__BUILD__";
-import { currentPdfDocument, renderRegionThumbnail } from "../documents/pdf-view.js?v=__BUILD__";
+import { mountRegionPreview } from "../documents/pdf-region-embed.js?v=__BUILD__";
 
 // ── Highlights view ────────────────────────────────────────────────────────
 // A highlight is a literal <mark>…</mark> pair sitting in state.notes — same
@@ -251,40 +251,12 @@ export function scanHighlightGroups(source, noteSource = source) {
 // duplication merging avoided is instead avoided by the entry being the
 // highlighted line rather than a preview of it.
 //
-// The picture for one region row, appended synchronously as a placeholder and
-// filled in when the render resolves. Asynchronous by necessity — rasterising a
-// page is a promise — and deliberately not awaited: forty entries would
-// otherwise appear one page-render at a time.
-//
-// The label is not a loading state; it is the ANSWER whenever there is no open
-// document to render from, and it is replaced only if a picture actually
-// arrives. So an offloaded deck's highlights list reads correctly and never
-// flickers through an empty box.
-export function addRegionPreview(body, record) {
-  const label = document.createElement("span");
-  label.className = "highlight-region-label";
-  // Always "Region · page N" (or "Ink · page N"), never the record's text:
-  // whatever words the box happened to cover are already the entry's own quote
-  // directly below this, and saying them twice makes it read as two highlights.
-  // Ink never has words at all, so for ink the label is the only naming there
-  // is until the thumbnail arrives.
-  // The same glyph the region-select button in the control row wears, and from
-  // the same Unicode block as the Cards tab's ▢ — a dotted-square character
-  // would have read better and is not reliably drawn.
-  const isInk = record.kind === "ink";
-  label.textContent = isInk
-    ? `✎ Ink · page ${record.page}`
-    : `▣ Region · page ${record.page}`;
-  body.appendChild(label);
-  if (!currentPdfDocument()) return;
-  renderRegionThumbnail(record).then((url) => {
-    if (!url || !label.isConnected) return;
-    const img = document.createElement("img");
-    img.className = "highlight-region-thumb";
-    img.src = url;
-    img.alt = isInk ? `Ink written on page ${record.page}` : `Region highlighted on page ${record.page}`;
-    label.replaceWith(img);
-  }).catch(() => { /* the label stays, which is a correct answer on its own */ });
+// The picture for one region (or ink) row — see mountRegionPreview, which
+// every list that shows one shares: drawn from the record's own paper whether
+// or not the Document view has it open, and labelled "Region · page N" only
+// when there is no picture to be had.
+export function addRegionPreview(body, record, options) {
+  return mountRegionPreview(body, record, options);
 }
 
 // Like highlightContextUnit, but collects up to `count` units stepping
@@ -342,10 +314,15 @@ export function collectDeckHighlightsForExport({ contextLines = 0, includeChapte
     documentHighlightsInReadingOrder().forEach((record) => {
       const note = documentNotes.get(record.id) || null;
       if (annotatedOnly && !note) return;
+      const pictured = record.kind === "area" || record.kind === "ink";
       items.push({
         // documentHighlightLabel, so a region round a figure exports as
-        // "Region · page 12" rather than as a blank bullet with a colour on it.
+        // "Region · page 12" rather than as a blank bullet with a colour on it
+        // — which is what the Markdown export still says. The HTML and PDF
+        // exports picture it instead, from `region` (highlightExportEntryHtml).
         markdown: documentHighlightLabel(record),
+        region: pictured ? record : null,
+        hasWords: Boolean(String(record.text || "").trim()),
         color: record.color,
         note: includeNotes ? note : null,
         before: [],
@@ -415,7 +392,9 @@ export function collectHighlightEntries() {
     // badge showing "5" is worse than a card showing nothing.
     const numbers = annotatedDocumentHighlightNumbers();
     documentHighlightsInReadingOrder().forEach((record) => {
-      const text = String(record.text || "").trim() || documentHighlightLabel(record);
+      const words = String(record.text || "").trim();
+      const text = words || documentHighlightLabel(record);
+      const pictured = record.kind === "area" || record.kind === "ink";
       entries.push({
         highlightId: record.id,
         color: record.color,
@@ -426,11 +405,14 @@ export function collectHighlightEntries() {
         // Ink takes the same preview a region does. Both are marks with no
         // words in them, and for both the only useful thing a list can show is
         // a picture of what is actually there.
-        region: (record.kind === "area" || record.kind === "ink") ? record : null,
+        region: pictured ? record : null,
         // Rendered as plain text: it came out of a PDF, so there is no markdown
         // in it to interpret, and a paper containing "*" or "_" must not turn
         // half a sentence italic here.
-        markdown: text.replace(/([\\`*_{}[\]()#+\-.!])/g, "\\$1"),
+        // A region or ink mark that covered no words has NO quote: the picture
+        // above it is what it is, and "Region · page 12" printed under the
+        // picture of it would be saying the same thing twice, worse.
+        markdown: (pictured && !words ? "" : text).replace(/([\\`*_{}[\]()#+\-.!])/g, "\\$1"),
         span: null,
         note: notes.get(record.id) || "",
         anchor: {

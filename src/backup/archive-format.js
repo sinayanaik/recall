@@ -183,6 +183,9 @@ export const BACKED_UP_META_KEYS = {
     + "why the scan below never saw it and it rode in every archive unlisted.",
   readingPositionNotebook:
     "The same, for the handwritten notebook.",
+  pdfOrder:
+    "The order the reader arranged a deck's several PDFs in, with its own edit "
+    + "stamp. Ids that name a PDF that did not come back are simply skipped.",
   pdfActiveId:
     "Which of a deck's several PDFs was open. Validated on every read, so a "
     + "value naming a PDF that did not come back is simply ignored.",
@@ -281,6 +284,7 @@ export const SHARE_META_POLICY = {
   deletedPdfIds: SHARE_POLICY_KEEP,
   pdfTocByPdfId: SHARE_POLICY_KEEP,
   pdfActiveId: SHARE_POLICY_KEEP,
+  pdfOrder: SHARE_POLICY_KEEP,
   pdfReadingPositions: SHARE_POLICY_PROGRESS,
   readingPositionPdf: SHARE_POLICY_PROGRESS,
   readingPositionNotebook: SHARE_POLICY_PROGRESS,

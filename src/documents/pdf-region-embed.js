@@ -20,7 +20,8 @@ import { decodeInkStrokes } from "../format/ink-strokes.js?v=__BUILD__";
 import { centerDiagramContent, openDiagramModal } from "../render/diagram-zoom.js?v=__BUILD__";
 import { paintInkStrokes } from "../render/ink-paint.js?v=__BUILD__";
 import { documentHighlightsForPdf, documentInkMarksForPdf } from "./pdf-highlights.js?v=__BUILD__";
-import { deckPdfById, PDF_PRIMARY_ID, pdfStoreKey } from "./pdf-multi.js?v=__BUILD__";
+import { DOC_SLOT_DOC, docSlotMeta, documentStoreKey, recordDocSlot } from "./doc-slot.js?v=__BUILD__";
+import { deckPdfById, isRecordForSurface, PDF_PRIMARY_ID, pdfStoreKey, recordPdfId } from "./pdf-multi.js?v=__BUILD__";
 import { getDocument } from "./pdf-store.js?v=__BUILD__";
 import { buildTextLayer, canvasOutputScale, clampScale, PDF_MAX_SCALE } from "./pdf-view.js?v=__BUILD__";
 import { attachRegionResizeHandle } from "./pdf-region-resize.js?v=__BUILD__";
@@ -138,6 +139,180 @@ function openEmbedDoc(storeKey, pdfMeta) {
   });
   embedDocs.set(key, promise);
   return promise;
+}
+
+// ── A still picture of a highlight's box ────────────────────────────────────
+//
+// The Highlights pane, the outline drawer, the page notes and the exports all
+// list a region (or an ink mark) — a mark with no words in it — and for every
+// one of them the only thing worth showing is what the box actually holds.
+// This is that picture, as a data URL a plain <img> can carry, rendered from
+// the record's OWN paper (its pdfId, or the notebook for a notebook record)
+// through openEmbedDoc above — so it does not care whether the Document view
+// has that paper open, or is open at all.
+//
+// Rendered on demand and never stored: a data URL on the record would ride in
+// meta, a JSONB column that syncs to every device on every save, and the bytes
+// it would be made from are already on the device. Memoised for the session
+// instead, keyed by the record's edit stamp as well as its id — an ink mark is
+// the same record growing stroke by stroke, and a memo on the id alone would
+// show its first stroke for the rest of the session.
+export const REGION_IMAGE_WIDTH = 260;
+
+const regionImages = new Map();
+
+// The finished pictures by the same key, for a caller that has to build its
+// markup synchronously (the exports) after awaiting preloadRegionImages.
+const regionImageUrls = new Map();
+
+function regionImageKey(record, width) {
+  const source = regionSource(record);
+  return `${source.storeKey}:${source.pdfMeta?.sha256 || ""}:${record.id}:${record.at || 0}:${width}`;
+}
+
+export function cachedRegionImage(record, { width = REGION_IMAGE_WIDTH } = {}) {
+  if (!record?.id) return null;
+  return regionImageUrls.get(regionImageKey(record, width)) || null;
+}
+
+export function preloadRegionImages(records, { width = REGION_IMAGE_WIDTH } = {}) {
+  return Promise.all((records || []).map((record) => renderRegionImage(record, { width })));
+}
+
+function regionSource(record) {
+  const slot = recordDocSlot(record);
+  if (slot === DOC_SLOT_DOC) {
+    const pdfId = recordPdfId(record);
+    return { slot, pdfId, storeKey: pdfStoreKey(state.localDeckId, pdfId), pdfMeta: deckPdfById(state.meta, pdfId) };
+  }
+  return { slot, pdfId: null, storeKey: documentStoreKey(state.localDeckId, slot), pdfMeta: docSlotMeta(slot) };
+}
+
+// The box a record is pictured by: the rectangle the reader drew for a
+// region, the bounds of its strokes (its first quad) for ink.
+export function regionImageRect(record) {
+  const rect = (record?.quads || [])[0]?.rect;
+  if (!Array.isArray(rect) || rect.length !== 4) return null;
+  const numbers = rect.map(Number);
+  return numbers.every(Number.isFinite) ? numbers : null;
+}
+
+export function renderRegionImage(record, { width = REGION_IMAGE_WIDTH } = {}) {
+  const rect = regionImageRect(record);
+  const pageNumber = Number(record?.quads?.[0]?.page || record?.page);
+  if (!record?.id || !rect || !Number.isInteger(pageNumber) || pageNumber < 1) return Promise.resolve(null);
+  const source = regionSource(record);
+  const key = regionImageKey(record, width);
+  const cached = regionImages.get(key);
+  if (cached) return cached;
+  const promise = paintRegionImage(record, rect, pageNumber, source, width).catch((error) => {
+    console.warn("Could not render a picture of a PDF region", error);
+    return null;
+  }).then((url) => {
+    // A failure (offline, the paper not on this device yet) is not kept, so
+    // the next list drawn tries again — the same rule openEmbedDoc keeps.
+    if (!url) regionImages.delete(key);
+    else regionImageUrls.set(key, url);
+    return url;
+  });
+  regionImages.set(key, promise);
+  return promise;
+}
+
+async function paintRegionImage(record, rect, pageNumber, source, width) {
+  const doc = await openEmbedDoc(source.storeKey, source.pdfMeta);
+  if (!doc || pageNumber > doc.numPages) return null;
+  const page = await doc.getPage(pageNumber);
+  const quadWidth = Math.max(1, Math.abs(rect[2] - rect[0]));
+  // Scaled so the CROP comes out at the width asked for, not the page — a
+  // fixed page scale makes a figure in the corner of an A4 sheet a few pixels
+  // across — and rendered at the screen's density so it stays sharp.
+  const scale = clampScale(width / quadWidth, 0.05);
+  const viewport = page.getViewport({ scale });
+  const [vx0, vy0, vx1, vy1] = viewport.convertToViewportRectangle(rect);
+  const left = Math.min(vx0, vx1);
+  const top = Math.min(vy0, vy1);
+  const nativeWidth = Math.max(1, Math.round(Math.abs(vx1 - vx0)));
+  const nativeHeight = Math.max(1, Math.round(Math.abs(vy1 - vy0)));
+  const outputScale = canvasOutputScale(nativeWidth, nativeHeight);
+  // Only the crop is rasterised, through an offset viewport — the same way
+  // mountPdfRegionEmbed paints its own.
+  const paintViewport = page.getViewport({
+    scale: scale * outputScale,
+    offsetX: -left * outputScale,
+    offsetY: -top * outputScale
+  });
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.ceil(nativeWidth * outputScale);
+  canvas.height = Math.ceil(nativeHeight * outputScale);
+  const ctx = canvas.getContext("2d", { alpha: false });
+  // White first: an `alpha: false` canvas starts black, and a page paints only
+  // its own marks (the same reason renderPageForPrint does this).
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  await page.render({ canvasContext: ctx, viewport: paintViewport }).promise;
+  // The ink on that page, this mark's included — the page underneath a margin
+  // note is blank paper, so without it an ink mark is pictured as an empty
+  // white box. The record handed in stands in for its stored copy, which may
+  // be a stroke behind it.
+  const marks = state.meta?.pdfHighlights;
+  const ink = (Array.isArray(marks) ? marks : []).filter((mark) => mark?.kind === "ink"
+    && mark.id !== record.id
+    && Number(mark.page) === pageNumber
+    && isRecordForSurface(mark, source.slot, source.pdfId));
+  if (record.kind === "ink") ink.push(record);
+  if (ink.length) {
+    const t = paintViewport.transform;
+    ctx.save();
+    ctx.setTransform(t[0], t[1], t[2], t[3], t[4], t[5]);
+    ink.forEach((mark) => paintInkStrokes(ctx, decodeInkStrokes(mark.ink?.s), { root: null }));
+    ctx.restore();
+  }
+  return canvas.toDataURL("image/jpeg", 0.8);
+}
+
+// The picture, put in place of a label wherever a list shows a region or an
+// ink mark. Synchronous for its caller: what goes in at once is a box already
+// the picture's shape, so a list of forty does not jump as they arrive; the
+// image replaces it when it is ready. The "Region · page N" words are the
+// ANSWER only when there is no picture to be had (the paper offloaded and not
+// on this device, or offline before it ever was) — never a loading state.
+export function mountRegionPreview(container, record, { width = REGION_IMAGE_WIDTH, className = "" } = {}) {
+  const isInk = record?.kind === "ink";
+  const page = record?.page || record?.quads?.[0]?.page || "";
+  const words = isInk ? `Ink · page ${page}` : `Region · page ${page}`;
+  const box = document.createElement("span");
+  box.className = `highlight-region-preview is-loading${className ? ` ${className}` : ""}`;
+  box.style.maxWidth = `${width}px`;
+  const rect = regionImageRect(record);
+  if (rect) {
+    const w = Math.max(1, Math.abs(rect[2] - rect[0]));
+    const h = Math.max(1, Math.abs(rect[3] - rect[1]));
+    box.style.aspectRatio = `${w} / ${h}`;
+  }
+  box.setAttribute("role", "img");
+  box.setAttribute("aria-label", isInk ? `Ink written on page ${page}` : `Region highlighted on page ${page}`);
+  container.appendChild(box);
+  const fallback = () => {
+    box.classList.remove("is-loading");
+    box.classList.add("is-fallback");
+    box.style.aspectRatio = "";
+    // The same glyphs the region-select and pen buttons wear.
+    box.textContent = `${isInk ? "✎" : "▣"} ${words}`;
+  };
+  renderRegionImage(record, { width }).then((url) => {
+    if (!url) return fallback();
+    const img = document.createElement("img");
+    img.className = "highlight-region-thumb";
+    img.alt = box.getAttribute("aria-label");
+    img.src = url;
+    img.draggable = false;
+    box.classList.remove("is-loading");
+    box.removeAttribute("role");
+    box.removeAttribute("aria-label");
+    box.replaceChildren(img);
+  }).catch(fallback);
+  return box;
 }
 
 function buildWrapper(parsed, targetWidth) {
