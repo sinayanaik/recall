@@ -66,7 +66,11 @@ export const LIB_URLS = {
   // (src/documents/pdf-region-download.js) is the paper's own page copied out
   // and cropped to the box, so its text stays text and a figure stays vector.
   // The UMD build, for the same classic-<script> reason as pdf.js above.
-  pdfLib: `${CDN_BASE}pdf-lib@1.17.1/dist/pdf-lib.min.js`
+  pdfLib: `${CDN_BASE}pdf-lib@1.17.1/dist/pdf-lib.min.js`,
+  // html-to-image turns a typed or picture block on a page into pixels, for a
+  // region pictured on a canvas or saved as an image or PDF
+  // (src/documents/pdf-region-marks.js). UMD, like the rest of this list.
+  htmlToImage: `${CDN_BASE}html-to-image@1.11.11/dist/html-to-image.js`
 };
 
 // ── Webfonts (Style → Basics/Notes → Font) ──────────────────────────────────
@@ -217,6 +221,11 @@ export async function ensureJsZip() {
 export async function ensurePdfLib() {
   if (window.PDFLib) return true;
   return (await loadScriptOnce(LIB_URLS.pdfLib)) && Boolean(window.PDFLib);
+}
+
+export async function ensureHtmlToImage() {
+  if (window.htmlToImage) return true;
+  return (await loadScriptOnce(LIB_URLS.htmlToImage)) && Boolean(window.htmlToImage);
 }
 
 // pdf.js, plus the one piece of setup it cannot do for itself here.

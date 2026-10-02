@@ -38,6 +38,7 @@ import { fileURLToPath } from "node:url";
 import { findChrome, launchChrome, connect, openPage, emulatePhone } from "./cdp.mjs";
 import { PDFJS_VERSION, pdfjsSources } from "./pdfjs-source.mjs";
 import { PDFLIB_VERSION, pdflibSource } from "./pdflib-source.mjs";
+import { HTMLTOIMAGE_VERSION, htmlToImageSource } from "./htmltoimage-source.mjs";
 import { FONT_SIZE, buildFixturePdf, fixtureLineOrigin } from "./pdf-fixture.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -231,6 +232,15 @@ try {
   console.log(`pdf-preview-check: could not obtain pdf-lib ${PDFLIB_VERSION} (${error?.message || error}) — region-PDF cases will be skipped.`);
 }
 
+// html-to-image draws a typed block inside a region as pixels. Without it the
+// block-in-a-picture cases say so and everything else still runs.
+let htmlToImage = null;
+try {
+  htmlToImage = htmlToImageSource();
+} catch (error) {
+  console.log(`pdf-preview-check: could not obtain html-to-image ${HTMLTOIMAGE_VERSION} (${error?.message || error}) — block-picture cases will be skipped.`);
+}
+
 const fixture = OWN_PDF
   ? { bytes: new Uint8Array(readFileSync(OWN_PDF)), pages: null, linesPerPage: null, title: path.basename(OWN_PDF), annotation: null }
   : buildFixturePdf();
@@ -285,6 +295,7 @@ try {
   });
 
   if (pdflib) await page.call("Page.addScriptToEvaluateOnNewDocument", { source: pdflib });
+  if (htmlToImage) await page.call("Page.addScriptToEvaluateOnNewDocument", { source: htmlToImage });
 
   await page.goto(`${server.base}/index.html`);
   await page.evaluate(SETUP_SRC, API_SRC);
@@ -1830,18 +1841,26 @@ try {
       const ctx = canvas.getContext("2d");
       const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
       const near = (i) => Math.abs(data[i] - want[0]) < 40 && Math.abs(data[i + 1] - want[1]) < 40 && Math.abs(data[i + 2] - want[2]) < 40;
-      let tinted = 0;
-      let total = 0;
-      // The outline was 2px inside the crop's edge at the embed's own scale.
+      // A frame is a ring round ALL FOUR edges. A text highlight inside the
+      // box (there is one, from the colour pressed on it above) may touch one
+      // edge — so what is asked is whether every edge is tinted, edge by edge.
       const ring = Math.max(2, Math.round(canvas.width / 200));
-      for (let y = 0; y < canvas.height; y += 1) {
-        for (let x = 0; x < canvas.width; x += 1) {
-          if (x >= ring && y >= ring && x < canvas.width - ring && y < canvas.height - ring) continue;
-          total += 1;
-          if (near((y * canvas.width + x) * 4)) tinted += 1;
-        }
-      }
-      edge = { tinted, total };
+      const share = (xs, ys) => {
+        let tinted = 0;
+        let total = 0;
+        for (const y of ys) for (const x of xs) { total += 1; if (near((y * canvas.width + x) * 4)) tinted += 1; }
+        return total ? tinted / total : 0;
+      };
+      const range = (a, b) => Array.from({ length: Math.max(0, b - a) }, (_, i) => a + i);
+      const allX = range(0, canvas.width);
+      const allY = range(0, canvas.height);
+      const edges = [
+        share(allX, range(0, ring)),
+        share(allX, range(canvas.height - ring, canvas.height)),
+        share(range(0, ring), allY),
+        share(range(canvas.width - ring, canvas.width), allY)
+      ];
+      edge = { edges: edges.map((v) => Math.round(v * 100)), framed: Math.min(...edges) > 0.5 };
     }
     api.state.notes = originalNotes;
     if (api.isNotesEditing()) api.resetNotesEditingUI();
@@ -1872,10 +1891,263 @@ try {
     } else {
       notes.push("Save as PDF not exercised: pdf-lib was not available");
     }
-    check("a region pasted into the Notes carries no highlight colour",
-      saved.edge && saved.edge.tinted / saved.edge.total < 0.05,
-      saved.edge ? `${saved.edge.tinted}/${saved.edge.total} edge px in the highlight colour` : "no embed rendered");
+    check("a region pasted into the Notes carries no frame in its own colour",
+      saved.edge && !saved.edge.framed,
+      saved.edge ? `% of each edge in the region's colour: ${saved.edge.edges.join(", ")}` : "no embed rendered");
   }
+
+  // ── 7b-iii. ...and every picture of it keeps what is drawn inside it ──────
+  //
+  // A region pictured anywhere — pasted into the Notes, zoomed, saved as an
+  // image or a PDF — shows the reader's annotations inside the box: a text
+  // highlight (blue here), pen ink (red), and a typed block. Only the region's
+  // own frame is left off. The PDF keeps the paper vector, draws the highlight
+  // and ink as vector paths, the block as an image, and carries the file's OWN
+  // annotations that touch the box (a Highlight and its Popup) while dropping
+  // what does not belong (a Link). All three marks are taken off again after,
+  // so nothing later in this file sees them.
+  const annotated = region.record ? await page.evaluate(`async (id) => {
+    const { api, settle } = window.__recall;
+    const embed = await import("/src/documents/pdf-region-embed.js?v=__BUILD__");
+    const download = await import("/src/documents/pdf-region-download.js?v=__BUILD__");
+    const strokes = await import("/src/format/ink-strokes.js?v=__BUILD__");
+    const records = api.state.meta?.pdfHighlights || [];
+    const record = records.find((r) => r.id === id);
+    const rect = record.quads[0].rect.map(Number);
+    const [x0, y0, x1, y1] = rect;
+    const w = x1 - x0;
+    const h = y1 - y0;
+    const paper = { ...(record.doc ? { doc: record.doc } : {}), ...(record.pdfId ? { pdfId: record.pdfId } : {}) };
+    const now = Date.now();
+    const blueRect = [x0 + w * 0.05, y0 + h * 0.55, x0 + w * 0.45, y0 + h * 0.8];
+    const inkPts = [x0 + w * 0.08, y0 + h * 0.15, 0.6, x0 + w * 0.3, y0 + h * 0.35, 0.6, x0 + w * 0.45, y0 + h * 0.2, 0.6];
+    const blockBox = { x: x0 + w * 0.55, y: y0 + h * 0.1, w: Math.min(w * 0.4, Math.max(95, w * 0.4)), h: Math.max(40, h * 0.5) };
+    const originalMarks = api.state.meta.pdfHighlights;
+    const originalBlocks = api.state.meta.pdfBlocks;
+    const withMarks = (on) => {
+      api.state.meta = {
+        ...api.state.meta,
+        pdfHighlights: on ? originalMarks.concat([
+          { id: "check-blue", color: "blue", page: record.page, anchor: null, focus: null, text: "", quads: [{ page: record.page, rect: blueRect }], at: now, ...paper },
+          { id: "check-ink", color: "pink", page: record.page, anchor: null, focus: null, text: "", kind: "ink",
+            quads: [{ page: record.page, rect: [inkPts[0] - 4, inkPts[4] - 4, inkPts[6] + 4, inkPts[4] + 4] }],
+            ink: { v: 1, s: strokes.encodeInkStrokes([{ w: 6, c: "red", p: inkPts }]) }, at: now, ...paper }
+        ]) : originalMarks,
+        pdfBlocks: on ? (originalBlocks || []).concat([
+          { id: "check-block", page: record.page, ...blockBox, z: 0, md: "**Boxed words**", style: { fill: "green" }, at: now, ...paper }
+        ]) : originalBlocks
+      };
+    };
+    // Pictures of the same box at the same size, with the marks and without.
+    // The paper is not white (the fixture's is cream), so what is measured is
+    // how much each mark CHANGED the picture, not an absolute colour.
+    const shifted = (a, b, test) => {
+      if (!a || !b || a.w !== b.w || a.h !== b.h) return -1;
+      let n = 0;
+      for (let i = 0; i < a.data.length; i += 4) if (test(a.data, b.data, i)) n += 1;
+      return n;
+    };
+    const towardBlue = (m, p, i) => (m[i + 2] - m[i]) - (p[i + 2] - p[i]) > 20;
+    // Pens are themed (#dc2626 on a light theme, #f87171 on a dark one).
+    const towardRed = (m, p, i) => m[i] > 150 && (m[i] - m[i + 1]) - (p[i] - p[i + 1]) > 60;
+    const pixelsOfCanvas = (c) => ({ w: c.width, h: c.height, data: c.getContext("2d").getImageData(0, 0, c.width, c.height).data });
+    const pixelsOf = async (blob) => {
+      const bitmap = await createImageBitmap(blob);
+      const c = document.createElement("canvas");
+      c.width = bitmap.width; c.height = bitmap.height;
+      c.getContext("2d").drawImage(bitmap, 0, 0);
+      return pixelsOfCanvas(c);
+    };
+    const renderPdf = async (bytes) => {
+      const doc = await window.pdfjsLib.getDocument({ data: bytes.slice(), isEvalSupported: false }).promise;
+      const p = await doc.getPage(1);
+      const vp = p.getViewport({ scale: 3 });
+      const c = document.createElement("canvas");
+      c.width = Math.ceil(vp.width); c.height = Math.ceil(vp.height);
+      const ctx = c.getContext("2d");
+      ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height);
+      await p.render({ canvasContext: ctx, viewport: vp }).promise;
+      return { pixels: pixelsOfCanvas(c), textItems: (await p.getTextContent()).items.length };
+    };
+    // How much of the block's own box changed.
+    const blockChange = (a, b) => {
+      if (!a || !b || a.w !== b.w) return 0;
+      const sx = a.w / w;
+      const sy = a.h / h;
+      const left = Math.round((blockBox.x - x0) * sx);
+      const top = Math.round((y1 - (blockBox.y + blockBox.h)) * sy);
+      const right = Math.min(a.w, Math.round((blockBox.x + blockBox.w - x0) * sx));
+      const bottom = Math.min(a.h, Math.round((y1 - blockBox.y) * sy));
+      let changed = 0;
+      let total = 0;
+      for (let y = top; y < bottom; y += 2) for (let x = left; x < right; x += 2) {
+        const i = (y * a.w + x) * 4;
+        total += 1;
+        if (Math.abs(a.data[i] - b.data[i]) + Math.abs(a.data[i + 1] - b.data[i + 1]) + Math.abs(a.data[i + 2] - b.data[i + 2]) > 30) changed += 1;
+      }
+      return total ? changed / total : 0;
+    };
+
+    const caught = [];
+    const click = HTMLAnchorElement.prototype.click;
+    HTMLAnchorElement.prototype.click = function () {
+      if (this.download) caught.push({ name: this.download, href: this.href });
+      else click.call(this);
+    };
+    const fetchCaught = async (ext) => {
+      const file = caught.filter((c) => c.name.endsWith(ext)).pop();
+      return file ? (await fetch(file.href)).blob() : null;
+    };
+    const out = { hasHtmlToImage: Boolean(window.htmlToImage), hasPdfLib: Boolean(window.PDFLib) };
+    try {
+      // The image.
+      withMarks(false);
+      await download.downloadRegionImage(record);
+      const bare = await fetchCaught(".png");
+      withMarks(true);
+      await download.downloadRegionImage(record);
+      const marked = await fetchCaught(".png");
+      const a = marked ? await pixelsOf(marked) : null;
+      const b = bare ? await pixelsOf(bare) : null;
+      out.image = a && b ? { blue: shifted(a, b, towardBlue), red: shifted(a, b, towardRed), block: blockChange(a, b) } : null;
+
+      // The zoom's crop (a bare pdfref:, so the region's own frame is found by
+      // its box).
+      const source = embed.regionSource(record);
+      const pdfPage = await embed.regionPdfPage(source, record.page);
+      withMarks(false);
+      const zoomBare = pixelsOfCanvas(await embed.renderRegionCrop(pdfPage, rect, 2, source, { excludeRect: rect }));
+      withMarks(true);
+      const zoomMarked = pixelsOfCanvas(await embed.renderRegionCrop(pdfPage, rect, 2, source, { excludeRect: rect }));
+      out.zoom = { blue: shifted(zoomMarked, zoomBare, towardBlue), red: shifted(zoomMarked, zoomBare, towardRed) };
+
+      // The PDF: rendered back through pdf.js, and its insides read with pdf-lib.
+      if (window.PDFLib) {
+        withMarks(false);
+        await download.downloadRegionPdf(record);
+        const pdfBare = await fetchCaught(".pdf");
+        withMarks(true);
+        await download.downloadRegionPdf(record);
+        const pdfMarked = await fetchCaught(".pdf");
+        if (pdfBare && pdfMarked) {
+          const markedBytes = new Uint8Array(await pdfMarked.arrayBuffer());
+          const m = await renderPdf(markedBytes);
+          const p = await renderPdf(new Uint8Array(await pdfBare.arrayBuffer()));
+          const { PDFDocument, PDFName, PDFDict } = window.PDFLib;
+          const countImages = async (bytes) => {
+            const lib = await PDFDocument.load(bytes);
+            const xobjects = lib.getPage(0).node.Resources()?.lookupMaybe(PDFName.of("XObject"), PDFDict);
+            return xobjects ? xobjects.keys().filter((k) => xobjects.lookup(k)?.dict?.get(PDFName.of("Subtype"))?.toString() === "/Image").length : 0;
+          };
+          out.pdf = {
+            blue: shifted(m.pixels, p.pixels, towardBlue), red: shifted(m.pixels, p.pixels, towardRed),
+            images: (await countImages(markedBytes)) - (await countImages(new Uint8Array(await pdfBare.arrayBuffer()))),
+            textItems: m.textItems
+          };
+        }
+
+        // The file's own annotations: a paper made here with a Highlight (and
+        // its Popup) inside the box, and a Link and another Highlight outside.
+        const { PDFDocument, PDFName, PDFString } = window.PDFLib;
+        const made = await PDFDocument.create();
+        const pg = made.addPage([600, 800]);
+        pg.drawText("A figure with somebody else's highlight on it", { x: 60, y: 200, size: 12 });
+        const ctxObj = made.context;
+        const hlRef = ctxObj.register(ctxObj.obj({ Type: "Annot", Subtype: "Highlight", Rect: [60, 195, 300, 215],
+          QuadPoints: [60, 215, 300, 215, 60, 195, 300, 195], C: [1, 1, 0], Contents: PDFString.of("theirs") }));
+        const popRef = ctxObj.register(ctxObj.obj({ Type: "Annot", Subtype: "Popup", Rect: [320, 195, 420, 260], Parent: hlRef }));
+        const linkRef = ctxObj.register(ctxObj.obj({ Type: "Annot", Subtype: "Link", Rect: [60, 230, 200, 245], Border: [0, 0, 0] }));
+        const farRef = ctxObj.register(ctxObj.obj({ Type: "Annot", Subtype: "Highlight", Rect: [60, 700, 300, 720],
+          QuadPoints: [60, 720, 300, 720, 60, 700, 300, 700], C: [0, 1, 0] }));
+        pg.node.set(PDFName.of("Annots"), ctxObj.obj([hlRef, popRef, linkRef, farRef]));
+        const cropped = await download.cropPdfToRegion(await made.save(), 1, [40, 150, 340, 300]);
+        const back = await PDFDocument.load(cropped);
+        const annots = back.getPage(0).node.Annots();
+        const kinds = [];
+        for (let i = 0; i < (annots ? annots.size() : 0); i += 1) {
+          kinds.push(annots.lookup(i).get(PDFName.of("Subtype")).toString().slice(1));
+        }
+        out.fileAnnots = kinds.sort();
+      }
+    } finally {
+      HTMLAnchorElement.prototype.click = click;
+    }
+
+    // Pasted into the Notes, with the marks and without: the canvas carries the highlight
+    // and the ink, and the block is live DOM inside the embed.
+    const originalNotes = api.state.notes || "";
+    const embedFor = async (on, width) => {
+      withMarks(on);
+      // The alt text is the only difference between the two, so each is its
+      // own rendered block at the same size.
+      const ref = embed.pdfRegionRefMarkdown(record.page, rect, record.pdfId, width).replace("![]", on ? "![marked]" : "![bare]");
+      api.state.notes = "Annotated:\\n\\n" + ref + "\\n\\n" + originalNotes;
+      if (api.isNotesEditing()) api.resetNotesEditingUI();
+      api.setViewMode("notes");
+      let wrapper = null;
+      for (let i = 0; i < 100; i += 1) {
+        wrapper = document.querySelector("#notesView .pdf-region-embed:not(.is-loading)");
+        if (wrapper?.dataset.pdfRef?.includes(":" + width + ")") && (!on || wrapper.querySelector(".pdf-region-embed-blocks .pdf-block"))) break;
+        await settle(50);
+      }
+      const canvas = wrapper?.querySelector("canvas");
+      return canvas ? { pixels: pixelsOfCanvas(canvas), block: Boolean(wrapper.querySelector(".pdf-region-embed-blocks .pdf-block")) } : null;
+    };
+    const embedMarked = await embedFor(true, 310);
+    const embedBare = await embedFor(false, 310);
+    if (embedMarked && embedBare) {
+      out.embed = {
+        blue: shifted(embedMarked.pixels, embedBare.pixels, towardBlue),
+        red: shifted(embedMarked.pixels, embedBare.pixels, towardRed),
+        block: embedMarked.block
+      };
+    }
+    api.state.notes = originalNotes;
+    if (api.isNotesEditing()) api.resetNotesEditingUI();
+
+    // A list picture is drawn again once the page gains a mark.
+    withMarks(false);
+    const thumbA = await embed.renderRegionImage(record);
+    withMarks(true);
+    const thumbB = await embed.renderRegionImage(record);
+    out.thumbRedrawn = Boolean(thumbA && thumbB && thumbA !== thumbB);
+
+    withMarks(false);
+    api.setViewMode("document");
+    await settle(150);
+    return out;
+  }`, region.record.id) : null;
+
+  if (annotated) {
+    if (annotated.image) {
+      check("a region saved as an image keeps a text highlight inside it", annotated.image.blue > 200, `${annotated.image.blue} px turned blue`);
+      check("...and the pen ink inside it", annotated.image.red > 200, `${annotated.image.red} px turned red`);
+      if (annotated.hasHtmlToImage) {
+        check("...and the typed block inside it", annotated.image.block > 0.3, `${Math.round(annotated.image.block * 100)}% of the block's box changed`);
+      } else {
+        notes.push("block-in-a-picture not exercised: html-to-image was not available");
+      }
+    } else {
+      check("a region saved as an image keeps its annotations", false, "nothing downloaded");
+    }
+    check("the zoom's picture keeps the highlight and the ink",
+      annotated.zoom?.blue > 200 && annotated.zoom?.red > 100, JSON.stringify(annotated.zoom));
+    if (annotated.hasPdfLib) {
+      check("a region saved as a PDF draws the highlight and the ink over the paper",
+        annotated.pdf?.blue > 200 && annotated.pdf?.red > 100, JSON.stringify(annotated.pdf));
+      check("...keeps the paper's own text as text", annotated.pdf?.textItems > 0, `${annotated.pdf?.textItems} text item(s)`);
+      if (annotated.hasHtmlToImage) {
+        check("...and carries the typed block as an image", annotated.pdf?.images === 1, `${annotated.pdf?.images} more image XObject(s) than without it`);
+      }
+      check("...and keeps the file's own annotations in the box, dropping links and the rest",
+        JSON.stringify(annotated.fileAnnots) === JSON.stringify(["Highlight", "Popup"]), JSON.stringify(annotated.fileAnnots));
+    }
+    check("a region pasted into the Notes shows the highlight and the ink inside it",
+      annotated.embed?.blue > 100 && annotated.embed?.red > 50, JSON.stringify(annotated.embed));
+    check("...and the typed block, as live content over the page", annotated.embed?.block === true);
+    check("a list picture of the region is redrawn when the page gains a mark", annotated.thumbRedrawn);
+  }
+
 
   // ── 7c. A region embed on a phone: its buttons, its fit, Zoom and go-to ──
   //
