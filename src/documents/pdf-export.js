@@ -37,7 +37,6 @@
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { escapeHtml } from "../core/text.js?v=__BUILD__";
-import { MARK_HIGHLIGHT_DEFAULT, MARK_HIGHLIGHT_HEX } from "../format/highlight-colors.js?v=__BUILD__";
 import { decodeInkStrokes } from "../format/ink-strokes.js?v=__BUILD__";
 import { paintInkStrokes } from "../render/ink-paint.js?v=__BUILD__";
 import { markdownToSafeHtml } from "../render/preprocess.js?v=__BUILD__";
@@ -46,6 +45,7 @@ import { DOC_SLOT_NOTEBOOK, activeDocSlot, docSlotMeta } from "./doc-slot.js?v=_
 import { annotatedDocumentHighlights, documentHighlightLabel, documentHighlights } from "./pdf-highlights.js?v=__BUILD__";
 import { currentPdfDocument, currentPdfPageCount, pdfOpenToken } from "./pdf-view.js?v=__BUILD__";
 import { renderRegionImage } from "./pdf-region-embed.js?v=__BUILD__";
+import { highlightHex } from "./pdf-region-marks.js?v=__BUILD__";
 
 // The rendered width of a page in the print document, in device pixels. A4 at
 // 14mm margins (installPdfPrintStyle) is ~182mm of content, which is ~688 CSS
@@ -61,10 +61,6 @@ export const PRINT_PAGE_QUALITY = 0.85;
 // Below this many pages the export just runs. Above it, the reader is told what
 // they are waiting for before the main thread goes away for a while.
 export const PRINT_PROGRESS_FROM = 4;
-
-function highlightHex(color) {
-  return MARK_HIGHLIGHT_HEX[color] || MARK_HIGHLIGHT_HEX[MARK_HIGHLIGHT_DEFAULT];
-}
 
 // One page, rasterised at print width with its highlights painted on.
 //

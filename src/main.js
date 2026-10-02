@@ -126,6 +126,7 @@ import { DOCUMENT_NOTE_HANDLERS, documentHighlightById, documentHighlightNote, f
 import { pdfRegionRefForRecord, pdfRegionRefMarkdown } from "./documents/pdf-region-embed.js?v=__BUILD__";
 import { setRegionResizeNotesSurface } from "./documents/pdf-region-resize.js?v=__BUILD__";
 import { setPdfRegionGoToHandler } from "./documents/pdf-region-embed.js?v=__BUILD__";
+import { setRegionBlockSource } from "./documents/pdf-region-marks.js?v=__BUILD__";
 import { downloadRegionImage, downloadRegionPdf } from "./documents/pdf-region-download.js?v=__BUILD__";
 import { closeDocumentToc, documentOutlineEntries, initDocumentOutlineFolding, isDocumentTocOpen, resolveOutlineEntryPage, toggleDocumentToc } from "./documents/pdf-outline.js?v=__BUILD__";
 import { activePdfId, deckPdfById, deckPdfs, PDF_PRIMARY_ID, withDeckPdfs } from "./documents/pdf-multi.js?v=__BUILD__";
@@ -136,7 +137,7 @@ import { adoptDocumentInk, canRedoInk, canUndoInk, copyInkSelection, cutInkSelec
 import { addHandwritingImage, enterHandwritingView, refreshHandwritingBoard, runHandwritingMenuAction, startHandwritingNotebook } from "./handwriting/board.js?v=__BUILD__";
 import { closeBlockStylePopover, isBlockStylePopoverOpen } from "./documents/block-style-bar.js?v=__BUILD__";
 import { closeBlockActionsPopover, isBlockActionsPopoverOpen } from "./documents/block-actions-popover.js?v=__BUILD__";
-import { canRedoBlocks, canUndoBlocks, commitBlockEdit, deleteBlock, duplicateBlock, editBlock, handleBlockPointerDown, nudgeBlock, paintDocumentBlocks, pdfPointAt, redoBlocks, repaintDocumentBlocks, restackBlock, selectBlock, selectedBlockId, setBlocksChangedHandler, undoBlocks } from "./documents/pdf-blocks.js?v=__BUILD__";
+import { blocksForPaper, buildStaticBlock, canRedoBlocks, canUndoBlocks, commitBlockEdit, deleteBlock, duplicateBlock, editBlock, handleBlockPointerDown, nudgeBlock, paintDocumentBlocks, pdfPointAt, redoBlocks, repaintDocumentBlocks, restackBlock, selectBlock, selectedBlockId, setBlocksChangedHandler, undoBlocks } from "./documents/pdf-blocks.js?v=__BUILD__";
 import { applyInkRailPreference, initInkRail, refreshInkRail } from "./ui/ink-rail.js?v=__BUILD__";
 import { INK_NUDGE_STEP, INK_NUDGE_STEP_COARSE } from "./render/ink-engine.js?v=__BUILD__";
 
@@ -1256,6 +1257,10 @@ onDomReady(() => {
   // every module that does those reaches pdf-region-embed.js back through
   // render/enhance.js.
   setPdfRegionGoToHandler((target) => { goToPdfRegion(target); });
+  // ...and the blocks on a page, for every picture of a region that shows
+  // them (pdf-region-marks.js). Registered for the same reason: pdf-blocks.js
+  // renders through render/enhance.js, which reaches that module back.
+  setRegionBlockSource({ blocksForPaper, buildStaticBlock });
 
   // ── What a highlight can be turned into ─────────────────────────────────
   //

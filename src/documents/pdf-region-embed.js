@@ -15,12 +15,10 @@
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { ensurePdfJs } from "../core/lib-loader.js?v=__BUILD__";
-import { decodeInkStrokes } from "../format/ink-strokes.js?v=__BUILD__";
 import { centerDiagramContent, openDiagramModal } from "../render/diagram-zoom.js?v=__BUILD__";
-import { paintInkStrokes } from "../render/ink-paint.js?v=__BUILD__";
-import { documentInkMarksForPdf } from "./pdf-highlights.js?v=__BUILD__";
 import { DOC_SLOT_DOC, docSlotMeta, documentStoreKey, recordDocSlot } from "./doc-slot.js?v=__BUILD__";
-import { deckPdfById, isRecordForSurface, PDF_PRIMARY_ID, pdfStoreKey, recordPdfId, recordsForSurface } from "./pdf-multi.js?v=__BUILD__";
+import { deckPdfById, PDF_PRIMARY_ID, pdfStoreKey, recordPdfId } from "./pdf-multi.js?v=__BUILD__";
+import { drawRegionBlocks, mountRegionBlockLayer, paintRegionMarks, rasteriseRegionBlocks, regionAnnotationStamp, regionMarksOnPage } from "./pdf-region-marks.js?v=__BUILD__";
 import { getDocument } from "./pdf-store.js?v=__BUILD__";
 import { buildTextLayer, canvasOutputScale, clampScale, PDF_MAX_SCALE } from "./pdf-view.js?v=__BUILD__";
 import { attachRegionResizeHandle } from "./pdf-region-resize.js?v=__BUILD__";
@@ -166,7 +164,10 @@ const regionImageUrls = new Map();
 
 function regionImageKey(record, width) {
   const source = regionSource(record);
-  return `${source.storeKey}:${source.pdfMeta?.sha256 || ""}:${record.id}:${record.at || 0}:${width}`;
+  const page = record.quads?.[0]?.page || record.page;
+  // The page's annotations are in the picture too (pdf-region-marks.js), so a
+  // highlight or block added on that page has to make it a different picture.
+  return `${source.storeKey}:${source.pdfMeta?.sha256 || ""}:${record.id}:${record.at || 0}:${regionAnnotationStamp(source, page)}:${width}`;
 }
 
 export function cachedRegionImage(record, { width = REGION_IMAGE_WIDTH } = {}) {
@@ -250,23 +251,17 @@ async function paintRegionImage(record, rect, pageNumber, source, width) {
   ctx.fillStyle = "#ffffff";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   await page.render({ canvasContext: ctx, viewport: paintViewport }).promise;
-  // The ink on that page, this mark's included — the page underneath a margin
-  // note is blank paper, so without it an ink mark is pictured as an empty
-  // white box. The record handed in stands in for its stored copy, which may
-  // be a stroke behind it.
-  const marks = state.meta?.pdfHighlights;
-  const ink = (Array.isArray(marks) ? marks : []).filter((mark) => mark?.kind === "ink"
-    && mark.id !== record.id
-    && Number(mark.page) === pageNumber
-    && isRecordForSurface(mark, source.slot, source.pdfId));
-  if (record.kind === "ink") ink.push(record);
-  if (ink.length) {
-    const t = paintViewport.transform;
-    ctx.save();
-    ctx.setTransform(t[0], t[1], t[2], t[3], t[4], t[5]);
-    ink.forEach((mark) => paintInkStrokes(ctx, decodeInkStrokes(mark.ink?.s), { root: null }));
-    ctx.restore();
-  }
+  // Everything the reader put on the page inside the box, in the page's own
+  // order (see pdf-region-marks.js) — less a region's own frame. An ink mark
+  // stands in for its stored copy, which may be a stroke behind it, and is
+  // never left out: the page under a margin note is blank paper, and without
+  // the mark it would be pictured as an empty white box.
+  paintRegionMarks(ctx, paintViewport, regionMarksOnPage(source, pageNumber, {
+    excludeId: record.kind === "area" ? record.id : null,
+    stand: record.kind === "ink" ? record : null
+  }));
+  const { rasters } = await rasteriseRegionBlocks(page, source, pageNumber, rect, scale * outputScale);
+  drawRegionBlocks(ctx, paintViewport, rasters);
   return canvas.toDataURL("image/jpeg", 0.8);
 }
 
@@ -435,10 +430,12 @@ export function affordableCropScale(rect, wanted) {
   return Math.max(0.5, Math.min(wanted, affordable, PDF_MAX_SCALE * 3));
 }
 
-// Exactly the box, as a canvas: the page's own content and the ink written on
-// it, at `scale` CSS pixels per PDF point. No highlight colour — the region is
-// shown or saved as what the paper holds there, not as the reader marked it.
-export async function renderRegionCrop(page, rect, scale, source) {
+// Exactly the box, as a canvas, at `scale` CSS pixels per PDF point: the page,
+// and everything the reader put on it inside the box (pdf-region-marks.js) —
+// less the captured region's own frame, named by `excludeId` (a record) or
+// `excludeRect` (a bare pdfref:). `failed` counts blocks that could not be
+// drawn, for a caller that wants to say so.
+export async function renderRegionCrop(page, rect, scale, source, { excludeId = null, excludeRect = null } = {}) {
   const viewport = page.getViewport({ scale });
   const [vx0, vy0, vx1, vy1] = viewport.convertToViewportRectangle(rect);
   const left = Math.min(vx0, vx1);
@@ -453,7 +450,10 @@ export async function renderRegionCrop(page, rect, scale, source) {
   ctx.fillStyle = "#ffffff";
   ctx.fillRect(0, 0, crop.width, crop.height);
   await page.render({ canvasContext: ctx, viewport: cropViewport }).promise;
-  paintInkOnCanvas(ctx, page.pageNumber, cropViewport, source.pdfId, source.slot);
+  paintRegionMarks(ctx, cropViewport, regionMarksOnPage(source, page.pageNumber, { excludeId, excludeRect }));
+  const { rasters, failed } = await rasteriseRegionBlocks(page, source, page.pageNumber, rect, scale);
+  drawRegionBlocks(ctx, cropViewport, rasters);
+  crop.failedBlocks = failed;
   return crop;
 }
 
@@ -465,7 +465,7 @@ async function openRegionZoom(parsed) {
   const quadWidth = Math.max(1, Math.abs(parsed.rect[2] - parsed.rect[0]));
   // Wide enough to still be sharp a couple of pinches in on this screen.
   const wanted = (Math.max(window.innerWidth || 0, 800) * 2.5) / quadWidth;
-  const crop = await renderRegionCrop(page, parsed.rect, affordableCropScale(parsed.rect, wanted), source);
+  const crop = await renderRegionCrop(page, parsed.rect, affordableCropScale(parsed.rect, wanted), source, { excludeRect: parsed.rect });
   const blob = await new Promise((resolve) => crop.toBlob(resolve, "image/png"));
   if (!blob) return;
   if (zoomObjectUrl) URL.revokeObjectURL(zoomObjectUrl);
@@ -511,37 +511,6 @@ function attachRegionTools(wrapper, parsed, { zoom = true } = {}) {
     }));
   }
   wrapper.appendChild(tools);
-}
-
-// ── Ink, which the page itself doesn't carry ────────────────────────────────
-//
-// page.render() draws only the PDF's own content. Ink is its own canvas layer
-// on the live page (pdf-ink.js), so it is repainted here onto the embed's own
-// canvas — it is something the reader WROTE there, and part of what the spot
-// holds.
-//
-// Highlight colour is deliberately not. An embed used to repaint every
-// highlight on its page too, which put the region's own outline and wash (and
-// the tint of any sentence marked inside it) on every copy of it in the notes,
-// on a card and in the zoom: the reader asked for the figure, and got the
-// figure with the marker still on it. The colour says "I marked this" on the
-// paper; anywhere else it is just in the way. The list pictures
-// (paintRegionImage) never carried it either.
-function paintInkOnCanvas(ctx, pageNumber, viewport, pdfId, slot = DOC_SLOT_DOC) {
-  const marks = slot === DOC_SLOT_DOC
-    ? documentInkMarksForPdf(pdfId, pageNumber)
-    // A notebook's ink (the Write tab) — the same rule paintRegionImage uses.
-    : recordsForSurface(state.meta?.pdfHighlights, slot, null)
-      .filter((mark) => mark?.kind === "ink" && Number(mark.page) === pageNumber);
-  if (!marks.length) return;
-  // Ink strokes are stored in PDF user-space points, same as everything else
-  // here — paintInkStrokes expects the context already carrying that
-  // transform, the same way the live page's own ink layer applies it.
-  const t = viewport.transform;
-  ctx.save();
-  ctx.setTransform(t[0], t[1], t[2], t[3], t[4], t[5]);
-  marks.forEach((record) => paintInkStrokes(ctx, decodeInkStrokes(record.ink?.s), { root: null }));
-  ctx.restore();
 }
 
 function showFallback(wrapper, parsed) {
@@ -623,10 +592,11 @@ export async function mountPdfRegionEmbed(img, { resizable = false } = {}) {
     canvas.style.height = `${nativeHeight}px`;
     const ctx = canvas.getContext("2d", { alpha: false });
     await page.render({ canvasContext: ctx, viewport: paintViewport }).promise;
-    // The ink written on this page, composited onto the same canvas the PDF
-    // itself just rendered to — but no highlight colour. See the note above
-    // paintInkOnCanvas for both halves of that.
-    paintInkOnCanvas(ctx, parsed.page, paintViewport, pdfId);
+    // What the reader put on the page inside the box — highlights and ink —
+    // composited onto the same canvas the PDF itself just rendered to, less the
+    // frame of the region this embed was made from (see pdf-region-marks.js).
+    const source = { slot: DOC_SLOT_DOC, pdfId, storeKey, pdfMeta };
+    paintRegionMarks(ctx, paintViewport, regionMarksOnPage(source, parsed.page, { excludeRect: parsed.rect }));
 
     // Real, positioned, selectable text — the exact function the Document
     // surface itself renders every page's text layer with. Nothing here is
@@ -646,6 +616,11 @@ export async function mountPdfRegionEmbed(img, { resizable = false } = {}) {
     const renderInfo = { pageGroup, nativeWidth, nativeHeight, left, top };
     observeRegionLayout(wrapper, renderInfo);
     attachRegionTools(wrapper, parsed);
+    // The typed and picture blocks inside the box, as live DOM over the page
+    // like the text layer — after the picture is up, so a block with mathematics
+    // in it never holds the figure back.
+    mountRegionBlockLayer(pageGroup, viewport, source, parsed.page, parsed.rect)
+      .catch((error) => console.warn("Could not show the blocks inside a PDF region", error));
 
     if (resizable) {
       attachRegionResizeHandle(wrapper, pageGroup, parsed, renderInfo);

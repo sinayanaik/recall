@@ -171,8 +171,19 @@ function syncBlockActionsPopover() {
 // This returns the surface's own, because that is what every caller means.
 export function documentBlocks(pageNumber = null) {
   const slot = activeDocSlot();
-  const list = recordsForSurface(state.meta?.pdfBlocks, slot, slot === DOC_SLOT_DOC ? activePdfId(state.meta) : null);
-  const out = list
+  return blocksForPaper(slot, slot === DOC_SLOT_DOC ? activePdfId(state.meta) : null, pageNumber);
+}
+
+// Any paper's blocks, not only the open one's — for a picture of a region
+// (src/documents/pdf-region-marks.js), which is drawn from the record's own
+// paper whether or not the Document view has it open.
+export function blocksForPaper(slot, pdfId, pageNumber = null) {
+  const out = normalizeBlocks(recordsForSurface(state.meta?.pdfBlocks, slot, pdfId));
+  return pageNumber === null ? out : out.filter((block) => block.page === Number(pageNumber));
+}
+
+function normalizeBlocks(list) {
+  return list
     .filter((block) => block && typeof block === "object" && block.id)
     .map((block) => ({
       id: String(block.id),
@@ -204,7 +215,6 @@ export function documentBlocks(pageNumber = null) {
       // reader puts every control back where it started.
       ...(block.style && typeof block.style === "object" ? { style: { ...block.style } } : {})
     }));
-  return pageNumber === null ? out : out.filter((block) => block.page === Number(pageNumber));
 }
 
 // A block's style, filled in. The one door between the record's optional bag and
@@ -975,6 +985,52 @@ async function renderBlockBody(body, md, node = null, block = null) {
   } catch (error) {
     console.warn("Could not render a block", error);
   }
+}
+
+// ── A block that is only looked at ──────────────────────────────────────────
+//
+// A region pictured somewhere other than the page — an embed in the notes or on
+// a card, the zoom, a saved image or PDF (src/documents/pdf-region-marks.js) —
+// shows the blocks inside it as the page does. This is the same block, built
+// by the same builder and styled by the same rules, with everything that makes
+// the live one a thing you can pick up taken away: no grip, no selection or
+// editing state, no pointer events, and none of the measuring that writes a new
+// height or width back into the record (that is the live page's job, and a
+// picture of a block must never move the block).
+//
+// Resolves once the words are rendered and any picture in it has decoded, so a
+// caller turning it into pixels gets the finished block and not its first
+// frame.
+export async function buildStaticBlock(block, viewport) {
+  const node = buildBlock(block);
+  node.classList.add("is-static");
+  node.querySelector(".pdf-block-grip")?.remove();
+  node.style.pointerEvents = "none";
+  placeBlock(node, viewport, block);
+  paintBlockStyle(node, block);
+  const body = node.querySelector(".pdf-block-body");
+  if (block.kind === PDF_BLOCK_IMAGE) {
+    const img = document.createElement("img");
+    img.className = "pdf-block-img";
+    img.alt = block.alt || "";
+    img.setAttribute("src", block.src || "");
+    body.appendChild(img);
+  } else if (block.md.trim()) {
+    try {
+      await renderMarkdown(body, block.md);
+      await enhanceRenderedMarkdown(body);
+    } catch (error) {
+      console.warn("Could not render a block for a region picture", error);
+    }
+  }
+  try {
+    await hydrateLocalImages(node);
+    await resolveStorageImages(node);
+  } catch (error) {
+    console.warn("Could not resolve a block's images for a region picture", error);
+  }
+  await Promise.all([...node.querySelectorAll("img")].map((img) => (img.decode ? img.decode().catch(() => {}) : null)));
+  return node;
 }
 
 // Called as each page finishes painting, through the same hook the ink and the
