@@ -497,9 +497,11 @@ const checks = [
     // cannot ask whether the line follows the nib. So: a stroke held still
     // mid-word and then continued (the straightener used to fire on the pause
     // and discard everything after it), the finished stroke reaching the dry
-    // canvas BEFORE the desynchronized wet layer gives it up, and the 185th
-    // stroke on a page costing what the 3rd did — three separate things used to
-    // be O(everything on the page) per stroke. Then the notebook: pages added,
+    // canvas BEFORE the wet layer gives it up, the wet layer being an ordinary
+    // composited canvas rather than a desynchronized one (which turned the page
+    // black under an S Pen), and the 185th stroke on a page costing what the 3rd
+    // did — three separate things used to be O(everything on the page) per
+    // stroke. Then the notebook: pages added,
     // torn out and read back from IndexedDB, and a text box dragged, resized and
     // still where it was put.
     ["handwriting   ", ["node", ["tools/handwriting-check.mjs"], ROOT]],
