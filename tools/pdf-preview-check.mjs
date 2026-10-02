@@ -5289,7 +5289,7 @@ try {
     const panel = document.getElementById("documentPdfPanel");
     const trigger = document.getElementById("documentPdfSwitcher");
     const rows = () => [...panel.querySelectorAll(".pdf-panel-row")];
-    trigger.click();
+    if (panel.hidden) trigger.click();
     await settle(60);
     // Rename a row that is NOT the open paper, in place.
     const target = rows().find((row) => row.dataset.pdfId !== api.state.meta.pdfActiveId);
@@ -5324,7 +5324,7 @@ try {
       await api.attachPdfToOpenDeck(new File([bytes], name, { type: "application/pdf" }));
       await settle(500);
     }
-    trigger.click();
+    if (panel.hidden) trigger.click();
     await settle(60);
 
     // Remove the PRIMARY — the deck's first paper — from its own row.

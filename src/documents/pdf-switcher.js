@@ -61,9 +61,11 @@ export function initPdfSwitcher() {
   pdfPanel = buildPanel();
   document.body.appendChild(pdfPanel);
 
-  trigger.addEventListener("click", () => {
+  trigger.addEventListener("click", (event) => {
     if (isPdfPanelOpen()) closePdfPanel();
-    else openPdfPanel();
+    // A click with no pointer behind it (detail 0) is Enter or Space: put focus
+    // in the list for the keyboard. A tap or a mouse press leaves it alone.
+    else openPdfPanel({ focusList: event.detail === 0 });
   });
   setPdfSwitcherPaintedHook((info) => {
     pdfPanelPainted = info;
@@ -95,7 +97,7 @@ export function initPdfSwitcher() {
   window.addEventListener("resize", () => { if (isPdfPanelOpen()) placePanel(); });
 }
 
-export function openPdfPanel() {
+export function openPdfPanel({ focusList = false } = {}) {
   if (!pdfPanel) return;
   if (!pdfPanelPainted) renderDocumentPdfSwitcher();
   if (!pdfPanelPainted) return;
@@ -108,9 +110,9 @@ export function openPdfPanel() {
   pdfPanel.hidden = false;
   el.documentPdfSwitcher?.setAttribute("aria-expanded", "true");
   placePanel();
-  const active = pdfPanelList.querySelector(".pdf-panel-row.is-active .pdf-panel-name");
-  active?.focus({ preventScroll: true });
-  active?.closest(".pdf-panel-row")?.scrollIntoView({ block: "nearest" });
+  const active = pdfPanelList.querySelector(".pdf-panel-row.is-active");
+  active?.scrollIntoView({ block: "nearest" });
+  if (focusList) active?.querySelector(".pdf-panel-name")?.focus({ preventScroll: true });
 }
 
 export function closePdfPanel({ focusTrigger = false } = {}) {
@@ -477,7 +479,7 @@ function layoutMidpoint(node) {
 // carried instead of snapping.
 function animateReflow(dragged, mutate, includeDragged = false) {
   const before = new Map();
-  [...listEl.children].forEach((node) => {
+  [...pdfPanelList.children].forEach((node) => {
     if (node !== dragged || includeDragged) before.set(node, node.getBoundingClientRect().top);
   });
   mutate();
@@ -517,7 +519,7 @@ function ensureAutoScroll() {
 }
 
 function rowOrder() {
-  return [...listEl.children].map((row) => row.dataset.pdfId);
+  return [...pdfPanelList.children].map((row) => row.dataset.pdfId);
 }
 
 function commitOrder() {
