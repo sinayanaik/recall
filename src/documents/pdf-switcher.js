@@ -50,6 +50,7 @@ let pdfPanelPainted = null;
 let pdfPanelDrag = null;
 let pdfPanelRenaming = null;
 let pdfPanelClickHushUntil = 0;
+let pdfPanelOrderCommitting = false;
 
 export function isPdfPanelOpen() {
   return Boolean(pdfPanel && !pdfPanel.hidden);
@@ -76,7 +77,10 @@ export function initPdfSwitcher() {
     }
     // Never under the reader's hand: a drag or a rename in progress owns the
     // rows until it finishes, and repaints once it has.
-    if (!pdfPanelDrag && !pdfPanelRenaming) paintRows();
+    // ...and a reorder this list just made needs no repaint: the rows are
+    // already in that order, and rebuilding them would pull the row out from
+    // under the click that ends the drag.
+    if (!pdfPanelDrag && !pdfPanelRenaming && !pdfPanelOrderCommitting) paintRows();
   });
 
   // Outside the panel closes it — but not a press in the confirm sheet a
@@ -531,5 +535,10 @@ function commitOrder() {
   if (ids.length === current.length && ids.every((id, index) => id === current[index])) return;
   state.meta = withPdfOrder(state.meta, ids);
   scheduleDeckAutosave();
-  renderDocumentPdfSwitcher();
+  pdfPanelOrderCommitting = true;
+  try {
+    renderDocumentPdfSwitcher();
+  } finally {
+    pdfPanelOrderCommitting = false;
+  }
 }

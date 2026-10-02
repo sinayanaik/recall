@@ -5243,7 +5243,7 @@ try {
     await settle(30);
     const afterKey = rows().map((row) => row.dataset.pdfId);
     const storedAfterKey = api.deckPdfs(api.state.meta).map((entry) => entry.id);
-    firstName.closest(".pdf-panel-row") && rows()[1].querySelector(".pdf-panel-name").dispatchEvent(
+    rows()[1].querySelector(".pdf-panel-name").dispatchEvent(
       new KeyboardEvent("keydown", { key: "ArrowUp", altKey: true, bubbles: true, cancelable: true }));
     await settle(30);
 
