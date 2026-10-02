@@ -410,9 +410,8 @@ let zoomObjectUrl = null;
 // is rasterised (an offset viewport, as mountPdfRegionEmbed paints its own).
 const ZOOM_MAX_CROP_PIXELS = 12_000_000;
 
-async function openRegionZoom(parsed) {
-  const pdfId = parsed.pdfId || PDF_PRIMARY_ID;
-  const doc = await openEmbedDoc(pdfStoreKey(state.localDeckId, pdfId), deckPdfById(state.meta, pdfId));
+async function openRegionZoom(parsed, source = docSource(parsed)) {
+  const doc = await openEmbedDoc(source.storeKey, source.pdfMeta);
   if (!doc || parsed.page > doc.numPages) return;
   const page = await doc.getPage(parsed.page);
   const quadWidth = Math.max(1, Math.abs(parsed.rect[2] - parsed.rect[0]));
@@ -431,8 +430,8 @@ async function openRegionZoom(parsed) {
   crop.height = Math.max(1, Math.round(Math.abs(vy1 - vy0)));
   const ctx = crop.getContext("2d", { alpha: false });
   await page.render({ canvasContext: ctx, viewport: cropViewport }).promise;
-  paintHighlightsOnCanvas(ctx, parsed.page, cropViewport, pdfId);
-  paintInkOnCanvas(ctx, parsed.page, cropViewport, pdfId);
+  paintHighlightsOnCanvas(ctx, parsed.page, cropViewport, source);
+  paintInkOnCanvas(ctx, parsed.page, cropViewport, source);
   const blob = await new Promise((resolve) => crop.toBlob(resolve, "image/png"));
   if (!blob) return;
   if (zoomObjectUrl) URL.revokeObjectURL(zoomObjectUrl);
@@ -464,17 +463,23 @@ function regionButton(label, title, onPress) {
   return button;
 }
 
-function attachRegionTools(wrapper, parsed, { zoom = true } = {}) {
+// `goTo` is off where the embed already sits beside its own way back — a card
+// in the Highlights pane has "Go to →" in its head, and two buttons that do the
+// same thing a centimetre apart is one too many.
+function attachRegionTools(wrapper, parsed, { zoom = true, goTo = true, source } = {}) {
   // Nothing to press on paper: an export or a print gets the picture alone.
   if (wrapper.closest("#printRoot, .print-root")) return;
+  if (!zoom && !goTo) return;
   const tools = document.createElement("div");
   tools.className = "pdf-region-embed-tools";
-  tools.appendChild(regionButton(`p. ${parsed.page} \u2197`, `Open page ${parsed.page} of the PDF at this spot`, () => {
-    if (goToRegion) goToRegion({ page: parsed.page, rect: parsed.rect, pdfId: parsed.pdfId || null });
-  }));
+  if (goTo) {
+    tools.appendChild(regionButton(`p. ${parsed.page} \u2197`, `Open page ${parsed.page} of the PDF at this spot`, () => {
+      if (goToRegion) goToRegion({ page: parsed.page, rect: parsed.rect, pdfId: parsed.pdfId || null });
+    }));
+  }
   if (zoom) {
     tools.appendChild(regionButton("Zoom", "Zoom into this region", () => {
-      openRegionZoom(parsed).catch((error) => console.warn("Could not zoom into a PDF region", error));
+      openRegionZoom(parsed, source).catch((error) => console.warn("Could not zoom into a PDF region", error));
     }));
   }
   wrapper.appendChild(tools);
@@ -500,8 +505,17 @@ function hexWithAlpha(hex, alpha) {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
-function paintHighlightsOnCanvas(ctx, pageNumber, viewport, pdfId) {
-  documentHighlightsForPdf(pdfId).forEach((record) => {
+// The marks on `source`'s paper — the deck's PDF by default, or a notebook
+// slot's, which documentHighlightsForPdf (DOC slot only) cannot see. The same
+// filter paintRegionImage uses, so a live region and its picture agree.
+function marksForSource(source) {
+  if (!source || source.slot === DOC_SLOT_DOC) return documentHighlightsForPdf(source?.pdfId || PDF_PRIMARY_ID);
+  const marks = state.meta?.pdfHighlights;
+  return (Array.isArray(marks) ? marks : []).filter((mark) => isRecordForSurface(mark, source.slot, source.pdfId));
+}
+
+function paintHighlightsOnCanvas(ctx, pageNumber, viewport, source) {
+  marksForSource(source).forEach((record) => {
     if (record.kind === "ink") return; // painted separately, below
     const hex = MARK_HIGHLIGHT_HEX[record.color] || MARK_HIGHLIGHT_HEX.yellow;
     (record.quads || []).forEach((quad) => {
@@ -531,8 +545,10 @@ function paintHighlightsOnCanvas(ctx, pageNumber, viewport, pdfId) {
   });
 }
 
-function paintInkOnCanvas(ctx, pageNumber, viewport, pdfId) {
-  const marks = documentInkMarksForPdf(pdfId, pageNumber);
+function paintInkOnCanvas(ctx, pageNumber, viewport, source) {
+  const marks = !source || source.slot === DOC_SLOT_DOC
+    ? documentInkMarksForPdf(source?.pdfId || PDF_PRIMARY_ID, pageNumber)
+    : marksForSource(source).filter((record) => record.kind === "ink" && Number(record.page) === Number(pageNumber));
   if (!marks.length) return;
   // Ink strokes are stored in PDF user-space points, same as everything else
   // here — paintInkStrokes expects the context already carrying that
@@ -544,7 +560,7 @@ function paintInkOnCanvas(ctx, pageNumber, viewport, pdfId) {
   ctx.restore();
 }
 
-function showFallback(wrapper, parsed) {
+function showFallback(wrapper, parsed, { goTo = true } = {}) {
   const page = parsed?.page;
   wrapper.classList.remove("is-loading");
   wrapper.classList.add("is-fallback");
@@ -555,7 +571,7 @@ function showFallback(wrapper, parsed) {
   wrapper.appendChild(note);
   // Nothing to zoom into, but the page is still somewhere the PDF can be
   // opened at — once it is on this device, the Document tab says so itself.
-  if (parsed) attachRegionTools(wrapper, parsed, { zoom: false });
+  if (parsed) attachRegionTools(wrapper, parsed, { zoom: false, goTo });
 }
 
 // Replaces `img` in place with a live-rendered crop of the PDF location it
@@ -570,13 +586,24 @@ export async function mountPdfRegionEmbed(img, { resizable = false } = {}) {
   const targetWidth = parsed.width || EMBED_TARGET_WIDTH;
   const wrapper = buildWrapper(parsed, targetWidth);
   img.replaceWith(wrapper);
+  await renderRegionEmbed(wrapper, parsed, docSource(parsed), { targetWidth, resizable });
+}
 
+// Where a ref's paper lives: a `pdfref:` always names one of the deck's PDFs
+// (never a notebook slot — those have no ref syntax), the primary by default.
+function docSource(parsed) {
+  const pdfId = parsed.pdfId || PDF_PRIMARY_ID;
+  return { slot: DOC_SLOT_DOC, pdfId, storeKey: pdfStoreKey(state.localDeckId, pdfId), pdfMeta: deckPdfById(state.meta, pdfId) };
+}
+
+// The render itself, into a wrapper buildWrapper made — shared by the notes
+// and card embeds above and the Highlights pane's (mountLiveRegion, below), so
+// a region looks and behaves the same everywhere it is listed: a crop of the
+// real page, its text selectable, not a flattened picture of one.
+async function renderRegionEmbed(wrapper, parsed, source, { targetWidth, resizable = false, goTo = true } = {}) {
   try {
-    const pdfId = parsed.pdfId || PDF_PRIMARY_ID;
-    const pdfMeta = deckPdfById(state.meta, pdfId);
-    const storeKey = pdfStoreKey(state.localDeckId, pdfId);
-    const doc = await openEmbedDoc(storeKey, pdfMeta);
-    if (!doc || parsed.page > doc.numPages) return showFallback(wrapper, parsed);
+    const doc = await openEmbedDoc(source.storeKey, source.pdfMeta);
+    if (!doc || parsed.page > doc.numPages) return showFallback(wrapper, parsed, { goTo });
     const page = await doc.getPage(parsed.page);
     const [x0, y0, x1, y1] = parsed.rect;
     const quadWidth = Math.max(1, Math.abs(x1 - x0));
@@ -627,8 +654,8 @@ export async function mountPdfRegionEmbed(img, { resizable = false } = {}) {
     // composited onto the same canvas the PDF itself just rendered to. See
     // the note above paintHighlightsOnCanvas for why page.render() alone
     // can't already carry them.
-    paintHighlightsOnCanvas(ctx, parsed.page, paintViewport, pdfId);
-    paintInkOnCanvas(ctx, parsed.page, paintViewport, pdfId);
+    paintHighlightsOnCanvas(ctx, parsed.page, paintViewport, source);
+    paintInkOnCanvas(ctx, parsed.page, paintViewport, source);
 
     // Real, positioned, selectable text — the exact function the Document
     // surface itself renders every page's text layer with. Nothing here is
@@ -643,17 +670,88 @@ export async function mountPdfRegionEmbed(img, { resizable = false } = {}) {
     pageGroup.append(canvas, textLayer);
 
     wrapper.classList.remove("is-loading");
-    wrapper.style.width = `${Math.round(targetWidth)}px`;
+    // A listed embed is sized by its stylesheet-facing inline width (see
+    // mountLiveRegion) — a fixed pixel width here would undo that.
+    if (!wrapper.classList.contains("is-listed")) wrapper.style.width = `${Math.round(targetWidth)}px`;
     wrapper.replaceChildren(pageGroup);
     const renderInfo = { pageGroup, nativeWidth, nativeHeight, left, top };
     observeRegionLayout(wrapper, renderInfo);
-    attachRegionTools(wrapper, parsed);
+    attachRegionTools(wrapper, parsed, { goTo, source });
 
     if (resizable) {
       attachRegionResizeHandle(wrapper, pageGroup, parsed, renderInfo);
     }
   } catch (error) {
     console.warn("Could not render a PDF region embed", error);
-    showFallback(wrapper, parsed);
+    showFallback(wrapper, parsed, { goTo });
   }
+}
+
+// ── A region in a list, as live as it is in the notes ──────────────────────
+//
+// "In the highlights panel a selected region is only an image, but in the notes
+// and flashcards it is the real PDF, text and all." It was: the pane listed a
+// region through mountRegionPreview, a flattened JPEG, while a `pdfref:` in a
+// note or a card went through mountPdfRegionEmbed above. This is the second
+// path, given a RECORD rather than a ref — so it reads the record's own paper,
+// a notebook slot included, the way regionSource does for the picture.
+//
+// Sized to fill its column but never taller than `maxHeight`: the width is
+// capped at the height budget times the box's own shape, so a tall figure is
+// narrowed rather than squashed or clipped, and layoutPdfRegionEmbed scales the
+// render to whatever width that comes to.
+//
+// Rendered when it comes near the viewport, not when it is built. The pane is
+// rebuilt on every highlight change, and a page render plus a text layer for
+// every region in a long paper, each time, is work nobody scrolled to.
+// The box is put in at the region's own shape first (buildWrapper), so the list
+// does not move when it lands.
+const LIVE_REGION_ROOT_MARGIN = "600px";
+
+let liveRegionObserver = null;
+
+const liveRegionJobs = new WeakMap();
+
+function scheduleLiveRegion(wrapper, job) {
+  if (typeof IntersectionObserver !== "function") return job();
+  if (!liveRegionObserver) {
+    liveRegionObserver = new IntersectionObserver((entries) => {
+      entries.forEach(({ target, isIntersecting }) => {
+        if (!isIntersecting) return;
+        liveRegionObserver.unobserve(target);
+        const run = liveRegionJobs.get(target);
+        liveRegionJobs.delete(target);
+        if (run && target.isConnected) run();
+      });
+    // scrollMargin as well: a list lives in its own scroller (the pane), and
+    // rootMargin only widens the VIEWPORT — the scroller still clips the target
+    // at its edge. Ignored, harmlessly, by a browser that does not know it.
+    }, { rootMargin: LIVE_REGION_ROOT_MARGIN, scrollMargin: LIVE_REGION_ROOT_MARGIN });
+  }
+  liveRegionJobs.set(wrapper, job);
+  liveRegionObserver.observe(wrapper);
+}
+
+export function mountLiveRegion(container, record, { maxHeight = 320, goTo = false } = {}) {
+  const rect = regionImageRect(record);
+  const page = Number(record?.quads?.[0]?.page || record?.page);
+  if (!rect || !Number.isInteger(page) || page < 1) {
+    // Nothing to render from — named, the way the picture names one.
+    return mountRegionPreview(container, record);
+  }
+  const source = regionSource(record);
+  const parsed = { page, rect, pdfId: source.pdfId, width: null };
+  const wrapper = buildWrapper(parsed, EMBED_TARGET_WIDTH);
+  wrapper.classList.remove("is-default-width");
+  wrapper.classList.add("is-listed");
+  const w = Math.max(1, Math.abs(rect[2] - rect[0]));
+  const h = Math.max(1, Math.abs(rect[3] - rect[1]));
+  wrapper.style.width = `min(100%, ${Math.round(maxHeight * (w / h))}px)`;
+  const isInk = record.kind === "ink";
+  // A figure, not an img: the text inside it is real and must stay readable.
+  wrapper.setAttribute("role", "figure");
+  wrapper.setAttribute("aria-label", isInk ? `Ink written on page ${page}` : `Region highlighted on page ${page}`);
+  container.appendChild(wrapper);
+  scheduleLiveRegion(wrapper, () => renderRegionEmbed(wrapper, parsed, source, { targetWidth: EMBED_TARGET_WIDTH, goTo }));
+  return wrapper;
 }

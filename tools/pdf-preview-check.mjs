@@ -1363,11 +1363,30 @@ try {
         api.openHighlightSplit("document");
         await settle(600);
         const cardOf = () => document.querySelector('#highlightCycleBody .hl-note[data-highlight-key="doc:' + id + '"]');
-        for (let i = 0; i < 40 && !cardOf()?.querySelector(".hl-note-region img"); i += 1) await settle(100);
+        const liveOf = () => cardOf()?.querySelector(".hl-note-region .pdf-region-embed:not(.is-loading)");
+        // Rendered as it nears the viewport (mountLiveRegion), so it is scrolled to.
+        for (let i = 0; i < 60 && !liveOf(); i += 1) {
+          cardOf()?.scrollIntoView({ block: "center" });
+          await settle(100);
+        }
         const card = cardOf();
+        const live = liveOf();
+        // Selected the way a reader would: a range over the embed's own text
+        // layer, which is what a drag in the pane makes.
+        const layer = live?.querySelector(".pdf-text-layer");
+        let selected = "";
+        if (layer?.firstChild) {
+          const range = document.createRange();
+          range.selectNodeContents(layer);
+          selected = range.toString().trim();
+        }
         const pane = {
           card: Boolean(card),
-          img: Boolean(card?.querySelector(".hl-note-region img.highlight-region-thumb")),
+          canvas: Boolean(live?.querySelector("canvas.pdf-region-embed-canvas")),
+          textLayer: Boolean(layer),
+          selectable: selected.length > 0,
+          flatImage: Boolean(card?.querySelector(".hl-note-region img.highlight-region-thumb")),
+          zoom: Array.from(live?.querySelectorAll(".pdf-region-embed-btn") || []).some((b) => b.textContent === "Zoom"),
           quoteHidden: card?.querySelector(".hl-note-quote")?.hidden === true,
           saysRegion: /Region · page/.test(card?.textContent || "")
         };
@@ -1394,8 +1413,12 @@ try {
   check("a region renders as a picture of what it holds",
     regionPictures?.pixels?.w > 0 && regionPictures?.pixels?.inked > 0,
     regionPictures?.pixels ? `${regionPictures.pixels.w}×${regionPictures.pixels.h}, ${regionPictures.pixels.inked} inked pixel(s)` : "no picture");
-  check("...which the Highlights pane shows, instead of \"Region · page N\"",
-    regionPictures?.pane?.img && regionPictures.pane.quoteHidden && !regionPictures.pane.saysRegion,
+  check("...which the Highlights pane shows live, instead of \"Region · page N\"",
+    regionPictures?.pane?.canvas && !regionPictures.pane.flatImage && regionPictures.pane.zoom
+      && regionPictures.pane.quoteHidden && !regionPictures.pane.saysRegion,
+    JSON.stringify(regionPictures?.pane));
+  check("...with the PDF's own text selectable, as in the notes and on a card",
+    regionPictures?.pane?.textLayer && regionPictures.pane.selectable,
     JSON.stringify(regionPictures?.pane));
   check("...and the outline drawer is handed the record to picture",
     regionPictures?.drawerRegion === true);
