@@ -61,7 +61,12 @@ export const LIB_URLS = {
   // precached in sw.js like the other five deferred libraries instead, which is
   // what keeps offline reading of an already-imported paper working.
   pdfjs: `${CDN_BASE}pdfjs-dist@3.11.174/legacy/build/pdf.min.js`,
-  pdfjsWorker: `${CDN_BASE}pdfjs-dist@3.11.174/legacy/build/pdf.worker.min.js`
+  pdfjsWorker: `${CDN_BASE}pdfjs-dist@3.11.174/legacy/build/pdf.worker.min.js`,
+  // pdf-lib WRITES a PDF where pdf.js only reads one: a region saved "as PDF"
+  // (src/documents/pdf-region-download.js) is the paper's own page copied out
+  // and cropped to the box, so its text stays text and a figure stays vector.
+  // The UMD build, for the same classic-<script> reason as pdf.js above.
+  pdfLib: `${CDN_BASE}pdf-lib@1.17.1/dist/pdf-lib.min.js`
 };
 
 // ── Webfonts (Style → Basics/Notes → Font) ──────────────────────────────────
@@ -207,6 +212,11 @@ export async function ensureMermaid() {
 export async function ensureJsZip() {
   if (window.JSZip) return true;
   return loadScriptOnce(LIB_URLS.jszip);
+}
+
+export async function ensurePdfLib() {
+  if (window.PDFLib) return true;
+  return (await loadScriptOnce(LIB_URLS.pdfLib)) && Boolean(window.PDFLib);
 }
 
 // pdf.js, plus the one piece of setup it cannot do for itself here.
