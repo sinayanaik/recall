@@ -88,9 +88,25 @@ export function docSlotReadingPositionKey(slot) {
   return normalizeDocSlot(slot) === DOC_SLOT_NOTEBOOK ? "readingPositionNotebook" : "readingPositionPdf";
 }
 
+// On the doc slot, meta.pdf is the mirror of the deck's PRIMARY paper
+// (src/documents/pdf-multi.js) — and the primary can be removed while other
+// papers stay. So when the mirror is gone, the first of meta.pdfs answers
+// instead: every caller of this on the doc slot is asking "is there a paper",
+// and the ones that need a particular paper ask deckPdfById for it.
 export function docSlotMeta(slot, meta = state.meta) {
   const record = meta?.[docSlotMetaKey(slot)];
-  return record && typeof record === "object" ? record : null;
+  if (record && typeof record === "object") return record;
+  if (normalizeDocSlot(slot) !== DOC_SLOT_DOC || !Array.isArray(meta?.pdfs)) return null;
+  return meta.pdfs.find((entry) => entry && typeof entry === "object" && entry.id) || null;
+}
+
+// "Does this deck have a PDF of its own?" — any of them, not just the primary.
+// Spelled out here rather than as deckPdfs(meta).length in pdf-multi.js because
+// that module imports this one, and the modules that ask (the bookmark, the
+// reading rail, the snapshot predicate) are kept clear of src/documents/'s
+// heavier edges for reasons of their own.
+export function deckHasPdf(meta = state.meta) {
+  return Boolean(docSlotMeta(DOC_SLOT_DOC, meta));
 }
 
 export function hasDocSlot(slot, meta = state.meta) {
@@ -145,7 +161,7 @@ export function documentTabForOpenDeck(meta = state.meta, deckKey = null) {
   if (remembered === "cards" || remembered === "notes") return remembered;
   if (remembered === "document" && hasDocSlot(DOC_SLOT_DOC, meta)) return "document";
   if (remembered === "handwriting" && deckHasHandwrittenPages(meta)) return "handwriting";
-  if (meta?.pdf && !meta.pdf.notebook) return "document";
+  if (deckHasPdf(meta) && !meta.pdf?.notebook) return "document";
   // Pages that are already on real paper, in either slot — the deck's own
   // document, or the one it has not been moved out of yet. Moving it is a rename
   // of two keys and costs nothing.

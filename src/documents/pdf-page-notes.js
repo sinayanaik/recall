@@ -75,6 +75,7 @@ import {
   scrollToDocumentPage
 } from "./pdf-view.js?v=__BUILD__";
 import { inkPenIsDown } from "../core/gesture.js?v=__BUILD__";
+import { deckHasPdf } from "./doc-slot.js?v=__BUILD__";
 
 export const PDF_PAGE_NOTES_KEY = "recall:pdfPageNotes";
 
@@ -357,7 +358,7 @@ export function refreshPdfPageNotes(annotated = null) {
   if (!view) return;
   const existing = new Map();
   view.querySelectorAll(`.${PAGE_NOTES_CLASS}`).forEach((node) => existing.set(node.dataset.pageNumber, node));
-  if (!pageNotesOn || !state.meta?.pdf) {
+  if (!pageNotesOn || !deckHasPdf(state.meta)) {
     existing.forEach((node) => node.remove());
     return;
   }
@@ -504,7 +505,7 @@ export function paintPdfPageNotesButton() {
   button.title = pageNotesOn
     ? "Hide the notes under the pages — read them from the highlight instead"
     : "Print every highlight's note under the page it is on, numbered";
-  const total = state.meta?.pdf ? annotatedDocumentHighlights().length : 0;
+  const total = deckHasPdf(state.meta) ? annotatedDocumentHighlights().length : 0;
   button.classList.toggle("is-empty", total === 0);
   const hint = button.querySelector(".nhm-hint");
   if (!hint) return;

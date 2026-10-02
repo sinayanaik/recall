@@ -192,7 +192,7 @@
     <link rel="modulepreload" href="src/documents/pdf-highlights.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/pdf-ink.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/pdf-multi-actions.js?v=__BUILD__">
-    <link rel="modulepreload" href="src/documents/pdf-arrange.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/documents/pdf-switcher.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/pdf-multi.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/pdf-outline.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/pdf-page-notes.js?v=__BUILD__">
@@ -1031,8 +1031,11 @@
                    src/documents/pdf-view.js), so an ordinary single-PDF deck's
                    toolbar looks exactly as it always has. Lives beside the
                    other doc-slot tools rather than in the ⋯ menu: which paper
-                   you are on is not a low-frequency setting. -->
-              <select class="autosync-select document-pdf-switcher" id="documentPdfSwitcher" aria-label="Switch PDF" title="Switch which of this deck's PDFs you're reading" hidden></select>
+                   you are on is not a low-frequency setting. It opens the
+                   deck's PDF panel (src/documents/pdf-switcher.js), where the
+                   papers are switched, dragged into order, renamed, removed
+                   and added, all in the one list. -->
+              <button class="autosync-select document-pdf-switcher" id="documentPdfSwitcher" type="button" aria-haspopup="dialog" aria-expanded="false" aria-label="This deck's PDFs" title="Switch, reorder, rename or remove this deck's PDFs" hidden><span class="document-pdf-switcher-name"></span><span class="document-pdf-switcher-count"></span><span class="document-pdf-switcher-caret" aria-hidden="true">&#9662;</span></button>
               <button class="tool-button document-more-btn" id="documentMoreBtn" type="button" aria-haspopup="true" aria-expanded="false" aria-label="PDF options" title="PDF options">&#8943;</button>
               <div class="document-more-menu" id="documentMoreMenu" role="menu" hidden>
                 <!-- "Save a copy" is not here any more. It downloads the
@@ -1072,7 +1075,6 @@
                   <span>Re-attach the PDF…</span>
                 </label>
                 <button class="md-menu-item" type="button" data-slot="doc" data-document-action="rename-pdf" title="Rename this PDF's tab"><span>Rename this PDF…</span></button>
-                <button class="md-menu-item" type="button" data-slot="doc" data-document-action="arrange-pdfs" title="Drag this deck's PDFs into the order the switcher lists them in"><span>Arrange PDFs…</span></button>
                 <button class="md-menu-item is-danger" type="button" data-slot="doc" data-document-action="remove-pdf" title="Remove this PDF from the deck — its highlights go with it"><span>Remove this PDF<span class="nhm-hint">Its highlights and bookmark go too</span></span></button>
               </div>
             </div>

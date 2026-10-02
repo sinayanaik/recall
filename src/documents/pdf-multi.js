@@ -25,7 +25,7 @@
 //                     meta.pdf when it is missing, so an ordinary deck's JSONB
 //                     never grows a byte for a feature it does not use.
 //   meta.pdfOrder    { ids, at } — the order the reader arranged them in
-//                     (pdf-arrange.js). Kept OFF the entries, with its own
+//                     (pdf-switcher.js). Kept OFF the entries, with its own
 //                     stamp, so a rename on one device and a reorder on
 //                     another both survive the merge; see deckPdfs for how an
 //                     id missing from it (attached since) is placed.
@@ -114,11 +114,15 @@ export function activePdfId(meta) {
 // whichever entry is PRIMARY_ID — deleted along with it if that entry is
 // gone — which is what makes an old cached client's view of "this deck's PDF"
 // stay correct without that client knowing anything changed.
-export function withDeckPdfs(meta, nextList) {
+//
+// `keepEmpty` is for removing a deck's LAST paper: an empty meta.pdfs (rather
+// than no key at all) is what keeps the sync merge on its by-id rule, where the
+// removal's tombstone is honoured — see mergeDeckMeta in sync/document-sync.js.
+export function withDeckPdfs(meta, nextList, { keepEmpty = false } = {}) {
   const base = meta && typeof meta === "object" ? meta : {};
   const list = (Array.isArray(nextList) ? nextList : []).filter((entry) => entry && entry.id);
   const next = { ...base };
-  if (list.length) next.pdfs = list;
+  if (list.length || keepEmpty) next.pdfs = list;
   else delete next.pdfs;
   const primary = list.find((entry) => entry.id === PDF_PRIMARY_ID);
   if (primary) {

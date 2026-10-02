@@ -480,14 +480,16 @@ export function mergeDeckMeta(cloudMeta, localMeta, { prefer = "local" } = {}) {
 
   // meta.pdf / meta.pdfs — the deck's own paper(s). Two regimes:
   //
-  //   • neither side has ever written meta.pdfs (still the ordinary, single-
-  //     PDF deck): the OLD rule, unchanged and untouched by any of the
-  //     multi-PDF machinery below — a side that has one always beats a side
-  //     that has none. This deck was never offered a "remove" action (see
-  //     removePdfFromDeck, which refuses on a deck's only PDF), so there is
-  //     nothing here that legitimately needs to disappear.
+  //   • neither side has ever written meta.pdfs nor removed a paper (still the
+  //     ordinary, single-PDF deck): the OLD rule, unchanged and untouched by
+  //     any of the multi-PDF machinery below — a side that has one always
+  //     beats a side that has none. Nothing here legitimately needs to
+  //     disappear: a removal always writes a tombstone, which is the other
+  //     regime's way in.
   //   • either side HAS meta.pdfs (a second PDF was attached on some device,
-  //     ever): the collection merges by id, exactly as pdfBlocks does just
+  //     ever) or a deletedPdfIds bag (a paper was removed — the deck's first,
+  //     or its only one, which leaves no list behind on an older build's copy):
+  //     the collection merges by id, exactly as pdfBlocks does just
   //     above — an add on either side is a genuine add, and a removal is
   //     honoured through its own tombstone bag rather than by "whoever has
   //     none loses", which is what makes removing a PDF possible at all.
@@ -495,7 +497,9 @@ export function mergeDeckMeta(cloudMeta, localMeta, { prefer = "local" } = {}) {
   //     only the bare meta.pdf, under the fixed PDF_PRIMARY_ID every device
   //     agrees on, so a deck mid-migration merges correctly with one that has
   //     already written meta.pdfs.
-  if (Array.isArray(cloud.pdfs) || Array.isArray(local.pdfs)) {
+  const pdfsRemoved = Object.keys(readMetaTombstones(cloud, "deletedPdfIds")).length > 0
+    || Object.keys(readMetaTombstones(local, "deletedPdfIds")).length > 0;
+  if (Array.isArray(cloud.pdfs) || Array.isArray(local.pdfs) || pdfsRemoved) {
     const cloudPdfs = deckPdfs(cloud);
     const localPdfs = deckPdfs(local);
     const counterpart = (list, id) => list.find((entry) => entry.id === id) || null;
@@ -505,7 +509,9 @@ export function mergeDeckMeta(cloudMeta, localMeta, { prefer = "local" } = {}) {
       withCarriedLocators(entry, counterpart(cloudPdfs, entry.id)),
       counterpart(localPdfs, entry.id)
     ));
-    if (mergedPdfs.length) next.pdfs = mergedPdfs;
+    // Kept as an empty list when a removal emptied it, so the next merge comes
+    // back through this branch rather than the old one (see withDeckPdfs).
+    if (mergedPdfs.length || pdfsRemoved) next.pdfs = mergedPdfs;
     else delete next.pdfs;
     // The mirror every old-cached client still reads as "this deck's PDF" —
     // see pdf-multi.js's own header for why this id is fixed rather than
@@ -521,7 +527,7 @@ export function mergeDeckMeta(cloudMeta, localMeta, { prefer = "local" } = {}) {
     // something the deck still has (see activePdfId) rather than name nothing
     // — dropped here so every reader downstream can trust it or ignore it.
     if (!mergedPdfs.some((entry) => entry.id === next.pdfActiveId)) delete next.pdfActiveId;
-    // The reader's arrangement (pdf-arrange.js) — one stamped value for the
+    // The reader's arrangement (pdf-switcher.js) — one stamped value for the
     // whole list, so the arrangement made last wins outright, whichever side
     // the merge otherwise prefers. Kept apart from the entries so a rename on
     // one device does not carry an older order along with it.

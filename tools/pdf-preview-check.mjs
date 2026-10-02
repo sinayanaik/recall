@@ -142,7 +142,8 @@ const API_SRC = `async () => {
     "/src/panels/highlight-cycle.js?v=__BUILD__",
     "/src/panels/highlight-index.js?v=__BUILD__",
     "/src/documents/pdf-region-embed.js?v=__BUILD__",
-    "/src/documents/pdf-arrange.js?v=__BUILD__",
+    "/src/documents/pdf-switcher.js?v=__BUILD__",
+    "/src/documents/pdf-multi-actions.js?v=__BUILD__",
     "/src/documents/pdf-multi.js?v=__BUILD__",
     "/src/notes/notes-edit-split.js?v=__BUILD__",
     "/src/notes/notes-view.js?v=__BUILD__",
@@ -420,8 +421,9 @@ try {
         // A popover is legitimately hidden until it is opened, and the re-attach
         // <input type="file" hidden> is never meant to be seen at all. A BUTTON
         // in this row is meant to be pressed, so a button with no box is the
-        // fault being looked for.
-        needsBox: node?.tagName === "BUTTON",
+        // fault being looked for. The PDF switcher is the one button hidden on
+        // purpose: it only appears once a deck has a second paper to switch to.
+        needsBox: node?.tagName === "BUTTON" && !(id === "documentPdfSwitcher" && node.hidden),
         visible: Boolean(box && box.width > 0 && box.height > 0)
       };
     });
@@ -5138,9 +5140,8 @@ try {
       secondName: api.state.meta?.pdfs?.[1]?.name || "",
       activeIsSecond: api.state.meta?.pdfActiveId === api.state.meta?.pdfs?.[1]?.id,
       switcherHidden: document.getElementById("documentPdfSwitcher")?.hidden !== false,
-      // The papers, not the "Arrange PDFs…" row that always closes the list.
-      switcherOptionCount: [...(document.getElementById("documentPdfSwitcher")?.options || [])].filter((o) => o.value !== "__arrange").length,
-      switcherArrangeLast: document.getElementById("documentPdfSwitcher")?.lastElementChild?.value === "__arrange"
+      switcherIsButton: document.getElementById("documentPdfSwitcher")?.tagName === "BUTTON",
+      switcherNamesOpen: (document.querySelector("#documentPdfSwitcher .document-pdf-switcher-name")?.textContent || "") === secondName
     };
   }`, Array.from(fixture.bytes), "attached.pdf");
 
@@ -5189,69 +5190,197 @@ try {
   check("...and the newly attached one made the deck's active PDF",
     attached.activeIsSecond && attached.secondName === "attached-again.pdf",
     `active is second=${attached.activeIsSecond}, name="${attached.secondName}"`);
-  check("...with a dropdown to switch between them now on screen",
-    attached.switcherHidden === false && attached.switcherOptionCount === 2 && attached.switcherArrangeLast,
-    `switcher hidden=${attached.switcherHidden}, ${attached.switcherOptionCount} paper option(s), arrange row last=${attached.switcherArrangeLast}`);
+  check("...with a switcher naming the open one now on screen",
+    attached.switcherHidden === false && attached.switcherIsButton && attached.switcherNamesOpen,
+    `switcher hidden=${attached.switcherHidden}, button=${attached.switcherIsButton}, names the open paper=${attached.switcherNamesOpen}`);
 
   // ── ...and the reader can put the papers in their own order ─────────────
   //
   // "Currently the PDFs are organised in chronological order; I want to drag
-  // and arrange them." A native select cannot be dragged, so the switcher's
-  // last row opens a sheet whose rows are dragged by a grip — with POINTER
-  // events, since that is what a finger on a phone produces.
+  // and arrange them." And then: "why do I have to click a separate panel to
+  // reorganize — it can happen in the first panel." So the switcher opens ONE
+  // list, and that list is dragged in place: by the row itself, not only a
+  // small grip, and committed on drop with no Done to press. POINTER events,
+  // since that is what a finger on a phone produces.
   const arranged = await page.evaluate(`async () => {
     const { api, settle } = window.__recall;
-    const picker = document.getElementById("documentPdfSwitcher");
-    const papers = () => [...picker.options].filter((o) => o.value !== "__arrange").map((o) => o.value);
-    const before = papers();
-    const openedOn = picker.value;
-    picker.value = "__arrange";
-    picker.dispatchEvent(new Event("change", { bubbles: true }));
-    await settle(100);
-    const sheet = document.querySelector(".pdf-arrange-modal");
-    const selectionKept = picker.value === openedOn;
-    const rows = () => [...(sheet?.querySelectorAll(".pdf-arrange-row") || [])];
-    const sheetOrder = rows().map((row) => row.dataset.pdfId);
-    // Drag the LAST row's grip to above the first row.
-    const last = rows()[rows().length - 1];
-    const grip = last?.querySelector(".pdf-arrange-grip");
-    const first = rows()[0].getBoundingClientRect();
-    const from = grip.getBoundingClientRect();
-    const fire = (type, y) => grip.dispatchEvent(new PointerEvent(type, {
-      bubbles: true, cancelable: true, pointerId: 7, pointerType: "touch", isPrimary: true, button: 0,
-      clientX: from.left + from.width / 2, clientY: y
+    const trigger = document.getElementById("documentPdfSwitcher");
+    const before = api.deckPdfs(api.state.meta).map((entry) => entry.id);
+    trigger.click();
+    await settle(80);
+    const panel = document.getElementById("documentPdfPanel");
+    const open = Boolean(panel && !panel.hidden);
+    const rows = () => [...(panel?.querySelectorAll(".pdf-panel-row") || [])];
+    const panelOrder = rows().map((row) => row.dataset.pdfId);
+    const activeMarked = panel?.querySelector(".pdf-panel-row.is-active")?.dataset.pdfId === api.state.meta.pdfActiveId;
+    // Drag the LAST row by its NAME (the body of the row, not the grip) to
+    // above the first row, with a mouse: it starts once the pointer has moved.
+    const fire = (target, type, x, y, pointerType = "mouse") => target.dispatchEvent(new PointerEvent(type, {
+      bubbles: true, cancelable: true, pointerId: 9, pointerType, isPrimary: true, button: 0, clientX: x, clientY: y
     }));
-    fire("pointerdown", from.top + from.height / 2);
-    for (let y = from.top + from.height / 2; y > first.top + 2; y -= 6) fire("pointermove", y);
-    fire("pointermove", first.top + 2);
-    fire("pointerup", first.top + 2);
+    const last = rows()[rows().length - 1];
+    const body = last.querySelector(".pdf-panel-name");
+    const from = body.getBoundingClientRect();
+    const first = rows()[0].getBoundingClientRect();
+    const x = from.left + from.width / 2;
+    fire(body, "pointerdown", x, from.top + from.height / 2);
+    for (let y = from.top + from.height / 2; y > first.top + 2; y -= 5) fire(window, "pointermove", x, y);
+    fire(window, "pointermove", x, first.top + 2);
+    const dragging = Boolean(panel.querySelector(".pdf-panel-row.is-dragging"));
+    fire(window, "pointerup", x, first.top + 2);
+    // The click a real mouse would send at the end of that drag must not be
+    // taken as "open this paper".
+    body.click();
+    await settle(60);
     const afterDrag = rows().map((row) => row.dataset.pdfId);
-    // ...and the arrows: the (new) second row up one, back to where it was.
-    rows()[1].querySelector('[data-arrange-move="-1"]').click();
-    const afterArrow = rows().map((row) => row.dataset.pdfId);
-    rows()[0].querySelector('[data-arrange-move="1"]').click();
-    sheet.querySelector("[data-arrange-save]").click();
-    await settle(100);
+    const stillOpen = !panel.hidden;
+    const activeAfterDrag = api.state.meta.pdfActiveId;
+
+    // ...and by keyboard: Alt+↓ on the (new) first row puts it back second.
+    const firstName = rows()[0].querySelector(".pdf-panel-name");
+    firstName.focus();
+    firstName.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", altKey: true, bubbles: true, cancelable: true }));
+    await settle(30);
+    const afterKey = rows().map((row) => row.dataset.pdfId);
+    const storedAfterKey = api.deckPdfs(api.state.meta).map((entry) => entry.id);
+    firstName.closest(".pdf-panel-row") && rows()[1].querySelector(".pdf-panel-name").dispatchEvent(
+      new KeyboardEvent("keydown", { key: "ArrowUp", altKey: true, bubbles: true, cancelable: true }));
+    await settle(30);
+
+    // ...and a press on a row's name that does not move is a switch.
+    const other = rows().find((row) => row.dataset.pdfId !== api.state.meta.pdfActiveId);
+    const otherId = other?.dataset.pdfId;
+    other?.querySelector(".pdf-panel-name").click();
+    await settle(700);
     return {
-      before, sheetOrder, afterDrag, afterArrow, selectionKept,
-      after: papers(),
+      before, open, panelOrder, activeMarked, dragging, afterDrag, stillOpen, activeAfterDrag,
+      afterKey, storedAfterKey,
       stored: api.state.meta?.pdfOrder?.ids || null,
       listed: api.deckPdfs(api.state.meta).map((entry) => entry.id),
-      closed: !document.querySelector(".pdf-arrange-modal")
+      switchedTo: api.state.meta.pdfActiveId, otherId,
+      closedOnSwitch: panel.hidden
     };
   }`);
   const reversed = [...arranged.before].reverse();
-  check("the switcher's last row opens the arranging sheet, listing the papers in their order",
-    arranged.sheetOrder.join(",") === arranged.before.join(",") && arranged.selectionKept,
-    `sheet=${arranged.sheetOrder.join(",")} switcher=${arranged.before.join(",")} selectionKept=${arranged.selectionKept}`);
-  check("...where dragging a paper's grip moves it",
-    arranged.afterDrag.join(",") === reversed.join(","), `${arranged.before.join(",")} → ${arranged.afterDrag.join(",")}`);
-  check("...as the arrows do",
-    arranged.afterArrow.join(",") === arranged.before.join(","), `→ ${arranged.afterArrow.join(",")}`);
-  check("...and Done puts the switcher, and the deck, in that order",
-    arranged.closed && arranged.after.join(",") === reversed.join(",")
-      && arranged.listed.join(",") === reversed.join(",") && arranged.stored?.join(",") === reversed.join(","),
-    `switcher=${arranged.after.join(",")} deck=${arranged.listed.join(",")} stored=${JSON.stringify(arranged.stored)}`);
+  check("the switcher opens one panel listing the papers in their order, the open one marked",
+    arranged.open && arranged.panelOrder.join(",") === arranged.before.join(",") && arranged.activeMarked,
+    `open=${arranged.open} panel=${arranged.panelOrder.join(",")} deck=${arranged.before.join(",")} active marked=${arranged.activeMarked}`);
+  check("...where dragging a row by its body moves it, and the order is kept on drop",
+    arranged.dragging && arranged.afterDrag.join(",") === reversed.join(",")
+      && arranged.stillOpen && arranged.activeAfterDrag !== undefined,
+    `dragging=${arranged.dragging} ${arranged.before.join(",")} → ${arranged.afterDrag.join(",")}, panel still open=${arranged.stillOpen}`);
+  check("...as Alt+arrow does from the keyboard, committed at once",
+    arranged.afterKey.join(",") === arranged.before.join(",") && arranged.storedAfterKey.join(",") === arranged.before.join(","),
+    `→ ${arranged.afterKey.join(",")} (deck ${arranged.storedAfterKey.join(",")})`);
+  check("...with the deck's order stamped for the sync, no Done to press",
+    arranged.listed.join(",") === reversed.join(",") && arranged.stored?.join(",") === reversed.join(","),
+    `deck=${arranged.listed.join(",")} stored=${JSON.stringify(arranged.stored)}`);
+  check("...and a plain press on a name switches to that paper and closes the panel",
+    arranged.switchedTo === arranged.otherId && arranged.closedOnSwitch,
+    `active=${arranged.switchedTo} wanted=${arranged.otherId} closed=${arranged.closedOnSwitch}`);
+
+  // ── Rename and remove ANY paper from the same list ──────────────────────
+  //
+  // "Editing more PDFs in the deck is very difficult" — rename and remove
+  // used to act only on the paper already open — "and while removing it says
+  // the first PDF can't be removed." Neither restriction is left.
+  const edited = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const panel = document.getElementById("documentPdfPanel");
+    const trigger = document.getElementById("documentPdfSwitcher");
+    const rows = () => [...panel.querySelectorAll(".pdf-panel-row")];
+    trigger.click();
+    await settle(60);
+    // Rename a row that is NOT the open paper, in place.
+    const target = rows().find((row) => row.dataset.pdfId !== api.state.meta.pdfActiveId);
+    const targetId = target.dataset.pdfId;
+    target.querySelector("[data-pdf-rename]").click();
+    const input = panel.querySelector(".pdf-panel-input");
+    const inline = Boolean(input);
+    input.value = "Renamed in place";
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await settle(60);
+    const renamed = api.deckPdfById(api.state.meta, targetId)?.label;
+    const rowShows = panel.querySelector('.pdf-panel-row[data-pdf-id="' + targetId + '"] .pdf-panel-label')?.textContent;
+    api.closePdfPanel();
+
+    // Removal on a deck of its own, so the cases after this one still have the
+    // two papers above to measure: three papers, so removing the first still
+    // leaves two and the panel.
+    const homeId = api.state.localDeckId;
+    const bytes = await api.readDocument(homeId).then((e) => e?.blob);
+    api.state.deckId = null;
+    api.state.localDeckId = null;
+    api.state.deckTitle = "Papers to remove";
+    api.state.deckCategory = "";
+    api.state.notes = "# Three papers";
+    api.state.masterCards = [];
+    api.state.cards = [];
+    api.state.meta = {};
+    await api.saveDeckToLibrary({ silent: true });
+    await api.loadDeckFromLibrary(api.state.localDeckId);
+    await settle(200);
+    for (const name of ["one.pdf", "two.pdf", "three.pdf"]) {
+      await api.attachPdfToOpenDeck(new File([bytes], name, { type: "application/pdf" }));
+      await settle(500);
+    }
+    trigger.click();
+    await settle(60);
+
+    // Remove the PRIMARY — the deck's first paper — from its own row.
+    const marksBefore = (api.state.meta.pdfHighlights || []).filter((r) => r.pdfId).length;
+    const primaryRow = panel.querySelector('.pdf-panel-row[data-pdf-id="primary"]');
+    primaryRow.querySelector("[data-pdf-remove]").click();
+    await settle(40);
+    const confirmShown = !document.getElementById("confirmModal").hidden;
+    document.getElementById("confirmModalOkBtn").click();
+    await settle(900);
+    const afterPrimary = {
+      ids: api.deckPdfs(api.state.meta).map((entry) => entry.id),
+      mirror: Boolean(api.state.meta.pdf),
+      tab: document.querySelector('#viewModeToggle [data-view-mode="document"]')?.hidden,
+      noDocument: document.getElementById("documentStage").classList.contains("has-no-document"),
+      painted: document.querySelectorAll("#documentView .pdf-page").length,
+      tombstone: Boolean(api.state.meta.deletedPdfIds?.primary),
+      marksKept: (api.state.meta.pdfHighlights || []).filter((r) => r.pdfId).length === marksBefore,
+      panelRows: panel.hidden ? -1 : rows().length
+    };
+
+    // ...and then the rest, down to none: the last one goes too.
+    for (const entry of api.deckPdfs(api.state.meta)) {
+      await api.removePdfFromDeck(entry.id);
+      await settle(500);
+    }
+    const empty = {
+      count: api.deckPdfs(api.state.meta).length,
+      keptList: Array.isArray(api.state.meta.pdfs),
+      noDocument: document.getElementById("documentStage").classList.contains("has-no-document"),
+      attachOffered: Boolean(document.querySelector("#documentView .pdf-missing")),
+      switcherHidden: trigger.hidden,
+      panelClosed: panel.hidden
+    };
+    // Back to the two-paper deck for the cases that follow.
+    await api.loadDeckFromLibrary(homeId);
+    await settle(200);
+    api.setViewMode("document");
+    await settle(900);
+    return { inline, renamed, rowShows, confirmShown, afterPrimary, empty };
+  }`);
+  check("a paper that is not the open one is renamed in place, from its own row",
+    edited.inline && edited.renamed === "Renamed in place" && edited.rowShows === "Renamed in place",
+    `inline=${edited.inline} label=${edited.renamed} row shows=${edited.rowShows}`);
+  check("the deck's FIRST paper can be removed, with a confirmation",
+    edited.confirmShown && !edited.afterPrimary.ids.includes("primary") && edited.afterPrimary.ids.length === 2
+      && edited.afterPrimary.tombstone && !edited.afterPrimary.mirror,
+    `confirm=${edited.confirmShown} left=${edited.afterPrimary.ids.join(",")} tombstone=${edited.afterPrimary.tombstone} meta.pdf=${edited.afterPrimary.mirror}`);
+  check("...leaving the others readable, their marks intact, and the panel open on them",
+    edited.afterPrimary.tab === false && !edited.afterPrimary.noDocument && edited.afterPrimary.painted > 0
+      && edited.afterPrimary.marksKept && edited.afterPrimary.panelRows === 2,
+    `tab hidden=${edited.afterPrimary.tab} no-document=${edited.afterPrimary.noDocument} painted=${edited.afterPrimary.painted} marks kept=${edited.afterPrimary.marksKept} panel rows=${edited.afterPrimary.panelRows}`);
+  check("...and the LAST paper can go too, leaving the offer to attach one",
+    edited.empty.count === 0 && edited.empty.keptList && edited.empty.noDocument && edited.empty.attachOffered
+      && edited.empty.switcherHidden && edited.empty.panelClosed,
+    JSON.stringify(edited.empty));
 
   // ── ...and that dropdown fits a phone, whatever the paper is called ──────
   //

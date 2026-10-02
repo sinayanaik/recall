@@ -79,7 +79,7 @@ import { fitDocumentToWidth, togglePdfInvert } from "../documents/pdf-view.js?v=
 import { chooseInkTool, toggleInkRail } from "./ink-rail.js?v=__BUILD__";
 import { toggleRegionSelect } from "../documents/pdf-region.js?v=__BUILD__";
 import { inkTool } from "../documents/pdf-ink.js?v=__BUILD__";
-import { onDocumentSurface } from "../documents/doc-slot.js?v=__BUILD__";
+import { deckHasPdf, onDocumentSurface } from "../documents/doc-slot.js?v=__BUILD__";
 
 export function isReadingRailExpanded() {
   return el.readingRail?.dataset.expanded === "true";
@@ -201,7 +201,7 @@ export function refreshReadingRailRows() {
   const documentSurfaceUp = onDocumentSurface();
   const hasDocument = Boolean(state.viewMode === "handwriting"
     ? (state.meta?.notebook || state.meta?.pdf?.notebook)
-    : state.meta?.pdf);
+    : deckHasPdf(state.meta));
   // Two of the document's rows mean nothing on a notebook, and the rail must not
   // be the back door to a control the view itself has taken away: dark page is
   // decided by the theme on generated paper (see togglePdfInvert, which refuses
