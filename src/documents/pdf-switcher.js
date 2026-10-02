@@ -246,7 +246,10 @@ function iconButton(key, glyph, label) {
 function onListClick(event) {
   // The click that ends a drag lands on whatever the row was dropped over; it
   // is the end of the drag, not a request to open that paper.
+  // Only that one click, and only while it can still be that click: a press
+  // straight after a drop is a new press.
   if (Date.now() < pdfPanelClickHushUntil) {
+    pdfPanelClickHushUntil = 0;
     event.preventDefault();
     event.stopPropagation();
     return;
