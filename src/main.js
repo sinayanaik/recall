@@ -40,7 +40,7 @@ import { closeAllRenderMenus, handleRenderToolbarAction, initRenderToolbars, ren
 import { applyPillHighlight, buildPillHighlightMenu, clozeTextareaSelection, eraseTextareaSelection, extractSelectionToNote, hideNotesSelectionButtonUnlessPinned, pillActionTarget } from "./format/selection-tools.js?v=__BUILD__";
 import { markBrokenImages } from "./images/broken.js?v=__BUILD__";
 import { revokeLocalImageUrls } from "./images/outbox.js?v=__BUILD__";
-import { allImageFiles, dragContainsImage, gifSourceUrlFromTransfer, insertTransferImages } from "./images/paste.js?v=__BUILD__";
+import { allImageFiles, dragContainsImage, animatedSourceUrlFromTransfer, insertTransferImages } from "./images/paste.js?v=__BUILD__";
 import { imagePickerActive } from "./images/upload.js?v=__BUILD__";
 import { importEpubFile, isEpubName, reportEpubImportCrash } from "./import/epub.js?v=__BUILD__";
 import { loadFiles, loadSample, showImportSourceDrawer, stagePastedMarkdown } from "./import/files.js?v=__BUILD__";
@@ -3311,18 +3311,19 @@ if (appInfoModal) {
 // ── Panel ──────────────────────────────────────────────────────────────────
 
 
-// ── Keeping a pasted GIF animated ──────────────────────────────────────────
-// Copying an animated GIF from a web page puts a FLATTENED still on the
-// clipboard — Chrome rasterises whichever frame was showing and hands it over as
-// image/png — so pasting one stored a motionless picture, no matter that
-// optimizeImage and IMAGE_STORAGE_EXT both already handle image/gif correctly.
-// The animation is still reachable: the same clipboard/drag carries a text/html
-// fragment (or a text/uri-list) pointing at the original file, so when that
-// points at a GIF we fetch the real bytes and store those instead.
+// ── Keeping a pasted animation animated ────────────────────────────────────
+// Copying an animated GIF (or animated WebP — what most GIF sites really serve)
+// from a web page puts a FLATTENED still on the clipboard — Chrome rasterises
+// whichever frame was showing and hands it over as image/png — so pasting one
+// stored a motionless picture, no matter that the upload path keeps animated
+// files whole. The animation is still reachable: the same clipboard/drag
+// carries a text/html fragment (or a text/uri-list) pointing at the original
+// file, so we fetch it and store the real bytes when they turn out to animate.
 //
-// Best-effort throughout: a host that serves no CORS headers, a URL that turns
-// out not to be a GIF after all, or an offline device all fall back to the
-// flattened frame rather than losing the paste.
+// Best-effort throughout: a URL that turns out to be a still, or an offline
+// device, falls back to the flattened frame rather than losing the paste. A
+// host that serves no CORS headers gets a link to the original instead, when
+// its URL plainly names an animation (src/images/paste.js).
 
 
 // ── A picture pasted or dropped onto a page of handwriting ────────────────
@@ -3379,12 +3380,12 @@ document.addEventListener("paste", (event) => {
   const imageFiles = allImageFiles(clipboardData);
   if (imageFiles.length) {
     event.preventDefault();
-    // Read the caret and the clipboard's GIF hint synchronously: the event's
-    // clipboardData is unreadable once the handler returns, and resolving a GIF
+    // Read the caret and the clipboard's source URL synchronously: the event's
+    // clipboardData is unreadable once the handler returns, and resolving it
     // is async, so both have to be captured before awaiting anything.
     const atPos = target.selectionStart;
-    const gifUrl = imageFiles.length === 1 && imageFiles[0].type !== "image/gif" ? gifSourceUrlFromTransfer(clipboardData) : null;
-    insertTransferImages(target, imageFiles, gifUrl, atPos);
+    const sourceUrl = imageFiles.length === 1 && imageFiles[0].type !== "image/gif" ? animatedSourceUrlFromTransfer(clipboardData) : null;
+    insertTransferImages(target, imageFiles, sourceUrl, atPos);
     return;
   }
 
@@ -3454,8 +3455,8 @@ document.addEventListener("drop", (event) => {
     // page hands over a still, with the original's URL alongside it. Only a
     // single dragged image can carry that hint — a multi-file drop is files
     // from a folder, which arrive whole.
-    const gifUrl = imageFiles.length === 1 && imageFiles[0].type !== "image/gif" ? gifSourceUrlFromTransfer(event.dataTransfer) : null;
-    insertTransferImages(event.target, imageFiles, gifUrl, event.target.selectionStart);
+    const sourceUrl = imageFiles.length === 1 && imageFiles[0].type !== "image/gif" ? animatedSourceUrlFromTransfer(event.dataTransfer) : null;
+    insertTransferImages(event.target, imageFiles, sourceUrl, event.target.selectionStart);
   } else showToast("Only image files can be dropped here", "info");
 });
 
