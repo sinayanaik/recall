@@ -1002,6 +1002,63 @@ try {
     return true;
   });
 
+  // ── 6. What a stroke is painted with ─────────────────────────────────────
+  const { inkCentrelinePath, inkStrokeOutline, paintInkLayers, resolveInkPaint } = paintMod;
+  const svgMod = await import(path.join(stage, "src/format/ink-svg.js"));
+  const { inkPathRecorder } = svgMod;
+
+  must("a tap with no pressure behind it is a dot of the full nib, not NaN", () => {
+    // A mouse or a finger reports the spec's flat 0.5, which sends the width to
+    // the speed path — and a single sample has no second one to measure speed
+    // against. It read past the end of the stroke and drew nothing.
+    const widths = inkStrokeWidths({ w: 3, c: "ink", p: [10, 10, 0.5] });
+    if (widths.length !== 1 || widths[0] !== 3) return `a flat-pressure tap is ${widths[0]} wide`;
+    for (const c of ["ink", "hyellowq35"]) {
+      const recorder = inkPathRecorder();
+      const drew = c === "ink"
+        ? inkStrokeOutline(recorder.ctx, { w: 3, c, p: [10, 10, 0.5] })
+        : inkCentrelinePath(recorder.ctx, { w: 14, c, p: [10, 10, 0.5] });
+      const d = recorder.path();
+      if (!drew || !d || /NaN/.test(d)) return `${c}: a one-sample stroke recorded "${d}"`;
+    }
+    return true;
+  });
+
+  must("a pen's colour follows the paper when the paper is known", () => {
+    if (resolveInkPaint("ink", { paper: "light" }).color !== INK_PEN_HEX.ink) return "ink on light paper is not the light pen";
+    if (resolveInkPaint("ink", { paper: "dark" }).color !== INK_PEN_HEX_DARK.ink) return "ink on dark paper is not the dark pen";
+    const custom = resolveInkPaint("x1e90ffq40", { paper: "dark" });
+    if (custom.color !== "#1e90ff" || custom.alpha !== 0.4 || custom.hl) return `a custom pen painted as ${JSON.stringify(custom)}`;
+    const band = resolveInkPaint("hgreenq35", { paper: "light" });
+    if (band.color !== INK_HL_HEX.green || band.alpha !== 0.35 || !band.hl) return `a highlighter painted as ${JSON.stringify(band)}`;
+    const unknown = resolveInkPaint("zebra", { paper: "light" });
+    return (unknown.color === INK_PEN_HEX.ink && unknown.alpha === 1 && !unknown.hl) || `an unknown word painted as ${JSON.stringify(unknown)}`;
+  });
+
+  must("on one raster, the highlighter goes down first, multiplied, and the pen's ink over it", () => {
+    const calls = [];
+    const ctx = {
+      globalAlpha: 1,
+      globalCompositeOperation: "source-over",
+      beginPath() {}, moveTo() {}, lineTo() {}, quadraticCurveTo() {}, arc() {}, closePath() {},
+      fill() { calls.push(["fill", this.fillStyle, this.globalAlpha, this.globalCompositeOperation]); },
+      stroke() { calls.push(["stroke", this.strokeStyle, this.globalAlpha, this.globalCompositeOperation, this.lineWidth]); }
+    };
+    const line = [10, 10, 0.5, 60, 10, 0.5, 110, 12, 0.5];
+    paintInkLayers(ctx, [
+      { w: 2, c: "red", p: line },
+      { w: 14, c: "hyellowq35", p: line },
+      { w: 2, c: "blueq50", p: line }
+    ], { paper: "light", blend: "multiply" });
+    if (calls.length !== 3) return `${calls.length} paint calls for three strokes`;
+    const [first, second, third] = calls;
+    if (first[0] !== "stroke" || first[3] !== "multiply" || first[2] !== 0.35 || first[4] !== 14) return `the band was painted ${JSON.stringify(first)}`;
+    if (second[0] !== "fill" || second[3] !== "source-over" || second[2] !== 1) return `the red pen was painted ${JSON.stringify(second)}`;
+    if (third[2] !== 0.5) return `a 50% pen was painted at ${third[2]}`;
+    if (ctx.globalAlpha !== 1 || ctx.globalCompositeOperation !== "source-over") return "the context was left translucent or blending";
+    return true;
+  });
+
   console.log("── ink ──");
   for (const [ok, name, detail] of results) {
     console.log(`  ${ok ? "ok  " : "FAIL"}  ${name}${ok ? "" : " — " + detail}`);

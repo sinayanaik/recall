@@ -30,7 +30,7 @@
 // quadratic per point and no fitting pass — the standard trick, and the reason
 // simplification can be as aggressive as it is without anything looking faceted.
 
-import { INK_PEN_HEX, inkPenVar, normalizeInkPen } from "../format/ink-colors.js?v=__BUILD__";
+import { INK_HL_HEX, INK_PEN_HEX, INK_PEN_HEX_DARK, inkPenVar, normalizeInkPen, parseInkToken } from "../format/ink-colors.js?v=__BUILD__";
 
 // How much of the nib a zero-pressure sample still puts down, and how much of it
 // pressure controls. A pen that tapers to nothing looks like a dying felt tip;
@@ -85,7 +85,14 @@ const INK_SPEED_FULL = 900;
 const inkColorCache = new Map();
 
 export function resolveInkColor(token, root = null) {
-  const pen = normalizeInkPen(token);
+  // A colour of the reader's own, or a highlighter, is the colour it says on
+  // every theme — only the eight palette pens are tokens that resolve per theme.
+  // A word this build does not understand falls through to the plain pen, which
+  // is what it always did.
+  const parsed = parseInkToken(token);
+  if (parsed?.hex) return parsed.hex;
+  if (parsed?.kind === "highlighter") return INK_HL_HEX[parsed.name];
+  const pen = normalizeInkPen(parsed?.name || token);
   const scope = root || (typeof document !== "undefined" ? document.documentElement : null);
   if (!scope || typeof getComputedStyle !== "function") return INK_PEN_HEX[pen];
   // The theme is IN the key, and that is the whole of the bug this once was.
@@ -113,6 +120,34 @@ export function resolveInkColor(token, root = null) {
   const resolved = value || INK_PEN_HEX[pen];
   inkColorCache.set(key, resolved);
   return resolved;
+}
+
+// ── What a stroke is painted WITH ──────────────────────────────────────────
+//
+// { color, alpha, hl } for a stroke's colour word: the colour to fill or stroke
+// with, the opacity to paint it at, and whether it is a highlighter (painted as
+// a constant-width band, underneath the pen's ink, on a layer that multiplies
+// with the page — see paintInkStroke and src/render/ink-engine.js).
+//
+// `paper` is "light" or "dark" when the CALLER knows what the page under the ink
+// looks like, and it is the answer to a bug the theme lookup above cannot see.
+// A palette pen resolves per THEME, which is right for a page that follows the
+// theme (a notebook, the drawing sheet) and wrong for somebody else's PDF, which
+// stays white on a dark theme unless the reader inverts it: the default pen
+// resolved to near-white and was drawn, near-invisibly, on white paper — and was
+// exported that way too. A surface that knows its paper passes it, and the pen
+// takes the set made for that paper. Without it, nothing changes.
+export function resolveInkPaint(token, { root = null, paper = null } = {}) {
+  const parsed = parseInkToken(token);
+  const alpha = parsed ? parsed.opacity : 1;
+  if (parsed?.kind === "highlighter") {
+    return { color: parsed.hex || INK_HL_HEX[parsed.name], alpha, hl: true };
+  }
+  if (parsed?.hex) return { color: parsed.hex, alpha, hl: false };
+  const pen = normalizeInkPen(parsed?.name);
+  if (paper === "light") return { color: INK_PEN_HEX[pen], alpha, hl: false };
+  if (paper === "dark") return { color: INK_PEN_HEX_DARK[pen], alpha, hl: false };
+  return { color: resolveInkColor(pen, root), alpha, hl: false };
 }
 
 // Called when the theme changes — from setTheme (src/ui/theme.js), which is the
@@ -147,6 +182,15 @@ export function inkStrokeWidths(stroke) {
   }
 
   if (!reportsPressure) {
+    // A single sample has no speed to measure — there is no second sample to
+    // measure it against — and the loop below would read one past the end of the
+    // stroke and hand back NaN, which an arc draws as nothing at all. So a tap
+    // from a mouse or a finger, which is exactly what a full stop is, left no
+    // mark. A nib that did not move is a nib at rest: full width.
+    if (count === 1) {
+      widths[0] = nib;
+      return widths;
+    }
     // No digitiser behind this one. Width from speed: the faster the nib was
     // travelling between two samples the lighter it is taken to have been,
     // which is what a hand actually does and what makes a mouse line taper at
@@ -293,14 +337,101 @@ function inkQuadRun(ctx, side, count, reverse) {
   ctx.lineTo(side[last * 2], side[(last * 2) + 1]);
 }
 
+// ── The highlighter's path ─────────────────────────────────────────────────
+//
+// A highlighter is a band of one width, so it is drawn as what it is: the
+// CENTRELINE, stroked with a round cap and a round join at the nib's width — not
+// the pen's filled outline at constant pressure. The outline would come out the
+// same along a gentle line and wrong at the place a highlighter goes most often,
+// the end of a line where the hand turns back: offset curves 30 points apart
+// cross themselves on a tight turn, and where they cross, a fill leaves a hole.
+// A stroked line has no inside to get wrong.
+//
+// The same calls as inkStrokeOutline and in the same vocabulary (moveTo, lineTo,
+// quadraticCurveTo), so the SVG and PDF recorders take it without a change. A
+// single sample is drawn as a hair-length segment rather than a lone moveTo:
+// a zero-length subpath draws no cap in an SVG or a PDF, and a dab with the
+// highlighter has to come out as a dot everywhere it is drawn.
+export function inkCentrelinePath(ctx, stroke) {
+  const points = Array.isArray(stroke?.p) ? stroke.p : [];
+  const count = Math.floor(points.length / 3);
+  if (!count) return false;
+  ctx.beginPath();
+  ctx.moveTo(points[0], points[1]);
+  if (count === 1) {
+    ctx.lineTo(points[0] + 0.01, points[1]);
+    return true;
+  }
+  for (let i = 1; i < count - 1; i += 1) {
+    ctx.quadraticCurveTo(
+      points[i * 3], points[(i * 3) + 1],
+      (points[i * 3] + points[(i + 1) * 3]) / 2,
+      (points[(i * 3) + 1] + points[((i + 1) * 3) + 1]) / 2
+    );
+  }
+  ctx.lineTo(points[(count - 1) * 3], points[((count - 1) * 3) + 1]);
+  return true;
+}
+
+// The nib a highlighter stroke is drawn at, which is the one the stroke stores:
+// a highlighter does not respond to pressure. A band that thinned wherever the
+// hand lightened would be a band with a ragged edge along a line of type.
+export function inkHighlighterWidth(stroke) {
+  return Math.max(0.1, Number(stroke?.w) || 1);
+}
+
 // Paint one stroke, colour and all. `root` scopes the colour lookup so the print
-// document resolves its own theme rather than the app's.
-export function paintInkStroke(ctx, stroke, { root = null, color = null } = {}) {
-  if (!inkStrokeOutline(ctx, stroke)) return;
-  ctx.fillStyle = color || resolveInkColor(stroke?.c, root);
-  ctx.fill();
+// document resolves its own theme rather than the app's; `paper`, when the
+// caller knows it, picks the pen set made for that paper (resolveInkPaint).
+//
+// Opacity is the context's globalAlpha for the length of the one fill, put back
+// afterwards: a caller painting a page of strokes should not find the next one
+// translucent because the last one was. It MULTIPLIES whatever alpha the caller
+// had set rather than replacing it, so a canvas painted at half strength stays
+// at half strength.
+export function paintInkStroke(ctx, stroke, { root = null, color = null, paper = null } = {}) {
+  const paint = resolveInkPaint(stroke?.c, { root, paper });
+  const before = ctx.globalAlpha;
+  if (paint.alpha < 1) ctx.globalAlpha = before * paint.alpha;
+  if (paint.hl) {
+    if (inkCentrelinePath(ctx, stroke)) {
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.lineWidth = inkHighlighterWidth(stroke);
+      ctx.strokeStyle = color || paint.color;
+      ctx.stroke();
+    }
+  } else if (inkStrokeOutline(ctx, stroke)) {
+    ctx.fillStyle = color || paint.color;
+    ctx.fill();
+  }
+  ctx.globalAlpha = before;
 }
 
 export function paintInkStrokes(ctx, strokes, options) {
   (Array.isArray(strokes) ? strokes : []).forEach((stroke) => paintInkStroke(ctx, stroke, options));
+}
+
+// A page's strokes onto ONE raster that already has the page on it — an export,
+// a region's picture — where there is no second layer to put the highlighter on.
+// Highlighter strokes go first and the pen's ink after, the order the screen
+// stacks its two layers in, so a band swept over a handwritten note sits under
+// the note rather than across it.
+//
+// `blend` is the composite operation the highlighter is painted with: "multiply"
+// on a raster of white paper, which is what leaves the scanned words under it
+// legible — the same arithmetic the screen does with mix-blend-mode. Left at the
+// canvas's own (source-over) when not given, for a caller drawing onto nothing.
+export function paintInkLayers(ctx, strokes, { root = null, paper = null, blend = null } = {}) {
+  const list = Array.isArray(strokes) ? strokes : [];
+  const bands = [];
+  const ink = [];
+  list.forEach((stroke) => (parseInkToken(stroke?.c)?.kind === "highlighter" ? bands : ink).push(stroke));
+  if (bands.length) {
+    const before = ctx.globalCompositeOperation;
+    if (blend) ctx.globalCompositeOperation = blend;
+    bands.forEach((stroke) => paintInkStroke(ctx, stroke, { root, paper }));
+    ctx.globalCompositeOperation = before;
+  }
+  ink.forEach((stroke) => paintInkStroke(ctx, stroke, { root, paper }));
 }
