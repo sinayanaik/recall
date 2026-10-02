@@ -107,8 +107,21 @@ function inkFitLine(points) {
   // The principal axis of the point cloud — the direction of least residual,
   // which is the right line whatever the stroke's orientation.
   const angle = 0.5 * Math.atan2(2 * sxy, sxx - syy);
-  const ux = Math.cos(angle);
-  const uy = Math.sin(angle);
+  let ux = Math.cos(angle);
+  let uy = Math.sin(angle);
+  // ...pointed the way the pen WENT. The axis above has no direction of its own —
+  // atan2 of a doubled angle always lands it in the right half-plane — so `from`
+  // and `to` below came out left-to-right whatever the hand did, and an arrow
+  // drawn right-to-left, or upwards, got its head on the end it started from.
+  // Orienting it from the first sample towards the last makes `to` the end the
+  // stroke finished at, which is what the arrow, and the straightened
+  // highlighter, both mean by it.
+  const towardX = points[(count - 1) * 3] - points[0];
+  const towardY = points[((count - 1) * 3) + 1] - points[1];
+  if ((towardX * ux) + (towardY * uy) < 0) {
+    ux = -ux;
+    uy = -uy;
+  }
   let worst = 0;
   let minT = Infinity;
   let maxT = -Infinity;
@@ -229,6 +242,75 @@ export function fitInkShape(points) {
     return null;
   }
   return { kind: "line", runs: [inkShapeRun([line.from[0], line.from[1], line.to[0], line.to[1]], pressure)] };
+}
+
+// ── A highlighter swept along a line ───────────────────────────────────────
+//
+// The highlighter is for marking a line of somebody else's text — on a scan,
+// usually, where there is no text layer to drag a highlight across — and a
+// band drawn freehand along a line wobbles in exactly the way the line of type
+// under it does not. So, with the highlighter's Straight switch on, a stroke
+// that WAS a line is redrawn as one when the pen lifts, levelled flat when it
+// was within a few degrees of flat, the way a ruler-guided marker would be.
+//
+// Not the hold gesture fitInkShape answers, and with a different tolerance,
+// because a highlighter is a different tool: it is wide (the wobble that matters
+// is relative to that width, not to the stroke's length), it is almost always
+// meant to be straight, and it is never handwriting — there is no letter O to
+// protect. What it does have to refuse is the reader who scribbles back and
+// forth to fill a block, or follows a line round a corner, and both of those
+// fail the fit or the progress test below.
+
+// How far a sample may wander off the fitted line, as a fraction of the nib —
+// a band whose wobble stays inside most of its own width reads as straight
+// already — floored for a narrow nib.
+export const INK_HL_STRAIGHT_RATIO = 0.6;
+export const INK_HL_STRAIGHT_MIN = 6;
+
+// Within this of horizontal (or vertical) it is levelled: a line of text is
+// level, and a highlight two degrees off it looks like a mistake.
+export const INK_HL_LEVEL_RADIANS = (4 * Math.PI) / 180;
+
+// The stroke must cover at least this many times its own width along the line
+// — below it, the "line" is a dab and has no direction worth straightening —
+// and its path may be at most this many times the span it covers, which is
+// what refuses a back-and-forth fill.
+const INK_HL_STRAIGHT_MIN_SPAN = 1.5;
+const INK_HL_STRAIGHT_MAX_TRAVEL = 1.35;
+
+// `points` is the flat [x, y, pressure, …] run; returns the replacement run (the
+// two ends of the line, at the stroke's mean pressure) or null to leave the
+// stroke as drawn.
+export function straightenInkHighlight(points, width) {
+  const count = Math.floor((points?.length || 0) / 3);
+  if (count < 2) return null;
+  const nib = Math.max(1, Number(width) || 1);
+  const line = inkFitLine(points);
+  const tolerance = Math.max(INK_HL_STRAIGHT_MIN, nib * INK_HL_STRAIGHT_RATIO);
+  if (line.worst > tolerance) return null;
+  const span = Math.hypot(line.to[0] - line.from[0], line.to[1] - line.from[1]);
+  if (span < nib * INK_HL_STRAIGHT_MIN_SPAN) return null;
+  let travel = 0;
+  for (let i = 0; i + 4 < points.length; i += 3) {
+    travel += Math.hypot(points[i + 3] - points[i], points[i + 4] - points[i + 1]);
+  }
+  if (travel > span * INK_HL_STRAIGHT_MAX_TRAVEL) return null;
+
+  let [x0, y0] = line.from;
+  let [x1, y1] = line.to;
+  const angle = Math.atan2(y1 - y0, x1 - x0);
+  const offHorizontal = Math.abs(Math.sin(angle));
+  const offVertical = Math.abs(Math.cos(angle));
+  if (offHorizontal < Math.sin(INK_HL_LEVEL_RADIANS)) {
+    const y = (y0 + y1) / 2;
+    y0 = y;
+    y1 = y;
+  } else if (offVertical < Math.sin(INK_HL_LEVEL_RADIANS)) {
+    const x = (x0 + x1) / 2;
+    x0 = x;
+    x1 = x;
+  }
+  return inkShapeRun([x0, y0, x1, y1], inkShapeMeanPressure(points));
 }
 
 // An arrow is a stroke that was a good line right up until the hand turned

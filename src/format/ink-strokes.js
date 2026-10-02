@@ -97,11 +97,18 @@ const INK_DECODE_TABLE = (() => {
   return table;
 })();
 
-// A colour is a palette TOKEN, never a hex value — the same discipline
-// MARK_HIGHLIGHT_HEX keeps, and for the same reason: a colour fixed at drawing
-// time is a colour that stops working the moment the reader changes theme or
-// inverts the page. Anything that is not a plain lowercase word is not a token
-// this app ever wrote, so it is refused rather than round-tripped.
+// A colour is a TOKEN, never a raw colour value — the same discipline
+// MARK_HIGHLIGHT_HEX keeps, and for the same reason: a palette pen fixed as a hex
+// at drawing time is a colour that stops working the moment the reader changes
+// theme or inverts the page. Anything that is not a plain lowercase word is not
+// a token this app ever wrote, so it is refused rather than round-tripped.
+//
+// The word can say more than a palette name now — a highlighter, a colour of the
+// reader's own, an opacity — and how it says it is parseInkToken's business in
+// src/format/ink-colors.js. This file only guards the shape, deliberately: a word
+// this build does not understand is still carried through decode and encode
+// untouched, so a stroke written by a later build is never rewritten into
+// something it was not by an earlier one.
 const INK_TOKEN_RE = /^[a-z][a-z0-9]{0,15}$/;
 
 // ── The varint ─────────────────────────────────────────────────────────────
@@ -506,6 +513,46 @@ export function eraseFromInkStroke(stroke, points, radius = 0) {
   return runs.map((kept) => ({ ...stroke, p: kept }));
 }
 
+// ── An eraser that moved faster than it was sampled ────────────────────────
+//
+// Both questions the eraser asks — inkStrokeHitsPoint and eraseFromInkStroke —
+// are asked of the eraser's SAMPLES. At writing speed those sit a fraction of a
+// point apart and the difference is academic; a quick swipe across a page with
+// a small eraser puts them several points apart, and a 1pt line crossed between
+// two of them is never touched. The swipe visibly passed over it and it stayed.
+//
+// So the path the eraser took is filled in before it is asked about: points
+// added along each segment no further apart than `spacing`, which the caller
+// sets from the eraser's own size so a big rubber is not paying for density it
+// cannot use. Capped per segment, because a pointer that jumps the width of the
+// page in one event (a stylus leaving and re-entering range) must not turn into
+// ten thousand hit tests.
+//
+// `from` is the last point already asked about, or null; it is not repeated in
+// the output. Points are { x, y }, the shape the eraser already passes around.
+export const INK_DENSIFY_MAX_PER_SEGMENT = 256;
+
+export function densifyInkPath(from, points, spacing) {
+  const list = Array.isArray(points) ? points : [];
+  const step = Math.max(0.25, Number(spacing) || 0);
+  const out = [];
+  let previous = from && Number.isFinite(from.x) && Number.isFinite(from.y) ? from : null;
+  list.forEach((point) => {
+    if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) return;
+    if (previous) {
+      const distance = Math.hypot(point.x - previous.x, point.y - previous.y);
+      const pieces = Math.min(INK_DENSIFY_MAX_PER_SEGMENT, Math.ceil(distance / step));
+      for (let i = 1; i < pieces; i += 1) {
+        const t = i / pieces;
+        out.push({ x: previous.x + ((point.x - previous.x) * t), y: previous.y + ((point.y - previous.y) * t) });
+      }
+    }
+    out.push({ x: point.x, y: point.y });
+    previous = point;
+  });
+  return out;
+}
+
 // How many points a set of strokes carries. The Storage panel and the size
 // guard both want this, and neither should have to know the point stride.
 export function inkPointCount(strokes) {
@@ -579,10 +626,18 @@ export function inkBoxGap(a, b) {
   return Math.hypot(dx, dy);
 }
 
-// `open` is { page, startedAt, lastAt, box } or null. Returns true when the new
-// strokes belong to it.
-export function inkStrokesJoinMark(open, { page, box, now }) {
+// `open` is { page, startedAt, lastAt, box, hl } or null. Returns true when the
+// new strokes belong to it.
+//
+// `hl` is whether the strokes are a HIGHLIGHTER's, and a highlighter stroke
+// never joins a pen's mark nor a pen stroke a highlighter's. They are two
+// different statements about the page — "this passage" and "what I wrote about
+// it" — and a highlight swept across a line straight after a margin note would
+// otherwise be filed, noted and carded as part of the note. Join, on the lasso,
+// is still there for the reader who means them as one.
+export function inkStrokesJoinMark(open, { page, box, now, hl = false }) {
   if (!open || open.page !== page) return false;
+  if (Boolean(open.hl) !== Boolean(hl)) return false;
   if ((now - open.lastAt) >= INK_MARK_IDLE_MS) return false;
   if ((now - open.startedAt) >= INK_MARK_CEILING_MS) return false;
   if (!open.box || !box) return true;
