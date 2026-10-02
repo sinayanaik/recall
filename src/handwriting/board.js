@@ -16,9 +16,10 @@
 //     for that is that it belongs in that view's own chrome. So it is a tab now,
 //     beside Cards, Notes and Document, on every open deck;
 //   • `position: fixed; z-index: 600`, with the stage re-parented into it on
-//     every open. The pen's wet and tip canvases are `desynchronized` — they ask
-//     to be taken out of the normal compositing path, which is what makes the
-//     line keep up with the nib — and a low-latency canvas re-parented into a
+//     every open. The pen's wet and tip canvases were `desynchronized` then —
+//     they asked to be taken out of the normal compositing path (they no longer
+//     do: see src/render/ink-engine.js, where the same flag turned the whole
+//     page black under the nib) — and a low-latency canvas re-parented into a
 //     fixed stacking context is exactly the flicker this feature was reported
 //     for, on a surface that is otherwise the same code as the PDF one nobody
 //     reported anything about;

@@ -23,9 +23,11 @@
 //      instead. So the line stopped following the nib and the writing after the
 //      pause was gone. This is the case the whole file exists for.
 //   2. Whether the finished stroke is on the dry canvas BEFORE the wet layer
-//      gives it up. The wet pair is `desynchronized` — it may present ahead of
-//      the compositor — so clearing it first put a one-frame hole where the
-//      stroke had just been, at every pen lift.
+//      gives it up. The wet pair was `desynchronized` — it could present ahead
+//      of the compositor — so clearing it first put a one-frame hole where the
+//      stroke had just been, at every pen lift. (It is not desynchronized any
+//      more, and 2c holds that: the same flag turned the page black under an
+//      S Pen.)
 //   3. Whether the 200th stroke on a page costs what the 2nd did. Three
 //      separate things used to be O(everything on the page) per stroke, and the
 //      symptom of all three was the same: writing got slower the more you had
@@ -343,7 +345,7 @@ try {
   //
   // The check above reads the dry canvas's own bitmap, which proves the stroke
   // was PAINTED. It cannot prove it is visible, and those came apart: the wet
-  // pair is `desynchronized`, which asks to be taken out of the normal
+  // pair was `desynchronized` then, which asks to be taken out of the normal
   // compositing path, and on Chrome/Android that can mean a hardware overlay
   // plane that does not blend with what is beneath it. Left mounted after the
   // stroke it covered the dry canvas, so the ink was painted, present, and
@@ -409,8 +411,10 @@ try {
     let head = 0;
     let tail = 0;
     let total = 0;
+    let attrs = {};
     if (live) {
       const ctx = live.getContext("2d");
+      attrs = (typeof ctx.getContextAttributes === "function" && ctx.getContextAttributes()) || {};
       const px = ctx.getImageData(0, 0, live.width, live.height).data;
       const w = live.width;
       // The stroke runs left to right across the page. "head" is the third of
@@ -425,7 +429,12 @@ try {
     }
     pen(view, "pointerup", x0 + 500, y0 + 100, 0);
     await settle(200);
-    return { hasLive: Boolean(live), lowLatency, layers, head, tail, total, errs: window.__errs.slice(0, 4) };
+    return {
+      hasLive: Boolean(live), lowLatency, layers, head, tail, total,
+      desynchronized: Boolean(attrs.desynchronized),
+      alpha: attrs.alpha !== false,
+      errs: window.__errs.slice(0, 4)
+    };
   }`, PEN_SRC);
 
   check("the live layer is on the page while the pen is down",
@@ -444,6 +453,20 @@ try {
     midStroke.lowLatency === 1 && midStroke.layers === 2,
     `${midStroke.lowLatency} low-latency canvas(es) and ${midStroke.layers} in total mid-stroke — `
       + `a plane over a plane hides the one beneath, which is "only the tip of the stroke is visible"`);
+  // ...and it is not a low-latency plane at all. Reported from a Samsung tablet
+  // with an S Pen: "when I am writing the background turns black and only the
+  // pen stroke is visible, and only after I lift the pen does the PDF come
+  // back", on the Document tab and the Write tab alike. A `desynchronized`
+  // context may be promoted to a front-buffer overlay plane with no alpha, and
+  // a transparent canvas over the whole page then presents as a black one.
+  // Headless Chrome never promotes, so no pixel read here can see it — but the
+  // context still reports the flag it was created with, and that is what is
+  // held. The two faults above were this same plane, and each was worked
+  // around while the flag stayed.
+  check("...and it is an ordinary composited canvas, not a desynchronized plane",
+    midStroke.hasLive && !midStroke.desynchronized && midStroke.alpha,
+    `desynchronized=${midStroke.desynchronized}, alpha=${midStroke.alpha} — a desynchronized canvas `
+      + `with alpha is a black page under the nib on Samsung/Android`);
   check("...carrying the START of the stroke, not only the nib",
     midStroke.head > 0,
     `${midStroke.head} inked pixel(s) where the stroke began, ${midStroke.tail} under the nib `

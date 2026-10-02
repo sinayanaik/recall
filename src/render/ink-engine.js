@@ -58,11 +58,23 @@
 //     one, and both Chrome/Android and Safari/iPadOS have it.
 //   • getPredictedEvents(), on the live canvas. Chrome only; absent elsewhere
 //     and simply not used there, which costs nothing but the prediction.
-//   • desynchronized on the live context, and on that one alone. Presents
-//     without waiting for the compositor on Chrome/Android. Deliberately NOT on
-//     the dry canvas: a desynchronized context may tear, which is fine for a
-//     stroke in flight and not for a page of finished work. And deliberately not
-//     on a SECOND live layer either, which is the whole of the fault above.
+//   • NOT `desynchronized`, on any canvas, and that is the third time this
+//     file has been reported for it. Reported from a Samsung tablet with an
+//     S Pen: "when I am writing the background turns black and only the pen
+//     stroke is visible, and only after I lift the pen does the PDF come back"
+//     — on the Document tab and the Write tab alike, because they are this one
+//     engine. A desynchronized context asks to be taken out of the normal
+//     compositing path, and on Chrome/Android that can mean a front-buffer
+//     overlay plane with NO ALPHA: every transparent pixel of a canvas laid
+//     over the whole page presents as black. The live layer is mounted for
+//     exactly the length of a stroke, so the page was black for exactly the
+//     length of a stroke. The two faults above were the same plane failing to
+//     blend in two other ways, and each was worked around while the flag was
+//     kept. It is gone instead: what it bought was a frame of latency on some
+//     devices, and the two points above — coalesced samples and a bounded
+//     prediction — are most of what makes the line keep up with the nib.
+//     tools/handwriting-check.mjs reads the live context's own attributes so
+//     the flag cannot come back unnoticed.
 //   • Not one layout read in the pointer path. The host rect is measured at
 //     pointerdown and on relayout, never per move. This is the discipline
 //     src/notes/touch-selection.js arrived at the hard way — its extendTo() ran
@@ -245,10 +257,12 @@ export function createInkEngine({
 
   // ── Hosts ────────────────────────────────────────────────────────────────
 
-  function ensureCanvas(extraClass, desynchronized) {
+  // An ordinary, alpha-composited 2D context for every canvas, the live one
+  // included. See the header for why it is never `desynchronized`.
+  function ensureCanvas(extraClass) {
     const canvas = document.createElement("canvas");
     canvas.className = `${className}${extraClass ? ` ${extraClass}` : ""}`;
-    const ctx = canvas.getContext("2d", desynchronized ? { desynchronized: true } : undefined);
+    const ctx = canvas.getContext("2d");
     return { canvas, ctx };
   }
 
@@ -267,7 +281,7 @@ export function createInkEngine({
       return existing;
     }
     if (existing) detachHost(key);
-    const { canvas, ctx } = ensureCanvas("is-ink-dry", false);
+    const { canvas, ctx } = ensureCanvas("is-ink-dry");
     element.appendChild(canvas);
     const entry = { key, el: element, canvas, ctx, scale: 1, strokes: existing?.strokes || [], painted: null, unrecorded: false };
     hosts.set(key, entry);
@@ -435,7 +449,7 @@ export function createInkEngine({
     // that position these canvases select on, and the layer is still the wet
     // one — there is simply no longer a second one over it.
     if (!inkOverlay) {
-      const made = ensureCanvas("is-ink-wet", true);
+      const made = ensureCanvas("is-ink-wet");
       inkOverlay = made.canvas;
       overlayCtx = made.ctx;
     }
@@ -465,11 +479,11 @@ export function createInkEngine({
   }
 
   // The wet layer gives up the live stroke only AFTER the dry layer has taken
-  // it. The live layer is `desynchronized` — it may present ahead of the
-  // compositor, which is the whole point of it — so clearing it first lets the
-  // erase reach the glass a frame before the committed stroke does. What that
-  // looks like is the stroke you have just written blinking out and back at
-  // every single pen lift.
+  // it. Clearing it first lets the erase reach the glass a frame before the
+  // committed stroke does — certain when the layer was `desynchronized` and
+  // presented ahead of the compositor, and still possible without it — and what
+  // that looks like is the stroke you have just written blinking out and back
+  // at every single pen lift.
   //
   // repaint() draws the selection chrome onto the very layer that is wiped a
   // line later, so the chrome is put back rather than lost.
@@ -487,13 +501,15 @@ export function createInkEngine({
     // stroke was never lost — it was on the dry canvas the whole time, behind a
     // canvas that had stopped leaving.
     //
-    // The live layer is created `desynchronized`, which is what buys the latency
-    // that makes the pen feel like a pen. What that flag actually asks for is to
-    // be taken OUT of the normal compositing path — on Chrome/Android a
-    // low-latency canvas can be promoted to a hardware overlay plane, and a
-    // plane does not blend with what is underneath it. Cleared to transparent on
-    // a desktop that composites it normally, it is invisible and harmless, which
-    // is exactly why leaving it mounted looked free here and was not.
+    // The live layer was created `desynchronized` then, which asks to be taken
+    // OUT of the normal compositing path — on Chrome/Android a low-latency
+    // canvas can be promoted to a hardware overlay plane, and a plane does not
+    // blend with what is underneath it. Cleared to transparent on a desktop that
+    // composites it normally, it is invisible and harmless, which is exactly why
+    // leaving it mounted looked free here and was not. The flag is gone now (see
+    // the header — the same plane turned the whole page black under the nib),
+    // but a full-page canvas that nothing is being drawn on is still a bitmap
+    // and a layer for nothing.
     //
     // So it is mounted for the duration of a stroke and no longer. The DOM churn
     // that costs is the price of the committed ink being on top of nothing at

@@ -138,11 +138,11 @@
        you, and the rule for that is written into the drawer's own markup: what
        belongs to the deck or the view you are looking at lives in that view's
        own chrome;
-     • the pen's live canvases are `desynchronized` (src/render/ink-engine.js) —
-       they ask to be taken out of the normal compositing path, which is the
-       whole reason the line keeps up with the nib. Re-parenting one into a
-       fixed, z-indexed box on every open is exactly the flicker this feature was
-       reported for, on a surface that is otherwise the same code as the PDF one
+     • the pen's live canvases were `desynchronized` then (they are not now:
+       src/render/ink-engine.js, where the flag turned the page black under the
+       nib) — they asked to be taken out of the normal compositing path.
+       Re-parenting one into a fixed, z-indexed box on every open is exactly the
+       flicker this feature was reported for, on a surface that is otherwise the same code as the PDF one
        nobody reported anything about;
      • and it had to force a refit on every open, because the stage really had
        arrived in a box of a different width.
