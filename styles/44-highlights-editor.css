@@ -304,12 +304,27 @@
 .hl-note-quote > :first-child { margin-top: 0; }
 .hl-note-quote > :last-child { margin-bottom: 0; }
 
-/* A picture of a region or ink mark, in its own element above the quote (see
-   articleFor) — larger here than in a drawer row, since in this pane the
-   picture is the card's whole subject. Keep the cap in step with
-   REGION_PREVIEW_MAX_HEIGHT in src/panels/highlights-editor.js. */
+/* A region or ink mark, in its own element above the quote (see articleFor) —
+   the live crop of the page with selectable text, the same embed a note or a
+   card shows (mountLiveRegion in src/documents/pdf-region-embed.js). Its
+   height cap is applied by narrowing it, from REGION_PREVIEW_MAX_HEIGHT in
+   src/panels/highlights-editor.js; here it only loses the notes' centring
+   margin, since in a card it sits flush with the words under it. */
 .hl-note-region {
   margin-bottom: 0.3em;
+}
+
+.hl-note-region .pdf-region-embed {
+  margin: 0;
+}
+
+/* Exactly its finished size while it waits to be rendered (it is rendered as it
+   nears the viewport): the loading box's own padding and floor would make it
+   grow or shrink the moment the page lands, and a card changing height under a
+   reveal is what moves the pane's scroll spy off the card it just revealed. */
+.hl-note-region .pdf-region-embed.is-loading {
+  padding: 0;
+  min-height: 0;
 }
 
 .hl-note-region .highlight-region-preview {

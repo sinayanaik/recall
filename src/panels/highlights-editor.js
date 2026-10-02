@@ -51,8 +51,7 @@ import { NOTE_AUTOSAVE_MS } from "../notes/highlight-note-editor.js?v=__BUILD__"
 import { createNoteEditorKit } from "../notes/note-editor-kit.js?v=__BUILD__";
 import { renderMarkdown } from "../render/block-cache.js?v=__BUILD__";
 import { registerRenderTarget, renderTargetConfig } from "../format/render-toolbar.js?v=__BUILD__";
-import { addRegionPreview } from "./highlights-panel.js?v=__BUILD__";
-import { REGION_IMAGE_WIDTH, regionImageRect } from "../documents/pdf-region-embed.js?v=__BUILD__";
+import { EMBED_TARGET_WIDTH, mountLiveRegion, regionImageRect } from "../documents/pdf-region-embed.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
 import { documentHighlightNote, setDocumentHighlightNote } from "../documents/pdf-highlights.js?v=__BUILD__";
 
@@ -339,15 +338,16 @@ function regionPreviewHeight(record) {
   if (!rect) return 48;
   const w = Math.max(1, Math.abs(rect[2] - rect[0]));
   const h = Math.max(1, Math.abs(rect[3] - rect[1]));
-  return Math.min(REGION_PREVIEW_MAX_HEIGHT, REGION_IMAGE_WIDTH * (h / w));
+  return Math.min(REGION_PREVIEW_MAX_HEIGHT, EMBED_TARGET_WIDTH * (h / w));
 }
 
-// The cap styles/44-highlights-editor.css puts on a picture in this pane.
+// The height a live region in this pane is held to — see mountLiveRegion, which
+// narrows a tall box to fit it rather than clipping it.
 const REGION_PREVIEW_MAX_HEIGHT = 320;
 
 export function estimateEntryHeight(entry) {
-  // A pictured entry is roughly its picture's height (REGION_IMAGE_WIDTH wide,
-  // at the box's own shape, capped by the stylesheet), not a line of text.
+  // A pictured entry is roughly its region's height (the column's width at the
+  // box's own shape, capped at REGION_PREVIEW_MAX_HEIGHT), not a line of text.
   const quoteLines = entry.region
     ? Math.ceil(regionPreviewHeight(entry.region) / 24) + (entry.markdown ? Math.ceil(entry.markdown.length / HL_ENTRY_LINE_CHARS) : 0)
     : Math.max(1, Math.ceil((entry.markdown || "").length / HL_ENTRY_LINE_CHARS));
@@ -469,17 +469,17 @@ function articleFor(entry) {
   // has not been written yet — see there.
   body.setAttribute("aria-label", "This highlight's note — press Enter to edit");
 
-  // A region drawn round a figure is a picture, so it is listed as one — in an
-  // element of its OWN above the quote, never inside it. The quote is painted
-  // later by renderMarkdown (paintQuote), which replaces everything in it: a
-  // picture put there was wiped the moment the entry was painted, which is
-  // why the pane only ever showed "Region · page N". The quote under it is
-  // the words the box happened to cover, and goes unshown when it covered
-  // none.
+  // A region drawn round a figure is listed as the region itself — the live
+  // crop of the page with its real, selectable text, exactly as a note or a
+  // card shows it (mountLiveRegion), not a flattened picture of it. In an
+  // element of its OWN above the quote, never inside it: the quote is painted
+  // later by renderMarkdown (paintQuote), which replaces everything in it. The
+  // quote under it is the words the box happened to cover, and goes unshown
+  // when it covered none.
   if (entry.region) {
     const region = document.createElement("div");
     region.className = "hl-note-region";
-    addRegionPreview(region, entry.region);
+    mountLiveRegion(region, entry.region, { maxHeight: REGION_PREVIEW_MAX_HEIGHT });
     if (!String(entry.markdown || "").trim()) quote.hidden = true;
     article.append(head, region, quote, body);
   } else {

@@ -665,6 +665,14 @@ function paintCardLinkFor(mark) {
 // arguing with a step.
 export const CYCLE_CARD_GAP_PX = 8;
 
+// Where revealCard last left the list, so the scroll spy can tell its own
+// scroll from the reader's. A card near the END of the list cannot be brought to
+// the top — the list runs out first — and the spy, asked "the topmost card in
+// view", then answered with the card above it: a press on the last highlight's
+// badge revealed it and immediately moved the counter off it. Taller cards (a
+// region rendered live, at the column's width) made that the common case.
+let revealedScrollTop = -1;
+
 function revealCard(card) {
   const body = el.highlightCycleBody;
   if (!body) return;
@@ -672,6 +680,8 @@ function revealCard(card) {
   const rect = card.getBoundingClientRect();
   if (rect.top >= box.top && rect.bottom <= box.bottom) return;
   body.scrollTop += rect.top - box.top - CYCLE_CARD_GAP_PX;
+  // Read back rather than computed: the browser clamps it at the end.
+  revealedScrollTop = body.scrollTop;
 }
 
 // ── The counter follows the scrollbar too ───────────────────────────────────
@@ -683,6 +693,9 @@ function revealCard(card) {
 function cycleScrollSpy() {
   const body = el.highlightCycleBody;
   if (!body || !cycleEntries.length) return;
+  // The scroll revealCard made: the card it revealed is the answer already.
+  if (revealedScrollTop >= 0 && Math.abs(body.scrollTop - revealedScrollTop) < 1) return;
+  revealedScrollTop = -1;
   const top = body.getBoundingClientRect().top;
   const cards = body.querySelectorAll(`.${HL_NOTE_CLASS}`);
   let found = "";
