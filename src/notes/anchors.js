@@ -12,6 +12,7 @@ import { loadWebDeck } from "../cloud/web-decks.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { wheelGestureActive } from "../core/gesture.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
+import { deckHasPdf } from "../documents/doc-slot.js?v=__BUILD__";
 import { flashDocumentHighlight } from "../documents/pdf-highlights.js?v=__BUILD__";
 import { captureDocumentSelection, resolveDocumentAnchor } from "../documents/pdf-selection.js?v=__BUILD__";
 import { isDocumentViewActive, scrollToDocumentPage } from "../documents/pdf-view.js?v=__BUILD__";
@@ -1030,7 +1031,7 @@ export function scheduleNoteJump(anchor, options, locator = null) {
   // has. So the ratio is applied twice — once from whatever is known now, and
   // once a couple of frames later against the laid-out page.
   const pdfAnchor = anchor?.pdf || (Number.isFinite(anchor?.pdfPage) ? { page: anchor.pdfPage } : null);
-  if (pdfAnchor && state.meta?.pdf) {
+  if (pdfAnchor && deckHasPdf(state.meta)) {
     if (state.viewMode !== "document") setViewMode("document");
     // The same line revealNoteAnchor already carries for the note surface, so
     // both halves of the split answer "centre it, or put it back?" the same way.

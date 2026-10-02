@@ -701,6 +701,10 @@ try {
       hasContent({ cards: [], notes: "", meta: { pdf: { name: "paper.pdf" } } }) === true
       || "deckPayloadHasContent called a paper empty");
 
+    must("...and so does one whose first paper was removed, leaving the others", () =>
+      hasContent({ cards: [], notes: "", meta: { pdfs: [{ id: "pdf-2", name: "q.pdf" }] } }) === true
+      || "deckPayloadHasContent called a deck with papers in meta.pdfs empty");
+
     must("a deck with nothing at all still counts as empty", () =>
       hasContent({ cards: [], notes: "   ", meta: {} }) === false
       || "deckPayloadHasContent called an empty deck full");
@@ -971,7 +975,7 @@ try {
 
     // ── The order the reader arranged the papers in ────────────────────────
     //
-    // meta.pdfOrder, written by the "Arrange PDFs" sheet. The merge rebuilds
+    // meta.pdfOrder, written by dragging in the PDF panel (pdf-switcher.js). The merge rebuilds
     // meta.pdfs in whichever side's order it met first, so the arrangement
     // has to be its own stamped value, settled by which was made last.
     const multi = await load("src/documents/pdf-multi.js");
@@ -1006,6 +1010,53 @@ try {
       const merged = docSync.mergeDeckMeta(cloud, local, { prefer: "cloud" });
       const listed = multi.deckPdfs(merged).map((entry) => `${entry.id}${entry.label ? `=${entry.label}` : ""}`).join(",");
       return listed === "pdf-2=Chapter 2,pdf-3,primary" || `got ${listed}`;
+    });
+
+    // ── Removing the deck's FIRST paper, or its ONLY one ───────────────────
+    //
+    // Both used to be refused (removePdfFromDeck), so the merge never had to
+    // honour them. It does now: the removal's tombstone has to beat a device
+    // that still carries the paper — including one that has only ever known
+    // the bare meta.pdf, which the old "a side that has one wins" rule would
+    // have handed straight back.
+    const iso = (ms) => new Date(ms).toISOString();
+    must("a removed first paper stays removed against a device that still has it", () => {
+      const local = { pdfs: [{ id: "pdf-2", name: "q.pdf", sha256: "b".repeat(64), at: T1 }], deletedPdfIds: { primary: iso(T2) } };
+      const cloud = { pdf: { ...paper, at: T1 }, pdfs: [{ ...paper, id: "primary", at: T1 }, { id: "pdf-2", name: "q.pdf", sha256: "b".repeat(64), at: T1 }] };
+      for (const prefer of ["local", "cloud"]) {
+        const merged = docSync.mergeDeckMeta(cloud, local, { prefer });
+        const ids = multi.deckPdfs(merged).map((entry) => entry.id).join(",");
+        if (ids !== "pdf-2" || merged.pdf) return `prefer=${prefer}: ${ids}, meta.pdf=${JSON.stringify(merged.pdf)}`;
+      }
+      return true;
+    });
+
+    must("a removed only paper stays removed, even against a device that knows only the bare meta.pdf", () => {
+      const local = { pdfs: [], deletedPdfIds: { primary: iso(T2) } };
+      const cloud = { pdf: { ...paper, at: T1 } };
+      for (const prefer of ["local", "cloud"]) {
+        const merged = docSync.mergeDeckMeta(cloud, local, { prefer });
+        if (merged.pdf || multi.deckPdfs(merged).length) return `prefer=${prefer}: came back as ${JSON.stringify(merged.pdf || merged.pdfs)}`;
+        if (!Array.isArray(merged.pdfs)) return `prefer=${prefer}: the empty list was dropped, so the next merge would use the old rule`;
+        // ...and the next merge, against the same stale copy, still agrees.
+        const again = docSync.mergeDeckMeta(cloud, merged, { prefer });
+        if (again.pdf || multi.deckPdfs(again).length) return `prefer=${prefer}: second merge resurrected it`;
+      }
+      return true;
+    });
+
+    must("...while a paper attached again after the removal survives it", () => {
+      const local = { pdfs: [{ ...paper, id: "primary", name: "new.pdf", at: T3 }], pdf: { ...paper, name: "new.pdf", at: T3 }, deletedPdfIds: { primary: iso(T2) } };
+      const cloud = { pdfs: [], deletedPdfIds: { primary: iso(T2) } };
+      const merged = docSync.mergeDeckMeta(cloud, local, { prefer: "cloud" });
+      return (merged.pdf?.name === "new.pdf" && multi.deckPdfs(merged).length === 1) || `got ${JSON.stringify(merged.pdfs)}`;
+    });
+
+    must("withDeckPdfs keeps an empty list when asked, and mirrors meta.pdf only while the primary is there", () => {
+      const emptied = multi.withDeckPdfs({ pdf: { ...paper }, pdfs: [{ ...paper, id: "primary" }] }, [], { keepEmpty: true });
+      if (!Array.isArray(emptied.pdfs) || emptied.pdfs.length || emptied.pdf) return `emptied: ${JSON.stringify(emptied)}`;
+      const dropped = multi.withDeckPdfs({ pdf: { ...paper }, pdfs: [{ ...paper, id: "primary" }, { id: "pdf-2", name: "q.pdf" }] }, [{ id: "pdf-2", name: "q.pdf" }]);
+      return (!dropped.pdf && dropped.pdfs.length === 1) || `dropped: ${JSON.stringify(dropped)}`;
     });
 
     must("a reorder alone counts as a change to sync", () => {

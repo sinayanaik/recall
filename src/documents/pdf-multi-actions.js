@@ -8,14 +8,14 @@ import { state } from "../core/state.js?v=__BUILD__";
 import { DOC_SLOT_DOC } from "./doc-slot.js?v=__BUILD__";
 import {
   deckPdfs,
-  PDF_PRIMARY_ID,
   pdfStoreKey,
   recordsForSurface,
   recordsOutsideSurface,
   withDeckPdfs
 } from "./pdf-multi.js?v=__BUILD__";
 import { deleteLocalDocument } from "./pdf-store.js?v=__BUILD__";
-import { renderDocumentPdfSwitcher, switchToPdf } from "./pdf-view.js?v=__BUILD__";
+import { openDocumentView, renderDocumentPdfSwitcher, switchToPdf } from "./pdf-view.js?v=__BUILD__";
+import { updateMeta } from "../cards/card-status.js?v=__BUILD__";
 import { recordDeletedMetaId } from "../sync/document-sync.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { deleteDocumentCopies } from "../storage/document-migration.js?v=__BUILD__";
@@ -27,29 +27,16 @@ import { showToast } from "../ui/feedback.js?v=__BUILD__";
 // outline cache, and — best-effort, same as offloadCurrentDocument — its
 // bytes on this device and in the cloud.
 //
-// Refused on a deck's only PDF. There is nowhere else for the doc slot to
-// land, and "get rid of my only paper" is what offload (keep the record, drop
-// the cloud bytes) and a fresh attach already cover.
+// Any of a deck's papers can go, the first and the last included. The first
+// used to be refused, because meta.pdf mirrors it and a good many modules asked
+// `state.meta?.pdf` for "does this deck have a document". They ask deckHasPdf
+// (src/documents/doc-slot.js) now, which counts every paper. The last used to
+// be refused too; removing it leaves the deck with no document, and the PDF tab
+// opens to the offer of one, exactly as on a deck that never had a paper.
 export async function removePdfFromDeck(pdfId) {
   const list = deckPdfs(state.meta);
   const entry = list.find((item) => item.id === pdfId);
   if (!entry) return false;
-  if (list.length < 2) {
-    showToast("This is the deck's only PDF — offload it or attach a different one instead", "info");
-    return false;
-  }
-  // The primary is not just "first in the list" — a good many other modules
-  // (the bookmark, the page-notes toggle, "does this deck have a document at
-  // all") ask `state.meta?.pdf` directly rather than "does deckPdfs(meta)
-  // have anything", exactly because every deck that has EVER had a PDF has
-  // had this one populated. Removing it out from under them would read as
-  // "this deck has no document" to every one of those the moment a SECOND,
-  // still-present PDF is the only one left. Removing another PDF and keeping
-  // this one is unaffected by this at all.
-  if (pdfId === PDF_PRIMARY_ID) {
-    showToast("This is the deck's first PDF — remove the others first, or offload this one instead", "info");
-    return false;
-  }
 
   const remaining = list.filter((item) => item.id !== pdfId);
   const highlights = Array.isArray(state.meta?.pdfHighlights) ? state.meta.pdfHighlights : [];
@@ -57,7 +44,9 @@ export async function removePdfFromDeck(pdfId) {
   const goneHighlights = recordsForSurface(highlights, DOC_SLOT_DOC, pdfId);
   const goneBlocks = recordsForSurface(blocks, DOC_SLOT_DOC, pdfId);
 
-  const meta = withDeckPdfs(state.meta, remaining);
+  // An empty list is kept as `[]` rather than dropped, so the sync merge stays
+  // on its by-id rule and honours the tombstone below; see withDeckPdfs.
+  const meta = withDeckPdfs(state.meta, remaining, { keepEmpty: true });
   meta.pdfHighlights = recordsOutsideSurface(highlights, DOC_SLOT_DOC, pdfId);
   meta.pdfBlocks = recordsOutsideSurface(blocks, DOC_SLOT_DOC, pdfId);
   goneHighlights.forEach((record) => {
@@ -77,8 +66,9 @@ export async function removePdfFromDeck(pdfId) {
     if (Object.keys(rest).length) meta.pdfTocByPdfId = rest;
     else delete meta.pdfTocByPdfId;
   }
-  const nextActive = remaining.some((item) => item.id === meta.pdfActiveId) ? meta.pdfActiveId : remaining[0].id;
-  meta.pdfActiveId = nextActive;
+  const nextActive = remaining.some((item) => item.id === meta.pdfActiveId) ? meta.pdfActiveId : (remaining[0]?.id || null);
+  if (nextActive) meta.pdfActiveId = nextActive;
+  else delete meta.pdfActiveId;
   state.meta = meta;
   scheduleDeckAutosave();
 
@@ -90,7 +80,15 @@ export async function removePdfFromDeck(pdfId) {
   }
   deleteLocalDocument(pdfStoreKey(state.localDeckId, pdfId)).catch(() => {});
 
-  await switchToPdf(nextActive);
+  if (nextActive) {
+    await switchToPdf(nextActive);
+  } else {
+    // Nothing left to switch to: the tab and the stage are told the deck has no
+    // document, and the stage reopens onto the attach panel.
+    updateMeta();
+    if (state.viewMode === "document") await openDocumentView({ force: true, slot: DOC_SLOT_DOC });
+  }
+  renderDocumentPdfSwitcher();
   showToast(`Removed "${entry.name || "PDF"}" from this deck`);
   return true;
 }

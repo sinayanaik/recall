@@ -794,41 +794,47 @@ export async function switchToPdf(pdfId) {
   return true;
 }
 
-// The dropdown itself — rebuilt from the deck's own list each time it might
-// have changed (an attach, a remove, a rename), and hidden outright when
-// there is only one PDF, so an ordinary single-PDF deck's toolbar looks
-// exactly as it always has.
+// The switcher — a button naming the open paper, which opens the deck's PDF
+// panel (src/documents/pdf-switcher.js): switch, drag to reorder, rename,
+// remove and add, all in one place. Repainted from the deck's own list each time
+// it might have changed (an attach, a remove, a rename, a reorder), and hidden
+// outright when there is only one PDF, so an ordinary single-PDF deck's toolbar
+// looks exactly as it always has.
 //
-// Its last row is not a paper: it opens the arranging sheet (pdf-arrange.js),
-// because a native select's own rows cannot be dragged. A value no paper id
-// can take (they are all "primary" or "pdf-…"), so it can never be mistaken
-// for one.
-export const PDF_ARRANGE_OPTION = "__arrange";
+// It used to be a native <select> whose last row opened a separate arranging
+// sheet, because a native select's rows cannot be dragged. The panel is the
+// list itself, so there is nothing to open a second sheet for.
+//
+// The panel lives in pdf-switcher.js, which imports THIS module for
+// switchToPdf, so it is told about each repaint through a hook rather than
+// imported here — the same edge setDocumentPagePaintedHook answers.
+let pdfSwitcherPainted = () => {};
+
+export function setPdfSwitcherPaintedHook(fn) {
+  pdfSwitcherPainted = typeof fn === "function" ? fn : () => {};
+}
 
 export function renderDocumentPdfSwitcher() {
-  const picker = el.documentPdfSwitcher;
-  if (!picker) return;
-  if (activeDocSlot() !== DOC_SLOT_DOC) { picker.hidden = true; return; }
-  const list = deckPdfs(state.meta);
+  const trigger = el.documentPdfSwitcher;
+  if (!trigger) return;
+  const list = activeDocSlot() === DOC_SLOT_DOC ? deckPdfs(state.meta) : [];
   if (list.length < 2) {
-    picker.hidden = true;
-    picker.innerHTML = "";
+    trigger.hidden = true;
+    pdfSwitcherPainted(null);
     return;
   }
   const activeId = openPdf?.pdfId || activePdfId(state.meta);
-  picker.innerHTML = "";
-  list.forEach((entry) => {
-    const option = document.createElement("option");
-    option.value = entry.id;
-    option.textContent = entry.label || entry.name || "PDF";
-    if (entry.id === activeId) option.selected = true;
-    picker.appendChild(option);
-  });
-  const arrange = document.createElement("option");
-  arrange.value = PDF_ARRANGE_OPTION;
-  arrange.textContent = "⇅ Arrange PDFs…";
-  picker.appendChild(arrange);
-  picker.hidden = false;
+  const active = list.find((entry) => entry.id === activeId) || list[0];
+  const label = active.label || active.name || "PDF";
+  const index = list.indexOf(active) + 1;
+  const name = trigger.querySelector(".document-pdf-switcher-name");
+  if (name) name.textContent = label;
+  else trigger.textContent = label;
+  const count = trigger.querySelector(".document-pdf-switcher-count");
+  if (count) count.textContent = `${index}/${list.length}`;
+  trigger.title = `${label} — ${index} of ${list.length} PDFs. Switch, reorder, rename or remove them`;
+  trigger.hidden = false;
+  pdfSwitcherPainted({ list, activeId: active.id });
 }
 
 // Everything a rendered page carries, brought up to date against arrays that

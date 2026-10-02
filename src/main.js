@@ -108,7 +108,7 @@ import { reconcileAllDecks, syncAllDecksAndWait } from "./sync/reconcile.js?v=__
 import { closeTopmostOverlay, initBackGesture } from "./ui/back-gesture.js?v=__BUILD__";
 import { showAuthenticatedUI, showLibraryFailedScreen, showLoginScreen, showSetupScreen } from "./ui/boot-screens.js?v=__BUILD__";
 import { applyChromeCollapse, hasStudyTextSelection, initImmersiveMode, isFocusModeActive, measureChromeHeights, setChromeCollapseHandler, setChromeFocusPinned, setChromeModesHandler, setFocusMode, toggleImmersiveMode } from "./ui/chrome.js?v=__BUILD__";
-import { DOC_SLOT_DOC, DOC_SLOT_NOTEBOOK, activeDocSlot, onDocumentSurface } from "./documents/doc-slot.js?v=__BUILD__";
+import { DOC_SLOT_DOC, DOC_SLOT_NOTEBOOK, activeDocSlot, deckHasPdf, onDocumentSurface } from "./documents/doc-slot.js?v=__BUILD__";
 import { captureDocumentSelection } from "./documents/pdf-selection.js?v=__BUILD__";
 import { closeImportPanel, closeMyDecksPanel, editCurrentDeckCategory, editCurrentDeckTitle, openImportPanel, openMyDecksPanel } from "./ui/deck-header.js?v=__BUILD__";
 import { addBlankCardAtCursor, flushWorkingDeck, toggleEditMode } from "./ui/edit-mode.js?v=__BUILD__";
@@ -129,8 +129,8 @@ import { setPdfRegionGoToHandler } from "./documents/pdf-region-embed.js?v=__BUI
 import { closeDocumentToc, documentOutlineEntries, initDocumentOutlineFolding, isDocumentTocOpen, resolveOutlineEntryPage, toggleDocumentToc } from "./documents/pdf-outline.js?v=__BUILD__";
 import { activePdfId, deckPdfById, deckPdfs, PDF_PRIMARY_ID, withDeckPdfs } from "./documents/pdf-multi.js?v=__BUILD__";
 import { removePdfFromDeck, renamePdf } from "./documents/pdf-multi-actions.js?v=__BUILD__";
-import { openPdfArrangeSheet } from "./documents/pdf-arrange.js?v=__BUILD__";
-import { currentPdfDocument, currentPdfPageCount, documentFittedWidth, fitDocumentToWidth, initDocumentPinchZoom, isDocumentFitWidth, openDocumentIsCurrent, openDocumentPdfId, openDocumentView, reattachDocument, relayoutDocument, repaintOpenDocumentPages, scheduleDocumentPositionSave, scrollToDocumentPage, refreshDocumentPaperForTheme, setDocumentAttachHandler, setDocumentOpenedHook, setDocumentPagePaintedHook, setNotebookStartHandler, switchToPdf, PDF_ARRANGE_OPTION, togglePdfInvert, updatePageIndicator, zoomDocument, retryMissingDocumentOpen } from "./documents/pdf-view.js?v=__BUILD__";
+import { closePdfPanel, initPdfSwitcher } from "./documents/pdf-switcher.js?v=__BUILD__";
+import { currentPdfDocument, currentPdfPageCount, documentFittedWidth, fitDocumentToWidth, initDocumentPinchZoom, isDocumentFitWidth, openDocumentIsCurrent, openDocumentPdfId, openDocumentView, reattachDocument, relayoutDocument, repaintOpenDocumentPages, scheduleDocumentPositionSave, scrollToDocumentPage, refreshDocumentPaperForTheme, setDocumentAttachHandler, setDocumentOpenedHook, setDocumentPagePaintedHook, setNotebookStartHandler, switchToPdf, togglePdfInvert, updatePageIndicator, zoomDocument, retryMissingDocumentOpen } from "./documents/pdf-view.js?v=__BUILD__";
 import { adoptDocumentInk, canRedoInk, canUndoInk, copyInkSelection, cutInkSelection, duplicateInkSelection, hasInkClipboard, initDocumentInk, inkMarkImageMarkdown, inkSelectionCount, isInkMarkId, nudgeInkSelection, paintDocumentInk, pasteInkSelection, redoInk, repaintDocumentInk, setInkChangedHandler, undoInk } from "./documents/pdf-ink.js?v=__BUILD__";
 import { addHandwritingImage, enterHandwritingView, refreshHandwritingBoard, runHandwritingMenuAction, startHandwritingNotebook } from "./handwriting/board.js?v=__BUILD__";
 import { closeBlockStylePopover, isBlockStylePopoverOpen } from "./documents/block-style-bar.js?v=__BUILD__";
@@ -3734,7 +3734,7 @@ el.documentPageInput?.addEventListener("change", () => {
 // left here is getting OUT of whatever the embed was shown in, onto the right
 // one of the deck's PDFs, and showing the reader which box on the page it was.
 async function goToPdfRegion({ page, rect, pdfId }) {
-  if (!state.meta?.pdf) {
+  if (!deckHasPdf(state.meta)) {
     setStatus("This deck has no PDF attached to open that region in.", "error");
     return;
   }
@@ -3965,6 +3965,8 @@ el.documentMoreBtn?.addEventListener("click", () => {
   const open = el.documentMoreMenu.hidden;
   el.documentMoreMenu.hidden = !open;
   el.documentMoreBtn.setAttribute("aria-expanded", String(open));
+  // One popover in this row at a time: the PDF panel hangs from the switcher.
+  if (open) closePdfPanel();
   // "Notes on the page" is a MODE, so its switch has to say which way it is set
   // — and its hint has to say how many notes there are to print, because
   // pressing a toggle on an unannotated paper and seeing nothing change is the
@@ -4009,7 +4011,6 @@ el.documentMoreMenu?.addEventListener("click", async (event) => {
   if (runHandwritingMenuAction(action)) return;
   if (action === "offload") await offloadCurrentDocument();
   if (action === "rename-pdf") renameCurrentPdf();
-  if (action === "arrange-pdfs") openPdfArrangeSheet();
   if (action === "remove-pdf") removeCurrentPdf();
 });
 
@@ -4032,17 +4033,9 @@ el.documentAddPdfInput?.addEventListener("change", async (event) => {
   if (file) await attachPdfToOpenDeck(file).catch(reportPdfImportCrash);
 });
 
-el.documentPdfSwitcher?.addEventListener("change", (event) => {
-  // The last row is not a paper but the way to rearrange them (see
-  // renderDocumentPdfSwitcher) — put the selection back on the open paper
-  // before the sheet opens, so the dropdown never claims to be showing it.
-  if (event.target.value === PDF_ARRANGE_OPTION) {
-    event.target.value = openDocumentPdfId() || activePdfId(state.meta) || "";
-    openPdfArrangeSheet();
-    return;
-  }
-  switchToPdf(event.target.value);
-});
+// The switcher opens the deck's PDF panel — switch, drag to reorder, rename,
+// remove and add, all in one list (src/documents/pdf-switcher.js).
+initPdfSwitcher();
 
 function renameCurrentPdf() {
   const pdfId = openDocumentPdfId() || activePdfId(state.meta);
@@ -4057,12 +4050,11 @@ function removeCurrentPdf() {
   const pdfId = openDocumentPdfId() || activePdfId(state.meta);
   const entry = deckPdfById(state.meta, pdfId);
   if (!entry) return;
-  if (deckPdfs(state.meta).length < 2) {
-    showToast("This is the deck's only PDF — offload it or attach a different one instead", "info");
-    return;
-  }
+  const rest = deckPdfs(state.meta).length > 1
+    ? "Your other PDFs, notes and cards are untouched."
+    : "It is this deck's only PDF, so the deck is left with no document — your notes and cards are untouched, and you can attach another any time.";
   showConfirmModal(
-    `“${entry.label || entry.name || "This PDF"}” will be removed from this deck, along with its highlights and bookmark. Your other PDFs, notes and cards are untouched.`,
+    `“${entry.label || entry.name || "This PDF"}” will be removed from this deck, along with its highlights and bookmark. ${rest}`,
     () => removePdfFromDeck(pdfId),
     { confirmLabel: "Remove", danger: true }
   );

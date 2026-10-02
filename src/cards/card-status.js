@@ -2,7 +2,7 @@
 
 import { syncResults, uncategorizedCards } from "./study.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
-import { deckHasHandwrittenPages } from "../documents/doc-slot.js?v=__BUILD__";
+import { deckHasHandwrittenPages, deckHasPdf } from "../documents/doc-slot.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { normalizeCardStatus } from "../export/markdown.js?v=__BUILD__";
 import { normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
@@ -137,7 +137,7 @@ export function updateMeta() {
 export function refreshDocumentTab() {
   const button = el.viewModeToggle?.querySelector('[data-view-mode="document"]');
   if (!button) return;
-  const hasDocument = Boolean(state.meta?.pdf);
+  const hasDocument = deckHasPdf(state.meta);
   const showTab = hasActiveDeck();
   button.hidden = !showTab;
   // The reading rail's own Document icon, in the same pass. Two controls saying

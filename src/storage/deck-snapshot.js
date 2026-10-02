@@ -58,8 +58,11 @@ export function deckPayloadHasContent({ cards, notes, meta } = {}) {
   // else has no cards, an empty note and no meta.pdf, so testing only meta.pdf
   // would call it empty — and this predicate is consulted on BOTH sides of the
   // round trip, so such a deck would not merely stop autosaving, it would refuse
-  // to load and report itself corrupted.
-  return Boolean(meta?.pdf || meta?.notebook);
+  // to load and report itself corrupted. meta.pdfs as well as meta.pdf: the
+  // deck's first paper can be removed while others stay, and meta.pdf (its
+  // mirror) goes with it. Spelled out rather than calling deckHasPdf because
+  // tools/document-sync-check.mjs lifts this function out as text.
+  return Boolean(meta?.pdf || (Array.isArray(meta?.pdfs) && meta.pdfs.length) || meta?.notebook);
 }
 
 export function deckSnapshot() {

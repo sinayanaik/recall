@@ -20,7 +20,7 @@
 // `meta.pdfHighlights` — an array on the deck's existing JSONB meta bag, no new
 // table and no new column.
 
-import { activeDocSlot, DOC_SLOT_DOC, stampDocSlotAll } from "./doc-slot.js?v=__BUILD__";
+import { activeDocSlot, deckHasPdf, DOC_SLOT_DOC, stampDocSlotAll } from "./doc-slot.js?v=__BUILD__";
 import { activePdfId, PDF_PRIMARY_ID, recordsForSurface, recordsOutsideSurface, stampRecordPdfIdAll } from "./pdf-multi.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { lastInkContactWasPen, msSinceLastInkStroke } from "../core/gesture.js?v=__BUILD__";
@@ -99,7 +99,7 @@ function wholeHighlightArray(next) {
 // decide whether to look at documentHighlights(), so a deck whose only document
 // is one it wrote itself would otherwise have every mark in it left off both.
 export function isPdfDeck() {
-  return Boolean(state.meta?.pdf || state.meta?.notebook);
+  return Boolean(deckHasPdf(state.meta) || state.meta?.notebook);
 }
 
 // Reading order, which is also the order the Highlights panel lists them in:

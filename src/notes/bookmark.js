@@ -41,7 +41,7 @@ import { currentDeckKey, rawOffsetForCurrentNotesScroll } from "./scroll-anchor.
 import { trimNoteAnchor } from "../quick-notes/anchors.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { showConfirmModal, showToast } from "../ui/feedback.js?v=__BUILD__";
-import { onDocumentSurface } from "../documents/doc-slot.js?v=__BUILD__";
+import { deckHasPdf, onDocumentSurface } from "../documents/doc-slot.js?v=__BUILD__";
 
 // Roughly the span of the text snippet an anchor already carries (trimNoteAnchor
 // caps `text` at 300 chars) — "near" means the reader can already see the
@@ -115,7 +115,7 @@ function notesSpotAnchor() {
 // stores and the prompt dedup want a finite `offset`, and `pdfPage`/`ratio` are
 // what scheduleNoteJump's document branch actually reads.
 function documentSpotAnchor() {
-  if (!state.meta?.pdf) return null;
+  if (!deckHasPdf(state.meta)) return null;
   const here = state.meta?.readingPosition;
   const page = Number(here?.pdfPage);
   if (!Number.isFinite(page)) return null;
