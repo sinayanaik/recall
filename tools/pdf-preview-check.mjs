@@ -37,6 +37,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { findChrome, launchChrome, connect, openPage, emulatePhone } from "./cdp.mjs";
 import { PDFJS_VERSION, pdfjsSources } from "./pdfjs-source.mjs";
+import { PDFLIB_VERSION, pdflibSource } from "./pdflib-source.mjs";
 import { FONT_SIZE, buildFixturePdf, fixtureLineOrigin } from "./pdf-fixture.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -221,6 +222,15 @@ try {
   process.exit(0);
 }
 
+// pdf-lib is needed only for "Save as PDF" on a region. Without it those cases
+// say so and the rest of the check still runs.
+let pdflib = null;
+try {
+  pdflib = pdflibSource();
+} catch (error) {
+  console.log(`pdf-preview-check: could not obtain pdf-lib ${PDFLIB_VERSION} (${error?.message || error}) — region-PDF cases will be skipped.`);
+}
+
 const fixture = OWN_PDF
   ? { bytes: new Uint8Array(readFileSync(OWN_PDF)), pages: null, linesPerPage: null, title: path.basename(OWN_PDF), annotation: null }
   : buildFixturePdf();
@@ -273,6 +283,8 @@ try {
   } catch (e) { console.warn("check: could not install the pdf.js worker", e); }
 })();`
   });
+
+  if (pdflib) await page.call("Page.addScriptToEvaluateOnNewDocument", { source: pdflib });
 
   await page.goto(`${server.base}/index.html`);
   await page.evaluate(SETUP_SRC, API_SRC);
@@ -1716,6 +1728,153 @@ try {
       `${location.before} → ${location.afterFirst} → ${location.afterSecond}`);
     check("...but a Ctrl+C before a lone Ctrl is not a double tap",
       location.afterCopy === location.afterSecond, `after=${location.afterCopy}`);
+  }
+
+  // ── 7b-ii. A region saved as a file, and shown without its colour ────────
+  //
+  // The mark menu on a region offers "Save as image" and "Save as PDF" (and a
+  // sentence offers neither). The image is a picture of the box; the PDF is the
+  // paper's own page cropped to it, so it opens as one page exactly the box's
+  // size in points. And a region shown anywhere but the paper carries no
+  // highlight colour: the embed's edge used to be the 2px outline in the
+  // region's own colour.
+  const saved = region.record ? await page.evaluate(`async (id) => {
+    const { api, settle } = window.__recall;
+    const menu = await import("/src/notes/mark-menu.js?v=__BUILD__");
+    const download = await import("/src/documents/pdf-region-download.js?v=__BUILD__");
+    const colors = await import("/src/format/highlight-colors.js?v=__BUILD__");
+    const records = api.state.meta?.pdfHighlights || [];
+    const record = records.find((r) => r.id === id) || null;
+    const rect = record.quads[0].rect.map(Number);
+    const rw = Math.abs(rect[2] - rect[0]);
+    const rh = Math.abs(rect[3] - rect[1]);
+
+    api.setViewMode("document");
+    await settle(150);
+    const rowsFor = (rid) => {
+      const r = records.find((x) => x.id === rid);
+      const anchor = document.querySelector('.pdf-mark[data-highlight-id="' + rid + '"]');
+      if (!anchor) return null;
+      menu.openMarkMenuWith(anchor, rid, api.DOCUMENT_MARK_HANDLERS, r?.color);
+      const shown = (cls) => { const b = document.querySelector(".mark-menu .mark-menu-" + cls); return Boolean(b && !b.hidden); };
+      const out = { image: shown("saveImage"), pdf: shown("savePdf") };
+      menu.closeMarkMenu();
+      return out;
+    };
+    const regionRows = rowsFor(id);
+    const text = records.find((r) => r.kind !== "area" && r.kind !== "ink" && r.quads?.length) || null;
+    const textRows = text ? rowsFor(text.id) : null;
+
+    // Every download goes through an <a download> click; catch them instead.
+    const caught = [];
+    const click = HTMLAnchorElement.prototype.click;
+    HTMLAnchorElement.prototype.click = function () {
+      if (this.download) caught.push({ name: this.download, href: this.href });
+      else click.call(this);
+    };
+    let image = null;
+    let pdf = null;
+    try {
+      await download.downloadRegionImage(record);
+      const png = caught.find((c) => c.name.endsWith(".png"));
+      if (png) {
+        const blob = await (await fetch(png.href)).blob();
+        const bitmap = await createImageBitmap(blob);
+        image = { name: png.name, type: blob.type, w: bitmap.width, h: bitmap.height };
+      }
+      if (window.PDFLib) {
+        await download.downloadRegionPdf(record);
+        const file = caught.find((c) => c.name.endsWith(".pdf"));
+        if (file) {
+          const bytes = new Uint8Array(await (await fetch(file.href)).arrayBuffer());
+          const doc = await window.pdfjsLib.getDocument({ data: bytes, isEvalSupported: false }).promise;
+          const p = await doc.getPage(1);
+          const vp = p.getViewport({ scale: 1 });
+          const canvas = document.createElement("canvas");
+          canvas.width = Math.ceil(vp.width * 2);
+          canvas.height = Math.ceil(vp.height * 2);
+          const ctx = canvas.getContext("2d");
+          ctx.fillStyle = "#fff";
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          await p.render({ canvasContext: ctx, viewport: p.getViewport({ scale: 2 }) }).promise;
+          const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+          let inked = 0;
+          for (let i = 0; i < data.length; i += 4) if (data[i] < 200 || data[i + 1] < 200 || data[i + 2] < 200) inked += 1;
+          const textItems = (await p.getTextContent()).items.length;
+          pdf = { name: file.name, pages: doc.numPages, w: vp.width, h: vp.height, inked, textItems };
+        }
+      }
+    } finally {
+      HTMLAnchorElement.prototype.click = click;
+    }
+
+    // The same region, pasted into the Notes: its edge is the page, not the
+    // highlight's outline.
+    const originalNotes = api.state.notes || "";
+    const embedMod = await import("/src/documents/pdf-region-embed.js?v=__BUILD__");
+    // Given a width of its own on purpose: a rendered block is cached by its
+    // source, and 7c needs the plain ref painted afresh at the phone's density.
+    api.state.notes = "A figure:\\n\\n" + embedMod.pdfRegionRefMarkdown(record.page, rect, record.pdfId, 300) + "\\n\\n" + originalNotes;
+    if (api.isNotesEditing()) api.resetNotesEditingUI();
+    api.setViewMode("notes");
+    let canvas = null;
+    for (let i = 0; i < 100; i += 1) {
+      canvas = document.querySelector("#notesView .pdf-region-embed:not(.is-loading) canvas");
+      if (canvas) break;
+      await settle(50);
+    }
+    let edge = null;
+    if (canvas) {
+      const hex = colors.MARK_HIGHLIGHT_HEX[record.color] || colors.MARK_HIGHLIGHT_HEX.yellow;
+      const want = [1, 3, 5].map((k) => parseInt(hex.slice(k, k + 2), 16));
+      const ctx = canvas.getContext("2d");
+      const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      const near = (i) => Math.abs(data[i] - want[0]) < 40 && Math.abs(data[i + 1] - want[1]) < 40 && Math.abs(data[i + 2] - want[2]) < 40;
+      let tinted = 0;
+      let total = 0;
+      // The outline was 2px inside the crop's edge at the embed's own scale.
+      const ring = Math.max(2, Math.round(canvas.width / 200));
+      for (let y = 0; y < canvas.height; y += 1) {
+        for (let x = 0; x < canvas.width; x += 1) {
+          if (x >= ring && y >= ring && x < canvas.width - ring && y < canvas.height - ring) continue;
+          total += 1;
+          if (near((y * canvas.width + x) * 4)) tinted += 1;
+        }
+      }
+      edge = { tinted, total };
+    }
+    api.state.notes = originalNotes;
+    if (api.isNotesEditing()) api.resetNotesEditingUI();
+    api.setViewMode("document");
+    await settle(100);
+
+    return { rw, rh, regionRows, textRows, image, pdf, edge, hasPdfLib: Boolean(window.PDFLib) };
+  }`, region.record.id) : null;
+
+  if (saved) {
+    check("a region's mark menu offers Save as image and Save as PDF",
+      saved.regionRows?.image && saved.regionRows?.pdf, JSON.stringify(saved.regionRows));
+    check("...and a text highlight's offers neither",
+      saved.textRows ? !saved.textRows.image && !saved.textRows.pdf : true,
+      saved.textRows ? JSON.stringify(saved.textRows) : "no text highlight to test");
+    const ratio = saved.image ? saved.image.w / saved.image.h : 0;
+    check("Save as image downloads a PNG the region's shape, at print resolution",
+      saved.image?.type === "image/png" && Math.abs(ratio - saved.rw / saved.rh) < 0.05
+        && saved.image.w >= Math.min(saved.rw * 3, 1000),
+      saved.image ? `${saved.image.name} ${saved.image.w}×${saved.image.h} (box ${Math.round(saved.rw)}×${Math.round(saved.rh)}pt)` : "nothing downloaded");
+    if (saved.hasPdfLib) {
+      check("Save as PDF downloads one page exactly the region's size",
+        saved.pdf?.pages === 1 && Math.abs(saved.pdf.w - saved.rw) < 1 && Math.abs(saved.pdf.h - saved.rh) < 1,
+        saved.pdf ? `${saved.pdf.name} ${saved.pdf.w.toFixed(1)}×${saved.pdf.h.toFixed(1)}pt` : "nothing downloaded");
+      check("...holding the paper's own content (real text, drawn)",
+        saved.pdf?.inked > 0 && saved.pdf?.textItems > 0,
+        saved.pdf ? `${saved.pdf.inked} inked px, ${saved.pdf.textItems} text item(s)` : "");
+    } else {
+      notes.push("Save as PDF not exercised: pdf-lib was not available");
+    }
+    check("a region pasted into the Notes carries no highlight colour",
+      saved.edge && saved.edge.tinted / saved.edge.total < 0.05,
+      saved.edge ? `${saved.edge.tinted}/${saved.edge.total} edge px in the highlight colour` : "no embed rendered");
   }
 
   // ── 7c. A region embed on a phone: its buttons, its fit, Zoom and go-to ──

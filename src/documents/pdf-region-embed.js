@@ -15,13 +15,12 @@
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { ensurePdfJs } from "../core/lib-loader.js?v=__BUILD__";
-import { MARK_HIGHLIGHT_HEX } from "../format/highlight-colors.js?v=__BUILD__";
 import { decodeInkStrokes } from "../format/ink-strokes.js?v=__BUILD__";
 import { centerDiagramContent, openDiagramModal } from "../render/diagram-zoom.js?v=__BUILD__";
 import { paintInkStrokes } from "../render/ink-paint.js?v=__BUILD__";
-import { documentHighlightsForPdf, documentInkMarksForPdf } from "./pdf-highlights.js?v=__BUILD__";
+import { documentInkMarksForPdf } from "./pdf-highlights.js?v=__BUILD__";
 import { DOC_SLOT_DOC, docSlotMeta, documentStoreKey, recordDocSlot } from "./doc-slot.js?v=__BUILD__";
-import { deckPdfById, isRecordForSurface, PDF_PRIMARY_ID, pdfStoreKey, recordPdfId } from "./pdf-multi.js?v=__BUILD__";
+import { deckPdfById, isRecordForSurface, PDF_PRIMARY_ID, pdfStoreKey, recordPdfId, recordsForSurface } from "./pdf-multi.js?v=__BUILD__";
 import { getDocument } from "./pdf-store.js?v=__BUILD__";
 import { buildTextLayer, canvasOutputScale, clampScale, PDF_MAX_SCALE } from "./pdf-view.js?v=__BUILD__";
 import { attachRegionResizeHandle } from "./pdf-region-resize.js?v=__BUILD__";
@@ -179,7 +178,7 @@ export function preloadRegionImages(records, { width = REGION_IMAGE_WIDTH } = {}
   return Promise.all((records || []).map((record) => renderRegionImage(record, { width })));
 }
 
-function regionSource(record) {
+export function regionSource(record) {
   const slot = recordDocSlot(record);
   if (slot === DOC_SLOT_DOC) {
     const pdfId = recordPdfId(record);
@@ -406,23 +405,42 @@ export function setPdfRegionGoToHandler(fn) {
 
 let zoomObjectUrl = null;
 
-// The pixel budget for the zoom render — of the CROP alone, which is all that
-// is rasterised (an offset viewport, as mountPdfRegionEmbed paints its own).
-const ZOOM_MAX_CROP_PIXELS = 12_000_000;
+// The pixel budget for a crop rendered to be looked at closely — the zoom, and
+// a region saved as an image (pdf-region-download.js). Of the CROP alone,
+// which is all that is rasterised (an offset viewport, as mountPdfRegionEmbed
+// paints its own).
+export const ZOOM_MAX_CROP_PIXELS = 12_000_000;
 
-async function openRegionZoom(parsed) {
-  const pdfId = parsed.pdfId || PDF_PRIMARY_ID;
-  const doc = await openEmbedDoc(pdfStoreKey(state.localDeckId, pdfId), deckPdfById(state.meta, pdfId));
-  if (!doc || parsed.page > doc.numPages) return;
-  const page = await doc.getPage(parsed.page);
-  const quadWidth = Math.max(1, Math.abs(parsed.rect[2] - parsed.rect[0]));
-  const quadHeight = Math.max(1, Math.abs(parsed.rect[3] - parsed.rect[1]));
-  // Wide enough to still be sharp a couple of pinches in on this screen.
-  const wanted = (Math.max(window.innerWidth || 0, 800) * 2.5) / quadWidth;
+// The paper a record was drawn on, as the bytes the store keeps — for a region
+// saved as a PDF, which copies the page itself rather than a picture of it.
+export function regionDocumentBlob(record) {
+  const source = regionSource(record);
+  return getDocument(source.storeKey, source.pdfMeta);
+}
+
+// The pdf.js page a region sits on, opened through the same per-paper cache
+// every embed uses. null when the paper is not on this device.
+export async function regionPdfPage(source, pageNumber) {
+  const doc = await openEmbedDoc(source.storeKey, source.pdfMeta);
+  if (!doc || pageNumber > doc.numPages) return null;
+  return doc.getPage(pageNumber);
+}
+
+// The largest scale at or under `wanted` that keeps a crop of `rect` inside
+// ZOOM_MAX_CROP_PIXELS.
+export function affordableCropScale(rect, wanted) {
+  const quadWidth = Math.max(1, Math.abs(rect[2] - rect[0]));
+  const quadHeight = Math.max(1, Math.abs(rect[3] - rect[1]));
   const affordable = Math.sqrt(ZOOM_MAX_CROP_PIXELS / (quadWidth * quadHeight));
-  const scale = Math.max(0.5, Math.min(wanted, affordable, PDF_MAX_SCALE * 3));
+  return Math.max(0.5, Math.min(wanted, affordable, PDF_MAX_SCALE * 3));
+}
+
+// Exactly the box, as a canvas: the page's own content and the ink written on
+// it, at `scale` CSS pixels per PDF point. No highlight colour — the region is
+// shown or saved as what the paper holds there, not as the reader marked it.
+export async function renderRegionCrop(page, rect, scale, source) {
   const viewport = page.getViewport({ scale });
-  const [vx0, vy0, vx1, vy1] = viewport.convertToViewportRectangle(parsed.rect);
+  const [vx0, vy0, vx1, vy1] = viewport.convertToViewportRectangle(rect);
   const left = Math.min(vx0, vx1);
   const top = Math.min(vy0, vy1);
   const cropViewport = page.getViewport({ scale, offsetX: -left, offsetY: -top });
@@ -430,9 +448,24 @@ async function openRegionZoom(parsed) {
   crop.width = Math.max(1, Math.round(Math.abs(vx1 - vx0)));
   crop.height = Math.max(1, Math.round(Math.abs(vy1 - vy0)));
   const ctx = crop.getContext("2d", { alpha: false });
+  // White first: an `alpha: false` canvas starts black, and a page paints only
+  // its own marks (the same reason paintRegionImage does this).
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, crop.width, crop.height);
   await page.render({ canvasContext: ctx, viewport: cropViewport }).promise;
-  paintHighlightsOnCanvas(ctx, parsed.page, cropViewport, pdfId);
-  paintInkOnCanvas(ctx, parsed.page, cropViewport, pdfId);
+  paintInkOnCanvas(ctx, page.pageNumber, cropViewport, source.pdfId, source.slot);
+  return crop;
+}
+
+async function openRegionZoom(parsed) {
+  const pdfId = parsed.pdfId || PDF_PRIMARY_ID;
+  const source = { slot: DOC_SLOT_DOC, pdfId, storeKey: pdfStoreKey(state.localDeckId, pdfId), pdfMeta: deckPdfById(state.meta, pdfId) };
+  const page = await regionPdfPage(source, parsed.page);
+  if (!page) return;
+  const quadWidth = Math.max(1, Math.abs(parsed.rect[2] - parsed.rect[0]));
+  // Wide enough to still be sharp a couple of pinches in on this screen.
+  const wanted = (Math.max(window.innerWidth || 0, 800) * 2.5) / quadWidth;
+  const crop = await renderRegionCrop(page, parsed.rect, affordableCropScale(parsed.rect, wanted), source);
   const blob = await new Promise((resolve) => crop.toBlob(resolve, "image/png"));
   if (!blob) return;
   if (zoomObjectUrl) URL.revokeObjectURL(zoomObjectUrl);
@@ -480,59 +513,26 @@ function attachRegionTools(wrapper, parsed, { zoom = true } = {}) {
   wrapper.appendChild(tools);
 }
 
-// ── Marks the page itself doesn't carry ─────────────────────────────────────
+// ── Ink, which the page itself doesn't carry ────────────────────────────────
 //
-// page.render() draws only the PDF's own content. A highlight is an
-// absolutely-positioned div over the canvas (.pdf-mark, styles/36-document.css
-// and styles/37-document-chrome.css) and ink is its own canvas layer
-// (pdf-ink.js) — neither exists in the rendered pixels, so an embed built from
-// page.render() alone shows the UNMARKED page, not what the reader actually
-// marked up. Repainted here directly onto the embed's own canvas instead,
-// matching those CSS rules' colours/opacities/blend modes exactly.
-const HIGHLIGHT_FILL_ALPHA = { yellow: 0.35, green: 0.33, blue: 0.32, pink: 0.3 };
-
-const AREA_FILL_ALPHA = 0.12;
-
-function hexWithAlpha(hex, alpha) {
-  const r = parseInt(hex.slice(1, 3), 16);
-  const g = parseInt(hex.slice(3, 5), 16);
-  const b = parseInt(hex.slice(5, 7), 16);
-  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
-}
-
-function paintHighlightsOnCanvas(ctx, pageNumber, viewport, pdfId) {
-  documentHighlightsForPdf(pdfId).forEach((record) => {
-    if (record.kind === "ink") return; // painted separately, below
-    const hex = MARK_HIGHLIGHT_HEX[record.color] || MARK_HIGHLIGHT_HEX.yellow;
-    (record.quads || []).forEach((quad) => {
-      if (quad.page !== pageNumber) return;
-      const [vx0, vy0, vx1, vy1] = viewport.convertToViewportRectangle(quad.rect);
-      const left = Math.min(vx0, vx1);
-      const top = Math.min(vy0, vy1);
-      const width = Math.abs(vx1 - vx0);
-      const height = Math.abs(vy1 - vy0);
-      ctx.save();
-      if (record.kind === "area") {
-        // Outlined with a faint wash rather than tinted — a filled multiply
-        // over a photograph would wash out the figure being highlighted, the
-        // same reason the live page draws a region this way.
-        ctx.fillStyle = hexWithAlpha(hex, AREA_FILL_ALPHA);
-        ctx.fillRect(left, top, width, height);
-        ctx.strokeStyle = hex;
-        ctx.lineWidth = 2;
-        ctx.strokeRect(left + 1, top + 1, Math.max(0, width - 2), Math.max(0, height - 2));
-      } else {
-        ctx.globalCompositeOperation = "multiply";
-        ctx.fillStyle = hexWithAlpha(hex, HIGHLIGHT_FILL_ALPHA[record.color] ?? 0.35);
-        ctx.fillRect(left, top, width, height);
-      }
-      ctx.restore();
-    });
-  });
-}
-
-function paintInkOnCanvas(ctx, pageNumber, viewport, pdfId) {
-  const marks = documentInkMarksForPdf(pdfId, pageNumber);
+// page.render() draws only the PDF's own content. Ink is its own canvas layer
+// on the live page (pdf-ink.js), so it is repainted here onto the embed's own
+// canvas — it is something the reader WROTE there, and part of what the spot
+// holds.
+//
+// Highlight colour is deliberately not. An embed used to repaint every
+// highlight on its page too, which put the region's own outline and wash (and
+// the tint of any sentence marked inside it) on every copy of it in the notes,
+// on a card and in the zoom: the reader asked for the figure, and got the
+// figure with the marker still on it. The colour says "I marked this" on the
+// paper; anywhere else it is just in the way. The list pictures
+// (paintRegionImage) never carried it either.
+function paintInkOnCanvas(ctx, pageNumber, viewport, pdfId, slot = DOC_SLOT_DOC) {
+  const marks = slot === DOC_SLOT_DOC
+    ? documentInkMarksForPdf(pdfId, pageNumber)
+    // A notebook's ink (the Write tab) — the same rule paintRegionImage uses.
+    : recordsForSurface(state.meta?.pdfHighlights, slot, null)
+      .filter((mark) => mark?.kind === "ink" && Number(mark.page) === pageNumber);
   if (!marks.length) return;
   // Ink strokes are stored in PDF user-space points, same as everything else
   // here — paintInkStrokes expects the context already carrying that
@@ -623,11 +623,9 @@ export async function mountPdfRegionEmbed(img, { resizable = false } = {}) {
     canvas.style.height = `${nativeHeight}px`;
     const ctx = canvas.getContext("2d", { alpha: false });
     await page.render({ canvasContext: ctx, viewport: paintViewport }).promise;
-    // What the reader actually marked up on this page — highlights and ink —
-    // composited onto the same canvas the PDF itself just rendered to. See
-    // the note above paintHighlightsOnCanvas for why page.render() alone
-    // can't already carry them.
-    paintHighlightsOnCanvas(ctx, parsed.page, paintViewport, pdfId);
+    // The ink written on this page, composited onto the same canvas the PDF
+    // itself just rendered to — but no highlight colour. See the note above
+    // paintInkOnCanvas for both halves of that.
     paintInkOnCanvas(ctx, parsed.page, paintViewport, pdfId);
 
     // Real, positioned, selectable text — the exact function the Document

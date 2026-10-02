@@ -1255,6 +1255,17 @@ export const DOCUMENT_MARK_HANDLERS = {
       ? ["card", "highlights", "copy", "location", "share", "search"]
       : ["card", "highlights", "copy", "share", "search"];
   },
+  // ...and a region adds "Save as image", plus "Save as PDF" on the paper: a
+  // PDF of the box is the paper's own page cropped to it
+  // (pdf-region-download.js), and the notebook's page is blank grid with the
+  // writing kept beside it, so there it would save nothing worth having.
+  actionsFor(id) {
+    const base = this.actions;
+    if (documentHighlightById(id)?.kind !== "area") return base;
+    const saves = activeDocSlot() === DOC_SLOT_DOC ? ["saveImage", "savePdf"] : ["saveImage"];
+    const at = base.indexOf("share");
+    return at === -1 ? [...base, ...saves] : [...base.slice(0, at), ...saves, ...base.slice(at)];
+  },
   recolour: (id, color) => recolourDocumentHighlight(id, color),
   remove: (id) => removeDocumentHighlight(id),
   noteText: (id) => documentHighlightNote(id),

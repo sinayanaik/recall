@@ -113,6 +113,12 @@ const SEARCH_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" 
 
 const LOCATION_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" width="15" height="15"><path d="M12 21s-6.5-6.2-6.5-11.2a6.5 6.5 0 0 1 13 0C18.5 14.8 12 21 12 21z"/><circle cx="12" cy="9.8" r="2.3"/></svg>';
 
+// Down into a tray, and a page with its corner turned — "a picture of it" and
+// "the page itself", the two ways a region can leave as a file.
+const SAVE_IMAGE_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" width="15" height="15"><path d="M12 4v10.5"/><path d="m7.5 10 4.5 4.5 4.5-4.5"/><path d="M4.5 16.5v3h15v-3"/></svg>';
+
+const SAVE_PDF_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" width="15" height="15"><path d="M14 3.5H6.5v17h11V7z"/><path d="M14 3.5V7h3.5"/><path d="M12 10.5v6"/><path d="m9.5 14 2.5 2.5 2.5-2.5"/></svg>';
+
 const PIN_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" width="15" height="15"><path d="M9.5 3.5h5l-.7 5.2 3.4 3.1v1.7H6.8v-1.7l3.4-3.1z"/><path d="M12 13.5v7"/></svg>';
 
 // ── ...and the order they come in ──────────────────────────────────────────
@@ -142,6 +148,11 @@ const MARK_MENU_ACTIONS = [
   // A PDF highlight's SPOT rather than its words — a `pdfref:` that renders as
   // a live picture of it wherever it is pasted (src/documents/pdf-region-embed.js).
   { id: "location", verb: "copyLocation", label: "Copy location", icon: LOCATION_ICON, run: "send" },
+  // A region (a box dragged round a figure) as a file — offered only on one,
+  // through actionsFor on DOCUMENT_MARK_HANDLERS; see pdf-region-download.js
+  // for why the two are not the same picture twice.
+  { id: "saveImage", verb: "saveRegionImage", label: "Save as image", icon: SAVE_IMAGE_ICON, run: "send" },
+  { id: "savePdf", verb: "saveRegionPdf", label: "Save as PDF", icon: SAVE_PDF_ICON, run: "send" },
   { id: "share", verb: "share", label: "Share", icon: "&#8599;", run: "send" },
   { id: "search", verb: "search", label: "Search the web", icon: SEARCH_ICON, run: "send" }
 ];
@@ -284,6 +295,8 @@ function ensureMarkMenu() {
     // into study material.
     if (action === "copy") markActions.copy?.(entry.codeText ?? entry.text);
     else if (action === "location") markActions.copyLocation?.(entry);
+    else if (action === "saveImage") markActions.saveRegionImage?.(entry);
+    else if (action === "savePdf") markActions.saveRegionPdf?.(entry);
     // The entry rides along with the card verb, and only that one. A card is
     // the single verb whose answer is not always the WORDS: an ink mark has
     // none, and what it should hold is the drawing. Copy, share and search are
@@ -351,7 +364,10 @@ export function openMarkMenuWith(mark, key, handlerSet, currentColor = null) {
   // Which of the four take-it-elsewhere rows this surface can honour. Hidden
   // rather than disabled: a row that is there and refuses is worse than one that
   // is not there, and the set that knows is the one that was handed in.
-  const allowed = Array.isArray(markHandlers.actions) ? markHandlers.actions : [];
+  // `actionsFor`, where a set has it, narrows that by the highlight itself —
+  // a region can be saved as a file and a sentence cannot.
+  const offered = typeof markHandlers.actionsFor === "function" ? markHandlers.actionsFor(index) : markHandlers.actions;
+  const allowed = Array.isArray(offered) ? offered : [];
   let lastRun = null;
   menu.querySelectorAll("[data-mark-action]").forEach((button) => {
     const row = MARK_MENU_ACTIONS.find((r) => r.id === button.dataset.markAction);

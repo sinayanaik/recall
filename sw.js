@@ -428,6 +428,7 @@ const APP_SHELL = [
   `./src/documents/pdf-multi.js?v=${STAMP}`,
   `./src/documents/pdf-outline.js?v=${STAMP}`,
   `./src/documents/pdf-page-notes.js?v=${STAMP}`,
+  `./src/documents/pdf-region-download.js?v=${STAMP}`,
   `./src/documents/pdf-region-embed.js?v=${STAMP}`,
   `./src/documents/pdf-region-resize.js?v=${STAMP}`,
   `./src/documents/pdf-region.js?v=${STAMP}`,
@@ -777,6 +778,9 @@ const CDN_ASSETS = [
   // already-imported paper readable offline.
   `${CDN}pdfjs-dist@3.11.174/legacy/build/pdf.min.js`,
   `${CDN}pdfjs-dist@3.11.174/legacy/build/pdf.worker.min.js`,
+  // pdf-lib, for a region saved as a PDF. Must stay byte-identical to
+  // LIB_URLS.pdfLib, or saving one offline quietly falls back to an image.
+  `${CDN}pdf-lib@1.17.1/dist/pdf-lib.min.js`,
   ...KATEX_FONTS,
   ...PRISM_LANGS
 ];

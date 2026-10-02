@@ -126,6 +126,7 @@ import { DOCUMENT_NOTE_HANDLERS, documentHighlightById, documentHighlightNote, f
 import { pdfRegionRefForRecord, pdfRegionRefMarkdown } from "./documents/pdf-region-embed.js?v=__BUILD__";
 import { setRegionResizeNotesSurface } from "./documents/pdf-region-resize.js?v=__BUILD__";
 import { setPdfRegionGoToHandler } from "./documents/pdf-region-embed.js?v=__BUILD__";
+import { downloadRegionImage, downloadRegionPdf } from "./documents/pdf-region-download.js?v=__BUILD__";
 import { closeDocumentToc, documentOutlineEntries, initDocumentOutlineFolding, isDocumentTocOpen, resolveOutlineEntryPage, toggleDocumentToc } from "./documents/pdf-outline.js?v=__BUILD__";
 import { activePdfId, deckPdfById, deckPdfs, PDF_PRIMARY_ID, withDeckPdfs } from "./documents/pdf-multi.js?v=__BUILD__";
 import { removePdfFromDeck, renamePdf } from "./documents/pdf-multi-actions.js?v=__BUILD__";
@@ -984,6 +985,20 @@ function copyTextToClipboard(text, successMessage = "Copied") {
   }
 }
 
+// The mark menu's "Save as image" / "Save as PDF" on a region. Each says for
+// itself what it saved; this only catches what neither expected.
+function saveRegionFile(entry, save) {
+  const record = documentHighlightById(entry?.locator?.highlightId);
+  if (record?.kind !== "area") {
+    showToast("Couldn't work out where this region is", "error");
+    return;
+  }
+  save(record).catch((error) => {
+    console.warn("Could not save a PDF region", error);
+    showToast("Couldn't save this region", "error");
+  });
+}
+
 el.copySelectionBtn?.addEventListener("pointerdown", (event) => {
   event.preventDefault();
   event.stopPropagation();
@@ -1275,6 +1290,11 @@ onDomReady(() => {
       }
       copyTextToClipboard(ref, "Location copied — paste it into your notes or a card");
     },
+    // A region as a file: a picture of the box, or the paper's own page cropped
+    // to it (pdf-region-download.js). Offered only on a region — see actionsFor
+    // on DOCUMENT_MARK_HANDLERS.
+    saveRegionImage: (entry) => saveRegionFile(entry, downloadRegionImage),
+    saveRegionPdf: (entry) => saveRegionFile(entry, downloadRegionPdf),
     makeCard: (text, anchor, entry) => {
       const id = entry?.locator?.highlightId;
       // Ink has no words. The card gets a picture of what was drawn instead,
