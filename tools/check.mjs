@@ -314,6 +314,9 @@ const checks = [
   // find, and whether using one rewrites that image's slice and nothing else
   // in the note.
   ["image-controls", ["node", ["tools/image-controls-check.mjs"], ROOT]],
+  // Pure byte work: does an animated GIF, WebP, APNG or AVIF get kept whole
+  // rather than flattened to its first frame by the canvas re-encode?
+  ["animated-image", ["node", ["tools/animated-image-check.mjs"], ROOT]],
   // And again: a paper's highlights and the notes written on them, merged
   // between two devices. The merge is deliberately pure string-and-object work
   // (src/format/highlight-notes-merge.js, src/sync/document-sync.js) precisely

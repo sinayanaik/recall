@@ -64,6 +64,86 @@ export function gifFrameCount(bytes) {
   return frames;
 }
 
+// ── Animation in the other formats ─────────────────────────────────────────
+// A "GIF" saved from Tenor, Giphy or a phone keyboard is very often not a GIF
+// at all but an animated WebP, and some are APNG or animated AVIF. Only
+// `image/gif` used to be exempt from the canvas re-encode, so every one of
+// those uploaded as its first frame — a still, everywhere, for good. So the
+// question is asked of the BYTES, for every format a browser animates, and the
+// type is read from them too: a file whose reported type disagrees with its
+// contents was otherwise checked against the wrong rule.
+const ascii = (bytes, at, length) => String.fromCharCode(...bytes.subarray(at, at + length));
+
+export function sniffImageType(bytes) {
+  if (!bytes || bytes.length < 12) return "";
+  if (ascii(bytes, 0, 4) === "GIF8") return "image/gif";
+  if (ascii(bytes, 0, 4) === "RIFF" && ascii(bytes, 8, 4) === "WEBP") return "image/webp";
+  if (bytes[0] === 0x89 && ascii(bytes, 1, 3) === "PNG") return "image/png";
+  if (bytes[0] === 0xFF && bytes[1] === 0xD8 && bytes[2] === 0xFF) return "image/jpeg";
+  if (avifBrands(bytes).some((brand) => brand === "avif" || brand === "avis")) return "image/avif";
+  return "";
+}
+
+// RIFF chunks after the 12-byte header. An extended (VP8X) file carries an
+// animation flag in its first chunk; ANIM/ANMF are checked as well, so a file
+// whose flag is wrong but whose frames are there still counts.
+export function webpIsAnimated(bytes) {
+  let at = 12;
+  while (at + 8 <= bytes.length) {
+    const fourcc = ascii(bytes, at, 4);
+    const size = bytes[at + 4] | (bytes[at + 5] << 8) | (bytes[at + 6] << 16) | (bytes[at + 7] << 24);
+    if (fourcc === "VP8X" && (bytes[at + 8] & 0x02)) return true;
+    if (fourcc === "ANIM" || fourcc === "ANMF") return true;
+    if (fourcc === "VP8 " || fourcc === "VP8L") return false;
+    if (size < 0) return false;
+    at += 8 + size + (size & 1);
+  }
+  return false;
+}
+
+// An APNG is a PNG with an acTL chunk before its first IDAT. Anything that
+// cannot be walked counts as STILL here, unlike a GIF: almost every PNG is a
+// screenshot, and those are exactly the uploads compression is for.
+export function pngIsAnimated(bytes) {
+  let at = 8;
+  while (at + 8 <= bytes.length) {
+    const size = ((bytes[at] << 24) | (bytes[at + 1] << 16) | (bytes[at + 2] << 8) | bytes[at + 3]) >>> 0;
+    const type = ascii(bytes, at + 4, 4);
+    if (type === "acTL") return true;
+    if (type === "IDAT" || type === "IEND") return false;
+    at += 12 + size;
+  }
+  return false;
+}
+
+// The brands an ISO-BMFF `ftyp` box declares: the major one, then the
+// compatible list. `avis` is the image-sequence brand, i.e. animated AVIF.
+function avifBrands(bytes) {
+  if (bytes.length < 16 || ascii(bytes, 4, 4) !== "ftyp") return [];
+  const size = ((bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3]) >>> 0;
+  const end = Math.min(bytes.length, size || bytes.length);
+  const brands = [ascii(bytes, 8, 4)];
+  for (let at = 16; at + 4 <= end; at += 4) brands.push(ascii(bytes, at, 4));
+  return brands;
+}
+
+export function avifIsAnimated(bytes) {
+  return avifBrands(bytes).includes("avis");
+}
+
+// `type` is the file's reported type, used only when the bytes say nothing
+// recognisable — the bytes win whenever they do.
+export function isAnimatedImage(bytes, type = "") {
+  switch (sniffImageType(bytes) || type) {
+    case "image/gif": return gifFrameCount(bytes) > 1;
+    case "image/webp": return webpIsAnimated(bytes);
+    case "image/png":
+    case "image/apng": return pngIsAnimated(bytes);
+    case "image/avif": return avifIsAnimated(bytes);
+    default: return false;
+  }
+}
+
 // ── The levels ─────────────────────────────────────────────────────────────
 // `maxDimension` is the longest side in pixels; `quality` is the WebP/JPEG
 // encoder's own 0–1 scale. Both null means "upload the file exactly as it is".
@@ -158,6 +238,17 @@ export function uncompressedImage(file, reason, sourceWidth = null, sourceHeight
   };
 }
 
+// The same file, relabelled with the type its bytes say it is, so it is stored
+// under the right Content-Type and extension (IMAGE_STORAGE_EXT). Unchanged
+// when the label was already right or the bytes say nothing recognisable.
+export function withSniffedType(file, head) {
+  const sniffed = sniffImageType(head);
+  if (!sniffed || sniffed === file.type) return file;
+  const ext = { "image/gif": "gif", "image/webp": "webp", "image/png": "png", "image/avif": "avif", "image/jpeg": "jpg" }[sniffed];
+  const baseName = (file.name || "image").replace(/\.[^.]+$/, "");
+  return new File([file], `${baseName}.${ext}`, { type: sniffed });
+}
+
 export async function compressImageToPreset(file, choice) {
   const settings = normalizeImageCompressionChoice(choice);
   const type = (file && file.type) || "";
@@ -165,16 +256,18 @@ export async function compressImageToPreset(file, choice) {
   if (!settings.maxDimension || !settings.quality) return uncompressedImage(file, "kept exactly as it is");
   // SVG is vector: already small, and rasterizing it would be a downgrade.
   if (type === "image/svg+xml") return uncompressedImage(file, "vector — already small");
-  if (type === "image/gif") {
-    // Only an ANIMATED gif has to skip this — the canvas path would flatten it
-    // to a still. A single-frame GIF is just a picture. Anything unparseable
-    // counts as animated, which can only cost bytes rather than the image.
-    try {
-      const head = new Uint8Array(await file.slice(0, 4 * 1024 * 1024).arrayBuffer());
-      if (gifFrameCount(head) > 1) return uncompressedImage(file, "animated GIF — kept whole");
-    } catch (_) {
-      return uncompressedImage(file, "animated GIF — kept whole");
-    }
+  // Only an ANIMATED image has to skip this — the canvas path would flatten it
+  // to its first frame. A still GIF, WebP or PNG is just a picture. A GIF that
+  // cannot be read counts as animated, which can only cost bytes rather than
+  // the image (see gifFrameCount).
+  let head = null;
+  try {
+    head = new Uint8Array(await file.slice(0, 4 * 1024 * 1024).arrayBuffer());
+  } catch (_) {
+    if (type === "image/gif") return uncompressedImage(file, "animated — kept whole");
+  }
+  if (head && isAnimatedImage(head, type)) {
+    return uncompressedImage(withSniffedType(file, head), "animated — kept whole");
   }
 
   return new Promise((resolve) => {

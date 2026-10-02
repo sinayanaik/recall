@@ -3,7 +3,8 @@
 // Images are downscaled and re-encoded before they get here — a phone photo is
 // several megabytes and nothing here needs that — at a level the person doing
 // the uploading picks and confirms (src/images/compress.js and its dialog).
-// Animated GIFs are left alone, since re-encoding one loses the animation.
+// Animated images (GIF, WebP, APNG, AVIF) are left alone, since re-encoding one
+// loses the animation.
 
 import { getCachedSession } from "../cloud/auth.js?v=__BUILD__";
 import { CLOUD_TIMEOUT_MS, withTimeout } from "../cloud/net.js?v=__BUILD__";
@@ -76,7 +77,7 @@ export const IMAGE_BUCKET = "images";
 // Storage serves the content-type set at upload, not one inferred from the name.
 export const IMAGE_STORAGE_EXT = {
   "image/webp": "webp", "image/jpeg": "jpg", "image/png": "png",
-  "image/gif": "gif", "image/svg+xml": "svg"
+  "image/gif": "gif", "image/svg+xml": "svg", "image/avif": "avif"
 };
 
 // ── Where an uploaded image lands in the bucket ────────────────────────────

@@ -1,15 +1,26 @@
-// Getting an image out of a paste, a drag, or the file picker — including a
-// dragged GIF, which arrives as a URL rather than a file.
+// Getting an image out of a paste, a drag, or the file picker — including an
+// animation copied off a web page, which arrives as a still plus its URL.
 
 import { chooseImageCompression } from "./compress-dialog.js?v=__BUILD__";
 import { insertImageUpload, insertPreparedImageUpload } from "./outbox.js?v=__BUILD__";
-import { setImagePickerActive } from "./upload.js?v=__BUILD__";
+import { insertAtCursor, setImagePickerActive } from "./upload.js?v=__BUILD__";
+import { isAnimatedImage, sniffImageType, withSniffedType } from "./compress.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
 
-// A GIF URL carried alongside the flattened bitmap, or null. DOMParser (not
-// innerHTML) so parsing the fragment can't kick off a load of every image in it.
-export function gifSourceUrlFromTransfer(dataTransfer) {
-  const looksLikeGif = (url) => /^https?:/i.test(url) && /\.gif(\?|#|$)/i.test(url);
+// The web address of the picture a paste or drag came from, or null. When an
+// image is copied out of a web page the clipboard holds a flattened still PNG
+// of it, and the only way back to the animation is the original's URL, which
+// the browser leaves alongside it in the HTML or the uri-list.
+//
+// Any http(s) URL is returned, not just one ending in .gif: Giphy, Tenor and
+// most GIF sites serve animated WebP, or addresses with no extension at all.
+// Whether the original is really animated is decided from its bytes once it
+// has been fetched (fetchAnimatedOriginal), never from its name.
+//
+// DOMParser (not innerHTML) so parsing the fragment can't kick off a load of
+// every image in it.
+export function animatedSourceUrlFromTransfer(dataTransfer) {
+  const isWebUrl = (url) => /^https?:/i.test(url);
   let html = "";
   try {
     html = dataTransfer?.getData?.("text/html") || "";
@@ -22,7 +33,7 @@ export function gifSourceUrlFromTransfer(dataTransfer) {
       // copied image — the markdown converter handles that case, not this one.
       if (imgs.length === 1) {
         const src = imgs[0].getAttribute("src") || "";
-        if (looksLikeGif(src)) return src;
+        if (isWebUrl(src)) return src;
       }
     } catch (_) { /* malformed fragment — fall through to the uri-list */ }
   }
@@ -31,35 +42,105 @@ export function gifSourceUrlFromTransfer(dataTransfer) {
     uriList = dataTransfer?.getData?.("text/uri-list") || "";
   } catch (_) { /* as above */ }
   const uri = uriList.split(/\r?\n/).map((line) => line.trim()).find((line) => line && !line.startsWith("#"));
-  return uri && looksLikeGif(uri) ? uri : null;
+  return uri && isWebUrl(uri) ? uri : null;
 }
 
-export async function fetchGifFile(url) {
-  if (!navigator.onLine) return null;
+// A URL that names an animation outright — by extension, or by being one of
+// the big GIF hosts. Only these are worth a toast while fetching, and only
+// these are worth linking to when the fetch is refused: an ordinary picture
+// copied off a page is better uploaded as the still it already is.
+export function looksAnimatedUrl(url) {
   try {
-    const response = await fetch(url, { mode: "cors", credentials: "omit" });
-    if (!response.ok) return null;
-    const blob = await response.blob();
-    // The URL ended in .gif; trust what came back over what it was named.
-    if (blob.type !== "image/gif" || !blob.size) return null;
-    const name = (url.split("/").pop() || "image.gif").split(/[?#]/)[0] || "image.gif";
-    return new File([blob], name, { type: "image/gif" });
+    const parsed = new URL(url);
+    if (/\.(gif|webp|apng)$/i.test(parsed.pathname)) return true;
+    return /(^|\.)(giphy\.com|tenor\.com|tenor\.googleapis\.com|gfycat\.com)$/i.test(parsed.hostname);
   } catch (_) {
-    return null;
+    return false;
+  }
+}
+
+// Formats that cannot animate: not worth a fetch that would only hold up the
+// compression dialog for a picture the clipboard already has.
+export function cannotAnimateUrl(url) {
+  try {
+    return /\.(jpe?g|bmp|svg|ico|tiff?)$/i.test(new URL(url).pathname);
+  } catch (_) {
+    return true;
+  }
+}
+
+// Long enough for a big GIF on a phone connection when the URL says it is an
+// animation; short when it does not, since then the fetch is only a check.
+export const ORIGINAL_FETCH_TIMEOUT_MS = 15000;
+
+export const UNNAMED_FETCH_TIMEOUT_MS = 5000;
+
+// The original behind a flattened paste, as a File — but only when it really
+// is animated. A still comes back null, so the clipboard's own bitmap is used
+// and nothing changes. `{ blocked: true }` means the site would not let this
+// page read it (no CORS) or could not be reached, which is a different answer
+// from "it is not animated": the caller may still link to it.
+export async function fetchAnimatedOriginal(url, timeoutMs = ORIGINAL_FETCH_TIMEOUT_MS) {
+  if (!navigator.onLine) return { blocked: true };
+  let blob = null;
+  try {
+    // A signal rather than a raced timer, so the limit covers reading the body
+    // too — fetch() itself resolves as soon as the headers arrive.
+    const signal = typeof AbortSignal?.timeout === "function" ? AbortSignal.timeout(timeoutMs) : undefined;
+    const response = await fetch(url, { mode: "cors", credentials: "omit", signal });
+    if (!response.ok) return { blocked: true };
+    blob = await response.blob();
+  } catch (_) {
+    return { blocked: true };
+  }
+  if (!blob?.size) return { file: null };
+  try {
+    const head = new Uint8Array(await blob.slice(0, 4 * 1024 * 1024).arrayBuffer());
+    if (!isAnimatedImage(head, blob.type)) return { file: null };
+    const type = sniffImageType(head) || blob.type;
+    const name = (url.split("/").pop() || "image").split(/[?#]/)[0] || "image";
+    return { file: withSniffedType(new File([blob], name, { type }), head) };
+  } catch (_) {
+    return { file: null };
+  }
+}
+
+// A drag out of a browser tab often carries the real file already — then the
+// URL beside it has nothing to add, and fetching it again is a wasted wait.
+async function fileIsAnimated(file) {
+  try {
+    return isAnimatedImage(new Uint8Array(await file.slice(0, 4 * 1024 * 1024).arrayBuffer()), file.type);
+  } catch (_) {
+    return false;
   }
 }
 
 // Insert an image that arrived by paste or drop. Identical to insertImageUpload
-// except that a clipboard-flattened GIF is swapped back for the real animated
-// file first. Both `gifUrl` and `atPos` are captured by the CALLER while the
+// except that a clipboard-flattened animation is swapped back for the real
+// file first. Both `sourceUrl` and `atPos` are captured by the CALLER while the
 // event is still live, because a DataTransfer can't be read after its handler
-// returns and the caret may move while the GIF is being fetched.
-export async function insertTransferImage(textarea, file, gifUrl, atPos) {
+// returns and the caret may move while the original is being fetched.
+//
+// When the site refuses to hand the original over, an address that plainly
+// names an animation is LINKED rather than uploaded as a still: it keeps
+// moving, at the cost of living on that site rather than in your storage —
+// which the toast says.
+export async function insertTransferImage(textarea, file, sourceUrl, atPos) {
   let toUpload = file;
-  if (gifUrl) {
-    showToast("Fetching the original GIF…", "info");
-    toUpload = (await fetchGifFile(gifUrl)) || file;
-    if (toUpload === file) showToast("Couldn't fetch the animated GIF — kept the still frame", "info");
+  if (sourceUrl && !cannotAnimateUrl(sourceUrl) && !(await fileIsAnimated(file))) {
+    const named = looksAnimatedUrl(sourceUrl);
+    if (named) showToast("Fetching the original animation…", "info");
+    const original = await fetchAnimatedOriginal(sourceUrl, named ? ORIGINAL_FETCH_TIMEOUT_MS : UNNAMED_FETCH_TIMEOUT_MS);
+    if (original.file) {
+      toUpload = original.file;
+    } else if (original.blocked && named) {
+      let host = "that site";
+      try { host = new URL(sourceUrl).hostname; } catch (_) { /* keep the generic name */ }
+      // Parentheses and whitespace would end the markdown destination early.
+      insertAtCursor(textarea, `![](${sourceUrl.replace(/[()\s]/g, encodeURIComponent)})`, atPos);
+      showToast(`Linked the animation from ${host} — that site doesn't allow copying it, so it stays hosted there`, "info");
+      return;
+    }
   }
   insertImageUpload(textarea, toUpload, atPos);
 }
@@ -68,11 +149,11 @@ export async function insertTransferImage(textarea, file, gifUrl, atPos) {
 // multi-file copy). One compression dialog covers all of them — a prompt per
 // image for a drop of twenty would be its own kind of unusable — and then each
 // prepared file is inserted in the order it arrived. The single-file case goes
-// through insertTransferImage so a dragged GIF still gets its animation back.
-export async function insertTransferImages(textarea, files, gifUrl, atPos) {
+// through insertTransferImage so a copied animation still gets its frames back.
+export async function insertTransferImages(textarea, files, sourceUrl, atPos) {
   const list = Array.from(files || []);
   if (list.length <= 1) {
-    if (list.length) await insertTransferImage(textarea, list[0], gifUrl, atPos);
+    if (list.length) await insertTransferImage(textarea, list[0], sourceUrl, atPos);
     return;
   }
   const chosen = await chooseImageCompression(list);

@@ -313,6 +313,18 @@ const REMOVED = {
     "took the FIRST image out of a paste or a drop and silently discarded the " +
     "rest — the one way of adding images that could lose some. allImageFiles " +
     "returns all of them, and one compression dialog covers the batch.",
+  // ── ...and the GIF-only recovery of a flattened paste ────────────────────
+  gifSourceUrlFromTransfer:
+    "returned the original's URL from a paste or drop only when it ended in " +
+    ".gif — but Giphy, Tenor and most GIF sites serve animated WebP, or " +
+    "addresses with no extension, so those pasted as a still. Generalised into " +
+    "animatedSourceUrlFromTransfer (src/images/paste.js): any http(s) URL, with " +
+    "whether it animates decided from the fetched bytes.",
+  fetchGifFile:
+    "kept a fetched original only when the server called it image/gif. " +
+    "Replaced by fetchAnimatedOriginal, which keeps it when its BYTES animate " +
+    "(isAnimatedImage — GIF, WebP, APNG, AVIF) and reports a refused fetch " +
+    "separately, so an obvious animation can be linked instead of flattened.",
   fetchText:
     "declared TWICE in the baseline (app.js:25472 and app.js:29556). Legal in a " +
     "classic script, where the second silently won for every caller; a hard " +
