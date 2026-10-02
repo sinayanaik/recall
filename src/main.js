@@ -2762,9 +2762,15 @@ document.addEventListener("keydown", (event) => {
   // The sheet comes first because it is over everything. Both branches fall
   // through when there is nothing to undo, so the shortcut still reaches the
   // card and note stacks on a surface where no ink has been made.
-  if ((event.ctrlKey || event.metaKey) && (event.key === "z" || event.key === "Z") && isInkSheetOpen()) {
+  // Ctrl+Y is redo here as well as Ctrl+Shift+Z — it is the one a Windows hand
+  // reaches for. Without it the press fell through to the card stack's own
+  // Ctrl+Y below and redid a CARD action from under the pen.
+  const inkChord = (event.ctrlKey || event.metaKey)
+    && ((event.key === "z" || event.key === "Z") || (!event.shiftKey && (event.key === "y" || event.key === "Y")));
+  const inkWantsRedo = event.shiftKey || event.key === "y" || event.key === "Y";
+  if (inkChord && isInkSheetOpen()) {
     event.preventDefault();
-    event.shiftKey ? redoInkSheet() : undoInkSheet();
+    inkWantsRedo ? redoInkSheet() : undoInkSheet();
     return;
   }
   // ── ...and the other ring on the same surface ────────────────────────────
@@ -2772,9 +2778,8 @@ document.addEventListener("keydown", (event) => {
   // Before the pen's, and only when the blocks are what moved last (or when the
   // pen has nothing left to take back). See lastDocumentEdit for why the two are
   // ordered at all rather than each grabbing the key.
-  if ((event.ctrlKey || event.metaKey) && (event.key === "z" || event.key === "Z")
-      && onDocumentSurface() && !event.target.matches("input, textarea")) {
-    const wantRedo = event.shiftKey;
+  if (inkChord && onDocumentSurface() && !event.target.matches("input, textarea")) {
+    const wantRedo = inkWantsRedo;
     const blocksCan = wantRedo ? canRedoBlocks() : canUndoBlocks();
     const inkCan = wantRedo ? canRedoInk() : canUndoInk();
     if (blocksCan && (lastDocumentEdit === "blocks" || !inkCan)) {
@@ -2783,11 +2788,10 @@ document.addEventListener("keydown", (event) => {
       return;
     }
   }
-  if ((event.ctrlKey || event.metaKey) && (event.key === "z" || event.key === "Z")
-      && onDocumentSurface() && !event.target.matches("input, textarea")
-      && (event.shiftKey ? canRedoInk() : canUndoInk())) {
+  if (inkChord && onDocumentSurface() && !event.target.matches("input, textarea")
+      && (inkWantsRedo ? canRedoInk() : canUndoInk())) {
     event.preventDefault();
-    event.shiftKey ? redoInk() : undoInk();
+    inkWantsRedo ? redoInk() : undoInk();
     return;
   }
   // ── The block the reader picked up ───────────────────────────────────────

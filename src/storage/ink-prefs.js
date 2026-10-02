@@ -91,21 +91,26 @@ export function inkPreferences() {
   }
 }
 
-export function writeInkPreferences({ pen, width, tool, eraserSize, eraseMode, snapShapes } = {}) {
+// A PATCH, not a record. Only what the caller names is written; everything it
+// leaves out keeps whatever was stored. It was a record — every key normalised
+// and written whether it was passed or not — and the drawing sheet passes three
+// of the six, so pressing a swatch on the sheet quietly reset the eraser's size,
+// its part/whole mode and the shape-snapper to their defaults on the paper too.
+export function writeInkPreferences(patch = {}) {
   try {
     // Merged rather than assigned: railOpen lives in the same bag and a bare
     // write here would forget which surfaces the reader had shut the rail on.
     const raw = localStorage.getItem(inkPreferencesKey);
     const parsed = (raw ? JSON.parse(raw) : null) || {};
-    localStorage.setItem(inkPreferencesKey, JSON.stringify({
-      ...parsed,
-      pen: normalizeInkPen(pen),
-      width: normalizeInkWidth(width),
-      tool: normalizeInkTool(tool),
-      eraserSize: normalizeInkEraserSize(eraserSize),
-      eraseMode: normalizeInkEraseMode(eraseMode),
-      snapShapes: snapShapes !== false
-    }));
+    const next = { ...parsed };
+    const { pen, width, tool, eraserSize, eraseMode, snapShapes } = patch || {};
+    if (pen !== undefined) next.pen = normalizeInkPen(pen);
+    if (width !== undefined) next.width = normalizeInkWidth(width);
+    if (tool !== undefined) next.tool = normalizeInkTool(tool);
+    if (eraserSize !== undefined) next.eraserSize = normalizeInkEraserSize(eraserSize);
+    if (eraseMode !== undefined) next.eraseMode = normalizeInkEraseMode(eraseMode);
+    if (snapShapes !== undefined) next.snapShapes = snapShapes !== false;
+    localStorage.setItem(inkPreferencesKey, JSON.stringify(next));
   } catch (error) {
     // Quota or a private window. Losing the preference costs the reader one
     // press next time, never a stroke.

@@ -36,9 +36,10 @@
 // it lives on the image's own grip row (src/images/surface-controls.js).
 
 import { HW_ZOOM_STEP, createHandwritingPaper } from "../handwriting/paper.js?v=__BUILD__";
-import { addHandwritingPage, fitHandwritingStrokesToPage, makeHandwritingPage, removeHandwritingPage } from "../handwriting/pages.js?v=__BUILD__";
+import { HW_PAGE_HEIGHT, addHandwritingPage, fitHandwritingStrokesToPage, makeHandwritingPage, removeHandwritingPage } from "../handwriting/pages.js?v=__BUILD__";
 import { buildInkNibs, buildInkPenSwatches, buildInkToolGroup, inkRailButton, paintInkRailPressed, readInkRailPress } from "../handwriting/rail.js?v=__BUILD__";
 import { inkStrokesFromSvg, inkSvgFile } from "../format/ink-svg.js?v=__BUILD__";
+import { transformInkStroke } from "../format/ink-strokes.js?v=__BUILD__";
 import { insertPreparedImageUpload } from "../images/outbox.js?v=__BUILD__";
 import { inkPreferences, writeInkPreferences } from "../storage/ink-prefs.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
@@ -310,6 +311,13 @@ function openInkSheet({ title, strokes, onDone }) {
   surface.engine.setPen(saved.pen);
   surface.engine.setWidth(saved.width);
   surface.engine.setTool(saved.tool);
+  // The eraser and the shape-snapper are how the reader likes the pen to work,
+  // and the sheet is the same pen. It used to open with the defaults whatever
+  // the reader had set on the paper — and then, on the first swatch pressed,
+  // WRITE those defaults back over the reader's own (see writeInkPreferences).
+  surface.engine.setEraserSize(saved.eraserSize);
+  surface.engine.setEraseMode(saved.eraseMode);
+  surface.engine.setSnapShapes(saved.snapShapes);
   // Rendered before the strokes are placed, so the page has the size it will
   // actually have when the fit is worked out against it.
   surface.render();
@@ -322,9 +330,23 @@ function openInkSheet({ title, strokes, onDone }) {
 // Every page that has something on it, in order — and the pages that do not are
 // simply not there. Adding a page and then not using it is not a decision to
 // insert a blank picture into a note.
+//
+// `top` is where the page sits in the stack, in the pages' own units, for the
+// one caller that lays them out as a single picture (reopenInkDrawing). Every
+// page's strokes are in that PAGE's coordinates, 0 at its own top edge, so a
+// stack made by simply concatenating them put page two's drawing on top of page
+// one's. The empty pages count towards it — the stack is laid out the way the
+// sheet showed it, gap and all.
+const SHEET_STACK_GAP = 24;
+
 function sheetDrawings() {
+  let top = 0;
   return sheetPages
-    .map((page) => ({ page, strokes: sheetPaper.engine.getStrokes(page.id) }))
+    .map((page) => {
+      const entry = { page, top, strokes: sheetPaper.engine.getStrokes(page.id) };
+      top += (Number(page.h) || HW_PAGE_HEIGHT) + SHEET_STACK_GAP;
+      return entry;
+    })
     .filter((entry) => entry.strokes.length);
 }
 
@@ -347,7 +369,7 @@ function closeInkSheet(commit) {
     // sheet means the same thing as Cancel.
     return;
   }
-  session.onDone(drawings.map((entry) => entry.strokes));
+  session.onDone(drawings.map((entry) => entry.strokes), drawings);
 }
 
 // ── The two ways in ────────────────────────────────────────────────────────
@@ -401,12 +423,15 @@ export async function reopenInkDrawing({ load, replace }) {
   openInkSheet({
     title: "Edit drawing",
     strokes,
-    onDone: async (pages) => {
+    onDone: async (_pages, drawings) => {
       // Re-opening replaces ONE picture, so it commits one. A reader who added
       // pages while editing gets them as the drawing they now have: the pages
       // are laid out one under the next in the same file, which is what the
-      // sheet showed them.
-      const file = inkSvgFile(pages.flat(), { name: `ink-${Date.now().toString(36)}` });
+      // sheet showed them — each moved down by where its page sits in the stack.
+      const stacked = drawings.flatMap((entry) => (entry.top
+        ? entry.strokes.map((stroke) => transformInkStroke(stroke, { dy: entry.top }))
+        : entry.strokes));
+      const file = inkSvgFile(stacked, { name: `ink-${Date.now().toString(36)}` });
       if (!file) return;
       await replace(file);
     }

@@ -83,7 +83,7 @@
 //     little unstable, a little flickering".
 
 import { INK_ERASER_SIZE_DEFAULT, INK_ERASE_MODE_DEFAULT, INK_PEN_DEFAULT, INK_TOOL_DEFAULT, INK_WIDTH_DEFAULT, normalizeInkEraseMode, normalizeInkEraserSize, normalizeInkPen, normalizeInkTool, normalizeInkWidth } from "../format/ink-colors.js?v=__BUILD__";
-import { eraseFromInkStroke, inkStrokeHitsPoint, inkStrokeInPolygon, inkStrokesBounds, transformInkStroke } from "../format/ink-strokes.js?v=__BUILD__";
+import { densifyInkPath, eraseFromInkStroke, inkStrokeHitsPoint, inkStrokeInPolygon, inkStrokesBounds, transformInkStroke } from "../format/ink-strokes.js?v=__BUILD__";
 import { INK_WIDTH_LOOKBACK, paintInkStroke, paintInkStrokes, resolveInkColor } from "./ink-paint.js?v=__BUILD__";
 import { boundInkPrediction } from "./ink-predict.js?v=__BUILD__";
 import { INK_SHAPE_HOLD_MS, fitInkShape } from "./ink-shapes.js?v=__BUILD__";
@@ -768,12 +768,20 @@ export function createInkEngine({
     if (!pending.length) return;
     const entry = hosts.get(live.key);
     if (!entry) return;
-    const points = [];
+    const sampled = [];
     pending.forEach((sample) => {
       const point = toModelPoint(live.key, sample);
-      if (point) points.push(point);
+      if (point) sampled.push(point);
     });
-    if (!points.length) return;
+    if (!sampled.length) return;
+    // The path BETWEEN the samples as well as the samples, no further apart than
+    // the eraser is big (densifyInkPath, src/format/ink-strokes.js). Both tests
+    // below ask about points, and a quick swipe puts its points several model
+    // units apart — far enough to step clean over a fine line that the eraser
+    // visibly passed across. Joined to the last point of the previous frame, so
+    // the gap between two frames is filled in too.
+    const points = densifyInkPath(live.lastErase || null, sampled, Math.max(0.5, eraserSize));
+    live.lastErase = sampled[sampled.length - 1];
     // Whole strokes, which is what this always did — cross a mark anywhere and
     // all of it goes.
     if (eraseMode === "stroke") {

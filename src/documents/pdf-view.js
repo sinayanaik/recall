@@ -3334,6 +3334,18 @@ export function initDocumentPinchZoom() {
 
   view.addEventListener("touchstart", (event) => {
     if (event.touches.length !== 2 || !openPdf) return;
+    // ── Not while the pen is writing ─────────────────────────────────────────
+    //
+    // A stylus on Android raises compatibility touch events of its own, so a
+    // palm resting on the glass while the pen writes is "two touches" to this
+    // listener — and a pinch that began there scaled the page under the nib and,
+    // on the relayout that ends it, tore the live stroke down with the page's ink
+    // layer. The ink side meant to give way to a second contact
+    // (src/documents/pdf-ink.js) and never could: its pointer handlers only ever
+    // see the pen's own pointer. So the decision is made here, where the second
+    // contact actually arrives — a pen in contact owns the page, and the palm is
+    // a palm.
+    if (inkPenIsDown()) return;
     const host = pagesHost();
     if (!host) return;
     const focal = touchMidpoint(event.touches);
@@ -3360,6 +3372,10 @@ export function initDocumentPinchZoom() {
     // gesture the reader had already abandoned — or, if no touchend arrived at
     // all, left the page transformed for good.
     if (pinch && event.touches.length !== 2) { endPinch(); return; }
+    // ...and a pinch already under way when the nib lands is over: the pen is
+    // what the reader reached for, and a page still scaling under it would carry
+    // the stroke off with it.
+    if (pinch && inkPenIsDown()) { endPinch(); return; }
     if (!pinch || event.touches.length !== 2 || !openPdf) return;
     const distance = touchDistance(event.touches);
     if (!pinch.startDistance) return;

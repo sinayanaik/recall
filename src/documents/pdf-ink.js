@@ -529,10 +529,12 @@ function onInkPointerMove(event) {
   // events in initDocumentInk are the primary net; this is the one for a device
   // that reports no end at all.
   if (Number(event.buttons) === 0 && !Number(event.pressure)) { cancelInkPress(); return; }
-  // A second contact is a pinch. The zoom handler in pdf-view.js is welcome to
-  // it — the same concession pdf-region.js makes — and a stroke half drawn
-  // while the page is scaling under it is not ink anyone wants kept.
-  if (event.isPrimary === false) { cancelInkPress(); return; }
+  // A second contact is NOT this stroke's business. There was a line here that
+  // cancelled the stroke on a non-primary move, meant to hand a pinch to the
+  // zoom — but it sat after the pointerId test above, so it only ever saw this
+  // pen's own (always primary) pointer and never ran. The palm-or-pinch question
+  // is answered where the second contact actually lands, in pdf-view.js's
+  // touchstart: while a pen is down, a second touch is a palm and does not zoom.
 
   if (press.live) { ensureEngine().move(event); return; }
 

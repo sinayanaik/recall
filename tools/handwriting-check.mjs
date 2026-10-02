@@ -1415,6 +1415,11 @@ try {
     key({ key: "z", ctrlKey: true });
     await settle(400);
     const afterUndo = { ink: inkCount() - inkBefore, blocks: api.documentBlocks().length };
+    // Ctrl+Y is the other redo, and it used to fall through to the CARD stack's
+    // own Ctrl+Y and redo a card action from under the pen.
+    key({ key: "y", ctrlKey: true });
+    await settle(400);
+    const afterRedoY = inkCount() - inkBefore;
 
     return {
       spotFound: Boolean(spot), made: Boolean(made), openedOnIt, rowInSheet,
@@ -1423,7 +1428,7 @@ try {
       overflowing, beforeFit: { h: beforeFit.h, y: beforeFit.y }, afterFit: { h: afterFit.h, y: afterFit.y },
       ring, gone, buried, backAgain: Boolean(backAgain), stillBuried,
       nudgedBy: nudged.x - (backAgain ? backAgain.x : 0), copies, copyOffset: copy ? copy.x - nudged.x : null,
-      zWas, zNow, inkDrawn, blocksBeforeUndo, afterUndo,
+      zWas, zNow, inkDrawn, blocksBeforeUndo, afterUndo, afterRedoY,
       errs: window.__errs.slice(0, 4)
     };
   }`);
@@ -1486,6 +1491,8 @@ try {
     styling.inkDrawn === 1 && styling.afterUndo.ink === 0 && styling.afterUndo.blocks === styling.blocksBeforeUndo,
     `${styling.inkDrawn} stroke drawn; after Ctrl+Z the page has ${styling.afterUndo.ink} stroke(s) and `
       + `${styling.afterUndo.blocks} block(s) against ${styling.blocksBeforeUndo}`);
+  check("...and Ctrl+Y puts the stroke back, rather than redoing a card",
+    styling.afterRedoY === 1, `${styling.afterRedoY} stroke(s) on the page after Ctrl+Y`);
 
   // ── 5b. The panel itself: typed values, and only the controls that mean ──
   //     something for the block it is open on
@@ -1853,6 +1860,64 @@ try {
   check("...and Done puts one picture per drawn page into the note",
     sheet.images === 2, `${sheet.images} image(s) in the note, ${sheet.uploads} file(s) uploaded`);
   check("...and closes", sheet.closed);
+
+  // ── 6b. The sheet is the same pen, and an edited drawing keeps its pages ──
+  //
+  // Two faults the sheet had and nothing asked about. Pressing a swatch on it
+  // wrote ALL SIX of the pen's preferences, three of them as their defaults —
+  // so the eraser's size, its part/whole mode and the shape-snapper the reader
+  // had set on the paper were quietly reset by drawing in a note. And editing a
+  // drawing that ran to a second page concatenated the pages' strokes, each in
+  // its own page's coordinates, so page two was drawn over page one.
+  const sheetMore = await page.evaluate(`async (penSrc) => {
+    const { api, settle } = window.__recall;
+    const pen = (0, eval)(penSrc);
+    api.writeInkPreferences({ eraserSize: 7, eraseMode: "part", snapShapes: false });
+    api.setViewMode("notes");
+    await settle(300);
+    const ta = document.getElementById("notesEdit");
+    api.insertInkDrawing(ta, 0);
+    await settle(400);
+    const shell = document.getElementById("inkSheet");
+    shell.querySelector('[data-ink-pen="red"]').dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 9, cancelable: true }));
+    await settle(150);
+    shell.querySelector(".ink-sheet-cancel").click();
+    await settle(300);
+    const prefs = api.inkPreferences();
+
+    // A drawing with one stroke near the top of its page, reopened, given a
+    // second page with a stroke of its own, and saved.
+    const original = api.inkStrokesToSvg([{ w: 2, c: "ink", p: [40, 40, 0.5, 120, 60, 0.5, 200, 50, 0.5] }]);
+    let saved = "";
+    await api.reopenInkDrawing({ load: async () => original, replace: async (file) => { saved = await file.text(); } });
+    await settle(400);
+    shell.querySelector('[data-ink-action="add-page"]').dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 9 }));
+    await settle(300);
+    const second = shell.querySelectorAll(".hw-page")[1];
+    const box = second.getBoundingClientRect();
+    pen(second, "pointerdown", box.left + 40, box.top + 40, 1);
+    for (let i = 1; i <= 10; i += 1) pen(second, "pointermove", box.left + 40 + (i * 8), box.top + 40 + (i * 2), 1);
+    pen(second, "pointerup", box.left + 120, box.top + 60, 0);
+    await settle(150);
+    shell.querySelector(".ink-sheet-done").click();
+    for (let i = 0; i < 30 && !saved; i += 1) await settle(100);
+    const strokes = api.inkStrokesFromSvg(saved);
+    const tops = strokes.map((stroke) => {
+      let top = Infinity;
+      for (let i = 1; i < stroke.p.length; i += 3) top = Math.min(top, stroke.p[i]);
+      return top;
+    }).sort((a, b) => a - b);
+    return { prefs, strokes: strokes.length, tops, errs: window.__errs.slice(0, 4) };
+  }`, PEN_SRC);
+
+  check("a swatch pressed in the sheet leaves the eraser and the snapper as the reader set them",
+    sheetMore.prefs.pen === "red" && sheetMore.prefs.eraserSize === 7
+      && sheetMore.prefs.eraseMode === "part" && sheetMore.prefs.snapShapes === false,
+    JSON.stringify(sheetMore.prefs));
+  check("an edited drawing that gained a page keeps that page BELOW the first",
+    sheetMore.strokes === 2 && sheetMore.tops[1] > 1123,
+    `${sheetMore.strokes} stroke(s), tops at ${sheetMore.tops.map((t) => Math.round(t)).join(", ")}`
+      + `${sheetMore.errs.length ? ` — ${sheetMore.errs.join(" | ")}` : ""}`);
   // ── 7. A paper to read AND pages to write on, on one deck ───────────────
   //
   // The report this exists for: "if a deck already had a pdf then if I'm open on
@@ -3638,6 +3703,62 @@ try {
     await touchEnd();
     await page.evaluate(`async () => { window.__recall.api.clearTouchSelection(); await window.__recall.settle(200); }`);
   }
+
+  // ── Two touches while the pen is down are a palm, not a pinch ────────────
+  //
+  // A stylus on Android raises compatibility touches of its own, so a palm on
+  // the glass while the pen writes is TWO touches to the zoom — and a pinch that
+  // began there scaled the page under the nib and tore the live stroke down on
+  // the relayout that ended it. The control first, through the same real touch
+  // input: the same two fingers with no pen near are a pinch. They are brought
+  // back to where they started before lifting, so the control commits no zoom
+  // for the cases after it to inherit.
+  const pinchProbe = `() => Boolean(document.querySelector("#documentView > .pdf-pages.is-pinching"))`;
+  const twoTouch = (type, spread) => page.call("Input.dispatchTouchEvent", {
+    type,
+    touchPoints: type === "touchEnd" ? [] : [
+      { x: spot.x - spread, y: spot.y, radiusX: 10, radiusY: 10, force: 1, id: 11 },
+      { x: spot.x + spread, y: spot.y + 20, radiusX: 10, radiusY: 10, force: 1, id: 12 }
+    ]
+  });
+  let pinchAlone = null;
+  let pinchUnderPen = null;
+  if (spot) {
+    await twoTouch("touchStart", 40);
+    await twoTouch("touchMove", 70);
+    await twoTouch("touchMove", 100);
+    pinchAlone = await page.evaluate(pinchProbe);
+    await twoTouch("touchMove", 70);
+    await twoTouch("touchMove", 40);
+    await twoTouch("touchEnd", 0);
+    await page.evaluate(`async () => { window.__recall.api.clearTouchSelection(); await window.__recall.settle(300); }`);
+
+    const before = await page.evaluate(`() => (window.__recall.api.state.meta.pdfHighlights || []).filter((h) => h.kind === "ink").length`);
+    await page.evaluate(`async (penSrc) => {
+      const pen = (0, eval)(penSrc);
+      pen(document.getElementById("documentView"), "pointerdown", ${spot.x}, ${spot.y + 60}, 1);
+      await window.__recall.settle(30);
+    }`, PEN_SRC);
+    await twoTouch("touchStart", 40);
+    await twoTouch("touchMove", 70);
+    await twoTouch("touchMove", 100);
+    pinchUnderPen = await page.evaluate(pinchProbe);
+    await twoTouch("touchEnd", 0);
+    await page.evaluate(`async (penSrc) => {
+      const pen = (0, eval)(penSrc);
+      const view = document.getElementById("documentView");
+      for (let i = 1; i <= 8; i += 1) pen(view, "pointermove", ${spot.x} + (i * 6), ${spot.y + 60} + (i * 2), 1);
+      pen(view, "pointerup", ${spot.x + 48}, ${spot.y + 76}, 0);
+      await window.__recall.settle(300);
+    }`, PEN_SRC);
+    const after = await page.evaluate(`() => (window.__recall.api.state.meta.pdfHighlights || []).filter((h) => h.kind === "ink").length`);
+    // Taken back, so the page is as the cases below expect it.
+    if (after > before) await page.evaluate(`async () => { window.__recall.api.undoInk(); await window.__recall.settle(300); }`);
+  }
+  check("two fingers on the paper with no pen near it are a pinch",
+    pinchAlone === true, spot ? "the control never pinched, so the case below would ask nothing" : "no readable line on the paper");
+  check("...but two touches while the pen is down do not zoom the page under it",
+    pinchUnderPen === false, "the page started scaling under a stroke in progress");
 
   check("a long press on the paper with no pen near it does select a word",
     palmAlone === true,
