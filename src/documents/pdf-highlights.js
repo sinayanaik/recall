@@ -603,7 +603,11 @@ export function recolourDocumentHighlight(id, color) {
   repaintDocumentHighlights();
 }
 
-export function removeDocumentHighlight(id) {
+// `undo: false` is for a removal that is ITSELF an undo — the highlighter
+// taking back the highlight it just made (src/documents/pdf-smart-highlight.js,
+// on the pen's own undo ring). Pushing a notes-undo step for that would leave
+// a second, unrelated Ctrl+Z on the notes stack that puts it back again.
+export function removeDocumentHighlight(id, { undo = true } = {}) {
   const record = documentHighlightById(id);
   if (!record) return;
   // An undo step, which this did not take. Deleting a <mark> in a note is
@@ -611,7 +615,7 @@ export function removeDocumentHighlight(id) {
   // deleting a highlight on a paper was not — one mis-tap and a passage and its
   // note were simply gone. Taken before anything is written, so it holds the
   // note as it was.
-  pushNotesUndo("remove highlight");
+  if (undo) pushNotesUndo("remove highlight");
   const next = documentHighlights().filter((entry) => entry.id !== id);
   // ── The tombstone ────────────────────────────────────────────────────────
   //
@@ -650,6 +654,21 @@ export function removeDocumentHighlight(id) {
   if (pruned !== state.notes) state.notes = pruned;
   commitDocumentHighlights(next);
   repaintDocumentHighlights();
+}
+
+// A highlight put back exactly as it was — same id, colour, anchors and quads —
+// by a redo of the highlighter's own undo (src/documents/pdf-smart-highlight.js).
+// The same id matters: its note, its card and its number on the page all hang
+// off it. commitDocumentHighlights drops the tombstone the removal wrote, which
+// is the path it already keeps for "an id that comes back". A fresh `at`, so a
+// sync weighs it as the newest word on that id. Returns the record, or null if
+// that id is already live — the redo has nothing to do.
+export function reinstateDocumentHighlight(record) {
+  if (!record?.id || documentHighlightById(record.id)) return null;
+  const next = { ...record, at: Date.now() };
+  commitDocumentHighlights([...documentHighlights(), next]);
+  repaintDocumentHighlights();
+  return next;
 }
 
 // ── The note on a highlight ─────────────────────────────────────────────────

@@ -108,6 +108,7 @@ import { resetCardDrag } from "../cards/swipe.js?v=__BUILD__";
 import { PDF_BLOCK_CLASS } from "../core/constants.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { inkPenIsDown, penTextMode, setInkPenDown, setTouchGestureHoldsSurface } from "../core/gesture.js?v=__BUILD__";
+import { wordBoundsAt } from "../core/word-bounds.js?v=__BUILD__";
 import { isProgrammaticNotesScroll, markProgrammaticNotesScroll } from "./notes-view.js?v=__BUILD__";
 import { NOTES_BLOCK_SELECTOR, caretFromPoint } from "./raw-offset.js?v=__BUILD__";
 import { NOTES_CHUNK_CLASS, isTopLevelBlockParent } from "../render/block-cache.js?v=__BUILD__";
@@ -960,49 +961,9 @@ export function caretInRoot(x, y, root) {
 
 // ── Word snapping ──────────────────────────────────────────────────────────
 //
-// A press selects a WORD, like every other platform. Intl.Segmenter rather than
-// a regex because this app renders notes in whatever language they were written
-// in, and a regex word boundary is an English assumption.
-
-const wordSegmenter = (() => {
-  try {
-    return new Intl.Segmenter(navigator.language || "en", { granularity: "word" });
-  } catch (_) {
-    return null;
-  }
-})();
-
-const WORD_RE = /[\p{L}\p{N}_'’-]+/gu;
-
-function wordBoundsAt(text, offset) {
-  if (!text) return null;
-  if (wordSegmenter) {
-    let fallback = null;
-    for (const segment of wordSegmenter.segment(text)) {
-      const start = segment.index;
-      const end = start + segment.segment.length;
-      if (offset < start) break;
-      if (offset > end) continue;
-      if (segment.isWordLike) return { start, end };
-      // A press that lands on the space between two words: remember it, but
-      // keep looking — the word STARTING at this offset is the better answer.
-      if (!fallback && offset > start && offset < end) fallback = { start, end };
-    }
-    if (fallback) return fallback;
-  }
-  WORD_RE.lastIndex = 0;
-  let match = WORD_RE.exec(text);
-  let previous = null;
-  while (match) {
-    const start = match.index;
-    const end = start + match[0].length;
-    if (offset >= start && offset <= end) return { start, end };
-    if (end < offset) previous = { start, end };
-    if (start > offset) break;
-    match = WORD_RE.exec(text);
-  }
-  return previous;
-}
+// A press selects a WORD, like every other platform — wordBoundsAt, which
+// lives in src/core/word-bounds.js now so the document surface's highlighter
+// can snap a drag to the same words.
 
 // The image, equation or diagram a press landed on, when there is no text to
 // snap to. Selecting one is meaningful in this app — rangeHasImage() in

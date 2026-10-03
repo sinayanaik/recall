@@ -1112,6 +1112,23 @@ export function pasteInkSelection(page = null) {
 
 export function nudgeInkSelection(dx, dy) { closeOpenMark(); return ensureEngine().nudgeSelection(dx, dy); }
 
+// A step on the pen's undo ring that is not strokes — see pushAction in
+// src/render/ink-engine.js. The highlighter's text highlights and ▣'s boxes
+// (src/documents/pdf-smart-highlight.js) are taken back by the same ↶ and the
+// same Ctrl+Z as the ink drawn beside them, in the order they were made. Each
+// side tells onInkChanged, which repaints the bar's ↶ ↷ and is what main.js
+// reads to order this ring against the blocks' (lastDocumentEdit).
+export function pushInkHistoryAction({ undo, redo }) {
+  if (typeof undo !== "function" || typeof redo !== "function") return;
+  const told = (fn) => () => {
+    const result = fn();
+    onInkChanged();
+    return result;
+  };
+  ensureEngine().pushAction({ undo: told(undo), redo: told(redo) });
+  onInkChanged();
+}
+
 export function undoInk() { closeOpenMark(); return ensureEngine().undo(); }
 export function redoInk() { closeOpenMark(); return ensureEngine().redo(); }
 export function canUndoInk() { return Boolean(engine?.canUndo()); }
