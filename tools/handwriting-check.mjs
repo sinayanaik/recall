@@ -2504,6 +2504,54 @@ try {
     `a stroke on the notebook opened after choosing red 3.4pt came out ${JSON.stringify(paperInk.nbStroke)}`);
   check("...with nothing thrown on the way", (paperInk.errs || []).length === 0, (paperInk.errs || []).join(" | "));
 
+  // ── 8c. A stroke whose pen-up never came ──────────────────────────────
+  //
+  // Seen in this suite's own run: a stroke whose pointerup never reached the
+  // page (a release outside the window, a capture the browser took back) left
+  // a press behind, and the ink layer refused every stroke after it for the
+  // rest of the session — the same "I cannot draw anything" a leaked press has
+  // always meant. The same pen pressing again is proof the last contact
+  // ended, so the stale press is let go, what it drew is kept, and the new
+  // stroke draws.
+  const lostUp = await page.evaluate(`async (penSrc) => {
+    const { api, settle } = window.__recall;
+    const pen = (0, eval)(penSrc);
+    api.setViewMode("document");
+    for (let i = 0; i < 60 && !document.querySelector("#documentStage[data-doc-slot='doc'] .pdf-page[data-page-number='1'] canvas.pdf-canvas"); i += 1) await settle(100);
+    await settle(400);
+    api.setInkTool("pen");
+    const view = document.getElementById("documentView");
+    const pageEl = document.querySelector("#documentStage .pdf-page[data-page-number='1']");
+    const at = (x, y) => { const b = pageEl.getBoundingClientRect(); const [vx, vy] = api.pdfPageViewport(1).convertToViewportPoint(x, y); return { x: b.left + vx, y: b.top + vy }; };
+    let a = at(120, 300);
+    if (a.y > window.innerHeight - 60 || a.y < 60) { view.scrollTop += a.y - (window.innerHeight / 2); await settle(300); a = at(120, 300); }
+    const strokes = () => (api.documentInkMarks(1) || []).flatMap((r) => api.decodeInkStrokes(r.ink && r.ink.s) || []).length;
+    const before = strokes();
+    pen(view, "pointerdown", a.x, a.y, 1);
+    for (let i = 1; i <= 10; i += 1) pen(view, "pointermove", a.x + (i * 10), a.y + Math.sin(i) * 4, 1);
+    await settle(60);
+    // ...and no pointerup. The same pen comes down again, lower down.
+    const b2 = { x: a.x, y: a.y + 50 };
+    pen(view, "pointerdown", b2.x, b2.y, 1);
+    for (let i = 1; i <= 10; i += 1) pen(view, "pointermove", b2.x + (i * 10), b2.y + Math.sin(i) * 4, 1);
+    await settle(60);
+    pen(view, "pointerup", b2.x + 100, b2.y, 0);
+    await settle(400);
+    const after = strokes();
+    api.undoInk();
+    api.undoInk();
+    await settle(200);
+    const back = strokes() - before;
+    // Back on the notebook, where 8b left the reader and 9 expects them.
+    api.setViewMode("handwriting");
+    for (let i = 0; i < 60 && !document.querySelector("#documentStage[data-doc-slot='notebook'] .pdf-page[data-page-number='1'] canvas.pdf-canvas"); i += 1) await settle(100);
+    await settle(400);
+    return { added: after - before, back, errs: window.__errs.slice(0, 3) };
+  }`, PEN_SRC);
+  check("a stroke whose pen-up never came does not stop the next one drawing",
+    lostUp.added === 2 && lostUp.back === 0,
+    `${lostUp.added} stroke(s) from the lost one and the next (want 2), ${lostUp.back} left after undoing both`);
+
   // ── 9. A picture on the page ────────────────────────────────────────────
   //
   // "the handwritten note is something like one note where in a canvas multiple

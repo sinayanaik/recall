@@ -560,6 +560,21 @@ function inkTakesPointer(event) {
 // A pen aimed at a markdown block, or at a page that is not there, is not a pen
 // that is writing, and a context menu over editable text is wanted.
 function onInkPointerDown(event) {
+  // The SAME pointer pressing again: one pointer cannot press twice without
+  // lifting, so the contact this press belonged to ended without its pointerup
+  // ever reaching this file — a release outside the window, a capture the
+  // browser took back. Kept, it refused every stroke after it for the rest of
+  // the session; it is let go instead, and this press is the new stroke. What
+  // that lost contact had drawn is kept — the reader saw it go down. A
+  // DIFFERENT pointer arriving mid-stroke is a palm or a second finger, and is
+  // still refused.
+  if (press && event.pointerId === press.pointerId) {
+    if (press.live) {
+      ensureEngine().end();
+      noteInkStrokeCommitted();
+    }
+    releaseInkPress();
+  }
   if (press) return;
   noteInkContact(event.pointerType, beginInkPress(event));
 }
