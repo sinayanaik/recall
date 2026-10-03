@@ -6324,6 +6324,143 @@ try {
       svg.notOurs === 0 && svg.junk === 0, `plain=${svg.notOurs}, junk=${svg.junk}`);
   }
 
+  // ── 12b. The highlighter, over words and not ────────────────────────────
+  //
+  // A real stylus, the pen bar's highlighter, on page 1 of the text fixture.
+  // Swept along a line of words it is a highlight OF the words — the text is
+  // there to be had, so it is taken: searchable, and a card with the words on
+  // it. Over blank paper, or drawn round something rather than along it, it is
+  // the band it always was. src/documents/pdf-smart-highlight.js.
+  if (!OWN_PDF) {
+    // Every target is scrolled to the middle of the screen before it is drawn
+    // on: the run has left the window a landscape phone by now, and a stroke
+    // aimed below the bottom of it is a stroke that never reaches the page.
+    const aim = (x, y, lineText = null) => page.evaluate(`async ({ x, y, lineText }) => {
+      const { api, settle } = window.__recall;
+      const view = document.getElementById("documentView");
+      const pageEl = document.querySelector('.pdf-page[data-page-number="1"]');
+      if (!pageEl) return { error: "page 1 is not on the stage" };
+      const viewport = api.pdfPageViewport(1);
+      const at = (px, py) => { const b = pageEl.getBoundingClientRect(); const [vx, vy] = viewport.convertToViewportPoint(px, py); return { x: b.left + vx, y: b.top + vy }; };
+      const target = at(x, y);
+      view.scrollTop += target.y - (window.innerHeight / 2);
+      await settle(300);
+      const out = { point: at(x, y), unit: Math.abs(at(0, 0).y - at(0, 1).y) };
+      if (lineText) {
+        const span = [...pageEl.querySelectorAll(".pdf-text-layer [data-item-index]")].find((node) => node.textContent.startsWith(lineText));
+        if (!span) return { error: "no '" + lineText + "' on the text layer" };
+        const charAt = (index) => {
+          const r = document.createRange();
+          r.setStart(span.firstChild, index);
+          r.setEnd(span.firstChild, index + 1);
+          const b = r.getBoundingClientRect();
+          return { x: (b.left + b.right) / 2, y: (b.top + b.bottom) / 2 };
+        };
+        out.from = charAt(span.textContent.indexOf("line") + 1);
+        out.to = charAt(span.textContent.indexOf("worth") + 2);
+      }
+      return out;
+    }`, { x, y, lineText });
+    const spots = await page.evaluate(`async () => {
+      const { api, settle } = window.__recall;
+      api.closeMyDecksPanel?.();
+      api.setRegionSelect?.(false);
+      api.setViewMode("document");
+      await settle(200);
+      await api.whenDocumentPageReady(1);
+      api.scrollToDocumentPage(1, 0, { smooth: false });
+      await settle(400);
+      const ink = await import("/src/documents/pdf-ink.js?v=__BUILD__");
+      ink.setInkTool("highlighter");
+      return { ok: true };
+    }`);
+    // Line 3's baseline is at PDF y 666; the blank paper below the last line
+    // of text (the twelve lines end at 522); the middle of lines 5 to 7.
+    const line3 = await aim(150, 669, "Page 1 line 3 carries");
+    if (line3.error) spots.error = line3.error;
+    if (spots.error) {
+      check("the highlighter has a line of words to sweep", false, spots.error);
+    } else {
+      const counts = () => page.evaluate(`() => {
+        const all = window.__recall.api.state.meta?.pdfHighlights || [];
+        return { text: all.filter((r) => r.kind === "text" && r.page === 1).map((r) => r.id), ink: all.filter((r) => r.kind === "ink").map((r) => r.id) };
+      }`);
+      const sweepFrom = (a, b, n = 12) => {
+        const points = [];
+        for (let i = 0; i <= n; i += 1) points.push([a.x + ((b.x - a.x) * i) / n, a.y + ((b.y - a.y) * i) / n + Math.round(Math.sin(i) * 1), 0.5]);
+        return points;
+      };
+      const newest = async (before, kind) => {
+        const after = await counts();
+        return after[kind].filter((id) => !before[kind].includes(id));
+      };
+      const read = (ids) => page.evaluate(`async (ids) => {
+        const { api } = window.__recall;
+        const { decodeInkStrokes } = await import("/src/format/ink-strokes.js?v=__BUILD__");
+        return ids.map((id) => {
+          const r = (api.state.meta?.pdfHighlights || []).find((entry) => entry.id === id);
+          return r ? { kind: r.kind, text: r.text, color: r.color, tokens: r.kind === "ink" ? decodeInkStrokes(r.ink?.s || []).map((st) => st.c) : [] } : null;
+        });
+      }`, ids);
+      const undo = () => page.evaluate(`async () => {
+        const ink = await import("/src/documents/pdf-ink.js?v=__BUILD__");
+        ink.undoInk();
+        await window.__recall.settle(150);
+      }`);
+
+      // Along the words.
+      let before = await counts();
+      await page.penStroke(sweepFrom(line3.from, line3.to));
+      await new Promise((r) => setTimeout(r, 400));
+      const sweptText = await newest(before, "text");
+      const sweptInk = await newest(before, "ink");
+      const swept = (await read(sweptText))[0] || null;
+      await undo();
+      const afterUndo = await counts();
+      check("a stylus highlighter swept along a line of words makes a TEXT highlight of them",
+        sweptText.length === 1 && sweptInk.length === 0 && swept?.text === "line 3 carries a sentence worth" && swept?.color === "yellow",
+        `${sweptText.length} text, ${sweptInk.length} ink · "${swept?.text || ""}" ${swept?.color || ""}`);
+      check("...that the pen's undo takes back off", !afterUndo.text.includes(sweptText[0]),
+        `${afterUndo.text.length} text highlight(s) on page 1 after undo`);
+
+      // Over blank paper: a band, as ever.
+      const blankAim = await aim(150, 470);
+      spots.blank = blankAim.point;
+      before = await counts();
+      await page.penStroke(sweepFrom(spots.blank, { x: spots.blank.x + 180, y: spots.blank.y }));
+      await new Promise((r) => setTimeout(r, 400));
+      const blankInk = await newest(before, "ink");
+      const blankText = await newest(before, "text");
+      const blank = (await read(blankInk))[0] || null;
+      await undo();
+      check("...while over blank paper it lays the band it always did",
+        blankInk.length === 1 && blankText.length === 0 && /^hyellowq35$/.test(blank?.tokens?.[0] || ""),
+        `${blankInk.length} ink, ${blankText.length} text · ${JSON.stringify(blank?.tokens || [])}`);
+
+      // A ring drawn round three lines is a drawing, not a sweep.
+      const ringAim = await aim(250, 630);
+      spots.ring = ringAim.point;
+      spots.ringRadius = ringAim.unit * 28;
+      before = await counts();
+      const ring = [];
+      for (let i = 0; i <= 28; i += 1) {
+        const t = (i / 28) * Math.PI * 2;
+        ring.push([spots.ring.x + Math.cos(t) * spots.ringRadius * 4, spots.ring.y + Math.sin(t) * spots.ringRadius, 0.5]);
+      }
+      await page.penStroke(ring);
+      await new Promise((r) => setTimeout(r, 400));
+      const ringInk = await newest(before, "ink");
+      const ringText = await newest(before, "text");
+      await undo();
+      check("...and a ring drawn round some lines stays a band, not a highlight of them",
+        ringInk.length === 1 && ringText.length === 0, `${ringInk.length} ink, ${ringText.length} text`);
+      await page.evaluate(`async () => {
+        const ink = await import("/src/documents/pdf-ink.js?v=__BUILD__");
+        ink.setInkTool("pen");
+      }`);
+    }
+  }
+
   // ── 13. A highlighter over a SCANNED page ───────────────────────────────
   //
   // "Some PDFs are simply scanned copies — I want some highlights over those

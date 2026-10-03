@@ -108,7 +108,7 @@ import { el } from "../core/dom.js?v=__BUILD__";
 import { inkPenIsDown, noteInkContact, noteInkStrokeCommitted, setInkPenDown, setPenTextMode } from "../core/gesture.js?v=__BUILD__";
 import { QUAD_GEOMETRY_VERSION, documentHighlightAtPoint, documentInkMarks, freshDocumentHighlightId, setDocumentInkForPage } from "./pdf-highlights.js?v=__BUILD__";
 import { REGION_CLASS } from "./pdf-region.js?v=__BUILD__";
-import { setSmartHlUndoSink } from "./pdf-smart-highlight.js?v=__BUILD__";
+import { setSmartHlUndoSink, smartHlClaimInkStroke } from "./pdf-smart-highlight.js?v=__BUILD__";
 import { PDF_DARK_CLASS, currentDocumentPage, documentPageInViewCheap, pdfPageElement, pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
 import { INK_ERASER_SIZE_DEFAULT, INK_ERASE_MODE_DEFAULT, INK_ERASE_TARGET_DEFAULT, INK_HL_TOKEN_DEFAULT, INK_HL_WIDTH_DEFAULT, INK_PEN_DEFAULT, INK_TOOL_DEFAULT, INK_WIDTH_DEFAULT, formatInkToken, inkFilingColor, isHighlighterToken, normalizeInkEraseMode, normalizeInkEraseTarget, normalizeInkEraserSize, normalizeInkHlWidth, normalizeInkOpacity, normalizeInkToken, normalizeInkTool, normalizeInkWidth, parseInkToken } from "../format/ink-colors.js?v=__BUILD__";
 import { INK_FORMAT_VERSION, INK_MARK_IDLE_MS, decodeInkStrokes, encodeInkStrokes, inkStrokesBounds, inkStrokesJoinMark, mergeInkBoxes } from "../format/ink-strokes.js?v=__BUILD__";
@@ -284,6 +284,12 @@ function ensureEngine() {
       }
       return layer;
     },
+    // A highlighter swept along a line of real words is a highlight OF those
+    // words — searchable, quotable, a card with the words on it — rather than
+    // a band over them; src/documents/pdf-smart-highlight.js decides, and keeps
+    // the band for a scan, a figure, handwriting, blank paper or anything drawn
+    // rather than swept.
+    claimStroke: (page, stroke) => smartHlClaimInkStroke(page, stroke),
     className: "pdf-ink-canvas"
   });
   applyInkSettings(engine);
