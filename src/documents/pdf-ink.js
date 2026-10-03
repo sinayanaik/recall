@@ -46,16 +46,24 @@
 // `touch`, and touch is a scroll gesture the app already understands rather
 // than a smear across the page.
 //
-// ── A tap passes through ───────────────────────────────────────────────────
+// ── A tap passes through — unless it is a full stop ───────────────────────
 //
 // A pen that always draws can no longer press a numbered note badge, open a
 // highlight's menu or hit a button. So a press that ends within INK_TAP_SLOP
-// pixels in under INK_TAP_MS is a TAP: the samples are thrown away, no ink is
-// committed, and the browser's own click is allowed to happen. Nothing is
-// synthesised and nothing is dispatched by hand — not calling preventDefault on
-// the pointerdown is the whole mechanism, and it means a pen tap reaches every
-// existing handler by the ordinary route rather than by a route this file would
-// have to keep in step with them.
+// pixels in under INK_TAP_MS is a TAP, and the browser's own click is allowed
+// to happen. Nothing is synthesised and nothing is dispatched by hand — not
+// calling preventDefault on the pointerdown is the whole mechanism, and it means
+// a pen tap reaches every existing handler by the ordinary route rather than by
+// a route this file would have to keep in step with them.
+//
+// What a tap used to leave behind was nothing at all, and handwriting is full
+// of taps: the dot on an i, a full stop, a decimal point, the colon in a ratio.
+// Every one of them silently did not exist. So a pen tap on BARE PAPER, with the
+// pen armed, now leaves a dot (see tapInk) — and a tap on anything that answers
+// a press (a button, a link, a note badge, a highlight, a region, a block) is
+// still that press and leaves no ink. A tap on the reader's own handwriting is
+// writing, not a press: that is the dot on the i. The eraser taps out what is
+// under it, the same rule from the other side.
 //
 // ── The compatibility touch events, which are the hard part ────────────────
 //
@@ -97,7 +105,7 @@
 import { PDF_BLOCK_CLASS, PDF_INK_HL_LAYER_CLASS, PDF_INK_LAYER_CLASS } from "../core/constants.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { inkPenIsDown, noteInkContact, noteInkStrokeCommitted, setInkPenDown, setPenTextMode } from "../core/gesture.js?v=__BUILD__";
-import { QUAD_GEOMETRY_VERSION, documentInkMarks, freshDocumentHighlightId, setDocumentInkForPage } from "./pdf-highlights.js?v=__BUILD__";
+import { QUAD_GEOMETRY_VERSION, documentHighlightAtPoint, documentInkMarks, freshDocumentHighlightId, setDocumentInkForPage } from "./pdf-highlights.js?v=__BUILD__";
 import { REGION_CLASS } from "./pdf-region.js?v=__BUILD__";
 import { PDF_DARK_CLASS, currentDocumentPage, documentPageInViewCheap, pdfPageElement, pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
 import { INK_ERASER_SIZE_DEFAULT, INK_ERASE_MODE_DEFAULT, INK_ERASE_TARGET_DEFAULT, INK_HL_TOKEN_DEFAULT, INK_HL_WIDTH_DEFAULT, INK_PEN_DEFAULT, INK_TOOL_DEFAULT, INK_WIDTH_DEFAULT, formatInkToken, inkFilingColor, isHighlighterToken, normalizeInkEraseMode, normalizeInkEraseTarget, normalizeInkEraserSize, normalizeInkHlWidth, normalizeInkOpacity, normalizeInkToken, normalizeInkTool, normalizeInkWidth, parseInkToken } from "../format/ink-colors.js?v=__BUILD__";
@@ -408,7 +416,12 @@ function markIdForNewStrokes(pageNumber, added) {
 
 // ── The write path ─────────────────────────────────────────────────────────
 
+// How many commits this module has written, for the tap above to ask whether
+// one happened.
+let inkCommits = 0;
+
 function commitInkPage(pageNumber, strokes, meta) {
+  inkCommits += 1;
   if (meta?.reason === "draw" && Array.isArray(meta.added) && meta.added.length) {
     const id = markIdForNewStrokes(pageNumber, meta.added);
     meta.added.forEach((stroke) => { stroke.m = id; });
@@ -570,6 +583,11 @@ function beginInkPress(event) {
   setInkPenDown(true);
   press = {
     pointerId: event.pointerId,
+    // What the nib landed on, and how — kept for the tap, whose pointerup is
+    // retargeted to #documentView by the capture below and can no longer say.
+    target: event.target,
+    pointerType: event.pointerType,
+    down: event,
     page,
     pageEl,
     rect: pageEl.getBoundingClientRect(),
@@ -645,8 +663,76 @@ function onInkPointerUp(event) {
     // before the following mark, which while somebody is writing is a fraction
     // of a second and is full of taps. See src/core/gesture.js.
     noteInkStrokeCommitted();
+  } else {
+    tapInk(press);
   }
   releaseInkPress();
+}
+
+// ── What a tap leaves ──────────────────────────────────────────────────────
+//
+// A dot, with the pen; a hole, with the eraser; nothing, with anything else —
+// and nothing at all where the tap landed on something that answers a press.
+// The click the browser fires after it is left alone for a dot (a dot is ink,
+// and the mark menus already refuse a pen that has just written — see
+// noteInkStrokeCommitted) and swallowed for an erase that took something, so a
+// tap that rubbed out a dot does not also press whatever was under it.
+//
+// A pen, not a mouse. A click is how a mouse presses everything else on this
+// surface, and a desktop reader with the rail open clicking a block's edge or
+// a page's margin does not mean "put a dot here"; a stylus tapping the page
+// does.
+const INK_TAP_PRESSES = "button, a[href], [role='button'], label, input, textarea, select, summary, .pdf-note-badge";
+
+function tapInk(tap) {
+  if (!tap || tap.pointerType !== "pen") return;
+  const erasing = isEraserEvent(tap.down) || inkTool() === "eraser";
+  if (!erasing && (inkTool() !== "pen" || !inkSettings.tapDots)) return;
+  if (tapSuppressed()) return;
+  if (tap.target?.closest?.(`${INK_TAP_PRESSES}, .${PDF_BLOCK_CLASS}`)) return;
+  // The mean of the samples, not the first: a tap is a few samples a pixel or
+  // two apart, and the middle of them is where the nib actually was. The
+  // pressure is the firmest of them, which is what a dot pressed into the paper
+  // looks like.
+  let x = 0;
+  let y = 0;
+  let pressure = 0;
+  tap.samples.forEach((sample) => {
+    x += sample.clientX;
+    y += sample.clientY;
+    pressure = Math.max(pressure, Number(sample.pressure) || 0);
+  });
+  x /= tap.samples.length;
+  y /= tap.samples.length;
+  if (documentHighlightAtPoint(x, y, { skipInk: true })) return;
+  activeRect = tap.rect;
+  if (!ensureInkLayer(tap.page)) return;
+  const active = ensureEngine();
+  const before = inkCommits;
+  const sample = { clientX: x, clientY: y, pressure: pressure || 0.5 };
+  if (!active.begin(tap.page, [sample], tap.down)) return;
+  active.end();
+  if (erasing) {
+    // Swallowed only if the tap actually took something — the commit count is
+    // the one answer to that which a rub that shortened a stroke without
+    // changing how many there are cannot fool.
+    if (inkCommits !== before) swallowClickUntil = Date.now() + 400;
+    return;
+  }
+  noteInkStrokeCommitted();
+}
+
+// The press that shuts the pen's panel is not a tap on the page, even when it
+// lands on one. The panel says so here, and the next tap within the window is
+// left alone.
+let tapSuppressedUntil = 0;
+
+export function suppressInkTap(ms = 400) {
+  tapSuppressedUntil = Date.now() + ms;
+}
+
+function tapSuppressed() {
+  return Date.now() < tapSuppressedUntil;
 }
 
 function onInkPointerCancel(event) {

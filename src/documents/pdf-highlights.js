@@ -890,7 +890,12 @@ export function flashDocumentRegion(pageNumber, rect) {
 // highlight), and an element with pointer-events disabled is exactly what
 // elementsFromPoint declines to return. So the quads are tested directly, in
 // the page's own coordinate space, which is where they already live.
-export function documentHighlightAtPoint(clientX, clientY) {
+// `skipInk` leaves ink marks out of it, for the one caller that asks about
+// everything EXCEPT the reader's own handwriting: a pen tap deciding whether it
+// landed on something it should press (a highlight, a region) or on paper it
+// should write on — and writing on, or right next to, your own handwriting is
+// writing. See onInkPointerUp in ./pdf-ink.js.
+export function documentHighlightAtPoint(clientX, clientY, { skipInk = false } = {}) {
   const page = document.elementFromPoint(clientX, clientY)?.closest(".pdf-page");
   if (!page) return null;
   const box = page.getBoundingClientRect();
@@ -910,7 +915,7 @@ export function documentHighlightAtPoint(clientX, clientY) {
     // which is most of them. What the reader means by "that one" is the ink
     // they pointed at.
     if (record.kind === "ink") {
-      if (Number(record.page) !== pageNumber) continue;
+      if (skipInk || Number(record.page) !== pageNumber) continue;
       const point = inkPagePoint(pageNumber, x, y);
       if (point && decodeInkStrokes(record.ink?.s).some((stroke) =>
         inkStrokeHitsPoint(stroke, point.x, point.y, INK_TAP_SLACK))) return record;

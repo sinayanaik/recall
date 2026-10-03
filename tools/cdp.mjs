@@ -316,7 +316,8 @@ export async function openPage(client) {
     },
 
     // A pen TAP: down and straight back up, under the tap window and inside the
-    // slop. What this must do is press whatever is underneath and leave no ink.
+    // slop. On something that answers a press it must press it and leave no ink;
+    // on bare paper it leaves a dot (src/documents/pdf-ink.js, tapInk).
     async penTap(x, y) {
       await this.penDown(x, y, { pressure: 0.4 });
       await this.penUp(x, y);

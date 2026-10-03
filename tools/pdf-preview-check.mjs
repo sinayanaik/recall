@@ -5984,7 +5984,12 @@ try {
     if (!el) return { error: "page 1 never rendered" };
     const box = el.getBoundingClientRect();
     if (box.width < 80 || box.height < 80) return { error: "page 1 has no size" };
-    return { x: Math.round(box.left + (box.width * 0.5)), y: Math.round(box.top + (box.height * 0.45)) };
+    return {
+      x: Math.round(box.left + (box.width * 0.5)), y: Math.round(box.top + (box.height * 0.45)),
+      // The left margin at the same height: bare paper, with no text run and so
+      // no highlight under it, for the tap.
+      marginX: Math.round(box.left + (box.width * 0.05))
+    };
   }`);
 
   if (inkSpot.error) {
@@ -5992,14 +5997,31 @@ try {
   } else {
     const before = await page.evaluate(`() => (window.__recall.api.state.meta?.pdfHighlights || []).length`);
 
-    // ── A tap is not a stroke ─────────────────────────────────────────────
-    await page.penTap(inkSpot.x, inkSpot.y);
+    // ── A tap on bare paper is a dot, not a stroke ────────────────────────
+    //
+    // It left nothing at all, and handwriting is full of taps — the dot on an i,
+    // a full stop, a decimal point. Through Chrome's real input pipeline, in the
+    // page's margin where nothing answers a press.
+    await page.penTap(inkSpot.marginX, inkSpot.y);
     const afterTap = await page.evaluate(`async () => {
-      await window.__recall.settle(250);
-      const marks = (window.__recall.api.state.meta?.pdfHighlights || []);
-      return { total: marks.length, ink: marks.filter((m) => m.kind === "ink").length };
+      const { api, settle } = window.__recall;
+      await settle(250);
+      const marks = (api.state.meta?.pdfHighlights || []);
+      const ink = marks.filter((m) => m.kind === "ink");
+      const { decodeInkStrokes } = await import("/src/format/ink-strokes.js?v=__BUILD__");
+      const strokes = ink.flatMap((m) => decodeInkStrokes(m.ink?.s || []));
+      const result = { total: marks.length, ink: ink.length, points: strokes.map((st) => st.p.length / 3) };
+      // Taken back, so the stroke below is the first ink on the page as the
+      // cases after it expect.
+      const { undoInk } = await import("/src/documents/pdf-ink.js?v=__BUILD__");
+      undoInk();
+      await settle(250);
+      result.after = (api.state.meta?.pdfHighlights || []).filter((m) => m.kind === "ink").length;
+      return result;
     }`);
-    check("a pen TAP leaves no ink", afterTap.ink === 0, `${afterTap.ink} ink mark(s) after a tap`);
+    check("a pen TAP on bare paper leaves a dot, not a stroke",
+      afterTap.ink === 1 && afterTap.points.length === 1 && afterTap.points[0] === 1 && afterTap.after === 0,
+      `${afterTap.ink} ink mark(s) holding ${JSON.stringify(afterTap.points)} point(s); ${afterTap.after} after undo`);
 
     // ── A stroke is ───────────────────────────────────────────────────────
     const stroke = [];
@@ -6037,7 +6059,7 @@ try {
     check("...and no text, because handwriting has none", afterStroke.text === "", `text = ${JSON.stringify(afterStroke.text)}`);
     check("...painted onto its own canvas layer", afterStroke.hasLayer && afterStroke.painted > 50,
       `layer=${afterStroke.hasLayer}, ${afterStroke.painted} inked pixel(s)`);
-    check("a pen stroke does not become a text highlight", afterStroke.count + afterTap.ink === 1,
+    check("a pen stroke does not become a text highlight", afterStroke.count + afterTap.after === 1,
       `${afterTap.total} record(s) before, ${afterStroke.count} ink after`);
 
     // ── Zoom: the strokes are coordinates INTO the page, so they must not

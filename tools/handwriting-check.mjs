@@ -3715,6 +3715,8 @@ try {
     const x0 = box.left + 80;
 
     const marks = () => (api.state.meta?.pdfHighlights || []).length;
+    const inkStrokes = () => (api.state.meta?.pdfHighlights || []).filter((r) => r.kind === "ink")
+      .flatMap((r) => api.decodeInkStrokes(r.ink?.s || [])).length;
     const menuUp = () => {
       const m = document.querySelector(".mark-menu");
       return Boolean(m) && !m.hidden && m.getBoundingClientRect().height > 0;
@@ -3733,6 +3735,7 @@ try {
 
     // ── The dotted i: short, still, and right on top of that stroke ────────
     const penTapX = x0 + 36;
+    const strokesBeforeTap = inkStrokes();
     pen(view, "pointerdown", penTapX, y, 1);
     await settle(30);
     pen(view, "pointerup", penTapX, y, 0);
@@ -3747,7 +3750,7 @@ try {
     // pointerdown above has already recorded, and not anything on the click.
     view.dispatchEvent(new PointerEvent("click", { bubbles: true, cancelable: true, clientX: penTapX, clientY: y, pointerType: "pen" }));
     await settle(350);
-    const penTap = { menu: menuUp(), inked: marks() - before - drew };
+    const penTap = { menu: menuUp(), inked: marks() - before - drew, dotted: inkStrokes() - strokesBeforeTap };
     closeMenus();
     await settle(120);
 
@@ -3786,14 +3789,85 @@ try {
   check("a pen tap on your own handwriting does not open its menu",
     !menus.fatal && menus.penTap?.menu === false,
     menus.fatal || "the mark menu came up under a tap that was part of writing");
-  check("...and the tap still leaves no ink, as a tap always did",
-    !menus.fatal && menus.penTap?.inked === 0,
-    menus.fatal || `${menus.penTap?.inked} mark(s) — a tap must not become a stroke`);
+  // A tap on your own writing IS writing — the dot on the i — so it leaves a dot,
+  // and the dot joins the word it was made beside rather than becoming a mark
+  // (and a row in the Highlights panel) of its own.
+  check("...and the tap leaves a dot, in the mark of the word it dots",
+    !menus.fatal && menus.penTap?.dotted === 1 && menus.penTap?.inked === 0,
+    menus.fatal || `${menus.penTap?.dotted} stroke(s) and ${menus.penTap?.inked} new mark(s) from a tap on the stroke`);
   // ...and the other half, which is what stops the fix being "the menu never
   // opens": touch never draws, so a finger is always free to mean "that one".
   check("...while a FINGER on the same ink still opens it",
     !menus.fatal && menus.fingerTap?.menu === true,
     menus.fatal || "the refusal took the last route to an ink mark's menu away");
+
+  // ── A tap is a full stop ──────────────────────────────────────────────────
+  //
+  // A tap used to leave nothing, and handwriting is full of taps: the dot on an
+  // i, a full stop, a decimal point. A pen tap on bare paper is a dot now; with
+  // Tap dots off it is nothing again; the eraser taps one out; and a tap on
+  // something that answers a press — here a region — is that press, not a dot.
+  const dots = await page.evaluate(`async (penSrc) => {
+    const { api, settle } = window.__recall;
+    const pen = (0, eval)(penSrc);
+    const view = document.getElementById("documentView");
+    api.setViewMode("handwriting");
+    await settle(400);
+    api.chooseInkTool("pen");
+    await settle(1700);
+    const pageEl = document.querySelector("#documentStage .pdf-page[data-page-number='1']");
+    if (!pageEl) return { fatal: "no notebook page" };
+    const box = pageEl.getBoundingClientRect();
+    const railBox = document.getElementById("documentInkRail")?.getBoundingClientRect();
+    const y = Math.max(box.top + 260, (railBox && railBox.height ? railBox.bottom : 0) + 120);
+    const x = box.left + (box.width * 0.6);
+    const strokes = () => (api.documentInkMarks(1) || []).flatMap((r) => api.decodeInkStrokes(r.ink?.s || []));
+    const tap = async (tx, ty, buttons = 1) => {
+      pen(view, "pointerdown", tx, ty, buttons);
+      await settle(20);
+      pen(view, "pointerup", tx, ty, 0);
+      await settle(300);
+    };
+    let n = strokes().length;
+    await tap(x, y);
+    const all = strokes();
+    const dot = all.length - n;
+    const dotPoints = dot === 1 ? all[all.length - 1].p.length / 3 : 0;
+
+    n = strokes().length;
+    api.setInkTapDots(false);
+    await tap(x + 50, y);
+    const whileOff = strokes().length - n;
+    api.setInkTapDots(true);
+
+    n = strokes().length;
+    api.setInkTool("eraser");
+    await tap(x, y);
+    const erased = n - strokes().length;
+    api.setInkTool("pen");
+    await settle(1700);
+
+    // A region over a patch of bare paper, and a tap inside it.
+    const rect = { left: x + 90, top: y - 20, right: x + 170, bottom: y + 20 };
+    const quad = api.rectToPdfQuad(rect, 1);
+    const region = api.addDocumentHighlight({ kind: "area", page: 1, quads: [quad], text: "", anchor: { page: 1, item: 0, ch: 0 }, focus: { page: 1, item: 0, ch: 0 } });
+    await settle(200);
+    n = strokes().length;
+    await tap(x + 130, y);
+    const onRegion = strokes().length - n;
+    api.closeMarkMenu();
+    if (region) api.removeDocumentHighlight(region.id);
+    await settle(200);
+    return { dot, dotPoints, whileOff, erased, onRegion, errs: window.__errs.slice(0, 4) };
+  }`, PEN_SRC);
+  check("a pen tap on bare paper leaves a dot",
+    !dots.fatal && dots.dot === 1 && dots.dotPoints === 1,
+    dots.fatal || `${dots.dot} stroke(s) of ${dots.dotPoints} point(s) from one tap`);
+  check("...and nothing with Tap dots switched off", dots.whileOff === 0, `${dots.whileOff} stroke(s) from a tap with dots off`);
+  check("...and a tap with the eraser takes the dot back out", dots.erased === 1, `${dots.erased} stroke(s) erased by one eraser tap`);
+  check("...while a tap on a highlight or a region presses it instead of writing",
+    dots.onRegion === 0, `${dots.onRegion} stroke(s) from a tap inside a region`);
+  check("...with nothing thrown", (dots.errs || []).length === 0, (dots.errs || []).join(" | "));
   // ── The palm that lands a frame before the nib ───────────────────────────
   //
   // onRootTouchStart reads the pen flag at TOUCHSTART, and the reported sequence
