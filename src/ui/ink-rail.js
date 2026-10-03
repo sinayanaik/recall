@@ -32,6 +32,7 @@ import { bindInkRailActivation, paintInkRailPressed } from "../handwriting/rail.
 import { buildInkPanel, createInkPanel, paintInkChip } from "../handwriting/ink-popover.js?v=__BUILD__";
 import { inkPreferences, inkRailOpen, rememberInkRecentColor, writeInkPreferences, writeInkRailOpen } from "../storage/ink-prefs.js?v=__BUILD__";
 import { activeDocSlot } from "../documents/doc-slot.js?v=__BUILD__";
+import { isRegionSelectArmed, setRegionSelect } from "../documents/pdf-region.js?v=__BUILD__";
 import { showConfirmModal } from "./feedback.js?v=__BUILD__";
 
 function pressed(node, on) {
@@ -289,6 +290,7 @@ function rememberInkPreferences() {
 // with it. Exported from here rather than written there so there is one
 // statement of what changing the tool entails: set it, remember it, repaint.
 export function chooseInkTool(tool) {
+  if (isRegionSelectArmed()) setRegionSelect(false);
   setInkTool(tool);
   rememberInkPreferences();
   refreshInkRail();
@@ -375,6 +377,10 @@ function pressRail(button) {
   else if (nextWidth) setInkWidth(Number(nextWidth));
   else if (nextEraser) setInkEraserSize(Number(nextEraser));
   else if (nextTool) {
+    // Picking up one of the pen's own tools puts ▣ down — while it is on, the
+    // stylus is ▣'s, and a reader reaching for the highlighter here means the
+    // pen's (src/documents/pdf-region.js).
+    if (isRegionSelectArmed()) setRegionSelect(false);
     // The armed tool pressed again opens its panel, the way every drawing app
     // a reader has used does it; a different tool is armed, and the panel —
     // if it was up — follows it (refreshInkRail).

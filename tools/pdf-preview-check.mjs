@@ -1175,7 +1175,7 @@ try {
     width: 1280, height: 900, deviceScaleFactor: 1, mobile: false
   });
 
-  // ── 7. A region highlight, and the same reload round-trip ────────────────
+  // ── 7. ▣: regions, words, and the same reload round-trip ─────────────────
   //
   // The one thing a text selection cannot do: a figure has no text layer to drag
   // across, so captureDocumentSelection returns null over one and half the
@@ -1184,8 +1184,17 @@ try {
   // makes this worth asserting — a record whose quad is in PDF user space is one
   // that survives a zoom and a reload, and a record whose quad is in client
   // pixels would pass every check made in the session that created it.
+  //
+  // And ▣ is a highlighter that stays on now ("it should be reusable until
+  // released, and smart enough to distinguish"): two boxes in a row with no
+  // re-arm, a drag that starts on words highlights those words — snapped to
+  // whole words, at once, with no selection bar — and each one is on the pen's
+  // undo ring. src/documents/pdf-region.js.
   const region = await page.evaluate(`async () => {
     const { api, settle } = window.__recall;
+    const menu = await import("/src/notes/mark-menu.js?v=__BUILD__");
+    const ink = await import("/src/documents/pdf-ink.js?v=__BUILD__");
+    const { renderFormatDefaults } = await import("/src/format/render-toolbar.js?v=__BUILD__");
     // The reload above went through loadDeckFromLibrary, which leaves the My
     // Decks panel on screen — and a full-screen panel over the page is exactly
     // what stops elementFromPoint finding the .pdf-page under the drag. In the
@@ -1213,119 +1222,271 @@ try {
     // src/documents/pdf-page-notes.js) rather than taking whichever text layer
     // happens to be first in the document.
     let textLayer = pageEl.querySelector(".pdf-text-layer");
-    for (let i = 0; i < 60 && !textLayer; i += 1) {
+    for (let i = 0; i < 60 && !(textLayer && textLayer.querySelector("[data-item-index]")); i += 1) {
       await settle(50);
       textLayer = pageEl.querySelector(".pdf-text-layer");
     }
     if (!textLayer) return { error: "page 2 never built a text layer" };
+    await settle(100);
     const box = pageEl.getBoundingClientRect();
-    // A box over the middle of the page, well clear of its edges — the geometry
-    // is what is under test, not which glyphs happen to fall inside it.
-    const from = { x: box.left + box.width * 0.2, y: box.top + box.height * 0.3 };
-    const to = { x: box.left + box.width * 0.7, y: box.top + box.height * 0.5 };
+    const view = document.getElementById("documentView");
+    const send = (type, point, extra = {}) => view.dispatchEvent(new PointerEvent(type, {
+      bubbles: true, cancelable: true, pointerId: 1, isPrimary: true, button: 0, pointerType: "mouse",
+      clientX: point.x, clientY: point.y, ...extra
+    }));
+    const frame = () => new Promise((resolve) => requestAnimationFrame(() => resolve()));
+    const drag = async (from, to, steps = 3) => {
+      send("pointerdown", from);
+      for (let i = 1; i <= steps; i += 1) {
+        send("pointermove", { x: from.x + ((to.x - from.x) * i) / steps, y: from.y + ((to.y - from.y) * i) / steps }, { buttons: 1 });
+      }
+      await frame();
+      const preview = pageEl.querySelectorAll(".pdf-smart-preview-band").length;
+      const marquee = Boolean(pageEl.querySelector(".pdf-region-marquee"));
+      send("pointerup", to);
+      await settle(120);
+      return { preview, marquee };
+    };
+    const areas = () => (api.state.meta?.pdfHighlights || []).filter((r) => r.kind === "area");
+    const texts = () => (api.state.meta?.pdfHighlights || []).filter((r) => r.kind === "text" && r.page === 2);
+    const lineSpan = (n) => [...pageEl.querySelectorAll(".pdf-text-layer [data-item-index]")]
+      .find((span) => span.textContent.startsWith("Page 2 line " + n + " carries"));
+    const charAt = (span, index) => {
+      const r = document.createRange();
+      r.setStart(span.firstChild, index);
+      r.setEnd(span.firstChild, index + 1);
+      const b = r.getBoundingClientRect();
+      return { x: (b.left + b.right) / 2, y: (b.top + b.bottom) / 2 };
+    };
+    const ends = (n) => {
+      const span = lineSpan(n);
+      if (!span) return null;
+      const text = span.textContent;
+      return { from: charAt(span, text.indexOf("line") + 1), to: charAt(span, text.indexOf("sentence") + 3) };
+    };
+    const onScreen = (p) => p && p.y > 0 && p.y < window.innerHeight && p.x > 0 && p.x < window.innerWidth;
+    const color = renderFormatDefaults.highlight || "yellow";
+
     api.setRegionSelect(true);
     const armedClass = document.getElementById("documentStage").classList.contains("is-region-select");
     const textLayerInert = getComputedStyle(textLayer).pointerEvents === "none";
-    const view = document.getElementById("documentView");
-    const send = (type, point) => view.dispatchEvent(new PointerEvent(type, {
-      bubbles: true, cancelable: true, pointerId: 1, isPrimary: true, button: 0,
-      clientX: point.x, clientY: point.y
-    }));
-    send("pointerdown", from);
-    send("pointermove", { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 });
-    const marqueeDrawn = Boolean(pageEl.querySelector(".pdf-region-marquee"));
-    send("pointermove", to);
-    send("pointerup", to);
-    await settle(120);
-    const records = api.state.meta?.pdfHighlights || [];
-    const record = records.filter((r) => r.kind === "area").pop() || null;
-    const disarmedAfterCapture = !api.isRegionSelectArmed();
 
-    // A capture disarms the mode — a reader pulling several regions out of one
-    // paper has to tap Select before each one. Proved here by immediately
-    // dragging a SECOND box, with no re-arm in between: it must NOT become a
-    // region. A page taller than the viewport (as this one is) puts most of
-    // its own height off-screen even though it renders fine — same band as the
-    // first drag's press point (which is known to land on-screen) but shifted
-    // over in x, so the two attempts don't overlap.
-    const from2 = { x: box.left + box.width * 0.15, y: from.y };
-    const to2 = { x: box.left + box.width * 0.55, y: to.y };
-    send("pointerdown", from2);
-    send("pointermove", { x: (from2.x + to2.x) / 2, y: (from2.y + to2.y) / 2 });
-    const marqueeDrawnWhileDisarmed = Boolean(pageEl.querySelector(".pdf-region-marquee"));
-    send("pointermove", to2);
-    send("pointerup", to2);
-    await settle(120);
-    const records2 = api.state.meta?.pdfHighlights || [];
-    const areaRecords2 = records2.filter((r) => r.kind === "area");
-    const secondMadeNoNewRegion = areaRecords2.length === (record ? 1 : 0)
-      && (areaRecords2[areaRecords2.length - 1]?.id ?? null) === (record?.id ?? null);
+    // ── Two boxes in a row, with no re-arm between them ──────────────────
+    // Each starts in the left MARGIN, off the words, so each is a box — the
+    // mode stays on after the first, which is the whole of what was asked.
+    const from1 = { x: box.left + box.width * 0.04, y: box.top + box.height * 0.3 };
+    const to1 = { x: box.left + box.width * 0.7, y: box.top + box.height * 0.5 };
+    const before1 = areas().length;
+    const first = await drag(from1, to1);
+    const record = areas().length === before1 + 1 ? areas()[areas().length - 1] : null;
+    const armedAfterFirst = api.isRegionSelectArmed();
+    const marqueeCleared = !pageEl.querySelector(".pdf-region-marquee");
+    menu.closeMarkMenu();
+    const from2 = { x: box.left + box.width * 0.03, y: from1.y };
+    const to2 = { x: box.left + box.width * 0.55, y: to1.y };
+    const second = await drag(from2, to2);
+    const record2 = areas().length === before1 + 2 ? areas()[areas().length - 1] : null;
+    const armedAfterSecond = api.isRegionSelectArmed();
+    menu.closeMarkMenu();
 
-    // Re-arming explicitly still lets a THIRD drag succeed — proves the tool
-    // isn't just broken, only that it needs a fresh tap per capture.
-    api.setRegionSelect(true);
-    const from3 = { x: box.left + box.width * 0.15, y: from.y };
-    const to3 = { x: box.left + box.width * 0.55, y: to.y };
-    send("pointerdown", from3);
-    send("pointermove", { x: (from3.x + to3.x) / 2, y: (from3.y + to3.y) / 2 });
-    send("pointermove", to3);
-    send("pointerup", to3);
-    await settle(120);
-    const records3 = api.state.meta?.pdfHighlights || [];
-    const areaRecords3 = records3.filter((r) => r.kind === "area");
-    const record3 = areaRecords3[areaRecords3.length - 1] || null;
-    const reArmedCaptureWorked = Boolean(record3 && record3.id !== record?.id);
-    const disarmedAfterThirdCapture = !api.isRegionSelectArmed();
+    // ── A drag across words highlights them ──────────────────────────────
+    const lineA = ends(2);
+    const lineB = ends(3);
+    if (!lineA || !lineB || ![lineA.from, lineA.to, lineB.from, lineB.to].every(onScreen)) {
+      api.setRegionSelect(false);
+      return { error: "lines 2 and 3 of page 2 are not on screen to drag across" };
+    }
+    const textsBefore = texts().length;
+    const forward = await drag(lineA.from, lineA.to, 4);
+    const madeA = texts().length === textsBefore + 1 ? texts()[texts().length - 1] : null;
+    const menuAfterText = menu.isMarkMenuOpen();
+    const previewCleared = !document.querySelector(".pdf-smart-preview-band");
+    const selectionCollapsed = window.getSelection()?.isCollapsed !== false;
+    const armedAfterText = api.isRegionSelectArmed();
 
-    // ...and the toolbar's own toggle still arms/disarms an idle (non-dragging)
-    // tool. Left OFF on the way out so later checks in this file (which assume
-    // the text layer is selectable again) see the surface the way a reader who
-    // tapped the button off would leave it.
-    api.setRegionSelect(true);
-    const armedByToggle = api.isRegionSelectArmed();
-    api.setRegionSelect(false);
-    const disarmedAfterToggle = !api.isRegionSelectArmed();
+    // Right to left, on the next line: the same words, the same snapping.
+    await drag(lineB.to, lineB.from, 4);
+    const madeB = texts().length === textsBefore + 2 ? texts()[texts().length - 1] : null;
+
+    // The same words again, in the same colour: nothing new.
+    await drag(lineA.from, lineA.to, 4);
+    const countAfterRepeat = texts().length;
+
+    // A press that barely moved is a tap, not a highlight.
+    await drag(lineA.from, { x: lineA.from.x + 3, y: lineA.from.y }, 1);
+    const countAfterTap = texts().length;
+
+    // ── On the pen's undo ring, in order ─────────────────────────────────
+    const canUndo = ink.canUndoInk();
+    ink.undoInk();
+    await settle(60);
+    const afterUndo1 = { b: Boolean(madeB && texts().some((r) => r.id === madeB.id)), a: Boolean(madeA && texts().some((r) => r.id === madeA.id)) };
+    ink.undoInk();
+    await settle(60);
+    const afterUndo2 = { a: Boolean(madeA && texts().some((r) => r.id === madeA.id)) };
+    ink.redoInk();
+    await settle(60);
+    const redone = madeA ? texts().find((r) => r.id === madeA.id) || null : null;
+    const redonePainted = madeA ? pageEl.querySelectorAll('.pdf-mark[data-highlight-id="' + madeA.id + '"]').length : 0;
+
+    // ── A tap on a highlight still opens it ──────────────────────────────
+    await settle(450);
+    const mark = madeA ? pageEl.querySelector('.pdf-mark[data-highlight-id="' + madeA.id + '"]') : null;
+    let tapOpened = false;
+    let tapMade = 0;
+    if (mark) {
+      const b = mark.getBoundingClientRect();
+      const at = { x: b.left + b.width / 2, y: b.top + b.height / 2 };
+      const countBefore = (api.state.meta?.pdfHighlights || []).length;
+      send("pointerdown", at);
+      send("pointerup", at);
+      view.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, clientX: at.x, clientY: at.y, detail: 1 }));
+      await settle(120);
+      tapOpened = menu.isMarkMenuOpen();
+      tapMade = (api.state.meta?.pdfHighlights || []).length - countBefore;
+      menu.closeMarkMenu();
+    }
 
     return {
       armedClass,
       textLayerInert,
-      marqueeDrawn,
-      marqueeCleared: !pageEl.querySelector(".pdf-region-marquee"),
-      disarmedAfterCapture,
-      marqueeDrawnWhileDisarmed,
-      secondMadeNoNewRegion,
-      reArmedCaptureWorked,
-      disarmedAfterThirdCapture,
-      armedByToggle,
-      disarmedAfterToggle,
+      marqueeDrawn: first.marquee,
+      marqueeCleared,
       record: record ? { id: record.id, page: record.page, kind: record.kind, quads: record.quads } : null,
-      painted: document.querySelectorAll('.pdf-mark[data-kind="area"]').length
+      record2: Boolean(record2 && record2.id !== record?.id),
+      armedAfterFirst,
+      armedAfterSecond,
+      painted: document.querySelectorAll('.pdf-mark[data-kind="area"]').length,
+      textPreview: forward.preview,
+      textMarquee: forward.marquee,
+      madeA: madeA ? { id: madeA.id, text: madeA.text, quads: madeA.quads.length, page: madeA.anchor?.page, color: madeA.color } : null,
+      madeB: madeB ? { text: madeB.text } : null,
+      color,
+      menuAfterText,
+      previewCleared,
+      selectionCollapsed,
+      armedAfterText,
+      repeatAdded: countAfterRepeat - (textsBefore + 2),
+      tapAdded: countAfterTap - countAfterRepeat,
+      canUndo,
+      afterUndo1,
+      afterUndo2,
+      redone: Boolean(redone),
+      redonePainted,
+      tapOpened,
+      tapMade,
+      madeIds: [madeA?.id, madeB?.id].filter(Boolean),
+      // For the real-input drags below, outside this evaluate.
+      mouseLine: ends(4),
+      penLine: ends(5),
+      armedAtEnd: api.isRegionSelectArmed()
     };
   }`);
 
   // Named rather than left to cascade: without this, a probe that returned an
-  // error would fail the four cases below with `class=undefined`, which says
-  // nothing about which of the two preconditions was missing.
+  // error would fail the cases below with `class=undefined`, which says
+  // nothing about which of the preconditions was missing.
   check("the region fixture is ready", !region.error, region.error || "page 2 rendered with a text layer");
-  check("region select arms the surface", region.armedClass && region.textLayerInert,
+  check("▣ arms the surface", region.armedClass && region.textLayerInert,
     `class=${region.armedClass} textLayerInert=${region.textLayerInert}`);
-  check("...and a drag draws a marquee", Boolean(region.marqueeDrawn));
+  check("...and a drag that starts off the words draws a marquee", Boolean(region.marqueeDrawn));
   check("...which becomes an area highlight",
     region.record?.kind === "area" && region.record?.quads?.length === 1,
     region.record ? `page ${region.record.page} · ${JSON.stringify(region.record.quads[0].rect.map((n) => Math.round(n)))}` : "no record");
   check("...painted as an outline, not a tint", region.painted > 0, `${region.painted} mark div(s)`);
-  check("...and the mode disarms itself after one capture",
-    region.disarmedAfterCapture && region.marqueeCleared,
-    `disarmedAfterCapture=${region.disarmedAfterCapture} marqueeCleared=${region.marqueeCleared}`);
-  check("...so a second drag right after it, with no re-arm, makes no region",
-    !region.marqueeDrawnWhileDisarmed && region.secondMadeNoNewRegion,
-    `marqueeDrawnWhileDisarmed=${region.marqueeDrawnWhileDisarmed} secondMadeNoNewRegion=${region.secondMadeNoNewRegion}`);
-  check("...but re-arming lets the very next drag capture a region again",
-    region.reArmedCaptureWorked && region.disarmedAfterThirdCapture,
-    `reArmedCaptureWorked=${region.reArmedCaptureWorked} disarmedAfterThirdCapture=${region.disarmedAfterThirdCapture}`);
+  check("...and the mode STAYS ON after it, so the next box needs no re-arm",
+    region.armedAfterFirst && region.marqueeCleared && region.record2 && region.armedAfterSecond,
+    `armed after 1st=${region.armedAfterFirst}, 2nd box made=${region.record2}, armed after 2nd=${region.armedAfterSecond}, marquee cleared=${region.marqueeCleared}`);
+  check("a drag that starts ON words previews them, with no marquee",
+    region.textPreview > 0 && !region.textMarquee, `${region.textPreview} preview band(s), marquee=${region.textMarquee}`);
+  check("...and highlights exactly those words, snapped to whole words",
+    region.madeA?.text === "line 2 carries a sentence" && region.madeA?.quads === 1 && region.madeA?.page === 2,
+    region.madeA ? `"${region.madeA.text}", ${region.madeA.quads} quad(s), page ${region.madeA.page}` : "no text highlight made");
+  check("...in the reader's highlight colour, with no menu in the way of the next line",
+    region.madeA?.color === region.color && !region.menuAfterText && region.previewCleared && region.selectionCollapsed && region.armedAfterText,
+    `colour ${region.madeA?.color} (want ${region.color}), menu=${region.menuAfterText}, preview left=${!region.previewCleared}, armed=${region.armedAfterText}`);
+  check("...right to left as well as left to right",
+    region.madeB?.text === "line 3 carries a sentence", region.madeB ? `"${region.madeB.text}"` : "no highlight from the reverse drag");
+  check("...and the same words again in the same colour add nothing, nor does a tap",
+    region.repeatAdded === 0 && region.tapAdded === 0, `repeat added ${region.repeatAdded}, tap added ${region.tapAdded}`);
+  check("the pen's undo takes the highlights back in order, and redo restores the same one",
+    region.canUndo && !region.afterUndo1.b && region.afterUndo1.a && !region.afterUndo2.a && region.redone && region.redonePainted > 0,
+    `undo 1: B live=${region.afterUndo1.b} A live=${region.afterUndo1.a}; undo 2: A live=${region.afterUndo2.a}; redo: A back=${region.redone}, painted=${region.redonePainted}`);
+  check("a tap on a highlight while ▣ is on opens its menu, and makes nothing",
+    region.tapOpened && region.tapMade === 0, `menu=${region.tapOpened}, made ${region.tapMade}`);
+
+  // ── Real input, through Chrome's own pipeline ─────────────────────────────
+  //
+  // A mouse drag, so the click the browser raises after it is the real one —
+  // the one that would open the new highlight's menu if it were not swallowed.
+  // And a pen, which the ink layer stands aside for while ▣ is on.
+  const realDrags = { mouse: null, pen: null };
+  if (!region.error && region.mouseLine && region.penLine) {
+    const countText = () => page.evaluate(`() => (window.__recall.api.state.meta?.pdfHighlights || []).filter((r) => r.kind === "text" && r.page === 2).length`);
+    const before = await countText();
+    const { from, to } = region.mouseLine;
+    await page.call("Input.dispatchMouseEvent", { type: "mousePressed", x: from.x, y: from.y, button: "left", buttons: 1, clickCount: 1 });
+    for (let i = 1; i <= 4; i += 1) {
+      await new Promise((r) => setTimeout(r, 16));
+      await page.call("Input.dispatchMouseEvent", { type: "mouseMoved", x: from.x + ((to.x - from.x) * i) / 4, y: from.y + ((to.y - from.y) * i) / 4, button: "left", buttons: 1 });
+    }
+    await page.call("Input.dispatchMouseEvent", { type: "mouseReleased", x: to.x, y: to.y, button: "left", buttons: 0, clickCount: 1 });
+    await new Promise((r) => setTimeout(r, 200));
+    realDrags.mouse = await page.evaluate(`async (before) => {
+      const { api } = window.__recall;
+      const menu = await import("/src/notes/mark-menu.js?v=__BUILD__");
+      const texts = (api.state.meta?.pdfHighlights || []).filter((r) => r.kind === "text" && r.page === 2);
+      return { added: texts.length - before, text: texts[texts.length - 1]?.text || "", menu: menu.isMarkMenuOpen(), id: texts[texts.length - 1]?.id };
+    }`, before);
+    const beforePen = await countText();
+    const inkBefore = await page.evaluate(`() => (window.__recall.api.state.meta?.pdfHighlights || []).filter((r) => r.kind === "ink").length`);
+    const pen = region.penLine;
+    const stroke = [];
+    for (let i = 0; i <= 6; i += 1) stroke.push([pen.from.x + ((pen.to.x - pen.from.x) * i) / 6, pen.from.y + ((pen.to.y - pen.from.y) * i) / 6, 0.5]);
+    await page.penStroke(stroke);
+    await new Promise((r) => setTimeout(r, 300));
+    realDrags.pen = await page.evaluate(`async ({ beforePen, inkBefore }) => {
+      const { api } = window.__recall;
+      const all = api.state.meta?.pdfHighlights || [];
+      const texts = all.filter((r) => r.kind === "text" && r.page === 2);
+      return { added: texts.length - beforePen, text: texts[texts.length - 1]?.text || "", ink: all.filter((r) => r.kind === "ink").length - inkBefore, id: texts[texts.length - 1]?.id };
+    }`, { beforePen, inkBefore });
+  }
+  check("a real mouse drag across words highlights them, and its click opens no menu",
+    realDrags.mouse?.added === 1 && realDrags.mouse?.text === "line 4 carries a sentence" && realDrags.mouse?.menu === false,
+    realDrags.mouse ? `added ${realDrags.mouse.added} "${realDrags.mouse.text}", menu=${realDrags.mouse.menu}` : "not run");
+  check("...and a real stylus drag does the same, drawing no ink while ▣ is on",
+    realDrags.pen?.added === 1 && realDrags.pen?.text === "line 5 carries a sentence" && realDrags.pen?.ink === 0,
+    realDrags.pen ? `added ${realDrags.pen.added} "${realDrags.pen.text}", ink marks +${realDrags.pen.ink}` : "not run");
+
+  const regionOff = await page.evaluate(`async (ids) => {
+    const { api, settle } = window.__recall;
+    // Escape is how a reader gets out without finding the button.
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    await settle(60);
+    const escaped = !api.isRegionSelectArmed();
+    const layer = document.querySelector('.pdf-page[data-page-number="2"] .pdf-text-layer');
+    const selectable = layer ? getComputedStyle(layer).pointerEvents !== "none" : false;
+    // ...and the toolbar's own toggle still arms and disarms an idle tool. Left
+    // OFF on the way out so later checks in this file (which assume the text
+    // layer is selectable again) see the surface the way a reader who tapped
+    // the button off would leave it.
+    api.setRegionSelect(true);
+    const armedByToggle = api.isRegionSelectArmed();
+    api.setRegionSelect(false);
+    const disarmedAfterToggle = !api.isRegionSelectArmed();
+    // The words highlighted above are taken back off, so the cases after this
+    // see the paper with exactly the two regions they always have.
+    (api.state.meta?.pdfHighlights || []).filter((r) => r.kind === "text" && r.page === 2 && ids.includes(r.id))
+      .forEach((r) => api.removeDocumentHighlight(r.id));
+    await settle(60);
+    return { escaped, selectable, armedByToggle, disarmedAfterToggle, areas: (api.state.meta?.pdfHighlights || []).filter((r) => r.kind === "area").length };
+  }`, [...(region.madeIds || []), realDrags.mouse?.id, realDrags.pen?.id].filter(Boolean));
+  check("Escape turns ▣ off, and the words are selectable again",
+    regionOff.escaped && regionOff.selectable, `off=${regionOff.escaped}, text layer selectable=${regionOff.selectable}`);
   check("...and the toolbar toggle still arms/disarms an idle tool",
-    region.armedByToggle && region.disarmedAfterToggle,
-    `armedByToggle=${region.armedByToggle} disarmedAfterToggle=${region.disarmedAfterToggle}`);
+    regionOff.armedByToggle && regionOff.disarmedAfterToggle,
+    `armedByToggle=${regionOff.armedByToggle} disarmedAfterToggle=${regionOff.disarmedAfterToggle}`);
 
   const regionReloaded = region.record
     ? await page.evaluate(`async (id) => {
@@ -6295,6 +6456,45 @@ try {
         `paper under the band ${JSON.stringify(underPaper)}, untouched ${JSON.stringify(clearPaper)}`);
       check("...and an undo takes the band back off", scanned.after === opened.before,
         `${scanned.after} mark(s) after undo, ${opened.before} before`);
+
+      // ▣ on the same scan: there are no words to start on, so a drag that
+      // starts on a scanned line — black, and to the eye exactly a line of
+      // text — draws a box and makes a region, never a text highlight.
+      const scanBox = await page.evaluate(`async ({ inkY, left, width }) => {
+        const { api, settle } = window.__recall;
+        const canvas = document.querySelector('.pdf-page[data-page-number="1"] canvas.pdf-canvas');
+        const b = canvas.getBoundingClientRect();
+        const scale = b.width / ${PAGE_WIDTH};
+        const y = b.top + ((${PAGE_HEIGHT} - inkY) * scale);
+        const from = { x: b.left + ((left + 20) * scale), y };
+        const to = { x: b.left + ((left + width - 40) * scale), y: y + (40 * scale) };
+        const view = document.getElementById("documentView");
+        const send = (type, p) => view.dispatchEvent(new PointerEvent(type, {
+          bubbles: true, cancelable: true, pointerId: 7, isPrimary: true, button: 0, pointerType: "mouse", clientX: p.x, clientY: p.y
+        }));
+        const smart = await import("/src/documents/pdf-smart-highlight.js?v=__BUILD__");
+        const ink = await import("/src/documents/pdf-ink.js?v=__BUILD__");
+        const menu = await import("/src/notes/mark-menu.js?v=__BUILD__");
+        const marks = () => api.state.meta?.pdfHighlights || [];
+        const before = marks().length;
+        api.setRegionSelect(true);
+        send("pointerdown", from);
+        send("pointermove", { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 });
+        send("pointermove", to);
+        send("pointerup", to);
+        await settle(150);
+        menu.closeMarkMenu();
+        const made = marks().slice(before);
+        ink.undoInk();
+        await settle(100);
+        const afterUndo = marks().length - before;
+        api.setRegionSelect(false);
+        return { hasText: smart.smartHlPageHasText(1), kinds: made.map((r) => r.kind), afterUndo };
+      }`, { inkY: scannedInkY(line), left: 72, width: SCAN_MEASURE });
+      check("...and ▣ dragged across a scanned line makes a region, never a text highlight",
+        scanBox.hasText === false && scanBox.kinds.length === 1 && scanBox.kinds[0] === "area",
+        `page has text=${scanBox.hasText}, made ${JSON.stringify(scanBox.kinds)}`);
+      check("...which the pen's undo takes back off", scanBox.afterUndo === 0, `${scanBox.afterUndo} mark(s) left after undo`);
     }
   }
 

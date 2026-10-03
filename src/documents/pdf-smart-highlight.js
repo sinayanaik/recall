@@ -95,7 +95,7 @@ export function smartHlPageHasText(page) {
 // after the layer is built, and a page scrolls between one press and the next.
 // A rotated span is left out — a vertical run of text has no left-to-right to
 // snap along, and the boxes below assume one.
-function smartHlSpans(page) {
+export function smartHlSpans(page) {
   const pageEl = pdfPageElement(page);
   if (!pageEl) return [];
   const spans = [];

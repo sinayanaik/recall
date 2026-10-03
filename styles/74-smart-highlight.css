@@ -1,0 +1,60 @@
+/* ▣ as a highlighter that stays on, and knows words from pictures.
+
+   A file of its own for the reason styles/52-ink.css gives for being one: the
+   rules this changes live in styles/37-document-chrome.css, a slice frozen
+   against pre-modular (tools/split-css.mjs), so they are overridden here rather
+   than edited there. src/documents/pdf-region.js says what the mode does now;
+   this is how it looks while it does it. */
+
+/* ── The pill ──────────────────────────────────────────────────────────────
+   It said "drag a box around a figure", which was the whole of the mode when
+   the mode turned itself off after one box. It stays on now, and a drag over
+   words highlights them, so the pill says both — and how to stop, which a mode
+   that stays on has to. One line, cut short with an ellipsis rather than
+   wrapped over the first line of the page on a narrow screen. */
+.document-stage.is-region-select .document-scroll::before {
+  content: "▣ Highlighting — drag across words, or box a figure · ▣ or Esc to stop";
+  max-width: calc(100% - 16px);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* On a touch screen one finger is the highlighter while the mode is on, so the
+   pill says what scrolls instead. */
+@media (pointer: coarse) {
+  .document-stage.is-region-select .document-scroll::before {
+    content: "▣ Drag across words, or box a figure · two fingers scroll";
+  }
+}
+
+/* Over words the pointer is a text cursor, under the crosshair everywhere else
+   — so a reader can see, before pressing, which of the two a drag from here
+   will be. */
+.document-stage.is-region-select.is-smart-hl-text .document-scroll {
+  cursor: text;
+}
+
+/* ── What a drag across words will highlight ───────────────────────────────
+   Drawn in the mark layer while the drag is under way, in the colour it will
+   land in, through the same quads the record will hold — so the preview IS the
+   highlight, a moment early. The four colours are the ones a .pdf-mark wears
+   (styles/36-document.css), copied rather than shared because the preview must
+   not be a .pdf-mark: other code queries that class for the highlights that
+   exist. Multiplied over the page like a highlight, and screened over an
+   inverted one, for the same reason a highlight is. */
+.pdf-smart-preview-band {
+  position: absolute;
+  border-radius: 2px;
+  mix-blend-mode: multiply;
+  pointer-events: none;
+}
+
+.pdf-smart-preview-band[data-color="yellow"] { background: color-mix(in srgb, #e0b400 35%, transparent); }
+.pdf-smart-preview-band[data-color="green"]  { background: color-mix(in srgb, #22c55e 33%, transparent); }
+.pdf-smart-preview-band[data-color="blue"]   { background: color-mix(in srgb, #3b82f6 32%, transparent); }
+.pdf-smart-preview-band[data-color="pink"]   { background: color-mix(in srgb, #ec4899 30%, transparent); }
+
+.document-stage.is-pdf-inverted .pdf-smart-preview-band {
+  mix-blend-mode: screen;
+}

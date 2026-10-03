@@ -166,7 +166,7 @@ const INK_NUDGE_KEYS = {
   ArrowUp: [0, -1],
   ArrowDown: [0, 1]
 };
-import { initDocumentRegionSelect, toggleRegionSelect } from "./documents/pdf-region.js?v=__BUILD__";
+import { initDocumentRegionSelect, noteRegionDocumentOpened, setRegionSelect, toggleRegionSelect } from "./documents/pdf-region.js?v=__BUILD__";
 import { paintPageNoteBadges, paintPdfPageNotesButton, readPdfPageNotesPreference, refreshPdfPageNotes, repaintPdfPageNotes, setDocumentNoteRevealHook, setPdfPageNotesFlag, togglePdfPageNotes } from "./documents/pdf-page-notes.js?v=__BUILD__";
 import { initReadingRail, refreshReadingRail, refreshReadingRailModes } from "./ui/reading-rail.js?v=__BUILD__";
 import { initScreenOrientation, setOrientationModesHandler, toggleLandscape } from "./ui/orientation.js?v=__BUILD__";
@@ -1246,7 +1246,13 @@ onDomReady(() => {
   setDocumentNoteRevealHook((locator) => cycleToLocator(locator));
   // Leaving for Cards or the Highlights tab closes the split; moving between
   // Notes and Document moves it.
-  setSplitViewHook((next) => splitFollowsViewMode(next));
+  setSplitViewHook((next) => {
+    // ▣ is a mode of the paper, and stays on only while the reader is on it —
+    // see src/documents/pdf-region.js. Leaving for the cards, the notes or the
+    // notebook leaves it behind.
+    if (next !== "document") setRegionSelect(false);
+    splitFollowsViewMode(next);
+  });
 
   // A PDF region pasted into the note gets the same drag-corner resize a card
   // face does, written back through the notes surface — see
@@ -1418,6 +1424,8 @@ onDomReady(() => {
     // pdf-view is in a position to know: the document's key, and whether its
     // pages came back out of the park rather than being rebuilt.
     adoptDocumentInk(opened);
+    // ...and ▣, which stays on for the paper it was turned on for and no other.
+    noteRegionDocumentOpened(opened);
     // The rail as THIS surface last left it. Here rather than in the Write tab's
     // own paint step because both slots need it and this hook is the one place
     // that fires for either: a notebook starts with the rail open (the pen is

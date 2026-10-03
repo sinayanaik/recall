@@ -65,6 +65,10 @@ const SECTIONS = [
 // Anything appearing in styles/ that is neither a slice nor listed here is
 // still a failure.
 const POST_SPLIT = {
+  "74-smart-highlight.css":
+    "▣ as a highlighter that stays on: the pill that says how to use and stop " +
+    "it, a text cursor over words, and the live preview of the words a drag " +
+    "will highlight. Overrides rules in the frozen 37-document-chrome.css.",
   "73-ink-panel.css":
     "The pen's slim bar: the chip showing the armed tool's colour and size, " +
     "the context slot and its menus, and the panel under the chip (size " +

@@ -30,10 +30,11 @@
 //
 // ── The pen draws and the finger scrolls, with no mode to forget ───────────
 //
-// pdf-region.js is one-shot precisely because an inkRailArmed drawing mode is a
-// surface you cannot scroll or select on, and it says so at length. Ink cannot
-// be one-shot — you do not write one stroke — so it does the other thing: it is
-// never inkRailArmed at all, and the pointer type decides.
+// ▣ (pdf-region.js) is a mode the reader turns on and off, and pays for it
+// with one-finger scrolling while it is on — it says so at length. Ink cannot
+// ask that: you write all day, and a page you cannot scroll while writing is
+// no page at all. So it does the other thing: it is never inkRailArmed at all,
+// and the pointer type decides.
 //
 //   pen    always draws. There is nothing to press first.
 //   touch  never draws. Scrolling, pinching and press-and-slide to select are
