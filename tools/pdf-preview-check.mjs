@@ -1368,6 +1368,34 @@ try {
       merge.redone = texts().find((r) => r.id === madeA.id)?.text || "";
     }
 
+    // ── Held at the bottom edge, a drag scrolls the page along ───────────
+    // One finger is the highlighter while ▣ is on, so the page has to move
+    // under a drag that wants to go further than the screen does.
+    let edge = null;
+    {
+      const span = lineSpan(6);
+      if (span) {
+        const start = charAt(span, span.textContent.indexOf("line") + 1);
+        const viewBox = view.getBoundingClientRect();
+        const at = { x: start.x + 20, y: viewBox.bottom - 8 };
+        const scrollBefore = view.scrollTop;
+        const ids = texts().map((r) => r.id);
+        await settle(450);
+        send("pointerdown", start);
+        send("pointermove", { x: start.x + 10, y: start.y + 10 }, { buttons: 1 });
+        send("pointermove", at, { buttons: 1 });
+        await settle(500);
+        const scrolled = view.scrollTop - scrollBefore;
+        send("pointerup", at);
+        await settle(150);
+        const made = texts().filter((r) => !ids.includes(r.id));
+        edge = { scrolled, made: made.length, text: made[0]?.text || "" };
+        if (made.length) ink.undoInk();
+        view.scrollTop = scrollBefore;
+        await settle(150);
+      }
+    }
+
     return {
       armedClass,
       textLayerInert,
@@ -1397,6 +1425,7 @@ try {
       tapOpened,
       tapMade,
       merge,
+      edge,
       madeIds: [madeA?.id, madeB?.id].filter(Boolean),
       // For the real-input drags below, outside this evaluate.
       mouseLine: ends(4),
@@ -1442,6 +1471,9 @@ try {
   check("...and undo shrinks it back, redo grows it again",
     region.merge?.undone === "line 2 carries a sentence" && region.merge?.redone === "line 2 carries a sentence worth selecting",
     region.merge ? `undo → "${region.merge.undone}", redo → "${region.merge.redone}"` : "not run");
+  check("a drag held at the bottom edge scrolls the page along, and still highlights",
+    region.edge?.scrolled > 20 && region.edge?.made === 1 && /^line 6 carries/.test(region.edge?.text || ""),
+    region.edge ? `scrolled ${region.edge.scrolled}px, made ${region.edge.made}: "${region.edge.text.slice(0, 60)}…"` : "not run");
 
   // ── Real input, through Chrome's own pipeline ─────────────────────────────
   //
