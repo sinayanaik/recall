@@ -38,7 +38,7 @@ import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { escapeHtml } from "../core/text.js?v=__BUILD__";
 import { decodeInkStrokes } from "../format/ink-strokes.js?v=__BUILD__";
-import { paintInkStrokes } from "../render/ink-paint.js?v=__BUILD__";
+import { paintInkLayers } from "../render/ink-paint.js?v=__BUILD__";
 import { markdownToSafeHtml } from "../render/preprocess.js?v=__BUILD__";
 import { setStatus } from "../ui/feedback.js?v=__BUILD__";
 import { DOC_SLOT_NOTEBOOK, activeDocSlot, docSlotMeta } from "./doc-slot.js?v=__BUILD__";
@@ -95,14 +95,19 @@ async function renderPageForPrint(pageNumber, records) {
     // the strokes are the mark, and they go on in PDF user space through this
     // page's own viewport transform, exactly as they are drawn on screen.
     //
-    // Saved and restored around, because paintInkStrokes leaves a transform and
+    // Saved and restored around, because paintInkLayers leaves a transform and
     // a fill on the context and the highlight loop below runs in page pixels.
     if (record.kind === "ink") {
       if (Number(record.page) !== pageNumber) return;
       const t = viewport.transform;
       context.save();
       context.setTransform(t[0], t[1], t[2], t[3], t[4], t[5]);
-      paintInkStrokes(context, decodeInkStrokes(record.ink?.s), { root: null });
+      // On white paper, whatever the app's theme — this is a picture of the PDF,
+      // which is printed white — and with any highlighter bands in the mark
+      // MULTIPLIED onto the page and laid under its pen strokes, as the screen
+      // stacks its two layers. A band from a later mark multiplies over earlier
+      // ink, which leaves that ink as dark as it was: multiply cannot cover.
+      paintInkLayers(context, decodeInkStrokes(record.ink?.s), { root: null, paper: "light", blend: "multiply" });
       context.restore();
       return;
     }

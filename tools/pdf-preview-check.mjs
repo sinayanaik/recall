@@ -39,7 +39,7 @@ import { findChrome, launchChrome, connect, openPage, emulatePhone } from "./cdp
 import { PDFJS_VERSION, pdfjsSources } from "./pdfjs-source.mjs";
 import { PDFLIB_VERSION, pdflibSource } from "./pdflib-source.mjs";
 import { HTMLTOIMAGE_VERSION, htmlToImageSource } from "./htmltoimage-source.mjs";
-import { FONT_SIZE, buildFixturePdf, fixtureLineOrigin } from "./pdf-fixture.mjs";
+import { FONT_SIZE, PAGE_HEIGHT, PAGE_WIDTH, SCAN_MEASURE, buildFixturePdf, fixtureLineOrigin, scannedInkY, scannedPaperY } from "./pdf-fixture.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
@@ -500,7 +500,17 @@ try {
       const box = node?.getBoundingClientRect();
       return Boolean(box && box.width > 0 && box.height > 0);
     };
+    // The three adders are rows of the bar's + menu now, so the + is pressed
+    // first — the same press a reader makes — and the rows are asked for a box
+    // with the menu open. The + itself has to have one before that.
+    const addButton = document.getElementById("inkRailAddBtn");
+    const addBoxed = boxed(addButton);
+    addButton?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true }));
+    await settle(150);
     const pageGroup = [...document.querySelectorAll("#documentInkRail [data-hw-action], #documentInkRail #handwritingImageBtn")];
+    const pageGroupBoxedNow = pageGroup.filter(boxed).length;
+    addButton?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true }));
+    await settle(100);
     document.getElementById("documentMoreBtn")?.click();
     await settle(200);
     const menuRows = [...document.querySelectorAll('#documentMoreMenu [data-slot="notebook"]')];
@@ -509,7 +519,8 @@ try {
       // The rail is open on arriving, and its page group has real boxes.
       railOpen: boxed(document.getElementById("documentInkRail")),
       pageGroup: pageGroup.length,
-      pageGroupBoxed: pageGroup.filter(boxed).length,
+      pageGroupBoxed: pageGroupBoxedNow,
+      addBoxed,
       // The notebook's rows are the ones on offer; the document's are not.
       menuRows: menuRows.length,
       menuRowsBoxed: menuRows.filter(boxed).length,
@@ -531,9 +542,9 @@ try {
 
   check("the pen's rail is up on arriving at the Write tab",
     writeControls.railOpen, `rail has a box=${writeControls.railOpen}`);
-  check("...with the page group on it, and every button of it pressable",
-    writeControls.pageGroup === 3 && writeControls.pageGroupBoxed === 3,
-    `${writeControls.pageGroupBoxed} of ${writeControls.pageGroup} with a box`);
+  check("...with the page group on it — a + whose menu's every row is pressable",
+    writeControls.addBoxed && writeControls.pageGroup === 3 && writeControls.pageGroupBoxed === 3,
+    `+ has a box=${writeControls.addBoxed}; ${writeControls.pageGroupBoxed} of ${writeControls.pageGroup} rows with a box once it is open`);
   // Five: a heading of its own plus three papers and the tear-out.
   check("the ⋯ menu offers the notebook's rows and not the document's",
     writeControls.menuRows === 5 && writeControls.menuRowsBoxed === 5 && writeControls.docRowsBoxed === 0,
@@ -5984,7 +5995,12 @@ try {
     if (!el) return { error: "page 1 never rendered" };
     const box = el.getBoundingClientRect();
     if (box.width < 80 || box.height < 80) return { error: "page 1 has no size" };
-    return { x: Math.round(box.left + (box.width * 0.5)), y: Math.round(box.top + (box.height * 0.45)) };
+    return {
+      x: Math.round(box.left + (box.width * 0.5)), y: Math.round(box.top + (box.height * 0.45)),
+      // The left margin at the same height: bare paper, with no text run and so
+      // no highlight under it, for the tap.
+      marginX: Math.round(box.left + (box.width * 0.05))
+    };
   }`);
 
   if (inkSpot.error) {
@@ -5992,14 +6008,31 @@ try {
   } else {
     const before = await page.evaluate(`() => (window.__recall.api.state.meta?.pdfHighlights || []).length`);
 
-    // ── A tap is not a stroke ─────────────────────────────────────────────
-    await page.penTap(inkSpot.x, inkSpot.y);
+    // ── A tap on bare paper is a dot, not a stroke ────────────────────────
+    //
+    // It left nothing at all, and handwriting is full of taps — the dot on an i,
+    // a full stop, a decimal point. Through Chrome's real input pipeline, in the
+    // page's margin where nothing answers a press.
+    await page.penTap(inkSpot.marginX, inkSpot.y);
     const afterTap = await page.evaluate(`async () => {
-      await window.__recall.settle(250);
-      const marks = (window.__recall.api.state.meta?.pdfHighlights || []);
-      return { total: marks.length, ink: marks.filter((m) => m.kind === "ink").length };
+      const { api, settle } = window.__recall;
+      await settle(250);
+      const marks = (api.state.meta?.pdfHighlights || []);
+      const ink = marks.filter((m) => m.kind === "ink");
+      const { decodeInkStrokes } = await import("/src/format/ink-strokes.js?v=__BUILD__");
+      const strokes = ink.flatMap((m) => decodeInkStrokes(m.ink?.s || []));
+      const result = { total: marks.length, ink: ink.length, points: strokes.map((st) => st.p.length / 3) };
+      // Taken back, so the stroke below is the first ink on the page as the
+      // cases after it expect.
+      const { undoInk } = await import("/src/documents/pdf-ink.js?v=__BUILD__");
+      undoInk();
+      await settle(250);
+      result.after = (api.state.meta?.pdfHighlights || []).filter((m) => m.kind === "ink").length;
+      return result;
     }`);
-    check("a pen TAP leaves no ink", afterTap.ink === 0, `${afterTap.ink} ink mark(s) after a tap`);
+    check("a pen TAP on bare paper leaves a dot, not a stroke",
+      afterTap.ink === 1 && afterTap.points.length === 1 && afterTap.points[0] === 1 && afterTap.after === 0,
+      `${afterTap.ink} ink mark(s) holding ${JSON.stringify(afterTap.points)} point(s); ${afterTap.after} after undo`);
 
     // ── A stroke is ───────────────────────────────────────────────────────
     const stroke = [];
@@ -6037,7 +6070,7 @@ try {
     check("...and no text, because handwriting has none", afterStroke.text === "", `text = ${JSON.stringify(afterStroke.text)}`);
     check("...painted onto its own canvas layer", afterStroke.hasLayer && afterStroke.painted > 50,
       `layer=${afterStroke.hasLayer}, ${afterStroke.painted} inked pixel(s)`);
-    check("a pen stroke does not become a text highlight", afterStroke.count + afterTap.ink === 1,
+    check("a pen stroke does not become a text highlight", afterStroke.count + afterTap.after === 1,
       `${afterTap.total} record(s) before, ${afterStroke.count} ink after`);
 
     // ── Zoom: the strokes are coordinates INTO the page, so they must not
@@ -6128,6 +6161,141 @@ try {
       `rendered=${svg.rendered}, ${svg.painted} inked pixel(s)`);
     check("...while an SVG that is not ours reads as no strokes rather than throwing",
       svg.notOurs === 0 && svg.junk === 0, `plain=${svg.notOurs}, junk=${svg.junk}`);
+  }
+
+  // ── 13. A highlighter over a SCANNED page ───────────────────────────────
+  //
+  // "Some PDFs are simply scanned copies — I want some highlights over those
+  // scanned texts too." A scan is a picture per page and no text at all, so the
+  // text highlight has nothing to select. The highlighter is the answer, and
+  // this is the reader's case end to end: a paper whose page is an image,
+  // a highlighter swept along one of its lines with a real stylus, a mark that
+  // is filed like any other highlight — and, read off the SCREEN rather than
+  // off a canvas, the words under the band still black while the paper round
+  // them takes the colour. That last is the compositor's answer, and only a
+  // screenshot can give it: a band painted over the top at 35% would leave the
+  // same canvases and grey the words.
+  if (!OWN_PDF) {
+    const scan = buildFixturePdf({ pages: 1, annotate: false, outline: false, scanned: true });
+    const line = 3;
+    const opened = await page.evaluate(`async (bytes) => {
+      const { api, settle } = window.__recall;
+      const before = api.readLocalDeckIndex().map((m) => m.id);
+      const file = new File([new Uint8Array(bytes)], "scanned.pdf", { type: "application/pdf" });
+      await api.importPdfFile(file, null);
+      await settle(400);
+      const entry = api.readLocalDeckIndex().find((m) => !before.includes(m.id));
+      if (!entry) return { error: "no deck was created for the scanned PDF" };
+      await api.loadDeckFromLibrary(entry.id);
+      await settle(300);
+      api.closeMyDecksPanel?.();
+      api.applyPdfInvert?.(false, { remember: false });
+      api.setViewMode("document");
+      await api.openDocumentView?.({ force: true });
+      await api.whenDocumentPageReady(1);
+      await settle(500);
+      document.querySelectorAll(".toast, #toastHost > *").forEach((n) => n.remove());
+      const pageEl = document.querySelector('.pdf-page[data-page-number="1"]');
+      const canvas = pageEl?.querySelector("canvas.pdf-canvas");
+      if (!canvas) return { error: "the scanned page never rendered" };
+      const view = document.getElementById("documentView");
+      view.scrollTop = Math.max(0, view.scrollTop + canvas.getBoundingClientRect().top - view.getBoundingClientRect().top - 40);
+      await settle(400);
+      const ink = await import("/src/documents/pdf-ink.js?v=__BUILD__");
+      ink.setInkTool("highlighter");
+      // Wide, so the band covers the white above and below the line as well as
+      // its black — the two things this asks about, side by side.
+      ink.setInkHighlighter({ width: 30 });
+      const box = canvas.getBoundingClientRect();
+      return {
+        deck: entry.id,
+        words: pageEl.querySelectorAll(".textLayer span, .pdf-text-layer span").length,
+        box: { left: box.left, top: box.top, width: box.width, height: box.height },
+        before: (api.state.meta?.pdfHighlights || []).length
+      };
+    }`, Array.from(scan.bytes));
+
+    if (opened.error) {
+      check("a scanned paper opens", false, opened.error);
+    } else {
+      const scale = opened.box.width / PAGE_WIDTH;
+      const at = (x, y) => [Math.round(opened.box.left + (x * scale)), Math.round(opened.box.top + ((PAGE_HEIGHT - y) * scale))];
+      const sweep = [];
+      for (let i = 0; i <= 24; i += 1) {
+        const [x, y] = at(72 + 30 + (i * 10), scannedInkY(line));
+        sweep.push([x, y + Math.round(Math.sin(i / 2) * 1.5), 0.5]);
+      }
+      await page.penStroke(sweep);
+      await new Promise((r) => setTimeout(r, 700));
+
+      // The screen, decoded by the page itself: a PNG back into an <img> and
+      // onto a canvas, which is the one decoder this harness already has.
+      const shot = await page.call("Page.captureScreenshot", { format: "png" });
+      const samples = {
+        underInk: at(220, scannedInkY(line)),
+        underPaper: at(220, scannedPaperY(line)),
+        // Past the end of the band, still on the scan: the same black and the
+        // same white with no band over them, so the two above are compared with
+        // what the page looks like untouched rather than with a number typed here.
+        clearInk: at(72 + SCAN_MEASURE - 30, scannedInkY(line)),
+        clearPaper: at(72 + SCAN_MEASURE - 30, scannedPaperY(line))
+      };
+      const scanned = await page.evaluate(`async (png, samples) => {
+        const { api, settle } = window.__recall;
+        const img = new Image();
+        await new Promise((resolve) => { img.onload = resolve; img.onerror = resolve; img.src = "data:image/png;base64," + png; });
+        const c = document.createElement("canvas");
+        c.width = img.naturalWidth; c.height = img.naturalHeight;
+        const ctx = c.getContext("2d");
+        ctx.drawImage(img, 0, 0);
+        const dpr = img.naturalWidth / window.innerWidth;
+        const read = ([x, y]) => {
+          const d = ctx.getImageData(Math.round(x * dpr), Math.round(y * dpr), 1, 1).data;
+          return [d[0], d[1], d[2]];
+        };
+        const pixels = Object.fromEntries(Object.entries(samples).map(([k, v]) => [k, read(v)]));
+        const marks = api.state.meta?.pdfHighlights || [];
+        const band = marks.find((m) => m.kind === "ink") || null;
+        const { decodeInkStrokes } = await import("/src/format/ink-strokes.js?v=__BUILD__");
+        const strokes = band ? decodeInkStrokes(band.ink?.s || []) : [];
+        const ink = await import("/src/documents/pdf-ink.js?v=__BUILD__");
+        const result = {
+          pixels,
+          marks: marks.length,
+          tokens: strokes.map((st) => st.c),
+          colour: band?.color || "",
+          page: band?.page,
+          isHighlight: band ? ink.inkMarkIsHighlight(band.id) : false
+        };
+        // Put back: the band taken off, the pen as it was. The deck itself is
+        // left in the library, with nothing on it.
+        ink.undoInk();
+        ink.setInkHighlighter({ width: 14 });
+        ink.setInkTool("pen");
+        await settle(300);
+        result.after = (api.state.meta?.pdfHighlights || []).length;
+        return result;
+      }`, shot.data, samples);
+
+      const lum = (px) => (px ? Math.round((px[0] + px[1] + px[2]) / 3) : -1);
+      const { underInk, underPaper, clearInk, clearPaper } = scanned.pixels;
+      check("a scanned page has no words to select — the case the highlighter is for",
+        opened.words === 0, `${opened.words} text-layer span(s) on an image-only page`);
+      check("...and a highlighter swept along one of its lines files a highlight on it",
+        scanned.marks === opened.before + 1 && scanned.page === 1 && scanned.isHighlight,
+        `${scanned.marks - opened.before} new mark(s) on page ${scanned.page}, highlight=${scanned.isHighlight}`);
+      check("...in the highlighter's own colour word, straightened, filed yellow",
+        scanned.tokens.length === 1 && /^hyellowq35$/.test(scanned.tokens[0]) && scanned.colour === "yellow",
+        `tokens ${scanned.tokens.join(", ") || "none"}, filed ${scanned.colour}`);
+      check("...that leaves the scanned words under it as black as they were",
+        lum(clearInk) < 40 && lum(underInk) < 25,
+        `black under the band ${JSON.stringify(underInk)} (lum ${lum(underInk)}), untouched ${JSON.stringify(clearInk)} — a band painted over the top would grey it`);
+      check("...while the paper round them takes the band's colour",
+        lum(clearPaper) > 235 && underPaper[0] > 200 && underPaper[2] < underPaper[0] - 40,
+        `paper under the band ${JSON.stringify(underPaper)}, untouched ${JSON.stringify(clearPaper)}`);
+      check("...and an undo takes the band back off", scanned.after === opened.before,
+        `${scanned.after} mark(s) after undo, ${opened.before} before`);
+    }
   }
 
   if (SHOT) {

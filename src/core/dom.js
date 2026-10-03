@@ -281,11 +281,14 @@ export const el = {
   documentRegionBtn: document.querySelector("#documentRegionBtn"),
   documentInkBtn: document.querySelector("#documentInkBtn"),
   documentInkRail: document.querySelector("#documentInkRail"),
-  inkRailPens: document.querySelector("#inkRailPens"),
-  inkRailWidths: document.querySelector("#inkRailWidths"),
-  inkRailEraser: document.querySelector("#inkRailEraser"),
+  // The pen's colours, nibs and eraser rings are no longer on the bar but in
+  // the panel under its chip, which is BUILT (buildInkPanel) — after this table
+  // is read — so they are looked up by id where they are used rather than
+  // held here as nulls.
   inkRailSelection: document.querySelector("#inkRailSelection"),
   inkRailBlock: document.querySelector("#inkRailBlock"),
+  inkRailPopover: document.querySelector("#inkRailPopover"),
+  inkRailStyleChip: document.querySelector("#inkRailStyleChip"),
   // The Write tab has no panel, no stage and — since the row that carried them
   // crushed its own tab labels — no chrome of its own either. Handwriting is
   // #documentStage showing the deck's OTHER document (src/documents/doc-slot.js);

@@ -622,9 +622,10 @@ check("...with cloze still withheld, because a note is not a card face",
       offers: {
         pens: palette.INK_PEN_COLORS.length,
         nibs: palette.INK_WIDTHS.length,
-        // The three that mark the page, not all four: the rail's fourth is
-        // "text", which turns the stylus into a way of selecting words, and a
-        // blank drawing sheet has none to select. See INK_DRAW_TOOLS.
+        // The four that mark the page — pen, highlighter, eraser and lasso —
+        // not the paper rail's fifth: "text" turns the stylus into a way of
+        // selecting words, and a blank drawing sheet has none to select. See
+        // INK_DRAW_TOOLS.
         tools: palette.INK_DRAW_TOOLS.length
       },
       // The sheet must be ON TOP. The app's toolbar is z-index 500 and its
@@ -676,6 +677,103 @@ check("...with cloze still withheld, because a note is not a card face",
       return { painted };
     }`);
     check("...and a stylus draws on it", drawn.painted > 100, `${drawn.painted} inked pixel(s)`);
+
+    // ── The sheet's pen panel ─────────────────────────────────────────────
+    //
+    // The sheet has the paper's slim bar and the same panel under its chip
+    // (src/handwriting/ink-popover.js), over its own engine. Asked here of the
+    // SHEET, because the adapter it goes through is the sheet's own and a
+    // panel that opened but changed nothing would pass every check made of the
+    // paper's.
+    const chipAt = await page.evaluate(`() => {
+      const chip = document.querySelector(".ink-sheet .ink-rail-chip");
+      const rail = document.querySelector(".ink-sheet-rail");
+      if (!chip || !rail) return null;
+      const box = chip.getBoundingClientRect();
+      return { x: Math.round(box.left + box.width / 2), y: Math.round(box.top + box.height / 2), railHeight: rail.getBoundingClientRect().height };
+    }`);
+    if (!chipAt) {
+      check("the sheet's bar has a chip for the pen's settings", false, "no chip on the sheet's rail");
+    } else {
+      await page.penTap(chipAt.x, chipAt.y);
+      await new Promise((r) => setTimeout(r, 120));
+      const opened = await page.evaluate(`() => {
+        const pop = document.querySelector(".ink-sheet .ink-rail-popover");
+        const shown = [...(pop?.querySelectorAll("[data-ink-panel]") || [])].filter((s) => !s.hidden).map((s) => s.dataset.inkPanel);
+        return {
+          open: Boolean(pop && !pop.hidden),
+          shown,
+          railHeight: document.querySelector(".ink-sheet-rail").getBoundingClientRect().height
+        };
+      }`);
+      check("the sheet's chip opens the pen's panel", opened.open && opened.shown.join() === "pen",
+        `open=${opened.open}, showing ${opened.shown.join(",") || "nothing"}`);
+      check("...under the bar, without making the bar any taller", Math.abs(opened.railHeight - chipAt.railHeight) < 1,
+        `${chipAt.railHeight}px → ${opened.railHeight}px`);
+
+      const sized = await page.evaluate(`async () => {
+        const palette = await import("/src/format/ink-colors.js?v=__BUILD__");
+        const prefs = await import("/src/storage/ink-prefs.js?v=__BUILD__");
+        const slider = document.querySelector('.ink-sheet [data-ink-slider="pen"]');
+        if (!slider) return { error: "no size slider" };
+        slider.value = String(palette.inkSliderFromWidth(4.7, palette.INK_WIDTH_RANGE));
+        slider.dispatchEvent(new Event("input", { bubbles: true }));
+        slider.dispatchEvent(new Event("change", { bubbles: true }));
+        return {
+          width: prefs.inkPreferences().width,
+          readout: document.querySelector('.ink-sheet [data-ink-value="pen"]')?.textContent || "",
+          chip: document.querySelector(".ink-sheet .ink-rail-chip")?.title || ""
+        };
+      }`);
+      check("...whose slider sets a size between the presets, not one of them",
+        !sized.error && Math.abs(sized.width - 4.7) < 0.15 && /4\.[6-8] pt/.test(sized.chip),
+        sized.error || `width=${sized.width}, readout="${sized.readout}", chip="${sized.chip}"`);
+
+      const escaped = await page.evaluate(`async () => {
+        document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+        await new Promise((r) => setTimeout(r, 50));
+        return {
+          panel: !document.querySelector(".ink-sheet .ink-rail-popover").hidden,
+          sheet: !document.querySelector(".ink-sheet").hidden
+        };
+      }`);
+      check("...and Escape puts the panel away, not the drawing", !escaped.panel && escaped.sheet,
+        `panel open=${escaped.panel}, sheet open=${escaped.sheet}`);
+    }
+
+    // The highlighter on the sheet: a band the drawing shows through. Without
+    // an underlay (the sheet has no scan to multiply with) it is painted first
+    // on the sheet's own canvas, at its own opacity — never the opaque pen.
+    const hlAt = await page.evaluate(`() => {
+      const button = document.querySelector('.ink-sheet [data-ink-tool="highlighter"]');
+      if (!button) return null;
+      const box = button.getBoundingClientRect();
+      return { x: Math.round(box.left + box.width / 2), y: Math.round(box.top + box.height / 2) };
+    }`);
+    if (!hlAt) {
+      check("the sheet offers the highlighter", false, "no highlighter on the sheet's rail");
+    } else {
+      await page.penTap(hlAt.x, hlAt.y);
+      await new Promise((r) => setTimeout(r, 80));
+      const band = [];
+      for (let i = 0; i <= 16; i += 1) band.push([sheet.x - 80 + (i * 10), sheet.y + 90, 0.5]);
+      await page.penStroke(band);
+      await new Promise((r) => setTimeout(r, 120));
+      const washed = await page.evaluate(`() => {
+        const canvas = document.querySelector(".ink-sheet .hw-page canvas");
+        const data = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data;
+        let translucent = 0;
+        for (let i = 3; i < data.length; i += 4) if (data[i] > 30 && data[i] < 160) translucent += 1;
+        return { translucent, pressed: document.querySelector('.ink-sheet [data-ink-tool="highlighter"]').getAttribute("aria-pressed") };
+      }`);
+      check("...and its highlighter lays a translucent band", washed.pressed === "true" && washed.translucent > 200,
+        `pressed=${washed.pressed}, ${washed.translucent} translucent pixel(s)`);
+      const penAt = await page.evaluate(`() => {
+        const box = document.querySelector('.ink-sheet [data-ink-tool="pen"]').getBoundingClientRect();
+        return { x: Math.round(box.left + box.width / 2), y: Math.round(box.top + box.height / 2) };
+      }`);
+      await page.penTap(penAt.x, penAt.y);
+    }
 
     const done = await page.evaluate(`async () => {
       const ta = document.querySelector("#notesEdit");

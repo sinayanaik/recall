@@ -870,7 +870,12 @@ try {
     const swatch = document.querySelector("#documentInkRail [data-ink-pen='red']");
     swatch?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 1, cancelable: true }));
     await settle(20);
-    return { drew: after > before, pen: api.inkPen(), hadSwatch: Boolean(swatch) };
+    const chosen = api.inkPen();
+    // Put back. The pen is the reader's and now survives a document being opened
+    // (it used to be quietly reset by the next one), so a red left here would be
+    // the colour of every stroke the cases below draw and measure.
+    api.setInkPen("ink", { keepOpacity: false });
+    return { drew: after > before, pen: chosen, hadSwatch: Boolean(swatch) };
   }`, PEN_SRC);
 
   check("a stroke whose pointerup never arrives does not kill the pen",
@@ -1415,6 +1420,11 @@ try {
     key({ key: "z", ctrlKey: true });
     await settle(400);
     const afterUndo = { ink: inkCount() - inkBefore, blocks: api.documentBlocks().length };
+    // Ctrl+Y is the other redo, and it used to fall through to the CARD stack's
+    // own Ctrl+Y and redo a card action from under the pen.
+    key({ key: "y", ctrlKey: true });
+    await settle(400);
+    const afterRedoY = inkCount() - inkBefore;
 
     return {
       spotFound: Boolean(spot), made: Boolean(made), openedOnIt, rowInSheet,
@@ -1423,7 +1433,7 @@ try {
       overflowing, beforeFit: { h: beforeFit.h, y: beforeFit.y }, afterFit: { h: afterFit.h, y: afterFit.y },
       ring, gone, buried, backAgain: Boolean(backAgain), stillBuried,
       nudgedBy: nudged.x - (backAgain ? backAgain.x : 0), copies, copyOffset: copy ? copy.x - nudged.x : null,
-      zWas, zNow, inkDrawn, blocksBeforeUndo, afterUndo,
+      zWas, zNow, inkDrawn, blocksBeforeUndo, afterUndo, afterRedoY,
       errs: window.__errs.slice(0, 4)
     };
   }`);
@@ -1486,6 +1496,8 @@ try {
     styling.inkDrawn === 1 && styling.afterUndo.ink === 0 && styling.afterUndo.blocks === styling.blocksBeforeUndo,
     `${styling.inkDrawn} stroke drawn; after Ctrl+Z the page has ${styling.afterUndo.ink} stroke(s) and `
       + `${styling.afterUndo.blocks} block(s) against ${styling.blocksBeforeUndo}`);
+  check("...and Ctrl+Y puts the stroke back, rather than redoing a card",
+    styling.afterRedoY === 1, `${styling.afterRedoY} stroke(s) on the page after Ctrl+Y`);
 
   // ── 5b. The panel itself: typed values, and only the controls that mean ──
   //     something for the block it is open on
@@ -1853,6 +1865,64 @@ try {
   check("...and Done puts one picture per drawn page into the note",
     sheet.images === 2, `${sheet.images} image(s) in the note, ${sheet.uploads} file(s) uploaded`);
   check("...and closes", sheet.closed);
+
+  // ── 6b. The sheet is the same pen, and an edited drawing keeps its pages ──
+  //
+  // Two faults the sheet had and nothing asked about. Pressing a swatch on it
+  // wrote ALL SIX of the pen's preferences, three of them as their defaults —
+  // so the eraser's size, its part/whole mode and the shape-snapper the reader
+  // had set on the paper were quietly reset by drawing in a note. And editing a
+  // drawing that ran to a second page concatenated the pages' strokes, each in
+  // its own page's coordinates, so page two was drawn over page one.
+  const sheetMore = await page.evaluate(`async (penSrc) => {
+    const { api, settle } = window.__recall;
+    const pen = (0, eval)(penSrc);
+    api.writeInkPreferences({ eraserSize: 7, eraseMode: "part", snapShapes: false });
+    api.setViewMode("notes");
+    await settle(300);
+    const ta = document.getElementById("notesEdit");
+    api.insertInkDrawing(ta, 0);
+    await settle(400);
+    const shell = document.getElementById("inkSheet");
+    shell.querySelector('[data-ink-pen="red"]').dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 9, cancelable: true }));
+    await settle(150);
+    shell.querySelector(".ink-sheet-cancel").click();
+    await settle(300);
+    const prefs = api.inkPreferences();
+
+    // A drawing with one stroke near the top of its page, reopened, given a
+    // second page with a stroke of its own, and saved.
+    const original = api.inkStrokesToSvg([{ w: 2, c: "ink", p: [40, 40, 0.5, 120, 60, 0.5, 200, 50, 0.5] }]);
+    let saved = "";
+    await api.reopenInkDrawing({ load: async () => original, replace: async (file) => { saved = await file.text(); } });
+    await settle(400);
+    shell.querySelector('[data-ink-action="add-page"]').dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 9 }));
+    await settle(300);
+    const second = shell.querySelectorAll(".hw-page")[1];
+    const box = second.getBoundingClientRect();
+    pen(second, "pointerdown", box.left + 40, box.top + 40, 1);
+    for (let i = 1; i <= 10; i += 1) pen(second, "pointermove", box.left + 40 + (i * 8), box.top + 40 + (i * 2), 1);
+    pen(second, "pointerup", box.left + 120, box.top + 60, 0);
+    await settle(150);
+    shell.querySelector(".ink-sheet-done").click();
+    for (let i = 0; i < 30 && !saved; i += 1) await settle(100);
+    const strokes = api.inkStrokesFromSvg(saved);
+    const tops = strokes.map((stroke) => {
+      let top = Infinity;
+      for (let i = 1; i < stroke.p.length; i += 3) top = Math.min(top, stroke.p[i]);
+      return top;
+    }).sort((a, b) => a - b);
+    return { prefs, strokes: strokes.length, tops, errs: window.__errs.slice(0, 4) };
+  }`, PEN_SRC);
+
+  check("a swatch pressed in the sheet leaves the eraser and the snapper as the reader set them",
+    sheetMore.prefs.pen === "red" && sheetMore.prefs.eraserSize === 7
+      && sheetMore.prefs.eraseMode === "part" && sheetMore.prefs.snapShapes === false,
+    JSON.stringify(sheetMore.prefs));
+  check("an edited drawing that gained a page keeps that page BELOW the first",
+    sheetMore.strokes === 2 && sheetMore.tops[1] > 1123,
+    `${sheetMore.strokes} stroke(s), tops at ${sheetMore.tops.map((t) => Math.round(t)).join(", ")}`
+      + `${sheetMore.errs.length ? ` — ${sheetMore.errs.join(" | ")}` : ""}`);
   // ── 7. A paper to read AND pages to write on, on one deck ───────────────
   //
   // The report this exists for: "if a deck already had a pdf then if I'm open on
@@ -2197,6 +2267,159 @@ try {
     themed.darkPaper && !themed.lightPaper,
     `dark page on a dark theme=${themed.darkPaper}, on a light theme=${themed.lightPaper}`);
   check("...with nothing thrown by the switch", themed.errs.length === 0, themed.errs.join(" | "));
+
+  // ── 8b. A white paper on a dark theme, and the highlighter's own layer ──
+  //
+  // The notebook's paper follows the theme; somebody else's PDF does not — it
+  // stays white unless the reader inverts it. The pen resolved per THEME, so on
+  // a dark theme the default pen was a near-white drawn on white paper: legible
+  // nowhere, and exported that way. It resolves for the PAPER now.
+  //
+  // And the highlighter, which is the reason any of this exists for a scanned
+  // page: its bands go on a layer of their own, BESIDE the ink layer (a blend
+  // inside the ink layer's stacking context would blend with nothing), that
+  // multiplies with the page — screen on an inverted one — under the pen's ink.
+  const paperInk = await page.evaluate(`async (penSrc) => {
+    const { api, settle } = window.__recall;
+    const pen = (0, eval)(penSrc);
+    const view = document.getElementById("documentView");
+    api.setTheme("dark-amoled");
+    api.setViewMode("document");
+    for (let i = 0; i < 80 && !document.querySelector("#documentStage[data-doc-slot='doc'] .pdf-page[data-page-number='1'] canvas.pdf-canvas"); i += 1) await settle(100);
+    await settle(500);
+    api.applyPdfInvert(false, { remember: false });
+    for (let i = 0; i < 60 && document.querySelector(".toast"); i += 1) await settle(100);
+    const pageEl = document.querySelector("#documentStage .pdf-page[data-page-number='1']");
+    if (!pageEl) return { fatal: "no first page on the paper" };
+    view.scrollTop = Math.max(0, view.scrollTop + pageEl.getBoundingClientRect().top - view.getBoundingClientRect().top);
+    await settle(400);
+    const box = pageEl.getBoundingClientRect();
+    const x0 = box.left + (box.width * 0.25);
+    const y0 = Math.max(box.top, 0) + 160;
+    const scribble = async (y, dy) => {
+      pen(view, "pointerdown", x0, y, 1);
+      for (let i = 1; i <= 14; i += 1) pen(view, "pointermove", x0 + (i * 12), y + (Math.sin(i) * dy), 1);
+      await settle(60);
+      const wetParent = document.querySelector(".is-ink-wet")?.parentElement?.className || "";
+      pen(view, "pointerup", x0 + 168, y, 0);
+      await settle(450);
+      return wetParent;
+    };
+    const darkest = () => {
+      const dry = document.querySelector("#documentStage .pdf-page[data-page-number='1'] .pdf-ink-layer .is-ink-dry");
+      if (!dry) return -1;
+      const px = dry.getContext("2d").getImageData(0, 0, dry.width, dry.height).data;
+      let best = 255;
+      for (let i = 0; i < px.length; i += 4) {
+        if (px[i + 3] < 200) continue;
+        const lum = (px[i] + px[i + 1] + px[i + 2]) / 3;
+        if (lum < best) best = lum;
+      }
+      return best;
+    };
+    const inkMarks = () => api.documentInkMarks(1);
+    const newest = (before) => inkMarks().find((record) => !before.includes(record.id)) || null;
+
+    api.setInkTool("pen");
+    api.setInkPen("ink", { keepOpacity: false });
+    let before = inkMarks().map((r) => r.id);
+    await scribble(y0, 4);
+    const penMark = newest(before);
+    const onWhite = darkest();
+    const swatch = document.querySelector('#inkRailPens [data-ink-pen="ink"]');
+    const swatchColour = swatch ? getComputedStyle(swatch).backgroundColor : "";
+    api.applyPdfInvert(true, { remember: false });
+    await settle(400);
+    const onBlack = darkest();
+    api.applyPdfInvert(false, { remember: false });
+    await settle(300);
+
+    api.setInkTool("highlighter");
+    before = inkMarks().map((r) => r.id);
+    const wetIn = await scribble(y0 + 70, 1.5);
+    const band = newest(before);
+    const strokes = band ? api.decodeInkStrokes(band.ink?.s) : [];
+    // Asked of the page as it is NOW, not of the element found before the
+    // strokes — a page can be rebuilt between the two, and a detached layer
+    // reports no style at all.
+    const livePage = document.querySelector("#documentStage .pdf-page[data-page-number='1']");
+    const layer = livePage.querySelector(".pdf-ink-hl-layer");
+    const inkLayer = livePage.querySelector(".pdf-ink-layer");
+    // Read NOW: a computed style is live, and by the time this function returns
+    // the paper's pages have been taken off the stage for the notebook — a
+    // detached element reports no style at all.
+    const layerStyle = layer ? { mixBlendMode: getComputedStyle(layer).mixBlendMode, zIndex: getComputedStyle(layer).zIndex } : null;
+    const hlCanvas = layer?.querySelector(".is-ink-hl");
+    let banded = 0;
+    if (hlCanvas) {
+      const px = hlCanvas.getContext("2d").getImageData(0, 0, hlCanvas.width, hlCanvas.height).data;
+      for (let i = 3; i < px.length; i += 4) if (px[i] > 0) banded += 1;
+    }
+    api.applyPdfInvert(true, { remember: false });
+    await settle(200);
+    const liveLayer = document.querySelector("#documentStage .pdf-page[data-page-number='1'] .pdf-ink-hl-layer");
+    const invertedBlend = liveLayer ? getComputedStyle(liveLayer).mixBlendMode : "";
+    api.applyPdfInvert(false, { remember: false });
+    api.setInkTool("pen");
+    // Taken back, so the paper is as the cases after this expect it.
+    api.undoInk();
+    api.undoInk();
+    await settle(300);
+
+    // ── The pen the reader chose, on a document opened after choosing it ──
+    api.setInkPen("red", { keepOpacity: false });
+    api.setInkWidth(3.4);
+    api.setViewMode("handwriting");
+    for (let i = 0; i < 60 && !document.querySelector("#documentStage[data-doc-slot='notebook'] .pdf-page[data-page-number='1'] canvas.pdf-canvas"); i += 1) await settle(100);
+    await settle(600);
+    const nbPage = document.querySelector("#documentStage .pdf-page[data-page-number='1']");
+    const nbBox = nbPage.getBoundingClientRect();
+    const nbBefore = api.documentInkMarks(1).map((r) => r.id);
+    pen(view, "pointerdown", nbBox.left + 80, Math.max(nbBox.top, 0) + 140, 1);
+    for (let i = 1; i <= 12; i += 1) pen(view, "pointermove", nbBox.left + 80 + (i * 9), Math.max(nbBox.top, 0) + 140 + (i * 2), 1);
+    pen(view, "pointerup", nbBox.left + 188, Math.max(nbBox.top, 0) + 164, 0);
+    await settle(450);
+    const nbMark = api.documentInkMarks(1).find((r) => !nbBefore.includes(r.id));
+    const nbStroke = nbMark ? api.decodeInkStrokes(nbMark.ink?.s)[0] : null;
+    api.undoInk();
+    api.setInkPen("ink", { keepOpacity: false });
+    api.setInkWidth(2);
+    api.setTheme("light-paper");
+    await settle(400);
+    return {
+      penMark: Boolean(penMark), onWhite, onBlack, swatchColour,
+      band: Boolean(band), tokens: strokes.map((s) => s.c), points: strokes.map((s) => s.p.length / 3),
+      bandColour: band?.color || "", wetIn,
+      siblings: Boolean(layer && inkLayer && layer.parentElement === livePage && inkLayer.parentElement === livePage),
+      blend: layerStyle?.mixBlendMode || "", z: layerStyle?.zIndex || "", banded, invertedBlend,
+      nbStroke: nbStroke ? { c: nbStroke.c, w: nbStroke.w } : null,
+      errs: window.__errs.slice(0, 4)
+    };
+  }`, PEN_SRC);
+
+  check("on a dark theme, the default pen on a WHITE paper is dark ink",
+    !paperInk.fatal && paperInk.penMark && paperInk.onWhite >= 0 && paperInk.onWhite < 120,
+    paperInk.fatal || `darkest inked pixel ${paperInk.onWhite} on a white page under dark-amoled — near-white is the pen drawing for the theme, not the paper`);
+  check("...and light ink once the reader inverts the page",
+    paperInk.onBlack > 160, `darkest inked pixel ${paperInk.onBlack} on an inverted page`);
+  check("...and the rail's swatch shows the colour the pen will actually draw",
+    paperInk.swatchColour === "rgb(22, 24, 29)", `the ink swatch is ${paperInk.swatchColour} over a white page`);
+  check("a highlighter band goes on a layer of its own, beside the ink layer, that multiplies with the page",
+    paperInk.band && paperInk.siblings && paperInk.blend === "multiply" && paperInk.z === "1" && paperInk.banded > 0,
+    `band=${paperInk.band}, siblings=${paperInk.siblings}, blend=${paperInk.blend}, z-index=${paperInk.z}, `
+      + `${paperInk.banded} painted pixel(s) on the band canvas`);
+  check("...is drawn live on that layer, so it blends while the pen is still down",
+    /pdf-ink-hl-layer/.test(paperInk.wetIn), `the live canvas was in "${paperInk.wetIn}" mid-stroke`);
+  check("...screens instead of multiplying on an inverted page",
+    paperInk.invertedBlend === "screen", `blend on an inverted page: ${paperInk.invertedBlend}`);
+  check("...is stored as a highlighter's colour word at its default opacity, straightened, and filed yellow",
+    paperInk.tokens.length === 1 && /^hyellowq35$/.test(paperInk.tokens[0]) && paperInk.points[0] === 2
+      && paperInk.bandColour === "yellow",
+    `tokens ${paperInk.tokens.join(", ") || "none"}, ${paperInk.points.join(", ")} point(s), filed ${paperInk.bandColour}`);
+  check("the pen the reader chose is the pen on the next document opened",
+    paperInk.nbStroke?.c === "red" && paperInk.nbStroke?.w === 3.4,
+    `a stroke on the notebook opened after choosing red 3.4pt came out ${JSON.stringify(paperInk.nbStroke)}`);
+  check("...with nothing thrown on the way", (paperInk.errs || []).length === 0, (paperInk.errs || []).join(" | "));
 
   // ── 9. A picture on the page ────────────────────────────────────────────
   //
@@ -2565,6 +2788,9 @@ try {
     api.setInkTool("pen");
     api.clearInkPage(1);
     await settle(200);
+    // Measured now: the tab switch and the end of the selection above can both
+    // change what the bar over the page is showing.
+    box = pageRect();
     // One long horizontal stroke, so there is an unambiguous middle to cross —
     // and, being the only thing on the page, an unambiguous position too.
     pen(view, "pointerdown", box.left + 40, box.top + 420, 1);
@@ -2578,6 +2804,10 @@ try {
     rail.querySelector('[data-ink-tool="eraser"]')
       .dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 43, cancelable: true }));
     await settle(150);
+    // Measured again: arming a different tool can change what the rail above
+    // the page is showing, and the page moves with it — a stroke aimed through a
+    // rect taken before the press lands somewhere else.
+    box = pageRect();
     // Straight down through the middle of it.
     pen(view, "pointerdown", box.left + 160, box.top + 400, 1);
     for (let i = 1; i <= 8; i += 1) pen(view, "pointermove", box.left + 160, box.top + 400 + (i * 5), 1);
@@ -3488,6 +3718,8 @@ try {
     const x0 = box.left + 80;
 
     const marks = () => (api.state.meta?.pdfHighlights || []).length;
+    const inkStrokes = () => (api.state.meta?.pdfHighlights || []).filter((r) => r.kind === "ink")
+      .flatMap((r) => api.decodeInkStrokes(r.ink?.s || [])).length;
     const menuUp = () => {
       const m = document.querySelector(".mark-menu");
       return Boolean(m) && !m.hidden && m.getBoundingClientRect().height > 0;
@@ -3506,6 +3738,7 @@ try {
 
     // ── The dotted i: short, still, and right on top of that stroke ────────
     const penTapX = x0 + 36;
+    const strokesBeforeTap = inkStrokes();
     pen(view, "pointerdown", penTapX, y, 1);
     await settle(30);
     pen(view, "pointerup", penTapX, y, 0);
@@ -3520,7 +3753,7 @@ try {
     // pointerdown above has already recorded, and not anything on the click.
     view.dispatchEvent(new PointerEvent("click", { bubbles: true, cancelable: true, clientX: penTapX, clientY: y, pointerType: "pen" }));
     await settle(350);
-    const penTap = { menu: menuUp(), inked: marks() - before - drew };
+    const penTap = { menu: menuUp(), inked: marks() - before - drew, dotted: inkStrokes() - strokesBeforeTap };
     closeMenus();
     await settle(120);
 
@@ -3559,14 +3792,282 @@ try {
   check("a pen tap on your own handwriting does not open its menu",
     !menus.fatal && menus.penTap?.menu === false,
     menus.fatal || "the mark menu came up under a tap that was part of writing");
-  check("...and the tap still leaves no ink, as a tap always did",
-    !menus.fatal && menus.penTap?.inked === 0,
-    menus.fatal || `${menus.penTap?.inked} mark(s) — a tap must not become a stroke`);
+  // A tap on your own writing IS writing — the dot on the i — so it leaves a dot,
+  // and the dot joins the word it was made beside rather than becoming a mark
+  // (and a row in the Highlights panel) of its own.
+  check("...and the tap leaves a dot, in the mark of the word it dots",
+    !menus.fatal && menus.penTap?.dotted === 1 && menus.penTap?.inked === 0,
+    menus.fatal || `${menus.penTap?.dotted} stroke(s) and ${menus.penTap?.inked} new mark(s) from a tap on the stroke`);
   // ...and the other half, which is what stops the fix being "the menu never
   // opens": touch never draws, so a finger is always free to mean "that one".
   check("...while a FINGER on the same ink still opens it",
     !menus.fatal && menus.fingerTap?.menu === true,
     menus.fatal || "the refusal took the last route to an ink mark's menu away");
+
+  // ── A tap is a full stop ──────────────────────────────────────────────────
+  //
+  // A tap used to leave nothing, and handwriting is full of taps: the dot on an
+  // i, a full stop, a decimal point. A pen tap on bare paper is a dot now; with
+  // Tap dots off it is nothing again; the eraser taps one out; and a tap on
+  // something that answers a press — here a region — is that press, not a dot.
+  const dots = await page.evaluate(`async (penSrc) => {
+    const { api, settle } = window.__recall;
+    const pen = (0, eval)(penSrc);
+    const view = document.getElementById("documentView");
+    api.setViewMode("handwriting");
+    await settle(400);
+    api.chooseInkTool("pen");
+    await settle(1700);
+    const pageEl = document.querySelector("#documentStage .pdf-page[data-page-number='1']");
+    if (!pageEl) return { fatal: "no notebook page" };
+    const box = pageEl.getBoundingClientRect();
+    const railBox = document.getElementById("documentInkRail")?.getBoundingClientRect();
+    const y = Math.max(box.top + 260, (railBox && railBox.height ? railBox.bottom : 0) + 120);
+    const x = box.left + (box.width * 0.6);
+    const strokes = () => (api.documentInkMarks(1) || []).flatMap((r) => api.decodeInkStrokes(r.ink?.s || []));
+    const tap = async (tx, ty, buttons = 1) => {
+      pen(view, "pointerdown", tx, ty, buttons);
+      await settle(20);
+      pen(view, "pointerup", tx, ty, 0);
+      await settle(300);
+    };
+    let n = strokes().length;
+    await tap(x, y);
+    const all = strokes();
+    const dot = all.length - n;
+    const dotPoints = dot === 1 ? all[all.length - 1].p.length / 3 : 0;
+
+    n = strokes().length;
+    api.setInkTapDots(false);
+    await tap(x + 50, y);
+    const whileOff = strokes().length - n;
+    api.setInkTapDots(true);
+
+    n = strokes().length;
+    api.setInkTool("eraser");
+    await tap(x, y);
+    const erased = n - strokes().length;
+    api.setInkTool("pen");
+    await settle(1700);
+
+    // A region over a patch of bare paper, and a tap inside it.
+    const rect = { left: x + 90, top: y - 20, right: x + 170, bottom: y + 20 };
+    const quad = api.rectToPdfQuad(rect, 1);
+    const region = api.addDocumentHighlight({ kind: "area", page: 1, quads: [quad], text: "", anchor: { page: 1, item: 0, ch: 0 }, focus: { page: 1, item: 0, ch: 0 } });
+    await settle(200);
+    n = strokes().length;
+    await tap(x + 130, y);
+    const onRegion = strokes().length - n;
+    api.closeMarkMenu();
+    if (region) api.removeDocumentHighlight(region.id);
+    await settle(200);
+    return { dot, dotPoints, whileOff, erased, onRegion, errs: window.__errs.slice(0, 4) };
+  }`, PEN_SRC);
+  check("a pen tap on bare paper leaves a dot",
+    !dots.fatal && dots.dot === 1 && dots.dotPoints === 1,
+    dots.fatal || `${dots.dot} stroke(s) of ${dots.dotPoints} point(s) from one tap`);
+  check("...and nothing with Tap dots switched off", dots.whileOff === 0, `${dots.whileOff} stroke(s) from a tap with dots off`);
+  check("...and a tap with the eraser takes the dot back out", dots.erased === 1, `${dots.erased} stroke(s) erased by one eraser tap`);
+  check("...while a tap on a highlight or a region presses it instead of writing",
+    dots.onRegion === 0, `${dots.onRegion} stroke(s) from a tap inside a region`);
+  check("...with nothing thrown", (dots.errs || []).length === 0, (dots.errs || []).join(" | "));
+
+  // ── The slim bar, and the panel under its chip ───────────────────────────
+  //
+  // "The pen options panels are so oversizing — instead I want compact and more
+  // feature rich pen options", and "I'm only seeing some preset pen sizes
+  // without any continuous customisation". The bar is one row that does not
+  // change height when the tool does; the settings are a panel under the chip
+  // that floats over the page; the size is continuous; and the colour can be
+  // any colour at any opacity.
+  const bar = await page.evaluate(`async (penSrc) => {
+    const { api, settle } = window.__recall;
+    const pen = (0, eval)(penSrc);
+    const { inkWidthFromSlider } = await import("/src/format/ink-colors.js?v=__BUILD__");
+    const view = document.getElementById("documentView");
+    const rail = document.getElementById("documentInkRail");
+    const popover = document.getElementById("inkRailPopover");
+    const chip = document.getElementById("inkRailStyleChip");
+    const press = (node) => node.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerId: 61 }));
+    const height = () => Math.round(rail.getBoundingClientRect().height);
+    const open = () => !popover.hidden && popover.getBoundingClientRect().height > 0;
+    const shown = () => popover.querySelector("[data-ink-panel]:not([hidden])")?.dataset.inkPanel || "";
+    api.setViewMode("handwriting");
+    await settle(400);
+    api.toggleInkRail(true);
+    api.closeInkRailPopups();
+    api.chooseInkTool("pen");
+    await settle(200);
+    const pageEl = document.querySelector("#documentStage .pdf-page[data-page-number='1']");
+    const pageTop = () => Math.round(pageEl.getBoundingClientRect().top);
+
+    // One row, and the same row whatever is armed.
+    const heights = [];
+    for (const tool of ["pen", "highlighter", "eraser", "lasso", "text", "pen"]) {
+      api.chooseInkTool(tool);
+      await settle(80);
+      heights.push(height());
+    }
+    const topBefore = pageTop();
+
+    // The chip opens the panel, over the page: the bar and the page stay put.
+    press(chip);
+    await settle(150);
+    const byChip = { open: open(), panel: shown(), expanded: chip.getAttribute("aria-expanded"), height: height(), pageTop: pageTop() };
+    // ...and pressing the armed tool again shuts it.
+    press(rail.querySelector('[data-ink-tool="pen"]'));
+    await settle(120);
+    const byTool = { closed: !open() };
+    press(rail.querySelector('[data-ink-tool="pen"]'));
+    await settle(120);
+    const reopened = open();
+
+    // A size from the slider is the size the pen draws at — not a preset.
+    const slider = popover.querySelector('[data-ink-slider="pen"]');
+    slider.value = "333";
+    slider.dispatchEvent(new Event("input", { bubbles: true }));
+    slider.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle(80);
+    const wantedWidth = inkWidthFromSlider(333);
+    const width = api.inkWidth();
+
+    // A colour of the reader's own, remembered among their colours.
+    const colour = popover.querySelector('[data-ink-colour="pen"]');
+    colour.value = "#ff8800";
+    colour.dispatchEvent(new Event("input", { bubbles: true }));
+    colour.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle(80);
+    const customPen = api.inkPen();
+    const recent = Boolean(popover.querySelector('[data-ink-recent="#ff8800"]'));
+    // ...at half strength.
+    const opacity = popover.querySelector('[data-ink-opacity="pen"]');
+    opacity.value = "50";
+    opacity.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle(80);
+    const halfPen = api.inkPen();
+
+    // Escape, from inside a slider — which the app's own key handler leaves alone.
+    slider.focus();
+    slider.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    await settle(80);
+    const escaped = !open();
+
+    // A press on the page shuts it — and that press is not also a dot.
+    press(chip);
+    await settle(120);
+    const strokes = () => (api.documentInkMarks(1) || []).flatMap((r) => api.decodeInkStrokes(r.ink?.s || [])).length;
+    const before = strokes();
+    const box = pageEl.getBoundingClientRect();
+    const tx = box.left + (box.width * 0.85);
+    const ty = Math.min(window.innerHeight - 40, box.top + 700);
+    document.elementFromPoint(tx, ty)?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerId: 1, pointerType: "pen", clientX: tx, clientY: ty, buttons: 1, pressure: 0.5 }));
+    pen(view, "pointerdown", tx, ty, 1);
+    pen(view, "pointerup", tx, ty, 0);
+    await settle(300);
+    const outside = { closed: !open(), dotted: strokes() - before };
+
+    // With a selection up, the panel restyles it — in one undo step per change.
+    api.setInkPen("ink", { keepOpacity: false });
+    api.setInkOpacity(1);
+    api.setInkWidth(2);
+    api.chooseInkTool("pen");
+    await settle(1700);
+    pen(view, "pointerdown", box.left + 60, box.top + 640, 1);
+    for (let i = 1; i <= 12; i += 1) pen(view, "pointermove", box.left + 60 + (i * 8), box.top + 640 + (i % 4), 1);
+    pen(view, "pointerup", box.left + 156, box.top + 640, 0);
+    await settle(300);
+    api.chooseInkTool("lasso");
+    await settle(100);
+    pen(view, "pointerdown", box.left + 40, box.top + 610);
+    [[200, 610], [200, 680], [40, 680], [40, 610]].forEach(([dx, dy]) => pen(view, "pointermove", box.left + dx, box.top + dy, 1));
+    pen(view, "pointerup", box.left + 40, box.top + 610, 0);
+    await settle(250);
+    const selected = api.inkSelectionCount();
+    press(chip);
+    await settle(120);
+    const selectionPanel = shown();
+    slider.value = "700";
+    slider.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle(200);
+    const widthOf = () => {
+      const all = (api.documentInkMarks(1) || []).flatMap((r) => api.decodeInkStrokes(r.ink?.s || []));
+      return all.length ? all[all.length - 1].w : 0;
+    };
+    const restyled = widthOf();
+    api.undoInk();
+    await settle(200);
+    const undone = widthOf();
+    api.closeInkRailPopups();
+
+    // The highlighter's own panel, and the eraser's.
+    api.chooseInkTool("highlighter");
+    await settle(80);
+    press(chip);
+    await settle(120);
+    const hlPanel = shown();
+    press(popover.querySelector('[data-ink-hl="green"]'));
+    await settle(80);
+    const hlToken = api.inkHighlighter().token;
+    api.closeInkRailPopups();
+    api.chooseInkTool("eraser");
+    await settle(80);
+    press(chip);
+    await settle(120);
+    const eraserPanel = shown();
+    press(popover.querySelector('[data-ink-erase-target="pen"]'));
+    await settle(80);
+    const target = api.inkEraseTarget();
+    press(popover.querySelector('[data-ink-erase-target="all"]'));
+    api.closeInkRailPopups();
+
+    // The keyboard: Enter on a focused tool is a click with no pointer behind it.
+    const lassoButton = rail.querySelector('[data-ink-tool="lasso"]');
+    lassoButton.focus();
+    lassoButton.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 0 }));
+    await settle(80);
+    const byKeyboard = api.inkTool();
+
+    // Put back what the cases after this expect.
+    api.setInkHighlighter({ token: "hyellowq35" });
+    api.setInkPen("ink", { keepOpacity: false });
+    api.setInkWidth(2);
+    api.chooseInkTool("pen");
+    api.closeInkRailPopups();
+    await settle(200);
+    return {
+      heights, topBefore, byChip, byTool, reopened, wantedWidth, width, customPen, recent, halfPen, escaped,
+      outside, selected, selectionPanel, restyled, undone, hlPanel, hlToken, eraserPanel, target, byKeyboard,
+      errs: window.__errs.slice(0, 4)
+    };
+  }`, PEN_SRC);
+  check("the pen's bar is one row, and the same row whatever tool is armed",
+    bar.heights.every((h) => h === bar.heights[0]) && bar.heights[0] <= 48,
+    `bar heights ${bar.heights.join(", ")}px`);
+  check("...its chip opens the panel over the page, moving neither the bar nor the page",
+    bar.byChip.open && bar.byChip.panel === "pen" && bar.byChip.expanded === "true"
+      && bar.byChip.height === bar.heights[0] && bar.byChip.pageTop === bar.topBefore,
+    `open=${bar.byChip.open}, panel=${bar.byChip.panel}, expanded=${bar.byChip.expanded}, `
+      + `bar ${bar.byChip.height}px (was ${bar.heights[0]}), page top ${bar.byChip.pageTop} (was ${bar.topBefore})`);
+  check("...and pressing the armed tool again shuts it, and opens it",
+    bar.byTool.closed && bar.reopened, `closed=${bar.byTool.closed}, reopened=${bar.reopened}`);
+  check("the size slider sets a size between the presets, which is the size the pen draws at",
+    Math.abs(bar.width - bar.wantedWidth) < 1e-9 && ![1.2, 2, 3.4, 6].includes(bar.width),
+    `slider 333 of 1000 gave ${bar.width}pt, expected ${bar.wantedWidth}pt`);
+  check("...any colour can be picked, and is kept among the reader's own",
+    bar.customPen === "xff8800" && bar.recent, `pen ${bar.customPen}, in the recent row=${bar.recent}`);
+  check("...at any opacity", bar.halfPen === "xff8800q50", `pen ${bar.halfPen} after opacity 50%`);
+  check("...and Escape from inside a slider shuts the panel", bar.escaped);
+  check("...as a press on the page does, without that press leaving a dot",
+    bar.outside.closed && bar.outside.dotted === 0,
+    `closed=${bar.outside.closed}, ${bar.outside.dotted} stroke(s) from the press that shut it`);
+  check("with something lassoed, the panel restyles it, in one undo step",
+    bar.selected > 0 && bar.selectionPanel === "pen" && bar.restyled > 2.5 && bar.undone === 2,
+    `${bar.selected} lassoed, panel ${bar.selectionPanel}: width 2 → ${bar.restyled} → ${bar.undone} after one undo`);
+  check("the highlighter and the eraser have panels of their own",
+    bar.hlPanel === "highlighter" && bar.hlToken === "hgreenq35" && bar.eraserPanel === "eraser" && bar.target === "pen",
+    `highlighter panel=${bar.hlPanel} (green → ${bar.hlToken}), eraser panel=${bar.eraserPanel} (target → ${bar.target})`);
+  check("a tool on the bar can be chosen from the keyboard", bar.byKeyboard === "lasso", `Enter on the lasso armed ${bar.byKeyboard}`);
+  check("...with nothing thrown by any of it", (bar.errs || []).length === 0, (bar.errs || []).join(" | "));
   // ── The palm that lands a frame before the nib ───────────────────────────
   //
   // onRootTouchStart reads the pen flag at TOUCHSTART, and the reported sequence
@@ -3638,6 +4139,62 @@ try {
     await touchEnd();
     await page.evaluate(`async () => { window.__recall.api.clearTouchSelection(); await window.__recall.settle(200); }`);
   }
+
+  // ── Two touches while the pen is down are a palm, not a pinch ────────────
+  //
+  // A stylus on Android raises compatibility touches of its own, so a palm on
+  // the glass while the pen writes is TWO touches to the zoom — and a pinch that
+  // began there scaled the page under the nib and tore the live stroke down on
+  // the relayout that ended it. The control first, through the same real touch
+  // input: the same two fingers with no pen near are a pinch. They are brought
+  // back to where they started before lifting, so the control commits no zoom
+  // for the cases after it to inherit.
+  const pinchProbe = `() => Boolean(document.querySelector("#documentView > .pdf-pages.is-pinching"))`;
+  const twoTouch = (type, spread) => page.call("Input.dispatchTouchEvent", {
+    type,
+    touchPoints: type === "touchEnd" ? [] : [
+      { x: spot.x - spread, y: spot.y, radiusX: 10, radiusY: 10, force: 1, id: 11 },
+      { x: spot.x + spread, y: spot.y + 20, radiusX: 10, radiusY: 10, force: 1, id: 12 }
+    ]
+  });
+  let pinchAlone = null;
+  let pinchUnderPen = null;
+  if (spot) {
+    await twoTouch("touchStart", 40);
+    await twoTouch("touchMove", 70);
+    await twoTouch("touchMove", 100);
+    pinchAlone = await page.evaluate(pinchProbe);
+    await twoTouch("touchMove", 70);
+    await twoTouch("touchMove", 40);
+    await twoTouch("touchEnd", 0);
+    await page.evaluate(`async () => { window.__recall.api.clearTouchSelection(); await window.__recall.settle(300); }`);
+
+    const before = await page.evaluate(`() => (window.__recall.api.state.meta.pdfHighlights || []).filter((h) => h.kind === "ink").length`);
+    await page.evaluate(`async (penSrc) => {
+      const pen = (0, eval)(penSrc);
+      pen(document.getElementById("documentView"), "pointerdown", ${spot.x}, ${spot.y + 60}, 1);
+      await window.__recall.settle(30);
+    }`, PEN_SRC);
+    await twoTouch("touchStart", 40);
+    await twoTouch("touchMove", 70);
+    await twoTouch("touchMove", 100);
+    pinchUnderPen = await page.evaluate(pinchProbe);
+    await twoTouch("touchEnd", 0);
+    await page.evaluate(`async (penSrc) => {
+      const pen = (0, eval)(penSrc);
+      const view = document.getElementById("documentView");
+      for (let i = 1; i <= 8; i += 1) pen(view, "pointermove", ${spot.x} + (i * 6), ${spot.y + 60} + (i * 2), 1);
+      pen(view, "pointerup", ${spot.x + 48}, ${spot.y + 76}, 0);
+      await window.__recall.settle(300);
+    }`, PEN_SRC);
+    const after = await page.evaluate(`() => (window.__recall.api.state.meta.pdfHighlights || []).filter((h) => h.kind === "ink").length`);
+    // Taken back, so the page is as the cases below expect it.
+    if (after > before) await page.evaluate(`async () => { window.__recall.api.undoInk(); await window.__recall.settle(300); }`);
+  }
+  check("two fingers on the paper with no pen near it are a pinch",
+    pinchAlone === true, spot ? "the control never pinched, so the case below would ask nothing" : "no readable line on the paper");
+  check("...but two touches while the pen is down do not zoom the page under it",
+    pinchUnderPen === false, "the page started scaling under a stroke in progress");
 
   check("a long press on the paper with no pen near it does select a word",
     palmAlone === true,

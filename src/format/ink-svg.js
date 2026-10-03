@@ -38,9 +38,9 @@
 // on — a file that stands on its own rather than one that asks the operating
 // system a question about an app it knows nothing about.
 
-import { INK_PEN_HEX, INK_PEN_TOKENS, normalizeInkPen } from "./ink-colors.js?v=__BUILD__";
+import { INK_PEN_HEX, INK_PEN_TOKENS, isHighlighterToken } from "./ink-colors.js?v=__BUILD__";
 import { decodeInkStroke, encodeInkStrokes, inkStrokesBounds } from "./ink-strokes.js?v=__BUILD__";
-import { inkStrokeOutline, resolveInkColor } from "../render/ink-paint.js?v=__BUILD__";
+import { inkCentrelinePath, inkHighlighterWidth, inkStrokeOutline, resolveInkColor, resolveInkPaint } from "../render/ink-paint.js?v=__BUILD__";
 
 // The element the strokes are stashed in, and the attribute that says which
 // encoding they are in. Read back by inkStrokesFromSvg; ignored by every
@@ -149,13 +149,29 @@ export function inkStrokesToSvg(strokes, { title = "Handwriting" } = {}) {
   const width = Math.max(1, (box.maxX - box.minX) + (INK_SVG_PADDING * 2));
   const height = Math.max(1, (box.maxY - box.minY) + (INK_SVG_PADDING * 2));
 
-  const paths = list.map((stroke) => {
+  // Highlighter bands first, so the pen's strokes are drawn over them as they
+  // are on the page; each band is its centreline stroked at its own width, the
+  // same geometry the screen strokes (inkCentrelinePath). The class is the
+  // stroke's own colour word, which is a safe class name by construction
+  // (lowercase letters and digits, src/format/ink-strokes.js).
+  const bands = list.filter((stroke) => isHighlighterToken(stroke.c));
+  const ink = list.filter((stroke) => !isHighlighterToken(stroke.c));
+  const used = new Set();
+  const paths = bands.map((stroke) => {
+    const recorder = inkPathRecorder();
+    if (!inkCentrelinePath(recorder.ctx, stroke)) return "";
+    const path = recorder.path();
+    if (!path) return "";
+    used.add(stroke.c);
+    return `<path class="p-${stroke.c}" d="${path}" stroke-width="${inkSvgNumber(inkHighlighterWidth(stroke))}"/>`;
+  }).concat(ink.map((stroke) => {
     const recorder = inkPathRecorder();
     if (!inkStrokeOutline(recorder.ctx, stroke)) return "";
     const path = recorder.path();
     if (!path) return "";
-    return `<path class="p-${normalizeInkPen(stroke.c)}" d="${path}"/>`;
-  }).filter(Boolean).join("");
+    used.add(String(stroke.c || "ink"));
+    return `<path class="p-${String(stroke.c || "ink")}" d="${path}"/>`;
+  })).filter(Boolean).join("");
   if (!paths) return "";
 
   // ── Why this is not two palettes and a media query any more ─────────────
@@ -180,8 +196,22 @@ export function inkStrokesToSvg(strokes, { title = "Handwriting" } = {}) {
   // light theme; with its own page under it, a drawing looks exactly as it did
   // when it was made, anywhere it is ever opened — a note, an export, a print,
   // or a file on a desk. It is a picture of a page, so it looks like one.
+  //
+  // One rule per palette pen, as before, and one more for every other colour
+  // word the drawing actually uses — a custom colour, an opacity, a
+  // highlighter. A word this build does not understand paints as the plain pen,
+  // the same answer resolveInkPaint gives on the page.
+  const ruleFor = (token) => {
+    const paint = resolveInkPaint(token);
+    const alpha = paint.alpha < 1 ? inkSvgNumber(paint.alpha) : null;
+    if (paint.hl) {
+      return `.p-${token}{fill:none;stroke:${paint.color};stroke-linecap:round;stroke-linejoin:round${alpha === null ? "" : `;stroke-opacity:${alpha}`}}`;
+    }
+    return `.p-${token}{fill:${paint.color}${alpha === null ? "" : `;fill-opacity:${alpha}`}}`;
+  };
   const rules = INK_PEN_TOKENS
     .map((token) => `.p-${token}{fill:${resolveInkColor(token) || INK_PEN_HEX[token]}}`)
+    .concat([...used].filter((token) => !INK_PEN_TOKENS.includes(token)).map(ruleFor))
     .join("");
   const paper = readCssColor("--card", readCssColor("--panel", INK_SVG_PAPER_FALLBACK));
   const edge = readCssColor("--line", INK_SVG_EDGE_FALLBACK);

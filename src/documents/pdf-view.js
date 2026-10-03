@@ -29,7 +29,7 @@
 
 import { isDriveConfigured } from "../cloud/drive-client.js?v=__BUILD__";
 import { isS3Configured } from "../cloud/s3-config.js?v=__BUILD__";
-import { PDF_BADGE_LAYER_CLASS, PDF_INK_LAYER_CLASS } from "../core/constants.js?v=__BUILD__";
+import { PDF_BADGE_LAYER_CLASS, PDF_INK_HL_LAYER_CLASS, PDF_INK_LAYER_CLASS } from "../core/constants.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { ensurePdfJs } from "../core/lib-loader.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
@@ -2297,6 +2297,9 @@ function stalePageForRelayout(pageNumber, width, height) {
   // handwriting having moved. It comes back with the page, repainted from the
   // strokes themselves at the new scale — see src/documents/pdf-ink.js.
   entry.el.querySelector(`.${PDF_INK_LAYER_CLASS}`)?.remove();
+  // The highlighter's bands are painted through the same transform, so they go
+  // with the ink for the same reason and come back with it.
+  entry.el.querySelector(`.${PDF_INK_HL_LAYER_CLASS}`)?.remove();
   entry.markLayer = null;
   entry.textLayer = null;
   canvas.classList.add("is-stale");
@@ -3149,8 +3152,20 @@ export function readPdfInvertPreference() {
 // theme would otherwise write "dark page: on" into the preference and hand it to
 // the next PDF the reader opened, which is a document they never asked to have
 // inverted.
+// Told when the page turns from white to dark or back. The pen's colours are
+// chosen for the paper they are drawn on (resolveInkPaint, src/render/ink-
+// paint.js), and the ink canvas is a bitmap, so a flip of the paper is a
+// repaint of the ink — which lives in a module this one must not import.
+let paperChangedHook = () => {};
+
+export function setPaperChangedHook(fn) {
+  paperChangedHook = typeof fn === "function" ? fn : () => {};
+}
+
 export function applyPdfInvert(on, { remember = true } = {}) {
+  const was = Boolean(el.documentStage?.classList.contains(PDF_DARK_CLASS));
   el.documentStage?.classList.toggle(PDF_DARK_CLASS, Boolean(on));
+  if (was !== Boolean(on)) paperChangedHook();
   // The button says which way the mode is set without being pressed — the same
   // rule every other toggle in this app's chrome follows, and the reason this
   // moved out of the ⋯ menu in the first place: a mode nobody can see the state
@@ -3334,6 +3349,18 @@ export function initDocumentPinchZoom() {
 
   view.addEventListener("touchstart", (event) => {
     if (event.touches.length !== 2 || !openPdf) return;
+    // ── Not while the pen is writing ─────────────────────────────────────────
+    //
+    // A stylus on Android raises compatibility touch events of its own, so a
+    // palm resting on the glass while the pen writes is "two touches" to this
+    // listener — and a pinch that began there scaled the page under the nib and,
+    // on the relayout that ends it, tore the live stroke down with the page's ink
+    // layer. The ink side meant to give way to a second contact
+    // (src/documents/pdf-ink.js) and never could: its pointer handlers only ever
+    // see the pen's own pointer. So the decision is made here, where the second
+    // contact actually arrives — a pen in contact owns the page, and the palm is
+    // a palm.
+    if (inkPenIsDown()) return;
     const host = pagesHost();
     if (!host) return;
     const focal = touchMidpoint(event.touches);
@@ -3360,6 +3387,10 @@ export function initDocumentPinchZoom() {
     // gesture the reader had already abandoned — or, if no touchend arrived at
     // all, left the page transformed for good.
     if (pinch && event.touches.length !== 2) { endPinch(); return; }
+    // ...and a pinch already under way when the nib lands is over: the pen is
+    // what the reader reached for, and a page still scaling under it would carry
+    // the stroke off with it.
+    if (pinch && inkPenIsDown()) { endPinch(); return; }
     if (!pinch || event.touches.length !== 2 || !openPdf) return;
     const distance = touchDistance(event.touches);
     if (!pinch.startDistance) return;

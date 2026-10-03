@@ -49,6 +49,26 @@
 // committed ink on the dry one beneath, which is the fault ce9f73a fixed and
 // which this must not undo. See handOverToDry.
 //
+// ── ...and a third, under the other two, for the highlighter ───────────────
+//
+//   under   one per host, made only for a host that has a highlighter stroke
+//           on it, and only when the surface offers somewhere to put it
+//           (`makeUnderlay`). Every committed highlighter stroke, and nothing
+//           else.
+//
+// A highlighter has to be UNDER the page's ink and BLENDED with the page itself,
+// and a canvas cannot do either from where the dry one sits: the dry canvas is
+// inside the ink layer, which is a stacking context of its own (z-index, for
+// the reason styles/52-ink.css gives), and a blend mode inside a stacking
+// context blends with nothing outside it. So the surface hands the engine a
+// different element — on a paper, a sibling layer of the ink layer that
+// multiplies with the page canvas (styles/72-ink-paper.css) — and the live
+// layer is mounted THERE for the length of a highlighter stroke, so the band
+// under the nib already looks like the band it will be. A surface that offers
+// no such element (the drawing sheet, which is blank paper) gets its
+// highlighter strokes painted first onto the dry canvas instead, under the pen's
+// ink and translucent, which over blank paper is the same picture.
+//
 // ── What the pen feel actually comes from ──────────────────────────────────
 //
 //   • getCoalescedEvents(). A stylus samples at 240Hz and pointermove fires at
@@ -82,11 +102,11 @@
 //     writes, which is layout thrash, and the report that produced was "a
 //     little unstable, a little flickering".
 
-import { INK_ERASER_SIZE_DEFAULT, INK_ERASE_MODE_DEFAULT, INK_PEN_DEFAULT, INK_TOOL_DEFAULT, INK_WIDTH_DEFAULT, normalizeInkEraseMode, normalizeInkEraserSize, normalizeInkPen, normalizeInkTool, normalizeInkWidth } from "../format/ink-colors.js?v=__BUILD__";
-import { eraseFromInkStroke, inkStrokeHitsPoint, inkStrokeInPolygon, inkStrokesBounds, transformInkStroke } from "../format/ink-strokes.js?v=__BUILD__";
-import { INK_WIDTH_LOOKBACK, paintInkStroke, paintInkStrokes, resolveInkColor } from "./ink-paint.js?v=__BUILD__";
+import { INK_ERASER_SIZE_DEFAULT, INK_ERASE_MODE_DEFAULT, INK_ERASE_TARGET_DEFAULT, INK_HL_TOKEN_DEFAULT, INK_HL_WIDTH_DEFAULT, INK_PEN_DEFAULT, INK_TOOL_DEFAULT, INK_WIDTH_DEFAULT, formatInkToken, isHighlighterToken, normalizeInkEraseMode, normalizeInkEraseTarget, normalizeInkEraserSize, normalizeInkHlWidth, normalizeInkOpacity, normalizeInkToken, normalizeInkTool, normalizeInkWidth, parseInkToken } from "../format/ink-colors.js?v=__BUILD__";
+import { densifyInkPath, eraseFromInkStroke, inkStrokeHitsPoint, inkStrokeInPolygon, inkStrokesBounds, transformInkStroke } from "../format/ink-strokes.js?v=__BUILD__";
+import { INK_WIDTH_LOOKBACK, paintInkLayers, paintInkStroke, paintInkStrokes, resolveInkColor } from "./ink-paint.js?v=__BUILD__";
 import { boundInkPrediction } from "./ink-predict.js?v=__BUILD__";
-import { INK_SHAPE_HOLD_MS, fitInkShape } from "./ink-shapes.js?v=__BUILD__";
+import { INK_SHAPE_HOLD_MS, fitInkShape, straightenInkHighlight } from "./ink-shapes.js?v=__BUILD__";
 
 // A canvas is painted at devicePixelRatio so ink is sharp, capped for the same
 // reason src/documents/pdf-view.js caps its page canvases: a phone at dpr 3
@@ -228,6 +248,16 @@ export function createInkEngine({
   onCommit = () => {},
   onSelectionChange = () => {},
   onToolChange = () => {},
+  // What the page under the ink looks like, per host — "light", "dark" or null
+  // to let the theme decide — so a palette pen can be painted in the set made
+  // for that paper (resolveInkPaint, ./ink-paint.js). The Document surface asks
+  // its own dark-page mode; the drawing sheet, whose paper follows the theme,
+  // passes nothing.
+  getPaper = null,
+  // The element a host's highlighter strokes are drawn into, or null — see the
+  // header. Called whenever the host has highlighter ink to paint, and expected
+  // to hand back the same element every time for as long as the host lives.
+  makeUnderlay = null,
   root = null,
   className = "ink-layer-canvas"
 } = {}) {
@@ -245,6 +275,13 @@ export function createInkEngine({
   // somebody writing mathematics draws a fraction bar and a radical and a long
   // division rule, and every one of them is a held straight line.
   let snapShapes = true;
+  // The highlighter is a second pen with its own colour word (always a
+  // highlighter's — see parseInkToken), its own width, and its own straightening
+  // rule; and the eraser can be told to take only one kind of mark.
+  let hl = INK_HL_TOKEN_DEFAULT;
+  let hlWidth = INK_HL_WIDTH_DEFAULT;
+  let hlStraight = true;
+  let eraseTarget = INK_ERASE_TARGET_DEFAULT;
 
   let inkOverlay = null;
   let overlayCtx = null;
@@ -266,6 +303,42 @@ export function createInkEngine({
     return { canvas, ctx };
   }
 
+  // The paper a host is drawn on, asked fresh each time: a reader can invert a
+  // page between two strokes, and a cached answer would paint the second in the
+  // set for the paper that is no longer there.
+  function paperFor(key) {
+    if (!getPaper) return null;
+    try {
+      const paper = getPaper(key);
+      return paper === "light" || paper === "dark" ? paper : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function paintOptions(key) {
+    return { root, paper: paperFor(key) };
+  }
+
+  // The host's highlighter canvas, made and mounted on first need and re-mounted
+  // if the element the surface gave it has been rebuilt since (a page re-rendered
+  // after a zoom takes its layers down with it). Null when the surface offers no
+  // such element, which is the cue to fall back to the dry canvas.
+  function ensureUnderlay(entry) {
+    if (!makeUnderlay || !entry?.el) return null;
+    let host = null;
+    try {
+      host = makeUnderlay(entry.key);
+    } catch (_) {
+      host = null;
+    }
+    if (!host) return null;
+    if (!entry.under) entry.under = { ...ensureCanvas("is-ink-hl"), el: null };
+    if (entry.under.canvas.parentNode !== host) host.appendChild(entry.under.canvas);
+    entry.under.el = host;
+    return entry.under;
+  }
+
   function attachHost(key, element) {
     if (!element) return null;
     const existing = hosts.get(key);
@@ -273,17 +346,19 @@ export function createInkEngine({
       // Same element, but its canvas may have been taken out from under it —
       // a PDF page torn back down to a placeholder empties itself wholesale.
       // Without this the entry looks attached, paints into a detached canvas,
-      // and the page comes back blank with its ink still in memory.
-      if (existing.canvas && existing.canvas.parentNode !== element) {
-        element.appendChild(existing.canvas);
-        repaint(key);
-      }
+      // and the page comes back blank with its ink still in memory. The
+      // highlighter's canvas lives in a different element that is torn down
+      // with the page in the same way, and is asked the same question.
+      const dryGone = existing.canvas && existing.canvas.parentNode !== element;
+      const underGone = existing.under && !existing.under.canvas.isConnected;
+      if (dryGone) element.appendChild(existing.canvas);
+      if (dryGone || underGone) repaint(key);
       return existing;
     }
     if (existing) detachHost(key);
     const { canvas, ctx } = ensureCanvas("is-ink-dry");
     element.appendChild(canvas);
-    const entry = { key, el: element, canvas, ctx, scale: 1, strokes: existing?.strokes || [], painted: null, unrecorded: false };
+    const entry = { key, el: element, canvas, ctx, under: null, scale: 1, strokes: existing?.strokes || [], painted: null, unrecorded: false };
     hosts.set(key, entry);
     repaint(key);
     return entry;
@@ -301,7 +376,7 @@ export function createInkEngine({
     // there was no pen lift: a host torn down mid-stroke (a page scrolled out of
     // the render window, a sheet closed under the nib) would otherwise leave a
     // canvas parented to an element nothing else is holding.
-    if (inkOverlay && entry.el && inkOverlay.parentNode === entry.el) unmountOverlay();
+    if (inkOverlay && entry.el && (inkOverlay.parentNode === entry.el || inkOverlay.parentNode === entry.under?.el)) unmountOverlay();
     // Optional chaining because this has to be idempotent: the entry deliberately
     // stays in `hosts` after a detach (that is what keeps the strokes), so a
     // second detach of the same key finds it with nothing left to remove. On the
@@ -312,6 +387,8 @@ export function createInkEngine({
     entry.canvas = null;
     entry.ctx = null;
     entry.el = null;
+    entry.under?.canvas?.remove();
+    entry.under = null;
     // The bitmap is gone, so nothing may be added to it. The next attachHost
     // makes a fresh canvas and repaint() records what that one holds.
     entry.painted = null;
@@ -332,7 +409,7 @@ export function createInkEngine({
   }
 
   function setStrokes(key, strokes) {
-    const entry = hosts.get(key) || { key, el: null, canvas: null, ctx: null, scale: 1, strokes: [], painted: null, unrecorded: false };
+    const entry = hosts.get(key) || { key, el: null, canvas: null, ctx: null, under: null, scale: 1, strokes: [], painted: null, unrecorded: false };
     entry.strokes = Array.isArray(strokes) ? strokes.slice() : [];
     hosts.set(key, entry);
     repaint(key);
@@ -362,14 +439,33 @@ export function createInkEngine({
     ctx.clearRect(0, 0, entry.canvas.width, entry.canvas.height);
     const m = inkDeviceTransform(getMatrix ? getMatrix(key) : null, entry.scale);
     ctx.setTransform(m[0], m[1], m[2], m[3], m[4], m[5]);
-    paintInkStrokes(ctx, entry.strokes, { root });
+    const options = paintOptions(key);
+    // The page's strokes split by kind, in one pass: highlighter bands to the
+    // canvas under the ink when there is one, and otherwise onto this one FIRST
+    // so the pen's ink lies over them either way.
+    const bands = [];
+    const ink = [];
+    entry.strokes.forEach((stroke) => (isHighlighterToken(stroke.c) ? bands : ink).push(stroke));
+    const under = (bands.length || entry.under) ? ensureUnderlay(entry) : null;
+    if (under) {
+      inkSizeCanvas(under.canvas, size.width, size.height);
+      under.ctx.setTransform(1, 0, 0, 1, 0, 0);
+      under.ctx.clearRect(0, 0, under.canvas.width, under.canvas.height);
+      under.ctx.setTransform(m[0], m[1], m[2], m[3], m[4], m[5]);
+      paintInkStrokes(under.ctx, bands, options);
+      paintInkStrokes(ctx, ink, options);
+    } else {
+      paintInkLayers(ctx, entry.strokes, options);
+    }
     // A stroke still in flight that has handed part of itself to this canvas —
     // see the bound in drawFrame — is not in entry.strokes yet, because it is
     // not committed until the pen lifts. Without this, anything that repaints
     // the dry canvas mid-stroke (a theme change, a relayout, a selection) would
-    // erase the front of the line the reader is still drawing.
+    // erase the front of the line the reader is still drawing. Only an opaque
+    // pen's stroke ever hands itself over (see drawFrame), so this is always
+    // the dry canvas's.
     if (live?.key === key && live.settled?.length) {
-      live.settled.forEach((run) => paintInkStroke(ctx, { w: live.width, c: live.pen, p: run }, { root }));
+      live.settled.forEach((run) => paintInkStroke(ctx, { w: live.width, c: live.pen, p: run }, options));
     }
     // What this bitmap now holds, so paintAppendedToDry can tell whether adding
     // to it is the same thing as painting it again.
@@ -381,7 +477,7 @@ export function createInkEngine({
     // the whole of it rather than trusting the count — which cannot notice,
     // since committing the stroke grows entry.strokes by exactly the amount the
     // count would expect.
-    entry.painted = { count: entry.strokes.length, width: size.width, height: size.height, matrix: m };
+    entry.painted = { count: entry.strokes.length, width: size.width, height: size.height, matrix: m, paper: options.paper, under: Boolean(under) };
     // ...and whether the replay above just put ink on it that `painted` does not
     // account for. Recomputed here rather than merely set, so a repaint after
     // reclaimSettled — which empties `settled` — clears it again.
@@ -429,9 +525,23 @@ export function createInkEngine({
     const count = entry.painted.count;
     if (entry.strokes.length !== count + added.length) return false;
     for (let i = 0; i < added.length; i += 1) { if (entry.strokes[count + i] !== added[i]) return false; }
+    // Painted for a different paper than the one under it now — the reader
+    // inverted the page — so the strokes already there are in the wrong set.
+    const options = paintOptions(key);
+    if (entry.painted.paper !== options.paper) return false;
+    // A highlighter band can only be ADDED where it will end up under the ink:
+    // on a highlighter canvas that the last repaint sized and drew. Without one
+    // it belongs beneath every pen stroke already on the dry canvas, which only
+    // a repaint can put it.
+    const bands = added.filter((stroke) => isHighlighterToken(stroke.c));
+    if (bands.length && !(entry.under && entry.painted.under && entry.under.canvas.isConnected)) return false;
     const ctx = entry.ctx;
     ctx.setTransform(m[0], m[1], m[2], m[3], m[4], m[5]);
-    paintInkStrokes(ctx, added, { root });
+    if (bands.length) {
+      entry.under.ctx.setTransform(m[0], m[1], m[2], m[3], m[4], m[5]);
+      paintInkStrokes(entry.under.ctx, bands, options);
+    }
+    paintInkStrokes(ctx, bands.length ? added.filter((stroke) => !isHighlighterToken(stroke.c)) : added, options);
     entry.painted.count = entry.strokes.length;
     return true;
   }
@@ -442,9 +552,13 @@ export function createInkEngine({
 
   // ── The inkOverlay pair ─────────────────────────────────────────────────────
 
-  function mountOverlay(key) {
+  // `layer` is "under" for a highlighter stroke, which is drawn live on the
+  // highlighter's own layer (see the header) so it blends as it goes rather than
+  // only once the pen lifts. Falls back to the host itself when there is none.
+  function mountOverlay(key, layer = "ink") {
     const entry = hosts.get(key);
     if (!entry?.el) return false;
+    const parent = layer === "under" && entry.under?.el ? entry.under.el : entry.el;
     // `is-ink-wet` is kept as the class name: it is what the two stylesheets
     // that position these canvases select on, and the layer is still the wet
     // one — there is simply no longer a second one over it.
@@ -460,8 +574,8 @@ export function createInkEngine({
     // a path that runs every frame of a drag. Only touch it when it is not
     // already where it belongs — which, since the layer is unmounted at every
     // pen lift, means at the start of every stroke.
-    if (inkOverlay.parentNode !== entry.el) {
-      entry.el.appendChild(inkOverlay);
+    if (inkOverlay.parentNode !== parent) {
+      parent.appendChild(inkOverlay);
       clearOverlay();
     }
     return true;
@@ -664,9 +778,21 @@ export function createInkEngine({
   function begin(key, samples, event) {
     const entry = hosts.get(key);
     if (!entry?.el) return false;
-    if (!mountOverlay(key)) return false;
     const eraser = isEraserEvent(event);
     const active = eraser ? "eraser" : tool;
+    const highlighting = active === "highlighter";
+    // The live layer goes where the stroke will end up. For a highlighter that
+    // is the host's highlighter canvas, made now if this is the page's first —
+    // and painted once, so it has the page's size before anything is added to it.
+    let layer = "ink";
+    if (highlighting && makeUnderlay) {
+      const fresh = !entry.under;
+      if (ensureUnderlay(entry)) {
+        layer = "under";
+        if (fresh || !entry.painted?.under) repaint(key);
+      }
+    }
+    if (!mountOverlay(key, layer)) return false;
 
     if (active === "lasso" && selection?.key === key) {
       const first = toModelPoint(key, samples[0]);
@@ -716,9 +842,16 @@ export function createInkEngine({
       return true;
     }
 
+    const token = highlighting ? hl : pen;
     live = {
       key,
       mode: "draw",
+      // A highlighter stroke, and whether this stroke is see-through at all —
+      // which a highlighter always is and a pen is when its colour word carries
+      // an opacity. Translucent ink cannot be painted in overlapping runs (see
+      // drawFrame), and a highlighter is straightened rather than snapped.
+      hl: highlighting,
+      translucent: highlighting || (parseInkToken(token)?.opacity ?? 1) < 1,
       points: [],
       // The first sample still drawn on the live layer, and the runs already
       // handed to the dry canvas. Both stay at their initial values for every
@@ -726,8 +859,8 @@ export function createInkEngine({
       // them — see the bound in drawFrame.
       from: 0,
       settled: [],
-      pen,
-      width,
+      pen: token,
+      width: highlighting ? hlWidth : width,
       holdTimer: 0,
       holdArmedAt: 0,
       snapped: null,
@@ -768,17 +901,29 @@ export function createInkEngine({
     if (!pending.length) return;
     const entry = hosts.get(live.key);
     if (!entry) return;
-    const points = [];
+    const sampled = [];
     pending.forEach((sample) => {
       const point = toModelPoint(live.key, sample);
-      if (point) points.push(point);
+      if (point) sampled.push(point);
     });
-    if (!points.length) return;
+    if (!sampled.length) return;
+    // The path BETWEEN the samples as well as the samples, no further apart than
+    // the eraser is big (densifyInkPath, src/format/ink-strokes.js). Both tests
+    // below ask about points, and a quick swipe puts its points several model
+    // units apart — far enough to step clean over a fine line that the eraser
+    // visibly passed across. Joined to the last point of the previous frame, so
+    // the gap between two frames is filled in too.
+    const points = densifyInkPath(live.lastErase || null, sampled, Math.max(0.5, eraserSize));
+    live.lastErase = sampled[sampled.length - 1];
+    // Which strokes the eraser may touch at all: both kinds, or only the pen's
+    // ink, or only the highlighter's bands (INK_ERASE_TARGETS).
+    const erasable = (stroke) => eraseTarget === "all"
+      || (eraseTarget === "highlighter") === isHighlighterToken(stroke.c);
     // Whole strokes, which is what this always did — cross a mark anywhere and
     // all of it goes.
     if (eraseMode === "stroke") {
-      const kept = entry.strokes.filter((stroke) =>
-        !points.some((point) => inkStrokeHitsPoint(stroke, point.x, point.y, eraserSize)));
+      const kept = entry.strokes.filter((stroke) => !erasable(stroke)
+        || !points.some((point) => inkStrokeHitsPoint(stroke, point.x, point.y, eraserSize)));
       if (kept.length === entry.strokes.length) return;
       entry.strokes = kept;
       repaint(live.key);
@@ -791,6 +936,7 @@ export function createInkEngine({
     let changed = false;
     const next = [];
     entry.strokes.forEach((stroke) => {
+      if (!erasable(stroke)) { next.push(stroke); return; }
       const left = eraseFromInkStroke(stroke, points, eraserSize);
       if (left.length === 1 && left[0] === stroke) { next.push(stroke); return; }
       changed = true;
@@ -842,6 +988,9 @@ export function createInkEngine({
     // straight lines, and somebody working through a page of them wants a pen
     // that does not keep making a decision for them.
     if (!snapShapes) return;
+    // Nor for a highlighter, which is straightened when it lifts instead (see
+    // end()) and has no business turning into a ring or an arrow.
+    if (live.hl) return;
     // A stroke that has already declined a shape is not asked again — see
     // revokeShape.
     if (live.snapDeclined) return;
@@ -865,7 +1014,7 @@ export function createInkEngine({
     reclaimSettled();
     clearOverlay();
     overlayTransform(live.key, overlayCtx, overlayScale);
-    fit.runs.forEach((run) => paintInkStroke(overlayCtx, { w: live.width, c: live.pen, p: run }, { root }));
+    fit.runs.forEach((run) => paintInkStroke(overlayCtx, { w: live.width, c: live.pen, p: run }, paintOptions(live.key)));
   }
 
   // Take back everything this stroke handed to the dry canvas, so the live layer
@@ -949,14 +1098,20 @@ export function createInkEngine({
     // know its own width or its own tangent, and the dry canvas is the one
     // surface a stroke in flight cannot be repainted from — so a provisional
     // width painted there is a bead that never comes out.
-    if (total - live.from > INK_LIVE_MAX_POINTS) {
+    //
+    // Never for a translucent stroke. The two runs OVERLAP, and an overlap of
+    // see-through ink is painted twice — a darker knot at the seam of every long
+    // highlighter swipe, on the one canvas that cannot be repainted mid-stroke.
+    // A highlighter is a short stroke anyway, and a translucent pen pays the
+    // repaint of the whole stroke per frame rather than leave the knot.
+    if (!live.translucent && total - live.from > INK_LIVE_MAX_POINTS) {
       const handOver = total - INK_LIVE_TAIL;
       const entry = hosts.get(live.key);
       if (entry?.ctx && handOver > live.from) {
         const run = live.points.slice(live.from * 3, handOver * 3);
         const m = inkDeviceTransform(getMatrix ? getMatrix(live.key) : null, entry.scale);
         entry.ctx.setTransform(m[0], m[1], m[2], m[3], m[4], m[5]);
-        paintInkStroke(entry.ctx, { w: live.width, c: live.pen, p: run }, { root });
+        paintInkStroke(entry.ctx, { w: live.width, c: live.pen, p: run }, paintOptions(live.key));
         // Remembered so repaint() can put it back. Without this a theme change,
         // a selection or a relayout under the nib would repaint the dry canvas
         // from entry.strokes — which does not hold this stroke yet — and erase
@@ -1010,7 +1165,7 @@ export function createInkEngine({
     }
     if (run.length < 3) return;
     overlayTransform(live.key, overlayCtx, overlayScale);
-    paintInkStroke(overlayCtx, { w: live.width, c: live.pen, p: run }, { root });
+    paintInkStroke(overlayCtx, { w: live.width, c: live.pen, p: run }, paintOptions(live.key));
     // A guess has to be able to expire. Frames are only scheduled by input, so a
     // pen that stopped moving used to leave its last prediction on the glass —
     // a phantom stub of ink sitting ahead of the nib until the hand moved again.
@@ -1114,7 +1269,13 @@ export function createInkEngine({
     }
 
     if (gesture.mode === "draw") {
-      const runs = gesture.snapped ? gesture.snapped.runs : [gesture.points];
+      let runs = gesture.snapped ? gesture.snapped.runs : [gesture.points];
+      // A highlighter swept along a line is laid down straight, with Straight on
+      // — see straightenInkHighlight for what it refuses.
+      if (gesture.hl && hlStraight && !gesture.snapped) {
+        const straight = straightenInkHighlight(gesture.points, gesture.width);
+        if (straight) runs = [straight];
+      }
       const added = runs
         .filter((run) => run.length >= 3)
         .map((run) => ({ w: gesture.width, c: gesture.pen, p: run }));
@@ -1245,21 +1406,37 @@ export function createInkEngine({
   // or a nib while something is lassoed means "make THIS that", which is what
   // anyone who has used a drawing tool expects it to mean — and the rail needed
   // no new buttons for it, which is why it is the first of these.
-  function restyleSelection({ pen: nextPen = null, width: nextWidth = null } = {}) {
-    const c = nextPen === null ? null : normalizeInkPen(nextPen);
-    const w = nextWidth === null ? null : normalizeInkWidth(nextWidth);
-    if (c === null && w === null) return false;
+  //
+  // ...of ONE KIND of stroke. A selection can hold handwriting and the
+  // highlighter bands under it, and a press on a pen colour means the
+  // handwriting: turning a yellow band into an opaque red one would bury the
+  // words it was highlighting. `kind` is which of the two this press is about —
+  // the colour's own kind when a colour is given, otherwise the caller's, and the
+  // pen's when neither says.
+  //
+  // A colour changes the hue and nothing else, so a 40% band recoloured is a 40%
+  // band in the new colour; `opacity` changes only the opacity. Each stroke's
+  // word is rebuilt from its own parts (formatInkToken), never replaced whole.
+  function restyleSelection({ pen: nextColor = null, width: nextWidth = null, opacity: nextOpacity = null, kind = null } = {}) {
+    const colour = nextColor === null ? null : parseInkToken(nextColor);
+    if (nextColor !== null && !colour) return false;
+    if (!colour && nextWidth === null && nextOpacity === null) return false;
+    const target = kind || colour?.kind || "pen";
+    const highlighter = target === "highlighter";
+    const w = nextWidth === null ? null : (highlighter ? normalizeInkHlWidth(nextWidth) : normalizeInkWidth(nextWidth));
     return mapSelection((stroke) => {
+      const was = parseInkToken(stroke.c) || { kind: "pen", name: INK_PEN_DEFAULT, hex: null, opacity: 1 };
+      if (was.kind !== target) return stroke;
+      const parts = { kind: was.kind, name: was.name, hex: was.hex, opacity: was.opacity };
+      if (colour) { parts.name = colour.name; parts.hex = colour.hex; }
+      if (nextOpacity !== null) parts.opacity = normalizeInkOpacity(nextOpacity);
+      const c = (colour || nextOpacity !== null) ? formatInkToken(parts) : stroke.c;
+      const nib = w === null ? stroke.w : w;
       // Returned UNCHANGED when it already says the right thing, so mapSelection's
       // identity compare can refuse the whole gesture — a press on the colour a
       // selection is already in must not cost an undo step or a write.
-      const recolour = c !== null && stroke.c !== c;
-      const renib = w !== null && stroke.w !== w;
-      if (!recolour && !renib) return stroke;
-      const next = { ...stroke };
-      if (recolour) next.c = c;
-      if (renib) next.w = w;
-      return next;
+      if (c === stroke.c && nib === stroke.w) return stroke;
+      return { ...stroke, c, w: nib };
     }, "restyle");
   }
 
@@ -1392,7 +1569,16 @@ export function createInkEngine({
     getTool: () => tool,
     setTool: (next) => { tool = normalizeInkTool(next); if (tool !== "lasso") setSelection(null); onToolChange({ tool, pen, width }); },
     getPen: () => pen,
-    setPen: (next) => { pen = normalizeInkPen(next); onToolChange({ tool, pen, width }); },
+    setPen: (next) => { pen = normalizeInkToken(next, "pen"); onToolChange({ tool, pen, width }); },
+    getHighlighter: () => ({ token: hl, width: hlWidth, straight: hlStraight }),
+    setHighlighter: ({ token = undefined, width: nextWidth = undefined, straight = undefined } = {}) => {
+      if (token !== undefined) hl = normalizeInkToken(token, "highlighter");
+      if (nextWidth !== undefined) hlWidth = normalizeInkHlWidth(nextWidth);
+      if (straight !== undefined) hlStraight = straight !== false;
+      onToolChange({ tool, pen, width });
+    },
+    getEraseTarget: () => eraseTarget,
+    setEraseTarget: (next) => { eraseTarget = normalizeInkEraseTarget(next); onToolChange({ tool, pen, width }); },
     getWidth: () => width,
     setWidth: (next) => { width = normalizeInkWidth(next); onToolChange({ tool, pen, width }); },
     getEraseMode: () => eraseMode,

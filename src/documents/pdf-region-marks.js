@@ -31,7 +31,7 @@ import { state } from "../core/state.js?v=__BUILD__";
 import { ensureHtmlToImage } from "../core/lib-loader.js?v=__BUILD__";
 import { MARK_HIGHLIGHT_DEFAULT, MARK_HIGHLIGHT_HEX } from "../format/highlight-colors.js?v=__BUILD__";
 import { decodeInkStrokes } from "../format/ink-strokes.js?v=__BUILD__";
-import { paintInkStrokes } from "../render/ink-paint.js?v=__BUILD__";
+import { paintInkLayers } from "../render/ink-paint.js?v=__BUILD__";
 import { recordsForSurface } from "./pdf-multi.js?v=__BUILD__";
 
 // ── The colours, matching the live mark layer ───────────────────────────────
@@ -124,12 +124,17 @@ export function paintRegionMarks(ctx, viewport, marks) {
     });
   });
   if (!marks.ink.length) return;
-  // Strokes are stored in PDF user-space points; paintInkStrokes expects the
+  // Strokes are stored in PDF user-space points; paintInkLayers expects the
   // context to carry that transform, as the live ink layer applies it.
   const t = viewport.transform;
   ctx.save();
   ctx.setTransform(t[0], t[1], t[2], t[3], t[4], t[5]);
-  marks.ink.forEach((record) => paintInkStrokes(ctx, decodeInkStrokes(record.ink?.s), { root: null }));
+  // Every mark's strokes in one call, so every highlighter band on the page goes
+  // down — multiplied — before any of the pen's ink, which is the order the
+  // screen's two layers stack in. On white paper: this is a picture of the PDF.
+  const strokes = [];
+  marks.ink.forEach((record) => strokes.push(...decodeInkStrokes(record.ink?.s)));
+  paintInkLayers(ctx, strokes, { root: null, paper: "light", blend: "multiply" });
   ctx.restore();
 }
 

@@ -782,6 +782,283 @@ try {
     return true;
   });
 
+  // ── 5. What a colour word can say ─────────────────────────────────────────
+  //
+  // The token is the one field a stroke has for its colour, and it now carries
+  // the kind (pen or highlighter), a custom colour and an opacity as well. Every
+  // form has to survive the wire format, an older build's view of it has to be
+  // harmless, and the rule that keeps it unambiguous — no palette name starts
+  // with h or x or contains a q — has to be true of both palettes.
+  const colorsMod = await import(path.join(stage, "src/format/ink-colors.js"));
+  const {
+    INK_HL_HEX, INK_HL_TOKEN_DEFAULT, INK_PEN_HEX, INK_PEN_HEX_DARK, INK_WIDTH_RANGE, INK_HL_WIDTH_RANGE,
+    INK_ERASER_RANGE, INK_SLIDER_STEPS, formatInkToken, inkFilingColor, inkSliderFromWidth,
+    inkWidthFromSlider, isHighlighterToken, normalizeInkEraserSize, normalizeInkHlWidth,
+    normalizeInkToken, normalizeInkWidth, parseInkToken
+  } = colorsMod;
+  const { INK_DENSIFY_MAX_PER_SEGMENT, densifyInkPath } = strokesMod;
+  const { straightenInkHighlight } = shapesMod;
+
+  must("every form of colour word survives the wire format, and parses back to what it said", () => {
+    const forms = [
+      ["red", { kind: "pen", name: "red", hex: null, opacity: 1 }],
+      ["x1e90ff", { kind: "pen", name: null, hex: "#1e90ff", opacity: 1 }],
+      ["blueq40", { kind: "pen", name: "blue", hex: null, opacity: 0.4 }],
+      ["hyellowq35", { kind: "highlighter", name: "yellow", hex: null, opacity: 0.35 }],
+      ["hx00ff88q60", { kind: "highlighter", name: null, hex: "#00ff88", opacity: 0.6 }],
+      ["hpink", { kind: "highlighter", name: "pink", hex: null, opacity: 1 }]
+    ];
+    for (const [token, want] of forms) {
+      const stroke = { w: 3.7, c: token, p: [10, 10, 0.5, 30, 12, 0.5, 50, 10, 0.5] };
+      const back = decodeInkStroke(encodeInkStroke(stroke));
+      if (!back || back.c !== token) return `${token} came back as ${back?.c}`;
+      if (back.w !== 3.7) return `${token}: a 3.7pt nib came back as ${back?.w}`;
+      const parsed = parseInkToken(token);
+      for (const key of Object.keys(want)) {
+        if (parsed?.[key] !== want[key]) return `${token}: ${key} parsed as ${parsed?.[key]}, expected ${want[key]}`;
+      }
+      if (formatInkToken(parsed) !== token) return `${token} formats back as ${formatInkToken(parsed)}`;
+    }
+    return true;
+  });
+
+  must("a word this build does not understand is kept exactly as written", () => {
+    // Forward compatibility: a later build's token must never be rewritten by
+    // this one, or a stroke written there loses its colour by being opened here.
+    for (const token of ["hred", "zebra", "xq50", "hyellowq05"]) {
+      const back = decodeInkStroke(encodeInkStroke({ w: 2, c: token, p: [0, 0, 0.5, 9, 9, 0.5] }));
+      if (back?.c !== token) return `${token} came back as ${back?.c}`;
+      if (parseInkToken(token) !== null) return `${token} parsed as something`;
+    }
+    return true;
+  });
+
+  must("no palette name can be mistaken for a kind, a custom colour or an opacity", () => {
+    for (const name of [...Object.keys(INK_PEN_HEX), ...Object.keys(INK_HL_HEX)]) {
+      if (/^[hx]/.test(name) || name.includes("q") || !/^[a-z]+$/.test(name)) return `palette name "${name}" breaks the token grammar`;
+    }
+    for (const name of Object.keys(INK_PEN_HEX)) {
+      if (isHighlighterToken(name)) return `pen ${name} reads as a highlighter`;
+    }
+    for (const name of Object.keys(INK_HL_HEX)) {
+      if (!isHighlighterToken(`h${name}`)) return `h${name} does not read as a highlighter`;
+    }
+    return true;
+  });
+
+  must("a pen or highlighter is always SET to something this build can draw", () => {
+    if (normalizeInkToken("zebra", "pen") !== "ink") return "an unknown pen did not fall back to ink";
+    if (normalizeInkToken("hyellowq35", "pen") !== "ink") return "a highlighter was accepted as the pen";
+    if (normalizeInkToken("red", "highlighter") !== INK_HL_TOKEN_DEFAULT) return "a pen was accepted as the highlighter";
+    if (normalizeInkToken("X1E90FF", "pen") !== "ink") return "an upper-case word was accepted";
+    if (formatInkToken({ kind: "pen", hex: "#ABC", opacity: 0.333 }) !== "xaabbccq33") return `short hex/opacity formatted as ${formatInkToken({ kind: "pen", hex: "#ABC", opacity: 0.333 })}`;
+    if (formatInkToken({ kind: "pen", name: "red", opacity: 0.02 }) !== "redq10") return "opacity was not floored at 10%";
+    return true;
+  });
+
+  must("every colour files under one of the four highlight colours", () => {
+    const four = new Set(["yellow", "green", "blue", "pink"]);
+    const rand = seeded(23);
+    const tokens = [...Object.keys(INK_PEN_HEX), ...Object.keys(INK_HL_HEX).map((n) => `h${n}`), "zebra"];
+    for (let i = 0; i < 200; i += 1) {
+      const hex = Math.floor(rand() * 0xffffff).toString(16).padStart(6, "0");
+      tokens.push(`x${hex}`, `hx${hex}q50`);
+    }
+    for (const token of tokens) {
+      if (!four.has(inkFilingColor(token))) return `${token} filed as ${inkFilingColor(token)}`;
+    }
+    // ...and the three pens added after the table was written no longer all
+    // fall through to yellow.
+    if (inkFilingColor("violet") === "yellow" || inkFilingColor("teal") === "yellow" || inkFilingColor("pink") === "yellow") {
+      return "violet, teal or pink still files as yellow";
+    }
+    if (inkFilingColor("x1e90ff") !== "blue" || inkFilingColor("x22aa22") !== "green") return "a custom colour was not filed by its hue";
+    return true;
+  });
+
+  must("a width is clamped to its tool's range and kept to the tenth the format stores", () => {
+    if (normalizeInkWidth(2.73) !== 2.7) return `2.73 became ${normalizeInkWidth(2.73)}`;
+    if (normalizeInkWidth(0.01) !== INK_WIDTH_RANGE.min) return "a hairline below the range was not clamped";
+    if (normalizeInkWidth(500) !== INK_WIDTH_RANGE.max) return "a width above the range was not clamped";
+    if (normalizeInkWidth("nope") !== 2) return "a nonsense width did not fall back to the default";
+    if (normalizeInkHlWidth(1) !== INK_HL_WIDTH_RANGE.min) return "a highlighter below its range was not clamped";
+    if (normalizeInkEraserSize(99) !== INK_ERASER_RANGE.max) return "an eraser above its range was not clamped";
+    // The four presets a reader already knows are still exactly what they were.
+    for (const preset of [1.2, 2, 3.4, 6]) {
+      if (normalizeInkWidth(preset) !== preset) return `preset ${preset} moved to ${normalizeInkWidth(preset)}`;
+    }
+    return true;
+  });
+
+  must("the size slider is logarithmic and round-trips the width it shows", () => {
+    for (const range of [INK_WIDTH_RANGE, INK_HL_WIDTH_RANGE, INK_ERASER_RANGE]) {
+      if (inkWidthFromSlider(0, range) !== range.min) return `slider 0 is ${inkWidthFromSlider(0, range)}, not ${range.min}`;
+      if (inkWidthFromSlider(INK_SLIDER_STEPS, range) !== range.max) return `slider max is ${inkWidthFromSlider(INK_SLIDER_STEPS, range)}`;
+      for (let step = 0; step <= INK_SLIDER_STEPS; step += 37) {
+        const width = inkWidthFromSlider(step, range);
+        const back = inkWidthFromSlider(inkSliderFromWidth(width, range), range);
+        if (Math.abs(back - width) > 0.1 + 1e-9) return `${width}pt went round the slider and came back ${back}pt`;
+      }
+    }
+    // Logarithmic: the middle of the pen's track is the geometric mean of its
+    // ends, not the arithmetic one — which would put 12pt at the centre and leave
+    // every width anybody writes with in the first sixteenth.
+    const middle = inkWidthFromSlider(INK_SLIDER_STEPS / 2);
+    const geometric = Math.sqrt(INK_WIDTH_RANGE.min * INK_WIDTH_RANGE.max);
+    return Math.abs(middle - geometric) < 0.15 || `the middle of the track is ${middle}pt, expected about ${geometric.toFixed(1)}pt`;
+  });
+
+  must("the canvas's copy of each pen is the colour the stylesheet gives it", () => {
+    // INK_PEN_HEX is the light set and INK_PEN_HEX_DARK the dark; styles/52-ink.css
+    // states both as custom properties. Two copies of one fact, held together.
+    const css = readFileSync(path.join(ROOT, "styles/52-ink.css"), "utf8");
+    const block = (selector) => {
+      const at = css.indexOf(selector);
+      if (at < 0) return "";
+      return css.slice(css.indexOf("{", at) + 1, css.indexOf("}", at));
+    };
+    const read = (text, token) => (new RegExp(`--ink-pen-${token}:\\s*(#[0-9a-fA-F]{6})`).exec(text) || [])[1]?.toLowerCase();
+    const dark = block(":root {");
+    const light = block(':root[data-theme="light-snow"]');
+    for (const token of Object.keys(INK_PEN_HEX)) {
+      if (read(light, token) !== INK_PEN_HEX[token]) return `light ${token}: css ${read(light, token)}, js ${INK_PEN_HEX[token]}`;
+      if (read(dark, token) !== INK_PEN_HEX_DARK[token]) return `dark ${token}: css ${read(dark, token)}, js ${INK_PEN_HEX_DARK[token]}`;
+    }
+    return true;
+  });
+
+  must("strokes of the two kinds never join one mark", () => {
+    const box = { minX: 0, minY: 0, maxX: 10, maxY: 10 };
+    const open = { page: 1, startedAt: 0, lastAt: 0, box, hl: false };
+    if (!inkStrokesJoinMark(open, { page: 1, box, now: 10 })) return "a pen stroke did not join a pen mark";
+    if (inkStrokesJoinMark(open, { page: 1, box, now: 10, hl: true })) return "a highlighter stroke joined a pen mark";
+    if (inkStrokesJoinMark({ ...open, hl: true }, { page: 1, box, now: 10 })) return "a pen stroke joined a highlighter mark";
+    if (!inkStrokesJoinMark({ ...open, hl: true }, { page: 1, box, now: 10, hl: true })) return "a highlighter stroke did not join a highlighter mark";
+    return true;
+  });
+
+  must("a fast eraser swipe is filled in, so it cannot step over a thin line", () => {
+    // Two samples 40 points apart either side of a vertical hairline at x=20.
+    const hairline = { w: 0.5, c: "ink", p: [20, -50, 0.5, 20, 50, 0.5] };
+    const swipe = [{ x: 0, y: 0 }, { x: 40, y: 0 }];
+    const sparse = swipe.some((q) => inkStrokeHitsPoint(hairline, q.x, q.y, 1.5));
+    const dense = densifyInkPath(null, swipe, 1.5);
+    const hit = dense.some((q) => inkStrokeHitsPoint(hairline, q.x, q.y, 1.5));
+    if (sparse) return "the fixture is wrong: the bare samples already hit the line";
+    if (!hit) return "the filled-in path still stepped over the line";
+    for (let i = 1; i < dense.length; i += 1) {
+      const gap = Math.hypot(dense[i].x - dense[i - 1].x, dense[i].y - dense[i - 1].y);
+      if (gap > 1.5 + 1e-9) return `points ${gap.toFixed(2)} apart after filling in at 1.5`;
+    }
+    const jump = densifyInkPath({ x: 0, y: 0 }, [{ x: 1e6, y: 0 }], 0.5);
+    if (jump.length > INK_DENSIFY_MAX_PER_SEGMENT) return `a jump across the page became ${jump.length} points`;
+    return dense[0].x === 0 && dense[dense.length - 1].x === 40 || "the ends of the swipe were lost";
+  });
+
+  must("an arrow drawn backwards or upwards has its head where the pen finished", () => {
+    const headAt = (from, to) => {
+      const shaft = samplePolyline((t) => [from[0] + ((to[0] - from[0]) * t), from[1] + ((to[1] - from[1]) * t)], 50);
+      // ...and the hand turning back for the head at the far end — the same
+      // three samples the forwards arrow above is drawn with, turned to suit.
+      const length = Math.hypot(to[0] - from[0], to[1] - from[1]);
+      const dx = (to[0] - from[0]) / length;
+      const dy = (to[1] - from[1]) / length;
+      const turn = [[-15, -12], [-25, -16], [-32, -19]]
+        .flatMap(([along, across]) => [to[0] + (dx * along) - (dy * across), to[1] + (dy * along) + (dx * across), 0.5]);
+      const points = [...shaft, ...turn];
+      const shape = fitInkShape(points);
+      if (shape?.kind !== "arrow") return null;
+      const head = shape.runs[1];
+      return [head[3], head[4]];
+    };
+    for (const [from, to] of [[[200, 100], [60, 100]], [[100, 300], [100, 120]], [[60, 100], [200, 100]]]) {
+      const tip = headAt(from, to);
+      if (!tip) return `${JSON.stringify(from)}→${JSON.stringify(to)} did not snap to an arrow`;
+      if (Math.hypot(tip[0] - to[0], tip[1] - to[1]) > 4) return `${JSON.stringify(from)}→${JSON.stringify(to)}: head at ${tip.map((v) => v.toFixed(0))}, not at the end`;
+    }
+    return true;
+  });
+
+  must("a highlighter swept along a line is drawn straight, and level when it nearly was", () => {
+    const rand = seeded(5);
+    const wobbly = samplePolyline((t) => [80 + (t * 300), 400 + (Math.sin(t * 20) * 2.5) + (t * 8) + (rand() - 0.5)], 60);
+    const run = straightenInkHighlight(wobbly, 14);
+    if (!run || run.length !== 6) return `a wobbly band came back ${run ? `${run.length / 3} points` : "unstraightened"}`;
+    if (Math.abs(run[1] - run[4]) > 1e-9) return "a band 1.5° off level was not levelled";
+    if (Math.abs(run[0] - 80) > 3 || Math.abs(run[3] - 380) > 3) return `the band's ends moved: ${run[0].toFixed(1)}→${run[3].toFixed(1)}`;
+    const steep = samplePolyline((t) => [100 + (t * 200), 100 + (t * 120)], 30);
+    const sloped = straightenInkHighlight(steep, 14);
+    if (!sloped || Math.abs(sloped[1] - sloped[4]) < 50) return "a deliberately diagonal band was flattened";
+    return true;
+  });
+
+  must("...and a scribble, a dab or a turn is left as drawn", () => {
+    const zigzag = samplePolyline((t) => [100 + ((Math.floor(t * 6) % 2 ? 1 - ((t * 6) % 1) : (t * 6) % 1) * 200), 300 + (t * 10)], 120);
+    if (straightenInkHighlight(zigzag, 14)) return "a back-and-forth fill was straightened";
+    const dab = samplePolyline((t) => [100 + (t * 8), 100], 10);
+    if (straightenInkHighlight(dab, 14)) return "a dab shorter than the nib was straightened";
+    const corner = samplePolyline((t) => (t < 0.5 ? [100 + (t * 400), 100] : [300, 100 + ((t - 0.5) * 400)]), 40);
+    if (straightenInkHighlight(corner, 14)) return "a stroke round a corner was straightened";
+    return true;
+  });
+
+  // ── 6. What a stroke is painted with ─────────────────────────────────────
+  const { inkCentrelinePath, inkStrokeOutline, paintInkLayers, resolveInkPaint } = paintMod;
+  const svgMod = await import(path.join(stage, "src/format/ink-svg.js"));
+  const { inkPathRecorder } = svgMod;
+
+  must("a tap with no pressure behind it is a dot of the full nib, not NaN", () => {
+    // A mouse or a finger reports the spec's flat 0.5, which sends the width to
+    // the speed path — and a single sample has no second one to measure speed
+    // against. It read past the end of the stroke and drew nothing.
+    const widths = inkStrokeWidths({ w: 3, c: "ink", p: [10, 10, 0.5] });
+    if (widths.length !== 1 || widths[0] !== 3) return `a flat-pressure tap is ${widths[0]} wide`;
+    for (const c of ["ink", "hyellowq35"]) {
+      const recorder = inkPathRecorder();
+      const drew = c === "ink"
+        ? inkStrokeOutline(recorder.ctx, { w: 3, c, p: [10, 10, 0.5] })
+        : inkCentrelinePath(recorder.ctx, { w: 14, c, p: [10, 10, 0.5] });
+      const d = recorder.path();
+      if (!drew || !d || /NaN/.test(d)) return `${c}: a one-sample stroke recorded "${d}"`;
+    }
+    return true;
+  });
+
+  must("a pen's colour follows the paper when the paper is known", () => {
+    if (resolveInkPaint("ink", { paper: "light" }).color !== INK_PEN_HEX.ink) return "ink on light paper is not the light pen";
+    if (resolveInkPaint("ink", { paper: "dark" }).color !== INK_PEN_HEX_DARK.ink) return "ink on dark paper is not the dark pen";
+    const custom = resolveInkPaint("x1e90ffq40", { paper: "dark" });
+    if (custom.color !== "#1e90ff" || custom.alpha !== 0.4 || custom.hl) return `a custom pen painted as ${JSON.stringify(custom)}`;
+    const band = resolveInkPaint("hgreenq35", { paper: "light" });
+    if (band.color !== INK_HL_HEX.green || band.alpha !== 0.35 || !band.hl) return `a highlighter painted as ${JSON.stringify(band)}`;
+    const unknown = resolveInkPaint("zebra", { paper: "light" });
+    return (unknown.color === INK_PEN_HEX.ink && unknown.alpha === 1 && !unknown.hl) || `an unknown word painted as ${JSON.stringify(unknown)}`;
+  });
+
+  must("on one raster, the highlighter goes down first, multiplied, and the pen's ink over it", () => {
+    const calls = [];
+    const ctx = {
+      globalAlpha: 1,
+      globalCompositeOperation: "source-over",
+      beginPath() {}, moveTo() {}, lineTo() {}, quadraticCurveTo() {}, arc() {}, closePath() {},
+      fill() { calls.push(["fill", this.fillStyle, this.globalAlpha, this.globalCompositeOperation]); },
+      stroke() { calls.push(["stroke", this.strokeStyle, this.globalAlpha, this.globalCompositeOperation, this.lineWidth]); }
+    };
+    const line = [10, 10, 0.5, 60, 10, 0.5, 110, 12, 0.5];
+    paintInkLayers(ctx, [
+      { w: 2, c: "red", p: line },
+      { w: 14, c: "hyellowq35", p: line },
+      { w: 2, c: "blueq50", p: line }
+    ], { paper: "light", blend: "multiply" });
+    if (calls.length !== 3) return `${calls.length} paint calls for three strokes`;
+    const [first, second, third] = calls;
+    if (first[0] !== "stroke" || first[3] !== "multiply" || first[2] !== 0.35 || first[4] !== 14) return `the band was painted ${JSON.stringify(first)}`;
+    if (second[0] !== "fill" || second[3] !== "source-over" || second[2] !== 1) return `the red pen was painted ${JSON.stringify(second)}`;
+    if (third[2] !== 0.5) return `a 50% pen was painted at ${third[2]}`;
+    if (ctx.globalAlpha !== 1 || ctx.globalCompositeOperation !== "source-over") return "the context was left translucent or blending";
+    return true;
+  });
+
   console.log("── ink ──");
   for (const [ok, name, detail] of results) {
     console.log(`  ${ok ? "ok  " : "FAIL"}  ${name}${ok ? "" : " — " + detail}`);

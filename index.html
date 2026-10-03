@@ -128,6 +128,8 @@
     <link rel="stylesheet" href="styles/69-repaint-stability.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/70-selection-compact.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/71-dialog-fit.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/72-ink-paper.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/73-ink-panel.css?v=__BUILD__">
 
     <!-- ── Module preloads ────────────────────────────────────────────────
          The app is ~130 ES modules and the browser discovers them by PARSING
@@ -242,6 +244,7 @@
     <link rel="modulepreload" href="src/handwriting/board.js?v=__BUILD__">
     <link rel="modulepreload" href="src/handwriting/pages.js?v=__BUILD__">
     <link rel="modulepreload" href="src/handwriting/paper.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/handwriting/ink-popover.js?v=__BUILD__">
     <link rel="modulepreload" href="src/handwriting/rail.js?v=__BUILD__">
     <link rel="modulepreload" href="src/format/locate-selection.js?v=__BUILD__">
     <link rel="modulepreload" href="src/format/merged-notes.js?v=__BUILD__">
@@ -1027,7 +1030,7 @@
                    is the rail — the colour, the nib, the eraser and the lasso —
                    and it is also the only way a mouse can draw, because a mouse
                    has no other way of saying which it meant. -->
-              <button class="tool-button document-toggle" id="documentInkBtn" type="button" aria-pressed="false" title="Pen — write on the page with a stylus. The pen draws and a finger scrolls; this opens the colours, the nib, the eraser and T, which turns the pen into a way of selecting words instead (and lets a mouse draw)." aria-label="Pen">&#9998;</button>
+              <button class="tool-button document-toggle" id="documentInkBtn" type="button" aria-pressed="false" title="Pen — write on the page with a stylus. The pen draws and a finger scrolls; this opens the pen's bar — the pen, the highlighter, the eraser, the lasso, T (which turns the pen into a way of selecting words instead) and a chip for size, colour and opacity — and lets a mouse draw." aria-label="Pen">&#9998;</button>
               <!-- Which of the deck's PDFs is on screen, when it has more than
                    one — hidden outright otherwise (renderDocumentPdfSwitcher,
                    src/documents/pdf-view.js), so an ordinary single-PDF deck's
@@ -1090,139 +1093,118 @@
                  tearing a page out or changing the paper are rows of ⋯, which is
                  where a thing you do once a session belongs. -->
             <div class="document-scroll" id="documentView"></div>
-            <!-- The pen's rail. Over the page like the pager, on the opposite
-                 side, and out of the way until the ✎ above is pressed.
+            <!-- The pen's rail: a SLIM BAR. It was every control the pen has in one
+                 wrapping band — eight swatches, four nibs, the eraser's rings,
+                 the tools, the switches, undo, clear, the notebook's adders and
+                 seven selection pills — three to five rows on a phone, every one
+                 of them taken off the page. "The pen options panels are so
+                 oversizing."
+
+                 So the bar carries what is pressed constantly — the tools, a chip
+                 showing the armed tool's colour and size, undo and redo — plus a
+                 slot for whatever the moment needs (a lassoed selection's
+                 actions, a block's, or the notebook's + menu), and ⋯. Everything
+                 else is in the panel under the chip (src/handwriting/ink-
+                 popover.js), which floats over the page and so never moves it.
+                 Press the chip, or the armed tool again, to open it.
+
                  data-ink-* rather than a listener per control: one delegated
-                 handler, the same pattern the edit toolbars and the floating
-                 render pill both use. -->
+                 handler, the pattern the edit toolbars already follow. -->
             <div class="document-ink-rail" id="documentInkRail" hidden role="toolbar" aria-label="Pen">
-              <div class="ink-rail-group" id="inkRailPens" role="group" aria-label="Pen colour"></div>
-              <div class="ink-rail-group" id="inkRailWidths" role="group" aria-label="Nib"></div>
-              <!-- The eraser's own row, in the place the nibs were, because it
-                   is the same question about a different tool and the rail has
-                   no room to carry both at once. Built from the palette leaf
-                   like the swatches and the nibs, and shown only while the
-                   eraser is the armed tool (refreshInkRail). -->
-              <div class="ink-rail-group" id="inkRailEraser" role="group" aria-label="Eraser" hidden>
-                <button class="tool-button ink-rail-btn is-switch" type="button" data-ink-action="erase-mode" aria-pressed="false" title="Rub out part of a stroke, rather than all of it — cross one letter in the middle of a word and only that letter goes" aria-label="Rub out part of a stroke">&#9021;</button>
-              </div>
-              <div class="ink-rail-group" role="group" aria-label="Tool">
-                <button class="tool-button ink-rail-btn" type="button" data-ink-tool="pen" aria-pressed="true" title="Pen" aria-label="Pen">&#9998;</button>
+              <div class="ink-rail-group ink-rail-tools" role="group" aria-label="Tool">
+                <button class="tool-button ink-rail-btn" type="button" data-ink-tool="pen" aria-pressed="true" title="Pen — press again for its size, colour and opacity" aria-label="Pen">&#9998;</button>
+                <!-- The highlighter: a see-through band that multiplies with the
+                     page, for the text a highlight cannot select — a scanned
+                     page has no text layer to drag across. Its glyph is drawn
+                     (INK_HIGHLIGHTER_ICON, src/handwriting/rail.js), because no
+                     character for it renders alike on every platform. -->
+                <button class="tool-button ink-rail-btn" type="button" data-ink-tool="highlighter" aria-pressed="false" title="Highlighter — a see-through band over the page, for text a highlight cannot select: a scanned page, a figure, a table" aria-label="Highlighter"><svg class="ink-rail-svg" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M14.6 3.4l6 6-8.3 8.3H6.3v-6z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M6.3 11.7l6 6" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M3.5 21h10" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" opacity="0.55"/></svg></button>
                 <button class="tool-button ink-rail-btn" type="button" data-ink-tool="eraser" aria-pressed="false" title="Eraser — cross a stroke to remove it. The eraser end or the side button of a stylus does this without leaving the pen." aria-label="Eraser">&#9003;</button>
                 <button class="tool-button ink-rail-btn" type="button" data-ink-tool="lasso" aria-pressed="false" title="Lasso — circle strokes to move, turn, resize, restyle, copy, join, split or delete them" aria-label="Lasso">&#9711;</button>
-                <!-- The pen stops drawing and starts picking out words. Not a
-                     fourth way of marking the page — this app's highlighter is
-                     the one that marks what you SELECTED, and until this
-                     existed a stylus had no way to select anything on a paper.
-                     Drag across a line and the pill comes up with Highlight,
-                     Cloze, Copy and the rest. A finger still scrolls. -->
+                <!-- The pen stops drawing and starts picking out words, so a
+                     stylus can reach the highlighter that marks what you
+                     SELECTED. A finger still scrolls. -->
                 <button class="tool-button ink-rail-btn" type="button" data-ink-tool="text" aria-pressed="false" title="Select text — the pen picks out words instead of drawing, so you can highlight them, make a cloze or copy them. Turn the stylus over and it still rubs out." aria-label="Select text">T</button>
               </div>
-              <!-- ── A switch, and NOT a fifth tool ─────────────────────────
-                   Hold the pen still and a rough circle becomes a circle. It
-                   is a good default and it was a law: a fraction bar, a
-                   radical and a long-division rule are all held straight
-                   lines, and a page of them is a page of decisions somebody
-                   did not ask for.
-
-                   It sat inside the Tool group above, wearing the same solid
-                   accent fill the armed tool wears — so the rail lit two
-                   buttons in the row that answers "which ONE tool is armed",
-                   and the reader's own tool was one of a pair. Its own group
-                   now, and `is-switch` for a pressed state that reads as ON
-                   rather than as CHOSEN (styles/52-ink.css). The eraser's
-                   part/whole toggle is the same kind of control and says so
-                   the same way. -->
-              <div class="ink-rail-group" role="group" aria-label="Shapes">
-                <button class="tool-button ink-rail-btn is-switch" type="button" data-ink-action="snap" aria-pressed="true" title="Snap shapes — hold the pen still at the end of a stroke and a rough circle, box, line or arrow is offered as a neat one" aria-label="Snap shapes">&#9651;</button>
+              <div class="ink-rail-group" role="group" aria-label="Pen settings">
+                <button class="tool-button ink-rail-btn ink-rail-chip" id="inkRailStyleChip" type="button" data-ink-action="style" aria-haspopup="dialog" aria-expanded="false" aria-controls="inkRailPopover" title="Size, colour and opacity" aria-label="Size, colour and opacity"><span class="ink-rail-chip-mark" aria-hidden="true"></span></button>
               </div>
               <div class="ink-rail-group" role="group" aria-label="Undo">
-                <button class="tool-button ink-rail-btn" type="button" data-ink-action="undo" title="Undo" aria-label="Undo">&#8630;</button>
-                <button class="tool-button ink-rail-btn" type="button" data-ink-action="redo" title="Redo" aria-label="Redo">&#8631;</button>
-                <!-- Clear takes every mark off the page you are looking at. It
-                     asks first, because it is the only control on this rail
-                     that a stroke cannot put right — and it still goes on the
-                     undo stack, so the answer to a mistaken yes is the arrow
-                     to its left. Disabled on a page with no ink on it. -->
-                <button class="tool-button ink-rail-btn is-labelled is-danger" type="button" data-ink-action="clear" title="Clear the page — remove every mark from the page you are looking at" aria-label="Clear the page"><span class="ink-rail-word" aria-hidden="true">Clear</span></button>
+                <button class="tool-button ink-rail-btn" type="button" data-ink-action="undo" title="Undo (Ctrl+Z)" aria-label="Undo">&#8630;</button>
+                <button class="tool-button ink-rail-btn" type="button" data-ink-action="redo" title="Redo (Ctrl+Y)" aria-label="Redo">&#8631;</button>
               </div>
-              <!-- ── What goes ON the page, as opposed to what draws on it ──
-                   The three the reader reaches for constantly, on a notebook
-                   only. Here rather than in #viewModeRow because that row is a
-                   nowrap line already carrying four tabs and five controls, and
-                   these were what crushed the tab labels; here they inherit a
-                   panel that already floats over the page, already wraps, and
-                   already gets out of the way while the pen is down.
-                   Tearing a page out and changing the paper are not constant —
-                   they are rows of ⋯. -->
-              <!-- ── A block's own actions, once one is picked up ────────────
-                   Style / Edit / Delete used to be a header drawn on EVERY
-                   block, permanently — three buttons' worth of height taken
-                   off the block's own text for controls that act on at most
-                   one block at a time. They live here now, the way a lassoed
-                   stroke's own actions already live in Selection below:
-                   hidden until src/documents/pdf-blocks.js says a block is
-                   selected (a click on it, same as a lasso), painted by
-                   refreshBlockRail in src/ui/ink-rail.js. Style and Edit read
-                   differently for a picture — "Frame" and "Describe" — the
-                   same distinction their glyphs always made when they sat on
-                   the block itself. -->
-              <div class="ink-rail-group ink-rail-block" id="inkRailBlock" role="group" aria-label="Block" hidden>
-                <button class="tool-button ink-rail-btn is-labelled" type="button" data-block-rail-action="style" title="Style this block" aria-label="Style this block"><span class="ink-rail-word" aria-hidden="true">Style</span></button>
-                <button class="tool-button ink-rail-btn is-labelled" type="button" data-block-rail-action="edit" title="Edit this block" aria-label="Edit this block"><span class="ink-rail-word" aria-hidden="true">Edit</span></button>
-                <button class="tool-button ink-rail-btn is-labelled is-danger" type="button" data-block-rail-action="delete" title="Delete this block" aria-label="Delete this block"><span class="ink-rail-word" aria-hidden="true">Delete</span></button>
+              <!-- ── One slot, for whatever the moment needs ─────────────────
+                   A selected block's own actions, a lassoed selection's, or —
+                   on a notebook, with nothing picked up — the + menu that adds
+                   to the page. Only one of them is ever up, so the bar keeps one
+                   width and the buttons beside it stay under the reader's
+                   thumb. -->
+              <div class="ink-rail-context" id="inkRailContext">
+                <!-- Style / Edit / Delete, once a block is picked up — hidden
+                     until src/documents/pdf-blocks.js says one is (painted by
+                     refreshBlockRail in src/ui/ink-rail.js). -->
+                <div class="ink-rail-group ink-rail-block" id="inkRailBlock" role="group" aria-label="Block" hidden>
+                  <button class="tool-button ink-rail-btn is-labelled" type="button" data-block-rail-action="style" title="Style this block" aria-label="Style this block"><span class="ink-rail-word" aria-hidden="true">Style</span></button>
+                  <button class="tool-button ink-rail-btn is-labelled" type="button" data-block-rail-action="edit" title="Edit this block" aria-label="Edit this block"><span class="ink-rail-word" aria-hidden="true">Edit</span></button>
+                  <button class="tool-button ink-rail-btn is-labelled is-danger" type="button" data-block-rail-action="delete" title="Delete this block" aria-label="Delete this block"><span class="ink-rail-word" aria-hidden="true">Delete</span></button>
+                </div>
+                <!-- While something is lassoed — or while something is on the
+                     clipboard, for Paste, which is FOR the moment nothing is
+                     selected: copying on page 1 and pasting on page 4. Copy and
+                     Delete are on the bar; the rest are a menu. Recolouring and
+                     re-sizing a selection need no button: with one up, the panel
+                     under the chip acts on it. -->
+                <div class="ink-rail-group ink-rail-selection" id="inkRailSelection" role="group" aria-label="Selection" hidden>
+                  <button class="tool-button ink-rail-btn is-labelled" type="button" data-ink-action="copy" title="Copy (Ctrl+C) — to paste on this page or any other" aria-label="Copy"><span class="ink-rail-word" aria-hidden="true">Copy</span></button>
+                  <button class="tool-button ink-rail-btn is-labelled ink-rail-paste-solo" type="button" data-ink-action="paste" title="Paste (Ctrl+V) — put what you copied on the page you are looking at, as a mark of its own" aria-label="Paste"><span class="ink-rail-word" aria-hidden="true">Paste</span></button>
+                  <button class="tool-button ink-rail-btn is-labelled is-danger" type="button" data-ink-action="delete" title="Delete these strokes" aria-label="Delete"><span class="ink-rail-word" aria-hidden="true">Delete</span></button>
+                  <button class="tool-button ink-rail-btn" type="button" data-ink-action="selection-more" id="inkRailSelectionMoreBtn" aria-haspopup="menu" aria-expanded="false" aria-controls="inkRailSelectionMenu" title="More for the selection — duplicate, cut, join, split" aria-label="More for the selection">&#9662;</button>
+                  <div class="ink-rail-menu" id="inkRailSelectionMenu" role="menu" aria-label="Selection" hidden>
+                    <button class="ink-rail-menu-item" type="button" role="menuitem" data-ink-action="duplicate" title="Duplicate — a second copy beside this one, as its own mark">Duplicate</button>
+                    <button class="ink-rail-menu-item" type="button" role="menuitem" data-ink-action="cut" title="Cut (Ctrl+X) — take these strokes away, to paste somewhere else">Cut</button>
+                    <button class="ink-rail-menu-item" type="button" role="menuitem" data-ink-action="paste" title="Paste (Ctrl+V) — put what you copied on the page you are looking at, as a mark of its own">Paste</button>
+                    <!-- Join and Split are the repair for the grouping rule
+                         guessing where one mark ended: see src/documents/pdf-ink.js. -->
+                    <button class="ink-rail-menu-item" type="button" role="menuitem" data-ink-action="join" title="Join — make these strokes one mark, with one note and one card">Join into one mark</button>
+                    <button class="ink-rail-menu-item" type="button" role="menuitem" data-ink-action="split" title="Split — take these strokes out into a mark of their own">Split into a new mark</button>
+                  </div>
+                </div>
+                <!-- What goes ON the page, as opposed to what draws on it: on a
+                     notebook only (styles/53-handwriting.css). One + and a menu,
+                     where it was three pills on the bar. The three controls are
+                     the ones they always were — src/handwriting/board.js acts on
+                     them — and the image row is still a <label> round its file
+                     input, which is what lets a press open the picker. -->
+                <div class="ink-rail-group ink-rail-page" role="group" aria-label="Add to this page">
+                  <button class="tool-button ink-rail-btn is-labelled" type="button" data-ink-action="add-menu" id="inkRailAddBtn" aria-haspopup="menu" aria-expanded="false" aria-controls="inkRailAddMenu" title="Add a text block, a picture or a page" aria-label="Add to this page"><span class="ink-rail-word" aria-hidden="true">&#43;</span></button>
+                  <div class="ink-rail-menu" id="inkRailAddMenu" role="menu" aria-label="Add to this page" hidden>
+                    <button class="ink-rail-menu-item" type="button" role="menuitem" data-hw-action="add-block" title="Add a markdown text block to the page you are looking at" aria-label="Add a text block">Text block</button>
+                    <!-- Pictures go on the page as their own object, dragged and
+                         resized like a text block and stored in the page's own
+                         points beside it. -->
+                    <label class="ink-rail-menu-item file-pick" id="handwritingImageBtn" role="menuitem" title="Add an image to the page you are looking at" aria-label="Add an image">
+                      <input id="handwritingImageInput" type="file" accept="image/*" hidden>
+                      <span>Picture&#8230;</span>
+                    </label>
+                    <button class="ink-rail-menu-item" type="button" role="menuitem" data-hw-action="add-page" title="Add a page at the end" aria-label="Add a page">Page at the end</button>
+                  </div>
+                </div>
               </div>
-              <div class="ink-rail-group ink-rail-page" role="group" aria-label="Add to this page">
-                <!-- ── Words, where these three were two glyphs in a 30px box ──
-                     "+✎", "+📷" and "+▯": a plus jammed against a pencil, a
-                     full-colour camera emoji standing a head taller than every
-                     monochrome glyph beside it, and a rectangle that is tofu on
-                     any font without it. Three of the most-reached-for controls
-                     on the Write tab, and not one of them said what it did.
-                     styles/56-pen-text.css already put the rule into words for
-                     the button next door: there is no symbol for this that
-                     renders on Android, iOS and desktop alike. So these say it
-                     in letters. The pen, the eraser and the lasso keep their
-                     glyphs — those are iconic and pressed constantly. -->
-                <button class="tool-button ink-rail-btn is-labelled" type="button" data-hw-action="add-block" title="Add a markdown text block to the page you are looking at" aria-label="Add a text block"><span class="ink-rail-word" aria-hidden="true">&#43; Text</span></button>
-                <!-- Pictures go on the page as their own object, dragged and
-                     resized like a text block and stored in the page's own
-                     points beside it — not as markdown inside one. A photograph
-                     of a whiteboard next to the working you did from it is the
-                     case this is for. -->
-                <label class="tool-button ink-rail-btn is-labelled file-pick" id="handwritingImageBtn" title="Add an image to the page you are looking at" aria-label="Add an image">
-                  <input id="handwritingImageInput" type="file" accept="image/*" hidden>
-                  <span class="ink-rail-word" aria-hidden="true">&#43; Image</span>
-                </label>
-                <button class="tool-button ink-rail-btn is-labelled" type="button" data-hw-action="add-page" title="Add a page at the end" aria-label="Add a page"><span class="ink-rail-word" aria-hidden="true">&#43; Page</span></button>
+              <div class="ink-rail-group" role="group" aria-label="More">
+                <button class="tool-button ink-rail-btn" type="button" data-ink-action="rail-more" id="inkRailMoreBtn" aria-haspopup="menu" aria-expanded="false" aria-controls="inkRailMoreMenu" title="More" aria-label="More pen actions">&#8943;</button>
+                <div class="ink-rail-menu" id="inkRailMoreMenu" role="menu" aria-label="More pen actions" hidden>
+                  <!-- Clear asks first, because it is the only control here that
+                       a stroke cannot put right — and it still goes on the undo
+                       stack. Disabled on a page with no ink on it. -->
+                  <button class="ink-rail-menu-item is-danger" type="button" role="menuitem" data-ink-action="clear" title="Clear the page — remove every mark from the page you are looking at" aria-label="Clear the page">Clear this page&#8230;</button>
+                </div>
               </div>
-              <!-- While something is lassoed, or while something is on the
-                   clipboard — Paste is the one control here that is FOR the
-                   moment nothing is selected, since copying on page 1 and
-                   pasting on page 4 is the case it exists for.
-
-                   Join and Split are the repair for the grouping rule guessing
-                   where one mark ended: see src/documents/pdf-ink.js. The rest
-                   are what a selection could not do at all — a lasso that can
-                   only move, resize and delete is a tool for correcting a
-                   placement, and a page of working needs this bit in red, this
-                   bit thinner, and this diagram again over there.
-
-                   Refused rather than hidden, one by one, for the reason join
-                   already was: a row that changes width between one selection
-                   and the next moves the buttons under the reader's thumb.
-
-                   Recolouring and re-nibbing need no button at all — with a
-                   selection up, a press on a swatch or a nib acts on it. -->
-              <div class="ink-rail-group ink-rail-selection" id="inkRailSelection" role="group" aria-label="Selection" hidden>
-                <button class="tool-button ink-rail-btn is-labelled" type="button" data-ink-action="join" title="Join — make these strokes one mark, with one note and one card" aria-label="Join"><span class="ink-rail-word" aria-hidden="true">Join</span></button>
-                <button class="tool-button ink-rail-btn is-labelled" type="button" data-ink-action="split" title="Split — take these strokes out into a mark of their own" aria-label="Split"><span class="ink-rail-word" aria-hidden="true">Split</span></button>
-                <button class="tool-button ink-rail-btn is-labelled" type="button" data-ink-action="duplicate" title="Duplicate — a second copy beside this one, as its own mark" aria-label="Duplicate"><span class="ink-rail-word" aria-hidden="true">Duplicate</span></button>
-                <button class="tool-button ink-rail-btn is-labelled" type="button" data-ink-action="copy" title="Copy (Ctrl+C) — to paste on this page or any other" aria-label="Copy"><span class="ink-rail-word" aria-hidden="true">Copy</span></button>
-                <button class="tool-button ink-rail-btn is-labelled" type="button" data-ink-action="cut" title="Cut (Ctrl+X) — take these strokes away, to paste somewhere else" aria-label="Cut"><span class="ink-rail-word" aria-hidden="true">Cut</span></button>
-                <button class="tool-button ink-rail-btn is-labelled" type="button" data-ink-action="paste" title="Paste (Ctrl+V) — put what you copied on the page you are looking at, as a mark of its own" aria-label="Paste"><span class="ink-rail-word" aria-hidden="true">Paste</span></button>
-                <button class="tool-button ink-rail-btn is-labelled is-danger" type="button" data-ink-action="delete" title="Delete these strokes" aria-label="Delete"><span class="ink-rail-word" aria-hidden="true">Delete</span></button>
-              </div>
+              <!-- The panel under the chip: size, colour, opacity and the
+                   switches, one section per tool. Built by buildInkPanel
+                   (src/handwriting/ink-popover.js) — the drawing sheet builds the
+                   same one — and floating over the page, so opening it moves
+                   nothing. -->
+              <div class="ink-rail-popover" id="inkRailPopover" role="dialog" aria-label="Pen settings" hidden></div>
             </div>
             <!-- Over the page, not above it. Quiet until reached for, so a
                  reader gets the whole height of the stage for the paper. -->
@@ -2135,7 +2117,7 @@
               <li><strong>Zoom and dark page</strong> — the page number and <strong>+ − ↔</strong> float over the bottom corner of the page, out of the way until you reach for them; <strong>◐</strong> inverts the page for a dark theme, off by default because a paper full of photographs looks wrong inverted (your highlights keep their own colours either way)</li>
               <li><strong>Finish a paper, then let go of it</strong> — <strong>⋯ → Save a copy</strong> downloads the original file, and <strong>⋯ → Remove from cloud</strong> frees the storage it was using. Your highlights, notes and cards all stay, and so does the copy on this device; another device asks you to re-attach the file, and checks it really is the same one before painting a single highlight on it</li>
               <li><strong>Read it on two devices at once</strong> — a highlight and the note written on it merge the way your cards do: each carries its own timestamp, both sides are merged rather than one replacing the other, and a highlight you delete stays deleted everywhere. Mark up page 3 on a laptop and page 40 on a phone and you end with both, on both, with no "your notes were replaced" to answer. If two devices genuinely write different text on the <em>same</em> note and nothing can say which came last, both texts are kept — one under the other — rather than either being dropped</li>
-              <li><strong>A scanned PDF with no text layer</strong> reads perfectly well, and there is no text in it to select — so no text highlights and no make-card-from-text, and there is no OCR. <strong>▣</strong> still works on every page of it, which is the one way to mark up a scan</li>
+              <li><strong>A scanned PDF with no text layer</strong> reads perfectly well, and there is no text in it to select — so no text highlights and no make-card-from-text, and there is no OCR. <strong>Highlight it with the pen's highlighter instead</strong>: open the pen (✎ beside the tabs), pick the highlighter and sweep it along a line. It is a see-through band — the scanned words stay black under it, the paper around them takes the colour — and it is laid down straight when you meant a line. Each sweep is a highlight like any other, listed in <strong>Highlights</strong> with a picture of the spot, and it takes a note and makes a card. <strong>▣</strong> boxes work on a scan too, for a figure or a table, though with no text under them they keep a picture of the spot rather than its words</li>
             </ul>
           </section>
 
@@ -2144,17 +2126,20 @@
             <p>If you have a <strong>Samsung S-Pen</strong> or an <strong>Apple Pencil</strong>, it writes. There is nothing to switch on: <strong>the pen draws and a finger scrolls</strong>, on the paper and everywhere else, and that is what happens if you never touch a setting — the app starts you there every time, so nothing is waiting to surprise you the next morning. A hand resting on the glass is a finger, so it scrolls rather than smearing — palm rejection you never have to turn on.</p>
             <ul class="help-list">
               <li><strong>Write straight onto a paper</strong> — open a PDF and draw. Strokes are stored as coordinates <em>into the page</em>, the same way a highlight is, so they stay on the words you drew them beside through every zoom, refit, rotation, reload and second device. Pressure varies the line, so a downstroke looks like a downstroke</li>
-              <li><strong>A tap still taps</strong> — press a numbered note badge, a highlight or a button with the pen and it does what it always did. Only a stroke is ink</li>
-              <li><strong>Press ✎ beside the Cards / Notes / PDF tabs</strong> for the rest of it: five pen colours, four nibs, an eraser and a lasso, with undo, redo and <strong>⌧ Clear the page</strong>. The colours are defined per theme, so a drawing made in daylight is still legible in a dark one, and your red pen stays red on an inverted page. <strong>Ctrl/⌘+Z</strong> takes back a stroke without reaching for the rail</li>
+              <li><strong>A tap still taps</strong> — press a numbered note badge, a highlight or a button with the pen and it does what it always did. <strong>A tap on bare paper leaves a dot</strong> — the dot on an i, a full stop, a decimal point — and joins the word it belongs to; <strong>Tap dots</strong> in the pen's settings turns that off. A tap with the eraser rubs out what is under it</li>
+              <li><strong>Press ✎ beside the Cards / Notes / PDF tabs</strong> for the pen's bar — one slim row, so it takes as little of the page as it can: the <strong>pen</strong>, the <strong>highlighter</strong>, the <strong>eraser</strong>, the <strong>lasso</strong> and <strong>T</strong>, then a round <strong>chip</strong> showing the colour and size you are drawing with, then undo and redo, and <strong>⋯</strong> for <strong>Clear this page</strong>. <strong>Ctrl/⌘+Z</strong> takes back a stroke without reaching for the bar and <strong>Ctrl+Y</strong> (or Ctrl/⌘+Shift+Z) puts it back</li>
+              <li><strong>Press the chip — or the tool you are holding, a second time — for its settings</strong>, in a small panel that floats under the bar rather than pushing the page down. For the pen: a <strong>size slider</strong> that goes anywhere from a hairline to a marker, with − and + for a tenth of a point at a time and the four usual sizes as one-tap presets; a <strong>preview</strong> of the stroke at the size it will really be on screen at this zoom; eight colours, <strong>+ for any colour of your own</strong> (the last six you used are kept beside it), and an <strong>opacity</strong> slider. For the highlighter: its width, six colours plus your own, its opacity (35% to start) and <strong>Straight</strong>. For the eraser: its size, <strong>Part</strong>, and whether it takes everything, only pen strokes or only highlighter bands — so you can rub out a band without touching the writing over it. Moving a slider only previews; letting go is the change, and one undo step. Everything is remembered for next time. A press anywhere outside the panel, or Escape, puts it away</li>
+              <li><strong>The highlighter</strong> — a see-through band for marking what a text highlight cannot select: a scanned page, a figure, a table, handwriting. It sits <em>under</em> the page's ink and blends with the paper, so the words beneath stay perfectly legible, and on an inverted page it lightens rather than darkens. A sweep along a line is laid down straight, and level if it nearly was, unless you turn <strong>Straight</strong> off. Each sweep is its own mark in <strong>Highlights</strong> — never merged into handwriting next to it — and a card made from it shows a live picture of the spot on the page</li>
+              <li><strong>Ink that follows the paper</strong> — on a white page the pen is dark and on an inverted page it is light, whatever the app's theme, so a dark theme never leaves you writing near-white on white. Exported and printed pages always use the white-paper colours</li>
               <li><strong>Erase without changing tool</strong> — the eraser end of a stylus, or its side button, erases for as long as you hold it. Crossing a stroke removes that stroke, not a hole in it</li>
               <li><strong>Or use the pen to pick out words</strong> — press <strong>T</strong> on the pen's panel and the stylus stops drawing and starts <em>selecting</em>: drag it across a line and the selection bar comes up with <strong>Highlight</strong>, Cloze, Copy, Make a card and the rest, exactly as it does for a finger. This app's highlighter has always been the one that marks the words you selected, and until now a stylus had no way to select any — so a pen could write in the margin of a paper and could not mark a sentence in it. A finger still scrolls the page while it is on, a tap is still a tap, and turning the stylus over still rubs out. Press <strong>&#9998;</strong> beside it to draw again. It is on the reading rail too, as <strong>Select text</strong>, which is how you reach it in focus mode with the tab row folded away</li>
-              <li><strong>Hold still and a shape snaps</strong> — pause at the end of a stroke and a rough circle becomes a circle, a rough box a box, a line a line, and a line with a hook on the end an arrow. It refuses far more often than it accepts, and it will not touch anything the size of handwriting: turning your writing into a shape would be much worse than not offering. <strong>Keep writing and it takes the offer back</strong> — a pause in the middle of a word is you thinking, not you drawing a line, so the stroke carries on from where the nib actually is. <strong>&#9651;</strong> on the pen's panel turns it off entirely, which is what a page of fraction bars, radicals and long-division rules wants: every one of those is a held straight line</li>
-              <li><strong>Lasso to fix, move or remove</strong> — circle some strokes to drag them, resize them from the corner, or delete them</li>
+              <li><strong>Hold still and a shape snaps</strong> — pause at the end of a stroke and a rough circle becomes a circle, a rough box a box, a line a line, and a line with a hook on the end an arrow. It refuses far more often than it accepts, and it will not touch anything the size of handwriting: turning your writing into a shape would be much worse than not offering. <strong>Keep writing and it takes the offer back</strong> — a pause in the middle of a word is you thinking, not you drawing a line, so the stroke carries on from where the nib actually is. <strong>Snap shapes</strong> in the pen's settings turns it off entirely, which is what a page of fraction bars, radicals and long-division rules wants: every one of those is a held straight line</li>
+              <li><strong>Lasso to fix, move or remove</strong> — circle some strokes to drag them, resize them from the corner, or delete them. With strokes circled, the chip's panel restyles <em>them</em>: a new colour, size or opacity changes what you circled. Circle writing and a highlight together and the panel shows <strong>Pen | Highlighter</strong> tabs, so you choose which of the two you are changing</li>
               <li><strong>Your writing is a mark like any other</strong> — a burst of strokes is listed in the <strong>Highlights</strong> pane with a picture of what you drew, takes a written note, wears a numbered badge on the page, and makes a flashcard whose answer is the drawing itself. Strokes made together become one mark and a pause of a second and a half starts the next; when that guesses wrong, lasso them and press <strong>⊞ Join</strong> or <strong>⊟ Split</strong></li>
               <li><strong>It syncs and it backs up</strong> — ink merges between two devices the way your highlights and cards do, ink you delete stays deleted, and <strong>⋯ → Export → This paper, annotated</strong> prints the pages with your handwriting on them</li>
-              <li><strong>Write in a note, or on a card</strong> — press <strong>✎</strong> in the editing toolbar and a drawing sheet opens. It is a real page rather than one screenful: it scrolls, <strong>+▢</strong> adds another page below, and Done drops one picture per page you drew on into the note where the caret was — each a block that reflows with the text, with the same corner grip to resize it and the same 🗑 to remove it. Press a drawing's own <strong>✎</strong> later to reopen it and add to it. It works with a finger and a mouse too, so a tablet without a stylus is not shut out</li>
+              <li><strong>Write in a note, or on a card</strong> — press <strong>✎</strong> in the editing toolbar and a drawing sheet opens. It has the same slim bar, the highlighter and the same settings panel. It is a real page rather than one screenful: it scrolls, <strong>+ Page</strong> adds another page below, and Done drops one picture per page you drew on into the note where the caret was — each a block that reflows with the text, with the same corner grip to resize it and the same 🗑 to remove it. Press a drawing's own <strong>✎</strong> later to reopen it and add to it. It works with a finger and a mouse too, so a tablet without a stylus is not shut out</li>
               <li><strong>No connection needed</strong> — a drawing made offline is kept on the device and uploads itself when you are back, exactly as a pasted picture does</li>
-              <li><strong>A whole notebook</strong> &mdash; the <strong>&#9998; Write</strong> tab, beside Cards, Notes and PDF, on every deck you open. Any deck can have one, <em>including a deck that already has a PDF</em>: the paper you are reading and the pages you are writing on are two different documents on the same deck, so nothing you write lands on somebody else's page. The paper is a <strong>real PDF</strong>, so writing on it is exactly writing on a paper &mdash; the same pen, the same strokes stored as coordinates into the page, the same zoom, the same export. <strong>The pen's panel is already open</strong> when you arrive, in the corner of the page: eight colours, four nib widths, the eraser, the <strong>lasso</strong> and undo. The eraser has a size of its own and two ways of working &mdash; cross a mark and all of it goes, or press <strong>&#9021;</strong> and it rubs out only what you pass over, so one letter in the middle of a line written without lifting is one letter. <strong>&#9651;</strong> turns off the shape snapping, for a page of fraction bars and radicals that are all meant to stay hand-drawn. Circle some writing with the lasso and you get a box round it &mdash; drag inside to move it, the bottom-right corner to resize, the round top-left one to <strong>turn</strong> it, and the arrow keys to nudge it a point at a time (hold Shift for ten). <strong>A press on a colour or a nib restyles what you have circled</strong> rather than only the next stroke. From the same panel: join, split, duplicate, copy, cut, paste and delete &mdash; and what you copy can be pasted onto <em>any</em> page, which is how a piece of working moves from the bottom of one page to the top of the next (Ctrl+C, Ctrl+X, Ctrl+V and Ctrl+D do the same). The same panel adds things to the page: <strong>&#43;&#9998;</strong> a markdown text block, <strong>&#43;&#128247;</strong> a picture (or just paste or drop one), <strong>&#43;&#9647;</strong> another page. Text blocks and pictures drag by their bar and resize by their corner. Under <strong>&#8943;</strong> are the two you reach for less often: grid, ruled or blank paper &mdash; which changes the sheet under what you have already written &mdash; and tearing out the page you are on, which moves everything after it up. The page follows your theme, dark paper on a dark theme, and so does your ink, so nothing you have written can disappear when you change it</li>
+              <li><strong>A whole notebook</strong> &mdash; the <strong>&#9998; Write</strong> tab, beside Cards, Notes and PDF, on every deck you open. Any deck can have one, <em>including a deck that already has a PDF</em>: the paper you are reading and the pages you are writing on are two different documents on the same deck, so nothing you write lands on somebody else's page. The paper is a <strong>real PDF</strong>, so writing on it is exactly writing on a paper &mdash; the same pen, the same strokes stored as coordinates into the page, the same zoom, the same export. <strong>The pen's bar is already open</strong> when you arrive, above the page, with the chip that opens the size, colour and opacity panel. The eraser has a size of its own and two ways of working &mdash; cross a mark and all of it goes, or switch on <strong>Part</strong> in its settings and it rubs out only what you pass over, so one letter in the middle of a line written without lifting is one letter. <strong>Snap shapes</strong> turns off the shape snapping, for a page of fraction bars and radicals that are all meant to stay hand-drawn. Circle some writing with the lasso and you get a box round it &mdash; drag inside to move it, the bottom-right corner to resize, the round top-left one to <strong>turn</strong> it, and the arrow keys to nudge it a point at a time (hold Shift for ten). <strong>A colour, size or opacity chosen while something is circled restyles what you circled</strong> rather than only the next stroke. <strong>Copy</strong> and <strong>Delete</strong> come up on the bar beside it, and <strong>&#9662;</strong> has duplicate, cut, paste, join and split &mdash; and what you copy can be pasted onto <em>any</em> page, which is how a piece of working moves from the bottom of one page to the top of the next (Ctrl+C, Ctrl+X, Ctrl+V and Ctrl+D do the same). <strong>&#43;</strong> on the bar adds things to the page: a markdown <strong>Text block</strong>, a <strong>Picture</strong> (or just paste or drop one), or another <strong>Page</strong> at the end. Text blocks and pictures drag by their bar and resize by their corner. Under <strong>&#8943;</strong> are the two you reach for less often: grid, ruled or blank paper &mdash; which changes the sheet under what you have already written &mdash; and tearing out the page you are on, which moves everything after it up. The page follows your theme, dark paper on a dark theme, and so does your ink, so nothing you have written can disappear when you change it</li>
               <li><strong>Type on the page too</strong> — <strong>+ Text</strong> drops a markdown block where you are looking, which you drag by its bar, resize from its corner and write in: the statement of a problem above a derivation in your own hand. Blocks work on <em>any</em> paper, not only a notebook's — a typed note over a figure in somebody's preprint is the same thing. They are positioned in the page's own points like a highlight, so they stay put through a zoom, a reload and a second device</li>
               <li><strong>On a laptop</strong> the pen rail is also how a mouse draws: a mouse has no way of saying whether a drag means ink or a selection, so it only inks while the rail is open</li>
             </ul>

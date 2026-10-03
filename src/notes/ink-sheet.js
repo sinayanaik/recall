@@ -36,11 +36,14 @@
 // it lives on the image's own grip row (src/images/surface-controls.js).
 
 import { HW_ZOOM_STEP, createHandwritingPaper } from "../handwriting/paper.js?v=__BUILD__";
-import { addHandwritingPage, fitHandwritingStrokesToPage, makeHandwritingPage, removeHandwritingPage } from "../handwriting/pages.js?v=__BUILD__";
-import { buildInkNibs, buildInkPenSwatches, buildInkToolGroup, inkRailButton, paintInkRailPressed, readInkRailPress } from "../handwriting/rail.js?v=__BUILD__";
+import { HW_PAGE_HEIGHT, addHandwritingPage, fitHandwritingStrokesToPage, makeHandwritingPage, removeHandwritingPage } from "../handwriting/pages.js?v=__BUILD__";
+import { bindInkRailActivation, buildInkToolGroup, inkRailButton, paintInkRailPressed } from "../handwriting/rail.js?v=__BUILD__";
+import { buildInkPanel, createInkPanel, paintInkChip } from "../handwriting/ink-popover.js?v=__BUILD__";
+import { formatInkToken, isHighlighterToken, normalizeInkToken, parseInkToken } from "../format/ink-colors.js?v=__BUILD__";
 import { inkStrokesFromSvg, inkSvgFile } from "../format/ink-svg.js?v=__BUILD__";
+import { transformInkStroke } from "../format/ink-strokes.js?v=__BUILD__";
 import { insertPreparedImageUpload } from "../images/outbox.js?v=__BUILD__";
-import { inkPreferences, writeInkPreferences } from "../storage/ink-prefs.js?v=__BUILD__";
+import { inkPreferences, rememberInkRecentColor, writeInkPreferences } from "../storage/ink-prefs.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
 import { lockPageScroll, unlockPageScroll } from "../ui/overlays.js?v=__BUILD__";
 
@@ -51,6 +54,11 @@ let sheetSession = null;
 // are simply never written to a deck. A drawing is still a picture in a note
 // when it is finished; what changed is that it is no longer one SCREENFUL.
 let sheetPages = [];
+// The panel under the sheet's chip — the same one the paper's rail has
+// (src/handwriting/ink-popover.js), acting on the sheet's own engine.
+let sheetPanel = null;
+// The press that shuts the panel is not a dot — see sheetPanelAdapter.
+let sheetTapSuppressedUntil = 0;
 
 // ── The overlay ────────────────────────────────────────────────────────────
 
@@ -87,17 +95,19 @@ function buildSheet() {
   rail.setAttribute("role", "toolbar");
   rail.setAttribute("aria-label", "Pen");
 
-  const pens = document.createElement("div");
-  pens.className = "ink-rail-group";
-  pens.setAttribute("role", "group");
-  pens.setAttribute("aria-label", "Pen colour");
-  buildInkPenSwatches(pens);
-
-  const widths = document.createElement("div");
-  widths.className = "ink-rail-group";
-  widths.setAttribute("role", "group");
-  widths.setAttribute("aria-label", "Nib");
-  buildInkNibs(widths);
+  // The same slim bar as the paper's: the tools, a chip for the armed tool's
+  // size, colour and opacity, and the panel under it — rather than eight
+  // swatches and four nibs laid out in a row of their own.
+  const settings = document.createElement("div");
+  settings.className = "ink-rail-group";
+  settings.setAttribute("role", "group");
+  settings.setAttribute("aria-label", "Pen settings");
+  const chip = inkRailButton("inkAction", "style", "Size, colour and opacity", "", "ink-rail-chip");
+  chip.innerHTML = '<span class="ink-rail-chip-mark" aria-hidden="true"></span>';
+  chip.setAttribute("aria-haspopup", "dialog");
+  chip.setAttribute("aria-expanded", "false");
+  chip.removeAttribute("aria-pressed");
+  settings.append(chip);
 
   const steps = document.createElement("div");
   steps.className = "ink-rail-group";
@@ -126,8 +136,15 @@ function buildSheet() {
     inkRailButton("inkAction", "add-page", "Add a page below", "", "", "&#43; Page")
   );
 
-  rail.append(pens, widths, buildInkToolGroup(), steps, paperGroup);
+  const sheetPopover = document.createElement("div");
+  sheetPopover.className = "ink-rail-popover";
+  sheetPopover.hidden = true;
+  sheetPopover.setAttribute("role", "dialog");
+  sheetPopover.setAttribute("aria-label", "Pen settings");
+  // No Tap dots switch here: on the sheet every tap is a dot, and always was.
+  buildInkPanel(sheetPopover, { tapDots: false });
 
+  rail.append(buildInkToolGroup(), settings, steps, paperGroup, sheetPopover);
   const stage = document.createElement("div");
   stage.className = "ink-sheet-stage";
   const scroller = document.createElement("div");
@@ -136,33 +153,40 @@ function buildSheet() {
 
   root.append(head, rail, stage);
   document.body.appendChild(root);
-  sheet = { root, scroller, stage, rail, title, cancel, done };
+  sheet = { root, scroller, stage, rail, title, cancel, done, chip, popover: sheetPopover };
+  sheetPanel = createInkPanel({ rail, popover: sheetPopover, chip, adapter: sheetPanelAdapter });
 
   cancel.addEventListener("click", () => closeInkSheet(false));
   done.addEventListener("click", () => closeInkSheet(true));
 
-  // Delegated, and pointerdown rather than click, for the reason readInkRailPress
-  // spells out: a press on a control must not travel on to the paper underneath
-  // it and start a stroke.
-  rail.addEventListener("pointerdown", (event) => {
-    const button = readInkRailPress(event);
-    if (!button || !sheetPaper) return;
+  // Delegated, and pointerdown rather than click, for the reason
+  // bindInkRailActivation spells out: a press on a control must not travel on to
+  // the paper underneath it and start a stroke. And Enter or Space on a focused
+  // control, which is a click with no pointer behind it. The panel under the
+  // chip handles its own presses before they reach here.
+  bindInkRailActivation(rail, (button) => {
+    if (!sheetPaper) return;
     const data = button.dataset;
     const pen = sheetPaper.engine;
-    if (data.inkPen) pen.setPen(data.inkPen);
-    else if (data.inkWidth) pen.setWidth(Number(data.inkWidth));
-    else if (data.inkTool) pen.setTool(data.inkTool);
-    else if (data.inkAction === "undo") pen.undo();
+    if (data.inkTool) {
+      // The armed tool pressed again opens its panel, as on the paper.
+      if (data.inkTool === pen.getTool() && sheetPanel?.panelFor()) {
+        sheetPanel.toggle();
+        refreshSheetRail();
+        return;
+      }
+      pen.setTool(data.inkTool);
+      writeInkPreferences({ tool: pen.getTool() });
+    } else if (data.inkAction === "style") {
+      sheetPanel?.toggle();
+    } else if (data.inkAction === "undo") pen.undo();
     else if (data.inkAction === "redo") pen.redo();
     else if (data.inkAction === "delete") pen.deleteSelection();
     else if (data.inkAction === "zoom-in") sheetPaper.setZoom(sheetPaper.zoom() * HW_ZOOM_STEP);
     else if (data.inkAction === "zoom-out") sheetPaper.setZoom(sheetPaper.zoom() / HW_ZOOM_STEP);
     else if (data.inkAction === "add-page") addSheetPage();
-    if (data.inkPen || data.inkWidth || data.inkTool) {
-      writeInkPreferences({ pen: pen.getPen(), width: pen.getWidth(), tool: pen.getTool() });
-    }
     refreshSheetRail();
-  });
+  }, "[data-ink-tool], [data-ink-action]");
 
   bindSheetPointer(scroller);
 
@@ -178,7 +202,13 @@ function buildSheet() {
 
   document.addEventListener("keydown", (event) => {
     if (!sheetSession) return;
-    if (event.key === "Escape") { event.preventDefault(); closeInkSheet(false); }
+    if (event.key !== "Escape") return;
+    event.preventDefault();
+    // The panel first: Escape puts away the topmost thing, and a reader who
+    // opened the pen's settings and changed their mind has not decided to throw
+    // the drawing away.
+    if (sheetPanel?.isOpen()) { sheetPanel.close(); return; }
+    closeInkSheet(false);
   });
   return sheet;
 }
@@ -196,11 +226,127 @@ function addSheetPage() {
 function refreshSheetRail() {
   if (!sheet || !sheetPaper) return;
   const pen = sheetPaper.engine;
-  paintInkRailPressed(sheet.rail, { pen: pen.getPen(), width: pen.getWidth(), tool: pen.getTool() });
+  const highlighter = { ...pen.getHighlighter(), opacity: parseInkToken(pen.getHighlighter().token)?.opacity ?? 1 };
+  const eraser = { size: pen.getEraserSize(), mode: pen.getEraseMode(), target: pen.getEraseTarget() };
+  paintInkRailPressed(sheet.rail, {
+    pen: pen.getPen(),
+    width: pen.getWidth(),
+    tool: pen.getTool(),
+    eraserSize: eraser.size,
+    eraseMode: eraser.mode,
+    snapShapes: pen.getSnapShapes(),
+    highlighter,
+    eraseTarget: eraser.target
+  });
+  paintInkChip(sheet.chip, {
+    tool: pen.getTool(),
+    pen: { token: pen.getPen(), width: pen.getWidth() },
+    highlighter,
+    eraser,
+    selecting: pen.hasSelection()
+  });
+  if (sheetPanel?.isOpen()) {
+    if (!sheetPanel.panelFor()) sheetPanel.close();
+    else sheetPanel.open(sheetPanel.panelFor());
+  }
   sheet.rail.querySelector('[data-ink-action="undo"]')?.toggleAttribute("disabled", !pen.canUndo());
   sheet.rail.querySelector('[data-ink-action="redo"]')?.toggleAttribute("disabled", !pen.canRedo());
   sheet.rail.querySelector('[data-ink-action="delete"]')?.toggleAttribute("disabled", !pen.hasSelection());
 }
+
+// ── What the sheet's panel reads and changes ──────────────────────────────
+//
+// The adapter createInkPanel takes, over the sheet's own engine. The same
+// rules as the paper's (src/documents/pdf-ink.js): a colour keeps the current
+// opacity, and with a lasso up each change restyles the selected strokes of the
+// one kind it is about. And the same preferences — the sheet is the same pen.
+function sheetEngine() {
+  return sheetPaper?.engine || null;
+}
+
+function sheetRestyle(patch) {
+  const pen = sheetEngine();
+  if (pen?.hasSelection()) pen.restyleSelection(patch);
+}
+
+function sheetHighlighterOpacity() {
+  return parseInkToken(sheetEngine()?.getHighlighter().token)?.opacity ?? 1;
+}
+
+const sheetPanelAdapter = {
+  tool: () => sheetEngine()?.getTool() || "pen",
+  selectionKinds: () => {
+    const out = { pen: 0, highlighter: 0 };
+    (sheetEngine()?.selectedStrokes() || []).forEach((stroke) => {
+      if (isHighlighterToken(stroke.c)) out.highlighter += 1;
+      else out.pen += 1;
+    });
+    return out;
+  },
+  pen: () => {
+    const pen = sheetEngine();
+    return { token: pen?.getPen() || "ink", width: pen?.getWidth() || 2, opacity: parseInkToken(pen?.getPen())?.opacity ?? 1 };
+  },
+  highlighter: () => ({ ...sheetEngine().getHighlighter(), opacity: sheetHighlighterOpacity() }),
+  eraser: () => {
+    const pen = sheetEngine();
+    return { size: pen.getEraserSize(), mode: pen.getEraseMode(), target: pen.getEraseTarget() };
+  },
+  setPenColour: (token) => {
+    const pen = sheetEngine();
+    const given = parseInkToken(normalizeInkToken(token, "pen"));
+    const next = formatInkToken({ ...given, kind: "pen", opacity: parseInkToken(pen.getPen())?.opacity ?? 1 });
+    sheetRestyle({ pen: next, kind: "pen" });
+    pen.setPen(next);
+  },
+  setPenWidth: (width) => { sheetRestyle({ width, kind: "pen" }); sheetEngine().setWidth(width); },
+  setPenOpacity: (opacity) => {
+    const pen = sheetEngine();
+    sheetRestyle({ opacity, kind: "pen" });
+    pen.setPen(formatInkToken({ ...parseInkToken(pen.getPen()), kind: "pen", opacity }));
+  },
+  setHighlighter: ({ color, width, opacity, straight } = {}) => {
+    const pen = sheetEngine();
+    let parts = parseInkToken(pen.getHighlighter().token);
+    const restyle = {};
+    if (color !== undefined) {
+      const given = parseInkToken(normalizeInkToken(color, "highlighter"));
+      parts = { ...parts, name: given.name, hex: given.hex };
+      restyle.pen = formatInkToken({ ...given, kind: "highlighter" });
+    }
+    if (opacity !== undefined) { parts = { ...parts, opacity }; restyle.opacity = opacity; }
+    if (width !== undefined) restyle.width = width;
+    if (Object.keys(restyle).length) sheetRestyle({ ...restyle, kind: "highlighter" });
+    pen.setHighlighter({ token: formatInkToken({ ...parts, kind: "highlighter" }), width, straight });
+  },
+  setEraserSize: (size) => sheetEngine().setEraserSize(size),
+  setEraseMode: (mode) => sheetEngine().setEraseMode(mode),
+  setEraseTarget: (target) => sheetEngine().setEraseTarget(target),
+  snapShapes: () => sheetEngine().getSnapShapes(),
+  setSnapShapes: (on) => sheetEngine().setSnapShapes(on),
+  recentColours: () => inkPreferences().recentColors,
+  rememberColour: (hex) => rememberInkRecentColor(hex),
+  // The sheet's paper follows the theme, so the preview does too.
+  paper: () => (/^light/.test(document.documentElement.dataset.theme || "") ? "light" : "dark"),
+  scale: () => sheetPaper?.scale() || 1,
+  changed: () => {
+    const pen = sheetEngine();
+    const band = pen.getHighlighter();
+    writeInkPreferences({
+      pen: pen.getPen(),
+      width: pen.getWidth(),
+      hlPen: band.token,
+      hlWidth: band.width,
+      hlStraight: band.straight,
+      eraserSize: pen.getEraserSize(),
+      eraseMode: pen.getEraseMode(),
+      eraseTarget: pen.getEraseTarget(),
+      snapShapes: pen.getSnapShapes()
+    });
+    refreshSheetRail();
+  },
+  suppressTap: () => { sheetTapSuppressedUntil = Date.now() + 400; }
+};
 
 // ── Input ──────────────────────────────────────────────────────────────────
 //
@@ -219,6 +365,7 @@ function refreshSheetRail() {
 function bindSheetPointer(scroller) {
   let active = null;
   let activePage = null;
+  let activeStart = null;
   scroller.addEventListener("pointerdown", (event) => {
     if (!sheetSession || active) return;
     if (event.button !== undefined && event.button > 0 && event.button !== 5) return;
@@ -229,6 +376,7 @@ function bindSheetPointer(scroller) {
     event.preventDefault();
     active = event.pointerId;
     activePage = page;
+    activeStart = { x: event.clientX, y: event.clientY, at: Date.now() };
     try { scroller.setPointerCapture(event.pointerId); } catch (_) { /* synthetic */ }
     if (!sheetPaper.engine.begin(page, [event], event)) { active = null; activePage = null; }
   });
@@ -242,7 +390,13 @@ function bindSheetPointer(scroller) {
     active = null;
     activePage = null;
     try { scroller.releasePointerCapture(event.pointerId); } catch (_) { /* already gone */ }
-    if (cancelled) sheetPaper.engine.cancel();
+    // The press that shut the pen's panel is not a dot. Anything longer than a
+    // tap is a stroke the reader meant, and is kept.
+    const tapped = activeStart && Date.now() - activeStart.at < 150
+      && Math.hypot(event.clientX - activeStart.x, event.clientY - activeStart.y) < 4;
+    const suppressed = tapped && activeStart.at <= sheetTapSuppressedUntil;
+    activeStart = null;
+    if (cancelled || suppressed) sheetPaper.engine.cancel();
     else { sheetPaper.engine.move(event); sheetPaper.engine.end(); }
     refreshSheetRail();
   };
@@ -310,6 +464,15 @@ function openInkSheet({ title, strokes, onDone }) {
   surface.engine.setPen(saved.pen);
   surface.engine.setWidth(saved.width);
   surface.engine.setTool(saved.tool);
+  // The eraser and the shape-snapper are how the reader likes the pen to work,
+  // and the sheet is the same pen. It used to open with the defaults whatever
+  // the reader had set on the paper — and then, on the first swatch pressed,
+  // WRITE those defaults back over the reader's own (see writeInkPreferences).
+  surface.engine.setEraserSize(saved.eraserSize);
+  surface.engine.setEraseMode(saved.eraseMode);
+  surface.engine.setEraseTarget(saved.eraseTarget);
+  surface.engine.setSnapShapes(saved.snapShapes);
+  surface.engine.setHighlighter({ token: saved.hlPen, width: saved.hlWidth, straight: saved.hlStraight });
   // Rendered before the strokes are placed, so the page has the size it will
   // actually have when the fit is worked out against it.
   surface.render();
@@ -322,9 +485,23 @@ function openInkSheet({ title, strokes, onDone }) {
 // Every page that has something on it, in order — and the pages that do not are
 // simply not there. Adding a page and then not using it is not a decision to
 // insert a blank picture into a note.
+//
+// `top` is where the page sits in the stack, in the pages' own units, for the
+// one caller that lays them out as a single picture (reopenInkDrawing). Every
+// page's strokes are in that PAGE's coordinates, 0 at its own top edge, so a
+// stack made by simply concatenating them put page two's drawing on top of page
+// one's. The empty pages count towards it — the stack is laid out the way the
+// sheet showed it, gap and all.
+const SHEET_STACK_GAP = 24;
+
 function sheetDrawings() {
+  let top = 0;
   return sheetPages
-    .map((page) => ({ page, strokes: sheetPaper.engine.getStrokes(page.id) }))
+    .map((page) => {
+      const entry = { page, top, strokes: sheetPaper.engine.getStrokes(page.id) };
+      top += (Number(page.h) || HW_PAGE_HEIGHT) + SHEET_STACK_GAP;
+      return entry;
+    })
     .filter((entry) => entry.strokes.length);
 }
 
@@ -333,6 +510,7 @@ function closeInkSheet(commit) {
   const session = sheetSession;
   const drawings = commit ? sheetDrawings() : [];
   sheetSession = null;
+  sheetPanel?.close();
   sheetPaper.engine.clearSelection();
   // Emptying the stack and re-rendering is what takes the pages down — render()
   // forgets any host whose page is gone, which is one statement of that rule
@@ -347,7 +525,7 @@ function closeInkSheet(commit) {
     // sheet means the same thing as Cancel.
     return;
   }
-  session.onDone(drawings.map((entry) => entry.strokes));
+  session.onDone(drawings.map((entry) => entry.strokes), drawings);
 }
 
 // ── The two ways in ────────────────────────────────────────────────────────
@@ -401,12 +579,15 @@ export async function reopenInkDrawing({ load, replace }) {
   openInkSheet({
     title: "Edit drawing",
     strokes,
-    onDone: async (pages) => {
+    onDone: async (_pages, drawings) => {
       // Re-opening replaces ONE picture, so it commits one. A reader who added
       // pages while editing gets them as the drawing they now have: the pages
       // are laid out one under the next in the same file, which is what the
-      // sheet showed them.
-      const file = inkSvgFile(pages.flat(), { name: `ink-${Date.now().toString(36)}` });
+      // sheet showed them — each moved down by where its page sits in the stack.
+      const stacked = drawings.flatMap((entry) => (entry.top
+        ? entry.strokes.map((stroke) => transformInkStroke(stroke, { dy: entry.top }))
+        : entry.strokes));
+      const file = inkSvgFile(stacked, { name: `ink-${Date.now().toString(36)}` });
       if (!file) return;
       await replace(file);
     }

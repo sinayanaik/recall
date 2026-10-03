@@ -25,16 +25,64 @@
 // follow: a control is a button with an attribute, not a binding.
 
 import { el } from "../core/dom.js?v=__BUILD__";
-import { canRedoInk, canUndoInk, clearInkPage, copyInkSelection, cutInkSelection, deleteInkSelection, duplicateInkSelection, hasInkClipboard, inkEraseMode, inkEraserSize, inkPageHasStrokes, inkPageInView, inkPageInViewCheap, inkPen, inkSelectionCount, inkSnapShapes, inkTool, inkWidth, isInkArmed, joinInkSelection, pasteInkSelection, redoInk, setInkArmed, setInkEraseMode, setInkEraserSize, setInkPen, setInkSnapShapes, setInkTool, setInkWidth, splitInkSelection, undoInk } from "../documents/pdf-ink.js?v=__BUILD__";
+import { canRedoInk, canUndoInk, clearInkPage, copyInkSelection, cutInkSelection, deleteInkSelection, duplicateInkSelection, hasInkClipboard, inkEraseMode, inkEraseTarget, inkEraserSize, inkHighlighter, inkPageHasStrokes, inkPageInView, inkPageInViewCheap, inkPaper, inkPen, inkPenOpacity, inkScreenScale, inkSelectionCount, inkSelectionKinds, inkSnapShapes, inkTapDots, inkTool, inkWidth, isInkArmed, joinInkSelection, pasteInkSelection, redoInk, setInkArmed, setInkEraseMode, setInkEraseTarget, setInkEraserSize, setInkHighlighter, setInkOpacity, setInkPen, setInkSnapShapes, setInkTapDots, setInkTool, setInkWidth, splitInkSelection, suppressInkTap, undoInk } from "../documents/pdf-ink.js?v=__BUILD__";
 import { deleteBlock, editBlock, openSelectedBlockStyle, selectedBlockKind, setBlockSelectionChangedHandler } from "../documents/pdf-blocks.js?v=__BUILD__";
 import { INK_TOOL_DEFAULT } from "../format/ink-colors.js?v=__BUILD__";
-import { buildInkEraserSizes, buildInkNibs, buildInkPenSwatches, paintInkRailPressed, readInkRailPress } from "../handwriting/rail.js?v=__BUILD__";
-import { inkPreferences, inkRailOpen, writeInkPreferences, writeInkRailOpen } from "../storage/ink-prefs.js?v=__BUILD__";
+import { bindInkRailActivation, paintInkRailPressed } from "../handwriting/rail.js?v=__BUILD__";
+import { buildInkPanel, createInkPanel, paintInkChip } from "../handwriting/ink-popover.js?v=__BUILD__";
+import { inkPreferences, inkRailOpen, rememberInkRecentColor, writeInkPreferences, writeInkRailOpen } from "../storage/ink-prefs.js?v=__BUILD__";
 import { activeDocSlot } from "../documents/doc-slot.js?v=__BUILD__";
 import { showConfirmModal } from "./feedback.js?v=__BUILD__";
 
 function pressed(node, on) {
   if (node) node.setAttribute("aria-pressed", on ? "true" : "false");
+}
+
+// The panel under the chip (src/handwriting/ink-popover.js), made in
+// initInkRail. Null until then, and on a page with no rail.
+let inkPanel = null;
+
+// ── The bar's three menus ──────────────────────────────────────────────────
+//
+// ⋯, the selection's ▾ and the notebook's +. Small, and the same three rules
+// each: one open at a time, any press outside shuts it, and choosing a row
+// shuts it — on CLICK, not on the press, because one of the rows is a <label>
+// round a file input and a label hidden under the press never fires its click.
+const MENUS = [
+  { button: "inkRailMoreBtn", menu: "inkRailMoreMenu" },
+  { button: "inkRailSelectionMoreBtn", menu: "inkRailSelectionMenu" },
+  { button: "inkRailAddBtn", menu: "inkRailAddMenu" }
+];
+
+function closeInkRailMenus(except = null) {
+  MENUS.forEach(({ button, menu }) => {
+    if (menu === except) return;
+    const node = document.getElementById(menu);
+    if (!node || node.hidden) return;
+    node.hidden = true;
+    document.getElementById(button)?.setAttribute("aria-expanded", "false");
+  });
+}
+
+function toggleInkRailMenu(menuId) {
+  const entry = MENUS.find((candidate) => candidate.menu === menuId);
+  const node = document.getElementById(menuId);
+  if (!entry || !node) return;
+  closeInkRailMenus(menuId);
+  inkPanel?.close();
+  node.hidden = !node.hidden;
+  document.getElementById(entry.button)?.setAttribute("aria-expanded", node.hidden ? "false" : "true");
+}
+
+// Whether anything the bar opened is open — the hardware Back key's question
+// (src/ui/back-gesture.js), and the panel's.
+export function isInkRailPopupOpen() {
+  return Boolean(inkPanel?.isOpen()) || MENUS.some(({ menu }) => document.getElementById(menu)?.hidden === false);
+}
+
+export function closeInkRailPopups() {
+  inkPanel?.close();
+  closeInkRailMenus();
 }
 
 // ── A block's own actions, once one is picked up ───────────────────────────
@@ -106,33 +154,47 @@ export function refreshInkRail() {
   const pasteable = hasInkClipboard();
   const tool = inkTool();
 
+  const highlighter = inkHighlighter();
+  const eraser = { size: inkEraserSize(), mode: inkEraseMode(), target: inkEraseTarget() };
+
   rail.hidden = false;
   pressed(el.documentInkBtn, open);
   paintInkRailPressed(rail, {
     pen: inkPen(),
     width: inkWidth(),
     tool,
-    eraserSize: inkEraserSize(),
-    eraseMode: inkEraseMode(),
-    snapShapes: inkSnapShapes()
+    eraserSize: eraser.size,
+    eraseMode: eraser.mode,
+    snapShapes: inkSnapShapes(),
+    highlighter,
+    eraseTarget: eraser.target,
+    tapDots: inkTapDots()
   });
-  // The eraser's row takes the place of the pen's, rather than sitting beside
-  // it: they answer the same question about whichever tool is armed, and the
-  // rail is already a wrapping panel over the page with no room to carry both.
-  // The COLOURS stay up whatever is armed, because with a lasso selection a
-  // press on one recolours what is selected — and because a reader who is about
-  // to swap back to the pen should be able to choose the colour first.
-  //
-  // Text is the one tool that takes BOTH rows down, and the colours with them.
+  paintInkChip(el.inkRailStyleChip, {
+    tool,
+    pen: { token: inkPen(), width: inkWidth() },
+    highlighter,
+    eraser,
+    selecting: count > 0
+  });
+  // Text takes the pen's colours and nibs down, and the panel with them.
   // Nothing is being drawn, so there is no nib and no ink colour to choose; and
   // the swatches' other job — recolouring a lasso selection — has nothing to act
   // on either, because setTool clears that selection on the way out of the lasso.
   // The colour a highlight is made in is the pill's, chosen there.
-  const erasing = tool === "eraser";
   const selectingText = tool === "text";
-  if (el.inkRailPens) el.inkRailPens.hidden = selectingText;
-  if (el.inkRailWidths) el.inkRailWidths.hidden = erasing || selectingText;
-  if (el.inkRailEraser) el.inkRailEraser.hidden = !erasing;
+  const pens = document.getElementById("inkRailPens");
+  const nibs = document.getElementById("inkRailWidths");
+  if (pens) pens.hidden = selectingText;
+  if (nibs) nibs.hidden = selectingText;
+  if (selectingText) inkPanel?.close();
+  // The panel follows the tool: open on the pen and switch to the eraser, and it
+  // is the eraser's panel that is showing — or none, for a tool with nothing to
+  // set.
+  if (inkPanel?.isOpen()) {
+    if (!inkPanel.panelFor()) inkPanel.close();
+    else inkPanel.open(inkPanel.panelFor());
+  }
   rail.querySelector('[data-ink-action="undo"]')?.toggleAttribute("disabled", !undoable);
   rail.querySelector('[data-ink-action="redo"]')?.toggleAttribute("disabled", !redoable);
   // Refused rather than hidden, for the reason join is below: a control that
@@ -147,14 +209,21 @@ export function refreshInkRail() {
   // page 1 and pasting on page 4 is the case it exists for, and a group that
   // vanished with the selection would take the only way of finishing that with it.
   if (el.inkRailSelection) el.inkRailSelection.hidden = count < 1 && !pasteable;
-  // Each one refused rather than hidden, so the row does not change width under
-  // the reader's thumb between one selection and the next. Join needs two
+  // With a selection the slot shows Copy, Delete and the ▾ menu; with only a
+  // clipboard it shows Paste on its own. The page's own + steps aside for
+  // either (styles/73-ink-panel.css), so the slot holds one thing at a time.
+  rail.classList.toggle("is-selecting", count > 0);
+  rail.classList.toggle("has-clipboard", pasteable && count < 1);
+  if (count < 1 && !pasteable) document.getElementById("inkRailSelectionMenu")?.setAttribute("hidden", "");
+  // Each one refused rather than hidden, so the menu does not change shape
+  // under the reader's thumb between one selection and the next. Join needs two
   // strokes to join; the rest need one; paste needs only a clipboard.
   rail.querySelector('[data-ink-action="join"]')?.toggleAttribute("disabled", count < 2);
   ["split", "duplicate", "copy", "cut", "delete"].forEach((action) => {
     rail.querySelector(`[data-ink-action="${action}"]`)?.toggleAttribute("disabled", count < 1);
   });
-  rail.querySelector('[data-ink-action="paste"]')?.toggleAttribute("disabled", !pasteable);
+  rail.querySelectorAll('[data-ink-action="paste"]').forEach((node) => node.toggleAttribute("disabled", !pasteable));
+  inkPanel?.refresh();
 }
 
 // ── Which tool each of the deck's two papers was left on ──────────────────
@@ -184,8 +253,12 @@ const slotTools = { doc: INK_TOOL_DEFAULT, notebook: INK_TOOL_DEFAULT };
 // the first stroke of the visit silently deleting something; coming back to the
 // lasso is a stroke that does not appear. Both are the fault this is fixing
 // wearing a different hat, so both fall back to the pen.
+//
+// The highlighter comes back as well: like the pen it only ever adds to the page,
+// and a reader working down a scanned chapter with it should find it still in
+// hand after a glance at the notebook.
 function rememberableInkTool(tool) {
-  return tool === "text" ? "text" : INK_TOOL_DEFAULT;
+  return tool === "text" || tool === "highlighter" ? tool : INK_TOOL_DEFAULT;
 }
 
 // Every setting the rail owns, read back off the engine rather than off the
@@ -194,13 +267,19 @@ function rememberableInkTool(tool) {
 // now — this rail, and the reading rail's own row.
 function rememberInkPreferences() {
   slotTools[activeDocSlot()] = rememberableInkTool(inkTool());
+  const highlighter = inkHighlighter();
   writeInkPreferences({
     pen: inkPen(),
     width: inkWidth(),
     tool: inkTool(),
     eraserSize: inkEraserSize(),
     eraseMode: inkEraseMode(),
-    snapShapes: inkSnapShapes()
+    snapShapes: inkSnapShapes(),
+    hlPen: highlighter.token,
+    hlWidth: highlighter.width,
+    hlStraight: highlighter.straight,
+    eraseTarget: inkEraseTarget(),
+    tapDots: inkTapDots()
   });
 }
 
@@ -256,74 +335,152 @@ export function applyInkRailPreference() {
   refreshInkRail();
 }
 
+// What the panel reads and changes, for the paper's rail — the adapter
+// createInkPanel takes (src/handwriting/ink-popover.js). Every commit goes
+// through the pdf-ink setters, which restyle a lassoed selection as well as
+// setting the pen, and then through the same remember-and-repaint as a press on
+// the bar.
+const panelAdapter = {
+  tool: () => inkTool(),
+  selectionKinds: () => inkSelectionKinds(),
+  pen: () => ({ token: inkPen(), width: inkWidth(), opacity: inkPenOpacity() }),
+  highlighter: () => inkHighlighter(),
+  eraser: () => ({ size: inkEraserSize(), mode: inkEraseMode(), target: inkEraseTarget() }),
+  setPenColour: (token) => setInkPen(token),
+  setPenWidth: (width) => setInkWidth(width),
+  setPenOpacity: (opacity) => setInkOpacity(opacity),
+  setHighlighter: (patch) => setInkHighlighter(patch),
+  setEraserSize: (size) => setInkEraserSize(size),
+  setEraseMode: (mode) => setInkEraseMode(mode),
+  setEraseTarget: (target) => setInkEraseTarget(target),
+  snapShapes: () => inkSnapShapes(),
+  setSnapShapes: (on) => setInkSnapShapes(on),
+  tapDots: () => inkTapDots(),
+  setTapDots: (on) => setInkTapDots(on),
+  recentColours: () => inkPreferences().recentColors,
+  rememberColour: (hex) => rememberInkRecentColor(hex),
+  paper: () => inkPaper(),
+  scale: () => inkScreenScale(),
+  changed: () => { rememberInkPreferences(); refreshInkRail(); },
+  suppressTap: () => suppressInkTap()
+};
+
+// One press on the bar, by pointer or by keyboard (bindInkRailActivation).
+function pressRail(button) {
+  const {
+    inkPen: nextPen, inkWidth: nextWidth, inkEraserSize: nextEraser, inkTool: nextTool, inkAction: action
+  } = button.dataset;
+  // A row of a menu shuts the menu it is in — on click, see MENUS.
+  if (nextPen) setInkPen(nextPen);
+  else if (nextWidth) setInkWidth(Number(nextWidth));
+  else if (nextEraser) setInkEraserSize(Number(nextEraser));
+  else if (nextTool) {
+    // The armed tool pressed again opens its panel, the way every drawing app
+    // a reader has used does it; a different tool is armed, and the panel —
+    // if it was up — follows it (refreshInkRail).
+    if (nextTool === inkTool() && inkPanel?.panelFor()) {
+      closeInkRailMenus();
+      inkPanel.toggle();
+      refreshInkRail();
+      return;
+    }
+    setInkTool(nextTool);
+  } else if (action === "style") {
+    closeInkRailMenus();
+    inkPanel?.toggle();
+    refreshInkRail();
+    return;
+  } else if (action === "rail-more") { toggleInkRailMenu("inkRailMoreMenu"); return; }
+  else if (action === "selection-more") { toggleInkRailMenu("inkRailSelectionMenu"); return; }
+  else if (action === "add-menu") { toggleInkRailMenu("inkRailAddMenu"); return; }
+  else if (action === "undo") undoInk();
+  else if (action === "redo") redoInk();
+  else if (action === "clear") { closeInkRailMenus(); askToClearPage(); }
+  else if (action === "join") joinInkSelection();
+  else if (action === "split") splitInkSelection();
+  else if (action === "duplicate") duplicateInkSelection();
+  else if (action === "copy") copyInkSelection();
+  else if (action === "cut") cutInkSelection();
+  else if (action === "paste") pasteInkSelection();
+  else if (action === "delete") deleteInkSelection();
+  // The two switches that are still on the bar's own handler when a surface
+  // without the panel presses them. Read back off the engine rather than
+  // toggled from the button's own aria-pressed, so the rail cannot come to
+  // disagree with the thing it is describing.
+  else if (action === "erase-mode") setInkEraseMode(inkEraseMode() === "part" ? "stroke" : "part");
+  else if (action === "snap") setInkSnapShapes(!inkSnapShapes());
+  if (nextPen || nextWidth || nextTool || nextEraser || action === "erase-mode" || action === "snap") {
+    rememberInkPreferences();
+  }
+  refreshInkRail();
+}
+
 export function initInkRail() {
   const rail = el.documentInkRail;
   if (!rail) return;
-  buildInkPenSwatches(el.inkRailPens);
-  buildInkNibs(el.inkRailWidths);
-  buildInkEraserSizes(el.inkRailEraser);
+  buildInkPanel(el.inkRailPopover, {
+    ids: { pens: "inkRailPens", widths: "inkRailWidths", eraser: "inkRailEraser", hlPens: "inkRailHlPens", hlWidths: "inkRailHlWidths" },
+    tapDots: true
+  });
+  inkPanel = el.inkRailPopover
+    ? createInkPanel({ rail, popover: el.inkRailPopover, chip: el.inkRailStyleChip, adapter: panelAdapter, onToggle: () => {} })
+    : null;
 
   // The pen, the nib and the tool are remembered per device rather than per
   // deck: which colour you write in is a fact about you, not about the paper.
   const saved = inkPreferences();
-  setInkPen(saved.pen);
+  // Whole, opacity and all — this is the saved pen, not a colour pressed on it.
+  setInkPen(saved.pen, { keepOpacity: false });
   setInkWidth(saved.width);
+  setInkHighlighter({ token: saved.hlPen, width: saved.hlWidth, straight: saved.hlStraight });
   setInkTool(saved.tool);
   slotTools.doc = saved.tool;
   slotTools.notebook = saved.tool;
   setInkEraserSize(saved.eraserSize);
   setInkEraseMode(saved.eraseMode);
+  setInkEraseTarget(saved.eraseTarget);
   setInkSnapShapes(saved.snapShapes);
+  setInkTapDots(saved.tapDots);
 
   el.documentInkBtn?.addEventListener("click", () => toggleInkRail());
 
   // pointerdown, not click, and preventDefault with it: a press on the rail
   // must not travel on to the page underneath and start a stroke, and on a
-  // stylus the two are a few pixels apart.
-  rail.addEventListener("pointerdown", (event) => {
-    const button = readInkRailPress(event);
-    if (!button) return;
-    const {
-      inkPen: nextPen, inkWidth: nextWidth, inkEraserSize: nextEraser, inkTool: nextTool, inkAction: action
-    } = button.dataset;
-    if (nextPen) setInkPen(nextPen);
-    else if (nextWidth) setInkWidth(Number(nextWidth));
-    else if (nextEraser) setInkEraserSize(Number(nextEraser));
-    else if (nextTool) setInkTool(nextTool);
-    else if (action === "undo") undoInk();
-    else if (action === "redo") redoInk();
-    else if (action === "clear") askToClearPage();
-    else if (action === "join") joinInkSelection();
-    else if (action === "split") splitInkSelection();
-    else if (action === "duplicate") duplicateInkSelection();
-    else if (action === "copy") copyInkSelection();
-    else if (action === "cut") cutInkSelection();
-    else if (action === "paste") pasteInkSelection();
-    else if (action === "delete") deleteInkSelection();
-    // The two switches. Read back off the engine rather than toggled from the
-    // button's own aria-pressed, so the rail cannot come to disagree with the
-    // thing it is describing.
-    else if (action === "erase-mode") setInkEraseMode(inkEraseMode() === "part" ? "stroke" : "part");
-    else if (action === "snap") setInkSnapShapes(!inkSnapShapes());
-    if (nextPen || nextWidth || nextTool || nextEraser || action === "erase-mode" || action === "snap") {
-      rememberInkPreferences();
-    }
-    refreshInkRail();
+  // stylus the two are a few pixels apart. And the keyboard's own press, which
+  // is a click with no pointer behind it — see bindInkRailActivation. The panel
+  // under the chip is inside the rail and handles its own presses first.
+  bindInkRailActivation(rail, pressRail, "[data-ink-pen], [data-ink-width], [data-ink-eraser-size], [data-ink-tool], [data-ink-action]");
+
+  // A row of a menu, chosen: the menu goes once the row has done its work.
+  rail.addEventListener("click", (event) => {
+    if (!event.target.closest?.(".ink-rail-menu-item")) return;
+    setTimeout(() => closeInkRailMenus(), 0);
+  });
+  // ...and a press anywhere else shuts any of them. Capture, so the page's own
+  // handlers see a press that has already put the menu away.
+  document.addEventListener("pointerdown", (event) => {
+    if (!MENUS.some(({ menu }) => document.getElementById(menu)?.hidden === false)) return;
+    if (event.target.closest?.(".ink-rail-menu, #inkRailMoreBtn, #inkRailSelectionMoreBtn, #inkRailAddBtn")) return;
+    closeInkRailMenus();
+  }, true);
+  rail.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    if (!MENUS.some(({ menu }) => document.getElementById(menu)?.hidden === false)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    closeInkRailMenus();
   });
 
   // A second delegated listener on the same rail, over a different attribute
   // namespace — the pattern src/handwriting/board.js already uses for the
   // +Text/+Image/+Page group on this element: each acts on a different engine,
   // so what a press MEANS stays local to the module that owns it.
-  el.inkRailBlock?.addEventListener("pointerdown", (event) => {
-    const button = event.target.closest("[data-block-rail-action]");
-    if (!button) return;
-    event.preventDefault();
+  bindInkRailActivation(el.inkRailBlock, (button) => {
     const action = button.dataset.blockRailAction;
     if (action === "style") openSelectedBlockStyle();
     else if (action === "edit") editBlock();
     else if (action === "delete") deleteBlock();
-  });
+  }, "[data-block-rail-action]");
   setBlockSelectionChangedHandler(refreshBlockRail);
   refreshBlockRail();
 

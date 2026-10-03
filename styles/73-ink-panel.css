@@ -1,0 +1,381 @@
+/* The pen's slim bar, the chip on it, its menus, and the panel under the chip.
+
+   A file of its own for the reason styles/52-ink.css gives for being one. The
+   bar keeps every rule 52-ink.css gives .document-ink-rail — a flex item in the
+   stage's column, above the scroller, so nothing ever lands under it — and this
+   file only adds what a bar with a panel needs.
+
+   ── Why the bar stays one row ──────────────────────────────────────────────
+
+   The rail was every control at once and wrapped to three, four, five rows on
+   a phone, all of them taken off the page, and changing tool changed which rows
+   were showing — so the page under the pen moved when the eraser was picked
+   up. The bar now holds a fixed set (five tools, the chip, undo and redo, one
+   context slot, ⋯) and everything that used to make it grow is in the panel,
+   which is positioned ABSOLUTELY under the bar: opening it, and everything in
+   it, moves nothing on the page. */
+
+.document-ink-rail {
+  /* The panel and the menus are positioned against the bar. backdrop-filter
+     already makes it their containing block — and is switched off on a coarse
+     pointer (52-ink.css), which would hand them to the stage instead. */
+  position: relative;
+  gap: 3px;
+}
+
+/* ── The chip ──────────────────────────────────────────────────────────────
+   The armed tool, at a glance: a dot of the pen's colour at a size that grows
+   with the nib, a band for the highlighter, a ring for the eraser. The values
+   come from paintInkChip (src/handwriting/ink-popover.js); the colour is the
+   rail-scoped pen property (72-ink-paper.css), so it is the paper's pen. */
+/* The drawing sheet's bar is the same bar (src/notes/ink-sheet.js), and its
+   panel is placed against it in the same way: under it, over the paper, never
+   pushing the paper down. */
+.ink-sheet-rail {
+  position: relative;
+  z-index: 2;
+}
+
+.ink-rail-chip {
+  position: relative;
+}
+
+.ink-rail-chip-mark {
+  display: block;
+  width: var(--chip-size, 10px);
+  height: var(--chip-size, 10px);
+  border-radius: 50%;
+  background: var(--chip-colour, var(--text));
+  opacity: var(--chip-opacity, 1);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--text) 22%, transparent);
+}
+
+.ink-rail-chip[data-kind="highlighter"] .ink-rail-chip-mark {
+  width: 20px;
+  height: max(5px, calc(var(--chip-size, 10px) * 0.7));
+  border-radius: 3px;
+  box-shadow: none;
+}
+
+.ink-rail-chip[data-kind="eraser"] .ink-rail-chip-mark {
+  background: transparent;
+  border: 2px solid var(--text);
+  box-shadow: none;
+}
+
+.ink-rail-chip[aria-expanded="true"] {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+/* ── The context slot ─────────────────────────────────────────────────────
+   A block's actions, a selection's, or the notebook's + — one at a time, so it
+   reads as one more group on the bar. The page's own + steps aside while a
+   selection or a clipboard is up, and the selection's group shows Copy, Delete
+   and ▾ for a selection and Paste on its own for a clipboard. */
+.ink-rail-context {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+}
+
+.ink-rail-context > .ink-rail-group,
+.ink-rail-context + .ink-rail-group {
+  padding-left: 6px;
+  border-left: 1px solid var(--line);
+}
+
+#documentStage .document-ink-rail.is-selecting .ink-rail-page,
+#documentStage .document-ink-rail.has-clipboard .ink-rail-page {
+  display: none;
+}
+
+.document-ink-rail:not(.is-selecting) #inkRailSelection > [data-ink-action="copy"],
+.document-ink-rail:not(.is-selecting) #inkRailSelection > [data-ink-action="delete"],
+.document-ink-rail:not(.is-selecting) #inkRailSelection > [data-ink-action="selection-more"],
+.document-ink-rail.is-selecting .ink-rail-paste-solo {
+  display: none;
+}
+
+/* The groups that own a menu are what it is placed against. */
+.ink-rail-page,
+.ink-rail-selection,
+.ink-rail-context + .ink-rail-group {
+  position: relative;
+}
+
+/* ── The bar's menus ──────────────────────────────────────────────────────
+   ⋯, the selection's ▾ and the notebook's +. Rows with words, at a height a
+   finger can press, under the button that opened them. */
+.ink-rail-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 30;
+  min-width: 190px;
+  max-width: calc(100vw - 24px);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 5px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+  box-shadow: 0 12px 30px rgb(0 0 0 / 0.3);
+}
+
+.ink-rail-menu-item {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 38px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.86rem;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.ink-rail-menu-item:hover,
+.ink-rail-menu-item:focus-visible {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  outline: none;
+}
+
+.ink-rail-menu-item[disabled],
+.ink-rail-menu-item.is-disabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+.ink-rail-menu-item.is-danger {
+  color: var(--ink-pen-red);
+}
+
+/* The image row is a <label> round its file input (the press that opens the
+   picker), so it takes the row's looks without being a button. */
+.ink-rail-menu-item.file-pick {
+  position: relative;
+}
+
+/* ── The panel under the chip ─────────────────────────────────────────────
+   Floating over the page rather than in the bar's flow: it is the one part of
+   the pen that is tall, and it is only ever up for as long as somebody is
+   choosing. Centred under the bar, never wider than the screen less a margin,
+   and scrolling inside itself on a short landscape phone rather than off the
+   bottom of it. */
+.ink-rail-popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 40;
+  width: min(340px, calc(100vw - 16px));
+  max-height: min(72vh, 580px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 14px 34px rgb(0 0 0 / 0.34);
+}
+
+.ink-pop-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Groups inside the panel are not the bar's groups and take no separator. */
+.ink-rail-popover .ink-rail-group + .ink-rail-group {
+  padding-left: 0;
+  border-left: 0;
+}
+
+.ink-pop-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.ink-pop-label {
+  min-width: 50px;
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.ink-pop-slider {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.ink-pop-step {
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  padding: 0;
+  border-radius: 8px;
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.ink-pop-value {
+  min-width: 50px;
+  text-align: right;
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.ink-pop-presets,
+.ink-pop-swatches {
+  justify-content: flex-start;
+  gap: 8px;
+}
+
+/* The stroke the settings will make, at the size it will be on the page. */
+.ink-pop-preview {
+  display: block;
+  width: 100%;
+  height: 44px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+/* Colours of the reader's own, and the + that adds one: the browser's colour
+   picker under a swatch-shaped face, so it sits in the row it adds to. */
+.ink-pop-custom {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.ink-pop-colour {
+  position: relative;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1.5px dashed color-mix(in srgb, var(--text) 45%, transparent);
+  border-radius: 50%;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.ink-pop-colour input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.ink-pop-colour-face {
+  font-size: 0.9rem;
+  line-height: 1;
+  pointer-events: none;
+}
+
+.ink-pop-switches {
+  flex-wrap: wrap;
+}
+
+/* All / Pen only / Highlighter only: one choice in three, as one control. */
+.ink-pop-segmented {
+  gap: 0;
+}
+
+.ink-pop-seg {
+  flex: 1;
+  height: 30px;
+  padding: 0 6px;
+  border-radius: 0;
+  font-size: 0.74rem;
+  white-space: nowrap;
+}
+
+.ink-pop-seg:first-child {
+  border-radius: 9px 0 0 9px;
+}
+
+.ink-pop-seg:last-child {
+  border-radius: 0 9px 9px 0;
+}
+
+.ink-pop-seg + .ink-pop-seg {
+  margin-left: -1px;
+}
+
+.ink-pop-seg[aria-pressed="true"],
+.ink-pop-tab[aria-selected="true"] {
+  background: var(--accent);
+  color: var(--accent-contrast);
+  border-color: var(--accent);
+}
+
+/* Pen | Highlighter, for a lasso holding both kinds. */
+.ink-pop-tabs {
+  display: flex;
+  gap: 4px;
+}
+
+.ink-pop-tab {
+  flex: 1;
+  height: 30px;
+  font-size: 0.78rem;
+}
+
+/* The highlighter's colours are washes, not inks — shown as the tint a band
+   leaves on white paper rather than as the full hue. */
+.ink-rail-swatch.is-hl {
+  background: color-mix(in srgb, var(--ink-swatch) 55%, #ffffff);
+}
+
+/* ...and its widths are bands rather than dots. */
+.ink-rail-nib.is-hl::before {
+  width: 18px;
+  height: var(--ink-nib, 8px);
+  border-radius: 3px;
+}
+
+/* A recent colour is the reader's own: ringed, so it reads as theirs. */
+.ink-rail-swatch.is-recent {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--text) 35%, transparent), inset 0 0 0 2px var(--panel);
+}
+
+@media (max-width: 480px) {
+  /* The bar on a phone: the same controls, a little closer together, so the
+     five tools, the chip, undo, redo, the slot and ⋯ stay one row. */
+  .document-ink-rail {
+    gap: 2px;
+  }
+
+  .ink-rail-context > .ink-rail-group,
+  .ink-rail-context + .ink-rail-group {
+    padding-left: 3px;
+  }
+
+  .ink-rail-popover {
+    width: calc(100vw - 16px);
+  }
+}

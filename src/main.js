@@ -132,8 +132,8 @@ import { closeDocumentToc, documentOutlineEntries, initDocumentOutlineFolding, i
 import { activePdfId, deckPdfById, deckPdfs, PDF_PRIMARY_ID, withDeckPdfs } from "./documents/pdf-multi.js?v=__BUILD__";
 import { removePdfFromDeck, renamePdf } from "./documents/pdf-multi-actions.js?v=__BUILD__";
 import { closePdfPanel, initPdfSwitcher } from "./documents/pdf-switcher.js?v=__BUILD__";
-import { currentPdfDocument, currentPdfPageCount, documentFittedWidth, fitDocumentToWidth, initDocumentPinchZoom, isDocumentFitWidth, openDocumentIsCurrent, openDocumentPdfId, openDocumentView, reattachDocument, relayoutDocument, repaintOpenDocumentPages, scheduleDocumentPositionSave, scrollToDocumentPage, refreshDocumentPaperForTheme, setDocumentAttachHandler, setDocumentOpenedHook, setDocumentPagePaintedHook, setNotebookStartHandler, switchToPdf, togglePdfInvert, updatePageIndicator, zoomDocument, retryMissingDocumentOpen } from "./documents/pdf-view.js?v=__BUILD__";
-import { adoptDocumentInk, canRedoInk, canUndoInk, copyInkSelection, cutInkSelection, duplicateInkSelection, hasInkClipboard, initDocumentInk, inkMarkImageMarkdown, inkSelectionCount, isInkMarkId, nudgeInkSelection, paintDocumentInk, pasteInkSelection, redoInk, repaintDocumentInk, setInkChangedHandler, undoInk } from "./documents/pdf-ink.js?v=__BUILD__";
+import { currentPdfDocument, currentPdfPageCount, documentFittedWidth, fitDocumentToWidth, initDocumentPinchZoom, isDocumentFitWidth, openDocumentIsCurrent, openDocumentPdfId, openDocumentView, reattachDocument, relayoutDocument, repaintOpenDocumentPages, scheduleDocumentPositionSave, scrollToDocumentPage, refreshDocumentPaperForTheme, setDocumentAttachHandler, setDocumentOpenedHook, setDocumentPagePaintedHook, setNotebookStartHandler, setPaperChangedHook, switchToPdf, togglePdfInvert, updatePageIndicator, zoomDocument, retryMissingDocumentOpen } from "./documents/pdf-view.js?v=__BUILD__";
+import { adoptDocumentInk, canRedoInk, canUndoInk, copyInkSelection, cutInkSelection, duplicateInkSelection, hasInkClipboard, initDocumentInk, inkMarkImageMarkdown, inkMarkIsHighlight, inkSelectionCount, isInkMarkId, nudgeInkSelection, paintDocumentInk, pasteInkSelection, redoInk, repaintDocumentInk, setInkChangedHandler, undoInk } from "./documents/pdf-ink.js?v=__BUILD__";
 import { addHandwritingImage, enterHandwritingView, refreshHandwritingBoard, runHandwritingMenuAction, startHandwritingNotebook } from "./handwriting/board.js?v=__BUILD__";
 import { closeBlockStylePopover, isBlockStylePopoverOpen } from "./documents/block-style-bar.js?v=__BUILD__";
 import { closeBlockActionsPopover, isBlockActionsPopoverOpen } from "./documents/block-actions-popover.js?v=__BUILD__";
@@ -1306,6 +1306,20 @@ onDomReady(() => {
       // which needs an upload — so this is the one verb here that is async, and
       // it falls back to the label if the drawing cannot be kept rather than
       // making no card at all.
+      // ...except a mark made only of highlighter bands, which is a highlight of
+      // something on the page — usually a line of a scan — and gets the page
+      // itself, cropped to the band, the way a region does below.
+      //
+      // Only on a paper: a region reference names a PDF of the deck's, and the
+      // notebook is not one of them — a band on handwritten paper gets the
+      // drawing, like any other ink.
+      if (id && isInkMarkId(id) && inkMarkIsHighlight(id)) {
+        const band = documentHighlightById(id);
+        if (band?.doc !== "notebook" && band?.quads?.[0]?.rect) {
+          createCardFromNotesSelection(pdfRegionRefMarkdown(band.page, band.quads[0].rect, band.pdfId), anchor);
+          return;
+        }
+      }
       if (id && isInkMarkId(id)) {
         inkMarkImageMarkdown(id)
           .then((markdown) => createCardFromNotesSelection(markdown || text, anchor))
@@ -2245,6 +2259,13 @@ setHandwritingViewHook(() => { enterHandwritingView(); });
 // on the other theme can be the colour of the paper. And a notebook's paper is
 // itself decided by the theme (invertForDocumentSlot), so it has to be re-asked
 // in the same pass or the ink and the page it is on disagree for a frame.
+// The paper flipping between white and dark is a repaint of the ink for the
+// same reason a theme change is: the pens are chosen for the paper they are on.
+// And of the rail, whose swatches are that paper's pens.
+setPaperChangedHook(() => {
+  repaintDocumentInk();
+  refreshInkRail();
+});
 setThemeRepaintHook(() => {
   refreshDocumentPaperForTheme();
   repaintDocumentInk();
@@ -2762,9 +2783,15 @@ document.addEventListener("keydown", (event) => {
   // The sheet comes first because it is over everything. Both branches fall
   // through when there is nothing to undo, so the shortcut still reaches the
   // card and note stacks on a surface where no ink has been made.
-  if ((event.ctrlKey || event.metaKey) && (event.key === "z" || event.key === "Z") && isInkSheetOpen()) {
+  // Ctrl+Y is redo here as well as Ctrl+Shift+Z — it is the one a Windows hand
+  // reaches for. Without it the press fell through to the card stack's own
+  // Ctrl+Y below and redid a CARD action from under the pen.
+  const inkChord = (event.ctrlKey || event.metaKey)
+    && ((event.key === "z" || event.key === "Z") || (!event.shiftKey && (event.key === "y" || event.key === "Y")));
+  const inkWantsRedo = event.shiftKey || event.key === "y" || event.key === "Y";
+  if (inkChord && isInkSheetOpen()) {
     event.preventDefault();
-    event.shiftKey ? redoInkSheet() : undoInkSheet();
+    inkWantsRedo ? redoInkSheet() : undoInkSheet();
     return;
   }
   // ── ...and the other ring on the same surface ────────────────────────────
@@ -2772,9 +2799,8 @@ document.addEventListener("keydown", (event) => {
   // Before the pen's, and only when the blocks are what moved last (or when the
   // pen has nothing left to take back). See lastDocumentEdit for why the two are
   // ordered at all rather than each grabbing the key.
-  if ((event.ctrlKey || event.metaKey) && (event.key === "z" || event.key === "Z")
-      && onDocumentSurface() && !event.target.matches("input, textarea")) {
-    const wantRedo = event.shiftKey;
+  if (inkChord && onDocumentSurface() && !event.target.matches("input, textarea")) {
+    const wantRedo = inkWantsRedo;
     const blocksCan = wantRedo ? canRedoBlocks() : canUndoBlocks();
     const inkCan = wantRedo ? canRedoInk() : canUndoInk();
     if (blocksCan && (lastDocumentEdit === "blocks" || !inkCan)) {
@@ -2783,11 +2809,10 @@ document.addEventListener("keydown", (event) => {
       return;
     }
   }
-  if ((event.ctrlKey || event.metaKey) && (event.key === "z" || event.key === "Z")
-      && onDocumentSurface() && !event.target.matches("input, textarea")
-      && (event.shiftKey ? canRedoInk() : canUndoInk())) {
+  if (inkChord && onDocumentSurface() && !event.target.matches("input, textarea")
+      && (inkWantsRedo ? canRedoInk() : canUndoInk())) {
     event.preventDefault();
-    event.shiftKey ? redoInk() : undoInk();
+    inkWantsRedo ? redoInk() : undoInk();
     return;
   }
   // ── The block the reader picked up ───────────────────────────────────────

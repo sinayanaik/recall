@@ -14,7 +14,27 @@
 
 import { BLANK_PAPER_DEFAULT, normalizeBlankPaper } from "../documents/blank-pdf.js?v=__BUILD__";
 import { normalizeBlockStyle } from "../documents/block-style.js?v=__BUILD__";
-import { INK_ERASER_SIZE_DEFAULT, INK_ERASE_MODE_DEFAULT, INK_PEN_DEFAULT, INK_TOOL_DEFAULT, INK_WIDTH_DEFAULT, normalizeInkEraseMode, normalizeInkEraserSize, normalizeInkPen, normalizeInkTool, normalizeInkWidth } from "../format/ink-colors.js?v=__BUILD__";
+import { INK_ERASER_SIZE_DEFAULT, INK_ERASE_MODE_DEFAULT, INK_ERASE_TARGET_DEFAULT, INK_HL_TOKEN_DEFAULT, INK_HL_WIDTH_DEFAULT, INK_PEN_DEFAULT, INK_TOOL_DEFAULT, INK_WIDTH_DEFAULT, normalizeInkEraseMode, normalizeInkEraseTarget, normalizeInkEraserSize, normalizeInkHex, normalizeInkHlWidth, normalizeInkToken, normalizeInkTool, normalizeInkWidth } from "../format/ink-colors.js?v=__BUILD__";
+
+// How many colours of the reader's own are kept to hand. Six is a row in the
+// pen's panel, and more is a palette nobody chose.
+export const INK_RECENT_COLORS_MAX = 6;
+
+function normalizeRecentColors(list) {
+  const out = [];
+  (Array.isArray(list) ? list : []).forEach((value) => {
+    const hex = normalizeInkHex(value);
+    if (hex && !out.includes(hex) && out.length < INK_RECENT_COLORS_MAX) out.push(hex);
+  });
+  return out;
+}
+
+// The tool a session may come back on. The pen, the highlighter and Text are
+// all ways of marking or reading the page that cannot take anything away; the
+// eraser and the lasso are not offered back, for the reason given below.
+function rememberableTool(tool) {
+  return tool === "pen" || tool === "highlighter" ? tool : INK_TOOL_DEFAULT;
+}
 import { inkPreferencesKey } from "./keys.js?v=__BUILD__";
 
 // ── ...and whether the rail is up, per surface ─────────────────────────────
@@ -62,12 +82,24 @@ export function inkPreferences() {
     const raw = localStorage.getItem(inkPreferencesKey);
     const parsed = raw ? JSON.parse(raw) : null;
     return {
-      pen: normalizeInkPen(parsed?.pen),
+      // A whole colour word now — a custom colour or an opacity rides in it — so
+      // it is read back through the pen's own normaliser rather than the
+      // palette's, which would turn every one of those back into plain ink.
+      pen: normalizeInkToken(parsed?.pen, "pen"),
       width: normalizeInkWidth(parsed?.width),
       // The tool is remembered too, but never as the eraser or the lasso: a
       // session that opens with the eraser selected is one where the first
       // stroke of the day silently deletes something.
-      tool: parsed?.tool === "pen" ? "pen" : INK_TOOL_DEFAULT,
+      tool: rememberableTool(parsed?.tool),
+      // The highlighter's own colour word, width and Straight switch. Absent
+      // Straight means on, for the reason snapShapes below gives.
+      hlPen: normalizeInkToken(parsed?.hlPen, "highlighter"),
+      hlWidth: normalizeInkHlWidth(parsed?.hlWidth),
+      hlStraight: parsed?.hlStraight !== false,
+      eraseTarget: normalizeInkEraseTarget(parsed?.eraseTarget),
+      // Absent means on — see setInkTapDots.
+      tapDots: parsed?.tapDots !== false,
+      recentColors: normalizeRecentColors(parsed?.recentColors),
       // The eraser's own two settings are remembered outright, unlike the tool
       // above, and the difference is deliberate: arming the eraser is something
       // the reader does per use, but how big it is and whether it takes part of
@@ -84,6 +116,12 @@ export function inkPreferences() {
       pen: INK_PEN_DEFAULT,
       width: INK_WIDTH_DEFAULT,
       tool: INK_TOOL_DEFAULT,
+      hlPen: INK_HL_TOKEN_DEFAULT,
+      hlWidth: INK_HL_WIDTH_DEFAULT,
+      hlStraight: true,
+      eraseTarget: INK_ERASE_TARGET_DEFAULT,
+      tapDots: true,
+      recentColors: [],
       eraserSize: INK_ERASER_SIZE_DEFAULT,
       eraseMode: INK_ERASE_MODE_DEFAULT,
       snapShapes: true
@@ -91,26 +129,50 @@ export function inkPreferences() {
   }
 }
 
-export function writeInkPreferences({ pen, width, tool, eraserSize, eraseMode, snapShapes } = {}) {
+// A PATCH, not a record. Only what the caller names is written; everything it
+// leaves out keeps whatever was stored. It was a record — every key normalised
+// and written whether it was passed or not — and the drawing sheet passes three
+// of the six, so pressing a swatch on the sheet quietly reset the eraser's size,
+// its part/whole mode and the shape-snapper to their defaults on the paper too.
+export function writeInkPreferences(patch = {}) {
   try {
     // Merged rather than assigned: railOpen lives in the same bag and a bare
     // write here would forget which surfaces the reader had shut the rail on.
     const raw = localStorage.getItem(inkPreferencesKey);
     const parsed = (raw ? JSON.parse(raw) : null) || {};
-    localStorage.setItem(inkPreferencesKey, JSON.stringify({
-      ...parsed,
-      pen: normalizeInkPen(pen),
-      width: normalizeInkWidth(width),
-      tool: normalizeInkTool(tool),
-      eraserSize: normalizeInkEraserSize(eraserSize),
-      eraseMode: normalizeInkEraseMode(eraseMode),
-      snapShapes: snapShapes !== false
-    }));
+    const next = { ...parsed };
+    const {
+      pen, width, tool, eraserSize, eraseMode, snapShapes,
+      hlPen, hlWidth, hlStraight, eraseTarget, tapDots, recentColors
+    } = patch || {};
+    if (pen !== undefined) next.pen = normalizeInkToken(pen, "pen");
+    if (width !== undefined) next.width = normalizeInkWidth(width);
+    if (tool !== undefined) next.tool = normalizeInkTool(tool);
+    if (hlPen !== undefined) next.hlPen = normalizeInkToken(hlPen, "highlighter");
+    if (hlWidth !== undefined) next.hlWidth = normalizeInkHlWidth(hlWidth);
+    if (hlStraight !== undefined) next.hlStraight = hlStraight !== false;
+    if (eraseTarget !== undefined) next.eraseTarget = normalizeInkEraseTarget(eraseTarget);
+    if (tapDots !== undefined) next.tapDots = tapDots !== false;
+    if (recentColors !== undefined) next.recentColors = normalizeRecentColors(recentColors);
+    if (eraserSize !== undefined) next.eraserSize = normalizeInkEraserSize(eraserSize);
+    if (eraseMode !== undefined) next.eraseMode = normalizeInkEraseMode(eraseMode);
+    if (snapShapes !== undefined) next.snapShapes = snapShapes !== false;
+    localStorage.setItem(inkPreferencesKey, JSON.stringify(next));
   } catch (error) {
     // Quota or a private window. Losing the preference costs the reader one
     // press next time, never a stroke.
     console.warn("Could not remember the pen", error);
   }
+}
+
+// A colour of the reader's own, put at the front of the recent row — moved
+// there if it was already in it, and the oldest dropped off the end.
+export function rememberInkRecentColor(hex) {
+  const value = normalizeInkHex(hex);
+  if (!value) return inkPreferences().recentColors;
+  const next = [value, ...inkPreferences().recentColors.filter((entry) => entry !== value)];
+  writeInkPreferences({ recentColors: next });
+  return normalizeRecentColors(next);
 }
 
 // ── ...and which paper, which is the same kind of fact ────────────────────
