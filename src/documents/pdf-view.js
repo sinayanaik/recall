@@ -1345,6 +1345,10 @@ function finishDocumentOpen(view, token, openSlot, at, { restored = false, refit
   // carries. Only for pages that actually have pixels: an unrendered one has no
   // layers to bring up to date and will run the hook when it draws.
   if (restored) openPdf.rendered.forEach((pageNumber) => onPagePainted(pageNumber));
+  // ...except when it is NOT the same picture any more: a canvas detached in the
+  // park for an hour is exactly the one the browser clears without telling
+  // anyone. See recoverLostPageCanvases.
+  if (restored) recoverLostPageCanvases();
   // A refit is a re-layout and a re-render, so it subsumes the sweep below —
   // and it keeps the old pixels stretched while the fresh ones land, rather than
   // dropping to a placeholder (stalePageForRelayout). Only when the fit has
@@ -2023,18 +2027,11 @@ async function renderPage(pageNumber) {
     entry.viewport = viewport;
     entry.renderScale = scale;
 
-    const canvas = document.createElement("canvas");
-    canvas.className = "pdf-canvas";
     const outputScale = canvasOutputScale(viewport.width, viewport.height);
     // Remembered so relayoutDocument can tell "these pixels are still exactly
     // right" from "the screen's density changed under them" without a redraw.
     entry.renderOutputScale = outputScale;
-    canvas.width = Math.floor(viewport.width * outputScale);
-    canvas.height = Math.floor(viewport.height * outputScale);
-    canvas.style.width = `${Math.floor(viewport.width)}px`;
-    canvas.style.height = `${Math.floor(viewport.height)}px`;
-    const context = canvas.getContext("2d", { alpha: false });
-    const transform = outputScale === 1 ? null : [outputScale, 0, 0, outputScale, 0, 0];
+    const { canvas, context, transform } = createPageCanvas(viewport, outputScale);
     await page.render({ canvasContext: context, viewport, transform }).promise;
     if (stale()) return;
 
@@ -2121,6 +2118,165 @@ async function renderPage(pageNumber) {
     console.warn(`Page ${pageNumber} did not answer in ${PDF_RENDER_DEADLINE_MS}ms — starting again`);
     forceRenderPage(pageNumber);
   }, PDF_RENDER_DEADLINE_MS);
+}
+
+// ── A page's canvas, and the pixels it can lose ─────────────────────────────
+//
+// "The page is black until I zoom" — a page that HAD rendered, with its
+// highlights still sitting on it, gone to a solid black rectangle. Not a
+// placeholder (that has its page number on it, and is #2a2f33 with dark page
+// on): the canvas was still there, it had simply lost its pixels.
+//
+// That is what Chrome does to an accelerated 2D canvas when the GPU context
+// behind it goes away — the app backgrounded on a phone, memory pressure, a
+// GPU process restart. The canvas fires `contextlost`, then `contextrestored`,
+// and comes back CLEARED; with `alpha: false` a cleared bitmap is opaque
+// black. Nothing here listened for either event, so the page stayed black
+// until a zoom happened to build a fresh canvas.
+//
+// Two answers, one of each kind:
+//
+//   • `willReadFrequently` keeps the bitmap in ordinary memory rather than on
+//     the GPU, and a lost GPU context cannot clear what is not on it. pdf.js
+//     reached the same conclusion for its own viewer (enableHWA, off by
+//     default, from v4.4). The pixel budget is unchanged — canvasOutputScale
+//     still caps every page.
+//   • ...and for whatever still loses its pixels (a WebView, a browser that
+//     ignores the hint, a parked page detached for hours), the loss is
+//     detected and the canvas repainted in place: see recoverLostPageCanvases.
+function createPageCanvas(viewport, outputScale) {
+  const canvas = document.createElement("canvas");
+  canvas.className = "pdf-canvas";
+  canvas.width = Math.floor(viewport.width * outputScale);
+  canvas.height = Math.floor(viewport.height * outputScale);
+  canvas.style.width = `${Math.floor(viewport.width)}px`;
+  canvas.style.height = `${Math.floor(viewport.height)}px`;
+  const context = canvas.getContext("2d", { alpha: false, willReadFrequently: true });
+  const transform = outputScale === 1 ? null : [outputScale, 0, 0, outputScale, 0, 0];
+  canvas.addEventListener("contextlost", () => lostCanvases.add(canvas));
+  canvas.addEventListener("contextrestored", () => {
+    // Restored means "usable again", not "repainted": the bitmap is blank.
+    lostCanvases.add(canvas);
+    scheduleCanvasRecovery();
+  });
+  return { canvas, context, transform };
+}
+
+// Canvases known to have been cleared under us. Weak, so a canvas that is
+// dropped by a zoom or a trim takes its entry with it.
+const lostCanvases = new WeakSet();
+
+// Has this canvas lost the page that was drawn on it?
+//
+// The event is the reliable answer and not the only one: Safari never sends it
+// for a 2D canvas, and a canvas detached in the park can be cleared with no one
+// listening. So the bitmap is also asked directly. pdf.js fills every page
+// white before it draws a thing, which makes "pure black at all four corners
+// and the centre" a cleared bitmap in practice — and the price of the rare
+// genuinely black page is one redundant render on returning to the app.
+function canvasLostItsPixels(canvas) {
+  if (lostCanvases.has(canvas)) return true;
+  try {
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return false;
+    if (typeof ctx.isContextLost === "function" && ctx.isContextLost()) return true;
+    const w = canvas.width;
+    const h = canvas.height;
+    if (w < 6 || h < 6) return false;
+    const points = [[2, 2], [w - 3, 2], [2, h - 3], [w - 3, h - 3], [w >> 1, h >> 1]];
+    return points.every(([x, y]) => {
+      const [r, g, b] = ctx.getImageData(x, y, 1, 1).data;
+      return r === 0 && g === 0 && b === 0;
+    });
+  } catch (_) {
+    return false;
+  }
+}
+
+// Draw a page again into a fresh canvas and swap it for the one that lost its
+// pixels, at the scale it was ALREADY drawn at — so the text, mark, badge and
+// ink layers sitting on it are all still right and stay exactly where they are.
+// replaceWith, so the new canvas takes the old one's place in tree order; the
+// layers' stacking depends on it (see stalePageForRelayout).
+function repaintPageCanvas(pageNumber, lost) {
+  const entry = openPdf?.pages.get(pageNumber);
+  // A render already in flight replaces the canvas anyway.
+  if (!entry || entry.repaint || entry.task || !entry.viewport) return;
+  const token = pdfOpenToken;
+  const generation = entry.generation;
+  const viewport = entry.viewport;
+  const outputScale = entry.renderOutputScale || canvasOutputScale(viewport.width, viewport.height);
+  const doc = openPdf.doc;
+  // A zoom or a trim while this was drawing has already decided the page's
+  // future, and bumped the generation to say so.
+  const stale = () => token !== pdfOpenToken || entry.generation !== generation || lost.parentNode !== entry.el;
+  entry.repaint = (async () => {
+    const page = await doc.getPage(pageNumber);
+    if (stale()) return;
+    const { canvas, context, transform } = createPageCanvas(viewport, outputScale);
+    await page.render({ canvasContext: context, viewport, transform }).promise;
+    if (stale()) return;
+    lostCanvases.delete(lost);
+    lost.replaceWith(canvas);
+  })()
+    .catch((error) => {
+      console.warn(`Could not repaint page ${pageNumber}`, error);
+      if (stale()) return;
+      // The long way round: a page drawn from scratch, layers and all.
+      unrenderPage(pageNumber);
+      if (isPageNearViewport(pageNumber)) renderPage(pageNumber);
+    })
+    .finally(() => { entry.repaint = null; });
+}
+
+// Every rendered page whose canvas was cleared under it: repainted if the
+// reader can see it or is about to, turned back into a placeholder if not (the
+// observer brings it back when they get there, and a black page they are not
+// looking at is not worth a render now).
+export function recoverLostPageCanvases() {
+  if (!openPdf) return 0;
+  let found = 0;
+  [...openPdf.rendered].forEach((pageNumber) => {
+    const entry = openPdf.pages.get(pageNumber);
+    const canvas = entry?.el.querySelector(".pdf-canvas:not(.is-stale)");
+    if (!canvas || !canvasLostItsPixels(canvas)) return;
+    found += 1;
+    if (isPageNearViewport(pageNumber)) repaintPageCanvas(pageNumber, canvas);
+    else {
+      lostCanvases.delete(canvas);
+      unrenderPage(pageNumber);
+    }
+  });
+  if (found) console.warn(`${found} page canvas(es) had lost their pixels — repainting`);
+  return found;
+}
+
+let canvasRecoveryFrame = 0;
+function scheduleCanvasRecovery() {
+  if (canvasRecoveryFrame) return;
+  canvasRecoveryFrame = requestAnimationFrame(() => {
+    canvasRecoveryFrame = 0;
+    recoverLostPageCanvases();
+  });
+}
+
+// The moments a canvas is most likely to have been cleared are the moments the
+// app comes back: from the background, or out of the back/forward cache. Asked
+// twice on a return, because Chrome can restore a context a beat after the page
+// is shown, and the second look is what catches a canvas restored late without
+// an event anyone heard.
+export const PDF_CANVAS_RECHECK_MS = 600;
+let canvasRecoveryInstalled = false;
+export function initDocumentCanvasRecovery() {
+  if (canvasRecoveryInstalled) return;
+  canvasRecoveryInstalled = true;
+  const onReturn = () => {
+    if (document.visibilityState !== "visible") return;
+    scheduleCanvasRecovery();
+    setTimeout(scheduleCanvasRecovery, PDF_CANVAS_RECHECK_MS);
+  };
+  document.addEventListener("visibilitychange", onReturn);
+  window.addEventListener("pageshow", onReturn);
 }
 
 // How long a page's render may go unanswered before it is started again.

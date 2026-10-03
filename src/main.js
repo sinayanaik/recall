@@ -132,7 +132,7 @@ import { closeDocumentToc, documentOutlineEntries, initDocumentOutlineFolding, i
 import { activePdfId, deckPdfById, deckPdfs, PDF_PRIMARY_ID, withDeckPdfs } from "./documents/pdf-multi.js?v=__BUILD__";
 import { removePdfFromDeck, renamePdf } from "./documents/pdf-multi-actions.js?v=__BUILD__";
 import { closePdfPanel, initPdfSwitcher } from "./documents/pdf-switcher.js?v=__BUILD__";
-import { currentPdfDocument, currentPdfPageCount, documentFittedWidth, fitDocumentToWidth, initDocumentPinchZoom, isDocumentFitWidth, openDocumentIsCurrent, openDocumentPdfId, openDocumentView, reattachDocument, relayoutDocument, repaintOpenDocumentPages, scheduleDocumentPositionSave, scrollToDocumentPage, refreshDocumentPaperForTheme, setDocumentAttachHandler, setDocumentOpenedHook, setDocumentPagePaintedHook, setNotebookStartHandler, setPaperChangedHook, switchToPdf, togglePdfInvert, updatePageIndicator, zoomDocument, retryMissingDocumentOpen } from "./documents/pdf-view.js?v=__BUILD__";
+import { currentPdfDocument, currentPdfPageCount, documentFittedWidth, fitDocumentToWidth, initDocumentCanvasRecovery, initDocumentPinchZoom, isDocumentFitWidth, openDocumentIsCurrent, openDocumentPdfId, openDocumentView, reattachDocument, relayoutDocument, repaintOpenDocumentPages, scheduleDocumentPositionSave, scrollToDocumentPage, refreshDocumentPaperForTheme, setDocumentAttachHandler, setDocumentOpenedHook, setDocumentPagePaintedHook, setNotebookStartHandler, setPaperChangedHook, switchToPdf, togglePdfInvert, updatePageIndicator, zoomDocument, retryMissingDocumentOpen } from "./documents/pdf-view.js?v=__BUILD__";
 import { adoptDocumentInk, canRedoInk, canUndoInk, copyInkSelection, cutInkSelection, duplicateInkSelection, hasInkClipboard, initDocumentInk, inkMarkImageMarkdown, inkMarkIsHighlight, inkSelectionCount, isInkMarkId, nudgeInkSelection, paintDocumentInk, pasteInkSelection, redoInk, repaintDocumentInk, setInkChangedHandler, undoInk } from "./documents/pdf-ink.js?v=__BUILD__";
 import { addHandwritingImage, enterHandwritingView, refreshHandwritingBoard, runHandwritingMenuAction, startHandwritingNotebook } from "./handwriting/board.js?v=__BUILD__";
 import { closeBlockStylePopover, isBlockStylePopoverOpen } from "./documents/block-style-bar.js?v=__BUILD__";
@@ -1168,6 +1168,7 @@ onDomReady(initNotesCaretLine);
 onDomReady(initMarkMenu);
 onDomReady(initDocumentMarkMenu);
 onDomReady(initDocumentPinchZoom);
+onDomReady(initDocumentCanvasRecovery);
 onDomReady(initDocumentRegionSelect);
 onDomReady(() => {
   initReadingRail();
