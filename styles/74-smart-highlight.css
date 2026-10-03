@@ -18,6 +18,9 @@
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+  /* The scroller is a flex column, and a flex item that clips its overflow may
+     shrink to nothing — which this one did, to a sliver of its own padding. */
+  flex-shrink: 0;
 }
 
 /* On a touch screen one finger is the highlighter while the mode is on, so the

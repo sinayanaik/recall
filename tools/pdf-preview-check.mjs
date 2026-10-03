@@ -1347,6 +1347,27 @@ try {
       menu.closeMarkMenu();
     }
 
+    // ── Running on from a highlight of the same colour GROWS it ──────────
+    // From inside "sentence" — already highlighted — on to "selecting": one
+    // highlight over the lot, with the same id, not a second laid half over
+    // the first. And undone, it is the highlight it was.
+    let merge = null;
+    if (madeA) {
+      const span = lineSpan(2);
+      const text = span.textContent;
+      const countBefore = texts().length;
+      await settle(450);
+      await drag(charAt(span, text.indexOf("sentence") + 2), charAt(span, text.indexOf("selecting") + 3), 4);
+      const grown = texts().find((r) => r.id === madeA.id) || null;
+      merge = { added: texts().length - countBefore, text: grown?.text || "" };
+      ink.undoInk();
+      await settle(60);
+      merge.undone = texts().find((r) => r.id === madeA.id)?.text || "";
+      ink.redoInk();
+      await settle(60);
+      merge.redone = texts().find((r) => r.id === madeA.id)?.text || "";
+    }
+
     return {
       armedClass,
       textLayerInert,
@@ -1375,6 +1396,7 @@ try {
       redonePainted,
       tapOpened,
       tapMade,
+      merge,
       madeIds: [madeA?.id, madeB?.id].filter(Boolean),
       // For the real-input drags below, outside this evaluate.
       mouseLine: ends(4),
@@ -1414,6 +1436,12 @@ try {
     `undo 1: B live=${region.afterUndo1.b} A live=${region.afterUndo1.a}; undo 2: A live=${region.afterUndo2.a}; redo: A back=${region.redone}, painted=${region.redonePainted}`);
   check("a tap on a highlight while ▣ is on opens its menu, and makes nothing",
     region.tapOpened && region.tapMade === 0, `menu=${region.tapOpened}, made ${region.tapMade}`);
+  check("running on from a highlight of the same colour grows it, rather than stacking a second",
+    region.merge?.added === 0 && region.merge?.text === "line 2 carries a sentence worth selecting",
+    region.merge ? `added ${region.merge.added}, now "${region.merge.text}"` : "not run");
+  check("...and undo shrinks it back, redo grows it again",
+    region.merge?.undone === "line 2 carries a sentence" && region.merge?.redone === "line 2 carries a sentence worth selecting",
+    region.merge ? `undo → "${region.merge.undone}", redo → "${region.merge.redone}"` : "not run");
 
   // ── Real input, through Chrome's own pipeline ─────────────────────────────
   //

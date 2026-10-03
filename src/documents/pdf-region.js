@@ -304,7 +304,7 @@ function updateRegionText() {
 function commitRegionText(drag) {
   const made = drag.range ? smartHlCapture(drag.range) : null;
   if (!made) return false;
-  smartHlApply(made.capture, made.rects, drag.color);
+  smartHlApply(made, drag.color);
   return true;
 }
 

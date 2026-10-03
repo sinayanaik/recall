@@ -44,8 +44,8 @@ import { inkFilingColor } from "../format/ink-colors.js?v=__BUILD__";
 import { closeMarkMenu } from "../notes/mark-menu.js?v=__BUILD__";
 import {
   addDocumentHighlight, documentHighlightById, documentHighlightNote, documentHighlightsCovering,
-  flashDocumentHighlight, recolourDocumentHighlight, reinstateDocumentHighlight, removeDocumentHighlight,
-  setDocumentHighlightNote
+  documentHighlightsUnderRects, flashDocumentHighlight, recolourDocumentHighlight, reinstateDocumentHighlight,
+  removeDocumentHighlight, setDocumentHighlightNote, updateDocumentHighlight
 } from "./pdf-highlights.js?v=__BUILD__";
 import {
   TEXT_ITEM_ATTR, captureDocumentRange, mergeQuads, pageNumberForRect, quadToPageBox, rectToPdfQuad, textItemBox
@@ -272,12 +272,41 @@ export function smartHlRangeBetween(a, b) {
   return range;
 }
 
-// What addDocumentHighlight takes, and the rects the covering test reads.
+// What addDocumentHighlight takes, the rects the covering test reads, and the
+// Range itself, which a merge grows.
 export function smartHlCapture(range) {
   const capture = captureDocumentRange(range);
   if (!capture) return null;
   const rects = Array.from(range.getClientRects()).filter((rect) => rect.width >= 0.5 && rect.height >= 0.5);
-  return { capture, rects };
+  return { capture, rects, range };
+}
+
+// A stored text highlight as a live Range over the text layer, from its own
+// anchors — null when either end's page is not on the stage.
+function smartHlBoundary(anchor) {
+  if (!anchor) return null;
+  const span = pdfPageElement(anchor.page)?.querySelector(`[${TEXT_ITEM_ATTR}="${Number(anchor.item) || 0}"]`);
+  const node = span?.firstChild;
+  if (!node || node.nodeType !== Node.TEXT_NODE) return null;
+  return { node, offset: Math.max(0, Math.min(Number(anchor.ch) || 0, node.nodeValue.length)) };
+}
+
+function smartHlRangeForRecord(record) {
+  const start = smartHlBoundary(record.anchor);
+  const end = smartHlBoundary(record.focus);
+  if (!start || !end) return null;
+  const range = document.createRange();
+  try {
+    range.setStart(start.node, start.offset);
+    range.setEnd(end.node, end.offset);
+  } catch (_) {
+    return null;
+  }
+  return range.collapsed ? null : range;
+}
+
+function smartHlGeometry(record) {
+  return { page: record.page, anchor: record.anchor, focus: record.focus, text: record.text, quads: record.quads };
 }
 
 // ── The preview ───────────────────────────────────────────────────────────
@@ -351,8 +380,19 @@ export function smartHlRememberAdd(record) {
 // ALL highlighted already are recoloured rather than highlighted twice, and a
 // run that adds anything new is a new highlight. Words already wearing this
 // very colour are left as they are, with a flash to say so.
-export function smartHlApply(capture, rects, color) {
+//
+// ...and one rule of a highlighter's own: a run that overlaps a highlight of
+// the SAME colour GROWS that highlight to cover both, rather than laying a
+// second over half of the first — which would read as a darker patch where the
+// two overlap and list as two highlights for what the reader made as one. The
+// grown highlight keeps its id, so its note and its card stay with it. Not
+// when two or more of the highlights it would swallow have notes of their own:
+// whose note would the one highlight keep? Then it is added beside them, as the
+// selection bar would.
+export function smartHlApply(made, color) {
+  const capture = made?.capture;
   if (!capture) return { kind: "none", id: null };
+  const rects = made.rects || [];
   const covering = documentHighlightsCovering(rects, { textOnly: true });
   if (covering.length) {
     if (covering.every((record) => record.color === color)) {
@@ -383,10 +423,50 @@ export function smartHlApply(capture, rects, color) {
     });
     return { kind: "recolour", id: covering[0].id };
   }
+  const merged = made.range ? smartHlMerge(made.range, rects, color) : null;
+  if (merged) return merged;
   const record = addDocumentHighlight(capture, color);
   if (!record) return { kind: "none", id: null };
   smartHlRememberAdd(record);
   return { kind: "add", id: record.id };
+}
+
+function smartHlMerge(range, rects, color) {
+  const touching = documentHighlightsUnderRects(rects, { textOnly: true })
+    .filter((record) => record.color === color && record.kind !== "area" && record.kind !== "ink");
+  if (!touching.length) return null;
+  const noted = touching.filter((record) => documentHighlightNote(record.id));
+  if (noted.length > 1) return null;
+  const union = range.cloneRange();
+  for (const record of touching) {
+    const own = smartHlRangeForRecord(record);
+    if (!own) return null;
+    if (own.compareBoundaryPoints(Range.START_TO_START, union) < 0) union.setStart(own.startContainer, own.startOffset);
+    if (own.compareBoundaryPoints(Range.END_TO_END, union) > 0) union.setEnd(own.endContainer, own.endOffset);
+  }
+  const capture = captureDocumentRange(union);
+  if (!capture) return null;
+  const kept = noted[0] || touching[0];
+  const keptBefore = smartHlGeometry(kept);
+  const keptAfter = smartHlGeometry(capture);
+  const swallowed = touching.filter((record) => record.id !== kept.id);
+  updateDocumentHighlight(kept.id, keptAfter);
+  swallowed.forEach((record) => removeDocumentHighlight(record.id, { undo: false }));
+  smartHlUndoSink({
+    undo: () => {
+      if (!documentHighlightById(kept.id)) return false;
+      updateDocumentHighlight(kept.id, keptBefore);
+      swallowed.forEach((record) => reinstateDocumentHighlight(record));
+      return true;
+    },
+    redo: () => {
+      if (!documentHighlightById(kept.id)) return false;
+      updateDocumentHighlight(kept.id, keptAfter);
+      swallowed.forEach((record) => removeDocumentHighlight(record.id, { undo: false }));
+      return true;
+    }
+  });
+  return { kind: "merge", id: kept.id };
 }
 
 // ── The stylus ────────────────────────────────────────────────────────────
@@ -520,6 +600,6 @@ export function smartHlClaimInkStroke(page, { points, token } = {}) {
   const sane = made.capture.quads.every((quad) => quad.page === page
     && Math.abs(((quad.rect[1] + quad.rect[3]) / 2) - midY) <= 0.6 * h);
   if (!sane) return false;
-  smartHlApply(made.capture, made.rects, inkFilingColor(token));
+  smartHlApply(made, inkFilingColor(token));
   return true;
 }

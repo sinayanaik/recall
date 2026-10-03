@@ -607,6 +607,19 @@ export function recolourDocumentHighlight(id, color) {
 // taking back the highlight it just made (src/documents/pdf-smart-highlight.js,
 // on the pen's own undo ring). Pushing a notes-undo step for that would leave
 // a second, unrelated Ctrl+Z on the notes stack that puts it back again.
+// A highlight's place changed in place: the same id, colour and note, over a
+// different run of words. What the highlighter does when a sweep runs on from
+// a highlight of the same colour (src/documents/pdf-smart-highlight.js) — one
+// highlight grown to cover both, rather than a second laid half over the first.
+export function updateDocumentHighlight(id, fields) {
+  if (!documentHighlightById(id)) return false;
+  const next = documentHighlights().map((record) =>
+    record.id === id ? { ...record, ...fields, qv: QUAD_GEOMETRY_VERSION, at: Date.now() } : record);
+  commitDocumentHighlights(next);
+  repaintDocumentHighlights();
+  return true;
+}
+
 export function removeDocumentHighlight(id, { undo = true } = {}) {
   const record = documentHighlightById(id);
   if (!record) return;
