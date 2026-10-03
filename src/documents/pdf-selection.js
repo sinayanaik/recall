@@ -166,7 +166,16 @@ export function mergeQuads(quads) {
 export function captureDocumentSelection() {
   const selection = window.getSelection();
   if (!selection || selection.isCollapsed || !selection.rangeCount) return null;
-  const range = selection.getRangeAt(0);
+  return captureDocumentRange(selection.getRangeAt(0));
+}
+
+// The same snapshot of any Range over the text layer, selected or not. The
+// highlighter (src/documents/pdf-smart-highlight.js) builds its Range from a
+// drag rather than from the reader's selection — and while ▣ is on the text
+// layer takes no pointer events, so there is no selection to read. Nothing
+// here needs one: getClientRects is a layout question, not a hit test.
+export function captureDocumentRange(range) {
+  if (!range || range.collapsed) return null;
   const anchor = boundaryAnchor(range.startContainer, range.startOffset, "start");
   const focus = boundaryAnchor(range.endContainer, range.endOffset, "end");
   if (!anchor || !focus) return null;

@@ -361,6 +361,7 @@ const APP_SHELL = [
   `./styles/71-dialog-fit.css?v=${STAMP}`,
   `./styles/72-ink-paper.css?v=${STAMP}`,
   `./styles/73-ink-panel.css?v=${STAMP}`,
+  `./styles/74-smart-highlight.css?v=${STAMP}`,
   // The module entry point. Everything it imports is stamped with the same
   // ?v=, so those URLs change with every release too — which is what lets the
   // cache-first handler below serve them without revalidating and still never
@@ -409,6 +410,7 @@ const APP_SHELL = [
   `./src/core/constants.js?v=${STAMP}`,
   `./src/core/dom.js?v=${STAMP}`,
   `./src/core/gesture.js?v=${STAMP}`,
+  `./src/core/word-bounds.js?v=${STAMP}`,
   `./src/core/lib-guard.js?v=${STAMP}`,
   `./src/core/lib-loader.js?v=${STAMP}`,
   `./src/core/state.js?v=${STAMP}`,
@@ -435,6 +437,7 @@ const APP_SHELL = [
   `./src/documents/pdf-region-marks.js?v=${STAMP}`,
   `./src/documents/pdf-region-resize.js?v=${STAMP}`,
   `./src/documents/pdf-region.js?v=${STAMP}`,
+  `./src/documents/pdf-smart-highlight.js?v=${STAMP}`,
   `./src/documents/pdf-selection.js?v=${STAMP}`,
   `./src/documents/pdf-store.js?v=${STAMP}`,
   `./src/documents/pdf-toc.js?v=${STAMP}`,

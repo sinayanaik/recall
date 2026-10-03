@@ -258,6 +258,15 @@ export function createInkEngine({
   // header. Called whenever the host has highlighter ink to paint, and expected
   // to hand back the same element every time for as long as the host lives.
   makeUnderlay = null,
+  // Offered a finished highlighter stroke before it is committed, as
+  // (key, { points, runs, width, token }) in model units: `points` is the raw
+  // centreline, `runs` what would be committed (straightened, if Straight is
+  // on). Truthy means the caller has turned the sweep into something else — on
+  // the Document surface, a text highlight of the words it ran along — and the
+  // stroke is dropped: no ink, no undo step of the engine's own, no commit. A
+  // throw keeps the stroke, so the reader never loses a band to a bug. The
+  // drawing sheet passes nothing and every stroke is ink, as before.
+  claimStroke = null,
   root = null,
   className = "ink-layer-canvas"
 } = {}) {
@@ -647,9 +656,24 @@ export function createInkEngine({
   // an erase cancelled mid-scrub had already removed strokes that nothing was
   // holding a copy of.
   function remember(key, before) {
-    history.push({ key, strokes: before });
+    rememberStep({ key, strokes: before });
+  }
+
+  function rememberStep(step) {
+    history.push(step);
     if (history.length > INK_HISTORY_MAX) history.shift();
     future.length = 0;
+  }
+
+  // A step that is not strokes: something the surface did on the pen's behalf
+  // and wants taken back by the same ↶ — the highlighter turning a sweep into a
+  // text highlight, which lives in the document's highlights rather than in any
+  // stroke array. `undo` and `redo` return false when there was nothing left to
+  // do (the highlight was deleted from its own menu in between), and restore
+  // then moves on to the step before, so one press is never a press for nothing.
+  function pushAction(action) {
+    if (!action || typeof action.undo !== "function" || typeof action.redo !== "function") return;
+    rememberStep({ action });
   }
 
   function snapshot(key) {
@@ -665,7 +689,18 @@ export function createInkEngine({
   }
 
   function restore(from, to, label) {
-    const step = from.pop();
+    let step = from.pop();
+    while (step?.action) {
+      let changed = false;
+      try {
+        changed = (label === "undo" ? step.action.undo() : step.action.redo()) !== false;
+      } catch (error) {
+        console.warn("An undo step could not be applied", error);
+      }
+      to.push(step);
+      if (changed) return true;
+      step = from.pop();
+    }
     if (!step) return false;
     const entry = hosts.get(step.key);
     if (!entry) return false;
@@ -1280,6 +1315,18 @@ export function createInkEngine({
         .filter((run) => run.length >= 3)
         .map((run) => ({ w: gesture.width, c: gesture.pen, p: run }));
       if (!added.length) { clearOverlay(); unmountOverlay(); return; }
+      // A sweep the surface reads as something else — see claimStroke. Asked
+      // only of a highlighter stroke the shape snapper did not take: a circle
+      // or an arrow is a drawing whatever is under it.
+      if (gesture.hl && !gesture.snapped && claimStroke) {
+        let claimed = false;
+        try {
+          claimed = Boolean(claimStroke(gesture.key, { points: gesture.points, runs: added, width: gesture.width, token: gesture.pen }));
+        } catch (error) {
+          console.warn("A highlighter stroke could not be read as text", error);
+        }
+        if (claimed) { clearOverlay(); unmountOverlay(); return; }
+      }
       entry.strokes = entry.strokes.concat(added);
       remember(gesture.key, gesture.before);
       // Offered to the dry canvas as an ADDITION rather than a repaint of the
@@ -1564,6 +1611,7 @@ export function createInkEngine({
     isDrawing: () => Boolean(live),
     undo: () => restore(history, future, "undo"),
     redo: () => restore(future, history, "redo"),
+    pushAction,
     canUndo: () => history.length > 0,
     canRedo: () => future.length > 0,
     getTool: () => tool,

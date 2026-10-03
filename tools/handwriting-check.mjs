@@ -2335,8 +2335,21 @@ try {
     await settle(300);
 
     api.setInkTool("highlighter");
+    // On BLANK paper, below the fixture's last line of text: a sweep along a
+    // line of words is a text highlight now (smartHlClaimInkStroke, in
+    // src/documents/pdf-smart-highlight.js), and this is the band's own case.
+    const blankAt = async () => {
+      const [, vy] = api.pdfPageViewport(1).convertToViewportPoint(150, 420);
+      let y = pageEl.getBoundingClientRect().top + vy;
+      if (y > window.innerHeight - 60 || y < 60) {
+        view.scrollTop += y - (window.innerHeight * 0.5);
+        await settle(300);
+        y = pageEl.getBoundingClientRect().top + vy;
+      }
+      return y;
+    };
     before = inkMarks().map((r) => r.id);
-    const wetIn = await scribble(y0 + 70, 1.5);
+    const wetIn = await scribble(await blankAt(), 1.5);
     const band = newest(before);
     const strokes = band ? api.decodeInkStrokes(band.ink?.s) : [];
     // Asked of the page as it is NOW, not of the element found before the
@@ -2360,6 +2373,62 @@ try {
     const liveLayer = document.querySelector("#documentStage .pdf-page[data-page-number='1'] .pdf-ink-hl-layer");
     const invertedBlend = liveLayer ? getComputedStyle(liveLayer).mixBlendMode : "";
     api.applyPdfInvert(false, { remember: false });
+    await settle(200);
+
+    // ── ...and along a line of WORDS, a text highlight ────────────────────
+    //
+    // The same highlighter swept along line 2 of the page: the words are
+    // there to be had, so it becomes a highlight OF them — whole words, filed
+    // in the band's colour — and no band is kept. It is on the pen's undo ring
+    // like the ink around it: undone, redone as the same highlight, and undone
+    // again so the cleanup below finds the history it always did.
+    const lineItem = (api.pdfPageTextItems(1) || []).find((item) => /^Page 1 line 2 carries/.test(item.str || ""));
+    let swept = null;
+    if (lineItem) {
+      const vp = api.pdfPageViewport(1);
+      const h = lineItem.height || Math.hypot(lineItem.transform[2], lineItem.transform[3]);
+      const midY = lineItem.transform[5] + (0.3 * h);
+      const startX = lineItem.transform[4] + (lineItem.width * 0.2);
+      const endX = lineItem.transform[4] + (lineItem.width * 0.7);
+      const toClient = (x) => {
+        const [vx, vy] = vp.convertToViewportPoint(x, midY);
+        const b = pageEl.getBoundingClientRect();
+        return { x: b.left + vx, y: b.top + vy };
+      };
+      let a = toClient(startX);
+      if (a.y > window.innerHeight - 60 || a.y < 60) {
+        view.scrollTop += a.y - (window.innerHeight * 0.5);
+        await settle(300);
+        a = toClient(startX);
+      }
+      const z = toClient(endX);
+      const marksBefore = inkMarks().map((r) => r.id);
+      const textsBefore = (api.state.meta?.pdfHighlights || []).filter((r) => r.kind === "text").map((r) => r.id);
+      pen(view, "pointerdown", a.x, a.y, 1);
+      for (let i = 1; i <= 16; i += 1) pen(view, "pointermove", a.x + (((z.x - a.x) * i) / 16), a.y + (Math.sin(i) * 1.2), 1);
+      await settle(60);
+      pen(view, "pointerup", z.x, z.y, 0);
+      await settle(450);
+      const made = (api.state.meta?.pdfHighlights || []).filter((r) => r.kind === "text" && !textsBefore.includes(r.id));
+      const id = made[0]?.id || null;
+      const live = () => Boolean(id && (api.state.meta?.pdfHighlights || []).some((r) => r.id === id));
+      swept = {
+        made: made.length,
+        text: made[0]?.text || "",
+        color: made[0]?.color || "",
+        line: lineItem.str,
+        inkAdded: inkMarks().filter((r) => !marksBefore.includes(r.id)).length
+      };
+      api.undoInk();
+      await settle(80);
+      swept.afterUndo = live();
+      api.redoInk();
+      await settle(80);
+      swept.afterRedo = live();
+      api.undoInk();
+      await settle(80);
+      swept.afterSecondUndo = live();
+    }
     api.setInkTool("pen");
     // Taken back, so the paper is as the cases after this expect it.
     api.undoInk();
@@ -2393,6 +2462,7 @@ try {
       siblings: Boolean(layer && inkLayer && layer.parentElement === livePage && inkLayer.parentElement === livePage),
       blend: layerStyle?.mixBlendMode || "", z: layerStyle?.zIndex || "", banded, invertedBlend,
       nbStroke: nbStroke ? { c: nbStroke.c, w: nbStroke.w } : null,
+      swept,
       errs: window.__errs.slice(0, 4)
     };
   }`, PEN_SRC);
@@ -2416,10 +2486,71 @@ try {
     paperInk.tokens.length === 1 && /^hyellowq35$/.test(paperInk.tokens[0]) && paperInk.points[0] === 2
       && paperInk.bandColour === "yellow",
     `tokens ${paperInk.tokens.join(", ") || "none"}, ${paperInk.points.join(", ")} point(s), filed ${paperInk.bandColour}`);
+  {
+    const sw = paperInk.swept;
+    const at = sw ? sw.line.indexOf(sw.text) : -1;
+    const wholeWords = Boolean(sw && sw.text && at >= 0
+      && (at === 0 || /\s/.test(sw.line[at - 1]))
+      && (at + sw.text.length === sw.line.length || /[\s.,;:]/.test(sw.line[at + sw.text.length])));
+    check("a highlighter swept along a line of WORDS becomes a text highlight of those words",
+      sw?.made === 1 && wholeWords && sw.text.split(" ").length >= 3 && sw.color === "yellow" && sw.inkAdded === 0,
+      sw ? `${sw.made} made: "${sw.text}" (whole words=${wholeWords}), colour ${sw.color}, ink marks +${sw.inkAdded}` : "line 2 of page 1 was not found");
+    check("...which the pen's undo takes back, and redo puts back",
+      sw && sw.afterUndo === false && sw.afterRedo === true && sw.afterSecondUndo === false,
+      sw ? `after undo live=${sw.afterUndo}, after redo=${sw.afterRedo}, after undo again=${sw.afterSecondUndo}` : "not run");
+  }
   check("the pen the reader chose is the pen on the next document opened",
     paperInk.nbStroke?.c === "red" && paperInk.nbStroke?.w === 3.4,
     `a stroke on the notebook opened after choosing red 3.4pt came out ${JSON.stringify(paperInk.nbStroke)}`);
   check("...with nothing thrown on the way", (paperInk.errs || []).length === 0, (paperInk.errs || []).join(" | "));
+
+  // ── 8c. A stroke whose pen-up never came ──────────────────────────────
+  //
+  // Seen in this suite's own run: a stroke whose pointerup never reached the
+  // page (a release outside the window, a capture the browser took back) left
+  // a press behind, and the ink layer refused every stroke after it for the
+  // rest of the session — the same "I cannot draw anything" a leaked press has
+  // always meant. The same pen pressing again is proof the last contact
+  // ended, so the stale press is let go, what it drew is kept, and the new
+  // stroke draws.
+  const lostUp = await page.evaluate(`async (penSrc) => {
+    const { api, settle } = window.__recall;
+    const pen = (0, eval)(penSrc);
+    api.setViewMode("document");
+    for (let i = 0; i < 60 && !document.querySelector("#documentStage[data-doc-slot='doc'] .pdf-page[data-page-number='1'] canvas.pdf-canvas"); i += 1) await settle(100);
+    await settle(400);
+    api.setInkTool("pen");
+    const view = document.getElementById("documentView");
+    const pageEl = document.querySelector("#documentStage .pdf-page[data-page-number='1']");
+    const at = (x, y) => { const b = pageEl.getBoundingClientRect(); const [vx, vy] = api.pdfPageViewport(1).convertToViewportPoint(x, y); return { x: b.left + vx, y: b.top + vy }; };
+    let a = at(120, 300);
+    if (a.y > window.innerHeight - 60 || a.y < 60) { view.scrollTop += a.y - (window.innerHeight / 2); await settle(300); a = at(120, 300); }
+    const strokes = () => (api.documentInkMarks(1) || []).flatMap((r) => api.decodeInkStrokes(r.ink && r.ink.s) || []).length;
+    const before = strokes();
+    pen(view, "pointerdown", a.x, a.y, 1);
+    for (let i = 1; i <= 10; i += 1) pen(view, "pointermove", a.x + (i * 10), a.y + Math.sin(i) * 4, 1);
+    await settle(60);
+    // ...and no pointerup. The same pen comes down again, lower down.
+    const b2 = { x: a.x, y: a.y + 50 };
+    pen(view, "pointerdown", b2.x, b2.y, 1);
+    for (let i = 1; i <= 10; i += 1) pen(view, "pointermove", b2.x + (i * 10), b2.y + Math.sin(i) * 4, 1);
+    await settle(60);
+    pen(view, "pointerup", b2.x + 100, b2.y, 0);
+    await settle(400);
+    const after = strokes();
+    api.undoInk();
+    api.undoInk();
+    await settle(200);
+    const back = strokes() - before;
+    // Back on the notebook, where 8b left the reader and 9 expects them.
+    api.setViewMode("handwriting");
+    for (let i = 0; i < 60 && !document.querySelector("#documentStage[data-doc-slot='notebook'] .pdf-page[data-page-number='1'] canvas.pdf-canvas"); i += 1) await settle(100);
+    await settle(400);
+    return { added: after - before, back, errs: window.__errs.slice(0, 3) };
+  }`, PEN_SRC);
+  check("a stroke whose pen-up never came does not stop the next one drawing",
+    lostUp.added === 2 && lostUp.back === 0,
+    `${lostUp.added} stroke(s) from the lost one and the next (want 2), ${lostUp.back} left after undoing both`);
 
   // ── 9. A picture on the page ────────────────────────────────────────────
   //

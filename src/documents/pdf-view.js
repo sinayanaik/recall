@@ -3343,6 +3343,15 @@ function clearPinchPaint() {
   host.style.willChange = "";
 }
 
+// Whether two fingers on the glass have become a ZOOM — the ratio has left 1.
+// ▣'s two-finger pan (src/documents/pdf-region.js) moves the page while they
+// are only travelling together, and hands the gesture over to this file the
+// moment they spread or close, so a pan and a zoom never fight over one pair
+// of fingers.
+export function documentPinchEngaged() {
+  return Boolean(pinch && pinch.ratio !== 1);
+}
+
 export function initDocumentPinchZoom() {
   const view = el.documentView;
   if (!view) return;

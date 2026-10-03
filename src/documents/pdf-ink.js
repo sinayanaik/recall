@@ -30,10 +30,11 @@
 //
 // ── The pen draws and the finger scrolls, with no mode to forget ───────────
 //
-// pdf-region.js is one-shot precisely because an inkRailArmed drawing mode is a
-// surface you cannot scroll or select on, and it says so at length. Ink cannot
-// be one-shot — you do not write one stroke — so it does the other thing: it is
-// never inkRailArmed at all, and the pointer type decides.
+// ▣ (pdf-region.js) is a mode the reader turns on and off, and pays for it
+// with one-finger scrolling while it is on — it says so at length. Ink cannot
+// ask that: you write all day, and a page you cannot scroll while writing is
+// no page at all. So it does the other thing: it is never inkRailArmed at all,
+// and the pointer type decides.
 //
 //   pen    always draws. There is nothing to press first.
 //   touch  never draws. Scrolling, pinching and press-and-slide to select are
@@ -107,6 +108,7 @@ import { el } from "../core/dom.js?v=__BUILD__";
 import { inkPenIsDown, noteInkContact, noteInkStrokeCommitted, setInkPenDown, setPenTextMode } from "../core/gesture.js?v=__BUILD__";
 import { QUAD_GEOMETRY_VERSION, documentHighlightAtPoint, documentInkMarks, freshDocumentHighlightId, setDocumentInkForPage } from "./pdf-highlights.js?v=__BUILD__";
 import { REGION_CLASS } from "./pdf-region.js?v=__BUILD__";
+import { setSmartHlUndoSink, smartHlClaimInkStroke } from "./pdf-smart-highlight.js?v=__BUILD__";
 import { PDF_DARK_CLASS, currentDocumentPage, documentPageInViewCheap, pdfPageElement, pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
 import { INK_ERASER_SIZE_DEFAULT, INK_ERASE_MODE_DEFAULT, INK_ERASE_TARGET_DEFAULT, INK_HL_TOKEN_DEFAULT, INK_HL_WIDTH_DEFAULT, INK_PEN_DEFAULT, INK_TOOL_DEFAULT, INK_WIDTH_DEFAULT, formatInkToken, inkFilingColor, isHighlighterToken, normalizeInkEraseMode, normalizeInkEraseTarget, normalizeInkEraserSize, normalizeInkHlWidth, normalizeInkOpacity, normalizeInkToken, normalizeInkTool, normalizeInkWidth, parseInkToken } from "../format/ink-colors.js?v=__BUILD__";
 import { INK_FORMAT_VERSION, INK_MARK_IDLE_MS, decodeInkStrokes, encodeInkStrokes, inkStrokesBounds, inkStrokesJoinMark, mergeInkBoxes } from "../format/ink-strokes.js?v=__BUILD__";
@@ -282,6 +284,12 @@ function ensureEngine() {
       }
       return layer;
     },
+    // A highlighter swept along a line of real words is a highlight OF those
+    // words — searchable, quotable, a card with the words on it — rather than
+    // a band over them; src/documents/pdf-smart-highlight.js decides, and keeps
+    // the band for a scan, a figure, handwriting, blank paper or anything drawn
+    // rather than swept.
+    claimStroke: (page, stroke) => smartHlClaimInkStroke(page, stroke),
     className: "pdf-ink-canvas"
   });
   applyInkSettings(engine);
@@ -552,6 +560,21 @@ function inkTakesPointer(event) {
 // A pen aimed at a markdown block, or at a page that is not there, is not a pen
 // that is writing, and a context menu over editable text is wanted.
 function onInkPointerDown(event) {
+  // The SAME pointer pressing again: one pointer cannot press twice without
+  // lifting, so the contact this press belonged to ended without its pointerup
+  // ever reaching this file — a release outside the window, a capture the
+  // browser took back. Kept, it refused every stroke after it for the rest of
+  // the session; it is let go instead, and this press is the new stroke. What
+  // that lost contact had drawn is kept — the reader saw it go down. A
+  // DIFFERENT pointer arriving mid-stroke is a palm or a second finger, and is
+  // still refused.
+  if (press && event.pointerId === press.pointerId) {
+    if (press.live) {
+      ensureEngine().end();
+      noteInkStrokeCommitted();
+    }
+    releaseInkPress();
+  }
   if (press) return;
   noteInkContact(event.pointerType, beginInkPress(event));
 }
@@ -823,6 +846,9 @@ function onInkClick(event) {
 }
 
 export function initDocumentInk() {
+  // The highlighter's text highlights and ▣'s boxes go on the pen's undo ring
+  // (src/documents/pdf-smart-highlight.js says why it is handed in, not imported).
+  setSmartHlUndoSink(pushInkHistoryAction);
   const view = el.documentView;
   if (!view) return;
   // Capture, so the decision about who owns this pointer is made before any of
@@ -1111,6 +1137,23 @@ export function pasteInkSelection(page = null) {
 }
 
 export function nudgeInkSelection(dx, dy) { closeOpenMark(); return ensureEngine().nudgeSelection(dx, dy); }
+
+// A step on the pen's undo ring that is not strokes — see pushAction in
+// src/render/ink-engine.js. The highlighter's text highlights and ▣'s boxes
+// (src/documents/pdf-smart-highlight.js) are taken back by the same ↶ and the
+// same Ctrl+Z as the ink drawn beside them, in the order they were made. Each
+// side tells onInkChanged, which repaints the bar's ↶ ↷ and is what main.js
+// reads to order this ring against the blocks' (lastDocumentEdit).
+export function pushInkHistoryAction({ undo, redo }) {
+  if (typeof undo !== "function" || typeof redo !== "function") return;
+  const told = (fn) => () => {
+    const result = fn();
+    onInkChanged();
+    return result;
+  };
+  ensureEngine().pushAction({ undo: told(undo), redo: told(redo) });
+  onInkChanged();
+}
 
 export function undoInk() { closeOpenMark(); return ensureEngine().undo(); }
 export function redoInk() { closeOpenMark(); return ensureEngine().redo(); }
