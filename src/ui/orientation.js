@@ -25,11 +25,27 @@
 // the window really is in full screen, and leaving full screen is what gives the
 // rotation back — the browser drops the lock itself, and this file notices.
 //
+// It does NOT run the other way. Full screen used to put the remembered
+// orientation back every time it was entered, so ⛶ turned the phone sideways —
+// or pinned it upright — when all the reader asked for was full screen. Same
+// rule as focus mode and full screen (src/ui/chrome.js): a control that moves
+// when you did not touch it is not a control. Pressing Landscape is the only
+// thing that turns the screen.
+//
+// ── What the switch says ──────────────────────────────────────────────────
+//
+// Only what is actually held. The API has no getter for a lock, so the switch
+// is cleared whenever the browser is known to have dropped one: full screen
+// ending in a tab, the screen ending up the other way round than the lock said
+// (an orientation change nobody here asked for), or the app coming back from
+// the background, which on Android costs it full screen and the lock with it.
+//
 // ── What is remembered ────────────────────────────────────────────────────
 //
 // The last orientation chosen, in localStorage. The installed app re-applies it
-// at launch, where a lock needs no gesture; a tab re-applies it whenever full
-// screen is entered, since that is the only moment a tab is allowed to.
+// at launch, where a lock needs no gesture. A tab does not: there the lock only
+// ever lives inside full screen, and entering full screen is not a request to
+// turn anything.
 
 import { el } from "../core/dom.js?v=__BUILD__";
 import { isFullscreenAvailable } from "./chrome.js?v=__BUILD__";
@@ -46,9 +62,9 @@ let lockedTo = null;
 // browser drops such a lock the moment full screen ends, and the switch has to
 // stop claiming it.
 let heldByFullscreen = false;
-// A lock this file is in the middle of asking for. The fullscreenchange that
-// entering full screen fires on the way must not re-apply the OLD preference
-// over the one being set.
+// A lock this file is in the middle of asking for. The fullscreenchange and
+// orientation change it sets off on the way are its own doing, not the browser
+// dropping a lock, and must not clear the switch under it.
 let locking = false;
 
 // The rail mirrors this control, and is told rather than left to notice — the
@@ -66,10 +82,22 @@ export function isOrientationLockAvailable() {
 }
 
 // Installed and launched as an app — where Chrome lets a page lock without full
-// screen.
-export function isStandaloneApp() {
+// screen. Decided once, at launch, and not asked again: Chrome answers
+// `(display-mode: fullscreen)` for a browser TAB in API full screen too, and a
+// lock taken there, mistaken for an app's, was never cleared when full screen
+// ended — the switch went on saying Landscape over an upright screen.
+let launchedAsApp = null;
+
+function detectInstalledApp() {
   const media = (query) => Boolean(window.matchMedia?.(query).matches);
-  return media("(display-mode: standalone)") || media("(display-mode: fullscreen)");
+  return media("(display-mode: standalone)")
+    || (media("(display-mode: fullscreen)") && !document.fullscreenElement)
+    || navigator.standalone === true;
+}
+
+export function isStandaloneApp() {
+  if (launchedAsApp === null) launchedAsApp = detectInstalledApp();
+  return launchedAsApp;
 }
 
 function storedOrientation() {
@@ -162,26 +190,42 @@ function offerOrientationControl() {
   return available;
 }
 
+// The browser dropped the lock: say so.
+function forgetLock() {
+  if (!lockedTo) return;
+  lockedTo = null;
+  heldByFullscreen = false;
+  paintOrientationButton();
+}
+
+// The screen is the other way round from the lock the switch claims, and no
+// lock is being asked for right now — so the lock is gone, whatever took it.
+function reconcileLock() {
+  if (!lockedTo || locking) return;
+  const type = typeof screen !== "undefined" ? screen.orientation?.type : null;
+  if (typeof type === "string" && !type.startsWith(lockedTo)) forgetLock();
+}
+
 export function initScreenOrientation() {
+  // Before anything can be in full screen — see isStandaloneApp.
+  isStandaloneApp();
   const available = offerOrientationControl();
   // A tablet with a keyboard cover, a laptop that folds into one: whether there
   // is a touch screen to turn can change under a running app.
   window.matchMedia?.("(pointer: coarse)").addEventListener?.("change", offerOrientationControl);
 
   // Leaving full screen in a tab takes the lock with it — the browser's doing,
-  // not ours — so the switch has to say so. Entering it (by ⛶, by F11, by this
-  // file) is the one moment a tab may lock, so the remembered choice is put back.
+  // not ours — so the switch has to say so. Entering it does nothing here: see
+  // the note at the top of this file.
   document.addEventListener("fullscreenchange", () => {
-    if (!isOrientationLockAvailable() || locking) return;
-    if (!document.fullscreenElement) {
-      if (lockedTo && heldByFullscreen) {
-        lockedTo = null;
-        heldByFullscreen = false;
-        paintOrientationButton();
-      }
-      return;
-    }
-    if (!lockedTo) restoreOrientation();
+    if (locking || document.fullscreenElement) return;
+    if (heldByFullscreen || !isStandaloneApp()) forgetLock();
+  });
+  if (typeof screen !== "undefined") screen.orientation?.addEventListener?.("change", reconcileLock);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "visible") return;
+    if (!document.fullscreenElement && (heldByFullscreen || !isStandaloneApp())) forgetLock();
+    else reconcileLock();
   });
 
   // Installed and launched: the lock is allowed without a gesture, so the app
@@ -189,13 +233,12 @@ export function initScreenOrientation() {
   if (available && isStandaloneApp()) restoreOrientation();
 }
 
-// Quietly: this is the app putting back what the reader chose, not the reader
-// asking, so a refusal is not worth a toast.
+// The installed app, at launch. Quietly: this is the app putting back what the
+// reader chose, not the reader asking, so a refusal is not worth a toast.
 function restoreOrientation() {
   const wanted = storedOrientation();
   if (!wanted) return;
-  const viaFullscreen = Boolean(document.fullscreenElement) && !isStandaloneApp();
   new Promise((resolve) => resolve(screen.orientation.lock(wanted)))
-    .then(() => { lockedTo = wanted; heldByFullscreen = viaFullscreen; paintOrientationButton(); })
+    .then(() => { lockedTo = wanted; heldByFullscreen = false; paintOrientationButton(); })
     .catch(() => {});
 }

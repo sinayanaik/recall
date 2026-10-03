@@ -772,6 +772,61 @@ try {
     return null;
   });
 
+  // Full screen used to put the remembered orientation back every time it was
+  // entered, so ⛶ turned the phone sideways (or pinned it upright) when all the
+  // reader asked for was full screen. And a lock taken in a tab that was ALREADY
+  // in full screen was mistaken for an installed app's — `display-mode:
+  // fullscreen` matches both — so when full screen ended and the browser
+  // dropped the lock, the switch went on saying Landscape.
+  await check("full screen does not turn the screen, and the switch follows a dropped lock", async () => {
+    await emulatePhone(page, { width: 390, height: 844 });
+    await new Promise((r) => setTimeout(r, 400));
+    const seen = await page.evaluate(`async () => {
+      const settle = (ms) => new Promise((r) => setTimeout(r, ms));
+      const btn = document.getElementById("rotateScreenBtn");
+      const full = document.getElementById("immersiveModeBtn");
+      const railRow = document.querySelector('#readingRailTray [data-rail-action="rotate"]');
+      if (!btn || !full || !railRow) return { error: "no Landscape or Full screen control in the page" };
+      const calls = [];
+      const real = Object.getOwnPropertyDescriptor(screen.orientation, "lock");
+      const key = "recall:screenOrientation";
+      const stored = localStorage.getItem(key);
+      screen.orientation.lock = (target) => { calls.push(target); return Promise.resolve(); };
+      try {
+        if (document.fullscreenElement) await document.exitFullscreen();
+        await settle(300);
+        localStorage.setItem(key, "landscape");
+        full.click();
+        await settle(400);
+        const afterFullscreen = { calls: calls.slice(), fullscreen: Boolean(document.fullscreenElement), pressed: btn.getAttribute("aria-pressed") };
+        btn.click();
+        await settle(300);
+        const locked = btn.getAttribute("aria-pressed");
+        await document.exitFullscreen();
+        await settle(400);
+        const left = { pressed: btn.getAttribute("aria-pressed"), rail: railRow.getAttribute("aria-pressed") };
+        return { afterFullscreen, locked, left };
+      } finally {
+        if (real) Object.defineProperty(screen.orientation, "lock", real);
+        else delete screen.orientation.lock;
+        if (stored === null) localStorage.removeItem(key);
+        else localStorage.setItem(key, stored);
+        if (document.fullscreenElement) await document.exitFullscreen().catch(() => {});
+        document.getElementById("notesHeadMoreMenu").hidden = true;
+      }
+    }`);
+    if (seen.error) return seen.error;
+    if (!seen.afterFullscreen.fullscreen) return "⛶ did not enter full screen, so nothing here was tested";
+    if (seen.afterFullscreen.calls.length) {
+      return `entering full screen asked the screen for ${JSON.stringify(seen.afterFullscreen.calls)} — it should not turn it at all`;
+    }
+    if (seen.afterFullscreen.pressed !== "false") return "entering full screen lit the Landscape switch";
+    if (seen.locked !== "true") return `Landscape pressed inside full screen read ${seen.locked}, expected true`;
+    if (seen.left.pressed !== "false") return "leaving full screen dropped the lock, but the switch still says Landscape";
+    if (seen.left.rail !== "false") return "leaving full screen dropped the lock, but the rail's copy still says Landscape";
+    return null;
+  });
+
   await check("...and a desktop is not offered a screen it cannot turn", async () => {
     await emulateDesktop();
     await page.call("Emulation.setTouchEmulationEnabled", { enabled: false });
