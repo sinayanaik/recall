@@ -193,6 +193,13 @@ export function setDocumentPagePaintedHook(fn) {
   onPagePainted = typeof fn === "function" ? fn : () => {};
 }
 
+// What else sits on a page and can be cleared with it — the ink, which this
+// module must not import (src/main.js wires it, as with the hook above).
+let onCanvasesRecovered = () => {};
+export function setDocumentCanvasRecoveredHook(fn) {
+  onCanvasesRecovered = typeof fn === "function" ? fn : () => {};
+}
+
 export function setDocumentOpenedHook(fn) {
   onDocumentOpened = typeof fn === "function" ? fn : () => {};
 }
@@ -2149,8 +2156,13 @@ function createPageCanvas(viewport, outputScale) {
   canvas.className = "pdf-canvas";
   canvas.width = Math.floor(viewport.width * outputScale);
   canvas.height = Math.floor(viewport.height * outputScale);
-  canvas.style.width = `${Math.floor(viewport.width)}px`;
-  canvas.style.height = `${Math.floor(viewport.height)}px`;
+  // Rounded, not floored: the page box is sized with Math.round (resizePageBox,
+  // buildPagePlaceholders), and a floored canvas left up to a pixel of the box
+  // showing along its bottom and right edge — a white rule under every page,
+  // or a grey one with dark page on. The bitmap stays floored; the sub-pixel
+  // stretch between the two is not something anyone can see.
+  canvas.style.width = `${Math.round(viewport.width)}px`;
+  canvas.style.height = `${Math.round(viewport.height)}px`;
   const context = canvas.getContext("2d", { alpha: false, willReadFrequently: true });
   const transform = outputScale === 1 ? null : [outputScale, 0, 0, outputScale, 0, 0];
   canvas.addEventListener("contextlost", () => lostCanvases.add(canvas));
@@ -2274,9 +2286,21 @@ export function initDocumentCanvasRecovery() {
     if (document.visibilityState !== "visible") return;
     scheduleCanvasRecovery();
     setTimeout(scheduleCanvasRecovery, PDF_CANVAS_RECHECK_MS);
+    // The ink is transparent, so a cleared ink canvas cannot be told from an
+    // empty one by looking at it — but its strokes are in memory and a repaint
+    // is a clear and a re-fill, so it is simply redrawn. The ink engine
+    // repaints on `contextrestored` by itself; this is for the loss nobody
+    // announced.
+    if (openPdf) {
+      try { onCanvasesRecovered(); } catch (error) { console.warn("Could not repaint the ink", error); }
+    }
   };
   document.addEventListener("visibilitychange", onReturn);
   window.addEventListener("pageshow", onReturn);
+  // Android Chrome FREEZES a backgrounded page rather than only hiding it, and
+  // says so on the way back with `resume` — which need not come with a
+  // visibilitychange of its own.
+  document.addEventListener("resume", onReturn);
 }
 
 // How long a page's render may go unanswered before it is started again.

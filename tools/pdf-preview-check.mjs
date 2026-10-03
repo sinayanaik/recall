@@ -5064,11 +5064,41 @@ try {
     }
     api.scrollToDocumentPage(1, 0, { smooth: false });
     await settle(300);
-    return { cpuBacked, wipedSpread, evented, silent, away };
+
+    // The canvas covers its page box exactly — no strip of the box's own
+    // background along the bottom or right edge. Measured at a zoom whose page
+    // size is NOT a whole number of pixels — at least half a pixel over in both
+    // directions, which is the only case where a floored canvas and a rounded
+    // box disagree. Searched for rather than hard-coded, so it stays that kind
+    // of scale whatever the fixture's page size.
+    const vp = api.pdfPageViewport(1);
+    const baseW = vp.width / vp.scale;
+    const baseH = vp.height / vp.scale;
+    const frac = (x) => x - Math.floor(x);
+    let target = vp.scale * 1.07;
+    for (let s = vp.scale * 1.02; s < vp.scale * 1.4; s += 0.0005) {
+      if (frac(baseW * s) > 0.6 && frac(baseH * s) > 0.6) { target = s; break; }
+    }
+    api.setDocumentScale(target);
+    await settle(500);
+    await api.whenDocumentPageReady(1);
+    const zoomedCanvas = canvasOf(pageEl());
+    const boxRect = pageEl().getBoundingClientRect();
+    const canvasRect = zoomedCanvas ? zoomedCanvas.getBoundingClientRect() : null;
+    const strip = canvasRect
+      ? { w: Math.round((boxRect.width - canvasRect.width) * 100) / 100, h: Math.round((boxRect.height - canvasRect.height) * 100) / 100,
+          box: Math.round(boxRect.width * 100) / 100 + "x" + Math.round(boxRect.height * 100) / 100 }
+      : null;
+    api.fitDocumentToWidth();
+    await settle(500);
+    return { cpuBacked, strip, wipedSpread, evented, silent, away };
   }`);
 
   check("a page's canvas is kept off the GPU, where a lost context cannot clear it",
     lostPixels.cpuBacked === true, `willReadFrequently=${lostPixels.cpuBacked}`);
+  check("...and covers its page box exactly, with no strip of page showing past it",
+    lostPixels.strip && Math.abs(lostPixels.strip.w) < 0.5 && Math.abs(lostPixels.strip.h) < 0.5,
+    lostPixels.strip ? `page ${lostPixels.strip.box} · box minus canvas: ${lostPixels.strip.w}px × ${lostPixels.strip.h}px` : "no canvas");
   check("a canvas cleared to black by a context loss is repainted without a zoom",
     lostPixels.wipedSpread < 5 && lostPixels.evented.replaced && lostPixels.evented.spread >= 40 && !lostPixels.evented.placeholder,
     `wiped spread ${lostPixels.wipedSpread} → replaced=${lostPixels.evented.replaced} spread ${lostPixels.evented.spread} placeholder=${lostPixels.evented.placeholder}`);
@@ -6406,6 +6436,48 @@ try {
       `layer=${afterStroke.hasLayer}, ${afterStroke.painted} inked pixel(s)`);
     check("a pen stroke does not become a text highlight", afterStroke.count + afterTap.after === 1,
       `${afterTap.total} record(s) before, ${afterStroke.count} ink after`);
+
+    // ── ...and it survives the canvas under it being cleared ─────────────────
+    //
+    // The same context loss that turns a page black clears an ink canvas too,
+    // and ink is transparent: what that looks like is the handwriting quietly
+    // gone until a zoom repaints it. Staged as the page's was in 9c-1 — the
+    // bitmap cleared, with the browser's event and then without it.
+    const inkLoss = await page.evaluate(`async () => {
+      const { settle } = window.__recall;
+      const layer = () => document.querySelector('.pdf-page[data-page-number="1"] .pdf-ink-layer canvas');
+      const inked = (c) => {
+        if (!c) return -1;
+        const data = c.getContext("2d").getImageData(0, 0, c.width, c.height).data;
+        let n = 0;
+        for (let i = 3; i < data.length; i += 4) if (data[i] > 8) n += 1;
+        return n;
+      };
+      const wipe = (c) => {
+        const ctx = c.getContext("2d");
+        ctx.save();
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.clearRect(0, 0, c.width, c.height);
+        ctx.restore();
+      };
+      const c = layer();
+      if (!c) return { hasLayer: false };
+      wipe(c);
+      const wiped = inked(c);
+      c.dispatchEvent(new Event("contextrestored"));
+      await settle(300);
+      const afterEvent = inked(layer());
+      wipe(layer());
+      document.dispatchEvent(new Event("visibilitychange"));
+      await settle(300);
+      const afterReturn = inked(layer());
+      return { hasLayer: true, wiped, afterEvent, afterReturn };
+    }`);
+    check("ink whose canvas was cleared by a context loss is repainted",
+      inkLoss.hasLayer && inkLoss.wiped === 0 && inkLoss.afterEvent > 50,
+      `layer=${inkLoss.hasLayer} · wiped ${inkLoss.wiped} → ${inkLoss.afterEvent} inked pixel(s)`);
+    check("...and cleared with no event at all, it is repainted on returning to the app",
+      inkLoss.afterReturn > 50, `${inkLoss.afterReturn} inked pixel(s) after the return`);
 
     // ── Zoom: the strokes are coordinates INTO the page, so they must not
     //    move in PDF space — and the layer must be rebuilt at the new scale
