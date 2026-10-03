@@ -590,7 +590,9 @@ export async function mountPdfRegionEmbed(img, { resizable = false } = {}) {
     canvas.style.top = `${top}px`;
     canvas.style.width = `${nativeWidth}px`;
     canvas.style.height = `${nativeHeight}px`;
-    const ctx = canvas.getContext("2d", { alpha: false });
+    // willReadFrequently keeps the bitmap off the GPU, so a lost GPU context
+    // cannot clear it to black — see createPageCanvas in pdf-view.js.
+    const ctx = canvas.getContext("2d", { alpha: false, willReadFrequently: true });
     await page.render({ canvasContext: ctx, viewport: paintViewport }).promise;
     // What the reader put on the page inside the box — highlights and ink —
     // composited onto the same canvas the PDF itself just rendered to, less the

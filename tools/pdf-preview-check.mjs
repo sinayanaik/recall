@@ -4968,6 +4968,119 @@ try {
       : hung.placeholder ? "p1:placeholder — still stuck"
         : hung.canvas ? "p1:fresh" : "p1:empty");
 
+  // ── 9c-1. A page that drew, and then lost its pixels ─────────────────────
+  //
+  // "The PDF shows black, and only after I zoom in or out does it come back."
+  // Not a placeholder — the page had rendered, its highlights were still on it
+  // — but a canvas the browser had CLEARED: Chrome drops an accelerated 2D
+  // canvas's bitmap when the GPU context behind it goes (a phone app sent to
+  // the background, memory pressure), fires contextlost / contextrestored, and
+  // hands it back blank. An `alpha: false` blank is opaque black. A zoom fixed
+  // it only because a zoom builds a new canvas.
+  //
+  // A real context loss cannot be caused from a page, so it is staged the way
+  // the browser leaves it: the bitmap painted black, with and without the
+  // events. What must survive is the page — repainted, with the layers that
+  // were on it still the same elements, not rebuilt.
+  const lostPixels = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    api.scrollToDocumentPage(1, 0, { smooth: false });
+    await settle(400);
+    await api.whenDocumentPageReady(1);
+    const pageEl = () => document.querySelector('.pdf-page[data-page-number="1"]');
+    const canvasOf = (el) => el && el.querySelector("canvas.pdf-canvas:not(.is-stale)");
+    const wipe = (c) => {
+      const ctx = c.getContext("2d");
+      ctx.save();
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.fillStyle = "#000";
+      ctx.fillRect(0, 0, c.width, c.height);
+      ctx.restore();
+    };
+    const spread = (c) => {
+      if (!c) return 0;
+      const probe = document.createElement("canvas");
+      probe.width = 24; probe.height = 32;
+      const ctx = probe.getContext("2d");
+      ctx.drawImage(c, 0, 0, c.width, c.height, 0, 0, 24, 32);
+      const data = ctx.getImageData(0, 0, 24, 32).data;
+      let lo = 255, hi = 0;
+      for (let i = 0; i < data.length; i += 4) {
+        const y = 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
+        if (y < lo) lo = y;
+        if (y > hi) hi = y;
+      }
+      return Math.round(hi - lo);
+    };
+    const first = canvasOf(pageEl());
+    const cpuBacked = Boolean(first && first.getContext("2d").getContextAttributes?.().willReadFrequently);
+    const textLayer = pageEl()?.querySelector(".pdf-text-layer") || null;
+
+    // With the events: contextlost, then a restore that comes back blank.
+    wipe(first);
+    const wipedSpread = spread(first);
+    first.dispatchEvent(new Event("contextlost"));
+    first.dispatchEvent(new Event("contextrestored"));
+    await settle(900);
+    const afterEvent = canvasOf(pageEl());
+    const evented = {
+      replaced: Boolean(afterEvent && afterEvent !== first),
+      spread: spread(afterEvent),
+      layersKept: Boolean(textLayer && textLayer.isConnected && textLayer.parentNode === pageEl()),
+      placeholder: Boolean(pageEl()?.querySelector(".pdf-page-label"))
+    };
+
+    // Without them: the bitmap simply blank when the reader comes back.
+    const second = afterEvent;
+    if (second) wipe(second);
+    document.dispatchEvent(new Event("visibilitychange"));
+    await settle(1400);
+    const afterReturn = canvasOf(pageEl());
+    const silent = {
+      replaced: Boolean(afterReturn && afterReturn !== second),
+      spread: spread(afterReturn),
+      placeholder: Boolean(pageEl()?.querySelector(".pdf-page-label"))
+    };
+
+    // ...and one the reader is NOT looking at goes back to a placeholder rather
+    // than spending a render now — or staying black for when they get there.
+    api.scrollToDocumentPage(3, 0, { smooth: false });
+    await settle(700);
+    const offscreen = [...document.querySelectorAll(".pdf-page")]
+      .map((el) => Number(el.dataset.pageNumber))
+      .find((n) => !api.isPageNearViewport(n) && canvasOf(document.querySelector('.pdf-page[data-page-number="' + n + '"]')));
+    let away = { page: offscreen || 0, placeholder: false, black: true };
+    if (offscreen) {
+      const awayEl = document.querySelector('.pdf-page[data-page-number="' + offscreen + '"]');
+      wipe(canvasOf(awayEl));
+      const found = api.recoverLostPageCanvases();
+      await settle(300);
+      away = {
+        page: offscreen,
+        found,
+        placeholder: Boolean(awayEl.querySelector(".pdf-page-label")),
+        black: Boolean(canvasOf(awayEl))
+      };
+    }
+    api.scrollToDocumentPage(1, 0, { smooth: false });
+    await settle(300);
+    return { cpuBacked, wipedSpread, evented, silent, away };
+  }`);
+
+  check("a page's canvas is kept off the GPU, where a lost context cannot clear it",
+    lostPixels.cpuBacked === true, `willReadFrequently=${lostPixels.cpuBacked}`);
+  check("a canvas cleared to black by a context loss is repainted without a zoom",
+    lostPixels.wipedSpread < 5 && lostPixels.evented.replaced && lostPixels.evented.spread >= 40 && !lostPixels.evented.placeholder,
+    `wiped spread ${lostPixels.wipedSpread} → replaced=${lostPixels.evented.replaced} spread ${lostPixels.evented.spread} placeholder=${lostPixels.evented.placeholder}`);
+  check("...in place, keeping the text layer that was already on the page",
+    lostPixels.evented.layersKept, `text layer kept=${lostPixels.evented.layersKept}`);
+  check("...and one cleared with no event at all is caught on returning to the app",
+    lostPixels.silent.replaced && lostPixels.silent.spread >= 40 && !lostPixels.silent.placeholder,
+    `replaced=${lostPixels.silent.replaced} spread ${lostPixels.silent.spread} placeholder=${lostPixels.silent.placeholder}`);
+  check("...while a cleared page off screen goes back to a placeholder, not a black page",
+    lostPixels.away.page > 0 && lostPixels.away.placeholder && !lostPixels.away.black,
+    lostPixels.away.page ? `p${lostPixels.away.page}: placeholder=${lostPixels.away.placeholder} canvas=${lostPixels.away.black}` : "no rendered off-screen page to clear");
+
   // Back to the desktop viewport and the ordinary preferences, so section 10
   // and the screenshot are not taken on a phone in focus mode with dark page on.
   await page.evaluate(`async () => {
