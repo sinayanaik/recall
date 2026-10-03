@@ -28,6 +28,14 @@
    with the nib, a band for the highlighter, a ring for the eraser. The values
    come from paintInkChip (src/handwriting/ink-popover.js); the colour is the
    rail-scoped pen property (72-ink-paper.css), so it is the paper's pen. */
+/* The drawing sheet's bar is the same bar (src/notes/ink-sheet.js), and its
+   panel is placed against it in the same way: under it, over the paper, never
+   pushing the paper down. */
+.ink-sheet-rail {
+  position: relative;
+  z-index: 2;
+}
+
 .ink-rail-chip {
   position: relative;
 }
