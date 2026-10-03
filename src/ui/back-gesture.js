@@ -29,6 +29,7 @@ import { isFocusModeActive, isImmersive, setFocusMode, setImmersiveMode } from "
 import { closeImportPanel, closeMyDecksPanel } from "./deck-header.js?v=__BUILD__";
 import { showToast } from "./feedback.js?v=__BUILD__";
 import { closeHelpModal } from "./help.js?v=__BUILD__";
+import { closeInkRailPopups, isInkRailPopupOpen } from "./ink-rail.js?v=__BUILD__";
 // Imported rather than inlined, unlike the two drawer export menus this
 // replaced: closeViewExportMenu also resets the button's aria-expanded, and a
 // second copy of that pair is a second thing to keep in step. Checked for a
@@ -59,6 +60,10 @@ import { unlockPageScroll } from "./overlays.js?v=__BUILD__";
 // would have walked straight past an open drawer and exited the app.
 export const OVERLAY_LAYERS = [
   // Popovers.
+  // The pen's panel and the bar's three menus. On a tablet the Back gesture is
+  // how a popover is put away, and one with no entry here loses it to
+  // goNavBack(), which would leave the paper.
+  { isOpen: () => isInkRailPopupOpen(), close: () => closeInkRailPopups() },
   { isOpen: () => Boolean(document.querySelector(".qn-cat-menu")), close: () => closeQnCatMenu() },
   { isOpen: () => Boolean(el.myDecksMoreMenu && !el.myDecksMoreMenu.hidden), close: () => closeMyDecksMoreMenu() },
   { isOpen: () => Boolean(el.myDecksBody?.querySelector(".deck-tile-overflow-menu:not([hidden])")), close: () => closeAllDeckTileMenus() },

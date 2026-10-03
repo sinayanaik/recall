@@ -2788,6 +2788,9 @@ try {
     api.setInkTool("pen");
     api.clearInkPage(1);
     await settle(200);
+    // Measured now: the tab switch and the end of the selection above can both
+    // change what the bar over the page is showing.
+    box = pageRect();
     // One long horizontal stroke, so there is an unambiguous middle to cross —
     // and, being the only thing on the page, an unambiguous position too.
     pen(view, "pointerdown", box.left + 40, box.top + 420, 1);
@@ -3868,6 +3871,203 @@ try {
   check("...while a tap on a highlight or a region presses it instead of writing",
     dots.onRegion === 0, `${dots.onRegion} stroke(s) from a tap inside a region`);
   check("...with nothing thrown", (dots.errs || []).length === 0, (dots.errs || []).join(" | "));
+
+  // ── The slim bar, and the panel under its chip ───────────────────────────
+  //
+  // "The pen options panels are so oversizing — instead I want compact and more
+  // feature rich pen options", and "I'm only seeing some preset pen sizes
+  // without any continuous customisation". The bar is one row that does not
+  // change height when the tool does; the settings are a panel under the chip
+  // that floats over the page; the size is continuous; and the colour can be
+  // any colour at any opacity.
+  const bar = await page.evaluate(`async (penSrc) => {
+    const { api, settle } = window.__recall;
+    const pen = (0, eval)(penSrc);
+    const { inkWidthFromSlider } = await import("/src/format/ink-colors.js?v=__BUILD__");
+    const view = document.getElementById("documentView");
+    const rail = document.getElementById("documentInkRail");
+    const popover = document.getElementById("inkRailPopover");
+    const chip = document.getElementById("inkRailStyleChip");
+    const press = (node) => node.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerId: 61 }));
+    const height = () => Math.round(rail.getBoundingClientRect().height);
+    const open = () => !popover.hidden && popover.getBoundingClientRect().height > 0;
+    const shown = () => popover.querySelector("[data-ink-panel]:not([hidden])")?.dataset.inkPanel || "";
+    api.setViewMode("handwriting");
+    await settle(400);
+    api.toggleInkRail(true);
+    api.closeInkRailPopups();
+    api.chooseInkTool("pen");
+    await settle(200);
+    const pageEl = document.querySelector("#documentStage .pdf-page[data-page-number='1']");
+    const pageTop = () => Math.round(pageEl.getBoundingClientRect().top);
+
+    // One row, and the same row whatever is armed.
+    const heights = [];
+    for (const tool of ["pen", "highlighter", "eraser", "lasso", "text", "pen"]) {
+      api.chooseInkTool(tool);
+      await settle(80);
+      heights.push(height());
+    }
+    const topBefore = pageTop();
+
+    // The chip opens the panel, over the page: the bar and the page stay put.
+    press(chip);
+    await settle(150);
+    const byChip = { open: open(), panel: shown(), expanded: chip.getAttribute("aria-expanded"), height: height(), pageTop: pageTop() };
+    // ...and pressing the armed tool again shuts it.
+    press(rail.querySelector('[data-ink-tool="pen"]'));
+    await settle(120);
+    const byTool = { closed: !open() };
+    press(rail.querySelector('[data-ink-tool="pen"]'));
+    await settle(120);
+    const reopened = open();
+
+    // A size from the slider is the size the pen draws at — not a preset.
+    const slider = popover.querySelector('[data-ink-slider="pen"]');
+    slider.value = "333";
+    slider.dispatchEvent(new Event("input", { bubbles: true }));
+    slider.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle(80);
+    const wantedWidth = inkWidthFromSlider(333);
+    const width = api.inkWidth();
+
+    // A colour of the reader's own, remembered among their colours.
+    const colour = popover.querySelector('[data-ink-colour="pen"]');
+    colour.value = "#ff8800";
+    colour.dispatchEvent(new Event("input", { bubbles: true }));
+    colour.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle(80);
+    const customPen = api.inkPen();
+    const recent = Boolean(popover.querySelector('[data-ink-recent="#ff8800"]'));
+    // ...at half strength.
+    const opacity = popover.querySelector('[data-ink-opacity="pen"]');
+    opacity.value = "50";
+    opacity.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle(80);
+    const halfPen = api.inkPen();
+
+    // Escape, from inside a slider — which the app's own key handler leaves alone.
+    slider.focus();
+    slider.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    await settle(80);
+    const escaped = !open();
+
+    // A press on the page shuts it — and that press is not also a dot.
+    press(chip);
+    await settle(120);
+    const strokes = () => (api.documentInkMarks(1) || []).flatMap((r) => api.decodeInkStrokes(r.ink?.s || [])).length;
+    const before = strokes();
+    const box = pageEl.getBoundingClientRect();
+    const tx = box.left + (box.width * 0.85);
+    const ty = Math.min(window.innerHeight - 40, box.top + 700);
+    document.elementFromPoint(tx, ty)?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerId: 1, pointerType: "pen", clientX: tx, clientY: ty, buttons: 1, pressure: 0.5 }));
+    pen(view, "pointerdown", tx, ty, 1);
+    pen(view, "pointerup", tx, ty, 0);
+    await settle(300);
+    const outside = { closed: !open(), dotted: strokes() - before };
+
+    // With a selection up, the panel restyles it — in one undo step per change.
+    api.setInkPen("ink", { keepOpacity: false });
+    api.setInkOpacity(1);
+    api.setInkWidth(2);
+    api.chooseInkTool("pen");
+    await settle(1700);
+    pen(view, "pointerdown", box.left + 60, box.top + 640, 1);
+    for (let i = 1; i <= 12; i += 1) pen(view, "pointermove", box.left + 60 + (i * 8), box.top + 640 + (i % 4), 1);
+    pen(view, "pointerup", box.left + 156, box.top + 640, 0);
+    await settle(300);
+    api.chooseInkTool("lasso");
+    await settle(100);
+    pen(view, "pointerdown", box.left + 40, box.top + 610);
+    [[200, 610], [200, 680], [40, 680], [40, 610]].forEach(([dx, dy]) => pen(view, "pointermove", box.left + dx, box.top + dy, 1));
+    pen(view, "pointerup", box.left + 40, box.top + 610, 0);
+    await settle(250);
+    const selected = api.inkSelectionCount();
+    press(chip);
+    await settle(120);
+    const selectionPanel = shown();
+    slider.value = "700";
+    slider.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle(200);
+    const widthOf = () => {
+      const all = (api.documentInkMarks(1) || []).flatMap((r) => api.decodeInkStrokes(r.ink?.s || []));
+      return all.length ? all[all.length - 1].w : 0;
+    };
+    const restyled = widthOf();
+    api.undoInk();
+    await settle(200);
+    const undone = widthOf();
+    api.closeInkRailPopups();
+
+    // The highlighter's own panel, and the eraser's.
+    api.chooseInkTool("highlighter");
+    await settle(80);
+    press(chip);
+    await settle(120);
+    const hlPanel = shown();
+    press(popover.querySelector('[data-ink-hl="green"]'));
+    await settle(80);
+    const hlToken = api.inkHighlighter().token;
+    api.closeInkRailPopups();
+    api.chooseInkTool("eraser");
+    await settle(80);
+    press(chip);
+    await settle(120);
+    const eraserPanel = shown();
+    press(popover.querySelector('[data-ink-erase-target="pen"]'));
+    await settle(80);
+    const target = api.inkEraseTarget();
+    press(popover.querySelector('[data-ink-erase-target="all"]'));
+    api.closeInkRailPopups();
+
+    // The keyboard: Enter on a focused tool is a click with no pointer behind it.
+    const lassoButton = rail.querySelector('[data-ink-tool="lasso"]');
+    lassoButton.focus();
+    lassoButton.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 0 }));
+    await settle(80);
+    const byKeyboard = api.inkTool();
+
+    // Put back what the cases after this expect.
+    api.setInkHighlighter({ token: "hyellowq35" });
+    api.setInkPen("ink", { keepOpacity: false });
+    api.setInkWidth(2);
+    api.chooseInkTool("pen");
+    api.closeInkRailPopups();
+    await settle(200);
+    return {
+      heights, topBefore, byChip, byTool, reopened, wantedWidth, width, customPen, recent, halfPen, escaped,
+      outside, selected, selectionPanel, restyled, undone, hlPanel, hlToken, eraserPanel, target, byKeyboard,
+      errs: window.__errs.slice(0, 4)
+    };
+  }`, PEN_SRC);
+  check("the pen's bar is one row, and the same row whatever tool is armed",
+    bar.heights.every((h) => h === bar.heights[0]) && bar.heights[0] <= 48,
+    `bar heights ${bar.heights.join(", ")}px`);
+  check("...its chip opens the panel over the page, moving neither the bar nor the page",
+    bar.byChip.open && bar.byChip.panel === "pen" && bar.byChip.expanded === "true"
+      && bar.byChip.height === bar.heights[0] && bar.byChip.pageTop === bar.topBefore,
+    `open=${bar.byChip.open}, panel=${bar.byChip.panel}, expanded=${bar.byChip.expanded}, `
+      + `bar ${bar.byChip.height}px (was ${bar.heights[0]}), page top ${bar.byChip.pageTop} (was ${bar.topBefore})`);
+  check("...and pressing the armed tool again shuts it, and opens it",
+    bar.byTool.closed && bar.reopened, `closed=${bar.byTool.closed}, reopened=${bar.reopened}`);
+  check("the size slider sets a size between the presets, which is the size the pen draws at",
+    Math.abs(bar.width - bar.wantedWidth) < 1e-9 && ![1.2, 2, 3.4, 6].includes(bar.width),
+    `slider 333 of 1000 gave ${bar.width}pt, expected ${bar.wantedWidth}pt`);
+  check("...any colour can be picked, and is kept among the reader's own",
+    bar.customPen === "xff8800" && bar.recent, `pen ${bar.customPen}, in the recent row=${bar.recent}`);
+  check("...at any opacity", bar.halfPen === "xff8800q50", `pen ${bar.halfPen} after opacity 50%`);
+  check("...and Escape from inside a slider shuts the panel", bar.escaped);
+  check("...as a press on the page does, without that press leaving a dot",
+    bar.outside.closed && bar.outside.dotted === 0,
+    `closed=${bar.outside.closed}, ${bar.outside.dotted} stroke(s) from the press that shut it`);
+  check("with something lassoed, the panel restyles it, in one undo step",
+    bar.selected > 0 && bar.selectionPanel === "pen" && bar.restyled > 2.5 && bar.undone === 2,
+    `${bar.selected} lassoed, panel ${bar.selectionPanel}: width 2 → ${bar.restyled} → ${bar.undone} after one undo`);
+  check("the highlighter and the eraser have panels of their own",
+    bar.hlPanel === "highlighter" && bar.hlToken === "hgreenq35" && bar.eraserPanel === "eraser" && bar.target === "pen",
+    `highlighter panel=${bar.hlPanel} (green → ${bar.hlToken}), eraser panel=${bar.eraserPanel} (target → ${bar.target})`);
+  check("a tool on the bar can be chosen from the keyboard", bar.byKeyboard === "lasso", `Enter on the lasso armed ${bar.byKeyboard}`);
+  check("...with nothing thrown by any of it", (bar.errs || []).length === 0, (bar.errs || []).join(" | "));
   // ── The palm that lands a frame before the nib ───────────────────────────
   //
   // onRootTouchStart reads the pen flag at TOUCHSTART, and the reported sequence

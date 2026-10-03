@@ -65,6 +65,11 @@ const SECTIONS = [
 // Anything appearing in styles/ that is neither a slice nor listed here is
 // still a failure.
 const POST_SPLIT = {
+  "73-ink-panel.css":
+    "The pen's slim bar: the chip showing the armed tool's colour and size, " +
+    "the context slot and its menus, and the panel under the chip (size " +
+    "slider, presets, preview, colours, opacity, switches), floating over the " +
+    "page so opening it moves nothing.",
   "72-ink-paper.css":
     "The highlighter's layer, a sibling of the ink layer that multiplies with " +
     "the page canvas so a band over a scanned line leaves the words legible " +

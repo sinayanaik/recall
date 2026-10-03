@@ -1119,6 +1119,22 @@ export function canRedoInk() { return Boolean(engine?.canRedo()); }
 export function inkSelectionCount() { return engine ? engine.selectionIndices().length : 0; }
 export function deleteInkSelection() { closeOpenMark(); return ensureEngine().deleteSelection(); }
 
+// How big a point is on the glass right now — CSS pixels per PDF point at the
+// zoom of the page in view — so the pen's panel can preview a stroke at the
+// size it will actually be drawn. 1 when nothing is open.
+export function inkScreenScale() {
+  const viewport = pdfPageViewport(documentPageInViewCheap() || currentDocumentPage());
+  // The length of the transform's first column, which is the scale whatever the
+  // page's rotation — on a page turned a quarter, transform[0] is zero.
+  const t = viewport?.transform;
+  return t ? (Math.hypot(t[0], t[1]) || 1) : 1;
+}
+
+// The paper under the ink, as the engine is told it (see ensureEngine).
+export function inkPaper() {
+  return el.documentStage?.classList.contains(PDF_DARK_CLASS) ? "dark" : "light";
+}
+
 // The page the reader is looking at — the same answer the pager and the contents
 // drawer's scroll-spy already read, rather than a second opinion about where in
 // the paper we are. Returns the page it cleared so the rail can name it in the

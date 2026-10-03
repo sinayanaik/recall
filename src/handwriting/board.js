@@ -51,6 +51,7 @@ import { notebookPaperPreference, writeNotebookPaperPreference } from "../storag
 import { addDocumentBlock, addDocumentImageBlock } from "../documents/pdf-blocks.js?v=__BUILD__";
 import { DOC_SLOT_NOTEBOOK, deckHasHandwrittenPages } from "../documents/doc-slot.js?v=__BUILD__";
 import { currentDocumentPage, openDocumentView, pdfPageViewport, scrollToDocumentPage } from "../documents/pdf-view.js?v=__BUILD__";
+import { bindInkRailActivation } from "./rail.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { hasActiveDeck, refreshHandwritingTab } from "../cards/card-status.js?v=__BUILD__";
@@ -187,14 +188,16 @@ function wire() {
   // src/ui/ink-rail.js gives for the controls beside these: a press on the rail
   // must not travel on to the page underneath and start a stroke, and on a
   // stylus the two are a few pixels apart.
-  el.documentInkRail?.addEventListener("pointerdown", (event) => {
-    const button = event.target.closest("[data-hw-action]");
-    if (!button || button.hasAttribute("disabled")) return;
-    event.preventDefault();
+  //
+  // ...and by the keyboard, whose press is a click with no pointer behind it
+  // (bindInkRailActivation, src/handwriting/rail.js). These are rows of the
+  // bar's + menu now, and a menu that can be reached with Tab and not used with
+  // Enter is a menu half built.
+  bindInkRailActivation(el.documentInkRail, (button) => {
     const action = button.dataset.hwAction;
     if (action === "add-page") addPage();
     else if (action === "add-block") addBlock();
-  });
+  }, "[data-hw-action]");
 }
 
 async function addPage() {
