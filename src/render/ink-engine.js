@@ -309,7 +309,25 @@ export function createInkEngine({
     const canvas = document.createElement("canvas");
     canvas.className = `${className}${extraClass ? ` ${extraClass}` : ""}`;
     const ctx = canvas.getContext("2d");
+    // A canvas whose GPU context was lost comes back from `contextrestored`
+    // BLANK — the browser restores the context, not the picture. Ink is
+    // transparent, so that reads as the handwriting quietly gone until a zoom
+    // happens to repaint it. Every host's strokes are still in memory, so a
+    // repaint is all it takes (see src/documents/pdf-view.js, which does the
+    // same for the page under it).
+    canvas.addEventListener("contextrestored", scheduleRepaintAll);
     return { canvas, ctx };
+  }
+
+  // One repaint for however many canvases are restored in the same moment —
+  // a context loss takes every canvas on the GPU with it at once.
+  let restoreFrame = 0;
+  function scheduleRepaintAll() {
+    if (restoreFrame) return;
+    restoreFrame = requestAnimationFrame(() => {
+      restoreFrame = 0;
+      repaintAll();
+    });
   }
 
   // The paper a host is drawn on, asked fresh each time: a reader can invert a
@@ -1636,6 +1654,8 @@ export function createInkEngine({
     getSnapShapes: () => snapShapes,
     setSnapShapes: (on) => { snapShapes = Boolean(on); onToolChange({ tool, pen, width }); },
     destroy: () => {
+      cancelAnimationFrame(restoreFrame);
+      restoreFrame = 0;
       cancel();
       unmountOverlay();
       hosts.forEach((_, key) => detachHost(key));
