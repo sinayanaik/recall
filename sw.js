@@ -436,6 +436,7 @@ const APP_SHELL = [
   `./src/documents/pdf-region-marks.js?v=${STAMP}`,
   `./src/documents/pdf-region-resize.js?v=${STAMP}`,
   `./src/documents/pdf-region.js?v=${STAMP}`,
+  `./src/documents/pdf-smart-highlight.js?v=${STAMP}`,
   `./src/documents/pdf-selection.js?v=${STAMP}`,
   `./src/documents/pdf-store.js?v=${STAMP}`,
   `./src/documents/pdf-toc.js?v=${STAMP}`,

@@ -107,6 +107,7 @@ import { el } from "../core/dom.js?v=__BUILD__";
 import { inkPenIsDown, noteInkContact, noteInkStrokeCommitted, setInkPenDown, setPenTextMode } from "../core/gesture.js?v=__BUILD__";
 import { QUAD_GEOMETRY_VERSION, documentHighlightAtPoint, documentInkMarks, freshDocumentHighlightId, setDocumentInkForPage } from "./pdf-highlights.js?v=__BUILD__";
 import { REGION_CLASS } from "./pdf-region.js?v=__BUILD__";
+import { setSmartHlUndoSink } from "./pdf-smart-highlight.js?v=__BUILD__";
 import { PDF_DARK_CLASS, currentDocumentPage, documentPageInViewCheap, pdfPageElement, pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
 import { INK_ERASER_SIZE_DEFAULT, INK_ERASE_MODE_DEFAULT, INK_ERASE_TARGET_DEFAULT, INK_HL_TOKEN_DEFAULT, INK_HL_WIDTH_DEFAULT, INK_PEN_DEFAULT, INK_TOOL_DEFAULT, INK_WIDTH_DEFAULT, formatInkToken, inkFilingColor, isHighlighterToken, normalizeInkEraseMode, normalizeInkEraseTarget, normalizeInkEraserSize, normalizeInkHlWidth, normalizeInkOpacity, normalizeInkToken, normalizeInkTool, normalizeInkWidth, parseInkToken } from "../format/ink-colors.js?v=__BUILD__";
 import { INK_FORMAT_VERSION, INK_MARK_IDLE_MS, decodeInkStrokes, encodeInkStrokes, inkStrokesBounds, inkStrokesJoinMark, mergeInkBoxes } from "../format/ink-strokes.js?v=__BUILD__";
@@ -823,6 +824,9 @@ function onInkClick(event) {
 }
 
 export function initDocumentInk() {
+  // The highlighter's text highlights and ▣'s boxes go on the pen's undo ring
+  // (src/documents/pdf-smart-highlight.js says why it is handed in, not imported).
+  setSmartHlUndoSink(pushInkHistoryAction);
   const view = el.documentView;
   if (!view) return;
   // Capture, so the decision about who owns this pointer is made before any of
