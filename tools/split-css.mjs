@@ -65,6 +65,11 @@ const SECTIONS = [
 // Anything appearing in styles/ that is neither a slice nor listed here is
 // still a failure.
 const POST_SPLIT = {
+  "72-ink-paper.css":
+    "The highlighter's layer, a sibling of the ink layer that multiplies with " +
+    "the page canvas so a band over a scanned line leaves the words legible " +
+    "(screen on an inverted page), and the rail's pen swatches scoped to the " +
+    "paper they will be drawn on rather than to the theme.",
   "71-dialog-fit.css":
     "Small dialogs that fit a phone: a <select> as wide as its longest folder " +
     "path pushed the Deck Category dialog, its close button and its actions " +

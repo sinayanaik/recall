@@ -28,7 +28,8 @@ import { ensurePdfLib } from "../core/lib-loader.js?v=__BUILD__";
 import { decodeInkStrokes } from "../format/ink-strokes.js?v=__BUILD__";
 import { slugifyFileName } from "../export/markdown.js?v=__BUILD__";
 import { inkPathRecorder } from "../format/ink-svg.js?v=__BUILD__";
-import { inkStrokeOutline, resolveInkColor } from "../render/ink-paint.js?v=__BUILD__";
+import { inkCentrelinePath, inkHighlighterWidth, inkStrokeOutline, resolveInkPaint } from "../render/ink-paint.js?v=__BUILD__";
+import { isHighlighterToken } from "../format/ink-colors.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
 import { affordableCropScale, regionDocumentBlob, regionImageRect, regionPdfPage, regionSource, renderRegionCrop } from "./pdf-region-embed.js?v=__BUILD__";
 import { AREA_FILL_ALPHA, blockPdfRect, highlightAlpha, highlightHex, rasteriseRegionBlocks, regionMarksOnPage } from "./pdf-region-marks.js?v=__BUILD__";
@@ -138,16 +139,47 @@ function drawHighlights(page, marks) {
   });
 }
 
+//
+// A highlighter band is drawn as what it is on screen: its CENTRELINE, stroked
+// at the band's width with round caps (inkCentrelinePath), multiplied with the
+// page so the words under it stay legible in the file as they do on the glass —
+// and all the bands go down before any of the pen's ink, which is drawn over
+// them. Without a fill colour at all, which is how drawSvgPath is told to
+// stroke and not fill. The joins are made round by a graphics-state operator,
+// because drawSvgPath has an option for the cap and none for the join.
 function drawInk(page, marks) {
   if (!marks.ink.length) return;
-  const { pushGraphicsState, popGraphicsState, concatTransformationMatrix } = window.PDFLib;
+  const { pushGraphicsState, popGraphicsState, concatTransformationMatrix, BlendMode, LineCapStyle, LineJoinStyle, setLineJoin } = window.PDFLib;
   page.pushOperators(pushGraphicsState(), concatTransformationMatrix(1, 0, 0, -1, 0, 0));
-  marks.ink.forEach((record) => decodeInkStrokes(record.ink?.s).forEach((stroke) => {
+  if (typeof setLineJoin === "function" && LineJoinStyle) page.pushOperators(setLineJoin(LineJoinStyle.Round));
+  const strokes = [];
+  marks.ink.forEach((record) => strokes.push(...decodeInkStrokes(record.ink?.s)));
+  const bands = strokes.filter((stroke) => isHighlighterToken(stroke?.c));
+  const ink = strokes.filter((stroke) => !isHighlighterToken(stroke?.c));
+  bands.forEach((stroke) => {
+    const recorder = inkPathRecorder();
+    if (!inkCentrelinePath(recorder.ctx, stroke)) return;
+    const paint = resolveInkPaint(stroke?.c, { paper: "light" });
+    const { color } = pdfColour(paint.color);
+    page.drawSvgPath(recorder.path(), {
+      x: 0,
+      y: 0,
+      borderColor: color,
+      borderWidth: inkHighlighterWidth(stroke),
+      borderOpacity: paint.alpha,
+      borderLineCap: LineCapStyle?.Round,
+      blendMode: BlendMode.Multiply
+    });
+  });
+  ink.forEach((stroke) => {
     const recorder = inkPathRecorder();
     if (!inkStrokeOutline(recorder.ctx, stroke)) return;
-    const { color, opacity } = pdfColour(resolveInkColor(stroke?.c, null));
-    page.drawSvgPath(recorder.path(), { x: 0, y: 0, color, opacity });
-  }));
+    // On white paper: this is the PDF's own page, printed white whatever theme
+    // the reader had on when they wrote over it.
+    const paint = resolveInkPaint(stroke?.c, { paper: "light" });
+    const { color, opacity } = pdfColour(paint.color);
+    page.drawSvgPath(recorder.path(), { x: 0, y: 0, color, opacity: opacity * paint.alpha });
+  });
   page.pushOperators(popGraphicsState());
 }
 

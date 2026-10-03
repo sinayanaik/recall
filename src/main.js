@@ -132,8 +132,8 @@ import { closeDocumentToc, documentOutlineEntries, initDocumentOutlineFolding, i
 import { activePdfId, deckPdfById, deckPdfs, PDF_PRIMARY_ID, withDeckPdfs } from "./documents/pdf-multi.js?v=__BUILD__";
 import { removePdfFromDeck, renamePdf } from "./documents/pdf-multi-actions.js?v=__BUILD__";
 import { closePdfPanel, initPdfSwitcher } from "./documents/pdf-switcher.js?v=__BUILD__";
-import { currentPdfDocument, currentPdfPageCount, documentFittedWidth, fitDocumentToWidth, initDocumentPinchZoom, isDocumentFitWidth, openDocumentIsCurrent, openDocumentPdfId, openDocumentView, reattachDocument, relayoutDocument, repaintOpenDocumentPages, scheduleDocumentPositionSave, scrollToDocumentPage, refreshDocumentPaperForTheme, setDocumentAttachHandler, setDocumentOpenedHook, setDocumentPagePaintedHook, setNotebookStartHandler, switchToPdf, togglePdfInvert, updatePageIndicator, zoomDocument, retryMissingDocumentOpen } from "./documents/pdf-view.js?v=__BUILD__";
-import { adoptDocumentInk, canRedoInk, canUndoInk, copyInkSelection, cutInkSelection, duplicateInkSelection, hasInkClipboard, initDocumentInk, inkMarkImageMarkdown, inkSelectionCount, isInkMarkId, nudgeInkSelection, paintDocumentInk, pasteInkSelection, redoInk, repaintDocumentInk, setInkChangedHandler, undoInk } from "./documents/pdf-ink.js?v=__BUILD__";
+import { currentPdfDocument, currentPdfPageCount, documentFittedWidth, fitDocumentToWidth, initDocumentPinchZoom, isDocumentFitWidth, openDocumentIsCurrent, openDocumentPdfId, openDocumentView, reattachDocument, relayoutDocument, repaintOpenDocumentPages, scheduleDocumentPositionSave, scrollToDocumentPage, refreshDocumentPaperForTheme, setDocumentAttachHandler, setDocumentOpenedHook, setDocumentPagePaintedHook, setNotebookStartHandler, setPaperChangedHook, switchToPdf, togglePdfInvert, updatePageIndicator, zoomDocument, retryMissingDocumentOpen } from "./documents/pdf-view.js?v=__BUILD__";
+import { adoptDocumentInk, canRedoInk, canUndoInk, copyInkSelection, cutInkSelection, duplicateInkSelection, hasInkClipboard, initDocumentInk, inkMarkImageMarkdown, inkMarkIsHighlight, inkSelectionCount, isInkMarkId, nudgeInkSelection, paintDocumentInk, pasteInkSelection, redoInk, repaintDocumentInk, setInkChangedHandler, undoInk } from "./documents/pdf-ink.js?v=__BUILD__";
 import { addHandwritingImage, enterHandwritingView, refreshHandwritingBoard, runHandwritingMenuAction, startHandwritingNotebook } from "./handwriting/board.js?v=__BUILD__";
 import { closeBlockStylePopover, isBlockStylePopoverOpen } from "./documents/block-style-bar.js?v=__BUILD__";
 import { closeBlockActionsPopover, isBlockActionsPopoverOpen } from "./documents/block-actions-popover.js?v=__BUILD__";
@@ -1306,6 +1306,20 @@ onDomReady(() => {
       // which needs an upload — so this is the one verb here that is async, and
       // it falls back to the label if the drawing cannot be kept rather than
       // making no card at all.
+      // ...except a mark made only of highlighter bands, which is a highlight of
+      // something on the page — usually a line of a scan — and gets the page
+      // itself, cropped to the band, the way a region does below.
+      //
+      // Only on a paper: a region reference names a PDF of the deck's, and the
+      // notebook is not one of them — a band on handwritten paper gets the
+      // drawing, like any other ink.
+      if (id && isInkMarkId(id) && inkMarkIsHighlight(id)) {
+        const band = documentHighlightById(id);
+        if (band?.doc !== "notebook" && band?.quads?.[0]?.rect) {
+          createCardFromNotesSelection(pdfRegionRefMarkdown(band.page, band.quads[0].rect, band.pdfId), anchor);
+          return;
+        }
+      }
       if (id && isInkMarkId(id)) {
         inkMarkImageMarkdown(id)
           .then((markdown) => createCardFromNotesSelection(markdown || text, anchor))
@@ -2245,6 +2259,13 @@ setHandwritingViewHook(() => { enterHandwritingView(); });
 // on the other theme can be the colour of the paper. And a notebook's paper is
 // itself decided by the theme (invertForDocumentSlot), so it has to be re-asked
 // in the same pass or the ink and the page it is on disagree for a frame.
+// The paper flipping between white and dark is a repaint of the ink for the
+// same reason a theme change is: the pens are chosen for the paper they are on.
+// And of the rail, whose swatches are that paper's pens.
+setPaperChangedHook(() => {
+  repaintDocumentInk();
+  refreshInkRail();
+});
 setThemeRepaintHook(() => {
   refreshDocumentPaperForTheme();
   repaintDocumentInk();

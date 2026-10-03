@@ -361,13 +361,21 @@ export function inkSliderFromWidth(width, range = INK_WIDTH_RANGE) {
 
 // ── Tools ──────────────────────────────────────────────────────────────────
 //
-// "pen" draws, "eraser" removes whole strokes, "lasso" selects them. There is
-// deliberately no highlighter: this app already has a highlighter, it marks the
-// words you selected, and a second one that paints a band wherever the nib went
-// would be two features answering to one name.
+// "pen" draws, "eraser" removes whole strokes, "lasso" selects them.
 //
-// Which left that highlighter unreachable with the very thing most people would
-// reach for it with. A stylus took every pointer it was given
+// "highlighter" paints a translucent band that multiplies with the page under
+// it. There was deliberately none, on the argument that this app's highlighter
+// is the one that marks the words you SELECTED, and a second that paints wherever
+// the nib went would be two features answering to one name. That argument
+// assumed there were always words to select. A scanned paper has none — no text
+// layer, so nothing to drag a highlight across — and was reported exactly so:
+// "some PDFs are simply scanned copies, I want highlights over those scanned
+// texts too". The text highlighter is still the one for text; this is the one
+// for everything a text layer cannot reach, and it files its bands in the same
+// Highlights panel, with the same notes and cards, as every other mark.
+//
+// The text highlighter used to be unreachable with the very thing most people
+// would reach for it with. A stylus took every pointer it was given
 // (inkTakesPointer, src/documents/pdf-ink.js), so on a paper it could draw and
 // could not select — no highlight, no cloze, no copy, no phrase lifted out into
 // a note, all of which the Document surface has had all along and only a finger
@@ -383,13 +391,13 @@ export function inkSliderFromWidth(width, range = INK_WIDTH_RANGE) {
 // per-device preference, the engine's own switch) then needs no new concept.
 //
 // Split in two because two surfaces ask different questions of this list. The
-// three that MARK the page are every tool a surface with no text can offer: the
+// four that MARK the page are every tool a surface with no text can offer: the
 // drawing sheet inside a note (src/notes/ink-sheet.js) is blank paper for
 // handwriting, and "select the words" there would be a button with nothing to
 // act on. A paper and a notebook have text under the nib, so they carry all four
 // — and their rail is markup rather than a loop, which is why the count is
 // stated here and checked against what is on screen (tools/note-editor-check.mjs).
-export const INK_DRAW_TOOLS = ["pen", "eraser", "lasso"];
+export const INK_DRAW_TOOLS = ["pen", "highlighter", "eraser", "lasso"];
 
 export const INK_TOOLS = [...INK_DRAW_TOOLS, "text"];
 

@@ -128,6 +128,7 @@
     <link rel="stylesheet" href="styles/69-repaint-stability.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/70-selection-compact.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/71-dialog-fit.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/72-ink-paper.css?v=__BUILD__">
 
     <!-- ── Module preloads ────────────────────────────────────────────────
          The app is ~130 ES modules and the browser discovers them by PARSING
@@ -1108,6 +1109,12 @@
               </div>
               <div class="ink-rail-group" role="group" aria-label="Tool">
                 <button class="tool-button ink-rail-btn" type="button" data-ink-tool="pen" aria-pressed="true" title="Pen" aria-label="Pen">&#9998;</button>
+                <!-- The highlighter: a see-through band that multiplies with the
+                     page, for the text a highlight cannot select — a scanned
+                     page has no text layer to drag across. Its glyph is drawn
+                     (INK_HIGHLIGHTER_ICON, src/handwriting/rail.js), because no
+                     character for it renders alike on every platform. -->
+                <button class="tool-button ink-rail-btn" type="button" data-ink-tool="highlighter" aria-pressed="false" title="Highlighter — a see-through band over the page, for text a highlight cannot select: a scanned page, a figure, a table" aria-label="Highlighter"><svg class="ink-rail-svg" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M14.6 3.4l6 6-8.3 8.3H6.3v-6z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M6.3 11.7l6 6" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M3.5 21h10" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" opacity="0.55"/></svg></button>
                 <button class="tool-button ink-rail-btn" type="button" data-ink-tool="eraser" aria-pressed="false" title="Eraser — cross a stroke to remove it. The eraser end or the side button of a stylus does this without leaving the pen." aria-label="Eraser">&#9003;</button>
                 <button class="tool-button ink-rail-btn" type="button" data-ink-tool="lasso" aria-pressed="false" title="Lasso — circle strokes to move, turn, resize, restyle, copy, join, split or delete them" aria-label="Lasso">&#9711;</button>
                 <!-- The pen stops drawing and starts picking out words. Not a

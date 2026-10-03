@@ -25,7 +25,7 @@
 // follow: a control is a button with an attribute, not a binding.
 
 import { el } from "../core/dom.js?v=__BUILD__";
-import { canRedoInk, canUndoInk, clearInkPage, copyInkSelection, cutInkSelection, deleteInkSelection, duplicateInkSelection, hasInkClipboard, inkEraseMode, inkEraserSize, inkPageHasStrokes, inkPageInView, inkPageInViewCheap, inkPen, inkSelectionCount, inkSnapShapes, inkTool, inkWidth, isInkArmed, joinInkSelection, pasteInkSelection, redoInk, setInkArmed, setInkEraseMode, setInkEraserSize, setInkPen, setInkSnapShapes, setInkTool, setInkWidth, splitInkSelection, undoInk } from "../documents/pdf-ink.js?v=__BUILD__";
+import { canRedoInk, canUndoInk, clearInkPage, copyInkSelection, cutInkSelection, deleteInkSelection, duplicateInkSelection, hasInkClipboard, inkEraseMode, inkEraseTarget, inkEraserSize, inkHighlighter, inkPageHasStrokes, inkPageInView, inkPageInViewCheap, inkPen, inkSelectionCount, inkSnapShapes, inkTapDots, inkTool, inkWidth, isInkArmed, joinInkSelection, pasteInkSelection, redoInk, setInkArmed, setInkEraseMode, setInkEraseTarget, setInkEraserSize, setInkHighlighter, setInkPen, setInkSnapShapes, setInkTapDots, setInkTool, setInkWidth, splitInkSelection, undoInk } from "../documents/pdf-ink.js?v=__BUILD__";
 import { deleteBlock, editBlock, openSelectedBlockStyle, selectedBlockKind, setBlockSelectionChangedHandler } from "../documents/pdf-blocks.js?v=__BUILD__";
 import { INK_TOOL_DEFAULT } from "../format/ink-colors.js?v=__BUILD__";
 import { buildInkEraserSizes, buildInkNibs, buildInkPenSwatches, paintInkRailPressed, readInkRailPress } from "../handwriting/rail.js?v=__BUILD__";
@@ -130,8 +130,9 @@ export function refreshInkRail() {
   // The colour a highlight is made in is the pill's, chosen there.
   const erasing = tool === "eraser";
   const selectingText = tool === "text";
-  if (el.inkRailPens) el.inkRailPens.hidden = selectingText;
-  if (el.inkRailWidths) el.inkRailWidths.hidden = erasing || selectingText;
+  const highlighting = tool === "highlighter";
+  if (el.inkRailPens) el.inkRailPens.hidden = selectingText || highlighting;
+  if (el.inkRailWidths) el.inkRailWidths.hidden = erasing || selectingText || highlighting;
   if (el.inkRailEraser) el.inkRailEraser.hidden = !erasing;
   rail.querySelector('[data-ink-action="undo"]')?.toggleAttribute("disabled", !undoable);
   rail.querySelector('[data-ink-action="redo"]')?.toggleAttribute("disabled", !redoable);
@@ -184,8 +185,12 @@ const slotTools = { doc: INK_TOOL_DEFAULT, notebook: INK_TOOL_DEFAULT };
 // the first stroke of the visit silently deleting something; coming back to the
 // lasso is a stroke that does not appear. Both are the fault this is fixing
 // wearing a different hat, so both fall back to the pen.
+//
+// The highlighter comes back as well: like the pen it only ever adds to the page,
+// and a reader working down a scanned chapter with it should find it still in
+// hand after a glance at the notebook.
 function rememberableInkTool(tool) {
-  return tool === "text" ? "text" : INK_TOOL_DEFAULT;
+  return tool === "text" || tool === "highlighter" ? tool : INK_TOOL_DEFAULT;
 }
 
 // Every setting the rail owns, read back off the engine rather than off the
@@ -194,13 +199,19 @@ function rememberableInkTool(tool) {
 // now — this rail, and the reading rail's own row.
 function rememberInkPreferences() {
   slotTools[activeDocSlot()] = rememberableInkTool(inkTool());
+  const highlighter = inkHighlighter();
   writeInkPreferences({
     pen: inkPen(),
     width: inkWidth(),
     tool: inkTool(),
     eraserSize: inkEraserSize(),
     eraseMode: inkEraseMode(),
-    snapShapes: inkSnapShapes()
+    snapShapes: inkSnapShapes(),
+    hlPen: highlighter.token,
+    hlWidth: highlighter.width,
+    hlStraight: highlighter.straight,
+    eraseTarget: inkEraseTarget(),
+    tapDots: inkTapDots()
   });
 }
 
@@ -266,14 +277,18 @@ export function initInkRail() {
   // The pen, the nib and the tool are remembered per device rather than per
   // deck: which colour you write in is a fact about you, not about the paper.
   const saved = inkPreferences();
-  setInkPen(saved.pen);
+  // Whole, opacity and all — this is the saved pen, not a colour pressed on it.
+  setInkPen(saved.pen, { keepOpacity: false });
   setInkWidth(saved.width);
+  setInkHighlighter({ token: saved.hlPen, width: saved.hlWidth, straight: saved.hlStraight });
   setInkTool(saved.tool);
   slotTools.doc = saved.tool;
   slotTools.notebook = saved.tool;
   setInkEraserSize(saved.eraserSize);
   setInkEraseMode(saved.eraseMode);
+  setInkEraseTarget(saved.eraseTarget);
   setInkSnapShapes(saved.snapShapes);
+  setInkTapDots(saved.tapDots);
 
   el.documentInkBtn?.addEventListener("click", () => toggleInkRail());
 

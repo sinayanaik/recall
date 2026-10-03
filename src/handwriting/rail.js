@@ -14,7 +14,7 @@
 // have to be handed one, which is just the same duplication wearing a parameter.
 // What is shared is everything a reader can see.
 
-import { INK_ERASER_SIZES, INK_PEN_COLORS, INK_WIDTHS, inkPenVar } from "../format/ink-colors.js?v=__BUILD__";
+import { INK_DRAW_TOOLS, INK_ERASER_SIZES, INK_PEN_COLORS, INK_WIDTHS, inkPenVar, parseInkToken } from "../format/ink-colors.js?v=__BUILD__";
 
 // ── A glyph, and — where a glyph was never going to be enough — a word ─────
 //
@@ -118,21 +118,41 @@ export function buildInkEraserSizes(host) {
   host.insertBefore(frag, host.firstChild);
 }
 
-// The three that MARK the page — INK_DRAW_TOOLS, not INK_TOOLS. The fourth,
+// The highlighter's glyph. Not a character, for the reason styles/56-pen-text.css
+// gives for the T: there is no symbol for a highlighter that renders on Android,
+// iOS and desktop alike — U+1F58D is a full-colour crayon emoji on one, tofu on
+// another, and either way a head taller than the monochrome pen beside it. So it
+// is drawn: a chisel-tipped marker over the band it leaves, in currentColor, at
+// the size of the glyphs around it.
+export const INK_HIGHLIGHTER_ICON = '<svg class="ink-rail-svg" viewBox="0 0 24 24" aria-hidden="true" focusable="false">'
+  + '<path d="M14.6 3.4l6 6-8.3 8.3H6.3v-6z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>'
+  + '<path d="M6.3 11.7l6 6" fill="none" stroke="currentColor" stroke-width="1.8"/>'
+  + '<path d="M3.5 21h10" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" opacity="0.55"/>'
+  + "</svg>";
+
+// What each tool that MARKS the page is called and drawn as, in one table, so
+// the sheet's loop and the paper's markup cannot come to disagree about it.
+const INK_TOOL_BUTTONS = {
+  pen: ["Pen", "&#9998;"],
+  highlighter: ["Highlighter — a see-through band over the page, for text a highlight cannot select (a scanned page, a figure)", INK_HIGHLIGHTER_ICON],
+  eraser: ["Eraser — cross a stroke to remove it", "&#9003;"],
+  lasso: ["Lasso — circle strokes to move, resize or delete them", "&#9711;"]
+};
+
+// The four that MARK the page — INK_DRAW_TOOLS, not INK_TOOLS. The fifth,
 // "text", turns the stylus into a way of selecting words instead of drawing
 // them, and this rail is the drawing SHEET's: blank paper inside a note, with no
-// text on it to select. The paper and the notebook carry all four, in their own
+// text on it to select. The paper and the notebook carry all five, in their own
 // markup in index.html.
 export function buildInkToolGroup() {
   const tools = document.createElement("div");
   tools.className = "ink-rail-group";
   tools.setAttribute("role", "group");
   tools.setAttribute("aria-label", "Tool");
-  tools.append(
-    inkRailButton("inkTool", "pen", "Pen", "&#9998;"),
-    inkRailButton("inkTool", "eraser", "Eraser — cross a stroke to remove it", "&#9003;"),
-    inkRailButton("inkTool", "lasso", "Lasso — circle strokes to move, resize or delete them", "&#9711;")
-  );
+  INK_DRAW_TOOLS.forEach((tool) => {
+    const [label, glyph] = INK_TOOL_BUTTONS[tool] || [tool, ""];
+    tools.append(inkRailButton("inkTool", tool, label, glyph));
+  });
   return tools;
 }
 
@@ -141,8 +161,12 @@ export function buildInkToolGroup() {
 // is the current one" rather than a class and an attribute that can disagree.
 export function paintInkRailPressed(rail, { pen, width, tool, eraserSize = null, eraseMode = null, snapShapes = null }) {
   if (!rail) return;
+  // The swatch is a COLOUR, and the pen's word carries more than one — a red pen
+  // at half strength is still the red swatch, and a colour of the reader's own
+  // lights none of them.
+  const colour = parseInkToken(pen)?.name || null;
   rail.querySelectorAll("[data-ink-pen]").forEach((node) =>
-    node.setAttribute("aria-pressed", node.dataset.inkPen === pen ? "true" : "false"));
+    node.setAttribute("aria-pressed", node.dataset.inkPen === colour ? "true" : "false"));
   rail.querySelectorAll("[data-ink-width]").forEach((node) =>
     node.setAttribute("aria-pressed", Number(node.dataset.inkWidth) === width ? "true" : "false"));
   rail.querySelectorAll("[data-ink-tool]").forEach((node) =>

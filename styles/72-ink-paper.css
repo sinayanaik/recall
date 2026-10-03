@@ -1,0 +1,96 @@
+/* The highlighter's layer, and the pens that follow the paper.
+
+   A file of its own for the reason styles/52-ink.css gives for being one: the
+   slices that would naturally hold this are frozen against pre-modular
+   (tools/split-css.mjs), so anything written since lives in a numbered file.
+
+   ── The highlighter ──────────────────────────────────────────────────────
+
+   A band laid over a line of a scanned page has to leave the scanned words
+   legible, and that is arithmetic, not opacity: drawn on top at 35%, a yellow
+   band greys the black glyphs under it; MULTIPLIED with the page, white paper
+   becomes yellow and black ink stays black. It is the rule `.pdf-mark` has
+   always kept for text highlights (styles/36-document.css), applied to a canvas
+   instead of a box — and screen, its complement, on an inverted page, where
+   multiply would turn the band as dark as the paper.
+
+   It cannot be the ink layer's own canvas. .pdf-ink-layer carries a z-index
+   (styles/52-ink.css explains at length why it must), which makes it a stacking
+   context, and a blend mode inside a stacking context blends only with what is
+   inside it: a transparent layer and nothing else. So the bands get a SIBLING
+   layer, and the blend goes on the layer itself so it composites against the
+   page canvas.
+
+   z-index 1: above the page canvas — which a dark page's filter makes a z-index
+   0 stacking context painted in tree order, and which a re-render appends LAST,
+   so tree order alone cannot be trusted to put this above it — and below the
+   ink (2), so the reader's handwriting is drawn over the band, as it would be
+   on paper. pointer-events: none for the same reason as the ink layer: the text
+   layer must go on receiving every press. */
+.pdf-ink-hl-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  overflow: hidden;
+  mix-blend-mode: multiply;
+}
+
+.document-stage.is-pdf-inverted .pdf-ink-hl-layer {
+  mix-blend-mode: screen;
+}
+
+/* The canvases inside it — the committed bands, and the live stroke while a
+   band is being drawn — are positioned exactly as the ink layer's are, and are
+   left out of the dark page's inversion for the same reason: a band keeps the
+   colour it was drawn in. */
+.pdf-ink-hl-layer .pdf-ink-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  filter: none;
+}
+
+/* ── The rail's swatches, for the paper they will be drawn on ─────────────
+
+   A pen on a paper is now painted in the set made for the paper — the light
+   set on a white page, the dark set on an inverted one (resolveInkPaint,
+   src/render/ink-paint.js) — rather than in the theme's. On a dark theme with
+   a white PDF the default pen used to be a near-white, and drew near-invisible
+   lines; it is near-black there now, and the swatch has to say so or the rail
+   would be offering a colour the pen no longer draws.
+
+   Scoped to the rail and nothing else. Blocks on a page read the same custom
+   properties for their text, over fills tinted for the theme
+   (styles/58-block-style.css), and they must go on following the theme. */
+.document-stage:not(.is-pdf-inverted) .document-ink-rail {
+  --ink-pen-ink: #16181d;
+  --ink-pen-red: #dc2626;
+  --ink-pen-blue: #2563eb;
+  --ink-pen-green: #15803d;
+  --ink-pen-amber: #d97706;
+  --ink-pen-violet: #7c3aed;
+  --ink-pen-teal: #0d9488;
+  --ink-pen-pink: #db2777;
+}
+
+.document-stage.is-pdf-inverted .document-ink-rail {
+  --ink-pen-ink: #e8eaed;
+  --ink-pen-red: #f87171;
+  --ink-pen-blue: #7aa7ff;
+  --ink-pen-green: #4ade80;
+  --ink-pen-amber: #fbbf24;
+  --ink-pen-violet: #c4a2ff;
+  --ink-pen-teal: #5eead4;
+  --ink-pen-pink: #f9a8d4;
+}
+
+/* The highlighter's glyph is drawn, not typed (src/handwriting/rail.js), and
+   sized to sit with the characters beside it. */
+.ink-rail-svg {
+  width: 1.15em;
+  height: 1.15em;
+  display: block;
+}

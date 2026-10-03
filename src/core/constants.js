@@ -55,6 +55,12 @@ export const PDF_BADGE_LAYER_CLASS = "pdf-badge-layer";
 // beside it already follow.
 export const PDF_INK_LAYER_CLASS = "pdf-ink-layer";
 
+// ...and the highlighter's, beside it rather than inside it, for the same two
+// modules and the same rule. It has to be its own sibling because it BLENDS
+// with the page canvas (styles/72-ink-paper.css), and a blend inside the ink
+// layer's stacking context would blend with nothing.
+export const PDF_INK_HL_LAYER_CLASS = "pdf-ink-hl-layer";
+
 // ...and a third, for the same reason again: the markdown blocks a reader drops
 // onto a page. Named here rather than in the module that builds them because
 // src/documents/pdf-ink.js has to be able to recognise one without importing it

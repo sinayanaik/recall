@@ -870,7 +870,12 @@ try {
     const swatch = document.querySelector("#documentInkRail [data-ink-pen='red']");
     swatch?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 1, cancelable: true }));
     await settle(20);
-    return { drew: after > before, pen: api.inkPen(), hadSwatch: Boolean(swatch) };
+    const chosen = api.inkPen();
+    // Put back. The pen is the reader's and now survives a document being opened
+    // (it used to be quietly reset by the next one), so a red left here would be
+    // the colour of every stroke the cases below draw and measure.
+    api.setInkPen("ink", { keepOpacity: false });
+    return { drew: after > before, pen: chosen, hadSwatch: Boolean(swatch) };
   }`, PEN_SRC);
 
   check("a stroke whose pointerup never arrives does not kill the pen",
@@ -2263,6 +2268,159 @@ try {
     `dark page on a dark theme=${themed.darkPaper}, on a light theme=${themed.lightPaper}`);
   check("...with nothing thrown by the switch", themed.errs.length === 0, themed.errs.join(" | "));
 
+  // ── 8b. A white paper on a dark theme, and the highlighter's own layer ──
+  //
+  // The notebook's paper follows the theme; somebody else's PDF does not — it
+  // stays white unless the reader inverts it. The pen resolved per THEME, so on
+  // a dark theme the default pen was a near-white drawn on white paper: legible
+  // nowhere, and exported that way. It resolves for the PAPER now.
+  //
+  // And the highlighter, which is the reason any of this exists for a scanned
+  // page: its bands go on a layer of their own, BESIDE the ink layer (a blend
+  // inside the ink layer's stacking context would blend with nothing), that
+  // multiplies with the page — screen on an inverted one — under the pen's ink.
+  const paperInk = await page.evaluate(`async (penSrc) => {
+    const { api, settle } = window.__recall;
+    const pen = (0, eval)(penSrc);
+    const view = document.getElementById("documentView");
+    api.setTheme("dark-amoled");
+    api.setViewMode("document");
+    for (let i = 0; i < 80 && !document.querySelector("#documentStage[data-doc-slot='doc'] .pdf-page[data-page-number='1'] canvas.pdf-canvas"); i += 1) await settle(100);
+    await settle(500);
+    api.applyPdfInvert(false, { remember: false });
+    for (let i = 0; i < 60 && document.querySelector(".toast"); i += 1) await settle(100);
+    const pageEl = document.querySelector("#documentStage .pdf-page[data-page-number='1']");
+    if (!pageEl) return { fatal: "no first page on the paper" };
+    view.scrollTop = Math.max(0, view.scrollTop + pageEl.getBoundingClientRect().top - view.getBoundingClientRect().top);
+    await settle(400);
+    const box = pageEl.getBoundingClientRect();
+    const x0 = box.left + (box.width * 0.25);
+    const y0 = Math.max(box.top, 0) + 160;
+    const scribble = async (y, dy) => {
+      pen(view, "pointerdown", x0, y, 1);
+      for (let i = 1; i <= 14; i += 1) pen(view, "pointermove", x0 + (i * 12), y + (Math.sin(i) * dy), 1);
+      await settle(60);
+      const wetParent = document.querySelector(".is-ink-wet")?.parentElement?.className || "";
+      pen(view, "pointerup", x0 + 168, y, 0);
+      await settle(450);
+      return wetParent;
+    };
+    const darkest = () => {
+      const dry = document.querySelector("#documentStage .pdf-page[data-page-number='1'] .pdf-ink-layer .is-ink-dry");
+      if (!dry) return -1;
+      const px = dry.getContext("2d").getImageData(0, 0, dry.width, dry.height).data;
+      let best = 255;
+      for (let i = 0; i < px.length; i += 4) {
+        if (px[i + 3] < 200) continue;
+        const lum = (px[i] + px[i + 1] + px[i + 2]) / 3;
+        if (lum < best) best = lum;
+      }
+      return best;
+    };
+    const inkMarks = () => api.documentInkMarks(1);
+    const newest = (before) => inkMarks().find((record) => !before.includes(record.id)) || null;
+
+    api.setInkTool("pen");
+    api.setInkPen("ink", { keepOpacity: false });
+    let before = inkMarks().map((r) => r.id);
+    await scribble(y0, 4);
+    const penMark = newest(before);
+    const onWhite = darkest();
+    const swatch = document.querySelector('#inkRailPens [data-ink-pen="ink"]');
+    const swatchColour = swatch ? getComputedStyle(swatch).backgroundColor : "";
+    api.applyPdfInvert(true, { remember: false });
+    await settle(400);
+    const onBlack = darkest();
+    api.applyPdfInvert(false, { remember: false });
+    await settle(300);
+
+    api.setInkTool("highlighter");
+    before = inkMarks().map((r) => r.id);
+    const wetIn = await scribble(y0 + 70, 1.5);
+    const band = newest(before);
+    const strokes = band ? api.decodeInkStrokes(band.ink?.s) : [];
+    // Asked of the page as it is NOW, not of the element found before the
+    // strokes — a page can be rebuilt between the two, and a detached layer
+    // reports no style at all.
+    const livePage = document.querySelector("#documentStage .pdf-page[data-page-number='1']");
+    const layer = livePage.querySelector(".pdf-ink-hl-layer");
+    const inkLayer = livePage.querySelector(".pdf-ink-layer");
+    // Read NOW: a computed style is live, and by the time this function returns
+    // the paper's pages have been taken off the stage for the notebook — a
+    // detached element reports no style at all.
+    const layerStyle = layer ? { mixBlendMode: getComputedStyle(layer).mixBlendMode, zIndex: getComputedStyle(layer).zIndex } : null;
+    const hlCanvas = layer?.querySelector(".is-ink-hl");
+    let banded = 0;
+    if (hlCanvas) {
+      const px = hlCanvas.getContext("2d").getImageData(0, 0, hlCanvas.width, hlCanvas.height).data;
+      for (let i = 3; i < px.length; i += 4) if (px[i] > 0) banded += 1;
+    }
+    api.applyPdfInvert(true, { remember: false });
+    await settle(200);
+    const liveLayer = document.querySelector("#documentStage .pdf-page[data-page-number='1'] .pdf-ink-hl-layer");
+    const invertedBlend = liveLayer ? getComputedStyle(liveLayer).mixBlendMode : "";
+    api.applyPdfInvert(false, { remember: false });
+    api.setInkTool("pen");
+    // Taken back, so the paper is as the cases after this expect it.
+    api.undoInk();
+    api.undoInk();
+    await settle(300);
+
+    // ── The pen the reader chose, on a document opened after choosing it ──
+    api.setInkPen("red", { keepOpacity: false });
+    api.setInkWidth(3.4);
+    api.setViewMode("handwriting");
+    for (let i = 0; i < 60 && !document.querySelector("#documentStage[data-doc-slot='notebook'] .pdf-page[data-page-number='1'] canvas.pdf-canvas"); i += 1) await settle(100);
+    await settle(600);
+    const nbPage = document.querySelector("#documentStage .pdf-page[data-page-number='1']");
+    const nbBox = nbPage.getBoundingClientRect();
+    const nbBefore = api.documentInkMarks(1).map((r) => r.id);
+    pen(view, "pointerdown", nbBox.left + 80, Math.max(nbBox.top, 0) + 140, 1);
+    for (let i = 1; i <= 12; i += 1) pen(view, "pointermove", nbBox.left + 80 + (i * 9), Math.max(nbBox.top, 0) + 140 + (i * 2), 1);
+    pen(view, "pointerup", nbBox.left + 188, Math.max(nbBox.top, 0) + 164, 0);
+    await settle(450);
+    const nbMark = api.documentInkMarks(1).find((r) => !nbBefore.includes(r.id));
+    const nbStroke = nbMark ? api.decodeInkStrokes(nbMark.ink?.s)[0] : null;
+    api.undoInk();
+    api.setInkPen("ink", { keepOpacity: false });
+    api.setInkWidth(2);
+    api.setTheme("light-paper");
+    await settle(400);
+    return {
+      penMark: Boolean(penMark), onWhite, onBlack, swatchColour,
+      band: Boolean(band), tokens: strokes.map((s) => s.c), points: strokes.map((s) => s.p.length / 3),
+      bandColour: band?.color || "", wetIn,
+      siblings: Boolean(layer && inkLayer && layer.parentElement === livePage && inkLayer.parentElement === livePage),
+      blend: layerStyle?.mixBlendMode || "", z: layerStyle?.zIndex || "", banded, invertedBlend,
+      nbStroke: nbStroke ? { c: nbStroke.c, w: nbStroke.w } : null,
+      errs: window.__errs.slice(0, 4)
+    };
+  }`, PEN_SRC);
+
+  check("on a dark theme, the default pen on a WHITE paper is dark ink",
+    !paperInk.fatal && paperInk.penMark && paperInk.onWhite >= 0 && paperInk.onWhite < 120,
+    paperInk.fatal || `darkest inked pixel ${paperInk.onWhite} on a white page under dark-amoled — near-white is the pen drawing for the theme, not the paper`);
+  check("...and light ink once the reader inverts the page",
+    paperInk.onBlack > 160, `darkest inked pixel ${paperInk.onBlack} on an inverted page`);
+  check("...and the rail's swatch shows the colour the pen will actually draw",
+    paperInk.swatchColour === "rgb(22, 24, 29)", `the ink swatch is ${paperInk.swatchColour} over a white page`);
+  check("a highlighter band goes on a layer of its own, beside the ink layer, that multiplies with the page",
+    paperInk.band && paperInk.siblings && paperInk.blend === "multiply" && paperInk.z === "1" && paperInk.banded > 0,
+    `band=${paperInk.band}, siblings=${paperInk.siblings}, blend=${paperInk.blend}, z-index=${paperInk.z}, `
+      + `${paperInk.banded} painted pixel(s) on the band canvas`);
+  check("...is drawn live on that layer, so it blends while the pen is still down",
+    /pdf-ink-hl-layer/.test(paperInk.wetIn), `the live canvas was in "${paperInk.wetIn}" mid-stroke`);
+  check("...screens instead of multiplying on an inverted page",
+    paperInk.invertedBlend === "screen", `blend on an inverted page: ${paperInk.invertedBlend}`);
+  check("...is stored as a highlighter's colour word at its default opacity, straightened, and filed yellow",
+    paperInk.tokens.length === 1 && /^hyellowq35$/.test(paperInk.tokens[0]) && paperInk.points[0] === 2
+      && paperInk.bandColour === "yellow",
+    `tokens ${paperInk.tokens.join(", ") || "none"}, ${paperInk.points.join(", ")} point(s), filed ${paperInk.bandColour}`);
+  check("the pen the reader chose is the pen on the next document opened",
+    paperInk.nbStroke?.c === "red" && paperInk.nbStroke?.w === 3.4,
+    `a stroke on the notebook opened after choosing red 3.4pt came out ${JSON.stringify(paperInk.nbStroke)}`);
+  check("...with nothing thrown on the way", (paperInk.errs || []).length === 0, (paperInk.errs || []).join(" | "));
+
   // ── 9. A picture on the page ────────────────────────────────────────────
   //
   // "the handwritten note is something like one note where in a canvas multiple
@@ -2643,6 +2801,10 @@ try {
     rail.querySelector('[data-ink-tool="eraser"]')
       .dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 43, cancelable: true }));
     await settle(150);
+    // Measured again: arming a different tool can change what the rail above
+    // the page is showing, and the page moves with it — a stroke aimed through a
+    // rect taken before the press lands somewhere else.
+    box = pageRect();
     // Straight down through the middle of it.
     pen(view, "pointerdown", box.left + 160, box.top + 400, 1);
     for (let i = 1; i <= 8; i += 1) pen(view, "pointermove", box.left + 160, box.top + 400 + (i * 5), 1);

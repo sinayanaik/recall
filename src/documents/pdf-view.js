@@ -29,7 +29,7 @@
 
 import { isDriveConfigured } from "../cloud/drive-client.js?v=__BUILD__";
 import { isS3Configured } from "../cloud/s3-config.js?v=__BUILD__";
-import { PDF_BADGE_LAYER_CLASS, PDF_INK_LAYER_CLASS } from "../core/constants.js?v=__BUILD__";
+import { PDF_BADGE_LAYER_CLASS, PDF_INK_HL_LAYER_CLASS, PDF_INK_LAYER_CLASS } from "../core/constants.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { ensurePdfJs } from "../core/lib-loader.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
@@ -2297,6 +2297,9 @@ function stalePageForRelayout(pageNumber, width, height) {
   // handwriting having moved. It comes back with the page, repainted from the
   // strokes themselves at the new scale — see src/documents/pdf-ink.js.
   entry.el.querySelector(`.${PDF_INK_LAYER_CLASS}`)?.remove();
+  // The highlighter's bands are painted through the same transform, so they go
+  // with the ink for the same reason and come back with it.
+  entry.el.querySelector(`.${PDF_INK_HL_LAYER_CLASS}`)?.remove();
   entry.markLayer = null;
   entry.textLayer = null;
   canvas.classList.add("is-stale");
@@ -3149,8 +3152,20 @@ export function readPdfInvertPreference() {
 // theme would otherwise write "dark page: on" into the preference and hand it to
 // the next PDF the reader opened, which is a document they never asked to have
 // inverted.
+// Told when the page turns from white to dark or back. The pen's colours are
+// chosen for the paper they are drawn on (resolveInkPaint, src/render/ink-
+// paint.js), and the ink canvas is a bitmap, so a flip of the paper is a
+// repaint of the ink — which lives in a module this one must not import.
+let paperChangedHook = () => {};
+
+export function setPaperChangedHook(fn) {
+  paperChangedHook = typeof fn === "function" ? fn : () => {};
+}
+
 export function applyPdfInvert(on, { remember = true } = {}) {
+  const was = Boolean(el.documentStage?.classList.contains(PDF_DARK_CLASS));
   el.documentStage?.classList.toggle(PDF_DARK_CLASS, Boolean(on));
+  if (was !== Boolean(on)) paperChangedHook();
   // The button says which way the mode is set without being pressed — the same
   // rule every other toggle in this app's chrome follows, and the reason this
   // moved out of the ⋯ menu in the first place: a mode nobody can see the state

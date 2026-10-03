@@ -94,13 +94,13 @@
 // than by dispatch order. The flag and the guard's own `press?.live` test are
 // unchanged and still carry everything else.
 
-import { PDF_BLOCK_CLASS, PDF_INK_LAYER_CLASS } from "../core/constants.js?v=__BUILD__";
+import { PDF_BLOCK_CLASS, PDF_INK_HL_LAYER_CLASS, PDF_INK_LAYER_CLASS } from "../core/constants.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { inkPenIsDown, noteInkContact, noteInkStrokeCommitted, setInkPenDown, setPenTextMode } from "../core/gesture.js?v=__BUILD__";
 import { QUAD_GEOMETRY_VERSION, documentInkMarks, freshDocumentHighlightId, setDocumentInkForPage } from "./pdf-highlights.js?v=__BUILD__";
 import { REGION_CLASS } from "./pdf-region.js?v=__BUILD__";
-import { currentDocumentPage, documentPageInViewCheap, pdfPageElement, pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
-import { INK_ERASER_SIZE_DEFAULT, INK_ERASE_MODE_DEFAULT, INK_PEN_DEFAULT, INK_TOOL_DEFAULT, INK_WIDTH_DEFAULT, normalizeInkEraseMode, normalizeInkEraserSize, normalizeInkPen, normalizeInkTool, normalizeInkWidth } from "../format/ink-colors.js?v=__BUILD__";
+import { PDF_DARK_CLASS, currentDocumentPage, documentPageInViewCheap, pdfPageElement, pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
+import { INK_ERASER_SIZE_DEFAULT, INK_ERASE_MODE_DEFAULT, INK_ERASE_TARGET_DEFAULT, INK_HL_TOKEN_DEFAULT, INK_HL_WIDTH_DEFAULT, INK_PEN_DEFAULT, INK_TOOL_DEFAULT, INK_WIDTH_DEFAULT, formatInkToken, inkFilingColor, isHighlighterToken, normalizeInkEraseMode, normalizeInkEraseTarget, normalizeInkEraserSize, normalizeInkHlWidth, normalizeInkOpacity, normalizeInkToken, normalizeInkTool, normalizeInkWidth, parseInkToken } from "../format/ink-colors.js?v=__BUILD__";
 import { INK_FORMAT_VERSION, INK_MARK_IDLE_MS, decodeInkStrokes, encodeInkStrokes, inkStrokesBounds, inkStrokesJoinMark, mergeInkBoxes } from "../format/ink-strokes.js?v=__BUILD__";
 import { notifyHighlightsChanged } from "../format/highlight-edit.js?v=__BUILD__";
 import { inkSvgFile } from "../format/ink-svg.js?v=__BUILD__";
@@ -130,9 +130,58 @@ const INK_NOTIFY_IDLE_MS = 250;
 // The filing colour an ink mark takes in the Highlights pane. Ink is drawn in
 // pen colours and a mark can hold several of them, but the row beside the paper
 // wears one of the four highlight tokens like every other row — so the pen is
-// mapped to the nearest of them. Not cosmetic: a reader who marks corrections
-// in red and questions in blue can still sort the list by what they meant.
-const INK_FILING_COLOR = { ink: "yellow", red: "pink", blue: "blue", green: "green", amber: "yellow" };
+// mapped to the nearest of them (inkFilingColor, src/format/ink-colors.js). Not
+// cosmetic: a reader who marks corrections in red and questions in blue can
+// still sort the list by what they meant. A mark with a highlighter band in it
+// files under the band's colour, because the band is what the reader was
+// pointing at.
+function inkGroupFilingColor(group) {
+  let token = group[group.length - 1]?.c;
+  for (let i = group.length - 1; i >= 0; i -= 1) {
+    if (isHighlighterToken(group[i]?.c)) { token = group[i].c; break; }
+  }
+  return inkFilingColor(token);
+}
+
+// ── How the pen is set, held HERE rather than in the engine ───────────────
+//
+// The engine is destroyed and rebuilt whenever a document is cold-opened
+// (resetDocumentInk, from adoptDocumentInk), and every one it built started
+// from the defaults. initInkRail read the reader's saved pen into the engine
+// that existed at boot — and the very first document opened threw that engine
+// away. So the pen came back black and 2pt on every paper the reader opened,
+// whatever they had chosen, until they touched the rail again; the rail
+// meanwhile lit whatever the new engine said, so it even looked deliberate.
+//
+// The settings belong to the reader, not to a document, so they live in this
+// module, which outlives every document, and are handed to each engine as it is
+// made or brought back out of the park (applyInkSettings). The getters read
+// from here, so the rail can never describe an engine that does not exist yet.
+const inkSettings = {
+  tool: INK_TOOL_DEFAULT,
+  pen: INK_PEN_DEFAULT,
+  width: INK_WIDTH_DEFAULT,
+  hl: INK_HL_TOKEN_DEFAULT,
+  hlWidth: INK_HL_WIDTH_DEFAULT,
+  hlStraight: true,
+  eraserSize: INK_ERASER_SIZE_DEFAULT,
+  eraseMode: INK_ERASE_MODE_DEFAULT,
+  eraseTarget: INK_ERASE_TARGET_DEFAULT,
+  snapShapes: true,
+  tapDots: true
+};
+
+function applyInkSettings(target) {
+  if (!target) return;
+  target.setPen(inkSettings.pen);
+  target.setWidth(inkSettings.width);
+  target.setHighlighter({ token: inkSettings.hl, width: inkSettings.hlWidth, straight: inkSettings.hlStraight });
+  target.setEraserSize(inkSettings.eraserSize);
+  target.setEraseMode(inkSettings.eraseMode);
+  target.setEraseTarget(inkSettings.eraseTarget);
+  target.setSnapShapes(inkSettings.snapShapes);
+  target.setTool(inkSettings.tool);
+}
 
 let engine = null;
 let press = null;
@@ -205,8 +254,29 @@ function ensureEngine() {
     },
     onCommit: (page, strokes, meta) => commitInkPage(page, strokes, meta),
     onSelectionChange: () => onInkChanged(),
+    // The paper is whatever the page shows: white unless the reader inverted it,
+    // which on a notebook follows the theme (invertForDocumentSlot). Asked of the
+    // class rather than of the preference, because the class is what is drawn.
+    getPaper: () => (el.documentStage?.classList.contains(PDF_DARK_CLASS) ? "dark" : "light"),
+    // The highlighter's layer: a sibling of the ink layer, so it can blend with
+    // the page canvas under both (styles/72-ink-paper.css says why it cannot be
+    // inside the ink layer). Made on the first band a page carries and found
+    // again after that; pdf-view.js drops it with the page's other layers on a
+    // relayout, and the next paint makes it again.
+    makeUnderlay: (page) => {
+      const pageEl = pdfPageElement(page);
+      if (!pageEl) return null;
+      let layer = pageEl.querySelector(`.${PDF_INK_HL_LAYER_CLASS}`);
+      if (!layer) {
+        layer = document.createElement("div");
+        layer.className = PDF_INK_HL_LAYER_CLASS;
+        pageEl.appendChild(layer);
+      }
+      return layer;
+    },
     className: "pdf-ink-canvas"
   });
+  applyInkSettings(engine);
   return engine;
 }
 
@@ -318,11 +388,14 @@ function closeOpenMark() {
 function markIdForNewStrokes(pageNumber, added) {
   const now = Date.now();
   const box = inkStrokesBounds(added);
-  if (inkStrokesJoinMark(openMark, { page: pageNumber, box, now })) {
+  // A highlighter band and a pen stroke never share a mark — see
+  // inkStrokesJoinMark for why the two are different statements about the page.
+  const hl = added.some((stroke) => isHighlighterToken(stroke.c));
+  if (inkStrokesJoinMark(openMark, { page: pageNumber, box, now, hl })) {
     openMark.lastAt = now;
     openMark.box = mergeInkBoxes(openMark.box, box);
   } else {
-    openMark = { page: pageNumber, id: freshDocumentHighlightId(), startedAt: now, lastAt: now, box };
+    openMark = { page: pageNumber, id: freshDocumentHighlightId(), startedAt: now, lastAt: now, box, hl };
   }
   if (openMarkTimer) clearTimeout(openMarkTimer);
   // The timer only closes the mark; the rule above is what decides whether a
@@ -387,7 +460,7 @@ function buildInkRecords(pageNumber, strokes) {
     const box = inkStrokesBounds(group);
     const record = {
       id,
-      color: previous?.color || INK_FILING_COLOR[normalizeInkPen(group[group.length - 1]?.c)] || "yellow",
+      color: previous?.color || inkGroupFilingColor(group),
       page: pageNumber,
       // No anchor and no focus: ink is not a position in a run of glyphs, and
       // resolveDocumentAnchor already falls back to the quads for a record that
@@ -763,9 +836,9 @@ export function setInkArmed(next) {
   onInkChanged();
 }
 
-export function inkTool() { return engine ? engine.getTool() : INK_TOOL_DEFAULT; }
-export function inkPen() { return engine ? engine.getPen() : INK_PEN_DEFAULT; }
-export function inkWidth() { return engine ? engine.getWidth() : INK_WIDTH_DEFAULT; }
+export function inkTool() { return inkSettings.tool; }
+export function inkPen() { return inkSettings.pen; }
+export function inkWidth() { return inkSettings.width; }
 
 export function setInkTool(tool) {
   // A tool change closes the open mark. Switching to the eraser and back is a
@@ -777,6 +850,7 @@ export function setInkTool(tool) {
   // just said the pen is not drawing, and the nib is still on the glass.
   // cancelInkPress is idempotent and does nothing when no press is live.
   if (next === "text") cancelInkPress();
+  inkSettings.tool = next;
   ensureEngine().setTool(next);
   // Stated for the selection controller, which cannot import this file — see
   // src/core/gesture.js — and painted on the stage so the cursor can say what
@@ -795,10 +869,18 @@ export function setInkTool(tool) {
 // pen is set as well as the selection restyled, so the next stroke carries on in
 // the colour the reader just chose; setting only the selection would leave them
 // picking the same colour twice for "this bit red, and the rest of the line too".
-export function setInkPen(pen) {
-  const next = normalizeInkPen(pen);
+//
+// A COLOUR, not a whole pen: a press on red with a 50% pen keeps the 50%, which
+// is what a reader who set the opacity once and then changed colour means. The
+// pen's own opacity is setInkOpacity's; `keepOpacity: false` is for the caller
+// restoring a saved pen whole.
+export function setInkPen(pen, { keepOpacity = true } = {}) {
+  const given = parseInkToken(normalizeInkToken(pen, "pen"));
+  const opacity = keepOpacity ? (parseInkToken(inkSettings.pen)?.opacity ?? 1) : given.opacity;
+  const next = formatInkToken({ ...given, kind: "pen", opacity });
   const active = ensureEngine();
-  if (active.hasSelection()) { closeOpenMark(); active.restyleSelection({ pen: next }); }
+  if (active.hasSelection()) { closeOpenMark(); active.restyleSelection({ pen: next, kind: "pen" }); }
+  inkSettings.pen = next;
   active.setPen(next);
   onInkChanged();
 }
@@ -806,17 +888,90 @@ export function setInkPen(pen) {
 export function setInkWidth(width) {
   const next = normalizeInkWidth(width);
   const active = ensureEngine();
-  if (active.hasSelection()) { closeOpenMark(); active.restyleSelection({ width: next }); }
+  if (active.hasSelection()) { closeOpenMark(); active.restyleSelection({ width: next, kind: "pen" }); }
+  inkSettings.width = next;
   active.setWidth(next);
   onInkChanged();
 }
 
-export function inkEraseMode() { return engine ? engine.getEraseMode() : INK_ERASE_MODE_DEFAULT; }
-export function setInkEraseMode(mode) { ensureEngine().setEraseMode(normalizeInkEraseMode(mode)); onInkChanged(); }
-export function inkEraserSize() { return engine ? engine.getEraserSize() : INK_ERASER_SIZE_DEFAULT; }
-export function setInkEraserSize(size) { ensureEngine().setEraserSize(normalizeInkEraserSize(size)); onInkChanged(); }
-export function inkSnapShapes() { return engine ? engine.getSnapShapes() : true; }
-export function setInkSnapShapes(on) { ensureEngine().setSnapShapes(on); onInkChanged(); }
+// The pen's opacity, 0.1 to 1 — and, with something lassoed, the opacity of
+// the selected handwriting and nothing else about it.
+export function inkPenOpacity() { return parseInkToken(inkSettings.pen)?.opacity ?? 1; }
+
+export function setInkOpacity(opacity) {
+  const value = normalizeInkOpacity(opacity);
+  const parsed = parseInkToken(inkSettings.pen) || parseInkToken(INK_PEN_DEFAULT);
+  const next = formatInkToken({ ...parsed, kind: "pen", opacity: value });
+  const active = ensureEngine();
+  if (active.hasSelection()) { closeOpenMark(); active.restyleSelection({ opacity: value, kind: "pen" }); }
+  inkSettings.pen = next;
+  active.setPen(next);
+  onInkChanged();
+}
+
+// ── The highlighter's own settings ────────────────────────────────────────
+//
+// One patch for the four of them — colour, width, opacity and Straight — with
+// the same rule as the pen's: a colour keeps the current opacity, and with a
+// selection up each change restyles the selected HIGHLIGHTER bands and leaves
+// the handwriting beside them alone (restyleSelection's `kind`).
+export function inkHighlighter() {
+  return { token: inkSettings.hl, width: inkSettings.hlWidth, straight: inkSettings.hlStraight, opacity: parseInkToken(inkSettings.hl)?.opacity ?? 1 };
+}
+
+//
+// `token` sets the whole word — colour and opacity together — and is for
+// restoring a saved highlighter, never for a press on the panel.
+export function setInkHighlighter({ token = undefined, color = undefined, width = undefined, opacity = undefined, straight = undefined } = {}) {
+  const active = ensureEngine();
+  const restyle = active.hasSelection() && token === undefined ? {} : null;
+  let parts = parseInkToken(token !== undefined ? normalizeInkToken(token, "highlighter") : inkSettings.hl)
+    || parseInkToken(INK_HL_TOKEN_DEFAULT);
+  if (color !== undefined) {
+    const given = parseInkToken(normalizeInkToken(color, "highlighter"));
+    parts = { ...parts, name: given.name, hex: given.hex };
+    if (restyle) restyle.pen = formatInkToken({ ...given, kind: "highlighter" });
+  }
+  if (opacity !== undefined) {
+    parts = { ...parts, opacity: normalizeInkOpacity(opacity) };
+    if (restyle) restyle.opacity = parts.opacity;
+  }
+  if (width !== undefined) {
+    inkSettings.hlWidth = normalizeInkHlWidth(width);
+    if (restyle) restyle.width = inkSettings.hlWidth;
+  }
+  if (straight !== undefined) inkSettings.hlStraight = straight !== false;
+  inkSettings.hl = formatInkToken({ ...parts, kind: "highlighter" });
+  if (restyle && Object.keys(restyle).length) {
+    closeOpenMark();
+    active.restyleSelection({ ...restyle, kind: "highlighter" });
+  }
+  active.setHighlighter({ token: inkSettings.hl, width: inkSettings.hlWidth, straight: inkSettings.hlStraight });
+  onInkChanged();
+}
+
+export function inkEraseMode() { return inkSettings.eraseMode; }
+export function setInkEraseMode(mode) { inkSettings.eraseMode = normalizeInkEraseMode(mode); ensureEngine().setEraseMode(inkSettings.eraseMode); onInkChanged(); }
+export function inkEraserSize() { return inkSettings.eraserSize; }
+export function setInkEraserSize(size) { inkSettings.eraserSize = normalizeInkEraserSize(size); ensureEngine().setEraserSize(inkSettings.eraserSize); onInkChanged(); }
+export function inkEraseTarget() { return inkSettings.eraseTarget; }
+export function setInkEraseTarget(target) { inkSettings.eraseTarget = normalizeInkEraseTarget(target); ensureEngine().setEraseTarget(inkSettings.eraseTarget); onInkChanged(); }
+export function inkSnapShapes() { return inkSettings.snapShapes; }
+export function setInkSnapShapes(on) { inkSettings.snapShapes = on !== false; ensureEngine().setSnapShapes(inkSettings.snapShapes); onInkChanged(); }
+// Whether a quick tap of the pen on bare paper leaves a dot — see onInkPointerUp.
+export function inkTapDots() { return inkSettings.tapDots; }
+export function setInkTapDots(on) { inkSettings.tapDots = on !== false; onInkChanged(); }
+
+// What kinds of stroke the lasso is holding, so the panel can offer the right
+// controls for restyling them: { pen, highlighter } counts.
+export function inkSelectionKinds() {
+  const out = { pen: 0, highlighter: 0 };
+  (engine ? engine.selectedStrokes() : []).forEach((stroke) => {
+    if (isHighlighterToken(stroke.c)) out.highlighter += 1;
+    else out.pen += 1;
+  });
+  return out;
+}
 
 // ── Copy, cut, paste, duplicate and nudge ─────────────────────────────────
 //
@@ -974,6 +1129,17 @@ export function isInkMarkId(id) {
   return documentInkMarks().some((record) => record.id === id);
 }
 
+// A mark made only of highlighter bands. Its card is not a picture of the
+// strokes — a yellow band on its own is a picture of nothing — but the page
+// under it: the same live crop a region makes (pdf-region-embed.js), which
+// paints the band over the scanned words it was laid on.
+export function inkMarkIsHighlight(id) {
+  const record = documentInkMarks().find((entry) => entry.id === id);
+  if (!record) return false;
+  const strokes = decodeInkStrokes(record.ink?.s);
+  return strokes.length > 0 && strokes.every((stroke) => isHighlighterToken(stroke.c));
+}
+
 // A deck swap. The engine holds decoded strokes for every page it has painted,
 // and a page 7 from the last paper is not a page 7 of this one.
 export function resetDocumentInk() {
@@ -1057,6 +1223,9 @@ export function adoptDocumentInk({ key = "", restored = false } = {}) {
     engine = parked.engine;
     seededInk = parked.seeded;
     inkEncodeCache = parked.encoded;
+    // The reader may have changed the pen since this engine was parked, and the
+    // pen is theirs, not this document's.
+    applyInkSettings(engine);
     // Same rule as above, for the branch that comes BACK to a document. A press
     // that belongs to whatever was on the stage a moment ago has no business
     // still being open over this one, and if it were left open no stroke on this
