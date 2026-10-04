@@ -307,37 +307,40 @@ export async function ensureTurndown() {
 }
 
 // Called once the app is interactive. The ensureX() guards above are the
-// correctness backstop, but they make the caller wait; warming the libraries
-// while the user is still reading their first card means that by the time
-// anyone renders a diagram, runs a backup or pastes rich text, the library is
-// already there. Idle-time and unawaited, so it cannot get in front of
-// anything the user is doing.
+// correctness backstop for every library here, and this warms the ONE that
+// cannot wait for one: htmlToMarkdown's paste path reads clipboardData
+// synchronously, so Turndown has to be on the page before anyone pastes.
 //
-// This also covers htmlToMarkdown's paste path, which reads clipboardData
-// synchronously and so genuinely cannot await a loader mid-event.
+// ── ...and only that one ───────────────────────────────────────────────────
+//
+// This used to warm mermaid, jszip and nomnoml as well, on every launch — 3.3MB
+// of mermaid alone parsed and evaluated on the main thread a couple of seconds
+// after boot, on a phone, for a reader who may never draw a diagram, import a
+// zip or open an EPUB. Every one of those already waits on its own guard at the
+// moment it is used — renderDiagramNodes on ensureMermaid/ensureNomnoml, the zip
+// and EPUB imports and the backup on ensureJsZip — and the service worker
+// precaches all of them (CDN_ASSETS in sw.js), so the first diagram is a cache
+// read rather than a download, online or off. What a reader gives up is the
+// parse, moved from boot to the first diagram they actually open — which the
+// diagram deferral (src/render/deferred-work.js) already starts 1200px early.
 export let deferredLibrariesWarmed = false;
 
 export function warmDeferredLibraries() {
   if (deferredLibrariesWarmed) return;
   deferredLibrariesWarmed = true;
   const warm = () => {
-    ensureMermaid();
-    ensureJsZip();
-    ensureNomnoml();
     ensureTurndown();
-    // Deliberately NOT pdf.js. It is far heavier than any of the four above
-    // (the library and its worker together are over a megabyte), and unlike a
-    // diagram or a paste, nothing reaches it by accident: only importing a PDF
-    // or opening a PDF deck does, and both of those already await
-    // ensurePdfJs(). Warming it would cost every user that download for a
-    // feature most of them never open.
+    // Deliberately NOT pdf.js either. The library and its worker together are
+    // over a megabyte, and unlike a paste, nothing reaches it by accident:
+    // only importing a PDF or opening a PDF deck does, and both of those
+    // already await ensurePdfJs(). Warming it would cost every user that
+    // download for a feature most of them never open.
   };
   // Held back a couple of seconds and THEN made to wait for an idle moment.
   // Both halves matter: the app is still rendering its first deck when this is
   // armed, and requestIdleCallback alone would happily fire during one of
-  // boot's IndexedDB awaits — dropping a 3.3MB mermaid parse straight into the
-  // window this whole change exists to clear. Anyone who reaches a diagram
-  // before then simply loads it through the ensureX() guard instead.
+  // boot's IndexedDB awaits. Anyone who pastes before then simply loads it
+  // through the ensureTurndown() guard instead.
   setTimeout(() => {
     if (typeof requestIdleCallback === "function") requestIdleCallback(warm, { timeout: 5000 });
     else warm();
