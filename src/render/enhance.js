@@ -9,13 +9,13 @@ import { loadNoteLinkIndex, noteLinkEntriesByTitle, parseNoteLinkTarget } from "
 import { isTopLevelBlockParent } from "./block-cache.js?v=__BUILD__";
 import { codeLanguageLabel, codeLanguageOrGeneric, configurePrismLanguages, declaredCodeLanguage, inferCodeLanguage, normalizeCodeLanguage } from "./code-language.js?v=__BUILD__";
 import { codeCleanText, extractCodeMarks, installCodeMarkHooks, paintCodeMarks } from "./code-marks.js?v=__BUILD__";
-import { EAGER_IMAGE_COUNT, deferrableRenderRoot, runNearViewportAndDefer, scopedQueryAll } from "./deferred-work.js?v=__BUILD__";
+import { EAGER_IMAGE_COUNT, deferrableRenderRoot, deferredWorkRunners, runNearViewportAndDefer, scopedQueryAll } from "./deferred-work.js?v=__BUILD__";
 import { addDiagramZoomControl } from "./diagram-zoom.js?v=__BUILD__";
 import { sourceWithNomnomlTheme } from "./diagrams.js?v=__BUILD__";
 import { noteLinkEntryMatchesId } from "./note-links.js?v=__BUILD__";
 import { normalizeImageUrl } from "./preprocess.js?v=__BUILD__";
 import { fitMarkdownTables } from "./tables.js?v=__BUILD__";
-import { PDFREF_SCHEME, mountPdfRegionEmbed } from "../documents/pdf-region-embed.js?v=__BUILD__";
+import { PDFREF_SCHEME, mountPdfRegionEmbed, paintPdfRegionEmbed, placePdfRegionEmbed, regionEmbedAwaitingPaint } from "../documents/pdf-region-embed.js?v=__BUILD__";
 
 export function enhanceCodeBlocks(roots) {
   configurePrismLanguages();
@@ -125,6 +125,49 @@ function enhanceCodeBlock(code) {
   Prism.highlightElement(code);
 }
 
+// ── A PDF region in the notes is painted when the reader nears it ──────────
+//
+// Painting a region means opening its paper, rasterising the crop on the main
+// thread and building its text layer, and a note with dozens of regions used
+// to do all of it the moment the note opened — every region at once, however
+// far down it sat, while the reader was trying to start reading the top. Now
+// each is placed at once (it already reserves its exact aspect ratio, so
+// nothing moves when it lands) and painted through the same near-the-viewport
+// deferral diagrams and tables use, with the same 1200px of runway.
+//
+// Observed through the note's TOP-LEVEL block that holds it rather than the
+// wrapper itself: a long note's top-level blocks carry content-visibility: auto
+// (styles/12-notes.css), and a skipped block's contents have no layout for an
+// observer to measure. The block's own box is real — that is what
+// contain-intrinsic-size is for.
+//
+// One runner per observed node is all src/render/deferred-work.js keeps, so a
+// region inside something another runner already owns — a table (fitted by
+// its own deferral), a diagram — is painted straight away, as it always was.
+function deferRegionPaints(wrappers, root) {
+  const blocks = new Set();
+  wrappers.forEach((wrapper) => {
+    let block = wrapper;
+    while (block?.parentNode && block.parentNode !== root) block = block.parentNode;
+    const owned = wrapper.closest("table, .mermaid, .nomnoml-diagram")
+      || (block && deferredWorkRunners.has(block) && deferredWorkRunners.get(block) !== paintRegionsIn);
+    if (!block || block.parentNode !== root || owned) {
+      paintPdfRegionEmbed(wrapper);
+      return;
+    }
+    blocks.add(block);
+  });
+  if (blocks.size) runNearViewportAndDefer([...blocks], root, paintRegionsIn);
+}
+
+function paintRegionsIn(blocks) {
+  blocks.forEach((block) => {
+    block.querySelectorAll(".pdf-region-embed").forEach((wrapper) => {
+      if (regionEmbedAwaitingPaint(wrapper)) paintPdfRegionEmbed(wrapper);
+    });
+  });
+}
+
 // Flags every display equation that carries an equation number, because two
 // things in this app quietly break KaTeX's numbering and both of them are only
 // worth correcting where a number actually exists.
@@ -205,9 +248,19 @@ export async function enhanceRenderedMarkdown(container, roots = null) {
   const allowRegionResize = container === el.questionView || container === el.answerView
     || container === el.notesView
     || Boolean(container.closest?.(".all-card-question, .all-card-answer"));
-  scopedQueryAll(scope, `img[src^="${PDFREF_SCHEME}"]`).forEach((img) => {
-    mountPdfRegionEmbed(img, { resizable: allowRegionResize });
-  });
+  //
+  // In the notes view the picture itself waits until the reader nears it — see
+  // deferRegionPaints. Everywhere else it is painted straight away.
+  const regionRoot = deferrableRenderRoot(container);
+  const regionImgs = scopedQueryAll(scope, `img[src^="${PDFREF_SCHEME}"]`);
+  if (regionRoot && regionImgs.length) {
+    const placed = regionImgs.map((img) => placePdfRegionEmbed(img, { resizable: allowRegionResize })).filter(Boolean);
+    deferRegionPaints(placed, regionRoot);
+  } else {
+    regionImgs.forEach((img) => {
+      mountPdfRegionEmbed(img, { resizable: allowRegionResize });
+    });
+  }
 
   scopedQueryAll(scope, ".math-display[data-tex], .math-inline[data-tex]").forEach((node) => {
     try {

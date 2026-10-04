@@ -55,38 +55,78 @@ export function deferrableRenderRoot(container) {
   return container === el.notesView ? el.notesView : null;
 }
 
-// Runs everything that has come into view. Batched per runner: one mermaid.run
-// for six diagrams costs far less than six.
+// Runs what has come into view. Batched per runner: one mermaid.run for six
+// diagrams costs far less than six.
 //
 // Split out of the IntersectionObserver callback deliberately. Rendering a
 // diagram or auto-fitting a table forces a layout of the whole notes document,
 // and doing that *inside* the observer callback meant a fling past a few
 // diagrams stalled the scroll for as long as they took to draw. DEFERRED_WORK_MARGIN
 // is 1200px of runway, so there is ample room to wait for an idle moment.
-export function drainReadyDeferredWork() {
+//
+// ── ...a batch at a time, inside the idle period it was given ─────────────
+//
+// This used to run EVERYTHING that had become ready in one go: a fling past a
+// stretch of diagrams, tables and PDF regions queued all of them, and the one
+// idle callback that followed drew every one in a single task — which on a
+// phone, where the reading surface's non-passive touchmove waits on the main
+// thread (src/notes/touch-selection.js), was the next flick starting late. And
+// "idle" was often not idle at all: during a continuous fling the 250ms timeout
+// is what fires, mid-scroll.
+//
+// So a drain runs one batch — up to DEFERRED_WORK_BATCH ready nodes that share a
+// runner, so a table fit still measures several tables in one read pass — and
+// then another only while the browser says the idle period has time left. When
+// it was the timeout that fired rather than an idle period, or there is no
+// requestIdleCallback at all (Safari), it is one batch and then the rest are
+// rescheduled. Nothing is dropped: whatever is left stays ready, and
+// flushDeferredWork (print, export, a zoom) still runs all of it at once.
+export const DEFERRED_WORK_BATCH = 4;
+
+export const DEFERRED_WORK_MIN_IDLE_MS = 6;
+
+export function drainReadyDeferredWork(deadline) {
   deferredWorkDrainHandle = 0;
   if (!readyDeferredWork.size) return;
-  const due = Array.from(readyDeferredWork);
-  readyDeferredWork.clear();
-  const batches = new Map();
-  due.forEach((node) => {
-    const run = deferredWorkRunners.get(node);
+  const forced = !deadline || typeof deadline.timeRemaining !== "function" || deadline.didTimeout;
+  let ran = 0;
+  while (readyDeferredWork.size) {
+    if (ran && (forced || deadline.timeRemaining() < DEFERRED_WORK_MIN_IDLE_MS)) break;
+    runNextDeferredBatch();
+    ran += 1;
+  }
+  if (readyDeferredWork.size) scheduleDeferredWorkDrain();
+}
+
+// The oldest ready node's runner, and up to DEFERRED_WORK_BATCH ready nodes that
+// share it, in the order they came into view.
+function runNextDeferredBatch() {
+  let run = null;
+  const batch = [];
+  for (const node of Array.from(readyDeferredWork)) {
+    const runner = deferredWorkRunners.get(node);
     // Gone already — flushDeferredWork got here first (print/export).
-    if (!run) return;
+    if (!runner) {
+      readyDeferredWork.delete(node);
+      continue;
+    }
+    if (!run) run = runner;
+    if (runner !== run) continue;
+    batch.push(node);
+    if (batch.length >= DEFERRED_WORK_BATCH) break;
+  }
+  batch.forEach((node) => {
+    readyDeferredWork.delete(node);
     deferredWorkRunners.delete(node);
     pendingDeferredWork.delete(node);
     deferredWorkObservers.forEach((observer) => observer.unobserve(node));
-    const batch = batches.get(run);
-    if (batch) batch.push(node);
-    else batches.set(run, [node]);
   });
-  batches.forEach((batch, run) => {
-    try {
-      Promise.resolve(run(batch)).catch((error) => console.warn("Deferred render failed", error));
-    } catch (error) {
-      console.warn("Deferred render failed", error);
-    }
-  });
+  if (!run || !batch.length) return;
+  try {
+    Promise.resolve(run(batch)).catch((error) => console.warn("Deferred render failed", error));
+  } catch (error) {
+    console.warn("Deferred render failed", error);
+  }
 }
 
 export function scheduleDeferredWorkDrain() {

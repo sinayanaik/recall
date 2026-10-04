@@ -108,12 +108,44 @@ export function parsePdfRef(src) {
 // several now — see pdf-multi.js) — deliberately NOT the Document surface's
 // own document object, so switching tabs/decks there can't tear an embed down
 // out from under a card that's still showing it, and vice versa.
+//
+// ── ...and only for the deck that is open ──────────────────────────────────
+//
+// Every key here is built from state.localDeckId, so an entry for any other deck
+// can never be asked for again until the reader goes back to it — and each one
+// is a parsed copy of a paper in a pdf.js worker of its own (pdf.js starts one
+// per document). Kept for the whole session, a reader moving through ten
+// annotated decks was carrying ten of them. So the first request on behalf of a
+// new deck releases the others, after a grace period long enough for a render
+// still in flight on one of them to land, and cancelled if the reader comes
+// back first.
 const embedDocs = new Map();
+
+export const EMBED_DOC_RELEASE_MS = 15000;
+
+function releaseOtherDecksEmbedDocs() {
+  const deck = state.localDeckId || "";
+  embedDocs.forEach((entry, key) => {
+    if (entry.deck === deck || entry.releasing) return;
+    entry.releasing = setTimeout(() => {
+      if (embedDocs.get(key) !== entry) return;
+      embedDocs.delete(key);
+      entry.promise.then((doc) => doc?.destroy?.()).catch(() => {});
+    }, EMBED_DOC_RELEASE_MS);
+  });
+}
 
 function openEmbedDoc(storeKey, pdfMeta) {
   const key = storeKey || "";
+  releaseOtherDecksEmbedDocs();
   const cached = embedDocs.get(key);
-  if (cached) return cached;
+  if (cached) {
+    if (cached.releasing) {
+      clearTimeout(cached.releasing);
+      cached.releasing = 0;
+    }
+    return cached.promise;
+  }
   const promise = (async () => {
     if (!(await ensurePdfJs())) return null;
     const blob = await getDocument(storeKey, pdfMeta);
@@ -131,10 +163,10 @@ function openEmbedDoc(storeKey, pdfMeta) {
     // embed asked for gets a fresh attempt, in case connectivity returns
     // later in the same session. Only a real, open document is worth
     // remembering, which is the whole point of caching (see above).
-    if (!doc) embedDocs.delete(key);
+    if (!doc && embedDocs.get(key)?.promise === promise) embedDocs.delete(key);
     return doc;
   });
-  embedDocs.set(key, promise);
+  embedDocs.set(key, { promise, deck: state.localDeckId || "", releasing: 0 });
   return promise;
 }
 
@@ -529,17 +561,50 @@ function showFallback(wrapper, parsed) {
 
 // Replaces `img` in place with a live-rendered crop of the PDF location it
 // points at. Fire-and-forget: called from enhanceRenderedMarkdown for every
-// `img[src^="pdfref:"]` a render pass finds. `resizable` is true only on the
+// `img[src^="pdfref:"]` a render pass finds outside the notes view (the notes
+// view places and paints in two steps — see placePdfRegionEmbed below). `resizable` is true only on the
 // interactive card surfaces enhanceRenderedMarkdown allows it for (Study,
 // All Cards) — see the allow-list there — and adds a drag-corner handle that
 // persists a new width back into the card via pdf-region-resize.js.
 export async function mountPdfRegionEmbed(img, { resizable = false } = {}) {
+  const wrapper = placePdfRegionEmbed(img, { resizable });
+  if (wrapper) await paintPdfRegionEmbed(wrapper);
+}
+
+// ── The two halves of a mount, so the second can wait ──────────────────────
+//
+// Placing is synchronous and cheap: the <img> becomes a wrapper that already has
+// the region's exact aspect ratio (buildWrapper), so the text around it never
+// moves when the picture lands. Painting is the expensive half — open the paper,
+// rasterise the crop on the main thread, build its text layer — and the notes
+// view used to do it for every region in the note the moment the note opened,
+// however far down the note it sat. src/render/enhance.js now places every
+// region at once and hands the painting to the same near-the-viewport deferral
+// diagrams already use; every other surface (a card face, All Cards, a quick
+// note, an export) still places and paints in one go through mountPdfRegionEmbed.
+const pendingRegionEmbeds = new WeakMap();
+
+export function placePdfRegionEmbed(img, { resizable = false } = {}) {
   const parsed = parsePdfRef(img.getAttribute("src"));
-  if (!parsed) return;
+  if (!parsed) return null;
   const targetWidth = parsed.width || EMBED_TARGET_WIDTH;
   const wrapper = buildWrapper(parsed, targetWidth);
   img.replaceWith(wrapper);
+  pendingRegionEmbeds.set(wrapper, { parsed, targetWidth, resizable });
+  return wrapper;
+}
 
+// Whether a wrapper has been placed and not yet painted — the deferral's runner
+// paints exactly these, and nothing it finds twice.
+export function regionEmbedAwaitingPaint(wrapper) {
+  return pendingRegionEmbeds.has(wrapper);
+}
+
+export async function paintPdfRegionEmbed(wrapper) {
+  const pending = pendingRegionEmbeds.get(wrapper);
+  if (!pending) return;
+  pendingRegionEmbeds.delete(wrapper);
+  const { parsed, targetWidth, resizable } = pending;
   try {
     const pdfId = parsed.pdfId || PDF_PRIMARY_ID;
     const pdfMeta = deckPdfById(state.meta, pdfId);
@@ -604,7 +669,17 @@ export async function mountPdfRegionEmbed(img, { resizable = false } = {}) {
     // surface itself renders every page's text layer with. Nothing here is
     // re-measured or re-derived: the whole page's spans are correct as they
     // are, and clipping a correctly-positioned thing to a window is free.
-    const { layer: textLayer } = await buildTextLayer(page, viewport);
+    //
+    // ...the spans INSIDE the box, that is. The layer used to be the whole
+    // page's, clipped by the wrapper: a few thousand absolutely positioned spans
+    // per region to show the few dozen in its box, in a note that may carry
+    // dozens of regions — and a selection dragged across the region picked up
+    // the whole page's hidden text with it. The clip is the crop in the same
+    // viewport the spans are placed in; every span kept is placed and indexed
+    // exactly as before.
+    const { layer: textLayer } = await buildTextLayer(page, viewport, {
+      clip: [left, top, left + nativeWidth, top + nativeHeight]
+    });
 
     const pageGroup = document.createElement("div");
     pageGroup.className = "pdf-region-embed-page";
@@ -627,6 +702,12 @@ export async function mountPdfRegionEmbed(img, { resizable = false } = {}) {
     if (resizable) {
       attachRegionResizeHandle(wrapper, pageGroup, parsed, renderInfo);
     }
+    // The crop is pixels on a canvas and its text is spans in the DOM, so
+    // nothing here needs the page's operator list or decoded images again; a
+    // later render of the same page (a resize, another region on it) asks the
+    // worker afresh. pdf.js defers this while another render of the page is
+    // still in flight.
+    try { page.cleanup(); } catch (_) { /* a destroyed document has nothing left */ }
   } catch (error) {
     console.warn("Could not render a PDF region embed", error);
     showFallback(wrapper, parsed);

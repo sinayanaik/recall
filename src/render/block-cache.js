@@ -2989,8 +2989,16 @@ export function notesLazyBuildObserver(root) {
       // queue stacks up to 250ms of drain latency on top of the runway, and a
       // fling covers 1200px well inside that. The span size bound is what makes
       // that affordable — see NOTES_LAZY_SPAN_MAX_CHARS.
+      //
+      // ...ONE span, that is: the one nearest the viewport. The bound makes one
+      // span fit a frame, and a fling routinely delivers two to four entries in
+      // the same callback — built together, that was two to four frames' work in
+      // one task, with every new span unable to paint until the last was done.
+      // The rest follow one per animation frame (queueNotesLazyBuildForFrame),
+      // nearest first, still well inside the 1200px of runway.
       const held = touchGestureHoldsSurface();
       const finished = [];
+      const arriving = [];
       entries.forEach((entry) => {
         if (!entry.isIntersecting) return;
         observer.unobserve(entry.target);
@@ -2998,7 +3006,15 @@ export function notesLazyBuildObserver(root) {
         if (index === -1) return;
         // ...unless a finger is on the surface. See the note above.
         if (held) { queueNotesLazyBuild(root, index); return; }
-        if (buildNotesLazySpan(root, index)) finished.push(index);
+        arriving.push({ index, distance: lazyEntryDistance(entry) });
+      });
+      arriving.sort((a, b) => a.distance - b.distance);
+      arriving.forEach(({ index, distance }, at) => {
+        if (at === 0) {
+          if (buildNotesLazySpan(root, index)) finished.push(index);
+        } else {
+          queueNotesLazyBuildForFrame(root, plan, index, distance);
+        }
       });
       finished.forEach((index) => finishNotesLazySpan(root, index));
       if (finished.length) {
@@ -3019,11 +3035,63 @@ export function notesLazyBuildObserver(root) {
   return observer;
 }
 
+// How far outside the scroller an entry's chunk was when it arrived, from the
+// geometry the observer already measured — no layout read of our own.
+function lazyEntryDistance(entry) {
+  const rect = entry.boundingClientRect;
+  const bounds = entry.rootBounds;
+  if (!rect || !bounds) return 0;
+  if (rect.bottom < bounds.top) return bounds.top - rect.bottom;
+  if (rect.top > bounds.bottom) return rect.top - bounds.bottom;
+  return 0;
+}
+
+// Spans that arrived in the same observer callback as a nearer one, built one
+// per animation frame. Each remembers the plan it was queued against: a note
+// re-planned or swapped in the meantime has indices describing a document that
+// is no longer on screen, and those are dropped exactly as the gesture queue
+// above drops them.
+const frameLazyBuilds = [];
+
+let frameLazyBuildHandle = 0;
+
+function queueNotesLazyBuildForFrame(root, plan, index, distance) {
+  if (frameLazyBuilds.some((queued) => queued.root === root && queued.plan === plan && queued.index === index)) return;
+  frameLazyBuilds.push({ root, plan, index, distance });
+  frameLazyBuilds.sort((a, b) => a.distance - b.distance);
+  if (!frameLazyBuildHandle) frameLazyBuildHandle = requestAnimationFrame(buildNextFrameLazySpan);
+}
+
+function buildNextFrameLazySpan() {
+  frameLazyBuildHandle = 0;
+  while (frameLazyBuilds.length) {
+    const { root, plan, index } = frameLazyBuilds.shift();
+    if (notesLazyPlans.get(root) !== plan || plan.built[index]) continue;
+    // A finger landed while these waited: hand them to the gesture's own
+    // queue, which builds them the moment it lifts.
+    if (touchGestureHoldsSurface()) {
+      queueNotesLazyBuild(root, index);
+      continue;
+    }
+    if (buildNotesLazySpan(root, index)) {
+      finishNotesLazySpan(root, index);
+      scheduleNotesChunkEstimates(root);
+      scheduleNotesBlockEstimate(root);
+      scheduleNotesLazyDensity(root);
+    }
+    break;
+  }
+  if (frameLazyBuilds.length) frameLazyBuildHandle = requestAnimationFrame(buildNextFrameLazySpan);
+}
+
 export function releaseNotesLazyBuildObserver(root) {
   const observer = notesLazyBuildObservers.get(root);
   if (observer) {
     observer.disconnect();
     notesLazyBuildObservers.delete(root);
+  }
+  for (let i = frameLazyBuilds.length - 1; i >= 0; i -= 1) {
+    if (frameLazyBuilds[i].root === root) frameLazyBuilds.splice(i, 1);
   }
   // Anything still queued describes chunks of a plan that is going away. Dropped
   // rather than flushed: building them would render spans of the note that is
