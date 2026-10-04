@@ -628,10 +628,10 @@ const PROBE = `async (api) => {
 
   // ── A highlight's note, said where the highlight is ─────────────────────
   //
-  // src/notes/highlight-badges.js. One numbered, pressable badge per annotated
-  // highlight — numbered from the SOURCE so a note built lazily, chunk by
-  // chunk, cannot renumber itself as the reader scrolls; drawn out of flow so it
-  // moves no glyph; and present only where there is a note to read.
+  // src/notes/highlight-badges.js. One pressable fold per annotated highlight,
+  // carrying no number — indexed from the SOURCE so a note built lazily, chunk
+  // by chunk, cannot reshuffle itself as the reader scrolls; drawn out of flow
+  // so it moves no glyph; and present only where there is a note to read.
 
   // The note bodies live in a "## Highlight Notes" section at the end (see
   // format/highlight-notes.js); the marks in the body only point at them.
@@ -757,25 +757,17 @@ const PROBE = `async (api) => {
     return true;
   });
 
-  // The number a card shows has to be the number its badge shows, and the only
-  // way to be sure of that is for both to come out of one function. This is that
-  // assertion: the entries the pane renders carry exactly the numbers the badge
-  // index hands out, including the skip over a highlight with nothing written on
-  // it. Three surfaces print this number — the badge on the mark, the note
-  // printed under a page, and the card — and "we computed the same sequence the
-  // same way in three files" is the guarantee that does not survive an edit to
-  // one of them.
-  check("a card's number is the number its badge wears", () => {
+  // A highlight in the notes view wears an unnumbered fold, so its card in the
+  // pane carries no number either: the card is the quote with its note under
+  // it, and a counter there grew to two and three digits while saying nothing
+  // the layout did not. Only a PDF Document highlight — whose page badge still
+  // shows one — gives its card a number (pdf-preview-check covers that half).
+  check("a notes-view card carries no number, annotated or not", () => {
     api.state.notes = NOTED;
-    const index = api.highlightNoteIndex(NOTED).byAttr;
-    const badges = [...index.values()].map((info) => info.n);
-    const cards = api.collectHighlightEntries().map((entry) => entry.n).filter(Boolean);
-    if (cards.join(",") !== badges.join(",")) {
-      return "cards numbered " + JSON.stringify(cards.join(",")) + " against badges " + JSON.stringify(badges.join(","));
-    }
-    // ...and the two highlights with no note are numbered in neither.
-    const unnumbered = api.collectHighlightEntries().filter((entry) => !entry.n).length;
-    if (unnumbered !== 2) return unnumbered + " entries carry no number, expected 2";
+    const entries = api.collectHighlightEntries();
+    if (entries.length !== 4) return entries.length + " entries, expected 4";
+    const numbered = entries.filter((entry) => entry.n);
+    if (numbered.length) return numbered.length + " notes-view card(s) still carry a number";
     return true;
   });
 
@@ -1016,7 +1008,7 @@ const PROBE = `async (api) => {
     return host;
   };
 
-  check("a note gives its highlight a numbered badge, a plain highlight none", () => {
+  check("a note gives its highlight a fold, a plain highlight none", () => {
     api.state.notes = NOTED;
     const host = renderNoted();
     try {
@@ -1029,9 +1021,14 @@ const PROBE = `async (api) => {
       if (got !== want) return got;
       const badges = [...host.querySelectorAll(".hl-note-badge")];
       if (badges.length !== 2) return badges.length + " badge(s), expected 2";
-      // Numbered from the SOURCE, in document order — the property that has to
-      // survive a note being built lazily, chunk by chunk.
-      if (badges.map((b) => b.textContent).join(",") !== "1,2") return "numbered " + badges.map((b) => b.textContent).join(",");
+      // A fold, not a number: nothing in it that could grow with the note, and
+      // nothing a screen reader would read as a footnote count.
+      if (badges.some((b) => b.textContent !== "")) return "the badge carries text: " + badges.map((b) => JSON.stringify(b.textContent)).join(",");
+      if (!badges.every((b) => b.getAttribute("aria-label"))) return "a badge with no accessible name";
+      // Still indexed from the SOURCE, in document order — the property that
+      // has to survive a note being built lazily, chunk by chunk.
+      const keys = badges.map((b) => b.dataset.hnKey).join(",");
+      if (keys !== "1,2") return "indexed " + keys;
       // Only where there is something to read. An id whose section entry was
       // deleted by hand is not a note, and must not be offered as one.
       const dangling = marks.find((m) => m.firstChild.textContent === "a dangling id");
@@ -1071,27 +1068,13 @@ const PROBE = `async (api) => {
     } finally { host.remove(); }
   });
 
-  // The box of the last real character in a mark — the badge's own digits
-  // skipped, since they are a text node inside the mark too.
-  const lastGlyphRect = (mark) => {
-    const walker = document.createTreeWalker(mark, NodeFilter.SHOW_TEXT, {
-      acceptNode: (node) => (node.parentElement.closest(".hl-note-badge") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT)
-    });
-    let last = null;
-    while (walker.nextNode()) if (walker.currentNode.data.trim()) last = walker.currentNode;
-    const end = last.data.replace(/\\s+$/, "").length;
-    const range = document.createRange();
-    range.setStart(last, end - 1);
-    range.setEnd(last, end);
-    return range.getBoundingClientRect();
-  };
-
-  check("...and it never covers the highlight's last letter", () => {
-    // The report: "they are always masking the last character of the
-    // highlighted content". The chip was pinned to the mark's right edge and
-    // pulled back over it ("right: -0.24em"), so "messagebox" read as
-    // "messagebo" plus a number. It now sits at its static position, just past
-    // the final glyph — so the two boxes must not share a single pixel.
+  check("...and it sits in the highlight's own corner, small, over nothing past it", () => {
+    // The report that retired the number: on a note with a gloss on every word
+    // the pills sat on the vowel signs and on the next word, and grew with
+    // every digit. The fold is the mark's top-right corner and no more — its
+    // right edge the tint's, its top the tint's, the same few pixels whatever
+    // the count — so it can neither reach the next word nor drop into the
+    // letters below the top band of the line.
     api.state.notes = NOTED;
     const host = renderNoted();
     try {
@@ -1099,19 +1082,21 @@ const PROBE = `async (api) => {
       const marks = [...host.querySelectorAll("mark.has-note")];
       if (marks.length !== 2) return marks.length + " annotated mark(s), expected 2";
       for (const mark of marks) {
-        const glyph = lastGlyphRect(mark);
-        const chip = mark.querySelector(".hl-note-badge").getBoundingClientRect();
-        const w = Math.min(glyph.right, chip.right) - Math.max(glyph.left, chip.left);
-        const h = Math.min(glyph.bottom, chip.bottom) - Math.max(glyph.top, chip.top);
-        if (w > 0.5 && h > 0.5) {
-          return JSON.stringify(mark.firstChild.textContent) + ": the badge covers " + w.toFixed(1) + "x" + h.toFixed(1) + "px of its last letter";
+        const name = JSON.stringify(mark.firstChild.textContent);
+        const lines = mark.getClientRects();
+        const end = lines[lines.length - 1];
+        const fold = mark.querySelector(".hl-note-badge").getBoundingClientRect();
+        const em = parseFloat(getComputedStyle(mark).fontSize);
+        if (fold.right > end.right + 0.5) return name + ": the fold reaches " + (fold.right - end.right).toFixed(1) + "px past the highlight";
+        if (end.right - fold.right > 1.5) return name + ": the fold stops " + (end.right - fold.right).toFixed(1) + "px short of the corner";
+        if (Math.abs(fold.top - end.top) > 1.5) return name + ": the fold's top is " + (fold.top - end.top).toFixed(1) + "px from the highlight's";
+        if (fold.width > 0.45 * em || fold.height > 0.45 * em) {
+          return name + ": the fold is " + fold.width.toFixed(1) + "x" + fold.height.toFixed(1) + "px at a " + em + "px font";
         }
-        // ...and it is still AT the end, not floated off somewhere clear of it.
-        if (chip.left < glyph.right - 0.5 || chip.left - glyph.right > 6) {
-          return "the badge starts " + (chip.left - glyph.right).toFixed(1) + "px from the last letter";
-        }
-        // Raised like a superscript: its top above the letters' own top.
-        if (chip.top >= glyph.top) return "the badge is not raised above the line it ends";
+        // ...and the drawn part is the upper-right half of that square: the
+        // corner of an em box, above the letters' x-height.
+        const clip = getComputedStyle(mark.querySelector(".hl-note-badge"), "::after").clipPath;
+        if (!/polygon/.test(clip)) return name + ": the fold is not drawn as a corner triangle (" + clip + ")";
       }
       return true;
     } finally { host.remove(); }
@@ -1131,13 +1116,12 @@ const PROBE = `async (api) => {
       const lines = mark.getClientRects();
       const lastLine = lines[lines.length - 1];
       const chip = mark.querySelector(".hl-note-badge").getBoundingClientRect();
-      const glyph = lastGlyphRect(mark);
       const midY = (chip.top + chip.bottom) / 2;
-      if (midY < lastLine.top - chip.height || midY > lastLine.bottom) {
-        return "the badge is at y=" + chip.top.toFixed(0) + ", the highlight's last line is y=" + lastLine.top.toFixed(0) + "-" + lastLine.bottom.toFixed(0);
+      if (midY < lastLine.top || midY > lastLine.bottom) {
+        return "the fold is at y=" + chip.top.toFixed(0) + ", the highlight's last line is y=" + lastLine.top.toFixed(0) + "-" + lastLine.bottom.toFixed(0);
       }
-      if (Math.abs(chip.left - glyph.right) > 6) {
-        return "the badge is at x=" + chip.left.toFixed(0) + ", the highlight ends at x=" + glyph.right.toFixed(0);
+      if (Math.abs(chip.right - lastLine.right) > 1.5) {
+        return "the fold ends at x=" + chip.right.toFixed(0) + ", the highlight ends at x=" + lastLine.right.toFixed(0);
       }
       return true;
     } finally { host.remove(); }
@@ -1311,7 +1295,7 @@ const PROBE = `async (api) => {
     return true;
   });
 
-  check("the export keeps every line's note on its own card, with its number", () => {
+  check("the export keeps every line's note on its own card, with no number or label", () => {
     const notes = [
       "ॐ <mark data-note=\\"hn-aaaa\\">स्वः</mark>",
       "<mark data-note=\\"hn-bbbb\\">तत्</mark>सवितुर्",
@@ -1332,7 +1316,12 @@ const PROBE = `async (api) => {
       const items = api.collectDeckHighlightsForExport({ includeChapter: false });
       if (items.length !== 2) return items.length + " item(s), expected 2";
       if (items.map((i) => i.note).join("|") !== "soul|that") return "notes came out as " + JSON.stringify(items.map((i) => i.note));
-      if (items.map((i) => i.n).join(",") !== "1,2") return "numbered " + items.map((i) => i.n).join(",");
+      if (items.some((i) => i.n)) return "an exported card still carries a number";
+      // The Markdown export: the note is a plain quote under its passage —
+      // no "Note 3:" telling the reader what the layout already does.
+      const md = api.buildHighlightsExportMarkdown("T");
+      if (md.includes("**Note")) return "the Markdown export still labels its notes";
+      if (!md.includes("> soul") || !md.includes("> that")) return "a note is missing from the Markdown export";
       if ((items[0].markdown.match(/<mark/g) || []).length !== 1) return "card 1 colours more than its own highlight: " + items[0].markdown;
       if (items[0].markdown.includes("data-note")) return "a note id leaked into the export";
       return true;
@@ -1651,7 +1640,9 @@ const API_SRC = `async () => {
     import("/src/format/code-highlight.js?v=__BUILD__"),
     import("/src/render/enhance.js?v=__BUILD__"),
     import("/src/panels/highlight-index.js?v=__BUILD__"),
-    import("/src/import/html-to-markdown.js?v=__BUILD__")
+    import("/src/import/html-to-markdown.js?v=__BUILD__"),
+    // buildHighlightsExportMarkdown, for what an exported note is labelled.
+    import("/src/export/pdf.js?v=__BUILD__")
   ]);
   const api = {};
   for (const m of mods) for (const k of Object.keys(m)) if (!(k in api)) api[k] = m[k];

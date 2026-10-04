@@ -1,4 +1,4 @@
-/* The number on a highlight that has something written about it
+/* The fold on a highlight that has something written about it
  *
  * Added AFTER the 13-way split of styles.css, in a file of its own so that
  * split stays byte-for-byte verifiable — see POST_SPLIT in tools/split-css.mjs.
@@ -19,11 +19,11 @@
  *
  * The badge keeps that rule by being OUT OF FLOW: `position: absolute` inside a
  * mark that is already `position: relative`. An absolutely positioned box
- * contributes nothing to the line box, so it can carry a background, a ring and
- * two digits of padding and still move no glyph. That is also the difference
- * from the ::after this replaces — a pseudo-element could not be pressed or
- * focused, and a click on one is a click on the mark, which opens the mark menu
- * instead of the note.
+ * contributes nothing to the line box, so it can carry a fill and a hit area
+ * and still move no glyph. It is a real <button> rather than a lone ::after on
+ * the mark because a pseudo-element of the MARK cannot be pressed or focused on
+ * its own — a click on one is a click on the mark, which opens the mark menu
+ * instead of the note. (The fold is drawn by the button's own ::after.)
  */
 
 /* ── Layer 1: this highlight has something to say ─────────────────────────
@@ -42,111 +42,114 @@
   position: relative;
 }
 
-/* ── Layer 2: the number ──────────────────────────────────────────────────
-   At the END of the mark: a highlight can be a single word or half a page, and
-   its start is where the eye already is when it reaches one — the end is where
-   it is looking for what comes next.
+/* ── Layer 2: the fold ────────────────────────────────────────────────────
+   A small triangle in the accent, tucked into the top-right corner of the
+   highlight — the folded corner a spreadsheet uses for "this cell has a
+   comment". It says one thing, that a note is here; what the note says is in
+   the tooltip and behind the press.
 
-   ── Why an opaque chip rather than coloured digits ──────────────────────
-   This was `color: var(--accent-strong)` painted straight onto the mark, and it
-   disappeared. A <mark>'s tint is a colour-mix over whatever the theme's surface
-   is (styles/12-notes.css), so there is no background a text colour can be
-   guaranteed to read against: yellow over a light theme and pink over an amoled
-   one are not the same problem and no single ink solves both. An opaque chip
-   hides the tint underneath it entirely, and the contrast question stops being
-   conditional on the theme AND the highlight colour at once.
+   ── Why not the number it replaces ─────────────────────────────────────
+   A numbered pill was the third thing you wrote, "3". On a note with a gloss
+   on nearly every word it sat on the vowel signs and on the next word, "10"
+   was twice the width of "9", and a hundred notes would have put a label on
+   every word. A fold is the same few pixels at the 3rd note and the 300th.
+   The number was never needed to READ a note: the press opens it, and the
+   Highlights pane and the exports put each note under its own quote.
 
-   --accent-contrast is the one pair in the token set that already carries a
-   contrast guarantee — it is defined in every one of the ten themes as the ink
-   that reads on --accent-strong (white on the light themes, near-black on the
-   dark ones). Deriving it by eye here would be re-deriving something the theme
-   file has already been made to answer. */
+   ── Where it lands ───────────────────────────────────────────────────────
+   No offsets. An absolutely positioned box with `top`/`left` at `auto` is
+   drawn at its STATIC position, and the badge is the mark's last child
+   (annotateMark appends it), so that is the point just past the final glyph —
+   on whichever line the highlight actually ends, not the first line box an
+   offset would be measured from. It has to stay INLINE-level for that: a
+   block-level one's static position is the start of the next line. Still out
+   of flow, so still not a pixel of advance (tools/highlight-check.mjs asserts
+   both halves).
+
+   From there the margins tuck it back INTO the corner: left by its own width,
+   so it ends exactly at the mark's right edge rather than over the space and
+   the next word, and up to the top of the mark's tint. The corner of an em box
+   is the emptiest place on a line — above a Latin letter's ascender, and
+   beside, not on, the Devanagari headline — and the fold covers half of a
+   square a third of an em wide there.
+
+   ── The ink ──────────────────────────────────────────────────────────────
+   --accent-strong, the filled accent every theme defines to stand on its own
+   surface, opaque so it reads over any of the six tints rather than mixing
+   with them. */
 .hl-note-badge {
   position: absolute;
-  /* ── AFTER the last character, not on top of it ─────────────────────────
-     This was `top: -0.5em; right: -0.24em` — pinned to the mark's right edge
-     and pulled back over it — and the chip sat squarely on the highlight's last
-     letter: "messagebo▣", "FigureCanvasTkA▣". The number was legible; the word
-     it was about was not.
-
-     No offsets at all now. An absolutely positioned box with `top`/`left` left
-     at `auto` is drawn at its STATIC position — where it would have been in
-     the flow — and the badge is the mark's last child (annotateMark appends
-     it), so that is exactly the point just past the final glyph. Still out of
-     flow, so still not a pixel of advance (tools/highlight-check.mjs asserts
-     both halves). It has to stay INLINE-level for that: a block-level one's
-     static position is the start of the next line.
-
-     It also fixes a highlight that wraps. An abs-pos child of a multi-line
-     inline takes the FIRST line box as its containing block, so the old offsets
-     put the number at the end of the mark's first line — mid-highlight, with
-     the real end a line further down. The static position follows the text to
-     wherever it actually finishes.
-
-     The margins are the nudge from there, in the chip's own (half-size) em: a
-     hair of clearance from the glyph, and up by just under a line of the chip
-     so it reads as a superscript. On the FIRST line of a block that is outside
-     the block's box, which paint containment used to clip — see
-     styles/75-highlight-stability.css, which takes containment off any block
-     carrying a number. */
   top: auto;
   right: auto;
-  margin-left: 0.1em;
-  margin-top: -0.9em;
+  --hl-fold: 0.36em;
+  width: var(--hl-fold);
+  height: var(--hl-fold);
+  /* Back by its own width, plus the 1px of padding a mark's tint has past its
+     last glyph (styles/23-highlight-marks.css), so its right edge IS the tint's. */
+  margin-left: calc(1px - var(--hl-fold));
+  /* Down by the half-leading: the static position of an inline-level abs-pos
+     box is the top of the LINE box, whatever its vertical-align, and the tint
+     is only the font's content area inside it. At the notes surface's line
+     height that gap is about a tenth of an em in Inter and in the Devanagari
+     fallbacks alike; a pixel either way on another face is a fold that pokes
+     a hair above the tint, never one that covers a letter. */
+  margin-top: 0.11em;
   /* Over the line above it rather than under it, on the rare line where the two
-     meet — a half-covered number is worse than one that slightly overlaps. */
+     meet. */
   z-index: 1;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  /* ── "10" on one line ────────────────────────────────────────────────────
-     The notes surface inherits `overflow-wrap: anywhere`, which lets a break
-     fall between any two characters — and an absolutely positioned box inside
-     a short mark is sized to fit almost no width, so "10" was laid out one
-     digit wide and stacked "1" over "0" inside a chip one line tall. A number
-     is one word: one line, as wide as it is. */
-  width: max-content;
-  white-space: nowrap;
-  overflow-wrap: normal;
-  word-break: keep-all;
-  /* Small, because it marks the end of a highlight and must not hide the words
-     around it: the vowel signs above and below a Devanagari letter reach into
-     exactly the space a superscript sits in. A pill rather than a circle, so
-     two and three digits keep the same height and only grow sideways. */
-  min-width: 1.25em;
-  height: 1.25em;
+  display: inline-block;
   box-sizing: border-box;
-  padding: 0 0.3em;
+  min-width: 0;
+  padding: 0;
   border: 0;
-  border-radius: 999px;
-  background: var(--accent-strong);
-  color: var(--accent-contrast);
-  font: inherit;
-  font-size: 0.5em;
-  font-weight: 800;
-  font-variant-numeric: tabular-nums;
-  line-height: 1;
-  letter-spacing: 0;
-  text-decoration: none;
+  background: none;
+  color: inherit;
+  font-size: 1em;
+  line-height: 0;
+  vertical-align: top;
   cursor: pointer;
-  /* A hairline in the page's own ground, so the chip is still a separate object
-     on the themes where the accent and a highlight colour are neighbours — a
-     blue tint under a navy theme, a green one under emerald. One pixel: at 1.5
-     it was a dark halo eating the vowel signs next to the chip. */
-  box-shadow: 0 0 0 1px var(--panel);
   /* Never part of a selection, and never part of what the source matcher reads.
      This is belt to the braces of the two JS skips (see cleanedSelectionFragment
      and emitTextWithLineBreaks in src/notes/selection.js): even where those are
      bypassed — a native double-click extending a selection through it, say —
-     the browser will not carry this digit into the range. */
+     the browser will not carry this node into the range. */
   -webkit-user-select: none;
   user-select: none;
 }
 
-.hl-note-badge:hover,
+/* The fold itself. On a pseudo-element rather than the button, because
+   clip-path clips hit-testing as well as paint: on the button it would leave a
+   target half the size of something already tiny. */
+.hl-note-badge::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--accent-strong);
+  clip-path: polygon(0 0, 100% 0, 100% 100%);
+  /* The mark's own corner radius (styles/12-notes.css), so the fold follows the
+     tint's rounded corner instead of poking a square tip out of it. */
+  border-top-right-radius: 3px;
+}
+
+/* ...and a target a finger can find. A third of an em is a mark, not a button,
+   so a transparent ::before reaches past the fold — up into the leading and out
+   over the space after the word, which nothing else on the line is using, and a
+   little way back over the highlight's end. A press anywhere else on the mark
+   still opens the mark menu. */
+.hl-note-badge::before {
+  content: "";
+  position: absolute;
+  inset: -0.35em -0.35em -0.3em -0.4em;
+}
+
+.hl-note-badge:hover::after,
+.hl-note-badge:focus-visible::after {
+  background: var(--accent);
+}
+
 .hl-note-badge:focus-visible {
   outline: 2px solid var(--accent);
-  outline-offset: 1px;
+  outline-offset: 2px;
 }
 
 /* The Document surface's page badge is the same feature on the other surface and
@@ -155,7 +158,7 @@
    cascade question nobody should have to answer twice. */
 
 /* Inside a code block the dotted underline goes: it cuts across the descenders
-   of the code being read, and the numbered chip is cue enough there. Same weight
+   of the code being read, and the fold is cue enough there. Same weight
    as the rule above (id + class + element) and later, so it wins. */
 #notesView pre code mark.has-note {
   text-decoration: none;

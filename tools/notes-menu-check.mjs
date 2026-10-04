@@ -428,14 +428,14 @@ try {
     return null;
   });
 
-  // ── The number on an annotated highlight ────────────────────────────────
+  // ── The fold on an annotated highlight ──────────────────────────────────
   //
   // These three cases used to be about the printed inline notes. The mode is
   // gone and the badge replaced it, but the QUESTIONS are the same three and
-  // they are the reason the badge was rebuilt: can you see it, can you read it,
-  // and can it leak into a selection.
+  // they are the reason the badge was rebuilt: can you see it, does it stand
+  // out on every tint, and can it leak into a selection.
 
-  await check("an annotated highlight wears a number you can actually see", async () => {
+  await check("an annotated highlight wears a fold you can see and press", async () => {
     const seen = await page.evaluate(`() => {
       const badges = [...document.querySelectorAll("#notesView .hl-note-badge")];
       if (!badges.length) return { error: "no badges on screen" };
@@ -448,26 +448,34 @@ try {
         count: badges.length,
         drawn: badges.map((n) => {
           const css = getComputedStyle(n);
+          const fold = getComputedStyle(n, "::after");
           const mark = n.closest("mark");
-          // The LAST line of the mark, not its bounding box: the number sits where
-          // the highlight ends, and on a highlight that wraps the box's right edge
-          // is the end of its first line.
+          // The LAST line of the mark, not its bounding box: the fold sits where
+          // the highlight ends, and on a highlight that wraps the box's right
+          // edge is the end of its first line.
           const lines = mark.getClientRects();
           const markRect = lines[lines.length - 1];
           const box = n.getBoundingClientRect();
+          // What a press just OUTSIDE the drawn fold reaches: a step back over
+          // the end of the word, and a step up and out into the gap after it.
+          // The ::before is what makes those land on the badge.
+          const hits = [[box.left - 4, box.top + box.height / 2], [box.right + 3, box.top - 3]]
+            .map(([x, y]) => document.elementFromPoint(x, y) === n);
           return {
             tag: n.tagName,
+            text: n.textContent,
             position: css.position,
-            // An opaque chip, not tinted digits. A colour-mixed background is
-            // not something a single ink can be guaranteed to read on, which is
-            // what the ::after this replaced kept discovering per theme.
-            alpha: parse(css.backgroundColor).a,
-            // ...and it has to be AT THE END of the highlight it belongs to —
-            // just past its last letter, never over it, and not floating
-            // somewhere near it.
-            near: box.left >= markRect.right - 4 && box.left - markRect.right < 12 && box.top < markRect.top + 4,
+            // Opaque, not tinted: a colour-mixed fill is not something that
+            // can be guaranteed to read over six tints in ten themes.
+            alpha: parse(fold.backgroundColor).a,
+            // ...and in the highlight's own top-right corner: its right edge the
+            // tint's, its top the tint's — over neither the next word nor the
+            // letters below.
+            corner: Math.abs(box.right - markRect.right) <= 1.5 && Math.abs(box.top - markRect.top) <= 2,
             wide: box.width,
-            tall: box.height
+            tall: box.height,
+            em: parseFloat(getComputedStyle(mark).fontSize),
+            hits
           };
         })
       };
@@ -476,22 +484,25 @@ try {
     if (seen.count !== 2) return `${seen.count} badges, expected 2`;
     for (const badge of seen.drawn) {
       if (badge.tag !== "BUTTON") return `the badge is a ${badge.tag}, which cannot be pressed or focused`;
+      if (badge.text) return `the badge carries text (${JSON.stringify(badge.text)}) — it is a fold, not a number`;
       if (badge.position !== "absolute") return `the badge is ${badge.position}, so it is in flow and moves the text`;
-      if (badge.alpha < 0.99) return `the badge's chip is ${badge.alpha} opaque — the tint under it shows through`;
-      if (!badge.near) return "the badge is not drawn on the highlight it belongs to";
-      // Small, but a target you can hit. Below this it is decoration.
-      if (badge.wide < 10 || badge.tall < 10) return `the badge is ${Math.round(badge.wide)}x${Math.round(badge.tall)}px`;
+      if (badge.alpha < 0.99) return `the fold is ${badge.alpha} opaque — the tint under it shows through`;
+      if (!badge.corner) return "the fold is not in the top-right corner of the highlight it belongs to";
+      // Visible, and small: the same few pixels at any note count.
+      if (badge.wide < 4 || badge.tall < 4) return `the fold is ${badge.wide.toFixed(1)}x${badge.tall.toFixed(1)}px — too small to see`;
+      if (badge.wide > badge.em * 0.45 || badge.tall > badge.em * 0.45) return `the fold is ${badge.wide.toFixed(1)}x${badge.tall.toFixed(1)}px at a ${badge.em}px font`;
+      // ...and a target a finger can find, larger than what is drawn.
+      if (!badge.hits.every(Boolean)) return `a press beside the fold missed it (${badge.hits.join(",")})`;
     }
     return null;
   });
 
-  // "Readable" has to mean readable in every theme, over every highlight
-  // colour. Both halves vary: --accent-strong and --accent-contrast are
-  // redefined per theme, and a <mark>'s tint is a color-mix of one of four
-  // hexes over whatever the page behind it is. This measures the pair that
-  // actually decides it — the badge's own ink on the badge's own chip — plus
-  // the chip against the tint it sits on, in a light theme and a dark one.
-  await check("...and it is readable in every theme, over every highlight colour", async () => {
+  // "Visible" has to mean visible in every theme, over every highlight colour.
+  // Both halves vary: --accent-strong is redefined per theme, and a <mark>'s
+  // tint is a color-mix of one of four hexes over whatever the page behind it
+  // is. This measures the pair that decides it — the fold's fill against the
+  // tint it sits in — in a light theme and two dark ones.
+  await check("...and it stands out in every theme, over every highlight colour", async () => {
     const seen = await page.evaluate(`() => {
       // Two serialisations, and they are on DIFFERENT scales. A plain colour
       // comes back as "rgb(244, 242, 236)"; anything that went through
@@ -530,13 +541,8 @@ try {
           if (!badge) continue;
           const page = parse(getComputedStyle(document.body).backgroundColor);
           const tint = over(parse(getComputedStyle(marks[0]).backgroundColor), page);
-          const css = getComputedStyle(badge);
-          const chip = over(parse(css.backgroundColor), tint);
-          out.push({
-            theme, colour,
-            readable: Math.round(ratio(over(parse(css.color), chip), chip) * 100) / 100,
-            fromTint: Math.round(ratio(chip, tint) * 100) / 100
-          });
+          const fold = over(parse(getComputedStyle(badge, "::after").backgroundColor), tint);
+          out.push({ theme, colour, fromTint: Math.round(ratio(fold, tint) * 100) / 100 });
         }
       }
       marks.forEach((mark) => { delete mark.dataset.color; });
@@ -545,20 +551,15 @@ try {
     }`);
     if (!seen.length) return "no annotated highlight to measure";
     for (const one of seen) {
-      // The digits on their own chip. This is the pair --accent-contrast is
-      // DEFINED as answering, so anything below 4.5 means a theme was added
-      // without it.
-      if (one.readable < 4.5) return `${one.colour} on ${one.theme}: the number is ${one.readable}:1 on its own chip`;
-      // ...and the chip against the highlight under it. A filled shape is read
-      // at a lower threshold than text, and the ring is carrying the rest.
-      if (one.fromTint < 1.35) return `${one.colour} on ${one.theme}: the chip is ${one.fromTint}:1 against the highlight — invisible`;
+      // A filled shape is read at a lower threshold than text — but it has no
+      // ring and no digits to carry it, so the fill alone has to.
+      if (one.fromTint < 1.35) return `${one.colour} on ${one.theme}: the fold is ${one.fromTint}:1 against the highlight — invisible`;
     }
     return null;
   });
 
   await check("nothing drawn on a highlight can be selected out of it", async () => {
-    // The badge's digits are not the note's text and are nowhere in the
-    // markdown — the source matcher must never see them, or every highlight
+    // The badge is not the note's text and is nowhere in the markdown — the source matcher must never see them, or every highlight
     // over an annotated paragraph misses. This is the CSS half of that (the JS
     // half is the two skips in selection.js).
     const bad = await page.evaluate(`() => [...document.querySelectorAll("#notesView .hl-note-badge")]

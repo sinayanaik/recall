@@ -227,12 +227,12 @@ const PROBE = async (cases) => {
 // ── A short note, on an engine without scroll anchoring ────────────────────
 //
 // The Gayatri Mantra report, on an iPhone: a note that fits on one screen, one
-// phrase per line, a numbered note on most words. "The first time I highlight
+// phrase per line, an annotated note on most words. "The first time I highlight
 // after opening the note, the note text scrolls somewhere else; after that it
 // doesn't." Safari has no CSS scroll anchoring, which every repaint-stability
 // measure above leans on, so `overflow-anchor: none` stands in for it.
 //
-// Also what that note showed about the numbers: the first line's were cut off
+// Also what that note showed about the badges (numbers then): the first line's were cut off
 // (paint containment), and "10" stacked as "1" over "0".
 const SHORT_NOTE = [
   "## Gayatri Mantra",
@@ -298,20 +298,21 @@ const PROBE_SHORT = async (note) => {
   out.contained = [...view.children].filter((b) => getComputedStyle(b).contentVisibility === "auto").length;
   const badges = [...view.querySelectorAll(".hl-note-badge")];
   out.badges = badges.length;
-  const one = badges.find((b) => b.textContent === "1");
-  const ten = badges.find((b) => b.textContent === "10");
+  // The 1st and the 10th fold: the same few pixels, and no text in either.
+  const one = badges[0];
+  const ten = badges[9];
   if (one && ten) {
     const a = one.getBoundingClientRect();
     const b = ten.getBoundingClientRect();
-    out.oneLine = { h1: Math.round(a.height * 10) / 10, h10: Math.round(b.height * 10) / 10, w1: Math.round(a.width), w10: Math.round(b.width) };
+    out.sameSize = { w1: Math.round(a.width * 10) / 10, h1: Math.round(a.height * 10) / 10, w10: Math.round(b.width * 10) / 10, h10: Math.round(b.height * 10) / 10, text: one.textContent + ten.textContent };
   }
-  out.hidden = badges.filter((badge) => {
+  out.hidden = badges.map((badge, i) => [badge, i + 1]).filter(([badge]) => {
     const r = badge.getBoundingClientRect();
     const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
     return hit !== badge;
-  }).map((b) => b.textContent);
+  }).map(([, i]) => i);
 
-  // The numbers move no letter: every highlight is where it would be without them.
+  // The folds move no letter: every highlight is where it would be without them.
   const para = view.querySelector("p");
   const lineWidths = () => [...para.querySelectorAll("mark")]
     .map((m) => { const r = m.getBoundingClientRect(); return Math.round(r.left * 10) / 10 + "-" + Math.round(r.right * 10) / 10; })
@@ -418,11 +419,11 @@ async function run() {
       const r = await page.evaluate(PROBE_SHORT, SHORT_NOTE);
       const label = "390px · a short annotated Devanagari note";
       check(r.contained === 0, `${label}: no block keeps content-visibility containment`, `${r.contained} contained`);
-      check(r.badges === 12, `${label}: every annotated highlight wears its number`, `${r.badges} badges`);
-      check(Boolean(r.oneLine) && Math.abs(r.oneLine.h10 - r.oneLine.h1) < 0.5 && r.oneLine.w10 > r.oneLine.w1,
-        `${label}: "10" is one line, as tall as "1" and wider`, JSON.stringify(r.oneLine));
-      check(r.hidden.length === 0, `${label}: no number is clipped or covered`, r.hidden.length ? `hidden: ${r.hidden.join(",")}` : "all visible");
-      check(r.shaping.withBadges === r.shaping.without, `${label}: the numbers move no highlight by a pixel`,
+      check(r.badges === 12, `${label}: every annotated highlight wears its fold`, `${r.badges} badges`);
+      check(Boolean(r.sameSize) && r.sameSize.w1 === r.sameSize.w10 && r.sameSize.h1 === r.sameSize.h10 && r.sameSize.text === "",
+        `${label}: the 10th fold is the 1st one's size, with no number in either`, JSON.stringify(r.sameSize));
+      check(r.hidden.length === 0, `${label}: no fold is clipped or covered`, r.hidden.length ? `hidden: #${r.hidden.join(",")}` : "all visible");
+      check(r.shaping.withBadges === r.shaping.without, `${label}: the folds move no highlight by a pixel`,
         `${r.shaping.withBadges} vs ${r.shaping.without}`);
       check(r.action === "added", `${label}: the first highlight after opening it is made`, `action ${r.action}`);
       check(r.worst <= TOLERANCE_PX && r.maxScroll === 0, `${label}: and nothing moves, with no scroll anchoring to hide it`,
