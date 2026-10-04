@@ -1,0 +1,70 @@
+/* Highlighting a short note must not move it, and nothing on a highlight may be clipped
+ *
+ * Written since the split, so it lives on its own — see POST_SPLIT in
+ * tools/split-css.mjs.
+ *
+ * ── 1. A short note has no containment at all ─────────────────────────────
+ *
+ * styles/12-notes.css:255 gives every top-level notes block
+ * `content-visibility: auto` with `contain-intrinsic-size: auto <estimate>`.
+ * That is a cost saving for a book, and the code that measures it says plainly
+ * where it stops paying: under NOTES_ESTIMATE_MIN_BLOCKS (60, in
+ * src/render/block-cache.js) "the browser lays out a screenful or two eagerly
+ * anyway, so almost every block is real and the estimate is unused".
+ *
+ * What it still costs a short note is everything containment brings with it:
+ *
+ *   • an estimated height for a block that has not yet been laid out, which on
+ *     an engine that resolves "is this near the viewport" a frame late (Safari)
+ *     is a block standing at 120px for a frame — enough to make a note that fits
+ *     on screen briefly scrollable, which is the window in which the pin after a
+ *     highlight corrects scrollTop. Reported as "the first highlight after
+ *     opening the note scrolls me somewhere else; after that it doesn't" — the
+ *     first time is the time no block has a remembered size yet;
+ *   • paint containment, which clips anything drawn outside a block's box — the
+ *     number on a highlight on the first line of a paragraph, cut in half.
+ *
+ * So below 60 children, none of it. `:has(> :nth-child(60))` is the count, in
+ * CSS, so there is no frame in which a script has not yet decided. A chunked
+ * note is excluded explicitly: its children are CHUNKS of 40 blocks, so a
+ * 2,000-block book has fewer than 60 of them and is exactly the note the
+ * containment exists for.
+ *
+ * (1,2,0) — the id clears 12-notes.css:255's (0,3,0), the trap
+ * 19-notes-chunks.css documents. */
+#notesView:not(:has(> :nth-child(60))):not(:has(> .notes-chunk)) > * {
+  content-visibility: visible;
+  contain-intrinsic-size: auto;
+}
+
+/* ── 2. ...and a block carrying a note number is never clipped ─────────────
+ *
+ * The same paint containment on a LONG note. The number is a superscript: it
+ * sits a little above its line by design (src/notes/highlight-badges.js), and on
+ * the first line of a paragraph that is outside the paragraph's box. Only the
+ * blocks that actually carry one are freed, and on a note of thousands of
+ * paragraphs those are few.
+ *
+ * Inside a chunk the blocks are already uncontained (19-notes-chunks.css); only
+ * the chunk's own top edge clips, so only a chunk whose FIRST block carries a
+ * number is freed. */
+#notesView > :has(.hl-note-badge) {
+  content-visibility: visible;
+}
+
+#notesView > .notes-chunk:has(> :first-child .hl-note-badge) {
+  content-visibility: visible;
+}
+
+/* ── 3. A card colours its own highlight, not the whole line's ─────────────
+ *
+ * A card in the Highlights pane quotes the whole line its highlight sits in,
+ * and that line's other highlights come with it. markOtherHighlights
+ * (src/panels/highlights-editor.js) marks those `.is-other`; they read as the
+ * plain text around the one this card — and its note — is about. The exports
+ * do the same by unwrapping them (markdownWithOnlyOwnMarks). */
+.hl-note-quote mark.is-other {
+  background: transparent;
+  text-decoration: none;
+  box-shadow: none;
+}

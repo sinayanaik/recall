@@ -11,7 +11,7 @@
 
 import { state } from "../core/state.js?v=__BUILD__";
 import { MARK_HIGHLIGHT_DEFAULT } from "../format/highlight-colors.js?v=__BUILD__";
-import { HIGHLIGHT_GROUP_GAP_RE, HIGHLIGHT_SCAN_RE, LIST_MARKER_RE, MARK_CLOSE_TAG, markOpenTag } from "../format/highlight.js?v=__BUILD__";
+import { HIGHLIGHT_SCAN_RE, LIST_MARKER_RE, MARK_CLOSE_TAG, continuesHighlightGroup, markOpenTag } from "../format/highlight.js?v=__BUILD__";
 import { highlightNoteResolver, readHighlightNotes } from "../format/highlight-notes.js?v=__BUILD__";
 import { readerNotesBody } from "../format/notes-fence.js?v=__BUILD__";
 import { codeFences, codeHighlightSnippet } from "../format/code-highlight.js?v=__BUILD__";
@@ -146,7 +146,7 @@ export function highlightContextUnit(units, index, step) {
 // <mark> tags behind — one per block, because a single one can't legally span
 // a boundary. Without the grouping pass below, that ONE highlight action
 // showed up as three separate rows. Adjacent same-colour matches separated by
-// nothing but boundary syntax (HIGHLIGHT_GROUP_GAP_RE) are merged back into
+// nothing but boundary syntax (continuesHighlightGroup) are merged back into
 // one GROUP first (one highlight action, however many <mark>s it left behind)
 // — and each piece's own list marker (if it had one) is restored so a
 // highlighted list still LOOKS like a list, not several plain-text lines.
@@ -214,7 +214,10 @@ export function scanHighlightGroups(source, noteSource = source) {
   const groups = [];
   raw.forEach((entry) => {
     const last = groups[groups.length - 1];
-    if (last && last.color === entry.color && HIGHLIGHT_GROUP_GAP_RE.test(source.slice(last.end, entry.start))) {
+    // continuesHighlightGroup, the rule markGroupSpanAt edits by — so the pane
+    // and the export can never call two highlights one while recolour and
+    // remove treat them as two, or the other way round.
+    if (last && continuesHighlightGroup(source, last.pieces[last.pieces.length - 1], entry)) {
       last.end = entry.end;
       last.pieces.push(entry);
     } else {
@@ -276,6 +279,45 @@ export function highlightContextUnits(units, index, step, count) {
   return step < 0 ? found.reverse() : found;
 }
 
+// ── Which of the marks in a quoted line are THIS highlight ─────────────────
+//
+// A card quotes the whole line its highlight sits in (highlightUnitSpan), and a
+// line often carries several highlights — a mantra with one per word carries
+// nothing else. Quoted raw, every one of them was painted, so a card holding
+// the note "life force" showed four coloured words and no way to tell which of
+// them the note was about. The panel and the export now colour only the card's
+// own highlight and show the rest of the line as plain text.
+//
+// The answer is a list of ordinals among the <mark>s in `span.cur`, in source
+// order — which is also their order among the rendered <mark> elements, the same
+// identity the exact-jump path relies on (see revealNoteMark). Null means "every
+// mark here is this highlight's": the bare-fragment fallback (built from the
+// group's own pieces) and a code row (whose marks are the code's own).
+export function ownMarkOrdinals(span, group) {
+  if (!span || span.code) return null;
+  const starts = new Set(group.pieces.map((piece) => piece.start));
+  const scan = new RegExp(HIGHLIGHT_SCAN_RE.source, "g");
+  const own = [];
+  let m;
+  let i = 0;
+  while ((m = scan.exec(span.cur))) {
+    if (starts.has(span.rawStart + m.index)) own.push(i);
+    i += 1;
+  }
+  return own;
+}
+
+// The quoted markdown with every mark that is NOT this highlight's unwrapped to
+// its text, and this highlight's own marks reduced to their colour — a note id
+// means nothing in an exported file.
+export function markdownWithOnlyOwnMarks(markdown, own) {
+  let i = -1;
+  return String(markdown || "").replace(new RegExp(HIGHLIGHT_SCAN_RE.source, "g"), (_all, color, _note, inner) => {
+    i += 1;
+    return !own || own.includes(i) ? markOpenTag(color || MARK_HIGHLIGHT_DEFAULT) + inner + MARK_CLOSE_TAG : inner;
+  });
+}
+
 // One entry per highlight (never merged, unlike collectDeckHighlights' rows —
 // export wants every highlight listed, each with its own surrounding
 // context) with `before`/`after` arrays of `contextLines` source units
@@ -332,14 +374,19 @@ export function collectDeckHighlightsForExport({ contextLines = 0, includeChapte
       });
     });
   }
+  // The number each highlight wears on the page (highlight-badges.js), so a
+  // printed card and the badge it came from say the same thing.
+  const noteNumbers = highlightNoteIndex(notes).byAttr;
   groups.forEach((group) => {
     const span = highlightUnitSpan(units, source, group, fences);
-    const markdown = span ? span.cur : group.pieces.reduce((acc, piece, i) => {
+    const quoted = span ? span.cur : group.pieces.reduce((acc, piece, i) => {
       const markedPiece = markOpenTag(group.color) + piece.inner + MARK_CLOSE_TAG;
       const rendered = piece.marker ? piece.marker + markedPiece : markedPiece;
       if (i === 0) return rendered;
       return acc + (piece.marker ? "\n" : "\n\n") + rendered;
     }, "");
+    // Only this highlight coloured — see ownMarkOrdinals.
+    const markdown = span?.code ? quoted : markdownWithOnlyOwnMarks(quoted, ownMarkOrdinals(span, group));
     // A code row already shows its whole lines, fenced; the units around it are
     // more code, which would come out as prose.
     const withContext = span && !span.code && contextLines > 0;
@@ -351,6 +398,7 @@ export function collectDeckHighlightsForExport({ contextLines = 0, includeChapte
     items.push({
       markdown,
       color: group.color,
+      n: noteNumbers.get(group.pieces[0].noteRef)?.n || 0,
       note: includeNotes ? note : null,
       before,
       after,
@@ -453,6 +501,9 @@ export function collectHighlightEntries() {
       region: null,
       markdown,
       span,
+      // Which of the quoted line's marks are this entry's — the pane colours
+      // those and shows the rest of the line plain (see ownMarkOrdinals).
+      own: ownMarkOrdinals(span, group),
       note: group.pieces[0].note || "",
       anchor: trimNoteAnchor({ offset: group.offset, source: group.pieces[0].inner, text, deckId: state.deckId, deckTitle: state.deckTitle }),
       locator: { markIndex: group.pieces[0].markIndex, markCount: raw.length }

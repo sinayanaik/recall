@@ -1229,6 +1229,116 @@ const PROBE = `async (api) => {
     }
   });
 
+  // ── One highlight is one highlight, however many lines it is next to ──────
+  //
+  // The Gayatri Mantra report: one phrase per line, one highlight per phrase,
+  // a note on each. A lone newline between two same-colour marks was read as a
+  // block boundary inside ONE highlight action, so the pane and the export
+  // merged neighbours, kept only the first one's note, and recolour/remove hit
+  // both. marked runs with breaks: true; a lone newline is inside a paragraph,
+  // and wrapAcrossBlocks never splits a mark there.
+  check("highlights on consecutive lines of one paragraph stay separate", () => {
+    const src = "ॐ <mark>स्वः</mark>\\n<mark>तत्</mark>सवितुर्";
+    const scan = api.scanHighlightGroups(src);
+    if (scan.groups.length !== 2) return "scanned as " + scan.groups.length + " group(s), expected 2";
+    const group = api.markGroupSpanAt(src, 0);
+    if (!group || group.count !== 1) return "an edit to the first would also take " + ((group?.count || 1) - 1) + " more";
+    return true;
+  });
+
+  check("a highlight carrying its own note never joins the one before it", () => {
+    const src = "- <mark>alpha</mark>\\n- <mark data-note=\\"hn-abcd\\">bravo</mark>";
+    if (api.markGroupSpanAt(src, 0).count !== 1) return "the annotated bravo was swept into alpha's group";
+    if (api.scanHighlightGroups(src).groups.length !== 2) return "the pane would show one row for two annotations";
+    return true;
+  });
+
+  check("an edit never groups two colours", () => {
+    const src = "- <mark>alpha</mark>\\n- <mark data-color=\\"green\\">bravo</mark>";
+    const group = api.markGroupSpanAt(src, 0);
+    if (group.count !== 1) return "removing the yellow highlight would also remove the green one";
+    return true;
+  });
+
+  check("one drag across paragraphs, and from a heading, still moves as one", () => {
+    const para = "<mark>first paragraph</mark>\\n\\n<mark>second paragraph</mark>";
+    if (api.markGroupSpanAt(para, 0).count !== 2) return "a paragraph drag no longer groups";
+    const heading = "## <mark>Heading</mark>\\n<mark>the paragraph under it</mark>";
+    if (api.markGroupSpanAt(heading, 0).count !== 2) return "a heading-into-paragraph drag no longer groups";
+    return true;
+  });
+
+  // ── A highlight never ends half-way through a letter ─────────────────────
+  check("a highlight boundary never splits a letter from its virama or vowel sign", () => {
+    // "तत" selected out of "तत्सवितुर्": the virama belongs to the second त.
+    const src = "तत्सवितुर्";
+    const snapped = api.snapToWholeCharacters(src, 0, 2);
+    if (src.slice(snapped.idx, snapped.end) !== "तत्") return "snapped to " + JSON.stringify(src.slice(snapped.idx, snapped.end));
+    // ...and a start that lands ON a sign moves back to its letter.
+    const start = api.snapToWholeCharacters("ab भू", 4, 5);
+    if (start.idx !== 3) return "a start on a vowel sign stayed at " + start.idx;
+    // Never across a tag: the letter on the far side is another highlight's.
+    const tagged = api.snapToWholeCharacters("<mark>त</mark>्स", 14, 16);
+    if (tagged.idx !== 14) return "moved back across a tag to " + tagged.idx;
+    return true;
+  });
+
+  // ── Touching a highlight is not selecting it ──────────────────────────────
+  check("a selection that only touches a neighbouring highlight does not overlap it", () => {
+    const host = document.createElement("p");
+    host.innerHTML = "ॐ <mark>भू</mark>र्भुवः स्वः";
+    document.body.appendChild(host);
+    try {
+      const mark = host.querySelector("mark");
+      const inside = mark.firstChild;
+      const after = mark.nextSibling;
+      const touching = document.createRange();
+      touching.setStart(inside, inside.data.length);
+      touching.setEnd(after, 6);
+      if (!touching.intersectsNode(mark)) return "the fixture does not reproduce the old false positive";
+      if (api.rangeCoversTextOf(touching, mark)) return "a range ending inside the neighbour's last position counted as covering it";
+      const covering = document.createRange();
+      covering.selectNodeContents(mark);
+      if (!api.rangeCoversTextOf(covering, mark)) return "the highlight's own words did not count";
+      return true;
+    } finally { host.remove(); }
+  });
+
+  // ── The pane and the export colour only the card's own highlight ─────────
+  check("a card's quote keeps only its own highlight coloured", () => {
+    const out = api.markdownWithOnlyOwnMarks("ॐ <mark>भू</mark><mark data-color=\\"green\\" data-note=\\"hn-abcd\\">र्भुवः</mark> <mark>स्वः</mark>", [1]);
+    if (out !== "ॐ भू<mark data-color=\\"green\\">र्भुवः</mark> स्वः") return JSON.stringify(out);
+    return true;
+  });
+
+  check("the export keeps every line's note on its own card, with its number", () => {
+    const notes = [
+      "ॐ <mark data-note=\\"hn-aaaa\\">स्वः</mark>",
+      "<mark data-note=\\"hn-bbbb\\">तत्</mark>सवितुर्",
+      "",
+      "## Highlight Notes",
+      "",
+      "### [hn-aaaa]",
+      "",
+      "soul",
+      "",
+      "### [hn-bbbb]",
+      "",
+      "that"
+    ].join("\\n");
+    const saved = api.state.notes;
+    api.state.notes = notes;
+    try {
+      const items = api.collectDeckHighlightsForExport({ includeChapter: false });
+      if (items.length !== 2) return items.length + " item(s), expected 2";
+      if (items.map((i) => i.note).join("|") !== "soul|that") return "notes came out as " + JSON.stringify(items.map((i) => i.note));
+      if (items.map((i) => i.n).join(",") !== "1,2") return "numbered " + items.map((i) => i.n).join(",");
+      if ((items[0].markdown.match(/<mark/g) || []).length !== 1) return "card 1 colours more than its own highlight: " + items[0].markdown;
+      if (items[0].markdown.includes("data-note")) return "a note id leaked into the export";
+      return true;
+    } finally { api.state.notes = saved; }
+  });
+
   // ── Highlights inside a code block ───────────────────────────────────────
   //
   // src/render/code-marks.js (the render) and src/format/code-highlight.js (the

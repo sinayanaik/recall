@@ -505,6 +505,11 @@ export async function settleNotesPin(view, anchors) {
     // mode changed mid-settle there is nothing meaningful left to correct —
     // scrollTop is pinned at 0 in a sideways note.
     if (isNotesPaged()) return;
+    // A note that fits in its box has no scroll position to be wrong about. The
+    // only way a correction can land on one is through a frame in which its
+    // content is briefly taller than it will settle at — and writing scrollTop
+    // then is how a note that does not scroll at all ended up scrolled.
+    if (view.scrollHeight <= view.clientHeight + 1) return;
     const drift = notesAnchorTop(anchor.node, view) - anchor.top;
     const residual = Math.abs(drift);
     if (residual <= NOTES_PIN_SETTLE_PX) return;

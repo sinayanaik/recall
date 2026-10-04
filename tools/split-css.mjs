@@ -65,6 +65,10 @@ const SECTIONS = [
 // Anything appearing in styles/ that is neither a slice nor listed here is
 // still a failure.
 const POST_SPLIT = {
+  "75-highlight-stability.css":
+    "A short note (under 60 blocks) keeps no content-visibility containment, so " +
+    "highlighting it cannot briefly make it scrollable; and a block carrying a " +
+    "note number is never paint-clipped. Overrides 12-notes.css:255.",
   "74-smart-highlight.css":
     "▣ as a highlighter that stays on: the pill that says how to use and stop " +
     "it, a text cursor over words, and the live preview of the words a drag " +

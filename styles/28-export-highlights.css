@@ -57,13 +57,46 @@
  * what theme is active when you export.
  */
 .highlight-export-entry {
-  margin: 0 0 14px;
+  position: relative;
+  margin: 0 0 12px;
   padding: 10px 14px;
-  border: 1px solid color-mix(in srgb, var(--print-text, #17201c) 15%, var(--print-bg, #eef2f2));
+  border: 1px solid color-mix(in srgb, var(--print-text, #17201c) 14%, transparent);
   border-left: 4px solid var(--print-accent, #16796c);
   border-radius: 0 8px 8px 0;
-  background: color-mix(in srgb, var(--print-text, #17201c) 4%, var(--print-bg, #eef2f2));
+  /* The page's own white, not a grey wash over it: a printed list of cards
+     each tinted grey read as grey boxes on a grey page. The colour accent on
+     the left and the hairline are what separate one card from the next. */
+  background: var(--print-panel, #ffffff);
   color: var(--print-text, #17201c);
+  /* A card is one thing: never its quote on one page and its note on the next. */
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+/* Room for the number in the corner. */
+.highlight-export-entry.has-number {
+  padding-right: 40px;
+}
+
+/* The number the highlight wears on the page (src/notes/highlight-badges.js),
+   so a card and its badge can be matched. */
+.highlight-export-n {
+  position: absolute;
+  top: 9px;
+  right: 10px;
+  min-width: 1.6em;
+  height: 1.6em;
+  padding: 0 0.4em;
+  box-sizing: border-box;
+  border-radius: 999px;
+  background: var(--print-accent, #16796c);
+  color: #ffffff;
+  font-size: 0.72rem;
+  font-weight: 800;
+  line-height: 1.6em;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .highlight-export-entry[data-color="yellow"] { border-left-color: #e0b400; }
@@ -83,6 +116,8 @@
 .highlight-export-mark {
   margin: 0;
   color: var(--print-text, #17201c);
+  /* The passage is what the card is about; the note under it is commentary. */
+  font-size: 1.08em;
 }
 
 /* A region or ink mark off a PDF, exported as the picture of what it holds. */
@@ -100,9 +135,22 @@
   margin-top: 8px;
   padding: 6px 10px;
   border-left: 3px solid var(--print-accent, #16796c);
-  background: color-mix(in srgb, var(--print-accent, #16796c) 8%, var(--print-bg, #eef2f2));
+  background: color-mix(in srgb, var(--print-accent, #16796c) 6%, var(--print-panel, #ffffff));
   border-radius: 0 6px 6px 0;
   color: var(--print-text, #17201c);
+}
+
+.highlight-export-note {
+  font-size: 0.94em;
+}
+
+.highlight-export-note > :not(.highlight-export-note-label) {
+  margin-top: 0.15em;
+  margin-bottom: 0.35em;
+}
+
+.highlight-export-note > :last-child {
+  margin-bottom: 0;
 }
 
 .highlight-export-note-label {
@@ -114,17 +162,41 @@
   color: color-mix(in srgb, var(--print-text, #17201c) 60%, var(--print-bg, #eef2f2));
 }
 
-.highlight-export-chapter-heading {
-  margin: 28px 0 12px;
+/* Two selectors' worth of specificity to clear `.rendered h2` (06-rendered.css),
+   which these headings also are. */
+.highlights-export-body .highlight-export-chapter-heading {
+  margin: 24px 0 12px;
   padding-bottom: 6px;
-  border-bottom: 2px solid color-mix(in srgb, var(--print-text, #17201c) 20%, var(--print-bg, #eef2f2));
+  border-bottom: 2px solid var(--print-accent, #16796c);
   font-size: 1.1rem;
   font-weight: 800;
   color: var(--print-text, #17201c);
 }
 
-.highlight-export-chapter-heading:first-child {
+/* ...and its accent bar, an ::after every rendered h2 grows. Under a heading
+   that already has a rule it was a second, shorter line. */
+.highlights-export-body .highlight-export-chapter-heading::after {
+  content: none;
+  display: none;
+}
+
+.highlights-export-body .highlight-export-chapter-heading:first-child {
   margin-top: 0;
+}
+
+/* ── The page itself ────────────────────────────────────────────────────────
+ * The print document sits on --print-bg, a pale grey meant for a preview
+ * floating over the app; printed, it was a grey strip under the last card and
+ * a hairline down the edge of the first page. A highlights document is printed
+ * on white, edge to edge. (0,2,1), to clear the themes' own --print-bg. */
+html:has(.cornell-print-document.is-highlights) {
+  --print-bg: #ffffff;
+}
+
+.cornell-print-document.is-highlights {
+  border: 0 !important;
+  box-shadow: none !important;
+  background: #ffffff !important;
 }
 
 /* One chapter's highlights per printed page, once there's more than one

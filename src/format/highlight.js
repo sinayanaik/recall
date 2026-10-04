@@ -218,7 +218,47 @@ export const HIGHLIGHT_SCAN_RE = /<mark(?:\s+data-color="([a-z]+)")?(?:\s+data-n
 // What can legally sit between two adjacent <mark>s that wrapAcrossBlocks
 // produced from ONE highlight action: nothing but the block boundary itself —
 // a blank line, or a newline plus the next list item's own "- "/"1. " marker.
-export const HIGHLIGHT_GROUP_GAP_RE = /^\n+(?:[ \t]*(?:[-*+]|\d+[.)])[ \t]+)?$/;
+//
+// ── ...and a single newline is NOT one ────────────────────────────────────
+//
+// This used to be /^\n+(marker)?$/, which accepts a lone "\n". marked runs with
+// `breaks: true`, so a lone newline is a line break INSIDE a paragraph, and
+// wrapAcrossBlocks never splits a mark there — every line of a paragraph shares
+// one mark. So two marks with only "\n" between them were never one action:
+// they were two highlights the reader made separately, one ending a line and the
+// next starting the line under it. A poem or a mantra, one phrase per line, is
+// nothing but that shape. Merged, the second highlight vanished from the
+// Highlights pane and the export, its note went with it, and recolouring or
+// removing either one did both. See continuesHighlightGroup for the one place a
+// lone newline still is a boundary (after a heading).
+export const HIGHLIGHT_GROUP_GAP_RE = /^(?:\n(?:[ \t]*\n)+(?:[ \t]*(?:[-*+]|\d+[.)])[ \t]+)?|\n[ \t]*(?:[-*+]|\d+[.)])[ \t]+)$/;
+
+// Whether the mark `next` is a continuation piece of the highlight `prev` ends —
+// the one rule every reader of groups shares (scanHighlightGroups, the panel and
+// the exports; markGroupSpanAt, recolour, remove and the note writer), so a
+// group cannot be one thing in a list and another under an edit.
+//
+// Both arguments carry { start, end, color } and the mark's raw data-note as
+// `noteRef` (scan entries) or `note` (markSpanAt). Three tests:
+//   • the same colour — one action writes one colour;
+//   • `next` carries no note reference of its own — only a group's FIRST piece
+//     ever carries the id (rewriteFirstMarkNote), so a later piece with one is
+//     by construction a separate, annotated highlight, and absorbing it is
+//     exactly how a note went missing;
+//   • nothing between them but a block boundary (HIGHLIGHT_GROUP_GAP_RE), or a
+//     lone newline after a HEADING, which wrapAcrossBlocks does flush on and
+//     which needs no blank line before the paragraph under it.
+export function continuesHighlightGroup(source, prev, next) {
+  if (!prev || !next) return false;
+  if ((prev.color || MARK_HIGHLIGHT_DEFAULT) !== (next.color || MARK_HIGHLIGHT_DEFAULT)) return false;
+  const nextNote = next.noteRef !== undefined ? next.noteRef : next.note;
+  if (nextNote) return false;
+  const gap = source.slice(prev.end, next.start);
+  if (HIGHLIGHT_GROUP_GAP_RE.test(gap)) return true;
+  if (gap !== "\n") return false;
+  const lineStart = source.lastIndexOf("\n", prev.start - 1) + 1;
+  return HEADING_LINE_RE.test(source.slice(lineStart, prev.start));
+}
 
 // The mark at ordinal `markIndex` (how many <mark> opens precede it in the
 // source) — the same ordinal collectDeckHighlights reports and the DOM
@@ -245,7 +285,9 @@ export function markSpanAt(source, markIndex) {
 // wrapAcrossBlocks emits one per block, list item and table cell — so editing
 // only the first would recolour/remove a fraction of it. The whole group
 // moves together, using the same adjacency rule the Highlights panel groups
-// rows by (HIGHLIGHT_GROUP_GAP_RE).
+// rows by (continuesHighlightGroup). It used to test the gap alone — not the
+// colour, not the note — so removing a yellow highlight also removed the green
+// one that happened to start the next list item.
 export function markGroupSpanAt(source, markIndex) {
   const first = markSpanAt(source, markIndex);
   if (!first) return null;
@@ -254,7 +296,7 @@ export function markGroupSpanAt(source, markIndex) {
   for (;;) {
     const next = markSpanAt(source, i);
     if (!next) break;
-    if (!HIGHLIGHT_GROUP_GAP_RE.test(source.slice(last.end, next.start))) break;
+    if (!continuesHighlightGroup(source, last, next)) break;
     last = next;
     i += 1;
   }
@@ -294,7 +336,8 @@ export function wrapKeepingPrefix(text, color) {
 export function highlightToggleInSource(source, sel, color, { literal = false } = {}) {
   const loc = locateSelectionInSource(source, sel, { fuzzy: true });
   if (!loc) return null;
-  const { idx, end, needle } = loc;
+  const { idx, end } = snapToWholeCharacters(source, loc.idx, loc.end);
+  const needle = source.slice(idx, end);
   const openMatch = MARK_OPEN_RE.exec(source.slice(0, idx));
   const hasClose = source.slice(end, end + MARK_CLOSE_TAG.length) === MARK_CLOSE_TAG;
   if (openMatch && hasClose) {
@@ -328,6 +371,29 @@ export function highlightToggleInSource(source, sel, color, { literal = false } 
     ? markOpenTag(color) + needle + MARK_CLOSE_TAG
     : wrapAcrossBlocks(needle, color, { openFence: codeFenceAt(fences, idx)?.marker || null });
   return { text: source.slice(0, idx) + wrapped + source.slice(end), action: "added", idx };
+}
+
+// ── A highlight never ends half-way through a letter ─────────────────────
+//
+// In Devanagari (and every other Indic script, and any text with combining
+// accents) what a reader sees as one letter is a base character followed by
+// marks: "त्" is त plus the virama ्. A selection snapped to the end of "तत"
+// stopped before the virama, the <mark> closed there, and the mark left outside
+// rendered on its own — as a dotted circle, "तत◌्" — in the note and in every
+// export. The browser cannot shape a letter whose pieces sit in two elements.
+//
+// So both ends are moved outward over combining marks (\p{M}, which includes
+// the viramas and the vowel signs) and the two joiners. Never across a tag or a
+// line: the character on the far side of either is not part of this letter.
+export const COMBINING_CHAR_RE = /[\p{M}\u200C\u200D]/u;
+
+export function snapToWholeCharacters(source, idx, end) {
+  let start = idx;
+  let stop = end;
+  while (stop < source.length && COMBINING_CHAR_RE.test(source[stop])) stop += 1;
+  while (start > 0 && start < stop && COMBINING_CHAR_RE.test(source[start])
+    && source[start - 1] !== ">" && source[start - 1] !== "\n") start -= 1;
+  return { idx: start, end: stop };
 }
 
 export function highlightInfoMessage(action) {
@@ -415,10 +481,36 @@ export function overlappingMarkIndex(view) {
   let hit = -1;
   for (let i = 0; i < marks.length; i += 1) {
     if (!range.intersectsNode(marks[i])) continue;
+    if (!rangeCoversTextOf(range, marks[i])) continue;
     if (hit !== -1) return -1; // touches more than one — not a clean edit
     hit = i;
   }
   return hit;
+}
+
+// ── Touching is not overlapping ───────────────────────────────────────────
+//
+// intersectsNode is true for a range that merely ENDS where a mark begins, or
+// begins at the very end of the text inside one — and a touch selection snapped
+// to a word boundary lands there all the time, because the word next to a
+// highlight starts exactly where the highlight's text node ends. So selecting
+// the word beside an existing highlight was read as "re-select that highlight":
+// the neighbour was recoloured, toggled off, or — through the highlight-and-note
+// button — had the new note written into it. That is how two annotations ended
+// up in one note.
+//
+// A mark counts only when the part of it the selection actually covers holds a
+// visible character.
+export function rangeCoversTextOf(range, mark) {
+  const inner = document.createRange();
+  inner.selectNodeContents(mark);
+  if (range.compareBoundaryPoints(Range.START_TO_START, inner) > 0) inner.setStart(range.startContainer, range.startOffset);
+  if (range.compareBoundaryPoints(Range.END_TO_END, inner) < 0) inner.setEnd(range.endContainer, range.endOffset);
+  if (inner.collapsed) return false;
+  // Anything the badge pass put inside a mark is not the mark's text.
+  const fragment = inner.cloneContents();
+  fragment.querySelectorAll?.(".hl-note-badge").forEach((node) => node.remove());
+  return /\S/.test(fragment.textContent || "");
 }
 
 // Re-selecting an existing highlight (to recolour or toggle it off) and
@@ -479,11 +571,23 @@ function codeFallbackSelection(sel) {
 // own `<mark` open tag in `source` — which is what lets a caller turn it into
 // an ordinal (markOpenOffsets) without re-searching for the words. The refusals
 // return null, and every existing caller ignores the value either way.
-export function makeHighlightFromSelection({ view, label, getSource, setSource, rerender }, color = renderFormatDefaults.highlight, selOverride = null) {
+// `keepExisting` (the highlight-and-note button): a selection that is already
+// one highlight is answered with that highlight, untouched — { action:
+// "existing" } — rather than being toggled off or recoloured, so the note editor
+// opens on the mark the reader pointed at.
+export function makeHighlightFromSelection({ view, label, getSource, setSource, rerender }, color = renderFormatDefaults.highlight, selOverride = null, { keepExisting = false } = {}) {
   // Only for a LIVE selection — selOverride (the pill's position-time
   // snapshot) has no DOM range left to test overlap against by the time it's
   // used, so it always falls through to the text-search path below.
   const overlapIndex = selOverride ? -1 : overlappingMarkIndex(view);
+  if (overlapIndex !== -1 && keepExisting) {
+    const source = getSource();
+    const span = markSpanAt(source, overlapIndex);
+    if (span) {
+      window.getSelection()?.removeAllRanges();
+      return { action: "existing", idx: span.start, source };
+    }
+  }
   if (overlapIndex !== -1) {
     const result = highlightToggleByOverlap(getSource(), overlapIndex, color);
     if (result) {
@@ -511,6 +615,12 @@ export function makeHighlightFromSelection({ view, label, getSource, setSource, 
       ? "Couldn't place that highlight in this code block — try selecting within a single line."
       : "Couldn't match that selection in the source — try selecting whole words.", "error");
     return null;
+  }
+  if (keepExisting && result.action === "removed") {
+    // The exact words of an existing highlight, in its own colour: the swatch
+    // would toggle it off; this button means "annotate it".
+    window.getSelection()?.removeAllRanges();
+    return { action: "existing", idx: result.idx, source: getSource() };
   }
   if (result.action === "already" || result.action === "not-highlighted") {
     showToast(highlightInfoMessage(result.action), "info");

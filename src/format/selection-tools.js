@@ -228,7 +228,10 @@ function selectionRects(target) {
 // documents' own handler set for the paper — and src/main.js already knows all
 // of them. Same arrangement as setHighlightBadgeHandler, and for the same
 // reason.
-export function applyPillHighlight(color) {
+// `keepExisting` is the highlight-and-note button's: pressing it over a passage
+// that is already highlighted means "write on THAT one", never "toggle it off",
+// which is what the plain swatch does with a repeated colour.
+export function applyPillHighlight(color, { keepExisting = false } = {}) {
   let made = null;
   const target = pillActionTarget();
   if (target?.kind === "document") {
@@ -289,7 +292,7 @@ export function applyPillHighlight(color) {
     // highlight hides the colour that was just applied.
     window.getSelection()?.removeAllRanges();
   } else if (target?.kind === "rendered") {
-    const result = makeHighlightFromSelection(renderTargetConfig(target.name), color, target.sel);
+    const result = makeHighlightFromSelection(renderTargetConfig(target.name), color, target.sel, { keepExisting });
     // `idx` is the offset of the new mark's own open tag in `source` — an
     // ordinal is one scan away, and only the caller that wants one has to pay
     // for it. A removal has nothing to annotate.

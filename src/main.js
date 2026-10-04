@@ -854,7 +854,7 @@ el.highlightSelectionBtn?.addEventListener("pointerdown", (event) => {
 el.highlightAnnotateSelectionBtn?.addEventListener("pointerdown", (event) => {
   event.preventDefault();
   event.stopPropagation();
-  const made = applyPillHighlight(renderFormatDefaults.highlight);
+  const made = applyPillHighlight(renderFormatDefaults.highlight, { keepExisting: true });
   if (!made) return;
   if (made.surface === "document") {
     // No rect to anchor against: the selection that named this highlight is

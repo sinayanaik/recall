@@ -432,8 +432,12 @@ export const HIGHLIGHT_EXPORT_REGION_WIDTH = 520;
 
 function highlightExportEntryHtml(item, groupedByPage = false) {
   const context = (units) => units.map((u) => `<p class="highlight-export-context">${markdownToSafeHtml(u)}</p>`).join("");
+  // The number the highlight wears on the page (highlight-badges.js), on the
+  // card and on its note, so a printed list and the note it came from can be
+  // matched up — "note 3" in the margin of the page, "3" on the card.
+  const number = item.n ? `<span class="highlight-export-n" title="Note ${escapeHtml(String(item.n))}">${escapeHtml(String(item.n))}</span>` : "";
   const note = item.note
-    ? `<div class="highlight-export-note"><p class="highlight-export-note-label">Note</p>${markdownToSafeHtml(item.note)}</div>`
+    ? `<div class="highlight-export-note"><p class="highlight-export-note-label">${item.n ? `Note ${escapeHtml(String(item.n))}` : "Note"}</p>${markdownToSafeHtml(item.note)}</div>`
     : "";
   // A page number, for a highlight that came off a PDF's Document surface.
   // Its equivalent of the chapter heading above — the difference being that a
@@ -460,7 +464,8 @@ function highlightExportEntryHtml(item, groupedByPage = false) {
       ? `<div class="highlight-export-mark rendered"><p>${escapeHtml(String(item.region.text || "").trim())}</p></div>`
       : `<div class="highlight-export-mark rendered">${markdownToSafeHtml(item.markdown)}</div>`;
   return `
-    <div class="highlight-export-entry" data-color="${escapeHtml(item.color)}">
+    <div class="highlight-export-entry${number ? " has-number" : ""}" data-color="${escapeHtml(item.color)}">
+      ${number}
       ${page}
       ${context(item.before)}
       ${pictureHtml}
@@ -554,7 +559,7 @@ export function buildHighlightsExportMarkdown(title, options = {}) {
     }
     const lines = [...item.before, item.markdown, ...item.after];
     if (item.page && !options.groupByPage) lines.unshift(`*p. ${item.page}*`);
-    if (item.note) lines.push(`> **Note:** ${item.note.replace(/\n/g, "\n> ")}`);
+    if (item.note) lines.push(`> **Note${item.n ? ` ${item.n}` : ""}:** ${item.note.replace(/\n/g, "\n> ")}`);
     blocks.push(lines.join("\n\n"));
   });
   return `# ${title}\n\n${blocks.join("\n\n---\n\n")}\n`;
@@ -567,7 +572,7 @@ export function buildHighlightsPrintDocument(title, options = {}) {
       <button type="button" data-print-close>Close</button>
       <button type="button" data-print-now>Download PDF</button>
     </div>
-    <div class="cornell-print-document">
+    <div class="cornell-print-document is-highlights">
       <header class="cornell-print-cover">
         <div>
           <h1>${escapeHtml(title)}</h1>
