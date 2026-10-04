@@ -64,6 +64,7 @@ import { closeMyDecksPanel } from "../ui/deck-header.js?v=__BUILD__";
 import { flushWorkingDeck } from "../ui/edit-mode.js?v=__BUILD__";
 import { setStatus, showToast } from "../ui/feedback.js?v=__BUILD__";
 import { setViewMode } from "../ui/view-mode.js?v=__BUILD__";
+import { hideHome } from "../ui/home-state.js?v=__BUILD__";
 
 // finishSaveDeckToLibrary only assigns state.localDeckId when the token it was
 // given still matches activeDeckLoadToken. -1 can never match (the counter only
@@ -220,6 +221,8 @@ export async function openDecksAsOneDeck(entries, { title, path = null, key, lan
   // loadDeckSnapshot does it, rather than left to the last-resort re-seed in
   // setViewMode.
   discardNotesEditingForDeckSwap();
+  // A folder opened as one deck replaces whatever was on screen — home included.
+  hideHome();
 
   state.deckId = null;
   state.localDeckId = null;

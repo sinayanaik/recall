@@ -27,6 +27,7 @@ import { lastSaveErrorWasQuota, persistWorkingDeck } from "../storage/quota.js?v
 import { closeImportPanel, openImportPanel, openMyDecksPanel } from "../ui/deck-header.js?v=__BUILD__";
 import { setStatus, showToast } from "../ui/feedback.js?v=__BUILD__";
 import { setViewMode } from "../ui/view-mode.js?v=__BUILD__";
+import { hideHome } from "../ui/home-state.js?v=__BUILD__";
 
 // ── Importing into a specific folder ────────────────────────────────────────
 // My Decks can create a deck or a subfolder in whatever folder you're looking
@@ -642,6 +643,8 @@ export function commitMarkdownImport() {
     const notesChanged = appendNotesToCurrentDeck(notes);
     closeAllCardsPanel();
     closeImportPanel();
+    // Show what was just imported, even if home was opened over this deck.
+    hideHome();
     setViewMode(notesChanged && !cards.length ? "notes" : state.viewMode);
     scheduleDeckAutosave();
     showCard();
@@ -670,6 +673,7 @@ export function commitMarkdownImport() {
 
   closeAllCardsPanel();
   closeImportPanel();
+  hideHome();
   // Land on whichever view actually received content, so an imported document
   // opens on its notes instead of an empty card stage.
   setViewMode(cards.length ? "cards" : "notes");

@@ -132,6 +132,7 @@
     <link rel="stylesheet" href="styles/73-ink-panel.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/74-smart-highlight.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/75-highlight-stability.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/76-home.css?v=__BUILD__">
 
     <!-- ── Module preloads ────────────────────────────────────────────────
          The app is ~130 ES modules and the browser discovers them by PARSING
@@ -378,6 +379,8 @@
     <link rel="modulepreload" href="src/ui/feedback.js?v=__BUILD__">
     <link rel="modulepreload" href="src/ui/fonts.js?v=__BUILD__">
     <link rel="modulepreload" href="src/ui/help.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/ui/home-state.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/ui/home.js?v=__BUILD__">
     <link rel="modulepreload" href="src/ui/ink-rail.js?v=__BUILD__">
     <link rel="modulepreload" href="src/ui/nav-history.js?v=__BUILD__">
     <link rel="modulepreload" href="src/ui/orientation.js?v=__BUILD__">
@@ -558,6 +561,12 @@
         <button class="app-back-btn" id="appBackBtn" type="button" aria-label="Back" title="Back" disabled>
           <span aria-hidden="true">&#8249;</span>
         </button>
+        <!-- Home. Always in this slot, beside Back, so the way out of any deck
+             is one press on every screen size — the drawer has the same entry
+             for anyone who looks for it there. See src/ui/home.js. -->
+        <button class="app-back-btn app-home-btn" id="appHomeBtn" type="button" aria-label="Home" title="Home">
+          <span aria-hidden="true">&#8962;</span>
+        </button>
         <div class="toolbar" id="mainToolbar">
           <div class="toolbar-drawer-head">
             <span class="toolbar-drawer-title">Recall</span>
@@ -565,6 +574,7 @@
           </div>
 
           <span class="drawer-section-label">Decks</span>
+          <button class="tool-button" id="homeBtn" type="button" title="Your home screen: recent decks and quick actions">&#8962; Home</button>
           <button class="tool-button" id="newDeckBtn" type="button">&#43; New Deck</button>
           <button class="tool-button" id="importBtn" type="button" title="Import a file, pasted Markdown, or a link — as notes, as cards, or both">&#8679; Import</button>
           <button class="tool-button" id="myDecksBtn" type="button" title="All your decks — saved on this device and synced to the cloud automatically">&#128218; My Decks</button>
@@ -678,6 +688,75 @@
         </div>
       </header>
 
+      <!-- ── Home ───────────────────────────────────────────────────────────
+           Where every launch lands (a refresh always starts with no deck open)
+           and where ⌂ goes back to. Drawn in the study surface's grid row while
+           html.is-home hides that surface, so a deck opened underneath stays
+           loaded and "Back to your deck" returns to the same place. Painted by
+           renderHome (src/ui/home.js); shown and hidden by src/ui/home-state.js. -->
+      <section class="home-view" id="homeView" hidden aria-label="Home">
+        <div class="home-inner">
+          <header class="home-hero">
+            <p class="home-greeting" id="homeGreeting">Welcome back</p>
+            <h1 class="home-title">Recall</h1>
+            <p class="home-summary" id="homeSummary"></p>
+          </header>
+
+          <button class="home-continue" id="homeContinueBtn" type="button" hidden>
+            <span class="home-continue-text">
+              <span class="home-continue-label" id="homeContinueLabel">Continue where you left off</span>
+              <span class="home-continue-title" id="homeContinueTitle"></span>
+              <span class="home-continue-meta" id="homeContinueMeta"></span>
+            </span>
+            <span class="home-continue-go" aria-hidden="true">&#8594;</span>
+          </button>
+
+          <div class="home-actions" role="group" aria-label="Quick actions">
+            <button class="home-action" id="homeNewDeckBtn" type="button">
+              <span class="home-action-icon" aria-hidden="true">&#10022;</span><span class="home-action-label">New Deck</span>
+            </button>
+            <button class="home-action" id="homeImportBtn" type="button">
+              <span class="home-action-icon" aria-hidden="true">&#11014;</span><span class="home-action-label">Import</span>
+            </button>
+            <button class="home-action" id="homeMyDecksBtn" type="button">
+              <span class="home-action-icon" aria-hidden="true">&#128218;</span><span class="home-action-label">My Decks</span>
+            </button>
+            <button class="home-action" id="homeQuickNotesBtn" type="button">
+              <span class="home-action-icon" aria-hidden="true">&#128209;</span><span class="home-action-label">Quick Notes</span>
+            </button>
+            <button class="home-action" id="homeAllCardsBtn" type="button" hidden>
+              <span class="home-action-icon" aria-hidden="true">&#128450;</span><span class="home-action-label">All Cards</span>
+            </button>
+            <button class="home-action" id="homeSyncBtn" type="button">
+              <span class="home-action-icon" aria-hidden="true">&#8635;</span><span class="home-action-label">Sync Now</span>
+            </button>
+          </div>
+
+          <section class="home-section" id="homeRecentSection" aria-labelledby="homeRecentTitle">
+            <div class="home-section-head">
+              <h2 class="home-section-title" id="homeRecentTitle">Recent decks</h2>
+              <button class="home-link" id="homeSeeAllBtn" type="button">See all &#8594;</button>
+            </div>
+            <div class="home-recent" id="homeRecent"></div>
+            <p class="home-empty" id="homeRecentEmpty" hidden>No decks yet — create your first deck, or import notes, a PDF or a book.</p>
+          </section>
+
+          <section class="home-section" aria-label="Sync and library">
+            <div class="deck-empty-panel home-status" id="deckEmptyPanel">
+              <div class="deck-empty-panel-row">
+                <span class="deck-empty-panel-label">Sync Status</span>
+                <span class="deck-empty-panel-value" id="deckEmptySyncValue"></span>
+              </div>
+              <div class="deck-empty-panel-row">
+                <span class="deck-empty-panel-label">Your Decks</span>
+                <span class="deck-empty-panel-value" id="deckEmptyLibraryValue"></span>
+              </div>
+            </div>
+            <div class="deck-empty-sync-report" id="deckEmptySyncReport" hidden></div>
+          </section>
+        </div>
+      </section>
+
       <section class="study-layout" aria-label="Flashcard study area">
         <section class="quiz-panel is-deck-empty" aria-label="Flashcard quiz">
           <!-- ONE control row for the whole notes view. The Cards/Notes/
@@ -764,16 +843,6 @@
               <div class="deck-empty-icon" id="deckEmptyIcon" aria-hidden="true">📚</div>
               <h2 class="deck-empty-title" id="deckEmptyTitle">Recall</h2>
               <p class="deck-empty-body" id="deckEmptyBody">Choose how to get started:</p>
-              <div class="deck-empty-panel" id="deckEmptyPanel">
-                <div class="deck-empty-panel-row">
-                  <span class="deck-empty-panel-label">Sync Status</span>
-                  <span class="deck-empty-panel-value" id="deckEmptySyncValue"></span>
-                </div>
-                <div class="deck-empty-panel-row">
-                  <span class="deck-empty-panel-label">Your Decks</span>
-                  <span class="deck-empty-panel-value" id="deckEmptyLibraryValue"></span>
-                </div>
-              </div>
               <div class="deck-empty-actions" id="deckEmptyActionsNone">
                 <button class="deck-empty-action" id="deckEmptyNewBtn" type="button">
                   <span class="deck-empty-action-icon" aria-hidden="true">✦</span>
@@ -798,7 +867,6 @@
                   Write Notes
                 </button>
               </div>
-              <div class="deck-empty-sync-report" id="deckEmptySyncReport" hidden></div>
             </div>
             <div class="swipe-hint" id="swipeHint" hidden aria-hidden="true">
               <div class="swipe-hint-row">
@@ -2074,7 +2142,8 @@
           <section class="help-section">
             <h3 class="help-section-title">1. Load a Deck</h3>
             <p>A <strong>deck</strong> is the thing you open from My Decks. It holds exactly two kinds of content: one <strong>notes</strong> document (freeform Markdown) and any number of <strong>cards</strong> (question / answer pairs). Everything you import becomes one or both of those.</p>
-            <p>Open the menu (<strong>☰</strong>, top-left) to get started:</p>
+            <p>Every launch opens on the <strong>Home</strong> screen: pick up the deck you were last in, jump into a recent deck, or start something new. Press <strong>⌂</strong> (top-left, beside Back) or <strong>⌂ Home</strong> at the top of the <strong>☰</strong> menu to come back to it from any deck — the deck stays open underneath, so <strong>Back to your deck</strong> (or Esc) returns you to exactly where you were.</p>
+            <p>Home and the menu (<strong>☰</strong>, top-left) both offer:</p>
             <ul class="help-list">
               <li><strong>+ New Deck</strong> — start a blank deck and add cards manually</li>
               <li><strong>Import</strong> — choose one file or a whole batch of them, paste Markdown, or fetch a link. Recall then shows what it found and asks whether it should become <strong>notes</strong>, <strong>cards</strong>, or <strong>both</strong>, and where it lands: <strong>separate decks</strong> (one per file), <strong>one new deck</strong>, or appended to the deck you already have open. Nothing is created until you confirm</li>

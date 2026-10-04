@@ -11,6 +11,7 @@ import { setDeckAutosaveStorageFailed } from "../storage/quota.js?v=__BUILD__";
 import { closeImportPanel, closeMyDecksPanel } from "../ui/deck-header.js?v=__BUILD__";
 import { setStatus, showConfirmModal, showPromptModal, showToast } from "../ui/feedback.js?v=__BUILD__";
 import { setViewMode } from "../ui/view-mode.js?v=__BUILD__";
+import { hideHome } from "../ui/home-state.js?v=__BUILD__";
 
 export function createNewDeck({ title = "New Deck", category = defaultDeckCategory, notesMode = false } = {}) {
   const name = String(title || "New Deck").trim() || "New Deck";
@@ -34,6 +35,9 @@ export function createNewDeck({ title = "New Deck", category = defaultDeckCatego
     setViewMode(notesMode ? "notes" : "cards");
     closeImportPanel();
     closeAllCardsPanel();
+    // The new deck is what goes on screen, even over a home screen that was
+    // opened on purpose.
+    hideHome();
     showCard();
     setStatus("Created new deck.");
   };

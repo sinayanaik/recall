@@ -92,7 +92,7 @@ import { closeClozePanel, openClozePanel, toggleClozePanelAll } from "./panels/c
 import { appInfoBtn, appInfoCheckBtn, appInfoCloseBtn, appInfoHealthBtn, appInfoModal, appInfoReloadBtn, closeAppInfoModal, forceRefreshAppInfo, openAppInfoModal, runProjectHealthCheck } from "./pwa/app-info.js?v=__BUILD__";
 import { FOREGROUND_SYNC_IDLE_MS, lastHiddenAt, onlineReconcileTimer, setLastHiddenAt, setOnlineReconcileTimer, updateOnlineIndicator } from "./pwa/online.js?v=__BUILD__";
 import { installIncomingFiles } from "./pwa/incoming-files.js?v=__BUILD__";
-import { installManifestLink, registerServiceWorker } from "./pwa/service-worker-client.js?v=__BUILD__";
+import { applyUpdate, installManifestLink, registerServiceWorker } from "./pwa/service-worker-client.js?v=__BUILD__";
 import { addQuickNoteCategory, assignQuickNoteCategory, closeQnCatMenu, closeQnCatModal, closeQuickNotesBoard, copyQuickNote, deleteQuickNoteCategory, jumpToQuickNoteSource, layoutQuickNotesGrid, openQnCatMenu, openQnCatModal, openQnRecolorMenu, openQuickNotesBoard, qnBoard, qnNewColor, renameQuickNoteCategory, renderQnColorPicker, renderQuickNotesBoard, saveQuickNote, setQnNewColor } from "./quick-notes/board.js?v=__BUILD__";
 import { closeDiagramModal, zoomDiagramBy } from "./render/diagram-zoom.js?v=__BUILD__";
 import { scheduleMarkdownTableFit } from "./render/tables.js?v=__BUILD__";
@@ -114,6 +114,7 @@ import { closeImportPanel, closeMyDecksPanel, editCurrentDeckCategory, editCurre
 import { addBlankCardAtCursor, flushWorkingDeck, toggleEditMode } from "./ui/edit-mode.js?v=__BUILD__";
 import { setStatus, showConfirmModal, showPromptModal, showToast } from "./ui/feedback.js?v=__BUILD__";
 import { closeHelpModal, helpBtn, helpModal, helpModalCloseBtn, helpModalCloseFootBtn, openHelpModal } from "./ui/help.js?v=__BUILD__";
+import { initHome } from "./ui/home.js?v=__BUILD__";
 import { goNavBack, recordNavHistory, refreshNavBack } from "./ui/nav-history.js?v=__BUILD__";
 import { anyModalOpen, lockPageScroll, unlockPageScroll } from "./ui/overlays.js?v=__BUILD__";
 import { chooseDeckCategory } from "./ui/pickers.js?v=__BUILD__";
@@ -3305,6 +3306,9 @@ if (deckEmptyNewBtn) deckEmptyNewBtn.addEventListener("click", () => createNewDe
 if (deckEmptyImportBtn2) deckEmptyImportBtn2.addEventListener("click", () => openImportPanel());
 if (deckEmptyWebBtn) deckEmptyWebBtn.addEventListener("click", () => openMyDecksPanel());
 
+// The home screen's own buttons, and the two ⌂ entries (app bar and drawer).
+initHome();
+
 
 if (helpBtn) helpBtn.addEventListener("click", openHelpModal);
 if (helpModalCloseBtn) helpModalCloseBtn.addEventListener("click", closeHelpModal);
@@ -3331,7 +3335,9 @@ if (appInfoHealthBtn) appInfoHealthBtn.addEventListener("click", runProjectHealt
 if (appInfoBtn) appInfoBtn.addEventListener("click", openAppInfoModal);
 if (appInfoCloseBtn) appInfoCloseBtn.addEventListener("click", closeAppInfoModal);
 if (appInfoCheckBtn) appInfoCheckBtn.addEventListener("click", forceRefreshAppInfo);
-if (appInfoReloadBtn) appInfoReloadBtn.addEventListener("click", () => location.reload());
+// Not location.reload(): a reload while the new release is still downloading is
+// answered by the old worker with the old page. See applyUpdate.
+if (appInfoReloadBtn) appInfoReloadBtn.addEventListener("click", () => applyUpdate({ button: appInfoReloadBtn }));
 if (appInfoModal) {
   appInfoModal.addEventListener("click", (e) => {
     if (e.target === appInfoModal) closeAppInfoModal();

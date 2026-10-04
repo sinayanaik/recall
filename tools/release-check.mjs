@@ -87,13 +87,18 @@ const dirA = path.join(tmp, "a");
 const dirB = path.join(tmp, "b");
 execFileSync("bash", ["-c", `mkdir -p ${dirA} ${dirB}`]);
 const SRC_REF = (process.argv.find((a) => a.startsWith("--from=")) || "").slice(7);
-for (const d of [dirA, dirB]) {
+const dirC = path.join(tmp, "c");
+const dirD = path.join(tmp, "d");
+execFileSync("bash", ["-c", `mkdir -p ${dirC} ${dirD}`]);
+for (const d of [dirA, dirB, dirC, dirD]) {
   if (SRC_REF) execFileSync("bash", ["-c", `cd ${ROOT} && git archive ${SRC_REF} | tar -x -C ${d}`]);
   else execFileSync("bash", ["-c",
     `cd ${ROOT} && tar -c index.html sw.js manifest.webmanifest src styles icons vendor | tar -x -C ${d}`]);
 }
 stamp(dirA, "aaaaaa1");
 stamp(dirB, "bbbbbb2");
+stamp(dirC, "cccccc3");
+stamp(dirD, "dddddd4");
 
 // One server whose document root can be swapped between releases mid-test.
 const serverJs = path.join(tmp, "server.mjs");
@@ -102,11 +107,22 @@ import http from "node:http";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 let root = process.argv[2];
+// Two faults the update section at the end needs: a slow release (every module
+// held back, so a worker install takes long enough to press Reload in the
+// middle of it) and a release whose worker install fails outright (the bare
+// "/" its install fetches answers 500, while /index.html navigations still
+// work — the shape of a flaky connection rather than a dead site).
+let slowMs = 0;
+let failRoot = false;
 const TYPES = { ".html":"text/html", ".js":"text/javascript", ".css":"text/css",
                 ".json":"application/json", ".png":"image/png", ".webmanifest":"application/manifest+json" };
 http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://x");
   if (url.pathname === "/__switch") { root = url.searchParams.get("to"); res.writeHead(200); res.end("ok"); return; }
+  if (url.pathname === "/__slow") { slowMs = Number(url.searchParams.get("ms")) || 0; res.writeHead(200); res.end("ok"); return; }
+  if (url.pathname === "/__failroot") { failRoot = url.searchParams.get("on") === "1"; res.writeHead(200); res.end("ok"); return; }
+  if (failRoot && url.pathname === "/") { res.writeHead(500); res.end("down"); return; }
+  if (slowMs && url.pathname.startsWith("/src/")) await new Promise((r) => setTimeout(r, slowMs));
   const file = path.join(root, url.pathname === "/" ? "/index.html" : url.pathname);
   try {
     const body = await readFile(file);
@@ -378,6 +394,59 @@ try {
   check(afterUpdateErrors.length === 0,
     `offline after update: no page errors${afterUpdateErrors.length ? " — " + afterUpdateErrors[0] : ""}`);
   await cdp.send("Network.emulateNetworkConditions", { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
+
+  // ── 7. Reload pressed while the next release is still downloading ───────
+  //
+  // The reported bug: "it keeps saying new version available, and Reload does
+  // nothing". The App Info modal offers Reload the moment the SERVER has newer
+  // HTML, which is before this device's new worker has downloaded it. That
+  // button was a bare location.reload(), and the old worker answered it with
+  // the old page — by design, see htmlMatchesThisRelease in sw.js — so the press
+  // visibly did nothing, again and again, until the background install finished.
+  // It now waits for the new worker and lands on it. The release is served
+  // slowly here so the press really does arrive mid-install.
+  const control = (q) => fetch(`http://127.0.0.1:${PORT}/${q}`);
+  await page.goto(`${ORIGIN}/index.html`, { waitUntil: "networkidle2", timeout: 60000 });
+  await new Promise((r) => setTimeout(r, 1500));
+  await control("__slow?ms=250");
+  await control(`__switch?to=${encodeURIComponent(dirC)}`);
+  const installingC = await page.evaluate(async () => {
+    const reg = await navigator.serviceWorker.getRegistration();
+    if (!reg) return false;
+    reg.update().catch(() => {});
+    for (let i = 0; i < 100 && !reg.installing; i++) await new Promise((r) => setTimeout(r, 100));
+    return Boolean(reg.installing);
+  });
+  check(installingC, "reload mid-download: release C is still installing when Reload is pressed");
+  const pressedAt = Date.now();
+  await Promise.all([
+    page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 90000 }).catch(() => null),
+    page.evaluate(() => document.getElementById("appInfoReloadBtn")?.click())
+  ]);
+  await new Promise((r) => setTimeout(r, 2000));
+  const midDownload = await readStamp();
+  console.log(`        (landed ${Math.round((Date.now() - pressedAt) / 100) / 10}s after the press)`);
+  check(midDownload === "cccccc3", `reload mid-download: ONE press lands release C (got ?v=${midDownload})`);
+  await control("__slow?ms=0");
+
+  // ── 8. Reload pressed when the new worker cannot install at all ─────────
+  //
+  // The other half of "Reload does nothing": an install that keeps failing (a
+  // flaky connection, a full quota) leaves the old worker in charge forever,
+  // and no amount of waiting for a new one helps. The press must still land
+  // the new release — by going around the worker, from the network.
+  await control("__failroot?on=1");
+  await control(`__switch?to=${encodeURIComponent(dirD)}`);
+  await Promise.all([
+    page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 120000 }).catch(() => null),
+    page.evaluate(() => document.getElementById("appInfoReloadBtn")?.click())
+  ]);
+  await new Promise((r) => setTimeout(r, 3000));
+  const failedInstall = await readStamp();
+  check(failedInstall === "dddddd4", `reload with a failing install: the press still lands release D (got ?v=${failedInstall})`);
+  const sparedD = await page.evaluate(async () => (await caches.keys()).includes("recall-vendor-v1"));
+  check(sparedD, "reload with a failing install: the vendor cache was spared");
+  await control("__failroot?on=0");
 
   console.log(failures ? `\n${failures} release check(s) failed.` : "\nRelease path verified: install, offline, update, and offline again after the update.");
   // The result line every check in this suite owes tools/check.mjs. This one

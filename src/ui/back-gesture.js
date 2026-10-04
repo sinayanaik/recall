@@ -29,6 +29,7 @@ import { isFocusModeActive, isImmersive, setFocusMode, setImmersiveMode } from "
 import { closeImportPanel, closeMyDecksPanel } from "./deck-header.js?v=__BUILD__";
 import { showToast } from "./feedback.js?v=__BUILD__";
 import { closeHelpModal } from "./help.js?v=__BUILD__";
+import { closeHome, isHomeDismissible } from "./home.js?v=__BUILD__";
 import { closeInkRailPopups, isInkRailPopupOpen } from "./ink-rail.js?v=__BUILD__";
 // Imported rather than inlined, unlike the two drawer export menus this
 // replaced: closeViewExportMenu also resets the button's aria-expanded, and a
@@ -134,6 +135,12 @@ export const OVERLAY_LAYERS = [
   { isOpen: () => Boolean(el.bucketPanel && !el.bucketPanel.hidden), close: () => closeBucketPanel() },
   { isOpen: () => Boolean(el.myDecksPanel && !el.myDecksPanel.hidden), close: () => closeMyDecksPanel() },
   { isOpen: () => Boolean(el.importPanel && el.importPanel.classList.contains("is-open")), close: () => closeImportPanel() },
+
+  // Home, opened over a deck that is still loaded. Under every panel above —
+  // they open over it — and over the notes TOC and editor below, which belong
+  // to the deck it covers. With no deck loaded it is not an overlay at all but
+  // the app itself, and does not answer here.
+  { isOpen: () => isHomeDismissible(), close: () => closeHome() },
 
   // The notes table-of-contents drawer is LAST, unlike the hamburger drawer
   // above: at z-index 40 it is underneath every panel and dialog here, so any

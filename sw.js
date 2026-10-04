@@ -363,6 +363,7 @@ const APP_SHELL = [
   `./styles/73-ink-panel.css?v=${STAMP}`,
   `./styles/74-smart-highlight.css?v=${STAMP}`,
   `./styles/75-highlight-stability.css?v=${STAMP}`,
+  `./styles/76-home.css?v=${STAMP}`,
   // The module entry point. Everything it imports is stamped with the same
   // ?v=, so those URLs change with every release too — which is what lets the
   // cache-first handler below serve them without revalidating and still never
@@ -601,6 +602,8 @@ const APP_SHELL = [
   `./src/ui/feedback.js?v=${STAMP}`,
   `./src/ui/fonts.js?v=${STAMP}`,
   `./src/ui/help.js?v=${STAMP}`,
+  `./src/ui/home-state.js?v=${STAMP}`,
+  `./src/ui/home.js?v=${STAMP}`,
   `./src/ui/ink-rail.js?v=${STAMP}`,
   `./src/ui/nav-history.js?v=${STAMP}`,
   `./src/ui/orientation.js?v=${STAMP}`,

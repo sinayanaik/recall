@@ -65,6 +65,10 @@ const SECTIONS = [
 // Anything appearing in styles/ that is neither a slice nor listed here is
 // still a failure.
 const POST_SPLIT = {
+  "76-home.css":
+    "The home screen (src/ui/home.js): where every launch lands and where the ⌂ " +
+    "buttons go. Takes the study surface's grid row while html.is-home hides it, " +
+    "and keeps the app bar up even under a remembered focus mode.",
   "75-highlight-stability.css":
     "A short note (under 60 blocks, flagged by syncShortNoteClass) keeps no " +
     "content-visibility containment, so highlighting it cannot briefly make it " +
