@@ -1,4 +1,4 @@
-// The number on a highlight that has something written about it.
+// The mark on a highlight that has something written about it.
 //
 // format/highlight-notes.js is the storage side: the text lives as plain
 // markdown in a "## Highlight Notes" section at the end of the same note, and
@@ -8,19 +8,32 @@
 // you tap the highlight there is nothing on screen to say the note exists at
 // all.
 //
-// So an annotated highlight wears a numbered badge, and pressing it opens that
-// note. Two facts in one glyph: there is something here, and it is the third
-// thing you wrote. A highlight with NO note wears nothing — the number is the
-// whole indicator, and a mark with nothing behind it must not offer one.
+// So an annotated highlight wears a small folded corner, and pressing it opens
+// that note. One fact in one glyph: there is something here. A highlight with
+// NO note wears nothing — the fold is the whole indicator, and a mark with
+// nothing behind it must not offer one.
+//
+// ── Why not a number ──────────────────────────────────────────────────────
+//
+// It was a numbered pill: "3", the third thing you wrote. On a note with one
+// annotation per word — a mantra, a glossed verse — the pills sat on the vowel
+// signs and the next word, two digits were twice as wide, and three would have
+// been a label on every word rather than a marker. Nothing ever needed the
+// number to READ a note: the press opens it, and the Highlights pane and the
+// exports put each note directly under its own quote. A fold is the same size
+// at the 3rd note and the 300th, and it sits in the highlight's own corner, over
+// nothing the reader came for. (The PDF Document surface keeps numbers on its
+// page badges: its notes strip under the page has no other way to pair a note
+// with a quad on a scanned image — see src/documents/pdf-page-notes.js.)
 //
 // ── What used to be here ──────────────────────────────────────────────────
 //
 // A second, opt-in mode PRINTED every note into the paragraph it belonged to:
 // merged into the sentence in a tinted box when it was one line, as a block
 // under it when it was more. It is gone. Reading a note is a press on its
-// number now, or the Highlights tab, which is a continuous editor of every note
+// fold now, or the Highlights tab, which is a continuous editor of every note
 // in the deck rather than a list to scroll. What that mode cost while it
-// existed is the reason this file still opens with a rule about pixels:
+// existed is the reason this file still keeps a rule about pixels:
 // injecting real content into rendered markdown needed two selection skips, a
 // user-select guard, a placement pass that had to reason about how the
 // incremental renderer compares a chunk's children, and an aria-hidden second
@@ -34,23 +47,25 @@
 //
 // The badge is therefore `position: absolute` inside the mark — which is already
 // `position: relative` when annotated, for exactly this. An out-of-flow box
-// contributes nothing to the line box, so it can carry a background, a ring and
-// two digits of padding and still move no glyph. That is what lets it be a real
+// contributes nothing to the line box, so it can carry a fill and a hit area
+// and still move no glyph. That is what lets it be a real
 // element rather than a ::after: a pseudo-element cannot be pressed on its own
 // (a click on one is a click on the mark, which opens the mark menu) and cannot
 // be reached by keyboard at all.
 //
 // Where it lands is the stylesheet's business, but it depends on one fact from
 // here: the badge is APPENDED, so it is the mark's last child. It carries no
-// offsets and sits at its static position — just past the final glyph, on
-// whichever line the highlight actually ends — rather than being pinned over
-// the last letter (styles/42-highlight-badge.css).
+// offsets and starts from its static position — just past the final glyph, on
+// whichever line the highlight actually ends — and its margins tuck it back
+// into the mark's top-right corner (styles/42-highlight-badge.css).
 //
 // ── ...and why the source matcher must never see it ───────────────────────
 //
 // locateSelectionInSource finds a rendered selection in the raw markdown by
-// matching its text. A digit injected into a <p> would make every highlight,
-// cloze and erase on that paragraph miss. Two places already know how to skip an
+// matching its text. The fold carries no text today, but it is a node inside
+// the <p>, and it carried a digit for long enough that the skips below are the
+// rule rather than a coincidence: text injected there would make every
+// highlight, cloze and erase on that paragraph miss. Two places already know how to skip an
 // element: cleanedSelectionFragment's removal list (which strips `button`
 // wholesale, so the badge is already covered there) and the walk in
 // emitTextWithLineBreaks, which runs over the LIVE dom and needs the class
@@ -113,7 +128,7 @@ function buildIndex(source) {
       // Resolved through the section rather than trusted: an id whose entry was
       // deleted by hand is not a note and must not be numbered, the same rule
       // mark-menu.js follows before it lights its pencil up. This is also what
-      // makes "a number only where there is something to read" true rather than
+      // makes "a fold only where there is something to read" true rather than
       // aspirational — an empty entry never reaches the map.
       const text = isHighlightNoteId(attr) ? section.get(attr) || "" : decodeHighlightNote(attr);
       if (!text) continue;
@@ -156,12 +171,14 @@ function badgeNode(info) {
   badge.className = MARK_BADGE_CLASS;
   badge.dataset.hnKey = `${info.n}`;
   badge.dataset.hnSig = hash32(info.text);
-  badge.textContent = `${info.n}`;
-  // The first words of the note, for a pointer. A badge that says only "3" is a
-  // footnote marker; one that says what is under it is worth hovering.
+  // No text: the fold is drawn by the stylesheet. data-hn-key keeps the
+  // note's place in the index so the passes can tell a moved badge from an
+  // unchanged one.
+  // The first words of the note, for a pointer — the fold says only that a
+  // note is there; hovering it says what the note is.
   const flat = info.text.replace(/\s+/g, " ").trim();
   badge.title = flat.length > MARK_BADGE_TITLE_CHARS ? `${flat.slice(0, MARK_BADGE_TITLE_CHARS)}…` : flat;
-  badge.setAttribute("aria-label", `Note ${info.n} on this highlight`);
+  badge.setAttribute("aria-label", "Open the note on this highlight");
   badge.addEventListener("click", (event) => {
     // The notes view's own click handler opens the MARK menu for whatever
     // highlight was pressed. mark-menu.js already declines a press on a
@@ -184,7 +201,7 @@ export const MARK_BADGE_TITLE_CHARS = 160;
 // ── The passes ────────────────────────────────────────────────────────────
 
 // One mark. `has-note` is the always-on dotted underline; the badge is the
-// number on top of it. Both come from the same lookup, so they cannot disagree
+// fold in its corner. Both come from the same lookup, so they cannot disagree
 // about whether this highlight has anything to say.
 function annotateMark(mark, index) {
   const info = index.byAttr.get(mark.getAttribute("data-note"));

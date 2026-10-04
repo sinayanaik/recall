@@ -199,10 +199,11 @@
   line-height: 1.2;
 }
 
-/* ── Which highlight this is ───────────────────────────────────────────────
-   The same number the badge on the page wears (src/notes/highlight-badges.js,
-   src/documents/pdf-page-notes.js), so the card and the mark can be matched by
-   eye. Deliberately the same shape as that badge — a small filled disc in the
+/* ── Which highlight this is, on a PDF page ────────────────────────────────
+   Only a PDF Document highlight's card has one: the same number its badge on
+   the page wears (src/documents/pdf-page-notes.js), so the card and the mark
+   can be matched by eye. A notes-view highlight wears an unnumbered fold
+   (src/notes/highlight-badges.js) and its card carries no number at all. Deliberately the same shape as that badge — a small filled disc in the
    accent, tabular digits — because two different-looking numbers claiming to be
    the same number is worse than one of them not being there.
 

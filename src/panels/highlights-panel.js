@@ -17,7 +17,6 @@ import { readerNotesBody } from "../format/notes-fence.js?v=__BUILD__";
 import { codeFences, codeHighlightSnippet } from "../format/code-highlight.js?v=__BUILD__";
 import { notesAnchorPlainText } from "../notes/anchors.js?v=__BUILD__";
 import { headingForOffset, headingIndexFor } from "../notes/chapters.js?v=__BUILD__";
-import { highlightNoteIndex } from "../notes/highlight-badges.js?v=__BUILD__";
 import { clozeCleanUnit, clozeUnitAt, clozeUnitIndex } from "./cloze-panel.js?v=__BUILD__";
 import { trimNoteAnchor } from "../quick-notes/anchors.js?v=__BUILD__";
 import { annotatedDocumentHighlightNumbers, documentHighlightLabel, documentHighlightsInReadingOrder, isPdfDeck } from "../documents/pdf-highlights.js?v=__BUILD__";
@@ -202,10 +201,10 @@ export function scanHighlightGroups(source, noteSource = source) {
       // own "Highlight Notes" section (or, for an old annotation, inline
       // base64) — so it is looked up here rather than read as text.
       note: noteRef ? noteTextFor(noteRef) || null : null,
-      // ...and the reference itself, carried rather than discarded, because it
-      // is the key the badge index is built on (highlightNoteIndex, in
-      // src/notes/highlight-badges.js). A card that wants to show the number
-      // its highlight wears on the page has to ask that index, not recount.
+      // ...and the reference itself, carried rather than discarded: it is the
+      // key the badge index is built on (highlightNoteIndex, in
+      // src/notes/highlight-badges.js), so anything that needs to match a row
+      // to the fold on its highlight asks by it rather than by position.
       noteRef,
       marker: precedingListMarker(source, start)
     });
@@ -374,9 +373,6 @@ export function collectDeckHighlightsForExport({ contextLines = 0, includeChapte
       });
     });
   }
-  // The number each highlight wears on the page (highlight-badges.js), so a
-  // printed card and the badge it came from say the same thing.
-  const noteNumbers = highlightNoteIndex(notes).byAttr;
   groups.forEach((group) => {
     const span = highlightUnitSpan(units, source, group, fences);
     const quoted = span ? span.cur : group.pieces.reduce((acc, piece, i) => {
@@ -398,7 +394,6 @@ export function collectDeckHighlightsForExport({ contextLines = 0, includeChapte
     items.push({
       markdown,
       color: group.color,
-      n: noteNumbers.get(group.pieces[0].noteRef)?.n || 0,
       note: includeNotes ? note : null,
       before,
       after,
@@ -478,10 +473,6 @@ export function collectHighlightEntries() {
   const notes = state.notes || "";
   const { source, raw, groups, units, fences } = scanHighlightGroups(readerNotesBody(notes), notes);
   const headings = headingIndexFor(source);
-  // ...and the note's own badge numbers, from the index the badges themselves
-  // are painted out of. Keyed on the <mark>'s data-note reference, which is why
-  // scanHighlightGroups carries it.
-  const noteNumbers = highlightNoteIndex(notes).byAttr;
   groups.forEach((group) => {
     const span = highlightUnitSpan(units, source, group, fences);
     const markdown = span ? span.cur : group.pieces.reduce((acc, piece, i) => {
@@ -497,7 +488,8 @@ export function collectHighlightEntries() {
       markIndex: group.pieces[0].markIndex,
       color: group.color,
       group: heading?.title || "",
-      n: noteNumbers.get(group.pieces[0].noteRef)?.n || 0,
+      // No `n`: a notes-view highlight wears an unnumbered fold, so its card
+      // carries no number either (see the head in highlights-editor.js).
       region: null,
       markdown,
       span,

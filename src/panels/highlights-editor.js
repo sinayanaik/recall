@@ -397,27 +397,26 @@ function articleFor(entry) {
   const head = document.createElement("div");
   head.className = "hl-note-head";
 
-  // ── The number, and it is the badge's number ────────────────────────────
+  // ── A number only where the page wears one ─────────────────────────────
   //
-  // "There should be a visually apparent identifier saying which note relates
-  // to which highlight." There was none: the card's only tie to the page was
-  // that both existed, and the pane's own "12 / 87" counter is a different
-  // sequence entirely — position among ALL highlights, annotated or not.
+  // The PDF Document surface pins a numbered badge to each annotated highlight,
+  // and its notes strip under the page pairs notes to quads by that number —
+  // so a card for a document highlight shows the same number, and the two can
+  // be matched by eye (annotatedDocumentHighlightNumbers decides it for both).
   //
-  // This is the number the highlight already wears on the page: the badge
-  // pinned to it, and the note printed under its page, both show it. It comes
-  // from the one function that decides it (annotatedDocumentHighlightNumbers /
-  // highlightNoteIndex, asked in collectHighlightEntries) so the three can never
-  // drift apart.
+  // A highlight in the notes view wears an unnumbered fold instead
+  // (src/notes/highlight-badges.js), and its card carries no number either: the
+  // card IS the highlight's quote with its note under it, so what the note is
+  // about is already on the card. A counter there only grew with the note —
+  // two digits, then three — and said nothing the layout did not.
   //
-  // Absent, not zero, on a highlight with nothing written about it yet — which
-  // is exactly what the page shows there too. A number that promised something
-  // to read and delivered a blank would be worse than the silence it replaced.
+  // So only document entries carry `n` (collectHighlightEntries), and it is
+  // absent there too on a highlight with nothing written about it yet.
   if (entry.n) {
     const number = document.createElement("span");
     number.className = "hl-note-n";
     number.textContent = String(entry.n);
-    number.title = `Note ${entry.n} — the number this highlight is marked with`;
+    number.title = `Note ${entry.n} — the number this highlight wears on the page`;
     head.appendChild(number);
   }
 

@@ -58,45 +58,20 @@
  */
 .highlight-export-entry {
   position: relative;
-  margin: 0 0 12px;
-  padding: 10px 14px;
-  border: 1px solid color-mix(in srgb, var(--print-text, #17201c) 14%, transparent);
-  border-left: 4px solid var(--print-accent, #16796c);
-  border-radius: 0 8px 8px 0;
-  /* The page's own white, not a grey wash over it: a printed list of cards
-     each tinted grey read as grey boxes on a grey page. The colour accent on
-     the left and the hairline are what separate one card from the next. */
+  /* ── Compact: a rule, not a box ───────────────────────────────────────────
+     Each card was a bordered, padded box with a number chip in its corner and
+     a labelled, tinted box for its note — three frames around two pieces of
+     text. The highlight's own colour down the left edge is the one frame a
+     card needs: it says where one highlight ends and the next begins, and
+     which colour it was. The gap between cards does the rest. */
+  margin: 0 0 10px;
+  padding: 2px 0 2px 12px;
+  border-left: 3px solid var(--print-accent, #16796c);
   background: var(--print-panel, #ffffff);
   color: var(--print-text, #17201c);
   /* A card is one thing: never its quote on one page and its note on the next. */
   break-inside: avoid;
   page-break-inside: avoid;
-}
-
-/* Room for the number in the corner. */
-.highlight-export-entry.has-number {
-  padding-right: 40px;
-}
-
-/* The number the highlight wears on the page (src/notes/highlight-badges.js),
-   so a card and its badge can be matched. */
-.highlight-export-n {
-  position: absolute;
-  top: 9px;
-  right: 10px;
-  min-width: 1.6em;
-  height: 1.6em;
-  padding: 0 0.4em;
-  box-sizing: border-box;
-  border-radius: 999px;
-  background: var(--print-accent, #16796c);
-  color: #ffffff;
-  font-size: 0.72rem;
-  font-weight: 800;
-  line-height: 1.6em;
-  text-align: center;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
 }
 
 .highlight-export-entry[data-color="yellow"] { border-left-color: #e0b400; }
@@ -131,35 +106,29 @@
   break-inside: avoid;
 }
 
+/* ── The note: commentary, set under the passage it is about ───────────────
+   No "Note" label and no number: a card is one highlight and its note, so the
+   pairing is the layout. What tells the two apart is the ink — the note a step
+   smaller and muted, on a hairline indented under the quote, the way a reply
+   sits under the message it answers. */
 .highlight-export-note {
-  margin-top: 8px;
-  padding: 6px 10px;
-  border-left: 3px solid var(--print-accent, #16796c);
-  background: color-mix(in srgb, var(--print-accent, #16796c) 6%, var(--print-panel, #ffffff));
-  border-radius: 0 6px 6px 0;
-  color: var(--print-text, #17201c);
+  margin: 3px 0 0;
+  padding: 0 0 0 10px;
+  border-left: 1px solid color-mix(in srgb, var(--print-text, #17201c) 22%, transparent);
+  color: color-mix(in srgb, var(--print-text, #17201c) 78%, var(--print-panel, #ffffff));
+  font-size: 0.92em;
 }
 
-.highlight-export-note {
-  font-size: 0.94em;
+/* Two classes, to clear `.rendered p` (06-rendered.css): a two-line note was
+   two paragraphs a blank line apart under a one-line quote. */
+.highlights-export-body .highlight-export-note > * {
+  margin-top: 0.1em;
+  margin-bottom: 0.3em;
+  line-height: 1.45;
 }
 
-.highlight-export-note > :not(.highlight-export-note-label) {
-  margin-top: 0.15em;
-  margin-bottom: 0.35em;
-}
-
-.highlight-export-note > :last-child {
+.highlights-export-body .highlight-export-note > :last-child {
   margin-bottom: 0;
-}
-
-.highlight-export-note-label {
-  margin: 0 0 2px;
-  font-size: 0.72rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.02em;
-  color: color-mix(in srgb, var(--print-text, #17201c) 60%, var(--print-bg, #eef2f2));
 }
 
 /* Two selectors' worth of specificity to clear `.rendered h2` (06-rendered.css),

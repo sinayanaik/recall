@@ -432,12 +432,12 @@ export const HIGHLIGHT_EXPORT_REGION_WIDTH = 520;
 
 function highlightExportEntryHtml(item, groupedByPage = false) {
   const context = (units) => units.map((u) => `<p class="highlight-export-context">${markdownToSafeHtml(u)}</p>`).join("");
-  // The number the highlight wears on the page (highlight-badges.js), on the
-  // card and on its note, so a printed list and the note it came from can be
-  // matched up — "note 3" in the margin of the page, "3" on the card.
-  const number = item.n ? `<span class="highlight-export-n" title="Note ${escapeHtml(String(item.n))}">${escapeHtml(String(item.n))}</span>` : "";
+  // The note goes straight under its quote, unlabelled. A card is one
+  // highlight and its note, so "Note" — and the number the page used to wear,
+  // "Note 3" — said only what the layout already does; the note's own rule and
+  // muted ink are what tell it from the passage (28-export-highlights.css).
   const note = item.note
-    ? `<div class="highlight-export-note"><p class="highlight-export-note-label">${item.n ? `Note ${escapeHtml(String(item.n))}` : "Note"}</p>${markdownToSafeHtml(item.note)}</div>`
+    ? `<div class="highlight-export-note">${markdownToSafeHtml(item.note)}</div>`
     : "";
   // A page number, for a highlight that came off a PDF's Document surface.
   // Its equivalent of the chapter heading above — the difference being that a
@@ -464,8 +464,7 @@ function highlightExportEntryHtml(item, groupedByPage = false) {
       ? `<div class="highlight-export-mark rendered"><p>${escapeHtml(String(item.region.text || "").trim())}</p></div>`
       : `<div class="highlight-export-mark rendered">${markdownToSafeHtml(item.markdown)}</div>`;
   return `
-    <div class="highlight-export-entry${number ? " has-number" : ""}" data-color="${escapeHtml(item.color)}">
-      ${number}
+    <div class="highlight-export-entry" data-color="${escapeHtml(item.color)}">
       ${page}
       ${context(item.before)}
       ${pictureHtml}
@@ -559,7 +558,9 @@ export function buildHighlightsExportMarkdown(title, options = {}) {
     }
     const lines = [...item.before, item.markdown, ...item.after];
     if (item.page && !options.groupByPage) lines.unshift(`*p. ${item.page}*`);
-    if (item.note) lines.push(`> **Note${item.n ? ` ${item.n}` : ""}:** ${item.note.replace(/\n/g, "\n> ")}`);
+    // A plain quote under the passage: in a file of one highlight per block,
+    // whose note it is goes without saying.
+    if (item.note) lines.push(`> ${item.note.replace(/\n/g, "\n> ")}`);
     blocks.push(lines.join("\n\n"));
   });
   return `# ${title}\n\n${blocks.join("\n\n---\n\n")}\n`;
