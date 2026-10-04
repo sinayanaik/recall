@@ -31,7 +31,7 @@ import { notesBlockForRawOffset } from "./raw-offset.js?v=__BUILD__";
 import { notesBlockAtReadingLineGeometric } from "./scroll-anchor.js?v=__BUILD__";
 import { hideNotesSelectionButton, touchSelectionDragActive } from "./selection.js?v=__BUILD__";
 import { blockAtNotesReadingLine, markNotesTocDirty } from "./toc.js?v=__BUILD__";
-import { applyNotesFoldState, notesFoldedHeadings, releaseNotesChunkEstimateObserver, releaseNotesLazyBuildObserver, renderMarkdown, resetNotesFoldedHeadings, setNotesBlockEstimateSource, syncNotesBlockEstimateSource, withChunkRendered } from "../render/block-cache.js?v=__BUILD__";
+import { NOTES_CHUNK_CLASS, NOTES_ESTIMATE_MIN_BLOCKS, applyNotesFoldState, notesFoldedHeadings, releaseNotesChunkEstimateObserver, releaseNotesLazyBuildObserver, renderMarkdown, resetNotesFoldedHeadings, setNotesBlockEstimateSource, syncNotesBlockEstimateSource, withChunkRendered } from "../render/block-cache.js?v=__BUILD__";
 import { headingSectionsFor } from "./chapters.js?v=__BUILD__";
 import { releaseDeferredWork } from "../render/deferred-work.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
@@ -40,6 +40,41 @@ import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 // Notes and Cards are two complementary views of the same deck: study/write
 // notes first, then distill them into flashcards (or skip notes entirely).
 export const quizPanel = document.querySelector(".quiz-panel");
+
+// ── A short note keeps no containment ─────────────────────────────────────
+//
+// Under NOTES_ESTIMATE_MIN_BLOCKS top-level blocks, and not chunked, #notesView
+// carries `is-short-note`, and styles/75-highlight-stability.css takes every
+// block's content-visibility off — see §1 there for what containment costs a
+// short note (a first highlight that scrolls it, a clipped fold).
+//
+// That count used to be made in CSS, `#notesView:not(:has(> :nth-child(60)))
+// … > *`, which re-evaluated the :has() over every sibling for every block on
+// EVERY style recalc in the document — quadratic in the note: 53ms per ☰ press
+// at 300 paragraphs, 421ms at 1,500 on a desktop, seconds on a phone
+// (tools/style-scale-check.mjs). Counted here instead, by an observer on the
+// container's own children: O(1) per batch of changes, and a MutationObserver
+// delivers before the next frame, so no frame is painted with a stale class.
+export const SHORT_NOTE_CLASS = "is-short-note";
+
+export function syncShortNoteClass(view = el.notesView) {
+  if (!view) return;
+  const children = view.children;
+  let short = children.length < NOTES_ESTIMATE_MIN_BLOCKS;
+  // Fewer than 60 children can still be a book: a chunked note's children are
+  // chunks of 40 blocks, and that is exactly the note the containment exists for.
+  for (let i = 0; short && i < children.length; i += 1) {
+    if (children[i].classList.contains(NOTES_CHUNK_CLASS)) short = false;
+  }
+  if (view.classList.contains(SHORT_NOTE_CLASS) !== short) view.classList.toggle(SHORT_NOTE_CLASS, short);
+}
+
+// No call at import time: block-cache.js reaches this module back through
+// images/outbox.js, so its constants may not be initialised yet — and an empty
+// #notesView has nothing to free. The first render's children wake the observer.
+if (el.notesView && typeof MutationObserver === "function") {
+  new MutationObserver(() => syncShortNoteClass()).observe(el.notesView, { childList: true });
+}
 
 export function isNotesEditing() {
   return Boolean(el.notesEdit && !el.notesEdit.hidden);

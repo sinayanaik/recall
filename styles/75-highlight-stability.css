@@ -24,36 +24,57 @@
  *   • paint containment, which clips anything drawn outside a block's box — the
  *     number on a highlight on the first line of a paragraph, cut in half.
  *
- * So below 60 children, none of it. `:has(> :nth-child(60))` is the count, in
- * CSS, so there is no frame in which a script has not yet decided. A chunked
- * note is excluded explicitly: its children are CHUNKS of 40 blocks, so a
- * 2,000-block book has fewer than 60 of them and is exactly the note the
- * containment exists for.
+ * So below 60 children, none of it. A chunked note is excluded explicitly: its
+ * children are CHUNKS of 40 blocks, so a 2,000-block book has fewer than 60 of
+ * them and is exactly the note the containment exists for.
+ *
+ * ── Why a class, and not :has() ───────────────────────────────────────────
+ *
+ * This was first written as the count itself, in CSS:
+ * `#notesView:not(:has(> :nth-child(60))):not(:has(> .notes-chunk)) > *`. That
+ * is evaluated per BLOCK, over every sibling, and again on every style recalc
+ * anywhere in the document — a menu opening, a button hidden, a node inserted —
+ * so it cost time quadratic in the note: 53ms per ☰ press at 300 paragraphs,
+ * 137ms of it at 1,500 on a desktop, several times that on a phone. The count
+ * is kept by syncShortNoteClass now (src/notes/notes-view.js, a MutationObserver
+ * on #notesView's own children), and this only reads the class it sets.
+ * tools/style-scale-check.mjs measures the recalc on a large annotated note and
+ * fails if a :has() anchored on #notesView or one of its ancestors comes back.
  *
  * (1,2,0) — the id clears 12-notes.css:255's (0,3,0), the trap
- * 19-notes-chunks.css documents. */
-#notesView:not(:has(> :nth-child(60))):not(:has(> .notes-chunk)) > * {
+ * 19-notes-chunks.css documents. The class is doubled to keep exactly the
+ * specificity the :has() version had. */
+#notesView.is-short-note.is-short-note > * {
   content-visibility: visible;
   contain-intrinsic-size: auto;
 }
 
-/* ── 2. ...and a block carrying a note number is never clipped ─────────────
+/* ── 2. ...and nothing on a highlight is clipped, by widening the clip ──────
  *
- * The same paint containment on a LONG note. The number is a superscript: it
- * sits a little above its line by design (src/notes/highlight-badges.js), and on
- * the first line of a paragraph that is outside the paragraph's box. Only the
- * blocks that actually carry one are freed, and on a note of thousands of
- * paragraphs those are few.
+ * The same paint containment on a LONG note. The note fold's finger-sized
+ * target (the transparent ::before in styles/42-highlight-badge.css) reaches
+ * about a quarter of an em above its line, and on the first line of a
+ * paragraph that is outside the paragraph's box — and paint containment clips
+ * hit-testing as well as paint, so the top of the target went dead.
  *
- * Inside a chunk the blocks are already uncontained (19-notes-chunks.css); only
- * the chunk's own top edge clips, so only a chunk whose FIRST block carries a
- * number is freed. */
-#notesView > :has(.hl-note-badge) {
-  content-visibility: visible;
-}
-
-#notesView > .notes-chunk:has(> :first-child .hl-note-badge) {
-  content-visibility: visible;
+ * This used to free every block carrying a fold from containment altogether
+ * (`#notesView > :has(.hl-note-badge) { content-visibility: visible }`, and the
+ * same for a chunk whose first block had one). On a note with a gloss on most
+ * lines that is most blocks: the :has() was evaluated per block on every recalc,
+ * and the blocks it matched were laid out and styled in full, on screen or not.
+ * One ☰ press on a 1,500-paragraph annotated note cost 180ms of style and layout
+ * on a desktop — the containment the note needs, switched off by the notes in it.
+ *
+ * Paint containment clips at the OVERFLOW CLIP EDGE, which overflow-clip-margin
+ * moves outward (CSS Overflow 4; Chromium and Firefox honour it for
+ * containment). Half an em clears the fold's target with room to spare, every
+ * block keeps its containment, and nothing has to know which blocks carry a
+ * fold. A chunk gets the same margin for its own top edge. An engine without
+ * the property clips the top quarter-em of a first-line fold's TARGET, never
+ * the fold, which is drawn inside the highlight. Replaced elements are left
+ * alone: there the margin would let an object-fit image paint out of its box. */
+#notesView > :not(img, video, canvas, iframe) {
+  overflow-clip-margin: 0.5em;
 }
 
 /* ── 3. A card colours its own highlight, not the whole line's ─────────────

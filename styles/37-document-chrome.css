@@ -73,10 +73,10 @@
    styles/16-mobile-reading.css:417. Same reasoning, one view along: there is no
    note to list the headings of and nothing to edit, so a control that would
    pretend otherwise stands down. */
-.quiz-panel.notes-mode:has(#documentStage:not([hidden])) .view-mode-row > .notes-toc-toggle,
-.quiz-panel.notes-mode:has(#documentStage:not([hidden])) .view-mode-row > .edit-toggle-pill,
-.quiz-panel.notes-mode:has(#documentStage:not([hidden])) .view-mode-row > .notes-head-more-btn,
-.quiz-panel.notes-mode:has(#documentStage:not([hidden])) .view-mode-row > .notes-head-more-menu {
+:is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > .notes-toc-toggle,
+:is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > .edit-toggle-pill,
+:is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > .notes-head-more-btn,
+:is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > .notes-head-more-menu {
   display: none;
 }
 
@@ -91,9 +91,9 @@
   display: none;
 }
 
-.quiz-panel.notes-mode:has(#documentStage:not([hidden])) .view-mode-row > .document-toggle,
-.quiz-panel.notes-mode:has(#documentStage:not([hidden])) .view-mode-row > .document-pdf-switcher,
-.quiz-panel.notes-mode:has(#documentStage:not([hidden])) .view-mode-row > .document-more-btn {
+:is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > .document-toggle,
+:is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > .document-pdf-switcher,
+:is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > .document-more-btn {
   display: inline-flex;
   flex: 0 0 auto;
 }
@@ -112,7 +112,7 @@
    `width: 0` gives the select a definite size, so it contributes nothing to
    the row's min-content; `flex: 1 1 0` then hands it the rest of its line,
    and the caps are lengths, not percentages of the box it is sizing. */
-.quiz-panel.notes-mode:has(#documentStage:not([hidden])) .view-mode-row > .document-pdf-switcher {
+:is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > .document-pdf-switcher {
   flex: 1 1 0;
   width: 0;
   min-width: 6rem;
@@ -120,7 +120,7 @@
   text-overflow: ellipsis;
 }
 
-.quiz-panel.notes-mode:has(#documentStage:not([hidden])) .view-mode-row > #documentTocBtn {
+:is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > #documentTocBtn {
   display: inline-flex;
   flex: 0 0 auto;
   width: 26px;
@@ -157,7 +157,7 @@
 }
 
 @media (min-width: 721px) {
-  .quiz-panel.notes-mode:has(#documentStage:not([hidden])) .view-mode-row {
+  :is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row {
     flex-wrap: wrap;
   }
 
@@ -169,21 +169,21 @@
      are untouched) makes the toggle's line-packing size 0, so it always fits
      line 1 regardless of viewport width — flex-grow still expands it to fill
      the line afterward, so what actually renders is unchanged. */
-  .quiz-panel.notes-mode:has(#documentStage:not([hidden])) .view-mode-row > .view-mode-toggle {
+  :is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > .view-mode-toggle {
     flex-basis: 0;
   }
 
-  .quiz-panel.notes-mode:has(#documentStage:not([hidden])) .view-mode-row > .view-mode-row-break {
+  :is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > .view-mode-row-break {
     display: block;
     flex-basis: 100%;
     order: 5;
   }
 
-  .quiz-panel.notes-mode:has(#documentStage:not([hidden])) .view-mode-row > #documentTocBtn,
-  .quiz-panel.notes-mode:has(#documentStage:not([hidden])) .view-mode-row > .document-toggle,
-  .quiz-panel.notes-mode:has(#documentStage:not([hidden])) .view-mode-row > .document-pdf-switcher,
-  .quiz-panel.notes-mode:has(#documentStage:not([hidden])) .view-mode-row > .document-more-btn,
-  .quiz-panel.notes-mode:has(#documentStage:not([hidden])) .view-mode-row > .document-more-menu {
+  :is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > #documentTocBtn,
+  :is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > .document-toggle,
+  :is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > .document-pdf-switcher,
+  :is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > .document-more-btn,
+  :is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > .document-more-menu {
     order: 10;
   }
 }
@@ -201,10 +201,10 @@
    `.has-no-document` is written by refreshDocumentTab in the same pass as the
    tab itself, so there is no second opinion about whether meta.pdf is set. The
    pager goes with them: a page number and a zoom over a panel with no pages. */
-.quiz-panel.notes-mode:has(#documentStage.has-no-document) .view-mode-row > .document-toggle,
-.quiz-panel.notes-mode:has(#documentStage.has-no-document) .view-mode-row > .document-pdf-switcher,
-.quiz-panel.notes-mode:has(#documentStage.has-no-document) .view-mode-row > .document-more-btn,
-.quiz-panel.notes-mode:has(#documentStage.has-no-document) .view-mode-row > #documentTocBtn,
+:is(.cs-doc-empty, #cs-specificity).cs-doc-empty .quiz-panel.notes-mode .view-mode-row > .document-toggle,
+:is(.cs-doc-empty, #cs-specificity).cs-doc-empty .quiz-panel.notes-mode .view-mode-row > .document-pdf-switcher,
+:is(.cs-doc-empty, #cs-specificity).cs-doc-empty .quiz-panel.notes-mode .view-mode-row > .document-more-btn,
+:is(.cs-doc-empty, #cs-specificity).cs-doc-empty .quiz-panel.notes-mode .view-mode-row > #documentTocBtn,
 #documentStage.has-no-document .document-pager {
   display: none;
 }
@@ -221,7 +221,7 @@
   z-index: 45;
 }
 
-.quiz-panel.notes-mode:has(#documentStage:not([hidden])) .view-mode-row > .document-more-menu:not([hidden]) {
+:is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > .document-more-menu:not([hidden]) {
   display: block;
 }
 
@@ -308,8 +308,8 @@
    fact styles/38-reading-rail.css reads to decide whether the reading rail
    exists — so a ⇓ floating alone on the empty-library screen is decided here
    rather than by a second flag in JavaScript that could fall out of step. */
-.view-mode-row:has(#viewModeToggle[hidden]) > .view-export-btn,
-.view-mode-row:has(#viewModeToggle[hidden]) > .view-export-menu {
+:is(.cs-view-toggle-hidden, #cs-specificity).cs-view-toggle-hidden .view-mode-row > .view-export-btn,
+:is(.cs-view-toggle-hidden, #cs-specificity).cs-view-toggle-hidden .view-mode-row > .view-export-menu {
   display: none;
 }
 

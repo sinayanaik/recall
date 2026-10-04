@@ -112,6 +112,93 @@ function naturalHeight(node) {
   return Math.ceil(node.scrollHeight + borders);
 }
 
+// ── The chrome's state, as classes on <body> ──────────────────────────────
+//
+// The stylesheets restyle the chrome from a handful of facts other code already
+// publishes on the elements themselves: the panel is in Notes view
+// (.quiz-panel.notes-mode), the ☰ drawer is open (#mainToolbar.mobile-open), a
+// deck is open (#viewModeToggle not [hidden]), the raw editor is up (#notesEdit
+// not [hidden]), and which paper #documentStage is showing. They used to be
+// read with :has() from an ancestor — `body:has(.quiz-panel.notes-mode) …`,
+// `.quiz-panel:has(#documentStage:not([hidden])) …` — which saves keeping a
+// second copy of each fact, and costs a lot more than it looks.
+//
+// A :has() anchored on <body> or .quiz-panel is an ancestor of #notesView, and
+// the browser cannot tell which `hidden` flip or which inserted node might
+// change its answer, so ANY of them — every button that shows or hides
+// something, every block a highlight rebuilds — re-styled the whole note under
+// it. That cost grows with the note: about 70ms per press at phone speed on a
+// 1,500-paragraph note, before the paragraph-count rule in
+// 75-highlight-stability.css made it seconds (tools/style-scale-check.mjs).
+//
+// So the second copy is kept, by one observer, and kept here rather than at
+// each of the dozen places that flip one of these facts: a MutationObserver on
+// exactly these elements' attributes, writing a class on <body> only when its
+// value changes. Its callback runs before the next frame, so no frame is
+// painted from a stale class. readChromeHeights syncs first, because
+// setViewMode flips notes-mode and measures the chrome in the same task.
+//
+// The selectors that read these keep the specificity their :has() had — see
+// the note on #cs-specificity in styles/33-reading-chrome.css.
+const CHROME_STATE_SOURCES = ["#mainToolbar", ".quiz-panel", "#viewModeToggle", "#notesEdit", "#documentStage"];
+
+export function syncChromeState() {
+  const body = document.body;
+  if (!body) return;
+  const toolbar = document.getElementById("mainToolbar");
+  const panel = document.querySelector(".quiz-panel");
+  // Looked up rather than read off `el`: this first runs at import, and dom.js
+  // is not guaranteed to have been evaluated by then.
+  const toggle = document.getElementById("viewModeToggle");
+  const notesEdit = document.getElementById("notesEdit");
+  const stage = document.getElementById("documentStage");
+  const slot = stage?.dataset.docSlot || "";
+  const facts = {
+    "cs-menu-open": Boolean(toolbar?.classList.contains("mobile-open")),
+    "cs-notes-mode": Boolean(panel?.classList.contains("notes-mode")),
+    "cs-view-toggle": Boolean(toggle && !toggle.hidden),
+    "cs-view-toggle-hidden": Boolean(toggle?.hidden),
+    "cs-notes-editing": Boolean(notesEdit && !notesEdit.hidden),
+    "cs-doc-shown": Boolean(stage && !stage.hidden),
+    "cs-doc-empty": Boolean(stage?.classList.contains("has-no-document")),
+    "cs-slot-doc": slot === "doc",
+    "cs-slot-notebook": slot === "notebook",
+    "cs-notebook-shown": Boolean(stage && !stage.hidden && slot === "notebook"),
+    "cs-notebook-open": Boolean(stage && slot === "notebook" && !stage.classList.contains("has-no-notebook"))
+  };
+  for (const [name, on] of Object.entries(facts)) {
+    if (body.classList.contains(name) !== on) body.classList.toggle(name, on);
+  }
+  // ...and one on <html>, which is where --print-bg has to change for a
+  // highlights document to print on white (styles/28-export-highlights.css).
+  const printRoot = document.getElementById("printRoot");
+  const printingHighlights = Boolean(printRoot?.querySelector(":scope > .cornell-print-document.is-highlights"));
+  const root = document.documentElement;
+  if (root.classList.contains(PRINT_HIGHLIGHTS_CLASS) !== printingHighlights) {
+    root.classList.toggle(PRINT_HIGHLIGHTS_CLASS, printingHighlights);
+  }
+}
+
+// Also written straight into the standalone print document's <html> by
+// src/export/run.js, which has no observer to set it.
+export const PRINT_HIGHLIGHTS_CLASS = "cs-print-highlights";
+
+function initChromeStateMirror() {
+  if (typeof MutationObserver !== "function") return;
+  const observer = new MutationObserver(syncChromeState);
+  CHROME_STATE_SOURCES.forEach((selector) => {
+    const node = document.querySelector(selector);
+    if (node) observer.observe(node, { attributes: true, attributeFilter: ["class", "hidden", "data-doc-slot"] });
+  });
+  const printRoot = document.getElementById("printRoot");
+  if (printRoot) observer.observe(printRoot, { childList: true });
+  syncChromeState();
+}
+
+// At import: every source is static markup in index.html, a module script runs
+// after the document is parsed, and nothing here reads another module's state.
+initChromeStateMirror();
+
 // Published ON THE ELEMENT THAT USES IT, not on :root — and that is a
 // performance fix, not tidiness.
 //
@@ -134,6 +221,7 @@ function naturalHeight(node) {
 // the row is the one place that covers both. None of them is an ancestor of
 // #notesView, so the note no longer has any reason to hear about this at all.
 export function readChromeHeights() {
+  syncChromeState();
   const appbar = document.querySelector(".appbar");
   const appbarHeight = naturalHeight(appbar);
   if (appbarHeight) appbar.style.setProperty("--appbar-h", `${appbarHeight}px`);

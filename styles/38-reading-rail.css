@@ -49,13 +49,14 @@
   display: none;
 }
 
-/* One fact, already published by the app and reached with :has() from <body>:
-   a deck is actually open (#viewModeToggle is what says so; updateCardControls
-   hides it when there is none). The #mainToolbar guard is the same one
-   body.chrome-collapsed's own rules carry: the ☰ drawer un-collapses the appbar
-   while it is open, and a rail floating over an open drawer is furniture on top
-   of furniture. */
-body:not(:has(#mainToolbar.mobile-open)):has(#viewModeToggle:not([hidden])) .reading-rail:not([hidden]) {
+/* One fact, already published by the app and mirrored onto <body> as
+   .cs-view-toggle by src/ui/chrome.js (see styles/33-reading-chrome.css for why
+   not :has()): a deck is actually open (#viewModeToggle is what says so;
+   updateCardControls hides it when there is none). The #mainToolbar guard is
+   the same one body.chrome-collapsed's own rules carry: the ☰ drawer
+   un-collapses the appbar while it is open, and a rail floating over an open
+   drawer is furniture on top of furniture. */
+body:not(:is(.cs-menu-open, #cs-specificity).cs-menu-open):is(.cs-view-toggle, #cs-specificity).cs-view-toggle .reading-rail:not([hidden]) {
   position: fixed;
   /* Not flush. --app-width is 100vw, so right:0 is exactly where
      #documentView's native scrollbar is, and a control sitting on a scrollbar

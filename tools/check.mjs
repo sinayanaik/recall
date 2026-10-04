@@ -475,6 +475,13 @@ const checks = [
     ["repaint-stab  ", ["node", ["tools/repaint-stability-check.mjs"], ROOT]],
     ["render-scale  ", ["node", ["tools/render-scale-check.mjs"], ROOT]],
     ["interaction   ", ["node", ["tools/interaction-scale-check.mjs"], ROOT]],
+    // ...and whether pressing anything costs the same on a big note as on a
+    // small one. Not JavaScript: style recalc. A :has() anchored on the note or
+    // an ancestor of it makes every menu, every hidden button and every node a
+    // highlight inserts re-style the whole note — 0.4s a press on a desktop,
+    // seconds on a phone, before src/ui/chrome.js mirrored those facts into
+    // classes. Also asserts nothing post-split brings one back.
+    ["style-scale   ", ["node", ["tools/style-scale-check.mjs"], ROOT]],
     // ...and whether anything ELSE moves the reader once they are there: a sync
     // rewriting the note under them, a jump's corrections under their finger, a
     // resume racing a jump they asked for, a deck dragged off the tab it

@@ -426,8 +426,11 @@ export function standalonePrintStyles() {
 export function standalonePrintDocumentHtml() {
   const documentNode = el.printRoot.querySelector(".cornell-print-document");
   if (!documentNode) return "";
+  // A highlights document prints on white: its <html> carries the class
+  // syncChromeState sets in the app (PRINT_HIGHLIGHTS_CLASS in
+  // src/ui/chrome.js), since nothing observes this page to set it.
   return `<!doctype html>
-    <html lang="en" data-theme="${escapeHtml(currentThemeId())}">
+    <html lang="en" data-theme="${escapeHtml(currentThemeId())}"${documentNode.classList.contains("is-highlights") ? ' class="cs-print-highlights"' : ""}>
       <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
