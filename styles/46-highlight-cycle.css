@@ -35,7 +35,7 @@
    the pane took 695px of an 844px phone. The same pairing 11-chrome.css uses
    for its own two variants, for the same reason. */
 .quiz-panel.notes-mode.is-split,
-.quiz-panel.notes-mode.is-split:has(.view-mode-toggle:not([hidden])) {
+.cs-view-toggle.cs-view-toggle .quiz-panel.notes-mode.is-split {
   grid-template-columns: minmax(0, var(--split-a, 60fr)) auto minmax(0, var(--split-b, 40fr));
   grid-template-rows: auto minmax(0, 1fr);
 }
@@ -293,7 +293,7 @@
    other way. */
 @media (max-width: 720px) {
   .quiz-panel.notes-mode.is-split,
-  .quiz-panel.notes-mode.is-split:has(.view-mode-toggle:not([hidden])) {
+  .cs-view-toggle.cs-view-toggle .quiz-panel.notes-mode.is-split {
     grid-template-columns: minmax(0, 1fr);
     /* Lengths, not `fr` — see applyStackedSpace in
        src/panels/highlight-cycle.js for why a flexible ROW track cannot divide
@@ -327,7 +327,7 @@
      Here the four rows above are the whole height, and every one of them is
      measured from what the screen actually has. */
   .quiz-panel.notes-mode.is-split,
-  .quiz-panel.notes-mode.is-split:has(.view-mode-toggle:not([hidden])) {
+  .cs-view-toggle.cs-view-toggle .quiz-panel.notes-mode.is-split {
     height: auto;
     min-height: 0;
   }
@@ -409,7 +409,7 @@
  */
 @media (min-width: 721px) and (max-width: 1080px) and (max-height: 620px) {
   .quiz-panel.notes-mode.is-split,
-  .quiz-panel.notes-mode.is-split:has(.view-mode-toggle:not([hidden])) {
+  .cs-view-toggle.cs-view-toggle .quiz-panel.notes-mode.is-split {
     height: min(760px, calc(100dvh - 86px));
     min-height: 0;
   }

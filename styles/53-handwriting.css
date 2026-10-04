@@ -180,7 +180,7 @@
 
    Same fix as last time and for the same reason: the row is centred in a panel
    that is far wider than it, so the width it asks for is the width it needs. */
-.quiz-panel.notes-mode:has(#documentStage:not([hidden])) .view-mode-row {
+:is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row {
   width: min(640px, 100%);
 }
 
@@ -198,20 +198,20 @@
    fourth tab. Not scoped to the notebook: the Document tab has exactly the same
    four tabs and one control MORE. */
 @media (max-width: 720px) {
-  .quiz-panel.notes-mode:has(#documentStage:not([hidden])) .view-mode-row {
+  :is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row {
     flex-wrap: wrap;
     row-gap: 4px;
   }
 
-  .quiz-panel.notes-mode:has(#documentStage:not([hidden])) .view-mode-row > #viewModeToggle {
+  :is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > #viewModeToggle {
     flex: 1 0 100%;
   }
 
   /* ☰ is authored BEFORE the toggle (ROW_LEAD_SELECTORS), so without this it
      sits alone on the first line with the tabs pushed under it — three lines of
      chrome to save one. `order` puts it back with the controls it belongs to. */
-  .quiz-panel.notes-mode:has(#documentStage:not([hidden])) .view-mode-row > #documentTocBtn,
-  .quiz-panel.notes-mode:has(#documentStage:not([hidden])) .view-mode-row > #notesTocBtn {
+  :is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > #documentTocBtn,
+  :is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > #notesTocBtn {
     order: 1;
   }
 }
@@ -235,8 +235,8 @@
    control that would disagree with the theme is gone. togglePdfInvert refuses on
    this slot as well: a hidden button is not the same as an unreachable mode, and
    the reading rail has a row for it too. */
-.quiz-panel.notes-mode:has(#documentStage[data-doc-slot="notebook"]:not([hidden])) .view-mode-row > #documentRegionBtn,
-.quiz-panel.notes-mode:has(#documentStage[data-doc-slot="notebook"]:not([hidden])) .view-mode-row > #documentDarkBtn {
+:is(.cs-notebook-shown, #cs-specificity).cs-notebook-shown.cs-notebook-shown .quiz-panel.notes-mode .view-mode-row > #documentRegionBtn,
+:is(.cs-notebook-shown, #cs-specificity).cs-notebook-shown.cs-notebook-shown .quiz-panel.notes-mode .view-mode-row > #documentDarkBtn {
   display: none;
 }
 
@@ -244,13 +244,13 @@
    meta.pdf and says nothing about a notebook — so on the Write tab of a deck
    with no PDF they would all be hidden over a perfectly good page of
    handwriting. Restated here against the fact that actually applies. */
-.quiz-panel.notes-mode:has(#documentStage[data-doc-slot="notebook"]:not(.has-no-notebook)) .view-mode-row > .document-toggle,
-.quiz-panel.notes-mode:has(#documentStage[data-doc-slot="notebook"]:not(.has-no-notebook)) .view-mode-row > .document-more-btn {
+:is(.cs-notebook-open, #cs-specificity).cs-notebook-open.cs-notebook-open .quiz-panel.notes-mode .view-mode-row > .document-toggle,
+:is(.cs-notebook-open, #cs-specificity).cs-notebook-open.cs-notebook-open .quiz-panel.notes-mode .view-mode-row > .document-more-btn {
   display: inline-flex;
   flex: 0 0 auto;
 }
 
-.quiz-panel.notes-mode:has(#documentStage[data-doc-slot="notebook"]:not(.has-no-notebook)) .view-mode-row > #documentTocBtn {
+:is(.cs-notebook-open, #cs-specificity).cs-notebook-open.cs-notebook-open .quiz-panel.notes-mode .view-mode-row > #documentTocBtn {
   display: inline-flex;
   flex: 0 0 auto;
   width: 26px;
@@ -258,8 +258,8 @@
   min-height: 26px;
 }
 
-.quiz-panel.notes-mode:has(#documentStage[data-doc-slot="notebook"]:not(.has-no-notebook)) .view-mode-row > #documentRegionBtn,
-.quiz-panel.notes-mode:has(#documentStage[data-doc-slot="notebook"]:not(.has-no-notebook)) .view-mode-row > #documentDarkBtn {
+:is(.cs-notebook-open, #cs-specificity).cs-notebook-open.cs-notebook-open .quiz-panel.notes-mode .view-mode-row > #documentRegionBtn,
+:is(.cs-notebook-open, #cs-specificity).cs-notebook-open.cs-notebook-open .quiz-panel.notes-mode .view-mode-row > #documentDarkBtn {
   display: none;
 }
 
@@ -294,8 +294,8 @@
    Each row of ⋯ says which of the deck's documents it is about, and the stage
    says which one is on screen. A row with no `data-slot` is true of both — the
    printed page notes are the only one. */
-.quiz-panel.notes-mode:has(#documentStage[data-doc-slot="doc"]) #documentMoreMenu [data-slot="notebook"],
-.quiz-panel.notes-mode:has(#documentStage[data-doc-slot="notebook"]) #documentMoreMenu [data-slot="doc"] {
+:is(.cs-slot-doc, #cs-specificity).cs-slot-doc .quiz-panel.notes-mode #documentMoreMenu [data-slot="notebook"],
+:is(.cs-slot-notebook, #cs-specificity).cs-slot-notebook .quiz-panel.notes-mode #documentMoreMenu [data-slot="doc"] {
   display: none;
 }
 

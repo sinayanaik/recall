@@ -68,9 +68,9 @@
      and a split pane fit the window on the same terms a card does. */
   .quiz-panel,
   .quiz-panel.notes-mode,
-  .quiz-panel.notes-mode:has(.view-mode-toggle:not([hidden])),
+  .cs-view-toggle.cs-view-toggle .quiz-panel.notes-mode,
   .quiz-panel.notes-mode.is-split,
-  .quiz-panel.notes-mode.is-split:has(.view-mode-toggle:not([hidden])) {
+  .cs-view-toggle.cs-view-toggle .quiz-panel.notes-mode.is-split {
     height: 100%;
     min-height: 0;
   }

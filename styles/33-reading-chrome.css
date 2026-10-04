@@ -35,14 +35,33 @@
  *     lost to anyone tabbing (and a coarse pointer keeps them visible outright,
  *     since there is no hover to reveal them with).
  *
- * ── Why :has() and not a body class ──────────────────────────────────────
+ * ── Why a body class, and not :has() ────────────────────────────────────
  *
- * setViewMode already publishes the state this needs — `quizPanel.classList
- * .toggle("notes-mode", …)` (src/ui/view-mode.js:36) — and .appbar is a SIBLING
- * of that panel, not an ancestor, so the selector has to walk up to <body> and
- * back down. Adding a second class on <body> saying the same thing is a second
- * thing to keep in step, and body.chrome-collapsed's own rules already reach
- * across the tree this way (styles/12-notes.css:1255).
+ * setViewMode publishes the state this needs — `quizPanel.classList
+ * .toggle("notes-mode", …)` (src/ui/view-mode.js) — and .appbar is a SIBLING of
+ * that panel, not an ancestor. These rules used to walk up to <body> with
+ * `body:has(.quiz-panel.notes-mode)` and back down, to avoid keeping a second
+ * copy of the fact. That copy turned out to be the cheap part: a :has() on
+ * <body> is answered again whenever anything under it might change the answer,
+ * and the browser cannot rule much out — every button hidden or shown and every
+ * node a highlight inserts re-styled the whole open note. On a 1,500-paragraph
+ * note that was ~70ms a press at phone speed, and it grew with the note.
+ *
+ * So src/ui/chrome.js mirrors each fact onto <body> as a `cs-` class
+ * (syncChromeState, one MutationObserver on the few elements that publish
+ * them), and the rules here and in the other post-split stylesheets read the
+ * class. tools/style-scale-check.mjs fails if a :has() anchored on <body> or an
+ * ancestor of the note comes back.
+ *
+ * ── #cs-specificity ───────────────────────────────────────────────────────
+ *
+ * A :has() weighs as much as its argument, and these rules are ordered against
+ * frozen slices by exactly that weight, so each rewrite keeps it. A repeated
+ * class makes up classes (`body.cs-notes-mode.cs-notes-mode` is the (0,2,1) of
+ * `body:has(.quiz-panel.notes-mode)`); an id's weight comes from
+ * `:is(.cs-x, #cs-specificity).cs-x`. No element has that id — it is in the
+ * :is() only for what it weighs, so the compound matches exactly `.cs-x`, at
+ * the (1,1,0) of the `:has(#documentStage:not([hidden]))` it replaced.
  *
  * ── Why no height is written here ────────────────────────────────────────
  *
@@ -57,9 +76,9 @@
    The card position and the score. Both are live and correct — they are just
    answering a question nobody in Notes view asked. (The sync countdown goes
    with them; the pill it lives in stays.) */
-body:has(.quiz-panel.notes-mode) .appbar #positionText,
-body:has(.quiz-panel.notes-mode) .appbar #scoreText,
-body:has(.quiz-panel.notes-mode) .appbar .sync-countdown {
+body.cs-notes-mode.cs-notes-mode .appbar #positionText,
+body.cs-notes-mode.cs-notes-mode .appbar #scoreText,
+body.cs-notes-mode.cs-notes-mode .appbar .sync-countdown {
   display: none;
 }
 
@@ -67,7 +86,7 @@ body:has(.quiz-panel.notes-mode) .appbar .sync-countdown {
    nothing. There are two in the row (index.html:506, :509) and only the second
    still has content on both sides, so the FIRST is the one to drop — matched
    positionally rather than by a class of its own, since neither is named. */
-body:has(.quiz-panel.notes-mode) .appbar .deck-meta-row2 .deck-meta-sep:first-of-type {
+body.cs-notes-mode.cs-notes-mode .appbar .deck-meta-row2 .deck-meta-sep:first-of-type {
   display: none;
 }
 
@@ -78,7 +97,7 @@ body:has(.quiz-panel.notes-mode) .appbar .deck-meta-row2 .deck-meta-sep:first-of
    the note's own headings a few lines below it. Two lines, then ellipsis: the
    full title is in the element's own tooltip and in My Decks either way, and a
    five-line title is a wall of chrome by itself. */
-body:has(.quiz-panel.notes-mode) .appbar .deck-title {
+body.cs-notes-mode.cs-notes-mode .appbar .deck-title {
   color: color-mix(in srgb, var(--accent) 34%, var(--muted));
   font-weight: 650;
   letter-spacing: 0.015em;
@@ -91,7 +110,7 @@ body:has(.quiz-panel.notes-mode) .appbar .deck-title {
 
 /* Hover still says it is pressable (it opens the title editor), so the
    affordance is kept where the pointer is, not painted permanently. */
-body:has(.quiz-panel.notes-mode) .appbar .deck-title:hover {
+body.cs-notes-mode.cs-notes-mode .appbar .deck-title:hover {
   color: var(--accent);
 }
 
@@ -100,7 +119,7 @@ body:has(.quiz-panel.notes-mode) .appbar .deck-title:hover {
    stays (it is the note's shelf) and the box goes, leaving a quiet label that
    still lights up under the pointer — so nothing about it is less reachable,
    only less loud. */
-body:has(.quiz-panel.notes-mode) .appbar .deck-category {
+body.cs-notes-mode.cs-notes-mode .appbar .deck-category {
   border-color: transparent;
   background: transparent;
   color: color-mix(in srgb, var(--accent-strong) 55%, var(--muted));
@@ -109,7 +128,7 @@ body:has(.quiz-panel.notes-mode) .appbar .deck-category {
   min-height: 0;
 }
 
-body:has(.quiz-panel.notes-mode) .appbar .deck-category:hover {
+body.cs-notes-mode.cs-notes-mode .appbar .deck-category:hover {
   border-color: transparent;
   background: color-mix(in srgb, var(--accent) 14%, transparent);
   color: var(--accent-strong);
@@ -123,13 +142,13 @@ body:has(.quiz-panel.notes-mode) .appbar .deck-category:hover {
    display — so nothing moves when they appear.
 
    :focus-within covers the keyboard: tab into either and both are visible. */
-body:has(.quiz-panel.notes-mode) .appbar .deck-meta .deck-title-edit {
+body.cs-notes-mode.cs-notes-mode .appbar .deck-meta .deck-title-edit {
   opacity: 0;
   transition: opacity 0.14s linear;
 }
 
-body:has(.quiz-panel.notes-mode) .appbar .deck-meta:hover .deck-title-edit,
-body:has(.quiz-panel.notes-mode) .appbar .deck-meta:focus-within .deck-title-edit {
+body.cs-notes-mode.cs-notes-mode .appbar .deck-meta:hover .deck-title-edit,
+body.cs-notes-mode.cs-notes-mode .appbar .deck-meta:focus-within .deck-title-edit {
   opacity: 1;
 }
 
@@ -137,7 +156,7 @@ body:has(.quiz-panel.notes-mode) .appbar .deck-meta:focus-within .deck-title-edi
    the same trade 16-mobile-reading.css:180 makes for the per-image controls,
    from the other side. */
 @media (hover: none), (pointer: coarse) {
-  body:has(.quiz-panel.notes-mode) .appbar .deck-meta .deck-title-edit {
+  body.cs-notes-mode.cs-notes-mode .appbar .deck-meta .deck-title-edit {
     opacity: 1;
   }
 }
@@ -147,7 +166,7 @@ body:has(.quiz-panel.notes-mode) .appbar .deck-meta:focus-within .deck-title-edi
    --app-gap are what put ~24px between the top of the window and the note.
    Halved while reading. Written on the shell rather than as a padding
    override so every child that composes with these two tokens stays in step. */
-body:has(.quiz-panel.notes-mode) .app-shell {
+body.cs-notes-mode.cs-notes-mode .app-shell {
   --app-pad: clamp(3px, 0.7vw, 7px);
   --app-gap: 6px;
 }
@@ -157,27 +176,27 @@ body:has(.quiz-panel.notes-mode) .app-shell {
    pill is the loudest object on a page whose subject is a paragraph of text.
    The frame goes; the active tab keeps a tint (that is the one piece of state
    the control exists to show) and everything else becomes quiet text. */
-body:has(.quiz-panel.notes-mode) .quiz-panel .view-mode-toggle:not([hidden]) {
+body.cs-notes-mode.cs-notes-mode .quiz-panel .view-mode-toggle:not([hidden]) {
   border-color: transparent;
   background: transparent;
   box-shadow: none;
   padding: 1px;
 }
 
-body:has(.quiz-panel.notes-mode) .view-mode-toggle button {
+body.cs-notes-mode.cs-notes-mode .view-mode-toggle button {
   min-height: 22px;
   font-size: 0.62rem;
   font-weight: 750;
 }
 
-body:has(.quiz-panel.notes-mode) .view-mode-toggle button.is-active {
+body.cs-notes-mode.cs-notes-mode .view-mode-toggle button.is-active {
   border-color: transparent;
   background: color-mix(in srgb, var(--accent) 13%, transparent);
   box-shadow: none;
 }
 
 /* The row's own bottom margin, halved with everything else. */
-body:has(.quiz-panel.notes-mode) .view-mode-row {
+body.cs-notes-mode.cs-notes-mode .view-mode-row {
   margin-bottom: 3px;
 }
 

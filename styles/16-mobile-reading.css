@@ -47,7 +47,7 @@
    mirror, so #notesEdit is a grandchild of .notes-stage, never a child. The
    pre-existing rule at styles/10-editor.css:598 that hid the TOC button in raw
    mode has the same shape and has therefore never fired. */
-.quiz-panel:has(#notesEdit:not([hidden])) .notes-head {
+:is(.cs-notes-editing, #cs-specificity).cs-notes-editing .quiz-panel .notes-head {
   display: flex;
 }
 
@@ -330,7 +330,7 @@
   max-height: var(--view-toggle-h, 300px);
 }
 
-body.chrome-collapsed:not(:has(#mainToolbar.mobile-open)) .view-mode-row {
+body.chrome-collapsed:not(:is(.cs-menu-open, #cs-specificity).cs-menu-open) .view-mode-row {
   max-height: 0;
   margin-bottom: 0;
   opacity: 0;
@@ -401,21 +401,13 @@ body.chrome-collapsed:not(:has(#mainToolbar.mobile-open)) .view-mode-row {
   display: none;
 }
 
-/* Highlights reuses .notes-mode, but it is not the notes: nothing to edit and
-   no contents to list. */
-.quiz-panel.notes-mode:has(#highlightsStage:not([hidden])) .view-mode-row > .notes-toc-toggle,
-.quiz-panel.notes-mode:has(#highlightsStage:not([hidden])) .view-mode-row > .edit-toggle-pill,
-.quiz-panel.notes-mode:has(#highlightsStage:not([hidden])) .view-mode-row > .notes-head-more-btn {
-  display: none;
-}
-
 /* Raw-edit mode KEEPS the contents. It used to hide the button here and in
    styles/10-editor.css (a frozen slice), which took the one way around a long
    note away exactly while editing it. The list now comes from the textarea in
    raw mode and a row moves the caret (rawNotesHeadings and
    scrollNotesEditToHeadingIndex in src/notes/toc.js). The frozen rule is out-
    specified here rather than edited; an extra class is enough to beat it. */
-.notes-stage:has(> .edit-textarea:not([hidden])) .notes-toc-toggle.notes-toc-toggle {
+.cs-notes-editing.cs-notes-editing .notes-stage .notes-toc-toggle.notes-toc-toggle {
   display: inline-flex;
 }
 
@@ -434,12 +426,12 @@ body.chrome-collapsed:not(:has(#mainToolbar.mobile-open)) .view-mode-row {
 /* The card counters are about the card deck. Hidden while reading at EVERY
    width now, not just on phones — a desktop appbar spent a whole meta row on
    "0/0 · Known 0 / Review 0" next to a note. */
-.app-shell:has(.quiz-panel.notes-mode) #positionText,
-.app-shell:has(.quiz-panel.notes-mode) #scoreText {
+.cs-notes-mode.cs-notes-mode .app-shell #positionText,
+.cs-notes-mode.cs-notes-mode .app-shell #scoreText {
   display: none;
 }
 
-.app-shell:has(.quiz-panel.notes-mode) .deck-meta-sep:has(+ #positionText) {
+.cs-notes-mode.cs-notes-mode .app-shell .deck-meta-sep:has(+ #positionText) {
   display: none;
 }
 

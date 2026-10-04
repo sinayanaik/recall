@@ -66,9 +66,11 @@ const SECTIONS = [
 // still a failure.
 const POST_SPLIT = {
   "75-highlight-stability.css":
-    "A short note (under 60 blocks) keeps no content-visibility containment, so " +
-    "highlighting it cannot briefly make it scrollable; and a block carrying a " +
-    "note number is never paint-clipped. Overrides 12-notes.css:255.",
+    "A short note (under 60 blocks, flagged by syncShortNoteClass) keeps no " +
+    "content-visibility containment, so highlighting it cannot briefly make it " +
+    "scrollable; and every block's clip edge is widened so a note fold's target " +
+    "is never paint-clipped. Overrides 12-notes.css:255 — by class, not :has(), " +
+    "see tools/style-scale-check.mjs.",
   "74-smart-highlight.css":
     "▣ as a highlighter that stays on: the pill that says how to use and stop " +
     "it, a text cursor over words, and the live preview of the words a drag " +

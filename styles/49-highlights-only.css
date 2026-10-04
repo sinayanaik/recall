@@ -45,7 +45,7 @@
  */
 
 .quiz-panel.notes-mode.is-split.is-split-only,
-.quiz-panel.notes-mode.is-split.is-split-only:has(.view-mode-toggle:not([hidden])) {
+.cs-view-toggle.cs-view-toggle .quiz-panel.notes-mode.is-split.is-split-only {
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
 }
@@ -77,7 +77,7 @@
    taken against a stage that has no box. */
 @media (max-width: 720px) {
   .quiz-panel.notes-mode.is-split.is-split-only,
-  .quiz-panel.notes-mode.is-split.is-split-only:has(.view-mode-toggle:not([hidden])) {
+  .cs-view-toggle.cs-view-toggle .quiz-panel.notes-mode.is-split.is-split-only {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto minmax(0, 1fr);
   }

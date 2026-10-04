@@ -157,8 +157,16 @@
  * The print document sits on --print-bg, a pale grey meant for a preview
  * floating over the app; printed, it was a grey strip under the last card and
  * a hairline down the edge of the first page. A highlights document is printed
- * on white, edge to edge. (0,2,1), to clear the themes' own --print-bg. */
-html:has(.cornell-print-document.is-highlights) {
+ * on white, edge to edge. (0,2,1), to clear the themes' own --print-bg.
+ *
+ * The class is set on <html> by syncChromeState (src/ui/chrome.js) while
+ * #printRoot holds a highlights document, and written into the standalone
+ * print page by standalonePrintDocumentHtml. It used to be
+ * `html:has(.cornell-print-document.is-highlights)`, a :has() on the root that
+ * every mutation in the app had to be checked against — including every block
+ * of an open note (see styles/33-reading-chrome.css). The class is doubled to
+ * keep the (0,2,1). */
+html.cs-print-highlights.cs-print-highlights {
   --print-bg: #ffffff;
 }
 
