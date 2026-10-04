@@ -98,6 +98,13 @@
 //   render-scale    does a BIG note still render? (2,000+ blocks takes a
 //                   different branch that nothing else here ever reaches — a
 //                   total failure of large notes once passed every other check)
+//   scroll-perf     does SCROLLING stay cheap on a phone? A dense paper flung,
+//                   a paper read in short flicks, a note full of PDF regions
+//                   and a book, all under a 4x CPU throttle — asserted as counts
+//                   and ratios (renders in flight, renders thrown away, saves per
+//                   pause, regions drawn up front, spans per region), with the
+//                   long tasks printed. --trace says what each style
+//                   recalculation was for
 //   mobile-menu     does the ☰ drawer still open on a PHONE with a book on
 //                   screen? The only check that throttles the CPU and uses a
 //                   fixture with figures in it, and it times the shared
@@ -475,6 +482,11 @@ const checks = [
     ["repaint-stab  ", ["node", ["tools/repaint-stability-check.mjs"], ROOT]],
     ["render-scale  ", ["node", ["tools/render-scale-check.mjs"], ROOT]],
     ["interaction   ", ["node", ["tools/interaction-scale-check.mjs"], ROOT]],
+    // ...and whether SCROLLING stays cheap once it is there, on a phone: what a
+    // fling of a paper sets off (renders in flight at once, renders finished
+    // for pages already left behind, saves per pause), and what a note full of
+    // PDF regions costs to open and scroll. Counts and ratios, not budgets.
+    ["scroll-perf   ", ["node", ["tools/scroll-perf-check.mjs"], ROOT]],
     // ...and whether anything ELSE moves the reader once they are there: a sync
     // rewriting the note under them, a jump's corrections under their finger, a
     // resume racing a jump they asked for, a deck dragged off the tab it
