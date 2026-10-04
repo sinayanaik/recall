@@ -19,6 +19,7 @@ import { currentDeckKey, currentReadingAnchor, currentReadingAnchorDeckKey } fro
 import { isQuickNotesDeck } from "../quick-notes/categories.js?v=__BUILD__";
 import { setDeckAutosaveStorageFailed } from "./quota.js?v=__BUILD__";
 import { setViewMode } from "../ui/view-mode.js?v=__BUILD__";
+import { hideHome } from "../ui/home-state.js?v=__BUILD__";
 import { activeDocSlot, documentTabForOpenDeck, hasDocSlot, onDocumentSurface } from "../documents/doc-slot.js?v=__BUILD__";
 import { deckTabKey } from "../storage/deck-tab.js?v=__BUILD__";
 
@@ -267,6 +268,10 @@ export function loadDeckSnapshot(payload, titleHint = "", append = false, { keep
     // AFTER this function returns — the same reason the resume below is in a
     // microtask — so reading it here asks about a deck with no local id and
     // finds nothing remembered, on every library deck.
+    // A different deck is being opened, so the home screen — even one opened on
+    // purpose over the previous deck — gives way to it. Not on a keepPlace
+    // refresh: that is a sync rewriting the deck underneath, not a choice.
+    if (!keepPlace) hideHome();
     if (!keepPlace) setViewMode(documentTabForOpenDeck(state.meta, deckTabKey(state.deckId, deckKey)));
     else if (onDocumentSurface() && !hasDocSlot(activeDocSlot(), state.meta)) setViewMode(documentTabForOpenDeck(state.meta, deckTabKey(state.deckId, deckKey)));
     // keepDocument, and this is the whole of "the pages blank and blink every

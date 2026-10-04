@@ -7,8 +7,9 @@
 import { canReachS3 } from "../cloud/s3-config.js?v=__BUILD__";
 import { canSignStorageUrls, resolveImageUrls } from "../cloud/storage-urls.js?v=__BUILD__";
 import { BUILD_STAMP } from "../core/build.js?v=__BUILD__";
-import { requestedAppVersion } from "./release-info.js?v=__BUILD__";
+import { fetchLiveRelease, requestedAppVersion } from "./release-info.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
+import { isHomeVisible, onHomeShown } from "../ui/home-state.js?v=__BUILD__";
 
 // Every Supabase Storage image URL referenced by a deck's markdown. Used to
 // pre-cache a pulled deck's images so it reads offline later — the service
@@ -132,46 +133,9 @@ export function showUpdateBanner() {
   reload.type = "button";
   reload.className = "update-banner-action";
   reload.textContent = "Reload";
-  reload.addEventListener("click", () => {
-    // Straight to the waiting worker if there is one: reloading alone does not
-    // promote it when the page still has a controller, so without this the
-    // button would appear to do nothing on the first press.
-    const waiting = serviceWorkerRegistration?.waiting;
-    if (!waiting) {
-      location.reload();
-      return;
-    }
-
-    // Reload once the new worker CONTROLS the page, not the instant it has been
-    // asked to. skipWaiting is a request, not a transition: it still has to
-    // finish activating and claim this client. Reloading immediately raced that
-    // — the old worker was still in charge, so it answered the navigation with
-    // its own release, and the page came back on the version the user had just
-    // pressed a button to leave. The controllerchange handler further down then
-    // declined to reload again (it refuses twice inside a minute, which is what
-    // stops a reload loop), so the update sat there until the user navigated
-    // again of their own accord.
-    //
-    // Measured before this change, driving a real install/update cycle: 1 to 3
-    // extra navigations were needed, and it never landed on the first press.
-    // It was always a race — the pre-split build lost it too — but a release
-    // whose install is 130 module requests instead of one loses it far more
-    // often, because the waiting worker takes that much longer to activate.
-    let done = false;
-    const go = () => {
-      if (done) return;
-      done = true;
-      // Tell the controllerchange handler this reload was ours, so it does not
-      // count as the user's own and suppress the next one.
-      try { sessionStorage.setItem("recall:updateReloadAt", String(Date.now())); } catch (_) {}
-      location.reload();
-    };
-    navigator.serviceWorker.addEventListener("controllerchange", go, { once: true });
-    try { waiting.postMessage({ type: "skip-waiting" }); } catch (_) { go(); return; }
-    // If the message is lost or the worker never claims, reload anyway rather
-    // than leaving a pressed button doing nothing at all.
-    setTimeout(go, 4000);
-  });
+  // The one way an update is applied — the same function the App Info modal's
+  // button calls. See applyUpdate for why a plain reload could not do this.
+  reload.addEventListener("click", () => applyUpdate({ button: reload }));
 
   const dismiss = document.createElement("button");
   dismiss.type = "button";
@@ -203,6 +167,263 @@ export function setUpdateFailedHint() {
 export function markUpdateAvailableInMenu() {
   document.getElementById("mobileMenuBtn")?.classList.add("has-update");
   document.getElementById("appInfoBtn")?.classList.add("has-update");
+}
+
+// ── Applying an update ──────────────────────────────────────────────────────
+//
+// Both Reload buttons (the banner and the App Info modal) used to end in a bare
+// location.reload(), and that is why pressing them so often did nothing. The
+// modal says "Update available" the moment the SERVER has a newer index.html,
+// which is usually well before this device's new worker has finished
+// downloading its ~170 files. A reload in that window is answered by the OLD
+// worker, whose fetch handler deliberately refuses newer HTML it has no
+// matching bundle for (htmlMatchesThisRelease in sw.js) and serves its cached
+// shell instead. So the page came back on the version it left, every time,
+// until the background install happened to finish — and if that install kept
+// failing on a poor connection, forever.
+//
+// applyUpdate carries a press all the way through instead: it finds out what
+// the server is serving, waits for the new worker to install and take control
+// (asking it to, if it is waiting), and only then reloads. When no worker can
+// be brought to take over — the install failed, or stalled past its budget — it
+// unregisters the worker and drops the versioned shell cache, so the reload
+// comes straight from the network. Nothing the user owns lives in those
+// caches: decks are in IndexedDB, and the image, vendor, CDN and share-target
+// caches are spared by name exactly as the worker's own activate sweep spares
+// them. The fresh page registers a new worker, which restores offline support.
+
+// Set while a press (or a silent auto-apply) is being carried through, so the
+// controllerchange handler leaves the reload to applyUpdate.
+let updateInProgress = false;
+
+// A newer worker took control of this page during its lifetime, but the page
+// itself was not reloaded (a deck was open). The page is the old release; the
+// next reload, served by the worker now in control, is the new one.
+let controllerReplaced = false;
+
+const UPDATE_RELOAD_AT_KEY = "recall:updateReloadAt";
+// The stamp a press was trying to reach, and the one it was leaving. Read back
+// by the page that loads next, which is how a reload that STILL landed on the
+// old build gets noticed. "Left the old build" is the test rather than "reached
+// the target": a deploy landing in between moves the target, not the outcome.
+const UPDATE_TARGET_KEY = "recall:updateTarget";
+const UPDATE_FROM_KEY = "recall:updateFrom";
+// Set once the network-only fallback has been tried for that target, so a
+// device that cannot get the new build is told so instead of reload-looping.
+const UPDATE_HARD_TRIED_KEY = "recall:updateHardTried";
+
+// How long a press waits for the new worker before falling back. Installing
+// is the slow case — the whole app shell over whatever connection this is.
+const UPDATE_INSTALL_BUDGET_MS = 45_000;
+const UPDATE_ACTIVATE_BUDGET_MS = 8_000;
+
+// The caches a release owns, and only those. Everything else is addressed by
+// URLs that carry their own version, and is spared for the reasons sw.js's
+// activate handler gives.
+const SPARED_CACHES = new Set(["recall-images-v1", "recall-vendor-v1", "recall-cdn-v1", "recall-share-target-v1"]);
+
+function readSession(key) {
+  try { return sessionStorage.getItem(key); } catch (_) { return null; }
+}
+
+function writeSession(key, value) {
+  try { sessionStorage.setItem(key, String(value)); } catch (_) { /* private mode — best effort */ }
+}
+
+function clearSession(key) {
+  try { sessionStorage.removeItem(key); } catch (_) { /* nothing to clear */ }
+}
+
+function waitMs(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function reloadedRecently() {
+  return Date.now() - (Number(readSession(UPDATE_RELOAD_AT_KEY)) || 0) < 60_000;
+}
+
+// Reload, marking the reload as ours so the controllerchange guard does not
+// mistake it for the user's own and so the next page can check where it landed.
+function reloadIntoUpdate(target) {
+  writeSession(UPDATE_RELOAD_AT_KEY, Date.now());
+  if (target) {
+    writeSession(UPDATE_TARGET_KEY, target);
+    writeSession(UPDATE_FROM_KEY, BUILD_STAMP);
+  }
+  location.reload();
+}
+
+// Is reloading right now free? Only when the reader is on the home screen, with
+// nothing half-typed and no dialog or import in progress. Every launch starts
+// on home anyway (see clearBrowserPersistence), and the open deck — if home was
+// opened over one — has already been saved by the pagehide flush. Anywhere
+// else, a reload would throw the reader out of what they are reading.
+export function isSafeToAutoReload() {
+  if (!isHomeVisible()) return false;
+  const active = document.activeElement;
+  if (active && (active.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName))) return false;
+  if (document.getElementById("importPanel")?.classList.contains("is-open")) return false;
+  for (const id of ["confirmModal", "promptModal"]) {
+    if (document.getElementById(id)?.hidden === false) return false;
+  }
+  return true;
+}
+
+// Hand control to the new worker and resolve once it has it. true: a newer
+// worker now controls this page, so a reload lands on it. false: nothing to
+// hand over to, or it could not be brought to take control within budget.
+async function handOverToNewWorker() {
+  if (!("serviceWorker" in navigator)) return false;
+  let registration = serviceWorkerRegistration;
+  if (!registration) {
+    try { registration = await navigator.serviceWorker.getRegistration(); } catch (_) { registration = null; }
+  }
+  if (!registration) return false;
+
+  // Listening before anything is asked of the worker, so a takeover that
+  // happens fast is not missed.
+  const controllerChanged = new Promise((resolve) => {
+    navigator.serviceWorker.addEventListener("controllerchange", () => resolve(true), { once: true });
+  });
+
+  let worker = registration.waiting || registration.installing;
+  if (!worker) {
+    // Nothing downloaded yet: ask for it now rather than waiting on the
+    // 30-minute timer. update() resolves once sw.js has been fetched, and a
+    // changed one is already "installing" by then.
+    try { await Promise.race([registration.update(), waitMs(10_000)]); } catch (_) { /* offline, or sw.js 404 */ }
+    worker = registration.waiting || registration.installing;
+  }
+  if (!worker) return false;
+
+  const budget = worker.state === "installing" ? UPDATE_INSTALL_BUDGET_MS : UPDATE_ACTIVATE_BUDGET_MS;
+  const settled = new Promise((resolve) => {
+    const onState = () => {
+      // The release's own install already asks to take over (skipWaiting in
+      // sw.js); asking again covers a worker from before that, and one that is
+      // sitting in "waiting" for any other reason.
+      if (worker.state === "installed") {
+        try { worker.postMessage({ type: "skip-waiting" }); } catch (_) { /* gone */ }
+      } else if (worker.state === "activated") {
+        resolve(true);
+      } else if (worker.state === "redundant") {
+        // Discarded: a failed download, or superseded by a newer one.
+        resolve(false);
+      }
+    };
+    worker.addEventListener("statechange", onState);
+    onState();
+  });
+  return Promise.race([controllerChanged, settled, waitMs(budget).then(() => false)]);
+}
+
+// The fallback that does not depend on the worker cooperating: take it out of
+// the way, drop the release's shell cache, and load from the network.
+async function reloadFromNetwork(target) {
+  writeSession(UPDATE_HARD_TRIED_KEY, target || "1");
+  try {
+    const registrations = await navigator.serviceWorker.getRegistrations();
+    await Promise.all(registrations.map((registration) => registration.unregister()));
+  } catch (_) { /* nothing registered */ }
+  try {
+    const keys = await caches.keys();
+    await Promise.all(keys
+      .filter((key) => key.startsWith("recall-") && !SPARED_CACHES.has(key))
+      .map((key) => caches.delete(key)));
+  } catch (_) { /* no Cache API */ }
+  reloadIntoUpdate(target);
+}
+
+// `silent`: an automatic apply at a safe moment. It never asks the server what
+// it is serving and never takes the network-only fallback — those are for a person
+// who pressed a button and is waiting on the answer. If it cannot finish, the
+// banner says so instead.
+export async function applyUpdate({ button = null, silent = false } = {}) {
+  if (updateInProgress) return;
+  updateInProgress = true;
+  const label = button?.textContent;
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Updating…";
+  }
+  const giveBack = () => {
+    updateInProgress = false;
+    if (button) {
+      button.disabled = false;
+      button.textContent = label;
+    }
+  };
+
+  try {
+    if (silent) {
+      if (reloadedRecently()) { giveBack(); showUpdateBanner(); return; }
+      if (controllerReplaced || await handOverToNewWorker()) { reloadIntoUpdate(null); return; }
+      giveBack();
+      showUpdateBanner();
+      return;
+    }
+
+    // What is the server serving? fetchLiveRelease is bounded (8s) and never
+    // answered from a cache.
+    let target = null;
+    try { target = (await fetchLiveRelease())?.stamp || null; } catch (_) { target = null; }
+    if (!target && navigator.onLine === false) {
+      giveBack();
+      showToast("You're offline — the update will install when you're back online", "info");
+      return;
+    }
+
+    // Nothing newer exists: a plain reload is the whole answer (it also clears
+    // a mixed build, which is the other thing these buttons are offered for).
+    if (target && target === BUILD_STAMP && !updateIsWaiting && !controllerReplaced) {
+      reloadIntoUpdate(null);
+      return;
+    }
+
+    if (controllerReplaced || await handOverToNewWorker()) {
+      reloadIntoUpdate(target);
+      return;
+    }
+
+    // No worker could be brought to take over, yet the server has a newer
+    // build. Go around the worker.
+    if (target && target !== BUILD_STAMP) {
+      if (button) button.textContent = "Reloading…";
+      await reloadFromNetwork(target);
+      return;
+    }
+    reloadIntoUpdate(target);
+  } catch (error) {
+    console.warn("Could not apply the update", error);
+    giveBack();
+    showToast("Couldn't finish the update — try again in a moment", "error");
+  }
+}
+
+// Read on every launch: did the update a button was pressed for actually land?
+// One network-only retry if it did not, then an honest message rather than a
+// loop.
+function verifyUpdateLanded() {
+  const target = readSession(UPDATE_TARGET_KEY);
+  if (!target) return;
+  const from = readSession(UPDATE_FROM_KEY);
+  const forget = () => {
+    clearSession(UPDATE_TARGET_KEY);
+    clearSession(UPDATE_FROM_KEY);
+    clearSession(UPDATE_HARD_TRIED_KEY);
+  };
+  if (target === BUILD_STAMP || (from && from !== BUILD_STAMP)) {
+    forget();
+    showToast("Recall is up to date ✓", "success");
+    return;
+  }
+  if (readSession(UPDATE_HARD_TRIED_KEY) || navigator.onLine === false) {
+    forget();
+    showToast("Couldn't switch to the new version yet — it will retry automatically", "error");
+    markUpdateAvailableInMenu();
+    return;
+  }
+  reloadFromNetwork(target);
 }
 
 export function registerServiceWorker() {
@@ -257,16 +478,6 @@ export function registerServiceWorker() {
       .catch(() => { /* no worker yet — the next online event tries again */ });
   };
 
-  // A worker that takes over a page which already had one has just swapped the
-  // app's files underneath a page still running the PREVIOUS release's JS. The
-  // markup can already be the new build while the behaviour is the old one, so
-  // half the app quietly does the old thing. It used to just show a toast and
-  // wait — but nobody reads it and everyone kept running the old release for
-  // days, which is exactly the "browsers serve the stale version" report.
-  // Reload straight into the new release instead; notes/cards autosave on
-  // input, so at most a keystroke is in flight. The sessionStorage guard keeps
-  // a flapping update (bad deploy, oscillating server) from reload-looping the
-  // tab: one automatic reload per minute at most.
   // The worker reporting that it served one release's bytes under another
   // release's URL. This is the only way the page can learn it is running a mixed
   // build — see mixedBuildUrls.
@@ -281,59 +492,48 @@ export function registerServiceWorker() {
     }
   });
 
-  // Is the reader inside a document, and past the top of it?
-  //
-  // Asked of the DOM rather than of src/documents/, deliberately. This module is
-  // registered from the boot path and must not pull the PDF surface and its
-  // whole import graph in behind it — and the question is a shallow one: is the
-  // document scroller on screen, and has it been scrolled. #documentView is the
-  // scroller for both papers (the deck's PDF and the notebook beside it), and a
-  // hidden one reports offsetParent null.
-  const readerIsMidDocument = () => {
-    try {
-      const view = document.getElementById("documentView");
-      if (!view || view.hidden || !view.offsetParent) return false;
-      return view.scrollTop > 0;
-    } catch (_) {
-      return false;
-    }
-  };
-
   let hadController = Boolean(navigator.serviceWorker.controller);
 
+  // A newer worker has taken over. Reload into it — but only when that is free.
+  //
+  // It used to reload unconditionally (bar two guards), on the grounds that a
+  // toast saying "reload to finish" was read by nobody. But this repo publishes
+  // on every push to main, and a reload is not free for a reader: every launch
+  // starts on the home screen with no deck open, so a release landing while
+  // somebody studied or read threw them out of their deck, several times a day.
+  //
+  // So: reload at once when it costs nothing (the reader is on the home screen
+  // — see isSafeToAutoReload). Anywhere else, keep the persistent banner and the
+  // menu dot up, and take the update at the next safe moment: going Home,
+  // coming back to the tab while home is showing, or the next launch, which is
+  // served by the new worker anyway. The sessionStorage guard still keeps a
+  // flapping deploy from reload-looping the tab: one automatic reload a minute.
   navigator.serviceWorker.addEventListener("controllerchange", () => {
     if (!hadController) {
       hadController = true; // first-ever install: this page is already current
       return;
     }
-    let lastReload = 0;
-    try { lastReload = Number(sessionStorage.getItem("recall:updateReloadAt")) || 0; } catch (_) {}
-    if (Date.now() - lastReload < 60_000) {
-      showToast("Recall updated — reload to finish", "info");
+    controllerReplaced = true;
+    updateIsWaiting = true;
+    markUpdateAvailableInMenu();
+    // A press is in flight: applyUpdate reloads on its own listener.
+    if (updateInProgress) return;
+    if (!reloadedRecently() && isSafeToAutoReload()) {
+      reloadIntoUpdate(null);
       return;
     }
-    // ...and not while somebody is reading a document.
-    //
-    // A reload is the one event that genuinely does put the reader back on the
-    // deck's STORED reading position, which is wherever it was last written
-    // down and not where they are. This repo publishes on every push to main,
-    // so a release landing mid-page is not a rare event, and "I was thrown to
-    // a different page for no reason" is what it looks like from the reader's
-    // chair — indistinguishable from the bug this branch is about.
-    //
-    // Deferred rather than cancelled: the banner and the menu marker already
-    // exist for a release that is waiting, and the next deck change, tab
-    // change or app launch takes it. Only while they are actually IN a
-    // document and have actually scrolled — a reader at the top of page 1
-    // loses nothing by reloading, and this must not become "the app never
-    // updates for anyone who once opened a PDF".
-    if (readerIsMidDocument()) {
-      showToast("Recall updated — reload to finish", "info");
-      markUpdateAvailableInMenu();
-      return;
-    }
-    try { sessionStorage.setItem("recall:updateReloadAt", String(Date.now())); } catch (_) {}
-    location.reload();
+    showUpdateBanner();
+  });
+
+  // A release that is ready and was waiting for the reader to get somewhere it
+  // can be applied without cost.
+  const applyPendingUpdateIfSafe = () => {
+    if (!(controllerReplaced || updateIsWaiting) || updateInProgress) return;
+    if (isSafeToAutoReload()) applyUpdate({ silent: true });
+  };
+  onHomeShown(applyPendingUpdateIfSafe);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") applyPendingUpdateIfSafe();
   });
 
   // A worker that reaches "installed" while this page already has a controller
@@ -344,12 +544,28 @@ export function registerServiceWorker() {
   // modal buried in the hamburger drawer that most users never open. So a user
   // whose install kept failing on a bad connection sat on an old build
   // indefinitely with the app insisting nothing was wrong.
+  //
+  // "installed" no longer raises the banner by itself. sw.js's install asks to
+  // take over as soon as its shell is cached, so "installed" is normally a
+  // moment-long state that controllerchange (above) follows and decides on —
+  // and a banner raised here was a banner flashed at a reader who was about to
+  // be reloaded anyway, or one shown on the home screen where the update could
+  // simply be applied. It only stays for a worker that genuinely sits waiting.
   const watchInstallingWorker = (registration) => {
     const worker = registration.installing;
     if (!worker) return;
     worker.addEventListener("statechange", () => {
       if (worker.state === "installed" && navigator.serviceWorker.controller) {
-        showUpdateBanner();
+        updateIsWaiting = true;
+        updateDownloadFailed = false;
+        markUpdateAvailableInMenu();
+        if (!updateInProgress && !reloadedRecently() && isSafeToAutoReload()) {
+          applyUpdate({ silent: true });
+          return;
+        }
+        setTimeout(() => {
+          if (registration.waiting === worker && !updateInProgress) showUpdateBanner();
+        }, 5000);
       } else if (worker.state === "redundant") {
         // Discarded before it could take over: a failed precache, a quota
         // rejection, or a newer worker superseding it. Only worth saying
@@ -358,6 +574,8 @@ export function registerServiceWorker() {
       }
     });
   };
+
+  verifyUpdateLanded();
 
   const register = () => {
     // updateViaCache: "none" — the browser's own HTTP cache must never answer
@@ -372,7 +590,14 @@ export function registerServiceWorker() {
         requestOfflineCacheRepair();
         // A worker may already be waiting from a previous visit — updatefound
         // has long since fired for it and will not fire again.
-        if (registration.waiting && navigator.serviceWorker.controller) showUpdateBanner();
+        // On launch the reader is normally on the home screen, so it is simply
+        // applied; otherwise the banner offers it.
+        if (registration.waiting && navigator.serviceWorker.controller) {
+          updateIsWaiting = true;
+          markUpdateAvailableInMenu();
+          if (!reloadedRecently() && isSafeToAutoReload()) applyUpdate({ silent: true });
+          else showUpdateBanner();
+        }
         watchInstallingWorker(registration);
         registration.addEventListener("updatefound", () => watchInstallingWorker(registration));
         const checkForUpdate = () => registration.update().catch(() => {});

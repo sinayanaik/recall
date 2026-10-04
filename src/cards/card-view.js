@@ -13,6 +13,7 @@ import { renderMarkdown } from "../render/block-cache.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { renderDeckEmptyState } from "../sync/indicator.js?v=__BUILD__";
 import { maybeShowSwipeHint } from "../ui/deck-header.js?v=__BUILD__";
+import { releaseAutomaticHome } from "../ui/home-state.js?v=__BUILD__";
 import { commitEditIfActive, setCardRawModePreferred } from "../ui/edit-mode.js?v=__BUILD__";
 
 export function transitionClassFor(direction, phase) {
@@ -147,6 +148,9 @@ export async function showCard(direction = 0) {
   if (enterClass) el.card.classList.add(enterClass);
 
   const card = state.cards[state.current];
+  // A deck is on screen: the home screen that stood in for "nothing open" steps
+  // aside (one opened on purpose with ⌂ stays — see releaseAutomaticHome).
+  if (hasActiveDeck()) releaseAutomaticHome();
   if (!card) {
     if (state.cards.length > 0) {
       // Deck finished — show rich summary overlay covering the whole card

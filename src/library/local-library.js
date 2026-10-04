@@ -27,6 +27,7 @@ import { repairSnapshotText } from "../sync/text-repair.js?v=__BUILD__";
 import { nextSyncStamp } from "../sync/stats.js?v=__BUILD__";
 import { refreshSyncIndicatorBaseline } from "../sync/indicator.js?v=__BUILD__";
 import { setStatus } from "../ui/feedback.js?v=__BUILD__";
+import { scheduleHomeRender } from "../ui/home-state.js?v=__BUILD__";
 import { recordNavHistory, refreshNavBack } from "../ui/nav-history.js?v=__BUILD__";
 
 // ── Batched index writes ────────────────────────────────────────────────────
@@ -132,6 +133,9 @@ export function writeLocalDeckIndex(list) {
     // it is also the one place the [[note]] link index can be invalidated
     // without having to find every rename, delete, import and sync by hand.
     invalidateNoteLinkIndex();
+    // ...and for the same reason, the one place the home screen's recent decks
+    // learn that the library changed under them.
+    scheduleHomeRender();
   } catch (error) {
     console.warn("Could not save the local deck index", error);
     throw error;

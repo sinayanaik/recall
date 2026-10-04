@@ -30,6 +30,7 @@ import { unlockPageScroll } from "../ui/overlays.js?v=__BUILD__";
 import { setViewMode } from "../ui/view-mode.js?v=__BUILD__";
 import { documentTabForOpenDeck } from "../documents/doc-slot.js?v=__BUILD__";
 import { deckTabKey } from "../storage/deck-tab.js?v=__BUILD__";
+import { hideHome } from "../ui/home-state.js?v=__BUILD__";
 
 // Whichever of two ISO timestamps (either may be null/undefined) is later,
 // or null if neither parses.
@@ -368,6 +369,8 @@ export async function loadWebDeck(deckId) {
     // of this line explains why an open raw editor outlives a deck swap and
     // what it overwrites when it does.
     discardNotesEditingForDeckSwap();
+    // A deck opened from the cloud replaces whatever was on screen — home too.
+    hideHome();
     // The deck being left is the last thing that needed its queued images'
     // blob URLs. See revokeLocalImageUrls for why the session can't wait for
     // pagehide to release them.

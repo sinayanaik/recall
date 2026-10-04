@@ -11,6 +11,7 @@ import { autoSyncNextAt, getAutoSyncMinutes } from "./auto-sync.js?v=__BUILD__";
 import { restoreStashedNotes } from "./notes-conflict.js?v=__BUILD__";
 import { lastStartupSyncReport, reconcileInFlight } from "./reconcile.js?v=__BUILD__";
 import { buildSyncReportHtml } from "./report.js?v=__BUILD__";
+import { releaseAutomaticHome, showHome } from "../ui/home-state.js?v=__BUILD__";
 
 // Coarse "Xm ago" style relative time, for the sync pill's last-synced suffix.
 export function formatRelativeTime(iso) {
@@ -181,8 +182,13 @@ export function refreshSyncIndicatorBaseline() {
 }
 
 // Swaps the shared #deckEmptyState container between two variants: "none"
-// (nothing loaded at all — New Deck/Import/My Decks) and "active" (a deck
-// exists but has zero cards yet — prompts to add one or draft notes first).
+// (nothing loaded at all) and "active" (a deck exists but has zero cards yet —
+// prompts to add one or draft notes first).
+//
+// "none" now means the home screen. The variant's markup is still painted
+// underneath as a fallback, but the page anyone sees with no deck open is the
+// dashboard in src/ui/home.js, which carries the sync rows and the startup
+// report that used to live here.
 export function renderDeckEmptyState(mode) {
   const isActive = mode === "active";
   if (el.deckEmptyIcon) el.deckEmptyIcon.textContent = isActive ? "🗂️" : "📚";
@@ -194,13 +200,13 @@ export function renderDeckEmptyState(mode) {
   }
   if (el.deckEmptyActionsNone) el.deckEmptyActionsNone.hidden = isActive;
   if (el.deckEmptyActionsActive) el.deckEmptyActionsActive.hidden = !isActive;
-  if (el.deckEmptyPanel) el.deckEmptyPanel.hidden = isActive;
   if (isActive) {
-    if (el.deckEmptySyncReport) el.deckEmptySyncReport.hidden = true;
-  } else {
-    updateDeckEmptyStatus();
-    renderWelcomeSyncReport();
+    releaseAutomaticHome();
+    return;
   }
+  showHome();
+  updateDeckEmptyStatus();
+  renderWelcomeSyncReport();
 }
 
 // Inline replacement for the old "Startup Sync Report" popup: the same
