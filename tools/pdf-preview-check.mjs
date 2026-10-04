@@ -3170,15 +3170,13 @@ try {
   check("...and being empty, it opens its editor rather than sitting blank",
     docNotes.editorOpen, `raw editor open=${docNotes.editorOpen}`);
 
-  // ── 8d-ii. The number on the card is the number on the page ─────────────
+  // ── 8d-ii. An annotated highlight wears a fold, and nothing is numbered ───
   //
-  // "There should be a visually apparent identifier saying which note relates to
-  // which highlight." The badge pinned to a highlight and the note printed under
-  // its page have carried a number for a while; the card did not, and the pane's
-  // own "12 / 87" counter is a DIFFERENT sequence — position among all
-  // highlights, annotated or not. Two numbers claiming to name the same
-  // highlight is worse than one of them being absent, so this asserts they are
-  // one sequence, taken from one function (annotatedDocumentHighlightNumbers).
+  // The page badge was a numbered pill just outside the highlight's corner, and
+  // the card in the pane repeated the number. Both went, the way they went in the
+  // notes view: the page wears a small unnumbered fold tucked into the
+  // highlight's own top-right corner, and the card is the quote with its note.
+  // A highlight with nothing written on it wears no fold at all.
   const numbering = await page.evaluate(`async () => {
     const { api, settle } = window.__recall;
     api.setViewMode("document");
@@ -3198,17 +3196,17 @@ try {
     await api.whenDocumentPageReady(records[0].page || 1);
     await settle(400);
     const list = document.getElementById("highlightCycleBody");
-    const cardNumber = (id) => {
-      const card = list.querySelector('.hl-note[data-highlight-key="doc:' + id + '"]');
-      return card?.querySelector(".hl-note-n")?.textContent || "";
-    };
-    const badgeNumber = (id) =>
-      document.querySelector('.pdf-note-badge[data-highlight-id="' + id + '"]')?.textContent || "";
+    const fold = (id) => document.querySelector('.pdf-note-badge[data-highlight-id="' + id + '"]');
+    const annotatedFold = fold(records[0].id);
+    const rect = annotatedFold?.getBoundingClientRect();
     const result = {
-      annotatedCard: cardNumber(records[0].id),
-      annotatedBadge: badgeNumber(records[0].id),
-      bareCard: cardNumber(records[1].id),
-      bareBadge: badgeNumber(records[1].id),
+      annotatedFold: Boolean(annotatedFold),
+      foldText: annotatedFold ? annotatedFold.textContent : null,
+      foldSize: rect ? [Math.round(rect.width), Math.round(rect.height)] : null,
+      bareFold: Boolean(fold(records[1].id)),
+      // No number anywhere: not on a card, not beside a note printed under a page.
+      numbers: list.querySelectorAll(".hl-note-n").length
+        + document.querySelectorAll(".pdf-page-note-num").length,
       // ...and the place label, so a card scrolled away from its group heading
       // still says which page it came from.
       where: list.querySelector('.hl-note[data-highlight-key="doc:' + records[0].id + '"] .hl-note-where')?.textContent || ""
@@ -3218,19 +3216,21 @@ try {
     return result;
   }`);
 
-  check("a card carries the same number its highlight wears on the page",
-    numbering.annotatedCard !== "" && numbering.annotatedCard === numbering.annotatedBadge,
-    `card "${numbering.annotatedCard}" vs badge "${numbering.annotatedBadge}"`);
-  check("...and a highlight with nothing written on it is numbered in neither",
-    numbering.bareCard === "" && numbering.bareBadge === "",
-    `card "${numbering.bareCard}" badge "${numbering.bareBadge}"`);
+  check("an annotated highlight on the page wears a fold with no digits in it",
+    numbering.annotatedFold && numbering.foldText === ""
+      && numbering.foldSize && numbering.foldSize[0] <= 12 && numbering.foldSize[1] <= 12,
+    `fold=${numbering.annotatedFold} text=${JSON.stringify(numbering.foldText)} size=${JSON.stringify(numbering.foldSize)}`);
+  check("...a highlight with nothing written on it wears none",
+    !numbering.bareFold, `bare fold=${numbering.bareFold}`);
+  check("...and neither the pane's cards nor the notes under the page carry a number",
+    numbering.numbers === 0, `${numbering.numbers} number(s) on screen`);
   check("...and the card says which page it came from",
     /^Page \d+$/.test(numbering.where), numbering.where || "no place label");
 
   // ── 8d-ii-b. ...and it appears the MOMENT the note is written ────────────
   //
-  // The number is the whole indicator that a note exists — the case above says
-  // it is the right number, and this one says it is on screen at all. It was
+  // The fold is the whole indicator that a note exists — this case says it is
+  // on screen at all. It was
   // not: writing a note in the pane and closing the editor left the paper
   // showing nothing, and the only way to see the badge was to leave the
   // document and come back. "I have to juggle from documents to some other
@@ -3263,9 +3263,8 @@ try {
     api.scrollToDocumentPage(target.page || 1, 0, { smooth: false });
     await settle(500);
     const list = document.getElementById("highlightCycleBody");
-    const badgeOf = () => document.querySelector('.pdf-note-badge[data-highlight-id="' + target.id + '"]')?.textContent || "";
-    const numberOf = () => list.querySelector('.hl-note[data-highlight-key="doc:' + target.id + '"] .hl-note-n')?.textContent || "";
-    const before = { badge: badgeOf(), number: numberOf() };
+    const badgeOf = () => Boolean(document.querySelector('.pdf-note-badge[data-highlight-id="' + target.id + '"]'));
+    const before = { badge: badgeOf() };
     const card = list.querySelector('.hl-note[data-highlight-key="doc:' + target.id + '"]');
     if (!card) return { error: "the pane lists no card for the first highlight" };
     card.querySelector(".hl-note-edit").click();
@@ -3281,24 +3280,18 @@ try {
     const savedWhileOpen = api.documentHighlightNote(target.id);
     area.blur();
     await settle(500);
-    const after = { badge: badgeOf(), number: numberOf() };
+    const after = { badge: badgeOf() };
     was.forEach(([id, note]) => api.setDocumentHighlightNote(id, note));
     await settle(300);
     return { before, after, savedWhileOpen };
   }`);
 
-  check("a note written in the pane puts its number on the paper at once",
-    !liveBadge.error && !liveBadge.before?.badge && Boolean(liveBadge.after?.badge),
-    liveBadge.error || `badge "${liveBadge.before?.badge}" -> "${liveBadge.after?.badge}", `
+  check("a note written in the pane puts its fold on the paper at once, with no view change",
+    !liveBadge.error && !liveBadge.before?.badge && liveBadge.after?.badge === true,
+    liveBadge.error || `fold ${liveBadge.before?.badge} -> ${liveBadge.after?.badge}, `
       + `autosaved while open=${JSON.stringify(liveBadge.savedWhileOpen)}`);
-  // Non-empty on BOTH sides of the comparison, or the case passes vacuously the
-  // moment the badge stops appearing — which is precisely the regression above.
-  check("...and on its card, with no view change in between",
-    !liveBadge.error && !liveBadge.before?.number
-      && Boolean(liveBadge.after?.number) && liveBadge.after?.number === liveBadge.after?.badge,
-    liveBadge.error || `card "${liveBadge.before?.number}" -> "${liveBadge.after?.number}" against badge "${liveBadge.after?.badge}"`);
 
-  // ── 8d-iii. Pressing a number shows the note, not a window over it ──────
+  // ── 8d-iii. Pressing a fold shows the note, not a window over it ────────
   //
   // A badge press opened a floating editor over the page. That is right when
   // there is nowhere else for the note to be, and wrong when the note is already
@@ -3347,7 +3340,7 @@ try {
     return result;
   }`);
 
-  check("pressing a numbered badge reveals that note in the pane",
+  check("pressing a fold reveals that note in the pane",
     !badgePress.error && badgePress.current && badgePress.inView && !badgePress.popupOpen,
     badgePress.error || `current=${badgePress.current} in view=${badgePress.inView} popup=${badgePress.popupOpen} counter=${badgePress.count}`);
   check("...and with no pane open, it still opens the window it always did",
@@ -3449,7 +3442,7 @@ try {
   check("the badge layer is still on top of the page after a re-fit",
     !badgesAfterRelayout.error && badgesAfterRelayout.last,
     badgesAfterRelayout.error || `children: ${badgesAfterRelayout.order}`);
-  check("...with its numbers still painted, as the highlights under them are",
+  check("...with its folds still painted, as the highlights under them are",
     !badgesAfterRelayout.error && badgesAfterRelayout.badges > 0 && badgesAfterRelayout.marks > 0,
     badgesAfterRelayout.error || `${badgesAfterRelayout.badges} badge(s) “${badgesAfterRelayout.number}”, ${badgesAfterRelayout.marks} mark(s)`);
   // On the GLASS. Dark page puts a filter on the canvas, and a filtered canvas
@@ -4610,7 +4603,7 @@ try {
     const documentRows = ["fit-width", "dark-page", "region"];
     // "inline-notes" is not here any more: the mode that printed every
     // highlight's note into the paragraph it annotated is gone, and a note is
-    // read by pressing the number on its highlight.
+    // read by pressing the fold on its highlight.
     //
     // Nor is "bookmark-set", and nor is this list about the notes any more. The
     // bookmark used to be two notes-only rows; the sync saves the spot now, and

@@ -115,6 +115,7 @@ import { addBlankCardAtCursor, flushWorkingDeck, toggleEditMode } from "./ui/edi
 import { setStatus, showConfirmModal, showPromptModal, showToast } from "./ui/feedback.js?v=__BUILD__";
 import { closeHelpModal, helpBtn, helpModal, helpModalCloseBtn, helpModalCloseFootBtn, openHelpModal } from "./ui/help.js?v=__BUILD__";
 import { initHome } from "./ui/home.js?v=__BUILD__";
+import { initShutdown } from "./ui/shutdown.js?v=__BUILD__";
 import { goNavBack, recordNavHistory, refreshNavBack } from "./ui/nav-history.js?v=__BUILD__";
 import { anyModalOpen, lockPageScroll, unlockPageScroll } from "./ui/overlays.js?v=__BUILD__";
 import { chooseDeckCategory } from "./ui/pickers.js?v=__BUILD__";
@@ -1915,6 +1916,7 @@ el.myDecksBtn?.addEventListener("click", () => {
 el.syncNowBtn?.addEventListener("click", () => {
   reconcileAllDecks({ explicit: true });
 });
+initShutdown();
 
 
 // Coming back from a frozen tab or a dead connection: check the deadline

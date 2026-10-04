@@ -698,21 +698,17 @@ export function documentHighlightNote(id) {
 
 // ── The number a highlight is shown as ──────────────────────────────────────
 //
-// Every annotated highlight on this paper, in reading order, with the number it
-// wears. It lives HERE, beside the records and the ordering it is derived from,
-// rather than in whichever surface happens to print it — and that is the point
-// of the file it moved out of (src/documents/pdf-page-notes.js, which paints the
-// badges) rather than a tidying preference. Three surfaces show this number now:
-// the badge pinned to the highlight on the page, the note printed under that
-// page, and the card in the side-by-side pane. A number that means one thing in
-// two of them and something else in the third is worse than no number at all,
-// and "we computed the same sequence the same way in three files" is exactly the
-// guarantee that does not survive an edit to one of them.
+// Every annotated highlight on this paper, in reading order. It lives HERE,
+// beside the records and the ordering it is derived from, rather than in
+// whichever surface happens to print it: the fold on the page, the notes printed
+// under it and the print export all walk this one list.
 //
-// A highlight with NO note is not numbered and is not in this list. The number
-// is the whole indicator — it says both "there is something written here" and
-// "it is the third thing you wrote" — so numbering an unannotated highlight
-// would promise something to read that does not exist.
+// `n` is the highlight's place in that list. Nothing shows it any more — the
+// page wears an unnumbered fold (src/documents/pdf-page-notes.js) — but it is
+// kept as a stable ordinal for anything that wants one.
+//
+// A highlight with NO note is not in this list. The fold is the whole indicator,
+// so a highlight with nothing written about it must not be offered one.
 //
 // Rebuilt on demand rather than memoized: it is one pass over an array that is
 // tens of entries long even for a heavily marked-up paper, and the note text it
@@ -737,15 +733,6 @@ export function annotatedDocumentHighlights() {
     out.push({ record, note, n: out.length + 1 });
   });
   return out;
-}
-
-// ...and the same answer as a lookup, for a caller that has an id in its hand
-// rather than a list to walk. 0 for a highlight with nothing written about it,
-// which is the same "no number" the page shows.
-export function annotatedDocumentHighlightNumbers() {
-  const numbers = new Map();
-  annotatedDocumentHighlights().forEach(({ record, n }) => numbers.set(record.id, n));
-  return numbers;
 }
 
 // `rerender` is the note editor's autosave option, and it is honoured here now.

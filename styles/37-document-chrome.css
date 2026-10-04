@@ -707,10 +707,10 @@
 }
 
 /* ── Highlight notes, on the page ──────────────────────────────────────────
-   The always-on half: a numbered badge on any highlight that HAS a note, so the
-   note announces itself without being opened. Its layer sits above the text
-   layer and takes no pointer events; only the badges do, so a selection still
-   works everywhere except the ~16px badge itself. */
+   The always-on half: a small folded corner on any highlight that HAS a note, so
+   the note announces itself without being opened. Its layer sits above the text
+   layer and takes no pointer events; only the folds do, so a selection still
+   works everywhere except the few pixels round each fold. */
 .pdf-badge-layer {
   position: absolute;
   inset: 0;
@@ -729,7 +729,7 @@
      `invert(1)` on .pdf-canvas (styles/36-document.css), and a filtered element
      paints as a z-index:0 stacking context — in TREE ORDER with its positioned
      siblings rather than behind them. An opaque canvas after this layer in the
-     document therefore paints over it and the numbers simply disappear. A
+     document therefore paints over it and the folds simply disappear. A
      positive z-index is painted later than every one of those, so the question
      stops depending on which order the page was last rebuilt in.
 
@@ -739,37 +739,66 @@
   z-index: 3;
 }
 
+/* ── The fold ─────────────────────────────────────────────────────────────
+   The same mark the notes view puts on an annotated highlight
+   (styles/42-highlight-badge.css): a small triangle in the accent, tucked into
+   the highlight's top-right corner, like a spreadsheet's "this cell has a
+   comment". It replaced a numbered pill that sat just outside the corner — over
+   the line above and the next word — and grew a digit at the tenth note. The
+   fold is the same size at the 3rd note and the 300th, and it says only that a
+   note is there; the title says what it is and the press opens it.
+
+   Placed by paintPageNoteBadges: its left edge is the quad's right edge less
+   NOTE_FOLD_PX, its top the quad's top. Keep --pdf-fold equal to that. */
 .pdf-note-badge {
+  --pdf-fold: 9px;
   position: absolute;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 16px;
-  height: 16px;
-  padding: 0 4px;
+  display: block;
+  width: var(--pdf-fold);
+  height: var(--pdf-fold);
+  min-width: 0;
+  padding: 0;
   border: 0;
-  border-radius: 999px;
-  background: var(--accent-strong);
-  /* Not #fff. --accent-strong is a LIGHT colour in seven of the ten themes, so
-     white-on-accent was white on pale green — the same legibility bug the note
-     badge in styles/42-highlight-badge.css was fixed for, one surface along.
-     --accent-contrast is defined per theme as the ink that reads on the accent,
-     which is the only place that question has already been answered. */
-  color: var(--accent-contrast);
-  font: inherit;
-  font-size: 0.62rem;
-  font-weight: 800;
-  font-variant-numeric: tabular-nums;
-  line-height: 1;
-  box-shadow: 0 1px 4px rgb(0 0 0 / 0.35);
+  background: none;
+  font-size: 0;
+  line-height: 0;
   cursor: pointer;
   pointer-events: auto;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
-.pdf-note-badge:hover,
+/* The fold itself, on a pseudo-element: clip-path clips hit-testing as well as
+   paint, so on the button it would halve a target that is already tiny. The
+   faint drop shadow keeps it legible over a page that is itself the accent's
+   colour. */
+.pdf-note-badge::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--accent-strong);
+  clip-path: polygon(0 0, 100% 0, 100% 100%);
+  border-top-right-radius: 2px;
+  filter: drop-shadow(0 0 1px rgb(0 0 0 / 0.45));
+}
+
+/* ...and a target a finger can find: a transparent square reaching past the
+   fold, mostly up and out over the margin beside the highlight rather than
+   back over the words. */
+.pdf-note-badge::before {
+  content: "";
+  position: absolute;
+  inset: -8px -8px -5px -6px;
+}
+
+.pdf-note-badge:hover::after,
+.pdf-note-badge:focus-visible::after {
+  background: var(--accent);
+}
+
 .pdf-note-badge:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
-  outline-offset: 1px;
+  outline-offset: 2px;
 }
 
 /* The opt-in half: the notes for one page, printed in the gap after it.
@@ -903,7 +932,7 @@
   text-align: left;
   cursor: pointer;
   /* Keeps a note whole. Without it a long note fragments at a column boundary
-     and its number badge ends up in a different column from its text, which
+     and its quote ends up in a different column from its text, which
      reads as two broken notes rather than one long one. A note taller than the
      column still spills — that is correct, the whole note is meant to be here.
      page-break-inside for the print path, which is the same export the ⋯ menu
@@ -919,20 +948,6 @@
 .pdf-page-note:focus-visible {
   border-color: var(--line);
   background: color-mix(in srgb, var(--accent) 10%, transparent);
-}
-
-.pdf-page-note-num {
-  flex: 0 0 auto;
-  min-width: 1.5em;
-  height: 1.5em;
-  margin-top: 0.2em;
-  border-radius: 999px;
-  background: var(--accent-strong);
-  color: #fff;
-  font-size: 0.7em;
-  font-weight: 800;
-  line-height: 1.5em;
-  text-align: center;
 }
 
 .pdf-page-note-body {

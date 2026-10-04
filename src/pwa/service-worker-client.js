@@ -263,7 +263,9 @@ export function isSafeToAutoReload() {
   const active = document.activeElement;
   if (active && (active.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName))) return false;
   if (document.getElementById("importPanel")?.classList.contains("is-open")) return false;
-  for (const id of ["confirmModal", "promptModal"]) {
+  // ...nor while the app is shut down (src/ui/shutdown.js): a reload there would
+  // bring back the app the reader just closed.
+  for (const id of ["confirmModal", "promptModal", "shutdownView"]) {
     if (document.getElementById(id)?.hidden === false) return false;
   }
   return true;

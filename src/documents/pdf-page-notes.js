@@ -1,7 +1,7 @@
 // A note attached to a PDF highlight, said on the page.
 //
 // The notes view answers half of this question — src/notes/highlight-badges.js
-// puts a numbered badge on every annotated highlight, which says a note is there
+// puts a small folded corner on every annotated highlight, which says a note is there
 // and opens it when pressed — and it opens with the reason: the annotation for a
 // sentence on page 3 sits four hundred paragraphs below the sentence, and until
 // you touch the highlight there is nothing on screen to say the note exists at
@@ -21,11 +21,21 @@
 // So the same two layers, in the same two kinds:
 //
 //   1. ALWAYS ON — an annotated highlight is marked as annotated: a small
-//      numbered badge pinned to its first quad. It says "there is something
+//      folded corner tucked into the top-right of its first quad, with no
+//      digits — the same fold the notes view uses. It says "there is something
 //      here"; pressing it opens the note, exactly as tapping the highlight does.
-//   2. OPT-IN — every note is numbered in reading order and PRINTED under the
-//      page it belongs to. Toggled from the document ⋯ menu and remembered
-//      across sessions.
+//   2. OPT-IN — every note is PRINTED under the page it belongs to, in reading
+//      order, each one led by the quote it is about. Toggled from the document
+//      ⋯ menu and remembered across sessions.
+//
+// ── Why no numbers ────────────────────────────────────────────────────────
+//
+// Both layers used to carry one: "3" on the badge, "3" beside the note under
+// the page, "3" on the card in the Highlights pane. On a page with a note on
+// every other line the pills covered the words they sat beside, and they grew
+// with the count. Nothing needed the number to pair a note with its highlight:
+// the fold opens its own note, and every printed note and every card already
+// opens with the quote it belongs to.
 //
 // ── Why a sibling of the page, and not a margin or an overlay ──────────────
 //
@@ -40,15 +50,14 @@
 // at 360px as at 1440px, and leaves the position tracking correct because
 // currentDocumentPage() and isPageNearViewport() both read live offsetTop.
 //
-// ── Why the numbers come from the records ─────────────────────────────────
+// ── Why the order comes from the records ──────────────────────────────────
 //
-// Same rule highlight-badges.js states for the same reason: numbering has
-// to come from the source, never from DOM order. The document view is
-// virtualized — only pages near the viewport carry a canvas at all — so a
-// counter that walked what happens to be rendered would hand out 1, 2, 3 for
-// whichever pages were on screen and renumber the lot on every scroll.
+// Same rule highlight-badges.js states for the same reason: order has to come
+// from the source, never from DOM order. The document view is virtualized —
+// only pages near the viewport carry a canvas at all — so a walk over what
+// happens to be rendered would see a different set on every scroll.
 // documentHighlightsInReadingOrder() is already page-then-down-the-page order,
-// which is exactly the order a reader would number them in.
+// which is exactly the order a reader prints them in.
 
 import { PDF_BADGE_LAYER_CLASS } from "../core/constants.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
@@ -88,6 +97,11 @@ export const BADGE_LAYER_CLASS = PDF_BADGE_LAYER_CLASS;
 export const NOTE_BADGE_CLASS = "pdf-note-badge";
 
 export const PAGE_NOTES_CLASS = "pdf-page-notes";
+
+// The fold's side, in CSS pixels. Here rather than only in the stylesheet
+// because the painter places it: the badge's left edge is the highlight's right
+// edge less this, so the fold ends exactly at the corner of the tint.
+export const NOTE_FOLD_PX = 9;
 
 // How much of a note goes in the badge's tooltip. Enough to recognise which note
 // it is without opening it; not so much that the tooltip is the note.
@@ -134,11 +148,11 @@ export function readPdfPageNotesPreference() {
 //
 // So each painter records what it drew and skips a page whose answer has not
 // moved. The signature has to cover everything that is rendered: which
-// highlights, in what order, with what NUMBER (a note added on page 2 renumbers
-// every note after it), and what the note says.
+// highlights, in what order, and what the note says. (No number: nothing shows
+// one any more, so a note added on page 2 no longer repaints every page after.)
 function pageNotesSignature(entries) {
   return entries
-    .map(({ record, note, n }) => `${n}:${record.id}:${record.color || ""}:${hash32(documentHighlightLabel(record))}:${hash32(note)}:${isPictured(record) ? record.at || 0 : ""}`)
+    .map(({ record, note }) => `${record.id}:${record.color || ""}:${hash32(documentHighlightLabel(record))}:${hash32(note)}:${isPictured(record) ? record.at || 0 : ""}`)
     .join("|");
 }
 
@@ -238,7 +252,7 @@ export function paintPageNoteBadges(pageNumber, all = null) {
   layer.dataset.signature = signature;
   layer.innerHTML = "";
   const frag = document.createDocumentFragment();
-  annotated.forEach(({ record, note, n }) => {
+  annotated.forEach(({ record, note }) => {
     const quad = (record.quads || []).find((entry) => entry.page === pageNumber);
     const box = quad ? quadToPageBox(quad) : null;
     if (!box) return;
@@ -246,16 +260,16 @@ export function paintPageNoteBadges(pageNumber, all = null) {
     badge.type = "button";
     badge.className = NOTE_BADGE_CLASS;
     badge.dataset.highlightId = record.id;
-    badge.textContent = String(n);
+    // No text: the fold is drawn by the stylesheet (styles/37-document-chrome.css).
     const flat = note.replace(/\s+/g, " ").trim();
     badge.title = flat.length > BADGE_TITLE_CHARS ? `${flat.slice(0, BADGE_TITLE_CHARS)}…` : flat;
-    badge.setAttribute("aria-label", `Note ${n} on this highlight`);
-    // Pinned just outside the highlight's top-right corner, so it never covers
-    // the words it is about. Clamped to 0 on the left because a highlight that
-    // starts in the page's left margin would otherwise put its badge outside the
-    // page.
-    badge.style.left = `${Math.max(0, box.left + box.width - 8)}px`;
-    badge.style.top = `${Math.max(0, box.top - 8)}px`;
+    badge.setAttribute("aria-label", "Open the note on this highlight");
+    // Tucked INTO the highlight's top-right corner, the way the notes view's
+    // fold is: it sits on the tint's own corner rather than over the line above
+    // or the next word. Clamped to 0 because a sliver of a highlight narrower
+    // than the fold would otherwise push it off the page's left edge.
+    badge.style.left = `${Math.max(0, box.left + box.width - NOTE_FOLD_PX)}px`;
+    badge.style.top = `${Math.max(0, box.top)}px`;
     badge.addEventListener("click", (event) => {
       // The document view's own click handler opens the MARK menu for whatever
       // highlight is under the pointer; the badge is a shortcut past that menu
@@ -283,8 +297,8 @@ function noteBlockFor(pageNumber, entries) {
   //
   // `column-width` alone answers "how many fit", and on a wide page that is four
   // — including for a page with ONE note on it, where multicol cannot split an
-  // unbreakable item (break-inside: avoid, and it has to be, or a note's number
-  // badge ends up in a different column from its text). The single note would
+  // unbreakable item (break-inside: avoid, and it has to be, or a note's quote
+  // ends up in a different column from its text). The single note would
   // sit in a 260px column with three empty ones beside it: narrower than the
   // full-width row this replaced, which is the opposite of the point.
   //
@@ -296,7 +310,7 @@ function noteBlockFor(pageNumber, entries) {
   head.className = "pdf-page-notes-head";
   head.textContent = `Notes · page ${pageNumber}`;
   block.appendChild(head);
-  entries.forEach(({ record, note, n }) => {
+  entries.forEach(({ record, note }) => {
     // A button, because the note is EDITABLE from here — the same round trip the
     // badge and the mark menu make. Read-only text would be a third place a note
     // appears and the only one you cannot fix a typo in.
@@ -304,9 +318,6 @@ function noteBlockFor(pageNumber, entries) {
     row.type = "button";
     row.className = "pdf-page-note";
     row.dataset.highlightId = record.id;
-    const number = document.createElement("span");
-    number.className = "pdf-page-note-num";
-    number.textContent = String(n);
     const body = document.createElement("span");
     body.className = "pdf-page-note-body";
     const excerpt = document.createElement("span");
@@ -323,7 +334,9 @@ function noteBlockFor(pageNumber, entries) {
     const text = document.createElement("span");
     text.innerHTML = markdownToSafeHtml(note);
     body.append(excerpt, text);
-    row.append(number, body);
+    // The quote leads, and it is what says which highlight this note is about —
+    // there is no number to match against the page any more.
+    row.append(body);
     row.addEventListener("click", () => openNoteFor(record, row));
     block.appendChild(row);
   });
@@ -334,8 +347,8 @@ function isPictured(record) {
   return record?.kind === "area" || record?.kind === "ink";
 }
 
-// Narrower than the pane's picture: this sits under a page, beside a number,
-// with the note itself still to come under it.
+// Narrower than the pane's picture: this sits under a page, in a column, with
+// the note itself still to come under it.
 const PAGE_NOTE_REGION_WIDTH = 200;
 
 function shortLabel(label) {
@@ -380,8 +393,8 @@ export function refreshPdfPageNotes(annotated = null) {
   //
   // setDocumentHighlightNote no longer notifies per keystroke (see there), so
   // most of those calls are gone. This is the other half, for the ones that are
-  // left: a highlight made or deleted anywhere renumbers the notes after it and
-  // so has to reach every page, and almost every page's answer is unchanged.
+  // left: a highlight made or deleted anywhere has to reach every page, and
+  // almost every page's answer is unchanged.
   // ── ...decided in full BEFORE anything is touched ────────────────────────
   //
   // The two anchor reads below used to happen here, unconditionally, before this
@@ -464,8 +477,7 @@ export function refreshPdfPageNotes(annotated = null) {
 
 // Every page currently on screen, plus the printed blocks. The counterpart of
 // repaintDocumentHighlights, and called from the same places — any CRUD on a
-// highlight or its note can change a NUMBER, and a number changing means every
-// badge after it changes too.
+// highlight or its note can add or remove a fold, and any page may hold it.
 //
 // ── One reading of the annotations for the whole pass ──────────────────────
 //
@@ -504,7 +516,7 @@ export function paintPdfPageNotesButton() {
   button.setAttribute("aria-pressed", pageNotesOn ? "true" : "false");
   button.title = pageNotesOn
     ? "Hide the notes under the pages — read them from the highlight instead"
-    : "Print every highlight's note under the page it is on, numbered";
+    : "Print every highlight's note under the page it is on";
   const total = deckHasPdf(state.meta) ? annotatedDocumentHighlights().length : 0;
   button.classList.toggle("is-empty", total === 0);
   const hint = button.querySelector(".nhm-hint");

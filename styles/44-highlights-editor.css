@@ -199,34 +199,7 @@
   line-height: 1.2;
 }
 
-/* ── Which highlight this is, on a PDF page ────────────────────────────────
-   Only a PDF Document highlight's card has one: the same number its badge on
-   the page wears (src/documents/pdf-page-notes.js), so the card and the mark
-   can be matched by eye. A notes-view highlight wears an unnumbered fold
-   (src/notes/highlight-badges.js) and its card carries no number at all. Deliberately the same shape as that badge — a small filled disc in the
-   accent, tabular digits — because two different-looking numbers claiming to be
-   the same number is worse than one of them not being there.
-
-   First in the row, and pushed to the LEFT: it is an identity, not a control,
-   and it should not move when the controls beside it appear on hover. */
-.hl-note-n {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 1.35em;
-  height: 1.35em;
-  margin-right: auto;
-  padding: 0 0.3em;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--accent) 88%, transparent);
-  color: #fff;
-  font-size: 0.66em;
-  font-weight: 800;
-  font-variant-numeric: tabular-nums;
-  line-height: 1;
-}
-
-/* The page or chapter, beside the number. Quiet — the group heading above says
+/* The page or chapter, first in the head. Quiet — the group heading above says
    it too; this is for a card being read out from under that heading. */
 .hl-note-where {
   overflow: hidden;

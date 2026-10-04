@@ -19,7 +19,7 @@ import { notesAnchorPlainText } from "../notes/anchors.js?v=__BUILD__";
 import { headingForOffset, headingIndexFor } from "../notes/chapters.js?v=__BUILD__";
 import { clozeCleanUnit, clozeUnitAt, clozeUnitIndex } from "./cloze-panel.js?v=__BUILD__";
 import { trimNoteAnchor } from "../quick-notes/anchors.js?v=__BUILD__";
-import { annotatedDocumentHighlightNumbers, documentHighlightLabel, documentHighlightsInReadingOrder, isPdfDeck } from "../documents/pdf-highlights.js?v=__BUILD__";
+import { documentHighlightLabel, documentHighlightsInReadingOrder, isPdfDeck } from "../documents/pdf-highlights.js?v=__BUILD__";
 import { mountRegionPreview } from "../documents/pdf-region-embed.js?v=__BUILD__";
 
 // ── Highlights view ────────────────────────────────────────────────────────
@@ -429,11 +429,6 @@ export function collectHighlightEntries() {
     // measured at 4ms for 50 highlights and 60ms for 400, which is the shape of
     // a cost that has no ceiling on a heavily annotated paper.
     const notes = readHighlightNotes(state.notes || "");
-    // The number each highlight wears on the page, asked of the one function
-    // that decides it (annotatedDocumentHighlightNumbers, beside the records in
-    // pdf-highlights.js) rather than recounted here. A card showing "3" beside a
-    // badge showing "5" is worse than a card showing nothing.
-    const numbers = annotatedDocumentHighlightNumbers();
     documentHighlightsInReadingOrder().forEach((record) => {
       const words = String(record.text || "").trim();
       const text = words || documentHighlightLabel(record);
@@ -442,9 +437,8 @@ export function collectHighlightEntries() {
         highlightId: record.id,
         color: record.color,
         group: record.page ? `Page ${record.page}` : "The document",
-        // 0 for a highlight with nothing written about it, which is the same
-        // "no number" the page shows.
-        n: numbers.get(record.id) || 0,
+        // No `n`: the page wears an unnumbered fold now, so the card carries no
+        // number either (see the head in highlights-editor.js).
         // Ink takes the same preview a region does. Both are marks with no
         // words in them, and for both the only useful thing a list can show is
         // a picture of what is actually there.

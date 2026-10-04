@@ -176,7 +176,7 @@ export function editorSignature(entries) {
   return entries
     // A pictured entry's edit stamp too: an ink mark grows stroke by stroke
     // with no words changing, and its picture has to follow.
-    .map((entry) => `${entryKey(entry)}:${entry.n || 0}:${entry.color || ""}:${hash32(entry.markdown || "")}:${hash32(entry.note || "")}:${entry.region?.at || ""}:${entry.own ? entry.own.join(",") : "*"}`)
+    .map((entry) => `${entryKey(entry)}:${entry.color || ""}:${hash32(entry.markdown || "")}:${hash32(entry.note || "")}:${entry.region?.at || ""}:${entry.own ? entry.own.join(",") : "*"}`)
     .join("|");
 }
 
@@ -397,28 +397,14 @@ function articleFor(entry) {
   const head = document.createElement("div");
   head.className = "hl-note-head";
 
-  // ── A number only where the page wears one ─────────────────────────────
+  // ── No number ──────────────────────────────────────────────────────────
   //
-  // The PDF Document surface pins a numbered badge to each annotated highlight,
-  // and its notes strip under the page pairs notes to quads by that number —
-  // so a card for a document highlight shows the same number, and the two can
-  // be matched by eye (annotatedDocumentHighlightNumbers decides it for both).
-  //
-  // A highlight in the notes view wears an unnumbered fold instead
-  // (src/notes/highlight-badges.js), and its card carries no number either: the
-  // card IS the highlight's quote with its note under it, so what the note is
-  // about is already on the card. A counter there only grew with the note —
-  // two digits, then three — and said nothing the layout did not.
-  //
-  // So only document entries carry `n` (collectHighlightEntries), and it is
-  // absent there too on a highlight with nothing written about it yet.
-  if (entry.n) {
-    const number = document.createElement("span");
-    number.className = "hl-note-n";
-    number.textContent = String(entry.n);
-    number.title = `Note ${entry.n} — the number this highlight wears on the page`;
-    head.appendChild(number);
-  }
+  // Neither surface numbers its highlights any more: the notes view and the PDF
+  // page both mark an annotated highlight with an unnumbered fold
+  // (src/notes/highlight-badges.js, src/documents/pdf-page-notes.js). The card
+  // IS the highlight's quote with its note under it, so what the note is about
+  // is already on the card; a counter only grew with the note — two digits,
+  // then three — and said nothing the layout did not.
 
   // ...and where it is. The group heading above already says this, but a card
   // read on its own — scrolled to by ◀ ▶, revealed by a press on its badge, or

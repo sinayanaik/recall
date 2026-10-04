@@ -179,9 +179,10 @@ async function excerptHtmlFor(record) {
 async function pageNotesHtml(entries) {
   if (!entries.length) return "";
   const excerpts = await Promise.all(entries.map(({ record }) => excerptHtmlFor(record)));
-  const rows = entries.map(({ note, n }, index) => `
+  // No number: the page no longer wears one (src/documents/pdf-page-notes.js),
+  // and each note already opens with the quote it is about.
+  const rows = entries.map(({ note }, index) => `
     <li class="doc-print-note">
-      <span class="doc-print-note-num">${n}</span>
       <span class="doc-print-note-body">
         ${excerpts[index]}
         ${markdownToSafeHtml(note)}

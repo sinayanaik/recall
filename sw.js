@@ -364,6 +364,7 @@ const APP_SHELL = [
   `./styles/74-smart-highlight.css?v=${STAMP}`,
   `./styles/75-highlight-stability.css?v=${STAMP}`,
   `./styles/76-home.css?v=${STAMP}`,
+  `./styles/77-shutdown.css?v=${STAMP}`,
   // The module entry point. Everything it imports is stamped with the same
   // ?v=, so those URLs change with every release too — which is what lets the
   // cache-first handler below serve them without revalidating and still never
@@ -610,6 +611,7 @@ const APP_SHELL = [
   `./src/ui/overlays.js?v=${STAMP}`,
   `./src/ui/pickers.js?v=${STAMP}`,
   `./src/ui/reading-rail.js?v=${STAMP}`,
+  `./src/ui/shutdown.js?v=${STAMP}`,
   `./src/ui/style-schema.js?v=${STAMP}`,
   `./src/ui/style-settings.js?v=${STAMP}`,
   `./src/ui/style-tokens.js?v=${STAMP}`,

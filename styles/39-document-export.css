@@ -56,8 +56,9 @@
   text-transform: uppercase;
 }
 
-/* The notes for that page, in the same numbered order the badges on screen use
-   — so a note in the export and the badge on the page are the same number. */
+/* The notes for that page, in reading order, each led by the quote it is about.
+   Unnumbered, like the folds on screen: the quote is what pairs a note with its
+   highlight. */
 .doc-print-notes {
   margin: 0;
   padding: 8px 10px;
@@ -82,20 +83,6 @@
   margin-bottom: 8px;
   break-inside: avoid;
   page-break-inside: avoid;
-}
-
-.doc-print-note-num {
-  flex: 0 0 auto;
-  min-width: 16px;
-  height: 16px;
-  margin-top: 2px;
-  border-radius: 999px;
-  background: var(--print-accent, #0f766e);
-  color: #fff;
-  font-size: 0.62rem;
-  font-weight: 800;
-  line-height: 16px;
-  text-align: center;
 }
 
 .doc-print-note-body {
