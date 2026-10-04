@@ -713,36 +713,115 @@ export function scheduleDeckAutosave() {
   // toast already told the user, and hammering a full store just wastes CPU
   // and fires more confusing errors.
   if (deckAutosaveStorageFailed) return;
+  // An ordinary save writes everything a lazy one was waiting to write.
+  cancelLazyDeckAutosave();
   if (deckAutosaveTimer) clearTimeout(deckAutosaveTimer);
-  setDeckAutosaveTimer(setTimeout(async () => {
+  setDeckAutosaveTimer(setTimeout(() => {
     setDeckAutosaveTimer(null);
-    persistWorkingDeck();
-    // An empty deck (e.g. the last card was just deleted) has nothing to
-    // save — saveDeckToLibrary correctly no-ops and returns null for this,
-    // but that's not a storage failure, so don't treat it as one.
-    //
-    // Shares saveDeckToLibrary's own predicate rather than restating it: they
-    // have to agree, and when they last disagreed a PDF deck's highlights were
-    // silently dropped on every reload while this line reported "saved".
-    if (deckHasNothingToSave()) {
-      setSyncIndicator("saved");
+    runDeckAutosave();
+  }, 400));
+}
+
+// The save itself, which the 400ms timer above and a lazy save that has waited
+// for its quiet moment both end in.
+async function runDeckAutosave() {
+  persistWorkingDeck();
+  // An empty deck (e.g. the last card was just deleted) has nothing to
+  // save — saveDeckToLibrary correctly no-ops and returns null for this,
+  // but that's not a storage failure, so don't treat it as one.
+  //
+  // Shares saveDeckToLibrary's own predicate rather than restating it: they
+  // have to agree, and when they last disagreed a PDF deck's highlights were
+  // silently dropped on every reload while this line reported "saved".
+  if (deckHasNothingToSave()) {
+    setSyncIndicator("saved");
+    return;
+  }
+  // The save is async now, so a throw here would become an unhandled
+  // rejection inside a timer — invisible, and it would leave the pill
+  // claiming whatever it last said. Autosave is the single most important
+  // background job in the app; it has to report its own failures.
+  try {
+    const savedMeta = await saveDeckToLibrary({ silent: true });
+    // A genuine quota failure already latched deckAutosaveStorageFailed and
+    // showed its toast inside saveDeckToLibrary (via handleDeckStorageQuotaError)
+    // — nothing left to do here but reflect the outcome in the pill.
+    setSyncIndicator(savedMeta ? "saved" : "error");
+  } catch (error) {
+    console.error("Autosave failed", error);
+    setSyncIndicator("error");
+  }
+}
+
+// ── A save that can wait: where the reader has got to ───────────────────────
+//
+// Reading a paper changes one thing about the deck — the page — and the
+// Document view used to ask for an ordinary autosave on every scroll frame to
+// record it. Debounced to 400ms, that is a whole-deck save after every PAUSE:
+// a snapshot of the deck, an IndexedDB read, a deep compare and a write, landing
+// just as the reader's next flick starts. On a phone the next flick cannot begin
+// until the main thread has answered its touchmove (src/notes/touch-selection.js
+// keeps a non-passive one on every reading surface), so that save was a scroll
+// that started late, once per pause, for a page number.
+//
+// So a position asks for this instead: the same save, once the reader has been
+// still for LAZY_DECK_AUTOSAVE_MS and the browser has an idle moment. Nothing it
+// writes is lost in the meantime. The device's own reading-position store is
+// written separately on its own 2s clock and flushed on pagehide
+// (src/notes/reading-position.js), the value is already in state.meta for any
+// other save to carry, and every path that flushes an armed autosave before
+// replacing the deck — navigation, a sync, the page going to the background —
+// promotes a waiting lazy save first (promoteLazyDeckAutosave below).
+export const LAZY_DECK_AUTOSAVE_MS = 1500;
+
+// ...and how long it then waits, at most, for the browser to be idle.
+export const LAZY_DECK_AUTOSAVE_IDLE_MS = 1000;
+
+let lazyAutosaveTimer = 0;
+let lazyAutosaveIdle = 0;
+
+export function scheduleLazyDeckAutosave() {
+  if (deckAutosaveStorageFailed) return;
+  // An ordinary save is already armed, and it will write this too.
+  if (deckAutosaveTimer) return;
+  cancelLazyDeckAutosave();
+  lazyAutosaveTimer = setTimeout(() => {
+    lazyAutosaveTimer = 0;
+    // Straight to the save once the browser is idle: the 400ms debounce an
+    // ordinary autosave waits out is for typing, and the quiet it waits for has
+    // already been waited for here.
+    const run = () => {
+      lazyAutosaveIdle = 0;
+      if (deckAutosaveStorageFailed || deckAutosaveTimer) return;
+      runDeckAutosave();
+    };
+    if (typeof requestIdleCallback !== "function") {
+      run();
       return;
     }
-    // The save is async now, so a throw here would become an unhandled
-    // rejection inside a timer — invisible, and it would leave the pill
-    // claiming whatever it last said. Autosave is the single most important
-    // background job in the app; it has to report its own failures.
-    try {
-      const savedMeta = await saveDeckToLibrary({ silent: true });
-      // A genuine quota failure already latched deckAutosaveStorageFailed and
-      // showed its toast inside saveDeckToLibrary (via handleDeckStorageQuotaError)
-      // — nothing left to do here but reflect the outcome in the pill.
-      setSyncIndicator(savedMeta ? "saved" : "error");
-    } catch (error) {
-      console.error("Autosave failed", error);
-      setSyncIndicator("error");
-    }
-  }, 400));
+    lazyAutosaveIdle = requestIdleCallback(run, { timeout: LAZY_DECK_AUTOSAVE_IDLE_MS });
+  }, LAZY_DECK_AUTOSAVE_MS);
+}
+
+export function lazyDeckAutosavePending() {
+  return Boolean(lazyAutosaveTimer || lazyAutosaveIdle);
+}
+
+// Dropped without saving — for the one caller that must not save at all: a deck
+// that has just been deleted (src/library/tombstones.js).
+export function cancelLazyDeckAutosave() {
+  if (lazyAutosaveTimer) clearTimeout(lazyAutosaveTimer);
+  if (lazyAutosaveIdle && typeof cancelIdleCallback === "function") cancelIdleCallback(lazyAutosaveIdle);
+  lazyAutosaveTimer = 0;
+  lazyAutosaveIdle = 0;
+}
+
+// Turn a waiting lazy save into an ordinary armed one, so that everything which
+// already knows how to flush deckAutosaveTimer flushes this too.
+export function promoteLazyDeckAutosave() {
+  if (!lazyDeckAutosavePending()) return false;
+  scheduleDeckAutosave();
+  return true;
 }
 
 // Write out an armed-but-unfired autosave for the deck that is open RIGHT NOW,
@@ -758,6 +837,9 @@ export function scheduleDeckAutosave() {
 // MUST re-check their load token afterwards — this introduces an await, and so
 // a fresh window in which the user can open something else.
 export async function flushPendingDeckAutosave() {
+  // A reading position still waiting for its quiet moment is a save this deck
+  // is owed too, and it is about to stop being the open one.
+  promoteLazyDeckAutosave();
   if (!deckAutosaveTimer) return;
   clearTimeout(deckAutosaveTimer);
   setDeckAutosaveTimer(null);

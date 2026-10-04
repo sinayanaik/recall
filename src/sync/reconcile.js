@@ -31,7 +31,7 @@ import { flushPendingQuickNoteAnchors } from "../quick-notes/anchors.js?v=__BUIL
 import { flushPendingQuickNoteCategories } from "../quick-notes/categories.js?v=__BUILD__";
 import { QUICK_NOTES_DECK_TITLE } from "../quick-notes/palette.js?v=__BUILD__";
 import { noteLinkAliasesFor } from "../render/note-links.js?v=__BUILD__";
-import { deckStoreUnreadable, deleteDeckSnapshot, readDeckSnapshot, withDeckLock, writeDeckSnapshot } from "../storage/deck-store.js?v=__BUILD__";
+import { deckStoreUnreadable, deleteDeckSnapshot, promoteLazyDeckAutosave, readDeckSnapshot, withDeckLock, writeDeckSnapshot } from "../storage/deck-store.js?v=__BUILD__";
 import { scheduleDocumentBackfill } from "../storage/document-migration.js?v=__BUILD__";
 import { describeSignedOutProblem } from "../storage/health.js?v=__BUILD__";
 import { ADOPT_DELETION_MAX_FRACTION, ADOPT_DELETION_MIN_CAP, LAST_GLOBAL_SYNC_ERROR_KEY, LAST_GLOBAL_SYNC_KEY, MISSING_DECK_MIN_AGE_MS, MISSING_DECK_MIN_SIGHTINGS, NOTES_CONFLICT_SUFFIX, clearBackgroundSyncProblem, clearMissingDeckWatch, readMissingDeckWatch, reportBackgroundSyncProblem, writeMissingDeckWatch } from "../storage/keys.js?v=__BUILD__";
@@ -1226,6 +1226,11 @@ export async function reconcileAllDecks({ explicit = false } = {}) {
   // in-flight edit. Flushing writes it out and bumps the timestamp so local
   // edits correctly win the last-write-wins comparison. Also runs when we just
   // committed an editor edit above, which schedules no timer of its own.
+  //
+  // A reading position waiting on its quiet moment (scheduleLazyDeckAutosave)
+  // is armed first, so it is flushed here too: left in memory, the stale page
+  // on disk is what the pull below would merge back over the reader's place.
+  promoteLazyDeckAutosave();
   if (deckAutosaveTimer || committedActiveEdit) {
     if (deckAutosaveTimer) {
       clearTimeout(deckAutosaveTimer);

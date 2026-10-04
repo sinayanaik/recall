@@ -42,7 +42,7 @@ import { isDarkThemeActive } from "../ui/theme-catalog.js?v=__BUILD__";
 import { getDocument, putDocument, sha256 } from "./pdf-store.js?v=__BUILD__";
 import { betterReadingPosition, scheduleReadingPositionSave } from "../notes/reading-position.js?v=__BUILD__";
 import { currentDeckKey } from "../notes/scroll-anchor.js?v=__BUILD__";
-import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
+import { scheduleDeckAutosave, scheduleLazyDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { setStatus, showToast } from "../ui/feedback.js?v=__BUILD__";
 
 // How many pages either side of the visible run keep their canvas. Two is
@@ -3569,9 +3569,15 @@ export function scheduleDocumentPositionSave() {
     // could sit unflushed in memory for the deck's entire session while a
     // periodic sync reconciled against the stale copy still on disk — merged
     // that stale page back over this one, and landed the reader there on the
-    // next reopen. Debounced, so a fling during active scrolling still
-    // coalesces into one write once it settles (see scheduleDeckAutosave).
-    scheduleDeckAutosave();
+    // next reopen.
+    //
+    // ...but LAZILY. This runs every frame of a scroll, and the ordinary
+    // autosave's 400ms debounce made it a whole-deck save after every pause in
+    // the reading — landing as the next flick began. A lazy save waits for the
+    // reader to be still and the browser to be idle, and a sync, a navigation
+    // or the page being hidden flushes it exactly as it flushes an armed one
+    // (see scheduleLazyDeckAutosave in src/storage/deck-store.js).
+    scheduleLazyDeckAutosave();
   }
 }
 

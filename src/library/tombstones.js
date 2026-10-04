@@ -13,7 +13,7 @@ import { isSignedIn, supabaseClient } from "../cloud/supabase-client.js?v=__BUIL
 import { deckStorageKey, defaultDeckCategory } from "../core/constants.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { deleteDeckFromLibrary, readLocalDeckIndex, writeLocalDeckIndex } from "./local-library.js?v=__BUILD__";
-import { readDeckSnapshot, withDeckLock, writeDeckSnapshot } from "../storage/deck-store.js?v=__BUILD__";
+import { cancelLazyDeckAutosave, readDeckSnapshot, withDeckLock, writeDeckSnapshot } from "../storage/deck-store.js?v=__BUILD__";
 import { LOCAL_DECK_TOMBSTONES_KEY, clearMissingDeckWatch } from "../storage/keys.js?v=__BUILD__";
 import { deckAutosaveTimer, persistWorkingDeck, setDeckAutosaveTimer } from "../storage/quota.js?v=__BUILD__";
 import { setViewMode } from "../ui/view-mode.js?v=__BUILD__";
@@ -195,6 +195,8 @@ export async function flushPendingUntombstones() {
 // visible deck) would call saveDeckToLibrary and re-create it as a brand-new
 // local deck, resurrecting exactly what was just deleted.
 export function resetActiveDeckAfterDelete() {
+  // ...and a reading position still waiting to be saved, for the same reason.
+  cancelLazyDeckAutosave();
   if (deckAutosaveTimer) {
     clearTimeout(deckAutosaveTimer);
     setDeckAutosaveTimer(null);
