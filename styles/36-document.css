@@ -237,6 +237,25 @@
  */
 .pdf-text-layer {
   line-height: 1;
+  /* Every property that can change how wide a run of text is, pinned to the
+     defaults of a 2D canvas context. buildTextLayer (src/documents/pdf-view.js)
+     measures each span's string with measureText rather than reading the
+     span's width back off the layout, and the two only agree if the span is set
+     the way the canvas sets it. Without this a text layer would inherit its
+     surface's typography — a region in the notes takes the reader's notes
+     weight, one on a question face takes the question's 500 — and every span
+     would be stretched by the wrong amount. Nothing here is visible: the text is
+     transparent, and the selection box is the span's box, which the scale
+     sizes from the PDF's own glyph widths either way. */
+  font-weight: 400;
+  font-style: normal;
+  font-stretch: normal;
+  font-variant: normal;
+  font-feature-settings: normal;
+  font-kerning: auto;
+  letter-spacing: normal;
+  word-spacing: normal;
+  text-transform: none;
   /* Selection over a canvas has no visible text of its own to tint, so the
      browser's selection colour IS the feedback. Kept obviously blue rather than
      themed: it is the OS's affordance, and a reader has to be able to tell a

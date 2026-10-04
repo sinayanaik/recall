@@ -159,7 +159,7 @@ function regionPageUnder(clientX, clientY) {
 // A page's spans, measured once and again only after a scroll — the boxes are
 // client coordinates, and measuring every span at every frame of a drag over a
 // dense page is a layout per frame for nothing. Forgotten at every press (a
-// zoom or a late --pdf-span-scale can have moved them since), and, between
+// zoom can have moved them since), and, between
 // presses, after a second: the hover cursor asks often and needs no better.
 const REGION_SPAN_CACHE_MS = 1000;
 

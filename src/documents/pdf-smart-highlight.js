@@ -91,8 +91,8 @@ export function smartHlPageHasText(page) {
 // ── The spans of a page, measured ─────────────────────────────────────────
 
 // Every text span on the page with its box in CLIENT coordinates, measured
-// now. Not cached across presses: the layer's --pdf-span-scale lands a frame
-// after the layer is built, and a page scrolls between one press and the next.
+// now. Not cached across presses: a page scrolls between one press and the
+// next, and a zoom rebuilds the layer under it.
 // A rotated span is left out — a vertical run of text has no left-to-right to
 // snap along, and the boxes below assume one.
 export function smartHlSpans(page) {
