@@ -244,7 +244,16 @@ function iconButton(key, glyph, label) {
 function onListClick(event) {
   // The click that ends a drag lands on whatever the row was dropped over; it
   // is the end of the drag, not a request to open that paper.
+  //
+  // THAT click, and no other. It used to be a flat 350ms window, so a reader
+  // who dropped a paper and went straight on to press another had the press
+  // thrown away too — and the drop REPAINTS the rows, so the drag's own click
+  // often never arrives at all (its target is no longer in the list) and the
+  // window was left to swallow whatever came next. So the hush is spent by the
+  // first click it swallows, and lifted by any new press or key in the list
+  // (onListPointerDown, onListKey): a click after one of those is the reader's.
   if (Date.now() < pdfPanelClickHushUntil) {
+    pdfPanelClickHushUntil = 0;
     event.preventDefault();
     event.stopPropagation();
     return;
@@ -319,6 +328,7 @@ function beginRename(row) {
 // ── Keyboard: Alt+↑/↓ moves the focused paper ───────────────────────────────
 
 function onListKey(event) {
+  pdfPanelClickHushUntil = 0;
   if (!event.altKey || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
   const row = event.target.closest(".pdf-panel-row");
   if (!row || event.target.closest("input")) return;
@@ -336,6 +346,9 @@ function onListKey(event) {
 // ── Dragging a row ──────────────────────────────────────────────────────────
 
 function onListPointerDown(event) {
+  // A new press: whatever click the last drag owed has either come or is not
+  // coming. See onListClick.
+  pdfPanelClickHushUntil = 0;
   if (pdfPanelDrag || pdfPanelRenaming) return;
   if (event.button !== undefined && event.button !== 0) return;
   const row = event.target.closest(".pdf-panel-row");
@@ -477,7 +490,7 @@ function layoutMidpoint(node) {
 // carried instead of snapping.
 function animateReflow(dragged, mutate, includeDragged = false) {
   const before = new Map();
-  [...listEl.children].forEach((node) => {
+  [...pdfPanelList.children].forEach((node) => {
     if (node !== dragged || includeDragged) before.set(node, node.getBoundingClientRect().top);
   });
   mutate();
@@ -517,7 +530,7 @@ function ensureAutoScroll() {
 }
 
 function rowOrder() {
-  return [...listEl.children].map((row) => row.dataset.pdfId);
+  return [...pdfPanelList.children].map((row) => row.dataset.pdfId);
 }
 
 function commitOrder() {
