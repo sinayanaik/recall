@@ -30,9 +30,32 @@
  * 2,000-block book has fewer than 60 of them and is exactly the note the
  * containment exists for.
  *
- * (1,2,0) — the id clears 12-notes.css:255's (0,3,0), the trap
- * 19-notes-chunks.css documents. */
-#notesView:not(:has(> :nth-child(60))):not(:has(> .notes-chunk)) > * {
+ * The id clears 12-notes.css:255's (0,3,0), the trap 19-notes-chunks.css
+ * documents.
+ *
+ * ── Counted WITHOUT :has(), and why that matters to every surface ─────────
+ *
+ * This was written `#notesView:not(:has(> :nth-child(60))):not(:has(> .notes-chunk)) > *`,
+ * and on Chromium it made the whole app restyle itself on almost any DOM change.
+ * Chromium keeps ONE invalidation set for the :has() pseudo-class across the
+ * stylesheet, and the universal `> *` after a :has() made that set "every
+ * descendant might be invalid". So whenever the engine re-checks ANY :has() —
+ * and body, .app-shell and .quiz-panel are the subjects of dozens of them
+ * (33-reading-chrome.css, 37-document-chrome.css, 53-handwriting.css…) — it
+ * restyled the entire subtree. Traced while flinging a paper on a phone: the
+ * page indicator's text changing once a page set off a recalculation of all
+ * 22,000 elements in the document, every text-layer span of every rendered page
+ * included, at well over a second each under a 4x CPU throttle
+ * (tools/scroll-perf-check.mjs --trace).
+ *
+ * The same condition as a quantity query on the children themselves: the first
+ * child is within 59 of the last (so there are at most 59), and it is not a
+ * chunk — then it, and every later child that is not a chunk, is uncontained.
+ * Structural selectors only invalidate #notesView's own children when its child
+ * list changes, which is what this rule is about, and nothing outside it. Still
+ * pure CSS, so there is still no frame in which a script has not yet decided. */
+#notesView > :first-child:nth-last-child(-n+59):not(.notes-chunk),
+#notesView > :first-child:nth-last-child(-n+59):not(.notes-chunk) ~ :not(.notes-chunk) {
   content-visibility: visible;
   contain-intrinsic-size: auto;
 }
@@ -47,8 +70,17 @@
  *
  * Inside a chunk the blocks are already uncontained (19-notes-chunks.css); only
  * the chunk's own top edge clips, so only a chunk whose FIRST block carries a
- * number is freed. */
-#notesView > :has(.hl-note-badge) {
+ * number is freed.
+ *
+ * Which is why the first rule must not match a chunk at all. Written as
+ * `#notesView > :has(.hl-note-badge)` it did — at (1,1,0), the same specificity
+ * as `#notesView > .notes-chunk` (19-notes-chunks.css) and later in the cascade,
+ * so it won, and any chunk with an annotated highlight ANYWHERE in it lost its
+ * containment outright. On a long, well-annotated book that is most chunks:
+ * forty blocks apiece laid out and painted whether on screen or not. The rule
+ * below it already says which chunks need freeing; this one now leaves chunks
+ * to it. */
+#notesView > :not(.notes-chunk):has(.hl-note-badge) {
   content-visibility: visible;
 }
 
