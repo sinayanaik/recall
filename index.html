@@ -133,6 +133,7 @@
     <link rel="stylesheet" href="styles/74-smart-highlight.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/75-highlight-stability.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/76-home.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/77-shutdown.css?v=__BUILD__">
 
     <!-- ── Module preloads ────────────────────────────────────────────────
          The app is ~130 ES modules and the browser discovers them by PARSING
@@ -387,6 +388,7 @@
     <link rel="modulepreload" href="src/ui/overlays.js?v=__BUILD__">
     <link rel="modulepreload" href="src/ui/pickers.js?v=__BUILD__">
     <link rel="modulepreload" href="src/ui/reading-rail.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/ui/shutdown.js?v=__BUILD__">
     <link rel="modulepreload" href="src/ui/style-schema.js?v=__BUILD__">
     <link rel="modulepreload" href="src/ui/style-settings.js?v=__BUILD__">
     <link rel="modulepreload" href="src/ui/style-tokens.js?v=__BUILD__">
@@ -666,6 +668,9 @@
           <button class="tool-button tool-button-info" id="helpBtn" type="button" title="How to use this app" aria-label="Help">&#63; Help &amp; Guide</button>
           <button class="tool-button" id="appInfoBtn" type="button" title="App version and update status" aria-label="App info">&#8505; App Info</button>
           <button class="tool-button" id="logoutBtn" type="button" title="Sign out" hidden>&#8594; Sign Out</button>
+          <!-- Shut down: save, sync everything, then close — instead of closing
+               the tab and hoping the last edit made it. See src/ui/shutdown.js. -->
+          <button class="tool-button tool-button-shutdown" id="shutdownBtn" type="button" title="Save and sync everything, then close Recall">&#9211; Shut down</button>
         </div>
 
         <div class="deck-meta">
@@ -1141,7 +1146,7 @@
                 <button class="md-menu-item" type="button" data-slot="notebook" data-document-action="hw-paper-ruled" title="Ruled paper, with a margin"><span>Ruled paper</span><span class="nhm-state" aria-hidden="true"><span class="nhm-switch"></span></span></button>
                 <button class="md-menu-item" type="button" data-slot="notebook" data-document-action="hw-paper-blank" title="Plain paper, nothing printed on it"><span>Blank paper</span><span class="nhm-state" aria-hidden="true"><span class="nhm-switch"></span></span></button>
                 <button class="md-menu-item is-danger" type="button" data-slot="notebook" data-document-action="hw-tear-out" title="Tear out the page you are looking at — everything written on it goes with it"><span>Tear out this page<span class="nhm-hint">Everything written on it goes too</span></span></button>
-                <button class="md-menu-item" type="button" data-document-action="page-notes" title="Print every highlight's note under the page it is on, numbered — the PDF tab's answer to the notes view's own inline notes"><span>Notes on the page<span class="nhm-hint">Print each highlight's note under its page</span></span><span class="nhm-state" aria-hidden="true"><span class="nhm-switch"></span></span></button>
+                <button class="md-menu-item" type="button" data-document-action="page-notes" title="Print every highlight's note under the page it is on — the PDF tab's answer to the notes view's own inline notes"><span>Notes on the page<span class="nhm-hint">Print each highlight's note under its page</span></span><span class="nhm-state" aria-hidden="true"><span class="nhm-switch"></span></span></button>
                 <label class="md-menu-item file-pick" data-slot="doc" data-document-action="add-pdf" title="Attach another PDF to this deck">
                   <input id="documentAddPdfInput" type="file" accept=".pdf,application/pdf" hidden>
                   <span>Add another PDF…</span>
@@ -1651,9 +1656,14 @@
                undo itself never tells you which way it is set. -->
           <button class="reading-rail-btn" type="button" data-rail-group="This page" data-rail-scope="document" data-rail-action="pen-text" aria-pressed="false" title="Select text with the pen — the stylus picks out words instead of drawing, so you can highlight them, make a cloze or copy them" aria-label="Select text with the pen"><span class="rr-ico" aria-hidden="true">T</span><span class="rr-label">Select text</span></button>
           <!-- ── The rest of what the folded row was holding ────────────-->
+          <!-- Home, first in the group, for the same reason the ⌂ sits beside
+               Back and heads the ☰ drawer: it is the way out of any deck, and
+               focus mode folds both of those away. -->
+          <button class="reading-rail-btn" type="button" data-rail-group="App" data-rail-action="home" title="Home — recent decks and quick actions" aria-label="Home"><span class="rr-ico" aria-hidden="true">&#8962;</span><span class="rr-label">Home</span></button>
           <button class="reading-rail-btn" type="button" data-rail-group="App" data-rail-action="decks" title="My Decks" aria-label="My Decks"><span class="rr-ico" aria-hidden="true">&#128218;</span><span class="rr-label">My Decks</span></button>
           <button class="reading-rail-btn" type="button" data-rail-group="App" data-rail-action="style" title="Themes &amp; style" aria-label="Themes and style"><span class="rr-ico" aria-hidden="true">&#127912;</span><span class="rr-label">Themes &amp; style</span></button>
           <button class="reading-rail-btn" type="button" data-rail-group="App" data-rail-action="sync" title="Sync all decks with the cloud now, and save where you are reading" aria-label="Sync now"><span class="rr-ico" aria-hidden="true">&#8635;</span><span class="rr-label">Sync now</span></button>
+          <button class="reading-rail-btn" type="button" data-rail-group="App" data-rail-action="shutdown" title="Shut down — save and sync everything, then close Recall" aria-label="Shut down"><span class="rr-ico" aria-hidden="true">&#9211;</span><span class="rr-label">Shut down</span></button>
           <!-- ── The two reading modes, pinned ──────────────────────────
                They are two toggles that say which way each is set. This used to
                be one toggle (Full screen) whose pressed state no stylesheet
@@ -2485,6 +2495,25 @@ What year was the Eiffel Tower built?
         <div class="sync-modal-actions">
           <button id="confirmModalCancelBtn" type="button" class="sync-modal-btn">Cancel</button>
           <button id="confirmModalOkBtn" type="button" class="sync-modal-btn is-primary">Confirm</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Shut down ──────────────────────────────────────────────────────
+         Over everything, with the rest of the page made inert while it is up.
+         data-state (working | done | unsynced) decides which buttons show —
+         see styles/77-shutdown.css and src/ui/shutdown.js. -->
+    <section class="shutdown-view" id="shutdownView" hidden data-state="working" role="dialog" aria-modal="true" aria-labelledby="shutdownTitle" aria-describedby="shutdownText">
+      <div class="shutdown-card">
+        <span class="shutdown-icon" aria-hidden="true">&#9211;</span>
+        <h2 class="shutdown-title" id="shutdownTitle">Shutting down…</h2>
+        <p class="shutdown-text" id="shutdownText" aria-live="polite"></p>
+        <span class="shutdown-spinner" aria-hidden="true"></span>
+        <div class="shutdown-actions">
+          <button class="shutdown-btn is-primary" id="shutdownRetryBtn" type="button" data-for="unsynced">Try again</button>
+          <button class="shutdown-btn" id="shutdownCloseAnywayBtn" type="button" data-for="unsynced">Close anyway</button>
+          <button class="shutdown-btn" id="shutdownCancelBtn" type="button" data-for="unsynced">Cancel</button>
+          <button class="shutdown-btn is-primary" id="shutdownReopenBtn" type="button" data-for="done">Reopen Recall</button>
         </div>
       </div>
     </section>

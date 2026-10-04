@@ -147,6 +147,15 @@ export function schedulePostEditSync() {
   }, POST_EDIT_SYNC_MS);
 }
 
+// Shut down (src/ui/shutdown.js): after the last sync has run, nothing should
+// start another one behind the "safe to close" screen. Not a preference — it is
+// not stored, and a reload (Reopen) starts the schedule again as usual.
+export function suspendAutoSync() {
+  if (autoSyncTicker) { clearInterval(autoSyncTicker); autoSyncTicker = null; }
+  if (postEditTimer) { clearTimeout(postEditTimer); postEditTimer = null; }
+  autoSyncNextAt = Infinity;
+}
+
 export function setAutoSyncMinutes(mins) {
   const clean = AUTOSYNC_ALLOWED.has(mins) ? mins : 0;
   try {

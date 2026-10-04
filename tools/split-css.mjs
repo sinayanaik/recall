@@ -65,6 +65,9 @@ const SECTIONS = [
 // Anything appearing in styles/ that is neither a slice nor listed here is
 // still a failure.
 const POST_SPLIT = {
+  "77-shutdown.css":
+    "The Shut down screen (src/ui/shutdown.js): saves and syncs everything, then " +
+    "closes the app or says it is safe to close the tab.",
   "76-home.css":
     "The home screen (src/ui/home.js): where every launch lands and where the ⌂ " +
     "buttons go. Takes the study surface's grid row while html.is-home hides it, " +

@@ -22,9 +22,8 @@
 // number to READ a note: the press opens it, and the Highlights pane and the
 // exports put each note directly under its own quote. A fold is the same size
 // at the 3rd note and the 300th, and it sits in the highlight's own corner, over
-// nothing the reader came for. (The PDF Document surface keeps numbers on its
-// page badges: its notes strip under the page has no other way to pair a note
-// with a quad on a scanned image — see src/documents/pdf-page-notes.js.)
+// nothing the reader came for. (The PDF Document surface wears the same fold
+// on its page badges — see src/documents/pdf-page-notes.js.)
 //
 // ── What used to be here ──────────────────────────────────────────────────
 //

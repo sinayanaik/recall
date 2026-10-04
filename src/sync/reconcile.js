@@ -1045,6 +1045,16 @@ async function pushLibraryDeckToCloudOnce(localMeta, { cloudExists = false, clou
 
 export let reconcileInFlight = false;
 
+// How the most recent run ended, for a caller that has to decide something on
+// it — Shut down (src/ui/shutdown.js) closes the app only once everything is in
+// the cloud, and says plainly when it is not. One of:
+//   "synced"    every deck matched or was carried
+//   "partial"   the run finished but some decks failed
+//   "signin"    not signed in: nothing to sync to, everything is on this device
+//   "offline" | "signedout" | "error"   the run stopped; decks are safe locally
+// null while a run is under way (or before the first).
+export let lastReconcileOutcome = null;
+
 // Most recent background (non-explicit) sync's report, or null once nothing's
 // left to show — rendered inline on the welcome screen, never as a modal.
 export let lastStartupSyncReport = null;
@@ -1121,12 +1131,13 @@ export async function reconcileAllDecks({ explicit = false } = {}) {
   // or the reader has not moved — see the notes on both in bookmark.js.
   captureBookmarkForSync({ announce: explicit });
   if (!supabaseClient || !isSignedIn) {
+    lastReconcileOutcome = "signin";
     if (explicit) showToast("Sign in to sync with the cloud", "info");
     return;
   }
   if (!navigator.onLine) {
     if (explicit) showToast("Offline — your decks are safe on this device", "info");
-    setSyncIndicator("offline");
+    setSyncIndicator(lastReconcileOutcome = "offline");
     updateDeckEmptyStatus();
     return;
   }
@@ -1145,6 +1156,7 @@ export async function reconcileAllDecks({ explicit = false } = {}) {
     return reconcileAllDecks({ explicit });
   }
   reconcileInFlight = true;
+  lastReconcileOutcome = null;
   let settleReconcile;
   reconcilePromise = new Promise((resolve) => { settleReconcile = resolve; });
 
@@ -1274,7 +1286,7 @@ export async function reconcileAllDecks({ explicit = false } = {}) {
     // already follows: absence that can't be trusted is not a fact.
     if (deckStoreUnreadable) {
       console.warn("Sync skipped — this device's deck contents could not be read this session.");
-      setSyncIndicator("error");
+      setSyncIndicator(lastReconcileOutcome = "error");
       if (explicit) {
         setStatus("Couldn't read this device's decks — reload the app before syncing. Nothing was changed.", "error");
         showToast("Couldn't read this device's decks — reload before syncing", "error");
@@ -1299,7 +1311,7 @@ export async function reconcileAllDecks({ explicit = false } = {}) {
       // what was wrong was reporting it as a network problem, which left the
       // user with nothing to act on and no reason to think signing in would
       // help. See the labels in setSyncIndicator.
-      setSyncIndicator("signedout");
+      setSyncIndicator(lastReconcileOutcome = "signedout");
       if (explicit) {
         setStatus("Couldn't confirm you're signed in — sign in again to sync. Your decks are safe on this device.", "error");
         showToast("Couldn't confirm your sign-in — your decks are safe on this device", "error");
@@ -1325,7 +1337,7 @@ export async function reconcileAllDecks({ explicit = false } = {}) {
     })();
     if (libraryOwner && libraryOwner !== cloudUserId) {
       console.warn("Sync skipped — the signed-in account doesn't own this device's deck library.");
-      setSyncIndicator("error");
+      setSyncIndicator(lastReconcileOutcome = "error");
       if (explicit) {
         setStatus("This device's decks belong to a different account — sign out and back in to sync them.", "error");
         showToast("Signed-in account doesn't match this device's decks", "error");
@@ -1409,7 +1421,7 @@ export async function reconcileAllDecks({ explicit = false } = {}) {
       ]));
     } catch (error) {
       if (!isTransientCloudError(error)) throw error;
-      setSyncIndicator("offline");
+      setSyncIndicator(lastReconcileOutcome = "offline");
       if (explicit) {
         setStatus("Couldn't reach the cloud — your decks are safe on this device.", "error");
         showToast("Couldn't reach the cloud — check your connection", "error");
@@ -1881,7 +1893,7 @@ export async function reconcileAllDecks({ explicit = false } = {}) {
         // needing a push is still marked as needing one, so the next sync after
         // a sign-in carries it.
         console.warn("Sync stopped before pushing — the sign-in lapsed mid-run.");
-        setSyncIndicator("signedout");
+        setSyncIndicator(lastReconcileOutcome = "signedout");
         if (explicit) {
           setStatus(SESSION_EXPIRED_MESSAGE, "error");
           showToast("Your sign-in expired — sign in again", "error");
@@ -2044,6 +2056,7 @@ export async function reconcileAllDecks({ explicit = false } = {}) {
       : failed
         ? `Sync incomplete — ${failedNote}`
         : nothingMoved;
+    lastReconcileOutcome = failed ? "partial" : "synced";
     if (explicit) {
       setStatus(summary);
       showToast(summary, failed ? "error" : "success");
@@ -2093,7 +2106,7 @@ export async function reconcileAllDecks({ explicit = false } = {}) {
     // which names nothing anybody can act on and reads like the app is
     // defective. It gets the pill that says what to do about it instead.
     const sessionLapsed = isSessionExpiredError(error);
-    setSyncIndicator(sessionLapsed ? "signedout" : "error");
+    setSyncIndicator(lastReconcileOutcome = sessionLapsed ? "signedout" : "error");
     localStorage.setItem(LAST_GLOBAL_SYNC_ERROR_KEY, "1");
     const offlineNow = !navigator.onLine || /failed to fetch|networkerror|load failed/i.test(error?.message || "");
     if (!explicit) {
