@@ -224,6 +224,146 @@ const PROBE = async (cases) => {
   return results;
 };
 
+// ── A short note, on an engine without scroll anchoring ────────────────────
+//
+// The Gayatri Mantra report, on an iPhone: a note that fits on one screen, one
+// phrase per line, a numbered note on most words. "The first time I highlight
+// after opening the note, the note text scrolls somewhere else; after that it
+// doesn't." Safari has no CSS scroll anchoring, which every repaint-stability
+// measure above leans on, so `overflow-anchor: none` stands in for it.
+//
+// Also what that note showed about the numbers: the first line's were cut off
+// (paint containment), and "10" stacked as "1" over "0".
+const SHORT_NOTE = [
+  "## Gayatri Mantra",
+  "",
+  "ॐ <mark data-note=\"hn-a1\">भू</mark><mark data-color=\"green\" data-note=\"hn-a2\">र्भुवः</mark> <mark data-note=\"hn-a3\">स्वः</mark>",
+  "<mark data-note=\"hn-a4\">तत्</mark><mark data-color=\"green\" data-note=\"hn-a5\">सवितुर्</mark>वरेण्यं",
+  "<mark data-color=\"blue\" data-note=\"hn-a6\">भर्गो</mark> <mark data-color=\"green\" data-note=\"hn-a7\">देवस्य</mark> <mark data-color=\"green\" data-note=\"hn-a8\">धीमहि</mark>।",
+  "<mark data-note=\"hn-a9\">धियो</mark> <mark data-note=\"hn-b1\">यो</mark> <mark data-note=\"hn-b2\">नः</mark> <mark data-note=\"hn-b3\">प्रचोदयात्</mark>॥",
+  "",
+  "उस प्राणस्वरूप, दुःखनाशक, सुखस्वरूप, श्रेष्ठ, तेजस्वी, पापनाशक, देवस्वरूप परमात्मा को हम अपनी अन्तरात्मा में धारण करें।"
+].join("\n");
+
+const PROBE_SHORT = async (note) => {
+  const paths = [
+    "/src/cloud/supabase-client.js?v=__BUILD__",
+    "/src/boot.js?v=__BUILD__",
+    "/src/ui/boot-screens.js?v=__BUILD__",
+    "/src/ui/view-mode.js?v=__BUILD__",
+    "/src/notes/notes-view.js?v=__BUILD__",
+    "/src/format/highlight.js?v=__BUILD__",
+    "/src/format/highlight-notes.js?v=__BUILD__",
+    "/src/format/render-toolbar.js?v=__BUILD__",
+    "/src/cards/new-deck.js?v=__BUILD__",
+    "/src/core/state.js?v=__BUILD__"
+  ];
+  const mods = await Promise.all(paths.map((p) => import(p)));
+  const api = {};
+  for (const m of mods) for (const k of Object.keys(m)) if (!(k in api)) api[k] = m[k];
+  const settle = (ms) => new Promise((r) => setTimeout(r, ms));
+  api.setSupabaseClient({
+    auth: {
+      getSession: async () => ({ data: { session: { user: { id: "u1", email: "you@example.com" }, access_token: "t" } }, error: null }),
+      getUser: async () => ({ data: { user: { id: "u1", email: "you@example.com" } }, error: null }),
+      onAuthStateChange: () => ({ data: { subscription: { unsubscribe() {} } } }),
+      signOut: async () => ({ error: null })
+    },
+    from: () => { throw new Error("repaint-stability-check does not touch the network"); },
+    storage: { from: () => ({ list: async () => ({ data: [], error: null }) }) }
+  });
+  api.setSignedIn(true);
+  api.showAuthenticatedUI();
+  api.initAppForUser();
+  await settle(600);
+  api.createNewDeck({ title: "Mantras", notesMode: true });
+  await settle(400);
+  api.setViewMode("notes");
+  await settle(300);
+  api.commitNotesEditIfActive();
+  await settle(300);
+  document.querySelectorAll(".toast").forEach((t) => t.remove());
+
+  let source = note;
+  ["a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8", "a9", "b1", "b2", "b3"].forEach((id, i) => {
+    source = api.setHighlightNoteInSource(source, "hn-" + id, "note " + (i + 1), "x");
+  });
+  const view = document.getElementById("notesView");
+  view.style.overflowAnchor = "none";
+  api.state.notes = source;
+  await api.renderNotesView();
+  await settle(500);
+  const out = {};
+
+  out.contained = [...view.children].filter((b) => getComputedStyle(b).contentVisibility === "auto").length;
+  const badges = [...view.querySelectorAll(".hl-note-badge")];
+  out.badges = badges.length;
+  const one = badges.find((b) => b.textContent === "1");
+  const ten = badges.find((b) => b.textContent === "10");
+  if (one && ten) {
+    const a = one.getBoundingClientRect();
+    const b = ten.getBoundingClientRect();
+    out.oneLine = { h1: Math.round(a.height * 10) / 10, h10: Math.round(b.height * 10) / 10, w1: Math.round(a.width), w10: Math.round(b.width) };
+  }
+  out.hidden = badges.filter((badge) => {
+    const r = badge.getBoundingClientRect();
+    const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    return hit !== badge;
+  }).map((b) => b.textContent);
+
+  // The numbers move no letter: every highlight is where it would be without them.
+  const para = view.querySelector("p");
+  const lineWidths = () => [...para.querySelectorAll("mark")]
+    .map((m) => { const r = m.getBoundingClientRect(); return Math.round(r.left * 10) / 10 + "-" + Math.round(r.right * 10) / 10; })
+    .join(",");
+  const withBadges = lineWidths();
+  badges.forEach((b) => { b.style.display = "none"; });
+  const without = lineWidths();
+  badges.forEach((b) => { b.style.display = ""; });
+  out.shaping = { withBadges, without };
+
+  // The first highlight after opening the note: nothing moves.
+  const textRange = (needle) => {
+    const walker = document.createTreeWalker(view, NodeFilter.SHOW_TEXT);
+    let n;
+    while ((n = walker.nextNode())) {
+      if (n.parentElement.closest(".hl-note-badge")) continue;
+      const at = n.data.indexOf(needle);
+      if (at === -1) continue;
+      const r = document.createRange();
+      r.setStart(n, at);
+      r.setEnd(n, at + needle.length);
+      return r;
+    }
+    return null;
+  };
+  const selection = getSelection();
+  selection.removeAllRanges();
+  selection.addRange(textRange("दुःखनाशक"));
+  await settle(250);
+  const probeNeedle = "धारण";
+  const before = textRange(probeNeedle).getBoundingClientRect();
+  const scrollBefore = view.scrollTop;
+  let worst = 0;
+  let maxScroll = 0;
+  let stop = false;
+  const tick = () => {
+    if (stop) return;
+    const r = textRange(probeNeedle)?.getBoundingClientRect();
+    if (r) worst = Math.max(worst, Math.abs(r.top - before.top), Math.abs(r.left - before.left));
+    maxScroll = Math.max(maxScroll, Math.abs(view.scrollTop - scrollBefore));
+    requestAnimationFrame(tick);
+  };
+  const result = api.makeHighlightFromSelection(api.renderTargetConfig("notes"), "yellow");
+  requestAnimationFrame(tick);
+  await settle(900);
+  stop = true;
+  out.action = result?.action || null;
+  out.worst = Math.round(worst * 10) / 10;
+  out.maxScroll = maxScroll;
+  return out;
+};
+
 const CASES = [
   { name: "a tall code block whose top is above the viewport", needle: "QQ30QQ", at: 200 },
   { name: "a code line scrolled sideways", needle: "QQ33QQ", at: 200, sideways: 150 },
@@ -266,6 +406,27 @@ async function run() {
           `${r.followersRemoved} of ${r.followers} detached`);
         check(r.freshLeft === 0, `${label}: no block is left marked fresh`, `${r.freshLeft} still marked`);
       }
+      await page.close();
+    }
+    {
+      const page = await browser.newPage();
+      page.on?.("pageerror", (error) => errors.push(String(error?.message || error)));
+      await page.setViewport({ width: 390, height: 844, isMobile: true, hasTouch: true });
+      await page.goto(`${server.base}/index.html`);
+      await page.waitForFunction(() => !document.documentElement.classList.contains("app-booting"), { timeout: 60000 });
+      await new Promise((r) => setTimeout(r, 1500));
+      const r = await page.evaluate(PROBE_SHORT, SHORT_NOTE);
+      const label = "390px · a short annotated Devanagari note";
+      check(r.contained === 0, `${label}: no block keeps content-visibility containment`, `${r.contained} contained`);
+      check(r.badges === 12, `${label}: every annotated highlight wears its number`, `${r.badges} badges`);
+      check(Boolean(r.oneLine) && Math.abs(r.oneLine.h10 - r.oneLine.h1) < 0.5 && r.oneLine.w10 > r.oneLine.w1,
+        `${label}: "10" is one line, as tall as "1" and wider`, JSON.stringify(r.oneLine));
+      check(r.hidden.length === 0, `${label}: no number is clipped or covered`, r.hidden.length ? `hidden: ${r.hidden.join(",")}` : "all visible");
+      check(r.shaping.withBadges === r.shaping.without, `${label}: the numbers move no highlight by a pixel`,
+        `${r.shaping.withBadges} vs ${r.shaping.without}`);
+      check(r.action === "added", `${label}: the first highlight after opening it is made`, `action ${r.action}`);
+      check(r.worst <= TOLERANCE_PX && r.maxScroll === 0, `${label}: and nothing moves, with no scroll anchoring to hide it`,
+        `worst ${r.worst}px, scrolled ${r.maxScroll}px`);
       await page.close();
     }
     check(errors.length === 0, "no uncaught exceptions", errors.slice(0, 3).join(" | ") || "clean");

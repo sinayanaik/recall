@@ -176,7 +176,7 @@ export function editorSignature(entries) {
   return entries
     // A pictured entry's edit stamp too: an ink mark grows stroke by stroke
     // with no words changing, and its picture has to follow.
-    .map((entry) => `${entryKey(entry)}:${entry.n || 0}:${entry.color || ""}:${hash32(entry.markdown || "")}:${hash32(entry.note || "")}:${entry.region?.at || ""}`)
+    .map((entry) => `${entryKey(entry)}:${entry.n || 0}:${entry.color || ""}:${hash32(entry.markdown || "")}:${hash32(entry.note || "")}:${entry.region?.at || ""}:${entry.own ? entry.own.join(",") : "*"}`)
     .join("|");
 }
 
@@ -277,6 +277,18 @@ function paintNoteBody(article, entry) {
 // card is showing. The second is a net under the first — with the entries
 // re-derived it should never fire — and a refusal costs the reader one press,
 // where the splice it replaces cost them the paragraph.
+// Only the entry's own highlight is coloured in its quote. The quote is the
+// raw line (it has to be — the in-place image resize below splices it back into
+// the note), so the other highlights on that line are still <mark>s once
+// rendered; they are told apart here, by ordinal (see ownMarkOrdinals in
+// highlights-panel.js), and styles/75-highlight-stability.css paints them plain.
+function markOtherHighlights(quote, entry) {
+  if (!Array.isArray(entry.own)) return;
+  quote.querySelectorAll("mark").forEach((mark, i) => {
+    mark.classList.toggle("is-other", !entry.own.includes(i));
+  });
+}
+
 function paintQuote(quote, entry) {
   if (!entry.span) return renderMarkdown(quote, entry.markdown);
   const notesConfig = renderTargetConfig("notes");
@@ -305,6 +317,7 @@ function paintQuote(quote, entry) {
     }
   };
   return renderMarkdown(quote, entry.markdown).then(() => {
+    markOtherHighlights(quote, entry);
     enhanceSurfaceImageControls(surface);
     enhanceSurfaceDiagramControls(surface);
   });
