@@ -35,7 +35,7 @@ import { ensurePdfJs, openPdfDocument } from "../core/lib-loader.js?v=__BUILD__"
 import { state } from "../core/state.js?v=__BUILD__";
 import { paintDocumentHighlights } from "./pdf-highlights.js?v=__BUILD__";
 import { textItemGap } from "./pdf-selection.js?v=__BUILD__";
-import { expectPdfPagePaint, firstPdfPagePainted, recordPdfTimingAfterPaint, samplePdfTiming } from "./pdf-timing.js?v=__BUILD__";
+import { countPdfTiming, expectPdfPagePaint, firstPdfPagePainted, notePdfInteractionLongTask, recordPdfTimingAfterPaint, samplePdfTiming } from "./pdf-timing.js?v=__BUILD__";
 import { buildDocumentOutline, clearDocumentOutline, setDocumentOutlinePage } from "./pdf-outline.js?v=__BUILD__";
 import { inkPenIsDown } from "../core/gesture.js?v=__BUILD__";
 import { DOC_SLOT_DOC, DOC_SLOT_NOTEBOOK, activeDocSlot, docSlotMeta, docSlotReadingPositionKey, documentStoreKey, normalizeDocSlot, onDocumentSurface } from "./doc-slot.js?v=__BUILD__";
@@ -455,6 +455,10 @@ export function tearDownDocumentView({ park = false } = {}) {
     cancelPageRender(entry);
   });
   resetRenderQueue();
+  // Their tasks were just cancelled above; holding the continuations would
+  // only keep the old document's canvases alive.
+  pausedRenders.length = 0;
+  parsedPages.clear();
   if (openPdf?.doc && !parked) {
     // Releases the worker's copy of the file. Without this, opening five papers
     // in a session keeps five parsed documents alive in the worker. Skipped for
@@ -1723,7 +1727,7 @@ export function documentSurfaceHidden() {
 
 function observePages() {
   const view = el.documentView;
-  watchForFling();
+  watchDocumentInteraction();
   openPdf.observer = new IntersectionObserver((entries) => {
     if (documentSurfaceHidden()) return;
     entries.forEach((entry) => {
@@ -1935,6 +1939,7 @@ export function relayoutDocumentHoldingReader({ refit = false } = {}) {
 
 export function setDocumentScale(scale, { fitWidth = false, afterLayout = null } = {}) {
   if (!openPdf) return;
+  noteDocumentInteraction(PDF_ZOOM_SETTLE_MS);
   expectPdfPagePaint("zoom", performance.now(), `to ${Math.round(clampScale(scale) * 100)}%`);
   openPdf.fitWidth = fitWidth;
   openPdf.scale = clampScale(scale);
@@ -2219,6 +2224,7 @@ async function renderPage(pageNumber) {
     // main thread, while the page the reader stopped on waited behind them.
     const renderTask = page.render({ canvasContext: context, viewport, transform });
     entry.renderTask = renderTask;
+    holdRenderWhileInteracting(renderTask, entry, pageNumber);
     // The page's text, asked for now, while the canvas is being drawn, rather
     // than after: it comes from the worker, and the worker is otherwise idle
     // while the main thread paints — waiting for the paint first put a whole
@@ -2244,6 +2250,7 @@ async function renderPage(pageNumber) {
     entry.el.querySelector(".pdf-canvas.is-stale")?.remove();
     entry.el.append(canvas);
     openPdf.rendered.add(pageNumber);
+    parsedPages.add(pageNumber);
     entry.urgent = false;
     samplePdfTiming("render", performance.now() - renderStartedAt);
     firstPdfPagePainted();
@@ -2323,9 +2330,15 @@ async function renderPage(pageNumber) {
   function armRenderDeadline() {
     entry.attempts = (entry.attempts || 0) + 1;
     clearTimeout(entry.deadline);
-    entry.deadline = setTimeout(() => {
+    entry.deadline = setTimeout(function onRenderDeadline() {
       entry.deadline = 0;
       if (token !== pdfOpenToken || entry.task !== task) return;
+      // Held under the reader's finger is not "stopped answering": the clock
+      // starts again when they let go.
+      if (entry.paused) {
+        entry.deadline = setTimeout(onRenderDeadline, PDF_RENDER_DEADLINE_MS);
+        return;
+      }
       // Whatever happens next, this render is abandoned, so its turn goes to
       // the next page in line — a hung worker must not hold the queue too.
       slot?.release();
@@ -2382,62 +2395,250 @@ function renderWaiterDropped(waiter) {
   return !isPageNearViewport(waiter.pageNumber);
 }
 
-// ── ...and not while the reader is flinging past ────────────────────────────
+// ── Nothing that can wait is drawn under the reader's finger ───────────────
 //
-// A page that is near the viewport for the hundred milliseconds a flick takes
-// to cross it is not a page anyone is going to read. Starting its render there
-// costs a slot and a worker round trip, and pdf.js cannot stop a render it has
-// started without wasting that work — so the queue simply does not START a
-// render while the scroller is moving faster than anyone reads, and looks
-// again once it has slowed down. Waiting pages stay in line; the nearest one
-// to wherever the flick lands goes first. A page someone is waiting on by name
-// (urgent) is never held back.
+// "I'm still seeing significant lag zooming in and out and panning." The
+// readout from the phone that said so put a number on why: one page took
+// 0.7–1.7s to draw (median 731ms), and every zoom step paid one. pdf.js paints
+// in slices of about 15ms, one per animation frame, but a single image cannot
+// be sliced — and this surface has a non-passive touchmove listener (touch
+// selection needs one; src/notes/touch-selection.js), so every move of a
+// panning finger waits for the main thread to be free. Any page being drawn —
+// a neighbour fetched ahead, a page re-rendered behind its stretched canvas
+// after a zoom, a sharp pass — was a stutter under the finger.
 //
-// The threshold is in viewport heights per second, so it means the same on a
-// phone and a monitor: three screens a second is a flick, reading is a small
-// fraction of one.
+// So the surface knows when the reader is interacting with it: a finger is on
+// it, a pinch is in flight, it scrolled in the last PDF_INTERACTION_SETTLE_MS,
+// or the scale changed in the last PDF_ZOOM_SETTLE_MS. While that is true:
+//
+//   • the queue starts no render unless the page is on screen and has
+//     nothing on it at all — a blank page is the one thing worse than a stutter;
+//   • a render already going is PAUSED between pdf.js's slices (its own
+//     onContinue hook) unless it is that kind of page, and picks up exactly
+//     where it left off when the reader lets go. A pause keeps its progress,
+//     which a cancel throws away.
+//
+// When it ends, everything that was held resumes and the queue moves again.
+export const PDF_INTERACTION_SETTLE_MS = 150;
+
+// A zoom step is followed by another more often than not, and the page on
+// screen already has its old canvas stretched to the new size (see
+// stalePageForRelayout) — so its redraw waits this long for the next step
+// rather than starting one per press.
+export const PDF_ZOOM_SETTLE_MS = 250;
+
+// ...and a FLING is stricter still. A blank page on screen may start drawing
+// while the reader pans, but not while the scroller is moving faster than
+// anyone reads (in viewport heights per second, so it means the same on a
+// phone and a monitor): every page a flick crosses would otherwise start a
+// render, each one asking the worker to parse the page and decode its images,
+// and the page the flick lands on waited behind all of them.
 export const PDF_FLING_SCREENS_PER_SECOND = 3;
 
-export const PDF_FLING_SETTLE_MS = 120;
-
 let flingUntil = 0;
-let flingTimer = 0;
-let flingLast = null;
-let flingWatching = false;
+let lastScroll = null;
 
-function watchForFling() {
+let touchesDown = 0;
+let interactionUntil = 0;
+let interactionTimer = 0;
+let interactionWatching = false;
+let scrollPumpFrame = 0;
+// pdf.js continuations held while the reader interacts: { entry, cont }.
+const pausedRenders = [];
+
+// A finger that went down and was never seen to come up. touchend is
+// delivered to the element the touch STARTED on, and on this surface that is
+// very often a text-layer span — which a zoom or a re-render removes from the
+// document mid-gesture, after which its touchend no longer bubbles to anything
+// here. watchDocumentInteraction listens on that element itself for the end,
+// which a detached element still receives; and as a net under that, a touch
+// with no touch activity of its own for this long no longer counts. Scrolling
+// deliberately does not count as touch activity: a momentum scroll or a
+// programmatic one would otherwise keep a lost finger "down" indefinitely.
+export const PDF_TOUCH_STALE_MS = 3000;
+
+let lastTouchActivity = 0;
+
+function fingerDown() {
+  return touchesDown > 0 && performance.now() - lastTouchActivity < PDF_TOUCH_STALE_MS;
+}
+
+export function documentInteracting() {
+  return fingerDown() || performance.now() < interactionUntil || documentPinchEngaged();
+}
+
+function noteDocumentInteraction(ms = PDF_INTERACTION_SETTLE_MS) {
+  const now = performance.now();
+  interactionUntil = Math.max(interactionUntil, now + ms);
+  // The span of time this interaction covers, for the long-task observer
+  // below: a new span if the last one has ended, a longer one if not.
+  const last = interactionSpans[interactionSpans.length - 1];
+  if (last && now <= last.end) last.end = Math.max(last.end, interactionUntil);
+  else {
+    interactionSpans.push({ start: now, end: interactionUntil });
+    if (interactionSpans.length > 40) interactionSpans.shift();
+  }
+  armInteractionSettle();
+}
+
+// Long tasks that overlapped an interaction go to the App Info readout: that
+// is the stutter a reader feels, and the one number that says whether this
+// surface is still competing with their finger. Observed once, for the
+// session; the observer is cheap and the browser only reports tasks of 50ms
+// or more. Where the Long Tasks API is missing (Safari), the line says so by
+// staying empty.
+const interactionSpans = [];
+let longTaskObserver = null;
+
+function watchLongTasks() {
+  if (longTaskObserver || typeof PerformanceObserver !== "function") return;
+  try {
+    longTaskObserver = new PerformanceObserver((list) => {
+      list.getEntries().forEach((task) => {
+        const start = task.startTime;
+        const end = start + task.duration;
+        const touched = fingerDown() || interactionSpans.some((span) => start < span.end && end > span.start);
+        if (touched) notePdfInteractionLongTask(task.duration);
+      });
+    });
+    longTaskObserver.observe({ type: "longtask", buffered: false });
+  } catch (_) {
+    longTaskObserver = null;
+  }
+}
+
+function armInteractionSettle() {
+  clearTimeout(interactionTimer);
+  const wait = Math.max(0, interactionUntil - performance.now()) + 10;
+  interactionTimer = setTimeout(onInteractionSettled, wait);
+}
+
+function onInteractionSettled() {
+  interactionTimer = 0;
+  if (documentInteracting()) {
+    // A pinch ends with its own event, which arms this again; a scroll or
+    // zoom that is still going has moved the deadline; and a finger that is
+    // still down is looked at again when it would go stale (see
+    // PDF_TOUCH_STALE_MS), in case its touchend never arrives.
+    if (fingerDown()) {
+      clearTimeout(interactionTimer);
+      interactionTimer = setTimeout(onInteractionSettled,
+        Math.max(0, lastTouchActivity + PDF_TOUCH_STALE_MS - performance.now()) + 10);
+    } else if (!documentPinchEngaged()) {
+      armInteractionSettle();
+    }
+    return;
+  }
+  resumePausedRenders();
+  pumpRenderQueue();
+  if (openPdf) scheduleSharpen();
+}
+
+function resumePausedRenders() {
+  if (!pausedRenders.length) return;
+  const held = pausedRenders.splice(0);
+  let resumed = 0;
+  held.forEach(({ entry, cont, pageNumber }) => {
+    entry.paused = false;
+    // A page the reader has gone past while it was held is not resumed but
+    // dropped, exactly as a trim would drop it: a fling crosses pages that
+    // start drawing while they are briefly blank on screen, and resuming all
+    // of them together on landing put them in front of the page the reader
+    // landed on.
+    if (!openPdf || !isPageNearViewport(pageNumber)) {
+      if (openPdf?.pages.get(pageNumber) === entry) unrenderPage(pageNumber);
+      return;
+    }
+    // A render cancelled while it was held ignores this: pdf.js checks.
+    try { cont(); } catch (error) { console.warn("Could not resume a page render", error); }
+    resumed += 1;
+  });
+  countPdfTiming("resumed", resumed);
+}
+
+// The one kind of render that may run while the reader interacts: a page that
+// is on screen with nothing drawn on it yet.
+function pageBlankOnScreen(pageNumber) {
+  const entry = openPdf?.pages.get(pageNumber);
+  if (!entry || entry.el.querySelector(".pdf-canvas")) return false;
+  return isPageOnScreen(pageNumber);
+}
+
+// Installed on every pdf.js render task this file starts.
+function holdRenderWhileInteracting(renderTask, entry, pageNumber) {
+  renderTask.onContinue = (cont) => {
+    if (!documentInteracting() || entry.urgent || pageBlankOnScreen(pageNumber)) {
+      cont();
+      return;
+    }
+    entry.paused = true;
+    pausedRenders.push({ entry, cont, pageNumber });
+    countPdfTiming("paused", 1);
+  };
+}
+
+function watchDocumentInteraction() {
   const view = el.documentView;
-  if (flingWatching || !view) return;
-  flingWatching = true;
+  if (interactionWatching || !view) return;
+  interactionWatching = true;
+  watchLongTasks();
+  // Passive, all of them: knowing a finger is down must not itself be one
+  // more thing a scroll waits for.
+  const onTouches = (event) => {
+    touchesDown = event.touches.length;
+    lastTouchActivity = performance.now();
+    noteDocumentInteraction();
+  };
+  const onTouchActivity = () => { lastTouchActivity = performance.now(); };
+  view.addEventListener("touchstart", (event) => {
+    onTouches(event);
+    // The end of this touch, heard on the element it started on — see
+    // PDF_TOUCH_STALE_MS for why the view alone is not enough.
+    Array.from(event.changedTouches || []).forEach((touch) => {
+      const target = touch.target;
+      if (!target?.addEventListener || target === view) return;
+      target.addEventListener("touchend", onTouches, { passive: true, once: true });
+      target.addEventListener("touchcancel", onTouches, { passive: true, once: true });
+      target.addEventListener("touchmove", onTouchActivity, { passive: true });
+    });
+  }, { passive: true });
+  view.addEventListener("touchmove", onTouchActivity, { passive: true });
+  view.addEventListener("touchend", onTouches, { passive: true });
+  view.addEventListener("touchcancel", onTouches, { passive: true });
+  view.addEventListener("wheel", () => noteDocumentInteraction(), { passive: true });
   view.addEventListener("scroll", () => {
+    noteDocumentInteraction();
     const at = performance.now();
-    const top = view.scrollTop;
-    const last = flingLast;
-    flingLast = { at, top };
-    // Whatever the speed, the pages on screen once it stops may want their
-    // sharp pass; the timer is re-armed by every scroll, so it fires on the
-    // first pause. A sharp pass already running is stopped: it is the most
-    // expensive render there is (a full-density canvas) and only an upgrade,
-    // and left running it holds a render slot that the pages the reader is
-    // scrolling TO are waiting for. It runs again on the pause.
+    const previous = lastScroll;
+    lastScroll = { at, top: view.scrollTop };
+    if (previous && at > previous.at && at - previous.at < 200) {
+      const screensPerSecond = (Math.abs(view.scrollTop - previous.top) / Math.max(1, view.clientHeight))
+        / ((at - previous.at) / 1000);
+      if (screensPerSecond >= PDF_FLING_SCREENS_PER_SECOND) flingUntil = at + PDF_INTERACTION_SETTLE_MS;
+    }
+    // While the reader moves, the only render the queue will start is a page
+    // that has come on screen blank — and the moment it does is a scroll, not
+    // any of the events that otherwise move the queue. Asked once a frame.
+    if (renderWaiters.length && !scrollPumpFrame) {
+      scrollPumpFrame = requestAnimationFrame(() => {
+        scrollPumpFrame = 0;
+        pumpRenderQueue();
+      });
+    }
+    // A sharp pass already running is stopped rather than paused: it is the
+    // most expensive render there is (a full-density canvas) and only an
+    // upgrade of a page the reader may be scrolling away from. It is asked
+    // for again once they stop.
     if (openPdf) {
       cancelSharpening();
       scheduleSharpen();
     }
-    if (!last || at - last.at > 200 || at <= last.at) return;
-    const screensPerSecond = (Math.abs(top - last.top) / Math.max(1, view.clientHeight)) / ((at - last.at) / 1000);
-    if (screensPerSecond < PDF_FLING_SCREENS_PER_SECOND) return;
-    flingUntil = at + PDF_FLING_SETTLE_MS;
-    clearTimeout(flingTimer);
-    flingTimer = setTimeout(() => {
-      flingTimer = 0;
-      pumpRenderQueue();
-    }, PDF_FLING_SETTLE_MS + 10);
   }, { passive: true });
 }
 
 function pumpRenderQueue() {
   if (!renderWaiters.length) return;
+  const interacting = documentInteracting();
   const flinging = performance.now() < flingUntil;
   // Asked once per pump, not per waiter: the answer is the same for all of
   // them, and it is a geometry read.
@@ -2450,11 +2651,14 @@ function pumpRenderQueue() {
     renderWaiters.splice(i, 1);
     dropWaitingRender(waiter);
   }
-  while (renderSlots.size < PDF_RENDER_CONCURRENCY && renderWaiters.length) {
+  // A render paused under the reader's finger keeps its slot but uses no
+  // time, so it does not count against the limit: a page that turns up blank
+  // on screen mid-pan must not wait for a held prefetch to give its slot back.
+  while (renderSlots.size - pausedRenders.length < PDF_RENDER_CONCURRENCY && renderWaiters.length) {
     let best = -1;
     let bestRank = Infinity;
     renderWaiters.forEach((waiter, index) => {
-      if (flinging && !waiter.entry.urgent) return;
+      if (interacting && !waiter.entry.urgent && (flinging || !pageBlankOnScreen(waiter.pageNumber))) return;
       // A sharp pass ranks half a page further away than its own page: after
       // the first pass of the page in view, ahead of the first passes of the
       // pages either side of it, which the reader is not looking at yet.
@@ -2462,8 +2666,8 @@ function pumpRenderQueue() {
         : Math.abs(waiter.pageNumber - current) + (waiter.entry.sharpening ? 0.5 : 0);
       if (rank < bestRank) { best = index; bestRank = rank; }
     });
-    // Mid-fling and nothing urgent: the settle timer in watchForFling pumps
-    // again once the scroller slows down.
+    // Mid-interaction and nothing that cannot wait: the settle timer pumps
+    // again once the reader lets go.
     if (best < 0) break;
     const [waiter] = renderWaiters.splice(best, 1);
     const slot = { release: () => {
@@ -2509,10 +2713,10 @@ function resetRenderQueue() {
 // the first pass of the page it is for and ahead of the pages either side
 // (see pumpRenderQueue): what the reader is looking at gets sharp before what
 // they might scroll to next gets drawn at all. It is never started while the
-// reader is flinging (PDF_FLING_SCREENS_PER_SECOND) or writing, and it is
-// cancelled like any other render the moment its page is trimmed or
-// re-scaled — so a page the reader only passed on the way somewhere else
-// never pays for it.
+// reader is interacting (documentInteracting) or writing, and it is cancelled
+// like any other render the moment its page is trimmed, re-scaled or
+// scrolled — so a page the reader only passed on the way somewhere else never
+// pays for it.
 export const PDF_SHARPEN_DELAY_MS = 150;
 
 let sharpenTimer = 0;
@@ -2545,7 +2749,7 @@ function isPageOnScreen(pageNumber) {
 function sharpenVisiblePage() {
   sharpenTimer = 0;
   if (!openPdf || documentSurfaceHidden()) return;
-  if (performance.now() < flingUntil || inkPenIsDown()) {
+  if (documentInteracting() || inkPenIsDown()) {
     scheduleSharpen();
     return;
   }
@@ -2581,6 +2785,7 @@ async function sharpenPage(pageNumber) {
     renderTask = page.render({ canvasContext: context, viewport, transform });
     // Where cancelPageRender looks, so a trim, a zoom or a scroll stops this.
     entry.renderTask = renderTask;
+    holdRenderWhileInteracting(renderTask, entry, pageNumber);
     sharpeningPages.add(pageNumber);
     await renderTask.promise;
     if (stale()) return;
@@ -3014,7 +3219,6 @@ function unrenderPage(pageNumber) {
   label.className = "pdf-page-label";
   label.textContent = String(pageNumber);
   entry.el.appendChild(label);
-  releasePageResources(pageNumber);
 }
 
 // Stop a render that is still painting. pdf.js rejects its promise with a
@@ -3028,11 +3232,37 @@ function cancelPageRender(entry) {
 }
 
 // ...and hand back what pdf.js keeps for a page once it has been drawn: its
-// drawing commands and the font data they reference. Nothing ever did, so a
-// long paper read to the end held every page it had passed through — on a
-// phone, the memory pressure that gets the worker killed, after which every
-// page waits out its deadline and reports that it could not be drawn.
+// drawing commands and the images they reference. Nothing ever did, so a long
+// paper read to the end held every page it had passed through — on a phone,
+// the memory pressure that gets the worker killed, after which every page
+// waits out its deadline and reports that it could not be drawn.
 // cleanup() declines by itself while a render of the page is still running.
+//
+// ── ...but not for a page the reader is about to come back to ─────────────
+//
+// This used to run the moment a page was trimmed, three pages away. Coming
+// back to it — scrolling up a page or two, or a zoom that un-renders the pages
+// off screen — then meant pdf.js parsing it again and DECODING ITS IMAGES
+// again in the worker before a pixel could be drawn: on an image-heavy paper,
+// most of what a page cost. So a page keeps what pdf.js parsed for it until
+// the reader is PDF_KEEP_PARSED_PAGES away (trimRenderedPages sweeps), which
+// on a short paper means for as long as it is open.
+export const PDF_KEEP_PARSED_PAGES = 8;
+
+// Pages that have been drawn and not cleaned up since.
+const parsedPages = new Set();
+
+function releaseFarPages(current) {
+  if (!openPdf || !parsedPages.size) return;
+  parsedPages.forEach((pageNumber) => {
+    if (Math.abs(pageNumber - current) <= PDF_KEEP_PARSED_PAGES) return;
+    const entry = openPdf.pages.get(pageNumber);
+    if (openPdf.rendered.has(pageNumber) || entry?.task || entry?.renderTask) return;
+    parsedPages.delete(pageNumber);
+    releasePageResources(pageNumber);
+  });
+}
+
 function releasePageResources(pageNumber) {
   const doc = openPdf?.doc;
   if (!doc) return;
@@ -3049,6 +3279,7 @@ function trimRenderedPages() {
   [...openPdf.rendered].forEach((pageNumber) => {
     if (Math.abs(pageNumber - current) > PDF_RENDER_WINDOW + 1) unrenderPage(pageNumber);
   });
+  releaseFarPages(current);
 }
 
 // ── The text layer ──────────────────────────────────────────────────────────

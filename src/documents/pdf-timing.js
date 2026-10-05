@@ -46,6 +46,31 @@ export function samplePdfTiming(kind, ms) {
 
 // The reader is waiting for a page: an open, a switch or a zoom has started
 // and is over when firstPdfPagePainted() is next called.
+// ── What the reader FEELS: the main thread blocked under their finger ──────
+//
+// Durations say how long a page took; they do not say whether panning
+// stuttered while it did. That is a long task (50ms or more on the main
+// thread, from the Long Tasks API) that ran while the reader was touching,
+// scrolling or zooming — pdf-view.js decides which ones those were and
+// reports them here. Kept for the last two minutes, so the readout describes
+// what the reader just did rather than the whole session.
+export const PDF_TIMING_JANK_WINDOW_MS = 2 * 60 * 1000;
+
+const pdfTimingJank = [];
+const pdfTimingCounts = { paused: 0, resumed: 0 };
+
+export function notePdfInteractionLongTask(ms) {
+  if (!Number.isFinite(ms) || ms <= 0) return;
+  const at = Date.now();
+  pdfTimingJank.push({ ms, at });
+  while (pdfTimingJank.length && at - pdfTimingJank[0].at > PDF_TIMING_JANK_WINDOW_MS) pdfTimingJank.shift();
+  if (pdfTimingJank.length > 500) pdfTimingJank.splice(0, pdfTimingJank.length - 500);
+}
+
+export function countPdfTiming(kind, n = 1) {
+  if (kind in pdfTimingCounts && Number.isFinite(n)) pdfTimingCounts[kind] += n;
+}
+
 export function expectPdfPagePaint(kind, startedAt = pdfTimingNow(), detail = "") {
   pdfTimingPending = { kind, startedAt, detail };
 }
@@ -104,6 +129,12 @@ export function pdfTimingReport() {
       ? `${PDF_TIMING_LABELS[kind]}: median ${s.median}ms · p90 ${s.p90}ms · worst ${s.worst}ms (${s.count} pages)`
       : `${PDF_TIMING_LABELS[kind]}: no pages yet`);
   });
+  const recentJank = pdfTimingJank.filter((j) => Date.now() - j.at <= PDF_TIMING_JANK_WINDOW_MS);
+  lines.push(recentJank.length
+    ? `while touching (last 2 min): ${recentJank.length} long tasks · worst ${Math.round(Math.max(...recentJank.map((j) => j.ms)))}ms`
+      + ` · total ${Math.round(recentJank.reduce((a, j) => a + j.ms, 0))}ms`
+    : "while touching (last 2 min): no long tasks");
+  lines.push(`renders held while touching: ${pdfTimingCounts.paused} · resumed: ${pdfTimingCounts.resumed}`);
   if (!pdfTimingEvents.length) {
     lines.push("No PDF opened since the app started.");
   } else {
