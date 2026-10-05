@@ -2965,8 +2965,8 @@ try {
   // pinch): a finger resting on the glass is somebody about to press on a word.
   //
   // What must hold: a page zoomed under a resting finger is redrawn without
-  // waiting for the lift; its text layer survives the zoom, re-scaled rather
-  // than rebuilt (keepTextLayerForScale); the page comes back drawn fresh,
+  // waiting for the lift, with one text layer built at the new size; the page
+  // comes back drawn fresh,
   // with its text layer, after a jiggling finger lifts; and a finger whose
   // touchend never arrives does not hold the paper's renders for ever.
   const jiggle = async (x, y, ms) => {
@@ -3026,9 +3026,9 @@ try {
   await touchEnd();
   check("a page zoomed under a resting finger is redrawn without waiting for the lift",
     underFinger.ok, underFinger.ok ? `page ${underFinger.page} in ${underFinger.ms}ms` : `page ${underFinger.page} still stale`);
-  check("...keeping its text layer through the zoom, re-scaled rather than rebuilt",
-    beforeZoom.layer && keptLayer.kept && keptLayer.layers === 1 && keptLayer.fits,
-    `kept=${keptLayer.kept} layers=${keptLayer.layers} ${keptLayer.size}`);
+  check("...with one text layer, built at the new size",
+    beforeZoom.layer && keptLayer.layers === 1 && keptLayer.fits,
+    `layers=${keptLayer.layers} ${keptLayer.size}`);
 
   // A jiggling finger: the page is moving, so the redraw may wait — but it
   // comes back once the finger lifts, text layer and all.

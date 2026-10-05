@@ -1817,28 +1817,16 @@ export function relayoutDocument({ refit = false, afterLayout = null } = {}) {
       // in for those reads, every one of them forced a layout of several
       // thousand text-layer spans that were about to be thrown away — most of
       // what a zoom step cost on a phone, before a single pixel was redrawn.
-      //
-      // The text layer is the exception: it is kept and re-scaled with a
-      // transform (keepTextLayerForScale), which changes no layout inside its
-      // strict containment. So is the page's viewport, re-made at the new
-      // scale now rather than when the page redraws, so that a selection made
-      // over the kept layer in the meantime is captured at the scale it is
-      // shown at.
-      dropPageLayers(entry, { keepTextAt: openPdf.scale });
-      if (entry.viewport && entry.viewport.scale !== openPdf.scale) {
-        entry.viewport = entry.viewport.clone({ scale: openPdf.scale });
-      }
+      dropPageLayers(entry);
     } else if (!openPdf.rendered.has(pageNumber) && entry.viewport && entry.viewport.scale !== openPdf.scale) {
       // A page still being redrawn from the LAST zoom when this one lands: its
-      // stretched canvas and kept text layer follow the page to its new size
-      // rather than staying at the size of a scale that is already gone.
+      // stretched canvas follows the page to its new size rather than staying
+      // at the size of a scale that is already gone.
       const staleCanvas = entry.el.querySelector(".pdf-canvas.is-stale");
       if (staleCanvas) {
         staleCanvas.style.width = `${Math.round(width)}px`;
         staleCanvas.style.height = `${Math.round(height)}px`;
       }
-      keepTextLayerForScale(entry, openPdf.scale);
-      entry.viewport = entry.viewport.clone({ scale: openPdf.scale });
     }
   });
   // Between the two passes, deliberately. A zoom moves the scroll offsets so the
@@ -2261,8 +2249,7 @@ async function renderPage(pageNumber) {
     // order it is asked, and the first page of an open waited behind its own
     // text extraction when this came first.
     //
-    // Not at all for a page still carrying a text layer from before a zoom
-    // that is close enough to this scale to keep (see keepTextLayerForScale).
+    // Not at all for a page redrawn at the scale its text layer was built at.
     const textContent = textLayerNeedsRebuild(entry, scale) ? page.getTextContent() : null;
     textContent?.catch(() => {});
     try {
@@ -3167,9 +3154,8 @@ function showPageRenderFailure(pageNumber, reason) {
 //      pausing outright while the page moves. A page somebody is waiting on by
 //      name (whenDocumentPageReady) skips the wait.
 //
-// A text layer that survived a zoom (see keepTextLayerForScale) is kept: the
-// new mark layer goes in under it and steps 2–3 are skipped unless the zoom
-// has gone far enough that it should be rebuilt at the new scale.
+// A page redrawn at the same scale keeps the text layer it has: the new mark
+// layer goes in under it and steps 2–3 are skipped.
 async function buildPageLayers(pageNumber, entry, page, viewport, stale, textContent = null) {
   if (stale()) return;
   entry.markLayer?.remove();
@@ -3213,35 +3199,18 @@ function keptTextLayer(entry) {
   return layer && layer.parentNode === entry.el ? layer : null;
 }
 
-// ── A text layer survives a zoom ──────────────────────────────────────────
+// A page redrawn at the scale its text layer was built at (a canvas recovery,
+// a forced retry) keeps that layer; any other scale gets a new one.
 //
-// Every span's position and size is the page's viewport transform times a
-// fixed matrix, and a viewport's transform is linear in its scale — so a text
-// layer built at one scale is exactly the text layer for another, scaled from
-// its top-left corner. pdf.js's own viewer keeps its text layer across a zoom
-// the same way. Rebuilding it used to be most of what a zoom step cost on a
-// phone (several thousand spans per page, per step).
-//
-// Selection keeps working because nothing reads a span's own coordinates: a
-// selection is captured from client rects against the page box through the
-// live viewport (pdf-selection.js), and both of those are already at the new
-// scale. Rebuilt for real only when the zoom has moved far enough from the
-// scale it was built at that the browser's minimum font size could start to
-// matter.
-export const PDF_TEXT_KEEP_RATIO = 2;
-
-function keepTextLayerForScale(entry, scale) {
-  const layer = keptTextLayer(entry);
-  if (!layer || !entry.textScale) return false;
-  const ratio = scale / entry.textScale;
-  layer.style.transform = ratio === 1 ? "" : `scale(${ratio})`;
-  return true;
-}
-
+// Keeping it across a ZOOM, re-scaled with a transform, was tried: a viewport
+// is linear in scale, so the geometry is exact. It cost more than it saved.
+// The browser lays every span out again the moment the page box around the
+// layer changes size, in the middle of the zoom's own layout reads — measured,
+// a zoom step's synchronous part went from ~80ms to ~400ms, which is a press
+// timer firing under a finger that only meant to pan. A layer rebuilt in
+// slices once the page is still costs more in total and blocks nothing.
 function textLayerNeedsRebuild(entry, scale) {
-  if (!keptTextLayer(entry) || !entry.textScale) return true;
-  const ratio = scale / entry.textScale;
-  return ratio > PDF_TEXT_KEEP_RATIO || ratio < 1 / PDF_TEXT_KEEP_RATIO;
+  return !keptTextLayer(entry) || entry.textScale !== scale;
 }
 
 export const PDF_TEXT_SLICE_MS = 6;
@@ -3391,7 +3360,7 @@ function stalePageForRelayout(pageNumber, width, height) {
   entry.generation = (entry.generation || 0) + 1;
   cancelPageRender(entry);
   openPdf.rendered.delete(pageNumber);
-  dropPageLayers(entry, { keepTextAt: openPdf.scale });
+  dropPageLayers(entry);
   dropDetail(entry);
   canvas.classList.add("is-stale");
   canvas.style.width = `${Math.round(width)}px`;
@@ -3402,18 +3371,11 @@ function stalePageForRelayout(pageNumber, width, height) {
 // text layers, the note badges, the ink and the highlighter's bands. All of it
 // is positioned through the viewport transform of the scale it was built at,
 // so none of it can survive a change of scale — see stalePageForRelayout.
-//
-// Except the text layer, which can: see keepTextLayerForScale. `keepTextAt` is
-// the scale the page is about to be shown at; the layer is kept, re-scaled to
-// it, when there is one to keep.
-function dropPageLayers(entry, { keepTextAt = null } = {}) {
+function dropPageLayers(entry) {
   entry.markLayer?.remove();
-  const keepText = Number.isFinite(keepTextAt) && keepTextLayerForScale(entry, keepTextAt);
-  if (!keepText) {
-    entry.textLayer?.remove();
-    entry.textLayer = null;
-    entry.textScale = 0;
-  }
+  entry.textLayer?.remove();
+  entry.textLayer = null;
+  entry.textScale = 0;
   entry.el.querySelector(`.${PDF_BADGE_LAYER_CLASS}`)?.remove();
   // ...and the ink, for the third time the same reason. Its canvas holds a
   // picture of the page's strokes drawn through the viewport transform of the

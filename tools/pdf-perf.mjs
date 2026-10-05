@@ -51,7 +51,7 @@ const arg = (name, fallback) => {
 const ROOT = path.resolve(arg("root", HERE));
 const RUNS = Math.max(1, Number(arg("runs", 3)));
 const THROTTLE = Number(arg("throttle", 4));
-const ONLY = new Set(String(arg("only", "open,tab,switch,zoom,zoomin,zoomout,fling,steady,pan")).split(","));
+const ONLY = new Set(String(arg("only", "open,tab,switch,zoom,zoomjank,zoomin,zoomout,fling,steady,pan")).split(","));
 const IMAGES = process.argv.includes("--images");
 const INVERT = process.argv.includes("--invert");
 // --profile=<flow> prints where the main thread's time went during that flow:
@@ -381,6 +381,28 @@ try { new PerformanceObserver((l) => l.getEntries().forEach((e) => window.__perf
       }`);
     }
 
+    if (ONLY.has("zoomjank")) {
+      // The 800ms after a zoom step, which is when a finger lands to pan: how
+      // much of it the main thread spends in long tasks.
+      results.zoomjank = await flow("zoomjank", `async () => {
+        const { api, settle } = window.__recall;
+        api.fitDocumentToWidth();
+        api.scrollToDocumentPage(3, 0.1, { smooth: false });
+        await settle(2500);
+        const from = window.__perf.longTasks.length;
+        const t0 = performance.now();
+        api.zoomDocument(1.2);
+        const sync = performance.now() - t0;
+        await settle(800);
+        const long = window.__perf.longTasks.slice(from);
+        const result = { sync: Math.round(sync), count: long.length, total: Math.round(long.reduce((a, b) => a + b, 0)),
+          worst: Math.round(Math.max(0, ...long)) };
+        api.fitDocumentToWidth();
+        await settle(2000);
+        return result;
+      }`);
+    }
+
     if (ONLY.has("zoomin")) {
       results.zoomin = await flow("zoomin", `async () => {
         const { api, settle, until } = window.__recall;
@@ -390,7 +412,7 @@ try { new PerformanceObserver((l) => l.getEntries().forEach((e) => window.__perf
         window.__perf.longTasks.length = 0;
         const page = api.currentDocumentPage();
         const t0 = performance.now();
-        if (api.setDocumentScale) api.setDocumentScale(5); else api.zoomDocument(5 / 0.6);
+        api.zoomDocument(8);
         const el = () => api.pdfPageElement(page);
         await until(() => Boolean(el()?.querySelector(".pdf-canvas:not(.is-stale)")));
         const drawn = performance.now() - t0;
@@ -532,6 +554,11 @@ try { new PerformanceObserver((l) => l.getEntries().forEach((e) => window.__perf
       // matters is what the main thread is doing while a finger is down: with
       // a non-passive touchmove on this surface (touch selection needs one),
       // every move waits for it.
+      if (PROFILE === "pan") {
+        await page.call("Profiler.enable");
+        await page.call("Profiler.setSamplingInterval", { interval: 200 });
+        await page.call("Profiler.start");
+      }
       const x = 200;
       let y = 650;
       await page.call("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y, id: 1 }] });
@@ -541,6 +568,11 @@ try { new PerformanceObserver((l) => l.getEntries().forEach((e) => window.__perf
         await page.call("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y, id: 1 }] });
       }
       await page.call("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+      if (PROFILE === "pan") {
+        await new Promise((r) => setTimeout(r, 1500));
+        const { profile } = await page.call("Profiler.stop");
+        printProfile(profile);
+      }
       results.pan = await page.evaluate(`async () => {
         const { api, settle } = window.__recall;
         await settle(200);
@@ -622,6 +654,9 @@ runs.forEach((r, i) => {
 });
 row("switch: PDF ↔ PDF, page on screen", (r) => r.switch);
 row("zoom: step to page redrawn", (r) => r.zoom);
+row("zoom step: synchronous part", (r) => r.zoomjank?.sync);
+row("zoom step: long tasks in next 800ms", (r) => r.zoomjank?.total);
+row("zoom step: worst long task", (r) => r.zoomjank?.worst);
 row("zoom in to 500%: page redrawn", (r) => r.zoomin?.drawn);
 row("zoom in to 500%: sharp detail", (r) => r.zoomin?.sharp);
 row("zoom in to 500%: canvas", (r) => r.zoomin?.mp, "MP");

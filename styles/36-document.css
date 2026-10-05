@@ -287,10 +287,6 @@
  * further from its selection the further along the line it goes.
  */
 .pdf-text-layer {
-  /* A text layer is kept across a zoom and re-scaled with a transform
-     (keepTextLayerForScale), which has to grow from the page's own top-left
-     corner, where every span's coordinates are measured from. */
-  transform-origin: 0 0;
   /* Strict containment: the layer is sized explicitly (buildTextLayer), so
      nothing inside it can change anything outside it, and the browser can lay
      out its hundreds of spans as one closed box. */
