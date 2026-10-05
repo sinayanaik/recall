@@ -140,9 +140,29 @@ export function fitPaddingFor(width) {
   return width && width < PDF_NARROW_WIDTH ? PDF_FIT_PADDING_NARROW : PDF_FIT_PADDING;
 }
 
-// A canvas is painted at devicePixelRatio so text is sharp, but a phone at
-// dpr 3 rendering a 300-dpi page is a lot of pixels for no visible gain.
-export const PDF_MAX_CANVAS_SCALE = 2;
+// A canvas is painted at devicePixelRatio so text is sharp. This used to stop
+// at 2, because every page in the render window was painted at it and a 3x
+// phone paying 2.25 times the pixels for every one of them was too slow. Pages
+// are drawn in two passes now (see "Fast first, sharp second" below): only the
+// pages actually on screen get the full-density pass, and only once nothing
+// else is waiting — so a 3x screen can have 3x pixels where it is looking.
+export const PDF_MAX_CANVAS_SCALE = 3;
+
+// The first pass: one canvas pixel per CSS pixel. A ninth of the pixels of a
+// 3x render, which is most of the time a big page takes to appear; soft on a
+// high-density screen until the sharp pass replaces it. Half the target
+// density (1.5x on a 3x phone) was tried and cost as much as the old 2x
+// render did, which is the cost this exists to take off the first frame.
+export const PDF_QUICK_CANVAS_SCALE = 1;
+
+// ...but only for a page whose sharp canvas is BIG. Measured on a dense paper
+// in phone emulation, a page at fit-width on a 2x screen (under a million
+// pixels) is not drawn meaningfully faster at 1x — the cost there is the
+// drawing commands, not the pixels — so drawing it twice only delays the
+// sharp version. Past this, which is a page zoomed in or any page on a 3x
+// screen, the pixels dominate: a zoom step reached the page in half the time
+// with a quick first pass.
+export const PDF_QUICK_PASS_MIN_PIXELS = 1_000_000;
 
 // ...and a ceiling on the bitmap itself, because the cap above is a ratio and
 // the thing it multiplies grows without limit. A page zoomed to 3x on a 3x
@@ -1825,8 +1845,10 @@ export function relayoutDocument({ refit = false, afterLayout = null } = {}) {
 // still re-render exactly as before.
 function pageNeedsRerender(entry, width, height) {
   if (entry.renderScale !== openPdf.scale) return true;
-  if (!entry.renderOutputScale) return true;
-  return canvasOutputScale(width, height) !== entry.renderOutputScale;
+  if (!entry.targetOutputScale) return true;
+  // The TARGET, not what is on the canvas: a page still showing its quick
+  // first pass is not stale, it is waiting for its sharp one.
+  return canvasOutputScale(width, height) !== entry.targetOutputScale;
 }
 
 // The same hold-the-reader guard openDocumentViewBody's tab-switch path
@@ -2177,10 +2199,19 @@ async function renderPage(pageNumber) {
     entry.viewport = viewport;
     entry.renderScale = scale;
 
-    const outputScale = canvasOutputScale(viewport.width, viewport.height);
-    // Remembered so relayoutDocument can tell "these pixels are still exactly
-    // right" from "the screen's density changed under them" without a redraw.
+    // The density this page SHOULD have, and the one it is drawn at first.
+    // Both remembered: relayoutDocument compares the target with what a new
+    // layout would want (so a page drawn quick is not mistaken for one whose
+    // screen density changed), canvas recovery repaints at what is actually
+    // on the canvas, and the sharp pass knows how far there is to go.
+    const targetScale = canvasOutputScale(viewport.width, viewport.height);
+    const sharpPixels = viewport.width * viewport.height * targetScale * targetScale;
+    const outputScale = sharpPixels > PDF_QUICK_PASS_MIN_PIXELS
+      ? Math.min(targetScale, PDF_QUICK_CANVAS_SCALE)
+      : targetScale;
+    entry.targetOutputScale = targetScale;
     entry.renderOutputScale = outputScale;
+    entry.needsSharp = outputScale < targetScale;
     const { canvas, context, transform } = createPageCanvas(viewport, outputScale);
     // Kept, so a page that is trimmed or re-scaled mid-render can STOP the
     // render rather than let it run to the end and throw the canvas away. A
@@ -2216,6 +2247,7 @@ async function renderPage(pageNumber) {
     entry.urgent = false;
     samplePdfTiming("render", performance.now() - renderStartedAt);
     firstPdfPagePainted();
+    if (entry.needsSharp) scheduleSharpen();
     // A page that drew has no failed attempts behind it any more. Without this
     // a page that needed two goes would carry that count into every later
     // re-render — a zoom, a rotate — and hit the ceiling early.
@@ -2382,6 +2414,16 @@ function watchForFling() {
     const top = view.scrollTop;
     const last = flingLast;
     flingLast = { at, top };
+    // Whatever the speed, the pages on screen once it stops may want their
+    // sharp pass; the timer is re-armed by every scroll, so it fires on the
+    // first pause. A sharp pass already running is stopped: it is the most
+    // expensive render there is (a full-density canvas) and only an upgrade,
+    // and left running it holds a render slot that the pages the reader is
+    // scrolling TO are waiting for. It runs again on the pause.
+    if (openPdf) {
+      cancelSharpening();
+      scheduleSharpen();
+    }
     if (!last || at - last.at > 200 || at <= last.at) return;
     const screensPerSecond = (Math.abs(top - last.top) / Math.max(1, view.clientHeight)) / ((at - last.at) / 1000);
     if (screensPerSecond < PDF_FLING_SCREENS_PER_SECOND) return;
@@ -2413,7 +2455,11 @@ function pumpRenderQueue() {
     let bestRank = Infinity;
     renderWaiters.forEach((waiter, index) => {
       if (flinging && !waiter.entry.urgent) return;
-      const rank = waiter.entry.urgent ? -1 : Math.abs(waiter.pageNumber - current);
+      // A sharp pass ranks half a page further away than its own page: after
+      // the first pass of the page in view, ahead of the first passes of the
+      // pages either side of it, which the reader is not looking at yet.
+      const rank = waiter.entry.urgent ? -1
+        : Math.abs(waiter.pageNumber - current) + (waiter.entry.sharpening ? 0.5 : 0);
       if (rank < bestRank) { best = index; bestRank = rank; }
     });
     // Mid-fling and nothing urgent: the settle timer in watchForFling pumps
@@ -2446,6 +2492,120 @@ function dropWaitingRender(waiter) {
 function resetRenderQueue() {
   renderWaiters.splice(0).forEach((waiter) => waiter.resolve(null));
   renderSlots.clear();
+}
+
+// ── Fast first, sharp second ────────────────────────────────────────────────
+//
+// "I want PDF rendering faster AND sharper." Those pull against each other in
+// one pass: the pixels that make text crisp on a 3x screen are nine times the
+// pixels of a 1x canvas, and every one of them is painted on the main thread.
+// So a page is drawn twice. The first pass (renderPage) is at
+// PDF_QUICK_CANVAS_SCALE and is what puts the page on screen; the second
+// redraws only the pages the reader can actually SEE at the full density the
+// screen has (canvasOutputScale, up to PDF_MAX_CANVAS_SCALE) and swaps the
+// sharp canvas in, in place, under the same text, mark, badge and ink layers.
+//
+// The second pass waits its turn in the same render queue, ranked just behind
+// the first pass of the page it is for and ahead of the pages either side
+// (see pumpRenderQueue): what the reader is looking at gets sharp before what
+// they might scroll to next gets drawn at all. It is never started while the
+// reader is flinging (PDF_FLING_SCREENS_PER_SECOND) or writing, and it is
+// cancelled like any other render the moment its page is trimmed or
+// re-scaled — so a page the reader only passed on the way somewhere else
+// never pays for it.
+export const PDF_SHARPEN_DELAY_MS = 150;
+
+let sharpenTimer = 0;
+
+// The pages whose sharp pass is running, so a scroll can stop them without
+// walking every page of the document per scroll event.
+const sharpeningPages = new Set();
+
+function cancelSharpening() {
+  if (!sharpeningPages.size || !openPdf) return;
+  sharpeningPages.forEach((pageNumber) => cancelPageRender(openPdf.pages.get(pageNumber)));
+}
+
+function scheduleSharpen(delay = PDF_SHARPEN_DELAY_MS) {
+  clearTimeout(sharpenTimer);
+  sharpenTimer = setTimeout(sharpenVisiblePage, delay);
+}
+
+// On screen now — no lead, unlike isPageNearViewport: the sharp pass is for
+// what is being looked at.
+function isPageOnScreen(pageNumber) {
+  const view = el.documentView;
+  const entry = openPdf?.pages.get(pageNumber);
+  if (!view || !entry) return false;
+  const top = pageOffsetTop(entry.el);
+  const bottom = top + entry.el.offsetHeight;
+  return bottom > view.scrollTop && top < view.scrollTop + view.clientHeight;
+}
+
+function sharpenVisiblePage() {
+  sharpenTimer = 0;
+  if (!openPdf || documentSurfaceHidden()) return;
+  if (performance.now() < flingUntil || inkPenIsDown()) {
+    scheduleSharpen();
+    return;
+  }
+  const current = currentDocumentPage();
+  let best = 0;
+  openPdf.pages.forEach((entry, pageNumber) => {
+    if (!entry.needsSharp || entry.sharpening || entry.task || !openPdf.rendered.has(pageNumber)) return;
+    if (!isPageOnScreen(pageNumber)) return;
+    if (!best || Math.abs(pageNumber - current) < Math.abs(best - current)) best = pageNumber;
+  });
+  if (best) sharpenPage(best);
+}
+
+async function sharpenPage(pageNumber) {
+  const entry = openPdf?.pages.get(pageNumber);
+  if (!entry?.viewport) return;
+  const token = pdfOpenToken;
+  const generation = entry.generation;
+  const viewport = entry.viewport;
+  const target = entry.targetOutputScale;
+  const stale = () => token !== pdfOpenToken || entry.generation !== generation || !openPdf?.rendered.has(pageNumber);
+  entry.sharpening = true;
+  let slot = null;
+  let renderTask = null;
+  try {
+    slot = await acquireRenderSlot(pageNumber, entry, stale);
+    // Dropped from the queue (the reader moved on): still wanted, if the page
+    // is still there, for when they come back to it.
+    if (!slot) return;
+    const page = await openPdf.doc.getPage(pageNumber);
+    if (stale()) return;
+    const { canvas, context, transform } = createPageCanvas(viewport, target);
+    renderTask = page.render({ canvasContext: context, viewport, transform });
+    // Where cancelPageRender looks, so a trim, a zoom or a scroll stops this.
+    entry.renderTask = renderTask;
+    sharpeningPages.add(pageNumber);
+    await renderTask.promise;
+    if (stale()) return;
+    const quick = entry.el.querySelector(".pdf-canvas:not(.is-stale)");
+    if (!quick) return;
+    // replaceWith, so the layers above keep their place in tree order — see
+    // repaintPageCanvas, which swaps a canvas the same way for the same reason.
+    quick.replaceWith(canvas);
+    entry.renderOutputScale = target;
+    entry.needsSharp = false;
+  } catch (error) {
+    if (error?.name !== "RenderingCancelledException") {
+      console.warn(`Could not sharpen page ${pageNumber}`, error);
+      // The quick canvas is a perfectly good page. Retrying a render that
+      // failed for a reason of its own would loop, so this page stays as it is.
+      entry.needsSharp = false;
+    }
+  } finally {
+    if (renderTask && entry.renderTask === renderTask) entry.renderTask = null;
+    sharpeningPages.delete(pageNumber);
+    slot?.release();
+    entry.sharpening = false;
+    // ...and the next visible page that wants it, if there is one.
+    if (openPdf) scheduleSharpen(0);
+  }
 }
 
 // ── A page's canvas, and the pixels it can lose ─────────────────────────────

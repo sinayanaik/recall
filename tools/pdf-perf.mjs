@@ -51,6 +51,8 @@ const EXTRA_CSS = arg("css", "");
 // the app ships, to see what the transpilation costs (needs the npm tarball
 // tools/pdfjs-source.mjs caches, unpacked with its build/ directory).
 const PDFJS_BUILD = arg("pdfjs", "legacy");
+// --dpr=3 emulates a 3x screen (most current phones) instead of tools/cdp.mjs's 2x.
+const DPR = Number(arg("dpr", 2));
 
 // The browser plumbing and pdf.js come from THIS tree, so two roots are
 // measured with the same harness; only the app under test differs.
@@ -192,6 +194,7 @@ async function oneRun() {
   const results = {};
   try {
     await emulatePhone(page, { cpuThrottle: 1 });
+    if (DPR !== 2) await page.call("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: DPR, mobile: true });
     await page.call("Page.addScriptToEvaluateOnNewDocument", {
       source: `${sources.main}
 ;(function () { var blob = new Blob([${JSON.stringify(sources.worker)}], { type: "text/javascript" });
@@ -361,8 +364,17 @@ try { new PerformanceObserver((l) => l.getEntries().forEach((e) => window.__perf
           if (canvasAt >= 0 && el.querySelector(".pdf-text-layer")) { textAt = performance.now() - landed; break; }
           await settle(25);
         }
+        // ...and how long until it is SHARP: drawn at the screen's full
+        // density (the second pass), not just on screen.
+        let sharpAt = -1;
+        for (let i = 0; i < 400; i++) {
+          const c = api.pdfPageElement(20).querySelector(".pdf-canvas:not(.is-stale)");
+          const density = c ? c.width / c.getBoundingClientRect().width : 0;
+          if (density >= Math.min(3, window.devicePixelRatio || 1) - 0.05) { sharpAt = performance.now() - landed; break; }
+          await settle(25);
+        }
         await settle(1500);
-        return { canvas: Math.round(canvasAt), text: Math.round(textAt) };
+        return { canvas: Math.round(canvasAt), text: Math.round(textAt), sharp: Math.round(sharpAt) };
       }`);
     }
 
@@ -433,7 +445,7 @@ const row = (label, pick, unit = "ms") => {
   if (values.every((v) => v === undefined)) return;
   console.log(`  ${label.padEnd(34)} ${String(median(values)).padStart(6)} ${unit}   (${values.join(", ")})`);
 };
-console.log(`pdf-perf · ${ROOT} · CPU ${THROTTLE}x · ${RUNS} run(s)${INVERT ? " · dark page" : ""} · median (each run)`);
+console.log(`pdf-perf · ${ROOT} · CPU ${THROTTLE}x · dpr ${DPR} · ${RUNS} run(s)${INVERT ? " · dark page" : ""} · median (each run)`);
 row("open: deck PDF to first page", (r) => r.open);
 row("tab: Notes → PDF, page on screen", (r) => r.tab?.ms);
 runs.forEach((r, i) => {
@@ -443,6 +455,7 @@ row("switch: PDF ↔ PDF, page on screen", (r) => r.switch);
 row("zoom: step to page redrawn", (r) => r.zoom);
 row("fling: page 20 canvas", (r) => r.fling?.canvas);
 row("fling: page 20 text layer", (r) => r.fling?.text);
+row("fling: page 20 sharp (full density)", (r) => r.fling?.sharp);
 row("steady scroll: p90 frame", (r) => r.steady?.p90Frame);
 row("steady scroll: worst frame", (r) => r.steady?.worstFrame);
 row("steady scroll: long tasks", (r) => r.steady?.longTaskMs);
