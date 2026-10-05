@@ -432,6 +432,7 @@ const APP_SHELL = [
   `./src/documents/pdf-ink.js?v=${STAMP}`,
   `./src/documents/pdf-multi-actions.js?v=${STAMP}`,
   `./src/documents/pdf-switcher.js?v=${STAMP}`,
+  `./src/documents/pdf-timing.js?v=${STAMP}`,
   `./src/documents/pdf-multi.js?v=${STAMP}`,
   `./src/documents/pdf-outline.js?v=${STAMP}`,
   `./src/documents/pdf-page-notes.js?v=${STAMP}`,

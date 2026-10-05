@@ -65,6 +65,46 @@
   position: relative;
 }
 
+/* A stage hidden after being on screen keeps its layout — see
+   keepDocumentStageLaidOut in src/ui/view-mode.js for why.
+
+   `[hidden]` is display:none !important everywhere else (01-tokens.css); the
+   id is what lets this rule win. While kept, nothing in the stage is painted,
+   hit-tested, focused or exposed to assistive tech — `content-visibility:
+   hidden` skips the contents the way display:none does, but keeps their
+   layout for the way back.
+
+   Only between Notes and the PDF (.notes-mode, which both of them set), and
+   IN FLOW, in the very grid cell the stage is shown in. Both halves are the
+   point. In flow and at the column's width is what lets the pages inside keep
+   their layout at all: taking the stage out of flow (position: absolute) makes
+   the browser rebuild its whole layout tree, which is the cost this exists to
+   avoid. And the cell: .notes-mode is a two-row grid (`auto 1fr`) whose second
+   row is whichever stage is showing, so both stages are placed there
+   explicitly and the kept one overlaps the shown one at zero height. Left to
+   auto-placement it would open a third row — and on a phone the panel has a
+   row gap, so the note above it would lose 8px. In Cards mode the grid is a
+   different shape with deliberately clipped spill rows, so a kept stage there
+   simply goes back to display:none. */
+.quiz-panel.notes-mode > .notes-stage,
+.quiz-panel.notes-mode > .document-stage {
+  grid-row: 2;
+  grid-column: 1;
+}
+
+.quiz-panel.notes-mode > #documentStage[hidden][data-kept] {
+  display: flex !important;
+  align-self: start;
+  height: 0;
+  min-height: 0;
+  overflow: hidden;
+  /* Not visibility or pointer-events: both are INHERITED, so setting either
+     here would restyle every span in every text layer on the way in and again
+     on the way out — the very cost this rule is for. content-visibility:
+     hidden already keeps the contents from being painted or hit. */
+  content-visibility: hidden;
+}
+
 /* The controls that used to sit in a `.document-toolbar` row of their own are
    in #viewModeRow beside the tabs now, and the page number and zoom float over
    the page as #documentPager — see styles/37-document-chrome.css, which is also
@@ -236,6 +276,10 @@
  * further from its selection the further along the line it goes.
  */
 .pdf-text-layer {
+  /* Strict containment: the layer is sized explicitly (buildTextLayer), so
+     nothing inside it can change anything outside it, and the browser can lay
+     out its hundreds of spans as one closed box. */
+  contain: strict;
   line-height: 1;
   /* Selection over a canvas has no visible text of its own to tint, so the
      browser's selection colour IS the feedback. Kept obviously blue rather than
@@ -516,4 +560,25 @@
    the app you cannot flick through. */
 .document-scroll {
   touch-action: pan-x pan-y;
+}
+
+/* ── PDF reader timings, in App Info ───────────────────────────────────────
+ *
+ * src/documents/pdf-timing.js, printed by src/pwa/app-info.js. Here and not
+ * beside the rest of App Info (11-chrome.css) because that file is one of the
+ * frozen slices tools/split-css.mjs compares byte for byte; this one is not.
+ * Monospaced and wrapping, because it is meant to be read on a phone and
+ * copied into a message as it is.
+ */
+.app-info-timings-text {
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--text);
+  font: 0.74rem/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
 }

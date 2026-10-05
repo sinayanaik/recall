@@ -200,6 +200,7 @@
     <link rel="modulepreload" href="src/documents/pdf-ink.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/pdf-multi-actions.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/pdf-switcher.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/documents/pdf-timing.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/pdf-multi.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/pdf-outline.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/pdf-page-notes.js?v=__BUILD__">
@@ -2484,6 +2485,19 @@ What year was the Eiffel Tower built?
             <p class="app-info-warning" id="appInfoHealthSummary" hidden></p>
             <div class="app-info-actions">
               <button type="button" class="sync-modal-btn" id="appInfoHealthBtn">Check my setup</button>
+            </div>
+          </div>
+
+          <!-- How long the PDF reader is taking on THIS device: opens, tab and
+               PDF switches, zooms, and per-page draw and text-layer times
+               (src/documents/pdf-timing.js). In memory only, never sent
+               anywhere; the button copies it so it can be pasted into a bug
+               report. -->
+          <div class="app-info-health app-info-timings">
+            <h3 class="app-info-health-title">PDF reader timings</h3>
+            <pre class="app-info-timings-text" id="appInfoPdfTimings">—</pre>
+            <div class="app-info-actions">
+              <button type="button" class="sync-modal-btn" id="appInfoCopyTimingsBtn">Copy timings</button>
             </div>
           </div>
         </div>

@@ -31,10 +31,11 @@ import { isDriveConfigured } from "../cloud/drive-client.js?v=__BUILD__";
 import { isS3Configured } from "../cloud/s3-config.js?v=__BUILD__";
 import { PDF_BADGE_LAYER_CLASS, PDF_INK_HL_LAYER_CLASS, PDF_INK_LAYER_CLASS } from "../core/constants.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
-import { ensurePdfJs } from "../core/lib-loader.js?v=__BUILD__";
+import { ensurePdfJs, openPdfDocument } from "../core/lib-loader.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { paintDocumentHighlights } from "./pdf-highlights.js?v=__BUILD__";
 import { textItemGap } from "./pdf-selection.js?v=__BUILD__";
+import { expectPdfPagePaint, firstPdfPagePainted, recordPdfTimingAfterPaint, samplePdfTiming } from "./pdf-timing.js?v=__BUILD__";
 import { buildDocumentOutline, clearDocumentOutline, setDocumentOutlinePage } from "./pdf-outline.js?v=__BUILD__";
 import { inkPenIsDown } from "../core/gesture.js?v=__BUILD__";
 import { DOC_SLOT_DOC, DOC_SLOT_NOTEBOOK, activeDocSlot, docSlotMeta, docSlotReadingPositionKey, documentStoreKey, normalizeDocSlot, onDocumentSurface } from "./doc-slot.js?v=__BUILD__";
@@ -796,12 +797,18 @@ function sameDocumentBytes(open, current) {
 // active is written to the deck's own meta before the open, not after, so a
 // reload or a sync mid-open still lands on the reader's choice rather than on
 // whichever paper happened to finish opening.
+// What the next openDocumentView is, for the timings in App Info.
+let nextOpenTimingKind = "";
+
 export async function switchToPdf(pdfId) {
   if (!pdfId || activeDocSlot() !== DOC_SLOT_DOC) return false;
   if (!deckPdfById(state.meta, pdfId)) return false;
   if (pdfId === (openPdf?.pdfId || activePdfId(state.meta))) return true;
   state.meta = { ...state.meta, pdfActiveId: pdfId };
   scheduleDeckAutosave();
+  // Reported as a switch rather than an open (see pdf-timing.js), whichever
+  // way openDocumentView finds to do it.
+  nextOpenTimingKind = "switch";
   await openDocumentView({ slot: DOC_SLOT_DOC, pdfId });
   return true;
 }
@@ -919,6 +926,9 @@ let documentOpensInFlight = 0;
 // all, and it has been wrong in three different ways so far. This makes being
 // wrong about it cost a re-parse the reader cannot see, instead of their page.
 async function openDocumentViewBody({ force = false, slot = null, pdfId = null, holdReader = false } = {}) {
+  const openStartedAt = performance.now();
+  const timingKind = nextOpenTimingKind || "open";
+  nextOpenTimingKind = "";
   const view = el.documentView;
   const openSlot = slot ? normalizeDocSlot(slot) : activeDocSlot();
   // Only means anything on the doc slot — the notebook shelf still has exactly
@@ -1011,6 +1021,7 @@ async function openDocumentViewBody({ force = false, slot = null, pdfId = null, 
     // from before the turn — measuring now would already include the gap and
     // padding change the new width brought with it.
     relayoutDocumentHoldingReader({ refit: true });
+    if (timingKind === "open") recordPdfTimingAfterPaint("tab", openStartedAt);
     return true;
   }
 
@@ -1089,6 +1100,8 @@ async function openDocumentViewBody({ force = false, slot = null, pdfId = null, 
     // of empty paper, which is the whole of what was reported.
     const wasScale = openPdf.scale;
     if (openPdf.fitWidth) openPdf.scale = fitWidthScale();
+    if (restored) recordPdfTimingAfterPaint("switch", openStartedAt, "kept in memory");
+    else expectPdfPagePaint("switch", openStartedAt, "parsed, redrawn");
     finishDocumentOpen(view, pdfOpenToken, openSlot,
       held || { page: parked.page, ratio: parked.ratio, across: parked.across },
       { restored, refit: restored && openPdf.scale !== wasScale });
@@ -1132,7 +1145,9 @@ async function openDocumentViewBody({ force = false, slot = null, pdfId = null, 
   const storeKey = openSlot === DOC_SLOT_DOC
     ? pdfStoreKey(state.localDeckId, openPdfId)
     : documentStoreKey(state.localDeckId, openSlot);
+  const readStartedAt = performance.now();
   const blob = await getDocument(storeKey, pdfMeta);
+  const readMs = performance.now() - readStartedAt;
   if (token !== pdfOpenToken) return supersededOpen();
   if (!blob) {
     renderMissingDocumentPrompt(pdfMeta, openPdfId);
@@ -1146,7 +1161,10 @@ async function openDocumentViewBody({ force = false, slot = null, pdfId = null, 
     // given to its worker, which detaches it — and the blob in the store is the
     // one thing that must survive, since it is the only copy on this device.
     const data = new Uint8Array(await blob.arrayBuffer());
-    doc = await window.pdfjsLib.getDocument({ data, isEvalSupported: false }).promise;
+    const parseStartedAt = performance.now();
+    doc = await openPdfDocument(data);
+    expectPdfPagePaint(timingKind, openStartedAt,
+      `read ${Math.round(readMs)}ms · parse ${Math.round(performance.now() - parseStartedAt)}ms · ${doc.numPages} pages · ${Math.round(blob.size / 1024)}KB`);
   } catch (error) {
     console.error("Could not read the PDF", error);
     showDocumentViewError(`Could not read this PDF — ${error?.message || "unexpected error"}`);
@@ -1416,6 +1434,9 @@ function watchDocumentViewSize() {
       // frame has passed, and the width this acts on has to be the width the
       // pages will actually be laid out against.
       if (!openPdf) return;
+      // Hidden: not a new width, and not a reason to remember 0 as the old one
+      // — see documentSurfaceHidden.
+      if (documentSurfaceHidden()) return;
       const width = view.clientWidth;
       const widthChanged = width !== lastWidth;
       lastWidth = width;
@@ -1653,9 +1674,38 @@ function buildPagePlaceholders() {
   view.appendChild(frag);
 }
 
+// ── A hidden surface is not a surface the reader has scrolled away from ─────
+//
+// Leaving the PDF tab hides the document stage, and a hidden scroller measures
+// 0×0. Three things here used to read that as a change and act on it: the
+// IntersectionObserver reported every page as no longer intersecting, and its
+// trim pass turned every rendered page back into a placeholder; the size
+// watcher saw the width "change" to 0 and re-laid every page out; and the
+// sweep, asked from either, rendered around a scroll position the hidden view
+// does not have. Coming back to the tab then redrew the whole visible run from
+// scratch — canvases, text layers, highlights — which is most of "even
+// switching to the PDF tab is painfully slow". Measured on a phone-throttled
+// CPU, a Notes → PDF switch spent over a second re-rasterising pages that had
+// been on screen a moment before.
+//
+// So while the surface is not displayed, nothing that is about the reader's
+// position runs. getClientRects() is empty for an element inside a
+// display:none subtree and only then — a scroller that is shown but not laid
+// out yet still has a rect, so a freshly opened document is unaffected.
+export function documentSurfaceHidden() {
+  const view = el.documentView;
+  if (!view || !view.isConnected) return true;
+  // The stage's own flag first: it is what the tabs set, and it is true for
+  // however the stylesheet chooses to keep a hidden stage off screen.
+  if (el.documentStage?.hidden) return true;
+  return view.getClientRects().length === 0;
+}
+
 function observePages() {
   const view = el.documentView;
+  watchForFling();
   openPdf.observer = new IntersectionObserver((entries) => {
+    if (documentSurfaceHidden()) return;
     entries.forEach((entry) => {
       const pageNumber = Number(entry.target.dataset.pageNumber);
       if (!pageNumber) return;
@@ -1717,7 +1767,16 @@ export function relayoutDocument({ refit = false, afterLayout = null } = {}) {
     entry.boxHeight = Math.round(height);
     bumpDocumentLayout();
     if (pageNumber === 1) publishPageWidth(width);
-    if (openPdf.rendered.has(pageNumber) && pageNeedsRerender(entry, width, height)) entry.pendingSize = { width, height };
+    if (openPdf.rendered.has(pageNumber) && pageNeedsRerender(entry, width, height)) {
+      entry.pendingSize = { width, height };
+      // Its layers are wrong at the new scale whatever happens to the page
+      // next (stalePageForRelayout or unrenderPage below), so they come off
+      // NOW, before afterLayout and isPageNearViewport read the layout. Left
+      // in for those reads, every one of them forced a layout of several
+      // thousand text-layer spans that were about to be thrown away — most of
+      // what a zoom step cost on a phone, before a single pixel was redrawn.
+      dropPageLayers(entry);
+    }
   });
   // Between the two passes, deliberately. A zoom moves the scroll offsets so the
   // point the reader was looking at stays where it was (restorePageAnchor), and
@@ -1854,6 +1913,7 @@ export function relayoutDocumentHoldingReader({ refit = false } = {}) {
 
 export function setDocumentScale(scale, { fitWidth = false, afterLayout = null } = {}) {
   if (!openPdf) return;
+  expectPdfPagePaint("zoom", performance.now(), `to ${Math.round(clampScale(scale) * 100)}%`);
   openPdf.fitWidth = fitWidth;
   openPdf.scale = clampScale(scale);
   relayoutDocument({ afterLayout });
@@ -1956,7 +2016,7 @@ export function isPageNearViewport(pageNumber) {
 // again, the failure should be a page that is drawn when it did not need to be,
 // not a reader looking at nothing.
 export function renderPagesNearViewport() {
-  if (!openPdf) return 0;
+  if (!openPdf || documentSurfaceHidden()) return 0;
   let asked = 0;
   openPdf.pages.forEach((entry, pageNumber) => {
     if (!isPageNearViewport(pageNumber)) return;
@@ -2105,6 +2165,7 @@ async function renderPage(pageNumber) {
     if (!slot) return;
     entry.releaseSlot = slot.release;
     armRenderDeadline();
+    const renderStartedAt = performance.now();
     const page = await openPdf.doc.getPage(pageNumber);
     if (stale()) return;
     const viewport = page.getViewport({ scale });
@@ -2127,6 +2188,15 @@ async function renderPage(pageNumber) {
     // main thread, while the page the reader stopped on waited behind them.
     const renderTask = page.render({ canvasContext: context, viewport, transform });
     entry.renderTask = renderTask;
+    // The page's text, asked for now, while the canvas is being drawn, rather
+    // than after: it comes from the worker, and the worker is otherwise idle
+    // while the main thread paints — waiting for the paint first put a whole
+    // worker round trip between a page appearing and its words becoming
+    // selectable. AFTER render(), not before it: the worker answers in the
+    // order it is asked, and the first page of an open waited behind its own
+    // text extraction when this came first.
+    const textContent = page.getTextContent();
+    textContent.catch(() => {});
     try {
       await renderTask.promise;
     } finally {
@@ -2144,6 +2214,8 @@ async function renderPage(pageNumber) {
     entry.el.append(canvas);
     openPdf.rendered.add(pageNumber);
     entry.urgent = false;
+    samplePdfTiming("render", performance.now() - renderStartedAt);
+    firstPdfPagePainted();
     // A page that drew has no failed attempts behind it any more. Without this
     // a page that needed two goes would carry that count into every later
     // re-render — a zoom, a rotate — and hit the ceiling early.
@@ -2163,7 +2235,7 @@ async function renderPage(pageNumber) {
     // selects text they have not read yet. Anything that must have them —
     // tools/pdf-preview-check.mjs, a highlight measuring against a text item —
     // goes through whenDocumentPageReady, which awaits this too.
-    entry.layerTask = buildPageLayers(pageNumber, entry, page, viewport, stale)
+    entry.layerTask = buildPageLayers(pageNumber, entry, page, viewport, stale, textContent)
       .catch((error) => console.warn(`Could not build the layers for page ${pageNumber}`, error))
       .finally(() => { if (entry.layerTask) entry.layerTask = null; });
   })()
@@ -2278,8 +2350,53 @@ function renderWaiterDropped(waiter) {
   return !isPageNearViewport(waiter.pageNumber);
 }
 
+// ── ...and not while the reader is flinging past ────────────────────────────
+//
+// A page that is near the viewport for the hundred milliseconds a flick takes
+// to cross it is not a page anyone is going to read. Starting its render there
+// costs a slot and a worker round trip, and pdf.js cannot stop a render it has
+// started without wasting that work — so the queue simply does not START a
+// render while the scroller is moving faster than anyone reads, and looks
+// again once it has slowed down. Waiting pages stay in line; the nearest one
+// to wherever the flick lands goes first. A page someone is waiting on by name
+// (urgent) is never held back.
+//
+// The threshold is in viewport heights per second, so it means the same on a
+// phone and a monitor: three screens a second is a flick, reading is a small
+// fraction of one.
+export const PDF_FLING_SCREENS_PER_SECOND = 3;
+
+export const PDF_FLING_SETTLE_MS = 120;
+
+let flingUntil = 0;
+let flingTimer = 0;
+let flingLast = null;
+let flingWatching = false;
+
+function watchForFling() {
+  const view = el.documentView;
+  if (flingWatching || !view) return;
+  flingWatching = true;
+  view.addEventListener("scroll", () => {
+    const at = performance.now();
+    const top = view.scrollTop;
+    const last = flingLast;
+    flingLast = { at, top };
+    if (!last || at - last.at > 200 || at <= last.at) return;
+    const screensPerSecond = (Math.abs(top - last.top) / Math.max(1, view.clientHeight)) / ((at - last.at) / 1000);
+    if (screensPerSecond < PDF_FLING_SCREENS_PER_SECOND) return;
+    flingUntil = at + PDF_FLING_SETTLE_MS;
+    clearTimeout(flingTimer);
+    flingTimer = setTimeout(() => {
+      flingTimer = 0;
+      pumpRenderQueue();
+    }, PDF_FLING_SETTLE_MS + 10);
+  }, { passive: true });
+}
+
 function pumpRenderQueue() {
   if (!renderWaiters.length) return;
+  const flinging = performance.now() < flingUntil;
   // Asked once per pump, not per waiter: the answer is the same for all of
   // them, and it is a geometry read.
   const current = openPdf ? currentDocumentPage() : 1;
@@ -2292,12 +2409,16 @@ function pumpRenderQueue() {
     dropWaitingRender(waiter);
   }
   while (renderSlots.size < PDF_RENDER_CONCURRENCY && renderWaiters.length) {
-    let best = 0;
+    let best = -1;
     let bestRank = Infinity;
     renderWaiters.forEach((waiter, index) => {
+      if (flinging && !waiter.entry.urgent) return;
       const rank = waiter.entry.urgent ? -1 : Math.abs(waiter.pageNumber - current);
       if (rank < bestRank) { best = index; bestRank = rank; }
     });
+    // Mid-fling and nothing urgent: the settle timer in watchForFling pumps
+    // again once the scroller slows down.
+    if (best < 0) break;
     const [waiter] = renderWaiters.splice(best, 1);
     const slot = { release: () => {
       if (!renderSlots.delete(slot)) return;
@@ -2557,17 +2678,19 @@ function showPageRenderFailure(pageNumber, reason) {
 
 // The mark and text layers, off the critical path. See the comment at the call
 // site for why they are not part of the render that puts the page on screen.
-async function buildPageLayers(pageNumber, entry, page, viewport, stale) {
+async function buildPageLayers(pageNumber, entry, page, viewport, stale, textContent = null) {
   await whenIdle();
   if (stale()) return;
+  const layersStartedAt = performance.now();
   const markLayer = document.createElement("div");
   markLayer.className = "pdf-mark-layer";
-  const { layer: textLayer, items } = await buildTextLayer(page, viewport);
+  const { layer: textLayer, items } = await buildTextLayer(page, viewport, textContent);
   if (stale()) return;
   entry.el.append(markLayer, textLayer);
   entry.markLayer = markLayer;
   entry.textLayer = textLayer;
   entry.textItems = items;
+  samplePdfTiming("text", performance.now() - layersStartedAt);
   // Painted as part of the layer build rather than on a later pass, so a
   // highlight is never briefly missing from a page the reader can already see
   // the marks of.
@@ -2678,6 +2801,17 @@ function stalePageForRelayout(pageNumber, width, height) {
   entry.generation = (entry.generation || 0) + 1;
   cancelPageRender(entry);
   openPdf.rendered.delete(pageNumber);
+  dropPageLayers(entry);
+  canvas.classList.add("is-stale");
+  canvas.style.width = `${Math.round(width)}px`;
+  canvas.style.height = `${Math.round(height)}px`;
+}
+
+// Everything drawn over a page's canvas at one particular scale: the mark and
+// text layers, the note badges, the ink and the highlighter's bands. All of it
+// is positioned through the viewport transform of the scale it was built at,
+// so none of it can survive a change of scale — see stalePageForRelayout.
+function dropPageLayers(entry) {
   entry.markLayer?.remove();
   entry.textLayer?.remove();
   entry.el.querySelector(`.${PDF_BADGE_LAYER_CLASS}`)?.remove();
@@ -2693,9 +2827,6 @@ function stalePageForRelayout(pageNumber, width, height) {
   entry.el.querySelector(`.${PDF_INK_HL_LAYER_CLASS}`)?.remove();
   entry.markLayer = null;
   entry.textLayer = null;
-  canvas.classList.add("is-stale");
-  canvas.style.width = `${Math.round(width)}px`;
-  canvas.style.height = `${Math.round(height)}px`;
 }
 
 function unrenderPage(pageNumber) {
@@ -2811,12 +2942,14 @@ export function fontAscentRatio(style) {
 // to be exact and it has to survive a re-render — which means owning the loop
 // that creates the spans rather than inferring indices from someone else's DOM
 // afterwards.
-export async function buildTextLayer(page, viewport) {
+// `content` is the page's getTextContent() when the caller has already asked
+// for it (renderPage does, so the worker answers while the canvas is drawn).
+export async function buildTextLayer(page, viewport, content = null) {
   const layer = document.createElement("div");
   layer.className = "pdf-text-layer";
   layer.style.width = `${Math.floor(viewport.width)}px`;
   layer.style.height = `${Math.floor(viewport.height)}px`;
-  const content = await page.getTextContent();
+  content = await (content || page.getTextContent());
   const frag = document.createDocumentFragment();
   let previous = null;
   let measureLater = false;

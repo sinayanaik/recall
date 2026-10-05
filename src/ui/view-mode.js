@@ -97,6 +97,24 @@ export function switchToPreviousView() {
   return true;
 }
 
+// ── Leaving the PDF tab without throwing its layout away ────────────────────
+//
+// A hidden stage is display:none, which discards the layout of everything in
+// it — and a rendered page carries a text layer of several hundred absolutely
+// positioned spans. Coming back to the tab then laid every one of them out
+// again from nothing: measured on a phone-throttled CPU, most of the 0.8s a
+// Notes → PDF switch took, with the page already drawn the whole time.
+//
+// So a stage that is hidden after having been on screen is marked `kept`, and
+// styles/36-document.css keeps it laid out — in flow, at zero height, with
+// `content-visibility: hidden` so none of it is painted or reachable — for as
+// long as the reader stays on Notes. The document's own observers stand down
+// while it is hidden (documentSurfaceHidden in src/documents/pdf-view.js), so
+// being kept is never mistaken for the reader having scrolled or resized.
+function keepDocumentStageLaidOut(stage) {
+  if (!("kept" in stage.dataset)) stage.dataset.kept = "";
+}
+
 export function setViewMode(mode, options = {}) {
   // "highlights" is deliberately not a mode any more, and deliberately not
   // special-cased into an error either: it falls through to "cards" like any
@@ -124,6 +142,8 @@ export function setViewMode(mode, options = {}) {
     state.viewMode = next;
     return;
   }
+  const leavingDocument = Boolean(el.documentStage && !el.documentStage.hidden)
+    && !(next === "document" || next === "handwriting");
   if (next === "cards") resetNotesEditingUI();
   blockEditFlushHook?.();
   // A note being typed in the highlights pane commits on the way out, exactly
@@ -152,6 +172,7 @@ export function setViewMode(mode, options = {}) {
   // paper needs every pixel of height the chrome is not using.
   quizPanel?.classList.toggle("notes-mode", notesActive || documentActive);
   el.notesStage.hidden = !notesActive;
+  if (leavingDocument) keepDocumentStageLaidOut(el.documentStage);
   if (el.documentStage) el.documentStage.hidden = !documentActive;
   // Which of the deck's two documents is on the stage, published for CSS: the
   // notebook's controls come up on one and the paper's on the other, and both

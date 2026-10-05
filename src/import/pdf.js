@@ -17,7 +17,7 @@
 
 import { updateMeta } from "../cards/card-status.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
-import { ensurePdfJs } from "../core/lib-loader.js?v=__BUILD__";
+import { ensurePdfJs, openPdfDocument } from "../core/lib-loader.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { stripInvalidUnicode } from "../core/text.js?v=__BUILD__";
 import { DOC_SLOT_DOC } from "../documents/doc-slot.js?v=__BUILD__";
@@ -217,7 +217,7 @@ export async function importPdfFile(file, folderPath = null) {
     // A copy, because pdf.js transfers the buffer it is given to its worker and
     // the File has to stay readable afterwards for the store and the upload.
     const data = new Uint8Array(await file.arrayBuffer());
-    doc = await window.pdfjsLib.getDocument({ data, isEvalSupported: false }).promise;
+    doc = await openPdfDocument(data);
     metadata = await doc.getMetadata().catch(() => null);
   } catch (error) {
     console.error("PDF parse failed", error);
@@ -402,7 +402,7 @@ export async function attachPdfToOpenDeck(file) {
   try {
     progress.update("Reading the document…", 0.05);
     const data = new Uint8Array(await file.arrayBuffer());
-    doc = await window.pdfjsLib.getDocument({ data, isEvalSupported: false }).promise;
+    doc = await openPdfDocument(data);
     const pageCount = doc.numPages;
     const { records, notes } = await readExistingHighlights(doc, progress);
     await doc.destroy().catch(() => {});
