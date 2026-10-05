@@ -2658,7 +2658,7 @@ function watchAnimationFrames() {
         if (!touched) return;
         const script = (frame.scripts || []).reduce((sum, s) => sum + (s.duration || 0), 0);
         const layout = frame.styleAndLayoutStart > 0 ? Math.max(0, end - frame.styleAndLayoutStart) : 0;
-        notePdfAnimationFrame({ startTime: frame.startTime, duration: frame.duration, script, layout });
+        notePdfAnimationFrame({ startTime: frame.startTime, duration: frame.duration, script, layout, blocking: frame.blockingDuration || 0 });
       });
     });
     animationFrameObserver.observe({ type: "long-animation-frame", buffered: false });
@@ -2811,6 +2811,39 @@ function whenRenderQueueIdle(entry, stale) {
     // A beat first, so the slot this page just gave back can be taken by the
     // next page before the queue is asked whether it is empty.
     setTimeout(check, 0);
+  });
+}
+
+// ── For the region pictures (src/documents/pdf-region-embed.js) ───────────
+//
+// The page renderer's copy of the paper on the stage, when the record being
+// pictured is ON that paper — so a region's picture can be drawn in the worker
+// from the copy it already has, instead of on the main thread from a third
+// pdf.js copy opened just for pictures. Null otherwise; the caller then does it
+// the old way.
+export function openRenderDocumentFor(slot, pdfId = null) {
+  if (!openPdf?.renderDoc || !pageRendererActive()) return null;
+  if (normalizeDocSlot(openPdf.slot) !== normalizeDocSlot(slot)) return null;
+  if (normalizeDocSlot(slot) === DOC_SLOT_DOC
+      && (openPdf.pdfId || PDF_PRIMARY_ID) !== (pdfId || PDF_PRIMARY_ID)) return null;
+  return openPdf.renderDoc;
+}
+
+// The paper's own pages first: resolves once no page is waiting to be drawn or
+// being drawn, or after `maxWait` whatever the queue is doing. Pictures for the
+// notes under the pages wait on this, so opening a paper with forty regions on
+// it does not put forty pictures in the worker ahead of the page on screen.
+export function whenPageDrawsIdle(maxWait = 3000) {
+  const startedAt = performance.now();
+  return new Promise((resolve) => {
+    const check = () => {
+      if ((!renderWaiters.length && !renderSlots.size) || performance.now() - startedAt > maxWait) {
+        resolve();
+        return;
+      }
+      setTimeout(check, 50);
+    };
+    check();
   });
 }
 
@@ -3199,14 +3232,34 @@ function canvasFromBitmap(bitmap, className) {
   canvas.className = className;
   canvas.width = bitmap.width;
   canvas.height = bitmap.height;
-  const context = canvas.getContext("bitmaprenderer");
+  // ── A SOFTWARE 2D canvas, so the page is not a layer of its own ─────────
+  //
+  // This was a `bitmaprenderer` canvas, and a GPU 2D canvas before that. Both
+  // are composited: the browser keeps the canvas as a layer of its own and
+  // composites it every frame. And everything drawn ON a composited canvas
+  // has to be composited too — the text layer, the mark layer (blended with
+  // `mix-blend-mode`, so a render surface of its own), the region layer, the
+  // folds — so a page came to the compositor as four or more layers, and an
+  // annotated page with its blends had to be re-blended on every frame of a
+  // scroll. That is the readout from the phone on a paper of regions and inline
+  // notes: frames of nearly two seconds with the main thread idle, waiting on
+  // the GPU.
+  //
+  // An unaccelerated canvas (`willReadFrequently`) is not composited: the
+  // browser paints it into the page's own layer, like an image, and the marks,
+  // folds and text on top of it go into that same layer — blended once, when
+  // the layer is rasterised, and only translated after that while the reader
+  // scrolls. The copy is one drawImage of a bitmap that is already in memory.
+  const context = canvas.getContext("2d", { alpha: false, willReadFrequently: true });
   if (!context) {
     bitmap.close();
-    throw new Error("no bitmaprenderer context");
+    throw new Error("no 2D context");
   }
-  context.transferFromImageBitmap(bitmap);
+  context.drawImage(bitmap, 0, 0);
+  bitmap.close();
   bitmapCanvases.add(canvas);
-  // Heard the same way a 2D page canvas is, should the browser ever announce it.
+  // Heard the same way any page canvas is, should the browser ever announce a
+  // lost context on it.
   canvas.addEventListener("contextlost", () => lostCanvases.add(canvas));
   canvas.addEventListener("contextrestored", () => {
     lostCanvases.add(canvas);
@@ -3215,12 +3268,13 @@ function canvasFromBitmap(bitmap, className) {
   return canvas;
 }
 
-// A page canvas's bitmap is a full page of pixels; handed back the moment the
-// canvas leaves the page rather than whenever the collector gets to it.
+// A page canvas is a full page of pixels; handed back the moment the canvas
+// leaves the page rather than whenever the collector gets to it.
 function releaseCanvasBitmap(canvas) {
   if (!canvas || !bitmapCanvases.has(canvas)) return;
   bitmapCanvases.delete(canvas);
-  try { canvas.getContext("bitmaprenderer")?.transferFromImageBitmap(null); } catch (_) { /* already empty */ }
+  canvas.width = 0;
+  canvas.height = 0;
 }
 
 function cancelledDraw(pageNumber) {

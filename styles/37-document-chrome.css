@@ -774,14 +774,23 @@
    paint, so on the button it would halve a target that is already tiny. The
    faint drop shadow keeps it legible over a page that is itself the accent's
    colour. */
+/* Its dark edge is painted in the same fill, as a narrow darker band along the
+   fold's long side, rather than with `filter: drop-shadow`. A filter is an
+   effect of its own on every fold — on a paper with notes on most of its
+   highlights, dozens of them on screen, each one a separate pass for the
+   compositor — and the gradient is one more stop in a paint that is happening
+   anyway. */
 .pdf-note-badge::after {
   content: "";
   position: absolute;
   inset: 0;
-  background: var(--accent-strong);
+  /* The long side is the diagonal's midpoint (50%) from the top-right corner
+     the gradient starts at; the rim is the band just inside it. */
+  background: linear-gradient(to bottom left,
+    var(--accent-strong) 0 40%,
+    color-mix(in srgb, var(--accent-strong) 55%, #000) 40% 100%);
   clip-path: polygon(0 0, 100% 0, 100% 100%);
   border-top-right-radius: 2px;
-  filter: drop-shadow(0 0 1px rgb(0 0 0 / 0.45));
 }
 
 /* ...and a target a finger can find: a transparent square reaching past the

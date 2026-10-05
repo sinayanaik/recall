@@ -5510,14 +5510,20 @@ try {
       : null;
     api.fitDocumentToWidth();
     await settle(500);
-    return { cpuBacked, strip, wipedSpread, evented, silent, away };
+    return { cpuBacked, rendererActive: api.pageRendererActive(), strip, wipedSpread, evented, silent, away };
   }`);
 
-  // On the GPU by default: willReadFrequently put every draw pdf.js makes on
-  // the main thread's CPU (318ms median a page on the phone in the report).
-  // The repaint checks below are what make a lost context survivable instead.
-  check("a page's canvas is drawn on the GPU unless the reader has asked for the CPU",
-    lostPixels.cpuBacked === false, `willReadFrequently=${lostPixels.cpuBacked}`);
+  // Drawn by the page renderer's worker and SHOWN on an unaccelerated canvas:
+  // the drawing costs the main thread nothing, and a software canvas is painted
+  // into the page's own layer rather than composited as a layer of its own —
+  // which a GPU canvas is, taking every mark, region and fold above it into
+  // layers of their own and re-blending them on every frame of a scroll (the
+  // readout from an annotated paper: two-second frames, main thread idle).
+  // Drawn on the main thread (no renderer), it stays on the GPU, where pdf.js's
+  // own drawing is cheapest there.
+  check("a page drawn in the worker is shown on an unaccelerated canvas, on the GPU when drawn here",
+    lostPixels.rendererActive ? lostPixels.cpuBacked === true : lostPixels.cpuBacked === false,
+    `renderer=${lostPixels.rendererActive} · willReadFrequently=${lostPixels.cpuBacked}`);
   check("...and covers its page box exactly, with no strip of page showing past it",
     lostPixels.strip && Math.abs(lostPixels.strip.w) < 0.5 && Math.abs(lostPixels.strip.h) < 0.5,
     lostPixels.strip ? `page ${lostPixels.strip.box} · box minus canvas: ${lostPixels.strip.w}px × ${lostPixels.strip.h}px` : "no canvas");
@@ -7399,9 +7405,27 @@ try {
     await settle(300);
     const canvasNow = () => document.querySelector('.pdf-page[data-page-number="1"] canvas.pdf-canvas:not(.is-stale)');
     const shown = canvasNow();
+    // ── A region's picture, from the worker, without another pdf.js copy ──
+    const pdfjs = window.pdfjsLib;
+    const realGetDocument = pdfjs.getDocument;
+    let documentsOpened = 0;
+    pdfjs.getDocument = function (...args) { documentsOpened += 1; return realGetDocument.apply(this, args); };
+    let picture = { skipped: true };
+    if (api.openDocumentSlot() === "doc") {
+      const pdfId = api.openDocumentPdfId();
+      const record = { id: "hn-checkpicture", kind: "area", color: "yellow", page: 1, at: Date.now(),
+        quads: [{ page: 1, rect: [72, 500, 300, 700] }] };
+      if (pdfId && pdfId !== "primary") record.pdfId = pdfId;
+      const url = await api.renderRegionImage(record, { width: 200 });
+      picture = { jpeg: String(url || "").startsWith("data:image/jpeg"), documentsOpened };
+    }
+    pdfjs.getDocument = realGetDocument;
+    // ── ...and the folds, which carry no filter of their own any more ─────
+    const fold = document.querySelector(".pdf-note-badge");
+    const foldFilter = fold ? getComputedStyle(fold, "::after").filter : "none";
     const inWorker = {
       active: api.pageRendererActive(),
-      bitmap: Boolean(shown) && shown.getContext("2d") === null,
+      software: Boolean(shown) && shown.getContext("2d")?.getContextAttributes?.().willReadFrequently === true,
       spread: shown ? spread(shown) : 0,
       says: /pages drawn: in a background thread/.test(api.pdfTimingReport())
     };
@@ -7417,11 +7441,15 @@ try {
       says: /pages drawn: on the main thread \\(forced by the check\\)/.test(api.pdfTimingReport()),
       restarts: await api.startPageRenderer()
     };
-    return { inWorker, onMain };
+    return { inWorker, onMain, picture, foldFilter };
   }`);
-  check("pages are drawn in the page renderer's worker and shown as bitmaps",
-    renderer.inWorker.active === true && renderer.inWorker.bitmap === true && renderer.inWorker.spread >= 40,
+  check("pages are drawn in the page renderer's worker and shown on an unaccelerated canvas",
+    renderer.inWorker.active === true && renderer.inWorker.software === true && renderer.inWorker.spread >= 40,
     JSON.stringify(renderer.inWorker));
+  check("a region's picture of the open paper comes from the worker, opening no other copy of it",
+    renderer.picture.skipped === true || (renderer.picture.jpeg === true && renderer.picture.documentsOpened === 0),
+    JSON.stringify(renderer.picture));
+  check("a note's fold carries no filter of its own", renderer.foldFilter === "none", `filter: ${renderer.foldFilter}`);
   check("...and App Info says so", renderer.inWorker.says === true);
   check("when the worker fails, pages are drawn on the main thread instead, with a page on them",
     renderer.onMain.twoD === true && renderer.onMain.spread >= 40, JSON.stringify(renderer.onMain));

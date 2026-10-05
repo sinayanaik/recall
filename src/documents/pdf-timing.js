@@ -177,6 +177,7 @@ function pdfTimingSlowFrameBreakdown(frames) {
   let script = 0;
   let layout = 0;
   let otherMain = 0;
+  let waitingForFrame = 0;
   let offMain = 0;
   slow.forEach((frame) => {
     const start = frame.end - frame.ms;
@@ -190,11 +191,20 @@ function pdfTimingSlowFrameBreakdown(frames) {
       counted.add(loaf);
       script += loaf.script;
       layout += loaf.layout;
-      otherMain += Math.max(0, loaf.duration - loaf.script - loaf.layout);
+      // What is left of a long frame once its script and its style/layout are
+      // taken out is one of two things. If the frame BLOCKED (a long task in
+      // it), the main thread was busy with something else — garbage, parsing,
+      // a canvas call. If it did not, the main thread sat idle inside the frame,
+      // waiting for the compositor to ask for the next one: the GPU or raster
+      // was what was slow. The readout used to call both "other main-thread",
+      // which sent the eye to the wrong thread.
+      const rest = Math.max(0, loaf.duration - loaf.script - loaf.layout);
+      if ((loaf.blocking || 0) >= 1) otherMain += rest;
+      else waitingForFrame += rest;
     });
     offMain += Math.max(0, frame.ms - covered);
   });
-  return { count: slow.length, script, layout, otherMain, offMain, observed: pdfTimingLoafsObserved };
+  return { count: slow.length, script, layout, otherMain, waitingForFrame, offMain, observed: pdfTimingLoafsObserved };
 }
 
 let pdfTimingLoafsObserved = false;
@@ -250,7 +260,8 @@ export function pdfTimingReport() {
     const split = pdfTimingSlowFrameBreakdown(recentFrames);
     if (split?.observed) {
       lines.push(`  where the slow frames went: script ${Math.round(split.script)}ms · style/layout ${Math.round(split.layout)}ms`
-        + ` · other main-thread ${Math.round(split.otherMain)}ms · off the main thread (GPU/raster) ${Math.round(split.offMain)}ms`);
+        + ` · other main-thread ${Math.round(split.otherMain)}ms`
+        + ` · waiting for a frame (GPU/compositor) ${Math.round(split.waitingForFrame + split.offMain)}ms`);
     } else if (split) {
       lines.push("  where the slow frames went: not measurable in this browser");
     }

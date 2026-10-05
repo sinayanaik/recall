@@ -59,6 +59,18 @@ const INVERT = process.argv.includes("--invert");
 // --highlights=N puts N text highlights (and one region for every ten) on every
 // page of the paper being measured, the way a heavily annotated paper is read.
 const HIGHLIGHTS = Math.max(0, Number(arg("highlights", 0)) || 0);
+// --annotated puts a note on every other highlight and turns on the notes printed
+// under each page, so the note folds and the inline notes (region pictures
+// included) are on screen: the shape of a paper somebody has worked through.
+// Implies --highlights=30 unless that is given.
+const ANNOTATED = process.argv.includes("--annotated");
+// --layers reports how many layers the compositor holds and how many device
+// pixels they cover, settled on a page and mid-scroll — what a phone's GPU has to
+// keep resident and composite every frame.
+const LAYERS = process.argv.includes("--layers");
+// --gpu composites on a software GPU rather than with the GPU off, so canvases
+// are accelerated and layers are made as a phone makes them.
+const GPU = process.argv.includes("--gpu");
 // --report prints the App Info readout at the end of each run.
 const REPORT = process.argv.includes("--report");
 // --main-thread draws pages on the main thread instead of in the page renderer.
@@ -180,7 +192,8 @@ const API_SRC = `async () => {
   const paths = ["/src/documents/pdf-view.js", "/src/import/pdf.js", "/src/library/local-library.js",
     "/src/storage/deck-store.js", "/src/ui/view-mode.js", "/src/cloud/supabase-client.js",
     "/src/core/state.js", "/src/ui/boot-screens.js", "/src/boot.js", "/src/library/my-decks.js",
-    "/src/documents/pdf-multi.js", "/src/ui/deck-header.js", "/src/documents/pdf-highlights.js", "/src/documents/pdf-timing.js"]
+    "/src/documents/pdf-multi.js", "/src/ui/deck-header.js", "/src/documents/pdf-highlights.js", "/src/documents/pdf-timing.js",
+    "/src/format/highlight-notes.js", "/src/documents/pdf-page-notes.js"]
     .map((p) => p + "?v=__BUILD__");
   const mods = await Promise.all(paths.map((p) => import(p).catch(() => ({}))));
   const api = {};
@@ -240,7 +253,7 @@ async function oneRun() {
     };
   }
   const server = await serveOn(ROOT);
-  const launched = await launchChrome(chrome);
+  const launched = await launchChrome(chrome, [], { gpu: GPU });
   const client = await connect(launched.wsUrl);
   const page = await openPage(client);
   const results = {};
@@ -292,15 +305,17 @@ try { new PerformanceObserver((l) => l.getEntries().forEach((e) => window.__perf
       const secondId = ids.find((id) => id !== firstId) || null;
       if (api.openDocumentPdfId() !== firstId) await api.switchToPdf(firstId);
       await settle(500);
-      api.applyPdfInvert(Boolean(invert), { remember: false });
+      // Remembered, so the flows that load another deck and come back keep it.
+      api.applyPdfInvert(Boolean(invert));
       for (let i = 0; i < 60 && api.deckAutosaveTimer; i += 1) await settle(100);
       return { deckId: entry.id, otherId, firstId, secondId, pages: api.currentPdfPageCount() };
     }`, Array.from(densePdf(IMAGES ? 24 : 40, { images: photos })),
     Array.from(densePdf(IMAGES ? 8 : 20, { seed: 11, title: "Second Paper", images: photos })),
     Array.from(densePdf(IMAGES ? 8 : 30, { seed: 23, title: "Other Deck", images: photos })), INVERT);
 
-    if (HIGHLIGHTS) {
-      await page.evaluate(`async (perPage, pages) => {
+    const perPageHighlights = HIGHLIGHTS || (ANNOTATED ? 30 : 0);
+    if (perPageHighlights) {
+      await page.evaluate(`async (perPage, pages, annotated) => {
         const { api, settle } = window.__recall;
         let seed = 5;
         const rnd = () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
@@ -315,18 +330,30 @@ try { new PerformanceObserver((l) => l.getEntries().forEach((e) => window.__perf
             const rect = area
               ? [col, y1 - 120, col + 230, y1]
               : [col + rnd() * 80, y1 - 10, col + 120 + rnd() * 110, y1];
-            made.push({ id: "perf-" + page + "-" + i, color: colors[i % 4], page, text: area ? "" : "perf",
+            made.push({ id: "hn-p" + page + "x" + i, color: colors[i % 4], page, text: area ? "" : "perf",
               quads: [{ page, rect }], kind: area ? "area" : "text", qv: 2, at: 1 });
           }
         }
         api.state.meta = { ...api.state.meta, pdfHighlights: made };
+        if (annotated) {
+          let notes = api.state.notes || "";
+          made.forEach((record, i) => {
+            if (i % 2) return;
+            notes = api.setHighlightNoteInSource(notes, record.id, "A note about this, with a few words to wrap " + i + ".", "perf " + i);
+          });
+          api.state.notes = notes;
+          try { localStorage.setItem("recall:pdfPageNotes", "1"); } catch (e) {}
+          api.setPdfPageNotesFlag(true);
+          api.applyPdfPageNotes();
+        }
         api.repaintDocumentHighlights();
+        api.repaintOpenDocumentPages?.();
         // Saved, so the flows that leave the deck and come back find them again.
         api.scheduleDeckAutosave?.();
         await settle(500);
         for (let i = 0; i < 60 && api.deckAutosaveTimer; i += 1) await settle(100);
         return made.length;
-      }`, HIGHLIGHTS, prepared.pages);
+      }`, perPageHighlights, prepared.pages, ANNOTATED);
     }
 
     await page.call("Emulation.setCPUThrottlingRate", { rate: THROTTLE });
@@ -627,6 +654,53 @@ try { new PerformanceObserver((l) => l.getEntries().forEach((e) => window.__perf
         return result;
       }`);
     }
+    if (LAYERS) {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const snapshot = async () => {
+        let latest = null;
+        const off = client.on((m) => {
+          if (m.method === "LayerTree.layerTreeDidChange" && m.sessionId === page.sessionId && m.params?.layers) latest = m.params.layers;
+        });
+        await page.call("LayerTree.enable");
+        await page.evaluate(`() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))`);
+        await sleep(400);
+        await page.call("LayerTree.disable");
+        off();
+        const drawing = (latest || []).filter((l) => l.drawsContent);
+        // LAYER_DEBUG=1 lists every layer with the element it belongs to.
+        if (process.env.LAYER_DEBUG) {
+          for (const l of drawing) {
+            let who = "";
+            if (l.backendNodeId) {
+              try {
+                const { node } = await page.call("DOM.describeNode", { backendNodeId: l.backendNodeId });
+                who = node.nodeName + " " + JSON.stringify(node.attributes || []);
+              } catch (e) { who = "?"; }
+            }
+            console.error("LAYER", Math.round(l.width) + "x" + Math.round(l.height), who, l.layerId);
+          }
+        }
+        const area = drawing.reduce((sum, l) => sum + l.width * l.height, 0) * DPR * DPR;
+        return { layers: drawing.length, mp: Math.round(area / 1e5) / 10 };
+      };
+      await page.evaluate(`async () => {
+        const { api, settle } = window.__recall;
+        api.fitDocumentToWidth();
+        api.scrollToDocumentPage(3, 0.1, { smooth: false });
+        await settle(3500);
+      }`);
+      const still = await snapshot();
+      await page.evaluate(`() => {
+        const view = document.getElementById("documentView");
+        let frames = 0;
+        const step = () => { view.scrollTop += 4; if (++frames < 120) requestAnimationFrame(step); };
+        requestAnimationFrame(step);
+      }`);
+      await sleep(600);
+      const moving = await snapshot();
+      results.layers = { still, moving };
+      await page.evaluate(`async () => { await window.__recall.settle(1500); }`);
+    }
     // --report prints App Info's PDF readout as the run left it — the same
     // lines a reader copies off their phone.
     if (REPORT) console.log(await page.evaluate(`() => window.__recall.api.pdfTimingReport?.() || "(no readout in this build)"`));
@@ -671,7 +745,7 @@ const row = (label, pick, unit = "ms") => {
   if (values.every((v) => v === undefined)) return;
   console.log(`  ${label.padEnd(34)} ${String(median(values)).padStart(6)} ${unit}   (${values.join(", ")})`);
 };
-console.log(`pdf-perf · ${ROOT} · CPU ${THROTTLE}x · dpr ${DPR}${IMAGES ? " · photo pages" : ""} · ${RUNS} run(s)${INVERT ? " · dark page" : ""}${HIGHLIGHTS ? ` · ${HIGHLIGHTS} highlights a page` : ""}${MAIN_THREAD ? " · drawn on the main thread" : ""} · median (each run)`);
+console.log(`pdf-perf · ${ROOT} · CPU ${THROTTLE}x · dpr ${DPR}${IMAGES ? " · photo pages" : ""} · ${RUNS} run(s)${INVERT ? " · dark page" : ""}${HIGHLIGHTS ? ` · ${HIGHLIGHTS} highlights a page` : ""}${ANNOTATED ? " · notes on half of them, printed under the pages" : ""}${MAIN_THREAD ? " · drawn on the main thread" : ""} · median (each run)`);
 row("open: deck PDF to first page", (r) => r.open);
 row("tab: Notes → PDF, page on screen", (r) => r.tab?.ms);
 runs.forEach((r, i) => {
@@ -697,5 +771,9 @@ row("pan after zoom: long tasks (count)", (r) => r.pan?.longTasks, "");
 row("pan after zoom: long tasks (total)", (r) => r.pan?.longTaskMs);
 row("pan after zoom: scrolled", (r) => r.pan?.moved, "px");
 row("pan: page fresh after lift", (r) => r.pan?.afterLiftMs);
+row("layers, settled on a page", (r) => r.layers?.still.layers, "");
+row("layers, settled: area", (r) => r.layers?.still.mp, "MP");
+row("layers, mid-scroll", (r) => r.layers?.moving.layers, "");
+row("layers, mid-scroll: area", (r) => r.layers?.moving.mp, "MP");
 if (process.argv.includes("--debug")) runs.forEach((r) => console.log(JSON.stringify(r.pan)));
 process.exit(0);

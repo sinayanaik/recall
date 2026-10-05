@@ -57,7 +57,11 @@ export function findChrome() {
 // they are asking about is what a second launch finds on disk (an installed
 // service worker, a filled cache). A reused profile is the caller's to delete;
 // only a temporary one is swept by close().
-export function launchChrome(chromePath, extraArgs = [], { profile, windowSize = "390,844" } = {}) {
+// `gpu` composites on a software GPU (SwiftShader) instead of turning the GPU
+// off, so layers are made the way a phone's GPU compositor makes them — which is
+// what tools/pdf-perf.mjs --gpu --layers needs to count. Slower, so off by
+// default.
+export function launchChrome(chromePath, extraArgs = [], { profile, windowSize = "390,844", gpu = false } = {}) {
   const userDataDir = profile || mkdtempSync(path.join(tmpdir(), "recall-cdp-"));
   const ownsProfile = !profile;
   const proc = spawn(chromePath, [
@@ -66,7 +70,7 @@ export function launchChrome(chromePath, extraArgs = [], { profile, windowSize =
     `--user-data-dir=${userDataDir}`,
     "--no-sandbox",
     "--disable-dev-shm-usage",
-    "--disable-gpu",
+    ...(gpu ? ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist"] : ["--disable-gpu"]),
     "--no-first-run",
     "--no-default-browser-check",
     "--disable-background-timer-throttling",
