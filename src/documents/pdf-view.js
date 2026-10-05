@@ -35,7 +35,7 @@ import { ensurePdfJs, openPdfDocument } from "../core/lib-loader.js?v=__BUILD__"
 import { state } from "../core/state.js?v=__BUILD__";
 import { paintDocumentHighlights } from "./pdf-highlights.js?v=__BUILD__";
 import { textItemGap } from "./pdf-selection.js?v=__BUILD__";
-import { countPdfTiming, expectPdfPagePaint, firstPdfPagePainted, notePdfInteractionLongTask, recordPdfTimingAfterPaint, samplePdfTiming } from "./pdf-timing.js?v=__BUILD__";
+import { expectPdfPagePaint, firstPdfPagePainted, notePdfCanvasSetup, notePdfInteractionFrame, notePdfInteractionLongTask, recordPdfTimingAfterPaint, samplePdfTiming } from "./pdf-timing.js?v=__BUILD__";
 import { buildDocumentOutline, clearDocumentOutline, setDocumentOutlinePage } from "./pdf-outline.js?v=__BUILD__";
 import { inkPenIsDown } from "../core/gesture.js?v=__BUILD__";
 import { DOC_SLOT_DOC, DOC_SLOT_NOTEBOOK, activeDocSlot, docSlotMeta, docSlotReadingPositionKey, documentStoreKey, normalizeDocSlot, onDocumentSurface } from "./doc-slot.js?v=__BUILD__";
@@ -140,44 +140,61 @@ export function fitPaddingFor(width) {
   return width && width < PDF_NARROW_WIDTH ? PDF_FIT_PADDING_NARROW : PDF_FIT_PADDING;
 }
 
-// A canvas is painted at devicePixelRatio so text is sharp. This used to stop
-// at 2, because every page in the render window was painted at it and a 3x
-// phone paying 2.25 times the pixels for every one of them was too slow. Pages
-// are drawn in two passes now (see "Fast first, sharp second" below): only the
-// pages actually on screen get the full-density pass, and only once nothing
-// else is waiting — so a 3x screen can have 3x pixels where it is looking.
+// A canvas is painted at devicePixelRatio so text is sharp, up to 3x.
+//
+// ── One pass, not two ──────────────────────────────────────────────────────
+//
+// Pages used to be drawn twice — a quick pass at 1x, then a "sharp" pass at
+// full density — for any page over a million device pixels, which on a 2.6x
+// phone is EVERY page at fit-width. The cost of drawing a real page is its
+// drawing commands and its images, not its pixel count, so the second pass
+// doubled the work of every page, and it was thrown away and restarted on
+// every scroll event besides. The App Info readout from the phone said so:
+// 318ms median, 1.4s p90 per page. A page is drawn once now, at the density
+// it will be shown at, within the pixel budget below.
 export const PDF_MAX_CANVAS_SCALE = 3;
 
-// The first pass: one canvas pixel per CSS pixel. A ninth of the pixels of a
-// 3x render, which is most of the time a big page takes to appear; soft on a
-// high-density screen until the sharp pass replaces it. Half the target
-// density (1.5x on a 3x phone) was tried and cost as much as the old 2x
-// render did, which is the cost this exists to take off the first frame.
-export const PDF_QUICK_CANVAS_SCALE = 1;
-
-// ...but only for a page whose sharp canvas is BIG. Measured on a dense paper
-// in phone emulation, a page at fit-width on a 2x screen (under a million
-// pixels) is not drawn meaningfully faster at 1x — the cost there is the
-// drawing commands, not the pixels — so drawing it twice only delays the
-// sharp version. Past this, which is a page zoomed in or any page on a 3x
-// screen, the pixels dominate: a zoom step reached the page in half the time
-// with a quick first pass.
-export const PDF_QUICK_PASS_MIN_PIXELS = 1_000_000;
-
-// ...and a ceiling on the bitmap itself, because the cap above is a ratio and
-// the thing it multiplies grows without limit. A page zoomed to 3x on a 3x
-// phone is a ~2300×3300 canvas — 7.7 million pixels, three of them in the
-// render window — to show a fifth of the page. Past this the output scale walks
-// back toward 1, which costs sharpness exactly where the page is already
-// magnified enough not to need it.
+// ...and a ceiling on the bitmap itself, which is now a real ceiling. It used
+// to be floored at one canvas pixel per CSS pixel, so it stopped applying the
+// moment a page was zoomed in: at 500% a page was a 12-million-pixel canvas,
+// two or three of them in the render window, on a 4GB phone — "zoom: 1819ms
+// (to 500%)". Past the budget the base canvas goes soft (down to a quarter of
+// a pixel per CSS pixel), and the part of the page actually on screen is drawn
+// sharp separately, by the detail tile (see "The detail tile" below).
 export const PDF_MAX_CANVAS_PIXELS = 4_000_000;
+
+// The base canvas never goes below this many canvas pixels per CSS pixel.
+export const PDF_MIN_CANVAS_SCALE = 0.25;
+
+// The per-canvas budget on THIS device: never more than about two screens'
+// worth of device pixels (a page at fit-width is under one), and less on a
+// phone that says it has little memory.
+export function canvasPixelBudget() {
+  const dpr = Math.min(PDF_MAX_CANVAS_SCALE, window.devicePixelRatio || 1);
+  // The SCREEN's size, not the window's: innerHeight moves every time a
+  // phone's URL bar shows or hides, and a budget that moved with it would make
+  // a zoomed page's density "change" and redraw it for nothing.
+  const cssWidth = window.screen?.width || window.innerWidth || 400;
+  const cssHeight = window.screen?.height || window.innerHeight || 800;
+  const screen = Math.max(1, cssWidth * cssHeight * dpr * dpr);
+  const lowMemory = Number(navigator.deviceMemory) > 0 && Number(navigator.deviceMemory) <= 4;
+  const cap = lowMemory ? PDF_MAX_CANVAS_PIXELS * 0.75 : PDF_MAX_CANVAS_PIXELS;
+  return Math.round(Math.min(cap, Math.max(screen * 2, 1_500_000)));
+}
 
 // The device pixel ratio to rasterise a page of this size at.
 export function canvasOutputScale(width, height) {
   const wanted = Math.min(PDF_MAX_CANVAS_SCALE, window.devicePixelRatio || 1);
   const area = Math.max(1, width * height);
-  const affordable = Math.sqrt(PDF_MAX_CANVAS_PIXELS / area);
-  return Math.max(1, Math.min(wanted, affordable));
+  const affordable = Math.sqrt(canvasPixelBudget() / area);
+  return Math.max(PDF_MIN_CANVAS_SCALE, Math.min(wanted, affordable));
+}
+
+// Whether a page drawn at this output scale is softer than the screen it is on
+// — the case the detail tile exists for.
+function pageWantsDetail(outputScale) {
+  const wanted = Math.min(PDF_MAX_CANVAS_SCALE, window.devicePixelRatio || 1);
+  return outputScale < wanted - 0.05;
 }
 
 export const PDF_DARK_CLASS = "is-pdf-inverted";
@@ -455,9 +472,9 @@ export function tearDownDocumentView({ park = false } = {}) {
     cancelPageRender(entry);
   });
   resetRenderQueue();
-  // Their tasks were just cancelled above; holding the continuations would
-  // only keep the old document's canvases alive.
-  pausedRenders.length = 0;
+  clearTimeout(detailTimer);
+  detailTimer = 0;
+  detailPages.clear();
   parsedPages.clear();
   if (openPdf?.doc && !parked) {
     // Releases the worker's copy of the file. Without this, opening five papers
@@ -1301,6 +1318,7 @@ async function openDocumentViewBody({ force = false, slot = null, pdfId = null, 
 // `refit` says the window changed size while they were away, so the pages are
 // laid out at a scale that no longer fits.
 function finishDocumentOpen(view, token, openSlot, at, { restored = false, refit = false } = {}) {
+  notePdfCanvasSetup({ cpu: pdfCanvasOnCpu(), budget: canvasPixelBudget(), slots: renderConcurrency() });
   if (!restored) buildPagePlaceholders();
   observePages();
   watchDocumentViewSize();
@@ -1784,8 +1802,8 @@ export function relayoutDocument({ refit = false, afterLayout = null } = {}) {
   // of those answers are worth anything.
   const near = new Set();
   openPdf.pages.forEach((entry, pageNumber) => {
-    const width = (entry.viewport ? entry.viewport.width / (entry.renderScale || 1) : openPdf.baseWidth) * openPdf.scale;
-    const height = (entry.viewport ? entry.viewport.height / (entry.renderScale || 1) : openPdf.baseHeight) * openPdf.scale;
+    const width = (entry.viewport ? entry.viewport.width / (entry.viewport.scale || 1) : openPdf.baseWidth) * openPdf.scale;
+    const height = (entry.viewport ? entry.viewport.height / (entry.viewport.scale || 1) : openPdf.baseHeight) * openPdf.scale;
     entry.el.style.width = `${Math.round(width)}px`;
     entry.el.style.height = `${Math.round(height)}px`;
     entry.boxHeight = Math.round(height);
@@ -1799,7 +1817,28 @@ export function relayoutDocument({ refit = false, afterLayout = null } = {}) {
       // in for those reads, every one of them forced a layout of several
       // thousand text-layer spans that were about to be thrown away — most of
       // what a zoom step cost on a phone, before a single pixel was redrawn.
-      dropPageLayers(entry);
+      //
+      // The text layer is the exception: it is kept and re-scaled with a
+      // transform (keepTextLayerForScale), which changes no layout inside its
+      // strict containment. So is the page's viewport, re-made at the new
+      // scale now rather than when the page redraws, so that a selection made
+      // over the kept layer in the meantime is captured at the scale it is
+      // shown at.
+      dropPageLayers(entry, { keepTextAt: openPdf.scale });
+      if (entry.viewport && entry.viewport.scale !== openPdf.scale) {
+        entry.viewport = entry.viewport.clone({ scale: openPdf.scale });
+      }
+    } else if (!openPdf.rendered.has(pageNumber) && entry.viewport && entry.viewport.scale !== openPdf.scale) {
+      // A page still being redrawn from the LAST zoom when this one lands: its
+      // stretched canvas and kept text layer follow the page to its new size
+      // rather than staying at the size of a scale that is already gone.
+      const staleCanvas = entry.el.querySelector(".pdf-canvas.is-stale");
+      if (staleCanvas) {
+        staleCanvas.style.width = `${Math.round(width)}px`;
+        staleCanvas.style.height = `${Math.round(height)}px`;
+      }
+      keepTextLayerForScale(entry, openPdf.scale);
+      entry.viewport = entry.viewport.clone({ scale: openPdf.scale });
     }
   });
   // Between the two passes, deliberately. A zoom moves the scroll offsets so the
@@ -1849,10 +1888,8 @@ export function relayoutDocument({ refit = false, afterLayout = null } = {}) {
 // still re-render exactly as before.
 function pageNeedsRerender(entry, width, height) {
   if (entry.renderScale !== openPdf.scale) return true;
-  if (!entry.targetOutputScale) return true;
-  // The TARGET, not what is on the canvas: a page still showing its quick
-  // first pass is not stale, it is waiting for its sharp one.
-  return canvasOutputScale(width, height) !== entry.targetOutputScale;
+  if (!entry.renderOutputScale) return true;
+  return canvasOutputScale(width, height) !== entry.renderOutputScale;
 }
 
 // The same hold-the-reader guard openDocumentViewBody's tab-switch path
@@ -2204,19 +2241,11 @@ async function renderPage(pageNumber) {
     entry.viewport = viewport;
     entry.renderScale = scale;
 
-    // The density this page SHOULD have, and the one it is drawn at first.
-    // Both remembered: relayoutDocument compares the target with what a new
-    // layout would want (so a page drawn quick is not mistaken for one whose
-    // screen density changed), canvas recovery repaints at what is actually
-    // on the canvas, and the sharp pass knows how far there is to go.
-    const targetScale = canvasOutputScale(viewport.width, viewport.height);
-    const sharpPixels = viewport.width * viewport.height * targetScale * targetScale;
-    const outputScale = sharpPixels > PDF_QUICK_PASS_MIN_PIXELS
-      ? Math.min(targetScale, PDF_QUICK_CANVAS_SCALE)
-      : targetScale;
-    entry.targetOutputScale = targetScale;
+    // Drawn once, at the density it will be shown at (within the budget).
+    // Remembered: relayoutDocument compares it with what a new layout would
+    // want, and canvas recovery repaints at what is actually on the canvas.
+    const outputScale = canvasOutputScale(viewport.width, viewport.height);
     entry.renderOutputScale = outputScale;
-    entry.needsSharp = outputScale < targetScale;
     const { canvas, context, transform } = createPageCanvas(viewport, outputScale);
     // Kept, so a page that is trimmed or re-scaled mid-render can STOP the
     // render rather than let it run to the end and throw the canvas away. A
@@ -2224,7 +2253,6 @@ async function renderPage(pageNumber) {
     // main thread, while the page the reader stopped on waited behind them.
     const renderTask = page.render({ canvasContext: context, viewport, transform });
     entry.renderTask = renderTask;
-    holdRenderWhileInteracting(renderTask, entry, pageNumber);
     // The page's text, asked for now, while the canvas is being drawn, rather
     // than after: it comes from the worker, and the worker is otherwise idle
     // while the main thread paints — waiting for the paint first put a whole
@@ -2232,8 +2260,11 @@ async function renderPage(pageNumber) {
     // selectable. AFTER render(), not before it: the worker answers in the
     // order it is asked, and the first page of an open waited behind its own
     // text extraction when this came first.
-    const textContent = page.getTextContent();
-    textContent.catch(() => {});
+    //
+    // Not at all for a page still carrying a text layer from before a zoom
+    // that is close enough to this scale to keep (see keepTextLayerForScale).
+    const textContent = textLayerNeedsRebuild(entry, scale) ? page.getTextContent() : null;
+    textContent?.catch(() => {});
     try {
       await renderTask.promise;
     } finally {
@@ -2247,14 +2278,18 @@ async function renderPage(pageNumber) {
     entry.el.querySelector(".pdf-page-label")?.remove();
     // ...and the previous scale's canvas, which stalePageForRelayout left in
     // place precisely so there was something to look at until this moment.
-    entry.el.querySelector(".pdf-canvas.is-stale")?.remove();
-    entry.el.append(canvas);
+    // The new one goes FIRST: a text layer kept across the zoom is already on
+    // the page, and with dark page on the canvas is a stacking context painted
+    // in tree order — after the layers it would cover them.
+    const staleCanvas = entry.el.querySelector(".pdf-canvas.is-stale");
+    if (staleCanvas) staleCanvas.replaceWith(canvas);
+    else entry.el.prepend(canvas);
     openPdf.rendered.add(pageNumber);
     parsedPages.add(pageNumber);
     entry.urgent = false;
     samplePdfTiming("render", performance.now() - renderStartedAt);
-    firstPdfPagePainted();
-    if (entry.needsSharp) scheduleSharpen();
+    firstPdfPagePainted(`${(canvas.width * canvas.height / 1e6).toFixed(1)}MP canvas`);
+    if (pageWantsDetail(outputScale)) scheduleDetail();
     // A page that drew has no failed attempts behind it any more. Without this
     // a page that needed two goes would carry that count into every later
     // re-render — a zoom, a rotate — and hit the ceiling early.
@@ -2333,12 +2368,6 @@ async function renderPage(pageNumber) {
     entry.deadline = setTimeout(function onRenderDeadline() {
       entry.deadline = 0;
       if (token !== pdfOpenToken || entry.task !== task) return;
-      // Held under the reader's finger is not "stopped answering": the clock
-      // starts again when they let go.
-      if (entry.paused) {
-        entry.deadline = setTimeout(onRenderDeadline, PDF_RENDER_DEADLINE_MS);
-        return;
-      }
       // Whatever happens next, this render is abandoned, so its turn goes to
       // the next page in line — a hung worker must not hold the queue too.
       slot?.release();
@@ -2373,18 +2402,26 @@ async function renderPage(pageNumber) {
 // observer asks for it again if they come back. A page someone is waiting on
 // by name (whenDocumentPageReady) is "urgent": first in line, and never dropped.
 //
-// Two slots rather than one: pdf.js does its parsing on the worker, so while
-// one page is being painted on the main thread the next one's drawing commands
-// are being prepared off it. More than that only splits the main thread
-// between pages the reader is not looking at yet.
+// One slot on a phone, two elsewhere. pdf.js paints a page in slices of about
+// 15ms, one slice per animation frame per render — so two renders at once are
+// 30ms of every frame on a phone, which is a stutter by itself, and the page
+// the reader is looking at finishes no sooner for sharing the main thread with
+// one they are not. On a desktop CPU the second slot lets the worker prepare
+// the next page while this one paints, and the frames can afford it.
 export const PDF_RENDER_CONCURRENCY = 2;
+
+export const PDF_RENDER_CONCURRENCY_COARSE = 1;
+
+function renderConcurrency() {
+  return window.matchMedia?.("(pointer: coarse)")?.matches ? PDF_RENDER_CONCURRENCY_COARSE : PDF_RENDER_CONCURRENCY;
+}
 
 const renderWaiters = [];
 const renderSlots = new Set();
 
-function acquireRenderSlot(pageNumber, entry, stale) {
+function acquireRenderSlot(pageNumber, entry, stale, { detail = false } = {}) {
   return new Promise((resolve) => {
-    renderWaiters.push({ pageNumber, entry, stale, resolve });
+    renderWaiters.push({ pageNumber, entry, stale, resolve, detail });
     pumpRenderQueue();
   });
 }
@@ -2395,44 +2432,44 @@ function renderWaiterDropped(waiter) {
   return !isPageNearViewport(waiter.pageNumber);
 }
 
-// ── Nothing that can wait is drawn under the reader's finger ───────────────
+// ── What may start while the reader is moving the page ─────────────────────
 //
-// "I'm still seeing significant lag zooming in and out and panning." The
-// readout from the phone that said so put a number on why: one page took
-// 0.7–1.7s to draw (median 731ms), and every zoom step paid one. pdf.js paints
-// in slices of about 15ms, one per animation frame, but a single image cannot
-// be sliced — and this surface has a non-passive touchmove listener (touch
-// selection needs one; src/notes/touch-selection.js), so every move of a
-// panning finger waits for the main thread to be free. Any page being drawn —
-// a neighbour fetched ahead, a page re-rendered behind its stretched canvas
-// after a zoom, a sharp pass — was a stutter under the finger.
+// This used to PAUSE renders while a finger was on the glass (pdf.js's
+// onContinue hook) and start nothing but a blank page, and a zoom held its
+// redraw for a further 250ms. On a phone a finger is on the glass most of the
+// time, so pages sat stretched or blank until the reader let go, then every
+// held render resumed at once — and a paused render did not count against the
+// slots, so more of them ran together after a release than the limit allows.
 //
-// So the surface knows when the reader is interacting with it: a finger is on
-// it, a pinch is in flight, it scrolled in the last PDF_INTERACTION_SETTLE_MS,
-// or the scale changed in the last PDF_ZOOM_SETTLE_MS. While that is true:
+// What a render costs the reader is not that it exists but how long each piece
+// of it holds the main thread, and pdf.js already slices a render to ~15ms per
+// frame. So nothing is paused any more. What is decided is what STARTS:
 //
-//   • the queue starts no render unless the page is on screen and has
-//     nothing on it at all — a blank page is the one thing worse than a stutter;
-//   • a render already going is PAUSED between pdf.js's slices (its own
-//     onContinue hook) unless it is that kind of page, and picks up exactly
-//     where it left off when the reader lets go. A pause keeps its progress,
-//     which a cancel throws away.
+//   • a page somebody is waiting on by name (urgent) — always;
+//   • a page on screen with no picture at all — always, except mid-fling;
+//   • a page on screen showing a stretched old canvas (after a zoom) — once the
+//     page has stopped moving: the stretched one is a perfectly good picture
+//     for the length of a gesture;
+//   • a page in the lead either side, and a detail tile — once the page has
+//     stopped moving.
 //
-// When it ends, everything that was held resumes and the queue moves again.
+// "Moving" is a scroll in the last PDF_INTERACTION_SETTLE_MS, a zoom step in
+// the last PDF_ZOOM_SETTLE_MS or a pinch in flight. A finger resting on the
+// glass is not moving: it is somebody about to press on a word, and that is
+// exactly when the page under it should finish drawing.
 export const PDF_INTERACTION_SETTLE_MS = 150;
 
-// A zoom step is followed by another more often than not, and the page on
-// screen already has its old canvas stretched to the new size (see
-// stalePageForRelayout) — so its redraw waits this long for the next step
-// rather than starting one per press.
-export const PDF_ZOOM_SETTLE_MS = 250;
+// Repeated presses of + or − arrive closer together than this, and each one
+// re-scales the page; the redraw waits for the last of them rather than
+// starting (and then cancelling) one per press. The stretched old canvas is on
+// screen the whole time.
+export const PDF_ZOOM_SETTLE_MS = 120;
 
-// ...and a FLING is stricter still. A blank page on screen may start drawing
-// while the reader pans, but not while the scroller is moving faster than
-// anyone reads (in viewport heights per second, so it means the same on a
-// phone and a monitor): every page a flick crosses would otherwise start a
-// render, each one asking the worker to parse the page and decode its images,
-// and the page the flick lands on waited behind all of them.
+// ...and a FLING is stricter still: nothing starts while the scroller is
+// moving faster than anyone reads (in viewport heights per second, so it means
+// the same on a phone and a monitor). Every page a flick crosses would
+// otherwise ask the worker to parse it and decode its images, and the page the
+// flick lands on would wait behind all of them.
 export const PDF_FLING_SCREENS_PER_SECOND = 3;
 
 let flingUntil = 0;
@@ -2443,18 +2480,14 @@ let interactionUntil = 0;
 let interactionTimer = 0;
 let interactionWatching = false;
 let scrollPumpFrame = 0;
-// pdf.js continuations held while the reader interacts: { entry, cont }.
-const pausedRenders = [];
 
 // A finger that went down and was never seen to come up. touchend is
 // delivered to the element the touch STARTED on, and on this surface that is
-// very often a text-layer span — which a zoom or a re-render removes from the
+// very often a text-layer span — which a re-render can remove from the
 // document mid-gesture, after which its touchend no longer bubbles to anything
 // here. watchDocumentInteraction listens on that element itself for the end,
 // which a detached element still receives; and as a net under that, a touch
-// with no touch activity of its own for this long no longer counts. Scrolling
-// deliberately does not count as touch activity: a momentum scroll or a
-// programmatic one would otherwise keep a lost finger "down" indefinitely.
+// with no touch activity of its own for this long no longer counts.
 export const PDF_TOUCH_STALE_MS = 3000;
 
 let lastTouchActivity = 0;
@@ -2463,8 +2496,16 @@ function fingerDown() {
   return touchesDown > 0 && performance.now() - lastTouchActivity < PDF_TOUCH_STALE_MS;
 }
 
+// Anything at all going on under the reader's hand — kept for the long-task
+// readout and for tools/pdf-preview-check.mjs.
 export function documentInteracting() {
   return fingerDown() || performance.now() < interactionUntil || documentPinchEngaged();
+}
+
+// The page itself is in motion: scrolled or zoomed a moment ago, or a pinch is
+// under way. This is what holds back work that can wait.
+export function documentMoving() {
+  return performance.now() < interactionUntil || documentPinchEngaged();
 }
 
 function noteDocumentInteraction(ms = PDF_INTERACTION_SETTLE_MS) {
@@ -2515,66 +2556,21 @@ function armInteractionSettle() {
 
 function onInteractionSettled() {
   interactionTimer = 0;
-  if (documentInteracting()) {
-    // A pinch ends with its own event, which arms this again; a scroll or
-    // zoom that is still going has moved the deadline; and a finger that is
-    // still down is looked at again when it would go stale (see
-    // PDF_TOUCH_STALE_MS), in case its touchend never arrives.
-    if (fingerDown()) {
-      clearTimeout(interactionTimer);
-      interactionTimer = setTimeout(onInteractionSettled,
-        Math.max(0, lastTouchActivity + PDF_TOUCH_STALE_MS - performance.now()) + 10);
-    } else if (!documentPinchEngaged()) {
-      armInteractionSettle();
-    }
+  if (documentMoving()) {
+    // A pinch ends with its own event, which arms this again; a scroll or a
+    // zoom that is still going has moved the deadline.
+    if (!documentPinchEngaged()) armInteractionSettle();
     return;
   }
-  resumePausedRenders();
   pumpRenderQueue();
-  if (openPdf) scheduleSharpen();
+  if (openPdf) scheduleDetail();
 }
 
-function resumePausedRenders() {
-  if (!pausedRenders.length) return;
-  const held = pausedRenders.splice(0);
-  let resumed = 0;
-  held.forEach(({ entry, cont, pageNumber }) => {
-    entry.paused = false;
-    // A page the reader has gone past while it was held is not resumed but
-    // dropped, exactly as a trim would drop it: a fling crosses pages that
-    // start drawing while they are briefly blank on screen, and resuming all
-    // of them together on landing put them in front of the page the reader
-    // landed on.
-    if (!openPdf || !isPageNearViewport(pageNumber)) {
-      if (openPdf?.pages.get(pageNumber) === entry) unrenderPage(pageNumber);
-      return;
-    }
-    // A render cancelled while it was held ignores this: pdf.js checks.
-    try { cont(); } catch (error) { console.warn("Could not resume a page render", error); }
-    resumed += 1;
-  });
-  countPdfTiming("resumed", resumed);
-}
-
-// The one kind of render that may run while the reader interacts: a page that
-// is on screen with nothing drawn on it yet.
+// A page on screen with no picture of any kind on it.
 function pageBlankOnScreen(pageNumber) {
   const entry = openPdf?.pages.get(pageNumber);
   if (!entry || entry.el.querySelector(".pdf-canvas")) return false;
   return isPageOnScreen(pageNumber);
-}
-
-// Installed on every pdf.js render task this file starts.
-function holdRenderWhileInteracting(renderTask, entry, pageNumber) {
-  renderTask.onContinue = (cont) => {
-    if (!documentInteracting() || entry.urgent || pageBlankOnScreen(pageNumber)) {
-      cont();
-      return;
-    }
-    entry.paused = true;
-    pausedRenders.push({ entry, cont, pageNumber });
-    countPdfTiming("paused", 1);
-  };
 }
 
 function watchDocumentInteraction() {
@@ -2587,7 +2583,7 @@ function watchDocumentInteraction() {
   const onTouches = (event) => {
     touchesDown = event.touches.length;
     lastTouchActivity = performance.now();
-    noteDocumentInteraction();
+    if (touchesDown) watchTouchFrames();
   };
   const onTouchActivity = () => { lastTouchActivity = performance.now(); };
   view.addEventListener("touchstart", (event) => {
@@ -2599,7 +2595,6 @@ function watchDocumentInteraction() {
       if (!target?.addEventListener || target === view) return;
       target.addEventListener("touchend", onTouches, { passive: true, once: true });
       target.addEventListener("touchcancel", onTouches, { passive: true, once: true });
-      target.addEventListener("touchmove", onTouchActivity, { passive: true });
     });
   }, { passive: true });
   view.addEventListener("touchmove", onTouchActivity, { passive: true });
@@ -2625,20 +2620,29 @@ function watchDocumentInteraction() {
         pumpRenderQueue();
       });
     }
-    // A sharp pass already running is stopped rather than paused: it is the
-    // most expensive render there is (a full-density canvas) and only an
-    // upgrade of a page the reader may be scrolling away from. It is asked
-    // for again once they stop.
-    if (openPdf) {
-      cancelSharpening();
-      scheduleSharpen();
-    }
+    // A detail tile being drawn is for the view the reader has just left.
+    cancelDetailRenders();
   }, { passive: true });
+}
+
+// Frame times while a finger is on the paper, for App Info: one rAF loop for
+// the length of the touch and not a frame longer.
+let touchFrameLoop = 0;
+
+function watchTouchFrames() {
+  if (touchFrameLoop) return;
+  let last = performance.now();
+  const step = (now) => {
+    notePdfInteractionFrame(now - last);
+    last = now;
+    touchFrameLoop = fingerDown() ? requestAnimationFrame(step) : 0;
+  };
+  touchFrameLoop = requestAnimationFrame(step);
 }
 
 function pumpRenderQueue() {
   if (!renderWaiters.length) return;
-  const interacting = documentInteracting();
+  const moving = documentMoving();
   const flinging = performance.now() < flingUntil;
   // Asked once per pump, not per waiter: the answer is the same for all of
   // them, and it is a geometry read.
@@ -2651,23 +2655,25 @@ function pumpRenderQueue() {
     renderWaiters.splice(i, 1);
     dropWaitingRender(waiter);
   }
-  // A render paused under the reader's finger keeps its slot but uses no
-  // time, so it does not count against the limit: a page that turns up blank
-  // on screen mid-pan must not wait for a held prefetch to give its slot back.
-  while (renderSlots.size - pausedRenders.length < PDF_RENDER_CONCURRENCY && renderWaiters.length) {
+  const limit = renderConcurrency();
+  while (renderSlots.size < limit && renderWaiters.length) {
     let best = -1;
     let bestRank = Infinity;
     renderWaiters.forEach((waiter, index) => {
-      if (interacting && !waiter.entry.urgent && (flinging || !pageBlankOnScreen(waiter.pageNumber))) return;
-      // A sharp pass ranks half a page further away than its own page: after
-      // the first pass of the page in view, ahead of the first passes of the
-      // pages either side of it, which the reader is not looking at yet.
-      const rank = waiter.entry.urgent ? -1
-        : Math.abs(waiter.pageNumber - current) + (waiter.entry.sharpening ? 0.5 : 0);
+      const urgent = waiter.entry.urgent && !waiter.detail;
+      if (!urgent && moving) {
+        // Mid-gesture only a blank page on screen may start, and not even
+        // that mid-fling.
+        if (flinging || waiter.detail || !pageBlankOnScreen(waiter.pageNumber)) return;
+      }
+      // On screen first, nearest first; a detail tile just behind the first
+      // pass of its own page and ahead of the pages either side of it.
+      const rank = urgent ? -1
+        : Math.abs(waiter.pageNumber - current) + (waiter.detail ? 0.5 : 0);
       if (rank < bestRank) { best = index; bestRank = rank; }
     });
     // Mid-interaction and nothing that cannot wait: the settle timer pumps
-    // again once the reader lets go.
+    // again once the page stops moving.
     if (best < 0) break;
     const [waiter] = renderWaiters.splice(best, 1);
     const slot = { release: () => {
@@ -2686,7 +2692,7 @@ function pumpRenderQueue() {
 // a stale canvas is not in openPdf.rendered, so nothing would ever trim it.
 function dropWaitingRender(waiter) {
   waiter.resolve(null);
-  if (waiter.stale()) return;
+  if (waiter.stale() || waiter.detail) return;
   if (waiter.entry.el.querySelector(".pdf-canvas.is-stale")) unrenderPage(waiter.pageNumber);
 }
 
@@ -2698,45 +2704,7 @@ function resetRenderQueue() {
   renderSlots.clear();
 }
 
-// ── Fast first, sharp second ────────────────────────────────────────────────
-//
-// "I want PDF rendering faster AND sharper." Those pull against each other in
-// one pass: the pixels that make text crisp on a 3x screen are nine times the
-// pixels of a 1x canvas, and every one of them is painted on the main thread.
-// So a page is drawn twice. The first pass (renderPage) is at
-// PDF_QUICK_CANVAS_SCALE and is what puts the page on screen; the second
-// redraws only the pages the reader can actually SEE at the full density the
-// screen has (canvasOutputScale, up to PDF_MAX_CANVAS_SCALE) and swaps the
-// sharp canvas in, in place, under the same text, mark, badge and ink layers.
-//
-// The second pass waits its turn in the same render queue, ranked just behind
-// the first pass of the page it is for and ahead of the pages either side
-// (see pumpRenderQueue): what the reader is looking at gets sharp before what
-// they might scroll to next gets drawn at all. It is never started while the
-// reader is interacting (documentInteracting) or writing, and it is cancelled
-// like any other render the moment its page is trimmed, re-scaled or
-// scrolled — so a page the reader only passed on the way somewhere else never
-// pays for it.
-export const PDF_SHARPEN_DELAY_MS = 150;
-
-let sharpenTimer = 0;
-
-// The pages whose sharp pass is running, so a scroll can stop them without
-// walking every page of the document per scroll event.
-const sharpeningPages = new Set();
-
-function cancelSharpening() {
-  if (!sharpeningPages.size || !openPdf) return;
-  sharpeningPages.forEach((pageNumber) => cancelPageRender(openPdf.pages.get(pageNumber)));
-}
-
-function scheduleSharpen(delay = PDF_SHARPEN_DELAY_MS) {
-  clearTimeout(sharpenTimer);
-  sharpenTimer = setTimeout(sharpenVisiblePage, delay);
-}
-
-// On screen now — no lead, unlike isPageNearViewport: the sharp pass is for
-// what is being looked at.
+// On screen now — no lead, unlike isPageNearViewport.
 function isPageOnScreen(pageNumber) {
   const view = el.documentView;
   const entry = openPdf?.pages.get(pageNumber);
@@ -2746,72 +2714,162 @@ function isPageOnScreen(pageNumber) {
   return bottom > view.scrollTop && top < view.scrollTop + view.clientHeight;
 }
 
-function sharpenVisiblePage() {
-  sharpenTimer = 0;
-  if (!openPdf || documentSurfaceHidden()) return;
-  if (documentInteracting() || inkPenIsDown()) {
-    scheduleSharpen();
-    return;
-  }
-  const current = currentDocumentPage();
-  let best = 0;
-  openPdf.pages.forEach((entry, pageNumber) => {
-    if (!entry.needsSharp || entry.sharpening || entry.task || !openPdf.rendered.has(pageNumber)) return;
-    if (!isPageOnScreen(pageNumber)) return;
-    if (!best || Math.abs(pageNumber - current) < Math.abs(best - current)) best = pageNumber;
-  });
-  if (best) sharpenPage(best);
+// ── The detail tile ─────────────────────────────────────────────────────────
+//
+// A page zoomed in past what the pixel budget can draw whole (canvasOutputScale)
+// gets a soft base canvas — and, once the reader stops moving, a second canvas
+// over just the part of the page that is on screen (plus a margin), drawn at
+// the screen's full density. pdf.js's own viewer does the same. It is what
+// makes 500% both possible on a 4GB phone and sharp: one screenful of pixels
+// where the reader is looking, instead of twelve million everywhere.
+//
+// The tile sits directly after the base canvas, under the mark and text
+// layers, and is dropped whenever the base canvas is (a relayout, a trim, an
+// unrender). A scroll cancels one being drawn; the settle draws it again where
+// the reader stopped.
+export const PDF_DETAIL_MARGIN = 0.1;
+
+export const PDF_DETAIL_DELAY_MS = 100;
+
+let detailTimer = 0;
+const detailPages = new Set();
+
+function scheduleDetail(delay = PDF_DETAIL_DELAY_MS) {
+  clearTimeout(detailTimer);
+  detailTimer = setTimeout(drawDetailTiles, delay);
 }
 
-async function sharpenPage(pageNumber) {
-  const entry = openPdf?.pages.get(pageNumber);
-  if (!entry?.viewport) return;
+function cancelDetailRenders() {
+  if (!detailPages.size || !openPdf) return;
+  detailPages.forEach((pageNumber) => {
+    const entry = openPdf.pages.get(pageNumber);
+    const task = entry?.detailTask;
+    if (!task) return;
+    entry.detailTask = null;
+    try { task.cancel(); } catch (_) { /* already settled */ }
+  });
+}
+
+function dropDetail(entry) {
+  if (!entry) return;
+  const task = entry.detailTask;
+  entry.detailTask = null;
+  if (task) { try { task.cancel(); } catch (_) { /* already settled */ } }
+  entry.detail?.canvas.remove();
+  entry.detail = null;
+}
+
+// The part of the page to draw sharp: what is on screen, widened by the
+// margin, in the page's own CSS pixels. Null when none of it is on screen.
+function detailRegion(entry) {
+  const view = el.documentView;
+  if (!view || !entry?.viewport) return null;
+  const viewRect = view.getBoundingClientRect();
+  const pageRect = entry.el.getBoundingClientRect();
+  const marginX = viewRect.width * PDF_DETAIL_MARGIN;
+  const marginY = viewRect.height * PDF_DETAIL_MARGIN;
+  const width = entry.viewport.width;
+  const height = entry.viewport.height;
+  const x0 = Math.max(0, Math.floor(viewRect.left - marginX - pageRect.left));
+  const y0 = Math.max(0, Math.floor(viewRect.top - marginY - pageRect.top));
+  const x1 = Math.min(width, Math.ceil(viewRect.right + marginX - pageRect.left));
+  const y1 = Math.min(height, Math.ceil(viewRect.bottom + marginY - pageRect.top));
+  if (x1 - x0 < 4 || y1 - y0 < 4) return null;
+  return { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
+}
+
+function regionCovers(outer, inner) {
+  return outer && inner && inner.x >= outer.x && inner.y >= outer.y
+    && inner.x + inner.width <= outer.x + outer.width
+    && inner.y + inner.height <= outer.y + outer.height;
+}
+
+function drawDetailTiles() {
+  detailTimer = 0;
+  if (!openPdf || documentSurfaceHidden()) return;
+  if (documentMoving() || inkPenIsDown()) {
+    scheduleDetail();
+    return;
+  }
+  openPdf.rendered.forEach((pageNumber) => {
+    const entry = openPdf.pages.get(pageNumber);
+    if (!entry || entry.task || entry.detailTask || entry.detailWaiting) return;
+    if (!pageWantsDetail(entry.renderOutputScale || 1)) {
+      if (entry.detail) dropDetail(entry);
+      return;
+    }
+    if (!isPageOnScreen(pageNumber)) return;
+    // What is on screen right now, without the margin: if the tile already
+    // covers that, there is nothing to do.
+    const visible = detailRegion(entry);
+    if (!visible) return;
+    const seen = { ...visible };
+    if (entry.detail && entry.detail.scale === entry.renderScale) {
+      const view = el.documentView;
+      const viewRect = view.getBoundingClientRect();
+      const pageRect = entry.el.getBoundingClientRect();
+      seen.x = Math.max(0, viewRect.left - pageRect.left);
+      seen.y = Math.max(0, viewRect.top - pageRect.top);
+      seen.width = Math.min(entry.viewport.width, viewRect.right - pageRect.left) - seen.x;
+      seen.height = Math.min(entry.viewport.height, viewRect.bottom - pageRect.top) - seen.y;
+      if (regionCovers(entry.detail.region, seen)) return;
+    }
+    drawDetailTile(pageNumber, entry, visible);
+  });
+}
+
+async function drawDetailTile(pageNumber, entry, region) {
   const token = pdfOpenToken;
   const generation = entry.generation;
   const viewport = entry.viewport;
-  const target = entry.targetOutputScale;
-  const stale = () => token !== pdfOpenToken || entry.generation !== generation || !openPdf?.rendered.has(pageNumber);
-  entry.sharpening = true;
+  const scale = entry.renderScale;
+  const stale = () => token !== pdfOpenToken || entry.generation !== generation
+    || !openPdf?.rendered.has(pageNumber) || entry.viewport !== viewport;
+  entry.detailWaiting = true;
+  detailPages.add(pageNumber);
   let slot = null;
-  let renderTask = null;
+  let task = null;
   try {
-    slot = await acquireRenderSlot(pageNumber, entry, stale);
-    // Dropped from the queue (the reader moved on): still wanted, if the page
-    // is still there, for when they come back to it.
-    if (!slot) return;
+    slot = await acquireRenderSlot(pageNumber, entry, stale, { detail: true });
+    entry.detailWaiting = false;
+    if (!slot || stale() || documentMoving()) return;
     const page = await openPdf.doc.getPage(pageNumber);
     if (stale()) return;
-    const { canvas, context, transform } = createPageCanvas(viewport, target);
-    renderTask = page.render({ canvasContext: context, viewport, transform });
-    // Where cancelPageRender looks, so a trim, a zoom or a scroll stops this.
-    entry.renderTask = renderTask;
-    holdRenderWhileInteracting(renderTask, entry, pageNumber);
-    sharpeningPages.add(pageNumber);
-    await renderTask.promise;
+    const wanted = Math.min(PDF_MAX_CANVAS_SCALE, window.devicePixelRatio || 1);
+    const density = Math.min(wanted, Math.sqrt(canvasPixelBudget() / Math.max(1, region.width * region.height)));
+    if (density <= (entry.renderOutputScale || 1) + 0.05) return;
+    const canvas = document.createElement("canvas");
+    canvas.className = "pdf-detail";
+    canvas.width = Math.max(1, Math.floor(region.width * density));
+    canvas.height = Math.max(1, Math.floor(region.height * density));
+    canvas.style.left = `${region.x}px`;
+    canvas.style.top = `${region.y}px`;
+    canvas.style.width = `${region.width}px`;
+    canvas.style.height = `${region.height}px`;
+    const context = canvas.getContext("2d", { alpha: false });
+    task = page.render({
+      canvasContext: context,
+      viewport,
+      transform: [density, 0, 0, density, -region.x * density, -region.y * density]
+    });
+    entry.detailTask = task;
+    await task.promise;
     if (stale()) return;
-    const quick = entry.el.querySelector(".pdf-canvas:not(.is-stale)");
-    if (!quick) return;
-    // replaceWith, so the layers above keep their place in tree order — see
-    // repaintPageCanvas, which swaps a canvas the same way for the same reason.
-    quick.replaceWith(canvas);
-    entry.renderOutputScale = target;
-    entry.needsSharp = false;
+    const base = entry.el.querySelector(".pdf-canvas:not(.is-stale)");
+    if (!base) return;
+    entry.detail?.canvas.remove();
+    base.after(canvas);
+    entry.detail = { canvas, region, scale };
   } catch (error) {
-    if (error?.name !== "RenderingCancelledException") {
-      console.warn(`Could not sharpen page ${pageNumber}`, error);
-      // The quick canvas is a perfectly good page. Retrying a render that
-      // failed for a reason of its own would loop, so this page stays as it is.
-      entry.needsSharp = false;
-    }
+    if (error?.name !== "RenderingCancelledException") console.warn(`Could not draw the detail of page ${pageNumber}`, error);
   } finally {
-    if (renderTask && entry.renderTask === renderTask) entry.renderTask = null;
-    sharpeningPages.delete(pageNumber);
+    entry.detailWaiting = false;
+    if (task && entry.detailTask === task) entry.detailTask = null;
+    detailPages.delete(pageNumber);
     slot?.release();
-    entry.sharpening = false;
-    // ...and the next visible page that wants it, if there is one.
-    if (openPdf) scheduleSharpen(0);
   }
 }
+
 
 // ── A page's canvas, and the pixels it can lose ─────────────────────────────
 //
@@ -2829,14 +2887,33 @@ async function sharpenPage(pageNumber) {
 //
 // Two answers, one of each kind:
 //
-//   • `willReadFrequently` keeps the bitmap in ordinary memory rather than on
-//     the GPU, and a lost GPU context cannot clear what is not on it. pdf.js
-//     reached the same conclusion for its own viewer (enableHWA, off by
-//     default, from v4.4). The pixel budget is unchanged — canvasOutputScale
-//     still caps every page.
-//   • ...and for whatever still loses its pixels (a WebView, a browser that
-//     ignores the hint, a parked page detached for hours), the loss is
-//     detected and the canvas repainted in place: see recoverLostPageCanvases.
+//   • the loss is detected and the canvas repainted in place: the
+//     contextlost/contextrestored events below, and recoverLostPageCanvases
+//     when the app comes back from the background;
+//   • ...and the bitmap can be kept off the GPU (`willReadFrequently`), where
+//     a lost context cannot clear it. That used to be the default, and it is
+//     not any more: it puts every draw pdf.js makes — every glyph, every path,
+//     every image and every downscale of one — on the main thread's CPU, at
+//     the full size of a canvas that is three times the screen's density. On
+//     the phone in the report that was 318ms median and 1.4s p90 per page, on
+//     an image-heavy paper. The recovery above already brings back a page that
+//     loses its pixels, which is the rare case; drawing every page on the CPU
+//     was the common one.
+//
+// PDF_CPU_CANVAS_KEY set to "1" in localStorage puts it back on the CPU, so a
+// device where that is faster (or where pages keep going black) can be
+// compared from App Info without a new build.
+export const PDF_CPU_CANVAS_KEY = "recall:pdfCpuCanvas";
+
+let cpuCanvasPreference = null;
+
+export function pdfCanvasOnCpu() {
+  if (cpuCanvasPreference === null) {
+    try { cpuCanvasPreference = localStorage.getItem(PDF_CPU_CANVAS_KEY) === "1"; } catch (_) { cpuCanvasPreference = false; }
+  }
+  return cpuCanvasPreference;
+}
+
 function createPageCanvas(viewport, outputScale) {
   const canvas = document.createElement("canvas");
   canvas.className = "pdf-canvas";
@@ -2849,7 +2926,7 @@ function createPageCanvas(viewport, outputScale) {
   // stretch between the two is not something anyone can see.
   canvas.style.width = `${Math.round(viewport.width)}px`;
   canvas.style.height = `${Math.round(viewport.height)}px`;
-  const context = canvas.getContext("2d", { alpha: false, willReadFrequently: true });
+  const context = canvas.getContext("2d", pdfCanvasOnCpu() ? { alpha: false, willReadFrequently: true } : { alpha: false });
   const transform = outputScale === 1 ? null : [outputScale, 0, 0, outputScale, 0, 0];
   canvas.addEventListener("contextlost", () => lostCanvases.add(canvas));
   canvas.addEventListener("contextrestored", () => {
@@ -2872,6 +2949,23 @@ const lostCanvases = new WeakSet();
 // white before it draws a thing, which makes "pure black at all four corners
 // and the centre" a cleared bitmap in practice — and the price of the rare
 // genuinely black page is one redundant render on returning to the app.
+let canvasProbeContext = null;
+
+function canvasProbe() {
+  if (canvasProbeContext === null) {
+    try {
+      const scratch = document.createElement("canvas");
+      scratch.width = 3;
+      scratch.height = 3;
+      canvasProbeContext = scratch.getContext("2d", { willReadFrequently: true }) || false;
+      if (canvasProbeContext) canvasProbeContext.imageSmoothingEnabled = false;
+    } catch (_) {
+      canvasProbeContext = false;
+    }
+  }
+  return canvasProbeContext || null;
+}
+
 function canvasLostItsPixels(canvas) {
   if (lostCanvases.has(canvas)) return true;
   try {
@@ -2881,11 +2975,18 @@ function canvasLostItsPixels(canvas) {
     const w = canvas.width;
     const h = canvas.height;
     if (w < 6 || h < 6) return false;
-    const points = [[2, 2], [w - 3, 2], [2, h - 3], [w - 3, h - 3], [w >> 1, h >> 1]];
-    return points.every(([x, y]) => {
-      const [r, g, b] = ctx.getImageData(x, y, 1, 1).data;
-      return r === 0 && g === 0 && b === 0;
-    });
+    // Nine points, read off a 3×3 copy rather than off the page's own canvas.
+    // A GPU canvas read back from repeatedly is one Chrome may quietly move to
+    // the CPU for good, which is the very cost createPageCanvas avoids.
+    const probe = canvasProbe();
+    if (!probe) return false;
+    probe.clearRect(0, 0, 3, 3);
+    probe.drawImage(canvas, 0, 0, 3, 3);
+    const data = probe.getImageData(0, 0, 3, 3).data;
+    for (let i = 0; i < data.length; i += 4) {
+      if (data[i] || data[i + 1] || data[i + 2]) return false;
+    }
+    return true;
   } catch (_) {
     return false;
   }
@@ -2936,6 +3037,12 @@ export function recoverLostPageCanvases() {
   let found = 0;
   [...openPdf.rendered].forEach((pageNumber) => {
     const entry = openPdf.pages.get(pageNumber);
+    // A detail tile is only ever an upgrade: one that lost its pixels is
+    // dropped, and drawn again once the reader is still.
+    if (entry?.detail && canvasLostItsPixels(entry.detail.canvas)) {
+      dropDetail(entry);
+      scheduleDetail();
+    }
     const canvas = entry?.el.querySelector(".pdf-canvas:not(.is-stale)");
     if (!canvas || !canvasLostItsPixels(canvas)) return;
     found += 1;
@@ -3043,40 +3150,150 @@ function showPageRenderFailure(pageNumber, reason) {
 
 // The mark and text layers, off the critical path. See the comment at the call
 // site for why they are not part of the render that puts the page on screen.
+//
+// ── Three steps, each as early as it can be and no earlier ────────────────
+//
+//   1. The highlights, straight away. A mark layer is a handful of divs placed
+//      through the live viewport, so a page never appears without its marks.
+//   2. The page's text ITEMS, from the worker, and then the painted hook: the
+//      ink, blocks, note badges and highlight repairs need the items, not the
+//      spans, so they do not wait for step 3.
+//   3. The text layer's SPANS, which are the expensive part — thousands of
+//      positioned elements on a dense page, which used to be built in one go
+//      on an idle callback with a 200ms timeout, so on a phone they were very
+//      often built in the middle of a pan, as one long task of up to 1.5s.
+//      Now they wait until the page is on screen and not moving, and are built
+//      in slices of PDF_TEXT_SLICE_MS, yielding a frame between slices and
+//      pausing outright while the page moves. A page somebody is waiting on by
+//      name (whenDocumentPageReady) skips the wait.
+//
+// A text layer that survived a zoom (see keepTextLayerForScale) is kept: the
+// new mark layer goes in under it and steps 2–3 are skipped unless the zoom
+// has gone far enough that it should be rebuilt at the new scale.
 async function buildPageLayers(pageNumber, entry, page, viewport, stale, textContent = null) {
-  await whenIdle();
   if (stale()) return;
-  const layersStartedAt = performance.now();
+  entry.markLayer?.remove();
   const markLayer = document.createElement("div");
   markLayer.className = "pdf-mark-layer";
-  const { layer: textLayer, items } = await buildTextLayer(page, viewport, textContent);
-  if (stale()) return;
-  entry.el.append(markLayer, textLayer);
+  const kept = keptTextLayer(entry);
+  if (kept) kept.before(markLayer);
+  else entry.el.append(markLayer);
   entry.markLayer = markLayer;
-  entry.textLayer = textLayer;
-  entry.textItems = items;
-  samplePdfTiming("text", performance.now() - layersStartedAt);
-  // Painted as part of the layer build rather than on a later pass, so a
-  // highlight is never briefly missing from a page the reader can already see
-  // the marks of.
   paintDocumentHighlights(pageNumber);
-  // ...and the note badges with them, for the same reason: a highlight that has
-  // a note has to say so from the first frame it is on screen.
+  if (kept && !textContent) {
+    entry.textUrgent = false;
+    onPagePainted(pageNumber);
+    return;
+  }
+  const content = await (textContent || page.getTextContent());
+  if (stale()) return;
+  entry.textItems = content.items;
   onPagePainted(pageNumber);
+  if (!(await waitForTextLayerTurn(pageNumber, entry, stale))) return;
+  const built = await buildTextLayerSliced(content, viewport, stale, (layer) => {
+    // Straight after the mark layer, so it stays under the ink, the blocks
+    // and the badges that step 2 has already put on the page.
+    if (entry.markLayer?.parentNode === entry.el) entry.markLayer.after(layer);
+    else entry.el.append(layer);
+  }, entry);
+  if (!built || stale()) {
+    built?.layer.remove();
+    return;
+  }
+  if (kept && kept !== built.layer) kept.remove();
+  entry.textLayer = built.layer;
+  entry.textScale = viewport.scale;
+  entry.textUrgent = false;
+  samplePdfTiming("text", built.spent);
 }
 
-// requestIdleCallback where there is one, a frame where there is not. The
-// timeout is the backstop: a page that is being scrolled past fast enough that
-// the browser never goes idle still gets its text layer promptly, because the
-// alternative is a page that cannot be selected until the reader stops.
-function whenIdle() {
+// The text layer a page is still carrying from an earlier scale, if any.
+function keptTextLayer(entry) {
+  const layer = entry.textLayer;
+  return layer && layer.parentNode === entry.el ? layer : null;
+}
+
+// ── A text layer survives a zoom ──────────────────────────────────────────
+//
+// Every span's position and size is the page's viewport transform times a
+// fixed matrix, and a viewport's transform is linear in its scale — so a text
+// layer built at one scale is exactly the text layer for another, scaled from
+// its top-left corner. pdf.js's own viewer keeps its text layer across a zoom
+// the same way. Rebuilding it used to be most of what a zoom step cost on a
+// phone (several thousand spans per page, per step).
+//
+// Selection keeps working because nothing reads a span's own coordinates: a
+// selection is captured from client rects against the page box through the
+// live viewport (pdf-selection.js), and both of those are already at the new
+// scale. Rebuilt for real only when the zoom has moved far enough from the
+// scale it was built at that the browser's minimum font size could start to
+// matter.
+export const PDF_TEXT_KEEP_RATIO = 2;
+
+function keepTextLayerForScale(entry, scale) {
+  const layer = keptTextLayer(entry);
+  if (!layer || !entry.textScale) return false;
+  const ratio = scale / entry.textScale;
+  layer.style.transform = ratio === 1 ? "" : `scale(${ratio})`;
+  return true;
+}
+
+function textLayerNeedsRebuild(entry, scale) {
+  if (!keptTextLayer(entry) || !entry.textScale) return true;
+  const ratio = scale / entry.textScale;
+  return ratio > PDF_TEXT_KEEP_RATIO || ratio < 1 / PDF_TEXT_KEEP_RATIO;
+}
+
+export const PDF_TEXT_SLICE_MS = 6;
+
+const nextFrame = () => new Promise((resolve) => requestAnimationFrame(() => resolve()));
+
+// Resolves true when this page's spans may be built, false if the page has
+// gone stale while it waited.
+function waitForTextLayerTurn(pageNumber, entry, stale) {
   return new Promise((resolve) => {
-    if (typeof requestIdleCallback === "function") requestIdleCallback(() => resolve(), { timeout: PDF_LAYER_IDLE_MS });
-    else requestAnimationFrame(() => resolve());
+    const check = () => {
+      if (stale()) { resolve(false); return; }
+      if (entry.urgent || entry.textUrgent) { resolve(true); return; }
+      if (!documentMoving() && !documentSurfaceHidden() && isPageOnScreen(pageNumber)) {
+        if (typeof requestIdleCallback === "function") requestIdleCallback(() => resolve(!stale()), { timeout: 100 });
+        else requestAnimationFrame(() => resolve(!stale()));
+        return;
+      }
+      entry.textWake = check;
+      setTimeout(() => { if (entry.textWake === check) { entry.textWake = null; check(); } }, documentMoving() ? 120 : 250);
+    };
+    check();
   });
 }
 
-export const PDF_LAYER_IDLE_MS = 200;
+async function buildTextLayerSliced(content, viewport, stale, insert, entry) {
+  const layer = createTextLayerBox(viewport);
+  insert(layer);
+  const items = content.items;
+  const run = { previous: null, measureLater: false };
+  let index = 0;
+  let spent = 0;
+  while (index < items.length) {
+    if (stale()) return null;
+    if (documentMoving() && !(entry.urgent || entry.textUrgent)) {
+      await nextFrame();
+      continue;
+    }
+    const started = performance.now();
+    const frag = document.createDocumentFragment();
+    while (index < items.length) {
+      appendTextItem(frag, items[index], index, viewport, content.styles, run);
+      index += 1;
+      if ((index & 15) === 0 && performance.now() - started > PDF_TEXT_SLICE_MS) break;
+    }
+    layer.appendChild(frag);
+    spent += performance.now() - started;
+    if (index < items.length) await nextFrame();
+  }
+  if (run.measureLater) measureTextLayerLater(layer);
+  return { layer, spent };
+}
 
 // Await whatever render is in flight for a page, and make sure one has been
 // STARTED if the page is near the viewport and has none. The virtualized view
@@ -3093,6 +3310,14 @@ export async function whenDocumentPageReady(pageNumber) {
   if (!openPdf.rendered.has(pageNumber)) {
     entry.urgent = true;
     pumpRenderQueue();
+  }
+  // ...and its text layer is built without waiting for the page to be on
+  // screen and still (see waitForTextLayerTurn). Cleared once it is built.
+  entry.textUrgent = true;
+  if (entry.textWake) {
+    const wake = entry.textWake;
+    entry.textWake = null;
+    wake();
   }
   if (!openPdf.rendered.has(pageNumber) && !entry.task) renderPage(pageNumber);
   // A loop, not a single await: renderPage clears entry.task in a `finally`,
@@ -3166,7 +3391,8 @@ function stalePageForRelayout(pageNumber, width, height) {
   entry.generation = (entry.generation || 0) + 1;
   cancelPageRender(entry);
   openPdf.rendered.delete(pageNumber);
-  dropPageLayers(entry);
+  dropPageLayers(entry, { keepTextAt: openPdf.scale });
+  dropDetail(entry);
   canvas.classList.add("is-stale");
   canvas.style.width = `${Math.round(width)}px`;
   canvas.style.height = `${Math.round(height)}px`;
@@ -3176,9 +3402,18 @@ function stalePageForRelayout(pageNumber, width, height) {
 // text layers, the note badges, the ink and the highlighter's bands. All of it
 // is positioned through the viewport transform of the scale it was built at,
 // so none of it can survive a change of scale — see stalePageForRelayout.
-function dropPageLayers(entry) {
+//
+// Except the text layer, which can: see keepTextLayerForScale. `keepTextAt` is
+// the scale the page is about to be shown at; the layer is kept, re-scaled to
+// it, when there is one to keep.
+function dropPageLayers(entry, { keepTextAt = null } = {}) {
   entry.markLayer?.remove();
-  entry.textLayer?.remove();
+  const keepText = Number.isFinite(keepTextAt) && keepTextLayerForScale(entry, keepTextAt);
+  if (!keepText) {
+    entry.textLayer?.remove();
+    entry.textLayer = null;
+    entry.textScale = 0;
+  }
   entry.el.querySelector(`.${PDF_BADGE_LAYER_CLASS}`)?.remove();
   // ...and the ink, for the third time the same reason. Its canvas holds a
   // picture of the page's strokes drawn through the viewport transform of the
@@ -3191,7 +3426,6 @@ function dropPageLayers(entry) {
   // with the ink for the same reason and come back with it.
   entry.el.querySelector(`.${PDF_INK_HL_LAYER_CLASS}`)?.remove();
   entry.markLayer = null;
-  entry.textLayer = null;
 }
 
 function unrenderPage(pageNumber) {
@@ -3209,9 +3443,12 @@ function unrenderPage(pageNumber) {
   entry.deadline = 0;
   entry.attempts = 0;
   openPdf.rendered.delete(pageNumber);
+  dropDetail(entry);
   entry.el.innerHTML = "";
   entry.markLayer = null;
   entry.textLayer = null;
+  entry.textScale = 0;
+  entry.textWake = null;
   // The items belong to the layer that is being dropped. Keeping them would be
   // a page of text content held for a page that is a grey rectangle again.
   entry.textItems = null;
@@ -3269,16 +3506,71 @@ function releasePageResources(pageNumber) {
   doc.getPage(pageNumber).then((page) => { try { page.cleanup(); } catch (_) { /* busy */ } }, () => {});
 }
 
-// Anything more than PDF_RENDER_WINDOW pages outside the visible run goes back
-// to being a placeholder. A canvas is several megabytes of bitmap; a hundred of
-// them is the difference between a reader and a memory profile.
+// A page far enough from the viewport goes back to being a placeholder. A
+// canvas is megabytes of bitmap; a hundred of them is the difference between a
+// reader and a memory profile.
+//
+// ── By distance, not by page count ────────────────────────────────────────
+//
+// This used to keep the current page ±3. Zoomed out to a third, five or six
+// pages are on screen at once, so pages the reader could SEE were trimmed —
+// and the observer and the sweep asked for them straight back, a render each,
+// which is a large part of "zoom: 2064ms (to 33%)". What decides whether a
+// page is worth its canvas is how far it is from what is on screen, so that
+// is what is measured now, off the geometry table the page indicator already
+// keeps (no extra layout reads). The distance is more than the render lead
+// (documentObserverLead), so a page at the edge is not trimmed and re-asked
+// for on alternate frames.
+export const PDF_TRIM_LEAD = 1.5;
+
+// ...and a ceiling on what the kept canvases add up to, in multiples of the
+// per-canvas budget, past which the farthest go first even when near.
+export const PDF_KEEP_CANVAS_BUDGETS = 4;
+
 function trimRenderedPages() {
   if (!openPdf) return;
+  const view = el.documentView;
   const current = currentDocumentPage();
+  const geometry = documentPageGeometry();
+  if (!view || !geometry) {
+    // A document still being built: the old rule, which needs no geometry.
+    [...openPdf.rendered].forEach((pageNumber) => {
+      if (Math.abs(pageNumber - current) > PDF_RENDER_WINDOW + 1) unrenderPage(pageNumber);
+    });
+    releaseFarPages(current);
+    return;
+  }
+  const height = Math.max(view.clientHeight, 1);
+  const top = view.scrollTop;
+  const bottom = top + height;
+  const lead = Math.max(PDF_TRIM_LEAD, documentObserverLead() + 0.5) * height;
+  const distance = (pageNumber) => {
+    const pageTop = geometry.tops[pageNumber - 1];
+    const pageBottom = geometry.bottoms[pageNumber - 1];
+    return Math.max(0, pageTop - bottom, top - pageBottom);
+  };
+  const kept = [];
   // Snapshotted, because unrenderPage deletes from the very Set being walked.
   [...openPdf.rendered].forEach((pageNumber) => {
-    if (Math.abs(pageNumber - current) > PDF_RENDER_WINDOW + 1) unrenderPage(pageNumber);
+    const entry = openPdf.pages.get(pageNumber);
+    if (entry?.urgent) return;
+    const away = distance(pageNumber);
+    if (away > lead) unrenderPage(pageNumber);
+    else kept.push({ pageNumber, away });
   });
+  const ceiling = canvasPixelBudget() * PDF_KEEP_CANVAS_BUDGETS;
+  const pixels = (pageNumber) => {
+    const entry = openPdf.pages.get(pageNumber);
+    const scale = entry?.renderOutputScale || 1;
+    return entry?.viewport ? entry.viewport.width * entry.viewport.height * scale * scale : 0;
+  };
+  let total = kept.reduce((sum, page) => sum + pixels(page.pageNumber), 0);
+  kept.sort((a, b) => b.away - a.away);
+  for (const page of kept) {
+    if (total <= ceiling || page.away === 0) break;
+    total -= pixels(page.pageNumber);
+    unrenderPage(page.pageNumber);
+  }
   releaseFarPages(current);
 }
 
@@ -3336,111 +3628,131 @@ export function fontAscentRatio(style) {
 // `content` is the page's getTextContent() when the caller has already asked
 // for it (renderPage does, so the worker answers while the canvas is drawn).
 export async function buildTextLayer(page, viewport, content = null) {
+  const layer = createTextLayerBox(viewport);
+  content = await (content || page.getTextContent());
+  const frag = document.createDocumentFragment();
+  const run = { previous: null, measureLater: false };
+  content.items.forEach((item, index) => appendTextItem(frag, item, index, viewport, content.styles, run));
+  layer.appendChild(frag);
+  if (run.measureLater) measureTextLayerLater(layer);
+  // The items go back with the layer, so the one caller can keep them on the
+  // page's entry. textForQuads() needs them to name a highlight from its quads
+  // (see repairDocumentHighlightText in pdf-highlights.js), and a second
+  // getTextContent() for that would be a round trip to the worker for something
+  // this function has already paid for.
+  return { layer, items: content.items };
+}
+
+function createTextLayerBox(viewport) {
   const layer = document.createElement("div");
   layer.className = "pdf-text-layer";
   layer.style.width = `${Math.floor(viewport.width)}px`;
   layer.style.height = `${Math.floor(viewport.height)}px`;
-  content = await (content || page.getTextContent());
-  const frag = document.createDocumentFragment();
-  let previous = null;
-  let measureLater = false;
-  content.items.forEach((item, index) => {
-    if (!item.str) return;
-    // ── The separator between one text item and the next ──────────────────
-    //
-    // A highlight's text comes from range.toString() over this layer
-    // (captureDocumentSelection), and so does what the browser puts on the
-    // clipboard. Range.toString() concatenates TEXT DATA: it walks text nodes
-    // and ignores everything else. With one bare <span> per item and nothing
-    // between them, two lines of a title page came back welded together —
-    // "DURRANT-WHYTESimultaneous…".
-    //
-    // A real whitespace TEXT NODE, therefore, and not a <br>: pdf.js's own text
-    // layer uses <br> for its line breaks, which reads correctly and is
-    // invisible to toString() — the one thing this has to be visible to. The
-    // spans are absolutely positioned, so an extra text node in the flow costs
-    // no layout and moves nothing.
-    //
-    // WHICH separator is textItemGap's decision, made from where the two items
-    // sit on the page. It used to be a space between any two items on a line,
-    // and an item is very often a fragment of a word — so a LaTeX paper copied
-    // as "A bs tr ac t — Man y app li ca ti ons". See textItemGap.
-    if (previous) {
-      const gap = textItemGap(previous, item);
-      if (gap) frag.appendChild(document.createTextNode(gap));
-    }
-    previous = item;
-    const span = document.createElement("span");
-    span.dataset.itemIndex = String(index);
-    span.textContent = item.str;
-    // pdf.js's own transform maths, kept verbatim in spirit: the item transform
-    // composed with the viewport transform gives the glyph run's baseline
-    // origin and its scale, and the span is placed and stretched to match so a
-    // selection over it selects the words that are actually painted there.
-    const tx = window.pdfjsLib.Util.transform(viewport.transform, item.transform);
-    const fontHeight = Math.hypot(tx[2], tx[3]);
-    // What the file says about the font this run was set in — its metrics, its
-    // family and whether it runs down the page instead of across it. Read once:
-    // the placement below, the CSS family and the rotation all have to be
-    // talking about the same font or they describe a box no glyph is in.
-    const style = content.styles?.[item.fontName];
-    // A vertically-set run (CJK) is turned a further quarter turn, which is what
-    // makes the offset below run along its own up-direction rather than the
-    // page's. pdf.js's text layer does the same, and this loop used to ignore it
-    // — so a vertical column's boxes were placed sideways from its glyphs.
-    const angle = Math.atan2(tx[1], tx[0]) + (style?.vertical ? Math.PI / 2 : 0);
-    // ── Where the top of the box goes, and why it is not the baseline minus an em
-    //
-    // tx[4]/tx[5] are the glyph run's BASELINE origin. A box whose top is
-    // `baseline - fontHeight` treats the font's ascent as a full em, which no
-    // font has: the box then starts about a fifth of an em above the tallest
-    // glyph and STOPS AT THE BASELINE, leaving every descender outside it.
-    //
-    // That is invisible until something measures the box, and two things do.
-    // The browser paints the selection on it — so a drag over a line of the
-    // paper highlights a band sitting high, clipping the tails off g, y and p.
-    // And captureDocumentSelection (src/documents/pdf-selection.js) takes
-    // range.getClientRects() off these very boxes, converts them to quads and
-    // stores them: so the highlight PAINTED back onto the page afterwards is
-    // high by the same amount, forever. This is the "the highlighted ribbon is
-    // not properly enclosing the text but rendering at an offset" report, and
-    // it was never a painting bug — the quads were captured that way.
-    //
-    // pdf.js's own text layer has always put the ascent here rather than a whole
-    // em; see fontAscentRatio for where the number comes from and why the
-    // shortfall is split the way it is.
-    const ascentPx = fontHeight * fontAscentRatio(style);
-    // Rotated text needs the offset taken along the run's own up-direction
-    // rather than straight up the page — the same decomposition pdf.js uses.
-    const left = angle ? tx[4] + ascentPx * Math.sin(angle) : tx[4];
-    const top = angle ? tx[5] - ascentPx * Math.cos(angle) : tx[5] - ascentPx;
-    // pdf.js names a generic family here; anything that could end the
-    // declaration is taken out, because the whole style is written in one go.
-    const family = String(style?.fontFamily || "sans-serif").replace(/[;{}]/g, "");
-    let css = `left:${left}px;top:${top}px;font-size:${fontHeight}px;font-family:${family};`;
-    // Horizontal scale, so the invisible text is exactly as wide as the visible
-    // glyphs. Without it a selection highlight drifts further from the words the
-    // further along the line it goes — which is the difference between "this
-    // works" and "this nearly works".
-    const expected = item.width * viewport.scale;
-    const transforms = [];
-    if (angle) transforms.push(`rotate(${angle}rad)`);
-    if (expected > 0 && fontHeight > 0) {
-      const natural = measureSpanText(item.str, fontHeight, family);
-      if (natural > 0) css += `--pdf-span-scale:${expected / natural};`;
-      else {
-        span.dataset.expectedWidth = String(expected);
-        measureLater = true;
-      }
+  return layer;
+}
+
+// One text item's span (and the separator before it), appended to `frag`.
+// `run` carries the previous item and whether any span could not be measured.
+function appendTextItem(frag, item, index, viewport, styles, run) {
+  if (!item.str) return;
+  // ── The separator between one text item and the next ──────────────────
+  //
+  // A highlight's text comes from range.toString() over this layer
+  // (captureDocumentSelection), and so does what the browser puts on the
+  // clipboard. Range.toString() concatenates TEXT DATA: it walks text nodes
+  // and ignores everything else. With one bare <span> per item and nothing
+  // between them, two lines of a title page came back welded together —
+  // "DURRANT-WHYTESimultaneous…".
+  //
+  // A real whitespace TEXT NODE, therefore, and not a <br>: pdf.js's own text
+  // layer uses <br> for its line breaks, which reads correctly and is
+  // invisible to toString() — the one thing this has to be visible to. The
+  // spans are absolutely positioned, so an extra text node in the flow costs
+  // no layout and moves nothing.
+  //
+  // WHICH separator is textItemGap's decision, made from where the two items
+  // sit on the page. It used to be a space between any two items on a line,
+  // and an item is very often a fragment of a word — so a LaTeX paper copied
+  // as "A bs tr ac t — Man y app li ca ti ons". See textItemGap.
+  if (run.previous) {
+    const gap = textItemGap(run.previous, item);
+    if (gap) frag.appendChild(document.createTextNode(gap));
+  }
+  run.previous = item;
+  const span = document.createElement("span");
+  span.dataset.itemIndex = String(index);
+  span.textContent = item.str;
+  // pdf.js's own transform maths, kept verbatim in spirit: the item transform
+  // composed with the viewport transform gives the glyph run's baseline
+  // origin and its scale, and the span is placed and stretched to match so a
+  // selection over it selects the words that are actually painted there.
+  const tx = window.pdfjsLib.Util.transform(viewport.transform, item.transform);
+  const fontHeight = Math.hypot(tx[2], tx[3]);
+  // What the file says about the font this run was set in — its metrics, its
+  // family and whether it runs down the page instead of across it. Read once:
+  // the placement below, the CSS family and the rotation all have to be
+  // talking about the same font or they describe a box no glyph is in.
+  const style = styles?.[item.fontName];
+  // A vertically-set run (CJK) is turned a further quarter turn, which is what
+  // makes the offset below run along its own up-direction rather than the
+  // page's. pdf.js's text layer does the same, and this loop used to ignore it
+  // — so a vertical column's boxes were placed sideways from its glyphs.
+  const angle = Math.atan2(tx[1], tx[0]) + (style?.vertical ? Math.PI / 2 : 0);
+  // ── Where the top of the box goes, and why it is not the baseline minus an em
+  //
+  // tx[4]/tx[5] are the glyph run's BASELINE origin. A box whose top is
+  // `baseline - fontHeight` treats the font's ascent as a full em, which no
+  // font has: the box then starts about a fifth of an em above the tallest
+  // glyph and STOPS AT THE BASELINE, leaving every descender outside it.
+  //
+  // That is invisible until something measures the box, and two things do.
+  // The browser paints the selection on it — so a drag over a line of the
+  // paper highlights a band sitting high, clipping the tails off g, y and p.
+  // And captureDocumentSelection (src/documents/pdf-selection.js) takes
+  // range.getClientRects() off these very boxes, converts them to quads and
+  // stores them: so the highlight PAINTED back onto the page afterwards is
+  // high by the same amount, forever. This is the "the highlighted ribbon is
+  // not properly enclosing the text but rendering at an offset" report, and
+  // it was never a painting bug — the quads were captured that way.
+  //
+  // pdf.js's own text layer has always put the ascent here rather than a whole
+  // em; see fontAscentRatio for where the number comes from and why the
+  // shortfall is split the way it is.
+  const ascentPx = fontHeight * fontAscentRatio(style);
+  // Rotated text needs the offset taken along the run's own up-direction
+  // rather than straight up the page — the same decomposition pdf.js uses.
+  const left = angle ? tx[4] + ascentPx * Math.sin(angle) : tx[4];
+  const top = angle ? tx[5] - ascentPx * Math.cos(angle) : tx[5] - ascentPx;
+  // pdf.js names a generic family here; anything that could end the
+  // declaration is taken out, because the whole style is written in one go.
+  const family = String(style?.fontFamily || "sans-serif").replace(/[;{}]/g, "");
+  let css = `left:${left}px;top:${top}px;font-size:${fontHeight}px;font-family:${family};`;
+  // Horizontal scale, so the invisible text is exactly as wide as the visible
+  // glyphs. Without it a selection highlight drifts further from the words the
+  // further along the line it goes — which is the difference between "this
+  // works" and "this nearly works".
+  const expected = item.width * viewport.scale;
+  const transforms = [];
+  if (angle) transforms.push(`rotate(${angle}rad)`);
+  if (expected > 0 && fontHeight > 0) {
+    const natural = measureSpanText(item.str, fontHeight, family);
+    // The number itself rather than a custom property: a var() is resolved
+    // per element, on thousands of them, every time the layer is styled.
+    if (natural > 0) transforms.push(`scaleX(${expected / natural})`);
+    else {
+      span.dataset.expectedWidth = String(expected);
+      run.measureLater = true;
       transforms.push("scaleX(var(--pdf-span-scale, 1))");
     }
-    if (transforms.length) css += `transform:${transforms.join(" ")};`;
-    // One write, not six: each property set on a style is a parse and a
-    // mutation of its own, times every text item on the page.
-    span.setAttribute("style", css);
-    frag.appendChild(span);
-  });
-  layer.appendChild(frag);
+  }
+  if (transforms.length) css += `transform:${transforms.join(" ")};`;
+  // One write, not six: each property set on a style is a parse and a
+  // mutation of its own, times every text item on the page.
+  span.setAttribute("style", css);
+  frag.appendChild(span);
+}
+
+function measureTextLayerLater(layer) {
   // ── Measured off a canvas, not off the page ─────────────────────────────
   //
   // Every span above is sized as it is built, from canvas measureText — the
@@ -3473,7 +3785,7 @@ export async function buildTextLayer(page, viewport, content = null) {
   // So: every read first, into an array, and only then every write. The browser
   // flushes once for the whole page instead of once per word. Nothing else about
   // the measurement changes — the same spans get the same numbers.
-  if (measureLater) requestAnimationFrame(() => {
+  requestAnimationFrame(() => {
     if (!layer.isConnected) return;
     const spans = layer.querySelectorAll("span[data-expected-width]");
     const widths = new Array(spans.length);
@@ -3484,12 +3796,6 @@ export async function buildTextLayer(page, viewport, content = null) {
       spans[i].style.setProperty("--pdf-span-scale", String(Number(spans[i].dataset.expectedWidth) / actual));
     }
   });
-  // The items go back with the layer, so the one caller can keep them on the
-  // page's entry. textForQuads() needs them to name a highlight from its quads
-  // (see repairDocumentHighlightText in pdf-highlights.js), and a second
-  // getTextContent() for that would be a round trip to the worker for something
-  // this function has already paid for.
-  return { layer, items: content.items };
 }
 
 // How wide a run of text is in the font its span is set in, at its size, in

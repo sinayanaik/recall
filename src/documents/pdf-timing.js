@@ -57,7 +57,27 @@ export function samplePdfTiming(kind, ms) {
 export const PDF_TIMING_JANK_WINDOW_MS = 2 * 60 * 1000;
 
 const pdfTimingJank = [];
-const pdfTimingCounts = { paused: 0, resumed: 0 };
+
+// The longest frame seen while a finger was on the paper, in the same window:
+// the stutter itself, where a long task is only one of its causes (a frame can
+// also be lost to style, layout or a raster upload).
+const pdfTimingFrames = [];
+
+// How pages are being drawn on this device — reported by pdf-view.js, so this
+// module can stay free of imports.
+let pdfTimingCanvas = null;
+
+export function notePdfCanvasSetup(info) {
+  pdfTimingCanvas = info && typeof info === "object" ? { ...info } : null;
+}
+
+export function notePdfInteractionFrame(ms) {
+  if (!Number.isFinite(ms) || ms <= 0) return;
+  const at = Date.now();
+  pdfTimingFrames.push({ ms, at });
+  while (pdfTimingFrames.length && at - pdfTimingFrames[0].at > PDF_TIMING_JANK_WINDOW_MS) pdfTimingFrames.shift();
+  if (pdfTimingFrames.length > 4000) pdfTimingFrames.splice(0, pdfTimingFrames.length - 4000);
+}
 
 export function notePdfInteractionLongTask(ms) {
   if (!Number.isFinite(ms) || ms <= 0) return;
@@ -67,19 +87,16 @@ export function notePdfInteractionLongTask(ms) {
   if (pdfTimingJank.length > 500) pdfTimingJank.splice(0, pdfTimingJank.length - 500);
 }
 
-export function countPdfTiming(kind, n = 1) {
-  if (kind in pdfTimingCounts && Number.isFinite(n)) pdfTimingCounts[kind] += n;
-}
-
 export function expectPdfPagePaint(kind, startedAt = pdfTimingNow(), detail = "") {
   pdfTimingPending = { kind, startedAt, detail };
 }
 
-export function firstPdfPagePainted() {
+// `extra` is what the page that ended the wait was drawn as — its canvas size.
+export function firstPdfPagePainted(extra = "") {
   if (!pdfTimingPending) return;
   const { kind, startedAt, detail } = pdfTimingPending;
   pdfTimingPending = null;
-  recordPdfTiming(kind, pdfTimingNow() - startedAt, detail);
+  recordPdfTiming(kind, pdfTimingNow() - startedAt, [detail, extra].filter(Boolean).join(" · "));
 }
 
 // A flow that is over once the browser has painted what it changed: two
@@ -122,6 +139,10 @@ export function pdfTimingReport() {
     + ` · ${nav.hardwareConcurrency || "?"} cores`
     + (nav.deviceMemory ? ` · ${nav.deviceMemory}GB` : "")
     + (typeof window !== "undefined" ? ` · ${window.innerWidth}×${window.innerHeight}` : ""));
+  if (pdfTimingCanvas) {
+    lines.push(`canvas: ${pdfTimingCanvas.cpu ? "CPU" : "GPU"} · budget ${(pdfTimingCanvas.budget / 1e6).toFixed(1)}MP a page`
+      + ` · ${pdfTimingCanvas.slots} at a time`);
+  }
   lines.push(`pdf.js: ${lib?.version || "not loaded"}`);
   ["render", "text"].forEach((kind) => {
     const s = pdfTimingStats(pdfTimingSamples[kind]);
@@ -134,7 +155,15 @@ export function pdfTimingReport() {
     ? `while touching (last 2 min): ${recentJank.length} long tasks · worst ${Math.round(Math.max(...recentJank.map((j) => j.ms)))}ms`
       + ` · total ${Math.round(recentJank.reduce((a, j) => a + j.ms, 0))}ms`
     : "while touching (last 2 min): no long tasks");
-  lines.push(`renders held while touching: ${pdfTimingCounts.paused} · resumed: ${pdfTimingCounts.resumed}`);
+  const recentFrames = pdfTimingFrames.filter((f) => Date.now() - f.at <= PDF_TIMING_JANK_WINDOW_MS);
+  if (recentFrames.length) {
+    const sorted = recentFrames.map((f) => f.ms).sort((a, b) => a - b);
+    const slow = sorted.filter((ms) => ms > 34).length;
+    lines.push(`frames while touching (last 2 min): ${sorted.length} · p90 ${Math.round(sorted[Math.floor(sorted.length * 0.9)])}ms`
+      + ` · longest ${Math.round(sorted[sorted.length - 1])}ms · ${slow} over 34ms`);
+  } else {
+    lines.push("frames while touching (last 2 min): none yet");
+  }
   if (!pdfTimingEvents.length) {
     lines.push("No PDF opened since the app started.");
   } else {
