@@ -20,7 +20,40 @@ export const PDF_TIMING_EVENTS_MAX = 20;
 export const PDF_TIMING_SAMPLES_MAX = 60;
 
 const pdfTimingEvents = [];
-const pdfTimingSamples = { render: [], text: [] };
+// `worker` and `draw` split `render` in two: waiting for the worker to have
+// something to draw (the page parsed, its fonts and images decoded) and the
+// drawing itself. `annotate` is the page-painted hook — highlights repaired,
+// ink, blocks and note badges — which ran on every page paint unmeasured.
+// `bake` is dark page drawn into a page's pixels (bakePagePaper).
+const pdfTimingSamples = { render: [], worker: [], draw: [], text: [], annotate: [], bake: [] };
+
+// Renders cancelled before they finished, and renders that finished for a zoom
+// or a position that had already gone — work that showed the reader nothing.
+let pdfTimingWasted = { cancelled: 0, dropped: 0 };
+
+export function notePdfWastedRenders(counts) {
+  if (counts && typeof counts === "object") pdfTimingWasted = { ...pdfTimingWasted, ...counts };
+}
+
+// ── Where a slow frame went ────────────────────────────────────────────────
+//
+// The readout that came back after the main-thread work was taken out said 20
+// frames over 34ms and one of 1.2s, with ONE long task in two minutes: the
+// time was not in script any more, and nothing here could say where it was.
+// The Long Animation Frames API (Chrome 123+) can: for every frame of 50ms or
+// more it reports how much of it was script and when style and layout began.
+// A slow frame seen by the touch rAF loop with no long animation frame over it
+// was slow somewhere the main thread cannot see — raster, the GPU, the
+// compositor. Silent where the API is missing.
+const pdfTimingLoafs = [];
+
+export function notePdfAnimationFrame(frame) {
+  if (!frame || !Number.isFinite(frame.duration)) return;
+  pdfTimingLoafs.push({ ...frame, at: Date.now() });
+  const at = Date.now();
+  while (pdfTimingLoafs.length && at - pdfTimingLoafs[0].at > PDF_TIMING_JANK_WINDOW_MS) pdfTimingLoafs.shift();
+  if (pdfTimingLoafs.length > 500) pdfTimingLoafs.splice(0, pdfTimingLoafs.length - 500);
+}
 
 // A flow that ends when the next page is drawn — an open, a PDF switch, a
 // zoom. At most one at a time: whichever was asked for last is what the
@@ -71,10 +104,12 @@ export function notePdfCanvasSetup(info) {
   pdfTimingCanvas = info && typeof info === "object" ? { ...info } : null;
 }
 
-export function notePdfInteractionFrame(ms) {
+// `end` is the frame's rAF timestamp, on the performance clock, so a slow frame
+// can be matched against the long animation frames that overlapped it.
+export function notePdfInteractionFrame(ms, end = pdfTimingNow()) {
   if (!Number.isFinite(ms) || ms <= 0) return;
   const at = Date.now();
-  pdfTimingFrames.push({ ms, at });
+  pdfTimingFrames.push({ ms, at, end });
   while (pdfTimingFrames.length && at - pdfTimingFrames[0].at > PDF_TIMING_JANK_WINDOW_MS) pdfTimingFrames.shift();
   if (pdfTimingFrames.length > 4000) pdfTimingFrames.splice(0, pdfTimingFrames.length - 4000);
 }
@@ -120,8 +155,50 @@ const PDF_TIMING_LABELS = {
   tab: "back to PDF tab",
   zoom: "zoom",
   render: "draw one page",
-  text: "make a page selectable"
+  worker: "  waiting for the worker",
+  draw: "  drawing",
+  text: "make a page selectable",
+  annotate: "put highlights and notes on a page",
+  bake: "draw dark page into a page"
 };
+
+// The slow frames (over 34ms) seen while touching, split by where the time
+// went. `script` and `layout` come from the long animation frames that
+// overlapped them; whatever part of a slow frame no long animation frame
+// covers is "off the main thread".
+function pdfTimingSlowFrameBreakdown(frames) {
+  const slow = frames.filter((f) => f.ms > 34 && Number.isFinite(f.end));
+  if (!slow.length) return null;
+  const loafs = pdfTimingLoafs.filter((l) => Date.now() - l.at <= PDF_TIMING_JANK_WINDOW_MS);
+  const counted = new Set();
+  let script = 0;
+  let layout = 0;
+  let otherMain = 0;
+  let offMain = 0;
+  slow.forEach((frame) => {
+    const start = frame.end - frame.ms;
+    let covered = 0;
+    loafs.forEach((loaf) => {
+      const loafEnd = loaf.startTime + loaf.duration;
+      const overlap = Math.min(frame.end, loafEnd) - Math.max(start, loaf.startTime);
+      if (overlap <= 0) return;
+      covered += overlap;
+      if (counted.has(loaf)) return;
+      counted.add(loaf);
+      script += loaf.script;
+      layout += loaf.layout;
+      otherMain += Math.max(0, loaf.duration - loaf.script - loaf.layout);
+    });
+    offMain += Math.max(0, frame.ms - covered);
+  });
+  return { count: slow.length, script, layout, otherMain, offMain, observed: pdfTimingLoafsObserved };
+}
+
+let pdfTimingLoafsObserved = false;
+
+export function notePdfAnimationFramesObserved(on) {
+  pdfTimingLoafsObserved = Boolean(on);
+}
 
 function pdfTimingAgo(at) {
   const seconds = Math.max(0, Math.round((Date.now() - at) / 1000));
@@ -141,15 +218,20 @@ export function pdfTimingReport() {
     + (typeof window !== "undefined" ? ` · ${window.innerWidth}×${window.innerHeight}` : ""));
   if (pdfTimingCanvas) {
     lines.push(`canvas: ${pdfTimingCanvas.cpu ? "CPU" : "GPU"} · budget ${(pdfTimingCanvas.budget / 1e6).toFixed(1)}MP a page`
-      + ` · ${pdfTimingCanvas.slots} at a time`);
+      + ` · ${pdfTimingCanvas.slots} at a time`
+      + (pdfTimingCanvas.dark ? ` · dark page ${pdfTimingCanvas.dark}` : ""));
   }
-  lines.push(`pdf.js: ${lib?.version || "not loaded"}`);
-  ["render", "text"].forEach((kind) => {
+  lines.push(`pdf.js: ${lib?.version || "not loaded"}${pdfTimingCanvas?.build ? ` (${pdfTimingCanvas.build} build)` : ""}`);
+  ["render", "worker", "draw", "text", "annotate", "bake"].forEach((kind) => {
     const s = pdfTimingStats(pdfTimingSamples[kind]);
+    // The two halves of a page's draw only say anything once there is one, and
+    // the dark page line only once a dark page has been drawn.
+    if (!s && (kind === "worker" || kind === "draw" || kind === "bake")) return;
     lines.push(s
       ? `${PDF_TIMING_LABELS[kind]}: median ${s.median}ms · p90 ${s.p90}ms · worst ${s.worst}ms (${s.count} pages)`
       : `${PDF_TIMING_LABELS[kind]}: no pages yet`);
   });
+  lines.push(`wasted renders: ${pdfTimingWasted.cancelled} stopped part-way · ${pdfTimingWasted.dropped} finished and thrown away`);
   const recentJank = pdfTimingJank.filter((j) => Date.now() - j.at <= PDF_TIMING_JANK_WINDOW_MS);
   lines.push(recentJank.length
     ? `while touching (last 2 min): ${recentJank.length} long tasks · worst ${Math.round(Math.max(...recentJank.map((j) => j.ms)))}ms`
@@ -161,6 +243,13 @@ export function pdfTimingReport() {
     const slow = sorted.filter((ms) => ms > 34).length;
     lines.push(`frames while touching (last 2 min): ${sorted.length} · p90 ${Math.round(sorted[Math.floor(sorted.length * 0.9)])}ms`
       + ` · longest ${Math.round(sorted[sorted.length - 1])}ms · ${slow} over 34ms`);
+    const split = pdfTimingSlowFrameBreakdown(recentFrames);
+    if (split?.observed) {
+      lines.push(`  where the slow frames went: script ${Math.round(split.script)}ms · style/layout ${Math.round(split.layout)}ms`
+        + ` · other main-thread ${Math.round(split.otherMain)}ms · off the main thread (GPU/raster) ${Math.round(split.offMain)}ms`);
+    } else if (split) {
+      lines.push("  where the slow frames went: not measurable in this browser");
+    }
   } else {
     lines.push("frames while touching (last 2 min): none yet");
   }

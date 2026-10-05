@@ -27,7 +27,7 @@ import { lastInkContactWasPen, msSinceLastInkStroke } from "../core/gesture.js?v
 import { state } from "../core/state.js?v=__BUILD__";
 import { stripInvalidUnicode } from "../core/text.js?v=__BUILD__";
 import { quadToPageBox, textForAnchorRange, textItemBox } from "./pdf-selection.js?v=__BUILD__";
-import { pdfMarkLayer, pdfPageTextItems, pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
+import { pdfAreaLayer, pdfMarkLayer, pdfPageTextItems, pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
 import { MARK_HIGHLIGHT_DEFAULT, MARK_HIGHLIGHT_HEX } from "../format/highlight-colors.js?v=__BUILD__";
 import { decodeInkStrokes, inkStrokeHitsPoint } from "../format/ink-strokes.js?v=__BUILD__";
 import { notifyHighlightsChanged } from "../format/highlight-edit.js?v=__BUILD__";
@@ -379,11 +379,43 @@ function scheduleRepairNotify() {
   }, REPAIR_NOTIFY_MS);
 }
 
+// Records already read back against their page's text and found right (or not
+// repairable). Keyed by the record OBJECT: any change to a highlight replaces
+// it with a new one, which is checked again. Without this every page paint —
+// every page, after every zoom — re-derived the words of every highlight on the
+// page and re-parsed the whole notes block before finding nothing to do.
+const textRepairChecked = new WeakSet();
+
 export function repairDocumentHighlightText(pageNumber) {
   const items = pdfPageTextItems(pageNumber);
   if (!items?.length) return false;
   const records = documentHighlights();
   if (!records.length) return false;
+  // What actually needs rewriting, found first, so the notes are only parsed
+  // when something does.
+  const repairs = new Map();
+  records.forEach((record) => {
+    if (textRepairChecked.has(record)) return;
+    // A region is named by where it is, not by what it says (see
+    // documentHighlightLabel), and an imported annotation has no anchors to
+    // read back from.
+    if (record.kind === "area") {
+      textRepairChecked.add(record);
+      return;
+    }
+    const quads = record.quads || [];
+    // Not this page's to judge: a highlight running onto another page, or one
+    // with nothing on this page at all, waits for its own page.
+    if (!quads.length || quads.some((quad) => quad.page !== pageNumber)) return;
+    const stored = String(record.text || "");
+    const derived = stored ? textForAnchorRange(items, record.anchor, record.focus) : "";
+    if (!stored || !derived || derived === stored || squashWhitespace(derived) !== squashWhitespace(stored)) {
+      textRepairChecked.add(record);
+      return;
+    }
+    repairs.set(record, derived);
+  });
+  if (!repairs.size) return false;
   let notes = state.notes || "";
   // One parse for the sweep, not one per record. Reading it inside the map made
   // this the third place that re-read the whole fenced block per highlight, and
@@ -396,17 +428,8 @@ export function repairDocumentHighlightText(pageNumber) {
   const noteTextById = readHighlightNotes(notes);
   let changed = false;
   const next = records.map((record) => {
-    // A region is named by where it is, not by what it says (see
-    // documentHighlightLabel), and an imported annotation has no anchors to
-    // read back from.
-    if (record.kind === "area") return record;
-    const quads = record.quads || [];
-    if (!quads.length || quads.some((quad) => quad.page !== pageNumber)) return record;
-    const stored = String(record.text || "");
-    if (!stored) return record;
-    const derived = textForAnchorRange(items, record.anchor, record.focus);
-    if (!derived || derived === stored) return record;
-    if (squashWhitespace(derived) !== squashWhitespace(stored)) return record;
+    const derived = repairs.get(record);
+    if (!derived) return record;
     changed = true;
     const note = noteTextById.get(record.id) || "";
     // Only when there IS a note: setHighlightNoteInSource treats an empty text
@@ -810,8 +833,14 @@ export function clearDocumentHighlightNote(id, options) {
 export function paintDocumentHighlights(pageNumber) {
   const layer = pdfMarkLayer(pageNumber);
   if (!layer) return;
+  // Regions on a layer of their own, which does not blend: the text marks'
+  // layer blends as one (styles/36-document.css), and a region outline inside
+  // it would be multiplied along with them.
+  const areaLayer = pdfAreaLayer(pageNumber);
   layer.innerHTML = "";
+  if (areaLayer !== layer) areaLayer.querySelectorAll(`.${PDF_MARK_CLASS}`).forEach((node) => node.remove());
   const frag = document.createDocumentFragment();
+  const areaFrag = document.createDocumentFragment();
   documentHighlights().forEach((record) => {
     // Ink paints itself, on its own canvas layer (src/documents/pdf-ink.js).
     // Its quad is a BOUNDING BOX and nothing else — it exists so that the
@@ -835,10 +864,11 @@ export function paintDocumentHighlights(pageNumber) {
       mark.style.top = `${box.top}px`;
       mark.style.width = `${box.width}px`;
       mark.style.height = `${box.height}px`;
-      frag.appendChild(mark);
+      (record.kind === "area" ? areaFrag : frag).appendChild(mark);
     });
   });
   layer.appendChild(frag);
+  areaLayer.appendChild(areaFrag);
 }
 
 // Every page currently carrying a mark layer. Called after any CRUD, because a
@@ -882,7 +912,7 @@ export function flashDocumentHighlight(id) {
 export const PDF_REGION_FLASH_CLASS = "pdf-region-flash";
 
 export function flashDocumentRegion(pageNumber, rect) {
-  const layer = pdfMarkLayer(pageNumber);
+  const layer = pdfAreaLayer(pageNumber);
   if (!layer || !Array.isArray(rect) || rect.length !== 4) return false;
   const box = quadToPageBox({ page: pageNumber, rect });
   if (!box) return false;

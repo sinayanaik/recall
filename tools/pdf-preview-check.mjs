@@ -1668,6 +1668,9 @@ try {
   const underRegion = region.record
     ? await page.evaluate(`async (regionId) => {
         const { api, settle } = window.__recall;
+        // The text layer, which is built once the page is drawn, on screen and
+        // still — asked for by name rather than raced (see whenDocumentPageReady).
+        await api.whenDocumentPageReady(2);
         const pageEl = document.querySelector('.pdf-page[data-page-number="2"]');
         const mark = pageEl?.querySelector('.pdf-mark[data-highlight-id="' + regionId + '"]');
         if (!mark) return { error: "the region is not painted on page 2" };
@@ -3622,6 +3625,182 @@ try {
     !badgesAfterRelayout.error && badgesAfterRelayout.hit === "badge",
     badgesAfterRelayout.error || `topmost = ${badgesAfterRelayout.hit}`);
 
+  // ── 8d-v½. Dark page in the pixels, highlights blended as one layer ─────
+  //
+  // "Almost unusable" on a 2.6x phone with dark page on and a paper full of
+  // highlights, after the main-thread work had been taken out: frames of a
+  // second while scrolling with ONE long task in two minutes. The GPU was
+  // re-running the invert filter over every page canvas on every frame, plus an
+  // offscreen blend pass per highlight. So dark page is drawn into the canvas
+  // once (bakePagePaper) and the highlights blend as a layer. What has to hold:
+  // the paper really is dark in the pixels and carries no filter; the probe that
+  // spots a canvas the browser cleared does not mistake a dark page for one;
+  // switching back to white covers the page at once and then redraws it white;
+  // and the marks paint normally inside a layer that does the blending, with
+  // regions in an unblended layer of their own.
+  const darkPixels = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    if (!api.canBakeDarkPage()) return { unsupported: true };
+    const stage = document.getElementById("documentStage");
+    const wasDark = stage.classList.contains("is-pdf-inverted");
+    if (wasDark) api.togglePdfInvert();
+    const target = api.documentHighlightsInReadingOrder().find((r) => r.kind !== "area" && r.kind !== "ink");
+    const pageNumber = target?.page || 1;
+    api.scrollToDocumentPage(pageNumber, 0, { smooth: false });
+    await api.whenDocumentPageReady(pageNumber);
+    await settle(300);
+    const pageEl = document.querySelector('.pdf-page[data-page-number="' + pageNumber + '"]');
+    const live = () => pageEl.querySelector(".pdf-canvas:not(.is-stale)");
+    // One pixel of paper: the top-left corner, inside the margin every paper has.
+    const paper = (canvas) => {
+      const probe = document.createElement("canvas");
+      probe.width = 1;
+      probe.height = 1;
+      const ctx = probe.getContext("2d", { willReadFrequently: true });
+      ctx.drawImage(canvas, 4, 4, 1, 1, 0, 0, 1, 1);
+      const [r, g, b] = ctx.getImageData(0, 0, 1, 1).data;
+      return r + g + b;
+    };
+    const until = async (test, limit = 6000) => {
+      const t0 = performance.now();
+      while (!test()) {
+        if (performance.now() - t0 > limit) return false;
+        await settle(50);
+      }
+      return true;
+    };
+    const out = {};
+    const white = live();
+    out.whiteFirst = Boolean(white) && !white.classList.contains("is-dark-pixels") && paper(white) > 700;
+    api.togglePdfInvert();
+    out.coveredAtOnce = getComputedStyle(white).filter.includes("invert");
+    out.redrawnDark = await until(() => live()?.classList.contains("is-dark-pixels"));
+    const dark = live();
+    out.darkFilter = dark ? getComputedStyle(dark).filter : "";
+    out.darkPaper = dark ? paper(dark) : -1;
+    out.lostPixels = api.recoverLostPageCanvases();
+    const markLayer = pageEl.querySelector(".pdf-mark-layer:not(.is-area)");
+    const mark = markLayer?.querySelector(".pdf-mark");
+    out.markBlend = mark ? getComputedStyle(mark).mixBlendMode : "no mark";
+    out.layerBlendDark = markLayer ? getComputedStyle(markLayer).mixBlendMode : "no layer";
+    const areas = [...document.querySelectorAll('.pdf-mark[data-kind="area"]')];
+    out.areas = areas.length;
+    out.areasInAreaLayer = areas.every((node) => node.parentElement?.classList.contains("is-area"));
+    out.areaLayerBlend = areas[0] ? getComputedStyle(areas[0].parentElement).mixBlendMode : "normal";
+    api.togglePdfInvert();
+    out.uncoveredAtOnce = Boolean(dark) && getComputedStyle(dark).filter.includes("invert");
+    out.redrawnWhite = await until(() => {
+      const canvas = live();
+      return Boolean(canvas) && !canvas.classList.contains("is-dark-pixels");
+    });
+    out.whitePaper = live() ? paper(live()) : -1;
+    out.layerBlendWhite = markLayer?.isConnected ? getComputedStyle(markLayer).mixBlendMode
+      : getComputedStyle(pageEl.querySelector(".pdf-mark-layer:not(.is-area)")).mixBlendMode;
+    if (wasDark) api.togglePdfInvert();
+    await settle(300);
+    return out;
+  }`);
+
+  if (darkPixels.unsupported) {
+    check("dark page is drawn into the pixels where the browser can (skipped: no ctx.filter here)", true);
+  } else {
+    check("a white page is white in its pixels", darkPixels.whiteFirst === true, JSON.stringify(darkPixels));
+    check("turning dark page on covers a drawn page at once", darkPixels.coveredAtOnce === true);
+    check("...then redraws it dark in its own pixels", darkPixels.redrawnDark === true && darkPixels.darkPaper >= 0 && darkPixels.darkPaper < 60,
+      `paper r+g+b = ${darkPixels.darkPaper}`);
+    check("...with no filter left on it for the GPU to run every frame", darkPixels.darkFilter === "none",
+      `filter: ${darkPixels.darkFilter}`);
+    check("...and a dark page is not taken for one the browser cleared", darkPixels.lostPixels === 0,
+      `${darkPixels.lostPixels} page(s) thought lost`);
+    check("turning it off covers the dark pixels at once", darkPixels.uncoveredAtOnce === true);
+    check("...then redraws the page white", darkPixels.redrawnWhite === true && darkPixels.whitePaper > 700,
+      `paper r+g+b = ${darkPixels.whitePaper}`);
+    check("highlights paint normally inside their layer", darkPixels.markBlend === "normal", `.pdf-mark: ${darkPixels.markBlend}`);
+    check("...and the layer is what blends: screen on a dark page, multiply on white",
+      darkPixels.layerBlendDark === "screen" && darkPixels.layerBlendWhite === "multiply",
+      `dark ${darkPixels.layerBlendDark}, white ${darkPixels.layerBlendWhite}`);
+    check("regions sit in an unblended layer of their own", darkPixels.areasInAreaLayer === true && darkPixels.areaLayerBlend === "normal",
+      `${darkPixels.areas} region(s), layer blend ${darkPixels.areaLayerBlend}`);
+  }
+
+  // ── 8d-v¾. The one render slot only does work the reader will see ────────
+  //
+  // A pinch from 92% to 33% on the phone waited for the 92% draw of a page to
+  // finish — in the only render slot a phone has — and then threw it away. And
+  // every render asked the worker for the page's text the moment it started,
+  // so a render cancelled a moment later still left a text extraction queued in
+  // the worker ahead of the page the reader was waiting for. A render in flight
+  // for a zoom that has gone is stopped now, and the text is asked for once the
+  // page has drawn.
+  // Slowed down, so a page is still being drawn when the zoom lands: on this
+  // machine, at full speed, a fixture page draws in a frame or two.
+  await page.call("Emulation.setCPUThrottlingRate", { rate: 12 });
+  const slotWork = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    api.fitDocumentToWidth();
+    await settle(400);
+    // Every page's text request, counted, on the page proxies of whatever
+    // document opens next: they share one prototype.
+    const proto = Object.getPrototypeOf(await api.currentPdfDocument().getPage(1));
+    const original = proto.getTextContent;
+    const asks = {};
+    proto.getTextContent = function (...args) {
+      asks[this.pageNumber] = (asks[this.pageNumber] || 0) + 1;
+      return original.apply(this, args);
+    };
+    const total = () => Object.values(asks).reduce((a, b) => a + b, 0);
+    const before = api.documentRenderStats();
+    // A fresh open, so the pages on screen are drawn from nothing...
+    const opening = api.openDocumentView({ force: true });
+    let caught = false;
+    for (let i = 0; i < 2000 && !caught; i += 1) {
+      if (api.documentRenderStats().drawing > 0) caught = true;
+      else await new Promise((r) => setTimeout(r, 1));
+    }
+    // ...and the zoom lands while the first of them is still being drawn.
+    const asksWhenCaught = total();
+    const cancelledBefore = api.documentRenderStats().cancelled;
+    if (caught) api.zoomDocument(1.25);
+    // On the spot: nothing is still drawing for the old zoom the moment the new
+    // one lands. (A fresh render for the new zoom waits for its turn first, so
+    // it is not drawing yet either.) The count is kept as the cancelled render
+    // settles, a tick later.
+    const drawingAfterZoom = api.documentRenderStats().drawing;
+    await new Promise((r) => setTimeout(r, 0));
+    const cancelled = api.documentRenderStats().cancelled - cancelledBefore;
+    await opening;
+    const pageNumber = api.currentDocumentPage();
+    await api.whenDocumentPageReady(pageNumber);
+    await settle(600);
+    const pageEl = document.querySelector('.pdf-page[data-page-number="' + pageNumber + '"]');
+    const canvas = pageEl?.querySelector(".pdf-canvas:not(.is-stale)");
+    const out = {
+      caught,
+      asksWhenCaught,
+      cancelled,
+      drawingAfterZoom,
+      pageAsks: asks[pageNumber] || 0,
+      drawnAtNewScale: Boolean(canvas) && Math.abs(parseFloat(canvas.style.width) - parseFloat(pageEl.style.width)) <= 1,
+      textLayer: Boolean(pageEl?.querySelector(".pdf-text-layer")),
+      totalCancelled: api.documentRenderStats().cancelled - before.cancelled
+    };
+    proto.getTextContent = original;
+    api.fitDocumentToWidth();
+    await settle(600);
+    return out;
+  }`);
+  await page.call("Emulation.setCPUThrottlingRate", { rate: 1 });
+
+  check("a page's text is not asked for while it is still being drawn",
+    slotWork.caught === true && slotWork.asksWhenCaught === 0,
+    `caught=${slotWork.caught} · ${slotWork.asksWhenCaught} ask(s) mid-draw`);
+  check("a zoom stops a render in flight for the old zoom on the spot",
+    slotWork.caught === true && slotWork.drawingAfterZoom === 0 && slotWork.cancelled >= 1,
+    `${slotWork.drawingAfterZoom} still drawing · ${slotWork.cancelled} cancelled`);
+  check("...and the page is then drawn at the new zoom, with its text asked for once",
+    slotWork.drawnAtNewScale === true && slotWork.textLayer === true && slotWork.pageAsks === 1,
+    JSON.stringify(slotWork));
+
   // ── 8d-vi. The tint that says which highlight the pane is on ────────────
   //
   // paintDocumentHighlights rebuilds the whole mark layer with innerHTML = "",
@@ -5057,6 +5236,63 @@ try {
     onPhone.labelVsPaper >= 3,
     `${onPhone.labelColor} on ${onPhone.probePaper} = ${onPhone.labelVsPaper.toFixed(2)}:1`);
 
+  // ── 9b′. A render held while the reader scrolls ─────────────────────────
+  //
+  // A page that already shows something (here, the stretched canvas a zoom
+  // leaves) waits between pdf.js slices while the reader is scrolling, so its
+  // GPU work does not share their frames. The last version of this gave the
+  // held render's slot away, and more renders ran together after a release
+  // than a phone's ONE slot allows; and a held render that was never woken
+  // would leave the page stretched for good. So, across a zoom and a scroll:
+  // never more than one render at a time, and everything finished, with the
+  // page drawn fresh, once the scrolling stops.
+  const heldOnPhone = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const view = document.getElementById("documentView");
+    api.scrollToDocumentPage(1, 0.2, { smooth: false });
+    await settle(600);
+    api.zoomDocument(1.3);
+    let maxSlots = 0;
+    let maxHeld = 0;
+    const sample = () => {
+      const stats = api.documentRenderStats();
+      maxSlots = Math.max(maxSlots, stats.slots);
+      maxHeld = Math.max(maxHeld, stats.held);
+      return stats;
+    };
+    for (let i = 0; i < 100 && !sample().drawing; i += 1) await new Promise((r) => setTimeout(r, 2));
+    for (let i = 0; i < 50; i += 1) {
+      view.scrollTop += i % 2 ? -2 : 2;
+      sample();
+      await new Promise((r) => requestAnimationFrame(r));
+    }
+    let clean = false;
+    for (let i = 0; i < 100 && !clean; i += 1) {
+      const stats = sample();
+      clean = !stats.held && !stats.drawing && !stats.waiting && !stats.slots;
+      if (!clean) await settle(50);
+    }
+    const page = api.currentDocumentPage();
+    const pageEl = document.querySelector('.pdf-page[data-page-number="' + page + '"]');
+    const out = {
+      limit: api.documentRenderStats().limit,
+      maxSlots,
+      maxHeld,
+      clean,
+      fresh: Boolean(pageEl?.querySelector(".pdf-canvas:not(.is-stale)")) && !pageEl?.querySelector(".pdf-canvas.is-stale")
+    };
+    api.fitDocumentToWidth();
+    await settle(600);
+    return out;
+  }`);
+
+  check("a phone never draws more than one page at a time across a zoom and a scroll",
+    heldOnPhone.maxSlots <= heldOnPhone.limit && heldOnPhone.limit === 1,
+    `${heldOnPhone.maxSlots} slot(s) of ${heldOnPhone.limit} · ${heldOnPhone.maxHeld} held at most`);
+  check("...and once the scrolling stops, nothing is left held and the page is drawn fresh",
+    heldOnPhone.clean === true && heldOnPhone.fresh === true,
+    JSON.stringify(heldOnPhone));
+
   // ── 9c. A first render that never answers ────────────────────────────────
   //
   // renderPage's in-flight guard — "a render is already going, remember the
@@ -6017,6 +6253,9 @@ try {
       await api.whenDocumentPageReady(p);
     }
     api.scrollToDocumentPage(1, 0, { smooth: false });
+    // Page 1 may have been trimmed while the others were drawn, and is drawn
+    // again now; its text layer is asked for by name rather than raced.
+    await api.whenDocumentPageReady(1);
     await settle(200);
     const live = [1, 2, 3, 4].filter((p) => document.querySelector('.pdf-page[data-page-number="' + p + '"] .pdf-text-layer'));
 

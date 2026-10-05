@@ -44,12 +44,12 @@
    highlight, a moment early. The four colours are the ones a .pdf-mark wears
    (styles/36-document.css), copied rather than shared because the preview must
    not be a .pdf-mark: other code queries that class for the highlights that
-   exist. Multiplied over the page like a highlight, and screened over an
-   inverted one, for the same reason a highlight is. */
+   exist. It sits in the mark layer, which is what blends with the page
+   (multiplied, or screened over an inverted one — styles/36-document.css), so
+   the band itself paints normally, exactly as a .pdf-mark does. */
 .pdf-smart-preview-band {
   position: absolute;
   border-radius: 2px;
-  mix-blend-mode: multiply;
   pointer-events: none;
 }
 
@@ -58,6 +58,3 @@
 .pdf-smart-preview-band[data-color="blue"]   { background: color-mix(in srgb, #3b82f6 32%, transparent); }
 .pdf-smart-preview-band[data-color="pink"]   { background: color-mix(in srgb, #ec4899 30%, transparent); }
 
-.document-stage.is-pdf-inverted .pdf-smart-preview-band {
-  mix-blend-mode: screen;
-}

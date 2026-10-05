@@ -35,7 +35,7 @@ import { ensurePdfJs, openPdfDocument } from "../core/lib-loader.js?v=__BUILD__"
 import { state } from "../core/state.js?v=__BUILD__";
 import { paintDocumentHighlights } from "./pdf-highlights.js?v=__BUILD__";
 import { textItemGap } from "./pdf-selection.js?v=__BUILD__";
-import { expectPdfPagePaint, firstPdfPagePainted, notePdfCanvasSetup, notePdfInteractionFrame, notePdfInteractionLongTask, recordPdfTimingAfterPaint, samplePdfTiming } from "./pdf-timing.js?v=__BUILD__";
+import { expectPdfPagePaint, firstPdfPagePainted, notePdfAnimationFrame, notePdfAnimationFramesObserved, notePdfCanvasSetup, notePdfInteractionFrame, notePdfInteractionLongTask, notePdfWastedRenders, recordPdfTimingAfterPaint, samplePdfTiming } from "./pdf-timing.js?v=__BUILD__";
 import { buildDocumentOutline, clearDocumentOutline, setDocumentOutlinePage } from "./pdf-outline.js?v=__BUILD__";
 import { inkPenIsDown } from "../core/gesture.js?v=__BUILD__";
 import { DOC_SLOT_DOC, DOC_SLOT_NOTEBOOK, activeDocSlot, docSlotMeta, docSlotReadingPositionKey, documentStoreKey, normalizeDocSlot, onDocumentSurface } from "./doc-slot.js?v=__BUILD__";
@@ -279,6 +279,15 @@ export function pdfPageElement(pageNumber) {
 
 export function pdfMarkLayer(pageNumber) {
   return openPdf?.pages?.get(pageNumber)?.markLayer || null;
+}
+
+// The unblended layer beside it, for region outlines (see buildPageLayers).
+// Falls back to the mark layer for a page built before it existed.
+export const PDF_AREA_LAYER_CLASS = "is-area";
+
+export function pdfAreaLayer(pageNumber) {
+  const entry = openPdf?.pages?.get(pageNumber);
+  return entry?.areaLayer || entry?.markLayer || null;
 }
 
 // One page's text content items, as pdf.js handed them over when the text layer
@@ -1318,7 +1327,7 @@ async function openDocumentViewBody({ force = false, slot = null, pdfId = null, 
 // `refit` says the window changed size while they were away, so the pages are
 // laid out at a scale that no longer fits.
 function finishDocumentOpen(view, token, openSlot, at, { restored = false, refit = false } = {}) {
-  notePdfCanvasSetup({ cpu: pdfCanvasOnCpu(), budget: canvasPixelBudget(), slots: renderConcurrency() });
+  noteCanvasSetup();
   if (!restored) buildPagePlaceholders();
   observePages();
   watchDocumentViewSize();
@@ -1416,6 +1425,9 @@ function finishDocumentOpen(view, token, openSlot, at, { restored = false, refit
   // park for an hour is exactly the one the browser clears without telling
   // anyone. See recoverLostPageCanvases.
   if (restored) recoverLostPageCanvases();
+  // ...and pages parked with dark page baked in one way and brought back to a
+  // stage set the other way. A no-op for every page whose paper still matches.
+  if (restored) repaperPages();
   // A refit is a re-layout and a re-render, so it subsumes the sweep below —
   // and it keeps the old pixels stretched while the fresh ones land, rather than
   // dropping to a placeholder (stalePageForRelayout). Only when the fit has
@@ -1828,7 +1840,14 @@ export function relayoutDocument({ refit = false, afterLayout = null } = {}) {
       if (entry.viewport && entry.viewport.scale !== openPdf.scale) {
         entry.viewport = entry.viewport.clone({ scale: openPdf.scale });
       }
-    } else if (!openPdf.rendered.has(pageNumber) && entry.viewport && entry.viewport.scale !== openPdf.scale) {
+    } else if (!openPdf.rendered.has(pageNumber) && entry.task && entry.taskScale !== openPdf.scale) {
+      // A page still being DRAWN for a zoom this one has replaced. Left to run,
+      // it holds the one render slot a phone has until it finishes a canvas
+      // that is thrown away on the spot. Stopped now; the pages near the view
+      // are asked for again below.
+      abandonPageRender(entry);
+    }
+    if (!openPdf.rendered.has(pageNumber) && entry.viewport && entry.viewport.scale !== openPdf.scale) {
       // A page still being redrawn from the LAST zoom when this one lands: its
       // stretched canvas and kept text layer follow the page to its new size
       // rather than staying at the size of a scale that is already gone.
@@ -2201,15 +2220,24 @@ async function renderPage(pageNumber) {
   // does not was untouched. forceRenderPage below is the way out, and
   // entry.deadline is what calls it without waiting for the reader.
   if (entry.task) {
-    entry.rerender = true;
-    // A render still WAITING for its turn may have just been made stale (a
-    // relayout bumps the generation). Dropping it now, rather than when a slot
-    // next frees, is what lets the re-request above start without delay.
-    pumpRenderQueue();
-    return;
+    // ...unless the render in flight is for a zoom that is already gone. Then
+    // waiting for it is waiting for a canvas that will be thrown away, in the
+    // one render slot a phone has: a pinch from 92% to 33% sat behind the 92%
+    // draw finishing. It is stopped and replaced instead.
+    if (entry.taskScale !== openPdf.scale) {
+      abandonPageRender(entry);
+    } else {
+      entry.rerender = true;
+      // A render still WAITING for its turn may have just been made stale (a
+      // relayout bumps the generation). Dropping it now, rather than when a slot
+      // next frees, is what lets the re-request above start without delay.
+      pumpRenderQueue();
+      return;
+    }
   }
   const token = pdfOpenToken;
   const scale = openPdf.scale;
+  entry.taskScale = scale;
   // Every await below re-checks this. A render is several async hops — get the
   // page, rasterise it, fetch its text content — and in that time the reader
   // can have scrolled far enough that trimRenderedPages decides this page
@@ -2253,27 +2281,73 @@ async function renderPage(pageNumber) {
     // main thread, while the page the reader stopped on waited behind them.
     const renderTask = page.render({ canvasContext: context, viewport, transform });
     entry.renderTask = renderTask;
-    // The page's text, asked for now, while the canvas is being drawn, rather
-    // than after: it comes from the worker, and the worker is otherwise idle
-    // while the main thread paints — waiting for the paint first put a whole
-    // worker round trip between a page appearing and its words becoming
-    // selectable. AFTER render(), not before it: the worker answers in the
-    // order it is asked, and the first page of an open waited behind its own
-    // text extraction when this came first.
+    // ── Held, not raced, while the page is moving ───────────────────────────
     //
-    // Not at all for a page still carrying a text layer from before a zoom
-    // that is close enough to this scale to keep (see keepTextLayerForScale).
-    const textContent = textLayerNeedsRebuild(entry, scale) ? page.getTextContent() : null;
-    textContent?.catch(() => {});
+    // pdf.js asks before every slice (onContinue). A page that already shows
+    // SOMETHING — the stretched canvas of the last zoom, or a lead page that is
+    // not on screen at all — waits between slices while the reader is scrolling
+    // or pinching, and goes on from where it stopped once they stop. Every slice
+    // is GPU work the compositor has to share a frame with, and a frame of
+    // scrolling is worth more than a slice of a page nobody is looking at yet.
+    //
+    // It keeps its slot while it waits, so nothing else starts behind its back
+    // (the fault that took the last version of this out), and a resting finger
+    // is not moving (the other one). A page blank on screen, or one somebody is
+    // waiting on by name, is never held; and if one of those needs the slot a
+    // held render is sitting on, the held one gives it up (pumpRenderQueue).
+    let firstSliceAt = 0;
+    let heldMs = 0;
+    renderTask.onContinue = (proceed) => {
+      if (!firstSliceAt) firstSliceAt = performance.now();
+      if (renderShouldHold(pageNumber, entry)) {
+        const heldAt = performance.now();
+        entry.heldContinue = () => {
+          heldMs += performance.now() - heldAt;
+          proceed();
+        };
+        heldRenders.add(entry);
+        armInteractionSettle();
+        return;
+      }
+      proceed();
+    };
     try {
       await renderTask.promise;
     } finally {
       if (entry.renderTask === renderTask) entry.renderTask = null;
+      entry.heldContinue = null;
+      heldRenders.delete(entry);
     }
     // The slot is for rasterising. The layers below are their own, smaller
     // work, and the next page should not wait for them.
     slot.release();
-    if (stale()) return;
+    if (stale()) {
+      noteWastedRender("dropped");
+      return;
+    }
+    const drawnAt = performance.now();
+    // Dark page goes into the pixels here, before anyone sees them.
+    bakePagePaper(canvas);
+    // The page's text, asked for once the page has drawn and is still wanted.
+    // It used to be asked alongside render(), so a render that was then
+    // cancelled — a zoom, a trim, a fling — still left a text extraction in the
+    // worker's queue, ahead of the operator list of the page the reader was
+    // waiting for. The words become selectable only once the page is still and
+    // on screen anyway (waitForTextLayerTurn), so this costs nobody a frame.
+    //
+    // Not at all for a page still carrying a text layer from before a zoom
+    // that is close enough to this scale to keep (see keepTextLayerForScale).
+    //
+    // ...and not while other pages are still waiting to be drawn: the worker
+    // answers in the order it is asked, so a text extraction asked for now
+    // would sit in front of the next page's drawing commands. A zoom that
+    // re-draws three pages waited for the first page's words before the second
+    // could start. Asked once the queue is empty, or at once for a page somebody
+    // needs the words of (whenDocumentPageReady), or after a short wait at most.
+    const textContent = textLayerNeedsRebuild(entry, scale)
+      ? whenRenderQueueIdle(entry, stale).then(() => (stale() ? null : page.getTextContent()))
+      : null;
+    textContent?.catch(() => {});
 
     entry.el.querySelector(".pdf-page-label")?.remove();
     // ...and the previous scale's canvas, which stalePageForRelayout left in
@@ -2287,7 +2361,15 @@ async function renderPage(pageNumber) {
     openPdf.rendered.add(pageNumber);
     parsedPages.add(pageNumber);
     entry.urgent = false;
-    samplePdfTiming("render", performance.now() - renderStartedAt);
+    // Time spent held while the reader moved is not time the page took.
+    samplePdfTiming("render", drawnAt - renderStartedAt - heldMs);
+    // ...split into the wait for the worker (the page parsed, its fonts and
+    // images decoded: the first slice is when pdf.js has something to draw) and
+    // the drawing itself.
+    if (firstSliceAt) {
+      samplePdfTiming("worker", firstSliceAt - renderStartedAt);
+      samplePdfTiming("draw", Math.max(0, drawnAt - firstSliceAt - heldMs));
+    }
     firstPdfPagePainted(`${(canvas.width * canvas.height / 1e6).toFixed(1)}MP canvas`);
     if (pageWantsDetail(outputScale)) scheduleDetail();
     // A page that drew has no failed attempts behind it any more. Without this
@@ -2316,7 +2398,10 @@ async function renderPage(pageNumber) {
     .catch((error) => {
       // A cancellation is the system working — a scale moved, a page was
       // trimmed — and says nothing to the reader.
-      if (error?.name === "RenderingCancelledException") return;
+      if (error?.name === "RenderingCancelledException") {
+        noteWastedRender("cancelled");
+        return;
+      }
       console.warn(`Could not render page ${pageNumber}`, error);
       // Everything else does. A page that threw keeps its placeholder, and a
       // placeholder with dark page on is a black rectangle: exactly the thing
@@ -2328,8 +2413,6 @@ async function renderPage(pageNumber) {
       if (!entry) return;
       slot?.release();
       if (entry.releaseSlot === slot?.release) entry.releaseSlot = null;
-      clearTimeout(entry.deadline);
-      entry.deadline = 0;
       // Only the render the entry is actually WAITING ON clears its handle.
       // Two renders can be alive for one page at once — stalePageForRelayout
       // bumps the generation and a fresh renderPage starts while the old one is
@@ -2339,6 +2422,11 @@ async function renderPage(pageNumber) {
       // third render of a page that is already being drawn.
       if (entry.task !== task) return;
       entry.task = null;
+      // ...and its deadline with it — after the test above, not before: a
+      // render abandoned for a newer one (abandonPageRender, forceRenderPage)
+      // settles late, and the deadline on the entry by then is the newer one's.
+      clearTimeout(entry.deadline);
+      entry.deadline = 0;
       // The request that arrived while this one was in flight (see the guard at
       // the top). Re-checked rather than trusted: the page can have been trimmed
       // or scrolled away from in the meantime, and this render may itself have
@@ -2368,6 +2456,12 @@ async function renderPage(pageNumber) {
     entry.deadline = setTimeout(function onRenderDeadline() {
       entry.deadline = 0;
       if (token !== pdfOpenToken || entry.task !== task) return;
+      // Held between slices while the reader moves: not a renderer that has
+      // stopped answering, so the clock starts again rather than the render.
+      if (entry.heldContinue) {
+        entry.deadline = setTimeout(onRenderDeadline, PDF_RENDER_DEADLINE_MS);
+        return;
+      }
       // Whatever happens next, this render is abandoned, so its turn goes to
       // the next page in line — a hung worker must not hold the queue too.
       slot?.release();
@@ -2546,6 +2640,35 @@ function watchLongTasks() {
   } catch (_) {
     longTaskObserver = null;
   }
+  watchAnimationFrames();
+}
+
+// ...and the long ANIMATION frames, which say what a slow frame was made of —
+// script, style and layout — so that a slow frame with none of it can be told
+// for what it is: time spent off the main thread, in raster and the GPU. See
+// pdfTimingSlowFrameBreakdown in pdf-timing.js. Chrome 123+; elsewhere the
+// readout says it cannot tell.
+let animationFrameObserver = null;
+
+function watchAnimationFrames() {
+  if (animationFrameObserver || typeof PerformanceObserver !== "function") return;
+  if (!PerformanceObserver.supportedEntryTypes?.includes("long-animation-frame")) return;
+  try {
+    animationFrameObserver = new PerformanceObserver((list) => {
+      list.getEntries().forEach((frame) => {
+        const end = frame.startTime + frame.duration;
+        const touched = fingerDown() || interactionSpans.some((span) => frame.startTime < span.end && end > span.start);
+        if (!touched) return;
+        const script = (frame.scripts || []).reduce((sum, s) => sum + (s.duration || 0), 0);
+        const layout = frame.styleAndLayoutStart > 0 ? Math.max(0, end - frame.styleAndLayoutStart) : 0;
+        notePdfAnimationFrame({ startTime: frame.startTime, duration: frame.duration, script, layout });
+      });
+    });
+    animationFrameObserver.observe({ type: "long-animation-frame", buffered: false });
+    notePdfAnimationFramesObserved(true);
+  } catch (_) {
+    animationFrameObserver = null;
+  }
 }
 
 function armInteractionSettle() {
@@ -2557,13 +2680,24 @@ function armInteractionSettle() {
 function onInteractionSettled() {
   interactionTimer = 0;
   if (documentMoving()) {
-    // A pinch ends with its own event, which arms this again; a scroll or a
-    // zoom that is still going has moved the deadline.
-    if (!documentPinchEngaged()) armInteractionSettle();
+    // A scroll or a zoom that is still going has moved the deadline. A pinch
+    // has no deadline of its own, and a pinch that ends where it began commits
+    // nothing that would arm this again — so it is looked at again shortly
+    // rather than trusted to call back, or a render held under it would wait
+    // for the next gesture.
+    if (documentPinchEngaged()) interactionTimer = setTimeout(onInteractionSettled, PDF_INTERACTION_SETTLE_MS);
+    else armInteractionSettle();
     return;
   }
+  resumeHeldRenders();
   pumpRenderQueue();
-  if (openPdf) scheduleDetail();
+  if (openPdf) {
+    // A held render given up for a blank page (pumpRenderQueue) is asked for
+    // again here, now that there is time to draw it.
+    sweepAbandonedPages();
+    renderPagesNearViewport();
+    scheduleDetail();
+  }
 }
 
 // A page on screen with no picture of any kind on it.
@@ -2571,6 +2705,124 @@ function pageBlankOnScreen(pageNumber) {
   const entry = openPdf?.pages.get(pageNumber);
   if (!entry || entry.el.querySelector(".pdf-canvas")) return false;
   return isPageOnScreen(pageNumber);
+}
+
+// Renders waiting between two pdf.js slices for the page to stop moving (see
+// the onContinue hook in renderPage).
+const heldRenders = new Set();
+
+function renderShouldHold(pageNumber, entry) {
+  if (entry.urgent || !documentMoving()) return false;
+  return !pageBlankOnScreen(pageNumber);
+}
+
+function resumeHeldRenders() {
+  if (!heldRenders.size) return;
+  [...heldRenders].forEach((entry) => {
+    const proceed = entry.heldContinue;
+    if (!proceed) {
+      heldRenders.delete(entry);
+      return;
+    }
+    // Still moving for this one (a pinch in flight): leave it where it is.
+    const pageNumber = Number(entry.el?.dataset.pageNumber) || 0;
+    if (renderShouldHold(pageNumber, entry)) return;
+    entry.heldContinue = null;
+    heldRenders.delete(entry);
+    proceed();
+  });
+}
+
+// Stop a render in flight for good and let the page be asked for afresh: its
+// pdf.js task cancelled, its turn in the queue given back, and its generation
+// moved on so that if any part of it does still land, it drops its own canvas.
+// Used for a render whose zoom has gone (renderPage, relayoutDocument) and for a
+// held render whose slot a blank page on screen needs (pumpRenderQueue).
+function abandonPageRender(entry) {
+  if (!entry) return;
+  clearTimeout(entry.deadline);
+  entry.deadline = 0;
+  entry.generation = (entry.generation || 0) + 1;
+  cancelPageRender(entry);
+  entry.heldContinue = null;
+  heldRenders.delete(entry);
+  const release = entry.releaseSlot;
+  entry.releaseSlot = null;
+  entry.task = null;
+  entry.rerender = false;
+  abandonedPages.add(entry);
+  release?.();
+}
+
+// Pages whose render was abandoned. Most are asked for again at once; one that
+// is not (the reader has gone on past it) can be left holding the stretched
+// canvas of an older zoom, which is in nobody's books — not openPdf.rendered,
+// so trimRenderedPages never comes for it. Swept on the settle.
+const abandonedPages = new Set();
+
+function sweepAbandonedPages() {
+  if (!openPdf) {
+    abandonedPages.clear();
+    return;
+  }
+  abandonedPages.forEach((entry) => {
+    if (entry.task) return;
+    abandonedPages.delete(entry);
+    const pageNumber = Number(entry.el?.dataset.pageNumber) || 0;
+    if (!pageNumber || openPdf.pages.get(pageNumber) !== entry || openPdf.rendered.has(pageNumber)) return;
+    if (isPageNearViewport(pageNumber)) renderPage(pageNumber);
+    else if (entry.el.querySelector(".pdf-canvas.is-stale")) unrenderPage(pageNumber);
+  });
+}
+
+// What the render queue is doing right now — for tools/pdf-preview-check.mjs,
+// which has to see that a stale render was stopped and a held one kept its slot.
+export function documentRenderStats() {
+  let drawing = 0;
+  openPdf?.pages.forEach((entry) => { if (entry.renderTask) drawing += 1; });
+  return {
+    ...wastedRenders,
+    held: heldRenders.size,
+    slots: renderSlots.size,
+    limit: renderConcurrency(),
+    waiting: renderWaiters.length,
+    drawing
+  };
+}
+
+// Resolves once no page is waiting to be drawn or being drawn — the moment the
+// worker has nothing more urgent to do than extract a page's text — or at once
+// for a page somebody is waiting on by name, or after PDF_TEXT_ASK_MAX_WAIT_MS
+// whatever the queue is doing, so a long scroll cannot starve the words.
+export const PDF_TEXT_ASK_MAX_WAIT_MS = 1500;
+
+function whenRenderQueueIdle(entry, stale) {
+  const startedAt = performance.now();
+  return new Promise((resolve) => {
+    const check = () => {
+      if (stale() || entry.urgent || entry.textUrgent
+          || (!renderWaiters.length && !renderSlots.size)
+          // The page the reader is looking at gets its words now: a fling
+          // that lands on it must not wait for the pages either side to draw.
+          || isPageOnScreen(Number(entry.el?.dataset.pageNumber) || 0)
+          || performance.now() - startedAt > PDF_TEXT_ASK_MAX_WAIT_MS) {
+        resolve();
+        return;
+      }
+      setTimeout(check, 40);
+    };
+    // A beat first, so the slot this page just gave back can be taken by the
+    // next page before the queue is asked whether it is empty.
+    setTimeout(check, 0);
+  });
+}
+
+// Renders that cost the reader something and showed them nothing, for App Info.
+const wastedRenders = { cancelled: 0, dropped: 0 };
+
+function noteWastedRender(kind) {
+  if (kind in wastedRenders) wastedRenders[kind] += 1;
+  notePdfWastedRenders({ ...wastedRenders });
 }
 
 function watchDocumentInteraction() {
@@ -2633,7 +2885,7 @@ function watchTouchFrames() {
   if (touchFrameLoop) return;
   let last = performance.now();
   const step = (now) => {
-    notePdfInteractionFrame(now - last);
+    notePdfInteractionFrame(now - last, now);
     last = now;
     touchFrameLoop = fingerDown() ? requestAnimationFrame(step) : 0;
   };
@@ -2656,6 +2908,19 @@ function pumpRenderQueue() {
     dropWaitingRender(waiter);
   }
   const limit = renderConcurrency();
+  // A held render (see renderPage's onContinue) keeps its slot so nothing else
+  // starts behind its back — but a page that has scrolled on screen BLANK, or
+  // one somebody is waiting on by name, cannot wait for the reader to stop. The
+  // held render gives its slot up to it; renderPagesNearViewport asks for that
+  // page again on the settle.
+  if (renderSlots.size >= limit && heldRenders.size) {
+    const needy = renderWaiters.some((waiter) => !waiter.detail
+      && (waiter.entry.urgent || (!flinging && pageBlankOnScreen(waiter.pageNumber))));
+    if (needy) {
+      const [held] = heldRenders;
+      if (held?.releaseSlot) abandonPageRender(held);
+    }
+  }
   while (renderSlots.size < limit && renderWaiters.length) {
     let best = -1;
     let bestRank = Infinity;
@@ -2702,6 +2967,8 @@ function dropWaitingRender(waiter) {
 function resetRenderQueue() {
   renderWaiters.splice(0).forEach((waiter) => waiter.resolve(null));
   renderSlots.clear();
+  heldRenders.clear();
+  abandonedPages.clear();
 }
 
 // On screen now — no lead, unlike isPageNearViewport.
@@ -2855,6 +3122,7 @@ async function drawDetailTile(pageNumber, entry, region) {
     entry.detailTask = task;
     await task.promise;
     if (stale()) return;
+    bakePagePaper(canvas);
     const base = entry.el.querySelector(".pdf-canvas:not(.is-stale)");
     if (!base) return;
     entry.detail?.canvas.remove();
@@ -2937,6 +3205,157 @@ function createPageCanvas(viewport, outputScale) {
   return { canvas, context, transform };
 }
 
+// ── Dark page, in the pixels ────────────────────────────────────────────────
+//
+// Dark page used to be `filter: invert(1) hue-rotate(180deg)` on every page
+// canvas (styles/36-document.css). A CSS filter on a composited canvas is not
+// paid once: the compositor runs it again over every visible canvas on EVERY
+// frame, and with the highlights blended over the filtered result, each of
+// them needs an offscreen pass of its own as well. On the 2.6x, 4GB phone in the
+// report that was frames of up to 1.2s while scrolling with only one 50ms long
+// task in two minutes — the time was going to the GPU, not to script.
+//
+// So the same two filters are applied ONCE, into the canvas, as the page is
+// drawn: one filtered copy of the canvas onto itself. The canvas then carries
+// `is-dark-pixels`, which takes the CSS filter off it. A canvas whose baked
+// paper is not the stage's any more (the reader toggled dark page) is given the
+// filter back as a stand-in until it is redrawn — exact, because invert(1)
+// followed by hue-rotate(180deg) is its own inverse — see repaperPages.
+//
+// A browser whose 2D context has no `filter` (Safari before 18) bakes nothing
+// and keeps the CSS filter, exactly as before.
+export const PDF_DARK_PIXELS_CLASS = "is-dark-pixels";
+
+const PDF_DARK_FILTER = "invert(1) hue-rotate(180deg)";
+
+let darkBakeSupport = null;
+
+export function canBakeDarkPage() {
+  if (darkBakeSupport !== null) return darkBakeSupport;
+  darkBakeSupport = false;
+  try {
+    const scratch = document.createElement("canvas");
+    scratch.width = 1;
+    scratch.height = 1;
+    const ctx = scratch.getContext("2d", { willReadFrequently: true });
+    if (ctx && "filter" in ctx) {
+      ctx.fillStyle = "#fff";
+      ctx.fillRect(0, 0, 1, 1);
+      ctx.filter = PDF_DARK_FILTER;
+      ctx.globalCompositeOperation = "copy";
+      ctx.drawImage(scratch, 0, 0);
+      const [r, g, b] = ctx.getImageData(0, 0, 1, 1).data;
+      darkBakeSupport = r < 16 && g < 16 && b < 16;
+    }
+  } catch (_) {
+    darkBakeSupport = false;
+  }
+  return darkBakeSupport;
+}
+
+// How pages are being drawn on this device, for App Info.
+function noteCanvasSetup(dark = null) {
+  notePdfCanvasSetup({
+    cpu: pdfCanvasOnCpu(),
+    budget: canvasPixelBudget(),
+    slots: renderConcurrency(),
+    dark: dark || (canBakeDarkPage() ? "drawn into the page" : "CSS filter")
+  });
+}
+
+function stageIsDark() {
+  return Boolean(el.documentStage?.classList.contains(PDF_DARK_CLASS));
+}
+
+// Whether a page canvas's pixels are for the paper the stage is showing now.
+function canvasPaperMatches(canvas) {
+  if (!canvas || !canBakeDarkPage()) return true;
+  return canvas.classList.contains(PDF_DARK_PIXELS_CLASS) === stageIsDark();
+}
+
+// Turn a freshly drawn canvas into the paper the stage is on. A no-op for white
+// paper. The `lighten` floor keeps a dark page from being PURE black anywhere,
+// because pure black at every probe point is how canvasLostItsPixels recognises
+// a bitmap the browser cleared — and white paper inverted is exactly that.
+// ...and only while it is cheap. On a GPU canvas this is one shader pass, and
+// what script sees is the recording of it — well under a millisecond. On a
+// canvas the browser keeps on the CPU (no GPU, a blocklisted one, or
+// recall:pdfCpuCanvas) it is a filter over every pixel on the main thread, which
+// is the very cost the CSS filter puts on the GPU instead. So it is timed, and
+// after a few pages that cost more than PDF_DARK_BAKE_MAX_MS it stops for the
+// session and the CSS filter does the work, as it always used to.
+export const PDF_DARK_BAKE_MAX_MS = 30;
+
+const darkBakeTimes = [];
+
+function noteDarkBakeTime(ms) {
+  samplePdfTiming("bake", ms);
+  darkBakeTimes.push(ms);
+  if (darkBakeTimes.length < 3) return;
+  const sorted = [...darkBakeTimes].sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)];
+  if (median <= PDF_DARK_BAKE_MAX_MS) return;
+  darkBakeSupport = false;
+  noteCanvasSetup(`CSS filter (drawing it in cost ${Math.round(median)}ms a page here)`);
+}
+
+function bakePagePaper(canvas) {
+  if (!canvas || !stageIsDark() || !canBakeDarkPage()) return;
+  const started = performance.now();
+  try {
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.filter = PDF_DARK_FILTER;
+    ctx.globalCompositeOperation = "copy";
+    ctx.drawImage(canvas, 0, 0);
+    ctx.filter = "none";
+    ctx.globalCompositeOperation = "lighten";
+    ctx.fillStyle = "#030303";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.restore();
+    canvas.classList.add(PDF_DARK_PIXELS_CLASS);
+    noteDarkBakeTime(performance.now() - started);
+  } catch (error) {
+    console.warn("Could not darken the page in place — the CSS filter will do it", error);
+  }
+}
+
+// The reader flipped dark page (or a notebook's paper followed the theme): every
+// drawn page is now the wrong paper. The stand-in filter covers it at once; this
+// redraws them for real, one at a time, nearest first, keeping every layer on the
+// page where it is (repaintPageCanvas swaps the canvas alone). Pages the reader
+// is nowhere near go back to placeholders instead, as a lost canvas does.
+let repaperChain = Promise.resolve();
+
+function repaperPages() {
+  if (!openPdf || !canBakeDarkPage()) return;
+  const current = currentDocumentPage();
+  const pages = [...openPdf.rendered].sort((a, b) => Math.abs(a - current) - Math.abs(b - current));
+  pages.forEach((pageNumber) => {
+    const entry = openPdf.pages.get(pageNumber);
+    if (entry?.detail && !canvasPaperMatches(entry.detail.canvas)) {
+      dropDetail(entry);
+      scheduleDetail();
+    }
+    const canvas = entry?.el.querySelector(".pdf-canvas:not(.is-stale)");
+    if (!canvas || canvasPaperMatches(canvas)) return;
+    if (!isPageNearViewport(pageNumber)) {
+      unrenderPage(pageNumber);
+      return;
+    }
+    const token = pdfOpenToken;
+    repaperChain = repaperChain.then(() => {
+      if (token !== pdfOpenToken || !openPdf?.rendered.has(pageNumber)) return null;
+      const live = entry.el.querySelector(".pdf-canvas:not(.is-stale)");
+      if (!live || canvasPaperMatches(live)) return null;
+      repaintPageCanvas(pageNumber, live);
+      return entry.repaint;
+    }).catch(() => {});
+  });
+}
+
 // Canvases known to have been cleared under us. Weak, so a canvas that is
 // dropped by a zoom or a trim takes its entry with it.
 const lostCanvases = new WeakSet();
@@ -3015,6 +3434,7 @@ function repaintPageCanvas(pageNumber, lost) {
     const { canvas, context, transform } = createPageCanvas(viewport, outputScale);
     await page.render({ canvasContext: context, viewport, transform }).promise;
     if (stale()) return;
+    bakePagePaper(canvas);
     lostCanvases.delete(lost);
     lost.replaceWith(canvas);
   })()
@@ -3173,27 +3593,36 @@ function showPageRenderFailure(pageNumber, reason) {
 async function buildPageLayers(pageNumber, entry, page, viewport, stale, textContent = null) {
   if (stale()) return;
   entry.markLayer?.remove();
+  entry.areaLayer?.remove();
   const markLayer = document.createElement("div");
   markLayer.className = "pdf-mark-layer";
+  // Regions are outlines and do not blend (styles/37-document-chrome.css), and
+  // the text marks now blend as ONE layer rather than one by one — so regions
+  // need a layer of their own beside it, or they would be multiplied with the
+  // rest. Same place in the stack: straight after, under the text layer.
+  const areaLayer = document.createElement("div");
+  areaLayer.className = `pdf-mark-layer ${PDF_AREA_LAYER_CLASS}`;
   const kept = keptTextLayer(entry);
-  if (kept) kept.before(markLayer);
-  else entry.el.append(markLayer);
+  if (kept) kept.before(markLayer, areaLayer);
+  else entry.el.append(markLayer, areaLayer);
   entry.markLayer = markLayer;
+  entry.areaLayer = areaLayer;
   paintDocumentHighlights(pageNumber);
   if (kept && !textContent) {
     entry.textUrgent = false;
-    onPagePainted(pageNumber);
+    annotatePage(pageNumber);
     return;
   }
   const content = await (textContent || page.getTextContent());
   if (stale()) return;
   entry.textItems = content.items;
-  onPagePainted(pageNumber);
+  annotatePage(pageNumber);
   if (!(await waitForTextLayerTurn(pageNumber, entry, stale))) return;
   const built = await buildTextLayerSliced(content, viewport, stale, (layer) => {
     // Straight after the mark layer, so it stays under the ink, the blocks
     // and the badges that step 2 has already put on the page.
-    if (entry.markLayer?.parentNode === entry.el) entry.markLayer.after(layer);
+    const under = entry.areaLayer?.parentNode === entry.el ? entry.areaLayer : entry.markLayer;
+    if (under?.parentNode === entry.el) under.after(layer);
     else entry.el.append(layer);
   }, entry);
   if (!built || stale()) {
@@ -3205,6 +3634,15 @@ async function buildPageLayers(pageNumber, entry, page, viewport, stale, textCon
   entry.textScale = viewport.scale;
   entry.textUrgent = false;
   samplePdfTiming("text", built.spent);
+}
+
+// The page-painted hook, timed: everything the reader's own marks cost a page
+// (src/main.js — highlight repairs, ink, blocks, note badges), which on a
+// heavily annotated paper is paid on every page after every zoom.
+function annotatePage(pageNumber) {
+  const started = performance.now();
+  onPagePainted(pageNumber);
+  samplePdfTiming("annotate", performance.now() - started);
 }
 
 // The text layer a page is still carrying from an earlier scale, if any.
@@ -3408,6 +3846,8 @@ function stalePageForRelayout(pageNumber, width, height) {
 // it, when there is one to keep.
 function dropPageLayers(entry, { keepTextAt = null } = {}) {
   entry.markLayer?.remove();
+  entry.areaLayer?.remove();
+  entry.areaLayer = null;
   const keepText = Number.isFinite(keepTextAt) && keepTextLayerForScale(entry, keepTextAt);
   if (!keepText) {
     entry.textLayer?.remove();
@@ -3446,6 +3886,7 @@ function unrenderPage(pageNumber) {
   dropDetail(entry);
   entry.el.innerHTML = "";
   entry.markLayer = null;
+  entry.areaLayer = null;
   entry.textLayer = null;
   entry.textScale = 0;
   entry.textWake = null;
@@ -4458,7 +4899,11 @@ export function setPaperChangedHook(fn) {
 export function applyPdfInvert(on, { remember = true } = {}) {
   const was = Boolean(el.documentStage?.classList.contains(PDF_DARK_CLASS));
   el.documentStage?.classList.toggle(PDF_DARK_CLASS, Boolean(on));
-  if (was !== Boolean(on)) paperChangedHook();
+  if (was !== Boolean(on)) {
+    paperChangedHook();
+    // The pages' own pixels are the old paper now; see bakePagePaper.
+    repaperPages();
+  }
   // The button says which way the mode is set without being pressed — the same
   // rule every other toggle in this app's chrome follows, and the reason this
   // moved out of the ⋯ menu in the first place: a mode nobody can see the state

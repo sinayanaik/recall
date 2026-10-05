@@ -272,8 +272,21 @@
   overflow: hidden;
 }
 
+/* The text highlights blend with the page as ONE layer, not one by one.
+   `mix-blend-mode` on every .pdf-mark gave every highlight its own offscreen
+   blend pass over the canvas under it, on every frame of a scroll — thirty
+   highlights on a page were thirty passes, and on a 2.6x phone that is where
+   frames of a second went. Blended as a layer it is one pass a page; inside it
+   the marks paint normally, so two overlapping highlights read as one rather
+   than darkening twice. Regions do not blend at all and sit in a layer of their
+   own beside this one (.is-area, see buildPageLayers in pdf-view.js). */
 .pdf-mark-layer {
   pointer-events: none;
+  mix-blend-mode: multiply;
+}
+
+.pdf-mark-layer.is-area {
+  mix-blend-mode: normal;
 }
 
 /* ── The text layer ────────────────────────────────────────────────────────
@@ -342,7 +355,6 @@
 .pdf-mark {
   position: absolute;
   border-radius: 2px;
-  mix-blend-mode: multiply;
 }
 
 .pdf-mark[data-color="yellow"] { background: color-mix(in srgb, #e0b400 35%, transparent); }
@@ -380,6 +392,24 @@
   filter: invert(1) hue-rotate(180deg);
 }
 
+/* ...except a page whose pixels are already dark. Where the browser can, dark
+   page is drawn INTO the canvas once, as the page is rendered (bakePagePaper in
+   src/documents/pdf-view.js), because a filter here is re-run by the GPU over
+   every visible page on every frame of a scroll. Those canvases carry
+   .is-dark-pixels and take no filter. */
+.document-stage.is-pdf-inverted .pdf-canvas.is-dark-pixels,
+.document-stage.is-pdf-inverted .pdf-detail.is-dark-pixels {
+  filter: none;
+}
+
+/* A page drawn dark on a stage that has just gone back to white, for the
+   moment until it is redrawn (repaperPages): the same filter turns it back,
+   exactly, since invert-then-hue-rotate(180deg) is its own inverse. */
+.document-stage:not(.is-pdf-inverted) .pdf-canvas.is-dark-pixels,
+.document-stage:not(.is-pdf-inverted) .pdf-detail.is-dark-pixels {
+  filter: invert(1) hue-rotate(180deg);
+}
+
 /* The undrawn page, on a dark theme — the other half of --surface-2.
  *
  * This was #111 against a mount of #000: a contrast ratio of 1.10, which is to
@@ -411,9 +441,20 @@
 }
 
 /* Multiply over an inverted (dark) page would make a highlight invisible —
-   screen is its complement, and keeps the tint reading as a highlight. */
-.document-stage.is-pdf-inverted .pdf-mark {
+   screen is its complement, and keeps the tint reading as a highlight. On the
+   layer, like multiply above. */
+.document-stage.is-pdf-inverted .pdf-mark-layer {
   mix-blend-mode: screen;
+}
+
+.document-stage.is-pdf-inverted .pdf-mark-layer.is-area {
+  mix-blend-mode: normal;
+}
+
+/* A page with no highlights on it has nothing to blend, and is not asked to:
+   most pages of most papers. After the two rules above, at their specificity. */
+.document-stage .pdf-mark-layer:empty {
+  mix-blend-mode: normal;
 }
 
 /* ── The states that are not a page ────────────────────────────────────────*/

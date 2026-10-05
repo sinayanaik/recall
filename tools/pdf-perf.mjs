@@ -4,6 +4,7 @@
 //   node tools/pdf-perf.mjs --root=/path/to/other/checkout
 //   node tools/pdf-perf.mjs --runs=3 --throttle=6 --only=open,tab
 //   node tools/pdf-perf.mjs --invert              # with dark page on
+//   node tools/pdf-perf.mjs --highlights=30       # 30 highlights on every page
 //
 // "Everything is slow on my phone — opening a deck's PDF, switching tabs,
 // switching PDFs, scrolling, zooming, panning." None of those had a number
@@ -54,6 +55,11 @@ const THROTTLE = Number(arg("throttle", 4));
 const ONLY = new Set(String(arg("only", "open,tab,switch,zoom,zoomin,zoomout,fling,steady,pan")).split(","));
 const IMAGES = process.argv.includes("--images");
 const INVERT = process.argv.includes("--invert");
+// --highlights=N puts N text highlights (and one region for every ten) on every
+// page of the paper being measured, the way a heavily annotated paper is read.
+const HIGHLIGHTS = Math.max(0, Number(arg("highlights", 0)) || 0);
+// --report prints the App Info readout at the end of each run.
+const REPORT = process.argv.includes("--report");
 // --profile=<flow> prints where the main thread's time went during that flow:
 // the functions with the most self time, from the V8 CPU profiler.
 const PROFILE = arg("profile", "");
@@ -171,7 +177,7 @@ const API_SRC = `async () => {
   const paths = ["/src/documents/pdf-view.js", "/src/import/pdf.js", "/src/library/local-library.js",
     "/src/storage/deck-store.js", "/src/ui/view-mode.js", "/src/cloud/supabase-client.js",
     "/src/core/state.js", "/src/ui/boot-screens.js", "/src/boot.js", "/src/library/my-decks.js",
-    "/src/documents/pdf-multi.js", "/src/ui/deck-header.js"]
+    "/src/documents/pdf-multi.js", "/src/ui/deck-header.js", "/src/documents/pdf-highlights.js", "/src/documents/pdf-timing.js"]
     .map((p) => p + "?v=__BUILD__");
   const mods = await Promise.all(paths.map((p) => import(p).catch(() => ({}))));
   const api = {};
@@ -285,6 +291,36 @@ try { new PerformanceObserver((l) => l.getEntries().forEach((e) => window.__perf
     Array.from(densePdf(IMAGES ? 8 : 20, { seed: 11, title: "Second Paper", images: photos })),
     Array.from(densePdf(IMAGES ? 8 : 30, { seed: 23, title: "Other Deck", images: photos })), INVERT);
 
+    if (HIGHLIGHTS) {
+      await page.evaluate(`async (perPage, pages) => {
+        const { api, settle } = window.__recall;
+        let seed = 5;
+        const rnd = () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
+        const colors = ["yellow", "green", "blue", "pink"];
+        const made = [];
+        for (let page = 1; page <= pages; page += 1) {
+          for (let i = 0; i < perPage; i += 1) {
+            const area = i % 10 === 9;
+            const col = rnd() < 0.5 ? 54 : 316;
+            const line = Math.floor(rnd() * 56);
+            const y1 = 748 - line * 11.5;
+            const rect = area
+              ? [col, y1 - 120, col + 230, y1]
+              : [col + rnd() * 80, y1 - 10, col + 120 + rnd() * 110, y1];
+            made.push({ id: "perf-" + page + "-" + i, color: colors[i % 4], page, text: area ? "" : "perf",
+              quads: [{ page, rect }], kind: area ? "area" : "text", qv: 2, at: 1 });
+          }
+        }
+        api.state.meta = { ...api.state.meta, pdfHighlights: made };
+        api.repaintDocumentHighlights();
+        // Saved, so the flows that leave the deck and come back find them again.
+        api.scheduleDeckAutosave?.();
+        await settle(500);
+        for (let i = 0; i < 60 && api.deckAutosaveTimer; i += 1) await settle(100);
+        return made.length;
+      }`, HIGHLIGHTS, prepared.pages);
+    }
+
     await page.call("Emulation.setCPUThrottlingRate", { rate: THROTTLE });
 
     // Runs one flow, under the profiler when --profile names it.
@@ -388,10 +424,12 @@ try { new PerformanceObserver((l) => l.getEntries().forEach((e) => window.__perf
         api.scrollToDocumentPage(3, 0.2, { smooth: false });
         await settle(1500);
         window.__perf.longTasks.length = 0;
-        const page = api.currentDocumentPage();
         const t0 = performance.now();
         if (api.setDocumentScale) api.setDocumentScale(5); else api.zoomDocument(5 / 0.6);
-        const el = () => api.pdfPageElement(page);
+        // The page in view AFTER the zoom: a 500% zoom with no anchor lands the
+        // reader on a different page from the one they were on, and waiting for
+        // the old one waited for a page nothing would ever draw.
+        const el = () => api.pdfPageElement(api.currentDocumentPage());
         await until(() => Boolean(el()?.querySelector(".pdf-canvas:not(.is-stale)")));
         const drawn = performance.now() - t0;
         const sharp = await until(() => Boolean(el()?.querySelector(".pdf-detail")), 6000);
@@ -573,6 +611,9 @@ try { new PerformanceObserver((l) => l.getEntries().forEach((e) => window.__perf
         return result;
       }`);
     }
+    // --report prints App Info's PDF readout as the run left it — the same
+    // lines a reader copies off their phone.
+    if (REPORT) console.log(await page.evaluate(`() => window.__recall.api.pdfTimingReport?.() || "(no readout in this build)"`));
   } finally {
     client.close();
     launched.proc.kill("SIGKILL");
@@ -614,7 +655,7 @@ const row = (label, pick, unit = "ms") => {
   if (values.every((v) => v === undefined)) return;
   console.log(`  ${label.padEnd(34)} ${String(median(values)).padStart(6)} ${unit}   (${values.join(", ")})`);
 };
-console.log(`pdf-perf · ${ROOT} · CPU ${THROTTLE}x · dpr ${DPR}${IMAGES ? " · photo pages" : ""} · ${RUNS} run(s)${INVERT ? " · dark page" : ""} · median (each run)`);
+console.log(`pdf-perf · ${ROOT} · CPU ${THROTTLE}x · dpr ${DPR}${IMAGES ? " · photo pages" : ""} · ${RUNS} run(s)${INVERT ? " · dark page" : ""}${HIGHLIGHTS ? ` · ${HIGHLIGHTS} highlights a page` : ""} · median (each run)`);
 row("open: deck PDF to first page", (r) => r.open);
 row("tab: Notes → PDF, page on screen", (r) => r.tab?.ms);
 runs.forEach((r, i) => {
