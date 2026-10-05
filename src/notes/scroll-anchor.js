@@ -242,6 +242,23 @@ export function setResumeLanding(value) {
   resumeLanding = Boolean(value);
 }
 
+export function isResumeLanding() {
+  return resumeLanding;
+}
+
+// ── ...nor while the window is changing size under the reader ──────────────
+//
+// A rotation re-flows the whole note, and the scrolls it sets off on the way —
+// the browser's own scroll anchoring giving up, the clamp when the note gets
+// shorter — were each captured as where the reader had got to, 150ms later,
+// and written down. src/notes/resize-hold.js puts the reader back on the line
+// they were reading and sets this for as long as it is doing so.
+let reflowHolding = false;
+
+export function setReflowHolding(value) {
+  reflowHolding = Boolean(value);
+}
+
 // ── A resume held for the tab it belongs to ────────────────────────────────
 //
 // A deck left on Cards (or on its paper) reopens there — the reader's own last
@@ -262,7 +279,7 @@ export function takeDeferredNotesResume(key) {
 
 export function captureCurrentReadingAnchor(expectedKey = null) {
   if (!el.notesView || el.notesView.hidden || state.viewMode !== "notes") return;
-  if (resumeLanding) return;
+  if (resumeLanding || reflowHolding) return;
   // The scroll that armed this capture happened in a deck that is no longer the
   // open one — a deck swap landed inside the debounce. Measuring the NEW deck's
   // scroll and filing it under either key would be wrong both ways.
@@ -303,7 +320,7 @@ export let readingAnchorCaptureTimer = 0;
 export let readingAnchorIdleHandle = 0;
 
 export function scheduleReadingAnchorCapture() {
-  if (resumeLanding) return;
+  if (resumeLanding || reflowHolding) return;
   // The deck the scroll happened in, taken NOW — see captureCurrentReadingAnchor.
   const key = currentDeckKey();
   if (readingAnchorCaptureTimer) clearTimeout(readingAnchorCaptureTimer);

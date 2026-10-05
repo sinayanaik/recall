@@ -987,35 +987,25 @@ async function openDocumentViewBody({ force = false, slot = null, pdfId = null, 
     // 0 and the "restore" MOVES the reader to pageOffsetTop(1) instead of
     // holding them.
     //
-    // Neither applies here, and this is a different call site from the two the
-    // revert was about. watchDocumentViewSize and the debounced window resize in
-    // src/main.js are deliberately left exactly as they are: they are the ones
-    // that fire mid-gesture. THIS one runs on a tab press, so the pen cannot be
+    // Neither applies here. THIS one runs on a tab press, so the pen cannot be
     // down — and it is asked anyway, because Part 1 of this branch makes
     // inkPenIsDown authoritative. The pages were never detached either, only
     // #documentStage hidden, so every offsetTop and scrollTop is intact.
+    // (watchDocumentViewSize and the debounced window resize in src/main.js hold
+    // the reader now too — see relayoutDocumentHoldingReader for what that
+    // needed beyond this.)
     //
     // Cause (2) becomes the do-not-restore-if-unchanged guard the commit itself
     // asked for: a reader at the very top of the document has nothing to hold,
-    // and re-landing them is the move the clamp made wrong.
-    // The UNCLAMPED residual, not currentDocumentRatio. The commit that wrote
-    // this guard named the clamp as one of the two reasons a hold could move
-    // the reader it was holding, and worked around it with atTheVeryTop alone —
-    // which covers the top of the document and not the 16px gap between every
-    // other pair of pages. currentDocumentResidual is that reason removed
-    // rather than routed around; atTheVeryTop stays, because "nothing to hold"
-    // is still a real answer and is still cheaper than holding nothing.
-    const heldPage = currentDocumentPage();
-    const heldRatio = currentDocumentResidual();
-    const heldAcross = currentDocumentAcross();
-    const atTheVeryTop = heldPage <= 1 && heldRatio <= 0 && !(heldAcross > 0);
-    const holdTheReader = !atTheVeryTop && !inkPenIsDown();
-    relayoutDocument({
-      refit: true,
-      afterLayout: holdTheReader
-        ? () => scrollToDocumentPage(heldPage, heldRatio, { smooth: false, across: heldAcross })
-        : null
-    });
+    // and re-landing them is the move the clamp made wrong. The hold uses the
+    // UNCLAMPED residual, not currentDocumentRatio, which removes the clamp
+    // rather than routing around it.
+    //
+    // A phone rotated while the reader was on another tab comes back here, and
+    // the settled position relayoutDocumentHoldingReader prefers is the one
+    // from before the turn — measuring now would already include the gap and
+    // padding change the new width brought with it.
+    relayoutDocumentHoldingReader({ refit: true });
     return true;
   }
 
@@ -1069,7 +1059,11 @@ async function openDocumentViewBody({ force = false, slot = null, pdfId = null, 
       rendered: restored ? parked.rendered : new Set(),
       observer: null,
       resizeObserver: null,
-      watchdog: 0
+      watchdog: 0,
+      // Where the reader was as of the last scroll at the fitted width — see
+      // noteSettledDocumentPosition. A park does not carry it: the switch back
+      // lands its own position, and the scroll that does it records a new one.
+      settled: null
     };
     if (restored) {
       view.appendChild(parked.host);
@@ -1202,7 +1196,8 @@ async function openDocumentViewBody({ force = false, slot = null, pdfId = null, 
     rendered: new Set(),
     observer: null,
     resizeObserver: null,
-    watchdog: 0
+    watchdog: 0,
+    settled: null
   };
 
   view.innerHTML = "";
@@ -1420,7 +1415,9 @@ function watchDocumentViewSize() {
       const widthChanged = width !== lastWidth;
       lastWidth = width;
       if (widthChanged && openPdf.fitWidth) {
-        relayoutDocument({ refit: true });
+        // Holding the reader: a rotation lands here first, and a bare refit
+        // left scrollTop over pages of a different height.
+        relayoutDocumentHoldingReader({ refit: true });
         return;
       }
       renderPagesNearViewport();
@@ -1768,20 +1765,77 @@ function pageNeedsRerender(entry, width, height) {
 // used to relayout bare and let scrollTop drift onto whatever page it now
 // falls on, landing the reader on an unrelated page (page 1 if the view
 // widened) with no gesture of their own to explain it.
+//
+// ── ...measured BEFORE the window changed, not after ─────────────────────────
+//
+// "Jumping from landscape to portrait, both in PDF and notes, I'm seeing
+// significant content jump." A rotation was the one refit that held nobody: the
+// ResizeObserver on the scroller and the debounced window resize both re-scaled
+// every page bare, so scrollTop kept its old pixel value over pages twice (or
+// half) the height — portrait to landscape at page 20 put the reader near page
+// 10, and back again sent them twice as far down or clean off the end, where
+// the browser's clamp fired a scroll event that SAVED the wrong page.
+//
+// Wiring the hold above into those two was not enough on its own, because by
+// the time either one runs the browser has already laid the window out at its
+// new size. Pages keep their inline pixel boxes until a relayout, so most of
+// the geometry is still the old one — but not all of it: crossing 560px swaps
+// the gaps between pages and the scroller's padding (styles/36-document.css),
+// which moves every page top by 8px per page above it before any code can
+// look. Measured then, page 100 is already a page and a half from where it was.
+//
+// So the position is remembered as the reader leaves it — every scroll pass in
+// src/main.js records it, but only while the window is still the width the
+// pages were fitted to — and a width change restores THAT. Nothing that
+// happens between the window changing and the refit (a scroll anchoring
+// adjustment, the clamp) is allowed to overwrite it, and the same test keeps
+// those scrolls out of the saved reading position too.
+function documentWidthPending() {
+  const width = el.documentView?.clientWidth || 0;
+  return Boolean(openPdf?.fitWidth && width && fittedWidth && width !== fittedWidth);
+}
+
+export function noteSettledDocumentPosition() {
+  const view = el.documentView;
+  if (!openPdf || !view) return;
+  const width = view.clientWidth;
+  if (!width || documentWidthPending()) return;
+  openPdf.settled = {
+    page: currentDocumentPage(),
+    ratio: currentDocumentResidual(),
+    across: currentDocumentAcross(),
+    width
+  };
+}
+
+// Where to put the reader back after a refit: the settled position when the
+// window has changed width since it was taken, the live one otherwise (a Fit
+// width press, a split drag on an unchanged window — nothing has moved yet, and
+// the live reading is the more exact). Null when there is nothing to hold.
+function documentPositionToHold() {
+  if (!openPdf || inkPenIsDown()) return null;
+  const settled = openPdf.settled;
+  const width = el.documentView?.clientWidth || 0;
+  const { page, ratio, across } = settled && width && settled.width !== width
+    ? settled
+    : { page: currentDocumentPage(), ratio: currentDocumentResidual(), across: currentDocumentAcross() };
+  if (page <= 1 && ratio <= 0 && !(across > 0)) return null;
+  return { page, ratio, across };
+}
+
 export function relayoutDocumentHoldingReader({ refit = false } = {}) {
   if (!openPdf) return;
-  const heldPage = currentDocumentPage();
-  // Unclamped, for the reason the tab-switch hold above gives at length.
-  const heldRatio = currentDocumentResidual();
-  const heldAcross = currentDocumentAcross();
-  const atTheVeryTop = heldPage <= 1 && heldRatio <= 0 && !(heldAcross > 0);
-  const holdTheReader = !atTheVeryTop && !inkPenIsDown();
+  const held = documentPositionToHold();
   relayoutDocument({
     refit,
-    afterLayout: holdTheReader
-      ? () => scrollToDocumentPage(heldPage, heldRatio, { smooth: false, across: heldAcross })
+    afterLayout: held
+      ? () => scrollToDocumentPage(held.page, held.ratio, { smooth: false, across: held.across })
       : null
   });
+  // Re-recorded at the width the pages now have, so the next width change
+  // starts from here — and so a hold that had nothing to do (already at the
+  // top) does not leave the old width's position standing.
+  noteSettledDocumentPosition();
 }
 
 export function setDocumentScale(scale, { fitWidth = false, afterLayout = null } = {}) {
@@ -3236,6 +3290,11 @@ function documentResumePosition(slot, pdfId = null) {
 
 export function scheduleDocumentPositionSave() {
   if (!openPdf) return;
+  // The window has changed width and the pages have not been refitted to it
+  // yet: whatever page sits under scrollTop now is an accident of the old
+  // page heights, not a place the reader went. The refit puts them back and
+  // its own scroll saves the real position.
+  if (documentWidthPending()) return;
   const page = currentDocumentPage();
   const slot = openPdf.slot;
   const extraPdfId = slot === DOC_SLOT_DOC && openPdf.pdfId && openPdf.pdfId !== PDF_PRIMARY_ID ? openPdf.pdfId : null;

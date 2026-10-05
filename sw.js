@@ -533,6 +533,7 @@ const APP_SHELL = [
   `./src/notes/paged-view.js?v=${STAMP}`,
   `./src/notes/raw-offset.js?v=${STAMP}`,
   `./src/notes/reading-position.js?v=${STAMP}`,
+  `./src/notes/resize-hold.js?v=${STAMP}`,
   `./src/notes/scroll-anchor.js?v=${STAMP}`,
   `./src/notes/selection.js?v=${STAMP}`,
   `./src/notes/toc-tree.js?v=${STAMP}`,

@@ -73,6 +73,7 @@ import { installCodeCopyCleaner } from "./render/code-marks.js?v=__BUILD__";
 import { commitNotesEditIfActive, enterNotesEditing, isNotesEditing, isProgrammaticNotesScroll, renderNotesViewPinned, setNotesScrolledSource, toggleAllNotesHeadings } from "./notes/notes-view.js?v=__BUILD__";
 import { sourceFromRawEditor } from "./notes/notes-edit-split.js?v=__BUILD__";
 import { initPagedNotes } from "./notes/paged-view.js?v=__BUILD__";
+import { initNotesResizeHold, noteSettledNotesPosition, scheduleSettledNotesCapture } from "./notes/resize-hold.js?v=__BUILD__";
 import { findRawOffsetForRenderedPoint } from "./notes/raw-offset.js?v=__BUILD__";
 import { flushReadingPositionSave } from "./notes/reading-position.js?v=__BUILD__";
 import { rawOffsetForCurrentNotesScroll, scheduleReadingAnchorCapture } from "./notes/scroll-anchor.js?v=__BUILD__";
@@ -121,7 +122,7 @@ import { anyModalOpen, lockPageScroll, unlockPageScroll } from "./ui/overlays.js
 import { chooseDeckCategory } from "./ui/pickers.js?v=__BUILD__";
 import { defaultStyleProfiles, styleDefaults } from "./ui/style-schema.js?v=__BUILD__";
 import { applyStyleDensity, detectStyleProfile, handleStyleControlChange, normalizeStyleValue, resetStyleField, resetStyleProfile, trackKeyboardInset } from "./ui/style-settings.js?v=__BUILD__";
-import { styleMobileMedia, styleProfiles } from "./ui/style-tokens.js?v=__BUILD__";
+import { styleCoarsePointerMedia, styleMobileMedia, styleProfiles } from "./ui/style-tokens.js?v=__BUILD__";
 import { setTheme, setThemeMenuOpen, setThemeRepaintHook } from "./ui/theme.js?v=__BUILD__";
 import { FOCUS_MODE_KEY, closeViewExportMenu, paintViewExportMenu, setBlockEditFlushHook, setHandwritingViewHook, setSplitViewHook, setViewMode, switchToPreviousView } from "./ui/view-mode.js?v=__BUILD__";
 import { DOCUMENT_NOTE_HANDLERS, documentHighlightById, documentHighlightNote, flashDocumentRegion, initDocumentMarkMenu, repairDocumentHighlightQuads, repairDocumentHighlightText } from "./documents/pdf-highlights.js?v=__BUILD__";
@@ -134,7 +135,7 @@ import { closeDocumentToc, documentOutlineEntries, initDocumentOutlineFolding, i
 import { activePdfId, deckPdfById, deckPdfs, PDF_PRIMARY_ID, withDeckPdfs } from "./documents/pdf-multi.js?v=__BUILD__";
 import { removePdfFromDeck, renamePdf } from "./documents/pdf-multi-actions.js?v=__BUILD__";
 import { closePdfPanel, initPdfSwitcher } from "./documents/pdf-switcher.js?v=__BUILD__";
-import { currentPdfDocument, currentPdfPageCount, documentFittedWidth, fitDocumentToWidth, initDocumentCanvasRecovery, initDocumentPinchZoom, isDocumentFitWidth, openDocumentIsCurrent, openDocumentPdfId, openDocumentView, reattachDocument, relayoutDocument, repaintOpenDocumentPages, scheduleDocumentPositionSave, scrollToDocumentPage, refreshDocumentPaperForTheme, setDocumentAttachHandler, setDocumentCanvasRecoveredHook, setDocumentOpenedHook, setDocumentPagePaintedHook, setNotebookStartHandler, setPaperChangedHook, switchToPdf, togglePdfInvert, updatePageIndicator, zoomDocument, retryMissingDocumentOpen } from "./documents/pdf-view.js?v=__BUILD__";
+import { currentPdfDocument, currentPdfPageCount, documentFittedWidth, fitDocumentToWidth, initDocumentCanvasRecovery, initDocumentPinchZoom, isDocumentFitWidth, openDocumentIsCurrent, openDocumentPdfId, noteSettledDocumentPosition, openDocumentView, reattachDocument, relayoutDocumentHoldingReader, repaintOpenDocumentPages, scheduleDocumentPositionSave, scrollToDocumentPage, refreshDocumentPaperForTheme, setDocumentAttachHandler, setDocumentCanvasRecoveredHook, setDocumentOpenedHook, setDocumentPagePaintedHook, setNotebookStartHandler, setPaperChangedHook, switchToPdf, togglePdfInvert, updatePageIndicator, zoomDocument, retryMissingDocumentOpen } from "./documents/pdf-view.js?v=__BUILD__";
 import { adoptDocumentInk, canRedoInk, canUndoInk, copyInkSelection, cutInkSelection, duplicateInkSelection, hasInkClipboard, initDocumentInk, inkMarkImageMarkdown, inkMarkIsHighlight, inkSelectionCount, isInkMarkId, nudgeInkSelection, paintDocumentInk, pasteInkSelection, redoInk, repaintDocumentInk, setInkChangedHandler, undoInk } from "./documents/pdf-ink.js?v=__BUILD__";
 import { addHandwritingImage, enterHandwritingView, refreshHandwritingBoard, runHandwritingMenuAction, startHandwritingNotebook } from "./handwriting/board.js?v=__BUILD__";
 import { closeBlockStylePopover, isBlockStylePopoverOpen } from "./documents/block-style-bar.js?v=__BUILD__";
@@ -171,7 +172,7 @@ const INK_NUDGE_KEYS = {
 import { initDocumentRegionSelect, noteRegionDocumentOpened, setRegionSelect, toggleRegionSelect } from "./documents/pdf-region.js?v=__BUILD__";
 import { paintPageNoteBadges, paintPdfPageNotesButton, readPdfPageNotesPreference, refreshPdfPageNotes, repaintPdfPageNotes, setDocumentNoteRevealHook, setPdfPageNotesFlag, togglePdfPageNotes } from "./documents/pdf-page-notes.js?v=__BUILD__";
 import { initReadingRail, refreshReadingRail, refreshReadingRailModes } from "./ui/reading-rail.js?v=__BUILD__";
-import { initScreenOrientation, setOrientationModesHandler, toggleLandscape } from "./ui/orientation.js?v=__BUILD__";
+import { initScreenOrientation, setBeforeOrientationChangeHandler, setOrientationModesHandler, toggleLandscape } from "./ui/orientation.js?v=__BUILD__";
 import { attachPdfToOpenDeck, importPdfFile, reportPdfImportCrash } from "./import/pdf.js?v=__BUILD__";
 
 // The two index builders the contents drawer's Highlights half already uses.
@@ -329,6 +330,10 @@ if (window.Prism?.plugins?.autoloader) {
 
 
 el.notesView?.addEventListener("scroll", () => {
+  // Where the reader is, kept for a rotation or a resize to put them back to
+  // (src/notes/resize-hold.js). Ahead of the programmatic test below on
+  // purpose: a resume landing or a jump puts the reader somewhere too.
+  scheduleSettledNotesCapture();
   // A scroll the app performed itself (the raw<->rendered restore, a TOC jump)
   // is not the reader moving, and re-deriving an anchor from it would just
   // re-measure the position we were asked to go to.
@@ -1166,6 +1171,8 @@ onDomReady(initNotesHeadOverflow);
 onDomReady(initNotesTocFolding);
 onDomReady(initNotesFoldTwisties);
 onDomReady(initPagedNotes);
+// After the paged view, whose own ResizeObserver this hands the block to hold.
+onDomReady(initNotesResizeHold);
 onDomReady(initNotesCaretLine);
 onDomReady(initMarkMenu);
 onDomReady(initDocumentMarkMenu);
@@ -1197,6 +1204,13 @@ onDomReady(() => {
   setChromeModesHandler(refreshReadingRailModes);
   // ...and the Landscape row, which is a copy in the same way.
   setOrientationModesHandler(refreshReadingRailModes);
+  // The Landscape switch: write down where the reader is on both reading
+  // surfaces before the screen turns, so the holds that follow the re-flow put
+  // them back there (src/notes/resize-hold.js, relayoutDocumentHoldingReader).
+  setBeforeOrientationChangeHandler(() => {
+    if (onDocumentSurface()) noteSettledDocumentPosition();
+    noteSettledNotesPosition();
+  });
 });
 // The pill's Highlight and ✕ need a description of the PDF selection taken
 // while it is still alive, and src/notes/selection.js cannot import the module
@@ -3043,11 +3057,19 @@ window.addEventListener("resize", () => {
   }
   scheduleLiveQuestionFit();
 });
-if (styleMobileMedia?.addEventListener) {
-  styleMobileMedia.addEventListener("change", handleStyleEnvironmentChange);
-} else if (styleMobileMedia?.addListener) {
-  styleMobileMedia.addListener(handleStyleEnvironmentChange);
+// Re-applied only when the PROFILE actually changes. Crossing the layout
+// breakpoint no longer always means that — a phone turned on its side stays on
+// the phone profile (src/ui/style-tokens.js) — and re-applying an unchanged
+// profile is a forced refresh of every table in the note at the one moment the
+// reader's place is being held through a re-flow.
+function styleEnvironmentChanged() {
+  if (detectStyleProfile() === state.activeStyleProfile) return;
+  handleStyleEnvironmentChange();
 }
+[styleMobileMedia, styleCoarsePointerMedia].forEach((media) => {
+  if (media?.addEventListener) media.addEventListener("change", styleEnvironmentChanged);
+  else if (media?.addListener) media.addListener(styleEnvironmentChanged);
+});
 
 
 window.addEventListener("online", () => { recoverSessionIfPossible(); });
@@ -3885,6 +3907,7 @@ el.documentView?.addEventListener("scroll", () => {
     // outlives its document at all.
     if (!onDocumentSurface()) return;
     // READS first, together, off one geometry table.
+    noteSettledDocumentPosition();
     scheduleDocumentPositionSave();
     // ...then the writes.
     updatePageIndicator();
@@ -3955,7 +3978,10 @@ window.addEventListener("resize", () => {
   if (!width || width === documentFittedWidth()) return;
   if (!isDocumentFitWidth()) return;
   clearTimeout(documentRefitTimer);
-  documentRefitTimer = setTimeout(() => relayoutDocument({ refit: true }), DOCUMENT_REFIT_MS);
+  // Holding the reader, from the position they had before the window changed —
+  // see relayoutDocumentHoldingReader. Usually the scroller's ResizeObserver
+  // has already done this and the width test above returns early.
+  documentRefitTimer = setTimeout(() => relayoutDocumentHoldingReader({ refit: true }), DOCUMENT_REFIT_MS);
 });
 
 // Long enough that a desktop drag-resize costs one relayout rather than sixty,
