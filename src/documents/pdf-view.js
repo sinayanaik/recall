@@ -2449,10 +2449,12 @@ const pausedRenders = [];
 // A finger that went down and was never seen to come up. touchend is
 // delivered to the element the touch STARTED on, and on this surface that is
 // very often a text-layer span — which a zoom or a re-render removes from the
-// document mid-gesture, after which its touchend reaches no listener here at
-// all. Left alone that would read as a finger held on the glass for ever, and
-// hold every render with it; so a touch with no touch or scroll activity for
-// this long no longer counts.
+// document mid-gesture, after which its touchend no longer bubbles to anything
+// here. watchDocumentInteraction listens on that element itself for the end,
+// which a detached element still receives; and as a net under that, a touch
+// with no touch activity of its own for this long no longer counts. Scrolling
+// deliberately does not count as touch activity: a momentum scroll or a
+// programmatic one would otherwise keep a lost finger "down" indefinitely.
 export const PDF_TOUCH_STALE_MS = 3000;
 
 let lastTouchActivity = 0;
@@ -2587,13 +2589,24 @@ function watchDocumentInteraction() {
     lastTouchActivity = performance.now();
     noteDocumentInteraction();
   };
-  view.addEventListener("touchstart", onTouches, { passive: true });
-  view.addEventListener("touchmove", () => { lastTouchActivity = performance.now(); }, { passive: true });
+  const onTouchActivity = () => { lastTouchActivity = performance.now(); };
+  view.addEventListener("touchstart", (event) => {
+    onTouches(event);
+    // The end of this touch, heard on the element it started on — see
+    // PDF_TOUCH_STALE_MS for why the view alone is not enough.
+    Array.from(event.changedTouches || []).forEach((touch) => {
+      const target = touch.target;
+      if (!target?.addEventListener || target === view) return;
+      target.addEventListener("touchend", onTouches, { passive: true, once: true });
+      target.addEventListener("touchcancel", onTouches, { passive: true, once: true });
+      target.addEventListener("touchmove", onTouchActivity, { passive: true });
+    });
+  }, { passive: true });
+  view.addEventListener("touchmove", onTouchActivity, { passive: true });
   view.addEventListener("touchend", onTouches, { passive: true });
   view.addEventListener("touchcancel", onTouches, { passive: true });
   view.addEventListener("wheel", () => noteDocumentInteraction(), { passive: true });
   view.addEventListener("scroll", () => {
-    lastTouchActivity = performance.now();
     noteDocumentInteraction();
     const at = performance.now();
     const previous = lastScroll;
