@@ -26,6 +26,15 @@
 //   zoom    a zoom step, to the page in view drawn fresh at the new scale
 //   fling   a flick from page 1 to page 20, to page 20's canvas and its text
 //   steady  three seconds of slow scrolling: frame times and long tasks
+//   pan     a real touch drag (CDP touch events, so it goes through the
+//           app's own touch listeners) started right after a zoom step, while
+//           the pages are being redrawn: frame times and long tasks under the
+//           finger. This is "zooming and panning lag" as a reader feels it.
+//
+// --images gives every page a large photograph (a JPEG, as most scanned or
+// figure-heavy papers have), so the cost of drawing a page is the image and
+// not the vector work — the shape of a 3.6MB, 6-page paper whose pages took
+// 0.7–1.7s each to draw on a real phone.
 
 import { spawn } from "node:child_process";
 import path from "node:path";
@@ -39,7 +48,8 @@ const arg = (name, fallback) => {
 const ROOT = path.resolve(arg("root", HERE));
 const RUNS = Math.max(1, Number(arg("runs", 3)));
 const THROTTLE = Number(arg("throttle", 4));
-const ONLY = new Set(String(arg("only", "open,tab,switch,zoom,fling,steady")).split(","));
+const ONLY = new Set(String(arg("only", "open,tab,switch,zoom,fling,steady,pan")).split(","));
+const IMAGES = process.argv.includes("--images");
 const INVERT = process.argv.includes("--invert");
 // --profile=<flow> prints where the main thread's time went during that flow:
 // the functions with the most self time, from the V8 CPU profiler.
@@ -60,7 +70,27 @@ const { findChrome, launchChrome, connect, openPage, emulatePhone } = await impo
 const { pdfjsSources } = await import(path.join(HERE, "tools/pdfjs-source.mjs"));
 
 // ── A paper that costs what a paper costs ──────────────────────────────────
-function densePdf(pages = 40, { seed = 7, title = "Dense Paper" } = {}) {
+// Photograph-like JPEGs, made once with ImageMagick and cached. Each page gets
+// its own image OBJECT, even where the bytes repeat, so pdf.js decodes it per
+// page as it would a real paper's figures rather than sharing one decode.
+async function photoJpegs(count = 6) {
+  const { execFileSync } = await import("node:child_process");
+  const { existsSync, mkdirSync, readFileSync } = await import("node:fs");
+  const dir = "/tmp/recall-perf-images";
+  mkdirSync(dir, { recursive: true });
+  const out = [];
+  for (let i = 0; i < count; i++) {
+    const file = path.join(dir, `photo-${i}.jpg`);
+    if (!existsSync(file)) {
+      execFileSync("convert", ["-size", "1800x2200", "-seed", String(100 + i), "plasma:fractal",
+        "-blur", "0x1", "-quality", "88", file]);
+    }
+    out.push({ width: 1800, height: 2200, bytes: readFileSync(file).toString("latin1") });
+  }
+  return out;
+}
+
+function densePdf(pages = 40, { seed = 7, title = "Dense Paper", images = null } = {}) {
   const objs = [];
   const push = (b) => { objs.push(b); return objs.length; };
   const cat = push("");
@@ -95,9 +125,17 @@ function densePdf(pages = 40, { seed = 7, title = "Dense Paper" } = {}) {
       s += `${x0.toFixed(1)} ${y0.toFixed(1)} m ${(x0 + rnd() * 10).toFixed(1)} ${(y0 + rnd() * 10).toFixed(1)} l S\n`;
     }
     s += "Q\n";
+    let xobjects = "";
+    if (images?.length) {
+      const img = images[p % images.length];
+      const imgId = push(`<< /Type /XObject /Subtype /Image /Width ${img.width} /Height ${img.height} `
+        + `/ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${img.bytes.length} >>\nstream\n${img.bytes}\nendstream`);
+      s += "q 504 0 0 420 54 300 cm /Ph Do Q\n";
+      xobjects = ` /XObject << /Ph ${imgId} 0 R >>`;
+    }
     const c = push(`<< /Length ${s.length} >>\nstream\n${s}\nendstream`);
     ids.push(push(`<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 612 792] `
-      + `/Resources << /Font << /F1 ${f1} 0 R /F2 ${f2} 0 R >> >> /Contents ${c} 0 R >>`));
+      + `/Resources << /Font << /F1 ${f1} 0 R /F2 ${f2} 0 R >>${xobjects} >> /Contents ${c} 0 R >>`));
   }
   objs[cat - 1] = `<< /Type /Catalog /Pages ${pagesId} 0 R >>`;
   objs[pagesId - 1] = `<< /Type /Pages /Kids [${ids.map((i) => `${i} 0 R`).join(" ")}] /Count ${ids.length} >>`;
@@ -130,7 +168,7 @@ const API_SRC = `async () => {
   const paths = ["/src/documents/pdf-view.js", "/src/import/pdf.js", "/src/library/local-library.js",
     "/src/storage/deck-store.js", "/src/ui/view-mode.js", "/src/cloud/supabase-client.js",
     "/src/core/state.js", "/src/ui/boot-screens.js", "/src/boot.js", "/src/library/my-decks.js",
-    "/src/documents/pdf-multi.js"]
+    "/src/documents/pdf-multi.js", "/src/ui/deck-header.js"]
     .map((p) => p + "?v=__BUILD__");
   const mods = await Promise.all(paths.map((p) => import(p).catch(() => ({}))));
   const api = {};
@@ -175,6 +213,8 @@ const SETUP_SRC = `async (apiSrc) => {
   await settle(600);
   return true;
 }`;
+
+const photos = IMAGES ? await photoJpegs(6) : null;
 
 async function oneRun() {
   const chrome = findChrome();
@@ -238,8 +278,9 @@ try { new PerformanceObserver((l) => l.getEntries().forEach((e) => window.__perf
       api.applyPdfInvert(Boolean(invert), { remember: false });
       for (let i = 0; i < 60 && api.deckAutosaveTimer; i += 1) await settle(100);
       return { deckId: entry.id, otherId, firstId, secondId, pages: api.currentPdfPageCount() };
-    }`, Array.from(densePdf(40)), Array.from(densePdf(20, { seed: 11, title: "Second Paper" })),
-    Array.from(densePdf(30, { seed: 23, title: "Other Deck" })), INVERT);
+    }`, Array.from(densePdf(IMAGES ? 24 : 40, { images: photos })),
+    Array.from(densePdf(IMAGES ? 8 : 20, { seed: 11, title: "Second Paper", images: photos })),
+    Array.from(densePdf(IMAGES ? 8 : 30, { seed: 23, title: "Other Deck", images: photos })), INVERT);
 
     await page.call("Emulation.setCPUThrottlingRate", { rate: THROTTLE });
 
@@ -404,6 +445,79 @@ try { new PerformanceObserver((l) => l.getEntries().forEach((e) => window.__perf
         };
       }`);
     }
+    if (ONLY.has("pan")) {
+      // Somewhere in the middle, settled, then a zoom step — so the pages are
+      // being redrawn at the new scale when the finger comes down, which is
+      // when a reader feels the lag.
+      await page.evaluate(`async () => {
+        const { api, settle } = window.__recall;
+        api.fitDocumentToWidth();
+        api.scrollToDocumentPage(3, 0.1, { smooth: false });
+        await settle(2500);
+        window.__pan = { frames: [], longTasks: [], startTop: 0 };
+        if (!${JSON.stringify(process.argv.includes("--pan-nozoom"))}) api.zoomDocument(1.2);
+        await settle(60);
+        const view = document.getElementById("documentView");
+        window.__pan.startTop = view.scrollTop;
+        const t0 = performance.now();
+        let last = t0;
+        window.__pan.running = true;
+        const step = (now) => {
+          window.__pan.frames.push(now - last);
+          last = now;
+          if (window.__pan.running) requestAnimationFrame(step);
+        };
+        requestAnimationFrame(step);
+        window.__pan.longFrom = window.__perf.longTasks.length;
+        return true;
+      }`);
+      // The drag: touch events through the browser's own input pipeline —
+      // touchstart, then a move every 16ms, 9px at a time (past any long-press
+      // slop at once, so it is a pan and not a press), then the lift. What
+      // matters is what the main thread is doing while a finger is down: with
+      // a non-passive touchmove on this surface (touch selection needs one),
+      // every move waits for it.
+      const x = 200;
+      let y = 650;
+      await page.call("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y, id: 1 }] });
+      for (let i = 0; i < 70; i++) {
+        await new Promise((r) => setTimeout(r, 16));
+        y -= 6;
+        await page.call("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y, id: 1 }] });
+      }
+      await page.call("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+      results.pan = await page.evaluate(`async () => {
+        const { api, settle } = window.__recall;
+        await settle(200);
+        window.__pan.running = false;
+        const view = document.getElementById("documentView");
+        const frames = window.__pan.frames.slice(1).sort((a, b) => a - b);
+        const long = window.__perf.longTasks.slice(window.__pan.longFrom);
+        const result = {
+          p90Frame: Math.round(frames[Math.floor(frames.length * 0.9)] || 0),
+          worstFrame: Math.round(frames[frames.length - 1] || 0),
+          longTasks: long.length,
+          longTaskMs: Math.round(long.reduce((a, b) => a + b, 0)),
+          moved: Math.round(view.scrollTop - window.__pan.startTop),
+          hit: (() => { const e = document.elementFromPoint(200, 600); return e ? (e.id || e.className || e.tagName) : "none"; })(),
+          viewTop: Math.round(view.scrollTop), winY: Math.round(window.scrollY)
+        };
+        // ...and everything comes back afterwards: the page on screen drawn
+        // fresh at the new scale, with its text layer.
+        const page = api.currentDocumentPage();
+        const t0 = performance.now();
+        let settledMs = -1;
+        for (let i = 0; i < 400; i++) {
+          const el = api.pdfPageElement(page);
+          if (el && el.querySelector(".pdf-canvas:not(.is-stale)") && el.querySelector(".pdf-text-layer")) { settledMs = performance.now() - t0; break; }
+          await settle(25);
+        }
+        result.afterLiftMs = Math.round(settledMs);
+        api.fitDocumentToWidth();
+        await settle(1500);
+        return result;
+      }`);
+    }
   } finally {
     client.close();
     launched.proc.kill("SIGKILL");
@@ -445,7 +559,7 @@ const row = (label, pick, unit = "ms") => {
   if (values.every((v) => v === undefined)) return;
   console.log(`  ${label.padEnd(34)} ${String(median(values)).padStart(6)} ${unit}   (${values.join(", ")})`);
 };
-console.log(`pdf-perf · ${ROOT} · CPU ${THROTTLE}x · dpr ${DPR} · ${RUNS} run(s)${INVERT ? " · dark page" : ""} · median (each run)`);
+console.log(`pdf-perf · ${ROOT} · CPU ${THROTTLE}x · dpr ${DPR}${IMAGES ? " · photo pages" : ""} · ${RUNS} run(s)${INVERT ? " · dark page" : ""} · median (each run)`);
 row("open: deck PDF to first page", (r) => r.open);
 row("tab: Notes → PDF, page on screen", (r) => r.tab?.ms);
 runs.forEach((r, i) => {
@@ -459,4 +573,11 @@ row("fling: page 20 sharp (full density)", (r) => r.fling?.sharp);
 row("steady scroll: p90 frame", (r) => r.steady?.p90Frame);
 row("steady scroll: worst frame", (r) => r.steady?.worstFrame);
 row("steady scroll: long tasks", (r) => r.steady?.longTaskMs);
+row("pan after zoom: p90 frame", (r) => r.pan?.p90Frame);
+row("pan after zoom: worst frame", (r) => r.pan?.worstFrame);
+row("pan after zoom: long tasks (count)", (r) => r.pan?.longTasks, "");
+row("pan after zoom: long tasks (total)", (r) => r.pan?.longTaskMs);
+row("pan after zoom: scrolled", (r) => r.pan?.moved, "px");
+row("pan: page fresh after lift", (r) => r.pan?.afterLiftMs);
+if (process.argv.includes("--debug")) runs.forEach((r) => console.log(JSON.stringify(r.pan)));
 process.exit(0);

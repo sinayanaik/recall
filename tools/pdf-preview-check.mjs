@@ -2954,6 +2954,86 @@ try {
     await settle(200);
   }`);
 
+  // ── 9c-3. Nothing that can wait is drawn under a finger ─────────────────
+  //
+  // "Significant lag zooming in and out and panning", on a phone where one
+  // page took 0.7–1.7s to draw. This surface has a non-passive touchmove (touch
+  // selection needs one), so while any page is being drawn every pan waits for
+  // the main thread. So while a finger is on the paper, a render that can wait
+  // is PAUSED between pdf.js's slices and resumed when it lifts
+  // (holdRenderWhileInteracting in src/documents/pdf-view.js).
+  //
+  // What must hold: during the touch the zoomed page keeps its stretched old
+  // canvas rather than being redrawn under the finger; after the lift it comes
+  // back drawn fresh, with its text layer, without anything asking for it; and
+  // a finger whose touchend never arrives (its span was removed mid-gesture)
+  // does not hold the paper's renders for ever.
+  const jiggle = async (x, y, ms) => {
+    const until = Date.now() + ms;
+    let dy = 14;
+    while (Date.now() < until) {
+      await touchMove(x, y + dy);
+      dy = -dy;
+      await pause(40);
+    }
+  };
+  const freshAfter = `async (limitMs) => {
+    const { api, settle } = window.__recall;
+    const t0 = performance.now();
+    while (performance.now() - t0 < limitMs) {
+      const page = api.currentDocumentPage();
+      const el = api.pdfPageElement(page);
+      if (el && el.querySelector(".pdf-canvas:not(.is-stale)") && !el.querySelector(".pdf-canvas.is-stale")
+        && el.querySelector(".pdf-text-layer")) return { ok: true, ms: Math.round(performance.now() - t0), page };
+      await settle(50);
+    }
+    return { ok: false, page: api.currentDocumentPage() };
+  }`;
+  const heldSpot = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    window.getSelection()?.removeAllRanges();
+    api.fitDocumentToWidth();
+    api.scrollToDocumentPage(1, 0.2, { smooth: false });
+    await settle(1500);
+    const box = document.getElementById("documentView").getBoundingClientRect();
+    return { x: Math.round(box.left + box.width / 2), y: Math.round(box.top + box.height / 2) };
+  }`);
+  await touchStart(heldSpot.x, heldSpot.y);
+  await touchMove(heldSpot.x, heldSpot.y + 14);
+  await page.evaluate(`() => { window.__recall.api.zoomDocument(1.25); return true; }`);
+  await jiggle(heldSpot.x, heldSpot.y, 900);
+  const underFinger = await page.evaluate(`() => {
+    const { api } = window.__recall;
+    const el = api.pdfPageElement(api.currentDocumentPage());
+    return {
+      interacting: api.documentInteracting(),
+      stale: Boolean(el && el.querySelector(".pdf-canvas.is-stale")),
+      fresh: Boolean(el && el.querySelector(".pdf-canvas:not(.is-stale)"))
+    };
+  }`);
+  await touchEnd();
+  const afterLift = await page.evaluate(freshAfter, 8000);
+  check("a page zoomed under a finger is not redrawn while the finger is down",
+    underFinger.interacting && underFinger.stale && !underFinger.fresh,
+    `interacting=${underFinger.interacting} stale=${underFinger.stale} fresh=${underFinger.fresh}`);
+  check("...and is redrawn, text layer and all, once the finger lifts",
+    afterLift.ok, afterLift.ok ? `page ${afterLift.page} in ${afterLift.ms}ms` : `page ${afterLift.page} still stale`);
+
+  // A finger that went down and is never seen to come up.
+  await touchStart(heldSpot.x, heldSpot.y);
+  await touchMove(heldSpot.x, heldSpot.y + 14);
+  await page.evaluate(`() => { window.__recall.api.zoomDocument(0.8); return true; }`);
+  const staleTouch = await page.evaluate(freshAfter, 3000 + 6000);
+  await touchEnd();
+  check("a touch whose end never arrives does not hold the paper's renders for ever",
+    staleTouch.ok, staleTouch.ok ? `redrawn ${staleTouch.ms}ms after the zoom` : "still stale");
+  await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    window.getSelection()?.removeAllRanges();
+    api.fitDocumentToWidth();
+    await settle(800);
+  }`);
+
   await page.call("Emulation.setTouchEmulationEnabled", { enabled: false, maxTouchPoints: 1 });
   await page.call("Emulation.setDeviceMetricsOverride", {
     width: 1280, height: 900, deviceScaleFactor: 1, mobile: false
