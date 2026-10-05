@@ -244,6 +244,17 @@
   display: block;
 }
 
+/* The sharp part of a page zoomed in past what one canvas can afford: a canvas
+   over just the region on screen, at the screen's full density, laid over the
+   softer page canvas and under the mark and text layers (the detail tile in
+   src/documents/pdf-view.js). Positioned and sized there, in the page's CSS
+   pixels. */
+.pdf-detail {
+  position: absolute;
+  display: block;
+  pointer-events: none;
+}
+
 /* The previous zoom's pixels, stretched to the new page box while the real
    render is in flight (stalePageForRelayout in src/documents/pdf-view.js). Soft
    for those few frames, and replaced the moment the fresh canvas lands — which
@@ -276,6 +287,10 @@
  * further from its selection the further along the line it goes.
  */
 .pdf-text-layer {
+  /* A text layer is kept across a zoom and re-scaled with a transform
+     (keepTextLayerForScale), which has to grow from the page's own top-left
+     corner, where every span's coordinates are measured from. */
+  transform-origin: 0 0;
   /* Strict containment: the layer is sized explicitly (buildTextLayer), so
      nothing inside it can change anything outside it, and the browser can lay
      out its hundreds of spans as one closed box. */
@@ -360,7 +375,8 @@
  * Off by default and remembered per device — a paper full of photographs looks
  * wrong inverted, and only the reader knows which kind of document this is.
  */
-.document-stage.is-pdf-inverted .pdf-canvas {
+.document-stage.is-pdf-inverted .pdf-canvas,
+.document-stage.is-pdf-inverted .pdf-detail {
   filter: invert(1) hue-rotate(180deg);
 }
 

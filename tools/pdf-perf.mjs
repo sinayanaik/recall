@@ -24,6 +24,9 @@
 //   tab     Notes → PDF tab, to a canvas on screen again
 //   switch  one PDF of the deck to the other and back, to its canvas
 //   zoom    a zoom step, to the page in view drawn fresh at the new scale
+//   zoomin  fit-width straight to 500%, to the page in view drawn fresh, and
+//           (when the build has one) to its sharp detail tile
+//   zoomout fit-width out to the lowest zoom, to every page on screen drawn
 //   fling   a flick from page 1 to page 20, to page 20's canvas and its text
 //   steady  three seconds of slow scrolling: frame times and long tasks
 //   pan     a real touch drag (CDP touch events, so it goes through the
@@ -48,7 +51,7 @@ const arg = (name, fallback) => {
 const ROOT = path.resolve(arg("root", HERE));
 const RUNS = Math.max(1, Number(arg("runs", 3)));
 const THROTTLE = Number(arg("throttle", 4));
-const ONLY = new Set(String(arg("only", "open,tab,switch,zoom,fling,steady,pan")).split(","));
+const ONLY = new Set(String(arg("only", "open,tab,switch,zoom,zoomin,zoomout,fling,steady,pan")).split(","));
 const IMAGES = process.argv.includes("--images");
 const INVERT = process.argv.includes("--invert");
 // --profile=<flow> prints where the main thread's time went during that flow:
@@ -378,6 +381,58 @@ try { new PerformanceObserver((l) => l.getEntries().forEach((e) => window.__perf
       }`);
     }
 
+    if (ONLY.has("zoomin")) {
+      results.zoomin = await flow("zoomin", `async () => {
+        const { api, settle, until } = window.__recall;
+        api.fitDocumentToWidth();
+        api.scrollToDocumentPage(3, 0.2, { smooth: false });
+        await settle(1500);
+        window.__perf.longTasks.length = 0;
+        const page = api.currentDocumentPage();
+        const t0 = performance.now();
+        if (api.setDocumentScale) api.setDocumentScale(5); else api.zoomDocument(5 / 0.6);
+        const el = () => api.pdfPageElement(page);
+        await until(() => Boolean(el()?.querySelector(".pdf-canvas:not(.is-stale)")));
+        const drawn = performance.now() - t0;
+        const sharp = await until(() => Boolean(el()?.querySelector(".pdf-detail")), 6000);
+        const canvas = el()?.querySelector(".pdf-canvas:not(.is-stale)");
+        const result = { drawn: Math.round(drawn), sharp: sharp < 0 ? -1 : Math.round(performance.now() - t0),
+          mp: canvas ? Math.round(canvas.width * canvas.height / 1e5) / 10 : 0,
+          longTaskMs: Math.round(window.__perf.longTasks.reduce((a, b) => a + b, 0)) };
+        api.fitDocumentToWidth();
+        await settle(2000);
+        return result;
+      }`);
+    }
+
+    if (ONLY.has("zoomout")) {
+      results.zoomout = await flow("zoomout", `async () => {
+        const { api, settle, until } = window.__recall;
+        api.fitDocumentToWidth();
+        api.scrollToDocumentPage(3, 0.2, { smooth: false });
+        await settle(1500);
+        window.__perf.longTasks.length = 0;
+        const view = document.getElementById("documentView");
+        const t0 = performance.now();
+        api.setDocumentScale(0.01);
+        const allDrawn = () => {
+          const box = view.getBoundingClientRect();
+          const pages = Array.from(view.querySelectorAll(".pdf-page")).filter((p) => {
+            const r = p.getBoundingClientRect();
+            return r.bottom > box.top && r.top < box.bottom;
+          });
+          return pages.length > 0 && pages.every((p) => p.querySelector(".pdf-canvas:not(.is-stale)"));
+        };
+        await settle(50);
+        const ms = await until(allDrawn, 20000);
+        const result = { ms: ms < 0 ? -1 : Math.round(performance.now() - t0),
+          longTaskMs: Math.round(window.__perf.longTasks.reduce((a, b) => a + b, 0)) };
+        api.fitDocumentToWidth();
+        await settle(2000);
+        return result;
+      }`);
+    }
+
     if (ONLY.has("fling")) {
       results.fling = await flow("fling", `async () => {
         const { api, settle } = window.__recall;
@@ -567,6 +622,12 @@ runs.forEach((r, i) => {
 });
 row("switch: PDF ↔ PDF, page on screen", (r) => r.switch);
 row("zoom: step to page redrawn", (r) => r.zoom);
+row("zoom in to 500%: page redrawn", (r) => r.zoomin?.drawn);
+row("zoom in to 500%: sharp detail", (r) => r.zoomin?.sharp);
+row("zoom in to 500%: canvas", (r) => r.zoomin?.mp, "MP");
+row("zoom in to 500%: long tasks", (r) => r.zoomin?.longTaskMs);
+row("zoom out: every page on screen drawn", (r) => r.zoomout?.ms);
+row("zoom out: long tasks", (r) => r.zoomout?.longTaskMs);
 row("fling: page 20 canvas", (r) => r.fling?.canvas);
 row("fling: page 20 text layer", (r) => r.fling?.text);
 row("fling: page 20 sharp (full density)", (r) => r.fling?.sharp);

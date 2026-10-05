@@ -2954,20 +2954,21 @@ try {
     await settle(200);
   }`);
 
-  // ── 9c-3. Nothing that can wait is drawn under a finger ─────────────────
+  // ── 9c-3. A finger on the paper does not hold the page back ─────────────
   //
   // "Significant lag zooming in and out and panning", on a phone where one
-  // page took 0.7–1.7s to draw. This surface has a non-passive touchmove (touch
-  // selection needs one), so while any page is being drawn every pan waits for
-  // the main thread. So while a finger is on the paper, a render that can wait
-  // is PAUSED between pdf.js's slices and resumed when it lifts
-  // (holdRenderWhileInteracting in src/documents/pdf-view.js).
+  // page took 0.7–1.7s to draw. An earlier answer PAUSED every render while a
+  // finger was on the paper; on a phone a finger is on the paper most of the
+  // time, so pages sat stretched or blank until it lifted, and the readout from
+  // the phone got worse, not better. What is held back now is only what can
+  // wait while the page is MOVING (a scroll, a zoom step a moment ago, a
+  // pinch): a finger resting on the glass is somebody about to press on a word.
   //
-  // What must hold: during the touch the zoomed page keeps its stretched old
-  // canvas rather than being redrawn under the finger; after the lift it comes
-  // back drawn fresh, with its text layer, without anything asking for it; and
-  // a finger whose touchend never arrives (its span was removed mid-gesture)
-  // does not hold the paper's renders for ever.
+  // What must hold: a page zoomed under a resting finger is redrawn without
+  // waiting for the lift; its text layer survives the zoom, re-scaled rather
+  // than rebuilt (keepTextLayerForScale); the page comes back drawn fresh,
+  // with its text layer, after a jiggling finger lifts; and a finger whose
+  // touchend never arrives does not hold the paper's renders for ever.
   const jiggle = async (x, y, ms) => {
     const until = Date.now() + ms;
     let dy = 14;
@@ -2998,25 +2999,46 @@ try {
     const box = document.getElementById("documentView").getBoundingClientRect();
     return { x: Math.round(box.left + box.width / 2), y: Math.round(box.top + box.height / 2) };
   }`);
-  await touchStart(heldSpot.x, heldSpot.y);
-  await touchMove(heldSpot.x, heldSpot.y + 14);
-  await page.evaluate(`() => { window.__recall.api.zoomDocument(1.25); return true; }`);
-  await jiggle(heldSpot.x, heldSpot.y, 900);
-  const underFinger = await page.evaluate(`() => {
+  // A resting finger: down, and then still.
+  const beforeZoom = await page.evaluate(`() => {
     const { api } = window.__recall;
     const el = api.pdfPageElement(api.currentDocumentPage());
-    return {
-      interacting: api.documentInteracting(),
-      stale: Boolean(el && el.querySelector(".pdf-canvas.is-stale")),
-      fresh: Boolean(el && el.querySelector(".pdf-canvas:not(.is-stale)"))
-    };
+    const layer = el && el.querySelector(".pdf-text-layer");
+    if (layer) layer.dataset.checkMarker = "kept";
+    return { page: api.currentDocumentPage(), layer: Boolean(layer) };
   }`);
+  await touchStart(heldSpot.x, heldSpot.y);
+  await page.evaluate(`() => { window.__recall.api.zoomDocument(1.25); return true; }`);
+  const underFinger = await page.evaluate(freshAfter, 6000);
+  const keptLayer = await page.evaluate(`(pageNumber) => {
+    const { api } = window.__recall;
+    const el = api.pdfPageElement(pageNumber);
+    const layer = el && el.querySelector(".pdf-text-layer");
+    const box = el && el.getBoundingClientRect();
+    const rect = layer && layer.getBoundingClientRect();
+    return {
+      kept: Boolean(layer && layer.dataset.checkMarker === "kept"),
+      layers: el ? el.querySelectorAll(".pdf-text-layer").length : 0,
+      fits: Boolean(rect && box && Math.abs(rect.width - box.width) < 2 && Math.abs(rect.height - box.height) < 2),
+      size: rect && box ? Math.round(rect.width) + "x" + Math.round(rect.height) + " in " + Math.round(box.width) + "x" + Math.round(box.height) : "none"
+    };
+  }`, beforeZoom.page);
+  await touchEnd();
+  check("a page zoomed under a resting finger is redrawn without waiting for the lift",
+    underFinger.ok, underFinger.ok ? `page ${underFinger.page} in ${underFinger.ms}ms` : `page ${underFinger.page} still stale`);
+  check("...keeping its text layer through the zoom, re-scaled rather than rebuilt",
+    beforeZoom.layer && keptLayer.kept && keptLayer.layers === 1 && keptLayer.fits,
+    `kept=${keptLayer.kept} layers=${keptLayer.layers} ${keptLayer.size}`);
+
+  // A jiggling finger: the page is moving, so the redraw may wait — but it
+  // comes back once the finger lifts, text layer and all.
+  await touchStart(heldSpot.x, heldSpot.y);
+  await touchMove(heldSpot.x, heldSpot.y + 14);
+  await page.evaluate(`() => { window.__recall.api.zoomDocument(0.8); return true; }`);
+  await jiggle(heldSpot.x, heldSpot.y, 900);
   await touchEnd();
   const afterLift = await page.evaluate(freshAfter, 8000);
-  check("a page zoomed under a finger is not redrawn while the finger is down",
-    underFinger.interacting && underFinger.stale && !underFinger.fresh,
-    `interacting=${underFinger.interacting} stale=${underFinger.stale} fresh=${underFinger.fresh}`);
-  check("...and is redrawn, text layer and all, once the finger lifts",
+  check("...and is redrawn, text layer and all, once a moving finger lifts",
     afterLift.ok, afterLift.ok ? `page ${afterLift.page} in ${afterLift.ms}ms` : `page ${afterLift.page} still stale`);
 
   // A finger that went down and is never seen to come up.
@@ -3027,6 +3049,74 @@ try {
   await touchEnd();
   check("a touch whose end never arrives does not hold the paper's renders for ever",
     staleTouch.ok, staleTouch.ok ? `redrawn ${staleTouch.ms}ms after the zoom` : "still stale");
+
+  // ── 9c-4. Zoomed far in, and far out ───────────────────────────────────
+  //
+  // In: a page at 500% used to be one canvas floored at a pixel per CSS
+  // pixel — twelve million of them on a phone, three in the render window. The
+  // base canvas now stays inside the per-canvas budget and the part on screen
+  // is drawn sharp by a detail tile.
+  //
+  // Out: pages used to be trimmed by page count (current ±3), so at the lowest
+  // zoom, with more pages than that on screen, visible pages were unrendered
+  // and asked for again, over and over. They are trimmed by distance now.
+  const zoomedIn = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    window.getSelection()?.removeAllRanges();
+    const view = document.getElementById("documentView");
+    api.fitDocumentToWidth();
+    api.scrollToDocumentPage(1, 0.3, { smooth: false });
+    await settle(1200);
+    api.setDocumentScale(5);
+    let el = null, base = null, detail = null;
+    for (let i = 0; i < 200; i += 1) {
+      await settle(50);
+      el = api.pdfPageElement(api.currentDocumentPage());
+      base = el && el.querySelector(".pdf-canvas:not(.is-stale)");
+      detail = el && el.querySelector(".pdf-detail");
+      if (base && detail) break;
+    }
+    const dpr = Math.min(3, window.devicePixelRatio || 1);
+    const vr = view.getBoundingClientRect();
+    const pr = el ? el.getBoundingClientRect() : null;
+    const dr = detail ? detail.getBoundingClientRect() : null;
+    const seen = pr ? { left: Math.max(vr.left, pr.left), top: Math.max(vr.top, pr.top),
+      right: Math.min(vr.right, pr.right), bottom: Math.min(vr.bottom, pr.bottom) } : null;
+    const covers = Boolean(dr && seen && dr.left <= seen.left + 1 && dr.top <= seen.top + 1
+      && dr.right >= seen.right - 1 && dr.bottom >= seen.bottom - 1);
+    return {
+      basePixels: base ? base.width * base.height : 0,
+      budget: api.canvasPixelBudget(),
+      density: detail ? Math.round(detail.width / parseFloat(detail.style.width) * 100) / 100 : 0,
+      dpr, covers
+    };
+  }`);
+  check("a page zoomed to 500% keeps its canvas inside the pixel budget",
+    zoomedIn.basePixels > 0 && zoomedIn.basePixels <= zoomedIn.budget * 1.01,
+    `${(zoomedIn.basePixels / 1e6).toFixed(1)}MP of ${(zoomedIn.budget / 1e6).toFixed(1)}MP`);
+  check("...and draws what is on screen sharp, in a detail tile at the screen's density",
+    zoomedIn.covers && zoomedIn.density >= Math.min(zoomedIn.dpr, 2) - 0.05,
+    `covers=${zoomedIn.covers} density ${zoomedIn.density} on a ${zoomedIn.dpr}x screen`);
+  const zoomedOut = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const view = document.getElementById("documentView");
+    api.setDocumentScale(0.01);
+    await settle(4000);
+    const box = view.getBoundingClientRect();
+    const onScreen = Array.from(view.querySelectorAll(".pdf-page")).filter((p) => {
+      const r = p.getBoundingClientRect();
+      return r.bottom > box.top && r.top < box.bottom;
+    });
+    const canvases = onScreen.map((p) => p.querySelector(".pdf-canvas:not(.is-stale)"));
+    await settle(1500);
+    const kept = canvases.filter((c) => c && c.isConnected).length;
+    api.fitDocumentToWidth();
+    await settle(1000);
+    return { onScreen: onScreen.length, drawn: canvases.filter(Boolean).length, kept };
+  }`);
+  check("zoomed all the way out, every page on screen is drawn and stays drawn",
+    zoomedOut.onScreen > 0 && zoomedOut.drawn === zoomedOut.onScreen && zoomedOut.kept === zoomedOut.onScreen,
+    `${zoomedOut.onScreen} on screen · ${zoomedOut.drawn} drawn · ${zoomedOut.kept} still drawn 1.5s later`);
   await page.evaluate(`async () => {
     const { api, settle } = window.__recall;
     window.getSelection()?.removeAllRanges();
@@ -5167,8 +5257,11 @@ try {
     return { cpuBacked, strip, wipedSpread, evented, silent, away };
   }`);
 
-  check("a page's canvas is kept off the GPU, where a lost context cannot clear it",
-    lostPixels.cpuBacked === true, `willReadFrequently=${lostPixels.cpuBacked}`);
+  // On the GPU by default: willReadFrequently put every draw pdf.js makes on
+  // the main thread's CPU (318ms median a page on the phone in the report).
+  // The repaint checks below are what make a lost context survivable instead.
+  check("a page's canvas is drawn on the GPU unless the reader has asked for the CPU",
+    lostPixels.cpuBacked === false, `willReadFrequently=${lostPixels.cpuBacked}`);
   check("...and covers its page box exactly, with no strip of page showing past it",
     lostPixels.strip && Math.abs(lostPixels.strip.w) < 0.5 && Math.abs(lostPixels.strip.h) < 0.5,
     lostPixels.strip ? `page ${lostPixels.strip.box} · box minus canvas: ${lostPixels.strip.w}px × ${lostPixels.strip.h}px` : "no canvas");
