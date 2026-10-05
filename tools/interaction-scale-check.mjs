@@ -828,10 +828,18 @@ const PROBE = `async (budget, tapCases) => {
     const wasReading = lineText();
     const anchor = api.readingAnchorNow();
     // Any "not found" the resume reports is a failure of this case, whatever
-    // the note ends up looking like — that warning IS the reported bug.
+    // the note ends up looking like — that warning IS the reported bug. Only
+    // that one: this window is nine seconds long, and a background sync that
+    // happens to fire in it warns too (the client here refuses the network, so
+    // "Could not fetch deck-deletion tombstones" lands whenever its timer does),
+    // which failed this case on CI with nothing wrong in the resume at all.
     const warnings = [];
     const realWarn = console.warn;
-    console.warn = (...a) => { warnings.push(a.map(String).join(" ")); realWarn(...a); };
+    console.warn = (...a) => {
+      const text = a.map(String).join(" ");
+      if (/reading position not found/i.test(text)) warnings.push(text);
+      realWarn(...a);
+    };
 
     api.setNotesScrolledSource(null);
     api.invalidateRenderedBlockCache();
