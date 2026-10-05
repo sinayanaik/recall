@@ -2575,6 +2575,10 @@ function watchDocumentInteraction() {
   const onTouchActivity = () => { lastTouchActivity = performance.now(); };
   view.addEventListener("touchstart", (event) => {
     onTouches(event);
+    // A finger landing is very often a pan about to start, and the scroll that
+    // says so comes only after the browser's slop. Nothing that can wait starts
+    // in that gap; if the finger stays put, it starts a moment later.
+    noteDocumentInteraction();
     // The end of this touch, heard on the element it started on — see
     // PDF_TOUCH_STALE_MS for why the view alone is not enough.
     Array.from(event.changedTouches || []).forEach((touch) => {
