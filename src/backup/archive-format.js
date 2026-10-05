@@ -394,6 +394,7 @@ export const NOT_BACKED_UP_SETTINGS_KEYS = {
   "recall:signedUrls": "Signed links that expire within the hour.",
   "recall:storage-probe": "A write used to test whether storage works.",
   "recall:lastBackup": "The record of the last backup — this device's history, not a preference.",
+  "recall:pdfRenderWorker": "A diagnostic switch for THIS device: PDF pages drawn on the main thread instead of in a worker; wrong on any other.",
   "recall:pdfCpuCanvas": "A diagnostic switch for THIS device's graphics (PDF pages drawn on the CPU); wrong on any other.",
   // Where this device was, a moment ago.
   "swipe-notes-current-deck-v1": "The deck open on this device.",

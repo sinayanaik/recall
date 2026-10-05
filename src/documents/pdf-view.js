@@ -32,6 +32,7 @@ import { isS3Configured } from "../cloud/s3-config.js?v=__BUILD__";
 import { PDF_BADGE_LAYER_CLASS, PDF_INK_HL_LAYER_CLASS, PDF_INK_LAYER_CLASS } from "../core/constants.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { ensurePdfJs, openPdfDocument } from "../core/lib-loader.js?v=__BUILD__";
+import { cleanupRenderPage, closeRenderDocument, openRenderDocument, pageRendererActive, pageRendererBakesDark, pageRendererFailed, pageRendererStatus, renderPageBitmap, startPageRenderer } from "./pdf-render-worker.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { paintDocumentHighlights } from "./pdf-highlights.js?v=__BUILD__";
 import { textItemGap } from "./pdf-selection.js?v=__BUILD__";
@@ -352,6 +353,8 @@ function releaseParked(key) {
   parked.rendered = null;
   parked.host = null;
   parked.doc.destroy().catch(() => {});
+  // ...and the page renderer's copy of it (src/documents/pdf-render-worker.js).
+  parked.renderDoc?.then((id) => closeRenderDocument(id));
 }
 
 // Everything parked for a deck that is not the one on screen. Called on every
@@ -450,6 +453,7 @@ function parkOpenDocument() {
   parkedDocuments.set(key, {
     sha: (openPdf.slot === DOC_SLOT_DOC ? deckPdfById(state.meta, openPdf.pdfId) : docSlotMeta(openPdf.slot))?.sha256 || "",
     doc: openPdf.doc,
+    renderDoc: openPdf.renderDoc,
     host,
     pages: openPdf.pages,
     rendered: openPdf.rendered,
@@ -491,6 +495,7 @@ export function tearDownDocumentView({ park = false } = {}) {
     // a parked document, which is the one case where the whole point is that the
     // worker keeps it.
     openPdf.doc.destroy().catch(() => {});
+    openPdf.renderDoc?.then((id) => closeRenderDocument(id));
   }
   openPdf = null;
   forgetDocumentPageGuess();
@@ -1110,6 +1115,7 @@ async function openDocumentViewBody({ force = false, slot = null, pdfId = null, 
       // bytes it is actually showing either way it was built.
       sha256: pdfMeta?.sha256 || "",
       doc: parked.doc,
+      renderDoc: parked.renderDoc || null,
       pageCount: parked.pageCount,
       baseWidth: parked.baseWidth,
       baseHeight: parked.baseHeight,
@@ -1191,6 +1197,9 @@ async function openDocumentViewBody({ force = false, slot = null, pdfId = null, 
   // or an empty scroller, which on an amoled theme is a black screen with no
   // way to tell it from a page. supersededOpen() draws the distinction.
   if (token !== pdfOpenToken) return supersededOpen();
+  // Started now, while the file is read, rather than after: the first time in a
+  // session it fetches pdf.js for the worker and starts it.
+  const pageRendererStarting = startPageRenderer();
 
   const storeKey = openSlot === DOC_SLOT_DOC
     ? pdfStoreKey(state.localDeckId, openPdfId)
@@ -1206,22 +1215,31 @@ async function openDocumentViewBody({ force = false, slot = null, pdfId = null, 
   }
 
   let doc;
+  let renderDoc = null;
   try {
     // A COPY of the bytes, deliberately: pdf.js transfers the buffer it is
     // given to its worker, which detaches it — and the blob in the store is the
     // one thing that must survive, since it is the only copy on this device.
     const data = new Uint8Array(await blob.arrayBuffer());
+    // The page renderer gets a copy of its own, opened alongside this one: it is
+    // where the pages are drawn (src/documents/pdf-render-worker.js), and this
+    // document is what everything else — viewports, text, the outline — reads.
+    // Started before the parse below and not waited for here; the first page
+    // render waits for it, and falls back to the main thread if it never comes.
+    renderDoc = (await pageRendererStarting) ? openRenderDocument(data.slice()) : null;
     const parseStartedAt = performance.now();
     doc = await openPdfDocument(data);
     expectPdfPagePaint(timingKind, openStartedAt,
       `read ${Math.round(readMs)}ms · parse ${Math.round(performance.now() - parseStartedAt)}ms · ${doc.numPages} pages · ${Math.round(blob.size / 1024)}KB`);
   } catch (error) {
+    renderDoc?.then((id) => closeRenderDocument(id));
     console.error("Could not read the PDF", error);
     showDocumentViewError(`Could not read this PDF — ${error?.message || "unexpected error"}`);
     return false;
   }
   if (token !== pdfOpenToken) {
     doc.destroy().catch(() => {});
+    renderDoc?.then((id) => closeRenderDocument(id));
     return supersededOpen();
   }
 
@@ -1252,6 +1270,9 @@ async function openDocumentViewBody({ force = false, slot = null, pdfId = null, 
     // id that also live in deckKey are not.
     sha256: pdfMeta?.sha256 || "",
     doc,
+    // The page renderer's copy: a promise of its id, null when pages are drawn
+    // on the main thread.
+    renderDoc,
     pageCount: doc.numPages,
     // Every page starts out assumed to be the size of page 1 — which is true
     // for essentially every paper, and self-correcting for the ones where it
@@ -2274,60 +2295,30 @@ async function renderPage(pageNumber) {
     // want, and canvas recovery repaints at what is actually on the canvas.
     const outputScale = canvasOutputScale(viewport.width, viewport.height);
     entry.renderOutputScale = outputScale;
-    const { canvas, context, transform } = createPageCanvas(viewport, outputScale);
-    // Kept, so a page that is trimmed or re-scaled mid-render can STOP the
+    // Drawn in the page renderer's worker when there is one, on the main thread
+    // when there is not — see startPageDraw. Kept as the entry's renderTask
+    // either way, so a page that is trimmed or re-scaled mid-render can STOP the
     // render rather than let it run to the end and throw the canvas away. A
     // fling past twenty pages used to rasterise all twenty, in full, on the
     // main thread, while the page the reader stopped on waited behind them.
-    const renderTask = page.render({ canvasContext: context, viewport, transform });
-    entry.renderTask = renderTask;
-    // ── Held, not raced, while the page is moving ───────────────────────────
-    //
-    // pdf.js asks before every slice (onContinue). A page that already shows
-    // SOMETHING — the stretched canvas of the last zoom, or a lead page that is
-    // not on screen at all — waits between slices while the reader is scrolling
-    // or pinching, and goes on from where it stopped once they stop. Every slice
-    // is GPU work the compositor has to share a frame with, and a frame of
-    // scrolling is worth more than a slice of a page nobody is looking at yet.
-    //
-    // It keeps its slot while it waits, so nothing else starts behind its back
-    // (the fault that took the last version of this out), and a resting finger
-    // is not moving (the other one). A page blank on screen, or one somebody is
-    // waiting on by name, is never held; and if one of those needs the slot a
-    // held render is sitting on, the held one gives it up (pumpRenderQueue).
-    let firstSliceAt = 0;
-    let heldMs = 0;
-    renderTask.onContinue = (proceed) => {
-      if (!firstSliceAt) firstSliceAt = performance.now();
-      if (renderShouldHold(pageNumber, entry)) {
-        const heldAt = performance.now();
-        entry.heldContinue = () => {
-          heldMs += performance.now() - heldAt;
-          proceed();
-        };
-        heldRenders.add(entry);
-        armInteractionSettle();
-        return;
-      }
-      proceed();
-    };
+    const draw = startPageDraw({ entry, pageNumber, page, viewport, outputScale, holdWhileMoving: true });
+    entry.renderTask = draw;
+    let drawn;
     try {
-      await renderTask.promise;
+      drawn = await draw.promise;
     } finally {
-      if (entry.renderTask === renderTask) entry.renderTask = null;
-      entry.heldContinue = null;
-      heldRenders.delete(entry);
+      if (entry.renderTask === draw) entry.renderTask = null;
     }
+    const { canvas } = drawn;
     // The slot is for rasterising. The layers below are their own, smaller
     // work, and the next page should not wait for them.
     slot.release();
     if (stale()) {
+      releaseCanvasBitmap(canvas);
       noteWastedRender("dropped");
       return;
     }
     const drawnAt = performance.now();
-    // Dark page goes into the pixels here, before anyone sees them.
-    bakePagePaper(canvas);
     // The page's text, asked for once the page has drawn and is still wanted.
     // It used to be asked alongside render(), so a render that was then
     // cancelled — a zoom, a trim, a fling — still left a text extraction in the
@@ -2344,8 +2335,12 @@ async function renderPage(pageNumber) {
     // re-draws three pages waited for the first page's words before the second
     // could start. Asked once the queue is empty, or at once for a page somebody
     // needs the words of (whenDocumentPageReady), or after a short wait at most.
+    //
+    // With the page renderer this document's worker draws nothing, so there is
+    // no queue to wait behind and the words are asked for at once.
     const textContent = textLayerNeedsRebuild(entry, scale)
-      ? whenRenderQueueIdle(entry, stale).then(() => (stale() ? null : page.getTextContent()))
+      ? (drawn.where === "worker" ? Promise.resolve() : whenRenderQueueIdle(entry, stale))
+        .then(() => (stale() ? null : page.getTextContent()))
       : null;
     textContent?.catch(() => {});
 
@@ -2356,20 +2351,22 @@ async function renderPage(pageNumber) {
     // the page, and with dark page on the canvas is a stacking context painted
     // in tree order — after the layers it would cover them.
     const staleCanvas = entry.el.querySelector(".pdf-canvas.is-stale");
-    if (staleCanvas) staleCanvas.replaceWith(canvas);
-    else entry.el.prepend(canvas);
+    if (staleCanvas) {
+      staleCanvas.replaceWith(canvas);
+      releaseCanvasBitmap(staleCanvas);
+    } else entry.el.prepend(canvas);
     openPdf.rendered.add(pageNumber);
     parsedPages.add(pageNumber);
     entry.urgent = false;
     // Time spent held while the reader moved is not time the page took.
-    samplePdfTiming("render", drawnAt - renderStartedAt - heldMs);
-    // ...split into the wait for the worker (the page parsed, its fonts and
+    samplePdfTiming("render", drawnAt - renderStartedAt - drawn.heldMs);
+    // ...split into the wait for pdf.js's worker (the page parsed, its fonts and
     // images decoded: the first slice is when pdf.js has something to draw) and
-    // the drawing itself.
-    if (firstSliceAt) {
-      samplePdfTiming("worker", firstSliceAt - renderStartedAt);
-      samplePdfTiming("draw", Math.max(0, drawnAt - firstSliceAt - heldMs));
-    }
+    // the drawing itself — which, with the page renderer, happens off the main
+    // thread, and what the main thread pays is only the swap (`swapMs`).
+    samplePdfTiming("worker", drawn.firstSliceMs);
+    samplePdfTiming("draw", drawn.drawMs);
+    if (drawn.where === "worker") samplePdfTiming("swap", drawn.swapMs);
     firstPdfPagePainted(`${(canvas.width * canvas.height / 1e6).toFixed(1)}MP canvas`);
     if (pageWantsDetail(outputScale)) scheduleDetail();
     // A page that drew has no failed attempts behind it any more. Without this
@@ -3023,6 +3020,7 @@ function dropDetail(entry) {
   entry.detailTask = null;
   if (task) { try { task.cancel(); } catch (_) { /* already settled */ } }
   entry.detail?.canvas.remove();
+  releaseCanvasBitmap(entry.detail?.canvas);
   entry.detail = null;
 }
 
@@ -3105,27 +3103,22 @@ async function drawDetailTile(pageNumber, entry, region) {
     const wanted = Math.min(PDF_MAX_CANVAS_SCALE, window.devicePixelRatio || 1);
     const density = Math.min(wanted, Math.sqrt(canvasPixelBudget() / Math.max(1, region.width * region.height)));
     if (density <= (entry.renderOutputScale || 1) + 0.05) return;
-    const canvas = document.createElement("canvas");
-    canvas.className = "pdf-detail";
-    canvas.width = Math.max(1, Math.floor(region.width * density));
-    canvas.height = Math.max(1, Math.floor(region.height * density));
+    task = startPageDraw({ entry, pageNumber, page, viewport, region, density });
+    entry.detailTask = task;
+    const { canvas } = await task.promise;
+    const base = entry.el.querySelector(".pdf-canvas:not(.is-stale)");
+    if (stale() || !base) {
+      releaseCanvasBitmap(canvas);
+      return;
+    }
     canvas.style.left = `${region.x}px`;
     canvas.style.top = `${region.y}px`;
     canvas.style.width = `${region.width}px`;
     canvas.style.height = `${region.height}px`;
-    const context = canvas.getContext("2d", { alpha: false });
-    task = page.render({
-      canvasContext: context,
-      viewport,
-      transform: [density, 0, 0, density, -region.x * density, -region.y * density]
-    });
-    entry.detailTask = task;
-    await task.promise;
-    if (stale()) return;
-    bakePagePaper(canvas);
-    const base = entry.el.querySelector(".pdf-canvas:not(.is-stale)");
-    if (!base) return;
-    entry.detail?.canvas.remove();
+    if (entry.detail) {
+      entry.detail.canvas.remove();
+      releaseCanvasBitmap(entry.detail.canvas);
+    }
     base.after(canvas);
     entry.detail = { canvas, region, scale };
   } catch (error) {
@@ -3180,6 +3173,178 @@ export function pdfCanvasOnCpu() {
     try { cpuCanvasPreference = localStorage.getItem(PDF_CPU_CANVAS_KEY) === "1"; } catch (_) { cpuCanvasPreference = false; }
   }
   return cpuCanvasPreference;
+}
+
+// ── Drawing a page: in the renderer's worker, or here ─────────────────────
+//
+// Everything that puts pixels on a page — a render, a detail tile, a repaint
+// after a lost context or a dark-page toggle — comes through here, so there is
+// one answer to "where is this page drawn". In the page renderer
+// (src/documents/pdf-render-worker.js) when it is running and has this
+// document open: pdf.js draws into an OffscreenCanvas on another core, and the
+// finished bitmap is shown in a `bitmaprenderer` canvas, which costs the main
+// thread a pointer move. Otherwise on the main thread, as it always was —
+// including for the rest of the session the moment the worker fails at
+// anything that is not a cancel.
+//
+// Resolves { canvas, firstSliceMs, drawMs, heldMs, swapMs, where }. `cancel` stops
+// it wherever it is running and rejects with a RenderingCancelledException, as a
+// pdf.js render task does. `holdWhileMoving` is renderPage's hold, which only
+// means anything on the main thread: a worker's slices cost the reader nothing.
+// `region` and `density` draw the detail tile's sub-rectangle instead of the page.
+const bitmapCanvases = new WeakSet();
+
+function canvasFromBitmap(bitmap, className) {
+  const canvas = document.createElement("canvas");
+  canvas.className = className;
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+  const context = canvas.getContext("bitmaprenderer");
+  if (!context) {
+    bitmap.close();
+    throw new Error("no bitmaprenderer context");
+  }
+  context.transferFromImageBitmap(bitmap);
+  bitmapCanvases.add(canvas);
+  // Heard the same way a 2D page canvas is, should the browser ever announce it.
+  canvas.addEventListener("contextlost", () => lostCanvases.add(canvas));
+  canvas.addEventListener("contextrestored", () => {
+    lostCanvases.add(canvas);
+    scheduleCanvasRecovery();
+  });
+  return canvas;
+}
+
+// A page canvas's bitmap is a full page of pixels; handed back the moment the
+// canvas leaves the page rather than whenever the collector gets to it.
+function releaseCanvasBitmap(canvas) {
+  if (!canvas || !bitmapCanvases.has(canvas)) return;
+  bitmapCanvases.delete(canvas);
+  try { canvas.getContext("bitmaprenderer")?.transferFromImageBitmap(null); } catch (_) { /* already empty */ }
+}
+
+function cancelledDraw(pageNumber) {
+  return Object.assign(new Error(`Rendering cancelled, page ${pageNumber}`), { name: "RenderingCancelledException" });
+}
+
+function startPageDraw({ entry, pageNumber, page, viewport, outputScale = 1, region = null, density = 1, holdWhileMoving = false }) {
+  let cancelled = false;
+  let inner = null;
+  const startedAt = performance.now();
+
+  const onMain = () => {
+    let canvas;
+    let context;
+    let transform;
+    if (region) {
+      canvas = document.createElement("canvas");
+      canvas.className = "pdf-detail";
+      canvas.width = Math.max(1, Math.floor(region.width * density));
+      canvas.height = Math.max(1, Math.floor(region.height * density));
+      context = canvas.getContext("2d", { alpha: false });
+      transform = [density, 0, 0, density, -region.x * density, -region.y * density];
+    } else {
+      ({ canvas, context, transform } = createPageCanvas(viewport, outputScale));
+    }
+    const renderTask = page.render({ canvasContext: context, viewport, transform });
+    inner = renderTask;
+    let firstSliceAt = 0;
+    let heldMs = 0;
+    // ── Held, not raced, while the page is moving ─────────────────────────
+    //
+    // pdf.js asks before every slice (onContinue). A page that already shows
+    // SOMETHING — the stretched canvas of the last zoom, or a lead page that is
+    // not on screen at all — waits between slices while the reader is
+    // scrolling or pinching, and goes on from where it stopped once they stop.
+    // It keeps its slot while it waits, so nothing else starts behind its back,
+    // and a resting finger is not moving. A page blank on screen, or one
+    // somebody is waiting on by name, is never held; and if one of those needs
+    // the slot a held render is sitting on, the held one gives it up
+    // (pumpRenderQueue).
+    renderTask.onContinue = (proceed) => {
+      if (!firstSliceAt) firstSliceAt = performance.now();
+      if (holdWhileMoving && entry && renderShouldHold(pageNumber, entry)) {
+        const heldAt = performance.now();
+        entry.heldContinue = () => {
+          heldMs += performance.now() - heldAt;
+          proceed();
+        };
+        heldRenders.add(entry);
+        armInteractionSettle();
+        return;
+      }
+      proceed();
+    };
+    return renderTask.promise
+      .then(() => {
+        const drawnAt = performance.now();
+        // Dark page goes into the pixels here, before anyone sees them.
+        bakePagePaper(canvas);
+        const first = firstSliceAt || drawnAt;
+        return { canvas, firstSliceMs: first - startedAt, drawMs: Math.max(0, drawnAt - first - heldMs), heldMs, swapMs: 0, where: "main" };
+      })
+      .finally(() => {
+        if (entry && holdWhileMoving) {
+          entry.heldContinue = null;
+          heldRenders.delete(entry);
+        }
+      });
+  };
+
+  const inWorker = async (renderDoc) => {
+    const id = await renderDoc;
+    if (cancelled) throw cancelledDraw(pageNumber);
+    if (id == null || !pageRendererActive()) {
+      // The renderer could not open this document: drawn here from now on,
+      // and App Info says so.
+      if (openPdf?.renderDoc === renderDoc) {
+        openPdf.renderDoc = null;
+        noteCanvasSetup();
+      }
+      return onMain();
+    }
+    const job = renderPageBitmap({ id, pageNumber, scale: viewport.scale, outputScale, region, density, dark: stageIsDark() });
+    inner = job;
+    let result;
+    try {
+      result = await job.promise;
+    } catch (error) {
+      if (cancelled || error?.name === "RenderingCancelledException") throw cancelledDraw(pageNumber);
+      if (pageRendererActive()) pageRendererFailed(`page ${pageNumber} could not be drawn there — ${error?.message || "unexpected error"}`);
+      noteCanvasSetup();
+      return onMain();
+    }
+    if (cancelled) {
+      try { result.bitmap.close(); } catch (_) { /* nothing to free */ }
+      throw cancelledDraw(pageNumber);
+    }
+    const swapStartedAt = performance.now();
+    const canvas = canvasFromBitmap(result.bitmap, region ? "pdf-detail" : "pdf-canvas");
+    if (!region) {
+      // Sized as createPageCanvas sizes a canvas: rounded to the page box.
+      canvas.style.width = `${Math.round(viewport.width)}px`;
+      canvas.style.height = `${Math.round(viewport.height)}px`;
+    }
+    if (result.dark) canvas.classList.add(PDF_DARK_PIXELS_CLASS);
+    return {
+      canvas,
+      firstSliceMs: result.firstSliceMs,
+      drawMs: result.drawMs,
+      heldMs: 0,
+      swapMs: performance.now() - swapStartedAt,
+      where: "worker"
+    };
+  };
+
+  const renderDoc = openPdf?.renderDoc;
+  const promise = renderDoc && pageRendererActive() ? inWorker(renderDoc) : onMain();
+  return {
+    promise,
+    cancel() {
+      cancelled = true;
+      try { inner?.cancel(); } catch (_) { /* already settled */ }
+    }
+  };
 }
 
 function createPageCanvas(viewport, outputScale) {
@@ -3253,13 +3418,30 @@ export function canBakeDarkPage() {
   return darkBakeSupport;
 }
 
+// Whether pages being drawn now can carry dark page in their pixels: in the
+// page renderer's worker when it is drawing them, here otherwise.
+function drawingInWorker() {
+  return Boolean(openPdf?.renderDoc) && pageRendererActive();
+}
+
+function darkPageBakes() {
+  return drawingInWorker() ? pageRendererBakesDark() : canBakeDarkPage();
+}
+
 // How pages are being drawn on this device, for App Info.
+let mainThreadDarkNote = "";
+
 function noteCanvasSetup(dark = null) {
+  if (dark) mainThreadDarkNote = dark;
+  const worker = drawingInWorker();
   notePdfCanvasSetup({
     cpu: pdfCanvasOnCpu(),
     budget: canvasPixelBudget(),
     slots: renderConcurrency(),
-    dark: dark || (canBakeDarkPage() ? "drawn into the page" : "CSS filter")
+    drawn: worker ? "in a background thread" : `on the main thread (${pageRendererStatus() || "renderer not in use"})`,
+    dark: worker
+      ? (pageRendererBakesDark() ? "drawn into the page" : "CSS filter")
+      : (mainThreadDarkNote || (canBakeDarkPage() ? "drawn into the page" : "CSS filter"))
   });
 }
 
@@ -3269,7 +3451,7 @@ function stageIsDark() {
 
 // Whether a page canvas's pixels are for the paper the stage is showing now.
 function canvasPaperMatches(canvas) {
-  if (!canvas || !canBakeDarkPage()) return true;
+  if (!canvas || !darkPageBakes()) return true;
   return canvas.classList.contains(PDF_DARK_PIXELS_CLASS) === stageIsDark();
 }
 
@@ -3330,7 +3512,7 @@ function bakePagePaper(canvas) {
 let repaperChain = Promise.resolve();
 
 function repaperPages() {
-  if (!openPdf || !canBakeDarkPage()) return;
+  if (!openPdf || !darkPageBakes()) return;
   const current = currentDocumentPage();
   const pages = [...openPdf.rendered].sort((a, b) => Math.abs(a - current) - Math.abs(b - current));
   pages.forEach((pageNumber) => {
@@ -3388,9 +3570,14 @@ function canvasProbe() {
 function canvasLostItsPixels(canvas) {
   if (lostCanvases.has(canvas)) return true;
   try {
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return false;
-    if (typeof ctx.isContextLost === "function" && ctx.isContextLost()) return true;
+    // A page drawn by the page renderer shows its bitmap through a
+    // `bitmaprenderer` context and has no 2D one to ask; it is sampled like any
+    // other, below.
+    if (!bitmapCanvases.has(canvas)) {
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return false;
+      if (typeof ctx.isContextLost === "function" && ctx.isContextLost()) return true;
+    }
     const w = canvas.width;
     const h = canvas.height;
     if (w < 6 || h < 6) return false;
@@ -3431,12 +3618,14 @@ function repaintPageCanvas(pageNumber, lost) {
   entry.repaint = (async () => {
     const page = await doc.getPage(pageNumber);
     if (stale()) return;
-    const { canvas, context, transform } = createPageCanvas(viewport, outputScale);
-    await page.render({ canvasContext: context, viewport, transform }).promise;
-    if (stale()) return;
-    bakePagePaper(canvas);
+    const { canvas } = await startPageDraw({ entry, pageNumber, page, viewport, outputScale }).promise;
+    if (stale()) {
+      releaseCanvasBitmap(canvas);
+      return;
+    }
     lostCanvases.delete(lost);
     lost.replaceWith(canvas);
+    releaseCanvasBitmap(lost);
   })()
     .catch((error) => {
       console.warn(`Could not repaint page ${pageNumber}`, error);
@@ -3884,6 +4073,7 @@ function unrenderPage(pageNumber) {
   entry.attempts = 0;
   openPdf.rendered.delete(pageNumber);
   dropDetail(entry);
+  entry.el.querySelectorAll(".pdf-canvas").forEach(releaseCanvasBitmap);
   entry.el.innerHTML = "";
   entry.markLayer = null;
   entry.areaLayer = null;
@@ -3944,6 +4134,8 @@ function releaseFarPages(current) {
 function releasePageResources(pageNumber) {
   const doc = openPdf?.doc;
   if (!doc) return;
+  // The page renderer holds its own parse of the page, images and all.
+  openPdf.renderDoc?.then((id) => cleanupRenderPage(id, pageNumber));
   doc.getPage(pageNumber).then((page) => { try { page.cleanup(); } catch (_) { /* busy */ } }, () => {});
 }
 

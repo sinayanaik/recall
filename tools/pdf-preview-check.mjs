@@ -36,7 +36,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { findChrome, launchChrome, connect, openPage, emulatePhone } from "./cdp.mjs";
-import { PDFJS_VERSION, pdfjsSources } from "./pdfjs-source.mjs";
+import { PDFJS_VERSION, pdfjsSources, servePdfjsFromDisk } from "./pdfjs-source.mjs";
 import { PDFLIB_VERSION, pdflibSource } from "./pdflib-source.mjs";
 import { HTMLTOIMAGE_VERSION, htmlToImageSource } from "./htmltoimage-source.mjs";
 import { FONT_SIZE, PAGE_HEIGHT, PAGE_WIDTH, SCAN_MEASURE, SPLIT_WORD_TEXT, buildFixturePdf, fixtureLineOrigin, scannedInkY, scannedPaperY } from "./pdf-fixture.mjs";
@@ -115,6 +115,9 @@ function serveOn(dir) {
 const API_SRC = `async () => {
   const paths = [
     "/src/documents/pdf-view.js?v=__BUILD__",
+    // The page renderer and App Info's readout, for section 14.
+    "/src/documents/pdf-render-worker.js?v=__BUILD__",
+    "/src/documents/pdf-timing.js?v=__BUILD__",
     "/src/documents/pdf-selection.js?v=__BUILD__",
     "/src/documents/pdf-highlights.js?v=__BUILD__",
     "/src/documents/pdf-outline.js?v=__BUILD__",
@@ -293,6 +296,11 @@ try {
   } catch (e) { console.warn("check: could not install the pdf.js worker", e); }
 })();`
   });
+
+  // ...and the same source for the CDN URLs, which the PDF page renderer
+  // fetches to hand to its worker (src/documents/pdf-render-worker.js). The
+  // pages in this check are drawn there, as they are in the app.
+  await servePdfjsFromDisk(client, page, sources);
 
   if (pdflib) await page.call("Page.addScriptToEvaluateOnNewDocument", { source: pdflib });
   if (htmlToImage) await page.call("Page.addScriptToEvaluateOnNewDocument", { source: htmlToImage });
@@ -5388,7 +5396,19 @@ try {
     await api.whenDocumentPageReady(1);
     const pageEl = () => document.querySelector('.pdf-page[data-page-number="1"]');
     const canvasOf = (el) => el && el.querySelector("canvas.pdf-canvas:not(.is-stale)");
+    // A page drawn by the page renderer is a bitmaprenderer canvas, which is
+    // blanked by handing it a black bitmap; one drawn on the main thread is a 2D
+    // canvas, painted black.
     const wipe = (c) => {
+      const shown = c.getContext("bitmaprenderer");
+      if (shown) {
+        const black = new OffscreenCanvas(c.width, c.height);
+        const bctx = black.getContext("2d");
+        bctx.fillStyle = "#000";
+        bctx.fillRect(0, 0, c.width, c.height);
+        shown.transferFromImageBitmap(black.transferToImageBitmap());
+        return;
+      }
       const ctx = c.getContext("2d");
       ctx.save();
       ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -5412,7 +5432,7 @@ try {
       return Math.round(hi - lo);
     };
     const first = canvasOf(pageEl());
-    const cpuBacked = Boolean(first && first.getContext("2d").getContextAttributes?.().willReadFrequently);
+    const cpuBacked = Boolean(first && first.getContext("2d")?.getContextAttributes?.().willReadFrequently);
     const textLayer = pageEl()?.querySelector(".pdf-text-layer") || null;
 
     // With the events: contextlost, then a restore that comes back blank.
@@ -7344,6 +7364,69 @@ try {
       check("...which the pen's undo takes back off", scanBox.afterUndo === 0, `${scanBox.afterUndo} mark(s) left after undo`);
     }
   }
+
+  // ── 14. Pages drawn in a worker, and drawn here when that fails ───────────
+  //
+  // On the phone, drawing a page of a paper full of figures cost the main
+  // thread 0.6–7s however the canvas was set up, and the reader's scroll waited
+  // for all of it. Pages are drawn in the page renderer's worker now
+  // (src/documents/pdf-render-worker.js) and shown as finished bitmaps — every
+  // check above ran that way. Asserted here: that it really is the worker
+  // drawing (a bitmaprenderer canvas, not a 2D one), with a real page on it;
+  // and that when the worker fails, pages are drawn on the main thread for the
+  // rest of the session, still with a page on them, and App Info says which.
+  // Last in the file, because the failure is for the rest of the session.
+  const spreadOf = `(c) => {
+    const probe = document.createElement("canvas");
+    probe.width = 24; probe.height = 32;
+    const ctx = probe.getContext("2d");
+    ctx.drawImage(c, 0, 0, c.width, c.height, 0, 0, 24, 32);
+    const data = ctx.getImageData(0, 0, 24, 32).data;
+    let lo = 255, hi = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      const y = 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
+      if (y < lo) lo = y;
+      if (y > hi) hi = y;
+    }
+    return Math.round(hi - lo);
+  }`;
+  const renderer = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const spread = ${spreadOf};
+    await api.openDocumentView({ force: true });
+    api.scrollToDocumentPage(1, 0, { smooth: false });
+    await api.whenDocumentPageReady(1);
+    await settle(300);
+    const canvasNow = () => document.querySelector('.pdf-page[data-page-number="1"] canvas.pdf-canvas:not(.is-stale)');
+    const shown = canvasNow();
+    const inWorker = {
+      active: api.pageRendererActive(),
+      bitmap: Boolean(shown) && shown.getContext("2d") === null,
+      spread: shown ? spread(shown) : 0,
+      says: /pages drawn: in a background thread/.test(api.pdfTimingReport())
+    };
+    api.pageRendererFailed("forced by the check");
+    await api.openDocumentView({ force: true });
+    api.scrollToDocumentPage(1, 0, { smooth: false });
+    await api.whenDocumentPageReady(1);
+    await settle(300);
+    const drawnHere = canvasNow();
+    const onMain = {
+      twoD: Boolean(drawnHere?.getContext("2d")),
+      spread: drawnHere ? spread(drawnHere) : 0,
+      says: /pages drawn: on the main thread \\(forced by the check\\)/.test(api.pdfTimingReport()),
+      restarts: await api.startPageRenderer()
+    };
+    return { inWorker, onMain };
+  }`);
+  check("pages are drawn in the page renderer's worker and shown as bitmaps",
+    renderer.inWorker.active === true && renderer.inWorker.bitmap === true && renderer.inWorker.spread >= 40,
+    JSON.stringify(renderer.inWorker));
+  check("...and App Info says so", renderer.inWorker.says === true);
+  check("when the worker fails, pages are drawn on the main thread instead, with a page on them",
+    renderer.onMain.twoD === true && renderer.onMain.spread >= 40, JSON.stringify(renderer.onMain));
+  check("...App Info says which and why, and the worker is not started again this session",
+    renderer.onMain.says === true && renderer.onMain.restarts === false);
 
   if (SHOT) {
     if (SHOT_PAGES) await emulatePhone(page, { width: 390, height: 780 });

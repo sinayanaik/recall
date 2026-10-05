@@ -1765,6 +1765,8 @@ function moveTime(event) {
 function cancelPress() {
   if (pressTimer) clearTimeout(pressTimer);
   pressTimer = null;
+  if (pressConfirmFrame) cancelAnimationFrame(pressConfirmFrame);
+  pressConfirmFrame = 0;
   pressActive = false;
   stopPressDrift();
   // Dropped rather than left behind: a note re-renders by replacing its blocks,
@@ -2189,7 +2191,56 @@ function onRootTouchStart(event) {
   watchPressDrift();
   if (pressTimer) clearTimeout(pressTimer);
   const onMark = Boolean(event.target?.closest?.("mark"));
-  pressTimer = setTimeout(() => firePress(root, pressX, pressY), onMark ? MARK_LONG_PRESS_MS : LONG_PRESS_MS);
+  const delay = onMark ? MARK_LONG_PRESS_MS : LONG_PRESS_MS;
+  const armedAt = performance.now();
+  pressTimer = setTimeout(() => confirmPressInNextFrame(root, armedAt + delay), delay);
+}
+
+// ── A press is decided in the frame after its timer, not in the timer ──────
+//
+// The timer is main-thread time, and so is the finger's first move. When the
+// main thread is busy as the finger lands — a page being drawn, a zoom's
+// relayout, a text layer going in — both are queued, and the timer can run
+// FIRST: the press fires on a finger that has already left, the next move
+// finds a selection in progress and refuses the scroll, and every move after it
+// extends a selection across the page. That is a scroll that will not scroll
+// and grows heavier with every frame. tools/pdf-perf.mjs's pan flow did exactly
+// this in three runs out of four after a zoom: 7,704 characters selected, 80
+// long tasks, the page not moved at all.
+//
+// Chrome hands queued touchmoves to the page at the start of a frame, before
+// that frame's animation callbacks — so deciding there means any move that has
+// already happened is seen first, and cancels the press if it went past the
+// slop. Where the browser can say input is still waiting
+// (navigator.scheduling.isInputPending), it is given up to PRESS_CONFIRM_FRAMES
+// to arrive. A press the reader really is holding costs a frame or two more.
+export const PRESS_CONFIRM_FRAMES = 3;
+
+let pressConfirmFrame = 0;
+
+function inputIsWaiting() {
+  try {
+    return Boolean(navigator.scheduling?.isInputPending?.({ includeContinuous: true }));
+  } catch (_) {
+    return false;
+  }
+}
+
+function confirmPressInNextFrame(root, dueAt, framesLeft = PRESS_CONFIRM_FRAMES) {
+  if (!pressActive) return;
+  cancelAnimationFrame(pressConfirmFrame);
+  pressConfirmFrame = requestAnimationFrame(() => {
+    pressConfirmFrame = 0;
+    if (!pressActive) return;
+    // Still input on its way, or the timer ran so late that the main thread was
+    // plainly busy when it was due: one more frame for the finger to report.
+    const late = performance.now() - dueAt > 100;
+    if (framesLeft > 1 && (inputIsWaiting() || late)) {
+      confirmPressInNextFrame(root, performance.now(), framesLeft - 1);
+      return;
+    }
+    firePress(root, pressX, pressY);
+  });
 }
 
 // Non-passive, and it early-returns in two property reads when there is no

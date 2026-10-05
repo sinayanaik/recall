@@ -288,6 +288,38 @@ export async function ensurePdfJs() {
   return true;
 }
 
+// ── pdf.js for a worker of our own ─────────────────────────────────────────
+//
+// The PDF page renderer (src/documents/pdf-render-worker.js) runs pdf.js's
+// drawing code in a worker, which loads the library with importScripts — and a
+// worker cannot importScripts the CDN URL and rely on the service worker the
+// way a page <script> does. So the library's source is fetched here, through
+// the page (answered from the precache offline, exactly as the core worker's is
+// above), and handed over as a same-origin Blob URL. The core worker's URL goes
+// with it: the renderer starts its own copy from the same blob.
+//
+// Null when either cannot be had — the renderer then reports itself unavailable
+// and pages are drawn on the main thread as they always were.
+let pdfjsLibraryBlobUrl = "";
+
+export async function pdfjsWorkerSources() {
+  if (!(await ensurePdfJs())) return null;
+  if (!pdfjsLibraryBlobUrl) {
+    try {
+      const response = await fetch(LIB_URLS.pdfjs);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      pdfjsLibraryBlobUrl = URL.createObjectURL(new Blob([await response.blob()], { type: "text/javascript" }));
+    } catch (error) {
+      console.warn("pdf.js could not be fetched for the page renderer", error);
+      return null;
+    }
+  }
+  const core = pdfWorkerBlobUrl || window.pdfjsLib?.GlobalWorkerOptions?.workerSrc || "";
+  // A cross-origin URL cannot be started as a worker from inside a worker.
+  if (!core.startsWith("blob:")) return null;
+  return { library: pdfjsLibraryBlobUrl, core };
+}
+
 // ── One pdf.js worker for the whole session ────────────────────────────────
 //
 // pdf.js gives every getDocument() a worker of its own unless it is handed
