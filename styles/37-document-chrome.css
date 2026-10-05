@@ -634,7 +634,9 @@
    35% yellow multiplied over a figure washes the figure out, and the figure is
    the thing being highlighted. So a region is an OUTLINE with a faint wash
    inside it — the colour still says which highlight this is, and what is under
-   it stays readable. */
+   it stays readable. The blend is on the mark LAYER now, so a region is put in
+   the unblended layer beside it (.pdf-mark-layer.is-area); `normal` here is
+   kept for a page painted before that layer existed. */
 .pdf-mark[data-kind="area"] {
   mix-blend-mode: normal;
   border-radius: 4px;
