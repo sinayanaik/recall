@@ -285,7 +285,7 @@ export function boxesIntersect(box, rect) {
 // makes a repaired highlight's text identical to what a fresh capture over the
 // same words produces.
 //
-// ── A space only where the page HAS one ──────────────────────────────────────
+// ── pdf.js already wrote the spaces ──────────────────────────────────────────
 //
 // "A bs tr ac t — Man y app li ca ti ons i n r obo ti cs", copied off a LaTeX
 // paper that any other reader copies as "Abstract—Many applications in
@@ -293,21 +293,27 @@ export function boxesIntersect(box, rect) {
 // did not already have one, on the theory that items are words. They are not:
 // pdf.js starts a new item at every font switch, and a paper switches font
 // inside a word all the time (small caps, a ligature from another font, an
-// italic letter). It reports a real gap between words as whitespace of its own,
-// so the space this added landed inside a word every single time it fired.
+// italic letter).
 //
-// So the page's own geometry decides. Two items on one baseline are one word
-// unless there is visibly room between them; an item on a different baseline
-// starts a new line even when pdf.js did not mark the end of the old one (an
-// end-of-line marker is often an empty item, which nothing here writes a span
-// for). Text that is rotated, vertical or right-to-left has no "left to right
-// along a baseline" to measure, and keeps the old answer.
+// The first fix measured the gap between the two items (the next item's x
+// against this one's x + width) and added a space when it looked like a word
+// gap. That still split words — "spherica l mode ls", "T his", "a re" — on
+// real papers, because it trusted item.width, and the width pdf.js reports for
+// a run does not always agree with where it puts the next one.
 //
-// A fraction of the font size, the same order as pdf.js's own threshold for
-// calling a gap a space. Kerning and the seam between two fonts are a few
-// hundredths of an em; the narrowest space in a justified line is about a fifth.
-export const PDF_WORD_GAP_RATIO = 0.15;
-
+// So no width is consulted at all. pdf.js has ALREADY decided where the word
+// gaps on a line are, from the glyph positions themselves: it writes a space
+// into the item's text, or emits a whitespace item of its own, for every
+// advance that is wider than a letter gap (compareWithLastPosition /
+// addFakeSpaces in its text extraction). Two items on one baseline with no
+// whitespace between them are therefore one word, and are joined with nothing.
+//
+// What is left for this function is the line break, which pdf.js marks with
+// hasEOL — often on an empty item that nothing here writes a span for. So a
+// change of baseline is a new line too, and so is a jump back to the left on
+// the same baseline: that is another run of text that happens to share it.
+// Text that is rotated, vertical or right-to-left has no "left to right along
+// a baseline" to compare, and keeps the old answer of a space.
 export function textItemGap(previous, next) {
   if (!previous) return "";
   if (previous.hasEOL) return "\n";
@@ -319,11 +325,9 @@ export function textItemGap(previous, next) {
   const size = Math.max(Number(previous.height) || a[3], Number(next.height) || b[3], 0);
   if (!(size > 0)) return " ";
   if (Math.abs(b[5] - a[5]) > size * 0.5) return "\n";
-  const gap = b[4] - (a[4] + (Number(previous.width) || 0));
-  // Back to the left by more than a character on the same baseline is not the
-  // next word of this line; it is another run of text that happens to share it.
-  if (gap < -size) return "\n";
-  return gap >= size * PDF_WORD_GAP_RATIO ? " " : "";
+  // Compared start to start, deliberately not against previous.width.
+  if (b[4] < a[4] - size) return "\n";
+  return "";
 }
 
 // The one cleanup every reader of a pdf.js text item goes through: collapse the

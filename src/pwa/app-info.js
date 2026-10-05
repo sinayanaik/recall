@@ -14,7 +14,8 @@ import { readLocalDeckIndex } from "../library/local-library.js?v=__BUILD__";
 import { probeLocalStorage } from "../storage/health.js?v=__BUILD__";
 import { GITHUB_REPO, compareCommits, fetchLiveRelease, fetchRepoRelease, releaseStampsIn, runningAppVersion, runningVersionLabel, setGithubReleaseCache } from "./release-info.js?v=__BUILD__";
 import { isMixedBuild, serviceWorkerRegistration, updateDownloadFailed, updateIsWaiting } from "./service-worker-client.js?v=__BUILD__";
-import { setButtonLoading } from "../ui/feedback.js?v=__BUILD__";
+import { setButtonLoading, showToast } from "../ui/feedback.js?v=__BUILD__";
+import { pdfTimingReport } from "../documents/pdf-timing.js?v=__BUILD__";
 import { lockPageScroll, unlockPageScroll } from "../ui/overlays.js?v=__BUILD__";
 
 export const appInfoModal = document.getElementById("appInfoModal");
@@ -605,9 +606,41 @@ export async function runProjectHealthCheck() {
   }
 }
 
+export const appInfoPdfTimings = document.getElementById("appInfoPdfTimings");
+
+export const appInfoCopyTimingsBtn = document.getElementById("appInfoCopyTimingsBtn");
+
+// The PDF reader's own timings, with the app version on top so a pasted copy
+// says which build it came from.
+function pdfTimingsText() {
+  return `Recall ${runningVersionLabel()}\n${pdfTimingReport()}`;
+}
+
+export function copyPdfTimings() {
+  const text = pdfTimingsText();
+  if (appInfoPdfTimings) appInfoPdfTimings.textContent = text;
+  const selectIt = () => {
+    // No clipboard API (an http:// LAN address is not a secure context): leave
+    // the text selected so the system's own copy is one tap away.
+    const range = document.createRange();
+    if (!appInfoPdfTimings) return;
+    range.selectNodeContents(appInfoPdfTimings);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    showToast("Selected — use your device's Copy");
+  };
+  if (!navigator.clipboard?.writeText) {
+    selectIt();
+    return;
+  }
+  navigator.clipboard.writeText(text).then(() => showToast("Timings copied"), selectIt);
+}
+
 export function openAppInfoModal() {
   if (!appInfoModal) return;
   if (appInfoVersion) appInfoVersion.textContent = runningVersionLabel();
+  if (appInfoPdfTimings) appInfoPdfTimings.textContent = pdfTimingsText();
   appInfoModal.hidden = false;
   lockPageScroll();
   refreshAppInfo();

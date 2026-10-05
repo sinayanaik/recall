@@ -90,7 +90,7 @@ import { documentHighlightEntries, noteHighlightEntries } from "./panels/highlig
 import { notifyHighlightsChanged, setHighlightsChangedHandler } from "./format/highlight-edit.js?v=__BUILD__";
 import { closeNotesToc, ensureNotesTocBuilt, flashNotesHeading, initNotesTocFolding, isNotesTocOpen, markNotesTocDirtyFromEditor, notesTocHeadings, notesTocScrollFrame, rawNotesHeadings, scrollNotesEditToHeadingIndex, scrollNotesHeadingIntoView, setNotesTocScrollFrame, tocPushesNotes, toggleNotesToc, updateNotesTocActive } from "./notes/toc.js?v=__BUILD__";
 import { closeClozePanel, openClozePanel, toggleClozePanelAll } from "./panels/cloze-panel.js?v=__BUILD__";
-import { appInfoBtn, appInfoCheckBtn, appInfoCloseBtn, appInfoHealthBtn, appInfoModal, appInfoReloadBtn, closeAppInfoModal, forceRefreshAppInfo, openAppInfoModal, runProjectHealthCheck } from "./pwa/app-info.js?v=__BUILD__";
+import { appInfoBtn, appInfoCheckBtn, appInfoCloseBtn, appInfoCopyTimingsBtn, appInfoHealthBtn, appInfoModal, appInfoReloadBtn, closeAppInfoModal, copyPdfTimings, forceRefreshAppInfo, openAppInfoModal, runProjectHealthCheck } from "./pwa/app-info.js?v=__BUILD__";
 import { FOREGROUND_SYNC_IDLE_MS, lastHiddenAt, onlineReconcileTimer, setLastHiddenAt, setOnlineReconcileTimer, updateOnlineIndicator } from "./pwa/online.js?v=__BUILD__";
 import { installIncomingFiles } from "./pwa/incoming-files.js?v=__BUILD__";
 import { applyUpdate, installManifestLink, registerServiceWorker } from "./pwa/service-worker-client.js?v=__BUILD__";
@@ -3354,6 +3354,7 @@ if (helpModal) {
 
 
 if (appInfoHealthBtn) appInfoHealthBtn.addEventListener("click", runProjectHealthCheck);
+if (appInfoCopyTimingsBtn) appInfoCopyTimingsBtn.addEventListener("click", copyPdfTimings);
 
 
 if (appInfoBtn) appInfoBtn.addEventListener("click", openAppInfoModal);

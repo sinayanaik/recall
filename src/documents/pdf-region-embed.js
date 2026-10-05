@@ -14,7 +14,7 @@
 
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
-import { ensurePdfJs } from "../core/lib-loader.js?v=__BUILD__";
+import { ensurePdfJs, openPdfDocument } from "../core/lib-loader.js?v=__BUILD__";
 import { centerDiagramContent, openDiagramModal } from "../render/diagram-zoom.js?v=__BUILD__";
 import { DOC_SLOT_DOC, docSlotMeta, documentStoreKey, recordDocSlot } from "./doc-slot.js?v=__BUILD__";
 import { deckPdfById, PDF_PRIMARY_ID, pdfStoreKey, recordPdfId } from "./pdf-multi.js?v=__BUILD__";
@@ -122,7 +122,7 @@ function openEmbedDoc(storeKey, pdfMeta) {
     // worker, which detaches it, and the blob in the store must survive —
     // same reasoning as the Document surface's own open (pdf-view.js).
     const data = new Uint8Array(await blob.arrayBuffer());
-    return window.pdfjsLib.getDocument({ data, isEvalSupported: false }).promise;
+    return openPdfDocument(data);
   })().catch((error) => {
     console.warn("Could not open the PDF for a region embed", error);
     return null;

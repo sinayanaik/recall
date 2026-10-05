@@ -288,6 +288,64 @@ export async function ensurePdfJs() {
   return true;
 }
 
+// ── One pdf.js worker for the whole session ────────────────────────────────
+//
+// pdf.js gives every getDocument() a worker of its own unless it is handed
+// one, and a new worker means fetching and PARSING the worker script again —
+// 1.1MB of it, on the main thread's dime as far as the reader can tell, before
+// the first byte of the paper is looked at. That was paid on every open of a
+// deck's PDF, every switch between two PDFs of one deck, every import and every
+// region picture in a note: "even switching/opening the pdf tab is painfully
+// slow". One worker is created the first time it is needed and every document
+// after that is opened in it. A document's destroy() leaves a worker it was
+// HANDED alone (pdf.js only tears down workers it made itself), so closing one
+// paper does not cost the next one its worker.
+//
+// If that worker is lost — an OS that kills a background thread under memory
+// pressure does not ask — the open that finds out gets one more try on a fresh
+// worker, and the session carries on with that one.
+let sharedPdfWorker = null;
+
+function pdfWorkerForOpen() {
+  const lib = window.pdfjsLib;
+  if (!lib?.PDFWorker) return null;
+  if (!sharedPdfWorker || sharedPdfWorker.destroyed) {
+    try {
+      sharedPdfWorker = new lib.PDFWorker({ name: "recall-pdf" });
+    } catch (error) {
+      console.warn("Could not start a shared pdf.js worker — each document will start its own", error);
+      sharedPdfWorker = null;
+    }
+  }
+  return sharedPdfWorker;
+}
+
+// pdf.js's getDocument, in the shared worker. Every caller in the app opens a
+// document through here; the options are the ones every one of them passed.
+// `data` is used as given — pdf.js transfers it to the worker, so a caller
+// that needs the bytes afterwards passes a copy, exactly as before.
+export async function openPdfDocument(data) {
+  const lib = window.pdfjsLib;
+  const open = (worker) => lib.getDocument(worker ? { data, worker, isEvalSupported: false } : { data, isEvalSupported: false }).promise;
+  const worker = pdfWorkerForOpen();
+  if (!worker) return open(null);
+  // Copied up front only for the retry: a transferred buffer is detached, so
+  // the second attempt needs bytes of its own.
+  const spare = data.slice();
+  try {
+    return await open(worker);
+  } catch (error) {
+    // A broken file fails the same way in any worker; only a dead worker is
+    // worth a second attempt, and the only way to tell is to try.
+    if (error?.name === "InvalidPDFException" || error?.name === "PasswordException") throw error;
+    console.warn("pdf.js worker did not answer — starting a fresh one", error);
+    try { worker.destroy(); } catch (_) { /* already gone */ }
+    sharedPdfWorker = null;
+    data = spare;
+    return open(pdfWorkerForOpen());
+  }
+}
+
 export async function ensureNomnoml() {
   if (typeof nomnoml !== "undefined") return true;
   // Sequential, not Promise.all: nomnoml reads graphre off the global at
