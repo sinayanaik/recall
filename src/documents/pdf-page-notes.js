@@ -216,7 +216,16 @@ export function paintPageNoteBadges(pageNumber, all = null) {
   // Only once the page has actually rendered: a placeholder has no viewport, so
   // quadToPageBox has nothing to convert against and every badge would land at
   // the origin. renderPage calls back in here once it does.
-  if (!pageEl.querySelector(".pdf-text-layer")) {
+  //
+  // Asked of the MARK layer, not the text layer, which this used to be. The
+  // text layer's spans are now built later — once the page is on screen and
+  // still, in slices — and nothing calls back in here when they land. So a page
+  // drawn fresh came up with its highlights and without a single fold on any of
+  // them, until something else happened to repaint the badges. The mark layer
+  // is built in the same pass as this hook, just before it; and the folds' own
+  // z-index (styles/37-document-chrome.css) keeps them above the text layer
+  // whenever that arrives.
+  if (!pageEl.querySelector(".pdf-mark-layer")) {
     layer?.remove();
     return;
   }

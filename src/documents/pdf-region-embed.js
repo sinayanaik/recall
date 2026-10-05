@@ -20,7 +20,8 @@ import { DOC_SLOT_DOC, docSlotMeta, documentStoreKey, recordDocSlot } from "./do
 import { deckPdfById, PDF_PRIMARY_ID, pdfStoreKey, recordPdfId } from "./pdf-multi.js?v=__BUILD__";
 import { drawRegionBlocks, mountRegionBlockLayer, paintRegionMarks, rasteriseRegionBlocks, regionAnnotationStamp, regionMarksOnPage } from "./pdf-region-marks.js?v=__BUILD__";
 import { getDocument } from "./pdf-store.js?v=__BUILD__";
-import { buildTextLayer, canvasOutputScale, clampScale, PDF_MAX_SCALE } from "./pdf-view.js?v=__BUILD__";
+import { buildTextLayer, canvasOutputScale, clampScale, currentPdfDocument, openRenderDocumentFor, PDF_MAX_SCALE, whenPageDrawsIdle } from "./pdf-view.js?v=__BUILD__";
+import { renderPageBitmap } from "./pdf-render-worker.js?v=__BUILD__";
 import { attachRegionResizeHandle } from "./pdf-region-resize.js?v=__BUILD__";
 
 export const PDFREF_SCHEME = "pdfref:";
@@ -219,7 +220,55 @@ export function renderRegionImage(record, { width = REGION_IMAGE_WIDTH } = {}) {
   return promise;
 }
 
+// ── Pictures of the paper on the stage come from the page renderer ────────
+//
+// A paper's regions with notes on them are pictured under their pages, in the
+// Highlights pane and in the outline drawer — and every one of those pictures
+// used to be drawn on the main thread, by a third pdf.js copy of the paper
+// opened just for them, all at once as the notes were built, each finished
+// with a synchronous JPEG encode. On a paper of regions that was a burst of
+// main-thread drawing every time it was opened, the very thing pages stopped
+// doing when they moved to the worker (src/documents/pdf-render-worker.js).
+//
+// So when the record is on the paper the Document view has open, the crop is
+// drawn by the page renderer from the copy it already holds, one picture at a
+// time and only once the pages themselves are drawn; the main thread draws the
+// marks over it and encodes it without blocking. Any other paper — a card's
+// region from a deck whose Document view is elsewhere — goes the old way.
+let regionPictureTurn = Promise.resolve();
+
+function takeRegionPictureTurn(work) {
+  const turn = regionPictureTurn.then(() => whenPageDrawsIdle()).then(work);
+  regionPictureTurn = turn.catch(() => {});
+  return turn;
+}
+
+// The canvas, as a data URL, without the synchronous encode toDataURL is: a
+// data URL is what every reader of these wants (an export writes it into the
+// file), but the JPEG encode itself happens off the main thread.
+function canvasDataUrl(canvas) {
+  return new Promise((resolve) => {
+    if (typeof canvas.toBlob !== "function") { resolve(canvas.toDataURL("image/jpeg", 0.8)); return; }
+    canvas.toBlob((blob) => {
+      if (!blob) { resolve(null); return; }
+      const reader = new FileReader();
+      reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : null);
+      reader.onerror = () => resolve(null);
+      reader.readAsDataURL(blob);
+    }, "image/jpeg", 0.8);
+  });
+}
+
 async function paintRegionImage(record, rect, pageNumber, source, width) {
+  const renderDoc = openRenderDocumentFor(source.slot, source.pdfId);
+  if (renderDoc) {
+    const url = await takeRegionPictureTurn(() => paintRegionImageInWorker(record, rect, pageNumber, source, width, renderDoc))
+      .catch((error) => {
+        console.warn("The page renderer could not picture a region — drawing it here", error);
+        return null;
+      });
+    if (url) return url;
+  }
   const doc = await openEmbedDoc(source.storeKey, source.pdfMeta);
   if (!doc || pageNumber > doc.numPages) return null;
   const page = await doc.getPage(pageNumber);
@@ -262,7 +311,51 @@ async function paintRegionImage(record, rect, pageNumber, source, width) {
   }));
   const { rasters } = await rasteriseRegionBlocks(page, source, pageNumber, rect, scale * outputScale);
   drawRegionBlocks(ctx, paintViewport, rasters);
-  return canvas.toDataURL("image/jpeg", 0.8);
+  return canvasDataUrl(canvas);
+}
+
+// The same picture, with the crop drawn by the page renderer. The geometry is
+// the main-thread document's (the paper on the stage, already parsed); the
+// pixels are the worker's.
+async function paintRegionImageInWorker(record, rect, pageNumber, source, width, renderDoc) {
+  const id = await renderDoc;
+  const doc = currentPdfDocument();
+  if (id == null || !doc || pageNumber > doc.numPages) return null;
+  const page = await doc.getPage(pageNumber);
+  const quadWidth = Math.max(1, Math.abs(rect[2] - rect[0]));
+  const scale = clampScale(width / quadWidth, 0.05);
+  const viewport = page.getViewport({ scale });
+  const [vx0, vy0, vx1, vy1] = viewport.convertToViewportRectangle(rect);
+  const left = Math.min(vx0, vx1);
+  const top = Math.min(vy0, vy1);
+  const nativeWidth = Math.max(1, Math.round(Math.abs(vx1 - vx0)));
+  const nativeHeight = Math.max(1, Math.round(Math.abs(vy1 - vy0)));
+  const outputScale = canvasOutputScale(nativeWidth, nativeHeight);
+  const { bitmap } = await renderPageBitmap({
+    id,
+    pageNumber,
+    scale,
+    region: { x: left, y: top, width: nativeWidth, height: nativeHeight },
+    density: outputScale
+  }).promise;
+  const paintViewport = page.getViewport({
+    scale: scale * outputScale,
+    offsetX: -left * outputScale,
+    offsetY: -top * outputScale
+  });
+  const canvas = document.createElement("canvas");
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+  const ctx = canvas.getContext("2d", { alpha: false });
+  ctx.drawImage(bitmap, 0, 0);
+  bitmap.close();
+  paintRegionMarks(ctx, paintViewport, regionMarksOnPage(source, pageNumber, {
+    excludeId: record.kind === "area" ? record.id : null,
+    stand: record.kind === "ink" ? record : null
+  }));
+  const { rasters } = await rasteriseRegionBlocks(page, source, pageNumber, rect, scale * outputScale);
+  drawRegionBlocks(ctx, paintViewport, rasters);
+  return canvasDataUrl(canvas);
 }
 
 // The picture, put in place of a label wherever a list shows a region or an
