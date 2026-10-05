@@ -286,8 +286,15 @@ export function pdfMarkLayer(pageNumber) {
 // because getTextContent() is a round trip to the worker and this page has
 // already paid for one; see repairDocumentHighlightText in pdf-highlights.js,
 // which is the only reader.
+//
+// Only once the page's text LAYER is built, although the items arrive first
+// (buildPageLayers): every reader of this takes "there are items" to mean "the
+// words on this page can be found" — the smart highlighter measures the spans
+// they name — and before the layer lands there are no spans to find.
 export function pdfPageTextItems(pageNumber) {
-  return openPdf?.pages?.get(pageNumber)?.textItems || null;
+  const entry = openPdf?.pages?.get(pageNumber);
+  if (!entry?.textItems || !keptTextLayer(entry)) return null;
+  return entry.textItems;
 }
 
 // Whether the Document surface is the one a selection or a jump should act on.
@@ -2074,6 +2081,7 @@ export function renderPagesNearViewport() {
     if (!isPageNearViewport(pageNumber)) return;
     asked += 1;
     renderPage(pageNumber);
+    ensurePageLayers(pageNumber);
   });
   if (!asked && openPdf.pages.size) {
     // Urgent, or the render queue would drop it for the very reason it is
@@ -2296,9 +2304,7 @@ async function renderPage(pageNumber) {
     // selects text they have not read yet. Anything that must have them —
     // tools/pdf-preview-check.mjs, a highlight measuring against a text item —
     // goes through whenDocumentPageReady, which awaits this too.
-    entry.layerTask = buildPageLayers(pageNumber, entry, page, viewport, stale, textContent)
-      .catch((error) => console.warn(`Could not build the layers for page ${pageNumber}`, error))
-      .finally(() => { if (entry.layerTask) entry.layerTask = null; });
+    startPageLayers(pageNumber, entry, page, viewport, stale, textContent);
   })()
     .catch((error) => {
       // A cancellation is the system working — a scale moved, a page was
@@ -3200,6 +3206,46 @@ async function buildPageLayers(pageNumber, entry, page, viewport, stale, textCon
   // hook is signature-guarded, so what was already painted in step 2 is a
   // no-op the second time.
   onPagePainted(pageNumber);
+}
+
+// Starts (and keeps track of) one page's layer build. The token says which
+// open of the document it belongs to, so a build left waiting across a park
+// does not stop the page from getting a fresh one when it comes back, and the
+// handle is only cleared by the build it belongs to.
+function startPageLayers(pageNumber, entry, page, viewport, stale, textContent = null) {
+  const task = buildPageLayers(pageNumber, entry, page, viewport, stale, textContent)
+    .catch((error) => console.warn(`Could not build the layers for page ${pageNumber}`, error))
+    .finally(() => { if (entry.layerTask === task) entry.layerTask = null; });
+  entry.layerTask = task;
+  entry.layerToken = pdfOpenToken;
+  return task;
+}
+
+// ── A drawn page with no text layer, and nothing building one ─────────────
+//
+// A layer build waits for the page to be on screen and still, so it can be
+// waiting when the document is parked (a switch to the notebook and back), and
+// a park makes it stale. The pages come back drawn — with nothing left that
+// would ever build their text. Asked from renderPagesNearViewport, which every
+// restore, relayout and resize already ends with.
+function ensurePageLayers(pageNumber) {
+  const entry = openPdf?.pages.get(pageNumber);
+  if (!entry || !openPdf.rendered.has(pageNumber) || !entry.viewport) return;
+  if (keptTextLayer(entry) && entry.markLayer?.parentNode === entry.el) return;
+  if (entry.layerTask && entry.layerToken === pdfOpenToken) return;
+  const token = pdfOpenToken;
+  const generation = entry.generation;
+  const viewport = entry.viewport;
+  const doc = openPdf.doc;
+  const stale = () => token !== pdfOpenToken || entry.generation !== generation
+    || entry.viewport !== viewport || !openPdf?.rendered.has(pageNumber);
+  const task = doc.getPage(pageNumber).then((page) => {
+    if (stale()) return;
+    return startPageLayers(pageNumber, entry, page, viewport, stale);
+  }).catch(() => {});
+  entry.layerTask = task;
+  entry.layerToken = token;
+  task.finally(() => { if (entry.layerTask === task) entry.layerTask = null; });
 }
 
 // The text layer a page is still carrying from an earlier scale, if any.
