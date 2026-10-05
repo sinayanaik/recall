@@ -488,6 +488,11 @@ const checks = [
     // reopened on. "Randomly I'm going to some place and then randomly to some
     // other place" — each case is one way two of those used to disagree.
     ["reading-pos   ", ["node", ["tools/reading-position-check.mjs"], ROOT]],
+    // ...and the biggest re-flow of all: the phone turned on its side and back,
+    // in a continuous note, a paged one and a fit-width PDF. "Jumping from
+    // landscape to portrait, both in PDF and notes, I'm seeing significant
+    // content jump."
+    ["rotation      ", ["node", ["tools/rotation-check.mjs"], ROOT]],
     ["mobile-menu   ", ["node", ["tools/mobile-menu-check.mjs"], ROOT]],
     ["notes-menu    ", ["node", ["tools/notes-menu-check.mjs"], ROOT]],
     ["style         ", ["node", ["tools/style-check.mjs"], ROOT]],

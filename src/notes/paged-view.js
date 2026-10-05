@@ -859,10 +859,25 @@ export function scheduleNotesPageSettle() {
 // A resize, a rotate or a font change re-flows every column, so the page the
 // reader was on no longer holds the same text. The page NUMBER is therefore
 // worthless; the block that was on screen is not.
+//
+// ...and that block has to be the one the reader saw BEFORE the re-flow. This
+// runs from a ResizeObserver, which is called after the browser has already laid
+// the columns out at the new size while scrollLeft still holds the old pixel
+// count — so asking firstVisibleNotesBlock() here looks the old offset up in
+// the new geometry. Turning a phone from 390 to 844 wide on page 10 sent the
+// reader to page 4; back again, to page 20. src/notes/resize-hold.js remembers
+// the block from the last settled layout and hands it over through the hook
+// below; only when it has nothing does this fall back to measuring.
+let resizeAnchorSource = () => null;
+
+export function setPagedResizeAnchorSource(fn) {
+  resizeAnchorSource = typeof fn === "function" ? fn : () => null;
+}
+
 export function repaginateNotesPreservingPlace() {
   const view = el.notesView;
   if (!view || !isNotesPaged()) return;
-  const anchor = firstVisibleNotesBlock();
+  const anchor = resizeAnchorSource() || firstVisibleNotesBlock();
   cancelAnimationFrame(refitFrame);
   refitFrame = requestAnimationFrame(() => {
     refitFrame = 0;

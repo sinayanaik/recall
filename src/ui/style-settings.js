@@ -18,7 +18,7 @@ import { setNotesReadingMode } from "../notes/paged-view.js?v=__BUILD__";
 import { scheduleMarkdownTableFit } from "../render/tables.js?v=__BUILD__";
 import { showConfirmModal, showToast } from "./feedback.js?v=__BUILD__";
 import { defaultStyleProfiles, styleControlGroups, styleCssVariables, styleDefaults, styleDensityPresets, styleFieldByKey } from "./style-schema.js?v=__BUILD__";
-import { styleMobileMedia, styleProfiles } from "./style-tokens.js?v=__BUILD__";
+import { prefersMobileStyleProfile, styleProfiles } from "./style-tokens.js?v=__BUILD__";
 import { resolveFontFamily } from "./fonts.js?v=__BUILD__";
 import { currentThemeId } from "./theme.js?v=__BUILD__";
 
@@ -159,7 +159,7 @@ export function normalizeStyleSettings(raw = {}, profile = "desktop") {
 }
 
 export function detectStyleProfile() {
-  return styleMobileMedia?.matches ? "mobile" : "desktop";
+  return prefersMobileStyleProfile() ? "mobile" : "desktop";
 }
 
 export function styleProfileLabel(profile) {

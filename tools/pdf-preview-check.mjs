@@ -6346,6 +6346,14 @@ try {
     const { api, settle } = window.__recall;
     api.setViewMode("document");
     await settle(300);
+    // Scrolled to, not assumed. The phase above left the reader 400px down a
+    // portrait page 1 and then turned the phone, and a turn now HOLDS that
+    // place — three quarters of the way down a page twice the height — so the
+    // spot written on below is above the screen. It used to be on it only
+    // because the refit kept scrollTop as a pixel count, which was the bug. So
+    // the spot is put in the middle of the scroller, which on a screen 390px
+    // tall is the only place a point 45% down a 1000px page can be seen.
+    api.scrollToDocumentPage(1, 0.45, { smooth: false, align: "center" });
     await api.whenDocumentPageReady(1);
     await settle(200);
     const el = document.querySelector('.pdf-page[data-page-number="1"]');

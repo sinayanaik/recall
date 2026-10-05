@@ -76,6 +76,17 @@ export function setOrientationModesHandler(fn) {
   onOrientationModes = typeof fn === "function" ? fn : () => {};
 }
 
+// Told just before this file turns the screen, so the reading surfaces can
+// write down where the reader is while the layout is still the one they were
+// reading in. The rotation, and the full screen a tab enters on the way, both
+// re-flow the page; anything measured after they start is measured in a layout
+// that has already moved. Registered for the same reason as the handler above.
+let onBeforeOrientationChange = () => {};
+
+export function setBeforeOrientationChangeHandler(fn) {
+  onBeforeOrientationChange = typeof fn === "function" ? fn : () => {};
+}
+
 export function isOrientationLockAvailable() {
   if (typeof screen === "undefined" || typeof screen.orientation?.lock !== "function") return false;
   return Boolean(window.matchMedia?.("(pointer: coarse)").matches);
@@ -128,6 +139,11 @@ async function enterFullscreen() {
 // locked, false when the platform refused.
 export async function setScreenOrientation(target) {
   if (!isOrientationLockAvailable()) return false;
+  try {
+    onBeforeOrientationChange();
+  } catch (_) {
+    /* a reader's place is worth keeping, not worth failing the turn over */
+  }
   locking = true;
   const standalone = isStandaloneApp();
   let enteredFullscreen = false;
