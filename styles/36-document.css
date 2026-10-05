@@ -244,12 +244,24 @@
   --pdf-selection: rgb(56 132 255 / 0.35);
 }
 
+/* Each span's width is matched to its glyph run by a scale computed from
+   canvas measureText (buildTextLayer), so the span has to set text exactly the
+   way a canvas does: no spacing, weight, style or mobile font boosting
+   inherited from the page around it, none of which the canvas would see. */
 .pdf-text-layer span {
   position: absolute;
   white-space: pre;
   color: transparent;
   transform-origin: 0 0;
   cursor: text;
+  font-weight: normal;
+  font-style: normal;
+  font-variant: normal;
+  letter-spacing: normal;
+  word-spacing: normal;
+  text-transform: none;
+  -webkit-text-size-adjust: none;
+  text-size-adjust: none;
 }
 
 .pdf-text-layer span::selection {

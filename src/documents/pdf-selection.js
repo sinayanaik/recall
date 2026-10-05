@@ -284,10 +284,46 @@ export function boxesIntersect(box, rect) {
 // into the layer. One definition, because the two have to agree: this is what
 // makes a repaired highlight's text identical to what a fresh capture over the
 // same words produces.
+//
+// ── A space only where the page HAS one ──────────────────────────────────────
+//
+// "A bs tr ac t — Man y app li ca ti ons i n r obo ti cs", copied off a LaTeX
+// paper that any other reader copies as "Abstract—Many applications in
+// robotics". This used to put a space between every two items on a line that
+// did not already have one, on the theory that items are words. They are not:
+// pdf.js starts a new item at every font switch, and a paper switches font
+// inside a word all the time (small caps, a ligature from another font, an
+// italic letter). It reports a real gap between words as whitespace of its own,
+// so the space this added landed inside a word every single time it fired.
+//
+// So the page's own geometry decides. Two items on one baseline are one word
+// unless there is visibly room between them; an item on a different baseline
+// starts a new line even when pdf.js did not mark the end of the old one (an
+// end-of-line marker is often an empty item, which nothing here writes a span
+// for). Text that is rotated, vertical or right-to-left has no "left to right
+// along a baseline" to measure, and keeps the old answer.
+//
+// A fraction of the font size, the same order as pdf.js's own threshold for
+// calling a gap a space. Kerning and the seam between two fonts are a few
+// hundredths of an em; the narrowest space in a justified line is about a fifth.
+export const PDF_WORD_GAP_RATIO = 0.15;
+
 export function textItemGap(previous, next) {
   if (!previous) return "";
   if (previous.hasEOL) return "\n";
-  return /\s$/.test(previous.str || "") || /^\s/.test(next?.str || "") ? "" : " ";
+  if (/\s$/.test(previous.str || "") || /^\s/.test(next?.str || "")) return "";
+  const a = previous.transform;
+  const b = next?.transform;
+  const horizontal = (t) => Array.isArray(t) && t[0] > 0 && Math.abs(t[1]) < 1e-6 && Math.abs(t[2]) < 1e-6;
+  if (!horizontal(a) || !horizontal(b) || previous.dir === "rtl" || next.dir === "rtl") return " ";
+  const size = Math.max(Number(previous.height) || a[3], Number(next.height) || b[3], 0);
+  if (!(size > 0)) return " ";
+  if (Math.abs(b[5] - a[5]) > size * 0.5) return "\n";
+  const gap = b[4] - (a[4] + (Number(previous.width) || 0));
+  // Back to the left by more than a character on the same baseline is not the
+  // next word of this line; it is another run of text that happens to share it.
+  if (gap < -size) return "\n";
+  return gap >= size * PDF_WORD_GAP_RATIO ? " " : "";
 }
 
 // The one cleanup every reader of a pdf.js text item goes through: collapse the
@@ -342,17 +378,21 @@ export function textForAnchorRange(items, anchor, focus) {
 // the same shape as one made in this app. `items` is
 // page.getTextContent().items for the quads' page.
 export function textForQuads(items, quads) {
-  const parts = [];
+  let out = "";
+  let previous = null;
   let anchorItem = null;
   items.forEach((item, index) => {
     if (!item.str) return;
     const box = textItemBox(item);
     if (!quads.some((quad) => boxesIntersect(box, quad.rect))) return;
     if (anchorItem === null) anchorItem = index;
-    parts.push(item.str);
+    // The same join as the text layer, so an imported highlight over a word
+    // set in two fonts reads as one word, as a highlight made here does.
+    out += textItemGap(previous, item) + item.str;
+    previous = item;
   });
   return {
-    text: cleanPdfItemText(parts.join(" ")),
+    text: cleanPdfItemText(out),
     item: anchorItem === null ? 0 : anchorItem
   };
 }

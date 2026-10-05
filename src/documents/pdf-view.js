@@ -34,6 +34,7 @@ import { el } from "../core/dom.js?v=__BUILD__";
 import { ensurePdfJs } from "../core/lib-loader.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { paintDocumentHighlights } from "./pdf-highlights.js?v=__BUILD__";
+import { textItemGap } from "./pdf-selection.js?v=__BUILD__";
 import { buildDocumentOutline, clearDocumentOutline, setDocumentOutlinePage } from "./pdf-outline.js?v=__BUILD__";
 import { inkPenIsDown } from "../core/gesture.js?v=__BUILD__";
 import { DOC_SLOT_DOC, DOC_SLOT_NOTEBOOK, activeDocSlot, docSlotMeta, docSlotReadingPositionKey, documentStoreKey, normalizeDocSlot, onDocumentSurface } from "./doc-slot.js?v=__BUILD__";
@@ -428,7 +429,11 @@ export function tearDownDocumentView({ park = false } = {}) {
   clearTimeout(openPdf?.watchdog);
   // Every page's render deadline too. These outlive the document they were
   // armed for otherwise, and fire against an openPdf that is a different paper.
-  openPdf?.pages?.forEach((entry) => clearTimeout(entry.deadline));
+  openPdf?.pages?.forEach((entry) => {
+    clearTimeout(entry.deadline);
+    cancelPageRender(entry);
+  });
+  resetRenderQueue();
   if (openPdf?.doc && !parked) {
     // Releases the worker's copy of the file. Without this, opening five papers
     // in a session keeps five parsed documents alive in the worker. Skipped for
@@ -1450,7 +1455,13 @@ function armDocumentRenderWatchdog(token) {
     // forceRenderPage, not renderPage. If the reason nothing rendered is a
     // first render that never settled, renderPage would be turned away by its
     // own in-flight guard and this net would catch nothing.
-    forceRenderPage(1);
+    //
+    // ...unless a page is being PAINTED right now. That is a render that is
+    // answering, only slowly — a dense page on a phone is honestly more than
+    // this window — and forcing page 1 would cancel it and start over. The
+    // per-page deadline is what catches a render that has stopped answering.
+    const pagePainting = [...openPdf.pages.values()].some((entry) => entry.renderTask);
+    if (!pagePainting) forceRenderPage(1);
     renderPagesNearViewport();
     setTimeout(() => {
       if (!openPdf || token !== pdfOpenToken || openPdf.rendered.size) return;
@@ -1458,7 +1469,10 @@ function armDocumentRenderWatchdog(token) {
       // slow, not damaged, and forceRenderPage above already owns it with its
       // own much longer deadline (PDF_RENDER_DEADLINE_MS × PDF_RENDER_ATTEMPTS).
       // Only declare the file damaged when NOTHING is even trying any more.
-      if (openPdf.pages.get(1)?.task) return;
+      // Any page, not page 1: the render queue drops a waiting page 1 when the
+      // reader is somewhere else in the document, and the pages they ARE on
+      // being drawn is not a damaged file.
+      if ([...openPdf.pages.values()].some((entry) => entry.task)) return;
       showDocumentViewError("This document's pages did not render. Reopen the deck, and if it keeps happening the file may be damaged.");
     }, PDF_RENDER_WATCHDOG_MS);
   }, PDF_RENDER_WATCHDOG_MS);
@@ -1950,6 +1964,9 @@ export function renderPagesNearViewport() {
     renderPage(pageNumber);
   });
   if (!asked && openPdf.pages.size) {
+    // Urgent, or the render queue would drop it for the very reason it is
+    // being asked for: by the arithmetic, it is not near anything.
+    openPdf.pages.get(1).urgent = true;
     renderPage(1);
     asked = 1;
   }
@@ -2061,6 +2078,10 @@ async function renderPage(pageNumber) {
   // entry.deadline is what calls it without waiting for the reader.
   if (entry.task) {
     entry.rerender = true;
+    // A render still WAITING for its turn may have just been made stale (a
+    // relayout bumps the generation). Dropping it now, rather than when a slot
+    // next frees, is what lets the re-request above start without delay.
+    pumpRenderQueue();
     return;
   }
   const token = pdfOpenToken;
@@ -2076,7 +2097,14 @@ async function renderPage(pageNumber) {
   const generation = (entry.generation = (entry.generation || 0) + 1);
   const stale = () => token !== pdfOpenToken || openPdf?.scale !== scale || entry.generation !== generation;
   let task;
+  let slot = null;
   task = (async () => {
+    // Wait for a turn (see "One page at a time" below). A page the reader has
+    // already gone past by the time its turn comes is not drawn at all.
+    slot = await acquireRenderSlot(pageNumber, entry, stale);
+    if (!slot) return;
+    entry.releaseSlot = slot.release;
+    armRenderDeadline();
     const page = await openPdf.doc.getPage(pageNumber);
     if (stale()) return;
     const viewport = page.getViewport({ scale });
@@ -2093,7 +2121,20 @@ async function renderPage(pageNumber) {
     // right" from "the screen's density changed under them" without a redraw.
     entry.renderOutputScale = outputScale;
     const { canvas, context, transform } = createPageCanvas(viewport, outputScale);
-    await page.render({ canvasContext: context, viewport, transform }).promise;
+    // Kept, so a page that is trimmed or re-scaled mid-render can STOP the
+    // render rather than let it run to the end and throw the canvas away. A
+    // fling past twenty pages used to rasterise all twenty, in full, on the
+    // main thread, while the page the reader stopped on waited behind them.
+    const renderTask = page.render({ canvasContext: context, viewport, transform });
+    entry.renderTask = renderTask;
+    try {
+      await renderTask.promise;
+    } finally {
+      if (entry.renderTask === renderTask) entry.renderTask = null;
+    }
+    // The slot is for rasterising. The layers below are their own, smaller
+    // work, and the next page should not wait for them.
+    slot.release();
     if (stale()) return;
 
     entry.el.querySelector(".pdf-page-label")?.remove();
@@ -2102,6 +2143,7 @@ async function renderPage(pageNumber) {
     entry.el.querySelector(".pdf-canvas.is-stale")?.remove();
     entry.el.append(canvas);
     openPdf.rendered.add(pageNumber);
+    entry.urgent = false;
     // A page that drew has no failed attempts behind it any more. Without this
     // a page that needed two goes would carry that count into every later
     // re-render — a zoom, a rotate — and hit the ceiling early.
@@ -2138,6 +2180,8 @@ async function renderPage(pageNumber) {
     })
     .finally(() => {
       if (!entry) return;
+      slot?.release();
+      if (entry.releaseSlot === slot?.release) entry.releaseSlot = null;
       clearTimeout(entry.deadline);
       entry.deadline = 0;
       // Only the render the entry is actually WAITING ON clears its handle.
@@ -2158,27 +2202,129 @@ async function renderPage(pageNumber) {
       if (!openPdf?.rendered.has(pageNumber) && isPageNearViewport(pageNumber)) renderPage(pageNumber);
     });
   entry.task = task;
-  entry.attempts = (entry.attempts || 0) + 1;
   // The deadline, and the reason this page can come back at all.
   //
-  // Nothing is cancelled here — there is nothing to cancel, the worker is what
-  // is not answering. The ENTRY is released instead, so the next request is
+  // Cancelling the render is not what rescues it — the worker is what is not
+  // answering, and a cancel goes unheard too. The ENTRY is released instead
+  // (and the render's turn in the queue with it), so the next request is
   // allowed to start a fresh render rather than being turned away by the
   // in-flight guard at the top of this function for the rest of the session.
   // Bumping the generation (in forceRenderPage) is what makes that safe: if the
   // abandoned render ever does land, stale() is true for it and it drops its
   // own canvas, exactly as a render superseded by a zoom already does.
-  entry.deadline = setTimeout(() => {
-    entry.deadline = 0;
-    if (token !== pdfOpenToken || entry.task !== task) return;
-    if (entry.attempts >= PDF_RENDER_ATTEMPTS) {
-      entry.task = null;
-      showPageRenderFailure(pageNumber, "the page renderer stopped answering");
-      return;
-    }
-    console.warn(`Page ${pageNumber} did not answer in ${PDF_RENDER_DEADLINE_MS}ms — starting again`);
-    forceRenderPage(pageNumber);
-  }, PDF_RENDER_DEADLINE_MS);
+  //
+  // Armed when the render STARTS, not when it was asked for: time spent
+  // waiting for a turn is not the renderer failing to answer, and counting it
+  // would retry a page whose only fault was being fourth in line.
+  function armRenderDeadline() {
+    entry.attempts = (entry.attempts || 0) + 1;
+    clearTimeout(entry.deadline);
+    entry.deadline = setTimeout(() => {
+      entry.deadline = 0;
+      if (token !== pdfOpenToken || entry.task !== task) return;
+      // Whatever happens next, this render is abandoned, so its turn goes to
+      // the next page in line — a hung worker must not hold the queue too.
+      slot?.release();
+      if (entry.attempts >= PDF_RENDER_ATTEMPTS) {
+        entry.task = null;
+        showPageRenderFailure(pageNumber, "the page renderer stopped answering");
+        return;
+      }
+      console.warn(`Page ${pageNumber} did not answer in ${PDF_RENDER_DEADLINE_MS}ms — starting again`);
+      forceRenderPage(pageNumber);
+    }, PDF_RENDER_DEADLINE_MS);
+  }
+}
+
+// ── One page at a time, nearest first ───────────────────────────────────────
+//
+// "It's so slow it's almost unusable — I'm seeing a blank screen and getting
+// stuck on pages." Every page that came near the viewport used to start
+// rendering the moment it did, all at once and in no order, and nothing ever
+// stopped one. A flick from page 1 to page 20 crossed every page in between,
+// and each of them started a full rasterisation on the main thread that ran to
+// completion and was then thrown away — measured on a dense two-column paper
+// with the CPU throttled to a phone's, 17 renders for one fling, and three
+// seconds before page 20, the one page the reader was looking at, got its turn
+// (six and a half before its text could be selected).
+//
+// So rendering takes turns. A render waits for one of a small number of slots,
+// and when a slot frees up the waiting page NEAREST the reader's current page
+// goes next — so the page on screen is always the next one drawn, however many
+// were asked for on the way to it. A waiting page the reader has since left
+// behind is dropped when its turn would have come, without being drawn; the
+// observer asks for it again if they come back. A page someone is waiting on
+// by name (whenDocumentPageReady) is "urgent": first in line, and never dropped.
+//
+// Two slots rather than one: pdf.js does its parsing on the worker, so while
+// one page is being painted on the main thread the next one's drawing commands
+// are being prepared off it. More than that only splits the main thread
+// between pages the reader is not looking at yet.
+export const PDF_RENDER_CONCURRENCY = 2;
+
+const renderWaiters = [];
+const renderSlots = new Set();
+
+function acquireRenderSlot(pageNumber, entry, stale) {
+  return new Promise((resolve) => {
+    renderWaiters.push({ pageNumber, entry, stale, resolve });
+    pumpRenderQueue();
+  });
+}
+
+function renderWaiterDropped(waiter) {
+  if (waiter.stale()) return true;
+  if (waiter.entry.urgent) return false;
+  return !isPageNearViewport(waiter.pageNumber);
+}
+
+function pumpRenderQueue() {
+  if (!renderWaiters.length) return;
+  // Asked once per pump, not per waiter: the answer is the same for all of
+  // them, and it is a geometry read.
+  const current = openPdf ? currentDocumentPage() : 1;
+  // Settle every waiter that will never be drawn first, so a page the reader
+  // has flung past does not occupy the queue until its turn.
+  for (let i = renderWaiters.length - 1; i >= 0; i -= 1) {
+    const waiter = renderWaiters[i];
+    if (!renderWaiterDropped(waiter)) continue;
+    renderWaiters.splice(i, 1);
+    dropWaitingRender(waiter);
+  }
+  while (renderSlots.size < PDF_RENDER_CONCURRENCY && renderWaiters.length) {
+    let best = 0;
+    let bestRank = Infinity;
+    renderWaiters.forEach((waiter, index) => {
+      const rank = waiter.entry.urgent ? -1 : Math.abs(waiter.pageNumber - current);
+      if (rank < bestRank) { best = index; bestRank = rank; }
+    });
+    const [waiter] = renderWaiters.splice(best, 1);
+    const slot = { release: () => {
+      if (!renderSlots.delete(slot)) return;
+      // Later, not now: release is called from inside a render's own
+      // bookkeeping, and the next render should start after it has finished.
+      queueMicrotask(pumpRenderQueue);
+    } };
+    renderSlots.add(slot);
+    waiter.resolve(slot);
+  }
+}
+
+// A page that was waiting and is no longer wanted. If a relayout left it a
+// stretched copy of its old canvas to show in the meantime, that goes too:
+// a stale canvas is not in openPdf.rendered, so nothing would ever trim it.
+function dropWaitingRender(waiter) {
+  waiter.resolve(null);
+  if (waiter.stale()) return;
+  if (waiter.entry.el.querySelector(".pdf-canvas.is-stale")) unrenderPage(waiter.pageNumber);
+}
+
+// Everything the queue holds belongs to the document that is being closed.
+// Waiters are told no; slots are forgotten rather than waited for, because a
+// render on a destroyed document is not guaranteed ever to settle.
+function resetRenderQueue() {
+  renderWaiters.splice(0).forEach((waiter) => waiter.resolve(null));
+  renderSlots.clear();
 }
 
 // ── A page's canvas, and the pixels it can lose ─────────────────────────────
@@ -2381,6 +2527,9 @@ function forceRenderPage(pageNumber) {
   if (!entry) return;
   clearTimeout(entry.deadline);
   entry.deadline = 0;
+  entry.releaseSlot?.();
+  entry.releaseSlot = null;
+  cancelPageRender(entry);
   // The abandoned render is now stale by generation, so if it ever lands it
   // discards its own canvas instead of painting into a page that has moved on.
   entry.generation = (entry.generation || 0) + 1;
@@ -2450,6 +2599,13 @@ export const PDF_LAYER_IDLE_MS = 200;
 export async function whenDocumentPageReady(pageNumber) {
   const entry = openPdf?.pages.get(pageNumber);
   if (!entry) return false;
+  // Somebody is waiting on this page by name, so it goes first in the render
+  // queue and is not dropped from it for being off screen. Cleared when it
+  // has drawn, so a page asked for once is not first in line forever.
+  if (!openPdf.rendered.has(pageNumber)) {
+    entry.urgent = true;
+    pumpRenderQueue();
+  }
   if (!openPdf.rendered.has(pageNumber) && !entry.task) renderPage(pageNumber);
   // A loop, not a single await: renderPage clears entry.task in a `finally`,
   // and a render that was superseded mid-flight leaves the page unrendered with
@@ -2520,6 +2676,7 @@ function stalePageForRelayout(pageNumber, width, height) {
     return;
   }
   entry.generation = (entry.generation || 0) + 1;
+  cancelPageRender(entry);
   openPdf.rendered.delete(pageNumber);
   entry.markLayer?.remove();
   entry.textLayer?.remove();
@@ -2547,6 +2704,8 @@ function unrenderPage(pageNumber) {
   // Invalidates any render still in flight for this page, so its canvas is
   // dropped rather than appended into the placeholder this is about to rebuild.
   entry.generation = (entry.generation || 0) + 1;
+  cancelPageRender(entry);
+  entry.urgent = false;
   // ...and its deadline goes with it. The page is a placeholder again by
   // intent, so a timer firing later to complain that it never drew would be
   // reporting this function's own work as a failure.
@@ -2564,6 +2723,29 @@ function unrenderPage(pageNumber) {
   label.className = "pdf-page-label";
   label.textContent = String(pageNumber);
   entry.el.appendChild(label);
+  releasePageResources(pageNumber);
+}
+
+// Stop a render that is still painting. pdf.js rejects its promise with a
+// RenderingCancelledException, which renderPage already treats as the system
+// working rather than as a failure.
+function cancelPageRender(entry) {
+  const renderTask = entry?.renderTask;
+  if (!renderTask) return;
+  entry.renderTask = null;
+  try { renderTask.cancel(); } catch (_) { /* already settled */ }
+}
+
+// ...and hand back what pdf.js keeps for a page once it has been drawn: its
+// drawing commands and the font data they reference. Nothing ever did, so a
+// long paper read to the end held every page it had passed through — on a
+// phone, the memory pressure that gets the worker killed, after which every
+// page waits out its deadline and reports that it could not be drawn.
+// cleanup() declines by itself while a render of the page is still running.
+function releasePageResources(pageNumber) {
+  const doc = openPdf?.doc;
+  if (!doc) return;
+  doc.getPage(pageNumber).then((page) => { try { page.cleanup(); } catch (_) { /* busy */ } }, () => {});
 }
 
 // Anything more than PDF_RENDER_WINDOW pages outside the visible run goes back
@@ -2637,22 +2819,17 @@ export async function buildTextLayer(page, viewport) {
   const content = await page.getTextContent();
   const frag = document.createDocumentFragment();
   let previous = null;
+  let measureLater = false;
   content.items.forEach((item, index) => {
     if (!item.str) return;
     // ── The separator between one text item and the next ──────────────────
     //
-    // This is what "I'm seeing garbage value most of the time when I'm
-    // highlighting something and then try to write a note for it" was.
-    //
     // A highlight's text comes from range.toString() over this layer
-    // (captureDocumentSelection), and Range.toString() concatenates TEXT DATA:
-    // it walks text nodes and ignores everything else. With one bare <span> per
-    // item and nothing between them, a selection spanning two items came back
-    // welded together — "DURRANT-WHYTE" and "Simultaneous Localization…", two
-    // separate lines of a title page, arriving as "DURRANT-WHYTESimultaneous…".
-    // That string is then the excerpt on the highlight's note, in the panel, in
-    // the printed page notes and in every export, and there is no way to fix it
-    // from any of them.
+    // (captureDocumentSelection), and so does what the browser puts on the
+    // clipboard. Range.toString() concatenates TEXT DATA: it walks text nodes
+    // and ignores everything else. With one bare <span> per item and nothing
+    // between them, two lines of a title page came back welded together —
+    // "DURRANT-WHYTESimultaneous…".
     //
     // A real whitespace TEXT NODE, therefore, and not a <br>: pdf.js's own text
     // layer uses <br> for its line breaks, which reads correctly and is
@@ -2660,14 +2837,12 @@ export async function buildTextLayer(page, viewport) {
     // spans are absolutely positioned, so an extra text node in the flow costs
     // no layout and moves nothing.
     //
-    // hasEOL is pdf.js saying "this item ended a line". Between items on the
-    // SAME line a space is added only when neither side already has one: an
-    // item is very often a fragment of a word (kerning, a ligature, a font
-    // switch mid-word), and a space inserted there would break the word instead
-    // of the join.
+    // WHICH separator is textItemGap's decision, made from where the two items
+    // sit on the page. It used to be a space between any two items on a line,
+    // and an item is very often a fragment of a word — so a LaTeX paper copied
+    // as "A bs tr ac t — Man y app li ca ti ons". See textItemGap.
     if (previous) {
-      const gap = previous.hasEOL ? "\n"
-        : (/\s$/.test(previous.str) || /^\s/.test(item.str) ? "" : " ");
+      const gap = textItemGap(previous, item);
       if (gap) frag.appendChild(document.createTextNode(gap));
     }
     previous = item;
@@ -2713,10 +2888,12 @@ export async function buildTextLayer(page, viewport) {
     const ascentPx = fontHeight * fontAscentRatio(style);
     // Rotated text needs the offset taken along the run's own up-direction
     // rather than straight up the page — the same decomposition pdf.js uses.
-    span.style.left = `${angle ? tx[4] + ascentPx * Math.sin(angle) : tx[4]}px`;
-    span.style.top = `${angle ? tx[5] - ascentPx * Math.cos(angle) : tx[5] - ascentPx}px`;
-    span.style.fontSize = `${fontHeight}px`;
-    span.style.fontFamily = style?.fontFamily || "sans-serif";
+    const left = angle ? tx[4] + ascentPx * Math.sin(angle) : tx[4];
+    const top = angle ? tx[5] - ascentPx * Math.cos(angle) : tx[5] - ascentPx;
+    // pdf.js names a generic family here; anything that could end the
+    // declaration is taken out, because the whole style is written in one go.
+    const family = String(style?.fontFamily || "sans-serif").replace(/[;{}]/g, "");
+    let css = `left:${left}px;top:${top}px;font-size:${fontHeight}px;font-family:${family};`;
     // Horizontal scale, so the invisible text is exactly as wide as the visible
     // glyphs. Without it a selection highlight drifts further from the words the
     // further along the line it goes — which is the difference between "this
@@ -2725,13 +2902,34 @@ export async function buildTextLayer(page, viewport) {
     const transforms = [];
     if (angle) transforms.push(`rotate(${angle}rad)`);
     if (expected > 0 && fontHeight > 0) {
-      span.dataset.expectedWidth = String(expected);
+      const natural = measureSpanText(item.str, fontHeight, family);
+      if (natural > 0) css += `--pdf-span-scale:${expected / natural};`;
+      else {
+        span.dataset.expectedWidth = String(expected);
+        measureLater = true;
+      }
       transforms.push("scaleX(var(--pdf-span-scale, 1))");
     }
-    if (transforms.length) span.style.transform = transforms.join(" ");
+    if (transforms.length) css += `transform:${transforms.join(" ")};`;
+    // One write, not six: each property set on a style is a parse and a
+    // mutation of its own, times every text item on the page.
+    span.setAttribute("style", css);
     frag.appendChild(span);
   });
   layer.appendChild(frag);
+  // ── Measured off a canvas, not off the page ─────────────────────────────
+  //
+  // Every span above is sized as it is built, from canvas measureText — the
+  // way pdf.js's own text layer does it — so building a page's text layer
+  // reads no layout at all. It used to read offsetWidth for every span, a
+  // frame later: one forced style and layout pass over thousands of spans per
+  // page, paid on every page the reader scrolled onto, which on a phone was
+  // most of the second between a page appearing and its text being
+  // selectable. It also left every selection box the wrong width for a frame.
+  //
+  // What follows is the old way, kept for the one case that still needs it:
+  // a browser with no 2D canvas to measure on, where measureSpanText says 0.
+  //
   // Measured in one pass AFTER the whole layer is in the document: reading
   // offsetWidth per span while still appending would be a forced layout per
   // text item, which on a dense two-column page is hundreds of them.
@@ -2751,7 +2949,7 @@ export async function buildTextLayer(page, viewport) {
   // So: every read first, into an array, and only then every write. The browser
   // flushes once for the whole page instead of once per word. Nothing else about
   // the measurement changes — the same spans get the same numbers.
-  requestAnimationFrame(() => {
+  if (measureLater) requestAnimationFrame(() => {
     if (!layer.isConnected) return;
     const spans = layer.querySelectorAll("span[data-expected-width]");
     const widths = new Array(spans.length);
@@ -2768,6 +2966,32 @@ export async function buildTextLayer(page, viewport) {
   // getTextContent() for that would be a round trip to the worker for something
   // this function has already paid for.
   return { layer, items: content.items };
+}
+
+// How wide a run of text is in the font its span is set in, at its size, in
+// CSS pixels — without asking the page. One canvas for the whole session, and
+// the font only re-set when it changes, which on a page of body text is
+// almost never: assigning ctx.font is a parse, and a page has thousands of
+// spans. 0 when there is no canvas to measure on.
+let textMeasure = null;
+let textMeasureFont = "";
+
+export function measureSpanText(text, fontSize, fontFamily) {
+  if (textMeasure === null) {
+    try {
+      const canvas = typeof OffscreenCanvas === "function" ? new OffscreenCanvas(1, 1) : document.createElement("canvas");
+      textMeasure = canvas.getContext("2d") || false;
+    } catch (_) {
+      textMeasure = false;
+    }
+  }
+  if (!textMeasure) return 0;
+  const font = `${fontSize}px ${fontFamily || "sans-serif"}`;
+  if (font !== textMeasureFont) {
+    textMeasure.font = font;
+    textMeasureFont = font;
+  }
+  return textMeasure.measureText(text).width;
 }
 
 // ── Position ────────────────────────────────────────────────────────────────

@@ -39,7 +39,7 @@ import { findChrome, launchChrome, connect, openPage, emulatePhone } from "./cdp
 import { PDFJS_VERSION, pdfjsSources } from "./pdfjs-source.mjs";
 import { PDFLIB_VERSION, pdflibSource } from "./pdflib-source.mjs";
 import { HTMLTOIMAGE_VERSION, htmlToImageSource } from "./htmltoimage-source.mjs";
-import { FONT_SIZE, PAGE_HEIGHT, PAGE_WIDTH, SCAN_MEASURE, buildFixturePdf, fixtureLineOrigin, scannedInkY, scannedPaperY } from "./pdf-fixture.mjs";
+import { FONT_SIZE, PAGE_HEIGHT, PAGE_WIDTH, SCAN_MEASURE, SPLIT_WORD_TEXT, buildFixturePdf, fixtureLineOrigin, scannedInkY, scannedPaperY } from "./pdf-fixture.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
@@ -5650,6 +5650,58 @@ try {
     check("...and its PDF tab on screen",
       plainResult.viewMode === "document" && plainResult.tabHidden === false,
       `viewMode=${plainResult.viewMode} tabHidden=${plainResult.tabHidden}`);
+  }
+
+  // ── 11b. Words set in more than one font copy as words ──────────────────
+  //
+  // "A bs tr ac t — Man y app li ca ti ons i n r obo ti cs", copied off a LaTeX
+  // paper that every other reader copies as "Abstract—Many applications in
+  // robotics". pdf.js makes a new text item at every font switch, and the text
+  // layer used to put a space between any two items on a line — so every seam
+  // inside a word became a space, on the clipboard and in every highlight.
+  //
+  // The fixture page sets its words in two fonts with no gap at the seams,
+  // and the check reads the page three ways: what a select-all-and-copy gives
+  // (range.toString over the layer, which is what the browser copies), what a
+  // highlight stores, and what an imported annotation over it would be named.
+  if (!OWN_PDF) {
+    const split = buildFixturePdf({ pages: 1, annotate: false, outline: false, splitWords: true });
+    const joined = await page.evaluate(`async (bytes) => {
+      const { api, settle } = window.__recall;
+      const before = api.readLocalDeckIndex().map((m) => m.id);
+      const file = new File([new Uint8Array(bytes)], "split-words.pdf", { type: "application/pdf" });
+      await api.importPdfFile(file, null);
+      await settle(400);
+      const entry = api.readLocalDeckIndex().find((m) => !before.includes(m.id));
+      if (!entry) return { error: "no deck was created for the split-word PDF" };
+      await api.loadDeckFromLibrary(entry.id);
+      await settle(300);
+      api.closeMyDecksPanel();
+      api.setViewMode("document");
+      await api.openDocumentView({ force: true });
+      if (!(await api.whenDocumentPageReady(1))) return { error: "page 1 of the split-word PDF never got a text layer" };
+      const pageEl = document.querySelector('.pdf-page[data-page-number="1"]');
+      const spans = Array.from(pageEl.querySelectorAll(".pdf-text-layer span[data-item-index]"));
+      const range = document.createRange();
+      range.setStart(spans[0].firstChild, 0);
+      const last = spans[spans.length - 1].firstChild;
+      range.setEnd(last, last.length);
+      const copied = range.toString();
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      const capture = api.captureDocumentSelection();
+      selection.removeAllRanges();
+      return { spans: spans.length, copied, captured: capture ? capture.text : null };
+    }`, Array.from(split.bytes));
+
+    if (joined.error) throw new Error(joined.error);
+    check("a word set in two fonts is several text items — the case this is about",
+      joined.spans > 2, `${joined.spans} span(s)`);
+    check("...and copies as one word, with the line break where the page has one",
+      joined.copied === SPLIT_WORD_TEXT, JSON.stringify(joined.copied));
+    check("...and a highlight over it stores the words, not the seams",
+      joined.captured === SPLIT_WORD_TEXT.replace(/\s+/g, " "), JSON.stringify(joined.captured));
   }
 
   // ── 12. A contents for a PDF that carries none ──────────────────────────
