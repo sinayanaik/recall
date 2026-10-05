@@ -25,7 +25,9 @@ const pdfTimingEvents = [];
 // drawing itself. `annotate` is the page-painted hook — highlights repaired,
 // ink, blocks and note badges — which ran on every page paint unmeasured.
 // `bake` is dark page drawn into a page's pixels (bakePagePaper).
-const pdfTimingSamples = { render: [], worker: [], draw: [], text: [], annotate: [], bake: [] };
+// `swap` is what a page drawn in the page renderer's worker costs the main
+// thread: showing the finished bitmap.
+const pdfTimingSamples = { render: [], worker: [], draw: [], swap: [], text: [], annotate: [], bake: [] };
 
 // Renders cancelled before they finished, and renders that finished for a zoom
 // or a position that had already gone — work that showed the reader nothing.
@@ -157,6 +159,7 @@ const PDF_TIMING_LABELS = {
   render: "draw one page",
   worker: "  waiting for the worker",
   draw: "  drawing",
+  swap: "  on the main thread",
   text: "make a page selectable",
   annotate: "put highlights and notes on a page",
   bake: "draw dark page into a page"
@@ -217,16 +220,17 @@ export function pdfTimingReport() {
     + (nav.deviceMemory ? ` · ${nav.deviceMemory}GB` : "")
     + (typeof window !== "undefined" ? ` · ${window.innerWidth}×${window.innerHeight}` : ""));
   if (pdfTimingCanvas) {
+    if (pdfTimingCanvas.drawn) lines.push(`pages drawn: ${pdfTimingCanvas.drawn}`);
     lines.push(`canvas: ${pdfTimingCanvas.cpu ? "CPU" : "GPU"} · budget ${(pdfTimingCanvas.budget / 1e6).toFixed(1)}MP a page`
       + ` · ${pdfTimingCanvas.slots} at a time`
       + (pdfTimingCanvas.dark ? ` · dark page ${pdfTimingCanvas.dark}` : ""));
   }
   lines.push(`pdf.js: ${lib?.version || "not loaded"}${pdfTimingCanvas?.build ? ` (${pdfTimingCanvas.build} build)` : ""}`);
-  ["render", "worker", "draw", "text", "annotate", "bake"].forEach((kind) => {
+  ["render", "worker", "draw", "swap", "text", "annotate", "bake"].forEach((kind) => {
     const s = pdfTimingStats(pdfTimingSamples[kind]);
-    // The two halves of a page's draw only say anything once there is one, and
-    // the dark page line only once a dark page has been drawn.
-    if (!s && (kind === "worker" || kind === "draw" || kind === "bake")) return;
+    // The parts of a page's draw only say anything once there is one, and the
+    // dark page line only once a dark page has been drawn on the main thread.
+    if (!s && (kind === "worker" || kind === "draw" || kind === "swap" || kind === "bake")) return;
     lines.push(s
       ? `${PDF_TIMING_LABELS[kind]}: median ${s.median}ms · p90 ${s.p90}ms · worst ${s.worst}ms (${s.count} pages)`
       : `${PDF_TIMING_LABELS[kind]}: no pages yet`);

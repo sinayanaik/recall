@@ -5,6 +5,7 @@
 //   node tools/pdf-perf.mjs --runs=3 --throttle=6 --only=open,tab
 //   node tools/pdf-perf.mjs --invert              # with dark page on
 //   node tools/pdf-perf.mjs --highlights=30       # 30 highlights on every page
+//   node tools/pdf-perf.mjs --main-thread         # pages drawn on the main thread
 //
 // "Everything is slow on my phone — opening a deck's PDF, switching tabs,
 // switching PDFs, scrolling, zooming, panning." None of those had a number
@@ -60,6 +61,8 @@ const INVERT = process.argv.includes("--invert");
 const HIGHLIGHTS = Math.max(0, Number(arg("highlights", 0)) || 0);
 // --report prints the App Info readout at the end of each run.
 const REPORT = process.argv.includes("--report");
+// --main-thread draws pages on the main thread instead of in the page renderer.
+const MAIN_THREAD = process.argv.includes("--main-thread");
 // --profile=<flow> prints where the main thread's time went during that flow:
 // the functions with the most self time, from the V8 CPU profiler.
 const PROFILE = arg("profile", "");
@@ -76,7 +79,7 @@ const DPR = Number(arg("dpr", 2));
 // The browser plumbing and pdf.js come from THIS tree, so two roots are
 // measured with the same harness; only the app under test differs.
 const { findChrome, launchChrome, connect, openPage, emulatePhone } = await import(path.join(HERE, "tools/cdp.mjs"));
-const { pdfjsSources } = await import(path.join(HERE, "tools/pdfjs-source.mjs"));
+const { pdfjsSources, servePdfjsFromDisk } = await import(path.join(HERE, "tools/pdfjs-source.mjs"));
 
 // ── A paper that costs what a paper costs ──────────────────────────────────
 // Photograph-like JPEGs, made once with ImageMagick and cached. Each page gets
@@ -244,6 +247,11 @@ async function oneRun() {
   try {
     await emulatePhone(page, { cpuThrottle: 1 });
     if (DPR !== 2) await page.call("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: DPR, mobile: true });
+    // The PDF page renderer fetches pdf.js by its CDN URL to start its worker;
+    // answered from the same files. --main-thread turns the renderer off, to
+    // compare the two on one build.
+    await servePdfjsFromDisk(client, page, sources);
+    if (MAIN_THREAD) await page.call("Page.addScriptToEvaluateOnNewDocument", { source: `try { localStorage.setItem("recall:pdfRenderWorker", "0"); } catch (e) {}` });
     await page.call("Page.addScriptToEvaluateOnNewDocument", {
       source: `${sources.main}
 ;(function () { var blob = new Blob([${JSON.stringify(sources.worker)}], { type: "text/javascript" });
@@ -572,13 +580,21 @@ try { new PerformanceObserver((l) => l.getEntries().forEach((e) => window.__perf
       // every move waits for it.
       const x = 200;
       let y = 650;
-      await page.call("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y, id: 1 }] });
+      //
+      // Sent on a 16ms clock WITHOUT waiting for the page to acknowledge each
+      // one, as a finger does: a dispatch is only answered once the page has
+      // handled it, and waiting for that turned a busy main thread into a finger
+      // that rested on the glass for most of a second before moving — a long
+      // press, which the page rightly answered by selecting text. The events
+      // still arrive in order.
+      const sent = [page.call("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y, id: 1 }] })];
       for (let i = 0; i < 70; i++) {
         await new Promise((r) => setTimeout(r, 16));
         y -= 6;
-        await page.call("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y, id: 1 }] });
+        sent.push(page.call("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y, id: 1 }] }));
       }
-      await page.call("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+      sent.push(page.call("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] }));
+      await Promise.all(sent);
       results.pan = await page.evaluate(`async () => {
         const { api, settle } = window.__recall;
         await settle(200);
@@ -655,7 +671,7 @@ const row = (label, pick, unit = "ms") => {
   if (values.every((v) => v === undefined)) return;
   console.log(`  ${label.padEnd(34)} ${String(median(values)).padStart(6)} ${unit}   (${values.join(", ")})`);
 };
-console.log(`pdf-perf · ${ROOT} · CPU ${THROTTLE}x · dpr ${DPR}${IMAGES ? " · photo pages" : ""} · ${RUNS} run(s)${INVERT ? " · dark page" : ""}${HIGHLIGHTS ? ` · ${HIGHLIGHTS} highlights a page` : ""} · median (each run)`);
+console.log(`pdf-perf · ${ROOT} · CPU ${THROTTLE}x · dpr ${DPR}${IMAGES ? " · photo pages" : ""} · ${RUNS} run(s)${INVERT ? " · dark page" : ""}${HIGHLIGHTS ? ` · ${HIGHLIGHTS} highlights a page` : ""}${MAIN_THREAD ? " · drawn on the main thread" : ""} · median (each run)`);
 row("open: deck PDF to first page", (r) => r.open);
 row("tab: Notes → PDF, page on screen", (r) => r.tab?.ms);
 runs.forEach((r, i) => {

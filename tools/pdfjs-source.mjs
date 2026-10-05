@@ -41,3 +41,34 @@ export function pdfjsSources() {
   }
   return { main: readFileSync(main, "utf8"), worker: readFileSync(worker, "utf8") };
 }
+
+// ...and the same files, ANSWERED for the CDN URLs the app asks for them by.
+//
+// Injecting pdf.js covers the page, but the PDF page renderer
+// (src/documents/pdf-render-worker.js) fetches the library's source to hand to
+// its worker (pdfjsWorkerSources in src/core/lib-loader.js), exactly as the app
+// does in a browser. A check machine may have no route to the CDN, so those
+// requests are fulfilled from these files over the DevTools protocol, which
+// exercises the app's real path rather than a test-only one. `which` picks the
+// legacy build the app ships or the untranspiled one tools/pdf-perf.mjs can try.
+export async function servePdfjsFromDisk(client, page, sources = pdfjsSources()) {
+  const body = {
+    main: Buffer.from(sources.main, "utf8").toString("base64"),
+    worker: Buffer.from(sources.worker, "utf8").toString("base64")
+  };
+  client.on((message) => {
+    if (message.method !== "Fetch.requestPaused" || message.sessionId !== page.sessionId) return;
+    const { requestId, request } = message.params;
+    const file = /pdf\.worker(\.min)?\.js/.test(request.url) ? body.worker : body.main;
+    page.call("Fetch.fulfillRequest", {
+      requestId,
+      responseCode: 200,
+      responseHeaders: [
+        { name: "Content-Type", value: "text/javascript" },
+        { name: "Access-Control-Allow-Origin", value: "*" }
+      ],
+      body: file
+    }).catch(() => {});
+  });
+  await page.call("Fetch.enable", { patterns: [{ urlPattern: `*pdfjs-dist@${PDFJS_VERSION}*` }] });
+}
