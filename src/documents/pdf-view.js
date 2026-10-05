@@ -3191,6 +3191,11 @@ async function buildPageLayers(pageNumber, entry, page, viewport, stale, textCon
   entry.textScale = viewport.scale;
   entry.textUrgent = false;
   samplePdfTiming("text", built.spent);
+  // ...and the painted hook once more, now that there is a text layer. The note
+  // badges wait for one (paintPageNoteBadges), and every painter behind the
+  // hook is signature-guarded, so what was already painted in step 2 is a
+  // no-op the second time.
+  onPagePainted(pageNumber);
 }
 
 // The text layer a page is still carrying from an earlier scale, if any.
