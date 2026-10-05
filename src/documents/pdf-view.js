@@ -3159,7 +3159,7 @@ function showPageRenderFailure(pageNumber, reason) {
 //      positioned elements on a dense page, which used to be built in one go
 //      on an idle callback with a 200ms timeout, so on a phone they were very
 //      often built in the middle of a pan, as one long task of up to 1.5s.
-//      Now they wait until the page is on screen and not moving, and are built
+//      Now they wait until the page is near the screen and still, and are built
 //      in slices of PDF_TEXT_SLICE_MS, yielding a frame between slices and
 //      pausing outright while the page moves. A page somebody is waiting on by
 //      name (whenDocumentPageReady) skips the wait.
@@ -3223,7 +3223,7 @@ function startPageLayers(pageNumber, entry, page, viewport, stale, textContent =
 
 // ── A drawn page with no text layer, and nothing building one ─────────────
 //
-// A layer build waits for the page to be on screen and still, so it can be
+// A layer build waits for the page to be near the screen and still, so it can be
 // waiting when the document is parked (a switch to the notebook and back), and
 // a park makes it stale. The pages come back drawn — with nothing left that
 // would ever build their text. Asked from renderPagesNearViewport, which every
@@ -3279,7 +3279,10 @@ function waitForTextLayerTurn(pageNumber, entry, stale) {
     const check = () => {
       if (stale()) { resolve(false); return; }
       if (entry.urgent || entry.textUrgent) { resolve(true); return; }
-      if (!documentMoving() && !documentSurfaceHidden() && isPageOnScreen(pageNumber)) {
+      // Near rather than on screen: the build is sliced and only runs while the
+      // page is still, so building the page either side costs no stutter, and
+      // it means a page scrolled into view can be pressed on straight away.
+      if (!documentMoving() && !documentSurfaceHidden() && isPageNearViewport(pageNumber)) {
         if (typeof requestIdleCallback === "function") requestIdleCallback(() => resolve(!stale()), { timeout: 100 });
         else requestAnimationFrame(() => resolve(!stale()));
         return;
