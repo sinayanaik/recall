@@ -674,3 +674,49 @@
   overflow-wrap: anywhere;
   user-select: text;
 }
+
+/* ── "Find what's slow", in App Info ───────────────────────────────────────
+ *
+ * One of these at a time is on #documentStage while the probe scrolls the
+ * paper (src/documents/pdf-view.js, runDocumentSlowProbe), and none otherwise.
+ * Each takes one part of the page out of what is painted and composited. The
+ * overlays on a page are positioned, so `display: none` takes them out
+ * entirely without moving anything; what is in the flow (the picture, the
+ * notes under a page) is `visibility: hidden`, so the page boxes keep their
+ * sizes and every pass scrolls over the same ground.
+ */
+.document-stage.pdf-probe-no-text .pdf-text-layer {
+  display: none !important;
+}
+
+.document-stage.pdf-probe-no-marks .pdf-page > :not(.pdf-canvas):not(.pdf-detail):not(.pdf-text-layer):not(.pdf-page-label) {
+  display: none !important;
+}
+
+.document-stage.pdf-probe-no-notes .pdf-page-notes {
+  visibility: hidden !important;
+}
+
+.document-stage.pdf-probe-no-chrome .pdf-page {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.document-stage.pdf-probe-no-pictures .pdf-page > .pdf-canvas,
+.document-stage.pdf-probe-no-pictures .pdf-page > .pdf-detail {
+  visibility: hidden !important;
+}
+
+.document-stage.pdf-probe-picture-layers .pdf-page > img.pdf-picture {
+  will-change: transform;
+}
+
+.document-stage.pdf-probe-empty .pdf-page > *,
+.document-stage.pdf-probe-empty .pdf-page-notes {
+  visibility: hidden !important;
+}
+
+.document-stage.pdf-probe-empty .pdf-page {
+  background: transparent !important;
+  box-shadow: none !important;
+}

@@ -451,6 +451,10 @@ let nextJob = 1;
 let nextDoc = 1;
 const rendererJobs = new Map();
 const rendererOpening = new Map();
+// Jobs the worker has been sent and not yet answered — a cancelled one too,
+// since a cancel lands only between pdf.js slices and an encode or a decode
+// runs to its end regardless. This, not rendererJobs, is how busy it is.
+const workerJobsOut = new Set();
 
 export function pageRendererActive() {
   return rendererReady && Boolean(rendererWorker);
@@ -468,6 +472,16 @@ export function pageRendererKeepsPictures() {
 
 export function renderDocumentSha(id) {
   return renderDocShas.get(id) || "";
+}
+
+// Jobs sent to the renderer and not answered yet — pages, pictures, composes,
+// detail tiles, and cancelled ones it is still finishing. Work drawn AHEAD of
+// the reader starts only when this is 0 (src/documents/pdf-view.js,
+// runPrerender): a worker job cannot be stopped mid-encode, and one started
+// just before the reader touches the paper is one the page they want waits
+// behind.
+export function pageRendererBusy() {
+  return workerJobsOut.size;
 }
 
 export function pageRendererStatus() {
@@ -489,6 +503,7 @@ export function pageRendererFailed(reason) {
   rendererStarting = null;
   rendererJobs.forEach((job) => job.reject(Object.assign(new Error(rendererUnavailable), { name: "PageRendererUnavailable" })));
   rendererJobs.clear();
+  workerJobsOut.clear();
   rendererOpening.forEach((pending) => pending.resolve(null));
   rendererOpening.clear();
   try { was?.terminate(); } catch (_) { /* already gone */ }
@@ -497,6 +512,7 @@ export function pageRendererFailed(reason) {
 
 function onWorkerMessage(event) {
   const message = event.data || {};
+  if (message.job != null) workerJobsOut.delete(message.job);
   if (message.type === "picture" || message.type === "composed") {
     const job = rendererJobs.get(message.job);
     rendererJobs.delete(message.job);
@@ -637,6 +653,7 @@ function rendererJob(message) {
       reject: (error) => { settled = true; reject(error); }
     });
   });
+  workerJobsOut.add(job);
   rendererWorker.postMessage({ ...message, job });
   return {
     promise,
@@ -687,6 +704,7 @@ export function renderPageBitmap({ id, pageNumber, scale, outputScale = 1, regio
       reject: (error) => { settled = true; reject(error); }
     });
   });
+  workerJobsOut.add(job);
   rendererWorker.postMessage({ type: "render", job, id, pageNumber, scale, outputScale, region, density, dark });
   return {
     promise,

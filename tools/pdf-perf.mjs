@@ -685,6 +685,35 @@ try { new PerformanceObserver((l) => l.getEntries().forEach((e) => window.__perf
         return result;
       }`);
     }
+    if (ONLY.has("probe")) {
+      // App Info's "Find what's slow", run here as it is on the phone: the
+      // same scroll with one part of the page hidden at a time. PROBE_DOM=1
+      // also lists what a page on screen is made of.
+      results.probe = await page.evaluate(`async () => {
+        const { api, settle } = window.__recall;
+        api.fitDocumentToWidth();
+        api.scrollToDocumentPage(2, 0, { smooth: false });
+        await settle(2500);
+        let dom = "";
+        if (${JSON.stringify(Boolean(process.env.PROBE_DOM))}) {
+          const el = api.pdfPageElement(api.currentDocumentPage());
+          const walk = (node, depth) => {
+            const kids = Array.from(node.children);
+            const names = new Map();
+            kids.forEach((k) => { const n = k.tagName.toLowerCase() + (k.className && typeof k.className === "string" ? "." + k.className.trim().split(/\\s+/).join(".") : ""); names.set(n, (names.get(n) || 0) + 1); });
+            names.forEach((count, n) => { dom += "  ".repeat(depth) + n + (count > 1 ? " ×" + count : "") + "\\n"; });
+            if (depth < 2) kids.forEach((k) => { if (k.children.length) { dom += "  ".repeat(depth) + "[" + k.className + "]:\\n"; walk(k, depth + 1); } });
+          };
+          if (el) walk(el, 0);
+          const host = el?.parentElement;
+          if (host) { dom += "host " + host.className + " children:\\n"; walk(host, 1); }
+        }
+        const text = api.runPdfSlowProbe ? await api.runPdfSlowProbe() : "no probe in this build";
+        return { text, dom };
+      }`);
+      if (results.probe.dom) console.log(results.probe.dom);
+      console.log(results.probe.text);
+    }
     if (LAYERS) {
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
       const snapshot = async () => {

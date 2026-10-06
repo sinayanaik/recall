@@ -15,7 +15,7 @@ import { probeLocalStorage } from "../storage/health.js?v=__BUILD__";
 import { GITHUB_REPO, compareCommits, fetchLiveRelease, fetchRepoRelease, releaseStampsIn, runningAppVersion, runningVersionLabel, setGithubReleaseCache } from "./release-info.js?v=__BUILD__";
 import { isMixedBuild, serviceWorkerRegistration, updateDownloadFailed, updateIsWaiting } from "./service-worker-client.js?v=__BUILD__";
 import { setButtonLoading, showToast } from "../ui/feedback.js?v=__BUILD__";
-import { pdfPicturePagesOn, pdfReaderTestAvailable, pdfTimingReport, runPdfReaderTest, setPdfPicturePages } from "../documents/pdf-timing.js?v=__BUILD__";
+import { pdfPicturePagesOn, pdfReaderTestAvailable, pdfTimingReport, runPdfReaderTest, runPdfSlowProbe, setPdfPicturePages } from "../documents/pdf-timing.js?v=__BUILD__";
 import { lockPageScroll, unlockPageScroll } from "../ui/overlays.js?v=__BUILD__";
 
 export const appInfoModal = document.getElementById("appInfoModal");
@@ -641,6 +641,8 @@ export const appInfoReaderTestBtn = document.getElementById("appInfoReaderTestBt
 
 export const appInfoPicturePagesBtn = document.getElementById("appInfoPicturePagesBtn");
 
+export const appInfoSlowProbeBtn = document.getElementById("appInfoSlowProbeBtn");
+
 function paintPicturePagesButton() {
   if (!appInfoPicturePagesBtn) return;
   const on = pdfPicturePagesOn();
@@ -662,6 +664,24 @@ export async function runReaderTestFromAppInfo() {
     await runPdfReaderTest();
   } catch (error) {
     console.warn("The reader test failed", error);
+  }
+  openAppInfoModal();
+  appInfoPdfTimings?.scrollIntoView?.({ block: "end" });
+}
+
+// Same shape as the reader test: out of the way while it scrolls, back with
+// the result at the bottom of the timings. About forty-five seconds.
+export async function runSlowProbeFromAppInfo() {
+  if (!pdfReaderTestAvailable()) {
+    showToast("Open a PDF on the PDF tab, then run this from here", "info");
+    return;
+  }
+  closeAppInfoModal();
+  showToast("Finding what's slow: scrolling the open paper ten times — hands off for about 45 seconds", "info");
+  try {
+    await runPdfSlowProbe();
+  } catch (error) {
+    console.warn("Find what's slow failed", error);
   }
   openAppInfoModal();
   appInfoPdfTimings?.scrollIntoView?.({ block: "end" });

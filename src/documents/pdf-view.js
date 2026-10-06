@@ -32,7 +32,7 @@ import { isS3Configured } from "../cloud/s3-config.js?v=__BUILD__";
 import { PDF_BADGE_LAYER_CLASS, PDF_INK_HL_LAYER_CLASS, PDF_INK_LAYER_CLASS } from "../core/constants.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { ensurePdfJs, openPdfDocument } from "../core/lib-loader.js?v=__BUILD__";
-import { cleanupRenderDocument, cleanupRenderPage, closeRenderDocument, composePagePicture, openRenderDocument, pageRendererActive, pageRendererBakesDark, pageRendererFailed, pageRendererKeepsPictures, pageRendererStatus, renderDocumentSha, renderPageBitmap, renderPagePicture, startPageRenderer } from "./pdf-render-worker.js?v=__BUILD__";
+import { cleanupRenderDocument, cleanupRenderPage, closeRenderDocument, composePagePicture, openRenderDocument, pageRendererActive, pageRendererBakesDark, pageRendererBusy, pageRendererFailed, pageRendererKeepsPictures, pageRendererStatus, renderDocumentSha, renderPageBitmap, renderPagePicture, startPageRenderer } from "./pdf-render-worker.js?v=__BUILD__";
 import { createRecordingContext } from "../render/canvas-record.js?v=__BUILD__";
 import { hash32 } from "../core/text.js?v=__BUILD__";
 import { paintRegionMarks, regionMarksOnPage } from "./pdf-region-marks.js?v=__BUILD__";
@@ -40,7 +40,7 @@ import { dropPicture, getPictureBlob, holdPictureUrl, loadPaperPictures, pagesWi
 import { state } from "../core/state.js?v=__BUILD__";
 import { paintDocumentHighlights } from "./pdf-highlights.js?v=__BUILD__";
 import { textItemGap } from "./pdf-selection.js?v=__BUILD__";
-import { expectPdfPagePaint, firstPdfPagePainted, notePdfAnimationFrame, notePdfAnimationFramesObserved, notePdfCanvasSetup, notePdfInteractionFrame, notePdfInteractionLongTask, notePdfWastedRenders, recordPdfTimingAfterPaint, samplePdfTiming, setPdfReaderTest } from "./pdf-timing.js?v=__BUILD__";
+import { expectPdfPagePaint, firstPdfPagePainted, notePdfAnimationFrame, notePdfAnimationFramesObserved, notePdfCanvasSetup, notePdfInteractionFrame, notePdfInteractionLongTask, notePdfWastedRenders, pendingPdfPagePaint, recordPdfTimingAfterPaint, samplePdfTiming, setPdfReaderTest } from "./pdf-timing.js?v=__BUILD__";
 import { buildDocumentOutline, clearDocumentOutline, setDocumentOutlinePage } from "./pdf-outline.js?v=__BUILD__";
 import { inkPenIsDown } from "../core/gesture.js?v=__BUILD__";
 import { DOC_SLOT_DOC, DOC_SLOT_NOTEBOOK, activeDocSlot, docSlotMeta, docSlotReadingPositionKey, documentStoreKey, normalizeDocSlot, onDocumentSurface } from "./doc-slot.js?v=__BUILD__";
@@ -2503,7 +2503,8 @@ async function renderPage(pageNumber) {
     if (Number.isFinite(drawn.encodeMs)) samplePdfTiming("encode", drawn.encodeMs);
     if (drawn.where === "worker") samplePdfTiming("swap", drawn.swapMs);
     if (drawn.where === "kept" || drawn.where === "composed") samplePdfTiming("kept", drawnAt - renderStartedAt);
-    firstPdfPagePainted(`${(drawn.pixels / 1e6).toFixed(1)}MP ${canvas.classList.contains("pdf-picture") ? `picture, ${drawn.where}` : "canvas"}`);
+    pagesShownCount += 1;
+    notePagePainted(pageNumber, `${(drawn.pixels / 1e6).toFixed(1)}MP ${canvas.classList.contains("pdf-picture") ? `picture, ${drawn.where}` : "canvas"}`);
     if (entry.pictureDetail || (!canvas.classList.contains("pdf-picture") && pageWantsDetail(outputScale))) scheduleDetail();
     // A page that drew has no failed attempts behind it any more. Without this
     // a page that needed two goes would carry that count into every later
@@ -3489,6 +3490,9 @@ const pictureElements = new WeakMap();
 // Counters for App Info and the reader test: how pages came to be on screen.
 // `drawn` is pages the reader waited on; `ahead`, pages drawn while they read.
 const pictureCounts = { kept: 0, composed: 0, drawn: 0, ahead: 0 };
+// Every page put on screen by renderPage, picture or canvas — for the probe,
+// which wants to know whether anything was drawn while it measured.
+let pagesShownCount = 0;
 
 export function documentPictureCounts() {
   return {
@@ -3499,7 +3503,12 @@ export function documentPictureCounts() {
     renderCopyOpenedBy: openPdf?.renderDocOpenedBy || "",
     active: picturesActive(),
     sha: openPdf?.pictureSha || "",
-    aheadBusy: Boolean(prerenderJob)
+    aheadBusy: Boolean(prerenderJob),
+    // What the reader's own pages may have waited behind: the worker's time
+    // on pages drawn ahead, and the jobs it has out right now.
+    aheadMs: prerenderSpentMs,
+    aheadBlockedBy: prerenderBlockedBy(),
+    workerJobs: pageRendererBusy()
   };
 }
 
@@ -3721,6 +3730,7 @@ async function obtainPagePicture({ entry, pageNumber, viewport, stale, takeSlot,
     if (stale()) return null;
     if (source) {
       const started = performance.now();
+      yieldPrerender();
       const composed = await composePagePicture({ source, bakeDarkPage: true, quality }).promise;
       if (stale()) return null;
       const meta = { sha, page: pageNumber, width: other.width, height: other.height, paper, kind: "plain", stamp: "" };
@@ -3742,6 +3752,7 @@ async function obtainPagePicture({ entry, pageNumber, viewport, stale, takeSlot,
     if (stale()) return null;
     if (id == null) throw Object.assign(new Error("the page renderer could not open this paper"), { name: "PageRendererUnavailable" });
     const started = performance.now();
+    yieldPrerender();
     const job = renderPagePicture({ id, pageNumber, width: target.width, dark: paper === "dark", ops, quality });
     entry.renderTask = job;
     let result;
@@ -3778,6 +3789,7 @@ async function obtainPagePicture({ entry, pageNumber, viewport, stale, takeSlot,
   const started = performance.now();
   const ops = await markOpsAt(pageNumber, want.marks, plain.picture.width, paper);
   if (stale()) return null;
+  yieldPrerender();
   const composed = await composePagePicture({ source: plain.blob, ops, quality }).promise;
   if (stale()) return null;
   const marked = { sha, page: pageNumber, width: plain.picture.width, height: plain.picture.height, paper, kind: "marked", stamp: want.stamp };
@@ -3850,6 +3862,20 @@ async function showPlainPicture(pageNumber, entry, shown) {
 // carry asks for a wider one (upgradePagePicture), once the page is still.
 let relayerTurn = Promise.resolve();
 
+// The wait a zoom (or an open) started is over when a page shows something
+// good enough for it. For a zoom, only the page the reader is looking at
+// counts: the first report's "zoom 11973ms … kept" was a zoom on kept pictures
+// — which never reach renderPage — timed until some page somewhere next drew,
+// seconds of reading later.
+function notePagePainted(pageNumber, extra, options) {
+  if (pendingPdfPagePaint() === "zoom" && pageNumber !== currentDocumentPage()) return;
+  firstPdfPagePainted(extra, options);
+}
+
+function pictureMegapixels(picture) {
+  return `${((picture.width * picture.height) / 1e6).toFixed(1)}MP`;
+}
+
 function relayerPage(pageNumber) {
   const entry = openPdf?.pages.get(pageNumber);
   if (!entry?.viewport) return;
@@ -3867,6 +3893,9 @@ function relayerPage(pageNumber) {
   entry.pictureDetail = target.detail;
   const shown = shownPicture(entry);
   if (shown) entry.renderOutputScale = shown.width / Math.max(1, viewport.width);
+  // Sharp enough already: the zoom is over for this page once it is painted.
+  // Too soft, and it is over when upgradePagePicture swaps the sharper one in.
+  if (shown && shown.width >= pictureMinWidth(target)) notePagePainted(pageNumber, `${pictureMegapixels(shown)} picture, kept`, { afterPaint: true });
   // A frame each: a zoom out puts a dozen pages near the reader at once, and
   // their marks, badges and ink built in one go were a long task under the
   // finger. The canvas path spread the same work out without meaning to — one
@@ -3900,15 +3929,28 @@ function relayerPage(pageNumber) {
 // seconds of opening, after which nothing on it is ever drawn again on this
 // device; on a long one, PDF_PRERENDER_RADIUS pages either side of the reader.
 //
-// It never competes with the reader: it starts only when nothing is waiting to
-// be drawn, is cancelled (between pdf.js slices) the moment they touch the
-// paper, and takes no render slot — so a page the reader scrolls to, and the
-// region pictures waiting on whenPageDrawsIdle, go first.
-export const PDF_PRERENDER_IDLE_MS = 2000;
-export const PDF_PRERENDER_RADIUS = 20;
+// It must never compete with the reader, and on the phone in the second report
+// it did: twenty-two pages drawn ahead in a session, each encode up to seven
+// seconds, the other paper composed for pages nobody had asked for — work the
+// worker cannot drop mid-encode, so a page the reader scrolled to waited behind
+// it. So: only after PDF_PRERENDER_IDLE_MS of stillness, only pages within
+// PDF_PRERENDER_RADIUS of the reader, never while the worker has any job out
+// (pageRendererBusy counts cancelled ones it is still finishing), never a page
+// that is kept on either paper (the other paper is composed when a page is
+// actually shown on it, not ahead), and cancelled before any page the reader
+// is waiting for is asked of the worker (yieldPrerender). It takes no render
+// slot, so the region pictures waiting on whenPageDrawsIdle go first too.
+export const PDF_PRERENDER_IDLE_MS = 5000;
+export const PDF_PRERENDER_RADIUS = 2;
 
 let prerenderTimer = 0;
 let prerenderJob = null;
+// "Find what's slow" is measuring (runDocumentSlowProbe): nothing is drawn
+// ahead or sharpened under it, so what it measures is the page alone.
+let probeRunning = false;
+// Time the worker spent on pages drawn ahead this session, for App Info: what
+// the reader's own pages may have waited behind.
+let prerenderSpentMs = 0;
 
 function schedulePrerender(delay = PDF_PRERENDER_IDLE_MS) {
   clearTimeout(prerenderTimer);
@@ -3929,8 +3971,28 @@ function noteReaderActiveForPrerender() {
   schedulePrerender();
 }
 
+// A page the reader is waiting for is about to be asked of the worker: a page
+// being drawn ahead goes first — cancelled, and re-armed for the next rest.
+function yieldPrerender() {
+  if (!prerenderJob) return;
+  cancelPrerender();
+  schedulePrerender();
+}
+
 export function documentPrerenderBusy() {
   return Boolean(prerenderJob);
+}
+
+// Why nothing is being drawn ahead right now, or "" when it may be. For the
+// checks and App Info.
+export function prerenderBlockedBy() {
+  if (!openPdf) return "no paper open";
+  if (!picturesActive()) return "picture pages off";
+  if (probeRunning) return "finding what's slow";
+  if (pageRendererBusy()) return "worker busy";
+  if (renderWaiters.length || renderSlots.size) return "pages being drawn";
+  if (documentInteracting() || documentMoving() || inkPenIsDown()) return "reader active";
+  return "";
 }
 
 async function runPrerender() {
@@ -3938,7 +4000,7 @@ async function runPrerender() {
   const open = openPdf;
   if (!open || prerenderJob || !picturesActive() || documentSurfaceHidden()) return;
   if (document.hidden || documentInteracting() || documentMoving() || inkPenIsDown()
-      || renderWaiters.length || renderSlots.size) {
+      || renderWaiters.length || renderSlots.size || pageRendererBusy() || probeRunning) {
     schedulePrerender();
     return;
   }
@@ -3949,7 +4011,11 @@ async function runPrerender() {
   const scale = open.scale;
   const unit = { width: open.baseWidth * scale, height: open.baseHeight * scale, scale };
   const target = pictureTarget(unit);
-  const have = pagesWithPictures(sha, paper, pictureMinWidth(target));
+  const minWidth = pictureMinWidth(target);
+  // Kept on either paper is kept enough: the other one is a compose away, made
+  // when the page is shown on it.
+  const have = pagesWithPictures(sha, paper, minWidth);
+  pagesWithPictures(sha, paper === "dark" ? "light" : "dark", minWidth).forEach((pageNumber) => have.add(pageNumber));
   const current = currentDocumentPage();
   let next = 0;
   for (let distance = 0; distance <= PDF_PRERENDER_RADIUS && !next; distance += 1) {
@@ -3966,31 +4032,22 @@ async function runPrerender() {
     if (open.renderDoc) open.renderDoc.then((id) => cleanupRenderDocument(id)).catch(() => {});
     return;
   }
-  // The other paper's picture, if it is kept, is one compose away — no pdf.js.
-  const other = pageRendererBakesDark()
-    ? storedPicture({ sha, page: next, paper: paper === "dark" ? "light" : "dark", minWidth: pictureMinWidth(target) })
-    : null;
-  const source = other ? await getPictureBlob(other.key) : null;
-  let job;
-  if (source) {
-    job = composePagePicture({ source, bakeDarkPage: true, quality: pictureQuality(paper) });
-  } else {
-    const renderDoc = ensureRenderDoc();
-    const id = renderDoc ? await renderDoc : null;
-    if (id == null || openPdf !== open || prerenderJob) return;
-    job = renderPagePicture({ id, pageNumber: next, width: target.width, dark: paper === "dark", quality: pictureQuality(paper) });
-  }
-  if (openPdf !== open || prerenderJob) {
-    job.cancel();
+  const renderDoc = ensureRenderDoc();
+  const id = renderDoc ? await renderDoc : null;
+  if (id == null || openPdf !== open || prerenderJob) return;
+  // Still still? Opening the render document can take a moment, and the
+  // reader may have touched the paper or asked for a page meanwhile.
+  if (prerenderBlockedBy()) {
+    schedulePrerender();
     return;
   }
+  const job = renderPagePicture({ id, pageNumber: next, width: target.width, dark: paper === "dark", quality: pictureQuality(paper) });
   prerenderJob = job;
+  const started = performance.now();
   try {
     const result = await job.promise;
-    const meta = source
-      ? { sha, page: next, width: other.width, height: other.height, paper, kind: "plain", stamp: "" }
-      : { sha, page: next, width: result.pixelWidth, height: result.pixelHeight, paper: result.dark ? "dark" : "light", kind: "plain", stamp: "" };
-    await putPicture(meta, source ? result.blob : result.plain);
+    const meta = { sha, page: next, width: result.pixelWidth, height: result.pixelHeight, paper: result.dark ? "dark" : "light", kind: "plain", stamp: "" };
+    await putPicture(meta, result.plain);
     pictureCounts.ahead += 1;
   } catch (error) {
     // Cancelled because the reader moved: their next rest re-arms this
@@ -3998,6 +4055,7 @@ async function runPrerender() {
     if (error?.name !== "RenderingCancelledException") console.warn(`Could not draw page ${next} ahead`, error);
     return;
   } finally {
+    prerenderSpentMs += performance.now() - started;
     if (prerenderJob === job) prerenderJob = null;
   }
   if (openPdf === open) schedulePrerender(30);
@@ -4021,7 +4079,7 @@ function runPictureUpgrades() {
     pictureUpgrades.clear();
     return;
   }
-  if (documentMoving() || inkPenIsDown()) {
+  if (documentMoving() || inkPenIsDown() || probeRunning) {
     pictureUpgradeTimer = setTimeout(runPictureUpgrades, PDF_INTERACTION_SETTLE_MS);
     return;
   }
@@ -4094,6 +4152,7 @@ async function upgradePagePicture(pageNumber) {
     } else entry.el.prepend(img);
     syncBakedPage(entry);
     entry.renderOutputScale = got.picture.width / Math.max(1, viewport.width);
+    if (got.picture.width >= pictureMinWidth(target)) notePagePainted(pageNumber, `${pictureMegapixels(got.picture)} picture, upgraded (${got.where})`, { afterPaint: true });
   } catch (error) {
     if (error?.name !== "RenderingCancelledException") console.warn(`Could not sharpen page ${pageNumber}`, error);
   } finally {
@@ -4183,6 +4242,7 @@ function startPageDraw({ entry, pageNumber, page, viewport, outputScale = 1, reg
       }
       return onMain();
     }
+    yieldPrerender();
     const job = renderPageBitmap({ id, pageNumber, scale: viewport.scale, outputScale, region, density, dark: stageIsDark() });
     inner = job;
     let result;
@@ -4343,7 +4403,8 @@ function noteCanvasSetup(dark = null) {
     where: worker ? "CPU, in the worker" : (pdfCanvasOnCpu() ? "CPU" : "GPU"),
     // Read when App Info is opened, not now: the counts move with every page.
     pages: () => (picturesActive()
-      ? `kept pictures (this session: ${pictureCounts.kept} shown from the device · ${pictureCounts.composed} composed · ${pictureCounts.drawn} drawn while waited on · ${pictureCounts.ahead} drawn ahead)`
+      ? `kept pictures (this session: ${pictureCounts.kept} shown from the device · ${pictureCounts.composed} composed · ${pictureCounts.drawn} drawn while waited on · ${pictureCounts.ahead} drawn ahead in ${(prerenderSpentMs / 1000).toFixed(1)}s)`
+        + `\n  worker now: ${pageRendererBusy()} job${pageRendererBusy() === 1 ? "" : "s"} out · drawing ahead ${prerenderJob ? "now" : `paused (${prerenderBlockedBy() || `waits for ${PDF_PRERENDER_IDLE_MS / 1000}s still`})`}`
       : `canvases (${pdfPicturesTurnedOff() ? "picture pages turned off on this device" : !pageRendererKeepsPictures() ? "this browser cannot keep pictures" : "this paper has no content hash"})`),
     budget: canvasPixelBudget(),
     slots: renderConcurrency(),
@@ -4422,7 +4483,7 @@ let repaperChain = Promise.resolve();
 
 function repaperPages() {
   if (!openPdf || !darkPageBakes()) return;
-  // The other paper's pictures for the rest of the paper, ahead of the reader.
+  // Pages near the reader not kept on either paper, drawn ahead once still.
   schedulePrerender();
   const current = currentDocumentPage();
   const pages = [...openPdf.rendered].sort((a, b) => Math.abs(a - current) - Math.abs(b - current));
@@ -6490,11 +6551,20 @@ async function runDocumentReaderTest() {
   scrollToDocumentPage(1, 0, { smooth: false });
   await framesWhile(() => null, { sharp: true });
   const steps = [];
+  // At reading speed — a screen a second, a thumb moving the page along — and
+  // then the fling the first version of this test was: six screens in a second
+  // and a half, every frame a whole new screen to rasterise. Reading is what a
+  // reader does most; the fling is the worst case, kept for comparison.
+  const reading = Math.max(0, Math.min(view.scrollHeight - view.clientHeight, view.clientHeight * 2));
+  steps.push(await framesWhile(async () => {
+    await scrollOver(view, 0, reading, 2000);
+    await scrollOver(view, reading, 0, 2000);
+  }, { label: "scroll at reading speed (4s)" }));
   const distance = Math.max(0, Math.min(view.scrollHeight - view.clientHeight, view.clientHeight * 6));
   steps.push(await framesWhile(async () => {
     await scrollOver(view, 0, distance, 1500);
     await scrollOver(view, distance, 0, 1500);
-  }, { label: "scroll down and back (3s)" }));
+  }, { label: "fling down and back (3s)" }));
   steps.push(await framesWhile(() => setDocumentScale(fitWidthScale() * 0.5), { sharp: true, label: "zoom out to half" }));
   steps.push(await framesWhile(() => setDocumentScale(fitWidthScale() * 1.4), { sharp: true, label: "zoom in to 1.4x" }));
   steps.push(await framesWhile(() => fitDocumentToWidth(), { sharp: true, label: "back to fit width" }));
@@ -6504,11 +6574,7 @@ async function runDocumentReaderTest() {
     scrollToDocumentPage(start.page, start.ratio, { smooth: false });
   }
   const after = documentPictureCounts();
-  let livePixels = 0;
-  openPdf?.rendered.forEach((pageNumber) => {
-    const surface = openPdf.pages.get(pageNumber)?.el.querySelector(".pdf-canvas");
-    if (surface) livePixels += (surface.naturalWidth || surface.width) * (surface.naturalHeight || surface.height);
-  });
+  const livePixels = heldPagePixels();
   return {
     at: Date.now(),
     pictures: after.active,
@@ -6526,6 +6592,151 @@ async function runDocumentReaderTest() {
   };
 }
 
+// Device pixels of page pictures and canvases on the stage now.
+function heldPagePixels() {
+  let pixels = 0;
+  openPdf?.rendered.forEach((pageNumber) => {
+    const surface = openPdf.pages.get(pageNumber)?.el.querySelector(".pdf-canvas");
+    if (surface) pixels += (surface.naturalWidth || surface.width) * (surface.naturalHeight || surface.height);
+  });
+  return pixels;
+}
+
+// ── Find what's slow ────────────────────────────────────────────────────────
+//
+// The second report: two frames in four and a half seconds of scrolling, with
+// no page drawn, nothing decoding and the main thread idle. Whatever starves
+// that phone's frames is how its browser rasterises and composites the page —
+// and which part of the page, no desktop can say: ten rounds of work were
+// measured on one, and the phone disagreed with each. So App Info scrolls the
+// open paper, at the zoom it is being read at, at reading speed, with one part
+// of the page hidden at a time, on the phone itself, and prints what the
+// frames did each time. Hidden, not removed (the pdf-probe-* rules at the end
+// of styles/36-document.css): only what is painted changes, so every pass
+// scrolls over the same ground. Nothing is drawn ahead or sharpened while it
+// runs, and it starts with an unmeasured pass so every page it crosses is
+// already on the stage.
+export const PDF_PROBE_VARIANTS = [
+  { label: "as it is", cls: "" },
+  { label: "no text layers", cls: "pdf-probe-no-text" },
+  { label: "no marks, regions, badges, blocks or ink", cls: "pdf-probe-no-marks" },
+  { label: "no notes under the pages", cls: "pdf-probe-no-notes" },
+  { label: "no page shadow or background", cls: "pdf-probe-no-chrome" },
+  { label: "pictures hidden", cls: "pdf-probe-no-pictures" },
+  { label: "pictures as their own GPU layers", cls: "pdf-probe-picture-layers" },
+  { label: "everything hidden (empty page boxes)", cls: "pdf-probe-empty" },
+  { label: "as it is, again", cls: "" }
+];
+export const PDF_PROBE_SCREENS = 2;
+export const PDF_PROBE_PASS_MS = 2000;
+
+// What the browser says it composites with. "no WebGL" on a phone means it has
+// fallen back to drawing every frame in software, which no change to the page
+// would cure.
+function gpuRendererName() {
+  try {
+    const canvas = document.createElement("canvas");
+    const gl = canvas.getContext("webgl") || canvas.getContext("experimental-webgl");
+    if (!gl) return "no WebGL (frames may be composited in software)";
+    const info = gl.getExtension("WEBGL_debug_renderer_info");
+    const name = info ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+    gl.getExtension("WEBGL_lose_context")?.loseContext();
+    return String(name || "unknown");
+  } catch (_) {
+    return "unknown";
+  }
+}
+
+async function runDocumentSlowProbe({ passMs = PDF_PROBE_PASS_MS } = {}) {
+  const view = el.documentView;
+  const stage = el.documentStage;
+  if (!openPdf || !view || !stage || documentSurfaceHidden()) return { error: "open a PDF on the PDF tab first" };
+  if (probeRunning) return { error: "it is already running" };
+  probeRunning = true;
+  cancelPrerender();
+  const open = openPdf;
+  const facts = {
+    gpu: gpuRendererName(),
+    memoryGB: navigator.deviceMemory || 0,
+    dpr: window.devicePixelRatio || 1,
+    pages: open.pageCount,
+    zoom: Math.round(open.scale * 100),
+    fit: open.fitWidth,
+    pictures: picturesActive(),
+    workerJobs: pageRendererBusy(),
+    passMs
+  };
+  const from = view.scrollTop;
+  const screen = view.clientHeight;
+  const room = Math.max(0, view.scrollHeight - screen);
+  // Down from where the reader is — or up to it, near the end of the paper.
+  let top = from;
+  let bottom = Math.min(room, from + screen * PDF_PROBE_SCREENS);
+  if (bottom - top < screen && room > 0) {
+    bottom = from;
+    top = Math.max(0, from - screen * PDF_PROBE_SCREENS);
+  }
+  const pass = async () => {
+    await scrollOver(view, top, bottom, passMs);
+    await scrollOver(view, bottom, top, passMs);
+  };
+  const longTasks = [];
+  let observer = null;
+  try {
+    observer = new PerformanceObserver((list) => list.getEntries().forEach((entry) => longTasks.push(entry)));
+    observer.observe({ type: "longtask" });
+  } catch (_) { observer = null; }
+  const steps = [];
+  try {
+    // Unmeasured: every page the passes cross, put on the stage first.
+    view.scrollTop = top;
+    await pass();
+    const limit = performance.now() + 10000;
+    while ((renderWaiters.length || renderSlots.size) && performance.now() < limit) await new Promise((r) => setTimeout(r, 50));
+    facts.heapMB = performance.memory?.usedJSHeapSize ? performance.memory.usedJSHeapSize / 1048576 : NaN;
+    facts.pixels = heldPagePixels();
+    facts.held = openPdf === open ? open.rendered.size : 0;
+    // Frames with nothing moving at all: if these are starved too, it is not
+    // the scroll.
+    view.scrollTop = top;
+    await nextFrame();
+    await new Promise((r) => setTimeout(r, 300));
+    facts.still = await framesWhile(() => new Promise((r) => setTimeout(r, 1000)), { label: "standing still (1s)" });
+    for (const variant of PDF_PROBE_VARIANTS) {
+      if (openPdf !== open || documentSurfaceHidden()) break;
+      if (variant.cls) stage.classList.add(variant.cls);
+      view.scrollTop = top;
+      await nextFrame();
+      await nextFrame();
+      await new Promise((r) => setTimeout(r, 300));
+      const shownBefore = pagesShownCount;
+      const startedAt = performance.now();
+      const step = await framesWhile(pass, { label: variant.label });
+      step.startedAt = startedAt;
+      step.endedAt = performance.now();
+      step.shown = pagesShownCount - shownBefore;
+      if (variant.cls) stage.classList.remove(variant.cls);
+      steps.push(step);
+    }
+    // Long tasks arrive a little after they end.
+    await new Promise((r) => setTimeout(r, 100));
+    steps.forEach((step) => {
+      const within = longTasks.filter((t) => t.startTime >= step.startedAt && t.startTime < step.endedAt);
+      step.longTasks = within.length;
+      step.longTaskMs = within.reduce((sum, t) => sum + t.duration, 0);
+    });
+  } finally {
+    observer?.disconnect();
+    PDF_PROBE_VARIANTS.forEach((variant) => variant.cls && stage.classList.remove(variant.cls));
+    probeRunning = false;
+    if (openPdf === open) {
+      view.scrollTop = from;
+      schedulePrerender();
+    }
+  }
+  return { at: Date.now(), facts, steps };
+}
+
 setPdfReaderTest({
   available: () => Boolean(openPdf),
   picturesOn: () => !pdfPicturesTurnedOff() && pageRendererKeepsPictures(),
@@ -6534,5 +6745,6 @@ setPdfReaderTest({
     if (openPdf) await openDocumentView({ force: true });
     noteCanvasSetup();
   },
-  run: runDocumentReaderTest
+  run: runDocumentReaderTest,
+  probe: runDocumentSlowProbe
 });
