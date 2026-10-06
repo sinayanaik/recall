@@ -15,7 +15,7 @@ import { probeLocalStorage } from "../storage/health.js?v=__BUILD__";
 import { GITHUB_REPO, compareCommits, fetchLiveRelease, fetchRepoRelease, releaseStampsIn, runningAppVersion, runningVersionLabel, setGithubReleaseCache } from "./release-info.js?v=__BUILD__";
 import { isMixedBuild, serviceWorkerRegistration, updateDownloadFailed, updateIsWaiting } from "./service-worker-client.js?v=__BUILD__";
 import { setButtonLoading, showToast } from "../ui/feedback.js?v=__BUILD__";
-import { pdfPicturePagesOn, pdfReaderTestAvailable, pdfTimingReport, runPdfReaderTest, runPdfSlowProbe, setPdfPicturePages } from "../documents/pdf-timing.js?v=__BUILD__";
+import { pdfDiagnosticsOn, pdfPicturePagesOn, pdfReaderTestAvailable, pdfTimingReport, runPdfReaderTest, runPdfSlowProbe, setPdfDiagnostics, setPdfPicturePages } from "../documents/pdf-timing.js?v=__BUILD__";
 import { lockPageScroll, unlockPageScroll } from "../ui/overlays.js?v=__BUILD__";
 
 export const appInfoModal = document.getElementById("appInfoModal");
@@ -643,6 +643,24 @@ export const appInfoPicturePagesBtn = document.getElementById("appInfoPicturePag
 
 export const appInfoSlowProbeBtn = document.getElementById("appInfoSlowProbeBtn");
 
+export const appInfoDiagnosticsBtn = document.getElementById("appInfoDiagnosticsBtn");
+
+function paintDiagnosticsButton() {
+  if (!appInfoDiagnosticsBtn) return;
+  const on = pdfDiagnosticsOn();
+  appInfoDiagnosticsBtn.textContent = `Diagnostics: ${on ? "on" : "off"}`;
+  appInfoDiagnosticsBtn.setAttribute("aria-pressed", on ? "true" : "false");
+}
+
+// The PDF reader's timings are recorded only while this is on — see
+// src/documents/pdf-timing.js. Turning it off forgets what was recorded.
+export function toggleDiagnosticsFromAppInfo() {
+  setPdfDiagnostics(!pdfDiagnosticsOn());
+  paintDiagnosticsButton();
+  if (appInfoPdfTimings) appInfoPdfTimings.textContent = pdfTimingsText();
+  showToast(pdfDiagnosticsOn() ? "Diagnostics on: the PDF reader is timed until you turn this off" : "Diagnostics off: nothing is recorded", "info");
+}
+
 function paintPicturePagesButton() {
   if (!appInfoPicturePagesBtn) return;
   const on = pdfPicturePagesOn();
@@ -698,6 +716,7 @@ export function openAppInfoModal() {
   if (appInfoVersion) appInfoVersion.textContent = runningVersionLabel();
   if (appInfoPdfTimings) appInfoPdfTimings.textContent = pdfTimingsText();
   paintPicturePagesButton();
+  paintDiagnosticsButton();
   appInfoModal.hidden = false;
   lockPageScroll();
   refreshAppInfo();
