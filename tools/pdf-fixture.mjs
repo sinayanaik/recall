@@ -143,6 +143,58 @@ function splitWordStream() {
     .join("\n");
 }
 
+// ── Words drawn more than once, on top of themselves ────────────────────────
+//
+// What The Little Book of Deep Learning does to its underlined index terms: each
+// syllable is stamped several times at sub-point offsets (a descender-skipping
+// underline clears the rule around g, p and y that way) and then drawn for real.
+// pdf.js reports every stamp as a text item, and copying "inductive bias" used
+// to give "inininin…ducducduc…tivetivetive…biasbiasbias".
+//
+// Set in Courier, whose every glyph advances 0.6em, so where each run starts is
+// arithmetic rather than a font metric. Each run is [text, stamps]: a run with
+// more than one stamp is drawn stamps - 1 times on a circle OVERPRINT_RADIUS
+// points across, then once at its true place. The second and third lines are
+// the controls the deduplication must leave alone: the same word twice in a row
+// ("the the"), the same letter twice in a row as separate runs ("a" "l" "l"),
+// and a word that also appears, underlined, on the line above.
+export const OVERPRINT_STAMPS = 11;
+
+export const OVERPRINT_RADIUS = 0.4;
+
+const COURIER_ADVANCE = 0.6;
+
+export const OVERPRINT_LINES = [
+  [["by crafting the right ", 1], ["in", OVERPRINT_STAMPS], ["duc", OVERPRINT_STAMPS], ["tive", OVERPRINT_STAMPS],
+    [" ", 1], ["bias", OVERPRINT_STAMPS], [" in a model,", 1]],
+  [["which means that ", 1], ["the", 1], [" ", 1], ["the", 1], [" structure of a", 1], ["l", 1], ["l", 1], [" of it", 1]],
+  [["has a bias", 1], [" that fits the data.", 1]]
+];
+
+// ...and what a reader expects on the clipboard for them.
+export const OVERPRINT_TEXT = "by crafting the right inductive bias in a model,\n"
+  + "which means that the the structure of all of it\n"
+  + "has a bias that fits the data.";
+
+function overprintStream() {
+  const out = [];
+  OVERPRINT_LINES.forEach((runs, line) => {
+    const y = FIRST_BASELINE - line * LINE_HEIGHT;
+    let x = MARGIN_LEFT;
+    runs.forEach(([text, stamps]) => {
+      for (let stamp = 0; stamp < stamps - 1; stamp += 1) {
+        const angle = (2 * Math.PI * stamp) / (stamps - 1);
+        const dx = (OVERPRINT_RADIUS * Math.cos(angle)).toFixed(3);
+        const dy = (OVERPRINT_RADIUS * Math.sin(angle)).toFixed(3);
+        out.push(`BT /F3 ${FONT_SIZE} Tf ${(x + Number(dx)).toFixed(3)} ${(y + Number(dy)).toFixed(3)} Td (${pdfString(text)}) Tj ET`);
+      }
+      out.push(`BT /F3 ${FONT_SIZE} Tf ${x.toFixed(3)} ${y} Td (${pdfString(text)}) Tj ET`);
+      x += text.length * FONT_SIZE * COURIER_ADVANCE;
+    });
+  });
+  return out.join("\n");
+}
+
 // ── A scanned page ──────────────────────────────────────────────────────────
 //
 // What a scan actually is to a PDF reader: one picture per page and not a
@@ -201,6 +253,8 @@ function scannedPageImage(linesPerPage) {
 // `headingSize` sets the first line of each page in larger type, so there is
 // something for that derivation to find.
 // `scanned` builds every page as a picture with no text in it (see above).
+// `overprint` builds every page as OVERPRINT_LINES: underlined words stamped
+// several times on top of themselves (see above).
 // `heightForPage` makes a paper whose pages are NOT all one size — a scan, a
 // plate section, a landscape figure. It matters because the viewer lays every
 // page out at page 1's size until that page is itself parsed, and the real size
@@ -209,7 +263,8 @@ function scannedPageImage(linesPerPage) {
 export function buildFixturePdf({
   pages = 4, linesPerPage = 12, annotate = true,
   width = PAGE_WIDTH, height = PAGE_HEIGHT,
-  outline = true, headingSize = 0, heightForPage = null, scanned = false, splitWords = false
+  outline = true, headingSize = 0, heightForPage = null, scanned = false, splitWords = false,
+  overprint = false
 } = {}) {
   const objects = [];       // 1-based; objects[i] is object i+1
   const push = (body) => { objects.push(body); return objects.length; };
@@ -219,6 +274,7 @@ export function buildFixturePdf({
   const pagesId = push("");
   const fontId = push("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>");
   const obliqueId = splitWords ? push("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Oblique >>") : 0;
+  const courierId = overprint ? push("<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>") : 0;
 
   // One Highlight annotation, on page 2, over that page's second line — the
   // shape a reference manager leaves behind, with quadPoints, an RGB colour and
@@ -248,11 +304,15 @@ export function buildFixturePdf({
       ? `q ${SCAN_MEASURE} 0 0 ${scan.rows} ${MARGIN_LEFT} ${SCAN_TOP - scan.rows} cm /Im1 Do Q`
       : splitWords
         ? splitWordStream()
-        : contentStreamFor(fixturePageLines(pageNumber, linesPerPage, { headingSize }));
+        : overprint
+          ? overprintStream()
+          : contentStreamFor(fixturePageLines(pageNumber, linesPerPage, { headingSize }));
     const contentId = push(`<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`);
     const annots = pageNumber === annotatedPage ? ` /Annots [${annotationId} 0 R]` : "";
     const pageHeight = typeof heightForPage === "function" ? (heightForPage(pageNumber) || height) : height;
-    const fonts = obliqueId ? `/F1 ${fontId} 0 R /F2 ${obliqueId} 0 R` : `/F1 ${fontId} 0 R`;
+    const fonts = `/F1 ${fontId} 0 R`
+      + (obliqueId ? ` /F2 ${obliqueId} 0 R` : "")
+      + (courierId ? ` /F3 ${courierId} 0 R` : "");
     const resources = scan ? `<< /XObject << /Im1 ${scanId} 0 R >> >>` : `<< /Font << ${fonts} >> >>`;
     pageIds.push(push(
       `<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 ${width} ${pageHeight}] `

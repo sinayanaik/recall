@@ -48,7 +48,8 @@ import {
   removeDocumentHighlight, setDocumentHighlightNote, updateDocumentHighlight
 } from "./pdf-highlights.js?v=__BUILD__";
 import {
-  TEXT_ITEM_ATTR, captureDocumentRange, mergeQuads, pageNumberForRect, quadToPageBox, rectToPdfQuad, textItemBox
+  TEXT_ITEM_ATTR, captureDocumentRange, mergeQuads, pageNumberForRect, quadToPageBox, rectToPdfQuad, settleTextAnchor,
+  spanCharStart, textItemBox
 } from "./pdf-selection.js?v=__BUILD__";
 import { pdfMarkLayer, pdfPageElement, pdfPageTextItems, pdfPageViewport, wakeDocumentPageText } from "./pdf-view.js?v=__BUILD__";
 
@@ -288,10 +289,15 @@ export function smartHlCapture(range) {
 // anchors — null when either end's page is not on the stage.
 function smartHlBoundary(anchor) {
   if (!anchor) return null;
-  const span = pdfPageElement(anchor.page)?.querySelector(`[${TEXT_ITEM_ATTR}="${Number(anchor.item) || 0}"]`);
+  // An anchor on a stamp of text drawn twice has no span of its own; it is
+  // read on the span of what it stamps (see textItemShadows).
+  const items = pdfPageTextItems(anchor.page);
+  const point = items ? settleTextAnchor(items, { item: Number(anchor.item) || 0, ch: Number(anchor.ch) || 0 }) : anchor;
+  const span = pdfPageElement(anchor.page)?.querySelector(`[${TEXT_ITEM_ATTR}="${Number(point.item) || 0}"]`);
   const node = span?.firstChild;
   if (!node || node.nodeType !== Node.TEXT_NODE) return null;
-  return { node, offset: Math.max(0, Math.min(Number(anchor.ch) || 0, node.nodeValue.length)) };
+  const offset = (Number(point.ch) || 0) - spanCharStart(span);
+  return { node, offset: Math.max(0, Math.min(offset, node.nodeValue.length)) };
 }
 
 function smartHlRangeForRecord(record) {
