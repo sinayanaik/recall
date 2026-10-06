@@ -33,6 +33,9 @@ import { PDF_BADGE_LAYER_CLASS, PDF_INK_HL_LAYER_CLASS, PDF_INK_LAYER_CLASS } fr
 import { el } from "../core/dom.js?v=__BUILD__";
 import { ensurePdfJs, openPdfDocument } from "../core/lib-loader.js?v=__BUILD__";
 import { cleanupRenderDocument, cleanupRenderPage, closeRenderDocument, composePagePicture, openRenderDocument, pageRendererActive, pageRendererBakesDark, pageRendererFailed, pageRendererKeepsPictures, pageRendererStatus, renderDocumentSha, renderPageBitmap, renderPagePicture, startPageRenderer } from "./pdf-render-worker.js?v=__BUILD__";
+import { createRecordingContext } from "../render/canvas-record.js?v=__BUILD__";
+import { hash32 } from "../core/text.js?v=__BUILD__";
+import { paintRegionMarks, regionMarksOnPage } from "./pdf-region-marks.js?v=__BUILD__";
 import { getPictureBlob, holdPictureUrl, loadPaperPictures, pagesWithPictures, pdfPicturesTurnedOff, pictureKey, putPicture, releasePictureUrl, setPdfPicturesTurnedOff, storedPicture, touchPicture } from "./pdf-pictures.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { paintDocumentHighlights } from "./pdf-highlights.js?v=__BUILD__";
@@ -939,6 +942,7 @@ export function renderDocumentPdfSwitcher() {
 // paintDocumentHighlights beside it because the hook does not cover the marks —
 // the two together are exactly the pair a fresh page render runs.
 export function repaintOpenDocumentPages() {
+  queueMicrotask(refreshBakedDocumentPages);
   if (!openPdf) return;
   // Only ever reached once openDocumentIsCurrent has said these are still the
   // pages of the file the deck names — so whatever else in the open key has
@@ -2462,6 +2466,7 @@ async function renderPage(pageNumber) {
       staleCanvas.replaceWith(canvas);
       releaseCanvasBitmap(staleCanvas);
     } else entry.el.prepend(canvas);
+    syncBakedPage(entry);
     openPdf.rendered.add(pageNumber);
     parsedPages.add(pageNumber);
     entry.urgent = false;
@@ -3164,9 +3169,12 @@ function dropDetail(entry) {
   const task = entry.detailTask;
   entry.detailTask = null;
   if (task) { try { task.cancel(); } catch (_) { /* already settled */ } }
+  const had = Boolean(entry.detail);
   entry.detail?.canvas.remove();
   releaseCanvasBitmap(entry.detail?.canvas);
   entry.detail = null;
+  const pageNumber = Number(entry.el?.dataset.pageNumber) || 0;
+  if (had && pageNumber) queueMicrotask(() => refreshBakedPage(pageNumber));
 }
 
 // The part of the page to draw sharp: what is on screen, widened by the
@@ -3269,6 +3277,8 @@ async function drawDetailTile(pageNumber, entry, region) {
     }
     base.after(canvas);
     entry.detail = { canvas, region, scale };
+    // A tile is the plain page: the marks go back on live while it is up.
+    refreshBakedPage(pageNumber);
   } catch (error) {
     if (error?.name !== "RenderingCancelledException") console.warn(`Could not draw the detail of page ${pageNumber}`, error);
   } finally {
@@ -3511,73 +3521,259 @@ function shownPicture(entry) {
   return img ? { img, ...pictureElements.get(img) } : null;
 }
 
-// Find, compose or draw the picture this page needs. Resolves { meta, blob,
+// ── The reader's marks, in the picture ──────────────────────────────────────
+//
+// What a heavily annotated page cost the compositor, on top of the paper: a
+// mark layer blended over it (multiply, screen on dark page) with a div per
+// highlighted line, and on every page with ink a GPU canvas of strokes and
+// another of highlighter bands inside a blended layer of its own — composited
+// layers and blend passes, every frame of a scroll. The reader's report was
+// that it is worst exactly there.
+//
+// So the text highlights and the ink are baked into the page's picture (a
+// "marked" picture, composed from the plain one in the worker — no pdf.js), and
+// while the picture matches the page's marks, `.pdf-page.is-baked` takes the
+// paint off the live ones (styles/36-document.css): the divs stay, so the flash,
+// the pane's ring, the mark menu and the smart highlighter all still find them,
+// but they paint nothing and nothing on the page blends. The ink layers are not
+// shown at all.
+//
+// The moment that stops being true — a highlight made, recoloured or removed, a
+// stroke, the pen taken up, a detail tile over the page — the page goes back to
+// its plain picture with the live marks on it, exactly as before, and the
+// marked picture follows once the page is still. Regions, note folds, blocks
+// and the text layer are never baked: they are what the reader presses.
+//
+// A notebook is never baked either: its ink IS the page, and it is written on.
+let documentInkLive = () => false;
+
+// pdf-ink.js says whether the pen is armed (it imports this module, so it
+// registers rather than being imported).
+export function setDocumentInkLiveCheck(fn) {
+  documentInkLive = typeof fn === "function" ? fn : () => false;
+}
+
+// Pages a pen has just started on, unbaked until it has been still for
+// PDF_INK_REST_MS — a stylus writes without arming the rail.
+export const PDF_INK_REST_MS = 2000;
+const inkActivePages = new Map();
+let inkRestTimer = 0;
+
+export function documentInkPageActive(pageNumber) {
+  if (!openPdf) return;
+  inkActivePages.set(pageNumber, performance.now() + PDF_INK_REST_MS);
+  refreshBakedPage(pageNumber);
+  clearTimeout(inkRestTimer);
+  inkRestTimer = setTimeout(() => {
+    const now = performance.now();
+    inkActivePages.forEach((until, page) => { if (until <= now) inkActivePages.delete(page); });
+    refreshBakedDocumentPages();
+  }, PDF_INK_REST_MS + 50);
+}
+
+function pageMarksSource() {
+  return { slot: openPdf.slot, pdfId: openPdf.slot === DOC_SLOT_DOC ? (openPdf.pdfId || PDF_PRIMARY_ID) : null };
+}
+
+// What the page's picture should be: the marks baked in, or the plain page.
+function desiredPicture(pageNumber, entry = openPdf?.pages.get(pageNumber)) {
+  const plain = { kind: "plain", stamp: "", marks: null };
+  if (!openPdf || !picturesActive() || normalizeDocSlot(openPdf.slot) === DOC_SLOT_NOTEBOOK) return plain;
+  if (documentInkLive() || entry?.detail) return plain;
+  const until = inkActivePages.get(pageNumber);
+  if (until && until > performance.now()) return plain;
+  const marks = regionMarksOnPage(pageMarksSource(), pageNumber);
+  marks.highlights = marks.highlights.filter((record) => record.kind !== "area");
+  if (!marks.highlights.length && !marks.ink.length) return plain;
+  // Exactly what will be drawn, and nothing else: a record that moves, changes
+  // colour or gains a stroke is a different picture.
+  const parts = [picturePaper()];
+  marks.highlights.forEach((record) => parts.push(record.id, record.color || "", JSON.stringify((record.quads || [])
+    .filter((quad) => Number(quad?.page) === pageNumber).map((quad) => quad.rect))));
+  marks.ink.forEach((record) => parts.push(record.id, String(record.ink?.s || "")));
+  return { kind: "marked", stamp: hash32(parts.join("|")), marks };
+}
+
+// Why a page is or is not baked, for tools/pdf-preview-check.mjs.
+export function documentPageBakeState(pageNumber) {
+  const entry = openPdf?.pages.get(pageNumber);
+  const want = desiredPicture(pageNumber, entry);
+  const shown = shownPicture(entry);
+  return {
+    want: want.kind,
+    shown: shown ? shown.kind : "none",
+    stampMatches: Boolean(shown) && shown.stamp === want.stamp,
+    pictures: picturesActive(),
+    inkLive: documentInkLive(),
+    detail: Boolean(entry?.detail),
+    baked: Boolean(entry?.el.classList.contains(PDF_BAKED_CLASS))
+  };
+}
+
+async function markOpsAt(pageNumber, marks, width, paper) {
+  const page = await openPdf.doc.getPage(pageNumber);
+  const unit = page.getViewport({ scale: 1 });
+  const viewport = page.getViewport({ scale: width / unit.width });
+  const recording = createRecordingContext();
+  paintRegionMarks(recording, viewport, marks, { paper, areas: false });
+  return recording.ops;
+}
+
+// Find, compose or draw the picture this page needs. Resolves { picture, blob,
 // where, timing } — or null when the page went stale on the way. `takeSlot` is
 // renderPage's: called only when something has to be DRAWN, so a kept picture
 // never waits in the render queue behind a page that is being.
-async function obtainPagePicture({ entry, pageNumber, viewport, stale, takeSlot, target = pictureTarget(viewport) }) {
+async function obtainPagePicture({ entry, pageNumber, viewport, stale, takeSlot, target = pictureTarget(viewport), want = desiredPicture(pageNumber, entry) }) {
   const sha = openPdf.pictureSha;
   const paper = picturePaper();
+  const quality = pictureQuality(paper);
   await loadPaperPictures(sha);
   if (stale()) return null;
   const minWidth = Math.floor(target.needed * PDF_PICTURE_SLACK);
-  const kept = storedPicture({ sha, page: pageNumber, paper, minWidth });
-  if (kept) {
-    const blob = await getPictureBlob(kept.key);
+  const done = (result) => {
+    pictureCounts[result.where] += 1;
+    return result;
+  };
+  // 1. Kept, marks and all.
+  if (want.kind === "marked") {
+    const keptMarked = storedPicture({ sha, page: pageNumber, paper, kind: "marked", stamp: want.stamp, minWidth });
+    const blob = keptMarked ? await getPictureBlob(keptMarked.key) : null;
     if (stale()) return null;
     if (blob) {
-      touchPicture(kept);
-      pictureCounts.kept += 1;
-      return { picture: kept, blob, where: "kept" };
+      touchPicture(keptMarked);
+      return done({ picture: keptMarked, blob, where: "kept" });
     }
   }
-  // The other paper, kept and wide enough: one compose, which is its own
-  // inverse for dark page, so it works in both directions.
-  if (pageRendererBakesDark()) {
+  // 2. The plain page: kept, or the other paper's composed (its own inverse
+  // for dark page, so it works both ways), or drawn.
+  let plain = null;
+  const kept = storedPicture({ sha, page: pageNumber, paper, minWidth });
+  const keptBlob = kept ? await getPictureBlob(kept.key) : null;
+  if (stale()) return null;
+  if (keptBlob) {
+    touchPicture(kept);
+    plain = { picture: kept, blob: keptBlob, where: "kept" };
+  }
+  if (!plain && pageRendererBakesDark()) {
     const other = storedPicture({ sha, page: pageNumber, paper: paper === "dark" ? "light" : "dark", minWidth });
     const source = other ? await getPictureBlob(other.key) : null;
     if (stale()) return null;
     if (source) {
       const started = performance.now();
-      const composed = await composePagePicture({ source, bakeDarkPage: true, quality: pictureQuality(paper) }).promise;
+      const composed = await composePagePicture({ source, bakeDarkPage: true, quality }).promise;
       if (stale()) return null;
       const meta = { sha, page: pageNumber, width: other.width, height: other.height, paper, kind: "plain", stamp: "" };
       meta.key = pictureKey(meta);
       putPicture(meta, composed.blob);
       samplePdfTiming("compose", performance.now() - started);
-      pictureCounts.composed += 1;
-      return { picture: meta, blob: composed.blob, where: "composed" };
+      plain = { picture: meta, blob: composed.blob, where: "composed" };
     }
   }
-  // Drawn.
-  const slot = await takeSlot();
-  if (!slot || stale()) return null;
-  const renderDoc = ensureRenderDoc();
-  const id = renderDoc ? await renderDoc : null;
-  if (stale()) return null;
-  if (id == null) throw Object.assign(new Error("the page renderer could not open this paper"), { name: "PageRendererUnavailable" });
-  const started = performance.now();
-  const job = renderPagePicture({ id, pageNumber, width: target.width, dark: paper === "dark", quality: pictureQuality(paper) });
-  entry.renderTask = job;
-  let result;
-  try {
-    result = await job.promise;
-  } finally {
-    if (entry.renderTask === job) entry.renderTask = null;
+  if (!plain) {
+    // Drawn — with the marks recorded first, so the one job hands back both
+    // the plain picture and the marked one.
+    const ops = want.kind === "marked" ? await markOpsAt(pageNumber, want.marks, target.width, paper) : null;
+    if (stale()) return null;
+    const slot = await takeSlot();
+    if (!slot || stale()) return null;
+    const renderDoc = ensureRenderDoc();
+    const id = renderDoc ? await renderDoc : null;
+    if (stale()) return null;
+    if (id == null) throw Object.assign(new Error("the page renderer could not open this paper"), { name: "PageRendererUnavailable" });
+    const started = performance.now();
+    const job = renderPagePicture({ id, pageNumber, width: target.width, dark: paper === "dark", ops, quality });
+    entry.renderTask = job;
+    let result;
+    try {
+      result = await job.promise;
+    } finally {
+      if (entry.renderTask === job) entry.renderTask = null;
+    }
+    const base = { sha, page: pageNumber, width: result.pixelWidth, height: result.pixelHeight, paper: result.dark ? "dark" : "light" };
+    const meta = { ...base, kind: "plain", stamp: "" };
+    meta.key = pictureKey(meta);
+    // Kept whatever happens next — a page drawn for a zoom that has since gone
+    // is still a picture of the page.
+    putPicture(meta, result.plain);
+    let shown = { picture: meta, blob: result.plain };
+    if (result.marked && want.kind === "marked") {
+      const marked = { ...base, kind: "marked", stamp: want.stamp };
+      marked.key = pictureKey(marked);
+      putPicture(marked, result.marked);
+      shown = { picture: marked, blob: result.marked };
+    }
+    if (stale()) {
+      pictureCounts.drawn += 1;
+      return null;
+    }
+    return done({
+      ...shown,
+      where: "drawn",
+      timing: { firstSliceMs: result.firstSliceMs, drawMs: result.drawMs, encodeMs: result.encodeMs, totalMs: performance.now() - started }
+    });
   }
-  const meta = { sha, page: pageNumber, width: result.pixelWidth, height: result.pixelHeight, paper: result.dark ? "dark" : "light", kind: "plain", stamp: "" };
-  meta.key = pictureKey(meta);
-  // Kept whatever happens next — a page drawn for a zoom that has since gone
-  // is still a picture of the page.
-  putPicture(meta, result.plain);
-  pictureCounts.drawn += 1;
+  if (want.kind !== "marked") return done(plain);
+  // 3. The marks, composed onto the plain page: a decode and an encode.
+  const started = performance.now();
+  const ops = await markOpsAt(pageNumber, want.marks, plain.picture.width, paper);
   if (stale()) return null;
-  return {
-    picture: meta,
-    blob: result.plain,
-    where: "drawn",
-    timing: { firstSliceMs: result.firstSliceMs, drawMs: result.drawMs, encodeMs: result.encodeMs, totalMs: performance.now() - started }
-  };
+  const composed = await composePagePicture({ source: plain.blob, ops, quality }).promise;
+  if (stale()) return null;
+  const marked = { sha, page: pageNumber, width: plain.picture.width, height: plain.picture.height, paper, kind: "marked", stamp: want.stamp };
+  marked.key = pictureKey(marked);
+  putPicture(marked, composed.blob);
+  samplePdfTiming("compose", performance.now() - started);
+  return done({ picture: marked, blob: composed.blob, where: "composed" });
+}
+
+// Whether the page's live marks should paint: not while its picture carries
+// them.
+function syncBakedPage(entry) {
+  const shown = shownPicture(entry);
+  entry?.el.classList.toggle(PDF_BAKED_CLASS, Boolean(shown && shown.kind === "marked"));
+}
+
+export const PDF_BAKED_CLASS = "is-baked";
+
+// A page whose marks have just changed, or whose pen has just gone down: back to
+// its plain picture with the live marks on it at once, and the marked picture
+// again once it is still (upgradePagePicture, through the same queue a zoom
+// uses).
+function refreshBakedPage(pageNumber) {
+  const entry = openPdf?.pages.get(pageNumber);
+  const shown = shownPicture(entry);
+  if (!entry || !shown || !openPdf.rendered.has(pageNumber)) return;
+  const want = desiredPicture(pageNumber, entry);
+  if (shown.kind === want.kind && shown.stamp === want.stamp) {
+    syncBakedPage(entry);
+    return;
+  }
+  if (shown.kind === "marked") showPlainPicture(pageNumber, entry, shown);
+  if (want.kind === "marked") schedulePictureUpgrade(pageNumber);
+}
+
+export function refreshBakedDocumentPages() {
+  if (!openPdf || !picturesActive()) return;
+  openPdf.rendered.forEach((pageNumber) => refreshBakedPage(pageNumber));
+}
+
+async function showPlainPicture(pageNumber, entry, shown) {
+  // The live marks paint again NOW — a moment of the old marks under the new
+  // beats a moment of the new ones missing.
+  entry.el.classList.remove(PDF_BAKED_CLASS);
+  const seq = (entry.pictureSeq = (entry.pictureSeq || 0) + 1);
+  const plain = storedPicture({ sha: openPdf.pictureSha, page: pageNumber, paper: shown.paper, minWidth: shown.width });
+  const blob = plain ? await getPictureBlob(plain.key) : null;
+  if (!blob || entry.pictureSeq !== seq || !openPdf?.rendered.has(pageNumber)) return;
+  const img = await pictureImage(plain, blob);
+  const old = entry.el.querySelector(".pdf-picture");
+  if (entry.pictureSeq !== seq || !old) {
+    releaseCanvasBitmap(img);
+    return;
+  }
+  old.replaceWith(img);
+  releaseCanvasBitmap(old);
+  syncBakedPage(entry);
 }
 
 // ── A zoom, on a page that is a picture ─────────────────────────────────────
@@ -3616,7 +3812,9 @@ function relayerPage(pageNumber) {
   })()
     .catch((error) => console.warn(`Could not rebuild the layers for page ${pageNumber}`, error))
     .finally(() => { if (entry.layerTask) entry.layerTask = null; });
-  if (!shown || shown.width < target.needed * PDF_PICTURE_SLACK || shown.paper !== picturePaper()) schedulePictureUpgrade(pageNumber);
+  const want = desiredPicture(pageNumber, entry);
+  if (!shown || shown.width < target.needed * PDF_PICTURE_SLACK || shown.paper !== picturePaper()
+      || shown.kind !== want.kind || shown.stamp !== want.stamp) schedulePictureUpgrade(pageNumber);
   if (target.detail) scheduleDetail();
 }
 
@@ -3777,7 +3975,12 @@ async function upgradePagePicture(pageNumber) {
   const viewport = entry.viewport;
   const target = pictureTarget(viewport);
   const shown = shownPicture(entry);
-  if (shown && shown.width >= target.needed * PDF_PICTURE_SLACK && shown.paper === picturePaper()) return;
+  const want = desiredPicture(pageNumber, entry);
+  if (shown && shown.width >= target.needed * PDF_PICTURE_SLACK && shown.paper === picturePaper()
+      && shown.kind === want.kind && shown.stamp === want.stamp) {
+    syncBakedPage(entry);
+    return;
+  }
   const token = pdfOpenToken;
   const generation = entry.generation;
   const scale = openPdf.scale;
@@ -3791,19 +3994,25 @@ async function upgradePagePicture(pageNumber) {
     slot?.release();
   }, PDF_RENDER_DEADLINE_MS);
   try {
+    const seq = (entry.pictureSeq = (entry.pictureSeq || 0) + 1);
     const got = await obtainPagePicture({
       entry,
       pageNumber,
       viewport,
       stale,
       target,
+      want,
       takeSlot: async () => (slot = await acquireRenderSlot(pageNumber, entry, stale))
     });
     slot?.release();
     if (!got) return;
     const img = await pictureImage(got.picture, got.blob);
-    if (stale()) {
+    // Superseded by a later swap (showPlainPicture, a newer upgrade), or by the
+    // marks having moved on again while this was composed.
+    const now = desiredPicture(pageNumber, entry);
+    if (stale() || entry.pictureSeq !== seq || got.picture.kind !== now.kind || (got.picture.stamp || "") !== now.stamp) {
       releaseCanvasBitmap(img);
+      if (!stale() && entry.pictureSeq === seq) schedulePictureUpgrade(pageNumber);
       return;
     }
     const old = entry.el.querySelector(".pdf-picture") || entry.el.querySelector(".pdf-canvas");
@@ -3811,6 +4020,7 @@ async function upgradePagePicture(pageNumber) {
       old.replaceWith(img);
       releaseCanvasBitmap(old);
     } else entry.el.prepend(img);
+    syncBakedPage(entry);
     entry.renderOutputScale = got.picture.width / Math.max(1, viewport.width);
   } catch (error) {
     if (error?.name !== "RenderingCancelledException") console.warn(`Could not sharpen page ${pageNumber}`, error);
@@ -4710,6 +4920,7 @@ function unrenderPage(pageNumber) {
   dropDetail(entry);
   entry.el.querySelectorAll(".pdf-canvas").forEach(releaseCanvasBitmap);
   entry.el.innerHTML = "";
+  entry.el.classList.remove(PDF_BAKED_CLASS);
   entry.markLayer = null;
   entry.areaLayer = null;
   entry.textLayer = null;

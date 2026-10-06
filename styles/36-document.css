@@ -472,6 +472,26 @@
   mix-blend-mode: normal;
 }
 
+/* A page whose kept picture has its text highlights and ink baked into it
+   (src/documents/pdf-view.js, "The reader's marks, in the picture"). The marks
+   are still here — the flash, the pane's ring, the mark menu and the smart
+   highlighter all find them — but they paint nothing of their own, nothing on
+   the page blends, and the ink layers (GPU canvases, one in a blended layer)
+   are not composited at all. The moment the marks change or the pen goes down
+   the class comes off and they paint as they always did. */
+.document-stage .pdf-page.is-baked .pdf-mark-layer:not(.is-area) {
+  mix-blend-mode: normal;
+}
+
+.pdf-page.is-baked .pdf-mark-layer:not(.is-area) > .pdf-mark {
+  background: transparent;
+}
+
+.pdf-page.is-baked .pdf-ink-layer,
+.pdf-page.is-baked .pdf-ink-hl-layer {
+  display: none;
+}
+
 /* ── The states that are not a page ────────────────────────────────────────*/
 
 .pdf-loading,

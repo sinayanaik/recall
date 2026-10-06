@@ -7649,6 +7649,107 @@ try {
       testLines.slice(0, 3).join(" | "));
   }
 
+  // ── 14b. The reader's marks, baked into the page's picture ────────────────
+  //
+  // On a heavily annotated page the compositor used to blend a mark layer of
+  // divs over the paper and composite the ink's GPU canvases, one inside a
+  // blended layer, every frame of a scroll. The highlights and the ink are
+  // baked into the kept picture now, and the live marks paint nothing while it
+  // matches them — until the marks change or a pen goes down, when the page is
+  // the plain picture with live marks again, and is baked again once still.
+  {
+    const baked = await page.evaluate(`async () => {
+      const { api, settle } = window.__recall;
+      const edit = await import("/src/format/highlight-edit.js?v=__BUILD__");
+      const highlights = await import("/src/documents/pdf-highlights.js?v=__BUILD__");
+      const counts = () => api.documentPictureCounts();
+      const record = highlights.documentHighlightsInReadingOrder().find((r) => r.kind !== "area" && r.kind !== "ink"
+        && (r.quads || []).some((q) => Number(q.page) === Number(r.page)));
+      if (!record) return { skipped: true };
+      const pageNumber = Number(record.page);
+      api.scrollToDocumentPage(pageNumber, 0, { smooth: false });
+      await api.whenDocumentPageReady(pageNumber);
+      const pageEl = document.querySelector('.pdf-page[data-page-number="' + pageNumber + '"]');
+      const until = async (test, limit = 6000) => {
+        const t0 = performance.now();
+        while (!test()) {
+          if (performance.now() - t0 > limit) return false;
+          await settle(40);
+        }
+        return true;
+      };
+      const isBaked = () => pageEl.classList.contains("is-baked");
+      const out = {};
+      // The pen's rail is left armed by the ink sections above, and an armed
+      // pen is exactly when the live ink must show: put it down first.
+      const ink = await import("/src/documents/pdf-ink.js?v=__BUILD__");
+      ink.setInkArmed(false);
+      out.bakedAtRest = await until(isBaked);
+      out.state = api.documentPageBakeState(pageNumber);
+      // The highlight's own pixels, in the picture: its colour, not the paper's.
+      const quad = record.quads.find((q) => Number(q.page) === pageNumber);
+      const sample = (dy = 0) => {
+        const img = pageEl.querySelector("img.pdf-picture");
+        const viewport = api.pdfPageViewport(pageNumber);
+        if (!img || !viewport) return null;
+        const [x0, y0, x1, y1] = viewport.convertToViewportRectangle(quad.rect.map(Number));
+        const k = img.naturalWidth / pageEl.getBoundingClientRect().width;
+        const x = ((Math.min(x0, x1) + Math.max(x0, x1)) / 2) * k;
+        const y = (Math.min(y0, y1) + dy) * k + 2;
+        const c = document.createElement("canvas");
+        c.width = 1; c.height = 1;
+        const ctx = c.getContext("2d", { willReadFrequently: true });
+        ctx.drawImage(img, x, y, 1, 1, 0, 0, 1, 1);
+        return Array.from(ctx.getImageData(0, 0, 1, 1).data.slice(0, 3));
+      };
+      const mark = pageEl.querySelector(".pdf-mark-layer:not(.is-area) .pdf-mark");
+      const markLayer = pageEl.querySelector(".pdf-mark-layer:not(.is-area)");
+      out.atRest = {
+        markPaints: mark ? getComputedStyle(mark).backgroundColor : "no mark",
+        layerBlend: markLayer ? getComputedStyle(markLayer).mixBlendMode : "no layer",
+        inkShown: Array.from(pageEl.querySelectorAll(".pdf-ink-layer, .pdf-ink-hl-layer")).filter((l) => getComputedStyle(l).display !== "none").length,
+        tint: sample(),
+        paper: sample(-12)
+      };
+      // A recolour: the live marks are back at once, and the page is baked
+      // again — composed, not drawn — once it is still.
+      const before = counts();
+      const next = record.color === "green" ? "pink" : "green";
+      api.state.meta.pdfHighlights = api.state.meta.pdfHighlights.map((r) => (r.id === record.id ? { ...r, color: next, at: Date.now() } : r));
+      highlights.repaintDocumentHighlights();
+      edit.notifyHighlightsChanged();
+      out.liveAtOnce = !isBaked();
+      out.rebaked = await until(isBaked);
+      out.recoloured = { composed: counts().composed - before.composed, drawn: counts().drawn - before.drawn, tint: sample() };
+      // A pen on the page: live ink at once, baked again once it rests.
+      api.documentInkPageActive(pageNumber);
+      out.penLive = !isBaked();
+      out.penRebaked = await until(isBaked, api.PDF_INK_REST_MS + 6000);
+      // Put the colour back.
+      api.state.meta.pdfHighlights = api.state.meta.pdfHighlights.map((r) => (r.id === record.id ? { ...r, color: record.color } : r));
+      highlights.repaintDocumentHighlights();
+      edit.notifyHighlightsChanged();
+      await until(isBaked);
+      return out;
+    }`);
+    if (baked.skipped) {
+      notes.push("14b skipped: no text highlight on the open paper");
+    } else {
+      const differs = (a, b) => Boolean(a && b) && Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) + Math.abs(a[2] - b[2]) > 30;
+      check("at rest, a highlighted page shows its marks baked into the picture",
+        baked.bakedAtRest && differs(baked.atRest.tint, baked.atRest.paper), JSON.stringify({ ...baked.atRest, state: baked.state }));
+      check("...while its live marks paint nothing, nothing blends, and its ink layers are not composited",
+        /rgba\(0, 0, 0, 0\)|transparent/.test(baked.atRest.markPaints) && baked.atRest.layerBlend === "normal" && baked.atRest.inkShown === 0,
+        JSON.stringify(baked.atRest));
+      check("recolouring a highlight puts the live marks back at once, then bakes the page again without drawing it",
+        baked.liveAtOnce && baked.rebaked && baked.recoloured.composed >= 1 && baked.recoloured.drawn === 0
+          && differs(baked.recoloured.tint, baked.atRest.tint),
+        JSON.stringify({ liveAtOnce: baked.liveAtOnce, rebaked: baked.rebaked, ...baked.recoloured }));
+      check("a pen going down on the page shows its live ink at once, and the page is baked again once it rests",
+        baked.penLive && baked.penRebaked, JSON.stringify({ penLive: baked.penLive, penRebaked: baked.penRebaked }));
+    }
+  }
+
   // ── 14. Pages drawn in a worker, and drawn here when that fails ───────────
   //
   // On the phone, drawing a page of a paper full of figures cost the main

@@ -109,7 +109,7 @@ import { inkPenIsDown, noteInkContact, noteInkStrokeCommitted, setInkPenDown, se
 import { QUAD_GEOMETRY_VERSION, documentHighlightAtPoint, documentInkMarks, freshDocumentHighlightId, setDocumentInkForPage } from "./pdf-highlights.js?v=__BUILD__";
 import { REGION_CLASS } from "./pdf-region.js?v=__BUILD__";
 import { setSmartHlUndoSink, smartHlClaimInkStroke } from "./pdf-smart-highlight.js?v=__BUILD__";
-import { PDF_DARK_CLASS, currentDocumentPage, documentPageInViewCheap, pdfPageElement, pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
+import { PDF_DARK_CLASS, currentDocumentPage, documentInkPageActive, documentPageInViewCheap, pdfPageElement, pdfPageViewport, refreshBakedDocumentPages, setDocumentInkLiveCheck } from "./pdf-view.js?v=__BUILD__";
 import { INK_ERASER_SIZE_DEFAULT, INK_ERASE_MODE_DEFAULT, INK_ERASE_TARGET_DEFAULT, INK_HL_TOKEN_DEFAULT, INK_HL_WIDTH_DEFAULT, INK_PEN_DEFAULT, INK_TOOL_DEFAULT, INK_WIDTH_DEFAULT, formatInkToken, inkFilingColor, isHighlighterToken, normalizeInkEraseMode, normalizeInkEraseTarget, normalizeInkEraserSize, normalizeInkHlWidth, normalizeInkOpacity, normalizeInkToken, normalizeInkTool, normalizeInkWidth, parseInkToken } from "../format/ink-colors.js?v=__BUILD__";
 import { INK_FORMAT_VERSION, INK_MARK_IDLE_MS, decodeInkStrokes, encodeInkStrokes, inkStrokesBounds, inkStrokesJoinMark, mergeInkBoxes } from "../format/ink-strokes.js?v=__BUILD__";
 import { notifyHighlightsChanged } from "../format/highlight-edit.js?v=__BUILD__";
@@ -346,6 +346,15 @@ function ensureInkLayer(pageNumber) {
   active.setStrokes(pageNumber, strokesForPage(records));
   seededInk.set(pageNumber, records);
   return true;
+}
+
+// The page a stroke (or a paste, a clear, a dot) is about to change: its kept
+// picture carries the ink baked in (src/documents/pdf-pictures.js), so it goes
+// back to the plain picture with the live layers on it first — or the stroke
+// would be drawn over a copy of itself.
+function inkLayerForWriting(pageNumber) {
+  documentInkPageActive(pageNumber);
+  return ensureInkLayer(pageNumber);
 }
 
 // Called as each page finishes painting, through the page-painted hook — the
@@ -665,7 +674,7 @@ function onInkPointerMove(event) {
 
   activeRect = press.rect;
   // The page may never have been drawn on, in which case it has no layer yet.
-  if (!ensureInkLayer(press.page)) { cancelInkPress(); return; }
+  if (!inkLayerForWriting(press.page)) { cancelInkPress(); return; }
   // Every sample taken while the app was still deciding is real ink and goes in
   // — without them a stroke visibly starts a few pixels after the nib landed.
   press.live = ensureEngine().begin(press.page, press.samples, event);
@@ -729,7 +738,7 @@ function tapInk(tap) {
   y /= tap.samples.length;
   if (documentHighlightAtPoint(x, y, { skipInk: true })) return;
   activeRect = tap.rect;
-  if (!ensureInkLayer(tap.page)) return;
+  if (!inkLayerForWriting(tap.page)) return;
   const active = ensureEngine();
   const before = inkCommits;
   const sample = { clientX: x, clientY: y, pressure: pressure || 0.5 };
@@ -849,6 +858,8 @@ export function initDocumentInk() {
   // The highlighter's text highlights and ▣'s boxes go on the pen's undo ring
   // (src/documents/pdf-smart-highlight.js says why it is handed in, not imported).
   setSmartHlUndoSink(pushInkHistoryAction);
+  // While the rail is armed every page shows its live ink, not a picture of it.
+  setDocumentInkLiveCheck(() => inkRailArmed);
   const view = el.documentView;
   if (!view) return;
   // Capture, so the decision about who owns this pointer is made before any of
@@ -925,7 +936,9 @@ export function initDocumentInk() {
 export function isInkArmed() { return inkRailArmed; }
 
 export function setInkArmed(next) {
+  const was = inkRailArmed;
   inkRailArmed = Boolean(next);
+  if (was !== inkRailArmed) queueMicrotask(refreshBakedDocumentPages);
   if (!inkRailArmed) {
     // setInkTool, NOT engine.setTool — and that is the whole of a bug that took
     // the pen away without saying so.
@@ -1131,7 +1144,7 @@ export function hasInkClipboard() { return Boolean(inkClipboard?.strokes?.length
 export function pasteInkSelection(page = null) {
   if (!hasInkClipboard()) return false;
   const target = Number.isFinite(page) ? page : currentDocumentPage();
-  if (!ensureInkLayer(target)) return false;
+  if (!inkLayerForWriting(target)) return false;
   closeOpenMark();
   return ensureEngine().pasteStrokes(target, inkClipboard);
 }
@@ -1200,7 +1213,7 @@ export function inkPageHasStrokes(page) {
 
 export function clearInkPage(page) {
   closeOpenMark();
-  if (!ensureInkLayer(page)) return false;
+  if (!inkLayerForWriting(page)) return false;
   return ensureEngine().clearHost(page);
 }
 

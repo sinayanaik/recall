@@ -93,36 +93,71 @@ export function regionMarksOnPage(source, pageNumber, { excludeId = null, exclud
 
 // Onto a canvas whose drawing space is `viewport` (an offset viewport for a
 // crop is fine — every coordinate goes through it).
-export function paintRegionMarks(ctx, viewport, marks) {
-  marks.highlights.forEach((record) => {
-    const hex = highlightHex(record.color);
+//
+// `paper` is the page the marks go onto: on a dark page (the paper inverted, as
+// dark page shows it) a tint is SCREENED rather than multiplied, and the pen
+// takes its dark set — the live page's own rules (styles/36-document.css,
+// styles/72-ink-paper.css). `areas: false` leaves regions out: a page's kept
+// picture (src/documents/pdf-pictures.js) carries the reader's highlights and
+// ink, while the regions stay live on the page, where they are pressed.
+//
+// On a RECORDING context (src/render/canvas-record.js, which has beginLayer) the
+// text tints go down as one group, blended once — the way the page's mark layer
+// is blended on screen, so two overlapping highlights read as one there and
+// here. On a real context each is blended as it is drawn, as it always was.
+export function paintRegionMarks(ctx, viewport, marks, { paper = "light", areas = true } = {}) {
+  const blend = paper === "dark" ? "screen" : "multiply";
+  const grouped = typeof ctx.beginLayer === "function";
+  const quadsOf = (record, paint) => {
     (record.quads || []).forEach((quad) => {
       if (Number(quad?.page) !== marks.page || !Array.isArray(quad.rect)) return;
       const [vx0, vy0, vx1, vy1] = viewport.convertToViewportRectangle(quad.rect.map(Number));
-      const left = Math.min(vx0, vx1);
-      const top = Math.min(vy0, vy1);
-      const width = Math.abs(vx1 - vx0);
-      const height = Math.abs(vy1 - vy0);
+      paint(Math.min(vx0, vx1), Math.min(vy0, vy1), Math.abs(vx1 - vx0), Math.abs(vy1 - vy0));
+    });
+  };
+  const paintArea = (record) => {
+    const hex = highlightHex(record.color);
+    quadsOf(record, (left, top, width, height) => {
       ctx.save();
-      if (record.kind === "area") {
-        // Outlined with a faint wash rather than tinted — a filled multiply
-        // over a photograph would wash out the figure, the same reason the
-        // live page draws a region this way.
-        const line = Math.max(1, viewport.scale * 1.5);
-        ctx.fillStyle = hexWithAlpha(hex, AREA_FILL_ALPHA);
-        ctx.fillRect(left, top, width, height);
-        ctx.strokeStyle = hex;
-        ctx.lineWidth = line;
-        ctx.strokeRect(left + line / 2, top + line / 2, Math.max(0, width - line), Math.max(0, height - line));
-      } else {
-        // Multiply, so the words stay readable through the tint.
-        ctx.globalCompositeOperation = "multiply";
-        ctx.fillStyle = hexWithAlpha(hex, highlightAlpha(record.color));
-        ctx.fillRect(left, top, width, height);
-      }
+      // Outlined with a faint wash rather than tinted — a filled multiply over
+      // a photograph would wash out the figure, the same reason the live page
+      // draws a region this way.
+      const line = Math.max(1, viewport.scale * 1.5);
+      ctx.fillStyle = hexWithAlpha(hex, AREA_FILL_ALPHA);
+      ctx.fillRect(left, top, width, height);
+      ctx.strokeStyle = hex;
+      ctx.lineWidth = line;
+      ctx.strokeRect(left + line / 2, top + line / 2, Math.max(0, width - line), Math.max(0, height - line));
       ctx.restore();
     });
-  });
+  };
+  const paintTint = (record, composite) => {
+    const fill = hexWithAlpha(highlightHex(record.color), highlightAlpha(record.color));
+    quadsOf(record, (left, top, width, height) => {
+      ctx.save();
+      // Multiply (screen on a dark page), so the words stay readable through
+      // the tint.
+      if (composite) ctx.globalCompositeOperation = composite;
+      ctx.fillStyle = fill;
+      ctx.fillRect(left, top, width, height);
+      ctx.restore();
+    });
+  };
+  if (grouped) {
+    const tints = marks.highlights.filter((record) => record.kind !== "area");
+    if (tints.length) {
+      ctx.beginLayer();
+      tints.forEach((record) => paintTint(record, null));
+      ctx.endLayer(blend);
+    }
+    if (areas) marks.highlights.filter((record) => record.kind === "area").forEach(paintArea);
+  } else {
+    marks.highlights.forEach((record) => {
+      if (record.kind === "area") {
+        if (areas) paintArea(record);
+      } else paintTint(record, blend);
+    });
+  }
   if (!marks.ink.length) return;
   // Strokes are stored in PDF user-space points; paintInkLayers expects the
   // context to carry that transform, as the live ink layer applies it.
@@ -134,7 +169,7 @@ export function paintRegionMarks(ctx, viewport, marks) {
   // screen's two layers stack in. On white paper: this is a picture of the PDF.
   const strokes = [];
   marks.ink.forEach((record) => strokes.push(...decodeInkStrokes(record.ink?.s)));
-  paintInkLayers(ctx, strokes, { root: null, paper: "light", blend: "multiply" });
+  paintInkLayers(ctx, strokes, { root: null, paper: paper === "dark" ? "dark" : "light", blend });
   ctx.restore();
 }
 
