@@ -666,28 +666,183 @@ body.has-touch-select .pdf-page:not(.is-text-awake) > .pdf-text-layer {
   touch-action: pan-x pan-y;
 }
 
-/* ── PDF reader timings, in App Info ───────────────────────────────────────
+/* ── ☰ → Diagnostics ───────────────────────────────────────────────────────
  *
- * src/documents/pdf-timing.js, printed by src/pwa/app-info.js. Here and not
- * beside the rest of App Info (11-chrome.css) because that file is one of the
- * frozen slices tools/split-css.mjs compares byte for byte; this one is not.
- * Monospaced and wrapping, because it is meant to be read on a phone and
- * copied into a message as it is.
+ * src/pwa/diagnostics-panel.js, on the help modal's shell (11-chrome.css).
+ * Here and not in 11-chrome.css because that file is one of the frozen slices
+ * tools/split-css.mjs compares byte for byte; this one is not.
+ *
+ * Built for a phone first. It used to be a row of five buttons under App Info
+ * that ran off the side of a 411px sheet. Now: switches as full-width rows with
+ * a line saying what each does, the tests as full-width buttons at least 48px
+ * tall, and the readout last, monospaced and wrapping, never wider than the
+ * sheet.
  */
-.app-info-timings-text {
-  margin: 0 0 10px;
-  padding: 10px 12px;
+.diagnostics-content {
+  max-width: 520px;
+}
+
+.diagnostics-body {
+  gap: 14px;
+  padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+}
+
+/* The body is a scrolling flex column: without this a long readout squeezes
+   the switch rows above it until they overlap. */
+.diagnostics-body > * {
+  flex-shrink: 0;
+}
+
+.diagnostics-intro {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 0.88rem;
+  line-height: 1.4;
+}
+
+.diagnostics-group {
+  display: grid;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.diagnostics-switch-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 56px;
+  padding: 12px 14px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.diagnostics-switch-row + .diagnostics-switch-row {
+  border-top: 1px solid var(--line);
+}
+
+.diagnostics-switch-text {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.diagnostics-switch-text strong,
+.diagnostics-test strong {
+  font-size: 0.98rem;
+  font-weight: 800;
+}
+
+.diagnostics-switch-text small,
+.diagnostics-test small {
+  color: var(--muted);
+  font-size: 0.8rem;
+  line-height: 1.35;
+}
+
+/* A switch, not a checkbox: the thing it controls is on or off now, not a
+   choice to be submitted. */
+.diagnostics-switch {
+  appearance: none;
+  -webkit-appearance: none;
+  flex: 0 0 auto;
+  position: relative;
+  width: 48px;
+  height: 28px;
+  margin: 0;
+  border-radius: 999px;
+  background: var(--line);
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.diagnostics-switch::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.35);
+  transition: transform 0.15s ease;
+}
+
+.diagnostics-switch:checked {
+  background: var(--accent);
+}
+
+.diagnostics-switch:checked::after {
+  transform: translateX(20px);
+}
+
+.diagnostics-switch:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.diagnostics-switch:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.diagnostics-heading {
+  margin: 4px 0 0;
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.diagnostics-tests {
+  display: grid;
+  gap: 10px;
+}
+
+.diagnostics-test {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  min-height: 56px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
   background: var(--surface-2);
   color: var(--text);
-  font: 0.74rem/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.diagnostics-test:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.diagnostics-readout-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.diagnostics-readout {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-2);
+  color: var(--text);
+  font: 0.72rem/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   user-select: text;
 }
 
-/* ── "Find what's slow", in App Info ───────────────────────────────────────
+/* ── "Find what's slow", in ☰ → Diagnostics ───────────────────────────────────────
  *
  * One of these at a time is on #documentStage while the probe scrolls the
  * paper (src/documents/pdf-view.js, runDocumentSlowProbe), and none otherwise.

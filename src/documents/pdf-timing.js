@@ -11,7 +11,7 @@
 // In memory only, and small: the last few events and a rolling window of
 // per-page samples. Nothing is stored, nothing is sent anywhere.
 //
-// And OFF unless the reader turns it on (App Info → Diagnostics): with it off
+// And OFF unless the reader turns it on (☰ → Diagnostics → Record timings): with it off
 // nothing below records, and pdf-view.js observes no long tasks, no long
 // animation frames and runs no frame loop under the finger. The reader test
 // and "Find what's slow" still run when asked — each is one press, measured
@@ -312,7 +312,7 @@ export function pdfTimingReport() {
   }
   lines.push(`pdf.js: ${lib?.version || "not loaded"}${pdfTimingCanvas?.build ? ` (${pdfTimingCanvas.build} build)` : ""}`);
   if (!pdfDiagnosticsEnabled) {
-    lines.push("diagnostics: off — nothing is being timed or recorded. Turn them on with the Diagnostics button to time opens, zooms, pages and frames.");
+    lines.push("diagnostics: off — nothing is being timed or recorded. Turn on Record timings in ☰ → Diagnostics to time opens, zooms, pages and frames.");
     if (pdfReaderTestResult) lines.push(pdfReaderTestResult);
     if (pdfSlowProbeResult) lines.push(pdfSlowProbeResult);
     return lines.join("\n");

@@ -549,6 +549,7 @@ const APP_SHELL = [
   `./src/panels/highlights-editor.js?v=${STAMP}`,
   `./src/panels/highlights-panel.js?v=${STAMP}`,
   `./src/pwa/app-info.js?v=${STAMP}`,
+  `./src/pwa/diagnostics-panel.js?v=${STAMP}`,
   `./src/pwa/incoming-files.js?v=${STAMP}`,
   `./src/pwa/online.js?v=${STAMP}`,
   `./src/pwa/release-info.js?v=${STAMP}`,

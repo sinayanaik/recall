@@ -326,6 +326,7 @@
     <link rel="modulepreload" href="src/panels/highlights-editor.js?v=__BUILD__">
     <link rel="modulepreload" href="src/panels/highlights-panel.js?v=__BUILD__">
     <link rel="modulepreload" href="src/pwa/app-info.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/pwa/diagnostics-panel.js?v=__BUILD__">
     <link rel="modulepreload" href="src/pwa/incoming-files.js?v=__BUILD__">
     <link rel="modulepreload" href="src/pwa/online.js?v=__BUILD__">
     <link rel="modulepreload" href="src/pwa/release-info.js?v=__BUILD__">
@@ -672,6 +673,7 @@
           <button class="tool-button" id="storageBtn" type="button" title="What your account is storing — decks, cards and images — and how to clean it up">&#128451; Storage &amp; Data</button>
           <button class="tool-button tool-button-info" id="helpBtn" type="button" title="How to use this app" aria-label="Help">&#63; Help &amp; Guide</button>
           <button class="tool-button" id="appInfoBtn" type="button" title="App version and update status" aria-label="App info">&#8505; App Info</button>
+          <button class="tool-button" id="diagnosticsBtn" type="button" title="How the PDF reader is performing on this device" aria-label="Diagnostics">&#128200; Diagnostics</button>
           <button class="tool-button" id="logoutBtn" type="button" title="Sign out" hidden>&#8594; Sign Out</button>
           <!-- Shut down: save, sync everything, then close — instead of closing
                the tab and hoping the last edit made it. See src/ui/shutdown.js. -->
@@ -2491,28 +2493,56 @@ What year was the Eiffel Tower built?
             </div>
           </div>
 
-          <!-- How long the PDF reader is taking on THIS device: opens, tab and
-               PDF switches, zooms, and per-page draw and text-layer times
-               (src/documents/pdf-timing.js). In memory only, never sent
-               anywhere; the button copies it so it can be pasted into a bug
-               report. -->
-          <div class="app-info-health app-info-timings">
-            <h3 class="app-info-health-title">PDF reader timings</h3>
-            <pre class="app-info-timings-text" id="appInfoPdfTimings">—</pre>
-            <div class="app-info-actions">
-              <!-- Off by default: nothing is timed or observed until it is on. -->
-              <button type="button" class="sync-modal-btn" id="appInfoDiagnosticsBtn" aria-pressed="false">Diagnostics: off</button>
-              <button type="button" class="sync-modal-btn" id="appInfoCopyTimingsBtn">Copy timings</button>
-              <!-- The same scroll and zooms on the open paper, every run, so two
-                   readouts can be compared; and the switch that decides whether
-                   pages are kept as pictures, so it can be run both ways. -->
-              <button type="button" class="sync-modal-btn" id="appInfoReaderTestBtn">Run reader test</button>
-              <!-- The same reading-speed scroll with one part of the page
-                   hidden at a time, to find which part costs the frames. -->
-              <button type="button" class="sync-modal-btn" id="appInfoSlowProbeBtn">Find what's slow</button>
-              <button type="button" class="sync-modal-btn" id="appInfoPicturePagesBtn" aria-pressed="true">Picture pages: on</button>
-            </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ☰ → Diagnostics (src/pwa/diagnostics-panel.js): how the PDF reader is
+         doing on THIS device. Its own sheet, built for a phone: two switches,
+         two tests, then the readout. In memory only, never sent anywhere. -->
+    <section class="help-modal" id="diagnosticsModal" hidden aria-label="Diagnostics">
+      <div class="help-modal-content diagnostics-content">
+        <div class="help-modal-head">
+          <h2 class="help-modal-title">Diagnostics</h2>
+          <button class="icon-button" id="diagnosticsCloseBtn" type="button" aria-label="Close diagnostics">&#215;</button>
+        </div>
+        <div class="help-modal-body diagnostics-body">
+          <p class="diagnostics-intro">How the PDF reader is performing on this device. Nothing here leaves the device unless you copy it.</p>
+
+          <div class="diagnostics-group">
+            <label class="diagnostics-switch-row" for="diagnosticsRecordToggle">
+              <span class="diagnostics-switch-text">
+                <strong>Record timings</strong>
+                <small>Times opens, zooms, pages and frames while you read. Off by default; turning it off forgets what was recorded.</small>
+              </span>
+              <input class="diagnostics-switch" id="diagnosticsRecordToggle" type="checkbox" role="switch">
+            </label>
+            <label class="diagnostics-switch-row" for="diagnosticsPicturesToggle">
+              <span class="diagnostics-switch-text">
+                <strong>Picture pages</strong>
+                <small>Shows PDF pages as pictures kept on this device. Turn off only to compare.</small>
+              </span>
+              <input class="diagnostics-switch" id="diagnosticsPicturesToggle" type="checkbox" role="switch">
+            </label>
           </div>
+
+          <h3 class="diagnostics-heading">Tests on the open PDF</h3>
+          <div class="diagnostics-tests">
+            <button class="diagnostics-test" id="diagnosticsReaderTestBtn" type="button">
+              <strong>Reader test</strong>
+              <small>The same scroll and zooms every run · about 15 seconds</small>
+            </button>
+            <button class="diagnostics-test" id="diagnosticsProbeBtn" type="button">
+              <strong>Find what's slow</strong>
+              <small>Scrolls with one part of the page hidden at a time · about 45 seconds</small>
+            </button>
+          </div>
+
+          <div class="diagnostics-readout-head">
+            <h3 class="diagnostics-heading">Readout</h3>
+            <button class="sync-modal-btn" id="diagnosticsCopyBtn" type="button">Copy</button>
+          </div>
+          <pre class="diagnostics-readout" id="diagnosticsReadout">—</pre>
         </div>
       </div>
     </section>
