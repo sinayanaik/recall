@@ -230,6 +230,20 @@ export async function getPictureBlob(key) {
   }
 }
 
+// A picture that will not decode (a write cut short by the OS, a disk that
+// lied) is dropped, and the page is drawn again in its place.
+export async function dropPicture(key) {
+  if (!key) return;
+  paperPictureIndex.forEach((entry) => entry.metas.delete(key));
+  const db = await openDb();
+  if (!db) return;
+  try {
+    const tx = db.transaction(STORE, "readwrite");
+    tx.objectStore(STORE).delete(key);
+    await pictureTxDone(tx);
+  } catch (_) { /* gone already */ }
+}
+
 let trimTimer = 0;
 
 export async function putPicture(meta, blob) {

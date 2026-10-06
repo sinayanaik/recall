@@ -499,7 +499,8 @@ try { new PerformanceObserver((l) => l.getEntries().forEach((e) => window.__perf
         const sharp = await until(() => Boolean(el()?.querySelector(".pdf-detail")), 6000);
         const canvas = el()?.querySelector(".pdf-canvas:not(.is-stale)");
         const result = { drawn: Math.round(drawn), sharp: sharp < 0 ? -1 : Math.round(performance.now() - t0),
-          mp: canvas ? Math.round(canvas.width * canvas.height / 1e5) / 10 : 0,
+          // naturalWidth for a page kept as a picture (an <img>), width for a canvas.
+          mp: canvas ? Math.round((canvas.naturalWidth || canvas.width) * (canvas.naturalHeight || canvas.height) / 1e5) / 10 : 0,
           longTaskMs: Math.round(window.__perf.longTasks.reduce((a, b) => a + b, 0)) };
         api.fitDocumentToWidth();
         await settle(2000);
@@ -567,8 +568,9 @@ try { new PerformanceObserver((l) => l.getEntries().forEach((e) => window.__perf
         let sharpAt = -1;
         for (let i = 0; i < 400; i++) {
           const c = api.pdfPageElement(20).querySelector(".pdf-canvas:not(.is-stale)");
-          const density = c ? c.width / c.getBoundingClientRect().width : 0;
-          if (density >= Math.min(3, window.devicePixelRatio || 1) - 0.05) { sharpAt = performance.now() - landed; break; }
+          const density = c ? (c.naturalWidth || c.width) / c.getBoundingClientRect().width : 0;
+          // 90%: a kept picture within PDF_PICTURE_SLACK of the screen counts.
+          if (density >= Math.min(3, window.devicePixelRatio || 1) * 0.9) { sharpAt = performance.now() - landed; break; }
           await settle(25);
         }
         await settle(1500);

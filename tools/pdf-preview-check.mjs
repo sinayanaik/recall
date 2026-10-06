@@ -7499,6 +7499,20 @@ try {
         spread: img ? spread(img) : 0,
         noCanvas: !pageEl?.querySelector("canvas.pdf-canvas")
       };
+      // A relayout at the scale the page already has (a tab switch, a sync's
+      // in-place reload) leaves a picture page exactly as it is: the same
+      // picture and the same layers, not rebuilt.
+      await api.whenDocumentPageReady(1);
+      await settle(300);
+      const layersBefore = Array.from(pageEl.querySelectorAll(".pdf-text-layer, .pdf-mark-layer"));
+      api.relayoutDocument({ refit: true });
+      await settle(400);
+      const layersAfter = Array.from(pageEl.querySelectorAll(".pdf-text-layer, .pdf-mark-layer"));
+      out.sameScale = {
+        layers: layersBefore.length,
+        kept: layersBefore.length > 0 && layersBefore.every((layer) => layer.isConnected) && layersAfter.length === layersBefore.length,
+        picture: pageEl.querySelector("img.pdf-picture") === img
+      };
       // Left still, the pages the reader has not reached are drawn ahead and
       // kept — so nothing below waits for a draw.
       let aheadBefore = counts().ahead;
@@ -7578,6 +7592,8 @@ try {
     check("a page is shown as a kept picture: an <img> filling the page box, with the page on it",
       kept.shown.active && kept.shown.img && kept.shown.fills && kept.shown.spread >= 40 && kept.shown.noCanvas,
       JSON.stringify(kept.shown));
+    check("a relayout at the same scale keeps a picture page's picture and layers as they are",
+      kept.sameScale.kept && kept.sameScale.picture, JSON.stringify(kept.sameScale));
     check("zooming all the way out draws nothing, and every page on screen is a picture",
       kept.zoomOut.drawn === 0 && kept.zoomOut.onScreen > 0 && kept.zoomOut.pictures === kept.zoomOut.onScreen,
       JSON.stringify(kept.zoomOut));
@@ -7598,7 +7614,10 @@ try {
       const fitPicture = api.pdfPageElement(api.currentDocumentPage())?.querySelector("img.pdf-picture");
       const fitWidth = fitPicture ? fitPicture.naturalWidth : 0;
       const before = counts();
-      api.setDocumentScale(api.fitWidthScale() * 1.6);
+      // 1.4x: past what the fit-width picture carries, short of the budget
+      // (past it, the detail tile does the sharpening and a softer picture
+      // under it is kept on purpose — PDF_PICTURE_UNDER_TILE).
+      api.setDocumentScale(api.fitWidthScale() * 1.4);
       let sharp = false;
       let width = 0;
       for (let i = 0; i < 160 && !sharp; i += 1) {
@@ -7682,7 +7701,13 @@ try {
   // baked into the kept picture now, and the live marks paint nothing while it
   // matches them — until the marks change or a pen goes down, when the page is
   // the plain picture with live marks again, and is baked again once still.
+  //
+  // On a 3x phone: on this 1x desktop window the per-page budget is under fit
+  // width, so a detail tile covers every page at fit — and a page under a tile
+  // is shown unbaked, on purpose (its marks have to be over the tile too).
   {
+    await page.call("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
+    await page.evaluate(`async () => { await window.__recall.settle(800); window.__recall.api.fitDocumentToWidth(); await window.__recall.settle(800); }`);
     const baked = await page.evaluate(`async () => {
       const { api, settle } = window.__recall;
       const edit = await import("/src/format/highlight-edit.js?v=__BUILD__");
@@ -7757,6 +7782,8 @@ try {
       await until(isBaked);
       return out;
     }`);
+    await page.call("Emulation.setDeviceMetricsOverride", { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
+    await page.evaluate(`async () => { await window.__recall.settle(800); }`);
     if (baked.skipped) {
       notes.push("14b skipped: no text highlight on the open paper");
     } else {
