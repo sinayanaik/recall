@@ -367,7 +367,7 @@ function formatPdfSlowProbe(result) {
   if (result.error) return `find what's slow: ${result.error}`;
   const f = result.facts || {};
   const lines = [`find what's slow (${new Date(result.at).toLocaleTimeString()}): ${f.pages} pages · zoom ${f.zoom}%${f.fit ? " (fit width)" : ""}`
-    + ` · pages as ${f.pictures ? "kept pictures" : "canvases"} · ${f.dpr}x`];
+    + ` · pages as ${f.pictures ? "kept pictures" : "canvases"}${f.textLayers ? ` · text layers ${f.textLayers}` : ""} · ${f.dpr}x`];
   lines.push(`  GPU: ${f.gpu}`);
   lines.push(`  ${f.memoryGB ? `memory ${f.memoryGB}GB · ` : ""}${Number.isFinite(f.heapMB) ? `JS heap ${f.heapMB.toFixed(0)}MB · ` : ""}`
     + `${f.held} pages on the stage, ${((f.pixels || 0) / 1e6).toFixed(1)}MP · worker jobs out at the start: ${f.workerJobs}`);

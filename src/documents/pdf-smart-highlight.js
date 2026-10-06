@@ -50,7 +50,7 @@ import {
 import {
   TEXT_ITEM_ATTR, captureDocumentRange, mergeQuads, pageNumberForRect, quadToPageBox, rectToPdfQuad, textItemBox
 } from "./pdf-selection.js?v=__BUILD__";
-import { pdfMarkLayer, pdfPageElement, pdfPageTextItems, pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
+import { pdfMarkLayer, pdfPageElement, pdfPageTextItems, pdfPageViewport, wakeDocumentPageText } from "./pdf-view.js?v=__BUILD__";
 
 export const SMART_HL_PREVIEW_CLASS = "pdf-smart-preview-band";
 
@@ -98,6 +98,9 @@ export function smartHlPageHasText(page) {
 export function smartHlSpans(page) {
   const pageEl = pdfPageElement(page);
   if (!pageEl) return [];
+  // A touch screen's text layers sleep until wanted (pdf-view.js, "The text
+  // layer sleeps"); these boxes are read off the rendered spans.
+  wakeDocumentPageText(Number(page));
   const spans = [];
   pageEl.querySelectorAll(`[${TEXT_ITEM_ATTR}]`).forEach((span) => {
     const node = span.firstChild;

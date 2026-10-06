@@ -2847,6 +2847,9 @@ try {
     // nothing at all.
     api.scrollToDocumentPage(1, 0, { smooth: false });
     await settle(400);
+    // Awake while a span is picked (a sleeping layer is not hit-tested), then
+    // asleep again, as the reader finds it: the press itself has to wake it.
+    api.wakeDocumentPageText(1);
     // ...and pick a span the point actually LANDS on: the text layer is
     // absolutely-positioned transparent boxes, and the first one on the page can
     // be a stray under the pager or clipped by the scroller's edge.
@@ -2864,7 +2867,16 @@ try {
       break;
     }
     if (!picked) return { error: "no reachable text layer span on page 1" };
+    api.sleepDocumentTextLayers();
+    const layer = picked.span.closest(".pdf-text-layer");
+    const asleep = {
+      contentVisibility: getComputedStyle(layer).contentVisibility,
+      hit: document.elementFromPoint(picked.x, picked.y) === picked.span,
+      measured: picked.span.getBoundingClientRect().width > 0,
+      awake: api.documentTextPagesAwake()
+    };
     return {
+      asleep,
       hasClass: document.body.classList.contains("has-touch-select"),
       userSelect: getComputedStyle(picked.span).userSelect,
       overlay: Boolean(document.querySelector(".touch-select-layer")),
@@ -2880,6 +2892,12 @@ try {
   check("the app owns touch selection over a PDF too",
     armed.hasClass && armed.userSelect === "none" && armed.overlay,
     `has-touch-select=${armed.hasClass} user-select=${armed.userSelect} overlay=${armed.overlay}`);
+  // The third phone report: every frame of a scroll waited on the text
+  // layers. Under the touch controller they are built but not rendered until
+  // pressed — still measurable, not hit-tested.
+  check("...where a page's text layer sleeps until pressed: not rendered, not hit, still measurable",
+    armed.asleep.contentVisibility === "hidden" && armed.asleep.hit === false && armed.asleep.measured && armed.asleep.awake === 0,
+    JSON.stringify(armed.asleep));
 
   let pdfTouch = { error: "not run" };
   if (armed.hasClass) {
@@ -2895,7 +2913,8 @@ try {
         text: range ? range.toString() : "",
         painted: Boolean(window.CSS && CSS.highlights && CSS.highlights.has("recall-touch-selection")),
         handles: Array.from(document.querySelectorAll(".touch-select-handle"))
-          .filter((h) => !h.classList.contains("is-hidden")).length
+          .filter((h) => !h.classList.contains("is-hidden")).length,
+        awake: document.querySelector('.pdf-page[data-page-number="1"]').classList.contains("is-text-awake")
       };
     }`);
     // Extend along the line, which is the gesture that used to hand the page
@@ -2938,6 +2957,8 @@ try {
     check("...a press selects a word off the page",
       pdfTouch.pressed.text.trim().length > 0 && pdfTouch.pressed.painted,
       `"${pdfTouch.pressed.text.trim().slice(0, 30)}" painted=${pdfTouch.pressed.painted}`);
+    check("...the press having woken that page's text layer to find it",
+      pdfTouch.pressed.awake === true, JSON.stringify({ awake: pdfTouch.pressed.awake }));
     check("...with our own handles on it, not the platform's",
       pdfTouch.pressed.handles === 2, `${pdfTouch.pressed.handles} handle(s)`);
     check("...and sliding the finger extends it",
@@ -2964,6 +2985,22 @@ try {
     window.getSelection()?.removeAllRanges();
     await settle(200);
   }`);
+  // ...and with nothing selected, a scroll puts it back to sleep.
+  const slept = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    api.clearTouchSelection?.();
+    try { window.CSS?.highlights?.delete("recall-touch-selection"); } catch (_) {}
+    window.getSelection()?.removeAllRanges();
+    const view = document.getElementById("documentView");
+    view.scrollTop += 40;
+    await settle(150);
+    view.scrollTop -= 40;
+    await settle(150);
+    const layer = document.querySelector('.pdf-page[data-page-number="1"] .pdf-text-layer');
+    return { awake: api.documentTextPagesAwake(), contentVisibility: layer ? getComputedStyle(layer).contentVisibility : "" };
+  }`);
+  check("...and a scroll with nothing selected puts it back to sleep",
+    slept.awake === 0 && slept.contentVisibility === "hidden", JSON.stringify(slept));
 
   // ── 9c-3. A finger on the paper does not hold the page back ─────────────
   //

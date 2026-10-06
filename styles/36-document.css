@@ -355,6 +355,18 @@
   background: var(--pdf-selection);
 }
 
+/* The text layer sleeps on a touch screen until it is pressed
+   (src/documents/pdf-view.js, "The text layer sleeps"): built, measurable, but
+   neither painted nor hit-tested. On the phone in the third report it was what
+   every frame of a scroll was waiting on — 189 frames in four seconds without
+   it, 3 with it. A press wakes the page under the finger (.is-text-awake) a
+   moment before the touch selection controller hit-tests it. Only where that
+   controller owns selection: a native long-press elsewhere needs the spans to
+   be there when the finger lands. */
+body.has-touch-select .pdf-page:not(.is-text-awake) > .pdf-text-layer {
+  content-visibility: hidden;
+}
+
 /* ── Highlights ────────────────────────────────────────────────────────────
  *
  * The same four tokens as a <mark>, at the same mix ratios (see

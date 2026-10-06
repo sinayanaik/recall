@@ -42,7 +42,7 @@ import { paintDocumentHighlights } from "./pdf-highlights.js?v=__BUILD__";
 import { textItemGap } from "./pdf-selection.js?v=__BUILD__";
 import { expectPdfPagePaint, firstPdfPagePainted, notePdfAnimationFrame, notePdfAnimationFramesObserved, notePdfCanvasSetup, notePdfInteractionFrame, notePdfInteractionLongTask, notePdfWastedRenders, pendingPdfPagePaint, recordPdfTimingAfterPaint, samplePdfTiming, setPdfReaderTest } from "./pdf-timing.js?v=__BUILD__";
 import { buildDocumentOutline, clearDocumentOutline, setDocumentOutlinePage } from "./pdf-outline.js?v=__BUILD__";
-import { inkPenIsDown } from "../core/gesture.js?v=__BUILD__";
+import { inkPenIsDown, setDocumentTextWake, touchGestureHoldsSurface } from "../core/gesture.js?v=__BUILD__";
 import { DOC_SLOT_DOC, DOC_SLOT_NOTEBOOK, activeDocSlot, docSlotMeta, docSlotReadingPositionKey, documentStoreKey, normalizeDocSlot, onDocumentSurface } from "./doc-slot.js?v=__BUILD__";
 import { activePdfId, deckPdfById, deckPdfs, PDF_PRIMARY_ID, pdfStoreKey } from "./pdf-multi.js?v=__BUILD__";
 import { isDarkThemeActive } from "../ui/theme-catalog.js?v=__BUILD__";
@@ -508,6 +508,7 @@ export function tearDownDocumentView({ park = false } = {}) {
     openPdf.renderDoc?.then((id) => closeRenderDocument(id));
   }
   openPdf = null;
+  awakeTextPages.clear();
   forgetDocumentPageGuess();
   clearDocumentOutline();
   // A parked surface took its pages with it (parkOpenDocument detached them);
@@ -3042,6 +3043,7 @@ function watchDocumentInteraction() {
   view.addEventListener("wheel", () => noteDocumentInteraction(), { passive: true });
   view.addEventListener("scroll", () => {
     noteDocumentInteraction();
+    if (awakeTextPages.size) sleepDocumentTextLayers();
     const at = performance.now();
     const previous = lastScroll;
     lastScroll = { at, top: view.scrollTop };
@@ -4405,6 +4407,7 @@ function noteCanvasSetup(dark = null) {
     pages: () => (picturesActive()
       ? `kept pictures (this session: ${pictureCounts.kept} shown from the device · ${pictureCounts.composed} composed · ${pictureCounts.drawn} drawn while waited on · ${pictureCounts.ahead} drawn ahead in ${(prerenderSpentMs / 1000).toFixed(1)}s)`
         + `\n  worker now: ${pageRendererBusy()} job${pageRendererBusy() === 1 ? "" : "s"} out · drawing ahead ${prerenderJob ? "now" : `paused (${prerenderBlockedBy() || `waits for ${PDF_PRERENDER_IDLE_MS / 1000}s still`})`}`
+        + `\n  text layers: ${textLayersSleep() ? `asleep until pressed (${awakeTextPages.size} awake now)` : "always on (selection here is the browser's own)"}`
       : `canvases (${pdfPicturesTurnedOff() ? "picture pages turned off on this device" : !pageRendererKeepsPictures() ? "this browser cannot keep pictures" : "this paper has no content hash"})`),
     budget: canvasPixelBudget(),
     slots: renderConcurrency(),
@@ -5038,6 +5041,83 @@ function dropPageLayers(entry, { keepTextAt = null } = {}) {
   entry.markLayer = null;
 }
 
+// ── The text layer sleeps ───────────────────────────────────────────────────
+//
+// Third phone report, "Find what's slow", scrolling at reading speed: 189
+// frames with the text layers gone, and 1 to 4 frames with anything else gone —
+// the marks, the notes, the shadows, the pictures themselves. The page was
+// never the picture or the highlights; it was the layer that makes the text
+// selectable: on a dense two-column page, hundreds of absolutely positioned,
+// transformed, transparent spans, which that phone's compositor paid for on
+// every frame whether or not anyone was selecting anything.
+//
+// So on a touch screen (where the touch selection controller owns selection,
+// body.has-touch-select) the layer is built as before but not rendered:
+// `content-visibility: hidden` (styles/36-document.css) skips its paint and
+// layout and keeps it out of hit-testing, while its geometry can still be read
+// (the smart highlighter measures spans). A press wakes the page under the
+// finger just before the controller hit-tests it (wakeDocumentTextAt, from
+// src/notes/touch-selection.js), and the page goes back to sleep as soon as the
+// reader scrolls — unless it holds the selection, or a press is in progress.
+// The selection itself is painted on the spans, so a page holding one has to
+// stay awake for it to show.
+export const PDF_TEXT_AWAKE_CLASS = "is-text-awake";
+
+const awakeTextPages = new Set();
+
+function wakeTextLayerAt(x, y) {
+  const pageEl = document.elementFromPoint(x, y)?.closest?.(".pdf-page[data-page-number]");
+  if (pageEl) wakeDocumentPageText(Number(pageEl.dataset.pageNumber));
+}
+
+// For code that measures a page's spans rather than hit-testing them (the
+// smart highlighter, a region's snap): measured awake, as it always was.
+export function wakeDocumentPageText(pageNumber) {
+  const entry = openPdf?.pages.get(pageNumber);
+  if (!entry || entry.el.classList.contains(PDF_TEXT_AWAKE_CLASS)) return;
+  entry.el.classList.add(PDF_TEXT_AWAKE_CLASS);
+  awakeTextPages.add(pageNumber);
+}
+
+setDocumentTextWake(wakeTextLayerAt);
+
+// The ranges selected on the document surface now: the touch controller's
+// (painted through the CSS highlight registry) and a native one.
+function liveSelectionRanges() {
+  const ranges = [];
+  try {
+    window.CSS?.highlights?.forEach((highlight) => highlight.forEach((range) => ranges.push(range)));
+  } catch (_) { /* no highlight registry */ }
+  const native = document.getSelection?.();
+  if (native && native.rangeCount && !native.isCollapsed) ranges.push(native.getRangeAt(0));
+  return ranges;
+}
+
+export function sleepDocumentTextLayers() {
+  if (!openPdf || touchGestureHoldsSurface()) return;
+  const ranges = liveSelectionRanges();
+  awakeTextPages.forEach((pageNumber) => {
+    const entry = openPdf.pages.get(pageNumber);
+    if (!entry) {
+      awakeTextPages.delete(pageNumber);
+      return;
+    }
+    if (ranges.some((range) => { try { return range.intersectsNode(entry.el); } catch (_) { return false; } })) return;
+    entry.el.classList.remove(PDF_TEXT_AWAKE_CLASS);
+    awakeTextPages.delete(pageNumber);
+  });
+}
+
+// Whether text layers sleep here at all: only where the touch selection
+// controller owns selection (the rule in styles/36-document.css says why).
+function textLayersSleep() {
+  return document.body.classList.contains("has-touch-select");
+}
+
+export function documentTextPagesAwake() {
+  return awakeTextPages.size;
+}
+
 function unrenderPage(pageNumber) {
   const entry = openPdf?.pages.get(pageNumber);
   if (!entry) return;
@@ -5057,6 +5137,8 @@ function unrenderPage(pageNumber) {
   entry.el.querySelectorAll(".pdf-canvas").forEach(releaseCanvasBitmap);
   entry.el.innerHTML = "";
   entry.el.classList.remove(PDF_BAKED_CLASS);
+  entry.el.classList.remove(PDF_TEXT_AWAKE_CLASS);
+  awakeTextPages.delete(pageNumber);
   entry.markLayer = null;
   entry.areaLayer = null;
   entry.textLayer = null;
@@ -6664,6 +6746,7 @@ async function runDocumentSlowProbe({ passMs = PDF_PROBE_PASS_MS } = {}) {
     fit: open.fitWidth,
     pictures: picturesActive(),
     workerJobs: pageRendererBusy(),
+    textLayers: textLayersSleep() ? "asleep until pressed" : "always on",
     passMs
   };
   const from = view.scrollTop;
