@@ -14,9 +14,10 @@
 import { el } from "../core/dom.js?v=__BUILD__";
 import { MARK_HIGHLIGHT_COLORS } from "../format/highlight-colors.js?v=__BUILD__";
 import { recolourHighlightAt, removeHighlightAt } from "../format/highlight-edit.js?v=__BUILD__";
-import { highlightNoteTextAt } from "../format/highlight-notes.js?v=__BUILD__";
+import { highlightNoteTextAt, highlightRefAt, highlightRefIndex } from "../format/highlight-notes.js?v=__BUILD__";
+import { initHighlightAdjust, startHighlightAdjust } from "./highlight-adjust.js?v=__BUILD__";
 import { openHighlightNoteEditor } from "./highlight-note-editor.js?v=__BUILD__";
-import { sourceMarkIndexFor } from "./anchors.js?v=__BUILD__";
+import { verifiedSourceMarkIndexFor } from "./anchors.js?v=__BUILD__";
 
 let menuEl = null;
 // A <mark>'s ordinal for a note, a highlight id for a document — see the
@@ -45,13 +46,21 @@ let openedAt = 0;
 // does not survive the crossing.
 //
 // The default set is the notes one, so every existing caller is unchanged.
+//
+// The notes set is keyed by a REF (highlightRefAt), not a bare ordinal: the
+// menu stays open while the note can change under it (an autosave, a sync), and
+// a ref is re-resolved against the note as it is when a row is pressed — by its
+// note id, or by its words near where it was — rather than trusted as a number.
+// `keyIndex` turns the key back into the ordinal the shared resolvers want.
 const NOTES_MARK_HANDLERS = {
   surface: "notes",
   actions: ["card", "pin", "highlights", "copy", "share", "search"],
-  recolour: (index, color) => recolourHighlightAt(index, color),
-  remove: (index) => removeHighlightAt(index),
-  noteText: (index) => highlightNoteTextAt(index),
-  openNote: (index, rect) => openHighlightNoteEditor(index, rect, highlightNoteTextAt(index))
+  keyIndex: (ref) => highlightRefIndex(ref),
+  recolour: (ref, color) => recolourHighlightAt(ref, color),
+  remove: (ref) => removeHighlightAt(ref),
+  noteText: (ref) => highlightNoteTextAt(ref),
+  openNote: (ref, rect) => openHighlightNoteEditor(ref, rect, highlightNoteTextAt(ref)),
+  adjust: (ref, mark) => startHighlightAdjust(mark, ref)
 };
 
 let markHandlers = NOTES_MARK_HANDLERS;
@@ -217,6 +226,17 @@ function ensureMarkMenu() {
   note.innerHTML = '<span class="mmi-ico" aria-hidden="true">&#9998;</span><span class="mmi-label">Add a note</span>';
   actions.appendChild(note);
 
+  // Resize it — more words or fewer, same colour, same note. Built by hand like
+  // the note row, and shown only where the handler set can do it (a note's
+  // highlight; a paper's quads have nothing to drag). See highlight-adjust.js.
+  const adjust = document.createElement("button");
+  adjust.type = "button";
+  adjust.className = "mark-menu-item mark-menu-adjust";
+  adjust.title = "Extend or shrink this highlight";
+  adjust.dataset.markColor = "adjust";
+  adjust.innerHTML = '<span class="mmi-ico" aria-hidden="true">&#8596;</span><span class="mmi-label">Adjust the highlight</span>';
+  actions.appendChild(adjust);
+
   MARK_MENU_ACTIONS.forEach((row) => {
     const button = document.createElement("button");
     button.type = "button";
@@ -269,6 +289,12 @@ function ensureMarkMenu() {
       set.openNote(index, rect);
       return;
     }
+    if (button.dataset.markColor === "adjust") {
+      closeMarkMenu();
+      if (index == null || !mark || typeof set.adjust !== "function") return;
+      set.adjust(index, mark);
+      return;
+    }
     if (button.dataset.markColor) {
       closeMarkMenu();
       if (index == null) return;
@@ -286,7 +312,9 @@ function ensureMarkMenu() {
     const surface = set.surface || "notes";
     closeMarkMenu();
     if (index == null) return;
-    const entry = markActions.resolveHighlightEntry?.(surface, index);
+    const resolvedKey = typeof set.keyIndex === "function" ? set.keyIndex(index) : index;
+    if (resolvedKey == null || resolvedKey < 0) return;
+    const entry = markActions.resolveHighlightEntry?.(surface, resolvedKey);
     if (!entry) return;
     // A highlight inside a code block carries two more strings (see
     // noteHighlightEntries): the code exactly as written, for Copy — the plain
@@ -329,9 +357,16 @@ export function openMarkMenuFor(mark) {
   // read. Below that threshold nothing changes; above it, this is the
   // difference between removing the highlight that was tapped and removing a
   // different one. See sourceMarkIndexFor.
-  const index = sourceMarkIndexFor(view, mark);
+  //
+  // ...and checked: the source entry has to hold the words the tapped mark
+  // shows (verifiedSourceMarkIndexFor). If it cannot be established, the note
+  // on screen is not the note in memory — repaint nothing here, open nothing,
+  // and let the next render put them back in step.
+  const index = verifiedSourceMarkIndexFor(view, mark);
   if (index === -1) return;
-  openMarkMenuWith(mark, index, NOTES_MARK_HANDLERS);
+  const ref = highlightRefAt(index);
+  if (!ref) return;
+  openMarkMenuWith(mark, ref, NOTES_MARK_HANDLERS);
 }
 
 // The general form: any element to anchor against, any key the handler set
@@ -358,6 +393,8 @@ export function openMarkMenuWith(mark, key, handlerSet, currentColor = null) {
   // ...and the row says which of the two things pressing it will do. "Add a
   // note" over a highlight that already has one is a row that lies about what
   // is behind it — the same fault the bookmark buttons were fixed for.
+  const adjustRow = menu.querySelector(".mark-menu-adjust");
+  if (adjustRow) adjustRow.hidden = typeof markHandlers.adjust !== "function";
   const noteLabel = menu.querySelector(".mark-menu-note .mmi-label");
   if (noteLabel) noteLabel.textContent = hasNote ? "Edit the note" : "Add a note";
 
@@ -420,6 +457,7 @@ export function closeMarkMenuOnScroll() {
 export function initMarkMenu() {
   const view = el.notesView;
   if (!view) return;
+  initHighlightAdjust();
 
   view.addEventListener("click", (event) => {
     // Never steal a click meant for something else that happens to sit inside a

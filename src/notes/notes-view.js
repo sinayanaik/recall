@@ -14,7 +14,7 @@ import { refreshHighlightBackdrop } from "../editor/highlight-mirror.js?v=__BUIL
 // this direction is a hoisted `function` declaration called at runtime, never a
 // `const` read while either module body is still evaluating.
 import { notifyHighlightsChanged } from "../format/highlight-edit.js?v=__BUILD__";
-import { migrateLegacyHighlightNotes } from "../format/highlight-notes.js?v=__BUILD__";
+import { migrateLegacyHighlightNotes, normalizeHighlightSource } from "../format/highlight-notes.js?v=__BUILD__";
 import { readerNotesBody } from "../format/notes-fence.js?v=__BUILD__";
 import { rawEditorValueFor, sourceFromRawEditor } from "./notes-edit-split.js?v=__BUILD__";
 import { resetClozeButton } from "../editor/toolbars.js?v=__BUILD__";
@@ -197,8 +197,27 @@ export function clearProgrammaticNotesSelection() {
 // The SAME string has to reach renderMarkdown and both source trackers, or the
 // block cache's estimate misses on every pass and re-measures a book-sized note
 // for nothing.
+// ── A note is never drawn from marks the edits would read differently ────
+//
+// Earlier versions could leave a highlight nested inside another, or an empty
+// one, in the note (see normalizeMarks in src/format/highlight.js). Rendered as
+// they were, the Nth <mark> on screen and the Nth highlight an edit resolves
+// were different highlights, and every tap after the first such mark removed,
+// recoloured or annotated the wrong one — or reported that the highlight was
+// "no longer in the note". Repaired here, before the DOM is built, so the two
+// are the same list by construction. The same string back — no write, no save —
+// for every note that has nothing to repair.
+function repairHighlightMarks() {
+  if (!state.notes || !state.notes.includes("<mark")) return;
+  const repaired = normalizeHighlightSource(state.notes);
+  if (repaired === state.notes) return;
+  state.notes = repaired;
+  scheduleDeckAutosave();
+}
+
 export function renderNotesView({ sameNote = false } = {}) {
   if (!el.notesView) return Promise.resolve();
+  repairHighlightMarks();
   const source = readerNotesBody(state.notes);
   if (sameNote) {
     // Same document, so the existing estimate still describes it and the queued
@@ -700,6 +719,7 @@ export function enterNotesEditing(cursorOffset = null) {
     state.notes = migrated;
     scheduleDeckAutosave();
   }
+  repairHighlightMarks();
   // The body only. This is the other half of the report the fence came from:
   // on a PDF deck the body is empty — the PDF is the document — so pressing ✎
   // used to open an editor containing nothing but the reader's own highlight

@@ -11,7 +11,7 @@
 
 import { state } from "../core/state.js?v=__BUILD__";
 import { MARK_HIGHLIGHT_DEFAULT } from "../format/highlight-colors.js?v=__BUILD__";
-import { HIGHLIGHT_SCAN_RE, LIST_MARKER_RE, MARK_CLOSE_TAG, continuesHighlightGroup, markOpenTag } from "../format/highlight.js?v=__BUILD__";
+import { LIST_MARKER_RE, MARK_CLOSE_TAG, continuesHighlightGroup, markOpenTag, rewriteMarkTags, scanMarks } from "../format/highlight.js?v=__BUILD__";
 import { highlightNoteResolver, readHighlightNotes } from "../format/highlight-notes.js?v=__BUILD__";
 import { readerNotesBody } from "../format/notes-fence.js?v=__BUILD__";
 import { codeFences, codeHighlightSnippet } from "../format/code-highlight.js?v=__BUILD__";
@@ -179,21 +179,23 @@ export function scanHighlightGroups(source, noteSource = source) {
   const raw = [];
   // Parsed at most once for the whole scan — see highlightNoteResolver.
   const noteTextFor = highlightNoteResolver(noteSource);
-  HIGHLIGHT_SCAN_RE.lastIndex = 0;
-  let m;
-  while ((m = HIGHLIGHT_SCAN_RE.exec(source))) {
-    const color = m[1] || MARK_HIGHLIGHT_DEFAULT;
-    const noteRef = m[2] || null;
-    const inner = m[3];
-    const openTagLength = m[0].length - inner.length - MARK_CLOSE_TAG.length;
-    const start = m.index;
+  // scanMarks, the counter every edit resolves an ordinal with — so row N here
+  // IS the highlight ✕ and ✎ act on for ordinal N. A mark nested in another
+  // (only ever left by an older version, and repaired before a note renders)
+  // is counted, as the DOM counts it, but is part of its outer mark's row.
+  scanMarks(source).forEach((entry) => {
+    if (entry.closeStart === -1 || entry.depth > 0) return;
+    const color = entry.color;
+    const noteRef = entry.note;
+    const inner = entry.inner;
+    const start = entry.start;
     raw.push({
       // Ordinal among ALL marks in the source, which is also this mark's
       // position among the rendered <mark> elements (revealNoteMark).
-      markIndex: raw.length,
+      markIndex: entry.index,
       start,
-      end: start + m[0].length,
-      offset: start + openTagLength,
+      end: entry.end,
+      offset: entry.openEnd,
       color,
       inner,
       // Only ever set on a group's FIRST piece (see format/highlight-notes.js).
@@ -208,7 +210,7 @@ export function scanHighlightGroups(source, noteSource = source) {
       noteRef,
       marker: precedingListMarker(source, start)
     });
-  }
+  });
 
   const groups = [];
   raw.forEach((entry) => {
@@ -227,12 +229,15 @@ export function scanHighlightGroups(source, noteSource = source) {
   // One pass for the whole note, shared by every group below — see
   // highlightUnitSpan, and clozeUnitIndex's own comment for why this is built
   // once rather than per highlight.
+  // What a locator's markCount has to be: every mark the DOM will hold, which
+  // is every open tag — not just the rows (see noteMarkNode's count gate).
+  const markCount = scanMarks(source).length;
   const units = clozeUnitIndex(source);
   // Same once-per-scan rule for the code blocks: a highlight in one is shown as
   // code (see highlightUnitSpan). Empty, and free, for a note with no fences.
   const fences = codeFences(source);
 
-  return { source, raw, groups, units, fences };
+  return { source, raw, groups, units, fences, markCount };
 }
 
 // ── A PDF deck's highlights, in the same shapes ─────────────────────────────
@@ -295,14 +300,12 @@ export function highlightContextUnits(units, index, step, count) {
 export function ownMarkOrdinals(span, group) {
   if (!span || span.code) return null;
   const starts = new Set(group.pieces.map((piece) => piece.start));
-  const scan = new RegExp(HIGHLIGHT_SCAN_RE.source, "g");
   const own = [];
-  let m;
-  let i = 0;
-  while ((m = scan.exec(span.cur))) {
-    if (starts.has(span.rawStart + m.index)) own.push(i);
-    i += 1;
-  }
+  // Every mark in the quoted line, counted as the DOM will count them once the
+  // quote is rendered (scanMarks) — not just the canonical ones.
+  scanMarks(span.cur).forEach((entry, i) => {
+    if (starts.has(span.rawStart + entry.start)) own.push(i);
+  });
   return own;
 }
 
@@ -310,11 +313,10 @@ export function ownMarkOrdinals(span, group) {
 // its text, and this highlight's own marks reduced to their colour — a note id
 // means nothing in an exported file.
 export function markdownWithOnlyOwnMarks(markdown, own) {
-  let i = -1;
-  return String(markdown || "").replace(new RegExp(HIGHLIGHT_SCAN_RE.source, "g"), (_all, color, _note, inner) => {
-    i += 1;
-    return !own || own.includes(i) ? markOpenTag(color || MARK_HIGHLIGHT_DEFAULT) + inner + MARK_CLOSE_TAG : inner;
-  });
+  const text = String(markdown || "");
+  // By position, over the same count ownMarkOrdinals numbered them with.
+  return rewriteMarkTags(text, scanMarks(text), (entry) =>
+    (!own || own.includes(entry.index)) && entry.depth === 0 ? markOpenTag(entry.color || MARK_HIGHLIGHT_DEFAULT) : "");
 }
 
 // One entry per highlight (never merged, unlike collectDeckHighlights' rows —
@@ -465,7 +467,7 @@ export function collectHighlightEntries() {
     });
   }
   const notes = state.notes || "";
-  const { source, raw, groups, units, fences } = scanHighlightGroups(readerNotesBody(notes), notes);
+  const { source, raw, groups, units, fences, markCount } = scanHighlightGroups(readerNotesBody(notes), notes);
   const headings = headingIndexFor(source);
   groups.forEach((group) => {
     const span = highlightUnitSpan(units, source, group, fences);
@@ -492,7 +494,7 @@ export function collectHighlightEntries() {
       own: ownMarkOrdinals(span, group),
       note: group.pieces[0].note || "",
       anchor: trimNoteAnchor({ offset: group.offset, source: group.pieces[0].inner, text, deckId: state.deckId, deckTitle: state.deckTitle }),
-      locator: { markIndex: group.pieces[0].markIndex, markCount: raw.length }
+      locator: { markIndex: group.pieces[0].markIndex, markCount }
     });
   });
   return entries;

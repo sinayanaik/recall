@@ -78,7 +78,7 @@ export function noteHighlightEntries() {
   const source = readerNotesBody(notes);
   // Scanned over the body, resolved against the whole note — the notes live in
   // the tail the body has just had sliced off it. See scanHighlightGroups.
-  const { raw, groups, fences } = scanHighlightGroups(source, notes);
+  const { groups, fences, markCount } = scanHighlightGroups(source, notes);
   const headings = headingIndexFor(source);
   const entries = [];
   groups.forEach((group) => {
@@ -113,7 +113,7 @@ export function noteHighlightEntries() {
       // path: if the rendered view holds a different number of marks than the
       // source does, the ordinal cannot be trusted and it falls back to a text
       // search. So it is carried, not recomputed by the caller.
-      locator: { markIndex: group.pieces[0].markIndex, markCount: raw.length }
+      locator: { markIndex: group.pieces[0].markIndex, markCount }
     });
   });
   return entries;
