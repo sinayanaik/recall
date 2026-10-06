@@ -7513,23 +7513,49 @@ try {
         kept: layersBefore.length > 0 && layersBefore.every((layer) => layer.isConnected) && layersAfter.length === layersBefore.length,
         picture: pageEl.querySelector("img.pdf-picture") === img
       };
-      // Left still, the pages the reader has not reached are drawn ahead and
-      // kept — so nothing below waits for a draw.
+      // Left still, the pages within PDF_PRERENDER_RADIUS of the reader are
+      // drawn ahead and kept — and no more than those: drawing ahead is work
+      // the worker cannot drop when the reader moves.
       let aheadBefore = counts().ahead;
       let aheadDone = false;
-      for (let i = 0; i < 300 && !aheadDone; i += 1) {
+      const near = Math.min(api.currentPdfPageCount(), 1 + api.PDF_PRERENDER_RADIUS);
+      for (let i = 0; i < 400 && !aheadDone; i += 1) {
         await settle(50);
-        aheadDone = pictures.pagesWithPictures(counts().sha, "light", 1).size === api.currentPdfPageCount();
+        const have = pictures.pagesWithPictures(counts().sha, "light", 1);
+        aheadDone = Array.from({ length: near }, (_, k) => k + 1).every((p) => have.has(p));
       }
-      out.ahead = { done: aheadDone, ahead: counts().ahead - aheadBefore, pages: api.currentPdfPageCount() };
-      // Out: as far as it goes. Nothing drawn, every page on screen a picture.
+      out.ahead = { done: aheadDone, ahead: counts().ahead - aheadBefore, pages: api.currentPdfPageCount(), near };
+      // Nothing is drawn ahead while the worker has a job out — a cancelled
+      // one included, until it answers: an encode cannot be stopped halfway.
+      const worker = await import("/src/documents/pdf-render-worker.js?v=__BUILD__");
+      const keptOne = pictures.storedPicture({ sha: counts().sha, page: 1, paper: "light", minWidth: 1 });
+      const source = keptOne ? await pictures.getPictureBlob(keptOne.key) : null;
+      out.busy = { skipped: !source };
+      if (source) {
+        const idle = worker.pageRendererBusy();
+        const job = worker.composePagePicture({ source, bakeDarkPage: true });
+        job.promise.catch(() => {});
+        const during = { busy: worker.pageRendererBusy(), blockedBy: api.prerenderBlockedBy() };
+        job.cancel();
+        const afterCancel = worker.pageRendererBusy();
+        let settled = afterCancel;
+        for (let i = 0; i < 200 && settled > idle; i += 1) {
+          await settle(30);
+          settled = worker.pageRendererBusy();
+        }
+        out.busy = { idle, during, afterCancel, settled };
+      }
+      // Out: as far as it goes. Nothing drawn for a page that is kept, and
+      // every page on screen a picture.
       let before = counts();
+      const keptBeforeOut = pictures.pagesWithPictures(counts().sha, "light", 1);
       api.setDocumentScale(0.01);
       await settle(2500);
       const outPages = onScreen();
       out.zoomOut = {
         drawn: counts().drawn - before.drawn,
         onScreen: outPages.length,
+        notKept: outPages.filter((p) => !keptBeforeOut.has(Number(p.dataset.pageNumber))).length,
         pictures: outPages.filter((p) => p.querySelector("img.pdf-picture")).length
       };
       // In, a little: within what the fit-width picture carries.
@@ -7538,7 +7564,10 @@ try {
       before = counts();
       api.setDocumentScale(api.fitWidthScale() * 1.05);
       await settle(1500);
-      out.smallZoom = { drawn: counts().drawn - before.drawn };
+      // The newest zoom in App Info's "recent", which this one should be —
+      // ended by the page in view, kept, not by whichever page drew next.
+      const zoomLine = api.pdfTimingReport().split("\\n").find((line) => /^\\s+zoom: \\d+ms \\(to /.test(line)) || "";
+      out.smallZoom = { drawn: counts().drawn - before.drawn, zoomLine, zoomMs: Number((zoomLine.match(/zoom: (\\d+)ms/) || [])[1]) };
       api.fitDocumentToWidth();
       await settle(1200);
       // A reopen: every page kept, so nothing drawn and no second copy opened.
@@ -7575,15 +7604,13 @@ try {
         dark = Boolean(document.querySelector('.pdf-page[data-page-number="1"] img.pdf-picture.is-dark-pixels'));
       }
       out.dark = { dark, drawn: counts().drawn - before.drawn, composed: counts().composed - before.composed };
-      // ...and the rest of the paper is kept for dark page too, ahead of the
-      // reader — composed from the light pictures, not drawn.
+      // ...and the rest of the paper is NOT made ahead for dark page: a page
+      // kept on the light paper is one compose away when it is shown on the
+      // dark one, and composing it ahead was work the worker could not drop
+      // when the reader moved (the second phone report: p90 3.2s a compose).
       aheadBefore = counts().ahead;
-      aheadDone = false;
-      for (let i = 0; i < 200 && !aheadDone; i += 1) {
-        await settle(50);
-        aheadDone = pictures.pagesWithPictures(counts().sha, "dark", 1).size === api.currentPdfPageCount();
-      }
-      out.aheadDark = { done: aheadDone, ahead: counts().ahead - aheadBefore, drawn: counts().drawn - before.drawn };
+      await settle(api.PDF_PRERENDER_IDLE_MS + 1500);
+      out.aheadDark = { ahead: counts().ahead - aheadBefore, drawn: counts().drawn - before.drawn };
       api.applyPdfInvert(false, { remember: false });
       await settle(800);
       out.report = /pages shown as: kept pictures/.test(api.pdfTimingReport());
@@ -7594,10 +7621,12 @@ try {
       JSON.stringify(kept.shown));
     check("a relayout at the same scale keeps a picture page's picture and layers as they are",
       kept.sameScale.kept && kept.sameScale.picture, JSON.stringify(kept.sameScale));
-    check("zooming all the way out draws nothing, and every page on screen is a picture",
-      kept.zoomOut.drawn === 0 && kept.zoomOut.onScreen > 0 && kept.zoomOut.pictures === kept.zoomOut.onScreen,
+    check("zooming all the way out draws only pages not kept yet, and every page on screen is a picture",
+      kept.zoomOut.drawn <= kept.zoomOut.notKept && kept.zoomOut.onScreen > 0 && kept.zoomOut.pictures === kept.zoomOut.onScreen,
       JSON.stringify(kept.zoomOut));
     check("a zoom within what the picture carries draws nothing", kept.smallZoom.drawn === 0, JSON.stringify(kept.smallZoom));
+    check("...and its time in App Info ends when the page in view is shown, not when some page next draws",
+      /picture, kept/.test(kept.smallZoom.zoomLine) && kept.smallZoom.zoomMs < 1000, JSON.stringify(kept.smallZoom));
     // In, past what the picture carries: on a 3x phone, where the budget
     // leaves room above fit width (on this 1x desktop window the fit-width
     // picture is already as wide as a page may be, and the detail tile does
@@ -7646,10 +7675,14 @@ try {
       JSON.stringify(kept.region));
     check("dark page is the kept picture composed, not the page drawn again",
       kept.dark.dark && kept.dark.drawn === 0 && kept.dark.composed >= 1, JSON.stringify(kept.dark));
-    check("left still, the pages the reader has not reached are drawn ahead and kept",
-      kept.ahead.done && kept.ahead.pages >= 3 && kept.ahead.ahead >= 1, JSON.stringify(kept.ahead));
-    check("...and for dark page, composed from those, with nothing drawn while waited on",
-      kept.aheadDark.done && kept.aheadDark.ahead >= 1 && kept.aheadDark.drawn === 0, JSON.stringify(kept.aheadDark));
+    check("left still, the pages within two of the reader are drawn ahead and kept, and no more",
+      kept.ahead.done && kept.ahead.pages >= 3 && kept.ahead.ahead >= 1 && kept.ahead.ahead <= kept.ahead.near, JSON.stringify(kept.ahead));
+    check("nothing is drawn ahead while the worker has a job out, a cancelled one included until it answers",
+      !kept.busy.skipped && kept.busy.during.busy === kept.busy.idle + 1 && kept.busy.during.blockedBy === "worker busy"
+        && kept.busy.afterCancel === kept.busy.idle + 1 && kept.busy.settled <= kept.busy.idle,
+      JSON.stringify(kept.busy));
+    check("...and for dark page nothing is composed or drawn ahead: a page is made on the other paper when it is shown",
+      kept.aheadDark.ahead === 0 && kept.aheadDark.drawn === 0, JSON.stringify(kept.aheadDark));
     check("...and App Info says pages are kept pictures", kept.report === true);
 
     const store = await page.evaluate(`async () => {
@@ -7688,9 +7721,37 @@ try {
     }`);
     const testLines = String(readerTest.text || "").split("\n");
     check("App Info's reader test scrolls and zooms the open paper and reports each step",
-      /pages as kept pictures/.test(readerTest.text) && testLines.filter((l) => /frames · p50/.test(l)).length === 4
+      /pages as kept pictures/.test(readerTest.text) && testLines.filter((l) => /frames · p50/.test(l)).length === 5
         && /sharp after/.test(readerTest.text) && readerTest.inReport,
       testLines.slice(0, 3).join(" | "));
+
+    // App Info's "Find what's slow": the same scroll with one part of the page
+    // hidden at a time, each reported, and the page left as it was. Short
+    // passes here; on the phone each is two seconds each way.
+    const probe = await page.evaluate(`async () => {
+      const { api, settle } = window.__recall;
+      const prerenderBefore = api.prerenderBlockedBy();
+      const running = api.runPdfSlowProbe({ passMs: 250 });
+      await settle(50);
+      const during = api.prerenderBlockedBy();
+      const text = await running;
+      return {
+        text,
+        during,
+        prerenderBefore,
+        inReport: api.pdfTimingReport().includes("find what's slow ("),
+        left: Array.from(document.getElementById("documentStage").classList).filter((c) => c.startsWith("pdf-probe-")),
+        after: api.prerenderBlockedBy()
+      };
+    }`);
+    const probeLines = String(probe.text || "").split("\n");
+    check("App Info's Find what's slow scrolls the paper once for each of its nine parts and reports each, with the GPU",
+      probeLines.filter((l) => /frames · p50/.test(l) && !/standing still/.test(l)).length === 9
+        && /standing still/.test(probe.text) && /GPU: /.test(probe.text) && probe.inReport,
+      probeLines.slice(0, 4).join(" | "));
+    check("...nothing is drawn ahead while it runs, and the page is left as it was",
+      probe.during === "finding what's slow" && probe.left.length === 0 && probe.after !== "finding what's slow",
+      JSON.stringify({ during: probe.during, left: probe.left, after: probe.after }));
   }
 
   // ── 14b. The reader's marks, baked into the page's picture ────────────────

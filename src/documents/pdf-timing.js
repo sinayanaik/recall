@@ -132,11 +132,21 @@ export function expectPdfPagePaint(kind, startedAt = pdfTimingNow(), detail = ""
 }
 
 // `extra` is what the page that ended the wait was drawn as — its canvas size.
-export function firstPdfPagePainted(extra = "") {
+// `afterPaint` ends it two frames on instead, once the browser has put it on
+// screen: for a page that was not drawn at all (a kept picture resized with
+// its box), the paint is the whole of the wait.
+export function firstPdfPagePainted(extra = "", { afterPaint = false } = {}) {
   if (!pdfTimingPending) return;
   const { kind, startedAt, detail } = pdfTimingPending;
   pdfTimingPending = null;
-  recordPdfTiming(kind, pdfTimingNow() - startedAt, [detail, extra].filter(Boolean).join(" · "));
+  const record = () => recordPdfTiming(kind, pdfTimingNow() - startedAt, [detail, extra].filter(Boolean).join(" · "));
+  if (afterPaint && typeof requestAnimationFrame === "function") requestAnimationFrame(() => requestAnimationFrame(record));
+  else record();
+}
+
+// What the wait in progress is for ("zoom", "open"…), or "".
+export function pendingPdfPagePaint() {
+  return pdfTimingPending?.kind || "";
 }
 
 // A flow that is over once the browser has painted what it changed: two
@@ -290,6 +300,7 @@ export function pdfTimingReport() {
     });
   }
   if (pdfReaderTestResult) lines.push(pdfReaderTestResult);
+  if (pdfSlowProbeResult) lines.push(pdfSlowProbeResult);
   return lines.join("\n");
 }
 
@@ -305,6 +316,7 @@ export function pdfTimingReport() {
 // Registered by pdf-view.js (this module imports nothing), run from App Info.
 let pdfReaderTest = null;
 let pdfReaderTestResult = "";
+let pdfSlowProbeResult = "";
 
 export function setPdfReaderTest(api) {
   pdfReaderTest = api && typeof api.run === "function" ? api : null;
@@ -331,6 +343,42 @@ export async function runPdfReaderTest() {
 
 export function lastPdfReaderTest() {
   return pdfReaderTestResult;
+}
+
+// "Find what's slow": the same reading-speed scroll over the open paper with
+// one part of the page hidden at a time (pdf-view.js, runDocumentSlowProbe).
+export async function runPdfSlowProbe(options = {}) {
+  if (!pdfReaderTest?.probe) return "";
+  const result = await pdfReaderTest.probe(options);
+  pdfSlowProbeResult = formatPdfSlowProbe(result);
+  return pdfSlowProbeResult;
+}
+
+export function lastPdfSlowProbe() {
+  return pdfSlowProbeResult;
+}
+
+function formatProbeFrames(step) {
+  return `${step.frames} frames · p50 ${step.p50}ms · p90 ${step.p90}ms · worst ${step.worst}ms · ${step.slow} over 34ms`;
+}
+
+function formatPdfSlowProbe(result) {
+  if (!result) return "";
+  if (result.error) return `find what's slow: ${result.error}`;
+  const f = result.facts || {};
+  const lines = [`find what's slow (${new Date(result.at).toLocaleTimeString()}): ${f.pages} pages · zoom ${f.zoom}%${f.fit ? " (fit width)" : ""}`
+    + ` · pages as ${f.pictures ? "kept pictures" : "canvases"} · ${f.dpr}x`];
+  lines.push(`  GPU: ${f.gpu}`);
+  lines.push(`  ${f.memoryGB ? `memory ${f.memoryGB}GB · ` : ""}${Number.isFinite(f.heapMB) ? `JS heap ${f.heapMB.toFixed(0)}MB · ` : ""}`
+    + `${f.held} pages on the stage, ${((f.pixels || 0) / 1e6).toFixed(1)}MP · worker jobs out at the start: ${f.workerJobs}`);
+  if (f.still) lines.push(`  standing still (1s): ${formatProbeFrames(f.still)}`);
+  lines.push(`  each pass: two screens down and back${f.passMs === 2000 ? " at reading speed" : ""} (${((f.passMs || 0) * 2 / 1000).toFixed(1)}s), with —`);
+  (result.steps || []).forEach((step) => {
+    lines.push(`  ${step.label}: ${formatProbeFrames(step)}`
+      + (step.longTasks ? ` · ${step.longTasks} long tasks, ${Math.round(step.longTaskMs)}ms` : "")
+      + (step.shown ? ` · ${step.shown} pages drawn` : ""));
+  });
+  return lines.join("\n");
 }
 
 function formatPdfReaderTest(result) {
