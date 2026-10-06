@@ -32,11 +32,12 @@ import { isS3Configured } from "../cloud/s3-config.js?v=__BUILD__";
 import { PDF_BADGE_LAYER_CLASS, PDF_INK_HL_LAYER_CLASS, PDF_INK_LAYER_CLASS } from "../core/constants.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { ensurePdfJs, openPdfDocument } from "../core/lib-loader.js?v=__BUILD__";
-import { cleanupRenderPage, closeRenderDocument, openRenderDocument, pageRendererActive, pageRendererBakesDark, pageRendererFailed, pageRendererStatus, renderPageBitmap, startPageRenderer } from "./pdf-render-worker.js?v=__BUILD__";
+import { cleanupRenderDocument, cleanupRenderPage, closeRenderDocument, composePagePicture, openRenderDocument, pageRendererActive, pageRendererBakesDark, pageRendererFailed, pageRendererKeepsPictures, pageRendererStatus, renderDocumentSha, renderPageBitmap, renderPagePicture, startPageRenderer } from "./pdf-render-worker.js?v=__BUILD__";
+import { getPictureBlob, holdPictureUrl, loadPaperPictures, pagesWithPictures, pdfPicturesTurnedOff, pictureKey, putPicture, releasePictureUrl, setPdfPicturesTurnedOff, storedPicture, touchPicture } from "./pdf-pictures.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { paintDocumentHighlights } from "./pdf-highlights.js?v=__BUILD__";
 import { textItemGap } from "./pdf-selection.js?v=__BUILD__";
-import { expectPdfPagePaint, firstPdfPagePainted, notePdfAnimationFrame, notePdfAnimationFramesObserved, notePdfCanvasSetup, notePdfInteractionFrame, notePdfInteractionLongTask, notePdfWastedRenders, recordPdfTimingAfterPaint, samplePdfTiming } from "./pdf-timing.js?v=__BUILD__";
+import { expectPdfPagePaint, firstPdfPagePainted, notePdfAnimationFrame, notePdfAnimationFramesObserved, notePdfCanvasSetup, notePdfInteractionFrame, notePdfInteractionLongTask, notePdfWastedRenders, recordPdfTimingAfterPaint, samplePdfTiming, setPdfReaderTest } from "./pdf-timing.js?v=__BUILD__";
 import { buildDocumentOutline, clearDocumentOutline, setDocumentOutlinePage } from "./pdf-outline.js?v=__BUILD__";
 import { inkPenIsDown } from "../core/gesture.js?v=__BUILD__";
 import { DOC_SLOT_DOC, DOC_SLOT_NOTEBOOK, activeDocSlot, docSlotMeta, docSlotReadingPositionKey, documentStoreKey, normalizeDocSlot, onDocumentSurface } from "./doc-slot.js?v=__BUILD__";
@@ -349,6 +350,9 @@ function releaseParked(key) {
   // entry is released" a single statement rather than something the collector
   // gets round to.
   parked.pages?.forEach((entry) => clearTimeout(entry.deadline));
+  // Their pictures' blob URLs are counted (src/documents/pdf-pictures.js), and
+  // a page that leaves for good gives its count back.
+  releasePagePicturesIn(parked.host);
   parked.pages = null;
   parked.rendered = null;
   parked.host = null;
@@ -454,6 +458,8 @@ function parkOpenDocument() {
     sha: (openPdf.slot === DOC_SLOT_DOC ? deckPdfById(state.meta, openPdf.pdfId) : docSlotMeta(openPdf.slot))?.sha256 || "",
     doc: openPdf.doc,
     renderDoc: openPdf.renderDoc,
+    renderBlob: openPdf.renderBlob,
+    pictureSha: openPdf.pictureSha,
     host,
     pages: openPdf.pages,
     rendered: openPdf.rendered,
@@ -485,6 +491,7 @@ export function tearDownDocumentView({ park = false } = {}) {
     cancelPageRender(entry);
   });
   resetRenderQueue();
+  cancelPrerender();
   clearTimeout(detailTimer);
   detailTimer = 0;
   detailPages.clear();
@@ -500,6 +507,9 @@ export function tearDownDocumentView({ park = false } = {}) {
   openPdf = null;
   forgetDocumentPageGuess();
   clearDocumentOutline();
+  // A parked surface took its pages with it (parkOpenDocument detached them);
+  // whatever is still here is going for good.
+  releasePagePicturesIn(el.documentView);
   if (el.documentView) el.documentView.innerHTML = "";
   if (el.documentPageIndicator) el.documentPageIndicator.textContent = "";
 }
@@ -1115,7 +1125,10 @@ async function openDocumentViewBody({ force = false, slot = null, pdfId = null, 
       // bytes it is actually showing either way it was built.
       sha256: pdfMeta?.sha256 || "",
       doc: parked.doc,
-      renderDoc: parked.renderDoc || null,
+      // `undefined` survives the park: a copy not opened yet is still openable.
+      renderDoc: parked.renderDoc === undefined ? undefined : (parked.renderDoc || null),
+      renderBlob: parked.renderBlob || null,
+      pictureSha: parked.pictureSha || "",
       pageCount: parked.pageCount,
       baseWidth: parked.baseWidth,
       baseHeight: parked.baseHeight,
@@ -1216,6 +1229,7 @@ async function openDocumentViewBody({ force = false, slot = null, pdfId = null, 
 
   let doc;
   let renderDoc = null;
+  let keepsPictures = false;
   try {
     // A COPY of the bytes, deliberately: pdf.js transfers the buffer it is
     // given to its worker, which detaches it — and the blob in the store is the
@@ -1226,7 +1240,22 @@ async function openDocumentViewBody({ force = false, slot = null, pdfId = null, 
     // document is what everything else — viewports, text, the outline — reads.
     // Started before the parse below and not waited for here; the first page
     // render waits for it, and falls back to the main thread if it never comes.
-    renderDoc = (await pageRendererStarting) ? openRenderDocument(data.slice()) : null;
+    //
+    // ── ...or not at all, until a page actually has to be drawn ──────────────
+    //
+    // With pages kept as pictures (src/documents/pdf-pictures.js) a paper read
+    // before is shown without drawing anything, and a second parse of it in
+    // the renderer — the bytes copied, the structure built, the fonts loaded —
+    // would be for nothing. So the copy is opened on the first page that is NOT
+    // kept (ensureRenderDoc), from the stored blob. `undefined` means exactly
+    // that: not opened, and openable. The one exception is a paper whose record
+    // carries no content hash: the renderer takes the hash as it opens it, and
+    // the pictures are keyed by it.
+    const rendererUp = await pageRendererStarting;
+    keepsPictures = rendererUp && pageRendererKeepsPictures() && !pdfPicturesTurnedOff();
+    if (!rendererUp) renderDoc = null;
+    else if (keepsPictures && pdfMeta?.sha256) renderDoc = undefined;
+    else renderDoc = openRenderDocument(data.slice(), { hash: keepsPictures });
     const parseStartedAt = performance.now();
     doc = await openPdfDocument(data);
     expectPdfPagePaint(timingKind, openStartedAt,
@@ -1271,8 +1300,14 @@ async function openDocumentViewBody({ force = false, slot = null, pdfId = null, 
     sha256: pdfMeta?.sha256 || "",
     doc,
     // The page renderer's copy: a promise of its id, null when pages are drawn
-    // on the main thread.
+    // on the main thread, undefined when it has not been needed yet (see
+    // ensureRenderDoc) — opened from `renderBlob` when it is.
     renderDoc,
+    renderBlob: blob,
+    // What this paper's kept pictures are filed under: the record's hash, or
+    // the one the renderer took as it opened the bytes. Empty until known, and
+    // empty for good when pictures are not in use.
+    pictureSha: keepsPictures ? (pdfMeta?.sha256 || "") : "",
     pageCount: doc.numPages,
     // Every page starts out assumed to be the size of page 1 — which is true
     // for essentially every paper, and self-correcting for the ones where it
@@ -1293,6 +1328,13 @@ async function openDocumentViewBody({ force = false, slot = null, pdfId = null, 
     watchdog: 0,
     settled: null
   };
+
+  if (keepsPictures && !openPdf.pictureSha && renderDoc) {
+    const opened = openPdf;
+    renderDoc.then((id) => {
+      if (openPdf === opened && id != null) opened.pictureSha = renderDocumentSha(id);
+    }, () => {});
+  }
 
   view.innerHTML = "";
   openPdf.scale = fitWidthScale();
@@ -1349,6 +1391,7 @@ async function openDocumentViewBody({ force = false, slot = null, pdfId = null, 
 // laid out at a scale that no longer fits.
 function finishDocumentOpen(view, token, openSlot, at, { restored = false, refit = false } = {}) {
   noteCanvasSetup();
+  schedulePrerender();
   if (!restored) buildPagePlaceholders();
   observePages();
   watchDocumentViewSize();
@@ -1905,6 +1948,14 @@ export function relayoutDocument({ refit = false, afterLayout = null } = {}) {
     // any more, so trimRenderedPages would never come back for it and every zoom
     // would leave another few megabytes of bitmap behind.
     if (isPageNearViewport(pageNumber)) {
+      // A page shown as a kept picture keeps it: the <img> is sized to the
+      // page box, so it is already the right size, and what is wrong at the
+      // new scale is only the layers on top of it. A sharper picture follows
+      // once the page is still, if this one is now too soft.
+      if (entry.el.querySelector(".pdf-picture")) {
+        relayerPage(pageNumber);
+        return;
+      }
       near.add(pageNumber);
       stalePageForRelayout(pageNumber, width, height);
     } else {
@@ -2289,12 +2340,19 @@ async function renderPage(pageNumber) {
   let task;
   let slot = null;
   task = (async () => {
-    // Wait for a turn (see "One page at a time" below). A page the reader has
-    // already gone past by the time its turn comes is not drawn at all.
-    slot = await acquireRenderSlot(pageNumber, entry, stale);
-    if (!slot) return;
-    entry.releaseSlot = slot.release;
-    armRenderDeadline();
+    const takeSlot = async () => {
+      // Wait for a turn (see "One page at a time" below). A page the reader has
+      // already gone past by the time its turn comes is not drawn at all.
+      slot = await acquireRenderSlot(pageNumber, entry, stale);
+      if (!slot) return null;
+      entry.releaseSlot = slot.release;
+      armRenderDeadline();
+      return slot;
+    };
+    // A page kept as a picture needs no turn at all: the turn is for DRAWING,
+    // and obtainPagePicture takes it only when it has to draw.
+    const asPicture = picturesActive();
+    if (!asPicture && !(await takeSlot())) return;
     const renderStartedAt = performance.now();
     const page = await openPdf.doc.getPage(pageNumber);
     if (stale()) return;
@@ -2307,33 +2365,65 @@ async function renderPage(pageNumber) {
     entry.viewport = viewport;
     entry.renderScale = scale;
 
-    // Drawn once, at the density it will be shown at (within the budget).
-    // Remembered: relayoutDocument compares it with what a new layout would
-    // want, and canvas recovery repaints at what is actually on the canvas.
-    const outputScale = canvasOutputScale(viewport.width, viewport.height);
-    entry.renderOutputScale = outputScale;
-    // Drawn in the page renderer's worker when there is one, on the main thread
-    // when there is not — see startPageDraw. Kept as the entry's renderTask
-    // either way, so a page that is trimmed or re-scaled mid-render can STOP the
-    // render rather than let it run to the end and throw the canvas away. A
-    // fling past twenty pages used to rasterise all twenty, in full, on the
-    // main thread, while the page the reader stopped on waited behind them.
-    const draw = startPageDraw({ entry, pageNumber, page, viewport, outputScale, holdWhileMoving: true });
-    entry.renderTask = draw;
     let drawn;
-    try {
-      drawn = await draw.promise;
-    } finally {
-      if (entry.renderTask === draw) entry.renderTask = null;
-    }
-    const { canvas } = drawn;
-    // The slot is for rasterising. The layers below are their own, smaller
-    // work, and the next page should not wait for them.
-    slot.release();
-    if (stale()) {
-      releaseCanvasBitmap(canvas);
-      noteWastedRender("dropped");
-      return;
+    let canvas;
+    let outputScale;
+    if (asPicture) {
+      const target = pictureTarget(viewport);
+      const got = await obtainPagePicture({ entry, pageNumber, viewport, stale, takeSlot, target });
+      slot?.release();
+      if (!got) {
+        if (stale()) noteWastedRender("dropped");
+        return;
+      }
+      canvas = await pictureImage(got.picture, got.blob);
+      if (stale()) {
+        releaseCanvasBitmap(canvas);
+        noteWastedRender("dropped");
+        return;
+      }
+      outputScale = got.picture.width / Math.max(1, viewport.width);
+      entry.renderOutputScale = outputScale;
+      entry.pictureDetail = target.detail;
+      drawn = {
+        canvas,
+        where: got.where,
+        heldMs: 0,
+        pixels: got.picture.width * got.picture.height,
+        firstSliceMs: got.timing?.firstSliceMs,
+        drawMs: got.timing?.drawMs,
+        encodeMs: got.timing?.encodeMs
+      };
+    } else {
+      // Drawn once, at the density it will be shown at (within the budget).
+      // Remembered: relayoutDocument compares it with what a new layout would
+      // want, and canvas recovery repaints at what is actually on the canvas.
+      outputScale = canvasOutputScale(viewport.width, viewport.height);
+      entry.renderOutputScale = outputScale;
+      entry.pictureDetail = false;
+      // Drawn in the page renderer's worker when there is one, on the main thread
+      // when there is not — see startPageDraw. Kept as the entry's renderTask
+      // either way, so a page that is trimmed or re-scaled mid-render can STOP the
+      // render rather than let it run to the end and throw the canvas away. A
+      // fling past twenty pages used to rasterise all twenty, in full, on the
+      // main thread, while the page the reader stopped on waited behind them.
+      const draw = startPageDraw({ entry, pageNumber, page, viewport, outputScale, holdWhileMoving: true });
+      entry.renderTask = draw;
+      try {
+        drawn = await draw.promise;
+      } finally {
+        if (entry.renderTask === draw) entry.renderTask = null;
+      }
+      ({ canvas } = drawn);
+      drawn.pixels = canvas.width * canvas.height;
+      // The slot is for rasterising. The layers below are their own, smaller
+      // work, and the next page should not wait for them.
+      slot.release();
+      if (stale()) {
+        releaseCanvasBitmap(canvas);
+        noteWastedRender("dropped");
+        return;
+      }
     }
     const drawnAt = performance.now();
     // The page's text, asked for once the page has drawn and is still wanted.
@@ -2356,7 +2446,7 @@ async function renderPage(pageNumber) {
     // With the page renderer this document's worker draws nothing, so there is
     // no queue to wait behind and the words are asked for at once.
     const textContent = textLayerNeedsRebuild(entry, scale)
-      ? (drawn.where === "worker" ? Promise.resolve() : whenRenderQueueIdle(entry, stale))
+      ? (drawn.where !== "main" ? Promise.resolve() : whenRenderQueueIdle(entry, stale))
         .then(() => (stale() ? null : page.getTextContent()))
       : null;
     textContent?.catch(() => {});
@@ -2367,7 +2457,7 @@ async function renderPage(pageNumber) {
     // The new one goes FIRST: a text layer kept across the zoom is already on
     // the page, and with dark page on the canvas is a stacking context painted
     // in tree order — after the layers it would cover them.
-    const staleCanvas = entry.el.querySelector(".pdf-canvas.is-stale");
+    const staleCanvas = entry.el.querySelector(".pdf-canvas.is-stale") || entry.el.querySelector(".pdf-picture");
     if (staleCanvas) {
       staleCanvas.replaceWith(canvas);
       releaseCanvasBitmap(staleCanvas);
@@ -2376,16 +2466,19 @@ async function renderPage(pageNumber) {
     parsedPages.add(pageNumber);
     entry.urgent = false;
     // Time spent held while the reader moved is not time the page took.
-    samplePdfTiming("render", drawnAt - renderStartedAt - drawn.heldMs);
+    if (drawn.where !== "kept" && drawn.where !== "composed") samplePdfTiming("render", drawnAt - renderStartedAt - drawn.heldMs);
     // ...split into the wait for pdf.js's worker (the page parsed, its fonts and
     // images decoded: the first slice is when pdf.js has something to draw) and
     // the drawing itself — which, with the page renderer, happens off the main
     // thread, and what the main thread pays is only the swap (`swapMs`).
-    samplePdfTiming("worker", drawn.firstSliceMs);
-    samplePdfTiming("draw", drawn.drawMs);
+    // A kept picture was not drawn at all, and says so.
+    if (Number.isFinite(drawn.firstSliceMs)) samplePdfTiming("worker", drawn.firstSliceMs);
+    if (Number.isFinite(drawn.drawMs)) samplePdfTiming("draw", drawn.drawMs);
+    if (Number.isFinite(drawn.encodeMs)) samplePdfTiming("encode", drawn.encodeMs);
     if (drawn.where === "worker") samplePdfTiming("swap", drawn.swapMs);
-    firstPdfPagePainted(`${(canvas.width * canvas.height / 1e6).toFixed(1)}MP canvas`);
-    if (pageWantsDetail(outputScale)) scheduleDetail();
+    if (drawn.where === "kept" || drawn.where === "composed") samplePdfTiming("kept", drawnAt - renderStartedAt);
+    firstPdfPagePainted(`${(drawn.pixels / 1e6).toFixed(1)}MP ${canvas.classList.contains("pdf-picture") ? `picture, ${drawn.where}` : "canvas"}`);
+    if (entry.pictureDetail || (!canvas.classList.contains("pdf-picture") && pageWantsDetail(outputScale))) scheduleDetail();
     // A page that drew has no failed attempts behind it any more. Without this
     // a page that needed two goes would carry that count into every later
     // re-render — a zoom, a rotate — and hit the ceiling early.
@@ -2628,6 +2721,8 @@ function noteDocumentInteraction(ms = PDF_INTERACTION_SETTLE_MS) {
     if (interactionSpans.length > 40) interactionSpans.shift();
   }
   armInteractionSettle();
+  // Pages drawn ahead in idle time stop the moment the reader moves again.
+  noteReaderActiveForPrerender();
 }
 
 // Long tasks that overlapped an interaction go to the App Info readout: that
@@ -2839,11 +2934,11 @@ function whenRenderQueueIdle(entry, stale) {
 // pdf.js copy opened just for pictures. Null otherwise; the caller then does it
 // the old way.
 export function openRenderDocumentFor(slot, pdfId = null) {
-  if (!openPdf?.renderDoc || !pageRendererActive()) return null;
+  if (!openPdf || !pageRendererActive()) return null;
   if (normalizeDocSlot(openPdf.slot) !== normalizeDocSlot(slot)) return null;
   if (normalizeDocSlot(slot) === DOC_SLOT_DOC
       && (openPdf.pdfId || PDF_PRIMARY_ID) !== (pdfId || PDF_PRIMARY_ID)) return null;
-  return openPdf.renderDoc;
+  return ensureRenderDoc();
 }
 
 // The paper's own pages first: resolves once no page is waiting to be drawn or
@@ -3109,7 +3204,10 @@ function drawDetailTiles() {
   openPdf.rendered.forEach((pageNumber) => {
     const entry = openPdf.pages.get(pageNumber);
     if (!entry || entry.task || entry.detailTask || entry.detailWaiting) return;
-    if (!pageWantsDetail(entry.renderOutputScale || 1)) {
+    // A page shown as a picture wants a tile only past what a picture may be
+    // (pictureTarget), not every time its picture is a shade under the screen.
+    const wantsDetail = entry.el.querySelector(".pdf-picture") ? Boolean(entry.pictureDetail) : pageWantsDetail(entry.renderOutputScale || 1);
+    if (!wantsDetail) {
       if (entry.detail) dropDetail(entry);
       return;
     }
@@ -3288,10 +3386,439 @@ function canvasFromBitmap(bitmap, className) {
 // A page canvas is a full page of pixels; handed back the moment the canvas
 // leaves the page rather than whenever the collector gets to it.
 function releaseCanvasBitmap(canvas) {
-  if (!canvas || !bitmapCanvases.has(canvas)) return;
+  if (!canvas) return;
+  if (pictureElements.has(canvas)) {
+    releasePictureUrl(pictureElements.get(canvas).key);
+    pictureElements.delete(canvas);
+    return;
+  }
+  if (!bitmapCanvases.has(canvas)) return;
   bitmapCanvases.delete(canvas);
   canvas.width = 0;
   canvas.height = 0;
+}
+
+function releasePagePicturesIn(root) {
+  root?.querySelectorAll?.(".pdf-picture").forEach(releaseCanvasBitmap);
+}
+
+// ── Pages as kept pictures ──────────────────────────────────────────────────
+//
+// See src/documents/pdf-pictures.js for why. What this half decides is which
+// picture a page needs and where it comes from, cheapest first:
+//
+//   1. kept, at least as wide as the page needs   → no slot, no pdf.js
+//   2. kept on the OTHER paper, wide enough        → a compose (dark page baked
+//                                                    in or out), no pdf.js
+//   3. none                                       → drawn in the page
+//                                                    renderer, kept, shown
+//
+// and the picture is shown as an <img class="pdf-canvas pdf-picture">, sized to
+// the page box, so every selector that finds "the page's pixels" by .pdf-canvas
+// still finds them, and a zoom simply stretches it. Only code that calls canvas
+// APIs tells the two apart (releaseCanvasBitmap above, the lost-pixel probe).
+//
+// ── How wide ────────────────────────────────────────────────────────────────
+//
+// On a ladder anchored at fit width — the page as wide as the scroller, at the
+// screen's density — and √2 apart, so fit width and twice it are exact, and a
+// pinch anywhere between lands on one of a handful of widths that are kept and
+// reused, rather than on a new density per zoom. Capped by the per-page pixel
+// budget (canvasPixelBudget); past the cap the detail tile draws what is on
+// screen at full density, as it always has.
+//
+// A picture at least PDF_PICTURE_SLACK of the width the page needs is used as
+// it is: 8% of softness is nothing anyone can see on a 2.6x screen, and it is
+// what keeps a small pinch, and every zoom OUT, from drawing anything at all.
+export const PDF_PICTURE_SLACK = 0.92;
+export const PDF_PICTURE_MAX_SIDE = 4096;
+export const PDF_PICTURE_QUALITY = 0.9;
+export const PDF_PICTURE_QUALITY_DARK = 0.92;
+
+const pictureElements = new WeakMap();
+
+// Counters for App Info and the reader test: how pages came to be on screen.
+// `drawn` is pages the reader waited on; `ahead`, pages drawn while they read.
+const pictureCounts = { kept: 0, composed: 0, drawn: 0, ahead: 0 };
+
+export function documentPictureCounts() {
+  return {
+    ...pictureCounts,
+    // Whether the page renderer's copy of the paper on the stage has been
+    // opened at all — a paper whose pages are all kept never needs it.
+    renderCopyOpened: Boolean(openPdf) && openPdf.renderDoc !== undefined && openPdf.renderDoc !== null,
+    active: picturesActive(),
+    sha: openPdf?.pictureSha || "",
+    aheadBusy: Boolean(prerenderJob)
+  };
+}
+
+function picturesActive() {
+  return Boolean(openPdf?.pictureSha) && pageRendererKeepsPictures() && !pdfPicturesTurnedOff();
+}
+
+function picturePaper() {
+  return stageIsDark() && pageRendererBakesDark() ? "dark" : "light";
+}
+
+function pictureQuality(paper) {
+  return paper === "dark" ? PDF_PICTURE_QUALITY_DARK : PDF_PICTURE_QUALITY;
+}
+
+function pictureTarget(viewport) {
+  const density = Math.min(PDF_MAX_CANVAS_SCALE, window.devicePixelRatio || 1);
+  const aspect = viewport.height / Math.max(1, viewport.width);
+  const wmax = Math.max(64, Math.min(
+    PDF_PICTURE_MAX_SIDE,
+    Math.floor(PDF_PICTURE_MAX_SIDE / Math.max(aspect, 1e-3)),
+    Math.floor(Math.sqrt(canvasPixelBudget() / Math.max(aspect, 1e-3)))
+  ));
+  const wanted = Math.round(viewport.width * density);
+  const needed = Math.min(wanted, wmax);
+  const unitWidth = viewport.width / (viewport.scale || 1);
+  const fit = Math.round((openPdf?.fitScale || viewport.scale) * unitWidth * density);
+  let step = Math.max(64, fit || needed);
+  while (step / Math.SQRT2 >= needed && step > 64) step = Math.round(step / Math.SQRT2);
+  while (step < needed) step = Math.round(step * Math.SQRT2);
+  return { wanted, needed, width: Math.min(step, wmax), wmax, detail: wanted > wmax * 1.05 };
+}
+
+async function pictureImage(meta, blob) {
+  const img = document.createElement("img");
+  img.className = "pdf-canvas pdf-picture";
+  img.alt = "";
+  img.draggable = false;
+  img.decoding = "async";
+  pictureElements.set(img, { key: meta.key, width: meta.width, height: meta.height, paper: meta.paper, kind: meta.kind, stamp: meta.stamp || "" });
+  img.src = holdPictureUrl(meta.key, blob);
+  if (meta.paper === "dark") img.classList.add(PDF_DARK_PIXELS_CLASS);
+  try {
+    await img.decode();
+  } catch (_) {
+    if (!img.complete) {
+      await new Promise((resolve) => {
+        img.addEventListener("load", resolve, { once: true });
+        img.addEventListener("error", resolve, { once: true });
+      });
+    }
+  }
+  return img;
+}
+
+// What the picture on a page is, or null for a page showing a canvas or nothing.
+function shownPicture(entry) {
+  const img = entry?.el.querySelector(".pdf-picture");
+  return img ? { img, ...pictureElements.get(img) } : null;
+}
+
+// Find, compose or draw the picture this page needs. Resolves { meta, blob,
+// where, timing } — or null when the page went stale on the way. `takeSlot` is
+// renderPage's: called only when something has to be DRAWN, so a kept picture
+// never waits in the render queue behind a page that is being.
+async function obtainPagePicture({ entry, pageNumber, viewport, stale, takeSlot, target = pictureTarget(viewport) }) {
+  const sha = openPdf.pictureSha;
+  const paper = picturePaper();
+  await loadPaperPictures(sha);
+  if (stale()) return null;
+  const minWidth = Math.floor(target.needed * PDF_PICTURE_SLACK);
+  const kept = storedPicture({ sha, page: pageNumber, paper, minWidth });
+  if (kept) {
+    const blob = await getPictureBlob(kept.key);
+    if (stale()) return null;
+    if (blob) {
+      touchPicture(kept);
+      pictureCounts.kept += 1;
+      return { picture: kept, blob, where: "kept" };
+    }
+  }
+  // The other paper, kept and wide enough: one compose, which is its own
+  // inverse for dark page, so it works in both directions.
+  if (pageRendererBakesDark()) {
+    const other = storedPicture({ sha, page: pageNumber, paper: paper === "dark" ? "light" : "dark", minWidth });
+    const source = other ? await getPictureBlob(other.key) : null;
+    if (stale()) return null;
+    if (source) {
+      const started = performance.now();
+      const composed = await composePagePicture({ source, bakeDarkPage: true, quality: pictureQuality(paper) }).promise;
+      if (stale()) return null;
+      const meta = { sha, page: pageNumber, width: other.width, height: other.height, paper, kind: "plain", stamp: "" };
+      meta.key = pictureKey(meta);
+      putPicture(meta, composed.blob);
+      samplePdfTiming("compose", performance.now() - started);
+      pictureCounts.composed += 1;
+      return { picture: meta, blob: composed.blob, where: "composed" };
+    }
+  }
+  // Drawn.
+  const slot = await takeSlot();
+  if (!slot || stale()) return null;
+  const renderDoc = ensureRenderDoc();
+  const id = renderDoc ? await renderDoc : null;
+  if (stale()) return null;
+  if (id == null) throw Object.assign(new Error("the page renderer could not open this paper"), { name: "PageRendererUnavailable" });
+  const started = performance.now();
+  const job = renderPagePicture({ id, pageNumber, width: target.width, dark: paper === "dark", quality: pictureQuality(paper) });
+  entry.renderTask = job;
+  let result;
+  try {
+    result = await job.promise;
+  } finally {
+    if (entry.renderTask === job) entry.renderTask = null;
+  }
+  const meta = { sha, page: pageNumber, width: result.pixelWidth, height: result.pixelHeight, paper: result.dark ? "dark" : "light", kind: "plain", stamp: "" };
+  meta.key = pictureKey(meta);
+  // Kept whatever happens next — a page drawn for a zoom that has since gone
+  // is still a picture of the page.
+  putPicture(meta, result.plain);
+  pictureCounts.drawn += 1;
+  if (stale()) return null;
+  return {
+    picture: meta,
+    blob: result.plain,
+    where: "drawn",
+    timing: { firstSliceMs: result.firstSliceMs, drawMs: result.drawMs, encodeMs: result.encodeMs, totalMs: performance.now() - started }
+  };
+}
+
+// ── A zoom, on a page that is a picture ─────────────────────────────────────
+//
+// What a zoom used to cost every page near the reader: its canvas stretched as
+// "stale", a fresh one drawn at the new density in the one render slot, the
+// layers rebuilt on top. A picture is sized to the page box and needs none of
+// that — the layers are what is wrong at the new scale (their coordinates
+// belong to the old one), so they are rebuilt, the text layer is kept and
+// re-scaled as it always was, and the page stays in openPdf.rendered the whole
+// time. Zooming OUT is therefore free. Zooming in past what the picture can
+// carry asks for a wider one (upgradePagePicture), once the page is still.
+function relayerPage(pageNumber) {
+  const entry = openPdf?.pages.get(pageNumber);
+  if (!entry?.viewport) return;
+  entry.generation = (entry.generation || 0) + 1;
+  cancelPageRender(entry);
+  dropDetail(entry);
+  const token = pdfOpenToken;
+  const generation = entry.generation;
+  const scale = openPdf.scale;
+  const viewport = entry.viewport.scale === scale ? entry.viewport : entry.viewport.clone({ scale });
+  entry.viewport = viewport;
+  entry.renderScale = scale;
+  const stale = () => token !== pdfOpenToken || openPdf?.scale !== scale || entry.generation !== generation;
+  const target = pictureTarget(viewport);
+  entry.pictureDetail = target.detail;
+  const shown = shownPicture(entry);
+  if (shown) entry.renderOutputScale = shown.width / Math.max(1, viewport.width);
+  entry.layerTask = (async () => {
+    const page = await openPdf.doc.getPage(pageNumber);
+    if (stale()) return;
+    const textContent = textLayerNeedsRebuild(entry, scale) ? page.getTextContent() : null;
+    textContent?.catch(() => {});
+    await buildPageLayers(pageNumber, entry, page, viewport, stale, textContent);
+  })()
+    .catch((error) => console.warn(`Could not rebuild the layers for page ${pageNumber}`, error))
+    .finally(() => { if (entry.layerTask) entry.layerTask = null; });
+  if (!shown || shown.width < target.needed * PDF_PICTURE_SLACK || shown.paper !== picturePaper()) schedulePictureUpgrade(pageNumber);
+  if (target.detail) scheduleDetail();
+}
+
+// ── Pages drawn ahead, while the reader reads ─────────────────────────────
+//
+// A page kept as a picture costs nothing to show; a page that is not costs a
+// draw the first time it comes near — and on the phone in the report a draw is
+// half a second at the median and five at p90, which is a blank page under a
+// fling. So while the reader is still (PDF_PRERENDER_IDLE_MS of no touch, no
+// scroll, no zoom, no pen) the pages not yet kept are drawn, nearest first, one
+// at a time, and kept. On a short paper that is the whole of it within a few
+// seconds of opening, after which nothing on it is ever drawn again on this
+// device; on a long one, PDF_PRERENDER_RADIUS pages either side of the reader.
+//
+// It never competes with the reader: it starts only when nothing is waiting to
+// be drawn, is cancelled (between pdf.js slices) the moment they touch the
+// paper, and takes no render slot — so a page the reader scrolls to, and the
+// region pictures waiting on whenPageDrawsIdle, go first.
+export const PDF_PRERENDER_IDLE_MS = 2000;
+export const PDF_PRERENDER_RADIUS = 20;
+
+let prerenderTimer = 0;
+let prerenderJob = null;
+
+function schedulePrerender(delay = PDF_PRERENDER_IDLE_MS) {
+  clearTimeout(prerenderTimer);
+  prerenderTimer = setTimeout(runPrerender, delay);
+}
+
+function cancelPrerender() {
+  clearTimeout(prerenderTimer);
+  prerenderTimer = 0;
+  const job = prerenderJob;
+  prerenderJob = null;
+  try { job?.cancel(); } catch (_) { /* already settled */ }
+}
+
+function noteReaderActiveForPrerender() {
+  if (!openPdf) return;
+  if (prerenderJob) cancelPrerender();
+  schedulePrerender();
+}
+
+export function documentPrerenderBusy() {
+  return Boolean(prerenderJob);
+}
+
+async function runPrerender() {
+  prerenderTimer = 0;
+  const open = openPdf;
+  if (!open || prerenderJob || !picturesActive() || documentSurfaceHidden()) return;
+  if (document.hidden || documentInteracting() || documentMoving() || inkPenIsDown()
+      || renderWaiters.length || renderSlots.size) {
+    schedulePrerender();
+    return;
+  }
+  const sha = open.pictureSha;
+  const paper = picturePaper();
+  await loadPaperPictures(sha);
+  if (openPdf !== open) return;
+  const scale = open.scale;
+  const unit = { width: open.baseWidth * scale, height: open.baseHeight * scale, scale };
+  const target = pictureTarget(unit);
+  const have = pagesWithPictures(sha, paper, Math.floor(target.needed * PDF_PICTURE_SLACK));
+  const current = currentDocumentPage();
+  let next = 0;
+  for (let distance = 0; distance <= PDF_PRERENDER_RADIUS && !next; distance += 1) {
+    for (const pageNumber of [current + distance, current - distance]) {
+      if (pageNumber < 1 || pageNumber > open.pageCount || have.has(pageNumber)) continue;
+      if (open.pages.get(pageNumber)?.task) continue;
+      next = pageNumber;
+      break;
+    }
+  }
+  if (!next) {
+    // Done for now: whatever pdf.js holds for drawing — fonts, images,
+    // operator lists — is handed back, since nothing near here needs drawing.
+    if (open.renderDoc) open.renderDoc.then((id) => cleanupRenderDocument(id)).catch(() => {});
+    return;
+  }
+  // The other paper's picture, if it is kept, is one compose away — no pdf.js.
+  const other = pageRendererBakesDark()
+    ? storedPicture({ sha, page: next, paper: paper === "dark" ? "light" : "dark", minWidth: Math.floor(target.needed * PDF_PICTURE_SLACK) })
+    : null;
+  const source = other ? await getPictureBlob(other.key) : null;
+  let job;
+  if (source) {
+    job = composePagePicture({ source, bakeDarkPage: true, quality: pictureQuality(paper) });
+  } else {
+    const renderDoc = ensureRenderDoc();
+    const id = renderDoc ? await renderDoc : null;
+    if (id == null || openPdf !== open || prerenderJob) return;
+    job = renderPagePicture({ id, pageNumber: next, width: target.width, dark: paper === "dark", quality: pictureQuality(paper) });
+  }
+  if (openPdf !== open || prerenderJob) {
+    job.cancel();
+    return;
+  }
+  prerenderJob = job;
+  try {
+    const result = await job.promise;
+    const meta = source
+      ? { sha, page: next, width: other.width, height: other.height, paper, kind: "plain", stamp: "" }
+      : { sha, page: next, width: result.pixelWidth, height: result.pixelHeight, paper: result.dark ? "dark" : "light", kind: "plain", stamp: "" };
+    await putPicture(meta, source ? result.blob : result.plain);
+    pictureCounts.ahead += 1;
+  } catch (error) {
+    // Cancelled because the reader moved: their next rest re-arms this
+    // (noteReaderActiveForPrerender has already).
+    if (error?.name !== "RenderingCancelledException") console.warn(`Could not draw page ${next} ahead`, error);
+    return;
+  } finally {
+    if (prerenderJob === job) prerenderJob = null;
+  }
+  if (openPdf === open) schedulePrerender(30);
+}
+
+// Pages showing a picture that is too soft for the zoom, or on the wrong paper,
+// waiting for the reader to be still. Upgrades are drawn one at a time through
+// the render queue like any page, and the soft picture stays up meanwhile.
+const pictureUpgrades = new Set();
+let pictureUpgradeTimer = 0;
+
+function schedulePictureUpgrade(pageNumber) {
+  pictureUpgrades.add(pageNumber);
+  clearTimeout(pictureUpgradeTimer);
+  pictureUpgradeTimer = setTimeout(runPictureUpgrades, PDF_INTERACTION_SETTLE_MS);
+}
+
+function runPictureUpgrades() {
+  pictureUpgradeTimer = 0;
+  if (!openPdf || !pictureUpgrades.size) {
+    pictureUpgrades.clear();
+    return;
+  }
+  if (documentMoving() || inkPenIsDown()) {
+    pictureUpgradeTimer = setTimeout(runPictureUpgrades, PDF_INTERACTION_SETTLE_MS);
+    return;
+  }
+  const current = currentDocumentPage();
+  [...pictureUpgrades]
+    .sort((a, b) => Math.abs(a - current) - Math.abs(b - current))
+    .forEach((pageNumber) => {
+      pictureUpgrades.delete(pageNumber);
+      if (isPageNearViewport(pageNumber)) upgradePagePicture(pageNumber);
+    });
+}
+
+async function upgradePagePicture(pageNumber) {
+  const entry = openPdf?.pages.get(pageNumber);
+  if (!entry?.viewport || !openPdf.rendered.has(pageNumber) || entry.task || !picturesActive()) return;
+  // One already on its way for an older zoom (relayerPage cancelled it): this
+  // one goes after it, not instead of it.
+  if (entry.upgrading) {
+    schedulePictureUpgrade(pageNumber);
+    return;
+  }
+  const viewport = entry.viewport;
+  const target = pictureTarget(viewport);
+  const shown = shownPicture(entry);
+  if (shown && shown.width >= target.needed * PDF_PICTURE_SLACK && shown.paper === picturePaper()) return;
+  const token = pdfOpenToken;
+  const generation = entry.generation;
+  const scale = openPdf.scale;
+  const stale = () => token !== pdfOpenToken || openPdf?.scale !== scale || entry.generation !== generation
+    || !openPdf?.rendered.has(pageNumber);
+  entry.upgrading = true;
+  let slot = null;
+  // A worker that stops answering must not keep the queue's one slot forever.
+  const deadline = setTimeout(() => {
+    cancelPageRender(entry);
+    slot?.release();
+  }, PDF_RENDER_DEADLINE_MS);
+  try {
+    const got = await obtainPagePicture({
+      entry,
+      pageNumber,
+      viewport,
+      stale,
+      target,
+      takeSlot: async () => (slot = await acquireRenderSlot(pageNumber, entry, stale))
+    });
+    slot?.release();
+    if (!got) return;
+    const img = await pictureImage(got.picture, got.blob);
+    if (stale()) {
+      releaseCanvasBitmap(img);
+      return;
+    }
+    const old = entry.el.querySelector(".pdf-picture") || entry.el.querySelector(".pdf-canvas");
+    if (old) {
+      old.replaceWith(img);
+      releaseCanvasBitmap(old);
+    } else entry.el.prepend(img);
+    entry.renderOutputScale = got.picture.width / Math.max(1, viewport.width);
+  } catch (error) {
+    if (error?.name !== "RenderingCancelledException") console.warn(`Could not sharpen page ${pageNumber}`, error);
+  } finally {
+    clearTimeout(deadline);
+    slot?.release();
+    entry.upgrading = false;
+  }
 }
 
 function cancelledDraw(pageNumber) {
@@ -3407,7 +3934,7 @@ function startPageDraw({ entry, pageNumber, page, viewport, outputScale = 1, reg
     };
   };
 
-  const renderDoc = openPdf?.renderDoc;
+  const renderDoc = ensureRenderDoc();
   const promise = renderDoc && pageRendererActive() ? inWorker(renderDoc) : onMain();
   return {
     promise,
@@ -3492,7 +4019,26 @@ export function canBakeDarkPage() {
 // Whether pages being drawn now can carry dark page in their pixels: in the
 // page renderer's worker when it is drawing them, here otherwise.
 function drawingInWorker() {
-  return Boolean(openPdf?.renderDoc) && pageRendererActive();
+  // `undefined` is a renderer copy not opened YET (ensureRenderDoc): pages are
+  // still the worker's to draw.
+  return Boolean(openPdf) && openPdf.renderDoc !== null && pageRendererActive();
+}
+
+// The page renderer's copy of the paper on the stage, opened the first time
+// something has to be drawn from it — see openDocumentViewBody. Null when pages
+// are drawn on the main thread.
+function ensureRenderDoc() {
+  const open = openPdf;
+  if (!open) return null;
+  if (open.renderDoc !== undefined) return open.renderDoc;
+  if (!open.renderBlob || !pageRendererActive()) {
+    open.renderDoc = null;
+    return null;
+  }
+  open.renderDoc = open.renderBlob.arrayBuffer()
+    .then((buffer) => (openPdf === open && pageRendererActive() ? openRenderDocument(new Uint8Array(buffer)) : null))
+    .catch(() => null);
+  return open.renderDoc;
 }
 
 function darkPageBakes() {
@@ -3510,6 +4056,10 @@ function noteCanvasSetup(dark = null) {
     // The worker always draws on a CPU OffscreenCanvas, whatever the main
     // thread's preference says; the readout used to print that preference.
     where: worker ? "CPU, in the worker" : (pdfCanvasOnCpu() ? "CPU" : "GPU"),
+    // Read when App Info is opened, not now: the counts move with every page.
+    pages: () => (picturesActive()
+      ? `kept pictures (this session: ${pictureCounts.kept} shown from the device · ${pictureCounts.composed} composed · ${pictureCounts.drawn} drawn while waited on · ${pictureCounts.ahead} drawn ahead)`
+      : `canvases (${pdfPicturesTurnedOff() ? "picture pages turned off on this device" : !pageRendererKeepsPictures() ? "this browser cannot keep pictures" : "this paper has no content hash"})`),
     budget: canvasPixelBudget(),
     slots: renderConcurrency(),
     drawn: worker ? "in a background thread" : `on the main thread (${pageRendererStatus() || "renderer not in use"})`,
@@ -3587,6 +4137,8 @@ let repaperChain = Promise.resolve();
 
 function repaperPages() {
   if (!openPdf || !darkPageBakes()) return;
+  // The other paper's pictures for the rest of the paper, ahead of the reader.
+  schedulePrerender();
   const current = currentDocumentPage();
   const pages = [...openPdf.rendered].sort((a, b) => Math.abs(a - current) - Math.abs(b - current));
   pages.forEach((pageNumber) => {
@@ -3599,6 +4151,12 @@ function repaperPages() {
     if (!canvas || canvasPaperMatches(canvas)) return;
     if (!isPageNearViewport(pageNumber)) {
       unrenderPage(pageNumber);
+      return;
+    }
+    // A kept picture is swapped for the other paper's — kept already, or one
+    // compose away — and keeps the stand-in filter until it lands.
+    if (canvas.classList.contains("pdf-picture")) {
+      repaperChain = repaperChain.then(() => upgradePagePicture(pageNumber)).catch(() => {});
       return;
     }
     const token = pdfOpenToken;
@@ -3642,6 +4200,9 @@ function canvasProbe() {
 }
 
 function canvasLostItsPixels(canvas) {
+  // A kept picture is an <img>: the browser decodes it again whenever it needs
+  // to, and it has no context to lose.
+  if (canvas?.classList?.contains("pdf-picture")) return false;
   if (lostCanvases.has(canvas)) return true;
   try {
     // A page drawn by the page renderer shows its bitmap through a
@@ -5547,3 +6108,145 @@ export function initDocumentPinchZoom() {
     endPinch();
   });
 }
+
+// ── The reader test (App Info) ──────────────────────────────────────────────
+//
+// The same scroll and the same three zooms on the open paper, every time, so a
+// readout from the phone with picture pages on can be set beside one with them
+// off and the difference read off the frames rather than argued from a desktop
+// benchmark (pdf-timing.js says why that matters). What it reports per step:
+// the frame intervals the main thread saw, how many frames had a page on
+// screen with nothing drawn on it, and — for a zoom — how long until every page
+// on screen was drawn sharp and nothing was left waiting.
+function documentPagesOnScreen() {
+  if (!openPdf) return [];
+  const current = currentDocumentPage();
+  const out = [];
+  for (let pageNumber = Math.max(1, current - 3); pageNumber <= Math.min(openPdf.pageCount, current + 3); pageNumber += 1) {
+    if (isPageOnScreen(pageNumber)) out.push(pageNumber);
+  }
+  return out;
+}
+
+function blankPageOnScreenNow() {
+  return documentPagesOnScreen().some((pageNumber) => !openPdf.pages.get(pageNumber)?.el.querySelector(".pdf-canvas"));
+}
+
+function documentSettledSharp() {
+  if (!openPdf) return true;
+  if (renderWaiters.length || renderSlots.size || pictureUpgrades.size) return false;
+  return documentPagesOnScreen().every((pageNumber) => {
+    const entry = openPdf.pages.get(pageNumber);
+    return entry && !entry.task && !entry.upgrading && entry.el.querySelector(".pdf-canvas:not(.is-stale)");
+  });
+}
+
+function framesWhile(run, { sharp = false, label = "" } = {}) {
+  return new Promise((resolve) => {
+    const frames = [];
+    let blank = 0;
+    let last = 0;
+    let going = true;
+    let sharpMs = NaN;
+    const started = performance.now();
+    const tick = (t) => {
+      if (!going) return;
+      if (last) frames.push(t - last);
+      last = t;
+      if (blankPageOnScreenNow()) blank += 1;
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+    Promise.resolve(run()).then(async () => {
+      if (sharp) {
+        const limit = performance.now() + 12000;
+        await new Promise((r) => setTimeout(r, PDF_INTERACTION_SETTLE_MS + 50));
+        while (!documentSettledSharp() && performance.now() < limit) await new Promise((r) => setTimeout(r, 30));
+        sharpMs = performance.now() - started;
+      }
+      going = false;
+      const sorted = [...frames].sort((a, b) => a - b);
+      const pick = (q) => (sorted.length ? Math.round(sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * q))]) : 0);
+      resolve({
+        label,
+        ms: performance.now() - started,
+        frames: sorted.length,
+        p50: pick(0.5),
+        p90: pick(0.9),
+        worst: sorted.length ? Math.round(sorted[sorted.length - 1]) : 0,
+        slow: sorted.filter((ms) => ms > 34).length,
+        blank,
+        sharpMs
+      });
+    });
+  });
+}
+
+function scrollOver(view, from, to, ms) {
+  return new Promise((resolve) => {
+    const started = performance.now();
+    const step = (t) => {
+      const k = Math.min(1, (t - started) / ms);
+      view.scrollTop = from + (to - from) * k;
+      if (k < 1) requestAnimationFrame(step);
+      else resolve();
+    };
+    requestAnimationFrame(step);
+  });
+}
+
+async function runDocumentReaderTest() {
+  const view = el.documentView;
+  if (!openPdf || !view || documentSurfaceHidden()) return { error: "open a PDF on the PDF tab first" };
+  const before = documentPictureCounts();
+  const start = { scale: openPdf.scale, fit: openPdf.fitWidth, page: currentDocumentPage(), ratio: currentDocumentRatio() };
+  fitDocumentToWidth();
+  scrollToDocumentPage(1, 0, { smooth: false });
+  await framesWhile(() => null, { sharp: true });
+  const steps = [];
+  const distance = Math.max(0, Math.min(view.scrollHeight - view.clientHeight, view.clientHeight * 6));
+  steps.push(await framesWhile(async () => {
+    await scrollOver(view, 0, distance, 1500);
+    await scrollOver(view, distance, 0, 1500);
+  }, { label: "scroll down and back (3s)" }));
+  steps.push(await framesWhile(() => setDocumentScale(fitWidthScale() * 0.5), { sharp: true, label: "zoom out to half" }));
+  steps.push(await framesWhile(() => setDocumentScale(fitWidthScale() * 1.4), { sharp: true, label: "zoom in to 1.4x" }));
+  steps.push(await framesWhile(() => fitDocumentToWidth(), { sharp: true, label: "back to fit width" }));
+  if (openPdf) {
+    if (start.fit) fitDocumentToWidth();
+    else setDocumentScale(start.scale);
+    scrollToDocumentPage(start.page, start.ratio, { smooth: false });
+  }
+  const after = documentPictureCounts();
+  let livePixels = 0;
+  openPdf?.rendered.forEach((pageNumber) => {
+    const surface = openPdf.pages.get(pageNumber)?.el.querySelector(".pdf-canvas");
+    if (surface) livePixels += (surface.naturalWidth || surface.width) * (surface.naturalHeight || surface.height);
+  });
+  return {
+    at: Date.now(),
+    pictures: after.active,
+    pages: openPdf?.pageCount || 0,
+    dpr: window.devicePixelRatio || 1,
+    steps,
+    counts: {
+      drawn: after.drawn - before.drawn,
+      kept: after.kept - before.kept,
+      composed: after.composed - before.composed,
+      ahead: after.ahead - before.ahead
+    },
+    heapMB: performance.memory?.usedJSHeapSize ? performance.memory.usedJSHeapSize / 1048576 : NaN,
+    livePixels
+  };
+}
+
+setPdfReaderTest({
+  available: () => Boolean(openPdf),
+  picturesOn: () => !pdfPicturesTurnedOff() && pageRendererKeepsPictures(),
+  async setPictures(on) {
+    setPdfPicturesTurnedOff(!on);
+    if (openPdf) await openDocumentView({ force: true });
+    noteCanvasSetup();
+  },
+  run: runDocumentReaderTest
+});

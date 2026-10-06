@@ -152,6 +152,140 @@ function pageRendererWorker() {
     return error;
   }
 
+  // ── Recorded drawing, replayed ─────────────────────────────────────────────
+  //
+  // The reader's marks are painted by the app's own code (paintRegionMarks,
+  // paintInkLayers) against a RECORDING context on the main thread, where theme
+  // colours resolve; what arrives here is the list of calls. `["=prop", value]`
+  // sets a property, `[method, ...args]` calls one, and the two layer markers
+  // paint a group onto a scratch canvas and blend it back ONCE — the way the
+  // page's mark layer is blended as one group on screen, so two overlapping
+  // highlights read as one rather than darkening twice.
+  function replayOps(canvas, base, ops) {
+    let ctx = base;
+    const stack = [];
+    for (const op of ops || []) {
+      const [name, ...args] = op;
+      if (name === "layer:begin") {
+        const scratch = new OffscreenCanvas(canvas.width, canvas.height);
+        const sctx = scratch.getContext("2d");
+        stack.push({ ctx, scratch });
+        ctx = sctx;
+        continue;
+      }
+      if (name === "layer:end") {
+        const top = stack.pop();
+        if (!top) continue;
+        ctx = top.ctx;
+        ctx.save();
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.globalAlpha = 1;
+        ctx.globalCompositeOperation = args[0] || "source-over";
+        ctx.drawImage(top.scratch, 0, 0);
+        ctx.restore();
+        top.scratch.width = 0;
+        continue;
+      }
+      if (name.charCodeAt(0) === 61 /* = */) {
+        try { ctx[name.slice(1)] = args[0]; } catch (_) { /* unsupported property */ }
+        continue;
+      }
+      const fn = ctx[name];
+      if (typeof fn === "function") fn.apply(ctx, args);
+    }
+  }
+
+  function encode(canvas, quality) {
+    return canvas.convertToBlob({ type: "image/jpeg", quality });
+  }
+
+  // A page drawn for keeping: `width` device pixels across, dark page baked in
+  // if asked, encoded as a JPEG — the PLAIN picture — and then, when there are
+  // marks, the same pixels with them painted on, encoded again: the MARKED one.
+  // The drawing data pdf.js kept for the page is handed back at once; the page
+  // is drawn once per paper per device, not once per zoom, so nothing is gained
+  // by holding it.
+  async function renderPicture(message) {
+    const { job, id, pageNumber, width, dark, ops, quality } = message;
+    const doc = docs.get(id);
+    if (!doc) throw new Error("that document is not open in the page renderer");
+    const started = performance.now();
+    const page = await doc.getPage(pageNumber);
+    if (cancelled.has(job)) throw cancelledError(job);
+    const unit = page.getViewport({ scale: 1 });
+    const scale = width / unit.width;
+    const viewport = page.getViewport({ scale });
+    const canvas = new OffscreenCanvas(Math.max(1, Math.round(viewport.width)), Math.max(1, Math.round(viewport.height)));
+    const ctx = canvas.getContext("2d", { alpha: false, willReadFrequently: true });
+    const task = page.render({ canvasContext: ctx, viewport });
+    let firstSliceAt = 0;
+    task.onContinue = (proceed) => {
+      if (!firstSliceAt) firstSliceAt = performance.now();
+      yieldThen(proceed);
+    };
+    tasks.set(job, task);
+    try {
+      await task.promise;
+    } finally {
+      tasks.delete(job);
+      try { page.cleanup(); } catch (_) { /* still busy: the next cleanup has it */ }
+    }
+    if (cancelled.has(job)) throw cancelledError(job);
+    const drawnAt = performance.now();
+    const baked = Boolean(dark && canDark);
+    if (baked) bakeDark(canvas, ctx);
+    const plain = await encode(canvas, quality);
+    let marked = null;
+    if (ops && ops.length) {
+      replayOps(canvas, ctx, ops);
+      marked = await encode(canvas, quality);
+    }
+    const encodedAt = performance.now();
+    canvas.width = 0;
+    post({
+      type: "picture",
+      job,
+      plain,
+      marked,
+      width: viewport.width,
+      height: viewport.height,
+      pixelWidth: Math.round(viewport.width),
+      pixelHeight: Math.round(viewport.height),
+      dark: baked,
+      firstSliceMs: firstSliceAt ? firstSliceAt - started : drawnAt - started,
+      drawMs: firstSliceAt ? drawnAt - firstSliceAt : 0,
+      encodeMs: encodedAt - drawnAt
+    });
+  }
+
+  // A picture made from another one, with no pdf.js in it: the plain picture of
+  // a page decoded, optionally cropped and scaled, dark page baked in if the
+  // source was light and the result is not, the marks painted on, and encoded.
+  // What a new highlight, a dark page toggle and a region's picture cost once
+  // the page has been drawn: a decode and an encode.
+  async function composePicture(message) {
+    const { job, source, crop, outWidth, outHeight, bakeDarkPage, ops, quality, as } = message;
+    const started = performance.now();
+    const bitmap = crop
+      ? await createImageBitmap(source, crop.x, crop.y, crop.width, crop.height)
+      : await createImageBitmap(source);
+    const width = Math.max(1, Math.round(outWidth || bitmap.width));
+    const height = Math.max(1, Math.round(outHeight || bitmap.height));
+    const canvas = new OffscreenCanvas(width, height);
+    const ctx = canvas.getContext("2d", { alpha: false, willReadFrequently: true });
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(bitmap, 0, 0, width, height);
+    bitmap.close();
+    if (bakeDarkPage && canDark) bakeDark(canvas, ctx);
+    if (ops && ops.length) replayOps(canvas, ctx, ops);
+    let blob = null;
+    let image = null;
+    if (as === "bitmap") image = canvas.transferToImageBitmap();
+    else blob = await encode(canvas, quality);
+    canvas.width = 0;
+    post({ type: "composed", job, blob, bitmap: image, width, height, ms: performance.now() - started }, image ? [image] : []);
+  }
+
   async function render(message) {
     const { job, id, pageNumber, scale, outputScale, region, density, dark } = message;
     const doc = docs.get(id);
@@ -215,10 +349,24 @@ function pageRendererWorker() {
           if (!lib?.getDocument || !lib?.PDFWorker) throw new Error("pdf.js did not load in the worker");
           core = new lib.PDFWorker({ name: "recall-render-core", port: new Worker(message.core) });
           canDark = probeDark();
-          post({ type: "ready", version: lib.version, canDark });
+          // Kept pictures need an encoder here and a decoder for blobs; without
+          // either, pages are shown the canvas way.
+          const canPicture = typeof OffscreenCanvas.prototype.convertToBlob === "function"
+            && typeof self.createImageBitmap === "function";
+          post({ type: "ready", version: lib.version, canDark, canPicture });
           break;
         }
         case "open": {
+          // The paper's content hash, when the record carries none: it is what
+          // the picture store is keyed by. Taken here, off the main thread,
+          // and BEFORE getDocument, which transfers the bytes away.
+          let sha = "";
+          if (message.hash && self.crypto?.subtle) {
+            try {
+              const digest = await self.crypto.subtle.digest("SHA-256", message.data);
+              sha = Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+            } catch (_) { /* no hash: no kept pictures for this paper */ }
+          }
           const loading = lib.getDocument({
             data: message.data,
             worker: core,
@@ -229,11 +377,17 @@ function pageRendererWorker() {
             filterFactory
           });
           docs.set(message.id, await loading.promise);
-          post({ type: "opened", id: message.id });
+          post({ type: "opened", id: message.id, sha });
           break;
         }
         case "render":
           await render(message);
+          break;
+        case "picture":
+          await renderPicture(message);
+          break;
+        case "compose":
+          await composePicture(message);
           break;
         case "cancel": {
           cancelled.add(message.job);
@@ -252,6 +406,14 @@ function pageRendererWorker() {
           if (doc) doc.destroy().catch(() => {});
           break;
         }
+        // Everything pdf.js holds for the document beyond its structure: fonts,
+        // images, operator lists. After a batch of kept pictures nothing will be
+        // drawn from it for a while, perhaps ever.
+        case "cleanupDocument": {
+          const doc = docs.get(message.id);
+          if (doc) doc.cleanup().catch(() => {});
+          break;
+        }
         default:
           break;
       }
@@ -266,7 +428,7 @@ function pageRendererWorker() {
         message: String(error?.message || error)
       });
     } finally {
-      if (message.type === "render") cancelled.delete(message.job);
+      if (message.type === "render" || message.type === "picture" || message.type === "compose") cancelled.delete(message.job);
     }
   };
 }
@@ -277,6 +439,9 @@ let rendererWorker = null;
 let rendererStarting = null;
 let rendererReady = false;
 let rendererBakesDark = false;
+let rendererKeepsPictures = false;
+// The content hash the renderer took of each document it opened, by id.
+const renderDocShas = new Map();
 // Why the renderer is not in use, for App Info — empty while it is.
 let rendererUnavailable = "not started";
 // Once it has failed at something, it is not started again until the app is
@@ -293,6 +458,16 @@ export function pageRendererActive() {
 
 export function pageRendererBakesDark() {
   return pageRendererActive() && rendererBakesDark;
+}
+
+// Whether the renderer can draw pages for keeping (src/documents/pdf-pictures.js):
+// an encoder for its OffscreenCanvas and a blob decoder.
+export function pageRendererKeepsPictures() {
+  return pageRendererActive() && rendererKeepsPictures;
+}
+
+export function renderDocumentSha(id) {
+  return renderDocShas.get(id) || "";
 }
 
 export function pageRendererStatus() {
@@ -322,6 +497,16 @@ export function pageRendererFailed(reason) {
 
 function onWorkerMessage(event) {
   const message = event.data || {};
+  if (message.type === "picture" || message.type === "composed") {
+    const job = rendererJobs.get(message.job);
+    rendererJobs.delete(message.job);
+    if (!job) {
+      try { message.bitmap?.close(); } catch (_) { /* nothing to free */ }
+      return;
+    }
+    job.resolve(message);
+    return;
+  }
   if (message.type === "rendered") {
     const job = rendererJobs.get(message.job);
     rendererJobs.delete(message.job);
@@ -335,11 +520,12 @@ function onWorkerMessage(event) {
   if (message.type === "opened") {
     const pending = rendererOpening.get(message.id);
     rendererOpening.delete(message.id);
+    if (message.sha) renderDocShas.set(message.id, message.sha);
     pending?.resolve(message.id);
     return;
   }
   if (message.type === "error") {
-    if (message.request === "render" && message.job != null) {
+    if ((message.request === "render" || message.request === "picture" || message.request === "compose") && message.job != null) {
       const job = rendererJobs.get(message.job);
       rendererJobs.delete(message.job);
       if (!job) return;
@@ -400,6 +586,7 @@ export function startPageRenderer() {
       created.onerror = (event) => pageRendererFailed(event?.message || "the rendererWorker stopped");
       rendererWorker = created;
       rendererBakesDark = Boolean(answer.canDark);
+      rendererKeepsPictures = Boolean(answer.canPicture);
       rendererReady = true;
       rendererUnavailable = "";
       return true;
@@ -416,18 +603,68 @@ export function startPageRenderer() {
 
 // Hand the renderer its own copy of a document's bytes. Resolves the id to
 // render it by, or null when it could not be opened there.
-export function openRenderDocument(bytes) {
+// `hash` asks the renderer to take the bytes' SHA-256 on the way in, for a paper
+// whose record carries none (renderDocumentSha reads it back).
+export function openRenderDocument(bytes, { hash = false } = {}) {
   if (!pageRendererActive() || !bytes) return Promise.resolve(null);
   const id = nextDoc++;
   return new Promise((resolve) => {
     rendererOpening.set(id, { resolve });
-    rendererWorker.postMessage({ type: "open", id, data: bytes }, [bytes.buffer]);
+    rendererWorker.postMessage({ type: "open", id, data: bytes, hash }, [bytes.buffer]);
   });
 }
 
 export function closeRenderDocument(id) {
   if (id == null || !rendererWorker) return;
+  renderDocShas.delete(id);
   rendererWorker.postMessage({ type: "close", id });
+}
+
+export function cleanupRenderDocument(id) {
+  if (id == null || !rendererWorker) return;
+  rendererWorker.postMessage({ type: "cleanupDocument", id });
+}
+
+function rendererJob(message) {
+  if (!pageRendererActive()) {
+    return { promise: Promise.reject(Object.assign(new Error(rendererUnavailable), { name: "PageRendererUnavailable" })), cancel() {} };
+  }
+  const job = nextJob++;
+  let settled = false;
+  const promise = new Promise((resolve, reject) => {
+    rendererJobs.set(job, {
+      resolve: (value) => { settled = true; resolve(value); },
+      reject: (error) => { settled = true; reject(error); }
+    });
+  });
+  rendererWorker.postMessage({ ...message, job });
+  return {
+    promise,
+    cancel() {
+      if (settled) return;
+      const pending = rendererJobs.get(job);
+      rendererJobs.delete(job);
+      rendererWorker?.postMessage({ type: "cancel", job });
+      pending?.reject(Object.assign(new Error(`Rendering cancelled, job ${job}`), { name: "RenderingCancelledException" }));
+    }
+  };
+}
+
+// Draw one page for keeping: `width` device pixels across, dark page baked in
+// when `dark`, and — when `ops` (recorded mark drawing, see
+// src/render/canvas-record.js) are given — a second, marked picture as well.
+// Resolves { plain, marked, width, height, pixelWidth, pixelHeight, dark,
+// firstSliceMs, drawMs, encodeMs }, the pictures as JPEG blobs.
+export function renderPagePicture({ id, pageNumber, width, dark = false, ops = null, quality = 0.9 }) {
+  return rendererJob({ type: "picture", id, pageNumber, width, dark, ops, quality });
+}
+
+// Make a picture from a kept one, no pdf.js involved: `source` (a blob)
+// decoded, cropped to `crop` (source pixels) if given, scaled to
+// outWidth × outHeight, dark page baked in when `bakeDarkPage`, `ops` painted
+// on. Resolves { blob } — or { bitmap } with `as: "bitmap"`.
+export function composePagePicture({ source, crop = null, outWidth = 0, outHeight = 0, bakeDarkPage = false, ops = null, quality = 0.9, as = "blob" }) {
+  return rendererJob({ type: "compose", source, crop, outWidth, outHeight, bakeDarkPage, ops, quality, as });
 }
 
 export function cleanupRenderPage(id, pageNumber) {

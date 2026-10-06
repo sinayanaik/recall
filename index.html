@@ -202,6 +202,7 @@
     <link rel="modulepreload" href="src/documents/pdf-switcher.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/pdf-timing.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/pdf-render-worker.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/documents/pdf-pictures.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/pdf-multi.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/pdf-outline.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/pdf-page-notes.js?v=__BUILD__">
@@ -343,6 +344,7 @@
     <link rel="modulepreload" href="src/render/enhance.js?v=__BUILD__">
     <link rel="modulepreload" href="src/render/ink-engine.js?v=__BUILD__">
     <link rel="modulepreload" href="src/render/ink-paint.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/render/canvas-record.js?v=__BUILD__">
     <link rel="modulepreload" href="src/render/ink-predict.js?v=__BUILD__">
     <link rel="modulepreload" href="src/render/ink-shapes.js?v=__BUILD__">
     <link rel="modulepreload" href="src/render/inline.js?v=__BUILD__">
@@ -2499,6 +2501,11 @@ What year was the Eiffel Tower built?
             <pre class="app-info-timings-text" id="appInfoPdfTimings">—</pre>
             <div class="app-info-actions">
               <button type="button" class="sync-modal-btn" id="appInfoCopyTimingsBtn">Copy timings</button>
+              <!-- The same scroll and zooms on the open paper, every run, so two
+                   readouts can be compared; and the switch that decides whether
+                   pages are kept as pictures, so it can be run both ways. -->
+              <button type="button" class="sync-modal-btn" id="appInfoReaderTestBtn">Run reader test</button>
+              <button type="button" class="sync-modal-btn" id="appInfoPicturePagesBtn" aria-pressed="true">Picture pages: on</button>
             </div>
           </div>
         </div>

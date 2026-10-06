@@ -244,6 +244,21 @@
   display: block;
 }
 
+/* A page kept as a picture (src/documents/pdf-pictures.js): an <img> in the
+   canvas's place, sized to the page box so a zoom simply stretches it until a
+   sharper one is swapped in. Nothing about it is for the reader's hands — the
+   text layer above takes every press — so it neither receives pointer events
+   nor offers Android's "save image" callout or a drag of its own. */
+.pdf-picture {
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-user-drag: none;
+  -webkit-touch-callout: none;
+}
+
 /* The sharp part of a page zoomed in past what one canvas can afford: a canvas
    over just the region on screen, at the screen's full density, laid over the
    softer page canvas and under the mark and text layers (the detail tile in

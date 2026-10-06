@@ -27,7 +27,10 @@ const pdfTimingEvents = [];
 // `bake` is dark page drawn into a page's pixels (bakePagePaper).
 // `swap` is what a page drawn in the page renderer's worker costs the main
 // thread: showing the finished bitmap.
-const pdfTimingSamples = { render: [], worker: [], draw: [], swap: [], text: [], annotate: [], bake: [] };
+// `kept` is a page shown from a kept picture (src/documents/pdf-pictures.js) —
+// read, decoded, on the page — and `compose` one made from another picture with
+// no pdf.js; `encode` is what keeping a freshly drawn page cost the worker.
+const pdfTimingSamples = { render: [], worker: [], draw: [], encode: [], swap: [], kept: [], compose: [], text: [], annotate: [], bake: [] };
 
 // Renders cancelled before they finished, and renders that finished for a zoom
 // or a position that had already gone — work that showed the reader nothing.
@@ -159,7 +162,10 @@ const PDF_TIMING_LABELS = {
   render: "draw one page",
   worker: "  waiting for the worker",
   draw: "  drawing",
+  encode: "  keeping it as a picture",
   swap: "  on the main thread",
+  kept: "show a kept page",
+  compose: "make a kept page's other paper",
   text: "make a page selectable",
   annotate: "put highlights and notes on a page",
   bake: "draw dark page into a page"
@@ -231,17 +237,18 @@ export function pdfTimingReport() {
     + (typeof window !== "undefined" ? ` · ${window.innerWidth}×${window.innerHeight}` : ""));
   if (pdfTimingCanvas) {
     if (pdfTimingCanvas.drawn) lines.push(`pages drawn: ${pdfTimingCanvas.drawn}`);
-    if (pdfTimingCanvas.pages) lines.push(`pages shown as: ${pdfTimingCanvas.pages}`);
+    const pages = typeof pdfTimingCanvas.pages === "function" ? pdfTimingCanvas.pages() : pdfTimingCanvas.pages;
+    if (pages) lines.push(`pages shown as: ${pages}`);
     lines.push(`canvas: ${pdfTimingCanvas.where || (pdfTimingCanvas.cpu ? "CPU" : "GPU")} · budget ${(pdfTimingCanvas.budget / 1e6).toFixed(1)}MP a page`
       + ` · ${pdfTimingCanvas.slots} at a time`
       + (pdfTimingCanvas.dark ? ` · dark page ${pdfTimingCanvas.dark}` : ""));
   }
   lines.push(`pdf.js: ${lib?.version || "not loaded"}${pdfTimingCanvas?.build ? ` (${pdfTimingCanvas.build} build)` : ""}`);
-  ["render", "worker", "draw", "swap", "text", "annotate", "bake"].forEach((kind) => {
+  ["render", "worker", "draw", "encode", "swap", "kept", "compose", "text", "annotate", "bake"].forEach((kind) => {
     const s = pdfTimingStats(pdfTimingSamples[kind]);
     // The parts of a page's draw only say anything once there is one, and the
     // dark page line only once a dark page has been drawn on the main thread.
-    if (!s && (kind === "worker" || kind === "draw" || kind === "swap" || kind === "bake")) return;
+    if (!s && kind !== "render" && kind !== "text" && kind !== "annotate") return;
     lines.push(s
       ? `${PDF_TIMING_LABELS[kind]}: median ${s.median}ms · p90 ${s.p90}ms · worst ${s.worst}ms (${s.count} pages)`
       : `${PDF_TIMING_LABELS[kind]}: no pages yet`);
@@ -282,5 +289,65 @@ export function pdfTimingReport() {
       lines.push(`  ${PDF_TIMING_LABELS[event.kind] || event.kind}: ${event.ms}ms${event.detail ? ` (${event.detail})` : ""} · ${pdfTimingAgo(event.at)}`);
     });
   }
+  if (pdfReaderTestResult) lines.push(pdfReaderTestResult);
+  return lines.join("\n");
+}
+
+// ── The reader test ─────────────────────────────────────────────────────────
+//
+// Nine rounds of work were measured on a desktop pretending to be a phone, and
+// the phone disagreed with every one of them. The scrolls and zooms the
+// readout above samples are whatever the reader happened to do, which makes
+// two readouts hard to compare. So App Info can run the SAME scroll and zooms
+// on the open paper, on the device itself, and print what the frames did — with
+// picture pages on, and again with them off.
+//
+// Registered by pdf-view.js (this module imports nothing), run from App Info.
+let pdfReaderTest = null;
+let pdfReaderTestResult = "";
+
+export function setPdfReaderTest(api) {
+  pdfReaderTest = api && typeof api.run === "function" ? api : null;
+}
+
+export function pdfReaderTestAvailable() {
+  return Boolean(pdfReaderTest?.available?.());
+}
+
+export function pdfPicturePagesOn() {
+  return Boolean(pdfReaderTest?.picturesOn?.());
+}
+
+export async function setPdfPicturePages(on) {
+  await pdfReaderTest?.setPictures?.(on);
+}
+
+export async function runPdfReaderTest() {
+  if (!pdfReaderTest) return "";
+  const result = await pdfReaderTest.run();
+  pdfReaderTestResult = formatPdfReaderTest(result);
+  return pdfReaderTestResult;
+}
+
+export function lastPdfReaderTest() {
+  return pdfReaderTestResult;
+}
+
+function formatPdfReaderTest(result) {
+  if (!result) return "";
+  if (result.error) return `reader test: ${result.error}`;
+  const lines = [`reader test (${new Date(result.at).toLocaleTimeString()}): pages as ${result.pictures ? "kept pictures" : "canvases"}`
+    + ` · ${result.pages} pages · ${result.dpr}x`];
+  result.steps.forEach((step) => {
+    lines.push(`  ${step.label}: ${Math.round(step.ms)}ms · ${step.frames} frames · p50 ${step.p50}ms · p90 ${step.p90}ms`
+      + ` · worst ${step.worst}ms · ${step.slow} over 34ms · ${step.blank} with a blank page on screen`
+      + (Number.isFinite(step.sharpMs) ? ` · sharp after ${Math.round(step.sharpMs)}ms` : ""));
+  });
+  const c = result.counts;
+  if (c) {
+    lines.push(`  pages: ${c.drawn} drawn while waited on · ${c.kept} shown from the device · ${c.composed} composed · ${c.ahead} drawn ahead`);
+  }
+  if (Number.isFinite(result.heapMB)) lines.push(`  JS heap after: ${result.heapMB.toFixed(0)}MB`);
+  if (Number.isFinite(result.livePixels)) lines.push(`  page pixels held on screen now: ${(result.livePixels / 1e6).toFixed(1)}MP`);
   return lines.join("\n");
 }

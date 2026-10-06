@@ -15,6 +15,7 @@ import { listS3Images, noteS3Image, s3ImageHasSize, uploadS3Image } from "../clo
 import { el } from "../core/dom.js?v=__BUILD__";
 import { escapeHtml, formatStorageBytes } from "../core/text.js?v=__BUILD__";
 import { deckPdfs, PDF_PRIMARY_ID } from "../documents/pdf-multi.js?v=__BUILD__";
+import { clearAllPdfPictures, pdfPictureStats } from "../documents/pdf-pictures.js?v=__BUILD__";
 import { clearAllLocalDocuments, deleteRemoteDocument, documentUsage, localDocumentUsage } from "../documents/pdf-store.js?v=__BUILD__";
 import { LOCAL_IMAGE_SCHEME, allOutboxImages, deleteOutboxImage, revokeLocalImageUrls } from "../images/outbox.js?v=__BUILD__";
 import { findSourceImages, sourceMayHaveImages } from "../images/surface-controls.js?v=__BUILD__";
@@ -188,13 +189,23 @@ export async function deviceStorageStats() {
     // readable offline), so on a library with papers in it this is by far the
     // largest number on this panel — and leaving it out would make the "on this
     // device" figure look like a mystery.
-    documents: 0, documentBytes: 0
+    documents: 0, documentBytes: 0,
+    // The pages of those papers, kept as pictures so a paper is drawn once
+    // rather than on every open, scroll and zoom (src/documents/pdf-pictures.js).
+    // A cache: capped, least recently used first, and every byte of it can be
+    // drawn again from the paper.
+    pagePictures: 0, pagePictureBytes: 0
   };
   try {
     const documents = await localDocumentUsage();
     stats.documents = documents.length;
     stats.documentBytes = documents.reduce((sum, entry) => sum + entry.bytes, 0);
   } catch { /* no document store yet */ }
+  try {
+    const pictures = await pdfPictureStats();
+    stats.pagePictures = pictures.pictures;
+    stats.pagePictureBytes = pictures.bytes;
+  } catch { /* no picture store yet */ }
   try {
     stats.queuedImages = (await allOutboxImages())?.length || 0;
   } catch { /* no outbox yet */ }
@@ -512,6 +523,8 @@ export async function wipeLocalLibrary() {
   // back down on the next open; whatever was offloaded asks to be re-attached,
   // which is the same answer any other device gives for it.
   await clearAllLocalDocuments();
+  // ...and the pictures of their pages, which are of no use without them.
+  await clearAllPdfPictures();
   try {
     if (typeof caches !== "undefined") await caches.delete(OFFLINE_IMAGE_CACHE);
   } catch { /* nothing cached */ }
@@ -701,6 +714,7 @@ export function renderStoragePanel(busyText = "") {
         ${storageStatTile(device.cachedImages, "Cached images")}
         ${storageStatTile(device.queuedImages, "Queued uploads", device.queuedImages ? "is-warn" : "")}
         ${storageStatTile(`${device.documents} · ${formatStorageBytes(device.documentBytes)}`, "PDFs held here")}
+        ${storageStatTile(`${device.pagePictures} · ${formatStorageBytes(device.pagePictureBytes)}`, "PDF pages drawn")}
       </div>
       ${device.quota ? `<p class="storage-note">Browser storage used by this site: ${escapeHtml(formatStorageBytes(device.quotaUsed))} of about ${escapeHtml(formatStorageBytes(device.quota))} available${storagePersisted === false ? " (not persisted — the browser may reclaim some of this under disk pressure)" : storagePersisted ? " (persisted)" : ""}.</p>` : ""}
       ${device.queuedImages ? `<p class="storage-note is-warning">${device.queuedImages} image${device.queuedImages === 1 ? "" : "s"} still waiting to upload. Sync before clearing this device, or those images are lost.</p>` : ""}
