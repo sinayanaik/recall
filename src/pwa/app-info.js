@@ -15,7 +15,7 @@ import { probeLocalStorage } from "../storage/health.js?v=__BUILD__";
 import { GITHUB_REPO, compareCommits, fetchLiveRelease, fetchRepoRelease, releaseStampsIn, runningAppVersion, runningVersionLabel, setGithubReleaseCache } from "./release-info.js?v=__BUILD__";
 import { isMixedBuild, serviceWorkerRegistration, updateDownloadFailed, updateIsWaiting } from "./service-worker-client.js?v=__BUILD__";
 import { setButtonLoading, showToast } from "../ui/feedback.js?v=__BUILD__";
-import { pdfTimingReport } from "../documents/pdf-timing.js?v=__BUILD__";
+import { pdfPicturePagesOn, pdfReaderTestAvailable, pdfTimingReport, runPdfReaderTest, setPdfPicturePages } from "../documents/pdf-timing.js?v=__BUILD__";
 import { lockPageScroll, unlockPageScroll } from "../ui/overlays.js?v=__BUILD__";
 
 export const appInfoModal = document.getElementById("appInfoModal");
@@ -637,10 +637,47 @@ export function copyPdfTimings() {
   navigator.clipboard.writeText(text).then(() => showToast("Timings copied"), selectIt);
 }
 
+export const appInfoReaderTestBtn = document.getElementById("appInfoReaderTestBtn");
+
+export const appInfoPicturePagesBtn = document.getElementById("appInfoPicturePagesBtn");
+
+function paintPicturePagesButton() {
+  if (!appInfoPicturePagesBtn) return;
+  const on = pdfPicturePagesOn();
+  appInfoPicturePagesBtn.textContent = `Picture pages: ${on ? "on" : "off"}`;
+  appInfoPicturePagesBtn.setAttribute("aria-pressed", on ? "true" : "false");
+}
+
+// The reader test runs on the paper behind this window, so the window gets out
+// of the way for it and comes back with the result at the bottom of the
+// timings. A reader with no paper open is told so rather than shown a blank.
+export async function runReaderTestFromAppInfo() {
+  if (!pdfReaderTestAvailable()) {
+    showToast("Open a PDF on the PDF tab, then run the test from here", "info");
+    return;
+  }
+  closeAppInfoModal();
+  showToast("Reader test: scrolling and zooming the open paper — hands off for a few seconds", "info");
+  try {
+    await runPdfReaderTest();
+  } catch (error) {
+    console.warn("The reader test failed", error);
+  }
+  openAppInfoModal();
+  appInfoPdfTimings?.scrollIntoView?.({ block: "end" });
+}
+
+export async function togglePicturePagesFromAppInfo() {
+  await setPdfPicturePages(!pdfPicturePagesOn());
+  paintPicturePagesButton();
+  if (appInfoPdfTimings) appInfoPdfTimings.textContent = pdfTimingsText();
+}
+
 export function openAppInfoModal() {
   if (!appInfoModal) return;
   if (appInfoVersion) appInfoVersion.textContent = runningVersionLabel();
   if (appInfoPdfTimings) appInfoPdfTimings.textContent = pdfTimingsText();
+  paintPicturePagesButton();
   appInfoModal.hidden = false;
   lockPageScroll();
   refreshAppInfo();

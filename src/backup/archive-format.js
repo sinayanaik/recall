@@ -246,6 +246,11 @@ export const BACKED_UP_STORES = {
 
 export const NOT_BACKED_UP_STORES = {
   // Same rule as the meta table: empty is a claim, not an oversight.
+  "recall-pdf-pictures":
+    "Pictures of PDF pages, kept so a paper is drawn once instead of on every "
+    + "open and zoom (src/documents/pdf-pictures.js). A cache: every byte can be "
+    + "drawn again from the paper itself, which IS backed up, and they are "
+    + "specific to this device's screen."
 };
 
 // ── What a SHARE does with each key ─────────────────────────────────────────
@@ -396,6 +401,7 @@ export const NOT_BACKED_UP_SETTINGS_KEYS = {
   "recall:lastBackup": "The record of the last backup — this device's history, not a preference.",
   "recall:pdfRenderWorker": "A diagnostic switch for THIS device: PDF pages drawn on the main thread instead of in a worker; wrong on any other.",
   "recall:pdfCpuCanvas": "A diagnostic switch for THIS device's graphics (PDF pages drawn on the CPU); wrong on any other.",
+  "recall:pdfPictures": "A diagnostic switch for THIS device: PDF pages shown as canvases instead of kept pictures; wrong on any other.",
   // Where this device was, a moment ago.
   "swipe-notes-current-deck-v1": "The deck open on this device.",
   "recall:deckTab-v1": "Which tab each deck was on, on this device.",

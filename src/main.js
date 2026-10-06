@@ -90,7 +90,7 @@ import { documentHighlightEntries, noteHighlightEntries } from "./panels/highlig
 import { notifyHighlightsChanged, setHighlightsChangedHandler } from "./format/highlight-edit.js?v=__BUILD__";
 import { closeNotesToc, ensureNotesTocBuilt, flashNotesHeading, initNotesTocFolding, isNotesTocOpen, markNotesTocDirtyFromEditor, notesTocHeadings, notesTocScrollFrame, rawNotesHeadings, scrollNotesEditToHeadingIndex, scrollNotesHeadingIntoView, setNotesTocScrollFrame, tocPushesNotes, toggleNotesToc, updateNotesTocActive } from "./notes/toc.js?v=__BUILD__";
 import { closeClozePanel, openClozePanel, toggleClozePanelAll } from "./panels/cloze-panel.js?v=__BUILD__";
-import { appInfoBtn, appInfoCheckBtn, appInfoCloseBtn, appInfoCopyTimingsBtn, appInfoHealthBtn, appInfoModal, appInfoReloadBtn, closeAppInfoModal, copyPdfTimings, forceRefreshAppInfo, openAppInfoModal, runProjectHealthCheck } from "./pwa/app-info.js?v=__BUILD__";
+import { appInfoBtn, appInfoCheckBtn, appInfoCloseBtn, appInfoCopyTimingsBtn, appInfoHealthBtn, appInfoModal, appInfoPicturePagesBtn, appInfoReaderTestBtn, appInfoReloadBtn, closeAppInfoModal, copyPdfTimings, forceRefreshAppInfo, openAppInfoModal, runProjectHealthCheck, runReaderTestFromAppInfo, togglePicturePagesFromAppInfo } from "./pwa/app-info.js?v=__BUILD__";
 import { FOREGROUND_SYNC_IDLE_MS, lastHiddenAt, onlineReconcileTimer, setLastHiddenAt, setOnlineReconcileTimer, updateOnlineIndicator } from "./pwa/online.js?v=__BUILD__";
 import { installIncomingFiles } from "./pwa/incoming-files.js?v=__BUILD__";
 import { applyUpdate, installManifestLink, registerServiceWorker } from "./pwa/service-worker-client.js?v=__BUILD__";
@@ -135,7 +135,7 @@ import { closeDocumentToc, documentOutlineEntries, initDocumentOutlineFolding, i
 import { activePdfId, deckPdfById, deckPdfs, PDF_PRIMARY_ID, withDeckPdfs } from "./documents/pdf-multi.js?v=__BUILD__";
 import { removePdfFromDeck, renamePdf } from "./documents/pdf-multi-actions.js?v=__BUILD__";
 import { closePdfPanel, initPdfSwitcher } from "./documents/pdf-switcher.js?v=__BUILD__";
-import { currentPdfDocument, currentPdfPageCount, documentFittedWidth, fitDocumentToWidth, initDocumentCanvasRecovery, initDocumentPinchZoom, isDocumentFitWidth, openDocumentIsCurrent, openDocumentPdfId, noteSettledDocumentPosition, openDocumentView, reattachDocument, relayoutDocumentHoldingReader, repaintOpenDocumentPages, scheduleDocumentPositionSave, scrollToDocumentPage, refreshDocumentPaperForTheme, setDocumentAttachHandler, setDocumentCanvasRecoveredHook, setDocumentOpenedHook, setDocumentPagePaintedHook, setNotebookStartHandler, setPaperChangedHook, switchToPdf, togglePdfInvert, updatePageIndicator, zoomDocument, retryMissingDocumentOpen } from "./documents/pdf-view.js?v=__BUILD__";
+import { currentPdfDocument, currentPdfPageCount, documentFittedWidth, refreshBakedDocumentPages, fitDocumentToWidth, initDocumentCanvasRecovery, initDocumentPinchZoom, isDocumentFitWidth, openDocumentIsCurrent, openDocumentPdfId, noteSettledDocumentPosition, openDocumentView, reattachDocument, relayoutDocumentHoldingReader, repaintOpenDocumentPages, scheduleDocumentPositionSave, scrollToDocumentPage, refreshDocumentPaperForTheme, setDocumentAttachHandler, setDocumentCanvasRecoveredHook, setDocumentOpenedHook, setDocumentPagePaintedHook, setNotebookStartHandler, setPaperChangedHook, switchToPdf, togglePdfInvert, updatePageIndicator, zoomDocument, retryMissingDocumentOpen } from "./documents/pdf-view.js?v=__BUILD__";
 import { adoptDocumentInk, canRedoInk, canUndoInk, copyInkSelection, cutInkSelection, duplicateInkSelection, hasInkClipboard, initDocumentInk, inkMarkImageMarkdown, inkMarkIsHighlight, inkSelectionCount, isInkMarkId, nudgeInkSelection, paintDocumentInk, pasteInkSelection, redoInk, repaintDocumentInk, setInkChangedHandler, undoInk } from "./documents/pdf-ink.js?v=__BUILD__";
 import { addHandwritingImage, enterHandwritingView, refreshHandwritingBoard, runHandwritingMenuAction, startHandwritingNotebook } from "./handwriting/board.js?v=__BUILD__";
 import { closeBlockStylePopover, isBlockStylePopoverOpen } from "./documents/block-style-bar.js?v=__BUILD__";
@@ -1558,6 +1558,9 @@ onDomReady(() => setHighlightsChangedHandler(() => {
   // box for nobody is the cost this guard exists to refuse.
   if (isHighlightSplitOpen()) refreshHighlightCycle();
   repaintPdfPageNotes();
+  // ...and the pages whose kept pictures carry the marks that just changed
+  // (src/documents/pdf-view.js, "The reader's marks, in the picture").
+  refreshBakedDocumentPages();
   // ...and the number on a <mark> in the note, which is the same fact on the
   // other reading surface and had nothing painting it.
   //
@@ -3355,6 +3358,8 @@ if (helpModal) {
 
 if (appInfoHealthBtn) appInfoHealthBtn.addEventListener("click", runProjectHealthCheck);
 if (appInfoCopyTimingsBtn) appInfoCopyTimingsBtn.addEventListener("click", copyPdfTimings);
+if (appInfoReaderTestBtn) appInfoReaderTestBtn.addEventListener("click", () => { runReaderTestFromAppInfo(); });
+if (appInfoPicturePagesBtn) appInfoPicturePagesBtn.addEventListener("click", () => { togglePicturePagesFromAppInfo(); });
 
 
 if (appInfoBtn) appInfoBtn.addEventListener("click", openAppInfoModal);

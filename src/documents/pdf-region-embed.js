@@ -18,10 +18,11 @@ import { ensurePdfJs, openPdfDocument } from "../core/lib-loader.js?v=__BUILD__"
 import { centerDiagramContent, openDiagramModal } from "../render/diagram-zoom.js?v=__BUILD__";
 import { DOC_SLOT_DOC, docSlotMeta, documentStoreKey, recordDocSlot } from "./doc-slot.js?v=__BUILD__";
 import { deckPdfById, PDF_PRIMARY_ID, pdfStoreKey, recordPdfId } from "./pdf-multi.js?v=__BUILD__";
-import { drawRegionBlocks, mountRegionBlockLayer, paintRegionMarks, rasteriseRegionBlocks, regionAnnotationStamp, regionMarksOnPage } from "./pdf-region-marks.js?v=__BUILD__";
+import { drawRegionBlocks, mountRegionBlockLayer, paintRegionMarks, rasteriseRegionBlocks, regionAnnotationStamp, regionBlocksInBox, regionMarksOnPage } from "./pdf-region-marks.js?v=__BUILD__";
 import { getDocument } from "./pdf-store.js?v=__BUILD__";
-import { buildTextLayer, canvasOutputScale, clampScale, currentPdfDocument, openRenderDocumentFor, PDF_MAX_SCALE, whenPageDrawsIdle } from "./pdf-view.js?v=__BUILD__";
-import { renderPageBitmap } from "./pdf-render-worker.js?v=__BUILD__";
+import { buildTextLayer, canvasOutputScale, clampScale, currentPdfDocument, keptPagePictureFor, openRenderDocumentFor, PDF_MAX_SCALE, whenPageDrawsIdle } from "./pdf-view.js?v=__BUILD__";
+import { composePagePicture, renderPageBitmap } from "./pdf-render-worker.js?v=__BUILD__";
+import { createRecordingContext } from "../render/canvas-record.js?v=__BUILD__";
 import { attachRegionResizeHandle } from "./pdf-region-resize.js?v=__BUILD__";
 
 export const PDFREF_SCHEME = "pdfref:";
@@ -259,7 +260,82 @@ function canvasDataUrl(canvas) {
   });
 }
 
+// ── ...or are cut out of the page's kept picture ───────────────────────────
+//
+// The paper on the stage has its pages kept as pictures (src/documents/
+// pdf-pictures.js), and a region's picture is a crop of its page: the crop, the
+// marks over it (recorded here, replayed in the worker) and the encode are one
+// compose in the page renderer — no pdf.js drawing at all, and no reason to
+// open the renderer's copy of the paper just for the pictures under its pages.
+// Used when the kept page is sharp enough for the size asked
+// (REGION_KEPT_SHARPNESS of the pixels the crop would be drawn at) and nothing
+// in the box is a block, which only the main thread can turn into pixels; the
+// drawn way otherwise.
+export const REGION_KEPT_SHARPNESS = 0.75;
+
+// How region pictures were made this session, for tools/pdf-preview-check.mjs.
+const regionPictureSources = { kept: 0, drawn: 0 };
+
+export function regionPictureCounts() {
+  return { ...regionPictureSources };
+}
+
+function blobDataUrl(blob) {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : null);
+    reader.onerror = () => resolve(null);
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function paintRegionImageFromKept(record, rect, pageNumber, source, width) {
+  if (regionBlocksInBox(source, pageNumber, rect).length) return null;
+  const kept = await keptPagePictureFor(source.slot, source.pdfId, pageNumber);
+  if (!kept) return null;
+  const { picture, blob, page } = kept;
+  const unit = page.getViewport({ scale: 1 });
+  const k = picture.width / unit.width;
+  const [vx0, vy0, vx1, vy1] = page.getViewport({ scale: k }).convertToViewportRectangle(rect);
+  const x = Math.max(0, Math.floor(Math.min(vx0, vx1)));
+  const y = Math.max(0, Math.floor(Math.min(vy0, vy1)));
+  const crop = {
+    x,
+    y,
+    width: Math.max(1, Math.min(picture.width, Math.ceil(Math.max(vx0, vx1))) - x),
+    height: Math.max(1, Math.min(picture.height, Math.ceil(Math.max(vy0, vy1))) - y)
+  };
+  // The size the drawn way would make it, so a crop is the same picture.
+  const quadWidth = Math.max(1, Math.abs(rect[2] - rect[0]));
+  const scale = clampScale(width / quadWidth, 0.05);
+  const nativeWidth = Math.max(1, Math.round(quadWidth * scale));
+  const nativeHeight = Math.max(1, Math.round(Math.abs(rect[3] - rect[1]) * scale));
+  const outputScale = canvasOutputScale(nativeWidth, nativeHeight);
+  const outWidth = Math.ceil(nativeWidth * outputScale);
+  const outHeight = Math.ceil(nativeHeight * outputScale);
+  if (crop.width < outWidth * REGION_KEPT_SHARPNESS) return null;
+  const s = outWidth / crop.width;
+  const paintViewport = page.getViewport({ scale: k * s, offsetX: -crop.x * s, offsetY: -crop.y * s });
+  const recording = createRecordingContext();
+  paintRegionMarks(recording, paintViewport, regionMarksOnPage(source, pageNumber, {
+    excludeId: record.kind === "area" ? record.id : null,
+    stand: record.kind === "ink" ? record : null
+  }));
+  const composed = await composePagePicture({ source: blob, crop, outWidth, outHeight, ops: recording.ops, quality: 0.85 }).promise;
+  return composed?.blob ? blobDataUrl(composed.blob) : null;
+}
+
 async function paintRegionImage(record, rect, pageNumber, source, width) {
+  const fromKept = await takeRegionPictureTurn(() => paintRegionImageFromKept(record, rect, pageNumber, source, width))
+    .catch((error) => {
+      console.warn("Could not cut a region out of its kept page — drawing it", error);
+      return null;
+    });
+  if (fromKept) {
+    regionPictureSources.kept += 1;
+    return fromKept;
+  }
+  regionPictureSources.drawn += 1;
   const renderDoc = openRenderDocumentFor(source.slot, source.pdfId);
   if (renderDoc) {
     const url = await takeRegionPictureTurn(() => paintRegionImageInWorker(record, rect, pageNumber, source, width, renderDoc))

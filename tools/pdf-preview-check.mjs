@@ -213,7 +213,7 @@ const SETUP_SRC = `async (apiSrc) => {
 // nothing on screen to say which one. This one drives a real browser through a
 // real PDF, which is more moving parts than most, so it is given an explicit
 // deadline and turns a hang into an ordinary failure with a name on it.
-export const WATCHDOG_MS = 5 * 60 * 1000;
+export const WATCHDOG_MS = 8 * 60 * 1000;
 
 const chrome = findChrome();
 if (!chrome) { console.log("pdf-preview-check: no Chrome on this machine — skipping."); process.exit(0); }
@@ -382,7 +382,7 @@ try {
       const el = document.querySelector('.pdf-page[data-page-number="' + p + '"]');
       out.push({
         page: p,
-        canvas: Boolean(el?.querySelector("canvas.pdf-canvas")),
+        canvas: Boolean(el?.querySelector(".pdf-canvas")),
         items: el?.querySelectorAll(".pdf-text-layer span[data-item-index]").length || 0
       });
     }
@@ -502,7 +502,7 @@ try {
     // A deck with no notebook opens the tab to the offer of one; the controls
     // have nothing to act on until it exists.
     document.querySelector("#documentView .pdf-missing-pick")?.click();
-    for (let i = 0; i < 80 && !document.querySelector("#documentStage .pdf-page canvas.pdf-canvas"); i += 1) await settle(100);
+    for (let i = 0; i < 80 && !document.querySelector("#documentStage .pdf-page .pdf-canvas"); i += 1) await settle(100);
     await settle(400);
     const boxed = (node) => {
       const box = node?.getBoundingClientRect();
@@ -603,8 +603,8 @@ try {
       const el = document.querySelector('.pdf-page[data-page-number="' + n + '"]');
       return {
         page: n,
-        canvas: Boolean(el?.querySelector("canvas.pdf-canvas")),
-        stale: Boolean(el?.querySelector("canvas.pdf-canvas.is-stale")),
+        canvas: Boolean(el?.querySelector(".pdf-canvas")),
+        stale: Boolean(el?.querySelector(".pdf-canvas.is-stale")),
         placeholder: Boolean(el?.querySelector(".pdf-page-label")),
         items: el?.querySelectorAll(".pdf-text-layer span[data-item-index]").length || 0
       };
@@ -3096,7 +3096,8 @@ try {
     const covers = Boolean(dr && seen && dr.left <= seen.left + 1 && dr.top <= seen.top + 1
       && dr.right >= seen.right - 1 && dr.bottom >= seen.bottom - 1);
     return {
-      basePixels: base ? base.width * base.height : 0,
+      // naturalWidth for a page kept as a picture (an <img>), width for a canvas.
+      basePixels: base ? (base.naturalWidth || base.width) * (base.naturalHeight || base.height) : 0,
       budget: api.canvasPixelBudget(),
       density: detail ? Math.round(detail.width / parseFloat(detail.style.width) * 100) / 100 : 0,
       dpr, covers
@@ -3743,8 +3744,13 @@ try {
   // Slowed down, so a page is still being drawn when the zoom lands: on this
   // machine, at full speed, a fixture page draws in a frame or two.
   await page.call("Emulation.setCPUThrottlingRate", { rate: 12 });
+  // On the CANVAS path: a page kept as a picture is not drawn again by a zoom
+  // at all, so there is no render in flight for a zoom to stop — which is the
+  // point of keeping it, and is checked in its own section (14a). This one is
+  // about the queue the canvas path still uses.
   const slotWork = await page.evaluate(`async () => {
     const { api, settle } = window.__recall;
+    localStorage.setItem("recall:pdfPictures", "0");
     api.fitDocumentToWidth();
     await settle(400);
     // Every page's text request, counted, on the page proxies of whatever
@@ -3793,6 +3799,8 @@ try {
       totalCancelled: api.documentRenderStats().cancelled - before.cancelled
     };
     proto.getTextContent = original;
+    localStorage.removeItem("recall:pdfPictures");
+    await api.openDocumentView({ force: true });
     api.fitDocumentToWidth();
     await settle(600);
     return out;
@@ -5138,7 +5146,7 @@ try {
 
     const view = document.getElementById("documentView");
     const pageEl = document.querySelector('.pdf-page[data-page-number="1"]');
-    const canvas = pageEl && pageEl.querySelector("canvas.pdf-canvas");
+    const canvas = pageEl && pageEl.querySelector(".pdf-canvas");
 
     // What the reader can actually tell apart. Not "are these two colours
     // different" — #000 and #111 ARE different, and are the same rectangle on
@@ -5182,13 +5190,19 @@ try {
     // luminance: a canvas that was allocated and never painted is one value
     // repeated, whatever that value happens to be.
     let darkest = -1, lightest = -1;
-    if (canvas && canvas.width && canvas.height) {
+    // A page kept as a picture is an <img>: its bitmap is naturalWidth across.
+    const bitmapW = canvas ? (canvas.naturalWidth || canvas.width) : 0;
+    const bitmapH = canvas ? (canvas.naturalHeight || canvas.height) : 0;
+    if (canvas && bitmapW && bitmapH) {
+      // Sampled, not averaged: an <img> is downscaled with mipmaps, which
+      // averages a line of text into the paper around it at 24×32.
       const scratch = document.createElement("canvas");
-      scratch.width = 24;
-      scratch.height = 32;
+      scratch.width = 96;
+      scratch.height = 128;
       const ctx = scratch.getContext("2d");
-      ctx.drawImage(canvas, 0, 0, canvas.width, canvas.height, 0, 0, 24, 32);
-      const data = ctx.getImageData(0, 0, 24, 32).data;
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(canvas, 0, 0, bitmapW, bitmapH, 0, 0, 96, 128);
+      const data = ctx.getImageData(0, 0, 96, 128).data;
       darkest = 255; lightest = 0;
       for (let i = 0; i < data.length; i += 4) {
         const y = 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
@@ -5318,8 +5332,18 @@ try {
   //
   // Simulated by hanging exactly one getPage, once, and then doing the three
   // things the reader actually did.
+  //
+  // On the CANVAS path, like 9c-1 below: both are about a page canvas — one
+  // whose render never answers, one whose bitmap the browser cleared — and a
+  // page kept as a picture has neither (a zoom does not redraw it, and an <img>
+  // has no context to lose). Turned back on at the end of 9c-1.
   const hung = await page.evaluate(`async () => {
     const { api, settle } = window.__recall;
+    localStorage.setItem("recall:pdfPictures", "0");
+    await api.openDocumentView({ force: true });
+    api.scrollToDocumentPage(1, 0, { smooth: false });
+    await api.whenDocumentPageReady(1);
+    await settle(300);
     const doc = api.currentPdfDocument();
     const real = doc.getPage.bind(doc);
     let hangs = 1;
@@ -5334,7 +5358,7 @@ try {
     // So stuck asks for a FRESH canvas, not for any canvas. A stale one is
     // present throughout and is exactly what the reader is complaining about.
     const fresh = () => {
-      const c = document.querySelector('.pdf-page[data-page-number="1"] canvas.pdf-canvas');
+      const c = document.querySelector('.pdf-page[data-page-number="1"] .pdf-canvas');
       return Boolean(c && !c.classList.contains("is-stale"));
     };
     api.zoomDocument(1.25);
@@ -5549,6 +5573,9 @@ try {
       localStorage.setItem("recall:pdfInvert", "0");
       localStorage.setItem("recall:focusMode", "0");
     } catch (e) { /* the live state above is what the rest of the run reads */ }
+    // ...and pictures back on, after 9c and 9c-1's canvases.
+    localStorage.removeItem("recall:pdfPictures");
+    await api.openDocumentView({ force: true });
     await settle(450);
   }`);
   await page.call("Emulation.setTouchEmulationEnabled", { enabled: false, maxTouchPoints: 1 });
@@ -7230,7 +7257,7 @@ try {
       await settle(500);
       document.querySelectorAll(".toast, #toastHost > *").forEach((n) => n.remove());
       const pageEl = document.querySelector('.pdf-page[data-page-number="1"]');
-      const canvas = pageEl?.querySelector("canvas.pdf-canvas");
+      const canvas = pageEl?.querySelector(".pdf-canvas");
       if (!canvas) return { error: "the scanned page never rendered" };
       const view = document.getElementById("documentView");
       view.scrollTop = Math.max(0, view.scrollTop + canvas.getBoundingClientRect().top - view.getBoundingClientRect().top - 40);
@@ -7335,7 +7362,7 @@ try {
       // text — draws a box and makes a region, never a text highlight.
       const scanBox = await page.evaluate(`async ({ inkY, left, width }) => {
         const { api, settle } = window.__recall;
-        const canvas = document.querySelector('.pdf-page[data-page-number="1"] canvas.pdf-canvas');
+        const canvas = document.querySelector('.pdf-page[data-page-number="1"] .pdf-canvas');
         const b = canvas.getBoundingClientRect();
         const scale = b.width / ${PAGE_WIDTH};
         const y = b.top + ((${PAGE_HEIGHT} - inkY) * scale);
@@ -7371,6 +7398,410 @@ try {
     }
   }
 
+  // ── 13½. Reading costs nothing it does not have to ───────────────────────
+  //
+  // The reading position used to arm the 400ms whole-deck save on every scroll
+  // stop: on an annotated paper, a long task each time the reader paused, and an
+  // upload at the next sync. It arms a LAZY save now — the same timer every
+  // flush knows about, which a real edit shortens again.
+  {
+    const lazy = await page.evaluate(`async () => {
+      const { api, settle } = window.__recall;
+      await api.openDocumentView({ force: true });
+      await api.whenDocumentPageReady(1);
+      await api.flushPendingDeckAutosave();
+      const view = document.getElementById("documentView");
+      const states = [];
+      for (const top of [400, 900, 1400]) {
+        view.scrollTop = top;
+        view.dispatchEvent(new Event("scroll"));
+        await settle(700);
+        states.push(api.deckAutosaveState());
+      }
+      // A real edit while the lazy one waits takes the short timer back.
+      api.scheduleDeckAutosave();
+      const afterEdit = api.deckAutosaveState();
+      await api.flushPendingDeckAutosave();
+      const flushed = api.deckAutosaveState();
+      return { states, afterEdit, flushed };
+    }`);
+    check("three scroll stops leave the deck save waiting, lazily, instead of saving after each",
+      lazy.states.every((s) => s.armed && s.lazy), JSON.stringify(lazy.states));
+    check("...a real edit takes the short save back, and a navigation flush writes it out",
+      lazy.afterEdit.armed && !lazy.afterEdit.lazy && !lazy.flushed.armed,
+      JSON.stringify({ afterEdit: lazy.afterEdit, flushed: lazy.flushed }));
+  }
+
+  // ── 14a. Pages kept as pictures ───────────────────────────────────────────
+  //
+  // Nine rounds of work made a page faster to DRAW, and the phone still drew
+  // every nearby page on every zoom, every page on screen on a zoom out, and
+  // the whole paper again on every open. A page is now drawn once, kept as a
+  // picture on the device (src/documents/pdf-pictures.js) and shown as an
+  // <img>; what is asserted here is that the drawing really does not happen
+  // again: not on a zoom out, not on a zoom within what the picture can carry,
+  // not on a reopen — which does not even open the renderer's copy of the
+  // paper — and not on a dark page toggle, which is a compose.
+  {
+    const kept = await page.evaluate(`async () => {
+      const { api, settle } = window.__recall;
+      const spread = (img) => {
+        const probe = document.createElement("canvas");
+        probe.width = 24; probe.height = 32;
+        const ctx = probe.getContext("2d");
+        ctx.drawImage(img, 0, 0, img.naturalWidth, img.naturalHeight, 0, 0, 24, 32);
+        const data = ctx.getImageData(0, 0, 24, 32).data;
+        let lo = 255, hi = 0;
+        for (let i = 0; i < data.length; i += 4) {
+          const y = 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
+          if (y < lo) lo = y;
+          if (y > hi) hi = y;
+        }
+        return Math.round(hi - lo);
+      };
+      const view = document.getElementById("documentView");
+      const onScreen = () => {
+        const box = view.getBoundingClientRect();
+        return Array.from(view.querySelectorAll(".pdf-page")).filter((p) => {
+          const r = p.getBoundingClientRect();
+          return r.bottom > box.top && r.top < box.bottom;
+        });
+      };
+      const counts = () => api.documentPictureCounts();
+      const pictures = await import("/src/documents/pdf-pictures.js?v=__BUILD__");
+      api.applyPdfInvert(false, { remember: false });
+      // A paper with pages to keep ahead of the reader: the last section left
+      // a one-page scan open.
+      for (const entry of api.readLocalDeckIndex()) {
+        await api.loadDeckFromLibrary(entry.id);
+        await settle(200);
+        api.closeMyDecksPanel?.();
+        api.setViewMode("document");
+        await api.openDocumentView({ force: true });
+        await settle(300);
+        if (api.currentPdfPageCount() >= 3) break;
+      }
+      // From nothing kept, so what follows is drawn by this section.
+      await pictures.clearAllPdfPictures();
+      await api.openDocumentView({ force: true });
+      api.fitDocumentToWidth();
+      api.scrollToDocumentPage(1, 0, { smooth: false });
+      await api.whenDocumentPageReady(1);
+      await settle(500);
+      const out = {};
+      const pageEl = document.querySelector('.pdf-page[data-page-number="1"]');
+      const img = pageEl?.querySelector("img.pdf-picture");
+      out.shown = {
+        active: counts().active,
+        img: Boolean(img),
+        fills: Boolean(img) && Math.abs(img.getBoundingClientRect().width - pageEl.getBoundingClientRect().width) <= 1
+          && Math.abs(img.getBoundingClientRect().height - pageEl.getBoundingClientRect().height) <= 1,
+        spread: img ? spread(img) : 0,
+        noCanvas: !pageEl?.querySelector("canvas.pdf-canvas")
+      };
+      // A relayout at the scale the page already has (a tab switch, a sync's
+      // in-place reload) leaves a picture page exactly as it is: the same
+      // picture and the same layers, not rebuilt.
+      await api.whenDocumentPageReady(1);
+      await settle(300);
+      const layersBefore = Array.from(pageEl.querySelectorAll(".pdf-text-layer, .pdf-mark-layer"));
+      api.relayoutDocument({ refit: true });
+      await settle(400);
+      const layersAfter = Array.from(pageEl.querySelectorAll(".pdf-text-layer, .pdf-mark-layer"));
+      out.sameScale = {
+        layers: layersBefore.length,
+        kept: layersBefore.length > 0 && layersBefore.every((layer) => layer.isConnected) && layersAfter.length === layersBefore.length,
+        picture: pageEl.querySelector("img.pdf-picture") === img
+      };
+      // Left still, the pages the reader has not reached are drawn ahead and
+      // kept — so nothing below waits for a draw.
+      let aheadBefore = counts().ahead;
+      let aheadDone = false;
+      for (let i = 0; i < 300 && !aheadDone; i += 1) {
+        await settle(50);
+        aheadDone = pictures.pagesWithPictures(counts().sha, "light", 1).size === api.currentPdfPageCount();
+      }
+      out.ahead = { done: aheadDone, ahead: counts().ahead - aheadBefore, pages: api.currentPdfPageCount() };
+      // Out: as far as it goes. Nothing drawn, every page on screen a picture.
+      let before = counts();
+      api.setDocumentScale(0.01);
+      await settle(2500);
+      const outPages = onScreen();
+      out.zoomOut = {
+        drawn: counts().drawn - before.drawn,
+        onScreen: outPages.length,
+        pictures: outPages.filter((p) => p.querySelector("img.pdf-picture")).length
+      };
+      // In, a little: within what the fit-width picture carries.
+      api.fitDocumentToWidth();
+      await settle(1200);
+      before = counts();
+      api.setDocumentScale(api.fitWidthScale() * 1.05);
+      await settle(1500);
+      out.smallZoom = { drawn: counts().drawn - before.drawn };
+      api.fitDocumentToWidth();
+      await settle(1200);
+      // A reopen: every page kept, so nothing drawn and no second copy opened.
+      before = counts();
+      await api.openDocumentView({ force: true });
+      api.scrollToDocumentPage(1, 0, { smooth: false });
+      await api.whenDocumentPageReady(1);
+      await settle(600);
+      out.reopen = { drawn: counts().drawn - before.drawn, kept: counts().kept - before.kept, renderCopyOpened: counts().renderCopyOpened, by: counts().renderCopyOpenedBy };
+      // A region's picture of the open paper: cut out of the kept page, with
+      // no pdf.js document opened and the renderer's copy still unopened.
+      const pdfjs = window.pdfjsLib;
+      const realGetDocument = pdfjs.getDocument;
+      let documentsOpened = 0;
+      pdfjs.getDocument = function (...args) { documentsOpened += 1; return realGetDocument.apply(this, args); };
+      out.region = { skipped: true };
+      if (api.openDocumentSlot() === "doc") {
+        const pdfId = api.openDocumentPdfId();
+        const record = { id: "hn-checkkept", kind: "area", color: "yellow", page: 1, at: Date.now(),
+          quads: [{ page: 1, rect: [72, 400, 400, 700] }] };
+        if (pdfId && pdfId !== "primary") record.pdfId = pdfId;
+        const embed = await import("/src/documents/pdf-region-embed.js?v=__BUILD__");
+        const keptBefore = embed.regionPictureCounts().kept;
+        const url = await api.renderRegionImage(record, { width: 180 });
+        out.region = { jpeg: String(url || "").startsWith("data:image/jpeg"), documentsOpened, fromKept: embed.regionPictureCounts().kept - keptBefore };
+      }
+      pdfjs.getDocument = realGetDocument;
+      // Dark page: the other paper, composed from the kept picture.
+      before = counts();
+      api.applyPdfInvert(true, { remember: false });
+      let dark = false;
+      for (let i = 0; i < 100 && !dark; i += 1) {
+        await settle(50);
+        dark = Boolean(document.querySelector('.pdf-page[data-page-number="1"] img.pdf-picture.is-dark-pixels'));
+      }
+      out.dark = { dark, drawn: counts().drawn - before.drawn, composed: counts().composed - before.composed };
+      // ...and the rest of the paper is kept for dark page too, ahead of the
+      // reader — composed from the light pictures, not drawn.
+      aheadBefore = counts().ahead;
+      aheadDone = false;
+      for (let i = 0; i < 200 && !aheadDone; i += 1) {
+        await settle(50);
+        aheadDone = pictures.pagesWithPictures(counts().sha, "dark", 1).size === api.currentPdfPageCount();
+      }
+      out.aheadDark = { done: aheadDone, ahead: counts().ahead - aheadBefore, drawn: counts().drawn - before.drawn };
+      api.applyPdfInvert(false, { remember: false });
+      await settle(800);
+      out.report = /pages shown as: kept pictures/.test(api.pdfTimingReport());
+      return out;
+    }`);
+    check("a page is shown as a kept picture: an <img> filling the page box, with the page on it",
+      kept.shown.active && kept.shown.img && kept.shown.fills && kept.shown.spread >= 40 && kept.shown.noCanvas,
+      JSON.stringify(kept.shown));
+    check("a relayout at the same scale keeps a picture page's picture and layers as they are",
+      kept.sameScale.kept && kept.sameScale.picture, JSON.stringify(kept.sameScale));
+    check("zooming all the way out draws nothing, and every page on screen is a picture",
+      kept.zoomOut.drawn === 0 && kept.zoomOut.onScreen > 0 && kept.zoomOut.pictures === kept.zoomOut.onScreen,
+      JSON.stringify(kept.zoomOut));
+    check("a zoom within what the picture carries draws nothing", kept.smallZoom.drawn === 0, JSON.stringify(kept.smallZoom));
+    // In, past what the picture carries: on a 3x phone, where the budget
+    // leaves room above fit width (on this 1x desktop window the fit-width
+    // picture is already as wide as a page may be, and the detail tile does
+    // the rest — correctly drawing nothing).
+    await page.call("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
+    const bigZoom = await page.evaluate(`async () => {
+      const { api, settle } = window.__recall;
+      const counts = () => api.documentPictureCounts();
+      await settle(800);
+      api.fitDocumentToWidth();
+      api.scrollToDocumentPage(1, 0, { smooth: false });
+      await api.whenDocumentPageReady(1);
+      await settle(1200);
+      const fitPicture = api.pdfPageElement(api.currentDocumentPage())?.querySelector("img.pdf-picture");
+      const fitWidth = fitPicture ? fitPicture.naturalWidth : 0;
+      const before = counts();
+      // 1.4x: past what the fit-width picture carries, short of the budget
+      // (past it, the detail tile does the sharpening and a softer picture
+      // under it is kept on purpose — PDF_PICTURE_UNDER_TILE).
+      api.setDocumentScale(api.fitWidthScale() * 1.4);
+      let sharp = false;
+      let width = 0;
+      for (let i = 0; i < 160 && !sharp; i += 1) {
+        await settle(50);
+        const pic = api.pdfPageElement(api.currentDocumentPage())?.querySelector("img.pdf-picture");
+        width = pic ? pic.naturalWidth : 0;
+        sharp = width > fitWidth * 1.1;
+      }
+      const out = { drawn: counts().drawn - before.drawn, kept: counts().kept - before.kept, sharp, fitWidth, width };
+      api.fitDocumentToWidth();
+      await settle(600);
+      return out;
+    }`);
+    await page.call("Emulation.setDeviceMetricsOverride", { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
+    await page.evaluate(`async () => { await window.__recall.settle(800); }`);
+    check("a zoom past it swaps in a wider picture for the page in view, drawing at most the pages on screen",
+      bigZoom.sharp && bigZoom.drawn + bigZoom.kept >= 1 && bigZoom.drawn <= 3, JSON.stringify(bigZoom));
+    // (The renderer's copy of the paper may still be opened here: on this
+    // headless window the per-page budget is under fit width, so the detail
+    // tile — which pdf.js draws — is wanted even at fit. renderCopyOpenedBy
+    // says who opened it.)
+    check("reopening the paper draws nothing",
+      kept.reopen.drawn === 0 && kept.reopen.kept >= 1, JSON.stringify(kept.reopen));
+    check("a region's picture of the open paper is cut out of its kept page, opening no copy of the paper",
+      kept.region.skipped === true || (kept.region.jpeg && kept.region.documentsOpened === 0 && kept.region.fromKept === 1),
+      JSON.stringify(kept.region));
+    check("dark page is the kept picture composed, not the page drawn again",
+      kept.dark.dark && kept.dark.drawn === 0 && kept.dark.composed >= 1, JSON.stringify(kept.dark));
+    check("left still, the pages the reader has not reached are drawn ahead and kept",
+      kept.ahead.done && kept.ahead.pages >= 3 && kept.ahead.ahead >= 1, JSON.stringify(kept.ahead));
+    check("...and for dark page, composed from those, with nothing drawn while waited on",
+      kept.aheadDark.done && kept.aheadDark.ahead >= 1 && kept.aheadDark.drawn === 0, JSON.stringify(kept.aheadDark));
+    check("...and App Info says pages are kept pictures", kept.report === true);
+
+    const store = await page.evaluate(`async () => {
+      const pictures = await import("/src/documents/pdf-pictures.js?v=__BUILD__");
+      const sha = "check-" + Date.now();
+      const blob = new Blob([new Uint8Array(5000)], { type: "image/jpeg" });
+      await pictures.loadPaperPictures(sha);
+      const meta = { sha, page: 1, width: 300, height: 400, paper: "light", kind: "plain", stamp: "" };
+      const key = await pictures.putPicture(meta, blob);
+      const back = await pictures.getPictureBlob(key);
+      const found = pictures.storedPicture({ sha, page: 1, paper: "light", minWidth: 280 });
+      const tooNarrow = pictures.storedPicture({ sha, page: 1, paper: "light", minWidth: 301 });
+      const url = pictures.holdPictureUrl(key, back);
+      const again = pictures.holdPictureUrl(key, back);
+      pictures.releasePictureUrl(key);
+      const stillHeld = pictures.heldPictureCount();
+      pictures.releasePictureUrl(key);
+      return {
+        roundTrip: Boolean(back) && back.size === 5000,
+        found: found?.key === key,
+        tooNarrow: tooNarrow === null,
+        sharedUrl: url === again,
+        released: pictures.heldPictureCount() === stillHeld - 1
+      };
+    }`);
+    check("a kept picture comes back from the store, found by the width it can carry",
+      store.roundTrip && store.found && store.tooNarrow, JSON.stringify(store));
+    check("...and its blob URL is shared and revoked only when the last holder lets go",
+      store.sharedUrl && store.released, JSON.stringify(store));
+
+    // App Info's reader test: the same scroll and zooms every run, reported.
+    const readerTest = await page.evaluate(`async () => {
+      const { api } = window.__recall;
+      const text = await api.runPdfReaderTest();
+      return { text, inReport: api.pdfTimingReport().includes("reader test (") };
+    }`);
+    const testLines = String(readerTest.text || "").split("\n");
+    check("App Info's reader test scrolls and zooms the open paper and reports each step",
+      /pages as kept pictures/.test(readerTest.text) && testLines.filter((l) => /frames · p50/.test(l)).length === 4
+        && /sharp after/.test(readerTest.text) && readerTest.inReport,
+      testLines.slice(0, 3).join(" | "));
+  }
+
+  // ── 14b. The reader's marks, baked into the page's picture ────────────────
+  //
+  // On a heavily annotated page the compositor used to blend a mark layer of
+  // divs over the paper and composite the ink's GPU canvases, one inside a
+  // blended layer, every frame of a scroll. The highlights and the ink are
+  // baked into the kept picture now, and the live marks paint nothing while it
+  // matches them — until the marks change or a pen goes down, when the page is
+  // the plain picture with live marks again, and is baked again once still.
+  //
+  // On a 3x phone: on this 1x desktop window the per-page budget is under fit
+  // width, so a detail tile covers every page at fit — and a page under a tile
+  // is shown unbaked, on purpose (its marks have to be over the tile too).
+  {
+    await page.call("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
+    await page.evaluate(`async () => { await window.__recall.settle(800); window.__recall.api.fitDocumentToWidth(); await window.__recall.settle(800); }`);
+    const baked = await page.evaluate(`async () => {
+      const { api, settle } = window.__recall;
+      const edit = await import("/src/format/highlight-edit.js?v=__BUILD__");
+      const highlights = await import("/src/documents/pdf-highlights.js?v=__BUILD__");
+      const counts = () => api.documentPictureCounts();
+      const record = highlights.documentHighlightsInReadingOrder().find((r) => r.kind !== "area" && r.kind !== "ink"
+        && (r.quads || []).some((q) => Number(q.page) === Number(r.page)));
+      if (!record) return { skipped: true };
+      const pageNumber = Number(record.page);
+      api.scrollToDocumentPage(pageNumber, 0, { smooth: false });
+      await api.whenDocumentPageReady(pageNumber);
+      const pageEl = document.querySelector('.pdf-page[data-page-number="' + pageNumber + '"]');
+      const until = async (test, limit = 6000) => {
+        const t0 = performance.now();
+        while (!test()) {
+          if (performance.now() - t0 > limit) return false;
+          await settle(40);
+        }
+        return true;
+      };
+      const isBaked = () => pageEl.classList.contains("is-baked");
+      const out = {};
+      // The pen's rail is left armed by the ink sections above, and an armed
+      // pen is exactly when the live ink must show: put it down first.
+      const ink = await import("/src/documents/pdf-ink.js?v=__BUILD__");
+      ink.setInkArmed(false);
+      out.bakedAtRest = await until(isBaked);
+      out.state = api.documentPageBakeState(pageNumber);
+      // The highlight's own pixels, in the picture: its colour, not the paper's.
+      const quad = record.quads.find((q) => Number(q.page) === pageNumber);
+      const sample = (dy = 0) => {
+        const img = pageEl.querySelector("img.pdf-picture");
+        const viewport = api.pdfPageViewport(pageNumber);
+        if (!img || !viewport) return null;
+        const [x0, y0, x1, y1] = viewport.convertToViewportRectangle(quad.rect.map(Number));
+        const k = img.naturalWidth / pageEl.getBoundingClientRect().width;
+        const x = ((Math.min(x0, x1) + Math.max(x0, x1)) / 2) * k;
+        const y = (Math.min(y0, y1) + dy) * k + 2;
+        const c = document.createElement("canvas");
+        c.width = 1; c.height = 1;
+        const ctx = c.getContext("2d", { willReadFrequently: true });
+        ctx.drawImage(img, x, y, 1, 1, 0, 0, 1, 1);
+        return Array.from(ctx.getImageData(0, 0, 1, 1).data.slice(0, 3));
+      };
+      const mark = pageEl.querySelector(".pdf-mark-layer:not(.is-area) .pdf-mark");
+      const markLayer = pageEl.querySelector(".pdf-mark-layer:not(.is-area)");
+      out.atRest = {
+        markPaints: mark ? getComputedStyle(mark).backgroundColor : "no mark",
+        layerBlend: markLayer ? getComputedStyle(markLayer).mixBlendMode : "no layer",
+        inkShown: Array.from(pageEl.querySelectorAll(".pdf-ink-layer, .pdf-ink-hl-layer")).filter((l) => getComputedStyle(l).display !== "none").length,
+        tint: sample(),
+        paper: sample(-12)
+      };
+      // A recolour: the live marks are back at once, and the page is baked
+      // again — composed, not drawn — once it is still.
+      const before = counts();
+      const next = record.color === "green" ? "pink" : "green";
+      api.state.meta.pdfHighlights = api.state.meta.pdfHighlights.map((r) => (r.id === record.id ? { ...r, color: next, at: Date.now() } : r));
+      highlights.repaintDocumentHighlights();
+      edit.notifyHighlightsChanged();
+      out.liveAtOnce = !isBaked();
+      out.rebaked = await until(isBaked);
+      out.recoloured = { composed: counts().composed - before.composed, drawn: counts().drawn - before.drawn, tint: sample() };
+      // A pen on the page: live ink at once, baked again once it rests.
+      api.documentInkPageActive(pageNumber);
+      out.penLive = !isBaked();
+      out.penRebaked = await until(isBaked, api.PDF_INK_REST_MS + 6000);
+      // Put the colour back.
+      api.state.meta.pdfHighlights = api.state.meta.pdfHighlights.map((r) => (r.id === record.id ? { ...r, color: record.color } : r));
+      highlights.repaintDocumentHighlights();
+      edit.notifyHighlightsChanged();
+      await until(isBaked);
+      return out;
+    }`);
+    await page.call("Emulation.setDeviceMetricsOverride", { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
+    await page.evaluate(`async () => { await window.__recall.settle(800); }`);
+    if (baked.skipped) {
+      notes.push("14b skipped: no text highlight on the open paper");
+    } else {
+      const differs = (a, b) => Boolean(a && b) && Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) + Math.abs(a[2] - b[2]) > 30;
+      check("at rest, a highlighted page shows its marks baked into the picture",
+        baked.bakedAtRest && differs(baked.atRest.tint, baked.atRest.paper), JSON.stringify({ ...baked.atRest, state: baked.state }));
+      check("...while its live marks paint nothing, nothing blends, and its ink layers are not composited",
+        /rgba\(0, 0, 0, 0\)|transparent/.test(baked.atRest.markPaints) && baked.atRest.layerBlend === "normal" && baked.atRest.inkShown === 0,
+        JSON.stringify(baked.atRest));
+      check("recolouring a highlight puts the live marks back at once, then bakes the page again without drawing it",
+        baked.liveAtOnce && baked.rebaked && baked.recoloured.composed >= 1 && baked.recoloured.drawn === 0
+          && differs(baked.recoloured.tint, baked.atRest.tint),
+        JSON.stringify({ liveAtOnce: baked.liveAtOnce, rebaked: baked.rebaked, ...baked.recoloured }));
+      check("a pen going down on the page shows its live ink at once, and the page is baked again once it rests",
+        baked.penLive && baked.penRebaked, JSON.stringify({ penLive: baked.penLive, penRebaked: baked.penRebaked }));
+    }
+  }
+
   // ── 14. Pages drawn in a worker, and drawn here when that fails ───────────
   //
   // On the phone, drawing a page of a paper full of figures cost the main
@@ -7396,9 +7827,12 @@ try {
     }
     return Math.round(hi - lo);
   }`;
+  // On the canvas path: this section is about how a page CANVAS is drawn and
+  // shown, and pages kept as pictures were checked in 14a above.
   const renderer = await page.evaluate(`async () => {
     const { api, settle } = window.__recall;
     const spread = ${spreadOf};
+    localStorage.setItem("recall:pdfPictures", "0");
     await api.openDocumentView({ force: true });
     api.scrollToDocumentPage(1, 0, { smooth: false });
     await api.whenDocumentPageReady(1);
