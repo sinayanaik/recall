@@ -225,3 +225,24 @@ export function noteWheelActivity() {
 export function wheelGestureActive() {
   return wheelActive;
 }
+
+// ── A page's text, woken before a press hit-tests it ───────────────────────
+//
+// On a touch screen a PDF page's text layer — hundreds of positioned,
+// transparent spans on a dense two-column page — is not rendered at all until
+// the reader presses (src/documents/pdf-view.js, "The text layer sleeps").
+// "Find what's slow" on the phone in the third report scrolled at 189 frames
+// with the text layers gone and 1 to 4 frames with anything else gone. A
+// sleeping layer is invisible to hit-testing, so the touch selection
+// controller (src/notes/touch-selection.js) asks for the page under the finger
+// to be woken before it hit-tests. Here because that module and pdf-view.js
+// both import this leaf, and neither imports the other.
+let documentTextWake = null;
+
+export function setDocumentTextWake(wake) {
+  documentTextWake = typeof wake === "function" ? wake : null;
+}
+
+export function wakeDocumentTextAt(x, y) {
+  documentTextWake?.(x, y);
+}

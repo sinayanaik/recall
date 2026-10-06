@@ -107,7 +107,7 @@
 import { resetCardDrag } from "../cards/swipe.js?v=__BUILD__";
 import { PDF_BLOCK_CLASS } from "../core/constants.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
-import { inkPenIsDown, penTextMode, setInkPenDown, setTouchGestureHoldsSurface } from "../core/gesture.js?v=__BUILD__";
+import { inkPenIsDown, penTextMode, setInkPenDown, setTouchGestureHoldsSurface, wakeDocumentTextAt } from "../core/gesture.js?v=__BUILD__";
 import { wordBoundsAt } from "../core/word-bounds.js?v=__BUILD__";
 import { isProgrammaticNotesScroll, markProgrammaticNotesScroll } from "./notes-view.js?v=__BUILD__";
 import { NOTES_BLOCK_SELECTOR, caretFromPoint } from "./raw-offset.js?v=__BUILD__";
@@ -901,6 +901,11 @@ function caretAcrossBlockGap(direct, x, y, root) {
 // The repaired hit-test. Tried in order of how much it costs.
 export function caretInRoot(x, y, root) {
   if (!root) return null;
+  // A PDF page's text layer is not rendered until it is pressed, and what is
+  // not rendered cannot be hit: the page under the point is woken first (the
+  // hit-test below then lays it out). Covers the press, a drag onto the next
+  // page, a handle drag and the pen.
+  if (isDocumentSelectionRoot(root)) wakeDocumentTextAt(x, y);
   const box = contentBox(root);
   const cy = Math.min(Math.max(y, box.top), box.bottom);
 
@@ -2008,6 +2013,9 @@ function firePress(root, x, y) {
   // this finger.
   resetCardDrag();
 
+  // Before atomicAt: with the page's text asleep the point would hit the
+  // page's picture, which is an <img>, and a press would select the page.
+  if (isDocumentSelectionRoot(root)) wakeDocumentTextAt(x, y);
   const atomic = atomicAt(x, y, root);
   if (atomic) {
     const range = document.createRange();
