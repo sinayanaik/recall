@@ -6293,8 +6293,10 @@ try {
     }`, Array.from(stamped.bytes));
 
     if (over.error) throw new Error(over.error);
+    // Ten of the eleven: pdf.js glues the last (real) "in" onto the first
+    // stamp of "duc" behind it, which is why the stamps are found per character.
     check("an underlined word stamped eleven times is that many text items — the case this is about",
-      over.stampedIn >= OVERPRINT_STAMPS, `${over.stampedIn} items read "in", of ${over.items}`);
+      over.stampedIn >= OVERPRINT_STAMPS - 1, `${over.stampedIn} items read "in", of ${over.items}`);
     check("...and the layer has a span for each item that is read, not for each stamp",
       over.spans === over.keptItems && over.spans < over.items, `${over.spans} span(s) for ${over.items} item(s)`);
     check("...every span still names its own item, and where in it its text starts",
@@ -6311,8 +6313,10 @@ try {
       over.partial === "uctive bias in a model," && over.partialItem === "induc" && over.partialAnchor?.ch === 3
         && over.partialReread === over.partial,
       `${JSON.stringify(over.partial)} at ${JSON.stringify(over.partialAnchor)} of ${JSON.stringify(over.partialItem)}`);
-    check("...and an annotation imported over that line is named once too",
-      over.imported === "by crafting the right inductive bias in a model,", JSON.stringify(over.imported));
+    // Over the same quads: an annotation imported from the file is named by
+    // the items under it, the stamps' items included.
+    check("...and an annotation imported over those words is named once too",
+      over.imported === "inductive bias in a model,", JSON.stringify(over.imported));
 
     // ...and a highlight that was STORED the old way, eleven times over, is
     // rewritten as the page paints — while one whose text somebody edited is
