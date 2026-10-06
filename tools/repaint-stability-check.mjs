@@ -163,7 +163,7 @@ const PROBE = async (cases) => {
     };
     const target = api.renderTargetConfig("notes");
     if (remove) {
-      // Highlight it first, then take it off again: the overlap path.
+      // Highlight it first, then take it off again with the eraser.
       select();
       api.makeHighlightFromSelection(target, "yellow");
       await settle(900);
@@ -204,7 +204,9 @@ const PROBE = async (cases) => {
       }
       requestAnimationFrame(tick);
     };
-    const outcome = api.makeHighlightFromSelection(target, "yellow");
+    // Taking it off is the eraser's job — pressing the same colour again no
+    // longer removes a highlight (src/format/highlight.js, applyHighlightRange).
+    const outcome = api.makeHighlightFromSelection(target, remove ? "clear" : "yellow");
     requestAnimationFrame(tick);
     await settle(900);
     stop = true;

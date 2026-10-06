@@ -308,14 +308,18 @@ const PROBE = `async (api) => {
     return true;
   });
 
-  check("highlighting then re-highlighting the same words removes it", () => {
+  // It used to toggle off. That was the commonest way to lose a highlight by
+  // accident — the pill's main button is "the last colour" — so only the
+  // eraser removes now.
+  check("highlighting then re-highlighting the same words keeps it", () => {
     const source = "one plain sentence here";
     const added = api.highlightToggleInSource(source, { asText: "plain sentence", occurrence: 0 }, "yellow");
     if (!added || added.action !== "added") return "first pass did not add: " + JSON.stringify(added);
-    const removed = api.highlightToggleInSource(added.text, { asText: "plain sentence", occurrence: 0 }, "yellow");
-    if (!removed) return "could not locate the mark to remove it";
-    if (removed.action !== "removed") return "second pass said " + removed.action;
-    if (removed.text !== source) return "did not round-trip: " + JSON.stringify(removed.text);
+    const again = api.highlightToggleInSource(added.text, { asText: "plain sentence", occurrence: 0 }, "yellow");
+    if (!again) return "could not locate the mark";
+    if (again.action !== "already") return "second pass said " + again.action + ": " + again.text;
+    const erased = api.highlightToggleInSource(added.text, { asText: "plain sentence", occurrence: 0 }, "clear");
+    if (!erased || erased.text !== source) return "the eraser did not take it off: " + JSON.stringify(erased);
     return true;
   });
 
@@ -593,6 +597,45 @@ const PROBE = `async (api) => {
     return true;
   });
 
+  // ── Nothing is removed that was not selected ────────────────────────────
+  check("the eraser starting BEFORE a highlight takes out only the selected words", () => {
+    const src = "one two <mark>three four five</mark> six";
+    const out = api.highlightToggleInSource(src, { asText: "two three", occurrence: 0 }, "clear");
+    if (!out) return "no result";
+    if (out.text !== "one two three<mark> four five</mark> six") return out.text;
+    return true;
+  });
+
+  check("the eraser ending AFTER a highlight takes out only the selected words", () => {
+    const src = "one <mark>two three four</mark> five six";
+    const out = api.highlightToggleInSource(src, { asText: "four five", occurrence: 0 }, "clear");
+    if (!out) return "no result";
+    if (out.text !== "one <mark>two three </mark>four five six") return out.text;
+    return true;
+  });
+
+  check("erasing one paragraph of a two-paragraph highlight keeps the other", () => {
+    const src = '<mark data-note="hn-aaaa">First paragraph here.</mark>\\n\\n<mark>Second paragraph here.</mark>';
+    if (api.markGroupSpanAt(src, 0).count !== 2) return "fixture is not one highlight in two pieces";
+    const out = api.highlightToggleInSource(src, { asText: "First paragraph here.", occurrence: 0 }, "clear");
+    if (!out) return "no result";
+    if (out.text !== 'First paragraph here.\\n\\n<mark data-note="hn-aaaa">Second paragraph here.</mark>') return JSON.stringify(out.text);
+    return true;
+  });
+
+  check("a highlight on a lone symbol is not 'empty'", () => {
+    const src = "a <mark>*</mark> b <mark>—</mark> c";
+    if (api.normalizeHighlightSource(src) !== src) return api.normalizeHighlightSource(src);
+    return true;
+  });
+
+  check("the raw editor's own colour again leaves the highlight", () => {
+    const text = '<mark data-color="green">kept</mark>';
+    if (api.toggleMarkColorInText(text, "green") !== text) return api.toggleMarkColorInText(text, "green");
+    if (api.toggleMarkColorInText(text, "clear") !== "kept") return "the eraser did not remove it";
+    return true;
+  });
+
   check("re-selecting part of a highlight in its own colour is 'already'", () => {
     const src = "x <mark>alpha beta</mark> y";
     const out = api.highlightToggleInSource(src, { asText: "beta", occurrence: 0 }, "yellow");
@@ -641,6 +684,22 @@ const PROBE = `async (api) => {
     if (api.resolveHighlightRef(moved, ref) !== 2) return "resolved to " + api.resolveHighlightRef(moved, ref);
     const gone = "a <mark>x</mark> b y";
     if (api.resolveHighlightRef(gone, ref) !== -1) return "a removed highlight resolved to " + api.resolveHighlightRef(gone, ref);
+    return true;
+  });
+
+  check("a held highlight is never swapped for a same-worded one", () => {
+    const src = "a <mark>term</mark> b";
+    const ref = api.highlightRefAt(0, src);
+    // The same word highlighted again right above it: two candidates, equally
+    // plausible — the answer must be "can't tell", not a guess.
+    const twin = "<mark>term</mark> " + src;
+    const got = api.resolveHighlightRef(twin, ref);
+    if (got === 0) return "resolved to the NEW highlight";
+    // Two identical highlights close together, nothing changed: each still
+    // resolves to itself.
+    const pair = "x <mark>the</mark> and <mark>the</mark> y";
+    const second = api.highlightRefAt(1, pair);
+    if (api.resolveHighlightRef(pair, second) !== 1) return "unchanged note resolved to " + api.resolveHighlightRef(pair, second);
     return true;
   });
 
@@ -1588,15 +1647,26 @@ const PROBE = `async (api) => {
     return true;
   });
 
-  check("code: same colour again removes, another recolours and keeps the note", () => {
+  check("code: same colour again keeps it, another recolours and keeps the note", () => {
     const once = api.highlightCodeSelectionInSource(CODE_NOTE, codeSel(CODE_TEXT, 2, 14), "green").text;
     const noted = once.replace('<mark data-color="green">', '<mark data-color="green" data-note="hn-abcd">');
     const recoloured = api.highlightCodeSelectionInSource(noted, codeSel(CODE_TEXT, 2, 14), "blue");
     if (recoloured.action !== "recolored" || !recoloured.text.includes('<mark data-color="blue" data-note="hn-abcd">compute area</mark>')) {
       return "recolour: " + JSON.stringify(recoloured);
     }
-    const removed = api.highlightCodeSelectionInSource(recoloured.text, codeSel(CODE_TEXT, 2, 14), "blue");
-    if (removed.action !== "removed" || removed.text !== CODE_NOTE) return "remove: " + JSON.stringify(removed);
+    const again = api.highlightCodeSelectionInSource(recoloured.text, codeSel(CODE_TEXT, 2, 14), "blue");
+    if (again.action !== "already" || again.text !== recoloured.text) return "same colour: " + JSON.stringify(again);
+    const removed = api.highlightCodeSelectionInSource(recoloured.text, codeSel(CODE_TEXT, 2, 14), "clear");
+    if (removed.action !== "removed" || removed.text !== CODE_NOTE) return "eraser: " + JSON.stringify(removed);
+    return true;
+  });
+
+  check("code: the eraser over part of a highlight leaves the rest", () => {
+    const once = api.highlightCodeSelectionInSource(CODE_NOTE, codeSel(CODE_TEXT, 2, 14), "green").text;
+    // "compute area" is 2..14; erase "compute" (2..9) only.
+    const r = api.highlightCodeSelectionInSource(once, codeSel(CODE_TEXT, 2, 9), "clear");
+    if (!r || r.action !== "removed") return JSON.stringify(r);
+    if (!r.text.includes('compute<mark data-color="green"> area</mark>')) return JSON.stringify(r.text);
     return true;
   });
 

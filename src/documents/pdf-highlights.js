@@ -1229,6 +1229,56 @@ export function documentHighlightsCovering(rects, { textOnly = false } = {}) {
   return covered ? touching : [];
 }
 
+// The highlights a selection covers WHOLE — the eraser's question, and the
+// inverse of documentHighlightsCovering's. A paper's highlight is a set of
+// quads with no way to take part of one away, so erasing has to be all or
+// nothing per record — and "all" is only right when the reader selected all of
+// it. Every quad of the record has to sit, along its whole width, inside the
+// selection's rects on the same page and line.
+export function documentHighlightsWithinRects(rects, { textOnly = false } = {}) {
+  const touching = documentHighlightsUnderRects(rects, { textOnly });
+  if (!touching.length) return [];
+  const pages = [];
+  document.querySelectorAll(".pdf-page[data-page-number]").forEach((pageEl) => {
+    const pageNumber = Number(pageEl.dataset.pageNumber);
+    if (pageNumber) pages.push({ pageNumber, box: pageEl.getBoundingClientRect() });
+  });
+  const targets = [];
+  rects.forEach((rect) => {
+    if (!rect || rect.right <= rect.left || rect.bottom <= rect.top) return;
+    const midY = (rect.top + rect.bottom) / 2;
+    const midX = (rect.left + rect.right) / 2;
+    const on = pages.find(({ box }) => midX >= box.left && midX <= box.right && midY >= box.top && midY <= box.bottom);
+    if (!on) return;
+    targets.push({
+      page: on.pageNumber,
+      left: rect.left - on.box.left,
+      top: rect.top - on.box.top,
+      right: rect.right - on.box.left,
+      bottom: rect.bottom - on.box.top
+    });
+  });
+  const quadCovered = (quad) => {
+    const box = quadToPageBox(quad);
+    if (!box) return false;
+    const midY = box.top + box.height / 2;
+    const line = targets
+      .filter((t) => t.page === quad.page && midY >= t.top - COVER_TOLERANCE && midY <= t.bottom + COVER_TOLERANCE)
+      .sort((a, b) => a.left - b.left);
+    // Walked left to right, so two rects either side of an unselected gap do
+    // not add up to "covered".
+    let x = box.left;
+    const right = box.left + box.width;
+    for (const t of line) {
+      if (t.left > x + COVER_TOLERANCE) break;
+      if (t.right > x) x = t.right;
+      if (x >= right - COVER_TOLERANCE) return true;
+    }
+    return x >= right - COVER_TOLERANCE;
+  };
+  return touching.filter((record) => (record.quads || []).length && record.quads.every(quadCovered));
+}
+
 // ── Importing the PDF's own highlights ──────────────────────────────────────
 //
 // A paper that arrives already annotated in Zotero, Preview or Okular carries

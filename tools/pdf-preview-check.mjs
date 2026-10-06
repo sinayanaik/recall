@@ -1054,6 +1054,14 @@ try {
       inner.setStart(line.firstChild, 0);
       inner.setEnd(line.firstChild, Math.floor(line.firstChild.length * 0.4));
       out.coveringMarkedRun = api.documentHighlightsCovering(Array.from(inner.getClientRects())).length;
+      // The eraser's question, the other way round: which highlights does the
+      // selection hold WHOLE? The whole line holds both; a selection clipping
+      // half of the left one holds neither, and erases nothing.
+      out.withinWholeLine = api.documentHighlightsWithinRects(rects).length;
+      const clip = document.createRange();
+      clip.setStart(line.firstChild, 0);
+      clip.setEnd(line.firstChild, Math.max(1, Math.floor(line.firstChild.length * 0.2)));
+      out.withinClip = api.documentHighlightsWithinRects(Array.from(clip.getClientRects())).length;
       madeIds.forEach((id) => api.removeDocumentHighlight(id));
       out.goneAfterRemove = madeIds.every((id) => !api.documentHighlightById(id));
     }
@@ -1077,6 +1085,9 @@ try {
   // line would be offered a single box to write both notes in. sameDocumentLine
   // — the geometry the merge was built on — is still asserted directly above,
   // because reading order still depends on it.
+  check("the eraser removes only highlights the selection holds whole",
+    pipeline.withinWholeLine === 2 && pipeline.withinClip === 0,
+    `whole line holds ${pipeline.withinWholeLine} of 2 · a clip of one holds ${pipeline.withinClip} (must be 0)`);
   check("a selection over the line finds the highlights under it",
     pipeline.foundUnderSelection === 2 && pipeline.foundUnderOverlay === 2,
     `${pipeline.foundUnderSelection} found over ${pipeline.rectCount} rect(s), ${pipeline.foundUnderOverlay} with something on top`);

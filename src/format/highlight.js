@@ -446,10 +446,12 @@ export function normalizeMarks(source) {
     while (stack.length && stack[stack.length - 1].end <= entry.start) stack.pop();
     // Cheapest tests first: this runs before every render of every note, and
     // for a healthy one the answer is "nothing to do" for every mark in it.
-    const suspect = entry.canonical && entry.closeStart !== -1
-      && (entry.depth > 0 || !/[^\s]/.test(entry.inner) || !plainMarkText(entry.inner));
+    // "Empty" means NOTHING but whitespace — not "nothing left once markup is
+    // stripped": a highlight on a lone "*" or "—" is still the reader's.
+    const empty = !/\S/.test(entry.inner);
+    const suspect = entry.canonical && entry.closeStart !== -1 && (entry.depth > 0 || empty);
     const usable = suspect && !insideInlineCode(text, entry.start);
-    if (usable && !plainMarkText(entry.inner) && !/<(?:img|svg)\b/i.test(entry.inner)) {
+    if (usable && empty) {
       drop.add(entry);
       return; // an empty mark holds nothing to be nested in
     }
@@ -511,10 +513,54 @@ export function wrapKeepingPrefix(text, color) {
 // hit in one mark, with none of wrapAcrossBlocks' prefix handling — in code a
 // leading `# ` is a comment, not a heading.
 export function highlightToggleInSource(source, sel, color, { literal = false, keepExisting = false } = {}) {
+  if (color === "clear") return eraseSelectionInSource(source, sel, { literal });
   const loc = locateSelectionInSource(source, sel, { fuzzy: true });
   if (!loc) return null;
   const { idx, end } = snapToWholeCharacters(source, loc.idx, loc.end);
   return applyHighlightRange(source, idx, end, color, { literal, keepExisting });
+}
+
+// ── The eraser finds exactly the words selected ───────────────────────────
+//
+// The text search widens a hit that straddles one edge of a <mark>…</mark> to
+// swallow the whole mark (expandToBalancedBounds — right for ADDING a mark,
+// which must not cross another one). For erasing it is the opposite of right:
+// a selection that began one word before a highlight came back covering all of
+// it, and the whole highlight was erased. So the eraser searches the note with
+// every mark tag taken out — plain words, nothing to widen over — and maps the
+// hit back onto the real note.
+function eraseSelectionInSource(source, sel, { literal = false } = {}) {
+  const marks = scanMarks(source);
+  if (!marks.length) {
+    const loc = locateSelectionInSource(source, sel, { fuzzy: true });
+    return loc ? { text: source, action: "not-highlighted", idx: loc.idx } : null;
+  }
+  const bare = rewriteMarkTags(source, marks, () => "");
+  const loc = locateSelectionInSource(bare, sel, { fuzzy: true });
+  if (!loc) return null;
+  const { idx, end } = snapToWholeCharacters(bare, loc.idx, loc.end);
+  return applyHighlightRange(source, bareToSourceOffset(marks, idx, true), bareToSourceOffset(marks, end, false), "clear", { literal });
+}
+
+// A position in the note with every mark tag removed, as a position in the
+// note itself. Where tags sit exactly at that position, a START is placed after
+// them and an END before them — so a selection that begins at a highlight's
+// first word starts inside the highlight, and one that ends at its last word
+// ends inside it.
+export function bareToSourceOffset(marks, at, isStart) {
+  const tags = [];
+  marks.forEach((entry) => {
+    tags.push({ start: entry.start, length: entry.openEnd - entry.start });
+    if (entry.closeStart !== -1) tags.push({ start: entry.closeStart, length: entry.end - entry.closeStart });
+  });
+  tags.sort((a, b) => a.start - b.start);
+  let removed = 0;
+  for (const tag of tags) {
+    const bareAt = tag.start - removed;
+    if (bareAt < at || (bareAt === at && isStart)) removed += tag.length;
+    else break;
+  }
+  return at + removed;
 }
 
 // ── What a selection does to the highlights it touches ────────────────────
@@ -575,31 +621,31 @@ export function applyHighlightRange(source, rawIdx, rawEnd, color, { literal = f
 
   // `force` (an Adjust): the range IS the highlight now, whatever it touches —
   // never a toggle, never "already". It goes straight to the union below.
+  // ── Nothing is ever removed that was not asked to be ──────────────────────
+  //
+  // Only the eraser ("clear") takes a highlight away, and it takes away exactly
+  // the words selected — one piece of a highlight that spans paragraphs, never
+  // the paragraphs either side of it (eraseMarkRange). Selecting a highlight and
+  // pressing its own colour again used to toggle it off, every paragraph of it:
+  // the commonest way to lose one by accident, because the pill's main button
+  // IS "the last colour", and pressing it over a highlight to do anything else
+  // with those words deleted the highlight. It says "already highlighted" now.
   if (overlapping.length === 1 && !reachesOut && !force) {
     // "Highlight and annotate" over words already highlighted means "annotate
     // THAT one" — the highlight is left exactly as it is.
     if (keepExisting) return { text: source, action: "existing", idx: first.start };
-    const insideBefore = visible(first.openEnd, idx);
-    const insideAfter = visible(end, first.closeStart);
-    if (!insideBefore && !insideAfter) {
-      const group = markGroupSpanAt(source, first.index);
-      if (color === "clear" || color === first.color) {
-        return { text: rewriteMarkTags(source, group.pieces, () => ""), action: "removed", idx: first.start };
-      }
-      return {
-        // Every piece keeps its own note reference — a recolour must not drop one.
-        text: rewriteMarkTags(source, group.pieces, (piece) => markOpenTag(color, piece.note)),
-        action: "recolored",
-        idx: first.start
-      };
-    }
-    if (color === "clear") return eraseRange(source, idx, end, overlapping);
+    if (color === "clear") return eraseMarkRange(source, idx, end, overlapping);
     if (color === first.color) return { text: source, action: "already", idx };
     const group = markGroupSpanAt(source, first.index);
-    return { text: rewriteMarkTags(source, group.pieces, (piece) => markOpenTag(color, piece.note)), action: "recolored", idx: first.start };
+    return {
+      // Every piece keeps its own note reference — a recolour must not drop one.
+      text: rewriteMarkTags(source, group.pieces, (piece) => markOpenTag(color, piece.note)),
+      action: "recolored",
+      idx: first.start
+    };
   }
 
-  if (color === "clear") return eraseRange(source, idx, end, overlapping);
+  if (color === "clear") return eraseMarkRange(source, idx, end, overlapping);
 
   // EXTEND. The union, widened over any other mark straddling either of its
   // edges so that no tag is left half in and half out.
@@ -644,7 +690,7 @@ function wrapRange(source, from, to, color, { literal, note, action, strip }) {
 // first piece that is left. A highlight erased whole hands its note on to the
 // next piece of its own group, so annotating a two-paragraph highlight and then
 // clearing the first paragraph does not orphan the note.
-function eraseRange(source, idx, end, overlapping) {
+export function eraseMarkRange(source, idx, end, overlapping) {
   const edits = [];
   let carry = null;
   let carryGroup = null;
@@ -657,8 +703,9 @@ function eraseRange(source, idx, end, overlapping) {
       note = carry;
       carry = null;
     }
+    // Anything but whitespace stays highlighted — a lone "*" or "—" too.
     const wrap = (text) => {
-      if (!plainMarkText(text)) return text;
+      if (!/\S/.test(text)) return text;
       const out = markOpenTag(e.color, note) + text + MARK_CLOSE_TAG;
       note = null;
       return out;
@@ -724,7 +771,10 @@ export function toggleMarkColorInText(text, color, { inCode = false, openFence =
   const closes = (text.match(/<\/mark\s*>/gi) || []).length;
   const whole = marks[0];
   if (whole && whole.start === 0 && whole.end === text.length && opens === 1 && closes === 1) {
-    if (color === "clear" || color === whole.color) return whole.inner;
+    if (color === "clear") return whole.inner;
+    // Its own colour again is not "remove" — the eraser is (see
+    // applyHighlightRange). Left exactly as it is.
+    if (color === whole.color) return text;
     // Preserves an existing note across a recolour.
     return markOpenTag(color, whole.note) + whole.inner + MARK_CLOSE_TAG;
   }
@@ -892,13 +942,17 @@ export function highlightToggleByOverlap(source, markIndex, color) {
   const span = markGroupSpanAt(source, markIndex);
   if (!span) return null;
   const first = span.pieces[0];
-  const remove = color === "clear" || color === first.color;
+  // A recolour, and only a recolour: re-pressing a highlight's own colour no
+  // longer takes it away (see applyHighlightRange), and the eraser goes through
+  // the text path, which erases exactly the words selected.
+  if (color === "clear") return null;
+  if (color === first.color) return { text: source, action: "already", idx: span.start };
   // Each piece keeps its own note reference — only the first piece has one by
   // construction, see highlight-notes.js — and is rewritten by position, so a
   // piece holding anything unusual cannot throw the rewrite out of step.
   return {
-    text: rewriteMarkTags(source, span.pieces, (piece) => (remove ? "" : markOpenTag(color, piece.note))),
-    action: remove ? "removed" : "recolored",
+    text: rewriteMarkTags(source, span.pieces, (piece) => markOpenTag(color, piece.note)),
+    action: "recolored",
     idx: span.start
   };
 }
@@ -924,26 +978,6 @@ export function rangeReachesOutside(range, mark) {
   if (before) return true;
   return range.compareBoundaryPoints(Range.END_TO_END, outer) > 0
     && part((piece) => { piece.setStart(outer.endContainer, outer.endOffset); piece.setEnd(range.endContainer, range.endOffset); });
-}
-
-// Whether the live selection covers every visible character of `mark` — a
-// clear over PART of a highlight erases those words (applyHighlightRange), and
-// only a clear over all of it removes the highlight by ordinal.
-export function rangeCoversWholeMark(range, mark) {
-  const inner = document.createRange();
-  inner.selectNodeContents(mark);
-  const startsInside = range.compareBoundaryPoints(Range.START_TO_START, inner) > 0;
-  const endsInside = range.compareBoundaryPoints(Range.END_TO_END, inner) < 0;
-  const text = (setUp) => {
-    const piece = document.createRange();
-    try { setUp(piece); } catch (_) { return ""; }
-    const fragment = piece.cloneContents();
-    fragment.querySelectorAll?.(".hl-note-badge").forEach((node) => node.remove());
-    return (fragment.textContent || "").trim();
-  };
-  if (startsInside && text((piece) => { piece.setStart(inner.startContainer, inner.startOffset); piece.setEnd(range.startContainer, range.startOffset); })) return false;
-  if (endsInside && text((piece) => { piece.setStart(range.endContainer, range.endOffset); piece.setEnd(inner.endContainer, inner.endOffset); })) return false;
-  return true;
 }
 
 // The text search's view of a code selection: the code itself, as the block
@@ -995,7 +1029,7 @@ export function makeHighlightFromSelection({ view, label, getSource, setSource, 
   const usable = hit
     && markTextMatches(markSpanAt(source0, hit.index)?.inner, renderedMarkText(hit.mark))
     && !rangeReachesOutside(hit.range, hit.mark)
-    && (color !== "clear" || rangeCoversWholeMark(hit.range, hit.mark));
+    && color !== "clear";
   if (usable && keepExisting) {
     const span = markSpanAt(source0, hit.index);
     if (span) {
@@ -1005,8 +1039,12 @@ export function makeHighlightFromSelection({ view, label, getSource, setSource, 
   }
   if (usable) {
     const result = highlightToggleByOverlap(source0, hit.index, color);
+    if (result?.action === "already") {
+      showToast(highlightInfoMessage(result.action), "info");
+      return null;
+    }
     if (result) {
-      const text = result.action === "removed" ? pruneOrphanHighlightNotes(result.text) : result.text;
+      const text = result.text;
       setSource(text);
       window.getSelection()?.removeAllRanges();
       rerender(result.idx);

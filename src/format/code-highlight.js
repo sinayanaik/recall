@@ -24,7 +24,7 @@
 // highlights still in it.
 
 import { MARK_HIGHLIGHT_DEFAULT } from "./highlight-colors.js?v=__BUILD__";
-import { MARK_CLOSE_TAG, markOpenTag } from "./highlight.js?v=__BUILD__";
+import { MARK_CLOSE_TAG, eraseMarkRange, markOpenTag, scanMarks } from "./highlight.js?v=__BUILD__";
 import { readerNotesBody } from "./notes-fence.js?v=__BUILD__";
 import { approximateRawOffsetForBlock } from "../notes/raw-offset.js?v=__BUILD__";
 import { codeCleanText, stripCodeMarks } from "../render/code-marks.js?v=__BUILD__";
@@ -150,8 +150,9 @@ export function locateCodeFence(source, codeText, { view = null, element = null 
 // annotate" turns into an ordinal).
 //
 //   • exactly an existing mark — or, on a touch screen where the DOM overlap
-//     test cannot run, overlapping exactly one — recolours it, or removes it
-//     when it is already that colour or `color` is "clear";
+//     test cannot run, overlapping exactly one — recolours it; "clear" erases
+//     only the selected part of it, and its own colour again is "already" —
+//     nothing is removed that was not selected;
 //   • overlapping more than one is refused ("already");
 //   • anything else is wrapped in one new mark.
 //
@@ -180,13 +181,16 @@ export function highlightCodeSelectionInSource(source, sel, color) {
     const range = touching[0];
     const inner = source.slice(range.sourceStart + range.openLength, range.sourceEnd - MARK_CLOSE_TAG.length);
     const existing = range.color || MARK_HIGHLIGHT_DEFAULT;
-    if (color === "clear" || color === existing) {
-      return {
-        text: source.slice(0, range.sourceStart) + inner + source.slice(range.sourceEnd),
-        action: "removed",
-        idx: range.sourceStart
-      };
+    // Only the eraser removes, and only what it covers: the words of this mark
+    // that the selection does not reach stay highlighted (eraseMarkRange). The
+    // mark's own colour pressed again is "already", never a removal — see the
+    // same rule for prose in applyHighlightRange.
+    if (color === "clear") {
+      const entry = scanMarks(source).find((candidate) => candidate.start === range.sourceStart);
+      if (!entry) return null;
+      return eraseMarkRange(source, model.rawStartAt(Math.max(start, range.start)), model.rawEndAt(Math.min(end, range.end)), [entry]);
     }
+    if (color === existing) return { text: source, action: "already", idx: range.sourceStart };
     return {
       // Keeps the mark's note: recolouring an annotated highlight must not drop it.
       text: source.slice(0, range.sourceStart) + markOpenTag(color, range.note) + inner + MARK_CLOSE_TAG + source.slice(range.sourceEnd),

@@ -3,7 +3,7 @@
 
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
-import { addDocumentHighlight, documentHighlightsCovering, documentHighlightsUnderRects, recolourDocumentHighlight, removeDocumentHighlight } from "../documents/pdf-highlights.js?v=__BUILD__";
+import { addDocumentHighlight, documentHighlightsCovering, documentHighlightsUnderRects, documentHighlightsWithinRects, recolourDocumentHighlight, removeDocumentHighlight } from "../documents/pdf-highlights.js?v=__BUILD__";
 import { captureDocumentSelection } from "../documents/pdf-selection.js?v=__BUILD__";
 import { isDocumentViewActive } from "../documents/pdf-view.js?v=__BUILD__";
 import { toggleWrapPair } from "../editor/text-transforms.js?v=__BUILD__";
@@ -254,11 +254,20 @@ export function applyPillHighlight(color, { keepExisting = false } = {}) {
       // them asks the question the reader meant: un-highlight what I have
       // selected. Every record the selection touches goes, because a selection
       // that covers two highlights meant both.
-      const under = documentHighlightsUnderRects(selectionRects(target), { textOnly: true });
-      under.forEach((record) => removeDocumentHighlight(record.id));
-      const removed = under.length;
-      if (!removed) showToast("Nothing highlighted there", "error");
-      else showToast(removed === 1 ? "Highlight removed" : `${removed} highlights removed`);
+      //
+      // ...but only the ones it COVERS. "Every record the selection touches"
+      // meant a selection catching one word at the edge of a long highlight
+      // erased all of it — a paper's highlight is a set of quads, and there is
+      // no taking part of one away. So a highlight the selection only clips is
+      // left alone, and the reader is told how to remove it on purpose.
+      const rects = selectionRects(target);
+      const covered = documentHighlightsWithinRects(rects, { textOnly: true });
+      covered.forEach((record) => removeDocumentHighlight(record.id));
+      const removed = covered.length;
+      if (removed) showToast(removed === 1 ? "Highlight removed" : `${removed} highlights removed`);
+      else if (documentHighlightsUnderRects(rects, { textOnly: true }).length) {
+        showToast("Select the whole highlight to remove it — or tap it and choose Remove", "info");
+      } else showToast("Nothing highlighted there", "error");
     } else {
       // Recolour what is already there rather than stacking another record on
       // top of it. Re-highlighting a passage in a new colour used to ADD a

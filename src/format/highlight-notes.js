@@ -444,19 +444,27 @@ export function resolveHighlightRef(source, ref) {
     if (byId) return byId.index;
   }
   const same = (entry) => entry && markTextMatches(entry.inner, ref.text) && markTextMatches(ref.text, plainMarkText(entry.inner));
-  if (same(entries[ref.index]) && (!ref.note || !entries[ref.index].note)) return ref.index;
-  let best = -1;
-  let bestDistance = Infinity;
-  entries.forEach((entry) => {
-    if (!same(entry) || (ref.note && entry.note)) return;
-    const distance = Math.abs(entry.start - (ref.start ?? 0));
-    if (distance < bestDistance) {
-      best = entry.index;
-      bestDistance = distance;
-    }
-  });
-  return best;
+  // Nothing moved: the same ordinal, at the same place, with the same words.
+  // (The ordinal alone is not enough — a highlight of the same words made above
+  // this one would be sitting in it.)
+  const atIndex = entries[ref.index];
+  if (same(atIndex) && atIndex.start === ref.start && (!ref.note || !atIndex.note)) return ref.index;
+  // The nearest highlight with the same words — but only when it is clearly the
+  // nearest. The same phrase highlighted twice is common (a refrain, a term),
+  // and guessing between two copies is how an edit lands on the wrong one: an
+  // answer of -1 makes the caller do nothing instead.
+  const candidates = entries
+    .filter((entry) => same(entry) && !(ref.note && entry.note))
+    .map((entry) => ({ index: entry.index, distance: Math.abs(entry.start - (ref.start ?? 0)) }))
+    .sort((a, b) => a.distance - b.distance);
+  if (!candidates.length) return -1;
+  if (candidates.length > 1 && candidates[1].distance <= candidates[0].distance * 2 + HIGHLIGHT_REF_SLACK) return -1;
+  return candidates[0].index;
 }
+
+// How far (in characters) two same-worded candidates must differ in distance
+// before the nearer is trusted — about one highlight's worth of tags.
+export const HIGHLIGHT_REF_SLACK = 64;
 
 // ── Two highlights becoming one ────────────────────────────────────────────
 //
