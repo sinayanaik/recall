@@ -36,7 +36,7 @@ import { cleanupRenderDocument, cleanupRenderPage, closeRenderDocument, composeP
 import { createRecordingContext } from "../render/canvas-record.js?v=__BUILD__";
 import { hash32 } from "../core/text.js?v=__BUILD__";
 import { paintRegionMarks, regionMarksOnPage } from "./pdf-region-marks.js?v=__BUILD__";
-import { getPictureBlob, holdPictureUrl, loadPaperPictures, pagesWithPictures, pdfPicturesTurnedOff, pictureKey, putPicture, releasePictureUrl, setPdfPicturesTurnedOff, storedPicture, touchPicture } from "./pdf-pictures.js?v=__BUILD__";
+import { getPictureBlob, holdPictureUrl, loadPaperPictures, pagesWithPictures, widestStoredPicture, pdfPicturesTurnedOff, pictureKey, putPicture, releasePictureUrl, setPdfPicturesTurnedOff, storedPicture, touchPicture } from "./pdf-pictures.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { paintDocumentHighlights } from "./pdf-highlights.js?v=__BUILD__";
 import { textItemGap } from "./pdf-selection.js?v=__BUILD__";
@@ -2946,6 +2946,24 @@ export function openRenderDocumentFor(slot, pdfId = null) {
   return ensureRenderDoc();
 }
 
+// ...or, better, the kept picture of the page (src/documents/pdf-pictures.js),
+// which a region's picture is a crop of: the widest plain one on white paper,
+// with the page proxy to measure it by. Null when there is none, or the record
+// is not on the paper on the stage — the caller then draws it.
+export async function keptPagePictureFor(slot, pdfId, pageNumber) {
+  if (!openPdf || !picturesActive()) return null;
+  if (normalizeDocSlot(openPdf.slot) !== normalizeDocSlot(slot)) return null;
+  if (normalizeDocSlot(slot) === DOC_SLOT_DOC
+      && (openPdf.pdfId || PDF_PRIMARY_ID) !== (pdfId || PDF_PRIMARY_ID)) return null;
+  const open = openPdf;
+  await loadPaperPictures(open.pictureSha);
+  const picture = widestStoredPicture({ sha: open.pictureSha, page: pageNumber, paper: "light" });
+  const blob = picture ? await getPictureBlob(picture.key) : null;
+  if (!blob || openPdf !== open || pageNumber > open.pageCount) return null;
+  const page = await open.doc.getPage(pageNumber);
+  return { picture, blob, page };
+}
+
 // The paper's own pages first: resolves once no page is waiting to be drawn or
 // being drawn, or after `maxWait` whatever the queue is doing. Pictures for the
 // notes under the pages wait on this, so opening a paper with forty regions on
@@ -3457,6 +3475,7 @@ export function documentPictureCounts() {
     // Whether the page renderer's copy of the paper on the stage has been
     // opened at all — a paper whose pages are all kept never needs it.
     renderCopyOpened: Boolean(openPdf) && openPdf.renderDoc !== undefined && openPdf.renderDoc !== null,
+    renderCopyOpenedBy: openPdf?.renderDocOpenedBy || "",
     active: picturesActive(),
     sha: openPdf?.pictureSha || "",
     aheadBusy: Boolean(prerenderJob)
@@ -4245,6 +4264,9 @@ function ensureRenderDoc() {
     open.renderDoc = null;
     return null;
   }
+  // Who needed it, for tools/pdf-preview-check.mjs: a paper whose pages are
+  // all kept should never get here.
+  open.renderDocOpenedBy = String(new Error().stack || "").split("\n").slice(2, 5).map((line) => line.trim().replace(/\(.*\/src\//, "(")).join(" < ");
   open.renderDoc = open.renderBlob.arrayBuffer()
     .then((buffer) => (openPdf === open && pageRendererActive() ? openRenderDocument(new Uint8Array(buffer)) : null))
     .catch(() => null);

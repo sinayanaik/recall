@@ -7533,7 +7533,25 @@ try {
       api.scrollToDocumentPage(1, 0, { smooth: false });
       await api.whenDocumentPageReady(1);
       await settle(600);
-      out.reopen = { drawn: counts().drawn - before.drawn, kept: counts().kept - before.kept, renderCopyOpened: counts().renderCopyOpened };
+      out.reopen = { drawn: counts().drawn - before.drawn, kept: counts().kept - before.kept, renderCopyOpened: counts().renderCopyOpened, by: counts().renderCopyOpenedBy };
+      // A region's picture of the open paper: cut out of the kept page, with
+      // no pdf.js document opened and the renderer's copy still unopened.
+      const pdfjs = window.pdfjsLib;
+      const realGetDocument = pdfjs.getDocument;
+      let documentsOpened = 0;
+      pdfjs.getDocument = function (...args) { documentsOpened += 1; return realGetDocument.apply(this, args); };
+      out.region = { skipped: true };
+      if (api.openDocumentSlot() === "doc") {
+        const pdfId = api.openDocumentPdfId();
+        const record = { id: "hn-checkkept", kind: "area", color: "yellow", page: 1, at: Date.now(),
+          quads: [{ page: 1, rect: [72, 400, 400, 700] }] };
+        if (pdfId && pdfId !== "primary") record.pdfId = pdfId;
+        const embed = await import("/src/documents/pdf-region-embed.js?v=__BUILD__");
+        const keptBefore = embed.regionPictureCounts().kept;
+        const url = await api.renderRegionImage(record, { width: 180 });
+        out.region = { jpeg: String(url || "").startsWith("data:image/jpeg"), documentsOpened, fromKept: embed.regionPictureCounts().kept - keptBefore };
+      }
+      pdfjs.getDocument = realGetDocument;
       // Dark page: the other paper, composed from the kept picture.
       before = counts();
       api.applyPdfInvert(true, { remember: false });
@@ -7598,8 +7616,15 @@ try {
     await page.evaluate(`async () => { await window.__recall.settle(800); }`);
     check("a zoom past it swaps in a wider picture for the page in view, drawing at most the pages on screen",
       bigZoom.sharp && bigZoom.drawn + bigZoom.kept >= 1 && bigZoom.drawn <= 3, JSON.stringify(bigZoom));
+    // (The renderer's copy of the paper may still be opened here: on this
+    // headless window the per-page budget is under fit width, so the detail
+    // tile — which pdf.js draws — is wanted even at fit. renderCopyOpenedBy
+    // says who opened it.)
     check("reopening the paper draws nothing",
       kept.reopen.drawn === 0 && kept.reopen.kept >= 1, JSON.stringify(kept.reopen));
+    check("a region's picture of the open paper is cut out of its kept page, opening no copy of the paper",
+      kept.region.skipped === true || (kept.region.jpeg && kept.region.documentsOpened === 0 && kept.region.fromKept === 1),
+      JSON.stringify(kept.region));
     check("dark page is the kept picture composed, not the page drawn again",
       kept.dark.dark && kept.dark.drawn === 0 && kept.dark.composed >= 1, JSON.stringify(kept.dark));
     check("left still, the pages the reader has not reached are drawn ahead and kept",

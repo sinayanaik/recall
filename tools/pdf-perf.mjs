@@ -53,7 +53,7 @@ const arg = (name, fallback) => {
 const ROOT = path.resolve(arg("root", HERE));
 const RUNS = Math.max(1, Number(arg("runs", 3)));
 const THROTTLE = Number(arg("throttle", 4));
-const ONLY = new Set(String(arg("only", "open,tab,switch,zoom,zoomin,zoomout,fling,steady,pan")).split(","));
+const ONLY = new Set(String(arg("only", "open,reopen,tab,switch,zoom,zoomin,zoomout,fling,steady,pan")).split(","));
 const IMAGES = process.argv.includes("--images");
 const INVERT = process.argv.includes("--invert");
 // --highlights=N puts N text highlights (and one region for every ten) on every
@@ -87,6 +87,12 @@ const EXTRA_CSS = arg("css", "");
 const PDFJS_BUILD = arg("pdfjs", "legacy");
 // --dpr=3 emulates a 3x screen (most current phones) instead of tools/cdp.mjs's 2x.
 const DPR = Number(arg("dpr", 2));
+// --pictures=0 shows pages as canvases instead of kept pictures
+// (src/documents/pdf-pictures.js), to compare the two on one build.
+const PICTURES = arg("pictures", "1") !== "0";
+// --pdf=<file> measures a real paper instead of the generated one (the second
+// paper and the other deck stay generated).
+const OWN_PDF = arg("pdf", "");
 
 // The browser plumbing and pdf.js come from THIS tree, so two roots are
 // measured with the same harness; only the app under test differs.
@@ -265,6 +271,7 @@ async function oneRun() {
     // compare the two on one build.
     await servePdfjsFromDisk(client, page, sources);
     if (MAIN_THREAD) await page.call("Page.addScriptToEvaluateOnNewDocument", { source: `try { localStorage.setItem("recall:pdfRenderWorker", "0"); } catch (e) {}` });
+    if (!PICTURES) await page.call("Page.addScriptToEvaluateOnNewDocument", { source: `try { localStorage.setItem("recall:pdfPictures", "0"); } catch (e) {}` });
     await page.call("Page.addScriptToEvaluateOnNewDocument", {
       source: `${sources.main}
 ;(function () { var blob = new Blob([${JSON.stringify(sources.worker)}], { type: "text/javascript" });
@@ -309,7 +316,7 @@ try { new PerformanceObserver((l) => l.getEntries().forEach((e) => window.__perf
       api.applyPdfInvert(Boolean(invert));
       for (let i = 0; i < 60 && api.deckAutosaveTimer; i += 1) await settle(100);
       return { deckId: entry.id, otherId, firstId, secondId, pages: api.currentPdfPageCount() };
-    }`, Array.from(densePdf(IMAGES ? 24 : 40, { images: photos })),
+    }`, OWN_PDF ? Array.from((await import("node:fs")).readFileSync(OWN_PDF)) : Array.from(densePdf(IMAGES ? 24 : 40, { images: photos })),
     Array.from(densePdf(IMAGES ? 8 : 20, { seed: 11, title: "Second Paper", images: photos })),
     Array.from(densePdf(IMAGES ? 8 : 30, { seed: 23, title: "Other Deck", images: photos })), INVERT);
 
@@ -391,6 +398,28 @@ try { new PerformanceObserver((l) => l.getEntries().forEach((e) => window.__perf
         await settle(2000);
         return Math.round(ms);
       }`, prepared.deckId, prepared.otherId);
+    }
+
+    // The same paper opened again: with picture pages, every page the reader
+    // reaches is shown from the device and nothing is drawn.
+    if (ONLY.has("reopen")) {
+      results.reopen = await flow("reopen", `async () => {
+        const { api, settle, drawnOnScreen, until } = window.__recall;
+        api.scrollToDocumentPage(1, 0, { smooth: false });
+        await settle(3000);
+        const before = api.documentPictureCounts ? api.documentPictureCounts() : null;
+        const t0 = performance.now();
+        await api.openDocumentView({ force: true });
+        await until(drawnOnScreen);
+        const ms = performance.now() - t0;
+        await settle(1000);
+        const after = api.documentPictureCounts ? api.documentPictureCounts() : null;
+        return {
+          ms: Math.round(ms),
+          drawn: after && before ? after.drawn - before.drawn : null,
+          kept: after && before ? after.kept - before.kept : null
+        };
+      }`);
     }
 
     if (ONLY.has("tab")) {
@@ -745,8 +774,10 @@ const row = (label, pick, unit = "ms") => {
   if (values.every((v) => v === undefined)) return;
   console.log(`  ${label.padEnd(34)} ${String(median(values)).padStart(6)} ${unit}   (${values.join(", ")})`);
 };
-console.log(`pdf-perf · ${ROOT} · CPU ${THROTTLE}x · dpr ${DPR}${IMAGES ? " · photo pages" : ""} · ${RUNS} run(s)${INVERT ? " · dark page" : ""}${HIGHLIGHTS ? ` · ${HIGHLIGHTS} highlights a page` : ""}${ANNOTATED ? " · notes on half of them, printed under the pages" : ""}${MAIN_THREAD ? " · drawn on the main thread" : ""} · median (each run)`);
+console.log(`pdf-perf · ${ROOT} · CPU ${THROTTLE}x · dpr ${DPR}${IMAGES ? " · photo pages" : ""} · ${RUNS} run(s)${INVERT ? " · dark page" : ""}${HIGHLIGHTS ? ` · ${HIGHLIGHTS} highlights a page` : ""}${ANNOTATED ? " · notes on half of them, printed under the pages" : ""}${MAIN_THREAD ? " · drawn on the main thread" : ""}${PICTURES ? "" : " · picture pages off"}${OWN_PDF ? ` · ${path.basename(OWN_PDF)}` : ""} · median (each run)`);
 row("open: deck PDF to first page", (r) => r.open);
+row("reopen: same paper, page on screen", (r) => r.reopen?.ms);
+row("reopen: pages drawn", (r) => r.reopen?.drawn ?? undefined, "");
 row("tab: Notes → PDF, page on screen", (r) => r.tab?.ms);
 runs.forEach((r, i) => {
   if (r.tab && r.tab.before !== r.tab.after) console.log(`  !! run ${i + 1}: the tab switch moved the reader from page ${r.tab.before} to ${r.tab.after}`);
