@@ -82,3 +82,65 @@
 #notesView mark {
   cursor: pointer;
 }
+
+/* "Adjust": the bar shown while a highlight's words are selected with handles
+ * so either end can be dragged — see src/notes/highlight-adjust.js. Pinned to
+ * the bottom of the screen, clear of the words being chosen, and above the
+ * selection pill's layer; the pill itself is hidden while it is up, because its
+ * buttons would treat the selection as a NEW highlight. */
+.highlight-adjust-bar {
+  position: fixed;
+  z-index: 95;
+  left: 50%;
+  bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: calc(100vw - 32px);
+  padding: 6px 6px 6px 14px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  -webkit-user-select: none;
+  user-select: none;
+  touch-action: manipulation;
+}
+
+.highlight-adjust-bar[hidden] {
+  display: none;
+}
+
+.highlight-adjust-hint {
+  font-size: 0.85rem;
+  color: var(--muted);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.highlight-adjust-bar button {
+  flex: none;
+  min-height: 36px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.highlight-adjust-bar .highlight-adjust-apply {
+  border-color: transparent;
+  background: var(--accent);
+  color: var(--accent-contrast, #fff);
+  font-weight: 600;
+}
+
+body.is-adjusting-highlight #selectionFloat {
+  display: none !important;
+}

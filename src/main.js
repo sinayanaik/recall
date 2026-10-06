@@ -58,7 +58,7 @@ import { renderMyDecksList, repaintMyDecks } from "./library/my-decks-render.js?
 import { selectedMyDecks, selectedMyFolders, updateMyDecksBulkBar } from "./library/my-decks-selection.js?v=__BUILD__";
 import { captureNotesAnchor, captureSourceAnchor, jumpToNoteForCurrentCard, scheduleNoteJump } from "./notes/anchors.js?v=__BUILD__";
 import { createCardFromNotesSelection } from "./notes/frame-card.js?v=__BUILD__";
-import { markOpenOffsets, noteMarkNode, sourceMarkIndexFor } from "./notes/anchors.js?v=__BUILD__";
+import { markOpenOffsets, noteMarkNode, verifiedSourceMarkIndexFor } from "./notes/anchors.js?v=__BUILD__";
 import { refreshHighlightBadges, setHighlightBadgeHandler } from "./notes/highlight-badges.js?v=__BUILD__";
 import { closeHighlightNoteEditor, isHighlightNoteEditorOpen, openHighlightNoteEditor } from "./notes/highlight-note-editor.js?v=__BUILD__";
 import { goToBookmark } from "./notes/bookmark.js?v=__BUILD__";
@@ -88,6 +88,7 @@ import { cycleToLocator, initHighlightCycle, isHighlightSplitOpen, openHighlight
 // surface this module's own subtree imports — see setMarkMenuActions.
 import { documentHighlightEntries, noteHighlightEntries } from "./panels/highlight-index.js?v=__BUILD__";
 import { notifyHighlightsChanged, setHighlightsChangedHandler } from "./format/highlight-edit.js?v=__BUILD__";
+import { setMarkOrdinalResolver } from "./format/highlight.js?v=__BUILD__";
 import { closeNotesToc, ensureNotesTocBuilt, flashNotesHeading, initNotesTocFolding, isNotesTocOpen, markNotesTocDirtyFromEditor, notesTocHeadings, notesTocScrollFrame, rawNotesHeadings, scrollNotesEditToHeadingIndex, scrollNotesHeadingIntoView, setNotesTocScrollFrame, tocPushesNotes, toggleNotesToc, updateNotesTocActive } from "./notes/toc.js?v=__BUILD__";
 import { closeClozePanel, openClozePanel, toggleClozePanelAll } from "./panels/cloze-panel.js?v=__BUILD__";
 import { appInfoBtn, appInfoCheckBtn, appInfoCloseBtn, appInfoHealthBtn, appInfoModal, appInfoReloadBtn, closeAppInfoModal, forceRefreshAppInfo, openAppInfoModal, runProjectHealthCheck } from "./pwa/app-info.js?v=__BUILD__";
@@ -1228,8 +1229,15 @@ onDomReady(() => setDocumentPillCaptureHook(captureDocumentSelection));
 //
 // The ordinal, not the DOM position: on a note built lazily chunk by chunk the
 // two are different numbers, and sourceMarkIndexFor is what maps between them.
+// The same mapping for a selection laid over an existing highlight (see
+// overlappingMark in src/format/highlight.js): in the note it has to be the
+// SOURCE ordinal, checked against the mark's words; on every other surface the
+// whole source is rendered, and the DOM index is the ordinal.
+onDomReady(() => setMarkOrdinalResolver((view, mark) => (view === el.notesView
+  ? verifiedSourceMarkIndexFor(view, mark)
+  : [...view.querySelectorAll("mark")].indexOf(mark))));
 onDomReady(() => setHighlightBadgeHandler((mark, rect, noteText) => {
-  const index = sourceMarkIndexFor(el.notesView, mark);
+  const index = verifiedSourceMarkIndexFor(el.notesView, mark);
   if (index < 0) return;
   // The pane first, when there is one: the note this badge names is already on
   // screen there, and revealing it beats covering the note with a window

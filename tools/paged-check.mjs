@@ -707,6 +707,75 @@ const PROBE = `async (api) => {
       if (src.indexOf("Two same words here.") === -1) return "the words were removed with the mark: " + JSON.stringify(src);
       return true;
     })());
+
+    // ── A note an older version left a nested highlight in ─────────────────
+    //
+    // "That highlight is no longer in the note" on ✕ and ✎, most of the time.
+    // One nested mark shifted every ordinal after it; the last highlight's
+    // ordinal pointed past the end. The render repairs the nest now, and the
+    // tap on the LAST highlight has to act on the last highlight.
+    api.state.notes = "# Nest\\n\\nA <mark>outer <mark>inner</mark> words</mark> b <mark>x</mark> c <mark>last one</mark> end.";
+    api.setNotesScrolledSource(null);
+    await api.renderNotesView();
+    await settle(500);
+    mk("a nested highlight is repaired before the note is drawn", (() => {
+      const src = api.state.notes;
+      if (src.indexOf("<mark>outer inner words</mark>") === -1) return "not flattened: " + JSON.stringify(src);
+      return view.querySelectorAll("mark").length === 3 ? true : "the view holds " + view.querySelectorAll("mark").length + " marks";
+    })());
+    const lastMark = [...view.querySelectorAll("mark")].pop();
+    if (lastMark) lastMark.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await settle(250);
+    const menu3 = document.querySelector(".mark-menu");
+    const rm3 = menu3 && !menu3.hidden ? menu3.querySelector(".mark-menu-remove") : null;
+    if (rm3) rm3.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    await settle(700);
+    mk("✕ on the last highlight removes the last highlight", (() => {
+      const src = api.state.notes;
+      if (src.indexOf("<mark>last one</mark>") !== -1) return "it is still there: " + JSON.stringify(src);
+      if (src.indexOf("<mark>x</mark>") === -1) return "a different one went: " + JSON.stringify(src);
+      return true;
+    })());
+
+    // ── Adjust: grow a highlight from its menu ──────────────────────────────
+    api.state.notes = '# Adjust\\n\\nOne <mark data-color="green">two three</mark> four five six.';
+    api.setNotesScrolledSource(null);
+    await api.renderNotesView();
+    await settle(500);
+    const target = view.querySelector("mark");
+    if (target) target.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await settle(250);
+    const menu4 = document.querySelector(".mark-menu");
+    const adjust = menu4 && !menu4.hidden ? menu4.querySelector(".mark-menu-adjust") : null;
+    mk("the menu offers Adjust on a note's highlight", adjust && !adjust.hidden ? true : "no Adjust row");
+    if (adjust) adjust.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    await settle(200);
+    const bar = document.querySelector(".highlight-adjust-bar");
+    mk("Adjust selects the highlight's words and shows its bar", (() => {
+      if (!bar || bar.hidden) return "no bar";
+      const sel = window.getSelection();
+      const text = sel && sel.rangeCount ? sel.getRangeAt(0).toString() : "";
+      return text === "two three" ? true : "selected " + JSON.stringify(text);
+    })());
+    // Drag the end out over "four" — done here the way a mouse would.
+    {
+      const mark = view.querySelector("mark");
+      const after = mark.nextSibling;
+      const range = document.createRange();
+      range.setStart(mark.firstChild, 0);
+      range.setEnd(after, " four".length);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }
+    const apply = bar ? bar.querySelector("[data-adjust=apply]") : null;
+    if (apply) apply.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    await settle(700);
+    mk("Apply moves the highlight to the new selection, same colour", (() => {
+      const src = api.state.notes;
+      if (src.indexOf('One <mark data-color="green">two three four</mark> five six.') === -1) return JSON.stringify(src);
+      return bar.hidden ? true : "the bar stayed up";
+    })());
   }
 
   api.setNotesReadingMode("continuous");

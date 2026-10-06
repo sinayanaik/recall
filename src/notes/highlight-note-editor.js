@@ -32,7 +32,7 @@
 // gets it there for every highlight afterwards.
 
 import { installModeKeys } from "../editor/markdown-keys.js?v=__BUILD__";
-import { clearHighlightNoteAt, setHighlightNoteAt } from "../format/highlight-notes.js?v=__BUILD__";
+import { clearHighlightNoteAt, highlightRefAt, setHighlightNoteAt } from "../format/highlight-notes.js?v=__BUILD__";
 import { createNoteEditorKit } from "./note-editor-kit.js?v=__BUILD__";
 import { renderNotesViewPinned } from "./notes-view.js?v=__BUILD__";
 import { styleMobileMedia } from "../ui/style-tokens.js?v=__BUILD__";
@@ -183,7 +183,14 @@ function ensureHighlightNoteEditor() {
     // { undo: !undoPushed } — one Ctrl+Z step for the whole editing session,
     // the same shape applyFormatToTextarea uses for a formatting run. A stack
     // with one entry per typing pause is not an undo stack.
-    noteHandlers.save(openMarkIndex, text, { rerender: false, undo: !undoPushed });
+    // false means the highlight could not be found (it was removed while the
+    // note was open): the text stays in the box, unsaved, and says so — it is
+    // never written onto a different highlight instead.
+    if (noteHandlers.save(openMarkIndex, text, { rerender: false, undo: !undoPushed }) === false) {
+      status.textContent = "Not saved — this highlight is gone";
+      status.classList.add("is-visible");
+      return;
+    }
     undoPushed = true;
     savedText = text;
     dirtySinceOpen = true;
@@ -414,7 +421,12 @@ export function openHighlightNoteEditor(markIndex, anchorRect, existingNoteMarkd
   closeHighlightNoteEditor();
   const { root, kit, textarea, deleteBtn, status, setMode } = ensureHighlightNoteEditor();
   noteHandlers = destination || NOTES_NOTE_HANDLERS;
-  openMarkIndex = markIndex;
+  // A note's highlight is held by REF, not by ordinal: the reader can go on
+  // highlighting above this one while the sheet is open, and every highlight
+  // made or removed above it changes its ordinal. See highlightRefAt.
+  openMarkIndex = noteHandlers === NOTES_NOTE_HANDLERS && Number.isInteger(markIndex)
+    ? highlightRefAt(markIndex) || markIndex
+    : markIndex;
   // setValue, not a bare `.value =`: a programmatic write fires no "input"
   // event, which is what the syntax-highlight backdrop syncs itself from —
   // without it the backdrop shows whatever the PREVIOUS note left behind while

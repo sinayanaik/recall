@@ -464,6 +464,209 @@ const PROBE = `async (api) => {
     return true;
   });
 
+  // ── One counter for every mark ────────────────────────────────────────────
+  //
+  // "That highlight is no longer in the note", ✕ that removed nothing, ✎ that
+  // wrote onto a different highlight. Every one of them was the same bug: the
+  // edits counted marks with a lazy <mark>…</mark> regex, the DOM counted
+  // elements, and a nested or empty mark made the two disagree from that point
+  // on. scanMarks is the one counter now; these hold it to the DOM's count.
+  const NESTED = 'a <mark>foo <mark data-color="green">bar</mark> baz</mark> b <mark>x</mark> c <mark>y</mark>';
+  const EMPTY = 'a <mark></mark> b <mark>x</mark> c <mark data-color="green">y</mark>';
+  const domMarks = (src) => {
+    const box = document.createElement("div");
+    box.innerHTML = api.markdownToSafeHtml(src);
+    return box.querySelectorAll("mark").length;
+  };
+
+  check("a nested mark is counted the way the DOM counts it", () => {
+    const n = api.scanMarks(NESTED).length;
+    const dom = domMarks(NESTED);
+    if (n !== 4) return "scanMarks counted " + n + ", expected 4";
+    if (dom !== n) return "the DOM holds " + dom + " marks, the scanner " + n;
+    const last = api.markSpanAt(NESTED, n - 1);
+    if (!last || last.inner !== "y") return "the last ordinal is not the last highlight: " + JSON.stringify(last);
+    return true;
+  });
+
+  check("an empty mark does not swallow the highlight after it", () => {
+    const entries = api.scanMarks(EMPTY);
+    if (entries.length !== domMarks(EMPTY)) return "scanner " + entries.length + " vs DOM " + domMarks(EMPTY);
+    if (api.markSpanAt(EMPTY, 1)?.inner !== "x") return "ordinal 1 is " + JSON.stringify(api.markSpanAt(EMPTY, 1));
+    if (api.markSpanAt(EMPTY, 2)?.inner !== "y") return "ordinal 2 is " + JSON.stringify(api.markSpanAt(EMPTY, 2));
+    return true;
+  });
+
+  check("repair: nested marks flatten into the outer one, empty ones go", () => {
+    const fixed = api.normalizeHighlightSource(NESTED);
+    const entries = api.scanMarks(fixed);
+    if (entries.length !== 3) return "expected 3 marks, got " + entries.length + ": " + fixed;
+    if (entries.some((e) => e.depth > 0)) return "still nested: " + fixed;
+    if (!fixed.includes("<mark>foo bar baz</mark>")) return "outer mark lost its words: " + fixed;
+    const clean = api.normalizeHighlightSource(EMPTY);
+    if (clean.includes("<mark></mark>")) return "the empty mark survived: " + clean;
+    if (api.scanMarks(clean).length !== 2) return "expected 2 marks after the repair: " + clean;
+    const untouched = 'plain <mark>one</mark> and <mark data-color="green">two</mark>';
+    if (api.normalizeHighlightSource(untouched) !== untouched) return "a healthy note was rewritten";
+    return true;
+  });
+
+  check("repair: a nested highlight's note is folded in, not dropped", () => {
+    let src = 'x <mark data-note="hn-aaaa">foo <mark data-note="hn-bbbb">bar</mark> baz</mark> y';
+    src = api.setHighlightNoteInSource(src, "hn-aaaa", "outer note", "");
+    src = api.setHighlightNoteInSource(src, "hn-bbbb", "inner note", "");
+    const fixed = api.normalizeHighlightSource(src);
+    const notes = api.readHighlightNotes(fixed);
+    if (api.scanMarks(api.readerNotesBody(fixed)).length !== 1) return "not flattened: " + fixed;
+    if (notes.has("hn-bbbb")) return "the folded entry is still there";
+    const text = notes.get("hn-aaaa") || "";
+    if (!text.includes("outer note") || !text.includes("inner note")) return "a note was lost: " + JSON.stringify(text);
+    return true;
+  });
+
+  check("an inner mark with the only note hands it to the outer one", () => {
+    const fixed = api.normalizeHighlightSource('x <mark>foo <mark data-note="hn-bbbb">bar</mark> baz</mark> y');
+    if (!fixed.includes('<mark data-note="hn-bbbb">foo bar baz</mark>')) return fixed;
+    return true;
+  });
+
+  check("a mark inside an inline code span is text, and is left alone", () => {
+    const tick = String.fromCharCode(96);
+    const src = "use " + tick + "<mark></mark>" + tick + " to highlight, like <mark>this</mark>";
+    if (api.normalizeHighlightSource(src) !== src) return api.normalizeHighlightSource(src);
+    return true;
+  });
+
+  // ── Extending, shrinking, never nesting ───────────────────────────────────
+  const marksOf = (text) => api.scanMarks(text);
+  const noNesting = (text) => (marksOf(text).some((e) => e.depth > 0) ? "nested: " + text : true);
+
+  check("extend: selecting past a highlight grows it, it does not toggle it off", () => {
+    const src = "one <mark>two</mark> three four";
+    const out = api.highlightToggleInSource(src, { asText: "two three", occurrence: 0 }, "yellow");
+    if (!out || out.action !== "extended") return "action " + (out && out.action) + ": " + (out && out.text);
+    if (out.text !== "one <mark>two three</mark> four") return out.text;
+    if (!out.text.startsWith("<mark", out.idx)) return "idx does not point at the mark";
+    return true;
+  });
+
+  check("extend backwards, and keep the note on the highlight", () => {
+    const src = 'one <mark data-color="green" data-note="hn-aaaa">two</mark> three';
+    const out = api.highlightToggleInSource(src, { asText: "one two", occurrence: 0 }, "green");
+    if (!out || out.action !== "extended") return "action " + (out && out.action) + ": " + (out && out.text);
+    if (out.text !== '<mark data-color="green" data-note="hn-aaaa">one two</mark> three') return out.text;
+    return true;
+  });
+
+  check("a selection across two highlights makes one, never a nest", () => {
+    const src = "<mark>one</mark> two <mark>three</mark> four";
+    const out = api.highlightToggleInSource(src, { asText: "one two three", occurrence: 0 }, "yellow");
+    if (!out) return "no result";
+    const nested = noNesting(out.text);
+    if (nested !== true) return nested;
+    if (out.text !== "<mark>one two three</mark> four") return out.text;
+    return true;
+  });
+
+  check("two annotated highlights merged keep both notes", () => {
+    const src = '<mark data-note="hn-aaaa">one</mark> two <mark data-note="hn-bbbb">three</mark>';
+    const out = api.highlightToggleInSource(src, { asText: "one two three", occurrence: 0 }, "yellow");
+    if (!out || out.action !== "extended") return "action " + (out && out.action);
+    if (JSON.stringify(out.notes) !== JSON.stringify([["hn-aaaa", "hn-bbbb"]])) return "notes " + JSON.stringify(out.notes);
+    if (!out.text.startsWith('<mark data-note="hn-aaaa">one two three</mark>')) return out.text;
+    return true;
+  });
+
+  check("shrink: clearing the middle of a highlight leaves both ends", () => {
+    const src = 'x <mark data-color="green" data-note="hn-aaaa">alpha beta gamma</mark> y';
+    const out = api.highlightToggleInSource(src, { asText: "beta", occurrence: 0 }, "clear");
+    if (!out || out.action !== "removed") return "action " + (out && out.action);
+    if (out.text !== 'x <mark data-color="green" data-note="hn-aaaa">alpha </mark>beta<mark data-color="green"> gamma</mark> y') return out.text;
+    return true;
+  });
+
+  check("shrink: clearing one end keeps the note on what is left", () => {
+    const src = 'x <mark data-note="hn-aaaa">alpha beta</mark> y';
+    const out = api.highlightToggleInSource(src, { asText: "alpha", occurrence: 0 }, "clear");
+    if (!out) return "no result";
+    if (out.text !== 'x alpha<mark data-note="hn-aaaa"> beta</mark> y') return out.text;
+    return true;
+  });
+
+  check("re-selecting part of a highlight in its own colour is 'already'", () => {
+    const src = "x <mark>alpha beta</mark> y";
+    const out = api.highlightToggleInSource(src, { asText: "beta", occurrence: 0 }, "yellow");
+    if (!out || out.action !== "already") return "action " + (out && out.action) + ": " + (out && out.text);
+    return true;
+  });
+
+  check("the raw editor's highlight never nests either", () => {
+    const out = api.toggleMarkColorInText("<mark>a</mark> b <mark>c</mark>", "green");
+    const nested = noNesting(out);
+    if (nested !== true) return nested;
+    if (out !== '<mark data-color="green">a b c</mark>') return out;
+    return true;
+  });
+
+  // ── Edits by ordinal on a note that has (had) a nested mark ───────────────
+  check("remove/recolour/note reach the LAST highlight of a nested note", () => {
+    const saved = api.state.notes;
+    try {
+      api.state.notes = NESTED;
+      const last = api.scanMarks(NESTED).length - 1;
+      if (!api.recolourHighlightAt(last, "green")) return "recolour refused";
+      if (!api.state.notes.endsWith('<mark data-color="green">y</mark>')) return "recolour hit: " + api.state.notes;
+      // The recolour re-rendered, and a render repairs the nest — so the
+      // ordinal is counted again, as anything holding one across an edit must
+      // (the mark menu and the note editor hold a ref for exactly this).
+      const lastNow = api.scanMarks(api.readerNotesBody(api.state.notes)).length - 1;
+      if (!api.setHighlightNoteAt(lastNow, "about y", { rerender: false })) return "note refused";
+      const id = api.markSpanAt(api.state.notes, lastNow)?.note;
+      if (api.readHighlightNotes(api.state.notes).get(id) !== "about y") return "note not on y";
+      if (!api.removeHighlightAt(lastNow)) return "remove refused";
+      // removeHighlightAt re-renders, which repairs the nest first — so count
+      // what is left rather than assume the ordinals did not move.
+      if (api.readerNotesBody(api.state.notes).includes(">y</mark>")) return "y still highlighted: " + api.state.notes;
+      if (!api.readerNotesBody(api.state.notes).includes("<mark>x</mark>")) return "removed the wrong one: " + api.state.notes;
+      return true;
+    } finally {
+      api.state.notes = saved;
+    }
+  });
+
+  check("a held highlight survives one being made above it", () => {
+    const src = "a <mark>x</mark> b <mark>y</mark>";
+    const ref = api.highlightRefAt(1, src);
+    const moved = "<mark>new</mark> " + src;
+    if (api.resolveHighlightRef(moved, ref) !== 2) return "resolved to " + api.resolveHighlightRef(moved, ref);
+    const gone = "a <mark>x</mark> b y";
+    if (api.resolveHighlightRef(gone, ref) !== -1) return "a removed highlight resolved to " + api.resolveHighlightRef(gone, ref);
+    return true;
+  });
+
+  check("adjust: a highlight grows and shrinks, keeping colour and note", () => {
+    const saved = api.state.notes;
+    try {
+      api.state.notes = 'one <mark data-color="green" data-note="hn-aaaa">two three</mark> four five';
+      if (!api.adjustHighlightAt(0, { asText: "two three four", occurrence: 0 })) return "grow refused";
+      if (!api.state.notes.startsWith('one <mark data-color="green" data-note="hn-aaaa">two three four</mark> five')) return "grow: " + api.state.notes;
+      if (!api.adjustHighlightAt(0, { asText: "three", occurrence: 0 })) return "shrink refused";
+      if (!api.state.notes.startsWith('one two <mark data-color="green" data-note="hn-aaaa">three</mark> four five')) return "shrink: " + api.state.notes;
+      // Shifted: starts earlier, ends earlier than it did.
+      if (!api.adjustHighlightAt(0, { asText: "two three", occurrence: 0 })) return "shift refused";
+      if (!api.state.notes.startsWith('one <mark data-color="green" data-note="hn-aaaa">two three</mark> four five')) return "shift: " + api.state.notes;
+      return true;
+    } finally {
+      api.state.notes = saved;
+    }
+  });
+
+  check("a rendered mark's words are checked against its source entry", () => {
+    if (!api.markTextMatches("**bold** [link](http://x.y)", "bold link")) return "markup in the source broke the match";
+    if (api.markTextMatches("other words", "bold link")) return "different words matched";
+    return true;
+  });
+
   // ── Chapters have to be worth a page ─────────────────────────────────────
   //
   // Reported as "headings that have no contents still occupy blank columns,

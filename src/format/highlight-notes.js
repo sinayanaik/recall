@@ -83,7 +83,7 @@ import {
   parseLegacyHighlightNoteEntries,
   writeHighlightNoteEntries
 } from "./highlight-notes-merge.js?v=__BUILD__";
-import { HIGHLIGHT_SCAN_RE, MARK_CLOSE_TAG, markGroupSpanAt, markOpenTag, markSpanAt } from "./highlight.js?v=__BUILD__";
+import { HIGHLIGHT_SCAN_RE, MARK_CLOSE_TAG, markOpenTag, markSpanAt, markTextMatches, normalizeMarks, plainMarkText, scanMarks } from "./highlight.js?v=__BUILD__";
 import { notifyHighlightsChanged } from "./highlight-edit.js?v=__BUILD__";
 import { renderNotesViewPinned } from "../notes/notes-view.js?v=__BUILD__";
 import { pushNotesUndo } from "../notes/notes-history.js?v=__BUILD__";
@@ -235,9 +235,9 @@ export function highlightNoteResolver(source) {
   };
 }
 
-export function highlightNoteTextAt(markIndex) {
+export function highlightNoteTextAt(markRef) {
   const source = state.notes || "";
-  const span = markSpanAt(source, markIndex);
+  const span = markSpanAt(source, resolveHighlightRef(source, markRef));
   return span ? highlightNoteText(source, span.note) : "";
 }
 
@@ -288,11 +288,9 @@ export function pruneOrphanHighlightNotes(source) {
   if (!span) return source;
   const body = upgraded.slice(0, span.start);
   const live = new Set();
-  HIGHLIGHT_SCAN_RE.lastIndex = 0;
-  let m;
-  while ((m = HIGHLIGHT_SCAN_RE.exec(body))) {
-    if (isHighlightNoteId(m[2])) live.add(m[2]);
-  }
+  scanMarks(body).forEach((entry) => {
+    if (isHighlightNoteId(entry.note)) live.add(entry.note);
+  });
   const pdfHighlights = state.meta?.pdfHighlights;
   if (Array.isArray(pdfHighlights)) {
     pdfHighlights.forEach((record) => {
@@ -353,23 +351,34 @@ export function pruneOrphanHighlightNotes(source) {
 //     highlight it is holding.
 //
 // All three default to true, so every other caller is unchanged.
-function rewriteFirstMarkNote(markIndex, makeNote, { rerender = true, undo = true, notify = true } = {}) {
+function rewriteFirstMarkNote(markRef, makeNote, { rerender = true, undo = true, notify = true } = {}) {
   const source = state.notes || "";
-  const span = markGroupSpanAt(source, markIndex);
-  const first = markSpanAt(source, markIndex);
-  if (!span || !first) {
+  const markIndex = resolveHighlightRef(source, markRef);
+  const first = markIndex < 0 ? null : markSpanAt(source, markIndex);
+  if (!first) {
     showToast("That highlight is no longer in the note", "error");
+    // Whatever the reader pressed was drawn from a note that no longer says
+    // what it said; repainting is what stops the next press failing the same way.
+    renderNotesViewPinned();
     return false;
   }
   const { id, text } = makeNote(first, source);
-  const rewrittenFirst = markOpenTag(first.color, id || undefined) + first.inner + MARK_CLOSE_TAG;
+  // Only the OPEN TAG is rewritten — the words, and anything nested or unusual
+  // inside them, are left exactly where they are.
+  const withMark = source.slice(0, first.start) + markOpenTag(first.color, id || undefined) + source.slice(first.openEnd);
   // The mark is rewritten FIRST and the section written against that result,
   // so the section's own offsets are computed against the text it lands in —
   // the mark's open tag changes length here (an id is added or dropped), and
   // a section start measured before that would be stale by exactly that much.
-  const withMark = source.slice(0, first.start) + rewrittenFirst + source.slice(first.end);
   if (undo) pushNotesUndo("highlight");
   state.notes = setHighlightNoteInSource(withMark, id || first.note, text, id ? excerptLabel(first.inner) : null);
+  // A ref follows the highlight it was resolved to, so the next save of the
+  // same editing session finds it by its id rather than by a number.
+  if (markRef && typeof markRef === "object") {
+    markRef.index = markIndex;
+    markRef.note = isHighlightNoteId(id) ? id : null;
+    markRef.start = first.start;
+  }
   if (rerender) renderNotesViewPinned();
   // Not optional: the deck has changed on disk whether or not anything was
   // repainted.
@@ -382,10 +391,10 @@ function rewriteFirstMarkNote(markIndex, makeNote, { rerender = true, undo = tru
   return true;
 }
 
-export function setHighlightNoteAt(markIndex, markdownText, options = {}) {
+export function setHighlightNoteAt(markRef, markdownText, options = {}) {
   const text = String(markdownText || "").trim();
-  if (!text) return clearHighlightNoteAt(markIndex, options);
-  return rewriteFirstMarkNote(markIndex, (first, source) => ({
+  if (!text) return clearHighlightNoteAt(markRef, options);
+  return rewriteFirstMarkNote(markRef, (first, source) => ({
     // A highlight that already has an id keeps it, so a hand-written section
     // entry isn't orphaned by an edit made through the popup.
     id: isHighlightNoteId(first.note) ? first.note : freshHighlightNoteId(source),
@@ -393,8 +402,91 @@ export function setHighlightNoteAt(markIndex, markdownText, options = {}) {
   }), options);
 }
 
-export function clearHighlightNoteAt(markIndex, options = {}) {
-  return rewriteFirstMarkNote(markIndex, () => ({ id: null, text: "" }), options);
+export function clearHighlightNoteAt(markRef, options = {}) {
+  return rewriteFirstMarkNote(markRef, () => ({ id: null, text: "" }), options);
+}
+
+// ── Holding on to a highlight while it is being written about ─────────────
+//
+// The note editor stays open while the reader keeps reading — and on a phone,
+// keeps highlighting, in the half of the screen above the sheet. An ordinal
+// taken when the editor opened is wrong the moment a highlight is made or
+// removed above this one: the next autosave wrote the note onto the wrong
+// highlight, or onto none ("That highlight is no longer in the note").
+//
+// So a caller that holds a highlight across time holds a REF — { index, note,
+// start, text } — and every write resolves it against the source as it is NOW:
+// by its note id when it has one (unique by construction), else by the mark
+// nearest where it was whose words are still its words. A plain number is still
+// accepted, as a ref nobody can re-check.
+export function highlightRefAt(markIndex, source = state.notes || "") {
+  const entry = scanMarks(source)[markIndex];
+  if (!entry) return null;
+  return {
+    index: markIndex,
+    note: isHighlightNoteId(entry.note) ? entry.note : null,
+    start: entry.start,
+    text: plainMarkText(entry.inner)
+  };
+}
+
+// The ordinal a ref names in the note as it is now, -1 if it is gone.
+export function highlightRefIndex(ref) {
+  return resolveHighlightRef(state.notes || "", ref);
+}
+
+export function resolveHighlightRef(source, ref) {
+  if (ref == null) return -1;
+  if (typeof ref !== "object") return Number.isInteger(ref) && ref >= 0 ? ref : -1;
+  const entries = scanMarks(source);
+  if (ref.note) {
+    const byId = entries.find((entry) => entry.note === ref.note);
+    if (byId) return byId.index;
+  }
+  const same = (entry) => entry && markTextMatches(entry.inner, ref.text) && markTextMatches(ref.text, plainMarkText(entry.inner));
+  if (same(entries[ref.index]) && (!ref.note || !entries[ref.index].note)) return ref.index;
+  let best = -1;
+  let bestDistance = Infinity;
+  entries.forEach((entry) => {
+    if (!same(entry) || (ref.note && entry.note)) return;
+    const distance = Math.abs(entry.start - (ref.start ?? 0));
+    if (distance < bestDistance) {
+      best = entry.index;
+      bestDistance = distance;
+    }
+  });
+  return best;
+}
+
+// ── Two highlights becoming one ────────────────────────────────────────────
+//
+// Extending a highlight over another, or repairing a highlight that an older
+// version nested inside another, leaves ONE mark where there were two — and
+// possibly two notes. Neither is dropped: `folded`'s text is appended to
+// `kept`'s, under a rule, and `folded`'s entry goes. Pairs are [keptId,
+// foldedId] as normalizeMarks and applyHighlightRange report them.
+export function foldHighlightNotes(source, pairs) {
+  let out = String(source || "");
+  (pairs || []).forEach(([kept, folded]) => {
+    if (!isHighlightNoteId(kept) || !isHighlightNoteId(folded) || kept === folded) return;
+    const notes = readHighlightNotes(out);
+    const extra = (notes.get(folded) || "").trim();
+    if (extra) {
+      const base = (notes.get(kept) || "").trim();
+      out = setHighlightNoteInSource(out, kept, base ? `${base}\n\n---\n\n${extra}` : extra, null);
+    }
+    out = setHighlightNoteInSource(out, folded, "", null);
+  });
+  return out;
+}
+
+// normalizeMarks (format/highlight.js) with the notes it had to merge merged —
+// the one call the render and the edit paths make. Same string back when there
+// was nothing to repair, which is every note written from here on.
+export function normalizeHighlightSource(source) {
+  const { text, notes } = normalizeMarks(source);
+  if (text === source) return source;
+  return notes.length ? foldHighlightNotes(text, notes) : text;
 }
 
 // One-shot conversion of the old inline-base64 form, run when the raw editor

@@ -16,6 +16,7 @@ import { deckHasPdf } from "../documents/doc-slot.js?v=__BUILD__";
 import { flashDocumentHighlight } from "../documents/pdf-highlights.js?v=__BUILD__";
 import { captureDocumentSelection, resolveDocumentAnchor } from "../documents/pdf-selection.js?v=__BUILD__";
 import { isDocumentViewActive, scrollToDocumentPage } from "../documents/pdf-view.js?v=__BUILD__";
+import { markTextMatches, renderedMarkText, scanMarks } from "../format/highlight.js?v=__BUILD__";
 import { locateSelectionInSource, renderedSelectionStrings } from "../format/locate-selection.js?v=__BUILD__";
 import { loadDeckFromLibrary } from "../library/local-library.js?v=__BUILD__";
 import { scrollTextareaToOffset } from "./caret.js?v=__BUILD__";
@@ -776,12 +777,11 @@ export function revealRenderedNoteRange(range, { flash = true, smooth = true, al
 // of which is not in the DOM.
 export const MARK_OPEN_TAG_RE = /<mark\b[^>]*>/g;
 
+// Built on scanMarks (src/format/highlight.js), the one counter every edit
+// uses, so an ordinal from here and an ordinal an edit resolves cannot be two
+// different numbers.
 export function markOpenOffsets(text) {
-  const offsets = [];
-  const scan = new RegExp(MARK_OPEN_TAG_RE.source, "g");
-  let match;
-  while ((match = scan.exec(text)) !== null) offsets.push(match.index);
-  return offsets;
+  return scanMarks(text).map((entry) => entry.start);
 }
 
 // Resolve `markIndex` against a note that is built as it is read: work out
@@ -847,6 +847,29 @@ export function sourceMarkIndexFor(view, mark) {
   if (within === -1) return -1;
   const index = base + within;
   return index < offsets.length ? index : -1;
+}
+
+// sourceMarkIndexFor, checked: the entry it names must hold the words the
+// tapped mark shows. A count that agrees can still be wrong — a mark the
+// renderer made that the source does not have, and one the source has that the
+// renderer did not, cancel out — and what a wrong ordinal did was remove or
+// annotate a DIFFERENT highlight from the one pressed. When the words disagree
+// the nearest entries either side are tried; when none of them is it, the
+// answer is -1 ("do nothing") rather than a guess.
+export const MARK_ORDINAL_SEARCH = 3;
+
+export function verifiedSourceMarkIndexFor(view, mark, source = state.notes || "") {
+  const index = sourceMarkIndexFor(view, mark);
+  if (index < 0) return -1;
+  const entries = scanMarks(source);
+  const words = renderedMarkText(mark);
+  const fits = (i) => entries[i] && markTextMatches(entries[i].inner, words);
+  if (fits(index)) return index;
+  for (let step = 1; step <= MARK_ORDINAL_SEARCH; step += 1) {
+    if (fits(index - step)) return index - step;
+    if (fits(index + step)) return index + step;
+  }
+  return -1;
 }
 
 // The rendered <mark> a locator names, or null. Split out of revealNoteMark

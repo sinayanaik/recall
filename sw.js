@@ -521,6 +521,7 @@ const APP_SHELL = [
   `./src/notes/chapters.js?v=${STAMP}`,
   `./src/notes/frame-card.js?v=${STAMP}`,
   `./src/notes/highlight-badges.js?v=${STAMP}`,
+  `./src/notes/highlight-adjust.js?v=${STAMP}`,
   `./src/notes/highlight-note-editor.js?v=${STAMP}`,
   `./src/notes/ink-sheet.js?v=${STAMP}`,
   `./src/notes/link-browse.js?v=${STAMP}`,
