@@ -708,14 +708,42 @@ export async function clearAllDeckSnapshots() {
   announceDeckStoreChange("clear", "");
 }
 
-export function scheduleDeckAutosave() {
+// ── A lazy save, for a change nobody is waiting to see written ─────────────
+//
+// The reading position is the one: the PDF reader moves it on every scroll, and
+// it used to arm the 400ms save like a keystroke does — so every time a reader
+// stopped scrolling, the whole deck (every highlight, every note, every stroke)
+// was snapshotted and written 400ms later, and stamped as changed for the next
+// sync to upload. On an annotated paper that is the long task a phone feels
+// under the finger as it lands on the next scroll.
+//
+// `lazy` arms the SAME timer, so everything that already flushes it still does
+// — a navigation (flushPendingDeckAutosave), a sync (reconcile flushes an armed
+// timer before it reads the library), pagehide and going hidden (which save
+// synchronously anyway). It only waits longer: DECK_AUTOSAVE_LAZY_MS after the
+// last lazy request. And it never stretches a real edit's save: a lazy request
+// while a short one is armed leaves the short one alone, and a real edit
+// replaces a lazy timer with the short one.
+export const DECK_AUTOSAVE_LAZY_MS = 15000;
+let deckAutosaveIsLazy = false;
+
+// For tools/pdf-preview-check.mjs: whether a save is armed, and whether it is a
+// lazy one. (deckAutosaveTimer itself is a binding a check can only snapshot.)
+export function deckAutosaveState() {
+  return { armed: Boolean(deckAutosaveTimer), lazy: Boolean(deckAutosaveTimer) && deckAutosaveIsLazy };
+}
+
+export function scheduleDeckAutosave({ lazy = false } = {}) {
   // After a storage-quota failure, stop scheduling further writes — the
   // toast already told the user, and hammering a full store just wastes CPU
   // and fires more confusing errors.
   if (deckAutosaveStorageFailed) return;
+  if (lazy && deckAutosaveTimer && !deckAutosaveIsLazy) return;
   if (deckAutosaveTimer) clearTimeout(deckAutosaveTimer);
+  deckAutosaveIsLazy = lazy;
   setDeckAutosaveTimer(setTimeout(async () => {
     setDeckAutosaveTimer(null);
+    deckAutosaveIsLazy = false;
     persistWorkingDeck();
     // An empty deck (e.g. the last card was just deleted) has nothing to
     // save — saveDeckToLibrary correctly no-ops and returns null for this,
@@ -742,7 +770,7 @@ export function scheduleDeckAutosave() {
       console.error("Autosave failed", error);
       setSyncIndicator("error");
     }
-  }, 400));
+  }, lazy ? DECK_AUTOSAVE_LAZY_MS : 400));
 }
 
 // Write out an armed-but-unfired autosave for the deck that is open RIGHT NOW,
@@ -761,6 +789,7 @@ export async function flushPendingDeckAutosave() {
   if (!deckAutosaveTimer) return;
   clearTimeout(deckAutosaveTimer);
   setDeckAutosaveTimer(null);
+  deckAutosaveIsLazy = false;
   persistWorkingDeck();
   // Same no-op case the timer itself handles — an empty deck has nothing to
   // save and this is not a storage failure.

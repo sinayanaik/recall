@@ -1834,13 +1834,18 @@ export function relayoutDocument({ refit = false, afterLayout = null } = {}) {
   // reads offsetTop and every page has to have its new height before the first
   // of those answers are worth anything.
   const near = new Set();
+  let resized = false;
   openPdf.pages.forEach((entry, pageNumber) => {
     const width = (entry.viewport ? entry.viewport.width / (entry.viewport.scale || 1) : openPdf.baseWidth) * openPdf.scale;
     const height = (entry.viewport ? entry.viewport.height / (entry.viewport.scale || 1) : openPdf.baseHeight) * openPdf.scale;
-    entry.el.style.width = `${Math.round(width)}px`;
-    entry.el.style.height = `${Math.round(height)}px`;
+    const boxWidth = `${Math.round(width)}px`;
+    const boxHeight = `${Math.round(height)}px`;
+    if (entry.el.style.width !== boxWidth || entry.el.style.height !== boxHeight) {
+      entry.el.style.width = boxWidth;
+      entry.el.style.height = boxHeight;
+      resized = true;
+    }
     entry.boxHeight = Math.round(height);
-    bumpDocumentLayout();
     if (pageNumber === 1) publishPageWidth(width);
     if (openPdf.rendered.has(pageNumber) && pageNeedsRerender(entry, width, height)) {
       entry.pendingSize = { width, height };
@@ -1881,6 +1886,10 @@ export function relayoutDocument({ refit = false, afterLayout = null } = {}) {
       entry.viewport = entry.viewport.clone({ scale: openPdf.scale });
     }
   });
+  // Once for the whole pass, and only when a box changed: a relayout at the
+  // size the pages already have (every in-place sync reload) keeps the geometry
+  // table it has.
+  if (resized) bumpDocumentLayout();
   // Between the two passes, deliberately. A zoom moves the scroll offsets so the
   // point the reader was looking at stays where it was (restorePageAnchor), and
   // the second pass below decides which pages to render from those offsets — so
@@ -2176,10 +2185,18 @@ function resizePageBox(entry, width, height) {
   // this one's height cannot move it. One forced layout, not two.
   const pageTop = delta && view ? pageOffsetTop(entry.el) : 0;
   const scrollTop = view ? view.scrollTop : 0;
-  entry.el.style.width = `${Math.round(width)}px`;
-  entry.el.style.height = `${nextHeight}px`;
+  const nextWidth = `${Math.round(width)}px`;
+  // Only a box that actually changed size invalidates the page geometry table:
+  // every page renders through here, and the table it would throw away (2 × N
+  // offset reads to rebuild) is the one the page indicator reads every frame of
+  // the scroll that follows. On a paper whose pages are all one size, which is
+  // most of them, nothing here changes at all.
+  if (entry.el.style.width !== nextWidth || entry.el.style.height !== `${nextHeight}px`) {
+    entry.el.style.width = nextWidth;
+    entry.el.style.height = `${nextHeight}px`;
+    bumpDocumentLayout();
+  }
   entry.boxHeight = nextHeight;
-  bumpDocumentLayout();
   if (!delta || !view || previousHeight <= 0) return;
   // A stroke in progress is the one case where correcting this is worse than
   // living with it: a programmatic scroll cancels the stroke (4f44b74), and a
@@ -3490,6 +3507,9 @@ function noteCanvasSetup(dark = null) {
   const worker = drawingInWorker();
   notePdfCanvasSetup({
     cpu: pdfCanvasOnCpu(),
+    // The worker always draws on a CPU OffscreenCanvas, whatever the main
+    // thread's preference says; the readout used to print that preference.
+    where: worker ? "CPU, in the worker" : (pdfCanvasOnCpu() ? "CPU" : "GPU"),
     budget: canvasPixelBudget(),
     slots: renderConcurrency(),
     drawn: worker ? "in a background thread" : `on the main thread (${pageRendererStatus() || "renderer not in use"})`,
@@ -5080,9 +5100,15 @@ export function scheduleDocumentPositionSave() {
     // could sit unflushed in memory for the deck's entire session while a
     // periodic sync reconciled against the stale copy still on disk — merged
     // that stale page back over this one, and landed the reader there on the
-    // next reopen. Debounced, so a fling during active scrolling still
-    // coalesces into one write once it settles (see scheduleDeckAutosave).
-    scheduleDeckAutosave();
+    // next reopen.
+    //
+    // LAZILY, though: a whole-deck save 400ms after every scroll stop was a
+    // long task on an annotated paper each time the reader paused, and an
+    // upload at the next sync. The lazy save arms the same timer every flush
+    // already knows about — a sync, a navigation, pagehide and going hidden all
+    // write it out — and otherwise waits for a real rest (see
+    // scheduleDeckAutosave).
+    scheduleDeckAutosave({ lazy: true });
   }
 }
 
@@ -5309,16 +5335,47 @@ function viewportFocal() {
 // coordinates, measured once before anything is transformed — transform-origin
 // is read in that same pre-transform space, so measuring it again mid-gesture
 // would compound.
+//
+// ── Once per frame, and the layer set up once per gesture ─────────────────
+//
+// touchmove arrives faster than frames on most phones, and each call used to
+// write four styles — the class, will-change, the origin and the transform. The
+// first three never change within a gesture; they are written when it starts
+// to paint and not again. The transform is written in the next animation frame,
+// with whatever ratio the last move left, so a burst of moves costs one style
+// write a frame instead of four a move.
+//
+// (`will-change` cannot simply live on .pdf-pages for good: a box with it is
+// the offsetParent of every page inside it, and every offsetTop this file reads
+// — the page the reader is on, the resume scroll, the anchor — is measured from
+// .document-stage on purpose. See pagesHost.)
+let pinchPaintFrame = 0;
+let pinchPaintRatio = 1;
+let pinchPaintPrimed = false;
+
 function paintPinch(origin, ratio) {
   const host = pagesHost();
   if (!host) return;
-  host.classList.add("is-pinching");
-  host.style.willChange = "transform";
-  host.style.transformOrigin = `${origin.x}px ${origin.y}px`;
-  host.style.transform = `scale(${ratio})`;
+  if (!pinchPaintPrimed) {
+    pinchPaintPrimed = true;
+    host.classList.add("is-pinching");
+    host.style.willChange = "transform";
+    host.style.transformOrigin = `${origin.x}px ${origin.y}px`;
+  }
+  pinchPaintRatio = ratio;
+  if (pinchPaintFrame) return;
+  pinchPaintFrame = requestAnimationFrame(() => {
+    pinchPaintFrame = 0;
+    if (!pinchPaintPrimed) return;
+    pagesHost()?.style.setProperty("transform", `scale(${pinchPaintRatio})`);
+  });
 }
 
 function clearPinchPaint() {
+  if (pinchPaintFrame) cancelAnimationFrame(pinchPaintFrame);
+  pinchPaintFrame = 0;
+  pinchPaintPrimed = false;
+  pinchPaintRatio = 1;
   const host = pagesHost();
   if (!host) return;
   host.classList.remove("is-pinching");

@@ -7371,6 +7371,40 @@ try {
     }
   }
 
+  // ── 13½. Reading costs nothing it does not have to ───────────────────────
+  //
+  // The reading position used to arm the 400ms whole-deck save on every scroll
+  // stop: on an annotated paper, a long task each time the reader paused, and an
+  // upload at the next sync. It arms a LAZY save now — the same timer every
+  // flush knows about, which a real edit shortens again.
+  {
+    const lazy = await page.evaluate(`async () => {
+      const { api, settle } = window.__recall;
+      await api.openDocumentView({ force: true });
+      await api.whenDocumentPageReady(1);
+      await api.flushPendingDeckAutosave();
+      const view = document.getElementById("documentView");
+      const states = [];
+      for (const top of [400, 900, 1400]) {
+        view.scrollTop = top;
+        view.dispatchEvent(new Event("scroll"));
+        await settle(700);
+        states.push(api.deckAutosaveState());
+      }
+      // A real edit while the lazy one waits takes the short timer back.
+      api.scheduleDeckAutosave();
+      const afterEdit = api.deckAutosaveState();
+      await api.flushPendingDeckAutosave();
+      const flushed = api.deckAutosaveState();
+      return { states, afterEdit, flushed };
+    }`);
+    check("three scroll stops leave the deck save waiting, lazily, instead of saving after each",
+      lazy.states.every((s) => s.armed && s.lazy), JSON.stringify(lazy.states));
+    check("...a real edit takes the short save back, and a navigation flush writes it out",
+      lazy.afterEdit.armed && !lazy.afterEdit.lazy && !lazy.flushed.armed,
+      JSON.stringify({ afterEdit: lazy.afterEdit, flushed: lazy.flushed }));
+  }
+
   // ── 14. Pages drawn in a worker, and drawn here when that fails ───────────
   //
   // On the phone, drawing a page of a paper full of figures cost the main

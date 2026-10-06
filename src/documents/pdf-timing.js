@@ -231,7 +231,8 @@ export function pdfTimingReport() {
     + (typeof window !== "undefined" ? ` · ${window.innerWidth}×${window.innerHeight}` : ""));
   if (pdfTimingCanvas) {
     if (pdfTimingCanvas.drawn) lines.push(`pages drawn: ${pdfTimingCanvas.drawn}`);
-    lines.push(`canvas: ${pdfTimingCanvas.cpu ? "CPU" : "GPU"} · budget ${(pdfTimingCanvas.budget / 1e6).toFixed(1)}MP a page`
+    if (pdfTimingCanvas.pages) lines.push(`pages shown as: ${pdfTimingCanvas.pages}`);
+    lines.push(`canvas: ${pdfTimingCanvas.where || (pdfTimingCanvas.cpu ? "CPU" : "GPU")} · budget ${(pdfTimingCanvas.budget / 1e6).toFixed(1)}MP a page`
       + ` · ${pdfTimingCanvas.slots} at a time`
       + (pdfTimingCanvas.dark ? ` · dark page ${pdfTimingCanvas.dark}` : ""));
   }
@@ -261,7 +262,12 @@ export function pdfTimingReport() {
     if (split?.observed) {
       lines.push(`  where the slow frames went: script ${Math.round(split.script)}ms · style/layout ${Math.round(split.layout)}ms`
         + ` · other main-thread ${Math.round(split.otherMain)}ms`
-        + ` · waiting for a frame (GPU/compositor) ${Math.round(split.waitingForFrame + split.offMain)}ms`);
+        // Not "the GPU": this is whatever part of a slow frame no long animation
+        // frame accounts for — every 34–50ms frame in full (those never produce
+        // one), short tasks under the 5ms script threshold, raster, the GPU.
+        // The old label named one of those as if it had been measured, and a
+        // round of work went into the GPU on the strength of it.
+        + ` · unattributed ${Math.round(split.waitingForFrame + split.offMain)}ms`);
     } else if (split) {
       lines.push("  where the slow frames went: not measurable in this browser");
     }
