@@ -9,13 +9,62 @@
 // number from the real device can replace a guess.
 //
 // In memory only, and small: the last few events and a rolling window of
-// per-page samples. Nothing is stored, nothing is sent anywhere, and recording
-// is a push onto an array — cheap enough to leave on for everyone.
+// per-page samples. Nothing is stored, nothing is sent anywhere.
+//
+// And OFF unless the reader turns it on (App Info → Diagnostics): with it off
+// nothing below records, and pdf-view.js observes no long tasks, no long
+// animation frames and runs no frame loop under the finger. The reader test
+// and "Find what's slow" still run when asked — each is one press, measured
+// for its own length and no longer.
 //
 // Imports nothing, deliberately: pdf-view.js reports into it and
 // src/pwa/app-info.js reads out of it, and neither should pull the other in.
 
 export const PDF_TIMING_EVENTS_MAX = 20;
+
+// ── On or off ───────────────────────────────────────────────────────────────
+//
+// A per-device switch, off by default: "1" in localStorage is on.
+export const PDF_DIAGNOSTICS_KEY = "recall:pdfDiagnostics";
+
+let pdfDiagnosticsEnabled = (() => {
+  try { return typeof localStorage !== "undefined" && localStorage.getItem(PDF_DIAGNOSTICS_KEY) === "1"; } catch (_) { return false; }
+})();
+const pdfDiagnosticsListeners = new Set();
+
+export function pdfDiagnosticsOn() {
+  return pdfDiagnosticsEnabled;
+}
+
+// Turning it off forgets everything recorded, so nothing is held for a
+// readout nobody is going to read.
+export function setPdfDiagnostics(on) {
+  const next = Boolean(on);
+  try {
+    if (next) localStorage.setItem(PDF_DIAGNOSTICS_KEY, "1");
+    else localStorage.removeItem(PDF_DIAGNOSTICS_KEY);
+  } catch (_) { /* this session only */ }
+  if (next === pdfDiagnosticsEnabled) return;
+  pdfDiagnosticsEnabled = next;
+  if (!next) clearPdfTimings();
+  pdfDiagnosticsListeners.forEach((listener) => {
+    try { listener(next); } catch (_) { /* one listener's problem */ }
+  });
+}
+
+export function onPdfDiagnosticsChange(listener) {
+  if (typeof listener === "function") pdfDiagnosticsListeners.add(listener);
+}
+
+function clearPdfTimings() {
+  pdfTimingEvents.length = 0;
+  Object.values(pdfTimingSamples).forEach((list) => { list.length = 0; });
+  pdfTimingWasted = { cancelled: 0, dropped: 0 };
+  pdfTimingLoafs.length = 0;
+  pdfTimingFrames.length = 0;
+  pdfTimingJank.length = 0;
+  pdfTimingPending = null;
+}
 
 export const PDF_TIMING_SAMPLES_MAX = 60;
 
@@ -37,6 +86,7 @@ const pdfTimingSamples = { render: [], worker: [], draw: [], encode: [], swap: [
 let pdfTimingWasted = { cancelled: 0, dropped: 0 };
 
 export function notePdfWastedRenders(counts) {
+  if (!pdfDiagnosticsEnabled) return;
   if (counts && typeof counts === "object") pdfTimingWasted = { ...pdfTimingWasted, ...counts };
 }
 
@@ -53,6 +103,7 @@ export function notePdfWastedRenders(counts) {
 const pdfTimingLoafs = [];
 
 export function notePdfAnimationFrame(frame) {
+  if (!pdfDiagnosticsEnabled) return;
   if (!frame || !Number.isFinite(frame.duration)) return;
   pdfTimingLoafs.push({ ...frame, at: Date.now() });
   const at = Date.now();
@@ -70,12 +121,14 @@ function pdfTimingNow() {
 }
 
 export function recordPdfTiming(kind, ms, detail = "") {
+  if (!pdfDiagnosticsEnabled) return;
   if (!Number.isFinite(ms) || ms < 0) return;
   pdfTimingEvents.push({ kind, ms: Math.round(ms), detail, at: Date.now() });
   if (pdfTimingEvents.length > PDF_TIMING_EVENTS_MAX) pdfTimingEvents.splice(0, pdfTimingEvents.length - PDF_TIMING_EVENTS_MAX);
 }
 
 export function samplePdfTiming(kind, ms) {
+  if (!pdfDiagnosticsEnabled) return;
   const list = pdfTimingSamples[kind];
   if (!list || !Number.isFinite(ms) || ms < 0) return;
   list.push(ms);
@@ -112,6 +165,7 @@ export function notePdfCanvasSetup(info) {
 // `end` is the frame's rAF timestamp, on the performance clock, so a slow frame
 // can be matched against the long animation frames that overlapped it.
 export function notePdfInteractionFrame(ms, end = pdfTimingNow()) {
+  if (!pdfDiagnosticsEnabled) return;
   if (!Number.isFinite(ms) || ms <= 0) return;
   const at = Date.now();
   pdfTimingFrames.push({ ms, at, end });
@@ -120,6 +174,7 @@ export function notePdfInteractionFrame(ms, end = pdfTimingNow()) {
 }
 
 export function notePdfInteractionLongTask(ms) {
+  if (!pdfDiagnosticsEnabled) return;
   if (!Number.isFinite(ms) || ms <= 0) return;
   const at = Date.now();
   pdfTimingJank.push({ ms, at });
@@ -128,6 +183,7 @@ export function notePdfInteractionLongTask(ms) {
 }
 
 export function expectPdfPagePaint(kind, startedAt = pdfTimingNow(), detail = "") {
+  if (!pdfDiagnosticsEnabled) return;
   pdfTimingPending = { kind, startedAt, detail };
 }
 
@@ -153,6 +209,7 @@ export function pendingPdfPagePaint() {
 // frames, because the first runs before the style and layout work that the
 // change caused, and that work is the part being measured.
 export function recordPdfTimingAfterPaint(kind, startedAt, detail = "") {
+  if (!pdfDiagnosticsEnabled) return;
   if (typeof requestAnimationFrame !== "function") return;
   requestAnimationFrame(() => requestAnimationFrame(() => recordPdfTiming(kind, pdfTimingNow() - startedAt, detail)));
 }
@@ -254,6 +311,12 @@ export function pdfTimingReport() {
       + (pdfTimingCanvas.dark ? ` · dark page ${pdfTimingCanvas.dark}` : ""));
   }
   lines.push(`pdf.js: ${lib?.version || "not loaded"}${pdfTimingCanvas?.build ? ` (${pdfTimingCanvas.build} build)` : ""}`);
+  if (!pdfDiagnosticsEnabled) {
+    lines.push("diagnostics: off — nothing is being timed or recorded. Turn them on with the Diagnostics button to time opens, zooms, pages and frames.");
+    if (pdfReaderTestResult) lines.push(pdfReaderTestResult);
+    if (pdfSlowProbeResult) lines.push(pdfSlowProbeResult);
+    return lines.join("\n");
+  }
   ["render", "worker", "draw", "encode", "swap", "kept", "compose", "text", "annotate", "bake"].forEach((kind) => {
     const s = pdfTimingStats(pdfTimingSamples[kind]);
     // The parts of a page's draw only say anything once there is one, and the

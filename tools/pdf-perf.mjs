@@ -229,6 +229,8 @@ const SETUP_SRC = `async (apiSrc) => {
     }
     return performance.now() - t0;
   };
+  // The reader's timings are off by default; everything here reads them.
+  api.setPdfDiagnostics?.(true);
   window.__recall = { api, settle, drawnOnScreen, until };
   api.setSupabaseClient({
     auth: { getSession: async () => ({ data: { session: { user: { id: "u1", email: "y@e.com" }, access_token: "t" } }, error: null }),

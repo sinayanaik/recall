@@ -2500,6 +2500,8 @@ What year was the Eiffel Tower built?
             <h3 class="app-info-health-title">PDF reader timings</h3>
             <pre class="app-info-timings-text" id="appInfoPdfTimings">—</pre>
             <div class="app-info-actions">
+              <!-- Off by default: nothing is timed or observed until it is on. -->
+              <button type="button" class="sync-modal-btn" id="appInfoDiagnosticsBtn" aria-pressed="false">Diagnostics: off</button>
               <button type="button" class="sync-modal-btn" id="appInfoCopyTimingsBtn">Copy timings</button>
               <!-- The same scroll and zooms on the open paper, every run, so two
                    readouts can be compared; and the switch that decides whether

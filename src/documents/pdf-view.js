@@ -40,7 +40,7 @@ import { dropPicture, getPictureBlob, holdPictureUrl, loadPaperPictures, pagesWi
 import { state } from "../core/state.js?v=__BUILD__";
 import { paintDocumentHighlights } from "./pdf-highlights.js?v=__BUILD__";
 import { textItemGap } from "./pdf-selection.js?v=__BUILD__";
-import { expectPdfPagePaint, firstPdfPagePainted, notePdfAnimationFrame, notePdfAnimationFramesObserved, notePdfCanvasSetup, notePdfInteractionFrame, notePdfInteractionLongTask, notePdfWastedRenders, pendingPdfPagePaint, recordPdfTimingAfterPaint, samplePdfTiming, setPdfReaderTest } from "./pdf-timing.js?v=__BUILD__";
+import { expectPdfPagePaint, firstPdfPagePainted, notePdfAnimationFrame, notePdfAnimationFramesObserved, notePdfCanvasSetup, notePdfInteractionFrame, notePdfInteractionLongTask, notePdfWastedRenders, onPdfDiagnosticsChange, pdfDiagnosticsOn, pendingPdfPagePaint, recordPdfTimingAfterPaint, samplePdfTiming, setPdfReaderTest } from "./pdf-timing.js?v=__BUILD__";
 import { buildDocumentOutline, clearDocumentOutline, setDocumentOutlinePage } from "./pdf-outline.js?v=__BUILD__";
 import { inkPenIsDown, setDocumentTextWake, touchGestureHoldsSurface } from "../core/gesture.js?v=__BUILD__";
 import { DOC_SLOT_DOC, DOC_SLOT_NOTEBOOK, activeDocSlot, docSlotMeta, docSlotReadingPositionKey, documentStoreKey, normalizeDocSlot, onDocumentSurface } from "./doc-slot.js?v=__BUILD__";
@@ -2763,7 +2763,7 @@ const interactionSpans = [];
 let longTaskObserver = null;
 
 function watchLongTasks() {
-  if (longTaskObserver || typeof PerformanceObserver !== "function") return;
+  if (!pdfDiagnosticsOn() || longTaskObserver || typeof PerformanceObserver !== "function") return;
   try {
     longTaskObserver = new PerformanceObserver((list) => {
       list.getEntries().forEach((task) => {
@@ -2788,7 +2788,7 @@ function watchLongTasks() {
 let animationFrameObserver = null;
 
 function watchAnimationFrames() {
-  if (animationFrameObserver || typeof PerformanceObserver !== "function") return;
+  if (!pdfDiagnosticsOn() || animationFrameObserver || typeof PerformanceObserver !== "function") return;
   if (!PerformanceObserver.supportedEntryTypes?.includes("long-animation-frame")) return;
   try {
     animationFrameObserver = new PerformanceObserver((list) => {
@@ -2807,6 +2807,18 @@ function watchAnimationFrames() {
     animationFrameObserver = null;
   }
 }
+
+// Diagnostics turned on: observed from now. Off: nothing observed at all.
+onPdfDiagnosticsChange((on) => {
+  if (on) {
+    if (interactionWatching) watchLongTasks();
+    return;
+  }
+  try { longTaskObserver?.disconnect(); } catch (_) { /* gone */ }
+  try { animationFrameObserver?.disconnect(); } catch (_) { /* gone */ }
+  longTaskObserver = null;
+  animationFrameObserver = null;
+});
 
 function armInteractionSettle() {
   clearTimeout(interactionTimer);
@@ -3071,7 +3083,7 @@ function watchDocumentInteraction() {
 let touchFrameLoop = 0;
 
 function watchTouchFrames() {
-  if (touchFrameLoop) return;
+  if (touchFrameLoop || !pdfDiagnosticsOn()) return;
   let last = performance.now();
   const step = (now) => {
     notePdfInteractionFrame(now - last, now);

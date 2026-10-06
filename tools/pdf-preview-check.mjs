@@ -176,6 +176,8 @@ const API_SRC = `async () => {
 const SETUP_SRC = `async (apiSrc) => {
   const api = await (0, eval)(apiSrc)();
   const settle = (ms) => new Promise((r) => setTimeout(r, ms));
+  // The reader's timings are off by default; everything here reads them.
+  api.setPdfDiagnostics?.(true);
   window.__recall = { api, settle };
   // Signed in, but with a client that refuses every network call. The import
   // has to reach the "could not upload, kept it on this device" branch, which
@@ -7761,6 +7763,36 @@ try {
       /pages as kept pictures/.test(readerTest.text) && testLines.filter((l) => /frames · p50/.test(l)).length === 5
         && /sharp after/.test(readerTest.text) && readerTest.inReport,
       testLines.slice(0, 3).join(" | "));
+
+    // Diagnostics off (the default for a reader): nothing timed, nothing
+    // observed, and what had been recorded is forgotten — and back on, timed
+    // again.
+    const diag = await page.evaluate(`async () => {
+      const { api, settle } = window.__recall;
+      api.setPdfDiagnostics(false);
+      const offReport = api.pdfTimingReport();
+      api.setDocumentScale(api.fitWidthScale() * 1.2);
+      await settle(1200);
+      api.fitDocumentToWidth();
+      await settle(1200);
+      const afterZoomOff = api.pdfTimingReport();
+      const stored = localStorage.getItem(api.PDF_DIAGNOSTICS_KEY);
+      api.setPdfDiagnostics(true);
+      api.setDocumentScale(api.fitWidthScale() * 1.2);
+      await settle(1200);
+      const onReport = api.pdfTimingReport();
+      api.fitDocumentToWidth();
+      await settle(800);
+      return {
+        off: /diagnostics: off/.test(offReport) && !/recent:/.test(offReport) && !/zoom: \\d+ms/.test(offReport),
+        stillOff: !/zoom: \\d+ms/.test(afterZoomOff),
+        stored,
+        on: /zoom: \\d+ms/.test(onReport) && !/diagnostics: off/.test(onReport),
+        storedOn: localStorage.getItem(api.PDF_DIAGNOSTICS_KEY)
+      };
+    }`);
+    check("diagnostics off: nothing is timed and what was recorded is forgotten; on again, a zoom is timed",
+      diag.off && diag.stillOff && diag.stored === null && diag.on && diag.storedOn === "1", JSON.stringify(diag));
 
     // App Info's "Find what's slow": the same scroll with one part of the page
     // hidden at a time, each reported, and the page left as it was. Short
