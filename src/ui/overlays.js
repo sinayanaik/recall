@@ -87,6 +87,9 @@ export function anyModalOpen() {
     (el.myDecksPanel && !el.myDecksPanel.hidden) ||
     (typeof helpModal !== "undefined" && helpModal && !helpModal.hidden) ||
     (typeof appInfoModal !== "undefined" && appInfoModal && !appInfoModal.hidden) ||
+    // Read off the DOM: src/pwa/diagnostics-panel.js takes its scroll lock
+    // from this module, so the arrow between them points one way only.
+    document.getElementById("diagnosticsModal")?.hidden === false ||
     (el.stylePanel && !el.stylePanel.hidden) ||
     (el.storagePanel && !el.storagePanel.hidden) ||
     (el.bucketPanel && !el.bucketPanel.hidden) ||
