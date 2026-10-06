@@ -1,4 +1,4 @@
-/* ▣ as a highlighter that stays on, and knows words from pictures.
+/* ▣ as a one-shot highlighter that knows words from pictures.
 
    A file of its own for the reason styles/52-ink.css gives for being one: the
    rules this changes live in styles/37-document-chrome.css, a slice frozen
@@ -8,12 +8,11 @@
 
 /* ── The pill ──────────────────────────────────────────────────────────────
    It said "drag a box around a figure", which was the whole of the mode when
-   the mode turned itself off after one box. It stays on now, and a drag over
-   words highlights them, so the pill says both — and how to stop, which a mode
-   that stays on has to. One line, cut short with an ellipsis rather than
+   a box was all it made. A drag over words highlights them now, so the pill
+   says both — and how to back out without making anything. One line, cut short with an ellipsis rather than
    wrapped over the first line of the page on a narrow screen. */
 .document-stage.is-region-select .document-scroll::before {
-  content: "▣ Highlighting — drag across words, or box a figure · ▣ or Esc to stop";
+  content: "▣ Highlight once — drag across words, or box a figure · ▣ or Esc to cancel";
   max-width: calc(100% - 16px);
   overflow: hidden;
   white-space: nowrap;

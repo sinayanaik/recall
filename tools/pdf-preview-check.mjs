@@ -1281,9 +1281,10 @@ try {
     const armedClass = document.getElementById("documentStage").classList.contains("is-region-select");
     const textLayerInert = getComputedStyle(textLayer).pointerEvents === "none";
 
-    // ── Two boxes in a row, with no re-arm between them ──────────────────
-    // Each starts in the left MARGIN, off the words, so each is a box — the
-    // mode stays on after the first, which is the whole of what was asked.
+    // ── One box per press of ▣ ────────────────────────────────────────────
+    // Each starts in the left MARGIN, off the words, so each is a box. The
+    // first turns the mode off — one highlight per press, which is what was
+    // asked — so the second is armed again first.
     const from1 = { x: box.left + box.width * 0.04, y: box.top + box.height * 0.3 };
     const to1 = { x: box.left + box.width * 0.7, y: box.top + box.height * 0.5 };
     const before1 = areas().length;
@@ -1292,6 +1293,7 @@ try {
     const armedAfterFirst = api.isRegionSelectArmed();
     const marqueeCleared = !pageEl.querySelector(".pdf-region-marquee");
     menu.closeMarkMenu();
+    api.setRegionSelect(true);
     const from2 = { x: box.left + box.width * 0.03, y: from1.y };
     const to2 = { x: box.left + box.width * 0.55, y: to1.y };
     const second = await drag(from2, to2);
@@ -1307,6 +1309,7 @@ try {
       return { error: "lines 2 and 3 of page 2 are not on screen to drag across" };
     }
     const textsBefore = texts().length;
+    api.setRegionSelect(true);
     const forward = await drag(lineA.from, lineA.to, 4);
     const madeA = texts().length === textsBefore + 1 ? texts()[texts().length - 1] : null;
     const menuAfterText = menu.isMarkMenuOpen();
@@ -1315,16 +1318,21 @@ try {
     const armedAfterText = api.isRegionSelectArmed();
 
     // Right to left, on the next line: the same words, the same snapping.
+    api.setRegionSelect(true);
     await drag(lineB.to, lineB.from, 4);
     const madeB = texts().length === textsBefore + 2 ? texts()[texts().length - 1] : null;
 
     // The same words again, in the same colour: nothing new.
+    api.setRegionSelect(true);
     await drag(lineA.from, lineA.to, 4);
     const countAfterRepeat = texts().length;
 
-    // A press that barely moved is a tap, not a highlight.
+    // A press that barely moved is a tap, not a highlight — and having made
+    // nothing, it does not use up the press: the mode is still on after it.
+    api.setRegionSelect(true);
     await drag(lineA.from, { x: lineA.from.x + 3, y: lineA.from.y }, 1);
     const countAfterTap = texts().length;
+    const armedAfterTap = api.isRegionSelectArmed();
 
     // ── On the pen's undo ring, in order ─────────────────────────────────
     const canUndo = ink.canUndoInk();
@@ -1348,6 +1356,7 @@ try {
       const b = mark.getBoundingClientRect();
       const at = { x: b.left + b.width / 2, y: b.top + b.height / 2 };
       const countBefore = (api.state.meta?.pdfHighlights || []).length;
+      api.setRegionSelect(true);
       send("pointerdown", at);
       send("pointerup", at);
       view.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, clientX: at.x, clientY: at.y, detail: 1 }));
@@ -1367,6 +1376,7 @@ try {
       const text = span.textContent;
       const countBefore = texts().length;
       await settle(450);
+      api.setRegionSelect(true);
       await drag(charAt(span, text.indexOf("sentence") + 2), charAt(span, text.indexOf("selecting") + 3), 4);
       const grown = texts().find((r) => r.id === madeA.id) || null;
       merge = { added: texts().length - countBefore, text: grown?.text || "" };
@@ -1391,6 +1401,7 @@ try {
         const scrollBefore = view.scrollTop;
         const ids = texts().map((r) => r.id);
         await settle(450);
+        api.setRegionSelect(true);
         send("pointerdown", start);
         send("pointermove", { x: start.x + 10, y: start.y + 10 }, { buttons: 1 });
         send("pointermove", at, { buttons: 1 });
@@ -1425,6 +1436,7 @@ try {
       previewCleared,
       selectionCollapsed,
       armedAfterText,
+      armedAfterTap,
       repeatAdded: countAfterRepeat - (textsBefore + 2),
       tapAdded: countAfterTap - countAfterRepeat,
       canUndo,
@@ -1455,21 +1467,22 @@ try {
     region.record?.kind === "area" && region.record?.quads?.length === 1,
     region.record ? `page ${region.record.page} · ${JSON.stringify(region.record.quads[0].rect.map((n) => Math.round(n)))}` : "no record");
   check("...painted as an outline, not a tint", region.painted > 0, `${region.painted} mark div(s)`);
-  check("...and the mode STAYS ON after it, so the next box needs no re-arm",
-    region.armedAfterFirst && region.marqueeCleared && region.record2 && region.armedAfterSecond,
+  check("...and the mode turns itself off after it — one box per press of ▣",
+    !region.armedAfterFirst && region.marqueeCleared && region.record2 && !region.armedAfterSecond,
     `armed after 1st=${region.armedAfterFirst}, 2nd box made=${region.record2}, armed after 2nd=${region.armedAfterSecond}, marquee cleared=${region.marqueeCleared}`);
   check("a drag that starts ON words previews them, with no marquee",
     region.textPreview > 0 && !region.textMarquee, `${region.textPreview} preview band(s), marquee=${region.textMarquee}`);
   check("...and highlights exactly those words, snapped to whole words",
     region.madeA?.text === "line 2 carries a sentence" && region.madeA?.quads === 1 && region.madeA?.page === 2,
     region.madeA ? `"${region.madeA.text}", ${region.madeA.quads} quad(s), page ${region.madeA.page}` : "no text highlight made");
-  check("...in the reader's highlight colour, with no menu in the way of the next line",
-    region.madeA?.color === region.color && !region.menuAfterText && region.previewCleared && region.selectionCollapsed && region.armedAfterText,
+  check("...in the reader's highlight colour, with no menu, and the mode off after it",
+    region.madeA?.color === region.color && !region.menuAfterText && region.previewCleared && region.selectionCollapsed && !region.armedAfterText,
     `colour ${region.madeA?.color} (want ${region.color}), menu=${region.menuAfterText}, preview left=${!region.previewCleared}, armed=${region.armedAfterText}`);
   check("...right to left as well as left to right",
     region.madeB?.text === "line 3 carries a sentence", region.madeB ? `"${region.madeB.text}"` : "no highlight from the reverse drag");
   check("...and the same words again in the same colour add nothing, nor does a tap",
     region.repeatAdded === 0 && region.tapAdded === 0, `repeat added ${region.repeatAdded}, tap added ${region.tapAdded}`);
+  check("...and a tap, having made nothing, leaves ▣ on", region.armedAfterTap === true, `armed after tap=${region.armedAfterTap}`);
   check("the pen's undo takes the highlights back in order, and redo restores the same one",
     region.canUndo && !region.afterUndo1.b && region.afterUndo1.a && !region.afterUndo2.a && region.redone && region.redonePainted > 0,
     `undo 1: B live=${region.afterUndo1.b} A live=${region.afterUndo1.a}; undo 2: A live=${region.afterUndo2.a}; redo: A back=${region.redone}, painted=${region.redonePainted}`);
@@ -1493,7 +1506,10 @@ try {
   const realDrags = { mouse: null, pen: null };
   if (!region.error && region.mouseLine && region.penLine) {
     const countText = () => page.evaluate(`() => (window.__recall.api.state.meta?.pdfHighlights || []).filter((r) => r.kind === "text" && r.page === 2).length`);
+    // One highlight per press of ▣, so each real drag is armed for first.
+    const arm = () => page.evaluate(`() => window.__recall.api.setRegionSelect(true)`);
     const before = await countText();
+    await arm();
     const { from, to } = region.mouseLine;
     await page.call("Input.dispatchMouseEvent", { type: "mousePressed", x: from.x, y: from.y, button: "left", buttons: 1, clickCount: 1 });
     for (let i = 1; i <= 4; i += 1) {
@@ -1511,6 +1527,7 @@ try {
     const beforePen = await countText();
     const inkBefore = await page.evaluate(`() => (window.__recall.api.state.meta?.pdfHighlights || []).filter((r) => r.kind === "ink").length`);
     const pen = region.penLine;
+    await arm();
     const stroke = [];
     for (let i = 0; i <= 6; i += 1) stroke.push([pen.from.x + ((pen.to.x - pen.from.x) * i) / 6, pen.from.y + ((pen.to.y - pen.from.y) * i) / 6, 0.5]);
     await page.penStroke(stroke);
@@ -1519,19 +1536,20 @@ try {
       const { api } = window.__recall;
       const all = api.state.meta?.pdfHighlights || [];
       const texts = all.filter((r) => r.kind === "text" && r.page === 2);
-      return { added: texts.length - beforePen, text: texts[texts.length - 1]?.text || "", ink: all.filter((r) => r.kind === "ink").length - inkBefore, id: texts[texts.length - 1]?.id };
+      return { added: texts.length - beforePen, text: texts[texts.length - 1]?.text || "", ink: all.filter((r) => r.kind === "ink").length - inkBefore, id: texts[texts.length - 1]?.id, armed: api.isRegionSelectArmed() };
     }`, { beforePen, inkBefore });
   }
   check("a real mouse drag across words highlights them, and its click opens no menu",
     realDrags.mouse?.added === 1 && realDrags.mouse?.text === "line 4 carries a sentence" && realDrags.mouse?.menu === false,
     realDrags.mouse ? `added ${realDrags.mouse.added} "${realDrags.mouse.text}", menu=${realDrags.mouse.menu}` : "not run");
-  check("...and a real stylus drag does the same, drawing no ink while ▣ is on",
-    realDrags.pen?.added === 1 && realDrags.pen?.text === "line 5 carries a sentence" && realDrags.pen?.ink === 0,
-    realDrags.pen ? `added ${realDrags.pen.added} "${realDrags.pen.text}", ink marks +${realDrags.pen.ink}` : "not run");
+  check("...and a real stylus drag does the same, drawing no ink while ▣ is on, and turning ▣ off",
+    realDrags.pen?.added === 1 && realDrags.pen?.text === "line 5 carries a sentence" && realDrags.pen?.ink === 0 && realDrags.pen?.armed === false,
+    realDrags.pen ? `added ${realDrags.pen.added} "${realDrags.pen.text}", ink marks +${realDrags.pen.ink}, armed=${realDrags.pen.armed}` : "not run");
 
   const regionOff = await page.evaluate(`async (ids) => {
     const { api, settle } = window.__recall;
     // Escape is how a reader gets out without finding the button.
+    api.setRegionSelect(true);
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
     await settle(60);
     const escaped = !api.isRegionSelectArmed();

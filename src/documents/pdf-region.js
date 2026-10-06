@@ -1,4 +1,4 @@
-// ▣ — the highlighter that stays on, and knows words from pictures.
+// ▣ — a one-shot highlighter that knows words from pictures.
 //
 // The Document surface's selection goes through a transparent text layer: one
 // span per pdf.js text item, sitting exactly over its glyphs, so a drag across
@@ -20,10 +20,8 @@
 //
 // ── What a drag means now ───────────────────────────────────────────────────
 //
-// "The text highlighter is a one-time tool — it should be reusable until
-// released, and smart enough to distinguish: where there is actual text,
-// highlight it as text; where there is none, only a scanned page, highlight it
-// as a region."
+// Smart enough to distinguish: where there is actual text, highlight it as
+// text; where there is none, only a scanned page, highlight it as a region.
 //
 //   A drag that STARTS ON WORDS highlights those words, snapped out to whole
 //   words, in the reader's highlight colour — at once, with no selection bar to
@@ -38,22 +36,22 @@
 // while this mode is on the text layer takes no pointer events, so nothing
 // here can ask the browser what is under the pointer.
 //
-// ── Why the mode stays on until released ───────────────────────────────────
+// ── One highlight per press ────────────────────────────────────────────────
 //
-// It used to switch itself off after every box, and before that (d76d007) it
-// stayed on — and was switched back to one-shot because a second drag made
-// right after the first, once the mode had quietly gone, fell through to an
-// ordinary text selection. It stays on now because the reader asked for a
-// highlighter that does, and that old fault cannot come back: the mode never
-// goes on its own, and a drag over words is the mode's own highlight rather
-// than something handed back to the text layer.
+// It has gone back and forth between staying on and switching off. It stayed
+// on for a while, and readers found it rarely used twice in a row — so a
+// sticky mode mostly meant remembering to switch it off again before a finger
+// could scroll. Now one finished drag — a box that became a region, or words
+// highlighted — turns the mode off. A press that made nothing (a tap, which is
+// how an existing highlight's menu is reached; a box too small to keep; a drag
+// cancelled by a second finger) leaves it armed, so a slip does not cost the
+// press.
 //
-// What it costs is one-finger scrolling: while ▣ is on, a finger is a
-// highlighter, the same way a pen is a pen. So two fingers scroll (and pinch to
-// zoom, as ever), a drag held near the edge of the page scrolls it, the pill at
-// the top says how to stop, and the mode goes by itself the moment the reader
-// leaves the paper — another tab, another document, or picking up the pen
-// bar's own tools.
+// While it is armed a finger is a highlighter, the same way a pen is a pen, so
+// two fingers scroll (and pinch to zoom, as ever), a drag held near the edge of
+// the page scrolls it, the pill at the top says what to do, and ▣ or Esc
+// cancels. It also goes by itself the moment the reader leaves the paper —
+// another tab, another document, or picking up the pen bar's own tools.
 
 import { PDF_BLOCK_CLASS } from "../core/constants.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
@@ -324,7 +322,7 @@ function scheduleRegionFrame() {
 
 // The edge of the scroller, while a drag is held in it: scrolled a little every
 // frame, and the drag brought up to date, for as long as the pointer stays
-// there. Without this a sticky mode with no one-finger scroll could not carry
+// there. Without this a mode with no one-finger scroll could not carry
 // a highlight or a box past the bottom of the screen.
 function regionEdgeStep() {
   const drag = regionDrag;
@@ -439,8 +437,13 @@ function finishRegionDrag(event) {
   regionFrame();
   const drag = releaseRegionDrag();
   if (!drag) return;
+  // One highlight per press of ▣: a drag the reader finished turns the mode
+  // off. A box too small to keep, or a tap, made nothing and leaves it armed.
   if (drag.kind === "box") {
-    if (commitRegionBox(drag)) regionSwallowClickUntil = Date.now() + REGION_SWALLOW_CLICK_MS;
+    if (commitRegionBox(drag)) {
+      regionSwallowClickUntil = Date.now() + REGION_SWALLOW_CLICK_MS;
+      setRegionSelect(false);
+    }
     return;
   }
   const minimum = drag.pointerType === "touch" ? REGION_TEXT_MIN_DRAG_TOUCH : REGION_TEXT_MIN_DRAG;
@@ -449,6 +452,7 @@ function finishRegionDrag(event) {
   if (drag.travel < minimum) return;
   regionSwallowClickUntil = Date.now() + REGION_SWALLOW_CLICK_MS;
   commitRegionText(drag);
+  setRegionSelect(false);
 }
 
 // ── Over words, a text cursor ───────────────────────────────────────────────
