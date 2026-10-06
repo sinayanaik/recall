@@ -39,7 +39,7 @@ import { findChrome, launchChrome, connect, openPage, emulatePhone } from "./cdp
 import { PDFJS_VERSION, pdfjsSources, servePdfjsFromDisk } from "./pdfjs-source.mjs";
 import { PDFLIB_VERSION, pdflibSource } from "./pdflib-source.mjs";
 import { HTMLTOIMAGE_VERSION, htmlToImageSource } from "./htmltoimage-source.mjs";
-import { FONT_SIZE, PAGE_HEIGHT, PAGE_WIDTH, SCAN_MEASURE, SPLIT_WORD_TEXT, buildFixturePdf, fixtureLineOrigin, scannedInkY, scannedPaperY } from "./pdf-fixture.mjs";
+import { FONT_SIZE, OVERPRINT_STAMPS, OVERPRINT_TEXT, PAGE_HEIGHT, PAGE_WIDTH, SCAN_MEASURE, SPLIT_WORD_TEXT, buildFixturePdf, fixtureLineOrigin, scannedInkY, scannedPaperY } from "./pdf-fixture.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
@@ -6203,6 +6203,139 @@ try {
       joined.copied === SPLIT_WORD_TEXT, JSON.stringify(joined.copied));
     check("...and a highlight over it stores the words, not the seams",
       joined.captured === SPLIT_WORD_TEXT.replace(/\s+/g, " "), JSON.stringify(joined.captured));
+  }
+
+  // ── 11a. Words drawn more than once, on top of themselves ───────────────
+  //
+  // "inininininin ducducducduc tivetivetive biasbiasbias in a model": copied
+  // off The Little Book of Deep Learning, whose underlined words are stamped
+  // several times at sub-point offsets and then drawn for real. pdf.js reports
+  // every stamp as a text item — and glues the real syllable onto the next
+  // one's first stamp ("induc", "ductive") — and the layer used to give every
+  // one of them a span.
+  //
+  // The fixture stamps each syllable of "inductive bias" eleven times; the
+  // other two lines are controls that must come through untouched ("the the",
+  // "all", and "bias" again on its own line).
+  if (!OWN_PDF) {
+    const stamped = buildFixturePdf({ pages: 1, annotate: false, outline: false, overprint: true });
+    const over = await page.evaluate(`async (bytes) => {
+      const { api, settle } = window.__recall;
+      const before = api.readLocalDeckIndex().map((m) => m.id);
+      const file = new File([new Uint8Array(bytes)], "overprint.pdf", { type: "application/pdf" });
+      await api.importPdfFile(file, null);
+      await settle(400);
+      const entry = api.readLocalDeckIndex().find((m) => !before.includes(m.id));
+      if (!entry) return { error: "no deck was created for the overprinted PDF" };
+      await api.loadDeckFromLibrary(entry.id);
+      await settle(300);
+      api.closeMyDecksPanel();
+      api.setViewMode("document");
+      await api.openDocumentView({ force: true });
+      if (!(await api.whenDocumentPageReady(1))) return { error: "page 1 of the overprinted PDF never got a text layer" };
+      const items = api.pdfPageTextItems(1);
+      const shadows = api.textItemShadows(items);
+      const pageEl = document.querySelector('.pdf-page[data-page-number="1"]');
+      const spans = Array.from(pageEl.querySelectorAll(".pdf-text-layer span[data-item-index]"));
+      const selection = window.getSelection();
+      const capture = (range) => {
+        selection.removeAllRanges();
+        selection.addRange(range);
+        const got = api.captureDocumentSelection();
+        selection.removeAllRanges();
+        return got;
+      };
+      // Everything, as a select-all and copy would take it.
+      const all = document.createRange();
+      all.setStart(spans[0].firstChild, 0);
+      const last = spans[spans.length - 1].firstChild;
+      all.setEnd(last, last.length);
+      const whole = capture(all);
+      // From inside the underlined word to the end of its line.
+      const spanOf = (text) => spans.find((s) => s.textContent === text);
+      const lineEnd = spanOf("in a model,");
+      const fromWord = document.createRange();
+      fromWord.setStart(spanOf("in").firstChild, 0);
+      fromWord.setEnd(lineEnd.firstChild, lineEnd.firstChild.length);
+      const word = capture(fromWord);
+      // From the middle of a span that carries only part of its item: the "u"
+      // of the "duc" kept out of "induc". Its anchor has to count in the item's
+      // characters, which is what data-ch-start is for.
+      const part = spans.find((s) => s.textContent === "duc" && s.hasAttribute("data-ch-start"));
+      const fromPart = document.createRange();
+      fromPart.setStart(part.firstChild, 1);
+      fromPart.setEnd(lineEnd.firstChild, lineEnd.firstChild.length);
+      const partial = capture(fromPart);
+      return {
+        items: items.length,
+        stampedIn: items.filter((it) => it.str === "in").length,
+        spans: spans.length,
+        keptItems: items.filter((it, i) => it.str && shadows.start[i] < shadows.end[i]).length,
+        indicesOk: spans.every((s) => {
+          const it = items[Number(s.dataset.itemIndex)];
+          const from = Number(s.getAttribute("data-ch-start")) || 0;
+          return it && it.str.slice(from, from + s.textContent.length) === s.textContent;
+        }),
+        copied: all.toString(),
+        captured: whole?.text ?? null,
+        word: word?.text ?? null,
+        wordReread: word ? api.textForAnchorRange(items, word.anchor, word.focus) : null,
+        partial: partial?.text ?? null,
+        partialAnchor: partial?.anchor ?? null,
+        partialItem: partial ? items[partial.anchor.item].str : null,
+        partialReread: partial ? api.textForAnchorRange(items, partial.anchor, partial.focus) : null,
+        imported: word ? api.textForQuads(items, word.quads).text : null,
+        legacy: word ? api.textForAnchorRange(items, word.anchor, word.focus, { shadows: "keep" }) : null,
+        anchor: word?.anchor ?? null,
+        focus: word?.focus ?? null,
+        quads: word?.quads ?? null
+      };
+    }`, Array.from(stamped.bytes));
+
+    if (over.error) throw new Error(over.error);
+    check("an underlined word stamped eleven times is that many text items — the case this is about",
+      over.stampedIn >= OVERPRINT_STAMPS, `${over.stampedIn} items read "in", of ${over.items}`);
+    check("...and the layer has a span for each item that is read, not for each stamp",
+      over.spans === over.keptItems && over.spans < over.items, `${over.spans} span(s) for ${over.items} item(s)`);
+    check("...every span still names its own item, and where in it its text starts",
+      over.indicesOk, String(over.indicesOk));
+    check("...a select-all copies every word once, with the controls intact",
+      over.copied === OVERPRINT_TEXT, JSON.stringify(over.copied));
+    check("...and a highlight over the page stores the words once",
+      over.captured === OVERPRINT_TEXT.replace(/\s+/g, " "), JSON.stringify(over.captured));
+    check("...a highlight from inside the underlined word stores it once",
+      over.word === "inductive bias in a model,", JSON.stringify(over.word));
+    check("...and reads back off its anchors as the same words",
+      over.wordReread === over.word, JSON.stringify(over.wordReread));
+    check("...a highlight starting mid-way through a partly-stamped item anchors in that item's own characters",
+      over.partial === "uctive bias in a model," && over.partialItem === "induc" && over.partialAnchor?.ch === 3
+        && over.partialReread === over.partial,
+      `${JSON.stringify(over.partial)} at ${JSON.stringify(over.partialAnchor)} of ${JSON.stringify(over.partialItem)}`);
+    check("...and an annotation imported over that line is named once too",
+      over.imported === "by crafting the right inductive bias in a model,", JSON.stringify(over.imported));
+
+    // ...and a highlight that was STORED the old way, eleven times over, is
+    // rewritten as the page paints — while one whose text somebody edited is
+    // left exactly as it is.
+    const repairedText = await page.evaluate(`async (args) => {
+      const { api, settle } = window.__recall;
+      const base = { color: "yellow", page: 1, anchor: args.anchor, focus: args.focus, quads: args.quads, at: 1 };
+      const stale = { ...base, id: "hn-stamp0", text: args.legacy.replace(/\\s+/g, " ").trim() };
+      const edited = { ...base, id: "hn-stamp1", text: "inductive bias, in my words" };
+      api.state.meta.pdfHighlights = [...(api.state.meta.pdfHighlights || []), stale, edited];
+      const ran = api.repairDocumentHighlightText(1);
+      await settle(200);
+      const find = (id) => (api.state.meta.pdfHighlights || []).find((r) => r.id === id);
+      const out = { ran, stale: find("hn-stamp0")?.text, edited: find("hn-stamp1")?.text, at: find("hn-stamp0")?.at };
+      api.state.meta.pdfHighlights = (api.state.meta.pdfHighlights || []).filter((r) => r.id !== "hn-stamp0" && r.id !== "hn-stamp1");
+      return out;
+    }`, { anchor: over.anchor, focus: over.focus, quads: over.quads, legacy: over.legacy });
+    check("a highlight already stored with the stamps in it is the bug's own record",
+      /^(in){5,}/.test(over.legacy.replace(/\s+/g, "")), JSON.stringify(over.legacy.slice(0, 40)));
+    check("...and is rewritten to the words once when its page paints",
+      repairedText.ran && repairedText.stale === "inductive bias in a model,", JSON.stringify(repairedText.stale));
+    check("...without moving `at`, and without touching text somebody edited",
+      repairedText.at === 1 && repairedText.edited === "inductive bias, in my words", JSON.stringify(repairedText));
   }
 
   // ── 12. A contents for a PDF that carries none ──────────────────────────

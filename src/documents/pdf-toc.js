@@ -45,7 +45,7 @@ import { state } from "../core/state.js?v=__BUILD__";
 import { stripInvalidUnicode } from "../core/text.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { PDF_PRIMARY_ID } from "./pdf-multi.js?v=__BUILD__";
-import { cleanPdfItemText, textItemGap } from "./pdf-selection.js?v=__BUILD__";
+import { cleanPdfItemText, keptTextItem, textItemGap, textItemShadows } from "./pdf-selection.js?v=__BUILD__";
 
 // Bumped when the rules below change enough that an old cached list would be
 // worse than a fresh scan. A cache from a different version is ignored and
@@ -210,8 +210,12 @@ export function pdfTocLinesFrom(items, pageNumber) {
   const lines = [];
   let current = null;
   let previous = null;
-  (items || []).forEach((item) => {
-    if (!item || !item.str) { if (item?.hasEOL) current = null; return; }
+  // Overprinted copies of a word are read once, as the text layer reads them.
+  const shadows = textItemShadows(items || []);
+  (items || []).forEach((source, index) => {
+    if (!source || !source.str) { if (source?.hasEOL) current = null; return; }
+    const item = keptTextItem(items, index, shadows);
+    if (!item) { if (source.hasEOL) current = null; return; }
     const size = pdfItemSize(item);
     const y = item.transform?.[5] ?? 0;
     const sameLine = current

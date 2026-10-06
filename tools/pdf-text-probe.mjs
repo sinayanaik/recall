@@ -2,6 +2,7 @@
 //
 //   node tools/pdf-text-probe.mjs paper.pdf            # page 1
 //   node tools/pdf-text-probe.mjs paper.pdf 3 --seams  # page 3, every seam listed
+//   node tools/pdf-text-probe.mjs book.pdf 16 --stamps # ...every overprint listed
 //
 // "I'm seeing gibberish": a LaTeX paper copied as "Man y app li ca ti ons".
 // There are two places a stray space can come from, and they need different
@@ -12,9 +13,14 @@
 //   • between items: the separator the text layer writes between two spans,
 //     which is textItemGap() in src/documents/pdf-selection.js.
 //
-// The text is joined with the app's own textItemGap — its source is read out
-// of pdf-selection.js and evaluated here, rather than copied, so this can never
-// report on a rule the app no longer uses. pdf.js is the version the app ships
+// "Every underlined word comes out eleven times": a book that draws a word
+// several times on top of itself (see textItemShadows). Those stamps are left
+// out of the text exactly as the text layer leaves them out, and counted.
+//
+// The text is joined with the app's own textItemGap and textItemShadows —
+// pdf-selection.js is loaded here with its browser-only imports stubbed out,
+// rather than copied, so this can never report on a rule the app no longer
+// uses. pdf.js is the version the app ships
 // (tools/pdfjs-source.mjs), run in Node through its legacy build.
 
 import { readFileSync } from "node:fs";
@@ -28,19 +34,22 @@ const args = process.argv.slice(2);
 const file = args.find((a) => a.toLowerCase().endsWith(".pdf"));
 const pageNumber = Number(args.find((a) => /^\d+$/.test(a)) || 1);
 const SEAMS = args.includes("--seams");
+const STAMPS = args.includes("--stamps");
 if (!file) {
-  console.log("usage: node tools/pdf-text-probe.mjs paper.pdf [page] [--seams]");
+  console.log("usage: node tools/pdf-text-probe.mjs paper.pdf [page] [--seams] [--stamps]");
   process.exit(2);
 }
 
-// The app's own separator, lifted out of its module by source.
-function appTextItemGap() {
-  const source = readFileSync(path.join(ROOT, "src/documents/pdf-selection.js"), "utf8");
-  const start = source.indexOf("export function textItemGap(");
-  const end = source.indexOf("\n}\n", start);
-  if (start < 0 || end < 0) throw new Error("textItemGap not found in pdf-selection.js");
-  const body = source.slice(start, end + 2).replace(/^export /, "");
-  return new Function(`${body}\nreturn textItemGap;`)();
+// The app's own text rules, out of its own module. Its imports are the one
+// thing that cannot load in Node (pdf-view.js wants a DOM), and nothing this
+// uses touches them, so they are stubbed.
+async function appTextRules() {
+  const source = readFileSync(path.join(ROOT, "src/documents/pdf-selection.js"), "utf8")
+    .replace(/^import .*$/gm, "")
+    + "\nfunction stripInvalidUnicode(value) { return value; }"
+    + "\nfunction pdfPageElement() { return null; }"
+    + "\nfunction pdfPageViewport() { return null; }\n";
+  return import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
 }
 
 pdfjsSources(); // makes sure the npm copy is unpacked
@@ -48,7 +57,7 @@ const require = createRequire(import.meta.url);
 const pdfjs = require("/tmp/recall-pdfjs/package/legacy/build/pdf.min.js");
 pdfjs.GlobalWorkerOptions.workerSrc = "/tmp/recall-pdfjs/package/legacy/build/pdf.worker.min.js";
 
-const textItemGap = appTextItemGap();
+const { keptTextItem, textItemGap, textItemShadows } = await appTextRules();
 const doc = await pdfjs.getDocument({ data: new Uint8Array(readFileSync(file)), isEvalSupported: false, verbosity: 0 }).promise;
 const page = await doc.getPage(pageNumber);
 const { items, styles } = await page.getTextContent();
@@ -56,8 +65,23 @@ const { items, styles } = await page.getTextContent();
 let joined = "";
 let previous = null;
 const seams = [];
-for (const item of items) {
-  if (!item.str) continue;
+const shadows = textItemShadows(items);
+const stamps = [];
+let leftOut = 0;
+let partly = 0;
+for (const [index, source] of items.entries()) {
+  if (!source.str) continue;
+  const item = keptTextItem(items, index, shadows);
+  if (item !== source) {
+    if (item) partly += 1;
+    else leftOut += 1;
+    stamps.push(`#${index} ${JSON.stringify(source.str)}`
+      + (item ? `  keeps ${JSON.stringify(item.str)}` : `  stamps #${shadows.origin[index]}`));
+  }
+  if (!item) {
+    if (source.hasEOL && previous) previous = source;
+    continue;
+  }
   if (previous) {
     const gap = textItemGap(previous, item);
     const sameLine = Math.abs(item.transform[5] - previous.transform[5]) < (previous.height || 1) * 0.5;
@@ -79,8 +103,13 @@ console.log(`${path.basename(file)} · page ${pageNumber} of ${doc.numPages} · 
 // the only place the app's separator decides anything. A stray space that
 // shows up in the copied text but at no seam was written by pdf.js itself.
 console.log(`same-line seams with no whitespace: ${seams.length}`);
+console.log(`overprinted: ${leftOut} item(s) left out, ${partly} partly`);
 console.log("\n── as the app copies it ──");
 console.log(joined.slice(0, 3000));
+if (STAMPS) {
+  console.log("\n── overprints ──");
+  stamps.forEach((line) => console.log(line));
+}
 if (SEAMS) {
   console.log("\n── seams ──");
   seams.forEach((line) => console.log(line));

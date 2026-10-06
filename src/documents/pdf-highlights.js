@@ -361,6 +361,22 @@ function squashWhitespace(text) {
   return String(text || "").replace(/\s+/g, "");
 }
 
+// ── ...and the words a highlight stored eleven times over ───────────────────
+//
+// "inininin ducducduc tivetivetive biasbiasbias in a model": a book that draws
+// its underlined words several times on top of each other gave the layer a span
+// per stamp, and a highlight over one stored each word as often as it was drawn
+// (see textItemShadows in pdf-selection.js). The layer reads them once now. A
+// record is repaired when what it stored is, whitespace aside, EXACTLY what the
+// old layer would have read between its anchors — the same strict kind of test
+// as above. Text somebody edited matches neither reading and is left alone.
+function storedAsLayerOnceRead(stored, derived, items, record) {
+  const squashed = squashWhitespace(stored);
+  if (squashed === squashWhitespace(derived)) return true;
+  const legacy = textForAnchorRange(items, record.anchor, record.focus, { shadows: "keep" });
+  return Boolean(legacy) && legacy !== derived && squashed === squashWhitespace(legacy);
+}
+
 // One notify for a whole sweep, not one per record or one per page.
 //
 // The repair runs from the page-painted hook, which is inside the layer build —
@@ -409,7 +425,7 @@ export function repairDocumentHighlightText(pageNumber) {
     if (!quads.length || quads.some((quad) => quad.page !== pageNumber)) return;
     const stored = String(record.text || "");
     const derived = stored ? textForAnchorRange(items, record.anchor, record.focus) : "";
-    if (!stored || !derived || derived === stored || squashWhitespace(derived) !== squashWhitespace(stored)) {
+    if (!stored || !derived || derived === stored || !storedAsLayerOnceRead(stored, derived, items, record)) {
       textRepairChecked.add(record);
       return;
     }

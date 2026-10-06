@@ -39,7 +39,7 @@ import { paintRegionMarks, regionMarksOnPage } from "./pdf-region-marks.js?v=__B
 import { dropPicture, getPictureBlob, holdPictureUrl, loadPaperPictures, pagesWithPictures, widestStoredPicture, pdfPicturesTurnedOff, pictureKey, putPicture, releasePictureUrl, setPdfPicturesTurnedOff, storedPicture, touchPicture } from "./pdf-pictures.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { paintDocumentHighlights } from "./pdf-highlights.js?v=__BUILD__";
-import { textItemGap } from "./pdf-selection.js?v=__BUILD__";
+import { TEXT_CH_START_ATTR, keptTextItem, textItemGap, textItemShadows } from "./pdf-selection.js?v=__BUILD__";
 import { expectPdfPagePaint, firstPdfPagePainted, notePdfAnimationFrame, notePdfAnimationFramesObserved, notePdfCanvasSetup, notePdfInteractionFrame, notePdfInteractionLongTask, notePdfWastedRenders, onPdfDiagnosticsChange, pdfDiagnosticsOn, pendingPdfPagePaint, recordPdfTimingAfterPaint, samplePdfTiming, setPdfReaderTest } from "./pdf-timing.js?v=__BUILD__";
 import { buildDocumentOutline, clearDocumentOutline, setDocumentOutlinePage } from "./pdf-outline.js?v=__BUILD__";
 import { inkPenIsDown, setDocumentTextWake, touchGestureHoldsSurface } from "../core/gesture.js?v=__BUILD__";
@@ -4894,7 +4894,7 @@ async function buildTextLayerSliced(content, viewport, stale, insert, entry) {
   const layer = createTextLayerBox(viewport);
   insert(layer);
   const items = content.items;
-  const run = { previous: null, measureLater: false };
+  const run = { previous: null, measureLater: false, shadows: textItemShadows(items) };
   let index = 0;
   let spent = 0;
   while (index < items.length) {
@@ -4906,7 +4906,7 @@ async function buildTextLayerSliced(content, viewport, stale, insert, entry) {
     const started = performance.now();
     const frag = document.createDocumentFragment();
     while (index < items.length) {
-      appendTextItem(frag, items[index], index, viewport, content.styles, run);
+      appendTextItem(frag, items[index], index, viewport, content.styles, run, items);
       index += 1;
       if ((index & 15) === 0 && performance.now() - started > PDF_TEXT_SLICE_MS) break;
     }
@@ -5340,8 +5340,8 @@ export async function buildTextLayer(page, viewport, content = null) {
   const layer = createTextLayerBox(viewport);
   content = await (content || page.getTextContent());
   const frag = document.createDocumentFragment();
-  const run = { previous: null, measureLater: false };
-  content.items.forEach((item, index) => appendTextItem(frag, item, index, viewport, content.styles, run));
+  const run = { previous: null, measureLater: false, shadows: textItemShadows(content.items) };
+  content.items.forEach((item, index) => appendTextItem(frag, item, index, viewport, content.styles, run, content.items));
   layer.appendChild(frag);
   if (run.measureLater) measureTextLayerLater(layer);
   // The items go back with the layer, so the one caller can keep them on the
@@ -5362,8 +5362,19 @@ function createTextLayerBox(viewport) {
 
 // One text item's span (and the separator before it), appended to `frag`.
 // `run` carries the previous item and whether any span could not be measured.
-function appendTextItem(frag, item, index, viewport, styles, run) {
-  if (!item.str) return;
+function appendTextItem(frag, source, index, viewport, styles, run, items) {
+  if (!source.str) return;
+  // Text drawn more than once in the same place (see textItemShadows): a stamp
+  // of something already on the layer gets no span and no separator, so the
+  // copy reads the word once; an item that is partly a stamp gets a span for
+  // the rest of it only. A stamp that ends a line still says so — it stands in
+  // as `previous`, which is where textItemGap reads hasEOL from, and it sits
+  // where the original does.
+  const item = run.shadows ? keptTextItem(items, index, run.shadows) : source;
+  if (!item) {
+    if (source.hasEOL && run.previous) run.previous = source;
+    return;
+  }
   // ── The separator between one text item and the next ──────────────────
   //
   // A highlight's text comes from range.toString() over this layer
@@ -5390,6 +5401,9 @@ function appendTextItem(frag, item, index, viewport, styles, run) {
   run.previous = item;
   const span = document.createElement("span");
   span.dataset.itemIndex = String(index);
+  // Where the span's text starts in its item's str, when that is not 0: an
+  // anchor's ch counts in the item's characters, not the span's.
+  if (item.keptFrom) span.setAttribute(TEXT_CH_START_ATTR, String(item.keptFrom));
   span.textContent = item.str;
   // pdf.js's own transform maths, kept verbatim in spirit: the item transform
   // composed with the viewport transform gives the glyph run's baseline
