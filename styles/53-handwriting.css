@@ -169,51 +169,103 @@
   text-overflow: ellipsis;
 }
 
-/* ── Four tabs, and the width they need ────────────────────────────────────
+/* ── Four tabs and the tools, on one line at every width ───────────────────
 
-   styles/37-document-chrome.css took this row from 440px to 560px when a PDF
-   deck turned out to be the first deck with four tabs. It has four tabs and one
-   more control now — ⋯ carries the notebook's own rows, so it no longer stands
-   down there — and 560px leaves about 88px a tab, which is a few pixels under
-   what "DOCUMENT" plus its emoji needs. The label was cut, on a desktop, with
-   room on either side of the row.
+   The row's width on this surface is set in styles/37-document-chrome.css,
+   which also puts the document's tools on the tabs' line. That used to be two
+   lines everywhere — and on a phone, the tabs alone on the first with the
+   tools centred under them — which was a whole toolbar's height above the page
+   to hold six small icons.
 
-   Same fix as last time and for the same reason: the row is centred in a panel
-   that is far wider than it, so the width it asks for is the width it needs. */
-:is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row {
-  width: min(640px, 100%);
-}
-
-/* ── Four tabs on a phone ──────────────────────────────────────────────────
-
-   The row is a NOWRAP flex line at `width: min(560px, 100%)`. On the document
-   surface it also carries ☰, ⇓, ◐, ▣, ✎ and ⋯ — six rigid 26px squares and six
-   gaps, which leaves about 184px for four equal tracks. "DOCUMENT" needs more
-   than the 46px that is.
-
-   So the tabs take a line of their own. Wrapping rather than shrinking is the
-   call styles/37-document-chrome.css already makes for this row's contents —
-   the emoji goes before the words do, because the word is the control — and
-   this is that argument one step further along, now that the surface has a
-   fourth tab. Not scoped to the notebook: the Document tab has exactly the same
-   four tabs and one control MORE. */
+   On a phone it is tight: four labels, ☰, ⇓, the divider and up to five tools
+   in about 360px. So the order of what gives way is the one this row has always
+   used — the emoji went first (37-document-chrome.css drops them at 640px),
+   then the spacing, then a little of the icons' size. The words stay whole. */
 @media (max-width: 720px) {
   :is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row {
-    flex-wrap: wrap;
-    row-gap: 4px;
+    gap: 2px;
   }
 
-  :is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > #viewModeToggle {
-    flex: 1 0 100%;
+  :is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > .view-mode-row-break {
+    margin: 0 1px;
   }
 
-  /* ☰ is authored BEFORE the toggle (ROW_LEAD_SELECTORS), so without this it
-     sits alone on the first line with the tabs pushed under it — three lines of
-     chrome to save one. `order` puts it back with the controls it belongs to. */
   :is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > #documentTocBtn,
-  :is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > #notesTocBtn {
-    order: 1;
+  :is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > .view-export-btn,
+  :is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > .document-toggle,
+  :is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > .document-more-btn {
+    width: 24px;
+    height: 24px;
+    min-height: 24px;
   }
+
+  :is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row .view-mode-toggle button {
+    padding: 0 3px;
+    letter-spacing: 0;
+    font-size: 0.6rem;
+  }
+
+  /* Each tab as wide as its word, not a quarter of the toggle each. Four equal
+     columns give "PDF" the same width as "NOTES", and on a phone that spare
+     width is exactly what NOTES and CARDS were short of — they ellipsised
+     while PDF sat in a box twice its size. `auto` tracks share what is left
+     over in proportion once every word fits. */
+  :is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > .view-mode-toggle:not([hidden]) {
+    grid-auto-columns: auto;
+    gap: 1px;
+  }
+}
+
+/* ── ...unless one line would be crowded: two compact rows ─────────────────
+
+   Below 480px (a phone held upright) one line does fit, but only by cutting
+   every tab to ~45px — "crowded", and one step from CAR… NOT…. So the tools
+   take a second row there: ☰, the tabs and ⇓ on the first, ◐ ▣ ✎ (paper) ⋯
+   centred on the second, 2px under it. Still the ghost icons, still no frame —
+   a short second row of icons, not the old full toolbar.
+
+   .view-mode-row-break, the hairline above 480px, is the line break here: a
+   zero-height item at flex-basis 100%, which nothing can share a line with. It
+   sits after ⇓ in the DOM, so no `order` is needed to put the tools after it. */
+@media (max-width: 480px) {
+  :is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row {
+    flex-wrap: wrap;
+    row-gap: 2px;
+  }
+
+  :is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > .view-mode-row-break {
+    flex: 0 0 100%;
+    width: 100%;
+    height: 0;
+    margin: 0;
+    background: none;
+  }
+
+  /* The tabs keep line 1 whatever the tools need: a flex-basis of 0 means the
+     line-packing pass sees no width to push them down by (flex-grow still
+     fills the line afterwards). Their min-width below is the real floor. */
+  :is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > .view-mode-toggle {
+    flex-basis: 0;
+  }
+
+  :is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row .view-mode-toggle button {
+    font-size: 0.62rem;
+  }
+}
+
+/* ── A tab's word is never cut ─────────────────────────────────────────────
+   The row wraps on this surface at every width, and the tabs refuse to be
+   narrower than their words. So if a line ever cannot hold everything — a
+   bigger system font, a narrower phone than any measured — something moves to
+   the next line rather than a label turning into "NOT…". In every width this
+   was tested at, the one-line and two-row layouts above already fit, and this
+   never comes into play. */
+:is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row {
+  flex-wrap: wrap;
+}
+
+:is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > .view-mode-toggle:not([hidden]) {
+  min-width: max-content;
 }
 
 /* ── ...and the document's own controls, on a notebook ─────────────────────
@@ -248,6 +300,10 @@
 :is(.cs-notebook-open, #cs-specificity).cs-notebook-open.cs-notebook-open .quiz-panel.notes-mode .view-mode-row > .document-more-btn {
   display: inline-flex;
   flex: 0 0 auto;
+}
+
+:is(.cs-notebook-open, #cs-specificity).cs-notebook-open.cs-notebook-open .quiz-panel.notes-mode .view-mode-row > .view-mode-row-break {
+  display: block;
 }
 
 :is(.cs-notebook-open, #cs-specificity).cs-notebook-open.cs-notebook-open .quiz-panel.notes-mode .view-mode-row > #documentTocBtn {

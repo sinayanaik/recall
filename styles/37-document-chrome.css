@@ -111,81 +111,92 @@
 
    `width: 0` gives the select a definite size, so it contributes nothing to
    the row's min-content; `flex: 1 1 0` then hands it the rest of its line,
-   and the caps are lengths, not percentages of the box it is sizing. */
+   and the caps are lengths, not percentages of the box it is sizing.
+
+   The caps are small because the line is shared with the tabs now: a paper's
+   name is a reminder, not a heading, and the full name is in the title and in
+   the panel the button opens. On a phone the name goes altogether and the
+   button is just "2/3 ▾" — which of how many is the part that tells you there
+   are others to switch to. */
 :is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > .document-pdf-switcher {
   flex: 1 1 0;
   width: 0;
-  min-width: 6rem;
-  max-width: 20rem;
+  min-width: 4.5rem;
+  max-width: 10rem;
+  height: 26px;
+  min-height: 26px;
+  padding: 0 6px;
+  border-color: transparent;
+  border-radius: 6px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--text);
+  font-size: 0.72rem;
   text-overflow: ellipsis;
+}
+
+/* A ghost like the icons either side of it — a framed box in the middle of
+   the line was the one thing still drawn as a separate toolbar. */
+:is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > .document-pdf-switcher:hover,
+:is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > .document-pdf-switcher:focus-visible {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+@media (max-width: 720px) {
+  :is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > .document-pdf-switcher {
+    flex: 0 0 auto;
+    width: auto;
+    min-width: 0;
+    gap: 2px;
+    padding: 0 4px;
+  }
+
+  .view-mode-row > .document-pdf-switcher .document-pdf-switcher-name {
+    display: none;
+  }
 }
 
 :is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > #documentTocBtn {
   display: inline-flex;
   flex: 0 0 auto;
-  width: 26px;
-  height: 26px;
-  min-height: 26px;
 }
 
-/* ── One row of tabs, one row of document tools — desktop and tablet ────────
-   Mobile already does this: 53-handwriting.css's `@media (max-width: 720px)`
-   block wraps this row and puts #documentTocBtn/#notesTocBtn at `order: 1` so
-   they land beside the rest of the lifted controls instead of stranded alone
-   with the tabs — written for the notebook, but (per its own comment) already
-   covering the Document tab too, since both carry the same four tabs. That
-   block is left untouched here.
+/* ── One line: the tabs, then the document's tools ─────────────────────────
+   This row used to break in two on the Document tab: the tabs on one line and
+   ☰ ◐ ▣ ✎ ⋯ on a second, centred under them, each a bordered square. It read as
+   a separate toolbar stacked above the page — "ugly, obstructive" was the
+   report — and it cost a whole line of height on the one surface whose subject
+   is a page that wants every pixel of it.
 
-   Above 720px the row never wrapped at all — the four tabs plus ⇓ export was
-   already a full nowrap row (see the width comment above), and the Document
-   tab's TOC button, three tool toggles, the multi-PDF switcher and ⋯ all
-   joined it, squeezed down by nothing but text-overflow: ellipsis on the tab
-   labels. This is that same wrap, scoped to widths the mobile rule does not
-   reach, and built the same way: .view-mode-row-break is the ONLY new
-   element, kept as a plain sibling in the DOM exactly where notes-head-
-   overflow.js already puts everything else, and `order` puts it — and the
-   document controls after it — on a second line however the browser actually
-   laid the nodes out. Nothing here changes which controls are IN the row,
-   only where each one sits once it is, so tools/pdf-preview-check.mjs's
-   #viewModeRow assertions do not move.
+   So they share the line, at every width, and they are quieter: borderless
+   icons (see "Ghost buttons" below) after a hairline that says where the tabs
+   end and the tools for THIS tab begin.
 
-   The break defaults to display:none — not just zero size — so it takes no
-   part in the row's flex layout (and adds none of its `gap`) on every other
-   view, where it has nothing to do. */
+   The hairline is .view-mode-row-break, which is already in the markup at
+   exactly that spot (after ⇓, before the lifted document controls) and used to
+   be the flex-basis: 100% item that forced the second line. It defaults to
+   display:none, so on every other view it takes no part in the row's layout
+   and adds none of its `gap`. */
 .view-mode-row-break {
   display: none;
 }
 
-@media (min-width: 721px) {
-  :is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row {
-    flex-wrap: wrap;
-  }
+:is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > .view-mode-row-break {
+  display: block;
+  flex: 0 0 1px;
+  align-self: center;
+  width: 1px;
+  height: 16px;
+  margin: 0 2px;
+  background: var(--line);
+}
 
-  /* .view-mode-toggle's own flex-basis is `auto` (16-mobile-reading.css:353,
-     frozen) — fine under nowrap, where flex-shrink alone decides its width,
-     but with wrap enabled the browser decides which line each item lands on
-     using its UNSHRUNK content size, not its shrunk rendered one. Overriding
-     only flex-basis (a longhand; flex-grow/shrink from the frozen shorthand
-     are untouched) makes the toggle's line-packing size 0, so it always fits
-     line 1 regardless of viewport width — flex-grow still expands it to fill
-     the line afterward, so what actually renders is unchanged. */
-  :is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > .view-mode-toggle {
-    flex-basis: 0;
-  }
-
-  :is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > .view-mode-row-break {
-    display: block;
-    flex-basis: 100%;
-    order: 5;
-  }
-
-  :is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > #documentTocBtn,
-  :is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > .document-toggle,
-  :is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > .document-pdf-switcher,
-  :is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > .document-more-btn,
-  :is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > .document-more-menu {
-    order: 10;
-  }
+/* Room for four tabs, ☰, ⇓ and the tools on one line. Still min(…, 100%), so a
+   phone gets the tighter sizing in styles/53-handwriting.css rather than a row
+   wider than the screen. */
+:is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row {
+  width: min(780px, 100%);
 }
 
 /* ── ...unless there is no document to control ─────────────────────────────
@@ -205,6 +216,7 @@
 :is(.cs-doc-empty, #cs-specificity).cs-doc-empty .quiz-panel.notes-mode .view-mode-row > .document-pdf-switcher,
 :is(.cs-doc-empty, #cs-specificity).cs-doc-empty .quiz-panel.notes-mode .view-mode-row > .document-more-btn,
 :is(.cs-doc-empty, #cs-specificity).cs-doc-empty .quiz-panel.notes-mode .view-mode-row > #documentTocBtn,
+:is(.cs-doc-empty, #cs-specificity).cs-doc-empty .quiz-panel.notes-mode .view-mode-row > .view-mode-row-break,
 #documentStage.has-no-document .document-pager {
   display: none;
 }
@@ -225,61 +237,70 @@
   display: block;
 }
 
-/* Sized to the tabs, like the lifted notes controls (16-mobile-reading.css:394)
-   — a taller button here grows the row, and --view-toggle-h with it. */
+/* ── Ghost buttons ─────────────────────────────────────────────────────────
+   Sized to the tabs, like the lifted notes controls (16-mobile-reading.css:394)
+   — a taller button here grows the row, and --view-toggle-h with it.
+
+   And quiet like the tabs. On the Document tab (and Write, which is the same
+   stage) these share a line with CARDS · NOTES · PDF · WRITE, which in reading
+   chrome are plain text with a tint on the active one (33-reading-chrome.css).
+   A run of outlined, gradient-filled squares beside that was the loudest thing
+   above the page. So no frame and no fill: an icon, a tint under the pointer,
+   and the active tab's own tint when a mode is on or a menu is open. ☰ and ⇓
+   join in on this surface so the line is one control language end to end. */
 .view-mode-row > .document-toggle,
-.view-mode-row > .document-more-btn {
+.view-mode-row > .document-more-btn,
+:is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > #documentTocBtn,
+:is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > .view-export-btn {
   width: 26px;
   height: 26px;
   min-height: 26px;
   padding: 0;
-  font-size: 0.8rem;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--muted);
+  font-size: 0.85rem;
 }
 
-/* ...but NOT the ⋯, which was reported as "almost invisible" and was.
-   `&#8943;` is a midline ellipsis: three dots on the baseline with no ascender
-   and no stem, so at 0.8rem inside a 26px box it renders about four pixels of
-   ink in the middle of an outlined square — on a dark theme, where the border
-   is one hairline of --line and the fill is --panel, there is nothing there to
-   see. The notes ⋯ two views along already had this problem and already fixed
-   it (16-mobile-reading.css:128-134, and its comment says why); this is the
-   same glyph in the same row, so it takes the same size rather than a new one.
-   The glyph stays a glyph: an SVG here would make the two ⋯ buttons in this row
-   different controls to look at. */
+/* ...but the ⋯ glyph is bigger, which it has to be: `&#8943;` is a midline
+   ellipsis, three dots with no ascender and no stem, and at 0.85rem in a 26px
+   box it is about four pixels of ink. The notes ⋯ two views along already had
+   this problem and already fixed it (16-mobile-reading.css:128-134); this is
+   the same glyph in the same row, so it takes the same size. And it keeps the
+   full text colour — without a frame round it, muted dots disappear. */
 .view-mode-row > .document-more-btn {
   font-size: 1.05rem;
   line-height: 1;
   color: var(--text);
 }
 
-/* A mode that is ON has to say so without being pressed — the same rule the
-   notes ⋯ menu's switches follow, drawn off aria-pressed so it is right
-   whoever flipped it. */
-.view-mode-row > .document-toggle[aria-pressed="true"] {
-  border-color: color-mix(in srgb, var(--accent) 50%, var(--line));
-  background: color-mix(in srgb, var(--accent) 22%, transparent);
-  color: var(--accent);
-}
-
-/* The ⋯'s own version of that state. It is aria-EXPANDED, not aria-pressed —
-   it opens a menu rather than turning a mode on — so it needs a rule of its
-   own, and it needs one: a menu that opens with its button unchanged leaves
-   nothing on screen saying which control the menu belongs to. */
-.view-mode-row > .document-more-btn[aria-expanded="true"] {
-  border-color: color-mix(in srgb, var(--accent) 50%, var(--line));
-  background: color-mix(in srgb, var(--accent) 22%, transparent);
-  color: var(--accent);
-}
-
-/* Hover/focus at half that strength, so reaching for it confirms it is a
-   control before it is pressed. Matches .reading-rail-btn:hover and the notes
-   menu's own rows. */
+/* Hover/focus: a light tint, so reaching for it confirms it is a control. */
 .view-mode-row > .document-more-btn:hover,
 .view-mode-row > .document-more-btn:focus-visible,
 .view-mode-row > .document-toggle:hover,
-.view-mode-row > .document-toggle:focus-visible {
-  border-color: color-mix(in srgb, var(--accent) 34%, var(--line));
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
+.view-mode-row > .document-toggle:focus-visible,
+:is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > #documentTocBtn:hover,
+:is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > #documentTocBtn:focus-visible,
+:is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > .view-export-btn:hover,
+:is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > .view-export-btn:focus-visible {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--text);
+}
+
+/* A mode that is ON has to say so without being pressed (aria-pressed, so it is
+   right whoever flipped it), and a button whose menu or drawer is open has to
+   say which control the menu belongs to (aria-expanded). Both take the active
+   tab's tint, so "this is on" looks the same everywhere on the line. */
+.view-mode-row > .document-toggle[aria-pressed="true"],
+.view-mode-row > .document-more-btn[aria-expanded="true"],
+:is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > #documentTocBtn[aria-expanded="true"],
+:is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > .view-export-btn[aria-expanded="true"] {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent);
 }
 
 /* ── The export button beside the tabs ─────────────────────────────────────
@@ -1055,6 +1076,12 @@
 
 .document-pdf-switcher[aria-expanded="true"] {
   border-color: color-mix(in srgb, var(--accent) 50%, var(--line));
+}
+
+:is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > .document-pdf-switcher[aria-expanded="true"] {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent);
 }
 
 /* ── The deck's PDF panel (src/documents/pdf-switcher.js) ─────────────────
