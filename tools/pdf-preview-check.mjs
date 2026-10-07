@@ -1121,6 +1121,13 @@ try {
         tabTops: Array.from(document.querySelectorAll("#viewModeToggle [data-view-mode]"))
           .filter((b) => !b.hidden)
           .map((b) => Math.round(b.getBoundingClientRect().top)),
+        // The vertical CENTRE of every visible control in the row, tabs and
+        // tools alike — one line means one centre, whatever their heights.
+        centres: Array.from(rowEl ? rowEl.children : [])
+          .filter((n) => getComputedStyle(n).display !== "none" && n.getBoundingClientRect().width > 0
+            && !n.matches('[role="menu"], .view-mode-row-break'))
+          .map((n) => { const r = n.getBoundingClientRect(); return Math.round(r.top + r.height / 2); }),
+        overflow: rowEl ? rowEl.scrollWidth - rowEl.clientWidth : 0,
         // Whose LABEL does not fit the box it is in. .vm-label is a flex item
         // inheriting white-space: nowrap, so without a min-width of its own it
         // refuses to shrink, overflows, and the button's overflow: hidden cuts
@@ -1156,24 +1163,23 @@ try {
       `${row.tabTops.length} tab(s) at y = ${[...new Set(row.tabTops)].join(", ")}`);
     check(`...and no tab label is cut off (${label})`, row.clipped.length === 0,
       row.clipped.length ? `clipped: ${row.clipped.join(", ")}` : `${row.tabTops.length} tab(s), all whole`);
-    // Two lines on a phone, deliberately — the tabs take a line of their own
-    // there rather than share one with six controls, because sharing is what
-    // cut "DOCUMENT" in half (styles/53-handwriting.css). Desktop and tablet
-    // used to hold everything on one line instead, squeezed down by nothing
-    // but text-overflow: ellipsis on the tab labels — 37-document-chrome.css
-    // now wraps the document controls onto a second line there too, above
-    // 720px, once a multi-PDF deck's switcher joined the row and made that
-    // one line genuinely crowded. So every width is now "the tabs, then the
-    // document controls" — two real lines, forced apart by .view-mode-row-
-    // break (a flex-basis: 100% item), which — because nothing can share a
-    // line with a 100%-wide item — always claims one small zero-height line
-    // of its own between them, gap included on both sides of it. 3.0 leaves
-    // room for that harmless third (invisible) line without room for an
-    // actual unwanted one: a real third line of controls measures far taller
-    // than one more row-gap.
-    check(`...and the row is at most two tabs tall (${label})`,
-      row.tabHeight > 0 && row.rowHeight < row.tabHeight * 3.0,
-      `row ${row.rowHeight}px vs tab ${row.tabHeight}px`);
+    // ONE line on a desktop: the tabs, ⇓, a hairline, then the PDF's own tools.
+    // It used to be two everywhere — the tools wrapped onto a second centred
+    // line of bordered squares, which read as a separate toolbar stacked over
+    // the page. Below 480px one line only fits by squeezing every tab to ~45px,
+    // so a phone held upright gets two COMPACT rows instead: ☰, the tabs and ⇓,
+    // then the tools (styles/53-handwriting.css). Either way no more than two,
+    // and never a tab word cut — the "no tab label is cut off" check above.
+    // Lines = clusters of centres more than 3px apart, so a 1px rounding
+    // difference inside one line never counts as two.
+    const lines = [...row.centres].sort((a, b) => a - b)
+      .filter((c, i, all) => i === 0 || c - all[i - 1] > 3).length;
+    const wantLines = width <= 480 ? 2 : 1;
+    check(`...and the PDF tools sit in ${wantLines === 1 ? "the tabs' line" : "one compact row under the tabs"} (${label})`,
+      row.tabHeight > 0 && lines === wantLines && row.rowHeight < row.tabHeight * (wantLines + 0.9),
+      `row ${row.rowHeight}px vs tab ${row.tabHeight}px, ${row.centres.length} control(s) on ${lines} line(s)`);
+    check(`...without running off the row (${label})`, row.overflow <= 1,
+      `row overflows by ${row.overflow}px`);
     check(`the inert notes controls stand down (${label})`,
       row.notesTocHidden && row.editPillHidden && row.notesMoreHidden,
       `toc=${row.notesTocHidden} pill=${row.editPillHidden} more=${row.notesMoreHidden}`);
@@ -5931,6 +5937,17 @@ try {
   // hook calls without it, but it only calls at all when openDocumentIsCurrent
   // is false, and every way that can now happen also moves documentOpenKey —
   // so the idempotent early-return is not on the hook's path either.
+  //
+  // A shorter window for this case only. The deck it opens is the two-page
+  // 16:9 fixture, which at 1280×900 is barely taller than its scroller: the
+  // control row above the page used to be two lines, and once the PDF tools
+  // joined the tabs' line (styles/37-document-chrome.css) the scroller grew
+  // by that line and scrolling to the bottom no longer stood the reader on
+  // page 2. Nothing about the reopen depends on the height; the fixture just
+  // needs room to be somewhere other than the stored page.
+  await page.call("Emulation.setDeviceMetricsOverride", {
+    width: 1280, height: 760, deviceScaleFactor: 1, mobile: false
+  });
   {
     const reopened = await page.evaluate(`async () => {
       const { api, settle } = window.__recall;
@@ -6068,6 +6085,9 @@ try {
       reopened.hadPdfMeta === false || reopened.currentAfterRealChange === false,
       "a genuinely different sha256 no longer forces a reopen");
   }
+  await page.call("Emulation.setDeviceMetricsOverride", {
+    width: 1280, height: 900, deviceScaleFactor: 1, mobile: false
+  });
 
   // ── A page above the reader that discovers it is a different size ────────
   //
@@ -7042,7 +7062,23 @@ try {
       stage: width("#documentStage"),
       switcher: width("#documentPdfSwitcher"),
       scrollWidth: document.documentElement.scrollWidth,
-      viewWidth: window.innerWidth
+      viewWidth: window.innerWidth,
+      // The tab words, with the switcher on the same line as them. The row
+      // check in section 6 runs on a one-PDF deck, where there is no switcher,
+      // and that is how "CAR… NOT…" got past it.
+      clipped: Array.from(document.querySelectorAll("#viewModeToggle [data-view-mode]"))
+        .filter((b) => !b.hidden)
+        .filter((b) => {
+          const label = b.querySelector(".vm-label");
+          return label && label.scrollWidth > label.clientWidth + 1;
+        })
+        .map((b) => b.dataset.viewMode),
+      lines: Array.from(document.getElementById("viewModeRow").children)
+        .filter((n) => getComputedStyle(n).display !== "none" && n.getBoundingClientRect().width > 0
+          && !n.matches('[role="menu"], .view-mode-row-break'))
+        .map((n) => { const r = n.getBoundingClientRect(); return r.top + r.height / 2; })
+        .sort((a, b) => a - b)
+        .filter((c, i, all) => i === 0 || c - all[i - 1] > 3).length
     };
     second.label = before;
     api.renderDocumentPdfSwitcher();
@@ -7052,6 +7088,9 @@ try {
   check("a long PDF title keeps the tools row inside a phone's panel",
     longTitle.row <= longTitle.panel + 1 && longTitle.switcher < longTitle.panel,
     `row ${longTitle.row}px, switcher ${longTitle.switcher}px, panel ${longTitle.panel}px`);
+  check("...with the switcher in the tools' row and every tab's word whole",
+    longTitle.lines <= 2 && longTitle.clipped.length === 0,
+    `${longTitle.lines} line(s), clipped: ${longTitle.clipped.join(", ") || "none"}`);
   check("...and the pages' stage with it, with nothing to scroll sideways",
     longTitle.stage <= longTitle.panel + 1 && longTitle.scrollWidth <= longTitle.viewWidth,
     `stage ${longTitle.stage}px in a ${longTitle.panel}px panel, page ${longTitle.scrollWidth}px in a ${longTitle.viewWidth}px viewport`);

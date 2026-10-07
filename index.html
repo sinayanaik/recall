@@ -837,13 +837,15 @@
                  the way in, not a second one. -->
             <button class="tool-button view-export-btn" id="viewExportBtn" type="button" aria-haspopup="true" aria-expanded="false" aria-label="Export" title="Export what you are looking at">&#8659;</button>
             <div class="view-export-menu" id="viewExportMenu" role="menu" hidden></div>
-            <!-- A PDF deck's document controls (TOC, dark page, region, ink, the
-                 PDF switcher, ⋯) are lifted into this row too (see
-                 notes-head-overflow.js), and on the Document tab that is six-plus
-                 controls sharing one line with the four view tabs. This break
-                 forces them onto a second line instead — see styles/37-document-
-                 chrome.css for the flex-wrap/order rules that use it. Zero-size
-                 and inert everywhere else. -->
+            <!-- A PDF deck's document controls (dark page, region, ink, the
+                 PDF switcher, ⋯) are lifted into this row after this element
+                 (see notes-head-overflow.js), and share the tabs' line. On the
+                 Document and Write tabs this is the hairline between the tabs
+                 and those tools — or, below 480px where one line would be
+                 crowded, the break that puts the tools on a compact second row
+                 (styles/37-document-chrome.css, styles/53-handwriting.css). It
+                 is display:none, and so takes no part in the row, everywhere
+                 else. -->
             <div class="view-mode-row-break" aria-hidden="true"></div>
           </div>
 
