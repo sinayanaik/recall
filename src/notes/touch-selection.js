@@ -1384,26 +1384,6 @@ function setSelectionPoints(anchor, focus, root) {
   return true;
 }
 
-// A selection the APP makes, with the reader's handles on it — the mark menu's
-// "Adjust", which selects a highlight's words so either end can be dragged.
-// The same state a press leaves behind, minus the press: no buzz, no drag in
-// progress, and the defence window armed so the tap that chose "Adjust" cannot
-// collapse it on the way up. Answers false when this controller is not the one
-// selecting (a desktop, or a range outside every surface it binds), and the
-// caller then falls back to the native Selection.
-export function selectRangeWithHandles(range) {
-  if (!armed || !range || range.collapsed) return false;
-  const root = touchSelectionRoots().find((candidate) => candidate.contains(range.commonAncestorContainer));
-  if (!root) return false;
-  const ok = setSelectionPoints(
-    { node: range.startContainer, offset: range.startOffset },
-    { node: range.endContainer, offset: range.endOffset },
-    root
-  );
-  if (ok) selectionDefendedUntil = performance.now() + SELECTION_DEFEND_MS;
-  return ok;
-}
-
 export function clearTouchSelection({ keepDocumentSelection = false } = {}) {
   stopEdgeScroll();
   if (frameHandle) {

@@ -300,7 +300,7 @@ function smartHlBoundary(anchor) {
   return { node, offset: Math.max(0, Math.min(offset, node.nodeValue.length)) };
 }
 
-function smartHlRangeForRecord(record) {
+export function smartHlRangeForRecord(record) {
   const start = smartHlBoundary(record.anchor);
   const end = smartHlBoundary(record.focus);
   if (!start || !end) return null;
@@ -314,8 +314,17 @@ function smartHlRangeForRecord(record) {
   return range.collapsed ? null : range;
 }
 
-function smartHlGeometry(record) {
+export function smartHlGeometry(record) {
   return { page: record.page, anchor: record.anchor, focus: record.focus, text: record.text, quads: record.quads };
+}
+
+// A highlight moved to other words in place — Adjust (src/documents/
+// pdf-highlight-adjust.js) — on the same undo ring as everything made here.
+export function smartHlRememberMove(id, before, after) {
+  smartHlUndoSink({
+    undo: () => updateDocumentHighlight(id, before),
+    redo: () => updateDocumentHighlight(id, after)
+  });
 }
 
 // ── The preview ───────────────────────────────────────────────────────────

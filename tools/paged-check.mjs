@@ -751,31 +751,126 @@ const PROBE = `async (api) => {
     if (adjust) adjust.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
     await settle(200);
     const bar = document.querySelector(".highlight-adjust-bar");
-    mk("Adjust selects the highlight's words and shows its bar", (() => {
+    const startGrip = document.querySelector(".adjust-handle.is-start");
+    const endGrip = document.querySelector(".adjust-handle.is-end");
+    // Grips of the app's own, on every device — this runs in a desktop browser,
+    // where the touch controller is not armed and there used to be none.
+    mk("Adjust puts a grip on each end of the highlight, and its bar up", (() => {
       if (!bar || bar.hidden) return "no bar";
-      const sel = window.getSelection();
-      const text = sel && sel.rangeCount ? sel.getRangeAt(0).toString() : "";
-      return text === "two three" ? true : "selected " + JSON.stringify(text);
-    })());
-    // Drag the end out over "four" — done here the way a mouse would.
-    {
+      if (!startGrip || startGrip.hidden || !endGrip || endGrip.hidden) return "no grips";
       const mark = view.querySelector("mark");
-      const after = mark.nextSibling;
-      const range = document.createRange();
-      range.setStart(mark.firstChild, 0);
-      range.setEnd(after, " four".length);
-      const sel = window.getSelection();
-      sel.removeAllRanges();
-      sel.addRange(range);
+      const r = mark.getBoundingClientRect();
+      const s = startGrip.getBoundingClientRect();
+      const e = endGrip.getBoundingClientRect();
+      if (Math.abs(s.left - r.left) > 4) return "start grip at " + s.left + ", mark starts at " + r.left;
+      if (Math.abs(e.left - r.right) > 4) return "end grip at " + e.left + ", mark ends at " + r.right;
+      return window.getSelection().isCollapsed || !window.getSelection().rangeCount ? true : "it selected the words instead";
+    })());
+    // Drag a grip by its bulb to a point, the way a mouse or a finger would.
+    const dragGrip = async (grip, toX, toY) => {
+      const bulb = grip.querySelector(".adjust-handle-bulb");
+      const stem = grip.getBoundingClientRect();
+      const fromX = stem.left;
+      const fromY = stem.top + stem.height / 2;
+      const opts = (x, y) => ({ bubbles: true, cancelable: true, pointerId: 7, pointerType: "mouse", button: 0, buttons: 1, isPrimary: true, clientX: x, clientY: y });
+      bulb.dispatchEvent(new PointerEvent("pointerdown", opts(fromX, fromY)));
+      const steps = 6;
+      for (let i = 1; i <= steps; i += 1) {
+        document.dispatchEvent(new PointerEvent("pointermove", opts(fromX + (toX - fromX) * i / steps, fromY + (toY - fromY) * i / steps)));
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+      }
+      document.dispatchEvent(new PointerEvent("pointerup", opts(toX, toY)));
+      await settle(80);
+    };
+    const wordBox = (word) => {
+      const walker = document.createTreeWalker(view, NodeFilter.SHOW_TEXT);
+      while (walker.nextNode()) {
+        const at = walker.currentNode.nodeValue.indexOf(word);
+        if (at === -1) continue;
+        const range = document.createRange();
+        range.setStart(walker.currentNode, at);
+        range.setEnd(walker.currentNode, at + word.length);
+        return range.getBoundingClientRect();
+      }
+      return null;
+    };
+    // The end grip dragged into the middle of "four" takes the whole word.
+    {
+      const four = wordBox("four");
+      if (endGrip && four) await dragGrip(endGrip, four.left + four.width * 0.6, four.top + four.height / 2);
     }
+    mk("dragging the end grip previews the longer highlight in place", (() => {
+      const four = wordBox("four");
+      const e = endGrip.getBoundingClientRect();
+      if (!four) return "no four";
+      return Math.abs(e.left - four.right) <= 4 ? true : "end grip at " + e.left + ", four ends at " + four.right;
+    })());
     const apply = bar ? bar.querySelector("[data-adjust=apply]") : null;
     if (apply) apply.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
     await settle(700);
-    mk("Apply moves the highlight to the new selection, same colour", (() => {
+    mk("Apply moves the highlight to the grips, same colour", (() => {
       const src = api.state.notes;
       if (src.indexOf('One <mark data-color="green">two three four</mark> five six.') === -1) return JSON.stringify(src);
-      return bar.hidden ? true : "the bar stayed up";
+      if (!bar.hidden) return "the bar stayed up";
+      return startGrip.closest(".adjust-handle-layer").hidden ? true : "the grips stayed up";
     })());
+
+    // ...and shrinks it from the other end, by the start grip.
+    {
+      const target = view.querySelector("mark");
+      if (target) target.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await settle(250);
+      const row = document.querySelector(".mark-menu:not([hidden]) .mark-menu-adjust");
+      if (row) row.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      await settle(200);
+      const three = wordBox("three");
+      if (three) await dragGrip(document.querySelector(".adjust-handle.is-start"), three.left + 1, three.top + three.height / 2);
+      // Escape first: nothing may be written by a cancel.
+      document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      await settle(300);
+    }
+    mk("Escape cancels an adjust without writing", (() => {
+      const src = api.state.notes;
+      return src.indexOf('<mark data-color="green">two three four</mark>') !== -1 ? true : JSON.stringify(src);
+    })());
+    {
+      const target = view.querySelector("mark");
+      if (target) target.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await settle(250);
+      const row = document.querySelector(".mark-menu:not([hidden]) .mark-menu-adjust");
+      if (row) row.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      await settle(200);
+      const three = wordBox("three");
+      if (three) await dragGrip(document.querySelector(".adjust-handle.is-start"), three.left + 1, three.top + three.height / 2);
+      document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      await settle(700);
+    }
+    mk("the start grip shrinks it, and Enter applies", (() => {
+      const src = api.state.notes;
+      return src.indexOf('One two <mark data-color="green">three four</mark> five six.') !== -1 ? true : JSON.stringify(src);
+    })());
+
+    // A click on a word with the grips up moves the nearer end there.
+    {
+      const target = view.querySelector("mark");
+      if (target) target.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await settle(250);
+      const row = document.querySelector(".mark-menu:not([hidden]) .mark-menu-adjust");
+      if (row) row.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      await settle(200);
+      const six = wordBox("six");
+      const hit = six ? document.elementFromPoint(six.left + 2, six.top + six.height / 2) : null;
+      if (hit) hit.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, clientX: six.left + 2, clientY: six.top + six.height / 2 }));
+      await settle(80);
+      const menuUp = document.querySelector(".mark-menu:not([hidden])");
+      if (apply) apply.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      await settle(700);
+      mk("a click on a word moves the nearer end to it", (() => {
+        if (menuUp) return "the click opened the mark menu instead";
+        const src = api.state.notes;
+        return src.indexOf('One two <mark data-color="green">three four five six</mark>.') !== -1 ? true : JSON.stringify(src);
+      })());
+    }
   }
 
   api.setNotesReadingMode("continuous");

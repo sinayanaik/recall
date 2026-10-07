@@ -1875,6 +1875,133 @@ try {
   check("...and the next Notes → PDF tab press still keeps them", syncReload.afterTabs === true,
     `afterTabs=${syncReload.afterTabs}`);
 
+  // ── 7a-ii. Adjust: a paper's highlight of words, resized by its grips ─────
+  //
+  // The mark menu's Adjust puts a grip on each end of a text highlight
+  // (src/documents/pdf-highlight-adjust.js on src/ui/adjust-handles.js); one
+  // dragged a word further and applied moves the SAME record — its id and its
+  // note stay — over the longer run. Escape writes nothing, and a region has
+  // no words to drag along, so it is not offered there.
+  const adjust = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const menu = await import("/src/notes/mark-menu.js?v=__BUILD__");
+    const hl = await import("/src/documents/pdf-highlights.js?v=__BUILD__");
+    api.setViewMode("document");
+    await api.openDocumentView();
+    await settle(400);
+    const view = document.querySelector("#documentView");
+    const pageEl = document.querySelector('.pdf-page[data-page-number="1"]');
+    pageEl?.scrollIntoView({ block: "start" });
+    await settle(500);
+    pageEl?.classList.add("is-text-awake");
+    const spans = Array.from(pageEl?.querySelectorAll(".pdf-text-layer span[data-item-index]") || []);
+    const span = spans.find((s) => {
+      const words = (s.firstChild?.nodeValue || "").split(" ").filter(Boolean);
+      return words.length >= 3 && words[0].length >= 2 && words[1].length >= 2 && !/rotate/.test(s.style.transform || "");
+    });
+    if (!span) return { error: "no span with three words on page 1" };
+    const node = span.firstChild;
+    const text = node.nodeValue;
+    const lead = text.length - text.trimStart().length;
+    const first = text.indexOf(" ", lead);
+    const secondStart = first + 1;
+    const secondEnd = text.indexOf(" ", secondStart);
+    const wordRange = (a, b) => { const r = document.createRange(); r.setStart(node, a); r.setEnd(node, b); return r; };
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(wordRange(lead, first));
+    const record = hl.addDocumentHighlight(api.captureDocumentSelection(), "pink");
+    sel.removeAllRanges();
+    if (!record) return { error: "could not make a highlight" };
+    hl.setDocumentHighlightNote(record.id, "kept note");
+    await settle(300);
+    const openAdjust = async () => {
+      const anchor = document.querySelector('.pdf-mark[data-highlight-id="' + record.id + '"]');
+      if (!anchor) return false;
+      menu.openMarkMenuWith(anchor, record.id, hl.DOCUMENT_MARK_HANDLERS, "pink");
+      const row = document.querySelector(".mark-menu .mark-menu-adjust");
+      const shown = Boolean(row && !row.hidden);
+      if (row) row.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      await settle(200);
+      return shown;
+    };
+    const offered = await openAdjust();
+    const endGrip = document.querySelector(".adjust-handle.is-end");
+    const gripsShown = Boolean(endGrip && !endGrip.hidden && !endGrip.closest(".adjust-handle-layer").hidden);
+    const drag = async (grip, toX, toY) => {
+      const bulb = grip.querySelector(".adjust-handle-bulb");
+      const stem = grip.getBoundingClientRect();
+      const fromX = stem.left;
+      const fromY = stem.top + stem.height / 2;
+      const opts = (x, y) => ({ bubbles: true, cancelable: true, pointerId: 9, pointerType: "mouse", button: 0, buttons: 1, isPrimary: true, clientX: x, clientY: y });
+      bulb.dispatchEvent(new PointerEvent("pointerdown", opts(fromX, fromY)));
+      for (let i = 1; i <= 6; i += 1) {
+        document.dispatchEvent(new PointerEvent("pointermove", opts(fromX + (toX - fromX) * i / 6, fromY + (toY - fromY) * i / 6)));
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+      }
+      document.dispatchEvent(new PointerEvent("pointerup", opts(toX, toY)));
+      await settle(80);
+    };
+    const second = wordRange(secondStart, secondEnd === -1 ? text.length : secondEnd).getBoundingClientRect();
+    const target = { x: second.left + second.width * 0.6, y: second.top + second.height / 2 };
+    // Escape first: nothing written.
+    if (gripsShown) await drag(endGrip, target.x, target.y);
+    const preview = document.querySelectorAll(".pdf-smart-preview-band").length;
+    document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await settle(200);
+    const afterEscape = hl.documentHighlightById(record.id)?.text || "";
+    const previewCleared = document.querySelectorAll(".pdf-smart-preview-band").length === 0;
+    // ...then for real.
+    await openAdjust();
+    if (gripsShown) await drag(document.querySelector(".adjust-handle.is-end"), target.x, target.y);
+    const apply = document.querySelector(".highlight-adjust-bar [data-adjust=apply]");
+    apply?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    await settle(400);
+    const after = hl.documentHighlightById(record.id);
+    const out = {
+      offered,
+      gripsShown,
+      preview,
+      before: record.text,
+      afterEscape,
+      previewCleared,
+      after: after?.text || "",
+      expected: text.slice(lead, secondEnd === -1 ? text.length : secondEnd).trim(),
+      sameId: Boolean(after),
+      note: hl.documentHighlightNote(record.id),
+      quadsGrew: Boolean(after) && JSON.stringify(after.quads) !== JSON.stringify(record.quads),
+      barGone: document.querySelector(".highlight-adjust-bar")?.hidden === true
+    };
+    // A region is not offered Adjust.
+    const area = hl.addDocumentHighlight({ kind: "area", page: 1, anchor: { page: 1, item: 0, ch: 0 }, focus: { page: 1, item: 0, ch: 0 }, text: "", quads: [{ page: 1, rect: [10, 10, 60, 60] }] }, "yellow");
+    await settle(150);
+    const areaAnchor = area && document.querySelector('.pdf-mark[data-highlight-id="' + area.id + '"]');
+    if (areaAnchor) {
+      menu.openMarkMenuWith(areaAnchor, area.id, hl.DOCUMENT_MARK_HANDLERS, "yellow");
+      const row = document.querySelector(".mark-menu .mark-menu-adjust");
+      out.areaOffered = Boolean(row && !row.hidden);
+      menu.closeMarkMenu();
+    }
+    if (area) hl.removeDocumentHighlight(area.id, { undo: false });
+    hl.removeDocumentHighlight(record.id, { undo: false });
+    return out;
+  }`);
+  check("Adjust is offered on a paper's highlight of words", adjust.offered === true,
+    adjust.error || `offered=${adjust.offered}`);
+  check("...and puts a grip on each end", adjust.gripsShown === true, adjust.error || "no grips");
+  check("...dragging one previews the new extent on the page", adjust.preview > 0, `preview bands=${adjust.preview}`);
+  check("...Escape writes nothing and clears the preview",
+    adjust.afterEscape === adjust.before && adjust.previewCleared === true,
+    `before=${JSON.stringify(adjust.before)} afterEscape=${JSON.stringify(adjust.afterEscape)} cleared=${adjust.previewCleared}`);
+  check("...Apply moves the same highlight over the words the grips cover",
+    // Whole words: trailing punctuation after the second word ("1:") stays out,
+    // as it does for the highlighter's own drag.
+    adjust.sameId === true && adjust.after.length > adjust.before.length && adjust.expected.startsWith(adjust.after)
+      && adjust.after.includes(" ") && adjust.quadsGrew === true && adjust.barGone === true,
+    `after=${JSON.stringify(adjust.after)} expected=${JSON.stringify(adjust.expected)} quadsGrew=${adjust.quadsGrew} barGone=${adjust.barGone}`);
+  check("...keeping its note", adjust.note === "kept note", `note=${JSON.stringify(adjust.note)}`);
+  check("...and a region is not offered Adjust", adjust.areaOffered === false, `areaOffered=${adjust.areaOffered}`);
+
   // ── 7b. Copy location, a region resized in the Notes, and Ctrl Ctrl ──────
   //
   // Three things a reader does moving between the paper and the note: take a

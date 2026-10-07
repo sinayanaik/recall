@@ -22,8 +22,15 @@ import { codeCleanText, codeRangeOffsets, rangeCodeBlock } from "../render/code-
 export function renderedSelectionStrings(view) {
   const selection = window.getSelection();
   if (!selection || selection.isCollapsed || !selection.rangeCount) return null;
+  return renderedRangeStrings(view, selection.getRangeAt(0));
+}
+
+// The same description of any Range in the view, selected or not — the
+// highlight Adjust grips (src/notes/highlight-adjust.js) hold their own Range
+// and never put it in the document selection.
+export function renderedRangeStrings(view, range) {
+  if (!range || range.collapsed) return null;
   if (!view || view.hidden) return null;
-  const range = selection.getRangeAt(0);
   if (!view.contains(range.commonAncestorContainer)) return null;
   const fragment = cleanedSelectionFragment(range);
   const asText = textWithLineBreaks(fragment).trim();
