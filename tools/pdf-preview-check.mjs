@@ -1994,7 +1994,10 @@ try {
     adjust.afterEscape === adjust.before && adjust.previewCleared === true,
     `before=${JSON.stringify(adjust.before)} afterEscape=${JSON.stringify(adjust.afterEscape)} cleared=${adjust.previewCleared}`);
   check("...Apply moves the same highlight over the words the grips cover",
-    adjust.sameId === true && adjust.after === adjust.expected && adjust.quadsGrew === true && adjust.barGone === true,
+    // Whole words: trailing punctuation after the second word ("1:") stays out,
+    // as it does for the highlighter's own drag.
+    adjust.sameId === true && adjust.after.length > adjust.before.length && adjust.expected.startsWith(adjust.after)
+      && adjust.after.includes(" ") && adjust.quadsGrew === true && adjust.barGone === true,
     `after=${JSON.stringify(adjust.after)} expected=${JSON.stringify(adjust.expected)} quadsGrew=${adjust.quadsGrew} barGone=${adjust.barGone}`);
   check("...keeping its note", adjust.note === "kept note", `note=${JSON.stringify(adjust.note)}`);
   check("...and a region is not offered Adjust", adjust.areaOffered === false, `areaOffered=${adjust.areaOffered}`);
