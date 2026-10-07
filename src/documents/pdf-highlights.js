@@ -34,6 +34,7 @@ import { notifyHighlightsChanged } from "../format/highlight-edit.js?v=__BUILD__
 import { pruneOrphanHighlightNotes, readHighlightNotes, setHighlightNoteInSource } from "../format/highlight-notes.js?v=__BUILD__";
 import { openHighlightNoteEditor } from "../notes/highlight-note-editor.js?v=__BUILD__";
 import { closeMarkMenu, closeMarkMenuOnScroll, openMarkMenuWith } from "../notes/mark-menu.js?v=__BUILD__";
+import { isAdjustHandlesOpen } from "../ui/adjust-handles.js?v=__BUILD__";
 import { pushNotesUndo } from "../notes/notes-history.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { dropHighlightTombstonesForLiveIds, recordDeletedHighlightId } from "../sync/document-sync.js?v=__BUILD__";
@@ -1298,6 +1299,16 @@ export function annotationQuads(annotation, pageNumber) {
 // <mark>'s ordinal, which is the whole reason src/notes/mark-menu.js takes a
 // handler set at all.
 
+// Adjust (src/documents/pdf-highlight-adjust.js) is handed in by main.js
+// rather than imported: it is built on the highlighter, which imports this
+// file, and the same rule as setMarkMenuActions keeps the document surface out
+// of a cycle.
+let documentHighlightAdjust = null;
+
+export function setDocumentHighlightAdjust(handlers) {
+  documentHighlightAdjust = handlers && typeof handlers.start === "function" ? handlers : null;
+}
+
 export const DOCUMENT_MARK_HANDLERS = {
   surface: "document",
   // No "pin". A Quick Note keeps a trimNoteAnchor'd anchor
@@ -1338,7 +1349,10 @@ export const DOCUMENT_MARK_HANDLERS = {
   recolour: (id, color) => recolourDocumentHighlight(id, color),
   remove: (id) => removeDocumentHighlight(id),
   noteText: (id) => documentHighlightNote(id),
-  openNote: (id, rect) => openHighlightNoteEditor(id, rect, documentHighlightNote(id), DOCUMENT_NOTE_HANDLERS)
+  openNote: (id, rect) => openHighlightNoteEditor(id, rect, documentHighlightNote(id), DOCUMENT_NOTE_HANDLERS),
+  // Words only — see canAdjustDocumentHighlight.
+  adjust: (id) => documentHighlightAdjust?.start(id),
+  canAdjust: (id) => Boolean(documentHighlightAdjust?.can(id))
 };
 
 export const DOCUMENT_NOTE_HANDLERS = {
@@ -1363,6 +1377,9 @@ export function initDocumentMarkMenu() {
   const view = el.documentView;
   if (!view) return;
   view.addEventListener("click", (event) => {
+    // While a highlight's grips are up a tap moves one of its ends
+    // (src/ui/adjust-handles.js), it does not open a menu.
+    if (isAdjustHandlesOpen()) return;
     // A live text selection means the reader is selecting, not tapping a
     // highlight — the floating pill is the right surface for that. Read
     // through the RANGE rather than Selection.toString(), for the reason

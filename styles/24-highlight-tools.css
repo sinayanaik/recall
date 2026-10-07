@@ -83,11 +83,11 @@
   cursor: pointer;
 }
 
-/* "Adjust": the bar shown while a highlight's words are selected with handles
- * so either end can be dragged — see src/notes/highlight-adjust.js. Pinned to
- * the bottom of the screen, clear of the words being chosen, and above the
- * selection pill's layer; the pill itself is hidden while it is up, because its
- * buttons would treat the selection as a NEW highlight. */
+/* "Adjust": the bar shown while a highlight has grips on its ends — see
+ * src/ui/adjust-handles.js. Pinned to the bottom of the screen, clear of the
+ * words being chosen, and above the selection pill's layer; the pill itself is
+ * hidden while it is up, because its buttons would treat the words as a NEW
+ * highlight. */
 .highlight-adjust-bar {
   position: fixed;
   z-index: 95;
@@ -144,3 +144,108 @@
 body.is-adjusting-highlight #selectionFloat {
   display: none !important;
 }
+
+/* ── The grips ──────────────────────────────────────────────────────────────
+ * One on each end of the highlight, on a fixed layer on <body> moved by a
+ * transform to the caret it marks (src/ui/adjust-handles.js). A stem the height
+ * of the line, and a round bulb that is what you take hold of: above the line
+ * for the start, below it for the end, so the two say which end is which and
+ * neither sits on the words. Pointer events, so a mouse, a finger and a pen all
+ * drag them. The layer is transparent to everything but the bulbs. */
+.adjust-handle-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 94;
+  pointer-events: none;
+}
+
+.adjust-handle-layer[hidden],
+.adjust-handle[hidden] {
+  display: none;
+}
+
+.adjust-handle {
+  --adjust-c: #e0b400;
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 0;
+  height: var(--adjust-caret-h, 18px);
+  pointer-events: none;
+}
+
+.adjust-handle[data-color="green"]  { --adjust-c: #22c55e; }
+.adjust-handle[data-color="blue"]   { --adjust-c: #3b82f6; }
+.adjust-handle[data-color="pink"]   { --adjust-c: #ec4899; }
+.adjust-handle[data-color="orange"] { --adjust-c: #f97316; }
+.adjust-handle[data-color="purple"] { --adjust-c: #8b5cf6; }
+
+.adjust-handle-bar {
+  position: absolute;
+  left: -1px;
+  top: -2px;
+  bottom: -2px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--adjust-c);
+}
+
+.adjust-handle-bulb {
+  position: absolute;
+  left: -9px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--adjust-c);
+  /* A ring in the page's own colour, so the bulb reads as a control rather
+     than a blot when it lands on prose. */
+  box-shadow: 0 0 0 2px var(--bg, #000), 0 1px 4px rgba(0, 0, 0, 0.45);
+  pointer-events: auto;
+  touch-action: none;
+  cursor: grab;
+}
+
+/* The grab area, well beyond the 18px dot: a finger is wider than that. */
+.adjust-handle-bulb::before {
+  content: "";
+  position: absolute;
+  inset: -13px;
+}
+
+.adjust-handle.is-start .adjust-handle-bulb { top: -20px; }
+.adjust-handle.is-end .adjust-handle-bulb { bottom: -20px; }
+
+/* While one is held, neither grip takes part in hit-testing: the point under
+   the caret is resolved with elementFromPoint/caretFromPoint, and a grip there
+   would answer instead of the words. The drag itself is followed on window. */
+body.is-adjust-dragging .adjust-handle-bulb {
+  pointer-events: none;
+}
+
+body.is-adjust-dragging,
+body.is-adjust-dragging * {
+  cursor: grabbing !important;
+}
+
+/* With the grips up a click on the words moves the nearer end there. */
+body.is-adjusting-highlight #notesView,
+body.is-adjusting-highlight #documentView {
+  cursor: text;
+}
+
+/* ── A note's preview ───────────────────────────────────────────────────────
+ * The highlight's own <mark>s paint nothing while it is adjusted, and the words
+ * the grips cover are painted instead (src/notes/highlight-adjust.js), through
+ * the Custom Highlight API — one name per colour, since ::highlight() cannot
+ * read an attribute. Same tints as .rendered mark (styles/12-notes.css). */
+.rendered mark.is-adjust-source,
+.rendered mark.is-adjust-source[data-color] {
+  background: transparent;
+}
+
+::highlight(recall-adjust-yellow) { background-color: color-mix(in srgb, #e0b400 35%, transparent); }
+::highlight(recall-adjust-green)  { background-color: color-mix(in srgb, #22c55e 33%, transparent); }
+::highlight(recall-adjust-blue)   { background-color: color-mix(in srgb, #3b82f6 32%, transparent); }
+::highlight(recall-adjust-pink)   { background-color: color-mix(in srgb, #ec4899 30%, transparent); }
+::highlight(recall-adjust-orange) { background-color: color-mix(in srgb, #f97316 33%, transparent); }
+::highlight(recall-adjust-purple) { background-color: color-mix(in srgb, #8b5cf6 30%, transparent); }

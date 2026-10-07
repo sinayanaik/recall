@@ -3643,6 +3643,16 @@ export const PDF_INK_REST_MS = 2000;
 const inkActivePages = new Map();
 let inkRestTimer = 0;
 
+// A highlight being adjusted (src/documents/pdf-highlight-adjust.js): its own
+// quads stop painting while the preview stands in for them, and a picture with
+// them baked in would keep showing the old extent under the new one.
+let documentMarksEditing = false;
+
+export function setDocumentMarksEditing(on) {
+  documentMarksEditing = Boolean(on);
+  refreshBakedDocumentPages();
+}
+
 export function documentInkPageActive(pageNumber) {
   if (!openPdf) return;
   inkActivePages.set(pageNumber, performance.now() + PDF_INK_REST_MS);
@@ -3663,7 +3673,7 @@ function pageMarksSource() {
 function desiredPicture(pageNumber, entry = openPdf?.pages.get(pageNumber)) {
   const plain = { kind: "plain", stamp: "", marks: null };
   if (!openPdf || !picturesActive() || normalizeDocSlot(openPdf.slot) === DOC_SLOT_NOTEBOOK) return plain;
-  if (documentInkLive() || entry?.detail) return plain;
+  if (documentInkLive() || documentMarksEditing || entry?.detail) return plain;
   const until = inkActivePages.get(pageNumber);
   if (until && until > performance.now()) return plain;
   const marks = regionMarksOnPage(pageMarksSource(), pageNumber);

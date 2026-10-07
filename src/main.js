@@ -127,7 +127,8 @@ import { applyStyleDensity, detectStyleProfile, handleStyleControlChange, normal
 import { styleCoarsePointerMedia, styleMobileMedia, styleProfiles } from "./ui/style-tokens.js?v=__BUILD__";
 import { setTheme, setThemeMenuOpen, setThemeRepaintHook } from "./ui/theme.js?v=__BUILD__";
 import { FOCUS_MODE_KEY, closeViewExportMenu, paintViewExportMenu, setBlockEditFlushHook, setHandwritingViewHook, setSplitViewHook, setViewMode, switchToPreviousView } from "./ui/view-mode.js?v=__BUILD__";
-import { DOCUMENT_NOTE_HANDLERS, documentHighlightById, documentHighlightNote, flashDocumentRegion, initDocumentMarkMenu, repairDocumentHighlightQuads, repairDocumentHighlightText } from "./documents/pdf-highlights.js?v=__BUILD__";
+import { DOCUMENT_NOTE_HANDLERS, documentHighlightById, documentHighlightNote, flashDocumentRegion, initDocumentMarkMenu, repairDocumentHighlightQuads, repairDocumentHighlightText, setDocumentHighlightAdjust } from "./documents/pdf-highlights.js?v=__BUILD__";
+import { canAdjustDocumentHighlight, startDocumentHighlightAdjust } from "./documents/pdf-highlight-adjust.js?v=__BUILD__";
 import { pdfRegionRefForRecord, pdfRegionRefMarkdown } from "./documents/pdf-region-embed.js?v=__BUILD__";
 import { setRegionResizeNotesSurface } from "./documents/pdf-region-resize.js?v=__BUILD__";
 import { setPdfRegionGoToHandler } from "./documents/pdf-region-embed.js?v=__BUILD__";
@@ -1178,6 +1179,9 @@ onDomReady(initNotesResizeHold);
 onDomReady(initNotesCaretLine);
 onDomReady(initMarkMenu);
 onDomReady(initDocumentMarkMenu);
+// A paper's highlight of words gets the mark menu's Adjust too — handed in,
+// because the adjuster is built on the highlighter, which imports pdf-highlights.
+setDocumentHighlightAdjust({ start: startDocumentHighlightAdjust, can: canAdjustDocumentHighlight });
 onDomReady(initDocumentPinchZoom);
 onDomReady(initDocumentCanvasRecovery);
 // A return to the app repaints the ink as well as checking the pages under it.

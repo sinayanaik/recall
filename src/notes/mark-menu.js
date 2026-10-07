@@ -15,7 +15,8 @@ import { el } from "../core/dom.js?v=__BUILD__";
 import { MARK_HIGHLIGHT_COLORS } from "../format/highlight-colors.js?v=__BUILD__";
 import { recolourHighlightAt, removeHighlightAt } from "../format/highlight-edit.js?v=__BUILD__";
 import { highlightNoteTextAt, highlightRefAt, highlightRefIndex } from "../format/highlight-notes.js?v=__BUILD__";
-import { initHighlightAdjust, startHighlightAdjust } from "./highlight-adjust.js?v=__BUILD__";
+import { startHighlightAdjust } from "./highlight-adjust.js?v=__BUILD__";
+import { isAdjustHandlesOpen } from "../ui/adjust-handles.js?v=__BUILD__";
 import { openHighlightNoteEditor } from "./highlight-note-editor.js?v=__BUILD__";
 import { verifiedSourceMarkIndexFor } from "./anchors.js?v=__BUILD__";
 
@@ -227,8 +228,10 @@ function ensureMarkMenu() {
   actions.appendChild(note);
 
   // Resize it — more words or fewer, same colour, same note. Built by hand like
-  // the note row, and shown only where the handler set can do it (a note's
-  // highlight; a paper's quads have nothing to drag). See highlight-adjust.js.
+  // the note row, and shown only where the handler set can do it: any of a
+  // note's highlights, and a paper's highlights of WORDS (a region or a stroke
+  // of ink has no words to drag the ends along) — `canAdjust`. See
+  // src/ui/adjust-handles.js.
   const adjust = document.createElement("button");
   adjust.type = "button";
   adjust.className = "mark-menu-item mark-menu-adjust";
@@ -394,7 +397,10 @@ export function openMarkMenuWith(mark, key, handlerSet, currentColor = null) {
   // note" over a highlight that already has one is a row that lies about what
   // is behind it — the same fault the bookmark buttons were fixed for.
   const adjustRow = menu.querySelector(".mark-menu-adjust");
-  if (adjustRow) adjustRow.hidden = typeof markHandlers.adjust !== "function";
+  if (adjustRow) {
+    adjustRow.hidden = typeof markHandlers.adjust !== "function"
+      || (typeof markHandlers.canAdjust === "function" && !markHandlers.canAdjust(index));
+  }
   const noteLabel = menu.querySelector(".mark-menu-note .mmi-label");
   if (noteLabel) noteLabel.textContent = hasNote ? "Edit the note" : "Add a note";
 
@@ -457,7 +463,6 @@ export function closeMarkMenuOnScroll() {
 export function initMarkMenu() {
   const view = el.notesView;
   if (!view) return;
-  initHighlightAdjust();
 
   view.addEventListener("click", (event) => {
     // Never steal a click meant for something else that happens to sit inside a
@@ -471,6 +476,9 @@ export function initMarkMenu() {
     // instead of starting the drag. Named the way src/cards/swipe.js already
     // names it for the same reason.
     if (event.target.closest("a, button, .cloze, .notes-img-controls, .notes-img-resize-handle, .notes-img-size-badge, .pdf-region-resize-handle")) return;
+    // While a highlight's grips are up a tap moves one of its ends
+    // (src/ui/adjust-handles.js), it does not open a menu.
+    if (isAdjustHandlesOpen()) return;
     const mark = event.target.closest("mark");
     if (!mark || !view.contains(mark)) {
       closeMarkMenu();
