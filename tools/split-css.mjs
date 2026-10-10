@@ -65,6 +65,10 @@ const SECTIONS = [
 // Anything appearing in styles/ that is neither a slice nor listed here is
 // still a failure.
 const POST_SPLIT = {
+  "78-sync-safety.css":
+    "Sync safety (src/sync/notes-conflict.js, src/sync/history.js): the " +
+    "'not synced yet' pill state, the per-paragraph conflict chooser and the " +
+    "Version history list.",
   "77-shutdown.css":
     "The Shut down screen (src/ui/shutdown.js): saves and syncs everything, then " +
     "closes the app or says it is safe to close the tab.",

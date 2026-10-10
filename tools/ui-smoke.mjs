@@ -409,6 +409,24 @@ const ACCEPTED_DIFFS = {
       + "paper deck was put back on the paper on every open. This run leaves the deck "
       + "on Cards (\"back to cards\", then shuffle, then save), so Cards is where it "
       + "comes back. See src/storage/deck-tab.js."
+  },
+  // Renaming the deck that is OPEN, from My Decks. The baseline renamed the copy
+  // on disk and left the screen saying the old title — and the next autosave,
+  // built from the screen, then wrote the old title back over the rename. The
+  // open deck now follows every write to its copy on disk (any write that is
+  // not its own save is merged into what is on screen — see
+  // reconcileOpenDeckWithStore), so the rename shows, and stays.
+  ...Object.fromEntries(["rename the saved deck", "search My Decks", "delete the saved deck"].map((step) => [step, {
+    fields: ["deckTitle"],
+    why: "the open deck shows a rename made to its saved copy, instead of keeping the "
+      + "stale title on screen (which the next autosave used to write back over the "
+      + "rename). Later steps carry the same title forward."
+  }])),
+  "sync": {
+    fields: ["toast"],
+    why: "the sync summary was rewritten to say which decks went which way and from "
+      + "which device (\"Synced — sent your changes in 1 deck (sample); received …\") "
+      + "instead of \"1 deck downloaded from the cloud, 1 deck uploaded to the cloud\"."
   }
 };
 

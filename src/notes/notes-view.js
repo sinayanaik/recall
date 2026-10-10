@@ -656,6 +656,45 @@ export function discardNotesEditingForDeckSwap() {
   resetNotesEditingUI();
 }
 
+// ── Another window's edit, landing while this one is typing ───────────────
+//
+// The open raw editor holds its own copy of the body, so a merge that brought
+// someone else's change into state.notes has to reach the textarea too —
+// otherwise the next keystroke copies the textarea back over state.notes and
+// the change is undone as if this reader had deleted it. Closing the editor
+// (what a deck swap does) would be the safe answer and an infuriating one, so
+// the value is replaced in place and the caret is carried across: kept where it
+// is when the change is elsewhere, shifted by the change's length when it is
+// before it. Undo is re-based on the merged text, so Ctrl+Z cannot walk the
+// other window's edit back out.
+export function refreshNotesEditorInPlace(source) {
+  if (!isNotesEditing()) return false;
+  const next = rawEditorValueFor(source);
+  const before = el.notesEdit.value;
+  if (next === before) return true;
+  const caretStart = el.notesEdit.selectionStart ?? 0;
+  const caretEnd = el.notesEdit.selectionEnd ?? caretStart;
+  const scrollTop = el.notesEdit.scrollTop;
+  let head = 0;
+  const maxHead = Math.min(before.length, next.length);
+  while (head < maxHead && before.charCodeAt(head) === next.charCodeAt(head)) head += 1;
+  let tail = 0;
+  while (tail < before.length - head && tail < next.length - head
+    && before.charCodeAt(before.length - 1 - tail) === next.charCodeAt(next.length - 1 - tail)) tail += 1;
+  const delta = next.length - before.length;
+  const carry = (offset) => {
+    if (offset <= head) return offset;
+    if (offset >= before.length - tail) return offset + delta;
+    return next.length - tail;
+  };
+  el.notesEdit.value = next;
+  try { el.notesEdit.setSelectionRange(carry(caretStart), carry(caretEnd)); } catch { /* detached */ }
+  el.notesEdit.scrollTop = scrollTop;
+  refreshHighlightBackdrop(el.notesEdit);
+  syncNotesHistoryBaseline(source);
+  return true;
+}
+
 export function commitNotesEditIfActive() {
   if (!isNotesEditing()) return;
   // Capture BEFORE overwriting state.notes / hiding the textarea — both the

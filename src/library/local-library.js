@@ -14,7 +14,12 @@ import { invalidateNoteLinkIndex } from "../notes/note-links.js?v=__BUILD__";
 import { repairEscapedMathMarkdown } from "../render/math.js?v=__BUILD__";
 import { noteLinkAliasesFor } from "../render/note-links.js?v=__BUILD__";
 import { deckPayloadHasContent, deckSnapshot, loadDeckSnapshot } from "../storage/deck-snapshot.js?v=__BUILD__";
-import { allDeckSnapshotIds, cloneSnapshot, deckSnapshotCache, deckStoreUnreadable, deleteDeckSnapshot, flushPendingDeckAutosave, forEachDeckSnapshot, indexedDbUnavailable, readDeckSnapshot, rewriteDeckSnapshot, withDeckLock, writeDeckSnapshot } from "../storage/deck-store.js?v=__BUILD__";
+import { allDeckSnapshotIds, cloneSnapshot, deckAutosaveState, deckSnapshotCache, deckStoreUnreadable, deleteDeckSnapshot, flushPendingDeckAutosave, forEachDeckSnapshot, indexedDbUnavailable, readDeckSnapshot, readDeckSnapshotFresh, rewriteDeckSnapshot, withDeckLock, writeDeckSnapshot } from "../storage/deck-store.js?v=__BUILD__";
+import { openDeckBase, revisionContent, setOpenDeckBase } from "../storage/open-deck-base.js?v=__BUILD__";
+import { stashConflictHunks, stashLosingNotes } from "../sync/conflict-stash.js?v=__BUILD__";
+import { mergeOpenDeckSnapshots, sameDeckContent } from "../sync/local-merge.js?v=__BUILD__";
+import { checkpointNoteVersion, recordNoteVersion } from "../sync/history.js?v=__BUILD__";
+import { splitHighlightNotesTail } from "../format/notes-fence.js?v=__BUILD__";
 import { LOCAL_DECKS_INDEX_KEY, LOCAL_DECK_PREFIX, NOTES_CONFLICT_SUFFIX } from "../storage/keys.js?v=__BUILD__";
 import { handleDeckStorageQuotaError, persistWorkingDeck, setDeckAutosaveStorageFailed, setLastSaveErrorWasQuota } from "../storage/quota.js?v=__BUILD__";
 import { cardSyncSignature, dropTombstonesForLiveCards, recordDeletedCardIds, stampCardSyncState } from "../sync/cards.js?v=__BUILD__";
@@ -63,21 +68,96 @@ export const INDEX_CHECKPOINT_EVERY = 25;
 
 // Reentrant, because the pull pass calls into functions that open their own
 // batches; only the outermost flush actually ends it.
+// ── ...and a batch must not erase another window's writes ─────────────────
+//
+// The index is shared by every window of the app. A batch holds a copy for the
+// length of a sync — minutes, on a large library — and used to write that copy
+// back WHOLE, so a deck saved in a second window during the sync had its entry
+// (its updatedAt, which is what says "this deck has an edit to push") reverted
+// to the batch's older copy. So the batch remembers the entries it started
+// from, and a flush writes only the entries THIS batch changed over whatever is
+// in localStorage now.
+let indexBatchBaseById = null;
+
+function indexEntriesById(list) {
+  const map = new Map();
+  for (const entry of Array.isArray(list) ? list : []) {
+    if (entry && entry.id !== undefined) map.set(String(entry.id), JSON.stringify(entry));
+  }
+  return map;
+}
+
+function readStoredIndexList() {
+  try {
+    const list = JSON.parse(localStorage.getItem(LOCAL_DECKS_INDEX_KEY) ?? "[]");
+    return Array.isArray(list) ? list : [];
+  } catch {
+    return null;
+  }
+}
+
 export function beginIndexBatch() {
+  if (indexBatchDepth === 0) {
+    const stored = readStoredIndexList();
+    indexBatchBaseById = stored ? indexEntriesById(stored) : null;
+  }
   indexBatchDepth++;
 }
 
 export function endIndexBatch() {
   if (indexBatchDepth === 0) return;
   indexBatchDepth--;
-  if (indexBatchDepth === 0) flushIndexBatch();
+  if (indexBatchDepth === 0) {
+    try {
+      flushIndexBatch();
+    } finally {
+      indexBatchBaseById = null;
+    }
+  }
 }
 
 // Push whatever is pending to localStorage. Safe to call at any time, including
 // when no batch is open.
 export function flushIndexBatch() {
   if (pendingIndexJson === null) return;
-  const json = pendingIndexJson;
+  let json = pendingIndexJson;
+  // Per entry, over what is on disk NOW — see indexBatchBaseById.
+  const stored = indexBatchBaseById ? readStoredIndexList() : null;
+  if (stored && indexBatchBaseById) {
+    try {
+      const pending = JSON.parse(json);
+      const pendingById = indexEntriesById(pending);
+      const storedById = new Map(stored.map((entry) => [String(entry?.id), entry]));
+      const out = [];
+      for (const entry of pending) {
+        const id = String(entry?.id);
+        const changedHere = pendingById.get(id) !== indexBatchBaseById.get(id);
+        const onDisk = storedById.get(id);
+        // Untouched by this batch: whatever the disk holds now is at least as new.
+        if (!changedHere && onDisk) { out.push(onDisk); continue; }
+        // Changed by BOTH (this sync, and a save in another window): the batch's
+        // entry, but never with an older updatedAt than the other window wrote —
+        // that stamp is what says the deck has an edit still to push.
+        const changedThere = onDisk && JSON.stringify(onDisk) !== indexBatchBaseById.get(id);
+        if (changedThere && Date.parse(onDisk.updatedAt || 0) > Date.parse(entry.updatedAt || 0)) {
+          out.push({ ...entry, updatedAt: onDisk.updatedAt });
+        } else {
+          out.push(entry);
+        }
+      }
+      for (const entry of stored) {
+        const id = String(entry?.id);
+        if (pendingById.has(id)) continue;
+        // In the base and gone from the batch → this batch removed it. Not in
+        // the base → another window added it while the batch was open: keep it.
+        if (!indexBatchBaseById.has(id)) out.push(entry);
+      }
+      json = JSON.stringify(out);
+      indexBatchBaseById = indexEntriesById(out);
+    } catch (error) {
+      console.warn("Could not merge the deck index with other windows' changes", error);
+    }
+  }
   // Cleared BEFORE the write, not after. If setItem throws (a full quota is the
   // realistic case), leaving the pending copy in place would mean every
   // subsequent read kept returning an index that is not on disk and never will
@@ -554,7 +634,81 @@ export function resolveSaveTarget(id) {
 // which deck it was saving. Omit it when the caller is fully synchronous (see
 // saveDeckToLibrarySync) — with no await in between there is nothing that could
 // have moved the user, and the check would only cost a comparison.
-export function finishSaveDeckToLibrary({ snapshot, localId, previousSnapshot, silent, updatedAt, lastSyncedAt, synced, loadToken }) {
+// ── Did somebody else write this deck since this window last agreed? ──────
+//
+// Another window with the same deck open, a sync pulling another device's work
+// in, a quick note pinned from elsewhere — anything that wrote the deck after
+// this window loaded or last saved it. `base` is that agreement (see
+// src/storage/open-deck-base.js). The revision answers it; a snapshot from before
+// revisions existed is compared by content instead.
+export function deckMovedSinceBase(base, previousSnapshot) {
+  if (!base || !previousSnapshot) return false;
+  if (base.rev && previousSnapshot.rev) return base.rev !== previousSnapshot.rev;
+  if (!base.loaded) return false;
+  return !sameDeckContent(base.loaded, previousSnapshot);
+}
+
+// Put a merged copy of the open deck on screen, without moving the reader. The
+// raw editor keeps its caret (refreshNotesEditorInPlace), the All Cards panel
+// stays open, and the surfaces repaint through the same hook a sync uses.
+function adoptIntoOpenDeck(snapshot, localId) {
+  // Never allowed to fail the save it follows: the write has already landed,
+  // and a deck the other window emptied (loadDeckSnapshot refuses a deck with
+  // no content) is still correct on disk — the screen simply keeps what it had
+  // until the next open.
+  try {
+    loadDeckSnapshot(snapshot, snapshot.sourceTitle || snapshot.deckTitle || "", false, { keepPlace: true, deckKey: localId });
+  } catch (error) {
+    console.warn("Could not show the merged copy of the open deck", error);
+  }
+  state.localDeckId = localId;
+  persistWorkingDeck();
+  try { deckReloadedInPlace?.(); } catch (error) { console.warn("Could not repaint the open deck", error); }
+}
+
+export function finishSaveDeckToLibrary({ snapshot, localId, previousSnapshot, silent, updatedAt, lastSyncedAt, synced, loadToken, base = null }) {
+  // What this window's state said, before any merge — the copy its edits are in.
+  const mine = snapshot;
+  const stillOpen = loadToken === undefined || loadToken === activeDeckLoadToken;
+  const forOpenDeck = Boolean(base) && stillOpen && String(base.localId) === String(localId);
+
+  // ── Merge, never overwrite ────────────────────────────────────────────────
+  //
+  // This used to write `mine` straight over whatever was on disk. When somebody
+  // else had written in between, that undid their work and — because every
+  // card they added was missing from `mine` — tombstoned those cards, so the
+  // next sync deleted them from the cloud as well. Now the disk copy is the
+  // "theirs" of a three-way merge against this window's base: what this window
+  // did not touch takes theirs, what it changed is kept, what both changed is
+  // merged (and only a genuine clash in the notes is set aside, per region).
+  let localMerge = null;
+  if (forOpenDeck && deckMovedSinceBase(base, previousSnapshot)) {
+    // The common ancestor: this window's base — unless the copy on disk was
+    // written from an older revision this window also knew, in which case that
+    // revision is the ancestor and this window's own last save is one of ITS
+    // changes, not something the other copy undid.
+    const parent = previousSnapshot.parentRev;
+    const ancestor = (parent && parent !== base.rev && revisionContent(parent)) || base.snapshot;
+    localMerge = mergeOpenDeckSnapshots(ancestor, mine, previousSnapshot);
+    snapshot = {
+      ...localMerge.snapshot,
+      app: mine.app,
+      version: mine.version,
+      exportedAt: mine.exportedAt,
+      localDeckId: localId
+    };
+    // Nothing of this window's is missing from disk: there is nothing to write.
+    // Only the screen is behind — bring it up to date and agree with the disk.
+    if (sameDeckContent(snapshot, previousSnapshot)) {
+      const entry = readLocalDeckIndex().find((e) => e.id === localId) || null;
+      if (entry) {
+        adoptIntoOpenDeck(previousSnapshot, localId);
+        setOpenDeckBase(localId, { rev: previousSnapshot.rev || null, loaded: previousSnapshot, snapshot: deckSnapshot() });
+        return entry;
+      }
+    }
+  }
+
   // Read the index entry HERE, not before the caller's await. Everything from
   // this line to writeLocalDeckIndex below is synchronous, so this is the only
   // point at which "what the index currently says" can be trusted to still be
@@ -636,8 +790,36 @@ export function finishSaveDeckToLibrary({ snapshot, localId, previousSnapshot, s
   // deck as saved — and persists to IndexedDB in the background. A genuine
   // quota error surfaces asynchronously via handleDeckStorageQuotaError
   // rather than failing this call; see the block comment on writeDeckSnapshot.
+  // ── Version history ─────────────────────────────────────────────────────
+  //
+  // The body on disk, kept before it is replaced: always when another window's
+  // text is being combined with this one's, and as a checkpoint at most every
+  // ten minutes while the reader types.
+  const previousBody = splitHighlightNotesTail(String(previousSnapshot?.notes || "")).body;
+  const nextBody = splitHighlightNotesTail(String(snapshot.notes || "")).body;
+  if (previousSnapshot && previousBody !== nextBody) {
+    if (localMerge) {
+      recordNoteVersion(localId, { notes: previousSnapshot.notes, deckTitle: previousSnapshot.deckTitle, reason: "before combining with another window" });
+    } else {
+      checkpointNoteVersion(localId, previousSnapshot.notes, previousSnapshot.deckTitle);
+    }
+  }
+
   setLastSaveErrorWasQuota(false);
-  writeDeckSnapshot(localId, snapshot);
+  // Derived from the copy it replaces — recorded on the write (parentRev).
+  snapshot.rev = previousSnapshot?.rev || null;
+  const writtenRev = writeDeckSnapshot(localId, snapshot, { origin: forOpenDeck || stillOpen ? "open-deck-save" : "save" });
+
+  // A clash the merge could not settle: this window's text stays in the note,
+  // and the other window's text for just those regions is kept for the resolver.
+  const localConflict = Boolean(localMerge?.bodyHunks?.length || localMerge?.bodyDeclined);
+  if (localMerge?.bodyHunks?.length) {
+    stashConflictHunks(localId, snapshot.deckTitle || "", localMerge.bodyHunks, { otherFrom: "another window" })
+      .catch((error) => console.warn("Could not keep the other window's version of a clashing paragraph", error));
+  } else if (localMerge?.bodyDeclined) {
+    stashLosingNotes(localId, snapshot.deckTitle || "", localMerge.theirsNotes)
+      .catch((error) => console.warn("Could not keep the other window's notes", error));
+  }
 
   const meta = {
     id: localId,
@@ -664,7 +846,7 @@ export function finishSaveDeckToLibrary({ snapshot, localId, previousSnapshot, s
     // authoritatively). Dropping them here meant the very next autosave — 400ms
     // after the user typed one character — silently cleared the warning while
     // the notes were still missing from the cloud.
-    notesConflicted: previousEntry?.notesConflicted || false,
+    notesConflicted: previousEntry?.notesConflicted || localConflict || false,
     notesSyncFailed: previousEntry?.notesSyncFailed || false,
     // Carried over for exactly the reason those two are, and it matters more:
     // this is the body the cloud is known to hold (src/sync/diff.js,
@@ -674,6 +856,12 @@ export function finishSaveDeckToLibrary({ snapshot, localId, previousSnapshot, s
     // timestamp fallback 400ms after every keystroke, which is the fault it
     // exists to fix.
     syncedNotesFingerprint: previousEntry?.syncedNotesFingerprint || null,
+    // The rest of what only a sync establishes, carried for the same reason:
+    // the title and folder the cloud holds (what a rename here is merged
+    // against) and the device the last pulled change came from.
+    ...(typeof previousEntry?.syncedTitle === "string" ? { syncedTitle: previousEntry.syncedTitle } : {}),
+    ...(typeof previousEntry?.syncedCategory === "string" ? { syncedCategory: previousEntry.syncedCategory } : {}),
+    ...(previousEntry?.lastSyncedFrom ? { lastSyncedFrom: previousEntry.lastSyncedFrom } : {}),
     // Carried for the same reason, and it is a number that can legitimately be
     // 0 — so `??` and not `||`, or every deck the reader has never paged past
     // the first card of reads as having no baseline at all.
@@ -708,9 +896,24 @@ export function finishSaveDeckToLibrary({ snapshot, localId, previousSnapshot, s
   // after which every autosave wrote the new note's body into the old note's
   // record. loadWebDeck already guards its own call to this effect with the
   // same token; the assignment itself was the hole.
-  if (loadToken === undefined || loadToken === activeDeckLoadToken) {
+  if (stillOpen) {
     state.localDeckId = localId;
     persistWorkingDeck();
+    // ── This window now agrees with the disk ────────────────────────────────
+    //
+    // If the merge brought in somebody else's change, the screen is shown it —
+    // on top of anything typed while this save was waiting for the disk, which
+    // is in `state` but not in `mine`. Then the new agreement is recorded, so the
+    // next save is measured from here.
+    if (localMerge && !sameDeckContent(snapshot, mine)) {
+      const current = deckSnapshot();
+      const typedMeanwhile = !sameDeckContent(current, mine);
+      const onScreen = typedMeanwhile ? mergeOpenDeckSnapshots(mine, current, snapshot).snapshot : snapshot;
+      adoptIntoOpenDeck(onScreen, localId);
+      setOpenDeckBase(localId, { rev: writtenRev, loaded: snapshot, snapshot: typedMeanwhile ? snapshot : deckSnapshot() });
+    } else {
+      setOpenDeckBase(localId, { rev: writtenRev, loaded: snapshot, snapshot: localMerge ? snapshot : mine });
+    }
   }
   // ── An edit that settled ─────────────────────────────────────────────────
   //
@@ -771,14 +974,17 @@ export async function saveDeckToLibrary({ id = null, silent = false, updatedAt =
   // which "right now" that was, so finishSaveDeckToLibrary can tell whether the
   // user has since opened something else.
   const loadToken = activeDeckLoadToken;
+  // The agreement this window's state was built on — captured with the snapshot,
+  // before any await, because both describe the same moment.
+  const base = openDeckBase(localId);
   // Serialised per deck: read-then-write, and a pull merging cloud cards into
-  // the same deck must not land in between (see withDeckLock).
+  // the same deck must not land in between (see withDeckLock) — across every
+  // window of the app, where the browser supports it.
   return withDeckLock(localId, async () => {
-    // Read the copy we're about to overwrite, BEFORE writing, so we can tell a
-    // real content edit apart from a position-only / no-op save and keep the cloud
-    // id from ever being dropped.
-    const previousSnapshot = await readDeckSnapshot(localId);
-    return finishSaveDeckToLibrary({ snapshot, localId, previousSnapshot, silent, updatedAt, lastSyncedAt, synced, loadToken });
+    // Read the copy we're about to replace, BEFORE writing — from disk, not this
+    // tab's cache, since another window may have written it a moment ago.
+    const previousSnapshot = await readDeckSnapshotFresh(localId);
+    return finishSaveDeckToLibrary({ snapshot, localId, previousSnapshot, silent, updatedAt, lastSyncedAt, synced, loadToken, base });
   });
 }
 
@@ -824,7 +1030,7 @@ export function saveDeckToLibrarySync({ id = null, silent = true } = {}) {
   if (deckStoreUnreadable) return null;
   const { snapshot, localId } = resolveSaveTarget(id);
   const previousSnapshot = cachedDeckSnapshotSync(localId);
-  return finishSaveDeckToLibrary({ snapshot, localId, previousSnapshot, silent, updatedAt: null, lastSyncedAt: undefined, synced: false });
+  return finishSaveDeckToLibrary({ snapshot, localId, previousSnapshot, silent, updatedAt: null, lastSyncedAt: undefined, synced: false, base: openDeckBase(localId) });
 }
 
 // ── Reloading a deck the reader is still standing in ───────────────────────
@@ -850,11 +1056,56 @@ export function saveDeckToLibrarySync({ id = null, silent = true } = {}) {
 // setDocumentOpenedHook, setInkChangedHandler).
 let deckReloadedInPlace = null;
 
+// Told when the reader opens a deck from the library — src/main.js asks the
+// cloud there and then whether another device has changed it (live-sync.js).
+let deckOpened = null;
+export function setDeckOpenedHook(fn) {
+  deckOpened = typeof fn === "function" ? fn : null;
+}
+
 export function setDeckReloadedInPlaceHook(fn) {
   deckReloadedInPlace = typeof fn === "function" ? fn : null;
 }
 
+// ── The open deck, brought up to date with the disk ───────────────────────
+//
+// For anything that rewrote the deck this window is showing: a sync, another
+// window's save, a pin from elsewhere. It is a save — the merge in
+// finishSaveDeckToLibrary is what makes that safe — so anything this window has
+// typed since its last save is kept and goes on top, and anything the disk has
+// that this window lacks comes onto the screen. A window with nothing new and
+// nothing behind does nothing at all.
+export async function reconcileOpenDeckWithStore() {
+  const id = state.localDeckId;
+  if (!id || isFolderDeckActive() || deckStoreUnreadable) return false;
+  const base = openDeckBase(id);
+  if (!base) return false;
+  const cached = cachedDeckSnapshotSync(id);
+  if (cached?.rev && base.rev && cached.rev === base.rev && !deckAutosaveState().armed) return false;
+  // An armed autosave is about to write this same state; doing it now (through
+  // the merge) instead of later is the same save, earlier.
+  if (deckAutosaveState().armed) {
+    await flushPendingDeckAutosave();
+    return true;
+  }
+  if (deckHasNothingToSave()) return false;
+  try {
+    return Boolean(await saveDeckToLibrary({ silent: true }));
+  } catch (error) {
+    console.warn("Could not bring the open deck up to date", error);
+    return false;
+  }
+}
+
 export async function loadDeckFromLibrary(id, { keepPlace = false } = {}) {
+  // The deck on screen, rewritten underneath the reader: merge it in place
+  // rather than re-open it. Re-opening read the disk copy and THEN flushed the
+  // armed autosave over it — so the screen showed the new copy while the disk
+  // held the old one, stamped as a fresh edit, and the next sync pushed it.
+  if (keepPlace && id && String(id) === String(state.localDeckId) && openDeckBase(id)) {
+    await reconcileOpenDeckWithStore();
+    return true;
+  }
   // Opening a saved deck is never an import, so it must not adopt a folder left
   // over from an "Import here" whose file picker was dismissed — that would
   // silently refile an existing deck.
@@ -900,12 +1151,15 @@ export async function loadDeckFromLibrary(id, { keepPlace = false } = {}) {
     if (!keepPlace) recordNavHistory();
     loadDeckSnapshot(payload, payload.sourceTitle || payload.deckTitle || "", false, { keepPlace, deckKey: id });
     state.localDeckId = id;
+    // The agreement every later save of this window is measured from.
+    setOpenDeckBase(id, { rev: payload.rev || null, loaded: payload, snapshot: deckSnapshot() });
     persistWorkingDeck();
     refreshSyncIndicatorBaseline();
     refreshNavBack(); // arrived — now the button knows where "here" is
     // The pages on screen were painted from arrays that have just been replaced.
     // Only the surface knows what it is showing, so it is told rather than asked.
     if (keepPlace) deckReloadedInPlace?.();
+    else deckOpened?.(id);
     return true;
   } catch (error) {
     console.warn("Could not load saved deck", error);

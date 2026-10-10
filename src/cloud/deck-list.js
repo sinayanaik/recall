@@ -46,7 +46,7 @@ export const DECK_INDEX_COLUMNS = "id, title, category, updated_at, last_accesse
 //
 // Ordering below sorts on updated_at then id, both present here, so paging
 // stays exactly as deterministic as with the full set.
-export const DECK_SYNC_INDEX_COLUMNS = "id, updated_at, title, category";
+export const DECK_SYNC_INDEX_COLUMNS = "id, updated_at, title, category, last_accessed_at";
 
 // PAGED, and that is now load-bearing rather than tidy: reconcile treats a deck
 // missing from this list as deleted in the cloud (see the deletion-adoption pass
@@ -297,6 +297,10 @@ export function isMissingColumnError(error, column) {
   if (!error) return false;
   if (String(error.code || "") === "42703") return true;
   const message = String(error.message || error).toLowerCase();
+  // PostgREST's own answer for a WRITE naming a column the table lacks:
+  // "Could not find the 'x' column of 'decks' in the schema cache". Postgres
+  // never sees that request, so it carries no 42703.
+  if (String(error.code || "") === "PGRST204") return message.includes(String(column).toLowerCase());
   return message.includes(String(column).toLowerCase())
     && message.includes("column")
     && message.includes("does not exist");

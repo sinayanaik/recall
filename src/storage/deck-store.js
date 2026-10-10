@@ -394,17 +394,61 @@ export function requestPersistentStorage() {
 // left unlocked.
 export const deckWriteLocks = new Map();
 
+// ── ...and across windows ─────────────────────────────────────────────────
+//
+// The queue above is per tab, and the same deck open in two windows is two
+// tabs. Where the browser has Web Locks, the operation also holds a lock named
+// for the deck, which every window of this origin shares — so a save in one
+// window and a save (or a sync pull) in another can no longer interleave their
+// read and their write. Never held across a network call, for the same reason
+// as the in-tab queue.
+export const crossTabLocks = typeof navigator !== "undefined" && navigator.locks && typeof navigator.locks.request === "function"
+  ? navigator.locks
+  : null;
+
 export function withDeckLock(id, fn) {
   const key = String(id || "");
   if (!key) return Promise.resolve(fn());
   const previous = deckWriteLocks.get(key) || Promise.resolve();
+  const run = crossTabLocks
+    // Released only once this operation's own write is on disk, or the next
+    // window to take the lock could read the copy it is replacing.
+    ? () => crossTabLocks.request(`recall-deck:${key}`, async () => {
+      // Whatever runs under the lock reads the deck from disk, not from a cache
+      // another window's write may not have refreshed yet — unless this tab's
+      // own newer write is still on its way there.
+      if (!pendingDeckWrites.has(key)) deckSnapshotCache.delete(key);
+      const value = await fn();
+      await deckWriteCommitted(key);
+      return value;
+    })
+    : fn;
   // Runs after the previous holder settles either way — one operation failing
   // must never wedge the queue for that deck.
-  const result = previous.then(fn, fn);
+  const result = previous.then(run, run);
   const tail = result.then(() => {}, () => {});
   deckWriteLocks.set(key, tail);
   tail.then(() => { if (deckWriteLocks.get(key) === tail) deckWriteLocks.delete(key); });
   return result;
+}
+
+// The same lock, held across a stretch of code instead of one callback: resolves
+// with a release function once this deck is ours, in this tab and (with Web
+// Locks) every other window. For the sync's push, whose read-merge-write is the
+// middle of a long function rather than a callback of its own. Release it
+// before any network call — and always: an unreleased lock stalls every save of
+// the deck for the life of the page.
+export function holdDeckLock(id) {
+  return new Promise((granted) => {
+    withDeckLock(id, () => new Promise((release) => {
+      let released = false;
+      granted(() => {
+        if (released) return;
+        released = true;
+        release();
+      });
+    })).catch(() => {});
+  });
 }
 
 // Re-read a deck, let `mutate` change the fresh copy, and write that back —
@@ -464,6 +508,32 @@ export function cloneSnapshot(snapshot) {
 // per-deck catch, or a try/catch around the old localStorage.getItem this
 // replaced) and only need `await` added — this is called out explicitly at
 // each call site rather than swallowed here.
+// The copy on DISK, not this tab's cache — for a read-modify-write that holds
+// the deck's cross-window lock. The cache is refreshed from other windows by a
+// broadcast that can arrive a moment after their write commits, so inside the
+// lock it is the one source that may be behind. A write of this tab's own still
+// in flight is newer than the disk, and wins as it does in readDeckSnapshot.
+export async function readDeckSnapshotFresh(id) {
+  if (!id) return null;
+  const key = String(id);
+  if (indexedDbUnavailable || pendingDeckWrites.has(key)) return readDeckSnapshot(id);
+  let row;
+  try {
+    row = await deckStoreRequest("readonly", (store) => store.get(key));
+  } catch (error) {
+    console.error(`Could not read deck snapshot ${key} from IndexedDB`, error);
+    throw error;
+  }
+  if (pendingDeckWrites.has(key)) return readDeckSnapshot(id);
+  if (!row || !row.snapshot) {
+    deckSnapshotCache.delete(key);
+    return null;
+  }
+  deckSnapshotCache.set(key, row.snapshot);
+  touchDeckSnapshotCache(key);
+  return cloneSnapshot(row.snapshot);
+}
+
 export async function readDeckSnapshot(id) {
   if (!id) return null;
   const key = String(id);
@@ -523,19 +593,59 @@ export async function readDeckSnapshot(id) {
 // pressure is slow, not broken.
 export const DECK_WRITE_SETTLE_TIMEOUT_MS = 15000;
 
-export function writeDeckSnapshot(id, snapshot) {
-  if (!id) return;
+// ── Every write is a new revision ──────────────────────────────────────────
+//
+// `rev` is unique per write and says nothing about order — only "is this still
+// the copy I read?". A window remembers the rev of the copy it loaded, and a
+// save that finds a different one on disk knows somebody else wrote in between
+// and merges instead of overwriting (see src/sync/local-merge.js).
+export function nextDeckRev() {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+// Told about every write, synchronously, with the id and the origin the writer
+// gave. src/main.js uses it to bring the deck on screen up to date when anything
+// other than that screen's own save rewrote it — a sync, another tab's change
+// arriving, a quick note pinned into it.
+let deckWriteListener = null;
+export function setDeckWriteListener(fn) {
+  deckWriteListener = typeof fn === "function" ? fn : null;
+}
+
+// The commit of the most recent write per deck, so a locked read-modify-write
+// can hold the cross-window lock until its write is actually on disk — releasing
+// it earlier would let the next window read the copy being replaced.
+const writeCommits = new Map();
+export function deckWriteCommitted(id, timeoutMs = DECK_WRITE_SETTLE_TIMEOUT_MS) {
+  const pending = writeCommits.get(String(id || ""));
+  if (!pending) return Promise.resolve();
+  return Promise.race([
+    pending.catch(() => {}),
+    new Promise((resolve) => setTimeout(resolve, timeoutMs))
+  ]);
+}
+
+export function writeDeckSnapshot(id, snapshot, { origin = "other" } = {}) {
+  if (!id) return null;
   const key = String(id);
+  const rev = nextDeckRev();
   if (indexedDbUnavailable) {
     try {
-      localStorage.setItem(LOCAL_DECK_PREFIX + key, JSON.stringify(snapshot));
+      localStorage.setItem(LOCAL_DECK_PREFIX + key, JSON.stringify({ ...snapshot, parentRev: snapshot.rev || null, rev }));
     } catch (error) {
       handleDeckStorageQuotaError(error);
     }
-    return;
+    try { deckWriteListener?.(key, origin); } catch (error) { console.warn("Deck write listener failed", error); }
+    return rev;
   }
   const stored = cloneSnapshot(snapshot);
-  if (!stored) return;
+  if (!stored) return null;
+  // The revision this write was derived from: a caller that read the deck and
+  // writes it back hands in an object still carrying the rev it read. That is
+  // the common ancestor a later merge needs when two windows wrote from the
+  // same copy (see revisionContent in ./open-deck-base.js).
+  stored.parentRev = snapshot.rev || snapshot.parentRev || null;
+  stored.rev = rev;
   deckSnapshotCache.set(key, stored);
   pendingDeckWrites.set(key, stored);
   // A new attempt clears the previous failure: this write is the one being
@@ -543,7 +653,15 @@ export function writeDeckSnapshot(id, snapshot) {
   failedDeckWrites.delete(key);
   // After pendingDeckWrites, so this key is pinned against its own eviction.
   touchDeckSnapshotCache(key);
-  deckStoreRequest("readwrite", (store) => store.put({ id: key, snapshot: stored })).then(() => {
+  const commit = deckStoreRequest("readwrite", (store) => store.put({ id: key, snapshot: stored }));
+  writeCommits.set(key, commit);
+  commit.then(() => {
+    if (writeCommits.get(key) === commit) writeCommits.delete(key);
+  }, () => {
+    if (writeCommits.get(key) === commit) writeCommits.delete(key);
+  });
+  try { deckWriteListener?.(key, origin); } catch (error) { console.warn("Deck write listener failed", error); }
+  commit.then(() => {
     // Identity-compared: a newer write for the same deck may have replaced this
     // one while the transaction was open, and that one is still unconfirmed.
     if (pendingDeckWrites.get(key) === stored) pendingDeckWrites.delete(key);
@@ -560,6 +678,7 @@ export function writeDeckSnapshot(id, snapshot) {
     if (pendingDeckWrites.get(key) === stored) failedDeckWrites.set(key, error);
     handleDeckStorageQuotaError(error);
   });
+  return rev;
 }
 
 // Await one write's commit — for restore, and for restore alone.

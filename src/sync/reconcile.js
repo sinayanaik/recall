@@ -31,54 +31,26 @@ import { flushPendingQuickNoteAnchors } from "../quick-notes/anchors.js?v=__BUIL
 import { flushPendingQuickNoteCategories } from "../quick-notes/categories.js?v=__BUILD__";
 import { QUICK_NOTES_DECK_TITLE } from "../quick-notes/palette.js?v=__BUILD__";
 import { noteLinkAliasesFor } from "../render/note-links.js?v=__BUILD__";
-import { deckStoreUnreadable, deleteDeckSnapshot, readDeckSnapshot, withDeckLock, writeDeckSnapshot } from "../storage/deck-store.js?v=__BUILD__";
+import { deckStoreUnreadable, deleteDeckSnapshot, holdDeckLock, readDeckSnapshot, readDeckSnapshotFresh, withDeckLock, writeDeckSnapshot } from "../storage/deck-store.js?v=__BUILD__";
 import { scheduleDocumentBackfill } from "../storage/document-migration.js?v=__BUILD__";
 import { describeSignedOutProblem } from "../storage/health.js?v=__BUILD__";
 import { ADOPT_DELETION_MAX_FRACTION, ADOPT_DELETION_MIN_CAP, LAST_GLOBAL_SYNC_ERROR_KEY, LAST_GLOBAL_SYNC_KEY, MISSING_DECK_MIN_AGE_MS, MISSING_DECK_MIN_SIGHTINGS, NOTES_CONFLICT_SUFFIX, clearBackgroundSyncProblem, clearMissingDeckWatch, readMissingDeckWatch, reportBackgroundSyncProblem, writeMissingDeckWatch } from "../storage/keys.js?v=__BUILD__";
 import { deckAutosaveTimer, describeSyncError, isQuotaExceededError, persistWorkingDeck, setDeckAutosaveTimer } from "../storage/quota.js?v=__BUILD__";
 import { rearmAutoSync } from "./auto-sync.js?v=__BUILD__";
-import { cardIsDirty, cardSyncSignature, mergeCloudCardsIntoSnapshot, readCardTombstones, reconcileCardsBeforePush } from "./cards.js?v=__BUILD__";
+import { cardIsDirty, cardSyncBase, cardSyncSignature, mergeCloudCardsIntoSnapshot, readCardTombstones, reconcileCardsBeforePush } from "./cards.js?v=__BUILD__";
 import { calculateSyncDiff, syncTextChanged, syncTextFingerprint } from "./diff.js?v=__BUILD__";
 import { documentLocatorsAhead, mergeDeckMeta, mergeDocumentAnnotations, reconcileDeckBeforePush } from "./document-sync.js?v=__BUILD__";
 import { mergeNoteBodies } from "./notes-merge3.js?v=__BUILD__";
+import { stashConflictHunks, stashLosingNotes } from "./conflict-stash.js?v=__BUILD__";
+import { recordLostCardText, recordNoteVersion } from "./history.js?v=__BUILD__";
 import { refreshSyncIndicatorBaseline, renderDeckEmptyState, setSyncIndicator, updateDeckEmptyStatus } from "./indicator.js?v=__BUILD__";
 import { pushDeckRowsToCloud } from "./push.js?v=__BUILD__";
 import { showSyncReport } from "./report.js?v=__BUILD__";
-import { clockSkewedAhead, describeSyncStats, documentSlotsChanged, emptySyncStats, isNoOpStats, metaRecordDelta, nextSyncStamp, quickNoteCategoriesDiffer, totalSyncStats, tsMs } from "./stats.js?v=__BUILD__";
+import { clockSkewedAhead, cloudMovedSince, cloudPushInFlight, deckHasLocalEdits, describeSyncStats, documentSlotsChanged, emptySyncStats, isNoOpStats, metaRecordDelta, metaSentDelta, nextSyncStamp, quickNoteCategoriesDiffer, totalSyncStats, tsMs } from "./stats.js?v=__BUILD__";
 import { repairSnapshotText } from "./text-repair.js?v=__BUILD__";
 import { commitEditIfActive } from "../ui/edit-mode.js?v=__BUILD__";
 import { setButtonLoading, setStatus, showConfirmModal, showToast } from "../ui/feedback.js?v=__BUILD__";
 import { setStyleStatus } from "../ui/style-settings.js?v=__BUILD__";
-
-// ── Rescuing a notes body that is about to be replaced ──────────────────────
-//
-// One stash slot per deck, at `localId + NOTES_CONFLICT_SUFFIX`, and it is only
-// ever added to. Writing straight over it would mean a second conflict arriving
-// before the first was answered silently destroys the copy the first one
-// rescued, which is the one thing this whole mechanism exists to prevent — so an
-// unanswered stash is kept and the new losing copy goes above it.
-//
-// `previous` is the caller's already-read copy where it has one; otherwise this
-// reads the slot itself. A stash can outlive its flag (the resolver that accepts
-// the synced copy clears one without deleting the other), so the read is not
-// optional — it is just worth skipping when the answer is already in hand.
-//
-// Shared by both directions since the push grew a stash of its own. It had none:
-// the pull rescued the body it was about to overwrite and the push overwrote the
-// CLOUD's body with nothing kept anywhere, which is the same loss with the
-// devices the other way round.
-async function stashLosingNotes(localId, deckTitle, losing, previous = null) {
-  const prior = previous || await readDeckSnapshot(localId + NOTES_CONFLICT_SUFFIX);
-  const carried = prior && String(prior.notes || "").trim() ? String(prior.notes) : "";
-  const when = prior?.savedAt ? new Date(prior.savedAt).toLocaleString() : "an earlier sync";
-  writeDeckSnapshot(localId + NOTES_CONFLICT_SUFFIX, {
-    savedAt: new Date().toISOString(),
-    deckTitle: deckTitle || "",
-    notes: carried && carried.trim() !== losing.trim()
-      ? `${losing}\n\n---\n\n## Also replaced, on ${when}\n\n${carried}\n`
-      : losing
-  });
-}
 
 // Pulls one cloud deck (metadata already in hand) plus its cards into the local
 // library, WITHOUT disturbing the active in-memory deck. Stamps the local copy
@@ -132,7 +104,7 @@ export async function pullCloudDeckIntoLibraryLocked(cloud, cards) {
   // copy" — pretending a read failure means the deck never existed here would
   // merge the cloud copy in as if this device had nothing local to protect,
   // discarding any of THIS device's dirty cards for the deck in the process.
-  const oldSnapshot = existing ? await readDeckSnapshot(localId) : null;
+  const oldSnapshot = existing ? await readDeckSnapshotFresh(localId) : null;
 
   // Distinguish "the cloud says these notes are empty" from "this row never
   // carried a notes column". Both look like a falsy `cloud.notes`, and the
@@ -218,9 +190,15 @@ export async function pullCloudDeckIntoLibraryLocked(cloud, cards) {
   const threeWay = (oldSnapshot && syncTextChanged(cloudBodyForMerge, localBodyForMerge))
     ? mergeNoteBodies(notesBase, localBodyForMerge, cloudBodyForMerge)
     : null;
-  const mergedBody = threeWay?.ok && !threeWay.conflicts && threeWay.merged !== cloudBodyForMerge
+  // Everything mergeable is merged — down to the word inside a paragraph both
+  // devices touched. A region the two changed in genuinely different ways keeps
+  // THIS device's text in the body and the cloud's text in `pullConflictHunks`,
+  // which is stashed below for the per-region resolver: nothing is dropped, and
+  // only the clashing paragraph is ever asked about.
+  const mergedBody = threeWay?.ok && threeWay.merged !== cloudBodyForMerge
     ? threeWay.merged
     : null;
+  const pullConflictHunks = mergedBody && threeWay.conflictHunks?.length ? threeWay.conflictHunks : [];
   const notesWereMerged = Boolean(mergedBody);
   const incomingNotes = mergedBody
     ? joinHighlightNotesTail(mergedBody, splitHighlightNotesTail(documentMerge.notes).tail)
@@ -233,15 +211,23 @@ export async function pullCloudDeckIntoLibraryLocked(cloud, cards) {
   // The merge — not a replacement. See mergeCloudCardsIntoSnapshot: cards this
   // device changed and hasn't pushed yet survive the pull instead of being
   // silently destroyed by the cloud copy.
-  const { cards: mergedCards, keptLocal, blockedResurrections, deletedCardIds } =
+  const { cards: mergedCards, keptLocal, blockedResurrections, deletedCardIds, conflictedCards, lostCardText } =
     mergeCloudCardsIntoSnapshot(oldSnapshot, cards, cloudIso);
+  if (lostCardText?.length) recordLostCardText(localId, oldSnapshot?.deckTitle || cloud.title, lostCardText, cloud.last_device || "another device");
 
+  // A rename (or folder move) made here and not yet pushed survives a pull that
+  // brings no rename of its own — the same three-way rule as the push side.
+  const titleKeptLocal = Boolean(oldSnapshot) && typeof existing?.syncedTitle === "string"
+    && (oldSnapshot.deckTitle || "") !== existing.syncedTitle && (cloud.title || "") === existing.syncedTitle;
+  const categoryKeptLocal = Boolean(oldSnapshot) && typeof existing?.syncedCategory === "string"
+    && normalizeDeckCategory(oldSnapshot.deckCategory) !== existing.syncedCategory
+    && normalizeDeckCategory(cloud.category) === existing.syncedCategory;
   const snapshot = {
     app: "recall",
     version: 1,
     exportedAt: new Date().toISOString(),
-    deckTitle: cloud.title || "",
-    deckCategory: normalizeDeckCategory(cloud.category),
+    deckTitle: titleKeptLocal ? oldSnapshot.deckTitle : (cloud.title || ""),
+    deckCategory: categoryKeptLocal ? normalizeDeckCategory(oldSnapshot.deckCategory) : normalizeDeckCategory(cloud.category),
     notes: incomingNotes,
     sourceTitle: cloud.title || "",
     importTitleHint: cloud.title || "",
@@ -288,6 +274,12 @@ export async function pullCloudDeckIntoLibraryLocked(cloud, cards) {
   const oldBody = splitHighlightNotesTail(String(oldSnapshot?.notes || "")).body;
   const newBody = splitHighlightNotesTail(snapshot.notes).body;
   let notesConflicted = false;
+  if (pullConflictHunks.length) {
+    notesConflicted = true;
+    await stashConflictHunks(localId, oldSnapshot?.deckTitle || cloud.title || "", pullConflictHunks, {
+      otherFrom: cloud.last_device || "another device"
+    }, stashed);
+  }
   // A clean three-way merge is not a conflict, and must not stash: nothing was
   // replaced, both edits are in the body below, and asking about it would be the
   // resolver firing on a merge that had nothing to resolve.
@@ -343,7 +335,7 @@ export async function pullCloudDeckIntoLibraryLocked(cloud, cards) {
       // the extra read is worth it and rare.
       await stashLosingNotes(localId, oldSnapshot.deckTitle || "", String(oldSnapshot.notes || ""), stashed);
     }
-  } else if (stashed && !syncTextChanged(splitHighlightNotesTail(String(stashed.notes || "")).body, newBody)) {
+  } else if (stashed && !stashed.hunks?.length && !syncTextChanged(splitHighlightNotesTail(String(stashed.notes || "")).body, newBody)) {
     // ── The repair ────────────────────────────────────────────────────────
     //
     // A stash whose BODY matches what this device now holds was never a conflict
@@ -355,6 +347,10 @@ export async function pullCloudDeckIntoLibraryLocked(cloud, cards) {
     // branch and is left exactly where it is.
     deleteDeckSnapshot(localId + NOTES_CONFLICT_SUFFIX);
   }
+
+  // A stash of clashing paragraphs from an earlier sync that nobody has answered
+  // yet still needs answering — this pull recomputing the flag must not hide it.
+  if (!notesConflicted && stashed?.hunks?.length) notesConflicted = true;
 
   // Diff the merged result against whatever was on this device before, for the
   // detailed sync report — a brand-new-to-this-device deck just reports its
@@ -383,6 +379,7 @@ export async function pullCloudDeckIntoLibraryLocked(cloud, cards) {
       statusChanges: diff.statusChanges,
       categoryChanges: diff.categoryChanges,
       cardsKeptLocal: keptLocal,
+      cardConflicts: conflictedCards || 0,
       // The BODY, separately from the annotations below it. "Your notes were
       // replaced" and "your highlights merged" are not the same news, and
       // reporting them as one line meant a sync that only moved annotations read
@@ -428,7 +425,14 @@ export async function pullCloudDeckIntoLibraryLocked(cloud, cards) {
     stats = { ...emptySyncStats(), cardsAdded: snapshot.cards.length, notesChanged: Boolean(newBody.trim()) };
   }
 
+  // Derived from the copy it replaces (see parentRev in writeDeckSnapshot).
+  if (oldSnapshot?.rev) snapshot.rev = oldSnapshot.rev;
   writeDeckSnapshot(localId, snapshot);
+  // The body this device held, kept in Version history whenever the pull
+  // replaced it with anything different — merged, conflicted or simply newer.
+  if (oldSnapshot && syncTextChanged(oldBody, newBody)) {
+    recordNoteVersion(localId, { notes: oldSnapshot.notes, deckTitle: oldSnapshot.deckTitle, reason: `before changes from ${cloud.last_device || "another device"} arrived` });
+  }
 
   const meta = {
     id: localId,
@@ -459,7 +463,7 @@ export async function pullCloudDeckIntoLibraryLocked(cloud, cards) {
     // And a fourth: the merge carried a paper's bucket key, hash or retired
     // old location back from this device's copy (documentLocatorsAhead). The
     // cloud lacks it, and every other device needs it to find the paper.
-    updatedAt: (keptLocal || blockedResurrections || notesWereMerged || locatorsAhead) ? new Date().toISOString() : cloudIso,
+    updatedAt: (keptLocal || blockedResurrections || notesWereMerged || locatorsAhead || titleKeptLocal || categoryKeptLocal) ? new Date().toISOString() : cloudIso,
     createdAt: cloud.created_at || existing?.createdAt || cloudIso,
     // Distinct from updatedAt (which also bumps on plain local edits) — this
     // specifically means "last confirmed match with the cloud", surfaced in
@@ -490,6 +494,11 @@ export async function pullCloudDeckIntoLibraryLocked(cloud, cards) {
     // baseline the only test available is "mine differs from theirs", which is
     // true on the device that never moved as often as on the one that did.
     syncedCurrentIndex: Number.isFinite(cloud.current_card_index) ? cloud.current_card_index : 0,
+    // The title and folder the cloud holds — what the next merge of each reads.
+    syncedTitle: cloud.title || "",
+    syncedCategory: normalizeDeckCategory(cloud.category),
+    // Who wrote what this device just took, for the report and the pill.
+    lastSyncedFrom: cloud.last_device || existing?.lastSyncedFrom || null,
     // Take whichever "last opened" is more recent — this device's own record,
     // or the cloud's (another device may have opened it more recently).
     accessedAt: laterIsoTimestamp(existing?.accessedAt, cloud.last_accessed_at),
@@ -598,8 +607,31 @@ export async function pushLibraryDeckToCloud(localMeta, options = {}) {
   }
 }
 
-async function pushLibraryDeckToCloudOnce(localMeta, { cloudExists = false, cloudDeck = null, webCards = null } = {}) {
-  const snapshot = await readDeckSnapshot(localMeta.id);
+// ── Held across the read-merge-write, released before the network ──────────
+//
+// Everything from reading the local copy to writing the merged one back used
+// to rely on having no `await` in between, which made it atomic in this tab and
+// in no other: a second window saving the same deck in that gap had its edit
+// written over by this push's older copy. So the deck's lock (every window's)
+// is held for that stretch and dropped before the upload, and taken again for
+// the write-back after it.
+async function pushLibraryDeckToCloudOnce(localMeta, options = {}) {
+  let release = await holdDeckLock(localMeta.id);
+  const unlock = () => {
+    if (!release) return;
+    const done = release;
+    release = null;
+    done();
+  };
+  try {
+    return await pushLibraryDeckToCloudHeld(localMeta, options, unlock);
+  } finally {
+    unlock();
+  }
+}
+
+async function pushLibraryDeckToCloudHeld(localMeta, { cloudExists = false, cloudDeck = null, webCards = null } = {}, unlock = () => {}) {
+  const snapshot = await readDeckSnapshotFresh(localMeta.id);
   if (!snapshot) throw new Error("Local deck snapshot missing");
 
   // Before anything reads this deck's text, take out what Postgres refuses (a
@@ -637,6 +669,29 @@ async function pushLibraryDeckToCloudOnce(localMeta, { cloudExists = false, clou
   // the row we merged against costs a millisecond and makes the write mean what
   // it says: this copy supersedes that one. See nextSyncStamp.
   const now = nextSyncStamp(new Date().toISOString(), cloudDeck?.updated_at);
+  // ── The title and folder are merged, not sent ────────────────────────────
+  //
+  // Both used to go up as this device held them, so a deck pushed for any reason
+  // put back a rename (or a move to another folder) made on another device.
+  // With the values the two last agreed on, a side that did not change one
+  // takes the other's.
+  let titleAdoptedHere = false;
+  let categoryAdoptedHere = false;
+  if (cloudExists && cloudDeck) {
+    if (typeof localMeta.syncedTitle === "string"
+        && (snapshot.deckTitle || "") === localMeta.syncedTitle
+        && typeof cloudDeck.title === "string" && cloudDeck.title !== localMeta.syncedTitle) {
+      snapshot.deckTitle = cloudDeck.title;
+      titleAdoptedHere = true;
+    }
+    if (typeof localMeta.syncedCategory === "string"
+        && normalizeDeckCategory(snapshot.deckCategory) === localMeta.syncedCategory
+        && cloudDeck.category && normalizeDeckCategory(cloudDeck.category) !== localMeta.syncedCategory) {
+      snapshot.deckCategory = normalizeDeckCategory(cloudDeck.category);
+      categoryAdoptedHere = true;
+    }
+    if (titleAdoptedHere || categoryAdoptedHere) snapshotNeedsWrite = true;
+  }
   const title = snapshot.deckTitle || "Untitled Deck";
   const deckCategory = normalizeDeckCategory(snapshot.deckCategory);
 
@@ -651,6 +706,8 @@ async function pushLibraryDeckToCloudOnce(localMeta, { cloudExists = false, clou
   // is always complete. See reconcileCardsBeforePush.
   let cardsRemovedHere = 0;
   let cardsAdoptedHere = 0;
+  let cardsUpdatedHere = 0;
+  let cardConflicts = 0;
   // Ids this push is about to delete from the cloud on a tombstone's say-so.
   // Once the push lands they've served their purpose and are retired below.
   let tombstonesBeingPruned = [];
@@ -658,6 +715,11 @@ async function pushLibraryDeckToCloudOnce(localMeta, { cloudExists = false, clou
     const reconciled = reconcileCardsBeforePush(snapshot, webCards);
     cardsRemovedHere = reconciled.dropped;
     cardsAdoptedHere = reconciled.adopted;
+    // Cards another device edited since this one last pulled, now taken (or
+    // merged in) instead of being sent back over that edit.
+    cardsUpdatedHere = reconciled.refreshed || 0;
+    cardConflicts = reconciled.conflictedCards || 0;
+    if (reconciled.lostCardText?.length) recordLostCardText(localMeta.id, snapshot.deckTitle, reconciled.lostCardText, cloudDeck?.last_device || "another device");
     tombstonesBeingPruned = Object.keys(reconciled.deletedCardIds);
     const tombstonesRetired = Object.keys(readCardTombstones(snapshot)).length !== tombstonesBeingPruned.length;
     snapshot.cards = reconciled.cards;
@@ -669,7 +731,7 @@ async function pushLibraryDeckToCloudOnce(localMeta, { cloudExists = false, clou
     // Only when something actually moved, though — most syncs change nothing
     // here, and rewriting every deck's snapshot on every sync is pure quota
     // churn on the device where quota is already the binding constraint.
-    if (cardsRemovedHere || cardsAdoptedHere || tombstonesRetired || snapshotNeedsWrite) {
+    if (cardsRemovedHere || cardsAdoptedHere || cardsUpdatedHere || tombstonesRetired || snapshotNeedsWrite) {
       writeDeckSnapshot(localMeta.id, snapshot);
       snapshotNeedsWrite = false;
     }
@@ -748,6 +810,7 @@ async function pushLibraryDeckToCloudOnce(localMeta, { cloudExists = false, clou
   // very next line. The stash lives under a different key, so it is just as
   // correct a moment later.
   let notesToStash = null;
+  let hunksToStash = null;
   if (documentPush && cloudDeck) {
     const cloudBody = splitHighlightNotesTail(String(cloudDeck.notes || "")).body;
     const pushedBody = splitHighlightNotesTail(String(documentPush.notes || "")).body;
@@ -777,7 +840,11 @@ async function pushLibraryDeckToCloudOnce(localMeta, { cloudExists = false, clou
     const cloudMovedByTheClock = tsMs(cloudDeck.updated_at) > tsMs(localMeta.lastSyncedAt);
     const worthKeeping = documentPush.bodyConflicted
       || (unorderable || (noBaseline && cloudMovedByTheClock));
-    if (!documentPush.adoptedCloudBody && cloudBody.trim() && worthKeeping
+    // A partial merge already applied everything mergeable; only the clashing
+    // regions are rescued, one by one, rather than the cloud's whole body.
+    if (documentPush.conflictHunks?.length) {
+      hunksToStash = documentPush.conflictHunks;
+    } else if (!documentPush.adoptedCloudBody && cloudBody.trim() && worthKeeping
         && syncTextChanged(cloudBody, pushedBody)) {
       notesToStash = String(cloudDeck.notes || "");
     }
@@ -786,6 +853,14 @@ async function pushLibraryDeckToCloudOnce(localMeta, { cloudExists = false, clou
   // this function. mergeDeckMeta builds a NEW object rather than mutating either
   // input, so holding the old reference across the assignment below is safe.
   const metaBeforePush = snapshot.meta;
+  // This device's body, if the merge is about to change it here — kept in
+  // Version history before it is.
+  if (documentPush && syncTextChanged(
+    splitHighlightNotesTail(String(snapshot.notes || "")).body,
+    splitHighlightNotesTail(String(documentPush.notes || "")).body
+  )) {
+    recordNoteVersion(localMeta.id, { notes: snapshot.notes, deckTitle: snapshot.deckTitle, reason: `before merging changes from ${cloudDeck?.last_device || "another device"}` });
+  }
   if (documentPush) {
     snapshot.notes = documentPush.notes;
     snapshot.meta = documentPush.meta;
@@ -806,9 +881,18 @@ async function pushLibraryDeckToCloudOnce(localMeta, { cloudExists = false, clou
   // Out of the critical section, and before the network write rather than after
   // it: a push that fails partway must still leave the copy it was going to
   // replace recoverable.
-  const notesStashed = Boolean(notesToStash);
+  // The local copy is written; nothing below reads-then-writes it until the
+  // re-read after the upload. Let the other windows (and this one's own saves)
+  // have the deck while the network does its part.
+  unlock();
+  const notesStashed = Boolean(notesToStash) || Boolean(hunksToStash?.length);
   if (notesToStash !== null) {
     await stashLosingNotes(localMeta.id, cloudDeck.title || snapshot.deckTitle || "", notesToStash);
+  }
+  if (hunksToStash?.length) {
+    await stashConflictHunks(localMeta.id, cloudDeck.title || snapshot.deckTitle || "", hunksToStash, {
+      otherFrom: cloudDeck.last_device || "another device"
+    });
   }
 
   // What we're about to put in the cloud, captured before the await so the
@@ -863,7 +947,9 @@ async function pushLibraryDeckToCloudOnce(localMeta, { cloudExists = false, clou
   // avoid. The worst a concurrent locked writer can do is overwrite the
   // dirty-flag clearing below, which costs one redundant re-push and loses
   // nothing. Do not "fix" this by wrapping the whole function.
-  const liveSnapshot = (await readDeckSnapshot(localMeta.id)) || snapshot;
+  const releaseAfterPush = await holdDeckLock(localMeta.id);
+  try {
+  const liveSnapshot = (await readDeckSnapshotFresh(localMeta.id)) || snapshot;
   liveSnapshot.deckId = deckId;
   // The cloud now holds exactly `pushedCards`, so every card still matching what
   // we sent is confirmed clean. A card whose signature changed mid-push stays
@@ -873,6 +959,9 @@ async function pushLibraryDeckToCloudOnce(localMeta, { cloudExists = false, clou
     const pushedSignature = pushedSignatureById.get(String(card.id));
     if (pushedSignature !== undefined && pushedSignature === cardSyncSignature(card)) {
       card.dirty = false;
+      // The cloud now holds exactly this, so it is the base the next merge of
+      // this card reasons from.
+      card.syncBase = cardSyncBase(card);
     } else if (cardIsDirty(card)) {
       stillDirty = true;
     }
@@ -957,7 +1046,16 @@ async function pushLibraryDeckToCloudOnce(localMeta, { cloudExists = false, clou
     // — and a quick note pinned into a stub deck would otherwise keep the 0 it
     // was created with.
     entry.cardCount = (liveSnapshot.cards || []).length;
+    // What the title and folder now are in the cloud — the agreement the next
+    // push and pull merge them against (see the top of this function).
+    entry.syncedTitle = title;
+    entry.syncedCategory = deckCategory;
+    if (titleAdoptedHere) entry.title = title;
+    if (categoryAdoptedHere) entry.category = deckCategory;
     writeLocalDeckIndex(index);
+  }
+  } finally {
+    releaseAfterPush();
   }
   // If we just pushed the active deck (first sync), adopt its new cloud id.
   if (state.localDeckId === localMeta.id && !state.deckId) state.deckId = deckId;
@@ -969,6 +1067,10 @@ async function pushLibraryDeckToCloudOnce(localMeta, { cloudExists = false, clou
   // cloud — a deletion or an addition made on another device, landing here.
   stats.cardsRemovedHere = cardsRemovedHere;
   stats.cardsAdoptedHere = cardsAdoptedHere;
+  stats.cardsUpdatedHere = cardsUpdatedHere;
+  stats.titleAdoptedHere = titleAdoptedHere;
+  stats.categoryAdoptedHere = categoryAdoptedHere;
+  stats.cardConflicts = cardConflicts;
   // What the pre-push document merge picked up from the cloud — annotations made
   // on another device that this device did not have, and would have deleted by
   // sending its own copy whole.
@@ -1004,6 +1106,14 @@ async function pushLibraryDeckToCloudOnce(localMeta, { cloudExists = false, clou
     // reconcileDeckBeforePush), so a block typed on the other device arrives on
     // this one down THIS path far more often than down the pull's — an open,
     // edited deck has the newer updatedAt and therefore always pushes.
+    // ...and what this device SENT, against the row it replaced: a deck pushed
+    // for a highlight says so, rather than reporting nothing (or its reading
+    // position) as the reason it went up.
+    const sent = metaSentDelta(cloudDeck?.meta, snapshot.meta);
+    stats.highlightsSent = sent.highlights;
+    stats.blocksSent = sent.blocks;
+    stats.bookmarkSent = sent.bookmark;
+    stats.documentSent = sent.document;
     const blocks = metaRecordDelta(metaBeforePush, snapshot.meta, "pdfBlocks");
     const docs = documentSlotsChanged(metaBeforePush, snapshot.meta);
     stats.blocksMerged = blocks.adopted;
@@ -1038,7 +1148,7 @@ async function pushLibraryDeckToCloudOnce(localMeta, { cloudExists = false, clou
     now,
     stats,
     localId: localMeta.id,
-    localCardsChanged: cardsRemovedHere > 0 || cardsAdoptedHere > 0,
+    localCardsChanged: cardsRemovedHere > 0 || cardsAdoptedHere > 0 || cardsUpdatedHere > 0 || titleAdoptedHere || categoryAdoptedHere,
     localDocumentChanged: Boolean(documentPush?.changed)
   };
 }
@@ -1075,7 +1185,7 @@ export async function syncAllDecksAndWait() {
     try { await reconcilePromise; } catch (_) { /* its own handler reported it */ }
   }
   try {
-    await reconcileAllDecks({ explicit: false });
+    await reconcileAllDecks({ explicit: false, wait: true });
   } catch (error) {
     console.warn("The sync did not finish", error);
   }
@@ -1113,7 +1223,44 @@ async function withSessionRetry(label, run) {
   }
 }
 
-export async function reconcileAllDecks({ explicit = false } = {}) {
+// ── One sync at a time, across every window ───────────────────────────────
+//
+// reconcileInFlight is per window, so two windows of the app (or two tabs) used
+// to sync the same library at the same moment: both read the same cloud rows,
+// both merged, both pushed, and the compare-and-swap was left to sort out which
+// of them had been working from a copy that no longer existed. Where the browser
+// has Web Locks, a sync holds one lock for the whole run. A background sync that
+// finds another window already syncing simply stands down — that sync covers
+// this device's decks too, since they share one library. Sync Now waits its
+// turn and then runs, so its report covers everything up to the moment it ran.
+export const SYNC_LOCK_NAME = "recall-sync";
+
+// `wait` is for a caller whose next step depends on this run happening — Shut
+// down, the bucket move — which must not stand down for another window's sync:
+// it waits its turn, quietly, and then runs.
+export async function reconcileAllDecks({ explicit = false, wait = false } = {}) {
+  const locks = typeof navigator !== "undefined" && navigator.locks?.request ? navigator.locks : null;
+  if (!locks) return reconcileAllDecksHeld({ explicit });
+  if (!explicit && wait) return locks.request(SYNC_LOCK_NAME, () => reconcileAllDecksHeld({ explicit }));
+  if (!explicit) {
+    return locks.request(SYNC_LOCK_NAME, { ifAvailable: true }, async (lock) => {
+      if (!lock) return undefined;
+      return reconcileAllDecksHeld({ explicit });
+    });
+  }
+  const free = await locks.request(SYNC_LOCK_NAME, { ifAvailable: true }, async (lock) => {
+    if (!lock) return false;
+    await reconcileAllDecksHeld({ explicit });
+    return true;
+  });
+  if (free) return undefined;
+  showToast(reconcileInFlight
+    ? "Sync already running — finishing that first"
+    : "Another window is syncing — this one will run right after it", "info");
+  return locks.request(SYNC_LOCK_NAME, () => reconcileAllDecksHeld({ explicit }));
+}
+
+async function reconcileAllDecksHeld({ explicit = false } = {}) {
   // ── Where the reader is, written down first ─────────────────────────────
   //
   // Before the guards, deliberately. "Save where I am" and "sync" used to be
@@ -1153,7 +1300,7 @@ export async function reconcileAllDecks({ explicit = false } = {}) {
       await reconcilePromise;
     } catch (_) { /* its own handler already reported it */ }
     if (reconcileInFlight) return; // a third caller beat us to the re-run
-    return reconcileAllDecks({ explicit });
+    return reconcileAllDecksHeld({ explicit });
   }
   reconcileInFlight = true;
   lastReconcileOutcome = null;
@@ -1272,6 +1419,10 @@ export async function reconcileAllDecks({ explicit = false } = {}) {
   // time the sync runs — so the summary can say the changes are already safe
   // instead of the bare, alarming "nothing to sync".
   const alreadyMatched = [];
+  // Decks this run deliberately left for the next one (the cloud's copy could
+  // not be read in full). Said out loud, so "up to date" is never claimed over
+  // a deck that was not actually looked at.
+  const skippedForRetry = [];
   // Per-deck breakdown for the detailed sync report — every deck actually
   // touched (or that failed) gets an entry naming it, its direction, and
   // exactly what changed (cards added/updated/deleted, notes).
@@ -1731,7 +1882,13 @@ export async function reconcileAllDecks({ explicit = false } = {}) {
         toPull.push(cloud);
         continue;
       }
-      if (tsMs(cloud.updated_at) > tsMs(localMeta.updatedAt)) toPull.push(cloud);
+      // Another device is mid-upload on this deck — next run.
+      if (cloudPushInFlight(cloud)) continue;
+      // Pulled only when the cloud moved AND this device has nothing of its own
+      // to send. With an edit here, the push below merges the cloud's change in
+      // first (cards, notes, highlights, title) and sends the union — so the
+      // deck converges in one run, and a stale copy is never pushed as newer.
+      if (cloudMovedSince(cloud, localMeta) && !deckHasLocalEdits(localMeta)) toPull.push(cloud);
     }
     if (tombstonedInCloud.length) {
       // Record the durable cross-device tombstones BEFORE deleting the rows,
@@ -1801,6 +1958,7 @@ export async function reconcileAllDecks({ explicit = false } = {}) {
       const cloud = pullBodyById.get(String(indexRow.id));
       if (!cloud) {
         console.warn(`No cloud body for deck ${indexRow.id} — skipping the pull rather than writing a deck with no notes.`);
+        skippedForRetry.push(indexRow.title || "Untitled deck");
         continue;
       }
       try {
@@ -1809,7 +1967,7 @@ export async function reconcileAllDecks({ explicit = false } = {}) {
           pulled++;
           // localId rides along so the report's "Restore my notes" button knows
           // which deck's stash to put back.
-          deckLog.push({ title: cloud.title || "Untitled deck", direction: "pulled", localId: res.localId, ...res.stats });
+          deckLog.push({ title: cloud.title || "Untitled deck", direction: "pulled", localId: res.localId, fromDevice: cloud.last_device || null, ...res.stats });
           // Only reload the on-screen deck when the pull actually changed its
           // content. A no-op pull (cloud read "newer" purely from a timestamp
           // artifact, with identical cards/notes) must NOT reload — doing so
@@ -1843,7 +2001,8 @@ export async function reconcileAllDecks({ explicit = false } = {}) {
       // copy is untouched and it pushes as normal the moment it's cleared.
       if (localMeta.deckId && heldDeckIds.has(String(localMeta.deckId))) continue;
       const cloud = localMeta.deckId ? cloudById.get(String(localMeta.deckId)) : null;
-      if (!cloud || tsMs(localMeta.updatedAt) > tsMs(cloud.updated_at)) toPush.push({ localMeta, cloud });
+      if (cloud && cloudPushInFlight(cloud)) continue;
+      if (!cloud || deckHasLocalEdits(localMeta)) toPush.push({ localMeta, cloud });
     }
 
     // Only decks that already exist in the cloud have rows to diff against; a
@@ -1920,6 +2079,7 @@ export async function reconcileAllDecks({ explicit = false } = {}) {
         const cloudBody = cloud ? pushBodyById.get(String(localMeta.deckId)) : null;
         if (cloud && !cloudBody) {
           console.warn(`No cloud body for deck ${localMeta.deckId} — skipping the push rather than sending its notes and meta blind.`);
+          skippedForRetry.push(localMeta.title || "Untitled deck");
           pushDone++;
           progress(`Uploading decks… (${pushDone} of ${toPush.length})`, "Uploading decks");
           return;
@@ -1934,7 +2094,7 @@ export async function reconcileAllDecks({ explicit = false } = {}) {
           // localId rides along for the same reason it does on the pull rows: a
           // push can stash a cloud body it replaced now, and the report's
           // "Restore my notes" button needs to know whose stash to put back.
-          deckLog.push({ title: localMeta.title || "Untitled deck", direction: "pushed", localId: res.localId, ...res.stats });
+          deckLog.push({ title: localMeta.title || "Untitled deck", direction: "pushed", localId: res.localId, fromDevice: cloudBody?.last_device || null, ...res.stats });
         } else {
           alreadyMatched.push(localMeta.title || "Untitled deck");
         }
@@ -2010,11 +2170,25 @@ export async function reconcileAllDecks({ explicit = false } = {}) {
     localStorage.removeItem(LAST_GLOBAL_SYNC_ERROR_KEY);
     clearBackgroundSyncProblem();
 
-    // Lead with the direction (how many decks moved, which way), then name the
-    // actual changes — "2 decks uploaded" alone never said WHAT was uploaded.
+    // ── The summary, in words that say what happened ─────────────────────────
+    //
+    // Which decks went which way, by name, then what changed. "Up to date" is
+    // only said when every deck was actually compared and nothing moved — never
+    // over a deck that was skipped, and never over a change that was merely of
+    // a kind this report has no word for.
+    const listNames = (titles) => {
+      const unique = [...new Set(titles)];
+      return unique.slice(0, 3).join(", ") + (unique.length > 3 ? ` and ${unique.length - 3} more` : "");
+    };
+    const sentTitles = deckLog.filter((e) => e.direction === "pushed").map((e) => e.title);
+    const receivedRows = deckLog.filter((e) => e.direction === "pulled");
+    const devices = [...new Set(receivedRows.map((e) => e.fromDevice).filter(Boolean))];
     const parts = [];
-    if (pulled) parts.push(`${pulled} deck${pulled === 1 ? "" : "s"} downloaded from the cloud`);
-    if (pushed) parts.push(`${pushed} deck${pushed === 1 ? "" : "s"} uploaded to the cloud`);
+    if (pushed) parts.push(`sent your changes in ${pushed} deck${pushed === 1 ? "" : "s"} (${listNames(sentTitles)})`);
+    if (pulled) {
+      parts.push(`received changes in ${pulled} deck${pulled === 1 ? "" : "s"} (${listNames(receivedRows.map((e) => e.title))})` +
+        (devices.length ? ` from ${listNames(devices)}` : ""));
+    }
     // Deliberately its own clause rather than folded into the change detail:
     // decks disappearing from this device is the one sync outcome the user most
     // needs to see stated plainly.
@@ -2040,26 +2214,23 @@ export async function reconcileAllDecks({ explicit = false } = {}) {
     // mostly runs, that's not an option at all.
     const failedTitles = deckLog.filter((e) => e.direction === "failed").map((e) => e.title);
     const failedNote = failed
-      ? `${failed} deck${failed === 1 ? "" : "s"} failed: ${failedTitles.slice(0, 2).join(", ")}` +
-        `${failedTitles.length > 2 ? ` and ${failedTitles.length - 2} more` : ""}`
+      ? `${failed} deck${failed === 1 ? "" : "s"} failed and will be retried: ${listNames(failedTitles)}`
       : "";
-    // "Nothing to sync" was the single most misleading string in the app: it's
-    // also what you got right after recategorising a quick note, because that
-    // change is written to the cloud the instant you make it, leaving the sync
-    // genuinely nothing to carry. Say which of the two actually happened.
-    const nothingMoved = alreadyMatched.length
-      ? `Already up to date — ${alreadyMatched.length} deck${alreadyMatched.length === 1 ? "" : "s"} checked, ` +
-        `everything already matches the cloud (board edits save as you make them)`
-      : "Already up to date — nothing changed here or in the cloud since the last sync";
+    const skippedNote = skippedForRetry.length
+      ? `${skippedForRetry.length} deck${skippedForRetry.length === 1 ? "" : "s"} couldn't be read from the cloud and will be tried again next sync (${listNames(skippedForRetry)})`
+      : "";
+    const checkedCount = readLocalDeckIndex().length;
+    const nothingMoved = `Up to date — nothing new to send or receive (${checkedCount} deck${checkedCount === 1 ? "" : "s"} checked)`;
+    const tail = [failedNote, skippedNote].filter(Boolean).join(". ");
     const summary = parts.length
-      ? `Sync complete — ${parts.join(", ")}${detail}${failed ? `. ${failedNote}` : ""}`
-      : failed
-        ? `Sync incomplete — ${failedNote}`
+      ? `Synced — ${parts.join("; ")}${detail}${tail ? `. ${tail}` : ""}`
+      : tail
+        ? `Sync incomplete — ${tail}`
         : nothingMoved;
-    lastReconcileOutcome = failed ? "partial" : "synced";
+    lastReconcileOutcome = failed || skippedForRetry.length ? "partial" : "synced";
     if (explicit) {
       setStatus(summary);
-      showToast(summary, failed ? "error" : "success");
+      showToast(summary, failed ? "error" : skippedForRetry.length ? "info" : "success");
       // Detailed report modal — only for the explicit "Sync Now" click, and
       // only when there's actually something to report.
       if (deckLog.length) showSyncReport(deckLog, { pulled, pushed, failed, timings });

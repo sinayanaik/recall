@@ -10,7 +10,7 @@ import { runRestoreFlow } from "./backup/restore.js?v=__BUILD__";
 import { shareDecksAsPackage } from "./backup/share-dialog.js?v=__BUILD__";
 import { appInitialized, bootApp, ensureLocalLibraryOwner, initAppForUser, recoverSessionIfPossible, resetLocalLibrary, setAppInitialized, setupAuthListener } from "./boot.js?v=__BUILD__";
 import { clearAllCardDropTargets, closeAllCardsPanel, deleteAllCard, goToCard, handleAllCardDragOver, handleAllCardDragStart, handleAllCardDrop, insertCardAfter, pushCardUndoSnapshot, redoCardAction, setAllCardStatus, snapshotCardsState, undoCardAction } from "./cards/all-cards-edit.js?v=__BUILD__";
-import { adjustCornellRowHeight, allCardsAnswersVisible, allCardsCompact, flipAllCard, handleAllCardDragEnd, openAllCardsPanel, setAllCardsAnswersVisible, setAllCardsCompact, setAllCardsFilter, toggleAllCardEditor } from "./cards/all-cards.js?v=__BUILD__";
+import { adjustCornellRowHeight, allCardsAnswersVisible, allCardsCompact, bumpAllCardsRenderId, flipAllCard, handleAllCardDragEnd, openAllCardsPanel, renderAllCards, setAllCardsAnswersVisible, setAllCardsCompact, setAllCardsFilter, toggleAllCardEditor } from "./cards/all-cards.js?v=__BUILD__";
 import { showCard } from "./cards/card-view.js?v=__BUILD__";
 import { flipCard, moveCard, navigateCard, replayDeck, resetQuiz, shuffleCards } from "./cards/deck-actions.js?v=__BUILD__";
 import { createNewDeck, newDeckInFolder } from "./cards/new-deck.js?v=__BUILD__";
@@ -21,7 +21,7 @@ import { closeStylePanel, handleStyleEnvironmentChange, loadStyleFromWeb, openSt
 import { onS3ImageIndexChange, refreshS3ImageIndex } from "./cloud/s3-images.js?v=__BUILD__";
 import { resolveStorageImages, resolveUnresolvedStorageImages } from "./cloud/storage-urls.js?v=__BUILD__";
 import { onS3ConfigAdopted } from "./cloud/s3-config-sync.js?v=__BUILD__";
-import { clearSupabaseConfig, initSupabaseClient, isSignedIn, onSigningReadyChange, reloadSupabaseLibrary, saveSupabaseConfig, setSignedIn, setSupabaseClient } from "./cloud/supabase-client.js?v=__BUILD__";
+import { clearSupabaseConfig, initSupabaseClient, isSignedIn, onSigningReadyChange, reloadSupabaseLibrary, saveSupabaseConfig, setSignedIn, setSignedInListener, setSupabaseClient } from "./cloud/supabase-client.js?v=__BUILD__";
 import { closeWebDeckExportMenus } from "./cloud/web-decks.js?v=__BUILD__";
 import { deckEmptyImportBtn2, deckEmptyNewBtn, deckEmptyWebBtn, el, onDomReady } from "./core/dom.js?v=__BUILD__";
 import { noteWheelActivity } from "./core/gesture.js?v=__BUILD__";
@@ -49,7 +49,9 @@ import { clearImportStaging, commitStagedImport, importDestinationFolder, import
 import { fetchUrl } from "./import/url.js?v=__BUILD__";
 import { closeAllDeckTileMenus, createFolder, setAllFoldersExpanded } from "./library/folder-tree.js?v=__BUILD__";
 import { normalizeDeckCategory } from "./library/folders.js?v=__BUILD__";
-import { flushIndexBatch, readLocalDeckIndex, setDeckContentSavedHook, setDeckReloadedInPlaceHook } from "./library/local-library.js?v=__BUILD__";
+import { flushIndexBatch, readLocalDeckIndex, reconcileOpenDeckWithStore, setDeckContentSavedHook, setDeckOpenedHook, setDeckReloadedInPlaceHook } from "./library/local-library.js?v=__BUILD__";
+import { checkDeckFreshness, startRealtimeSync, stopRealtimeSync } from "./sync/live-sync.js?v=__BUILD__";
+import { showVersionHistory } from "./sync/history.js?v=__BUILD__";
 import { categorizeSelectedMyDecks, deleteSelectedMyDecks, loadSelectedMyDecks } from "./library/my-decks-actions.js?v=__BUILD__";
 import { hydrateMyDecksIcons } from "./library/my-decks-icons.js?v=__BUILD__";
 import { closeMyDecksMoreMenu, currentMyDecksFolder, importIntoFolder, myDecksImportFolder, myDecksSearchTimer, setMyDecksSearchTimer, toggleMyDecksMoreMenu } from "./library/my-decks-menu.js?v=__BUILD__";
@@ -99,7 +101,7 @@ import { applyUpdate, installManifestLink, registerServiceWorker } from "./pwa/s
 import { addQuickNoteCategory, assignQuickNoteCategory, closeQnCatMenu, closeQnCatModal, closeQuickNotesBoard, copyQuickNote, deleteQuickNoteCategory, jumpToQuickNoteSource, layoutQuickNotesGrid, openQnCatMenu, openQnCatModal, openQnRecolorMenu, openQuickNotesBoard, qnBoard, qnNewColor, renameQuickNoteCategory, renderQnColorPicker, renderQuickNotesBoard, saveQuickNote, setQnNewColor } from "./quick-notes/board.js?v=__BUILD__";
 import { closeDiagramModal, zoomDiagramBy } from "./render/diagram-zoom.js?v=__BUILD__";
 import { scheduleMarkdownTableFit } from "./render/tables.js?v=__BUILD__";
-import { deckSnapshotCache, deckStoreChannel, deckStoreRequest, indexedDbUnavailable, pendingDeckWrites, scheduleDeckAutosave, setDeckStoreChannel, touchDeckSnapshotCache } from "./storage/deck-store.js?v=__BUILD__";
+import { deckSnapshotCache, deckStoreChannel, deckStoreRequest, indexedDbUnavailable, pendingDeckWrites, scheduleDeckAutosave, setDeckStoreChannel, setDeckWriteListener, touchDeckSnapshotCache } from "./storage/deck-store.js?v=__BUILD__";
 import { isQuotaExceededError } from "./storage/quota.js?v=__BUILD__";
 import { deleteDocumentCopies, onDocumentBackfillDone, scheduleDocumentBackfill } from "./storage/document-migration.js?v=__BUILD__";
 import { bucketPanelOpen, closeBucketPanel, openBucketPanel, refreshBucketReport, runBucketAction, setBucketKeysChanged, setBucketSyncRunner } from "./storage/bucket-panel.js?v=__BUILD__";
@@ -114,7 +116,8 @@ import { applyChromeCollapse, hasStudyTextSelection, initImmersiveMode, isFocusM
 import { DOC_SLOT_DOC, DOC_SLOT_NOTEBOOK, activeDocSlot, deckHasPdf, onDocumentSurface } from "./documents/doc-slot.js?v=__BUILD__";
 import { captureDocumentSelection } from "./documents/pdf-selection.js?v=__BUILD__";
 import { closeImportPanel, closeMyDecksPanel, editCurrentDeckCategory, editCurrentDeckTitle, openImportPanel, openMyDecksPanel } from "./ui/deck-header.js?v=__BUILD__";
-import { addBlankCardAtCursor, flushWorkingDeck, toggleEditMode } from "./ui/edit-mode.js?v=__BUILD__";
+import { addBlankCardAtCursor, cardEditActive, flushWorkingDeck, toggleEditMode } from "./ui/edit-mode.js?v=__BUILD__";
+import { setAllCardsRefreshHook } from "./storage/deck-snapshot.js?v=__BUILD__";
 import { setStatus, showConfirmModal, showPromptModal, showToast } from "./ui/feedback.js?v=__BUILD__";
 import { closeHelpModal, helpBtn, helpModal, helpModalCloseBtn, helpModalCloseFootBtn, openHelpModal } from "./ui/help.js?v=__BUILD__";
 import { initHome } from "./ui/home.js?v=__BUILD__";
@@ -1664,6 +1667,38 @@ try {
 } catch {
   setDeckStoreChannel(null); // not supported — single-tab behaviour, as before
 }
+// ── Keeping the deck on screen in step with the disk ──────────────────────
+//
+// Anything that writes the open deck other than this window's own save — a sync
+// pulling or merging, another window, a quick note pinned into it — is followed
+// by a merge of the disk copy into what is on screen (reconcileOpenDeckWithStore).
+// Coalesced, because a sync writes one deck several times in a row; and held
+// while a card is open in its raw editor or the All Cards panel has focus, whose
+// text is not in `state` yet — the save that follows their commit merges anyway.
+let openDeckReconcileTimer = null;
+function scheduleOpenDeckReconcile(delay = 60) {
+  if (openDeckReconcileTimer) clearTimeout(openDeckReconcileTimer);
+  openDeckReconcileTimer = setTimeout(() => {
+    openDeckReconcileTimer = null;
+    const busy = cardEditActive()
+      || isHighlightNoteEditorOpen()
+      || Boolean(el.allCardsPanel && !el.allCardsPanel.hidden && el.allCardsPanel.contains(document.activeElement)
+        && /^(TEXTAREA|INPUT)$/.test(document.activeElement?.tagName || ""));
+    if (busy) { scheduleOpenDeckReconcile(1500); return; }
+    reconcileOpenDeckWithStore().catch((error) => console.warn("Could not bring the open deck up to date", error));
+  }, delay);
+}
+setDeckWriteListener((id, origin) => {
+  if (origin === "open-deck-save") return;
+  if (String(id) === String(state.localDeckId || "")) scheduleOpenDeckReconcile();
+});
+setAllCardsRefreshHook(() => {
+  if (!el.allCardsPanel || el.allCardsPanel.hidden) return;
+  if (el.allCardsPanel.contains(document.activeElement) && /^(TEXTAREA|INPUT)$/.test(document.activeElement?.tagName || "")) return;
+  bumpAllCardsRenderId();
+  renderAllCards();
+});
+
 if (deckStoreChannel) {
   deckStoreChannel.onmessage = (event) => {
     const { type, id } = event.data || {};
@@ -1696,6 +1731,11 @@ if (deckStoreChannel) {
         } else {
           deckSnapshotCache.delete(String(id));
         }
+        // The deck on screen here was just changed in another window: bring this
+        // one up to date (merging anything typed here on top). This is what
+        // used to be missing — the cache was refreshed and the screen was not,
+        // so this window's next save wrote its stale copy over the other's.
+        if (String(id) === String(state.localDeckId || "")) scheduleOpenDeckReconcile();
       })
       .catch((error) => console.warn("Could not refresh a deck snapshot after another tab changed it", id, error));
   };
@@ -1971,6 +2011,12 @@ applyAutoSyncInterval();
 // anybody is waiting for — and it refuses outright while auto-sync is off. See
 // schedulePostEditSync.
 setDeckContentSavedHook(schedulePostEditSync);
+document.getElementById("versionHistoryBtn")?.addEventListener("click", () => { showVersionHistory(); });
+// A deck just opened: has another device changed it since this one last synced?
+setDeckOpenedHook((localId) => { checkDeckFreshness(localId); });
+// Realtime for as long as there is somebody signed in to hear about.
+setSignedInListener((signedIn) => (signedIn ? startRealtimeSync() : stopRealtimeSync()));
+if (isSignedIn) startRealtimeSync();
 // Every static [data-md-icon] button gets its SVG once, at startup.
 hydrateMyDecksIcons();
 
@@ -3172,7 +3218,12 @@ document.addEventListener("visibilitychange", () => {
   // where the app is backgrounded constantly, edits from another device could
   // sit unseen indefinitely. reconcileAllDecks self-gates on sign-in and
   // connectivity and dedupes overlapping runs, so this is safe to just call.
-  if (!lastHiddenAt || Date.now() - lastHiddenAt < FOREGROUND_SYNC_IDLE_MS) return;
+  if (!lastHiddenAt || Date.now() - lastHiddenAt < FOREGROUND_SYNC_IDLE_MS) {
+    // Back after a short absence: not worth a whole sync, but worth one cheap
+    // question about the deck on screen — it is the one being read and edited.
+    if (lastHiddenAt) checkDeckFreshness();
+    return;
+  }
   setLastHiddenAt(0);
   if (!isSignedIn || !navigator.onLine) return;
   reconcileAllDecks({ explicit: false });

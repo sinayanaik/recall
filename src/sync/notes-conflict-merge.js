@@ -64,3 +64,36 @@ export function promoteStashedNotes(currentNotes, stashNotes) {
   const stashedBody = splitHighlightNotesTail(String(stashNotes || "")).body;
   return joinHighlightNotesTail(stashedBody, currentTail);
 }
+
+// ── One clashing paragraph, answered ────────────────────────────────────────
+//
+// A partial merge (src/sync/merge3.js) applies every change from both sides and
+// keeps, in each region the two changed differently, THIS side's text; the
+// other side's text for that region is filed as a hunk { kept, other }. These
+// are the three answers to one hunk:
+//
+//   "current"  keep what the note holds — nothing to change
+//   "other"    put the other version in its place
+//   "both"     keep both, this one first
+//
+// The paragraph is found by its text. If it has been edited since (so `kept`
+// is no longer in the note), nothing is guessed: the other version is added at
+// the end under a heading saying where it came from, which loses nothing and
+// asks nothing more of the reader.
+export function applyConflictHunk(notes, hunk, choice) {
+  const current = String(notes || "");
+  if (choice === "current") return { notes: current, placed: true };
+  const { body, tail } = splitHighlightNotesTail(current);
+  const kept = String(hunk?.kept ?? "");
+  const other = String(hunk?.other ?? "");
+  const at = kept ? body.indexOf(kept) : -1;
+  if (at === -1) {
+    if (!other.trim()) return { notes: current, placed: false };
+    const from = hunk?.otherFrom || "another device";
+    const appended = `${body.replace(/\s+$/, "")}\n\n---\n\n## Version from ${from}\n\n${other}\n`;
+    return { notes: joinHighlightNotesTail(appended, tail), placed: false };
+  }
+  const replacement = choice === "other" ? other : `${kept}\n\n${other}`;
+  const nextBody = body.slice(0, at) + replacement + body.slice(at + kept.length);
+  return { notes: joinHighlightNotesTail(nextBody, tail), placed: true };
+}

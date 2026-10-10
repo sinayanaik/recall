@@ -747,7 +747,11 @@ export function reconcileDeckBeforePush(snapshot, cloudDeck, { notesBaseline = n
   // last synced by an older build — mergeNoteBodies says so and nothing changes.
   const bothMovedTheBody = localBodyEdited && cloudBodyMoved && syncTextChanged(cloudBody, localBody);
   const threeWay = bothMovedTheBody ? mergeNoteBodies(notesBase, localBody, cloudBody) : null;
-  const mergedBody = threeWay?.ok && !threeWay.conflicts ? threeWay.merged : null;
+  // Every mergeable change from both sides — a region the two changed
+  // differently keeps this device's text, and the cloud's version of just that
+  // region is handed back in conflictHunks for the caller to stash.
+  const mergedBody = threeWay?.ok ? threeWay.merged : null;
+  const conflictHunks = threeWay?.ok ? (threeWay.conflictHunks || []) : [];
 
   const merged = hasAnnotations
     ? mergeDocumentAnnotations({
@@ -794,11 +798,14 @@ export function reconcileDeckBeforePush(snapshot, cloudDeck, { notesBaseline = n
     // which the report has a sentence for: a merge nobody was told about is
     // indistinguishable from a sync that did nothing, until the reader notices a
     // sentence they did not write.
-    notesMerged: Boolean(mergedBody),
+    notesMerged: Boolean(mergedBody) && !conflictHunks.length,
+    // The regions both devices changed differently, one entry each, with the
+    // cloud's text in `remote`. The body above holds this device's text there.
+    conflictHunks,
     // ...and whether the two really did diverge in a way nothing could settle,
     // which is the only case that is a conflict at all. A clean three-way merge
     // is emphatically not one.
-    bodyConflicted: bothMovedTheBody && !mergedBody,
+    bodyConflicted: bothMovedTheBody && (!mergedBody || conflictHunks.length > 0),
     highlightsAdopted: merged?.highlightsAdopted || 0,
     highlightsRemoved: merged?.highlightsRemoved || 0,
     highlightNotesMerged: merged?.highlightNotesMerged || 0,

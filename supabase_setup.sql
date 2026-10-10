@@ -616,6 +616,131 @@ END $$;
 
 
 -- ============================================================================
+-- 9. Sync safety — version history, which device wrote what, live updates
+-- ============================================================================
+-- Three additions that make sync safer, all optional: an older project without
+-- them still syncs (the app notices each one missing and goes without it).
+--
+-- last_device — the name of the device that last wrote the deck ("Chrome on
+-- Android"), so the sync report can say where a change came from.
+ALTER TABLE decks ADD COLUMN IF NOT EXISTS last_device TEXT;
+
+-- deck_revisions — every earlier version of a deck's notes, kept in the cloud.
+-- The sync merges two devices' edits rather than choosing between them, and
+-- sets aside the few paragraphs it cannot merge; this is the net under all of
+-- it. Whenever a write changes a deck's notes or title, the version it replaces
+-- is copied here first — notes, title, the meta bag and the cards as they were —
+-- and so is a deck's last version just before it is deleted. The app's Version
+-- history (in a note's ⋯ menu) lists them and puts one back.
+--
+-- Written ONLY by the trigger below, which runs as the table's owner; the app
+-- can read its own rows and nothing else. The newest 50 per deck are kept.
+CREATE TABLE IF NOT EXISTS deck_revisions (
+  id BIGSERIAL PRIMARY KEY,
+  deck_id TEXT NOT NULL,
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  title TEXT,
+  notes TEXT,
+  meta JSONB,
+  cards JSONB,
+  -- The device that wrote this version, and what replaced it (the next
+  -- device's name, or 'deleted').
+  device TEXT,
+  replaced_by TEXT,
+  -- When this version was written (the deck's updated_at at the time), and when
+  -- it was replaced.
+  version_at TIMESTAMP WITH TIME ZONE,
+  created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS deck_revisions_user_deck_created_idx
+  ON deck_revisions (user_id, deck_id, created_at DESC);
+
+ALTER TABLE deck_revisions ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Users read own deck revisions" ON deck_revisions;
+CREATE POLICY "Users read own deck revisions" ON deck_revisions
+  FOR SELECT TO authenticated
+  USING (user_id = (select auth.uid()));
+
+CREATE OR REPLACE FUNCTION record_deck_revision()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  replaced_by_device TEXT;
+BEGIN
+  -- A row with no owner (a pre-auth deployment, section 8) has nobody to show
+  -- its history to.
+  IF OLD.user_id IS NULL THEN
+    IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
+    RETURN NEW;
+  END IF;
+  -- NEW is never read on a delete.
+  IF TG_OP = 'DELETE' THEN
+    replaced_by_device := 'deleted';
+  ELSIF OLD.notes IS DISTINCT FROM NEW.notes OR OLD.title IS DISTINCT FROM NEW.title THEN
+    replaced_by_device := NEW.last_device;
+  ELSE
+    RETURN NEW;
+  END IF;
+
+  INSERT INTO deck_revisions (deck_id, user_id, title, notes, meta, cards, device, replaced_by, version_at)
+  VALUES (
+    OLD.id, OLD.user_id, OLD.title, OLD.notes, OLD.meta,
+    (SELECT COALESCE(jsonb_agg(jsonb_build_object(
+        'id', c.id, 'question', c.question, 'answer', c.answer,
+        'status', c.status, 'category', c.category) ORDER BY c.position), '[]'::jsonb)
+       FROM cards c WHERE c.deck_id = OLD.id),
+    OLD.last_device,
+    replaced_by_device,
+    OLD.updated_at
+  );
+  DELETE FROM deck_revisions
+   WHERE deck_id = OLD.id AND user_id = OLD.user_id
+     AND id NOT IN (
+       SELECT id FROM deck_revisions
+        WHERE deck_id = OLD.id AND user_id = OLD.user_id
+        ORDER BY created_at DESC, id DESC
+        LIMIT 50
+     );
+
+  IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS record_deck_revision ON decks;
+CREATE TRIGGER record_deck_revision
+  AFTER UPDATE ON decks
+  FOR EACH ROW
+  EXECUTE FUNCTION record_deck_revision();
+
+-- BEFORE, so the deck's cards are still there to be copied — the delete
+-- cascades to them.
+DROP TRIGGER IF EXISTS record_deck_revision_on_delete ON decks;
+CREATE TRIGGER record_deck_revision_on_delete
+  BEFORE DELETE ON decks
+  FOR EACH ROW
+  EXECUTE FUNCTION record_deck_revision();
+
+-- Live updates — a change made on one device appears on the others within
+-- seconds instead of at their next timed sync. Adds `decks` to Supabase's
+-- Realtime publication (Row Level Security still decides who hears what).
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'supabase_realtime')
+     AND NOT EXISTS (
+       SELECT 1 FROM pg_publication_tables
+        WHERE pubname = 'supabase_realtime' AND schemaname = 'public' AND tablename = 'decks'
+     ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE decks;
+  END IF;
+END $$;
+
+
+-- ============================================================================
 -- Done. One thing left, in the dashboard rather than here:
 -- Authentication → Providers → Email → turn OFF "Confirm email", so the app's
 -- own "Create account" button signs you straight in.
@@ -626,3 +751,4 @@ COMMENT ON TABLE cards IS 'One row per flashcard, ordered within its deck by `po
 COMMENT ON TABLE deleted_decks IS 'Durable cross-device delete tombstones. Never pruned automatically — a deletion must outlive any device still holding a stale copy.';
 COMMENT ON TABLE app_style_settings IS 'Per-user layout/typography settings (row id = auth.uid()), plus a legacy shared ''global'' row that accounts with no style of their own inherit. The theme is stored here too, as a `theme` key holding a theme ID (e.g. ''dark-amoled'') alongside the ''desktop''/''mobile'' profiles, so a device that syncs its style down also gets the theme that went with it. Colour VALUES are still not included — those live in CSS, keyed off that ID.';
 COMMENT ON TABLE app_storage_settings IS 'Per-user keys to the S3-compatible bucket that holds PDFs (row key = auth.uid()), so they are pasted once per account rather than once per device. s3_config NULL means the reader pressed Forget; updated_at is written by the client and compared, so it has no trigger.';
+COMMENT ON TABLE deck_revisions IS 'Earlier versions of each deck (notes, title, meta and cards), copied by trigger whenever a write changes the notes or title, and once more just before a delete. Newest 50 per deck. Read-only to the app — the Version history panel.';

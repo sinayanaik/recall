@@ -68,7 +68,25 @@ const ACCEPTED_DIFFS = {
     "pushes that lost a race with another device and re-merged instead of " +
     "overwriting it — zero on every ordinary sync, and the only evidence there " +
     "will ever be that concurrent editing is being handled rather than silently " +
-    "resolved in somebody's favour."
+    "resolved in somebody's favour.",
+  ...Object.fromEntries([
+    "merge/clean-local-absent-from-cloud-is-dropped", "merge/cloud-newer-wins",
+    "merge/dirty-local-absent-from-cloud-survives", "merge/dirty-local-newer-wins",
+    "merge/dirty-local-older-loses", "merge/empty-cloud-nonempty-local",
+    "merge/new-cloud-card-is-adopted", "merge/noteAnchor-survives-a-pull",
+    "merge/quick-note-category-follows-cloud", "merge/tombstoned-card-not-resurrected",
+    "push/reconcile-clean", "push/reconcile-empty-cloud", "stamp/synced-clears-dirty"
+  ].map((key) => [key, "Cards now carry `syncBase` — the card as the cloud held it at the " +
+    "last sync that confirmed it — so a card both devices edited is merged field by " +
+    "field (question on one, answer on the other) instead of the newer edit winning " +
+    "whole. The merge results also report conflictedCards / lostCardText (the other " +
+    "side's text for a field both changed, kept in Version history) and, on the push " +
+    "side, `refreshed`. Additive bookkeeping: the cards themselves are unchanged."])),
+  "push/reconcile-cloud-newer": "The bug being fixed, on purpose. A card this device " +
+    "did NOT edit (dirty: false) used to be sent as this device held it, so a device " +
+    "that changed anything else in the deck pushed its old text over a newer edit made " +
+    "on another device. A clean card now takes the cloud's fields (question: CLOUD, " +
+    "not the stale Q), plus the syncBase bookkeeping described above."
 };
 
 // Chrome comes from tools/browser.mjs, which drives it over the DevTools
@@ -752,6 +770,10 @@ const STORAGE = String.raw`async (api) => {
   await must("a deck written to IndexedDB reads back identical", async () => {
     await api.writeDeckSnapshot("local-1", deck);
     const back = await api.readDeckSnapshot("local-1");
+    // Every write is stamped with its store revision (rev) and the revision it
+    // was derived from (parentRev) — the store's bookkeeping for the merge that
+    // keeps two windows from overwriting each other, not part of the deck.
+    if (back) { delete back.rev; delete back.parentRev; }
     return JSON.stringify(back) === JSON.stringify(deck)
       || ("round trip differed: " + JSON.stringify(back).slice(0, 200));
   });

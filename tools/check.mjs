@@ -438,6 +438,10 @@ const checks = [
     // Chrome through tools/browser.mjs, so if that is broken this says so once
     // rather than letting twenty checks fail for a reason none of them names.
     ["browser       ", ["node", ["tools/browser-check.mjs"], ROOT]],
+    // The same note open in two windows of the app, for real: two pages on one
+    // origin sharing IndexedDB, BroadcastChannel and Web Locks. Each window's
+    // edits must survive the other's saves, hides and syncs.
+    ["multi-window  ", ["node", ["tools/multi-window-sync-check.mjs"], ROOT]],
     ["boot-check    ", ["node", ["tools/boot-check.mjs", "--baseline", "pre-modular"], ROOT]],
     ["behaviour     ", ["node", ["tools/behaviour-parity.mjs"], ROOT]],
     ["sync          ", ["node", ["tools/sync-parity.mjs"], ROOT]],
