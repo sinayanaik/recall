@@ -51,7 +51,6 @@ import { closeAllDeckTileMenus, createFolder, setAllFoldersExpanded } from "./li
 import { normalizeDeckCategory } from "./library/folders.js?v=__BUILD__";
 import { flushIndexBatch, readLocalDeckIndex, reconcileOpenDeckWithStore, setDeckContentSavedHook, setDeckOpenedHook, setDeckReloadedInPlaceHook } from "./library/local-library.js?v=__BUILD__";
 import { checkDeckFreshness, startRealtimeSync, stopRealtimeSync } from "./sync/live-sync.js?v=__BUILD__";
-import { showVersionHistory } from "./sync/history.js?v=__BUILD__";
 import { categorizeSelectedMyDecks, deleteSelectedMyDecks, loadSelectedMyDecks } from "./library/my-decks-actions.js?v=__BUILD__";
 import { hydrateMyDecksIcons } from "./library/my-decks-icons.js?v=__BUILD__";
 import { closeMyDecksMoreMenu, currentMyDecksFolder, importIntoFolder, myDecksImportFolder, myDecksSearchTimer, setMyDecksSearchTimer, toggleMyDecksMoreMenu } from "./library/my-decks-menu.js?v=__BUILD__";
@@ -2011,7 +2010,6 @@ applyAutoSyncInterval();
 // anybody is waiting for — and it refuses outright while auto-sync is off. See
 // schedulePostEditSync.
 setDeckContentSavedHook(schedulePostEditSync);
-document.getElementById("versionHistoryBtn")?.addEventListener("click", () => { showVersionHistory(); });
 // A deck just opened: has another device changed it since this one last synced?
 setDeckOpenedHook((localId) => { checkDeckFreshness(localId); });
 // Realtime for as long as there is somebody signed in to hear about.

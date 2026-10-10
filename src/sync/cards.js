@@ -39,7 +39,7 @@ export function mergeCardFields(base, local, remote) {
   const r = cardSyncBase(remote);
   let conflicted = false;
   // The other side's text for every field that clashed — handed back so the
-  // caller can keep it (Version history) rather than let it vanish.
+  // caller can offer it in the conflict resolver rather than let it vanish.
   const lost = [];
   const out = {};
   for (const field of ["question", "answer", "status", "category"]) {

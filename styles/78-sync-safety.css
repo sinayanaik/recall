@@ -1,10 +1,10 @@
 /* Sync safety
  * Added after the split — see POST_SPLIT in tools/split-css.mjs.
  *
- * The "saved here, not synced yet" pill state, the per-paragraph conflict
- * chooser (src/sync/notes-conflict.js) and the Version history list
- * (src/sync/history.js). Both live in the shared #syncModal, so they reuse its
- * .sync-modal-btn and .notes-conflict-* pieces and only add their own layout.
+ * The "saved here, not synced yet" pill state and the per-paragraph / per-card
+ * conflict chooser (src/sync/notes-conflict.js). The chooser lives in the shared
+ * #syncModal, so it reuses its .sync-modal-btn and .notes-conflict-* pieces and
+ * only adds its own layout.
  */
 
 /* A waiting state, not a fault: between the muted "saved" and the accent of
@@ -59,77 +59,4 @@
 .notes-conflict-hunk-choices .sync-modal-btn:disabled {
   opacity: 0.6;
   cursor: progress;
-}
-
-/* ── Version history ────────────────────────────────────────────────────── */
-
-.version-heading {
-  margin: 16px 0 8px;
-  font-size: 0.9rem;
-  font-weight: 800;
-}
-
-.version-list {
-  display: grid;
-  gap: 8px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.version-row {
-  display: grid;
-  gap: 4px;
-  padding: 10px 12px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--panel);
-}
-
-.version-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 8px;
-  align-items: baseline;
-  font-size: 0.85rem;
-}
-
-.version-meta span,
-.version-empty,
-.version-history-loading {
-  color: var(--muted);
-  font-size: 0.8rem;
-}
-
-.version-first-line {
-  overflow: hidden;
-  font-size: 0.82rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.version-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 4px;
-}
-
-.version-actions .sync-modal-btn {
-  min-height: 34px;
-}
-
-.version-preview {
-  margin: 6px 0 0;
-  max-height: 260px;
-  overflow: auto;
-  overscroll-behavior: contain;
-  padding: 8px 10px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--panel-2);
-  font-size: 0.78rem;
-  line-height: 1.45;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
 }

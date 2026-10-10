@@ -250,13 +250,7 @@ export const NOT_BACKED_UP_STORES = {
     "Pictures of PDF pages, kept so a paper is drawn once instead of on every "
     + "open and zoom (src/documents/pdf-pictures.js). A cache: every byte can be "
     + "drawn again from the paper itself, which IS backed up, and they are "
-    + "specific to this device's screen.",
-  "recall-history":
-    "Version history of each note on THIS device (src/sync/history.js): the "
-    + "texts sync or another window replaced, and ten-minute checkpoints. A "
-    + "safety net about this device's past, not part of the library — the "
-    + "backup already carries every note as it is now, and the cloud keeps its "
-    + "own history (deck_revisions) for every device."
+    + "specific to this device's screen."
 };
 
 // ── What a SHARE does with each key ─────────────────────────────────────────

@@ -54,19 +54,21 @@ export async function stashConflictHunks(localId, deckTitle, hunks, { otherFrom 
   const savedAt = new Date().toISOString();
   const fresh = hunks.map((hunk, index) => ({
     id: `h${Date.now().toString(36)}${index}${Math.random().toString(36).slice(2, 6)}`,
-    kept: String(hunk.local ?? ""),
-    other: String(hunk.remote ?? ""),
+    kept: String(hunk.kept ?? hunk.local ?? ""),
+    other: String(hunk.other ?? hunk.remote ?? ""),
     base: String(hunk.base ?? ""),
+    // A card field rather than a paragraph of the note: which card, which side.
+    ...(hunk.kind === "card" ? { kind: "card", cardId: String(hunk.cardId), field: hunk.field, question: String(hunk.question ?? "") } : {}),
     otherFrom,
     savedAt
   }));
   const carried = Array.isArray(prior?.hunks) ? prior.hunks : [];
   // The same clash seen again on the next sync is one question, not two.
-  const seen = new Set(carried.map((h) => `${h.kept}\u241f${h.other}`));
+  const seen = new Set(carried.map((h) => `${h.cardId || ""}\u241f${h.kept}\u241f${h.other}`));
   const next = {
     savedAt,
     deckTitle: deckTitle || prior?.deckTitle || "",
-    hunks: [...carried, ...fresh.filter((h) => !seen.has(`${h.kept}\u241f${h.other}`))]
+    hunks: [...carried, ...fresh.filter((h) => !seen.has(`${h.cardId || ""}\u241f${h.kept}\u241f${h.other}`))]
   };
   // A whole-body stash from before (or from a deck with no merge base) rides
   // along untouched; the resolver offers both.
@@ -74,3 +76,22 @@ export async function stashConflictHunks(localId, deckTitle, hunks, { otherFrom 
   writeDeckSnapshot(localId + NOTES_CONFLICT_SUFFIX, next);
 }
 
+
+// A card field both devices changed in ways the word merge could not settle
+// (src/sync/cards.js, mergeCardFields → `lost`), as a conflict hunk: the text the
+// card now holds is `kept`, the other device's is `other`. `cards` is the merged
+// card list, so `kept` is exactly what the reader will see on the card.
+export function cardConflictHunks(lost, cards) {
+  const byId = new Map((cards || []).map((card) => [String(card.id), card]));
+  return (lost || []).map((item) => {
+    const card = byId.get(String(item.id)) || {};
+    return {
+      kind: "card",
+      cardId: String(item.id),
+      field: item.field,
+      question: String(card.question ?? ""),
+      kept: String(card[item.field] ?? ""),
+      other: String(item.text ?? "")
+    };
+  });
+}

@@ -526,7 +526,6 @@ const APP_SHELL = [
   `./src/storage/open-deck-base.js?v=${STAMP}`,
   `./src/sync/conflict-stash.js?v=${STAMP}`,
   `./src/sync/device.js?v=${STAMP}`,
-  `./src/sync/history.js?v=${STAMP}`,
   `./src/sync/live-sync.js?v=${STAMP}`,
   `./src/sync/local-merge.js?v=${STAMP}`,
   `./src/sync/merge3.js?v=${STAMP}`,

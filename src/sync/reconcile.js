@@ -41,8 +41,7 @@ import { cardIsDirty, cardSyncBase, cardSyncSignature, mergeCloudCardsIntoSnapsh
 import { calculateSyncDiff, syncTextChanged, syncTextFingerprint } from "./diff.js?v=__BUILD__";
 import { documentLocatorsAhead, mergeDeckMeta, mergeDocumentAnnotations, reconcileDeckBeforePush } from "./document-sync.js?v=__BUILD__";
 import { mergeNoteBodies } from "./notes-merge3.js?v=__BUILD__";
-import { stashConflictHunks, stashLosingNotes } from "./conflict-stash.js?v=__BUILD__";
-import { recordLostCardText, recordNoteVersion } from "./history.js?v=__BUILD__";
+import { cardConflictHunks, stashConflictHunks, stashLosingNotes } from "./conflict-stash.js?v=__BUILD__";
 import { refreshSyncIndicatorBaseline, renderDeckEmptyState, setSyncIndicator, updateDeckEmptyStatus } from "./indicator.js?v=__BUILD__";
 import { pushDeckRowsToCloud } from "./push.js?v=__BUILD__";
 import { showSyncReport } from "./report.js?v=__BUILD__";
@@ -211,9 +210,16 @@ export async function pullCloudDeckIntoLibraryLocked(cloud, cards) {
   // The merge — not a replacement. See mergeCloudCardsIntoSnapshot: cards this
   // device changed and hasn't pushed yet survive the pull instead of being
   // silently destroyed by the cloud copy.
+  let cardsConflictStashed = false;
   const { cards: mergedCards, keptLocal, blockedResurrections, deletedCardIds, conflictedCards, lostCardText } =
     mergeCloudCardsIntoSnapshot(oldSnapshot, cards, cloudIso);
-  if (lostCardText?.length) recordLostCardText(localId, oldSnapshot?.deckTitle || cloud.title, lostCardText, cloud.last_device || "another device");
+  if (lostCardText?.length) {
+    // A card field both devices changed in ways the word merge cannot settle:
+    // this device's text stays on the card, and the other's waits in the
+    // conflict stash for the reader to choose — nothing is silently dropped.
+    await stashConflictHunks(localId, oldSnapshot?.deckTitle || cloud.title || "", cardConflictHunks(lostCardText, mergedCards), { otherFrom: cloud.last_device || "another device" });
+    cardsConflictStashed = true;
+  }
 
   // A rename (or folder move) made here and not yet pushed survives a pull that
   // brings no rename of its own — the same three-way rule as the push side.
@@ -278,7 +284,7 @@ export async function pullCloudDeckIntoLibraryLocked(cloud, cards) {
     notesConflicted = true;
     await stashConflictHunks(localId, oldSnapshot?.deckTitle || cloud.title || "", pullConflictHunks, {
       otherFrom: cloud.last_device || "another device"
-    }, stashed);
+    });
   }
   // A clean three-way merge is not a conflict, and must not stash: nothing was
   // replaced, both edits are in the body below, and asking about it would be the
@@ -333,9 +339,9 @@ export async function pullCloudDeckIntoLibraryLocked(cloud, cards) {
       // without deleting the other), and writing over one unseen is the single
       // thing this whole mechanism exists to prevent. So look again here, where
       // the extra read is worth it and rare.
-      await stashLosingNotes(localId, oldSnapshot.deckTitle || "", String(oldSnapshot.notes || ""), stashed);
+      await stashLosingNotes(localId, oldSnapshot.deckTitle || "", String(oldSnapshot.notes || ""));
     }
-  } else if (stashed && !stashed.hunks?.length && !syncTextChanged(splitHighlightNotesTail(String(stashed.notes || "")).body, newBody)) {
+  } else if (stashed && !stashed.hunks?.length && !cardsConflictStashed && !syncTextChanged(splitHighlightNotesTail(String(stashed.notes || "")).body, newBody)) {
     // ── The repair ────────────────────────────────────────────────────────
     //
     // A stash whose BODY matches what this device now holds was never a conflict
@@ -350,7 +356,7 @@ export async function pullCloudDeckIntoLibraryLocked(cloud, cards) {
 
   // A stash of clashing paragraphs from an earlier sync that nobody has answered
   // yet still needs answering — this pull recomputing the flag must not hide it.
-  if (!notesConflicted && stashed?.hunks?.length) notesConflicted = true;
+  if (!notesConflicted && (stashed?.hunks?.length || cardsConflictStashed)) notesConflicted = true;
 
   // Diff the merged result against whatever was on this device before, for the
   // detailed sync report — a brand-new-to-this-device deck just reports its
@@ -428,11 +434,6 @@ export async function pullCloudDeckIntoLibraryLocked(cloud, cards) {
   // Derived from the copy it replaces (see parentRev in writeDeckSnapshot).
   if (oldSnapshot?.rev) snapshot.rev = oldSnapshot.rev;
   writeDeckSnapshot(localId, snapshot);
-  // The body this device held, kept in Version history whenever the pull
-  // replaced it with anything different — merged, conflicted or simply newer.
-  if (oldSnapshot && syncTextChanged(oldBody, newBody)) {
-    recordNoteVersion(localId, { notes: oldSnapshot.notes, deckTitle: oldSnapshot.deckTitle, reason: `before changes from ${cloud.last_device || "another device"} arrived` });
-  }
 
   const meta = {
     id: localId,
@@ -708,6 +709,7 @@ async function pushLibraryDeckToCloudHeld(localMeta, { cloudExists = false, clou
   let cardsAdoptedHere = 0;
   let cardsUpdatedHere = 0;
   let cardConflicts = 0;
+  let cardHunksToStash = null;
   // Ids this push is about to delete from the cloud on a tombstone's say-so.
   // Once the push lands they've served their purpose and are retired below.
   let tombstonesBeingPruned = [];
@@ -719,7 +721,7 @@ async function pushLibraryDeckToCloudHeld(localMeta, { cloudExists = false, clou
     // merged in) instead of being sent back over that edit.
     cardsUpdatedHere = reconciled.refreshed || 0;
     cardConflicts = reconciled.conflictedCards || 0;
-    if (reconciled.lostCardText?.length) recordLostCardText(localMeta.id, snapshot.deckTitle, reconciled.lostCardText, cloudDeck?.last_device || "another device");
+    if (reconciled.lostCardText?.length) cardHunksToStash = cardConflictHunks(reconciled.lostCardText, reconciled.cards);
     tombstonesBeingPruned = Object.keys(reconciled.deletedCardIds);
     const tombstonesRetired = Object.keys(readCardTombstones(snapshot)).length !== tombstonesBeingPruned.length;
     snapshot.cards = reconciled.cards;
@@ -853,14 +855,6 @@ async function pushLibraryDeckToCloudHeld(localMeta, { cloudExists = false, clou
   // this function. mergeDeckMeta builds a NEW object rather than mutating either
   // input, so holding the old reference across the assignment below is safe.
   const metaBeforePush = snapshot.meta;
-  // This device's body, if the merge is about to change it here — kept in
-  // Version history before it is.
-  if (documentPush && syncTextChanged(
-    splitHighlightNotesTail(String(snapshot.notes || "")).body,
-    splitHighlightNotesTail(String(documentPush.notes || "")).body
-  )) {
-    recordNoteVersion(localMeta.id, { notes: snapshot.notes, deckTitle: snapshot.deckTitle, reason: `before merging changes from ${cloudDeck?.last_device || "another device"}` });
-  }
   if (documentPush) {
     snapshot.notes = documentPush.notes;
     snapshot.meta = documentPush.meta;
@@ -885,13 +879,18 @@ async function pushLibraryDeckToCloudHeld(localMeta, { cloudExists = false, clou
   // re-read after the upload. Let the other windows (and this one's own saves)
   // have the deck while the network does its part.
   unlock();
-  const notesStashed = Boolean(notesToStash) || Boolean(hunksToStash?.length);
+  const notesStashed = Boolean(notesToStash) || Boolean(hunksToStash?.length) || Boolean(cardHunksToStash?.length);
   if (notesToStash !== null) {
     await stashLosingNotes(localMeta.id, cloudDeck.title || snapshot.deckTitle || "", notesToStash);
   }
   if (hunksToStash?.length) {
     await stashConflictHunks(localMeta.id, cloudDeck.title || snapshot.deckTitle || "", hunksToStash, {
       otherFrom: cloudDeck.last_device || "another device"
+    });
+  }
+  if (cardHunksToStash?.length) {
+    await stashConflictHunks(localMeta.id, cloudDeck?.title || snapshot.deckTitle || "", cardHunksToStash, {
+      otherFrom: cloudDeck?.last_device || "another device"
     });
   }
 
@@ -947,6 +946,11 @@ async function pushLibraryDeckToCloudHeld(localMeta, { cloudExists = false, clou
   // avoid. The worst a concurrent locked writer can do is overwrite the
   // dirty-flag clearing below, which costs one redundant re-push and loses
   // nothing. Do not "fix" this by wrapping the whole function.
+  // Anything still waiting in the conflict stash — a paragraph or a card field
+  // the reader has not chosen for yet — keeps the deck flagged, whatever this
+  // push found; clearing the flag over it would hide the question for good.
+  const pendingConflict = await readDeckSnapshot(localMeta.id + NOTES_CONFLICT_SUFFIX);
+  const conflictStillPending = Boolean(pendingConflict?.hunks?.length || String(pendingConflict?.notes || "").trim());
   const releaseAfterPush = await holdDeckLock(localMeta.id);
   try {
   const liveSnapshot = (await readDeckSnapshotFresh(localMeta.id)) || snapshot;
@@ -1038,7 +1042,7 @@ async function pushLibraryDeckToCloudHeld(localMeta, { cloudExists = false, clou
     // we last agreed on, so nobody else has moved it and there is nothing to
     // rescue. Without a fingerprint the push still knows nothing and says
     // nothing, exactly as before.
-    else if (localMeta.syncedNotesFingerprint && !documentPush?.bodyConflicted
+    else if (!conflictStillPending && localMeta.syncedNotesFingerprint && !documentPush?.bodyConflicted
              && syncTextFingerprint(splitHighlightNotesTail(String(cloudDeck?.notes || "")).body) === localMeta.syncedNotesFingerprint) {
       entry.notesConflicted = false;
     }

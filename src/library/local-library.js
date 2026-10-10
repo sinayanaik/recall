@@ -18,7 +18,6 @@ import { allDeckSnapshotIds, cloneSnapshot, deckAutosaveState, deckSnapshotCache
 import { openDeckBase, revisionContent, setOpenDeckBase } from "../storage/open-deck-base.js?v=__BUILD__";
 import { stashConflictHunks, stashLosingNotes } from "../sync/conflict-stash.js?v=__BUILD__";
 import { mergeOpenDeckSnapshots, sameDeckContent } from "../sync/local-merge.js?v=__BUILD__";
-import { checkpointNoteVersion, recordNoteVersion } from "../sync/history.js?v=__BUILD__";
 import { splitHighlightNotesTail } from "../format/notes-fence.js?v=__BUILD__";
 import { LOCAL_DECKS_INDEX_KEY, LOCAL_DECK_PREFIX, NOTES_CONFLICT_SUFFIX } from "../storage/keys.js?v=__BUILD__";
 import { handleDeckStorageQuotaError, persistWorkingDeck, setDeckAutosaveStorageFailed, setLastSaveErrorWasQuota } from "../storage/quota.js?v=__BUILD__";
@@ -790,21 +789,6 @@ export function finishSaveDeckToLibrary({ snapshot, localId, previousSnapshot, s
   // deck as saved — and persists to IndexedDB in the background. A genuine
   // quota error surfaces asynchronously via handleDeckStorageQuotaError
   // rather than failing this call; see the block comment on writeDeckSnapshot.
-  // ── Version history ─────────────────────────────────────────────────────
-  //
-  // The body on disk, kept before it is replaced: always when another window's
-  // text is being combined with this one's, and as a checkpoint at most every
-  // ten minutes while the reader types.
-  const previousBody = splitHighlightNotesTail(String(previousSnapshot?.notes || "")).body;
-  const nextBody = splitHighlightNotesTail(String(snapshot.notes || "")).body;
-  if (previousSnapshot && previousBody !== nextBody) {
-    if (localMerge) {
-      recordNoteVersion(localId, { notes: previousSnapshot.notes, deckTitle: previousSnapshot.deckTitle, reason: "before combining with another window" });
-    } else {
-      checkpointNoteVersion(localId, previousSnapshot.notes, previousSnapshot.deckTitle);
-    }
-  }
-
   setLastSaveErrorWasQuota(false);
   // Derived from the copy it replaces — recorded on the write (parentRev).
   snapshot.rev = previousSnapshot?.rev || null;

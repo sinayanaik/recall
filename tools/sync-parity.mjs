@@ -80,7 +80,7 @@ const ACCEPTED_DIFFS = {
     "last sync that confirmed it — so a card both devices edited is merged field by " +
     "field (question on one, answer on the other) instead of the newer edit winning " +
     "whole. The merge results also report conflictedCards / lostCardText (the other " +
-    "side's text for a field both changed, kept in Version history) and, on the push " +
+    "side's text for a field both changed, offered in the conflict resolver) and, on the push " +
     "side, `refreshed`. Additive bookkeeping: the cards themselves are unchanged."])),
   "push/reconcile-cloud-newer": "The bug being fixed, on purpose. A card this device " +
     "did NOT edit (dirty: false) used to be sent as this device held it, so a device " +
