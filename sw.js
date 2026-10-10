@@ -365,6 +365,7 @@ const APP_SHELL = [
   `./styles/75-highlight-stability.css?v=${STAMP}`,
   `./styles/76-home.css?v=${STAMP}`,
   `./styles/77-shutdown.css?v=${STAMP}`,
+  `./styles/78-sync-safety.css?v=${STAMP}`,
   // The module entry point. Everything it imports is stamped with the same
   // ?v=, so those URLs change with every release too — which is what lets the
   // cache-first handler below serve them without revalidating and still never
@@ -522,6 +523,13 @@ const APP_SHELL = [
   `./src/notes/frame-card.js?v=${STAMP}`,
   `./src/notes/highlight-badges.js?v=${STAMP}`,
   `./src/notes/highlight-adjust.js?v=${STAMP}`,
+  `./src/storage/open-deck-base.js?v=${STAMP}`,
+  `./src/sync/conflict-stash.js?v=${STAMP}`,
+  `./src/sync/device.js?v=${STAMP}`,
+  `./src/sync/history.js?v=${STAMP}`,
+  `./src/sync/live-sync.js?v=${STAMP}`,
+  `./src/sync/local-merge.js?v=${STAMP}`,
+  `./src/sync/merge3.js?v=${STAMP}`,
   `./src/ui/adjust-handles.js?v=${STAMP}`,
   `./src/documents/pdf-highlight-adjust.js?v=${STAMP}`,
   `./src/notes/highlight-note-editor.js?v=${STAMP}`,

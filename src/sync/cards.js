@@ -11,6 +11,55 @@
 import { normalizeCardStatus } from "../export/markdown.js?v=__BUILD__";
 import { normalizeSyncText } from "./diff.js?v=__BUILD__";
 import { tsMs } from "./stats.js?v=__BUILD__";
+import { mergeText } from "./merge3.js?v=__BUILD__";
+
+// ── What the cloud held when this device last agreed with it, per card ─────
+//
+// `syncBase` is the card as the cloud had it at the last pull or push that
+// confirmed it. It is what lets a card be merged field by field, the way the
+// notes are merged line by line: the question edited on one device and the
+// answer on the other are two edits, not a clash, and a card this device never
+// touched is simply the cloud's — never sent back over a newer edit.
+export function cardSyncBase(card) {
+  return {
+    question: String(card?.question ?? ""),
+    answer: String(card?.answer ?? ""),
+    status: normalizeCardStatus(card?.status) || null,
+    category: card?.category ? String(card.category) : null
+  };
+}
+
+// Merge one card's fields: `local` and `remote` both descend from `base`.
+// Returns { card, conflicted } — card holds the merged fields (local wins a
+// field both changed in ways the text merge cannot reconcile), and conflicted
+// says that happened.
+export function mergeCardFields(base, local, remote) {
+  const b = cardSyncBase(base);
+  const l = cardSyncBase(local);
+  const r = cardSyncBase(remote);
+  let conflicted = false;
+  // The other side's text for every field that clashed — handed back so the
+  // caller can keep it (Version history) rather than let it vanish.
+  const lost = [];
+  const out = {};
+  for (const field of ["question", "answer", "status", "category"]) {
+    if (l[field] === r[field]) out[field] = l[field];
+    else if (l[field] === b[field]) out[field] = r[field];
+    else if (r[field] === b[field]) out[field] = l[field];
+    else if (field === "question" || field === "answer") {
+      const text = mergeText(b[field], l[field], r[field]);
+      out[field] = text.merged;
+      if (!text.ok || text.conflicts.length) {
+        conflicted = true;
+        lost.push({ field, text: r[field] });
+      }
+    } else {
+      out[field] = l[field];
+      conflicted = true;
+    }
+  }
+  return { card: out, conflicted, lost };
+}
 
 // ── Per-card delete tombstones ──────────────────────────────────────────────
 // `dirty` alone cannot express "I deleted this card": a deleted card leaves no
@@ -127,9 +176,13 @@ export function stampCardSyncState(snapshot, previousSnapshot, stampIso, { synce
     if (synced) {
       card.dirty = false;
       card.updatedAt = stampIso;
+      card.syncBase = cardSyncBase(card);
       continue;
     }
     const previous = previousById.get(String(card.id));
+    // The cloud's copy at the last agreement belongs to the card, not to this
+    // save — deckSnapshot() never carries it, so it is carried here.
+    if (previous?.syncBase && !card.syncBase) card.syncBase = previous.syncBase;
     if (previous && cardSyncSignature(previous) === cardSyncSignature(card)) {
       card.dirty = cardIsDirty(previous);
       card.updatedAt = previous.updatedAt || stampIso;
@@ -167,6 +220,8 @@ export function mergeCloudCardsIntoSnapshot(oldSnapshot, cloudCards, deckFallbac
   const cloudIds = new Set();
   let keptLocal = 0;
   let blockedResurrections = 0;
+  let conflictedCards = 0;
+  const lostCardText = [];
 
   for (const row of cloudCards || []) {
     const id = String(row.id || "");
@@ -187,13 +242,35 @@ export function mergeCloudCardsIntoSnapshot(oldSnapshot, cloudCards, deckFallbac
       status: normalizeCardStatus(row.status),
       category: row.category ? String(row.category) : null,
       dirty: false,
-      updatedAt: row.updated_at || deckFallbackIso
+      updatedAt: row.updated_at || deckFallbackIso,
+      syncBase: cardSyncBase(row)
     };
     if (local) {
       seenLocalIds.add(id);
+      // Edited here and not yet pushed. With the card's own base this is a
+      // field-by-field merge — the other device's edit to a different field is
+      // taken, ours is kept, and the card still owes the cloud a push if ours
+      // added anything. Without one (a card last synced by an older build) the
+      // old rule stands: the newer edit wins.
+      if (cardIsDirty(local) && local.syncBase) {
+        const { card: fields, conflicted, lost } = mergeCardFields(local.syncBase, local, row);
+        const sameAsCloud = cardSyncSignature(fields) === cardSyncSignature(fromCloud);
+        if (!sameAsCloud) keptLocal += 1;
+        if (conflicted) conflictedCards += 1;
+        for (const item of lost) lostCardText.push({ id, ...item });
+        merged.push({
+          ...local,
+          ...fields,
+          id,
+          dirty: !sameAsCloud,
+          updatedAt: sameAsCloud ? fromCloud.updatedAt : (local.updatedAt || fromCloud.updatedAt),
+          syncBase: cardSyncBase(row)
+        });
+        continue;
+      }
       if (cardIsDirty(local) && cardUpdatedMs(local, deckFallbackIso) > tsMs(row.updated_at || deckFallbackIso)) {
         keptLocal += 1;
-        merged.push({ ...local, id });
+        merged.push({ ...local, id, syncBase: cardSyncBase(row) });
         continue;
       }
       // noteAnchor is a device-local link (the cloud `cards` table has no column
@@ -247,7 +324,7 @@ export function mergeCloudCardsIntoSnapshot(oldSnapshot, cloudCards, deckFallbac
       : Object.fromEntries(Object.entries(tombstones).filter(([id]) => cloudIds.has(id)))
   );
 
-  return { cards: merged, keptLocal, blockedResurrections, deletedCardIds };
+  return { cards: merged, keptLocal, blockedResurrections, deletedCardIds, conflictedCards, lostCardText };
 }
 
 // The push side of the same story. `pushLibraryDeckToCloud` sends the local card
@@ -292,12 +369,40 @@ export function reconcileCardsBeforePush(snapshot, cloudCards) {
 
   const cards = [];
   let dropped = 0;
+  let refreshed = 0;
+  let conflictedCards = 0;
+  const lostCardText = [];
   for (const card of localCards) {
     const id = String(card.id || "");
     if (!id) continue;
     if (hasCardSyncState && !cloudLooksBlank && !cloudById.has(id) && !cardIsDirty(card)) {
       dropped += 1;
       continue;
+    }
+    const row = cloudById.get(id);
+    // ── A card this device did not edit is the cloud's ──────────────────────
+    //
+    // It used to go up as this device held it, always. So a device that changed
+    // ANYTHING in a deck — one status, one highlight — re-sent every card it had,
+    // and a card edited on another device since this one last pulled was put
+    // back to its old text, with the report calling that an edit. A clean card
+    // now takes the cloud's fields; an edited one is merged field by field
+    // against what the cloud held when they last agreed.
+    if (row && hasCardSyncState) {
+      const cloudFields = cardSyncBase(row);
+      if (!cardIsDirty(card)) {
+        if (cardSyncSignature(card) !== cardSyncSignature(cloudFields)) refreshed += 1;
+        cards.push({ ...card, ...cloudFields, dirty: false, updatedAt: row.updated_at || card.updatedAt, syncBase: cloudFields });
+        continue;
+      }
+      if (card.syncBase) {
+        const { card: fields, conflicted, lost } = mergeCardFields(card.syncBase, card, row);
+        if (cardSyncSignature(fields) !== cardSyncSignature(card)) refreshed += 1;
+        if (conflicted) conflictedCards += 1;
+        for (const item of lost) lostCardText.push({ id, ...item });
+        cards.push({ ...card, ...fields });
+        continue;
+      }
     }
     cards.push(card);
   }
@@ -317,7 +422,8 @@ export function reconcileCardsBeforePush(snapshot, cloudCards) {
       status: normalizeCardStatus(row.status),
       category: row.category ? String(row.category) : null,
       dirty: false,
-      updatedAt: row.updated_at || new Date().toISOString()
+      updatedAt: row.updated_at || new Date().toISOString(),
+      syncBase: cardSyncBase(row)
     });
   }
 
@@ -332,5 +438,5 @@ export function reconcileCardsBeforePush(snapshot, cloudCards) {
       : Object.fromEntries(Object.entries(tombstones).filter(([id]) => cloudById.has(id)))
   );
 
-  return { cards, dropped, adopted, deletedCardIds };
+  return { cards, dropped, adopted, refreshed, conflictedCards, lostCardText, deletedCardIds };
 }

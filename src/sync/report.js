@@ -2,7 +2,7 @@
 
 import { el } from "../core/dom.js?v=__BUILD__";
 import { escapeHtml } from "../core/text.js?v=__BUILD__";
-import { restoreStashedNotes } from "./notes-conflict.js?v=__BUILD__";
+import { showNotesConflictModal } from "./notes-conflict.js?v=__BUILD__";
 import { describeSyncStats } from "./stats.js?v=__BUILD__";
 
 // Shared HTML for a sync report — every deck reconcileAllDecks() touched,
@@ -37,7 +37,7 @@ export function buildSyncTimingHtml(timings) {
 export function buildSyncReportHtml(deckLog, { pulled = 0, pushed = 0, failed = 0, timings = null } = {}) {
   const describeCounts = (entry) => {
     const parts = describeSyncStats(entry);
-    return parts.length ? parts.join(", ") : "no per-card changes (deck metadata only)";
+    return parts.length ? parts.join(", ") : "reading place and other settings only";
   };
 
   const rows = deckLog.map((entry) => {
@@ -47,15 +47,26 @@ export function buildSyncReportHtml(deckLog, { pulled = 0, pushed = 0, failed = 
         <div class="sync-report-detail">${escapeHtml(entry.error || "Unknown error")}</div>
       </li>`;
     }
+    // Which way it went, and — when it can be said — from which device. A push
+    // that also brought another device's work in (it merges before it sends)
+    // says both halves, because "uploaded" alone hid that this device's copy had
+    // just changed too.
+    const from = entry.fromDevice ? ` from ${escapeHtml(entry.fromDevice)}` : " from another device";
+    const broughtIn = entry.cardsAdoptedHere || entry.cardsRemovedHere || entry.cardsUpdatedHere
+      || entry.highlightsMerged || entry.highlightsRemovedHere || entry.blocksMerged || entry.blocksRemovedHere
+      || entry.notesMerged || entry.titleAdoptedHere || entry.categoryAdoptedHere
+      || entry.documentAttached || entry.documentPagesChanged || entry.documentRemovedHere;
     const dirLabel = entry.direction === "pulled"
-      ? "⬇ Downloaded from cloud"
+      ? `⬇ Received changes${from}`
       : entry.direction === "removed"
         ? "🗑 Removed from this device"
-        : "⬆ Uploaded to cloud";
+        : broughtIn
+          ? `⇄ Sent your changes and brought in changes${from}`
+          : "⬆ Sent your changes";
     // A replaced notes body is the one thing sync can still overwrite, so it
     // gets an actual way out rather than only a line of prose saying it happened.
     const recover = entry.notesConflicted && entry.localId
-      ? `<button type="button" class="sync-report-recover" data-recover-notes="${escapeHtml(entry.localId)}">Restore my notes</button>`
+      ? `<button type="button" class="sync-report-recover" data-resolve-conflict="${escapeHtml(entry.localId)}">Review the clashing paragraph</button>`
       : "";
     return `<li class="sync-report-row">
       <strong>${escapeHtml(entry.title)}</strong> — ${dirLabel}
@@ -65,7 +76,7 @@ export function buildSyncReportHtml(deckLog, { pulled = 0, pushed = 0, failed = 
   }).join("");
 
   return `
-    <p class="sync-report-summary">${pulled} deck${pulled === 1 ? "" : "s"} downloaded, ${pushed} deck${pushed === 1 ? "" : "s"} uploaded${failed ? `, ${failed} failed` : ""}</p>
+    <p class="sync-report-summary">${pushed} deck${pushed === 1 ? "" : "s"} sent · ${pulled} deck${pulled === 1 ? "" : "s"} received${failed ? ` · ${failed} failed (will retry)` : ""}</p>
     ${buildSyncTimingHtml(timings)}
     <ul class="sync-report-list">${rows}</ul>
   `;
@@ -92,9 +103,9 @@ export function showSyncReport(deckLog, { pulled = 0, pushed = 0, failed = 0, ti
   content.innerHTML = buildSyncReportHtml(deckLog, { pulled, pushed, failed, timings });
   // Delegated so the buttons keep working across re-renders of the report.
   content.onclick = async (event) => {
-    const button = event.target.closest("[data-recover-notes]");
+    const button = event.target.closest("[data-resolve-conflict]");
     if (!button) return;
-    if (await restoreStashedNotes(button.dataset.recoverNotes)) button.remove();
+    showNotesConflictModal(button.dataset.resolveConflict);
   };
   modal.hidden = false;
 }

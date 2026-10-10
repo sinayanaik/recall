@@ -8,8 +8,9 @@ import { state } from "../core/state.js?v=__BUILD__";
 import { listLocalDecks, readLocalDeckIndex } from "../library/local-library.js?v=__BUILD__";
 import { LAST_GLOBAL_SYNC_ERROR_KEY, LAST_GLOBAL_SYNC_KEY } from "../storage/keys.js?v=__BUILD__";
 import { autoSyncNextAt, getAutoSyncMinutes } from "./auto-sync.js?v=__BUILD__";
-import { restoreStashedNotes } from "./notes-conflict.js?v=__BUILD__";
+import { showNotesConflictModal } from "./notes-conflict.js?v=__BUILD__";
 import { lastStartupSyncReport, reconcileInFlight } from "./reconcile.js?v=__BUILD__";
+import { deckHasLocalEdits } from "./stats.js?v=__BUILD__";
 import { buildSyncReportHtml } from "./report.js?v=__BUILD__";
 import { releaseAutomaticHome, showHome } from "../ui/home-state.js?v=__BUILD__";
 
@@ -110,6 +111,10 @@ export function setSyncIndicator(stateName) {
     saved: "Saved on device",
     saving: "Syncing…",
     synced: "Synced",
+    // Saved here, and the cloud does not have it yet. The pill used to say
+    // "Synced" for any deck with a cloud id, edits or no edits — which is how
+    // "it said synced" came to describe a deck whose last hour was on one device.
+    unsynced: "Saved here · not synced yet",
     offline: "Offline · saved on device",
     // A lapsed token is not a lapsed connection. This used to reuse "offline",
     // so a phone whose refresh token had expired in a pocket showed an offline
@@ -120,6 +125,20 @@ export function setSyncIndicator(stateName) {
   };
   let resolvedState = stateName === "signin" ? "saved" : stateName;
   let text = labels[stateName] || "";
+  // A save, while signed in: the pill's question is whether the CLOUD has it.
+  // A deck that has synced before is answered by the "synced" branch below
+  // (synced, or saved-but-not-synced-yet); one that never has is unsynced.
+  if (stateName === "saved" && state.localDeckId && supabaseClient && isSignedIn) {
+    const localMeta = readLocalDeckIndex().find((m) => m.id === state.localDeckId);
+    if (localMeta?.lastSyncedAt) {
+      stateName = "synced";
+      resolvedState = "synced";
+      text = labels.synced;
+    } else if (localMeta) {
+      resolvedState = "unsynced";
+      text = getAutoSyncMinutes() ? "Saved here · syncs soon" : labels.unsynced;
+    }
+  }
   // Which deck the pill would open the notes-conflict resolver for, if any.
   let conflictId = "";
   if (stateName === "synced" && state.localDeckId) {
@@ -136,8 +155,13 @@ export function setSyncIndicator(stateName) {
       // Was "see Sync Now", which led nowhere: a second sync finds the deck
       // already matching, so it logs nothing and renders no report — and the
       // report was the only thing that ever carried a way out.
-      text = "Notes conflict — tap to fix";
+      text = "Both devices changed a paragraph — tap to choose";
       conflictId = state.localDeckId;
+    } else if (deckHasLocalEdits(localMeta)) {
+      // The deck has a cloud copy, but this device holds edits it has not
+      // received — say so rather than "Synced".
+      resolvedState = "unsynced";
+      text = getAutoSyncMinutes() ? "Saved here · syncs soon" : labels.unsynced;
     } else {
       const relative = formatRelativeTime(localMeta?.lastSyncedAt);
       if (relative) text += ` · ${relative}`;
@@ -222,14 +246,14 @@ export function renderWelcomeSyncReport() {
     return;
   }
   const { deckLog, pulled, pushed, failed, timings } = lastStartupSyncReport;
-  node.innerHTML = `<p class="deck-empty-sync-report-title">Startup Sync Report</p>${buildSyncReportHtml(deckLog, { pulled, pushed, failed, timings })}`;
+  node.innerHTML = `<p class="deck-empty-sync-report-title">Last background sync</p>${buildSyncReportHtml(deckLog, { pulled, pushed, failed, timings })}`;
   // The report can carry a "Restore my notes" button; a background sync's
   // report is the one the user is most likely to be looking at, so it has to
   // work here too, not only in the explicit-sync modal.
-  node.onclick = async (event) => {
-    const button = event.target.closest("[data-recover-notes]");
+  node.onclick = (event) => {
+    const button = event.target.closest("[data-resolve-conflict]");
     if (!button) return;
-    if (await restoreStashedNotes(button.dataset.recoverNotes)) button.remove();
+    showNotesConflictModal(button.dataset.resolveConflict);
   };
   node.hidden = false;
 }

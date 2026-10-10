@@ -1,6 +1,7 @@
 // Counting what a sync did, so the report can say it in words.
 
 import { quickNoteCategoriesFromMeta } from "../quick-notes/categories.js?v=__BUILD__";
+import { canonicalJson } from "./merge3.js?v=__BUILD__";
 
 // Normalizes any ISO / timestamptz string to epoch ms so timestamps written by
 // the JS client and read back from Postgres compare correctly.
@@ -60,6 +61,52 @@ export function clockSkewedAhead(iso, nowIso = new Date().toISOString()) {
   const stamp = tsMs(iso);
   if (!stamp) return false;
   return stamp > tsMs(nowIso) + SYNC_CLOCK_SKEW_TOLERANCE_MS;
+}
+
+// ── Which way a deck goes: by who edited, not by whose clock is later ──────
+//
+// The direction used to be `cloud.updated_at > local updatedAt` → pull, and the
+// reverse → push: a comparison of two devices' clocks. Any local write that
+// moved updatedAt — including a window saving a STALE copy of a deck another
+// device had just changed — therefore turned the old copy into "the newer one"
+// and pushed it over the edit. That is the "I opened the note on my other
+// device and my change disappeared" report.
+//
+// The question is really two questions, and neither needs a clock:
+//
+//   did THIS device change the deck since it last agreed with the cloud?
+//       updatedAt is stamped monotonically past lastSyncedAt by every real
+//       edit (nextSyncStamp) and set equal to it by every sync, so "later than"
+//       here compares two stamps this device wrote itself.
+//   did the CLOUD change since then?
+//       lastSyncedAt holds the exact updated_at the cloud row had when they
+//       agreed, so any different value means somebody wrote it. Equality, not
+//       ordering — a wrong clock elsewhere cannot fake it either way.
+//
+//   only the cloud moved   → pull
+//   this device edited     → push, which merges whatever the cloud has first
+//   neither                → nothing to do
+export function deckHasLocalEdits(entry) {
+  if (!entry) return false;
+  if (entry.dirty === true) return true;
+  return tsMs(entry.updatedAt) > tsMs(entry.lastSyncedAt);
+}
+
+export function cloudMovedSince(cloudRow, entry) {
+  if (!entry?.lastSyncedAt) return true;
+  return tsMs(cloudRow?.updated_at) !== tsMs(entry.lastSyncedAt);
+}
+
+// A row stamped at the epoch is another device's push still uploading its cards
+// (see PENDING_TS in ./push.js). Reading it now would merge against half a deck;
+// leave it this run. A row stuck there past the grace period is a push that died
+// part-way, and is treated as any other change.
+export const PENDING_PUSH_GRACE_MS = 5 * 60 * 1000;
+
+export function cloudPushInFlight(cloudRow, nowMs = Date.now()) {
+  if (!cloudRow || tsMs(cloudRow.updated_at) !== 0) return false;
+  const started = tsMs(cloudRow.last_accessed_at);
+  return Boolean(started) && nowMs - started < PENDING_PUSH_GRACE_MS;
 }
 
 // The one shape every push/pull reports its diff in. Both directions fill the
@@ -152,6 +199,23 @@ export function emptySyncStats() {
     // only evidence the reader will ever have that concurrent editing is being
     // handled rather than silently resolved in somebody's favour.
     pushRetried: 0,
+    // Cards another device edited since this one last synced, which this one
+    // took (or merged field by field) instead of sending its older copy back.
+    cardsUpdatedHere: 0,
+    // Cards both devices changed in the same field, differently — this device's
+    // text kept, the other's in version history.
+    cardConflicts: 0,
+    // What a push actually SENT beyond cards and prose, so a deck uploaded for a
+    // highlight does not report itself as "reading position synced" (or as
+    // nothing at all). Counted against the cloud row the push replaced.
+    highlightsSent: 0,
+    blocksSent: 0,
+    bookmarkSent: false,
+    documentSent: false,
+    // A rename or folder move made on another device, taken here rather than
+    // overwritten by this device's older title on the way up.
+    titleAdoptedHere: false,
+    categoryAdoptedHere: false,
     // meta.readingPosition (where paged/continuous reading last left off) moved.
     // This can be the ONLY thing a push actually changed — reading a book edits
     // no card and no note text — and without its own flag that push's stats
@@ -164,55 +228,104 @@ export function emptySyncStats() {
 
 // The counted stats (summed across decks), as opposed to the deck-level
 // booleans below them, which are counted as "how many decks".
-export const SYNC_COUNT_STATS = ["cardsAdded", "cardsDeleted", "cardsEdited", "statusChanges", "cardsMoved", "categoryChanges", "cardsKeptLocal", "cardsRemovedHere", "cardsAdoptedHere", "highlightsMerged", "highlightsRemovedHere", "highlightNotesMerged", "blocksMerged", "blocksRemovedHere", "pushRetried"];
+export const SYNC_COUNT_STATS = ["cardsAdded", "cardsDeleted", "cardsEdited", "statusChanges", "cardsMoved", "categoryChanges", "cardsKeptLocal", "cardsRemovedHere", "cardsAdoptedHere", "cardsUpdatedHere", "cardConflicts", "highlightsMerged", "highlightsRemovedHere", "highlightNotesMerged", "highlightsSent", "blocksMerged", "blocksRemovedHere", "blocksSent", "pushRetried"];
 
 // Every field of emptySyncStats belongs to exactly one of these two lists, and a
 // field in neither is dropped silently by totalSyncStats — reported per deck and
 // then missing from the summary, which is how a stat ends up half-wired. There
 // is an assertion for exactly that in tools/sync-reconcile-check.mjs.
-export const SYNC_FLAG_STATS = ["notesChanged", "titleChanged", "deckCategoryChanged", "noteCategoriesChanged", "notesConflicted", "notesMerged", "notesSyncFailed", "deckRemovedHere", "documentAttached", "documentPagesChanged", "documentRemovedHere", "readingPositionSynced"];
+export const SYNC_FLAG_STATS = ["notesChanged", "titleChanged", "deckCategoryChanged", "noteCategoriesChanged", "notesConflicted", "notesMerged", "notesSyncFailed", "deckRemovedHere", "documentAttached", "documentPagesChanged", "documentRemovedHere", "bookmarkSent", "documentSent", "titleAdoptedHere", "categoryAdoptedHere", "readingPositionSynced"];
 
 // Human phrases for a diff, most consequential first. Returns an array so
 // callers can join, count, or truncate it. With `asTotals`, the deck-level
 // booleans have been summed into deck counts by totalSyncStats and say so.
+//
+// ── Written to be read by someone who did not watch the sync ───────────────
+//
+// Every phrase names the thing and says which way it went: "3 cards added",
+// "2 highlights sent", "1 card updated from another device". What a phrase must
+// never do is describe bookkeeping as news — the reading position moving is
+// not a change anybody asked about, and reporting it ("reading position
+// synced") is what made a deck uploaded for a highlight look like it had
+// uploaded nothing. It is still synced; it is simply not announced.
 export function describeSyncStats(stats = {}, { asTotals = false } = {}) {
   const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
   const parts = [];
+  const flag = (value, label) => {
+    if (!value) return;
+    parts.push(asTotals && value > 1 ? `${label} (${value} decks)` : label);
+  };
+  // What needs the reader first.
+  flag(stats.notesSyncFailed, "notes could NOT be synced — run supabase_setup.sql in Supabase");
+  flag(stats.notesConflicted, "a paragraph was changed differently on both devices — both versions kept, tap to choose");
+  if (stats.cardConflicts) parts.push(`${plural(stats.cardConflicts, "card was", "cards were")} changed differently on both devices — this device's text kept, the other is in Version history`);
+  flag(stats.deckRemovedHere, "removed here (deleted on another device)");
+  // The reader's own writing.
+  flag(stats.notesMerged, "notes edits from both devices combined");
+  flag(stats.notesChanged, "notes edited");
+  flag(stats.titleChanged, "renamed");
+  flag(stats.titleAdoptedHere, "renamed on another device");
+  flag(stats.deckCategoryChanged, "moved to another folder");
+  flag(stats.categoryAdoptedHere, "moved to another folder on another device");
+  // Cards.
   if (stats.cardsAdded) parts.push(`${plural(stats.cardsAdded, "card", "cards")} added`);
-  if (stats.cardsDeleted) parts.push(`${plural(stats.cardsDeleted, "card", "cards")} deleted`);
   if (stats.cardsEdited) parts.push(`${plural(stats.cardsEdited, "card", "cards")} edited`);
-  if (stats.statusChanges) parts.push(`${plural(stats.statusChanges, "card", "cards")} restacked (known/review)`);
+  if (stats.cardsDeleted) parts.push(`${plural(stats.cardsDeleted, "card", "cards")} deleted`);
+  if (stats.cardsUpdatedHere) parts.push(`${plural(stats.cardsUpdatedHere, "card", "cards")} updated from another device`);
+  if (stats.cardsAdoptedHere) parts.push(`${plural(stats.cardsAdoptedHere, "card", "cards")} added on another device`);
+  if (stats.cardsRemovedHere) parts.push(`${plural(stats.cardsRemovedHere, "card", "cards")} deleted on another device`);
+  if (stats.cardsKeptLocal) parts.push(`${plural(stats.cardsKeptLocal, "card", "cards")} with newer edits here kept`);
+  if (stats.statusChanges) parts.push(`${plural(stats.statusChanges, "card", "cards")} marked known/review`);
   if (stats.cardsMoved) parts.push(`${plural(stats.cardsMoved, "card", "cards")} reordered`);
-  if (stats.categoryChanges) parts.push(`${plural(stats.categoryChanges, "note", "notes")} recategorised`);
-  if (stats.cardsKeptLocal) parts.push(`${plural(stats.cardsKeptLocal, "card", "cards")} kept from this device (newer than the cloud)`);
-  if (stats.cardsRemovedHere) parts.push(`${plural(stats.cardsRemovedHere, "card", "cards")} removed here (deleted on another device)`);
-  if (stats.cardsAdoptedHere) parts.push(`${plural(stats.cardsAdoptedHere, "card", "cards")} picked up here (added on another device)`);
-  if (stats.highlightsMerged) parts.push(`${plural(stats.highlightsMerged, "highlight", "highlights")} merged in from another device`);
-  if (stats.highlightsRemovedHere) parts.push(`${plural(stats.highlightsRemovedHere, "highlight", "highlights")} removed here (deleted on another device)`);
-  if (stats.highlightNotesMerged) parts.push(`${plural(stats.highlightNotesMerged, "highlight note", "highlight notes")} merged`);
+  if (stats.categoryChanges) parts.push(`${plural(stats.categoryChanges, "quick note", "quick notes")} recategorised`);
+  // The paper and what is written on it.
+  if (stats.highlightsSent) parts.push(`${plural(stats.highlightsSent, "highlight or ink mark", "highlights and ink marks")} sent`);
+  if (stats.highlightsMerged) parts.push(`${plural(stats.highlightsMerged, "highlight or ink mark", "highlights and ink marks")} from another device`);
+  if (stats.highlightsRemovedHere) parts.push(`${plural(stats.highlightsRemovedHere, "highlight", "highlights")} deleted on another device`);
+  if (stats.highlightNotesMerged) parts.push(`${plural(stats.highlightNotesMerged, "highlight note", "highlight notes")} combined`);
   // "text block" is the app's own word for a meta.pdfBlocks record — the + Text
   // button's own tooltip says "Add a markdown text block to the page you are
   // looking at" — so the report calls it what the control that made it calls it.
-  if (stats.blocksMerged) parts.push(`${plural(stats.blocksMerged, "text block", "text blocks")} added on another device`);
-  if (stats.blocksRemovedHere) parts.push(`${plural(stats.blocksRemovedHere, "text block", "text blocks")} removed here (deleted on another device)`);
-  if (stats.pushRetried) parts.push(`${plural(stats.pushRetried, "deck", "decks")} re-merged because another device wrote first`);
-  const flag = (value, label) => {
-    if (!value) return;
-    parts.push(asTotals && value > 1 ? `${label} on ${value} decks` : label);
-  };
-  flag(stats.notesChanged, "notes edited");
-  flag(stats.titleChanged, "deck renamed");
-  flag(stats.deckCategoryChanged, "deck category changed");
-  flag(stats.noteCategoriesChanged, "note categories added/renamed/removed");
-  flag(stats.notesConflicted, "your notes edit was replaced by a newer one (a copy was kept)");
-  flag(stats.notesMerged, "your notes and another device's were merged");
-  flag(stats.documentAttached, "a document was attached on another device");
-  flag(stats.documentPagesChanged, "the document's pages changed on another device");
-  flag(stats.documentRemovedHere, "the document was removed on another device");
-  flag(stats.notesSyncFailed, "notes could NOT be synced — run supabase_setup.sql in Supabase");
-  flag(stats.deckRemovedHere, "removed here (deleted on another device)");
-  flag(stats.readingPositionSynced, "reading position synced");
+  if (stats.blocksSent) parts.push(`${plural(stats.blocksSent, "text block", "text blocks")} sent`);
+  if (stats.blocksMerged) parts.push(`${plural(stats.blocksMerged, "text block", "text blocks")} from another device`);
+  if (stats.blocksRemovedHere) parts.push(`${plural(stats.blocksRemovedHere, "text block", "text blocks")} deleted on another device`);
+  flag(stats.documentSent, "document updated");
+  flag(stats.documentAttached, "document attached on another device");
+  flag(stats.documentPagesChanged, "document pages changed on another device");
+  flag(stats.documentRemovedHere, "document removed on another device");
+  flag(stats.bookmarkSent, "bookmark saved");
+  flag(stats.noteCategoriesChanged, "quick-note categories updated");
+  if (stats.pushRetried) parts.push(`${plural(stats.pushRetried, "deck", "decks")} re-merged because another device saved at the same moment`);
   return parts;
+}
+
+// ── What a push sent, beyond the cards and the prose ───────────────────────
+//
+// Measured against the cloud row the push replaced, so it is what actually
+// went up — not what this device happens to hold. Keys that are bookkeeping
+// (the reading position, link aliases, tombstones, the paper's locators) are
+// not news and are not counted.
+export function metaSentDelta(cloudMeta, pushedMeta) {
+  const before = cloudMeta && typeof cloudMeta === "object" ? cloudMeta : {};
+  const after = pushedMeta && typeof pushedMeta === "object" ? pushedMeta : {};
+  const records = (meta, key) => (Array.isArray(meta[key]) ? meta[key] : []);
+  const changedRecords = (key) => {
+    const was = new Map(records(before, key).map((r) => [String(r?.id ?? ""), canonicalJson(r)]));
+    let n = 0;
+    for (const record of records(after, key)) {
+      const id = String(record?.id ?? "");
+      if (!id || was.get(id) !== canonicalJson(record)) n += 1;
+    }
+    return n;
+  };
+  const slot = (meta, key) => (meta[key] && typeof meta[key] === "object" ? canonicalJson(meta[key]) : "");
+  const documentSent = ["pdf", "pdfs", "notebook", "pdfOrder"].some((key) => slot(before, key) !== slot(after, key));
+  return {
+    highlights: changedRecords("pdfHighlights"),
+    blocks: changedRecords("pdfBlocks"),
+    bookmark: (before.bookmark?.at || null) !== (after.bookmark?.at || null) && Boolean(after.bookmark),
+    document: documentSent
+  };
 }
 
 // Did the deck's quick-note category DEFINITIONS change (added, renamed,

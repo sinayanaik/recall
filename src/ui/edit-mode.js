@@ -52,6 +52,14 @@ export function flushWorkingDeck() {
 }
 
 
+// Is a card's question or answer open in its raw editor right now? Its text
+// lives only in the textarea until committed, so anything that replaces the
+// open deck's state underneath it has to wait.
+export function cardEditActive() {
+  return [[el.questionView, el.questionEdit], [el.answerView, el.answerEdit]]
+    .some(([view, edit]) => Boolean(view && edit && view.hidden === true && edit.hidden === false));
+}
+
 export function commitEditIfActive() {
   const sides = [
     { side: "question", view: el.questionView, edit: el.questionEdit, toolbar: el.questionEditToolbar, btn: el.editQuestionBtn },

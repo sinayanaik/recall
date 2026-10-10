@@ -117,10 +117,20 @@ export function setSigningPending(value) {
 
 setTimeout(() => setSigningPending(false), SIGNING_PENDING_MAX_MS);
 
+// Told whenever the signed-in state flips — the live sync (src/sync/live-sync.js)
+// opens its Realtime channel on a sign-in and closes it on a sign-out.
+let signedInListener = null;
+export function setSignedInListener(fn) {
+  signedInListener = typeof fn === "function" ? fn : null;
+}
+
 export function setSignedIn(value) {
   const next = Boolean(value);
   const changed = isSignedIn !== next;
   isSignedIn = next;
+  if (changed) {
+    try { signedInListener?.(next); } catch (error) { console.warn("Sign-in listener failed", error); }
+  }
   // An answer either way closes the question, so a sign-out is as much a
   // resolution as a sign-in: the images that were waiting to hear should stop
   // waiting and be judged on what they can actually load.

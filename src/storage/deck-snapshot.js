@@ -13,7 +13,7 @@ import { importTargetCategory } from "../import/staging.js?v=__BUILD__";
 import { normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
 import { resumeOpenedDeck } from "../notes/anchors.js?v=__BUILD__";
 import { maybePromptBookmarkJump } from "../notes/bookmark.js?v=__BUILD__";
-import { discardNotesEditingForDeckSwap } from "../notes/notes-view.js?v=__BUILD__";
+import { discardNotesEditingForDeckSwap, refreshNotesEditorInPlace } from "../notes/notes-view.js?v=__BUILD__";
 import { betterReadingPosition, newerReadingPosition } from "../notes/reading-position.js?v=__BUILD__";
 import { currentDeckKey, currentReadingAnchor, currentReadingAnchorDeckKey } from "../notes/scroll-anchor.js?v=__BUILD__";
 import { isQuickNotesDeck } from "../quick-notes/categories.js?v=__BUILD__";
@@ -22,6 +22,7 @@ import { setViewMode } from "../ui/view-mode.js?v=__BUILD__";
 import { hideHome } from "../ui/home-state.js?v=__BUILD__";
 import { activeDocSlot, documentTabForOpenDeck, hasDocSlot, onDocumentSurface } from "../documents/doc-slot.js?v=__BUILD__";
 import { deckTabKey } from "../storage/deck-tab.js?v=__BUILD__";
+import { clearOpenDeckBase } from "./open-deck-base.js?v=__BUILD__";
 
 // Is there anything in this deck at all?
 //
@@ -226,6 +227,11 @@ export function loadDeckSnapshot(payload, titleHint = "", append = false, { keep
     // (file open, snapshot import) genuinely wants a fresh, unattached deck so
     // its first autosave doesn't overwrite the deck that was open before.
     state.localDeckId = null;
+    // A different deck (or the same one opened afresh): the previous agreement
+    // with the disk no longer describes what is on screen. loadDeckFromLibrary
+    // records the new one; a deck from anywhere else has none until its first
+    // save. An in-place refresh keeps it — its caller records the new one.
+    if (!keepPlace) clearOpenDeckBase();
     // Whatever is being opened here is a real deck, so the folder-as-one-deck
     // mode is over. Cleared HERE rather than in each loader because every path
     // that replaces the open deck comes through this one — library open, cloud
@@ -239,7 +245,10 @@ export function loadDeckSnapshot(payload, titleHint = "", append = false, { keep
     // the next keystroke then copies it into state.notes and the autosave
     // writes the OLD note's body over the NEW deck's record. See the block
     // comment on discardNotesEditingForDeckSwap.
-    discardNotesEditingForDeckSwap();
+    // ...except on an in-place refresh of the SAME deck (a merge brought another
+    // window's or device's change in): the editor stays open and takes the
+    // merged text where the reader is typing. See refreshNotesEditorInPlace.
+    if (!(keepPlace && refreshNotesEditorInPlace(payloadNotes))) discardNotesEditingForDeckSwap();
     // See the identical call in loadWebDeck: the outgoing deck's queued-image
     // blob URLs are released here rather than held until pagehide.
     revokeLocalImageUrls();
@@ -315,6 +324,15 @@ export function loadDeckSnapshot(payload, titleHint = "", append = false, { keep
     }
   }
   syncResults();
-  closeAllCardsPanel();
+  // An in-place refresh leaves the All Cards panel where the reader has it;
+  // opening a different deck closes it as before.
+  if (!keepPlace || append) closeAllCardsPanel();
+  else refreshAllCardsPanelInPlace?.();
   showCard();
+}
+
+// Registered by src/main.js — the panel's renderer sits above this module.
+let refreshAllCardsPanelInPlace = null;
+export function setAllCardsRefreshHook(fn) {
+  refreshAllCardsPanelInPlace = typeof fn === "function" ? fn : null;
 }

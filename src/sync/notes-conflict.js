@@ -9,7 +9,8 @@ import { loadDeckFromLibrary, readLocalDeckIndex, writeLocalDeckIndex } from "..
 import { renderMyDecksList } from "../library/my-decks-render.js?v=__BUILD__";
 import { deleteDeckSnapshot, readDeckSnapshot, writeDeckSnapshot } from "../storage/deck-store.js?v=__BUILD__";
 import { NOTES_CONFLICT_SUFFIX } from "../storage/keys.js?v=__BUILD__";
-import { mergeRestoredNotes, promoteStashedNotes } from "./notes-conflict-merge.js?v=__BUILD__";
+import { applyConflictHunk, mergeRestoredNotes, promoteStashedNotes } from "./notes-conflict-merge.js?v=__BUILD__";
+import { recordNoteVersion } from "./history.js?v=__BUILD__";
 import { refreshSyncIndicatorBaseline } from "./indicator.js?v=__BUILD__";
 import { showConfirmModal, showToast } from "../ui/feedback.js?v=__BUILD__";
 
@@ -131,6 +132,9 @@ export async function resolveNotesConflict(localId, choice) {
     writeLocalDeckIndex(index);
     clearNotesConflictFlag(localId, { touch: true });
   } else {
+    // Discarded from the stash, but never from history.
+    const stash = await readDeckSnapshot(notesConflictStashKey(localId));
+    if (stash?.notes) await recordNoteVersion(localId, { notes: stash.notes, deckTitle: stash.deckTitle, reason: "the copy set aside in a conflict" });
     clearNotesConflictFlag(localId);
   }
 
@@ -158,6 +162,97 @@ export function notesConflictPreview(text) {
   return `<pre class="notes-conflict-preview">${escapeHtml(clipped + more)}</pre>`;
 }
 
+// ── Answering one clashing paragraph ───────────────────────────────────────
+//
+// Applies the reader's choice to the deck's notes, drops that hunk from the
+// stash, and — once none are left — clears the flag. A change to the notes
+// bumps updatedAt, so the answer is what the next sync sends; "keep this one"
+// changes nothing and fakes no edit.
+export async function resolveConflictHunk(localId, hunkId, choice) {
+  const stashKey = notesConflictStashKey(localId);
+  const [snapshot, stash] = await Promise.all([readDeckSnapshot(localId), readDeckSnapshot(stashKey)]);
+  if (!snapshot) {
+    showToast("That deck is no longer on this device", "error");
+    return false;
+  }
+  const hunks = Array.isArray(stash?.hunks) ? stash.hunks : [];
+  const hunk = hunks.find((h) => h.id === hunkId);
+  if (!hunk) return false;
+  // Whatever the answer, the text that loses goes into Version history.
+  if (choice === "current" && hunk.other) {
+    await recordNoteVersion(localId, { notes: hunk.other, deckTitle: snapshot.deckTitle, reason: `paragraph from ${hunk.otherFrom || "another device"} not kept` });
+  } else if (choice === "other" && hunk.kept) {
+    await recordNoteVersion(localId, { notes: snapshot.notes, deckTitle: snapshot.deckTitle, reason: "before choosing the other device's paragraph" });
+  }
+  const result = applyConflictHunk(snapshot.notes, hunk, choice);
+  const changed = result.notes !== String(snapshot.notes || "");
+  if (changed) {
+    snapshot.notes = result.notes;
+    writeDeckSnapshot(localId, snapshot);
+  }
+  const remaining = hunks.filter((h) => h.id !== hunkId);
+  if (remaining.length || String(stash?.notes || "").trim()) {
+    writeDeckSnapshot(stashKey, { ...stash, hunks: remaining });
+  } else {
+    deleteDeckSnapshot(stashKey);
+  }
+  const index = readLocalDeckIndex();
+  const entry = index.find((m) => m.id === localId);
+  if (entry) {
+    if (changed) {
+      entry.updatedAt = new Date().toISOString();
+      entry.hasNotes = Boolean(String(snapshot.notes || "").trim());
+    }
+    if (!remaining.length && !String(stash?.notes || "").trim()) entry.notesConflicted = false;
+    writeLocalDeckIndex(index);
+  }
+  await refreshAfterNotesConflictResolved(localId, { reload: changed });
+  if (!result.placed && choice !== "current") {
+    showToast("That paragraph had changed since — the other version was added at the end of the note", "info");
+  }
+  return true;
+}
+
+function renderHunkResolver(content, localId, stash, deckTitle) {
+  const hunks = stash.hunks || [];
+  const rows = hunks.map((hunk, index) => {
+    const from = escapeHtml(hunk.otherFrom || "another device");
+    const when = hunk.savedAt ? escapeHtml(new Date(hunk.savedAt).toLocaleString()) : "";
+    return `
+      <section class="notes-conflict-hunk" data-hunk="${escapeHtml(hunk.id)}">
+        <h3>Paragraph ${index + 1} of ${hunks.length}${when ? ` <span>· ${when}</span>` : ""}</h3>
+        <div class="notes-conflict-versions">
+          <div class="notes-conflict-version">
+            <h4>In the note now</h4>
+            ${notesConflictPreview(hunk.kept)}
+          </div>
+          <div class="notes-conflict-version">
+            <h4>From ${from}</h4>
+            ${notesConflictPreview(hunk.other)}
+          </div>
+        </div>
+        <div class="notes-conflict-hunk-choices">
+          <button type="button" class="sync-modal-btn" data-hunk-choice="current" data-hunk-id="${escapeHtml(hunk.id)}">Keep the note's</button>
+          <button type="button" class="sync-modal-btn" data-hunk-choice="other" data-hunk-id="${escapeHtml(hunk.id)}">Use ${from}'s</button>
+          <button type="button" class="sync-modal-btn is-primary" data-hunk-choice="both" data-hunk-id="${escapeHtml(hunk.id)}">Keep both</button>
+        </div>
+      </section>`;
+  }).join("");
+  const legacy = String(stash.notes || "").trim()
+    ? `<p class="notes-conflict-intro">There is also an older saved copy of the whole note from an earlier sync — it will be offered once these are answered.</p>`
+    : "";
+  content.innerHTML = `
+    <p class="notes-conflict-intro">
+      Everything else in <strong>${escapeHtml(deckTitle)}</strong> was merged automatically. Only
+      ${hunks.length === 1 ? "this paragraph was" : `these ${hunks.length} paragraphs were`} changed
+      differently on two devices, so the note keeps one version and the other is here. Pick for each —
+      every version also stays in Version history.
+    </p>
+    ${rows}
+    ${legacy}
+  `;
+}
+
 // The resolver itself. Reuses the #syncModal chrome the same way showSyncReport
 // does — its footer Cancel becomes "Close", and the three real choices are
 // buttons in the body so they can carry their own explanation.
@@ -171,10 +266,42 @@ export async function showNotesConflictModal(localId) {
     readDeckSnapshot(notesConflictStashKey(localId))
   ]);
 
-  if (!stash || !String(stash.notes || "").trim()) {
+  const hasHunks = Array.isArray(stash?.hunks) && stash.hunks.length > 0;
+  if (!stash || (!hasHunks && !String(stash.notes || "").trim())) {
     clearNotesConflictFlag(localId);
     await refreshAfterNotesConflictResolved(localId, { reload: false });
     showToast("That conflict has already been dealt with", "info");
+    return;
+  }
+
+  if (hasHunks) {
+    const titleEl = document.getElementById("syncModalTitle");
+    const confirmBtn = document.getElementById("confirmSyncBtn");
+    const cancelBtn = document.getElementById("cancelSyncBtn");
+    if (titleEl) titleEl.textContent = "Choose between two versions";
+    if (confirmBtn) confirmBtn.hidden = true;
+    if (cancelBtn) cancelBtn.textContent = "Decide later";
+    renderHunkResolver(content, localId, stash, snapshot?.deckTitle || stash.deckTitle || "this deck");
+    content.onclick = async (event) => {
+      const button = event.target.closest("[data-hunk-choice]");
+      if (!button) return;
+      const all = Array.from(content.querySelectorAll("[data-hunk-choice]"));
+      all.forEach((node) => { node.disabled = true; });
+      try {
+        await resolveConflictHunk(localId, button.dataset.hunkId, button.dataset.hunkChoice);
+      } finally {
+        all.forEach((node) => { node.disabled = false; });
+      }
+      // Next question, or the older whole-note copy, or done.
+      const next = await readDeckSnapshot(notesConflictStashKey(localId));
+      if (next && (next.hunks?.length || String(next.notes || "").trim())) {
+        showNotesConflictModal(localId);
+      } else {
+        modal.hidden = true;
+        showToast("All clashing paragraphs answered — the note will sync with your choices", "success");
+      }
+    };
+    modal.hidden = false;
     return;
   }
 
@@ -215,7 +342,7 @@ export async function showNotesConflictModal(localId) {
       </button>
       <button type="button" class="sync-modal-btn" data-conflict-choice="synced">
         Keep the synced version
-        <span>Discards your saved copy. This cannot be undone.</span>
+        <span>Your saved copy moves to Version history.</span>
       </button>
     </div>
   `;

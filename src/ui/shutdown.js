@@ -103,7 +103,9 @@ async function syncForShutdown() {
         try { await reconcilePromise; } catch (_) { /* reported by its own run */ }
         continue;
       }
-      await reconcileAllDecks({ explicit: false });
+      // `wait`: another window's sync in progress is waited for, not skipped —
+      // "safe to close" is only said about a sync that actually ran.
+      await reconcileAllDecks({ explicit: false, wait: true });
       return;
     }
   } finally {

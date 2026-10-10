@@ -44,141 +44,40 @@
 // tools/sync-reconcile-check.mjs drives it straight from Node. So it is a leaf
 // that knows about strings and nothing else — no state, no store, no DOM.
 
-// The most lines this will run the matrix over. Past it the merge declines and
-// the caller falls back to the resolver, which is the honest answer: a note that
-// large is one where a wrong merge would be hardest to spot and hardest to undo.
-export const MERGE3_MAX_LINES = 4000;
-
-// Named for this module rather than `lines`, which a dozen other files use as a
-// local and which tools/module-symbols.mjs therefore reads as a collision.
-function merge3Lines(text) {
-  return String(text || "").split("\n");
-}
-
-// The longest common subsequence of two line arrays, as a list of [i, j] pairs.
-// Plain dynamic programming: the trimming below is what keeps the inputs small,
-// and a cleverer algorithm here would be a second thing to get wrong.
-function lcsPairs(a, b) {
-  const n = a.length;
-  const m = b.length;
-  const table = new Uint32Array((n + 1) * (m + 1));
-  const at = (i, j) => i * (m + 1) + j;
-  for (let i = n - 1; i >= 0; i -= 1) {
-    for (let j = m - 1; j >= 0; j -= 1) {
-      table[at(i, j)] = a[i] === b[j]
-        ? table[at(i + 1, j + 1)] + 1
-        : Math.max(table[at(i + 1, j)], table[at(i, j + 1)]);
-    }
-  }
-  const pairs = [];
-  let i = 0;
-  let j = 0;
-  while (i < n && j < m) {
-    if (a[i] === b[j]) { pairs.push([i, j]); i += 1; j += 1; }
-    else if (table[at(i + 1, j)] >= table[at(i, j + 1)]) i += 1;
-    else j += 1;
-  }
-  return pairs;
-}
-
-// The edit from `base` to `side`, as runs of base lines replaced by side lines.
-// Anchored on the LCS, so a hunk is always "base lines [start, end) became these
-// lines" — which is the form the overlap test below needs.
-function hunks(base, side) {
-  const out = [];
-  const pairs = lcsPairs(base, side);
-  let bi = 0;
-  let si = 0;
-  const flush = (bEnd, sEnd) => {
-    if (bi === bEnd && si === sEnd) return;
-    out.push({ start: bi, end: bEnd, replacement: side.slice(si, sEnd) });
-  };
-  for (const [b, s] of pairs) {
-    flush(b, s);
-    bi = b + 1;
-    si = s + 1;
-  }
-  flush(base.length, side.length);
-  return out;
-}
-
-// Do two hunks touch the same base lines — or meet end to end at one?
+// The engine lives in ./merge3.js, shared with the deck-level merges; this is
+// the notes-body face of it, kept under its old name because two sync paths and
+// tools/sync-reconcile-check.mjs call it.
 //
-// The adjacency half is deliberate and is not over-caution. Two hunks that abut
-// have no line between them to say which order they belong in, so applying both
-// invents an ordering the reader never chose; interleaving two people's
-// paragraphs is exactly the "text nobody wrote" this merge must not produce. An
-// insertion at the same point from both sides is the commonest instance, and it
-// is a question, not a merge.
-function overlaps(x, y) {
-  return x.start <= y.end && y.start <= x.end;
-}
+// ── What changed, and why ─────────────────────────────────────────────────
+//
+// This used to be all-or-nothing: one clash anywhere in the note and the whole
+// merge was refused, so two devices that each fixed a different typo in the
+// same paragraph — or edited two neighbouring lines — had one of their edits
+// filed away under a question. That is not how merging works anywhere else. Now
+// every change that CAN be applied is applied (down to the word, inside a
+// paragraph both edited), and only the regions the two genuinely changed in
+// different ways are reported, one by one, in `conflictHunks`.
+
+import { mergeText } from "./merge3.js?v=__BUILD__";
 
 // Merge `local` and `remote`, both derived from `base`.
 //
-// Returns { merged, conflicts, ok }. `ok` false means the merge declined — too
-// large, or no base to work from — and the caller must fall back to whatever it
-// did before. `conflicts` counts the hunk pairs that touched the same lines;
-// when it is non-zero `merged` is not usable and the caller must ask.
-//
-// Deliberately all-or-nothing rather than emitting conflict markers into the
-// text. A `<<<<<<<` in somebody's notes is a merge tool's output leaking into a
-// document, and this app already has a better answer for the case: the losing
-// copy is stashed whole and the reader picks. Markers would also round-trip
-// through the sync as ordinary prose, to every other device.
+// Returns { merged, conflicts, ok, conflictHunks, insertedBoth }:
+//   ok             false when the merge declined (no base, or too large to
+//                  reason about) — `merged` is then `local` and the caller falls
+//                  back to keeping a whole copy, as before.
+//   merged         every change from both sides; in a conflicting region, the
+//                  LOCAL side's text.
+//   conflicts      how many regions clashed (0 means a clean merge).
+//   conflictHunks  [{ base, local, remote, line }] for each of those regions —
+//                  `remote` is the text the merge did not keep there.
 export function mergeNoteBodies(base, local, remote) {
-  const baseText = String(base ?? "");
-  const localText = String(local ?? "");
-  const remoteText = String(remote ?? "");
-
-  // Nothing to reason from. Not a failure — a deck that has never synced, or one
-  // whose base predates this — but not a merge either.
-  if (base === null || base === undefined) return { merged: localText, conflicts: 0, ok: false };
-
-  // The easy three, which are also the common three, answered without building
-  // a matrix at all.
-  if (localText === remoteText) return { merged: localText, conflicts: 0, ok: true };
-  if (localText === baseText) return { merged: remoteText, conflicts: 0, ok: true };
-  if (remoteText === baseText) return { merged: localText, conflicts: 0, ok: true };
-
-  const baseLines = merge3Lines(baseText);
-  const localLines = merge3Lines(localText);
-  const remoteLines = merge3Lines(remoteText);
-  if (Math.max(baseLines.length, localLines.length, remoteLines.length) > MERGE3_MAX_LINES) {
-    return { merged: localText, conflicts: 0, ok: false };
-  }
-
-  const localHunks = hunks(baseLines, localLines);
-  const remoteHunks = hunks(baseLines, remoteLines);
-
-  let conflicts = 0;
-  for (const l of localHunks) {
-    for (const r of remoteHunks) {
-      // Identical edits on both sides are one edit, not a clash — two devices
-      // that fixed the same typo agree, and asking about that would be the
-      // resolver firing on a merge that had nothing to resolve.
-      if (!overlaps(l, r)) continue;
-      if (l.start === r.start && l.end === r.end
-          && l.replacement.join("\n") === r.replacement.join("\n")) continue;
-      conflicts += 1;
-    }
-  }
-  if (conflicts) return { merged: localText, conflicts, ok: true };
-
-  // Apply both sets, in base order. Non-overlapping by the test above, so the
-  // only thing left is to walk the base once and splice — and to drop the
-  // duplicate when both sides made the identical change.
-  const all = [...localHunks, ...remoteHunks].sort((a, b) => a.start - b.start || a.end - b.end);
-  const out = [];
-  let cursor = 0;
-  for (const hunk of all) {
-    // The identical-edit case skipped above: the second copy has already been
-    // applied, and the cursor is past it.
-    if (hunk.start < cursor) continue;
-    out.push(...baseLines.slice(cursor, hunk.start));
-    out.push(...hunk.replacement);
-    cursor = hunk.end;
-  }
-  out.push(...baseLines.slice(cursor));
-  return { merged: out.join("\n"), conflicts: 0, ok: true };
+  const result = mergeText(base, local, remote);
+  return {
+    merged: result.merged,
+    conflicts: result.conflicts.length,
+    ok: result.ok,
+    conflictHunks: result.conflicts,
+    insertedBoth: result.insertedBoth
+  };
 }

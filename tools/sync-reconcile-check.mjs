@@ -119,6 +119,7 @@ try {
   const diff = await load("src/sync/diff.js");
   const conflict = await load("src/sync/notes-conflict-merge.js");
   const merge3 = await load("src/sync/notes-merge3.js");
+  const merge3Engine = await load("src/sync/merge3.js");
 
   const clone = (value) => JSON.parse(JSON.stringify(value));
   const iso = (ms) => new Date(ms).toISOString();
@@ -184,9 +185,13 @@ try {
     editLocally(dev, wallMs, (s) => { s.notes = fence.joinHighlightNotesTail(body, fence.splitHighlightNotesTail(s.notes).tail); });
 
   // Which way this deck would sync, by the two gates in reconcileAllDecks.
+  // The rule reconcileAllDecks applies, through the same helpers: push when this
+  // device edited (the push merges the cloud in first), pull when only the cloud
+  // moved, nothing otherwise. No device's clock decides it.
   function direction(dev, cloud) {
-    if (stats.tsMs(cloud.deck.updated_at) > stats.tsMs(dev.entry.updatedAt)) return "pull";
-    if (stats.tsMs(dev.entry.updatedAt) > stats.tsMs(cloud.deck.updated_at)) return "push";
+    if (!dev.entry.lastSyncedAt) return "pull";
+    if (stats.deckHasLocalEdits(dev.entry)) return "push";
+    if (stats.cloudMovedSince(cloud.deck, dev.entry)) return "pull";
     return "none";
   }
 
@@ -214,9 +219,15 @@ try {
     const threeWay = diff.syncTextChanged(cloudBodyForMerge, oldBody)
       ? merge3.mergeNoteBodies(dev.base, oldBody, cloudBodyForMerge)
       : null;
-    const mergedBody = threeWay?.ok && !threeWay.conflicts && threeWay.merged !== cloudBodyForMerge
+    // Every mergeable change is applied; a clashing region keeps this device's
+    // text and the cloud's is stashed per region, exactly as reconcile.js does.
+    const mergedBody = threeWay?.ok && threeWay.merged !== cloudBodyForMerge
       ? threeWay.merged
       : null;
+    if (mergedBody && threeWay.conflicts) {
+      dev.conflicted = true;
+      dev.hunks = (dev.hunks || []).concat(threeWay.conflictHunks);
+    }
     if (mergedBody) {
       documentMerge.notes = fence.joinHighlightNotesTail(mergedBody, fence.splitHighlightNotesTail(documentMerge.notes).tail);
     }
@@ -289,7 +300,10 @@ try {
     const cloudMovedByTheClock = stats.tsMs(cloud.deck.updated_at) > stats.tsMs(dev.entry.lastSyncedAt);
     const worthKeeping = documentPush.bodyConflicted
       || (unorderable || (!notesBaseline && cloudMovedByTheClock));
-    if (!documentPush.adoptedCloudBody && cloudBody.trim() && worthKeeping
+    if (documentPush.conflictHunks?.length) {
+      dev.hunks = (dev.hunks || []).concat(documentPush.conflictHunks);
+      dev.conflicted = true;
+    } else if (!documentPush.adoptedCloudBody && cloudBody.trim() && worthKeeping
         && diff.syncTextChanged(cloudBody, pushedBody)) {
       dev.stash = String(cloud.deck.notes || "");
       dev.conflicted = true;
@@ -1253,8 +1267,13 @@ try {
     // one B started with — the deck still owes the cloud a push, and stamping it
     // aligned would leave the merge on one device for ever. That is what the
     // next line actually asserts.
-    must("...and the merging device still owes the cloud a push", () =>
-      direction(B, cloud) === "push" || `B would ${direction(B, cloud)}`);
+    // B edited, so B PUSHES — and a push merges the cloud in first — so the
+    // union reaches the cloud in this one run instead of waiting for a second.
+    // Whatever B holds, the cloud must hold it too, or B must still owe a push.
+    must("...and the merge never stays on one device only", () =>
+      fence.splitHighlightNotesTail(cloud.deck.notes).body === "ONE\n\ntwo\n\nTHREE"
+      || direction(B, cloud) === "push"
+      || `cloud=${JSON.stringify(cloud.deck.notes)} and B would ${direction(B, cloud)}`);
     sync(B, cloud, T0 + 7 * MIN);
     must("...after which the cloud carries both", () =>
       fence.splitHighlightNotesTail(cloud.deck.notes).body === "ONE\n\ntwo\n\nTHREE"
@@ -1327,8 +1346,14 @@ try {
 
     must("two edits to the same line are still a conflict", () =>
       B.conflicted === true || "the merge silently picked one");
-    must("...and the losing copy is kept", () =>
-      String(B.stash || "").includes("B's version") || `stash=${JSON.stringify(B.stash)}`);
+    // Only the clashing paragraph is in question: the note keeps one version
+    // there and the conflict hunk holds the other, so both survive verbatim.
+    must("...and the losing copy is kept", () => {
+      const held = [B.snapshot.notes, String(B.stash || ""), ...(B.hunks || []).flatMap((h) => [h.local, h.remote])].join("\n");
+      return (held.includes("B's version") && held.includes("A's version")) || `note=${JSON.stringify(B.snapshot.notes)} hunks=${JSON.stringify(B.hunks)}`;
+    });
+    must("...and is offered as ONE region, not the whole note", () =>
+      (B.hunks || []).length === 1 || `hunks=${JSON.stringify(B.hunks)} stash=${JSON.stringify(B.stash)}`);
   }
 
   // A deck with no base — synced last by a build from before this existed — has
@@ -1372,8 +1397,26 @@ try {
     // Two insertions at the same point have no line between them to say which
     // order they belong in, and interleaving two people's paragraphs is the
     // "text nobody wrote" this must not produce.
-    must("...and so are two insertions at the same point", () =>
-      m("a", "a\nfrom local", "a\nfrom remote").conflicts > 0 || "two appends were interleaved");
+    // Two new paragraphs at one spot — both devices appending to the end of a
+    // note is the everyday case — are not edits to anything the other wrote, so
+    // both are kept, whole and in order (the already-shared one first), and the
+    // merge says it did so. Interleaving them line by line is what must not
+    // happen.
+    must("...while two insertions at the same point are both kept, whole", () => {
+      const r = m("a", "a\nfrom local", "a\nfrom remote");
+      return (r.conflicts === 0 && r.insertedBoth === 1 && r.merged === "a\nfrom remote\nfrom local") || JSON.stringify(r);
+    });
+    must("edits to neighbouring lines both apply — adjacency is not a clash", () =>
+      m("a\nb\nc", "A\nb\nc", "a\nB\nc").merged === "A\nB\nc" || "adjacent edits were refused");
+    must("two different edits inside ONE paragraph merge word by word", () => {
+      const r = m("The quick brown fox jumps.", "The quick red fox jumps.", "The quick brown fox leaps.");
+      return (r.conflicts === 0 && r.merged === "The quick red fox leaps.") || JSON.stringify(r);
+    });
+    must("a genuine clash keeps every OTHER change and reports just that region", () => {
+      const r = m("x\nThe cat sat\ny\nz", "X\nThe dog sat\ny\nz", "x\nThe cow sat\ny\nZ");
+      return (r.conflicts === 1 && r.merged === "X\nThe dog sat\ny\nZ"
+        && r.conflictHunks[0].remote.includes("The cow sat") && r.conflictHunks[0].local.includes("The dog sat")) || JSON.stringify(r);
+    });
     must("the merge does not depend on which device is called local", () => {
       const one = m("a\nb\nc\nd\ne", "A\nb\nc\nd\ne", "a\nb\nc\nd\nE").merged;
       const two = m("a\nb\nc\nd\ne", "a\nb\nc\nd\nE", "A\nb\nc\nd\ne").merged;
@@ -1386,9 +1429,17 @@ try {
     });
     must("no base means no merge, and it says so", () =>
       m(null, "x", "y").ok === false || "a merge was attempted with no ancestor");
-    must("...and a body past the size cap declines rather than guessing", () => {
-      const big = Array.from({ length: merge3.MERGE3_MAX_LINES + 10 }, (_, i) => "line " + i).join("\n");
-      return m(big, big + "\nlocal", "remote\n" + big).ok === false || "a body past the cap was merged anyway";
+    must("a huge note with small edits still merges — the common head and tail are trimmed", () => {
+      const big = Array.from({ length: merge3Engine.MERGE3_MAX_LINES * 3 }, (_, i) => "line " + i).join("\n");
+      const r = m(big, big + "\nlocal", "remote\n" + big);
+      return (r.ok && !r.conflicts && r.merged.startsWith("remote\n") && r.merged.endsWith("\nlocal")) || "a large note with two small edits was refused";
+    });
+    must("...while a rewrite past the size cap declines rather than guessing", () => {
+      const n = merge3Engine.MERGE3_MAX_LINES + 10;
+      const base = Array.from({ length: n }, (_, i) => "line " + i).join("\n");
+      const local = Array.from({ length: n }, (_, i) => (i % 2 ? "L" : "line ") + i).join("\n");
+      const remote = Array.from({ length: n }, (_, i) => (i % 3 ? "R" : "line ") + i).join("\n");
+      return m(base, local, remote).ok === false || "a body past the cap was merged anyway";
     });
 
     // The property the whole feature rests on: over many randomised
@@ -1550,6 +1601,165 @@ try {
       }
       localStorage.removeItem(auto.AUTOSYNC_KEY);
       return armed === true || "no timer was armed for a device with auto-sync on";
+    });
+  }
+
+  // ══ F16. Two windows of one device: a save merges, it never overwrites ═══
+  //
+  // The reported loss: the same note open in two windows (or tabs), and edits in
+  // one discarded when the other saved or synced. A save used to write the whole
+  // deck from that window's memory over whatever was on disk; it is now a
+  // three-way merge against the copy that window loaded (src/sync/local-merge.js).
+  {
+    const localMerge = await load("src/sync/local-merge.js");
+    const m = localMerge.mergeOpenDeckSnapshots;
+    const base = { deckTitle: "D", notes: "intro\n\nmiddle\n\nend", cards: [{ id: "a", question: "Qa", answer: "Aa" }], meta: {} };
+    const otherWindow = clone(base);
+    otherWindow.notes = "intro\n\nmiddle (edited in window 2)\n\nend";
+    otherWindow.cards.push({ id: "b", question: "Qb", answer: "Ab", dirty: true });
+    otherWindow.meta = { pdfHighlights: [{ id: "h1", text: "x" }] };
+    otherWindow.syncedNotesBase = "kept by the store";
+
+    must("a stale window with no edits of its own takes the disk copy whole", () => {
+      const r = m(base, clone(base), otherWindow);
+      return (localMerge.sameDeckContent(r.snapshot, otherWindow) && !r.mineEdited) || JSON.stringify(r.snapshot);
+    });
+    must("...and keeps the store's own bookkeeping fields", () =>
+      m(base, clone(base), otherWindow).snapshot.syncedNotesBase === "kept by the store" || "syncedNotesBase lost");
+
+    const mine = clone(base);
+    mine.notes = "intro (edited in window 1)\n\nmiddle\n\nend";
+    mine.cards[0].answer = "Aa, answered in window 1";
+    const both = m(base, mine, otherWindow).snapshot;
+    must("both windows' paragraph edits survive", () =>
+      both.notes === "intro (edited in window 1)\n\nmiddle (edited in window 2)\n\nend" || JSON.stringify(both.notes));
+    must("...and the card added in the other window is still there", () =>
+      both.cards.map((c) => c.id).join() === "a,b" || both.cards.map((c) => c.id).join());
+    must("...and this window's card edit too", () =>
+      both.cards[0].answer === "Aa, answered in window 1" || JSON.stringify(both.cards[0]));
+    must("...and the other window's highlight", () =>
+      both.meta.pdfHighlights?.[0]?.id === "h1" || JSON.stringify(both.meta));
+    must("a card this window never saw is NOT recorded as deleted here", () => {
+      const s2 = clone(both);
+      cards.recordDeletedCardIds(s2, otherWindow, iso(T0));
+      return !Object.keys(cards.readCardTombstones(s2)).length || JSON.stringify(s2.deletedCardIds);
+    });
+    must("...while a card this window really deleted still is", () => {
+      const deletedHere = clone(base);
+      deletedHere.cards = [];
+      const merged = m(base, deletedHere, otherWindow).snapshot;
+      cards.recordDeletedCardIds(merged, otherWindow, iso(T0));
+      return (merged.cards.map((c) => c.id).join() === "b" && Object.keys(cards.readCardTombstones(merged)).join() === "a")
+        || `cards=${merged.cards.map((c) => c.id)} tombstones=${JSON.stringify(merged.deletedCardIds)}`;
+    });
+    must("the same paragraph changed in both windows is one clash, every other change kept", () => {
+      const a = clone(base); a.notes = "intro\n\nmiddle, version A\n\nend";
+      const b = clone(base); b.notes = "intro edited\n\nmiddle, version B\n\nend";
+      const r = m(base, a, b);
+      return (r.bodyHunks.length === 1 && r.snapshot.notes === "intro edited\n\nmiddle, version A\n\nend"
+        && r.bodyHunks[0].remote.includes("version B")) || JSON.stringify(r);
+    });
+  }
+
+  // ══ F17. Direction: by who edited, never by whose clock is later ════════
+  //
+  // The other reported loss: edit and sync on device A; open the note on device
+  // B (which holds the old copy) and sync — and A's edit was gone, because B's
+  // copy had been saved since and its timestamp read as "newer".
+  {
+    const entry = { lastSyncedAt: iso(T0), updatedAt: iso(T0) };
+    must("a device that edited nothing is not dirty", () => stats.deckHasLocalEdits(entry) === false || "dirty");
+    must("an edit stamped past the agreement is", () =>
+      stats.deckHasLocalEdits({ ...entry, updatedAt: iso(T0 + 1) }) === true || "not dirty");
+    must("the cloud moved iff its stamp is not the one we agreed on — by equality, not by clock", () =>
+      (stats.cloudMovedSince({ updated_at: iso(T0) }, entry) === false
+        && stats.cloudMovedSince({ updated_at: iso(T0 - 5 * MIN) }, entry) === true
+        && stats.cloudMovedSince({ updated_at: iso(T0 + 5 * MIN) }, entry) === true) || "wrong");
+    must("a cloud row mid-upload on another device is left for the next run", () =>
+      (stats.cloudPushInFlight({ updated_at: new Date(0).toISOString(), last_accessed_at: iso(Date.now() - MIN) }) === true
+        && stats.cloudPushInFlight({ updated_at: new Date(0).toISOString(), last_accessed_at: iso(Date.now() - 60 * MIN) }) === false)
+      || "wrong");
+
+    // The reported sequence, end to end.
+    const cloud = makeCloud();
+    const A = makeDevice("A");
+    const B = makeDevice("B");
+    editNotes(A, T0 + MIN, "first draft");
+    push(A, cloud, T0 + MIN);
+    pull(B, cloud, T0 + 2 * MIN);
+    editNotes(A, T0 + 3 * MIN, "first draft, improved on A");
+    push(A, cloud, T0 + 4 * MIN);
+    // B opens the note and reads it: nothing it does is an edit.
+    must("the device that only opened the note pulls the edit, it does not push its old copy", () =>
+      direction(B, cloud) === "pull" || `B would ${direction(B, cloud)}`);
+    sync(B, cloud, T0 + 5 * MIN);
+    must("...and ends with A's text", () =>
+      fence.splitHighlightNotesTail(B.snapshot.notes).body === "first draft, improved on A" || JSON.stringify(B.snapshot.notes));
+    must("...and the cloud still holds it", () =>
+      fence.splitHighlightNotesTail(cloud.deck.notes).body === "first draft, improved on A" || JSON.stringify(cloud.deck.notes));
+  }
+
+  // ══ F18. A push never sends back a card it did not edit ═════════════════
+  {
+    const snapshot = {
+      cards: [
+        { id: "c1", question: "Q1", answer: "old answer", status: null, dirty: false, updatedAt: iso(T0), syncBase: { question: "Q1", answer: "old answer", status: null, category: null } },
+        { id: "c2", question: "Q2 edited here", answer: "A2", status: null, dirty: true, updatedAt: iso(T0 + MIN), syncBase: { question: "Q2", answer: "A2", status: null, category: null } }
+      ]
+    };
+    const cloudRows = [
+      { id: "c1", question: "Q1", answer: "new answer from the other device", status: null, category: null, updated_at: iso(T0 + 2 * MIN) },
+      { id: "c2", question: "Q2", answer: "A2 answered elsewhere", status: null, category: null, updated_at: iso(T0 + 2 * MIN) }
+    ];
+    const r = cards.reconcileCardsBeforePush(clone(snapshot), cloudRows);
+    const byId = Object.fromEntries(r.cards.map((c) => [c.id, c]));
+    must("a clean card takes the cloud's newer text instead of sending its old one", () =>
+      byId.c1.answer === "new answer from the other device" || JSON.stringify(byId.c1));
+    must("an edited card merges field by field: my question, their answer", () =>
+      (byId.c2.question === "Q2 edited here" && byId.c2.answer === "A2 answered elsewhere") || JSON.stringify(byId.c2));
+    must("...and both count as cards updated from another device", () => r.refreshed === 2 || `refreshed=${r.refreshed}`);
+    must("the same field changed differently on both keeps this device's and hands the other back", () => {
+      const f = cards.mergeCardFields({ question: "The cat" }, { question: "The dog" }, { question: "The cow" });
+      return (f.card.question === "The dog" && f.conflicted && f.lost[0]?.text === "The cow") || JSON.stringify(f);
+    });
+    must("different words of one field merge", () => {
+      const f = cards.mergeCardFields({ answer: "red apple pie" }, { answer: "green apple pie" }, { answer: "red apple tart" });
+      return (f.card.answer === "green apple tart" && !f.conflicted) || JSON.stringify(f);
+    });
+  }
+
+  // ══ F19. Answering one clashing paragraph ═══════════════════════════════
+  {
+    const hunk = { kept: "The dog sat", other: "The cow sat", otherFrom: "Phone" };
+    const note = "one\n\nThe dog sat\n\nthree";
+    must("'use theirs' swaps just that paragraph", () =>
+      conflict.applyConflictHunk(note, hunk, "other").notes === "one\n\nThe cow sat\n\nthree" || "wrong");
+    must("'keep both' keeps both, in place", () =>
+      conflict.applyConflictHunk(note, hunk, "both").notes === "one\n\nThe dog sat\n\nThe cow sat\n\nthree" || "wrong");
+    must("'keep the note's' changes nothing", () =>
+      conflict.applyConflictHunk(note, hunk, "current").notes === note || "changed");
+    must("a paragraph edited since is not guessed at — the other version goes to the end, labelled", () => {
+      const r = conflict.applyConflictHunk("one\n\nThe dog stood\n\nthree", hunk, "other");
+      return (!r.placed && r.notes.includes("The dog stood") && r.notes.includes("Version from Phone") && r.notes.includes("The cow sat")) || JSON.stringify(r);
+    });
+  }
+
+  // ══ F20. The report says what happened ══════════════════════════════════
+  {
+    must("a reading position alone is not announced as a change", () =>
+      stats.describeSyncStats({ ...stats.emptySyncStats(), readingPositionSynced: true }).length === 0 || "announced");
+    must("...so a deck whose only move was the reading place is not counted as uploaded", () =>
+      stats.isNoOpStats({ ...stats.emptySyncStats(), readingPositionSynced: true }) === true || "counted");
+    must("a highlight sent is named as one", () => {
+      const sent = stats.metaSentDelta({ pdfHighlights: [{ id: "h1", t: 1 }] }, { pdfHighlights: [{ id: "h1", t: 1 }, { id: "h2", t: 2 }], readingPosition: { offset: 9 } });
+      const parts = stats.describeSyncStats({ ...stats.emptySyncStats(), highlightsSent: sent.highlights });
+      return (sent.highlights === 1 && parts.join().includes("1 highlight or ink mark sent")) || JSON.stringify({ sent, parts });
+    });
+    must("every new stat is summed into the totals", () => {
+      const fields = Object.keys(stats.emptySyncStats());
+      const listed = new Set([...stats.SYNC_COUNT_STATS, ...stats.SYNC_FLAG_STATS]);
+      const missing = fields.filter((f) => !listed.has(f));
+      return !missing.length || `not in either list: ${missing.join(", ")}`;
     });
   }
 

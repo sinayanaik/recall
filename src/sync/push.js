@@ -35,6 +35,7 @@ import { sanitizeUnicodeDeep, stripInvalidUnicode } from "../core/text.js?v=__BU
 import { normalizeCardStatus } from "../export/markdown.js?v=__BUILD__";
 import { syncTextChanged } from "./diff.js?v=__BUILD__";
 import { emptySyncStats } from "./stats.js?v=__BUILD__";
+import { deviceLabel } from "./device.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
 
 // Upsert one chunk of card rows, retrying without `category` if the database
@@ -89,6 +90,10 @@ export class DeckRowMovedError extends Error {
   }
 }
 
+// Set once a write is refused for want of decks.last_device, so every later
+// push this session leaves it out instead of failing first.
+let lastDeviceColumnMissing = false;
+
 export async function pushDeckRowsToCloud({ deckId, title, category, notes, meta, currentIndex, cards, isNewDeck, overwrite, now, webCards = null, expectedUpdatedAt = null, sendCurrentIndex = true, say = () => {} }) {
   // ── Nothing Postgres refuses leaves this device ──────────────────────────
   //
@@ -118,6 +123,10 @@ export async function pushDeckRowsToCloud({ deckId, title, category, notes, meta
     updated_at: now,
     last_accessed_at: now
   };
+  // Which device wrote this — read back by every other device's sync report
+  // ("downloaded edits from Chrome on Android"). An optional column: a project
+  // that has not run the newer supabase_setup.sql simply goes without it.
+  if (!lastDeviceColumnMissing) deckData.last_device = deviceLabel();
 
   // ── Where the reader is in the CARDS is a position, not shared content ────
   //
@@ -195,6 +204,15 @@ export async function pushDeckRowsToCloud({ deckId, title, category, notes, meta
     () => writeDeckRow(deckDataPending, "save deck"),
     { label: "save deck" }
   );
+  if (deckError && "last_device" in deckDataPending && isMissingColumnError(deckError, "last_device")) {
+    lastDeviceColumnMissing = true;
+    delete deckDataPending.last_device;
+    delete deckData.last_device;
+    ({ error: deckError } = await withRetry(
+      () => writeDeckRow(deckDataPending, "save deck"),
+      { label: "save deck" }
+    ));
+  }
   // This deck is NOT fully synced if we fall into this branch — cards may
   // still go through below, but the notes text stays cloud-side stale. The
   // caller must know that, not just see a console warning: this flag rides
