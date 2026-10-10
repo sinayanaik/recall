@@ -91,7 +91,7 @@ Nothing else in the dashboard needs configuring yet — Auth is enabled by defau
 
 In your project, open **SQL Editor → New query**. Copy **everything** in the block below, paste it in, and click **Run**.
 
-This is the only SQL you need — one run creates all six tables, every column, the indexes the sync depends on, all Row Level Security policies, and the two private storage buckets (`images` and `documents`) with their policies. The same thing also ships in this repo as **`supabase_setup.sql`** if you'd rather copy from the file; the two are identical.
+This is the only SQL you need — one run creates all five tables, every column, the indexes the sync depends on, all Row Level Security policies, and the two private storage buckets (`images` and `documents`) with their policies. The same thing also ships in this repo as **`supabase_setup.sql`** if you'd rather copy from the file; the two are identical.
 
 > [!TIP]
 > **It's safe to re-run, and safe on a project that already holds decks.** Every statement is guarded or additive, so this is also the upgrade path — run it again after pulling a new version of Recall.
@@ -717,114 +717,23 @@ END $$;
 
 
 -- ============================================================================
--- 9. Sync safety — version history, which device wrote what, live updates
+-- 9. Sync — which device wrote what, and live updates
 -- ============================================================================
--- Three additions that make sync safer, all optional: an older project without
+-- Two additions the sync uses when they are there; an older project without
 -- them still syncs (the app notices each one missing and goes without it).
 --
 -- last_device — the name of the device that last wrote the deck ("Chrome on
 -- Android"), so the sync report can say where a change came from.
 ALTER TABLE decks ADD COLUMN IF NOT EXISTS last_device TEXT;
 
--- deck_revisions — every earlier version of a deck's notes, kept in the cloud.
--- The sync merges two devices' edits rather than choosing between them, and
--- sets aside the few paragraphs it cannot merge; this is the net under all of
--- it. Whenever a write changes a deck's notes or title, the version it replaces
--- is copied here first — notes, title, the meta bag and the cards as they were —
--- and so is a deck's last version just before it is deleted. The app's Version
--- history (in a note's ⋯ menu) lists them and puts one back.
---
--- Written ONLY by the trigger below, which runs as the table's owner; the app
--- can read its own rows and nothing else. The newest 50 per deck are kept.
-CREATE TABLE IF NOT EXISTS deck_revisions (
-  id BIGSERIAL PRIMARY KEY,
-  deck_id TEXT NOT NULL,
-  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
-  title TEXT,
-  notes TEXT,
-  meta JSONB,
-  cards JSONB,
-  -- The device that wrote this version, and what replaced it (the next
-  -- device's name, or 'deleted').
-  device TEXT,
-  replaced_by TEXT,
-  -- When this version was written (the deck's updated_at at the time), and when
-  -- it was replaced.
-  version_at TIMESTAMP WITH TIME ZONE,
-  created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS deck_revisions_user_deck_created_idx
-  ON deck_revisions (user_id, deck_id, created_at DESC);
-
-ALTER TABLE deck_revisions ENABLE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS "Users read own deck revisions" ON deck_revisions;
-CREATE POLICY "Users read own deck revisions" ON deck_revisions
-  FOR SELECT TO authenticated
-  USING (user_id = (select auth.uid()));
-
-CREATE OR REPLACE FUNCTION record_deck_revision()
-RETURNS TRIGGER
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public
-AS $$
-DECLARE
-  replaced_by_device TEXT;
-BEGIN
-  -- A row with no owner (a pre-auth deployment, section 8) has nobody to show
-  -- its history to.
-  IF OLD.user_id IS NULL THEN
-    IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
-    RETURN NEW;
-  END IF;
-  -- NEW is never read on a delete.
-  IF TG_OP = 'DELETE' THEN
-    replaced_by_device := 'deleted';
-  ELSIF OLD.notes IS DISTINCT FROM NEW.notes OR OLD.title IS DISTINCT FROM NEW.title THEN
-    replaced_by_device := NEW.last_device;
-  ELSE
-    RETURN NEW;
-  END IF;
-
-  INSERT INTO deck_revisions (deck_id, user_id, title, notes, meta, cards, device, replaced_by, version_at)
-  VALUES (
-    OLD.id, OLD.user_id, OLD.title, OLD.notes, OLD.meta,
-    (SELECT COALESCE(jsonb_agg(jsonb_build_object(
-        'id', c.id, 'question', c.question, 'answer', c.answer,
-        'status', c.status, 'category', c.category) ORDER BY c.position), '[]'::jsonb)
-       FROM cards c WHERE c.deck_id = OLD.id),
-    OLD.last_device,
-    replaced_by_device,
-    OLD.updated_at
-  );
-  DELETE FROM deck_revisions
-   WHERE deck_id = OLD.id AND user_id = OLD.user_id
-     AND id NOT IN (
-       SELECT id FROM deck_revisions
-        WHERE deck_id = OLD.id AND user_id = OLD.user_id
-        ORDER BY created_at DESC, id DESC
-        LIMIT 50
-     );
-
-  IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
-  RETURN NEW;
-END;
-$$;
-
+-- One copy per deck, and nothing else. A pre-release build of this section kept
+-- every earlier version of each deck in a deck_revisions table; that is gone —
+-- the sync merges edits instead of keeping copies of them — and these lines take
+-- it out of any project that ran that build. No-ops everywhere else.
 DROP TRIGGER IF EXISTS record_deck_revision ON decks;
-CREATE TRIGGER record_deck_revision
-  AFTER UPDATE ON decks
-  FOR EACH ROW
-  EXECUTE FUNCTION record_deck_revision();
-
--- BEFORE, so the deck's cards are still there to be copied — the delete
--- cascades to them.
 DROP TRIGGER IF EXISTS record_deck_revision_on_delete ON decks;
-CREATE TRIGGER record_deck_revision_on_delete
-  BEFORE DELETE ON decks
-  FOR EACH ROW
-  EXECUTE FUNCTION record_deck_revision();
+DROP FUNCTION IF EXISTS record_deck_revision();
+DROP TABLE IF EXISTS deck_revisions;
 
 -- Live updates — a change made on one device appears on the others within
 -- seconds instead of at their next timed sync. Adds `decks` to Supabase's
@@ -852,7 +761,6 @@ COMMENT ON TABLE cards IS 'One row per flashcard, ordered within its deck by `po
 COMMENT ON TABLE deleted_decks IS 'Durable cross-device delete tombstones. Never pruned automatically — a deletion must outlive any device still holding a stale copy.';
 COMMENT ON TABLE app_style_settings IS 'Per-user layout/typography settings (row id = auth.uid()), plus a legacy shared ''global'' row that accounts with no style of their own inherit. The theme is stored here too, as a `theme` key holding a theme ID (e.g. ''dark-amoled'') alongside the ''desktop''/''mobile'' profiles, so a device that syncs its style down also gets the theme that went with it. Colour VALUES are still not included — those live in CSS, keyed off that ID.';
 COMMENT ON TABLE app_storage_settings IS 'Per-user keys to the S3-compatible bucket that holds PDFs (row key = auth.uid()), so they are pasted once per account rather than once per device. s3_config NULL means the reader pressed Forget; updated_at is written by the client and compared, so it has no trigger.';
-COMMENT ON TABLE deck_revisions IS 'Earlier versions of each deck (notes, title, meta and cards), copied by trigger whenever a write changes the notes or title, and once more just before a delete. Newest 50 per deck. Read-only to the app — the Version history panel.';
 ```
 
 ---
@@ -968,13 +876,12 @@ So there is nothing to migrate for the folders themselves, and **nothing about t
 
 **Re-running is still worth it for the storage policies.** Section 7 now drops and recreates its three policies by name, the way section 6 has always done for the table policies, instead of skipping them when they already exist. That guard made re-running a no-op for every project that was already set up — so a project that had run the older `supabase_image_storage.sql` kept that file's bare `auth.uid()` policy bodies indefinitely and never picked up the `(select auth.uid())` form, which Postgres hoists into an InitPlan and evaluates once per statement rather than once per row. An EPUB import is where that bites: it inserts one storage object per figure, hundreds in a row, each one re-running `auth.uid()` under the old bodies. Policies aren't data, so recreating them loses nothing, and if the role running the file isn't allowed to alter `storage.objects`, the whole block rolls back to whatever was already there and prints a `NOTICE` — an upgrade that can't be applied leaves image uploads working rather than stripping their policies.
 
-**Safer sync needs the newer SQL — re-run it once.** Section 9 adds three things the sync uses when they are there and quietly goes without when they are not:
+**Re-run it once for the newer sync.** Section 9 adds two things the sync uses when they are there and quietly goes without when they are not:
 
-- **`decks.last_device`** — which device last wrote each deck, so the sync report can say *"Downloaded edits from Chrome on Android"* rather than *"from the cloud"*.
-- **`deck_revisions`** — version history in the cloud. Whenever a write changes a deck's notes or title, the version it replaces is copied there first (notes, title, highlights and cards), and so is a deck's last version just before it is deleted. The newest 50 per deck are kept, and **⋯ → Version history** on any note lists them and puts one back. It is written only by a trigger; the app can read its own rows and nothing else.
+- **`decks.last_device`** — which device last wrote each deck, so the sync report can say *"received changes from Chrome on Android"* rather than *"from the cloud"*.
 - **Realtime on `decks`** — a change made on one device shows up on your others within seconds instead of at their next timed sync.
 
-Until it has run, sync still merges and still never overwrites, but the report can't name devices, history is limited to what each device kept locally, and other devices' changes arrive on the timer.
+Each deck is still stored once — one row, one copy. Until the SQL has run, sync still merges every change and never overwrites one; the report just can't name devices, and other devices' changes arrive on the timer.
 
 ### The one case that needs a manual step: a deployment older than authentication
 
@@ -1401,10 +1308,9 @@ Do the storage half here rather than in SQL — Supabase blocks it outright (`ER
 | `cards` | One row per flashcard | `position` — order within the deck · `status` — known/review/NULL · `category` — Quick Notes subject label · `updated_at` — drives the **per-card** sync merge |
 | `deleted_decks` | Delete tombstones | Never pruned automatically, so a deletion outlives any device still holding a stale copy |
 | `app_style_settings` | Layout and typography, one row per user | Keyed on the user's auth uid, plus a legacy shared `global` row used as a fallback |
-| `deck_revisions` | Earlier versions of each deck, for **Version history** | Filled only by a trigger on `decks` — every write that changes the notes or title, and once just before a delete · `device` / `replaced_by` — which device wrote that version and which one replaced it · newest 50 per deck · read-only to the app |
 | `app_storage_settings` | The keys to your PDF bucket, one row per user | `s3_config` — endpoint, bucket, region, key ID and secret, or NULL once you press **Forget** · `updated_at` — written by the device and compared, so it has no trigger. See [Cloud bucket](#cloud-bucket--papers-and-images-in-your-own-s3-bucket) |
 
-Plus five indexes (`decks (user_id, updated_at DESC)`, `decks (user_id, last_accessed_at DESC)`, `cards (deck_id, position)`, `deleted_decks (user_id)`, `deck_revisions (user_id, deck_id, created_at DESC)`), six RLS policies, the version-history trigger, `decks` added to the Realtime publication, and two **private** Storage buckets — `images` and `documents` — with three policies each: upload, delete *and read* all confined to the user's own uid-named folder.
+Plus four indexes (`decks (user_id, updated_at DESC)`, `decks (user_id, last_accessed_at DESC)`, `cards (deck_id, position)`, `deleted_decks (user_id)`), five RLS policies, `decks` added to the Realtime publication, and two **private** Storage buckets — `images` and `documents` — with three policies each: upload, delete *and read* all confined to the user's own uid-named folder.
 
 `images` was public-read until native PDF documents landed, because a rendered `![](url)` carried no signed-in context to authenticate with. The app now signs each URL at render time from the session it already has (`src/cloud/storage-urls.js`), so read can be scoped exactly like write is. **The URLs in your notes did not change** — the bucket was not recreated, renamed or migrated, one `UPDATE` flipped its `public` flag and one policy swap replaced open read with owner-scoped read. That canonical `…/object/public/images/{uid}/…` string is now an *identifier* rather than a fetchable address: it is still what the markdown holds, still what the offline image cache is keyed by, and still what a delete resolves a path from.
 

@@ -303,7 +303,6 @@
     <link rel="modulepreload" href="src/storage/open-deck-base.js?v=__BUILD__">
     <link rel="modulepreload" href="src/sync/conflict-stash.js?v=__BUILD__">
     <link rel="modulepreload" href="src/sync/device.js?v=__BUILD__">
-    <link rel="modulepreload" href="src/sync/history.js?v=__BUILD__">
     <link rel="modulepreload" href="src/sync/live-sync.js?v=__BUILD__">
     <link rel="modulepreload" href="src/sync/local-merge.js?v=__BUILD__">
     <link rel="modulepreload" href="src/sync/merge3.js?v=__BUILD__">
@@ -611,11 +610,6 @@
                this drawer now follows: what belongs to the deck or the view you
                are looking at lives in that view's own chrome. -->
           <button class="tool-button" id="syncNowBtn" type="button" title="Sync all decks with the cloud now — combines the changes from all your devices and windows, and saves where you are reading">&#8635; Sync Now</button>
-          <!-- Version history of the note that is open: every earlier version of
-               its text, from this device and (with the newer SQL) from the cloud.
-               Beside Sync Now because it is the answer to "what did sync do to
-               my note?" — see src/sync/history.js. -->
-          <button class="tool-button" id="versionHistoryBtn" type="button" title="Earlier versions of the open note's text — restore any of them">&#128338; Version history</button>
 
           <span class="drawer-section-label">Study</span>
           <!-- 🗂, not the ≡ this used to carry: a stack of horizontal lines is
@@ -2373,8 +2367,7 @@
             </div>
             <ul class="help-list">
               <li><strong>Sync is automatic</strong> — every deck is mirrored to your account in the background; <strong>Sync Now</strong> runs one immediately. <strong>Auto-sync</strong>, under <strong>App</strong> in the same menu, is how often that happens on its own — and it also runs shortly after you stop typing, when you open a note another device has changed, and (with the current setup SQL) within seconds of a change on another device</li>
-              <li><strong>Edits are combined, never thrown away</strong> — like merging in Git. If two devices (or two windows on one device) change different paragraphs, cards or highlights, both changes are kept. Two different edits to the same paragraph are even merged word by word. Only when both changed the <em>same words</em> differently does the pill say <strong>Both devices changed a paragraph — tap to choose</strong>: you see just that paragraph, both versions side by side, and pick one or keep both</li>
-              <li><strong>Version history</strong> — <strong>☰ → Version history</strong> lists earlier versions of the open note, from this device and from the cloud, with <strong>Restore</strong> on each. A version is kept whenever sync or another window replaces your text, and every ten minutes while you type</li>
+              <li><strong>Edits are combined, never thrown away</strong> — like merging in Git. If two devices (or two windows on one device) change different paragraphs, cards or highlights, both changes are kept. Two different edits to the same paragraph are even merged word by word. Only when both changed the <em>same words</em> differently does the pill say <strong>Both devices changed a paragraph — tap to choose</strong>: you see just that paragraph (or card), both versions side by side, and pick one or keep both. Each note is kept as one copy — there is no pile of old versions</li>
               <li><strong>The pill says where your edits are</strong> — <strong>Saved here · syncs soon</strong> means the edit is safe on this device and not in the cloud yet; <strong>Synced</strong> means the cloud has everything</li>
               <li><strong>My Decks</strong> — every deck, on this device and in the cloud, with a live sync-status column. Per deck: <strong>Load</strong>, <strong>Export</strong> (PDF / Markdown / JSON / SQL), <strong>Rename</strong>, <strong>Delete</strong>, and an inline <strong>category editor</strong>. Filter by category, select several decks for <strong>bulk Load / Categorize / Export / Delete</strong>, or <strong>Export All</strong> to back up the whole library. Deletes propagate to your other devices</li>
               <li><strong>Back up &amp; share with .recall files</strong> — <strong>⋯ → Back up library (.recall)</strong> saves everything (decks, notes, PDFs, highlights, ink, pictures, folders, reading positions and settings) in one file, with a live panel showing every deck, image and paper as it goes; <strong>⋯ → Restore backup</strong> merges it back. To give decks to someone else, select them and choose <strong>Export → Share (.recall — everything)</strong>: they open the file with <strong>Import</strong> (or drop it on the app) and get the decks as their own, papers and all. Your study progress stays out unless you tick it in, and importing the same file again offers to <strong>update</strong> the decks instead of duplicating them</li>

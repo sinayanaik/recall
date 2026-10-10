@@ -1744,6 +1744,33 @@ try {
     });
   }
 
+  // ══ F19b. A clashing card field waits for the reader, then is answered ═══
+  //
+  // No version history: a card field both devices changed in ways the word
+  // merge cannot settle keeps this device's text, and the other device's text
+  // waits in the conflict stash as a hunk until the reader picks.
+  {
+    const stash = await load("src/sync/conflict-stash.js");
+    const f = cards.mergeCardFields({ question: "Q", answer: "The cat" }, { question: "Q", answer: "The dog" }, { question: "Q", answer: "The cow" });
+    const hunks = stash.cardConflictHunks(f.lost.map((l) => ({ id: "c9", ...l })), [{ id: "c9", question: "Q", answer: f.card.answer }]);
+    must("the other device's card text becomes a hunk, nothing is dropped", () =>
+      (hunks.length === 1 && hunks[0].kind === "card" && hunks[0].kept === "The dog" && hunks[0].other === "The cow" && hunks[0].field === "answer")
+      || JSON.stringify(hunks));
+    const snap = { cards: [{ id: "c9", question: "Q", answer: "The dog", dirty: false }] };
+    must("'use theirs' sets that field and marks the card for the next sync", () => {
+      const r = conflict.applyCardConflictHunk(snap, hunks[0], "other", iso(T0));
+      return (r.changed && r.snapshot.cards[0].answer === "The cow" && r.snapshot.cards[0].dirty === true) || JSON.stringify(r);
+    });
+    must("'keep both' keeps both texts on the card", () => {
+      const r = conflict.applyCardConflictHunk(snap, hunks[0], "both", iso(T0));
+      return r.snapshot.cards[0].answer === "The dog\n\nThe cow" || JSON.stringify(r.snapshot.cards[0]);
+    });
+    must("'keep this one' changes nothing and fakes no edit", () => {
+      const r = conflict.applyCardConflictHunk(snap, hunks[0], "current", iso(T0));
+      return (!r.changed && r.snapshot === snap) || JSON.stringify(r);
+    });
+  }
+
   // ══ F20. The report says what happened ══════════════════════════════════
   {
     must("a reading position alone is not announced as a change", () =>

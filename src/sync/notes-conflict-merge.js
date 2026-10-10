@@ -97,3 +97,25 @@ export function applyConflictHunk(notes, hunk, choice) {
   const nextBody = body.slice(0, at) + replacement + body.slice(at + kept.length);
   return { notes: joinHighlightNotesTail(nextBody, tail), placed: true };
 }
+
+// ── One clashing card field, answered ──────────────────────────────────────
+//
+// The card counterpart of applyConflictHunk: two devices changed the same
+// field of one card in ways the word merge could not settle, the card kept
+// this device's text, and the other device's waits in the hunk. Returns the
+// snapshot with that field set, and the card marked as edited so the answer is
+// what the next sync sends — or the snapshot unchanged for "current", or when
+// the card no longer exists.
+export function applyCardConflictHunk(snapshot, hunk, choice, stampIso = new Date().toISOString()) {
+  const cards = Array.isArray(snapshot?.cards) ? snapshot.cards : [];
+  const index = cards.findIndex((card) => String(card.id) === String(hunk?.cardId));
+  if (choice === "current" || index === -1) return { snapshot, changed: false, found: index !== -1 };
+  const field = hunk.field === "question" ? "question" : "answer";
+  const current = String(cards[index][field] ?? "");
+  const other = String(hunk.other ?? "");
+  const next = choice === "other" ? other : (current.includes(other) ? current : `${current}\n\n${other}`);
+  if (next === current) return { snapshot, changed: false, found: true };
+  const nextCards = cards.slice();
+  nextCards[index] = { ...cards[index], [field]: next, dirty: true, updatedAt: stampIso };
+  return { snapshot: { ...snapshot, cards: nextCards }, changed: true, found: true };
+}

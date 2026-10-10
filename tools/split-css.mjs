@@ -66,9 +66,8 @@ const SECTIONS = [
 // still a failure.
 const POST_SPLIT = {
   "78-sync-safety.css":
-    "Sync safety (src/sync/notes-conflict.js, src/sync/history.js): the " +
-    "'not synced yet' pill state, the per-paragraph conflict chooser and the " +
-    "Version history list.",
+    "Sync safety (src/sync/notes-conflict.js): the 'not synced yet' pill " +
+    "state and the per-paragraph / per-card conflict chooser.",
   "77-shutdown.css":
     "The Shut down screen (src/ui/shutdown.js): saves and syncs everything, then " +
     "closes the app or says it is safe to close the tab.",

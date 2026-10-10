@@ -19,6 +19,8 @@
 //   • two edits in ONE paragraph, typed in both windows at once, both survive
 //   • an armed autosave can no longer write a stale copy over a newer one that
 //     a sync just put on disk (the "old copy synced as the latest" report)
+//   • a window hidden a moment after the other saved (writing from a cache one
+//     save behind) loses neither window's edit
 //
 // Needs Chrome (see tools/cdp.mjs); a machine without one fails rather than
 // skipping, since a check that skips has verified nothing.
@@ -265,12 +267,6 @@ try {
   check("...and both windows end up showing the same text",
     aScreen7.notes === disk7.notes && bScreen7.notes === disk7.notes, JSON.stringify({ a: aScreen7.notes, b: bScreen7.notes }));
 
-  // ── 8. Version history kept what was replaced ────────────────────────────
-  const versions = await pageA.evaluate(`async (id) => {
-    const mod = await import("/src/sync/history.js?v=__BUILD__");
-    return (await mod.listNoteVersions(id)).length;
-  }`, localId);
-  check("earlier versions of the note were kept in history", versions > 0, `versions=${versions}`);
 } catch (error) {
   failures += 1;
   console.log(`  FAIL  the check itself failed: ${error.message}`);

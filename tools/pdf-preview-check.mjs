@@ -1815,9 +1815,14 @@ try {
     await api.whenDocumentPageReady(2);
     await settle(400);
     // A highlight that is on disk but not on screen, so the reload has
-    // something to deliver: made (which autosaves), then dropped from memory
-    // only. After the reload it has to be painted — the in-place repaint is
-    // still how synced content reaches the page.
+    // something to deliver — put there the way a sync puts it: made (which
+    // autosaves), taken off the page and saved without it, and then written
+    // back onto the disk copy alone, as a pull from another device would. It
+    // used to be dropped from memory only; but memory moving away from disk is
+    // now the reader's own edit (every save merges it in — see
+    // finishSaveDeckToLibrary), so that no longer simulated a sync at all.
+    // After the reload it has to be painted — the in-place repaint is still how
+    // synced content reaches the page.
     const pageEl = document.querySelector('.pdf-page[data-page-number="2"]');
     const span = pageEl?.querySelector(".pdf-text-layer span");
     if (!span?.firstChild) return { error: "page 2 has no text layer" };
@@ -1833,9 +1838,18 @@ try {
     await settle(900);
     for (let i = 0; i < 60 && api.deckAutosaveTimer; i += 1) await settle(100);
     await settle(300);
+    const synced = (await api.readDeckSnapshotFresh(deckId))?.meta?.pdfHighlights?.find((r) => r.id === record.id);
+    if (!synced) return { error: "the highlight never reached the disk" };
     api.state.meta = { ...api.state.meta, pdfHighlights: (api.state.meta.pdfHighlights || []).filter((r) => r.id !== record.id) };
     api.repaintDocumentHighlights();
+    await api.saveDeckToLibrary({ silent: true });
+    await settle(300);
     const hiddenBefore = !document.querySelector('.pdf-mark[data-highlight-id="' + record.id + '"]');
+    // The "pull": another device's copy, with the highlight, lands on disk.
+    const onDisk = await api.readDeckSnapshotFresh(deckId);
+    onDisk.meta = { ...onDisk.meta, pdfHighlights: [...(onDisk.meta?.pdfHighlights || []), synced] };
+    if (onDisk.meta.deletedHighlightIds) delete onDisk.meta.deletedHighlightIds[record.id];
+    api.writeDeckSnapshot(deckId, onDisk);
 
     const events = [];
     const observer = new MutationObserver((mutations) => mutations.forEach((m) => {

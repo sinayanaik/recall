@@ -203,7 +203,7 @@ export function emptySyncStats() {
     // took (or merged field by field) instead of sending its older copy back.
     cardsUpdatedHere: 0,
     // Cards both devices changed in the same field, differently — this device's
-    // text kept, the other's in version history.
+    // text kept, the other's waiting in the conflict resolver.
     cardConflicts: 0,
     // What a push actually SENT beyond cards and prose, so a deck uploaded for a
     // highlight does not report itself as "reading position synced" (or as
@@ -258,7 +258,7 @@ export function describeSyncStats(stats = {}, { asTotals = false } = {}) {
   // What needs the reader first.
   flag(stats.notesSyncFailed, "notes could NOT be synced — run supabase_setup.sql in Supabase");
   flag(stats.notesConflicted, "a paragraph was changed differently on both devices — both versions kept, tap to choose");
-  if (stats.cardConflicts) parts.push(`${plural(stats.cardConflicts, "card was", "cards were")} changed differently on both devices — this device's text kept, the other is in Version history`);
+  if (stats.cardConflicts) parts.push(`${plural(stats.cardConflicts, "card was", "cards were")} changed differently on both devices — tap to choose`);
   flag(stats.deckRemovedHere, "removed here (deleted on another device)");
   // The reader's own writing.
   flag(stats.notesMerged, "notes edits from both devices combined");
