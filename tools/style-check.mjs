@@ -298,6 +298,61 @@ const PROBE = `async (api) => {
     await setHighlightStyle(original);
   }
 
+  // ── "Follow Notes" is an empty box, not a magic word ─────────────────────
+  api.setStyleTextTab("highlights");
+  api.updateStyleControls();
+  const hlSize = controls.querySelector('[data-style-key="hlNoteFontSize"]');
+  push("a follows-Notes box is empty and its placeholder says what it follows", (() => {
+    if (!hlSize) return "no hlNoteFontSize box";
+    if (hlSize.value !== "") return "the box shows " + JSON.stringify(hlSize.value);
+    const notesSize = api.getStyleProfileSettings(profile).notesFontSize;
+    if (!hlSize.placeholder.includes("Notes") || !hlSize.placeholder.includes(notesSize)) return "placeholder is " + JSON.stringify(hlSize.placeholder);
+    return true;
+  })());
+  push("clearing a follows-Notes box puts it back to following", (() => {
+    hlSize.value = "24px";
+    hlSize.dispatchEvent(new Event("input", { bubbles: true }));
+    if (api.getStyleProfileSettings(profile).hlNoteFontSize !== "24px") return "typing 24px stored " + api.getStyleProfileSettings(profile).hlNoteFontSize;
+    hlSize.focus();
+    hlSize.value = "";
+    hlSize.dispatchEvent(new Event("input", { bubbles: true }));
+    hlSize.blur();
+    if (hlSize.value !== "") return "after clearing, the box shows " + JSON.stringify(hlSize.value);
+    if (api.getStyleProfileSettings(profile).hlNoteFontSize !== "inherit") return "stored " + api.getStyleProfileSettings(profile).hlNoteFontSize;
+    if (document.documentElement.style.getPropertyValue("--hl-note-font-size")) return "--hl-note-font-size is still written";
+    return true;
+  })());
+  push("the notes font offers 'Same as Global font', not 'Inherit'", (() => {
+    const option = controls.querySelector('[data-style-key="notesFontFamily"] option[value="inherit"]');
+    return option?.textContent === "Same as Global font" ? true : "the option reads " + JSON.stringify(option?.textContent);
+  })());
+
+  // ── No caps: what is typed is what is drawn ──────────────────────────────
+  try {
+    await setHighlightStyle({ appWidthPercent: "130", modalWidthPercent: "1500px", notesMaxWidthPercent: "40ch", notesFontWeight: "350", toolbarButtonHeight: "20px" });
+    const rootStyle = document.documentElement.style;
+    push("layout boxes take a percent or any CSS length, uncapped", (() => {
+      const problems = [];
+      if (rootStyle.getPropertyValue("--app-width").trim() !== "130vw") problems.push("--app-width " + rootStyle.getPropertyValue("--app-width"));
+      if (rootStyle.getPropertyValue("--modal-width").trim() !== "1500px") problems.push("--modal-width " + rootStyle.getPropertyValue("--modal-width"));
+      if (rootStyle.getPropertyValue("--notes-max-width").trim() !== "40ch") problems.push("--notes-max-width " + rootStyle.getPropertyValue("--notes-max-width"));
+      const shell = document.querySelector(".app-shell");
+      const wanted = window.innerWidth * 1.3;
+      if (shell && Math.abs(shell.getBoundingClientRect().width - wanted) > 2) problems.push("the app is " + shell.getBoundingClientRect().width + "px wide, expected " + wanted);
+      return problems.length ? problems.join(" · ") : true;
+    })());
+    push("a weight outside the old 300–900 list is applied", (() => {
+      const weight = getComputedStyle(notes).fontWeight;
+      return weight === "350" ? true : "notes weight is " + weight;
+    })());
+    push("the replay row has no floor under Button height", (() => {
+      const got = getComputedStyle(document.documentElement).getPropertyValue("--replay-button-height").trim();
+      return got.includes("max(") ? "still wrapped: " + got : true;
+    })());
+  } finally {
+    await setHighlightStyle(original);
+  }
+
   // ── Density only touches spacing and controls ────────────────────────────
   push("every density preset writes only Spacing & controls fields", (() => {
     const spacingKeys = new Set(api.styleControlGroups.filter((g) => g.section === "spacing").flatMap((g) => g.fields.map((f) => f.key)));

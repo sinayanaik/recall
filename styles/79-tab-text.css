@@ -166,3 +166,38 @@
     grid-template-columns: minmax(0, 1fr) minmax(0, 9em);
   }
 }
+
+/* ── Whatever is typed in the Style panel is what is drawn ────────────────────
+ *
+ * These rules wrapped a setting in min()/max() against the screen, so an App
+ * width or Dialog width past 100% (or a Button height under 32px, for the
+ * replay row) was silently cut back to a value nobody typed. The setting now
+ * reaches the page as written. The phone layout's own full-width sheets
+ * (styles/09-all-cards.css, 720px and below) are a layout, not a setting, and
+ * are left alone.
+ */
+:root {
+  --replay-button-height: calc(var(--toolbar-button-height) - 8px);
+}
+
+@media (min-width: 721px) {
+  .app-shell {
+    width: var(--app-width);
+  }
+
+  .web-decks-shell {
+    width: var(--modal-width);
+  }
+
+  .import-card {
+    width: var(--modal-width);
+    max-width: none;
+  }
+}
+
+@media (max-width: 720px) {
+  .app-shell {
+    width: var(--app-mobile-width);
+    max-width: none;
+  }
+}

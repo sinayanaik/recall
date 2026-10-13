@@ -73,7 +73,10 @@ export function fitLiveQuestion() {
   }, 0);
   const gapHeight = Math.max(visibleItems.length - 1, 0) * rowGap;
   const lineHeight = parseFloat(settings.questionLineHeight) || parseFloat(styleDefaults.questionLineHeight) || 1.18;
-  const fillRatio = Math.min(Math.max((parseFloat(settings.questionFillPercent) || parseFloat(styleDefaults.questionFillPercent)) / 100, 0.1), 0.95);
+  // Not clamped: whatever fill the Style panel was given is the fill used. Only
+  // a value that is not a positive number falls back to the default.
+  const typedFill = parseFloat(settings.questionFillPercent);
+  const fillRatio = (typedFill > 0 ? typedFill : parseFloat(styleDefaults.questionFillPercent)) / 100;
   const maxQuestionFontSize = numericStyleValue(settings.questionMaxFontSize) ?? numericStyleValue(styleDefaults.questionMaxFontSize) ?? 64;
   const availableHeight = Math.max(face.clientHeight - paddingY - occupiedHeight - gapHeight, 1);
   const availableWidth = Math.max(face.clientWidth - paddingX, 1);
@@ -94,7 +97,9 @@ export function fitLiveQuestion() {
   // Space available for scalable text after reserving room for code blocks
   const textAvailableHeight = Math.max(availableHeight - fixedContentHeight, 1);
   const targetHeight = Math.max(textAvailableHeight * fillRatio, 1);
-  const searchCeiling = Math.max(1, Math.min(maxQuestionFontSize, 360, targetHeight / Math.max(lineHeight, 0.1) * 2.2, availableWidth * 1.6));
+  // The search runs up to the Question size the Style panel was given — no
+  // fixed ceiling of its own — bounded only by what the card can physically hold.
+  const searchCeiling = Math.max(1, Math.min(maxQuestionFontSize, targetHeight / Math.max(lineHeight, 0.1) * 2.2, availableWidth * 1.6));
   let low = 1;
   let high = searchCeiling;
   let best = low;
