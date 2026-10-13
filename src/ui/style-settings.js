@@ -462,7 +462,10 @@ export function renderStyleControls() {
 
   // ── 1 Global ──────────────────────────────────────────────────────────
   const global = buildStyleBlock("global", "Global");
-  groupsIn("global").forEach((group) => global.appendChild(buildStyleFieldList(group.fields)));
+  groupsIn("global").forEach((group, index) => {
+    if (index > 0) global.appendChild(buildStyleSubhead(group.title));
+    global.appendChild(buildStyleFieldList(group.fields));
+  });
   el.styleControls.appendChild(global);
 
   // ── 2 Text, one tab at a time ─────────────────────────────────────────

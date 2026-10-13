@@ -353,6 +353,35 @@ const PROBE = `async (api) => {
     await setHighlightStyle(original);
   }
 
+  // ── Headings: each level its own multiple of the text around it ──────────
+  const headed = document.createElement("div");
+  headed.className = "rendered";
+  headed.innerHTML = "<h1>a</h1><h2>b</h2><h3>c</h3><h4>d</h4><p>e</p>";
+  notes.appendChild(headed);
+  const qHeading = document.createElement("h1");
+  qHeading.textContent = "q";
+  question.appendChild(qHeading);
+  try {
+    const ratio = (sel) => size(headed.querySelector(sel)) / size(headed.querySelector("p"));
+    push("default headings are a little bigger than the text, stepping down", (() => {
+      const got = ["h1", "h2", "h3", "h4"].map((h) => ratio(h).toFixed(2)).join(",");
+      return got === "1.20,1.12,1.06,1.00" ? true : "ratios are " + got;
+    })());
+    await setHighlightStyle({ headingH1Scale: "1.5", headingH3Scale: "0.9" });
+    push("each heading level takes its own typed factor", (() => {
+      const got = ["h1", "h2", "h3"].map((h) => ratio(h).toFixed(2)).join(",");
+      return got === "1.50,1.12,0.90" ? true : "ratios are " + got;
+    })());
+    push("the question face keeps its auto-fitted, text-sized headings", (() => {
+      const got = size(qHeading) / size(question);
+      return Math.abs(got - 1) < 0.01 ? true : "question h1 is " + got.toFixed(2) + "x";
+    })());
+  } finally {
+    headed.remove();
+    qHeading.remove();
+    await setHighlightStyle(original);
+  }
+
   // ── Density only touches spacing and controls ────────────────────────────
   push("every density preset writes only Spacing & controls fields", (() => {
     const spacingKeys = new Set(api.styleControlGroups.filter((g) => g.section === "spacing").flatMap((g) => g.fields.map((f) => f.key)));

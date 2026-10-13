@@ -18,6 +18,12 @@ export const defaultStyleProfiles = {
     // Global
     "fontFamily": "system",
     "uiFontSize": "16px",
+    "headingH1Scale": "1.2",
+    "headingH2Scale": "1.12",
+    "headingH3Scale": "1.06",
+    "headingH4Scale": "1",
+    "headingH5Scale": "1",
+    "headingH6Scale": "1",
     // Text — Cards
     "baseFontSize": "12px",
     "baseLineHeight": "1.23",
@@ -92,6 +98,12 @@ export const defaultStyleProfiles = {
     // Global
     "fontFamily": "system",
     "uiFontSize": "16px",
+    "headingH1Scale": "1.2",
+    "headingH2Scale": "1.12",
+    "headingH3Scale": "1.06",
+    "headingH4Scale": "1",
+    "headingH5Scale": "1",
+    "headingH6Scale": "1",
     // Text — Cards
     "baseFontSize": "18px",
     "baseLineHeight": "1.58",
@@ -218,7 +230,24 @@ export const styleControlGroups = [
       // in the chrome scales with it. 16px is the browser default, i.e. exactly
       // what the app looked like before this control existed.
       { key: "uiFontSize", label: "Interface size", type: "text", unit: "px", probe: "font-size", hint: "Size of menus, labels and other interface text." }
+
     ]
+  },
+  // Headings: one multiplier per level, of the text around the heading — not
+  // a size, because every tab's headings sit on that tab's own Text size, so a
+  // ratio keeps them "a little bigger than the words around them" whatever each
+  // tab is set to. Not limited: 1 is text-sized, below 1 is smaller.
+  // styles/79-tab-text.css applies them.
+  {
+    title: "Headings",
+    section: "global",
+    fields: [1, 2, 3, 4, 5, 6].map((level) => ({
+      key: `headingH${level}Scale`,
+      label: `H${level} size`,
+      type: "text",
+      probe: "number",
+      hint: `Heading ${level} as a multiple of the text around it — 1 is the same size, 1.2 is a fifth bigger.`
+    }))
   },
   {
     title: "Cards",
@@ -399,6 +428,12 @@ export const styleCssVariables = {
   notesLineHeight: "--notes-line-height",
   notesFontWeight: "--notes-font-weight",
   notesPadding: "--notes-padding",
+  headingH1Scale: "--heading-h1-scale",
+  headingH2Scale: "--heading-h2-scale",
+  headingH3Scale: "--heading-h3-scale",
+  headingH4Scale: "--heading-h4-scale",
+  headingH5Scale: "--heading-h5-scale",
+  headingH6Scale: "--heading-h6-scale",
   // Per-tab text. Each is re-pointed onto the shared variable inside its own
   // surface by styles/79-tab-text.css.
   notesRawFontSize: "--notes-raw-font-size",
