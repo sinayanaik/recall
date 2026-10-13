@@ -12,7 +12,7 @@ import { state } from "../core/state.js?v=__BUILD__";
 import { cachedUserId } from "../quick-notes/categories.js?v=__BUILD__";
 import { setStatus } from "../ui/feedback.js?v=__BUILD__";
 import { lockPageScroll, unlockPageScroll } from "../ui/overlays.js?v=__BUILD__";
-import { applyActiveStyleSettings, detectStyleProfile, hasMeaningfulStyleSettings, setStyleProfileSettings, setStyleProfiles, setStyleStatus, styleProfileLabel, styleProfilesPayload, styleSettingsFromControls, updateStyleControls, updateStyleProfileUi } from "../ui/style-settings.js?v=__BUILD__";
+import { applyActiveStyleSettings, detectStyleProfile, hasMeaningfulStyleSettings, setStyleProfileSettings, setStyleProfiles, setStyleStatus, setStyleTextTab, styleProfileLabel, styleProfilesPayload, styleSettingsFromControls, updateStyleControls, updateStyleProfileUi } from "../ui/style-settings.js?v=__BUILD__";
 import { styleProfiles } from "../ui/style-tokens.js?v=__BUILD__";
 import { setTheme } from "../ui/theme.js?v=__BUILD__";
 
@@ -22,6 +22,9 @@ export function openStylePanel() {
   state.styleEditProfileFollowsDevice = true;
   el.stylePanel.hidden = false;
   updateStyleControls();
+  // The Text section opens on the surface you were looking at.
+  const view = state.viewMode;
+  setStyleTextTab(view === "notes" ? "notes" : view === "document" || view === "handwriting" ? "document" : "cards");
 }
 
 export function closeStylePanel() {

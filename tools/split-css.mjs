@@ -65,6 +65,10 @@ const SECTIONS = [
 // Anything appearing in styles/ that is neither a slice nor listed here is
 // still a failure.
 const POST_SPLIT = {
+  "79-tab-text.css":
+    "Per-tab text settings (src/ui/style-schema.js): each surface re-points the " +
+    "shared code/raw-editor size variables at its own Text tab, plus the " +
+    "simplified Style panel layout (Global / Text / Spacing & controls).",
   "78-sync-safety.css":
     "Sync safety (src/sync/notes-conflict.js): the 'not synced yet' pill " +
     "state and the per-paragraph / per-card conflict chooser.",

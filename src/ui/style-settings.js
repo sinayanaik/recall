@@ -17,7 +17,7 @@ import { isNotesEditing } from "../notes/notes-view.js?v=__BUILD__";
 import { setNotesReadingMode } from "../notes/paged-view.js?v=__BUILD__";
 import { scheduleMarkdownTableFit } from "../render/tables.js?v=__BUILD__";
 import { showConfirmModal, showToast } from "./feedback.js?v=__BUILD__";
-import { defaultStyleProfiles, styleControlGroups, styleCssVariables, styleDefaults, styleDensityPresets, styleFieldByKey } from "./style-schema.js?v=__BUILD__";
+import { defaultStyleProfiles, legacySpacingDefaults, styleControlGroups, styleCssVariables, styleDefaults, styleDensityPresets, styleFieldByKey, styleTextTabs } from "./style-schema.js?v=__BUILD__";
 import { prefersMobileStyleProfile, styleProfiles } from "./style-tokens.js?v=__BUILD__";
 import { resolveFontFamily } from "./fonts.js?v=__BUILD__";
 import { currentThemeId } from "./theme.js?v=__BUILD__";
@@ -175,7 +175,30 @@ export function styleProfileLabel(profile) {
 // --code-mark-scale. Not exported: nothing else reads it.
 const CODE_MARK_SCALES = { subtle: "0.7", medium: "1", strong: "1.5" };
 
-export const STYLE_SETTINGS_VERSION = 4;
+// 5: the panel became Global / Text per tab / Spacing & controls. Notes got its
+// own raw-editor and code sizes, and the spacing defaults went tight.
+export const STYLE_SETTINGS_VERSION = 5;
+
+// The v5 upgrade, applied once to a profile stored before it.
+//
+// Notes' new code and raw-editor sizes start as copies of the shared values they
+// split off from, so nobody's notes change size the day they get their own
+// control. A spacing value still equal to the old default is moved to the new
+// tight one: it was inherited, never chosen. A value somebody typed is kept.
+function upgradeToV5(settings, profile) {
+  if (!settings || typeof settings !== "object") return settings;
+  const has = (key) => Object.prototype.hasOwnProperty.call(settings, key);
+  const next = { ...settings };
+  if (!has("notesRawFontSize") && has("rawMarkdownFontSize")) next.notesRawFontSize = settings.rawMarkdownFontSize;
+  if (!has("notesCodeFontSize") && has("codeFontSize")) next.notesCodeFontSize = settings.codeFontSize;
+  if (!has("notesCodeLineHeight") && has("codeLineHeight")) next.notesCodeLineHeight = settings.codeLineHeight;
+  const oldDefaults = legacySpacingDefaults[profile] || {};
+  const newDefaults = defaultStyleProfiles[profile] || styleDefaults;
+  Object.entries(oldDefaults).forEach(([key, oldValue]) => {
+    if (has(key) && String(settings[key]).trim() === oldValue) next[key] = newDefaults[key];
+  });
+  return next;
+}
 
 export function normalizeStyleProfiles(raw = {}) {
   const source = raw && typeof raw === "object" ? raw : {};
@@ -194,10 +217,11 @@ export function normalizeStyleProfiles(raw = {}) {
     return rest;
   };
 
+  const upgrade = (settings, profile) => (storedVersion >= 5 ? settings : upgradeToV5(dropPreV3(settings), profile));
+
   if (!hasProfiles) {
-    const legacySource = dropPreV3(source);
-    const legacy = normalizeStyleSettings(legacySource, "desktop");
-    const mobileLegacySource = { ...defaultStyleProfiles.mobile, ...migrateLegacyStyleSettings(legacySource) };
+    const legacy = normalizeStyleSettings(upgrade(migrateLegacyStyleSettings(source), "desktop"), "desktop");
+    const mobileLegacySource = { ...defaultStyleProfiles.mobile, ...upgrade(migrateLegacyStyleSettings(source), "mobile") };
     return {
       desktop: { ...legacy },
       mobile: normalizeStyleSettings(mobileLegacySource, "mobile"),
@@ -208,8 +232,8 @@ export function normalizeStyleProfiles(raw = {}) {
   const desktopSource = profileSource.desktop || profileSource.mobile || defaultStyleProfiles.desktop;
   const mobileSource = profileSource.mobile || profileSource.desktop || defaultStyleProfiles.mobile;
   return {
-    desktop: normalizeStyleSettings(dropPreV3(desktopSource), "desktop"),
-    mobile: normalizeStyleSettings(dropPreV3(mobileSource), "mobile"),
+    desktop: normalizeStyleSettings(upgrade(migrateLegacyStyleSettings(desktopSource), "desktop"), "desktop"),
+    mobile: normalizeStyleSettings(upgrade(migrateLegacyStyleSettings(mobileSource), "mobile"), "mobile"),
     version: STYLE_SETTINGS_VERSION
   };
 }
@@ -265,6 +289,115 @@ export function setStyleStatus(message) {
   if (el.styleSyncStatus) el.styleSyncStatus.textContent = message;
 }
 
+// The tab the Text section is showing. Module state, not persisted: the panel
+// opens on whatever surface you were looking at (see openStylePanel), which is
+// almost always the one you meant to tune.
+let styleTextTab = styleTextTabs[0].id;
+
+export function currentStyleTextTab() {
+  return styleTextTab;
+}
+
+export function setStyleTextTab(tab) {
+  if (!styleTextTabs.some(({ id }) => id === tab)) return;
+  styleTextTab = tab;
+  if (!el.styleControls) return;
+  el.styleControls.querySelectorAll("button[data-style-tab]").forEach((button) => {
+    const active = button.dataset.styleTab === tab;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-selected", String(active));
+  });
+  el.styleControls.querySelectorAll("[data-style-tab-body]").forEach((body) => {
+    body.hidden = body.dataset.styleTabBody !== tab;
+  });
+}
+
+// One row: name (with its ↺), the control, and a one-line hint the stylesheet
+// only shows while the row has focus — the hints were half the panel's height.
+function buildStyleField(field) {
+  const label = document.createElement("label");
+  label.className = "style-field";
+
+  // The ↺ is hidden until the value differs from this profile's default
+  // (updateStyleFieldStates), so an untouched panel shows no reset at all.
+  const name = document.createElement("span");
+  name.className = "style-field-name";
+  name.textContent = field.label;
+  const reset = document.createElement("button");
+  reset.type = "button";
+  reset.className = "style-field-reset";
+  reset.dataset.styleReset = field.key;
+  reset.textContent = "↺";
+  reset.title = `Reset ${field.label.toLowerCase()} to its default`;
+  reset.setAttribute("aria-label", `Reset ${field.label} to its default`);
+  reset.hidden = true;
+  name.appendChild(reset);
+  label.appendChild(name);
+
+  let control;
+  if (field.type === "select") {
+    control = document.createElement("select");
+    const makeOption = (value) => {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = value.charAt(0).toUpperCase() + value.slice(1);
+      return option;
+    };
+    // Only the font pickers set `groups`; every other select is short enough
+    // that a flat list is the fastest to scan.
+    if (field.groups) {
+      field.groups.forEach(({ label: groupLabel, options }) => {
+        const optgroup = document.createElement("optgroup");
+        optgroup.label = groupLabel;
+        options.forEach((value) => optgroup.appendChild(makeOption(value)));
+        control.appendChild(optgroup);
+      });
+    } else {
+      field.options.forEach((value) => control.appendChild(makeOption(value)));
+    }
+  } else {
+    // Plain textbox, no slider and no min/max — see styleControlGroups.
+    control = document.createElement("input");
+    control.type = "text";
+    control.spellcheck = false;
+    control.placeholder = styleDefaults[field.key] || "";
+    control.dataset.unit = field.unit || "";
+  }
+  control.dataset.styleKey = field.key;
+  label.appendChild(control);
+
+  const hint = document.createElement("small");
+  hint.textContent = field.hint;
+  label.appendChild(hint);
+  return label;
+}
+
+function buildStyleFieldList(fields) {
+  const body = document.createElement("div");
+  body.className = "style-section-body";
+  fields.forEach((field) => body.appendChild(buildStyleField(field)));
+  return body;
+}
+
+function buildStyleBlock(section, title) {
+  const block = document.createElement("section");
+  block.className = "style-block";
+  block.dataset.styleSection = section;
+  block.setAttribute("aria-label", title);
+  const head = document.createElement("h2");
+  head.className = "style-block-head";
+  head.textContent = title;
+  block.appendChild(head);
+  return block;
+}
+
+function buildStyleSubhead(text) {
+  const sub = document.createElement("h3");
+  sub.className = "style-subhead";
+  sub.textContent = text;
+  return sub;
+}
+
 export function renderStyleControls() {
   if (!el.styleControls || el.styleControls.dataset.rendered === "true") return;
   const themeField = el.styleControls.querySelector(".style-field");
@@ -300,19 +433,44 @@ export function renderStyleControls() {
   profileField.appendChild(profileHint);
   el.styleControls.appendChild(profileField);
 
-  // Density: one press for the eight size/spacing values almost everyone was
-  // opening Advanced to tune one at a time. It writes the real controls (see
-  // styleDensityPresets), so the fields underneath move with it and stay the
-  // thing that decides — this is a shortcut, not a mode.
-  const density = document.createElement("section");
-  density.className = "style-density-field";
-  density.setAttribute("aria-label", "Density");
-  const densityHead = document.createElement("div");
-  densityHead.className = "style-density-head";
-  densityHead.textContent = "Density";
-  density.appendChild(densityHead);
+  const groupsIn = (section) => styleControlGroups.filter((group) => group.section === section);
+
+  // ── 1 Global ──────────────────────────────────────────────────────────
+  const global = buildStyleBlock("global", "Global");
+  groupsIn("global").forEach((group) => global.appendChild(buildStyleFieldList(group.fields)));
+  el.styleControls.appendChild(global);
+
+  // ── 2 Text, one tab at a time ─────────────────────────────────────────
+  const text = buildStyleBlock("text", "Text");
+  const tabRow = document.createElement("div");
+  tabRow.className = "style-tab-toggle";
+  tabRow.setAttribute("role", "tablist");
+  tabRow.setAttribute("aria-label", "Text settings for");
+  styleTextTabs.forEach(({ id, label }) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.setAttribute("role", "tab");
+    button.dataset.styleTab = id;
+    button.textContent = label;
+    tabRow.appendChild(button);
+  });
+  text.appendChild(tabRow);
+  groupsIn("text").forEach((group) => {
+    const body = buildStyleFieldList(group.fields);
+    body.dataset.styleTabBody = group.tab;
+    body.setAttribute("role", "tabpanel");
+    body.setAttribute("aria-label", group.title);
+    text.appendChild(body);
+  });
+  el.styleControls.appendChild(text);
+
+  // ── 3 Spacing & controls ──────────────────────────────────────────────
+  // Density sits here because it only ever writes these fields (see
+  // styleDensityPresets): a shortcut, not a mode — the fields stay what decides.
+  const spacing = buildStyleBlock("spacing", "Spacing & controls");
   const densityButtons = document.createElement("div");
   densityButtons.className = "style-density-toggle";
+  densityButtons.setAttribute("aria-label", "Density");
   ["compact", "comfortable", "large"].forEach((preset) => {
     const button = document.createElement("button");
     button.type = "button";
@@ -320,116 +478,32 @@ export function renderStyleControls() {
     button.textContent = preset.charAt(0).toUpperCase() + preset.slice(1);
     densityButtons.appendChild(button);
   });
-  density.appendChild(densityButtons);
-  const densityHint = document.createElement("small");
-  densityHint.textContent = "Sets text size, line spacing, padding, gaps and button height together. Fine-tune any of them under Advanced.";
-  density.appendChild(densityHint);
-  el.styleControls.appendChild(density);
-
-  // Everything past the basics goes inside ONE fold. Seven peer accordions read
-  // as seven equally-important things to work through; a short visible list plus
-  // "Advanced" reads as a setting you change and a drawer you can ignore.
-  const advanced = document.createElement("details");
-  advanced.className = "style-advanced";
-  advanced.open = false;
-  const advancedHeading = document.createElement("summary");
-  advancedHeading.textContent = "Advanced";
-  advanced.appendChild(advancedHeading);
-  const advancedBody = document.createElement("div");
-  advancedBody.className = "style-advanced-body";
-  advanced.appendChild(advancedBody);
-
-  styleControlGroups.forEach((group) => {
-    const isBasic = group.tier === "basic";
-    // Basics render as a plain list — no summary, nothing to expand. A
-    // disclosure you always want open is just a click in the way.
-    const section = document.createElement(isBasic ? "section" : "details");
-    section.className = isBasic ? "style-basics" : "style-section";
-
-    if (isBasic) {
-      section.setAttribute("aria-label", group.title);
-    } else {
-      section.open = false;
-      const heading = document.createElement("summary");
-      heading.textContent = group.title;
-      section.appendChild(heading);
-    }
-
-    const body = document.createElement("div");
-    body.className = "style-section-body";
-
-    group.fields.forEach((field) => {
-      const label = document.createElement("label");
-      label.className = "style-field";
-
-      // Name row, so the per-field ↺ can sit opposite the label rather than
-      // pushing the control around. It's hidden until the value differs from
-      // this profile's default (updateStyleFieldStates), so an untouched panel
-      // shows no reset affordance at all.
-      const name = document.createElement("span");
-      name.className = "style-field-name";
-      name.textContent = field.label;
-      const reset = document.createElement("button");
-      reset.type = "button";
-      reset.className = "style-field-reset";
-      reset.dataset.styleReset = field.key;
-      reset.textContent = "↺";
-      reset.title = `Reset ${field.label.toLowerCase()} to its default`;
-      reset.setAttribute("aria-label", `Reset ${field.label} to its default`);
-      reset.hidden = true;
-      name.appendChild(reset);
-      label.appendChild(name);
-
-      let control;
-      if (field.type === "select") {
-        control = document.createElement("select");
-        const makeOption = (value) => {
-          const option = document.createElement("option");
-          option.value = value;
-          option.textContent = value.charAt(0).toUpperCase() + value.slice(1);
-          return option;
-        };
-        // Only the font pickers set `groups` — everything else (weights,
-        // alignments, notes layout) is short enough that a flat list is still
-        // the fastest way to scan it, so this stays opt-in per field rather
-        // than a blanket change to every select.
-        if (field.groups) {
-          field.groups.forEach(({ label: groupLabel, options }) => {
-            const optgroup = document.createElement("optgroup");
-            optgroup.label = groupLabel;
-            options.forEach((value) => optgroup.appendChild(makeOption(value)));
-            control.appendChild(optgroup);
-          });
-        } else {
-          field.options.forEach((value) => control.appendChild(makeOption(value)));
-        }
-        control.dataset.styleKey = field.key;
-        label.appendChild(control);
-      } else {
-        // Plain textbox, no slider companion and no min/max — see the comment
-        // on styleControlGroups.
-        control = document.createElement("input");
-        control.type = "text";
-        control.spellcheck = false;
-        control.placeholder = styleDefaults[field.key] || "";
-        control.dataset.styleKey = field.key;
-        control.dataset.unit = field.unit || "";
-        label.appendChild(control);
-      }
-
-      const hint = document.createElement("small");
-      hint.textContent = field.hint;
-      label.appendChild(hint);
-
-      body.appendChild(label);
-    });
-
-    section.appendChild(body);
-    (isBasic ? el.styleControls : advancedBody).appendChild(section);
+  spacing.appendChild(densityButtons);
+  groupsIn("spacing").forEach((group) => {
+    spacing.appendChild(buildStyleSubhead(group.title));
+    spacing.appendChild(buildStyleFieldList(group.fields));
   });
+  el.styleControls.appendChild(spacing);
 
-  el.styleControls.appendChild(advanced);
+  // ── More: everything that isn't a size, folded shut ───────────────────
+  const more = document.createElement("details");
+  more.className = "style-advanced";
+  more.dataset.styleSection = "more";
+  more.open = false;
+  const moreHeading = document.createElement("summary");
+  moreHeading.textContent = "More";
+  more.appendChild(moreHeading);
+  const moreBody = document.createElement("div");
+  moreBody.className = "style-advanced-body";
+  groupsIn("more").forEach((group) => {
+    moreBody.appendChild(buildStyleSubhead(group.title));
+    moreBody.appendChild(buildStyleFieldList(group.fields));
+  });
+  more.appendChild(moreBody);
+  el.styleControls.appendChild(more);
+
   el.styleControls.dataset.rendered = "true";
+  setStyleTextTab(styleTextTab);
 }
 
 export function numericStyleValue(value) {
@@ -520,6 +594,9 @@ export function applyStyleSettings(rawSettings, options = {}) {
   // "system") meant the inheritance never took effect, and "Base font family"
   // appeared to do nothing to any card or note — it only reached app chrome.
   root.style.setProperty("--app-font-family", resolveFontFamily(settings.fontFamily));
+  // Interface size: <html>'s own font-size, so every rem in the chrome follows
+  // it. Not a custom property — rem is defined against this and nothing else.
+  root.style.fontSize = usable("uiFontSize");
   // …except the notes, which can now opt out of it. Same reason this one is
   // hand-written rather than left to the styleCssVariables loop below: the
   // stored value is a KEY into fontFamilyChoices, not a font stack, so it has to

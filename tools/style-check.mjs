@@ -237,6 +237,94 @@ const PROBE = `async (api) => {
       hlCardPadding: api.defaultStyleProfiles[profile].hlCardPadding
     });
   }
+
+  // ── The panel is three sections and a fold ───────────────────────────────
+  api.updateStyleControls();
+  const controls = document.getElementById("styleControls");
+  push("the panel renders Global, Text, Spacing & controls and More", (() => {
+    const sections = [...controls.querySelectorAll("[data-style-section]")].map((node) => node.dataset.styleSection);
+    if (sections.join(",") !== "global,text,spacing,more") return "sections are " + JSON.stringify(sections);
+    if (controls.querySelector('[data-style-section="more"]').open) return "More starts open";
+    return true;
+  })());
+
+  push("each Text tab holds exactly its own fields, one tab shown at a time", (() => {
+    const problems = [];
+    for (const group of api.styleControlGroups.filter((g) => g.section === "text")) {
+      const body = controls.querySelector('[data-style-tab-body="' + group.tab + '"]');
+      if (!body) { problems.push("no body for " + group.tab); continue; }
+      const keys = [...body.querySelectorAll("[data-style-key]")].map((node) => node.dataset.styleKey).join(",");
+      if (keys !== group.fields.map((f) => f.key).join(",")) problems.push(group.tab + " holds " + keys);
+    }
+    api.setStyleTextTab("notes");
+    const shown = [...controls.querySelectorAll("[data-style-tab-body]")].filter((node) => !node.hidden).map((node) => node.dataset.styleTabBody);
+    if (shown.join(",") !== "notes") problems.push("showing " + JSON.stringify(shown) + " after choosing notes");
+    return problems.length ? problems.join(" · ") : true;
+  })());
+
+  // ── A tab's code and raw-editor sizes are its own ────────────────────────
+  const notesPre = document.createElement("pre");
+  notesPre.textContent = "x = 1";
+  notes.appendChild(notesPre);
+  const cardPre = document.createElement("pre");
+  cardPre.textContent = "x = 1";
+  question.appendChild(cardPre);
+  const notesEdit = document.getElementById("notesEdit");
+  const questionEdit = document.getElementById("questionEdit");
+  const size = (node) => parseFloat(getComputedStyle(node).fontSize) || 0;
+  const original = { ...api.getStyleProfileSettings(profile) };
+  try {
+    await setHighlightStyle({ notesCodeFontSize: "29px", codeFontSize: "13px", notesRawFontSize: "27px", rawMarkdownFontSize: "15px" });
+    push("Notes code size reaches notes code and not card code", (() => {
+      if (Math.abs(size(notesPre) - 29) > 0.5) return "notes code is " + size(notesPre) + "px, expected 29";
+      if (Math.abs(size(cardPre) - 13) > 0.5) return "card code is " + size(cardPre) + "px, expected 13";
+      return true;
+    })());
+    push("Notes raw editor size reaches the notes editor and not the card editor", (() => {
+      if (!notesEdit || !questionEdit) return "missing #notesEdit or #questionEdit";
+      if (Math.abs(size(notesEdit) - 27) > 0.5) return "notes editor is " + size(notesEdit) + "px, expected 27";
+      if (Math.abs(size(questionEdit) - 15) > 0.5) return "card editor is " + size(questionEdit) + "px, expected 15";
+      return true;
+    })());
+
+    await setHighlightStyle({ uiFontSize: "20px" });
+    push("Interface size sets the root font size", (() => {
+      const got = size(document.documentElement);
+      return Math.abs(got - 20) > 0.5 ? "html is " + got + "px, expected 20" : true;
+    })());
+  } finally {
+    notesPre.remove();
+    cardPre.remove();
+    await setHighlightStyle(original);
+  }
+
+  // ── Density only touches spacing and controls ────────────────────────────
+  push("every density preset writes only Spacing & controls fields", (() => {
+    const spacingKeys = new Set(api.styleControlGroups.filter((g) => g.section === "spacing").flatMap((g) => g.fields.map((f) => f.key)));
+    const stray = [];
+    for (const byDensity of Object.values(api.styleDensityPresets)) {
+      for (const preset of Object.values(byDensity)) {
+        for (const key of Object.keys(preset)) if (!spacingKeys.has(key)) stray.push(key);
+      }
+    }
+    return stray.length ? "outside Spacing & controls: " + [...new Set(stray)].join(", ") : true;
+  })());
+
+  // ── The v5 upgrade ───────────────────────────────────────────────────────
+  push("a v4 profile keeps its own spacing, tightens inherited spacing, and seeds the notes sizes", (() => {
+    const v4 = { version: 4, desktop: { ...api.defaultStyleProfiles.desktop, appGap: "10px", cardPadding: "30px", rawMarkdownFontSize: "21px", codeFontSize: "17px", codeLineHeight: "1.3" }, mobile: { ...api.defaultStyleProfiles.mobile } };
+    for (const key of ["notesRawFontSize", "notesCodeFontSize", "notesCodeLineHeight"]) { delete v4.desktop[key]; delete v4.mobile[key]; }
+    const out = api.normalizeStyleProfiles(v4).desktop;
+    const problems = [];
+    if (out.appGap !== api.defaultStyleProfiles.desktop.appGap) problems.push("appGap stayed " + out.appGap);
+    if (out.cardPadding !== "30px") problems.push("a chosen cardPadding became " + out.cardPadding);
+    if (out.notesRawFontSize !== "21px") problems.push("notesRawFontSize is " + out.notesRawFontSize);
+    if (out.notesCodeFontSize !== "17px") problems.push("notesCodeFontSize is " + out.notesCodeFontSize);
+    if (out.notesCodeLineHeight !== "1.3") problems.push("notesCodeLineHeight is " + out.notesCodeLineHeight);
+    const again = api.normalizeStyleProfiles({ ...api.normalizeStyleProfiles(v4), desktop: { ...out, appGap: "10px" } }).desktop;
+    if (again.appGap !== "10px") problems.push("a v5 profile's 10px appGap was rewritten to " + again.appGap);
+    return problems.length ? problems.join(" · ") : true;
+  })());
   return results;
 }`;
 
