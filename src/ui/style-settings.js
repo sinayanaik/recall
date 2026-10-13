@@ -94,7 +94,7 @@ export function styleDisplayValue(key, value) {
 // box, what it follows and that setting's current value.
 function stylePlaceholder(key, settings, defaults) {
   const field = styleFieldByKey[key];
-  if (field?.inherits) return `Same as ${field.inherits.label} · ${settings?.[field.inherits.key] ?? defaults[field.inherits.key] ?? ""}`;
+  if (field?.inherits) return `${field.inherits.label} · ${settings?.[field.inherits.key] ?? defaults[field.inherits.key] ?? ""}`;
   return defaults[key] || "";
 }
 
