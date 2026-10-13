@@ -63,14 +63,39 @@ export function normalizeStyleValue(key, value, customDefault) {
 export function isStyleValueUsable(field, value) {
   if (!field || field.type === "select") return true;
   const raw = String(value ?? "").trim();
-  if (!raw) return false;
-  if (field.probe === "number") return /^-?\d*\.?\d+$/.test(raw) && Number.isFinite(parseFloat(raw));
+  if (!raw) return Boolean(field.inherits);
+  if (field.inherits && raw === "inherit") return true;
+  if (field.probe === "number") return /^-?\d*\.?\d+%?$/.test(raw) && Number.isFinite(parseFloat(raw));
+  // The layout boxes: a bare number is a percent (of whatever unit
+  // applyStyleSettings gives that box), anything else must be a CSS length.
+  if (field.probe === "length-percentage") {
+    if (/^-?\d*\.?\d+$/.test(raw)) return true;
+    if (typeof CSS === "undefined" || typeof CSS.supports !== "function") return true;
+    try { return CSS.supports("width", raw); } catch (_) { return false; }
+  }
   if (!field.probe || typeof CSS === "undefined" || typeof CSS.supports !== "function") return true;
   try {
     return CSS.supports(field.probe, raw);
   } catch (_) {
     return false;
   }
+}
+
+// What the box shows for a stored value. A follows-another-setting field shows
+// nothing at all in that state — its placeholder says what it is following —
+// so emptying the box is how you get back there.
+export function styleDisplayValue(key, value) {
+  const field = styleFieldByKey[key];
+  if (field?.inherits && (value === "inherit" || value === "")) return "";
+  return value ?? "";
+}
+
+// The placeholder: the default for most boxes; for a follows-another-setting
+// box, what it follows and that setting's current value.
+function stylePlaceholder(key, settings, defaults) {
+  const field = styleFieldByKey[key];
+  if (field?.inherits) return `${field.inherits.label} · ${settings?.[field.inherits.key] ?? defaults[field.inherits.key] ?? ""}`;
+  return defaults[key] || "";
 }
 
 // Paints the two per-field affordances: the invalid marker, and the ↺ that only
@@ -340,7 +365,7 @@ function buildStyleField(field) {
     const makeOption = (value) => {
       const option = document.createElement("option");
       option.value = value;
-      option.textContent = value.charAt(0).toUpperCase() + value.slice(1);
+      option.textContent = field.optionLabels?.[value] ?? value.charAt(0).toUpperCase() + value.slice(1);
       return option;
     };
     // Only the font pickers set `groups`; every other select is short enough
@@ -552,12 +577,10 @@ export function updateStyleControls() {
     //
     // The field is normalized on focusout instead (see the listener below), so
     // "28" still becomes "28px" — just once you've finished saying it.
-    if (input === document.activeElement) {
-      input.placeholder = defaults[input.dataset.styleKey] || "";
-      return;
-    }
-    input.value = settings[input.dataset.styleKey] ?? "";
-    input.placeholder = defaults[input.dataset.styleKey] || "";
+    const key = input.dataset.styleKey;
+    input.placeholder = stylePlaceholder(key, settings, defaults);
+    if (input === document.activeElement) return;
+    input.value = styleDisplayValue(key, settings[key]);
   });
   updateStyleFieldStates();
 }
@@ -578,14 +601,13 @@ export function applyStyleSettings(rawSettings, options = {}) {
     const field = styleFieldByKey[key];
     return isStyleValueUsable(field, settings[key]) ? settings[key] : profileDefaults[key];
   };
-  const appWidthPercent = numericStyleValue(settings.appWidthPercent) ?? 100;
-  const appHeightPercent = numericStyleValue(settings.appHeightPercent) ?? 100;
-  const cardWidthPercent = numericStyleValue(settings.cardWidthPercent) ?? 96;
-  const cardMaxHeightPercent = numericStyleValue(settings.cardMaxHeightPercent) ?? 74;
-  const modalWidthPercent = numericStyleValue(settings.modalWidthPercent) ?? 60;
-  const visualMaxWidthPercent = numericStyleValue(settings.visualMaxWidthPercent) ?? (activeProfile === "mobile" ? 90 : 50);
-
-  const notesMaxWidthPercent = numericStyleValue(settings.notesMaxWidthPercent) ?? 100;
+  // The layout boxes. A bare number keeps its old meaning — a percent of the
+  // screen or the container, in the unit each variable has always used — and
+  // anything else (900px, 60ch, calc(…)) is used exactly as written.
+  const layout = (key, unit) => {
+    const value = usable(key);
+    return /^-?\d*\.?\d+$/.test(String(value).trim()) ? `${String(value).trim()}${unit}` : value;
+  };
 
   const root = document.documentElement;
   // ONE font variable. --question/answer/notes-font-family are declared in
@@ -636,7 +658,7 @@ export function applyStyleSettings(rawSettings, options = {}) {
   // here: their controls were removed (the first padded inside cardPadding —
   // two ways to push the same text inward; the second only sized the import
   // box). The :root defaults in styles.css carry them now.
-  root.style.setProperty("--notes-max-width", `${notesMaxWidthPercent}%`);
+  root.style.setProperty("--notes-max-width", layout("notesMaxWidthPercent", "%"));
   // A bare number in storage, a percentage on the page — the same shape as the
   // line above, and absent from styleCssVariables for the same reason: the
   // generic loop writes a setting's value verbatim, and "74" is not a colour
@@ -653,16 +675,16 @@ export function applyStyleSettings(rawSettings, options = {}) {
   // The only percent that isn't run through numericStyleValue above, so it's the
   // only one where a non-numeric entry would reach CSS as "abc%".
   root.style.setProperty("--question-fill", `${numericStyleValue(settings.questionFillPercent) ?? numericStyleValue(profileDefaults.questionFillPercent) ?? 58}%`);
-  root.style.setProperty("--app-width", `${appWidthPercent}vw`);
-  root.style.setProperty("--app-height", `${appHeightPercent}vh`);
-  root.style.setProperty("--app-mobile-width", `${appWidthPercent}vw`);
-  root.style.setProperty("--app-mobile-height", `${appHeightPercent}dvh`);
-  root.style.setProperty("--card-width", `${cardWidthPercent}%`);
-  root.style.setProperty("--card-mobile-width", `${cardWidthPercent}%`);
-  root.style.setProperty("--card-max-height", `${cardMaxHeightPercent}vh`);
-  root.style.setProperty("--card-mobile-max-height", `${cardMaxHeightPercent}dvh`);
-  root.style.setProperty("--modal-width", `${modalWidthPercent}vw`);
-  root.style.setProperty("--visual-max-width", `${visualMaxWidthPercent}%`);
+  root.style.setProperty("--app-width", layout("appWidthPercent", "vw"));
+  root.style.setProperty("--app-height", layout("appHeightPercent", "vh"));
+  root.style.setProperty("--app-mobile-width", layout("appWidthPercent", "vw"));
+  root.style.setProperty("--app-mobile-height", layout("appHeightPercent", "dvh"));
+  root.style.setProperty("--card-width", layout("cardWidthPercent", "%"));
+  root.style.setProperty("--card-mobile-width", layout("cardWidthPercent", "%"));
+  root.style.setProperty("--card-max-height", layout("cardMaxHeightPercent", "vh"));
+  root.style.setProperty("--card-mobile-max-height", layout("cardMaxHeightPercent", "dvh"));
+  root.style.setProperty("--modal-width", layout("modalWidthPercent", "vw"));
+  root.style.setProperty("--visual-max-width", layout("visualMaxWidthPercent", "%"));
 
   if (!el.stylePanel || el.stylePanel.hidden || state.styleEditProfile === state.activeStyleProfile) {
     updateStyleControls();
@@ -804,7 +826,7 @@ export function resetStyleField(key) {
   const defaults = defaultStyleProfiles[editProfile] || styleDefaults;
   const input = el.styleControls?.querySelector(`[data-style-key="${key}"]`);
   if (!input) return;
-  input.value = defaults[key] ?? "";
+  input.value = styleDisplayValue(key, defaults[key]);
   handleStyleControlChange();
 }
 

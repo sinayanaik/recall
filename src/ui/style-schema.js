@@ -188,11 +188,18 @@ export const styleDefaults = defaultStyleProfiles.desktop;
 // Nothing in here may write a CSS variable no stylesheet reads: a control that
 // silently does nothing is worse than a missing one.
 //
-// Every numeric control is a plain textbox (type "text") — no sliders and no
-// min/max clamps: whatever you type is what gets applied. A bare number in a
-// px field gets the unit appended for convenience ("18" → "18px"); anything
-// else passes through verbatim, so calc()/rem/em values work too.
-const weightOptions = ["300", "400", "500", "600", "700", "800", "900"];
+// Every numeric control is a plain textbox (type "text") — no sliders, no
+// dropdown of allowed values and no min/max clamps: whatever you type is what
+// gets applied. A bare number in a px field gets the unit appended for
+// convenience ("18" → "18px"); anything else passes through verbatim, so
+// calc()/rem/em values work too. The layout boxes read a bare number as a
+// percent and anything else as the CSS length it is.
+//
+// `inherits` marks a field whose default is "follow another setting". Its box
+// is EMPTY in that state, with a placeholder naming what it follows and that
+// value — so clearing the box is how you get back to it, and nobody has to know
+// the word "inherit" exists. (Typing "inherit" still works.)
+const followsNotes = (key) => ({ label: "Notes", key });
 
 export const styleTextTabs = [
   { id: "cards", label: "Cards" },
@@ -241,7 +248,8 @@ export const styleControlGroups = [
         key: "notesFontFamily", label: "Font", type: "select",
         options: ["inherit", ...fontFamilyOptions],
         groups: [{ label: "Notes", options: ["inherit"] }, ...fontFamilyOptionGroups],
-        hint: "Typeface for notes only. “Inherit” follows the Global font."
+        optionLabels: { inherit: "Same as Global font" },
+        hint: "Typeface for notes only."
       },
       { key: "notesFontSize", label: "Text size", type: "text", unit: "px", probe: "font-size", hint: "Rendered notes text." },
       { key: "notesLineHeight", label: "Line spacing", type: "text", probe: "line-height", hint: "Reading spacing in notes." },
@@ -258,8 +266,8 @@ export const styleControlGroups = [
     section: "text",
     tab: "highlights",
     fields: [
-      { key: "hlNoteFontSize", label: "Text size", type: "text", unit: "px", probe: "font-size", hint: "Notes in the side-by-side highlights pane; the cards scale with it. “Inherit” follows Notes." },
-      { key: "hlNoteLineHeight", label: "Line spacing", type: "text", probe: "line-height", hint: "Reading spacing in the pane. “Inherit” follows Notes." },
+      { key: "hlNoteFontSize", label: "Text size", type: "text", unit: "px", probe: "font-size", inherits: followsNotes("notesFontSize"), hint: "Notes in the side-by-side highlights pane; the cards scale with it. Leave empty to follow Notes." },
+      { key: "hlNoteLineHeight", label: "Line spacing", type: "text", probe: "line-height", inherits: followsNotes("notesLineHeight"), hint: "Reading spacing in the pane. Leave empty to follow Notes." },
       { key: "hlQuoteFontSize", label: "Quoted line size", type: "text", probe: "font-size", hint: "The highlighted passage at the top of each card, relative to its note." }
     ]
   },
@@ -305,14 +313,14 @@ export const styleControlGroups = [
       // Drives a CLASS on #notesView, not a variable: the paged layout is a
       // different set of rules. See src/notes/paged-view.js.
       { key: "notesReadingMode", label: "Notes layout", type: "select", options: ["continuous", "paged-1", "paged-2"], hint: "Continuous scrolls the whole note. Paged lays it out in pages — one column, or two side by side." },
-      { key: "notesMaxWidthPercent", label: "Notes width %", type: "text", probe: "number", hint: "Maximum width of the notes column." },
-      { key: "appWidthPercent", label: "App width %", type: "text", probe: "number", hint: "Width of the whole app as a percent of the screen." },
-      { key: "appHeightPercent", label: "App height %", type: "text", probe: "number", hint: "Height of the whole app as a percent of the screen." },
-      { key: "cardWidthPercent", label: "Card width %", type: "text", probe: "number", hint: "Flashcard width as a percent of the study area." },
-      { key: "cardMaxHeightPercent", label: "Card max height %", type: "text", probe: "number", hint: "Maximum flashcard height as a percent of the screen." },
-      { key: "modalWidthPercent", label: "Dialog width %", type: "text", probe: "number", hint: "Import and My Decks panel width as a percent of the screen." },
-      { key: "visualMaxWidthPercent", label: "Image max width %", type: "text", probe: "number", hint: "Maximum width of images, videos and diagrams." },
-      { key: "questionFillPercent", label: "Question fill %", type: "text", probe: "number", hint: "How much of the card the question tries to fill." }
+      { key: "notesMaxWidthPercent", label: "Notes width", type: "text", probe: "length-percentage", hint: "Maximum width of the notes column. A number is a percent; 900px, 60ch or calc(…) work as written." },
+      { key: "appWidthPercent", label: "App width", type: "text", probe: "length-percentage", hint: "Width of the whole app. A number is a percent of the screen; any CSS width works as written." },
+      { key: "appHeightPercent", label: "App height", type: "text", probe: "length-percentage", hint: "Height of the whole app. A number is a percent of the screen; any CSS height works as written." },
+      { key: "cardWidthPercent", label: "Card width", type: "text", probe: "length-percentage", hint: "Flashcard width. A number is a percent of the study area; any CSS width works as written." },
+      { key: "cardMaxHeightPercent", label: "Card max height", type: "text", probe: "length-percentage", hint: "Maximum flashcard height. A number is a percent of the screen; any CSS height works as written." },
+      { key: "modalWidthPercent", label: "Dialog width", type: "text", probe: "length-percentage", hint: "Width of the Import and shared-deck dialogs (My Decks sizes itself to its table). A number is a percent of the screen; any CSS width works as written." },
+      { key: "visualMaxWidthPercent", label: "Image max width", type: "text", probe: "length-percentage", hint: "Maximum width of images, videos and diagrams. A number is a percent; any CSS width works as written." },
+      { key: "questionFillPercent", label: "Question fill %", type: "text", probe: "number", hint: "How much of the card the question tries to fill, as a percent." }
     ]
   },
   {
@@ -321,10 +329,10 @@ export const styleControlGroups = [
     fields: [
       { key: "questionAlign", label: "Question align", type: "select", options: ["left", "center", "right", "justify"], hint: "Question text alignment." },
       { key: "questionVerticalAlign", label: "Question vertical align", type: "select", options: ["start", "center", "end"], hint: "Question vertical position." },
-      { key: "questionFontWeight", label: "Question weight", type: "select", options: weightOptions, hint: "Question text thickness." },
-      { key: "answerFontWeight", label: "Answer weight", type: "select", options: weightOptions, hint: "Answer text thickness." },
-      { key: "notesFontWeight", label: "Notes weight", type: "select", options: weightOptions, hint: "Notes text thickness." },
-      { key: "hlNoteWeight", label: "Highlight note weight", type: "select", options: ["inherit", ...weightOptions], hint: "Text thickness in the highlights pane. “Inherit” follows Notes." },
+      { key: "questionFontWeight", label: "Question weight", type: "text", probe: "font-weight", hint: "Question text thickness: 1 to 1000, or normal/bold." },
+      { key: "answerFontWeight", label: "Answer weight", type: "text", probe: "font-weight", hint: "Answer text thickness: 1 to 1000, or normal/bold." },
+      { key: "notesFontWeight", label: "Notes weight", type: "text", probe: "font-weight", hint: "Notes text thickness: 1 to 1000, or normal/bold." },
+      { key: "hlNoteWeight", label: "Highlight note weight", type: "text", probe: "font-weight", inherits: followsNotes("notesFontWeight"), hint: "Text thickness in the highlights pane. Leave empty to follow Notes." },
       { key: "hlQuoteInkPercent", label: "Quoted line contrast %", type: "text", probe: "number", hint: "How strongly the quoted passage is inked against its note." },
       { key: "codeHighlightStrength", label: "Code highlight strength", type: "select", options: ["subtle", "medium", "strong"], hint: "How strongly a highlight shows on code blocks." }
     ]

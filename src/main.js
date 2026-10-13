@@ -125,7 +125,7 @@ import { goNavBack, recordNavHistory, refreshNavBack } from "./ui/nav-history.js
 import { anyModalOpen, lockPageScroll, unlockPageScroll } from "./ui/overlays.js?v=__BUILD__";
 import { chooseDeckCategory } from "./ui/pickers.js?v=__BUILD__";
 import { defaultStyleProfiles, styleDefaults } from "./ui/style-schema.js?v=__BUILD__";
-import { applyStyleDensity, detectStyleProfile, handleStyleControlChange, normalizeStyleValue, resetStyleField, resetStyleProfile, setStyleTextTab, trackKeyboardInset } from "./ui/style-settings.js?v=__BUILD__";
+import { applyStyleDensity, detectStyleProfile, handleStyleControlChange, normalizeStyleValue, resetStyleField, resetStyleProfile, setStyleTextTab, styleDisplayValue, trackKeyboardInset } from "./ui/style-settings.js?v=__BUILD__";
 import { styleCoarsePointerMedia, styleMobileMedia, styleProfiles } from "./ui/style-tokens.js?v=__BUILD__";
 import { setTheme, setThemeMenuOpen, setThemeRepaintHook } from "./ui/theme.js?v=__BUILD__";
 import { FOCUS_MODE_KEY, closeViewExportMenu, paintViewExportMenu, setBlockEditFlushHook, setHandwritingViewHook, setSplitViewHook, setViewMode, switchToPreviousView } from "./ui/view-mode.js?v=__BUILD__";
@@ -2297,7 +2297,10 @@ el.styleControls.addEventListener("focusout", (event) => {
   const editProfile = styleProfiles.includes(state.styleEditProfile) ? state.styleEditProfile : detectStyleProfile();
   const defaults = defaultStyleProfiles[editProfile] || styleDefaults;
   const key = event.target.dataset.styleKey;
-  const normalized = normalizeStyleValue(key, event.target.value, defaults[key]);
+  // An emptied follows-Notes box stays empty: that IS its "follow" state, and
+  // its placeholder says so. Writing "inherit" back into it is what made the
+  // option look like a magic word you had to already know.
+  const normalized = styleDisplayValue(key, normalizeStyleValue(key, event.target.value, defaults[key]));
   // Leaving a field you didn't touch is not an edit. Without this, tabbing
   // through the panel would mark the profile "Unsynced" and set styleTouched,
   // which also makes Sync Down refuse to overwrite (see loadStyleFromWeb).
