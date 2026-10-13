@@ -125,7 +125,7 @@ import { goNavBack, recordNavHistory, refreshNavBack } from "./ui/nav-history.js
 import { anyModalOpen, lockPageScroll, unlockPageScroll } from "./ui/overlays.js?v=__BUILD__";
 import { chooseDeckCategory } from "./ui/pickers.js?v=__BUILD__";
 import { defaultStyleProfiles, styleDefaults } from "./ui/style-schema.js?v=__BUILD__";
-import { applyStyleDensity, detectStyleProfile, handleStyleControlChange, normalizeStyleValue, resetStyleField, resetStyleProfile, trackKeyboardInset } from "./ui/style-settings.js?v=__BUILD__";
+import { applyStyleDensity, detectStyleProfile, handleStyleControlChange, normalizeStyleValue, resetStyleField, resetStyleProfile, setStyleTextTab, trackKeyboardInset } from "./ui/style-settings.js?v=__BUILD__";
 import { styleCoarsePointerMedia, styleMobileMedia, styleProfiles } from "./ui/style-tokens.js?v=__BUILD__";
 import { setTheme, setThemeMenuOpen, setThemeRepaintHook } from "./ui/theme.js?v=__BUILD__";
 import { FOCUS_MODE_KEY, closeViewExportMenu, paintViewExportMenu, setBlockEditFlushHook, setHandwritingViewHook, setSplitViewHook, setViewMode, switchToPreviousView } from "./ui/view-mode.js?v=__BUILD__";
@@ -2268,6 +2268,9 @@ el.syncDownBtn.addEventListener("click", () => loadStyleFromWeb(true));
 el.styleControls.addEventListener("click", (event) => {
   const profileButton = event.target.closest("button[data-style-profile]");
   if (profileButton) { switchStyleEditProfile(profileButton.dataset.styleProfile); return; }
+
+  const tabButton = event.target.closest("button[data-style-tab]");
+  if (tabButton) { setStyleTextTab(tabButton.dataset.styleTab); return; }
 
   const densityButton = event.target.closest("button[data-style-density]");
   if (densityButton) { applyStyleDensity(densityButton.dataset.styleDensity); return; }

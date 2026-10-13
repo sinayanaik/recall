@@ -1,0 +1,168 @@
+/* ── Text settings, per tab ──────────────────────────────────────────────────
+ *
+ * The code and raw-editor sizes used to be one value each for the whole app, so
+ * a note's code blocks and a card's code blocks could not differ. The Style
+ * panel now has one Text tab per surface (src/ui/style-schema.js), and this is
+ * where each surface takes its own: the shared variables every rule already
+ * reads (--code-font-size, --raw-markdown-font-size, …) are re-pointed inside
+ * the surface's container. The :root values stay the Cards tab's, which is also
+ * what the import boxes and every other editor outside these containers use.
+ */
+
+#notesStage {
+  --code-font-size: var(--notes-code-font-size);
+  --code-line-height: var(--notes-code-line-height);
+  --raw-markdown-font-size: var(--notes-raw-font-size);
+}
+
+/* The highlights pane is sized on the Notes scale (styles/44), so its code
+   follows Notes' code too. */
+.highlight-cycle {
+  --code-font-size: var(--notes-code-font-size);
+  --code-line-height: var(--notes-code-line-height);
+  --raw-markdown-font-size: var(--notes-raw-font-size);
+}
+
+#documentStage {
+  --code-font-size: var(--doc-code-font-size);
+}
+
+/* Text blocks on PDF and handwriting pages. Same specificity as the rules in
+   styles/53-handwriting.css and styles/58-block-style.css it replaces, and
+   later, so it wins over them — while a block given its own size or code size
+   (`.pdf-block[data-block-size] …`, 0,3,0) still wins over this. */
+.pdf-block-body,
+.pdf-block-edit {
+  font-size: calc(var(--doc-block-font-size, 0.82rem) * var(--pdf-block-scale, 1));
+  line-height: var(--doc-block-line-height, 1.4);
+}
+
+.pdf-block-body {
+  --code-font-size: var(--doc-code-font-size, 1em);
+}
+
+/* ── The panel itself ───────────────────────────────────────────────────────
+ *
+ * Global / Text / Spacing & controls as three plain boxes, each field one row —
+ * name on the left, value on the right. The hints are still there, but only for
+ * the row you are in (or one holding a value CSS cannot use): shown on every
+ * row they were most of the panel's height.
+ */
+.style-block {
+  flex-shrink: 0;
+  display: grid;
+  gap: 8px;
+  border: 1px solid color-mix(in srgb, var(--line) 80%, var(--accent));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel-2) 50%, transparent);
+  padding: 10px 12px;
+}
+
+.style-block-head {
+  margin: 0;
+  color: var(--accent);
+  font-size: 0.76rem;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.style-subhead {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.style-block .style-section-body,
+.style-advanced-body .style-section-body {
+  border-top: 0;
+  padding: 0;
+  gap: 6px;
+}
+
+.style-section-body > .style-field {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 10.5em);
+  align-items: center;
+  column-gap: 10px;
+  row-gap: 3px;
+}
+
+.style-section-body > .style-field > .style-field-name {
+  justify-content: flex-start;
+  align-items: center;
+  gap: 6px;
+  color: var(--text);
+  font-size: 0.84rem;
+  font-weight: 600;
+  text-transform: none;
+}
+
+.style-section-body > .style-field > input,
+.style-section-body > .style-field > select {
+  min-width: 0;
+  width: 100%;
+}
+
+.style-section-body > .style-field > small {
+  grid-column: 1 / -1;
+  display: none;
+}
+
+.style-section-body > .style-field:focus-within > small,
+.style-section-body > .style-field.is-invalid > small {
+  display: block;
+}
+
+/* The tab row: shaped like the profile toggle, four-up. */
+.style-tab-toggle {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.style-tab-toggle button {
+  min-height: 32px;
+  min-width: 0;
+  padding: 0 4px;
+  border: 1px solid var(--line);
+  border-radius: var(--toolbar-button-radius);
+  background: var(--card);
+  color: var(--text);
+  font-size: 0.8rem;
+  font-weight: 800;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.style-tab-toggle button.is-active {
+  border-color: color-mix(in srgb, var(--accent) 72%, var(--line));
+  background: color-mix(in srgb, var(--accent) 22%, var(--panel));
+  color: var(--accent);
+}
+
+.style-block .style-density-toggle button {
+  min-height: 32px;
+}
+
+.style-section-body[hidden] {
+  display: none;
+}
+
+.style-advanced-body {
+  gap: 6px;
+}
+
+@media (max-width: 720px) {
+  .style-tab-toggle {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .style-section-body > .style-field {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 9em);
+  }
+}
