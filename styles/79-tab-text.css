@@ -201,3 +201,33 @@
     max-width: none;
   }
 }
+
+/* ── Headings: a little bigger than the text around them ─────────────────────
+ *
+ * styles/06-rendered.css sets every heading to 1em and lets weight, colour and
+ * the underline ladder carry the hierarchy, which read as headings no bigger
+ * than the notes. Each level now has its own multiplier (Global → Headings,
+ * H1–H6 size): h1 1.2, h2 1.12, h3 1.06 and h4–h6 1 by default. Relative to
+ * each surface's own text, so every tab's Text size still decides.
+ *
+ * The question face keeps its flattened 1em headings
+ * (`.card-question .rendered :is(…)`, higher specificity than these): its size
+ * is auto-fitted to the card, and a heading bigger than its own fit would
+ * overflow it. Print and export sheets keep their own rules for the same
+ * reason.
+ */
+:root {
+  --heading-h1-scale: 1.2;
+  --heading-h2-scale: 1.12;
+  --heading-h3-scale: 1.06;
+  --heading-h4-scale: 1;
+  --heading-h5-scale: 1;
+  --heading-h6-scale: 1;
+}
+
+:is(.rendered, .qn-card-body, .epub-preview-chapter-body) h1 { font-size: calc(1em * var(--heading-h1-scale)); }
+:is(.rendered, .qn-card-body, .epub-preview-chapter-body) h2 { font-size: calc(1em * var(--heading-h2-scale)); }
+:is(.rendered, .qn-card-body, .epub-preview-chapter-body) h3 { font-size: calc(1em * var(--heading-h3-scale)); }
+:is(.rendered, .qn-card-body, .epub-preview-chapter-body) h4 { font-size: calc(1em * var(--heading-h4-scale)); }
+:is(.rendered, .qn-card-body, .epub-preview-chapter-body) h5 { font-size: calc(1em * var(--heading-h5-scale)); }
+:is(.rendered, .qn-card-body, .epub-preview-chapter-body) h6 { font-size: calc(1em * var(--heading-h6-scale)); }
