@@ -77,7 +77,7 @@ import { initPagedNotes } from "./notes/paged-view.js?v=__BUILD__";
 import { initNotesResizeHold, noteSettledNotesPosition, scheduleSettledNotesCapture } from "./notes/resize-hold.js?v=__BUILD__";
 import { findRawOffsetForRenderedPoint } from "./notes/raw-offset.js?v=__BUILD__";
 import { flushReadingPositionSave } from "./notes/reading-position.js?v=__BUILD__";
-import { rawOffsetForCurrentNotesScroll, scheduleReadingAnchorCapture } from "./notes/scroll-anchor.js?v=__BUILD__";
+import { rawOffsetForCurrentNotesScroll, scheduleReadingAnchorCapture, setReadingAnchorCapturedHook } from "./notes/scroll-anchor.js?v=__BUILD__";
 import { beginSelectionGesture, currentNotesSelectionMarkdown, currentSelectionPlainText, endSelectionGesture, hideNotesSelectionButton, noteSelectionChanged, pillSelectionCapture, scheduleNotesSelectionCheck, setDocumentPillCaptureHook, setSelectionBarExpanded, suspendSelectionBarForScroll } from "./notes/selection.js?v=__BUILD__";
 import { clearTouchSelection, initTouchSelection } from "./notes/touch-selection.js?v=__BUILD__";
 import { recordNotesTyping, redoNotes, undoNotes } from "./notes/notes-history.js?v=__BUILD__";
@@ -128,7 +128,7 @@ import { defaultStyleProfiles, styleDefaults } from "./ui/style-schema.js?v=__BU
 import { applyStyleDensity, detectStyleProfile, handleStyleControlChange, normalizeStyleValue, resetStyleField, resetStyleProfile, setStyleTextTab, styleDisplayValue, trackKeyboardInset } from "./ui/style-settings.js?v=__BUILD__";
 import { styleCoarsePointerMedia, styleMobileMedia, styleProfiles } from "./ui/style-tokens.js?v=__BUILD__";
 import { setTheme, setThemeMenuOpen, setThemeRepaintHook } from "./ui/theme.js?v=__BUILD__";
-import { FOCUS_MODE_KEY, closeViewExportMenu, paintViewExportMenu, setBlockEditFlushHook, setHandwritingViewHook, setSplitViewHook, setViewMode, switchToPreviousView } from "./ui/view-mode.js?v=__BUILD__";
+import { FOCUS_MODE_KEY, closeViewExportMenu, paintViewExportMenu, setBlockEditFlushHook, setHandwritingViewHook, setSplitViewHook, setViewMode, setViewSwitchHook, switchToPreviousView } from "./ui/view-mode.js?v=__BUILD__";
 import { DOCUMENT_NOTE_HANDLERS, documentHighlightById, documentHighlightNote, flashDocumentRegion, initDocumentMarkMenu, repairDocumentHighlightQuads, repairDocumentHighlightText, setDocumentHighlightAdjust } from "./documents/pdf-highlights.js?v=__BUILD__";
 import { canAdjustDocumentHighlight, startDocumentHighlightAdjust } from "./documents/pdf-highlight-adjust.js?v=__BUILD__";
 import { pdfRegionRefForRecord, pdfRegionRefMarkdown } from "./documents/pdf-region-embed.js?v=__BUILD__";
@@ -140,7 +140,7 @@ import { closeDocumentToc, documentOutlineEntries, initDocumentOutlineFolding, i
 import { activePdfId, deckPdfById, deckPdfs, PDF_PRIMARY_ID, withDeckPdfs } from "./documents/pdf-multi.js?v=__BUILD__";
 import { removePdfFromDeck, renamePdf } from "./documents/pdf-multi-actions.js?v=__BUILD__";
 import { closePdfPanel, initPdfSwitcher } from "./documents/pdf-switcher.js?v=__BUILD__";
-import { currentPdfDocument, currentPdfPageCount, documentFittedWidth, refreshBakedDocumentPages, fitDocumentToWidth, initDocumentCanvasRecovery, initDocumentPinchZoom, isDocumentFitWidth, openDocumentIsCurrent, openDocumentPdfId, noteSettledDocumentPosition, openDocumentView, reattachDocument, relayoutDocumentHoldingReader, repaintOpenDocumentPages, scheduleDocumentPositionSave, scrollToDocumentPage, refreshDocumentPaperForTheme, setDocumentAttachHandler, setDocumentCanvasRecoveredHook, setDocumentOpenedHook, setDocumentPagePaintedHook, setNotebookStartHandler, setPaperChangedHook, switchToPdf, togglePdfInvert, updatePageIndicator, zoomDocument, retryMissingDocumentOpen } from "./documents/pdf-view.js?v=__BUILD__";
+import { currentPdfDocument, currentPdfPageCount, documentFittedWidth, refreshBakedDocumentPages, fitDocumentToWidth, initDocumentCanvasRecovery, initDocumentPinchZoom, isDocumentFitWidth, openDocumentIsCurrent, openDocumentPdfId, noteSettledDocumentPosition, openDocumentView, reattachDocument, relayoutDocumentHoldingReader, repaintOpenDocumentPages, scheduleDocumentPositionSave, scrollToDocumentPage, refreshDocumentPaperForTheme, setDocumentAttachHandler, setDocumentCanvasRecoveredHook, setDocumentOpenedHook, setDocumentPagePaintedHook, setNotebookStartHandler, setPageIndicatorUpdatedHook, setPaperChangedHook, switchToPdf, togglePdfInvert, updatePageIndicator, zoomDocument, retryMissingDocumentOpen } from "./documents/pdf-view.js?v=__BUILD__";
 import { adoptDocumentInk, canRedoInk, canUndoInk, copyInkSelection, cutInkSelection, duplicateInkSelection, hasInkClipboard, initDocumentInk, inkMarkImageMarkdown, inkMarkIsHighlight, inkSelectionCount, isInkMarkId, nudgeInkSelection, paintDocumentInk, pasteInkSelection, redoInk, repaintDocumentInk, setInkChangedHandler, undoInk } from "./documents/pdf-ink.js?v=__BUILD__";
 import { addHandwritingImage, enterHandwritingView, refreshHandwritingBoard, runHandwritingMenuAction, startHandwritingNotebook } from "./handwriting/board.js?v=__BUILD__";
 import { closeBlockStylePopover, isBlockStylePopoverOpen } from "./documents/block-style-bar.js?v=__BUILD__";
@@ -179,6 +179,9 @@ import { paintPageNoteBadges, paintPdfPageNotesButton, readPdfPageNotesPreferenc
 import { initReadingRail, refreshReadingRail, refreshReadingRailModes } from "./ui/reading-rail.js?v=__BUILD__";
 import { initScreenOrientation, setBeforeOrientationChangeHandler, setOrientationModesHandler, toggleLandscape } from "./ui/orientation.js?v=__BUILD__";
 import { attachPdfToOpenDeck, importPdfFile, reportPdfImportCrash } from "./import/pdf.js?v=__BUILD__";
+import { flushActivity, initActivityLog, noteViewSwitch } from "./stats/activity.js?v=__BUILD__";
+import { noteDocumentProgress, noteNotesProgress } from "./stats/reading-progress.js?v=__BUILD__";
+import { pushReadingStatsInBackground } from "./stats/stats-sync.js?v=__BUILD__";
 
 // The two index builders the contents drawer's Highlights half already uses.
 // Imported HERE, not by the mark menu, which is reached from the document
@@ -3194,6 +3197,7 @@ window.addEventListener("pagehide", () => {
   // survives an OS killing a backgrounded phone app mid-IndexedDB-write.
   flushReadingPositionSave();
   flushWorkingDeck();
+  flushActivity();
   // A sync in progress holds the deck index in memory between checkpoints (see
   // beginIndexBatch), so a tab that goes away mid-sync would leave the last few
   // pulled decks with a snapshot in IndexedDB and no index entry naming it —
@@ -3215,6 +3219,9 @@ document.addEventListener("visibilitychange", () => {
     // Same reason as the pagehide handler above; on mobile this is the event
     // that actually fires when the app is swiped away.
     try { flushIndexBatch(); } catch (error) { console.warn("Could not flush the deck index", error); }
+    // The time log flushes itself on this event (src/stats/activity.js); this
+    // sends it on, so the other devices see these minutes before the next sync.
+    pushReadingStatsInBackground();
     return;
   }
   // Coming back to a backgrounded PWA used to show whatever was on screen when
@@ -3403,6 +3410,13 @@ if (deckEmptyWebBtn) deckEmptyWebBtn.addEventListener("click", () => openMyDecks
 
 // The home screen's own buttons, and the two ⌂ entries (app bar and drawer).
 initHome();
+
+// Reading progress and the time log (src/stats/). Measured on this device, kept
+// on this device, and carried to the others by the sync (src/stats/stats-sync.js).
+setViewSwitchHook(noteViewSwitch);
+setPageIndicatorUpdatedHook(noteDocumentProgress);
+setReadingAnchorCapturedHook(noteNotesProgress);
+initActivityLog();
 
 
 if (helpBtn) helpBtn.addEventListener("click", openHelpModal);

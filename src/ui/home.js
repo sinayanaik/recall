@@ -25,6 +25,9 @@ import { reconcileAllDecks } from "../sync/reconcile.js?v=__BUILD__";
 import { formatRelativeTime, renderWelcomeSyncReport, updateDeckEmptyStatus } from "../sync/indicator.js?v=__BUILD__";
 import { openImportPanel, openMyDecksPanel } from "./deck-header.js?v=__BUILD__";
 import { hideHome, isHomeVisible, setHomeRenderHook, showHome } from "./home-state.js?v=__BUILD__";
+import {
+  combinedReadingStats, describeReadingPart, homeTileProgress, homeTimeLine, initHomeStats, latestReadingPart, renderHomeStats
+} from "./home-stats.js?v=__BUILD__";
 
 // Enough to fill two rows on a desktop and not so many that home becomes a
 // second My Decks. "See all" is one press away.
@@ -53,7 +56,7 @@ function homeDeckMeta(deck) {
   return parts.join(" · ");
 }
 
-function buildHomeDeckTile(deck) {
+function buildHomeDeckTile(deck, combined) {
   const tile = document.createElement("button");
   tile.type = "button";
   tile.className = "home-deck";
@@ -86,6 +89,9 @@ function buildHomeDeckTile(deck) {
   }
 
   tile.append(title, category, facts);
+  // How far through its Notes or a PDF, when it has been read.
+  const progress = combined ? homeTileProgress(combined, deck) : null;
+  if (progress) tile.append(progress);
   tile.addEventListener("click", () => openDeckFromHome(deck));
   return tile;
 }
@@ -105,6 +111,9 @@ export function renderHome() {
   if (!view) return;
   const decks = listLocalDecks();
   const deckOpen = hasActiveDeck();
+  // Reading progress and time spent, every device folded together — read off
+  // this device's copies, so it costs no more than the deck index does.
+  const combined = combinedReadingStats();
 
   const greeting = document.getElementById("homeGreeting");
   if (greeting) greeting.textContent = homeGreeting();
@@ -112,8 +121,13 @@ export function renderHome() {
   if (summary) {
     const cards = decks.reduce((sum, deck) => sum + (Number(deck.cardCount) || 0), 0);
     summary.textContent = decks.length
-      ? `${homeCount(decks.length, "deck")} · ${homeCount(cards, "card")} on this device`
+      ? `${homeCount(decks.length, "file")} · ${homeCount(cards, "card")} on this device`
       : "Your study library starts here.";
+  }
+  const timeLine = document.getElementById("homeTimeLine");
+  if (timeLine) {
+    timeLine.textContent = homeTimeLine(combined);
+    timeLine.hidden = !timeLine.textContent;
   }
 
   // The continue card: the deck underneath if there is one, otherwise the one
@@ -134,13 +148,28 @@ export function renderHome() {
         ? (openEntry ? homeDeckMeta(openEntry) : homeCount(state.masterCards.length, "card"))
         : (resumeDeck ? homeDeckMeta(resumeDeck) : "");
     }
+    // Where the reader is in it, Kindle-style: a bar, the percent, the chapters
+    // and the time left.
+    const featured = deckOpen ? (openEntry || { id: state.localDeckId, deckId: state.deckId }) : resumeDeck;
+    const latest = featured ? latestReadingPart(combined, featured) : null;
+    const continueProgress = document.getElementById("homeContinueProgress");
+    const continueFill = document.getElementById("homeContinueProgressFill");
+    const continueReading = document.getElementById("homeContinueReading");
+    if (continueProgress) continueProgress.hidden = !latest;
+    if (continueFill && latest) continueFill.style.width = `${Math.min(100, (Number(latest.part.pct) || 0) * 100).toFixed(1)}%`;
+    if (continueReading) {
+      continueReading.hidden = !latest;
+      continueReading.textContent = latest
+        ? `${latest.part.key === "notes" ? "Notes" : (latest.part.name || "PDF")} · ${describeReadingPart(latest.file, latest.part)}`
+        : "";
+    }
   }
 
   // Recent decks, minus whichever one the continue card already offers.
   const featuredId = deckOpen ? state.localDeckId : resumeDeck?.id;
   const recent = decks.filter((deck) => deck.id !== featuredId).slice(0, HOME_RECENT_LIMIT);
   const grid = document.getElementById("homeRecent");
-  if (grid) grid.replaceChildren(...recent.map(buildHomeDeckTile));
+  if (grid) grid.replaceChildren(...recent.map((deck) => buildHomeDeckTile(deck, combined)));
   const recentSection = document.getElementById("homeRecentSection");
   if (recentSection) recentSection.hidden = recent.length === 0 && decks.length > 0;
   const empty = document.getElementById("homeRecentEmpty");
@@ -150,6 +179,8 @@ export function renderHome() {
   // All Cards browses the OPEN deck's cards, so it is only offered over one.
   const allCards = document.getElementById("homeAllCardsBtn");
   if (allCards) allCards.hidden = !state.masterCards.length;
+
+  renderHomeStats(combined, decks);
 
   updateDeckEmptyStatus();
   renderWelcomeSyncReport();
@@ -173,6 +204,7 @@ export function closeHome() {
 
 export function initHome() {
   setHomeRenderHook(renderHome);
+  initHomeStats();
   const on = (id, handler) => document.getElementById(id)?.addEventListener("click", handler);
   on("appHomeBtn", openHome);
   on("homeBtn", openHome);

@@ -51,6 +51,15 @@ export function setSplitViewHook(fn) {
   splitViewHook = fn;
 }
 
+// The time log and the reading tracker (src/stats/activity.js), told BEFORE the
+// switch lands, so the seconds already spent are filed under the part they were
+// spent in. A hook for the same reason as the one above.
+let viewSwitchHook = null;
+
+export function setViewSwitchHook(fn) {
+  viewSwitchHook = typeof fn === "function" ? fn : null;
+}
+
 // The Write tab's own paint step. A hook rather than an import, and for the
 // reason setDocumentAttachHandler is one: src/handwriting/board.js reaches
 // card-status, which reaches this module, and pulling it in here would close
@@ -156,6 +165,7 @@ export function setViewMode(mode, options = {}) {
   // or merely swapping which paper is on it — see staysOnDocument.
   const previous = state.viewMode;
   if (changed) previousViewMode = previous;
+  if (changed) viewSwitchHook?.(previous, next);
   state.viewMode = next;
   // Before the stages are shown and hidden below: the split's own layout is a
   // class on the panel that decides which of them gets a column, and setting it

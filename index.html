@@ -136,6 +136,7 @@
     <link rel="stylesheet" href="styles/77-shutdown.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/78-sync-safety.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/79-tab-text.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/80-reading-progress.css?v=__BUILD__">
 
     <!-- ── Module preloads ────────────────────────────────────────────────
          The app is ~130 ES modules and the browser discovers them by PARSING
@@ -376,6 +377,13 @@
     <link rel="modulepreload" href="src/storage/keys.js?v=__BUILD__">
     <link rel="modulepreload" href="src/storage/quota.js?v=__BUILD__">
     <link rel="modulepreload" href="src/storage/storage-panel.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/stats/activity.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/stats/combine.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/stats/reading-math.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/stats/reading-progress.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/stats/reading-speed.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/stats/reading-stats-store.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/stats/stats-sync.js?v=__BUILD__">
     <link rel="modulepreload" href="src/sync/auto-sync.js?v=__BUILD__">
     <link rel="modulepreload" href="src/sync/cards.js?v=__BUILD__">
     <link rel="modulepreload" href="src/sync/diff.js?v=__BUILD__">
@@ -398,6 +406,7 @@
     <link rel="modulepreload" href="src/ui/fonts.js?v=__BUILD__">
     <link rel="modulepreload" href="src/ui/help.js?v=__BUILD__">
     <link rel="modulepreload" href="src/ui/home-state.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/ui/home-stats.js?v=__BUILD__">
     <link rel="modulepreload" href="src/ui/home.js?v=__BUILD__">
     <link rel="modulepreload" href="src/ui/ink-rail.js?v=__BUILD__">
     <link rel="modulepreload" href="src/ui/nav-history.js?v=__BUILD__">
@@ -723,6 +732,7 @@
             <p class="home-greeting" id="homeGreeting">Welcome back</p>
             <h1 class="home-title">Recall</h1>
             <p class="home-summary" id="homeSummary"></p>
+            <p class="home-time-line" id="homeTimeLine" hidden></p>
           </header>
 
           <button class="home-continue" id="homeContinueBtn" type="button" hidden>
@@ -730,6 +740,8 @@
               <span class="home-continue-label" id="homeContinueLabel">Continue where you left off</span>
               <span class="home-continue-title" id="homeContinueTitle"></span>
               <span class="home-continue-meta" id="homeContinueMeta"></span>
+              <span class="home-progress" id="homeContinueProgress" hidden><span class="home-progress-fill" id="homeContinueProgressFill"></span></span>
+              <span class="home-continue-reading" id="homeContinueReading" hidden></span>
             </span>
             <span class="home-continue-go" aria-hidden="true">&#8594;</span>
           </button>
@@ -755,6 +767,15 @@
             </button>
           </div>
 
+          <!-- Filled by src/ui/home-stats.js: the Notes and PDFs part-way read,
+               newest first, each with how far, the chapters and the time left. -->
+          <section class="home-section" id="homeReadingSection" aria-labelledby="homeReadingTitle" hidden>
+            <div class="home-section-head">
+              <h2 class="home-section-title" id="homeReadingTitle">Keep reading</h2>
+            </div>
+            <div class="home-reading" id="homeReading"></div>
+          </section>
+
           <section class="home-section" id="homeRecentSection" aria-labelledby="homeRecentTitle">
             <div class="home-section-head">
               <h2 class="home-section-title" id="homeRecentTitle">Recent files</h2>
@@ -762,6 +783,20 @@
             </div>
             <div class="home-recent" id="homeRecent"></div>
             <p class="home-empty" id="homeRecentEmpty" hidden>No files yet — create your first file, or import notes, a PDF or a book.</p>
+          </section>
+
+          <!-- The time log, every device added up (src/stats/activity.js,
+               src/ui/home-stats.js). Active time only. -->
+          <section class="home-section" id="homeTimeSection" aria-labelledby="homeTimeTitle" hidden>
+            <div class="home-section-head">
+              <h2 class="home-section-title" id="homeTimeTitle">Your time</h2>
+            </div>
+            <div class="home-time-card">
+              <div class="home-time-totals" id="homeTimeTotals"></div>
+              <div class="home-chart" id="homeTimeChart" role="img"></div>
+              <ol class="home-time-files" id="homeTimeFiles" aria-label="Files you spent the most time in"></ol>
+              <p class="home-time-devices" id="homeTimeDevices"></p>
+            </div>
           </section>
 
           <section class="home-section" aria-label="Sync and library">
@@ -2172,7 +2207,7 @@
           <section class="help-section">
             <h3 class="help-section-title">1. Open a File</h3>
             <p>A <strong>file</strong> is the thing you open from My Files. Each file has four parts, one per tab: <strong>Cards</strong> (question / answer pairs), <strong>Notes</strong> (one freeform Markdown document), <strong>PDFs</strong> (papers and books you read and highlight) and <strong>Canvas</strong> (pages you write on with a pen). Everything you import becomes cards, notes or a PDF.</p>
-            <p>Every launch opens on the <strong>Home</strong> screen: pick up the file you were last in, jump into a recent file, or start something new. Press <strong>⌂</strong> (top-left, beside Back) or <strong>⌂ Home</strong> at the top of the <strong>☰</strong> menu to come back to it from any file — the file stays open underneath, so <strong>Back to your file</strong> (or Esc) returns you to exactly where you were.</p>
+            <p>Every launch opens on the <strong>Home</strong> screen: pick up the file you were last in, jump into a recent file, or start something new. Home also shows where you are in what you are reading (<strong>Keep reading</strong>) and how much time you have spent in Recall (<strong>Your time</strong>) — see <strong>7. Track Progress</strong>. Press <strong>⌂</strong> (top-left, beside Back) or <strong>⌂ Home</strong> at the top of the <strong>☰</strong> menu to come back to it from any file — the file stays open underneath, so <strong>Back to your file</strong> (or Esc) returns you to exactly where you were.</p>
             <p>Home and the menu (<strong>☰</strong>, top-left) both offer:</p>
             <ul class="help-list">
               <li><strong>+ New File</strong> — start a blank file and add cards or notes</li>
@@ -2355,6 +2390,14 @@
               <span class="help-legend-dot" style="background:var(--accent)"></span><span>Progress</span>
             </div>
             <p>The header shows a live <strong>Known X / Review Y</strong> count, and each card carries a status badge. Replay filtered sessions (Review only, Known only, Uncategorized) from the buttons below the card.</p>
+            <h4 class="help-subsection-title">Reading progress</h4>
+            <p>While you read a file's <strong>Notes</strong> or one of its <strong>PDFs</strong>, a line at the foot of the page shows how far through you are, which chapter you are in, and the time left — in the chapter and in the whole thing, for example <em>42% · Ch 3/12 · 8 min left in chapter · 1 h 10 min left</em>. Chapters come from the PDF's own contents, or from the headings in your Notes.</p>
+            <ul class="help-list">
+              <li><strong>Time left is learned from you.</strong> Each device measures how fast <em>you</em> read on it — pages a minute for PDFs, words a minute for Notes, and per file once you have spent a while in it — and recalculates the estimate every few seconds as you read. Until it has measured you, it assumes about 2 minutes a page and 230 words a minute. Quick jumps (the contents, a search) are not counted as reading.</li>
+              <li><strong>Your time</strong> on Home counts <em>active</em> time only: the app on screen and used in the last two minutes. It shows today, the last 7 days, all time, the last two weeks day by day, and the files you have spent the most time in.</li>
+              <li><strong>Across devices.</strong> Everything is measured and kept on the device first. Each sync then sends this device's numbers to your Supabase project and brings your other devices' back, so Home adds up your time from all of them and picks up from the newest place you read. Each device keeps its own reading speed.</li>
+              <li>Hide the line under <strong>Themes &amp; Style → Reading progress</strong>.</li>
+            </ul>
           </section>
 
           <section class="help-section">

@@ -384,6 +384,49 @@ END $$;
 -- this value to decide whose keys are newer, and the client writes it
 -- deliberately — the same reason decks and cards have none (see section 5).
 
+-- ============================================================================
+-- 4c. reading_stats — one row PER DEVICE: reading progress and time spent
+-- ============================================================================
+-- What each device measured on its own: active time in the app (per day, per
+-- file and per part), and how far through each file's Notes and PDFs the reader
+-- got there — percent, chapters, the furthest point. Measured and stored on the
+-- device first; this row is that device's copy, so the others can show it.
+--
+-- Each device writes ONLY its own row (device_id is the app's random per-browser
+-- id), and every device reads all of them and adds them up — time summed, the
+-- newest position taken, the furthest point kept. So two devices reading at
+-- once can never overwrite each other's minutes, and there is nothing to merge
+-- on the way in. A device's reading SPEED is not in here: each device estimates
+-- "time left" from its own.
+--
+-- Optional, like section 9: without this table the app keeps each device's
+-- stats on that device and says so on Home.
+CREATE TABLE IF NOT EXISTS reading_stats (
+  user_id UUID NOT NULL DEFAULT auth.uid() REFERENCES auth.users(id) ON DELETE CASCADE,
+  device_id TEXT NOT NULL,
+  device_label TEXT,
+  stats JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (user_id, device_id)
+);
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'reading_stats_object' AND conrelid = 'reading_stats'::regclass
+  ) THEN
+    ALTER TABLE reading_stats
+      ADD CONSTRAINT reading_stats_object
+      CHECK (jsonb_typeof(stats) = 'object');
+  END IF;
+END $$;
+
+-- No updated_at trigger either: the device writes the moment its stats last
+-- changed. The primary key leads with user_id, so it is also the index the
+-- one query this table sees (every row of one account) needs.
+
 
 -- ============================================================================
 -- 5. Indexes
@@ -442,6 +485,7 @@ ALTER TABLE cards ENABLE ROW LEVEL SECURITY;
 ALTER TABLE deleted_decks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE app_style_settings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE app_storage_settings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE reading_stats ENABLE ROW LEVEL SECURITY;
 
 -- Postgres has no CREATE POLICY IF NOT EXISTS, so each policy is dropped first
 -- — which is also what lets re-running this file repair a deployment whose
@@ -467,6 +511,7 @@ DROP POLICY IF EXISTS "Users manage own cards" ON cards;
 DROP POLICY IF EXISTS "Users manage own deck tombstones" ON deleted_decks;
 DROP POLICY IF EXISTS "Users manage own app style settings" ON app_style_settings;
 DROP POLICY IF EXISTS "Users manage own storage settings" ON app_storage_settings;
+DROP POLICY IF EXISTS "Users manage own reading stats" ON reading_stats;
 
 -- auth.uid() is wrapped in a scalar subquery in every policy below. Called
 -- bare, it is re-evaluated once PER ROW; as `(select auth.uid())` the planner
@@ -513,6 +558,12 @@ CREATE POLICY "Users manage own app style settings" ON app_style_settings
 -- Strictly one's own row: unlike the style table there is no shared fallback,
 -- because what is in here is a credential.
 CREATE POLICY "Users manage own storage settings" ON app_storage_settings
+  FOR ALL TO authenticated
+  USING (user_id = (select auth.uid()))
+  WITH CHECK (user_id = (select auth.uid()));
+
+-- Every device of the account reads every row and writes its own.
+CREATE POLICY "Users manage own reading stats" ON reading_stats
   FOR ALL TO authenticated
   USING (user_id = (select auth.uid()))
   WITH CHECK (user_id = (select auth.uid()));
@@ -764,6 +815,7 @@ COMMENT ON TABLE cards IS 'One row per flashcard, ordered within its deck by `po
 COMMENT ON TABLE deleted_decks IS 'Durable cross-device delete tombstones. Never pruned automatically — a deletion must outlive any device still holding a stale copy.';
 COMMENT ON TABLE app_style_settings IS 'Per-user layout/typography settings (row id = auth.uid()), plus a legacy shared ''global'' row that accounts with no style of their own inherit. The theme is stored here too, as a `theme` key holding a theme ID (e.g. ''dark-amoled'') alongside the ''desktop''/''mobile'' profiles, so a device that syncs its style down also gets the theme that went with it. Colour VALUES are still not included — those live in CSS, keyed off that ID.';
 COMMENT ON TABLE app_storage_settings IS 'Per-user keys to the S3-compatible bucket that holds PDFs (row key = auth.uid()), so they are pasted once per account rather than once per device. s3_config NULL means the reader pressed Forget; updated_at is written by the client and compared, so it has no trigger.';
+COMMENT ON TABLE reading_stats IS 'Per-device reading progress and active time (row key = auth.uid() + the app''s device id). Each device writes only its own row and reads all of them; Home adds them up. updated_at is written by the client.';
 ```
 
 ---
@@ -885,6 +937,8 @@ So there is nothing to migrate for the folders themselves, and **nothing about t
 - **Realtime on `decks`** — a change made on one device shows up on your others within seconds instead of at their next timed sync.
 
 Each deck is still stored once — one row, one copy. Until the SQL has run, sync still merges every change and never overwrites one; the report just can't name devices, and other devices' changes arrive on the timer.
+
+**Re-run it once for reading progress across devices.** Section 4c adds `reading_stats`, one row per device holding what that device measured: active time in the app, and how far through each file's Notes and PDFs you got there. Every device writes only its own row and reads all of them, so Home can show your time and your place across devices without one device ever overwriting another's minutes. Until the SQL has run, each device keeps its own progress and time, and Home says *"This device only"*. The time-left estimates never need the table: each device works them out from its own reading speed.
 
 ### The one case that needs a manual step: a deployment older than authentication
 
@@ -1312,8 +1366,9 @@ Do the storage half here rather than in SQL — Supabase blocks it outright (`ER
 | `deleted_decks` | Delete tombstones | Never pruned automatically, so a deletion outlives any device still holding a stale copy |
 | `app_style_settings` | Layout and typography, one row per user | Keyed on the user's auth uid, plus a legacy shared `global` row used as a fallback |
 | `app_storage_settings` | The keys to your PDF bucket, one row per user | `s3_config` — endpoint, bucket, region, key ID and secret, or NULL once you press **Forget** · `updated_at` — written by the device and compared, so it has no trigger. See [Cloud bucket](#cloud-bucket--papers-and-images-in-your-own-s3-bucket) |
+| `reading_stats` | Reading progress and active time, one row per device | `device_id` — the app's random id for one browser · `stats` — that device's time per day, per file and per part, and how far through each file's Notes and PDFs it got · `updated_at` — written by the device. Every device reads all the rows and adds them up |
 
-Plus four indexes (`decks (user_id, updated_at DESC)`, `decks (user_id, last_accessed_at DESC)`, `cards (deck_id, position)`, `deleted_decks (user_id)`), five RLS policies, `decks` added to the Realtime publication, and two **private** Storage buckets — `images` and `documents` — with three policies each: upload, delete *and read* all confined to the user's own uid-named folder.
+Plus four indexes (`decks (user_id, updated_at DESC)`, `decks (user_id, last_accessed_at DESC)`, `cards (deck_id, position)`, `deleted_decks (user_id)`), six RLS policies, `decks` added to the Realtime publication, and two **private** Storage buckets — `images` and `documents` — with three policies each: upload, delete *and read* all confined to the user's own uid-named folder.
 
 `images` was public-read until native PDF documents landed, because a rendered `![](url)` carried no signed-in context to authenticate with. The app now signs each URL at render time from the session it already has (`src/cloud/storage-urls.js`), so read can be scoped exactly like write is. **The URLs in your notes did not change** — the bucket was not recreated, renamed or migrated, one `UPDATE` flipped its `public` flag and one policy swap replaced open read with owner-scoped read. That canonical `…/object/public/images/{uid}/…` string is now an *identifier* rather than a fetchable address: it is still what the markdown holds, still what the offline image cache is keyed by, and still what a delete resolves a path from.
 
@@ -1392,6 +1447,7 @@ subsuming another:
 | `export` | ...and the same question backwards: export a deck, import the file back, is it the same deck? A card may contain a standalone `---`, which is also the separator the format puts between its two sides, so the escape and the unescape live in different modules and nothing compared them. Also the zip, read back through the app's own reader |
 | `s3-store` | Does a paper still come back now that it lives in your bucket — and does the move out of Drive and Supabase finish? A moved paper must never be offered again; an old copy is deleted only once the bucket copy is checked, the cloud's copy of the deck carries the hash every device needs, and no other deck still relies on it |
 | `s3-images` | Do images reach your bucket and come back out of it without a note changing? The identifier-to-key mapping and the service worker's rebuild of it, where a new image goes when the bucket refuses, which storage an image is loaded from, and a clean-up that deletes a Supabase copy only when the bucket holds it at the same size |
+| `reading-stats` | Is reading progress right, and is your time counted once? Words before a point in a note, which chapter a page is in and how many are done, a reading speed that learns from you and ignores skimming, and one `reading_stats` row per device that every device adds up the same way — with a project that has no such table carrying on as "this device only" |
 | `theme` | Do the ten themes and the sixty-five style settings still agree with each other? Every theme defines every colour its siblings do, every setting has a default that is in range and appears in exactly one Style panel group, no two settings write the same CSS variable, and `isDarkThemeActive` answers correctly for every theme, both aliases, an unknown theme and no document at all |
 | `library` | A folder IS a deck's category — a `/`-delimited path — so every folder operation is string arithmetic in one leaf module. Every spelling normalises the same way, a rename moves everything nested under it and nothing that merely shares a prefix, and "Mathematics" is not inside "Math" |
 | `scanner-audit` | Does the identifier scanner the next check relies on actually *see* every reference? |

@@ -248,6 +248,14 @@ export function setDocumentOpenedHook(fn) {
   onDocumentOpened = typeof fn === "function" ? fn : () => {};
 }
 
+// Every page-indicator update, for the reading-progress line at the foot of the
+// page (src/stats/reading-progress.js) — which imports this module, so it is
+// told through a hook rather than imported here.
+let onPageIndicatorUpdated = () => {};
+export function setPageIndicatorUpdatedHook(fn) {
+  onPageIndicatorUpdated = typeof fn === "function" ? fn : () => {};
+}
+
 export function setDocumentAttachHandler(fn) {
   onAttachDocument = typeof fn === "function" ? fn : async () => false;
 }
@@ -6022,6 +6030,7 @@ export function updatePageIndicator() {
   // kind of second opinion that goes stale. The call is a compare on a number
   // when the page has not changed.
   setDocumentOutlinePage(page);
+  onPageIndicatorUpdated();
 }
 
 // Written through exactly the plumbing the notes view uses — same store, same
