@@ -13,8 +13,8 @@ import { setStatus, showConfirmModal, showPromptModal, showToast } from "../ui/f
 import { setViewMode } from "../ui/view-mode.js?v=__BUILD__";
 import { hideHome } from "../ui/home-state.js?v=__BUILD__";
 
-export function createNewDeck({ title = "New Deck", category = defaultDeckCategory, notesMode = false } = {}) {
-  const name = String(title || "New Deck").trim() || "New Deck";
+export function createNewDeck({ title = "New File", category = defaultDeckCategory, notesMode = false } = {}) {
+  const name = String(title || "New File").trim() || "New File";
   const cat = normalizeDeckCategory(category);
   const doCreate = () => {
     setDeckAutosaveStorageFailed(false);
@@ -39,10 +39,10 @@ export function createNewDeck({ title = "New Deck", category = defaultDeckCatego
     // opened on purpose.
     hideHome();
     showCard();
-    setStatus("Created new deck.");
+    setStatus("Created new file.");
   };
   if (hasActiveDeck()) {
-    showConfirmModal("Create a new deck? Unsaved local progress will be lost.", doCreate, { confirmLabel: "Create New" });
+    showConfirmModal("Create a new file? Unsaved local progress will be lost.", doCreate, { confirmLabel: "Create New" });
   } else {
     doCreate();
   }
@@ -56,12 +56,12 @@ export function createNewDeck({ title = "New Deck", category = defaultDeckCatego
 export function newDeckInFolder(folderPath = "") {
   const cat = normalizeDeckCategory(folderPath);
   const where = cat === defaultDeckCategory ? "" : ` in "${cat}"`;
-  showPromptModal("New deck", `Name your new deck${where}. Start adding notes and cards right away.`, "", (title) => {
+  showPromptModal("New file", `Name your new file${where}. Start adding notes and cards right away.`, "", (title) => {
     // Empty field, "New Deck" placeholder — falls back to that indicative name
     // if left blank, so the field never needs clearing before typing.
-    const name = String(title || "").trim() || "New Deck";
+    const name = String(title || "").trim() || "New File";
     createNewDeck({ title: name, category: cat, notesMode: true });
     closeMyDecksPanel();
-    showToast(`New deck "${name}"${where} — add notes or cards to save it`);
-  }, { placeholder: "New Deck" });
+    showToast(`New file "${name}"${where} — add notes or cards to save it`);
+  }, { placeholder: "New File" });
 }

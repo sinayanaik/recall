@@ -297,8 +297,8 @@ export function documentExportUnavailableReason() {
   const slot = activeDocSlot();
   if (!docSlotMeta(slot)) {
     return slot === DOC_SLOT_NOTEBOOK
-      ? "This deck has no handwritten pages to export."
-      : "This deck has no PDF to export.";
+      ? "This file has no Canvas pages to export."
+      : "This file has no PDF to export.";
   }
   if (!currentPdfDocument()) return "Open the document first — its pages aren't loaded yet.";
   if (!el.printRoot) return "This build has nowhere to print to.";

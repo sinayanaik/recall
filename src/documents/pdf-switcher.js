@@ -141,11 +141,11 @@ function buildPanel() {
   node.className = "pdf-panel";
   node.id = "documentPdfPanel";
   node.setAttribute("role", "dialog");
-  node.setAttribute("aria-label", "This deck's PDFs");
+  node.setAttribute("aria-label", "This file's PDFs");
   node.hidden = true;
   node.innerHTML = `
     <div class="pdf-panel-head">
-      <span class="pdf-panel-title">PDFs in this deck</span>
+      <span class="pdf-panel-title">PDFs in this file</span>
       <span class="pdf-panel-hint">Drag to reorder</span>
     </div>
     <ol class="pdf-panel-list" data-pdf-list></ol>
@@ -222,7 +222,7 @@ function buildRow(entry, active) {
   }
 
   const rename = iconButton("pdfRename", "✎", `Rename “${label}”`);
-  const remove = iconButton("pdfRemove", "×", `Remove “${label}” from this deck`);
+  const remove = iconButton("pdfRemove", "×", `Remove “${label}” from this file`);
   remove.classList.add("is-danger");
   row.append(grip, name, rename, remove);
   return row;
@@ -281,9 +281,9 @@ function confirmRemove(pdfId) {
   const count = deckPdfs(state.meta).length;
   const rest = count > 1
     ? "Your other PDFs, notes and cards are untouched."
-    : "It is this deck's only PDF, so the deck is left with no document — your notes and cards are untouched, and you can attach another any time.";
+    : "It is this file's only PDF, so the file is left with no document — your notes and cards are untouched, and you can attach another any time.";
   showConfirmModal(
-    `“${entryLabel(entry)}” will be removed from this deck, along with its highlights and bookmark. ${rest}`,
+    `“${entryLabel(entry)}” will be removed from this file, along with its highlights and bookmark. ${rest}`,
     () => removePdfFromDeck(pdfId),
     { confirmLabel: "Remove", danger: true }
   );

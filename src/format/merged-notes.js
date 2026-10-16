@@ -237,7 +237,7 @@ export function buildMergedNotes(members) {
     // A heading, always: the table of contents matches these against the member
     // titles in order to work out where each deck's own headings begin (see
     // applyFolderSectionDepths), and a bare `#` matches nothing.
-    .map((member) => `${mergedSectionMarker(member.localId)}\n# ${member.title || "Untitled deck"}\n\n${member.body}`.replace(/\s+$/, ""))
+    .map((member) => `${mergedSectionMarker(member.localId)}\n# ${member.title || "Untitled file"}\n\n${member.body}`.replace(/\s+$/, ""))
     .join("\n\n") + "\n";
 
   // The tail is written in the exact shape mergeHighlightNoteTails produces, so
@@ -336,7 +336,7 @@ export function mergedSplitProblem(markdown, members) {
     return `expected ${expected.length} section marker${expected.length === 1 ? "" : "s"}, found ${seen.length}`;
   }
   const missing = expected.filter((id) => !seen.includes(id));
-  if (missing.length) return `${missing.length} section marker${missing.length === 1 ? "" : "s"} no longer match a deck`;
+  if (missing.length) return `${missing.length} section marker${missing.length === 1 ? "" : "s"} no longer match a file`;
   if (new Set(seen).size !== seen.length) return "a section marker appears more than once";
   return "";
 }

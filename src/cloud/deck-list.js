@@ -81,7 +81,7 @@ export async function fetchCloudDeckIndex(columns = DECK_INDEX_COLUMNS) {
         .range(from, from + pageSize - 1)
         .abortSignal(signal)),
       CLOUD_TIMEOUT_MS,
-      "read deck index"
+      "read file index"
     );
     if (error) throw error;
     if (typeof count === "number") expectedTotal = count;
@@ -93,7 +93,7 @@ export async function fetchCloudDeckIndex(columns = DECK_INDEX_COLUMNS) {
   }
   const rows = [...byId.values()];
   if (expectedTotal !== null && rows.length < expectedTotal) {
-    throw new Error(`Deck index read was incomplete (${rows.length} of ${expectedTotal}) — not treating the gap as deletions`);
+    throw new Error(`File index read was incomplete (${rows.length} of ${expectedTotal}) — not treating the gap as deletions`);
   }
   return rows;
 }
@@ -144,7 +144,7 @@ export async function fetchCloudDeckRows(deckIds) {
         .in("id", chunk)
         .abortSignal(signal)),
       CLOUD_TIMEOUT_MS,
-      "read deck bodies"
+      "read file bodies"
     );
     // Thrown, not collected. mapWithConcurrency runs its workers under
     // Promise.all, so this rejects the whole read — which is the required

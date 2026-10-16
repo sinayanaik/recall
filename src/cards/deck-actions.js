@@ -75,7 +75,7 @@ export function shuffleCards() {
     [state.cards[index], state.cards[swap]] = [state.cards[swap], state.cards[index]];
   }
   state.current = 0;
-  setStatus("Deck shuffled.");
+  setStatus("Cards shuffled.");
   showCard();
 }
 

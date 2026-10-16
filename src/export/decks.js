@@ -58,7 +58,7 @@ export async function exportDeckPayloads(payloads, format, { fileBaseName, title
       downloadTextFile(
         payloads.map((payload) => {
           const body = String(payload.deck.notes || "").trim();
-          return `# ${payload.deck.title}\n\n${body ? notesExportBlock(body) : "*No notes for this deck.*"}`;
+          return `# ${payload.deck.title}\n\n${body ? notesExportBlock(body) : "*No notes for this file.*"}`;
         }).join("\n\n---\n\n"),
         `${fileBaseName}.md`,
         "text/markdown;charset=utf-8"
@@ -172,19 +172,19 @@ export async function exportDeckPayloads(payloads, format, { fileBaseName, title
 
 export async function exportMyDeck(sel, format) {
   try {
-    setStatus("Exporting deck...");
+    setStatus("Exporting file...");
     const payload = await myDeckPayload(sel);
     await exportDeckPayloads([payload], format, {
       fileBaseName: slugifyFileName(payload.deck.title || "recall"),
-      title: payload.deck.title || "Deck"
+      title: payload.deck.title || "File"
     });
-    if (format !== "pdf") showToast(`Exported "${payload.deck.title || "deck"}" as ${format.toUpperCase()}`);
+    if (format !== "pdf") showToast(`Exported "${payload.deck.title || "file"}" as ${format.toUpperCase()}`);
     if (sel.deckId && supabaseClient && isSignedIn && navigator.onLine) {
       touchWebDeckAccess(sel.deckId).catch(() => {});
     }
   } catch (error) {
     console.error("Failed to export deck", error);
-    setStatus("Failed to export deck.", "error");
+    setStatus("Failed to export file.", "error");
     showToast("Export failed", "error");
   }
 }
@@ -194,14 +194,14 @@ export async function exportSelectedMyDecks(selections, format) {
   const contentType = await chooseExportContent();
   if (!contentType) return; // cancelled
   try {
-    setStatus(`Exporting ${selections.length} deck${selections.length === 1 ? "" : "s"}...`);
+    setStatus(`Exporting ${selections.length} file${selections.length === 1 ? "" : "s"}...`);
     const payloads = [];
     for (const sel of selections) payloads.push(await myDeckPayload(sel));
-    await exportDeckPayloads(payloads, format, { fileBaseName: `selected-decks-${contentType}`, title: "Selected Decks" }, contentType);
-    if (format !== "pdf") showToast(`Exported ${payloads.length} deck${payloads.length === 1 ? "" : "s"} ${contentType} as ${format.toUpperCase()}`);
+    await exportDeckPayloads(payloads, format, { fileBaseName: `selected-files-${contentType}`, title: "Selected Files" }, contentType);
+    if (format !== "pdf") showToast(`Exported ${payloads.length} file${payloads.length === 1 ? "" : "s"} ${contentType} as ${format.toUpperCase()}`);
   } catch (error) {
     console.error("Failed to export selected decks", error);
-    setStatus("Failed to export selected decks.", "error");
+    setStatus("Failed to export selected files.", "error");
     showToast("Export failed", "error");
   }
 }
@@ -228,19 +228,19 @@ export async function exportAllMyDecks(format) {
   const contentType = await chooseExportContent();
   if (!contentType) return; // cancelled
   try {
-    setStatus("Exporting all decks...");
+    setStatus("Exporting all files...");
     const selections = await allMyDeckSelections();
     if (!selections.length) {
-      setStatus("No decks to export.", "error");
+      setStatus("No files to export.", "error");
       return;
     }
     const payloads = [];
     for (const sel of selections) payloads.push(await myDeckPayload(sel));
-    await exportDeckPayloads(payloads, format, { fileBaseName: `all-decks-${contentType}`, title: "All Decks" }, contentType);
-    if (format !== "pdf") showToast(`Exported all decks' ${contentType} as ${format.toUpperCase()}`);
+    await exportDeckPayloads(payloads, format, { fileBaseName: `all-files-${contentType}`, title: "All Files" }, contentType);
+    if (format !== "pdf") showToast(`Exported all files' ${contentType} as ${format.toUpperCase()}`);
   } catch (error) {
     console.error("Failed to export all decks", error);
-    setStatus("Failed to export all decks.", "error");
+    setStatus("Failed to export all files.", "error");
     showToast("Export failed", "error");
   }
 }

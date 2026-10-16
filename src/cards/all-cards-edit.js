@@ -113,7 +113,7 @@ export function deleteAllCard(cardId) {
     }
     showCard();
     renderAllCards();
-    setStatus(state.deckId ? "Card deleted locally. Sync to update the web deck." : "Card deleted. Ctrl+Z to undo.");
+    setStatus(state.deckId ? "Card deleted locally. Sync to update the cloud copy." : "Card deleted. Ctrl+Z to undo.");
   }, { confirmLabel: "Delete", danger: true });
 }
 
@@ -156,7 +156,7 @@ export function refreshAllCardsAround(cardId, side = "question") {
 
 export function insertCardAfter(cardId) {
   if (!state.masterCards.length && !state.deckTitle) {
-    setStatus("Create a new deck or import one first.", "error");
+    setStatus("Create a new file or import one first.", "error");
     return;
   }
 
@@ -182,7 +182,7 @@ export function insertCardAfter(cardId) {
   refreshAllCardsAround(newCard.id).then((item) => {
     if (item) openAllCardEditor(item, "question");
   });
-  setStatus(state.deckId ? "Card inserted locally. Sync to update the web deck." : "Card inserted.");
+  setStatus(state.deckId ? "Card inserted locally. Sync to update the cloud copy." : "Card inserted.");
 }
 
 export function activeDeckMatchesMasterOrder() {
@@ -218,7 +218,7 @@ export function finishMasterCardReorder(cardId, shouldRefreshActiveDeck, current
     movedItem?.scrollIntoView({ block: "nearest" });
     movedItem?.focus({ preventScroll: true });
   });
-  setStatus(state.deckId ? "Card order updated locally. Sync to update the web deck." : "Card order updated.");
+  setStatus(state.deckId ? "Card order updated locally. Sync to update the cloud copy." : "Card order updated.");
 }
 
 export function reorderMasterCard(cardId, targetCardId, placement) {

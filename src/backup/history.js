@@ -93,7 +93,7 @@ export function backupNudgeDue({ record = readLastBackup(), changedAt = 0, deckC
 export function describeLastBackup(record = readLastBackup()) {
   if (!record?.at) return "Never backed up";
   const bits = [`Last backup: ${formatBackupAge(record)}`];
-  if (record.decks) bits.push(`${record.decks} deck${record.decks === 1 ? "" : "s"}`);
-  if (record.documents) bits.push(`${record.documents} paper${record.documents === 1 ? "" : "s"}`);
+  if (record.decks) bits.push(`${record.decks} file${record.decks === 1 ? "" : "s"}`);
+  if (record.documents) bits.push(`${record.documents} PDF${record.documents === 1 ? "" : "s"}`);
   return bits.join(" · ");
 }

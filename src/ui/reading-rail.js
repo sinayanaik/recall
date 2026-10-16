@@ -249,8 +249,8 @@ const VIEW_NAMES = {
   // The key is the view mode and the value is what the reader calls it. They
   // stopped matching when the tab was renamed to PDF, and that is deliberate:
   // "document" is the name of #documentStage, which a deck's notebook shares.
-  document: "PDF",
-  handwriting: "Handwritten notes"
+  document: "PDFs",
+  handwriting: "Canvas"
 };
 
 // A heading with nothing under it is worse than no heading — "This page" over an

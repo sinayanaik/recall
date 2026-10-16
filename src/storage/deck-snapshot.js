@@ -154,7 +154,7 @@ export function clearBrowserPersistence() {
 export function loadDeckSnapshot(payload, titleHint = "", append = false, { keepPlace = false, deckKey = null } = {}) {
   setDeckAutosaveStorageFailed(false);
   if (!payload || !Array.isArray(payload.cards)) {
-    throw new Error("Invalid flashcard JSON");
+    throw new Error("Invalid card JSON");
   }
 
   const usedIds = new Set(append ? state.masterCards.map(c => c.id) : []);
@@ -195,7 +195,7 @@ export function loadDeckSnapshot(payload, titleHint = "", append = false, { keep
   // `cards` here is the PARSED list (blank-question rows already dropped), not
   // payload.cards — a file of nothing but unusable rows is still empty.
   if (!deckPayloadHasContent({ cards, notes: payloadNotes, meta: payload.meta })) {
-    throw new Error("No cards in flashcard JSON");
+    throw new Error("No cards in card JSON");
   }
 
   if (append) {

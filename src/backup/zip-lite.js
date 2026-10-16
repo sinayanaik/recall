@@ -432,7 +432,7 @@ export class LiteZip {
 
       offset += 30 + nameBytes.length + compressedSize;
       if (offset > ZIP_LITE_MAX_BYTES) {
-        throw new Error("This library is too large for one archive (over 4 GB) — back it up in parts by selecting decks");
+        throw new Error("This library is too large for one archive (over 4 GB) — back it up in parts by selecting files");
       }
       // The decoded copy is dropped as soon as its bytes are in the part list,
       // so a hundred papers are held one at a time rather than all at once. The

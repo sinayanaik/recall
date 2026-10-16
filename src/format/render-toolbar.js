@@ -280,9 +280,9 @@ export function createRenderToolbarHtml({ actions = true, highlight = true } = {
   const captureGroup = actions
     ? `
     <span class="render-divider" aria-hidden="true"></span>
-    <button type="button" class="render-btn render-make-card" data-render-action="make-card" title="Make a flashcard from the selection">+</button>
+    <button type="button" class="render-btn render-make-card" data-render-action="make-card" title="Make a card from the selection">+</button>
     <button type="button" class="render-btn make-cloze-btn" data-render-action="cloze" title="Cloze — hide the selection as a fill-in-the-blank">${CLOZE_MAKE_ICON}</button>
-    <button type="button" class="render-btn render-quick-note" data-render-action="quick-note" title="Save selection to the quick_notes deck">📌</button>`
+    <button type="button" class="render-btn render-quick-note" data-render-action="quick-note" title="Save selection to the quick_notes file">📌</button>`
     : "";
   // ── ≡ and ❝, side by side ─────────────────────────────────────────────
   //

@@ -173,7 +173,7 @@ export function bucketKeysSyncLine(report) {
   if (!report?.signedIn) return note("The keys are on this device only until you sign in — then every device on your account gets them.");
   switch (sync.state) {
     case "synced":
-      return note("Keys synced to your account — every device you sign in on can open these papers and images.");
+      return note("Keys synced to your account — every device you sign in on can open these PDFs and images.");
     case "unavailable":
       return note("The keys are on this device only: your Supabase project has no <code>app_storage_settings</code> table yet. Re-run <code>supabase_setup.sql</code> and they sync to your other devices.", true);
     case "offline":
@@ -375,7 +375,7 @@ export function renderBucketPanel() {
        <button type="button" class="storage-action" data-bucket-action="migrate" ${reachable && !working ? "" : "disabled"}>
          Move them to the bucket${reachable ? "" : " — add a bucket first"}
        </button>
-       <p class="storage-note">Each paper is copied into the bucket and checked there, then your decks sync, so every device knows where it went. Only after that is the old copy removed. An interrupted move leaves a duplicate, never a gap. A paper another deck still relies on keeps its old copy until that deck has moved too.</p>
+       <p class="storage-note">Each paper is copied into the bucket and checked there, then your files sync, so every device knows where it went. Only after that is the old copy removed. An interrupted move leaves a duplicate, never a gap. A paper another file still relies on keeps its old copy until that file has moved too.</p>
        ${fromDrive ? `<p class="storage-note is-warning">${fromDrive} of these ${fromDrive === 1 ? "is" : "are"} in Google Drive. Google no longer lets Recall read or delete there, so ${fromDrive === 1 ? "it moves" : "they move"} from a device that already holds the file. The Drive copy is left in your Drive for you to delete by hand.</p>` : ""}`
     : `<p class="storage-note">Nothing left to move. Every paper in this library is either in the bucket or on this device alone.</p>`}
     ${migrationResultsHtml(lastRun)}`;
@@ -439,7 +439,7 @@ async function runBucketWork(label, work, { touchesImages = false } = {}) {
 }
 
 function migrationProgressText(phase, done, count, name) {
-  if (phase === "sync") return "Syncing your decks…";
+  if (phase === "sync") return "Syncing your files…";
   if (phase === "retire") return `Removing old copies ${Math.min(done + 1, count)} of ${count} — ${name}`;
   return `Copying ${Math.min(done + 1, count)} of ${count} into the bucket — ${name}`;
 }
@@ -575,7 +575,7 @@ export async function runBucketAction(action) {
     }
     const total = jobs.reduce((sum, job) => sum + job.bytes, 0);
     showConfirmModal(
-      `${jobs.length} paper${jobs.length === 1 ? "" : "s"} (${formatStorageBytes(total)}) will be copied into your bucket and checked there. Your decks then sync so every device knows where each one went, and only then is the old copy removed from Supabase. Copies in Google Drive are left in your Drive and listed for you. Your highlights, notes and cards are untouched, and so is every copy on this device.`,
+      `${jobs.length} paper${jobs.length === 1 ? "" : "s"} (${formatStorageBytes(total)}) will be copied into your bucket and checked there. Your files then sync so every device knows where each one went, and only then is the old copy removed from Supabase. Copies in Google Drive are left in your Drive and listed for you. Your highlights, notes and cards are untouched, and so is every copy on this device.`,
       () => runBucketWork("Moving papers to the bucket…", async (say) => {
         const summary = await migrateDocumentsToS3(jobs, {
           sync: bucketSyncRunner,
@@ -643,7 +643,7 @@ export async function runBucketAction(action) {
     }
     const bytes = (imageSurvey?.inBoth || []).reduce((sum, object) => sum + (Number(object.size) || 0), 0);
     if (!await confirmByTyping("DELETE", "Remove the Supabase copies?",
-      `${confirmed.size} image${confirmed.size === 1 ? "" : "s"} (${formatStorageBytes(bytes)}) are in your bucket at the same size, so their Supabase copies can go. Each is checked again at the moment of deleting, and anything that no longer matches is kept. Before you do this: take a backup (My Decks → ⋯ → Back up library), and open Recall once on your other devices so they are on this version — an older version only knows how to load images from Supabase. Type DELETE to confirm.`)) return;
+      `${confirmed.size} image${confirmed.size === 1 ? "" : "s"} (${formatStorageBytes(bytes)}) are in your bucket at the same size, so their Supabase copies can go. Each is checked again at the moment of deleting, and anything that no longer matches is kept. Before you do this: take a backup (My Files → ⋯ → Back up library), and open Recall once on your other devices so they are on this version — an older version only knows how to load images from Supabase. Type DELETE to confirm.`)) return;
     await runBucketWork("Removing the Supabase copies…", async (say) => {
       const result = await removeSupabaseImageCopies(confirmed, { onProgress: say });
       try {

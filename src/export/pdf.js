@@ -37,7 +37,7 @@ export function exportMarkdown(scope = "all") {
   const title = scope === "known" ? "Known" : scope === "review" ? "Review" : scope === "uncategorized" ? "Uncategorized" : "All Cards";
   const uncategorized = uncategorizedCards();
   const output = [
-    `# ${state.deckTitle || "Flashcard Export"}`,
+    `# ${state.deckTitle || "Card Export"}`,
     "",
     `Category: ${state.deckCategory || defaultDeckCategory}`,
     `Exported: ${new Date().toISOString()}`,
@@ -117,7 +117,7 @@ export function printableCardCount(entries = []) {
 export function cornellDeckDividerHtml(entry) {
   return `
     <article class="cornell-print-deck-divider">
-      <span>Deck</span>
+      <span>File</span>
       <h2>${escapeHtml(entry.title || "Untitled")}</h2>
       <p>Category: ${escapeHtml(normalizeDeckCategory(entry.category))}</p>
     </article>
@@ -348,7 +348,7 @@ export function cornellFlatDeckDividerHtml(entry) {
   return `
     <table class="flat-export-divider" cellspacing="0" cellpadding="0" width="100%">
       <tr><td>
-        <span>Deck</span>
+        <span>File</span>
         <h2>${escapeHtml(entry.title || "Untitled")}</h2>
         <p>Category: ${escapeHtml(normalizeDeckCategory(entry.category))}</p>
       </td></tr>
@@ -382,7 +382,7 @@ export function buildNotesExportBody(title, notesMarkdown) {
   return `
     <header class="flat-export-cover">
       <h1>${escapeHtml(title)}</h1>
-      <p>Study Notes &middot; ${new Date().toLocaleString()}</p>
+      <p>Notes &middot; ${new Date().toLocaleString()}</p>
     </header>
     <section class="flat-export-notes rendered">
       ${markdownToSafeHtml(notesMarkdown)}
@@ -404,7 +404,7 @@ export function buildNotesPrintDocument(title, notesMarkdown) {
       <header class="cornell-print-cover">
         <div>
           <h1>${escapeHtml(title)}</h1>
-          <p>Study Notes &middot; ${new Date().toLocaleString()}</p>
+          <p>Notes &middot; ${new Date().toLocaleString()}</p>
         </div>
       </header>
       <section class="rendered" aria-label="${escapeHtml(title)} notes">
@@ -489,7 +489,7 @@ function highlightExportEntryHtml(item, groupedByPage = false) {
 // already arrive in documentHighlightsInReadingOrder() order — page, then down
 // the page — so there is nothing to sort, and it is what turns a flat list of
 // passages into something shaped like the paper it came out of.
-function highlightsExportBodyHtml(items, { groupByPage = false, emptyLabel = "No highlights in this deck." } = {}) {
+function highlightsExportBodyHtml(items, { groupByPage = false, emptyLabel = "No highlights in this file." } = {}) {
   if (!items.length) return `<p class="flat-export-empty">${escapeHtml(emptyLabel)}</p>`;
   let lastChapter = null;
   let lastPage = null;
@@ -543,7 +543,7 @@ export function buildHighlightsExportBody(title, options = {}) {
 // # title instead of competing with it.
 export function buildHighlightsExportMarkdown(title, options = {}) {
   const items = collectDeckHighlightsForExport(options);
-  if (!items.length) return `# ${title}\n\nNo highlights in this deck.\n`;
+  if (!items.length) return `# ${title}\n\nNo highlights in this file.\n`;
   const blocks = [];
   let lastChapter = null;
   let lastPage = null;
@@ -593,11 +593,11 @@ export function buildHighlightsPrintDocument(title, options = {}) {
 // the same deck-divider treatment the cards PDF already uses between decks.
 export function notesFlatSectionsHtml(sections) {
   if (sections.length === 1) {
-    return `<div class="rendered">${markdownToSafeHtml(sections[0].notes || "*No notes for this deck.*")}</div>`;
+    return `<div class="rendered">${markdownToSafeHtml(sections[0].notes || "*No notes for this file.*")}</div>`;
   }
   return sections.map((section) => `
     ${cornellDeckDividerHtml({ title: section.title, category: section.category })}
-    <div class="rendered">${markdownToSafeHtml(section.notes || "*No notes for this deck.*")}</div>
+    <div class="rendered">${markdownToSafeHtml(section.notes || "*No notes for this file.*")}</div>
   `).join("");
 }
 
@@ -605,7 +605,7 @@ export function buildNotesFlatDocument(title, sections) {
   return `
     <header class="flat-export-cover">
       <h1>${escapeHtml(title)}</h1>
-      <p>Study Notes &middot; ${new Date().toLocaleString()}</p>
+      <p>Notes &middot; ${new Date().toLocaleString()}</p>
     </header>
     <section class="flat-export-notes">
       ${notesFlatSectionsHtml(sections)}
@@ -623,7 +623,7 @@ export function buildNotesFlatPrintDocument(title, sections) {
       <header class="cornell-print-cover">
         <div>
           <h1>${escapeHtml(title)}</h1>
-          <p>Study Notes &middot; ${new Date().toLocaleString()}</p>
+          <p>Notes &middot; ${new Date().toLocaleString()}</p>
         </div>
       </header>
       <section aria-label="${escapeHtml(title)} notes">

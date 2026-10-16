@@ -76,7 +76,7 @@ export function buildSyncReportHtml(deckLog, { pulled = 0, pushed = 0, failed = 
   }).join("");
 
   return `
-    <p class="sync-report-summary">${pushed} deck${pushed === 1 ? "" : "s"} sent · ${pulled} deck${pulled === 1 ? "" : "s"} received${failed ? ` · ${failed} failed (will retry)` : ""}</p>
+    <p class="sync-report-summary">${pushed} file${pushed === 1 ? "" : "s"} sent · ${pulled} file${pulled === 1 ? "" : "s"} received${failed ? ` · ${failed} failed (will retry)` : ""}</p>
     ${buildSyncTimingHtml(timings)}
     <ul class="sync-report-list">${rows}</ul>
   `;

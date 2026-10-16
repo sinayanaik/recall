@@ -332,7 +332,7 @@ async function run() {
         const file = new File([new Uint8Array(bytes)], "rotation.pdf", { type: "application/pdf" });
         await api.importPdfFile(file, null);
         await settle(400);
-        const entry = api.readLocalDeckIndex().find((m) => m.title && m.title !== "Rotation fixture" && m.title !== "Untitled deck");
+        const entry = api.readLocalDeckIndex().find((m) => m.title && m.title !== "Rotation fixture" && m.title !== "Untitled file");
         if (!entry) return { error: "no PDF deck was created" };
         await api.loadDeckFromLibrary(entry.id);
         await settle(400);

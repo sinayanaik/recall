@@ -443,10 +443,11 @@ try {
     const at = await charIn("P30", 4);
     const sel = await dragTo(at, { x: at.x, y: stage.head.top + 6 });
     // The failure this exists for: the selection collapsed to nothing and
-    // re-anchored inside the header's "Study Notes" label.
+    // re-anchored inside the header's "Notes" label (it said "Study Notes"
+    // until the parts of a file were named — NOMENCLATURE.md).
     if (sel.len === 0) return "the selection collapsed to nothing";
     if (sel.anchorIn !== "notes") return `the anchor moved to ${sel.anchorIn}`;
-    if (/Study Notes|CARDS|NOTES|HIGHLIGHTS/.test(sel.text)) return `header text is in the selection: ${JSON.stringify(sel.text.slice(0, 60))}`;
+    if (/\bNotes\b|CARDS|NOTES|HIGHLIGHTS/.test(sel.text)) return `header text is in the selection: ${JSON.stringify(sel.text.slice(0, 60))}`;
     return null;
   });
 
@@ -460,7 +461,7 @@ try {
     // gets on the clipboard is Selection.toString(), and that is what has to
     // be free of the app's furniture.
     if (stage.copyLabel && sel.text.includes(stage.copyLabel)) return `the code block's copy button (${JSON.stringify(stage.copyLabel)}) is in the selected text`;
-    if (/Study Notes|Reveal clozes|Make card/.test(sel.text)) return `control text is in the selection: ${JSON.stringify(sel.text.slice(0, 60))}`;
+    if (/\bNotes\b|Reveal clozes|Make card/.test(sel.text)) return `control text is in the selection: ${JSON.stringify(sel.text.slice(0, 60))}`;
     return null;
   });
 

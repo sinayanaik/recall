@@ -39,7 +39,7 @@ export function buildDeckSql(payloads, title = "Recall SQL Export", { includeNot
     // INSERT below (escaped via sqlValue), a title containing a literal
     // newline here would break out of the "--" comment and let the rest of
     // the title be interpreted as SQL.
-    lines.push(`-- Deck: ${String(deck.title || "").replace(/\r?\n/g, " ")}`);
+    lines.push(`-- File: ${String(deck.title || "").replace(/\r?\n/g, " ")}`);
     const notesColumns = includeNotes ? [["notes", sqlValue(deck.notes || "")]] : [];
     const columns = [
       ["id", sqlValue(deck.id)],
@@ -85,7 +85,7 @@ export function buildDeckSql(payloads, title = "Recall SQL Export", { includeNot
 }
 
 export function currentDeckPayload(scope = "all") {
-  const deckTitle = state.deckTitle || state.sourceTitle || "Untitled Deck";
+  const deckTitle = state.deckTitle || state.sourceTitle || "Untitled File";
   const deckId = state.deckId || slugifyFileName(deckTitle);
   const cards = cardsForScope(scope).map((card, index) => ({
     id: card.id,
@@ -129,5 +129,5 @@ export function exportSql(scope = "all") {
     `${exportBaseName(scope)}.sql`,
     "application/sql;charset=utf-8"
   );
-  setStatus("Exported current deck as SQL.");
+  setStatus("Exported this file as SQL.");
 }

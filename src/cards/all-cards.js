@@ -160,7 +160,7 @@ export function saveAllCardEditor(item) {
   }
 
   refreshAllCardsAround(card.id, side);
-  setStatus(state.deckId ? "Card updated locally. Sync to update the web deck." : "Card updated.");
+  setStatus(state.deckId ? "Card updated locally. Sync to update the cloud copy." : "Card updated.");
 }
 
 export async function ensureAllCardAnswer(item) {
@@ -379,7 +379,7 @@ export async function renderAllCards() {
 
 export function openAllCardsPanel() {
   if (!state.masterCards.length) {
-    setStatus("Import a deck before opening all cards.", "error");
+    setStatus("Open a file before opening all its cards.", "error");
     return;
   }
 

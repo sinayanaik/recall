@@ -1141,7 +1141,7 @@ export async function addDocumentImageBlock(pageNumber, file, at = null) {
   const stored = await storeImageOrQueue(file);
   if (stored.error) {
     showToast(stored.error === "not-signed-in"
-      ? "Sign in to add pictures — they are stored with your deck"
+      ? "Sign in to add pictures — they are stored with your file"
       : "Could not add that image", "error");
     return null;
   }

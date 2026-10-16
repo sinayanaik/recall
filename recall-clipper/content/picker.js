@@ -1438,7 +1438,7 @@
       </div>
       <div class="rc-render" data-render></div>
       <textarea class="rc-raw" data-md spellcheck="false" readonly hidden></textarea>
-      <div class="rc-note">Rendered with Recall's own engine — math (<code>$…$</code>), Mermaid/nomnoml diagrams and syntax highlighting appear exactly as they will in a deck. Equations are recovered as LaTeX from KaTeX, MathJax, Wikipedia and plain MathML. Tables become Markdown when the grid can hold them and sanitised HTML when they need merged or nested cells (Wikipedia infoboxes), so nothing is dropped either way.</div>
+      <div class="rc-note">Rendered with Recall's own engine — math (<code>$…$</code>), Mermaid/nomnoml diagrams and syntax highlighting appear exactly as they will in a Recall file. Equations are recovered as LaTeX from KaTeX, MathJax, Wikipedia and plain MathML. Tables become Markdown when the grid can hold them and sanitised HTML when they need merged or nested cells (Wikipedia infoboxes), so nothing is dropped either way.</div>
     </div>
     <div class="rc-toast" data-toast hidden></div>
   `;
@@ -1584,7 +1584,7 @@
     const where = source === "selection" ? "highlighted text"
       : source === "remaining" ? "the cleaned page"
       : "picked blocks";
-    toast(ok ? `Copied ${markdown.length} chars from ${where}${clipNote(tables, math)} → paste into a deck's Notes`
+    toast(ok ? `Copied ${markdown.length} chars from ${where}${clipNote(tables, math)} → paste into a file's Notes`
              : "Couldn't reach the clipboard — open Preview to copy manually.", ok);
   }
 

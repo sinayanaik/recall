@@ -17,14 +17,14 @@ export async function chooseDeckCategory(currentCategory = defaultDeckCategory) 
   return new Promise((resolve) => {
     const modal = document.createElement("section");
     modal.className = "category-choice-modal";
-    modal.setAttribute("aria-label", "Choose deck category");
+    modal.setAttribute("aria-label", "Choose file category");
 
     const shell = document.createElement("div");
     shell.className = "category-choice-shell";
     shell.innerHTML = `
       <div class="category-choice-head">
         <div>
-          <h2>Deck Category</h2>
+          <h2>File Category</h2>
           <p>Choose an existing category or create a new one.</p>
         </div>
         <button type="button" data-category-cancel aria-label="Close category editor">&#215;</button>

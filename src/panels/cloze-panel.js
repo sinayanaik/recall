@@ -150,7 +150,7 @@ export function collectDeckClozes() {
     }
     if (items.length) groups.push({ label, items });
   };
-  pushGroup("Study Notes", state.notes || "");
+  pushGroup("Notes", state.notes || "");
   (state.masterCards || []).forEach((card, i) => {
     pushGroup(`Card ${i + 1} · Question`, card.question || "");
     pushGroup(`Card ${i + 1} · Answer`, card.answer || "");
@@ -234,7 +234,7 @@ export function renderClozePanel() {
 
   if (el.clozeReviewSummary) {
     el.clozeReviewSummary.textContent =
-      total === 0 ? "No clozes yet" : `${total} cloze${total === 1 ? "" : "s"} across this deck`;
+      total === 0 ? "No clozes yet" : `${total} cloze${total === 1 ? "" : "s"} across this file`;
   }
 
   if (tables.length) {
@@ -271,7 +271,7 @@ export function renderClozePanel() {
     const p = document.createElement("p");
     p.className = "cloze-empty";
     p.textContent =
-      "No fill-in-the-blank clozes in this deck yet. Select text in your notes or a card and press […] to hide it as a cloze.";
+      "No fill-in-the-blank clozes in this file yet. Select text in your notes or a card and press […] to hide it as a cloze.";
     body.appendChild(p);
     resetClozePanelBulk();
     return;

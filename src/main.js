@@ -1943,10 +1943,10 @@ document.getElementById("logoutBtn")?.addEventListener("click", () => {
     await handleLogout();
     try {
       await resetLocalLibrary();
-      showToast(total ? `Signed out — ${total} deck${total === 1 ? "" : "s"} removed from this device` : "Signed out", "success");
+      showToast(total ? `Signed out — ${total} file${total === 1 ? "" : "s"} removed from this device` : "Signed out", "success");
     } catch (error) {
       console.warn("Could not clear the local deck library on sign-out", error);
-      showToast("Signed out, but the decks on this device could not be removed", "error");
+      showToast("Signed out, but the files on this device could not be removed", "error");
     }
   };
 
@@ -1955,12 +1955,12 @@ document.getElementById("logoutBtn")?.addEventListener("click", () => {
   showConfirmModal(
     // One paragraph, no newlines: .confirm-modal-message renders with textContent
     // and the default white-space, so a "\n\n" here would collapse to a space.
-    `Sign out and remove all ${total} deck${total === 1 ? "" : "s"} from this device? `
+    `Sign out and remove all ${total} file${total === 1 ? "" : "s"} from this device? `
     + "Everything already synced stays in your Supabase project and comes back when you sign in again."
     + (localOnly
-      ? ` But ${localOnly} deck${localOnly === 1 ? " has" : "s have"} never synced — `
+      ? ` But ${localOnly} file${localOnly === 1 ? " has" : "s have"} never synced — `
         + `${localOnly === 1 ? "it exists" : "they exist"} only on this device and will be gone for good. `
-        + "Cancel and use My Decks → ⋯ → Backup first if you need them."
+        + "Cancel and use My Files → ⋯ → Backup first if you need them."
       : ""),
     () => { signOutAndWipe(); },
     { confirmLabel: "Sign out & delete", danger: true }
@@ -3249,7 +3249,7 @@ window.addEventListener("online", () => {
 window.addEventListener("offline", () => {
   updateOnlineIndicator();
   updateDeckEmptyStatus();
-  showToast("You're offline — local decks still work", "info");
+  showToast("You're offline — local files still work", "info");
 });
 updateOnlineIndicator();
 
@@ -3321,7 +3321,7 @@ onS3ConfigAdopted(() => {
 onDocumentBackfillDone((summary) => {
   if (bucketPanelOpen()) refreshBucketReport();
   if (summary.uploaded) {
-    showToast(`Uploaded ${summary.uploaded} paper${summary.uploaded === 1 ? "" : "s"} to your bucket — your other devices can open ${summary.uploaded === 1 ? "it" : "them"} now`, "success");
+    showToast(`Uploaded ${summary.uploaded} PDF${summary.uploaded === 1 ? "" : "s"} to your bucket — your other devices can open ${summary.uploaded === 1 ? "it" : "them"} now`, "success");
   }
 });
 // ...and once now. bootApp() is started higher up this file, and two of its
@@ -3391,7 +3391,7 @@ if (el.deleteCardBtn) {
         state.current = Math.max(0, state.cards.length - 1);
       }
       showCard();
-      setStatus(state.deckId ? "Card deleted locally. Sync to update the web deck." : "Card deleted. Ctrl+Z to undo.");
+      setStatus(state.deckId ? "Card deleted locally. Sync to update the cloud copy." : "Card deleted. Ctrl+Z to undo.");
     }, { confirmLabel: "Delete", danger: true });
   });
 }
@@ -3898,13 +3898,13 @@ el.documentPageInput?.addEventListener("change", () => {
 // one of the deck's PDFs, and showing the reader which box on the page it was.
 async function goToPdfRegion({ page, rect, pdfId }) {
   if (!deckHasPdf(state.meta)) {
-    setStatus("This deck has no PDF attached to open that region in.", "error");
+    setStatus("This file has no PDF attached to open that region in.", "error");
     return;
   }
   // A ref with no pdfId is the primary paper (see pdfRegionRefMarkdown).
   const wantedPdf = pdfId || PDF_PRIMARY_ID;
   if (!deckPdfById(state.meta, wantedPdf)) {
-    setStatus("The PDF this region came from is no longer attached to this deck.", "error");
+    setStatus("The PDF this region came from is no longer attached to this file.", "error");
     return;
   }
   // Back returns to the card or the note the press came from.
@@ -4219,9 +4219,9 @@ function removeCurrentPdf() {
   if (!entry) return;
   const rest = deckPdfs(state.meta).length > 1
     ? "Your other PDFs, notes and cards are untouched."
-    : "It is this deck's only PDF, so the deck is left with no document — your notes and cards are untouched, and you can attach another any time.";
+    : "It is this file's only PDF, so the file is left with no document — your notes and cards are untouched, and you can attach another any time.";
   showConfirmModal(
-    `“${entry.label || entry.name || "This PDF"}” will be removed from this deck, along with its highlights and bookmark. ${rest}`,
+    `“${entry.label || entry.name || "This PDF"}” will be removed from this file, along with its highlights and bookmark. ${rest}`,
     () => removePdfFromDeck(pdfId),
     { confirmLabel: "Remove", danger: true }
   );
@@ -4263,7 +4263,7 @@ async function offloadCurrentDocument() {
       )));
       scheduleDeckAutosave();
       showToast(shared
-        ? "Removed from this deck's cloud copy — another deck uses the same file, so it stays in the bucket"
+        ? "Removed from this file's cloud copy — another file uses the same PDF, so it stays in the bucket"
         : `Removed from cloud · ${formatStorageBytes(pdfMeta.size || 0)} freed`);
     },
     { confirmLabel: "Remove", danger: true }

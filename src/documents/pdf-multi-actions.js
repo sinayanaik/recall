@@ -89,7 +89,7 @@ export async function removePdfFromDeck(pdfId) {
     if (state.viewMode === "document") await openDocumentView({ force: true, slot: DOC_SLOT_DOC });
   }
   renderDocumentPdfSwitcher();
-  showToast(`Removed "${entry.name || "PDF"}" from this deck`);
+  showToast(`Removed "${entry.name || "PDF"}" from this file`);
   return true;
 }
 

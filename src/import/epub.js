@@ -1041,15 +1041,15 @@ export function showEpubPreview({ title, author, chapterCount, imageEntries = []
           <label class="epub-preview-mode-option">
             <input type="radio" name="epub-import-mode" value="chapters" checked>
             <span>
-              <strong>Separate deck per chapter</strong>
-              <small>One deck per chapter (notes only), inside a new folder named after the book.</small>
+              <strong>Separate file per chapter</strong>
+              <small>One file per chapter (notes only), inside a new folder named after the book.</small>
             </span>
           </label>
           <label class="epub-preview-mode-option">
             <input type="radio" name="epub-import-mode" value="book">
             <span>
-              <strong>Single deck for the whole book</strong>
-              <small>All chapters combined into one deck's notes, with chapter titles kept as headings.</small>
+              <strong>Single file for the whole book</strong>
+              <small>All chapters combined into one file's notes, with chapter titles kept as headings.</small>
             </span>
           </label>
         </div>
@@ -1253,7 +1253,7 @@ export function showEpubPreview({ title, author, chapterCount, imageEntries = []
       warning.hidden = !(selectedMode() === "chapters" && existingDeckCount > 0);
     };
     if (existingDeckCount > 0) {
-      warning.textContent = `⚠ That folder already holds ${existingDeckCount} deck${existingDeckCount === 1 ? "" : "s"} — importing again adds a second copy of every chapter rather than replacing them.`;
+      warning.textContent = `⚠ That folder already holds ${existingDeckCount} file${existingDeckCount === 1 ? "" : "s"} — importing again adds a second copy of every chapter rather than replacing them.`;
     }
     modeInputs.forEach((input) => input.addEventListener("change", updateWarningVisibility));
     updateWarningVisibility();
@@ -1437,7 +1437,7 @@ export async function runEpubImport(zip, pkg, bookTitle, imageEntries, markers, 
       // instead — an accepted tradeoff of sort being user-selectable now.
       const baseTime = Date.now();
       for (let i = 0; i < chapters.length; i++) {
-        const label = `Creating chapter decks ${i + 1}/${chapters.length}…`;
+        const label = `Creating chapter files ${i + 1}/${chapters.length}…`;
         setStatus(label);
         progress.update(label, i / Math.max(chapters.length, 1));
         await epubYield();
@@ -1479,9 +1479,9 @@ export async function runEpubImport(zip, pkg, bookTitle, imageEntries, markers, 
 
     if (saveFailed) {
       const message = mode === "book"
-        ? (lastSaveErrorWasQuota ? "Could not save — device storage is full." : "Could not save this deck.")
+        ? (lastSaveErrorWasQuota ? "Could not save — device storage is full." : "Could not save this file.")
         : lastSaveErrorWasQuota
-          ? `Only ${saved} of ${chapters.length} chapters saved — device storage is full. Delete some decks and re-import.`
+          ? `Only ${saved} of ${chapters.length} chapters saved — device storage is full. Delete some files and re-import.`
           : `Only ${saved} of ${chapters.length} chapters could be saved.`;
       progress.update(message, saved / Math.max(mode === "book" ? 1 : chapters.length, 1));
       setStatus(message, "error");
@@ -1494,7 +1494,7 @@ export async function runEpubImport(zip, pkg, bookTitle, imageEntries, markers, 
     const summary = mode === "book"
       ? (progress.cancelled()
           ? `Import stopped — saved "${bookTitle}" with ${chapters.length} ${bookChapterWord} converted so far`
-          : `Imported "${bookTitle}" as one deck (${chapters.length} ${bookChapterWord})`)
+          : `Imported "${bookTitle}" as one file (${chapters.length} ${bookChapterWord})`)
       : progress.cancelled()
         ? `Import stopped — kept ${saved} ${chapterWord} of "${bookTitle}"`
         : `Imported "${bookTitle}" — ${saved} ${chapterWord}`;

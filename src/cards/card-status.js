@@ -53,15 +53,15 @@ export function updateMeta() {
   // `#` heading, which saveFolderDeck writes back as that deck's new name.
   const isFolder = Boolean(state.folderDeck);
   el.editDeckTitleBtn.disabled = !hasDeck || isFolder;
-  el.editDeckTitleBtn.title = isFolder ? "Rename each deck from its own row in My Decks" : "Edit deck title";
+  el.editDeckTitleBtn.title = isFolder ? "Rename each file from its own row in My Files" : "Edit file title";
   if (el.deckCategory) {
     el.deckCategory.textContent = isFolder
       ? (state.folderDeck.path ? "FOLDER" : "MERGED")
       : normalizeDeckCategory(state.deckCategory);
     el.deckCategory.title = isFolder
       ? (state.folderDeck.path
-        ? `Reading every deck in ${state.folderDeck.path} as one document`
-        : `Reading ${state.folderDeck.members.length} decks as one document — edits are saved back to each of them`)
+        ? `Reading every file in ${state.folderDeck.path} as one document`
+        : `Reading ${state.folderDeck.members.length} files as one document — edits are saved back to each of them`)
       : `Category: ${normalizeDeckCategory(state.deckCategory)}`;
   }
   if (el.editDeckCategoryBtn) {

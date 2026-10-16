@@ -522,7 +522,7 @@
       <div class="boot-name">Recall</div>
       <div class="boot-spinner" aria-hidden="true"></div>
       <p class="boot-slow" id="bootSkeletonSlow">Still starting up. If this doesn't clear, your
-        connection may be stalled — your decks are stored on this device and are safe.</p>
+        connection may be stalled — your files are stored on this device and are safe.</p>
       <button class="boot-retry" type="button" id="bootSkeletonRetry" hidden>Reload</button>
     </div>
     <script>
@@ -592,11 +592,11 @@
             <button class="toolbar-close-btn" id="toolbarCloseBtn" type="button" aria-label="Close menu">&#215;</button>
           </div>
 
-          <span class="drawer-section-label">Decks</span>
-          <button class="tool-button" id="homeBtn" type="button" title="Your home screen: recent decks and quick actions">&#8962; Home</button>
-          <button class="tool-button" id="newDeckBtn" type="button">&#43; New Deck</button>
+          <span class="drawer-section-label">Files</span>
+          <button class="tool-button" id="homeBtn" type="button" title="Your home screen: recent files and quick actions">&#8962; Home</button>
+          <button class="tool-button" id="newDeckBtn" type="button">&#43; New File</button>
           <button class="tool-button" id="importBtn" type="button" title="Import a file, pasted Markdown, or a link — as notes, as cards, or both">&#8679; Import</button>
-          <button class="tool-button" id="myDecksBtn" type="button" title="All your decks — saved on this device and synced to the cloud automatically">&#128218; My Decks</button>
+          <button class="tool-button" id="myDecksBtn" type="button" title="All your files — saved on this device and synced to the cloud automatically">&#128218; My Files</button>
           <!-- No "📄 Attach a PDF…" row here any more, and it is not a feature
                that went away. It existed because the Document surface only
                existed once meta.pdf did, so a deck whose notes were typed up
@@ -610,7 +610,7 @@
                for something scoped to one open deck — which is exactly the rule
                this drawer now follows: what belongs to the deck or the view you
                are looking at lives in that view's own chrome. -->
-          <button class="tool-button" id="syncNowBtn" type="button" title="Sync all decks with the cloud now — combines the changes from all your devices and windows, and saves where you are reading">&#8635; Sync Now</button>
+          <button class="tool-button" id="syncNowBtn" type="button" title="Sync all files with the cloud now — combines the changes from all your devices and windows, and saves where you are reading">&#8635; Sync Now</button>
 
           <span class="drawer-section-label">Study</span>
           <!-- 🗂, not the ≡ this used to carry: a stack of horizontal lines is
@@ -619,7 +619,7 @@
                not the 🗃 (card file box) Storage & Data carries — a different
                drawing in a different section. -->
           <button class="tool-button" id="allCardsBtn" type="button">&#128450; Browse All Cards</button>
-          <button class="tool-button" id="quickNotesBoardBtn" type="button" title="Skim every pinned note across all decks, sorted by subject">&#128209; Quick Notes</button>
+          <button class="tool-button" id="quickNotesBoardBtn" type="button" title="Skim every pinned note across all files, sorted by subject">&#128209; Quick Notes</button>
           <!-- No "✎ Handwritten Notes" row here any more, and the feature did
                not go with it. It opened a full-page overlay for the deck you
                happened to have open — which is a surface scoped to one deck, in
@@ -681,7 +681,7 @@
           </div>
           <button class="tool-button" id="styleBtn" type="button" title="Themes &amp; Style" aria-label="Themes and style">&#9711; Themes &amp; Style</button>
           <button class="tool-button" id="bucketBtn" type="button" title="Your own bucket for papers and images: its keys, and moving what is still in Supabase or Google Drive into it">&#9729; Cloud bucket</button>
-          <button class="tool-button" id="storageBtn" type="button" title="What your account is storing — decks, cards and images — and how to clean it up">&#128451; Storage &amp; Data</button>
+          <button class="tool-button" id="storageBtn" type="button" title="What your account is storing — files, cards and images — and how to clean it up">&#128451; Storage &amp; Data</button>
           <button class="tool-button tool-button-info" id="helpBtn" type="button" title="How to use this app" aria-label="Help">&#63; Help &amp; Guide</button>
           <button class="tool-button" id="appInfoBtn" type="button" title="App version and update status" aria-label="App info">&#8505; App Info</button>
           <button class="tool-button" id="diagnosticsBtn" type="button" title="How the PDF reader is performing on this device" aria-label="Diagnostics">&#128200; Diagnostics</button>
@@ -694,14 +694,14 @@
         <div class="deck-meta">
           <span class="deck-title-wrap" id="deckTitleWrap" hidden>
             <span class="deck-title" id="deckTitle"></span>
-            <button class="deck-title-edit" id="editDeckTitleBtn" type="button" title="Edit deck title" aria-label="Edit deck title">&#9998;</button>
+            <button class="deck-title-edit" id="editDeckTitleBtn" type="button" title="Edit file title" aria-label="Edit file title">&#9998;</button>
           </span>
           <span class="deck-meta-row2" id="deckMeta2Row" hidden>
             <span class="deck-category" id="deckCategory">Uncategorized</span>
             <!-- A tag, not the ✏ next to the deck title: the two buttons sit a
                  few pixels apart in the same meta block and edit different
                  things, so sharing a pencil made the pair unreadable. -->
-            <button class="deck-title-edit deck-category-edit" id="editDeckCategoryBtn" type="button" title="Edit deck category" aria-label="Edit deck category">&#127991;</button>
+            <button class="deck-title-edit deck-category-edit" id="editDeckCategoryBtn" type="button" title="Edit file category" aria-label="Edit file category">&#127991;</button>
             <span class="deck-meta-sep" aria-hidden="true"></span>
             <span id="positionText">0/0</span>
             <strong id="scoreText">Known 0 / Review 0</strong>
@@ -736,13 +736,13 @@
 
           <div class="home-actions" role="group" aria-label="Quick actions">
             <button class="home-action" id="homeNewDeckBtn" type="button">
-              <span class="home-action-icon" aria-hidden="true">&#10022;</span><span class="home-action-label">New Deck</span>
+              <span class="home-action-icon" aria-hidden="true">&#10022;</span><span class="home-action-label">New File</span>
             </button>
             <button class="home-action" id="homeImportBtn" type="button">
               <span class="home-action-icon" aria-hidden="true">&#11014;</span><span class="home-action-label">Import</span>
             </button>
             <button class="home-action" id="homeMyDecksBtn" type="button">
-              <span class="home-action-icon" aria-hidden="true">&#128218;</span><span class="home-action-label">My Decks</span>
+              <span class="home-action-icon" aria-hidden="true">&#128218;</span><span class="home-action-label">My Files</span>
             </button>
             <button class="home-action" id="homeQuickNotesBtn" type="button">
               <span class="home-action-icon" aria-hidden="true">&#128209;</span><span class="home-action-label">Quick Notes</span>
@@ -757,11 +757,11 @@
 
           <section class="home-section" id="homeRecentSection" aria-labelledby="homeRecentTitle">
             <div class="home-section-head">
-              <h2 class="home-section-title" id="homeRecentTitle">Recent decks</h2>
+              <h2 class="home-section-title" id="homeRecentTitle">Recent files</h2>
               <button class="home-link" id="homeSeeAllBtn" type="button">See all &#8594;</button>
             </div>
             <div class="home-recent" id="homeRecent"></div>
-            <p class="home-empty" id="homeRecentEmpty" hidden>No decks yet — create your first deck, or import notes, a PDF or a book.</p>
+            <p class="home-empty" id="homeRecentEmpty" hidden>No files yet — create your first file, or import notes, a PDF or a book.</p>
           </section>
 
           <section class="home-section" aria-label="Sync and library">
@@ -771,7 +771,7 @@
                 <span class="deck-empty-panel-value" id="deckEmptySyncValue"></span>
               </div>
               <div class="deck-empty-panel-row">
-                <span class="deck-empty-panel-label">Your Decks</span>
+                <span class="deck-empty-panel-label">Your Files</span>
                 <span class="deck-empty-panel-value" id="deckEmptyLibraryValue"></span>
               </div>
             </div>
@@ -780,8 +780,8 @@
         </div>
       </section>
 
-      <section class="study-layout" aria-label="Flashcard study area">
-        <section class="quiz-panel is-deck-empty" aria-label="Flashcard quiz">
+      <section class="study-layout" aria-label="Card study area">
+        <section class="quiz-panel is-deck-empty" aria-label="Card quiz">
           <!-- ONE control row for the whole notes view. The Cards/Notes/
                PDF tabs, plus the three notes controls that used to sit in
                a second row of their own inside .notes-stage: the table of
@@ -794,7 +794,7 @@
                pin buttons inside the ⋯ menu resolve their surface from the
                nearest such ancestor. -->
           <div class="view-mode-row" id="viewModeRow" data-render-target="notes">
-            <div class="view-mode-toggle" id="viewModeToggle" hidden aria-label="Deck view">
+            <div class="view-mode-toggle" id="viewModeToggle" hidden aria-label="File view">
               <!-- The glyph and the word are separate spans so the glyph can be
                    DROPPED on a narrow screen. A PDF deck has four tabs, not
                    three, and at 360px four labels plus four emoji plus the
@@ -805,7 +805,7 @@
               <!-- Only a deck with meta.pdf ever shows this (see
                    refreshDocumentTab) — it is not a third empty tab on every
                    deck in the library, it is the surface a PDF deck opens on. -->
-              <button type="button" data-view-mode="document" hidden><span class="vm-ico" aria-hidden="true">&#128196;</span><span class="vm-label">PDF</span></button>
+              <button type="button" data-view-mode="document" hidden><span class="vm-ico" aria-hidden="true">&#128196;</span><span class="vm-label">PDFs</span></button>
               <!-- Handwritten notes. Shown on every open deck, exactly as the
                    PDF tab is and for the same reason: a surface you have to
                    be told exists is a surface most people never find. It used to
@@ -814,7 +814,7 @@
                    the APP rather than of the deck in front of you.
                    "Write", not "Handwriting": at 640px the glyphs drop and four
                    words have to share the row. -->
-              <button type="button" data-view-mode="handwriting" hidden><span class="vm-ico" aria-hidden="true">&#9998;</span><span class="vm-label">Write</span></button>
+              <button type="button" data-view-mode="handwriting" hidden><span class="vm-ico" aria-hidden="true">&#9998;</span><span class="vm-label">Canvas</span></button>
               <!-- There is no Highlights tab. There was, and it showed exactly
                    the cards the side-by-side pane below shows — the same
                    renderHighlightsEditor, into a different box — in a place you
@@ -871,7 +871,7 @@
               <div class="deck-empty-actions" id="deckEmptyActionsNone">
                 <button class="deck-empty-action" id="deckEmptyNewBtn" type="button">
                   <span class="deck-empty-action-icon" aria-hidden="true">✦</span>
-                  New Deck
+                  New File
                 </button>
                 <button class="deck-empty-action" id="deckEmptyImportBtn" type="button">
                   <span class="deck-empty-action-icon" aria-hidden="true">⬆</span>
@@ -879,7 +879,7 @@
                 </button>
                 <button class="deck-empty-action" id="deckEmptyWebBtn" type="button">
                   <span class="deck-empty-action-icon" aria-hidden="true">📚</span>
-                  My Decks
+                  My Files
                 </button>
               </div>
               <div class="deck-empty-actions" id="deckEmptyActionsActive" hidden>
@@ -970,7 +970,7 @@
                    what the label says. -->
               <button class="notes-toc-toggle" id="notesTocBtn" type="button" title="Contents and highlights" aria-label="Contents and highlights" aria-expanded="false" aria-controls="notesTocDrawer"><span class="notes-toc-bars" aria-hidden="true"></span><svg class="toc-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><g class="toc-ico-list"><path d="M4 6h.01M4 12h.01M4 18h.01"/><path d="M9 6h11M9 12h11M9 18h11"/></g><path class="toc-ico-close" d="M6 6l12 12M18 6 6 18"/></svg></button>
               <div class="face-label-row">
-                <span class="face-label">Study Notes</span>
+                <span class="face-label">Notes</span>
               </div>
               <div class="edit-toolbar" id="notesEditToolbar" hidden></div>
                 <!-- Three groups, separated by hairlines. Everything in this row
@@ -987,9 +987,9 @@
               <span class="notes-head-divider is-lead" aria-hidden="true"></span>
               <button class="edit-card-btn cloze-make-icon" data-nhm-group="From the selection" data-render-action="cloze" type="button" title="Make a cloze — hide the selected text as a fill-in-the-blank" aria-label="Make a cloze from the selection"><svg class="cz-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M2.5 7h4.5"/><rect x="9.5" y="4" width="12" height="6" rx="1.5" fill="currentColor" stroke="none"/><path d="M6 14.5v7M2.5 18h7"/></svg><span class="nhm-label">Hide the selection as a blank</span></button>
               <button class="edit-card-btn cloze-toggle-icon" id="clozeToggleNotesBtn" data-nhm-group="Clozes" type="button" aria-pressed="false" title="Show or hide every answer in these notes" aria-label="Reveal or hide all clozes in these notes"><svg class="cz-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true" stroke-linejoin="round"><path d="M1.8 12S5.5 5.5 12 5.5 22.2 12 22.2 12 18.5 18.5 12 18.5 1.8 12 1.8 12Z"/><circle cx="12" cy="12" r="2.6" fill="currentColor" stroke="none"/><path class="cz-slash" d="M4 20 20 4"/></svg><span class="nhm-label cloze-toggle-label">Reveal clozes</span></button>
-              <button class="edit-card-btn cloze-review-icon" id="clozeReviewBtn" data-nhm-group="Clozes" type="button" title="List every fill-in-the-blank in this deck" aria-label="List all clozes in this deck"><svg class="cz-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M2.5 5.5h4"/><rect x="9" y="3.5" width="12.5" height="4" rx="1.2" fill="currentColor" stroke="none"/><path d="M2.5 12h4"/><rect x="9" y="10" width="9" height="4" rx="1.2" fill="currentColor" stroke="none"/><path d="M2.5 18.5h4"/><rect x="9" y="16.5" width="12.5" height="4" rx="1.2" fill="currentColor" stroke="none"/></svg><span class="nhm-label">List every cloze in this deck</span></button>
+              <button class="edit-card-btn cloze-review-icon" id="clozeReviewBtn" data-nhm-group="Clozes" type="button" title="List every fill-in-the-blank in this file" aria-label="List all clozes in this file"><svg class="cz-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M2.5 5.5h4"/><rect x="9" y="3.5" width="12.5" height="4" rx="1.2" fill="currentColor" stroke="none"/><path d="M2.5 12h4"/><rect x="9" y="10" width="9" height="4" rx="1.2" fill="currentColor" stroke="none"/><path d="M2.5 18.5h4"/><rect x="9" y="16.5" width="12.5" height="4" rx="1.2" fill="currentColor" stroke="none"/></svg><span class="nhm-label">List every cloze in this file</span></button>
               <span class="notes-head-divider" aria-hidden="true"></span>
-              <button class="edit-card-btn notes-make-card" data-nhm-group="From the selection" data-render-action="make-card" type="button" title="Make a flashcard from the selection" aria-label="Make a flashcard from the selection"><span class="nhm-ico" aria-hidden="true">+</span><span class="nhm-label">Make a flashcard</span></button>
+              <button class="edit-card-btn notes-make-card" data-nhm-group="From the selection" data-render-action="make-card" type="button" title="Make a card from the selection" aria-label="Make a card from the selection"><span class="nhm-ico" aria-hidden="true">+</span><span class="nhm-label">Make a card</span></button>
               <button class="edit-card-btn notes-quick-note" data-nhm-group="From the selection" data-render-action="quick-note" type="button" title="Pin the selection to Quick Notes" aria-label="Pin the selection to Quick Notes"><span class="nhm-ico" aria-hidden="true">&#128204;</span><span class="nhm-label">Pin it to Quick Notes</span></button>
               <span class="notes-head-divider" aria-hidden="true"></span>
               <button class="edit-card-btn edit-toggle-pill" id="editNotesBtn" type="button" title="Edit notes" aria-label="Edit notes"><span class="pill-seg pill-seg-edit">&#9998;</span><span class="pill-seg pill-seg-view">&#128065;</span></button>
@@ -1137,7 +1137,7 @@
                    deck's PDF panel (src/documents/pdf-switcher.js), where the
                    papers are switched, dragged into order, renamed, removed
                    and added, all in the one list. -->
-              <button class="autosync-select document-pdf-switcher" id="documentPdfSwitcher" type="button" aria-haspopup="dialog" aria-expanded="false" aria-label="This deck's PDFs" title="Switch, reorder, rename or remove this deck's PDFs" hidden><span class="document-pdf-switcher-name"></span><span class="document-pdf-switcher-count"></span><span class="document-pdf-switcher-caret" aria-hidden="true">&#9662;</span></button>
+              <button class="autosync-select document-pdf-switcher" id="documentPdfSwitcher" type="button" aria-haspopup="dialog" aria-expanded="false" aria-label="This file's PDFs" title="Switch, reorder, rename or remove this file's PDFs" hidden><span class="document-pdf-switcher-name"></span><span class="document-pdf-switcher-count"></span><span class="document-pdf-switcher-caret" aria-hidden="true">&#9662;</span></button>
               <button class="tool-button document-more-btn" id="documentMoreBtn" type="button" aria-haspopup="true" aria-expanded="false" aria-label="PDF options" title="PDF options">&#8943;</button>
               <div class="document-more-menu" id="documentMoreMenu" role="menu" hidden>
                 <!-- "Save a copy" is not here any more. It downloads the
@@ -1161,23 +1161,23 @@
                      row is a <label> whose input is bound by id at boot. A
                      rebuild would quietly break both. -->
                 <div class="md-menu-head" data-slot="doc"><span>PDF</span></div>
-                <div class="md-menu-head" data-slot="notebook"><span>Handwritten pages</span></div>
+                <div class="md-menu-head" data-slot="notebook"><span>Canvas pages</span></div>
                 <button class="md-menu-item" type="button" data-slot="notebook" data-document-action="hw-paper-grid" title="Squared paper — 5mm, with a heavier line every 2cm"><span>Grid paper</span><span class="nhm-state" aria-hidden="true"><span class="nhm-switch"></span></span></button>
                 <button class="md-menu-item" type="button" data-slot="notebook" data-document-action="hw-paper-ruled" title="Ruled paper, with a margin"><span>Ruled paper</span><span class="nhm-state" aria-hidden="true"><span class="nhm-switch"></span></span></button>
                 <button class="md-menu-item" type="button" data-slot="notebook" data-document-action="hw-paper-blank" title="Plain paper, nothing printed on it"><span>Blank paper</span><span class="nhm-state" aria-hidden="true"><span class="nhm-switch"></span></span></button>
                 <button class="md-menu-item is-danger" type="button" data-slot="notebook" data-document-action="hw-tear-out" title="Tear out the page you are looking at — everything written on it goes with it"><span>Tear out this page<span class="nhm-hint">Everything written on it goes too</span></span></button>
-                <button class="md-menu-item" type="button" data-document-action="page-notes" title="Print every highlight's note under the page it is on — the PDF tab's answer to the notes view's own inline notes"><span>Notes on the page<span class="nhm-hint">Print each highlight's note under its page</span></span><span class="nhm-state" aria-hidden="true"><span class="nhm-switch"></span></span></button>
-                <label class="md-menu-item file-pick" data-slot="doc" data-document-action="add-pdf" title="Attach another PDF to this deck">
+                <button class="md-menu-item" type="button" data-document-action="page-notes" title="Print every highlight's note under the page it is on — the PDFs tab's answer to the notes view's own inline notes"><span>Notes on the page<span class="nhm-hint">Print each highlight's note under its page</span></span><span class="nhm-state" aria-hidden="true"><span class="nhm-switch"></span></span></button>
+                <label class="md-menu-item file-pick" data-slot="doc" data-document-action="add-pdf" title="Attach another PDF to this file">
                   <input id="documentAddPdfInput" type="file" accept=".pdf,application/pdf" hidden>
                   <span>Add another PDF…</span>
                 </label>
                 <button class="md-menu-item" type="button" data-slot="doc" data-document-action="offload" title="Delete the cloud copy to free space — highlights, notes and cards all stay"><span>Remove from cloud</span></button>
-                <label class="md-menu-item file-pick" data-slot="doc" data-document-action="reattach" title="Point this deck back at the PDF on this device">
+                <label class="md-menu-item file-pick" data-slot="doc" data-document-action="reattach" title="Point this file back at the PDF on this device">
                   <input id="documentReattachInput" type="file" accept=".pdf,application/pdf" hidden>
                   <span>Re-attach the PDF…</span>
                 </label>
                 <button class="md-menu-item" type="button" data-slot="doc" data-document-action="rename-pdf" title="Rename this PDF's tab"><span>Rename this PDF…</span></button>
-                <button class="md-menu-item is-danger" type="button" data-slot="doc" data-document-action="remove-pdf" title="Remove this PDF from the deck — its highlights go with it"><span>Remove this PDF<span class="nhm-hint">Its highlights and bookmark go too</span></span></button>
+                <button class="md-menu-item is-danger" type="button" data-slot="doc" data-document-action="remove-pdf" title="Remove this PDF from the file — its highlights go with it"><span>Remove this PDF<span class="nhm-hint">Its highlights and bookmark go too</span></span></button>
               </div>
             </div>
             <!-- The notebook's own controls used to be a .handwriting-head here,
@@ -1552,7 +1552,7 @@
             <button class="nav-card" id="nextCardBtn" type="button" title="Next card" aria-label="Next card" data-shortcut="Next (→)"><span>Next</span><span aria-hidden="true">&#8594;</span></button>
             <button class="known" id="knownBtn" type="button" title="Known" aria-label="Mark card known" data-shortcut="Known (K)"><span>Known</span><span aria-hidden="true">✅</span></button>
           </div>
-          <div class="deck-utility-actions" aria-label="Deck actions">
+          <div class="deck-utility-actions" aria-label="File actions">
             <button id="shuffleBtn" type="button" title="Shuffle" aria-label="Shuffle cards">
               <span aria-hidden="true">&#8644;</span><span>Shuffle</span>
             </button>
@@ -1639,7 +1639,7 @@
           <button class="reading-rail-btn" type="button" data-rail-group="Views" data-view-mode="cards" title="Cards" aria-label="Cards"><span class="rr-ico" aria-hidden="true">&#9634;</span><span class="rr-label">Cards</span></button>
           <button class="reading-rail-btn" type="button" data-rail-group="Views" data-view-mode="notes" title="Notes" aria-label="Notes"><span class="rr-ico" aria-hidden="true">&#128221;</span><span class="rr-label">Notes</span></button>
           <button class="reading-rail-btn" type="button" data-rail-group="Views" data-view-mode="document" hidden title="PDF" aria-label="PDF"><span class="rr-ico" aria-hidden="true">&#128196;</span><span class="rr-label">PDF</span></button>
-          <button class="reading-rail-btn" type="button" data-rail-group="Views" data-view-mode="handwriting" hidden title="Handwritten notes" aria-label="Handwritten notes"><span class="rr-ico" aria-hidden="true">&#9998;</span><span class="rr-label">Write</span></button>
+          <button class="reading-rail-btn" type="button" data-rail-group="Views" data-view-mode="handwriting" hidden title="Canvas" aria-label="Canvas"><span class="rr-ico" aria-hidden="true">&#9998;</span><span class="rr-label">Canvas</span></button>
           <!-- ── What you can do to what is on screen ───────────────────-->
           <button class="reading-rail-btn" type="button" data-rail-group="This page" data-rail-action="contents" title="Contents" aria-label="Contents"><span class="rr-ico" aria-hidden="true">&#9776;</span><span class="rr-label">Contents</span></button>
           <!-- The ✎|👁 pill is in the row focus mode folds away, so the one thing
@@ -1679,10 +1679,10 @@
           <!-- Home, first in the group, for the same reason the ⌂ sits beside
                Back and heads the ☰ drawer: it is the way out of any deck, and
                focus mode folds both of those away. -->
-          <button class="reading-rail-btn" type="button" data-rail-group="App" data-rail-action="home" title="Home — recent decks and quick actions" aria-label="Home"><span class="rr-ico" aria-hidden="true">&#8962;</span><span class="rr-label">Home</span></button>
-          <button class="reading-rail-btn" type="button" data-rail-group="App" data-rail-action="decks" title="My Decks" aria-label="My Decks"><span class="rr-ico" aria-hidden="true">&#128218;</span><span class="rr-label">My Decks</span></button>
+          <button class="reading-rail-btn" type="button" data-rail-group="App" data-rail-action="home" title="Home — recent files and quick actions" aria-label="Home"><span class="rr-ico" aria-hidden="true">&#8962;</span><span class="rr-label">Home</span></button>
+          <button class="reading-rail-btn" type="button" data-rail-group="App" data-rail-action="decks" title="My Files" aria-label="My Files"><span class="rr-ico" aria-hidden="true">&#128218;</span><span class="rr-label">My Files</span></button>
           <button class="reading-rail-btn" type="button" data-rail-group="App" data-rail-action="style" title="Themes &amp; style" aria-label="Themes and style"><span class="rr-ico" aria-hidden="true">&#127912;</span><span class="rr-label">Themes &amp; style</span></button>
-          <button class="reading-rail-btn" type="button" data-rail-group="App" data-rail-action="sync" title="Sync all decks with the cloud now, and save where you are reading" aria-label="Sync now"><span class="rr-ico" aria-hidden="true">&#8635;</span><span class="rr-label">Sync now</span></button>
+          <button class="reading-rail-btn" type="button" data-rail-group="App" data-rail-action="sync" title="Sync all files with the cloud now, and save where you are reading" aria-label="Sync now"><span class="rr-ico" aria-hidden="true">&#8635;</span><span class="rr-label">Sync now</span></button>
           <button class="reading-rail-btn" type="button" data-rail-group="App" data-rail-action="shutdown" title="Shut down — save and sync everything, then close Recall" aria-label="Shut down"><span class="rr-ico" aria-hidden="true">&#9211;</span><span class="rr-label">Shut down</span></button>
           <!-- ── The two reading modes, pinned ──────────────────────────
                They are two toggles that say which way each is set. This used to
@@ -1715,7 +1715,7 @@
         <div class="import-head">
           <div>
             <h1>Import</h1>
-            <p>A deck holds <strong>notes</strong> (one Markdown document) and <strong>cards</strong> (question / answer pairs). Pick your sources below, then choose which of the two they become — and whether each one gets its own deck.</p>
+            <p>A file holds <strong>notes</strong> (one Markdown document) and <strong>cards</strong> (question / answer pairs). Pick your sources below, then choose which of the two they become — and whether each one gets its own file.</p>
           </div>
           <button class="icon-button" id="closeImportBtn" type="button" aria-label="Close import panel">&#215;</button>
         </div>
@@ -1741,7 +1741,7 @@
               <span>From a link</span>
             </button>
           </div>
-          <p class="import-source-hint">Markdown or plain text, a Recall <code>.json</code> / <code>.zip</code> export, or an <code>.epub</code> book (one deck per chapter). <strong>Pick as many files as you like</strong> — you can turn each one into its own deck, or merge them all into one.</p>
+          <p class="import-source-hint">Markdown or plain text, a Recall <code>.json</code> / <code>.zip</code> export, or an <code>.epub</code> book (one file per chapter). <strong>Pick as many as you like</strong> — you can turn each one into its own file, or merge them all into one.</p>
 
           <div class="import-source-drawer" id="importUrlRow" hidden>
             <div class="url-row-compact">
@@ -1786,7 +1786,7 @@
 
           <div class="import-decklist" id="importDeckList" hidden>
             <div class="import-decklist-head">
-              <span class="import-choice-label" id="importDeckListLabel">Decks found</span>
+              <span class="import-choice-label" id="importDeckListLabel">Files found</span>
               <label class="import-decklist-all"><input type="checkbox" id="importDeckSelectAll" checked> Select all</label>
             </div>
             <div class="import-decklist-rows" id="importDeckListRows"></div>
@@ -1856,7 +1856,7 @@
         <div class="qn-head">
           <div class="qn-head-titles">
             <h1>&#128209; Quick Notes</h1>
-            <p id="qnSummary">Pinned snippets across all your decks, at a glance.</p>
+            <p id="qnSummary">Pinned snippets across all your files, at a glance.</p>
           </div>
           <div class="qn-head-actions">
             <div class="qn-search-wrap">
@@ -1986,7 +1986,7 @@
         <div class="cloze-head">
           <div>
             <h1>Cloze Review</h1>
-            <p id="clozeReviewSummary">Every fill-in-the-blank in this deck</p>
+            <p id="clozeReviewSummary">Every fill-in-the-blank in this file</p>
           </div>
           <div class="cloze-head-actions">
             <button class="cloze-bulk-btn" id="clozeBulkBtn" type="button" aria-pressed="false" title="Reveal or hide every cloze in this list">[A] Reveal all</button>
@@ -1997,35 +1997,35 @@
       </div>
     </section>
 
-    <section class="web-decks-panel" id="myDecksPanel" hidden aria-label="My Decks">
+    <section class="web-decks-panel" id="myDecksPanel" hidden aria-label="My Files">
       <div class="web-decks-shell">
         <div class="web-decks-head">
           <div class="web-decks-head-main">
-            <h1>My Decks</h1>
+            <h1>My Files</h1>
             <span class="web-decks-count" id="myDecksCount" hidden></span>
             <p class="web-decks-head-sub">Saved on this device and synced to the cloud automatically.</p>
           </div>
-          <button class="icon-button" id="closeMyDecksBtn" type="button" data-md-icon="close" aria-label="Close my decks panel"></button>
+          <button class="icon-button" id="closeMyDecksBtn" type="button" data-md-icon="close" aria-label="Close my files panel"></button>
         </div>
         <div class="web-decks-tools">
           <div class="web-decks-tools-row web-decks-tools-primary">
             <div class="my-decks-viewswitch" id="myDecksViewSwitch" role="group" aria-label="Library view">
-              <button type="button" data-mydecks-view="grid" data-md-icon="grid" aria-pressed="false" title="Grid — every deck at once"><span class="md-btn-label">Grid</span></button>
+              <button type="button" data-mydecks-view="grid" data-md-icon="grid" aria-pressed="false" title="Grid — every file at once"><span class="md-btn-label">Grid</span></button>
               <button type="button" data-mydecks-view="folder" data-md-icon="folder" aria-pressed="true" title="Folder — browse one level at a time"><span class="md-btn-label">Folder</span></button>
               <button type="button" data-mydecks-view="tree" data-md-icon="tree" aria-pressed="false" title="Tree — the full nested hierarchy"><span class="md-btn-label">Tree</span></button>
             </div>
             <div class="web-decks-tools-primary-right">
-              <div class="my-decks-display-toggle" id="myDecksDisplayToggle" role="group" aria-label="Deck display">
-                <button type="button" data-mydecks-display="tiles" data-md-icon="tiles" aria-pressed="true" title="Show decks as tiles"><span class="md-btn-label">Tiles</span></button>
-                <button type="button" data-mydecks-display="list" data-md-icon="list" aria-pressed="false" title="Show decks as a list"><span class="md-btn-label">List</span></button>
+              <div class="my-decks-display-toggle" id="myDecksDisplayToggle" role="group" aria-label="File display">
+                <button type="button" data-mydecks-display="tiles" data-md-icon="tiles" aria-pressed="true" title="Show files as tiles"><span class="md-btn-label">Tiles</span></button>
+                <button type="button" data-mydecks-display="list" data-md-icon="list" aria-pressed="false" title="Show files as a list"><span class="md-btn-label">List</span></button>
               </div>
-              <button class="web-decks-refresh web-decks-primary-btn" id="myDecksNewDeckBtn" type="button" data-md-icon="newDeck" title="Create a new deck in the current folder"><span class="md-btn-label">New deck</span></button>
+              <button class="web-decks-refresh web-decks-primary-btn" id="myDecksNewDeckBtn" type="button" data-md-icon="newDeck" title="Create a new file in the current folder"><span class="md-btn-label">New file</span></button>
               <button class="web-decks-refresh" id="myDecksNewFolderBtn" type="button" data-md-icon="newFolder" title="Create a new folder"><span class="md-btn-label">New folder</span></button>
               <!-- Import sits beside New deck / New folder because it's the third
                    way to put something in the folder you're looking at. The
                    picker below is shared with every folder row's own Import
                    button; myDecksImportFolder records which one opened it. -->
-              <button class="web-decks-refresh" id="myDecksImportBtn" type="button" data-md-icon="importDeck" title="Import one or more files (.recall, .md, .txt, .json, .zip, .epub, .pdf) into this folder — you choose whether they become notes or cards, and whether each file gets its own deck"><span class="md-btn-label">Import</span></button>
+              <button class="web-decks-refresh" id="myDecksImportBtn" type="button" data-md-icon="importDeck" title="Import one or more files (.recall, .md, .txt, .json, .zip, .epub, .pdf) into this folder — you choose whether they become notes or cards, and whether each one gets its own file"><span class="md-btn-label">Import</span></button>
               <input id="myDecksImportInput" type="file" multiple accept=".recall,.md,.markdown,.txt,.json,.zip,.epub,.pdf,application/vnd.recall+zip,application/octet-stream,text/markdown,text/plain,application/json,application/zip,application/epub+zip,application/pdf" hidden>
               <!-- Everything else lives behind one "⋯" so the toolbar is a single
                    row at every width. Ids are unchanged, so the existing
@@ -2041,22 +2041,22 @@
                   <button class="md-menu-item" id="myDecksRefreshBtn" type="button" data-md-icon="refresh"><span>Refresh</span></button>
                   <button class="md-menu-item" id="myDecksTreeToggleAll" type="button" data-md-icon="expand" title="Expand or collapse all folders" hidden><span>Expand all</span></button>
                   <div class="md-menu-group">Import</div>
-                  <label class="md-menu-item file-pick" id="myDecksImportEpubBtn" data-md-icon="book" title="Import an EPUB book as one folder with a deck per chapter">
+                  <label class="md-menu-item file-pick" id="myDecksImportEpubBtn" data-md-icon="book" title="Import an EPUB book as one folder with a file per chapter">
                     <input id="myDecksImportEpubInput" type="file" accept=".epub,application/epub+zip" hidden>
                     <span>Import EPUB</span>
                   </label>
                   <!-- One deck per paper, opening on its PDF tab. Nothing
                        is extracted: the PDF stays the document and the deck's
                        Notes tab is yours to write in. -->
-                  <label class="md-menu-item file-pick" id="myDecksImportPdfBtn" data-md-icon="book" title="Import a PDF as a deck you read, highlight and make cards from — the file itself, laid out as its author left it">
+                  <label class="md-menu-item file-pick" id="myDecksImportPdfBtn" data-md-icon="book" title="Import a PDF as a file you read, highlight and make cards from — the PDF itself, laid out as its author left it">
                     <input id="myDecksImportPdfInput" type="file" multiple accept=".pdf,application/pdf" hidden>
                     <span>Import PDF</span>
                   </label>
                   <button class="md-menu-item" id="myDecksRestoreBtn" type="button" data-md-icon="upload" title="Restore your library from a backup (.recall, or an older .zip / .json)"><span>Restore backup</span></button>
                   <input id="restoreFileInput" type="file" accept=".recall,.zip,.json,application/vnd.recall+zip,application/zip,application/x-zip-compressed,application/json,application/octet-stream" hidden>
-                  <button class="md-menu-item" id="myDecksCheckImagesBtn" type="button" data-md-icon="search" title="Check every deck for image references that no longer resolve"><span>Check for broken images</span></button>
+                  <button class="md-menu-item" id="myDecksCheckImagesBtn" type="button" data-md-icon="search" title="Check every file for image references that no longer resolve"><span>Check for broken images</span></button>
                   <div class="md-menu-group" id="myDecksBackupStatus">Never backed up</div>
-                  <div class="md-menu-group">Export all decks</div>
+                  <div class="md-menu-group">Export all files</div>
                   <div id="myDecksExportAllMenu">
                     <button class="md-menu-item" type="button" data-export-all="pdf"><span>Cornell PDF</span></button>
                     <button class="md-menu-item" type="button" data-export-all="html"><span>Standalone HTML</span></button>
@@ -2064,7 +2064,7 @@
                     <button class="md-menu-item" type="button" data-export-all="markdown"><span>Markdown</span></button>
                     <button class="md-menu-item" type="button" data-export-all="json"><span>JSON</span></button>
                     <button class="md-menu-item" type="button" data-export-all="sql"><span>SQL</span></button>
-                    <button class="md-menu-item" type="button" data-export-all="backup" title="Everything: decks, notes, images, the PDFs themselves, folders, reading positions and settings, in one .recall file that stands on its own"><span>Back up library (.recall — everything)</span></button>
+                    <button class="md-menu-item" type="button" data-export-all="backup" title="Everything: files, notes, images, the PDFs themselves, folders, reading positions and settings, in one .recall file that stands on its own"><span>Back up library (.recall — everything)</span></button>
                   </div>
                 </div>
               </div>
@@ -2073,11 +2073,11 @@
           <div class="web-decks-tools-row web-decks-tools-secondary">
             <nav class="my-decks-breadcrumb" id="myDecksBreadcrumb" aria-label="Folder path" hidden></nav>
             <div class="my-decks-search" data-md-icon="search">
-              <input type="search" id="myDecksSearch" placeholder="Search decks…" aria-label="Search decks by title" autocomplete="off">
+              <input type="search" id="myDecksSearch" placeholder="Search files…" aria-label="Search files by title" autocomplete="off">
             </div>
             <label class="my-decks-filter" data-md-icon="sort">
               <span>Sort</span>
-              <select id="myDecksSort" aria-label="Sort decks">
+              <select id="myDecksSort" aria-label="Sort files">
                 <option value="recent">Recently opened</option>
                 <option value="title-asc">Title (A–Z)</option>
                 <option value="title-desc">Title (Z–A)</option>
@@ -2108,7 +2108,7 @@
               </colgroup>
               <thead>
                 <tr>
-                  <th style="text-align: center;"><input type="checkbox" id="myDecksSelectAllCheckbox" aria-label="Select all decks"></th>
+                  <th style="text-align: center;"><input type="checkbox" id="myDecksSelectAllCheckbox" aria-label="Select all files"></th>
                   <th>Title</th>
                   <th>Category</th>
                   <th>Cards</th>
@@ -2118,7 +2118,7 @@
                 </tr>
               </thead>
               <tbody id="myDecksListTable">
-                <tr><td colspan="7" class="web-decks-empty">No decks saved on this device yet.</td></tr>
+                <tr><td colspan="7" class="web-decks-empty">No files saved on this device yet.</td></tr>
               </tbody>
             </table>
           </div>
@@ -2135,7 +2135,7 @@
             <div class="bulk-export-dropdown">
               <button id="myDecksBulkExportBtn" class="bulk-action-btn bulk-export" type="button" aria-haspopup="true" aria-expanded="false">Export</button>
               <div class="bulk-export-menu" id="myDecksBulkExportMenu" hidden>
-                <button type="button" id="myDecksBulkShareBtn" title="One .recall file with the chosen decks and everything in them — cards, notes, PDFs, highlights, ink and pictures — for someone else to import">Share (.recall — everything)</button>
+                <button type="button" id="myDecksBulkShareBtn" title="One .recall package with the chosen files and everything in them — cards, notes, PDFs, highlights, ink and pictures — for someone else to import">Share (.recall — everything)</button>
                 <button type="button" data-bulk-export="pdf">Cornell PDF</button>
                 <button type="button" data-bulk-export="html">Standalone HTML</button>
                 <button type="button" data-bulk-export="doc">Word (.docx)</button>
@@ -2170,21 +2170,21 @@
         <div class="help-modal-body">
 
           <section class="help-section">
-            <h3 class="help-section-title">1. Load a Deck</h3>
-            <p>A <strong>deck</strong> is the thing you open from My Decks. It holds exactly two kinds of content: one <strong>notes</strong> document (freeform Markdown) and any number of <strong>cards</strong> (question / answer pairs). Everything you import becomes one or both of those.</p>
-            <p>Every launch opens on the <strong>Home</strong> screen: pick up the deck you were last in, jump into a recent deck, or start something new. Press <strong>⌂</strong> (top-left, beside Back) or <strong>⌂ Home</strong> at the top of the <strong>☰</strong> menu to come back to it from any deck — the deck stays open underneath, so <strong>Back to your deck</strong> (or Esc) returns you to exactly where you were.</p>
+            <h3 class="help-section-title">1. Open a File</h3>
+            <p>A <strong>file</strong> is the thing you open from My Files. Each file has four parts, one per tab: <strong>Cards</strong> (question / answer pairs), <strong>Notes</strong> (one freeform Markdown document), <strong>PDFs</strong> (papers and books you read and highlight) and <strong>Canvas</strong> (pages you write on with a pen). Everything you import becomes cards, notes or a PDF.</p>
+            <p>Every launch opens on the <strong>Home</strong> screen: pick up the file you were last in, jump into a recent file, or start something new. Press <strong>⌂</strong> (top-left, beside Back) or <strong>⌂ Home</strong> at the top of the <strong>☰</strong> menu to come back to it from any file — the file stays open underneath, so <strong>Back to your file</strong> (or Esc) returns you to exactly where you were.</p>
             <p>Home and the menu (<strong>☰</strong>, top-left) both offer:</p>
             <ul class="help-list">
-              <li><strong>+ New Deck</strong> — start a blank deck and add cards manually</li>
-              <li><strong>Import</strong> — choose one file or a whole batch of them, paste Markdown, or fetch a link. Recall then shows what it found and asks whether it should become <strong>notes</strong>, <strong>cards</strong>, or <strong>both</strong>, and where it lands: <strong>separate decks</strong> (one per file), <strong>one new deck</strong>, or appended to the deck you already have open. Nothing is created until you confirm</li>
-              <li><strong>My Decks</strong> — every deck you've studied, saved on this device and mirrored to the cloud</li>
+              <li><strong>+ New File</strong> — start a blank file and add cards or notes</li>
+              <li><strong>Import</strong> — choose one file from your device or a whole batch of them, paste Markdown, or fetch a link. Recall then shows what it found and asks whether it should become <strong>notes</strong>, <strong>cards</strong>, or <strong>both</strong>, and where it lands: <strong>separate files</strong> (one per source), <strong>one new file</strong>, or appended to the file you already have open. Nothing is created until you confirm</li>
+              <li><strong>My Files</strong> — every file you've studied, saved on this device and mirrored to the cloud</li>
             </ul>
-            <p>A plain Markdown page with ordinary headings is imported as <strong>notes</strong> by default — it is a document, not a stack of flashcards. Pick <strong>Cards</strong> in the review step if you do want each heading turned into a card.</p>
+            <p>A plain Markdown page with ordinary headings is imported as <strong>notes</strong> by default — it is a document, not a stack of cards. Pick <strong>Cards</strong> in the review step if you do want each heading turned into a card.</p>
           </section>
 
           <section class="help-section">
-            <h3 class="help-section-title">Study Notes 📝 — learn first, card later</h3>
-            <p>Every deck has a freeform <strong>Notes</strong> document beside its cards. Use the <strong>Cards ⇄ Notes</strong> toggle at the top of the study area (or <strong>Study Notes</strong> in the toolbar).</p>
+            <h3 class="help-section-title">Notes 📝 — learn first, card later</h3>
+            <p>Every file has a freeform <strong>Notes</strong> document beside its cards. Use the <strong>Cards ⇄ Notes</strong> tabs at the top of the study area (or <strong>Notes</strong> in the toolbar).</p>
             <ul class="help-list">
               <li><strong>Write notes first</strong> — full Markdown: headings, math, diagrams, code, pasted images</li>
               <li><strong>Highlight → + Make card</strong> — select any fact (text, images, math) in the rendered notes; the floating button shows how much is captured. Tap it to preview the selection as the card's <em>answer</em> and frame the <em>question</em> that should bring it to mind (Ctrl+Enter to add)</li>
@@ -2198,25 +2198,25 @@
               <li><strong>Split a note that got too long</strong> — select the part that has outgrown its home and tap <strong>↪</strong> in the selection strip. It moves into a note of its own and leaves a link in its place</li>
               <li><strong>See what points here</strong> — open the <strong>contents</strong> drawer beside the tabs (the icon of three lines with dots beside them — <strong>not</strong> the ☰ at top-left, which is the app's own menu); under the headings, <strong>Linked from</strong> lists every note that references the one you're reading</li>
               <li><strong>...and what you marked, beside what you marked it in</strong> — that drawer's <strong>Highlights</strong> half lists every highlight in this note, and <strong>Side by side</strong> at the top of it splits the panel: the note on one side, its highlights with their notes on the other, <strong>◀ ▶</strong> to walk through them. Drag the divider to resize the two — they start at 3:2 and stack top-and-bottom on a phone</li>
-              <li>Notes save, sync, and export together with the deck — or skip notes entirely and make cards directly, as before</li>
-              <li><strong>On a phone, the header gets out of your way</strong> — scroll down and the deck title bar and Cards/Notes toggle fold away; scroll back up and they return. Tap <strong>⤢</strong> in the notes header to keep them hidden for good, and <strong>⤡</strong> to bring them back</li>
+              <li>Notes save, sync, and export together with the rest of the file — or skip notes entirely and make cards directly, as before</li>
+              <li><strong>On a phone, the header gets out of your way</strong> — scroll down and the file title bar and the Cards / Notes / PDFs / Canvas tabs fold away; scroll back up and they return. Tap <strong>⤢</strong> in the notes header to keep them hidden for good, and <strong>⤡</strong> to bring them back</li>
               <li><strong>Turn the screen from the app</strong> — on an Android phone or tablet, <strong>&#10227; Landscape</strong> in the notes <strong>⋯</strong> menu (and on the <strong>‹</strong> tab at the right edge) turns the screen sideways, and switching it off turns it back upright, so you can leave the phone's own auto-rotate off. In a browser tab it goes full screen first, because that is the only place a browser lets a page turn the screen; leaving full screen hands rotation back to the phone. The installed app remembers which way you left it</li>
             </ul>
           </section>
 
           <section class="help-section">
             <h3 class="help-section-title">PDFs 📄 — read the paper, not a translation of it</h3>
-            <p>Drop a <code>.pdf</code> into <strong>Import</strong> (or <strong>My Decks → ⋯ → Import PDF</strong>) and you get one deck per paper, opening on a third tab: <strong>PDF</strong>, beside Notes and Cards. The page is the PDF itself, laid out exactly as its author left it — two columns, display maths, figures and all. Nothing is extracted and nothing is re-rendered to images, so nothing is lost on the way in.</p>
-            <p><strong>Already have the deck, and the paper turned up later?</strong> Open it and press its <strong>📄 PDF</strong> tab. Every deck has one; on a deck with no paper it opens to <strong>Attach a PDF to read it here</strong>, and the file you pick becomes that deck's document — with any highlights already in it imported, exactly as an import would — while the deck's title, cards and notes are left as they are. (The side menu used to carry <strong>📄 Attach a PDF…</strong> as well; it did the identical thing, and the tab is the place you are already standing when you want it.) A deck that already <em>has</em> a document uses <strong>PDF ⋯ → Re-attach the PDF…</strong> instead, which checks the file really is the same one first, because a highlight is a position in one exact file.</p>
-            <p><strong>More than one paper in a deck?</strong> <strong>PDF ⋯ → Add another PDF…</strong> puts a second one beside the first, and a dropdown next to ⋯ switches between them. They are listed in the order they were added until you choose otherwise: <strong>⇅ Arrange PDFs…</strong> at the bottom of that dropdown (or in the ⋯ menu) opens a list you drag into your own order by each paper's <strong>⠿</strong> grip — with a finger on a phone, or the mouse — or move with its ↑ ↓ arrows. <strong>Done</strong> keeps the order, and it syncs to your other devices.</p>
+            <p>Drop a <code>.pdf</code> into <strong>Import</strong> (or <strong>My Files → ⋯ → Import PDF</strong>) and you get one file per paper, opening on its <strong>PDFs</strong> tab, beside Cards and Notes. The page is the PDF itself, laid out exactly as its author left it — two columns, display maths, figures and all. Nothing is extracted and nothing is re-rendered to images, so nothing is lost on the way in.</p>
+            <p><strong>Already have the file, and the paper turned up later?</strong> Open it and press its <strong>📄 PDFs</strong> tab. Every file has one; on a file with no PDF it opens to <strong>Attach a PDF to read it here</strong>, and the PDF you pick becomes that file's PDF — with any highlights already in it imported, exactly as an import would — while the file's title, cards and notes are left as they are. (The side menu used to carry <strong>📄 Attach a PDF…</strong> as well; it did the identical thing, and the tab is the place you are already standing when you want it.) A file that already <em>has</em> a PDF uses <strong>PDF ⋯ → Re-attach the PDF…</strong> instead, which checks it really is the same PDF first, because a highlight is a position in one exact PDF.</p>
+            <p><strong>More than one PDF in a file?</strong> <strong>PDF ⋯ → Add another PDF…</strong> puts a second one beside the first, and a dropdown next to ⋯ switches between them. They are listed in the order they were added until you choose otherwise: <strong>⇅ Arrange PDFs…</strong> at the bottom of that dropdown (or in the ⋯ menu) opens a list you drag into your own order by each paper's <strong>⠿</strong> grip — with a finger on a phone, or the mouse — or move with its ↑ ↓ arrows. <strong>Done</strong> keeps the order, and it syncs to your other devices.</p>
             <p><strong>Where the file itself is kept.</strong> On this device first — which is what makes a paper readable with no connection — and in <strong>an S3-compatible bucket you supply</strong>, so the same paper opens on a phone that has never seen it. A bucket rather than your Supabase project, because one paper can outweigh a hundred figures and a handful of them would spend the free tier's whole gigabyte; Cloudflare R2 gives 10&nbsp;GB free with no charge for downloads. Set it up once under <strong>☰ → Storage &amp; Data → PDF storage</strong> — four values pasted once on any device, and every device you sign in on picks them up at its next sync. Until you do, papers still import and still open; they stay on the device you imported them on, and go up by themselves at the first sync after the bucket is added. Papers uploaded before this changed — to Google Drive, or to Supabase before that — are still where they were and still open, and the same panel moves them across when you want the space back.</p>
             <ul class="help-list">
               <li><strong>Select text on the page → the same selection bar you already know</strong> — <strong>Highlight</strong> in any of the four colours, <strong>Add note</strong>, or <strong>+ Make card</strong>. The card remembers the page and the exact passage, so "Go to notes" on that card brings you back to it. On a phone the press-and-slide is the app's own, the same one your notes use: it starts the moment you feel it rather than a second or two later, and the two grips stay on the words they mark however the page moves</li>
               <li><strong>Highlights already in the file are imported</strong> — a paper you have been annotating in Zotero, Preview or Okular arrives with those highlights in place, and any comment on one becomes a note on it</li>
               <li><strong>They show up everywhere your other highlights do</strong> — the drawer's <strong>Highlights</strong> half and the side-by-side pane list them with their page numbers, and the highlights export carries the page too</li>
-              <li><strong>The Notes tab is still yours</strong> — an ordinary Markdown note beside the paper, with clozes, math and note links all working as they always have. The two are one deck</li>
+              <li><strong>The Notes tab is still yours</strong> — an ordinary Markdown note beside the paper, with clozes, math and note links all working as they always have. Both are parts of one file</li>
               <li><strong>▣ Highlight — on until you turn it off</strong> — press <strong>▣</strong> and it stays on for as long as you are on the paper, until you press it again or <kbd>Esc</kbd>. With it on, <strong>drag across words and they are highlighted</strong> straight away, snapped to whole words, in your highlight colour — line after line, with nothing to press in between, and a live preview of exactly what will land. <strong>Start a drag anywhere that is not words</strong> — the margin, a figure, a table drawn as a picture, or a scanned page with no text at all — <strong>and you draw a box</strong> instead, which becomes a region and opens its menu. To box something that <em>is</em> words, like a table or an equation set as text, start just beside it, or hold still a moment before you move, or hold <kbd>Alt</kbd> with a mouse. Tap any highlight to open it. One finger is the highlighter while ▣ is on, so <strong>two fingers scroll</strong> (and pinch to zoom), and a drag held at the edge of the screen scrolls the page along. <strong>Ctrl/⌘+Z</strong>, or ↶ on the pen's bar, takes back the last one, and ↷ puts it back. It turns itself off when you go to another tab or paper, or pick up one of the pen's tools</li>
-              <li><strong>A region is a highlight like any other</strong> — it takes a colour, it takes a note, it turns into a card, and it is listed beside the paper with a picture of what you drew round. It keeps the spot, not the words: a region marks a place on the page, so drag across words when it is the words you want. Wherever a region is listed — the Highlights pane, the contents drawer's Highlights, the notes under each page, and the HTML and PDF highlight exports — it is shown as a picture of what you drew round, drawn from the paper on this device whether or not the PDF tab is open; only when the paper is not on this device is it named <em>Region · page N</em> instead. Tap any highlight or region on the paper and choose <strong>Copy location</strong>, then paste it into your notes or a card: it shows as a live picture of that spot on the page, and you can drag its corner to resize it. Its <strong>p. N ↗</strong> button opens the PDF at that exact spot, and <strong>Zoom</strong> opens it full screen to pinch into. On a phone it fills the width of the screen until you resize it. It shows this deck's PDF, so paste it within the same deck</li>
+              <li><strong>A region is a highlight like any other</strong> — it takes a colour, it takes a note, it turns into a card, and it is listed beside the paper with a picture of what you drew round. It keeps the spot, not the words: a region marks a place on the page, so drag across words when it is the words you want. Wherever a region is listed — the Highlights pane, the contents drawer's Highlights, the notes under each page, and the HTML and PDF highlight exports — it is shown as a picture of what you drew round, drawn from the paper on this device whether or not the PDFs tab is open; only when the paper is not on this device is it named <em>Region · page N</em> instead. Tap any highlight or region on the paper and choose <strong>Copy location</strong>, then paste it into your notes or a card: it shows as a live picture of that spot on the page, and you can drag its corner to resize it. Its <strong>p. N ↗</strong> button opens the PDF at that exact spot, and <strong>Zoom</strong> opens it full screen to pinch into. On a phone it fills the width of the screen until you resize it. It shows this file's PDF, so paste it within the same file</li>
               <li><strong>Read every note on the page it belongs to</strong> — a highlight with a note on it wears a small numbered badge; press it to open the note. <strong>⋯ → Notes on the page</strong> is a switch: flip it on and all of them print, numbered, in the gap under each page, so a paper you have read closely reads back as a paper plus its margins rather than a paper plus another tab. It says how many it printed and takes you to a page carrying one, since the notes are wherever you made them and not necessarily where you are now</li>
               <li><strong>Contents, even for a paper that has none</strong> — the <strong>contents</strong> icon beside the tabs opens the same drawer the notes view has, with the same foldable tree. Most books carry a table of contents in the file and it is used as-is; most papers, preprints and printed-to-PDF chapters do not, so one is read out of the type on their pages instead — the headings, set larger or numbered — and the drawer says when what you are looking at was found that way rather than written by the author. It is worked out once and kept, so it is there instantly every time afterwards</li>
               <li><strong>...and what you marked on it, in the same drawer</strong> — the <strong>Highlights</strong> half lists every highlight on this paper with its page and the first of whatever you wrote about it, so finding one does not mean leaving the page you are on</li>
@@ -2229,12 +2229,13 @@
           </section>
 
           <section class="help-section">
-            <h3 class="help-section-title">Handwriting ✎ — a pen on the page, and in the note</h3>
+            <h3 class="help-section-title">The pen ✎ — on a PDF, on the Canvas, and in a note</h3>
             <p>If you have a <strong>Samsung S-Pen</strong> or an <strong>Apple Pencil</strong>, it writes. There is nothing to switch on: <strong>the pen draws and a finger scrolls</strong>, on the paper and everywhere else, and that is what happens if you never touch a setting — the app starts you there every time, so nothing is waiting to surprise you the next morning. A hand resting on the glass is a finger, so it scrolls rather than smearing — palm rejection you never have to turn on.</p>
             <ul class="help-list">
               <li><strong>Write straight onto a paper</strong> — open a PDF and draw. Strokes are stored as coordinates <em>into the page</em>, the same way a highlight is, so they stay on the words you drew them beside through every zoom, refit, rotation, reload and second device. Pressure varies the line, so a downstroke looks like a downstroke</li>
               <li><strong>A tap still taps</strong> — press a numbered note badge, a highlight or a button with the pen and it does what it always did. <strong>A tap on bare paper leaves a dot</strong> — the dot on an i, a full stop, a decimal point — and joins the word it belongs to; <strong>Tap dots</strong> in the pen's settings turns that off. A tap with the eraser rubs out what is under it</li>
-              <li><strong>Press ✎ beside the Cards / Notes / PDF tabs</strong> for the pen's bar — one slim row, so it takes as little of the page as it can: the <strong>pen</strong>, the <strong>highlighter</strong>, the <strong>eraser</strong>, the <strong>lasso</strong> and <strong>T</strong>, then a round <strong>chip</strong> showing the colour and size you are drawing with, then undo and redo, and <strong>⋯</strong> for <strong>Clear this page</strong>. <strong>Ctrl/⌘+Z</strong> takes back a stroke without reaching for the bar and <strong>Ctrl+Y</strong> (or Ctrl/⌘+Shift+Z) puts it back</li>
+              <li><strong>Press ✎ beside the Cards / Notes / PDFs tabs</strong>
+ for the pen's bar — one slim row, so it takes as little of the page as it can: the <strong>pen</strong>, the <strong>highlighter</strong>, the <strong>eraser</strong>, the <strong>lasso</strong> and <strong>T</strong>, then a round <strong>chip</strong> showing the colour and size you are drawing with, then undo and redo, and <strong>⋯</strong> for <strong>Clear this page</strong>. <strong>Ctrl/⌘+Z</strong> takes back a stroke without reaching for the bar and <strong>Ctrl+Y</strong> (or Ctrl/⌘+Shift+Z) puts it back</li>
               <li><strong>Press the chip — or the tool you are holding, a second time — for its settings</strong>, in a small panel that floats under the bar rather than pushing the page down. For the pen: a <strong>size slider</strong> that goes anywhere from a hairline to a marker, with − and + for a tenth of a point at a time and the four usual sizes as one-tap presets; a <strong>preview</strong> of the stroke at the size it will really be on screen at this zoom; eight colours, <strong>+ for any colour of your own</strong> (the last six you used are kept beside it), and an <strong>opacity</strong> slider. For the highlighter: its width, six colours plus your own, its opacity (35% to start) and <strong>Straight</strong>. For the eraser: its size, <strong>Part</strong>, and whether it takes everything, only pen strokes or only highlighter bands — so you can rub out a band without touching the writing over it. Moving a slider only previews; letting go is the change, and one undo step. Everything is remembered for next time. A press anywhere outside the panel, or Escape, puts it away</li>
               <li><strong>The highlighter knows words from pictures</strong> — <strong>sweep it along a line of real words and those words are highlighted</strong>, snapped to whole words, exactly as if you had selected them: searchable, quoted in exports, and a card made from it has the words on it. Everywhere else — a scanned page, a figure, a table drawn as a picture, handwriting, blank paper — and for anything you <em>draw</em> rather than sweep, like a ring round a paragraph, it is a see-through band. Undo takes either back. The band sits <em>under</em> the page's ink and blends with the paper, so the words beneath stay perfectly legible, and on an inverted page it lightens rather than darkens. A sweep along a line is laid down straight, and level if it nearly was, unless you turn <strong>Straight</strong> off. Each sweep is its own mark in <strong>Highlights</strong> — never merged into handwriting next to it — and a card made from it shows a live picture of the spot on the page</li>
               <li><strong>Ink that follows the paper</strong> — on a white page the pen is dark and on an inverted page it is light, whatever the app's theme, so a dark theme never leaves you writing near-white on white. Exported and printed pages always use the white-paper colours</li>
@@ -2242,12 +2243,13 @@
               <li><strong>Or use the pen to pick out words</strong> — press <strong>T</strong> on the pen's panel and the stylus stops drawing and starts <em>selecting</em>: drag it across a line and the selection bar comes up with <strong>Highlight</strong>, Cloze, Copy, Make a card and the rest, exactly as it does for a finger. This app's highlighter has always been the one that marks the words you selected, and until now a stylus had no way to select any — so a pen could write in the margin of a paper and could not mark a sentence in it. A finger still scrolls the page while it is on, a tap is still a tap, and turning the stylus over still rubs out. Press <strong>&#9998;</strong> beside it to draw again. It is on the reading rail too, as <strong>Select text</strong>, which is how you reach it in focus mode with the tab row folded away</li>
               <li><strong>Hold still and a shape snaps</strong> — pause at the end of a stroke and a rough circle becomes a circle, a rough box a box, a line a line, and a line with a hook on the end an arrow. It refuses far more often than it accepts, and it will not touch anything the size of handwriting: turning your writing into a shape would be much worse than not offering. <strong>Keep writing and it takes the offer back</strong> — a pause in the middle of a word is you thinking, not you drawing a line, so the stroke carries on from where the nib actually is. <strong>Snap shapes</strong> in the pen's settings turns it off entirely, which is what a page of fraction bars, radicals and long-division rules wants: every one of those is a held straight line</li>
               <li><strong>Lasso to fix, move or remove</strong> — circle some strokes to drag them, resize them from the corner, or delete them. With strokes circled, the chip's panel restyles <em>them</em>: a new colour, size or opacity changes what you circled. Circle writing and a highlight together and the panel shows <strong>Pen | Highlighter</strong> tabs, so you choose which of the two you are changing</li>
-              <li><strong>Your writing is a mark like any other</strong> — a burst of strokes is listed in the <strong>Highlights</strong> pane with a picture of what you drew, takes a written note, wears a numbered badge on the page, and makes a flashcard whose answer is the drawing itself. Strokes made together become one mark and a pause of a second and a half starts the next; when that guesses wrong, lasso them and press <strong>⊞ Join</strong> or <strong>⊟ Split</strong></li>
-              <li><strong>It syncs and it backs up</strong> — ink merges between two devices the way your highlights and cards do, ink you delete stays deleted, and <strong>⋯ → Export → This paper, annotated</strong> prints the pages with your handwriting on them</li>
+              <li><strong>Your writing is a mark like any other</strong> — a burst of strokes is listed in the <strong>Highlights</strong> pane with a picture of what you drew, takes a written note, wears a numbered badge on the page, and makes a card whose answer is the drawing itself. Strokes made together become one mark and a pause of a second and a half starts the next; when that guesses wrong, lasso them and press <strong>⊞ Join</strong> or <strong>⊟ Split</strong></li>
+              <li><strong>It syncs and it backs up</strong> — ink merges between two devices the way your highlights and cards do, ink you delete stays deleted, and <strong>⋯ → Export → This PDF, annotated</strong> prints the pages with your handwriting on them</li>
               <li><strong>Write in a note, or on a card</strong> — press <strong>✎</strong> in the editing toolbar and a drawing sheet opens. It has the same slim bar, the highlighter and the same settings panel. It is a real page rather than one screenful: it scrolls, <strong>+ Page</strong> adds another page below, and Done drops one picture per page you drew on into the note where the caret was — each a block that reflows with the text, with the same corner grip to resize it and the same 🗑 to remove it. Press a drawing's own <strong>✎</strong> later to reopen it and add to it. It works with a finger and a mouse too, so a tablet without a stylus is not shut out</li>
               <li><strong>No connection needed</strong> — a drawing made offline is kept on the device and uploads itself when you are back, exactly as a pasted picture does</li>
-              <li><strong>A whole notebook</strong> &mdash; the <strong>&#9998; Write</strong> tab, beside Cards, Notes and PDF, on every deck you open. Any deck can have one, <em>including a deck that already has a PDF</em>: the paper you are reading and the pages you are writing on are two different documents on the same deck, so nothing you write lands on somebody else's page. The paper is a <strong>real PDF</strong>, so writing on it is exactly writing on a paper &mdash; the same pen, the same strokes stored as coordinates into the page, the same zoom, the same export. <strong>The pen's bar is already open</strong> when you arrive, above the page, with the chip that opens the size, colour and opacity panel. The eraser has a size of its own and two ways of working &mdash; cross a mark and all of it goes, or switch on <strong>Part</strong> in its settings and it rubs out only what you pass over, so one letter in the middle of a line written without lifting is one letter. <strong>Snap shapes</strong> turns off the shape snapping, for a page of fraction bars and radicals that are all meant to stay hand-drawn. Circle some writing with the lasso and you get a box round it &mdash; drag inside to move it, the bottom-right corner to resize, the round top-left one to <strong>turn</strong> it, and the arrow keys to nudge it a point at a time (hold Shift for ten). <strong>A colour, size or opacity chosen while something is circled restyles what you circled</strong> rather than only the next stroke. <strong>Copy</strong> and <strong>Delete</strong> come up on the bar beside it, and <strong>&#9662;</strong> has duplicate, cut, paste, join and split &mdash; and what you copy can be pasted onto <em>any</em> page, which is how a piece of working moves from the bottom of one page to the top of the next (Ctrl+C, Ctrl+X, Ctrl+V and Ctrl+D do the same). <strong>&#43;</strong> on the bar adds things to the page: a markdown <strong>Text block</strong>, a <strong>Picture</strong> (or just paste or drop one), or another <strong>Page</strong> at the end. Text blocks and pictures drag by their bar and resize by their corner. Under <strong>&#8943;</strong> are the two you reach for less often: grid, ruled or blank paper &mdash; which changes the sheet under what you have already written &mdash; and tearing out the page you are on, which moves everything after it up. The page follows your theme, dark paper on a dark theme, and so does your ink, so nothing you have written can disappear when you change it</li>
-              <li><strong>Type on the page too</strong> — <strong>+ Text</strong> drops a markdown block where you are looking, which you drag by its bar, resize from its corner and write in: the statement of a problem above a derivation in your own hand. Blocks work on <em>any</em> paper, not only a notebook's — a typed note over a figure in somebody's preprint is the same thing. They are positioned in the page's own points like a highlight, so they stay put through a zoom, a reload and a second device</li>
+              <li><strong>A whole Canvas</strong> &mdash; the <strong>&#9998; Canvas</strong> tab, beside Cards, Notes and PDFs, on every file you open. Any file can have one, <em>including a file that already has a PDF</em>: the PDF you are reading and the Canvas pages you are writing on are two different documents in the same file, so nothing you write lands on somebody else's page. Canvas pages are a <strong>real PDF</strong> underneath, so writing on them is exactly writing on a paper &mdash; the same pen, the same strokes stored as coordinates into the page, the same zoom, the same export. <strong>The pen's bar is already open</strong> when you arrive, above the page, with the chip that opens the size, colour and opacity panel. The eraser has a size of its own and two ways of working &mdash; cross a mark and all of it goes, or switch on <strong>Part</strong> in its settings and it rubs out only what you pass over, so one letter in the middle of a line written without lifting is one letter. <strong>Snap shapes</strong> turns off the shape snapping, for a page of fraction bars and radicals that are all meant to stay hand-drawn. Circle some writing with the lasso and you get a box round it &mdash; drag inside to move it, the bottom-right corner to resize, the round top-left one to <strong>turn</strong> it, and the arrow keys to nudge it a point at a time (hold Shift for ten). <strong>A colour, size or opacity chosen while something is circled restyles what you circled</strong> rather than only the next stroke. <strong>Copy</strong> and <strong>Delete</strong> come up on the bar beside it, and <strong>&#9662;</strong> has duplicate, cut, paste, join and split &mdash; and what you copy can be pasted onto <em>any</em> page, which is how a piece of working moves from the bottom of one page to the top of the next (Ctrl+C, Ctrl+X, Ctrl+V and Ctrl+D do the same). <strong>&#43;</strong> on the bar adds things to the page: a markdown <strong>Text block</strong>, a <strong>Picture</strong> (or just paste or drop one), or another <strong>Page</strong> at the end. Text blocks and pictures drag by their bar and resize by their corner. Under <strong>&#8943;</strong> are the two you reach for less often: grid, ruled or blank paper &mdash; which changes the sheet under what you have already written &mdash; and tearing out the page you are on, which moves everything after it up. The page follows your theme, dark paper on a dark theme, and so does your ink, so nothing you have written can disappear when you change it</li>
+              <li><strong>Type on the page too</strong> — <strong>+ Text</strong> drops a markdown block where you are looking, which you drag by its bar, resize from its corner and write in: the statement of a problem above a derivation in your own hand. Blocks work on <em>any</em> page, a PDF's as well as the Canvas's
+ — a typed note over a figure in somebody's preprint is the same thing. They are positioned in the page's own points like a highlight, so they stay put through a zoom, a reload and a second device</li>
               <li><strong>On a laptop</strong> the pen rail is also how a mouse draws: a mouse has no way of saying whether a drag means ink or a selection, so it only inks while the rail is open</li>
             </ul>
           </section>
@@ -2285,7 +2287,7 @@
               <tr><td><kbd>←</kbd> <kbd>→</kbd> / <kbd>↑</kbd> <kbd>↓</kbd></td><td>Navigate cards</td></tr>
               <tr><td><kbd>Ctrl</kbd> + <kbd>E</kbd></td><td>Toggle edit / rendered view</td></tr>
               <tr><td><kbd>Ctrl</kbd> <kbd>Ctrl</kbd> <em>(tap twice)</em></td><td>Jump back to the view you were on last — e.g. Notes ↔ PDF</td></tr>
-              <tr><td><kbd>Ctrl</kbd> + <kbd>.</kbd></td><td>Toggle focus mode (hide the header while you read — the <strong>‹</strong> tab on the right edge of the screen is always there, and opens the contents, the four views, My Decks, and Focus mode and Full screen themselves)</td></tr>
+              <tr><td><kbd>Ctrl</kbd> + <kbd>.</kbd></td><td>Toggle focus mode (hide the header while you read — the <strong>‹</strong> tab on the right edge of the screen is always there, and opens the contents, the four views, My Files, and Focus mode and Full screen themselves)</td></tr>
               <tr><td><kbd>Esc</kbd></td><td>Close the topmost panel, or leave focus mode</td></tr>
             </table>
           </section>
@@ -2298,7 +2300,7 @@
               <tr><td>Tap card</td><td>Flip to answer</td></tr>
             </table>
             <p>Use the <strong>✅ Known</strong> / <strong>❌ Review</strong> buttons (or <kbd>K</kbd> / <kbd>R</kbd>) to sort cards.</p>
-            <p><strong>Back</strong> — your phone's back gesture (and the browser's back button) works the way you'd expect: it closes whatever is open, one layer at a time, then walks back through the notes and decks you've been through, returning you to the paragraph you were reading. Only once there's nothing left does it leave Recall, and it asks first.</p>
+            <p><strong>Back</strong> — your phone's back gesture (and the browser's back button) works the way you'd expect: it closes whatever is open, one layer at a time, then walks back through the notes and files you've been through, returning you to the paragraph you were reading. Only once there's nothing left does it leave Recall, and it asks first.</p>
           </section>
 
           <section class="help-section">
@@ -2308,7 +2310,7 @@
             <table class="help-table">
               <tr><td><kbd>B</kbd> <kbd>I</kbd> <kbd>U</kbd> <kbd>S</kbd></td><td>Bold, Italic, Underline, Strikethrough</td></tr>
               <tr><td><kbd>&lt;/&gt;</kbd></td><td>Inline code</td></tr>
-              <tr><td><kbd>[…]</kbd></td><td>Cloze — hide the selection as a fill-in-the-blank. In the editor it wraps the selection in <code>{{ }}</code>; in the rendered card or notes, select some text and tap the <kbd>[…]</kbd> button to cloze it in place (tap again on the same text to un-cloze). Tap a cloze on the card to reveal it, or use the <strong>Reveal clozes</strong> button to flip them all at once (tap again to hide them; you can still tap any single one). In the <strong>notes header</strong> all three cloze tools sit together as one group, each drawn as what it does: a line of text with a solid blank in it and a <strong>+</strong> makes a cloze from your selection; an <strong>eye</strong> shows every answer at once (it gains a slash while they are showing, so tapping hides them again); and <strong>three stacked rows</strong> open <strong>Cloze Review</strong> — a list of every blank in the deck</td></tr>
+              <tr><td><kbd>[…]</kbd></td><td>Cloze — hide the selection as a fill-in-the-blank. In the editor it wraps the selection in <code>{{ }}</code>; in the rendered card or notes, select some text and tap the <kbd>[…]</kbd> button to cloze it in place (tap again on the same text to un-cloze). Tap a cloze on the card to reveal it, or use the <strong>Reveal clozes</strong> button to flip them all at once (tap again to hide them; you can still tap any single one). In the <strong>notes header</strong> all three cloze tools sit together as one group, each drawn as what it does: a line of text with a solid blank in it and a <strong>+</strong> makes a cloze from your selection; an <strong>eye</strong> shows every answer at once (it gains a slash while they are showing, so tapping hides them again); and <strong>three stacked rows</strong> open <strong>Cloze Review</strong> — a list of every blank in the file</td></tr>
               <tr><td><kbd>B I U</kbd></td><td>Format-in-place — rewrites the markdown under the <em>selected</em> text, in the rendered view and in the raw editor alike. These live on the floating bar that appears with your selection, alongside everything that <em>captures</em> one (cloze, <kbd>+</kbd> make a card, <kbd>📌</kbd> pin, highlight, <kbd>↪</kbd> split out, <kbd>⌫</kbd> delete). The notes header keeps the three cloze tools, which are about the note as a whole rather than about a selection</td></tr>
               <tr><td><kbd>Aa</kbd></td><td>Font family picker</td></tr>
               <tr><td><kbd>A</kbd> <em>(underlined)</em></td><td>Text colour — the letter wears the colour it will apply. Tap it to use that colour in one tap; tap the ▾ beside it to pick another, which becomes the new default. The highlighter is the same idea with the colour behind the letter</td></tr>
@@ -2324,19 +2326,19 @@
               <li><strong>🖼️ in the editor</strong> — tap the image button (it sits beside <kbd>-</kbd> and <kbd>Tx</kbd> in raw-edit mode, the three controls that act on the caret or the line rather than on a selection) to open your file picker. <em>On phones and tablets this offers your camera or photo library</em></li>
             </ul>
             <p><strong>Nothing uploads until you say so.</strong> Whichever way an image arrives, a dialog opens first: choose a compression level — <strong>Original</strong>, <strong>High</strong>, <strong>Balanced</strong> (1600px · 82%, the default), <strong>Small</strong>, <strong>Tiny</strong>, or open <strong>Advanced</strong> for your own quality and longest side — and see each file's real size before and after, plus the dimensions it will be stored at. The sizes shown <em>are</em> the compressed files, not a guess about them. Press <strong>Upload</strong> and exactly those are sent; press Cancel and nothing is inserted and nothing is uploaded. Picking several images at once, dropping a handful, or importing a whole EPUB asks <em>once</em>, for all of them together. Animated GIFs and SVGs are always kept whole.</p>
-            <p>Uploads go to your own <strong>Supabase Storage</strong> bucket, and an <code>![](…)</code> link is inserted automatically. No separate key to set up — the same sign-in that unlocks sync unlocks image uploads. Images need a connection to upload; picked while offline, they wait on this device and go up when you're back. Every rendered image in a note carries its own controls, whatever its size and wherever it sits — in a bullet, in a table cell, inside a link: drag the <strong>blue corner grip</strong> to resize it, or use the <strong>🗑</strong> button to remove it. Since it's your own storage, removing it also deletes the file for good (unless the same image is used elsewhere in the deck), unlike the old ImgBB host.</p>
+            <p>Uploads go to your own <strong>Supabase Storage</strong> bucket, and an <code>![](…)</code> link is inserted automatically. No separate key to set up — the same sign-in that unlocks sync unlocks image uploads. Images need a connection to upload; picked while offline, they wait on this device and go up when you're back. Every rendered image in a note carries its own controls, whatever its size and wherever it sits — in a bullet, in a table cell, inside a link: drag the <strong>blue corner grip</strong> to resize it, or use the <strong>🗑</strong> button to remove it. Since it's your own storage, removing it also deletes the file for good (unless the same image is used elsewhere in the file), unlike the old ImgBB host.</p>
             <p><strong>Google Drive links</strong> just work: paste a public share link like <code>![](https://drive.google.com/file/d/FILE_ID/view)</code> and it renders directly — no need to convert it first.</p>
           </section>
 
           <section class="help-section">
             <h3 class="help-section-title">6. Quick Notes 📌</h3>
-            <p>Found something worth keeping while reviewing an answer? Capture it without leaving your deck:</p>
+            <p>Found something worth keeping while reviewing an answer? Capture it without leaving your file:</p>
             <ul class="help-list">
               <li>Open the <strong>answer</strong> in edit mode (pencil icon — long-press works on desktop — then flip to the answer side)</li>
               <li><strong>Select the text</strong> you want to keep</li>
               <li>Click the <strong>📌</strong> button on the floating bar that appears with your selection</li>
             </ul>
-            <p>The selection is saved as a new card in a dedicated <code>quick_notes</code> cloud deck (created automatically the first time). The selected text becomes the card’s <strong>question</strong>, with a blank answer for you to fill in later. A <span class="help-toast-chip"><span class="help-toast-chip-icon">✓</span> Saved to quick_notes</span> toast confirms it worked. Open your <code>quick_notes</code> deck any time from <strong>My Decks</strong>. <em>(Requires sign-in, since notes are stored in the cloud.)</em></p>
+            <p>The selection is saved as a new card in a dedicated <code>quick_notes</code> cloud file (created automatically the first time). The selected text becomes the card’s <strong>question</strong>, with a blank answer for you to fill in later. A <span class="help-toast-chip"><span class="help-toast-chip-icon">✓</span> Saved to quick_notes</span> toast confirms it worked. Open your <code>quick_notes</code> file any time from <strong>My Files</strong>. <em>(Requires sign-in, since notes are stored in the cloud.)</em></p>
           </section>
 
           <section class="help-section">
@@ -2364,27 +2366,28 @@
             <h3 class="help-section-title">9. Sync &amp; Cloud</h3>
             <div class="help-btn-row">
               <button type="button" class="tool-button help-demo-btn" tabindex="-1">⟳ Sync Now</button>
-              <button type="button" class="tool-button help-demo-btn" tabindex="-1">📚 My Decks</button>
+              <button type="button" class="tool-button help-demo-btn" tabindex="-1">📚 My Files</button>
             </div>
             <ul class="help-list">
-              <li><strong>Sync is automatic</strong> — every deck is mirrored to your account in the background; <strong>Sync Now</strong> runs one immediately. <strong>Auto-sync</strong>, under <strong>App</strong> in the same menu, is how often that happens on its own — and it also runs shortly after you stop typing, when you open a note another device has changed, and (with the current setup SQL) within seconds of a change on another device</li>
+              <li><strong>Sync is automatic</strong> — every file is mirrored to your account in the background; <strong>Sync Now</strong> runs one immediately. <strong>Auto-sync</strong>, under <strong>App</strong> in the same menu, is how often that happens on its own — and it also runs shortly after you stop typing, when you open a note another device has changed, and (with the current setup SQL) within seconds of a change on another device</li>
               <li><strong>Edits are combined, never thrown away</strong> — like merging in Git. If two devices (or two windows on one device) change different paragraphs, cards or highlights, both changes are kept. Two different edits to the same paragraph are even merged word by word. Only when both changed the <em>same words</em> differently does the pill say <strong>Both devices changed a paragraph — tap to choose</strong>: you see just that paragraph (or card), both versions side by side, and pick one or keep both. Each note is kept as one copy — there is no pile of old versions</li>
               <li><strong>The pill says where your edits are</strong> — <strong>Saved here · syncs soon</strong> means the edit is safe on this device and not in the cloud yet; <strong>Synced</strong> means the cloud has everything</li>
-              <li><strong>My Decks</strong> — every deck, on this device and in the cloud, with a live sync-status column. Per deck: <strong>Load</strong>, <strong>Export</strong> (PDF / Markdown / JSON / SQL), <strong>Rename</strong>, <strong>Delete</strong>, and an inline <strong>category editor</strong>. Filter by category, select several decks for <strong>bulk Load / Categorize / Export / Delete</strong>, or <strong>Export All</strong> to back up the whole library. Deletes propagate to your other devices</li>
-              <li><strong>Back up &amp; share with .recall files</strong> — <strong>⋯ → Back up library (.recall)</strong> saves everything (decks, notes, PDFs, highlights, ink, pictures, folders, reading positions and settings) in one file, with a live panel showing every deck, image and paper as it goes; <strong>⋯ → Restore backup</strong> merges it back. To give decks to someone else, select them and choose <strong>Export → Share (.recall — everything)</strong>: they open the file with <strong>Import</strong> (or drop it on the app) and get the decks as their own, papers and all. Your study progress stays out unless you tick it in, and importing the same file again offers to <strong>update</strong> the decks instead of duplicating them</li>
-              <li><strong>Exporting the deck you have open</strong> is not in this menu — it is the <strong>⇓</strong> beside the Cards / Notes / PDF tabs, which always offers the formats for the tab you are on: the cards as Cornell PDF, Markdown, JSON or SQL; the notes as PDF, HTML, Word or Markdown; a paper as its annotated pages, all its pages, the notes alone or the original file. <strong>Highlights…</strong> sits at the bottom of that menu on Notes and PDF</li>
+              <li><strong>My Files</strong> — every file, on this device and in the cloud, with a live sync-status column. Per file: <strong>Load</strong>, <strong>Export</strong> (PDF / Markdown / JSON / SQL), <strong>Rename</strong>, <strong>Delete</strong>, and an inline <strong>category editor</strong>. Filter by category, select several files for <strong>bulk Load / Categorize / Export / Delete</strong>, or <strong>Export All</strong> to back up the whole library. Deletes propagate to your other devices</li>
+              <li><strong>Back up &amp; share with .recall files</strong> — <strong>⋯ → Back up library (.recall)</strong> saves everything (files, cards, notes, PDFs, Canvas pages, highlights, ink, pictures, folders, reading positions and settings) in one .recall package, with a live panel showing every file, image and PDF as it goes; <strong>⋯ → Restore backup</strong> merges it back. To give files to someone else, select them and choose <strong>Export → Share (.recall — everything)</strong>: they open the package with <strong>Import</strong> (or drop it on the app) and get the files as their own, PDFs and all. Your study progress stays out unless you tick it in, and importing the same package again offers to <strong>update</strong> the files instead of duplicating them</li>
+              <li><strong>Exporting the file you have open</strong> is not in this menu — it is the <strong>⇓</strong> beside the Cards / Notes / PDFs / Canvas tabs, which always offers the formats for the tab you are on: the cards as Cornell PDF, Markdown, JSON or SQL; the notes as PDF, HTML, Word or Markdown; a paper as its annotated pages, all its pages, the notes alone or the original file. <strong>Highlights…</strong> sits at the bottom of that menu on Notes and PDF</li>
             </ul>
-            <p>Every cloud action gives you instant feedback: a toast slides in at the top of the screen confirming it worked — for example <span class="help-toast-chip"><span class="help-toast-chip-icon">✓</span> Deck deleted everywhere</span> or <span class="help-toast-chip help-toast-chip-err"><span class="help-toast-chip-icon">✕</span> Sync failed</span> — so you never have to wonder whether your sync, load, or delete went through. Click a toast to dismiss it early.</p>
+            <p>Every cloud action gives you instant feedback: a toast slides in at the top of the screen confirming it worked — for example <span class="help-toast-chip"><span class="help-toast-chip-icon">✓</span> File deleted everywhere</span> or <span class="help-toast-chip help-toast-chip-err"><span class="help-toast-chip-icon">✕</span> Sync failed</span> — so you never have to wonder whether your sync, load, or delete went through. Click a toast to dismiss it early.</p>
           </section>
 
           <section class="help-section">
-            <h3 class="help-section-title">10. Offline &amp; My Decks 💾</h3>
+            <h3 class="help-section-title">10. Offline &amp; My Files 💾</h3>
             <p>Once you’ve opened the app online once, it keeps working with no connection:</p>
             <ul class="help-list">
               <li><strong>It opens straight into your library</strong> with no network — no waiting, no sign-in wall. Everything Recall needs to start is stored on the device, so a plane, a tunnel or a blocked network changes nothing about reading and editing.</li>
-              <li><strong>You stay signed in</strong> offline (after signing in online at least once), so you go straight to your decks.</li>
-              <li><strong>Saving is automatic</strong> — every edit is written to the on-device library in the background; there is no manual save button. A reload starts on the clean home screen; reopen your deck from <strong>My Decks</strong>.</li>
-              <li><strong>Every cloud deck is mirrored</strong> onto the device automatically, so the whole library is available offline — load, rename, or delete with no connection.</li>
+              <li><strong>You stay signed in</strong> offline (after signing in online at least once), so you go straight to your files.</li>
+              <li><strong>Saving is automatic</strong> — every edit is written to the on-device library in the background; there is no manual save button. A reload starts on the clean home screen; reopen your file from <strong>My Files</strong>.</li>
+              <li><strong>Every cloud file is mirrored</strong>
+ onto the device automatically, so the whole library is available offline — load, rename, or delete with no connection.</li>
               <li>An <strong>Offline</strong> badge appears bottom-left when you lose connection.</li>
             </ul>
             <p>A first-time login needs internet. Edits made offline (including deletes) sync automatically once the connection returns.</p>
@@ -2609,8 +2612,8 @@ What year was the Eiffel Tower built?
          through to the page behind; only the panels take them. -->
     <div class="frame-card-layer" id="frameCardLayer"></div>
     <template id="frameCardTemplate">
-      <div class="confirm-modal-content frame-card-content frame-card-panel" role="dialog" aria-label="Make a flashcard">
-        <h3 class="prompt-modal-title frame-card-titlebar" title="Drag to move">Make a flashcard</h3>
+      <div class="confirm-modal-content frame-card-content frame-card-panel" role="dialog" aria-label="Make a card">
+        <h3 class="prompt-modal-title frame-card-titlebar" title="Drag to move">Make a card</h3>
         <div class="frame-card-body">
           <div class="frame-card-field frame-card-answer-field">
             <span class="frame-card-label frame-card-answer-label">Answer — captured from your notes</span>
@@ -2703,7 +2706,8 @@ What year was the Eiffel Tower built?
         <p class="setup-hint">
           Recall couldn't load <code>vendor/supabase-js</code>, which it needs to sign in. That's
           usually a content blocker or a half-installed copy of the app — not your account. Your
-          saved project settings are untouched, and any decks already on this device are safe.
+          saved project settings are untouched, and any files already on this device are safe.
+
         </p>
         <p id="offlineBootError" class="login-error" aria-live="polite"></p>
         <button id="offlineBootRetryBtn" class="login-btn-primary" type="button">Try again</button>

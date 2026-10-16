@@ -305,7 +305,7 @@ async function readJobBytes(job) {
   // pages, say) is refused here — before anything is uploaded under a key it
   // has no right to, and long before anything is deleted.
   if (job.sha256 && hash !== job.sha256) {
-    return { reason: "the copy found is not the version this deck uses, so nothing was changed" };
+    return { reason: "the copy found is not the version this file uses, so nothing was changed" };
   }
   return { blob, hash };
 }
@@ -355,7 +355,7 @@ export async function copyDocumentToS3(job) {
     // Nothing is lost: the record still names the old copy, so the paper
     // still opens, and the object in the bucket is found by its hash on the
     // next run rather than uploaded again.
-    return { copied: false, reason: "could not update the deck" };
+    return { copied: false, reason: "could not update the file" };
   }
   return { copied: true, s3Key: key, hash, size };
 }
@@ -388,7 +388,7 @@ export async function readCloudDocumentMeta(deckIds = null) {
         const { data, error } = await withTimeout(
           supabaseClient.from("decks").select(columns).in("id", ids.slice(i, i + 50)),
           CLOUD_TIMEOUT_MS,
-          "read deck documents"
+          "read file documents"
         );
         if (error) throw error;
         keep(data);
@@ -400,7 +400,7 @@ export async function readCloudDocumentMeta(deckIds = null) {
         supabaseClient.from("decks").select(columns).order("id", { ascending: true })
           .range(from, from + CLOUD_DOCUMENT_PAGE - 1),
         CLOUD_TIMEOUT_MS,
-        "read deck documents"
+        "read file documents"
       );
       if (error) throw error;
       keep(data);
@@ -488,7 +488,7 @@ function jobHolderId(job) {
 export async function retireDocumentSources(job, copied, { cloudMeta = null, holders = null } = {}) {
   // Against the record as it is NOW, not as it was planned.
   const entry = await readJobEntry(job);
-  if (!entry || entry.sha256 !== copied.hash) return { status: "waiting", reason: "the deck changed while it was moving" };
+  if (!entry || entry.sha256 !== copied.hash) return { status: "waiting", reason: "the file changed while it was moving" };
   const sources = liveLegacyLocators(entry);
   if (!sources.length) return { status: "moved", reason: "", freed: 0 };
 
@@ -502,10 +502,10 @@ export async function retireDocumentSources(job, copied, { cloudMeta = null, hol
   // device to tell.
   const deckId = cloudDeckIdFor(job.deckLocalId);
   if (deckId) {
-    if (!cloudMeta) return { status: "waiting", reason: isSignedIn ? "waiting for the deck to sync" : "sign in so your other devices hear where it went" };
+    if (!cloudMeta) return { status: "waiting", reason: isSignedIn ? "waiting for the file to sync" : "sign in so your other devices hear where it went" };
     const row = cloudMeta.get(String(deckId));
     const cloudEntry = row ? entryForJob(row, job) : null;
-    if (!cloudEntry || cloudEntry.sha256 !== copied.hash) return { status: "waiting", reason: "waiting for the deck to sync" };
+    if (!cloudEntry || cloudEntry.sha256 !== copied.hash) return { status: "waiting", reason: "waiting for the file to sync" };
   }
 
   const complete = Boolean(holders?.complete);
@@ -525,7 +525,7 @@ export async function retireDocumentSources(job, copied, { cloudMeta = null, hol
     }
     if (field === "path") {
       if (!complete) {
-        waiting.push(isSignedIn ? "the other decks in the cloud could not be checked, so the old Supabase copy was kept for now" : "sign in to remove the old Supabase copy");
+        waiting.push(isSignedIn ? "the other files in the cloud could not be checked, so the old Supabase copy was kept for now" : "sign in to remove the old Supabase copy");
         continue;
       }
       // The object has to BE this file. For a record that was never hashed,
@@ -580,7 +580,7 @@ export async function retireDocumentSources(job, copied, { cloudMeta = null, hol
       // Whatever was deleted is deleted, and the bucket copy is confirmed and
       // known to the cloud — so the paper is safe. The marker is what failed,
       // and the next run finds nothing left to delete and writes it then.
-      return { status: "waiting", reason: "could not update the deck", freed };
+      return { status: "waiting", reason: "could not update the file", freed };
     }
     for (const field of retiredNow) {
       const key = `${field}\n${entry[field]}`;
@@ -892,7 +892,7 @@ export async function backfillDocumentToS3(job) {
   const recorded = await recordS3Key(job, key, hash);
   // An object in the bucket whose deck could not be told is still reachable:
   // other devices derive the key from the id and hash they already hold.
-  return { status: uploaded ? "uploaded" : "recorded", reason: recorded ? "" : "could not update the deck" };
+  return { status: uploaded ? "uploaded" : "recorded", reason: recorded ? "" : "could not update the file" };
 }
 
 export async function backfillDocumentsToS3(jobs, { onProgress = null, isCancelled = () => false } = {}) {

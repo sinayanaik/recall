@@ -14,31 +14,31 @@ export function defaultPackageTitle(titles = []) {
   if (list.length === 1) return list[0];
   if (list.length === 2) return `${list[0]} & ${list[1]}`;
   if (list.length > 2) return `${list[0]} and ${list.length - 1} more`;
-  return "Recall decks";
+  return "Recall files";
 }
 
 export function showShareOptions({ count = 1, title = "" } = {}) {
   return new Promise((resolve) => {
     const modal = document.createElement("section");
     modal.className = "category-choice-modal share-options-modal";
-    modal.setAttribute("aria-label", "Share decks");
+    modal.setAttribute("aria-label", "Share files");
     const shell = document.createElement("div");
     shell.className = "category-choice-shell share-options-shell";
     shell.innerHTML = `
       <div class="category-choice-head">
         <div>
-          <h2>Share ${count} deck${count === 1 ? "" : "s"} as a .recall file</h2>
-          <p>One file with everything in it. Whoever opens it in Recall gets the decks as their own — cards, notes, PDFs, highlights, ink and pictures.</p>
+          <h2>Share ${count} file${count === 1 ? "" : "s"} as a .recall package</h2>
+          <p>One package with everything in it. Whoever opens it in Recall gets the files as their own — cards, notes, PDFs, highlights, ink and pictures.</p>
         </div>
         <button type="button" data-share-cancel aria-label="Close">&#215;</button>
       </div>
       <label class="share-options-field">Name
         <input type="text" data-share-title maxlength="120" value="${escapeHtml(title)}">
       </label>
-      <label class="share-options-check"><input type="checkbox" data-share-papers checked> Include the PDFs and handwritten notebooks</label>
+      <label class="share-options-check"><input type="checkbox" data-share-papers checked> Include the PDFs and Canvas pages</label>
       <label class="share-options-check"><input type="checkbox" data-share-images checked> Include the pictures</label>
       <label class="share-options-check"><input type="checkbox" data-share-progress> Include my study progress (known / review marks, bookmarks, reading positions)</label>
-      <p class="restore-note">Nothing tied to your account goes in the file — no sign-in, no storage links. Importing the same file again later offers to update the decks instead of duplicating them.</p>
+      <p class="restore-note">Nothing tied to your account goes in the package — no sign-in, no storage links. Importing the same package again later offers to update the files instead of duplicating them.</p>
       <div class="category-choice-actions">
         <button type="button" data-share-cancel>Cancel</button>
         <button type="button" class="import-action-primary" data-share-confirm>Create file</button>

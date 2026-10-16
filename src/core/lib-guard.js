@@ -52,7 +52,7 @@ export function reportMissingBootLibraries(missing) {
     slow.textContent =
       `Recall couldn't load ${missing.length === 1 ? "a file it needs" : "some files it needs"}: ` +
       `${missing.map(([, file]) => file).join(", ")}. That usually means a content blocker, or an ` +
-      "app install that didn't finish. Your decks are stored on this device and are not affected.";
+      "app install that didn't finish. Your files are stored on this device and are not affected.";
   }
   const retry = document.getElementById("bootSkeletonRetry");
   if (retry) retry.hidden = false;

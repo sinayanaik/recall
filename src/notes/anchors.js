@@ -50,7 +50,7 @@ export function addCardFromNotes(question, answer, noteAnchor = null) {
   updateMeta();
   scheduleDeckAutosave();
   showToast(`Card added · ${state.masterCards.length} total`);
-  setStatus(state.deckId ? "Card added from notes locally. Sync to update the web deck." : "Card added from notes.");
+  setStatus(state.deckId ? "Card added from notes locally. Sync to update the cloud copy." : "Card added from notes.");
 }
 
 // Strip markdown syntax down to the plain text a reader sees — used both to
@@ -1305,7 +1305,7 @@ export async function jumpToNoteForCurrentCard() {
 
   // Cross-deck anchor (quick_notes pin): open the source deck first, then jump.
   // The deck loaders record the back history themselves — nothing to do here.
-  setStatus("Opening the source deck…");
+  setStatus("Opening the source file…");
   if (anchor.deckLocalId && (await loadDeckFromLibrary(anchor.deckLocalId))) {
     scheduleNoteJump(anchor);
     return;
@@ -1313,8 +1313,8 @@ export async function jumpToNoteForCurrentCard() {
   if (anchor.deckId && supabaseClient && navigator.onLine) {
     loadWebDeck(anchor.deckId)
       .then(() => scheduleNoteJump(anchor))
-      .catch(() => setStatus("Couldn't open the source deck for this note.", "error"));
+      .catch(() => setStatus("Couldn't open the source file for this note.", "error"));
     return;
   }
-  setStatus("Couldn't open the source deck for this note — it isn't available on this device.", "error");
+  setStatus("Couldn't open the source file for this note — it isn't available on this device.", "error");
 }

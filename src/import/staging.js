@@ -226,12 +226,12 @@ export function importDetectionChips() {
   const fileCount = importStaging.sources.length;
   if (fileCount > 1) chips.push({ text: `${fileCount} files read`, tone: "ok" });
   if (decks.length > 1) {
-    chips.push({ text: `${decks.length} decks found`, tone: "ok" });
+    chips.push({ text: `${decks.length} files found`, tone: "ok" });
   }
 
   const snapshotDecks = decks.filter((deck) => deck.snapshot);
   if (snapshotDecks.length) {
-    chips.push({ text: `${snapshotDecks.length} Recall deck export${snapshotDecks.length === 1 ? "" : "s"}`, tone: "ok" });
+    chips.push({ text: `${snapshotDecks.length} Recall file export${snapshotDecks.length === 1 ? "" : "s"}`, tone: "ok" });
     const saved = snapshotDecks.reduce((sum, deck) => sum + deck.cards.length, 0);
     const withNotes = snapshotDecks.filter((deck) => deck.notesBody.trim()).length;
     chips.push({ text: `${saved} saved card${saved === 1 ? "" : "s"}` });
@@ -279,7 +279,7 @@ export function importContentHintText() {
   if (importStaging.content === "cards") {
     return heuristicOnly
       ? "Every ## heading becomes a card question and the text under it becomes the answer. Use Notes instead if these are documents you want to read."
-      : "Only the flashcards are kept; the surrounding document is dropped.";
+      : "Only the cards are kept; the surrounding document is dropped.";
   }
   return importStaging.decks.length > 1
     ? "Each document is kept whole as its notes, and any cards written in card syntax are pulled out alongside it. Files with no card syntax stay pure notes."
@@ -292,14 +292,14 @@ export function importTargetHintText() {
   if (importStaging.target === "current") {
     const bits = [];
     if (importStaging.content !== "notes") bits.push("cards are added after the existing ones");
-    if (importStaging.content !== "cards") bits.push("notes are appended to the end of this deck's notes");
+    if (importStaging.content !== "cards") bits.push("notes are appended to the end of this file's notes");
     return `Nothing is replaced — ${bits.join(", ")}.`;
   }
   if (importStaging.target === "separate") {
     const count = importTotals().decks;
-    return `Saves ${count} separate deck${count === 1 ? "" : "s"} into that folder and opens the library there. The deck you have open now is untouched.`;
+    return `Saves ${count} separate file${count === 1 ? "" : "s"} into that folder and opens the library there. The file you have open now is untouched.`;
   }
-  return "Merges everything into one new deck in that folder and opens it. The deck you have open now is left saved in My Decks.";
+  return "Merges everything into one new file in that folder and opens it. The file you have open now is left saved in My Files.";
 }
 
 export function importChoiceButtonHtml(value, label, { active, disabled = false, title = "" } = {}) {
@@ -339,18 +339,18 @@ export function renderImportChoices() {
     // rather than silently saving one deck into the library without opening it.
     const multiple = importSelectedDecks().length > 1;
     if (!multiple && importStaging.target === "separate") importStaging.target = "new";
-    const currentLabel = state.deckTitle.trim() ? `Current deck — ${state.deckTitle.trim()}` : "Current deck";
+    const currentLabel = state.deckTitle.trim() ? `Current file — ${state.deckTitle.trim()}` : "Current file";
     el.importTargetOptions.innerHTML = [
       // Only offered when there is more than one deck to separate — with a
       // single candidate it would be indistinguishable from "one new deck".
       multiple
-        ? importChoiceButtonHtml("separate", "🗃 Separate decks", { active: importStaging.target === "separate" })
+        ? importChoiceButtonHtml("separate", "🗃 Separate files", { active: importStaging.target === "separate" })
         : "",
-      importChoiceButtonHtml("new", multiple ? "✦ One new deck" : "✦ A new deck", { active: importStaging.target === "new" }),
+      importChoiceButtonHtml("new", multiple ? "✦ One new file" : "✦ A new file", { active: importStaging.target === "new" }),
       importChoiceButtonHtml("current", `⊕ ${currentLabel}`, {
         active: importStaging.target === "current",
         disabled: !hasDeck,
-        title: hasDeck ? "" : "No deck is open yet."
+        title: hasDeck ? "" : "No file is open yet."
       })
     ].filter(Boolean).join("");
   }
@@ -402,8 +402,8 @@ export function renderImportDeckList() {
   el.importDeckList.hidden = false;
   if (el.importDeckListLabel) {
     el.importDeckListLabel.textContent = importStaging.sources.length > 1
-      ? "Decks these files will become"
-      : "Decks found in this file";
+      ? "Files these sources will become"
+      : "Files found in this export";
   }
   el.importDeckListRows.innerHTML = importStaging.decks.map((deck, index) => {
     const resolved = resolveIncomingDeck(deck, importStaging.content);
@@ -418,7 +418,7 @@ export function renderImportDeckList() {
     return `
       <label class="import-decklist-row">
         <input type="checkbox" data-import-deck="${index}"${deck.selected ? " checked" : ""}>
-        <span class="import-decklist-title">${escapeHtml(deck.title || `Deck ${index + 1}`)}</span>
+        <span class="import-decklist-title">${escapeHtml(deck.title || `File ${index + 1}`)}</span>
         <span class="import-decklist-meta">${escapeHtml(meta)}</span>
         <span class="import-decklist-count">${escapeHtml(parts.join(" · ") || "empty")}</span>
       </label>
@@ -436,7 +436,7 @@ export async function renderImportPreview() {
 
   if (el.importPreviewSummary) {
     const bits = [];
-    if (totals.decks > 1) bits.push(`${totals.decks} decks`);
+    if (totals.decks > 1) bits.push(`${totals.decks} files`);
     if (totals.cards) bits.push(`${totals.cards} card${totals.cards === 1 ? "" : "s"}`);
     if (totals.notes) bits.push(`${totals.notes} notes document${totals.notes === 1 ? "" : "s"}`);
     el.importPreviewSummary.textContent = bits.join(" · ") || "nothing to import";
@@ -444,7 +444,7 @@ export async function renderImportPreview() {
 
   const resolved = importResolvedDecks();
   if (!resolved.length) {
-    el.importPreviewBody.innerHTML = `<div class="import-preview-empty">Select at least one deck above.</div>`;
+    el.importPreviewBody.innerHTML = `<div class="import-preview-empty">Select at least one file above.</div>`;
     return;
   }
 
@@ -463,7 +463,7 @@ export async function renderImportPreview() {
   resolved.forEach((deck) => deck.cards.forEach((card) => cards.push({ ...card, deckTitle: deck.title })));
   const shown = cards.slice(0, 12);
   const notesLead = importStaging.content === "both" && resolved.some((deck) => deck.notes.trim())
-    ? `<div class="import-preview-note">${resolved.length > 1 ? "Each document is also kept as its deck's notes." : "The full document is also kept as this deck's notes."}</div>`
+    ? `<div class="import-preview-note">${resolved.length > 1 ? "Each document is also kept as its file's notes." : "The full document is also kept as this file's notes."}</div>`
     : "";
 
   if (!shown.length) {
@@ -500,10 +500,10 @@ export function renderImportReview() {
     const totals = importTotals();
     el.importConfirmBtn.disabled = !totals.cards && !totals.notes;
     el.importConfirmBtn.textContent = importStaging.target === "current"
-      ? "Add to this deck"
+      ? "Add to this file"
       : importStaging.target === "separate"
-        ? `Create ${totals.decks} deck${totals.decks === 1 ? "" : "s"}`
-        : "Create deck";
+        ? `Create ${totals.decks} file${totals.decks === 1 ? "" : "s"}`
+        : "Create file";
   }
   renderImportPreview();
 }
@@ -545,7 +545,7 @@ export function mintImportCards(incoming) {
 export async function commitSeparateDecks() {
   const resolved = importResolvedDecks();
   if (!resolved.length) {
-    setStatus("Select at least one deck to import.", "error");
+    setStatus("Select at least one file to import.", "error");
     return false;
   }
 
@@ -571,7 +571,7 @@ export async function commitSeparateDecks() {
     const { cards, statusById } = mintImportCards(deck.cards);
     state.deckId = null;
     state.localDeckId = null;
-    state.deckTitle = deck.title || `Imported deck ${i + 1}`;
+    state.deckTitle = deck.title || `Imported file ${i + 1}`;
     // A folder the import was aimed at wins; otherwise each deck keeps the
     // category its own file declared.
     state.deckCategory = folder != null ? landingFolder : normalizeDeckCategory(deck.category);
@@ -607,14 +607,14 @@ export async function commitSeparateDecks() {
 
   if (failed) {
     const message = lastSaveErrorWasQuota
-      ? `Only ${written} of ${resolved.length} decks saved — device storage is full. Delete some decks and try again.`
-      : `Only ${written} of ${resolved.length} decks could be saved.`;
+      ? `Only ${written} of ${resolved.length} files saved — device storage is full. Delete some files and try again.`
+      : `Only ${written} of ${resolved.length} files could be saved.`;
     setStatus(message, "error");
     showToast(message, "error");
     return written > 0;
   }
 
-  const message = `Imported ${written} deck${written === 1 ? "" : "s"} into ${landingFolder}.`;
+  const message = `Imported ${written} file${written === 1 ? "" : "s"} into ${landingFolder}.`;
   setStatus(message);
   showToast(message);
   return true;
@@ -625,7 +625,7 @@ export async function commitSeparateDecks() {
 export function commitMarkdownImport() {
   const resolved = importResolvedDecks();
   if (!resolved.length) {
-    setStatus("Select at least one deck to import.", "error");
+    setStatus("Select at least one file to import.", "error");
     return false;
   }
 
@@ -663,7 +663,7 @@ export function commitMarkdownImport() {
   syncResults();
 
   const title = resolved.length === 1
-    ? (resolved[0].title || titleFromImportHint(importStaging.titleHint) || "Imported deck")
+    ? (resolved[0].title || titleFromImportHint(importStaging.titleHint) || "Imported file")
     : `Combined: ${resolved.map((deck) => deck.title || "Untitled").join(", ")}`.slice(0, 80);
   state.deckTitle = title;
   state.deckCategory = importTargetCategory(resolved.length === 1 ? resolved[0].category : defaultDeckCategory);
@@ -687,8 +687,8 @@ export function importCommitMessage(cardCount, notesCount, deckCount, appended) 
   if (cardCount) bits.push(`${cardCount} card${cardCount === 1 ? "" : "s"}`);
   if (notesCount) bits.push("notes");
   const what = bits.join(" and ") || "nothing";
-  if (appended) return `Added ${what} to "${state.deckTitle || "this deck"}".`;
-  if (deckCount > 1) return `Imported ${what} from ${deckCount} decks.`;
+  if (appended) return `Added ${what} to "${state.deckTitle || "this file"}".`;
+  if (deckCount > 1) return `Imported ${what} from ${deckCount} files.`;
   return `Imported ${what}.`;
 }
 
@@ -705,7 +705,7 @@ export function commitSnapshotImport() {
   const title = state.deckTitle || candidate.title;
   closeImportPanel();
   setStatus(append
-    ? `Added ${state.masterCards.length} card${state.masterCards.length === 1 ? "" : "s"} to "${title || "this deck"}".`
+    ? `Added ${state.masterCards.length} card${state.masterCards.length === 1 ? "" : "s"} to "${title || "this file"}".`
     : `Imported "${title}".`);
   if (append) scheduleDeckAutosave();
   return true;

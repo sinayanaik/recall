@@ -90,7 +90,7 @@ export function buildDeckSummaryHtml() {
   return `<div class="deck-summary">
     <div class="deck-summary-header">
       <div class="deck-summary-icon">🎉</div>
-      <h2 class="deck-summary-title">Deck Complete!</h2>
+      <h2 class="deck-summary-title">Cards Complete!</h2>
       <p class="deck-summary-subtitle">${escapeHtml(state.deckTitle || "All cards reviewed")}</p>
     </div>
     <div class="deck-summary-body">

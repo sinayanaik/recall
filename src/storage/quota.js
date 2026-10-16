@@ -72,7 +72,7 @@ export function describeSyncError(error) {
   // renders the repair has already run — so trying again really is the answer.
   // Keyed on the CODE, not the message, exactly as isMissingColumnError is.
   if (String(error?.code || "") === "22P05") {
-    return "This deck had characters the cloud can't store — they've been cleaned up, try syncing again";
+    return "This file had characters the cloud can't store — they've been cleaned up, try syncing again";
   }
   return error?.message || String(error);
 }
@@ -107,7 +107,7 @@ export function handleDeckStorageQuotaError(error) {
   if (!deckAutosaveStorageFailed) {
     setDeckAutosaveStorageFailed(true);
     setSyncIndicator("error");
-    showToast("Device storage full — clear old decks to keep saving", "error");
+    showToast("Device storage full — clear old files to keep saving", "error");
   }
   return true;
 }

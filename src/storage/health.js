@@ -69,11 +69,11 @@ export function describeSignedOutProblem() {
   if (probe.writable) {
     return {
       kind: "signed-out",
-      message: "Signed out — sign in again to resume syncing. Your decks are safe on this device."
+      message: "Signed out — sign in again to resume syncing. Your files are safe on this device."
     };
   }
   return {
     kind: "storage-blocked",
-    message: `Recall can't save your sign-in on this browser, so it can't stay signed in. ${probe.reason} Your decks are safe on this device.`
+    message: `Recall can't save your sign-in on this browser, so it can't stay signed in. ${probe.reason} Your files are safe on this device.`
   };
 }

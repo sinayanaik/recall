@@ -32,7 +32,7 @@ export async function restoreStashedNotes(localId) {
 
   const snapshot = await readDeckSnapshot(localId);
   if (!snapshot) {
-    showToast("That deck is no longer on this device", "error");
+    showToast("That file is no longer on this device", "error");
     return false;
   }
 
@@ -61,7 +61,7 @@ export async function restoreStashedNotes(localId) {
   }
   deleteDeckSnapshot(localId + NOTES_CONFLICT_SUFFIX);
   await refreshAfterNotesConflictResolved(localId);
-  showToast("Your notes were added back at the end of the deck's notes", "success");
+  showToast("Your notes were added back at the end of the file's notes", "success");
   return true;
 }
 
@@ -106,7 +106,7 @@ export async function resolveNotesConflict(localId, choice) {
 
   const snapshot = await readDeckSnapshot(localId);
   if (!snapshot) {
-    showToast("That deck is no longer on this device", "error");
+    showToast("That file is no longer on this device", "error");
     return false;
   }
 
@@ -168,7 +168,7 @@ export async function resolveConflictHunk(localId, hunkId, choice) {
   const stashKey = notesConflictStashKey(localId);
   const [snapshot, stash] = await Promise.all([readDeckSnapshot(localId), readDeckSnapshot(stashKey)]);
   if (!snapshot) {
-    showToast("That deck is no longer on this device", "error");
+    showToast("That file is no longer on this device", "error");
     return false;
   }
   const hunks = Array.isArray(stash?.hunks) ? stash.hunks : [];
@@ -251,7 +251,7 @@ function renderHunkResolver(content, localId, stash, deckTitle) {
     <p class="notes-conflict-intro">
       Everything else in <strong>${escapeHtml(deckTitle)}</strong> was merged automatically. Only
       ${hunks.length === 1 ? "this part was" : `these ${hunks.length} parts were`} changed in the same
-      place, differently, on two devices — so the deck keeps one version and the other waits here until
+      place, differently, on two devices — so the file keeps one version and the other waits here until
       you pick. Nothing else is kept anywhere, so choose for each.
     </p>
     ${rows}
@@ -287,7 +287,7 @@ export async function showNotesConflictModal(localId) {
     if (titleEl) titleEl.textContent = "Choose between two versions";
     if (confirmBtn) confirmBtn.hidden = true;
     if (cancelBtn) cancelBtn.textContent = "Decide later";
-    renderHunkResolver(content, localId, stash, snapshot?.deckTitle || stash.deckTitle || "this deck");
+    renderHunkResolver(content, localId, stash, snapshot?.deckTitle || stash.deckTitle || "this file");
     content.onclick = async (event) => {
       const button = event.target.closest("[data-hunk-choice]");
       if (!button) return;
@@ -319,7 +319,7 @@ export async function showNotesConflictModal(localId) {
   if (cancelBtn) cancelBtn.textContent = "Decide later";
 
   const when = stash.savedAt ? new Date(stash.savedAt).toLocaleString() : "an earlier sync";
-  const deckTitle = snapshot?.deckTitle || stash.deckTitle || "this deck";
+  const deckTitle = snapshot?.deckTitle || stash.deckTitle || "this file";
 
   content.innerHTML = `
     <p class="notes-conflict-intro">

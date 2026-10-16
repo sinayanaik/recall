@@ -190,13 +190,13 @@ export async function packBackupDocuments(zip, entries, onProgress, isCancelled 
   const indexJson = `${JSON.stringify({
     schema: BACKUP_DOCUMENT_SCHEMA,
     version: 1,
-    note: "One PDF per document, the file exactly as it was imported — a deck can "
-      + "have several papers plus a handwritten notebook, and `slot` says which "
-      + "shelf a document is on (a record with no slot is the deck's paper); "
-      + "`pdfId` says which paper on that shelf, for a deck with more than one "
-      + "(absent or \"primary\" is the first). A deck's highlights are "
+    note: "One PDF per document, the file exactly as it was imported — a file can "
+      + "have several PDFs plus a Canvas, and `slot` says which "
+      + "shelf a document is on (a record with no slot is the file's paper); "
+      + "`pdfId` says which paper on that shelf, for a file with more than one "
+      + "(absent or \"primary\" is the first). A file's highlights are "
       + "coordinates into these bytes, so a restore refuses a file whose hash does "
-      + "not match the deck's own record — the same rule re-attaching a paper by "
+      + "not match the file's own record — the same rule re-attaching a paper by "
       + "hand already follows.",
     documents,
     missing

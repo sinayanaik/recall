@@ -1467,7 +1467,7 @@ try {
     if (JSON.stringify(steps) !== JSON.stringify(want)) return `steps were ${steps.join(" → ")}`;
     const logs = sink.events.filter(([kind]) => kind === "log").map(([, text]) => text);
     if (!logs.some((text) => text.includes("Biology")) || !logs.some((text) => text.includes("Chemistry"))) return "a deck was read without a log line";
-    if (!logs.some((text) => /Paper 1\/1 · cell\.pdf/.test(text))) return `the paper was not logged: ${logs.join(" | ")}`;
+    if (!logs.some((text) => /PDF 1\/1 · cell\.pdf/.test(text))) return `the paper was not logged: ${logs.join(" | ")}`;
     if (!logs.some((text) => /^Verified \d+ files/.test(text))) return "the verify step did not report";
     return true;
   });
