@@ -66,6 +66,13 @@ export async function removePdfFromDeck(pdfId) {
     if (Object.keys(rest).length) meta.pdfTocByPdfId = rest;
     else delete meta.pdfTocByPdfId;
   }
+  // The reader's own contents for it. Dropped rather than stamped as a reset:
+  // the PDF it arranged is gone, and its tombstone is what keeps it gone.
+  if (meta.pdfUserToc && pdfId in meta.pdfUserToc) {
+    const { [pdfId]: _drop, ...rest } = meta.pdfUserToc;
+    if (Object.keys(rest).length) meta.pdfUserToc = rest;
+    else delete meta.pdfUserToc;
+  }
   const nextActive = remaining.some((item) => item.id === meta.pdfActiveId) ? meta.pdfActiveId : (remaining[0]?.id || null);
   if (nextActive) meta.pdfActiveId = nextActive;
   else delete meta.pdfActiveId;

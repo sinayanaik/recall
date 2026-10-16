@@ -368,6 +368,7 @@ const APP_SHELL = [
   `./styles/78-sync-safety.css?v=${STAMP}`,
   `./styles/79-tab-text.css?v=${STAMP}`,
   `./styles/80-reading-progress.css?v=${STAMP}`,
+  `./styles/81-pdf-contents-edit.css?v=${STAMP}`,
   // The module entry point. Everything it imports is stamped with the same
   // ?v=, so those URLs change with every release too — which is what lets the
   // cache-first handler below serve them without revalidating and still never
@@ -439,7 +440,11 @@ const APP_SHELL = [
   `./src/documents/pdf-render-worker.js?v=${STAMP}`,
   `./src/documents/pdf-pictures.js?v=${STAMP}`,
   `./src/documents/pdf-multi.js?v=${STAMP}`,
+  `./src/documents/pdf-bookmarks.js?v=${STAMP}`,
+  `./src/documents/pdf-dest.js?v=${STAMP}`,
+  `./src/documents/pdf-links.js?v=${STAMP}`,
   `./src/documents/pdf-outline.js?v=${STAMP}`,
+  `./src/documents/pdf-outline-drag.js?v=${STAMP}`,
   `./src/documents/pdf-page-notes.js?v=${STAMP}`,
   `./src/documents/pdf-region-download.js?v=${STAMP}`,
   `./src/documents/pdf-region-embed.js?v=${STAMP}`,
@@ -450,6 +455,7 @@ const APP_SHELL = [
   `./src/documents/pdf-selection.js?v=${STAMP}`,
   `./src/documents/pdf-store.js?v=${STAMP}`,
   `./src/documents/pdf-toc.js?v=${STAMP}`,
+  `./src/documents/pdf-toc-arrange.js?v=${STAMP}`,
   `./src/documents/pdf-view.js?v=${STAMP}`,
   `./src/editor/highlight-mirror.js?v=${STAMP}`,
   `./src/editor/markdown-keys.js?v=${STAMP}`,

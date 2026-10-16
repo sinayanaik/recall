@@ -187,6 +187,76 @@ export function cachePdfContents(entries, pageCount, pdfId = PDF_PRIMARY_ID) {
   scheduleDeckAutosave();
 }
 
+// ── The reader's own contents ──────────────────────────────────────────────
+//
+// What the drawer lists once the reader has changed it — added a bookmark,
+// dragged a heading under another, renamed or deleted a row. Not a cache: it
+// cannot be derived again, so it is a key of its own beside the derived one
+// rather than an edit of it, and resetting it gives back whatever the PDF's own
+// outline or the derived contents were.
+//
+//   meta.pdfUserToc = { [pdfId]: { at, pages, entries: [{ id, t, p, r, d, b }] } }
+//                                or { at, reset: 1 } once reset
+//
+// p is the page (0 for a destination that resolved to nothing), r how far down
+// it (0..1), d the depth, b 1 for a bookmark the reader made. One bag for every
+// PDF in the file, primary included, merged per pdfId by `at` in
+// src/sync/document-sync.js — a contents is one arrangement, and two devices'
+// halves of two arrangements stitched row by row would be neither.
+
+export const PDF_USER_TOC_KEY = "pdfUserToc";
+
+export function readUserPdfContents(pageCount, pdfId = PDF_PRIMARY_ID, meta = state.meta) {
+  const saved = meta?.[PDF_USER_TOC_KEY]?.[pdfId || PDF_PRIMARY_ID];
+  if (!saved || !Array.isArray(saved.entries)) return null;
+  // The same proof readCachedPdfContents asks for: a contents arranged for a
+  // file of another length is a contents for another file.
+  if (pageCount && saved.pages && saved.pages !== pageCount) return null;
+  return saved.entries.map((entry) => ({
+    id: String(entry.id || ""),
+    title: String(entry.t || ""),
+    page: Number(entry.p) || 0,
+    ratio: Math.min(1, Math.max(0, Number(entry.r) || 0)),
+    depth: Math.max(0, Math.round(Number(entry.d) || 0)),
+    bookmark: entry.b === 1 || entry.b === true,
+    user: true
+  })).filter((entry) => entry.id && entry.title);
+}
+
+export function writeUserPdfContents(entries, pageCount, pdfId = PDF_PRIMARY_ID) {
+  if (!state.meta || typeof state.meta !== "object") return;
+  const saved = {
+    at: Date.now(),
+    pages: pageCount,
+    entries: entries.map((entry) => {
+      const row = { id: entry.id, t: stripInvalidUnicode(entry.title), p: entry.page || 0, d: entry.depth || 0 };
+      // Rounded: four places is a tenth of a point on a page, and the bag is
+      // synced with the rest of meta.
+      if (entry.ratio) row.r = Math.round(entry.ratio * 10000) / 10000;
+      if (entry.bookmark) row.b = 1;
+      return row;
+    })
+  };
+  state.meta = { ...state.meta, [PDF_USER_TOC_KEY]: { ...(state.meta[PDF_USER_TOC_KEY] || {}), [pdfId || PDF_PRIMARY_ID]: saved } };
+  scheduleDeckAutosave();
+}
+
+// A reset is written, not deleted: an absent key on this device would lose
+// the merge to the arrangement still sitting on another one, and bring it
+// straight back. A stamped empty answer beats an older arrangement by the same
+// rule an arrangement beats an older one.
+export function clearUserPdfContents(pdfId = PDF_PRIMARY_ID) {
+  const bag = state.meta?.[PDF_USER_TOC_KEY];
+  const id = pdfId || PDF_PRIMARY_ID;
+  if (!bag?.[id] || !Array.isArray(bag[id].entries)) return;
+  state.meta = { ...state.meta, [PDF_USER_TOC_KEY]: { ...bag, [id]: { at: Date.now(), reset: 1 } } };
+  scheduleDeckAutosave();
+}
+
+export function hasUserPdfContents(pageCount, pdfId = PDF_PRIMARY_ID) {
+  return Boolean(readUserPdfContents(pageCount, pdfId));
+}
+
 // ── Lines ──────────────────────────────────────────────────────────────────
 
 // One text item's type size, in PDF user space. The same expression

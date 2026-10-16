@@ -334,6 +334,10 @@ const checks = [
   // so this can drive it with no browser and no baseline tag — the sync checks
   // below need both, and a check that can only skip verifies nothing.
   ["document-sync ", ["node", ["tools/document-sync-check.mjs"], ROOT]],
+  // The arithmetic behind a PDF's contents being rearranged by hand — a row
+  // dragged with everything under it, a heading nested into another — and the
+  // reading of where a link inside a PDF goes. Pure, imports nothing.
+  ["toc-arrange   ", ["node", ["tools/pdf-toc-arrange-check.mjs"], ROOT]],
   // Where a paper's BYTES live. getDocument is the one place those bytes are
   // resolved and four surfaces sit on it, so the resolution order — device,
   // then the reader's bucket, then Drive, then the old Supabase bucket for
@@ -550,6 +554,10 @@ const checks = [
     // heading" was.
     ["toc-binding   ", ["node", ["tools/toc-binding-check.mjs"], ROOT]],
     ["pdf-document  ", ["node", ["tools/pdf-preview-check.mjs"], ROOT]],
+    // The links inside a PDF, followed by a real press, and the reader's own
+    // contents: a bookmark from a page's right-click menu, a heading dragged
+    // into another, kept across a reload and undone by Reset.
+    ["pdf-links     ", ["node", ["tools/pdf-links-check.mjs"], ROOT]],
     ["epub-import   ", ["node", ["tools/epub-import-check.mjs"], ROOT]],
     ["offline       ", ["node", ["tools/offline-check.mjs"], ROOT]],
     // Was in tools/ and in nothing's list: it drives the whole EPUB pipeline

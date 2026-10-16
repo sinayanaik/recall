@@ -591,6 +591,27 @@ export function mergeDeckMeta(cloudMeta, localMeta, { prefer = "local" } = {}) {
     else delete next.pdfReadingPositions;
   }
 
+  // meta.pdfUserToc — { [pdfId]: { at, pages, entries } | { at, reset } }, the
+  // reader's own contents for each PDF (src/documents/pdf-toc.js). The same
+  // per-id union settled by `at` as the positions above: an arrangement is one
+  // value, so the one made last wins whole, and a reset is a stamped value too
+  // so it can win against an older arrangement on another device.
+  if ((cloud.pdfUserToc && typeof cloud.pdfUserToc === "object")
+      || (local.pdfUserToc && typeof local.pdfUserToc === "object")) {
+    const merged = {};
+    new Set([
+      ...Object.keys(cloud.pdfUserToc || {}),
+      ...Object.keys(local.pdfUserToc || {})
+    ]).forEach((id) => {
+      const a = cloud.pdfUserToc?.[id];
+      const b = local.pdfUserToc?.[id];
+      const picked = a && b ? ((Number(b.at) || 0) >= (Number(a.at) || 0) ? b : a) : (b || a);
+      if (picked) merged[id] = picked;
+    });
+    if (Object.keys(merged).length) next.pdfUserToc = merged;
+    else delete next.pdfUserToc;
+  }
+
   // meta.linkIds — a sorted array of the ids this deck answers to, one minted per
   // device. Every device holds a piece of the truth, so a union is the only
   // correct answer, exactly as the pull side takes one. Not capped here:

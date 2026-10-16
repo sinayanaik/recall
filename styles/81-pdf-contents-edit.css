@@ -1,0 +1,183 @@
+/* The reader's own PDF contents
+ *
+ * Added after the 13-way split of styles.css, in a file of its own — see
+ * POST_SPLIT in tools/split-css.mjs. Composes with the drawer rows in
+ * styles/12-notes.css, 17-toc-fold.css and 45-toc-rows.css without restating
+ * them.
+ *
+ *   • the small menu a right-click opens on a page or on a contents row
+ *     (src/documents/pdf-bookmarks.js);
+ *   • bookmark rows, and the flash a row gets when it lands somewhere new;
+ *   • the drag (src/documents/pdf-outline-drag.js): the rows being carried, the
+ *     row a drop would go into, the line where it would go, and the label that
+ *     follows the pointer.
+ */
+
+/* ── The drawer head ───────────────────────────────────────────────────────
+   Every button in the head wears .notes-toc-fold-all's look, and that class
+   pushes itself to the end with margin-left:auto — which on three buttons in a
+   row spreads them apart. Only the first one shown takes the push; the rest
+   sit beside it. */
+.document-toc-drawer .notes-toc-fold-all:not([hidden]) ~ .notes-toc-fold-all {
+  margin-left: 4px;
+}
+
+.document-toc-drawer .document-toc-bookmark {
+  font-size: 0.85rem;
+}
+
+/* ── The menu ──────────────────────────────────────────────────────────────
+   Fixed at the pointer and placed by openContextMenu; the same panel, line and
+   shadow as the block actions popover (styles/59-block-actions.css), as a
+   column of rows rather than a row of pills, because these are sentences. */
+.pdf-context-menu {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 620;
+  display: flex;
+  flex-direction: column;
+  min-width: 180px;
+  max-width: min(320px, calc(100vw - 16px));
+  padding: 4px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgb(0 0 0 / 0.32);
+}
+
+.pdf-context-menu-item {
+  appearance: none;
+  -webkit-appearance: none;
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.82rem;
+  line-height: 1.3;
+  text-align: left;
+  cursor: pointer;
+}
+
+.pdf-context-menu-item:hover:not(:disabled),
+.pdf-context-menu-item:focus-visible {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  outline: none;
+}
+
+.pdf-context-menu-item:disabled {
+  color: var(--muted);
+  cursor: default;
+  opacity: 0.6;
+}
+
+.pdf-context-menu-item.is-danger:hover:not(:disabled) {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+}
+
+/* ── Bookmark rows ─────────────────────────────────────────────────────────
+   A bookmark is the reader's, not the author's: its dot becomes a small ribbon
+   in the accent colour, so a list of headings with three bookmarks in it says
+   which three at a glance. */
+.document-toc-list .notes-toc-item[data-toc-bookmark="true"] .notes-toc-dot {
+  width: 7px;
+  height: 10px;
+  border-radius: 1px;
+  background: var(--accent);
+  clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 72%, 0 100%);
+}
+
+.document-toc-list .notes-toc-item[data-toc-bookmark="true"] .notes-toc-text {
+  font-style: italic;
+}
+
+/* Where a bookmark, a moved row or a renamed one has just landed. */
+.document-toc-list .notes-toc-item.is-flash > .notes-toc-link {
+  animation: document-toc-flash 1.4s ease-out;
+}
+
+@keyframes document-toc-flash {
+  0%,
+  30% {
+    background: color-mix(in srgb, var(--accent) 22%, transparent);
+  }
+
+  100% {
+    background: transparent;
+  }
+}
+
+/* ── Dragging ──────────────────────────────────────────────────────────────*/
+.document-toc-list.is-arranging,
+.document-toc-list.is-arranging * {
+  cursor: grabbing;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.document-toc-list .notes-toc-item.is-dragging {
+  opacity: 0.35;
+}
+
+/* The row a drop would put the carried one inside. */
+.document-toc-list .notes-toc-item.is-drop-into > .notes-toc-link {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+/* Where the drop would land, indented to the depth it would land at. Fixed and
+   placed by the drag itself, so it is not clipped by the drawer's scroller. */
+.document-toc-drop {
+  position: fixed;
+  z-index: 630;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+  pointer-events: none;
+}
+
+.document-toc-drop::before {
+  content: "";
+  position: absolute;
+  left: -4px;
+  top: -3px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.document-toc-drop[hidden] {
+  display: none;
+}
+
+.document-toc-ghost {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 631;
+  max-width: 260px;
+  padding: 4px 9px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 8px 22px rgb(0 0 0 / 0.28);
+  font-size: 0.78rem;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .document-toc-list .notes-toc-item.is-flash > .notes-toc-link {
+    animation: none;
+  }
+}
