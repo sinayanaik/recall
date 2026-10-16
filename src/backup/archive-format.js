@@ -349,6 +349,7 @@ export const BACKED_UP_SETTINGS_KEYS = {
   "recall:imageCompression": "How pasted images are compressed before upload.",
   "recall:pdfPageNotes": "Whether a paper's page notes are shown.",
   "recall:pdfInvert": "Whether papers are shown inverted for dark reading.",
+  "recall:readingProgressShown": "Whether the reading-progress row is shown at the foot of Notes and PDFs.",
   "recall:focusMode": "Focus mode.",
   "recall:screenOrientation": "The orientation lock.",
   "recall:splitRatio": "Where the split view's divider sits.",

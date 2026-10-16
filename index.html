@@ -1068,6 +1068,9 @@
                    Hidden in paged mode, which lays out every block up front
                    and has nothing here to fold. -->
               <button class="edit-card-btn notes-fold-all-btn" id="notesFoldAllBtn" data-nhm-group="While you read" type="button" aria-pressed="false" title="Hide the text under every heading" aria-label="Fold or unfold every section"><span class="nhm-ico" aria-hidden="true">&#9776;</span><span class="nhm-label notes-fold-label">Fold all sections</span></button>
+              <!-- ⋯ → Show progress: the one-row reading line at the foot of the
+                   page (src/stats/reading-progress.js). Off until asked for. -->
+              <button class="edit-card-btn reading-progress-btn" id="readingProgressNotesBtn" data-nhm-group="While you read" type="button" aria-pressed="false" title="Show how far you are, the chapter and the time left, in one row at the foot of the page" aria-label="Show reading progress"><span class="nhm-ico" aria-hidden="true">&#9719;</span><span class="nhm-label">Show progress<span class="nhm-hint">Percent, chapter and time left</span></span><span class="nhm-state" aria-hidden="true"><span class="nhm-switch"></span></span></button>
               <!-- Every low-frequency button above moves INTO the menu below —
                    the cloze trio, make-card, pin, the two bookmark controls,
                    focus, full screen and the highlight-notes toggle: ten at
@@ -1202,6 +1205,7 @@
                 <button class="md-menu-item" type="button" data-slot="notebook" data-document-action="hw-paper-blank" title="Plain paper, nothing printed on it"><span>Blank paper</span><span class="nhm-state" aria-hidden="true"><span class="nhm-switch"></span></span></button>
                 <button class="md-menu-item is-danger" type="button" data-slot="notebook" data-document-action="hw-tear-out" title="Tear out the page you are looking at — everything written on it goes with it"><span>Tear out this page<span class="nhm-hint">Everything written on it goes too</span></span></button>
                 <button class="md-menu-item" type="button" data-document-action="page-notes" title="Print every highlight's note under the page it is on — the PDFs tab's answer to the notes view's own inline notes"><span>Notes on the page<span class="nhm-hint">Print each highlight's note under its page</span></span><span class="nhm-state" aria-hidden="true"><span class="nhm-switch"></span></span></button>
+                <button class="md-menu-item" type="button" data-slot="doc" data-document-action="reading-progress" aria-pressed="false" title="Show how far you are, the chapter and the time left, in one row at the foot of the page"><span>Show progress<span class="nhm-hint">Percent, chapter and time left</span></span><span class="nhm-state" aria-hidden="true"><span class="nhm-switch"></span></span></button>
                 <label class="md-menu-item file-pick" data-slot="doc" data-document-action="add-pdf" title="Attach another PDF to this file">
                   <input id="documentAddPdfInput" type="file" accept=".pdf,application/pdf" hidden>
                   <span>Add another PDF…</span>
@@ -2391,12 +2395,12 @@
             </div>
             <p>The header shows a live <strong>Known X / Review Y</strong> count, and each card carries a status badge. Replay filtered sessions (Review only, Known only, Uncategorized) from the buttons below the card.</p>
             <h4 class="help-subsection-title">Reading progress</h4>
-            <p>While you read a file's <strong>Notes</strong> or one of its <strong>PDFs</strong>, a line at the foot of the page shows how far through you are, which chapter you are in, and the time left — in the chapter and in the whole thing, for example <em>42% · Ch 3/12 · 8 min left in chapter · 1 h 10 min left</em>. Chapters come from the PDF's own contents, or from the headings in your Notes.</p>
+            <p>While you read a file's <strong>Notes</strong> or one of its <strong>PDFs</strong>, turn on <strong>⋯ → Show progress</strong> for one compact row at the foot of the page. It follows you as you scroll, and shows how far through you are, which chapter you are in, and the time left — in the chapter and in the whole thing, for example <em>42% · Ch 3/12 · 8 min left in chapter · 1 h 10 min left</em>. Chapters come from the PDF's own contents, or from the headings in your Notes.</p>
             <ul class="help-list">
               <li><strong>Time left is learned from you.</strong> Each device measures how fast <em>you</em> read on it — pages a minute for PDFs, words a minute for Notes, and per file once you have spent a while in it — and recalculates the estimate every few seconds as you read. Until it has measured you, it assumes about 2 minutes a page and 230 words a minute. Quick jumps (the contents, a search) are not counted as reading.</li>
               <li><strong>Your time</strong> on Home counts <em>active</em> time only: the app on screen and used in the last two minutes. It shows today, the last 7 days, all time, the last two weeks day by day, and the files you have spent the most time in.</li>
               <li><strong>Across devices.</strong> Everything is measured and kept on the device first. Each sync then sends this device's numbers to your Supabase project and brings your other devices' back, so Home adds up your time from all of them and picks up from the newest place you read. Each device keeps its own reading speed.</li>
-              <li>Hide the line under <strong>Themes &amp; Style → Reading progress</strong>.</li>
+              <li>The row is off until you turn it on, and the switch is the same in Notes and PDFs. Home shows your progress either way.</li>
             </ul>
           </section>
 

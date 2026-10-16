@@ -192,6 +192,35 @@ try {
     return (all === 5000 && partial === 2000 && none === 0) || `${all} / ${partial} / ${none}`;
   });
 
+  await must("a fling is caught by its speed, however small each frame of it is", () => {
+    // Reading a PDF: a fiftieth of a page over a frame, or a page over a minute.
+    const reading = !math.isReadingJump("pdf", 0.02, 16) && !math.isReadingJump("pdf", 1, 60000);
+    // A fling: half a page in a quarter second. A contents jump: five pages at once.
+    const fling = math.isReadingJump("pdf", 0.5, 250);
+    const jump = math.isReadingJump("pdf", 5, 60000);
+    // Notes: 300 words a minute is reading; 400 words in half a second is not.
+    const notesReading = !math.isReadingJump("notes", 5, 1000);
+    const notesFling = math.isReadingJump("notes", 400, 500);
+    return (reading && fling && jump && notesReading && notesFling) || `${reading} ${fling} ${jump} ${notesReading} ${notesFling}`;
+  });
+
+  await must("between exact readings, the note's place follows the scroll", () => {
+    const calibration = { scrollTop: 1000, words: 500, wordsPerPx: 0.5 };
+    const down = math.interpolateNotesWords(calibration, 1200, 4000, 0.3);
+    const up = math.interpolateNotesWords(calibration, 900, 4000, 0.3);
+    const average = math.interpolateNotesWords({ scrollTop: 0, words: 0, wordsPerPx: 0 }, 100, 4000, 0.3);
+    const clamped = math.interpolateNotesWords(calibration, 999999, 4000, 0.3);
+    return (down === 600 && up === 450 && near(average, 30) && clamped === 4000) || `${down} ${up} ${average} ${clamped}`;
+  });
+
+  await must("two exact readings set the local rate, unless they are too close or implausible", () => {
+    const rate = math.calibrateWordsPerPx({ scrollTop: 0, words: 0 }, { scrollTop: 1000, words: 400 }, 0.3);
+    const tooClose = math.calibrateWordsPerPx({ scrollTop: 0, words: 0 }, { scrollTop: 50, words: 20 }, 0.3);
+    const wild = math.calibrateWordsPerPx({ scrollTop: 0, words: 0 }, { scrollTop: 1000, words: 5000 }, 0.3);
+    const backwards = math.calibrateWordsPerPx({ scrollTop: 0, words: 100 }, { scrollTop: 1000, words: 50 }, 0.3);
+    return (near(rate, 0.4) && tooClose === 0 && wild === 0 && backwards === 0) || `${rate} ${tooClose} ${wild} ${backwards}`;
+  });
+
   // ── The speed model ───────────────────────────────────────────────────────
 
   await must("before anything is measured, the defaults: 2 min a page, 230 words a minute", () => {

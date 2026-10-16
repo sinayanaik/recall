@@ -675,9 +675,6 @@ export function applyStyleSettings(rawSettings, options = {}) {
   // different LAYOUT for the notes view (a class plus a repagination), not a
   // different value for one of its properties. See src/notes/paged-view.js.
   setNotesReadingMode(settings.notesReadingMode);
-  // The reading-progress line (src/stats/reading-progress.js), shown or hidden
-  // by styles/80-reading-progress.css.
-  document.documentElement.dataset.readingProgress = settings.readingProgress === "off" ? "off" : "on";
   // The only percent that isn't run through numericStyleValue above, so it's the
   // only one where a non-numeric entry would reach CSS as "abc%".
   root.style.setProperty("--question-fill", `${numericStyleValue(settings.questionFillPercent) ?? numericStyleValue(profileDefaults.questionFillPercent) ?? 58}%`);

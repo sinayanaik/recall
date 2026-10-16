@@ -180,7 +180,7 @@ import { initReadingRail, refreshReadingRail, refreshReadingRailModes } from "./
 import { initScreenOrientation, setBeforeOrientationChangeHandler, setOrientationModesHandler, toggleLandscape } from "./ui/orientation.js?v=__BUILD__";
 import { attachPdfToOpenDeck, importPdfFile, reportPdfImportCrash } from "./import/pdf.js?v=__BUILD__";
 import { flushActivity, initActivityLog, noteViewSwitch } from "./stats/activity.js?v=__BUILD__";
-import { noteDocumentProgress, noteNotesProgress } from "./stats/reading-progress.js?v=__BUILD__";
+import { initReadingProgressToggles, noteDocumentProgress, noteNotesProgress, noteNotesScroll, toggleReadingProgressShown } from "./stats/reading-progress.js?v=__BUILD__";
 import { pushReadingStatsInBackground } from "./stats/stats-sync.js?v=__BUILD__";
 
 // The two index builders the contents drawer's Highlights half already uses.
@@ -342,6 +342,10 @@ el.notesView?.addEventListener("scroll", () => {
   // (src/notes/resize-hold.js). Ahead of the programmatic test below on
   // purpose: a resume landing or a jump puts the reader somewhere too.
   scheduleSettledNotesCapture();
+  // The reading-progress row follows every frame of the scroll — one scrollTop
+  // read, batched to the frame (src/stats/reading-progress.js). Ahead of the
+  // programmatic test too: after a contents jump the reader IS somewhere else.
+  noteNotesScroll();
   // A scroll the app performed itself (the raw<->rendered restore, a TOC jump)
   // is not the reader moving, and re-deriving an anchor from it would just
   // re-measure the position we were asked to go to.
@@ -3416,6 +3420,7 @@ initHome();
 setViewSwitchHook(noteViewSwitch);
 setPageIndicatorUpdatedHook(noteDocumentProgress);
 setReadingAnchorCapturedHook(noteNotesProgress);
+initReadingProgressToggles();
 initActivityLog();
 
 
@@ -4177,13 +4182,17 @@ el.documentMoreMenu?.addEventListener("click", async (event) => {
   // feedback, and a menu that closed underneath the press would take that away.
   // The paper rows are the same kind of thing — three rows of one choice, and
   // seeing the mark move to the one you pressed is what says it worked.
-  const staysOpen = action === "page-notes" || action.startsWith("hw-paper-");
+  const staysOpen = action === "page-notes" || action === "reading-progress" || action.startsWith("hw-paper-");
   if (!staysOpen) {
     el.documentMoreMenu.hidden = true;
     el.documentMoreBtn?.setAttribute("aria-expanded", "false");
   }
   if (action === "page-notes") {
     togglePdfPageNotes();
+    return;
+  }
+  if (action === "reading-progress") {
+    toggleReadingProgressShown();
     return;
   }
   // The notebook's rows — the paper and the tear-out. Handled by the module that
