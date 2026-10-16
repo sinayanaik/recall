@@ -14,9 +14,7 @@
   flex: 0 0 auto;
   align-items: center;
   min-width: 0;
-  height: 18px;
-  /* Flush with the foot of the stage, closing up the stage's own gap. */
-  margin-top: calc(-1 * var(--notes-stage-gap, 0px));
+  height: 16px;
   padding: 2px 10px 0;
   overflow: hidden;
   background: var(--panel);
@@ -26,6 +24,19 @@
   line-height: 1;
   white-space: nowrap;
   contain: layout style;
+}
+
+/* In Notes the row bleeds to the panel's own edges, the way .notes-rendered
+   does above it: no stage gap over it and no stage padding under it, so the
+   only height it takes is its own. The note stops at the row's top edge rather
+   than running on under it. */
+#notesStage > .reading-progress {
+  margin: calc(-1 * var(--notes-stage-gap)) calc(-1 * var(--notes-stage-pad)) calc(-1 * var(--notes-stage-pad));
+  border-radius: 0 0 var(--card-radius, 14px) var(--card-radius, 14px);
+}
+
+#notesStage.has-reading-progress > .notes-rendered {
+  margin-bottom: 0;
 }
 
 .reading-progress[hidden] {
