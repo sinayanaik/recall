@@ -6736,6 +6736,12 @@ try {
   const attached = await page.evaluate(`async (bytes, name) => {
     const { api, settle } = window.__recall;
     api.closeMyDecksPanel();
+    // What every real navigation does before it replaces the open deck: write
+    // out the save still armed for the outgoing one. The cases above read a PDF,
+    // and reading arms a lazy save of the position; left armed, it fired in the
+    // middle of this case against the deck the lines below put into state, and
+    // the in-place reload that followed took the reader off the PDF tab.
+    await api.flushPendingDeckAutosave();
     // A perfectly ordinary deck: notes, no document, nothing PDF-shaped anywhere
     // near it.
     api.state.deckId = null;
