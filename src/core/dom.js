@@ -358,6 +358,18 @@ export function onDomReady(fn) {
   else queueMicrotask(fn);
 }
 
+// Is this element laid out on screen right now? `hidden` on the element itself
+// is only one way to be off screen: Home takes the whole study surface out of
+// the layout (html.is-home → display:none on an ancestor), and inside that
+// subtree every offset, rect and scrollTop reads 0 while the element still says
+// it is not hidden. Zeros read as a position are a real-looking wrong place —
+// the top of a note, the last page of a PDF — so anything that measures where
+// the reader is asks this first. getClientRects() is empty exactly when the
+// element generates no box.
+export function isDisplayed(node) {
+  return Boolean(node?.isConnected) && !node.hidden && node.getClientRects().length > 0;
+}
+
 export const deckEmptyNewBtn = document.getElementById("deckEmptyNewBtn");
 
 export const deckEmptyImportBtn2 = document.getElementById("deckEmptyImportBtn");

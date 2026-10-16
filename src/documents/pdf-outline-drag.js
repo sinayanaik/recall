@@ -21,7 +21,8 @@
 // the drop will land is indented to the depth it will land at.
 //
 // A finger that holds a row and lets go without moving gets the row's menu
-// (rename, move, delete) — the press-and-hold that a mouse spells right-click.
+// (rename, move, delete). A mouse and a keyboard reach the same actions
+// through the row's keys (F2, Delete, Alt+arrows) in pdf-bookmarks.js.
 
 import { el } from "../core/dom.js?v=__BUILD__";
 import { allowedDepths, subtreeEnd } from "./pdf-toc-arrange.js?v=__BUILD__";
@@ -166,7 +167,7 @@ function finishOutlineDrag(commit) {
   if (!active) return;
   outlineClickHushUntil = Date.now() + 400;
   // Held and let go where it was: the row's menu, which is how a finger asks
-  // for what a mouse gets from a right-click.
+  // for what a keyboard gets from F2, Delete and Alt+arrows.
   if (!moved) {
     if (pointerType === "touch") outlineHoldMenu?.(from, lastX, lastY);
     return;

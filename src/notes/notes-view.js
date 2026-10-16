@@ -5,7 +5,7 @@
 // position, so a note opens halfway down itself.
 
 import { updateMeta } from "../cards/card-status.js?v=__BUILD__";
-import { el } from "../core/dom.js?v=__BUILD__";
+import { el, isDisplayed } from "../core/dom.js?v=__BUILD__";
 import { touchGestureHoldsSurface, wheelGestureActive } from "../core/gesture.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { refreshHighlightBackdrop } from "../editor/highlight-mirror.js?v=__BUILD__";
@@ -422,7 +422,9 @@ export function notesAnchorTop(node, view) {
 // markFreshBlocks in src/render/block-cache.js.
 export function renderNotesViewPinned(offsetHint) {
   const view = el.notesView;
-  if (!view || view.hidden) return renderNotesView({ sameNote: true });
+  // Nothing to pin against off screen (raw mode, or Home over the open file):
+  // every rect reads 0 there, so the anchors would be measured as nowhere.
+  if (!isDisplayed(view)) return renderNotesView({ sameNote: true });
 
   // ── Paged mode pins by SCROLL POSITION, not by anchor block ──────────────
   //

@@ -14,12 +14,12 @@
 // the file uses more than once: a book's outline usually opens with one entry
 // for the book itself, and counting that as "Ch 1/1" would say nothing.
 
-import { el } from "../core/dom.js?v=__BUILD__";
+import { el, isDisplayed } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { documentOutlineEntries } from "../documents/pdf-outline.js?v=__BUILD__";
 import { deckPdfById, PDF_PRIMARY_ID } from "../documents/pdf-multi.js?v=__BUILD__";
 import {
-  currentDocumentPage, currentDocumentRatio, currentPdfPageCount, openDocumentPdfId, openDocumentSlot
+  currentDocumentPage, currentDocumentRatio, currentPdfPageCount, documentSurfaceHidden, openDocumentPdfId, openDocumentSlot
 } from "../documents/pdf-view.js?v=__BUILD__";
 import { headingIndexFor } from "../notes/chapters.js?v=__BUILD__";
 import { isNotesPaged } from "../notes/paged-view.js?v=__BUILD__";
@@ -116,8 +116,15 @@ function scrolledToEnd(view) {
   return Boolean(view) && view.scrollHeight > 0 && view.scrollTop + view.clientHeight >= view.scrollHeight - 4;
 }
 
+// Neither measure reads a surface that is not on screen. Home hides the whole
+// study surface with display:none and leaves the file open, and inside it every
+// offset reads 0: the PDF used to measure as "on the last page" and the note as
+// "at the top", and the heartbeat filed that as how far the reader had got. A
+// null here makes adopt() write down the last reading taken ON screen and stop;
+// the first beat after the reader is back measures again.
 function measureDocument() {
   if (state.viewMode !== "document" || openDocumentSlot() !== "doc") return null;
+  if (documentSurfaceHidden()) return null;
   const ids = openFileIds();
   const pages = currentPdfPageCount();
   if (!ids || !pages) return null;
@@ -145,7 +152,7 @@ function notesOffsetNow() {
   }
   const stored = readStoredReadingPosition(key);
   if (stored && Number.isFinite(stored.offset)) return stored.offset;
-  if (el.notesView && el.notesView.scrollTop < 8) return 0;
+  if (isDisplayed(el.notesView) && el.notesView.scrollTop < 8) return 0;
   return null;
 }
 
@@ -191,7 +198,7 @@ function visibleWordsPerPx(view) {
 // screen, or failing that what the last two exact readings measured.
 function calibrateNotes(key, source, words, total) {
   const view = el.notesView;
-  if (!view || isNotesPaged()) {
+  if (!isDisplayed(view) || isNotesPaged()) {
     notesCalibration = null;
     return;
   }
@@ -210,7 +217,7 @@ function calibrateNotes(key, source, words, total) {
 // which is what keeps the line moving on every frame instead of waiting for the
 // scroll to settle.
 function measureNotes(exactOffset = null) {
-  if (state.viewMode !== "notes") return null;
+  if (state.viewMode !== "notes" || !isDisplayed(el.notesStage)) return null;
   const ids = openFileIds();
   const source = state.notes || "";
   if (!ids || !source.trim()) return null;
@@ -218,18 +225,22 @@ function measureNotes(exactOffset = null) {
   if (!index.total) return null;
   const key = currentDeckKey();
   const view = el.notesView;
+  // Raw mode hides the rendered note and puts the editor on screen: its
+  // scrollTop reads 0 there, which is not the reader's place, so the place is
+  // the last captured anchor until it is back.
+  const following = isDisplayed(view);
   let pos = null;
   if (exactOffset != null) {
     pos = Math.min(index.total, wordsBeforeOffset(index, exactOffset));
     calibrateNotes(key, source, pos, index.total);
-  } else if (notesCalibration && notesCalibration.key === key && notesCalibration.source === source && view && !isNotesPaged()) {
+  } else if (following && notesCalibration && notesCalibration.key === key && notesCalibration.source === source && !isNotesPaged()) {
     pos = interpolateNotesWords(notesCalibration, view.scrollTop, index.total, notesAverageWordsPerPx(view, index.total));
   } else {
     const offset = notesOffsetNow();
     if (offset == null) return null;
     pos = Math.min(index.total, wordsBeforeOffset(index, offset));
   }
-  if (!isNotesPaged() && scrolledToEnd(view)) pos = index.total;
+  if (following && !isNotesPaged() && scrolledToEnd(view)) pos = index.total;
   return { ids, kind: "notes", partKey: "notes", name: "", page: 0, pos, total: index.total, chapters: notesReadingChapters(source, index) };
 }
 

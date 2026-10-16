@@ -148,6 +148,16 @@
   min-width: 0;
   max-width: 100%;
   overflow: auto;
+  /* The scrollbar's room is kept whether or not there is a scrollbar yet. Fit
+     width is measured on an EMPTY scroller (src/documents/pdf-view.js
+     fitWidthScale) and the pages that go in a moment later bring a classic
+     scrollbar with them — 15px on Windows — so the scroller came out narrower
+     than the width the pages were fitted to, and stayed that way. The reader
+     never resized anything, but documentWidthPending read it as a resize
+     waiting for its refit and turned away every save of the reading position
+     for the whole session. Overlay scrollbars (phones, macOS) take no room and
+     are unaffected. */
+  scrollbar-gutter: stable;
   overscroll-behavior: contain;
   padding: 16px 0 48px;
   /* No `, var(--bg)` fallback any more. The token is defined now

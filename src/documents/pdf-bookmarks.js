@@ -3,13 +3,17 @@
 // The arithmetic and the saving are in src/documents/pdf-outline.js (and the
 // tree moves in pdf-toc-arrange.js); this is the part a person touches:
 //
-//   • right-click on a page → "Add bookmark here", titled from the line under
-//     the pointer, which becomes a row of the contents drawer;
-//   • 🔖 in the drawer's head, and Ctrl/⌘+D, for the place on screen — the way
-//     in on a touch screen, where a long-press already means "select text";
-//   • right-click (or the keyboard) on a row of the drawer: rename, move,
-//     indent, outdent, delete;
+//   • 🔖 in the drawer's head, and Ctrl/⌘+D, bookmark the place on screen,
+//     titled from the first line of text there; it becomes a row of the
+//     contents drawer, filed under its section;
+//   • the keyboard on a row of the drawer — F2 renames, Delete removes,
+//     Alt+arrows move, indent and outdent — and a finger's press-and-hold on a
+//     row opens the same actions as a menu;
 //   • ⟲ in the drawer's head, back to the PDF's own contents.
+//
+// No right-click menu of the app's own, on a page or on a row: right-click is
+// the browser's, which is where Copy and the rest live. (There used to be one
+// on each, and the drawer and the keys already did everything they offered.)
 //
 // Dragging rows is src/documents/pdf-outline-drag.js.
 
@@ -33,23 +37,19 @@ import { setOutlineHoldMenu } from "./pdf-outline-drag.js?v=__BUILD__";
 import {
   currentDocumentPage,
   currentDocumentRatio,
+  documentSurfaceHidden,
   isDocumentViewActive,
   openDocumentSlot,
   pdfPageTextItems,
   pdfPageViewport
 } from "./pdf-view.js?v=__BUILD__";
 
-// A bookmark made with the pointer is saved a little above the line that was
-// pressed, so jumping to it shows that line rather than putting it under the
-// top edge of the screen.
-const BOOKMARK_LEAD_PX = 40;
-
 // A title read off the page is a line of text, not a paragraph.
 const BOOKMARK_TITLE_MAX_CHARS = 80;
 
 // ── The menu ───────────────────────────────────────────────────────────────
 //
-// One small floating list of actions, at the pointer. Built here rather than
+// One small floating list of actions, at the finger. Built here rather than
 // shared with the block or highlight popovers for the reason
 // block-actions-popover.js gives for itself: each is small, and they are never
 // open at once.
@@ -81,7 +81,7 @@ function onMenuKey(event) {
     return;
   }
   if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
-  const buttons = [...menu.querySelectorAll("button:not(:disabled)")];
+  const buttons = [...contextMenuEl.querySelectorAll("button:not(:disabled)")];
   if (!buttons.length) return;
   event.preventDefault();
   const at = buttons.indexOf(document.activeElement);
@@ -146,20 +146,29 @@ export function lineTitleAt(items, y) {
   return `${text.slice(0, BOOKMARK_TITLE_MAX_CHARS - 1).trimEnd()}…`;
 }
 
-function placeOnPage(pageEl, clientX, clientY) {
-  const page = Number(pageEl?.dataset.pageNumber);
-  if (!page) return null;
-  const box = pageEl.getBoundingClientRect();
-  if (!box.height) return null;
-  const ratio = Math.max(0, Math.min(1, (clientY - box.top - BOOKMARK_LEAD_PX) / box.height));
-  let title = "";
-  const viewport = pdfPageViewport(page);
-  if (viewport && box.width) {
-    const x = (clientX - box.left) * (viewport.width / box.width);
-    const y = (clientY - box.top) * (viewport.height / box.height);
-    title = lineTitleAt(pdfPageTextItems(page), viewport.convertToPdfPoint(x, y)[1]);
+// The first line of text at or below a height on a page (PDF user space, so
+// "below" is a smaller y): the line the reader sees first when that height is
+// the top of their screen. Its baseline is the highest one not above the
+// height, and lineTitleAt reads the words along it. "" when there is no text
+// below (a figure, the foot of the page, a scan).
+function firstLineTitleBelow(items, y) {
+  if (!Array.isArray(items) || !Number.isFinite(y)) return "";
+  let baseline = -Infinity;
+  for (const item of items) {
+    if (!item?.str?.trim() || !Array.isArray(item.transform)) continue;
+    const base = item.transform[5];
+    if (base <= y && base > baseline) baseline = base;
   }
-  return { page, ratio, title };
+  return Number.isFinite(baseline) ? lineTitleAt(items, baseline) : "";
+}
+
+// The words at the top of the screen, when the page has its text: `ratio` is
+// how far down the page the top of the view is.
+function titleAtPlace(page, ratio) {
+  const viewport = pdfPageViewport(page);
+  if (!viewport?.height) return "";
+  const y = viewport.convertToPdfPoint(0, Math.max(0, Math.min(1, ratio)) * viewport.height)[1];
+  return firstLineTitleBelow(pdfPageTextItems(page), y);
 }
 
 function promptForBookmark({ page, ratio, title }) {
@@ -184,34 +193,17 @@ export function bookmarkCurrentPlace() {
   if (!canBookmark()) return false;
   const page = currentDocumentPage();
   if (!page) return false;
-  promptForBookmark({ page, ratio: currentDocumentRatio(), title: "" });
+  const ratio = currentDocumentRatio();
+  let title = "";
+  try { title = titleAtPlace(page, ratio); } catch { title = ""; }
+  promptForBookmark({ page, ratio, title });
   return true;
 }
 
+// Not with the PDF off screen (Home over it): Ctrl+D there would bookmark a
+// page the reader cannot see.
 function canBookmark() {
-  return isDocumentViewActive() && openDocumentSlot() === DOC_SLOT_DOC && canEditDocumentOutline();
-}
-
-function onPageContextMenu(event) {
-  // Shift+right-click is the browser's own menu, always — and so is a
-  // right-click on selected words, whose menu is where Copy lives.
-  if (event.defaultPrevented || event.shiftKey || !canBookmark()) return;
-  const selection = window.getSelection?.();
-  if (selection && !selection.isCollapsed && String(selection).trim()) return;
-  if (event.target?.closest?.(".pdf-block, .pdf-badge-layer > *, input, textarea, [contenteditable='true']")) return;
-  const pageEl = event.target?.closest?.(".pdf-page[data-page-number]");
-  if (!pageEl) return;
-  // A touch long-press is the selection controller's (src/notes/
-  // touch-selection.js), which refuses this event itself; a pen's press is
-  // ink's. Only a mouse gets a menu.
-  if (event.pointerType && event.pointerType !== "mouse") return;
-  if (event.sourceCapabilities?.firesTouchEvents) return;
-  const place = placeOnPage(pageEl, event.clientX, event.clientY);
-  if (!place) return;
-  event.preventDefault();
-  openContextMenu(event.clientX, event.clientY, [
-    { label: `Add bookmark here (p. ${place.page})`, run: () => promptForBookmark(place) }
-  ], "Page actions");
+  return isDocumentViewActive() && !documentSurfaceHidden() && openDocumentSlot() === DOC_SLOT_DOC && canEditDocumentOutline();
 }
 
 // ── A row of the contents ──────────────────────────────────────────────────
@@ -246,14 +238,6 @@ function stepOutlineRow(index, direction) {
     // Keep the keyboard on the row it was moving — the one the move flashed.
     el.documentOutlineList?.querySelector(".is-flash .notes-toc-link")?.focus({ preventScroll: true });
   });
-}
-
-function onRowContextMenu(event) {
-  if (event.shiftKey || !canEditDocumentOutline()) return;
-  const index = rowIndexOf(event.target);
-  if (index < 0) return;
-  event.preventDefault();
-  openRowMenu(index, event.clientX, event.clientY);
 }
 
 function openRowMenu(index, x, y) {
@@ -307,8 +291,6 @@ function bookmarkKeyInField(target) {
 export function initDocumentBookmarks() {
   // A finger's press-and-hold on a row, let go without dragging it.
   setOutlineHoldMenu(openRowMenu);
-  el.documentView?.addEventListener("contextmenu", onPageContextMenu);
-  el.documentOutlineList?.addEventListener("contextmenu", onRowContextMenu);
   el.documentOutlineList?.addEventListener("keydown", onRowKey);
   document.getElementById("documentTocBookmarkBtn")?.addEventListener("click", (event) => {
     event.preventDefault();
