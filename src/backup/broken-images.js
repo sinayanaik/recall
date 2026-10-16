@@ -101,7 +101,7 @@ export async function scanForBrokenImageRefs(onProgress, isCancelled = () => fal
   const decksByRef = new Map();
   payloads.forEach(({ payload }) => {
     const snapshot = deckPayloadSnapshot(payload);
-    const title = payload.deck.title || "Untitled deck";
+    const title = payload.deck.title || "Untitled file";
     collectBackupImageRefs(snapshot).forEach((ref) => {
       if (ref.startsWith(LOCAL_IMAGE_SCHEME)) return; // queued offline, not broken
       if (!decksByRef.has(ref)) decksByRef.set(ref, new Set());
@@ -143,7 +143,7 @@ function buildScanModal() {
     <div class="category-choice-head">
       <div>
         <h2>Checking for broken images</h2>
-        <p class="backup-progress-line" role="status" aria-live="polite">Reading your decks…</p>
+        <p class="backup-progress-line" role="status" aria-live="polite">Reading your files…</p>
       </div>
     </div>
     <div class="job-progress-track is-indeterminate"><div class="job-progress-fill"></div></div>

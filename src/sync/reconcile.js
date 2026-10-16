@@ -437,7 +437,7 @@ export async function pullCloudDeckIntoLibraryLocked(cloud, cards) {
 
   const meta = {
     id: localId,
-    title: snapshot.deckTitle || "Untitled deck",
+    title: snapshot.deckTitle || "Untitled file",
     category: snapshot.deckCategory,
     cardCount: snapshot.cards.length,
     hasNotes: Boolean(snapshot.notes.trim()),
@@ -586,9 +586,9 @@ export async function pushLibraryDeckToCloud(localMeta, options = {}) {
       // The row AND the cards, because the other device may have added, edited
       // or deleted either. Read together, so the pair the next attempt merges
       // against is one moment's worth of cloud rather than two.
-      const [rows, cardsByDeck] = await withSessionRetry("re-read a deck after a push race", () => Promise.all([
-        withRetry(() => fetchCloudDeckRows([localMeta.deckId]), { label: "deck body" }),
-        withRetry(() => fetchCardsForDecks([localMeta.deckId]), { label: "deck cards" })
+      const [rows, cardsByDeck] = await withSessionRetry("re-read a file after a push race", () => Promise.all([
+        withRetry(() => fetchCloudDeckRows([localMeta.deckId]), { label: "file body" }),
+        withRetry(() => fetchCardsForDecks([localMeta.deckId]), { label: "file cards" })
       ]));
       const freshDeck = rows.get(String(localMeta.deckId));
       // Gone entirely, between our read and now: another device deleted the
@@ -633,7 +633,7 @@ async function pushLibraryDeckToCloudOnce(localMeta, options = {}) {
 
 async function pushLibraryDeckToCloudHeld(localMeta, { cloudExists = false, cloudDeck = null, webCards = null } = {}, unlock = () => {}) {
   const snapshot = await readDeckSnapshotFresh(localMeta.id);
-  if (!snapshot) throw new Error("Local deck snapshot missing");
+  if (!snapshot) throw new Error("Local file snapshot missing");
 
   // Before anything reads this deck's text, take out what Postgres refuses (a
   // NUL from a PDF's own title or glyph mapping — see repairSnapshotText). Here
@@ -693,7 +693,7 @@ async function pushLibraryDeckToCloudHeld(localMeta, { cloudExists = false, clou
     }
     if (titleAdoptedHere || categoryAdoptedHere) snapshotNeedsWrite = true;
   }
-  const title = snapshot.deckTitle || "Untitled Deck";
+  const title = snapshot.deckTitle || "Untitled File";
   const deckCategory = normalizeDeckCategory(snapshot.deckCategory);
 
   // Reconcile against the deck's actual cloud rows BEFORE sending anything. The
@@ -777,7 +777,7 @@ async function pushLibraryDeckToCloudHeld(localMeta, { cloudExists = false, clou
   // answer on the same terms. Nothing is lost — the local copy is untouched and
   // still stamped as needing a push, so the next sync carries it.
   if (cloudExists && !documentPush) {
-    throw new Error("No cloud body for this deck — skipping the push rather than sending notes and meta blind");
+    throw new Error("No cloud body for this file — skipping the push rather than sending notes and meta blind");
   }
   let documentTombstonesBeingPruned = [];
   // ── The push's own stash ────────────────────────────────────────────────
@@ -1287,7 +1287,7 @@ async function reconcileAllDecksHeld({ explicit = false } = {}) {
     return;
   }
   if (!navigator.onLine) {
-    if (explicit) showToast("Offline — your decks are safe on this device", "info");
+    if (explicit) showToast("Offline — your files are safe on this device", "info");
     setSyncIndicator(lastReconcileOutcome = "offline");
     updateDeckEmptyStatus();
     return;
@@ -1443,8 +1443,8 @@ async function reconcileAllDecksHeld({ explicit = false } = {}) {
       console.warn("Sync skipped — this device's deck contents could not be read this session.");
       setSyncIndicator(lastReconcileOutcome = "error");
       if (explicit) {
-        setStatus("Couldn't read this device's decks — reload the app before syncing. Nothing was changed.", "error");
-        showToast("Couldn't read this device's decks — reload before syncing", "error");
+        setStatus("Couldn't read this device's files — reload the app before syncing. Nothing was changed.", "error");
+        showToast("Couldn't read this device's files — reload before syncing", "error");
       }
       return;
     }
@@ -1468,8 +1468,8 @@ async function reconcileAllDecksHeld({ explicit = false } = {}) {
       // help. See the labels in setSyncIndicator.
       setSyncIndicator(lastReconcileOutcome = "signedout");
       if (explicit) {
-        setStatus("Couldn't confirm you're signed in — sign in again to sync. Your decks are safe on this device.", "error");
-        showToast("Couldn't confirm your sign-in — your decks are safe on this device", "error");
+        setStatus("Couldn't confirm you're signed in — sign in again to sync. Your files are safe on this device.", "error");
+        showToast("Couldn't confirm your sign-in — your files are safe on this device", "error");
       } else {
         // Background runs used to say nothing at all here, so a session that
         // lapsed while the app was closed simply stopped syncing, silently,
@@ -1494,8 +1494,8 @@ async function reconcileAllDecksHeld({ explicit = false } = {}) {
       console.warn("Sync skipped — the signed-in account doesn't own this device's deck library.");
       setSyncIndicator(lastReconcileOutcome = "error");
       if (explicit) {
-        setStatus("This device's decks belong to a different account — sign out and back in to sync them.", "error");
-        showToast("Signed-in account doesn't match this device's decks", "error");
+        setStatus("This device's files belong to a different account — sign out and back in to sync them.", "error");
+        showToast("Signed-in account doesn't match this device's files", "error");
       }
       return;
     }
@@ -1567,18 +1567,18 @@ async function reconcileAllDecksHeld({ explicit = false } = {}) {
     // dead cell or behind a captive portal — and the sync would then grind
     // through a 20-second timeout per deck before giving up. If the very first
     // request can't get out, treat the cloud as unreachable and stop here.
-    progress("Reading the deck list…");
+    progress("Reading the file list…");
     let cloudDecks, remoteDeletedIds;
     try {
-      [cloudDecks, remoteDeletedIds] = await withSessionRetry("deck list", () => Promise.all([
-        withRetry(() => fetchCloudDeckIndex(DECK_SYNC_INDEX_COLUMNS), { label: "deck index" }),
+      [cloudDecks, remoteDeletedIds] = await withSessionRetry("file list", () => Promise.all([
+        withRetry(() => fetchCloudDeckIndex(DECK_SYNC_INDEX_COLUMNS), { label: "file index" }),
         withRetry(() => fetchDeletedDeckIds(), { label: "tombstones" })
       ]));
     } catch (error) {
       if (!isTransientCloudError(error)) throw error;
       setSyncIndicator(lastReconcileOutcome = "offline");
       if (explicit) {
-        setStatus("Couldn't reach the cloud — your decks are safe on this device.", "error");
+        setStatus("Couldn't reach the cloud — your files are safe on this device.", "error");
         showToast("Couldn't reach the cloud — check your connection", "error");
       }
       return;
@@ -1618,11 +1618,11 @@ async function reconcileAllDecksHeld({ explicit = false } = {}) {
     // background runs too, once, via the same per-kind gate.
     if (deckTombstoneTableMissing) {
       if (explicit) {
-        showToast("Deck deletions can't sync — run supabase_setup.sql in Supabase", "error");
+        showToast("File deletions can't sync — run supabase_setup.sql in Supabase", "error");
       } else {
         reportBackgroundSyncProblem(
           "tombstones-missing",
-          "Deck deletions can't sync — run supabase_setup.sql in Supabase"
+          "File deletions can't sync — run supabase_setup.sql in Supabase"
         );
       }
     }
@@ -1652,7 +1652,7 @@ async function reconcileAllDecksHeld({ explicit = false } = {}) {
       remoteTombstoneRemovals.push({
         deckId: String(deckId),
         meta: staleLocal || null,
-        title: staleLocal?.title || "Untitled deck",
+        title: staleLocal?.title || "Untitled file",
         origin: TOMBSTONE_ORIGIN_USER
       });
     }
@@ -1754,12 +1754,12 @@ async function reconcileAllDecksHeld({ explicit = false } = {}) {
         missingWatch[deckId] = {
           firstMissingAt: seen?.firstMissingAt || new Date(nowMs).toISOString(),
           sightings,
-          title: meta.title || "Untitled deck"
+          title: meta.title || "Untitled file"
         };
         const corroborated =
           sightings >= MISSING_DECK_MIN_SIGHTINGS &&
           nowMs - firstMissingAt >= MISSING_DECK_MIN_AGE_MS;
-        if (corroborated) qualifiedForRemoval.push({ title: meta.title || "Untitled deck", deckId, id: meta.id });
+        if (corroborated) qualifiedForRemoval.push({ title: meta.title || "Untitled file", deckId, id: meta.id });
         else heldDeckIds.add(deckId);
       }
       // Anything present again (or already gone from the library) leaves the
@@ -1918,19 +1918,19 @@ async function reconcileAllDecksHeld({ explicit = false } = {}) {
       // step. Sequential: these are deletes, and there is no hurry.
       for (let i = 0; i < tombstonedInCloud.length; i += CARD_FETCH_DECK_CHUNK) {
         const chunk = tombstonedInCloud.slice(i, i + CARD_FETCH_DECK_CHUNK);
-        const { error: redeleteError } = await withTimeout(abortable((signal) => supabaseClient.from("decks").delete().in("id", chunk).abortSignal(signal)), CLOUD_TIMEOUT_MS, "re-delete decks");
+        const { error: redeleteError } = await withTimeout(abortable((signal) => supabaseClient.from("decks").delete().in("id", chunk).abortSignal(signal)), CLOUD_TIMEOUT_MS, "re-delete files");
         if (redeleteError) console.warn("Tombstone re-delete failed", chunk, redeleteError);
       }
     }
 
-    if (toPull.length) progress(`Downloading ${toPull.length} deck${toPull.length === 1 ? "" : "s"} from the cloud…`, "Downloading decks");
+    if (toPull.length) progress(`Downloading ${toPull.length} file${toPull.length === 1 ? "" : "s"} from the cloud…`, "Downloading files");
     // Cards and deck BODIES together: the index rows above carry no notes or
     // meta, and the pull needs both. Two requests in parallel, for only the
     // decks actually being pulled, instead of every deck's notes up front.
     const [pullCardsByDeck, pullBodyById] = toPull.length
-      ? await withSessionRetry("download decks", () => Promise.all([
-          withRetry(() => fetchCardsForDecks(toPull.map((d) => d.id)), { label: "deck cards" }),
-          withRetry(() => fetchCloudDeckRows(toPull.map((d) => d.id)), { label: "deck bodies" })
+      ? await withSessionRetry("download files", () => Promise.all([
+          withRetry(() => fetchCardsForDecks(toPull.map((d) => d.id)), { label: "file cards" }),
+          withRetry(() => fetchCloudDeckRows(toPull.map((d) => d.id)), { label: "file bodies" })
         ]))
       : [new Map(), new Map()];
 
@@ -1949,7 +1949,7 @@ async function reconcileAllDecksHeld({ explicit = false } = {}) {
     beginIndexBatch();
     let pullDone = 0;
     for (const indexRow of toPull) {
-      progress(`Saving decks from the cloud… (${++pullDone} of ${toPull.length})`, "Saving decks from the cloud");
+      progress(`Saving files from the cloud… (${++pullDone} of ${toPull.length})`, "Saving files from the cloud");
       // The full row, and ONLY the full row. This used to fall back to the index
       // row when the body was missing, so that a deck deleted between the two
       // requests still pulled "what we know" instead of throwing. But
@@ -1962,7 +1962,7 @@ async function reconcileAllDecksHeld({ explicit = false } = {}) {
       const cloud = pullBodyById.get(String(indexRow.id));
       if (!cloud) {
         console.warn(`No cloud body for deck ${indexRow.id} — skipping the pull rather than writing a deck with no notes.`);
-        skippedForRetry.push(indexRow.title || "Untitled deck");
+        skippedForRetry.push(indexRow.title || "Untitled file");
         continue;
       }
       try {
@@ -1971,7 +1971,7 @@ async function reconcileAllDecksHeld({ explicit = false } = {}) {
           pulled++;
           // localId rides along so the report's "Restore my notes" button knows
           // which deck's stash to put back.
-          deckLog.push({ title: cloud.title || "Untitled deck", direction: "pulled", localId: res.localId, fromDevice: cloud.last_device || null, ...res.stats });
+          deckLog.push({ title: cloud.title || "Untitled file", direction: "pulled", localId: res.localId, fromDevice: cloud.last_device || null, ...res.stats });
           // Only reload the on-screen deck when the pull actually changed its
           // content. A no-op pull (cloud read "newer" purely from a timestamp
           // artifact, with identical cards/notes) must NOT reload — doing so
@@ -1979,11 +1979,11 @@ async function reconcileAllDecksHeld({ explicit = false } = {}) {
           // for no real reason.
           if (activeDeckId && String(cloud.id) === String(activeDeckId)) activeDeckMovedLocalId = res.localId;
         } else {
-          alreadyMatched.push(cloud.title || "Untitled deck");
+          alreadyMatched.push(cloud.title || "Untitled file");
         }
       } catch (e) {
         failed++;
-        deckLog.push({ title: cloud.title || "Untitled deck", direction: "failed", error: describeSyncError(e) });
+        deckLog.push({ title: cloud.title || "Untitled file", direction: "failed", error: describeSyncError(e) });
         console.warn("Reconcile pull failed", cloud.id, e);
       }
     }
@@ -2016,7 +2016,7 @@ async function reconcileAllDecksHeld({ explicit = false } = {}) {
     // rows have no notes, so without this every push would claim "notes edited".
     const pushDiffIds = toPush.filter((e) => e.cloud).map((e) => e.localMeta.deckId);
     const [pushCardsByDeck, pushBodyById] = pushDiffIds.length
-      ? await withSessionRetry("read decks to diff", () => Promise.all([
+      ? await withSessionRetry("read files to diff", () => Promise.all([
           withRetry(() => fetchCardsForDecks(pushDiffIds, "id, deck_id, question, answer, position, status, category"), { label: "push diff cards" }),
           withRetry(() => fetchCloudDeckRows(pushDiffIds), { label: "push diff bodies" })
         ]))
@@ -2083,9 +2083,9 @@ async function reconcileAllDecksHeld({ explicit = false } = {}) {
         const cloudBody = cloud ? pushBodyById.get(String(localMeta.deckId)) : null;
         if (cloud && !cloudBody) {
           console.warn(`No cloud body for deck ${localMeta.deckId} — skipping the push rather than sending its notes and meta blind.`);
-          skippedForRetry.push(localMeta.title || "Untitled deck");
+          skippedForRetry.push(localMeta.title || "Untitled file");
           pushDone++;
-          progress(`Uploading decks… (${pushDone} of ${toPush.length})`, "Uploading decks");
+          progress(`Uploading files… (${pushDone} of ${toPush.length})`, "Uploading files");
           return;
         }
         const res = await pushLibraryDeckToCloud(localMeta, {
@@ -2098,9 +2098,9 @@ async function reconcileAllDecksHeld({ explicit = false } = {}) {
           // localId rides along for the same reason it does on the pull rows: a
           // push can stash a cloud body it replaced now, and the report's
           // "Restore my notes" button needs to know whose stash to put back.
-          deckLog.push({ title: localMeta.title || "Untitled deck", direction: "pushed", localId: res.localId, fromDevice: cloudBody?.last_device || null, ...res.stats });
+          deckLog.push({ title: localMeta.title || "Untitled file", direction: "pushed", localId: res.localId, fromDevice: cloudBody?.last_device || null, ...res.stats });
         } else {
-          alreadyMatched.push(localMeta.title || "Untitled deck");
+          alreadyMatched.push(localMeta.title || "Untitled file");
         }
         // The pre-push merge rewrote this deck's card list on this device. If
         // it's the deck on screen, the in-memory copy is now the stale one — and
@@ -2112,13 +2112,13 @@ async function reconcileAllDecksHeld({ explicit = false } = {}) {
         }
       } catch (e) {
         failed++;
-        deckLog.push({ title: localMeta.title || "Untitled deck", direction: "failed", error: describeSyncError(e) });
+        deckLog.push({ title: localMeta.title || "Untitled file", direction: "failed", error: describeSyncError(e) });
         console.warn("Reconcile push failed", localMeta.id, e);
       }
       // Counted as decks finish rather than as they start — with three in flight
       // a "3 of 12" that meant "started" would race ahead of what's actually done.
       pushDone++;
-      progress(`Uploading decks… (${pushDone} of ${toPush.length})`, "Uploading decks");
+      progress(`Uploading files… (${pushDone} of ${toPush.length})`, "Uploading files");
     });
 
     // Papers this device holds that the bucket does not — imported before the
@@ -2188,23 +2188,23 @@ async function reconcileAllDecksHeld({ explicit = false } = {}) {
     const receivedRows = deckLog.filter((e) => e.direction === "pulled");
     const devices = [...new Set(receivedRows.map((e) => e.fromDevice).filter(Boolean))];
     const parts = [];
-    if (pushed) parts.push(`sent your changes in ${pushed} deck${pushed === 1 ? "" : "s"} (${listNames(sentTitles)})`);
+    if (pushed) parts.push(`sent your changes in ${pushed} file${pushed === 1 ? "" : "s"} (${listNames(sentTitles)})`);
     if (pulled) {
-      parts.push(`received changes in ${pulled} deck${pulled === 1 ? "" : "s"} (${listNames(receivedRows.map((e) => e.title))})` +
+      parts.push(`received changes in ${pulled} file${pulled === 1 ? "" : "s"} (${listNames(receivedRows.map((e) => e.title))})` +
         (devices.length ? ` from ${listNames(devices)}` : ""));
     }
     // Deliberately its own clause rather than folded into the change detail:
     // decks disappearing from this device is the one sync outcome the user most
     // needs to see stated plainly.
     if (adoptedDeletions.length) {
-      parts.push(`${adoptedDeletions.length} deck${adoptedDeletions.length === 1 ? "" : "s"} removed here (deleted on another device)`);
+      parts.push(`${adoptedDeletions.length} file${adoptedDeletions.length === 1 ? "" : "s"} removed here (deleted on another device)`);
     }
     // Decks the sync deliberately left alone. Worth saying out loud: the user
     // asked for a sync and some of their decks were skipped, and the old silent
     // behaviour here — delete first, explain never — is what made the failure so
     // expensive. "Kept" is the message; nothing was lost.
     if (heldDeckIds.size && !removalNeedsConfirmation) {
-      parts.push(`${heldDeckIds.size} deck${heldDeckIds.size === 1 ? "" : "s"} missing from the cloud kept here for now`);
+      parts.push(`${heldDeckIds.size} file${heldDeckIds.size === 1 ? "" : "s"} missing from the cloud kept here for now`);
     }
     // Before the report reads `timings`: the finally below also closes the open
     // phase, but that runs after this, so without this call the last (often
@@ -2218,13 +2218,13 @@ async function reconcileAllDecksHeld({ explicit = false } = {}) {
     // mostly runs, that's not an option at all.
     const failedTitles = deckLog.filter((e) => e.direction === "failed").map((e) => e.title);
     const failedNote = failed
-      ? `${failed} deck${failed === 1 ? "" : "s"} failed and will be retried: ${listNames(failedTitles)}`
+      ? `${failed} file${failed === 1 ? "" : "s"} failed and will be retried: ${listNames(failedTitles)}`
       : "";
     const skippedNote = skippedForRetry.length
-      ? `${skippedForRetry.length} deck${skippedForRetry.length === 1 ? "" : "s"} couldn't be read from the cloud and will be tried again next sync (${listNames(skippedForRetry)})`
+      ? `${skippedForRetry.length} file${skippedForRetry.length === 1 ? "" : "s"} couldn't be read from the cloud and will be tried again next sync (${listNames(skippedForRetry)})`
       : "";
     const checkedCount = readLocalDeckIndex().length;
-    const nothingMoved = `Up to date — nothing new to send or receive (${checkedCount} deck${checkedCount === 1 ? "" : "s"} checked)`;
+    const nothingMoved = `Up to date — nothing new to send or receive (${checkedCount} file${checkedCount === 1 ? "" : "s"} checked)`;
     const tail = [failedNote, skippedNote].filter(Boolean).join(". ");
     const summary = parts.length
       ? `Synced — ${parts.join("; ")}${detail}${tail ? `. ${tail}` : ""}`
@@ -2256,7 +2256,7 @@ async function reconcileAllDecksHeld({ explicit = false } = {}) {
     if (removalNeedsConfirmation) {
       const names = removalNeedsConfirmation.slice(0, 3).map((entry) => entry.title).join(", ");
       const more = removalNeedsConfirmation.length > 3 ? ` and ${removalNeedsConfirmation.length - 3} more` : "";
-      const count = `${removalNeedsConfirmation.length} deck${removalNeedsConfirmation.length === 1 ? "" : "s"}`;
+      const count = `${removalNeedsConfirmation.length} file${removalNeedsConfirmation.length === 1 ? "" : "s"}`;
       if (explicit) {
         showConfirmModal(
           `${count} on this device are no longer in the cloud: ${names}${more}.\n\n` +
@@ -2264,7 +2264,7 @@ async function reconcileAllDecksHeld({ explicit = false } = {}) {
           "when the cloud can't be read properly — keep them, and they'll be uploaded again on the next sync.",
           () => {
             const removed = removeDecksMissingFromCloud(removalNeedsConfirmation);
-            showToast(`${removed} deck${removed === 1 ? "" : "s"} removed from this device`, "success");
+            showToast(`${removed} file${removed === 1 ? "" : "s"} removed from this device`, "success");
             if (el.myDecksPanel && !el.myDecksPanel.hidden) renderMyDecksList();
             updateDeckEmptyStatus();
           },
@@ -2294,7 +2294,7 @@ async function reconcileAllDecksHeld({ explicit = false } = {}) {
       } else if (!offlineNow) {
         reportBackgroundSyncProblem(
           isMissingRelationError(error) || isMissingNotesColumnError(error) ? "schema" : "failed",
-          `Sync failed — ${isQuotaExceededError(error) ? describeSyncError(error) : (error?.message || "unknown error")}. Your decks are safe on this device.`
+          `Sync failed — ${isQuotaExceededError(error) ? describeSyncError(error) : (error?.message || "unknown error")}. Your files are safe on this device.`
         );
       }
     }
@@ -2309,7 +2309,7 @@ async function reconcileAllDecksHeld({ explicit = false } = {}) {
         const reason = offlineNow
           ? "Couldn't reach the cloud — check your connection"
           : (isQuotaExceededError(error) ? describeSyncError(error) : error?.message || "Unknown error");
-        setStatus(`Sync failed — ${reason}. Your decks are safe on this device.`, "error");
+        setStatus(`Sync failed — ${reason}. Your files are safe on this device.`, "error");
         showToast(`Sync failed — ${reason}`, "error");
       }
     }

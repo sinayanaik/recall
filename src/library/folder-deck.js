@@ -127,7 +127,7 @@ export async function openDecksAsOneDeck(entries, { title, path = null, key, lan
   // character note came back as 2,658.
   flushWorkingDeck();
 
-  setStatus(`Opening ${entries.length} deck${entries.length === 1 ? "" : "s"} in ${what}…`);
+  setStatus(`Opening ${entries.length} file${entries.length === 1 ? "" : "s"} in ${what}…`);
 
   const members = [];
   const skipped = [];
@@ -142,7 +142,7 @@ export async function openDecksAsOneDeck(entries, { title, path = null, key, lan
       members.push({
         localId: entry.sel.localId ? String(entry.sel.localId) : null,
         deckId: payload.deck?.id ? String(payload.deck.id) : (entry.sel.deckId || null),
-        title: String(payload.deck?.title || entry.title || "Untitled deck"),
+        title: String(payload.deck?.title || entry.title || "Untitled file"),
         // Its own category, carried so memberSnapshot can put the deck back
         // where it was. Without it a write-back has nothing but the merged
         // view's own category to fall back on, which for a selection spanning
@@ -166,8 +166,8 @@ export async function openDecksAsOneDeck(entries, { title, path = null, key, lan
 
   const writable = members.filter((member) => member.localId);
   if (!writable.length) {
-    setStatus(`Couldn't read any of the ${entries.length} decks in "${what}" on this device.`, "error");
-    showToast("None of those decks could be read on this device", "error");
+    setStatus(`Couldn't read any of the ${entries.length} files in "${what}" on this device.`, "error");
+    showToast("None of those files could be read on this device", "error");
     return false;
   }
 
@@ -205,12 +205,12 @@ export async function openDecksAsOneDeck(entries, { title, path = null, key, lan
 
   const { notes: mergedNotes, hasNotes, noteOwner, originalNoteId, preambleById, protectedNoteIds } = buildMergedNotes(writable);
   if (!hasNotes && !cards.length) {
-    setStatus(`Those decks have nothing in them to open.`, "error");
+    setStatus(`Those files have nothing in them to open.`, "error");
     showToast(`Nothing to open in ${what}`, "error");
     return false;
   }
   if (!hasNotes && onEmpty === "refuse") {
-    setStatus(`The decks in "${what}" have no notes to read.`, "error");
+    setStatus(`The files in "${what}" have no notes to read.`, "error");
     showToast(`Nothing to read in ${what}`, "error");
     return false;
   }
@@ -271,12 +271,12 @@ export async function openDecksAsOneDeck(entries, { title, path = null, key, lan
   closeMyDecksPanel();
   showCard();
 
-  const note = `${writable.length} deck${writable.length === 1 ? "" : "s"} · ${cards.length} card${cards.length === 1 ? "" : "s"}`;
-  setStatus(`Reading ${resolvedTitle} — ${note}. Edits are saved back to each deck.`);
-  showToast(`Reading ${note} as one document · edits save back to each deck`);
+  const note = `${writable.length} file${writable.length === 1 ? "" : "s"} · ${cards.length} card${cards.length === 1 ? "" : "s"}`;
+  setStatus(`Reading ${resolvedTitle} — ${note}. Edits are saved back to each file.`);
+  showToast(`Reading ${note} as one document · edits save back to each file`);
   if (skipped.length) {
     showToast(
-      `${skipped.length} deck${skipped.length === 1 ? "" : "s"} couldn't be opened: ${skipped.slice(0, 2).join(", ")}` +
+      `${skipped.length} file${skipped.length === 1 ? "" : "s"} couldn't be opened: ${skipped.slice(0, 2).join(", ")}` +
       `${skipped.length > 2 ? ` and ${skipped.length - 2} more` : ""}`,
       "error"
     );
@@ -291,8 +291,8 @@ export async function openFolderAsDeck(path) {
     // Named, because the two ways to get here look identical from the outside:
     // the folder really is empty, or My Decks has not been painted this session
     // and decksUnderFolder therefore has nothing to read.
-    setStatus(`No decks found in "${folderPath}".`, "error");
-    showToast(`No decks in "${folderPath}" to read`, "error");
+    setStatus(`No files found in "${folderPath}".`, "error");
+    showToast(`No files in "${folderPath}" to read`, "error");
     return false;
   }
 
@@ -334,7 +334,7 @@ export async function openSelectionAsOneDeck(selections) {
     // having no notes would break the one thing a bulk Load already did.
     landOn: "auto",
     onEmpty: "cards",
-    label: `${selections.length} selected decks`
+    label: `${selections.length} selected files`
   });
 }
 
@@ -478,7 +478,7 @@ export async function saveFolderDeck({ silent = true } = {}) {
   }
 
   if (written !== folder.members.length && !silent) {
-    setStatus(`Saved ${written} of ${folder.members.length} decks.`, "error");
+    setStatus(`Saved ${written} of ${folder.members.length} files.`, "error");
   }
   // A truthy return is what the autosave reads as "saved" for the sync pill.
   return written ? { id: null, title: folder.title, folder: true } : null;

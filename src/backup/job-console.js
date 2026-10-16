@@ -49,7 +49,7 @@ export function formatJobDuration(ms) {
 export const JOB_LOG_VISIBLE = 400;
 
 export const DEFAULT_JOB_STATS = [
-  ["decks", "Decks"],
+  ["decks", "Files"],
   ["cards", "Cards"],
   ["images", "Images"],
   ["papers", "Papers"],

@@ -129,7 +129,7 @@ async function writeNotebookPdf({ pages, paper, reopen = true }) {
     }
   };
   if (!(await saveDeckToLibrary({ silent: true })) || !state.localDeckId) {
-    showToast("Could not save this deck on your device", "error");
+    showToast("Could not save this file on your device", "error");
     return false;
   }
   // The device copy before the upload, because it is the one the reader is about
@@ -188,7 +188,7 @@ export async function ensureNotebookDocument({ paper = null } = {}) {
     // can simply be made again from the record of what it was; that is a property
     // no real document has and it would be a waste not to use it.
     if (!(await notebookBytesPresent())) {
-      showToast("Re-making this notebook's paper on this device…", "info");
+      showToast("Re-making this canvas's paper on this device…", "info");
       return (await writeNotebookPdf({ pages: notebookPageCount(), paper: notebookPaper(), reopen: false })) && "wrote";
     }
     // ...and the same property, used for the same reason one step further on: a
@@ -274,7 +274,7 @@ export async function migrateLegacyNotebook() {
   });
 
   if (!(await saveDeckToLibrary({ silent: true })) || !state.localDeckId) {
-    showToast("Could not save this deck on your device — your pages were left as they were", "error");
+    showToast("Could not save this file on your device — your pages were left as they were", "error");
     return false;
   }
 
@@ -297,7 +297,7 @@ export async function migrateLegacyNotebook() {
     ? ` ${plan.orphans} text box${plan.orphans === 1 ? "" : "es"} had no page to sit on and were left out.`
     : "";
   showToast(
-    `Your handwritten pages are on real paper now — ${plan.pages} page${plan.pages === 1 ? "" : "s"}`
+    `Your Canvas pages are on real paper now — ${plan.pages} page${plan.pages === 1 ? "" : "s"}`
     + `${marks ? `, ${marks} with writing on` : ""}${blocks ? `, ${blocks} text block${blocks === 1 ? "" : "s"}` : ""}.${lost}`
   );
   return true;
@@ -327,7 +327,7 @@ export async function migrateNotebookSlot() {
   const wasLocalId = state.localDeckId;
   state.meta = movedNotebookSlotMeta(state.meta);
   if (!(await saveDeckToLibrary({ silent: true })) || !state.localDeckId) {
-    showToast("Could not save this deck on your device — your pages were left as they were", "error");
+    showToast("Could not save this file on your device — your pages were left as they were", "error");
     return false;
   }
   if (!wasLocalId) return true;
@@ -347,7 +347,7 @@ export async function addNotebookPage() {
   if (!hasNotebook()) return false;
   const pages = notebookPageCount();
   if (pages >= NOTEBOOK_MAX_PAGES) {
-    showToast(`A notebook stops at ${NOTEBOOK_MAX_PAGES} pages — start another one`, "info");
+    showToast(`A canvas stops at ${NOTEBOOK_MAX_PAGES} pages — start another one`, "info");
     return false;
   }
   return writeNotebookPdf({ pages: pages + 1, paper: notebookPaper() });
@@ -377,7 +377,7 @@ export async function deleteNotebookPage(pageNumber) {
   const n = Number(pageNumber);
   if (!(n >= 1 && n <= pages)) return false;
   if (pages < 2) {
-    showToast("A notebook keeps at least one page", "info");
+    showToast("A canvas keeps at least one page", "info");
     return false;
   }
   const afterTearOut = (record) => {

@@ -195,7 +195,7 @@ export function renderQnCard(card) {
   // A recovered anchor is a best guess (matched by text), so say so on hover
   // rather than promising it's exactly where you pinned from.
   const hint = anchor && anchor.guessed
-    ? "Best match — found by searching your decks' notes"
+    ? "Best match — found by searching your files' notes"
     : "Go to where this was pinned";
   const source = anchor && (anchor.deckTitle || anchor.deckId || anchor.deckLocalId)
     ? `<button type="button" class="qn-card-source" data-qn-jump="${escapeHtml(card.id)}" title="${escapeHtml(hint)}">&#8618; ${escapeHtml(anchor.deckTitle || "source")}</button>`
@@ -223,7 +223,7 @@ export function updateQnSummary(matching = quickNotesMatchingQuery()) {
   const total = qnBoard.cards.length;
   const cats = state.quickNoteCategories.length;
   if (!total) {
-    el.qnSummary.textContent = "Pinned snippets across all your decks, at a glance.";
+    el.qnSummary.textContent = "Pinned snippets across all your files, at a glance.";
     return;
   }
   if (qnBoard.query.trim()) {
@@ -288,7 +288,7 @@ export function renderQuickNotesBoard() {
     return;
   }
   if (!qnBoard.cards.length) {
-    el.qnBody.innerHTML = `<div class="qn-empty"><p class="qn-empty-title">No quick notes yet</p><p>Select text anywhere in a deck's notes and tap &#128204; to pin it here for a quick skim later.</p></div>`;
+    el.qnBody.innerHTML = `<div class="qn-empty"><p class="qn-empty-title">No quick notes yet</p><p>Select text anywhere in a file's notes and tap &#128204; to pin it here for a quick skim later.</p></div>`;
     return;
   }
 
@@ -404,7 +404,7 @@ export async function jumpToQuickNoteSource(cardId) {
   recordNavHistory({ cardId });
   closeQuickNotesBoard();
   if (onAnchorSourceDeck(anchor)) { scheduleNoteJump(anchor); return; }
-  setStatus("Opening the source deck…");
+  setStatus("Opening the source file…");
   if (anchor.deckLocalId && (await suppressNavRecording(() => loadDeckFromLibrary(anchor.deckLocalId)))) {
     scheduleNoteJump(anchor);
     return;
@@ -412,10 +412,10 @@ export async function jumpToQuickNoteSource(cardId) {
   if (anchor.deckId && supabaseClient && navigator.onLine) {
     suppressNavRecording(() => loadWebDeck(anchor.deckId))
       .then(() => scheduleNoteJump(anchor))
-      .catch(() => setStatus("Couldn't open the source deck for this note.", "error"));
+      .catch(() => setStatus("Couldn't open the source file for this note.", "error"));
     return;
   }
-  setStatus("Couldn't open the source deck for this note — it isn't available on this device.", "error");
+  setStatus("Couldn't open the source file for this note — it isn't available on this device.", "error");
 }
 
 // Copy a note's text straight to the clipboard — the most common thing to want

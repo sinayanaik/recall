@@ -248,7 +248,7 @@ export async function planPackageImport(archive, { progress = null } = {}) {
       }
       if (!existing) {
         if (!scanned) {
-          progress?.current?.("Looking for decks already imported from this package…");
+          progress?.current?.("Looking for files already imported from this package…");
           scanned = await importedOriginsOnDevice();
         }
         const hit = scanned.get(origin);
@@ -267,7 +267,7 @@ export async function planPackageImport(archive, { progress = null } = {}) {
       own,
       existing,
       existingSalt,
-      title: deck.title || "Untitled deck",
+      title: deck.title || "Untitled file",
       choice: quick ? IMPORT_CHOICE_UPDATE : existing ? IMPORT_CHOICE_UPDATE : IMPORT_CHOICE_NEW,
       counts: { cards: deck.cards.length, marks, papers: papers + (deck.meta?.notebook ? 1 : 0) }
     });
@@ -287,7 +287,7 @@ export function showPackageImportPreview(plan, archive) {
   return new Promise((resolve) => {
     const modal = document.createElement("section");
     modal.className = "category-choice-modal restore-preview-modal package-import-modal";
-    modal.setAttribute("aria-label", "Import decks");
+    modal.setAttribute("aria-label", "Import files");
 
     const manifest = archive.manifest || {};
     const images = archive.assets?.size || 0;
@@ -327,7 +327,7 @@ export function showPackageImportPreview(plan, archive) {
       return `<li class="restore-row ${cls}">`
         + `<span class="restore-badge">${badge}</span>`
         + `<span class="restore-name"><span class="restore-title"></span><span class="restore-folder"></span></span>`
-        + `<span class="restore-detail">${escapeHtml(bits.join(" · "))}${entry.existing ? `<br><small>${entry.own ? "your own deck" : "imported before"} — "${escapeHtml(entry.existing.title || "")}"</small>` : ""}</span>`
+        + `<span class="restore-detail">${escapeHtml(bits.join(" · "))}${entry.existing ? `<br><small>${entry.own ? "your own file" : "imported before"} — "${escapeHtml(entry.existing.title || "")}"</small>` : ""}</span>`
         + `<span class="package-import-choice">${control}</span>`
         + `</li>`;
     }).join("");
@@ -338,24 +338,24 @@ export function showPackageImportPreview(plan, archive) {
     shell.innerHTML = `
       <div class="category-choice-head">
         <div>
-          <h2>Import ${plan.entries.length} deck${plan.entries.length === 1 ? "" : "s"}${plan.title ? ` — ${escapeHtml(plan.title)}` : ""}</h2>
-          <p>${escapeHtml([manifest.kind === PACKAGE_KIND_SHARE ? "A shared package" : "A library backup, imported as separate decks", made ? `made ${made}` : ""].filter(Boolean).join(" · "))}. Nothing changes until you press Import.</p>
+          <h2>Import ${plan.entries.length} file${plan.entries.length === 1 ? "" : "s"}${plan.title ? ` — ${escapeHtml(plan.title)}` : ""}</h2>
+          <p>${escapeHtml([manifest.kind === PACKAGE_KIND_SHARE ? "A shared package" : "A library backup, imported as separate files", made ? `made ${made}` : ""].filter(Boolean).join(" · "))}. Nothing changes until you press Import.</p>
         </div>
         <button type="button" data-import-cancel aria-label="Close">&#215;</button>
       </div>
       <ul class="restore-deck-list">${rowsHtml}</ul>
-      <label class="package-import-folder">Put new decks in folder
+      <label class="package-import-folder">Put new files in folder
         <input type="text" data-import-folder list="packageImportFolders" placeholder="Keep the folders they came in" autocomplete="off" value="${escapeHtml(plan.destination || "")}">
         <datalist id="packageImportFolders">${folderOptions}</datalist>
       </label>
       <p class="restore-summary">${escapeHtml([
         images ? `${images} image${images === 1 ? "" : "s"} — stored on this device, then uploaded to your own storage` : "",
         papers ? `${papers} PDF${papers === 1 ? "" : "s"} — stored on this device, then uploaded to your own bucket if you have one` : "",
-        papersMissing ? `${papersMissing} PDF${papersMissing === 1 ? " was" : "s were"} not in the package (those decks will ask for the file)` : "",
+        papersMissing ? `${papersMissing} PDF${papersMissing === 1 ? " was" : "s were"} not in the package (those files will ask for the PDF)` : "",
         manifest.includesProgress === false ? "The sender's study progress was not included" : ""
       ].filter(Boolean).join(" · ") || "Text only.")}</p>
       <p class="restore-integrity${verification && verification.checked && !verification.ok ? " is-warning" : ""}">${escapeHtml(integrity)}</p>
-      <p class="restore-note">"Update mine" merges the package into the deck you already have: new and changed cards come in, your own cards and your study progress are kept.</p>
+      <p class="restore-note">"Update mine" merges the package into the file you already have: new and changed cards come in, your own cards and your study progress are kept.</p>
       <div class="category-choice-actions">
         <button type="button" data-import-cancel>Cancel</button>
         <button type="button" class="import-action-primary" data-import-confirm>Import</button>
@@ -405,8 +405,8 @@ export function showPackageImportPreview(plan, archive) {
 
 export const IMPORT_STEPS = [
   ["images", "Store images"],
-  ["decks", "Write decks"],
-  ["papers", "Store papers"],
+  ["decks", "Write files"],
+  ["papers", "Store PDFs"],
   ["upload", "Upload to your storage"],
   ["finish", "Finish"]
 ];
@@ -527,7 +527,7 @@ export async function applyPackageImport(plan, archive, { progress = null } = {}
   progress?.stepDone?.("images", `${assetResult.kept + assetResult.adopted}${assetResult.failed ? `, ${assetResult.failed} failed` : ""}`);
 
   // ── Decks ──
-  progress?.step?.("decks", "Writing decks…");
+  progress?.step?.("decks", "Writing files…");
   const written = [];
   const failed = [];
   let added = 0;
@@ -536,7 +536,7 @@ export async function applyPackageImport(plan, archive, { progress = null } = {}
   for (let i = 0; i < active.length; i += 1) {
     const entry = active[i];
     const deck = entry.reminted;
-    progress?.count?.(i + 1, active.length, `Writing decks ${i + 1}/${active.length}…`);
+    progress?.count?.(i + 1, active.length, `Writing files ${i + 1}/${active.length}…`);
     try {
       if (entry.mode === IMPORT_CHOICE_NEW) {
         const snapshot = backupDeckToSnapshot(deck, entry.targetLocalId);
@@ -580,19 +580,19 @@ export async function applyPackageImport(plan, archive, { progress = null } = {}
 
   // ── Papers ──
   let documentResult = { stored: 0, rebound: 0, present: 0, failed: 0, refused: 0 };
-  progress?.step?.("papers", "Storing papers on this device…");
+  progress?.step?.("papers", "Storing PDFs on this device…");
   if (archive.zip && archive.documentIndex?.documents?.length) {
     try {
       // Matched to the reminted decks by the path they had in the archive —
       // every one of them kept it — and filed under the id they have now.
       const docPlan = await planBackupDocumentRestore(archive.zip, archive.documentIndex, reminted, (deck) => deck.targetLocalId || "");
       documentResult = await commitBackupDocuments(docPlan, (done, total, item) => {
-        progress?.count?.(done, total, `Storing papers ${done}/${total}…`);
-        if (item) progress?.log?.(`Paper ${done}/${total} · ${item.name || "document.pdf"}${item.bytes ? ` · ${formatJobBytes(item.bytes)}` : ""} · ${item.outcome}`, item.outcome === "stored" || item.outcome === "re-keyed" ? "info" : "warn");
+        progress?.count?.(done, total, `Storing PDFs ${done}/${total}…`);
+        if (item) progress?.log?.(`PDF ${done}/${total} · ${item.name || "document.pdf"}${item.bytes ? ` · ${formatJobBytes(item.bytes)}` : ""} · ${item.outcome}`, item.outcome === "stored" || item.outcome === "re-keyed" ? "info" : "warn");
       });
     } catch (error) {
       console.warn("Could not import this package's papers", error);
-      progress?.error?.(`The papers could not be stored: ${error?.message || error}`);
+      progress?.error?.(`The PDFs could not be stored: ${error?.message || error}`);
     }
     progress?.stepDone?.("papers", `${documentResult.stored + documentResult.rebound} stored${documentResult.present ? `, ${documentResult.present} already here` : ""}`);
   } else {
@@ -619,7 +619,7 @@ export async function applyPackageImport(plan, archive, { progress = null } = {}
   }
   if (documentResult.stored + documentResult.rebound) {
     scheduleDocumentBackfill({ force: true });
-    progress?.log?.("Papers are uploading to your bucket in the background (if you have one set up).");
+    progress?.log?.("PDFs are uploading to your bucket in the background (if you have one set up).");
   }
   progress?.stepDone?.("upload", uploadedImages ? `${uploadedImages} images` : "");
 
@@ -632,17 +632,17 @@ export async function applyPackageImport(plan, archive, { progress = null } = {}
   await renderMyDecksList();
 
   const parts = [];
-  if (added) parts.push(`${added} deck${added === 1 ? "" : "s"} imported`);
+  if (added) parts.push(`${added} file${added === 1 ? "" : "s"} imported`);
   if (updated) parts.push(`${updated} updated`);
   if (cardsIn) parts.push(`${cardsIn} card${cardsIn === 1 ? "" : "s"}`);
   const images = assetResult.kept + assetResult.adopted;
   if (images) parts.push(`${images} image${images === 1 ? "" : "s"}`);
   const papers = documentResult.stored + documentResult.rebound;
-  if (papers) parts.push(`${papers} paper${papers === 1 ? "" : "s"}`);
+  if (papers) parts.push(`${papers} PDF${papers === 1 ? "" : "s"}`);
   const problems = [];
-  if (failed.length) problems.push(`${failed.length} deck${failed.length === 1 ? "" : "s"} could not be saved (${failed.slice(0, 3).join(", ")}) — this device may be out of space`);
-  if (documentResult.refused) problems.push(`${documentResult.refused} paper${documentResult.refused === 1 ? "" : "s"} did not match the deck recorded for ${documentResult.refused === 1 ? "it" : "them"} and ${documentResult.refused === 1 ? "was" : "were"} not stored`);
-  if (documentResult.failed) problems.push(`${documentResult.failed} paper${documentResult.failed === 1 ? "" : "s"} could not be stored on this device`);
+  if (failed.length) problems.push(`${failed.length} file${failed.length === 1 ? "" : "s"} could not be saved (${failed.slice(0, 3).join(", ")}) — this device may be out of space`);
+  if (documentResult.refused) problems.push(`${documentResult.refused} PDF${documentResult.refused === 1 ? "" : "s"} did not match the file recorded for ${documentResult.refused === 1 ? "it" : "them"} and ${documentResult.refused === 1 ? "was" : "were"} not stored`);
+  if (documentResult.failed) problems.push(`${documentResult.failed} PDF${documentResult.failed === 1 ? "" : "s"} could not be stored on this device`);
   if (assetResult.failed) problems.push(`${assetResult.failed} image${assetResult.failed === 1 ? "" : "s"} could not be stored on this device`);
   const summary = parts.join(", ") || "nothing to import";
   if (problems.length) {
@@ -671,7 +671,7 @@ export const OPEN_STEPS = [
 // import-as-copies; a share to the import preview. `prefer` overrides the
 // file's own kind: "restore" from the Restore button, "import" from Import.
 export async function openRecallPackage(file, { prefer = "", destination = "" } = {}) {
-  const reading = showBackupProgress(`Opening ${file?.name || "the file"}`, { steps: OPEN_STEPS, stats: [["decks", "Decks"], ["cards", "Cards"], ["images", "Images"], ["papers", "Papers"], ["size", "Size"], ["time", "Time"]] });
+  const reading = showBackupProgress(`Opening ${file?.name || "the file"}`, { steps: OPEN_STEPS, stats: [["decks", "Files"], ["cards", "Cards"], ["images", "Images"], ["papers", "PDFs"], ["size", "Size"], ["time", "Time"]] });
   let archive;
   try {
     setStatus("Reading the file…");
@@ -702,7 +702,7 @@ export async function openRecallPackage(file, { prefer = "", destination = "" } 
   const wantsRestore = prefer === "restore" || (prefer !== "import" && archive.kind !== PACKAGE_KIND_SHARE);
   try {
     if (wantsRestore) {
-      reading.step("compare", "Comparing against your decks…");
+      reading.step("compare", "Comparing against your files…");
       // Images are re-homed BEFORE the diff: a foreign backup's references get
       // rewritten to local placeholders, and the preview then compares (and the
       // apply then writes) exactly the text the decks will end up with.
@@ -746,7 +746,7 @@ export async function openRecallPackage(file, { prefer = "", destination = "" } 
       }
       return;
     }
-    reading.step("compare", "Looking for decks you already have…");
+    reading.step("compare", "Looking for files you already have…");
     reading.close();
     await importAsShare(archive, destination);
   } catch (error) {
@@ -765,7 +765,7 @@ async function importAsShare(archive, destination = "") {
     setStatus("Import cancelled.");
     return;
   }
-  const progress = showBackupProgress(`Importing ${plan.entries.filter((entry) => entry.choice !== IMPORT_CHOICE_SKIP).length} deck(s)`, { steps: IMPORT_STEPS });
+  const progress = showBackupProgress(`Importing ${plan.entries.filter((entry) => entry.choice !== IMPORT_CHOICE_SKIP).length} file(s)`, { steps: IMPORT_STEPS });
   setStatus("Importing…");
   try {
     await applyPackageImport(chosen, archive, { progress });

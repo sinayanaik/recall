@@ -27,7 +27,7 @@ export function createDeckExportControl(sel, deckTitle, { compact = false } = {}
   button.type = "button";
   button.setAttribute("aria-haspopup", "true");
   button.setAttribute("aria-expanded", "false");
-  button.title = "Export deck";
+  button.title = "Export file";
   button.setAttribute("aria-label", `Export ${deckTitle || "Untitled"}`);
   button.innerHTML = mdIcon("download");
   if (!compact) {
@@ -97,7 +97,7 @@ export async function loadSelectedMyDecks(selections) {
       if (await loadDeckFromLibrary(sel.localId)) {
         touchLocalDeckAccess(sel.localId);
         closeMyDecksPanel();
-        showToast("Deck loaded");
+        showToast("File loaded");
       }
     } else if (sel.deckId) {
       closeMyDecksPanel();
@@ -125,8 +125,8 @@ export async function loadSelectedMyDecks(selections) {
     await openSelectionAsOneDeck(selections);
   } catch (error) {
     console.error("Failed to load selected decks", error);
-    setStatus("Failed to load selected decks.", "error");
-    showToast("Couldn't load selected decks", "error");
+    setStatus("Failed to load selected files.", "error");
+    showToast("Couldn't load selected files", "error");
   }
 }
 
@@ -135,7 +135,7 @@ export async function categorizeSelectedMyDecks(selections) {
   const category = await chooseDeckCategory();
   if (category === null) return;
 
-  setStatus(`Updating category for ${selections.length} deck${selections.length === 1 ? "" : "s"}...`);
+  setStatus(`Updating category for ${selections.length} file${selections.length === 1 ? "" : "s"}...`);
   let failed = 0;
   for (const sel of selections) {
     try {
@@ -147,11 +147,11 @@ export async function categorizeSelectedMyDecks(selections) {
   }
   renderMyDecksList();
   if (failed) {
-    setStatus(`Category updated, but ${failed} deck${failed === 1 ? "" : "s"} failed.`, "error");
-    showToast(`Couldn't update ${failed} deck${failed === 1 ? "" : "s"}`, "error");
+    setStatus(`Category updated, but ${failed} file${failed === 1 ? "" : "s"} failed.`, "error");
+    showToast(`Couldn't update ${failed} file${failed === 1 ? "" : "s"}`, "error");
   } else {
-    setStatus("Deck categories updated.");
-    showToast(`Set category "${normalizeDeckCategory(category)}" on ${selections.length} deck${selections.length === 1 ? "" : "s"}`);
+    setStatus("File categories updated.");
+    showToast(`Set category "${normalizeDeckCategory(category)}" on ${selections.length} file${selections.length === 1 ? "" : "s"}`);
   }
 }
 

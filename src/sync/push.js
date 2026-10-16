@@ -78,7 +78,7 @@ export async function upsertCardRows(rows) {
 // than by matching a message.
 export class DeckRowMovedError extends Error {
   constructor(deckId) {
-    super(`Deck ${deckId} was written by another device between the read and the push`);
+    super(`File ${deckId} was written by another device between the read and the push`);
     this.name = "DeckRowMovedError";
     this.deckRowMoved = true;
     // A code, so withRetry can never read this as transient. Its second test is
@@ -201,16 +201,16 @@ export async function pushDeckRowsToCloud({ deckId, title, category, notes, meta
   // still matches the row it read or raises DeckRowMovedError, and the second
   // outcome is the one the caller is prepared for.
   let { error: deckError } = await withRetry(
-    () => writeDeckRow(deckDataPending, "save deck"),
-    { label: "save deck" }
+    () => writeDeckRow(deckDataPending, "save file"),
+    { label: "save file" }
   );
   if (deckError && "last_device" in deckDataPending && isMissingColumnError(deckError, "last_device")) {
     lastDeviceColumnMissing = true;
     delete deckDataPending.last_device;
     delete deckData.last_device;
     ({ error: deckError } = await withRetry(
-      () => writeDeckRow(deckDataPending, "save deck"),
-      { label: "save deck" }
+      () => writeDeckRow(deckDataPending, "save file"),
+      { label: "save file" }
     ));
   }
   // This deck is NOT fully synced if we fall into this branch — cards may
@@ -224,7 +224,7 @@ export async function pushDeckRowsToCloud({ deckId, title, category, notes, meta
     // Database hasn't run supabase_setup.sql yet — sync everything else so
     // the user doesn't lose card changes, but warn about notes.
     const { notes: _omit, ...deckDataWithoutNotes } = deckDataPending;
-    ({ error: deckError } = await writeDeckRow(deckDataWithoutNotes, "save deck"));
+    ({ error: deckError } = await writeDeckRow(deckDataWithoutNotes, "save file"));
     if (!deckError && String(notes || "").trim()) {
       notesSyncFailed = true;
       // A data-loss-relevant warning, unlike routine save-confirmation toasts
@@ -348,7 +348,7 @@ export async function pushDeckRowsToCloud({ deckId, title, category, notes, meta
       .eq("id", deckId).eq("updated_at", PENDING_TS).select("id")
       .abortSignal(signal)),
     CLOUD_TIMEOUT_MS,
-    "finalize deck"
+    "finalize file"
   );
   if (bumpResult.error) throw bumpResult.error;
   if (Array.isArray(bumpResult.data) && bumpResult.data.length === 0) throw new DeckRowMovedError(deckId);

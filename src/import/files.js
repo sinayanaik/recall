@@ -191,7 +191,7 @@ export function loadFile(file, folderPath = null) {
 }
 
 export function loadSample() {
-  stageMarkdownImport(sampleMarkdown, { name: "Sample flashcards", folder: null });
+  stageMarkdownImport(sampleMarkdown, { name: "Sample cards", folder: null });
 }
 
 export function showImportSourceDrawer(which) {

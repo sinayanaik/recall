@@ -151,7 +151,7 @@ const PIN_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" str
 // stray line behind, because the rule belongs to a row and hidden rows are
 // display:none.
 const MARK_MENU_ACTIONS = [
-  { id: "card", verb: "makeCard", label: "Make a flashcard", icon: "&#43;", run: "keep" },
+  { id: "card", verb: "makeCard", label: "Make a card", icon: "&#43;", run: "keep" },
   { id: "pin", verb: "pin", label: "Pin to Quick Notes", icon: PIN_ICON, run: "keep" },
   { id: "highlights", verb: "showInHighlights", label: "Show in Highlights", icon: "&#9776;", run: "keep" },
   { id: "copy", verb: "copy", label: "Copy", icon: "&#10697;", run: "send" },

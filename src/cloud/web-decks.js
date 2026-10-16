@@ -66,7 +66,7 @@ export async function updatedDeckRow(builder, label) {
   if (error) throw error;
   if (!data || data.length === 0) {
     throw new Error(
-      `Couldn't ${label} in the cloud — that deck isn't there, or it belongs to another account.`
+      `Couldn't ${label} in the cloud — that file isn't there, or it belongs to another account.`
     );
   }
   return true;
@@ -96,7 +96,7 @@ export async function updateWebDeckTitle(deckId, title) {
   const now = new Date().toISOString();
   await updatedDeckRow(
     supabaseClient.from("decks").update({ title, updated_at: now }).eq("id", deckId),
-    "rename that deck"
+    "rename that file"
   );
   await syncLocalLibraryMetaForDeck(deckId, { title, now });
   return true;
@@ -109,7 +109,7 @@ export async function updateWebDeckCategory(deckId, category) {
   const now = new Date().toISOString();
   await updatedDeckRow(
     supabaseClient.from("decks").update({ category: normalized, updated_at: now }).eq("id", deckId),
-    "move that deck"
+    "move that file"
   );
   await syncLocalLibraryMetaForDeck(deckId, { category: normalized, now });
   return true;
@@ -276,7 +276,7 @@ export function webDeckPayloadMarkdown(payload) {
     `# ${payload.deck.title}`,
     "",
     `Category: ${payload.deck.category}`,
-    `Deck ID: ${payload.deck.id}`,
+    `File ID: ${payload.deck.id}`,
     `Exported: ${new Date().toISOString()}`,
     "",
     formatCardList("Cards", payload.cards),
@@ -306,12 +306,12 @@ export function nextDeckLoadToken() {
 export async function loadWebDeck(deckId) {
   if (!deckId || !supabaseClient) return;
   if (!navigator.onLine) {
-    setStatus("Offline — can't load web decks. Try “My Decks” for device copies.", "error");
-    showToast("Offline — can't load web deck", "info");
+    setStatus("Offline — can't load web files. Try “My Files” for device copies.", "error");
+    showToast("Offline — can't load web file", "info");
     return;
   }
 
-  setStatus("Loading deck from web...");
+  setStatus("Loading file from web...");
   // A navigation door — see recordNavHistory. Recorded synchronously, before
   // the await below can let anything else move the user.
   recordNavHistory();
@@ -319,7 +319,7 @@ export async function loadWebDeck(deckId) {
 
   try {
     const [deckResult, cardsResult] = await Promise.all([
-      withTimeout(abortable((signal) => supabaseClient.from("decks").select("*").eq("id", deckId).single().abortSignal(signal)), CLOUD_TIMEOUT_MS, "load deck"),
+      withTimeout(abortable((signal) => supabaseClient.from("decks").select("*").eq("id", deckId).single().abortSignal(signal)), CLOUD_TIMEOUT_MS, "load file"),
       withTimeout(abortable((signal) => supabaseClient.from("cards").select("*").eq("deck_id", deckId).order("position", { ascending: true }).abortSignal(signal)), CLOUD_TIMEOUT_MS, "load cards")
     ]);
 
@@ -435,8 +435,8 @@ export async function loadWebDeck(deckId) {
       resumeOpenedDeck(readerActedSince(shownAt) ? null : resumeAt, () => maybePromptBookmarkJump());
     }
   } catch (error) {
-    setStatus("Failed to load deck from web.", "error");
-    showToast("Couldn't load deck", "error");
+    setStatus("Failed to load file from web.", "error");
+    showToast("Couldn't load file", "error");
     console.error(error);
   }
 }

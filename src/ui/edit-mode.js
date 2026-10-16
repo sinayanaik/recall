@@ -218,14 +218,14 @@ export function toggleEditMode(side, { cursorOffset = null, remember = true } = 
     }
 
     scheduleDeckAutosave();
-    setStatus(state.deckId ? "Card updated locally. Sync to update the web deck." : "Card updated.");
+    setStatus(state.deckId ? "Card updated locally. Sync to update the cloud copy." : "Card updated.");
   }
 }
 
 
 export function addBlankCardAtCursor() {
   if (!state.masterCards.length && !state.deckTitle) {
-    setStatus("Create a new deck or import one first.", "error");
+    setStatus("Create a new file or import one first.", "error");
     return;
   }
   // From zero cards there's no "current" card to navigate from — land

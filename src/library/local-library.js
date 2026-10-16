@@ -807,7 +807,7 @@ export function finishSaveDeckToLibrary({ snapshot, localId, previousSnapshot, s
 
   const meta = {
     id: localId,
-    title: snapshot.deckTitle || "Untitled deck",
+    title: snapshot.deckTitle || "Untitled file",
     category: snapshot.deckCategory || defaultDeckCategory,
     cardCount: snapshot.cards.length,
     hasNotes: Boolean(String(snapshot.notes || "").trim()),
@@ -865,8 +865,8 @@ export function finishSaveDeckToLibrary({ snapshot, localId, previousSnapshot, s
     if (!silent) {
       setStatus(
         isQuota
-          ? "Could not save deck — device storage is full. Delete some old decks to free space."
-          : `Could not save deck: ${error?.message || error?.name || "unknown error"}`,
+          ? "Could not save file — device storage is full. Delete some old files to free space."
+          : `Could not save file: ${error?.message || error?.name || "unknown error"}`,
         "error"
       );
     }
@@ -940,7 +940,7 @@ export async function saveDeckToLibrary({ id = null, silent = false, updatedAt =
   // document was built from; saveFolderDeck puts them there.
   if (!id && isFolderDeckActive()) return saveFolderDeck({ silent });
   if (deckHasNothingToSave()) {
-    if (!silent) setStatus("Add some cards or notes before saving a deck.", "error");
+    if (!silent) setStatus("Add some cards or notes before saving a file.", "error");
     return null;
   }
   // The deck bodies on this device couldn't be read this session (see
@@ -949,7 +949,7 @@ export async function saveDeckToLibrary({ id = null, silent = false, updatedAt =
   // invisible — the one way a read failure becomes a write failure. Refuse,
   // and say so; a reload restores normal operation.
   if (deckStoreUnreadable) {
-    if (!silent) setStatus("Couldn't read this device's decks — reload the app before editing. Nothing was changed.", "error");
+    if (!silent) setStatus("Couldn't read this device's files — reload the app before editing. Nothing was changed.", "error");
     return null;
   }
   const { snapshot, localId } = resolveSaveTarget(id);
@@ -1111,11 +1111,11 @@ export async function loadDeckFromLibrary(id, { keepPlace = false } = {}) {
     payload = await readDeckSnapshot(id);
   } catch (error) {
     console.warn("Could not read saved deck from storage", id, error);
-    setStatus("Couldn't read that deck from this device's storage — reload the app and try again. Nothing was changed.", "error");
+    setStatus("Couldn't read that file from this device's storage — reload the app and try again. Nothing was changed.", "error");
     return false;
   }
   if (!payload) {
-    setStatus("That saved deck could not be found.", "error");
+    setStatus("That saved file could not be found.", "error");
     return false;
   }
   // A newer deck open (local or web) has taken over the view since this read
@@ -1147,7 +1147,7 @@ export async function loadDeckFromLibrary(id, { keepPlace = false } = {}) {
     return true;
   } catch (error) {
     console.warn("Could not load saved deck", error);
-    setStatus("That saved deck is corrupted and could not be loaded.", "error");
+    setStatus("That saved file is corrupted and could not be loaded.", "error");
     return false;
   }
 }

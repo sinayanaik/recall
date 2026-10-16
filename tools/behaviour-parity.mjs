@@ -73,7 +73,11 @@ const PROBE = `(api, cases) => {
     // questions and answers, not the entropy.
     safe("cards/" + i, () => JSON.stringify(api.parseCards(md)).replace(/-[a-z0-9]{6}"/g, '-RANDOM"'));
     safe("classify/" + i, () => api.classifyCardSyntax(md));
-    safe("title/" + i, () => api.inferDeckTitle(md, ""));
+    // The fallback title was "Pasted Deck" until the library's items were
+    // named files (NOMENCLATURE.md) — a wording change made on purpose, so it
+    // is normalised the way the card ids above are. Anything else that moves
+    // the inferred title still differs.
+    safe("title/" + i, () => api.inferDeckTitle(md, "").replace(/^Pasted Deck$/, "Pasted File"));
     safe("notes/" + i, () => api.extractNotesFromMarkdown(md));
     safe("qheads/" + i, () => api.countQuestionHeadings(md));
   });

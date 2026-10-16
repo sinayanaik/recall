@@ -21,7 +21,7 @@ import { setViewMode } from "../ui/view-mode.js?v=__BUILD__";
 // What a reader is told when a deletion is declined because its tombstone could
 // not be recorded. One definition, because three call sites say it.
 export const TOMBSTONE_REFUSED_MESSAGE =
-  "Storage is full, so this deck was left in place — deleting it without a record would let it come back on the next sync.";
+  "Storage is full, so this file was left in place — deleting it without a record would let it come back on the next sync.";
 
 export function readDeckTombstones() {
   try {
@@ -292,7 +292,7 @@ export async function deleteDeckEverywhere({ localId = null, deckId = null } = {
     // tombstone persists, so the deletion still eventually propagates.
     const { error: tombstoneError } = await withTimeout(abortable((signal) => supabaseClient.from("deleted_decks").upsert({ deck_id: deckId }).abortSignal(signal)), CLOUD_TIMEOUT_MS, "record delete tombstone");
     if (tombstoneError) console.warn("Could not record cross-device delete tombstone", tombstoneError);
-    const { error } = await withTimeout(abortable((signal) => supabaseClient.from("decks").delete().eq("id", deckId).abortSignal(signal)), CLOUD_TIMEOUT_MS, "delete deck");
+    const { error } = await withTimeout(abortable((signal) => supabaseClient.from("decks").delete().eq("id", deckId).abortSignal(signal)), CLOUD_TIMEOUT_MS, "delete file");
     cloudError = error || null;
   }
   return { cloudError, refused: false };

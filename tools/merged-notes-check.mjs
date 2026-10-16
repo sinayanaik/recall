@@ -264,7 +264,7 @@ try {
       if (settled(got.notes) !== normalized(member.notes)) {
         return `${member.localId}: notes came back as ${show(got.notes)}, expected ${show(normalized(member.notes))}`;
       }
-      if (got.title !== String(member.title || "Untitled deck")) {
+      if (got.title !== String(member.title || "Untitled file")) {
         return `${member.localId}: title came back as ${show(got.title)}`;
       }
     }

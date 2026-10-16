@@ -35,8 +35,8 @@ export function createToolbarHtml(options = {}) {
   const quickNoteBtn = options.quickNote
     ? `
     <span class="edit-toolbar-divider" aria-hidden="true"></span>
-    <button type="button" data-action="make-card" class="toolbar-make-card" title="Make a flashcard from the selection">+</button>
-    <button type="button" data-action="quick-note" class="toolbar-quick-note" title="Save selection to the quick_notes deck">📌</button>`
+    <button type="button" data-action="make-card" class="toolbar-make-card" title="Make a card from the selection">+</button>
+    <button type="button" data-action="quick-note" class="toolbar-quick-note" title="Save selection to the quick_notes file">📌</button>`
     : "";
   // The notes header owns cloze/capture and stays visible while raw-editing, so
   // repeating them here would show each action twice in the same header.

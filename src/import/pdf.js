@@ -285,9 +285,9 @@ export async function importPdfFile(file, folderPath = null) {
       pdfHighlights: records
     };
 
-    progress.update("Saving the deck…", 0.7);
+    progress.update("Saving the file…", 0.7);
     if (!(await saveDeckToLibrary({ silent: true }))) {
-      throw new Error("could not save the deck on this device");
+      throw new Error("could not save the file on this device");
     }
     const deckLocalId = state.localDeckId;
 
@@ -381,7 +381,7 @@ export async function importPdfFile(file, folderPath = null) {
 export async function attachPdfToOpenDeck(file) {
   if (!file) return false;
   if (!state.deckTitle && !state.masterCards.length && !String(state.notes || "").trim()) {
-    showToast("Open or create a deck first, then attach its PDF", "error");
+    showToast("Open or create a file first, then attach its PDF", "error");
     return false;
   }
   if (file.size > MAX_DOCUMENT_BYTES) {
@@ -448,9 +448,9 @@ export async function attachPdfToOpenDeck(file) {
       ]
     };
 
-    progress.update("Saving the deck…", 0.7);
+    progress.update("Saving the file…", 0.7);
     if (!(await saveDeckToLibrary({ silent: true }))) {
-      throw new Error("could not save the deck on this device");
+      throw new Error("could not save the file on this device");
     }
     const deckLocalId = state.localDeckId;
 

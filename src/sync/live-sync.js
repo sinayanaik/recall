@@ -56,7 +56,7 @@ export async function checkDeckFreshness(localId = state.localDeckId) {
       abortable((signal) => supabaseClient
         .from("decks").select("id, updated_at, last_accessed_at").eq("id", entry.deckId).abortSignal(signal)),
       CLOUD_TIMEOUT_MS,
-      "check deck freshness"
+      "check file freshness"
     );
     if (error || !Array.isArray(data) || !data.length) return false;
     const row = data[0];

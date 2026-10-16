@@ -22,7 +22,7 @@ export function buildDeckLoadButton(deck, kind) {
   label.className = "md-btn-label";
   label.textContent = "Load";
   loadBtn.append(label);
-  loadBtn.title = "Load deck";
+  loadBtn.title = "Load file";
   loadBtn.setAttribute("aria-label", `Load ${deck.title || "deck"}`);
   loadBtn.addEventListener("click", () => loadDeckEntry(deck, kind));
   return loadBtn;
@@ -40,21 +40,21 @@ export function buildDeckRenameButton(sel, deck) {
 // Confirms and deletes a deck (from device and/or cloud as appropriate).
 export function deleteDeckEntry(deck, kind) {
   if (kind === "cloud") {
-    showConfirmModal(`Delete "${deck.title || "this deck"}" from the cloud? This cannot be undone.`, async () => {
+    showConfirmModal(`Delete "${deck.title || "this file"}" from the cloud? This cannot be undone.`, async () => {
       const { cloudError, refused } = await deleteDeckEverywhere({ localId: null, deckId: deck.id });
       renderMyDecksList();
       if (refused) showToast(TOMBSTONE_REFUSED_MESSAGE, "error");
-      else showToast(cloudError ? "Delete failed — will retry on next sync" : "Deck deleted everywhere", "info");
+      else showToast(cloudError ? "Delete failed — will retry on next sync" : "File deleted everywhere", "info");
     }, { confirmLabel: "Delete", danger: true });
   } else {
     const inCloud = Boolean(deck.deckId);
     const scope = inCloud ? "from this device and the cloud" : "from this device";
-    showConfirmModal(`Delete "${deck.title || "this deck"}" ${scope}? This cannot be undone.`, async () => {
+    showConfirmModal(`Delete "${deck.title || "this file"}" ${scope}? This cannot be undone.`, async () => {
       const { cloudError, refused } = await deleteDeckEverywhere({ localId: deck.id, deckId: deck.deckId || null });
       renderMyDecksList();
       if (refused) showToast(TOMBSTONE_REFUSED_MESSAGE, "error");
       else if (cloudError) showToast("Deleted here — cloud delete will retry on next sync", "info");
-      else showToast(inCloud ? "Deck deleted everywhere" : "Deck deleted from device", "info");
+      else showToast(inCloud ? "File deleted everywhere" : "File deleted from device", "info");
     }, { confirmLabel: "Delete", danger: true });
   }
 }
@@ -126,7 +126,7 @@ export function deckNotesMarker() {
   const span = document.createElement("span");
   span.className = "deck-has-notes";
   span.textContent = "📝";
-  span.title = "This deck has study notes";
+  span.title = "This file has notes";
   return span;
 }
 
@@ -138,7 +138,7 @@ export function deckPagesMarker(pages) {
   const span = document.createElement("span");
   span.className = "deck-has-pages";
   span.textContent = `\u270e ${pages}`;
-  span.title = `Handwritten notes — ${pages} page${pages === 1 ? "" : "s"}`;
+  span.title = `Canvas — ${pages} page${pages === 1 ? "" : "s"}`;
   return span;
 }
 
@@ -155,7 +155,7 @@ export function buildLocalDeckRow(deck, cloudById = null, categories = webDeckCa
 
   const tdTitle = document.createElement("td");
   tdTitle.dataset.label = "Title";
-  tdTitle.textContent = deck.title || "Untitled deck";
+  tdTitle.textContent = deck.title || "Untitled file";
 
   const tdCategory = document.createElement("td");
   tdCategory.dataset.label = "Category";
@@ -169,7 +169,7 @@ export function buildLocalDeckRow(deck, cloudById = null, categories = webDeckCa
   tdCount.append(deckCardCountSpan(count));
   if (hasNotes) {
     tdCount.append(deckNotesMarker());
-    tdCount.title = "This deck has study notes";
+    tdCount.title = "This file has notes";
   }
   if (deck.pageCount > 0) tdCount.append(deckPagesMarker(deck.pageCount));
 
@@ -199,7 +199,7 @@ export function buildCloudDeckRow(deck, categories = webDeckCategories) {
 
   const tdTitle = document.createElement("td");
   tdTitle.dataset.label = "Title";
-  tdTitle.textContent = deck.title || "Untitled deck";
+  tdTitle.textContent = deck.title || "Untitled file";
 
   const tdCategory = document.createElement("td");
   tdCategory.dataset.label = "Category";

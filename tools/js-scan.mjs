@@ -170,6 +170,123 @@ export function blankLiterals(src) {
 }
 
 /**
+ * Every piece of string text in `src`: the body of each '…' and "…" literal,
+ * and each run of a template literal's text between its `${…}`s. Comments and
+ * regex literals are stepped over and not returned. Returns
+ * [{ text, start, line }], `start` being the offset of the text's first
+ * character and `line` its 1-based line.
+ *
+ * The same walk as blankLiterals above, kept separate rather than shared so
+ * that function's results — which split-parity and module-symbols rest on —
+ * cannot move because of this one. Used by tools/nomenclature-check.mjs.
+ */
+export function stringLiterals(src) {
+  const found = [];
+  const lineAt = (() => {
+    const starts = [0];
+    for (let k = 0; k < src.length; k++) if (src[k] === "\n") starts.push(k + 1);
+    return (pos) => {
+      let lo = 0, hi = starts.length - 1;
+      while (lo < hi) {
+        const mid = (lo + hi + 1) >> 1;
+        if (starts[mid] <= pos) lo = mid; else hi = mid - 1;
+      }
+      return lo + 1;
+    };
+  })();
+  const push = (start, end) => {
+    if (end > start) found.push({ text: src.slice(start, end), start, line: lineAt(start) });
+  };
+
+  const stack = [{ type: "code", depth: 0 }];
+  let prev = "";
+  let i = 0;
+
+  while (i < src.length) {
+    const top = stack[stack.length - 1];
+    const c = src[i];
+
+    if (top.type === "tmpl") {
+      if (c === "\\") { i += 2; continue; }
+      if (c === "`") { push(top.start, i); stack.pop(); prev = "`"; i++; continue; }
+      if (c === "$" && src[i + 1] === "{") {
+        push(top.start, i);
+        stack.push({ type: "code", depth: 0 });
+        prev = "(";
+        i += 2;
+        continue;
+      }
+      i++;
+      continue;
+    }
+
+    const two = src.slice(i, i + 2);
+
+    if (two === "//") {
+      const end = src.indexOf("\n", i);
+      i = end === -1 ? src.length : end;
+      continue;
+    }
+    if (two === "/*") {
+      const end = src.indexOf("*/", i + 2);
+      i = end === -1 ? src.length : end + 2;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      let k = i + 1;
+      for (; k < src.length; k++) {
+        if (src[k] === "\\") { k++; continue; }
+        if (src[k] === c || src[k] === "\n") break;
+      }
+      push(i + 1, Math.min(k, src.length));
+      prev = c;
+      i = k + 1;
+      continue;
+    }
+    if (c === "`") {
+      stack.push({ type: "tmpl", start: i + 1 });
+      i++;
+      continue;
+    }
+    if (c === "/" && regexStartsAt(src, i, prev)) {
+      let k = i + 1;
+      let inClass = false;
+      let terminated = false;
+      for (; k < src.length; k++) {
+        if (src[k] === "\\") { k++; continue; }
+        if (src[k] === "\n") break;
+        if (src[k] === "[") inClass = true;
+        else if (src[k] === "]") inClass = false;
+        else if (src[k] === "/" && !inClass) { terminated = true; break; }
+      }
+      if (terminated) {
+        let end = k + 1;
+        while (end < src.length && isIdentChar(src[end])) end++;
+        prev = "/";
+        i = end;
+        continue;
+      }
+    }
+    if (c === "{") {
+      top.depth++;
+    } else if (c === "}") {
+      if (top.depth === 0 && stack.length > 1) {
+        // Closing a `${…}`: the template's text resumes after this brace.
+        stack.pop();
+        stack[stack.length - 1].start = i + 1;
+        prev = "`";
+        i++;
+        continue;
+      }
+      top.depth--;
+    }
+    if (!/\s/.test(c)) prev = c;
+    i++;
+  }
+  return found;
+}
+
+/**
  * Every top-level declaration in `src`, in source order.
  * Returns [{ name, kind, start, end, line }] where `end` is exclusive.
  *

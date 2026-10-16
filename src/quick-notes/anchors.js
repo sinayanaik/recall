@@ -229,7 +229,7 @@ export async function loadDeckNotesForSearch() {
       const { data, error } = await withTimeout(
         abortable((signal) => supabaseClient.from("decks").select("id, title, notes").abortSignal(signal)),
         CLOUD_TIMEOUT_MS,
-        "read deck notes"
+        "read file notes"
       );
       if (error) throw error;
       for (const deck of data || []) {

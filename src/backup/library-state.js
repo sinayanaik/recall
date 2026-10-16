@@ -86,7 +86,7 @@ export function collectBackupLibraryState() {
   return {
     schema: BACKUP_LIBRARY_SCHEMA,
     version: 1,
-    note: "The library's own shape: folders that hold no decks yet, which folds "
+    note: "The library's own shape: folders that hold no files yet, which folds "
       + "are open, and where you had got to in each note. Restore merges this in "
       + "additively and never overwrites a place you have been since.",
     capturedAt: new Date().toISOString(),

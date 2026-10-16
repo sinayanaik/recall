@@ -58,11 +58,11 @@ function buildHomeDeckTile(deck) {
   tile.type = "button";
   tile.className = "home-deck";
   tile.dataset.deckId = deck.id;
-  tile.setAttribute("aria-label", `Open ${deck.title || "Untitled deck"}`);
+  tile.setAttribute("aria-label", `Open ${deck.title || "Untitled file"}`);
 
   const title = document.createElement("span");
   title.className = "home-deck-title";
-  title.textContent = deck.title || "Untitled deck";
+  title.textContent = deck.title || "Untitled file";
 
   const category = document.createElement("span");
   category.className = "home-deck-category";
@@ -127,8 +127,8 @@ export function renderHome() {
   if (continueBtn) {
     continueBtn.hidden = !deckOpen && !resumeDeck;
     continueBtn.dataset.mode = deckOpen ? "back" : "resume";
-    if (continueLabel) continueLabel.textContent = deckOpen ? "Back to your deck" : "Continue where you left off";
-    if (continueTitle) continueTitle.textContent = deckOpen ? (state.deckTitle || "Untitled deck") : (resumeDeck?.title || "Untitled deck");
+    if (continueLabel) continueLabel.textContent = deckOpen ? "Back to your file" : "Continue where you left off";
+    if (continueTitle) continueTitle.textContent = deckOpen ? (state.deckTitle || "Untitled file") : (resumeDeck?.title || "Untitled file");
     if (continueMeta) {
       continueMeta.textContent = deckOpen
         ? (openEntry ? homeDeckMeta(openEntry) : homeCount(state.masterCards.length, "card"))

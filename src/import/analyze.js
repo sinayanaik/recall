@@ -125,7 +125,7 @@ export function snapshotIncomingDeck(payload, { name = "", source = "" } = {}) {
       status: normalizeCardStatus(card.status)
     }));
   return {
-    title: String(payload?.deckTitle || "").trim() || titleFromImportHint(name) || "Imported deck",
+    title: String(payload?.deckTitle || "").trim() || titleFromImportHint(name) || "Imported file",
     category: normalizeDeckCategory(payload?.deckCategory || payload?.category),
     source,
     content: "",

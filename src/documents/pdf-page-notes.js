@@ -579,7 +579,7 @@ export function announcePdfPageNotes() {
   if (!pageNotesOn) return;
   const annotated = annotatedDocumentHighlights();
   if (!annotated.length) {
-    showToast("No highlight in this paper has a note on it yet — write one and it prints under its page");
+    showToast("No highlight in this PDF has a note on it yet — write one and it prints under its page");
     return;
   }
   const pages = new Set();

@@ -223,14 +223,14 @@ export async function readBackupArchive(file, progress = null) {
     if (manifest) {
       progress?.log?.(`${manifest.kind === PACKAGE_KIND_SHARE ? "Shared package" : "Library backup"}`
         + ` · format v${manifest.version || "?"}${manifest.exportedAt ? ` · made ${new Date(manifest.exportedAt).toLocaleString()}` : ""}`
-        + ` · ${manifest.deckCount ?? "?"} decks, ${manifest.assetCount ?? 0} images, ${manifest.documentCount ?? 0} papers.`);
+        + ` · ${manifest.deckCount ?? "?"} files, ${manifest.assetCount ?? 0} images, ${manifest.documentCount ?? 0} PDFs.`);
       if (verification?.checked) {
         progress?.log?.(verification.ok
           ? `Checked ${verification.checkedFiles || 0} files against the package's index${verification.hashedFiles ? ` (${verification.hashedFiles} by hash)` : ""} — all intact.`
           : `Problems: ${verification.notes.join(" ")}`, verification.ok ? "info" : "warn");
       }
     } else {
-      progress?.log?.("No index in this archive — reading every deck file it holds.");
+      progress?.log?.("No index in this archive — reading every file's JSON it holds.");
     }
     // Our own archives (and anything shaped like them): every .json under a
     // decks/ root, at any depth — the depth IS the folder path.
@@ -273,11 +273,11 @@ export async function readBackupArchive(file, progress = null) {
         console.warn("Skipping unreadable deck file in archive", path, error);
         progress?.warn?.(`Could not read ${path}: ${error?.message || error}`);
       }
-      progress?.current?.(`Reading deck files ${i + 1}/${deckPaths.length}…`);
+      progress?.current?.(`Reading files ${i + 1}/${deckPaths.length}…`);
       if (i % 10 === 9) await yieldToPage();
     }
-    if (!decks.length) throw new Error("no decks found in this file");
-    progress?.log?.(`Read ${decks.length} deck${decks.length === 1 ? "" : "s"}.`);
+    if (!decks.length) throw new Error("no files found in this archive");
+    progress?.log?.(`Read ${decks.length} file${decks.length === 1 ? "" : "s"}.`);
     const assets = await readBackupAssets(zip, progress);
     if (assets.size) progress?.log?.(`Read ${assets.size} packed image${assets.size === 1 ? "" : "s"}.`);
     return {
@@ -296,7 +296,7 @@ export async function readBackupArchive(file, progress = null) {
   // Plain JSON export (single snapshot or {decks:[...]} bundle) — text only,
   // there is nowhere in a bare .json for image bytes, papers or folders to live.
   expandBackupBundleInto(JSON.parse(await file.text()), decks);
-  if (!decks.length) throw new Error("no decks found in this file");
+  if (!decks.length) throw new Error("no files found in this archive");
   return { decks, assets: new Map(), zip: null, manifest: null, verification: null, kind: PACKAGE_KIND_LIBRARY, documentIndex: { documents: [], missing: [] }, libraryState: null, settings: null };
 }
 
@@ -781,7 +781,7 @@ export function upsertRestoredMeta(localId, snapshot, backupDeck) {
   const now = new Date().toISOString();
   const meta = {
     id: localId,
-    title: snapshot.deckTitle || "Untitled deck",
+    title: snapshot.deckTitle || "Untitled file",
     category: snapshot.deckCategory || defaultDeckCategory,
     cardCount: (snapshot.cards || []).length,
     hasNotes: Boolean(String(snapshot.notes || "").trim()),
@@ -800,27 +800,27 @@ export function upsertRestoredMeta(localId, snapshot, backupDeck) {
 export const META_KEY_LABELS = {
   pdf: "paper",
   pdfs: "papers",
-  notebook: "handwritten notebook",
-  pdfToc: "paper contents",
-  pdfTocByPdfId: "paper contents",
+  notebook: "Canvas pages",
+  pdfToc: "PDF contents",
+  pdfTocByPdfId: "PDF contents",
   pdfBlocks: "blocks on the pages",
   deletedBlockIds: "deleted blocks",
-  deletedPdfIds: "removed papers",
-  pdfActiveId: "open paper",
-  pdfOrder: "paper order",
+  deletedPdfIds: "removed PDFs",
+  pdfActiveId: "open PDF",
+  pdfOrder: "PDF order",
   bookmark: "bookmark",
   readingPosition: "reading position",
-  readingPositionPdf: "place in the paper",
-  readingPositionNotebook: "place in the notebook",
-  pdfReadingPositions: "places in the papers",
+  readingPositionPdf: "place in the PDF",
+  readingPositionNotebook: "place in the canvas",
+  pdfReadingPositions: "places in the PDFs",
   linkIds: "note links",
   quickNoteCategories: "note categories",
   noteAnchors: "pinned notes",
   importedFrom: "package origin",
-  pages: "notebook pages (older format)",
-  textBoxes: "notebook text (older format)",
-  deletedPageIds: "deleted notebook pages",
-  deletedTextBoxIds: "deleted notebook text"
+  pages: "canvas pages (older format)",
+  textBoxes: "canvas text (older format)",
+  deletedPageIds: "deleted canvas pages",
+  deletedTextBoxIds: "deleted canvas text"
 };
 
 // Confirmation preview — resolves true to apply, false to cancel. Nothing is
@@ -833,7 +833,7 @@ export function showRestorePreview(report) {
 
     const total = report.totals;
     const summaryBits = [];
-    if (total.newDecks) summaryBits.push(`${total.newDecks} new deck${total.newDecks === 1 ? "" : "s"}`);
+    if (total.newDecks) summaryBits.push(`${total.newDecks} new file${total.newDecks === 1 ? "" : "s"}`);
     if (total.cardsAdded) summaryBits.push(`${total.cardsAdded} card${total.cardsAdded === 1 ? "" : "s"} restored`);
     if (total.cardsUpdated) summaryBits.push(`${total.cardsUpdated} updated`);
     if (total.cardsKept) summaryBits.push(`${total.cardsKept} local kept`);
@@ -864,7 +864,7 @@ export function showRestorePreview(report) {
     const papers = report.documentIndex?.documents?.length || 0;
     const papersMissing = report.documentIndex?.missing?.length || 0;
     const paperNote = papers || papersMissing
-      ? `Papers: ${papers} in this archive${papersMissing ? `, ${papersMissing} the backup could not read` : ""}.`
+      ? `PDFs: ${papers} in this archive${papersMissing ? `, ${papersMissing} the backup could not read` : ""}.`
       : "";
 
     // What the archive claims, and whether the zip agrees. An archive that has
@@ -882,7 +882,7 @@ export function showRestorePreview(report) {
     } else {
       const hashes = verification.hashes || { total: 0, hashed: 0 };
       integrityNote = hashes.hashed
-        ? `Checked against this archive's own index: ${verification.counts?.found?.decks ?? 0} deck files present and the right size.`
+        ? `Checked against this archive's own index: ${verification.counts?.found?.decks ?? 0} files present and the right size.`
         : `Checked against this archive's own index: every file is present and the right size.`;
     }
 
@@ -931,7 +931,7 @@ export function showRestorePreview(report) {
       <div class="category-choice-head">
         <div>
           <h2>Restore from backup</h2>
-          <p>Reviewed against your current decks. Nothing changes until you confirm.</p>
+          <p>Reviewed against your current files. Nothing changes until you confirm.</p>
         </div>
         <button type="button" data-restore-cancel aria-label="Close">&#215;</button>
       </div>
@@ -940,12 +940,12 @@ export function showRestorePreview(report) {
       ${imageNote ? `<p class="restore-summary">${escapeHtml(imageNote)}</p>` : ""}
       ${paperNote ? `<p class="restore-summary">${escapeHtml(paperNote)}</p>` : ""}
       <p class="restore-integrity${verification && verification.checked && !verification.ok ? " is-warning" : ""}">${escapeHtml(integrityNote)}</p>
-      ${report.skipped?.length ? `<p class="restore-integrity is-warning">${escapeHtml(`${report.skipped.length} deck${report.skipped.length === 1 ? " was" : "s were"} not readable when this was made and ${report.skipped.length === 1 ? "is" : "are"} not in it.`)}</p>` : ""}
+      ${report.skipped?.length ? `<p class="restore-integrity is-warning">${escapeHtml(`${report.skipped.length} file${report.skipped.length === 1 ? " was" : "s were"} not readable when this was made and ${report.skipped.length === 1 ? "is" : "are"} not in it.`)}</p>` : ""}
       ${report.settings ? `<label class="restore-settings-toggle"><input type="checkbox" data-restore-settings${readLocalDeckIndex().length ? "" : " checked"}> Also restore this backup's appearance &amp; settings (theme, fonts, pens — ${Object.keys(report.settings.values || {}).length})</label>` : ""}
-      <p class="restore-note">A backup of your current decks is saved first (without their PDFs — a restore never overwrites or removes a paper), so this is reversible. Local-only decks and cards are never deleted.</p>
+      <p class="restore-note">A backup of your current files is saved first (without their PDFs — a restore never overwrites or removes a paper), so this is reversible. Local-only files and cards are never deleted.</p>
       <div class="category-choice-actions">
         <button type="button" data-restore-cancel>Cancel</button>
-        ${report.allowCopies ? `<button type="button" data-restore-copies title="Keep your decks as they are and add these as separate decks, the way a package from someone else is imported">Import as separate copies</button>` : ""}
+        ${report.allowCopies ? `<button type="button" data-restore-copies title="Keep your files as they are and add these as separate files, the way a package from someone else is imported">Import as separate copies</button>` : ""}
         <button type="button" class="import-action-primary" data-restore-confirm ${willChange ? "" : "disabled"}>${verification && verification.checked && !verification.ok ? "Restore what's readable" : "Merge &amp; Restore"}</button>
       </div>
     `;
@@ -954,7 +954,7 @@ export function showRestorePreview(report) {
     const titleSpans = shell.querySelectorAll(".restore-title");
     const folderSpans = shell.querySelectorAll(".restore-folder");
     report.decks.forEach((entry, i) => {
-      if (titleSpans[i]) titleSpans[i].textContent = entry.title || "Untitled deck";
+      if (titleSpans[i]) titleSpans[i].textContent = entry.title || "Untitled file";
       // Where the deck will live. Worth showing: for an archive with no folder
       // information of its own this is the folder the restore INFERRED, and the
       // preview is the place to notice it before anything is written.
@@ -1002,8 +1002,8 @@ export function archiveLocalIdFor(manifest, backupDeck) {
 export const RESTORE_STEPS = [
   ["safety", "Safety backup"],
   ["images", "Store images"],
-  ["decks", "Write decks"],
-  ["papers", "Store papers"],
+  ["decks", "Write files"],
+  ["papers", "Store PDFs"],
   ["library", "Folders & places"],
   ["finish", "Finish"]
 ];
@@ -1082,12 +1082,12 @@ export async function applyRestore(report, { autoBackup = true, progress = null,
   // going to console.warn where nobody was looking. Of every place in this app
   // that could report a success it did not have, this is the one where being
   // wrong costs the user the data they came here to recover.
-  progress?.step?.("decks", "Writing decks…");
+  progress?.step?.("decks", "Writing files…");
   const writtenLocalIds = new Set();
   let deckIndex = 0;
   for (const entry of report.decks) {
     deckIndex += 1;
-    progress?.count?.(deckIndex, report.decks.length, `Writing decks ${deckIndex}/${report.decks.length}…`);
+    progress?.count?.(deckIndex, report.decks.length, `Writing files ${deckIndex}/${report.decks.length}…`);
     // An UNCHANGED deck still has to be in the two maps below. Its cards and
     // notes need no write — that is what unchanged means — but the archive may
     // still be carrying the one thing this device does not have: the PDF. A
@@ -1133,7 +1133,7 @@ export async function applyRestore(report, { autoBackup = true, progress = null,
       });
       writtenLocalIds.add(localId);
       upsertRestoredMeta(localId, snapshot, entry.backupDeck);
-      progress?.log?.(`${isNew ? "Added" : "Merged"} "${entry.title || "Untitled deck"}"${isNew ? ` — ${entry.backupDeck.cards.length} cards` : merged ? ` — ${merged.added} cards added, ${merged.updated} updated` : ""}`);
+      progress?.log?.(`${isNew ? "Added" : "Merged"} "${entry.title || "Untitled file"}"${isNew ? ` — ${entry.backupDeck.cards.length} cards` : merged ? ` — ${merged.added} cards added, ${merged.updated} updated` : ""}`);
       if (snapshot.deckId) restoredDeckIds.push(String(snapshot.deckId));
       localIdByDeck.set(entry.backupDeck, localId);
       const archiveId = archiveLocalIdFor(report.manifest, entry.backupDeck);
@@ -1148,8 +1148,8 @@ export async function applyRestore(report, { autoBackup = true, progress = null,
       }
     } catch (error) {
       console.warn("Failed to restore deck", entry.title, error);
-      failedDecks.push(entry.title || "Untitled deck");
-      progress?.error?.(`Could not save "${entry.title || "Untitled deck"}": ${error?.message || error}`);
+      failedDecks.push(entry.title || "Untitled file");
+      progress?.error?.(`Could not save "${entry.title || "Untitled file"}": ${error?.message || error}`);
     }
     if (deckIndex % 5 === 0) await yieldToPage();
   }
@@ -1159,7 +1159,7 @@ export async function applyRestore(report, { autoBackup = true, progress = null,
   // loop above has only just settled on — and that ordering is the whole of the
   // fix for a restore severing a paper from bytes on its own disk.
   let documentResult = { stored: 0, rebound: 0, present: 0, failed: 0, refused: 0 };
-  progress?.step?.("papers", "Storing papers on this device…");
+  progress?.step?.("papers", "Storing PDFs on this device…");
   if (report.zip && report.documentIndex?.documents?.length) {
     try {
       const plan = await planBackupDocumentRestore(
@@ -1169,13 +1169,13 @@ export async function applyRestore(report, { autoBackup = true, progress = null,
         (deck) => localIdByDeck.get(deck) || ""
       );
       documentResult = await commitBackupDocuments(plan, (done, total, item) => {
-        setStatus(`Restoring papers ${done}/${total}…`);
-        progress?.count?.(done, total, `Storing papers ${done}/${total}…`);
-        if (item) progress?.log?.(`Paper ${done}/${total} · ${item.name || "document.pdf"}${item.bytes ? ` · ${formatJobBytes(item.bytes)}` : ""} · ${item.outcome}`, item.outcome === "stored" || item.outcome === "re-keyed" ? "info" : "warn");
+        setStatus(`Restoring PDFs ${done}/${total}…`);
+        progress?.count?.(done, total, `Storing PDFs ${done}/${total}…`);
+        if (item) progress?.log?.(`PDF ${done}/${total} · ${item.name || "document.pdf"}${item.bytes ? ` · ${formatJobBytes(item.bytes)}` : ""} · ${item.outcome}`, item.outcome === "stored" || item.outcome === "re-keyed" ? "info" : "warn");
       });
     } catch (error) {
       console.warn("Could not restore this archive's papers", error);
-      progress?.error?.(`The papers could not be restored: ${error?.message || error}`);
+      progress?.error?.(`The PDFs could not be restored: ${error?.message || error}`);
     }
     progress?.stepDone?.("papers", `${documentResult.stored + documentResult.rebound} stored${documentResult.present ? `, ${documentResult.present} already here` : ""}`);
   } else {
@@ -1245,7 +1245,7 @@ export async function applyRestore(report, { autoBackup = true, progress = null,
   // after the write is confirmed, not after it is queued, which is the whole
   // reason the loop above awaits.
   const parts = [];
-  if (addedDecks) parts.push(`${addedDecks} deck${addedDecks === 1 ? "" : "s"} added`);
+  if (addedDecks) parts.push(`${addedDecks} file${addedDecks === 1 ? "" : "s"} added`);
   if (mergedDecks) parts.push(`${mergedDecks} merged`);
   if (cardsAdded) parts.push(`${cardsAdded} card${cardsAdded === 1 ? "" : "s"} restored`);
   if (cardsUpdated) parts.push(`${cardsUpdated} updated`);
@@ -1253,7 +1253,7 @@ export async function applyRestore(report, { autoBackup = true, progress = null,
   if (images) parts.push(`${images} image${images === 1 ? "" : "s"} restored`);
   if (assetResult.failed) parts.push(`${assetResult.failed} image${assetResult.failed === 1 ? "" : "s"} could not be stored`);
   const papers = documentResult.stored + documentResult.rebound;
-  if (papers) parts.push(`${papers} paper${papers === 1 ? "" : "s"} restored`);
+  if (papers) parts.push(`${papers} PDF${papers === 1 ? "" : "s"} restored`);
   if (libraryResult.folders) parts.push(`${libraryResult.folders} folder${libraryResult.folders === 1 ? "" : "s"} restored`);
   if (libraryResult.readingPositions) parts.push(`${libraryResult.readingPositions} reading position${libraryResult.readingPositions === 1 ? "" : "s"} restored`);
   if (settingsApplied) parts.push(`${settingsApplied} setting${settingsApplied === 1 ? "" : "s"} restored (reload to apply)`);
@@ -1263,16 +1263,16 @@ export async function applyRestore(report, { autoBackup = true, progress = null,
   // the only one who can do anything about the reason.
   const problems = [];
   if (failedDecks.length) {
-    problems.push(`${failedDecks.length} deck${failedDecks.length === 1 ? "" : "s"} could not be saved`
+    problems.push(`${failedDecks.length} file${failedDecks.length === 1 ? "" : "s"} could not be saved`
       + ` (${failedDecks.slice(0, 3).join(", ")}${failedDecks.length > 3 ? ", and more" : ""})`
       + " — this device may be out of space");
   }
   if (documentResult.refused) {
-    problems.push(`${documentResult.refused} paper${documentResult.refused === 1 ? "" : "s"} in this archive did not match the deck${documentResult.refused === 1 ? "" : "s"} `
+    problems.push(`${documentResult.refused} PDF${documentResult.refused === 1 ? "" : "s"} in this archive did not match the file${documentResult.refused === 1 ? "" : "s"} `
       + "recorded for them and were not restored — their highlights would have landed on the wrong pages");
   }
   if (documentResult.failed) {
-    problems.push(`${documentResult.failed} paper${documentResult.failed === 1 ? "" : "s"} could not be stored on this device`);
+    problems.push(`${documentResult.failed} PDF${documentResult.failed === 1 ? "" : "s"} could not be stored on this device`);
   }
 
   if (problems.length) {

@@ -106,7 +106,7 @@ export function paintHandwritingControls() {
     "title",
     ready && notebookPageCount() > 1
       ? `Tear out page ${currentDocumentPage() || 1} — everything written on it goes with it`
-      : "A notebook keeps at least one page"
+      : "A canvas keeps at least one page"
   );
 }
 
@@ -212,7 +212,7 @@ async function addPage() {
 function tearOutPage() {
   const page = currentDocumentPage();
   const total = notebookPageCount();
-  if (total < 2) { showToast("A notebook keeps at least one page", "info"); return; }
+  if (total < 2) { showToast("A canvas keeps at least one page", "info"); return; }
   showConfirmModal(
     `Tear out page ${page}? Everything written on it goes with it.`,
     () => { deleteNotebookPage(page).then(() => paintHandwritingControls()); },

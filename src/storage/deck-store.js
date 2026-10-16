@@ -714,7 +714,7 @@ export function deckWriteSettled(id) {
       // worst case someone re-runs a restore that was in fact fine, and a
       // re-run is a no-op by construction.
       if (Date.now() - started > DECK_WRITE_SETTLE_TIMEOUT_MS) {
-        return reject(new Error("The deck store did not confirm the write"));
+        return reject(new Error("The file store did not confirm the write"));
       }
       setTimeout(poll, 20);
     };

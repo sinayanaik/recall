@@ -117,7 +117,7 @@ const SHUTDOWN_NOT_SYNCED_REASONS = {
   offline: "You're offline, so the latest changes didn't reach the cloud.",
   signedout: "Your sign-in has lapsed, so the latest changes didn't reach the cloud.",
   error: "The sync didn't finish, so the latest changes may not be in the cloud.",
-  partial: "Some decks didn't sync, so their latest changes aren't in the cloud yet."
+  partial: "Some files didn't sync, so their latest changes aren't in the cloud yet."
 };
 
 function finishShutdown(text) {
@@ -139,7 +139,7 @@ export async function shutDownApp() {
   try {
     paintShutdown({ state: "working", title: "Shutting down…", text: "Saving your work on this device…" });
     flushForShutdown();
-    paintShutdown({ state: "working", title: "Shutting down…", text: "Syncing your decks with the cloud…" });
+    paintShutdown({ state: "working", title: "Shutting down…", text: "Syncing your files with the cloud…" });
     await syncForShutdown();
     // Once more after the sync: a pull can reload the open deck, and the index
     // batch it opened is shutdownClosed in its finally.

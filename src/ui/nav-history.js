@@ -185,7 +185,7 @@ export async function goToNavLocation(location) {
       ? await openFolderAsDeck(location.path)
       : await openSelectionAsOneDeck(location.sels || []);
     if (reopened) restoreDeckPosition(location);
-    else setStatus("Couldn't go back — those decks are no longer available.", "error");
+    else setStatus("Couldn't go back — those files are no longer available.", "error");
     return;
   }
   if (el.quickNotesBoard && !el.quickNotesBoard.hidden) closeQuickNotesBoard();
@@ -199,7 +199,7 @@ export async function goToNavLocation(location) {
     restoreDeckPosition(location);
     return;
   }
-  setStatus("Couldn't go back — that deck isn't available on this device.", "error");
+  setStatus("Couldn't go back — that file isn't available on this device.", "error");
 }
 
 // Step back one place. Re-entrancy guarded: restoring is async (it may load a

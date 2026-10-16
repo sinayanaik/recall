@@ -643,9 +643,9 @@ function renderMissingDocumentPrompt(pdfMeta, pdfId = null) {
 function renderAttachDocumentPrompt() {
   renderDocumentPickPrompt({
     heading: "Attach a PDF to read it here",
-    body: "This deck has no document yet. Pick a PDF and it becomes this deck's PDF tab — read it, highlight it and make cards from it, with any highlights already in the file imported along with it.",
+    body: "This file has no document yet. Pick a PDF and it becomes this file's PDF tab — read it, highlight it and make cards from it, with any highlights already in the file imported along with it.",
     pick: "Choose a PDF…",
-    note: "Your cards, notes and title are left exactly as they are — this adds a document to the deck, it does not import over it.",
+    note: "Your cards, notes and title are left exactly as they are — this adds a document to the file, it does not import over it.",
     onFile: (file) => onAttachDocument(file)
   });
 }
@@ -669,9 +669,9 @@ export function setNotebookStartHandler(fn) {
 
 function renderStartNotebookPrompt() {
   renderDocumentPickPrompt({
-    heading: "Start a handwritten notebook",
-    body: "Blank pages of your own, beside this deck's cards, notes and any PDF it already has. Write on them with a stylus, drop in text blocks and images, and add as many pages as you need.",
-    pick: "Start a notebook",
+    heading: "Start a Canvas",
+    body: "Blank pages of your own, beside this file's cards, notes and any PDF it already has. Write on them with a stylus, drop in text blocks and images, and add as many pages as you need.",
+    pick: "Start a Canvas",
     note: "Grid, ruled or blank — you can change the paper at any time, and what you have written stays where it is.",
     onPress: () => { onStartNotebook?.(); }
   });
@@ -688,7 +688,7 @@ export async function reattachDocument(file, pdfMeta, pdfId = PDF_PRIMARY_ID) {
   }
   const deckLocalId = state.localDeckId;
   if (!deckLocalId) {
-    showToast("Save this deck before re-attaching its PDF", "error");
+    showToast("Save this file before re-attaching its PDF", "error");
     return false;
   }
   await putDocument({ deckLocalId: pdfStoreKey(deckLocalId, pdfId), blob: file, sha256: hash, name: file.name, at: Date.now() });
@@ -1617,7 +1617,7 @@ function armDocumentRenderWatchdog(token) {
       // reader is somewhere else in the document, and the pages they ARE on
       // being drawn is not a damaged file.
       if ([...openPdf.pages.values()].some((entry) => entry.task)) return;
-      showDocumentViewError("This document's pages did not render. Reopen the deck, and if it keeps happening the file may be damaged.");
+      showDocumentViewError("This document's pages did not render. Reopen the file, and if it keeps happening the file may be damaged.");
     }, PDF_RENDER_WATCHDOG_MS);
   }, PDF_RENDER_WATCHDOG_MS);
 }
@@ -1636,7 +1636,7 @@ function armDocumentRenderWatchdog(token) {
 // body of openDocumentView, so "greater than one" means a successor exists.
 function supersededOpen() {
   if (documentOpensInFlight > 1) return false;
-  if (!openPdf) showDocumentViewError("The document was closed while it was opening. Open the deck again.");
+  if (!openPdf) showDocumentViewError("The document was closed while it was opening. Open the file again.");
   return false;
 }
 

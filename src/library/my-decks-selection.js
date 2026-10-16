@@ -92,7 +92,7 @@ export async function myDeckPayload({ localId = null, deckId = null } = {}) {
   if (deckId && supabaseClient && isSignedIn && navigator.onLine) {
     return fetchWebDeckPayload(deckId);
   }
-  throw new Error("Deck data unavailable — cloud-only decks need a connection");
+  throw new Error("File data unavailable — cloud-only files need a connection");
 }
 
 // The single source of truth for the title search, shared by the renderer
@@ -169,7 +169,7 @@ export function updateMyDecksBulkBar() {
   if (el.myDecksSelectedCount) {
     const bits = [];
     if (folderCount) bits.push(`${folderCount} folder${folderCount === 1 ? "" : "s"}`);
-    bits.push(`${deckCount} deck${deckCount === 1 ? "" : "s"}`);
+    bits.push(`${deckCount} file${deckCount === 1 ? "" : "s"}`);
     el.myDecksSelectedCount.textContent = folderCount ? bits.join(" · ") : String(deckCount);
   }
   if (el.myDecksBulkActions) el.myDecksBulkActions.hidden = checkedBoxes.length === 0;
@@ -249,7 +249,7 @@ export async function setMyDeckCategory({ localId = null, deckId = null } = {}, 
       updateMeta();
     }
   } else {
-    throw new Error("Offline — a cloud-only deck can't be categorized right now");
+    throw new Error("Offline — a cloud-only file can't be categorized right now");
   }
   return normalized;
 }
@@ -296,14 +296,14 @@ export function createDeckCategoryControl(sel, currentCategory, categories, deck
     select.disabled = true;
     saveBtn.disabled = true;
     try {
-      setStatus("Updating deck category...");
+      setStatus("Updating file category...");
       const normalized = await setMyDeckCategory(sel, nextCategory);
-      setStatus("Deck category updated.");
+      setStatus("File category updated.");
       showToast(`Category set to "${normalized}"`);
       renderMyDecksList();
     } catch (error) {
       console.error("Failed to update deck category", error);
-      setStatus("Failed to update deck category.", "error");
+      setStatus("Failed to update file category.", "error");
       showToast("Couldn't update category", "error");
       select.disabled = false;
       saveBtn.disabled = false;
@@ -350,10 +350,10 @@ export function createDeckCategoryControl(sel, currentCategory, categories, deck
 }
 
 export function renameMyDeck({ localId = null, deckId = null } = {}, currentTitle = "") {
-  showPromptModal("Rename Deck", "", currentTitle || "Untitled", async (nextTitle) => {
+  showPromptModal("Rename File", "", currentTitle || "Untitled", async (nextTitle) => {
     const title = nextTitle.trim();
     if (!title) {
-      setStatus("Deck title cannot be empty.", "error");
+      setStatus("File title cannot be empty.", "error");
       return;
     }
     try {
@@ -374,12 +374,12 @@ export function renameMyDeck({ localId = null, deckId = null } = {}, currentTitl
         updateMeta();
       }
       renderMyDecksList();
-      setStatus("Deck renamed.");
+      setStatus("File renamed.");
       showToast(`Renamed to "${title}"`);
     } catch (error) {
       console.error("Failed to rename deck", error);
-      setStatus("Failed to rename deck.", "error");
-      showToast("Couldn't rename deck", "error");
+      setStatus("Failed to rename file.", "error");
+      showToast("Couldn't rename file", "error");
     }
   });
 }

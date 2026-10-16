@@ -393,7 +393,7 @@ const VIEW_EXPORT_MENUS = {
       ["html", "Standalone HTML", ""],
       ["doc", "Word (.docx)", ""],
       ["markdown", "Markdown", ""],
-      ["json", "JSON", "A Recall deck, re-importable"],
+      ["json", "JSON", "A Recall file, re-importable"],
       ["sql", "SQL", ""]
     ]
   },
@@ -435,10 +435,10 @@ const VIEW_EXPORT_MENUS = {
   // original PDF" would have been a lie: nobody handed us this file, this app
   // wrote it.
   handwriting: {
-    head: "Export handwritten pages",
+    head: "Export Canvas pages",
     rows: [
       ["doc:annotated-pdf", "Pages you wrote on", "Only the pages that have something on them"],
-      ["doc:pages-pdf", "The whole notebook", "Every page, with your handwriting on it"],
+      ["doc:pages-pdf", "The whole canvas", "Every page, with your handwriting on it"],
       ["doc:notes-pdf", "The notes on their own", "Every note, grouped by page"],
       ["doc:original", "The blank paper", "The pages with nothing on them"],
       ["hl:open", "Highlights…", "Every mark, with its note"]

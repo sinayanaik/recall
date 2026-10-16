@@ -2,7 +2,7 @@
 
 A tiny, standalone Chrome/Brave extension that lets you **pick or trim any part of
 a web page and copy it as clean GFM Markdown** — ready to paste straight into the
-**Study Notes** of a new deck in the [Recall](../recall) app.
+**Notes** of a new file in the [Recall](../recall) app.
 
 It ships **separately from the Recall web app**: its own folder, no imports, no
 build step, no network calls, no account. What the two share is a *format* and a
@@ -57,9 +57,9 @@ No build step. Works fully offline. Nothing is uploaded anywhere.
    (or the panel's **Copy**) to put the raw Markdown on your clipboard. The
    preview runs the clipped Markdown through **Recall's own render pipeline**, so
    math, Mermaid/nomnoml diagrams, syntax highlighting and cloze blanks appear
-   exactly as they will inside a deck. (Those libraries load the first time you
+   exactly as they will inside a Recall file. (Those libraries load the first time you
    open a preview, so the plain **Copy Markdown** path stays instant.)
-5. In Recall: create a **＋ New deck**, open its **Notes**, and paste.
+5. In Recall: create a **＋ New file**, open its **Notes**, and paste.
 
 The Copy toast reports the decisions the clip had to make — how many tables went
 to Markdown and how many to HTML, how many formulas were recovered as LaTeX, and

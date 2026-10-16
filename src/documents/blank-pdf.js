@@ -140,7 +140,7 @@ function paperStream(kind) {
 
 // `pages` blank pages of `paper`. Returns the bytes as a Uint8Array, ready for
 // a Blob or a File.
-export function buildBlankPdf({ pages = 1, paper = BLANK_PAPER_DEFAULT, title = "Handwritten notes" } = {}) {
+export function buildBlankPdf({ pages = 1, paper = BLANK_PAPER_DEFAULT, title = "Canvas" } = {}) {
   const count = Math.max(1, Math.min(500, Math.round(pages)));
   const kind = normalizeBlankPaper(paper);
   const objects = [];

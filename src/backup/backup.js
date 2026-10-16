@@ -142,7 +142,7 @@ export function restoredHighlightCount(localMeta, mergedMeta) {
 export function normalizeBackupDeck(raw, fallbackCategory = "") {
   if (!raw || typeof raw !== "object") return null;
   const cards = Array.isArray(raw.cards) ? raw.cards : [];
-  const title = raw.deckTitle || raw.title || (raw.deck && raw.deck.title) || "Untitled deck";
+  const title = raw.deckTitle || raw.title || (raw.deck && raw.deck.title) || "Untitled file";
   const ownCategory = raw.deckCategory || raw.category || (raw.deck && raw.deck.category) || "";
   return {
     deckId: raw.deckId || raw.deck_id || (raw.deck && raw.deck.id) || null,
@@ -397,7 +397,7 @@ export function backupDeckFolderPath(category) {
 // is (`<slug>--<id>`), so what you see in the zip matches what you see in the
 // bucket.
 export function backupAssetFolderPath(title, id) {
-  return `${BACKUP_ASSET_DIR}/${backupPathSegment(title, "Deck")}--${id}`;
+  return `${BACKUP_ASSET_DIR}/${backupPathSegment(title, "File")}--${id}`;
 }
 
 // Read a deck's folder path back out of the archive: everything between the
@@ -510,7 +510,7 @@ export async function packBackupAssets(zip, entries, onProgress, isCancelled = (
     schema: BACKUP_ASSET_SCHEMA,
     version: 1,
     note: "Maps each image reference used in decks/**.json to its packed file. "
-      + "Files are grouped per deck, named the way that deck's Storage folder is. "
+      + "Images are grouped per file, named the way that file's Storage folder is. "
       + "Restore re-homes these into the restoring device's own storage.",
     assets,
     missing,
@@ -573,10 +573,10 @@ export async function backupZipFactory() {
 export async function collectBackupPayloads(progress = null, selections = null) {
   let chosen = selections;
   if (!chosen) {
-    const stop = progress?.wait?.("Listing your decks (and asking the cloud for any stored only there)") || (() => {});
+    const stop = progress?.wait?.("Listing your files (and asking the cloud for any stored only there)") || (() => {});
     try {
       chosen = await raceCancel(allMyDeckSelections(), progress);
-      stop(`Found ${chosen.length} deck${chosen.length === 1 ? "" : "s"}`);
+      stop(`Found ${chosen.length} file${chosen.length === 1 ? "" : "s"}`);
     } catch (error) {
       stop();
       if (error?.message === "CANCELLED") return { payloads: [], skipped: [] };
@@ -588,18 +588,18 @@ export async function collectBackupPayloads(progress = null, selections = null) 
   for (let i = 0; i < chosen.length; i += 1) {
     if (progress?.cancelled()) break;
     const sel = chosen[i];
-    progress?.current?.(`Reading deck ${i + 1} of ${chosen.length}…`);
+    progress?.current?.(`Reading file ${i + 1} of ${chosen.length}…`);
     try {
       const payload = await myDeckPayload(sel);
       payloads.push({ selection: sel, payload });
       progress?.log?.(`Read "${payload.deck.title || "Untitled"}" — ${describeDeckPayload(payload)}`);
     } catch (error) {
-      const label = sel?.localId || sel?.deckId || "a deck";
+      const label = sel?.localId || sel?.deckId || "a file";
       skipped.push({ localId: sel?.localId || null, deckId: sel?.deckId || null, reason: String(error?.message || error || "unreadable") });
       progress?.warn?.(`Could not read ${label}: ${error?.message || error}`);
       console.warn("Skipping unavailable deck in backup", sel, error);
     }
-    progress?.count?.(i + 1, chosen.length, `Reading decks ${i + 1}/${chosen.length}…`);
+    progress?.count?.(i + 1, chosen.length, `Reading files ${i + 1}/${chosen.length}…`);
     progress?.setStat("decks", payloads.length);
     // One deck per turn of the event loop. A book-sized deck is a lot of JSON,
     // and a library of them read back to back was the freeze.
@@ -703,10 +703,10 @@ export function packageDeckSnapshot(selection, payload, { kind = PACKAGE_KIND_LI
 // ── Writing a package ─────────────────────────────────────────────────────
 
 export const PACKAGE_STEPS = [
-  ["scan", "Find decks"],
-  ["decks", "Read decks"],
+  ["scan", "Find files"],
+  ["decks", "Read files"],
   ["images", "Pack images"],
-  ["papers", "Pack papers"],
+  ["papers", "Pack PDFs"],
   ["library", "Library & settings"],
   ["write", "Write the file"],
   ["verify", "Verify"],
@@ -749,12 +749,12 @@ export async function writeRecallPackage({
     return { ok: false };
   };
 
-  progress?.step?.("scan", selections ? `Preparing ${selections.length} deck${selections.length === 1 ? "" : "s"}…` : "Finding your decks…");
+  progress?.step?.("scan", selections ? `Preparing ${selections.length} file${selections.length === 1 ? "" : "s"}…` : "Finding your files…");
   const collected = await collectBackupPayloads(progress, selections);
   const payloads = collected.payloads || collected;
   const skipped = collected.skipped || [];
   if (progress?.cancelled()) return bail(`${isShare ? "Share" : "Backup"} cancelled.`);
-  progress?.stepDone?.("scan", `${payloads.length + skipped.length} deck${payloads.length + skipped.length === 1 ? "" : "s"}`);
+  progress?.stepDone?.("scan", `${payloads.length + skipped.length} file${payloads.length + skipped.length === 1 ? "" : "s"}`);
   if (!payloads.length) {
     // An empty library is a failed BACKUP — the user pressed a button and no
     // file arrived, so say so. It is not a failed SAFETY STEP: there, having
@@ -765,9 +765,9 @@ export async function writeRecallPackage({
       progress?.close();
       return { ok: false };
     }
-    const message = skipped.length ? `None of the ${skipped.length} decks could be read.` : "No decks to back up.";
+    const message = skipped.length ? `None of the ${skipped.length} files could be read.` : "No files to back up.";
     setStatus(message, "error");
-    progress?.finish(message, { warning: skipped.length ? "Cloud-only decks need a connection." : "This device has no decks saved yet.", failed: true });
+    progress?.finish(message, { warning: skipped.length ? "Cloud-only files need a connection." : "This device has no files saved yet.", failed: true });
     return { ok: false };
   }
 
@@ -798,7 +798,7 @@ export async function writeRecallPackage({
     await recordText(file, text);
   };
 
-  progress?.step?.("decks", "Packing decks…");
+  progress?.step?.("decks", "Packing files…");
   let cardTotal = 0;
   for (let i = 0; i < payloads.length; i += 1) {
     if (progress?.cancelled()) return bail(`${isShare ? "Share" : "Backup"} cancelled.`);
@@ -811,7 +811,7 @@ export async function writeRecallPackage({
     const category = normalizeDeckCategory(payload.deck.category);
     const dir = backupDeckFolderPath(category);
     folders.add(category);
-    const base = `${backupPathSegment(payload.deck.title, "Deck")}-${idPart}`;
+    const base = `${backupPathSegment(payload.deck.title, "File")}-${idPart}`;
     let path = `${dir}/${base}.json`;
     let n = 2;
     while (usedPaths.has(path)) path = `${dir}/${base}-${n++}.json`;
@@ -819,7 +819,7 @@ export async function writeRecallPackage({
     const deckJson = `${JSON.stringify(snapshot, null, 2)}\n`;
     await addText(path, deckJson);
     cardTotal += payload.cards.length;
-    const pathSegment = backupPathSegment(payload.deck.title, "Deck");
+    const pathSegment = backupPathSegment(payload.deck.title, "File");
     entries.push({
       snapshot,
       assetFolder: backupAssetFolderPath(payload.deck.title, idPart),
@@ -830,7 +830,7 @@ export async function writeRecallPackage({
       deckFile: path,
       localId: selection?.localId || null,
       deckId: snapshot.deckId || null,
-      title: payload.deck.title || "Untitled deck",
+      title: payload.deck.title || "Untitled file",
       pathSegment,
       idPart
     });
@@ -846,21 +846,21 @@ export async function writeRecallPackage({
       // and every id [[links]] in the other decks might name it by.
       origin: packageOriginFor(selection, payload),
       ids: packageIdsFor(selection, payload),
-      title: payload.deck.title || "Untitled deck",
+      title: payload.deck.title || "Untitled file",
       category: payload.deck.category || "",
       cardCount: payload.cards.length,
       hasNotes: Boolean(String(payload.deck.notes || "").trim()),
       updatedAt: payload.deck.updated_at || null,
       bytes: utf8Bytes(deckJson).length
     });
-    progress?.count?.(i + 1, payloads.length, `Packing decks ${i + 1}/${payloads.length}…`);
+    progress?.count?.(i + 1, payloads.length, `Packing files ${i + 1}/${payloads.length}…`);
     progress?.current?.(`${payload.deck.title || "Untitled"} · ${formatJobBytes(deckJson.length)}`);
     progress?.setStat("cards", cardTotal);
     await yieldToPage();
   }
-  progress?.stepDone?.("decks", `${payloads.length} deck${payloads.length === 1 ? "" : "s"}, ${cardTotal} cards`);
+  progress?.stepDone?.("decks", `${payloads.length} file${payloads.length === 1 ? "" : "s"}, ${cardTotal} cards`);
 
-  const deckLabel = `${payloads.length} deck${payloads.length === 1 ? "" : "s"}`;
+  const deckLabel = `${payloads.length} file${payloads.length === 1 ? "" : "s"}`;
   let packed = { assets: [], missing: [], missingHosted: [], missingExternal: [], missingQueued: [], indexBytes: 0, indexJson: "" };
   if (includeImages) {
     progress?.step?.("images", "Looking for images…");
@@ -900,14 +900,14 @@ export async function writeRecallPackage({
   // bucket in one Supabase project. See src/backup/documents.js.
   let documents = { documents: [], missing: [], bytes: 0, indexJson: "" };
   if (includeDocuments) {
-    progress?.step?.("papers", "Looking for papers…");
+    progress?.step?.("papers", "Looking for PDFs…");
     let paperBytes = 0;
     documents = await packBackupDocuments(zip, entries, (done, total) => {
-      setStatus(`Packing papers ${done}/${total}…`);
-      progress?.count?.(done, total, `Packing papers ${done}/${total}…`);
+      setStatus(`Packing PDFs ${done}/${total}…`);
+      progress?.count?.(done, total, `Packing PDFs ${done}/${total}…`);
       progress?.setStat("papers", done);
     }, () => Boolean(progress?.cancelled()), (item) => {
-      const label = `Paper ${item.index}/${item.total} · ${item.name}${item.bytes ? ` · ${formatJobBytes(item.bytes)}` : ""}`;
+      const label = `PDF ${item.index}/${item.total} · ${item.name}${item.bytes ? ` · ${formatJobBytes(item.bytes)}` : ""}`;
       if (item.phase === "packed") {
         paperBytes += item.bytes || 0;
         progress?.setStat("size", formatJobBytes(paperBytes));
@@ -973,7 +973,7 @@ export async function writeRecallPackage({
 
   // ── Write ──
   progress?.step?.("write", "Writing the file…");
-  setStatus(`Writing ${noun} (${deckLabel}${packed.assets.length ? `, ${packed.assets.length} images` : ""}${documents.documents.length ? `, ${documents.documents.length} papers` : ""})…`);
+  setStatus(`Writing ${noun} (${deckLabel}${packed.assets.length ? `, ${packed.assets.length} images` : ""}${documents.documents.length ? `, ${documents.documents.length} PDFs` : ""})…`);
   let blob;
   try {
     blob = await zip.generateAsync({
@@ -1034,7 +1034,7 @@ export async function writeRecallPackage({
     ? ` with ${packed.assets.length} image${packed.assets.length === 1 ? "" : "s"}`
     : "";
   const paperNoteShort = documents.documents.length
-    ? ` and ${documents.documents.length} paper${documents.documents.length === 1 ? "" : "s"}`
+    ? ` and ${documents.documents.length} PDF${documents.documents.length === 1 ? "" : "s"}`
     : "";
   // Reported as two different things, because they mean two different things
   // and only one is a problem with YOUR library. An external link the browser
@@ -1056,19 +1056,19 @@ export async function writeRecallPackage({
   const missingPapers = documents.missing;
   const warnings = [];
   if (skipped.length) {
-    warnings.push(`${skipped.length} deck${plural(skipped.length, "", "s")} could not be read and ${plural(skipped.length, "is", "are")} not in this ${noun}`
-      + " (cloud-only decks need a connection). The Activity log names them.");
+    warnings.push(`${skipped.length} file${plural(skipped.length, "", "s")} could not be read and ${plural(skipped.length, "is", "are")} not in this ${noun}`
+      + " (cloud-only files need a connection). The Activity log names them.");
   }
   if (missingPapers.length) {
-    warnings.push(`${missingPapers.length} paper${plural(missingPapers.length, "", "s")} could not be read and ${plural(missingPapers.length, "is", "are")} not in this ${noun}: `
+    warnings.push(`${missingPapers.length} PDF${plural(missingPapers.length, "", "s")} could not be read and ${plural(missingPapers.length, "is", "are")} not in this ${noun}: `
       + `${missingPapers.slice(0, 5).map((entry) => entry.deckTitle).join(", ")}`
       + `${missingPapers.length > 5 ? `, and ${missingPapers.length - 5} more` : ""}. `
-      + "Their highlights and notes are here; the files themselves are not, so those decks will ask for the PDF to be re-attached.");
+      + "Their highlights and notes are here; the files themselves are not, so those files will ask for the PDF to be re-attached.");
   }
   if (hosted) {
     warnings.push(
       `${hosted} image${plural(hosted, "", "s")} you uploaded ${plural(hosted, "is", "are")} no longer in your storage, so ${plural(hosted, "it", "they")} could not be packed. `
-      + "Use More → Check for broken images to see which decks they're in."
+      + "Use More → Check for broken images to see which files they're in."
     );
   }
   const queued = (packed.missingQueued || []).length;
@@ -1128,8 +1128,8 @@ export async function shareFile(blob, name, title = "") {
   try {
     await navigator.share({
       files: [new File([blob], name, { type: blob.type || PACKAGE_MIME })],
-      title: title ? `Recall: ${title}` : "Recall decks",
-      text: "Open this in Recall (My Decks → Import) to get the decks, with their papers, highlights and notes."
+      title: title ? `Recall: ${title}` : "Recall files",
+      text: "Open this in Recall (My Files → Import) to get the files, with their PDFs, highlights and notes."
     });
   } catch (error) {
     if (error?.name !== "AbortError") showToast("Could not open the share sheet — use Download instead", "error");
@@ -1166,33 +1166,33 @@ function packageReadme({ now, isShare, title, payloads, folders, packed, documen
     isShare ? `Recall package${title ? ` — ${title}` : ""}` : "Recall library backup",
     "",
     `Created: ${now.toISOString()}`,
-    `Decks:   ${payloads.length}`,
+    `Files:   ${payloads.length}`,
     `Folders: ${folders.size}`,
     `Images:  ${packed.assets.length}${packed.missing.length ? ` (${packed.missing.length} unreachable, not packed)` : ""}`,
-    `Papers:  ${paperNote}`,
+    `PDFs:    ${paperNote}`,
     "",
     isShare
-      ? "Open it in Recall: My Decks → Import (or drop the file onto the app). The decks arrive as "
-        + "your own — cards, notes, papers, highlights, ink and pictures — and their papers and "
+      ? "Open it in Recall: My Files → Import (or drop the file onto the app). The files arrive as "
+        + "your own — cards, notes, PDFs, highlights, ink and pictures — and their PDFs and "
         + "images are uploaded to your own storage. Importing the same package again offers to "
-        + "update the decks you already have from it."
-      : "Restore it in Recall: My Decks → More → Restore backup (or drop the file onto the app).",
+        + "update the files you already have from it."
+      : "Restore it in Recall: My Files → More → Restore backup (or drop the file onto the app).",
     "",
     "It is a zip. Rename it to .zip to look inside:",
-    "  manifest.json          index of every deck, image and paper, with sizes and hashes",
-    "  decks/<folder>/*.json  one file per deck, inside its own folder path",
-    "  assets/<deck>--<id>/   that deck's images, as real files",
+    "  manifest.json          index of every file, image and PDF, with sizes and hashes",
+    "  decks/<folder>/*.json  one JSON per file, inside its own folder path",
+    "  assets/<file>--<id>/   that file's images, as real files",
     "  assets/index.json      maps each image reference to its packed file",
-    "  documents/<deck>--<id>/ that deck's PDFs, exactly as they were imported",
-    "  documents/index.json   which PDF belongs to which deck, and its hash",
+    "  documents/<file>--<id>/ that file's PDFs, exactly as they were imported",
+    "  documents/index.json   which PDF belongs to which file, and its hash",
     ...(isShare ? [] : [
       "  library.json           empty folders, open folds, and your place in each note",
       "  settings.json          this device's preferences (restored only when asked)"
     ]),
     "",
     "The images and the PDFs are real files in here, not links — the package stands",
-    "on its own. A paper's highlights are coordinates into its exact bytes, so an",
-    "import refuses a PDF whose hash does not match the deck's own record rather",
+    "on its own. A PDF's highlights are coordinates into its exact bytes, so an",
+    "import refuses a PDF whose hash does not match the file's own record rather",
     "than putting every highlight on the wrong words.",
     ""
   ].join("\n");
@@ -1249,7 +1249,7 @@ export async function exportRecallPackage(selections, {
   title = ""
 } = {}) {
   if (!selections?.length) return false;
-  const panelTitle = `Packaging ${selections.length} deck${selections.length === 1 ? "" : "s"} to share`;
+  const panelTitle = `Packaging ${selections.length} file${selections.length === 1 ? "" : "s"} to share`;
   const progress = showBackupProgress(panelTitle, { steps: PACKAGE_STEPS });
   try {
     const result = await writeRecallPackage({

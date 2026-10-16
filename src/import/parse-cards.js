@@ -117,7 +117,7 @@ export function inferDeckTitle(markdown, fallback = "") {
     return nonQuestionHeading.replace(/^#{2,6}\s+/, "").replace(/\s+#*$/, "").trim();
   }
 
-  return humanizeSourceTitle(fallback) || "Pasted Deck";
+  return humanizeSourceTitle(fallback) || "Pasted File";
 }
 
 export function stripQuoteMarker(line) {

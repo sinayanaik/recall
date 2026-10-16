@@ -30,9 +30,9 @@ flowchart LR
 ::
 
 ::
-## How do Markdown flashcards become cards?
+## How does Markdown become cards?
 
 ---
 
-Each \`::\` block becomes one flashcard. The \`---\` line separates the front from the back.
+Each \`::\` block becomes one card. The \`---\` line separates the front from the back.
 ::`;

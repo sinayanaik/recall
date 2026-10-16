@@ -2,7 +2,7 @@
   "id": "./",
   "name": "Recall",
   "short_name": "Recall",
-  "description": "Markdown flashcards and notes that work fully offline — study, edit and import with no connection, then sync when you are back.",
+  "description": "Markdown cards and notes that work fully offline — study, edit and import with no connection, then sync when you are back.",
   "lang": "en",
   "dir": "ltr",
   "start_url": "./",

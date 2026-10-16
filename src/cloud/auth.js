@@ -161,7 +161,7 @@ export function isSessionExpiredError(error) {
 // happen, and it always ends by saying the decks are safe — because the first
 // thing this failure makes anybody wonder is whether their data went with it.
 export const SESSION_EXPIRED_MESSAGE =
-  "Your sign-in expired — sign in again. Your decks are safe on this device.";
+  "Your sign-in expired — sign in again. Your files are safe on this device.";
 
 // Raw provider strings were shown verbatim, which is fine for "Invalid login
 // credentials" and useless for the rest. "Failed to fetch" reads like a bug in

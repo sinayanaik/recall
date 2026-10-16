@@ -379,7 +379,7 @@ export const HEALTH_TABLES = [
   {
     table: "decks",
     columns: "id, title, category, notes, meta, updated_at, last_accessed_at, current_card_index",
-    label: "Decks table"
+    label: "Files table (decks)"
   },
   {
     table: "cards",
@@ -431,7 +431,7 @@ export async function checkProjectHealth() {
   // reached on precisely the devices that need it.
   const storage = probeLocalStorage();
   if (storage.writable) {
-    add("Browser storage", "ok", "This browser lets Recall save your sign-in and your deck list.");
+    add("Browser storage", "ok", "This browser lets Recall save your sign-in and your file list.");
   } else {
     add("Browser storage", "fail",
       `Recall can't write to this browser's storage, so it can't stay signed in between loads. ${storage.reason}`);
@@ -512,20 +512,20 @@ export async function checkProjectHealth() {
     const { data, error } = await withTimeout(
       abortable((signal) => supabaseClient.from("decks").select("id").limit(1).abortSignal(signal)),
       HEALTH_TIMEOUT_MS,
-      "check deck visibility"
+      "check file visibility"
     );
     if (error) throw error;
     const syncedLocally = readLocalDeckIndex().filter((entry) => entry.deckId && entry.lastSyncedAt).length;
     if ((!data || data.length === 0) && syncedLocally > 0) {
       add(
-        "Deck ownership",
+        "File ownership",
         "fail",
-        `This device has ${syncedLocally} deck${syncedLocally === 1 ? "" : "s"} it previously synced, but your account ` +
+        `This device has ${syncedLocally} file${syncedLocally === 1 ? "" : "s"} it previously synced, but your account ` +
         "can see none in the cloud. On a project upgraded from before sign-in existed, the existing rows have no owner " +
         "and RLS hides them. Section 8 of supabase_setup.sql has the one-line UPDATE that claims them."
       );
     } else {
-      add("Deck ownership", "ok", "Your account can read its own decks.");
+      add("File ownership", "ok", "Your account can read its own files.");
     }
   } catch (_) {
     // The table checks above already reported whatever is wrong here.
@@ -569,13 +569,13 @@ export function renderProjectHealth(results) {
     const others = failed - 1;
     appInfoHealthSummary.textContent =
       "This browser won't let Recall store anything, so your sign-in can't be kept and syncing can't run. "
-      + "Nothing is wrong with your decks or your project — check this site's cookie and site-data permissions, "
+      + "Nothing is wrong with your files or your project — check this site's cookie and site-data permissions, "
       + "try a normal (non-private) window, or free up disk space."
       + (others > 0 ? ` ${others} other check${others === 1 ? "" : "s"} could not be trusted while storage is failing.` : "");
     appInfoHealthSummary.hidden = false;
   } else if (failed) {
     appInfoHealthSummary.textContent =
-      `${failed} problem${failed === 1 ? "" : "s"} will stop syncing from working properly. ${RERUN_SQL} It is safe to re-run and safe on a project that already holds decks.`;
+      `${failed} problem${failed === 1 ? "" : "s"} will stop syncing from working properly. ${RERUN_SQL} It is safe to re-run and safe on a project that already holds files.`;
     appInfoHealthSummary.hidden = false;
   } else if (warned) {
     appInfoHealthSummary.textContent =

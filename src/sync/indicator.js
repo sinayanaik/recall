@@ -270,7 +270,7 @@ export function updateDeckEmptyStatus() {
   if (!syncNode || !libraryNode) return;
 
   const count = listLocalDecks().length;
-  libraryNode.textContent = count ? `${count} saved deck${count === 1 ? "" : "s"} on this device` : "No decks yet";
+  libraryNode.textContent = count ? `${count} saved file${count === 1 ? "" : "s"} on this device` : "No files yet";
 
   if (!supabaseClient || !isSignedIn) {
     syncNode.textContent = "💾 Local only — sign in to back up to the cloud";

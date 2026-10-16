@@ -662,7 +662,7 @@ export function verifyBackupArchive(fileNames, manifest) {
   result.counts = { declared, found };
 
   if (declared.decks && found.decks < declared.decks) {
-    result.notes.push(`${declared.decks - found.decks} of ${declared.decks} deck files are missing from this archive.`);
+    result.notes.push(`${declared.decks - found.decks} of ${declared.decks} file records are missing from this archive.`);
   }
   if (declared.documents && found.documents < declared.documents) {
     result.notes.push(`${declared.documents - found.documents} of ${declared.documents} document files are missing from this archive.`);

@@ -2181,8 +2181,9 @@ try {
     };
   }`, Array.from(buildFixturePdf({ pages: 3 }).bytes), PEN_SRC);
 
+  // The offer says "Canvas" — the name the notebook has in the UI (NOMENCLATURE.md).
   check("a deck that already has a PDF is offered a notebook, not a refusal",
-    both.hasPdf && both.hasNotebook && /notebook/i.test(both.offered),
+    both.hasPdf && both.hasNotebook && /canvas/i.test(both.offered),
     `pdf=${both.hasPdf}, notebook=${both.hasNotebook}, the surface offered "${both.offered}"`);
   check("...and the two are different documents, with their own page counts",
     both.paperPages === 3 && both.notebookPages === 1,

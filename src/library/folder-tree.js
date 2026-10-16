@@ -131,7 +131,7 @@ export function deckSizeValue(entry) {
 }
 
 export function deckTitleValue(entry) {
-  return (entry.deck.title || "Untitled deck").toLowerCase();
+  return (entry.deck.title || "Untitled file").toLowerCase();
 }
 
 export function myDecksSortComparator(sort) {
@@ -200,7 +200,7 @@ export async function rewriteFolderPaths(fromPath, toPath) {
   }
   if (stuck.length) {
     showToast(
-      `${stuck.length} deck${stuck.length === 1 ? "" : "s"} couldn't be moved: ${stuck.slice(0, 2).join(", ")}` +
+      `${stuck.length} file${stuck.length === 1 ? "" : "s"} couldn't be moved: ${stuck.slice(0, 2).join(", ")}` +
       `${stuck.length > 2 ? ` and ${stuck.length - 2} more` : ""}`,
       "error"
     );
@@ -265,7 +265,7 @@ export function deleteFolder(path) {
   const parent = segments.slice(0, -1).join(FOLDER_SEP);
   const total = decksUnderFolder(path).length;
   const message = total > 0
-    ? `Delete folder "${leaf}"? Its ${total === 1 ? "1 deck moves" : total + " decks move"} to ${parent || "Uncategorized"}. No decks are deleted.`
+    ? `Delete folder "${leaf}"? Its ${total === 1 ? "1 file moves" : total + " files move"} to ${parent || "Uncategorized"}. No files are deleted.`
     : `Delete empty folder "${leaf}"?`;
   showConfirmModal(message, async () => {
     try {
@@ -354,7 +354,7 @@ export function buildFolderRow(node, depth, isCollapsed) {
   // data-count is the bare number; the phone layout swaps to it, because
   // "12 decks" costs a third of the room the folder's own name needs.
   count.dataset.count = String(total);
-  count.textContent = total === 1 ? "1 deck" : `${total} decks`;
+  count.textContent = total === 1 ? "1 file" : `${total} files`;
 
   // Shared with the Folder-view nav rows, so a folder offers the same four
   // actions wherever it appears. (Tree rows used to build their own three-button
@@ -384,7 +384,7 @@ export function buildRootDropRow() {
   tr.className = "deck-folder-row deck-root-row";
   const td = document.createElement("td");
   td.colSpan = 7;
-  td.innerHTML = `<div class="deck-folder-wrap"><span class="deck-folder-icon">${mdIcon("home")}</span><span class="deck-folder-name">All decks</span><span class="deck-root-hint">drop here to remove from a folder</span></div>`;
+  td.innerHTML = `<div class="deck-folder-wrap"><span class="deck-folder-icon">${mdIcon("home")}</span><span class="deck-folder-name">All files</span><span class="deck-root-hint">drop here to remove from a folder</span></div>`;
   tr.append(td);
   attachFolderDropTarget(tr, "");
   return tr;
@@ -475,7 +475,7 @@ export function renderMyDecksBreadcrumb() {
     attachFolderDropTarget(b, path); // drop a deck/folder on a crumb to move it here
     return b;
   };
-  nav.appendChild(mk("All decks", "", cwd === "", "home"));
+  nav.appendChild(mk("All files", "", cwd === "", "home"));
   let acc = "";
   const segs = folderSegments(cwd);
   segs.forEach((seg, i) => {
@@ -497,8 +497,8 @@ export function renderMyDecksBreadcrumb() {
 export function folderActions(path) {
   return [
     ["Open", () => setMyDecksCwdAndRender(path)],
-    ["Read as one deck", () => openFolderAsDeck(path)],
-    ["New deck here", () => newDeckInFolder(path)],
+    ["Read as one document", () => openFolderAsDeck(path)],
+    ["New file here", () => newDeckInFolder(path)],
     ["New subfolder", () => createFolder(path)],
     ["Import here…", () => importIntoFolder(path)],
     ["Rename", () => renameFolder(path)],
@@ -624,7 +624,7 @@ export function buildFolderActionCluster(path) {
   };
   wrap.append(
     mk("folder", "Open", "Open this folder", () => setMyDecksCwdAndRender(path)),
-    mk("book", "Read", "Read every deck in this folder as one document — edits are saved back to each deck", () => openFolderAsDeck(path)),
+    mk("book", "Read", "Read every file in this folder as one document — edits are saved back to each file", () => openFolderAsDeck(path)),
     buildFolderOverflowMenu(path, folderSegments(path).slice(-1)[0] || path),
   );
   return wrap;
@@ -664,7 +664,7 @@ export function buildFolderTile(node) {
   main.querySelector(".folder-tile-name").textContent = node.name;
   const count = document.createElement("span");
   count.className = "folder-tile-count";
-  count.textContent = total === 1 ? "1 deck" : `${total} decks`;
+  count.textContent = total === 1 ? "1 file" : `${total} files`;
   // Read stays visible because it is the one action a folder tile could not
   // otherwise offer at all (the tile's own click already Opens). Everything
   // else — new deck, new subfolder, import, rename, move, delete — is in the
@@ -676,7 +676,7 @@ export function buildFolderTile(node) {
   read.type = "button";
   read.className = "folder-tile-read";
   read.innerHTML = `${mdIcon("book")}<span class="md-btn-label">Read</span>`;
-  read.title = "Read every deck in this folder as one document — edits are saved back to each deck";
+  read.title = "Read every file in this folder as one document — edits are saved back to each file";
   read.setAttribute("aria-label", read.title);
   // The tile itself opens the folder, so this press must not also drill in.
   read.addEventListener("click", (e) => { e.stopPropagation(); openFolderAsDeck(node.path); });
@@ -728,7 +728,7 @@ export function buildFolderNavRow(node) {
   // data-count is the bare number; the phone layout swaps to it, because
   // "12 decks" costs a third of the room the folder's own name needs.
   count.dataset.count = String(total);
-  count.textContent = total === 1 ? "1 deck" : `${total} decks`;
+  count.textContent = total === 1 ? "1 file" : `${total} files`;
   wrap.append(label, count, buildFolderActionCluster(node.path));
   td.append(wrap);
   tr.append(td);
@@ -826,7 +826,7 @@ export function buildDeckTile(entry, ctx) {
 
   const title = document.createElement("div");
   title.className = "deck-tile-title";
-  title.textContent = deck.title || "Untitled deck";
+  title.textContent = deck.title || "Untitled file";
   title.title = deck.title || "";
 
   const chip = document.createElement("span");
@@ -839,7 +839,7 @@ export function buildDeckTile(entry, ctx) {
   const countEl = document.createElement("span");
   countEl.className = "deck-tile-count";
   countEl.textContent = `${count ?? "—"} ${count === 1 ? "card" : "cards"}${hasNotes ? " · 📝" : ""}`;
-  if (hasNotes) countEl.title = "This deck has study notes";
+  if (hasNotes) countEl.title = "This file has notes";
   const badge = document.createElement("span");
   badge.className = `deck-tile-sync ${status.cls}`;
   badge.textContent = status.label;

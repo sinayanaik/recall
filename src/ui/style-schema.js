@@ -305,7 +305,7 @@ export const styleControlGroups = [
     section: "text",
     tab: "document",
     fields: [
-      { key: "docBlockFontSize", label: "Text block size", type: "text", unit: "px", probe: "font-size", hint: "Text blocks on PDF and handwriting pages. A block given its own size keeps it." },
+      { key: "docBlockFontSize", label: "Text block size", type: "text", unit: "px", probe: "font-size", hint: "Text blocks on PDF and Canvas pages. A block given its own size keeps it." },
       { key: "docBlockLineHeight", label: "Line spacing", type: "text", probe: "line-height", hint: "Line spacing inside text blocks." },
       { key: "docCodeFontSize", label: "Code size", type: "text", unit: "px", probe: "font-size", hint: "Code inside blocks and PDF notes. 1em is the size of the words around it." }
     ]
@@ -321,7 +321,7 @@ export const styleControlGroups = [
       { key: "notesPadding", label: "Notes padding", type: "text", unit: "px", probe: "width", hint: "Inside spacing around notes." },
       { key: "hlCardPadding", label: "Highlight card padding", type: "text", unit: "px", probe: "width", hint: "Inside spacing on each highlight card." },
       { key: "hlCardGap", label: "Highlight card gap", type: "text", unit: "px", probe: "width", hint: "Space between highlight cards." },
-      { key: "modalPadding", label: "Dialog padding", type: "text", unit: "px", probe: "width", hint: "Inside spacing of the import and My Decks panels." }
+      { key: "modalPadding", label: "Dialog padding", type: "text", unit: "px", probe: "width", hint: "Inside spacing of the import and My Files panels." }
     ]
   },
   {
@@ -345,9 +345,9 @@ export const styleControlGroups = [
       { key: "notesMaxWidthPercent", label: "Notes width", type: "text", probe: "length-percentage", hint: "Maximum width of the notes column. A number is a percent; 900px, 60ch or calc(…) work as written." },
       { key: "appWidthPercent", label: "App width", type: "text", probe: "length-percentage", hint: "Width of the whole app. A number is a percent of the screen; any CSS width works as written." },
       { key: "appHeightPercent", label: "App height", type: "text", probe: "length-percentage", hint: "Height of the whole app. A number is a percent of the screen; any CSS height works as written." },
-      { key: "cardWidthPercent", label: "Card width", type: "text", probe: "length-percentage", hint: "Flashcard width. A number is a percent of the study area; any CSS width works as written." },
-      { key: "cardMaxHeightPercent", label: "Card max height", type: "text", probe: "length-percentage", hint: "Maximum flashcard height. A number is a percent of the screen; any CSS height works as written." },
-      { key: "modalWidthPercent", label: "Dialog width", type: "text", probe: "length-percentage", hint: "Width of the Import and shared-deck dialogs (My Decks sizes itself to its table). A number is a percent of the screen; any CSS width works as written." },
+      { key: "cardWidthPercent", label: "Card width", type: "text", probe: "length-percentage", hint: "Card width. A number is a percent of the study area; any CSS width works as written." },
+      { key: "cardMaxHeightPercent", label: "Card max height", type: "text", probe: "length-percentage", hint: "Maximum card height. A number is a percent of the screen; any CSS height works as written." },
+      { key: "modalWidthPercent", label: "Dialog width", type: "text", probe: "length-percentage", hint: "Width of the Import and shared-file dialogs (My Files sizes itself to its table). A number is a percent of the screen; any CSS width works as written." },
       { key: "visualMaxWidthPercent", label: "Image max width", type: "text", probe: "length-percentage", hint: "Maximum width of images, videos and diagrams. A number is a percent; any CSS width works as written." },
       { key: "questionFillPercent", label: "Question fill %", type: "text", probe: "number", hint: "How much of the card the question tries to fill, as a percent." }
     ]
@@ -370,9 +370,9 @@ export const styleControlGroups = [
     title: "Shape",
     section: "more",
     fields: [
-      { key: "cardCornerRadius", label: "Card corners", type: "text", unit: "px", probe: "border-radius", hint: "Roundness of flashcard corners." },
-      { key: "panelCornerRadius", label: "Panel corners", type: "text", unit: "px", probe: "border-radius", hint: "Roundness of the study, import and My Decks panels." },
-      { key: "cardBorderWidth", label: "Card border", type: "text", unit: "px", probe: "border-top-width", hint: "Border thickness around the flashcard." },
+      { key: "cardCornerRadius", label: "Card corners", type: "text", unit: "px", probe: "border-radius", hint: "Roundness of card corners." },
+      { key: "panelCornerRadius", label: "Panel corners", type: "text", unit: "px", probe: "border-radius", hint: "Roundness of the study, import and My Files panels." },
+      { key: "cardBorderWidth", label: "Card border", type: "text", unit: "px", probe: "border-top-width", hint: "Border thickness around the card." },
       { key: "hlCardRadius", label: "Highlight card corners", type: "text", unit: "px", probe: "border-radius", hint: "Roundness of a highlight card." },
       { key: "hlCardRail", label: "Highlight colour rail", type: "text", unit: "px", probe: "border-top-width", hint: "Width of the coloured edge on each highlight card." },
       { key: "hlNoteEmptyHeight", label: "Empty note box height", type: "text", unit: "px", probe: "height", hint: "Height of the blank box on a highlight with no note yet." }

@@ -253,7 +253,7 @@ export function describeSyncStats(stats = {}, { asTotals = false } = {}) {
   const parts = [];
   const flag = (value, label) => {
     if (!value) return;
-    parts.push(asTotals && value > 1 ? `${label} (${value} decks)` : label);
+    parts.push(asTotals && value > 1 ? `${label} (${value} files)` : label);
   };
   // What needs the reader first.
   flag(stats.notesSyncFailed, "notes could NOT be synced — run supabase_setup.sql in Supabase");

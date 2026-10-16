@@ -215,7 +215,7 @@ export function maybePromptBookmarkJump() {
   recordBookmarkPrompted(key, bookmark.at);
   if (sameSpot(bookmark, currentSpotAnchor())) return;
   showConfirmModal(
-    "You left off somewhere else in this deck on another device. Jump there?",
+    "You left off somewhere else in this file on another device. Jump there?",
     () => scheduleNoteJump(bookmark, { patient: true }),
     { confirmLabel: "Jump to bookmark" }
   );

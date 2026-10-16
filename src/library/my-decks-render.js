@@ -18,9 +18,9 @@ import { isDeckTombstoned } from "./tombstones.js?v=__BUILD__";
 
 // ── Empty states ────────────────────────────────────────────────────────────
 export function myDecksEmptyMessage(ctx) {
-  if (ctx.search) return `No decks match “${ctx.search}”.`;
-  if (ctx.totalDecks === 0) return ctx.loading ? "Checking the cloud for your decks…" : "No decks yet. Use ＋ New deck to create your first one.";
-  return "Nothing filed here yet. Use ＋ New deck, or drag a deck onto a folder.";
+  if (ctx.search) return `No files match “${ctx.search}”.`;
+  if (ctx.totalDecks === 0) return ctx.loading ? "Checking the cloud for your files…" : "No files yet. Use ＋ New file to create your first one.";
+  return "Nothing filed here yet. Use ＋ New file, or drag a file onto a folder.";
 }
 
 export function buildEmptyCard(message) {
@@ -175,7 +175,7 @@ export function paintMyDecks(localDecks, cloudById, { cloudOnly = [], categories
   // The header count replaces the descriptive paragraph that used to sit there:
   // same vertical space, but it says something that changes.
   if (el.myDecksCount) {
-    el.myDecksCount.textContent = ctx.totalDecks === 1 ? "1 deck" : `${ctx.totalDecks} decks`;
+    el.myDecksCount.textContent = ctx.totalDecks === 1 ? "1 file" : `${ctx.totalDecks} files`;
     el.myDecksCount.hidden = false;
   }
   syncMyDecksChrome();

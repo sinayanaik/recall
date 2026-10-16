@@ -116,13 +116,13 @@ export async function collectReferencedStoragePaths(onProgress) {
   // rows of consecutive pages in different orders, so a row can fall between
   // two pages and never be read — and a row not read is a picture that looks
   // unused, which this list exists to prevent.
-  onProgress?.("Reading decks in the cloud…");
+  onProgress?.("Reading files in the cloud…");
   const pageSize = 500;
   for (let from = 0; ; from += pageSize) {
     const { data, error } = await withTimeout(
       supabaseClient.from("decks").select("id, notes, pdfBlocks:meta->pdfBlocks").order("id", { ascending: true }).range(from, from + pageSize - 1),
       CLOUD_TIMEOUT_MS,
-      "read deck notes"
+      "read file notes"
     );
     if (error) throw error;
     const rows = data || [];
@@ -277,7 +277,7 @@ export async function buildStorageReport(onProgress, { census = true } = {}) {
   }
 
   try {
-    onProgress?.("Counting decks and cards…");
+    onProgress?.("Counting files and cards…");
     const [decks, cards, tombstones] = await Promise.all([
       countCloudRows("decks"),
       countCloudRows("cards"),
@@ -487,7 +487,7 @@ export async function deleteAllCloudDecks() {
   const { error } = await withTimeout(
     supabaseClient.from("decks").delete().neq("id", "\u0000"),
     CLOUD_TIMEOUT_MS,
-    "delete decks"
+    "delete files"
   );
   if (error) throw error;
 }
@@ -619,7 +619,7 @@ export function renderStoragePanel(busyText = "") {
 
   const cloudSection = cloud
     ? `<div class="storage-stats">
-         ${storageStatTile(cloud.decks, "Decks")}
+         ${storageStatTile(cloud.decks, "Files")}
          ${storageStatTile(cloud.cards, "Cards")}
          ${storageStatTile(cloud.tombstones, "Delete records")}
        </div>`
@@ -639,11 +639,11 @@ export function renderStoragePanel(busyText = "") {
        ${store.orphanError
         ? `<p class="storage-note is-warning">${escapeHtml(store.orphanError)} Unused-image cleanup is disabled until this succeeds.</p>`
         : `${store.orphans.length
-          ? `<p class="storage-note">${store.orphans.length} image${store.orphans.length === 1 ? " is" : "s are"} no longer referenced by any deck or note (${escapeHtml(formatStorageBytes(store.orphanBytes))}). These are what deleting an image or a deck leaves behind.</p>`
+          ? `<p class="storage-note">${store.orphans.length} image${store.orphans.length === 1 ? " is" : "s are"} no longer referenced by any file or note (${escapeHtml(formatStorageBytes(store.orphanBytes))}). These are what deleting an image or a file leaves behind.</p>`
           : `<p class="storage-note">Every stored image is still in use.</p>`}
        ${store.missingError ? `<p class="storage-note is-warning">${escapeHtml(store.missingError)}</p>` : ""}
        ${store.missingRefs.length
-          ? `<p class="storage-note is-warning">${store.missingRefs.length} image${store.missingRefs.length === 1 ? "" : "s"} referenced by your decks ${store.missingRefs.length === 1 ? "is" : "are"} in neither Supabase nor your bucket, so ${store.missingRefs.length === 1 ? "it" : "they"} can't be shown or backed up. Deleting unused images will not help — this is the opposite problem. <strong>Restore missing images</strong> below puts back any this device still has a copy of; My Decks → More → Check for broken images shows which decks they're in.</p>
+          ? `<p class="storage-note is-warning">${store.missingRefs.length} image${store.missingRefs.length === 1 ? "" : "s"} referenced by your files ${store.missingRefs.length === 1 ? "is" : "are"} in neither Supabase nor your bucket, so ${store.missingRefs.length === 1 ? "it" : "they"} can't be shown or backed up. Deleting unused images will not help — this is the opposite problem. <strong>Restore missing images</strong> below puts back any this device still has a copy of; My Files → More → Check for broken images shows which files they're in.</p>
              <ul class="storage-groups">${missingRefPreview(store.missingRefs).map((name) => `
                <li><span class="storage-group-name">${escapeHtml(name)}</span></li>`).join("")}${
               store.missingRefs.length > MISSING_REF_PREVIEW
@@ -670,7 +670,7 @@ export function renderStoragePanel(busyText = "") {
          <li><span class="storage-group-name">${escapeHtml(object.name)}</span>
              <span class="storage-group-size">${escapeHtml(formatStorageBytes(object.size))}</span>
              <button type="button" class="storage-offload" data-storage-offload="${escapeHtml(object.path)}" title="Delete this file from the cloud — highlights, notes and cards all stay, and so does any copy on a device that has one">Offload</button></li>`).join("")}</ul>
-         <p class="storage-note">Offloading deletes the cloud copy only. The deck keeps its highlights, notes and cards, and any device that already downloaded the file keeps reading it — other devices ask for it to be re-attached.</p>`
+         <p class="storage-note">Offloading deletes the cloud copy only. The file keeps its highlights, notes and cards, and any device that already downloaded the file keeps reading it — other devices ask for it to be re-attached.</p>`
         : `<p class="storage-note">No documents stored. Import a PDF and the file itself lands here.</p>`}`
     : `<p class="storage-note is-warning">${escapeHtml(report.documentsError || report.storageError || "No document data.")}</p>`;
 
@@ -678,7 +678,7 @@ export function renderStoragePanel(busyText = "") {
   // read yet — see buildStorageReport. They say so rather than showing a zero,
   // because a zero is a claim and "still counting" is the truth.
   const counting = `<div class="job-progress-track is-indeterminate"><div class="job-progress-fill"></div></div>
-    <p class="storage-note">Counting… this walks every image, deck and card, so it takes a moment. Nothing above is waiting on it.</p>`;
+    <p class="storage-note">Counting… this walks every image, file and card, so it takes a moment. Nothing above is waiting on it.</p>`;
 
   body.innerHTML = `
     <div class="storage-card">
@@ -689,7 +689,7 @@ export function renderStoragePanel(busyText = "") {
 
     <div class="storage-card">
       <h2>Cloud database</h2>
-      <p class="storage-sub">Your decks, cards and cross-device delete records.</p>
+      <p class="storage-sub">Your files, cards and cross-device delete records.</p>
       ${report.censusPending ? counting : cloudSection}
     </div>
 
@@ -709,7 +709,7 @@ export function renderStoragePanel(busyText = "") {
       <h2>This device</h2>
       <p class="storage-sub">The local copy that makes the app work offline.</p>
       <div class="storage-stats">
-        ${storageStatTile(device.decks, "Decks")}
+        ${storageStatTile(device.decks, "Files")}
         ${storageStatTile(formatStorageBytes(device.bytes), "On this device")}
         ${storageStatTile(device.cachedImages, "Cached images")}
         ${storageStatTile(device.queuedImages, "Queued uploads", device.queuedImages ? "is-warn" : "")}
@@ -724,7 +724,7 @@ export function renderStoragePanel(busyText = "") {
       <h2>Backups</h2>
       <p class="storage-sub">A backup <code>.zip</code> is the only copy that does not depend on this device or on your cloud project still being there.</p>
       <p class="storage-note">${escapeHtml(describeLastBackup())}${lastBackup?.bytes ? ` · ${escapeHtml(formatStorageBytes(lastBackup.bytes))}` : ""}.</p>
-      ${backupDue ? `<p class="storage-note is-warning">Your library has changed since then. My Decks → ⋯ → Back up library (.recall) writes a new one — decks, notes, images, the PDFs themselves and your settings.</p>` : ""}
+      ${backupDue ? `<p class="storage-note is-warning">Your library has changed since then. My Files → ⋯ → Back up library (.recall) writes a new one — files, notes, images, the PDFs themselves and your settings.</p>` : ""}
     </div>
 
     <div class="storage-card is-danger">
@@ -742,8 +742,8 @@ export function renderStoragePanel(busyText = "") {
         <button type="button" class="storage-action is-danger" data-storage-action="images" ${store && store.count ? "" : "disabled"}>
           Delete all images
         </button>
-        <button type="button" class="storage-action is-danger" data-storage-action="decks" ${cloud && (cloud.decks || cloud.tombstones) ? "" : "disabled"}>
-          Delete all cloud decks &amp; cards
+        <button type="button" class="storage-action is-danger" data-storage-action="files" ${cloud && (cloud.decks || cloud.tombstones) ? "" : "disabled"}>
+          Delete all cloud files &amp; cards
         </button>
         <button type="button" class="storage-action" data-storage-action="device" ${device.decks || device.cachedImages || device.queuedImages ? "" : "disabled"}>
           Clear this device
@@ -752,7 +752,7 @@ export function renderStoragePanel(busyText = "") {
           Reset everything
         </button>
       </div>
-      <p class="storage-note">Take a backup first — <strong>My Decks → ⋯ → Back up library (.recall)</strong> holds every deck, note, image and PDF.</p>
+      <p class="storage-note">Take a backup first — <strong>My Files → ⋯ → Back up library (.recall)</strong> holds every file, note, image and PDF.</p>
     </div>
 
     <p class="storage-timestamp">Counted ${escapeHtml(report.at.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", second: "2-digit" }))}${report.online ? "" : " · offline"}</p>
@@ -818,7 +818,7 @@ export async function offloadStorageDocument(path) {
     ? `${which} is safely in your Cloud bucket, so removing this Supabase copy frees its space and nothing else. Highlights, notes and cards stay.`
     : records.length
       ? `${which} is NOT in your Cloud bucket yet, so this may be the only copy in any cloud. Devices that do not already hold the file will ask for it to be re-attached. Move it from ☰ → Cloud bucket first to keep a copy. Remove it anyway?`
-      : "No deck on this device names this file, so it may belong to a deck that is only on another device. Removing it cannot be undone. Remove it anyway?";
+      : "No file on this device names this PDF, so it may belong to a file that is only on another device. Removing it cannot be undone. Remove it anyway?";
   showConfirmModal(message, async () => {
     if (storageBusy) return;
     storageBusy = true;
@@ -948,7 +948,7 @@ export async function runStorageAction(action) {
     if (!store?.orphans.length) return;
     const paths = store.orphans.map((object) => object.path);
     showConfirmModal(
-      `Delete ${paths.length} unused image${paths.length === 1 ? "" : "s"} (${formatStorageBytes(store.orphanBytes)})? No deck or note points at ${paths.length === 1 ? "it" : "them"}.`,
+      `Delete ${paths.length} unused image${paths.length === 1 ? "" : "s"} (${formatStorageBytes(store.orphanBytes)})? No file or note points at ${paths.length === 1 ? "it" : "them"}.`,
       () => run("Deleting unused images…", (progress) => deleteStorageObjects(paths, progress), { touchesImages: true }),
       { confirmLabel: "Delete", danger: true }
     );
@@ -958,7 +958,7 @@ export async function runStorageAction(action) {
   if (action === "images") {
     if (!store?.count) return;
     if (!await confirmByTyping("DELETE", "Delete every image in Supabase?",
-      `All ${store.count} images (${formatStorageBytes(store.bytes)}) will be removed from your Supabase storage. Decks and notes stay; any picture that is not also in your Cloud bucket becomes a broken link. Your Cloud bucket is not touched. Type DELETE to confirm.`)) return;
+      `All ${store.count} images (${formatStorageBytes(store.bytes)}) will be removed from your Supabase storage. Files and notes stay; any picture that is not also in your Cloud bucket becomes a broken link. Your Cloud bucket is not touched. Type DELETE to confirm.`)) return;
     await run("Deleting images…", async (progress) => {
       const keepCached = await bucketHeldPaths();
       return deleteStorageObjects(store.objects.map((object) => object.path), progress, { keepCached: keepCached || true });
@@ -967,9 +967,9 @@ export async function runStorageAction(action) {
   }
 
   if (action === "decks") {
-    if (!await confirmByTyping("DELETE", "Delete all cloud decks and cards?",
-      `${report.cloud.decks} deck${report.cloud.decks === 1 ? "" : "s"} and ${report.cloud.cards} card${report.cloud.cards === 1 ? "" : "s"} will be deleted from the database. Every device that has synced them will drop its copy on its next sync. Type DELETE to confirm.`)) return;
-    await run("Deleting decks…", async (progress) => {
+    if (!await confirmByTyping("DELETE", "Delete all cloud files and cards?",
+      `${report.cloud.decks} file${report.cloud.decks === 1 ? "" : "s"} and ${report.cloud.cards} card${report.cloud.cards === 1 ? "" : "s"} will be deleted from the database. Every device that has synced them will drop its copy on its next sync. Type DELETE to confirm.`)) return;
+    await run("Deleting files…", async (progress) => {
       await deleteAllCloudDecks();
       progress("Clearing delete records…");
       await deleteAllCloudTombstones().catch((error) => console.warn("Could not clear tombstones", error));
@@ -991,14 +991,14 @@ export async function runStorageAction(action) {
 
   if (action === "everything") {
     if (!await confirmByTyping("RESET", "Reset everything?",
-      "Deletes every deck, card and image in your Supabase account AND this device's copy. Tables, buckets, policies and your login all stay, so the app keeps working — it just starts empty. Your Cloud bucket is not touched. This cannot be undone. Type RESET to confirm.")) return;
+      "Deletes every file, card and image in your Supabase account AND this device's copy. Tables, buckets, policies and your login all stay, so the app keeps working — it just starts empty. Your Cloud bucket is not touched. This cannot be undone. Type RESET to confirm.")) return;
     await run("Resetting…", async (progress) => {
       if (store?.objects.length) await deleteStorageObjects(store.objects.map((object) => object.path), progress);
       if (report.documents?.objects.length) {
         progress("Deleting documents…");
         for (const object of report.documents.objects) await deleteRemoteDocument(object.path);
       }
-      progress("Deleting decks and cards…");
+      progress("Deleting files and cards…");
       await deleteAllCloudDecks();
       progress("Clearing delete records…");
       await deleteAllCloudTombstones().catch((error) => console.warn("Could not clear tombstones", error));

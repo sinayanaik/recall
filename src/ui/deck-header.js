@@ -52,14 +52,14 @@ export function setDeckCategory(category, options = {}) {
 
 export async function editCurrentDeckTitle() {
   if (!hasActiveDeck()) {
-    setStatus("Create or import a deck before editing its title.", "error");
+    setStatus("Create or import a file before editing its title.", "error");
     return;
   }
 
-  showPromptModal("Edit Deck Title", "", state.deckTitle || state.sourceTitle || "Untitled Deck", async (nextTitle) => {
+  showPromptModal("Edit File Title", "", state.deckTitle || state.sourceTitle || "Untitled File", async (nextTitle) => {
     const title = nextTitle.trim();
     if (!title) {
-      setStatus("Deck title cannot be empty.", "error");
+      setStatus("File title cannot be empty.", "error");
       return;
     }
 
@@ -82,7 +82,7 @@ export async function editCurrentDeckTitle() {
       await saveDeckToLibrary({ silent: true });
     }
     renderMyDecksList();
-    setStatus("Deck title updated.");
+    setStatus("File title updated.");
     showToast(`Renamed to "${title}"`);
 
     // 3) Best-effort immediate cloud rename so other devices see it now instead
@@ -90,10 +90,10 @@ export async function editCurrentDeckTitle() {
     if (state.deckId && supabaseClient && isSignedIn && navigator.onLine) {
       try {
         await updateWebDeckTitle(state.deckId, title);
-        setStatus("Deck title updated in the cloud.");
+        setStatus("File title updated in the cloud.");
       } catch (error) {
         console.warn("Cloud rename failed — the next sync will push it", error);
-        setStatus("Deck renamed. Cloud update will retry on the next sync.");
+        setStatus("File renamed. Cloud update will retry on the next sync.");
       }
     }
   });
@@ -101,7 +101,7 @@ export async function editCurrentDeckTitle() {
 
 export async function editCurrentDeckCategory() {
   if (!hasActiveDeck()) {
-    setStatus("Create or import a deck before editing its category.", "error");
+    setStatus("Create or import a file before editing its category.", "error");
     return;
   }
 
@@ -110,21 +110,21 @@ export async function editCurrentDeckCategory() {
   setDeckCategory(category);
 
   if (!state.deckId || !supabaseClient) {
-    setStatus("Deck category updated locally. Sync to update the web deck.");
+    setStatus("File category updated locally. Sync to update the cloud copy.");
     return;
   }
 
   try {
-    setStatus("Updating web deck category...");
+    setStatus("Updating the file category in the cloud...");
     await applyWebDeckCategory(state.deckId, category);
-    setStatus("Deck category updated in the cloud.");
+    setStatus("File category updated in the cloud.");
   } catch (error) {
     console.error("Failed to update web deck category", error);
     // Was a flat "run the deck category SQL migration first", which is only one
     // of the reasons this fails — and since the write now reports a zero-row
     // update instead of pretending it succeeded, it is no longer the likeliest.
     setStatus(
-      `Deck category updated on this device, but the cloud copy didn't change — ${error?.message || "unknown error"}`,
+      `File category updated on this device, but the cloud copy didn't change — ${error?.message || "unknown error"}`,
       "error"
     );
   }

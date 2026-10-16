@@ -216,6 +216,22 @@
   }
 }
 
+/* ── The same, on Cards and Notes, once the tabs are this narrow ────────────
+
+   The rule above only covers a file whose PDF or Canvas is on screen. On Cards
+   and Notes the four tabs were still a quarter each — 45px at 360px — and
+   "CANVAS" is the one word that needs more than that: it showed as "CANV…"
+   while "PDFS" sat in a box with room to spare. Sized to their words, the four
+   take about 165px of a 194px toggle, so they all fit whole. `auto` tracks
+   still shrink below their word when they must (a button is overflow: hidden,
+   so its automatic minimum is 0), which keeps the ellipsis as the last resort
+   rather than a row wider than the screen. */
+@media (max-width: 420px) {
+  .quiz-panel .view-mode-toggle:not([hidden]) {
+    grid-auto-columns: auto;
+  }
+}
+
 /* ── ...unless one line would be crowded: two compact rows ─────────────────
 
    Below 480px (a phone held upright) one line does fit, but only by cutting

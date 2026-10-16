@@ -317,7 +317,7 @@ try {
     await api.importPdfFile(file, null);
     await settle(400);
     const index = api.readLocalDeckIndex();
-    const entry = index.find((m) => m.title && m.title !== "Untitled deck") || index[0];
+    const entry = index.find((m) => m.title && m.title !== "Untitled file") || index[0];
     if (!entry) return { error: "no deck was created" };
     await api.loadDeckFromLibrary(entry.id);
     await settle(400);
