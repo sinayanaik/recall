@@ -3,7 +3,7 @@
 // for the manual, cross-device equivalent (a deliberate bookmark, not an
 // ambient scroll position).
 
-import { el } from "../core/dom.js?v=__BUILD__";
+import { el, isDisplayed } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { firstVisibleNotesBlock, isNotesPaged, notesCurrentPage, notesPageCount, notesPagedProbeX } from "./paged-view.js?v=__BUILD__";
 import { approximateRawOffsetForBlock, findRawOffsetForRenderedPoint, rawOffsetForRenderedBlock } from "./raw-offset.js?v=__BUILD__";
@@ -48,7 +48,10 @@ export function notesReadingLineOffset(viewportHeight) {
 // of testing every block from the top.
 export function notesBlockAtReadingLineGeometric() {
   const view = el.notesView;
-  if (!view || view.hidden) return null;
+  // Not `view.hidden` alone: Home hides the whole study surface from an
+  // ancestor, and there every block's rect is 0 — the search would answer the
+  // first block, the top of the note, with confidence (see isDisplayed).
+  if (!isDisplayed(view)) return null;
   // The BLOCKS, not view.children — on a long enough note those are chunk
   // wrappers of 40, and the search would answer at 40-block granularity.
   const blocks = notesTopLevelBlocks(view);
@@ -141,7 +144,7 @@ export function snapOffsetToLineStart(source, offset) {
 // costs precision, never the reader's place.
 export function rawOffsetForCurrentNotesScroll() {
   const view = el.notesView;
-  if (!view || view.hidden) return null;
+  if (!isDisplayed(view)) return null;
   const notes = state.notes || "";
   if (!notes) return null;
   const rect = view.getBoundingClientRect();
@@ -286,7 +289,9 @@ export function setReadingAnchorCapturedHook(fn) {
 }
 
 export function captureCurrentReadingAnchor(expectedKey = null) {
-  if (!el.notesView || el.notesView.hidden || state.viewMode !== "notes") return;
+  // Off screen — raw mode, another tab, or Home over the open file — there is
+  // nothing to read the place off, and a reading taken anyway is the top.
+  if (!isDisplayed(el.notesView) || state.viewMode !== "notes") return;
   if (resumeLanding || reflowHolding) return;
   // The scroll that armed this capture happened in a deck that is no longer the
   // open one — a deck swap landed inside the debounce. Measuring the NEW deck's

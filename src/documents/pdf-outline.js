@@ -643,6 +643,18 @@ export async function ensureUserDocumentOutline() {
     const ceiling = index ? copied[index - 1].depth + 1 : 0;
     entry.depth = Math.max(0, Math.min(entry.depth - least, ceiling, OUTLINE_MAX_DEPTH));
   });
+  // The folds come along. Every row has just been given an id, and a row with
+  // an id is keyed by it (outlineKeyFor) — so without this every branch's key
+  // was new, tocCarryFolds folded every one of them, and the first bookmark
+  // landed inside a section the same edit had just closed: "the bookmark is
+  // not added to the contents". Taken here, after the lookups, so a fold the
+  // reader made while they ran counts too.
+  source.forEach((entry, index) => {
+    const before = outlineKeyFor(entry);
+    const after = outlineKeyFor(copied[index]);
+    if (outlineKnownBranches.has(before)) outlineKnownBranches.add(after);
+    if (outlineCollapsed.has(before)) outlineCollapsed.add(after);
+  });
   // A newer build from here on: a derivation still scanning, or the outline's
   // tail still resolving, is about a list that has just been replaced.
   outlineToken += 1;
@@ -660,8 +672,13 @@ function commitUserOutline(entries, focusId = null) {
   writeUserPdfContents(entries, outlineDoc?.numPages || 0, outlinePdfId);
   if (focusId) {
     const index = entries.findIndex((entry) => entry.id === focusId);
+    // Open, and KNOWN to be open: a heading that becomes a branch with this very
+    // edit has a key tocCarryFolds has never seen, and an unseen branch starts
+    // folded — with the row this edit is about inside it.
     for (let at = parentOf(entries, index); at >= 0; at = parentOf(entries, at)) {
-      outlineCollapsed.delete(outlineKeyFor(entries[at]));
+      const key = outlineKeyFor(entries[at]);
+      outlineCollapsed.delete(key);
+      outlineKnownBranches.add(key);
     }
   }
   renderDocumentOutline();

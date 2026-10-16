@@ -1556,7 +1556,6 @@ function finishDocumentOpen(view, token, openSlot, at, { restored = false, refit
 function watchDocumentViewSize() {
   const view = el.documentView;
   if (!view || typeof ResizeObserver !== "function") return;
-  let lastWidth = view.clientWidth;
   let frame = 0;
   openPdf.resizeObserver = new ResizeObserver(() => {
     if (!openPdf || frame) return;
@@ -1566,13 +1565,19 @@ function watchDocumentViewSize() {
       // frame has passed, and the width this acts on has to be the width the
       // pages will actually be laid out against.
       if (!openPdf) return;
-      // Hidden: not a new width, and not a reason to remember 0 as the old one
-      // — see documentSurfaceHidden.
+      // Hidden: not a new width — see documentSurfaceHidden.
       if (documentSurfaceHidden()) return;
-      const width = view.clientWidth;
-      const widthChanged = width !== lastWidth;
-      lastWidth = width;
-      if (widthChanged && openPdf.fitWidth) {
+      // Against the width the pages were FITTED to, which is the question
+      // documentWidthPending asks — and the two must agree, because that one
+      // turns every save of the reading position away until the refit happens.
+      // This used to compare against the width it saw last, which it first read
+      // only after the pages were in: on a screen whose scrollbar takes room,
+      // the pages had been fitted to the empty scroller a moment before the
+      // scrollbar arrived, so the last width and the current one matched, the
+      // refit never came, and the position was never saved while reading.
+      // styles/36-document.css keeps the scrollbar's room now; this makes any
+      // other way of arriving at that state mend itself.
+      if (documentWidthPending()) {
         // Holding the reader: a rotation lands here first, and a bare refit
         // left scrollTop over pages of a different height.
         relayoutDocumentHoldingReader({ refit: true });
@@ -1831,6 +1836,40 @@ export function documentSurfaceHidden() {
   // however the stylesheet chooses to keep a hidden stage off screen.
   if (el.documentStage?.hidden) return true;
   return view.getClientRects().length === 0;
+}
+
+// ── ...and a hidden surface is not a place the reader has gone to ───────────
+//
+// The same zeros, read as a POSITION: every page's offsetTop and offsetHeight
+// is 0 and so is scrollTop, no page's bottom is past the top of the view, and
+// the page lookup falls through to the last page — at ratio 0. Home is where
+// this bit: it hides the whole study surface with display:none and leaves the
+// PDF open, so for as long as Home was up the reader was "on the last page".
+// The 5-second reading heartbeat filed that as the progress (99%, every chapter
+// done), and the sync that going Home starts re-stamped it as the place to
+// resume — so the PDF reopened at its end.
+//
+// The browser keeps the scroller's offset across display:none (it reads 0 while
+// hidden and is back the moment the surface is), so the reader's place is not
+// lost; only the readings taken while hidden are wrong. While hidden, then, the
+// four position readings below — page, ratio, residual, across — all answer
+// with where the reader was the last time the surface was on screen:
+// openPdf.settled, which every visible scroll pass records (src/main.js) and the
+// resume's own scroll and every jump pass through. One answer for every caller
+// — the park, the held reopen, the page indicator, the contents, ink, page
+// notes — rather than a guard in each of them. The two callers that WRITE the
+// position down (the save and the progress line) decline outright: the reader
+// is not here, and a fresh `at` on an old place would beat a newer one from
+// another device.
+//
+// Before anything has settled — a document opened while hidden, which nothing
+// does today — it is the last page this module measured, or page 1, at the top.
+function hiddenDocumentPlace() {
+  const settled = openPdf?.settled;
+  if (settled && settled.page > 0) {
+    return { page: settled.page, residual: Number(settled.ratio) || 0, across: Number(settled.across) || 0 };
+  }
+  return { page: lastPageAnswer || 1, residual: 0, across: 0 };
 }
 
 function observePages() {
@@ -5731,6 +5770,12 @@ export function currentDocumentPage() {
       && performance.now() - lastPageAt < PAGE_MEMO_MAX_AGE_MS) {
     return lastPageAnswer;
   }
+  // ...and a subtree that is in the document but not displayed (Home, another
+  // tab) reads 0 everywhere just the same — see hiddenDocumentPlace. Asked here,
+  // past the memo and before the geometry, so a hit costs nothing and a miss
+  // pays for no layout flush the geometry read below would not have forced
+  // anyway. Not memoised: the answer is not a measurement of this scrollTop.
+  if (documentSurfaceHidden()) return hiddenDocumentPlace().page;
 
   const count = openPdf.pageCount;
   const geometry = documentPageGeometry();
@@ -5808,6 +5853,9 @@ export function documentPageInViewCheap() {
 export function currentDocumentRatio() {
   const view = el.documentView;
   if (!view || !openPdf) return 0;
+  // Hidden: the place the page lookup answered with, not a fraction of a
+  // 0-height box (see hiddenDocumentPlace).
+  if (documentSurfaceHidden()) return Math.min(1, Math.max(0, hiddenDocumentPlace().residual));
   const page = currentDocumentPage();
   // Off the same table currentDocumentPage just used, so asking for the page and
   // then for the position within it costs ONE reading of the geometry rather
@@ -5854,6 +5902,7 @@ export function currentDocumentRatio() {
 export function currentDocumentResidual() {
   const view = el.documentView;
   if (!view || !openPdf) return 0;
+  if (documentSurfaceHidden()) return hiddenDocumentPlace().residual;
   const page = currentDocumentPage();
   const geometry = documentPageGeometry();
   if (geometry) {
@@ -5891,7 +5940,10 @@ export function currentDocumentAcross() {
   // forces no layout — the same argument currentDocumentPage's memo makes about
   // scrollTop. Below fit-width it is pinned at 0 and there is no column to
   // remember, which is nearly every reader, and they pay one free read for it.
-  if (view.scrollLeft <= 0) return 0;
+  // A hidden scroller reads 0 too, whatever its column (see
+  // hiddenDocumentPlace) — and only this branch can meet one, so only this
+  // branch asks.
+  if (view.scrollLeft <= 0) return documentSurfaceHidden() ? hiddenDocumentPlace().across : 0;
   // ONE page's box, and deliberately not a `lefts`/`widths` pair on
   // documentPageGeometry: that table is built for every page of the document and
   // sits on the pen's and the scroll pass's hot paths (see the notes on it). By
@@ -6092,6 +6144,12 @@ export function scheduleDocumentPositionSave() {
   // page heights, not a place the reader went. The refit puts them back and
   // its own scroll saves the real position.
   if (documentWidthPending()) return;
+  // The surface is not on screen — Home is up, or another tab. The reader is
+  // not reading here, so there is nothing new to write down; and the in-place
+  // reload a sync triggers (src/main.js) calls this while Home is showing,
+  // where it used to save the LAST page with a fresh `at` that then won every
+  // merge. See hiddenDocumentPlace.
+  if (documentSurfaceHidden()) return;
   const page = currentDocumentPage();
   const slot = openPdf.slot;
   const extraPdfId = slot === DOC_SLOT_DOC && openPdf.pdfId && openPdf.pdfId !== PDF_PRIMARY_ID ? openPdf.pdfId : null;

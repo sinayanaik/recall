@@ -1,7 +1,10 @@
-// Do the links inside a PDF work, and can a reader make the contents their own?
+// Do the links inside a PDF work, can a reader make the contents their own,
+// and does the PDF keep the reader's place?
 //
 //   node tools/pdf-links-check.mjs
 //
+//   0. the pages are fitted to the scroller as it is once they are in it, so a
+//      scrollbar arriving does not leave the reading position unsaveable;
 // Driven through the browser's own input pipeline (CDP mouse events), not
 // dispatchEvent inside the page, because both features are about which layer a
 // real press reaches: a link's words sit under the text layer, the pen, the
@@ -12,12 +15,18 @@
 //      height the link names, not the top of the page — and leaves a way back;
 //   2. a press on a web link opens it, and one on a javascript: link does not;
 //   3. a drag that selects a link's words is a selection, not a jump;
-//   4. right-click on a page → "Add bookmark here" adds a row to the contents,
-//      titled from the line under the pointer and nested in its section;
+//   4. right-click on a page or a row of the contents is the browser's own
+//      menu; 🔖 in the drawer bookmarks the place on screen, titled from the
+//      first line there, nested in its section and VISIBLE in the drawer (it
+//      used to land inside a branch the edit had just folded);
 //   5. dragging a row onto the middle of another nests it there, with what is
 //      under it, and the arrangement survives the file being re-read from disk;
 //   6. a bookmark row jumps to its own place, and Reset brings back the PDF's
-//      own contents.
+//      own contents;
+//   7. going Home with the PDF open (which hides the reader with display:none
+//      rather than closing it) records neither the last page as the reading
+//      position nor the end of the PDF as the progress — and the reader is on
+//      the same page when they come back.
 //
 // Shares its harness with tools/pdf-preview-check.mjs (the same local pdf.js,
 // the same offline sign-in), cut down to what these cases need.
@@ -66,6 +75,10 @@ const API_SRC = `async () => {
     "/src/documents/pdf-links.js?v=__BUILD__",
     "/src/documents/pdf-outline.js?v=__BUILD__",
     "/src/import/pdf.js?v=__BUILD__",
+    "/src/ui/home-state.js?v=__BUILD__",
+    "/src/stats/reading-progress.js?v=__BUILD__",
+    "/src/stats/reading-stats-store.js?v=__BUILD__",
+    "/src/notes/reading-position.js?v=__BUILD__",
     "/src/library/local-library.js?v=__BUILD__",
     "/src/storage/deck-store.js?v=__BUILD__",
     "/src/ui/view-mode.js?v=__BUILD__",
@@ -224,6 +237,21 @@ try {
   }`, Array.from(fixture.bytes));
   if (opened.error) throw new Error(opened.error);
 
+  // ── 0. The pages fit the scroller they are in ───────────────────────────
+  //
+  // Fit width is measured on the empty scroller, and the pages that go in a
+  // moment later bring a scrollbar with them on any screen whose scrollbars
+  // take room (this Chrome's do: 15px). A scroller left narrower than the
+  // width the pages were fitted to reads as a resize still waiting for its
+  // refit, and every save of the reading position is turned away while one is.
+  const fitted = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    await settle(500);
+    const view = document.getElementById("documentView");
+    return { width: view.clientWidth, fitted: api.documentFittedWidth(), scrollbar: view.offsetWidth - view.clientWidth };
+  }`);
+  check("the pages are fitted to the scroller with its scrollbar in it", fitted.width === fitted.fitted, JSON.stringify(fitted));
+
   // ── 1. A link to another place in the PDF ────────────────────────────────
   check("the page's link annotations are read, and the javascript: one is dropped",
     opened.links.join(",") === `dest,${fixture.links.external.url}`, opened.links.join(", "));
@@ -278,21 +306,35 @@ try {
     selected.length > 3 && afterSelect.page === beforeSelect.page, `"${selected}" · page ${beforeSelect.page} → ${afterSelect.page}`);
   await page.evaluate(`() => window.getSelection().removeAllRanges()`);
 
-  // ── 4. A bookmark from the page's own menu ──────────────────────────────
+  // ── 4. A bookmark from the contents drawer ──────────────────────────────
   const bookmarkLine = 3;
   const bookmarkAt = await linePoint(2, bookmarkLine);
   await click(bookmarkAt.x, bookmarkAt.y, "right");
   await sleep(200);
-  const menu = await page.evaluate(`() => Array.from(document.querySelectorAll(".pdf-context-menu-item")).map((b) => b.textContent)`);
-  check("right-click on a page offers a bookmark", menu.length === 1 && /Add bookmark here \(p\. 2\)/.test(menu[0]), JSON.stringify(menu));
-  await page.evaluate(`() => document.querySelector(".pdf-context-menu-item")?.click()`);
-  await sleep(200);
-  const prompt = await page.evaluate(`() => ({
-    shown: document.getElementById("promptModal")?.hidden === false,
-    value: document.getElementById("promptModalInput")?.value || ""
-  })`);
+  const pageMenu = await page.evaluate(`() => document.querySelectorAll(".pdf-context-menu").length`);
+  check("right-click on a page opens no menu of the app's own", pageMenu === 0, `${pageMenu} menu(s)`);
+  await page.evaluate(`() => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }))`);
+
+  // The top of the screen just above line 3 of page 2, so the place on screen
+  // starts at that line — the bookmark is named after it.
+  const { baseline: bookmarkBaseline } = fixtureLineOrigin(bookmarkLine);
+  const prompt = await page.evaluate(`async (ratio) => {
+    const { api, settle } = window.__recall;
+    api.scrollToDocumentPage(2, ratio, { smooth: false });
+    await settle(400);
+    if (!document.getElementById("documentOutlineDrawer").classList.contains("is-open")) {
+      document.getElementById("documentTocBtn").click();
+      await settle(400);
+    }
+    document.getElementById("documentTocBookmarkBtn").click();
+    await settle(200);
+    return {
+      shown: document.getElementById("promptModal")?.hidden === false,
+      value: document.getElementById("promptModalInput")?.value || ""
+    };
+  }`, (792 - (bookmarkBaseline + FONT_SIZE * 1.2)) / 792);
   const expectedTitle = fixturePageLines(2, fixture.linesPerPage)[bookmarkLine];
-  check("...titled from the line under the pointer", prompt.shown && prompt.value === expectedTitle, `"${prompt.value}" vs "${expectedTitle}"`);
+  check("🔖 bookmarks the place on screen, titled from its first line", prompt.shown && prompt.value === expectedTitle, `"${prompt.value}" vs "${expectedTitle}"`);
   await page.evaluate(`() => document.getElementById("promptModalOkBtn").click()`);
   await sleep(700);
   const afterBookmark = await page.evaluate(`() => {
@@ -301,7 +343,8 @@ try {
     const rows = Array.from(document.querySelectorAll("#documentOutlineList .notes-toc-item")).map((li) => ({
       text: li.querySelector(".notes-toc-text")?.textContent || "",
       depth: Number(li.style.getPropertyValue("--toc-depth")),
-      bookmark: li.dataset.tocBookmark === "true"
+      bookmark: li.dataset.tocBookmark === "true",
+      visible: li.offsetParent !== null && li.getBoundingClientRect().height > 0
     }));
     return {
       saved: saved ? saved.entries.map((e) => e.t + "@" + e.d + (e.b ? "*" : "")) : null,
@@ -312,9 +355,61 @@ try {
   check("...which is saved as the file's own contents, nested in its section",
     afterBookmark.saved?.join("|") === `Section 1@0|Section 2@0|${expectedTitle}@1*|Section 3@0|Section 4@0`,
     JSON.stringify(afterBookmark.saved));
-  check("...and shown in the drawer as a bookmark",
-    afterBookmark.drawerOpen && afterBookmark.rows.some((row) => row.bookmark && row.text === expectedTitle && row.depth === 1),
+  check("...and shown in the drawer as a bookmark, unfolded so it can be seen",
+    afterBookmark.drawerOpen && afterBookmark.rows.some((row) => row.bookmark && row.text === expectedTitle && row.depth === 1 && row.visible),
     JSON.stringify(afterBookmark.rows));
+
+  // A second bookmark, in another section: the first one's branch stays open.
+  const second = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    api.scrollToDocumentPage(4, 0.3, { smooth: false });
+    await settle(400);
+    document.getElementById("documentTocBookmarkBtn").click();
+    await settle(200);
+    document.getElementById("promptModalOkBtn").click();
+    await settle(700);
+    return Array.from(document.querySelectorAll("#documentOutlineList .notes-toc-item"))
+      .filter((li) => li.dataset.tocBookmark === "true")
+      .map((li) => ({ text: li.querySelector(".notes-toc-text")?.textContent || "", visible: li.offsetParent !== null && li.getBoundingClientRect().height > 0 }));
+  }`);
+  check("a second bookmark is visible too, and the first stays unfolded",
+    second.length === 2 && second.every((row) => row.visible), JSON.stringify(second));
+  // Back to one bookmark, for the cases below.
+  await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const index = api.documentOutlineEntries().findIndex((e) => e.bookmark && e.page === 4);
+    if (index >= 0) await api.deleteDocumentOutlineEntry(index);
+    await settle(300);
+  }`);
+
+  // A row of the contents: no menu of the app's own on right-click; F2 renames.
+  const rowAt = await page.evaluate(`() => {
+    const link = Array.from(document.querySelectorAll("#documentOutlineList .notes-toc-link"))
+      .find((item) => item.querySelector(".notes-toc-text")?.textContent === "Section 1");
+    const box = link?.getBoundingClientRect();
+    return box ? { x: Math.round(box.left + box.width / 2), y: Math.round(box.top + box.height / 2) } : null;
+  }`);
+  if (rowAt) {
+    await click(rowAt.x, rowAt.y, "right");
+    await sleep(200);
+  }
+  const rowMenu = await page.evaluate(`() => document.querySelectorAll(".pdf-context-menu").length`);
+  check("right-click on a row of the contents opens no menu of the app's own", Boolean(rowAt) && rowMenu === 0, `${rowMenu} menu(s)`);
+  const renamePrompt = await page.evaluate(`async () => {
+    const { settle } = window.__recall;
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    const link = Array.from(document.querySelectorAll("#documentOutlineList .notes-toc-link"))
+      .find((item) => item.querySelector(".notes-toc-text")?.textContent === "Section 1");
+    link.focus();
+    link.dispatchEvent(new KeyboardEvent("keydown", { key: "F2", bubbles: true, cancelable: true }));
+    await settle(200);
+    const shown = document.getElementById("promptModal")?.hidden === false;
+    const value = document.getElementById("promptModalInput")?.value || "";
+    document.getElementById("promptModalCancelBtn")?.click();
+    await settle(200);
+    return { shown, value };
+  }`);
+  check("...and F2 on a row renames it", renamePrompt.shown && renamePrompt.value === "Section 1", JSON.stringify(renamePrompt));
 
   // ── 5. Dragging a row into another ──────────────────────────────────────
   const rowBox = async (title) => page.evaluate(`(title) => {
@@ -380,7 +475,7 @@ try {
     await settle(900);
     return { page: api.currentDocumentPage(), ratio: api.currentDocumentRatio() };
   }`, expectedTitle);
-  // The bookmark was made BOOKMARK_LEAD_PX above line 3 of page 2.
+  // The bookmark was made with the top of the screen just above line 3 of page 2.
   check("a bookmark row goes to its page, partway down it", jump.page === 2 && jump.ratio > 0.05 && jump.ratio < 0.3,
     `page ${jump.page} · ratio ${jump.ratio.toFixed(3)}`);
 
@@ -407,6 +502,55 @@ try {
   check("...and brings back the PDF's own contents",
     reset.rows.join("|") === "Section 1@0|Section 2@0|Section 3@0|Section 4@0" && reset.saved?.reset === 1 && reset.hiddenAfter,
     `${reset.rows.join(" | ")} · ${JSON.stringify(reset.saved)}`);
+
+  // ── 7. Home over an open PDF is not the end of the PDF ──────────────────
+  //
+  // Home hides the reader with display:none and leaves it open, and every
+  // offset inside a display:none subtree reads 0 — which the page lookup used
+  // to answer with the LAST page. The heartbeat then filed that as the
+  // progress, and the sync that going Home starts saved it as the place to
+  // resume.
+  const home = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const fileKey = api.statsFileKey({ deckId: api.state.deckId || null, localDeckId: api.state.localDeckId || null });
+    const pct = () => api.readReadingStats().files[fileKey]?.parts?.["doc:primary"]?.pct ?? null;
+    api.scrollToDocumentPage(2, 0.5, { smooth: false });
+    await settle(500);
+    api.tickReadingProgress(0);
+    api.flushReadingProgress();
+    api.flushReadingPositionSave();
+    const before = { page: api.currentDocumentPage(), pct: pct(), saved: api.state.meta?.readingPosition?.pdfPage ?? null };
+    api.showHome({ explicit: true });
+    await settle(200);
+    // What the reader's absence used to write down: a heartbeat, and the
+    // position save the in-place reload after a sync makes.
+    api.tickReadingProgress(0);
+    api.flushReadingProgress();
+    api.scheduleDocumentPositionSave();
+    api.flushReadingPositionSave();
+    const hidden = {
+      layoutGone: document.getElementById("documentView").getClientRects().length === 0,
+      page: api.currentDocumentPage(),
+      ratio: api.currentDocumentRatio(),
+      pct: pct(),
+      saved: api.state.meta?.readingPosition?.pdfPage ?? null,
+      stored: api.readStoredReadingPosition(api.documentPositionKey("doc"))?.pdfPage ?? null
+    };
+    api.hideHome();
+    await settle(400);
+    return { before, hidden, after: { page: api.currentDocumentPage(), ratio: api.currentDocumentRatio() }, pages: api.currentPdfPageCount() };
+  }`);
+  check("scrolling saves the reading position", home.before.saved === 2, JSON.stringify(home.before));
+  check("going Home hides the reader without closing it (the case under test)", home.hidden.layoutGone, JSON.stringify(home.hidden));
+  check("...the page is still the reader's while Home is up",
+    home.hidden.page === 2 && Math.abs(home.hidden.ratio - 0.5) < 0.05, `page ${home.hidden.page} · ratio ${home.hidden.ratio}`);
+  check("...the progress is not recorded as the end of the PDF",
+    home.before.pct != null && Math.abs(home.hidden.pct - home.before.pct) < 0.01 && home.hidden.pct < 0.6,
+    `${home.before.pct} → ${home.hidden.pct} of ${home.pages} pages`);
+  check("...the place to resume is not the last page",
+    home.hidden.saved === 2 && home.hidden.stored === 2, `meta ${home.hidden.saved} · stored ${home.hidden.stored}`);
+  check("...and coming back finds the reader where they were",
+    home.after.page === 2 && Math.abs(home.after.ratio - 0.5) < 0.05, JSON.stringify(home.after));
 } catch (error) {
   console.log(`  FAIL  the check itself: ${error?.stack || error}`);
   failures.push("the check itself");
