@@ -1012,6 +1012,38 @@ try {
       return listed === "pdf-2=Chapter 2,pdf-3,primary" || `got ${listed}`;
     });
 
+    // ── The reader's own contents for each PDF ─────────────────────────────
+    //
+    // meta.pdfUserToc (src/documents/pdf-toc.js): bookmarks and a rearranged
+    // contents, one stamped arrangement per pdf id. Without its own rule the
+    // key would fall to the spread, and the pushing device would win whatever
+    // was made last.
+    const toc = (at, title) => ({ at, pages: 3, entries: [{ id: "bm-1", t: title, p: 2, r: 0.4, d: 0, b: 1 }] });
+
+    must("the newer contents arrangement wins per PDF, from either side and whichever side is preferred", () => {
+      for (const prefer of ["local", "cloud"]) {
+        const a = docSync.mergeDeckMeta({ pdfUserToc: { primary: toc(T2, "new") } }, { pdfUserToc: { primary: toc(T1, "old") } }, { prefer });
+        const b = docSync.mergeDeckMeta({ pdfUserToc: { primary: toc(T1, "old") } }, { pdfUserToc: { primary: toc(T2, "new") } }, { prefer });
+        if (a.pdfUserToc?.primary?.entries?.[0]?.t !== "new" || b.pdfUserToc?.primary?.entries?.[0]?.t !== "new") return `prefer=${prefer}: ${JSON.stringify([a.pdfUserToc, b.pdfUserToc])}`;
+      }
+      return true;
+    });
+
+    must("...each PDF's arrangement is settled on its own, and one that only one side has is kept", () => {
+      const merged = docSync.mergeDeckMeta(
+        { pdfUserToc: { primary: toc(T3, "cloud primary"), "pdf-2": toc(T1, "cloud second") } },
+        { pdfUserToc: { "pdf-2": toc(T2, "local second"), "pdf-3": toc(T1, "local third") } },
+        { prefer: "cloud" }
+      );
+      const titles = ["primary", "pdf-2", "pdf-3"].map((id) => merged.pdfUserToc?.[id]?.entries?.[0]?.t).join(",");
+      return titles === "cloud primary,local second,local third" || `got ${titles}`;
+    });
+
+    must("...and a reset is a stamped value that beats an older arrangement on the other device", () => {
+      const merged = docSync.mergeDeckMeta({ pdfUserToc: { primary: toc(T1, "old") } }, { pdfUserToc: { primary: { at: T2, reset: 1 } } }, { prefer: "cloud" });
+      return (merged.pdfUserToc?.primary?.reset === 1 && !merged.pdfUserToc.primary.entries) || JSON.stringify(merged.pdfUserToc);
+    });
+
     // ── Removing the deck's FIRST paper, or its ONLY one ───────────────────
     //
     // Both used to be refused (removePdfFromDeck), so the merge never had to
@@ -1163,6 +1195,16 @@ try {
     must("...while an untouched deck still reads as unchanged", () =>
       deckContentMatches(deck({ pdf: { ...paper, s3Key: KEY } }), deck({ pdf: { ...paper, s3Key: KEY } })) === true
       || "an identical deck read as changed — every autosave would push");
+
+    must("a bookmark or a rearranged PDF contents counts as a change", () =>
+      deckContentMatches(deck({ pdf: paper }), deck({ pdf: paper, pdfUserToc: { primary: { at: T1, pages: 3, entries: [] } } })) === false
+      || "a new contents arrangement read as no change");
+
+    must("...and so does a later edit of it", () =>
+      deckContentMatches(
+        deck({ pdf: paper, pdfUserToc: { primary: { at: T1, pages: 3, entries: [] } } }),
+        deck({ pdf: paper, pdfUserToc: { primary: { at: T2, pages: 3, entries: [] } } })
+      ) === false || "an edited contents arrangement read as no change");
   }
 
   console.log("── document sync ──");

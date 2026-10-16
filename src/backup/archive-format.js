@@ -152,6 +152,11 @@ export const BACKED_UP_META_KEYS = {
   pdfTocByPdfId:
     "The contents read out of each PDF beyond the primary, cached the same "
     + "way pdfToc above caches the primary's, and for the same reason.",
+  pdfUserToc:
+    "The reader's own contents for each PDF, one entry per pdf id: the "
+    + "bookmarks they added and the headings they renamed, moved or nested. "
+    + "Not derivable from the file the way pdfToc is, so it is carried; each "
+    + "entry is settled by its own `at`.",
   bookmark:
     "The place the reader marked. Settled on restore by its own `at`, never by "
     + "which side is newer as a whole.",
@@ -288,6 +293,7 @@ export const SHARE_META_POLICY = {
   pdfToc: SHARE_POLICY_KEEP,
   deletedPdfIds: SHARE_POLICY_KEEP,
   pdfTocByPdfId: SHARE_POLICY_KEEP,
+  pdfUserToc: SHARE_POLICY_KEEP,
   pdfActiveId: SHARE_POLICY_KEEP,
   pdfOrder: SHARE_POLICY_KEEP,
   pdfReadingPositions: SHARE_POLICY_PROGRESS,

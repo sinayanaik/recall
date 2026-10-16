@@ -307,7 +307,8 @@ export function pdfAreaLayer(pageNumber) {
 // was built — null for a page that has none on screen. Kept rather than fetched
 // because getTextContent() is a round trip to the worker and this page has
 // already paid for one; see repairDocumentHighlightText in pdf-highlights.js,
-// which is the only reader.
+// and the bookmark title read off the line under the pointer in
+// pdf-bookmarks.js.
 export function pdfPageTextItems(pageNumber) {
   return openPdf?.pages?.get(pageNumber)?.textItems || null;
 }

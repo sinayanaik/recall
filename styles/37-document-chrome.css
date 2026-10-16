@@ -592,6 +592,29 @@
   font-size: 0.85rem;
 }
 
+/* The way back from a link inside the PDF (src/documents/pdf-links.js). It is
+   the one thing in the cluster that is there because of something the reader
+   just did, so while it shows the cluster is at full strength. */
+.document-pager .document-link-back {
+  height: 26px;
+  min-height: 26px;
+  padding: 0 8px;
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.document-pager:has(.document-link-back:not([hidden])) {
+  opacity: 1;
+}
+
+/* A link in the paper under a mouse. The spans set `cursor: text` for
+   selection, so the pointer is overridden on them too. */
+.document-scroll.is-over-pdf-link .pdf-page,
+.document-scroll.is-over-pdf-link .pdf-text-layer span {
+  cursor: pointer;
+}
+
 /* A phone has no room for a cluster in the corner of a fit-width page, so it
    loses the two things pinch-zoom already does. */
 @media (max-width: 560px) {

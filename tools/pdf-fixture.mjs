@@ -264,7 +264,7 @@ export function buildFixturePdf({
   pages = 4, linesPerPage = 12, annotate = true,
   width = PAGE_WIDTH, height = PAGE_HEIGHT,
   outline = true, headingSize = 0, heightForPage = null, scanned = false, splitWords = false,
-  overprint = false
+  overprint = false, links = false
 } = {}) {
   const objects = [];       // 1-based; objects[i] is object i+1
   const push = (body) => { objects.push(body); return objects.length; };
@@ -298,6 +298,17 @@ export function buildFixturePdf({
       + `/BitsPerComponent 8 /Length ${scan.pixels.length} >>\nstream\n${scan.pixels}\nendstream`)
     : 0;
 
+  // Links on page 1, for src/documents/pdf-links.js: one to a place halfway
+  // down page 3 (the shape a "see §3" or a citation is), one to a web page,
+  // and one with a javascript: URI that must never be followed. Reserved here,
+  // written once the pages they point at have ids.
+  const linkSpec = links && pages >= 3 ? {
+    internal: { line: 4, toPage: 3, top: PAGE_HEIGHT / 2 },
+    external: { line: 6, url: "https://example.com/the-fixture-paper" },
+    unsafe: { line: 8, url: "javascript:alert(1)" }
+  } : null;
+  const linkIds = linkSpec ? [push(""), push(""), push("")] : [];
+
   const pageIds = [];
   for (let pageNumber = 1; pageNumber <= pages; pageNumber++) {
     const stream = scan
@@ -308,7 +319,11 @@ export function buildFixturePdf({
           ? overprintStream()
           : contentStreamFor(fixturePageLines(pageNumber, linesPerPage, { headingSize }));
     const contentId = push(`<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`);
-    const annots = pageNumber === annotatedPage ? ` /Annots [${annotationId} 0 R]` : "";
+    const pageAnnots = [
+      ...(pageNumber === annotatedPage ? [annotationId] : []),
+      ...(pageNumber === 1 ? linkIds : [])
+    ];
+    const annots = pageAnnots.length ? ` /Annots [${pageAnnots.map((id) => `${id} 0 R`).join(" ")}]` : "";
     const pageHeight = typeof heightForPage === "function" ? (heightForPage(pageNumber) || height) : height;
     const fonts = `/F1 ${fontId} 0 R`
       + (obliqueId ? ` /F2 ${obliqueId} 0 R` : "")
@@ -318,6 +333,14 @@ export function buildFixturePdf({
       `<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 ${width} ${pageHeight}] `
       + `/Resources ${resources} /Contents ${contentId} 0 R${annots} >>`
     ));
+  }
+
+  if (linkSpec) {
+    const linkAnnot = (line, action) => `<< /Type /Annot /Subtype /Link /Rect [${lineRect(line, 200).join(" ")}] /Border [0 0 0] /A ${action} >>`;
+    objects[linkIds[0] - 1] = linkAnnot(linkSpec.internal.line,
+      `<< /S /GoTo /D [${pageIds[linkSpec.internal.toPage - 1]} 0 R /XYZ 0 ${linkSpec.internal.top} 0] >>`);
+    objects[linkIds[1] - 1] = linkAnnot(linkSpec.external.line, `<< /S /URI /URI (${pdfString(linkSpec.external.url)}) >>`);
+    objects[linkIds[2] - 1] = linkAnnot(linkSpec.unsafe.line, `<< /S /URI /URI (${pdfString(linkSpec.unsafe.url)}) >>`);
   }
 
   // A two-level outline: one entry per page, so the check can assert both that
@@ -373,6 +396,7 @@ export function buildFixturePdf({
       : null,
     annotation: annotate
       ? { page: annotatedPage, line: annotatedLine, rect, comment: annotationComment }
-      : null
+      : null,
+    links: linkSpec
   };
 }

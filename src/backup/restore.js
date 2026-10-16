@@ -803,6 +803,7 @@ export const META_KEY_LABELS = {
   notebook: "Canvas pages",
   pdfToc: "PDF contents",
   pdfTocByPdfId: "PDF contents",
+  pdfUserToc: "PDF bookmarks and contents edits",
   pdfBlocks: "blocks on the pages",
   deletedBlockIds: "deleted blocks",
   deletedPdfIds: "removed PDFs",

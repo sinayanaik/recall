@@ -137,6 +137,9 @@ import { setPdfRegionGoToHandler } from "./documents/pdf-region-embed.js?v=__BUI
 import { setRegionBlockSource } from "./documents/pdf-region-marks.js?v=__BUILD__";
 import { downloadRegionImage, downloadRegionPdf } from "./documents/pdf-region-download.js?v=__BUILD__";
 import { closeDocumentToc, documentOutlineEntries, initDocumentOutlineFolding, isDocumentTocOpen, resolveOutlineEntryPage, toggleDocumentToc } from "./documents/pdf-outline.js?v=__BUILD__";
+import { initDocumentLinks, prefetchDocumentPageLinks, resetDocumentLinks } from "./documents/pdf-links.js?v=__BUILD__";
+import { initDocumentBookmarks } from "./documents/pdf-bookmarks.js?v=__BUILD__";
+import { initDocumentOutlineDrag } from "./documents/pdf-outline-drag.js?v=__BUILD__";
 import { activePdfId, deckPdfById, deckPdfs, PDF_PRIMARY_ID, withDeckPdfs } from "./documents/pdf-multi.js?v=__BUILD__";
 import { removePdfFromDeck, renamePdf } from "./documents/pdf-multi-actions.js?v=__BUILD__";
 import { closePdfPanel, initPdfSwitcher } from "./documents/pdf-switcher.js?v=__BUILD__";
@@ -1448,6 +1451,9 @@ onDomReady(() => {
     // handwriting it annotates, and under the numbered badges you press.
     paintDocumentBlocks(pageNumber);
     paintPageNoteBadges(pageNumber);
+    // The page's links, fetched now so a press on one has them in hand (see
+    // src/documents/pdf-links.js — a web link must open inside the click).
+    prefetchDocumentPageLinks(pageNumber);
     // ...and the tint that says which of these marks the pane is currently on.
     // The mark layer was rebuilt from scratch a moment ago — paintDocument
     // Highlights empties it — so the class went with the elements that carried
@@ -1455,6 +1461,8 @@ onDomReady(() => {
     repaintHighlightLink();
   });
   setDocumentOpenedHook((opened) => {
+    // A "back" chip left by a link in the last document points into that one.
+    resetDocumentLinks();
     // The engine holds decoded strokes for every page it has painted, keyed by
     // page number — and page 7 of the last paper is not page 7 of this one. So
     // it is torn down on a cold open, where openDocumentViewBody has just
@@ -4084,6 +4092,9 @@ const DOCUMENT_REFIT_MS = 150;
 // row. They used to be two copies of `drawer.hidden = !open`, and both of them
 // left out the `.is-open` class the drawer is actually revealed by, so the
 // panel was unhidden fully transparent and off the left edge of the screen.
+initDocumentLinks();
+initDocumentBookmarks();
+initDocumentOutlineDrag();
 el.documentTocBtn?.addEventListener("click", toggleDocumentToc);
 el.documentTocCloseBtn?.addEventListener("click", closeDocumentToc);
 initDocumentOutlineFolding();
@@ -4109,7 +4120,9 @@ el.documentOutlineList?.addEventListener("click", (event) => {
   const entry = documentOutlineEntries()[index];
   if (!entry) return;
   if (entry.page) {
-    goToOutlineEntry(entry.page);
+    // A bookmark, or a row of the reader's own contents, knows how far down
+    // its page it is; the file's own rows go to the top of theirs.
+    goToOutlineEntry(entry.page, entry.ratio || 0);
     return;
   }
   // One worker round trip. Unawaited on purpose — the handler cannot block —
@@ -4119,8 +4132,8 @@ el.documentOutlineList?.addEventListener("click", (event) => {
   });
 });
 
-function goToOutlineEntry(page) {
-  scrollToDocumentPage(page, 0);
+function goToOutlineEntry(page, ratio = 0) {
+  scrollToDocumentPage(page, ratio);
   // Always, unlike the notes contents, and the difference is not an oversight.
   // Above 720px the notes STAGE makes room for its drawer (the
   // .notes-stage.is-toc-open rules in styles/12-notes.css), so the drawer covers
@@ -4143,6 +4156,10 @@ document.addEventListener("pointerdown", (event) => {
   if (!isDocumentTocOpen()) return;
   if (el.documentOutlineDrawer?.contains(event.target)) return;
   if (el.documentTocBtn?.contains(event.target)) return;
+  // A row's menu and the rename/confirm dialogs it opens are the drawer's own,
+  // floating over it.
+  if (el.promptModal?.contains(event.target) || el.confirmModal?.contains(event.target)) return;
+  if (event.target.closest?.(".pdf-context-menu")) return;
   closeDocumentToc();
 });
 

@@ -65,6 +65,10 @@ const SECTIONS = [
 // Anything appearing in styles/ that is neither a slice nor listed here is
 // still a failure.
 const POST_SPLIT = {
+  "81-pdf-contents-edit.css":
+    "The reader's own PDF contents (src/documents/pdf-bookmarks.js, " +
+    "pdf-outline-drag.js): the page and row menu, bookmark rows, and the " +
+    "drag-to-rearrange states in the contents drawer.",
   "80-reading-progress.css":
     "Reading progress and the time log (src/stats/, src/ui/home-stats.js): the " +
     "percent / chapter / time-left line at the foot of Notes and PDFs, and " +

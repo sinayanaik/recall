@@ -556,6 +556,14 @@ function documentLocatorSignature(meta) {
   return `${list}|${order}|${stamp(meta?.pdf)}|${stamp(meta?.notebook)}`;
 }
 
+// The reader's own contents for each PDF (src/documents/pdf-toc.js). Every
+// edit to one stamps its `at`, so the stamps alone say whether anything moved.
+function userContentsSignature(meta) {
+  const bag = meta?.pdfUserToc;
+  if (!bag || typeof bag !== "object") return "";
+  return Object.keys(bag).sort().map((id) => `${id}:${Number(bag[id]?.at) || 0}`).join(",");
+}
+
 export function deckContentMatches(a, b) {
   if (!a || !b) return false;
   if (normalizeSyncText(a.deckTitle) !== normalizeSyncText(b.deckTitle)) return false;
@@ -579,6 +587,7 @@ export function deckContentMatches(a, b) {
   if (!annotationsMatch(a, b)) return false;
   if (handwritingSignature(a.meta) !== handwritingSignature(b.meta)) return false;
   if (documentLocatorSignature(a.meta) !== documentLocatorSignature(b.meta)) return false;
+  if (userContentsSignature(a.meta) !== userContentsSignature(b.meta)) return false;
   const aCards = a.cards || [];
   const bCards = b.cards || [];
   if (aCards.length !== bCards.length) return false;

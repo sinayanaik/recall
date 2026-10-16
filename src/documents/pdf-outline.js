@@ -41,7 +41,9 @@ import {
   tocParentsFromDepths,
   tocRowFor
 } from "../notes/toc-tree.js?v=__BUILD__";
-import { cachePdfContents, derivePdfContents, readCachedPdfContents } from "./pdf-toc.js?v=__BUILD__";
+import { cachePdfContents, clearUserPdfContents, derivePdfContents, readCachedPdfContents, readUserPdfContents, writeUserPdfContents } from "./pdf-toc.js?v=__BUILD__";
+import { destinationPageNumber, explicitDestination, resolvePdfDestination } from "./pdf-dest.js?v=__BUILD__";
+import { indent, insertionFor, moveDown, moveSubtree, moveUp, outdent, parentOf, removeEntry } from "./pdf-toc-arrange.js?v=__BUILD__";
 import { DOC_SLOT_NOTEBOOK, activeDocSlot } from "./doc-slot.js?v=__BUILD__";
 import { PDF_PRIMARY_ID } from "./pdf-multi.js?v=__BUILD__";
 
@@ -97,6 +99,15 @@ let outlineScanning = false;
 // as pdfOpenToken in pdf-view.js.
 let outlineToken = 0;
 
+// Whether what is listed is the reader's own arrangement (meta.pdfUserToc, see
+// "The reader's own contents" below) rather than the file's or the derived one.
+let outlineUser = false;
+
+// The document and PDF the list belongs to — what an edit needs to resolve the
+// file's destinations into pages and to know where to save.
+let outlineDoc = null;
+let outlinePdfId = PDF_PRIMARY_ID;
+
 // The flat list's tree, and which branches are folded — by TITLE+PAGE rather
 // than by index, exactly as the notes contents carries folds by slug.
 let outlineDepths = [];
@@ -117,9 +128,15 @@ export function isDocumentOutlineDerived() {
   return outlineDerived;
 }
 
+export function isDocumentOutlineUser() {
+  return outlineUser;
+}
+
 export function clearDocumentOutline() {
   outlineToken += 1;
   outlineEntries = [];
+  outlineUser = false;
+  outlineDoc = null;
   outlineDerived = false;
   outlineScanning = false;
   outlineItems = [];
@@ -132,19 +149,13 @@ export function clearDocumentOutline() {
   if (list) list.innerHTML = "";
   if (el.documentOutlineEmpty) el.documentOutlineEmpty.hidden = false;
   paintOutlineDerivedNote();
+  paintOutlineEditable();
 }
 
 // A pdf.js outline destination → a 1-based page number, or 0 when it cannot be
 // resolved (a broken link, or a named destination the file does not define).
 export async function outlineDestinationPage(doc, dest) {
-  try {
-    const resolved = typeof dest === "string" ? await doc.getDestination(dest) : dest;
-    if (!Array.isArray(resolved) || !resolved.length) return 0;
-    const index = await doc.getPageIndex(resolved[0]);
-    return index + 1;
-  } catch (_) {
-    return 0;
-  }
+  return destinationPageNumber(doc, await explicitDestination(doc, dest));
 }
 
 export function flattenOutline(items, depth = 0, out = []) {
@@ -166,7 +177,30 @@ export function flattenOutline(items, depth = 0, out = []) {
 
 export async function buildDocumentOutline(doc, pdfId = PDF_PRIMARY_ID) {
   const token = (outlineToken += 1);
+  outlineDoc = doc;
+  outlinePdfId = pdfId || PDF_PRIMARY_ID;
+  outlineUser = false;
+  paintOutlineEditable();
+
+  // ── The reader's own, first ──────────────────────────────────────────────
+  //
+  // Once someone has added a bookmark or moved a heading, what they arranged
+  // IS the contents of this PDF — the file's outline and the derived one are
+  // what it was made from, and what a reset goes back to.
+  if (activeDocSlot() !== DOC_SLOT_NOTEBOOK) {
+    const own = readUserPdfContents(doc.numPages, outlinePdfId);
+    if (own) {
+      outlineEntries = own.map((entry) => ({ ...entry, dead: !entry.page }));
+      outlineUser = true;
+      outlineDerived = false;
+      outlineScanning = false;
+      renderDocumentOutline();
+      return outlineEntries;
+    }
+  }
+
   const outline = await doc.getOutline();
+  if (token !== outlineToken) return outlineEntries;
   outlineEntries = flattenOutline(outline).filter((entry) => entry.title);
   outlineDerived = false;
   outlineScanning = false;
@@ -339,6 +373,9 @@ function markOutlineRowDead(li, entry) {
 // fold state, which is a fair price and is a shape a real document essentially
 // never produces (pdfTocEntriesFrom drops consecutive repeats).
 function outlineKeyFor(entry) {
+  // The reader's own rows carry an id that survives a move, a rename and a
+  // change of depth — which none of the three parts below does.
+  if (entry.id) return `id:${entry.id}`;
   return `${entry.depth}:${entry.page}:${entry.title}`;
 }
 
@@ -415,6 +452,8 @@ export function renderDocumentOutline() {
       tail
     });
     link.dataset.outlineIndex = String(index);
+    if (entry.id) li.dataset.tocId = entry.id;
+    if (entry.bookmark) li.dataset.tocBookmark = "true";
     markOutlineRowDead(li, entry);
     frag.appendChild(li);
     outlineItems.push(li);
@@ -423,6 +462,7 @@ export function renderDocumentOutline() {
   list.appendChild(frag);
   applyDocumentOutlineFolding();
   updateDocumentOutlineFoldAll();
+  paintOutlineEditable();
 }
 
 export function applyDocumentOutlineFolding() {
@@ -494,14 +534,28 @@ export function setDocumentOutlinePage(page) {
 
 export function updateDocumentOutlineActive() {
   if (!outlineLinks.length || !outlineCurrentPage) return;
-  // The last entry at or before this page, skipping folded-away rows — lighting
-  // a row the reader cannot see says nothing.
+  // The entry furthest into the document that is still at or before this page,
+  // skipping folded-away rows — lighting a row the reader cannot see says
+  // nothing. Not simply "the last one before the first that is past it": the
+  // reader's own arrangement need not be in page order (a bookmark dragged
+  // under the chapter it is about, wherever that chapter is), so every row is
+  // looked at, and a tie goes to the later row as the old scan's did.
   let found = -1;
+  let foundPage = 0;
+  let foundRatio = -1;
   for (let index = 0; index < outlineEntries.length; index += 1) {
     const entry = outlineEntries[index];
-    if (!entry.page || entry.page > outlineCurrentPage) break;
+    if (!entry.page || entry.page > outlineCurrentPage) {
+      if (!outlineUser && entry.page > outlineCurrentPage) break;
+      continue;
+    }
     if (outlineItems[index]?.hidden) continue;
-    found = index;
+    const ratio = Number(entry.ratio) || 0;
+    if (entry.page > foundPage || (entry.page === foundPage && ratio >= foundRatio)) {
+      found = index;
+      foundPage = entry.page;
+      foundRatio = ratio;
+    }
   }
   if (found === outlineActiveIndex) return;
   const previous = outlineLinks[outlineActiveIndex];
@@ -514,6 +568,193 @@ export function updateDocumentOutlineActive() {
   if (!next) return;
   next.classList.add("is-active");
   next.setAttribute("aria-current", "true");
+}
+
+// ── The reader's own contents ──────────────────────────────────────────────
+//
+// A bookmark the reader adds, a heading dragged under another, a row renamed
+// or deleted: each turns the list on screen into the reader's own copy the
+// first time, saved as meta.pdfUserToc (src/documents/pdf-toc.js) and listed in
+// place of the file's or the derived contents from then on. Every operation
+// here is by INDEX into the list as it is on screen, and the copy keeps every
+// row in the same place, so an index taken from a row before the copy is still
+// the right one after it.
+
+// Bookmarks and edits are for a PDF. The Canvas has no contents to arrange;
+// its drawer is there for its highlights.
+export function canEditDocumentOutline() {
+  return Boolean(outlineDoc) && activeDocSlot() !== DOC_SLOT_NOTEBOOK;
+}
+
+function paintOutlineEditable() {
+  const editable = canEditDocumentOutline();
+  el.documentOutlineDrawer?.classList.toggle("is-editable", editable);
+  const reset = document.getElementById("documentTocResetBtn");
+  if (reset) reset.hidden = !(editable && outlineUser);
+  const bookmark = document.getElementById("documentTocBookmarkBtn");
+  if (bookmark) bookmark.hidden = !editable;
+}
+
+function mintOutlineId(prefix) {
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+// The list on screen as the reader's own copy, made the first time it is
+// edited. The file's own outline has its destinations looked up in full on the
+// way — page and height — because the copy has to stand on its own: it is
+// saved, synced, and listed on a device that never resolved a thing.
+//
+// Resolves false when the list changed underneath (another document opened)
+// while the lookups were running.
+export async function ensureUserDocumentOutline() {
+  if (outlineUser) return true;
+  if (!canEditDocumentOutline()) return false;
+  const doc = outlineDoc;
+  const token = outlineToken;
+  const source = outlineEntries.slice();
+  const copied = [];
+  for (const entry of source) {
+    let page = entry.page || 0;
+    let ratio = Number(entry.ratio) || 0;
+    if (entry.dest && !entry.dead) {
+      const target = await resolvePdfDestination(doc, entry.dest);
+      if (token !== outlineToken) return false;
+      page = target.page;
+      ratio = target.ratio;
+    }
+    copied.push({
+      id: mintOutlineId("toc"),
+      title: entry.title,
+      page,
+      ratio,
+      depth: entry.depth,
+      bookmark: Boolean(entry.bookmark),
+      user: true,
+      dead: !page
+    });
+  }
+  if (token !== outlineToken) return false;
+  // Depths as the drawer draws them (tocDepthsFromLevels), and never more
+  // than one deeper than the row above: the arithmetic in pdf-toc-arrange.js
+  // reads a row's children off the depths, and a derived contents whose first
+  // heading is a level 2 is not a list of orphans.
+  const least = copied.reduce((min, entry) => Math.min(min, entry.depth), Infinity);
+  copied.forEach((entry, index) => {
+    const ceiling = index ? copied[index - 1].depth + 1 : 0;
+    entry.depth = Math.max(0, Math.min(entry.depth - least, ceiling, OUTLINE_MAX_DEPTH));
+  });
+  // A newer build from here on: a derivation still scanning, or the outline's
+  // tail still resolving, is about a list that has just been replaced.
+  outlineToken += 1;
+  outlineUser = true;
+  outlineDerived = false;
+  outlineScanning = false;
+  outlineEntries = copied;
+  return true;
+}
+
+// Save and show. `focusId` is a row to make visible — its ancestors unfolded
+// and the row scrolled to and flashed — after a bookmark or a move.
+function commitUserOutline(entries, focusId = null) {
+  outlineEntries = entries;
+  writeUserPdfContents(entries, outlineDoc?.numPages || 0, outlinePdfId);
+  if (focusId) {
+    const index = entries.findIndex((entry) => entry.id === focusId);
+    for (let at = parentOf(entries, index); at >= 0; at = parentOf(entries, at)) {
+      outlineCollapsed.delete(outlineKeyFor(entries[at]));
+    }
+  }
+  renderDocumentOutline();
+  if (focusId) flashDocumentOutlineRow(focusId);
+}
+
+export function flashDocumentOutlineRow(id) {
+  const li = el.documentOutlineList?.querySelector(`[data-toc-id="${CSS.escape(id)}"]`);
+  if (!li) return;
+  li.scrollIntoView({ block: "nearest" });
+  li.classList.remove("is-flash");
+  void li.offsetWidth;
+  li.classList.add("is-flash");
+  setTimeout(() => li.classList.remove("is-flash"), 1600);
+}
+
+// A bookmark at a place in the document: { page, ratio, title }. Resolves the
+// new row's id, or null when nothing was added.
+export async function addDocumentOutlineBookmark({ page, ratio = 0, title = "" } = {}) {
+  if (!page || !(await ensureUserDocumentOutline())) return null;
+  const clean = String(title || "").replace(/\s+/g, " ").trim() || `Bookmark — p. ${page}`;
+  const row = {
+    id: mintOutlineId("bm"),
+    title: clean,
+    page,
+    ratio: Math.min(1, Math.max(0, Number(ratio) || 0)),
+    depth: 0,
+    bookmark: true,
+    user: true,
+    dead: false
+  };
+  const at = insertionFor(outlineEntries, row.page, row.ratio, OUTLINE_MAX_DEPTH);
+  row.depth = at.depth;
+  const next = outlineEntries.slice();
+  next.splice(at.index, 0, row);
+  commitUserOutline(next, row.id);
+  return row.id;
+}
+
+// A branch dragged in the drawer: the row at `from` and everything under it,
+// put in front of `before` with its top row at `depth`.
+export async function moveDocumentOutlineEntry(from, before, depth) {
+  if (!outlineEntries[from] || !(await ensureUserDocumentOutline())) return false;
+  const moved = moveSubtree(outlineEntries, from, before, depth, OUTLINE_MAX_DEPTH);
+  const id = moved.entries[moved.index]?.id;
+  commitUserOutline(moved.entries, id);
+  return true;
+}
+
+const OUTLINE_STEPS = { up: moveUp, down: moveDown, indent, outdent };
+
+// One keyboard step — "up", "down", "indent", "outdent". False when the row
+// cannot go that way (the first of its siblings cannot go up).
+export async function stepDocumentOutlineEntry(index, step) {
+  const apply = OUTLINE_STEPS[step];
+  if (!apply || !outlineEntries[index]) return false;
+  if (!apply(outlineEntries, index, OUTLINE_MAX_DEPTH)) return false;
+  if (!(await ensureUserDocumentOutline())) return false;
+  const moved = apply(outlineEntries, index, OUTLINE_MAX_DEPTH);
+  if (!moved) return false;
+  const id = moved.entries[moved.index]?.id;
+  commitUserOutline(moved.entries, id);
+  return true;
+}
+
+export function canStepDocumentOutlineEntry(index, step) {
+  const apply = OUTLINE_STEPS[step];
+  return Boolean(apply && outlineEntries[index] && apply(outlineEntries, index, OUTLINE_MAX_DEPTH));
+}
+
+export async function renameDocumentOutlineEntry(index, title) {
+  const clean = String(title || "").replace(/\s+/g, " ").trim();
+  if (!clean || !outlineEntries[index] || !(await ensureUserDocumentOutline())) return false;
+  if (outlineEntries[index].title === clean) return true;
+  const next = outlineEntries.slice();
+  next[index] = { ...next[index], title: clean };
+  commitUserOutline(next);
+  return true;
+}
+
+export async function deleteDocumentOutlineEntry(index) {
+  if (!outlineEntries[index] || !(await ensureUserDocumentOutline())) return false;
+  commitUserOutline(removeEntry(outlineEntries, index));
+  return true;
+}
+
+// Back to the file's own outline, or the derived contents.
+export async function resetDocumentOutline() {
+  if (!outlineDoc) return;
+  clearUserPdfContents(outlinePdfId);
+  outlineCollapsed = new Set();
+  outlineKnownBranches = new Set();
+  await buildDocumentOutline(outlineDoc, outlinePdfId);
 }
 
 // ── Opening and closing ────────────────────────────────────────────────────

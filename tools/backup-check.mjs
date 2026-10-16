@@ -125,6 +125,7 @@ const META_FIXTURES = {
   deletedPdfIds: { "pdf-bz": "2027-01-01T00:00:00.000Z" },
   pdfReadingPositions: { "pdf-b2": { offset: 4, pdfPage: 4, ratio: 0.5, text: "over there", at: 1_800_000_000_000 } },
   pdfTocByPdfId: { "pdf-b2": { v: 1, pages: 2, entries: [{ t: "Appendix", p: 1, d: 0 }] } },
+  pdfUserToc: { primary: { at: 1_800_000_000_000, pages: 3, entries: [{ id: "bm-1", t: "Key result", p: 2, r: 0.4, d: 1, b: 1 }] } },
   bookmark: { offset: 10, text: "here", at: 1_800_000_000_000 },
   readingPosition: { offset: 20, text: "there", at: 1_800_000_000_000 },
   linkIds: ["lnk-one"],
