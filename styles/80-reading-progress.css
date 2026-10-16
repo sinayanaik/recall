@@ -2,33 +2,42 @@
  * Added after the split — see POST_SPLIT in tools/split-css.mjs.
  */
 
-/* ── The line at the foot of Notes and PDFs ─────────────────────────────────
+/* ── The row at the foot of Notes and PDFs ─────────────────────────────────
    src/stats/reading-progress.js appends one to #notesStage and one to
-   #documentStage. Over the page rather than under it, like the PDF pager: a
-   reader gets every pixel of height for the text. Quiet until looked at, and
-   never in the way of a press — pointer-events stay with the page. */
+   #documentStage, the first time the reader turns it on (⋯ → Show progress).
+   One compact row, IN the stage's flex column rather than over the page, so it
+   never covers a line of text: a 2px fill along its top edge, and one line of
+   small type under it that cuts off with "…" rather than wrapping. */
 .reading-progress {
-  position: absolute;
-  right: 0;
-  bottom: 0;
-  left: 0;
-  z-index: 5;
-  height: 0;
-  pointer-events: none;
+  position: relative;
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  min-width: 0;
+  height: 18px;
+  /* Flush with the foot of the stage, closing up the stage's own gap. */
+  margin-top: calc(-1 * var(--notes-stage-gap, 0px));
+  padding: 2px 10px 0;
+  overflow: hidden;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 0.66rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  white-space: nowrap;
   contain: layout style;
 }
 
-.reading-progress[hidden],
-html[data-reading-progress="off"] .reading-progress {
+.reading-progress[hidden] {
   display: none;
 }
 
 .reading-progress-bar {
   position: absolute;
+  top: 0;
   right: 0;
-  bottom: 0;
   left: 0;
-  height: 3px;
+  height: 2px;
   background: color-mix(in srgb, var(--line) 70%, transparent);
 }
 
@@ -37,31 +46,13 @@ html[data-reading-progress="off"] .reading-progress {
   width: 0;
   height: 100%;
   background: var(--accent);
-  transition: width 0.3s ease;
 }
 
 .reading-progress-label {
-  position: absolute;
-  bottom: 9px;
-  left: 12px;
-  display: flex;
-  align-items: center;
-  gap: 0 8px;
-  max-width: calc(100% - 24px);
+  display: block;
+  min-width: 0;
   overflow: hidden;
-  /* Its own presses, so a pointer resting on it gets the details as a tooltip;
-     everything around it still belongs to the page. */
-  pointer-events: auto;
-  padding: 3px 10px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--panel) 96%, transparent);
-  box-shadow: 0 4px 14px rgb(0 0 0 / 0.18);
-  color: var(--muted);
-  font-size: 0.72rem;
-  font-variant-numeric: tabular-nums;
-  line-height: 1.4;
-  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .reading-progress-label > span[hidden] {
@@ -70,7 +61,7 @@ html[data-reading-progress="off"] .reading-progress {
 
 .reading-progress-label > span + span::before {
   content: "·";
-  margin-right: 8px;
+  margin: 0 6px;
   color: color-mix(in srgb, var(--muted) 60%, transparent);
 }
 
@@ -79,37 +70,13 @@ html[data-reading-progress="off"] .reading-progress {
   font-weight: 800;
 }
 
-/* The PDF pager sits at the bottom right; the line keeps to the left of it. */
-#documentStage .reading-progress-label {
-  max-width: calc(100% - 250px);
-  bottom: 18px;
-  left: 14px;
-}
-
-#notesStage .reading-progress-label {
-  bottom: 10px;
-}
-
-/* Paged notes carry their own page row at the foot of the stage; the line sits
-   above it, and the bar gives way to it. */
-#notesStage .reading-progress.is-paged .reading-progress-label {
-  bottom: 40px;
-}
-
-#notesStage .reading-progress.is-paged .reading-progress-bar {
-  display: none;
+/* The PDF's floating page control sits just above the row while it is shown. */
+#documentStage.has-reading-progress .document-pager {
+  bottom: 32px;
 }
 
 @media (max-width: 520px) {
   .reading-progress-chapter-left {
-    display: none;
-  }
-
-  #documentStage .reading-progress-label {
-    max-width: calc(100% - 196px);
-  }
-
-  #documentStage .reading-progress-chapter {
     display: none;
   }
 }
@@ -368,7 +335,6 @@ html[data-reading-progress="off"] .reading-progress {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .reading-progress-fill,
   .home-reading-row {
     transition: none;
   }

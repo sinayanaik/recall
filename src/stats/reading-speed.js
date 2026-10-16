@@ -40,10 +40,6 @@ export const SPEED_BOUNDS = {
   notes: { min: 60000 / 1000, max: 60000 / 50 }
 };
 
-// The most a single move may cover and still be reading rather than a jump —
-// a contents entry, a search hit, a link, a resume landing.
-export const SPEED_JUMP_UNITS = { pdf: 3, notes: 1500 };
-
 export function defaultMsPerUnit(kind) {
   return kind === "pdf" ? DEFAULT_MS_PER_PAGE : DEFAULT_MS_PER_WORD;
 }

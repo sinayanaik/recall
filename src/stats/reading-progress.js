@@ -26,10 +26,12 @@ import { isNotesPaged } from "../notes/paged-view.js?v=__BUILD__";
 import { readStoredReadingPosition } from "../notes/reading-position.js?v=__BUILD__";
 import { currentDeckKey, currentReadingAnchor, currentReadingAnchorDeckKey } from "../notes/scroll-anchor.js?v=__BUILD__";
 import { formatDuration } from "./combine.js?v=__BUILD__";
-import { buildWordIndex, chapterProgress, pickChapterLevel, wordsBeforeOffset } from "./reading-math.js?v=__BUILD__";
+import {
+  buildWordIndex, calibrateWordsPerPx, chapterProgress, interpolateNotesWords, isReadingJump, pickChapterLevel, wordsBeforeOffset
+} from "./reading-math.js?v=__BUILD__";
 import { readReadingStats, recordPartProgress, statsFileKey } from "./reading-stats-store.js?v=__BUILD__";
 import {
-  SPEED_JUMP_UNITS, estimateRemainingMs, readSpeedModel, recordSpeedSample, speedMeasured
+  estimateRemainingMs, readSpeedModel, recordSpeedSample, speedMeasured
 } from "./reading-speed.js?v=__BUILD__";
 
 // A speed sample is taken once the reader has moved forward AND this much
@@ -145,15 +147,56 @@ function notesOffsetNow() {
   return null;
 }
 
-function measureNotes(offset = notesOffsetNow()) {
-  if (state.viewMode !== "notes" || offset == null) return null;
+// The last exact readings of the note on screen, for following the scroll in
+// between them (interpolateNotesWords). Belongs to one note body: a different
+// deck, or an edit, starts again from the next exact reading.
+let notesCalibration = null;
+
+function notesAverageWordsPerPx(view, total) {
+  const range = view ? view.scrollHeight - view.clientHeight : 0;
+  return range > 0 ? total / range : 0;
+}
+
+// Folds an exact reading in: where it was taken and how many words in, plus
+// the local words-per-pixel the last two exact readings give.
+function calibrateNotes(key, source, words, total) {
+  const view = el.notesView;
+  if (!view || isNotesPaged()) {
+    notesCalibration = null;
+    return;
+  }
+  const next = { key, source, scrollTop: view.scrollTop, words };
+  const previous = notesCalibration && notesCalibration.key === key && notesCalibration.source === source ? notesCalibration : null;
+  const local = calibrateWordsPerPx(previous, next, notesAverageWordsPerPx(view, total));
+  next.wordsPerPx = local || previous?.wordsPerPx || 0;
+  notesCalibration = next;
+}
+
+// Where in the note the reader is, in words. `exactOffset` is a captured
+// anchor; without one, the scroll is followed from the last exact reading,
+// which is what keeps the line moving on every frame instead of waiting for the
+// scroll to settle.
+function measureNotes(exactOffset = null) {
+  if (state.viewMode !== "notes") return null;
   const ids = openFileIds();
   const source = state.notes || "";
   if (!ids || !source.trim()) return null;
   const index = notesWordIndex(source);
   if (!index.total) return null;
-  let pos = Math.min(index.total, wordsBeforeOffset(index, offset));
-  if (!isNotesPaged() && scrolledToEnd(el.notesView)) pos = index.total;
+  const key = currentDeckKey();
+  const view = el.notesView;
+  let pos = null;
+  if (exactOffset != null) {
+    pos = Math.min(index.total, wordsBeforeOffset(index, exactOffset));
+    calibrateNotes(key, source, pos, index.total);
+  } else if (notesCalibration && notesCalibration.key === key && notesCalibration.source === source && view && !isNotesPaged()) {
+    pos = interpolateNotesWords(notesCalibration, view.scrollTop, index.total, notesAverageWordsPerPx(view, index.total));
+  } else {
+    const offset = notesOffsetNow();
+    if (offset == null) return null;
+    pos = Math.min(index.total, wordsBeforeOffset(index, offset));
+  }
+  if (!isNotesPaged() && scrolledToEnd(view)) pos = index.total;
   return { ids, kind: "notes", partKey: "notes", name: "", page: 0, pos, total: index.total, chapters: notesReadingChapters(source, index) };
 }
 
@@ -180,19 +223,29 @@ function settleReading(measured) {
 
 let speedWindow = null;
 
-function resetSpeedWindow(reading) {
-  speedWindow = reading ? { partId: reading.partId, kind: reading.kind, start: reading.pos, last: reading.pos, ms: 0 } : null;
+function resetSpeedWindow(reading, now = Date.now()) {
+  speedWindow = reading
+    ? { partId: reading.partId, kind: reading.kind, start: reading.pos, last: reading.pos, ms: 0, markAt: now, markPos: reading.pos }
+    : null;
 }
 
-function observePosition(reading) {
+// Every position, every frame. A move that is too far, or too FAST over the
+// last quarter second (isReadingJump), is the reader travelling rather than
+// reading — so the window starts again from where they landed.
+function observePosition(reading, now = Date.now()) {
   if (!speedWindow || speedWindow.partId !== reading.partId) {
-    resetSpeedWindow(reading);
+    resetSpeedWindow(reading, now);
     return;
   }
-  const delta = reading.pos - speedWindow.last;
-  if (delta < -BACKWARD_SLACK[reading.kind] || delta > SPEED_JUMP_UNITS[reading.kind]) {
-    resetSpeedWindow(reading);
+  const backward = reading.pos - speedWindow.last < -BACKWARD_SLACK[reading.kind];
+  const dt = now - speedWindow.markAt;
+  if (backward || isReadingJump(reading.kind, reading.pos - speedWindow.markPos, dt)) {
+    resetSpeedWindow(reading, now);
     return;
+  }
+  if (dt >= 250) {
+    speedWindow.markAt = now;
+    speedWindow.markPos = reading.pos;
   }
   speedWindow.last = Math.max(speedWindow.last, reading.pos);
 }
@@ -250,6 +303,46 @@ function scheduleProgressCommit() {
 
 const strips = new Map();
 
+// Off until the reader asks for it — ⋯ → Show progress, in Notes or a PDF.
+// Progress is measured and kept either way; this is only whether the row is on
+// screen. Per device, like the PDF's page notes.
+export const READING_PROGRESS_SHOWN_KEY = "recall:readingProgressShown";
+
+let progressShown = null;
+
+export function readingProgressShown() {
+  if (progressShown === null) {
+    try { progressShown = localStorage.getItem(READING_PROGRESS_SHOWN_KEY) === "on"; } catch { progressShown = false; }
+  }
+  return progressShown;
+}
+
+// The two switches that say it: a row in each ⋯ menu.
+export function paintReadingProgressToggles() {
+  const on = readingProgressShown();
+  const buttons = [
+    document.getElementById("readingProgressNotesBtn"),
+    el.documentMoreMenu?.querySelector('[data-document-action="reading-progress"]')
+  ];
+  for (const button of buttons) {
+    if (!button) continue;
+    button.setAttribute("aria-pressed", on ? "true" : "false");
+    button.title = on ? "Hide the progress row at the foot of the page" : "Show how far you are, the chapter and the time left, in one row at the foot of the page";
+  }
+}
+
+export function setReadingProgressShown(on) {
+  progressShown = Boolean(on);
+  try { localStorage.setItem(READING_PROGRESS_SHOWN_KEY, progressShown ? "on" : "off"); } catch { /* this session only */ }
+  paintReadingProgressToggles();
+  if (progressShown) tickReadingProgress(0);
+  schedulePaint();
+}
+
+export function toggleReadingProgressShown() {
+  setReadingProgressShown(!readingProgressShown());
+}
+
 function stripFor(stage) {
   if (!stage) return null;
   let strip = strips.get(stage);
@@ -264,6 +357,7 @@ function stripFor(stage) {
   bar.append(fill);
   const label = document.createElement("span");
   label.className = "reading-progress-label";
+  root.setAttribute("aria-label", "Reading progress");
   const pct = document.createElement("span");
   pct.className = "reading-progress-pct";
   const chapter = document.createElement("span");
@@ -292,24 +386,33 @@ export function readingTimeLeft(reading = liveReading) {
   };
 }
 
+// "32.4%" — a tenth of a percent, so the number moves while the reader does.
+export function formatReadingPct(pct) {
+  if (pct >= 0.9995) return "100%";
+  return `${(Math.floor(Math.max(0, pct) * 1000) / 10).toFixed(1)}%`;
+}
+
 function paintStrip(stage, reading) {
-  const strip = stripFor(stage);
+  if (!stage) return;
+  const shown = Boolean(reading) && readingProgressShown();
+  stage.classList.toggle("has-reading-progress", shown);
+  // Not created until it is first wanted: a reader who never turns it on has
+  // nothing extra in the stage at all.
+  const strip = shown ? stripFor(stage) : strips.get(stage);
   if (!strip) return;
-  if (!reading) {
+  if (!shown) {
     strip.root.hidden = true;
     return;
   }
   const time = readingTimeLeft(reading);
   const done = reading.pct >= 0.995;
-  const pctText = `${Math.floor(reading.pct * 100)}%`;
+  const pctText = formatReadingPct(reading.pct);
   const ch = reading.chapter;
   const chapterText = ch && ch.chTotal > 1 && ch.chIndex >= 0 ? `Ch ${ch.chIndex + 1}/${ch.chTotal}` : "";
   const chapterLeftText = chapterText && !done && time.chapterLeftMs > 0 ? `${formatDuration(time.chapterLeftMs, { short: true })} left in chapter` : "";
   const leftText = done ? "Finished" : `${formatDuration(time.leftMs, { short: true })} left`;
   const text = [pctText, chapterText, chapterLeftText, leftText].join("|");
   strip.root.hidden = false;
-  // Paged notes have their own page row at the foot of the stage.
-  strip.root.classList.toggle("is-paged", reading.kind === "notes" && isNotesPaged());
   strip.fill.style.width = `${(reading.pct * 100).toFixed(2)}%`;
   if (text === strip.text) return;
   strip.text = text;
@@ -356,7 +459,21 @@ export function noteDocumentProgress() {
   adopt(settleReading(measureDocument()));
 }
 
-// A reading anchor was just captured in the note (src/notes/scroll-anchor.js).
+// Every scroll frame in the note (src/main.js's #notesView listener): follow
+// the scroll from the last exact reading. One scrollTop read; no layout.
+let notesScrollFrame = 0;
+
+export function noteNotesScroll() {
+  if (notesScrollFrame) return;
+  notesScrollFrame = requestAnimationFrame(() => {
+    notesScrollFrame = 0;
+    if (state.viewMode !== "notes") return;
+    adopt(settleReading(measureNotes()));
+  });
+}
+
+// A reading anchor was just captured in the note (src/notes/scroll-anchor.js):
+// the exact place, which corrects whatever the scroll-following estimated.
 export function noteNotesProgress(anchor, key) {
   if (state.viewMode !== "notes" || key !== currentDeckKey()) return;
   if (!Number.isFinite(anchor?.offset)) return;
@@ -386,4 +503,11 @@ export function leaveReadingSurface() {
 
 export function flushReadingProgress() {
   commitProgress();
+}
+
+// The Notes ⋯ row is wired here; the PDF ⋯ row goes through that menu's own
+// [data-document-action] handler in src/main.js.
+export function initReadingProgressToggles() {
+  document.getElementById("readingProgressNotesBtn")?.addEventListener("click", toggleReadingProgressShown);
+  paintReadingProgressToggles();
 }

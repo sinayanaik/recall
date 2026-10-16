@@ -71,7 +71,6 @@ export const defaultStyleProfiles = {
     "buttonCornerRadius": "8px",
     // More
     "notesReadingMode": "continuous",
-    "readingProgress": "on",
     "notesMaxWidthPercent": "100",
     "appWidthPercent": "100",
     "appHeightPercent": "100",
@@ -147,7 +146,6 @@ export const defaultStyleProfiles = {
     "buttonCornerRadius": "8px",
     // More
     "notesReadingMode": "continuous",
-    "readingProgress": "on",
     "notesMaxWidthPercent": "100",
     "appWidthPercent": "100",
     "appHeightPercent": "100",
@@ -344,8 +342,6 @@ export const styleControlGroups = [
       // Drives a CLASS on #notesView, not a variable: the paged layout is a
       // different set of rules. See src/notes/paged-view.js.
       { key: "notesReadingMode", label: "Notes layout", type: "select", options: ["continuous", "paged-1", "paged-2"], hint: "Continuous scrolls the whole note. Paged lays it out in pages — one column, or two side by side." },
-      // Drives an attribute on <html>, read by styles/80-reading-progress.css.
-      { key: "readingProgress", label: "Reading progress", type: "select", options: ["on", "off"], optionLabels: { on: "Shown", off: "Hidden" }, hint: "The line at the foot of Notes and PDFs: how far you are, the chapter, and the time left at your reading speed." },
       { key: "notesMaxWidthPercent", label: "Notes width", type: "text", probe: "length-percentage", hint: "Maximum width of the notes column. A number is a percent; 900px, 60ch or calc(…) work as written." },
       { key: "appWidthPercent", label: "App width", type: "text", probe: "length-percentage", hint: "Width of the whole app. A number is a percent of the screen; any CSS width works as written." },
       { key: "appHeightPercent", label: "App height", type: "text", probe: "length-percentage", hint: "Height of the whole app. A number is a percent of the screen; any CSS height works as written." },
