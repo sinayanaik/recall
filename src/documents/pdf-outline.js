@@ -613,6 +613,10 @@ export async function ensureUserDocumentOutline() {
   const token = outlineToken;
   const source = outlineEntries.slice();
   const copied = [];
+  // Each row's fold key before the copy, so the folds can follow the rows to
+  // their new keys (which are by id) rather than every branch the reader had
+  // opened snapping shut as "new" — see tocCarryFolds.
+  const oldKeys = source.map(outlineKeyFor);
   for (const entry of source) {
     let page = entry.page || 0;
     let ratio = Number(entry.ratio) || 0;
@@ -643,6 +647,15 @@ export async function ensureUserDocumentOutline() {
     const ceiling = index ? copied[index - 1].depth + 1 : 0;
     entry.depth = Math.max(0, Math.min(entry.depth - least, ceiling, OUTLINE_MAX_DEPTH));
   });
+  const known = new Set();
+  const collapsed = new Set();
+  copied.forEach((entry, index) => {
+    const key = outlineKeyFor(entry);
+    if (outlineKnownBranches.has(oldKeys[index])) known.add(key);
+    if (outlineCollapsed.has(oldKeys[index])) collapsed.add(key);
+  });
+  outlineKnownBranches = known;
+  outlineCollapsed = collapsed;
   // A newer build from here on: a derivation still scanning, or the outline's
   // tail still resolving, is about a list that has just been replaced.
   outlineToken += 1;
@@ -659,9 +672,14 @@ function commitUserOutline(entries, focusId = null) {
   outlineEntries = entries;
   writeUserPdfContents(entries, outlineDoc?.numPages || 0, outlinePdfId);
   if (focusId) {
+    // Every heading above it open — marked KNOWN as well as not collapsed,
+    // because a branch the drawer has never seen starts folded, and a heading
+    // that has just been given its first child is exactly that.
     const index = entries.findIndex((entry) => entry.id === focusId);
     for (let at = parentOf(entries, index); at >= 0; at = parentOf(entries, at)) {
-      outlineCollapsed.delete(outlineKeyFor(entries[at]));
+      const key = outlineKeyFor(entries[at]);
+      outlineKnownBranches.add(key);
+      outlineCollapsed.delete(key);
     }
   }
   renderDocumentOutline();

@@ -301,7 +301,8 @@ try {
     const rows = Array.from(document.querySelectorAll("#documentOutlineList .notes-toc-item")).map((li) => ({
       text: li.querySelector(".notes-toc-text")?.textContent || "",
       depth: Number(li.style.getPropertyValue("--toc-depth")),
-      bookmark: li.dataset.tocBookmark === "true"
+      bookmark: li.dataset.tocBookmark === "true",
+      hidden: li.hidden
     }));
     return {
       saved: saved ? saved.entries.map((e) => e.t + "@" + e.d + (e.b ? "*" : "")) : null,
@@ -312,8 +313,8 @@ try {
   check("...which is saved as the file's own contents, nested in its section",
     afterBookmark.saved?.join("|") === `Section 1@0|Section 2@0|${expectedTitle}@1*|Section 3@0|Section 4@0`,
     JSON.stringify(afterBookmark.saved));
-  check("...and shown in the drawer as a bookmark",
-    afterBookmark.drawerOpen && afterBookmark.rows.some((row) => row.bookmark && row.text === expectedTitle && row.depth === 1),
+  check("...and shown in the drawer as a bookmark, its section unfolded so it can be seen",
+    afterBookmark.drawerOpen && afterBookmark.rows.some((row) => row.bookmark && row.text === expectedTitle && row.depth === 1 && !row.hidden),
     JSON.stringify(afterBookmark.rows));
 
   // ── 5. Dragging a row into another ──────────────────────────────────────
@@ -335,12 +336,15 @@ try {
     return {
       saved: (api.state.meta?.pdfUserToc?.primary?.entries || []).map((e) => e.t + "@" + e.d),
       page: api.currentDocumentPage(),
+      visible: Array.from(document.querySelectorAll("#documentOutlineList .notes-toc-item:not([hidden]) .notes-toc-text")).map((t) => t.textContent),
       leftovers: document.querySelectorAll(".document-toc-ghost, .document-toc-drop").length
     };
   }`);
   check("dropping a row on the middle of another nests it there, with its bookmark",
     afterDrag.saved.join("|") === `Section 1@0|Section 3@0|Section 4@0|Section 2@1|${expectedTitle}@2`,
     afterDrag.saved.join(" | "));
+  check("...and the row it moved is left in view, its new heading unfolded",
+    afterDrag.visible.includes("Section 2"), afterDrag.visible.join(" | "));
   check("...the drop is not also a press on the row, and leaves nothing behind",
     afterDrag.leftovers === 0, `${afterDrag.leftovers} drag element(s) left`);
 
