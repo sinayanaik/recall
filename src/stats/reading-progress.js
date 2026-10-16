@@ -24,7 +24,9 @@ import {
 import { headingIndexFor } from "../notes/chapters.js?v=__BUILD__";
 import { isNotesPaged } from "../notes/paged-view.js?v=__BUILD__";
 import { readStoredReadingPosition } from "../notes/reading-position.js?v=__BUILD__";
-import { currentDeckKey, currentReadingAnchor, currentReadingAnchorDeckKey } from "../notes/scroll-anchor.js?v=__BUILD__";
+import {
+  currentDeckKey, currentReadingAnchor, currentReadingAnchorDeckKey, notesBlockAtReadingLineGeometric
+} from "../notes/scroll-anchor.js?v=__BUILD__";
 import { formatDuration } from "./combine.js?v=__BUILD__";
 import {
   buildWordIndex, calibrateWordsPerPx, chapterProgress, interpolateNotesWords, isReadingJump, pickChapterLevel, wordsBeforeOffset
@@ -157,8 +159,36 @@ function notesAverageWordsPerPx(view, total) {
   return range > 0 ? total / range : 0;
 }
 
+// How densely the text on screen packs words, measured off the blocks from
+// the reading line down: their words over their height. The whole note's
+// average (total words over scroll height) is a poor guide on a long note,
+// where the height of everything not yet laid out is an estimate — and the
+// next screen reads like this one far more than like the book's average.
+// Taken once per exact reading, never while scrolling.
+function visibleWordsPerPx(view) {
+  let block = notesBlockAtReadingLineGeometric();
+  if (!block) return 0;
+  // From the first block's top to the last one's bottom, so the gaps between
+  // paragraphs count as the pixels they are: block boxes alone leave out the
+  // margins, and a rate taken off them runs ahead of the reader.
+  const top = block.getBoundingClientRect().top;
+  let bottom = top;
+  let words = 0;
+  for (let i = 0; block && i < 40 && bottom - top < view.clientHeight * 1.5; i += 1) {
+    const rect = block.getBoundingClientRect();
+    if (rect.height > 0) {
+      bottom = Math.max(bottom, rect.bottom);
+      words += (block.textContent.match(/\S+/g) || []).length;
+    }
+    block = block.nextElementSibling;
+  }
+  const height = bottom - top;
+  return height >= view.clientHeight / 2 && words > 0 ? words / height : 0;
+}
+
 // Folds an exact reading in: where it was taken and how many words in, plus
-// the local words-per-pixel the last two exact readings give.
+// the words-per-pixel to follow the scroll at until the next one — what is on
+// screen, or failing that what the last two exact readings measured.
 function calibrateNotes(key, source, words, total) {
   const view = el.notesView;
   if (!view || isNotesPaged()) {
@@ -167,8 +197,11 @@ function calibrateNotes(key, source, words, total) {
   }
   const next = { key, source, scrollTop: view.scrollTop, words };
   const previous = notesCalibration && notesCalibration.key === key && notesCalibration.source === source ? notesCalibration : null;
-  const local = calibrateWordsPerPx(previous, next, notesAverageWordsPerPx(view, total));
-  next.wordsPerPx = local || previous?.wordsPerPx || 0;
+  const average = notesAverageWordsPerPx(view, total);
+  let visible = 0;
+  try { visible = visibleWordsPerPx(view); } catch { visible = 0; }
+  const measured = calibrateWordsPerPx(previous, next, average);
+  next.wordsPerPx = visible || measured || previous?.wordsPerPx || 0;
   notesCalibration = next;
 }
 
