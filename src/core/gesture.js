@@ -226,6 +226,61 @@ export function wheelGestureActive() {
   return wheelActive;
 }
 
+// ── Has the reader touched anything since…? ────────────────────────────────
+//
+// Every place the app moves a scroller on the reader's behalf more than once —
+// a jump's retries and corrections, a repaint's pin, a page snap, the second
+// landing of a PDF jump — has to stand down the moment the reader takes the
+// scroller back, or the note "fights" them: they scroll away and are pulled
+// back to where the app was aiming. One listener for the whole app rather than
+// one per loop: several can be in flight at once, and each only needs to know
+// whether the reader has acted SINCE it began. Here, in the leaf, so the notes,
+// the PDF and the paged view can all ask without an import edge between them.
+//
+// Input events, deliberately not `scroll`: a streaming note moves its own
+// scrollTop as blocks land and chunks swap estimated heights for real ones, and
+// none of that is the reader.
+export const READER_INPUT_EVENTS = ["pointerdown", "touchstart", "wheel", "keydown"];
+
+let readerInputAt = 0;
+
+// ...and whether a finger is on the glass right now. Touch events rather than
+// pointer events: once the browser takes a touch as a pan it fires
+// pointercancel and no more pointer events, while touchmove/touchend keep
+// coming for as long as the finger stays down.
+let readerTouchCount = 0;
+const touchReleaseListeners = new Set();
+
+if (typeof document !== "undefined") {
+  READER_INPUT_EVENTS.forEach((type) => document.addEventListener(type, () => {
+    readerInputAt = performance.now();
+  }, { capture: true, passive: true }));
+  document.addEventListener("touchstart", (event) => {
+    readerTouchCount = event.touches?.length || 1;
+  }, { capture: true, passive: true });
+  const lifted = (event) => {
+    readerTouchCount = event.touches?.length || 0;
+    if (readerTouchCount) return;
+    touchReleaseListeners.forEach((listener) => {
+      try { listener(); } catch (_) { /* one listener must not strand the rest */ }
+    });
+  };
+  document.addEventListener("touchend", lifted, { capture: true, passive: true });
+  document.addEventListener("touchcancel", lifted, { capture: true, passive: true });
+}
+
+export function readerActedSince(time) {
+  return readerInputAt > time;
+}
+
+export function readerTouchDown() {
+  return readerTouchCount > 0;
+}
+
+export function onReaderTouchRelease(listener) {
+  if (typeof listener === "function") touchReleaseListeners.add(listener);
+}
+
 // ── A page's text, woken before a press hit-tests it ───────────────────────
 //
 // On a touch screen a PDF page's text layer — hundreds of positioned,

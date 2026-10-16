@@ -24,7 +24,7 @@ import { onS3ConfigAdopted } from "./cloud/s3-config-sync.js?v=__BUILD__";
 import { clearSupabaseConfig, initSupabaseClient, isSignedIn, onSigningReadyChange, reloadSupabaseLibrary, saveSupabaseConfig, setSignedIn, setSignedInListener, setSupabaseClient } from "./cloud/supabase-client.js?v=__BUILD__";
 import { closeWebDeckExportMenus } from "./cloud/web-decks.js?v=__BUILD__";
 import { deckEmptyImportBtn2, deckEmptyNewBtn, deckEmptyWebBtn, el, onDomReady } from "./core/dom.js?v=__BUILD__";
-import { noteWheelActivity } from "./core/gesture.js?v=__BUILD__";
+import { noteWheelActivity, readerActedSince } from "./core/gesture.js?v=__BUILD__";
 import { assertBootLibraries } from "./core/lib-guard.js?v=__BUILD__";
 import { ensureTurndown } from "./core/lib-loader.js?v=__BUILD__";
 import { state } from "./core/state.js?v=__BUILD__";
@@ -3924,6 +3924,8 @@ el.documentPageInput?.addEventListener("change", () => {
 // left here is getting OUT of whatever the embed was shown in, onto the right
 // one of the deck's PDFs, and showing the reader which box on the page it was.
 async function goToPdfRegion({ page, rect, pdfId }) {
+  // Inside the press that asked for this, so the press itself is not "since".
+  const pressedAt = performance.now();
   if (!deckHasPdf(state.meta)) {
     setStatus("This file has no PDF attached to open that region in.", "error");
     return;
@@ -3954,6 +3956,9 @@ async function goToPdfRegion({ page, rect, pdfId }) {
     await new Promise((resolve) => setTimeout(resolve, 80));
   }
   if (state.viewMode !== "document") return; // the reader went somewhere else meanwhile
+  // ...or started reading the paper while it opened. Jumping now, up to eight
+  // seconds after the press, would take the page out from under them.
+  if (readerActedSince(pressedAt)) { refreshNavBack(); return; }
   scheduleNoteJump({ pdf: { page }, page, quads: [{ page, rect }] }, {
     patient: true,
     flash: false,

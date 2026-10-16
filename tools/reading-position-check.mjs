@@ -23,6 +23,15 @@
 //      — and the position is landed when the reader does go to Notes.
 //   6. Nothing captured while a resume is landing is taken for the reader's
 //      position.
+//   7. "Go to bookmark" lets go the moment the reader scrolls away — even when
+//      its words cannot be found, which is when it used to keep pulling them
+//      back for eight seconds.
+//   8. A bookmark taken on a paragraph full of markdown and inline HTML (what
+//      an imported book is made of) is found again word for word.
+//   9. A resume the reader interrupts still reports itself settled, which is
+//      what arms the bookmark for the file that was opened.
+//  10. A folder opened as one document — how a book imported one file per
+//      chapter is read — reopens where it was left, not at its first page.
 
 import { spawn } from "node:child_process";
 import path from "node:path";
@@ -77,6 +86,9 @@ const SETUP_SRC = `async () => {
     "/src/notes/anchors.js?v=__BUILD__",
     "/src/notes/scroll-anchor.js?v=__BUILD__",
     "/src/notes/reading-position.js?v=__BUILD__",
+    "/src/notes/bookmark.js?v=__BUILD__",
+    "/src/library/folder-deck.js?v=__BUILD__",
+    "/src/library/local-library.js?v=__BUILD__",
     "/src/notes/raw-offset.js?v=__BUILD__",
     "/src/storage/deck-snapshot.js?v=__BUILD__",
     "/src/core/state.js?v=__BUILD__",
@@ -113,7 +125,20 @@ const SETUP_SRC = `async () => {
 
   const words = "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa".split(" ");
   const lines = ["# Position probe", ""];
-  for (let i = 0; i < 160; i += 1) lines.push("P" + String(i).padStart(4, "0") + " " + words.join(" ") + " " + words.join(" ") + ".", "");
+  // Every tenth paragraph is written the way an imported book is: emphasis, a
+  // footnote marker and a link, none of which reads the same rendered. Its
+  // words are its own, as a book's are — a sentence repeated paragraph after
+  // paragraph would let any search take the wrong copy.
+  for (let i = 0; i < 160; i += 1) {
+    const marker = "P" + String(i).padStart(4, "0");
+    const own = words.map((w) => w + i);
+    const body = i % 10 === 5
+      ? own.slice(0, 4).join(" ") + " **" + own[4] + "** " + own[5] + "<sup>3</sup> " + own[6]
+        + " [" + own[7] + "](https://example.com/" + i + ") _" + own[8] + "_ " + own.slice(9).join(" ")
+        + " " + own.join(" ") + " " + own.slice(0, 8).join(" ")
+      : words.join(" ") + " " + words.join(" ");
+    lines.push(marker + " " + body + ".", "");
+  }
   api.state.notes = lines.join("\\n");
   api.renderNotesView();
   await settle(800);
@@ -356,6 +381,140 @@ async function run() {
     check(near(landing.stored, "P0100") && (landing.memory == null || near(landing.memory, "P0100", 4)),
       "...and the note's top, passed through on the way, was not recorded as the position",
       `stored: ${JSON.stringify(landing.stored)}, in memory: ${JSON.stringify(landing.memory)}`);
+
+    // ── 7. Go to bookmark, then scroll somewhere else ───────────────────────
+    //
+    // A bookmark as the old capture took it: a slice of the raw markdown, which
+    // on this paragraph never appears in the rendered text. The jump can only
+    // land on the block, and it used to re-aim there every 600ms for its whole
+    // eight-second budget — under the reader's finger.
+    const jumped = await page.evaluate(async () => {
+      const { api, settle } = window.__recall;
+      const view = document.getElementById("notesView");
+      view.scrollTop = 0;
+      await settle(300);
+      api.state.meta = { ...(api.state.meta || {}), bookmark: window.__anchorFor("P0055") };
+      api.goToBookmark();
+      await settle(1500);
+      return { reading: window.__reading() };
+    });
+    check(near(jumped.reading, "P0055", 2), "go to bookmark lands on the bookmarked paragraph", `reading ${jumped.reading}`);
+    await touchTap(touchAt.x, touchAt.y);
+    const scrolledAway = await page.evaluate(() => {
+      const view = document.getElementById("notesView");
+      view.scrollTop += 3000;
+      view.dispatchEvent(new Event("scroll"));
+      return { scrollTop: view.scrollTop, reading: window.__reading() };
+    });
+    await wait(2500);
+    const afterAway = await page.evaluate(() => ({
+      scrollTop: document.getElementById("notesView").scrollTop,
+      reading: window.__reading(),
+      status: document.getElementById("statusText")?.textContent || ""
+    }));
+    check(Math.abs(afterAway.scrollTop - scrolledAway.scrollTop) < 2 && afterAway.reading === scrolledAway.reading,
+      "...and scrolling away is not pulled back to it",
+      `${Math.round(scrolledAway.scrollTop)} (${scrolledAway.reading}) after the finger, ${Math.round(afterAway.scrollTop)} (${afterAway.reading}) 2.5s later`);
+    check(!/Couldn't find that spot/.test(afterAway.status),
+      "...and no 'couldn't find that spot' once the reader has moved on",
+      afterAway.status || "no status");
+
+    // ── 8. A bookmark taken in an imported book's markup ────────────────────
+    const exact = await page.evaluate(async () => {
+      const { api, settle } = window.__recall;
+      const view = document.getElementById("notesView");
+      window.__scrollTo("P0065");
+      await settle(400);
+      const anchor = api.currentSpotAnchor();
+      view.scrollTop = 0;
+      await settle(300);
+      window.getSelection()?.removeAllRanges();
+      api.state.meta = { ...(api.state.meta || {}), bookmark: anchor };
+      api.goToBookmark();
+      // Inside the flash's 1.8s: the block flash is only drawn when the exact
+      // words were found (revealRenderedNoteRange), never by the estimate.
+      await settle(900);
+      return {
+        text: anchor?.text || "",
+        reading: window.__reading(),
+        flashed: Boolean(document.querySelector("#notesView .note-anchor-flash"))
+      };
+    });
+    check(exact.text && !/[*_<>\[\]]/.test(exact.text),
+      "a bookmark's words are the words on screen, not the markdown behind them",
+      JSON.stringify(exact.text.slice(0, 60)));
+    check(exact.flashed && exact.reading === "P0065",
+      "...so going back finds them exactly, and puts them back on the reading line",
+      `reading ${exact.reading}, ${exact.flashed ? "flashed" : "not flashed (fell back to an estimate)"}`);
+
+    // ── 9. A resume the reader interrupts ───────────────────────────────────
+    await page.evaluate(async () => {
+      const { api, settle } = window.__recall;
+      api.setViewMode("notes");
+      await settle(300);
+      window.__settledBy = null;
+      api.resumeOpenedDeck(window.__anchorFor("P0150"), () => { window.__settledBy = "resume"; });
+    });
+    await touchTap(touchAt.x, touchAt.y);
+    await wait(1200);
+    const interrupted = await page.evaluate(() => window.__settledBy);
+    check(interrupted === "resume",
+      "a resume the reader interrupts still settles, so the file's bookmark is armed",
+      `onSettled ${interrupted ? "called" : "never called"}`);
+
+    // ── 10. A book read as its chapter folder ───────────────────────────────
+    const folder = await page.evaluate(async () => {
+      const { api, settle } = window.__recall;
+      const view = document.getElementById("notesView");
+      const words = "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima".split(" ");
+      const ids = [];
+      for (let c = 0; c < 3; c += 1) {
+        api.createNewDeck({ title: "Chapter " + (c + 1), notesMode: true });
+        await settle(200);
+        api.commitNotesEditIfActive();
+        // A file of its own: case 1 pinned a local id onto the working deck by
+        // hand, and a save would otherwise write every chapter over that one.
+        api.state.localDeckId = null;
+        api.state.deckId = null;
+        api.state.deckCategory = "Fixture book";
+        const lines = ["# Chapter " + (c + 1), ""];
+        for (let i = 0; i < 50; i += 1) {
+          lines.push("C" + c + "P" + String(i).padStart(3, "0") + " " + words.map((w) => w + c + "x" + i).join(" ") + " " + words.join(" ") + ".", "");
+        }
+        api.state.notes = lines.join("\n");
+        await api.saveDeckToLibrary({ silent: true });
+        await settle(150);
+        ids.push(api.state.localDeckId);
+      }
+      const open = () => api.openDecksAsOneDeck(
+        ids.map((localId, i) => ({ sel: { localId }, title: "Chapter " + (i + 1), category: "Fixture book" })),
+        { title: "Fixture book", path: "Fixture book", key: api.folderDeckKey("Fixture book"), landOn: "notes", onEmpty: "refuse" }
+      );
+      const reading = () => (api.notesBlockAtReadingLineGeometric()?.textContent || "").trim().slice(0, 6);
+      if (!(await open())) return { opened: false };
+      await settle(1500);
+      const target = Array.from(view.querySelectorAll("p")).find((p) => p.textContent.startsWith("C1P030"));
+      if (!target) return { opened: true, found: false, ids };
+      view.scrollTop = Math.max(0, view.scrollTop + target.getBoundingClientRect().top - view.getBoundingClientRect().top - 8);
+      view.dispatchEvent(new Event("scroll"));
+      await settle(1200);
+      const left = reading();
+      api.flushReadingPositionSave();
+      // Somewhere else with a note of its own, so the view really is repainted
+      // and scrolled for it — as opening any other file, or a cold start, does.
+      await api.loadDeckFromLibrary(ids[0]);
+      await settle(1500);
+      const between = reading();
+      await open();
+      await settle(3000);
+      return { opened: true, found: true, left, between, back: reading(), key: api.currentDeckKey() };
+    });
+    check(folder.opened && folder.found && folder.left === "C1P030",
+      "a chapter folder opened as one document, and read into its middle",
+      JSON.stringify(folder));
+    check(folder.back === folder.left,
+      "...reopens where it was left, not at its first page",
+      `left on ${folder.left}, reopened on ${folder.back}`);
 
     check(errors.length === 0, "no uncaught exceptions", errors.length ? errors[0] : "clean");
   } finally {

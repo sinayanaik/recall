@@ -15,7 +15,7 @@ import { LIST_MARKER_RE, MARK_CLOSE_TAG, continuesHighlightGroup, markOpenTag, r
 import { highlightNoteResolver, readHighlightNotes } from "../format/highlight-notes.js?v=__BUILD__";
 import { readerNotesBody } from "../format/notes-fence.js?v=__BUILD__";
 import { codeFences, codeHighlightSnippet } from "../format/code-highlight.js?v=__BUILD__";
-import { notesAnchorPlainText } from "../notes/anchors.js?v=__BUILD__";
+import { notesAnchorPlainText } from "../notes/anchor-text.js?v=__BUILD__";
 import { headingForOffset, headingIndexFor } from "../notes/chapters.js?v=__BUILD__";
 import { clozeCleanUnit, clozeUnitAt, clozeUnitIndex } from "./cloze-panel.js?v=__BUILD__";
 import { trimNoteAnchor } from "../quick-notes/anchors.js?v=__BUILD__";
