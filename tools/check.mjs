@@ -205,6 +205,10 @@
 //                   Supabase copy only when the bucket provably holds it
 //   s3-keys-sync    ...and do the bucket keys reach the reader's other devices
 //                   through their Supabase row — and only theirs?
+//   reading-stats   reading progress, time left and the time log: the chapter
+//                   and word arithmetic, a speed model that learns the reader
+//                   and ignores skims, time that is never double counted, and
+//                   one row per device that every device adds up the same way
 //   ui-smoke        does the APP still work? 18 real actions — import, flip,
 //                   mark known, All Cards, notes, export, sync — driven through
 //                   the DOM on both builds and compared step by step
@@ -362,6 +366,11 @@ const checks = [
   // nothing untested is published, Forget reaches everywhere and stays, and one
   // account's secret never lands in another's row on a shared device.
   ["s3-keys-sync  ", ["node", ["tools/s3-config-sync-check.mjs"], ROOT]],
+  // Reading progress and the time log (src/stats/). Measured on each device,
+  // one row per device in reading_stats, added up on read — so what is checked
+  // is that the adding up is right: time summed and never twice, the newest
+  // place and the furthest point, and a project without the table carrying on.
+  ["reading-stats ", ["node", ["tools/reading-stats-check.mjs"], ROOT]],
   // The signature itself, against AWS's own published presigned-URL vector and
   // against a second implementation written from the spec with node:crypto.
   //

@@ -277,6 +277,14 @@ export function takeDeferredNotesResume(key) {
   return held && held.key === key ? held.anchor : null;
 }
 
+// Told about every captured anchor, for the reading-progress line
+// (src/stats/reading-progress.js). A hook, because that module imports this one.
+let readingAnchorCapturedHook = null;
+
+export function setReadingAnchorCapturedHook(fn) {
+  readingAnchorCapturedHook = typeof fn === "function" ? fn : null;
+}
+
 export function captureCurrentReadingAnchor(expectedKey = null) {
   if (!el.notesView || el.notesView.hidden || state.viewMode !== "notes") return;
   if (resumeLanding || reflowHolding) return;
@@ -296,6 +304,7 @@ export function captureCurrentReadingAnchor(expectedKey = null) {
   const key = currentDeckKey();
   setCurrentReadingAnchor(anchor);
   setCurrentReadingAnchorDeckKey(key);
+  readingAnchorCapturedHook?.(anchor, key);
   // ...and write it down. The in-memory anchor above is still what a deck save
   // folds into meta, but a reader who only reads never triggers a deck save, and
   // that is exactly the reader this feature is for.

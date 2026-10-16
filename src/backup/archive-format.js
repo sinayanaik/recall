@@ -410,7 +410,11 @@ export const NOT_BACKED_UP_SETTINGS_KEYS = {
   "recall:deckTab-v1": "Which tab each deck was on, on this device.",
   flashcards_mydecks_cwd_v1: "The folder My Decks was showing.",
   flashcards_last_import_folder_v1: "The folder the last import went to.",
-  "swipe-hint-seen": "Whether this device has seen the swipe hint."
+  "swipe-hint-seen": "Whether this device has seen the swipe hint.",
+  // Reading progress and time spent (src/stats/).
+  "recall:reading-stats-v1": "This device's reading progress and time spent. Carried by its own row in reading_stats, not by a backup: restored onto another device it would be counted twice.",
+  "recall:reading-stats-devices-v1": "A cache of the other devices' reading stats, pulled again on every sync.",
+  "recall:reading-speed-v1": "How fast the reader reads on THIS device — what its time-left estimates divide by; wrong on any other."
 };
 
 // The settings a library backup carries, read off this device. Values are

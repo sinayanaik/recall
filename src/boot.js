@@ -17,6 +17,7 @@ import { state } from "./core/state.js?v=__BUILD__";
 import { discardIndexBatch, pruneOrphanedDeckSnapshots, readLocalDeckIndex, runEscapedMathRepair } from "./library/local-library.js?v=__BUILD__";
 import { discardNotesEditingForDeckSwap } from "./notes/notes-view.js?v=__BUILD__";
 import { forgetAllReadingPositions } from "./notes/reading-position.js?v=__BUILD__";
+import { forgetAllReadingStats } from "./stats/reading-stats-store.js?v=__BUILD__";
 import { forgetAllDeckTabs } from "./storage/deck-tab.js?v=__BUILD__";
 import { checkProjectHealth } from "./pwa/app-info.js?v=__BUILD__";
 import { updateOnlineIndicator } from "./pwa/online.js?v=__BUILD__";
@@ -157,6 +158,9 @@ export async function resetLocalLibrary() {
   // Reading positions describe the decks that were just removed, and each one
   // carries a snippet of the note's own text.
   forgetAllReadingPositions();
+  // Reading progress and time spent: per file of the library being removed,
+  // with titles. The next account's devices bring their own back down.
+  forgetAllReadingStats();
   // ...and which tab each of those decks was left on. No note text in these —
   // they are deck ids and a mode — but they describe one account's library and
   // have no business outliving it on a shared device.

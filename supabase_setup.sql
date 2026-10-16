@@ -280,6 +280,49 @@ END $$;
 -- this value to decide whose keys are newer, and the client writes it
 -- deliberately — the same reason decks and cards have none (see section 5).
 
+-- ============================================================================
+-- 4c. reading_stats — one row PER DEVICE: reading progress and time spent
+-- ============================================================================
+-- What each device measured on its own: active time in the app (per day, per
+-- file and per part), and how far through each file's Notes and PDFs the reader
+-- got there — percent, chapters, the furthest point. Measured and stored on the
+-- device first; this row is that device's copy, so the others can show it.
+--
+-- Each device writes ONLY its own row (device_id is the app's random per-browser
+-- id), and every device reads all of them and adds them up — time summed, the
+-- newest position taken, the furthest point kept. So two devices reading at
+-- once can never overwrite each other's minutes, and there is nothing to merge
+-- on the way in. A device's reading SPEED is not in here: each device estimates
+-- "time left" from its own.
+--
+-- Optional, like section 9: without this table the app keeps each device's
+-- stats on that device and says so on Home.
+CREATE TABLE IF NOT EXISTS reading_stats (
+  user_id UUID NOT NULL DEFAULT auth.uid() REFERENCES auth.users(id) ON DELETE CASCADE,
+  device_id TEXT NOT NULL,
+  device_label TEXT,
+  stats JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (user_id, device_id)
+);
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'reading_stats_object' AND conrelid = 'reading_stats'::regclass
+  ) THEN
+    ALTER TABLE reading_stats
+      ADD CONSTRAINT reading_stats_object
+      CHECK (jsonb_typeof(stats) = 'object');
+  END IF;
+END $$;
+
+-- No updated_at trigger either: the device writes the moment its stats last
+-- changed. The primary key leads with user_id, so it is also the index the
+-- one query this table sees (every row of one account) needs.
+
 
 -- ============================================================================
 -- 5. Indexes
@@ -338,6 +381,7 @@ ALTER TABLE cards ENABLE ROW LEVEL SECURITY;
 ALTER TABLE deleted_decks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE app_style_settings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE app_storage_settings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE reading_stats ENABLE ROW LEVEL SECURITY;
 
 -- Postgres has no CREATE POLICY IF NOT EXISTS, so each policy is dropped first
 -- — which is also what lets re-running this file repair a deployment whose
@@ -363,6 +407,7 @@ DROP POLICY IF EXISTS "Users manage own cards" ON cards;
 DROP POLICY IF EXISTS "Users manage own deck tombstones" ON deleted_decks;
 DROP POLICY IF EXISTS "Users manage own app style settings" ON app_style_settings;
 DROP POLICY IF EXISTS "Users manage own storage settings" ON app_storage_settings;
+DROP POLICY IF EXISTS "Users manage own reading stats" ON reading_stats;
 
 -- auth.uid() is wrapped in a scalar subquery in every policy below. Called
 -- bare, it is re-evaluated once PER ROW; as `(select auth.uid())` the planner
@@ -409,6 +454,12 @@ CREATE POLICY "Users manage own app style settings" ON app_style_settings
 -- Strictly one's own row: unlike the style table there is no shared fallback,
 -- because what is in here is a credential.
 CREATE POLICY "Users manage own storage settings" ON app_storage_settings
+  FOR ALL TO authenticated
+  USING (user_id = (select auth.uid()))
+  WITH CHECK (user_id = (select auth.uid()));
+
+-- Every device of the account reads every row and writes its own.
+CREATE POLICY "Users manage own reading stats" ON reading_stats
   FOR ALL TO authenticated
   USING (user_id = (select auth.uid()))
   WITH CHECK (user_id = (select auth.uid()));
@@ -660,3 +711,4 @@ COMMENT ON TABLE cards IS 'One row per flashcard, ordered within its deck by `po
 COMMENT ON TABLE deleted_decks IS 'Durable cross-device delete tombstones. Never pruned automatically — a deletion must outlive any device still holding a stale copy.';
 COMMENT ON TABLE app_style_settings IS 'Per-user layout/typography settings (row id = auth.uid()), plus a legacy shared ''global'' row that accounts with no style of their own inherit. The theme is stored here too, as a `theme` key holding a theme ID (e.g. ''dark-amoled'') alongside the ''desktop''/''mobile'' profiles, so a device that syncs its style down also gets the theme that went with it. Colour VALUES are still not included — those live in CSS, keyed off that ID.';
 COMMENT ON TABLE app_storage_settings IS 'Per-user keys to the S3-compatible bucket that holds PDFs (row key = auth.uid()), so they are pasted once per account rather than once per device. s3_config NULL means the reader pressed Forget; updated_at is written by the client and compared, so it has no trigger.';
+COMMENT ON TABLE reading_stats IS 'Per-device reading progress and active time (row key = auth.uid() + the app''s device id). Each device writes only its own row and reads all of them; Home adds them up. updated_at is written by the client.';
