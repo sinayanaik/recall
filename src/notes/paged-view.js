@@ -53,6 +53,7 @@
 // of white rather than the rest of a column.
 
 import { el } from "../core/dom.js?v=__BUILD__";
+import { onReaderTouchRelease, readerActedSince, readerTouchDown } from "../core/gesture.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { isProgrammaticNotesScroll, markProgrammaticNotesScroll } from "./notes-view.js?v=__BUILD__";
 import { notesTopLevelBlocks, reshapeRenderedChunks } from "../render/block-cache.js?v=__BUILD__";
@@ -614,6 +615,7 @@ function revealPagedTarget(resolve) {
   // nineteen pages in. Counted rather than flagged because two reveals can
   // overlap (a TOC press during a highlight's jump).
   aimsInFlight += 1;
+  const startedAt = performance.now();
   let done = false;
   const finish = () => {
     if (done) return;
@@ -642,6 +644,9 @@ function revealPagedTarget(resolve) {
     // a layout that cannot have changed — and the reader comes back to whatever
     // the last attempt guessed instead of where they left off.
     if (typeof document !== "undefined" && document.visibilityState === "hidden") { finish(); return; }
+    // The reader has started turning pages themselves: the first aim took them
+    // there, and a re-aim now would turn the page back under their finger.
+    if (readerActedSince(startedAt)) { finish(); return; }
     attempts += 1;
     const page = aim();
     if (page == null) { finish(); return; }
@@ -831,6 +836,11 @@ export function scheduleNotesPageSettle() {
     // selectionchange listener in initPagedNotes settles once, when the
     // selection collapses.
     if (notesSelectionIsLive()) return;
+    // A finger is still on the glass. A swipe that pauses part-way is the
+    // reader holding the page where they want it, and snapping it to the
+    // nearest column then moves it under their finger. Not re-armed either: the
+    // touch release below settles once, when the finger lifts.
+    if (readerTouchDown()) return;
     // A smooth programmatic turn is still in flight. Snapping to "the nearest
     // page" now would snap to whatever page the ANIMATION has reached and
     // abandon the journey — measured as End landing on page 6 of 11. The
@@ -1047,6 +1057,14 @@ export function initPagedNotes() {
   document.addEventListener("selectionchange", () => {
     if (!isNotesPaged() || state.viewMode !== "notes") return;
     if (notesSelectionIsLive()) return;
+    scheduleNotesPageSettle();
+  });
+
+  // ...and the other half of the finger guard: lifting it is when a paused
+  // swipe is let go, so that is when it snaps. A fling's momentum keeps firing
+  // scroll events after this, which simply re-arms the same settle.
+  onReaderTouchRelease(() => {
+    if (!isNotesPaged() || state.viewMode !== "notes") return;
     scheduleNotesPageSettle();
   });
 

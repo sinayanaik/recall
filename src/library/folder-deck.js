@@ -54,7 +54,10 @@ import {
   splitMemberNoteTails,
   splitMergedNotes
 } from "../format/merged-notes.js?v=__BUILD__";
+import { resumeOpenedDeck } from "../notes/anchors.js?v=__BUILD__";
 import { discardNotesEditingForDeckSwap } from "../notes/notes-view.js?v=__BUILD__";
+import { betterReadingPosition } from "../notes/reading-position.js?v=__BUILD__";
+import { currentDeckKey } from "../notes/scroll-anchor.js?v=__BUILD__";
 import { decksUnderFolder } from "./folder-tree.js?v=__BUILD__";
 import { normalizeDeckCategory } from "./folders.js?v=__BUILD__";
 import { cachedDeckSnapshotSync, finishSaveDeckToLibrary } from "./local-library.js?v=__BUILD__";
@@ -270,6 +273,21 @@ export async function openDecksAsOneDeck(entries, { title, path = null, key, lan
   closeAllCardsPanel();
   closeMyDecksPanel();
   showCard();
+
+  // ── ...where the reader left it ──────────────────────────────────────────
+  //
+  // The position was being saved all along — the reading-position store is
+  // keyed by currentDeckKey(), whose third part is this document's key — and
+  // never read back: both deck loaders resume, and this, the way an imported
+  // book's chapter folder is read, did not. So the book reopened at its first
+  // page every time. The same rule as theirs (resumeOpenedDeck): landed now on
+  // Notes, held for Notes when the document opens on Cards.
+  //
+  // The local store only: state.meta is empty here by design (see above), so
+  // there is no synced position to weigh it against. And no bookmark prompt —
+  // maybePromptBookmarkJump would also arm the bookmark capture, which writes
+  // into state.meta, and this document's meta must stay empty.
+  resumeOpenedDeck(betterReadingPosition(null, currentDeckKey()));
 
   const note = `${writable.length} file${writable.length === 1 ? "" : "s"} · ${cards.length} card${cards.length === 1 ? "" : "s"}`;
   setStatus(`Reading ${resolvedTitle} — ${note}. Edits are saved back to each file.`);

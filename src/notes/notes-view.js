@@ -6,7 +6,7 @@
 
 import { updateMeta } from "../cards/card-status.js?v=__BUILD__";
 import { el, isDisplayed } from "../core/dom.js?v=__BUILD__";
-import { touchGestureHoldsSurface, wheelGestureActive } from "../core/gesture.js?v=__BUILD__";
+import { readerActedSince, touchGestureHoldsSurface, wheelGestureActive } from "../core/gesture.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { refreshHighlightBackdrop } from "../editor/highlight-mirror.js?v=__BUILD__";
 // A cycle — highlight-edit.js imports renderNotesViewPinned from here — and the
@@ -477,6 +477,9 @@ export function renderNotesViewPinned(offsetHint) {
     || blockAtNotesReadingLine()
     || notesBlockAtReadingLineGeometric();
   const anchors = [];
+  // When the reader's place was measured. Anything they do after this is a
+  // newer opinion about where they are than `anchors` — see settleNotesPin.
+  const measuredAt = performance.now();
   // Both siblings, not just the previous one. The block under the reading line
   // is very often the one being edited, and an edited block is rebuilt rather
   // than reused — so the pin falls through to a neighbour. One neighbour is a
@@ -489,7 +492,7 @@ export function renderNotesViewPinned(offsetHint) {
 
   const done = renderNotesView({ sameNote: true });
   if (!anchors.length) return done;
-  return done.then(() => settleNotesPin(view, anchors));
+  return done.then(() => settleNotesPin(view, anchors, measuredAt));
 }
 
 // Put the anchor back where it was, then keep checking that it stayed there.
@@ -500,7 +503,7 @@ export function renderNotesViewPinned(offsetHint) {
 // that arrives above the reader moves the text again, after the single
 // correction this used to make had already run. So the residual is re-measured
 // on a settle cadence and re-corrected while it is still shrinking.
-export async function settleNotesPin(view, anchors) {
+export async function settleNotesPin(view, anchors, measuredAt = performance.now()) {
   const budget = (state.notes || "").length > NOTES_PIN_LARGE_NOTE_CHARS
     ? NOTES_PIN_LARGE_NOTE_BUDGET_MS
     : NOTES_PIN_BUDGET_MS;
@@ -555,6 +558,16 @@ export async function settleNotesPin(view, anchors) {
     // reader's own scroll input, which reads as the view resisting and then
     // snapping back.
     if (touchSelectionDragActive() || touchGestureHoldsSurface() || wheelGestureActive()) return;
+    // ── ...nor a scroll the reader started since their place was measured ──
+    //
+    // The flags above are about a finger HOLDING the surface, and a touch scroll
+    // stops holding it the moment the browser takes it as a scroll. But `drift`
+    // below is measured from where the anchor sat before the repaint, so a
+    // reader who scrolled during the settle (a sync or an image upload repaints
+    // under them at any moment) had their own scroll measured as drift and
+    // taken back — the note resisting and returning to where it was. Any input
+    // since the measurement means the measurement is no longer theirs.
+    if (readerActedSince(measuredAt)) return;
     // Paged mode never gets here: renderNotesViewPinned handles it by restoring
     // scrollLeft directly, because re-deriving a page from a block anchor is
     // what made a highlight in the first column turn the page backwards. If the

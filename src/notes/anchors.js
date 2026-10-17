@@ -10,7 +10,7 @@ import { syncResults } from "../cards/study.js?v=__BUILD__";
 import { supabaseClient } from "../cloud/supabase-client.js?v=__BUILD__";
 import { loadWebDeck } from "../cloud/web-decks.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
-import { wheelGestureActive } from "../core/gesture.js?v=__BUILD__";
+import { READER_INPUT_EVENTS, readerActedSince, wheelGestureActive } from "../core/gesture.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { deckHasPdf } from "../documents/doc-slot.js?v=__BUILD__";
 import { flashDocumentHighlight } from "../documents/pdf-highlights.js?v=__BUILD__";
@@ -19,6 +19,7 @@ import { isDocumentViewActive, scrollToDocumentPage } from "../documents/pdf-vie
 import { markTextMatches, renderedMarkText, scanMarks } from "../format/highlight.js?v=__BUILD__";
 import { locateSelectionInSource, renderedSelectionStrings } from "../format/locate-selection.js?v=__BUILD__";
 import { loadDeckFromLibrary } from "../library/local-library.js?v=__BUILD__";
+import { notesAnchorPlainText } from "./anchor-text.js?v=__BUILD__";
 import { scrollTextareaToOffset } from "./caret.js?v=__BUILD__";
 import { NOTES_PROGRAMMATIC_SCROLL_MS, markProgrammaticNotesScroll, markProgrammaticNotesSelection } from "./notes-view.js?v=__BUILD__";
 import { estimateNotesPageForFraction, isNotesPaged, notesPageCount, notesPageForElement, revealInPagedNotes, revealRangeInPagedNotes } from "./paged-view.js?v=__BUILD__";
@@ -53,27 +54,8 @@ export function addCardFromNotes(question, answer, noteAnchor = null) {
   setStatus(state.deckId ? "Card added from notes locally. Sync to update the cloud copy." : "Card added from notes.");
 }
 
-// Strip markdown syntax down to the plain text a reader sees — used both to
-// build a searchable anchor snippet and to match a card's answer against the
-// rendered notes for the content fallback.
-export function notesAnchorPlainText(src) {
-  return String(src || "")
-    .replace(/```[\s\S]*?```/g, (m) => m.replace(/```[^\n]*\n?/g, "").replace(/```/g, "")) // code fences → inner text
-    .replace(/`([^`]*)`/g, "$1")                 // inline code
-    .replace(/!\[[^\]]*\]\([^)]*\)/g, "")        // images
-    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")     // links → label
-    .replace(/\{\{|\}\}/g, "")                   // cloze braces
-    // Highlights are literal <mark>…</mark> pairs living in the markdown, so any
-    // snippet taken from highlighted text carries the tags. They have to go
-    // BEFORE the emphasis rule below, which eats a tag's ">" and leaves
-    // "<markAlpha beta</mark" — a needle that can never appear in the rendered
-    // text, so every jump built from it failed. Deliberately mark tags only, not
-    // a general tag strip: prose containing "a < b" must survive untouched.
-    .replace(/<\/?mark(?:\s[^>]*)?>/g, "")       // highlight tags
-    .replace(/[*_~>#]+/g, "")                    // inline emphasis / heading / quote markers
-    .replace(/\s+/g, " ")
-    .trim();
-}
+// notesAnchorPlainText lives in src/notes/anchor-text.js, a leaf the scroll
+// sampler can import without reaching back into this module.
 
 // Snapshot of where the current NOTES selection sits, captured while the
 // selection is still live. Returns null for a selection made anywhere other
@@ -520,23 +502,9 @@ export const NOTES_AIM_SETTLE_PX = 4;
 
 export const NOTES_AIM_SETTLE_MS = 110;
 
-const READER_INPUT_EVENTS = ["pointerdown", "touchstart", "wheel", "keydown"];
-
-// When the reader last put a finger, a wheel or a key to the page. One
-// listener for the whole app rather than one per convergence: several can be in
-// flight at once (a resume, then a heading jump), and each only needs to know
-// whether the reader has acted SINCE it began.
-let readerInputAt = 0;
-
-if (typeof document !== "undefined") {
-  READER_INPUT_EVENTS.forEach((type) => document.addEventListener(type, () => {
-    readerInputAt = performance.now();
-  }, { capture: true, passive: true }));
-}
-
-export function readerActedSince(time) {
-  return readerInputAt > time;
-}
+// When the reader last put a finger, a wheel or a key to the page —
+// readerActedSince — lives in src/core/gesture.js, where every surface that
+// moves a scroller can ask it.
 
 export async function convergeNotesScroll(residual, budgetMs, { smooth = true } = {}) {
   const view = el.notesView;
@@ -1021,16 +989,26 @@ let cancelResume = null;
 // `options.resume` marks an ambient landing — see the block above.
 //
 // `options.patient` asks for the SAME generous retry budget as a resume
-// (NOTE_RESUME_BUDGET_MS, re-aimed on every pass) without the rest of what
-// makes a resume a resume — it still reports failure with a status message,
-// and a touch/scroll doesn't cancel it, because this IS the deliberate
-// action the reader asked for (the Highlights panel's "Go to →"). Without
-// this, revealNoteMark's exact <mark>-ordinal path (see below) silently gives
-// up the instant the target's block hasn't streamed into the DOM yet — which
-// on a large book is routine for a mark near the end — and falls back to a
-// text search whose windowed estimate can be wrong on an unstreamed note.
-// Patience is what lets the exact path win once streaming catches up instead
-// of settling for that guess after ~1s.
+// (NOTE_RESUME_BUDGET_MS) without the rest of what makes a resume a resume —
+// it still reports failure with a status message (the Highlights panel's "Go
+// to →", Go to bookmark). Without this, revealNoteMark's exact <mark>-ordinal
+// path (see below) silently gives up the instant the target's block hasn't
+// streamed into the DOM yet — which on a large book is routine for a mark near
+// the end — and falls back to a text search whose windowed estimate can be
+// wrong on an unstreamed note. Patience is what lets the exact path win once
+// streaming catches up instead of settling for that guess after ~1s.
+//
+// ── ...and patience is not ownership ─────────────────────────────────────
+//
+// A patient jump used to ignore the reader: no interruption watcher, and a
+// re-aim at the target block on every pass for the whole eight seconds. On an
+// imported book, whose markup means the exact words are often not found, that
+// was a hard scroll back to the bookmark every 600ms under the reader's
+// finger — "when I scroll anywhere else it's resisting and bringing me back".
+// Every jump that retries now stands down the moment the reader puts a finger,
+// a wheel or a key to the page. The watcher is armed here, inside the press
+// that asked for the jump, so that press's own pointerdown/touchstart/keydown
+// have already gone by and cannot cancel it.
 export function scheduleNoteJump(anchor, options, locator = null) {
   // ── One opinion about where the reader is ─────────────────────────────────
   //
@@ -1076,11 +1054,16 @@ export function scheduleNoteJump(anchor, options, locator = null) {
         span: resolved.span
       });
     };
+    const startedAt = performance.now();
     land();
     // The page it landed on has had time to render by now, so the quads it
     // carries can be measured and flashed.
+    //
+    // ...unless the reader has already taken the paper back. The first land is
+    // a smooth glide on a phone, and a flick during it used to be answered by
+    // this second land pulling the page back to the target.
     setTimeout(() => {
-      land();
+      if (!readerActedSince(startedAt)) land();
       if (options?.flash !== false && locator?.highlightId) flashDocumentHighlight(locator.highlightId);
       options?.onSettled?.();
     }, 260);
@@ -1091,10 +1074,11 @@ export function scheduleNoteJump(anchor, options, locator = null) {
   const patient = resume || Boolean(options?.patient);
   let estimatedOnce = false;
   const until = performance.now() + NOTE_RESUME_BUDGET_MS;
-  // The reader taking over ends the resume there and then — including the
-  // "a resume is landing" gate on reading-position captures, which would
+  // The reader taking over ends the jump there and then — any jump, not only a
+  // resume (see "patience is not ownership" above). For a resume that includes
+  // the "a resume is landing" gate on reading-position captures, which would
   // otherwise hold until the eight-second budget ran out.
-  const reader = resume ? watchForReaderInterruption(() => finishResume()) : null;
+  const reader = watchForReaderInterruption(resume ? () => { finishResume(); settleOnce(true); } : null);
   // At most one ambient resume, ever. Nobody asks for a resume — two of them
   // are two different opinions about where the reader is, both moving the same
   // scroller for up to eight seconds. There are two schedulers (loadDeckSnapshot
@@ -1117,29 +1101,47 @@ export function scheduleNoteJump(anchor, options, locator = null) {
     cancelResume?.();
     cancelResume = () => {
       cancelled = true;
-      reader?.cancel();
+      reader.cancel();
       finishResume();
     };
     self = cancelResume;
     setResumeLanding(true);
   }
+  // ── Settled means "no longer moving the note", however it got there ──────
+  //
+  // onSettled is how a deck open learns the resume is over (it arms the
+  // bookmark capture and raises the cross-device prompt — see
+  // maybePromptBookmarkJump). It used to be called only when the resume
+  // LANDED, so a reader who touched the note while a book was still landing
+  // left it uncalled for the rest of the session: no bookmark was ever taken
+  // for that file, and its way back stayed hidden. The reader taking over
+  // settles it too. Out of the touch handler, not inside it, and never for a
+  // resume a newer one replaced — that deck is not the open one any more.
+  let settled = false;
+  const settleOnce = (deferred = false) => {
+    if (settled || cancelled) return;
+    settled = true;
+    if (deferred) setTimeout(() => options?.onSettled?.(), 0);
+    else options?.onSettled?.();
+  };
   const done = () => {
-    reader?.cancel();
+    reader.cancel();
     // Landed without the reader taking over: the place it landed IS the
     // reading position, and the in-memory copy a deck save folds into meta
     // says so — rather than whatever was last captured before the deck opened.
-    if (resume && !cancelled && !reader?.interrupted()) {
+    if (resume && !cancelled && !reader.interrupted()) {
       setCurrentReadingAnchor(anchor);
       setCurrentReadingAnchorDeckKey(currentDeckKey());
     }
     finishResume();
-    options?.onSettled?.();
+    settleOnce();
   };
   const attempt = (retries) => {
     // A newer resume owns the scroller now.
     if (cancelled) return;
-    // The reader took over. Their position is the real one now.
-    if (reader?.interrupted()) return;
+    // The reader took over. Their position is the real one now — and having
+    // moved on, they are owed no "couldn't find that spot" either.
+    if (reader.interrupted()) return;
     // A big note mid-stream has a growing backlog of freshly appended,
     // never-laid-out blocks. Both revealNoteAnchor's text search and the
     // re-aim below it read block geometry, which — same reason notesStreamBusy
@@ -1176,10 +1178,10 @@ export function scheduleNoteJump(anchor, options, locator = null) {
       // search is centred near the target before retrying.
       //
       // For a resume (and a patient jump) this is also the landing itself, and
-      // it is re-aimed on every pass rather than once: the note is still
-      // streaming, so its height — and therefore where a given fraction of it
-      // sits — changes under us. That is what "land straight away, then
-      // correct" means here. The reader is put roughly in the right chapter
+      // it is re-aimed on every pass that reaches here rather than once — but
+      // only a pass the stream has let through, and the first of those on a
+      // block that can be named is the last (see below). That is what "land
+      // straight away, then correct" means here. The reader is put roughly in the right chapter
       // within a frame or two and converges on the exact paragraph as the note
       // settles, instead of sitting at the top of a book waiting for a search
       // that has nothing to search yet.
@@ -1217,7 +1219,13 @@ export function scheduleNoteJump(anchor, options, locator = null) {
         // retry; stopping here has to ask for it. Not in paged mode, where
         // scrollNotesBlockToReadingLine has already turned to the block's page
         // and there is no vertical residual to chase.
-        if (resume && block) {
+        //
+        // A patient jump stops here too. It used to keep re-aiming at this
+        // block every 600ms for the rest of its budget, which on a settled
+        // note cannot land anywhere new and could only take the note back from
+        // a reader who had started to scroll. The convergence still corrects
+        // for the chunks settling, and it yields to the reader's input itself.
+        if (patient && block) {
           if (!isNotesPaged()) {
             convergeNotesScroll(() => noteRangeReadingLineResidual(null, block, el.notesView), NOTE_JUMP_BUDGET_MS, { smooth: false });
           }
@@ -1247,8 +1255,11 @@ export function scheduleNoteJump(anchor, options, locator = null) {
       return;
     }
     if (retries > 0) setTimeout(() => attempt(retries - 1), 120);
-    else if (!options || options.flash !== false) {
-      setStatus("Couldn't find that spot in the notes — it may have been edited.", "info");
+    else {
+      reader.cancel();
+      if (!options || options.flash !== false) {
+        setStatus("Couldn't find that spot in the notes — it may have been edited.", "info");
+      }
     }
   };
   requestAnimationFrame(() => requestAnimationFrame(() => attempt(8)));

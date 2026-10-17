@@ -522,6 +522,7 @@ const APP_SHELL = [
   `./src/library/my-decks-render.js?v=${STAMP}`,
   `./src/library/my-decks-selection.js?v=${STAMP}`,
   `./src/library/tombstones.js?v=${STAMP}`,
+  `./src/notes/anchor-text.js?v=${STAMP}`,
   `./src/notes/anchors.js?v=${STAMP}`,
   `./src/notes/bookmark-prompt-store.js?v=${STAMP}`,
   `./src/notes/bookmark.js?v=${STAMP}`,

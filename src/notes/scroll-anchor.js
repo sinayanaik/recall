@@ -8,6 +8,7 @@ import { state } from "../core/state.js?v=__BUILD__";
 import { firstVisibleNotesBlock, isNotesPaged, notesCurrentPage, notesPageCount, notesPagedProbeX } from "./paged-view.js?v=__BUILD__";
 import { approximateRawOffsetForBlock, findRawOffsetForRenderedPoint, rawOffsetForRenderedBlock } from "./raw-offset.js?v=__BUILD__";
 import { trimNoteAnchor } from "../quick-notes/anchors.js?v=__BUILD__";
+import { renderedAnchorText } from "./anchor-text.js?v=__BUILD__";
 import { scheduleReadingPositionSave } from "./reading-position.js?v=__BUILD__";
 import { NOTES_CHUNK_CLASS, notesTopLevelBlocks } from "../render/block-cache.js?v=__BUILD__";
 
@@ -190,6 +191,28 @@ export function rawOffsetForCurrentNotesScroll() {
   return snapOffsetToLineStart(notes, (view.scrollTop / range) * notes.length);
 }
 
+// The words at `offset`, as the rendered note shows them — the `text` a
+// bookmark or a reading position is found again by (see renderedAnchorText).
+//
+// Kept to the one markdown line the offset is on. A paragraph is one line, and
+// the search matches inside one block's text; a needle that ran on into the
+// next paragraph carried a join the rendered blocks do not have. Forward from
+// the offset first, which is what the reader was looking at; backward only when
+// the offset sits at the very end of its line.
+export const READING_ANCHOR_TEXT_CHARS = 80;
+
+export function readingAnchorText(notes, offset) {
+  const source = String(notes || "");
+  const at = Math.max(0, Math.min(Number(offset) || 0, source.length));
+  const lineEnd = source.indexOf("\n", at);
+  const forwardEnd = Math.min(at + READING_ANCHOR_TEXT_CHARS * 2, lineEnd === -1 ? source.length : lineEnd);
+  const forward = renderedAnchorText(source.slice(at, forwardEnd)).slice(0, READING_ANCHOR_TEXT_CHARS).trim();
+  if (forward) return forward;
+  const lineStart = source.lastIndexOf("\n", Math.max(0, at - 1)) + 1;
+  const backwardStart = Math.max(lineStart, at - READING_ANCHOR_TEXT_CHARS * 2);
+  return renderedAnchorText(source.slice(backwardStart, at)).slice(-READING_ANCHOR_TEXT_CHARS).trim();
+}
+
 // ── Cross-device reading-position resume ────────────────────────────────
 // currentReadingAnchor is the in-memory copy. It is folded into deckSnapshot()'s
 // meta bag (see the `readingPosition` line there) as a piggyback on whatever
@@ -300,7 +323,10 @@ export function captureCurrentReadingAnchor(expectedKey = null) {
   const offset = rawOffsetForCurrentNotesScroll();
   if (offset == null) return;
   const notes = state.notes || "";
-  const text = notes.slice(offset, offset + 80).trim() || notes.slice(Math.max(0, offset - 80), offset).trim();
+  // The words on screen, not the markdown behind them — see readingAnchorText.
+  // `source` stays the raw slice: it is what raw mode and the offset check in
+  // resolveRawNoteIndex compare against.
+  const text = readingAnchorText(notes, offset);
   if (!text) return;
   // `at` is what lets a position from another device be compared with this
   // one's on open — see betterReadingPosition. It rides into meta.readingPosition

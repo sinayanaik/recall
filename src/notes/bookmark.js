@@ -37,7 +37,7 @@ import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { scheduleNoteJump } from "./anchors.js?v=__BUILD__";
 import { recordBookmarkPrompted, wasBookmarkPrompted } from "./bookmark-prompt-store.js?v=__BUILD__";
-import { currentDeckKey, rawOffsetForCurrentNotesScroll } from "./scroll-anchor.js?v=__BUILD__";
+import { currentDeckKey, rawOffsetForCurrentNotesScroll, readingAnchorText } from "./scroll-anchor.js?v=__BUILD__";
 import { trimNoteAnchor } from "../quick-notes/anchors.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { showConfirmModal, showToast } from "../ui/feedback.js?v=__BUILD__";
@@ -91,7 +91,11 @@ function notesSpotAnchor() {
   const offset = rawOffsetForCurrentNotesScroll();
   if (offset == null) return null;
   const notes = state.notes || "";
-  const text = notes.slice(offset, offset + 80).trim() || notes.slice(Math.max(0, offset - 80), offset).trim();
+  // The words on screen, not the markdown behind them. A raw slice of an
+  // imported book (emphasis, links, <sup> markers) is never found again by the
+  // rendered-text search, and Go to bookmark then had only an estimate to aim
+  // at — see readingAnchorText.
+  const text = readingAnchorText(notes, offset);
   const trimmed = trimNoteAnchor({ offset, source: notes.slice(offset, offset + 80), text });
   if (!trimmed) return null;
   // trimNoteAnchor drops `.at` (quick-notes pins don't want one) — re-add it
@@ -183,10 +187,18 @@ export function captureBookmarkForSync({ announce = false } = {}) {
   return true;
 }
 
+// Put back where it was taken, not centred. A bookmark is a reading position —
+// sampled on the reading line (notes) or top-aligned (the paper, see
+// documentSpotAnchor) — so going back to it is a restore, and a restore is only
+// the identity on the same line it was measured from. Centred, it reopened the
+// reader a third of a screen early: three paragraphs above the one they kept.
+// The document branch reads anything but "center" as top-aligned.
+const BOOKMARK_JUMP = { patient: true, align: "reading-line" };
+
 export function goToBookmark() {
   const bookmark = state.meta?.bookmark;
   if (!bookmark) return;
-  scheduleNoteJump(bookmark, { patient: true });
+  scheduleNoteJump(bookmark, BOOKMARK_JUMP);
 }
 
 // Called once per deck-load, after the ambient same-device resume (if any) has
@@ -216,7 +228,7 @@ export function maybePromptBookmarkJump() {
   if (sameSpot(bookmark, currentSpotAnchor())) return;
   showConfirmModal(
     "You left off somewhere else in this file on another device. Jump there?",
-    () => scheduleNoteJump(bookmark, { patient: true }),
+    () => scheduleNoteJump(bookmark, BOOKMARK_JUMP),
     { confirmLabel: "Jump to bookmark" }
   );
 }

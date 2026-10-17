@@ -3,7 +3,7 @@
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { escapeHtml } from "../core/text.js?v=__BUILD__";
-import { notesAnchorPlainText } from "./anchors.js?v=__BUILD__";
+import { notesAnchorPlainText } from "./anchor-text.js?v=__BUILD__";
 import { caretRectInBackdrop } from "./caret.js?v=__BUILD__";
 import { browseRowsFor, folderCrumbs, noteLinkBrowseSort, noteLinkHomeFolder, noteLinkSortLabel, parentFolder, toggleNoteLinkBrowseSort } from "./link-browse.js?v=__BUILD__";
 import { scoreNoteEntry } from "./link-fuzzy.js?v=__BUILD__";
