@@ -1731,6 +1731,21 @@ export function documentMinScale() {
   return Math.max(PDF_ABS_MIN_SCALE, Math.min(PDF_MIN_SCALE, fit * PDF_ZOOM_OUT_HEADROOM));
 }
 
+// How far the reader has zoomed from fit-width: 1 at fit, 3 at three times it.
+// The pen reads this so the size it was given means the same thing on screen at
+// every zoom (widthScaleFor, src/render/ink-engine.js). Bounded so a fit scale
+// not yet measured, or a page laid out at a scale from another window size,
+// cannot hand the pen a nib of nothing or a nib the width of the page.
+export const PDF_ZOOM_RATIO_MIN = 0.2;
+export const PDF_ZOOM_RATIO_MAX = 5;
+
+export function documentZoomRatio() {
+  const fit = openPdf?.fitScale;
+  const scale = openPdf?.scale;
+  if (!Number.isFinite(fit) || fit <= 0 || !Number.isFinite(scale) || scale <= 0) return 1;
+  return Math.min(PDF_ZOOM_RATIO_MAX, Math.max(PDF_ZOOM_RATIO_MIN, scale / fit));
+}
+
 // Note the finite check, which is not decoration. Math.max(0.4, NaN) is NaN and
 // so is Math.min(5, NaN), so a NaN got through here unchanged — and every page
 // is then sized `NaNpx`, which is an invalid declaration the browser discards,
@@ -3294,6 +3309,31 @@ function detailRegion(entry) {
   const y0 = Math.max(0, Math.floor(viewRect.top - marginY - pageRect.top));
   const x1 = Math.min(width, Math.ceil(viewRect.right + marginX - pageRect.left));
   const y1 = Math.min(height, Math.ceil(viewRect.bottom + marginY - pageRect.top));
+  if (x1 - x0 < 4 || y1 - y0 < 4) return null;
+  return { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
+}
+
+// What of a page is on screen, without the margin, in the page's own CSS
+// pixels — or null when none of it is. The ink's detail canvas reads this
+// (getViewRect, src/render/ink-engine.js) so the handwriting is sharpened over
+// the same part of the page this file sharpens the paper under it.
+//
+// Measured against the page's laid-out size rather than its box on screen, so
+// a pinch still in progress (a CSS transform on the page host) does not hand
+// back a rectangle in the wrong units.
+export function documentPageVisibleRect(pageNumber) {
+  const view = el.documentView;
+  const entry = openPdf?.pages.get(pageNumber);
+  if (!view || !entry?.el || !entry.viewport) return null;
+  const viewRect = view.getBoundingClientRect();
+  const pageRect = entry.el.getBoundingClientRect();
+  if (!pageRect.width || !pageRect.height) return null;
+  const sx = entry.viewport.width / pageRect.width;
+  const sy = entry.viewport.height / pageRect.height;
+  const x0 = Math.max(0, (viewRect.left - pageRect.left) * sx);
+  const y0 = Math.max(0, (viewRect.top - pageRect.top) * sy);
+  const x1 = Math.min(entry.viewport.width, (viewRect.right - pageRect.left) * sx);
+  const y1 = Math.min(entry.viewport.height, (viewRect.bottom - pageRect.top) * sy);
   if (x1 - x0 < 4 || y1 - y0 < 4) return null;
   return { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
 }

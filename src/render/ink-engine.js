@@ -115,6 +115,35 @@ import { INK_SHAPE_HOLD_MS, fitInkShape, straightenInkHighlight } from "./ink-sh
 export const INK_MAX_CANVAS_SCALE = 2;
 export const INK_MAX_CANVAS_PIXELS = 4_000_000;
 
+// ── The detail canvas, which is what keeps ink sharp at any zoom ──────────
+//
+// Those two caps are per CANVAS, and a canvas was the whole page. Zoom an A4
+// page to twice fit-width on a tablet and it is three and a half million CSS
+// pixels, so the budget allows about one device pixel per CSS pixel: the
+// handwriting went soft the moment anybody zoomed in to look at it, while the
+// page under it stayed crisp — because src/documents/pdf-view.js has had a
+// detail tile for exactly this since it stopped drawing 500% pages whole. "They
+// look blurred when zoomed in, not sharp" is the ink without one.
+//
+// So the ink gets the same thing. The whole-page canvas stays, at whatever
+// density the budget allows, so a scroll never uncovers a page with no ink on
+// it; and over the part of the page on screen, plus a margin, a second canvas
+// is drawn at the screen's full density. It is redrawn where the reader stops
+// (refreshWindows), never mid-stroke, and only when the page as a whole is
+// softer than the screen — at fit-width on most screens there is none at all.
+//
+// Up to three device pixels per CSS pixel, as the page itself is drawn
+// (PDF_MAX_CANVAS_SCALE): a phone at dpr 3 showed its paper at 3 and its ink
+// at 2, which is soft ink on a sharp page at every zoom. The window is about a
+// screenful, so the pixels that costs are bounded by the screen and not by how
+// far in the reader has zoomed.
+export const INK_DETAIL_MAX_SCALE = 3;
+export const INK_DETAIL_MAX_PIXELS = 6_000_000;
+
+// How far past the visible part of the page the window reaches, as a fraction
+// of what is visible, so a small scroll does not immediately need a redraw.
+export const INK_DETAIL_MARGIN = 0.15;
+
 // How far two runs of the same stroke overlap where they meet. Not a number to
 // taste: it is exactly how far back a sample's own width reaches
 // (INK_WIDTH_LOOKBACK, src/render/ink-paint.js), because a run that starts any
@@ -188,8 +217,12 @@ export const INK_NUDGE_STEP = 1;
 
 export const INK_NUDGE_STEP_COARSE = 10;
 
+function inkWantedScale(cap) {
+  return Math.min(cap, (typeof window !== "undefined" && window.devicePixelRatio) || 1);
+}
+
 function inkCanvasScale(width, height) {
-  const wanted = Math.min(INK_MAX_CANVAS_SCALE, (typeof window !== "undefined" && window.devicePixelRatio) || 1);
+  const wanted = inkWantedScale(INK_MAX_CANVAS_SCALE);
   const area = Math.max(1, width * height);
   return Math.min(wanted, Math.sqrt(INK_MAX_CANVAS_PIXELS / area));
 }
@@ -210,7 +243,72 @@ function inkSizeCanvas(canvas, width, height) {
   const cssHeight = `${Math.round(height)}px`;
   if (canvas.style.width !== cssWidth) canvas.style.width = cssWidth;
   if (canvas.style.height !== cssHeight) canvas.style.height = cssHeight;
+  // A canvas that was a window last time (the wet layer is either, stroke by
+  // stroke) goes back to covering the host from its corner.
+  if (canvas.style.left) canvas.style.left = "";
+  if (canvas.style.top) canvas.style.top = "";
+  if (canvas.classList.contains("is-ink-window")) canvas.classList.remove("is-ink-window");
   return scale;
+}
+
+// The part of a host to draw sharp: what is visible, widened by the margin and
+// kept inside the host, in the host's CSS pixels — and the density it can be
+// drawn at within `budget`.
+//
+// Density before margin. A budget that cannot afford both gives up the margin
+// first — a window that needs redrawing after a shorter scroll is the price —
+// and the screen's density only when what is actually visible is more than
+// the budget on its own.
+function inkWindowFor(visible, size, budget) {
+  const wanted = inkWantedScale(INK_DETAIL_MAX_SCALE);
+  const visibleArea = Math.max(1, visible.width * visible.height);
+  const affordable = Math.sqrt(budget / (visibleArea * wanted * wanted));
+  const grow = Math.max(1, Math.min(1 + (2 * INK_DETAIL_MARGIN), affordable));
+  const marginX = (visible.width * (grow - 1)) / 2;
+  const marginY = (visible.height * (grow - 1)) / 2;
+  const x0 = Math.max(0, Math.floor(visible.x - marginX));
+  const y0 = Math.max(0, Math.floor(visible.y - marginY));
+  const x1 = Math.min(Math.ceil(size.width), Math.ceil(visible.x + visible.width + marginX));
+  const y1 = Math.min(Math.ceil(size.height), Math.ceil(visible.y + visible.height + marginY));
+  const region = { x: x0, y: y0, width: Math.max(1, x1 - x0), height: Math.max(1, y1 - y0) };
+  const scale = Math.min(wanted, Math.sqrt(budget / Math.max(1, region.width * region.height)));
+  return { region, scale };
+}
+
+// A canvas that covers `region` of its host rather than all of it: positioned
+// there, and sized to it. Pairs with inkDeviceTransform's `region`.
+function inkSizeWindow(canvas, region, scale) {
+  const w = Math.max(1, Math.round(region.width * scale));
+  const h = Math.max(1, Math.round(region.height * scale));
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w;
+    canvas.height = h;
+  }
+  const left = `${region.x}px`;
+  const top = `${region.y}px`;
+  const cssWidth = `${region.width}px`;
+  const cssHeight = `${region.height}px`;
+  if (canvas.style.left !== left) canvas.style.left = left;
+  if (canvas.style.top !== top) canvas.style.top = top;
+  if (canvas.style.width !== cssWidth) canvas.style.width = cssWidth;
+  if (canvas.style.height !== cssHeight) canvas.style.height = cssHeight;
+  if (!canvas.classList.contains("is-ink-window")) canvas.classList.add("is-ink-window");
+}
+
+function inkRegionCovers(outer, inner) {
+  return Boolean(outer && inner) && inner.x >= outer.x && inner.y >= outer.y
+    && inner.x + inner.width <= outer.x + outer.width
+    && inner.y + inner.height <= outer.y + outer.height;
+}
+
+// A canvas nothing will draw on again. Shrunk before it is let go, because a
+// detached canvas keeps its bitmap until it is collected, and a detail canvas
+// is a screenful of device pixels.
+function releaseInkCanvas(canvas) {
+  if (!canvas) return;
+  canvas.remove();
+  canvas.width = 0;
+  canvas.height = 0;
 }
 
 // Model -> device pixels, in one matrix. Handed straight to setTransform, so
@@ -236,9 +334,13 @@ export function isEraserEvent(event) {
   return Boolean(buttons & 32) || Boolean(buttons & 2);
 }
 
-function inkDeviceTransform(matrix, scale) {
+// `region`, for a canvas that is a window onto part of its host (inkSizeWindow),
+// moves the host's origin to the window's corner first.
+function inkDeviceTransform(matrix, scale, region = null) {
   const m = Array.isArray(matrix) && matrix.length === 6 ? matrix : [1, 0, 0, 1, 0, 0];
-  return [m[0] * scale, m[1] * scale, m[2] * scale, m[3] * scale, m[4] * scale, m[5] * scale];
+  const ox = region ? region.x : 0;
+  const oy = region ? region.y : 0;
+  return [m[0] * scale, m[1] * scale, m[2] * scale, m[3] * scale, (m[4] - ox) * scale, (m[5] - oy) * scale];
 }
 
 export function createInkEngine({
@@ -267,6 +369,12 @@ export function createInkEngine({
   // throw keeps the stroke, so the reader never loses a band to a bug. The
   // drawing sheet passes nothing and every stroke is ink, as before.
   claimStroke = null,
+  // How many model units a unit of the chosen size is on this host right now,
+  // or null for exactly one. See widthScaleFor below.
+  getWidthScale = null,
+  // The part of the host on screen, in its own CSS pixels, or null — see
+  // "The detail canvas" at the top of this file.
+  getViewRect = null,
   root = null,
   className = "ink-layer-canvas"
 } = {}) {
@@ -295,11 +403,46 @@ export function createInkEngine({
   let inkOverlay = null;
   let overlayCtx = null;
   let overlayScale = 1;
+  // The part of its host the wet layer covers, or null for all of it — see
+  // mountOverlay.
+  let overlayRegion = null;
 
   let live = null;
   let queued = [];
   let frame = 0;
   let selection = null;
+
+  // ── A size means the same thing on screen at every zoom ──────────────────
+  //
+  // Strokes are stored in model units so they survive a zoom, and the chosen
+  // size used to be model units too — so zooming in three times to write
+  // something small made the nib three times fatter on screen, which is the
+  // opposite of what zooming in to write small is for. "When I set a size and
+  // zoom in, the global setting is still applied" is that report.
+  //
+  // The size the reader picks is now what the nib looks like. The surface says
+  // how far the host is zoomed from its reference (fit-width, on a paper), and
+  // a stroke begun at 3x is drawn and STORED a third as thick in model units —
+  // so it looks like the chosen size while it is being written and keeps its
+  // place on the page afterwards, scaling with the page like every stroke
+  // already on it. At the reference zoom this is exactly 1, which is where
+  // everybody who never zooms always is.
+  //
+  // The eraser and a restyle of a lasso selection are sizes too, and follow the
+  // same rule, so "size" means one thing on this surface whatever is armed.
+  function widthScaleFor(key) {
+    if (!getWidthScale) return 1;
+    let scale = 1;
+    try { scale = Number(getWidthScale(key)); } catch (_) { scale = 1; }
+    return Number.isFinite(scale) && scale > 0 ? scale : 1;
+  }
+
+  // A tenth of a point is the finest nib the wire format can say
+  // (encodeInkStrokes, ../format/ink-strokes.js); below that a stroke would
+  // round to a width of zero, which reads back as the default.
+  function scaledWidth(value, key) {
+    return Math.max(0.1, value * widthScaleFor(key));
+  }
 
   // ── Hosts ────────────────────────────────────────────────────────────────
 
@@ -385,7 +528,7 @@ export function createInkEngine({
     if (existing) detachHost(key);
     const { canvas, ctx } = ensureCanvas("is-ink-dry");
     element.appendChild(canvas);
-    const entry = { key, el: element, canvas, ctx, under: null, scale: 1, strokes: existing?.strokes || [], painted: null, unrecorded: false };
+    const entry = { key, el: element, canvas, ctx, under: null, detail: null, scale: 1, strokes: existing?.strokes || [], painted: null, unrecorded: false };
     hosts.set(key, entry);
     repaint(key);
     return entry;
@@ -414,6 +557,7 @@ export function createInkEngine({
     entry.canvas = null;
     entry.ctx = null;
     entry.el = null;
+    dropInkDetail(entry);
     entry.under?.canvas?.remove();
     entry.under = null;
     // The bitmap is gone, so nothing may be added to it. The next attachHost
@@ -436,7 +580,7 @@ export function createInkEngine({
   }
 
   function setStrokes(key, strokes) {
-    const entry = hosts.get(key) || { key, el: null, canvas: null, ctx: null, under: null, scale: 1, strokes: [], painted: null, unrecorded: false };
+    const entry = hosts.get(key) || { key, el: null, canvas: null, ctx: null, under: null, detail: null, scale: 1, strokes: [], painted: null, unrecorded: false };
     entry.strokes = Array.isArray(strokes) ? strokes.slice() : [];
     hosts.set(key, entry);
     repaint(key);
@@ -455,34 +599,80 @@ export function createInkEngine({
     return hosts.get(key)?.strokes.length || 0;
   }
 
-  function repaint(key) {
-    const entry = hosts.get(key);
-    if (!entry?.canvas || !entry.ctx || !entry.el) return;
-    const size = getHostSize ? getHostSize(key) : null;
-    if (!size || !size.width || !size.height) return;
-    entry.scale = inkSizeCanvas(entry.canvas, size.width, size.height);
-    const ctx = entry.ctx;
+  // What is on screen of a host, in its own CSS pixels and inside it, or null
+  // when none of it is or the surface cannot say.
+  function viewRectFor(key, size) {
+    if (!getViewRect || !size) return null;
+    let rect = null;
+    try { rect = getViewRect(key); } catch (_) { rect = null; }
+    if (!rect || !Number.isFinite(rect.x) || !Number.isFinite(rect.y)) return null;
+    const x0 = Math.max(0, rect.x);
+    const y0 = Math.max(0, rect.y);
+    const x1 = Math.min(size.width, rect.x + rect.width);
+    const y1 = Math.min(size.height, rect.y + rect.height);
+    if (!(x1 - x0 >= 4) || !(y1 - y0 >= 4)) return null;
+    return { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
+  }
+
+  // Whether this host's whole-page canvas is softer than the screen — the one
+  // case a detail canvas is for. The same 0.05 of slack pdf-view.js allows its
+  // own pages, so a budget a hair under the screen does not cost a second canvas.
+  function hostWantsDetail(entry) {
+    return entry.scale < inkWantedScale(INK_DETAIL_MAX_SCALE) - 0.05;
+  }
+
+  function dropInkDetail(entry) {
+    const detail = entry?.detail;
+    if (!detail) return;
+    releaseInkCanvas(detail.canvas);
+    releaseInkCanvas(detail.under?.canvas);
+    entry.detail = null;
+  }
+
+  // Made, mounted and sized for what is on screen now — or dropped, when nothing
+  // of the host is or its whole canvas is already sharp. Placed straight after
+  // the canvas it sharpens, so the wet layer (appended for a stroke) is always
+  // above both.
+  function syncInkDetail(entry, key, size) {
+    const visible = hostWantsDetail(entry) ? viewRectFor(key, size) : null;
+    if (!visible) { dropInkDetail(entry); return null; }
+    const { region, scale } = inkWindowFor(visible, size, INK_DETAIL_MAX_PIXELS);
+    if (!entry.detail) entry.detail = { ...ensureCanvas("is-ink-dry is-ink-detail"), under: null, region: null, scale: 1 };
+    const detail = entry.detail;
+    if (detail.canvas.parentNode !== entry.el || detail.canvas.previousSibling !== entry.canvas) entry.canvas.after(detail.canvas);
+    inkSizeWindow(detail.canvas, region, scale);
+    if (entry.under?.canvas?.isConnected) {
+      if (!detail.under) detail.under = ensureCanvas("is-ink-hl is-ink-detail");
+      const after = entry.under.canvas;
+      if (detail.under.canvas.parentNode !== after.parentNode || detail.under.canvas.previousSibling !== after) after.after(detail.under.canvas);
+      inkSizeWindow(detail.under.canvas, region, scale);
+    } else if (detail.under) {
+      releaseInkCanvas(detail.under.canvas);
+      detail.under = null;
+    }
+    detail.region = region;
+    detail.scale = scale;
+    return detail;
+  }
+
+  // One raster of a host's strokes: onto `ctx`, with the highlighter's bands
+  // onto `underCtx` when there is one and otherwise first onto `ctx` so the
+  // pen's ink lies over them either way. Cleared first. The same painting for
+  // the whole-page canvas and its detail window; only the matrix differs.
+  function paintDryRaster(key, target, underTarget, m, split, options) {
+    const ctx = target.ctx;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.clearRect(0, 0, entry.canvas.width, entry.canvas.height);
-    const m = inkDeviceTransform(getMatrix ? getMatrix(key) : null, entry.scale);
+    ctx.clearRect(0, 0, target.canvas.width, target.canvas.height);
     ctx.setTransform(m[0], m[1], m[2], m[3], m[4], m[5]);
-    const options = paintOptions(key);
-    // The page's strokes split by kind, in one pass: highlighter bands to the
-    // canvas under the ink when there is one, and otherwise onto this one FIRST
-    // so the pen's ink lies over them either way.
-    const bands = [];
-    const ink = [];
-    entry.strokes.forEach((stroke) => (isHighlighterToken(stroke.c) ? bands : ink).push(stroke));
-    const under = (bands.length || entry.under) ? ensureUnderlay(entry) : null;
-    if (under) {
-      inkSizeCanvas(under.canvas, size.width, size.height);
-      under.ctx.setTransform(1, 0, 0, 1, 0, 0);
-      under.ctx.clearRect(0, 0, under.canvas.width, under.canvas.height);
-      under.ctx.setTransform(m[0], m[1], m[2], m[3], m[4], m[5]);
-      paintInkStrokes(under.ctx, bands, options);
-      paintInkStrokes(ctx, ink, options);
+    const underCtx = underTarget?.ctx || null;
+    if (underCtx) {
+      underCtx.setTransform(1, 0, 0, 1, 0, 0);
+      underCtx.clearRect(0, 0, underTarget.canvas.width, underTarget.canvas.height);
+      underCtx.setTransform(m[0], m[1], m[2], m[3], m[4], m[5]);
+      paintInkStrokes(underCtx, split.bands, options);
+      paintInkStrokes(ctx, split.ink, options);
     } else {
-      paintInkLayers(ctx, entry.strokes, options);
+      paintInkLayers(ctx, split.all, options);
     }
     // A stroke still in flight that has handed part of itself to this canvas —
     // see the bound in drawFrame — is not in entry.strokes yet, because it is
@@ -494,6 +684,36 @@ export function createInkEngine({
     if (live?.key === key && live.settled?.length) {
       live.settled.forEach((run) => paintInkStroke(ctx, { w: live.width, c: live.pen, p: run }, options));
     }
+  }
+
+  // The page's strokes split by kind, in one pass.
+  function splitStrokes(strokes) {
+    const bands = [];
+    const ink = [];
+    strokes.forEach((stroke) => (isHighlighterToken(stroke.c) ? bands : ink).push(stroke));
+    return { bands, ink, all: strokes };
+  }
+
+  function paintInkDetail(entry, key, detail, split, options) {
+    const dm = inkDeviceTransform(getMatrix ? getMatrix(key) : null, detail.scale, detail.region);
+    paintDryRaster(key, detail, detail.under || null, dm, split, options);
+    detail.matrix = dm;
+  }
+
+  function repaint(key) {
+    const entry = hosts.get(key);
+    if (!entry?.canvas || !entry.ctx || !entry.el) return;
+    const size = getHostSize ? getHostSize(key) : null;
+    if (!size || !size.width || !size.height) return;
+    entry.scale = inkSizeCanvas(entry.canvas, size.width, size.height);
+    const m = inkDeviceTransform(getMatrix ? getMatrix(key) : null, entry.scale);
+    const options = paintOptions(key);
+    const split = splitStrokes(entry.strokes);
+    const under = (split.bands.length || entry.under) ? ensureUnderlay(entry) : null;
+    if (under) inkSizeCanvas(under.canvas, size.width, size.height);
+    paintDryRaster(key, entry, under || null, m, split, options);
+    const detail = syncInkDetail(entry, key, size);
+    if (detail) paintInkDetail(entry, key, detail, split, options);
     // What this bitmap now holds, so paintAppendedToDry can tell whether adding
     // to it is the same thing as painting it again.
     //
@@ -510,6 +730,33 @@ export function createInkEngine({
     // reclaimSettled — which empties `settled` — clears it again.
     entry.unrecorded = Boolean(live?.key === key && live.settled?.length);
     if (selection?.key === key) drawSelectionChrome();
+  }
+
+  // ── Where the reader stopped ─────────────────────────────────────────────
+  //
+  // The detail canvas covers what was on screen when it was drawn. Once the
+  // reader has scrolled somewhere it no longer covers, only that window is
+  // drawn again — the whole-page canvas under it has not changed, and painting
+  // it again would be the cost of every stroke on the page for nothing. Never
+  // during a gesture: the pen is down on what is on screen, and the window
+  // already covers it.
+  function refreshWindows() {
+    if (live) return;
+    hosts.forEach((entry, key) => {
+      if (!entry.canvas || !entry.ctx || !entry.el || !entry.painted) return;
+      const size = getHostSize ? getHostSize(key) : null;
+      if (!size || !size.width || !size.height) return;
+      if (size.width !== entry.painted.width || size.height !== entry.painted.height) { repaint(key); return; }
+      const visible = hostWantsDetail(entry) ? viewRectFor(key, size) : null;
+      if (!visible) { dropInkDetail(entry); return; }
+      const detail = entry.detail;
+      if (detail && detail.canvas.isConnected && inkRegionCovers(detail.region, visible)
+        && (!entry.under || detail.under?.canvas.isConnected)) return;
+      const fresh = syncInkDetail(entry, key, size);
+      if (fresh) paintInkDetail(entry, key, fresh, splitStrokes(entry.strokes), paintOptions(key));
+    });
+    // The lasso's frame is on the wet layer, which is a window too.
+    if (selection && !live) { clearOverlay(); drawSelectionChrome(); }
   }
 
   // ── Adding to the dry canvas instead of painting it again ─────────────────
@@ -562,13 +809,33 @@ export function createInkEngine({
     // a repaint can put it.
     const bands = added.filter((stroke) => isHighlighterToken(stroke.c));
     if (bands.length && !(entry.under && entry.painted.under && entry.under.canvas.isConnected)) return false;
+    // The detail window holds the same strokes as the canvas under it, so it is
+    // added to by the same rule — and asked the same questions first, so that a
+    // refusal never leaves one of the two a stroke ahead of the other.
+    const detail = entry.detail;
+    let dm = null;
+    if (detail) {
+      if (!detail.canvas.isConnected || !detail.matrix) return false;
+      if (bands.length && !detail.under?.canvas.isConnected) return false;
+      dm = inkDeviceTransform(getMatrix ? getMatrix(key) : null, detail.scale, detail.region);
+      for (let i = 0; i < 6; i += 1) { if (dm[i] !== detail.matrix[i]) return false; }
+    }
+    const ink = bands.length ? added.filter((stroke) => !isHighlighterToken(stroke.c)) : added;
     const ctx = entry.ctx;
     ctx.setTransform(m[0], m[1], m[2], m[3], m[4], m[5]);
     if (bands.length) {
       entry.under.ctx.setTransform(m[0], m[1], m[2], m[3], m[4], m[5]);
       paintInkStrokes(entry.under.ctx, bands, options);
     }
-    paintInkStrokes(ctx, bands.length ? added.filter((stroke) => !isHighlighterToken(stroke.c)) : added, options);
+    paintInkStrokes(ctx, ink, options);
+    if (detail) {
+      detail.ctx.setTransform(dm[0], dm[1], dm[2], dm[3], dm[4], dm[5]);
+      if (bands.length) {
+        detail.under.ctx.setTransform(dm[0], dm[1], dm[2], dm[3], dm[4], dm[5]);
+        paintInkStrokes(detail.under.ctx, bands, options);
+      }
+      paintInkStrokes(detail.ctx, ink, options);
+    }
     entry.painted.count = entry.strokes.length;
     return true;
   }
@@ -594,9 +861,33 @@ export function createInkEngine({
       inkOverlay = made.canvas;
       overlayCtx = made.ctx;
     }
+    // Already up for the gesture in flight: the page cannot scroll under a
+    // live stroke or drag, so the window it was given at the start still holds,
+    // and asking again is two layout reads a frame for the same answer.
+    if (live && inkOverlay.parentNode === parent) return true;
     const size = getHostSize ? getHostSize(key) : null;
     if (!size || !size.width || !size.height) return false;
-    overlayScale = inkSizeCanvas(inkOverlay, size.width, size.height);
+    // ── A window, not the page ───────────────────────────────────────────
+    //
+    // The wet layer is cleared and the whole stroke in flight filled again on
+    // every frame. It was the size of the page, so at a zoom it was millions of
+    // pixels cleared sixty times a second — capped at a density that made the
+    // live line soft as well — to show a stroke that is necessarily on screen.
+    // It covers the screenful the pen is on now, at full density: less to clear
+    // per frame, which is the lag a fast hand feels, and a line as sharp while
+    // it is being written as after.
+    const visible = viewRectFor(key, size);
+    const was = overlayRegion;
+    overlayRegion = null;
+    if (visible) {
+      const { region, scale } = inkWindowFor(visible, size, INK_MAX_CANVAS_PIXELS);
+      if (region.width * region.height < size.width * size.height * 0.9 || scale > inkCanvasScale(size.width, size.height) + 0.05) {
+        inkSizeWindow(inkOverlay, region, scale);
+        overlayRegion = region;
+        overlayScale = scale;
+      }
+    }
+    if (!overlayRegion) overlayScale = inkSizeCanvas(inkOverlay, size.width, size.height);
     // Appending an already-appended child moves it, which is real DOM work on
     // a path that runs every frame of a drag. Only touch it when it is not
     // already where it belongs — which, since the layer is unmounted at every
@@ -604,12 +895,20 @@ export function createInkEngine({
     if (inkOverlay.parentNode !== parent) {
       parent.appendChild(inkOverlay);
       clearOverlay();
+    } else if (!sameRegion(was, overlayRegion)) {
+      // Moved without being resized keeps its pixels, at the old offset.
+      clearOverlay();
     }
     return true;
   }
 
+  function sameRegion(a, b) {
+    if (!a || !b) return a === b;
+    return a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
+  }
+
   function overlayTransform(key, ctx, scale) {
-    const m = inkDeviceTransform(getMatrix ? getMatrix(key) : null, scale);
+    const m = inkDeviceTransform(getMatrix ? getMatrix(key) : null, scale, overlayRegion);
     ctx.setTransform(m[0], m[1], m[2], m[3], m[4], m[5]);
   }
 
@@ -913,13 +1212,15 @@ export function createInkEngine({
       from: 0,
       settled: [],
       pen: token,
-      width: highlighting ? hlWidth : width,
+      width: scaledWidth(highlighting ? hlWidth : width, key),
       holdTimer: 0,
       holdArmedAt: 0,
       snapped: null,
       snapDeclined: false,
       predicted: null,
       lastEvent: null,
+      lastAt: null,
+      prevAt: null,
       before: entry.strokes.slice()
     };
     samples.forEach((sample) => pushPoint(sample));
@@ -937,6 +1238,11 @@ export function createInkEngine({
     if (!point) return;
     const pressure = Number.isFinite(sample.pressure) ? sample.pressure : 0.5;
     live.points.push(point.x, point.y, Math.max(0, Math.min(1, pressure)));
+    // When the last two real samples were taken, so the guess can be bounded by
+    // how fast the hand is going rather than by how far apart two samples
+    // happen to be (see INK_PREDICT_SPEED_SLACK, ./ink-predict.js).
+    const at = Number(sample.timeStamp);
+    if (Number.isFinite(at)) { live.prevAt = live.lastAt; live.lastAt = at; }
   }
 
   function pushLasso(sample) {
@@ -966,7 +1272,8 @@ export function createInkEngine({
     // units apart — far enough to step clean over a fine line that the eraser
     // visibly passed across. Joined to the last point of the previous frame, so
     // the gap between two frames is filled in too.
-    const points = densifyInkPath(live.lastErase || null, sampled, Math.max(0.5, eraserSize));
+    const radius = eraserSize * widthScaleFor(live.key);
+    const points = densifyInkPath(live.lastErase || null, sampled, Math.max(0.5 * widthScaleFor(live.key), radius));
     live.lastErase = sampled[sampled.length - 1];
     // Which strokes the eraser may touch at all: both kinds, or only the pen's
     // ink, or only the highlighter's bands (INK_ERASE_TARGETS).
@@ -976,7 +1283,7 @@ export function createInkEngine({
     // all of it goes.
     if (eraseMode === "stroke") {
       const kept = entry.strokes.filter((stroke) => !erasable(stroke)
-        || !points.some((point) => inkStrokeHitsPoint(stroke, point.x, point.y, eraserSize)));
+        || !points.some((point) => inkStrokeHitsPoint(stroke, point.x, point.y, radius)));
       if (kept.length === entry.strokes.length) return;
       entry.strokes = kept;
       repaint(live.key);
@@ -990,7 +1297,7 @@ export function createInkEngine({
     const next = [];
     entry.strokes.forEach((stroke) => {
       if (!erasable(stroke)) { next.push(stroke); return; }
-      const left = eraseFromInkStroke(stroke, points, eraserSize);
+      const left = eraseFromInkStroke(stroke, points, radius);
       if (left.length === 1 && left[0] === stroke) { next.push(stroke); return; }
       changed = true;
       left.forEach((piece) => next.push(piece));
@@ -1165,6 +1472,13 @@ export function createInkEngine({
         const m = inkDeviceTransform(getMatrix ? getMatrix(live.key) : null, entry.scale);
         entry.ctx.setTransform(m[0], m[1], m[2], m[3], m[4], m[5]);
         paintInkStroke(entry.ctx, { w: live.width, c: live.pen, p: run }, paintOptions(live.key));
+        // ...and onto the sharp window over it, or the handed-over front of the
+        // line would show soft through it until the pen lifts.
+        if (entry.detail?.canvas.isConnected) {
+          const dm = inkDeviceTransform(getMatrix ? getMatrix(live.key) : null, entry.detail.scale, entry.detail.region);
+          entry.detail.ctx.setTransform(dm[0], dm[1], dm[2], dm[3], dm[4], dm[5]);
+          paintInkStroke(entry.detail.ctx, { w: live.width, c: live.pen, p: run }, paintOptions(live.key));
+        }
         // Remembered so repaint() can put it back. Without this a theme change,
         // a selection or a relayout under the nib would repaint the dry canvas
         // from entry.strokes — which does not hold this stroke yet — and erase
@@ -1213,7 +1527,8 @@ export function createInkEngine({
         const at = Number(sample.timeStamp) - Number(event.timeStamp);
         if (Number.isFinite(at)) ahead.push(at); else timed = false;
       });
-      kept = boundInkPrediction(run, guesses, timed && ahead.length === (guesses.length / 3) ? ahead : null);
+      const stepMs = (Number.isFinite(live.lastAt) && Number.isFinite(live.prevAt)) ? live.lastAt - live.prevAt : null;
+      kept = boundInkPrediction(run, guesses, timed && ahead.length === (guesses.length / 3) ? ahead : null, stepMs);
       for (let i = 0; i < kept * 3; i += 1) run.push(guesses[i]);
     }
     if (run.length < 3) return;
@@ -1488,7 +1803,11 @@ export function createInkEngine({
     if (!colour && nextWidth === null && nextOpacity === null) return false;
     const target = kind || colour?.kind || "pen";
     const highlighter = target === "highlighter";
-    const w = nextWidth === null ? null : (highlighter ? normalizeInkHlWidth(nextWidth) : normalizeInkWidth(nextWidth));
+    const picked = nextWidth === null ? null : (highlighter ? normalizeInkHlWidth(nextWidth) : normalizeInkWidth(nextWidth));
+    // In model units at the zoom the selection is being looked at, as a new
+    // stroke would be (widthScaleFor), and to the tenth the format stores so the
+    // unchanged test below can still recognise a press that changes nothing.
+    const w = picked === null ? null : Math.round(scaledWidth(picked, selection?.key) * 10) / 10 || 0.1;
     return mapSelection((stroke) => {
       const was = parseInkToken(stroke.c) || { kind: "pen", name: INK_PEN_DEFAULT, hex: null, opacity: 1 };
       if (was.kind !== target) return stroke;
@@ -1608,6 +1927,7 @@ export function createInkEngine({
     strokeCount,
     repaint,
     repaintAll,
+    refreshWindows,
     begin,
     move,
     end,

@@ -54,6 +54,22 @@ export const INK_PREDICT_MIN_STEP = 0.35;
 // last one, so a guess that does is not a guess about this hand.
 export const INK_PREDICT_MAX_LEAD = 2.5;
 
+// ...but a step is a step of SAMPLES, not of time, and that is what made fast
+// writing feel behind the nib. The engine paints the coalesced samples a stylus
+// reports at 240Hz, so the "last step" is about 4ms of travel and 2.5 of them
+// is about 10ms: the guess was cut at less than half the horizon above, and cut
+// hardest when the hand was moving fastest, which is exactly when a gap between
+// nib and ink is widest. So when the engine knows how long that step took, the
+// reach is also allowed to be the distance the hand covers in the whole horizon
+// at the speed it was just going — with this much slack for a hand that is
+// still accelerating. The direction and the horizon still bound it, so a guess
+// can reach further along the line and never off it.
+export const INK_PREDICT_SPEED_SLACK = 1.2;
+
+// Below this, two samples' timestamps say nothing about speed: they are the same
+// hardware report split up, or a clock with millisecond granularity.
+export const INK_PREDICT_MIN_STEP_MS = 2;
+
 // How sharply the guess may turn away from the direction the pen was actually
 // going, as the cosine of the angle between them. cos 50° ≈ 0.64: a prediction
 // that bends further than this is the predictor curling round a corner the hand
@@ -69,11 +85,12 @@ export const INK_PREDICT_FALLBACK_MAX = 2;
 // `run` the real samples about to be painted, `predicted` the browser's guesses
 // mapped through the same transform. `aheadMs[i]` is how far after the last real
 // sample the i-th guess claims to be, or null where the browser did not say.
+// `stepMs` is how long the last real step took, or null where that is unknown.
 //
 // Returns how many of the guesses to draw, always a prefix: a prediction is a
 // path, and keeping the third point of one whose second point was wrong would
 // draw a line to somewhere the predictor never claimed the pen would pass.
-export function boundInkPrediction(run, predicted, aheadMs = null) {
+export function boundInkPrediction(run, predicted, aheadMs = null, stepMs = null) {
   const guesses = Math.floor((predicted?.length || 0) / 3);
   if (!guesses) return 0;
   const real = Math.floor((run?.length || 0) / 3);
@@ -92,7 +109,10 @@ export function boundInkPrediction(run, predicted, aheadMs = null) {
   dirX /= step;
   dirY /= step;
 
-  const reach = step * INK_PREDICT_MAX_LEAD;
+  let reach = step * INK_PREDICT_MAX_LEAD;
+  if (Number.isFinite(stepMs) && stepMs >= INK_PREDICT_MIN_STEP_MS) {
+    reach = Math.max(reach, (step / stepMs) * INK_PREDICT_MAX_MS * INK_PREDICT_SPEED_SLACK);
+  }
   let atX = lastX;
   let atY = lastY;
   let travelled = 0;

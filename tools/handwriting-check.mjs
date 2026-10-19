@@ -136,7 +136,9 @@ const API_SRC = `async () => {
     // reload, so that "it fell back" can be told from "it was never remembered".
     "/src/documents/doc-slot.js?v=__BUILD__",
     "/src/storage/deck-tab.js?v=__BUILD__",
-    "/src/ui/reading-rail.js?v=__BUILD__"
+    "/src/ui/reading-rail.js?v=__BUILD__",
+    // Focus mode itself, for the strip of tabs it keeps at the top.
+    "/src/ui/chrome.js?v=__BUILD__"
   ];
   const mods = await Promise.all(paths.map((p) => import(p)));
   const api = {};
@@ -4468,6 +4470,172 @@ try {
   check("...and nothing threw while the reader's place was being asked about",
     !place.fatal && (place.errs || []).length === 0,
     place.fatal || (place.errs || []).join(" | "));
+
+  // ── Zoomed in: sharp, and the size the reader chose ─────────────────────
+  //
+  // "When I set a size and zoom in, the global setting is still applied, so it
+  // looks blurred zoomed in — not size-adaptive and not sharp." Two faults:
+  //
+  //   • the ink was one canvas the size of the page, held to a pixel budget, so
+  //     at twice fit-width it was drawn at well under one device pixel per CSS
+  //     pixel while the paper under it had a sharp detail tile;
+  //   • the size was in PDF points, so a stroke begun at 2x was twice as thick
+  //     on screen as the same size at fit.
+  //
+  // Asked at dpr 2 (emulatePhone above), on page 1 of the notebook.
+  const zoomed = await page.evaluate(`async (penSrc) => {
+    const { api, settle } = window.__recall;
+    const pen = (0, eval)(penSrc);
+    const errs = [];
+    window.addEventListener("error", (e) => errs.push(String(e.message)));
+    const view = document.getElementById("documentView");
+    api.setViewMode("handwriting");
+    for (let i = 0; i < 80 && !document.querySelector("#documentStage .pdf-page[data-page-number='1'] canvas.pdf-canvas"); i += 1) await settle(100);
+    api.chooseInkTool("pen");
+    api.fitDocumentToWidth();
+    await settle(600);
+    api.scrollToDocumentPage(1, 0, { smooth: false });
+    await settle(300);
+    const strokesOn = () => api.documentInkMarks(1).flatMap((r) => api.decodeInkStrokes(r.ink?.s || []));
+    const key = (s) => JSON.stringify(s.p);
+    // A short stroke somewhere on page 1 that is on screen and clear of the bar,
+    // and the stroke it made.
+    const drawOne = async () => {
+      const pageEl = document.querySelector("#documentStage .pdf-page[data-page-number='1']");
+      const box = pageEl.getBoundingClientRect();
+      const rail = document.getElementById("documentInkRail")?.getBoundingClientRect();
+      const top = Math.max(box.top + 40, (rail && rail.height ? rail.bottom : 0) + 60);
+      const left = Math.max(box.left, 0) + 80;
+      const before = new Set(strokesOn().map(key));
+      pen(view, "pointerdown", left, top, 1);
+      for (let i = 1; i <= 12; i += 1) pen(view, "pointermove", left + (i * 8), top + (i * 2), 1);
+      await settle(80);
+      pen(view, "pointerup", left + 96, top + 24, 0);
+      await settle(300);
+      return strokesOn().find((s) => !before.has(key(s))) || null;
+    };
+    const atFit = await drawOne();
+    const ratioAtFit = api.documentZoomRatio();
+    const previewAtFit = api.inkPreviewScale();
+
+    api.setDocumentScale(api.fitWidthScale() * 2);
+    await settle(900);
+    api.scrollToDocumentPage(1, 0, { smooth: false });
+    await settle(400);
+    const ratioZoomed = api.documentZoomRatio();
+    const previewZoomed = api.inkPreviewScale();
+    const atTwo = await drawOne();
+
+    // The sharp window over what is on screen, and how dense it is.
+    const layer = () => document.querySelector("#documentStage .pdf-page[data-page-number='1'] .pdf-ink-layer");
+    const read = () => {
+      const detail = layer()?.querySelector(".is-ink-detail");
+      const base = layer()?.querySelector(".is-ink-dry:not(.is-ink-detail)");
+      const density = (c) => (c ? c.width / (parseFloat(c.style.width) || c.width) : 0);
+      return {
+        detail: Boolean(detail),
+        detailDensity: density(detail),
+        baseDensity: density(base),
+        top: detail ? parseFloat(detail.style.top) || 0 : -1,
+        height: detail ? parseFloat(detail.style.height) || 0 : 0
+      };
+    };
+    const sharp = read();
+    // Scrolled well past the window, and let settle: the window follows.
+    const pageEl = document.querySelector("#documentStage .pdf-page[data-page-number='1']");
+    view.scrollTop += Math.round(view.clientHeight * 1.4);
+    await settle(400);
+    const visibleTop = view.getBoundingClientRect().top - pageEl.getBoundingClientRect().top;
+    const moved = read();
+    api.fitDocumentToWidth();
+    await settle(600);
+    const backAtFit = read();
+    return {
+      atFit: atFit ? atFit.w : 0,
+      atTwo: atTwo ? atTwo.w : 0,
+      chosen: api.inkWidth(),
+      ratioAtFit, ratioZoomed, previewAtFit, previewZoomed,
+      sharp, moved, visibleTop, backAtFit,
+      dpr: window.devicePixelRatio,
+      errs
+    };
+  }`, PEN_SRC);
+
+  check("at fit-width a stroke is drawn at exactly the chosen size",
+    Math.abs(zoomed.ratioAtFit - 1) < 0.01 && Math.abs(zoomed.atFit - zoomed.chosen) <= 0.1,
+    `zoom ${zoomed.ratioAtFit.toFixed(2)}x, chose ${zoomed.chosen}pt, stored ${zoomed.atFit}pt`);
+  check("...and at twice fit-width it is half as thick on the page, so the same on screen",
+    Math.abs(zoomed.ratioZoomed - 2) < 0.05 && Math.abs(zoomed.atTwo - (zoomed.chosen / 2)) <= 0.1,
+    `zoom ${zoomed.ratioZoomed.toFixed(2)}x, chose ${zoomed.chosen}pt, stored ${zoomed.atTwo}pt (want ${zoomed.chosen / 2})`);
+  check("...and the panel's preview stays the size it will look",
+    zoomed.previewAtFit > 0 && Math.abs(zoomed.previewZoomed - zoomed.previewAtFit) / zoomed.previewAtFit < 0.05,
+    `preview scale ${zoomed.previewAtFit.toFixed(3)} at fit, ${zoomed.previewZoomed.toFixed(3)} at 2x`);
+  check("zoomed past what one canvas can hold, the ink on screen is drawn at full density",
+    zoomed.sharp.detail && zoomed.sharp.detailDensity >= zoomed.dpr - 0.06,
+    `detail=${zoomed.sharp.detail}, ${zoomed.sharp.detailDensity.toFixed(2)} device px per CSS px at dpr ${zoomed.dpr} `
+      + `(the whole-page canvas under it: ${zoomed.sharp.baseDensity.toFixed(2)})`);
+  check("...and the sharp window follows the reader once a scroll settles",
+    zoomed.moved.detail && zoomed.moved.top <= zoomed.visibleTop + 1
+      && zoomed.moved.top + zoomed.moved.height >= zoomed.visibleTop + 100,
+    `window ${zoomed.moved.top.toFixed(0)}-${(zoomed.moved.top + zoomed.moved.height).toFixed(0)}, view starts at ${zoomed.visibleTop.toFixed(0)}`);
+  check("...and is gone again at fit-width, where the page is sharp on its own",
+    !zoomed.backAtFit.detail || zoomed.backAtFit.baseDensity < zoomed.dpr - 0.05,
+    `detail=${zoomed.backAtFit.detail}, whole-page density ${zoomed.backAtFit.baseDensity.toFixed(2)}`);
+  check("...with nothing thrown while zoomed", zoomed.errs.length === 0, zoomed.errs.join(" | "));
+
+  // ── The tabs, in focus mode ──────────────────────────────────────────────
+  //
+  // "In the focus mode the tab switching option should also be there." Focus
+  // mode folds the tab row away with the header; a compact strip of the four
+  // stays at the top instead, clear of the Canvas's pen bar, and pressing one
+  // switches part without leaving focus mode.
+  const focusTabs = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const errs = [];
+    window.addEventListener("error", (e) => errs.push(String(e.message)));
+    const strip = document.getElementById("focusTabs");
+    const shown = () => Boolean(strip) && getComputedStyle(strip).display !== "none";
+    const lit = () => strip?.querySelector("button.is-active")?.dataset.viewMode || "";
+    api.setViewMode("handwriting");
+    await settle(500);
+    const before = shown();
+    api.setFocusMode(true);
+    await settle(300);
+    const on = shown();
+    const litOn = lit();
+    const visible = [...(strip?.querySelectorAll("button") || [])].filter((b) => !b.hidden).map((b) => b.dataset.viewMode);
+    const stripBox = strip.getBoundingClientRect();
+    const bar = document.getElementById("documentInkRail");
+    const barBox = bar && !bar.hidden ? bar.getBoundingClientRect() : null;
+    strip.querySelector('[data-view-mode="notes"]').click();
+    await settle(500);
+    const afterPress = { view: api.state.viewMode, focus: document.body.classList.contains("chrome-collapsed"), lit: lit() };
+    strip.querySelector('[data-view-mode="handwriting"]').click();
+    await settle(600);
+    const back = api.state.viewMode;
+    api.setFocusMode(false);
+    await settle(300);
+    return {
+      before, on, litOn, visible,
+      stripBottom: stripBox.bottom, stripTop: stripBox.top,
+      barTop: barBox ? barBox.top : null,
+      afterPress, back, off: shown(), errs
+    };
+  }`);
+
+  check("focus mode keeps a strip of the four tabs at the top, and only focus mode",
+    !focusTabs.before && focusTabs.on && focusTabs.stripTop < 40 && !focusTabs.off,
+    `before=${focusTabs.before}, in focus mode=${focusTabs.on} at top ${Math.round(focusTabs.stripTop)}px, after=${focusTabs.off}`);
+  check("...with the part being looked at lit, and every part this file has",
+    focusTabs.litOn === "handwriting" && ["cards", "notes", "document", "handwriting"].every((v) => focusTabs.visible.includes(v)),
+    `lit "${focusTabs.litOn}", showing ${focusTabs.visible.join(", ")}`);
+  check("...clear of the Canvas's pen bar rather than over it",
+    focusTabs.barTop === null || focusTabs.barTop >= focusTabs.stripBottom - 1,
+    `strip ends at ${Math.round(focusTabs.stripBottom)}px, the pen bar starts at ${focusTabs.barTop === null ? "—" : Math.round(focusTabs.barTop)}px`);
+  check("...and a press switches part without leaving focus mode",
+    focusTabs.afterPress.view === "notes" && focusTabs.afterPress.focus && focusTabs.afterPress.lit === "notes" && focusTabs.back === "handwriting",
+    `view ${focusTabs.afterPress.view}, focus=${focusTabs.afterPress.focus}, lit ${focusTabs.afterPress.lit}, back to ${focusTabs.back}`);
+  check("...with nothing thrown", focusTabs.errs.length === 0, focusTabs.errs.join(" | "));
 
   check("nothing threw anywhere in this run",
     sheet.errs.length === 0 && picture.errs.length === 0,

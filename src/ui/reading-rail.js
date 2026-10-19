@@ -454,6 +454,17 @@ export function initReadingRail() {
     refreshReadingRailModes();
   });
 
+  // The strip of tabs focus mode keeps at the top (#focusTabs). Its own
+  // listener, because it is not inside the rail — and the same call the rail's
+  // view rows make, so a tab pressed here is the same switch as one pressed
+  // anywhere else. Focus mode stays on: that is the point of the strip.
+  el.focusTabs?.addEventListener("click", (event) => {
+    const view = event.target.closest("[data-view-mode]");
+    if (!view || view.hidden) return;
+    setViewMode(view.dataset.viewMode, { deferRender: true });
+    setReadingRailExpanded(false);
+  });
+
   // A press anywhere else folds it back up — the rail overlays the page, and one
   // left open is a column of icons sitting on top of what is being read.
   document.addEventListener("pointerdown", (event) => {

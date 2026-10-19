@@ -115,7 +115,7 @@ try {
   const { fitInkShape, INK_SHAPE_MIN_SIZE } = shapesMod;
   const predictMod = await import(path.join(stage, "src/render/ink-predict.js"));
   const {
-    INK_PREDICT_FALLBACK_MAX, INK_PREDICT_MAX_LEAD, INK_PREDICT_MAX_MS, boundInkPrediction
+    INK_PREDICT_FALLBACK_MAX, INK_PREDICT_MAX_LEAD, INK_PREDICT_MAX_MS, INK_PREDICT_MIN_STEP_MS, boundInkPrediction
   } = predictMod;
   const { INK_WIDTH_LOOKAHEAD, INK_WIDTH_LOOKBACK, inkStrokeWidths } = paintMod;
   const migrateMod = await import(path.join(stage, "src/documents/notebook-migrate.js"));
@@ -780,6 +780,29 @@ try {
       if (kept > n) return `offered ${n} guesses and kept ${kept}`;
     }
     return true;
+  });
+
+  must("a fast hand gets the whole horizon, not two and a half samples of it", () => {
+    // "When writing too fast it feels a little lag": at 240Hz the last real step
+    // is ~4ms of travel, so a reach of 2.5 steps stopped the guess ~10ms ahead
+    // however fast the hand went. Four units in 4ms is a unit a millisecond; a
+    // guess 20ms ahead along the same line is 20 units out and must be kept.
+    const fast = boundInkPrediction(straightRun, [28, 0, 0.5], [20], 4);
+    if (fast !== 1) return `kept ${fast} of a straight guess 20ms ahead of a fast hand`;
+    // ...and without the step's duration it is exactly the old bound.
+    const untimed = boundInkPrediction(straightRun, [28, 0, 0.5], [20]);
+    return untimed === 0 || `kept ${untimed} with no step time; the step bound should still hold`;
+  });
+
+  must("...but speed never excuses a guess past the horizon or off the line", () => {
+    const late = boundInkPrediction(straightRun, [28, 0, 0.5], [INK_PREDICT_MAX_MS + 4], 4);
+    if (late !== 0) return `kept a guess ${INK_PREDICT_MAX_MS + 4}ms ahead`;
+    const far = boundInkPrediction(straightRun, [400, 0, 0.5], [20], 4);
+    if (far !== 0) return "kept a guess far beyond the distance the hand covers in the horizon";
+    const turned = boundInkPrediction(straightRun, [8, 20, 0.5], [20], 4);
+    if (turned !== 0) return "kept a guess at a right angle to the stroke";
+    const split = boundInkPrediction(straightRun, [28, 0, 0.5], [20], INK_PREDICT_MIN_STEP_MS / 2);
+    return split === 0 || "trusted a step time too short to say anything about speed";
   });
 
   // ── 5. What a colour word can say ─────────────────────────────────────────

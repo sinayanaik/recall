@@ -194,7 +194,10 @@ export function setViewMode(mode, options = {}) {
   // NOT a document.querySelectorAll: an attribute selector cannot be answered
   // from an index, so on a book-sized note that would be a full tree walk on
   // every tab press.
-  [el.viewModeToggle, el.readingRailTray].forEach((container) => {
+  //
+  // ...and the strip of tabs focus mode keeps on screen (#focusTabs), for the
+  // same reason and by the same rule.
+  [el.viewModeToggle, el.readingRailTray, el.focusTabs].forEach((container) => {
     container?.querySelectorAll("[data-view-mode]").forEach((button) => {
       button.classList.toggle("is-active", button.dataset.viewMode === next);
     });
