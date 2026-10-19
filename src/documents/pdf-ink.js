@@ -109,7 +109,7 @@ import { inkPenIsDown, noteInkContact, noteInkStrokeCommitted, setInkPenDown, se
 import { QUAD_GEOMETRY_VERSION, documentHighlightAtPoint, documentInkMarks, freshDocumentHighlightId, setDocumentInkForPage } from "./pdf-highlights.js?v=__BUILD__";
 import { REGION_CLASS } from "./pdf-region.js?v=__BUILD__";
 import { setSmartHlUndoSink, smartHlClaimInkStroke } from "./pdf-smart-highlight.js?v=__BUILD__";
-import { PDF_DARK_CLASS, currentDocumentPage, documentInkPageActive, documentPageInViewCheap, pdfPageElement, pdfPageViewport, refreshBakedDocumentPages, setDocumentInkLiveCheck } from "./pdf-view.js?v=__BUILD__";
+import { PDF_DARK_CLASS, currentDocumentPage, documentInkPageActive, documentPageInViewCheap, documentPageVisibleRect, documentZoomRatio, pdfPageElement, pdfPageViewport, refreshBakedDocumentPages, setDocumentInkLiveCheck } from "./pdf-view.js?v=__BUILD__";
 import { INK_ERASER_SIZE_DEFAULT, INK_ERASE_MODE_DEFAULT, INK_ERASE_TARGET_DEFAULT, INK_HL_TOKEN_DEFAULT, INK_HL_WIDTH_DEFAULT, INK_PEN_DEFAULT, INK_TOOL_DEFAULT, INK_WIDTH_DEFAULT, formatInkToken, inkFilingColor, isHighlighterToken, normalizeInkEraseMode, normalizeInkEraseTarget, normalizeInkEraserSize, normalizeInkHlWidth, normalizeInkOpacity, normalizeInkToken, normalizeInkTool, normalizeInkWidth, parseInkToken } from "../format/ink-colors.js?v=__BUILD__";
 import { INK_FORMAT_VERSION, INK_MARK_IDLE_MS, decodeInkStrokes, encodeInkStrokes, inkStrokesBounds, inkStrokesJoinMark, mergeInkBoxes } from "../format/ink-strokes.js?v=__BUILD__";
 import { notifyHighlightsChanged } from "../format/highlight-edit.js?v=__BUILD__";
@@ -290,6 +290,15 @@ function ensureEngine() {
     // the band for a scan, a figure, handwriting, blank paper or anything drawn
     // rather than swept.
     claimStroke: (page, stroke) => smartHlClaimInkStroke(page, stroke),
+    // The chosen size is what the nib looks like on screen, so a page zoomed to
+    // three times fit-width takes a nib a third as thick in PDF points (see
+    // widthScaleFor in the engine). One scale for the whole document, because
+    // zoom is one setting for the whole document.
+    getWidthScale: () => 1 / documentZoomRatio(),
+    // What of the page is on screen, for the sharp window the engine draws over
+    // a page zoomed past what one canvas can hold (see the detail canvas in the
+    // engine) — measured by the same file that sharpens the paper under it.
+    getViewRect: (page) => documentPageVisibleRect(page),
     className: "pdf-ink-canvas"
   });
   applyInkSettings(engine);
@@ -847,6 +856,30 @@ function detachInkScrollGuard() {
   inkScrollGuardOn = false;
 }
 
+// ── Sharp where the reader stops ───────────────────────────────────────────
+//
+// A page zoomed in past what one canvas can draw sharp gets a window of sharp
+// ink over what is on screen (the detail canvas in the engine). Redrawn once
+// the scroll settles, on the same delay the paper's own detail tile waits
+// (PDF_DETAIL_DELAY_MS): drawing it per scroll event would be the cost of every
+// stroke in view on every frame of a flick, and the soft page under it is
+// already there to scroll over in the meantime.
+const INK_WINDOW_SETTLE_MS = 100;
+let inkWindowTimer = 0;
+
+function scheduleInkWindows() {
+  if (!engine) return;
+  clearTimeout(inkWindowTimer);
+  inkWindowTimer = setTimeout(refreshInkWindows, INK_WINDOW_SETTLE_MS);
+}
+
+function refreshInkWindows() {
+  inkWindowTimer = 0;
+  if (!engine) return;
+  if (inkPenIsDown()) { scheduleInkWindows(); return; }
+  engine.refreshWindows();
+}
+
 function onInkClick(event) {
   if (Date.now() > swallowClickUntil) return;
   swallowClickUntil = 0;
@@ -870,6 +903,7 @@ export function initDocumentInk() {
   view.addEventListener("pointercancel", onInkPointerCancel, true);
   view.addEventListener("click", onInkClick, true);
   // The scroll guard is bound per press — see attachInkScrollGuard.
+  view.addEventListener("scroll", scheduleInkWindows, { passive: true });
 
   // ── The OS menu, over the one surface it must never open on ───────────────
   //
@@ -1184,6 +1218,13 @@ export function inkScreenScale() {
   // page's rotation — on a page turned a quarter, transform[0] is zero.
   const t = viewport?.transform;
   return t ? (Math.hypot(t[0], t[1]) || 1) : 1;
+}
+
+// ...and how big a point of the CHOSEN SIZE is on the glass, which is what the
+// panel's preview wants now that a size means the same thing at every zoom:
+// the page's own scale at fit-width, whatever the zoom actually is.
+export function inkPreviewScale() {
+  return inkScreenScale() / documentZoomRatio();
 }
 
 // The paper under the ink, as the engine is told it (see ensureEngine).

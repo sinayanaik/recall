@@ -145,6 +145,8 @@ export function refreshDocumentTab() {
   // remembered opens a surface the other one says is not there.
   const railButton = el.readingRailTray?.querySelector('[data-view-mode="document"]');
   if (railButton) railButton.hidden = !showTab;
+  const focusButton = el.focusTabs?.querySelector('[data-view-mode="document"]');
+  if (focusButton) focusButton.hidden = !showTab;
   // Published on the stage so CSS can stand the document's own controls down on
   // a deck that has none — ☰ contents, ◐ dark page, ▣ region and ⋯ are lifted
   // into the view-mode row for the whole session and shown from "is the Document
@@ -180,6 +182,8 @@ export function refreshHandwritingTab() {
   button.hidden = !showTab;
   const railButton = el.readingRailTray?.querySelector('[data-view-mode="handwriting"]');
   if (railButton) railButton.hidden = !showTab;
+  const focusButton = el.focusTabs?.querySelector('[data-view-mode="handwriting"]');
+  if (focusButton) focusButton.hidden = !showTab;
   // The same published fact the Document surface uses for its own controls: a
   // deck with no notebook has nothing to add a page to, nothing to tear out and
   // no paper to change, so those controls stand down rather than sitting inert

@@ -476,3 +476,107 @@ body:not(.chrome-collapsed) .reading-rail[data-expanded="false"] .reading-rail-g
     height: 36px;
   }
 }
+
+/* ── The tabs, kept at the top in focus mode ──────────────────────────────
+ *
+ * Focus mode folds the tab row away with the header, and the four parts were
+ * then reachable only through the tray above — open it, press, it closes. On
+ * the Canvas, where a reader goes back and forth between their handwriting and
+ * the PDF or the notes beside it, that is two presses for the commonest thing
+ * they do. "In focus mode the tab switching option should also be there."
+ *
+ * So a compact strip of the four stays at the top while the chrome is folded:
+ * a small pill, centred, translucent, out of the way of both edges (the back
+ * gesture's on the left, the rail's on the right). Shown on exactly the guard
+ * the rail itself is shown on — a file is open, the ☰ drawer is not — plus
+ * the fold, since with the chrome up the real tabs are right there. */
+.focus-tabs {
+  display: none;
+}
+
+body.chrome-collapsed:not(:is(.cs-menu-open, #cs-specificity).cs-menu-open):is(.cs-view-toggle, #cs-specificity).cs-view-toggle .focus-tabs {
+  position: fixed;
+  top: max(4px, env(safe-area-inset-top, 0px));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 62;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  max-width: calc(100vw - 96px);
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel) 90%, transparent);
+  box-shadow: 0 4px 14px rgb(0 0 0 / 0.18);
+}
+
+/* ...and the room for it. The strip floats, so without this it would sit on
+   the first line of the note, or on the Canvas's pen bar, which is at the top
+   of the stage. The shell's own top padding grows by the strip's height while
+   it is up, which moves every part down together and asks nothing of any of
+   them. */
+body.chrome-collapsed:not(:is(.cs-menu-open, #cs-specificity).cs-menu-open):is(.cs-view-toggle, #cs-specificity).cs-view-toggle .app-shell {
+  padding-top: calc(var(--app-pad, 0px) + 34px + env(safe-area-inset-top, 0px));
+}
+
+.focus-tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  min-width: 0;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.focus-tabs button[hidden] {
+  display: none;
+}
+
+.focus-tabs button:hover,
+.focus-tabs button:focus-visible {
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+/* Lit by setViewMode, in the same pass that lights the real tabs. */
+.focus-tabs button.is-active {
+  border-color: color-mix(in srgb, var(--accent) 46%, var(--line));
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  color: var(--accent);
+}
+
+.focus-tabs .ft-ico {
+  font-size: 0.9rem;
+}
+
+/* A phone held upright has room for four icons and not four words. */
+@media (max-width: 480px) {
+  .focus-tabs button {
+    padding: 0 9px;
+  }
+
+  .focus-tabs .ft-label {
+    display: none;
+  }
+}
+
+@media (pointer: coarse) {
+  .focus-tabs button {
+    height: 30px;
+  }
+
+  body.chrome-collapsed:not(:is(.cs-menu-open, #cs-specificity).cs-menu-open):is(.cs-view-toggle, #cs-specificity).cs-view-toggle .app-shell {
+    padding-top: calc(var(--app-pad, 0px) + 38px + env(safe-area-inset-top, 0px));
+  }
+}
