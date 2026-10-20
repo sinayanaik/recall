@@ -396,7 +396,11 @@ function bindSheetPointer(scroller) {
       && Math.hypot(event.clientX - activeStart.x, event.clientY - activeStart.y) < 4;
     const suppressed = tapped && activeStart.at <= sheetTapSuppressedUntil;
     activeStart = null;
-    if (cancelled || suppressed) sheetPaper.engine.cancel();
+    // A contact the browser took away (pointercancel) keeps what it drew — the
+    // engine's settle() commits a pen stroke and puts back anything else. Only
+    // the press that shut the panel is thrown away, because it was never ink.
+    if (suppressed) sheetPaper.engine.cancel();
+    else if (cancelled) sheetPaper.engine.settle();
     else { sheetPaper.engine.move(event); sheetPaper.engine.end(); }
     refreshSheetRail();
   };

@@ -177,7 +177,7 @@ const inkSettings = {
   eraserSize: INK_ERASER_SIZE_DEFAULT,
   eraseMode: INK_ERASE_MODE_DEFAULT,
   eraseTarget: INK_ERASE_TARGET_DEFAULT,
-  snapShapes: true,
+  snapShapes: false,
   tapDots: true
 };
 
@@ -590,6 +590,8 @@ function onInkPointerDown(event) {
     if (press.live) {
       ensureEngine().end();
       noteInkStrokeCommitted();
+    } else if (press.started) {
+      ensureEngine().cancel();
     }
     releaseInkPress();
   }
@@ -642,7 +644,34 @@ function beginInkPress(event) {
   // fire a click if this turns out to be a tap.
   try { el.documentView?.setPointerCapture?.(event.pointerId); } catch (_) { /* synthetic event */ }
   attachInkScrollGuard();
+  startInkAtOnce(event, page);
   return true;
+}
+
+// ── Ink from the first sample ──────────────────────────────────────────────
+//
+// The press used to show nothing until it had moved INK_TAP_SLOP pixels or
+// lasted INK_TAP_MS, because until then it might be a tap. Every sample of
+// that window went into the stroke once it began, so nothing was lost — but
+// nothing was SHOWN either, and the opening of a slowly started letter appeared
+// up to 150ms after the nib had drawn it. That is the lag at the start of a
+// stroke.
+//
+// So a pen with a drawing tool armed starts its stroke the moment it lands,
+// and the tap-or-stroke question is still asked exactly as before — only now a
+// tap is a stroke taken back (finishStartedTap) rather than one never begun.
+// Not for a press on something that answers a press, where ink flashing under
+// the nib for the length of a tap would be wrong; not for the eraser or the
+// lasso, whose first sample DOES something; and not for a mouse, whose click
+// is how it presses everything else on this surface. Those go the old way.
+function startInkAtOnce(event, page) {
+  if (event.pointerType !== "pen" || isEraserEvent(event)) return;
+  const tool = inkTool();
+  if (tool !== "pen" && tool !== "highlighter") return;
+  if (event.target?.closest?.(INK_TAP_PRESSES)) return;
+  activeRect = press.rect;
+  if (!inkLayerForWriting(page)) return;
+  press.started = ensureEngine().begin(page, [event], event);
 }
 
 function onInkPointerMove(event) {
@@ -660,7 +689,10 @@ function onInkPointerMove(event) {
   // reader's hand, which is a far worse fault than the one being fixed. The
   // events in initDocumentInk are the primary net; this is the one for a device
   // that reports no end at all.
-  if (Number(event.buttons) === 0 && !Number(event.pressure)) { cancelInkPress(); return; }
+  //
+  // The ink is KEPT. Whatever the device failed to report, the reader watched
+  // the line go down, and throwing it away is the one wrong answer.
+  if (Number(event.buttons) === 0 && !Number(event.pressure)) { cancelInkPress({ keep: true }); return; }
   // A second contact is NOT this stroke's business. There was a line here that
   // cancelled the stroke on a non-primary move, meant to hand a pinch to the
   // zoom — but it sat after the pointerId test above, so it only ever saw this
@@ -678,8 +710,12 @@ function onInkPointerMove(event) {
   const coalesced = typeof event.getCoalescedEvents === "function" ? event.getCoalescedEvents() : null;
   if (coalesced && coalesced.length) press.samples.push(...coalesced);
   else press.samples.push(event);
+  // Already on the glass — see startInkAtOnce. The samples above are kept as
+  // well, for the dot a tap may still turn out to be.
+  if (press.started) ensureEngine().move(event);
   const moved = Math.hypot(event.clientX - press.startX, event.clientY - press.startY);
   if (moved < INK_TAP_SLOP && (Date.now() - press.startAt) < INK_TAP_MS) return;
+  if (press.started) { press.live = true; return; }
 
   activeRect = press.rect;
   // The page may never have been drawn on, in which case it has no layer yet.
@@ -704,10 +740,47 @@ function onInkPointerUp(event) {
     // before the following mark, which while somebody is writing is a fraction
     // of a second and is full of taps. See src/core/gesture.js.
     noteInkStrokeCommitted();
+  } else if (press.started) {
+    finishStartedTap(press, event);
   } else {
     tapInk(press);
   }
   releaseInkPress();
+}
+
+// A tap the pen had already started drawing (startInkAtOnce).
+//
+// A press that barely moved is a dot, and goes on to tapInk exactly as it
+// always did — the firm, centred dot it makes is the one a nib pressed into
+// paper leaves. A press that DID move, but less than INK_TAP_SLOP and quicker
+// than INK_TAP_MS, is not a dot: it is a comma, an apostrophe, an accent, the
+// tick of a small check mark — and squashing every one of those into a round
+// dot at the mean of its samples was how handwriting lost its punctuation. That
+// is kept as the stroke it was, with the samples the nib actually reported.
+//
+// Either way only with the pen armed and Tap dots on, and never over a
+// highlight, whose own menu is what a tap there is for. Anything else is taken
+// back, and the click goes through as it did before there was ink to show.
+const INK_TAP_DOT_SPREAD = 1;
+
+function finishStartedTap(tap, up) {
+  const active = ensureEngine();
+  const keep = inkTool() === "pen" && inkSettings.tapDots && !tapSuppressed();
+  if (!keep) { active.cancel(); return; }
+  let spread = 0;
+  let x = 0;
+  let y = 0;
+  const samples = tap.samples.concat(up);
+  samples.forEach((sample) => {
+    spread = Math.max(spread, Math.hypot(sample.clientX - tap.startX, sample.clientY - tap.startY));
+    x += sample.clientX;
+    y += sample.clientY;
+  });
+  if (spread <= INK_TAP_DOT_SPREAD) { active.cancel(); tapInk(tap); return; }
+  if (documentHighlightAtPoint(x / samples.length, y / samples.length, { skipInk: true })) { active.cancel(); return; }
+  active.move(up);
+  active.end();
+  noteInkStrokeCommitted();
 }
 
 // ── What a tap leaves ──────────────────────────────────────────────────────
@@ -776,13 +849,29 @@ function tapSuppressed() {
   return Date.now() < tapSuppressedUntil;
 }
 
+// A pointercancel is the browser or the system taking the contact away — a
+// gesture it decided was its own, a palm the OS rejected, the screen turning.
+// None of that unwrites what the nib had already written, so the stroke is kept
+// as far as it went (the engine's settle(); an erase or a drag is still put
+// back). It used to be thrown away, which is a line the reader watched go down
+// and then watched vanish.
 function onInkPointerCancel(event) {
   if (!press || event.pointerId !== press.pointerId) return;
-  cancelInkPress();
+  cancelInkPress({ keep: true });
 }
 
-function cancelInkPress() {
-  if (press?.live) ensureEngine().cancel();
+// `keep` for a contact that was taken away rather than refused: a live pen
+// stroke is committed instead of discarded. A press still deciding whether it
+// was a tap is only ever taken back.
+function cancelInkPress({ keep = false } = {}) {
+  if (press?.live && keep) {
+    if (ensureEngine().settle()) {
+      swallowClickUntil = Date.now() + 400;
+      noteInkStrokeCommitted();
+    }
+  } else if (press?.live || press?.started) {
+    ensureEngine().cancel();
+  }
   releaseInkPress();
 }
 

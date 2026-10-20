@@ -117,7 +117,7 @@ try {
   const {
     INK_PREDICT_FALLBACK_MAX, INK_PREDICT_MAX_LEAD, INK_PREDICT_MAX_MS, INK_PREDICT_MIN_STEP_MS, boundInkPrediction
   } = predictMod;
-  const { INK_WIDTH_LOOKAHEAD, INK_WIDTH_LOOKBACK, inkStrokeWidths } = paintMod;
+  const { INK_WIDTH_LOOKAHEAD, INK_WIDTH_LOOKBACK, inkBakeSpeedWidths, inkStrokeWidths } = paintMod;
   const migrateMod = await import(path.join(stage, "src/documents/notebook-migrate.js"));
   const { LEGACY_SCALE, hasLegacyNotebook, hasNotebookInPdfSlot, migratedNotebookMeta, movedNotebookSlotMeta, planLegacyNotebookMigration } = migrateMod;
 
@@ -161,6 +161,27 @@ try {
   must("a one-sample stroke is a dot, not nothing", () => {
     const back = decodeInkStroke(encodeInkStroke({ w: 2, c: "ink", p: [40, 50, 0.7] }));
     return (back && back.p.length === 3) || "a full stop in a margin note decoded to nothing";
+  });
+
+  must("a press on a straight line survives simplification", () => {
+    // A ruled-straight run whose pressure swells in the middle and eases off —
+    // the foot of a downstroke. Geometry alone keeps the two ends and nothing
+    // else, and the swell came back on reload as a line of one width.
+    const p = [];
+    for (let i = 0; i <= 40; i += 1) p.push(10 + i, 50, 0.3 + (0.5 * Math.sin((i / 40) * Math.PI)));
+    const back = decodeInkStroke(encodeInkStroke({ w: 2, c: "ink", p }));
+    if (!back) return "did not decode";
+    let peak = 0;
+    for (let i = 2; i < back.p.length; i += 3) peak = Math.max(peak, back.p[i]);
+    if (peak < 0.75) return `the press came back at ${peak.toFixed(2)} — flattened to the ends' ${p[2].toFixed(2)}`;
+    return true;
+  });
+
+  must("...and geometry alone is still available, keeping just the ends of a straight line", () => {
+    const p = [];
+    for (let i = 0; i <= 40; i += 1) p.push(10 + i, 50, 0.3 + (0.5 * Math.sin((i / 40) * Math.PI)));
+    const kept = simplifyInkStroke(p, 0.125, 0);
+    return kept.length === 6 || `kept ${kept.length / 3} points of a straight line`;
   });
 
   must("simplification keeps both ends and cuts the middle", () => {
@@ -233,11 +254,16 @@ try {
     // The regression guard on the encoding. A page covered edge to edge is
     // about a thousand strokes; this is measured rather than asserted from
     // memory, and the ceiling is what the README's number is worth.
+    //
+    // 96KB, up from 80, on purpose and once: the simplifier stopped dropping
+    // points the hand made and the eye can find on zooming in, and stopped
+    // flattening pressure (simplifyInkStroke). That took this page from ~68KB to
+    // ~83KB, and the ceiling keeps the same headroom over it the old one had.
     const rand = seeded(23);
     const strokes = [];
     for (let i = 0; i < 1000; i += 1) strokes.push(handwritingStroke(rand, { samples: 10 + Math.floor(rand() * 50) }));
     const bytes = inkEncodedSize(encodeInkStrokes(strokes));
-    if (bytes > 80 * 1024) return `${(bytes / 1024).toFixed(0)}KB for a saturated page — the encoding has regressed`;
+    if (bytes > 96 * 1024) return `${(bytes / 1024).toFixed(0)}KB for a saturated page — the encoding has regressed`;
     if (inkPointCount(strokes) < 20000) return "the fixture is not actually a saturated page any more";
     return true;
   });
@@ -1029,6 +1055,34 @@ try {
   const { inkCentrelinePath, inkStrokeOutline, paintInkLayers, resolveInkPaint } = paintMod;
   const svgMod = await import(path.join(stage, "src/format/ink-svg.js"));
   const { inkPathRecorder } = svgMod;
+
+  must("a finger's taper is written down at the lift, so a reload draws the line it drew", () => {
+    // Width from speed is width from the spacing of samples, and simplification
+    // changes the spacing. Baked into pressure while the samples are real, the
+    // stroke paints the same before and after the round trip.
+    const p = [];
+    let x = 20;
+    for (let i = 0; i < 80; i += 1) {
+      x += 0.4 + (3 * Math.sin((i / 80) * Math.PI));
+      p.push(x, 100 + (6 * Math.sin(i / 7)), 0.5);
+    }
+    const live = inkStrokeWidths({ w: 3, c: "ink", p });
+    const baked = inkBakeSpeedWidths(p, 3);
+    if (!baked) return "a flat-pressure stroke was not baked";
+    if (inkBakeSpeedWidths(baked, 3) !== null) return "a stroke with real pressure was baked again";
+    const painted = inkStrokeWidths({ w: 3, c: "ink", p: baked });
+    for (let i = 0; i < live.length; i += 1) {
+      if (Math.abs(painted[i] - live[i]) > 0.25) return `sample ${i}: ${painted[i].toFixed(2)} wide baked, ${live[i].toFixed(2)} live`;
+    }
+    const back = decodeInkStroke(encodeInkStroke({ w: 3, c: "ink", p: baked }));
+    const reloaded = inkStrokeWidths(back);
+    const thinnest = (list) => Math.min(...list);
+    const widest = (list) => Math.max(...list);
+    if (Math.abs(widest(reloaded) - widest(live)) > 0.3 || Math.abs(thinnest(reloaded) - thinnest(live)) > 0.3) {
+      return `reloaded ${thinnest(reloaded).toFixed(2)}-${widest(reloaded).toFixed(2)}, drawn ${thinnest(live).toFixed(2)}-${widest(live).toFixed(2)}`;
+    }
+    return inkBakeSpeedWidths([5, 5, 0.5], 3) === null || "a single sample was baked";
+  });
 
   must("a tap with no pressure behind it is a dot of the full nib, not NaN", () => {
     // A mouse or a finger reports the spec's flat 0.5, which sends the width to

@@ -104,7 +104,7 @@
 
 import { INK_ERASER_SIZE_DEFAULT, INK_ERASE_MODE_DEFAULT, INK_ERASE_TARGET_DEFAULT, INK_HL_TOKEN_DEFAULT, INK_HL_WIDTH_DEFAULT, INK_PEN_DEFAULT, INK_TOOL_DEFAULT, INK_WIDTH_DEFAULT, formatInkToken, isHighlighterToken, normalizeInkEraseMode, normalizeInkEraseTarget, normalizeInkEraserSize, normalizeInkHlWidth, normalizeInkOpacity, normalizeInkToken, normalizeInkTool, normalizeInkWidth, parseInkToken } from "../format/ink-colors.js?v=__BUILD__";
 import { densifyInkPath, eraseFromInkStroke, inkStrokeHitsPoint, inkStrokeInPolygon, inkStrokesBounds, transformInkStroke } from "../format/ink-strokes.js?v=__BUILD__";
-import { INK_WIDTH_LOOKBACK, paintInkLayers, paintInkStroke, paintInkStrokes, resolveInkColor } from "./ink-paint.js?v=__BUILD__";
+import { INK_WIDTH_LOOKBACK, inkBakeSpeedWidths, paintInkLayers, paintInkStroke, paintInkStrokes, resolveInkColor } from "./ink-paint.js?v=__BUILD__";
 import { boundInkPrediction } from "./ink-predict.js?v=__BUILD__";
 import { INK_SHAPE_HOLD_MS, fitInkShape, straightenInkHighlight } from "./ink-shapes.js?v=__BUILD__";
 
@@ -387,11 +387,13 @@ export function createInkEngine({
   let width = INK_WIDTH_DEFAULT;
   let eraseMode = INK_ERASE_MODE_DEFAULT;
   let eraserSize = INK_ERASER_SIZE_DEFAULT;
-  // Whether a hold offers to straighten the stroke into a shape. On by default,
-  // because it is what the feature is for — but refusable, which it was not:
-  // somebody writing mathematics draws a fraction bar and a radical and a long
-  // division rule, and every one of them is a held straight line.
-  let snapShapes = true;
+  // Whether a hold offers to straighten the stroke into a shape. OFF by default:
+  // the pen's job is to keep what the hand did. Somebody writing mathematics
+  // draws a fraction bar and a radical and a long division rule, every one of
+  // them a held straight line, and on a Canvas written larger than the shape
+  // floor a held l, 1 or O was replaced by a ruled line or a ring. Snapping is
+  // a drawing aid the reader turns on (ink-prefs.js), not a default.
+  let snapShapes = false;
   // The highlighter is a second pen with its own colour word (always a
   // highlighter's — see parseInkToken), its own width, and its own straightening
   // rule; and the eraser can be told to take only one kind of mark.
@@ -1637,7 +1639,12 @@ export function createInkEngine({
     }
 
     if (gesture.mode === "draw") {
-      let runs = gesture.snapped ? gesture.snapped.runs : [gesture.points];
+      // A pen with no pressure behind it keeps the taper it was drawn with —
+      // see inkBakeSpeedWidths for why that has to be decided now, while the
+      // samples are still the ones the pointer delivered. Not a highlighter,
+      // which is one width whatever the hand does.
+      const drawn = gesture.hl ? null : inkBakeSpeedWidths(gesture.points, gesture.width);
+      let runs = gesture.snapped ? gesture.snapped.runs : [drawn || gesture.points];
       // A highlighter swept along a line is laid down straight, with Straight on
       // — see straightenInkHighlight for what it refuses.
       if (gesture.hl && hlStraight && !gesture.snapped) {
@@ -1697,11 +1704,35 @@ export function createInkEngine({
     // and neither is a state the reader asked for — so this is a restore, not
     // an undo, and it leaves no step to redo.
     const entry = hosts.get(gesture.key);
+    let restored = false;
     if (entry && gesture.before && !sameStrokes(gesture.before, entry.strokes)) {
       entry.strokes = gesture.before;
+      restored = true;
       if (selection?.key === gesture.key) setSelection(null);
     }
-    repaint(gesture.key);
+    // A pen stroke that never handed anything to the dry canvas left nothing on
+    // it to take back: the whole of it was on the live layer, which is already
+    // gone. Repainting the page anyway is the cost of every stroke on it, paid
+    // for each provisional stroke that turns out to be a tap — an i-dot, a full
+    // stop — which while somebody is writing is several times a second.
+    // Everything else still repaints: a restore, a hand-off to take back, and
+    // the lasso's frame, which lived on the layer that was just unmounted.
+    const untouched = gesture.mode === "draw" && !restored && !gesture.settled?.length
+      && selection?.key !== gesture.key && !entry?.unrecorded;
+    if (!untouched) repaint(gesture.key);
+  }
+
+  // The contact was taken away rather than lifted — a pointercancel, or a pen
+  // that stopped reporting without ever saying it had left the glass. Ink the
+  // reader watched go down is kept, exactly as a lift would have kept it; there
+  // is nothing about a cancelled contact that makes the line any less written.
+  // Every other gesture is put back as cancel() puts it back: an erase, a lasso
+  // or a drag that the browser interrupted is not a decision the reader made.
+  function settle() {
+    if (!live) return false;
+    if (live.mode === "draw") { end(); return true; }
+    cancel();
+    return false;
   }
 
   // ── Selection actions ────────────────────────────────────────────────────
@@ -1932,6 +1963,7 @@ export function createInkEngine({
     move,
     end,
     cancel,
+    settle,
     clearHost,
     deleteSelection,
     selectedStrokes,

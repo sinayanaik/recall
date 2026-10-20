@@ -77,6 +77,12 @@ export function writeInkRailOpen(slot, open) {
   }
 }
 
+// Stamped beside snapShapes whenever it is written. A snapShapes saved without
+// it was written while snapping was on by default — by the panel writing every
+// setting at once, nearly always — so it says nothing about what the reader
+// wants and is not believed. See inkPreferences.
+const INK_SNAP_PREFS_VERSION = 2;
+
 export function inkPreferences() {
   try {
     const raw = localStorage.getItem(inkPreferencesKey);
@@ -92,7 +98,8 @@ export function inkPreferences() {
       // stroke of the day silently deletes something.
       tool: rememberableTool(parsed?.tool),
       // The highlighter's own colour word, width and Straight switch. Absent
-      // Straight means on, for the reason snapShapes below gives.
+      // Straight means on: a band laid along a line of type is meant straight,
+      // and a highlighter is never handwriting.
       hlPen: normalizeInkToken(parsed?.hlPen, "highlighter"),
       hlWidth: normalizeInkHlWidth(parsed?.hlWidth),
       hlStraight: parsed?.hlStraight !== false,
@@ -107,9 +114,13 @@ export function inkPreferences() {
       // session is the friction this file exists to avoid.
       eraserSize: normalizeInkEraserSize(parsed?.eraserSize),
       eraseMode: normalizeInkEraseMode(parsed?.eraseMode),
-      // Absent means on. The offer is the feature; this is the way out of it,
-      // and a build that has never written the key must not read as "refused".
-      snapShapes: parsed?.snapShapes !== false
+      // Absent means OFF. Snapping a held stroke into a line or a ring is a
+      // drawing aid, not handwriting, and on a Canvas written larger than its
+      // 18pt floor it took held letters — an l, a 1, an O — and replaced them.
+      // So it is something the reader turns on, and a value saved before that
+      // was true (INK_SNAP_PREFS_VERSION) is read as the old default it almost
+      // always was, rather than as a choice: off, once.
+      snapShapes: parsed?.snapShapesV === INK_SNAP_PREFS_VERSION && parsed?.snapShapes === true
     };
   } catch (_) {
     return {
@@ -124,7 +135,7 @@ export function inkPreferences() {
       recentColors: [],
       eraserSize: INK_ERASER_SIZE_DEFAULT,
       eraseMode: INK_ERASE_MODE_DEFAULT,
-      snapShapes: true
+      snapShapes: false
     };
   }
 }
@@ -156,7 +167,10 @@ export function writeInkPreferences(patch = {}) {
     if (recentColors !== undefined) next.recentColors = normalizeRecentColors(recentColors);
     if (eraserSize !== undefined) next.eraserSize = normalizeInkEraserSize(eraserSize);
     if (eraseMode !== undefined) next.eraseMode = normalizeInkEraseMode(eraseMode);
-    if (snapShapes !== undefined) next.snapShapes = snapShapes !== false;
+    if (snapShapes !== undefined) {
+      next.snapShapes = snapShapes === true;
+      next.snapShapesV = INK_SNAP_PREFS_VERSION;
+    }
     localStorage.setItem(inkPreferencesKey, JSON.stringify(next));
   } catch (error) {
     // Quota or a private window. Losing the preference costs the reader one
