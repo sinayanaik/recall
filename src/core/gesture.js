@@ -117,9 +117,9 @@ export function inkPenIsDown() {
 // wrong question for the fault these two are here for. Writing a sentence is a
 // shower of contacts that are each over in well under the 150ms
 // src/documents/pdf-ink.js calls a TAP — an i-dot, a comma, a tick, an accent,
-// a retouch of the letter before — and a tap deliberately commits no ink and
-// deliberately lets the browser's click through, which is what lets a pen press
-// a numbered note badge or a button at all. The click then lands on the page,
+// a retouch of the letter before — and a tap, which leaves its dot or its small
+// mark as ink, deliberately lets the browser's click through, which is what
+// lets a pen press a numbered note badge or a button at all. The click then lands on the page,
 // within six PDF points of ink already on it, and opens that stroke's highlight
 // menu. Reported as "the more menu keeps popping up while I am writing", and it
 // is one of these per dotted i.

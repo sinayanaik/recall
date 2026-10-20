@@ -26,20 +26,21 @@
 //      a pen moving at writing speed differ by a fraction of a point, and a
 //      format that spends the same room on a small number as a large one
 //      spends most of its bytes on zeros.
-//   3. It is SIMPLIFIED before it is encoded. A stylus samples at 240Hz and a
-//      hand does not move at 240Hz; three quarters of the points on a stroke
-//      sit on a line between their neighbours to well under the width of the
-//      nib. Dropping them costs nothing visible and is the largest single
-//      saving here — see simplifyInkStroke.
+//   3. It is SIMPLIFIED before it is encoded — but only of what cannot be seen
+//      or cannot be stored. A stylus samples at 240Hz and a hand does not move
+//      at 240Hz; a good share of the points on a stroke sit on a line between
+//      their neighbours closer than the quantiser below can even tell apart.
+//      Those go. A point that bends the line, or that changes how hard the nib
+//      was pressing, stays — see simplifyInkStroke.
 //
 // Measured on a simulated page of 1,000 strokes and 33,000 samples: plain JSON
-// is ~700KB, this is ~70KB, and a page annotated the way a paper actually gets
+// is ~700KB, this is ~83KB, and a page annotated the way a paper actually gets
 // annotated — a few marginal notes and a ring round a figure, call it a tenth of
-// a saturated page — is ~7KB. That is the same order as the notes column already
+// a saturated page — is ~8KB. That is the same order as the notes column already
 // carries for an imported book, and it is pushed by the same mechanism.
 //
 // The number worth knowing is the other end: a forty-page paper covered edge to
-// edge on EVERY page is ~2.7MB in one JSONB column re-sent on every sync. That
+// edge on EVERY page is ~3.3MB in one JSONB column re-sent on every sync. That
 // is a real ceiling rather than a theoretical one, which is why inkEncodedSize()
 // and inkPointCount() below exist at all — tools/ink-check.mjs measures a
 // saturated page against a stated budget on every run, so the encoding cannot
@@ -73,18 +74,27 @@ export const INK_COORD_SCALE = 8;
 export const INK_PRESSURE_LEVELS = 32;
 
 // How far a point may sit from the line between its neighbours before it is
-// worth keeping — as a FRACTION OF THE NIB WIDTH, not an absolute distance.
-// What can be seen is what stands out from under the line, so the threshold has
-// to scale with the line: an eighth of a 6pt marker is invisible and an eighth
-// of a 1pt fineliner is not, and one absolute number is wrong for one of them.
-// An eighth measured against the width halves the points on a page of writing
-// with nothing visible changed.
-export const INK_SIMPLIFY_RATIO = 0.125;
+// worth keeping — as a FRACTION OF THE NIB WIDTH, not an absolute distance, so
+// a 6pt marker is not stored with the care a 1pt fineliner needs.
+//
+// A sixteenth. It was an eighth, which halved the points on a page and was
+// invisible at the zoom it was drawn at — and was not invisible once somebody
+// zoomed in on their own writing, where the curve of a letter had been
+// redrawn through fewer points than the hand made. At a sixteenth, for every
+// pen anyone writes with, the floor below is what decides.
+export const INK_SIMPLIFY_RATIO = 0.0625;
 
 // ...with a floor of one quantisation step. Below this a point cannot be
 // represented distinctly anyway, so keeping it spends bytes on a coordinate
 // that decodes to the same place as its neighbour.
 export const INK_SIMPLIFY_TOLERANCE = 1 / INK_COORD_SCALE;
+
+// How far a point's PRESSURE may sit from what its neighbours would give it
+// before it is kept for that alone: a level and a half of the stored 32. The
+// press at the foot of a downstroke on an otherwise straight line is the width
+// ramp that makes handwriting look written, and a simplifier that only looks
+// at geometry flattens it to whatever the two ends of the line happened to be.
+export const INK_SIMPLIFY_PRESSURE = 1.5 / (INK_PRESSURE_LEVELS - 1);
 
 
 // base64url, so the string needs no escaping in JSON, in a URL, or in the
@@ -188,15 +198,17 @@ function inkSegmentDistanceSq(px, py, ax, ay, bx, by) {
 // tens of thousands of points and the worst case for the recursive form is a
 // stack frame per point.
 //
-// Pressure is carried through rather than considered. A point kept for its
-// GEOMETRY keeps whatever pressure it had, and pressure between kept points
-// interpolates — which is what a width ramp does anyway. Keeping a point purely
-// because its pressure differed would preserve a bump nobody can see on a line
-// whose width spans three pixels.
-export function simplifyInkStroke(points, tolerance = INK_SIMPLIFY_TOLERANCE) {
+// Pressure is considered as well as position. A span whose points all lie on
+// its line still keeps the one whose pressure strays furthest from the straight
+// ramp between the span's ends, when that is more than `pressureTolerance` —
+// otherwise the swell of a pressed downstroke along a straight line is flattened
+// on save, and the letter comes back on reload in a hand that is not the
+// reader's. Pass 0 for geometry alone.
+export function simplifyInkStroke(points, tolerance = INK_SIMPLIFY_TOLERANCE, pressureTolerance = INK_SIMPLIFY_PRESSURE) {
   const count = Math.floor(points.length / 3);
   if (count < 3) return points.slice();
   const toleranceSq = tolerance * tolerance;
+  const pressureLimit = Math.max(0, Number(pressureTolerance) || 0);
   const keep = new Uint8Array(count);
   keep[0] = 1;
   keep[count - 1] = 1;
@@ -209,15 +221,28 @@ export function simplifyInkStroke(points, tolerance = INK_SIMPLIFY_TOLERANCE) {
     const ay = points[(first * 3) + 1];
     const bx = points[last * 3];
     const by = points[(last * 3) + 1];
+    const pa = Number(points[(first * 3) + 2]) || 0;
+    const pb = Number(points[(last * 3) + 2]) || 0;
+    const span = last - first;
     let worst = -1;
     let worstAt = -1;
+    let pressureWorst = 0;
+    let pressureAt = -1;
     for (let i = first + 1; i < last; i += 1) {
       const d = inkSegmentDistanceSq(points[i * 3], points[(i * 3) + 1], ax, ay, bx, by);
       if (d > worst) { worst = d; worstAt = i; }
+      if (pressureLimit) {
+        const expected = pa + ((pb - pa) * ((i - first) / span));
+        const off = Math.abs((Number(points[(i * 3) + 2]) || 0) - expected);
+        if (off > pressureWorst) { pressureWorst = off; pressureAt = i; }
+      }
     }
-    if (worst <= toleranceSq || worstAt < 0) continue;
-    keep[worstAt] = 1;
-    stack.push(first, worstAt, worstAt, last);
+    let split = -1;
+    if (worst > toleranceSq && worstAt >= 0) split = worstAt;
+    else if (pressureLimit && pressureWorst > pressureLimit && pressureAt >= 0) split = pressureAt;
+    if (split < 0) continue;
+    keep[split] = 1;
+    stack.push(first, split, split, last);
   }
   const out = [];
   for (let i = 0; i < count; i += 1) {

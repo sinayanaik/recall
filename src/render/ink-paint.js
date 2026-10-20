@@ -220,6 +220,41 @@ export function inkStrokeWidths(stroke) {
   return widths;
 }
 
+// ── Speed widths, written down where they will survive ─────────────────────
+//
+// A stroke from something that reports no pressure takes its width from SPEED,
+// and speed here is the distance between consecutive samples — which is only a
+// speed while the samples are the ones the pointer actually delivered. The
+// stroke is stored simplified (src/format/ink-strokes.js), and once a run of a
+// dozen samples is one point the "speed" across it is a dozen times higher: the
+// line the reader drew with a finger or a mouse came back thinner on reload than
+// it was while they drew it.
+//
+// So, at the moment the stroke is finished and the samples are still the real
+// ones, its widths are written into the pressure channel — the inverse of the
+// pressure ramp above — and from then on it is a stroke that reports pressure,
+// painted the same way live, after a reload and in an export, and simplified
+// with its taper kept (simplifyInkStroke keeps pressure changes). Returns null
+// when there is nothing to do: a stroke that reports real pressure, or a single
+// sample, whose width is the full nib either way.
+export function inkBakeSpeedWidths(points, nib) {
+  const list = Array.isArray(points) ? points : [];
+  const count = Math.floor(list.length / 3);
+  if (count < 2) return null;
+  for (let i = 0; i < count; i += 1) {
+    const value = list[(i * 3) + 2];
+    if (value > 0 && Math.abs(value - INK_FLAT_PRESSURE) > 0.001) return null;
+  }
+  const size = Number(nib) || 1;
+  const widths = inkStrokeWidths({ w: size, p: list });
+  const out = list.slice();
+  for (let i = 0; i < count; i += 1) {
+    const pressure = ((widths[i] / size) - INK_PRESSURE_FLOOR) / INK_PRESSURE_SPAN;
+    out[(i * 3) + 2] = Math.max(0, Math.min(1, pressure));
+  }
+  return out;
+}
+
 // A second pass over the speed-derived widths only. Speed between two adjacent
 // samples is noisy in a way pressure is not — one slow sample in a fast run is
 // a bead on the line — and the averaging above cannot see it because it happens

@@ -272,6 +272,11 @@ try {
     // (INK_SHAPE_HOLD_MS is 600ms) — then more of the same line. A straight run
     // is chosen deliberately: it is the shape most likely to be snapped, so it
     // is the case where losing the rest of the stroke was most likely.
+    //
+    // Snapping is off unless the reader turns it on, and this is the case that
+    // exists to prove a snap is revoked when the pen moves on — so it is on here,
+    // and put back afterwards.
+    api.setInkSnapShapes(true);
     pen(document.getElementById("documentView"), "pointerdown", box.left + 40, box.top + 60, 1);
     for (let i = 1; i <= 10; i += 1) pen(document.getElementById("documentView"), "pointermove", box.left + 40 + (i * 10), box.top + 60, 1);
     await settle(750);
@@ -280,6 +285,7 @@ try {
     await settle(80);
     pen(document.getElementById("documentView"), "pointerup", halfway + 100, box.top + 60, 0);
     await settle(200);
+    api.setInkSnapShapes(false);
 
     // The strokes, out of the ink records the paper carries — the same place
     // they live on anybody else's PDF, because this IS the Document surface.
@@ -1879,7 +1885,16 @@ try {
   const sheetMore = await page.evaluate(`async (penSrc) => {
     const { api, settle } = window.__recall;
     const pen = (0, eval)(penSrc);
-    api.writeInkPreferences({ eraserSize: 7, eraseMode: "part", snapShapes: false });
+    // Shape snapping used to default on and is now off, so a snapShapes saved
+    // by an older build — almost always that default, written back by the
+    // panel — reads as off once. One the reader sets from here on is kept.
+    const key = "recall:ink-prefs-v1";
+    const was = localStorage.getItem(key);
+    localStorage.setItem(key, JSON.stringify({ ...(JSON.parse(was || "null") || {}), snapShapes: true, snapShapesV: undefined }));
+    const legacySnap = api.inkPreferences().snapShapes;
+    api.writeInkPreferences({ snapShapes: true });
+    const chosenSnap = api.inkPreferences().snapShapes;
+    api.writeInkPreferences({ eraserSize: 7, eraseMode: "part", snapShapes: true });
     api.setViewMode("notes");
     await settle(300);
     const ta = document.getElementById("notesEdit");
@@ -1914,13 +1929,17 @@ try {
       for (let i = 1; i < stroke.p.length; i += 3) top = Math.min(top, stroke.p[i]);
       return top;
     }).sort((a, b) => a - b);
-    return { prefs, strokes: strokes.length, tops, errs: window.__errs.slice(0, 4) };
+    api.writeInkPreferences({ snapShapes: false });
+    return { prefs, legacySnap, chosenSnap, strokes: strokes.length, tops, errs: window.__errs.slice(0, 4) };
   }`, PEN_SRC);
 
   check("a swatch pressed in the sheet leaves the eraser and the snapper as the reader set them",
     sheetMore.prefs.pen === "red" && sheetMore.prefs.eraserSize === 7
-      && sheetMore.prefs.eraseMode === "part" && sheetMore.prefs.snapShapes === false,
+      && sheetMore.prefs.eraseMode === "part" && sheetMore.prefs.snapShapes === true,
     JSON.stringify(sheetMore.prefs));
+  check("shape snapping saved by an older build reads as off once, and a choice made now is kept",
+    sheetMore.legacySnap === false && sheetMore.chosenSnap === true,
+    `legacy reads ${sheetMore.legacySnap}, a fresh choice reads ${sheetMore.chosenSnap}`);
   check("an edited drawing that gained a page keeps that page BELOW the first",
     sheetMore.strokes === 2 && sheetMore.tops[1] > 1123,
     `${sheetMore.strokes} stroke(s), tops at ${sheetMore.tops.map((t) => Math.round(t)).join(", ")}`
@@ -3995,7 +4014,45 @@ try {
     api.closeMarkMenu();
     if (region) api.removeDocumentHighlight(region.id);
     await settle(200);
-    return { dot, dotPoints, whileOff, erased, onRegion, errs: window.__errs.slice(0, 4) };
+
+    // A comma: a quick little flick, under the tap's distance and its time. It
+    // used to be squashed into a round dot at the mean of its samples; it is
+    // kept as the mark the nib made.
+    n = strokes().length;
+    const cx = x - 160;
+    const cy = y + 80;
+    pen(view, "pointerdown", cx, cy, 1);
+    pen(view, "pointermove", cx + 1, cy + 1, 1);
+    pen(view, "pointermove", cx + 1.5, cy + 2.5, 1);
+    pen(view, "pointermove", cx + 1, cy + 3.5, 1);
+    pen(view, "pointerup", cx + 1, cy + 3.5, 0);
+    await settle(300);
+    const afterComma = strokes();
+    const comma = afterComma.length - n;
+    const commaPoints = comma === 1 ? afterComma[afterComma.length - 1].p.length / 3 : 0;
+
+    // Ink from the first sample: the live layer is up the moment the nib lands,
+    // before it has travelled the tap's distance.
+    const sx = x - 160;
+    const sy = y + 160;
+    pen(view, "pointerdown", sx, sy, 1);
+    await settle(40);
+    const wetAtLanding = Boolean(document.querySelector("#documentStage canvas.is-ink-wet")?.isConnected);
+    for (let i = 1; i <= 8; i += 1) { pen(view, "pointermove", sx + i * 6, sy, 1); await settle(10); }
+    n = strokes().length;
+    pen(view, "pointerup", sx + 48, sy, 0);
+    await settle(300);
+    const slowStart = strokes().length - n;
+
+    // A contact the browser takes away mid-stroke keeps what it drew.
+    n = strokes().length;
+    pen(view, "pointerdown", sx, sy + 60, 1);
+    for (let i = 1; i <= 10; i += 1) { pen(view, "pointermove", sx + i * 6, sy + 60 + (i % 2), 1); await settle(10); }
+    view.dispatchEvent(new PointerEvent("pointercancel", { bubbles: true, pointerId: 1, pointerType: "pen", isPrimary: true, clientX: sx + 60, clientY: sy + 60 }));
+    await settle(300);
+    const keptOnCancel = strokes().length - n;
+
+    return { dot, dotPoints, whileOff, erased, onRegion, comma, commaPoints, wetAtLanding, slowStart, keptOnCancel, errs: window.__errs.slice(0, 4) };
   }`, PEN_SRC);
   check("a pen tap on bare paper leaves a dot",
     !dots.fatal && dots.dot === 1 && dots.dotPoints === 1,
@@ -4004,6 +4061,14 @@ try {
   check("...and a tap with the eraser takes the dot back out", dots.erased === 1, `${dots.erased} stroke(s) erased by one eraser tap`);
   check("...while a tap on a highlight or a region presses it instead of writing",
     dots.onRegion === 0, `${dots.onRegion} stroke(s) from a tap inside a region`);
+  check("a quick small flick — a comma, an accent — is kept as drawn, not squashed into a dot",
+    dots.comma === 1 && dots.commaPoints > 1,
+    `${dots.comma} stroke(s) of ${dots.commaPoints} point(s) from a comma`);
+  check("the pen's ink is on the glass from the first sample, not after the tap's distance",
+    dots.wetAtLanding === true && dots.slowStart === 1,
+    `live layer up at landing: ${dots.wetAtLanding}; ${dots.slowStart} stroke(s) committed`);
+  check("a stroke the browser cancels mid-way is kept, not thrown away",
+    dots.keptOnCancel === 1, `${dots.keptOnCancel} stroke(s) after a pointercancel`);
   check("...with nothing thrown", (dots.errs || []).length === 0, (dots.errs || []).join(" | "));
 
   // ── The slim bar, and the panel under its chip ───────────────────────────
