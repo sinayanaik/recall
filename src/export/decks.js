@@ -9,6 +9,7 @@ import { prepareExportHtml, wrapStandaloneHtmlDocument } from "./html.js?v=__BUI
 import { normalizeCardStatus, slugifyFileName } from "./markdown.js?v=__BUILD__";
 import { buildCornellFlatDocument, buildNotesFlatDocument, exportNotesFlatPdf } from "./pdf.js?v=__BUILD__";
 import { exportCardsPdf, imageEmbedSuffix } from "./run.js?v=__BUILD__";
+import { askExportTheme } from "./theme-dialog.js?v=__BUILD__";
 import { buildDeckSql } from "./sql.js?v=__BUILD__";
 import { notesExportBlock } from "../import/parse-cards.js?v=__BUILD__";
 import { listLocalDecks } from "../library/local-library.js?v=__BUILD__";
@@ -24,10 +25,19 @@ import { chooseExportContent } from "../ui/pickers.js?v=__BUILD__";
 // behaviour: cards-only for pdf/html/doc, cards+notes combined for
 // markdown/json/sql), or "cards"/"notes" when a bulk export (Export All /
 // multi-select) asked the user which one they wanted via chooseExportContent().
+// Returns false when the reader cancelled the look it asks for, so the caller
+// does not announce an export that never happened.
 export async function exportDeckPayloads(payloads, format, { fileBaseName, title }, contentType = "both") {
+  // A PDF, Word or HTML file is given a look, asked for here as it is from the
+  // ⇓ menu (src/export/theme-dialog.js). Cancel exports nothing.
+  let theme;
+  if (format === "pdf" || format === "html" || format === "doc") {
+    theme = await askExportTheme({ title: `Export as ${{ pdf: "PDF", html: "HTML", doc: "Word" }[format]}` });
+    if (!theme) return false;
+  }
   if (contentType === "notes") {
     if (format === "pdf") {
-      await exportNotesFlatPdf(payloads, { fileBaseName, title });
+      await exportNotesFlatPdf(payloads, { fileBaseName, title, theme });
       return;
     }
     if (format === "html" || format === "doc") {
@@ -38,14 +48,14 @@ export async function exportDeckPayloads(payloads, format, { fileBaseName, title
       }));
       const rawBodyHtml = buildNotesFlatDocument(title, sections);
       if (format === "doc") {
-        const { bytes, failedImageCount } = await buildDocxBytes(rawBodyHtml, fileBaseName);
+        const { bytes, failedImageCount } = await buildDocxBytes(rawBodyHtml, fileBaseName, { theme });
         downloadTextFile(bytes, `${fileBaseName}.docx`, "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
         setStatus(`Exported notes as Word (.docx).${imageEmbedSuffix(failedImageCount)}`);
       } else {
         const { html: bodyHtml, failedImageCount } = await prepareExportHtml(rawBodyHtml);
-        const html = await wrapStandaloneHtmlDocument(bodyHtml, fileBaseName);
+        const html = await wrapStandaloneHtmlDocument(bodyHtml, fileBaseName, { theme });
         downloadTextFile(html, `${fileBaseName}.html`, "text/html;charset=utf-8");
-        setStatus(`Exported notes as standalone HTML.${imageEmbedSuffix(failedImageCount)}`);
+        setStatus(`Exported notes as standalone HTML.${imageEmbedSuffix(failedImageCount, { format: "html" })}`);
       }
       return;
     }
@@ -79,7 +89,8 @@ export async function exportDeckPayloads(payloads, format, { fileBaseName, title
       const payload = payloads[0];
       await exportCardsPdf(payload.deck.title, payload.cards, {
         fileBaseName,
-        statusById: statusByIdFromCards(payload.cards)
+        statusById: statusByIdFromCards(payload.cards),
+        theme
       });
       return;
     }
@@ -98,7 +109,7 @@ export async function exportDeckPayloads(payloads, format, { fileBaseName, title
         if (status) statusById[id] = status;
       });
     });
-    await exportCardsPdf(title, cards, { fileBaseName, statusById });
+    await exportCardsPdf(title, cards, { fileBaseName, statusById, theme });
     return;
   }
 
@@ -125,14 +136,14 @@ export async function exportDeckPayloads(payloads, format, { fileBaseName, title
     }
     const rawBodyHtml = buildCornellFlatDocument(title, cards, { sourceTitle: title, statusById });
     if (format === "doc") {
-      const { bytes, failedImageCount } = await buildDocxBytes(rawBodyHtml, fileBaseName);
+      const { bytes, failedImageCount } = await buildDocxBytes(rawBodyHtml, fileBaseName, { theme });
       downloadTextFile(bytes, `${fileBaseName}.docx`, "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
       setStatus(`Exported as Word (.docx).${imageEmbedSuffix(failedImageCount)}`);
     } else {
       const { html: bodyHtml, failedImageCount } = await prepareExportHtml(rawBodyHtml);
-      const html = await wrapStandaloneHtmlDocument(bodyHtml, fileBaseName);
+      const html = await wrapStandaloneHtmlDocument(bodyHtml, fileBaseName, { theme });
       downloadTextFile(html, `${fileBaseName}.html`, "text/html;charset=utf-8");
-      setStatus(`Exported as standalone HTML.${imageEmbedSuffix(failedImageCount)}`);
+      setStatus(`Exported as standalone HTML.${imageEmbedSuffix(failedImageCount, { format: "html" })}`);
     }
     return;
   }
@@ -174,10 +185,11 @@ export async function exportMyDeck(sel, format) {
   try {
     setStatus("Exporting file...");
     const payload = await myDeckPayload(sel);
-    await exportDeckPayloads([payload], format, {
+    const done = await exportDeckPayloads([payload], format, {
       fileBaseName: slugifyFileName(payload.deck.title || "recall"),
       title: payload.deck.title || "File"
     });
+    if (done === false) { setStatus("Export cancelled."); return; }
     if (format !== "pdf") showToast(`Exported "${payload.deck.title || "file"}" as ${format.toUpperCase()}`);
     if (sel.deckId && supabaseClient && isSignedIn && navigator.onLine) {
       touchWebDeckAccess(sel.deckId).catch(() => {});
@@ -197,7 +209,8 @@ export async function exportSelectedMyDecks(selections, format) {
     setStatus(`Exporting ${selections.length} file${selections.length === 1 ? "" : "s"}...`);
     const payloads = [];
     for (const sel of selections) payloads.push(await myDeckPayload(sel));
-    await exportDeckPayloads(payloads, format, { fileBaseName: `selected-files-${contentType}`, title: "Selected Files" }, contentType);
+    const done = await exportDeckPayloads(payloads, format, { fileBaseName: `selected-files-${contentType}`, title: "Selected Files" }, contentType);
+    if (done === false) { setStatus("Export cancelled."); return; }
     if (format !== "pdf") showToast(`Exported ${payloads.length} file${payloads.length === 1 ? "" : "s"} ${contentType} as ${format.toUpperCase()}`);
   } catch (error) {
     console.error("Failed to export selected decks", error);
@@ -236,7 +249,8 @@ export async function exportAllMyDecks(format) {
     }
     const payloads = [];
     for (const sel of selections) payloads.push(await myDeckPayload(sel));
-    await exportDeckPayloads(payloads, format, { fileBaseName: `all-files-${contentType}`, title: "All Files" }, contentType);
+    const done = await exportDeckPayloads(payloads, format, { fileBaseName: `all-files-${contentType}`, title: "All Files" }, contentType);
+    if (done === false) { setStatus("Export cancelled."); return; }
     if (format !== "pdf") showToast(`Exported all files' ${contentType} as ${format.toUpperCase()}`);
   } catch (error) {
     console.error("Failed to export all decks", error);

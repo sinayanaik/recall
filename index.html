@@ -138,6 +138,7 @@
     <link rel="stylesheet" href="styles/79-tab-text.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/80-reading-progress.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/81-pdf-contents-edit.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/82-export-themes.css?v=__BUILD__">
 
     <!-- ── Module preloads ────────────────────────────────────────────────
          The app is ~130 ES modules and the browser discovers them by PARSING
@@ -234,11 +235,14 @@
     <link rel="modulepreload" href="src/export/decks.js?v=__BUILD__">
     <link rel="modulepreload" href="src/export/docx.js?v=__BUILD__">
     <link rel="modulepreload" href="src/export/html.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/export/images.js?v=__BUILD__">
     <link rel="modulepreload" href="src/export/markdown.js?v=__BUILD__">
     <link rel="modulepreload" href="src/export/notes-body.js?v=__BUILD__">
     <link rel="modulepreload" href="src/export/pdf.js?v=__BUILD__">
     <link rel="modulepreload" href="src/export/run.js?v=__BUILD__">
     <link rel="modulepreload" href="src/export/sql.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/export/theme-dialog.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/export/themes.js?v=__BUILD__">
     <link rel="modulepreload" href="src/export/zip.js?v=__BUILD__">
     <link rel="modulepreload" href="src/format/cloze.js?v=__BUILD__">
     <link rel="modulepreload" href="src/format/code-highlight.js?v=__BUILD__">
@@ -2735,13 +2739,33 @@ What year was the Eiffel Tower built?
             Include notes attached to highlights
           </label>
         </div>
+        <!-- The look for PDF, Word and HTML (src/export/themes.js), painted by
+             src/export/theme-dialog.js. Markdown has no look and ignores it. -->
+        <div class="frame-card-field">
+          <span class="frame-card-label" id="exportHighlightsThemeLabel">Style</span>
+          <div class="export-theme-options is-compact" id="exportHighlightsTheme" role="radiogroup" aria-labelledby="exportHighlightsThemeLabel"></div>
+        </div>
         <div class="sync-modal-actions export-highlights-formats">
           <button type="button" class="sync-modal-btn" data-export-highlights="markdown">Markdown</button>
           <button type="button" class="sync-modal-btn" data-export-highlights="pdf">PDF</button>
+          <button type="button" class="sync-modal-btn" data-export-highlights="doc">Word (.docx)</button>
           <button type="button" class="sync-modal-btn" data-export-highlights="html">Standalone HTML</button>
         </div>
         <div class="sync-modal-actions">
           <button id="exportHighlightsCancelBtn" type="button" class="sync-modal-btn">Cancel</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Asked at the moment of exporting to PDF, Word or HTML: how the file
+         should look. src/export/theme-dialog.js; the last choice is kept. -->
+    <section class="confirm-modal" id="exportThemeModal" hidden aria-labelledby="exportThemeTitle">
+      <div class="confirm-modal-content export-theme-content">
+        <h3 class="prompt-modal-title" id="exportThemeTitle">Export style</h3>
+        <div class="export-theme-options" id="exportThemeOptions" role="radiogroup" aria-labelledby="exportThemeTitle"></div>
+        <div class="sync-modal-actions">
+          <button id="exportThemeCancelBtn" type="button" class="sync-modal-btn">Cancel</button>
+          <button id="exportThemeConfirmBtn" type="button" class="sync-modal-btn is-primary">Export</button>
         </div>
       </div>
     </section>

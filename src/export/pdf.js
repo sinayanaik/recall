@@ -11,11 +11,13 @@ import { notesForExport } from "./notes-body.js?v=__BUILD__";
 import { ensureMermaid } from "../core/lib-loader.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { escapeHtml } from "../core/text.js?v=__BUILD__";
+import { exportThemeClass, loadExportTheme } from "./themes.js?v=__BUILD__";
+import { prepareExportImages } from "./images.js?v=__BUILD__";
 import { exportBaseName, formatCardList, normalizeCardStatus } from "./markdown.js?v=__BUILD__";
 import { installPdfPrintStyle, printPreparedDocument, revealPrintRootClozes } from "./run.js?v=__BUILD__";
 import { notesExportBlock } from "../import/parse-cards.js?v=__BUILD__";
 import { collectDeckHighlightsForExport } from "../panels/highlights-panel.js?v=__BUILD__";
-import { cachedRegionImage } from "../documents/pdf-region-embed.js?v=__BUILD__";
+import { cachedRegionImage, regionImageRect } from "../documents/pdf-region-embed.js?v=__BUILD__";
 import { normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
 import { enhanceRenderedMarkdown } from "../render/enhance.js?v=__BUILD__";
 import { markdownToSafeHtml } from "../render/preprocess.js?v=__BUILD__";
@@ -23,6 +25,14 @@ import { deckSnapshot } from "../storage/deck-snapshot.js?v=__BUILD__";
 import { setStatus } from "../ui/feedback.js?v=__BUILD__";
 import { unlockPageScroll } from "../ui/overlays.js?v=__BUILD__";
 import { configureMermaid, currentThemeId } from "../ui/theme.js?v=__BUILD__";
+
+// The class every exported document's wrapper carries: `export-root` for the
+// rules every look shares (pictures, code that wraps), and the look itself
+// (src/export/themes.js, styles/82-export-themes.css). The look asked for, or
+// the one last chosen — the bulk export from My Files asks nothing.
+export function exportRootClass(theme) {
+  return `export-root ${exportThemeClass(theme || loadExportTheme())}`;
+}
 
 export function cardsForScope(scope) {
   syncResults();
@@ -174,7 +184,7 @@ export function buildCornellPrintDocument(title, cards, scope, options = {}) {
       <button type="button" data-print-close>Close</button>
       <button type="button" data-print-now>Download PDF</button>
     </div>
-    <div class="cornell-print-document">
+    <div class="cornell-print-document ${exportRootClass(options.theme)}">
       <header class="cornell-print-cover">
         <div>
           <h1>${escapeHtml(sourceTitle)}</h1>
@@ -394,13 +404,13 @@ export function buildNotesExportBody(title, notesMarkdown) {
 // the card PDF they just flow as regular paragraphs — the layout that was
 // splitting oddly across pages for cards was the fixed-height Cornell rows,
 // which don't apply here.
-export function buildNotesPrintDocument(title, notesMarkdown) {
+export function buildNotesPrintDocument(title, notesMarkdown, { theme } = {}) {
   return `
     <div class="print-preview-actions" data-print-ui>
       <button type="button" data-print-close>Close</button>
       <button type="button" data-print-now>Download PDF</button>
     </div>
-    <div class="cornell-print-document">
+    <div class="cornell-print-document ${exportRootClass(theme)}">
       <header class="cornell-print-cover">
         <div>
           <h1>${escapeHtml(title)}</h1>
@@ -430,6 +440,18 @@ export function buildNotesPrintDocument(title, notesMarkdown) {
 // survive it.
 export const HIGHLIGHT_EXPORT_REGION_WIDTH = 520;
 
+// ...but never wider than the region is on the page. A fixed 520px blew a
+// small mark — a word circled in ink, a scribble in a margin — up to half a
+// page of blurred pixels. A region is shown at its own size (one PDF point is
+// 96/72 CSS pixels at 100%), capped at HIGHLIGHT_EXPORT_REGION_WIDTH, and
+// drawn at twice that so it is sharp on paper.
+export function highlightExportRegionSize(record) {
+  const rect = regionImageRect(record);
+  const natural = rect ? Math.abs(rect[2] - rect[0]) * 96 / 72 : HIGHLIGHT_EXPORT_REGION_WIDTH;
+  const shown = Math.max(24, Math.min(HIGHLIGHT_EXPORT_REGION_WIDTH, Math.round(natural)));
+  return { shown, render: shown * 2 };
+}
+
 function highlightExportEntryHtml(item, groupedByPage = false) {
   const context = (units) => units.map((u) => `<p class="highlight-export-context">${markdownToSafeHtml(u)}</p>`).join("");
   // The note goes straight under its quote, unlabelled. A card is one
@@ -454,9 +476,10 @@ function highlightExportEntryHtml(item, groupedByPage = false) {
   // URL here and travels inside the exported file. A label only when there is
   // no picture to be had (the paper not on this device), or under the picture
   // when the box covered words.
-  const picture = item.region ? cachedRegionImage(item.region, { width: HIGHLIGHT_EXPORT_REGION_WIDTH }) : null;
+  const size = item.region ? highlightExportRegionSize(item.region) : null;
+  const picture = item.region ? cachedRegionImage(item.region, { width: size.render }) : null;
   const pictureHtml = picture
-    ? `<img class="highlight-export-region" src="${escapeHtml(picture)}" alt="${escapeHtml(item.markdown)}">`
+    ? `<img class="highlight-export-region has-custom-size" src="${escapeHtml(picture)}" alt="${escapeHtml(item.markdown)}" style="--notes-img-w:${size.shown}px; width:${size.shown}px">`
     : "";
   const markHtml = picture && !item.hasWords
     ? ""
@@ -573,7 +596,7 @@ export function buildHighlightsPrintDocument(title, options = {}) {
       <button type="button" data-print-close>Close</button>
       <button type="button" data-print-now>Download PDF</button>
     </div>
-    <div class="cornell-print-document is-highlights">
+    <div class="cornell-print-document is-highlights ${exportRootClass(options.theme)}">
       <header class="cornell-print-cover">
         <div>
           <h1>${escapeHtml(title)}</h1>
@@ -613,13 +636,13 @@ export function buildNotesFlatDocument(title, sections) {
   `;
 }
 
-export function buildNotesFlatPrintDocument(title, sections) {
+export function buildNotesFlatPrintDocument(title, sections, { theme } = {}) {
   return `
     <div class="print-preview-actions" data-print-ui>
       <button type="button" data-print-close>Close</button>
       <button type="button" data-print-now>Download PDF</button>
     </div>
-    <div class="cornell-print-document">
+    <div class="cornell-print-document ${exportRootClass(theme)}">
       <header class="cornell-print-cover">
         <div>
           <h1>${escapeHtml(title)}</h1>
@@ -646,7 +669,7 @@ export const pdfPrintStyleId = "pdfPrintStyle";
 
 // Bulk counterpart of exportNotesPdf() — combines every selected deck's notes
 // into one print-preview document instead of the single active deck's own.
-export async function exportNotesFlatPdf(payloads, { fileBaseName, title }) {
+export async function exportNotesFlatPdf(payloads, { fileBaseName, title, theme }) {
   const sections = payloads.map((payload) => ({
     title: payload.deck.title || "Untitled",
     category: payload.deck.category,
@@ -666,7 +689,7 @@ export async function exportNotesFlatPdf(payloads, { fileBaseName, title }) {
   document.title = fileBaseName;
   try {
     await afterPaint();
-    el.printRoot.innerHTML = buildNotesFlatPrintDocument(title, sections);
+    el.printRoot.innerHTML = buildNotesFlatPrintDocument(title, sections, { theme });
     // Must precede configureMermaid("print"): with mermaid loaded on demand,
     // an unloaded library makes that call a silent no-op, and the
     // enhanceRenderedMarkdown below would then load mermaid itself and
@@ -679,6 +702,7 @@ export async function exportNotesFlatPdf(payloads, { fileBaseName, title }) {
     } finally {
       configureMermaid(currentThemeId());
     }
+    await prepareExportImages(el.printRoot, { mode: "pdf" });
     revealPrintRootClozes();
     await (document.fonts?.ready || Promise.resolve());
     await afterPaint();

@@ -65,6 +65,10 @@ const SECTIONS = [
 // Anything appearing in styles/ that is neither a slice nor listed here is
 // still a failure.
 const POST_SPLIT = {
+  "82-export-themes.css":
+    "The three looks an export can be given — Plain, Minimal and Fancy " +
+    "(src/export/themes.js) — on the exported PDF and HTML document, and the " +
+    "picker that asks for one (src/export/theme-dialog.js).",
   "81-pdf-contents-edit.css":
     "The reader's own PDF contents (src/documents/pdf-bookmarks.js, " +
     "pdf-outline-drag.js): the page and row menu, bookmark rows, and the " +

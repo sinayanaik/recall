@@ -35,6 +35,8 @@ import { tripleClickAllCardToEditor, tripleClickCardToEditor } from "./editor/tr
 import { exportAllMyDecks, exportSelectedMyDecks } from "./export/decks.js?v=__BUILD__";
 import { closePrintPreview, printPreviewOpen } from "./export/pdf.js?v=__BUILD__";
 import { generatePdfDirectly, handleExportAction, handleExportDocumentAction, handleExportHighlightsAction, handleExportNotesAction } from "./export/run.js?v=__BUILD__";
+import { askExportTheme, chosenExportTheme, paintExportThemeOptions } from "./export/theme-dialog.js?v=__BUILD__";
+import { saveExportTheme } from "./export/themes.js?v=__BUILD__";
 import { eraseNotesSelection, makeClozeFromSelection } from "./format/cloze.js?v=__BUILD__";
 import { closeAllRenderMenus, handleRenderToolbarAction, initRenderToolbars, renderFormatDefaults, renderTargetConfig, setRenderDefault } from "./format/render-toolbar.js?v=__BUILD__";
 import { applyPillHighlight, buildPillHighlightMenu, clozeTextareaSelection, eraseTextareaSelection, extractSelectionToNote, hideNotesSelectionButtonUnlessPinned, pillActionTarget } from "./format/selection-tools.js?v=__BUILD__";
@@ -2590,6 +2592,8 @@ el.allCardsList.addEventListener("keydown", (event) => {
 // dispatch below is their caller.
 const openExportHighlightsModal = () => {
   if (!el.exportHighlightsModal) return;
+  // Painted on every open, so it shows the look last chosen anywhere.
+  paintExportThemeOptions(el.exportHighlightsTheme, "exportHighlightsTheme");
   el.exportHighlightsModal.hidden = false;
   lockPageScroll();
 };
@@ -2635,6 +2639,18 @@ el.viewExportMenu?.addEventListener("click", (event) => {
   // also carries a scope — always "all", which is the only scope any menu has
   // ever offered (the drawer's copy said the same thing and is now gone).
   const [surface, format] = action.includes(":") ? action.split(":") : ["cards", action];
+  // A file with a look — PDF, Word, HTML — asks which look first (src/export/
+  // theme-dialog.js). Markdown, JSON, SQL and the original PDF have none.
+  const styledTitle = exportThemeTitle(surface, format);
+  if (styledTitle) {
+    askExportTheme({ title: styledTitle }).then((theme) => {
+      if (!theme) return;
+      if (surface === "cards") handleExportAction(format, "all", { theme });
+      else if (surface === "notes") handleExportNotesAction(format, { theme });
+      else if (surface === "doc") handleExportDocumentAction(format, { theme });
+    });
+    return;
+  }
   if (surface === "cards") handleExportAction(format, "all");
   else if (surface === "notes") handleExportNotesAction(format);
   else if (surface === "doc") handleExportDocumentAction(format);
@@ -2643,6 +2659,16 @@ el.viewExportMenu?.addEventListener("click", (event) => {
   // only a highlights export has (context lines, chapter headings, notes).
   else if (surface === "hl") openExportHighlightsModal();
 });
+// The dialog's title for an export that is given a look, or "" for one that
+// is not.
+function exportThemeTitle(surface, format) {
+  const FORMAT_WORDS = { pdf: "PDF", html: "HTML", doc: "Word" };
+  if ((surface === "cards" || surface === "notes") && FORMAT_WORDS[format]) {
+    return `Export ${surface === "cards" ? "cards" : "notes"} as ${FORMAT_WORDS[format]}`;
+  }
+  if (surface === "doc" && /-pdf$/.test(format)) return "Export as PDF";
+  return "";
+}
 el.exportHighlightsCancelBtn?.addEventListener("click", () => {
   if (!el.exportHighlightsModal) return;
   el.exportHighlightsModal.hidden = true;
@@ -2654,8 +2680,10 @@ el.exportHighlightsModal?.addEventListener("click", (event) => {
   const options = {
     contextLines: Math.max(0, Number(el.exportHighlightsContext?.value) || 0),
     includeChapter: el.exportHighlightsChapterToggle?.checked !== false,
-    includeNotes: el.exportHighlightsNotesToggle?.checked !== false
+    includeNotes: el.exportHighlightsNotesToggle?.checked !== false,
+    theme: chosenExportTheme(el.exportHighlightsTheme)
   };
+  saveExportTheme(options.theme);
   unlockPageScroll();
   handleExportHighlightsAction(button.dataset.exportHighlights, options);
 });

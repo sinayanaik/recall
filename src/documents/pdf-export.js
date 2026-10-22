@@ -41,11 +41,13 @@ import { decodeInkStrokes } from "../format/ink-strokes.js?v=__BUILD__";
 import { paintInkLayers } from "../render/ink-paint.js?v=__BUILD__";
 import { markdownToSafeHtml } from "../render/preprocess.js?v=__BUILD__";
 import { setStatus } from "../ui/feedback.js?v=__BUILD__";
-import { DOC_SLOT_NOTEBOOK, activeDocSlot, docSlotMeta } from "./doc-slot.js?v=__BUILD__";
+import { DOC_SLOT_DOC, DOC_SLOT_NOTEBOOK, activeDocSlot, docSlotMeta } from "./doc-slot.js?v=__BUILD__";
+import { activePdfId } from "./pdf-multi.js?v=__BUILD__";
+import { exportThemeClass } from "../export/themes.js?v=__BUILD__";
 import { annotatedDocumentHighlights, documentHighlightLabel, documentHighlights } from "./pdf-highlights.js?v=__BUILD__";
 import { currentPdfDocument, currentPdfPageCount, pdfOpenToken } from "./pdf-view.js?v=__BUILD__";
-import { renderRegionImage } from "./pdf-region-embed.js?v=__BUILD__";
-import { highlightHex } from "./pdf-region-marks.js?v=__BUILD__";
+import { regionImageRect, renderRegionImage } from "./pdf-region-embed.js?v=__BUILD__";
+import { drawRegionBlocks, highlightHex, rasteriseRegionBlocks } from "./pdf-region-marks.js?v=__BUILD__";
 
 // The rendered width of a page in the print document, in device pixels. A4 at
 // 14mm margins (installPdfPrintStyle) is ~182mm of content, which is ~688 CSS
@@ -88,6 +90,22 @@ async function renderPageForPrint(pageNumber, records) {
   context.fillRect(0, 0, canvas.width, canvas.height);
   await page.render({ canvasContext: context, viewport }).promise;
   if (token !== pdfOpenToken) return null;
+
+  // The typed text and pictures placed on the page (src/documents/
+  // pdf-blocks.js) — on a Canvas they are half of what is on it, and the page
+  // export used to print the paper and the ink without them. Drawn by the
+  // same rasteriser a region's picture uses, over the whole page, at this
+  // viewport's scale so the words are as sharp as the page around them; and
+  // under the marks, which annotate them as they annotate the paper.
+  const slot = activeDocSlot();
+  const paperSource = { slot, pdfId: slot === DOC_SLOT_DOC ? activePdfId(state.meta) : null };
+  const { rasters } = await rasteriseRegionBlocks(page, paperSource, pageNumber, page.view, viewport.scale)
+    .catch((error) => {
+      console.warn("Could not draw a page's blocks for the export", error);
+      return { rasters: [] };
+    });
+  if (token !== pdfOpenToken) return null;
+  drawRegionBlocks(context, viewport, rasters);
 
   records.forEach((record) => {
     // Ink is drawn as ink. Its quad is a bounding box round handwriting, so
@@ -162,15 +180,32 @@ function excerptFor(record) {
 // from.
 export const PRINT_REGION_WIDTH = 240;
 
+// A region pictured beside its note is shown at its own size on the page, up
+// to PRINT_REGION_WIDTH — never blown up past it, which turned a circled word
+// into a blurred block — and drawn at twice that so it is sharp on paper.
+function printRegionSize(record) {
+  const rect = regionImageRect(record);
+  const natural = rect ? Math.abs(rect[2] - rect[0]) * 96 / 72 : PRINT_REGION_WIDTH;
+  const shown = Math.max(24, Math.min(PRINT_REGION_WIDTH, Math.round(natural)));
+  return { shown, render: shown * 2 };
+}
+
 async function excerptHtmlFor(record) {
+  // On a Canvas the handwriting a note is about is on the page printed just
+  // above it, so a second picture of it is the same strokes again, cut out and
+  // resized. It is named instead.
+  if (record?.kind === "ink" && activeDocSlot() === DOC_SLOT_NOTEBOOK) {
+    return `<span class="doc-print-note-excerpt">${escapeHtml(`Handwriting · page ${record.page || record.quads?.[0]?.page || ""}`.trim())}</span>`;
+  }
   if (record?.kind === "area" || record?.kind === "ink") {
-    const url = await renderRegionImage(record, { width: PRINT_REGION_WIDTH }).catch(() => null);
+    const size = printRegionSize(record);
+    const url = await renderRegionImage(record, { width: size.render }).catch(() => null);
     if (url) {
       const words = String(record.text || "").replace(/\s+/g, " ").trim();
       const caption = words
         ? `<span class="doc-print-note-excerpt">${escapeHtml(words.length > PRINT_EXCERPT_CHARS ? `${words.slice(0, PRINT_EXCERPT_CHARS).trimEnd()}…` : words)}</span>`
         : "";
-      return `<img class="doc-print-note-region" src="${escapeHtml(url)}" alt="${escapeHtml(documentHighlightLabel(record))}">${caption}`;
+      return `<img class="doc-print-note-region" src="${escapeHtml(url)}" alt="${escapeHtml(documentHighlightLabel(record))}" style="width:${size.shown}px">${caption}`;
     }
   }
   return `<span class="doc-print-note-excerpt">${escapeHtml(excerptFor(record))}</span>`;
@@ -195,7 +230,7 @@ async function pageNotesHtml(entries) {
 // The whole document. `annotatedOnly` prints only the pages that carry a note —
 // which for a paper read closely is a handful of sheets rather than forty, and
 // is what most people mean by "my notes on this".
-export async function buildDocumentPrintDocument(title, { annotatedOnly = false } = {}) {
+export async function buildDocumentPrintDocument(title, { annotatedOnly = false, theme } = {}) {
   const pageCount = currentPdfPageCount();
   const annotated = annotatedDocumentHighlights();
   const notesByPage = new Map();
@@ -256,7 +291,7 @@ export async function buildDocumentPrintDocument(title, { annotatedOnly = false 
       <button type="button" data-print-close>Close</button>
       <button type="button" data-print-now>Download PDF</button>
     </div>
-    <div class="cornell-print-document doc-print-document">
+    <div class="cornell-print-document doc-print-document export-root ${exportThemeClass(theme)}">
       <header class="cornell-print-cover">
         <div>
           <h1>${escapeHtml(title)}</h1>

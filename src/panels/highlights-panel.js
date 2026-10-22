@@ -20,6 +20,7 @@ import { headingForOffset, headingIndexFor } from "../notes/chapters.js?v=__BUIL
 import { clozeCleanUnit, clozeUnitAt, clozeUnitIndex } from "./cloze-panel.js?v=__BUILD__";
 import { trimNoteAnchor } from "../quick-notes/anchors.js?v=__BUILD__";
 import { documentHighlightLabel, documentHighlightsInReadingOrder, isPdfDeck } from "../documents/pdf-highlights.js?v=__BUILD__";
+import { activeDocSlot, DOC_SLOT_NOTEBOOK } from "../documents/doc-slot.js?v=__BUILD__";
 import { mountRegionPreview } from "../documents/pdf-region-embed.js?v=__BUILD__";
 
 // ── Highlights view ────────────────────────────────────────────────────────
@@ -354,9 +355,15 @@ export function collectDeckHighlightsForExport({ contextLines = 0, includeChapte
     // gives: reading a note per record makes this quadratic in how many
     // highlights the paper has.
     const documentNotes = readHighlightNotes(notes);
+    // On a Canvas every pen stroke is an ink mark, so a page of handwriting
+    // exported as "highlights" was dozens of pictures of scribble fragments.
+    // The handwriting is what the page export is for; here an ink mark is
+    // listed only when the reader wrote a note on it.
+    const onCanvas = activeDocSlot() === DOC_SLOT_NOTEBOOK;
     documentHighlightsInReadingOrder().forEach((record) => {
       const note = documentNotes.get(record.id) || null;
       if (annotatedOnly && !note) return;
+      if (onCanvas && record.kind === "ink" && !note) return;
       const pictured = record.kind === "area" || record.kind === "ink";
       items.push({
         // documentHighlightLabel, so a region round a figure exports as

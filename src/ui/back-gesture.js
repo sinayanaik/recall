@@ -113,6 +113,7 @@ export const OVERLAY_LAYERS = [
   // frontmost draft, the same one-layer-per-press rule as everything here.
   { isOpen: () => isFrameCardOpen(), close: () => cancelFrontFrameCard() },
   { isOpen: () => Boolean(el.exportHighlightsModal && !el.exportHighlightsModal.hidden), close: () => el.exportHighlightsCancelBtn?.click() },
+  { isOpen: () => Boolean(el.exportThemeModal && !el.exportThemeModal.hidden), close: () => el.exportThemeCancelBtn?.click() },
   { isOpen: () => Boolean(el.qnCatModal && !el.qnCatModal.hidden), close: () => closeQnCatModal() },
   // These two are read off the DOM rather than through their `helpModal` /
   // `appInfoModal` bindings, which are top-level `const`s declared thousands of
