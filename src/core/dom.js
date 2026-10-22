@@ -225,6 +225,7 @@ export const el = {
   editNotesBtn: document.querySelector("#editNotesBtn"),
   bookmarkGoBtn: document.querySelector("#bookmarkGoBtn"),
   focusModeBtn: document.querySelector("#focusModeBtn"),
+  teleprompterBtn: document.querySelector("#teleprompterBtn"),
   makeCardFromSelectionBtn: document.querySelector("#makeCardFromSelectionBtn"),
   makeClozeFromSelectionBtn: document.querySelector("#makeClozeFromSelectionBtn"),
   pinQuickNoteFromSelectionBtn: document.querySelector("#pinQuickNoteFromSelectionBtn"),

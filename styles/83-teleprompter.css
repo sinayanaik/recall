@@ -1,0 +1,544 @@
+/* The teleprompter
+ * Added after the split — see POST_SPLIT in tools/split-css.mjs.
+ */
+
+/* ── The runway ─────────────────────────────────────────────────────────────
+   src/notes/teleprompter.js sizes these two so the note's first line can sit
+   in the band with the scroller at the top, and its last line can be scrolled
+   up to it. Pseudo-elements rather than padding: .notes-rendered's padding is
+   written by the frozen styles/12-notes.css and re-written by several slices
+   after it, and these add to whatever it is instead of competing with it. Not
+   children either, so the block cache's `.notes-rendered > *` never sees them. */
+#notesView.is-teleprompter::before,
+#notesView.is-teleprompter::after {
+  content: "";
+  display: block;
+  pointer-events: none;
+}
+
+#notesView.is-teleprompter::before {
+  height: var(--tp-lead, 0px);
+}
+
+#notesView.is-teleprompter::after {
+  height: var(--tp-runout, 0px);
+}
+
+/* ── The band ───────────────────────────────────────────────────────────────
+   Over the note's scrollport, never over its scrollbar, and never in the way
+   of a press: the text under it must stay selectable. Positioned by variables
+   the session writes on a resize or a settings change, not per frame. Under
+   the contents drawer (z-index 40) and the ⋯ menu (45). */
+.tp-overlay {
+  position: absolute;
+  top: var(--tp-box-top, 0px);
+  left: var(--tp-box-left, 0px);
+  z-index: 20;
+  width: var(--tp-box-width, 100%);
+  height: var(--tp-box-height, 100%);
+  overflow: hidden;
+  pointer-events: none;
+  transition: opacity 0.25s ease;
+  --tp-dim-ink: color-mix(in srgb, var(--card) var(--tp-dim, 45%), transparent);
+}
+
+/* Paused, it is Notes again: no band, no dimming, the text as it is. */
+.tp-overlay[data-phase="paused"],
+.tp-overlay[data-phase="ended"] {
+  opacity: 0;
+}
+
+.tp-dim {
+  position: absolute;
+  right: 0;
+  left: 0;
+}
+
+/* Softened for the last few px nearest the band, so the line about to arrive
+   and the line just read are half-lit rather than cut off by a hard edge. */
+.tp-dim-top {
+  top: 0;
+  height: var(--tp-band-top, 0px);
+  background: linear-gradient(to bottom, var(--tp-dim-ink), var(--tp-dim-ink) calc(100% - 22px), transparent);
+}
+
+.tp-dim-bottom {
+  top: calc(var(--tp-band-top, 0px) + var(--tp-band-height, 0px));
+  bottom: 0;
+  background: linear-gradient(to top, var(--tp-dim-ink), var(--tp-dim-ink) calc(100% - 22px), transparent);
+}
+
+.tp-band {
+  position: absolute;
+  top: var(--tp-band-top, 0px);
+  right: 0;
+  left: 0;
+  height: var(--tp-band-height, 0px);
+  display: none;
+  border-block: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+
+.tp-overlay.has-band > .tp-band {
+  display: block;
+}
+
+/* The marker at its left edge: where the eye goes back to at each line. */
+.tp-band::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 2px;
+  border-block: 7px solid transparent;
+  border-left: 9px solid color-mix(in srgb, var(--accent) 75%, transparent);
+  transform: translateY(-50%);
+}
+
+.tp-countdown {
+  position: absolute;
+  top: calc(var(--tp-band-top, 0px) + var(--tp-band-height, 0px) / 2);
+  left: 50%;
+  display: grid;
+  place-items: center;
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-contrast, #fff);
+  font-size: 1.9rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.22);
+  transform: translate(-50%, -50%);
+}
+
+.tp-countdown[hidden] {
+  display: none;
+}
+
+/* ── The bar ────────────────────────────────────────────────────────────── */
+.tp-bar {
+  position: absolute;
+  bottom: max(12px, var(--safe-bottom));
+  left: 50%;
+  z-index: 38;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  max-width: calc(100% - 16px);
+  padding: 5px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.16);
+  transform: translateX(-50%);
+  transition: opacity 0.3s ease, transform 0.25s ease;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+#notesStage.has-reading-progress > .tp-bar {
+  bottom: calc(max(12px, var(--safe-bottom)) + 18px);
+}
+
+/* Faded while the text moves and nobody is near it; never while a pointer or
+   the keyboard is. */
+.tp-bar.is-faded:not(:hover):not(:focus-within) {
+  opacity: 0.35;
+}
+
+/* Out of the way while a selection, its pill or a highlight's menu has the
+   foot of the screen. It comes back when they go. */
+.tp-bar.is-tucked {
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, calc(100% + 40px));
+}
+
+.tp-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 40px;
+  min-height: 40px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 11px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 0.95rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.tp-btn:hover {
+  background: color-mix(in srgb, var(--text) 7%, transparent);
+}
+
+.tp-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.tp-btn:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.tp-play {
+  min-width: 48px;
+  background: var(--accent);
+  color: var(--accent-contrast, #fff);
+  font-weight: 700;
+}
+
+.tp-play:hover {
+  background: var(--accent-strong);
+}
+
+/* Paused, the way back in is the biggest thing on the bar. */
+.tp-bar[data-phase="paused"] .tp-play,
+.tp-bar[data-phase="countdown"] .tp-play {
+  padding: 0 16px;
+  font-size: 1rem;
+}
+
+.tp-play-label:empty {
+  display: none;
+}
+
+/* Carrying on by itself: the button fills, clockwise, as the wait runs out. */
+.tp-play.is-auto-resuming {
+  background:
+    conic-gradient(var(--accent-strong) var(--tp-resume-progress, 0deg), var(--accent) 0);
+}
+
+.tp-speed,
+.tp-size {
+  display: inline-flex;
+  align-items: center;
+}
+
+.tp-speed-read {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 64px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.15;
+}
+
+.tp-wpm {
+  font-size: 0.88rem;
+  font-weight: 700;
+}
+
+.tp-left {
+  color: var(--muted);
+  font-size: 0.66rem;
+  white-space: nowrap;
+}
+
+.tp-left[hidden] {
+  display: none;
+}
+
+.tp-size .tp-btn {
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.tp-close {
+  color: var(--muted);
+}
+
+/* The end of the note: one sentence and the two things worth doing next. */
+.tp-end {
+  display: none;
+  align-items: center;
+  gap: 6px;
+  padding-left: 8px;
+}
+
+.tp-end-text {
+  font-size: 0.88rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.tp-again {
+  background: var(--accent);
+  color: var(--accent-contrast, #fff);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.tp-again:hover {
+  background: var(--accent-strong);
+}
+
+.tp-bar[data-phase="ended"] > :not(.tp-end):not(.tp-status) {
+  display: none;
+}
+
+.tp-bar[data-phase="ended"] > .tp-end {
+  display: inline-flex;
+}
+
+.tp-status {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* ── The settings sheet ─────────────────────────────────────────────────── */
+.tp-sheet {
+  position: absolute;
+  right: 12px;
+  bottom: calc(max(12px, var(--safe-bottom)) + 62px);
+  z-index: 39;
+  display: flex;
+  flex-direction: column;
+  width: min(360px, calc(100% - 24px));
+  max-height: min(70vh, calc(100% - 90px));
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: var(--shadow, 0 18px 50px rgba(0, 0, 0, 0.2));
+}
+
+#notesStage.has-reading-progress > .tp-sheet {
+  bottom: calc(max(12px, var(--safe-bottom)) + 80px);
+}
+
+.tp-sheet[hidden] {
+  display: none;
+}
+
+.tp-sheet-head {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 6px 6px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.tp-sheet-body {
+  min-height: 0;
+  padding: 4px 12px 12px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.tp-sheet-section + .tp-sheet-section {
+  border-top: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+}
+
+.tp-sheet-title {
+  margin: 10px 0 4px;
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.tp-row {
+  display: grid;
+  grid-template-columns: 62px auto minmax(0, 1fr) auto 66px;
+  align-items: center;
+  gap: 4px;
+  min-height: 40px;
+}
+
+.tp-row-label {
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.tp-step {
+  min-width: 34px;
+  min-height: 34px;
+  padding: 0;
+  font-size: 1.05rem;
+}
+
+.tp-slider {
+  width: 100%;
+  min-width: 0;
+  height: 28px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.tp-row-value {
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* The label above its choices, not beside them: "Carry on by itself" does not
+   fit a slider row's label column, and the choices then get the full width. */
+.tp-row.tp-choice-row {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+  padding: 4px 0 6px;
+}
+
+.tp-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.tp-choice {
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  font-size: 0.8rem;
+}
+
+.tp-choice[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-contrast, #fff);
+}
+
+.tp-use-mine {
+  width: 100%;
+  margin: 2px 0 4px;
+  border: 1px dashed color-mix(in srgb, var(--accent) 55%, var(--line));
+  color: var(--accent-strong);
+  font-size: 0.82rem;
+}
+
+.tp-use-mine[hidden] {
+  display: none;
+}
+
+.tp-switch-row {
+  justify-content: space-between;
+  width: 100%;
+  min-height: 46px;
+  padding: 4px 2px;
+  text-align: left;
+}
+
+.tp-switch-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 0.86rem;
+  line-height: 1.2;
+}
+
+.tp-switch-hint {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+/* The ⋯ menu's switch, drawn the same way: off is a grey track, on is the
+   accent with the knob moved over. */
+.tp-switch {
+  position: relative;
+  flex: 0 0 auto;
+  width: 34px;
+  height: 19px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--muted) 30%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--line) 85%, transparent);
+  transition: background-color 0.18s ease;
+}
+
+.tp-switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: color-mix(in srgb, #fff 88%, var(--panel));
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+  transition: transform 0.18s ease;
+}
+
+.tp-switch-row[aria-pressed="true"] .tp-switch {
+  background: var(--accent);
+}
+
+.tp-switch-row[aria-pressed="true"] .tp-switch::after {
+  transform: translateX(15px);
+}
+
+.tp-reset {
+  width: 100%;
+  margin-top: 10px;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+/* ── A phone ────────────────────────────────────────────────────────────────
+   The bar spans the foot of the panel, its groups spread out, so each control
+   is a full thumb's width; the sheet becomes a sheet over the bottom. */
+@media (max-width: 720px) {
+  .tp-bar {
+    right: 8px;
+    left: 8px;
+    justify-content: space-between;
+    gap: 2px;
+    max-width: none;
+    padding: 4px;
+    transform: none;
+  }
+
+  .tp-bar.is-tucked {
+    transform: translateY(calc(100% + 40px));
+  }
+
+  .tp-btn {
+    min-width: 38px;
+    padding: 0 6px;
+  }
+
+  .tp-speed-read {
+    min-width: 50px;
+  }
+
+  .tp-sheet {
+    right: 8px;
+    left: 8px;
+    width: auto;
+  }
+
+  .tp-row {
+    grid-template-columns: 54px auto minmax(0, 1fr) auto 62px;
+  }
+}
+
+@media (max-width: 360px) {
+  .tp-size {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tp-overlay,
+  .tp-bar,
+  .tp-switch,
+  .tp-switch::after {
+    transition: none;
+  }
+}

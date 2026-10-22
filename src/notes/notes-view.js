@@ -6,7 +6,7 @@
 
 import { updateMeta } from "../cards/card-status.js?v=__BUILD__";
 import { el, isDisplayed } from "../core/dom.js?v=__BUILD__";
-import { readerActedSince, touchGestureHoldsSurface, wheelGestureActive } from "../core/gesture.js?v=__BUILD__";
+import { notesAutoScrolling, readerActedSince, touchGestureHoldsSurface, wheelGestureActive } from "../core/gesture.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { refreshHighlightBackdrop } from "../editor/highlight-mirror.js?v=__BUILD__";
 // A cycle — highlight-edit.js imports renderNotesViewPinned from here — and the
@@ -558,6 +558,10 @@ export async function settleNotesPin(view, anchors, measuredAt = performance.now
     // reader's own scroll input, which reads as the view resisting and then
     // snapping back.
     if (touchSelectionDragActive() || touchGestureHoldsSurface() || wheelGestureActive()) return;
+    // ...nor the teleprompter, which is moving the text on purpose: every frame
+    // of it reads as drift from where the anchor was measured, and correcting
+    // it pulled the note back by however far it had played since the repaint.
+    if (notesAutoScrolling()) return;
     // ── ...nor a scroll the reader started since their place was measured ──
     //
     // The flags above are about a finger HOLDING the surface, and a touch scroll

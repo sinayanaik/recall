@@ -139,6 +139,7 @@
     <link rel="stylesheet" href="styles/80-reading-progress.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/81-pdf-contents-edit.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/82-export-themes.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/83-teleprompter.css?v=__BUILD__">
 
     <!-- ── Module preloads ────────────────────────────────────────────────
          The app is ~130 ES modules and the browser discovers them by PARSING
@@ -339,6 +340,8 @@
     <link rel="modulepreload" href="src/notes/resize-hold.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/scroll-anchor.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/selection.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/notes/teleprompter-panel.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/notes/teleprompter.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/toc-tree.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/toc.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/touch-selection.js?v=__BUILD__">
@@ -1082,6 +1085,11 @@
               <!-- ⋯ → Show progress: the one-row reading line at the foot of the
                    page (src/stats/reading-progress.js). Off until asked for. -->
               <button class="edit-card-btn reading-progress-btn" id="readingProgressNotesBtn" data-nhm-group="While you read" type="button" aria-pressed="false" title="Show how far you are, the chapter and the time left, in one row at the foot of the page" aria-label="Show reading progress"><span class="nhm-ico" aria-hidden="true">&#9719;</span><span class="nhm-label">Show progress<span class="nhm-hint">Percent, chapter and time left</span></span><span class="nhm-state" aria-hidden="true"><span class="nhm-switch"></span></span></button>
+              <!-- ⋯ → Teleprompter: the note scrolls by itself under a reading band,
+                   at a speed the reader sets; touching it pauses it, and Notes
+                   is then Notes until ▶ Resume (src/notes/teleprompter.js).
+                   On while a session is open, which is what the switch says. -->
+              <button class="edit-card-btn teleprompter-btn" id="teleprompterBtn" data-nhm-group="While you read" type="button" aria-pressed="false" title="Teleprompter — the text scrolls by itself at the speed you set; touch it to pause" aria-label="Teleprompter"><span class="nhm-ico" aria-hidden="true">&#9654;</span><span class="nhm-label">Teleprompter<span class="nhm-hint">Scrolls the text for you</span></span><span class="nhm-state" aria-hidden="true"><span class="nhm-switch"></span></span></button>
               <!-- Every low-frequency button above moves INTO the menu below —
                    the cloze trio, make-card, pin, the two bookmark controls,
                    focus, full screen and the highlight-notes toggle: ten at
@@ -1717,6 +1725,10 @@
                which is why it carries no data-rail-scope: a saved spot means
                something on both reading surfaces now. -->
           <button class="reading-rail-btn" data-rail-group="This page" type="button" data-rail-action="bookmark-go" title="Go to your bookmark — the spot your last sync saved" aria-label="Go to the bookmark"><span class="rr-ico" aria-hidden="true">&#8617;</span><span class="rr-label">Go to bookmark</span></button>
+          <!-- The teleprompter, here as well as in the notes ⋯ menu because focus
+               mode — which a session turns on — folds that menu away. A toggle,
+               mirrored off #teleprompterBtn by refreshReadingRailModes. -->
+          <button class="reading-rail-btn" data-rail-group="This page" data-rail-scope="notes" type="button" data-rail-action="teleprompter" aria-pressed="false" title="Teleprompter — the text scrolls by itself; touch it to pause" aria-label="Teleprompter"><span class="rr-ico" aria-hidden="true">&#9654;</span><span class="rr-label">Teleprompter</span></button>
           <!-- ── The document's own three ───────────────────────────────
                Hidden outside Document view by refreshReadingRailRows. "Fit to
                width" is not a convenience here: styles/37-document-chrome.css
@@ -2275,6 +2287,7 @@
               <li><strong>See what points here</strong> — open the <strong>contents</strong> drawer beside the tabs (the icon of three lines with dots beside them — <strong>not</strong> the ☰ at top-left, which is the app's own menu); under the headings, <strong>Linked from</strong> lists every note that references the one you're reading</li>
               <li><strong>...and what you marked, beside what you marked it in</strong> — that drawer's <strong>Highlights</strong> half lists every highlight in this note, and <strong>Side by side</strong> at the top of it splits the panel: the note on one side, its highlights with their notes on the other, <strong>◀ ▶</strong> to walk through them. Drag the divider to resize the two — they start at 3:2 and stack top-and-bottom on a phone</li>
               <li>Notes save, sync, and export together with the rest of the file — or skip notes entirely and make cards directly, as before</li>
+              <li><strong>Let the text come to you</strong> — <strong>⋯ → Teleprompter</strong> (or <strong>&#9654; Teleprompter</strong> on the <strong>‹</strong> tab at the right edge) scrolls the notes by themselves, under a soft band that marks the line to read. The bar at the foot sets the speed in words a minute (it starts at your own reading speed once Recall has measured it), the text size with <strong>A− A+</strong>, and everything else under <strong>⚙</strong>: spacing, width, font, where the band sits, how much the rest is dimmed, a countdown, and keeping the screen on. <strong>Touch the text and it stops</strong> — select, highlight, open a highlight, make a card, exactly as usual — then <strong>&#9654; Resume</strong> carries on from wherever the text is. Turn on <em>Carry on by itself</em> and it resumes a few seconds after you stop touching it. Going to Cards, a PDF or Home pauses it; <strong>✕</strong>, <kbd>Esc</kbd> or Back puts the normal Notes text back, on the same line</li>
               <li><strong>On a phone, the header gets out of your way</strong> — scroll down and the file title bar and the Cards / Notes / PDFs / Canvas tabs fold away; scroll back up and they return. Tap <strong>⤢</strong> in the notes header to keep them hidden for good, and <strong>⤡</strong> to bring them back</li>
               <li><strong>Turn the screen from the app</strong> — on an Android phone or tablet, <strong>&#10227; Landscape</strong> in the notes <strong>⋯</strong> menu (and on the <strong>‹</strong> tab at the right edge) turns the screen sideways, and switching it off turns it back upright, so you can leave the phone's own auto-rotate off. In a browser tab it goes full screen first, because that is the only place a browser lets a page turn the screen; leaving full screen hands rotation back to the phone. The installed app remembers which way you left it</li>
             </ul>
@@ -2369,6 +2382,10 @@
               <tr><td><kbd>Alt</kbd> + <kbd>←</kbd></td><td>On a PDF, after following a link in it: back to where you were</td></tr>
               <tr><td><kbd>Ctrl</kbd> + <kbd>.</kbd></td><td>Toggle focus mode (hide the header while you read — the <strong>‹</strong> tab on the right edge of the screen is always there, and opens the contents, the four views, My Files, and Focus mode and Full screen themselves; a small strip of the four tabs — Cards, Notes, PDFs and Canvas — stays at the top as well, so you can switch parts without leaving focus mode)</td></tr>
               <tr><td><kbd>Esc</kbd></td><td>Close the topmost panel, or leave focus mode</td></tr>
+              <tr><td><kbd>Space</kbd></td><td>In the teleprompter: pause / carry on</td></tr>
+              <tr><td><kbd>↑</kbd> <kbd>↓</kbd></td><td>In the teleprompter: faster / slower</td></tr>
+              <tr><td><kbd>←</kbd> <kbd>→</kbd></td><td>In the teleprompter: back / forward two lines</td></tr>
+              <tr><td><kbd>+</kbd> <kbd>−</kbd></td><td>In the teleprompter: bigger / smaller text</td></tr>
             </table>
           </section>
 

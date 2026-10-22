@@ -65,6 +65,11 @@ const SECTIONS = [
 // Anything appearing in styles/ that is neither a slice nor listed here is
 // still a failure.
 const POST_SPLIT = {
+  "83-teleprompter.css":
+    "The teleprompter (src/notes/teleprompter.js, teleprompter-panel.js): the " +
+    "reading band and the dimming over the note, the lead-in and run-out that " +
+    "let the first and last lines reach the band, the bar at the foot of Notes " +
+    "and its settings sheet.",
   "82-export-themes.css":
     "The three looks an export can be given — Plain, Minimal and Fancy " +
     "(src/export/themes.js) — on the exported PDF and HTML document, and the " +

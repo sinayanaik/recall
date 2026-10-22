@@ -19,6 +19,8 @@ import { closeHighlightNoteEditor, isHighlightNoteEditorOpen } from "../notes/hi
 import { closeNotesHeadMore, isNotesHeadMoreOpen } from "../notes/notes-head-overflow.js?v=__BUILD__";
 import { commitNotesEditIfActive, isNotesEditing } from "../notes/notes-view.js?v=__BUILD__";
 import { closeNotesToc, isNotesTocOpen } from "../notes/toc.js?v=__BUILD__";
+import { exitTeleprompter, teleprompterOnScreen } from "../notes/teleprompter.js?v=__BUILD__";
+import { closeTeleprompterSheet, isTeleprompterSheetOpen } from "../notes/teleprompter-panel.js?v=__BUILD__";
 import { closeClozePanel } from "../panels/cloze-panel.js?v=__BUILD__";
 import { closeAppInfoModal } from "../pwa/app-info.js?v=__BUILD__";
 import { closeDiagnosticsPanel } from "../pwa/diagnostics-panel.js?v=__BUILD__";
@@ -85,6 +87,8 @@ export const OVERLAY_LAYERS = [
   // press aimed at the open menu would fall through to goNavBack() and load
   // another deck underneath it.
   { isOpen: () => isNotesHeadMoreOpen(), close: () => closeNotesHeadMore() },
+  // The teleprompter's ⚙ sheet, a popover over its own bar.
+  { isOpen: () => isTeleprompterSheetOpen(), close: () => closeTeleprompterSheet() },
   { isOpen: () => isHighlightNoteEditorOpen(), close: () => closeHighlightNoteEditor() },
 
   // The hamburger drawer sits here, above the dialogs, because it genuinely is
@@ -149,6 +153,12 @@ export const OVERLAY_LAYERS = [
   // above: at z-index 40 it is underneath every panel and dialog here, so any
   // of them opened over it must take the press first.
   { isOpen: () => isNotesTocOpen(), close: () => closeNotesToc() },
+
+  // The teleprompter (src/notes/teleprompter.js): not an overlay but a way the
+  // note is being read, under the drawer that can open over it. Only while it
+  // is on screen — a session paused behind Cards or Home is not what a press
+  // there means. Leaving puts the reader's line back where Notes keeps it.
+  { isOpen: () => teleprompterOnScreen(), close: () => exitTeleprompter() },
 
   // The raw markdown editor, below even the TOC drawer — it is inline content,
   // not an overlay, so everything above genuinely sits on top of it and takes

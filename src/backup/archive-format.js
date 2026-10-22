@@ -356,6 +356,7 @@ export const BACKED_UP_SETTINGS_KEYS = {
   "recall:pdfPageNotes": "Whether a paper's page notes are shown.",
   "recall:pdfInvert": "Whether papers are shown inverted for dark reading.",
   "recall:readingProgressShown": "Whether the reading-progress row is shown at the foot of Notes and PDFs.",
+  "recall:teleprompter-v1": "The teleprompter's speed, type, reading band and behaviour.",
   "recall:focusMode": "Focus mode.",
   "recall:screenOrientation": "The orientation lock.",
   "recall:splitRatio": "Where the split view's divider sits.",

@@ -182,6 +182,7 @@ const INK_NUDGE_KEYS = {
 import { initDocumentRegionSelect, noteRegionDocumentOpened, setRegionSelect, toggleRegionSelect } from "./documents/pdf-region.js?v=__BUILD__";
 import { paintPageNoteBadges, paintPdfPageNotesButton, readPdfPageNotesPreference, refreshPdfPageNotes, repaintPdfPageNotes, setDocumentNoteRevealHook, setPdfPageNotesFlag, togglePdfPageNotes } from "./documents/pdf-page-notes.js?v=__BUILD__";
 import { initReadingRail, refreshReadingRail, refreshReadingRailModes } from "./ui/reading-rail.js?v=__BUILD__";
+import { initTeleprompter, setTeleprompterChangedHook } from "./notes/teleprompter.js?v=__BUILD__";
 import { initScreenOrientation, setBeforeOrientationChangeHandler, setOrientationModesHandler, toggleLandscape } from "./ui/orientation.js?v=__BUILD__";
 import { attachPdfToOpenDeck, importPdfFile, reportPdfImportCrash } from "./import/pdf.js?v=__BUILD__";
 import { flushActivity, initActivityLog, noteViewSwitch } from "./stats/activity.js?v=__BUILD__";
@@ -1224,6 +1225,10 @@ onDomReady(() => {
   setChromeModesHandler(refreshReadingRailModes);
   // ...and the Landscape row, which is a copy in the same way.
   setOrientationModesHandler(refreshReadingRailModes);
+  // ...and the Teleprompter row (src/notes/teleprompter.js), which the rail
+  // imports, so it cannot be imported back.
+  setTeleprompterChangedHook(refreshReadingRailModes);
+  initTeleprompter();
   // The Landscape switch: write down where the reader is on both reading
   // surfaces before the screen turns, so the holds that follow the re-flow put
   // them back there (src/notes/resize-hold.js, relayoutDocumentHoldingReader).

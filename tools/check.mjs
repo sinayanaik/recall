@@ -113,6 +113,13 @@
 //                   plus whether a note printed into a paragraph is drawn any
 //                   differently from the paragraph. Speaks CDP directly, so it
 //                   runs wherever there is a Chrome rather than skipping
+//   teleprompter    does a note scroll by itself at the speed it says, stop
+//                   in the same tick a press lands (so the first long-press
+//                   selects), stay the note while paused, carry on from where
+//                   the text is, and give the Notes text back exactly on
+//                   leaving? Paged mode suspended and restored, the end said,
+//                   another tab pausing it, the raw editor ending it, and the
+//                   bar fitting a 390px phone. CDP directly, like notes-menu
 //   style           does a Style panel setting reach the element it names?
 //   highlight       does highlighting mark the thing that was SELECTED?
 //   note-link-brws  can you find a note to link to WITHOUT remembering its
@@ -519,6 +526,7 @@ const checks = [
     ["rotation      ", ["node", ["tools/rotation-check.mjs"], ROOT]],
     ["mobile-menu   ", ["node", ["tools/mobile-menu-check.mjs"], ROOT]],
     ["notes-menu    ", ["node", ["tools/notes-menu-check.mjs"], ROOT]],
+    ["teleprompter  ", ["node", ["tools/teleprompter-check.mjs"], ROOT]],
     ["style         ", ["node", ["tools/style-check.mjs"], ROOT]],
     ["highlight     ", ["node", ["tools/highlight-check.mjs"], ROOT]],
     ["note-editor   ", ["node", ["tools/note-editor-check.mjs"], ROOT]],

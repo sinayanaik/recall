@@ -75,6 +75,7 @@ import { toggleLandscape } from "./orientation.js?v=__BUILD__";
 import { setViewMode } from "./view-mode.js?v=__BUILD__";
 import { toggleNotesToc } from "../notes/toc.js?v=__BUILD__";
 import { goToBookmark } from "../notes/bookmark.js?v=__BUILD__";
+import { toggleTeleprompter } from "../notes/teleprompter.js?v=__BUILD__";
 import { openStylePanel } from "../cloud/style-sync.js?v=__BUILD__";
 import { reconcileAllDecks } from "../sync/reconcile.js?v=__BUILD__";
 import { fitDocumentToWidth, togglePdfInvert } from "../documents/pdf-view.js?v=__BUILD__";
@@ -300,6 +301,10 @@ export function refreshReadingRailModes() {
   if (penTextRow) penTextRow.setAttribute("aria-pressed", inkTool() === "text" ? "true" : "false");
   mirrorMode("immersive", el.immersiveModeBtn);
   mirrorMode("focus", el.focusModeBtn);
+  // Painted by paintTeleprompterToggles, which calls this through the hook
+  // src/main.js registers — the session can start and end by Escape, Back, the
+  // bar's ✕ or a change of file, none of them a press on this row.
+  mirrorMode("teleprompter", el.teleprompterBtn);
   // Landscape is offered only where the screen can actually be locked
   // (src/ui/orientation.js unhides the original), so the copy follows the
   // original's hidden as well as its pressed state.
@@ -411,6 +416,7 @@ export function initReadingRail() {
     else if (action === "decks") openMyDecksPanel();
     else if (action === "contents") toggleContents();
     else if (action === "bookmark-go") goToBookmark();
+    else if (action === "teleprompter") toggleTeleprompter();
     else if (action === "style") openStylePanel();
     else if (action === "sync") reconcileAllDecks({ explicit: true });
     else if (action === "shutdown") shutDownApp();

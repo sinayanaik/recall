@@ -104,6 +104,7 @@ const OVERFLOW_SELECTORS = [
   ".notes-head > #rotateScreenBtn",
   ".notes-head > #notesFoldAllBtn",
   ".notes-head > #readingProgressNotesBtn",
+  ".notes-head > #teleprompterBtn",
   ".notes-head > #bookmarkGoBtn",
   ".notes-head > .notes-make-card",
   ".notes-head > .notes-quick-note",
