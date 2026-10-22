@@ -71,7 +71,7 @@ export async function wrapStandaloneHtmlDocument(bodyHtml, title, { theme = load
   const styleTag = await buildExportStyleTag();
   const liveStyle = document.documentElement.getAttribute("style") || "";
   return `<!doctype html>
-<html lang="en" data-theme="${escapeHtml(currentThemeId())}" style="${escapeHtml(liveStyle)}">
+<html lang="en" class="export-page" data-theme="${escapeHtml(currentThemeId())}" style="${escapeHtml(liveStyle)}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">

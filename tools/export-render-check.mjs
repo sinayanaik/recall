@@ -146,6 +146,8 @@ const NOTE_SRC = `async () => {
     "",
     "![offline](recall-img:exportcheck1)",
     "",
+    "![big](/icons/icon-512.png)",
+    "",
     "> A quote.",
     "",
     "| a | b |",
@@ -199,6 +201,31 @@ function check(label, ok, detail = "") {
   ran += 1;
   if (!ok) failures += 1;
   console.log(`  ${ok ? "ok  " : "FAIL"}  ${label}${detail ? `  ${detail}` : ""}`);
+}
+
+// The print frame's HTML in a tab of its own, as the hidden iframe the app
+// prints through would hold it: measured under print media, then printed to a
+// real PDF so the sheet count is Chrome's own.
+async function printFrame(html, measureSrc) {
+  const tab = await openPage(client);
+  try {
+    // A4's content box at the 14mm margins installPdfPrintStyle sets (182 ×
+    // 269mm), so what is measured under print media is laid out at the width
+    // the sheet gives it.
+    await tab.call("Emulation.setDeviceMetricsOverride", { width: 688, height: 1017, deviceScaleFactor: 1, mobile: false });
+    await tab.goto(`${server.base}/index.html`);
+    await tab.evaluate(`(html) => { document.open(); document.write(html.replace(/<script>[\\s\\S]*?<\\/script>/, "")); document.close(); }`, html);
+    await new Promise((r) => setTimeout(r, 800));
+    await tab.call("Emulation.setEmulatedMedia", { media: "print" });
+    await new Promise((r) => setTimeout(r, 200));
+    const measure = await tab.evaluate(measureSrc);
+    const { data } = await tab.call("Page.printToPDF", { printBackground: true, preferCSSPageSize: true });
+    const pdf = Buffer.from(data, "base64").toString("latin1");
+    const pages = (pdf.match(/\/Type\s*\/Page[^s]/g) || []).length;
+    return { measure, pages };
+  } finally {
+    await tab.call("Page.close").catch(() => {});
+  }
 }
 
 try {
@@ -310,6 +337,19 @@ try {
     /Courier/.test(pdf.fancy.h1Font), pdf.fancy.h1Font);
   check("...and keeps the heading colour the app gives h1",
     pdf.fancy.h1Color !== pdf.fancy.bodyColor, `h1 ${pdf.fancy.h1Color}, text ${pdf.fancy.bodyColor}`);
+
+  // A picture in the notes PDF, under print media: as large as the Notes view
+  // shows it, not held to the 55mm every printed picture used to be, and
+  // without the border and padding the print rules framed it in.
+  const notesPrinted = await printFrame(pdf.minimal.frame, `() => {
+    const img = [...document.querySelectorAll(".rendered img")].find((node) => node.naturalWidth >= 512 && !node.classList.contains("has-custom-size"));
+    const cs = img ? getComputedStyle(img) : null;
+    return img ? { height: Math.round(img.getBoundingClientRect().height), border: cs.borderTopWidth, padding: cs.paddingTop } : null;
+  }`);
+  check("Notes PDF printed: a large picture is as large as the Notes view shows it (420px), not capped at 55mm (208px)",
+    notesPrinted.measure && notesPrinted.measure.height > 300 && notesPrinted.measure.height <= 420, JSON.stringify(notesPrinted.measure));
+  check("...and is not framed in a border and padding the Notes view does not have",
+    notesPrinted.measure && notesPrinted.measure.border === "0px" && notesPrinted.measure.padding === "0px", JSON.stringify(notesPrinted.measure));
 
   // ── Notes → standalone HTML ──────────────────────────────────────────────
   const html = await page.evaluate(`async () => {
@@ -429,6 +469,8 @@ try {
     }
     await settle(500);
     const inkMarks = (api.state.meta.pdfHighlights || []).filter((r) => r.kind === "ink" && r.doc === "notebook").length;
+    // "Pages you wrote on": a page of handwriting with no note on it is one.
+    const writtenPages = api.documentPrintPageCount({ annotatedOnly: true });
 
     // The page with no blocks...
     const without = await api.buildDocumentPrintDocument("Canvas", { annotatedOnly: false, theme: "minimal" });
@@ -456,12 +498,47 @@ try {
     for (let i = 0; i < Math.min(a.length, b.length); i += 4) {
       if (Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1]) + Math.abs(a[i + 2] - b[i + 2]) > 90) changed += 1;
     }
+    // Inside the block, on the printed page: paper colours (a light fill with
+    // dark words), not the dark theme's black box with white text.
+    const pdfPage = await api.currentPdfDocument().getPage(1);
+    const [, , pageW, pageH] = pdfPage.view;
+    const probe = new Image();
+    probe.src = pageImage(withBlock);
+    await probe.decode();
+    const k = probe.naturalWidth / pageW;
+    const bx0 = Math.round((record?.x || 0) * k) + 6;
+    const by0 = Math.round((pageH - (record?.y || 0) - (record?.h || 0)) * k) + 6;
+    const bw = Math.round((record?.w || 0) * k) - 12;
+    const bh = Math.round((record?.h || 0) * k) - 12;
+    let sum = 0;
+    let dark = 0;
+    let count = 0;
+    for (let y = by0; y < by0 + bh; y += 2) {
+      for (let x = bx0; x < bx0 + bw; x += 2) {
+        const i = (y * probe.naturalWidth + x) * 4;
+        const lum = 0.299 * b[i] + 0.587 * b[i + 1] + 0.114 * b[i + 2];
+        sum += lum;
+        count += 1;
+        if (lum < 110) dark += 1;
+      }
+    }
+    api.el.printRoot.innerHTML = withBlock;
+    api.installPdfPrintStyle();
+    const frame = api.standalonePrintDocumentHtml();
+    api.closePrintPreview();
     const items = api.collectDeckHighlightsForExport({});
     return {
       inkMarks,
       blockMade: Boolean(record),
       changed,
       themed: withBlock.includes("export-theme-minimal"),
+      writtenPages,
+      blockLuminance: count ? Math.round(sum / count) : 0,
+      blockDark: dark,
+      pageWidthPx: probe.naturalWidth,
+      cover: (withBlock.match(/<p>([^<]*)&middot;/) || [])[1] || "",
+      fileName: api.documentExportBaseName(),
+      frame,
       inkItems: items.filter((item) => item.region && item.region.kind === "ink").length
     };
   }`);
@@ -476,6 +553,40 @@ try {
       console.log(`  skip  Canvas blocks on the exported page — ${htmlToImage ? "no block was made" : "html-to-image not available"}`);
     }
     check("Canvas PDF: the page export wears the chosen look", canvas.themed);
+    if (htmlToImage && canvas.blockMade) {
+      check("Canvas PDF: the block prints in paper colours — a light fill with dark words — under a dark app theme",
+        canvas.blockLuminance > 200 && canvas.blockDark > 30, `mean luminance ${canvas.blockLuminance}, ${canvas.blockDark} dark sample(s)`);
+    }
+    check("Canvas PDF: \"Pages you wrote on\" counts a page of handwriting that has no note",
+      canvas.writtenPages >= 1, `${canvas.writtenPages} page(s)`);
+    check("Canvas PDF: it is called a Canvas, on the cover and in the file name",
+      /Canvas/.test(canvas.cover) && / - canvas$/.test(canvas.fileName), `${canvas.cover.trim()} · ${canvas.fileName}`);
+    check("Canvas PDF: the page is drawn sharp enough to print (≥1800px across)", canvas.pageWidthPx >= 1800, `${canvas.pageWidthPx}px`);
+
+    // ── ...printed: the page fills the sheet ─────────────────────────────
+    //
+    // Printed for real, through Chrome's own PDF writer, with the print
+    // frame's HTML in a tab of its own. \`.print-root img\` once held every
+    // printed picture to 55mm, so a whole page came out a stamp-sized thumbnail
+    // nobody could read — invisible to anything but print media.
+    const printed = await printFrame(canvas.frame, `() => {
+      const img = document.querySelector(".doc-print-page img");
+      const doc = document.querySelector(".cornell-print-document");
+      const mm = (px) => Math.round(px * 25.4 / 96);
+      return {
+        widthShare: img.getBoundingClientRect().width / doc.getBoundingClientRect().width,
+        heightMm: mm(img.getBoundingClientRect().height),
+        colorScheme: getComputedStyle(document.documentElement).colorScheme
+      };
+    }`);
+    check("Canvas PDF printed: the page is printed across the whole width of the sheet",
+      printed.measure.widthShare > 0.95, `${Math.round(printed.measure.widthShare * 100)}% of the width`);
+    check("...and as tall as the sheet allows, not a thumbnail",
+      printed.measure.heightMm > 230, `${printed.measure.heightMm}mm tall`);
+    check("...on white paper: the frame does not carry the dark theme's colour scheme into the margins",
+      printed.measure.colorScheme === "light", printed.measure.colorScheme);
+    check("...with the cover on a sheet of its own and the page on the next",
+      printed.pages === 2, `${printed.pages} sheet(s)`);
     check("Canvas highlights: handwriting with no note on it is not exported as dozens of pictures",
       canvas.inkItems === 0, `${canvas.inkItems} ink item(s)`);
   }
