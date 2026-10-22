@@ -47,7 +47,11 @@ export function notesReadingLineOffset(viewportHeight) {
 // reading a rect forces the browser to lay one out — the same reason
 // findRenderedNoteRange searches for its window's first member this way instead
 // of testing every block from the top.
-export function notesBlockAtReadingLineGeometric() {
+//
+// `atY`, a viewport Y, asks about a different line: the teleprompter's reading
+// band sits lower than the reading line, and it holds the reader's place on
+// the band.
+export function notesBlockAtReadingLineGeometric(atY = null) {
   const view = el.notesView;
   // Not `view.hidden` alone: Home hides the whole study surface from an
   // ancestor, and there every block's rect is 0 — the search would answer the
@@ -64,7 +68,7 @@ export function notesBlockAtReadingLineGeometric() {
   // knows how to answer "what is the reader looking at": it is the first block
   // on the current page.
   if (isNotesPaged()) return firstVisibleNotesBlock();
-  const y = view.getBoundingClientRect().top + notesReadingLineOffset(view.clientHeight);
+  const y = Number.isFinite(atY) ? atY : view.getBoundingClientRect().top + notesReadingLineOffset(view.clientHeight);
   // ── Chunked: find the CHUNK first, then the block inside it ──────────────
   //
   // The search below rests on the block rects being sorted, and on a chunked
@@ -283,6 +287,12 @@ let reflowHolding = false;
 
 export function setReflowHolding(value) {
   reflowHolding = Boolean(value);
+}
+
+// For the teleprompter, which stands still while a hold is putting the reader
+// back on their line rather than moving the text out from under it.
+export function isReflowHolding() {
+  return reflowHolding;
 }
 
 // ── A resume held for the tab it belongs to ────────────────────────────────

@@ -96,8 +96,23 @@ const fittedSpans = new Set();
 let fittedGeometry = "";
 let fittedSource = null;
 
+// The teleprompter scrolls DOWN, and a columned note has nowhere to scroll
+// down to. So while it runs the note is continuous whatever the setting says,
+// and the setting is untouched: applyStyleSettings calls setNotesReadingMode
+// on every style change, which would undo a mode written over the reader's
+// choice the first time they nudged a font size. A flag consulted here
+// instead, which a style apply cannot see. See src/notes/teleprompter.js.
+let pagedSuspended = false;
+
 export function isNotesPaged() {
-  return notesReadingMode !== "continuous";
+  return !pagedSuspended && notesReadingMode !== "continuous";
+}
+
+export function setNotesPagedSuspended(suspended) {
+  const next = Boolean(suspended);
+  if (next === pagedSuspended) return;
+  pagedSuspended = next;
+  applyNotesPagedLayout();
 }
 
 // Kept only so nothing that imports it breaks; it is always false now. Paged
@@ -811,7 +826,7 @@ export function notesSelectionIsLive() {
 // each, because the fit was still politely waiting for a drag that had finished.
 //
 // Text, not ranges, is what "someone is selecting something" means here.
-function notesSelectionHoldsText() {
+export function notesSelectionHoldsText() {
   if (!notesSelectionIsLive()) return false;
   return String(window.getSelection() || "").trim().length > 0;
 }

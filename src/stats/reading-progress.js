@@ -15,6 +15,7 @@
 // for the book itself, and counting that as "Ch 1/1" would say nothing.
 
 import { el, isDisplayed } from "../core/dom.js?v=__BUILD__";
+import { notesAutoScrolling } from "../core/gesture.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { documentOutlineEntries } from "../documents/pdf-outline.js?v=__BUILD__";
 import { deckPdfById, PDF_PRIMARY_ID } from "../documents/pdf-multi.js?v=__BUILD__";
@@ -277,6 +278,14 @@ function resetSpeedWindow(reading, now = Date.now()) {
 // last quarter second (isReadingJump), is the reader travelling rather than
 // reading — so the window starts again from where they landed.
 function observePosition(reading, now = Date.now()) {
+  // The teleprompter is moving a note at the speed the reader SET, which is
+  // not a measurement of the speed they read at — and that measurement is the
+  // teleprompter's own default speed, so learning from it would feed itself.
+  // The window starts again from wherever it stops.
+  if (reading.kind === "notes" && notesAutoScrolling()) {
+    resetSpeedWindow(reading, now);
+    return;
+  }
   if (!speedWindow || speedWindow.partId !== reading.partId) {
     resetSpeedWindow(reading, now);
     return;
@@ -428,6 +437,15 @@ export function readingTimeLeft(reading = liveReading) {
     chapterLeftMs: reading.chapter ? estimateRemainingMs(model, reading.kind, reading.partId, reading.chapter.chLeftUnits) : 0,
     measured: speedMeasured(model, reading.kind)
   };
+}
+
+// Words between the reading line and the end of the note on screen, or null
+// when the open surface is not a note. For the teleprompter's "time left at
+// this speed", which divides by the speed the reader set rather than the one
+// measured.
+export function liveNotesWordsLeft() {
+  if (liveReading?.kind !== "notes") return null;
+  return Math.max(0, liveReading.total - liveReading.pos);
 }
 
 // "32.4%" — a tenth of a percent, so the number moves while the reader does.

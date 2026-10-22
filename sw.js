@@ -370,6 +370,7 @@ const APP_SHELL = [
   `./styles/80-reading-progress.css?v=${STAMP}`,
   `./styles/81-pdf-contents-edit.css?v=${STAMP}`,
   `./styles/82-export-themes.css?v=${STAMP}`,
+  `./styles/83-teleprompter.css?v=${STAMP}`,
   // The module entry point. Everything it imports is stamped with the same
   // ?v=, so those URLs change with every release too — which is what lets the
   // cache-first handler below serve them without revalidating and still never
@@ -562,6 +563,8 @@ const APP_SHELL = [
   `./src/notes/resize-hold.js?v=${STAMP}`,
   `./src/notes/scroll-anchor.js?v=${STAMP}`,
   `./src/notes/selection.js?v=${STAMP}`,
+  `./src/notes/teleprompter-panel.js?v=${STAMP}`,
+  `./src/notes/teleprompter.js?v=${STAMP}`,
   `./src/notes/toc-tree.js?v=${STAMP}`,
   `./src/notes/toc.js?v=${STAMP}`,
   `./src/notes/touch-selection.js?v=${STAMP}`,

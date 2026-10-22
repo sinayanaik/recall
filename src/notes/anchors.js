@@ -10,7 +10,7 @@ import { syncResults } from "../cards/study.js?v=__BUILD__";
 import { supabaseClient } from "../cloud/supabase-client.js?v=__BUILD__";
 import { loadWebDeck } from "../cloud/web-decks.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
-import { READER_INPUT_EVENTS, readerActedSince, wheelGestureActive } from "../core/gesture.js?v=__BUILD__";
+import { READER_INPUT_EVENTS, notesAutoScrolling, readerActedSince, wheelGestureActive } from "../core/gesture.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { deckHasPdf } from "../documents/doc-slot.js?v=__BUILD__";
 import { flashDocumentHighlight } from "../documents/pdf-highlights.js?v=__BUILD__";
@@ -534,6 +534,10 @@ export async function convergeNotesScroll(residual, budgetMs, { smooth = true } 
     // deliberate navigation (opening a note, a TOC/highlight jump) and still
     // runs regardless; only these follow-up corrections back off.
     if (wheelGestureActive()) return;
+    // ...nor the teleprompter while it plays (src/notes/teleprompter.js): the
+    // text moving on is not the aim drifting, and a correction would pull it
+    // back.
+    if (notesAutoScrolling()) return;
     // ...nor a finger. On a phone the reader scrolls by touch, which the wheel
     // test above never sees, so a correction arriving 110ms into their swipe
     // pulled the note back to where the jump had aimed — "I'm going to some

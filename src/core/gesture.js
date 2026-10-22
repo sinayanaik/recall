@@ -301,3 +301,32 @@ export function setDocumentTextWake(wake) {
 export function wakeDocumentTextAt(x, y) {
   documentTextWake?.(x, y);
 }
+
+// ── Is the app scrolling the note by itself? ───────────────────────────────
+//
+// The teleprompter (src/notes/teleprompter.js) moves #notesView a fraction of a
+// pixel on every frame for as long as it plays. Two kinds of code would
+// otherwise read that as something to undo or to learn from:
+//
+//   • settleNotesPin and convergeNotesScroll measure "drift" from where the
+//     reader was when they began, and the teleprompter moving on is drift to
+//     them — a repaint landing mid-play pulled the text back to where it had
+//     been, and the teleprompter then carried on from there.
+//   • The reading-speed sampler (src/stats/reading-progress.js) would learn the
+//     speed the reader SET as the speed they read at, and the teleprompter's
+//     own default speed is that measurement.
+//
+// True only while it is actually moving the text: a pause, a countdown or a
+// rotation it is waiting out leaves it false, so a jump or a hold that runs in
+// those moments corrects exactly as it always has. Here, in the leaf, because
+// notes-view.js, anchors.js and the stats all need to ask, and the
+// teleprompter imports all three.
+let notesAutoScrollActive = false;
+
+export function setNotesAutoScrolling(active) {
+  notesAutoScrollActive = Boolean(active);
+}
+
+export function notesAutoScrolling() {
+  return notesAutoScrollActive;
+}
