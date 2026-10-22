@@ -12,15 +12,13 @@
  * scanned page would look like a printing fault.
  */
 
+/* Every page starts a sheet of its own — the first too, so the cover is a
+   title page and page 1 is not shrunk to share a sheet with it. The sheet
+   itself may break: a page printed at full size and its notes cannot both fit
+   on one sheet, so the notes follow it, onto the next sheet when they must.
+   Only the page itself (the figure) is kept whole. */
 .doc-print-sheet {
-  break-inside: avoid;
-  page-break-inside: avoid;
   margin: 0 0 18px;
-}
-
-/* Each page starts a new sheet — except the first, which would otherwise put a
-   blank page between the cover and page 1. */
-.doc-print-sheet + .doc-print-sheet {
   break-before: page;
   page-break-before: always;
 }
@@ -28,22 +26,29 @@
 .doc-print-page {
   margin: 0 0 10px;
   text-align: center;
+  break-inside: avoid;
+  page-break-inside: avoid;
 }
 
 /* The page is an IMAGE, at whatever pixel width it was rasterised at
-   (PRINT_PAGE_WIDTH). Scaled to the print measure here rather than there, so
-   one rendering serves both the screen preview and the sheet.
-   max-height keeps a portrait page and its notes on one sheet: without it a
-   full-height page image pushes every note onto the following sheet, which is
-   the layout this export exists to avoid. */
+   (PRINT_PAGE_WIDTH), printed as large as the sheet allows: the whole width,
+   and the whole height less the caption. It used to be held to 76vh to keep a
+   page and its notes on one sheet — and `.print-root img` (10-editor.css)
+   holds every printed picture to 55mm, which on a whole page is a postage
+   stamp nobody can read. A page is not a picture in a note; both are undone
+   here, at a specificity and weight that beat that rule. */
+.print-root .doc-print-page img,
 .doc-print-page img {
   display: block;
-  width: 100%;
-  max-width: 100%;
-  max-height: 76vh;
-  margin: 0 auto;
+  width: 100% !important;
+  max-width: 100% !important;
+  height: auto !important;
+  max-height: none !important;
+  margin: 0 auto !important;
+  padding: 0 !important;
   object-fit: contain;
-  border: 1px solid var(--print-line, #d4d4d8);
+  background: none !important;
+  border: 1px solid var(--print-line, #d4d4d8) !important;
   border-radius: 2px;
 }
 
@@ -123,7 +128,11 @@
     print-color-adjust: exact;
   }
 
+  /* A4 at the 14mm margins installPdfPrintStyle sets is 269mm tall; the
+     caption under the page takes the rest. A landscape page is held by its
+     width instead and fills it. */
+  .print-root .doc-print-page img,
   .doc-print-page img {
-    max-height: 200mm;
+    max-height: 262mm !important;
   }
 }

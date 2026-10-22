@@ -47,13 +47,14 @@ import { exportThemeClass } from "../export/themes.js?v=__BUILD__";
 import { annotatedDocumentHighlights, documentHighlightLabel, documentHighlights } from "./pdf-highlights.js?v=__BUILD__";
 import { currentPdfDocument, currentPdfPageCount, pdfOpenToken } from "./pdf-view.js?v=__BUILD__";
 import { regionImageRect, renderRegionImage } from "./pdf-region-embed.js?v=__BUILD__";
-import { drawRegionBlocks, highlightHex, rasteriseRegionBlocks } from "./pdf-region-marks.js?v=__BUILD__";
+import { drawRegionBlocks, highlightHex, rasteriseRegionBlocks, regionBlocksInBox } from "./pdf-region-marks.js?v=__BUILD__";
 
 // The rendered width of a page in the print document, in device pixels. A4 at
-// 14mm margins (installPdfPrintStyle) is ~182mm of content, which is ~688 CSS
-// pixels; this is a shade over 2× that, so the page is crisp at print
-// resolution without every sheet carrying a megabyte of JPEG.
-export const PRINT_PAGE_WIDTH = 1400;
+// 14mm margins (installPdfPrintStyle) is ~182mm of content, and the page is
+// printed across all of it (styles/39-document-export.css): 1800 pixels over
+// 182mm is ~250dpi, which keeps a paper's footnotes and a Canvas's thin pen
+// lines legible, without every sheet carrying several megabytes of JPEG.
+export const PRINT_PAGE_WIDTH = 1800;
 
 // JPEG, not PNG. A scanned or figure-heavy page as a lossless PNG runs to
 // several megabytes, and forty of those is a document the print window cannot
@@ -97,9 +98,9 @@ async function renderPageForPrint(pageNumber, records) {
   // same rasteriser a region's picture uses, over the whole page, at this
   // viewport's scale so the words are as sharp as the page around them; and
   // under the marks, which annotate them as they annotate the paper.
-  const slot = activeDocSlot();
-  const paperSource = { slot, pdfId: slot === DOC_SLOT_DOC ? activePdfId(state.meta) : null };
-  const { rasters } = await rasteriseRegionBlocks(page, paperSource, pageNumber, page.view, viewport.scale)
+  // In paper colours, whatever the app's theme: the page is printed white, and
+  // a block built in a dark theme's tokens printed as a black box.
+  const { rasters } = await rasteriseRegionBlocks(page, stagePaperSource(), pageNumber, page.view, viewport.scale, { paper: "light" })
     .catch((error) => {
       console.warn("Could not draw a page's blocks for the export", error);
       return { rasters: [] };
@@ -227,9 +228,54 @@ async function pageNotesHtml(entries) {
   return `<ol class="doc-print-notes">${rows}</ol>`;
 }
 
-// The whole document. `annotatedOnly` prints only the pages that carry a note —
-// which for a paper read closely is a handful of sheets rather than forty, and
-// is what most people mean by "my notes on this".
+// The paper on the stage, as the block and mark lookups name it.
+function stagePaperSource() {
+  const slot = activeDocSlot();
+  return { slot, pdfId: slot === DOC_SLOT_DOC ? activePdfId(state.meta) : null };
+}
+
+function onCanvasSlot() {
+  return activeDocSlot() === DOC_SLOT_NOTEBOOK;
+}
+
+// Everything on a page counts as something on it, for every page of a box this
+// large: a block anywhere on page n.
+const WHOLE_PAGE = [-1e6, -1e6, 1e6, 1e6];
+
+// The pages "only the annotated pages" means. On a paper it is the pages with
+// a note — a paper read closely is a handful of those rather than forty. On a
+// Canvas the menu says "Pages you wrote on", and a page of handwriting with no
+// note on it was left out: there it is any page with a stroke, a highlight or
+// a block on it.
+function annotatedPages() {
+  const pages = new Set();
+  annotatedDocumentHighlights().forEach(({ record }) => {
+    const page = Number(record.page || record.quads?.[0]?.page || 0);
+    if (page) pages.add(page);
+  });
+  if (!onCanvasSlot()) return pages;
+  documentHighlights().forEach((record) => {
+    (record.quads || []).forEach((quad) => { if (quad?.page) pages.add(Number(quad.page)); });
+  });
+  const source = stagePaperSource();
+  for (let page = 1; page <= currentPdfPageCount(); page += 1) {
+    if (regionBlocksInBox(source, page, WHOLE_PAGE).length) pages.add(page);
+  }
+  return pages;
+}
+
+// What the export calls the thing it prints, in the status line and on the
+// cover — a Canvas was announced as "the document" and printed as one.
+export function documentExportNoun() {
+  return onCanvasSlot() ? "Canvas" : "document";
+}
+
+export function documentExportEmptyMessage({ annotatedOnly = false } = {}) {
+  if (onCanvasSlot()) return annotatedOnly ? "No Canvas page has anything on it yet." : "This Canvas has no pages to export.";
+  return annotatedOnly ? "No page of this document has a note on it yet." : "This document has no pages to export.";
+}
+
+// The whole document, or with `annotatedOnly` just annotatedPages().
 export async function buildDocumentPrintDocument(title, { annotatedOnly = false, theme } = {}) {
   const pageCount = currentPdfPageCount();
   const annotated = annotatedDocumentHighlights();
@@ -255,9 +301,10 @@ export async function buildDocumentPrintDocument(title, { annotatedOnly = false,
     });
   });
 
+  const keep = annotatedOnly ? annotatedPages() : null;
   const wanted = [];
   for (let pageNumber = 1; pageNumber <= pageCount; pageNumber++) {
-    if (annotatedOnly && !notesByPage.has(pageNumber)) continue;
+    if (keep && !keep.has(pageNumber)) continue;
     wanted.push(pageNumber);
   }
 
@@ -265,7 +312,7 @@ export async function buildDocumentPrintDocument(title, { annotatedOnly = false,
   for (let i = 0; i < wanted.length; i++) {
     const pageNumber = wanted[i];
     if (wanted.length >= PRINT_PROGRESS_FROM) {
-      setStatus(`Preparing the document PDF — page ${i + 1} of ${wanted.length}…`);
+      setStatus(`Preparing the ${documentExportNoun()} PDF — page ${i + 1} of ${wanted.length}…`);
     }
     // Sequential on purpose: see the header. `await` inside the loop is the
     // point of it, not an oversight.
@@ -285,7 +332,7 @@ export async function buildDocumentPrintDocument(title, { annotatedOnly = false,
 
   const empty = sheets.length
     ? ""
-    : `<p class="flat-export-empty">No page of this document has a note on it yet.</p>`;
+    : `<p class="flat-export-empty">${escapeHtml(documentExportEmptyMessage({ annotatedOnly }))}</p>`;
   return `
     <div class="print-preview-actions" data-print-ui>
       <button type="button" data-print-close>Close</button>
@@ -295,7 +342,7 @@ export async function buildDocumentPrintDocument(title, { annotatedOnly = false,
       <header class="cornell-print-cover">
         <div>
           <h1>${escapeHtml(title)}</h1>
-          <p>Document &amp; notes &middot; ${annotated.length} note${annotated.length === 1 ? "" : "s"} &middot; ${new Date().toLocaleString()}</p>
+          <p>${onCanvasSlot() ? "Canvas" : "Document &amp; notes"} &middot; ${annotated.length} note${annotated.length === 1 ? "" : "s"} &middot; ${new Date().toLocaleString()}</p>
         </div>
       </header>
       ${empty}
@@ -306,12 +353,12 @@ export async function buildDocumentPrintDocument(title, { annotatedOnly = false,
 
 export function documentExportBaseName() {
   const title = state.deckTitle || state.sourceTitle || "document";
-  return `${title.replace(/[\\/:*?"<>|]+/g, "-").trim()} - document and notes`;
+  return `${title.replace(/[\\/:*?"<>|]+/g, "-").trim()} - ${onCanvasSlot() ? "canvas" : "document and notes"}`;
 }
 
 export function documentHasPagesToPrint({ annotatedOnly = false } = {}) {
   if (!docSlotMeta(activeDocSlot()) || !currentPdfDocument()) return false;
-  return annotatedOnly ? annotatedDocumentHighlights().length > 0 : currentPdfPageCount() > 0;
+  return annotatedOnly ? annotatedPages().size > 0 : currentPdfPageCount() > 0;
 }
 
 // Whether the surface even has a document open to export. The ⋯ row is painted
@@ -319,12 +366,7 @@ export function documentHasPagesToPrint({ annotatedOnly = false } = {}) {
 export function documentPrintPageCount({ annotatedOnly = false } = {}) {
   if (!docSlotMeta(activeDocSlot())) return 0;
   if (!annotatedOnly) return currentPdfPageCount();
-  const pages = new Set();
-  annotatedDocumentHighlights().forEach(({ record }) => {
-    const page = Number(record.page || record.quads?.[0]?.page || 0);
-    if (page) pages.add(page);
-  });
-  return pages.size;
+  return annotatedPages().size;
 }
 
 // A guard for the caller, so el.documentView is not the thing that decides.

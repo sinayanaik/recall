@@ -245,13 +245,20 @@ export async function mountRegionBlockLayer(pageGroup, viewport, source, pageNum
 // html-to-image at `pixelRatio`. Only loaded when a page actually has a block
 // inside the box. A block that cannot be drawn (a picture whose host refuses a
 // cross-origin read) is skipped and counted; the rest still are.
-export async function rasteriseRegionBlocks(page, source, pageNumber, rect, pixelRatio) {
+//
+// `paper: "light"` draws them in paper colours whatever the app's theme — for a
+// page that is printed white (src/documents/pdf-export.js). The host then wears
+// `print-tokens`, which rebinds the theme's tokens and the block fills to the
+// print palette (styles/82-export-themes.css). Otherwise a block is drawn as
+// the reader sees it, which is what the zoom and the pane's pictures want.
+export async function rasteriseRegionBlocks(page, source, pageNumber, rect, pixelRatio, { paper = "theme" } = {}) {
   const blocks = regionBlocksInBox(source, pageNumber, rect);
   if (!blocks.length) return { rasters: [], failed: 0 };
   if (!(await ensureHtmlToImage())) return { rasters: [], failed: blocks.length };
   const viewport = page.getViewport({ scale: 1 });
   const host = document.createElement("div");
   host.setAttribute("aria-hidden", "true");
+  if (paper === "light") host.className = "print-tokens";
   host.style.cssText = `position:fixed;left:-100000px;top:0;width:${Math.ceil(viewport.width)}px;height:${Math.ceil(viewport.height)}px;pointer-events:none;`;
   document.body.appendChild(host);
   const rasters = [];

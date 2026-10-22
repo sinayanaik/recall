@@ -10,7 +10,7 @@ import { afterPaint } from "../cards/question-fit.js?v=__BUILD__";
 import { downloadTextFile } from "../cloud/web-decks.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { notesForExport } from "./notes-body.js?v=__BUILD__";
-import { buildDocumentPrintDocument, documentExportBaseName, documentExportUnavailableReason, documentPrintPageCount } from "../documents/pdf-export.js?v=__BUILD__";
+import { buildDocumentPrintDocument, documentExportBaseName, documentExportEmptyMessage, documentExportNoun, documentExportUnavailableReason, documentPrintPageCount } from "../documents/pdf-export.js?v=__BUILD__";
 import { saveDocumentCopy } from "../documents/pdf-view.js?v=__BUILD__";
 import { ensureMermaid } from "../core/lib-loader.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
@@ -448,7 +448,10 @@ export function standalonePrintDocumentHtml() {
   // reader's fonts and sizes (src/ui/style-settings.js); without it the print
   // frame fell back to the token defaults and the PDF changed face. Fancy reads
   // them; Plain and Minimal set their own. The page itself is white.
-  const liveStyle = `${document.documentElement.getAttribute("style") || ""}; --print-bg: #ffffff;`;
+  //
+  // `color-scheme: light`, because the frame carries the app's theme and a dark
+  // theme's color-scheme paints the sheet's margins dark round a white page.
+  const liveStyle = `${document.documentElement.getAttribute("style") || ""}; --print-bg: #ffffff; color-scheme: light;`;
   return `<!doctype html>
     <html lang="en" data-theme="${escapeHtml(currentThemeId())}" style="${escapeHtml(liveStyle)}"${documentNode.classList.contains("is-highlights") ? ' class="cs-print-highlights"' : ""}>
       <head>
@@ -771,14 +774,13 @@ export async function exportDocumentPdf({ annotatedOnly = false, theme = loadExp
     return;
   }
   if (!documentPrintPageCount({ annotatedOnly })) {
-    setStatus(annotatedOnly
-      ? "No page of this document has a note on it yet."
-      : "This document has no pages to export.", "error");
+    setStatus(documentExportEmptyMessage({ annotatedOnly }), "error");
     return;
   }
+  const noun = documentExportNoun();
   const title = state.deckTitle || state.sourceTitle || "Document";
 
-  setStatus("Preparing the document PDF…");
+  setStatus(`Preparing the ${noun} PDF…`);
   el.printRoot.innerHTML = "";
   el.printRoot.classList.add("is-preparing");
   el.printRoot.classList.remove("is-preview");
@@ -802,11 +804,11 @@ export async function exportDocumentPdf({ annotatedOnly = false, theme = loadExp
     installPdfPrintStyle();
     const opened = printPreparedDocument();
     setStatus(opened
-      ? "Opening the document PDF — choose Save as PDF in the dialog."
-      : "Could not prepare the document PDF export.", opened ? undefined : "error");
+      ? `Opening the ${noun} PDF — choose Save as PDF in the dialog.`
+      : `Could not prepare the ${noun} PDF export.`, opened ? undefined : "error");
   } catch (error) {
     console.error("Document PDF export failed", error);
-    setStatus("Could not prepare the document PDF export.", "error");
+    setStatus(`Could not prepare the ${noun} PDF export.`, "error");
   } finally {
     closePrintPreview();
   }
