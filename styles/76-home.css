@@ -321,6 +321,11 @@ html.is-home body:is(.chrome-collapsed, #cs-specificity).chrome-collapsed .appba
   font-size: 1.15rem;
 }
 
+.app-files-btn span {
+  font-size: 0.95rem;
+  line-height: 1;
+}
+
 .app-home-btn[aria-current="page"],
 #homeBtn[aria-current="page"] {
   border-color: var(--accent);

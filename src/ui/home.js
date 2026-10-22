@@ -208,6 +208,7 @@ export function initHome() {
   const on = (id, handler) => document.getElementById(id)?.addEventListener("click", handler);
   on("appHomeBtn", openHome);
   on("homeBtn", openHome);
+  on("appMyDecksBtn", () => openMyDecksPanel());
   on("homeContinueBtn", () => {
     if (hasActiveDeck()) { hideHome(); return; }
     const deck = listLocalDecks()[0];
