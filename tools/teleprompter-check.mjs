@@ -426,15 +426,25 @@ try {
       const viewSize = parseFloat(getComputedStyle(document.getElementById("notesView")).fontSize);
       await type("wpm", before.wpm);
       await type("fontSize", before.fontSize);
+      await type("bandSize", 4);
+      const view = document.getElementById("notesView");
+      const band = {
+        line: parseFloat(getComputedStyle(view).lineHeight),
+        room: view.clientHeight,
+        height: parseFloat(document.querySelector(".tp-overlay").style.getPropertyValue("--tp-band-height"))
+      };
+      await type("bandSize", before.settings.bandSize);
       sheet.querySelector(".tp-sheet-close").click();
-      return { boxes, after, shownWpm, viewSize };
+      return { boxes, after, shownWpm, viewSize, band };
     }`);
-    const want = ["wpm", "fontSize", "lineHeight", "width", "bandPos", "dim"];
+    const want = ["wpm", "fontSize", "lineHeight", "width", "bandPos", "bandSize", "dim"];
     const missing = want.filter((k) => !seen.boxes.includes(k));
     if (missing.length) return `no number box for: ${missing.join(", ")}`;
     if (seen.after.wpm !== 850) return `typed 850 wpm, the session has ${seen.after.wpm}`;
     if (seen.shownWpm !== "850") return `the box shows ${seen.shownWpm} after typing 850`;
     if (seen.after.fontSize !== 72 || Math.abs(seen.viewSize - 72) > 0.5) return `typed 72px, the note is ${seen.viewSize}px`;
+    const bandWant = Math.min(seen.band.room, 4 * seen.band.line);
+    if (Math.abs(seen.band.height - bandWant) > 1) return `typed a 4-line band, it is ${seen.band.height}px over ${seen.band.line}px lines`;
     return null;
   });
 

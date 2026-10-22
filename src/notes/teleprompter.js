@@ -99,6 +99,7 @@ const TELEPROMPTER_DEFAULTS = {
   width: 100,
   font: "notes",
   bandPos: 35,
+  bandSize: 2,
   dim: 45,
   band: true,
   countdown: 3,
@@ -233,12 +234,12 @@ function teleprompterLineHeight(view) {
   return Number.isFinite(line) && line > 0 ? line : (parseFloat(style.fontSize) || 16) * 1.5;
 }
 
-// The band, in px inside the note's scrollport: two lines tall, centred on the
-// height the reader chose.
+// The band, in px inside the note's scrollport: as many lines tall as the reader
+// chose (never taller than the scrollport), centred on the height they chose.
 function bandGeometry(view) {
   const line = teleprompterLineHeight(view);
   const height = view.clientHeight;
-  const bandHeight = Math.round(line * 2);
+  const bandHeight = Math.round(Math.min(height, line * teleprompterSession.settings.bandSize));
   const centre = height * (teleprompterSession.settings.bandPos / 100);
   const bandTop = Math.round(Math.max(0, Math.min(height - bandHeight, centre - bandHeight / 2)));
   return { line, height, bandTop, bandHeight, bandLine: bandTop + bandHeight / 2 };
@@ -292,7 +293,7 @@ function keepLineAt(view, anchor, lineY, done = null) {
   });
 }
 
-// A change that moves the text — the type, the band's height — made with the
+// A change that moves the text — the type, the band's height or size — made with the
 // line on the band held where it is. The loop stands still meanwhile.
 function holdBandPlace(change) {
   const view = el.notesView;
@@ -927,7 +928,7 @@ function setTeleprompterSetting(key, value, { commit = true } = {}) {
         relayoutTeleprompter();
       });
     }
-  } else if (TYPE_KEYS.has(key) || key === "bandPos") {
+  } else if (TYPE_KEYS.has(key) || key === "bandPos" || key === "bandSize") {
     if (teleprompterSession.settings[key] !== next) {
       holdBandPlace(() => {
         teleprompterSession.settings = { ...teleprompterSession.settings, [key]: next };
