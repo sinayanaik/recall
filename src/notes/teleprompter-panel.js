@@ -35,6 +35,7 @@ export const TELEPROMPTER_RANGES = {
   lineHeight: { label: "Spacing", min: 1.2, max: 2.4, step: 0.1, floor: 0.8, ceiling: 6, decimals: 2, unit: "×", less: "Tighter", more: "Looser" },
   width: { label: "Width", min: 40, max: 100, step: 5, floor: 10, ceiling: 100, decimals: 0, unit: "%", less: "Narrower", more: "Wider" },
   bandPos: { label: "Height", min: 15, max: 60, step: 1, floor: 0, ceiling: 100, decimals: 0, unit: "%", less: "Higher", more: "Lower" },
+  bandSize: { label: "Size", min: 1, max: 6, step: 0.5, floor: 0.5, ceiling: 20, decimals: 1, unit: "lines", less: "Thinner", more: "Thicker" },
   dim: { label: "Dim", min: 0, max: 80, step: 5, floor: 0, ceiling: 100, decimals: 0, unit: "%", less: "Less", more: "More" }
 };
 
@@ -146,7 +147,7 @@ function buildTeleprompterSheet() {
     tpSection("Pace", tpRangeRow("wpm"), mine),
     tpSection("Text", tpRangeRow("fontSize"), tpRangeRow("lineHeight"), tpRangeRow("width"),
       tpChoiceRow("font", "Font", TELEPROMPTER_FONTS)),
-    tpSection("Reading band", tpRangeRow("bandPos"), tpRangeRow("dim"),
+    tpSection("Reading band", tpRangeRow("bandPos"), tpRangeRow("bandSize"), tpRangeRow("dim"),
       tpSwitchRow("band", "Show the band", "A soft bar across the line to read")),
     tpSection("While it runs",
       tpChoiceRow("countdown", "Countdown", TELEPROMPTER_COUNTDOWNS.map((n) => [n, n ? `${n} s` : "Off"])),
