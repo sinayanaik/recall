@@ -128,12 +128,14 @@ const WATCH_MS = 250;
 
 let settingsCache = null;
 
+// Any value inside the setting's floor and ceiling — not the slider's range,
+// which is only the comfortable part of it (see TELEPROMPTER_RANGES).
 function clampToRange(key, value) {
   const range = TELEPROMPTER_RANGES[key];
   const number = Number(value);
   if (!Number.isFinite(number)) return null;
-  const stepped = Math.round((number - range.min) / range.step) * range.step + range.min;
-  return Math.round(Math.min(range.max, Math.max(range.min, stepped)) * 100) / 100;
+  const scale = 10 ** range.decimals;
+  return Math.round(Math.min(range.ceiling, Math.max(range.floor, number)) * scale) / scale;
 }
 
 function normaliseTeleprompterSettings(raw) {
@@ -177,7 +179,7 @@ function measuredTeleprompterWpm() {
   if (!speedMeasured(model, "notes")) return null;
   const msPerWord = speedFor(model, "notes");
   if (!(msPerWord > 0)) return null;
-  return clampToRange("wpm", 60000 / msPerWord);
+  return clampToRange("wpm", Math.round(60000 / msPerWord / 10) * 10);
 }
 
 // ── The session ─────────────────────────────────────────────────────────────
@@ -601,7 +603,7 @@ export function startTeleprompter() {
     deckKey: currentDeckKey(),
     settings,
     wpm: settings.wpm || measuredTeleprompterWpm() || TELEPROMPTER_FALLBACK_WPM,
-    fontSize: settings.fontSize || clampToRange("fontSize", notesFontPx * 1.25),
+    fontSize: settings.fontSize || clampToRange("fontSize", Math.round(notesFontPx * 1.25)),
     pagedBefore,
     focusSetByUs: false,
     pos: 0,
@@ -969,7 +971,7 @@ function resetTeleprompterSettings() {
     // A quarter up on what Notes itself is set to, read off the root because
     // the note's own value is the teleprompter's.
     const rootSize = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--notes-font-size")) || 16;
-    teleprompterSession.fontSize = clampToRange("fontSize", rootSize * 1.25);
+    teleprompterSession.fontSize = clampToRange("fontSize", Math.round(rootSize * 1.25));
     applyTeleprompterType(view);
     relayoutTeleprompter();
   });

@@ -23,15 +23,19 @@
 // or a settings change and at no other time. The text scrolls under it; it
 // never moves with the text.
 
-// Every slider in the sheet. The session clamps stored values to these too,
-// which is why they live here, where both sides can read them.
+// Every number in the sheet. `min`..`max` is only where the SLIDER runs — the
+// comfortable range, so a drag is not a hunt — and the box beside it takes any
+// value at all inside `floor`..`ceiling`, which are not taste but sense: no
+// speed of nought, no width past the whole column, no band below the screen.
+// `decimals` is how finely a typed value is kept. The session clamps stored
+// values to the same, which is why this lives here, where both sides read it.
 export const TELEPROMPTER_RANGES = {
-  wpm: { label: "Speed", min: 60, max: 600, step: 10, unit: "wpm", less: "Slower", more: "Faster" },
-  fontSize: { label: "Size", min: 12, max: 56, step: 1, unit: "px", less: "Smaller", more: "Bigger" },
-  lineHeight: { label: "Spacing", min: 1.2, max: 2.4, step: 0.1, unit: "", less: "Tighter", more: "Looser" },
-  width: { label: "Width", min: 40, max: 100, step: 5, unit: "%", less: "Narrower", more: "Wider" },
-  bandPos: { label: "Height", min: 15, max: 60, step: 1, unit: "%", less: "Higher", more: "Lower" },
-  dim: { label: "Dim", min: 0, max: 80, step: 5, unit: "%", less: "Less", more: "More" }
+  wpm: { label: "Speed", min: 60, max: 600, step: 10, floor: 1, ceiling: 5000, decimals: 0, unit: "wpm", less: "Slower", more: "Faster" },
+  fontSize: { label: "Size", min: 12, max: 56, step: 1, floor: 4, ceiling: 400, decimals: 1, unit: "px", less: "Smaller", more: "Bigger" },
+  lineHeight: { label: "Spacing", min: 1.2, max: 2.4, step: 0.1, floor: 0.8, ceiling: 6, decimals: 2, unit: "×", less: "Tighter", more: "Looser" },
+  width: { label: "Width", min: 40, max: 100, step: 5, floor: 10, ceiling: 100, decimals: 0, unit: "%", less: "Narrower", more: "Wider" },
+  bandPos: { label: "Height", min: 15, max: 60, step: 1, floor: 0, ceiling: 100, decimals: 0, unit: "%", less: "Higher", more: "Lower" },
+  dim: { label: "Dim", min: 0, max: 80, step: 5, floor: 0, ceiling: 100, decimals: 0, unit: "%", less: "Less", more: "More" }
 };
 
 export const TELEPROMPTER_FONTS = [
@@ -68,18 +72,12 @@ function tpButton(className, action, label, text, extra = {}) {
   });
 }
 
-export function formatTeleprompterValue(key, value) {
-  const range = TELEPROMPTER_RANGES[key];
-  if (key === "lineHeight") return Number(value).toFixed(1);
-  if (key === "dim" && !value) return "Off";
-  return `${value}${range?.unit ? (range.unit === "%" ? "%" : ` ${range.unit}`) : ""}`;
-}
-
 // ── The sheet's rows ────────────────────────────────────────────────────────
 
-// −, the slider, + and the value: the pen panel's size row
+// −, the slider, + and a box to type the number in: the pen panel's size row
 // (src/handwriting/ink-popover.js), for the same reason — a slider alone is a
-// poor way to move one step on a phone, and the steps are what people nudge.
+// poor way to move one step on a phone, and the steps are what people nudge —
+// plus the box, for the exact number, or one past either end of the slider.
 function tpRangeRow(key) {
   const range = TELEPROMPTER_RANGES[key];
   const row = tpNode("div", "tp-row");
@@ -91,9 +89,20 @@ function tpRangeRow(key) {
       "data-tp-range": key, "aria-label": range.label
     }),
     tpNode("button", "tp-btn tp-step", { type: "button", "data-tp-step": key, "data-tp-dir": "1", title: range.more, "aria-label": `${range.more} — ${range.label.toLowerCase()}`, text: "+" }),
-    tpNode("output", "tp-row-value", { "data-tp-value": key })
+    tpRangeEntry(key, range)
   );
   return row;
+}
+
+function tpRangeEntry(key, range) {
+  const entry = tpNode("label", "tp-entry");
+  entry.append(tpNode("input", "tp-number", {
+    type: "number", inputmode: "decimal", step: "any",
+    min: String(range.floor), max: String(range.ceiling),
+    "data-tp-number": key, "aria-label": `${range.label}${{ "%": " in percent", "×": " as a multiple of the text size" }[range.unit] ?? ` in ${range.unit}`}`
+  }));
+  entry.append(tpNode("span", "tp-unit", { text: range.unit }));
+  return entry;
 }
 
 function tpChoiceRow(key, label, choices) {
@@ -207,14 +216,28 @@ function buildTeleprompterOverlay() {
 
 // ── Built and taken down ────────────────────────────────────────────────────
 
+// A slider previews on every `input` and is kept on `change`. A typed number
+// is taken on `change` alone — Enter, or leaving the box — so the text does not
+// re-size under the reader at every digit of "28".
 function onSheetInput(event, commit) {
+  if (!teleprompterPanel) return;
   const slider = event.target.closest?.("[data-tp-range]");
-  if (!slider || !teleprompterPanel) return;
-  const key = slider.dataset.tpRange;
-  const value = Number(slider.value);
-  const output = teleprompterPanel.sheet.querySelector(`[data-tp-value="${key}"]`);
-  if (output) output.textContent = formatTeleprompterValue(key, value);
-  teleprompterPanel.handlers.setting(key, value, { commit });
+  if (slider) {
+    const key = slider.dataset.tpRange;
+    const box = teleprompterPanel.sheet.querySelector(`[data-tp-number="${key}"]`);
+    if (box) box.value = slider.value;
+    teleprompterPanel.handlers.setting(key, Number(slider.value), { commit });
+    return;
+  }
+  const box = event.target.closest?.("[data-tp-number]");
+  if (!box || !commit) return;
+  const value = Number(box.value);
+  // An empty or unreadable box puts back what was there.
+  if (box.value.trim() === "" || !Number.isFinite(value)) {
+    box.value = box.dataset.tpShown || "";
+    return;
+  }
+  teleprompterPanel.handlers.setting(box.dataset.tpNumber, value, { commit: true });
 }
 
 function onPanelClick(event) {
@@ -224,9 +247,11 @@ function onPanelClick(event) {
   if (step) {
     const key = step.dataset.tpStep;
     const range = TELEPROMPTER_RANGES[key];
-    const slider = teleprompterPanel.sheet.querySelector(`[data-tp-range="${key}"]`);
-    const current = Number(slider?.value);
-    const next = Math.min(range.max, Math.max(range.min, current + Number(step.dataset.tpDir) * range.step));
+    // From the box, not the slider: the box holds the real value, which may be
+    // past either end of the slider.
+    const box = teleprompterPanel.sheet.querySelector(`[data-tp-number="${key}"]`);
+    const current = Number(box?.dataset.tpShown);
+    const next = Math.min(range.ceiling, Math.max(range.floor, current + Number(step.dataset.tpDir) * range.step));
     teleprompterPanel.handlers.setting(key, Math.round(next * 100) / 100, { commit: true });
     return;
   }
@@ -370,8 +395,11 @@ export function paintTeleprompterPanel(model) {
   teleprompterPanel.play.style.setProperty("--tp-resume-progress", `${Math.round((progress || 0) * 360)}deg`);
 
   teleprompterPanel.wpm.textContent = `${model.wpm} wpm`;
+  // Its room is kept when there is nothing to say: the bar is centred, and a
+  // line that came and went made it change width — sliding ⚙ and ✕ sideways
+  // under a pointer on its way to them.
   teleprompterPanel.left.textContent = model.leftText || "";
-  teleprompterPanel.left.hidden = !model.leftText;
+  teleprompterPanel.left.style.visibility = model.leftText ? "" : "hidden";
 
   teleprompterPanel.count.hidden = phase !== "countdown";
   if (phase === "countdown") teleprompterPanel.count.textContent = String(model.countdown || "");
@@ -390,8 +418,12 @@ function paintTeleprompterSheet(settings, measuredWpm, wpm, fontSize) {
     // Not under the reader's thumb: rewriting a slider's value mid-drag makes
     // it jump back to wherever the last paint thought it was.
     if (slider && document.activeElement !== slider) slider.value = String(values[key]);
-    const output = teleprompterPanel.sheet.querySelector(`[data-tp-value="${key}"]`);
-    if (output) output.textContent = formatTeleprompterValue(key, values[key]);
+    // Nor under the reader's typing.
+    const box = teleprompterPanel.sheet.querySelector(`[data-tp-number="${key}"]`);
+    if (box) {
+      box.dataset.tpShown = String(values[key]);
+      if (document.activeElement !== box) box.value = String(values[key]);
+    }
   });
   teleprompterPanel.sheet.querySelectorAll("[data-tp-choice]").forEach((button) => {
     const current = String(values[button.dataset.tpChoice]);

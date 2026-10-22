@@ -259,7 +259,7 @@ try {
     const presses = Math.round(s.wpm / 10);
     for (let i = 0; i < presses; i += 1) await key("ArrowUp", "ArrowUp", 38);
     const doubled = await snap();
-    if (doubled.wpm !== Math.min(600, s.wpm * 2)) return `↑ x${presses} took ${s.wpm} wpm to ${doubled.wpm}`;
+    if (doubled.wpm !== s.wpm * 2) return `↑ x${presses} took ${s.wpm} wpm to ${doubled.wpm}`;
     await sleep(300);
     const fast = await rateOver(1500);
     const ratio = fast / slow;
@@ -376,6 +376,65 @@ try {
       document.querySelector('[data-tp-choice="autoResume"][data-tp-choice-value="0"]').click();
       document.querySelector(".tp-sheet .tp-sheet-close").click();
     }`);
+    return null;
+  });
+
+  await check("⚙ and ✕ stay where they are whether it plays, pauses or counts the time left", async () => {
+    const where = () => page.evaluate(`() => {
+      const r = (sel) => document.querySelector(sel).getBoundingClientRect();
+      return { gear: Math.round(r(".tp-bar .tp-settings").left), close: Math.round(r(".tp-bar .tp-close").left) };
+    }`);
+    const playing = await where();
+    await key(" ", "Space", 32);
+    await sleep(300);
+    const paused = await where();
+    const blank = await page.evaluate(`async () => {
+      document.querySelector(".tp-left").textContent = "";
+      document.querySelector(".tp-left").style.visibility = "hidden";
+      const r = document.querySelector(".tp-bar .tp-settings").getBoundingClientRect();
+      return Math.round(r.left);
+    }`);
+    await key(" ", "Space", 32);
+    if (paused.gear !== playing.gear || paused.close !== playing.close) {
+      return `pausing moved ⚙ from ${playing.gear} to ${paused.gear}px — a moving target is a missed press`;
+    }
+    if (blank !== playing.gear) return `losing the time-left line moved ⚙ from ${playing.gear} to ${blank}px`;
+    return null;
+  });
+
+  await check("every setting takes a typed number, past either end of its slider", async () => {
+    const seen = await page.evaluate(`async () => {
+      const { api, settle } = window.__recall;
+      document.querySelector(".tp-bar .tp-settings").click();
+      await settle(100);
+      const sheet = document.querySelector(".tp-sheet");
+      const boxes = [...sheet.querySelectorAll("[data-tp-number]")].map((n) => n.dataset.tpNumber);
+      const type = async (key, value) => {
+        const box = sheet.querySelector('[data-tp-number="' + key + '"]');
+        box.focus();
+        box.value = String(value);
+        box.dispatchEvent(new Event("input", { bubbles: true }));
+        box.dispatchEvent(new Event("change", { bubbles: true }));
+        box.blur();
+        await settle(150);
+      };
+      const before = api.teleprompterSnapshot();
+      await type("wpm", 850);
+      await type("fontSize", 72);
+      const after = api.teleprompterSnapshot();
+      const shownWpm = sheet.querySelector('[data-tp-number="wpm"]').value;
+      const viewSize = parseFloat(getComputedStyle(document.getElementById("notesView")).fontSize);
+      await type("wpm", before.wpm);
+      await type("fontSize", before.fontSize);
+      sheet.querySelector(".tp-sheet-close").click();
+      return { boxes, after, shownWpm, viewSize };
+    }`);
+    const want = ["wpm", "fontSize", "lineHeight", "width", "bandPos", "dim"];
+    const missing = want.filter((k) => !seen.boxes.includes(k));
+    if (missing.length) return `no number box for: ${missing.join(", ")}`;
+    if (seen.after.wpm !== 850) return `typed 850 wpm, the session has ${seen.after.wpm}`;
+    if (seen.shownWpm !== "850") return `the box shows ${seen.shownWpm} after typing 850`;
+    if (seen.after.fontSize !== 72 || Math.abs(seen.viewSize - 72) > 0.5) return `typed 72px, the note is ${seen.viewSize}px`;
     return null;
   });
 

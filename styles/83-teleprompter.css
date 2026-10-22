@@ -188,8 +188,10 @@
   opacity: 0.5;
 }
 
+/* Wide enough for "▶ Resume" whatever the phase, for the reason the speed
+   readout has a fixed width. */
 .tp-play {
-  min-width: 48px;
+  width: 112px;
   background: var(--accent);
   color: var(--accent-contrast, #fff);
   font-weight: 700;
@@ -202,7 +204,6 @@
 /* Paused, the way back in is the biggest thing on the bar. */
 .tp-bar[data-phase="paused"] .tp-play,
 .tp-bar[data-phase="countdown"] .tp-play {
-  padding: 0 16px;
   font-size: 1rem;
 }
 
@@ -222,11 +223,14 @@
   align-items: center;
 }
 
+/* A fixed width, like the play button's below: the bar is centred, so any
+   control that changed width as the numbers in it changed moved every other
+   control sideways — ⚙ and ✕ slid out from under a pointer on its way. */
 .tp-speed-read {
   display: inline-flex;
   flex-direction: column;
   align-items: center;
-  min-width: 64px;
+  width: 96px;
   font-variant-numeric: tabular-nums;
   line-height: 1.15;
 }
@@ -237,13 +241,12 @@
 }
 
 .tp-left {
+  max-width: 100%;
+  overflow: hidden;
   color: var(--muted);
   font-size: 0.66rem;
+  text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.tp-left[hidden] {
-  display: none;
 }
 
 .tp-size .tp-btn {
@@ -344,17 +347,14 @@
 }
 
 .tp-sheet-title {
-  margin: 10px 0 4px;
-  color: var(--muted);
-  font-size: 0.7rem;
+  margin: 12px 0 4px;
+  font-size: 0.86rem;
   font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
 }
 
 .tp-row {
   display: grid;
-  grid-template-columns: 62px auto minmax(0, 1fr) auto 66px;
+  grid-template-columns: 62px auto minmax(0, 1fr) auto 92px;
   align-items: center;
   gap: 4px;
   min-height: 40px;
@@ -381,11 +381,47 @@
   accent-color: var(--accent);
 }
 
-.tp-row-value {
-  font-size: 0.8rem;
+/* The box to type the number in, and its unit after it. */
+.tp-entry {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  min-width: 0;
+}
+
+.tp-number {
+  width: 58px;
+  min-width: 0;
+  min-height: 32px;
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.84rem;
   font-variant-numeric: tabular-nums;
   text-align: right;
-  white-space: nowrap;
+  -moz-appearance: textfield;
+}
+
+.tp-number::-webkit-outer-spin-button,
+.tp-number::-webkit-inner-spin-button {
+  margin: 0;
+  -webkit-appearance: none;
+}
+
+.tp-number:focus-visible {
+  border-color: var(--accent);
+  outline: 2px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  outline-offset: 0;
+}
+
+.tp-unit {
+  min-width: 26px;
+  color: var(--muted);
+  font-size: 0.74rem;
 }
 
 /* The label above its choices, not beside them: "Carry on by itself" does not
@@ -513,8 +549,18 @@
     padding: 0 6px;
   }
 
+  /* No room for the word on a phone; the button is the big ▶ alone, still
+     named Resume to a screen reader. */
+  .tp-play {
+    width: 48px;
+  }
+
+  .tp-play-label {
+    display: none;
+  }
+
   .tp-speed-read {
-    min-width: 50px;
+    width: 78px;
   }
 
   .tp-sheet {
@@ -524,7 +570,11 @@
   }
 
   .tp-row {
-    grid-template-columns: 54px auto minmax(0, 1fr) auto 62px;
+    grid-template-columns: 54px auto minmax(0, 1fr) auto 84px;
+  }
+
+  .tp-number {
+    width: 52px;
   }
 }
 
