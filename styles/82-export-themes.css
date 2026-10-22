@@ -1,0 +1,363 @@
+/* The three looks an export can be given — Plain, Minimal and Fancy
+ * (src/export/themes.js), asked for at the moment of exporting.
+ *
+ * The class sits on the exported document's wrapper: .cornell-print-document
+ * in a PDF, .flat-export-document in a standalone HTML file. Word has no CSS
+ * and reads the same choice as tokens in themes.js instead.
+ *
+ * Every look prints on white, and every look rebinds the SCREEN tokens that
+ * .rendered reads (--text, --accent-strong, --line ...) onto the print palette
+ * on the wrapper itself. That is what lets a note keep its own formatting —
+ * the heading ladder, the quote, the table — in a dark app theme, without a
+ * dark theme's pale text arriving on white paper.
+ */
+
+:is(.export-theme-plain, .export-theme-minimal, .export-theme-fancy) {
+  --print-bg: #ffffff;
+  --print-surface: #ffffff;
+  --print-panel: #ffffff;
+  --bg: var(--print-bg);
+  --card: var(--print-surface);
+  --panel: var(--print-panel);
+  --panel-2: var(--print-panel-2);
+  --text: var(--print-text);
+  --muted: var(--print-muted);
+  --line: var(--print-line);
+  --accent: var(--print-accent);
+  --accent-strong: var(--print-accent-strong);
+  background: #ffffff;
+  color: var(--print-text);
+}
+
+.cornell-print-document:is(.export-theme-plain, .export-theme-minimal, .export-theme-fancy) {
+  border: none;
+  box-shadow: none;
+}
+
+/* The print frame's own page, and a saved HTML file's, are white too. */
+html:has(.export-root),
+html:has(.export-root) body,
+.print-root:has(.export-root) {
+  background: #ffffff !important;
+}
+
+/* ── Pictures ────────────────────────────────────────────────────────────
+ * As they are in the Notes view: one never resized is capped at the width the
+ * Notes view gives it, and one resized keeps the width it was given, never
+ * wider than the page. Nothing is split across two pages. */
+.export-root .rendered img {
+  max-width: 100%;
+  height: auto;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+.export-root .rendered img:not(.has-custom-size, .highlight-export-region) {
+  max-width: min(420px, 100%);
+}
+
+.export-root .rendered img.has-custom-size {
+  max-width: 100% !important;
+}
+
+.export-root .rendered :is(table, pre, blockquote, figure, .mermaid, svg) {
+  break-inside: avoid;
+}
+
+/* Code wraps on paper: a line that scrolls on screen would be cut off at the
+ * page edge. */
+.export-root .rendered pre,
+.export-root .rendered pre code {
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.export-root .rendered pre {
+  overflow: visible;
+}
+
+/* ── Plain ───────────────────────────────────────────────────────────────
+ * Black text on white, a book face, sizes doing the work colour does
+ * elsewhere. Highlights keep their colour: they are part of the note. */
+.export-theme-plain {
+  --print-text: #111111;
+  --print-muted: #444444;
+  --print-line: #9a9a9a;
+  --print-accent: #111111;
+  --print-accent-strong: #111111;
+  --print-panel-2: #ffffff;
+  --print-question: #ffffff;
+  font-family: Georgia, "Times New Roman", Times, serif;
+}
+
+.export-theme-plain :is(.rendered, .cornell-print-cover, .flat-export-cover) {
+  font-family: inherit;
+}
+
+.export-theme-plain .rendered :is(h1, h2, h3, h4, h5, h6) {
+  color: #111111;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.export-theme-plain .rendered :is(h1, h2, h3, h4, h5, h6)::after {
+  display: none;
+}
+
+.export-theme-plain .rendered h1 { font-size: 1.6em; }
+.export-theme-plain .rendered h2 { font-size: 1.35em; }
+.export-theme-plain .rendered h3 { font-size: 1.18em; }
+.export-theme-plain .rendered h4 { font-size: 1.06em; }
+.export-theme-plain .rendered :is(h5, h6) { font-size: 1em; font-style: italic; }
+
+/* Text the colour picker tinted prints black too, as it does in Word. A
+ * background — a highlight, or a span the picker shaded — is kept. */
+.export-theme-plain .rendered :is([style*="color"], font[color]) {
+  color: inherit !important;
+}
+
+.export-theme-plain .rendered a {
+  color: #111111;
+  text-decoration: underline;
+}
+
+.export-theme-plain .rendered blockquote {
+  border-left: 2px solid #555555;
+  border-radius: 0;
+  background: none;
+  color: #333333;
+}
+
+.export-theme-plain .rendered :not(pre) > code {
+  border: 1px solid #cccccc;
+  background: none;
+  color: #111111;
+}
+
+.export-theme-plain .rendered pre {
+  border: 1px solid #bbbbbb;
+  border-radius: 0;
+  background: #ffffff !important;
+}
+
+.export-theme-plain .rendered :is(th, td) {
+  border-color: #999999;
+}
+
+.export-theme-plain .rendered th {
+  background: none;
+}
+
+.export-theme-plain :is(.cornell-print-cover, .flat-export-cover) {
+  border-bottom: 1px solid #111111;
+  background: none;
+}
+
+/* ── Minimal ─────────────────────────────────────────────────────────────
+ * A clean sans face, one accent colour, thin rules under the two chapter
+ * levels and nothing else. */
+.export-theme-minimal {
+  --print-text: #1f2328;
+  --print-muted: #59636e;
+  --print-line: #d8dee4;
+  --print-panel-2: #f6f8fa;
+  --print-question: #f6f8fa;
+  font-family: Inter, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+.export-theme-minimal :is(.rendered, .cornell-print-cover, .flat-export-cover) {
+  font-family: inherit;
+}
+
+.export-theme-minimal .rendered :is(h1, h2, h3, h4, h5, h6) {
+  color: var(--print-text);
+  font-weight: 650;
+  line-height: 1.25;
+}
+
+.export-theme-minimal .rendered h1 { font-size: 1.55em; color: var(--print-accent-strong); }
+.export-theme-minimal .rendered h2 { font-size: 1.3em; }
+.export-theme-minimal .rendered h3 { font-size: 1.15em; }
+.export-theme-minimal .rendered h4 { font-size: 1.05em; }
+.export-theme-minimal .rendered :is(h5, h6) { font-size: 1em; color: var(--print-muted); }
+
+.export-theme-minimal .rendered :is(h1, h2)::after {
+  width: 100%;
+  border-top: 1px solid var(--print-line);
+}
+
+.export-theme-minimal .rendered :is(h3, h4, h5, h6)::after {
+  display: none;
+}
+
+.export-theme-minimal .rendered blockquote {
+  border-left: 3px solid var(--print-accent);
+  background: none;
+  color: var(--print-muted);
+}
+
+.export-theme-minimal .rendered pre {
+  border: 1px solid #e1e4e8;
+  background: #f6f8fa !important;
+}
+
+.export-theme-minimal :is(.cornell-print-cover, .flat-export-cover) {
+  border-bottom: 1px solid var(--print-accent);
+  background: none;
+}
+
+.export-theme-minimal .cornell-print-cover h1 {
+  font-size: 28px;
+  font-weight: 700;
+}
+
+/* ── Fancy ───────────────────────────────────────────────────────────────
+ * The note as the app shows it — the reader's own face and size, the heading
+ * ladder of styles/06-rendered.css — on white, under a coloured cover band. */
+.export-theme-fancy {
+  font-family: var(--notes-font-family, var(--app-font-family));
+}
+
+.export-theme-fancy .rendered {
+  font-family: var(--notes-font-family, var(--app-font-family));
+}
+
+/* 29-print-safe-rendered.css sets every heading to one colour for print; the
+ * ladder is put back here, through the rebound tokens above. */
+.export-theme-fancy .rendered h1 { color: var(--accent-strong); font-weight: 800; }
+.export-theme-fancy .rendered h2 { color: var(--text); font-weight: 800; }
+.export-theme-fancy .rendered h3 { color: var(--accent-strong); font-weight: 700; }
+.export-theme-fancy .rendered h4 { color: var(--text); font-weight: 700; }
+.export-theme-fancy .rendered :is(h5, h6) { color: var(--muted); font-weight: 600; }
+
+.export-theme-fancy :is(.cornell-print-cover, .flat-export-cover) {
+  border-bottom: none;
+  border-left: 6px solid var(--print-accent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--print-accent) 12%, #ffffff);
+  padding: 22px 24px;
+}
+
+.export-theme-fancy :is(.cornell-print-cover, .flat-export-cover) h1 {
+  color: var(--print-accent-strong);
+}
+
+/* ── The picker ──────────────────────────────────────────────────────────
+ * #exportThemeModal and the Style row of #exportHighlightsModal
+ * (src/export/theme-dialog.js): one card per look, with a small drawing of a
+ * page in it — a title line and two lines of text. */
+.export-theme-options {
+  display: grid;
+  gap: 8px;
+}
+
+.export-theme-option {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  cursor: pointer;
+  color: var(--text);
+}
+
+.export-theme-option:has(input:checked) {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.export-theme-option:has(input:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.export-theme-option input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.export-theme-text {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.export-theme-text strong {
+  font-size: 0.95rem;
+}
+
+.export-theme-text small {
+  color: var(--muted);
+  font-size: 0.8rem;
+  line-height: 1.3;
+}
+
+.export-theme-swatch {
+  display: grid;
+  flex: 0 0 auto;
+  align-content: start;
+  gap: 4px;
+  width: 38px;
+  height: 46px;
+  border: 1px solid #c9cfd4;
+  border-radius: 3px;
+  background: #ffffff;
+  padding: 6px 5px;
+}
+
+.export-theme-swatch i {
+  display: block;
+  height: 3px;
+  border-radius: 2px;
+  background: #b5bbc1;
+}
+
+.export-theme-swatch i:first-child {
+  width: 70%;
+  height: 4px;
+  background: #222222;
+}
+
+.export-theme-swatch.is-minimal i:first-child {
+  background: var(--accent);
+  box-shadow: 0 3px 0 -2px #d8dee4;
+}
+
+.export-theme-swatch.is-fancy {
+  padding-top: 0;
+}
+
+.export-theme-swatch.is-fancy i:first-child {
+  width: auto;
+  height: 10px;
+  margin: 0 -5px 2px;
+  border-radius: 2px 2px 0 0;
+  border-left: 3px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 22%, #ffffff);
+}
+
+/* Inside the highlights dialog, three across where there is room. */
+.export-theme-options.is-compact {
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+
+.export-theme-options.is-compact .export-theme-option {
+  padding: 8px 10px;
+  gap: 10px;
+}
+
+.export-theme-options.is-compact .export-theme-swatch {
+  width: 28px;
+  height: 34px;
+  padding: 4px;
+  gap: 3px;
+}
+
+.export-theme-options.is-compact small {
+  display: none;
+}

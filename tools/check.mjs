@@ -554,6 +554,11 @@ const checks = [
     // heading" was.
     ["toc-binding   ", ["node", ["tools/toc-binding-check.mjs"], ROOT]],
     ["pdf-document  ", ["node", ["tools/pdf-preview-check.mjs"], ROOT]],
+    // What an export actually puts in the file: every picture inlined (the
+    // PDFs never did, and an image added offline resolved nowhere), the look
+    // asked for at export time, Word keeping a resized picture's width and a
+    // highlight's colour, and a Canvas page printed with its typed blocks.
+    ["export-render ", ["node", ["tools/export-render-check.mjs"], ROOT]],
     // The links inside a PDF, followed by a real press, and the reader's own
     // contents: a bookmark from a page's right-click menu, a heading dragged
     // into another, kept across a reload and undone by Reset.

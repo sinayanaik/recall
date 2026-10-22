@@ -83,6 +83,7 @@ export function anyModalOpen() {
     (el.confirmModal && !el.confirmModal.hidden) ||
     (el.promptModal && !el.promptModal.hidden) ||
     (el.exportHighlightsModal && !el.exportHighlightsModal.hidden) ||
+    (el.exportThemeModal && !el.exportThemeModal.hidden) ||
     isHighlightNoteEditorOpen() ||
     (el.myDecksPanel && !el.myDecksPanel.hidden) ||
     (typeof helpModal !== "undefined" && helpModal && !helpModal.hidden) ||

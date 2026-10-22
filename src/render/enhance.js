@@ -15,7 +15,7 @@ import { sourceWithNomnomlTheme } from "./diagrams.js?v=__BUILD__";
 import { noteLinkEntryMatchesId } from "./note-links.js?v=__BUILD__";
 import { normalizeImageUrl } from "./preprocess.js?v=__BUILD__";
 import { fitMarkdownTables } from "./tables.js?v=__BUILD__";
-import { PDFREF_SCHEME, mountPdfRegionEmbed } from "../documents/pdf-region-embed.js?v=__BUILD__";
+import { PDFREF_SCHEME, mountPdfRegionEmbed, mountPdfRegionPicture } from "../documents/pdf-region-embed.js?v=__BUILD__";
 
 export function enhanceCodeBlocks(roots) {
   configurePrismLanguages();
@@ -205,8 +205,14 @@ export async function enhanceRenderedMarkdown(container, roots = null) {
   const allowRegionResize = container === el.questionView || container === el.answerView
     || container === el.notesView
     || Boolean(container.closest?.(".all-card-question, .all-card-answer"));
+  // An export renders into el.printRoot and is serialised once this resolves,
+  // so there the region is a still picture and is waited for — a live embed's
+  // canvas would be serialised empty (see mountPdfRegionPicture).
+  const exporting = container === el.printRoot;
+  const regionPictures = [];
   scopedQueryAll(scope, `img[src^="${PDFREF_SCHEME}"]`).forEach((img) => {
-    mountPdfRegionEmbed(img, { resizable: allowRegionResize });
+    if (exporting) regionPictures.push(mountPdfRegionPicture(img).catch((error) => console.warn("Could not picture a PDF region for export", error)));
+    else mountPdfRegionEmbed(img, { resizable: allowRegionResize });
   });
 
   scopedQueryAll(scope, ".math-display[data-tex], .math-inline[data-tex]").forEach((node) => {
@@ -293,6 +299,7 @@ export async function enhanceRenderedMarkdown(container, roots = null) {
   // which is what keeps a book paying only for the chunks it has built.
   if (container === el.notesView) annotateHighlightBadges(container, roots);
   await diagramWork;
+  await Promise.all(regionPictures);
 }
 
 // Grey out any [[reference]] whose target no longer exists, so a broken link is

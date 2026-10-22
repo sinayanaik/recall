@@ -369,6 +369,7 @@ const APP_SHELL = [
   `./styles/79-tab-text.css?v=${STAMP}`,
   `./styles/80-reading-progress.css?v=${STAMP}`,
   `./styles/81-pdf-contents-edit.css?v=${STAMP}`,
+  `./styles/82-export-themes.css?v=${STAMP}`,
   // The module entry point. Everything it imports is stamped with the same
   // ?v=, so those URLs change with every release too — which is what lets the
   // cache-first handler below serve them without revalidating and still never
@@ -466,11 +467,14 @@ const APP_SHELL = [
   `./src/export/decks.js?v=${STAMP}`,
   `./src/export/docx.js?v=${STAMP}`,
   `./src/export/html.js?v=${STAMP}`,
+  `./src/export/images.js?v=${STAMP}`,
   `./src/export/markdown.js?v=${STAMP}`,
   `./src/export/notes-body.js?v=${STAMP}`,
   `./src/export/pdf.js?v=${STAMP}`,
   `./src/export/run.js?v=${STAMP}`,
   `./src/export/sql.js?v=${STAMP}`,
+  `./src/export/theme-dialog.js?v=${STAMP}`,
+  `./src/export/themes.js?v=${STAMP}`,
   `./src/export/zip.js?v=${STAMP}`,
   `./src/format/cloze.js?v=${STAMP}`,
   `./src/format/code-highlight.js?v=${STAMP}`,

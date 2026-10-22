@@ -86,6 +86,12 @@ const showName = showIdx !== -1 ? args[showIdx + 1] : null;
 // (the old name) and in the ADDED list (the new one), which is the honest way
 // to show it — the tool matches by name and cannot know the two are related.
 const REMOVED = {
+  // ── The HTML export's own image inliner ─────────────────────────────────
+  embedImagesAsDataUris:
+    "Inlined every picture of the standalone HTML and Word exports as a data: " +
+    "URI. It became prepareExportImages in src/export/images.js, which every " +
+    "export now runs — the PDFs too, which never did — and which also resolves " +
+    "a picture still waiting to upload first.",
   // ── The phone selection bar, pinned to the bottom of the screen ─────────
   pinSelectionButtonToBottom:
     "Parked the phone selection bar at one fixed spot ~76px above the bottom " +

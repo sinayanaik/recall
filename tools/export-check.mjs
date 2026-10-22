@@ -390,6 +390,76 @@ try {
     return true;
   });
 
+  // ── The export looks (src/export/themes.js) ─────────────────────────────
+  //
+  // Asked at export time and remembered; the .docx export reads the tokens and
+  // the width helpers, which are what keep a resized picture its size in Word.
+  const themes = await load("src/export/themes.js");
+
+  must("there are exactly three looks — Plain, Minimal and Fancy — and Minimal is the default", () => {
+    const ids = Object.keys(themes.EXPORT_THEMES).join(",");
+    if (ids !== "plain,minimal,fancy") return `looks: ${ids}`;
+    if (themes.EXPORT_THEME_DEFAULT !== "minimal") return `default: ${themes.EXPORT_THEME_DEFAULT}`;
+    for (const theme of Object.values(themes.EXPORT_THEMES)) {
+      if (!theme.label || !theme.description) return `${theme.id} has no label or description`;
+      if (theme.docx?.headingSizes?.length !== 6) return `${theme.id} does not size all six heading levels`;
+    }
+    return true;
+  });
+
+  must("an unknown or missing look falls back to the default, and the class follows it", () => {
+    for (const bad of [undefined, null, "", "dark", "__proto__", "toString"]) {
+      if (themes.normalizeExportTheme(bad) !== "minimal") return `${show(bad)} -> ${themes.normalizeExportTheme(bad)}`;
+    }
+    if (themes.exportThemeClass("plain") !== "export-theme-plain") return themes.exportThemeClass("plain");
+    if (themes.exportThemeClass("nope") !== "export-theme-minimal") return themes.exportThemeClass("nope");
+    return true;
+  });
+
+  must("the last look chosen is remembered, and storage that throws is survived", () => {
+    const store = new Map();
+    globalThis.localStorage = { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, String(v)) };
+    if (themes.loadExportTheme() !== "minimal") return `empty storage -> ${themes.loadExportTheme()}`;
+    themes.saveExportTheme("fancy");
+    if (themes.loadExportTheme() !== "fancy") return `saved fancy, read ${themes.loadExportTheme()}`;
+    themes.saveExportTheme("bogus");
+    if (themes.loadExportTheme() !== "minimal") return `saved bogus, read ${themes.loadExportTheme()}`;
+    globalThis.localStorage = { getItem: () => { throw new Error("blocked"); }, setItem: () => { throw new Error("blocked"); } };
+    themes.saveExportTheme("plain");
+    if (themes.loadExportTheme() !== "minimal") return "threw through";
+    delete globalThis.localStorage;
+    return true;
+  });
+
+  must("a resized picture's width is read from either spelling the note writes", () => {
+    const cases = [
+      [{ className: "has-custom-size", style: "--notes-img-w:300px; width:300px" }, 300],
+      [{ className: "x has-custom-size", style: "width: 212.5px" }, 212.5],
+      [{ className: "has-custom-size", style: "--notes-img-w: 180px" }, 180],
+      // Not resized: its own width is the answer, whatever the style says.
+      [{ className: "", style: "width:300px" }, 0],
+      [{ className: "has-custom-sizes", style: "width:300px" }, 0],
+      // max-width is not the width.
+      [{ className: "has-custom-size", style: "max-width:300px" }, 0],
+      [{}, 0]
+    ];
+    for (const [input, want] of cases) {
+      const got = themes.customImageWidthPx(input);
+      if (got !== want) return `${show(JSON.stringify(input))} -> ${got}, wanted ${want}`;
+    }
+    return true;
+  });
+
+  must("a picture laid out at a given width keeps its shape", () => {
+    const sized = themes.displayImageSize(1200, 800, 300);
+    if (sized.width !== 300 || sized.height !== 200) return JSON.stringify(sized);
+    const natural = themes.displayImageSize(640, 480, 0);
+    if (natural.width !== 640 || natural.height !== 480) return JSON.stringify(natural);
+    const degenerate = themes.displayImageSize(0, 0, 0);
+    if (degenerate.width < 1 || degenerate.height < 1) return JSON.stringify(degenerate);
+    return true;
+  });
+
   // ── A coverage floor ────────────────────────────────────────────────────
   must("the round trip still exercises the escaping it is here for", () => {
     const withRules = ALL_CASES.filter((c) => /^\s*---(?!-)/m.test(c.text)).length;

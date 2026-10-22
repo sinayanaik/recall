@@ -16,9 +16,11 @@ import { ensureMermaid } from "../core/lib-loader.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { escapeHtml } from "../core/text.js?v=__BUILD__";
 import { buildDocxBytes } from "./docx.js?v=__BUILD__";
+import { prepareExportImages } from "./images.js?v=__BUILD__";
+import { exportTheme, loadExportTheme } from "./themes.js?v=__BUILD__";
 import { prepareExportHtml, wrapStandaloneHtmlDocument } from "./html.js?v=__BUILD__";
 import { exportBaseName, slugifyFileName } from "./markdown.js?v=__BUILD__";
-import { buildCornellFlatDocument, buildCornellPrintDocument, buildHighlightsExportBody, buildHighlightsExportMarkdown, buildHighlightsPrintDocument, buildNotesExportBody, HIGHLIGHT_EXPORT_REGION_WIDTH, buildNotesPrintDocument, cardsForScope, closePrintPreview, exportJson, exportMarkdown, pdfPrintStyleId, printableCardCount, scopeTitle, setPrintTitleBeforeExport } from "./pdf.js?v=__BUILD__";
+import { buildCornellFlatDocument, buildCornellPrintDocument, buildHighlightsExportBody, buildHighlightsExportMarkdown, buildHighlightsPrintDocument, buildNotesExportBody, highlightExportRegionSize, buildNotesPrintDocument, cardsForScope, closePrintPreview, exportJson, exportMarkdown, pdfPrintStyleId, printableCardCount, scopeTitle, setPrintTitleBeforeExport } from "./pdf.js?v=__BUILD__";
 import { collectDeckHighlightsForExport } from "../panels/highlights-panel.js?v=__BUILD__";
 import { preloadRegionImages } from "../documents/pdf-region-embed.js?v=__BUILD__";
 import { exportSql } from "./sql.js?v=__BUILD__";
@@ -30,9 +32,21 @@ import { configureMermaid, currentThemeId } from "../ui/theme.js?v=__BUILD__";
 // every image (e.g. a private Drive share or a host that blocks hotlinking),
 // so the user knows some images were kept as plain links instead of quietly
 // discovering a broken image glyph after opening the file.
-export function imageEmbedSuffix(failedImageCount) {
+//
+// Word gets a link in the picture's place; a PDF or HTML file keeps the
+// picture, loading it from where it lives (src/export/images.js).
+export function imageEmbedSuffix(failedImageCount, { format = "doc" } = {}) {
   if (!failedImageCount) return "";
-  return ` (${failedImageCount} image${failedImageCount === 1 ? "" : "s"} couldn't be embedded — kept as ${failedImageCount === 1 ? "a link" : "links"})`;
+  const many = failedImageCount !== 1;
+  const kept = format === "doc"
+    ? `kept as ${many ? "links" : "a link"}`
+    : `${many ? "they load" : "it loads"} from the web`;
+  return ` (${failedImageCount} image${many ? "s" : ""} couldn't be embedded — ${kept})`;
+}
+
+// What the status line calls a look, e.g. "Minimal".
+function themeLabel(theme) {
+  return exportTheme(theme).label;
 }
 
 // "An export is running, don't start a second one" — greyed out on the button
@@ -52,7 +66,7 @@ function setExportBusy(busy) {
   if (el.viewExportBtn) el.viewExportBtn.disabled = busy;
 }
 
-export async function exportCardsFlat(scope, format) {
+export async function exportCardsFlat(scope, format, { theme = loadExportTheme() } = {}) {
   const cards = cardsForScope(scope);
   const title = scopeTitle(scope);
   if (!printableCardCount(cards)) {
@@ -65,18 +79,8 @@ export async function exportCardsFlat(scope, format) {
   try {
     const docTitle = exportBaseName(scope);
     const rawBodyHtml = buildCornellFlatDocument(title, cards, { sourceTitle: state.deckTitle || state.sourceTitle });
-    let failedImageCount;
-    if (format === "doc") {
-      const result = await buildDocxBytes(rawBodyHtml, docTitle);
-      failedImageCount = result.failedImageCount;
-      downloadTextFile(result.bytes, `${docTitle}.docx`, "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
-    } else {
-      const { html: bodyHtml, failedImageCount: htmlFailed } = await prepareExportHtml(rawBodyHtml);
-      failedImageCount = htmlFailed;
-      const html = await wrapStandaloneHtmlDocument(bodyHtml, docTitle);
-      downloadTextFile(html, `${docTitle}.html`, "text/html;charset=utf-8");
-    }
-    setStatus(`Exported ${title.toLowerCase()} as ${format === "doc" ? "Word (.docx)" : formatLabel}.${imageEmbedSuffix(failedImageCount)}`);
+    const failedImageCount = await downloadFlatExport(rawBodyHtml, docTitle, format, theme);
+    setStatus(`Exported ${title.toLowerCase()} as ${format === "doc" ? "Word (.docx)" : formatLabel} · ${themeLabel(theme)}.${imageEmbedSuffix(failedImageCount, { format })}`);
   } catch (error) {
     console.error("Cards export failed", error);
     setStatus("Could not prepare the export.", "error");
@@ -85,11 +89,25 @@ export async function exportCardsFlat(scope, format) {
   }
 }
 
+// The Word or standalone HTML file for an already-built body, downloaded.
+// Returns how many pictures could not be embedded.
+async function downloadFlatExport(rawBodyHtml, docTitle, format, theme) {
+  if (format === "doc") {
+    const { bytes, failedImageCount } = await buildDocxBytes(rawBodyHtml, docTitle, { theme });
+    downloadTextFile(bytes, `${docTitle}.docx`, "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+    return failedImageCount;
+  }
+  const { html: bodyHtml, failedImageCount } = await prepareExportHtml(rawBodyHtml);
+  const html = await wrapStandaloneHtmlDocument(bodyHtml, docTitle, { theme });
+  downloadTextFile(html, `${docTitle}.html`, "text/html;charset=utf-8");
+  return failedImageCount;
+}
+
 export function notesExportBaseName() {
   return `${slugifyFileName(state.deckTitle || state.sourceTitle || "recall")} - notes`;
 }
 
-export async function exportNotesFlat(format) {
+export async function exportNotesFlat(format, { theme = loadExportTheme() } = {}) {
   const notes = notesForExport();
   if (!notes.trim()) {
     setStatus("No notes to export.", "error");
@@ -109,18 +127,8 @@ export async function exportNotesFlat(format) {
   setExportBusy(true);
   try {
     const rawBodyHtml = buildNotesExportBody(title, notes);
-    let failedImageCount;
-    if (format === "doc") {
-      const result = await buildDocxBytes(rawBodyHtml, docTitle);
-      failedImageCount = result.failedImageCount;
-      downloadTextFile(result.bytes, `${docTitle}.docx`, "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
-    } else {
-      const { html: bodyHtml, failedImageCount: htmlFailed } = await prepareExportHtml(rawBodyHtml);
-      failedImageCount = htmlFailed;
-      const html = await wrapStandaloneHtmlDocument(bodyHtml, docTitle);
-      downloadTextFile(html, `${docTitle}.html`, "text/html;charset=utf-8");
-    }
-    setStatus(`Exported notes as ${format === "doc" ? "Word (.docx)" : formatLabel}.${imageEmbedSuffix(failedImageCount)}`);
+    const failedImageCount = await downloadFlatExport(rawBodyHtml, docTitle, format, theme);
+    setStatus(`Exported notes as ${format === "doc" ? "Word (.docx)" : formatLabel} · ${themeLabel(theme)}.${imageEmbedSuffix(failedImageCount, { format })}`);
   } catch (error) {
     console.error("Notes export failed", error);
     setStatus("Could not prepare the notes export.", "error");
@@ -141,7 +149,9 @@ export async function exportNotesFlat(format) {
 async function preloadHighlightRegionImages(items) {
   const regions = items.map((item) => item.region).filter(Boolean);
   if (!regions.length) return;
-  await preloadRegionImages(regions, { width: HIGHLIGHT_EXPORT_REGION_WIDTH }).catch(() => {});
+  // Each at its own size (highlightExportRegionSize) — the same width the
+  // markup asks the cache for, or the picture is not found there.
+  await Promise.all(regions.map((region) => preloadRegionImages([region], { width: highlightExportRegionSize(region).render }).catch(() => {})));
 }
 
 export function highlightsExportBaseName() {
@@ -169,17 +179,20 @@ export async function exportHighlightsFlat(format, options = {}) {
     return;
   }
 
-  setStatus("Preparing highlights standalone HTML export...");
+  const theme = options.theme || loadExportTheme();
+  const formatLabel = format === "doc" ? "Word (.docx)" : "standalone HTML";
+  setStatus(`Preparing highlights ${formatLabel} export...`);
+  setExportBusy(true);
   try {
     await preloadHighlightRegionImages(items);
     const rawBodyHtml = buildHighlightsExportBody(title, options);
-    const { html: bodyHtml, failedImageCount } = await prepareExportHtml(rawBodyHtml);
-    const html = await wrapStandaloneHtmlDocument(bodyHtml, docTitle);
-    downloadTextFile(html, `${docTitle}.html`, "text/html;charset=utf-8");
-    setStatus(`Exported highlights as standalone HTML.${imageEmbedSuffix(failedImageCount)}`);
+    const failedImageCount = await downloadFlatExport(rawBodyHtml, docTitle, format, theme);
+    setStatus(`Exported highlights as ${formatLabel} · ${themeLabel(theme)}.${imageEmbedSuffix(failedImageCount, { format })}`);
   } catch (error) {
     console.error("Highlights export failed", error);
     setStatus("Could not prepare the highlights export.", "error");
+  } finally {
+    setExportBusy(false);
   }
 }
 
@@ -201,7 +214,7 @@ export async function exportHighlightsPdf(options = {}) {
   try {
     await afterPaint();
     await preloadHighlightRegionImages(items);
-    el.printRoot.innerHTML = buildHighlightsPrintDocument(title, options);
+    el.printRoot.innerHTML = buildHighlightsPrintDocument(title, { ...options, theme: options.theme || loadExportTheme() });
     // Must precede configureMermaid("print") — see exportNotesPdf's own
     // comment: an unloaded mermaid makes that call a silent no-op, and the
     // enhanceRenderedMarkdown below would load it configured for the SCREEN
@@ -213,6 +226,7 @@ export async function exportHighlightsPdf(options = {}) {
     } finally {
       configureMermaid(currentThemeId());
     }
+    await prepareExportImages(el.printRoot, { mode: "pdf" });
     revealPrintRootClozes();
     await (document.fonts?.ready || Promise.resolve());
     await afterPaint();
@@ -429,8 +443,14 @@ export function standalonePrintDocumentHtml() {
   // A highlights document prints on white: its <html> carries the class
   // syncChromeState sets in the app (PRINT_HIGHLIGHTS_CLASS in
   // src/ui/chrome.js), since nothing observes this page to set it.
+  //
+  // The <html> style attribute is where the style settings panel writes the
+  // reader's fonts and sizes (src/ui/style-settings.js); without it the print
+  // frame fell back to the token defaults and the PDF changed face. Fancy reads
+  // them; Plain and Minimal set their own. The page itself is white.
+  const liveStyle = `${document.documentElement.getAttribute("style") || ""}; --print-bg: #ffffff;`;
   return `<!doctype html>
-    <html lang="en" data-theme="${escapeHtml(currentThemeId())}"${documentNode.classList.contains("is-highlights") ? ' class="cs-print-highlights"' : ""}>
+    <html lang="en" data-theme="${escapeHtml(currentThemeId())}" style="${escapeHtml(liveStyle)}"${documentNode.classList.contains("is-highlights") ? ' class="cs-print-highlights"' : ""}>
       <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -572,7 +592,7 @@ export async function exportCardsPdf(sourceTitle, cards, options = {}) {
 
   try {
     await afterPaint();
-    el.printRoot.innerHTML = buildCornellPrintDocument(title, cards, "all", { sourceTitle, statusById });
+    el.printRoot.innerHTML = buildCornellPrintDocument(title, cards, "all", { sourceTitle, statusById, theme: options.theme });
     // Must precede configureMermaid("print"): with mermaid loaded on demand,
     // an unloaded library makes that call a silent no-op, and the
     // enhanceRenderedMarkdown below would then load mermaid itself and
@@ -585,6 +605,7 @@ export async function exportCardsPdf(sourceTitle, cards, options = {}) {
     } finally {
       configureMermaid(currentThemeId());
     }
+    await prepareExportImages(el.printRoot, { mode: "pdf" });
     revealPrintRootClozes();
     await (document.fonts?.ready || Promise.resolve());
     await afterPaint();
@@ -606,7 +627,7 @@ export async function exportCardsPdf(sourceTitle, cards, options = {}) {
   }
 }
 
-export async function exportPdf(scope = "all") {
+export async function exportPdf(scope = "all", { theme = loadExportTheme() } = {}) {
   const cards = cardsForScope(scope);
   const title = scopeTitle(scope);
   if (!cards.length) {
@@ -624,7 +645,7 @@ export async function exportPdf(scope = "all") {
   document.title = exportBaseName(scope);
   try {
     await afterPaint();
-    el.printRoot.innerHTML = buildCornellPrintDocument(title, cards, scope);
+    el.printRoot.innerHTML = buildCornellPrintDocument(title, cards, scope, { theme });
     // Must precede configureMermaid("print"): with mermaid loaded on demand,
     // an unloaded library makes that call a silent no-op, and the
     // enhanceRenderedMarkdown below would then load mermaid itself and
@@ -637,6 +658,7 @@ export async function exportPdf(scope = "all") {
     } finally {
       configureMermaid(currentThemeId());
     }
+    await prepareExportImages(el.printRoot, { mode: "pdf" });
     revealPrintRootClozes();
     await (document.fonts?.ready || Promise.resolve());
     await afterPaint();
@@ -658,13 +680,15 @@ export async function exportPdf(scope = "all") {
   }
 }
 
-export function handleExportAction(format, scope) {
+// `theme` is the look asked for at the moment of exporting (src/export/
+// theme-dialog.js); the formats with no look of their own ignore it.
+export function handleExportAction(format, scope, { theme } = {}) {
   // The drawer's #exportMenu was closed here. It is gone, and the ⇓ menu that
   // replaced it closes itself in its own dispatch (closeViewExportMenu, called
   // before this) rather than making each export responsible for it.
   if (format === "pdf") {
     setStatus("Opening PDF export...");
-    window.setTimeout(() => exportPdf(scope), 0);
+    window.setTimeout(() => exportPdf(scope, { theme }), 0);
     return;
   }
   if (format === "json") {
@@ -676,13 +700,13 @@ export function handleExportAction(format, scope) {
     return;
   }
   if (format === "html" || format === "doc") {
-    exportCardsFlat(scope, format);
+    exportCardsFlat(scope, format, { theme });
     return;
   }
   exportMarkdown(scope);
 }
 
-export async function exportNotesPdf() {
+export async function exportNotesPdf({ theme = loadExportTheme() } = {}) {
   const notes = notesForExport();
   if (!notes.trim()) {
     setStatus("No notes to export as PDF.", "error");
@@ -700,7 +724,7 @@ export async function exportNotesPdf() {
   document.title = notesExportBaseName();
   try {
     await afterPaint();
-    el.printRoot.innerHTML = buildNotesPrintDocument(title, notes);
+    el.printRoot.innerHTML = buildNotesPrintDocument(title, notes, { theme });
     // Must precede configureMermaid("print"): with mermaid loaded on demand,
     // an unloaded library makes that call a silent no-op, and the
     // enhanceRenderedMarkdown below would then load mermaid itself and
@@ -713,6 +737,7 @@ export async function exportNotesPdf() {
     } finally {
       configureMermaid(currentThemeId());
     }
+    await prepareExportImages(el.printRoot, { mode: "pdf" });
     revealPrintRootClozes();
     await (document.fonts?.ready || Promise.resolve());
     await afterPaint();
@@ -739,7 +764,7 @@ export async function exportNotesPdf() {
 // The third is the highlights export with two options set, so it costs nothing;
 // the first two go through src/documents/pdf-export.js, which rasterises pages.
 
-export async function exportDocumentPdf({ annotatedOnly = false } = {}) {
+export async function exportDocumentPdf({ annotatedOnly = false, theme = loadExportTheme() } = {}) {
   const blocked = documentExportUnavailableReason();
   if (blocked) {
     setStatus(blocked, "error");
@@ -762,7 +787,7 @@ export async function exportDocumentPdf({ annotatedOnly = false } = {}) {
   document.title = documentExportBaseName();
   try {
     await afterPaint();
-    const html = await buildDocumentPrintDocument(title, { annotatedOnly });
+    const html = await buildDocumentPrintDocument(title, { annotatedOnly, theme });
     // null means the deck was closed while its pages were rendering. Nothing to
     // report and nothing to print — the reader is looking at something else.
     if (html === null) return;
@@ -791,8 +816,9 @@ export async function exportDocumentPdf({ annotatedOnly = false } = {}) {
 // page it is on. Straight through the highlights pipeline with annotatedOnly
 // and groupByPage — one call site, one option object, so the menu row cannot
 // drift from what it says it does.
-export function exportDocumentNotesPdf() {
+export function exportDocumentNotesPdf({ theme } = {}) {
   handleExportHighlightsAction("pdf", {
+    theme,
     annotatedOnly: true,
     groupByPage: true,
     includeNotes: true,
@@ -801,7 +827,7 @@ export function exportDocumentNotesPdf() {
   });
 }
 
-export function handleExportDocumentAction(action) {
+export function handleExportDocumentAction(action, { theme } = {}) {
   if (el.viewExportMenu) el.viewExportMenu.hidden = true;
   if (action === "original") {
     saveDocumentCopy();
@@ -809,22 +835,22 @@ export function handleExportDocumentAction(action) {
   }
   if (action === "notes-pdf") {
     setStatus("Opening the notes PDF export…");
-    window.setTimeout(() => exportDocumentNotesPdf(), 0);
+    window.setTimeout(() => exportDocumentNotesPdf({ theme }), 0);
     return;
   }
   // "pages-pdf" (everything) and "annotated-pdf" (only the pages with notes).
   const annotatedOnly = action === "annotated-pdf";
   setStatus("Opening the document PDF export…");
-  window.setTimeout(() => exportDocumentPdf({ annotatedOnly }), 0);
+  window.setTimeout(() => exportDocumentPdf({ annotatedOnly, theme }), 0);
 }
 
-export function handleExportNotesAction(format) {
+export function handleExportNotesAction(format, { theme } = {}) {
   // As in handleExportAction: the drawer's own #exportNotesMenu was closed
   // here, and the ⇓ menu that replaced it closes itself before dispatching.
   if (format === "pdf") {
     setStatus("Opening notes PDF export...");
-    window.setTimeout(() => exportNotesPdf(), 0);
+    window.setTimeout(() => exportNotesPdf({ theme }), 0);
     return;
   }
-  exportNotesFlat(format);
+  exportNotesFlat(format, { theme });
 }

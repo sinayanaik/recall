@@ -102,6 +102,13 @@ export const el = {
   exportHighlightsChapterToggle: document.querySelector("#exportHighlightsChapterToggle"),
   exportHighlightsNotesToggle: document.querySelector("#exportHighlightsNotesToggle"),
   exportHighlightsCancelBtn: document.querySelector("#exportHighlightsCancelBtn"),
+  exportHighlightsTheme: document.querySelector("#exportHighlightsTheme"),
+  // The look an export is given, asked for as it starts (src/export/theme-dialog.js).
+  exportThemeModal: document.querySelector("#exportThemeModal"),
+  exportThemeTitle: document.querySelector("#exportThemeTitle"),
+  exportThemeOptions: document.querySelector("#exportThemeOptions"),
+  exportThemeCancelBtn: document.querySelector("#exportThemeCancelBtn"),
+  exportThemeConfirmBtn: document.querySelector("#exportThemeConfirmBtn"),
   allCardsBtn: document.querySelector("#allCardsBtn"),
   allCardsPanel: document.querySelector("#allCardsPanel"),
   allCardsList: document.querySelector("#allCardsList"),

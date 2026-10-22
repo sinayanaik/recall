@@ -2,74 +2,20 @@
 // still renders with no network and no Supabase project behind it.
 
 import { afterPaint } from "../cards/question-fit.js?v=__BUILD__";
-import { fetchableStorageUrl } from "../cloud/storage-urls.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { ensureMermaid } from "../core/lib-loader.js?v=__BUILD__";
 import { escapeHtml } from "../core/text.js?v=__BUILD__";
 import { buildExportStyleTag } from "./pdf.js?v=__BUILD__";
+import { prepareExportImages, unembeddableImageFallback } from "./images.js?v=__BUILD__";
+import { exportThemeClass, loadExportTheme } from "./themes.js?v=__BUILD__";
 import { enhanceRenderedMarkdown } from "../render/enhance.js?v=__BUILD__";
 import { configureMermaid, currentThemeId } from "../ui/theme.js?v=__BUILD__";
 
 // Renders off-screen in el.printRoot (same trick exportCardsPdf uses) so
-// math/diagrams are baked to static markup, then hands back plain HTML.
-// Word only ever sees the file we hand it (no live network fetch the way a
-// browser does while printing), and a saved standalone HTML file is meant to
-// keep working with no connection at all — so every <img src> pointing at a
-// remote URL gets pulled down once here and turned into a data: URI.
-//
-// Some remote hosts (private Drive shares, hotlink protection, rate limits)
-// respond 200 with an HTML sign-in/error page instead of image bytes, or
-// reject the cross-origin fetch outright. Embedding that response verbatim
-// produces an unreadable image (Word shows this as a broken "Read Error"
-// tile), so any src that doesn't resolve to real image bytes is swapped for
-// a plain link instead — broken but honest, rather than silently corrupt.
-export function unembeddableImageFallback(img, src) {
-  const link = document.createElement("a");
-  link.className = "export-image-fallback";
-  link.href = src;
-  link.target = "_blank";
-  link.rel = "noopener noreferrer";
-  link.textContent = img.getAttribute("alt")?.trim() || "View image";
-  return link;
-}
-
-export async function embedImagesAsDataUris(container) {
-  const images = Array.from(container.querySelectorAll("img[src]"));
-  let failedCount = 0;
-  await Promise.all(images.map(async (img) => {
-    // The figure's identifier when the render already swapped in a signed
-    // URL: it is what gets signed afresh below, and — more to the point — what
-    // the fallback link names. A signed URL in an exported file is a bearer
-    // credential that outlives the export by up to a week.
-    const src = img.getAttribute("data-canonical-src") || img.getAttribute("src");
-    if (!src || src.startsWith("data:")) return;
-    try {
-      // The images bucket is private, so a canonical `.../object/public/…`
-      // src — which is what a note holds, and what an un-resolved render or a
-      // cached chunk can still be showing — is not fetchable on its own. Sign
-      // it here rather than trusting whatever the render-time swap happened to
-      // leave on the element; a no-op for a data: URI, a blob, or a link we
-      // never hosted.
-      const fetchSrc = await fetchableStorageUrl(src);
-      const response = await fetch(fetchSrc, { mode: "cors" });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const blob = await response.blob();
-      if (!blob.type.startsWith("image/")) throw new Error(`Not image bytes (got ${blob.type || "unknown"})`);
-      const dataUrl = await new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(reader.result);
-        reader.onerror = () => reject(reader.error);
-        reader.readAsDataURL(blob);
-      });
-      img.setAttribute("src", dataUrl);
-    } catch (error) {
-      console.warn("Could not embed image for export, linking to original instead:", src, error);
-      failedCount += 1;
-      img.replaceWith(unembeddableImageFallback(img, src));
-    }
-  }));
-  return failedCount;
-}
+// math/diagrams are baked to static markup, then hands back plain HTML. Every
+// picture is inlined by prepareExportImages (src/export/images.js), so a saved
+// file keeps working with no connection at all.
+export { unembeddableImageFallback };
 
 // Mounts + renders + embeds into el.printRoot and leaves it mounted (unlike
 // prepareExportHtml, which serializes it to a string and tears it down).
@@ -77,7 +23,7 @@ export async function embedImagesAsDataUris(container) {
 // rasterize with their actual pixel dimensions — not a string it would have
 // to re-parse, so it shares this step and calls finishExportRoot() itself
 // once it's done reading the DOM.
-export async function prepareExportRoot(bodyHtml) {
+export async function prepareExportRoot(bodyHtml, { mode = "html" } = {}) {
   el.printRoot.innerHTML = bodyHtml;
   el.printRoot.classList.remove("is-preview");
   el.printRoot.classList.add("is-preparing");
@@ -94,7 +40,7 @@ export async function prepareExportRoot(bodyHtml) {
   } finally {
     configureMermaid(currentThemeId());
   }
-  const failedImageCount = await embedImagesAsDataUris(el.printRoot);
+  const failedImageCount = await prepareExportImages(el.printRoot, { mode });
   await (document.fonts?.ready || Promise.resolve());
   await afterPaint();
   return failedImageCount;
@@ -118,7 +64,10 @@ export async function prepareExportHtml(bodyHtml) {
 // overrides from the style settings panel (fonts, sizes, widths, theme) —
 // opening the file reproduces the exact look of the app when it was
 // exported, not just its default theme.
-export async function wrapStandaloneHtmlDocument(bodyHtml, title) {
+//
+// The chosen look (src/export/themes.js) is a class on the wrapper, styled by
+// styles/82-export-themes.css, which is inlined with everything else.
+export async function wrapStandaloneHtmlDocument(bodyHtml, title, { theme = loadExportTheme() } = {}) {
   const styleTag = await buildExportStyleTag();
   const liveStyle = document.documentElement.getAttribute("style") || "";
   return `<!doctype html>
@@ -130,7 +79,7 @@ export async function wrapStandaloneHtmlDocument(bodyHtml, title) {
 ${styleTag}
 </head>
 <body>
-<div class="flat-export-document">
+<div class="flat-export-document export-root ${exportThemeClass(theme)}">
 ${bodyHtml}
 </div>
 </body>

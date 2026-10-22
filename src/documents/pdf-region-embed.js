@@ -702,6 +702,43 @@ function showFallback(wrapper, parsed) {
 // interactive card surfaces enhanceRenderedMarkdown allows it for (Study,
 // All Cards) — see the allow-list there — and adds a drag-corner handle that
 // persists a new width back into the card via pdf-region-resize.js.
+// The export's version of mountPdfRegionEmbed: the region as a plain picture.
+//
+// The live embed is a <canvas> under a text layer, and an export serialises
+// its render to markup — which keeps the canvas element and loses every pixel
+// on it, so a region in the notes printed as an empty box and never reached
+// Word at all. So an export render (anything in el.printRoot) swaps the ref for
+// an <img> of the same crop, through the same renderer the Highlights pane
+// pictures regions with, at twice the width it is shown so it is sharp on
+// paper. Resolves once the picture is in, or the ref has become its
+// "PDF region · page N" label.
+export async function mountPdfRegionPicture(img) {
+  const parsed = parsePdfRef(img.getAttribute("src"));
+  if (!parsed) return;
+  const shownWidth = Math.round(parsed.width || EMBED_TARGET_WIDTH);
+  const record = {
+    id: `ref:${img.getAttribute("src")}`,
+    kind: "area",
+    page: parsed.page,
+    pdfId: parsed.pdfId || null,
+    quads: [{ page: parsed.page, rect: parsed.rect }]
+  };
+  const url = await renderRegionImage(record, { width: shownWidth * 2 }).catch(() => null);
+  if (!url) {
+    const label = document.createElement("span");
+    label.className = "export-image-fallback";
+    label.textContent = `PDF region · page ${parsed.page}`;
+    img.replaceWith(label);
+    return;
+  }
+  const picture = document.createElement("img");
+  picture.className = "pdf-region-picture has-custom-size";
+  picture.alt = img.getAttribute("alt") || `PDF region · page ${parsed.page}`;
+  picture.setAttribute("src", url);
+  picture.setAttribute("style", `--notes-img-w:${shownWidth}px; width:${shownWidth}px`);
+  img.replaceWith(picture);
+}
+
 export async function mountPdfRegionEmbed(img, { resizable = false } = {}) {
   const parsed = parsePdfRef(img.getAttribute("src"));
   if (!parsed) return;
