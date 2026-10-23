@@ -489,11 +489,21 @@ async function run() {
       press(document.querySelector(".appbar"));
       press(document.getElementById("notesView"));
       document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Shift", bubbles: true }));
+      // What is on screen while it waits: the loader, not a blank note.
+      const loader = document.querySelector(".notes-resume-loader:not(.is-leaving)");
+      const waiting = {
+        loader: Boolean(loader) && document.getElementById("notesView").classList.contains("is-resuming"),
+        where: loader?.querySelector(".notes-resume-where")?.textContent || "",
+        through: loader?.querySelector(".notes-resume-through")?.textContent || "",
+        inNote: Boolean(loader && document.getElementById("notesView").contains(loader))
+      };
       await settle(3000);
       return {
         rendering,
+        waiting,
         reading: window.__reading(),
-        hidden: document.getElementById("notesView").classList.contains("is-resuming")
+        hidden: document.getElementById("notesView").classList.contains("is-resuming"),
+        loaderGone: !document.querySelector(".notes-resume-loader")
       };
     });
     check(waited.rendering, "the note was still rendering when the resume began", String(waited.rendering));
@@ -501,6 +511,10 @@ async function run() {
       "presses before the resume has landed do not leave the file at its top",
       `expected ~P0130, reading ${waited.reading}`);
     check(!waited.hidden, "...and the note is visible again once it has landed", waited.hidden ? "still hidden" : "visible");
+    check(waited.waiting.loader && !waited.waiting.inNote && /Position probe/.test(waited.waiting.where) && /% through$/.test(waited.waiting.through),
+      "while it waits, a loader says where the reader is being taken instead of a blank note",
+      JSON.stringify(waited.waiting));
+    check(waited.loaderGone, "...and the loader is gone once the resume has landed", waited.loaderGone ? "gone" : "still there");
 
     // ── 12. The bookmark is newer than the reading position ─────────────────
     //
@@ -558,6 +572,36 @@ async function run() {
     check(near(syncDuring.reading, "P0090", 3),
       "...and its repaint does not pin the reader back to where the note opened",
       `expected ~P0090, reading ${syncDuring.reading}`);
+
+    // ── 14. Start from the top, instead of waiting ──────────────────────────
+    //
+    // The loader's button. The resume stops for good — nothing pulls the note
+    // to the old place afterwards — it still settles, so the file's bookmark
+    // capture is armed, and the reader is at the top of the note.
+    const fromTop = await page.evaluate(async () => {
+      const { api, settle } = window.__recall;
+      api.setViewMode("cards");
+      await settle(200);
+      api.setNotesScrolledSource(null);
+      api.setViewMode("notes");
+      let settledCalled = false;
+      api.resumeOpenedDeck(window.__anchorFor("P0140"), () => { settledCalled = true; });
+      const button = document.querySelector(".notes-resume-loader .notes-resume-top");
+      button?.click();
+      await settle(3000);
+      return {
+        button: Boolean(button),
+        reading: window.__reading(),
+        settledCalled,
+        hidden: document.getElementById("notesView").classList.contains("is-resuming"),
+        loaderGone: !document.querySelector(".notes-resume-loader")
+      };
+    });
+    check(fromTop.button, "the loader offers Start from the top", fromTop.button ? "offered" : "no button");
+    check(near(fromTop.reading, "P0000", 3) && !fromTop.hidden && fromTop.loaderGone,
+      "...which leaves the reader at the top, with the note shown and the loader gone",
+      `reading ${fromTop.reading}, ${fromTop.hidden ? "hidden" : "shown"}, loader ${fromTop.loaderGone ? "gone" : "still there"}`);
+    check(fromTop.settledCalled, "...and still settles the resume, so the bookmark is armed", String(fromTop.settledCalled));
 
     // ── 10. A book read as its chapter folder ───────────────────────────────
     const folder = await page.evaluate(async () => {

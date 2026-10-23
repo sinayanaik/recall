@@ -53,6 +53,9 @@ export function markNotesTocDirty() {
   // later, so a burst of renders (a streamed note finishing, an edit committing)
   // costs one rebuild rather than one each.
   if (isNotesTocOpen()) scheduleNotesTocRebuild();
+  // Shut: built in the background on a book, so it is ready when it is opened
+  // — see "built ahead of the press" below buildNotesToc.
+  else scheduleNotesTocPrebuild();
 }
 
 export let notesTocRebuildFrame = 0;
@@ -600,19 +603,80 @@ export function markNotesTocDirtyFromEditor() {
   }, 250);
 }
 
-export function buildNotesToc() {
-  if (!el.notesView || !el.notesTocList) return;
-  notesTocDirty = false;
-  notesTocHeadings = notesTocShowsRaw() ? rawNotesHeadings() : ensureNotesHeadingIds();
+// The rows are built in three steps, so the middle one can run ahead of time:
+//
+//   planNotesToc       which headings, and the tree over them (depths, parents,
+//                      branches) — the same arrays the module keeps beside the list
+//   buildNotesTocRows  one <li> per heading, into a fragment nothing is showing
+//   installNotesToc    the fragment into the list, the folds carried, the arrays
+//                      made the module's own
+//
+// buildNotesToc runs all three at once, as it always has. The prebuild below it
+// runs the middle step in idle slices after a render, so on a book the ☰ press
+// finds the list already built.
+function planNotesToc() {
+  const headings = notesTocShowsRaw() ? rawNotesHeadings() : ensureNotesHeadingIds();
+  // Normalise the shallowest heading level to depth 0 so notes that start at
+  // ## still indent from the left edge rather than looking pushed-in.
+  const depths = tocDepthsFromLevels(headings.map((h) => h.level));
+  applyFolderSectionDepths(depths);
+  return {
+    headings,
+    depths,
+    // The relation the flat list does not carry — see src/notes/toc-tree.js,
+    // which the document contents builds its own tree with too.
+    parents: tocParentsFromDepths(depths),
+    branches: tocBranchesFromDepths(depths),
+    raw: notesTocShowsRaw(),
+    rows: document.createDocumentFragment(),
+    items: [],
+    links: [],
+    next: 0
+  };
+}
 
+// Returns whether every row is built. `deadline`, when given, is an idle
+// deadline: the build stops when it runs out and picks up where it left off.
+function buildNotesTocRows(plan, deadline = null) {
+  const { headings, depths, branches } = plan;
+  while (plan.next < headings.length) {
+    const index = plan.next;
+    plan.next += 1;
+    const heading = headings[index];
+    // Ids are already assigned by ensureNotesHeadingIds in planNotesToc. The row
+    // itself — rail, dot, text, twisty — is src/notes/toc-tree.js, so this list
+    // and the document's cannot drift apart. `href` is what makes these <a>s: a
+    // heading in a note has a real anchor to be middle-clicked to, where a PDF
+    // page has none.
+    const { li, link } = tocRowFor({
+      index,
+      depth: depths[index],
+      depths,
+      level: heading.level,
+      text: heading.text,
+      href: `#${heading.id}`,
+      branch: branches[index],
+      number: heading.number
+    });
+    plan.rows.appendChild(li);
+    plan.links.push(link);
+    plan.items.push(li);
+    if (deadline && (index & 15) === 15 && deadline.timeRemaining() < 1) return false;
+  }
+  return true;
+}
+
+function installNotesToc(plan) {
+  notesTocDirty = false;
+  notesTocHeadings = plan.headings;
   el.notesTocList.innerHTML = "";
-  notesTocItems = [];
-  notesTocParent = [];
-  notesTocBranch = [];
   // The list is being rebuilt, so every link reference updateNotesTocActive
   // held is now detached and the remembered active row means nothing.
-  notesTocLinks = [];
   notesTocActiveIndex = -1;
+  notesTocParent = plan.parents;
+  notesTocBranch = plan.branches;
+  notesTocItems = plan.items;
+  notesTocLinks = plan.links;
   const hasHeadings = notesTocHeadings.length > 0;
   if (el.notesTocEmpty) el.notesTocEmpty.hidden = hasHeadings;
   el.notesTocList.hidden = !hasHeadings;
@@ -624,19 +688,11 @@ export function buildNotesToc() {
   }
   if (el.notesTocBtn) el.notesTocBtn.classList.add("has-toc");
 
-  // Normalise the shallowest heading level to depth 0 so notes that start at
-  // ## still indent from the left edge rather than looking pushed-in.
-  const depths = tocDepthsFromLevels(notesTocHeadings.map((h) => h.level));
-  applyFolderSectionDepths(depths);
-
-  // The relation the flat list does not carry — see src/notes/toc-tree.js,
-  // which the document contents builds its own tree with too.
-  notesTocParent = tocParentsFromDepths(depths);
-  notesTocBranch = tocBranchesFromDepths(depths);
-
   // Fold state, carried over by slug. Anything not seen before is folded, so a
   // note opens as its top-level outline; pruning to the current note's slugs is
-  // what makes a different note start folded again.
+  // what makes a different note start folded again. Taken here, at install,
+  // rather than when the rows were planned: a prebuilt list is installed after
+  // the reader may have folded something.
   const carried = tocCarryFolds({
     keys: notesTocHeadings.map((heading) => heading.id),
     branches: notesTocBranch,
@@ -646,29 +702,107 @@ export function buildNotesToc() {
   notesTocKnownBranches = carried.known;
   notesTocCollapsed = carried.collapsed;
 
-  notesTocHeadings.forEach((heading, index) => {
-    // Ids are already assigned by ensureNotesHeadingIds above. The row itself —
-    // rail, dot, text, twisty — is src/notes/toc-tree.js, so this list and the
-    // document's cannot drift apart. `href` is what makes these <a>s: a heading
-    // in a note has a real anchor to be middle-clicked to, where a PDF page has
-    // none.
-    const { li, link } = tocRowFor({
-      index,
-      depth: depths[index],
-      depths,
-      level: heading.level,
-      text: heading.text,
-      href: `#${heading.id}`,
-      branch: notesTocBranch[index],
-      number: heading.number
-    });
-    el.notesTocList.appendChild(li);
-    notesTocLinks.push(link);
-    notesTocItems.push(li);
-  });
-
+  el.notesTocList.appendChild(plan.rows);
   applyNotesTocFolding();
   updateNotesTocFoldAllButton();
+}
+
+export function buildNotesToc() {
+  if (!el.notesView || !el.notesTocList) return;
+  const plan = takeNotesTocPrebuild() || planNotesToc();
+  buildNotesTocRows(plan);
+  installNotesToc(plan);
+}
+
+// ── ...and built ahead of the press, on a book ──────────────────────────────
+//
+// "Built when it is looked at" (notesTocDirty) kept the render tail free, and
+// left the whole build on the ☰ press instead: on a 1,000-heading book about
+// 240ms of a ~330ms press at phone speed, before the drawer could appear. So
+// once a render has settled, a note with this many headings has its rows built
+// in idle slices — each one stops when the browser's idle deadline does, so no
+// task gets longer than it already was — and installed into the closed drawer.
+// The press then only shows it. A note with fewer headings builds in a few
+// milliseconds and keeps building on the press.
+//
+// Any new mark (another render, an edit, a different note) throws a prebuild
+// away and starts again; buildNotesToc picks up one that is still valid and
+// finishes it synchronously, so a press mid-prebuild loses nothing. Never in
+// the raw editor, whose list changes with every pause in the typing.
+export const NOTES_TOC_PREBUILD_MIN = 200;
+
+const NOTES_TOC_SLICE_MS = 8;
+
+let notesTocPrebuild = null;
+
+let notesTocPrebuildHandle = 0;
+
+const HAS_IDLE_CALLBACK = typeof requestIdleCallback === "function";
+
+function cancelNotesTocPrebuild() {
+  if (notesTocPrebuildHandle) {
+    if (HAS_IDLE_CALLBACK) cancelIdleCallback(notesTocPrebuildHandle);
+    else clearTimeout(notesTocPrebuildHandle);
+  }
+  notesTocPrebuildHandle = 0;
+  notesTocPrebuild = null;
+}
+
+function takeNotesTocPrebuild() {
+  const plan = notesTocPrebuild;
+  cancelNotesTocPrebuild();
+  return plan && plan.raw === notesTocShowsRaw() ? plan : null;
+}
+
+// Without requestIdleCallback (Safari), a timer and a budget of our own.
+function whenIdle(fn) {
+  if (HAS_IDLE_CALLBACK) return requestIdleCallback(fn, { timeout: 2000 });
+  return setTimeout(() => {
+    const until = performance.now() + NOTES_TOC_SLICE_MS;
+    fn({ timeRemaining: () => Math.max(0, until - performance.now()), didTimeout: false });
+  }, 50);
+}
+
+function prebuildNotesTocSlice(deadline) {
+  notesTocPrebuildHandle = 0;
+  if (!notesTocDirty || isNotesTocOpen() || notesTocShowsRaw() || !el.notesTocList) {
+    notesTocPrebuild = null;
+    return;
+  }
+  // A slice never runs past NOTES_TOC_SLICE_MS, whatever the deadline offers:
+  // a press that lands mid-slice waits for the rest of it.
+  const until = performance.now() + NOTES_TOC_SLICE_MS;
+  const budget = { timeRemaining: () => Math.min(deadline.timeRemaining(), until - performance.now()) };
+  if (!notesTocPrebuild) {
+    const prepared = preparedNotesSource();
+    if (prepared == null || notesHeadingScan(prepared).length < NOTES_TOC_PREBUILD_MIN) return;
+    const plan = planNotesToc();
+    // Planning pairs the headings with the note's elements, and anything that
+    // marked the list stale meanwhile scheduled a prebuild of its own — this
+    // plan is the newer answer, so it replaces that one.
+    cancelNotesTocPrebuild();
+    notesTocPrebuild = plan;
+    notesTocPrebuildHandle = whenIdle(prebuildNotesTocSlice);
+    return;
+  }
+  if (!buildNotesTocRows(notesTocPrebuild, budget)) {
+    notesTocPrebuildHandle = whenIdle(prebuildNotesTocSlice);
+    return;
+  }
+  // Installed in a slice of its own: putting a thousand rows into a drawer that
+  // is display:none and folding them is a style-free DOM operation, ~10ms.
+  notesTocPrebuildHandle = whenIdle(() => {
+    notesTocPrebuildHandle = 0;
+    const plan = takeNotesTocPrebuild();
+    if (!plan || !notesTocDirty || isNotesTocOpen()) return;
+    installNotesToc(plan);
+  });
+}
+
+function scheduleNotesTocPrebuild() {
+  cancelNotesTocPrebuild();
+  if (notesTocShowsRaw()) return;
+  notesTocPrebuildHandle = whenIdle(prebuildNotesTocSlice);
 }
 
 // Distance kept between the top of the notes viewport and the heading it

@@ -95,6 +95,31 @@ const ANCHORS = /(^|[\s>+~(,])(html|body|:root)\b|\.app-shell\b|\.quiz-panel\b|\
     offenders.length ? `${offenders.length} found:\n        ${offenders.join("\n        ")}` : true);
 }
 
+// ── Static: no :has() on something INSIDE the note either ─────────────────
+//
+// 9fdc382 drew heading numbers with `.rendered :is(h1, …)[data-heading-number]
+// :not(:has(> .heading-number-mark))::before` — a :has() on every heading of the
+// open note, re-checked as the note's DOM changes under it (a fold twisty, a
+// number mark, a span built as the reader scrolls). Cheap on the day it landed,
+// and the same shape as the rules b4394ea took out; the heading carries
+// .has-number-mark now. A post-split rule whose selector reaches into the note
+// says what it means with a class.
+const INSIDE_NOTE = /\.rendered\b|\.notes-rendered\b|#notesView\b|\.notes-chunk\b/;
+{
+  const offenders = [];
+  for (const file of readdirSync(path.join(ROOT, "styles")).sort()) {
+    const m = /^(\d+)-.*\.css$/.exec(file);
+    if (!m || Number(m[1]) <= 13) continue;
+    const text = readFileSync(path.join(ROOT, "styles", file), "utf8").replace(/\/\*[\s\S]*?\*\//g, (c) => c.replace(/[^\n]/g, " "));
+    text.split("\n").forEach((line, i) => {
+      const at = line.indexOf(":has(");
+      if (at !== -1 && INSIDE_NOTE.test(line.slice(0, at))) offenders.push(`styles/${file}:${i + 1}  ${line.trim().slice(0, 90)}`);
+    });
+  }
+  push("no post-split stylesheet puts a :has() on an element inside the note",
+    offenders.length ? `${offenders.length} found:\n        ${offenders.join("\n        ")}` : true);
+}
+
 // ── Static: no sibling combinator after [hidden] ───────────────────────────
 //
 // Every stylesheet, the frozen slices too: what this costs does not depend on

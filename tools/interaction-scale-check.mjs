@@ -113,7 +113,13 @@ const BUDGET = {
   // outright rather than hoping it shows through the frame-gap noise.
   repaintMs: 60,
   tailMs: 200,       // longest blocking task in the second after the render
-  tocOpenMs: 250,    // a cold ☰ Contents open on the book (~180ms; 330ms regressed)
+  tocOpenMs: 200,    // a cold ☰ Contents build + open on the book (~125ms; ~180ms while each row ran the HTML parser; 330ms regressed)
+  // The Highlights pane beside 2,000 highlights: what is in its DOM (18,000+
+  // when every card was built up front; a few hundred now), and a ☰ toggle's
+  // style + layout + hit test beside it, against the same toggle with it shut.
+  paneElements: 4000,
+  panePressRatio: 2,
+  panePressSlackMs: 0.5,
   resumeMs: 6000     // how long a resumed reading position may take to land
 };
 
@@ -566,7 +572,8 @@ const PROBE = `async (budget, tapCases) => {
   //
   // The press itself, from a list that has to be built (as on the first open
   // after an edit): build, style and layout of every row, in the click. On
-  // this book that is 6,060 rows. It is ~180ms, and was ~330ms while a stylesheet
+  // this book that is 6,060 rows. It is ~125ms (~180ms while every row ran the
+  // HTML parser — see tocRowFor), and was ~330ms while a stylesheet
   // put [hidden] before a sibling combinator — every row's fold walked all the
   // rows after it (see tools/style-scale-check.mjs). Median of three.
   {
@@ -885,6 +892,112 @@ const PROBE = `async (budget, tapCases) => {
       : warnings.length + " warning(s): " + warnings[0]);
   }
 
+  // ── The Highlights pane beside a book with thousands of highlights ──────
+  //
+  // Reported as "the bug is back" — buttons answering slowly again once a big
+  // note is open — and this time it was not a stylesheet. The side-by-side pane
+  // built a card for every highlight: 2,000 of them came to 22,001 elements,
+  // each card a content-visibility box the browser hit-tests, pre-paints and
+  // runs its visibility observer over on every frame. With the pane open, a ☰
+  // press at 4x CPU throttle took 200-300ms against ~40ms with it shut. The pane
+  // now builds batches of cards as they come near (highlights-editor.js), so:
+  //   • what is in the DOM is a screenful or two of cards, not all of them;
+  //   • ◀ ▶ to a card far down the list builds it, lights it and shows it;
+  //   • the scroll spy still says which card is at the top.
+  {
+    const marked = [];
+    for (let c = 0; c < 40; c += 1) {
+      marked.push("# Chapter " + (c + 1) + "\\n");
+      for (let s = 0; s < 50; s += 1) {
+        marked.push("Marked paragraph " + (s + 1) + " of chapter " + (c + 1) + ", with <mark data-color=\\"yellow\\">gloss " + c + "-" + s + "</mark> and the rest of the sentence after it.\\n");
+      }
+    }
+    state.notes = marked.join("\\n");
+    api.setNotesScrolledSource(null);
+    api.invalidateRenderedBlockCache();
+    await api.renderNotesView();
+    await settle(1500);
+    // A ☰ press: the class flip, the style and layout it causes, and the hit
+    // test the next tap pays. Median of nine. Taken with the pane shut first, so
+    // the pane is judged by what it ADDS to a press on this machine.
+    const pressMs = async () => {
+      const toolbar = document.getElementById("mainToolbar");
+      const xs = [];
+      for (let i = 0; i < 9; i += 1) {
+        const t0 = performance.now();
+        toolbar.classList.toggle("mobile-open", i % 2 === 0);
+        await Promise.resolve();
+        void document.body.offsetHeight;
+        document.elementFromPoint(innerWidth / 2, innerHeight * 0.75);
+        xs.push(performance.now() - t0);
+      }
+      toolbar.classList.remove("mobile-open");
+      xs.sort((a, b) => a - b);
+      return xs[4];
+    };
+    const pressShut = await pressMs();
+    api.openHighlightSplit("notes");
+    await settle(2500);
+    const body = document.getElementById("highlightCycleBody");
+    const count = () => (document.getElementById("highlightCycleCount")?.textContent || "").trim();
+    const total = 40 * 50;
+    const elements = body ? body.getElementsByTagName("*").length : 0;
+    const cards = body ? body.querySelectorAll(".hl-note").length : 0;
+    push("the Highlights pane builds only the cards near the screen", (() => {
+      if (!body || !api.isHighlightSplitOpen()) return "the pane did not open";
+      if (!count().endsWith("/ " + total)) return "the pane lists " + JSON.stringify(count()) + ", not " + total + " highlights";
+      if (elements > budget.paneElements) return elements + " elements in the pane for " + total + " highlights";
+      return true;
+    })(), elements + " elements, " + cards + " cards built of " + total);
+
+    // ...and the same press with it open: about what it costs shut (0.5ms
+    // both), where it was 1.6ms against 0.4ms when every card was built.
+    {
+      const open = await pressMs();
+      const allowed = pressShut * budget.panePressRatio + budget.panePressSlackMs;
+      push("a press beside the Highlights pane costs about what it costs without it", open > allowed
+        ? "a ☰ toggle took " + open.toFixed(1) + "ms with the pane open, " + pressShut.toFixed(1) + "ms with it shut"
+        : true, open.toFixed(1) + "ms open, " + pressShut.toFixed(1) + "ms shut");
+    }
+
+    const far = Math.floor(total * 0.75);
+    api.cycleHighlightBy(far);
+    await settle(900);
+    push("◀ ▶ to a card far down the list builds it and shows it", (() => {
+      if (count() !== (far + 1) + " / " + total) return "the counter says " + JSON.stringify(count());
+      const current = body.querySelector(".hl-note.is-current");
+      if (!current) return "no card is lit";
+      if (!current.textContent.includes("gloss " + Math.floor(far / 50) + "-" + (far % 50))) {
+        return "the lit card is " + JSON.stringify(current.textContent.trim().slice(0, 60));
+      }
+      const box = body.getBoundingClientRect();
+      const rect = current.getBoundingClientRect();
+      if (rect.bottom <= box.top || rect.top >= box.bottom) return "the lit card is off the pane, " + Math.round(rect.top - box.top) + "px from its top";
+      return true;
+    })());
+
+    body.scrollTop = Math.round(body.scrollHeight * 0.3);
+    body.dispatchEvent(new Event("scroll"));
+    await settle(600);
+    push("the pane's counter follows a scroll through unbuilt cards", (() => {
+      const current = body.querySelector(".hl-note.is-current");
+      if (!current) return "no card is lit after the scroll";
+      const box = body.getBoundingClientRect();
+      const rect = current.getBoundingClientRect();
+      if (rect.bottom <= box.top || rect.top >= box.bottom) return "the lit card is off the pane after the scroll";
+      const at = Number(count().split("/")[0]);
+      if (!(at > 1 && at - 1 < far)) return "the counter says " + JSON.stringify(count()) + " after scrolling to 30%";
+      return true;
+    })(), count());
+
+    api.closeHighlightSplit();
+    state.notes = md;
+    api.setNotesScrolledSource(null);
+    api.invalidateRenderedBlockCache();
+    await api.renderNotesView();
+    await settle(600);
+  }
+
   R.observer?.disconnect();
   return results;
 }`;
@@ -903,6 +1016,7 @@ const API_SRC = `async () => {
     "/src/format/highlight.js?v=__BUILD__",
     "/src/format/render-toolbar.js?v=__BUILD__",
     "/src/notes/selection.js?v=__BUILD__",
+    "/src/panels/highlight-cycle.js?v=__BUILD__",
     "/src/ui/view-mode.js?v=__BUILD__",
     "/src/ui/boot-screens.js?v=__BUILD__",
     "/src/cloud/supabase-client.js?v=__BUILD__",

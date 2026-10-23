@@ -142,6 +142,12 @@ export function numberHeadingsInHtml(html) {
 // arrow is prepended, so one that arrives after the span still lands in front.
 export const HEADING_NUMBER_MARK_CLASS = "heading-number-mark";
 
+// ...and on the heading, a class saying it carries one, so the stylesheet can
+// leave its own ::before off without asking with :has(> .heading-number-mark).
+// A :has() on an element inside the note is the shape b4394ea took out of the
+// stylesheets: the browser re-checks it as the note's DOM changes under it.
+export const HEADING_HAS_MARK_CLASS = "has-number-mark";
+
 const FOLD_TWISTY_SELECTOR = ":scope > .notes-fold-twisty";
 
 export function setHeadingNumberMark(heading, number) {
@@ -150,6 +156,7 @@ export function setHeadingNumberMark(heading, number) {
   let mark = heading.querySelector(`:scope > .${HEADING_NUMBER_MARK_CLASS}`);
   if (!number) {
     mark?.remove();
+    heading.classList.remove(HEADING_HAS_MARK_CLASS);
     return;
   }
   if (!mark) {
@@ -161,6 +168,7 @@ export function setHeadingNumberMark(heading, number) {
     else heading.prepend(mark);
   }
   mark.dataset.headingNumber = number;
+  heading.classList.add(HEADING_HAS_MARK_CLASS);
 }
 
 export const HEADING_NUMBER_TEXT_CLASS = "heading-number";

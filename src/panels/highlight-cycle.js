@@ -47,6 +47,9 @@ import { applyNotesPagedLayout, isNotesPaged } from "../notes/paged-view.js?v=__
 import {
   HL_NOTE_CLASS,
   closeHighlightsEditor,
+  firstHighlightCardBelow,
+  highlightCardFor,
+  highlightCardPainted,
   highlightEntryKey,
   initHighlightsEditor,
   renderHighlightsEditor,
@@ -585,11 +588,13 @@ function paintCycleCount() {
   if (el.highlightCycleNextBtn) el.highlightCycleNextBtn.disabled = cycleIndex < 0 || cycleIndex >= cycleEntries.length - 1;
 }
 
-function cardFor(index) {
+// On a long list only the cards near the reader are built (see "built where it
+// is looked at" in highlights-editor.js), so `build` says whether a card that is
+// not there yet should be: yes for a step to it, no for tinting it.
+function cardFor(index, { build = true } = {}) {
   const entry = cycleEntries[index];
   if (!entry || !el.highlightCycleBody) return null;
-  return el.highlightCycleBody
-    .querySelector(`.${HL_NOTE_CLASS}[data-highlight-key="${CSS.escape(highlightEntryKey(entry))}"]`);
+  return highlightCardFor(el.highlightCycleBody, highlightEntryKey(entry), { build });
 }
 
 function paintCurrentCard() {
@@ -601,6 +606,12 @@ function paintCurrentCard() {
   card.classList.add("is-current");
   paintLink(cycleEntries[cycleIndex]);
   revealCard(card);
+  // A card whose batch was only just built is its estimate until its markdown
+  // has painted, and so are the cards above it in that batch — so the reveal is
+  // taken again against the real heights, if it is still the one asked for.
+  highlightCardPainted(body, card).then(() => {
+    if (card.isConnected && card.classList.contains("is-current")) revealCard(card);
+  });
 }
 
 // ── Which mark this card is about ───────────────────────────────────────────
@@ -683,7 +694,7 @@ function paintCardLinkFor(mark) {
   if (index < 0) return;
   const at = cycleEntries.findIndex((entry) => !entry.highlightId && entry.markIndex === index);
   if (at < 0) return;
-  cardFor(at)?.classList.add(LINKED_CLASS);
+  cardFor(at, { build: false })?.classList.add(LINKED_CLASS);
 }
 
 // Scrolled by hand rather than with scrollIntoView, for two reasons: that call
@@ -712,13 +723,7 @@ function cycleScrollSpy() {
   const body = el.highlightCycleBody;
   if (!body || !cycleEntries.length) return;
   const top = body.getBoundingClientRect().top;
-  const cards = body.querySelectorAll(`.${HL_NOTE_CLASS}`);
-  let found = "";
-  for (const card of cards) {
-    if (card.getBoundingClientRect().bottom <= top + CYCLE_CARD_GAP_PX) continue;
-    found = card.dataset.highlightKey || "";
-    break;
-  }
+  const found = firstHighlightCardBelow(body, top + CYCLE_CARD_GAP_PX)?.dataset.highlightKey || "";
   if (!found || found === cycleKey) return;
   const at = cycleEntries.findIndex((entry) => highlightEntryKey(entry) === found);
   if (at < 0) return;

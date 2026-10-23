@@ -118,22 +118,30 @@ export function tocCarryFolds({ keys, branches, known, collapsed }) {
   return { known: nextKnown, collapsed: nextCollapsed };
 }
 
+function tocSpan(className, attr = null, value = "") {
+  const span = document.createElement("span");
+  span.className = className;
+  if (attr) span.setAttribute(attr, value);
+  return span;
+}
+
 // One column per ancestor level, plus an elbow connecting up to the parent
 // chain and across to this row's dot — the last column is a "├" (more siblings
 // follow) or "└" (last child) elbow, columns before it are plain vertical guides
 // that only continue if that ancestor branch still has more siblings coming.
-export function tocRailHtml(depths, index, depth) {
-  let rail = "";
+//
+// Built as nodes. A row used to be built as an HTML string — this rail, the dot
+// and the text — assigned to the link's innerHTML, which runs the HTML parser once
+// per row: 1,481 parses on a 1,000-heading book, about a quarter of what a
+// cold ☰ Contents press cost on a phone. Same elements, same attributes, no
+// parser.
+export function tocRailNode(depths, index, depth) {
+  if (depth <= 0) return null;
+  const rail = tocSpan("notes-toc-rail", "aria-hidden", "true");
   for (let d = 0; d < depth; d++) {
-    if (d === depth - 1) {
-      rail += `<span class="notes-toc-elbow" data-last="${tocIsLastSibling(depths, index)}"></span>`;
-    } else {
-      // Column d represents the ancestor ONE level below it (d+1) — e.g. column
-      // 0 for a depth-3 item is its grandparent's level (depth 1), not the
-      // root's (depth 0); the root gets no column of its own since depth-0 rows
-      // never get a rail at all.
-      rail += `<span class="notes-toc-guide" data-state="${tocGuideContinues(depths, index, d + 1) ? "line" : "blank"}"></span>`;
-    }
+    rail.appendChild(d === depth - 1
+      ? tocSpan("notes-toc-elbow", "data-last", String(tocIsLastSibling(depths, index)))
+      : tocSpan("notes-toc-guide", "data-state", tocGuideContinues(depths, index, d + 1) ? "line" : "blank"));
   }
   return rail;
 }
@@ -167,13 +175,13 @@ export function tocRowFor({ index, depth, depths, level, text, href, branch, tai
   link.dataset.tocIndex = String(index);
   link.style.setProperty("--toc-depth", String(depth));
 
-  const rail = tocRailHtml(depths, index, depth);
-  link.innerHTML =
-    (rail ? `<span class="notes-toc-rail" aria-hidden="true">${rail}</span>` : "")
-    + `<span class="notes-toc-dot" data-level="${level}"></span>`
-    + `<span class="notes-toc-text"></span>`;
-  link.querySelector(".notes-toc-text").textContent = text;
-  if (number) link.querySelector(".notes-toc-text").dataset.headingNumber = number;
+  const rail = tocRailNode(depths, index, depth);
+  if (rail) link.appendChild(rail);
+  link.appendChild(tocSpan("notes-toc-dot", "data-level", String(level)));
+  const label = tocSpan("notes-toc-text");
+  label.textContent = text;
+  if (number) label.dataset.headingNumber = number;
+  link.appendChild(label);
   if (tail) link.appendChild(tail);
   li.appendChild(link);
 
@@ -189,7 +197,9 @@ export function tocRowFor({ index, depth, depths, level, text, href, branch, tai
     twisty.className = TOC_TWISTY_CLASS;
     twisty.dataset.tocIndex = String(index);
     twisty.dataset.tocLabel = text;
-    twisty.innerHTML = '<span class="notes-toc-twisty-glyph" aria-hidden="true">▸</span>';
+    const glyph = tocSpan("notes-toc-twisty-glyph", "aria-hidden", "true");
+    glyph.textContent = "▸";
+    twisty.appendChild(glyph);
     li.appendChild(twisty);
   }
   return { li, link };
