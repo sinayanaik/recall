@@ -8268,7 +8268,12 @@ try {
         paper: sample(-12)
       };
       // A recolour: the live marks are back at once, and the page is baked
-      // again — composed, not drawn — once it is still.
+      // again — composed, not drawn — once it is still. Counted from a renderer
+      // with nothing out: the switch to a phone's width above still has pages
+      // to draw at the new size on a slow machine, and one of those landing in
+      // the window read as the recolour having drawn a page (seen on the CI
+      // runner, drawn 1, on the run after one that drew 0).
+      await until(() => { const c = counts(); return !c.workerJobs && !c.aheadBusy; });
       const before = counts();
       const next = record.color === "green" ? "pink" : "green";
       api.state.meta.pdfHighlights = api.state.meta.pdfHighlights.map((r) => (r.id === record.id ? { ...r, color: next, at: Date.now() } : r));
