@@ -248,7 +248,7 @@ try {
   // ── Starting it ──────────────────────────────────────────────────────────
   await check("⋯ → Teleprompter on a PDF is a switch that reads Off, and pressing it opens a session", async () => {
     const before = await page.evaluate(`() => {
-      const row = document.getElementById("documentTeleprompterBtn");
+      const row = document.querySelector('#documentMoreMenu [data-document-action="teleprompter"]');
       return row ? { pressed: row.getAttribute("aria-pressed"), slot: row.dataset.slot, label: row.textContent } : null;
     }`);
     if (!before) return "no Teleprompter row in the PDF's ⋯ menu";
@@ -256,7 +256,7 @@ try {
     if (before.slot !== "doc") return `the row is shown on ${before.slot}, not only on a PDF`;
     await page.evaluate(`() => {
       document.getElementById("documentMoreBtn").click();
-      document.getElementById("documentTeleprompterBtn").click();
+      document.querySelector('#documentMoreMenu [data-document-action="teleprompter"]').click();
     }`);
     await sleep(300);
     const after = await page.evaluate(`() => {
@@ -264,7 +264,7 @@ try {
       const pager = document.getElementById("documentPager");
       return {
         active: window.__recall.api.pdfTeleprompterActive(),
-        pressed: document.getElementById("documentTeleprompterBtn").getAttribute("aria-pressed"),
+        pressed: document.querySelector('#documentMoreMenu [data-document-action="teleprompter"]').getAttribute("aria-pressed"),
         rail: document.querySelector('#readingRailTray [data-rail-action="pdf-teleprompter"]')?.getAttribute("aria-pressed"),
         bar: Boolean(bar && bar.getBoundingClientRect().height > 30),
         sizeHidden: bar?.querySelector(".tp-size")?.hidden === true,
@@ -450,7 +450,7 @@ try {
         || document.getElementById("documentStage").classList.contains("is-teleprompter"),
       lead: document.getElementById("documentView").style.getPropertyValue("--tp-lead"),
       bar: Boolean(document.querySelector("#documentStage > .tp-bar")),
-      pressed: document.getElementById("documentTeleprompterBtn").getAttribute("aria-pressed")
+      pressed: document.querySelector('#documentMoreMenu [data-document-action="teleprompter"]').getAttribute("aria-pressed")
     })`);
     if (after.active) return "Escape did not leave the teleprompter";
     if (Math.abs(after.scale - s.baseScale) > 0.01) return `zoom ${after.scale.toFixed(2)}, the reader had ${s.baseScale.toFixed(2)}`;

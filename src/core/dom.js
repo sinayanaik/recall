@@ -282,8 +282,10 @@ export const el = {
   documentZoomInBtn: document.querySelector("#documentZoomInBtn"),
   documentZoomOutBtn: document.querySelector("#documentZoomOutBtn"),
   documentFitBtn: document.querySelector("#documentFitBtn"),
-  // ⋯ → Teleprompter on a PDF (src/documents/pdf-teleprompter.js).
-  documentTeleprompterBtn: document.querySelector("#documentTeleprompterBtn"),
+  // ⋯ → Teleprompter on a PDF (src/documents/pdf-teleprompter.js). Found by
+  // its action, as the menu's other rows are: an id in .document-head is read
+  // by pdf-preview-check as a control that must have a box on screen.
+  documentTeleprompterBtn: document.querySelector('#documentMoreMenu [data-document-action="teleprompter"]'),
   // Two modes, as buttons in the view-mode row rather than rows in the ⋯ menu:
   // dark page read as missing while it was buried there, and region select is
   // the only way to highlight a figure at all.
