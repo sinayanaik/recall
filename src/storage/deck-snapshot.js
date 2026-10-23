@@ -5,6 +5,7 @@ import { showCard } from "../cards/card-view.js?v=__BUILD__";
 import { resetStudyDeck, syncResults } from "../cards/study.js?v=__BUILD__";
 import { applyDeckMetaCategories, quickNoteCategoryForCard } from "../cloud/web-decks.js?v=__BUILD__";
 import { deckStorageKey } from "../core/constants.js?v=__BUILD__";
+import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { normalizeCardStatus } from "../export/markdown.js?v=__BUILD__";
 import { revokeLocalImageUrls } from "../images/outbox.js?v=__BUILD__";
@@ -20,7 +21,7 @@ import { isQuickNotesDeck } from "../quick-notes/categories.js?v=__BUILD__";
 import { setDeckAutosaveStorageFailed } from "./quota.js?v=__BUILD__";
 import { setViewMode } from "../ui/view-mode.js?v=__BUILD__";
 import { hideHome } from "../ui/home-state.js?v=__BUILD__";
-import { activeDocSlot, documentTabForOpenDeck, hasDocSlot, onDocumentSurface } from "../documents/doc-slot.js?v=__BUILD__";
+import { DOC_SLOT_NOTEBOOK, activeDocSlot, documentTabForOpenDeck, hasDocSlot, onDocumentSurface } from "../documents/doc-slot.js?v=__BUILD__";
 import { deckTabKey } from "../storage/deck-tab.js?v=__BUILD__";
 import { clearOpenDeckBase } from "./open-deck-base.js?v=__BUILD__";
 
@@ -211,6 +212,14 @@ export function loadDeckSnapshot(payload, titleHint = "", append = false, { keep
     // otherwise leak its labels onto same-id cards and get pushed to the cloud.
     state.categoryById = categoryById;
     applyDeckMetaCategories(payload.meta, payload.deckId, payload.deckTitle);
+    // Read before anything is repainted: whether the surface the reader is on
+    // was showing a document, for the keepPlace exception further down. From
+    // the classes refreshDocumentTab and refreshHandwritingTab last published
+    // on the stage — what was on screen — not from state.meta, which an
+    // in-place merge has already rewritten by the time it calls this.
+    const stage = el.documentStage;
+    const documentWasShown = Boolean(keepPlace && onDocumentSurface() && stage
+      && !stage.classList.contains(activeDocSlot() === DOC_SLOT_NOTEBOOK ? "has-no-notebook" : "has-no-document"));
     // Carry the whole meta bag forward — see the loadWebDeck sibling of this
     // line for why (per-deck fields beyond quick_notes categories).
     state.meta = payload.meta && typeof payload.meta === "object" ? payload.meta : {};
@@ -273,7 +282,11 @@ export function loadDeckSnapshot(payload, titleHint = "", append = false, { keep
     // The one exception is the case where moving them is the correct answer:
     // they are looking at a document that the other device has just removed.
     // Deliberately narrow — a deck whose paper is gone has nothing to show on
-    // that tab — and it is exactly the new documentRemovedHere stat.
+    // that tab — and it is exactly the new documentRemovedHere stat. WAS
+    // looking at one: a deck that never had a paper shows the offer to attach
+    // one on that tab, and asking only "is there a document now?" sent the
+    // reader who had just pressed the tab back to Notes on the next autosave,
+    // which comes through here too (adoptIntoOpenDeck) a moment later.
     // deckKey, not currentDeckKey(): state.localDeckId is assigned on the line
     // AFTER this function returns — the same reason the resume below is in a
     // microtask — so reading it here asks about a deck with no local id and
@@ -283,7 +296,7 @@ export function loadDeckSnapshot(payload, titleHint = "", append = false, { keep
     // refresh: that is a sync rewriting the deck underneath, not a choice.
     if (!keepPlace) hideHome();
     if (!keepPlace) setViewMode(documentTabForOpenDeck(state.meta, deckTabKey(state.deckId, deckKey)));
-    else if (onDocumentSurface() && !hasDocSlot(activeDocSlot(), state.meta)) setViewMode(documentTabForOpenDeck(state.meta, deckTabKey(state.deckId, deckKey)));
+    else if (documentWasShown && !hasDocSlot(activeDocSlot(), state.meta)) setViewMode(documentTabForOpenDeck(state.meta, deckTabKey(state.deckId, deckKey)));
     // keepDocument, and this is the whole of "the pages blank and blink every
     // few minutes while I read". Painting the document surface from here asks
     // openDocumentView whether the paper is already open, and it answers by
