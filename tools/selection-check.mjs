@@ -594,6 +594,38 @@ try {
   // extend a selection out of it into the row below. Kept as a guard, since
   // nothing about that is guaranteed and the row is one CSS change away from
   // being reachable.
+  // What a drag over a card face did, for when it selected nothing. The cause
+  // of that has differed between machines (it passed here and failed on the CI
+  // runner), so the failure says what it saw instead of only that it failed:
+  // what the press landed on, whether the browser started a selection and
+  // whether anything cancelled it, how long the selection got mid-drag, and
+  // whether the card's swipe took the gesture.
+  const armCardDragProbe = () => page.evaluate(() => {
+    const probe = { selectstart: 0, prevented: 0, changes: 0, longest: 0, swiping: false, down: "" };
+    const card = document.querySelector(".card");
+    const on = (type, fn) => document.addEventListener(type, fn, true);
+    on("pointerdown", (event) => {
+      const hit = document.elementFromPoint(event.clientX, event.clientY);
+      const caret = document.caretPositionFromPoint?.(event.clientX, event.clientY)?.offsetNode;
+      probe.down = `${hit?.tagName?.toLowerCase() || "?"}.${String(hit?.className || "").split(" ")[0]} caret=${caret?.nodeType === 3 ? "text" : caret?.nodeName || "none"} userSelect=${hit ? getComputedStyle(hit).userSelect : "?"}`;
+    });
+    on("selectstart", (event) => {
+      probe.selectstart += 1;
+      // Read after every listener has run.
+      setTimeout(() => { if (event.defaultPrevented) probe.prevented += 1; }, 0);
+    });
+    on("selectionchange", () => {
+      probe.changes += 1;
+      probe.longest = Math.max(probe.longest, String(window.getSelection() || "").length);
+    });
+    on("pointermove", () => { if (card?.classList.contains("is-dragging")) probe.swiping = true; });
+    window.__cardDragProbe = probe;
+  });
+  const readCardDragProbe = async () => {
+    const p = await page.evaluate(() => window.__cardDragProbe || null);
+    return p ? ` [press on ${p.down}; selectstart ${p.selectstart}x (${p.prevented} cancelled), ${p.changes} selectionchange, longest ${p.longest} chars, swipe engaged ${p.swiping}]` : "";
+  };
+
   await check("a card answer selects without pulling in the button row", async () => {
     await page.evaluate(async () => {
       const api = window.__api;
@@ -624,8 +656,9 @@ try {
     // selects the face's text. Asserted before the hazard below, because if
     // this fails then "the button row is not in the selection" is true for the
     // uninteresting reason that nothing is.
+    await armCardDragProbe();
     const within = await dragTo({ x: face.x, y: face.y }, { x: face.x + 220, y: face.y }, 25);
-    if (within.len === 0) return "a drag that stays on the card face selects nothing at all";
+    if (within.len === 0) return `a drag that stays on the card face selects nothing at all${await readCardDragProbe()}`;
     const sel = await dragTo({ x: face.x, y: face.y }, { x: face.x + 60, y: face.controlsTop + 20 }, 30);
     if (sel.len === 0) return "the selection collapsed to nothing";
     if (/Review|Prev|Known|Shuffle|Restart/.test(sel.text)) {
@@ -651,8 +684,9 @@ try {
       return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
     });
     if (!face) return "the card face did not render";
+    await armCardDragProbe();
     const sel = await dragTo({ x: face.x, y: face.y }, { x: face.x + 220, y: face.y }, 5);
-    return sel.len > 0 ? null : "five 44px moves across the words selected nothing — the swipe took the drag";
+    return sel.len > 0 ? null : `five 44px moves across the words selected nothing${await readCardDragProbe()}`;
   });
 
   // ...while a drag that starts in the card's EMPTY space is still a swipe, and
