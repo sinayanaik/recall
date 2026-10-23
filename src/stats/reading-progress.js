@@ -15,7 +15,7 @@
 // for the book itself, and counting that as "Ch 1/1" would say nothing.
 
 import { el, isDisplayed } from "../core/dom.js?v=__BUILD__";
-import { notesAutoScrolling } from "../core/gesture.js?v=__BUILD__";
+import { documentAutoScrolling, notesAutoScrolling } from "../core/gesture.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { documentOutlineEntries } from "../documents/pdf-outline.js?v=__BUILD__";
 import { deckPdfById, PDF_PRIMARY_ID } from "../documents/pdf-multi.js?v=__BUILD__";
@@ -282,7 +282,7 @@ function observePosition(reading, now = Date.now()) {
   // not a measurement of the speed they read at — and that measurement is the
   // teleprompter's own default speed, so learning from it would feed itself.
   // The window starts again from wherever it stops.
-  if (reading.kind === "notes" && notesAutoScrolling()) {
+  if ((reading.kind === "notes" && notesAutoScrolling()) || (reading.kind === "pdf" && documentAutoScrolling())) {
     resetSpeedWindow(reading, now);
     return;
   }

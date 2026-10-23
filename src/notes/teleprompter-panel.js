@@ -1,18 +1,25 @@
 // The teleprompter's surface: the reading band over the note, the bar at the
 // foot of it, and the settings sheet the bar's ⚙ opens.
 //
-// What it does lives in src/notes/teleprompter.js; this file only draws. It is
+// Two teleprompters draw with it: the note's (src/notes/teleprompter.js) and
+// the PDF's (src/documents/pdf-teleprompter.js). It is built for one `kind` at
+// a time — the PDF's sheet has no type to set and a layout to choose instead —
+// and there is only ever one: building it for the other kind first evicts the
+// session that had it, through that session's own `evict` handler.
+//
+// What either does lives in its own module; this file only draws. It is
 // handed two callbacks when it is built — action(name) for the bar's buttons
 // and setting(key, value, { commit }) for the sheet — and it imports nothing of
 // that module's, so the edge runs one way: the session reaches in to paint, the
 // surface reaches back only through what it was given.
 //
-// ── Inside #notesStage, on purpose ─────────────────────────────────────────
+// ── Inside the stage, on purpose ───────────────────────────────────────────
 //
-// All three are children of the stage, which is already the positioned box the
-// contents drawer is placed against (styles/11-chrome.css). So they leave with
-// it: Cards, a PDF, the raw editor and Home all hide the stage, and none of them
-// needs telling to take the teleprompter away with it.
+// All three are children of the stage (#notesStage, or #documentStage for a
+// PDF), which is already the positioned box the contents drawer is placed
+// against (styles/11-chrome.css). So they leave with it: Cards, a PDF, the raw
+// editor and Home all hide the notes stage, and none of them needs telling to
+// take the teleprompter away with it.
 //
 // ── The band is never measured while the text moves ────────────────────────
 //
@@ -49,6 +56,19 @@ export const TELEPROMPTER_FONTS = [
 export const TELEPROMPTER_COUNTDOWNS = [0, 3, 5];
 
 export const TELEPROMPTER_AUTO_RESUMES = [0, 3, 5, 10];
+
+// The PDF's layout: find the columns on each page, or take the reader's word.
+export const TELEPROMPTER_COLUMNS = [
+  ["auto", "Auto"],
+  ["one", "One"],
+  ["two", "Two"]
+];
+
+// What the bar says at the end, per kind.
+const END_TEXT = {
+  notes: "End of the notes",
+  pdf: "End of the PDF"
+};
 
 // After this long with the text moving and nobody near the bar, it fades back
 // so it is not the brightest thing below the band.
@@ -132,7 +152,7 @@ function tpSection(title, ...rows) {
   return section;
 }
 
-function buildTeleprompterSheet() {
+function buildTeleprompterSheet(kind) {
   const sheetNode = tpNode("div", "tp-sheet", { role: "dialog", "aria-label": "Teleprompter settings", id: "teleprompterSheet" });
   sheetNode.hidden = true;
   const head = tpNode("div", "tp-sheet-head");
@@ -145,8 +165,11 @@ function buildTeleprompterSheet() {
   const body = tpNode("div", "tp-sheet-body");
   body.append(
     tpSection("Pace", tpRangeRow("wpm"), mine),
-    tpSection("Text", tpRangeRow("fontSize"), tpRangeRow("lineHeight"), tpRangeRow("width"),
-      tpChoiceRow("font", "Font", TELEPROMPTER_FONTS)),
+    kind === "pdf"
+      ? tpSection("Layout", tpChoiceRow("columns", "Columns", TELEPROMPTER_COLUMNS),
+        tpSwitchRow("zoomColumn", "Zoom to the column", "A column fills the width, and the view follows it"))
+      : tpSection("Text", tpRangeRow("fontSize"), tpRangeRow("lineHeight"), tpRangeRow("width"),
+        tpChoiceRow("font", "Font", TELEPROMPTER_FONTS)),
     tpSection("Reading band", tpRangeRow("bandPos"), tpRangeRow("bandSize"), tpRangeRow("dim"),
       tpSwitchRow("band", "Show the band", "A soft bar across the line to read")),
     tpSection("While it runs",
@@ -162,7 +185,7 @@ function buildTeleprompterSheet() {
 
 // ── The bar ─────────────────────────────────────────────────────────────────
 
-function buildTeleprompterBar() {
+function buildTeleprompterBar(kind) {
   const bar = tpNode("div", "tp-bar", { role: "toolbar", "aria-label": "Teleprompter" });
   const play = tpButton("tp-play", "play", "Pause (Space)", "");
   const playIcon = tpNode("span", "tp-play-ico", { "aria-hidden": "true" });
@@ -180,11 +203,13 @@ function buildTeleprompterBar() {
     tpButton("tp-faster", "faster", "Faster (↑)", "+")
   );
 
+  // A PDF's type is the page's own; zooming is the pager's and the column's.
   const size = tpNode("div", "tp-size");
   size.append(
     tpButton("tp-smaller", "smaller", "Smaller text (−)", "A−"),
     tpButton("tp-bigger", "bigger", "Bigger text (+)", "A+")
   );
+  size.hidden = kind === "pdf";
 
   const settings = tpButton("tp-settings", "settings", "Teleprompter settings", "⚙", { "aria-expanded": "false", "aria-controls": "teleprompterSheet" });
   const close = tpButton("tp-close", "exit", "Leave the teleprompter (Esc)", "✕");
@@ -192,7 +217,7 @@ function buildTeleprompterBar() {
   // What the bar says at the end of the note, in place of the controls.
   const end = tpNode("div", "tp-end");
   end.append(
-    tpNode("span", "tp-end-text", { text: "End of the notes" }),
+    tpNode("span", "tp-end-text", { text: END_TEXT[kind] || END_TEXT.notes }),
     tpButton("tp-again", "again", "Start again from the top", "↺ From the top"),
     tpButton("tp-done", "exit", "Leave the teleprompter", "Done")
   );
@@ -271,16 +296,26 @@ function onPanelClick(event) {
   if (button) teleprompterPanel.handlers.action(button.dataset.tpAction);
 }
 
-export function ensureTeleprompterPanel(stage, handlers) {
-  if (teleprompterPanel) {
+// `handlers.evict`, when given, is how the panel takes itself back from this
+// session for the other kind: it should end the session (which removes the
+// panel) without moving anything on a surface the reader is not looking at.
+export function ensureTeleprompterPanel(stage, handlers, kind = "notes") {
+  if (teleprompterPanel && teleprompterPanel.kind === kind && teleprompterPanel.stage === stage) {
     teleprompterPanel.handlers = handlers;
     return teleprompterPanel;
   }
+  if (teleprompterPanel) {
+    const previous = teleprompterPanel.handlers;
+    if (previous !== handlers) previous?.evict?.();
+    removeTeleprompterPanel();
+  }
   const { overlayNode, count } = buildTeleprompterOverlay();
-  const bar = buildTeleprompterBar();
-  const { sheetNode, mine } = buildTeleprompterSheet();
+  const bar = buildTeleprompterBar(kind);
+  const { sheetNode, mine } = buildTeleprompterSheet(kind);
+  overlayNode.dataset.kind = kind;
+  bar.bar.dataset.kind = kind;
   stage.append(overlayNode, bar.bar, sheetNode);
-  teleprompterPanel = { ...bar, overlay: overlayNode, count, sheet: sheetNode, mine, stage, handlers, fadeTimer: 0 };
+  teleprompterPanel = { ...bar, overlay: overlayNode, count, sheet: sheetNode, mine, stage, handlers, kind, fadeTimer: 0 };
   bar.bar.addEventListener("click", onPanelClick);
   sheetNode.addEventListener("click", onPanelClick);
   sheetNode.addEventListener("input", (event) => onSheetInput(event, false));
@@ -314,8 +349,9 @@ export function teleprompterPanelContains(node) {
 
 // `box` is the note's scrollport inside the stage, and `band` the band's top
 // and height inside that: all in px, all measured by the session on a resize
-// or a settings change.
-export function placeTeleprompterBand({ top, left, width, height, bandTop, bandHeight, dim, showBand }) {
+// or a settings change. `bandLeft` and `bandWidth`, when given, narrow the band
+// to one column of a PDF; without them it runs the width of the box.
+export function placeTeleprompterBand({ top, left, width, height, bandTop, bandHeight, bandLeft = null, bandWidth = null, dim, showBand }) {
   if (!teleprompterPanel) return;
   const style = teleprompterPanel.overlay.style;
   style.setProperty("--tp-box-top", `${top}px`);
@@ -324,6 +360,13 @@ export function placeTeleprompterBand({ top, left, width, height, bandTop, bandH
   style.setProperty("--tp-box-height", `${height}px`);
   style.setProperty("--tp-band-top", `${bandTop}px`);
   style.setProperty("--tp-band-height", `${bandHeight}px`);
+  if (Number.isFinite(bandLeft) && Number.isFinite(bandWidth)) {
+    style.setProperty("--tp-band-left", `${bandLeft}px`);
+    style.setProperty("--tp-band-width", `${bandWidth}px`);
+  } else {
+    style.removeProperty("--tp-band-left");
+    style.removeProperty("--tp-band-width");
+  }
   style.setProperty("--tp-dim", `${dim}%`);
   teleprompterPanel.overlay.classList.toggle("has-band", Boolean(showBand));
 }

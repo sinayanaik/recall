@@ -400,3 +400,117 @@ export function buildFixturePdf({
     links: linkSpec
   };
 }
+
+// ── A paper in two columns ──────────────────────────────────────────────────
+//
+// For the PDF teleprompter (tools/pdf-teleprompter-check.mjs), which reads a
+// page in the order it is read: the title and abstract across the page first,
+// then down the left column, then back up to the top of the right one. Letter
+// pages, 10pt type on a 13pt pitch, two columns of COLUMN_WIDTH with a gutter
+// of 22pt between them — the shape of a conference paper.
+//
+// `scanned` draws the same layout as a picture with no text in it: dark bars
+// for words, one shared image on every page. Pages 2 onward of the text build
+// have no title, just the two columns from the top.
+export const COLUMN_LEFT = 54;
+export const COLUMN_WIDTH = 241;
+export const COLUMN_GUTTER = 22;
+export const COLUMN_RIGHT = COLUMN_LEFT + COLUMN_WIDTH + COLUMN_GUTTER;
+export const COLUMN_PITCH = 13;
+export const COLUMN_SIZE = 10;
+const COLUMN_TOP = 740;
+const COLUMN_FIRST_PAGE_TOP = 600;
+const COLUMN_BOTTOM = 72;
+const COLUMN_SENTENCE = "the reader follows one column down to its foot and then the next";
+
+function columnLines(top) {
+  return Math.floor((top - COLUMN_BOTTOM) / COLUMN_PITCH) + 1;
+}
+
+function columnsPageStream(pageNumber) {
+  const parts = [];
+  const top = pageNumber === 1 ? COLUMN_FIRST_PAGE_TOP : COLUMN_TOP;
+  if (pageNumber === 1) {
+    parts.push(`BT /F1 18 Tf 150 700 Td (${pdfString("Reading Two Columns in Order")}) Tj ET`);
+    for (let index = 0; index < 4; index += 1) {
+      const text = `Abstract line ${index + 1}: a paragraph set across the whole page, above both columns of the paper.`;
+      parts.push(`BT /F1 ${COLUMN_SIZE} Tf 72 ${660 - index * COLUMN_PITCH} Td (${pdfString(text)}) Tj ET`);
+    }
+  }
+  const count = columnLines(top);
+  [COLUMN_LEFT, COLUMN_RIGHT].forEach((x, side) => {
+    for (let index = 0; index < count; index += 1) {
+      const label = `${side ? "R" : "L"}${pageNumber}.${index + 1}`;
+      const text = `${label} ${COLUMN_SENTENCE}`.slice(0, 48);
+      parts.push(`BT /F1 ${COLUMN_SIZE} Tf ${x} ${top - index * COLUMN_PITCH} Td (${pdfString(text)}) Tj ET`);
+    }
+  });
+  return parts.join("\n");
+}
+
+// The scanned page, at half a point a pixel: paper 240, ink 30.
+function columnsScanImage() {
+  const w = PAGE_WIDTH / 2;
+  const h = PAGE_HEIGHT / 2;
+  const rows = [];
+  for (let y = 0; y < h; y += 1) rows.push(new Array(w).fill(240));
+  const bar = (x0, x1, baselineY, height) => {
+    // baselineY in PDF points from the bottom; the image's row 0 is the top.
+    const bottom = Math.round((PAGE_HEIGHT - baselineY) / 2);
+    let x = Math.round(x0 / 2);
+    let seed = (bottom * 31 + x) % 23;
+    while (x < Math.round(x1 / 2)) {
+      seed = (seed * 17 + 5) % 23;
+      const word = Math.min(Math.round(x1 / 2) - x, 6 + (seed % 9));
+      for (let row = bottom - height; row < bottom; row += 1) {
+        for (let col = x; col < x + word; col += 1) rows[row][col] = 30;
+      }
+      x += word + 3;
+    }
+  };
+  bar(150, 462, 700, 7);
+  for (let index = 0; index < 4; index += 1) bar(72, 540, 660 - index * COLUMN_PITCH, 4);
+  const count = columnLines(COLUMN_FIRST_PAGE_TOP);
+  [COLUMN_LEFT, COLUMN_RIGHT].forEach((x) => {
+    for (let index = 0; index < count; index += 1) bar(x, x + COLUMN_WIDTH, COLUMN_FIRST_PAGE_TOP - index * COLUMN_PITCH, 4);
+  });
+  return { w, h, pixels: rows.map((row) => String.fromCharCode(...row)).join("") };
+}
+
+export function buildColumnsPdf({ pages = 3, scanned = false } = {}) {
+  const objects = [];
+  const push = (body) => { objects.push(body); return objects.length; };
+  const catalogId = push("");
+  const pagesId = push("");
+  const fontId = push("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>");
+  const scan = scanned ? columnsScanImage() : null;
+  const scanId = scan
+    ? push(`<< /Type /XObject /Subtype /Image /Width ${scan.w} /Height ${scan.h} /ColorSpace /DeviceGray `
+      + `/BitsPerComponent 8 /Length ${scan.pixels.length} >>\nstream\n${scan.pixels}\nendstream`)
+    : 0;
+  const pageIds = [];
+  for (let pageNumber = 1; pageNumber <= pages; pageNumber += 1) {
+    const stream = scan ? `q ${PAGE_WIDTH} 0 0 ${PAGE_HEIGHT} 0 0 cm /Im1 Do Q` : columnsPageStream(pageNumber);
+    const contentId = push(`<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`);
+    const resources = scan ? `<< /XObject << /Im1 ${scanId} 0 R >> >>` : `<< /Font << /F1 ${fontId} 0 R >> >>`;
+    pageIds.push(push(
+      `<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 ${PAGE_WIDTH} ${PAGE_HEIGHT}] `
+      + `/Resources ${resources} /Contents ${contentId} 0 R >>`
+    ));
+  }
+  const title = scanned ? "The Scanned Columns" : "The Columns Paper";
+  const infoId = push(`<< /Title (${title}) /Author (Recall Checks) >>`);
+  objects[catalogId - 1] = `<< /Type /Catalog /Pages ${pagesId} 0 R >>`;
+  objects[pagesId - 1] = `<< /Type /Pages /Kids [${pageIds.map((id) => `${id} 0 R`).join(" ")}] /Count ${pageIds.length} >>`;
+  let pdf = "%PDF-1.4\n";
+  const offsets = [];
+  objects.forEach((body, index) => {
+    offsets.push(pdf.length);
+    pdf += `${index + 1} 0 obj\n${body}\nendobj\n`;
+  });
+  const xrefStart = pdf.length;
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  offsets.forEach((offset) => { pdf += `${String(offset).padStart(10, "0")} 00000 n \n`; });
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root ${catalogId} 0 R /Info ${infoId} 0 R >>\nstartxref\n${xrefStart}\n%%EOF\n`;
+  return { bytes: Uint8Array.from(pdf, (c) => c.charCodeAt(0) & 0xff), pages, title };
+}

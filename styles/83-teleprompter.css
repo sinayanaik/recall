@@ -526,6 +526,59 @@
   font-size: 0.82rem;
 }
 
+/* ── A PDF ──────────────────────────────────────────────────────────────────
+   src/documents/pdf-teleprompter.js. The same band and bar, over #documentView
+   inside #documentStage. The PDF has no size to set, so the bar has no A−/A+;
+   the band may be narrowed to the column being read; and the floating page
+   control steps aside, because the bar takes the foot of the page. */
+.tp-size[hidden] {
+  display: none;
+}
+
+.tp-overlay[data-kind="pdf"] .tp-band {
+  right: auto;
+  left: var(--tp-band-left, 0px);
+  width: var(--tp-band-width, 100%);
+  transition: opacity 0.2s ease;
+}
+
+/* While the view glides from one column or page to the next the band is not
+   on any line, so it steps back until the text has landed under it. */
+.tp-overlay.is-gliding .tp-band {
+  opacity: 0;
+}
+
+#documentStage.is-teleprompter .document-pager {
+  display: none;
+}
+
+#documentStage.has-reading-progress > .tp-bar {
+  bottom: calc(max(12px, var(--safe-bottom)) + 18px);
+}
+
+#documentStage.has-reading-progress > .tp-sheet {
+  bottom: calc(max(12px, var(--safe-bottom)) + 80px);
+}
+
+/* The lead-in and run-out, as on a note: the first line of the first page can
+   start in the band and the last line of the last page can reach it. On the
+   pages' box, not the scroller, so nothing that measures a page from the
+   scroller's padding is moved. */
+#documentView.is-teleprompter > .pdf-pages::before,
+#documentView.is-teleprompter > .pdf-pages::after {
+  content: "";
+  flex: none;
+  pointer-events: none;
+}
+
+#documentView.is-teleprompter > .pdf-pages::before {
+  height: var(--tp-lead, 0px);
+}
+
+#documentView.is-teleprompter > .pdf-pages::after {
+  height: var(--tp-runout, 0px);
+}
+
 /* ── A phone ────────────────────────────────────────────────────────────────
    The bar spans the foot of the panel, its groups spread out, so each control
    is a full thumb's width; the sheet becomes a sheet over the bottom. */

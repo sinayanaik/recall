@@ -330,3 +330,19 @@ export function setNotesAutoScrolling(active) {
 export function notesAutoScrolling() {
   return notesAutoScrollActive;
 }
+
+// ...and the PDF's (src/documents/pdf-teleprompter.js), which moves
+// #documentView the same way. Asked by the scroll listener in
+// src/documents/pdf-view.js, which otherwise counts every scroll as the reader
+// moving and holds back rendering until they stop — and a teleprompter never
+// stops, so the pages ahead of it would never be drawn. And by the same
+// reading-speed sampler, for the same reason as the note's.
+let documentAutoScrollActive = false;
+
+export function setDocumentAutoScrolling(active) {
+  documentAutoScrollActive = Boolean(active);
+}
+
+export function documentAutoScrolling() {
+  return documentAutoScrollActive;
+}

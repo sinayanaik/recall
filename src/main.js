@@ -183,6 +183,7 @@ import { initDocumentRegionSelect, noteRegionDocumentOpened, setRegionSelect, to
 import { paintPageNoteBadges, paintPdfPageNotesButton, readPdfPageNotesPreference, refreshPdfPageNotes, repaintPdfPageNotes, setDocumentNoteRevealHook, setPdfPageNotesFlag, togglePdfPageNotes } from "./documents/pdf-page-notes.js?v=__BUILD__";
 import { initReadingRail, refreshReadingRail, refreshReadingRailModes } from "./ui/reading-rail.js?v=__BUILD__";
 import { initTeleprompter, setTeleprompterChangedHook } from "./notes/teleprompter.js?v=__BUILD__";
+import { initPdfTeleprompter, setPdfTeleprompterChangedHook } from "./documents/pdf-teleprompter.js?v=__BUILD__";
 import { initScreenOrientation, setBeforeOrientationChangeHandler, setOrientationModesHandler, toggleLandscape } from "./ui/orientation.js?v=__BUILD__";
 import { attachPdfToOpenDeck, importPdfFile, reportPdfImportCrash } from "./import/pdf.js?v=__BUILD__";
 import { flushActivity, initActivityLog, noteViewSwitch } from "./stats/activity.js?v=__BUILD__";
@@ -1229,6 +1230,9 @@ onDomReady(() => {
   // imports, so it cannot be imported back.
   setTeleprompterChangedHook(refreshReadingRailModes);
   initTeleprompter();
+  // ...and the PDF's (src/documents/pdf-teleprompter.js), the same way.
+  setPdfTeleprompterChangedHook(refreshReadingRailModes);
+  initPdfTeleprompter();
   // The Landscape switch: write down where the reader is on both reading
   // surfaces before the screen turns, so the holds that follow the re-flow put
   // them back there (src/notes/resize-hold.js, relayoutDocumentHoldingReader).
@@ -4250,6 +4254,9 @@ el.documentMoreMenu?.addEventListener("click", async (event) => {
     toggleReadingProgressShown();
     return;
   }
+  // Its own click listener starts and stops it (initPdfTeleprompter), as the
+  // notes menu's row does; the menu only had to close.
+  if (action === "teleprompter") return;
   // The notebook's rows — the paper and the tear-out. Handled by the module that
   // owns those operations rather than here, and returning true is how it says it
   // took the press.

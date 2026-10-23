@@ -120,6 +120,10 @@
 //                   leaving? Paged mode suspended and restored, the end said,
 //                   another tab pausing it, the raw editor ending it, and the
 //                   bar fitting a 390px phone. CDP directly, like notes-menu
+//   pdf-teleprompt  ...and does a PDF do the same IN READING ORDER: a title
+//                   and abstract first, down the left column, back up to the
+//                   head of the right one, then the next page — zoomed to the
+//                   column on a phone, from a text layer and from a scan?
 //   style           does a Style panel setting reach the element it names?
 //   highlight       does highlighting mark the thing that was SELECTED?
 //   note-link-brws  can you find a note to link to WITHOUT remembering its
@@ -345,6 +349,10 @@ const checks = [
   // dragged with everything under it, a heading nested into another — and the
   // reading of where a link inside a PDF goes. Pure, imports nothing.
   ["toc-arrange   ", ["node", ["tools/pdf-toc-arrange-check.mjs"], ROOT]],
+  // The order a PDF page is read in, for the PDF teleprompter: one column, two
+  // columns, a title and abstract across both, a caption cutting them, and a
+  // scan with no text read from its picture. Pure, imports nothing.
+  ["reading-path  ", ["node", ["tools/pdf-reading-path-check.mjs"], ROOT]],
   // Where a paper's BYTES live. getDocument is the one place those bytes are
   // resolved and four surfaces sit on it, so the resolution order — device,
   // then the reader's bucket, then Drive, then the old Supabase bucket for
@@ -527,6 +535,10 @@ const checks = [
     ["mobile-menu   ", ["node", ["tools/mobile-menu-check.mjs"], ROOT]],
     ["notes-menu    ", ["node", ["tools/notes-menu-check.mjs"], ROOT]],
     ["teleprompter  ", ["node", ["tools/teleprompter-check.mjs"], ROOT]],
+    // ...and the PDF's: down the left column, back up to the right, on to the
+    // next page, zoomed to the column on a phone — from a text layer and from
+    // a scan — with the pages ahead still drawn while it moves.
+    ["pdf-teleprompt", ["node", ["tools/pdf-teleprompter-check.mjs"], ROOT]],
     ["style         ", ["node", ["tools/style-check.mjs"], ROOT]],
     ["highlight     ", ["node", ["tools/highlight-check.mjs"], ROOT]],
     ["note-editor   ", ["node", ["tools/note-editor-check.mjs"], ROOT]],
