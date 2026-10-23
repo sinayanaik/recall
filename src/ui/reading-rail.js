@@ -76,6 +76,7 @@ import { setViewMode } from "./view-mode.js?v=__BUILD__";
 import { toggleNotesToc } from "../notes/toc.js?v=__BUILD__";
 import { goToBookmark } from "../notes/bookmark.js?v=__BUILD__";
 import { toggleTeleprompter } from "../notes/teleprompter.js?v=__BUILD__";
+import { togglePdfTeleprompter } from "../documents/pdf-teleprompter.js?v=__BUILD__";
 import { openStylePanel } from "../cloud/style-sync.js?v=__BUILD__";
 import { reconcileAllDecks } from "../sync/reconcile.js?v=__BUILD__";
 import { fitDocumentToWidth, togglePdfInvert } from "../documents/pdf-view.js?v=__BUILD__";
@@ -210,7 +211,7 @@ export function refreshReadingRailRows() {
   // decided by the theme on generated paper (see togglePdfInvert, which refuses
   // there), and there are no figures on blank paper to draw a region round.
   const onNotebook = state.viewMode === "handwriting";
-  const NOT_ON_NOTEBOOK = new Set(["dark-page", "region"]);
+  const NOT_ON_NOTEBOOK = new Set(["dark-page", "region", "pdf-teleprompter"]);
   tray.querySelectorAll("[data-rail-scope]").forEach((node) => {
     const scope = node.dataset.railScope;
     const inScope = scope === "document" ? documentSurfaceUp : scope === state.viewMode;
@@ -305,6 +306,7 @@ export function refreshReadingRailModes() {
   // src/main.js registers — the session can start and end by Escape, Back, the
   // bar's ✕ or a change of file, none of them a press on this row.
   mirrorMode("teleprompter", el.teleprompterBtn);
+  mirrorMode("pdf-teleprompter", el.documentTeleprompterBtn);
   // Landscape is offered only where the screen can actually be locked
   // (src/ui/orientation.js unhides the original), so the copy follows the
   // original's hidden as well as its pressed state.
@@ -417,6 +419,7 @@ export function initReadingRail() {
     else if (action === "contents") toggleContents();
     else if (action === "bookmark-go") goToBookmark();
     else if (action === "teleprompter") toggleTeleprompter();
+    else if (action === "pdf-teleprompter") togglePdfTeleprompter();
     else if (action === "style") openStylePanel();
     else if (action === "sync") reconcileAllDecks({ explicit: true });
     else if (action === "shutdown") shutDownApp();

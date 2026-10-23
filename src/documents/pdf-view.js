@@ -42,7 +42,7 @@ import { paintDocumentHighlights } from "./pdf-highlights.js?v=__BUILD__";
 import { TEXT_CH_START_ATTR, keptTextItem, textItemGap, textItemShadows } from "./pdf-selection.js?v=__BUILD__";
 import { expectPdfPagePaint, firstPdfPagePainted, notePdfAnimationFrame, notePdfAnimationFramesObserved, notePdfCanvasSetup, notePdfInteractionFrame, notePdfInteractionLongTask, notePdfWastedRenders, onPdfDiagnosticsChange, pdfDiagnosticsOn, pendingPdfPagePaint, recordPdfTimingAfterPaint, samplePdfTiming, setPdfReaderTest } from "./pdf-timing.js?v=__BUILD__";
 import { buildDocumentOutline, clearDocumentOutline, setDocumentOutlinePage } from "./pdf-outline.js?v=__BUILD__";
-import { inkPenIsDown, setDocumentTextWake, touchGestureHoldsSurface } from "../core/gesture.js?v=__BUILD__";
+import { documentAutoScrolling, inkPenIsDown, setDocumentTextWake, touchGestureHoldsSurface } from "../core/gesture.js?v=__BUILD__";
 import { DOC_SLOT_DOC, DOC_SLOT_NOTEBOOK, activeDocSlot, docSlotMeta, docSlotReadingPositionKey, documentStoreKey, normalizeDocSlot, onDocumentSurface } from "./doc-slot.js?v=__BUILD__";
 import { activePdfId, deckPdfById, deckPdfs, PDF_PRIMARY_ID, pdfStoreKey } from "./pdf-multi.js?v=__BUILD__";
 import { isDarkThemeActive } from "../ui/theme-catalog.js?v=__BUILD__";
@@ -3117,7 +3117,10 @@ function watchDocumentInteraction() {
   view.addEventListener("touchcancel", onTouches, { passive: true });
   view.addEventListener("wheel", () => noteDocumentInteraction(), { passive: true });
   view.addEventListener("scroll", () => {
-    noteDocumentInteraction();
+    // The PDF teleprompter's own frames are not the reader moving: holding
+    // renders back until it stopped would leave the pages it is scrolling
+    // towards undrawn for as long as it plays.
+    if (!documentAutoScrolling()) noteDocumentInteraction();
     if (awakeTextPages.size) sleepDocumentTextLayers();
     const at = performance.now();
     const previous = lastScroll;

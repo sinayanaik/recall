@@ -20,6 +20,7 @@ import { closeNotesHeadMore, isNotesHeadMoreOpen } from "../notes/notes-head-ove
 import { commitNotesEditIfActive, isNotesEditing } from "../notes/notes-view.js?v=__BUILD__";
 import { closeNotesToc, isNotesTocOpen } from "../notes/toc.js?v=__BUILD__";
 import { exitTeleprompter, teleprompterOnScreen } from "../notes/teleprompter.js?v=__BUILD__";
+import { exitPdfTeleprompter, pdfTeleprompterOnScreen } from "../documents/pdf-teleprompter.js?v=__BUILD__";
 import { closeTeleprompterSheet, isTeleprompterSheetOpen } from "../notes/teleprompter-panel.js?v=__BUILD__";
 import { closeClozePanel } from "../panels/cloze-panel.js?v=__BUILD__";
 import { closeAppInfoModal } from "../pwa/app-info.js?v=__BUILD__";
@@ -159,6 +160,9 @@ export const OVERLAY_LAYERS = [
   // is on screen — a session paused behind Cards or Home is not what a press
   // there means. Leaving puts the reader's line back where Notes keeps it.
   { isOpen: () => teleprompterOnScreen(), close: () => exitTeleprompter() },
+  // ...and the PDF's (src/documents/pdf-teleprompter.js), which gives back the
+  // reader's own zoom with the line on the band where it was.
+  { isOpen: () => pdfTeleprompterOnScreen(), close: () => exitPdfTeleprompter() },
 
   // The raw markdown editor, below even the TOC drawer — it is inline content,
   // not an overlay, so everything above genuinely sits on top of it and takes

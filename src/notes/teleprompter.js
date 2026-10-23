@@ -130,8 +130,9 @@ const WATCH_MS = 250;
 let settingsCache = null;
 
 // Any value inside the setting's floor and ceiling — not the slider's range,
-// which is only the comfortable part of it (see TELEPROMPTER_RANGES).
-function clampToRange(key, value) {
+// which is only the comfortable part of it (see TELEPROMPTER_RANGES). The PDF's
+// teleprompter (src/documents/pdf-teleprompter.js) keeps its numbers the same way.
+export function clampToRange(key, value) {
   const range = TELEPROMPTER_RANGES[key];
   const number = Number(value);
   if (!Number.isFinite(number)) return null;
@@ -174,8 +175,10 @@ function writeTeleprompterSettings(next) {
 }
 
 // The reader's own measured speed, rounded to the slider's step — or null
-// until this device has watched them read long enough to trust it.
-function measuredTeleprompterWpm() {
+// until this device has watched them read long enough to trust it. Words a
+// minute are measured on notes only (a PDF's speed is kept in pages), so the
+// PDF's teleprompter starts from this too.
+export function measuredTeleprompterWpm() {
   const model = readSpeedModel();
   if (!speedMeasured(model, "notes")) return null;
   const msPerWord = speedFor(model, "notes");
@@ -584,7 +587,10 @@ export function paintTeleprompterToggles() {
 
 const panelHandlers = {
   action: (name) => onTeleprompterAction(name),
-  setting: (key, value, options) => onTeleprompterSetting(key, value, options)
+  setting: (key, value, options) => onTeleprompterSetting(key, value, options),
+  // The PDF's teleprompter is taking the panel: this one is behind Cards or a
+  // PDF by then, so nothing is landed on a note nobody is looking at.
+  evict: () => exitTeleprompter({ land: false })
 };
 
 export function startTeleprompter() {
