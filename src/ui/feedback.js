@@ -169,6 +169,48 @@ function measureToastLift() {
   return Math.max(0, Math.round(lift));
 }
 
+// ── A pen writes through a notification ──────────────────────────────────
+//
+// The toasts sit at the foot of the screen, which on a PDF or a Canvas is paper.
+// A stroke begun where one was up landed on the toast — the page under it never
+// heard the pen — so for the three to ten seconds a "Saved" or a sync error was
+// showing, the bottom of the page could not be written on. A nib means to WRITE:
+// while the surface under it takes the pen (src/documents/pdf-ink.js registers
+// the test, so this file does not import the document layer), the column stops
+// being hit-tested for the length of the contact and the press is handed to
+// what is underneath. A finger and a mouse still tap, swipe and close a toast.
+let penWritesThrough = null;
+
+export function setToastPenPassThrough(test) {
+  penWritesThrough = typeof test === "function" ? test : null;
+}
+
+const TOAST_PEN_THROUGH_CLASS = "is-pen-through";
+
+function passPenThroughToasts(container) {
+  container.addEventListener("pointerdown", (event) => {
+    if (event.pointerType !== "pen" || !penWritesThrough) return;
+    container.classList.add(TOAST_PEN_THROUGH_CLASS);
+    const under = document.elementFromPoint(event.clientX, event.clientY);
+    if (!under || container.contains(under) || !penWritesThrough(event, under)) {
+      container.classList.remove(TOAST_PEN_THROUGH_CLASS);
+      return;
+    }
+    event.stopImmediatePropagation();
+    const release = (end) => {
+      if (end.pointerId !== event.pointerId) return;
+      container.classList.remove(TOAST_PEN_THROUGH_CLASS);
+      window.removeEventListener("pointerup", release, true);
+      window.removeEventListener("pointercancel", release, true);
+    };
+    window.addEventListener("pointerup", release, true);
+    window.addEventListener("pointercancel", release, true);
+    // The same press, aimed at the page. Its own handler takes pointer capture,
+    // so the rest of the stroke goes there without passing this way again.
+    under.dispatchEvent(new PointerEvent("pointerdown", event));
+  }, true);
+}
+
 // Transient toast notification, anchored bottom-centre (styles/84-toasts.css),
 // used to confirm that web-sync actions (sync, load, delete, rename, export,
 // quick note) actually completed — visible regardless of where the triggering
@@ -185,6 +227,7 @@ export function showToast(message, type = "success", { action = null } = {}) {
     container.className = "toast-container";
     container.setAttribute("role", "status");
     container.setAttribute("aria-live", "polite");
+    passPenThroughToasts(container);
     document.body.appendChild(container);
   }
 

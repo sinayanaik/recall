@@ -64,7 +64,7 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { findChrome, launchChrome, connect, openPage, emulatePhone } from "./cdp.mjs";
-import { pdfjsSources } from "./pdfjs-source.mjs";
+import { pdfjsSources, servePdfjsFromDisk } from "./pdfjs-source.mjs";
 import { buildFixturePdf } from "./pdf-fixture.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -234,6 +234,21 @@ try {
   // theme. That disagreement is the ordinary case and it is what the drawing
   // colours used to be decided by.
   await page.call("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: "light" }] });
+  // The page renderer's worker fetches pdf.js by its CDN URL. Answered from
+  // disk, so this check takes the same path on every machine — whether it
+  // could reach the CDN used to decide which kind of page it was looking at.
+  await servePdfjsFromDisk(client, page);
+  // ...and pages as CANVASES, not kept pictures (src/documents/pdf-pictures.js).
+  // Every case here reads the paper's own pixels and waits for
+  // `canvas.pdf-canvas`. Where the renderer keeps pictures — which it did on the
+  // CI runner, with a route to the CDN — a page is an <img> instead: each of
+  // those waits ran out its eight seconds, the grid case read "undefined" rules
+  // off a canvas that was not there, and the check overran its watchdog. Kept
+  // pictures are pdf-preview-check's subject, not this one's; the switch is the
+  // app's own diagnostic one, set before the app boots.
+  await page.call("Page.addScriptToEvaluateOnNewDocument", {
+    source: `try { localStorage.setItem("recall:pdfPictures", "0"); } catch (e) {}`
+  });
   await page.goto(`${server.base}/index.html`);
   const pdfjs = pdfjsSources();
   await page.evaluate(SETUP_SRC, API_SRC, pdfjs.main, pdfjs.worker);
@@ -483,6 +498,68 @@ try {
     midStroke.head > 0 && midStroke.tail > 0 && midStroke.total > midStroke.head + midStroke.tail,
     `head ${midStroke.head}, middle ${midStroke.total - midStroke.head - midStroke.tail}, nib ${midStroke.tail}`);
   check("...with nothing thrown mid-stroke", midStroke.errs.length === 0, midStroke.errs.join(" | "));
+
+  // ── 2c½. A notification over the page ───────────────────────────────────
+  //
+  // Notifications moved to the foot of the screen (styles/84-toasts.css), which
+  // on a PDF or a Canvas is paper — and a pen landing on one wrote nothing: the
+  // toast took the press, and the page under it never heard the nib. For as
+  // long as a "Saved" or a sync error was up, the bottom of the page could not
+  // be written on. This case presses where a real browser would aim the press,
+  // AT the toast, rather than at #documentView as the cases above do.
+  const throughToast = await page.evaluate(`async (penSrc) => {
+    const { api, settle } = window.__recall;
+    const feedback = await import("/src/ui/feedback.js?v=__BUILD__");
+    const pen = (0, eval)(penSrc);
+    const view = document.getElementById("documentView");
+    const pageEl = document.querySelector("#documentStage .pdf-page[data-page-number='1']");
+    const runs = () => (api.state.meta.pdfHighlights || [])
+      .filter((r) => r.kind === "ink")
+      .reduce((n, r) => n + api.decodeInkStrokes(r.ink?.s || []).length, 0);
+    document.querySelectorAll(".toast").forEach((node) => node.remove());
+    feedback.showToast("A notification over the paper", "info");
+    await settle(400);
+    const toast = document.querySelector(".toast");
+    const t = toast?.getBoundingClientRect();
+    const p = pageEl.getBoundingClientRect();
+    if (!t || t.top < p.top || t.bottom > p.bottom) return { error: "the toast is not over the page" };
+    const x0 = t.left + 20;
+    const y0 = t.top + (t.height / 2);
+    const hit = document.elementFromPoint(x0, y0);
+    const before = runs();
+    pen(hit, "pointerdown", x0, y0, 1);
+    for (let i = 1; i <= 30; i += 1) pen(view, "pointermove", x0 + (i * 6), y0 - (i * 2), 1);
+    await settle(120);
+    pen(view, "pointerup", x0 + 180, y0 - 60, 0);
+    await settle(300);
+    const drew = runs() - before;
+    const stillThere = Boolean(toast.isConnected && !toast.classList.contains("is-leaving"));
+    const through = document.querySelector(".toast-container")?.classList.contains("is-pen-through") || false;
+    // ...and a finger on the same toast is still the toast's.
+    toast.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 7, pointerType: "touch", isPrimary: true, clientX: x0, clientY: y0 }));
+    toast.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, pointerId: 7, pointerType: "touch", isPrimary: true, clientX: x0, clientY: y0 }));
+    toast.click();
+    await settle(100);
+    return {
+      hitToast: Boolean(hit?.closest(".toast")), drew, stillThere, through,
+      dismissed: toast.classList.contains("is-leaving") || !toast.isConnected,
+      errs: window.__errs.slice(0, 4)
+    };
+  }`, PEN_SRC);
+  if (throughToast.error) {
+    check("a pen stroke begun on a notification over the page draws on the page", false, throughToast.error);
+  } else {
+    check("a pen stroke begun on a notification over the page draws on the page",
+      throughToast.hitToast && throughToast.drew === 1,
+      `the press landed on the toast=${throughToast.hitToast}, ${throughToast.drew} stroke(s) added — `
+        + "the bottom of the page could not be written on while a notification was up");
+    check("...without taking the notification away, or leaving the column un-pressable",
+      throughToast.stillThere && !throughToast.through,
+      `toast still up=${throughToast.stillThere}, column still passing presses through=${throughToast.through}`);
+    check("...while a finger on the same notification still dismisses it", throughToast.dismissed,
+      `dismissed by a tap=${throughToast.dismissed}`);
+    check("...with nothing thrown", throughToast.errs.length === 0, throughToast.errs.join(" | "));
+  }
 
   // ── 2d. A stroke longer than the live layer's bound ─────────────────────
   //

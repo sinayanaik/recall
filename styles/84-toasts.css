@@ -32,6 +32,13 @@
   -webkit-user-select: none;
 }
 
+/* A pen writing through the column (passPenThroughToasts in src/ui/feedback.js):
+   nothing in it is hit-tested until the nib lifts. */
+.toast-container.is-pen-through,
+.toast-container.is-pen-through * {
+  pointer-events: none !important;
+}
+
 .toast.is-visible {
   transform: translateY(0);
 }

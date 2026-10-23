@@ -116,6 +116,7 @@ import { notifyHighlightsChanged } from "../format/highlight-edit.js?v=__BUILD__
 import { inkSvgFile } from "../format/ink-svg.js?v=__BUILD__";
 import { storeImageOrQueue } from "../images/outbox.js?v=__BUILD__";
 import { createInkEngine, isEraserEvent } from "../render/ink-engine.js?v=__BUILD__";
+import { setToastPenPassThrough } from "../ui/feedback.js?v=__BUILD__";
 
 // A press shorter and stiller than both of these was a tap, not a stroke.
 // 150ms is under the 240ms the touch controller waits for a press, so the two
@@ -616,7 +617,7 @@ function beginInkPress(event) {
   // a dependency on what it is standing down FOR. Without this a pen aimed at a
   // block's drag bar moved the block and drew a stroke across the page.
   if (event.target?.closest?.(`.${PDF_BLOCK_CLASS}`)) return false;
-  const pageEl = document.elementFromPoint(event.clientX, event.clientY)?.closest(".pdf-page");
+  const pageEl = inkPageAtPoint(event.clientX, event.clientY);
   if (!pageEl) return false;
   const page = Number(pageEl.dataset.pageNumber);
   if (!page || !pdfPageViewport(page)) return false;
@@ -746,6 +747,17 @@ function onInkPointerUp(event) {
     tapInk(press);
   }
   releaseInkPress();
+}
+
+// The page under the nib. A notification over it does not count — the toast
+// column hands a pen to the page beneath it (setToastPenPassThrough in
+// src/ui/feedback.js), so it must not be what decides there is no page here.
+function inkPageAtPoint(x, y) {
+  for (const node of document.elementsFromPoint(x, y)) {
+    if (node.closest(".toast-container")) continue;
+    return node.closest(".pdf-page");
+  }
+  return null;
 }
 
 // A tap the pen had already started drawing (startInkAtOnce).
@@ -982,6 +994,11 @@ export function initDocumentInk() {
   setSmartHlUndoSink(pushInkHistoryAction);
   // While the rail is armed every page shows its live ink, not a picture of it.
   setDocumentInkLiveCheck(() => inkRailArmed);
+  // A pen landing on a notification over a page writes on the page.
+  setToastPenPassThrough((event, under) => Boolean(el.documentView?.contains(under)
+    && under.closest(".pdf-page")
+    && !el.documentStage?.hidden
+    && inkTakesPointer(event)));
   const view = el.documentView;
   if (!view) return;
   // Capture, so the decision about who owns this pointer is made before any of
