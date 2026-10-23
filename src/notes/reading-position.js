@@ -167,3 +167,31 @@ export function betterReadingPosition(metaPosition, key) {
   if (!metaPosition || !Number.isFinite(metaPosition.offset)) return stored;
   return newerReadingPosition(stored, metaPosition);
 }
+
+// Where a file's Notes reopen: the newest of the places it may have been
+// written down — this device's store, `meta.readingPosition` and
+// `meta.bookmark`.
+//
+// The bookmark has to be in this. It is captured and pushed on EVERY sync
+// (captureBookmarkForSync), while meta.readingPosition only travels as a
+// passenger on some other save — so the bookmark is usually the newest place
+// the reader was, on any device. Leaving it out reopened the book on an older
+// spot (often the contents) and then asked "Jump there?" about the place the
+// open should simply have gone to.
+//
+// Notes-shaped places only. meta.readingPosition is ALSO written by the PDF
+// (scheduleDocumentPositionSave) whenever the reader scrolls a page, and a PDF
+// place that happened to be newer used to win here — resumeOpenedDeck then
+// skipped the Notes resume altogether, and the Notes tab opened at its first
+// line. The PDF lands its own place, from its own per-slot record.
+function isNotesPosition(anchor) {
+  return Boolean(anchor) && Number.isFinite(anchor.offset) && !anchor.pdf
+    && !(anchor.pdfPage != null && Number.isFinite(Number(anchor.pdfPage)));
+}
+
+export function resumePositionForOpen(meta, key) {
+  const stored = readStoredReadingPosition(key);
+  return [stored, meta?.readingPosition, meta?.bookmark]
+    .filter(isNotesPosition)
+    .reduce((best, next) => newerReadingPosition(best, next), null);
+}

@@ -32,6 +32,13 @@
 //      what arms the bookmark for the file that was opened.
 //  10. A folder opened as one document — how a book imported one file per
 //      chapter is read — reopens where it was left, not at its first page.
+//  11. Presses before a resume has landed (the app bar, a toast, the note
+//      while it is still rendering) do not leave a book at its contents.
+//  12. A bookmark newer than this device's place is where the file reopens —
+//      a PDF page in meta.readingPosition never wins it — with no "Jump
+//      there?" question.
+//  13. A sync during the landing neither captures the top as the bookmark nor
+//      pins the reader back to it.
 
 import { spawn } from "node:child_process";
 import path from "node:path";
@@ -92,7 +99,8 @@ const SETUP_SRC = `async () => {
     "/src/notes/raw-offset.js?v=__BUILD__",
     "/src/storage/deck-snapshot.js?v=__BUILD__",
     "/src/core/state.js?v=__BUILD__",
-    "/src/cards/new-deck.js?v=__BUILD__"
+    "/src/cards/new-deck.js?v=__BUILD__",
+    "/src/ui/overlays.js?v=__BUILD__"
   ];
   const mods = await Promise.all(paths.map((p) => import(p)));
   const api = {};
@@ -461,6 +469,95 @@ async function run() {
     check(interrupted === "resume",
       "a resume the reader interrupts still settles, so the file's bookmark is armed",
       `onSettled ${interrupted ? "called" : "never called"}`);
+
+    // ── 11. Touches while a resume waits for the note to render ────────────
+    //
+    // A file opened on a big book shows its first screen while the note is
+    // still rendering, and the resume used to end on the first press anywhere
+    // — the app bar, a toast, the note itself — leaving the book at its
+    // contents. Until the resume has put the reader somewhere, none of that is
+    // the reader choosing a place.
+    const waited = await page.evaluate(async () => {
+      const { api, settle } = window.__recall;
+      api.setViewMode("cards");
+      await settle(200);
+      api.setNotesScrolledSource(null);
+      api.setViewMode("notes");
+      const rendering = api.isNotesRenderInFlight();
+      api.resumeOpenedDeck(window.__anchorFor("P0130"));
+      const press = (node) => node && node.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerType: "touch" }));
+      press(document.querySelector(".appbar"));
+      press(document.getElementById("notesView"));
+      document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Shift", bubbles: true }));
+      await settle(3000);
+      return {
+        rendering,
+        reading: window.__reading(),
+        hidden: document.getElementById("notesView").classList.contains("is-resuming")
+      };
+    });
+    check(waited.rendering, "the note was still rendering when the resume began", String(waited.rendering));
+    check(near(waited.reading, "P0130", 3),
+      "presses before the resume has landed do not leave the file at its top",
+      `expected ~P0130, reading ${waited.reading}`);
+    check(!waited.hidden, "...and the note is visible again once it has landed", waited.hidden ? "still hidden" : "visible");
+
+    // ── 12. The bookmark is newer than the reading position ─────────────────
+    //
+    // The sync captures the bookmark on every run, so it is often the newest
+    // place there is — and the PDF writes meta.readingPosition too. The file
+    // reopens on the newest Notes place, and asks nothing.
+    const newest = await page.evaluate(async () => {
+      const { api, settle } = window.__recall;
+      const key = api.currentDeckKey();
+      const now = Date.now();
+      api.writeStoredReadingPosition(key, { ...window.__anchorFor("P0020"), at: now - 60000 });
+      const meta = {
+        ...(api.state.meta || {}),
+        bookmark: { ...window.__anchorFor("P0110"), at: now - 1000 },
+        readingPosition: { offset: 3, pdfPage: 3, ratio: 0.2, text: "Page 3", at: now }
+      };
+      api.state.meta = meta;
+      const chosen = api.resumePositionForOpen(meta, key);
+      api.setViewMode("cards");
+      await settle(200);
+      api.setNotesScrolledSource(null);
+      api.setViewMode("notes");
+      let settledCalled = false;
+      api.resumeOpenedDeck(chosen, () => { settledCalled = true; api.bookmarkResumeSettled(); });
+      await settle(3000);
+      return {
+        chosen: chosen ? window.__markerAt(chosen.offset) : null,
+        reading: window.__reading(),
+        settledCalled,
+        modal: !document.getElementById("confirmModal")?.hidden
+      };
+    });
+    check(newest.chosen === "P0110",
+      "a bookmark newer than this device's place is where the file reopens, and a PDF page never wins it",
+      `chose ${newest.chosen}`);
+    check(near(newest.reading, "P0110", 3) && newest.settledCalled,
+      "...and the Notes land there", `reading ${newest.reading}`);
+    check(!newest.modal, "...with no \"Jump there?\" question", newest.modal ? "a confirm dialog is open" : "no dialog");
+
+    // ── 13. A sync while a resume is landing ────────────────────────────────
+    const syncDuring = await page.evaluate(async () => {
+      const { api, settle } = window.__recall;
+      api.setViewMode("cards");
+      await settle(200);
+      api.setNotesScrolledSource(null);
+      api.setViewMode("notes");
+      api.resumeOpenedDeck(window.__anchorFor("P0090"));
+      // The capture a sync starts with, and the repaint it ends with.
+      const captured = api.captureBookmarkForSync();
+      api.renderNotesViewPinned();
+      await settle(3200);
+      return { captured, reading: window.__reading() };
+    });
+    check(!syncDuring.captured, "a sync's bookmark capture writes nothing while the resume is landing", String(syncDuring.captured));
+    check(near(syncDuring.reading, "P0090", 3),
+      "...and its repaint does not pin the reader back to where the note opened",
+      `expected ~P0090, reading ${syncDuring.reading}`);
 
     // ── 10. A book read as its chapter folder ───────────────────────────────
     const folder = await page.evaluate(async () => {

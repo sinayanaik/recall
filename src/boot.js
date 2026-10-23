@@ -15,7 +15,7 @@ import { deckStorageKey, themeStorageKey } from "./core/constants.js?v=__BUILD__
 import { warmDeferredLibraries } from "./core/lib-loader.js?v=__BUILD__";
 import { state } from "./core/state.js?v=__BUILD__";
 import { discardIndexBatch, pruneOrphanedDeckSnapshots, readLocalDeckIndex, runEscapedMathRepair } from "./library/local-library.js?v=__BUILD__";
-import { discardNotesEditingForDeckSwap } from "./notes/notes-view.js?v=__BUILD__";
+import { discardNotesEditingForDeckSwap, runDeckSwapHooks } from "./notes/notes-view.js?v=__BUILD__";
 import { forgetAllReadingPositions } from "./notes/reading-position.js?v=__BUILD__";
 import { forgetAllReadingStats } from "./stats/reading-stats-store.js?v=__BUILD__";
 import { forgetAllDeckTabs } from "./storage/deck-tab.js?v=__BUILD__";
@@ -183,6 +183,7 @@ export async function resetLocalLibrary() {
   // Nothing repaints on this path, so the setViewMode net never runs — the
   // raw editor would sit there still holding the PREVIOUS account's note,
   // ready to be typed back into whatever this account opens first.
+  runDeckSwapHooks();
   discardNotesEditingForDeckSwap();
   state.notes = "";
 }

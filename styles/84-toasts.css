@@ -14,7 +14,9 @@
 
 .toast-container {
   top: auto;
-  bottom: calc(56px + var(--safe-bottom) + var(--kb-inset, 0px));
+  /* --toast-lift: clear of a bar pinned to the foot (the selection pill, the
+     Adjust bar, a teleprompter's bar) — set by showToast in src/ui/feedback.js. */
+  bottom: calc(56px + var(--safe-bottom) + var(--kb-inset, 0px) + var(--toast-lift, 0px));
   /* Newest nearest the edge, the way it arrived. */
   flex-direction: column;
   justify-content: flex-end;

@@ -1,0 +1,14 @@
+/* A file's Notes reopening where the reader left off
+ * Added after the split — see POST_SPLIT in tools/split-css.mjs.
+ *
+ * While a resume waits for a big book to render (scheduleNoteJump in
+ * src/notes/anchors.js), the note is kept out of sight, so it does not show its
+ * contents page and then jump. Opacity rather than visibility or display: the
+ * note keeps its layout and its hit-testing, which is what the resume measures.
+ * Never left on: anchors.js lifts it when the resume lands, gives up or is
+ * cancelled, and after NOTE_RESUME_HIDE_MS at the latest.
+ */
+
+#notesView.is-resuming > * {
+  opacity: 0;
+}

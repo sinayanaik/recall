@@ -18,9 +18,9 @@
 // narrow cloud write that existed to beat the deck push it was not part of, and
 // the run that captures a bookmark now IS the run about to push it.)
 //
-// Surfaced on another device two ways: a one-time "jump there?"
-// prompt right after the ambient same-device resume settles, and the persistent
-// "go to bookmark" button for whenever that prompt is missed or dismissed.
+// Used on every device two ways: opening the file's Notes goes to it by itself
+// when it is the newest place the reader was (resumePositionForOpen), and the
+// persistent "go to bookmark" button goes there on request.
 //
 // ── Two surfaces, one bookmark ─────────────────────────────────────────────
 //
@@ -36,11 +36,11 @@
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { scheduleNoteJump } from "./anchors.js?v=__BUILD__";
-import { recordBookmarkPrompted, wasBookmarkPrompted } from "./bookmark-prompt-store.js?v=__BUILD__";
-import { currentDeckKey, rawOffsetForCurrentNotesScroll, readingAnchorText } from "./scroll-anchor.js?v=__BUILD__";
+import { recordBookmarkPrompted } from "./bookmark-prompt-store.js?v=__BUILD__";
+import { currentDeckKey, isResumeLanding, rawOffsetForCurrentNotesScroll, readingAnchorText } from "./scroll-anchor.js?v=__BUILD__";
 import { trimNoteAnchor } from "../quick-notes/anchors.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
-import { showConfirmModal, showToast } from "../ui/feedback.js?v=__BUILD__";
+import { showToast } from "../ui/feedback.js?v=__BUILD__";
 import { deckHasPdf, onDocumentSurface } from "../documents/doc-slot.js?v=__BUILD__";
 
 // Roughly the span of the text snippet an anchor already carries (trimNoteAnchor
@@ -168,13 +168,18 @@ export function refreshBookmarkButtonUI() {
 // calling it would be a second write of the same thing.
 export function captureBookmarkForSync({ announce = false } = {}) {
   if (resumeSettledForKey !== currentDeckKey()) return false;
+  // A resume still landing (a big book takes seconds): what is on screen is not
+  // where the reader is, and a capture now would push the contents page over
+  // the real bookmark. (A resume held for a file that opened on Cards needs no
+  // check: off the Notes tab, currentSpotAnchor never measures the note.)
+  if (isResumeLanding()) return false;
   const next = currentSpotAnchor();
   if (!next) return false;
   // Standing still writes nothing — see BOOKMARK_PROMPT_NEAR_CHARS.
   if (sameSpot(state.meta?.bookmark, next)) return false;
   state.meta = { ...(state.meta && typeof state.meta === "object" ? state.meta : {}), bookmark: next };
-  // This device just set it — it must never see a "jump to bookmark?" prompt
-  // for its own bookmark.
+  // This device just set it, so this version is already accounted for here
+  // (see bookmark-prompt-store.js).
   recordBookmarkPrompted(currentDeckKey(), next.at);
   refreshBookmarkButtonUI();
   // Rides the normal save path (see deckContentMatches in local-library.js,
@@ -201,15 +206,21 @@ export function goToBookmark() {
   scheduleNoteJump(bookmark, BOOKMARK_JUMP);
 }
 
-// Called once per deck-load, after the ambient same-device resume (if any) has
-// settled — see the onSettled hook threaded through scheduleNoteJump in
-// deck-snapshot.js / web-decks.js, and the `else` beside it for a deck that had
-// no position to resume to. Never competes with that resume for the scroller:
-// it only ever runs after it is done.
+// Called once per deck-load, after the ambient resume (if any) has settled —
+// see the onSettled hook threaded through scheduleNoteJump in deck-snapshot.js /
+// web-decks.js, and the `else` beside it for a deck that had no position to
+// resume to. Arms captureBookmarkForSync (see resumeSettledForKey above).
 //
-// Which is also what makes it the right place to arm captureBookmarkForSync.
-// See resumeSettledForKey above.
-export function maybePromptBookmarkJump() {
+// ── No "Jump there?" question any more ─────────────────────────────────────
+//
+// This used to raise a confirm dialog whenever the resume had not landed near
+// the bookmark. The resume now goes to the newest of the reading position and
+// the bookmark by itself (resumePositionForOpen), so a question here could
+// only ever be about an OLDER spot, or show over a tab that isn't Notes —
+// which is what "it opens at the contents and then asks me" was. The
+// bookmark's `.at` is still recorded as seen, so the store carried in backups
+// (bookmark-prompt-store.js) keeps meaning what it always did.
+export function bookmarkResumeSettled() {
   resumeSettledForKey = currentDeckKey();
   // The other reliable per-deck moment. refreshBookmarkButtonUI's own call site
   // is the notes render (notes-view.js), which a PDF deck opening straight onto
@@ -217,18 +228,5 @@ export function maybePromptBookmarkJump() {
   // stayed hidden on exactly the surface that now has no other door to it.
   refreshBookmarkButtonUI();
   const bookmark = state.meta?.bookmark;
-  if (!bookmark || !Number.isFinite(bookmark.offset)) return;
-  const key = currentDeckKey();
-  if (wasBookmarkPrompted(key, bookmark.at)) return;
-  // Recorded as seen the moment the decision is made — whether that's because
-  // the prompt is about to show, or because it turned out to be unnecessary.
-  // Either way this exact bookmark version has now been accounted for on this
-  // device, so it won't nag again until a newer one replaces it.
-  recordBookmarkPrompted(key, bookmark.at);
-  if (sameSpot(bookmark, currentSpotAnchor())) return;
-  showConfirmModal(
-    "You left off somewhere else in this file on another device. Jump there?",
-    () => scheduleNoteJump(bookmark, BOOKMARK_JUMP),
-    { confirmLabel: "Jump to bookmark" }
-  );
+  if (bookmark?.at) recordBookmarkPrompted(currentDeckKey(), bookmark.at);
 }

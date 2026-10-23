@@ -245,6 +245,20 @@ function buildTeleprompterOverlay() {
 // A slider previews on every `input` and is kept on `change`. A typed number
 // is taken on `change` alone — Enter, or leaving the box — so the text does not
 // re-size under the reader at every digit of "28".
+// A slider fires `input` for every pixel of a drag, and each preview re-lays
+// out the whole note under the new type (and holds the reader's line), which
+// is a full restyle of a book per event. One preview a frame is all the eye can
+// see; the drag's own `change` lands the exact value at once.
+let pendingSliderPreview = null;
+let sliderPreviewFrame = 0;
+
+function flushSliderPreview() {
+  sliderPreviewFrame = 0;
+  const pending = pendingSliderPreview;
+  pendingSliderPreview = null;
+  if (pending && teleprompterPanel) teleprompterPanel.handlers.setting(pending.key, pending.value, { commit: false });
+}
+
 function onSheetInput(event, commit) {
   if (!teleprompterPanel) return;
   const slider = event.target.closest?.("[data-tp-range]");
@@ -252,6 +266,14 @@ function onSheetInput(event, commit) {
     const key = slider.dataset.tpRange;
     const box = teleprompterPanel.sheet.querySelector(`[data-tp-number="${key}"]`);
     if (box) box.value = slider.value;
+    if (!commit) {
+      pendingSliderPreview = { key, value: Number(slider.value) };
+      if (!sliderPreviewFrame) sliderPreviewFrame = requestAnimationFrame(flushSliderPreview);
+      return;
+    }
+    if (sliderPreviewFrame) cancelAnimationFrame(sliderPreviewFrame);
+    sliderPreviewFrame = 0;
+    pendingSliderPreview = null;
     teleprompterPanel.handlers.setting(key, Number(slider.value), { commit });
     return;
   }
@@ -381,6 +403,10 @@ export function openTeleprompterSheet() {
   if (!teleprompterPanel) return;
   teleprompterPanel.sheet.hidden = false;
   teleprompterPanel.settings.setAttribute("aria-expanded", "true");
+  // Not painted while it was shut (see paintTeleprompterPanel), so brought up
+  // to date as it opens.
+  const model = teleprompterPanel.lastModel;
+  if (model) paintTeleprompterSheet(model.settings, model.measuredWpm, model.wpm, model.fontSize);
 }
 
 export function closeTeleprompterSheet() {
@@ -422,6 +448,16 @@ const PLAY_FACES = {
 // settings, measuredWpm, statusText }.
 export function paintTeleprompterPanel(model) {
   if (!teleprompterPanel) return;
+  // Called four times a second by each teleprompter's watch, playing or paused,
+  // and most of those calls describe exactly what is already on screen. A
+  // repaint that changes nothing still dirties the bar and walks the sheet's
+  // controls, so it is skipped — unless the sheet is open, where a control the
+  // reader has just typed into may need putting back.
+  const sheetOpen = !teleprompterPanel.sheet.hidden;
+  const signature = JSON.stringify(model);
+  if (signature === teleprompterPanel.painted && !sheetOpen) return;
+  teleprompterPanel.painted = signature;
+  teleprompterPanel.lastModel = model;
   const { phase } = model;
   const phaseChanged = teleprompterPanel.phase !== phase;
   teleprompterPanel.phase = phase;
@@ -451,7 +487,7 @@ export function paintTeleprompterPanel(model) {
   if (teleprompterPanel.status.textContent !== model.statusText) teleprompterPanel.status.textContent = model.statusText || "";
 
   if (phaseChanged) wakeTeleprompterBar();
-  paintTeleprompterSheet(model.settings, model.measuredWpm, model.wpm, model.fontSize);
+  if (sheetOpen) paintTeleprompterSheet(model.settings, model.measuredWpm, model.wpm, model.fontSize);
 }
 
 function paintTeleprompterSheet(settings, measuredWpm, wpm, fontSize) {

@@ -3139,8 +3139,10 @@ function watchDocumentInteraction() {
         pumpRenderQueue();
       });
     }
-    // A detail tile being drawn is for the view the reader has just left.
-    cancelDetailRenders();
+    // A detail tile being drawn is for the view the reader has just left —
+    // unless it is the teleprompter moving the view a pixel a frame, which
+    // otherwise threw away every sharp tile it started for as long as it played.
+    if (!documentAutoScrolling()) cancelDetailRenders();
   }, { passive: true });
 }
 
@@ -6180,6 +6182,26 @@ function documentResumePosition(slot, pdfId = null) {
     || betterReadingPosition(state.meta?.readingPosition, currentDeckKey());
 }
 
+// ── The zoom a save writes down ────────────────────────────────────────────
+//
+// The PDF teleprompter zooms in on a column while it reads one. That is the
+// teleprompter's zoom, not the reader's, and saved as theirs it was what the
+// PDF reopened at — stuck at the column's size with Fit width off — whenever a
+// session ended without its own exit (the app closed, a file switch, a sync
+// reopening the paper). src/documents/pdf-teleprompter.js says which zoom is
+// the reader's while it holds the paper; a hook, because it imports this file.
+let readerZoomOverride = null;
+
+export function setDocumentReaderZoomHook(fn) {
+  readerZoomOverride = typeof fn === "function" ? fn : null;
+}
+
+function readerZoomForSave() {
+  const own = readerZoomOverride?.(openPdf);
+  if (own && Number.isFinite(own.scale) && own.scale > 0) return { scale: own.scale, fitWidth: Boolean(own.fitWidth) };
+  return { scale: openPdf.scale, fitWidth: Boolean(openPdf.fitWidth) };
+}
+
 export function scheduleDocumentPositionSave() {
   if (!openPdf) return;
   // The window has changed width and the pages have not been refitted to it
@@ -6207,8 +6229,7 @@ export function scheduleDocumentPositionSave() {
   scheduleReadingPositionSave(documentPositionKey(slot, extraPdfId), {
     ...position,
     across: currentDocumentAcross(),
-    scale: openPdf.scale,
-    fitWidth: Boolean(openPdf.fitWidth)
+    ...readerZoomForSave()
   });
   // ...and into the deck's own meta, which is what travels between devices.
   //

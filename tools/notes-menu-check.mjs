@@ -402,7 +402,7 @@ try {
       // A capture is refused until the deck's resume has settled — the guard
       // that stops the sync 1200ms after boot writing "the top of the note"
       // over a real bookmark. Opening a deck is what normally arms it.
-      api.maybePromptBookmarkJump();
+      api.bookmarkResumeSettled();
       const saved = api.captureBookmarkForSync();
       return { saved, at: api.state.meta && api.state.meta.bookmark ? api.state.meta.bookmark.at : null };
     }`);
