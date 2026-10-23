@@ -288,12 +288,13 @@ try {
     return null;
   });
 
-  await check("paused, the note is the note: same type, no band, selectable — and the bar steps aside", async () => {
+  await check("paused, it stays the teleprompter: same type, the band kept, selectable — and the band and bar step aside for a selection", async () => {
     const type = await page.evaluate(READ_TYPE);
     const s = await snap();
     if (Math.abs(type.size - s.fontSize) > 0.5) return `paused at ${type.size}px — the type changed under the reader`;
     const seen = await page.evaluate(`async () => {
       const overlay = document.querySelector(".tp-overlay");
+      const paused = getComputedStyle(overlay).opacity;
       const view = document.getElementById("notesView");
       const box = view.getBoundingClientRect();
       const p = [...view.querySelectorAll("p")].find((n) => n.getBoundingClientRect().top > box.top + 40);
@@ -304,20 +305,25 @@ try {
       sel.addRange(range);
       await new Promise((r) => setTimeout(r, 700));
       const tucked = document.querySelector(".tp-bar").classList.contains("is-tucked");
+      const selecting = getComputedStyle(overlay).opacity;
       const text = String(getSelection()).trim().length;
       sel.removeAllRanges();
-      await new Promise((r) => setTimeout(r, 600));
+      await new Promise((r) => setTimeout(r, 800));
       return {
-        opacity: getComputedStyle(overlay).opacity,
+        paused,
+        selecting,
+        after: getComputedStyle(overlay).opacity,
         tucked,
         text,
         back: !document.querySelector(".tp-bar").classList.contains("is-tucked")
       };
     }`);
-    if (seen.opacity !== "0") return `the band is still showing while paused (opacity ${seen.opacity})`;
+    if (seen.paused !== "1") return `the band went away when it paused (opacity ${seen.paused}) — it looked like plain Notes`;
     if (!seen.text) return "could not select text in the paused note";
+    if (seen.selecting !== "0") return `the band stayed over a live selection (opacity ${seen.selecting})`;
     if (!seen.tucked) return "the bar stayed up over a live selection";
     if (!seen.back) return "the bar did not come back once the selection was gone";
+    if (seen.after !== "1") return `the band did not come back once the selection was gone (opacity ${seen.after})`;
     return null;
   });
 

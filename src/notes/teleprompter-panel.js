@@ -464,6 +464,7 @@ export function paintTeleprompterPanel(model) {
   teleprompterPanel.bar.dataset.phase = phase;
   teleprompterPanel.overlay.dataset.phase = phase;
   teleprompterPanel.bar.classList.toggle("is-tucked", Boolean(model.tucked));
+  teleprompterPanel.overlay.classList.toggle("is-tucked", Boolean(model.tucked));
 
   const face = PLAY_FACES[phase] || PLAY_FACES.paused;
   teleprompterPanel.play.querySelector(".tp-play-ico").textContent = face.icon;
