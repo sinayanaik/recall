@@ -601,8 +601,16 @@ try {
   // whether anything cancelled it, how long the selection got mid-drag, and
   // whether the card's swipe took the gesture.
   const armCardDragProbe = () => page.evaluate(() => {
-    const probe = { selectstart: 0, prevented: 0, changes: 0, longest: 0, swiping: false, down: "" };
+    const probe = { selectstart: 0, prevented: 0, changes: 0, longest: 0, swiping: false, down: "", redrawn: 0, refits: 0 };
     const card = document.querySelector(".card");
+    // The face's own nodes replaced under the drag, and its font size rewritten
+    // (the question fitter): either takes the selection's anchor away.
+    new MutationObserver((records) => {
+      for (const record of records) {
+        if (record.type === "childList") probe.redrawn += 1;
+        else if (record.attributeName === "style") probe.refits += 1;
+      }
+    }).observe(card, { childList: true, subtree: true, attributes: true, attributeFilter: ["style"] });
     const on = (type, fn) => document.addEventListener(type, fn, true);
     on("pointerdown", (event) => {
       const hit = document.elementFromPoint(event.clientX, event.clientY);
@@ -618,12 +626,20 @@ try {
       probe.changes += 1;
       probe.longest = Math.max(probe.longest, String(window.getSelection() || "").length);
     });
-    on("pointermove", () => { if (card?.classList.contains("is-dragging")) probe.swiping = true; });
+    on("pointermove", (event) => {
+      if (card?.classList.contains("is-dragging")) probe.swiping = true;
+      if (!probe.mid) {
+        const hit = document.elementFromPoint(event.clientX, event.clientY);
+        probe.mid = `${hit?.tagName?.toLowerCase() || "?"} userSelect=${hit ? getComputedStyle(hit).userSelect : "?"}`;
+      }
+    });
+    const media = (q) => (window.matchMedia(q).matches ? "y" : "n");
+    probe.env = `pointer:coarse=${media("(pointer: coarse)")} hover:none=${media("(hover: none)")} any-pointer:fine=${media("(any-pointer: fine)")} touchPoints=${navigator.maxTouchPoints}`;
     window.__cardDragProbe = probe;
   });
   const readCardDragProbe = async () => {
     const p = await page.evaluate(() => window.__cardDragProbe || null);
-    return p ? ` [press on ${p.down}; selectstart ${p.selectstart}x (${p.prevented} cancelled), ${p.changes} selectionchange, longest ${p.longest} chars, swipe engaged ${p.swiping}]` : "";
+    return p ? ` [press on ${p.down}; selectstart ${p.selectstart}x (${p.prevented} cancelled), ${p.changes} selectionchange, longest ${p.longest} chars, swipe engaged ${p.swiping}, ${p.redrawn} node replacement(s) and ${p.refits} style rewrite(s) in the card; mid-drag on ${p.mid || "-"}; ${p.env}]` : "";
   };
 
   await check("a card answer selects without pulling in the button row", async () => {
