@@ -113,6 +113,7 @@ const BUDGET = {
   // outright rather than hoping it shows through the frame-gap noise.
   repaintMs: 60,
   tailMs: 200,       // longest blocking task in the second after the render
+  tocOpenMs: 250,    // a cold ☰ Contents open on the book (~180ms; 330ms regressed)
   resumeMs: 6000     // how long a resumed reading position may take to land
 };
 
@@ -559,6 +560,32 @@ const PROBE = `async (budget, tapCases) => {
       await api.renderNotesView();
       await settle(300);
     }
+  }
+
+  // ── Opening the contents on a book ──────────────────────────────────────
+  //
+  // The press itself, from a list that has to be built (as on the first open
+  // after an edit): build, style and layout of every row, in the click. On
+  // this book that is 6,060 rows. It is ~180ms, and was ~330ms while a stylesheet
+  // put [hidden] before a sibling combinator — every row's fold walked all the
+  // rows after it (see tools/style-scale-check.mjs). Median of three.
+  {
+    const opens = [];
+    for (let i = 0; i < 3; i += 1) {
+      api.closeNotesToc();
+      await settle(350);
+      api.markNotesTocDirty();
+      const started = performance.now();
+      api.openNotesToc();
+      void document.body.offsetHeight;
+      opens.push(performance.now() - started);
+    }
+    api.closeNotesToc();
+    await settle(350);
+    opens.sort((a, b) => a - b);
+    push("opening the contents on a book answers the press", opens[1] > budget.tocOpenMs
+      ? "the press took " + Math.round(opens[1]) + "ms to build and lay out the contents"
+      : true, Math.round(opens[1]) + "ms for " + document.querySelectorAll("#notesTocList li").length + " rows");
   }
 
   // ── The TOC's active row ────────────────────────────────────────────────

@@ -36,6 +36,25 @@
 //   • that what the replaced rules DID still happens: a short note is
 //     uncontained, a long one is contained with a widened clip edge, and the
 //     mirrored classes follow the facts they copy.
+//
+// ── And no sibling combinator after [hidden] ─────────────────────────────────
+//
+// The same report came back after 84134ec: on a book, the ☰ Contents button
+// took ~450ms to paint, against ~210ms before. One rule did it:
+//
+//   .document-toc-drawer .notes-toc-fold-all:not([hidden]) ~ .notes-toc-fold-all
+//
+// A [hidden] on the left of `~` (or `+`) gives the `hidden` attribute a sibling
+// invalidation set, so EVERY change to `hidden`, on any element in the
+// document, makes the browser walk that element's following siblings. The
+// ancestor in front of it does not narrow that. The contents drawer sets
+// `hidden` on each of its rows (6,000 on the book in interaction-scale-check),
+// so building or folding it became quadratic: the style pass over the same
+// 6,735 elements went from 66ms to 255ms. So this also asserts:
+//   • statically, that no stylesheet — frozen slices included — puts [hidden]
+//     before a sibling combinator;
+//   • in a real browser, that hiding a list four times longer costs about four
+//     times as much, not sixteen.
 
 import { spawn } from "node:child_process";
 import { readFileSync, readdirSync } from "node:fs";
@@ -73,6 +92,25 @@ const ANCHORS = /(^|[\s>+~(,])(html|body|:root)\b|\.app-shell\b|\.quiz-panel\b|\
     });
   }
   push("no post-split stylesheet anchors a :has() on #notesView or an ancestor of it",
+    offenders.length ? `${offenders.length} found:\n        ${offenders.join("\n        ")}` : true);
+}
+
+// ── Static: no sibling combinator after [hidden] ───────────────────────────
+//
+// Every stylesheet, the frozen slices too: what this costs does not depend on
+// where the rule lives. A compound is everything since the last combinator or
+// selector boundary; one carrying [hidden] (or :not([hidden])) followed by `~`
+// or `+` is the shape that makes `hidden` quadratic in a list's length.
+{
+  const offenders = [];
+  for (const file of readdirSync(path.join(ROOT, "styles")).sort()) {
+    if (!file.endsWith(".css")) continue;
+    const text = readFileSync(path.join(ROOT, "styles", file), "utf8").replace(/\/\*[\s\S]*?\*\//g, (c) => c.replace(/[^\n]/g, " "));
+    text.split("\n").forEach((line, i) => {
+      if (/\[hidden\]\)*\s*[~+](?!=)/.test(line)) offenders.push(`styles/${file}:${i + 1}  ${line.trim().slice(0, 90)}`);
+    });
+  }
+  push("no stylesheet puts [hidden] before a sibling combinator (~ or +)",
     offenders.length ? `${offenders.length} found:\n        ${offenders.join("\n        ")}` : true);
 }
 
@@ -225,6 +263,45 @@ const MIRROR = `async () => {
   return out;
 }`;
 
+// What the contents drawer does when it is built: `n` sibling rows inside a
+// hidden drawer, each row's `hidden` set as its fold is applied, then the
+// drawer shown with most of them still folded away. Median of 5.
+//
+// Inside a hidden container on purpose. Showing thousands of rows that were
+// display:none is quadratic in Chrome on its own, with no stylesheet at all —
+// that would measure the browser, not this app's CSS. Here, without a sibling
+// rule on [hidden], 6,000 rows cost ~18ms in an empty page; with one, ~150ms.
+const HIDE_SIBLINGS = `async (n) => {
+  const xs = [];
+  for (let k = 0; k < 5; k += 1) {
+    const drawer = document.createElement("nav");
+    drawer.hidden = true;
+    const list = document.createElement("ol");
+    list.className = "notes-toc-list";
+    for (let i = 0; i < n; i += 1) {
+      const li = document.createElement("li");
+      li.className = "notes-toc-item";
+      li.textContent = "Row " + i;
+      li.hidden = true;
+      list.appendChild(li);
+    }
+    drawer.appendChild(list);
+    document.body.appendChild(drawer);
+    void document.body.offsetHeight;
+    await new Promise((r) => setTimeout(r, 30));
+    const t0 = performance.now();
+    for (const li of list.children) li.hidden = false;
+    for (const li of list.children) li.hidden = true;
+    drawer.hidden = false;
+    void list.offsetHeight;
+    xs.push(performance.now() - t0);
+    drawer.remove();
+  }
+  xs.sort((a, b) => a - b);
+  return xs[2];
+}`;
+const SIBLINGS = { small: 1500, large: 6000, maxRatio: 8, largeMs: 60 };
+
 const servers = [];
 let failed = 0;
 try {
@@ -261,6 +338,16 @@ try {
     push("opening the ☰ menu does not re-style the note", m.menu <= BUDGET.toggleMs ? true : `${ms(m.menu)} (budget ${BUDGET.toggleMs}ms)`, ms(m.menu));
     push("hiding an unrelated element does not re-style the note", m.hidden <= BUDGET.toggleMs ? true : `${ms(m.hidden)} (budget ${BUDGET.toggleMs}ms)`, ms(m.hidden));
     push("inserting a node in a highlight stays local", m.insert <= BUDGET.insertMs ? true : `${ms(m.insert)} (budget ${BUDGET.insertMs}ms)`, ms(m.insert));
+
+    // ── Hiding a long list stays linear in its length ──────────────────────
+    const hideSmall = await page.evaluate((src, n) => (0, eval)("(" + src + ")")(n), HIDE_SIBLINGS, SIBLINGS.small);
+    const hideLarge = await page.evaluate((src, n) => (0, eval)("(" + src + ")")(n), HIDE_SIBLINGS, SIBLINGS.large);
+    const ratio = hideLarge / Math.max(0.5, hideSmall);
+    push(`hiding ${SIBLINGS.large} sibling rows costs about ${SIBLINGS.large / SIBLINGS.small}x hiding ${SIBLINGS.small}, not ${(SIBLINGS.large / SIBLINGS.small) ** 2}x`,
+      ratio <= SIBLINGS.maxRatio ? true : `${ratio.toFixed(1)}x (${ms(hideSmall)} → ${ms(hideLarge)}; at most ${SIBLINGS.maxRatio}x)`,
+      `${ms(hideSmall)} → ${ms(hideLarge)}`);
+    push(`hiding ${SIBLINGS.large} sibling rows stays cheap`,
+      hideLarge <= SIBLINGS.largeMs ? true : `${ms(hideLarge)} (budget ${SIBLINGS.largeMs}ms)`, ms(hideLarge));
 
     const mirror = await page.evaluate((src) => (0, eval)("(" + src + ")")(), MIRROR);
     for (const [k, v] of Object.entries(mirror)) push(`chrome-state mirror: ${k}`, v ? true : "the body class does not match");

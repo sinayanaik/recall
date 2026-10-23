@@ -16,9 +16,20 @@
 /* ── The drawer head ───────────────────────────────────────────────────────
    Every button in the head wears .notes-toc-fold-all's look, and that class
    pushes itself to the end with margin-left:auto — which on three buttons in a
-   row spreads them apart. Only the first one shown takes the push; the rest
-   sit beside it. */
-.document-toc-drawer .notes-toc-fold-all:not([hidden]) ~ .notes-toc-fold-all {
+   row spreads them apart. So here the title takes the free space instead, and
+   the buttons sit together at the end, whichever of them are shown.
+
+   Not `.notes-toc-fold-all:not([hidden]) ~ .notes-toc-fold-all`, which is what
+   this was: a [hidden] before a sibling combinator makes every change to
+   `hidden`, anywhere in the document, walk the changed element's following
+   siblings. The contents drawer hides thousands of sibling rows, so opening it
+   on a book became quadratic (~210ms to ~450ms). tools/style-scale-check.mjs
+   fails on that shape. */
+.document-toc-drawer .notes-toc-head > .notes-toc-title {
+  margin-right: auto;
+}
+
+.document-toc-drawer .notes-toc-fold-all {
   margin-left: 4px;
 }
 
