@@ -718,6 +718,10 @@ try {
       const pill = document.getElementById("selectionFloat") || document.querySelector(".selection-float");
       const wasHidden = pill.hidden;
       const wasStyle = pill.getAttribute("style");
+      const wasClass = pill.className;
+      // On screen, not stepped aside: an earlier long-press can leave the touch
+      // bar marked as scrolled off, and a bar nobody can see lifts nothing.
+      pill.classList.remove("is-offscreen", "is-scrolling");
       pill.hidden = false;
       pill.style.top = (innerHeight - 64) + "px";
       pill.style.bottom = "auto";
@@ -725,6 +729,7 @@ try {
       const pillBox = pill.getBoundingClientRect();
       const overPill = await measure("Pill toast probe");
       if (wasStyle == null) pill.removeAttribute("style"); else pill.setAttribute("style", wasStyle);
+      pill.className = wasClass;
       pill.hidden = wasHidden;
       if (!api.teleprompterActive()) api.toggleTeleprompter();
       await settle(400);
