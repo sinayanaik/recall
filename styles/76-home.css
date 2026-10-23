@@ -326,6 +326,64 @@ html.is-home body:is(.chrome-collapsed, #cs-specificity).chrome-collapsed .appba
   line-height: 1;
 }
 
+/* ── The file's name beside four buttons, on a phone ─────────────────────
+   ☰ ‹ ⌂ 📚 leave the name about half a 390px screen, and in that column the
+   title, the folder row and the save status wrapped onto three lines: an
+   app bar 60px tall where it had been 42, taken from the page being read, and
+   a header whose every re-measure re-laid out the wrapped text. One line each
+   instead. The title ends in "…" (its tooltip and My Files carry all of it).
+   In the row under it the folder and the card score give way long before the
+   save status does — that one shrinks last, keeping the words it leads with
+   ("Sync failed", "Both devices changed…"), and a pill that asks for a tap is
+   still the same button when shortened. */
+@media (max-width: 720px) {
+  /* The Notes view clamps its own title to two lines, at
+     body.cs-notes-mode.cs-notes-mode .appbar .deck-title (33-reading-chrome.css),
+     so the second selector outranks that by one class. */
+  .deck-meta .deck-title,
+  body.cs-notes-mode.cs-notes-mode .appbar .deck-meta .deck-title {
+    -webkit-line-clamp: 1;
+    line-clamp: 1;
+  }
+
+  .deck-meta .deck-meta-row2 {
+    flex-wrap: nowrap;
+    overflow: hidden;
+  }
+
+  /* Blocks rather than their usual inline-grid / inline-flex, so each one's own
+     text-overflow can draw the "…": text inside a grid or a flex box sits in an
+     anonymous item it cannot reach. 14px is the phone chip's 16px less its
+     border. */
+  .deck-meta .deck-category {
+    display: block;
+    flex: 0 20 auto;
+    min-width: 2.5em;
+    line-height: 14px;
+  }
+
+  .deck-meta #scoreText {
+    flex: 0 20 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .deck-meta .sync-indicator:not(:empty) {
+    display: block;
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .deck-meta .deck-category-edit,
+  .deck-meta #positionText,
+  .deck-meta .deck-meta-sep {
+    flex-shrink: 0;
+  }
+}
+
 .app-home-btn[aria-current="page"],
 #homeBtn[aria-current="page"] {
   border-color: var(--accent);

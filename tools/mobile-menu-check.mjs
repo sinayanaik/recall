@@ -77,7 +77,13 @@ const BUDGET = {
   // re-laid out the note: 6-9 layouts a press and a run of 33-100ms frames, the
   // "going into focus mode feels very laggy" report. It now changes height once
   // (styles/67-focus-fold.css), which measures 2-3.
-  focusFoldLayouts: 4
+  focusFoldLayouts: 4,
+  // The app bar with a file open, at 390px: the title on one line and the
+  // folder and save status on another, 42px. The My Files button (fe63160)
+  // squeezed the name into a column where they wrapped to three lines, 60px —
+  // taller chrome over the page, and a readChromeHeights that went from ~0ms
+  // to 20-45ms here, because every re-measure re-laid out the wrapped text.
+  appbarPx: 48
 };
 
 function serveOn(dir) {
@@ -338,7 +344,8 @@ const PLUMBING_SRC = `async () => {
     unlock: Math.round(median(runs.unlock)),
     measure: Math.round(median(runs.measure)),
     canScroll: overlays.pageCanScroll(),
-    stillLocked: document.documentElement.classList.contains("modal-scroll-lock")
+    stillLocked: document.documentElement.classList.contains("modal-scroll-lock"),
+    appbar: document.querySelector(".appbar")?.scrollHeight || 0
   };
 }`;
 
@@ -534,6 +541,11 @@ async function run() {
       plumbing.measure <= BUDGET.chromeMeasureMs,
       `readChromeHeights ${plumbing.measure}ms — this runs on every chrome fold and every ResizeObserver tick while a phone scrolls`,
       `${plumbing.measure}ms`);
+
+    push("the app bar keeps the file's name to two lines on a phone",
+      plumbing.appbar > 0 && plumbing.appbar <= BUDGET.appbarPx,
+      `the app bar is ${plumbing.appbar}px tall — its title, folder and save status have wrapped`,
+      `${plumbing.appbar}px`);
 
     push("focus mode folds without tweening a layout property",
       foldTweens.length === 0,
