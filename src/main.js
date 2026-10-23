@@ -2824,7 +2824,11 @@ el.card.addEventListener("click", (event) => {
     return;
   }
   if (hasCardTextSelection()) return;
-  const isDrag = Math.abs(state.dragCurrentX - state.dragStartX) >= 8 || Math.abs(state.dragCurrentY - state.dragStartY) >= 8;
+  // From where the press began to where the swipe last saw it — or to where the
+  // button came up, for a press on the words that the swipe left to the
+  // browser (isMousePressOnCardText in src/cards/swipe.js).
+  const isDrag = Math.max(Math.abs(state.dragCurrentX - state.dragStartX), Math.abs(event.clientX - state.dragStartX)) >= 8
+    || Math.max(Math.abs(state.dragCurrentY - state.dragStartY), Math.abs(event.clientY - state.dragStartY)) >= 8;
   if (isDrag || isCardActionTarget(event.target)) return;
   flipCard();
 });

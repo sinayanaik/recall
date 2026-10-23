@@ -327,7 +327,15 @@ function isMousePressOnCardText(event) {
 export function handlePointerDown(event) {
   if (!currentCardCanMove() || isCardActionTarget(event.target)) return;
   if (isHorizontalScrollTarget(event.target)) return;
-  if (isMousePressOnCardText(event)) return;
+  if (isMousePressOnCardText(event)) {
+    // Not a swipe, but still where the press began: the card's click handler
+    // tells a drag across the words from a tap on them by how far the button
+    // travelled from here (src/main.js), and without it a drag that selected
+    // nothing would flip the card.
+    state.dragStartX = state.dragCurrentX = event.clientX;
+    state.dragStartY = state.dragCurrentY = event.clientY;
+    return;
+  }
   // Touch/pen: an active selection means the user is dragging a selection
   // handle — don't start a swipe. (Mouse keeps its mid-drag guard in updateSwipe
   // so a lingering selection never blocks starting a fresh drag.)

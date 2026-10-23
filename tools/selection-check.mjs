@@ -624,8 +624,15 @@ try {
     });
     on("selectionchange", () => {
       probe.changes += 1;
-      probe.longest = Math.max(probe.longest, String(window.getSelection() || "").length);
+      const sel = window.getSelection();
+      probe.longest = Math.max(probe.longest, String(sel || "").length);
+      const at = (node, offset) => `${node?.nodeType === 3 ? "#text" : node?.nodeName?.toLowerCase() || "-"}${node?.parentElement?.id ? "@" + node.parentElement.id : ""}:${offset}`;
+      const line = `${sel?.type || "?"} ${at(sel?.anchorNode, sel?.anchorOffset)}→${at(sel?.focusNode, sel?.focusOffset)}`;
+      (probe.seen ||= []).push(line);
     });
+    for (const type of ["pointerdown", "pointermove", "pointerup", "mousedown", "mouseup", "click", "dragstart"]) {
+      card?.addEventListener(type, (event) => { (probe.events ||= {})[type] = ((probe.events || {})[type] || 0) + 1; if (type === "dragstart") probe.dragTarget = event.target?.nodeName; }, true);
+    }
     on("pointermove", (event) => {
       if (card?.classList.contains("is-dragging")) probe.swiping = true;
       if (!probe.mid) {
@@ -634,12 +641,13 @@ try {
       }
     });
     const media = (q) => (window.matchMedia(q).matches ? "y" : "n");
+    probe.editable = Boolean(document.querySelector("#questionView")?.isContentEditable);
     probe.env = `pointer:coarse=${media("(pointer: coarse)")} hover:none=${media("(hover: none)")} any-pointer:fine=${media("(any-pointer: fine)")} touchPoints=${navigator.maxTouchPoints}`;
     window.__cardDragProbe = probe;
   });
   const readCardDragProbe = async () => {
     const p = await page.evaluate(() => window.__cardDragProbe || null);
-    return p ? ` [press on ${p.down}; selectstart ${p.selectstart}x (${p.prevented} cancelled), ${p.changes} selectionchange, longest ${p.longest} chars, swipe engaged ${p.swiping}, ${p.redrawn} node replacement(s) and ${p.refits} style rewrite(s) in the card; mid-drag on ${p.mid || "-"}; ${p.env}]` : "";
+    return p ? ` [press on ${p.down}; selectstart ${p.selectstart}x (${p.prevented} cancelled), ${p.changes} selectionchange, longest ${p.longest} chars, swipe engaged ${p.swiping}, ${p.redrawn} node replacement(s) and ${p.refits} style rewrite(s) in the card; mid-drag on ${p.mid || "-"}; ${p.env}; selection ${(p.seen || []).slice(0, 3).concat((p.seen || []).length > 3 ? ["…", p.seen[p.seen.length - 1]] : []).join(" | ")}; card events ${JSON.stringify(p.events || {})}${p.dragTarget ? ` dragstart on ${p.dragTarget}` : ""}; editable=${p.editable}]` : "";
   };
 
   await check("a card answer selects without pulling in the button row", async () => {
