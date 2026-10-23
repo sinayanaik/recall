@@ -25,6 +25,7 @@ import { setMyDecksCwd, setMyDecksView } from "../library/my-decks-prefs.js?v=__
 import { renderMyDecksList } from "../library/my-decks-render.js?v=__BUILD__";
 import { enhanceRenderedMarkdown } from "../render/enhance.js?v=__BUILD__";
 import { markdownToSafeHtml } from "../render/preprocess.js?v=__BUILD__";
+import { numberRenderedHeadings } from "../notes/heading-numbers.js?v=__BUILD__";
 import { lastSaveErrorWasQuota, persistWorkingDeck } from "../storage/quota.js?v=__BUILD__";
 import { openMyDecksPanel } from "../ui/deck-header.js?v=__BUILD__";
 import { setStatus, showToast } from "../ui/feedback.js?v=__BUILD__";
@@ -806,6 +807,7 @@ export async function convertEpubChaptersForPreview(zip, spine, markers, imageEn
 // every created URL is tracked for revocation on close.
 export async function renderEpubPreviewChapter(body, markdown, zip, cache) {
   body.innerHTML = markdownToSafeHtml(markdown || "");
+  numberRenderedHeadings(body);
   const pending = [];
   body.querySelectorAll(`img[src^="#${EPUB_PREVIEW_IMG_PREFIX}"]`).forEach((img) => {
     const marker = img.getAttribute("src").slice(1 + EPUB_PREVIEW_IMG_PREFIX.length);

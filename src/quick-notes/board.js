@@ -16,6 +16,7 @@ import { flushPendingQuickNoteAnchors, noteAnchorsFromMeta, queuePendingQuickNot
 import { applyQuickNoteCategoryOps, cachedUserId, categoryDeleteOp, categoryUpsertOp, ensureLocalQuickNotesSnapshot, flushPendingQuickNoteCategories, generateCategoryId, getQuickNotesDeckId, normalizeCategoryColor, normalizeQuickNoteCategories, quickNoteCategoriesFromMeta, readCachedQuickNoteCategories, readLocalSnapshotByDeckId, writeCachedQuickNoteCategories } from "./categories.js?v=__BUILD__";
 import { QUICK_NOTES_DECK_TITLE, QUICK_NOTE_COLOR_PALETTE, QUICK_NOTE_DEFAULT_COLOR } from "./palette.js?v=__BUILD__";
 import { markdownToSafeHtml } from "../render/preprocess.js?v=__BUILD__";
+import { numberHeadingsInHtml } from "../notes/heading-numbers.js?v=__BUILD__";
 import { mergeCloudCardsIntoSnapshot } from "../sync/cards.js?v=__BUILD__";
 import { formatRelativeTime } from "../sync/indicator.js?v=__BUILD__";
 import { setStatus, showConfirmModal, showToast } from "../ui/feedback.js?v=__BUILD__";
@@ -211,7 +212,7 @@ export function renderQnCard(card) {
       <button type="button" class="qn-card-cat-btn" data-qn-cat-btn="${escapeHtml(card.id)}" aria-haspopup="true" title="Change category">${catLabel}<span class="qn-caret" aria-hidden="true">&#9662;</span></button>
       ${time}
     </div>
-    <div class="qn-card-body">${markdownToSafeHtml(card.question || "")}</div>
+    <div class="qn-card-body">${numberHeadingsInHtml(markdownToSafeHtml(card.question || ""))}</div>
     <div class="qn-card-foot">
       ${source}
       <button type="button" class="qn-card-copy" data-qn-copy="${escapeHtml(card.id)}" title="Copy this note" aria-label="Copy this note">&#128203;</button>

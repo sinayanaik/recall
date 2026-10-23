@@ -36,7 +36,7 @@ import { state } from "../core/state.js?v=__BUILD__";
 import { readerNotesBody } from "../format/notes-fence.js?v=__BUILD__";
 import { codeHighlightSnippet } from "../format/code-highlight.js?v=__BUILD__";
 import { readHighlightNotes } from "../format/highlight-notes.js?v=__BUILD__";
-import { headingForOffset, headingIndexFor } from "../notes/chapters.js?v=__BUILD__";
+import { SECTION_BEFORE_KEY, documentSectionModel, noteSectionModel } from "./highlight-sections.js?v=__BUILD__";
 import { notesAnchorPlainText } from "../notes/anchor-text.js?v=__BUILD__";
 import { trimNoteAnchor } from "../quick-notes/anchors.js?v=__BUILD__";
 import { scanHighlightGroups } from "./highlights-panel.js?v=__BUILD__";
@@ -79,7 +79,7 @@ export function noteHighlightEntries() {
   // Scanned over the body, resolved against the whole note — the notes live in
   // the tail the body has just had sliced off it. See scanHighlightGroups.
   const { groups, fences, markCount } = scanHighlightGroups(source, notes);
-  const headings = headingIndexFor(source);
+  const sections = noteSectionModel(source);
   const entries = [];
   groups.forEach((group) => {
     // The FIRST piece's inner text, not the group's. A selection dragged across
@@ -88,7 +88,7 @@ export function noteHighlightEntries() {
     // land.
     const text = notesAnchorPlainText(group.pieces[0].inner);
     if (!text) return;
-    const heading = headingForOffset(headings, group.offset);
+    const heading = sections.headingAt(group.offset);
     // A highlight inside a code block leaves it as CODE: a card or a pin made
     // from it gets the lines it sits on as a fenced block, in the block's
     // language, with the highlights still on them; Copy gets exactly the code
@@ -102,6 +102,10 @@ export function noteHighlightEntries() {
       note: Boolean(group.pieces[0].note),
       noteText: clipDrawerNote(group.pieces[0].note),
       where: heading?.title || "",
+      // Its section number, drawn before `where` by the stylesheet; and the
+      // section itself, which the drawer's section picker filters on.
+      whereNumber: heading?.number || "",
+      section: heading?.key || SECTION_BEFORE_KEY,
       anchor: trimNoteAnchor({
         offset: group.offset,
         source: group.pieces[0].inner,
@@ -133,8 +137,12 @@ export function documentHighlightEntries() {
   // out of state.notes each time it is called, which turns listing a paper's
   // highlights into quadratic work in how many there are.
   const notes = readHighlightNotes(state.notes || "");
-  return documentHighlightsInReadingOrder().map((record) => ({
+  const records = documentHighlightsInReadingOrder();
+  const sections = documentSectionModel(records.map((record) => record.page || 0));
+  return records.map((record) => ({
     key: `doc-${record.id}`,
+    section: sections.keyForPage(record.page || 0),
+    page: record.page || 0,
     // documentHighlightLabel, so a region drawn round a figure is listed as
     // "Region · page 12" rather than as a blank row — which in a list is
     // indistinguishable from a bug.

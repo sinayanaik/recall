@@ -1,0 +1,235 @@
+/* Section numbers on a note's headings — 1, 1.1, 1.2, 1.2.1 …
+ * Added after the split — see POST_SPLIT in tools/split-css.mjs.
+ *
+ * The number is never in the text. src/notes/heading-numbers.js works it out
+ * from the note's headings and puts it on each one as data-heading-number;
+ * this sheet draws it, and only while the Notes setting "Number headings" has
+ * put .heading-numbers on <html>. A pseudo-element so a heading still SAYS only
+ * its title — to the contents pairing, to a copy, to a jump's anchor — and so
+ * switching the setting is a class change rather than a re-render.
+ *
+ * user-select: none keeps a drag across a heading from picking the number up,
+ * and tabular figures keep 1.9 and 1.10 lined up down a contents list.
+ */
+
+:root.heading-numbers :is(.rendered, .qn-card-body, .epub-preview-chapter-body) :is(h1, h2, h3, h4, h5, h6)[data-heading-number]:not(:has(> .heading-number-mark))::before,
+:root.heading-numbers .heading-number-mark[data-heading-number]::before,
+:root.heading-numbers .notes-toc-text[data-heading-number]::before,
+:root.heading-numbers .hl-notes-group-head[data-heading-number]::before,
+:root.heading-numbers .heading-number-label[data-heading-number]::before,
+:root.heading-numbers .hl-section-number[data-heading-number]::before {
+  content: attr(data-heading-number) "\2002";
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* In the note itself the number is a quieter shade of the heading, so the
+   title is still what the eye lands on. In the notes view it is drawn by an
+   empty span after the fold arrow (setHeadingNumberMark), so it reads
+   "▾ 1 Introduction" rather than putting the number ahead of the arrow. */
+:root.heading-numbers :is(.rendered, .qn-card-body, .epub-preview-chapter-body) :is(h1, h2, h3, h4, h5, h6)[data-heading-number]::before,
+:root.heading-numbers .heading-number-mark[data-heading-number]::before {
+  color: color-mix(in srgb, currentColor 72%, transparent);
+}
+
+/* The number an export writes as text (writeHeadingNumbersAsText) — the same
+   quieter shade, for the print root and the standalone HTML. */
+.heading-number {
+  font-variant-numeric: tabular-nums;
+  color: color-mix(in srgb, currentColor 72%, transparent);
+}
+
+/* ── The section picker (src/panels/highlight-sections.js) ─────────────────
+ *
+ * A button that says which sections the highlight list is showing, and a
+ * checklist shaped like the contents under it. In the pane's head and the
+ * contents drawer it drops down over the list; in the export dialog it is laid
+ * out in the form (.is-inline).
+ */
+
+.section-picker {
+  min-width: 0;
+}
+
+.section-picker[hidden] {
+  display: none;
+}
+
+.section-picker-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  min-width: 0;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.74rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.section-picker-btn:hover,
+.section-picker-btn[aria-expanded="true"] {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+  color: var(--accent);
+}
+
+/* Narrowed to some sections: say so in the accent, so a short list is not
+   mistaken for everything that was highlighted. */
+.section-picker-btn.is-filtered {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+  background: color-mix(in srgb, var(--accent) 14%, var(--panel));
+  color: var(--accent);
+}
+
+.section-picker-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.section-picker-caret {
+  flex: 0 0 auto;
+  font-size: 0.7em;
+}
+
+.section-picker-pop {
+  position: absolute;
+  top: 100%;
+  left: 8px;
+  right: 8px;
+  z-index: 5;
+  max-height: min(60vh, 420px);
+  overflow-y: auto;
+  margin-top: 2px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.section-picker-pop[hidden] {
+  display: none;
+}
+
+.section-picker-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.section-picker-list.is-inline {
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.section-picker-group {
+  margin: 6px 6px 2px;
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.section-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px 3px calc(6px + var(--section-depth, 0) * 14px);
+  border-radius: 6px;
+  font-size: 0.8rem;
+}
+
+.section-picker-row:hover {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.section-picker-row.is-all {
+  font-weight: 700;
+  border-bottom: 1px solid var(--line);
+  border-radius: 6px 6px 0 0;
+  margin-bottom: 2px;
+}
+
+/* Undoes the app-wide `input { width: 100%; height: var(--input-height) }`,
+   which is for text boxes — the same reset .restore-settings-toggle makes. */
+.section-picker-row input[type="checkbox"] {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  box-shadow: none;
+  accent-color: var(--accent);
+}
+
+.section-picker-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+/* Nothing highlighted in it: still pickable, just quieter. Covered by a picked
+   parent: ticked and greyed, since there is nothing left to choose. */
+.section-picker-row.is-empty .section-picker-text,
+.section-picker-row.is-covered .section-picker-text {
+  color: var(--muted);
+}
+
+.section-picker-count {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* In the pane's head: beside the counter, and the drop-down spans the head so
+   it fits however narrow the pane is. */
+.hc-head {
+  position: relative;
+}
+
+.hc-sections {
+  display: flex;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 45%;
+}
+
+/* In the contents drawer: its own row under Side by side / Highlights only. */
+.drawer-highlights-sections {
+  position: relative;
+  margin: 0 0 6px;
+}
+
+.drawer-highlights-sections .section-picker-btn {
+  width: 100%;
+  justify-content: space-between;
+}
+
+.drawer-highlights-sections .section-picker-pop {
+  left: 0;
+  right: 0;
+}
+
+.export-highlights-sections-field[hidden] {
+  display: none;
+}

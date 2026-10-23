@@ -21,6 +21,7 @@ import { cachedRegionImage, regionImageRect } from "../documents/pdf-region-embe
 import { normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
 import { enhanceRenderedMarkdown } from "../render/enhance.js?v=__BUILD__";
 import { markdownToSafeHtml } from "../render/preprocess.js?v=__BUILD__";
+import { isHighlightNotesAppendixHeading, writeHeadingNumbersAsText } from "../notes/heading-numbers.js?v=__BUILD__";
 import { deckSnapshot } from "../storage/deck-snapshot.js?v=__BUILD__";
 import { setStatus } from "../ui/feedback.js?v=__BUILD__";
 import { unlockPageScroll } from "../ui/overlays.js?v=__BUILD__";
@@ -395,9 +396,17 @@ export function buildNotesExportBody(title, notesMarkdown) {
       <p>Notes &middot; ${new Date().toLocaleString()}</p>
     </header>
     <section class="flat-export-notes rendered">
-      ${markdownToSafeHtml(notesMarkdown)}
+      ${notesExportHtml(notesMarkdown)}
     </section>
   `;
+}
+
+// A note's own markdown, rendered for an export, with its section numbers
+// written in as text when Number headings is on — a file that leaves the app
+// has no stylesheet to draw them. The highlight-notes appendix notesForExport
+// adds is not one of the note's sections and stays unnumbered.
+export function notesExportHtml(notesMarkdown) {
+  return writeHeadingNumbersAsText(markdownToSafeHtml(notesMarkdown), { until: isHighlightNotesAppendixHeading });
 }
 
 // Notes have no Cornell table (no fixed question/answer columns), so unlike
@@ -418,7 +427,7 @@ export function buildNotesPrintDocument(title, notesMarkdown, { theme } = {}) {
         </div>
       </header>
       <section class="rendered" aria-label="${escapeHtml(title)} notes">
-        ${markdownToSafeHtml(notesMarkdown)}
+        ${notesExportHtml(notesMarkdown)}
       </section>
     </div>
   `;
@@ -616,11 +625,11 @@ export function buildHighlightsPrintDocument(title, options = {}) {
 // the same deck-divider treatment the cards PDF already uses between decks.
 export function notesFlatSectionsHtml(sections) {
   if (sections.length === 1) {
-    return `<div class="rendered">${markdownToSafeHtml(sections[0].notes || "*No notes for this file.*")}</div>`;
+    return `<div class="rendered">${notesExportHtml(sections[0].notes || "*No notes for this file.*")}</div>`;
   }
   return sections.map((section) => `
     ${cornellDeckDividerHtml({ title: section.title, category: section.category })}
-    <div class="rendered">${markdownToSafeHtml(section.notes || "*No notes for this file.*")}</div>
+    <div class="rendered">${notesExportHtml(section.notes || "*No notes for this file.*")}</div>
   `).join("");
 }
 

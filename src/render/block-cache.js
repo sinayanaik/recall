@@ -13,7 +13,7 @@ import { state } from "../core/state.js?v=__BUILD__";
 import { markBrokenImages } from "../images/broken.js?v=__BUILD__";
 import { hydrateLocalImages } from "../images/outbox.js?v=__BUILD__";
 import { enhanceSurfaceDiagramControls, enhanceSurfaceImageControls, findSourceImages, imageMatchKey, imageSurfaceForView } from "../images/surface-controls.js?v=__BUILD__";
-import { bindNotesHeadingElements, markNotesTocDirty, refreshNotesTocAvailability } from "../notes/toc.js?v=__BUILD__";
+import { bindNotesHeadingElements, bindNotesHeadingsAcrossView, markNotesTocDirty, refreshNotesTocAvailability } from "../notes/toc.js?v=__BUILD__";
 import { foldKeyFor, hiddenBlockMaskFor, pagedSpanStarts } from "../notes/chapters.js?v=__BUILD__";
 import { readerNotesBody } from "../format/notes-fence.js?v=__BUILD__";
 import { enhanceRenderedMarkdown, promoteNotesHeadings } from "./enhance.js?v=__BUILD__";
@@ -166,6 +166,12 @@ export function finalizeRenderedSurface(container) {
     // has a contents to offer.
     markNotesTocDirty();
     refreshNotesTocAvailability();
+    // ...and one more thing visible with the drawer shut: each heading's section
+    // number (src/notes/heading-numbers.js), which the pairing writes onto the
+    // element. A span built later pairs itself as it is built; this covers an
+    // eagerly rendered note, and an edit that added or removed a heading and so
+    // renumbered the ones already on screen.
+    bindNotesHeadingsAcrossView(container);
     scheduleNotesBlockEstimate(container);
     scheduleNotesChunkEstimates(container);
     applyNotesFoldState(container);

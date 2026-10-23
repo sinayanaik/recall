@@ -65,6 +65,11 @@ const SECTIONS = [
 // Anything appearing in styles/ that is neither a slice nor listed here is
 // still a failure.
 const POST_SPLIT = {
+  "86-heading-numbers.css":
+    "LaTeX-style section numbers drawn before each heading in Notes, the " +
+    "contents drawer and the highlights lists, and the section picker that " +
+    "narrows the highlights to chosen sections (src/notes/heading-numbers.js, " +
+    "src/panels/highlight-sections.js).",
   "85-resume.css":
     "A file's Notes kept out of sight while they reopen where the reader left " +
     "off, so a big book does not show its contents page and then jump " +

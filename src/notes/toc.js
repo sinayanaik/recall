@@ -17,6 +17,7 @@ import { activeChapterIndex, firstVisibleNotesBlock, isNotesPaged, notesCurrentP
 import { NOTES_BLOCK_SELECTOR } from "./raw-offset.js?v=__BUILD__";
 import { notesReadingLineOffset } from "./scroll-anchor.js?v=__BUILD__";
 import { MARK_BADGE_CLASS } from "./highlight-badges.js?v=__BUILD__";
+import { headingNumbersForLevels, numberRenderedHeadings, setHeadingNumberMark } from "./heading-numbers.js?v=__BUILD__";
 import { NOTES_CHUNK_CLASS, NOTES_CHUNK_PENDING_CLASS, NOTES_TOP_LEVEL_SELECTOR, ensureNotesLazyOffsetBuilt, notesHeadingScan, notesLazyPlan, notesLazyTopAtOffset, renderedBlockCache, scanPreparedHeadings, withChunkRendered } from "../render/block-cache.js?v=__BUILD__";
 import { NOTE_LINK_PATTERN, noteLinkEntryMatchesId } from "../render/note-links.js?v=__BUILD__";
 import { forEachDeckSnapshot } from "../storage/deck-store.js?v=__BUILD__";
@@ -193,11 +194,17 @@ export function preparedNotesSource() {
 export function notesHeadingsForPrepared(prepared) {
   if (prepared === notesHeadingSource) return notesHeadingList;
   const used = new Set();
-  notesHeadingList = notesHeadingScan(prepared).map((entry) => ({
+  const scan = notesHeadingScan(prepared);
+  // Numbered over the WHOLE scan, not over what is on screen: most of a long
+  // note is not in the DOM, and a heading has to know it is 14.3 before the
+  // thirteen chapters above it have ever been built.
+  const numbers = headingNumbersForLevels(scan.map((entry) => entry.level));
+  notesHeadingList = scan.map((entry, i) => ({
     level: entry.level,
     text: entry.text,
     offset: entry.offset,
     id: slugifyHeading(entry.text, used),
+    number: numbers[i],
     el: null
   }));
   notesHeadingSource = prepared;
@@ -320,6 +327,7 @@ export function bindNotesHeadingElements(container, from = null, to = null, root
     }
     headings[target].el = node;
     node.id = headings[target].id;
+    setHeadingNumberMark(node, headings[target].number);
     at = target + 1;
   }
 }
@@ -335,12 +343,14 @@ export function ensureNotesHeadingIds() {
   // DOM is all there is, and it is complete by definition.
   if (prepared == null) {
     const used = new Set();
+    numberRenderedHeadings(el.notesView);
+    el.notesView.querySelectorAll("[data-heading-number]").forEach((h) => setHeadingNumberMark(h, h.dataset.headingNumber));
     return Array.from(el.notesView.querySelectorAll("h1, h2, h3, h4, h5, h6"))
       .filter((h) => h.textContent.trim() !== "")
       .map((node) => {
         if (!node.id) node.id = slugifyHeading(node.textContent, used);
         else used.add(node.id);
-        return { level: Number(node.tagName[1]), text: node.textContent.trim(), offset: null, id: node.id, el: node };
+        return { level: Number(node.tagName[1]), text: node.textContent.trim(), offset: null, id: node.id, number: node.dataset.headingNumber || "", el: node };
       });
   }
   const headings = notesHeadingsForPrepared(prepared);
@@ -564,11 +574,14 @@ export function rawNotesHeadings() {
   const value = el.notesEdit?.value ?? "";
   if (value === rawTocSource) return rawTocHeadings;
   const used = new Set();
-  rawTocHeadings = scanPreparedHeadings(value).map((entry) => ({
+  const scan = scanPreparedHeadings(value);
+  const numbers = headingNumbersForLevels(scan.map((entry) => entry.level));
+  rawTocHeadings = scan.map((entry, i) => ({
     level: entry.level,
     text: entry.text,
     offset: entry.offset,
     id: slugifyHeading(entry.text, used),
+    number: numbers[i],
     el: null
   }));
   rawTocSource = value;
@@ -646,7 +659,8 @@ export function buildNotesToc() {
       level: heading.level,
       text: heading.text,
       href: `#${heading.id}`,
-      branch: notesTocBranch[index]
+      branch: notesTocBranch[index],
+      number: heading.number
     });
     el.notesTocList.appendChild(li);
     notesTocLinks.push(link);

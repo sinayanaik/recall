@@ -15,6 +15,7 @@ import { escapeRegExp } from "../core/text.js?v=__BUILD__";
 import { scheduleNotesCaretCheck } from "../notes/caret.js?v=__BUILD__";
 import { isNotesEditing } from "../notes/notes-view.js?v=__BUILD__";
 import { setNotesReadingMode } from "../notes/paged-view.js?v=__BUILD__";
+import { setHeadingNumbersOn } from "../notes/heading-numbers.js?v=__BUILD__";
 import { scheduleMarkdownTableFit } from "../render/tables.js?v=__BUILD__";
 import { showConfirmModal, showToast } from "./feedback.js?v=__BUILD__";
 import { defaultStyleProfiles, legacySpacingDefaults, styleControlGroups, styleCssVariables, styleDefaults, styleDensityPresets, styleFieldByKey, styleTextTabs } from "./style-schema.js?v=__BUILD__";
@@ -675,6 +676,9 @@ export function applyStyleSettings(rawSettings, options = {}) {
   // different LAYOUT for the notes view (a class plus a repagination), not a
   // different value for one of its properties. See src/notes/paged-view.js.
   setNotesReadingMode(settings.notesReadingMode);
+  // Also a class, not a value: the stylesheet draws the numbers only while it
+  // is on <html>, so the switch needs no re-render. See heading-numbers.js.
+  setHeadingNumbersOn(settings.headingNumbers !== "off");
   // The only percent that isn't run through numericStyleValue above, so it's the
   // only one where a non-numeric entry would reach CSS as "abc%".
   root.style.setProperty("--question-fill", `${numericStyleValue(settings.questionFillPercent) ?? numericStyleValue(profileDefaults.questionFillPercent) ?? 58}%`);

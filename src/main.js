@@ -90,6 +90,7 @@ import { cycleToLocator, initHighlightCycle, isHighlightSplitOpen, openHighlight
 // Imported HERE, not by the mark menu, which is reached from the document
 // surface this module's own subtree imports — see setMarkMenuActions.
 import { documentHighlightEntries, noteHighlightEntries } from "./panels/highlight-index.js?v=__BUILD__";
+import { mountExportSectionPicker } from "./panels/highlight-sections.js?v=__BUILD__";
 import { notifyHighlightsChanged, setHighlightsChangedHandler } from "./format/highlight-edit.js?v=__BUILD__";
 import { setMarkOrdinalResolver } from "./format/highlight.js?v=__BUILD__";
 import { closeNotesToc, ensureNotesTocBuilt, flashNotesHeading, initNotesTocFolding, isNotesTocOpen, markNotesTocDirtyFromEditor, notesTocHeadings, notesTocScrollFrame, rawNotesHeadings, scrollNotesEditToHeadingIndex, scrollNotesHeadingIntoView, setNotesTocScrollFrame, tocPushesNotes, toggleNotesToc, updateNotesTocActive } from "./notes/toc.js?v=__BUILD__";
@@ -2599,10 +2600,19 @@ el.allCardsList.addEventListener("keydown", (event) => {
 // row on the notes and document view menus now — "hl:open" — rather than
 // deleted. handleExportAction and handleExportNotesAction are untouched; the ⇓
 // dispatch below is their caller.
+let exportSectionPicker = null;
 const openExportHighlightsModal = () => {
   if (!el.exportHighlightsModal) return;
   // Painted on every open, so it shows the look last chosen anywhere.
   paintExportThemeOptions(el.exportHighlightsTheme, "exportHighlightsTheme");
+  // ...and so is the section checklist, from the choice the pane and the
+  // drawer are showing right now.
+  exportSectionPicker = mountExportSectionPicker(el.exportHighlightsSections, {
+    entriesFor: (surface) => (surface === "document" ? documentHighlightEntries() : noteHighlightEntries())
+  });
+  if (el.exportHighlightsSectionsField) {
+    el.exportHighlightsSectionsField.hidden = !el.exportHighlightsSections?.querySelector(".section-picker-row:not(.is-all)");
+  }
   el.exportHighlightsModal.hidden = false;
   lockPageScroll();
 };
@@ -2690,6 +2700,7 @@ el.exportHighlightsModal?.addEventListener("click", (event) => {
     contextLines: Math.max(0, Number(el.exportHighlightsContext?.value) || 0),
     includeChapter: el.exportHighlightsChapterToggle?.checked !== false,
     includeNotes: el.exportHighlightsNotesToggle?.checked !== false,
+    sections: exportSectionPicker?.read() || null,
     theme: chosenExportTheme(el.exportHighlightsTheme)
   };
   saveExportTheme(options.theme);

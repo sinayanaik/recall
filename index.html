@@ -142,6 +142,7 @@
     <link rel="stylesheet" href="styles/83-teleprompter.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/84-toasts.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/85-resume.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/86-heading-numbers.css?v=__BUILD__">
 
     <!-- ── Module preloads ────────────────────────────────────────────────
          The app is ~130 ES modules and the browser discovers them by PARSING
@@ -318,6 +319,7 @@
     <link rel="modulepreload" href="src/notes/frame-card.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/highlight-badges.js?v=__BUILD__">
     <link rel="modulepreload" href="src/notes/highlight-adjust.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/notes/heading-numbers.js?v=__BUILD__">
     <link rel="modulepreload" href="src/storage/open-deck-base.js?v=__BUILD__">
     <link rel="modulepreload" href="src/sync/conflict-stash.js?v=__BUILD__">
     <link rel="modulepreload" href="src/sync/device.js?v=__BUILD__">
@@ -353,6 +355,7 @@
     <link rel="modulepreload" href="src/panels/drawer-highlights.js?v=__BUILD__">
     <link rel="modulepreload" href="src/panels/highlight-cycle.js?v=__BUILD__">
     <link rel="modulepreload" href="src/panels/highlight-index.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/panels/highlight-sections.js?v=__BUILD__">
     <link rel="modulepreload" href="src/panels/highlights-editor.js?v=__BUILD__">
     <link rel="modulepreload" href="src/panels/highlights-panel.js?v=__BUILD__">
     <link rel="modulepreload" href="src/pwa/app-info.js?v=__BUILD__">
@@ -1440,6 +1443,11 @@
               <button class="hc-step" id="highlightCyclePrevBtn" type="button" title="The highlight before this one" aria-label="Previous highlight">&#9664;</button>
               <span class="hc-count" id="highlightCycleCount" aria-live="polite">0 / 0</span>
               <button class="hc-step" id="highlightCycleNextBtn" type="button" title="The next highlight" aria-label="Next highlight">&#9654;</button>
+              <!-- All sections, or the ones picked: a checklist shaped like the
+                   contents (src/panels/highlight-sections.js). The counter and
+                   ◀ ▶ walk only what it lets through, and the contents
+                   drawer's Highlights list shares the same choice. -->
+              <div class="hc-sections" id="highlightCycleSections"></div>
               <!-- The Highlights tab's own ⇓ Export, which came here with the
                    rest of it. The ⇓ beside the tabs opens the identical dialog
                    from a "Highlights…" row on both reading views; this one is
@@ -2300,6 +2308,8 @@
               <li><strong>Split a note that got too long</strong> — select the part that has outgrown its home and tap <strong>↪</strong> in the selection strip. It moves into a note of its own and leaves a link in its place</li>
               <li><strong>See what points here</strong> — open the <strong>contents</strong> drawer beside the tabs (the icon of three lines with dots beside them — <strong>not</strong> the ☰ at top-left, which is the app's own menu); under the headings, <strong>Linked from</strong> lists every note that references the one you're reading</li>
               <li><strong>...and what you marked, beside what you marked it in</strong> — that drawer's <strong>Highlights</strong> half lists every highlight in this note, and <strong>Side by side</strong> at the top of it splits the panel: the note on one side, its highlights with their notes on the other, <strong>◀ ▶</strong> to walk through them. Drag the divider to resize the two — they start at 3:2 and stack top-and-bottom on a phone</li>
+              <li><strong>Numbered headings</strong> — headings are numbered the way a paper is: <strong>1</strong>, <strong>1.1</strong>, <strong>1.2</strong>, <strong>1.2.1</strong>, and so on, in the note, in the contents drawer and in the highlights lists. The numbers follow the note as you write it — add or move a section and everything after it renumbers itself — and they are never typed into your text, so the Markdown stays exactly as you wrote it. Your top headings are <strong>1, 2, 3</strong> whether they are <code>#</code> or <code>##</code>, and a heading that skips a level (a <code>###</code> straight under a <code>#</code>) is still <strong>1.1</strong>. PDF, Word and HTML exports of the notes keep the numbers. Turn them off under <strong>Themes &amp; Style → Text → Notes → Number headings</strong></li>
+              <li><strong>Highlights from some sections only</strong> — the <strong>All sections ▾</strong> button above the highlights (in the drawer's <strong>Highlights</strong> half and at the top of <strong>Side by side</strong>) opens a checklist shaped like the contents, with how many highlights each section holds. Tick one or more sections — a section brings its subsections with it — and the list, the counter and <strong>◀ ▶</strong> keep to them. The drawer and the side-by-side pane share the choice, and it goes back to all sections when you close side by side or open another file. On a PDF the sections are the PDF's own contents, or its pages when it has none. <strong>Export highlights</strong> has the same checklist, so you can export just one chapter</li>
               <li>Notes save, sync, and export together with the rest of the file — or skip notes entirely and make cards directly, as before</li>
               <li><strong>Let the text come to you</strong> — <strong>⋯ → Teleprompter</strong> (or <strong>&#9654; Teleprompter</strong> on the <strong>‹</strong> tab at the right edge) scrolls the notes by themselves, under a soft band that marks the line to read. The bar at the foot sets the speed in words a minute (it starts at your own reading speed once Recall has measured it), the text size with <strong>A− A+</strong>, and everything else under <strong>⚙</strong>: spacing, width, font, where the band sits and how many lines tall it is, how much the rest is dimmed, a countdown, and keeping the screen on. <strong>Touch the text and it stops</strong> — select, highlight, open a highlight, make a card, exactly as usual — then <strong>&#9654; Resume</strong> carries on from wherever the text is. Turn on <em>Carry on by itself</em> and it resumes a few seconds after you stop touching it. Going to Cards, a PDF or Home pauses it; <strong>✕</strong>, <kbd>Esc</kbd> or Back puts the normal Notes text back, on the same line</li>
               <li><strong>On a phone, the header gets out of your way</strong> — scroll down and the file title bar and the Cards / Notes / PDFs / Canvas tabs fold away; scroll back up and they return. Tap <strong>⤢</strong> in the notes header to keep them hidden for good, and <strong>⤡</strong> to bring them back</li>
@@ -2770,6 +2780,13 @@ What year was the Eiffel Tower built?
             <input type="checkbox" id="exportHighlightsNotesToggle" checked>
             Include notes attached to highlights
           </label>
+        </div>
+        <!-- All sections, or only some: the same checklist as the pane's and
+             the drawer's (src/panels/highlight-sections.js), starting from
+             whatever they are set to. Hidden when the file has no sections. -->
+        <div class="frame-card-field export-highlights-sections-field" id="exportHighlightsSectionsField" hidden>
+          <span class="frame-card-label" id="exportHighlightsSectionsLabel">Sections to export</span>
+          <div class="export-highlights-sections" id="exportHighlightsSections" role="group" aria-labelledby="exportHighlightsSectionsLabel"></div>
         </div>
         <!-- The look for PDF, Word and HTML (src/export/themes.js), painted by
              src/export/theme-dialog.js. Markdown has no look and ignores it. -->
