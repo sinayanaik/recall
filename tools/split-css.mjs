@@ -65,6 +65,10 @@ const SECTIONS = [
 // Anything appearing in styles/ that is neither a slice nor listed here is
 // still a failure.
 const POST_SPLIT = {
+  "85-resume.css":
+    "A file's Notes kept out of sight while they reopen where the reader left " +
+    "off, so a big book does not show its contents page and then jump " +
+    "(scheduleNoteJump in src/notes/anchors.js).",
   "84-toasts.css":
     "Notifications moved to the bottom, clear of the app bar, with a close " +
     "button, an optional action and swipe-to-dismiss (showToast and " +

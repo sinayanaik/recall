@@ -67,6 +67,7 @@ const API_SRC = `async () => {
     "/src/cloud/supabase-client.js?v=__BUILD__",
     "/src/core/state.js?v=__BUILD__",
     "/src/core/gesture.js?v=__BUILD__",
+    "/src/notes/reading-position.js?v=__BUILD__",
     "/src/boot.js?v=__BUILD__"
   ];
   const mods = await Promise.all(paths.map((p) => import(p)));
@@ -437,6 +438,30 @@ try {
     console.log(`      screenshot: ${SHOT}`);
   }
 
+  // The column's zoom is the teleprompter's, not the reader's. Saved as theirs,
+  // it was what the PDF reopened at whenever a session ended without its own
+  // exit — the app closed, a file switch, a sync reopening the paper.
+  await check("while a column is zoomed, the place saved for the PDF keeps the reader's own zoom", async () => {
+    const seen = await page.evaluate(`async () => {
+      const { api, settle } = window.__recall;
+      const view = document.getElementById("documentView");
+      view.scrollTop += 40;
+      view.dispatchEvent(new Event("scroll"));
+      await settle(400);
+      api.flushReadingPositionSave();
+      // The module itself, for its live openPdf: the api copies values once.
+      const pv = await import("/src/documents/pdf-view.js?v=__BUILD__");
+      const stored = api.readStoredReadingPosition(api.documentPositionKey(pv.openPdf.slot, null));
+      const s = api.pdfTeleprompterSnapshot();
+      return { saved: stored ? stored.scale : null, fit: stored ? stored.fitWidth : null, applied: pv.openPdf.scale, base: s.baseScale };
+    }`);
+    if (!(seen.applied > seen.base * 1.2)) return `no column zoom to test (applied ${seen.applied}, the reader's ${seen.base})`;
+    if (seen.saved == null) return "nothing was saved";
+    if (Math.abs(seen.saved - seen.base) > 0.01) return `saved zoom ${seen.saved.toFixed(2)}, the reader's own is ${seen.base.toFixed(2)} (the column's ${seen.applied.toFixed(2)})`;
+    if (seen.fit !== true) return "saved without Fit width, which the reader had on";
+    return null;
+  });
+
   await check("Escape gives back the reader's own zoom, and the PDF as it was", async () => {
     const s = await snap();
     await page.call("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
@@ -457,6 +482,45 @@ try {
     if (!after.fit) return "the PDF no longer follows the window width, as it did before";
     if (after.cls || after.lead || after.bar) return "the teleprompter left something behind on the PDF";
     if (after.pressed !== "false") return "the switch still reads On";
+    return null;
+  });
+
+  // What the Notes teleprompter does to this one when it takes the panel from
+  // behind another tab. The zoom used to be put back there and then, under
+  // display:none, and the reader came back to the old scrollTop on pages half
+  // the size — pages further on.
+  await check("ended from behind another tab, the PDF comes back on the same page at the reader's zoom", async () => {
+    const started = await page.evaluate(`() => window.__recall.api.startPdfTeleprompter()`);
+    if (!started) return "it would not start again";
+    await setNumber("wpm", 3000);
+    await page.waitFor(`() => { const s = window.__recall.api.pdfTeleprompterSnapshot(); return s && s.segment?.kind === "column" && !s.holding && s.scale > s.baseScale * 1.2; }`,
+      { timeout: 60000, label: "a zoomed column" });
+    await setNumber("wpm", 200);
+    const seen = await page.evaluate(`async () => {
+      const { api, settle } = window.__recall;
+      api.pausePdfTeleprompter("reader");
+      await settle(400);
+      const base = api.pdfTeleprompterSnapshot().baseScale;
+      const page = api.currentDocumentPage();
+      api.setViewMode("cards");
+      await settle(400);
+      api.exitPdfTeleprompter({ land: false });
+      await settle(300);
+      api.setViewMode("document");
+      await settle(1200);
+      const pv = await import("/src/documents/pdf-view.js?v=__BUILD__");
+      const view = document.getElementById("documentView");
+      // A short PDF at the reader's zoom cannot put its last page at the top:
+      // the view stops at its end, with that page on screen.
+      const atEnd = view.scrollTop >= view.scrollHeight - view.clientHeight - 2;
+      const pageBox = view.querySelector('.pdf-page[data-page-number="' + page + '"]')?.getBoundingClientRect();
+      const viewBox = view.getBoundingClientRect();
+      const pageOnScreen = Boolean(pageBox && pageBox.top < viewBox.bottom && pageBox.bottom > viewBox.top);
+      return { page, base, after: api.currentDocumentPage(), atEnd, pageOnScreen, scale: pv.openPdf.scale, fit: api.isDocumentFitWidth() };
+    }`);
+    if (seen.after !== seen.page && !(seen.atEnd && seen.pageOnScreen)) return `left on page ${seen.page}, came back on page ${seen.after}`;
+    if (Math.abs(seen.scale - seen.base) > 0.01) return `zoom ${seen.scale.toFixed(2)} on coming back, the reader had ${seen.base.toFixed(2)}`;
+    if (!seen.fit) return "the PDF no longer follows the window width";
     return null;
   });
 

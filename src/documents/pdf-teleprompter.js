@@ -45,6 +45,7 @@ import { formatDuration } from "../stats/combine.js?v=__BUILD__";
 import { isFocusModeActive, setFocusMode } from "../ui/chrome.js?v=__BUILD__";
 import { anyModalOpen } from "../ui/overlays.js?v=__BUILD__";
 import { currentDeckKey } from "../notes/scroll-anchor.js?v=__BUILD__";
+import { onDeckSwap } from "../notes/notes-view.js?v=__BUILD__";
 import { clampToRange, measuredTeleprompterWpm } from "../notes/teleprompter.js?v=__BUILD__";
 import {
   TELEPROMPTER_AUTO_RESUMES, TELEPROMPTER_COLUMNS, TELEPROMPTER_COUNTDOWNS, TELEPROMPTER_RANGES,
@@ -56,8 +57,9 @@ import { isRegionSelectArmed } from "./pdf-region.js?v=__BUILD__";
 import { buildPathFromBoxes, buildPathFromInk, pathWords } from "./pdf-reading-path.js?v=__BUILD__";
 import { keptTextItem, textItemBox, textItemShadows } from "./pdf-selection.js?v=__BUILD__";
 import {
-  PDF_MAX_SCALE, currentDocumentPage, documentPinchEngaged, documentSurfaceHidden, fitWidthScale, openDocumentSlot, openPdf,
-  pageOffsetLeft, pageOffsetTop, pdfPageTextItems, setDocumentScale
+  PDF_MAX_SCALE, currentDocumentAcross, currentDocumentPage, currentDocumentResidual, documentPinchEngaged, documentSurfaceHidden,
+  fitWidthScale, openDocumentSlot, openPdf, pageOffsetLeft, pageOffsetTop, pdfPageTextItems, scrollToDocumentPage,
+  setDocumentReaderZoomHook, setDocumentScale
 } from "./pdf-view.js?v=__BUILD__";
 
 // ── Settings ────────────────────────────────────────────────────────────────
@@ -286,8 +288,11 @@ export function pdfTeleprompterPath(pageNumber) {
   return pdfSession ? pathFor(pageNumber) || null : null;
 }
 
+let pdfTpReducedMotionQuery = null;
+
 function pdfTpReducedMotion() {
-  return typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (!pdfTpReducedMotionQuery && typeof matchMedia === "function") pdfTpReducedMotionQuery = matchMedia("(prefers-reduced-motion: reduce)");
+  return Boolean(pdfTpReducedMotionQuery?.matches);
 }
 
 function surfaceShowsSession() {
@@ -814,6 +819,10 @@ export function startPdfTeleprompter() {
   const stage = el.documentStage;
   if (pdfSession || !view || !stage || !openPdf) return false;
   if (!surfaceShowsSession()) return false;
+  // The PDF is on screen, so a restore still waiting for it has nothing to do
+  // that this session's own start does not do better.
+  applyPendingRestore();
+  dropPendingRestore();
   const settings = readPdfTeleprompterSettings();
   const atTop = view.scrollTop <= 1;
   pdfSession = {
@@ -885,6 +894,69 @@ function onViewResized() {
   }
 }
 
+// ── Putting the reader's zoom back on a PDF nobody can see ──────────────────
+//
+// A session ended from behind another tab (the Notes teleprompter taking the
+// panel) used to put the reader's zoom back there and then, under display:none.
+// Every offset reads 0 in there, so nothing could be measured, and the browser
+// then restored the old scrollTop — taken at the column's zoom and with the
+// lead-in still in it — onto pages half the size: the reader came back pages
+// further on, and the next scroll saved that as their place. So the restore
+// waits until the PDF is on screen again, and lands on the place it was last
+// seen at (the hidden readings answer with openPdf.settled).
+let pendingRestore = null;
+let pendingRestoreObserver = null;
+
+function dropPendingRestore() {
+  pendingRestore = null;
+  pendingRestoreObserver?.disconnect();
+  pendingRestoreObserver = null;
+}
+
+function applyPendingRestore() {
+  const restore = pendingRestore;
+  if (!restore) return;
+  if (openPdf !== restore.pdf) {
+    dropPendingRestore();
+    return;
+  }
+  if (documentSurfaceHidden()) return;
+  dropPendingRestore();
+  const { page, ratio, across } = restore.place;
+  const putBack = () => scrollToDocumentPage(page, ratio, { smooth: false, across });
+  const scale = restore.fitWidth ? fitWidthScale() : restore.scale;
+  if (Math.abs((openPdf.scale || scale) - scale) > 0.001 || Boolean(openPdf.fitWidth) !== restore.fitWidth) {
+    setDocumentScale(scale, { fitWidth: restore.fitWidth, afterLayout: putBack });
+  } else {
+    putBack();
+  }
+}
+
+function restoreWhenShown(ending) {
+  dropPendingRestore();
+  pendingRestore = {
+    pdf: ending.pdf,
+    scale: ending.baseScale,
+    fitWidth: ending.baseFitWidth,
+    place: { page: currentDocumentPage(), ratio: currentDocumentResidual(), across: currentDocumentAcross() }
+  };
+  const view = el.documentView;
+  if (!view || typeof ResizeObserver !== "function") return;
+  // A scroller coming back from display:none changes size from 0, which is
+  // the one moment this needs; a frame later, so the restore's own layout is
+  // not inside the observer's callback.
+  pendingRestoreObserver = new ResizeObserver(() => requestAnimationFrame(applyPendingRestore));
+  pendingRestoreObserver.observe(view);
+}
+
+// The zoom the position save writes down is the reader's, not the column's —
+// see setDocumentReaderZoomHook in pdf-view.js.
+function readerZoomFor(pdf) {
+  if (pdfSession && pdfSession.pdf === pdf) return { scale: pdfSession.baseScale, fitWidth: pdfSession.baseFitWidth };
+  if (pendingRestore && pendingRestore.pdf === pdf) return { scale: pendingRestore.scale, fitWidth: pendingRestore.fitWidth };
+  return null;
+}
+
 // `land`: put the reader's own zoom back, with the line on the band where it
 // is. Not when the PDF on screen is no longer the one that was read.
 export function exitPdfTeleprompter({ land = true } = {}) {
@@ -912,6 +984,10 @@ export function exitPdfTeleprompter({ land = true } = {}) {
       };
     }
   }
+  // Read before the session goes: the hidden readings are the place it was
+  // last seen at, which is where the reader comes back to.
+  const restoreLater = Boolean(view) && openPdf === ending.pdf && !canLand && documentSurfaceHidden();
+  if (restoreLater) restoreWhenShown(ending);
   pdfSession = null;
   closeTeleprompterSheet();
   removeTeleprompterPanel();
@@ -921,7 +997,7 @@ export function exitPdfTeleprompter({ land = true } = {}) {
   // when the session is ended from behind Cards or Notes, so the column's zoom
   // is not what they find on coming back. Their line is put back only where it
   // is on screen to be put back.
-  if (view && openPdf === ending.pdf) {
+  if (view && openPdf === ending.pdf && !restoreLater) {
     const putBack = () => {
       if (!anchor) return;
       const box = tpPageBox(anchor.page);
@@ -1279,9 +1355,11 @@ function onPdfTeleprompterKey(event) {
 }
 
 export function initPdfTeleprompter() {
+  setDocumentReaderZoomHook(readerZoomFor);
+  onDeckSwap(() => exitPdfTeleprompter({ land: false }));
   // Capture phase, so the stop lands before any surface's own handler — the
   // text selection's press timer and the pen's first point among them.
-  document.addEventListener("pointerdown", onPdfReaderPress, { capture: true });
+  document.addEventListener("pointerdown", onPdfReaderPress, { capture: true, passive: true });
   document.addEventListener("touchstart", onPdfReaderPress, { capture: true, passive: true });
   document.addEventListener("wheel", onPdfReaderWheel, { capture: true, passive: true });
   document.addEventListener("keydown", onPdfTeleprompterKey, { capture: true });

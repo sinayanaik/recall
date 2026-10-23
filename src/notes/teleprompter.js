@@ -67,12 +67,14 @@ import { anyModalOpen } from "../ui/overlays.js?v=__BUILD__";
 import { isHighlightNoteEditorOpen } from "./highlight-note-editor.js?v=__BUILD__";
 import { isMarkMenuOpen } from "./mark-menu.js?v=__BUILD__";
 import { isNotesHeadMoreOpen } from "./notes-head-overflow.js?v=__BUILD__";
-import { isNotesEditing, markProgrammaticNotesScroll } from "./notes-view.js?v=__BUILD__";
+import { isNotesEditing, markProgrammaticNotesScroll, onDeckSwap } from "./notes-view.js?v=__BUILD__";
 import {
   firstVisibleNotesBlock, isNotesPaged, notesSelectionHoldsText, revealInPagedNotes, setNotesPagedSuspended
 } from "./paged-view.js?v=__BUILD__";
+import { flushReadingPositionSave } from "./reading-position.js?v=__BUILD__";
 import {
-  currentDeckKey, isReflowHolding, isResumeLanding, notesBlockAtReadingLineGeometric, notesReadingLineOffset, scheduleReadingAnchorCapture
+  captureCurrentReadingAnchor, currentDeckKey, currentReadingAnchor, currentReadingAnchorDeckKey, deferNotesResume,
+  isReflowHolding, isResumeLanding, notesBlockAtReadingLineGeometric, notesReadingLineOffset, scheduleReadingAnchorCapture
 } from "./scroll-anchor.js?v=__BUILD__";
 import { isSelectionAdjusting, selectionGestureIsLive } from "./selection.js?v=__BUILD__";
 import {
@@ -225,8 +227,34 @@ export function teleprompterSnapshot() {
   };
 }
 
+// One MediaQueryList for the session's life rather than a new one per frame:
+// `.matches` stays live on the object.
+let reducedMotionQuery = null;
+
 function reducedMotion() {
-  return typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (!reducedMotionQuery && typeof matchMedia === "function") reducedMotionQuery = matchMedia("(prefers-reduced-motion: reduce)");
+  return Boolean(reducedMotionQuery?.matches);
+}
+
+// ── Where the reader has got to, written down now ───────────────────────────
+//
+// Every frame of the teleprompter is the app's own scroll, so the scroll
+// listener in main.js saves nothing while it plays. scheduleReadingAnchorCapture
+// alone was not enough to make up for that: it waits 150ms and an idle
+// callback, and by then a press on Home, My Files or another tab has hidden
+// the note — the capture finds nothing on screen and gives up, and twenty
+// minutes of reading reopen where the session began. So the place is taken
+// synchronously, in the press that pauses, while the note is still displayed;
+// `flush` also writes it straight to the store, for the moments the app may
+// not get another chance (backgrounded, leaving).
+const PLAY_CAPTURE_MS = 5000;
+
+function saveTeleprompterPlace({ flush = false } = {}) {
+  if (!teleprompterSession || state.viewMode !== "notes" || !isDisplayed(el.notesView)) return;
+  if (currentDeckKey() !== teleprompterSession.deckKey) return;
+  captureCurrentReadingAnchor(teleprompterSession.deckKey);
+  teleprompterSession.capturedAt = performance.now();
+  if (flush) flushReadingPositionSave();
 }
 
 // ── Geometry ────────────────────────────────────────────────────────────────
@@ -631,7 +659,8 @@ export function startTeleprompter() {
     tucked: false,
     wakeLock: null,
     wakeRequested: false,
-    resizeObserver: null
+    resizeObserver: null,
+    capturedAt: 0
   };
   if (pagedBefore) setNotesPagedSuspended(true);
   view.classList.add("is-teleprompter");
@@ -678,6 +707,17 @@ export function exitTeleprompter({ land = true } = {}) {
   ending.resizeObserver?.disconnect();
   const canLand = land && view && isDisplayed(view) && !isNotesEditing();
   const anchor = canLand ? measureLineAnchor(view, bandLineY(view)) : null;
+  // Ended while the note is out of sight (the PDF's teleprompter taking the
+  // panel from behind another tab). Taking the larger type off a hidden note
+  // leaves its scrollTop measured on text that is no longer that size, so the
+  // reader would come back somewhere else. Hand the place the session last
+  // saved to the resume that runs when Notes is next shown — for this same
+  // file only: on a file switch the new file's own resume owns that slot.
+  const hiddenHere = !canLand && view && !isDisplayed(view)
+    && currentDeckKey() === ending.deckKey
+    && currentReadingAnchorDeckKey === ending.deckKey && currentReadingAnchor;
+  if (hiddenHere) deferNotesResume(ending.deckKey, currentReadingAnchor);
+  else if (canLand) saveTeleprompterPlace({ flush: true });
   teleprompterSession = null;
   closeTeleprompterSheet();
   removeTeleprompterPanel();
@@ -755,7 +795,11 @@ export function pauseTeleprompter(reason = "button") {
   }
   letScreenSleep();
   // The loop announces each of its frames as the app's own scroll, so nothing
-  // was saving where the reader had got to; this is where they are now.
+  // was saving where the reader had got to; this is where they are now —
+  // taken now, before the press that paused can hide the note (see
+  // saveTeleprompterPlace). An eased stop ("button") is still moving, so the
+  // capture after it settles stays as well.
+  saveTeleprompterPlace({ flush: reason === "hidden" || reason === "away" });
   scheduleReadingAnchorCapture();
   paintTeleprompter();
 }
@@ -792,7 +836,7 @@ function finishTeleprompter() {
   teleprompterSession.pauseReason = null;
   stopTeleprompterFrames();
   letScreenSleep();
-  scheduleReadingAnchorCapture();
+  saveTeleprompterPlace({ flush: true });
   paintTeleprompter();
 }
 
@@ -845,7 +889,10 @@ function watchTeleprompter() {
     teleprompterSession.pauseReason = "button";
   }
   if (teleprompterSession.phase !== "paused") {
-    if (teleprompterSession.phase === "playing") paintTeleprompter();
+    if (teleprompterSession.phase === "playing") {
+      if (performance.now() - teleprompterSession.capturedAt >= PLAY_CAPTURE_MS) saveTeleprompterPlace();
+      paintTeleprompter();
+    }
     return;
   }
   const busy = teleprompterReaderBusy();
@@ -1054,9 +1101,12 @@ function onTeleprompterKey(event) {
 }
 
 export function initTeleprompter() {
+  // Another file opening ends the session now, before its note is rendered —
+  // see onDeckSwap.
+  onDeckSwap(() => exitTeleprompter({ land: false }));
   // Capture phase, so the stop lands before any surface's own handler — above
   // all touch-selection's press timer (see the header).
-  document.addEventListener("pointerdown", onReaderPress, { capture: true });
+  document.addEventListener("pointerdown", onReaderPress, { capture: true, passive: true });
   document.addEventListener("touchstart", onReaderPress, { capture: true, passive: true });
   document.addEventListener("wheel", onReaderWheel, { capture: true, passive: true });
   document.addEventListener("keydown", onTeleprompterKey, { capture: true });

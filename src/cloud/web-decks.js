@@ -15,12 +15,11 @@ import { notesExportBlock } from "../import/parse-cards.js?v=__BUILD__";
 import { setKnownWebDeckCategories, webDeckCategories } from "../library/categories.js?v=__BUILD__";
 import { normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
 import { readLocalDeckIndex, saveDeckToLibrary, syncLocalLibraryMetaForDeck, writeLocalDeckIndex } from "../library/local-library.js?v=__BUILD__";
-import { readerActedSince } from "../core/gesture.js?v=__BUILD__";
 import { resumeOpenedDeck } from "../notes/anchors.js?v=__BUILD__";
-import { maybePromptBookmarkJump } from "../notes/bookmark.js?v=__BUILD__";
-import { betterReadingPosition } from "../notes/reading-position.js?v=__BUILD__";
+import { bookmarkResumeSettled } from "../notes/bookmark.js?v=__BUILD__";
+import { resumePositionForOpen } from "../notes/reading-position.js?v=__BUILD__";
 import { currentDeckKey } from "../notes/scroll-anchor.js?v=__BUILD__";
-import { discardNotesEditingForDeckSwap } from "../notes/notes-view.js?v=__BUILD__";
+import { discardNotesEditingForDeckSwap, runDeckSwapHooks } from "../notes/notes-view.js?v=__BUILD__";
 import { isQuickNotesDeck, quickNoteCategoriesFromMeta, readCachedQuickNoteCategories, writeCachedQuickNoteCategories } from "../quick-notes/categories.js?v=__BUILD__";
 import { flushPendingDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { refreshSyncIndicatorBaseline } from "../sync/indicator.js?v=__BUILD__";
@@ -369,6 +368,7 @@ export async function loadWebDeck(deckId) {
     // MUST come before state.notes is replaced — the loadDeckSnapshot sibling
     // of this line explains why an open raw editor outlives a deck swap and
     // what it overwrites when it does.
+    runDeckSwapHooks();
     discardNotesEditingForDeckSwap();
     // A deck opened from the cloud replaces whatever was on screen — home too.
     hideHome();
@@ -405,7 +405,6 @@ export async function loadWebDeck(deckId) {
     // as a side effect, and running that for a deck the user has since navigated
     // away from would yank state.localDeckId back to it out from under whatever
     // deck is actually on screen now.
-    const shownAt = performance.now();
     if (loadToken === activeDeckLoadToken) {
       state.localDeckId = null;
       const mirroredMeta = await saveDeckToLibrary({ silent: true, updatedAt: deckData.updated_at, lastSyncedAt: deckData.updated_at, synced: true });
@@ -428,12 +427,14 @@ export async function loadWebDeck(deckId) {
     // deck opened from the cloud and the resume fell back to whatever the cloud
     // copy said, however stale. Same rule as loadDeckSnapshot: resumeOpenedDeck.
     //
-    // ...unless the reader has already started reading in the moment the mirror
-    // took: the note has been on screen since the tab was chosen, and a resume
-    // landing after they have scrolled would move it out from under them.
+    // Even if the reader touched the screen while the mirror was saving. That
+    // used to skip the resume altogether, and a tap in those moments (on the
+    // app bar, on the "Loaded" toast) left a book open at its contents. What
+    // they could have read in that time was the top of the file, not their
+    // place; the resume itself stands down once it has landed and they move.
     if (loadToken === activeDeckLoadToken) {
-      const resumeAt = betterReadingPosition(state.meta?.readingPosition, currentDeckKey());
-      resumeOpenedDeck(readerActedSince(shownAt) ? null : resumeAt, () => maybePromptBookmarkJump());
+      const resumeAt = resumePositionForOpen(state.meta, currentDeckKey());
+      resumeOpenedDeck(resumeAt, () => bookmarkResumeSettled());
     }
   } catch (error) {
     setStatus("Failed to load file from web.", "error");

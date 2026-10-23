@@ -120,10 +120,53 @@ export function enableSwipeDismiss(node, { onDismiss, axis = "x", onHold = null,
 
 // How long a toast stays up. Long enough to READ: a fixed 2.6s was fine for
 // "Saved" and cut a two-line sync error off mid-sentence.
+//
+// A confirmation is capped at four seconds: it sits over the foot of the
+// screen, where the selection pill and the reading bars are, and a "Cloze
+// added" still up ten seconds later was the thing the next press landed on.
+// An error keeps the longer span — it is the one worth reading to the end.
 const TOAST_MAX_VISIBLE = 3;
 function toastDuration(message, type) {
-  const base = type === "error" ? 5000 : 2600;
-  return Math.min(10000, base + String(message).length * 30);
+  if (type === "error") return Math.min(10000, 5000 + String(message).length * 30);
+  return Math.min(4000, 2600 + String(message).length * 20);
+}
+
+// ── Never on top of a control ──────────────────────────────────────────────
+//
+// The bars that sit at the foot of the screen: the selection pill (pinned
+// there, or placed under a selection near the bottom), the highlight Adjust
+// bar, and either teleprompter's bar. A toast over one of them took the press
+// meant for its button (a tap on a toast dismisses it), so the button seemed
+// to need pressing twice. The column is lifted clear of whichever is up in the
+// lower half of the screen, measured once per toast.
+const BOTTOM_BAR_SELECTOR = ".selection-float, .highlight-adjust-bar, .tp-bar";
+const TOAST_BASE_BOTTOM_PX = 56;
+
+function liftToastsClearOfBars(container) {
+  // Placement only: a toast must show whatever this finds (or fails to).
+  try {
+    container.style.setProperty("--toast-lift", `${measureToastLift()}px`);
+  } catch (_) { /* the default bottom it always had */ }
+}
+
+function measureToastLift() {
+  let lift = 0;
+  const viewport = window.innerHeight || document.documentElement.clientHeight || 0;
+  document.querySelectorAll(BOTTOM_BAR_SELECTOR).forEach((bar) => {
+    if (bar.hidden || bar.closest("[hidden]")) return;
+    const rect = bar.getBoundingClientRect();
+    if (!rect.width || !rect.height || rect.top >= viewport) return;
+    // A bar stepping aside keeps its box (the touch bar while the view scrolls
+    // or its selection is off screen: visibility hidden, opacity 0). Nothing
+    // there to press, so nothing to lift the toasts over — lifting anyway put
+    // them in the middle of the page, under the next stroke of a pen.
+    const style = getComputedStyle(bar);
+    if (style.visibility === "hidden" || style.display === "none" || Number(style.opacity) === 0) return;
+    // Only bars that live at the foot: anything higher is not in the way.
+    if (viewport - rect.top > viewport * 0.5) return;
+    lift = Math.max(lift, viewport - rect.top + 8 - TOAST_BASE_BOTTOM_PX);
+  });
+  return Math.max(0, Math.round(lift));
 }
 
 // Transient toast notification, anchored bottom-centre (styles/84-toasts.css),
@@ -212,6 +255,7 @@ export function showToast(message, type = "success", { action = null } = {}) {
     dismiss();
   });
   toast.append(closeBtn);
+  liftToastsClearOfBars(container);
   container.appendChild(toast);
 
   requestAnimationFrame(() => toast.classList.add("is-visible"));

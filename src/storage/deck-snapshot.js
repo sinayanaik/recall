@@ -12,9 +12,9 @@ import { humanizeSourceTitle, sourceFileTitle } from "../import/parse-cards.js?v
 import { importTargetCategory } from "../import/staging.js?v=__BUILD__";
 import { normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
 import { resumeOpenedDeck } from "../notes/anchors.js?v=__BUILD__";
-import { maybePromptBookmarkJump } from "../notes/bookmark.js?v=__BUILD__";
-import { discardNotesEditingForDeckSwap, refreshNotesEditorInPlace } from "../notes/notes-view.js?v=__BUILD__";
-import { betterReadingPosition, newerReadingPosition } from "../notes/reading-position.js?v=__BUILD__";
+import { bookmarkResumeSettled } from "../notes/bookmark.js?v=__BUILD__";
+import { discardNotesEditingForDeckSwap, refreshNotesEditorInPlace, runDeckSwapHooks } from "../notes/notes-view.js?v=__BUILD__";
+import { newerReadingPosition, resumePositionForOpen } from "../notes/reading-position.js?v=__BUILD__";
 import { currentDeckKey, currentReadingAnchor, currentReadingAnchorDeckKey } from "../notes/scroll-anchor.js?v=__BUILD__";
 import { isQuickNotesDeck } from "../quick-notes/categories.js?v=__BUILD__";
 import { setDeckAutosaveStorageFailed } from "./quota.js?v=__BUILD__";
@@ -248,6 +248,7 @@ export function loadDeckSnapshot(payload, titleHint = "", append = false, { keep
     // ...except on an in-place refresh of the SAME deck (a merge brought another
     // window's or device's change in): the editor stays open and takes the
     // merged text where the reader is typing. See refreshNotesEditorInPlace.
+    if (!keepPlace) runDeckSwapHooks();
     if (!(keepPlace && refreshNotesEditorInPlace(payloadNotes))) discardNotesEditingForDeckSwap();
     // See the identical call in loadWebDeck: the outgoing deck's queued-image
     // blob URLs are released here rather than held until pagehide.
@@ -312,14 +313,16 @@ export function loadDeckSnapshot(payload, titleHint = "", append = false, { keep
     //
     // Not on a keepPlace refresh. The reader is already somewhere in this deck
     // and a background sync is not a reason to scroll them to wherever the
-    // saved position happens to be — nor to raise a bookmark prompt, which is a
-    // question about opening a deck and not about syncing one.
+    // saved position happens to be — nor to re-arm the bookmark capture, which
+    // belongs to opening a deck and not to syncing one.
     if (!keepPlace) {
       queueMicrotask(() => {
-        const resumeAt = betterReadingPosition(state.meta?.readingPosition, currentDeckKey());
+        // The newest of this device's place, the file's synced place and its
+        // bookmark — see resumePositionForOpen.
+        const resumeAt = resumePositionForOpen(state.meta, currentDeckKey());
         // ...and it must not choose the tab, nor land a paper twice. See
         // resumeOpenedDeck for the rule, which loadWebDeck shares.
-        resumeOpenedDeck(resumeAt, () => maybePromptBookmarkJump());
+        resumeOpenedDeck(resumeAt, () => bookmarkResumeSettled());
       });
     }
   }

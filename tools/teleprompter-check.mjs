@@ -13,8 +13,9 @@
 // from wherever the text is NOW; it can carry on by itself, but never over a
 // selection; Escape gives back the Notes text exactly as it was; paged mode is
 // suspended while it runs and returned after; the end of the note is said, not
-// silently sat at; another tab pauses it and the raw editor ends it; and on a
-// phone the bar fits.
+// silently sat at; another tab pauses it and the raw editor ends it; a press
+// on Home saves the place it had reached; and on a phone the bar fits and no
+// notification covers it or the selection pill.
 //
 // Same harness as notes-menu-check: the app's own modules imported into the
 // page, a fake Supabase client, one fixture file created and opened in Notes.
@@ -59,7 +60,11 @@ const API_SRC = `async () => {
     "/src/cloud/supabase-client.js?v=__BUILD__",
     "/src/cards/new-deck.js?v=__BUILD__",
     "/src/boot.js?v=__BUILD__",
-    "/src/core/state.js?v=__BUILD__"
+    "/src/core/state.js?v=__BUILD__",
+    "/src/notes/reading-position.js?v=__BUILD__",
+    "/src/notes/scroll-anchor.js?v=__BUILD__",
+    "/src/ui/home.js?v=__BUILD__",
+    "/src/ui/feedback.js?v=__BUILD__"
   ];
   const mods = await Promise.all(paths.map((p) => import(p)));
   const api = {};
@@ -557,6 +562,61 @@ try {
     return null;
   });
 
+  // Every frame is the app's own scroll, so the scroll listener saves nothing
+  // while it plays. A press on Home used to pause it with a capture that ran
+  // after Home had hidden the note — it found nothing, and the file reopened
+  // where the session had begun.
+  await check("playing, a press on Home saves the place it had reached", async () => {
+    const before = await page.evaluate(`async () => {
+      const { api, settle } = window.__recall;
+      const key = api.currentDeckKey();
+      const view = document.getElementById("notesView");
+      const target = [...view.querySelectorAll("p")].find((p) => p.textContent.startsWith("Paragraph 60."));
+      view.scrollTop += target.getBoundingClientRect().top - view.getBoundingClientRect().top;
+      // That scroll was the reader's and is saved as theirs; let it land, then
+      // forget it, so whatever is stored afterwards was the teleprompter's.
+      await settle(2600);
+      api.flushReadingPositionSave();
+      api.forgetStoredReadingPosition(key);
+      api.resumeTeleprompter();
+      await settle(1800);
+      const block = api.notesBlockAtReadingLineGeometric();
+      return {
+        key,
+        phase: api.teleprompterSnapshot()?.phase,
+        at: Number(((block && block.textContent) || "").match(/^Paragraph (\\d+)/)?.[1])
+      };
+    }`);
+    if (before.phase !== "playing") return `it was ${before.phase} before the press`;
+    // The press and then what the button does with it. Focus mode (on by
+    // default) folds the app bar away while the teleprompter runs, so the
+    // button itself is not there to be pressed — the reading rail's Home is.
+    await page.evaluate(`() => {
+      const { api } = window.__recall;
+      const home = document.getElementById("appHomeBtn");
+      home.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerType: "mouse" }));
+      api.openHome();
+    }`);
+    await sleep(600);
+    const after = await page.evaluate(`async (key) => {
+      const { api, settle } = window.__recall;
+      api.flushReadingPositionSave();
+      const stored = api.readStoredReadingPosition(key);
+      const notes = api.state.notes;
+      const head = stored ? notes.lastIndexOf("Paragraph ", stored.offset + 12) : -1;
+      const at = head >= 0 ? Number(notes.slice(head).match(/^Paragraph (\\d+)/)?.[1]) : null;
+      const homeUp = !document.getElementById("homeView").hidden;
+      api.closeHome();
+      api.setViewMode("notes");
+      await settle(400);
+      return { stored: Boolean(stored), at, homeUp };
+    }`, before.key);
+    if (!after.homeUp) return "the press did not open Home";
+    if (!after.stored) return "nothing was saved for the file";
+    if (!(Math.abs(after.at - before.at) <= 3)) return `saved at paragraph ${after.at}, it was reading paragraph ${before.at}`;
+    return null;
+  });
+
   await check("the raw editor ends it", async () => {
     const seen = await page.evaluate(`async () => {
       const { api, settle } = window.__recall;
@@ -636,6 +696,52 @@ try {
     if (seen.overflow > 1) return `the bar's controls overflow it by ${seen.overflow}px`;
     if (seen.page > 1) return `the page scrolls sideways by ${seen.page}px`;
     if (seen.small.length) return `too small to press: ${seen.small.join(", ")}`;
+    return null;
+  });
+  // The selection pill pins itself to the foot of a phone's screen, where the
+  // notifications now sit; a toast over it took the press meant for its button
+  // (a tap on a toast dismisses it), and the button seemed to need two presses.
+  await check("on a phone, a notification stays clear of the selection pill and the teleprompter's bar", async () => {
+    const seen = await page.evaluate(`async () => {
+      const { api, settle } = window.__recall;
+      const measure = async (message) => {
+        api.showToast(message, "info");
+        await settle(400);
+        const toast = [...document.querySelectorAll(".toast")].find((n) => n.dataset.message === message);
+        const box = toast && toast.getBoundingClientRect();
+        toast && toast.dispatchEvent(new CustomEvent("toast-dismiss"));
+        await settle(320);
+        return box;
+      };
+      // Where the touch bar puts itself for a selection near the foot of the
+      // screen (placeTouchSelectionBar in src/notes/selection.js).
+      const pill = document.getElementById("selectionFloat") || document.querySelector(".selection-float");
+      const wasHidden = pill.hidden;
+      const wasStyle = pill.getAttribute("style");
+      pill.hidden = false;
+      pill.style.top = (innerHeight - 64) + "px";
+      pill.style.bottom = "auto";
+      await settle(100);
+      const pillBox = pill.getBoundingClientRect();
+      const overPill = await measure("Pill toast probe");
+      if (wasStyle == null) pill.removeAttribute("style"); else pill.setAttribute("style", wasStyle);
+      pill.hidden = wasHidden;
+      if (!api.teleprompterActive()) api.toggleTeleprompter();
+      await settle(400);
+      api.pauseTeleprompter("button");
+      await settle(300);
+      const barBox = document.querySelector(".tp-bar").getBoundingClientRect();
+      const overBar = await measure("Teleprompter toast probe");
+      api.exitTeleprompter();
+      return {
+        pill: { top: pillBox.top, height: pillBox.height, toast: overPill ? overPill.bottom : null },
+        bar: { top: barBox.top, height: barBox.height, toast: overBar ? overBar.bottom : null }
+      };
+    }`);
+    if (!seen.pill.height) return "the pill is not on screen";
+    if (seen.pill.toast == null || seen.bar.toast == null) return "no toast showed";
+    if (seen.pill.toast > seen.pill.top) return `the toast's foot (${Math.round(seen.pill.toast)}) is over the pill (top ${Math.round(seen.pill.top)})`;
+    if (seen.bar.toast > seen.bar.top) return `the toast's foot (${Math.round(seen.bar.toast)}) is over the bar (top ${Math.round(seen.bar.top)})`;
     return null;
   });
 } finally {

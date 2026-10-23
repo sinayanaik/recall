@@ -28,7 +28,7 @@ import { clearNotesHistory, syncNotesHistoryBaseline } from "./notes-history.js?
 import { textareaOffsetFromScroll } from "./caret.js?v=__BUILD__";
 import { applyNotesPagedLayout, firstVisibleNotesBlock, isNotesPaged, notesPageCount, revealInPagedNotes } from "./paged-view.js?v=__BUILD__";
 import { notesBlockForRawOffset } from "./raw-offset.js?v=__BUILD__";
-import { notesBlockAtReadingLineGeometric } from "./scroll-anchor.js?v=__BUILD__";
+import { isResumeLanding, notesBlockAtReadingLineGeometric } from "./scroll-anchor.js?v=__BUILD__";
 import { hideNotesSelectionButton, touchSelectionDragActive } from "./selection.js?v=__BUILD__";
 import { blockAtNotesReadingLine, markNotesTocDirty } from "./toc.js?v=__BUILD__";
 import { NOTES_CHUNK_CLASS, NOTES_ESTIMATE_MIN_BLOCKS, applyNotesFoldState, notesFoldedHeadings, releaseNotesChunkEstimateObserver, releaseNotesLazyBuildObserver, renderMarkdown, resetNotesFoldedHeadings, setNotesBlockEstimateSource, syncNotesBlockEstimateSource, withChunkRendered } from "../render/block-cache.js?v=__BUILD__";
@@ -215,8 +215,45 @@ function repairHighlightMarks() {
   scheduleDeckAutosave();
 }
 
-export function renderNotesView({ sameNote = false } = {}) {
+// ── Is a render of the note still under way? ───────────────────────────────
+//
+// Counted from the moment a render is asked for until its whole tail (folds,
+// paged layout, badges) has run, superseded or not. A resume that lands while
+// this is up is aiming at a document that is not this note's yet: during the
+// unyielded parse of a big book the block cache still describes the PREVIOUS
+// note, and isNotesStreamBusy only goes up once streaming itself starts — so a
+// resume could "land" on a stale block and stop there, leaving the new book at
+// its contents.
+let notesRenderInFlight = 0;
+
+const NOTES_RENDER_FLIGHT_MAX_MS = 20000;
+
+export function isNotesRenderInFlight() {
+  return notesRenderInFlight > 0;
+}
+
+export function renderNotesView(options = {}) {
   if (!el.notesView) return Promise.resolve();
+  notesRenderInFlight += 1;
+  let released = false;
+  // A render that never settles (a diagram library that never answers) must
+  // not hold every later resume back: the flag lets go on its own.
+  const backstop = setTimeout(() => release(), NOTES_RENDER_FLIGHT_MAX_MS);
+  const release = () => {
+    if (released) return;
+    released = true;
+    clearTimeout(backstop);
+    notesRenderInFlight = Math.max(0, notesRenderInFlight - 1);
+  };
+  try {
+    return renderNotesViewNow(options).finally(release);
+  } catch (error) {
+    release();
+    throw error;
+  }
+}
+
+function renderNotesViewNow({ sameNote = false } = {}) {
   repairHighlightMarks();
   const source = readerNotesBody(state.notes);
   if (sameNote) {
@@ -527,6 +564,12 @@ export async function settleNotesPin(view, anchors, measuredAt = performance.now
     settleMs = NOTES_PIN_SETTLE_MS;
     const anchor = anchors.find((entry) => entry.node.isConnected && view.contains(entry.node));
     if (!anchor) return;
+    // A file's Notes are still being taken to where the reader left off. The
+    // pin was measured before that landed — at the top, on a book that had only
+    // just opened — so holding it would undo the resume. A sync that rewrote
+    // the file as it opened did exactly that, every time another device had
+    // touched it.
+    if (isResumeLanding()) return;
     // Never move the page out from under a finger. A touch selection is live
     // while this runs whenever the reader highlights and then reaches straight
     // back to the text, and a scrollTop write during a drag moves the words
@@ -640,6 +683,27 @@ export function resetNotesEditingUI() {
   hideNotesSelectionButton();
   // Back to the rendered note's own headings.
   markNotesTocDirty();
+}
+
+// ── Another file is about to replace the open one ──────────────────────────
+//
+// Things that hold the open file's surface (both teleprompters) end here, in
+// the same tick, rather than on their own 250ms watch: until then the incoming
+// note rendered under the teleprompter's larger type and lead-in, its resume
+// landed on that layout, and the session's exit then shrank the type back under
+// the place it had just landed on. A hook, because those modules import this one.
+// Called by the deck loaders for a real swap only — never for a sync's in-place
+// refresh of the same file.
+const deckSwapHooks = new Set();
+
+export function onDeckSwap(fn) {
+  if (typeof fn === "function") deckSwapHooks.add(fn);
+}
+
+export function runDeckSwapHooks() {
+  deckSwapHooks.forEach((fn) => {
+    try { fn(); } catch (error) { console.warn("A file-swap hook failed", error); }
+  });
 }
 
 // Leave raw edit mode because the note underneath is being REPLACED, not

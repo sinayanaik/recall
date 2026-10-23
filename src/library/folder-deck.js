@@ -55,7 +55,7 @@ import {
   splitMergedNotes
 } from "../format/merged-notes.js?v=__BUILD__";
 import { resumeOpenedDeck } from "../notes/anchors.js?v=__BUILD__";
-import { discardNotesEditingForDeckSwap } from "../notes/notes-view.js?v=__BUILD__";
+import { discardNotesEditingForDeckSwap, runDeckSwapHooks } from "../notes/notes-view.js?v=__BUILD__";
 import { betterReadingPosition } from "../notes/reading-position.js?v=__BUILD__";
 import { currentDeckKey } from "../notes/scroll-anchor.js?v=__BUILD__";
 import { decksUnderFolder } from "./folder-tree.js?v=__BUILD__";
@@ -223,6 +223,7 @@ export async function openDecksAsOneDeck(entries, { title, path = null, key, lan
   // document. Discarded before state.notes is replaced, exactly as
   // loadDeckSnapshot does it, rather than left to the last-resort re-seed in
   // setViewMode.
+  runDeckSwapHooks();
   discardNotesEditingForDeckSwap();
   // A folder opened as one deck replaces whatever was on screen — home included.
   hideHome();
@@ -284,8 +285,8 @@ export async function openDecksAsOneDeck(entries, { title, path = null, key, lan
   // Notes, held for Notes when the document opens on Cards.
   //
   // The local store only: state.meta is empty here by design (see above), so
-  // there is no synced position to weigh it against. And no bookmark prompt —
-  // maybePromptBookmarkJump would also arm the bookmark capture, which writes
+  // there is no synced position to weigh it against. And no bookmarkResumeSettled —
+  // it would arm the bookmark capture, which writes
   // into state.meta, and this document's meta must stay empty.
   resumeOpenedDeck(betterReadingPosition(null, currentDeckKey()));
 

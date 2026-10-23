@@ -21,7 +21,7 @@ import { locateSelectionInSource, renderedSelectionStrings } from "../format/loc
 import { loadDeckFromLibrary } from "../library/local-library.js?v=__BUILD__";
 import { notesAnchorPlainText } from "./anchor-text.js?v=__BUILD__";
 import { scrollTextareaToOffset } from "./caret.js?v=__BUILD__";
-import { NOTES_PROGRAMMATIC_SCROLL_MS, markProgrammaticNotesScroll, markProgrammaticNotesSelection } from "./notes-view.js?v=__BUILD__";
+import { NOTES_PROGRAMMATIC_SCROLL_MS, isNotesRenderInFlight, markProgrammaticNotesScroll, markProgrammaticNotesSelection } from "./notes-view.js?v=__BUILD__";
 import { estimateNotesPageForFraction, isNotesPaged, notesPageCount, notesPageForElement, revealInPagedNotes, revealRangeInPagedNotes } from "./paged-view.js?v=__BUILD__";
 import { NOTES_BLOCK_SELECTOR, approximateRawOffsetForBlock, notesBlockForRawOffset } from "./raw-offset.js?v=__BUILD__";
 import { currentDeckKey, deferNotesResume, notesReadingLineOffset, setCurrentReadingAnchor, setCurrentReadingAnchorDeckKey, setResumeLanding } from "./scroll-anchor.js?v=__BUILD__";
@@ -957,9 +957,13 @@ export const NOTE_RESUME_SETTLED_RETRY_MS = 600;
 // so anything that says "I am here now" ends it.
 export const READER_INTERRUPTION_EVENTS = READER_INPUT_EVENTS;
 
-export function watchForReaderInterruption(onInterrupt = null) {
+// `accept`, when given, decides which of those events count. A resume passes
+// readerTakesNoteBack: a tap on the app bar or on a toast is not the reader
+// choosing a place in the note.
+export function watchForReaderInterruption(onInterrupt = null, accept = null) {
   let interrupted = false;
-  const stop = () => {
+  const stop = (event) => {
+    if (accept && !accept(event)) return;
     interrupted = true;
     cancel();
     onInterrupt?.();
@@ -977,6 +981,41 @@ export function watchForReaderInterruption(onInterrupt = null) {
   // is unambiguous.
   READER_INTERRUPTION_EVENTS.forEach((type) => document.addEventListener(type, stop, { capture: true, passive: true }));
   return { interrupted: () => interrupted, cancel };
+}
+
+// The keys that move the note. Anything else (a shortcut, Escape, a modifier on
+// its own) is not the reader picking a place to read.
+const NOTE_SCROLL_KEYS = new Set(["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " ", "Spacebar"]);
+
+export function readerTakesNoteBack(event) {
+  if (!event) return true;
+  if (event.type === "keydown") return NOTE_SCROLL_KEYS.has(event.key);
+  const stage = el.notesStage || el.notesView;
+  const target = event.target;
+  return Boolean(stage && target && typeof target === "object" && "nodeType" in target && stage.contains(target));
+}
+
+// Stands in for the watcher until a resume has put the reader somewhere.
+const NOT_WATCHING = Object.freeze({ interrupted: () => false, cancel: () => {} });
+
+// The longest a resume waits for the note to be rendered at all, on the
+// slowest phone and the largest book. NOTE_RESUME_BUDGET_MS is counted from
+// when the render is done; this caps the whole wait.
+export const NOTE_RESUME_MAX_WAIT_MS = 30000;
+
+// How long the note is kept out of sight while a resume waits for it — long
+// enough that a book does not flash its contents page before landing, short
+// enough that a slow render never leaves a blank screen.
+export const NOTE_RESUME_HIDE_MS = 6000;
+
+const NOTES_RESUMING_CLASS = "is-resuming";
+let resumeHideTimer = 0;
+
+function setNotesResuming(active) {
+  clearTimeout(resumeHideTimer);
+  resumeHideTimer = 0;
+  el.notesView?.classList.toggle(NOTES_RESUMING_CLASS, Boolean(active));
+  if (active) resumeHideTimer = setTimeout(() => setNotesResuming(false), NOTE_RESUME_HIDE_MS);
 }
 
 // Cancels the resume currently in flight, or null when there isn't one. See
@@ -1077,12 +1116,34 @@ export function scheduleNoteJump(anchor, options, locator = null) {
   const resume = Boolean(options?.resume);
   const patient = resume || Boolean(options?.patient);
   let estimatedOnce = false;
-  const until = performance.now() + NOTE_RESUME_BUDGET_MS;
+  const scheduledAt = performance.now();
+  // Counted from when the note has finished rendering, not from now: a big book
+  // can spend most of eight seconds being parsed and streamed in, and a budget
+  // that ran out meanwhile gave up without ever having aimed. Pushed forward
+  // while the render is busy (see attempt), never past NOTE_RESUME_MAX_WAIT_MS.
+  let until = scheduledAt + NOTE_RESUME_BUDGET_MS;
+  const waitCap = scheduledAt + NOTE_RESUME_MAX_WAIT_MS;
   // The reader taking over ends the jump there and then — any jump, not only a
   // resume (see "patience is not ownership" above). For a resume that includes
   // the "a resume is landing" gate on reading-position captures, which would
   // otherwise hold until the eight-second budget ran out.
-  const reader = watchForReaderInterruption(resume ? () => { finishResume(); settleOnce(true); } : null);
+  //
+  // ...but a RESUME only listens once it has put the reader somewhere. Until
+  // then the screen shows the top of the book, and a touch there (most often
+  // the app bar, a toast, or a reader waiting for the place to appear) is not
+  // somebody choosing to read the contents page. It used to end the resume
+  // there for good — the book stayed at its contents, the next scroll saved
+  // that as the place, and the next sync pushed it as the bookmark. A jump the
+  // reader asks for (a contents row, Go to bookmark) still ends it at once,
+  // through cancelResume.
+  const watchReader = () => watchForReaderInterruption(
+    resume ? () => { finishResume(); settleOnce(true); } : null,
+    resume ? readerTakesNoteBack : null
+  );
+  let reader = resume ? NOT_WATCHING : watchReader();
+  const listenForReader = () => {
+    if (reader === NOT_WATCHING && !cancelled && !settled) reader = watchReader();
+  };
   // At most one ambient resume, ever. Nobody asks for a resume — two of them
   // are two different opinions about where the reader is, both moving the same
   // scroller for up to eight seconds. There are two schedulers (loadDeckSnapshot
@@ -1099,6 +1160,7 @@ export function scheduleNoteJump(anchor, options, locator = null) {
     if (self && cancelResume === self) {
       cancelResume = null;
       setResumeLanding(false);
+      setNotesResuming(false);
     }
   };
   if (resume) {
@@ -1110,15 +1172,18 @@ export function scheduleNoteJump(anchor, options, locator = null) {
     };
     self = cancelResume;
     setResumeLanding(true);
+    // Out of sight while the note renders, so a book does not show its
+    // contents page and then jump. Only when there is a render to wait for —
+    // a note already on screen lands within two frames.
+    if (isNotesRenderInFlight() || isNotesStreamBusy()) setNotesResuming(true);
   }
   // ── Settled means "no longer moving the note", however it got there ──────
   //
   // onSettled is how a deck open learns the resume is over (it arms the
-  // bookmark capture and raises the cross-device prompt — see
-  // maybePromptBookmarkJump). It used to be called only when the resume
-  // LANDED, so a reader who touched the note while a book was still landing
-  // left it uncalled for the rest of the session: no bookmark was ever taken
-  // for that file, and its way back stayed hidden. The reader taking over
+  // bookmark capture — see bookmarkResumeSettled). It used to be called only
+  // when the resume LANDED, so a reader who touched the note while a book was
+  // still landing left it uncalled for the rest of the session: no bookmark
+  // was ever taken for that file, and its way back stayed hidden. The reader taking over
   // settles it too. Out of the touch handler, not inside it, and never for a
   // resume a newer one replaced — that deck is not the open one any more.
   let settled = false;
@@ -1146,6 +1211,17 @@ export function scheduleNoteJump(anchor, options, locator = null) {
     // The reader took over. Their position is the real one now — and having
     // moved on, they are owed no "couldn't find that spot" either.
     if (reader.interrupted()) return;
+    // The reader has gone to another tab while the note was still rendering.
+    // Landing now would pull them back to Notes (revealNoteAnchor switches
+    // views), so the resume is held, exactly as for a file that opened on
+    // Cards, and lands when they come back to Notes (see deferNotesResume).
+    if (resume && state.viewMode !== "notes") {
+      if (Number.isFinite(anchor?.offset)) deferNotesResume(currentDeckKey(), anchor);
+      reader.cancel();
+      finishResume();
+      settleOnce();
+      return;
+    }
     // A big note mid-stream has a growing backlog of freshly appended,
     // never-laid-out blocks. Both revealNoteAnchor's text search and the
     // re-aim below it read block geometry, which — same reason notesStreamBusy
@@ -1162,7 +1238,8 @@ export function scheduleNoteJump(anchor, options, locator = null) {
     // once the stream settles, a single unhurried pass lands correctly, and
     // the backlog is gone by then anyway, so nothing already scheduled is
     // wasted by having waited.
-    const streaming = isNotesStreamBusy();
+    const streaming = isNotesStreamBusy() || isNotesRenderInFlight();
+    if (streaming) until = Math.min(waitCap, Math.max(until, performance.now() + NOTE_RESUME_BUDGET_MS));
     if (!streaming) {
       // ── Build the part of the note this jump is aimed at ─────────────────
       //
@@ -1199,6 +1276,10 @@ export function scheduleNoteJump(anchor, options, locator = null) {
         const block = notesBlockForRawOffset(el.notesView, state.notes || "", anchor.offset);
         if (block) scrollNotesBlockToReadingLine(block, false);
         else estimateNotesScrollForOffset(anchor.offset);
+        // The reader is near their place now, so from here a touch on the note
+        // means they have taken it back.
+        listenForReader();
+        if (resume) setNotesResuming(false);
         // Landed. The note has finished streaming and the block the offset
         // falls in has been put on the reading line — which is the resume, and
         // is measured as the resume by interaction-scale-check (the CONTENT at
