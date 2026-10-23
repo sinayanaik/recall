@@ -394,6 +394,10 @@ try {
   const midStroke = await page.evaluate(`async (penSrc) => {
     const { api, settle } = window.__recall;
     const pen = (0, eval)(penSrc);
+    // A toast is a fixed box over the page (bottom-centre now, top before), and
+    // the pen dispatch below lands on whatever is under the point — waited out
+    // as the scribble case further down does, for the same reason.
+    for (let i = 0; i < 80 && document.querySelector(".toast"); i += 1) await settle(100);
     const view = document.getElementById("documentView");
     const pageEl = document.querySelector("#documentStage .pdf-page[data-page-number='1']");
     const box = pageEl.getBoundingClientRect();
@@ -1978,7 +1982,7 @@ try {
     const paperPages = api.currentPdfPageCount();
 
     // "Attached" and "Saved here" both raise a toast, and a toast is a
-    // fixed-position box in the top corner — elementFromPoint finds IT, the pen
+    // fixed-position box over the page — elementFromPoint finds IT, the pen
     // never lands on a page, and the stroke this case is about is never made.
     // Waited out rather than pressed around, because where the toast sits is not
     // this check's business.
