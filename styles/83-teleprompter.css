@@ -42,8 +42,10 @@
   --tp-dim-ink: color-mix(in srgb, var(--card) var(--tp-dim, 45%), transparent);
 }
 
-/* Paused, it is Notes again: no band, no dimming, the text as it is. */
-.tp-overlay[data-phase="paused"],
+/* Paused, the band and the dimming stay: only the scrolling stops. They step
+   back while a selection, its pill or a highlight's menu is up, so what is
+   being selected is seen as it is, and at the end of the note. */
+.tp-overlay.is-tucked,
 .tp-overlay[data-phase="ended"] {
   opacity: 0;
 }

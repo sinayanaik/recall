@@ -2,8 +2,9 @@
 // sets, under a band that marks the line to read.
 //
 // "Reading articles in the notes I have imported, it is very hard to scroll" —
-// so the text comes to the reader instead. Touching it stops it at once, and
-// Notes is then exactly Notes: long-press to select, highlight, open a
+// so the text comes to the reader instead. Touching it stops it at once — the
+// teleprompter stays, band and all, and only the scrolling stops — and the text
+// works exactly as in Notes: long-press to select, highlight, open a
 // highlight's menu, make a card. ▶ Resume (or Space) carries on from wherever
 // the text is by then; a setting can make it carry on by itself once the
 // reader has been still for a few seconds.
@@ -15,7 +16,8 @@
 //     a style change made while it runs cannot undo them and leaving takes
 //     nothing but removing them. They stay while paused, by the reader's
 //     choice: words that jump under a finger reaching for them cannot be
-//     selected.
+//     selected. So do the band and the dimming, which step back only while a
+//     selection or a highlight's menu is up (the bar's `tucked`).
 //   • Paging. A columned note has nowhere to scroll down to, so paged mode is
 //     suspended (setNotesPagedSuspended) and comes back on leaving, turned to
 //     the page holding the line the reader was on.
