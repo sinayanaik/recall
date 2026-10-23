@@ -12,7 +12,7 @@
  * and tabular figures keep 1.9 and 1.10 lined up down a contents list.
  */
 
-:root.heading-numbers :is(.rendered, .qn-card-body, .epub-preview-chapter-body) :is(h1, h2, h3, h4, h5, h6)[data-heading-number]:not(:has(> .heading-number-mark))::before,
+:root.heading-numbers :is(.rendered, .qn-card-body, .epub-preview-chapter-body) :is(h1, h2, h3, h4, h5, h6)[data-heading-number]:not(.has-number-mark)::before,
 :root.heading-numbers .heading-number-mark[data-heading-number]::before,
 :root.heading-numbers .notes-toc-text[data-heading-number]::before,
 :root.heading-numbers .hl-notes-group-head[data-heading-number]::before,

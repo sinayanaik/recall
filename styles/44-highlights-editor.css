@@ -158,6 +158,36 @@
   content-visibility: visible;
 }
 
+/* ── ...or, on a long list, the batch ───────────────────────────────────────
+   Past HL_WINDOW_MIN_ENTRIES (src/panels/highlights-editor.js) the list is cut
+   into batches of 40 that are built as they come near, and it is the BATCH that
+   is contained: fifty boxes for the browser to track on every frame instead of
+   one per highlight, which on a book with 2,000 of them was most of what every
+   button press in the app cost while this pane was open. The per-entry rule
+   above does not reach in here (the group is not a child of .hl-notes), so the
+   cards inside a batch are plain.
+   An unbuilt batch is an empty box with an inline height — the estimate of what
+   it will hold. A built one keeps that as its contain-intrinsic-size, which
+   `auto` replaces with the real height once it has been on screen.
+   overflow-anchor: none, because the module itself keeps the reader's place
+   when a batch above them is built (Safari has no scroll anchoring to do it),
+   and Chrome's anchoring on top of that would move them twice.
+   The sticky group head is still sticky: a group that runs across two batches
+   repeats its head in the second (.is-continued). The clip margin keeps the
+   lit card's ring from being cut at a batch's edge. */
+.hl-notes-batch {
+  overflow-anchor: none;
+}
+
+.hl-notes-batch.is-built {
+  content-visibility: auto;
+  overflow-clip-margin: 8px;
+}
+
+.hl-notes-batch + .hl-notes-batch > .hl-notes-group:first-child:not(.is-continued) {
+  margin-top: 1.8em;
+}
+
 /* The same four hexes .pdf-mark[data-kind="area"] draws a region outline with
    (styles/37-document-chrome.css) and MARK_HIGHLIGHT_HEX names in
    src/format/highlight-colors.js. Literal, like those, rather than a tint: a

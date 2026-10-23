@@ -22,7 +22,7 @@ import { onS3ImageIndexChange, refreshS3ImageIndex } from "./cloud/s3-images.js?
 import { resolveStorageImages, resolveUnresolvedStorageImages } from "./cloud/storage-urls.js?v=__BUILD__";
 import { onS3ConfigAdopted } from "./cloud/s3-config-sync.js?v=__BUILD__";
 import { clearSupabaseConfig, initSupabaseClient, isSignedIn, onSigningReadyChange, reloadSupabaseLibrary, saveSupabaseConfig, setSignedIn, setSignedInListener, setSupabaseClient } from "./cloud/supabase-client.js?v=__BUILD__";
-import { closeWebDeckExportMenus } from "./cloud/web-decks.js?v=__BUILD__";
+import { closeWebDeckExportMenus, markWebDeckExportMenuOpen } from "./cloud/web-decks.js?v=__BUILD__";
 import { deckEmptyImportBtn2, deckEmptyNewBtn, deckEmptyWebBtn, el, onDomReady } from "./core/dom.js?v=__BUILD__";
 import { noteWheelActivity, readerActedSince } from "./core/gesture.js?v=__BUILD__";
 import { assertBootLibraries } from "./core/lib-guard.js?v=__BUILD__";
@@ -2203,6 +2203,7 @@ document.getElementById("myDecksBulkDeleteBtn")?.addEventListener("click", () =>
       const shouldOpen = bulkExportMenu.hidden;
       closeWebDeckExportMenus(bulkExportMenu);
       bulkExportMenu.hidden = !shouldOpen;
+      if (shouldOpen) markWebDeckExportMenuOpen(bulkExportMenu);
       bulkExportBtn.setAttribute("aria-expanded", String(shouldOpen));
     });
     // Share the selection as one .recall package — see src/backup/share-dialog.js.

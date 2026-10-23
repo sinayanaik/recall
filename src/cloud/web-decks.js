@@ -128,14 +128,34 @@ export async function applyWebDeckCategory(deckId, category) {
   return normalized;
 }
 
+// The export menus that have been opened and not closed through here. Kept
+// rather than found: closeWebDeckExportMenus runs on EVERY click in the app (the
+// document click handler in src/main.js), and finding them was a
+// document.querySelectorAll over the whole page — ~9ms a click on desktop and
+// ~36ms on a phone once a book and its Highlights pane are open. The two
+// places that open one (createDeckExportControl and the bulk ⇓) say so with
+// markWebDeckExportMenuOpen. A menu one of its own rows hid is still in here,
+// which costs nothing: hiding a hidden menu changes nothing.
+const openExportMenus = new Set();
+
+export function markWebDeckExportMenuOpen(menu) {
+  if (menu) openExportMenus.add(menu);
+}
+
+export function isAnyWebDeckExportMenuOpen() {
+  for (const menu of openExportMenus) if (menu.isConnected && !menu.hidden) return true;
+  return false;
+}
+
 export function closeWebDeckExportMenus(exceptMenu = null) {
-  document.querySelectorAll(".web-deck-export-menu, .bulk-export-menu").forEach((menu) => {
-    if (menu !== exceptMenu) {
-      menu.hidden = true;
-      const trigger = menu.previousElementSibling;
-      if (trigger?.matches("[aria-expanded]")) trigger.setAttribute("aria-expanded", "false");
-    }
-  });
+  for (const menu of [...openExportMenus]) {
+    if (menu === exceptMenu) continue;
+    openExportMenus.delete(menu);
+    if (!menu.isConnected) continue;
+    menu.hidden = true;
+    const trigger = menu.previousElementSibling;
+    if (trigger?.matches("[aria-expanded]")) trigger.setAttribute("aria-expanded", "false");
+  }
 }
 
 export function downloadTextFile(content, filename, type = "text/plain;charset=utf-8") {

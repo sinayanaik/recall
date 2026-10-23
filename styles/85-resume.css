@@ -12,3 +12,189 @@
 #notesView.is-resuming > * {
   opacity: 0;
 }
+
+/* ── ...and what is shown instead of the blank ─────────────────────────────
+ * src/notes/resume-loader.js puts this over the note while it is out of sight:
+ * a little page whose lines keep scrolling, the section the reader is being
+ * taken back to, a track with their place marked and a bar travelling to it,
+ * and Start from the top. Everything that moves is a transform, so it keeps
+ * moving on the compositor while the main thread is busy rendering the book.
+ * --resume-at is how far through the note the place is, 0 to 1.
+ */
+
+.notes-resume-loader {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  pointer-events: none;
+  animation: notes-resume-in 160ms ease-out both;
+}
+
+.notes-resume-loader.is-leaving {
+  animation: notes-resume-out 180ms ease-in both;
+}
+
+.notes-resume-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-areas:
+    "page text"
+    "page track"
+    "page through"
+    "top top";
+  align-items: center;
+  column-gap: 14px;
+  row-gap: 6px;
+  width: min(100%, 340px);
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: var(--shadow);
+  pointer-events: auto;
+}
+
+/* The page: a card-sized window onto lines that scroll up through it. The
+   lines are one tall strip, twice the window's height, moved by exactly one
+   repeat so the loop has no seam. */
+.notes-resume-page {
+  grid-area: page;
+  position: relative;
+  width: 46px;
+  height: 60px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--card);
+}
+
+.notes-resume-lines {
+  position: absolute;
+  inset: 0 7px auto;
+  height: 120px;
+  background: repeating-linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--muted) 45%, transparent) 0 3px,
+    transparent 3px 10px
+  );
+  animation: notes-resume-scroll 1.4s linear infinite;
+}
+
+.notes-resume-text {
+  grid-area: text;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.notes-resume-kicker {
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 700;
+}
+
+.notes-resume-where {
+  overflow: hidden;
+  font-size: 0.95rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The track: the whole note, the place marked on it, and a bar that travels
+   from the start to the place and begins again. */
+.notes-resume-track {
+  grid-area: track;
+  position: relative;
+  height: 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 14%, var(--panel-2));
+}
+
+.notes-resume-fill {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--accent);
+  transform-origin: left center;
+  transform: scaleX(var(--resume-at, 0));
+  animation: notes-resume-travel 1.2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+.notes-resume-marker {
+  position: absolute;
+  top: 50%;
+  left: calc(var(--resume-at, 0) * 100%);
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--panel);
+  border-radius: 50%;
+  background: var(--accent-strong);
+  transform: translate(-50%, -50%);
+}
+
+.notes-resume-through {
+  grid-area: through;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.notes-resume-through:empty {
+  display: none;
+}
+
+.notes-resume-top {
+  grid-area: top;
+  justify-self: end;
+  margin-top: 4px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.notes-resume-top:hover,
+.notes-resume-top:focus-visible {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+@keyframes notes-resume-scroll {
+  from { transform: translateY(0); }
+  to { transform: translateY(-50%); }
+}
+
+@keyframes notes-resume-travel {
+  from { transform: scaleX(0); }
+  70%, to { transform: scaleX(var(--resume-at, 0)); }
+}
+
+@keyframes notes-resume-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes notes-resume-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+/* Still there, still saying where — just not moving. */
+@media (prefers-reduced-motion: reduce) {
+  .notes-resume-loader,
+  .notes-resume-loader.is-leaving,
+  .notes-resume-lines,
+  .notes-resume-fill {
+    animation: none;
+  }
+}

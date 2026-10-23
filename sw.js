@@ -568,6 +568,7 @@ const APP_SHELL = [
   `./src/notes/raw-offset.js?v=${STAMP}`,
   `./src/notes/reading-position.js?v=${STAMP}`,
   `./src/notes/resize-hold.js?v=${STAMP}`,
+  `./src/notes/resume-loader.js?v=${STAMP}`,
   `./src/notes/scroll-anchor.js?v=${STAMP}`,
   `./src/notes/selection.js?v=${STAMP}`,
   `./src/notes/teleprompter-panel.js?v=${STAMP}`,

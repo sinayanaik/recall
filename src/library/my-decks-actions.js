@@ -1,7 +1,7 @@
 // The per-deck and bulk actions on the My Decks list: open, categorise,
 // delete.
 
-import { closeWebDeckExportMenus, loadWebDeck, touchLocalDeckAccess } from "../cloud/web-decks.js?v=__BUILD__";
+import { closeWebDeckExportMenus, loadWebDeck, markWebDeckExportMenuOpen, touchLocalDeckAccess } from "../cloud/web-decks.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { shareDecksAsPackage } from "../backup/share-dialog.js?v=__BUILD__";
 import { exportMyDeck } from "../export/decks.js?v=__BUILD__";
@@ -78,6 +78,7 @@ export function createDeckExportControl(sel, deckTitle, { compact = false } = {}
     const shouldOpen = menu.hidden;
     closeWebDeckExportMenus(menu);
     menu.hidden = !shouldOpen;
+    if (shouldOpen) markWebDeckExportMenuOpen(menu);
     button.setAttribute("aria-expanded", String(shouldOpen));
   });
 

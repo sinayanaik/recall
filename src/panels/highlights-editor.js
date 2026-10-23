@@ -826,9 +826,13 @@ function groupHead(label, number = "") {
 // Idempotent by the flag: the observer can hand the same node back (a scroll up
 // and down again), and re-rendering an entry the reader may be typing into would
 // be worse than wasteful.
-function paintEntry(article) {
+//
+// `entry` when the caller already holds it. Looking it up by key is a walk of
+// every entry, and doing that for each of 2,000 cards was four million
+// comparisons before the pane could show anything.
+function paintEntry(article, known = null) {
   if (article.dataset.painted === "true") return Promise.resolve();
-  const entry = lastEntries.find((one) => entryKey(one) === article.dataset.highlightKey);
+  const entry = known || lastEntries.find((one) => entryKey(one) === article.dataset.highlightKey);
   if (!entry) return Promise.resolve();
   article.dataset.painted = "true";
   return Promise.all([
@@ -931,8 +935,9 @@ function calibrateEntryEstimates(articles, samples) {
 // measured at 6x CPU throttle, 31ms per frame painting everything up front
 // against 71ms rendering it as it was reached. Work done ahead of the reader is
 // free; the same work done under them is not.
-function paintEntries(articles, list) {
-  return Promise.all(articles.map((article) => paintEntry(article))).then(() => {
+function paintEntries(painted, list) {
+  const articles = painted.map(([article]) => article);
+  return Promise.all(painted.map(([article, entry]) => paintEntry(article, entry))).then(() => {
     // After a frame, so the heights being read are the laid-out ones.
     requestAnimationFrame(() => measureAndContain(articles, list));
   });
@@ -952,6 +957,241 @@ function measureAndContain(articles, list) {
     if (guess > 0 && real > 0) samples.push([real, guess]);
   }
   applyContainment(articles, samples, list);
+}
+
+// One run of entries into `container`, grouped: a <section> per group, with its
+// head, and the entry's card in it. `before` is the group of the entry just
+// ahead of this run — a batch (below) that starts part-way through a group
+// repeats its head, marked .is-continued, so the sticky head keeps saying which
+// group the reader is in rather than vanishing at the batch's edge.
+function groupIdentity(entry) {
+  // By number as well as by name: two sections called "Summary" are two
+  // groups, even when nothing between them was highlighted.
+  return entry ? `${entry.groupNumber || ""}|${entry.group || ""}` : null;
+}
+
+function appendGroupedEntries(container, entries, before = null) {
+  const painted = [];
+  let section = null;
+  let group = null;
+  entries.forEach((entry) => {
+    const label = entry.group || "";
+    const identity = groupIdentity(entry);
+    if (!section || group !== identity) {
+      const continued = !section && before === identity;
+      group = identity;
+      section = document.createElement("section");
+      section.className = "hl-notes-group";
+      if (continued) section.classList.add("is-continued");
+      if (label) {
+        const head = groupHead(label, entry.groupNumber);
+        // Said once to a screen reader, where the group starts.
+        if (continued) head.setAttribute("aria-hidden", "true");
+        section.appendChild(head);
+      }
+      container.appendChild(section);
+    }
+    const article = articleFor(entry);
+    section.appendChild(article);
+    painted.push([article, entry]);
+  });
+  return painted;
+}
+
+// ── A long list is built where it is looked at ──────────────────────────────
+//
+// Reported as "the bug is back": with a big note open, every button in the app
+// answered slowly. It was this pane. It built a card for every highlight up
+// front — on a book with 2,000 of them, 22,001 elements beside a note that
+// itself had 256 in the DOM — and the per-card content-visibility above made
+// each card a box the browser hit-tests, pre-paints and runs its visibility
+// observer over on EVERY frame. Measured at 4x CPU throttle: a ☰ press took
+// 200-300ms with the pane open against ~40ms with it shut, and JavaScript was
+// under 10ms of that.
+//
+// So past HL_WINDOW_MIN_ENTRIES the list is cut into batches of HL_BATCH. A
+// batch is an empty placeholder of its estimated height until it comes within
+// HL_BATCH_MARGIN of the scroller's edge, and is then built — cards, paint and
+// all — and contained as one box (styles/44-highlights-editor.css). Fifty boxes
+// for the browser to track instead of two thousand, and only the cards near the
+// reader in the DOM at all. Below the threshold the surface is built whole,
+// exactly as it always was.
+//
+// Everything that needs a particular card asks highlightCardFor, which builds
+// its batch when asked to; the scroll spy asks firstHighlightCardBelow, which
+// looks at batches before cards.
+export const HL_WINDOW_MIN_ENTRIES = 150;
+
+export const HL_BATCH = 40;
+
+export const HL_BATCH_CLASS = "hl-notes-batch";
+
+const HL_BATCH_MARGIN = "150% 0px";
+
+// The batched surface currently in `windowed.list`, or null.
+let windowed = null;
+
+function windowedFor(list) {
+  return windowed && windowed.list === list && windowed.root.isConnected ? windowed : null;
+}
+
+function placeholderHeight(pane, batch) {
+  return Math.round(batch.measured || batch.estimate * pane.ratio);
+}
+
+// Builds one batch in place. Returns what has to be painted, and keeps the paint
+// on the batch so a caller revealing a card in it can wait for its real height.
+//
+// A batch entirely above the scroller's viewport grows the content in front of
+// the reader when it is built, so the scroller is moved by however much it grew
+// — once now for the cards, and once more when their markdown has painted.
+// Done by hand rather than left to scroll anchoring because Safari has none,
+// and .hl-notes-batch opts out of it so Chrome does not do it twice.
+function buildBatch(pane, index) {
+  const batch = pane.batches[index];
+  if (!batch || batch.built) return batch?.painted || Promise.resolve();
+  batch.built = true;
+  pane.observer?.unobserve(batch.node);
+  const list = pane.list;
+  const above = () => batch.node.getBoundingClientRect().bottom <= list.getBoundingClientRect().top;
+  const wasAbove = above();
+  const heightBefore = batch.node.offsetHeight;
+  const painted = appendGroupedEntries(batch.node, batch.entries, groupIdentity(pane.entries[batch.start - 1]));
+  batch.node.style.height = "";
+  batch.node.style.containIntrinsicSize = `auto ${placeholderHeight(pane, batch)}px`;
+  batch.node.classList.add("is-built");
+  let height = heightBefore;
+  const keepPlace = () => {
+    if (!wasAbove || !batch.node.isConnected) return;
+    const now = batch.node.offsetHeight;
+    if (now !== height) list.scrollTop += now - height;
+    height = now;
+  };
+  keepPlace();
+  batch.painted = Promise.all(painted.map(([article, entry]) => paintEntry(article, entry))).then(keepPlace);
+  return batch.painted;
+}
+
+function observeBatches(pane) {
+  if (typeof IntersectionObserver !== "function") {
+    pane.batches.forEach((batch, index) => buildBatch(pane, index));
+    return;
+  }
+  pane.observer = new IntersectionObserver((records) => {
+    if (windowed !== pane) {
+      pane.observer.disconnect();
+      return;
+    }
+    records.forEach((record) => {
+      if (!record.isIntersecting) return;
+      const index = pane.batches.findIndex((batch) => batch.node === record.target);
+      if (index >= 0) buildBatch(pane, index);
+    });
+    if (pane.batches.every((batch) => batch.built)) pane.observer.disconnect();
+  }, { root: pane.list, rootMargin: HL_BATCH_MARGIN });
+  pane.batches.forEach((batch) => { if (!batch.built) pane.observer.observe(batch.node); });
+}
+
+function renderWindowed(root, entries, list, previous) {
+  const pane = { list, root, entries, batches: [], batchOf: new Map(), ratio: previous?.ratio || 1, observer: null };
+  for (let start = 0; start < entries.length; start += HL_BATCH) {
+    const slice = entries.slice(start, start + HL_BATCH);
+    const node = document.createElement("div");
+    node.className = HL_BATCH_CLASS;
+    const index = pane.batches.length;
+    const batch = {
+      node,
+      start,
+      entries: slice,
+      estimate: slice.reduce((sum, entry) => sum + estimateEntryHeight(entry), 0),
+      // A rebuild of the same list (a note saved, a highlight added) keeps what
+      // each batch measured last time, so the batches the reader has already
+      // been through do not snap back to estimates under them.
+      measured: previous?.heights.get(index) || 0,
+      built: false,
+      painted: null
+    };
+    slice.forEach((entry) => pane.batchOf.set(entryKey(entry), index));
+    pane.batches.push(batch);
+    node.style.height = `${placeholderHeight(pane, batch)}px`;
+    root.appendChild(node);
+  }
+  return pane;
+}
+
+// What a rebuild carries over from the surface it replaces — see renderWindowed.
+function windowedCarry(list) {
+  const pane = windowedFor(list);
+  if (!pane) return null;
+  const heights = new Map();
+  pane.batches.forEach((batch, index) => { if (batch.built) heights.set(index, batch.node.offsetHeight); });
+  pane.observer?.disconnect();
+  return { ratio: pane.ratio, heights };
+}
+
+// The batches the scroller is showing right now, built before anything is
+// painted so the reader never sees placeholders where cards just were.
+function buildVisibleBatches(pane) {
+  const top = pane.list.scrollTop;
+  const bottom = top + Math.max(pane.list.clientHeight, 1);
+  const origin = pane.root.offsetTop;
+  const paints = [];
+  pane.batches.forEach((batch, index) => {
+    const from = origin + batch.node.offsetTop;
+    if (from + batch.node.offsetHeight >= top && from <= bottom) paints.push(buildBatch(pane, index));
+  });
+  if (!paints.length && pane.batches.length) paints.push(buildBatch(pane, 0));
+  return paints;
+}
+
+// The card for `key` on `list`, building its batch when `build` says so.
+// Without `build`, a card whose batch has not been built is simply not there —
+// which is the right answer for tinting the card a mark is pointed at, and the
+// wrong one for stepping to it.
+export function highlightCardFor(list, key, { build = false } = {}) {
+  if (!list || !key) return null;
+  const selector = `.${HL_NOTE_CLASS}[data-highlight-key="${CSS.escape(key)}"]`;
+  const pane = windowedFor(list);
+  if (!pane) return list.querySelector(selector);
+  const index = pane.batchOf.get(key);
+  if (index == null) return null;
+  const batch = pane.batches[index];
+  if (!batch.built) {
+    if (!build) return null;
+    buildBatch(pane, index);
+  }
+  return batch.node.querySelector(selector);
+}
+
+// Resolves once `card`'s markdown has painted — its real height, which is what
+// a reveal has to measure. At once for a card that was painted already.
+export function highlightCardPainted(list, card) {
+  const pane = windowedFor(list);
+  if (!pane || !card) return Promise.resolve();
+  const batch = pane.batches.find((one) => one.node.contains(card));
+  return batch?.painted || Promise.resolve();
+}
+
+// The first card whose bottom is below `y` — what the pane's scroll spy calls
+// "the card at the top". Batches first, so a scroll costs a few dozen rects
+// rather than one per highlight.
+export function firstHighlightCardBelow(list, y) {
+  if (!list) return null;
+  const first = (cards) => {
+    for (const card of cards) if (card.getBoundingClientRect().bottom > y) return card;
+    return null;
+  };
+  const pane = windowedFor(list);
+  if (!pane) return first(list.querySelectorAll(`.${HL_NOTE_CLASS}`));
+  for (let index = 0; index < pane.batches.length; index += 1) {
+    const batch = pane.batches[index];
+    if (batch.node.getBoundingClientRect().bottom <= y) continue;
+    // On screen and not built yet: the observer is about to, so do it now.
+    if (!batch.built) buildBatch(pane, index);
+    const card = first(batch.node.querySelectorAll(`.${HL_NOTE_CLASS}`));
+    if (card) return card;
+  }
+  return null;
 }
 
 // Rendered into `list` — #highlightCycleBody in side-by-side mode, and whatever
@@ -975,35 +1215,58 @@ export function renderHighlightsEditor(entries, list) {
   // this one — which is empty until the first render into it.
 
   const scrollTop = list.scrollTop;
+  const previous = windowedCarry(list);
+  if (windowed?.list === list) windowed = null;
   const root = document.createElement("div");
   root.className = HL_NOTES_CLASS;
   root.dataset.signature = signature;
-  const painted = [];
-  let section = null;
-  let group = null;
-  entries.forEach((entry) => {
-    const label = entry.group || "";
-    // By number as well as by name: two sections called "Summary" are two
-    // groups, even when nothing between them was highlighted.
-    const identity = `${entry.groupNumber || ""}|${label}`;
-    if (!section || group !== identity) {
-      group = identity;
-      section = document.createElement("section");
-      section.className = "hl-notes-group";
-      if (label) section.appendChild(groupHead(label, entry.groupNumber));
-      root.appendChild(section);
-    }
-    const article = articleFor(entry);
-    section.appendChild(article);
-    painted.push([article, entry]);
-  });
+  if (entries.length > HL_WINDOW_MIN_ENTRIES) {
+    root.classList.add("is-windowed");
+    const pane = renderWindowed(root, entries, list, previous);
+    if (existing) existing.replaceWith(root);
+    else list.replaceChildren(root);
+    list.scrollTop = scrollTop;
+    windowed = pane;
+    const paints = buildVisibleBatches(pane);
+    observeBatches(pane);
+    return Promise.all(paints).then(() => {
+      requestAnimationFrame(() => calibrateWindowed(pane));
+    });
+  }
+  const painted = appendGroupedEntries(root, entries);
   if (existing) existing.replaceWith(root);
   else list.replaceChildren(root);
   list.scrollTop = scrollTop;
   // Painted AFTER the surface is in the document, not inline as each article is
   // built: a mermaid diagram inside a note needs real layout to size itself
   // against, which a still-detached node does not have.
-  return paintEntries(painted.map(([article]) => article), list);
+  return paintEntries(painted, list);
+}
+
+// calibrateEntryEstimates for a batched surface: the same median ratio, taken
+// from the cards that are on screen, applied to the batches nobody has reached.
+function calibrateWindowed(pane) {
+  if (windowed !== pane) return;
+  const samples = [];
+  for (const article of pane.root.querySelectorAll(`.${HL_BATCH_CLASS}.is-built .${HL_NOTE_CLASS}`)) {
+    if (samples.length >= HL_ESTIMATE_SAMPLE) break;
+    const guess = Number(article.dataset.estimate) || 0;
+    const real = article.offsetHeight;
+    if (guess > 0 && real > 0) samples.push(real / guess);
+  }
+  if (samples.length < 2) return;
+  samples.sort((a, b) => a - b);
+  const ratio = samples[Math.floor(samples.length / 2)];
+  if (!Number.isFinite(ratio) || ratio <= 0 || Math.abs(ratio - pane.ratio) < HL_ESTIMATE_TOLERANCE * pane.ratio) return;
+  pane.ratio = ratio;
+  // Only the ones still ahead of the reader: resizing a placeholder above the
+  // viewport would move everything they are looking at.
+  const top = pane.list.getBoundingClientRect().top;
+  pane.batches.forEach((batch) => {
+    if (batch.built || batch.measured) return;
+    if (batch.node.getBoundingClientRect().bottom <= top) return;
+    batch.node.style.height = `${placeholderHeight(pane, batch)}px`;
+  });
 }
 
 // ── What a press on a note means ────────────────────────────────────────────

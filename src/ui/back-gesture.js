@@ -8,7 +8,7 @@
 
 import { closeAllCardsPanel } from "../cards/all-cards-edit.js?v=__BUILD__";
 import { closeStylePanel } from "../cloud/style-sync.js?v=__BUILD__";
-import { closeWebDeckExportMenus } from "../cloud/web-decks.js?v=__BUILD__";
+import { closeWebDeckExportMenus, isAnyWebDeckExportMenuOpen } from "../cloud/web-decks.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { closeMainMenu, isMainMenuOpen } from "../editor/toolbars.js?v=__BUILD__";
 import { closeAllDeckTileMenus } from "../library/folder-tree.js?v=__BUILD__";
@@ -72,7 +72,7 @@ export const OVERLAY_LAYERS = [
   { isOpen: () => Boolean(document.querySelector(".qn-cat-menu")), close: () => closeQnCatMenu() },
   { isOpen: () => Boolean(el.myDecksMoreMenu && !el.myDecksMoreMenu.hidden), close: () => closeMyDecksMoreMenu() },
   { isOpen: () => Boolean(el.myDecksBody?.querySelector(".deck-tile-overflow-menu:not([hidden])")), close: () => closeAllDeckTileMenus() },
-  { isOpen: () => Boolean(document.querySelector(".web-deck-export-menu:not([hidden]), .bulk-export-menu:not([hidden])")), close: () => closeWebDeckExportMenus() },
+  { isOpen: () => isAnyWebDeckExportMenuOpen(), close: () => closeWebDeckExportMenus() },
   // ONE export menu, where there were two. #exportMenu and #exportNotesMenu
   // were the ☰ drawer's inline export popovers, and both are gone: their rows
   // duplicated, row for row, what the ⇓ beside the tabs already offers.

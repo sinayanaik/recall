@@ -30,6 +30,7 @@ import { ensureNotesLazyFractionBuilt, ensureNotesLazyOffsetBuilt, isNotesStream
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { setStatus, showToast } from "../ui/feedback.js?v=__BUILD__";
 import { setViewMode } from "../ui/view-mode.js?v=__BUILD__";
+import { hideResumeLoader, showResumeLoader } from "./resume-loader.js?v=__BUILD__";
 
 export function addCardFromNotes(question, answer, noteAnchor = null) {
   const card = {
@@ -1011,11 +1012,20 @@ export const NOTE_RESUME_HIDE_MS = 6000;
 const NOTES_RESUMING_CLASS = "is-resuming";
 let resumeHideTimer = 0;
 
-function setNotesResuming(active) {
+// ...and, while it is out of sight, what is shown in its place: a loader saying
+// where the reader is being taken, with a way to start from the top instead
+// (src/notes/resume-loader.js). `loader` is what it needs — the offset being
+// resumed to and how to call the resume off.
+function setNotesResuming(active, loader = null) {
   clearTimeout(resumeHideTimer);
   resumeHideTimer = 0;
   el.notesView?.classList.toggle(NOTES_RESUMING_CLASS, Boolean(active));
-  if (active) resumeHideTimer = setTimeout(() => setNotesResuming(false), NOTE_RESUME_HIDE_MS);
+  if (active) {
+    showResumeLoader(loader || {});
+    resumeHideTimer = setTimeout(() => setNotesResuming(false), NOTE_RESUME_HIDE_MS);
+  } else {
+    hideResumeLoader();
+  }
 }
 
 // Cancels the resume currently in flight, or null when there isn't one. See
@@ -1175,7 +1185,20 @@ export function scheduleNoteJump(anchor, options, locator = null) {
     // Out of sight while the note renders, so a book does not show its
     // contents page and then jump. Only when there is a render to wait for —
     // a note already on screen lands within two frames.
-    if (isNotesRenderInFlight() || isNotesStreamBusy()) setNotesResuming(true);
+    if (isNotesRenderInFlight() || isNotesStreamBusy()) {
+      setNotesResuming(true, {
+        offset: anchor?.offset,
+        // The reader would rather read from the top than wait: the resume ends
+        // as though they had taken the note back — settled first, so the deck
+        // open still arms its bookmark capture (see settleOnce), then stopped —
+        // and the loader puts them at the top.
+        onStartFromTop: () => {
+          if (cancelResume !== self) return;
+          settleOnce(true);
+          cancelResume();
+        }
+      });
+    }
   }
   // ── Settled means "no longer moving the note", however it got there ──────
   //
