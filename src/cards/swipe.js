@@ -297,9 +297,37 @@ export function finishSwipe() {
   resetCardDrag();
 }
 
+// A mouse pressed ON the card's words is starting a selection, and is left to
+// the browser rather than to the swipe. The mid-drag guard in updateSwipe only
+// stands the swipe down once the selection already exists, and whether it does
+// by the time the drag has crossed intentDistance depends on how far the first
+// mouse move went and how wide the characters are: when it did not, the swipe
+// latched, took the pointer and cancelled the selection the reader was making
+// (and a long enough drag turned the card). A press in the card's empty space
+// still swipes; a click on the words still flips it. Touch and pen have the
+// dwell for this (beginSwipe) and are not asked.
+function isMousePressOnCardText(event) {
+  if (event.pointerType !== "mouse") return false;
+  const x = event.clientX;
+  const y = event.clientY;
+  const node = document.caretPositionFromPoint
+    ? document.caretPositionFromPoint(x, y)?.offsetNode
+    : document.caretRangeFromPoint?.(x, y)?.startContainer;
+  if (node?.nodeType !== Node.TEXT_NODE || !el.card.contains(node)) return false;
+  // The caret snaps to the NEAREST text from anywhere in the box, so the
+  // press has to be inside one of the text's own line boxes.
+  const range = document.createRange();
+  range.selectNodeContents(node);
+  for (const rect of range.getClientRects()) {
+    if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) return true;
+  }
+  return false;
+}
+
 export function handlePointerDown(event) {
   if (!currentCardCanMove() || isCardActionTarget(event.target)) return;
   if (isHorizontalScrollTarget(event.target)) return;
+  if (isMousePressOnCardText(event)) return;
   // Touch/pen: an active selection means the user is dragging a selection
   // handle — don't start a swipe. (Mouse keeps its mid-drag guard in updateSwipe
   // so a lingering selection never blocks starting a fresh drag.)

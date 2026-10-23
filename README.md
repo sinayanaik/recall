@@ -1429,11 +1429,12 @@ Three things a check must now do, none of which it had to before:
   from `tools/browser.mjs`, which speaks the DevTools protocol directly and
   needs nothing installed.
 
-Two failures are pinned rather than fixed, both in `tools/check.mjs` with the
-evidence written out: `SELECTION_EXPECTED_FAILURES` (a mouse drag on a card
-face selects nothing, cause not isolated) and `PORT_SYNC_EXPECTED_DRIFT` (two
-pre-existing clipper drifts). A pinned number has to be changed deliberately,
-in a diff a reviewer can see.
+One finding is pinned rather than fixed, in `tools/check.mjs` with the
+evidence written out: `PORT_SYNC_EXPECTED_DRIFT` (two pre-existing clipper
+drifts). A pinned number has to be changed deliberately, in a diff a reviewer
+can see. (Two other pins are gone, because the bugs behind them are fixed: a
+mouse drag on a card's words that the card swipe took over, and an export that
+lost every card after one that left a code fence open.)
 
 50 checks, each answering a different question, and none of them
 subsuming another:

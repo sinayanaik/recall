@@ -634,6 +634,67 @@ try {
     return null;
   });
 
+  // ...and the same drag when its FIRST move already crosses the swipe's 12px
+  // intent distance. The card swipe used to stand down only once a selection
+  // existed, and whether one did by then depended on how far the first move
+  // went and how wide the characters were — so this case passed here and failed
+  // on the CI runner's fonts, and a reader's mouse drag across a card's words
+  // sometimes selected nothing. Coarse moves take the fonts out of it.
+  await check("a drag across a card's words selects them even when its first move is a long one", async () => {
+    const face = await page.evaluate(() => {
+      const t = document.querySelector("#questionView p")?.firstChild;
+      if (!t) return null;
+      const range = document.createRange();
+      range.setStart(t, 2);
+      range.setEnd(t, 3);
+      const r = range.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    });
+    if (!face) return "the card face did not render";
+    const sel = await dragTo({ x: face.x, y: face.y }, { x: face.x + 220, y: face.y }, 5);
+    return sel.len > 0 ? null : "five 44px moves across the words selected nothing — the swipe took the drag";
+  });
+
+  // ...while a drag that starts in the card's EMPTY space is still a swipe, and
+  // turns the card. Nothing drove a mouse swipe before this, and the guard above
+  // is a reason to start: it must not take the swipe away from the mouse.
+  await check("a mouse drag from the card's empty space still turns the card", async () => {
+    await page.evaluate(async () => {
+      const api = window.__api;
+      api.addCardFromNotes("A second card, to turn to", "Its answer.");
+      api.setViewMode("cards");
+      await new Promise((r) => setTimeout(r, 400));
+    });
+    await whenStill("#questionView");
+    const start = await page.evaluate(() => {
+      const card = document.querySelector(".card");
+      if (!card) return null;
+      const box = card.getBoundingClientRect();
+      // Down the card's right edge, inside its padding: the first point that is
+      // the card and is not text or a control. Dragged LEFT from there, which
+      // is "next" — the card just added is after this one.
+      for (let y = box.bottom - 12; y > box.top + 12; y -= 6) {
+        const x = box.right - 10;
+        const hit = document.elementFromPoint(x, y);
+        if (!hit || !card.contains(hit) || hit.closest("button, a, input, textarea, .card-actions")) continue;
+        const caret = document.caretRangeFromPoint?.(x, y);
+        const text = caret?.startContainer;
+        if (text?.nodeType === Node.TEXT_NODE) {
+          const range = document.createRange();
+          range.selectNodeContents(text);
+          if ([...range.getClientRects()].some((r) => x >= r.left && x <= r.right && y >= r.top && y <= r.bottom)) continue;
+        }
+        return { x, y, width: box.width, question: document.querySelector("#questionView")?.textContent || "" };
+      }
+      return null;
+    });
+    if (!start) return "found no empty point on the card to press";
+    await dragTo({ x: start.x, y: start.y }, { x: start.x - Math.max(200, start.width * 0.7), y: start.y }, 25);
+    await new Promise((r) => setTimeout(r, 500));
+    const after = await page.evaluate(() => document.querySelector("#questionView")?.textContent || "");
+    return after !== start.question ? null : "the card did not turn — a mouse can no longer swipe";
+  });
+
   // Reported as "the categorisation of the text selection options ... can be
   // more better layout especially think in mind about mobile devices where I
   // have to click one extra button for more options, everything needs to come
