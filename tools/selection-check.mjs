@@ -690,7 +690,7 @@ try {
   // on the CI runner's fonts, and a reader's mouse drag across a card's words
   // sometimes selected nothing. Coarse moves take the fonts out of it.
   await check("a drag across a card's words selects them even when its first move is a long one", async () => {
-    const face = await page.evaluate(() => {
+    const charAt = () => page.evaluate(() => {
       const t = document.querySelector("#questionView p")?.firstChild;
       if (!t) return null;
       const range = document.createRange();
@@ -699,6 +699,17 @@ try {
       const r = range.getBoundingClientRect();
       return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
     });
+    // The drag above ended moments ago, and its release may refit the question
+    // (a new font size, so the words move). Aim at the character once it has
+    // stopped moving, not at where it was a frame before the press.
+    let face = null;
+    for (let i = 0; i < 30; i += 1) {
+      const a = await charAt();
+      await new Promise((r) => setTimeout(r, 120));
+      const b = await charAt();
+      face = b;
+      if (a && b && Math.abs(a.x - b.x) < 0.5 && Math.abs(a.y - b.y) < 0.5) break;
+    }
     if (!face) return "the card face did not render";
     await armCardDragProbe();
     const sel = await dragTo({ x: face.x, y: face.y }, { x: face.x + 220, y: face.y }, 5);
