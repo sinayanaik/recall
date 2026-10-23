@@ -45,6 +45,7 @@ export const defaultStyleProfiles = {
     "notesRawFontSize": "16px",
     "notesCodeFontSize": "12px",
     "notesCodeLineHeight": "1.17",
+    "headingNumbers": "on",
     // Text — Highlights
     "hlNoteFontSize": "inherit",
     "hlNoteLineHeight": "inherit",
@@ -121,6 +122,7 @@ export const defaultStyleProfiles = {
     "notesRawFontSize": "18px",
     "notesCodeFontSize": "18px",
     "notesCodeLineHeight": "1.55",
+    "headingNumbers": "on",
     // Text — Highlights
     "hlNoteFontSize": "inherit",
     "hlNoteLineHeight": "inherit",
@@ -284,7 +286,14 @@ export const styleControlGroups = [
       { key: "notesLineHeight", label: "Line spacing", type: "text", probe: "line-height", hint: "Reading spacing in notes." },
       { key: "notesRawFontSize", label: "Raw editor size", type: "text", unit: "px", probe: "font-size", hint: "Markdown while editing notes." },
       { key: "notesCodeFontSize", label: "Code size", type: "text", unit: "px", probe: "font-size", hint: "Code blocks in notes." },
-      { key: "notesCodeLineHeight", label: "Code line spacing", type: "text", probe: "line-height", hint: "Line spacing inside code blocks in notes." }
+      { key: "notesCodeLineHeight", label: "Code line spacing", type: "text", probe: "line-height", hint: "Line spacing inside code blocks in notes." },
+      // Drives a CLASS on <html> and a flag the exports read, not a variable —
+      // see src/notes/heading-numbers.js.
+      {
+        key: "headingNumbers", label: "Number headings", type: "select", options: ["on", "off"],
+        optionLabels: { on: "On — 1, 1.1, 1.2…", off: "Off" },
+        hint: "Numbers each heading by its place in the note, like 1, 1.1, 1.2. The numbers are only drawn: your text is not changed."
+      }
     ]
   },
   // "inherit" on the two type fields means the same as notesFontFamily's:

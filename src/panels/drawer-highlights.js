@@ -46,6 +46,7 @@ import { el } from "../core/dom.js?v=__BUILD__";
 import { scheduleNoteJump } from "../notes/anchors.js?v=__BUILD__";
 import { documentHighlightEntries, noteHighlightEntries } from "./highlight-index.js?v=__BUILD__";
 import { mountRegionPreview } from "../documents/pdf-region-embed.js?v=__BUILD__";
+import { filterBySections, isSectionFilterActive, mountSectionPicker, onSectionsChanged } from "./highlight-sections.js?v=__BUILD__";
 
 // How many rows are built before the list offers to show the rest. Comfortably
 // more than a drawer's worth of scrolling, and far short of the thousands a
@@ -111,6 +112,37 @@ const drawerDirty = new WeakMap();
 // the list is next rebuilt from scratch — a different deck's highlights are a
 // different question.
 const drawerShowAll = new WeakMap();
+
+// Each drawer's highlights BEFORE the section picker narrows them, as the last
+// build found them: what its picker counts, and what tells an empty list apart
+// from an empty choice.
+const drawerAllEntries = new WeakMap();
+
+// The picker in each drawer, so a build can tell it the counts have changed.
+const drawerPickers = new WeakMap();
+
+// A section choice is shared with the side-by-side pane, so one made THERE
+// narrows this list too. Rebuilt now if the list is on screen, and on the next
+// open if it is not — the same rule a highlight change follows.
+//
+// Subscribed when the first drawer is built rather than at import: this module
+// sits in an import cycle with highlight-sections.js (through pdf-outline.js),
+// and a call into that module while it is still being evaluated would throw.
+let drawerSectionsListening = false;
+
+function listenForSectionChoices() {
+  if (drawerSectionsListening) return;
+  drawerSectionsListening = true;
+  onSectionsChanged((surface) => {
+    [el.notesTocDrawer, el.documentOutlineDrawer].forEach((drawer) => {
+      if (!drawer || drawerSurface(drawer) !== surface) return;
+      if (!drawer.querySelector(`.${DRAWER_HIGHLIGHTS_CLASS}`)) return;
+      drawerShowAll.delete(drawer);
+      if (drawerSection(drawer) === "highlights" && !drawer.hidden) renderDrawerHighlights(drawer);
+      else drawerDirty.set(drawer, true);
+    });
+  });
+}
 
 export function drawerSection(drawer) {
   return drawer ? (drawerShowing.get(drawer) || "contents") : "contents";
@@ -200,12 +232,22 @@ export function installDrawerSections(drawer) {
   const modes = document.createElement("div");
   modes.className = "drawer-highlights-modes";
   modes.append(sideBySide, only);
+  // All sections, or the ones picked — the same choice the pane's head offers,
+  // and shared with it. On a row of its own under the two buttons: a drawer is
+  // too narrow for a third control beside them.
+  listenForSectionChoices();
+  const sections = document.createElement("div");
+  sections.className = "drawer-highlights-sections";
+  drawerPickers.set(drawer, mountSectionPicker(sections, {
+    surface: drawerSurface(drawer),
+    entries: () => drawerAllEntries.get(drawer) || []
+  }));
   const list = document.createElement("ol");
   list.className = "drawer-highlights-list";
   const empty = document.createElement("p");
   empty.className = "notes-toc-empty drawer-highlights-empty";
   empty.hidden = true;
-  section.append(modes, list, empty);
+  section.append(modes, sections, list, empty);
   scroll.after(section);
 
   // The existing scroll box is the contents section from here on, so the switch
@@ -308,7 +350,18 @@ function drawerRowFor(drawer, entry) {
     if (entry.where) {
       const where = document.createElement("span");
       where.className = "drawer-highlight-where";
-      where.textContent = entry.where;
+      // The section number on a child of its own: the row's ::before is the
+      // "·" that separates it from the ✎, and the number is drawn by the
+      // stylesheet so it follows the Number headings setting.
+      if (entry.whereNumber) {
+        const label = document.createElement("span");
+        label.className = "heading-number-label";
+        label.dataset.headingNumber = entry.whereNumber;
+        label.textContent = entry.where;
+        where.appendChild(label);
+      } else {
+        where.textContent = entry.where;
+      }
       meta.appendChild(where);
     }
     jump.appendChild(meta);
@@ -373,7 +426,10 @@ export function renderDrawerHighlights(drawer) {
   const list = drawer.querySelector(".drawer-highlights-list");
   const empty = drawer.querySelector(".drawer-highlights-empty");
   if (!list) return;
-  const entries = drawerEntriesFor(drawer);
+  const all = drawerEntriesFor(drawer);
+  drawerAllEntries.set(drawer, all);
+  const entries = filterBySections(drawerSurface(drawer), all);
+  drawerPickers.get(drawer)?.refresh();
   list.innerHTML = "";
   const frag = document.createDocumentFragment();
   const limit = drawerShowAll.get(drawer) ? entries.length : DRAWER_ROW_LIMIT;
@@ -395,7 +451,9 @@ export function renderDrawerHighlights(drawer) {
   list.appendChild(frag);
   if (empty) {
     empty.hidden = entries.length > 0;
-    empty.textContent = drawer === el.documentOutlineDrawer
+    empty.textContent = all.length && isSectionFilterActive(drawerSurface(drawer))
+      ? "No highlights in the chosen sections. Pick more sections above, or All sections."
+      : drawer === el.documentOutlineDrawer
       ? "Nothing highlighted in this document yet. Select some words on the page and press Highlight."
       : "Nothing highlighted in this note yet. Select some text and press the highlight button.";
   }

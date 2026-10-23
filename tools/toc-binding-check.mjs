@@ -35,6 +35,7 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { findChrome, launchChrome, connect, openPage } from "./cdp.mjs";
+import { headingNumbersForLevels } from "../src/notes/heading-numbers.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -187,7 +188,7 @@ function stageAndBind(prepared, mode) {
       if (child.nodeType === 1 && child.classList?.contains("hl-note-badge")) continue;
       text += child.textContent || "";
     }
-    return { level: Number(node.tagName[1]), text: text.replace(/\s+/g, " ").trim(), id: node.id };
+    return { level: Number(node.tagName[1]), text: text.replace(/\s+/g, " ").trim(), id: node.id, number: node.dataset.headingNumber || "" };
   };
 
   // Which spans a descriptor could possibly have been bound from — used to tell
@@ -203,6 +204,7 @@ function stageAndBind(prepared, mode) {
     level: h.level,
     text: h.text,
     id: h.id,
+    number: h.number || "",
     buildable: buildable(h),
     bound: h.el && h.el.isConnected ? said(h.el) : null
   }));
@@ -317,6 +319,12 @@ try {
       const report = await page.evaluate(stageAndBind, prepared, mode);
       const where = `${shapeName} / ${mode.name}`;
       const seen = new Map();
+      // Numbered over EVERY row, built or not: a heading has to know it is 14.3
+      // before the thirteen chapters above it are in the document.
+      const wantNumbers = headingNumbersForLevels(report.map((row) => row.level));
+      report.forEach((row, i) => {
+        if (row.number !== wantNumbers[i]) failures.push(`${where}: row ${i} ${JSON.stringify(row.text)} numbered ${row.number}, expected ${wantNumbers[i]}`);
+      });
       for (let i = 0; i < report.length; i += 1) {
         const row = report[i];
         rows += 1;
@@ -341,6 +349,13 @@ try {
         // on, or a middle-click goes somewhere the click does not.
         if (row.bound.id !== row.id) {
           failures.push(`${where}: row ${i} ${JSON.stringify(row.text)} has id ${row.id} but its element carries ${row.bound.id}`);
+          continue;
+        }
+        // The section number the note DRAWS on the heading has to be the one
+        // the row carries — both come off the one descriptor, and the pairing
+        // is what writes it onto the element.
+        if (row.bound.number !== row.number) {
+          failures.push(`${where}: row ${i} ${JSON.stringify(row.text)} is numbered ${row.number} but its heading shows ${row.bound.number || "nothing"}`);
           continue;
         }
         // Two rows sharing one element is the signature of a pairing that lost

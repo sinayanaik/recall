@@ -349,6 +349,11 @@ const checks = [
   // dragged with everything under it, a heading nested into another — and the
   // reading of where a link inside a PDF goes. Pure, imports nothing.
   ["toc-arrange   ", ["node", ["tools/pdf-toc-arrange-check.mjs"], ROOT]],
+  // The section numbers on a note's headings (1, 1.1, 1.2 …) and the section
+  // filter on its highlights: the counting, the section index the highlight
+  // lists use agreeing with what the note draws, and which highlights a pick
+  // of sections keeps. Pure, or lifted as text with the scanner it needs.
+  ["heading-nums  ", ["node", ["tools/heading-numbers-check.mjs"], ROOT]],
   // The order a PDF page is read in, for the PDF teleprompter: one column, two
   // columns, a title and abstract across both, a caption cutting them, and a
   // scan with no text read from its picture. Pure, imports nothing.

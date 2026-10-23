@@ -16,7 +16,8 @@ import { highlightNoteResolver, readHighlightNotes } from "../format/highlight-n
 import { readerNotesBody } from "../format/notes-fence.js?v=__BUILD__";
 import { codeFences, codeHighlightSnippet } from "../format/code-highlight.js?v=__BUILD__";
 import { notesAnchorPlainText } from "../notes/anchor-text.js?v=__BUILD__";
-import { headingForOffset, headingIndexFor } from "../notes/chapters.js?v=__BUILD__";
+import { numberedHeadingLabel } from "../notes/heading-numbers.js?v=__BUILD__";
+import { SECTION_BEFORE_KEY, documentSectionModel, noteSectionModel, sectionFilterFor } from "./highlight-sections.js?v=__BUILD__";
 import { clozeCleanUnit, clozeUnitAt, clozeUnitIndex } from "./cloze-panel.js?v=__BUILD__";
 import { trimNoteAnchor } from "../quick-notes/anchors.js?v=__BUILD__";
 import { documentHighlightLabel, documentHighlightsInReadingOrder, isPdfDeck } from "../documents/pdf-highlights.js?v=__BUILD__";
@@ -337,14 +338,19 @@ export function markdownWithOnlyOwnMarks(markdown, own) {
 // to colour — and it is deliberately independent of `includeNotes`: the filter
 // reads the note before that toggle is applied, or asking for "annotated
 // highlights, without their notes" would quietly return nothing at all.
-export function collectDeckHighlightsForExport({ contextLines = 0, includeChapter = true, includeNotes = true, annotatedOnly = false } = {}) {
+//
+// `sections` is the dialog's section choice, { notes, document }, each a Set of
+// section keys or null for all of them (src/panels/highlight-sections.js). The
+// chapter label carries the heading's number when Number headings is on — it
+// is text here, because the file this goes into has no stylesheet to draw it.
+export function collectDeckHighlightsForExport({ contextLines = 0, includeChapter = true, includeNotes = true, annotatedOnly = false, sections = null } = {}) {
   // readerNotesBody for the same reason collectNoteHighlightRows uses it: a
   // <mark> a reader typed into a highlight's own note is not a highlight of the
   // document, and exporting it as one puts a note's fragment in a list of
   // passages from the paper.
   const notes = state.notes || "";
   const { source, groups, units, fences } = scanHighlightGroups(readerNotesBody(notes), notes);
-  const headings = includeChapter ? headingIndexFor(source) : null;
+  const noteModel = noteSectionModel(source);
   const items = [];
   // A PDF deck's highlights come first, in reading order, and carry their page
   // instead of a chapter — which is what an exported list of passages from a
@@ -360,7 +366,11 @@ export function collectDeckHighlightsForExport({ contextLines = 0, includeChapte
     // The handwriting is what the page export is for; here an ink mark is
     // listed only when the reader wrote a note on it.
     const onCanvas = activeDocSlot() === DOC_SLOT_NOTEBOOK;
-    documentHighlightsInReadingOrder().forEach((record) => {
+    const records = documentHighlightsInReadingOrder();
+    const docModel = documentSectionModel(records.map((record) => record.page || 0));
+    const inChosen = sectionFilterFor(docModel, sections?.document || null);
+    records.forEach((record) => {
+      if (!inChosen({ section: docModel.keyForPage(record.page || 0) })) return;
       const note = documentNotes.get(record.id) || null;
       if (annotatedOnly && !note) return;
       if (onCanvas && record.kind === "ink" && !note) return;
@@ -382,7 +392,9 @@ export function collectDeckHighlightsForExport({ contextLines = 0, includeChapte
       });
     });
   }
+  const inChosenNotes = sectionFilterFor(noteModel, sections?.notes || null);
   groups.forEach((group) => {
+    if (!inChosenNotes({ section: noteModel.keyForOffset(group.offset) })) return;
     const span = highlightUnitSpan(units, source, group, fences);
     const quoted = span ? span.cur : group.pieces.reduce((acc, piece, i) => {
       const markedPiece = markOpenTag(group.color) + piece.inner + MARK_CLOSE_TAG;
@@ -397,7 +409,7 @@ export function collectDeckHighlightsForExport({ contextLines = 0, includeChapte
     const withContext = span && !span.code && contextLines > 0;
     const before = withContext ? highlightContextUnits(units, span.first, -1, contextLines) : [];
     const after = withContext ? highlightContextUnits(units, span.last, 1, contextLines) : [];
-    const chapter = headings ? headingForOffset(headings, group.offset) : null;
+    const chapter = includeChapter ? noteModel.headingAt(group.offset) : null;
     const note = group.pieces[0].note || null;
     if (annotatedOnly && !note) return;
     items.push({
@@ -406,7 +418,7 @@ export function collectDeckHighlightsForExport({ contextLines = 0, includeChapte
       note: includeNotes ? note : null,
       before,
       after,
-      chapter: chapter?.title || null
+      chapter: chapter ? numberedHeadingLabel(chapter) || null : null
     });
   });
   return items;
@@ -438,7 +450,9 @@ export function collectHighlightEntries() {
     // measured at 4ms for 50 highlights and 60ms for 400, which is the shape of
     // a cost that has no ceiling on a heavily annotated paper.
     const notes = readHighlightNotes(state.notes || "");
-    documentHighlightsInReadingOrder().forEach((record) => {
+    const records = documentHighlightsInReadingOrder();
+    const docModel = documentSectionModel(records.map((record) => record.page || 0));
+    records.forEach((record) => {
       const words = String(record.text || "").trim();
       const text = words || documentHighlightLabel(record);
       const pictured = record.kind === "area" || record.kind === "ink";
@@ -446,6 +460,10 @@ export function collectHighlightEntries() {
         highlightId: record.id,
         color: record.color,
         group: record.page ? `Page ${record.page}` : "The document",
+        // Which section of the PDF's own contents it is in — what the section
+        // picker narrows the list by (src/panels/highlight-sections.js).
+        section: docModel.keyForPage(record.page || 0),
+        page: record.page || 0,
         // No `n`: the page wears an unnumbered fold now, so the card carries no
         // number either (see the head in highlights-editor.js).
         // Ink takes the same preview a region does. Both are marks with no
@@ -475,7 +493,7 @@ export function collectHighlightEntries() {
   }
   const notes = state.notes || "";
   const { source, raw, groups, units, fences, markCount } = scanHighlightGroups(readerNotesBody(notes), notes);
-  const headings = headingIndexFor(source);
+  const noteModel = noteSectionModel(source);
   groups.forEach((group) => {
     const span = highlightUnitSpan(units, source, group, fences);
     const markdown = span ? span.cur : group.pieces.reduce((acc, piece, i) => {
@@ -486,11 +504,16 @@ export function collectHighlightEntries() {
     }, "");
     const text = notesAnchorPlainText(group.pieces[0].inner);
     if (!text) return;
-    const heading = headingForOffset(headings, group.offset);
+    const heading = noteModel.headingAt(group.offset);
     entries.push({
       markIndex: group.pieces[0].markIndex,
       color: group.color,
       group: heading?.title || "",
+      // The heading's section number, drawn beside the group's head by the
+      // stylesheet so it follows the Number headings setting; and the section
+      // itself, for the section picker.
+      groupNumber: heading?.number || "",
+      section: heading?.key || SECTION_BEFORE_KEY,
       // No `n`: a notes-view highlight wears an unnumbered fold, so its card
       // carries no number either (see the head in highlights-editor.js).
       region: null,

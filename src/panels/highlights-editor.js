@@ -176,7 +176,9 @@ export function editorSignature(entries) {
   return entries
     // A pictured entry's edit stamp too: an ink mark grows stroke by stroke
     // with no words changing, and its picture has to follow.
-    .map((entry) => `${entryKey(entry)}:${entry.color || ""}:${hash32(entry.markdown || "")}:${hash32(entry.note || "")}:${entry.region?.at || ""}:${entry.own ? entry.own.join(",") : "*"}`)
+    // The group too: a heading added above a highlight renumbers its group's
+    // head without changing anything else about the card.
+    .map((entry) => `${entryKey(entry)}:${entry.groupNumber || ""}:${hash32(entry.group || "")}:${entry.color || ""}:${hash32(entry.markdown || "")}:${hash32(entry.note || "")}:${entry.region?.at || ""}:${entry.own ? entry.own.join(",") : "*"}`)
     .join("|");
 }
 
@@ -808,10 +810,14 @@ function noteCaretFromPoint(body, entry, event) {
 
 // ── The surface ─────────────────────────────────────────────────────────────
 
-function groupHead(label) {
+// `number` is the section's heading number, drawn by the stylesheet ahead of
+// the label (styles/86-heading-numbers.css), so the Number headings setting
+// reaches it without a rebuild.
+function groupHead(label, number = "") {
   const head = document.createElement("h3");
   head.className = "hl-notes-group-head";
   head.textContent = label;
+  if (number) head.dataset.headingNumber = number;
   return head;
 }
 
@@ -977,11 +983,14 @@ export function renderHighlightsEditor(entries, list) {
   let group = null;
   entries.forEach((entry) => {
     const label = entry.group || "";
-    if (!section || group !== label) {
-      group = label;
+    // By number as well as by name: two sections called "Summary" are two
+    // groups, even when nothing between them was highlighted.
+    const identity = `${entry.groupNumber || ""}|${label}`;
+    if (!section || group !== identity) {
+      group = identity;
       section = document.createElement("section");
       section.className = "hl-notes-group";
-      if (label) section.appendChild(groupHead(label));
+      if (label) section.appendChild(groupHead(label, entry.groupNumber));
       root.appendChild(section);
     }
     const article = articleFor(entry);

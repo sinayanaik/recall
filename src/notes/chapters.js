@@ -13,7 +13,8 @@
 // long the book is, so paging per chapter is what removes that ceiling.
 
 import { preprocessSpecialBlocks } from "../render/preprocess.js?v=__BUILD__";
-import { splitPreparedBlocks } from "../render/block-cache.js?v=__BUILD__";
+import { scanPreparedHeadings, splitPreparedBlocks } from "../render/block-cache.js?v=__BUILD__";
+import { headingNumbersForLevels, headingParentsForLevels } from "./heading-numbers.js?v=__BUILD__";
 
 // A heading line in prepared markdown: "## Title". Fences are skipped by the
 // walk below, so a "#" inside a code block cannot open a chapter.
@@ -96,6 +97,67 @@ export function headingForOffset(headings, offset) {
     if (headings[mid].start <= offset) { best = mid; lo = mid + 1; } else hi = mid - 1;
   }
   return best === -1 ? null : headings[best];
+}
+
+// ── The note's SECTIONS, numbered ───────────────────────────────────────────
+//
+// headingIndexFor's shape — { start, level, title } in raw offsets, searchable
+// with headingForOffset — plus what a list of highlights needs to say where one
+// is and to narrow itself to a few sections (src/panels/highlight-sections.js):
+//
+//   number   "1.2", the same number the note view draws on the heading
+//   parent   index of the section it is inside, or -1
+//   key      a name for the section that survives an edit above it — level and
+//            title, with #2, #3 for a repeat — so a picked section stays
+//            picked while the reader keeps writing
+//
+// Scanned with scanPreparedHeadings, the scanner the notes view and its
+// contents number from, rather than with the line regex above. The two
+// disagree about exactly the headings that would put the numbers out of step —
+// a setext "Title / ===" heading the regex cannot see, a commented-out
+// "## Draft" it counts — and a highlight listed under "2.3" has to be under the
+// heading the note shows as 2.3. preprocessSpecialBlocks neither adds nor
+// removes a heading, so scanning the raw string finds the same headings at raw
+// offsets, which is what a highlight's offset is.
+let cachedSectionSource = null;
+let cachedSectionIndex = null;
+
+export function sectionHeadingIndexFor(source) {
+  const text = String(source || "");
+  if (text === cachedSectionSource) return cachedSectionIndex;
+  const scan = scanPreparedHeadings(text);
+  const levels = scan.map((entry) => entry.level);
+  const numbers = headingNumbersForLevels(levels);
+  const parents = headingParentsForLevels(levels);
+  const seen = new Map();
+  cachedSectionIndex = scan.map((entry, i) => {
+    const base = `${entry.level}:${entry.text}`;
+    const n = (seen.get(base) || 0) + 1;
+    seen.set(base, n);
+    return {
+      start: entry.offset,
+      level: entry.level,
+      title: entry.text,
+      number: numbers[i],
+      parent: parents[i],
+      key: n === 1 ? base : `${base}#${n}`
+    };
+  });
+  cachedSectionSource = text;
+  return cachedSectionIndex;
+}
+
+// Index of the last section starting at or before `offset`, or -1 before the
+// first heading — headingForOffset's bisection, answering with the position.
+export function sectionIndexForOffset(headings, offset) {
+  let lo = 0;
+  let hi = headings.length - 1;
+  let best = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (headings[mid].start <= offset) { best = mid; lo = mid + 1; } else hi = mid - 1;
+  }
+  return best;
 }
 
 export function blockStartsChapter(block, level) {

@@ -149,7 +149,11 @@ export function tocRailHtml(depths, index, depth) {
 //
 // `tail` is an optional node appended inside the link after the text — the page
 // number on a document row, and nothing at all on a notes row.
-export function tocRowFor({ index, depth, depths, level, text, href, branch, tail }) {
+//
+// `number` is the heading's section number (src/notes/heading-numbers.js), put
+// on the text as an attribute for the stylesheet to draw — so it is not part of
+// the row's text, and the row still says only what the heading says.
+export function tocRowFor({ index, depth, depths, level, text, href, branch, tail, number }) {
   const li = document.createElement("li");
   li.className = TOC_ROW_CLASS;
   // The twisty is positioned against the row, at this row's own indent, so the
@@ -169,6 +173,7 @@ export function tocRowFor({ index, depth, depths, level, text, href, branch, tai
     + `<span class="notes-toc-dot" data-level="${level}"></span>`
     + `<span class="notes-toc-text"></span>`;
   link.querySelector(".notes-toc-text").textContent = text;
+  if (number) link.querySelector(".notes-toc-text").dataset.headingNumber = number;
   if (tail) link.appendChild(tail);
   li.appendChild(link);
 

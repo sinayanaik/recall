@@ -53,6 +53,7 @@ import {
   setHighlightJumpHook
 } from "./highlights-editor.js?v=__BUILD__";
 import { collectHighlightEntries } from "./highlights-panel.js?v=__BUILD__";
+import { filterBySections, isSectionFilterActive, mountSectionPicker, onSectionsChanged, resetSelectedSections } from "./highlight-sections.js?v=__BUILD__";
 import { onDocumentSurface } from "../documents/doc-slot.js?v=__BUILD__";
 
 // 3:2, which is what was asked for, and which is also about the narrowest a
@@ -100,6 +101,13 @@ export const SPLIT_ONLY_CLASS = "is-split-only";
 let splitMode = "side";
 
 let cycleEntries = [];
+
+// The surface's highlights before the section picker narrows them — what the
+// picker counts, and what tells "nothing highlighted here" apart from "nothing
+// in the sections you picked".
+let cycleAllEntries = [];
+
+let sectionPicker = null;
 
 let cycleIndex = -1;
 
@@ -367,6 +375,11 @@ export function closeHighlightSplit() {
   // is. Clearing it also makes the next open a real render rather than a
   // signature match against a stale list.
   if (el.highlightCycleBody) el.highlightCycleBody.replaceChildren();
+  cycleAllEntries = [];
+  // The section choice is made for the task the pane was opened for, so it
+  // goes with the pane — the drawer's list, which shares it, goes back to all
+  // of them too.
+  resetSelectedSections();
   notePaneResized();
 }
 
@@ -422,10 +435,19 @@ export function splitFollowsViewMode(next) {
 // The pane lists the surface it is beside — the same split the contents
 // drawer's own Highlights section makes (drawerEntriesFor), and for the same
 // reason: what you marked on the thing you are looking at.
+//
+// ...and then narrowed to the sections picked in the pane's head, if any were.
+// Everything below — the counter, ◀ ▶, where the pane opens — works over the
+// narrowed list, so stepping through one chapter stays inside it.
 function entriesForSurface(surface) {
-  return collectHighlightEntries()
+  cycleAllEntries = collectHighlightEntries()
     .filter((entry) => (surface === "document" ? Boolean(entry.highlightId) : !entry.highlightId));
+  return filterBySections(surface, cycleAllEntries);
 }
+
+const CYCLE_EMPTY_TEXT = "Nothing highlighted here yet.";
+
+const CYCLE_EMPTY_FILTERED_TEXT = "No highlights in the chosen sections.";
 
 export function refreshHighlightCycle() {
   if (!splitSurface || !el.highlightCycleBody) return;
@@ -442,7 +464,13 @@ export function refreshHighlightCycle() {
   // (the scroll spy, the next rebuild, the click handler's "is this already the
   // current one" test) was still asking about a highlight that no longer exists.
   if (at < 0) cycleKey = cycleIndex >= 0 && cycleEntries[cycleIndex] ? highlightEntryKey(cycleEntries[cycleIndex]) : "";
-  if (el.highlightCycleEmpty) el.highlightCycleEmpty.hidden = cycleEntries.length > 0;
+  if (el.highlightCycleEmpty) {
+    el.highlightCycleEmpty.hidden = cycleEntries.length > 0;
+    el.highlightCycleEmpty.textContent = cycleAllEntries.length && isSectionFilterActive(splitSurface)
+      ? CYCLE_EMPTY_FILTERED_TEXT
+      : CYCLE_EMPTY_TEXT;
+  }
+  sectionPicker?.refresh();
   el.highlightCycleBody.hidden = cycleEntries.length === 0;
   renderHighlightsEditor(cycleEntries, el.highlightCycleBody).then(() => {
     // After the cards exist — the mark and the reveal both need the node.
@@ -815,6 +843,19 @@ export function initHighlightCycle() {
   el.highlightCycleNextBtn?.addEventListener("click", () => cycleHighlightBy(1));
   el.highlightCycleWideBtn?.addEventListener("click", () => toggleHighlightsOnly());
   el.highlightCycleCloseBtn?.addEventListener("click", () => closeHighlightSplit());
+
+  // The section picker, in the head. It counts the surface's whole list, and a
+  // change to the choice — from here or from the drawer, which shares it —
+  // rebuilds the pane's list.
+  sectionPicker = mountSectionPicker(el.highlightCycleSections, {
+    surface: () => splitSurface || state.viewMode,
+    entries: () => cycleAllEntries
+  });
+  onSectionsChanged((surface) => {
+    if (!splitSurface || surface !== splitSurface) return;
+    refreshHighlightCycle();
+    goToCycleIndex(nearestCycleIndex(), { jump: false });
+  });
 
   // A press on a card's own "Go to →" is a move like any other, so the counter
   // and the lit card follow it. The jump itself is that button's business —
