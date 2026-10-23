@@ -8,7 +8,7 @@ import { canReachS3 } from "../cloud/s3-config.js?v=__BUILD__";
 import { canSignStorageUrls, resolveImageUrls } from "../cloud/storage-urls.js?v=__BUILD__";
 import { BUILD_STAMP } from "../core/build.js?v=__BUILD__";
 import { fetchLiveRelease, requestedAppVersion } from "./release-info.js?v=__BUILD__";
-import { showToast } from "../ui/feedback.js?v=__BUILD__";
+import { enableSwipeDismiss, showToast } from "../ui/feedback.js?v=__BUILD__";
 import { isHomeVisible, onHomeShown } from "../ui/home-state.js?v=__BUILD__";
 
 // Every Supabase Storage image URL referenced by a deck's markdown. Used to
@@ -142,15 +142,22 @@ export function showUpdateBanner() {
   dismiss.className = "update-banner-dismiss";
   dismiss.setAttribute("aria-label", "Dismiss");
   dismiss.textContent = "×";
-  dismiss.addEventListener("click", () => {
+  const close = () => {
     updateBannerEl?.remove();
     updateBannerEl = null;
     // The dot in the menu deliberately stays: dismissing the bar means "not
     // now", not "pretend this build is current".
-  });
+  };
+  dismiss.addEventListener("click", close);
 
   updateBannerEl.append(text, reload, dismiss);
   document.body.appendChild(updateBannerEl);
+  // A flick sideways closes it too, like the toasts — given a moment to slide
+  // out before it is removed.
+  const banner = updateBannerEl;
+  enableSwipeDismiss(banner, {
+    onDismiss: () => setTimeout(() => { if (updateBannerEl === banner) close(); }, 220)
+  });
 }
 
 export function setUpdateFailedHint() {
@@ -489,7 +496,11 @@ export function registerServiceWorker() {
     mixedBuildUrls.add(String(event.data.url || ""));
     // Say it once. Repeating it per asset would be three toasts for one fault.
     if (!known) {
-      showToast("Some of this app didn't load in the right version — reload when you can", "error");
+      // With its own Reload: it asks for one, and a message that asks for an
+      // action and then times out is how this went unanswered before.
+      showToast("Some of this app didn't load in the right version — reload when you can", "error", {
+        action: { label: "Reload", onClick: () => applyUpdate() }
+      });
       markUpdateAvailableInMenu();
     }
   });

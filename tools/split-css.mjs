@@ -65,6 +65,10 @@ const SECTIONS = [
 // Anything appearing in styles/ that is neither a slice nor listed here is
 // still a failure.
 const POST_SPLIT = {
+  "84-toasts.css":
+    "Notifications moved to the bottom, clear of the app bar, with a close " +
+    "button, an optional action and swipe-to-dismiss (showToast and " +
+    "enableSwipeDismiss in src/ui/feedback.js, shared by the update banner).",
   "83-teleprompter.css":
     "The teleprompter (src/notes/teleprompter.js, teleprompter-panel.js): the " +
     "reading band and the dimming over the note, the lead-in and run-out that " +

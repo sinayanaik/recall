@@ -1,6 +1,6 @@
 // Is each library the first render depends on actually here?
 //
-// index.html loads marked, DOMPurify and KaTeX as parser-blocking <script>
+// index.html loads marked, DOMPurify and KaTeX as deferred (once blocking) <script>
 // tags, and until they were vendored those were requests to a third-party CDN
 // that could simply not answer. The failure that produced was far worse than a
 // missing feature: main.js called `marked.setOptions(...)` at MODULE SCOPE, so

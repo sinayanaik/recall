@@ -1,0 +1,107 @@
+/* Notifications at the bottom, and swipeable
+ * Added after the split — see POST_SPLIT in tools/split-css.mjs.
+ *
+ * The toast used to sit top-centre at z 99999 (styles/08-panels.css), which is
+ * exactly where the app bar is: a tap meant for ☰, Back, Home or My Files
+ * landed on whatever notification happened to be up, and dismissed that
+ * instead. It also covered the update banner, which owns the top. So it moves
+ * to the bottom, where a phone puts its own: above the Offline / Sign in pill
+ * (bottom-left, styles/11-chrome.css) and above the on-screen keyboard.
+ *
+ * src/ui/feedback.js gives each toast a real × button and swipe-to-dismiss
+ * (enableSwipeDismiss), which the update banner shares.
+ */
+
+.toast-container {
+  top: auto;
+  bottom: calc(56px + var(--safe-bottom) + var(--kb-inset, 0px));
+  /* Newest nearest the edge, the way it arrived. */
+  flex-direction: column;
+  justify-content: flex-end;
+}
+
+.toast {
+  padding: 8px 6px 8px 14px;
+  transform: translateY(14px);
+  /* The swipe is ours: without this a sideways drag scrolls the page under it,
+     and a downward one pulls the page instead of the toast. */
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.toast.is-visible {
+  transform: translateY(0);
+}
+
+.toast.is-leaving {
+  transform: translateY(14px);
+}
+
+/* Follows the finger without lag while dragging; the inline transform written
+   by enableSwipeDismiss then animates out (or back) with the normal transition. */
+.toast.is-dragging,
+.update-banner.is-dragging {
+  transition: none;
+}
+
+.update-banner {
+  touch-action: pan-y;
+  transition: opacity 0.22s ease, transform 0.22s ease;
+}
+
+.toast-msg {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.toast-action {
+  flex: none;
+  padding: 5px 11px;
+  border-radius: 7px;
+  border: 1px solid color-mix(in srgb, var(--accent) 60%, var(--line));
+  background: var(--accent);
+  color: var(--bg);
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+/* Same shape as .update-banner-dismiss, so the two pop-ups close the same way. */
+.toast-close {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 1.15rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+/* Drawn, not text: the toast's textContent is what it SAYS, and checks and
+   screen readers read it as that. The button's name is its aria-label. */
+.toast-close::before {
+  content: "×";
+}
+
+.toast-close:hover,
+.toast-close:focus-visible {
+  color: var(--text);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toast,
+  .toast.is-visible,
+  .toast.is-leaving {
+    transform: none;
+  }
+}

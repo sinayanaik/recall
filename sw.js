@@ -25,7 +25,8 @@ const STAMP = CACHE_NAME.slice("recall-".length);
 // assets already precached: the app never painted at all (still waiting past
 // 140s); with this, it is fully loaded in 2.7s. The network response still
 // lands — it just updates the cache in the background instead of holding the
-// page hostage.
+// page hostage. Navigations no longer wait on it at all when a shell is cached
+// (see sameOriginNetworkFirst); this is for the other unstamped requests.
 const NETWORK_TIMEOUT_MS = 2500;
 
 // A versioned asset (app.js?v=…, styles.css?v=…) that misses the cache gets a
@@ -371,6 +372,7 @@ const APP_SHELL = [
   `./styles/81-pdf-contents-edit.css?v=${STAMP}`,
   `./styles/82-export-themes.css?v=${STAMP}`,
   `./styles/83-teleprompter.css?v=${STAMP}`,
+  `./styles/84-toasts.css?v=${STAMP}`,
   // The module entry point. Everything it imports is stamped with the same
   // ?v=, so those URLs change with every release too — which is what lets the
   // cache-first handler below serve them without revalidating and still never
@@ -1228,10 +1230,11 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // Everything else same-origin (the navigation/HTML above all): network-first,
-  // but only for as long as the network is actually answering. See
-  // NETWORK_TIMEOUT_MS — past that, the cached copy wins and the request keeps
-  // running in the background purely to refresh the cache for next time.
+  // Everything else same-origin: network-first, but only for as long as the
+  // network is actually answering. See NETWORK_TIMEOUT_MS — past that, the
+  // cached copy wins and the request keeps running in the background purely to
+  // refresh the cache for next time. The navigation itself is served from the
+  // cached shell straight away when there is one (see sameOriginNetworkFirst).
   event.respondWith(sameOriginNetworkFirst(event, request));
 });
 
@@ -1398,6 +1401,17 @@ async function sameOriginNetworkFirst(event, request) {
       return Response.error();
     }
   }
+
+  // A launch with a shell on hand opens it at once. The network copy could
+  // only ever be used if it carried THIS release's stamp (htmlMatchesThisRelease
+  // refuses any other) — and this worker's install already cached exactly that
+  // markup as "./". So waiting for it bought nothing, and cost every launch on a
+  // slow connection up to NETWORK_TIMEOUT_MS of splash screen while a 260KB page
+  // downloaded only to be thrown away. The fetch above still runs to completion
+  // under waitUntil: it refreshes the copy, and a newer stamp on the server
+  // still calls registration.update(), so a release reaches this device exactly
+  // as before — it is the launch that no longer waits on the check.
+  if (request.mode === "navigate") return cached;
 
   // Give the network a head start, then stop waiting. A rejected fetch (genuinely
   // offline) resolves the race immediately with null, so being offline still

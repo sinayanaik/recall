@@ -19,7 +19,7 @@ import { discardNotesEditingForDeckSwap } from "./notes/notes-view.js?v=__BUILD_
 import { forgetAllReadingPositions } from "./notes/reading-position.js?v=__BUILD__";
 import { forgetAllReadingStats } from "./stats/reading-stats-store.js?v=__BUILD__";
 import { forgetAllDeckTabs } from "./storage/deck-tab.js?v=__BUILD__";
-import { checkProjectHealth } from "./pwa/app-info.js?v=__BUILD__";
+import { checkProjectHealth, openAppInfoModal } from "./pwa/app-info.js?v=__BUILD__";
 import { updateOnlineIndicator } from "./pwa/online.js?v=__BUILD__";
 import { installManifestLink, markUpdateAvailableInMenu, registerServiceWorker } from "./pwa/service-worker-client.js?v=__BUILD__";
 import { clearBrowserPersistence } from "./storage/deck-snapshot.js?v=__BUILD__";
@@ -111,8 +111,9 @@ export async function announceProjectHealthOnce() {
   const broken = results.filter((r) => r.status === "fail" || r.status === "warn");
   if (!broken.length) return;
   showToast(
-    `Your Supabase project needs attention — ${broken[0].label.toLowerCase()}. See ☰ → App Info.`,
-    "error"
+    `Your Supabase project needs attention — ${broken[0].label.toLowerCase()}.`,
+    "error",
+    { action: { label: "App Info", onClick: openAppInfoModal } }
   );
   markUpdateAvailableInMenu();
 }

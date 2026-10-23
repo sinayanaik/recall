@@ -140,6 +140,7 @@
     <link rel="stylesheet" href="styles/81-pdf-contents-edit.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/82-export-themes.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/83-teleprompter.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/84-toasts.css?v=__BUILD__">
 
     <!-- ── Module preloads ────────────────────────────────────────────────
          The app is ~130 ES modules and the browser discovers them by PARSING
@@ -2487,7 +2488,7 @@
               <li><strong>Back up &amp; share with .recall files</strong> — <strong>⋯ → Back up library (.recall)</strong> saves everything (files, cards, notes, PDFs, Canvas pages, highlights, ink, pictures, folders, reading positions and settings) in one .recall package, with a live panel showing every file, image and PDF as it goes; <strong>⋯ → Restore backup</strong> merges it back. To give files to someone else, select them and choose <strong>Export → Share (.recall — everything)</strong>: they open the package with <strong>Import</strong> (or drop it on the app) and get the files as their own, PDFs and all. Your study progress stays out unless you tick it in, and importing the same package again offers to <strong>update</strong> the files instead of duplicating them</li>
               <li><strong>Exporting the file you have open</strong> is not in this menu — it is the <strong>⇓</strong> beside the Cards / Notes / PDFs / Canvas tabs, which always offers the formats for the tab you are on: the cards as Cornell PDF, Markdown, JSON or SQL; the notes as PDF, HTML, Word or Markdown; a paper as its annotated pages, all its pages, the notes alone or the original file. <strong>Highlights…</strong> sits at the bottom of that menu on Notes and PDF</li>
             </ul>
-            <p>Every cloud action gives you instant feedback: a toast slides in at the top of the screen confirming it worked — for example <span class="help-toast-chip"><span class="help-toast-chip-icon">✓</span> File deleted everywhere</span> or <span class="help-toast-chip help-toast-chip-err"><span class="help-toast-chip-icon">✕</span> Sync failed</span> — so you never have to wonder whether your sync, load, or delete went through. Click a toast to dismiss it early.</p>
+            <p>Every cloud action gives you instant feedback: a notification slides up at the bottom of the screen confirming it worked — for example <span class="help-toast-chip"><span class="help-toast-chip-icon">✓</span> File deleted everywhere</span> or <span class="help-toast-chip help-toast-chip-err"><span class="help-toast-chip-icon">✕</span> Sync failed</span> — so you never have to wonder whether your sync, load, or delete went through. Tap ×, or swipe it away, to dismiss it early.</p>
           </section>
 
           <section class="help-section">
@@ -2866,9 +2867,9 @@ What year was the Eiffel Tower built?
       </div>
     </div>
 
-    <!-- ── Vendored, same-origin, parser-blocking ────────────────────────
+    <!-- ── Vendored, same-origin, deferred ───────────────────────────────
          These eight were <script src="https://cdn.jsdelivr.net/…"> tags. They
-         are parser-blocking by necessity (the first render needs marked,
+         were parser-blocking (the first render needs marked,
          DOMPurify and KaTeX, and bootApp needs supabase-js), which meant the
          whole app — which paints nothing before src/main.js runs — was gated
          on a third-party origin answering. A CDN that merely HUNG produced a
@@ -2880,15 +2881,27 @@ What year was the Eiffel Tower built?
          them: the version is in the path, so the URL is already immutable and
          is never re-downloaded. (Spelling the placeholder out here would be
          rewritten into a commit sha by deploy.yml's blind global substitution,
-         which is why this sentence names the query rather than showing it.) -->
-    <script src="vendor/dompurify-3.1.6/purify.min.js"></script>
-    <script src="vendor/marked-14.1.2/marked.min.js"></script>
+         which is why this sentence names the query rather than showing it.)
+
+         `defer`, and that is safe for the reason the module below spells out:
+         classic deferred scripts and a module script run in DOCUMENT ORDER once
+         parsing ends, so every one of these has run — in this order — before
+         src/main.js evaluates, exactly as when they blocked. What changes is
+         that the parser no longer stops at each one: the boot skeleton above
+         paints as soon as the stylesheets are in, instead of after ~500KB of
+         library has been parsed and run. On an installed app that is the
+         moment the phone's own splash (the icon on a dark screen) gives way to
+         the app, which is what "it sits on the logo for ages" was. The inline
+         Prism line between them is not deferrable and does not need to be: it
+         only has to run BEFORE prism-core, and inline scripts run at parse. -->
+    <script defer src="vendor/dompurify-3.1.6/purify.min.js"></script>
+    <script defer src="vendor/marked-14.1.2/marked.min.js"></script>
     <script>window.Prism = window.Prism || {}; window.Prism.manual = true;</script>
-    <script src="vendor/prismjs-1.30.0/prism-core.min.js"></script>
-    <script src="vendor/prismjs-1.30.0/components/prism-python.min.js"></script>
-    <script src="vendor/prismjs-1.30.0/prism-autoloader.min.js"></script>
-    <script src="vendor/katex-0.16.11/katex.min.js"></script>
-    <script src="vendor/katex-0.16.11/auto-render.min.js"></script>
+    <script defer src="vendor/prismjs-1.30.0/prism-core.min.js"></script>
+    <script defer src="vendor/prismjs-1.30.0/components/prism-python.min.js"></script>
+    <script defer src="vendor/prismjs-1.30.0/prism-autoloader.min.js"></script>
+    <script defer src="vendor/katex-0.16.11/katex.min.js"></script>
+    <script defer src="vendor/katex-0.16.11/auto-render.min.js"></script>
     <!-- mermaid, jszip, graphre+nomnoml, turndown+its gfm plugin and an unused
          zoom library used to sit here. Together they were ~3.6MB of blocking
          JS that had to download AND execute before app.js could start — and since
@@ -2918,7 +2931,7 @@ What year was the Eiffel Tower built?
          build unregisters the worker and refetches every load — always had the
          newest. Bump it in tools/vendor-sync.mjs, which is the only place the
          version is written now. -->
-    <script src="vendor/supabase-js-2.112.2/supabase.min.js"></script>
+    <script defer src="vendor/supabase-js-2.112.2/supabase.min.js"></script>
     <!-- type="module" so the app can be split into src/**. Two consequences
          worth knowing, both verified rather than assumed:
 
