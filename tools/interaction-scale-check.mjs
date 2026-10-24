@@ -339,7 +339,11 @@ const PROBE = `async (budget, tapCases) => {
         const needles = [];
         if (described.asText) needles.push(described.asText);
         if (described.asMarkdown && described.asMarkdown !== described.asText) needles.push(described.asMarkdown);
-        const windowed = api.locateSelectionInSource(md, described, { fuzzy: true });
+        // Without its range, so this is the text search alone: the placement by
+        // blocks (src/format/source-blocks.js) runs first whenever it can, and
+        // would otherwise answer for it.
+        const searchOnly = { asText: described.asText, asMarkdown: described.asMarkdown, view: described.view, anchorNode: described.anchorNode, occurrence: described.occurrence };
+        const windowed = api.locateSelectionInSource(md, searchOnly, { fuzzy: true });
         const whole = api.locateAttemptsIn(md, md, 0, needles, described, { fuzzy: true, boundedFuzzy: false, near: null });
         push("the windowed search finds what the whole-note search finds", (() => {
           if (!windowed) return "the windowed cascade found nothing";
@@ -349,6 +353,18 @@ const PROBE = `async (budget, tapCases) => {
           }
           return true;
         })(), windowed ? "at " + windowed.idx : "");
+
+        // ...and placing the same selection by its two ends, on a note this
+        // size, lands on the same text the search does.
+        const placed = api.locateSelectionInSource(md, described, { fuzzy: true });
+        push("placing a selection by its blocks agrees with the search", (() => {
+          if (!placed) return "nothing was placed";
+          if (!placed.exact) return "the placement declined, so the search answered instead";
+          if (whole && (placed.idx !== whole.idx || placed.end !== whole.end)) {
+            return "placed [" + placed.idx + "," + placed.end + ") vs searched [" + whole.idx + "," + whole.end + ")";
+          }
+          return true;
+        })(), placed ? "at " + placed.idx : "");
       }
       selection.removeAllRanges();
       await settle(60);

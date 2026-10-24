@@ -126,6 +126,11 @@
 //                   column on a phone, from a text layer and from a scan?
 //   style           does a Style panel setting reach the element it names?
 //   highlight       does highlighting mark the thing that was SELECTED?
+//   erase           does Delete remove exactly what was selected — a heading
+//                   with its ##, a bullet with its -, a selection across a
+//                   formula, a table or a picture — and do highlight and cloze
+//                   land on the same text? A selection is placed by its two
+//                   ends, block by block (src/format/source-blocks.js)
 //   note-link-brws  can you find a note to link to WITHOUT remembering its
 //                   name? Walks the [[ picker's folder tree and asks a
 //                   half-remembered query of it, then checks that neither route
@@ -546,6 +551,7 @@ const checks = [
     ["pdf-teleprompt", ["node", ["tools/pdf-teleprompter-check.mjs"], ROOT]],
     ["style         ", ["node", ["tools/style-check.mjs"], ROOT]],
     ["highlight     ", ["node", ["tools/highlight-check.mjs"], ROOT]],
+    ["erase         ", ["node", ["tools/erase-check.mjs"], ROOT]],
     ["note-editor   ", ["node", ["tools/note-editor-check.mjs"], ROOT]],
     // ...and the other place a note-shaped answer is written: the "Make a
     // flashcard" panels, the same editor since the answer stopped being a

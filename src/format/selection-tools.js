@@ -9,7 +9,8 @@ import { isDocumentViewActive } from "../documents/pdf-view.js?v=__BUILD__";
 import { toggleWrapPair } from "../editor/text-transforms.js?v=__BUILD__";
 import { MARK_HIGHLIGHT_COLORS } from "./highlight-colors.js?v=__BUILD__";
 import { codeSelectionContext, makeHighlightFromSelection, toggleMarkColorInText } from "./highlight.js?v=__BUILD__";
-import { locateSelectionInSource, renderedSelectionStrings } from "./locate-selection.js?v=__BUILD__";
+import { balancedHit, locateSelectionInSource, renderedSelectionStrings } from "./locate-selection.js?v=__BUILD__";
+import { sourceRangeForSelection } from "./source-blocks.js?v=__BUILD__";
 import { renderFormatDefaults, renderTargetConfig } from "./render-toolbar.js?v=__BUILD__";
 import { createLinkedNoteFlow } from "../notes/note-links.js?v=__BUILD__";
 import { pushNotesUndo } from "../notes/notes-history.js?v=__BUILD__";
@@ -408,14 +409,20 @@ export async function extractSelectionToNote() {
       showToast("Select the text to move into its own note first", "error");
       return;
     }
-    // Same locate-then-splice the eraser uses, so a selection that spans list
-    // items or padded bullets is found the same way there as here.
-    const loc = locateSelectionInSource(state.notes || "", sel, { fuzzy: true });
+    // Placed by its two ends where it can be, the way the eraser places it — a
+    // selection that takes whole lines takes their markers, so a section split
+    // out moves its "## " heading with it and the link takes the line's place.
+    // What moves is then the note's own markdown, exactly, not the selection
+    // re-serialised from the page. Inline markup cut at either end is widened to
+    // whole so the moved text is balanced. The text search is the fallback.
+    const notes = state.notes || "";
+    const placed = sel.range ? balancedHit(notes, sourceRangeForSelection(notes, sel, { lines: true }), false) : null;
+    const loc = placed || locateSelectionInSource(notes, sel, { fuzzy: true });
     if (!loc) {
       showToast("Couldn't match that selection in the note — try selecting within one section.", "error");
       return;
     }
-    body = sel.asMarkdown || sel.asText || "";
+    body = placed ? notes.slice(placed.idx, placed.end) : (sel.asMarkdown || sel.asText || "");
     applyLink = (link) => {
       const notes = state.notes || "";
       pushNotesUndo("split into its own note");

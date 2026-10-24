@@ -499,6 +499,7 @@ const APP_SHELL = [
   `./src/handwriting/ink-popover.js?v=${STAMP}`,
   `./src/handwriting/rail.js?v=${STAMP}`,
   `./src/format/locate-selection.js?v=${STAMP}`,
+  `./src/format/source-blocks.js?v=${STAMP}`,
   `./src/format/merged-notes.js?v=${STAMP}`,
   `./src/format/notes-fence.js?v=${STAMP}`,
   `./src/format/render-toolbar.js?v=${STAMP}`,

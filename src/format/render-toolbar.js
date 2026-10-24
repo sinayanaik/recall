@@ -14,13 +14,14 @@ import { locateSelectionInSource, renderedSelectionStrings } from "./locate-sele
 import { applyFormatToTextarea, clozeTextareaSelection } from "./selection-tools.js?v=__BUILD__";
 import { captureNotesAnchor, captureSourceAnchor } from "../notes/anchors.js?v=__BUILD__";
 import { createCardFromNotesSelection } from "../notes/frame-card.js?v=__BUILD__";
-import { isNotesEditing, renderNotesViewPinned } from "../notes/notes-view.js?v=__BUILD__";
+import { enterNotesEditing, isNotesEditing, renderNotesViewPinned } from "../notes/notes-view.js?v=__BUILD__";
 import { activeEditingTarget, hideNotesSelectionButton, renderedSelectionStudyMarkdown } from "../notes/selection.js?v=__BUILD__";
 import { saveQuickNote } from "../quick-notes/board.js?v=__BUILD__";
 import { renderMarkdown } from "../render/block-cache.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { pushNotesUndo, syncNotesHistoryBaseline } from "../notes/notes-history.js?v=__BUILD__";
 import { setStatus } from "../ui/feedback.js?v=__BUILD__";
+import { toggleEditMode } from "../ui/edit-mode.js?v=__BUILD__";
 
 // Persist a question/answer edit to both the active deck and the master list
 // (mirrors the save path in toggleEditMode / commitEditIfActive).
@@ -111,6 +112,12 @@ export function renderTargetConfig(target) {
       // edited instead of guessing one from where the reading line happens
       // to sit — see renderNotesViewPinned.
       rerender: (offsetHint) => renderNotesViewPinned(offsetHint),
+      // The raw editor, opened with [start, end) selected — where an action
+      // that could not place a selection exactly hands it to the reader.
+      openEditorAt: (start, end = start) => {
+        enterNotesEditing(start);
+        return selectInOpenEditor(el.notesEdit, start, end);
+      },
     };
   }
   const side = target === "answer" ? "answer" : "question";
@@ -128,7 +135,20 @@ export function renderTargetConfig(target) {
         if (side === "question") scheduleLiveQuestionFit();
         resetClozeButton(el.clozeToggleBtn);
       }),
+    openEditorAt: (start, end = start) => {
+      if (!state.cards[state.current] || !view || view.hidden) return false;
+      toggleEditMode(side, { cursorOffset: start });
+      return selectInOpenEditor(side === "question" ? el.questionEdit : el.answerEdit, start, end);
+    },
   };
+}
+
+// Select [start, end) in a raw editor that has just been opened, if it has.
+export function selectInOpenEditor(edit, start, end) {
+  if (!edit || edit.hidden) return false;
+  const max = edit.value.length;
+  edit.setSelectionRange(Math.max(0, Math.min(start, max)), Math.max(0, Math.min(end, max)));
+  return true;
 }
 
 // Text-colour palette mirrors the editor toolbar's.

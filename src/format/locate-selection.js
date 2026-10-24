@@ -14,6 +14,9 @@ import { cleanedSelectionFragment, countRenderedTextBefore, textWithLineBreaks }
 // module body is still evaluating.
 import { NOTES_BLOCK_SELECTOR, approximateRawOffsetForBlock, rawOffsetForRenderedBlock } from "../notes/raw-offset.js?v=__BUILD__";
 import { codeCleanText, codeRangeOffsets, rangeCodeBlock } from "../render/code-marks.js?v=__BUILD__";
+// source-blocks.js reads the normaliser and the inline-region scan from here, so
+// this is a cycle too; both directions are runtime calls only.
+import { sourceRangeForSelection } from "./source-blocks.js?v=__BUILD__";
 
 // The current selection inside `view`, captured both as markdown (so inline
 // bold/math/etc. survive) and as plain text — either may be the string that
@@ -73,6 +76,10 @@ export function renderedRangeStrings(view, range) {
     asMarkdown,
     view,
     anchorNode: startNode?.nodeType === Node.ELEMENT_NODE ? startNode : startNode?.parentElement || null,
+    // The selection itself, so locateSelectionInSource can place its two ends
+    // block by block (see source-blocks.js) before falling back to searching
+    // for its words. The same clone the occurrence count measures from.
+    range: countFrom,
   };
   // ── ...and, inside a code block, exactly where ──────────────────────────
   //
@@ -682,7 +689,28 @@ export function locateAttemptsIn(source, text, base, needles, sel, { fuzzy, boun
   return null;
 }
 
+// A placed range a caller that wraps it in one simple pair ({{ }}, ** **, a
+// coloured span) can take: nothing in it that a wrap would cut across — no blank
+// line between blocks, no list item, quote line, heading or table row starting
+// inside it. The text search could never return such a range to these callers
+// (they do not opt into the fuzzy stages that bridge blocks), so neither may the
+// placement.
+export function wrapsAsOneRun(text) {
+  if (/\n[ \t]*\n/.test(text)) return false;
+  return !/\n(?:[ \t]*>|[ \t]*(?:[-*+]|\d+[.)])[ \t]|[ \t]*#{1,6}[ \t]|[ \t]*\|)/.test(text);
+}
+
 export function locateSelectionInSource(source, sel, { fuzzy = false, boundedFuzzy = false } = {}) {
+  // First, place the selection by its two ends (src/format/source-blocks.js):
+  // exact wherever the render cache can vouch for the blocks involved, and
+  // indifferent to whatever lies between them. The search below is the
+  // fallback, for a selection on a surface with no cache to read.
+  const placed = sel?.range ? sourceRangeForSelection(source, sel) : null;
+  if (placed && (fuzzy || wrapsAsOneRun(placed.needle))) {
+    const hit = balancedHit(source, placed, false);
+    if (hit) return { ...hit, exact: true };
+  }
+
   // The needles only. Which ordinal each one is searched at is decided inside
   // locateAttemptsIn, and deliberately not here — see the note there. The
   // asMarkdown needle has no occurrence count of its own, but repeats of the same
