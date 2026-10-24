@@ -63,7 +63,11 @@ const PROBE = `(api, cases) => {
     safe("inline/" + i, () => api.protectInline(md));
     safe("cite/" + i, () => api.normalizeCitations(md));
     safe("repair/" + i, () => api.repairEscapedMathMarkdown(md));
-    safe("html/" + i, () => api.markdownToSafeHtml(md));
+    // A picture from another site now carries referrerpolicy="no-referrer"
+    // (installImageReferrerHook in src/render/preprocess.js), on purpose: sites
+    // with hotlink protection refuse it otherwise. Normalised away the way the
+    // card ids below are; any other change to the HTML still differs.
+    safe("html/" + i, () => api.markdownToSafeHtml(md).replace(/ referrerpolicy="no-referrer"/g, ""));
     safe("ranges/" + i, () => JSON.stringify(api.findMathRanges(md)));
   });
 

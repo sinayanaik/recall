@@ -37,7 +37,6 @@ export const el = {
   importStartOverBtn: document.querySelector("#importStartOverBtn"),
   sampleBtn: document.querySelector("#sampleBtn"),
   newDeckBtn: document.querySelector("#newDeckBtn"),
-  importBtn: document.querySelector("#importBtn"),
   myDecksBtn: document.querySelector("#myDecksBtn"),
   syncNowBtn: document.querySelector("#syncNowBtn"),
   autoSyncSelect: document.querySelector("#autoSyncSelect"),
@@ -65,8 +64,6 @@ export const el = {
   myDecksRefreshBtn: document.querySelector("#myDecksRefreshBtn"),
   myDecksNewFolderBtn: document.querySelector("#myDecksNewFolderBtn"),
   myDecksImportBtn: document.querySelector("#myDecksImportBtn"),
-  myDecksImportInput: document.querySelector("#myDecksImportInput"),
-  myDecksImportEpubInput: document.querySelector("#myDecksImportEpubInput"),
   closeImportBtn: document.querySelector("#closeImportBtn"),
   importPanel: document.querySelector("#importPanel"),
   quickNotesBoardBtn: document.querySelector("#quickNotesBoardBtn"),
@@ -330,7 +327,6 @@ export const el = {
   focusTabs: document.querySelector("#focusTabs"),
   readingRailCloseBtn: document.querySelector("#readingRailCloseBtn"),
   readingRailViewName: document.querySelector("#readingRailViewName"),
-  myDecksImportPdfInput: document.querySelector("#myDecksImportPdfInput"),
   // No attachPdfBtn / attachPdfInput. They were the drawer's "Attach a PDF"
   // row, which existed because the Document surface only existed once meta.pdf
   // did. It is on every open deck now (refreshDocumentTab), and a deck with no
@@ -388,6 +384,5 @@ export function isDisplayed(node) {
 
 export const deckEmptyNewBtn = document.getElementById("deckEmptyNewBtn");
 
-export const deckEmptyImportBtn2 = document.getElementById("deckEmptyImportBtn");
 
 export const deckEmptyWebBtn = document.getElementById("deckEmptyWebBtn");

@@ -463,7 +463,46 @@ export const SANITIZE_CONFIG = {
 // and left an empty pane with nothing to explain it.
 export function safeHtmlFromPrepared(prepared) {
   if (!markdownLibrariesReady()) return `<pre class="md-unrendered">${escapeHtml(prepared)}</pre>`;
+  installImageReferrerHook();
   return DOMPurify.sanitize(marked.parse(prepared), SANITIZE_CONFIG);
+}
+
+// ── Pictures from other sites are asked for without a Referer ───────────────
+//
+// Plenty of sites refuse a picture when the request says it comes from another
+// site (hotlink protection) — most food and news blogs among them — so a page
+// imported from one rendered every picture as "Image didn't load". The same
+// request with no Referer at all is what a typed-in address sends, and those
+// sites allow it. Set on every <img> whose address is another site's; this
+// app's own pictures are left exactly as they were.
+//
+// A DOMPurify hook, so it covers every rendered surface at once — both
+// sanitize calls go through the shared DOMPurify instance. Installed on first
+// use rather than at import, because DOMPurify is a page global the vendored
+// script defines and this module is also imported where it is absent.
+let imageReferrerHookInstalled = false;
+
+export function isOtherSiteImageUrl(src) {
+  const text = String(src || "");
+  if (!/^(?:https?:)?\/\//i.test(text)) return false;
+  try {
+    const url = new URL(text, typeof location !== "undefined" ? location.href : "https://localhost/");
+    if (typeof location !== "undefined" && url.origin === location.origin) return false;
+    // Recall's own image storage: signed or public Supabase object URLs.
+    return !/\/storage\/v1\/object\//.test(url.pathname);
+  } catch (_) {
+    return false;
+  }
+}
+
+export function installImageReferrerHook() {
+  if (imageReferrerHookInstalled || typeof DOMPurify === "undefined" || typeof DOMPurify.addHook !== "function") return;
+  imageReferrerHookInstalled = true;
+  DOMPurify.addHook("afterSanitizeAttributes", (node) => {
+    if (node.nodeName === "IMG" && isOtherSiteImageUrl(node.getAttribute("src"))) {
+      node.setAttribute("referrerpolicy", "no-referrer");
+    }
+  });
 }
 
 export function markdownToSafeHtml(markdown) {

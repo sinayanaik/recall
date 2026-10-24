@@ -6,7 +6,7 @@ import { applyWebDeckCategory, updateWebDeckTitle } from "../cloud/web-decks.js?
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { showImportSourceDrawer } from "../import/files.js?v=__BUILD__";
-import { clearImportStaging } from "../import/staging.js?v=__BUILD__";
+import { clearImportStaging, setImportAimFolder } from "../import/staging.js?v=__BUILD__";
 import { normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
 import { saveDeckToLibrary } from "../library/local-library.js?v=__BUILD__";
 import { renderMyDecksList } from "../library/my-decks-render.js?v=__BUILD__";
@@ -130,7 +130,18 @@ export async function editCurrentDeckCategory() {
   }
 }
 
-export function openImportPanel() {
+// The Import screen. Opened from My Files' Import button with the folder on
+// screen, so whatever is imported lands there; My Files sits above this panel,
+// so it closes first (a commit that makes several files reopens it at the
+// folder it wrote to). Called with no argument when a staged import puts the
+// panel back up — the folder it was opened for stays as it was.
+export function openImportPanel(options) {
+  if (options && "folder" in options) {
+    if (el.myDecksPanel && !el.myDecksPanel.hidden) closeMyDecksPanel();
+    clearImportStaging();
+    showImportSourceDrawer(null);
+    setImportAimFolder(options.folder);
+  }
   lockPageScroll();
   el.importPanel.classList.add("is-open");
 }
@@ -139,6 +150,7 @@ export function openImportPanel() {
 // must not be waiting the next time the panel opens.
 export function closeImportPanel() {
   clearImportStaging();
+  setImportAimFolder(null);
   showImportSourceDrawer(null);
   if (el.pasteMarkdownInput) el.pasteMarkdownInput.value = "";
   el.importPanel.classList.remove("is-open");

@@ -15,7 +15,6 @@ import { openFolderAsDeck } from "./folder-deck.js?v=__BUILD__";
 import { FOLDER_SEP, addKnownFolder, folderSegments, isCategoryUnder, normalizeDeckCategory, readExpandedFolders, readKnownFolders, rewriteCategoryPrefix, writeExpandedFolders, writeKnownFolders } from "./folders.js?v=__BUILD__";
 import { createDeckExportControl, deckCardInfo, deckSelOf, loadDeckEntry } from "./my-decks-actions.js?v=__BUILD__";
 import { mdIcon } from "./my-decks-icons.js?v=__BUILD__";
-import { importIntoFolder } from "./my-decks-menu.js?v=__BUILD__";
 import { setMyDecksCwd } from "./my-decks-prefs.js?v=__BUILD__";
 import { renderMyDecksList, repaintMyDecks } from "./my-decks-render.js?v=__BUILD__";
 import { createDeckSelectControl, createFolderSelectControl, renameMyDeck, setMyDeckCategory } from "./my-decks-selection.js?v=__BUILD__";
@@ -500,7 +499,6 @@ export function folderActions(path) {
     ["Read as one document", () => openFolderAsDeck(path)],
     ["New file here", () => newDeckInFolder(path)],
     ["New subfolder", () => createFolder(path)],
-    ["Import here…", () => importIntoFolder(path)],
     ["Rename", () => renameFolder(path)],
     ["Move to…", () => moveFolderViaMenu(path)],
     ["Delete", () => deleteFolder(path)],

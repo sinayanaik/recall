@@ -23,7 +23,7 @@ import { loadDeckEntry } from "../library/my-decks-actions.js?v=__BUILD__";
 import { openQuickNotesBoard } from "../quick-notes/board.js?v=__BUILD__";
 import { reconcileAllDecks } from "../sync/reconcile.js?v=__BUILD__";
 import { formatRelativeTime, renderWelcomeSyncReport, updateDeckEmptyStatus } from "../sync/indicator.js?v=__BUILD__";
-import { openImportPanel, openMyDecksPanel } from "./deck-header.js?v=__BUILD__";
+import { openMyDecksPanel } from "./deck-header.js?v=__BUILD__";
 import { hideHome, isHomeVisible, setHomeRenderHook, showHome } from "./home-state.js?v=__BUILD__";
 import {
   combinedReadingStats, describeReadingPart, homeTileProgress, homeTimeLine, initHomeStats, latestReadingPart, renderHomeStats
@@ -217,7 +217,6 @@ export function initHome() {
   // The panels open OVER home and leave it underneath, so closing one comes
   // back here. Only creating a deck replaces it, and createNewDeck does that.
   on("homeNewDeckBtn", () => createNewDeck());
-  on("homeImportBtn", () => openImportPanel());
   on("homeMyDecksBtn", () => openMyDecksPanel());
   on("homeSeeAllBtn", () => openMyDecksPanel());
   on("homeQuickNotesBtn", () => openQuickNotesBoard());

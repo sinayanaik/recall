@@ -28,6 +28,8 @@ import { closeImportPanel, openImportPanel, openMyDecksPanel } from "../ui/deck-
 import { setStatus, showToast } from "../ui/feedback.js?v=__BUILD__";
 import { setViewMode } from "../ui/view-mode.js?v=__BUILD__";
 import { hideHome } from "../ui/home-state.js?v=__BUILD__";
+import { copyWebImages } from "./web-images.js?v=__BUILD__";
+import { rewriteUrlsDeep, webImageUrls } from "./web-text.js?v=__BUILD__";
 
 // ── Importing into a specific folder ────────────────────────────────────────
 // My Decks can create a deck or a subfolder in whatever folder you're looking
@@ -44,6 +46,15 @@ export let pendingImportFolder = null;
 // Setter: an imported binding is read-only, and the import entry points in main.js choose the destination folder.
 export function setPendingImportFolder(value) {
   pendingImportFolder = value;
+}
+
+// The folder the Import screen was opened for. It is opened from My Files, and
+// whichever source is then picked — files, a link, pasted Markdown — files what
+// it makes into the folder that was on screen. Cleared when the screen closes.
+export let importAimFolder = null;
+
+export function setImportAimFolder(value) {
+  importAimFolder = value != null && String(value).trim() !== "" ? value : null;
 }
 
 // The folder the last import was filed into. Every Import entry point outside
@@ -260,7 +271,50 @@ export function importDetectionChips() {
     chips.push({ text: `skipped ${name}`, tone: "warn" });
   });
 
+  const pages = webPageSources();
+  if (pages.length) {
+    const total = (key) => pages.reduce((sum, source) => sum + (source.webPage.removed?.[key] || 0), 0);
+    const ads = total("ads");
+    const clutter = total("clutter");
+    const pictures = total("pictures");
+    if (pages.some((source) => source.webPage.keepAll)) {
+      chips.push({ text: "the whole page, ads and menus included", tone: "warn" });
+    } else if (ads || clutter) {
+      const bits = [];
+      if (ads) bits.push(`${ads} ad${ads === 1 ? "" : "s"}`);
+      if (clutter) bits.push(`${clutter} menu${clutter === 1 ? "" : "s"}, banner${clutter === 1 ? "" : "s"} or sidebar${clutter === 1 ? "" : "s"}`);
+      chips.push({ text: `removed ${bits.join(" and ")}`, tone: "ok" });
+    }
+    if (pictures) chips.push({ text: `${pictures} picture${pictures === 1 ? "" : "s"} stayed in the saved page's folder`, tone: "warn" });
+  }
+
   return chips;
+}
+
+// ── A saved or fetched web page, cleaned or whole ───────────────────────────
+//
+// A web page is staged with its ads and furniture taken out (src/import/
+// web-page.js), and the review screen offers the page as it was in case a rule
+// took something real. Both readings ride on the source; the switch swaps which
+// one is staged and re-reads it, keeping the choices already made.
+export function webPageSources() {
+  return (importStaging?.sources || []).filter((source) => source && source.webPage);
+}
+
+export function toggleWebPageClutter() {
+  const pages = webPageSources();
+  if (!pages.length) return;
+  const keepAll = !pages.some((source) => source.webPage.keepAll);
+  pages.forEach((source) => {
+    source.webPage.keepAll = keepAll;
+    source.markdown = keepAll ? source.webPage.full : source.webPage.cleaned;
+  });
+  const { sources, folder, skipped, content, target } = importStaging;
+  const restaged = stageImportSources(sources, { folder, skipped });
+  if (!restaged) return;
+  if (restaged.modes.includes(content)) restaged.content = content;
+  if (target !== "separate" || restaged.decks.length > 1) restaged.target = target;
+  renderImportReview();
 }
 
 export function importContentHintText() {
@@ -311,8 +365,19 @@ export function renderImportDetection() {
   const chips = importDetectionChips();
   el.importDetect.innerHTML = `
     <div class="import-detect-source" title="${escapeHtml(importStaging?.sourceLabel || "")}">${escapeHtml(importStaging?.sourceLabel || "")}</div>
-    <div class="import-detect-chips">${chips.map((chip) => `<span class="import-chip${chip.tone ? ` is-${chip.tone}` : ""}">${escapeHtml(chip.text)}</span>`).join("")}</div>
+    <div class="import-detect-chips">${chips.map((chip) => `<span class="import-chip${chip.tone ? ` is-${chip.tone}` : ""}">${escapeHtml(chip.text)}</span>`).join("")}${webPageToggleHtml()}</div>
   `;
+}
+
+export function webPageToggleHtml() {
+  const pages = webPageSources();
+  if (!pages.length) return "";
+  const keepingAll = pages.some((source) => source.webPage.keepAll);
+  const label = keepingAll ? "Remove ads and menus again" : "Keep everything";
+  const title = keepingAll
+    ? "Import only the article, without the page's ads, menus and banners"
+    : "Import the whole page as it was — use this if something you wanted was removed";
+  return `<button type="button" class="import-chip import-chip-action" data-import-webpage-toggle title="${escapeHtml(title)}">${escapeHtml(label)}</button>`;
 }
 
 export function renderImportChoices() {
@@ -711,8 +776,54 @@ export function commitSnapshotImport() {
   return true;
 }
 
+// The sources a page on the web became: their pictures are copied into Recall
+// before the import is written (src/import/web-images.js).
+export function webImportSources() {
+  return (importStaging?.sources || []).filter((source) => source && (source.webPage || source.web));
+}
+
+// Copy every picture the web sources point at, then point the staged files at
+// the copies. A picture that cannot be copied keeps its web address. Never
+// blocks the import: anything that goes wrong here leaves the note as staged.
+export async function copyStagedWebImages() {
+  const sources = webImportSources();
+  const urls = [];
+  sources.forEach((source) => webImageUrls(source.markdown).forEach((url) => { if (!urls.includes(url)) urls.push(url); }));
+  if (!urls.length) return "";
+  const title = importSelectedDecks()[0]?.title || sources[0]?.name || "page";
+  const button = el.importConfirmBtn;
+  const label = button?.textContent;
+  if (button) button.disabled = true;
+  try {
+    const { map, failed, skipped } = await copyWebImages(urls, {
+      title,
+      onProgress: (done, total) => setStatus(`Saving pictures into Recall… ${done} / ${total}`)
+    });
+    if (Object.keys(map).length) {
+      rewriteUrlsDeep(importStaging.decks, map);
+      sources.forEach((source) => { source.markdown = rewriteUrlsDeep(source.markdown, map); });
+    }
+    if (skipped === "offline") return "Pictures stay on the web for now — you're offline.";
+    if (skipped) return "Pictures stay on the web — sign in to save them into Recall.";
+    return failed ? `${failed} picture${failed === 1 ? "" : "s"} couldn't be saved and still load from the web.` : "";
+  } catch (error) {
+    console.warn("Could not copy a page's pictures", error);
+    return "Pictures stay on the web — copying them failed.";
+  } finally {
+    if (button) {
+      button.disabled = false;
+      if (label) button.textContent = label;
+    }
+  }
+}
+
 export async function commitStagedImport() {
   if (!importStaging) return;
+  const staged = importStaging;
+  const pictureNote = await copyStagedWebImages();
+  // The review screen was closed (or another import staged) while pictures were
+  // copying: this import is no longer the one on screen.
+  if (importStaging !== staged) return;
   if (importStaging.target !== "current") {
     setPendingImportFolder(importStaging.folder);
     // Remember it BEFORE committing: the commit paths clear the staging area.
@@ -727,4 +838,5 @@ export async function commitStagedImport() {
       ? commitSnapshotImport()
       : commitMarkdownImport();
   if (done) importStaging = null;
+  if (done && pictureNote) showToast(pictureNote, "info");
 }

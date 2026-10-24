@@ -7,8 +7,10 @@ import { ensureJsZip } from "../core/lib-loader.js?v=__BUILD__";
 import { importEpubFile, isEpubName, isJsonName, isMarkdownName, isZipName, reportEpubImportCrash } from "./epub.js?v=__BUILD__";
 import { importPdfFile, isPdfName, reportPdfImportCrash } from "./pdf.js?v=__BUILD__";
 import { sampleMarkdown } from "./sample.js?v=__BUILD__";
-import { setPendingImportFolder, stageImportSources, stageMarkdownImport } from "./staging.js?v=__BUILD__";
+import { importAimFolder, setPendingImportFolder, stageImportSources, stageMarkdownImport } from "./staging.js?v=__BUILD__";
 import { setStatus } from "../ui/feedback.js?v=__BUILD__";
+import { readWebPageFile, webPageToMarkdown } from "./web-page.js?v=__BUILD__";
+import { isWebPageFile } from "./web-text.js?v=__BUILD__";
 
 export async function collectMarkdownFromZip(input, prefix = "", depth = 0) {
   if (depth > 4) return [];
@@ -76,6 +78,10 @@ export function readFileText(file) {
 // is a single source. Never throws: an unreadable file is reported and skipped
 // so one bad file can't sink a batch of twenty good ones.
 export async function readImportSources(file) {
+  // A saved web page: read, cleaned of its ads and furniture, and converted —
+  // never staged as raw HTML, which is what a picked .html used to become.
+  if (isWebPageFile(file)) return readWebPageSources(file);
+
   if (isZipName(file.name) || /zip/i.test(file.type)) {
     try {
       return await readZipSources(file);
@@ -105,6 +111,36 @@ export async function readImportSources(file) {
   }
 
   return [{ kind: "markdown", name: file.name, markdown: text }];
+}
+
+// One saved page → one Markdown source carrying both readings of it: cleaned
+// (what is staged) and full (what "Keep everything" on the review screen swaps
+// in). See src/import/web-page.js.
+export async function readWebPageSources(file) {
+  let page;
+  try {
+    const { html, baseUrl } = await readWebPageFile(file);
+    page = await webPageToMarkdown({ html, baseUrl });
+  } catch (error) {
+    console.warn("Could not read a saved page", error);
+    setStatus(`Could not read ${file.name}.`, "error");
+    return [];
+  }
+  if (!page) {
+    setStatus(`Couldn't read ${file.name} — turning a page into notes needs a connection the first time.`, "error");
+    return [];
+  }
+  return [webPageSource(page, page.title || file.name.replace(/\.[^.]+$/, ""))];
+}
+
+export function webPageSource(page, name) {
+  return {
+    kind: "markdown",
+    name,
+    markdown: page.cleaned,
+    baseUrl: page.baseUrl,
+    webPage: { cleaned: page.cleaned, full: page.full, removed: page.removed, keepAll: false }
+  };
 }
 
 // Reads everything that was picked and stages it for review. `folderPath` files
@@ -210,5 +246,5 @@ export function stagePastedMarkdown() {
     el.pasteMarkdownInput?.focus();
     return;
   }
-  stageMarkdownImport(markdown, { name: "", folder: null });
+  stageMarkdownImport(markdown, { name: "", folder: importAimFolder });
 }

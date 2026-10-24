@@ -375,6 +375,7 @@ const APP_SHELL = [
   `./styles/84-toasts.css?v=${STAMP}`,
   `./styles/85-resume.css?v=${STAMP}`,
   `./styles/86-heading-numbers.css?v=${STAMP}`,
+  `./styles/87-web-import.css?v=${STAMP}`,
   // The module entry point. Everything it imports is stamped with the same
   // ?v=, so those URLs change with every release too — which is what lets the
   // cache-first handler below serve them without revalidating and still never
@@ -521,6 +522,9 @@ const APP_SHELL = [
   `./src/import/sample.js?v=${STAMP}`,
   `./src/import/staging.js?v=${STAMP}`,
   `./src/import/url.js?v=${STAMP}`,
+  `./src/import/web-images.js?v=${STAMP}`,
+  `./src/import/web-page.js?v=${STAMP}`,
+  `./src/import/web-text.js?v=${STAMP}`,
   `./src/library/categories.js?v=${STAMP}`,
   `./src/library/deck-rows.js?v=${STAMP}`,
   `./src/library/folder-deck.js?v=${STAMP}`,

@@ -240,6 +240,23 @@ const REMOVED = {
     "drawer's Highlights half, which already knows which reading surface you " +
     "are on. #highlightsStage, #highlightsList and #exportHighlightsBtn went " +
     "with it; the ⇓ moved into the pane's own header.",
+  // ── One Import, in My Files ─────────────────────────────────────────────
+  //
+  // Import used to be offered from the ☰ menu, Home, an empty file, My Files'
+  // own button, its ⋯ menu (Import EPUB / Import PDF) and every folder row.
+  // My Files' Import is the one left, and it now opens the full Import screen
+  // aimed at the folder on screen (openImportPanel({ folder }) and
+  // importAimFolder in src/import/staging.js), so the bare file picker these
+  // drove has nothing left to do: the screen's own picker reads every kind.
+  myDecksImportFolder:
+    "Which folder had opened My Files' shared hidden file picker. The Import " +
+    "screen records its folder as importAimFolder instead.",
+  importIntoFolder:
+    "Opened that hidden picker for a folder (My Files' button and each folder " +
+    "row's \"Import here…\"). The button opens the Import screen now, and the " +
+    "folder rows' entry is gone.",
+  deckEmptyImportBtn2:
+    "The empty file's Import button. Import is only in My Files.",
   // ── The Highlights tab stopped being a list of rows ─────────────────────
   collectDeckHighlights:
     "Built the row shape the Highlights tab rendered: a highlight widened to " +

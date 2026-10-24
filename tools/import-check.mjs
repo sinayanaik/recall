@@ -495,6 +495,114 @@ try {
     const recognised = SAMPLES.filter(([, src]) => lang.inferCodeLanguage(src)).length;
     return recognised >= SAMPLES.length ? true : `only ${recognised} of ${SAMPLES.length} samples recognised`;
   });
+
+  // ── web-text: a saved page's bytes, and Markdown from the web ─────────────
+  //
+  // src/import/web-text.js is the string half of importing a web page, written
+  // without a DOM so it can be held to account here. A saved .mhtml is MIME:
+  // the HTML is quoted-printable or base64 in some charset, and the page's own
+  // address rides on Content-Location — get any of those wrong and the import
+  // is mojibake, or every picture and link is relative to nowhere.
+  const web = await load("src/import/web-text.js");
+  const latin1 = (bytes) => web.bytesToLatin1(Uint8Array.from(bytes));
+  const mhtml = (parts, { snapshot = "" } = {}) => [
+    "From: <Saved by Blink>",
+    snapshot ? `Snapshot-Content-Location: ${snapshot}` : "",
+    "MIME-Version: 1.0",
+    'Content-Type: multipart/related;\r\n\ttype="text/html";\r\n\tboundary="----MultipartBoundary--abc----"',
+    "",
+    ...parts.map((part) => `------MultipartBoundary--abc----\r\n${part}`),
+    "------MultipartBoundary--abc------",
+    ""
+  ].filter((line, i) => i !== 1 || line).join("\r\n");
+
+  must("mhtml: a quoted-printable UTF-8 page reads back exactly", () => {
+    const qp = "<html><body><p>Caf=C3=A9 cr=C3=A8me =E2=80=94 50 =3D fifty, a long line that wra=\r\nps.</p></body></html>";
+    const page = web.parseMhtml(mhtml([
+      `Content-Type: text/html\r\nContent-ID: <frame-1@mhtml.blink>\r\nContent-Transfer-Encoding: quoted-printable\r\nContent-Location: https://example.com/recipes/beans/\r\n\r\n${qp}\r\n`
+    ]));
+    if (!page) return "no page found";
+    if (!page.html.includes("Café crème — 50 = fifty, a long line that wraps.")) return `decoded as ${show(page.html)}`;
+    return page.baseUrl === "https://example.com/recipes/beans/" ? true : `base ${show(page.baseUrl)}`;
+  });
+
+  must("mhtml: base64 in windows-1252, after an image part", () => {
+    const html = "<p>naïve résumé</p>";
+    const b64 = Buffer.from(html, "latin1").toString("base64");
+    const page = web.parseMhtml(mhtml([
+      "Content-Type: image/png\r\nContent-Transfer-Encoding: base64\r\nContent-Location: https://example.com/a.png\r\n\r\niVBORw0KGgo=\r\n",
+      `Content-Type: text/html; charset="windows-1252"\r\nContent-Transfer-Encoding: base64\r\nContent-Location: https://example.com/page\r\n\r\n${b64}\r\n`
+    ]));
+    if (!page) return "no page found";
+    return page.html === html ? true : `decoded as ${show(page.html)}`;
+  });
+
+  must("mhtml: the snapshot address stands in when the part has none", () => {
+    const page = web.parseMhtml(mhtml(["Content-Type: text/html\r\n\r\n<p>x</p>\r\n"], { snapshot: "https://example.com/snap" }));
+    return page && page.baseUrl === "https://example.com/snap" ? true : show(page && page.baseUrl);
+  });
+
+  must("mhtml: recognised by name, by type, and by its first lines", () => {
+    if (!web.looksLikeMhtml("page.mhtml", "", "")) return "by name";
+    if (!web.looksLikeMhtml("download", "multipart/related", "")) return "by type";
+    if (!web.looksLikeMhtml("x", "", "From: <Saved by Blink>\r\nMIME-Version: 1.0\r\nContent-Type: multipart/related;")) return "by content";
+    if (web.looksLikeMhtml("page.html", "text/html", "<!doctype html>")) return "an .html was taken for an .mhtml";
+    return true;
+  });
+
+  must("saved pages: recognised by extension and by type", () => {
+    const yes = [{ name: "a.html" }, { name: "b.HTM" }, { name: "c.mht" }, { name: "d", type: "multipart/related" }, { name: "e", type: "application/x-mimearchive" }];
+    const no = [{ name: "a.md" }, { name: "b.pdf", type: "application/pdf" }, { name: "c.htmlx" }];
+    const wrongYes = yes.filter((f) => !web.isWebPageFile(f)).map((f) => f.name);
+    const wrongNo = no.filter((f) => web.isWebPageFile(f)).map((f) => f.name);
+    return wrongYes.length || wrongNo.length ? `missed ${wrongYes.join(",")} · wrongly took ${wrongNo.join(",")}` : true;
+  });
+
+  must("html charset: declared, defaulted, and a BOM outranking the declaration", () => {
+    const enc = (text) => Uint8Array.from(Buffer.from(text, "latin1"));
+    if (web.sniffHtmlCharset(enc('<meta charset="windows-1252"><p>x')) !== "windows-1252") return "meta charset";
+    if (web.sniffHtmlCharset(enc('<meta http-equiv="Content-Type" content="text/html; charset=ISO-8859-1">')) !== "iso-8859-1") return "http-equiv";
+    if (web.sniffHtmlCharset(enc("<p>none")) !== "utf-8") return "default";
+    if (web.sniffHtmlCharset(Uint8Array.from([0xef, 0xbb, 0xbf, ...enc('<meta charset="windows-1252">')])) !== "utf-8") return "BOM";
+    return web.decodeBytes(enc("café"), "no-such-charset") === "caf�" ? true : "an unknown label did not fall back to UTF-8";
+  });
+
+  must("saved html: the address a desktop browser saved it from", () => {
+    const html = "<!DOCTYPE html>\n<!-- saved from url=(0042)https://example.com/recipes/garlic-beans/ -->\n<html>";
+    return web.savedFromUrl(html) === "https://example.com/recipes/garlic-beans/" ? true : show(web.savedFromUrl(html));
+  });
+
+  must("page titles lose their site name, and only that", () => {
+    const cases = [
+      ["Garlic Green Beans (Air Fryer + Stir Fry) | Food Trails", "Garlic Green Beans (Air Fryer + Stir Fry)"],
+      ["How to roast beans - Serious Eats", "How to roast beans"],
+      ["A–Z", "A–Z"],
+      ["  Just a title  ", "Just a title"]
+    ];
+    const wrong = cases.filter(([input, want]) => web.cleanPageTitle(input) !== want);
+    return wrong.length ? `${show(wrong[0][0])} → ${show(web.cleanPageTitle(wrong[0][0]))}` : true;
+  });
+
+  must("reader-proxy Markdown: the 'Image N:' label and placeholder pictures go", () => {
+    const md = "Intro\n\n![Image 1: Garlic Beans (Air Fryer +Stir Fry](https://e.x/beans.jpg)\n\n![Image 2](data:image/svg+xml;base64,PHN2Zy8+)\n\nEnd";
+    const out = web.cleanReaderMarkdown(md);
+    if (out.includes("Image 1:") || out.includes("data:")) return show(out);
+    return out.includes("![Garlic Beans (Air Fryer +Stir Fry](https://e.x/beans.jpg)") ? true : show(out);
+  });
+
+  must("web pictures: every address once, in order, from Markdown and <img>", () => {
+    const md = '![a](https://e.x/1.jpg "t")\n![b](<https://e.x/2.png>)\n<img src="https://e.x/3.webp" alt="c">\n![again](https://e.x/1.jpg)\n![local](recall-img:abc)';
+    const urls = web.webImageUrls(md);
+    return JSON.stringify(urls) === JSON.stringify(["https://e.x/1.jpg", "https://e.x/2.png", "https://e.x/3.webp"]) ? true : show(JSON.stringify(urls));
+  });
+
+  must("web pictures: rewritten everywhere, a longer address never half-rewritten", () => {
+    const map = { "https://e.x/a.jpg": "S1", "https://e.x/a.jpg?w=2": "S2" };
+    const staged = [{ notes: "![](https://e.x/a.jpg?w=2) ![](https://e.x/a.jpg)", cards: [{ question: "![](https://e.x/a.jpg)", answer: "none" }] }];
+    web.rewriteUrlsDeep(staged, map);
+    if (staged[0].notes !== "![](S2) ![](S1)") return show(staged[0].notes);
+    return staged[0].cards[0].question === "![](S1)" ? true : show(staged[0].cards[0].question);
+  });
 } catch (error) {
   must(`the check itself: ${error?.message || error}`, () => String(error?.stack || error));
 } finally {

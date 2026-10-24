@@ -18,7 +18,7 @@ import { foldKeyFor, hiddenBlockMaskFor, pagedSpanStarts } from "../notes/chapte
 import { readerNotesBody } from "../format/notes-fence.js?v=__BUILD__";
 import { enhanceRenderedMarkdown, promoteNotesHeadings } from "./enhance.js?v=__BUILD__";
 import { markdownLibrariesReady } from "../core/lib-guard.js?v=__BUILD__";
-import { LIST_ITEM_SOURCE, SANITIZE_CONFIG, preprocessSpecialBlocks, safeHtmlFromPrepared } from "./preprocess.js?v=__BUILD__";
+import { LIST_ITEM_SOURCE, SANITIZE_CONFIG, installImageReferrerHook, preprocessSpecialBlocks, safeHtmlFromPrepared } from "./preprocess.js?v=__BUILD__";
 import { DEFERRED_WORK_MARGIN } from "./deferred-work.js?v=__BUILD__";
 
 // ── Incremental rendering ──────────────────────────────────────────────────
@@ -952,6 +952,7 @@ export function renderPreparedBlocks(sources, prelude = "") {
   // broken/blank content seen on large notes. The per-block parse is correct;
   // the shared DOMPurify.sanitize pass below keeps it from being N sanitizes.
   const joined = sources.map((source) => marked.parse(head + source)).join(BLOCK_BREAK_HTML);
+  installImageReferrerHook();
   const parts = DOMPurify.sanitize(joined, SANITIZE_CONFIG).split(BLOCK_BREAK_RE);
   if (parts.length === sources.length) return parts;
   // A marker was dropped, or the markdown contained one of its own. Either way
