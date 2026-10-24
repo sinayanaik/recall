@@ -40,6 +40,15 @@
 // rotation's hold — is followed rather than fought: a scrollTop that is not the
 // one this wrote last is where the loop carries on from.
 //
+// scrollTop only holds whole CSS pixels (Chrome rounds 10.2 to 10 at any
+// device pixel ratio), so a note written there alone stood still for four or
+// five frames and then jumped a pixel — three device pixels on a phone — which
+// is the judder "stuttering sometimes" was. The part of a pixel it cannot hold
+// is a transform on the scroller instead (placeSubPixel): written on the
+// element itself, never as a variable the whole note would inherit, so it is
+// the compositor's alone — no style, layout or paint of the text. It is there
+// only while the frames run; a paused note has none.
+//
 // Speed is in words a minute, which is how reading speed is measured everywhere
 // else in the app (src/stats/reading-speed.js), and the default IS the reader's
 // measured speed once there is one. It is turned into pixels from how densely
@@ -61,7 +70,7 @@ import { readerTouchDown, setNotesAutoScrolling, touchGestureHoldsSurface } from
 import { state } from "../core/state.js?v=__BUILD__";
 import { NOTES_CHUNK_CLASS, NOTES_CHUNK_PENDING_CLASS, withChunkRendered } from "../render/block-cache.js?v=__BUILD__";
 import { formatDuration } from "../stats/combine.js?v=__BUILD__";
-import { liveNotesWordsLeft } from "../stats/reading-progress.js?v=__BUILD__";
+import { lastExactNotesReading, liveNotesWordsLeft, readingTimeLeft } from "../stats/reading-progress.js?v=__BUILD__";
 import { readSpeedModel, speedFor, speedMeasured } from "../stats/reading-speed.js?v=__BUILD__";
 import { isAdjustHandlesOpen } from "../ui/adjust-handles.js?v=__BUILD__";
 import { isFocusModeActive, setFocusMode } from "../ui/chrome.js?v=__BUILD__";
@@ -80,7 +89,7 @@ import {
 } from "./scroll-anchor.js?v=__BUILD__";
 import { isSelectionAdjusting, selectionGestureIsLive } from "./selection.js?v=__BUILD__";
 import {
-  TELEPROMPTER_AUTO_RESUMES, TELEPROMPTER_COUNTDOWNS, TELEPROMPTER_FONTS, TELEPROMPTER_RANGES,
+  TELEPROMPTER_AUTO_RESUMES, TELEPROMPTER_COUNTDOWNS, TELEPROMPTER_FONTS, TELEPROMPTER_RANGES, TELEPROMPTER_SCROLLS,
   closeTeleprompterSheet, ensureTeleprompterPanel, isTeleprompterSheetOpen, paintTeleprompterPanel,
   placeTeleprompterBand, removeTeleprompterPanel, teleprompterPanelContains, toggleTeleprompterSheet, wakeTeleprompterBar
 } from "./teleprompter-panel.js?v=__BUILD__";
@@ -109,7 +118,8 @@ const TELEPROMPTER_DEFAULTS = {
   countdown: 3,
   autoResume: 0,
   focus: true,
-  wake: true
+  wake: true,
+  scroll: "auto"
 };
 
 const TELEPROMPTER_FALLBACK_WPM = 200;
@@ -130,6 +140,11 @@ const RAMP_OUT_S = 0.25;
 
 const DENSITY_MS = 750;
 const WATCH_MS = 250;
+
+// How quickly the speed follows a new measure of the density: a time constant,
+// so a page of lists after a page of prose changes the speed over a second or
+// two instead of in one step every 750ms.
+const DENSITY_EASE_S = 1.2;
 
 let settingsCache = null;
 
@@ -157,6 +172,7 @@ function normaliseTeleprompterSettings(raw) {
   if (TELEPROMPTER_FONTS.some(([value]) => value === input.font)) out.font = input.font;
   if (TELEPROMPTER_COUNTDOWNS.includes(Number(input.countdown))) out.countdown = Number(input.countdown);
   if (TELEPROMPTER_AUTO_RESUMES.includes(Number(input.autoResume))) out.autoResume = Number(input.autoResume);
+  if (TELEPROMPTER_SCROLLS.some(([value]) => value === input.scroll)) out.scroll = input.scroll;
   ["band", "focus", "wake"].forEach((key) => {
     if (typeof input[key] === "boolean") out[key] = input[key];
   });
@@ -193,7 +209,8 @@ export function measuredTeleprompterWpm() {
 // ── The session ─────────────────────────────────────────────────────────────
 
 // null when there is none. Phases: "countdown" → "playing" ⇄ "paused", and
-// "ended" at the foot of the note.
+// "ended" at the foot of the note; or "manual" for as long as the reader has
+// chosen to scroll by hand — the band, the dimming and the type, and no loop.
 let teleprompterSession = null;
 
 // The ⋯ row and the rail's copy of it are painted from here; the rail is told
@@ -225,6 +242,9 @@ export function teleprompterSnapshot() {
     pauseReason: teleprompterSession.pauseReason,
     pxPerSecond: teleprompterSession.wordsPerPx ? teleprompterSession.wpm / 60 / teleprompterSession.wordsPerPx : 0,
     wordsPerPx: teleprompterSession.wordsPerPx,
+    subPixel: teleprompterSession.subPixel,
+    sourceWordsPerPx: teleprompterSession.sigma,
+    leftMs: teleprompterTimeLeftMs(),
     settings: { ...teleprompterSession.settings }
   };
 }
@@ -257,6 +277,25 @@ function saveTeleprompterPlace({ flush = false } = {}) {
   captureCurrentReadingAnchor(teleprompterSession.deckKey);
   teleprompterSession.capturedAt = performance.now();
   if (flush) flushReadingPositionSave();
+}
+
+// The every-few-seconds copy taken while it plays, which nothing is waiting
+// on: a capture is a hit-test, a Range.toString and a snippet search (see
+// READING_ANCHOR_IDLE_MS in src/notes/scroll-anchor.js), and taken inside the
+// watch it was a dropped frame every five seconds. In the browser's idle time
+// between frames instead. The captures that matter — the press that pauses,
+// the app going away, the end — stay synchronous.
+function savePlaceWhenIdle() {
+  const owner = teleprompterSession;
+  if (!owner || owner.idleSave) return;
+  owner.capturedAt = performance.now();
+  owner.idleSave = true;
+  const run = () => {
+    owner.idleSave = false;
+    if (teleprompterSession === owner && owner.phase === "playing") saveTeleprompterPlace();
+  };
+  if (typeof requestIdleCallback === "function") requestIdleCallback(run, { timeout: 2000 });
+  else setTimeout(run, 0);
 }
 
 // ── Geometry ────────────────────────────────────────────────────────────────
@@ -354,6 +393,7 @@ function resyncPosition() {
 
 function applyTeleprompterType(view) {
   const { settings } = teleprompterSession;
+  forgetTimeLeftLearning();
   view.style.setProperty("--notes-font-size", `${teleprompterSession.fontSize}px`);
   view.style.setProperty("--notes-line-height", String(settings.lineHeight));
   view.style.setProperty("--notes-max-width", `${settings.width}%`);
@@ -361,6 +401,7 @@ function applyTeleprompterType(view) {
   else view.style.removeProperty("--notes-font-family");
   // Type of a different size packs words differently; measure it afresh.
   teleprompterSession.wordsPerPx = 0;
+  teleprompterSession.densityTarget = 0;
 }
 
 function clearTeleprompterType(view) {
@@ -383,6 +424,7 @@ function sizeTeleprompterRunway(view, geometry, { compensate = false } = {}) {
   view.style.setProperty("--tp-lead", `${lead}px`);
   view.style.setProperty("--tp-runout", `${runout}px`);
   teleprompterSession.lead = lead;
+  teleprompterSession.textTop = padTop + lead;
   if (compensate && delta && view.scrollTop > 0) {
     markProgrammaticNotesScroll();
     view.scrollTop += delta;
@@ -410,11 +452,28 @@ function relayoutTeleprompter({ compensate = false } = {}) {
   const geometry = bandGeometry(view);
   sizeTeleprompterRunway(view, geometry, { compensate });
   placeBand(view, geometry);
+  // How far below Notes' own reading line the band sits: the place a capture
+  // reads off is that line, and the time left is counted from the band.
+  teleprompterSession.readingLine = notesReadingLineOffset(geometry.height);
+  teleprompterSession.lineGap = geometry.bandLine - teleprompterSession.readingLine;
 }
 
 // ── Words a minute into pixels a second ─────────────────────────────────────
 
 const TELEPROMPTER_TEXT_BLOCKS = "p, ul, ol, dl, blockquote, h1, h2, h3, h4, h5, h6";
+
+// Each block's words, counted once: the measure below runs every 750ms over
+// the same blocks, and counting meant a regex over each one's text every time.
+const blockWordCounts = new WeakMap();
+
+function blockWords(block) {
+  let words = blockWordCounts.get(block);
+  if (words === undefined) {
+    words = (block.textContent.match(/\S+/g) || []).length;
+    blockWordCounts.set(block, words);
+  }
+  return words;
+}
 
 // The block after this one in reading order, across a chunk's edge.
 function nextReadingBlock(node, view) {
@@ -443,7 +502,7 @@ function measureTeleprompterDensity(view) {
     const next = nextReadingBlock(block, view);
     if (rect.height > 0 && block.matches(TELEPROMPTER_TEXT_BLOCKS)) {
       const slotBottom = next ? Math.max(rect.bottom, next.getBoundingClientRect().top) : rect.bottom;
-      words += (block.textContent.match(/\S+/g) || []).length;
+      words += blockWords(block);
       height += slotBottom - rect.top;
       width = width || block.clientWidth;
     }
@@ -457,8 +516,57 @@ function measureTeleprompterDensity(view) {
   const wordsPerLine = Math.max(3, (width || view.clientWidth) / (fontPx * 0.5 * 6));
   const predicted = wordsPerLine / (line * 1.15);
   const measured = words && height > line * 2 ? words / height : 0;
-  const sample = measured ? Math.min(predicted * 2, Math.max(predicted * 0.5, measured)) : (teleprompterSession.wordsPerPx || predicted);
-  teleprompterSession.wordsPerPx = teleprompterSession.wordsPerPx ? teleprompterSession.wordsPerPx + 0.3 * (sample - teleprompterSession.wordsPerPx) : sample;
+  const session = teleprompterSession;
+  const sample = measured ? Math.min(predicted * 2, Math.max(predicted * 0.5, measured)) : (session.densityTarget || predicted);
+  // The target the speed eases toward (easeTeleprompterDensity); the first
+  // measure of a type is taken as it is.
+  session.densityTarget = session.densityTarget ? session.densityTarget + 0.5 * (sample - session.densityTarget) : sample;
+  if (!session.wordsPerPx) session.wordsPerPx = session.densityTarget;
+}
+
+function easeTeleprompterDensity(dt) {
+  const session = teleprompterSession;
+  if (!session.densityTarget) return;
+  if (reducedMotion() || !session.wordsPerPx) {
+    session.wordsPerPx = session.densityTarget;
+    return;
+  }
+  session.wordsPerPx += (session.densityTarget - session.wordsPerPx) * (1 - Math.exp(-dt / DENSITY_EASE_S));
+}
+
+// ── The part of a pixel ─────────────────────────────────────────────────────
+
+// `fraction` of a pixel further down than scrollTop says, as a transform on
+// the scroller — the `translate` property, which restyles in half the time
+// `transform` does. `will-change` with it, so the compositor moves the text it
+// already has rather than drawing it again at every new fraction.
+function placeSubPixel(view, fraction) {
+  const shown = Math.round(fraction * 100) / 100;
+  if (teleprompterSession.subPixelOn && shown === teleprompterSession.subPixel) return;
+  if (!teleprompterSession.subPixelOn) {
+    view.style.willChange = "translate";
+    teleprompterSession.subPixelOn = true;
+  }
+  teleprompterSession.subPixel = shown;
+  view.style.translate = `0 ${-shown}px`;
+}
+
+// Gone, with the text put on the nearer whole pixel: a paused note is plain,
+// for selecting and every menu that measures it.
+function clearSubPixel(view) {
+  if (!teleprompterSession?.subPixelOn || !view) return;
+  const session = teleprompterSession;
+  const fraction = session.subPixel;
+  session.subPixelOn = false;
+  session.subPixel = 0;
+  view.style.translate = "";
+  view.style.willChange = "";
+  if (fraction >= 0.5 && view.scrollTop + 1 <= view.scrollHeight - view.clientHeight) {
+    markProgrammaticNotesScroll();
+    view.scrollTop += 1;
+  }
+  session.pos = view.scrollTop;
+  session.lastWritten = view.scrollTop;
 }
 
 // ── The frame ───────────────────────────────────────────────────────────────
@@ -473,6 +581,7 @@ function stopTeleprompterFrames() {
   if (teleprompterSession) {
     teleprompterSession.frame = 0;
     teleprompterSession.lastFrameAt = 0;
+    clearSubPixel(el.notesView);
   }
   setNotesAutoScrolling(false);
 }
@@ -497,6 +606,7 @@ function teleprompterFrame(now) {
   if (!teleprompterSession || !view) return;
   teleprompterSession.frame = 0;
   if (!surfaceStillHere()) {
+    clearSubPixel(view);
     setNotesAutoScrolling(false);
     watchTeleprompter();
     return;
@@ -515,6 +625,7 @@ function teleprompterFrame(now) {
   // change of type): stand still until it has, and carry on from where it left
   // the text.
   if (teleprompterSession.holding || isReflowHolding() || isResumeLanding()) {
+    clearSubPixel(view);
     setNotesAutoScrolling(false);
     resyncPosition();
     scheduleTeleprompterFrame();
@@ -524,14 +635,27 @@ function teleprompterFrame(now) {
     measureTeleprompterDensity(view);
     teleprompterSession.measuredAt = now;
   }
+  easeTeleprompterDensity(dt);
   if (Math.abs(view.scrollTop - teleprompterSession.lastWritten) > 1.5) teleprompterSession.pos = view.scrollTop;
   const max = Math.max(0, view.scrollHeight - view.clientHeight);
   const pxPerSecond = teleprompterSession.wpm / 60 / teleprompterSession.wordsPerPx;
-  teleprompterSession.pos = Math.min(max, teleprompterSession.pos + pxPerSecond * teleprompterSession.ease * dt);
+  const step = Math.min(max - teleprompterSession.pos, pxPerSecond * teleprompterSession.ease * dt);
+  teleprompterSession.pos = Math.min(max, teleprompterSession.pos + Math.max(0, step));
+  // The pace the time left divides by: at full speed only, and per word a minute.
+  if (teleprompterSession.ease >= 1 && step > 0) {
+    teleprompterSession.pacePx += step;
+    teleprompterSession.paceWpmSeconds += teleprompterSession.wpm * dt;
+    teleprompterSession.paceSeconds += dt;
+  }
   setNotesAutoScrolling(true);
-  markProgrammaticNotesScroll();
-  view.scrollTop = teleprompterSession.pos;
+  // The whole pixels to scrollTop, the rest to the transform — see the header.
+  const whole = Math.floor(teleprompterSession.pos);
+  if (view.scrollTop !== whole) {
+    markProgrammaticNotesScroll();
+    view.scrollTop = whole;
+  }
   teleprompterSession.lastWritten = view.scrollTop;
+  if (!reducedMotion()) placeSubPixel(view, view.scrollTop === whole ? teleprompterSession.pos - whole : 0);
   if (teleprompterSession.phase === "playing" && teleprompterSession.pos >= max - 0.5 && !lastSpanPending(view)) {
     finishTeleprompter();
     return;
@@ -542,7 +666,9 @@ function teleprompterFrame(now) {
 // ── The screen, kept on ─────────────────────────────────────────────────────
 //
 // A phone dims after thirty seconds without a touch, and a teleprompter is
-// thirty seconds without a touch by design.
+// thirty seconds without a touch by design. Scrolling by hand is a touch every
+// so often, but a slow reader at arm's length can still go thirty seconds.
+const SCREEN_ON_PHASES = new Set(["playing", "manual"]);
 
 async function holdScreenAwake() {
   if (!teleprompterSession || !teleprompterSession.settings.wake || teleprompterSession.wakeLock || teleprompterSession.wakeRequested) return;
@@ -552,7 +678,7 @@ async function holdScreenAwake() {
   try {
     const lock = await navigator.wakeLock.request("screen");
     owner.wakeRequested = false;
-    if (teleprompterSession !== owner || owner.phase !== "playing" || !owner.settings.wake) {
+    if (teleprompterSession !== owner || !SCREEN_ON_PHASES.has(owner.phase) || !owner.settings.wake) {
       lock.release?.().catch?.(() => {});
       return;
     }
@@ -576,13 +702,104 @@ function letScreenSleep() {
 const STATUS_TEXT = {
   countdown: "Starting",
   paused: "Paused",
-  ended: "End of the notes"
+  ended: "End of the notes",
+  manual: "Scrolling by hand"
 };
 
-function timeLeftText() {
+// ── The time left ───────────────────────────────────────────────────────────
+//
+// How long the loop will take to bring the last line to the band: the rest of
+// the note as a DISTANCE, at the pace the loop really moves.
+//
+// The words left are the reading-progress line's (src/stats/reading-progress.js):
+// the note's markdown, list dashes and table bars and link targets and all,
+// counted from Notes' reading line. The speed is set in the words on screen.
+// Dividing the one by the other was most of what made the old number wrong —
+// and a picture or a table, which has no words and takes as long to pass the
+// band as the text it displaces, was not in it at all. So the session learns,
+// from the exact readings (a captured anchor, never the estimate between two),
+// how many of those markdown words go to a pixel of scroll at its own type
+// (sigma): anything that is in the markdown and not in the reading, or in the
+// reading and not the markdown, is then in both sides of the sum and cancels.
+// Pixels alone could not do it: a stretch of a long note not yet laid out is
+// as tall as estimated at Notes' smaller type, not the teleprompter's.
+//
+// Left in pixels = (words left at the band) / sigma − scrolled since then;
+// the time = that / the pixels a second the loop has averaged so far. Not its
+// speed this instant: that follows the density of the screen, and swings by
+// a quarter between a page of prose and a page of tables. The average is kept
+// per word a minute, so a change of speed is in it at once. Between two
+// readings it is one scrollTop read, and it only goes down.
+
+const SIGMA_MIN_PX = 200;
+
+// Three seconds at full speed before the average is trusted over the speed
+// of the moment.
+const PACE_TRUST_S = 3;
+
+function forgetTimeLeftLearning() {
+  if (!teleprompterSession) return;
+  teleprompterSession.sigma = 0;
+  teleprompterSession.sigmaBase = null;
+  teleprompterSession.leftFix = null;
+  teleprompterSession.typeAt = performance.now();
+  teleprompterSession.pacePx = 0;
+  teleprompterSession.paceWpmSeconds = 0;
+  teleprompterSession.paceSeconds = 0;
+}
+
+function foldExactReading() {
+  const session = teleprompterSession;
+  const exact = lastExactNotesReading();
+  if (!exact || exact.at <= session.exactAt || exact.at < session.typeAt) return;
+  session.exactAt = exact.at;
+  // Taken with Notes' reading line still in the lead-in above the first line:
+  // all the words are still to come at a scroll that has passed none of them,
+  // which would have a pixel hold too few words for every reading after it.
+  if (exact.scrollTop + (session.readingLine || 0) < (session.textTop || 0)) return;
+  const base = session.sigmaBase;
+  const fix = session.leftFix;
+  // Further down with more words still to go cannot be: an anchor that found
+  // the same words earlier in the note. Not learned from, not shown.
+  if (fix && exact.scrollTop >= fix.scrollTop && exact.wordsLeft > fix.wordsLeft) return;
+  // Back up the note is a new start, not a reading to learn from.
+  if (!base || exact.scrollTop < base.scrollTop) {
+    session.sigmaBase = exact;
+  } else {
+    const px = exact.scrollTop - base.scrollTop;
+    const words = base.wordsLeft - exact.wordsLeft;
+    if (px >= SIGMA_MIN_PX && words > 0) session.sigma = words / px;
+  }
+  session.leftFix = exact;
+}
+
+function teleprompterTimeLeftMs() {
+  const session = teleprompterSession;
+  const view = el.notesView;
+  if (!session || session.phase === "ended") return null;
+  // By hand: the reader's own speed, as the progress row reckons it.
+  if (session.phase === "manual") return readingTimeLeft()?.leftMs ?? null;
+  if (!session.wpm) return null;
+  foldExactReading();
+  const rho = session.wordsPerPx;
+  const fix = session.leftFix;
+  if (fix && rho > 0 && view) {
+    const sigma = session.sigma || rho;
+    const wordsAtBand = Math.max(0, fix.wordsLeft - (session.lineGap || 0) * sigma);
+    const pxLeft = Math.max(0, wordsAtBand / sigma - (view.scrollTop - fix.scrollTop));
+    const pxPerSecond = session.paceSeconds >= PACE_TRUST_S
+      ? (session.pacePx / session.paceWpmSeconds) * session.wpm
+      : session.wpm / 60 / rho;
+    return pxPerSecond > 0 ? (pxLeft / pxPerSecond) * 1000 : null;
+  }
   const words = liveNotesWordsLeft();
-  if (!(words > 0) || !teleprompterSession.wpm) return "";
-  return `≈ ${formatDuration((words / teleprompterSession.wpm) * 60000, { short: true })} left`;
+  return words > 0 ? (words / session.wpm) * 60000 : null;
+}
+
+function timeLeftText() {
+  const ms = teleprompterTimeLeftMs();
+  if (!(ms > 0)) return "";
+  return `≈ ${formatDuration(ms, { short: true })} left`;
 }
 
 function paintTeleprompter() {
@@ -649,7 +866,23 @@ export function startTeleprompter() {
     frame: 0,
     lastFrameAt: 0,
     wordsPerPx: 0,
+    densityTarget: 0,
     measuredAt: 0,
+    subPixel: 0,
+    subPixelOn: false,
+    sigma: 0,
+    sigmaBase: null,
+    leftFix: null,
+    exactAt: 0,
+    pacePx: 0,
+    paceWpmSeconds: 0,
+    paceSeconds: 0,
+    typeAt: 0,
+    lineGap: 0,
+    readingLine: 0,
+    textTop: 0,
+    idleSave: false,
+    wasAway: false,
     holding: 1,
     lead: 0,
     pauseReason: null,
@@ -687,12 +920,17 @@ export function startTeleprompter() {
     keepLineAt(view, anchor, () => bandLineY(view), landed);
   }
   if (typeof ResizeObserver === "function") {
-    teleprompterSession.resizeObserver = new ResizeObserver(() => relayoutTeleprompter({ compensate: true }));
+    teleprompterSession.resizeObserver = new ResizeObserver(() => {
+      relayoutTeleprompter({ compensate: true });
+      // A new width re-wraps the text: the words a pixel holds are new too.
+      forgetTimeLeftLearning();
+    });
     teleprompterSession.resizeObserver.observe(view);
   }
   teleprompterSession.watchTimer = setInterval(watchTeleprompter, WATCH_MS);
   paintTeleprompterToggles();
-  beginTeleprompterCountdown();
+  if (settings.scroll === "manual") enterManualTeleprompter();
+  else beginTeleprompterCountdown();
   return true;
 }
 
@@ -811,7 +1049,7 @@ function teleprompterAtEnd(view) {
 }
 
 export function resumeTeleprompter() {
-  if (!teleprompterSession) return;
+  if (!teleprompterSession || teleprompterSession.phase === "manual") return;
   // From the end, Space starts again from the top — unless the reader has
   // since scrolled back up to something, which is where they meant.
   if (teleprompterSession.phase === "ended") {
@@ -843,9 +1081,47 @@ function finishTeleprompter() {
 }
 
 function togglePlayTeleprompter() {
-  if (!teleprompterSession) return;
+  if (!teleprompterSession || teleprompterSession.phase === "manual") return;
   if (teleprompterSession.phase === "playing") pauseTeleprompter("button");
   else resumeTeleprompter();
+}
+
+// Scrolling by hand: the loop stops where it is, and nothing will start it
+// again until the reader chooses "By itself".
+function enterManualTeleprompter() {
+  const session = teleprompterSession;
+  if (!session) return;
+  clearInterval(session.countdownTimer);
+  session.countdownTimer = 0;
+  stopTeleprompterFrames();
+  session.ease = 0;
+  session.phase = "manual";
+  session.pauseReason = null;
+  session.resumeProgress = null;
+  holdScreenAwake();
+  paintTeleprompter();
+}
+
+// Back to "By itself", paused: ▶ is there to press, and nothing moves before
+// the reader does.
+function leaveManualTeleprompter() {
+  const session = teleprompterSession;
+  if (!session || session.phase !== "manual") return;
+  session.phase = "paused";
+  session.pauseReason = "button";
+  session.lastInputAt = performance.now();
+  letScreenSleep();
+  saveTeleprompterPlace();
+  paintTeleprompter();
+}
+
+function applyTeleprompterScrollMode() {
+  if (!teleprompterSession) return;
+  if (teleprompterSession.settings.scroll === "manual") {
+    if (teleprompterSession.phase !== "manual") enterManualTeleprompter();
+  } else {
+    leaveManualTeleprompter();
+  }
 }
 
 // ── While it is open ────────────────────────────────────────────────────────
@@ -876,12 +1152,24 @@ function watchTeleprompter() {
     exitTeleprompter({ land: false });
     return;
   }
-  if (state.viewMode !== "notes" || !isDisplayed(el.notesView)) {
-    pauseTeleprompter("away");
+  if (state.viewMode !== "notes" || !isDisplayed(el.notesView) || document.hidden) {
+    if (teleprompterSession.phase === "manual") {
+      if (!teleprompterSession.wasAway) letScreenSleep();
+      teleprompterSession.wasAway = true;
+    } else {
+      pauseTeleprompter(document.hidden && isDisplayed(el.notesView) && state.viewMode === "notes" ? "hidden" : "away");
+    }
     return;
   }
-  if (document.hidden) {
-    pauseTeleprompter("hidden");
+  if (teleprompterSession.phase === "manual") {
+    // Back from another tab or the background: the browser let go of the
+    // screen lock there, so it is asked for again — once, not every tick.
+    if (teleprompterSession.wasAway) {
+      teleprompterSession.wasAway = false;
+      holdScreenAwake();
+    }
+    teleprompterSession.tucked = teleprompterReaderBusy();
+    paintTeleprompter();
     return;
   }
   // Scrolled back up from the end: the bar offers ▶ again rather than only
@@ -892,7 +1180,7 @@ function watchTeleprompter() {
   }
   if (teleprompterSession.phase !== "paused") {
     if (teleprompterSession.phase === "playing") {
-      if (performance.now() - teleprompterSession.capturedAt >= PLAY_CAPTURE_MS) saveTeleprompterPlace();
+      if (performance.now() - teleprompterSession.capturedAt >= PLAY_CAPTURE_MS) savePlaceWhenIdle();
       paintTeleprompter();
     }
     return;
@@ -994,6 +1282,7 @@ function setTeleprompterSetting(key, value, { commit = true } = {}) {
   } else {
     teleprompterSession.settings = { ...teleprompterSession.settings, [key]: next };
     if (key === "dim" || key === "band") relayoutTeleprompter();
+    if (key === "scroll") applyTeleprompterScrollMode();
     if (key === "focus") {
       if (next && !isFocusModeActive()) {
         setFocusMode(true);
@@ -1031,6 +1320,7 @@ function resetTeleprompterSettings() {
     applyTeleprompterType(view);
     relayoutTeleprompter();
   });
+  applyTeleprompterScrollMode();
 }
 
 // ── Input ───────────────────────────────────────────────────────────────────
@@ -1076,6 +1366,9 @@ function onTeleprompterKey(event) {
     event.preventDefault();
     fn();
   };
+  // By hand, Space and ↑ ↓ are the browser's own scrolling again; ← → still
+  // step two lines and the size keys still size.
+  if (teleprompterSession.phase === "manual" && [" ", "Spacebar", "ArrowUp", "ArrowDown"].includes(event.key)) return;
   switch (event.key) {
     case " ":
     case "Spacebar":

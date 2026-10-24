@@ -15,7 +15,9 @@
 // the foot of the left column to the head of the right one and goes on to the
 // next page; the pages ahead keep being drawn while it plays; a press stops it
 // in the same tick; Cards pauses it; Escape gives back the reader's own zoom;
-// and the bar fits a phone.
+// and the bar fits a phone. Then: By hand, the band follows the column under it
+// and nothing else moves; a page turn in a one-column book carries on at the
+// reading speed, with the band kept; and the time left is what the run takes.
 //
 // Same harness as pdf-preview-check: pdf.js from disk, the app's own modules
 // imported into the page, a client that refuses the network, and two PDFs
@@ -27,7 +29,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { findChrome, launchChrome, connect, openPage, emulatePhone } from "./cdp.mjs";
 import { PDFJS_VERSION, pdfjsSources, servePdfjsFromDisk } from "./pdfjs-source.mjs";
-import { buildColumnsPdf } from "./pdf-fixture.mjs";
+import { buildColumnsPdf, buildFixturePdf } from "./pdf-fixture.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
@@ -550,6 +552,145 @@ try {
   });
 
   await page.evaluate(`() => window.__recall.api.exitPdfTeleprompter()`);
+
+  // ── By hand ──────────────────────────────────────────────────────────────
+  const columnsAgain = await page.evaluate(OPEN_SRC, Array.from(paper.bytes), "columns.pdf", paper.title);
+  if (columnsAgain.error) throw new Error(columnsAgain.error);
+
+  const choose = (key, value) => page.evaluate(`(key, value) => {
+    const button = document.querySelector('#documentStage [data-tp-choice="' + key + '"][data-tp-choice-value="' + value + '"]');
+    if (button) button.click();
+    return Boolean(button);
+  }`, key, value);
+
+  await check("By hand: the band follows the column under it, nothing moves by itself, and the zoom stays the reader's", async () => {
+    const started = await page.evaluate(`() => window.__recall.api.startPdfTeleprompter()`);
+    if (!started) return "it would not start";
+    if (!(await choose("scroll", "manual"))) return "no By hand in the sheet";
+    await sleep(500);
+    const read = `() => {
+      const s = window.__recall.api.pdfTeleprompterSnapshot();
+      const overlay = document.querySelector("#documentStage > .tp-overlay");
+      const view = document.getElementById("documentView");
+      return {
+        phase: s.phase, scale: s.scale, top: view.scrollTop, width: view.clientWidth, segment: s.segment && s.segment.kind,
+        band: parseFloat(overlay.style.getPropertyValue("--tp-band-width")) || view.clientWidth,
+        play: document.querySelector("#documentStage .tp-play").getBoundingClientRect().width > 0
+      };
+    }`;
+    const first = await page.evaluate(read);
+    await sleep(1200);
+    const still = await page.evaluate(read);
+    if (first.phase !== "manual") return `By hand left it ${first.phase}`;
+    if (first.play) return "▶ still shows";
+    if (still.top !== first.top) return `the PDF moved ${still.top - first.top}px by itself`;
+    if (first.segment !== "full") return `at the top the band is on a ${first.segment} segment, not the title`;
+    // Down into the two columns, the way a reader scrolls.
+    await page.evaluate(`() => { const view = document.getElementById("documentView"); view.scrollTop += Math.round(view.clientHeight * 0.45); }`);
+    let into = null;
+    for (let i = 0; i < 20; i += 1) {
+      await sleep(150);
+      into = await page.evaluate(read);
+      if (into.segment === "column" && into.band < into.width * 0.65) break;
+    }
+    if (into.segment !== "column" || !(into.band < into.width * 0.65)) return `in the columns the band is on a ${into.segment} segment, ${into.band}px of ${into.width}px`;
+    if (into.phase !== "manual") return `scrolling left it ${into.phase}`;
+    if (Math.abs(into.scale - first.scale) > 0.001) return `the zoom went from ${first.scale} to ${into.scale}`;
+    await choose("scroll", "auto");
+    await sleep(300);
+    const back = await page.evaluate(read);
+    if (back.phase !== "paused" || !back.play) return `By itself came back ${back.phase}${back.play ? "" : " with no ▶"}`;
+    await page.evaluate(`() => window.__recall.api.exitPdfTeleprompter()`);
+    return null;
+  });
+
+  // ── A book in one column: the turn of a page, and the time left ──────────
+  const book = buildFixturePdf({ pages: 4, linesPerPage: 30, annotate: false, outline: false });
+  const openedBook = await page.evaluate(OPEN_SRC, Array.from(book.bytes), "book.pdf", book.title);
+  if (openedBook.error) throw new Error(openedBook.error);
+
+  await check("a page turn carries on at the reading speed: no stop, no standing start, the band kept", async () => {
+    const started = await page.evaluate(`() => window.__recall.api.startPdfTeleprompter()`);
+    if (!started) return "it would not start";
+    await choose("scroll", "auto");
+    await setNumber("wpm", 1500);
+    await page.evaluate(`() => window.__recall.api.resumePdfTeleprompter()`);
+    await waitPhase("playing", 4000);
+    await sleep(1500);
+    const seen = await page.evaluate(`async () => {
+      const api = window.__recall.api;
+      const view = document.getElementById("documentView");
+      const overlay = document.querySelector("#documentStage > .tp-overlay");
+      const at = () => view.scrollTop + (api.pdfTeleprompterSnapshot().subPixel.top || 0);
+      const steps = [];
+      let pages = new Set();
+      let carried = false;
+      let faded = false;
+      let last = at();
+      const t0 = performance.now();
+      await new Promise((resolve) => {
+        const frame = (now) => {
+          const s = api.pdfTeleprompterSnapshot();
+          const y = at();
+          steps.push({ step: y - last, page: s.cursor?.page || 0, glide: s.gliding });
+          last = y;
+          pages.add(s.cursor?.page || 0);
+          if (s.carrying) {
+            carried = true;
+            if (overlay.classList.contains("is-gliding")) faded = true;
+          }
+          if (now - t0 < 14000 && s.phase === "playing") requestAnimationFrame(frame);
+          else resolve();
+        };
+        requestAnimationFrame(frame);
+      });
+      // A page's place, read with the part-pixel translate on the scroller
+      // (which makes it the pages' offsetParent) and again without.
+      const pageEl = document.querySelector('#documentView .pdf-page[data-page-number="3"]');
+      const moving = { on: Boolean(view.style.translate), top: api.pageOffsetTop(pageEl), left: api.pageOffsetLeft(pageEl) };
+      api.pausePdfTeleprompter("reader");
+      const still = { on: Boolean(view.style.translate), top: api.pageOffsetTop(pageEl), left: api.pageOffsetLeft(pageEl) };
+      const reading = steps.filter((entry) => !entry.glide).map((entry) => entry.step).sort((a, b) => a - b);
+      const median = reading[reading.length >> 1] || 0;
+      const slowAt = steps.map((entry, index) => (entry.step < median * 0.3 ? index : -1)).filter((index) => index >= 0);
+      const around = slowAt.length ? steps.slice(Math.max(0, slowAt[0] - 3), slowAt[0] + 4).map((e) => e.step.toFixed(2) + (e.glide ? "g" : "") + "p" + e.page).join(" ") : "";
+      return { pages: [...pages], frames: steps.length, median, slow: slowAt.length, around, carried, faded, moving, still };
+    }`);
+    if (seen.pages.length < 2) return `the window saw only page(s) ${seen.pages.join(", ")}`;
+    if (!seen.carried) return "the page turn was not a carry-on glide";
+    if (seen.faded) return "the band stepped back for a page turn in the same column";
+    if (!seen.moving.on || seen.still.on) return `the translate was ${seen.moving.on ? "" : "not "}on while playing and ${seen.still.on ? "still" : "not"} on when paused`;
+    if (seen.moving.top !== seen.still.top || seen.moving.left !== seen.still.left) return `page 3 is at ${JSON.stringify(seen.moving)} while playing, ${JSON.stringify(seen.still)} paused`;
+    if (seen.slow) return `${seen.slow} of ${seen.frames} frames moved under a third of the reading step (${seen.median.toFixed(3)}px): ${seen.around}`;
+    return null;
+  });
+
+  await check("the time left is what the run then takes", async () => {
+    await page.evaluate(`async () => {
+      const { api, settle } = window.__recall;
+      api.exitPdfTeleprompter();
+      await settle(300);
+      const view = document.getElementById("documentView");
+      view.scrollTop = 0;
+      await settle(300);
+      api.startPdfTeleprompter();
+    }`);
+    await choose("scroll", "auto");
+    await setNumber("wpm", 2400);
+    await page.evaluate(`() => window.__recall.api.resumePdfTeleprompter()`);
+    await waitPhase("playing", 4000);
+    await sleep(2500);
+    const estimate = (await snap()).leftMs;
+    const started = Date.now();
+    await waitPhase("ended", 120000);
+    const actual = Date.now() - started;
+    const error = (estimate - actual) / actual;
+    console.log(`        time left: said ${(estimate / 1000).toFixed(1)}s, took ${(actual / 1000).toFixed(1)}s (${(error * 100).toFixed(1)}%)`);
+    if (!Number.isFinite(estimate)) return "no estimate while playing";
+    if (Math.abs(error) > 0.15) return `said ${(estimate / 1000).toFixed(1)}s left, it took ${(actual / 1000).toFixed(1)}s`;
+    await page.evaluate(`() => window.__recall.api.exitPdfTeleprompter()`);
+    return null;
+  });
 } catch (error) {
   failures.push({ name: "the check itself", detail: String(error?.stack || error) });
   console.log(`FAIL  the check itself\n        ${error?.stack || error}`);

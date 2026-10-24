@@ -2198,9 +2198,16 @@ export function isDocumentFitWidth() {
 // constant, so nothing was badly wrong; it is why a resume to page 1 landed
 // forty-odd pixels into the page instead of at its top. Subtracted once, here,
 // rather than at four call sites that would each have to remember.
+//
+// One exception: while the teleprompter moves the PDF it holds the part of a
+// pixel scrollTop cannot in a `translate` on the scroller
+// (src/documents/pdf-teleprompter.js), and a transformed box is the
+// offsetParent of everything inside it. Then offsetTop is already measured
+// from the scroller's padding edge, which is the same origin.
 export function pageOffsetTop(entryEl) {
   const view = el.documentView;
   if (!entryEl) return 0;
+  if (view && entryEl.offsetParent === view) return entryEl.offsetTop + view.clientTop;
   return entryEl.offsetTop - (view?.offsetTop || 0);
 }
 
@@ -2213,6 +2220,7 @@ export function pageOffsetTop(entryEl) {
 export function pageOffsetLeft(entryEl) {
   const view = el.documentView;
   if (!entryEl) return 0;
+  if (view && entryEl.offsetParent === view) return entryEl.offsetLeft + view.clientLeft;
   return entryEl.offsetLeft - (view?.offsetLeft || 0);
 }
 

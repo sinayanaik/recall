@@ -57,6 +57,13 @@ export const TELEPROMPTER_COUNTDOWNS = [0, 3, 5];
 
 export const TELEPROMPTER_AUTO_RESUMES = [0, 3, 5, 10];
 
+// Who moves the text: the teleprompter, at the speed set, or the reader, with
+// the band, the dimming and the type all kept — a reading band to scroll under.
+export const TELEPROMPTER_SCROLLS = [
+  ["auto", "By itself"],
+  ["manual", "By hand"]
+];
+
 // The PDF's layout: find the columns on each page, or take the reader's word.
 export const TELEPROMPTER_COLUMNS = [
   ["auto", "Auto"],
@@ -164,7 +171,7 @@ function buildTeleprompterSheet(kind) {
   mine.hidden = true;
   const body = tpNode("div", "tp-sheet-body");
   body.append(
-    tpSection("Pace", tpRangeRow("wpm"), mine),
+    tpSection("Pace", tpChoiceRow("scroll", "Scrolling", TELEPROMPTER_SCROLLS), tpRangeRow("wpm"), mine),
     kind === "pdf"
       ? tpSection("Layout", tpChoiceRow("columns", "Columns", TELEPROMPTER_COLUMNS),
         tpSwitchRow("zoomColumn", "Zoom to the column", "A column fills the width, and the view follows it"))
@@ -441,7 +448,10 @@ const PLAY_FACES = {
   countdown: { icon: "▶", label: "Start now", title: "Start now (Space)" },
   playing: { icon: "❚❚", label: "", title: "Pause (Space)" },
   paused: { icon: "▶", label: "Resume", title: "Resume from here (Space)" },
-  ended: { icon: "▶", label: "Resume", title: "Resume" }
+  ended: { icon: "▶", label: "Resume", title: "Resume" },
+  // Not shown (styles/83-teleprompter.css): nothing plays while the reader
+  // scrolls by hand.
+  manual: { icon: "▶", label: "", title: "Scrolling by hand" }
 };
 
 // `model`: { phase, wpm, leftText, countdown, tucked, resumeProgress,

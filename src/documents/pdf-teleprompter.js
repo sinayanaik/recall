@@ -31,6 +31,24 @@
 // own zoom. The zoom changes only between segments, through setDocumentScale,
 // and leaving puts the reader's own zoom back with their line where it was.
 //
+// A glide that only carries on down — the foot of a page to the head of the
+// next in a one-column book, or past a figure — starts at the speed the text
+// was moving and ends at the speed of what comes next (a cubic Hermite curve),
+// with the band kept: an ease from standing still was a stop and a lurch at
+// every page. One that changes column or zoom still eases in and out, with
+// the band stepped back, because the eye has somewhere new to go.
+//
+// As in Notes, scrollTop and scrollLeft hold whole pixels only, and the part of
+// a pixel they cannot is a `translate` on the scroller while the frames run
+// (placePdfSubPixel) — see the header of src/notes/teleprompter.js.
+//
+// ── By hand ────────────────────────────────────────────────────────────────
+//
+// "By hand" in the sheet keeps the band, the dimming and the column the band
+// is narrowed to, and moves nothing: the reader scrolls. The band follows the
+// column under it as they do (followManualScroll), and the zoom is theirs —
+// never changed to fit a column, and kept as it is on leaving.
+//
 // ── Interrupting it ────────────────────────────────────────────────────────
 //
 // As the note's: a press, a touch or a wheel anywhere but its own controls
@@ -42,24 +60,25 @@ import { el, isDisplayed } from "../core/dom.js?v=__BUILD__";
 import { readerTouchDown, setDocumentAutoScrolling, touchGestureHoldsSurface, inkPenIsDown } from "../core/gesture.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { formatDuration } from "../stats/combine.js?v=__BUILD__";
+import { readingTimeLeft } from "../stats/reading-progress.js?v=__BUILD__";
 import { isFocusModeActive, setFocusMode } from "../ui/chrome.js?v=__BUILD__";
 import { anyModalOpen } from "../ui/overlays.js?v=__BUILD__";
 import { currentDeckKey } from "../notes/scroll-anchor.js?v=__BUILD__";
 import { onDeckSwap } from "../notes/notes-view.js?v=__BUILD__";
 import { clampToRange, measuredTeleprompterWpm } from "../notes/teleprompter.js?v=__BUILD__";
 import {
-  TELEPROMPTER_AUTO_RESUMES, TELEPROMPTER_COLUMNS, TELEPROMPTER_COUNTDOWNS, TELEPROMPTER_RANGES,
+  TELEPROMPTER_AUTO_RESUMES, TELEPROMPTER_COLUMNS, TELEPROMPTER_COUNTDOWNS, TELEPROMPTER_RANGES, TELEPROMPTER_SCROLLS,
   closeTeleprompterSheet, ensureTeleprompterPanel, isTeleprompterSheetOpen, paintTeleprompterPanel,
   placeTeleprompterBand, removeTeleprompterPanel, teleprompterPanelContains, toggleTeleprompterSheet, wakeTeleprompterBar
 } from "../notes/teleprompter-panel.js?v=__BUILD__";
 import { isInkArmed } from "./pdf-ink.js?v=__BUILD__";
 import { isRegionSelectArmed } from "./pdf-region.js?v=__BUILD__";
-import { buildPathFromBoxes, buildPathFromInk, pathWords } from "./pdf-reading-path.js?v=__BUILD__";
+import { buildPathFromBoxes, buildPathFromInk } from "./pdf-reading-path.js?v=__BUILD__";
 import { keptTextItem, textItemBox, textItemShadows } from "./pdf-selection.js?v=__BUILD__";
 import {
   PDF_MAX_SCALE, currentDocumentAcross, currentDocumentPage, currentDocumentResidual, documentPinchEngaged, documentSurfaceHidden,
   fitWidthScale, openDocumentSlot, openPdf, pageOffsetLeft, pageOffsetTop, pdfPageTextItems, scrollToDocumentPage,
-  setDocumentReaderZoomHook, setDocumentScale
+  setDocumentReaderZoomHook, setDocumentScale, whenPageDrawsIdle
 } from "./pdf-view.js?v=__BUILD__";
 
 // ── Settings ────────────────────────────────────────────────────────────────
@@ -82,7 +101,8 @@ const PDF_TELEPROMPTER_DEFAULTS = {
   countdown: 3,
   autoResume: 0,
   focus: true,
-  wake: true
+  wake: true,
+  scroll: "auto"
 };
 
 const PDF_TELEPROMPTER_RANGE_KEYS = ["wpm", "bandPos", "bandSize", "dim"];
@@ -111,6 +131,14 @@ const INK_PICTURE_WIDTH = 720;
 
 const PDF_TP_WATCH_MS = 250;
 
+// By hand, a page's reading path is built once the scroll has been still this
+// long — not for every page a fling passes on its way.
+const MANUAL_PATH_SETTLE_MS = 150;
+
+// What a change of zoom costs the time left: the layout at the new size and
+// the frame after it, before the band moves on.
+const ZOOM_LANDING_MS = 250;
+
 let pdfTpSettingsCache = null;
 
 function normalisePdfTeleprompterSettings(raw) {
@@ -125,6 +153,7 @@ function normalisePdfTeleprompterSettings(raw) {
   if (TELEPROMPTER_COLUMNS.some(([value]) => value === input.columns)) out.columns = input.columns;
   if (TELEPROMPTER_COUNTDOWNS.includes(Number(input.countdown))) out.countdown = Number(input.countdown);
   if (TELEPROMPTER_AUTO_RESUMES.includes(Number(input.autoResume))) out.autoResume = Number(input.autoResume);
+  if (TELEPROMPTER_SCROLLS.some(([value]) => value === input.scroll)) out.scroll = input.scroll;
   ["band", "focus", "wake", "zoomColumn"].forEach((key) => {
     if (typeof input[key] === "boolean") out[key] = input[key];
   });
@@ -207,11 +236,17 @@ async function inkPicture(page, viewport) {
   return { gray, width, height };
 }
 
-async function buildPagePath(pdf, pageNumber, columns) {
+// The path from the page's text layer alone: null for a page with too little
+// text to go by, which is read from its picture instead.
+async function buildTextPath(pdf, pageNumber, columns) {
   const page = await pdf.doc.getPage(pageNumber);
   const viewport = page.getViewport({ scale: 1 });
   const items = pdfPageTextItems(pageNumber) || (await page.getTextContent()).items || [];
-  const fromText = buildPathFromBoxes(textBoxes(items, viewport), viewport.width, viewport.height, { columns });
+  return { page, viewport, path: buildPathFromBoxes(textBoxes(items, viewport), viewport.width, viewport.height, { columns }) };
+}
+
+async function buildPagePath(pdf, pageNumber, columns) {
+  const { page, viewport, path: fromText } = await buildTextPath(pdf, pageNumber, columns);
   if (fromText) return fromText;
   const picture = await inkPicture(page, viewport);
   return buildPathFromInk(picture.gray, picture.width, picture.height, { columns })
@@ -235,7 +270,8 @@ function pathFor(pageNumber) {
       .then((path) => {
         if (cache.get(key) === pending) cache.set(key, path);
         if (pdfSession?.pdf === pdf) {
-          schedulePdfFrame();
+          if (pdfSession.phase === "manual") followManualScroll();
+          else schedulePdfFrame();
           paintPdfTeleprompter();
         }
         return path;
@@ -245,10 +281,91 @@ function pathFor(pageNumber) {
   return undefined;
 }
 
+// The path if it is already built, without asking for it.
+function builtPath(pageNumber) {
+  if (!pdfSession) return null;
+  const known = pathCache(pdfSession.pdf).get(`${pageNumber}:${pdfSession.settings.columns}`);
+  return known && !known.then ? known : null;
+}
+
+// ── The pages ahead, read in the background ─────────────────────────────────
+//
+// For the time left, which has to know how much is on every page still to
+// come — not guess it from the one or two being read, where a title page or a
+// page of figures threw it out by half. A page with a text layer gets its real
+// path, put in the same cache the loop reads (so it is ready when the band
+// gets there, too); one without is only marked as a scan, because its path is
+// a picture to draw and that is not worth doing for a number.
+//
+// One page per idle moment, from the cursor on, never ahead of a page that is
+// waiting to be drawn (whenPageDrawsIdle), and only while a session is open.
+// The text itself is pulled out by pdf.js in its own worker.
+
+const scanCaches = new WeakMap();
+
+// "page:columns" for every page found to have no text layer worth reading.
+function scanPagesOf(pdf) {
+  let scans = scanCaches.get(pdf);
+  if (!scans) {
+    scans = new Set();
+    scanCaches.set(pdf, scans);
+  }
+  return scans;
+}
+
+function readAheadWhenIdle() {
+  const session = pdfSession;
+  if (!session || session.readingAhead) return;
+  session.readingAhead = true;
+  const next = async () => {
+    if (pdfSession !== session || openPdf !== session.pdf) return;
+    const from = Math.max(1, session.cursor?.page || currentDocumentPage() || 1);
+    const columns = session.settings.columns;
+    const cache = pathCache(session.pdf);
+    const scans = scanPagesOf(session.pdf);
+    let pageNumber = 0;
+    for (let n = from; n <= openPdf.pageCount; n += 1) {
+      if (!cache.has(`${n}:${columns}`) && !scans.has(`${n}:${columns}`)) {
+        pageNumber = n;
+        break;
+      }
+    }
+    if (!pageNumber) {
+      session.readingAhead = false;
+      return;
+    }
+    await whenPageDrawsIdle();
+    if (pdfSession !== session || session.settings.columns !== columns) {
+      if (pdfSession === session) session.readingAhead = false;
+      if (pdfSession === session) readAheadWhenIdle();
+      return;
+    }
+    try {
+      const { path } = await buildTextPath(session.pdf, pageNumber, columns);
+      const key = `${pageNumber}:${columns}`;
+      if (path) {
+        if (!cache.has(key)) cache.set(key, path);
+      } else {
+        scans.add(key);
+      }
+    } catch {
+      scans.add(`${pageNumber}:${columns}`);
+    }
+    schedule();
+  };
+  const schedule = () => {
+    if (pdfSession !== session) return;
+    if (typeof requestIdleCallback === "function") requestIdleCallback(() => { next(); }, { timeout: 3000 });
+    else setTimeout(next, 50);
+  };
+  schedule();
+}
+
 // ── The session ─────────────────────────────────────────────────────────────
 
 // null when there is none. Phases as the note's: "countdown" → "playing" ⇄
-// "paused", and "ended" at the foot of the last page.
+// "paused", and "ended" at the foot of the last page; or "manual" while the
+// reader scrolls by hand.
 let pdfSession = null;
 
 let pdfTeleprompterChangedHook = null;
@@ -276,7 +393,10 @@ export function pdfTeleprompterSnapshot() {
     cursor: pdfSession.cursor ? { ...pdfSession.cursor } : null,
     segment: segment ? { ...segment } : null,
     gliding: Boolean(pdfSession.glide),
+    carrying: Boolean(pdfSession.glide?.carry),
     holding: pdfSession.holding,
+    subPixel: { ...pdfSession.subPixel },
+    leftMs: pdfTimeLeftMs(),
     scale: openPdf?.scale || 0,
     baseScale: pdfSession.baseScale,
     settings: { ...pdfSession.settings }
@@ -470,7 +590,9 @@ function placePdfBand() {
   let bandLeft = null;
   let bandWidth = null;
   if (segment && box) {
-    const camera = cameraFor(pdfSession.cursor);
+    // By hand the view is wherever the reader put it, not where the camera
+    // would; otherwise where the camera is going, so the band is there first.
+    const camera = pdfSession.phase === "manual" ? null : cameraFor(pdfSession.cursor);
     const scrollLeft = camera ? camera.left : view.scrollLeft;
     const left = box.left + segment.x0 * box.width - scrollLeft - COLUMN_SIDE_ROOM;
     const right = box.left + segment.x1 * box.width - scrollLeft + COLUMN_SIDE_ROOM;
@@ -522,13 +644,49 @@ function setGliding(on) {
   tpOverlay?.classList.toggle("is-gliding", Boolean(on));
 }
 
-function writeScroll(view, top, left) {
-  view.scrollTop = top;
-  view.scrollLeft = left;
+// `fine`: the loop moving the view, which puts the whole pixels in the scroll
+// and the rest in placePdfSubPixel. Every other write — a jump, a landing, a
+// runway — is whole, and takes any fraction away.
+function writeScroll(view, top, left, { fine = false } = {}) {
+  const wholeTop = fine ? Math.floor(top) : top;
+  const wholeLeft = fine ? Math.floor(left) : left;
+  view.scrollTop = wholeTop;
+  view.scrollLeft = wholeLeft;
   if (pdfSession) {
     pdfSession.lastTop = view.scrollTop;
     pdfSession.lastLeft = view.scrollLeft;
   }
+  if (fine && pdfSession && !pdfTpReducedMotion()) {
+    placePdfSubPixel(view,
+      view.scrollTop === wholeTop ? top - wholeTop : 0,
+      view.scrollLeft === wholeLeft ? left - wholeLeft : 0);
+  } else {
+    clearPdfSubPixel(view);
+  }
+}
+
+// ── The part of a pixel ─────────────────────────────────────────────────────
+//
+// As the note's (src/notes/teleprompter.js): the `translate` property on the
+// scroller, with `will-change` so the compositor moves the pages it has rather
+// than drawing them again. A transformed box is the offsetParent of the pages
+// inside it, which pageOffsetTop and pageOffsetLeft (pdf-view.js) allow for.
+
+function placePdfSubPixel(view, fractionTop, fractionLeft) {
+  const top = Math.round(fractionTop * 100) / 100;
+  const left = Math.round(fractionLeft * 100) / 100;
+  const shown = pdfSession.subPixel;
+  if (shown.on && shown.top === top && shown.left === left) return;
+  if (!shown.on) view.style.willChange = "translate";
+  pdfSession.subPixel = { on: true, top, left };
+  view.style.translate = `${-left}px ${-top}px`;
+}
+
+function clearPdfSubPixel(view) {
+  if (!pdfSession?.subPixel.on || !view) return;
+  pdfSession.subPixel = { on: false, top: 0, left: 0 };
+  view.style.translate = "";
+  view.style.willChange = "";
 }
 
 function viewMovedByOther(view) {
@@ -565,10 +723,29 @@ function zoomForCursor(scale) {
   });
 }
 
+// How fast the camera goes down through a segment at full speed, in px a ms:
+// its span over the time its words take.
+function segmentVelocity(cursor) {
+  const segment = segmentAt(cursor);
+  const box = cursor ? tpPageBox(cursor.page) : null;
+  if (!segment || !box) return 0;
+  const { start, end } = segmentSpan(segment);
+  return ((end - start) * box.height) / (segmentSeconds(segment) * 1000);
+}
+
+function segmentSeconds(segment) {
+  return Math.max(0.5, (segment.words / Math.max(1, pdfSession.wpm)) * 60);
+}
+
+function glideMs(distance, view) {
+  return Math.max(GLIDE_MIN_MS, Math.min(GLIDE_MAX_MS, (distance / Math.max(1, view.clientHeight)) * 450));
+}
+
 // Moves the cursor to `next` and the camera after it: a zoom if the segment
 // wants one, a glide if the camera has somewhere to go, or nothing.
 function moveCursorTo(next, { glide = true } = {}) {
   const view = el.documentView;
+  const previous = pdfSession.cursor;
   pdfSession.cursor = next;
   pathFor(next.page + 1);
   const segment = segmentAt(next);
@@ -584,13 +761,42 @@ function moveCursorTo(next, { glide = true } = {}) {
   const distance = Math.hypot(camera.top - view.scrollTop, camera.left - view.scrollLeft);
   if (!glide || distance < 4 || pdfTpReducedMotion()) {
     pdfSession.glide = null;
-    writeScroll(view, camera.top, camera.left);
+    writeScroll(view, camera.top, camera.left, { fine: true });
     placePdfBand();
     return;
   }
-  const ms = Math.max(GLIDE_MIN_MS, Math.min(GLIDE_MAX_MS, (distance / Math.max(1, view.clientHeight)) * 450));
-  pdfSession.glide = { fromTop: view.scrollTop, fromLeft: view.scrollLeft, start: performance.now(), ms };
+  const ms = glideMs(distance, view);
+  const fromTop = view.scrollTop + pdfSession.subPixel.top;
+  const fromLeft = view.scrollLeft + pdfSession.subPixel.left;
+  // Carrying on down the same column: leave at the speed the text was going
+  // and arrive at the speed of what comes next, the band kept up.
+  const rise = camera.top - fromTop;
+  if (previous && rise > 0 && Math.abs(camera.left - fromLeft) < 4) {
+    // Held where a cubic Hermite curve cannot overshoot (α² + β² ≤ 9).
+    const limit = (2 * rise) / ms;
+    pdfSession.glide = {
+      fromTop, fromLeft, start: performance.now(), ms, carry: true,
+      v0: Math.min(limit, segmentVelocity(previous) * pdfSession.ease),
+      v1: Math.min(limit, segmentVelocity(next))
+    };
+    return;
+  }
+  pdfSession.glide = { fromTop, fromLeft, start: performance.now(), ms };
   setGliding(true);
+}
+
+function easeInOut(x) {
+  return x < 0.5 ? 2 * x * x : 1 - (-2 * x + 2) ** 2 / 2;
+}
+
+// Where a glide has the view at `progress` (0–1) of the way.
+function glideTop(glide, to, progress) {
+  if (!glide.carry) return glide.fromTop + (to - glide.fromTop) * easeInOut(progress);
+  const p = progress;
+  const p2 = p * p;
+  const p3 = p2 * p;
+  return (2 * p3 - 3 * p2 + 1) * glide.fromTop + (p3 - 2 * p2 + p) * glide.ms * glide.v0
+    + (-2 * p3 + 3 * p2) * to + (p3 - p2) * glide.ms * glide.v1;
 }
 
 // ── The frame ───────────────────────────────────────────────────────────────
@@ -605,12 +811,26 @@ function stopFrames() {
   if (pdfSession) {
     pdfSession.frame = 0;
     pdfSession.lastFrameAt = 0;
+    clearPdfSubPixel(el.documentView);
   }
   setDocumentAutoScrolling(false);
 }
 
-function easeInOut(x) {
-  return x < 0.5 ? 2 * x * x : 1 - (-2 * x + 2) ** 2 / 2;
+function stepGlide(view, now) {
+  const glide = pdfSession.glide;
+  const camera = cameraFor(pdfSession.cursor);
+  const progress = Math.min(1, (now - glide.start) / glide.ms);
+  if (camera) {
+    writeScroll(view,
+      glideTop(glide, camera.top, progress),
+      glide.fromLeft + (camera.left - glide.fromLeft) * easeInOut(progress),
+      { fine: true });
+  }
+  if (progress >= 1) {
+    pdfSession.glide = null;
+    setGliding(false);
+    placePdfBand();
+  }
 }
 
 function pdfFrame(now) {
@@ -618,6 +838,7 @@ function pdfFrame(now) {
   if (!pdfSession || !view) return;
   pdfSession.frame = 0;
   if (!sessionStillOpen() || !surfaceShowsSession() || document.hidden) {
+    clearPdfSubPixel(view);
     setDocumentAutoScrolling(false);
     watchPdfTeleprompter();
     return;
@@ -634,6 +855,7 @@ function pdfFrame(now) {
   }
   // A zoom is landing, or a pinch is under way: stand still.
   if (pdfSession.holding || documentPinchEngaged()) {
+    clearPdfSubPixel(view);
     setDocumentAutoScrolling(false);
     schedulePdfFrame();
     return;
@@ -676,25 +898,12 @@ function pdfFrame(now) {
   }
   setDocumentAutoScrolling(true);
   if (pdfSession.glide) {
-    const glide = pdfSession.glide;
-    const camera = cameraFor(pdfSession.cursor);
-    const progress = Math.min(1, (now - glide.start) / glide.ms);
-    const eased = easeInOut(progress);
-    if (camera) {
-      writeScroll(view,
-        glide.fromTop + (camera.top - glide.fromTop) * eased,
-        glide.fromLeft + (camera.left - glide.fromLeft) * eased);
-    }
-    if (progress >= 1) {
-      pdfSession.glide = null;
-      setGliding(false);
-      placePdfBand();
-    }
+    stepGlide(view, now);
     schedulePdfFrame();
     return;
   }
   // Through the segment at the speed set: its words at so many a minute.
-  const seconds = Math.max(0.5, (segment.words / Math.max(1, pdfSession.wpm)) * 60);
+  const seconds = segmentSeconds(segment);
   pdfSession.cursor.t = Math.min(1, pdfSession.cursor.t + (pdfSession.ease * dt) / seconds);
   if (pdfSession.cursor.t >= 1 && pdfSession.phase === "playing") {
     const next = nextCursor(pdfSession.cursor);
@@ -706,13 +915,20 @@ function pdfFrame(now) {
     }
     if (next) {
       moveCursorTo(next);
+      // A glide's first step is taken in this frame, on the frame's own clock,
+      // as though it had begun with it: a frame that stood still here was a
+      // stop at every page turn.
+      if (pdfSession.glide && !pdfSession.holding) {
+        pdfSession.glide.start = now - dt * 1000;
+        stepGlide(view, now);
+      }
       schedulePdfFrame();
       return;
     }
     // The next page's path is still being built: wait at the end of this one.
   }
   const camera = cameraFor(pdfSession.cursor);
-  if (camera) writeScroll(view, camera.top, camera.left);
+  if (camera) writeScroll(view, camera.top, camera.left, { fine: true });
   schedulePdfFrame();
 }
 
@@ -726,7 +942,7 @@ async function holdPdfScreenAwake() {
   try {
     const lock = await navigator.wakeLock.request("screen");
     owner.wakeRequested = false;
-    if (pdfSession !== owner || owner.phase !== "playing" || !owner.settings.wake) {
+    if (pdfSession !== owner || (owner.phase !== "playing" && owner.phase !== "manual") || !owner.settings.wake) {
       lock.release?.().catch?.(() => {});
       return;
     }
@@ -750,33 +966,94 @@ function letPdfScreenSleep() {
 const PDF_TP_STATUS_TEXT = {
   countdown: "Starting",
   paused: "Paused",
-  ended: "End of the PDF"
+  ended: "End of the PDF",
+  manual: "Scrolling by hand"
 };
 
-// The words still to come: the rest of this page's path, and every page after
-// it at the average of the pages whose paths are known.
-function wordsLeft() {
-  const cursor = pdfSession?.cursor;
-  if (!cursor || !openPdf) return 0;
-  const path = pathFor(cursor.page);
-  if (!path) return 0;
-  let words = 0;
-  path.segments.forEach((segment, index) => {
-    if (index > cursor.index) words += segment.words;
-    else if (index === cursor.index) words += segment.words * (1 - cursor.t);
-  });
-  const known = [];
-  pathCache(pdfSession.pdf).forEach((value, key) => {
-    if (!value.then && key.endsWith(`:${pdfSession.settings.columns}`)) known.push(pathWords(value));
-  });
-  const average = known.length ? known.reduce((sum, value) => sum + value, 0) / known.length : 0;
-  return words + average * Math.max(0, openPdf.pageCount - cursor.page);
+// ── The time left ───────────────────────────────────────────────────────────
+//
+// What the loop will spend from here, worked out the way it spends it: each
+// segment its words at the speed set, never under half a second; each move
+// from one segment to the next the glide it takes; each change between a
+// column and the full width, a zoom. Every page ahead is counted from its own
+// reading path — read in the background (readAheadWhenIdle) — and only a page
+// not read yet, or a scan whose path is a picture not drawn yet, is taken at
+// the average of the pages that are.
+
+// The room between two pages (.pdf-pages' gap).
+const PAGE_GAP_PX = 16;
+
+function transitionMs(from, to, box, view, nextPage) {
+  if (pdfSession.settings.zoomColumn && (from.kind === "column") !== (to.kind === "column")) return ZOOM_LANDING_MS;
+  const leave = segmentSpan(from).end;
+  const arrive = segmentSpan(to).start;
+  const dy = nextPage ? (1 - leave + arrive) * box.height + PAGE_GAP_PX : Math.abs(arrive - leave) * box.height;
+  const dx = Math.abs((from.x0 + from.x1 - to.x0 - to.x1) / 2) * box.width;
+  const distance = Math.hypot(dx, dy);
+  return distance < 4 || pdfTpReducedMotion() ? 0 : glideMs(distance, view);
+}
+
+// A path from segment `fromIndex`, `fromT` of the way through it, to its end.
+function pathMs(path, fromIndex, fromT, box, view) {
+  const segments = path.segments;
+  let ms = 0;
+  for (let index = fromIndex; index < segments.length; index += 1) {
+    ms += segmentSeconds(segments[index]) * 1000 * (index === fromIndex ? 1 - fromT : 1);
+    if (index + 1 < segments.length) ms += transitionMs(segments[index], segments[index + 1], box, view, false);
+  }
+  return ms;
+}
+
+function pdfTimeLeftMs() {
+  const session = pdfSession;
+  if (!session || session.phase === "ended") return null;
+  // By hand: the reader's own speed, as the progress row reckons it.
+  if (session.phase === "manual") return readingTimeLeft()?.leftMs ?? null;
+  const cursor = session.cursor;
+  const view = el.documentView;
+  if (!cursor || !openPdf || !view || !session.wpm) return null;
+  const path = builtPath(cursor.page);
+  const box = tpPageBox(cursor.page);
+  if (!path || !box || !path.segments.length) return null;
+  // A page's time at this speed and this size, kept until either changes.
+  const key = `${session.wpm}|${session.settings.columns}|${session.settings.zoomColumn}|${Math.round(box.height)}|${view.clientHeight}`;
+  if (session.pageMsKey !== key) {
+    session.pageMsKey = key;
+    session.pageMs = new Map();
+  }
+  let ms = pathMs(path, cursor.index, Math.max(0, Math.min(1, cursor.t)), box, view);
+  if (session.glide) ms += Math.max(0, session.glide.ms - (performance.now() - session.glide.start));
+  const known = [pathMs(path, 0, 0, box, view)];
+  let last = path.segments[path.segments.length - 1];
+  let unknown = 0;
+  for (let n = cursor.page + 1; n <= openPdf.pageCount; n += 1) {
+    const ahead = builtPath(n);
+    if (!ahead) {
+      unknown += 1;
+      last = null;
+      continue;
+    }
+    if (!ahead.segments.length) continue;
+    let pageMs = session.pageMs.get(n);
+    if (pageMs === undefined) {
+      pageMs = pathMs(ahead, 0, 0, box, view);
+      session.pageMs.set(n, pageMs);
+    }
+    ms += pageMs + (last ? transitionMs(last, ahead.segments[0], box, view, true) : 0);
+    known.push(pageMs);
+    last = ahead.segments[ahead.segments.length - 1];
+  }
+  if (unknown) {
+    const average = known.reduce((sum, value) => sum + value, 0) / known.length;
+    ms += unknown * (average + glideMs(box.height * 0.15, view));
+  }
+  return ms;
 }
 
 function pdfTimeLeftText() {
-  const words = wordsLeft();
-  if (!(words > 0) || !pdfSession.wpm) return "";
-  return `≈ ${formatDuration((words / pdfSession.wpm) * 60000, { short: true })} left`;
+  const ms = pdfTimeLeftMs();
+  if (!(ms > 0)) return "";
+  return `≈ ${formatDuration(ms, { short: true })} left`;
 }
 
 function paintPdfTeleprompter() {
@@ -854,7 +1131,14 @@ export function startPdfTeleprompter() {
     tucked: false,
     wakeLock: null,
     wakeRequested: false,
-    resizeObserver: null
+    resizeObserver: null,
+    subPixel: { on: false, top: 0, left: 0 },
+    pageMs: new Map(),
+    pageMsKey: "",
+    readingAhead: false,
+    manualFrame: 0,
+    manualSettle: 0,
+    wasAway: false
   };
   ensureTeleprompterPanel(stage, pdfPanelHandlers, "pdf");
   stage.classList.add("is-teleprompter");
@@ -878,7 +1162,9 @@ export function startPdfTeleprompter() {
   }
   pdfSession.watchTimer = setInterval(watchPdfTeleprompter, PDF_TP_WATCH_MS);
   paintPdfTeleprompterToggles();
-  beginCountdown();
+  readAheadWhenIdle();
+  if (settings.scroll === "manual") enterPdfManual();
+  else beginCountdown();
   return true;
 }
 
@@ -952,7 +1238,9 @@ function restoreWhenShown(ending) {
 // The zoom the position save writes down is the reader's, not the column's —
 // see setDocumentReaderZoomHook in pdf-view.js.
 function readerZoomFor(pdf) {
-  if (pdfSession && pdfSession.pdf === pdf) return { scale: pdfSession.baseScale, fitWidth: pdfSession.baseFitWidth };
+  if (pdfSession && pdfSession.pdf === pdf) {
+    return pdfSession.phase === "manual" ? null : { scale: pdfSession.baseScale, fitWidth: pdfSession.baseFitWidth };
+  }
   if (pendingRestore && pendingRestore.pdf === pdf) return { scale: pendingRestore.scale, fitWidth: pendingRestore.fitWidth };
   return null;
 }
@@ -966,8 +1254,14 @@ export function exitPdfTeleprompter({ land = true } = {}) {
   clearInterval(ending.watchTimer);
   clearInterval(ending.countdownTimer);
   stopFrames();
+  stopFollowingManualScroll();
   letPdfScreenSleep();
   ending.resizeObserver?.disconnect();
+  // By hand, the zoom on screen is the reader's own, and it stays.
+  if (ending.phase === "manual" && openPdf === ending.pdf) {
+    ending.baseScale = openPdf.scale;
+    ending.baseFitWidth = Boolean(openPdf.fitWidth);
+  }
   // The line on the band, as a point on its page, before anything moves.
   let anchor = null;
   const canLand = land && view && openPdf === ending.pdf && surfaceShowsSession();
@@ -1103,7 +1397,7 @@ export function pausePdfTeleprompter(reason = "button") {
 }
 
 export function resumePdfTeleprompter() {
-  if (!pdfSession) return;
+  if (!pdfSession || pdfSession.phase === "manual") return;
   if (pdfSession.phase === "ended") {
     restartPdfTeleprompter();
     return;
@@ -1131,9 +1425,98 @@ function finishPdfTeleprompter() {
 }
 
 function togglePlay() {
-  if (!pdfSession) return;
+  if (!pdfSession || pdfSession.phase === "manual") return;
   if (pdfSession.phase === "playing") pausePdfTeleprompter("button");
   else resumePdfTeleprompter();
+}
+
+// ── By hand ─────────────────────────────────────────────────────────────────
+
+function enterPdfManual() {
+  const session = pdfSession;
+  if (!session) return;
+  clearInterval(session.countdownTimer);
+  session.countdownTimer = 0;
+  stopFrames();
+  session.ease = 0;
+  session.landing = false;
+  if (session.glide) {
+    session.glide = null;
+    setGliding(false);
+  }
+  session.phase = "manual";
+  session.pauseReason = null;
+  session.resumeProgress = null;
+  el.documentView?.addEventListener("scroll", followManualScroll, { passive: true });
+  followManualScroll();
+  holdPdfScreenAwake();
+  paintPdfTeleprompter();
+}
+
+// Back to "By itself", paused, from the line under the band: ▶ to press, and
+// the column zoom only once it plays.
+function leavePdfManual() {
+  const session = pdfSession;
+  if (!session || session.phase !== "manual") return;
+  stopFollowingManualScroll();
+  session.phase = "paused";
+  session.pauseReason = "button";
+  session.cursor = null;
+  session.appliedScale = openPdf?.scale || session.appliedScale;
+  session.baseScale = openPdf?.scale || session.baseScale;
+  session.baseFitWidth = Boolean(openPdf?.fitWidth);
+  session.columnScale = 0;
+  session.lastInputAt = performance.now();
+  letPdfScreenSleep();
+  paintPdfTeleprompter();
+}
+
+function applyPdfScrollMode() {
+  if (!pdfSession) return;
+  if (pdfSession.settings.scroll === "manual") {
+    if (pdfSession.phase !== "manual") enterPdfManual();
+  } else {
+    leavePdfManual();
+  }
+}
+
+function stopFollowingManualScroll() {
+  el.documentView?.removeEventListener("scroll", followManualScroll);
+  if (!pdfSession) return;
+  if (pdfSession.manualFrame) cancelAnimationFrame(pdfSession.manualFrame);
+  clearTimeout(pdfSession.manualSettle);
+  pdfSession.manualFrame = 0;
+  pdfSession.manualSettle = 0;
+}
+
+// The band onto the column under it, once a frame at most. A page whose path
+// is not built yet keeps the band as it was until the scroll has settled.
+function followManualScroll() {
+  const session = pdfSession;
+  if (!session || session.phase !== "manual" || session.manualFrame) return;
+  session.manualFrame = requestAnimationFrame(() => {
+    session.manualFrame = 0;
+    if (pdfSession !== session || session.phase !== "manual") return;
+    const view = el.documentView;
+    if (!view || !openPdf || !surfaceShowsSession()) return;
+    const y = view.scrollTop + bandLine(view);
+    const pageNumber = pageUnderLine(view, y);
+    const box = tpPageBox(pageNumber);
+    const path = builtPath(pageNumber);
+    clearTimeout(session.manualSettle);
+    if (!path) {
+      session.manualSettle = setTimeout(() => {
+        if (pdfSession === session && session.phase === "manual") pathFor(pageNumber);
+      }, MANUAL_PATH_SETTLE_MS);
+      return;
+    }
+    if (!box) return;
+    const fy = (y - box.top) / Math.max(1, box.height);
+    const fx = (view.scrollLeft + view.clientWidth / 2 - box.left) / Math.max(1, box.width);
+    const found = cursorOnPage(pageNumber, path, fx, fy);
+    if (found) session.cursor = found;
+    placePdfBand();
+  });
 }
 
 // ── While it is open ────────────────────────────────────────────────────────
@@ -1156,6 +1539,23 @@ function watchPdfTeleprompter() {
   // is not on screen any more.
   if (!sessionStillOpen()) {
     exitPdfTeleprompter({ land: false });
+    return;
+  }
+  if (pdfSession.phase === "manual") {
+    if (!surfaceShowsSession() || document.hidden) {
+      if (!pdfSession.wasAway) letPdfScreenSleep();
+      pdfSession.wasAway = true;
+      return;
+    }
+    // Back from another tab or the background, where the browser let go of
+    // the screen lock: asked for once again.
+    if (pdfSession.wasAway) {
+      pdfSession.wasAway = false;
+      holdPdfScreenAwake();
+      followManualScroll();
+    }
+    pdfSession.tucked = readerBusy();
+    paintPdfTeleprompter();
     return;
   }
   if (!surfaceShowsSession()) {
@@ -1245,9 +1645,13 @@ function setPdfTeleprompterSetting(key, value, { commit = true } = {}) {
       pdfSession.cursor = null;
       pdfSession.glide = null;
       pathFor(Math.max(1, currentDocumentPage() || 1));
-      schedulePdfFrame();
+      readAheadWhenIdle();
+      if (pdfSession.phase === "manual") followManualScroll();
+      else schedulePdfFrame();
     }
-    if (key === "zoomColumn" && before !== next) {
+    if (key === "scroll" && before !== next) applyPdfScrollMode();
+    // By hand the zoom is the reader's: the setting waits for "By itself".
+    if (key === "zoomColumn" && before !== next && pdfSession.phase !== "manual") {
       pdfSession.columnScale = 0;
       const segment = currentSegment();
       if (segment && pdfSession.cursor) {
@@ -1290,7 +1694,9 @@ function resetPdfTeleprompterSettings() {
   pdfSession.columnScale = 0;
   sizeRunway();
   placePdfBand();
-  schedulePdfFrame();
+  readAheadWhenIdle();
+  applyPdfScrollMode();
+  if (pdfSession.phase !== "manual") schedulePdfFrame();
 }
 
 // ── Input ───────────────────────────────────────────────────────────────────
@@ -1334,6 +1740,8 @@ function onPdfTeleprompterKey(event) {
     event.preventDefault();
     fn();
   };
+  // By hand, Space and ↑ ↓ scroll the PDF as they always do.
+  if (pdfSession.phase === "manual" && [" ", "Spacebar", "ArrowUp", "ArrowDown"].includes(event.key)) return;
   switch (event.key) {
     case " ":
     case "Spacebar":
