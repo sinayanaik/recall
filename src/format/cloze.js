@@ -2,6 +2,7 @@
 
 import { notifyHighlightsChanged } from "./highlight-edit.js?v=__BUILD__";
 import { locateSelectionInSource, renderedSelectionStrings } from "./locate-selection.js?v=__BUILD__";
+import { dropMarkerOnlyLine, eraseSourceRange, sourceGuessForSelection, sourceRangeForSelection, tidyBlankLinesAt, wholeEntities } from "./source-blocks.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
 
@@ -98,13 +99,34 @@ export function tidyErasedSeam(before, after) {
 // with a selection that starts mid-paragraph-1 and ends mid-paragraph-3, and it
 // is what this app's own raw editor already did.
 export function eraseSelectionFromSource(source, sel) {
+  // Placed by its two ends when the render cache can vouch for them (see
+  // src/format/source-blocks.js) — and then a selection that takes a line's
+  // whole text takes its marker too, so a deleted heading, bullet, task or
+  // quote leaves no stray "## ", "- " or "> " behind.
+  const placed = sel?.range ? sourceRangeForSelection(source, sel, { lines: true }) : null;
+  if (placed) return eraseSourceRange(source, placed.idx, placed.end, placed);
   // fuzzy: the eraser REMOVES the whole match, markers included, so the
   // block-boundary concern that keeps cloze/colour on strict matching doesn't
   // apply — and without it a selection spanning list items (padded "-   "
   // markers, "*" bullets, ordered numbers) could never be found, which is
   // exactly the "delete does nothing on bullet points" case.
-  const loc = locateSelectionInSource(source, sel, { fuzzy: true, boundedFuzzy: true });
-  if (!loc) return null;
+  const found = locateSelectionInSource(source, sel, { fuzzy: true, boundedFuzzy: true });
+  if (!found) return null;
+  // The search matches what a reader sees, so it can end on the "&" of an
+  // "&amp;"; never leave the "amp;" of one behind.
+  const ends = wholeEntities(source, found.idx, found.end);
+  const loc = { idx: ends.start, end: ends.end, needle: source.slice(ends.start, ends.end) };
+  const erased = eraseLocatedMatch(source, loc);
+  // The text search only ever finds words, so a line it emptied still has its
+  // marker; take that away too.
+  const dropped = dropMarkerOnlyLine(erased, Math.min(loc.idx, erased.length));
+  return dropped.text === erased ? erased : tidyBlankLinesAt(dropped.text, Math.min(dropped.at, dropped.text.length));
+}
+
+// Splice a match the text search found out of the source — the eraser's
+// fallback, for a selection the render cache cannot place (a surface with no
+// cache, a note repainted underneath the selection).
+export function eraseLocatedMatch(source, loc) {
   const { idx, end, needle } = loc;
   const before = source.slice(0, idx);
   const after = source.slice(end);
@@ -149,7 +171,7 @@ export function eraseSelectionFromSource(source, sel) {
 // splices the selection OUT of the source instead of wrapping it. Runs against
 // whichever rendered face the selection is in (notes, question or answer —
 // renderTargetConfig handles all three).
-export function eraseNotesSelection({ view, label, getSource, setSource, rerender }, selOverride = null) {
+export function eraseNotesSelection({ view, label, getSource, setSource, rerender, openEditorAt }, selOverride = null) {
   const sel = selOverride || renderedSelectionStrings(view);
   if (!sel) {
     showToast(`Select some text in the ${label} first, then tap the eraser to delete it.`, "error");
@@ -157,6 +179,14 @@ export function eraseNotesSelection({ view, label, getSource, setSource, rerende
   }
   const result = eraseSelectionFromSource(getSource(), sel);
   if (result == null) {
+    // Nothing is deleted on a guess. The reader is taken to where the selection
+    // most likely is in the raw editor, with that much selected, and decides.
+    const guess = typeof openEditorAt === "function" ? sourceGuessForSelection(getSource(), sel) : null;
+    if (guess && openEditorAt(guess.start, guess.end)) {
+      window.getSelection()?.removeAllRanges();
+      showToast("Couldn't place that selection exactly — opened the editor there, so you can delete it yourself", "info");
+      return;
+    }
     showToast("Couldn't match that selection in the source — try selecting whole words, or use the raw editor.", "error");
     return;
   }
