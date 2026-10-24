@@ -205,9 +205,9 @@ function buildTeleprompterBar(kind) {
   const left = tpNode("span", "tp-left");
   readout.append(wpm, left);
   speed.append(
-    tpButton("tp-slower", "slower", "Slower (↓)", "−"),
+    tpButton("tp-slower", "slower", "Slower (Shift+↓)", "−"),
     readout,
-    tpButton("tp-faster", "faster", "Faster (↑)", "+")
+    tpButton("tp-faster", "faster", "Faster (Shift+↑)", "+")
   );
 
   // A PDF's type is the page's own; zooming is the pager's and the column's.
@@ -266,8 +266,28 @@ function flushSliderPreview() {
   if (pending && teleprompterPanel) teleprompterPanel.handlers.setting(pending.key, pending.value, { commit: false });
 }
 
+// ── Giving the keyboard back ────────────────────────────────────────────────
+//
+// A control the reader pressed or dragged with a mouse or a pen keeps the
+// keyboard's focus, and the keys then went to IT: ↑ after dragging the Size
+// slider made the type bigger instead of moving the text, and Space after A+
+// pressed A+ again. So once a pointer has used a control, the focus is let go
+// and the keys come back to the text (the teleprompter's own key handler).
+// Someone who reached the control with Tab keeps it — the keys are theirs.
+
+function letGoOfFocus(node) {
+  if (node && document.activeElement === node) node.blur();
+}
+
 function onSheetInput(event, commit) {
   if (!teleprompterPanel) return;
+  // A number typed and taken (Enter, or leaving the box) is done with. (A
+  // slider a pointer moved lets go when the pointer does — see the sheet's
+  // pointerdown.)
+  if (commit) {
+    const box = event.target.closest?.("[data-tp-number]");
+    if (box) queueMicrotask(() => letGoOfFocus(box));
+  }
   const slider = event.target.closest?.("[data-tp-range]");
   if (slider) {
     const key = slider.dataset.tpRange;
@@ -298,6 +318,12 @@ function onSheetInput(event, commit) {
 function onPanelClick(event) {
   if (!teleprompterPanel) return;
   wakeTeleprompterBar();
+  // A click from a pointer (detail > 0; Enter and Space on a focused button
+  // give 0) leaves no focus behind on the button — see letGoOfFocus.
+  if (event.detail > 0) {
+    const clickedButton = event.target.closest?.("button");
+    if (clickedButton) queueMicrotask(() => letGoOfFocus(clickedButton));
+  }
   const step = event.target.closest("[data-tp-step]");
   if (step) {
     const key = step.dataset.tpStep;
@@ -349,6 +375,14 @@ export function ensureTeleprompterPanel(stage, handlers, kind = "notes") {
   sheetNode.addEventListener("click", onPanelClick);
   sheetNode.addEventListener("input", (event) => onSheetInput(event, false));
   sheetNode.addEventListener("change", (event) => onSheetInput(event, true));
+  // A slider pressed or dragged lets go of the focus when the pointer comes
+  // up, wherever it comes up — after the slider's own change has landed.
+  sheetNode.addEventListener("pointerdown", (event) => {
+    const slider = event.target.closest?.("[data-tp-range]");
+    if (!slider) return;
+    const release = () => setTimeout(() => letGoOfFocus(slider), 0);
+    document.addEventListener("pointerup", release, { once: true, capture: true });
+  }, { capture: true });
   // The bar comes back to full strength the moment a pointer or the keyboard
   // is near it; CSS does the same for :hover and :focus-within, this re-arms
   // the fade so it does not drop away again under a finger about to press.

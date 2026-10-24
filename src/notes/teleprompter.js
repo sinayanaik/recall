@@ -75,6 +75,9 @@ import { readSpeedModel, speedFor, speedMeasured } from "../stats/reading-speed.
 import { isAdjustHandlesOpen } from "../ui/adjust-handles.js?v=__BUILD__";
 import { isFocusModeActive, setFocusMode } from "../ui/chrome.js?v=__BUILD__";
 import { anyModalOpen } from "../ui/overlays.js?v=__BUILD__";
+import {
+  WHEEL_LINES, glideScrollTo, isNotchedWheel, lineMiddlesBetween, pendingGlidePx, stopGlide, wheelNotches
+} from "./band-steps.js?v=__BUILD__";
 import { isHighlightNoteEditorOpen } from "./highlight-note-editor.js?v=__BUILD__";
 import { isMarkMenuOpen } from "./mark-menu.js?v=__BUILD__";
 import { isNotesHeadMoreOpen } from "./notes-head-overflow.js?v=__BUILD__";
@@ -952,6 +955,7 @@ export function startTeleprompter() {
     teleprompterSession.resizeObserver.observe(view);
   }
   teleprompterSession.watchTimer = setInterval(watchTeleprompter, WATCH_MS);
+  view.addEventListener("wheel", onTeleprompterWheel, { passive: false });
   paintTeleprompterToggles();
   if (settings.scroll === "manual") enterManualTeleprompter();
   else beginTeleprompterCountdown();
@@ -969,6 +973,8 @@ export function exitTeleprompter({ land = true } = {}) {
   stopTeleprompterFrames();
   letScreenSleep();
   ending.resizeObserver?.disconnect();
+  view?.removeEventListener("wheel", onTeleprompterWheel);
+  if (view) stopGlide(view);
   const canLand = land && view && isDisplayed(view) && !isNotesEditing();
   const anchor = canLand ? measureLineAnchor(view, bandLineY(view)) : null;
   // Ended while the note is out of sight (the PDF's teleprompter taking the
@@ -1238,17 +1244,127 @@ function changeTeleprompterSize(delta) {
   setTeleprompterSetting("fontSize", teleprompterSession.fontSize + delta, { commit: true });
 }
 
-function nudgeTeleprompter(lines) {
+// ── Steps by the line ───────────────────────────────────────────────────────
+//
+// ↑ ↓ ← →, the page keys and a mouse wheel's clicks (src/notes/band-steps.js):
+// so many of the note's own lines, ending with one on the band. A line is on
+// the band when its middle is where the band's first whole line has its
+// middle — the band's top, plus half of whatever it has over its whole lines,
+// plus half a line.
+
+function bandSlotMiddle(view) {
+  const geometry = bandGeometry(view);
+  const whole = Math.max(1, Math.floor(teleprompterSession.settings.bandSize));
+  return {
+    line: geometry.line,
+    mid: view.getBoundingClientRect().top + geometry.bandTop
+      + Math.max(0, (geometry.bandHeight - whole * geometry.line) / 2) + geometry.line / 2
+  };
+}
+
+// Down the left edge of the text under the band, where every line starts —
+// a short last line of a paragraph does not reach the middle.
+function lineProbeX(view, y) {
+  const block = notesBlockAtReadingLineGeometric(y);
+  const box = (block && view.contains(block) ? block : view).getBoundingClientRect();
+  return box.left + Math.min(6, Math.max(1, box.width / 4));
+}
+
+// The scrollTop that puts the `lines`-th line after (or, negative, before)
+// the one on the band onto the band — counted from where a glide under way is
+// going. 0 lines is the nearest line. A step past what is on screen is taken
+// at the line height, and set right when it lands (alignTeleprompterToBand).
+function teleprompterStepTarget(view, lines) {
+  const { line, mid } = bandSlotMiddle(view);
+  const pending = pendingGlidePx(view);
+  const at = mid + pending;
+  const box = view.getBoundingClientRect();
+  const x = lineProbeX(view, mid);
+  let delta = pending + lines * line;
+  if (lines > 0) {
+    const middles = lineMiddlesBetween(x, at + 2, box.top + view.clientHeight - 2, line);
+    if (middles.length >= lines) delta = middles[lines - 1] - mid;
+  } else if (lines < 0) {
+    // From the top of the screen: a gap between paragraphs can be taller than
+    // the lines it is counted in.
+    const middles = lineMiddlesBetween(x, box.top + 1, at - 2, line);
+    if (middles.length >= -lines) delta = middles[middles.length + lines] - mid;
+  } else {
+    const middles = lineMiddlesBetween(x, mid - line * 0.75, mid + line * 0.75, line);
+    if (!middles.length) return view.scrollTop;
+    delta = middles.reduce((best, middle) => (Math.abs(middle - mid) < Math.abs(best - mid) ? middle : best)) - mid;
+  }
+  return Math.max(0, Math.min(view.scrollHeight - view.clientHeight, view.scrollTop + delta));
+}
+
+function alignTeleprompterToBand() {
+  const view = el.notesView;
+  if (!teleprompterSession || !view || teleprompterSession.phase === "playing") return;
+  const target = teleprompterStepTarget(view, 0);
+  if (Math.abs(target - view.scrollTop) >= 1) glideScrollTo(view, target);
+}
+
+// Playing, the step is made at once and the loop carries on from it, as it
+// follows any other move; otherwise it glides.
+function stepTeleprompterLines(lines) {
   const view = el.notesView;
   if (!teleprompterSession || !view) return;
-  markProgrammaticNotesScroll();
-  view.scrollTop = Math.max(0, view.scrollTop + lines * teleprompterLineHeight(view));
-  resyncPosition();
+  const target = teleprompterStepTarget(view, lines);
+  if (teleprompterSession.phase === "playing" || teleprompterSession.phase === "countdown") {
+    stopGlide(view);
+    markProgrammaticNotesScroll();
+    view.scrollTop = target;
+    resyncPosition();
+  } else {
+    glideScrollTo(view, target);
+  }
   if (teleprompterSession.phase === "ended" && lines < 0) {
     teleprompterSession.phase = "paused";
     teleprompterSession.pauseReason = "button";
     paintTeleprompter();
   }
+}
+
+// A screen, less two lines so the eye has somewhere to pick up from: the last
+// line on screen comes to the band going down. Going up, the lines it lands on
+// are not drawn yet to count, so it is a screen's height, set onto the band
+// once it is there.
+function pageTeleprompter(direction) {
+  const view = el.notesView;
+  if (!teleprompterSession || !view) return;
+  if (teleprompterSession.phase === "playing" || teleprompterSession.phase === "countdown") pauseTeleprompter("reader");
+  const { line, mid } = bandSlotMiddle(view);
+  const box = view.getBoundingClientRect();
+  if (direction > 0) {
+    const at = mid + pendingGlidePx(view);
+    const middles = lineMiddlesBetween(lineProbeX(view, mid), at + 2, box.top + view.clientHeight - line, line);
+    if (middles.length) {
+      glideScrollTo(view, view.scrollTop + middles[middles.length - 1] - mid);
+      return;
+    }
+  }
+  const jump = Math.max(line, view.clientHeight - 2 * line);
+  glideScrollTo(view, view.scrollTop + pendingGlidePx(view) + direction * jump, { done: alignTeleprompterToBand });
+}
+
+function jumpTeleprompterTo(end) {
+  const view = el.notesView;
+  if (!teleprompterSession || !view) return;
+  if (teleprompterSession.phase === "playing" || teleprompterSession.phase === "countdown") pauseTeleprompter("reader");
+  stopGlide(view);
+  view.scrollTop = end ? view.scrollHeight - view.clientHeight : 0;
+}
+
+// A click of a mouse wheel over the note: whole lines onto the band. Only
+// while a session is open (added and taken off with it), so the note's
+// ordinary scrolling keeps its passive listeners. A trackpad, and anything
+// else the wheel test is not sure of, scrolls as the browser does.
+function onTeleprompterWheel(event) {
+  if (!teleprompterSession || !isNotchedWheel(event) || teleprompterPanelContains(event.target)) return;
+  event.preventDefault();
+  // A press of the wheel while it plays has already paused it (onReaderWheel,
+  // in the capture phase), so this glides.
+  stepTeleprompterLines(wheelNotches(event) * WHEEL_LINES);
 }
 
 function onTeleprompterAction(name) {
@@ -1390,31 +1506,37 @@ function onTeleprompterKey(event) {
     event.preventDefault();
     fn();
   };
-  // By hand, Space and ↑ ↓ are the browser's own scrolling again; ← → still
-  // step two lines and the size keys still size.
-  if (teleprompterSession.phase === "manual" && [" ", "Spacebar", "ArrowUp", "ArrowDown"].includes(event.key)) return;
+  const manual = teleprompterSession.phase === "manual";
+  // The keys move the note, whatever has the focus: they used to be left to
+  // the browser, which scrolls only the element the keyboard is on — after a
+  // press on the bar, that button, and nothing moved.
   switch (event.key) {
     case " ":
     case "Spacebar":
       // A focused button, link or cloze takes its own Space.
       if (target?.closest?.("button, a, .cloze, [role='button']")) return;
-      act(togglePlayTeleprompter);
+      if (manual) act(() => pageTeleprompter(event.shiftKey ? -1 : 1));
+      else act(togglePlayTeleprompter);
       return;
-    case "ArrowUp": act(() => changeTeleprompterSpeed(TELEPROMPTER_RANGES.wpm.step)); return;
-    case "ArrowDown": act(() => changeTeleprompterSpeed(-TELEPROMPTER_RANGES.wpm.step)); return;
-    case "ArrowLeft": act(() => nudgeTeleprompter(-2)); return;
-    case "ArrowRight": act(() => nudgeTeleprompter(2)); return;
+    // ↑ ↓ a line; with Shift, the speed.
+    case "ArrowUp":
+      if (!event.shiftKey) act(() => stepTeleprompterLines(-1));
+      else if (!manual) act(() => changeTeleprompterSpeed(TELEPROMPTER_RANGES.wpm.step));
+      return;
+    case "ArrowDown":
+      if (!event.shiftKey) act(() => stepTeleprompterLines(1));
+      else if (!manual) act(() => changeTeleprompterSpeed(-TELEPROMPTER_RANGES.wpm.step));
+      return;
+    case "ArrowLeft": act(() => stepTeleprompterLines(-2)); return;
+    case "ArrowRight": act(() => stepTeleprompterLines(2)); return;
     case "+":
     case "=": act(() => changeTeleprompterSize(2)); return;
     case "-":
     case "_": act(() => changeTeleprompterSize(-2)); return;
-    // The browser scrolls for these; the reader has taken the scroller back.
-    case "PageUp":
-    case "PageDown":
-    case "Home":
-    case "End":
-      if (teleprompterSession.phase === "playing" || teleprompterSession.phase === "countdown") pauseTeleprompter("reader");
-      return;
+    case "PageUp": act(() => pageTeleprompter(-1)); return;
+    case "PageDown": act(() => pageTeleprompter(1)); return;
+    case "Home": act(() => jumpTeleprompterTo(false)); return;
+    case "End": act(() => jumpTeleprompterTo(true)); return;
     default:
   }
 }

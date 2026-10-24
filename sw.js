@@ -535,6 +535,7 @@ const APP_SHELL = [
   `./src/library/tombstones.js?v=${STAMP}`,
   `./src/notes/anchor-text.js?v=${STAMP}`,
   `./src/notes/anchors.js?v=${STAMP}`,
+  `./src/notes/band-steps.js?v=${STAMP}`,
   `./src/notes/bookmark-prompt-store.js?v=${STAMP}`,
   `./src/notes/bookmark.js?v=${STAMP}`,
   `./src/notes/caret-line.js?v=${STAMP}`,
