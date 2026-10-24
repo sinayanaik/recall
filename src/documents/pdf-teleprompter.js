@@ -65,6 +65,7 @@ import { isFocusModeActive, setFocusMode } from "../ui/chrome.js?v=__BUILD__";
 import { anyModalOpen } from "../ui/overlays.js?v=__BUILD__";
 import { currentDeckKey } from "../notes/scroll-anchor.js?v=__BUILD__";
 import { onDeckSwap } from "../notes/notes-view.js?v=__BUILD__";
+import { WHEEL_LINES, glideScrollTo, isNotchedWheel, pendingGlidePx, stopGlide, wheelNotches } from "../notes/band-steps.js?v=__BUILD__";
 import { clampToRange, measuredTeleprompterWpm } from "../notes/teleprompter.js?v=__BUILD__";
 import {
   TELEPROMPTER_AUTO_RESUMES, TELEPROMPTER_COLUMNS, TELEPROMPTER_COUNTDOWNS, TELEPROMPTER_RANGES, TELEPROMPTER_SCROLLS,
@@ -1161,6 +1162,7 @@ export function startPdfTeleprompter() {
     pdfSession.resizeObserver.observe(view);
   }
   pdfSession.watchTimer = setInterval(watchPdfTeleprompter, PDF_TP_WATCH_MS);
+  view.addEventListener("wheel", onPdfTeleprompterWheel, { passive: false });
   paintPdfTeleprompterToggles();
   readAheadWhenIdle();
   if (settings.scroll === "manual") enterPdfManual();
@@ -1257,6 +1259,8 @@ export function exitPdfTeleprompter({ land = true } = {}) {
   stopFollowingManualScroll();
   letPdfScreenSleep();
   ending.resizeObserver?.disconnect();
+  view?.removeEventListener("wheel", onPdfTeleprompterWheel);
+  if (view) stopGlide(view);
   // By hand, the zoom on screen is the reader's own, and it stays.
   if (ending.phase === "manual" && openPdf === ending.pdf) {
     ending.baseScale = openPdf.scale;
@@ -1594,20 +1598,121 @@ function changeSpeed(delta) {
   setPdfTeleprompterSetting("wpm", pdfSession.wpm + delta, { commit: true });
 }
 
-// Back or on by a couple of lines: the view moves, and the cursor follows it
-// on the next frame as it follows any other move.
+// ── Steps by the line ───────────────────────────────────────────────────────
+//
+// ↑ ↓ ← →, the page keys and a mouse wheel's clicks, as the note's
+// (src/notes/band-steps.js) — but a PDF's lines are known without looking:
+// the reading path has where each segment starts and how far apart its lines
+// are. A step lands a line of it on the band; one that would leave the
+// segment goes by the line pitch, and the next lands on the first line of the
+// next segment.
+
+function clampTop(view, top) {
+  return Math.max(0, Math.min(view.scrollHeight - view.clientHeight, top));
+}
+
+// The middles of the lines of the column under the band, in the scroller's
+// own px, on this page and the pages either side whose paths are built — down
+// the column the band is on (the cursor's segment), or, before there is one,
+// the middle of the view. In the order they are on screen, which on a page of
+// two columns is not the reading order: a key or a wheel moves the view up or
+// down what is there.
+function pdfLineMiddles(view, pageNumber) {
+  const segment = currentSegment();
+  const middles = [];
+  for (let n = Math.max(1, pageNumber - 1); n <= Math.min(openPdf.pageCount, pageNumber + 1); n += 1) {
+    const box = tpPageBox(n);
+    const path = builtPath(n);
+    if (!box || !path?.segments.length) continue;
+    const fx = segment && pdfSession.cursor?.page === n
+      ? (segment.x0 + segment.x1) / 2
+      : (view.scrollLeft + view.clientWidth / 2 - box.left) / Math.max(1, box.width);
+    let column = path.segments.filter((each) => fx >= each.x0 && fx <= each.x1);
+    if (!column.length) column = path.segments;
+    column.forEach((each) => {
+      const { start, end } = segmentSpan(each);
+      const count = Math.round((end - start) / Math.max(1e-6, each.linePitch));
+      for (let k = 0; k <= count; k += 1) middles.push(box.top + (start + k * each.linePitch) * box.height);
+    });
+  }
+  return middles.sort((a, b) => a - b);
+}
+
+// The scrollTop that puts the `lines`-th line after (negative: before) the one
+// on the band onto it, counted from where a glide under way is going; 0 is the
+// nearest line. Without a path to go by, it is the line pitch.
+function pdfStepTarget(view, lines) {
+  const pending = pendingGlidePx(view);
+  const line = bandLine(view);
+  const y = view.scrollTop + pending + line;
+  const middles = pdfLineMiddles(view, pageUnderLine(view, y));
+  let to = null;
+  if (lines > 0) to = middles.filter((middle) => middle > y + 1)[lines - 1];
+  else if (lines < 0) {
+    const above = middles.filter((middle) => middle < y - 1);
+    to = above[above.length + lines];
+  } else if (middles.length) {
+    to = middles.reduce((best, middle) => (Math.abs(middle - y) < Math.abs(best - y) ? middle : best));
+  }
+  if (to != null) return clampTop(view, to - line);
+  return lines ? clampTop(view, view.scrollTop + pending + lines * pdfPitchPx(view)) : view.scrollTop + pending;
+}
+
+function pdfPitchPx(view) {
+  const segment = currentSegment();
+  const box = pdfSession.cursor ? tpPageBox(pdfSession.cursor.page) : null;
+  return segment && box ? segment.linePitch * box.height : 24;
+}
+
+// Playing, the view moves at once and the cursor follows it on the next frame
+// as it follows any other move; otherwise it glides.
 function nudge(lines) {
   const view = el.documentView;
   if (!pdfSession || !view) return;
-  const segment = currentSegment();
-  const box = pdfSession.cursor ? tpPageBox(pdfSession.cursor.page) : null;
-  const line = segment && box ? segment.linePitch * box.height : 24;
-  view.scrollTop = Math.max(0, view.scrollTop + lines * line);
+  const target = pdfStepTarget(view, lines);
+  if (pdfSession.phase === "playing" || pdfSession.phase === "countdown") {
+    stopGlide(view);
+    view.scrollTop = target;
+  } else {
+    glideScrollTo(view, target);
+  }
   if (pdfSession.phase === "ended" && lines < 0) {
     pdfSession.phase = "paused";
     pdfSession.pauseReason = "button";
   }
   paintPdfTeleprompter();
+}
+
+function alignPdfToBand() {
+  const view = el.documentView;
+  if (!pdfSession || !view || pdfSession.phase === "playing") return;
+  const target = pdfStepTarget(view, 0);
+  if (Math.abs(target - view.scrollTop) >= 1) glideScrollTo(view, target);
+}
+
+// A screen less two lines, set onto the band once it lands.
+function pagePdf(direction) {
+  const view = el.documentView;
+  if (!pdfSession || !view) return;
+  if (pdfSession.phase === "playing" || pdfSession.phase === "countdown") pausePdfTeleprompter("reader");
+  const jump = Math.max(24, view.clientHeight - 2 * pdfPitchPx(view));
+  glideScrollTo(view, view.scrollTop + pendingGlidePx(view) + direction * jump, { done: alignPdfToBand });
+}
+
+function jumpPdfTo(end) {
+  const view = el.documentView;
+  if (!pdfSession || !view) return;
+  if (pdfSession.phase === "playing" || pdfSession.phase === "countdown") pausePdfTeleprompter("reader");
+  stopGlide(view);
+  view.scrollTop = end ? view.scrollHeight - view.clientHeight : 0;
+}
+
+// A click of a mouse wheel over the PDF: whole lines onto the band. Ctrl and
+// a pinch stay the zoom's; a trackpad scrolls as the browser does.
+function onPdfTeleprompterWheel(event) {
+  if (!pdfSession || !isNotchedWheel(event) || teleprompterPanelContains(event.target)) return;
+  event.preventDefault();
+  nudge(wheelNotches(event) * WHEEL_LINES);
 }
 
 function onPdfTeleprompterAction(name) {
@@ -1740,24 +1845,30 @@ function onPdfTeleprompterKey(event) {
     event.preventDefault();
     fn();
   };
-  // By hand, Space and ↑ ↓ scroll the PDF as they always do.
-  if (pdfSession.phase === "manual" && [" ", "Spacebar", "ArrowUp", "ArrowDown"].includes(event.key)) return;
+  const manual = pdfSession.phase === "manual";
+  // The keys move the PDF whatever has the focus, as the note's do.
   switch (event.key) {
     case " ":
     case "Spacebar":
       if (target?.closest?.("button, a, [role='button']")) return;
-      act(togglePlay);
+      if (manual) act(() => pagePdf(event.shiftKey ? -1 : 1));
+      else act(togglePlay);
       return;
-    case "ArrowUp": act(() => changeSpeed(TELEPROMPTER_RANGES.wpm.step)); return;
-    case "ArrowDown": act(() => changeSpeed(-TELEPROMPTER_RANGES.wpm.step)); return;
+    // ↑ ↓ a line; with Shift, the speed.
+    case "ArrowUp":
+      if (!event.shiftKey) act(() => nudge(-1));
+      else if (!manual) act(() => changeSpeed(TELEPROMPTER_RANGES.wpm.step));
+      return;
+    case "ArrowDown":
+      if (!event.shiftKey) act(() => nudge(1));
+      else if (!manual) act(() => changeSpeed(-TELEPROMPTER_RANGES.wpm.step));
+      return;
     case "ArrowLeft": act(() => nudge(-2)); return;
     case "ArrowRight": act(() => nudge(2)); return;
-    case "PageUp":
-    case "PageDown":
-    case "Home":
-    case "End":
-      if (pdfSession.phase === "playing" || pdfSession.phase === "countdown") pausePdfTeleprompter("reader");
-      return;
+    case "PageUp": act(() => pagePdf(-1)); return;
+    case "PageDown": act(() => pagePdf(1)); return;
+    case "Home": act(() => jumpPdfTo(false)); return;
+    case "End": act(() => jumpPdfTo(true)); return;
     default:
   }
 }

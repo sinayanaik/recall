@@ -188,6 +188,12 @@ const ORDER_SRC = `async (pageNumber) => {
   return { order: letters.join(" "), source: path.source, columns: path.columns };
 }`;
 
+// A key through the browser's own input, as a keyboard sends it.
+async function key(keyName, code, keyCode, modifiers = 0) {
+  await page.call("Input.dispatchKeyEvent", { type: "keyDown", key: keyName, code, windowsVirtualKeyCode: keyCode, modifiers });
+  await page.call("Input.dispatchKeyEvent", { type: "keyUp", key: keyName, code, windowsVirtualKeyCode: keyCode, modifiers });
+}
+
 // Sets a number in the ⚙ sheet the way a reader types it: the box, then change.
 const setNumber = (key, value) => page.evaluate(`(key, value) => {
   const box = document.querySelector('#documentStage [data-tp-number="' + key + '"]');
@@ -690,6 +696,52 @@ try {
     if (Math.abs(error) > 0.15) return `said ${(estimate / 1000).toFixed(1)}s left, it took ${(actual / 1000).toFixed(1)}s`;
     await page.evaluate(`() => window.__recall.api.exitPdfTeleprompter()`);
     return null;
+  });
+
+  await check("on a desktop's keys and wheel, a line of the page lands on the band: ↓, a wheel click, ↑", async () => {
+    await page.evaluate(`async () => {
+      const { api, settle } = window.__recall;
+      if (!api.pdfTeleprompterActive()) api.startPdfTeleprompter();
+      await settle(300);
+    }`);
+    await choose("scroll", "manual");
+    await page.evaluate(`() => { const view = document.getElementById("documentView"); view.scrollTop = Math.round(view.scrollHeight * 0.3); }`);
+    await sleep(800);
+    // How far the band is from the nearest line of the segment under it, in px.
+    const look = () => page.evaluate(`() => {
+      const api = window.__recall.api;
+      const s = api.pdfTeleprompterSnapshot();
+      const view = document.getElementById("documentView");
+      if (!s.segment || !s.cursor) return { off: null, top: view.scrollTop, scale: s.scale };
+      const pageEl = document.querySelector('#documentView .pdf-page[data-page-number="' + s.cursor.page + '"]');
+      const height = pageEl.offsetHeight;
+      const y = view.scrollTop + Math.round(view.clientHeight * s.settings.bandPos / 100);
+      const fy = (y - api.pageOffsetTop(pageEl)) / height;
+      const seg = s.segment;
+      const start = Math.min(seg.y0 + seg.linePitch / 2, (seg.y0 + seg.y1) / 2);
+      const k = (fy - start) / seg.linePitch;
+      return { off: (k - Math.round(k)) * seg.linePitch * height, pitch: seg.linePitch * height, top: view.scrollTop, scale: s.scale, phase: s.phase };
+    }`);
+    const box = await page.evaluate(`() => { const r = document.getElementById("documentView").getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height * 0.7) }; }`);
+    const problems = [];
+    const start = await look();
+    for (const [label, act, sign] of [
+      ["↓", () => key("ArrowDown", "ArrowDown", 40), 1],
+      ["a wheel click down", () => page.call("Input.dispatchMouseEvent", { type: "mouseWheel", x: box.x, y: box.y, deltaX: 0, deltaY: 100 }), 1],
+      ["↑", () => key("ArrowUp", "ArrowUp", 38), -1]
+    ]) {
+      const before = await look();
+      await act();
+      await sleep(600);
+      const after = await look();
+      if (after.phase !== "manual") problems.push(`${label} left it ${after.phase}`);
+      if (!((after.top - before.top) * sign > 2)) problems.push(`${label} moved ${after.top - before.top}px`);
+      if (after.off == null || Math.abs(after.off) > 1.5) problems.push(`after ${label} the band is ${after.off?.toFixed?.(2)}px off a line (pitch ${after.pitch?.toFixed?.(1)}px)`);
+      if (Math.abs(after.scale - start.scale) > 0.001) problems.push(`${label} changed the zoom`);
+    }
+    await choose("scroll", "auto");
+    await page.evaluate(`() => window.__recall.api.exitPdfTeleprompter()`);
+    return problems.length ? problems.join("; ") : null;
   });
 } catch (error) {
   failures.push({ name: "the check itself", detail: String(error?.stack || error) });

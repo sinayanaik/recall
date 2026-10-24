@@ -197,9 +197,10 @@ async function pressText() {
   return during;
 }
 
-async function key(keyName, code, keyCode) {
-  await page.call("Input.dispatchKeyEvent", { type: "keyDown", key: keyName, code, windowsVirtualKeyCode: keyCode });
-  await page.call("Input.dispatchKeyEvent", { type: "keyUp", key: keyName, code, windowsVirtualKeyCode: keyCode });
+// `modifiers`: CDP's bit field — 8 is Shift.
+async function key(keyName, code, keyCode, modifiers = 0) {
+  await page.call("Input.dispatchKeyEvent", { type: "keyDown", key: keyName, code, windowsVirtualKeyCode: keyCode, modifiers });
+  await page.call("Input.dispatchKeyEvent", { type: "keyUp", key: keyName, code, windowsVirtualKeyCode: keyCode, modifiers });
 }
 
 const waitPhase = (phase, timeout = 6000) => page.waitFor(
@@ -288,14 +289,14 @@ try {
     const s = await snap();
     const slow = await rateOver(1500);
     const presses = Math.round(s.wpm / 10);
-    for (let i = 0; i < presses; i += 1) await key("ArrowUp", "ArrowUp", 38);
+    for (let i = 0; i < presses; i += 1) await key("ArrowUp", "ArrowUp", 38, 8);
     const doubled = await snap();
-    if (doubled.wpm !== s.wpm * 2) return `↑ x${presses} took ${s.wpm} wpm to ${doubled.wpm}`;
+    if (doubled.wpm !== s.wpm * 2) return `Shift+↑ x${presses} took ${s.wpm} wpm to ${doubled.wpm}`;
     await sleep(300);
     const fast = await rateOver(1500);
     const ratio = fast / slow;
     if (ratio < 1.5 || ratio > 2.6) return `${s.wpm} → ${doubled.wpm} wpm moved ${slow.toFixed(1)} → ${fast.toFixed(1)}px/s`;
-    for (let i = 0; i < presses; i += 1) await key("ArrowDown", "ArrowDown", 40);
+    for (let i = 0; i < presses; i += 1) await key("ArrowDown", "ArrowDown", 40, 8);
     return null;
   });
 
@@ -369,7 +370,7 @@ try {
     return null;
   });
 
-  await check("Space pauses and carries on; ↓ makes it slower", async () => {
+  await check("Space pauses and carries on; Shift+↓ makes it slower", async () => {
     const before = await snap();
     await key(" ", "Space", 32);
     await sleep(100);
@@ -378,10 +379,11 @@ try {
     await key(" ", "Space", 32);
     await sleep(100);
     if ((await snap()).phase !== "playing") return "a second Space did not carry on";
-    await key("ArrowDown", "ArrowDown", 40);
+    await key("ArrowDown", "ArrowDown", 40, 8);
     const slower = await snap();
-    if (slower.wpm !== before.wpm - 10) return `↓ took ${before.wpm} to ${slower.wpm} wpm`;
-    await key("ArrowUp", "ArrowUp", 38);
+    if (slower.wpm !== before.wpm - 10) return `Shift+↓ took ${before.wpm} to ${slower.wpm} wpm`;
+    await key("ArrowUp", "ArrowUp", 38, 8);
+    if ((await snap()).wpm !== before.wpm) return "Shift+↑ did not put the speed back";
     return null;
   });
 
@@ -955,19 +957,176 @@ try {
     for (;;) {
       const now = await snap();
       if (now.phase === "ended") break;
-      if (Number.isFinite(now.leftMs)) estimates.push(now.leftMs);
+      if (Number.isFinite(now.leftMs)) estimates.push({ at: Date.now() - started, ms: now.leftMs });
       if (Date.now() - started > 180000) return "the note never reached its end";
       await sleep(500);
     }
     const actual = Date.now() - started;
     const error = (estimate - actual) / actual;
     let rises = 0;
-    for (let i = 1; i < estimates.length; i += 1) if (estimates[i] > estimates[i - 1] * 1.1 + 1000) rises += 1;
-    console.log(`        time left: said ${(estimate / 1000).toFixed(1)}s, took ${(actual / 1000).toFixed(1)}s (${(error * 100).toFixed(1)}%), ${words} words on screen, sigma ${first.sourceWordsPerPx?.toFixed(3)} vs ${first.wordsPerPx?.toFixed(3)} words/px`);
+    for (let i = 1; i < estimates.length; i += 1) if (estimates[i].ms > estimates[i - 1].ms * 1.1 + 1000) rises += 1;
+    // Halfway, with more of the note seen, it should be closer still.
+    const half = estimates.reduce((best, entry) => (Math.abs(entry.at - actual / 2) < Math.abs(best.at - actual / 2) ? entry : best), estimates[0]);
+    const halfError = half ? (half.ms - (actual - half.at)) / (actual - half.at) : NaN;
+    console.log(`        time left: said ${(estimate / 1000).toFixed(1)}s, took ${(actual / 1000).toFixed(1)}s (${(error * 100).toFixed(1)}%); halfway ${(halfError * 100).toFixed(1)}%; ${words} words on screen`);
     if (!Number.isFinite(estimate)) return "no estimate while playing";
-    if (Math.abs(error) > 0.1) return `said ${(estimate / 1000).toFixed(1)}s left, it took ${(actual / 1000).toFixed(1)}s`;
+    if (Math.abs(error) > 0.15) return `said ${(estimate / 1000).toFixed(1)}s left, it took ${(actual / 1000).toFixed(1)}s`;
+    if (!(Math.abs(halfError) <= 0.1)) return `halfway it said ${(half.ms / 1000).toFixed(1)}s left, with ${((actual - half.at) / 1000).toFixed(1)}s to go`;
     if (rises) return `the estimate went back up ${rises} time(s) along the way`;
     return null;
+  });
+
+  // ── Desktop: the keys and the wheel move the text a line at a time ──────
+  await page.goto(`${server.base}/index.html`);
+  await page.evaluate(SETUP_SRC, API_SRC, FIXTURE);
+
+  // Where the line nearest the band sits against it: 0 when one is on it. The
+  // same measure the session steps by — a line's middle against the middle of
+  // the band's first whole line.
+  const ON_BAND_SRC = `() => {
+    const view = document.getElementById("notesView");
+    const overlay = document.querySelector("#notesStage > .tp-overlay");
+    const s = window.__recall.api.teleprompterSnapshot();
+    const bandTop = parseFloat(overlay.style.getPropertyValue("--tp-band-top"));
+    const bandHeight = parseFloat(overlay.style.getPropertyValue("--tp-band-height"));
+    const line = parseFloat(getComputedStyle(view).lineHeight);
+    const whole = Math.max(1, Math.floor(s.settings.bandSize));
+    const box = view.getBoundingClientRect();
+    const mid = box.top + bandTop + Math.max(0, (bandHeight - whole * line) / 2) + line / 2;
+    const p = [...view.querySelectorAll("p")].find((n) => { const r = n.getBoundingClientRect(); return r.top <= mid && r.bottom >= mid; });
+    let off = null;
+    if (p) {
+      const range = document.caretRangeFromPoint(p.getBoundingClientRect().left + 4, mid);
+      if (range && range.startContainer.nodeType === 3) {
+        const at = Math.min(range.startOffset, range.startContainer.length - 1);
+        range.setStart(range.startContainer, at);
+        range.setEnd(range.startContainer, at + 1);
+        const rect = range.getClientRects()[0];
+        if (rect) off = (rect.top + rect.bottom) / 2 - mid;
+      }
+    }
+    return { off, line, top: view.scrollTop, font: parseFloat(getComputedStyle(view).fontSize), wpm: s.wpm, phase: s.phase };
+  }`;
+  const onBand = () => page.evaluate(ON_BAND_SRC);
+  const clickAt = async (selector) => {
+    const p = await page.evaluate(`() => { const r = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; }`);
+    await page.call("Input.dispatchMouseEvent", { type: "mousePressed", x: p.x, y: p.y, button: "left", buttons: 1, clickCount: 1 });
+    await page.call("Input.dispatchMouseEvent", { type: "mouseReleased", x: p.x, y: p.y, button: "left", buttons: 0, clickCount: 1 });
+    await sleep(250);
+  };
+  const wheelAt = async (deltaY) => {
+    const p = await page.evaluate(`() => { const r = document.getElementById("notesView").getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height * 0.7) }; }`);
+    await page.call("Input.dispatchMouseEvent", { type: "mouseWheel", x: p.x, y: p.y, deltaX: 0, deltaY });
+    await sleep(400);
+  };
+
+  await check("↓ and ↑ move the text a line and land one on the band, whatever has the focus", async () => {
+    await page.evaluate(`async () => {
+      const { api, settle } = window.__recall;
+      document.getElementById("notesView").scrollTop = 1500;
+      await settle(200);
+      api.toggleTeleprompter();
+      await settle(300);
+    }`);
+    await setSetting("scroll", "auto");
+    await clickAt("#notesView");
+    await sleep(300);
+    const problems = [];
+    const stepAndLook = async (label, keyName, code, keyCode) => {
+      const before = await onBand();
+      await key(keyName, code, keyCode);
+      await sleep(400);
+      const after = await onBand();
+      const moved = after.top - before.top;
+      const want = keyName === "ArrowDown" ? 1 : -1;
+      if (after.font !== before.font) problems.push(`${label}: the type went ${before.font} → ${after.font}px`);
+      if (after.wpm !== before.wpm) problems.push(`${label}: the speed went ${before.wpm} → ${after.wpm}`);
+      if (!(moved * want > after.line * 0.3 && moved * want < after.line * 2.6)) problems.push(`${label}: moved ${moved}px for a ${after.line}px line`);
+      if (after.off == null || Math.abs(after.off) > 1.5) problems.push(`${label}: the nearest line is ${after.off}px off the band`);
+    };
+    await stepAndLook("paused, ↓", "ArrowDown", "ArrowDown", 40);
+    await stepAndLook("paused, ↓ again", "ArrowDown", "ArrowDown", 40);
+    await stepAndLook("paused, ↑", "ArrowUp", "ArrowUp", 38);
+    // A press on A+ leaves no focus on it to take the keys.
+    await clickAt(".tp-bar .tp-bigger");
+    await sleep(300);
+    await stepAndLook("after A+", "ArrowDown", "ArrowDown", 40);
+    // Nor does a drag of a slider with the mouse.
+    await clickAt(".tp-bar .tp-settings");
+    await clickAt('[data-tp-range="lineHeight"]');
+    await sleep(300);
+    const focus = await page.evaluate(`() => document.activeElement?.dataset?.tpRange || ""`);
+    if (focus) problems.push(`the ${focus} slider kept the focus after the mouse let go`);
+    await stepAndLook("after the Spacing slider", "ArrowDown", "ArrowDown", 40);
+    await clickAt(".tp-sheet-close");
+    return problems.length ? problems.join("; ") : null;
+  });
+
+  await check("playing, ↓ steps a line and it carries on playing", async () => {
+    await page.evaluate(`() => window.__recall.api.resumeTeleprompter()`);
+    await waitPhase("playing", 3000);
+    await sleep(700);
+    const before = await onBand();
+    await key("ArrowDown", "ArrowDown", 40);
+    await sleep(60);
+    const after = await onBand();
+    if (after.phase !== "playing") return `↓ left it ${after.phase}`;
+    if (!(after.top - before.top > after.line * 0.3)) return `↓ moved it ${after.top - before.top}px while playing`;
+    return null;
+  });
+
+  await check("a click of a mouse wheel moves two whole lines onto the band; a trackpad's scroll is left to the browser", async () => {
+    await page.evaluate(`() => window.__recall.api.pauseTeleprompter("button")`);
+    await sleep(500);
+    const problems = [];
+    for (const deltaY of [100, 100, -100]) {
+      const before = await onBand();
+      await wheelAt(deltaY);
+      const after = await onBand();
+      const moved = (after.top - before.top) * Math.sign(deltaY);
+      if (!(moved > after.line * 1.3 && moved < after.line * 3.6)) problems.push(`a click of ${deltaY} moved ${moved}px for a ${after.line}px line`);
+      if (after.off == null || Math.abs(after.off) > 1.5) problems.push(`after a click of ${deltaY} the nearest line is ${after.off}px off the band`);
+    }
+    // A trackpad's wheel events carry precise pixels, which DevTools cannot
+    // send (every wheel it sends is a mouse's click): one made in the page,
+    // which no browser scrolls by, shows whether the session took it.
+    const trackpad = await page.evaluate(`() => {
+      const view = document.getElementById("notesView");
+      const before = view.scrollTop;
+      const event = new WheelEvent("wheel", { deltaY: 7, deltaMode: 0, bubbles: true, cancelable: true });
+      view.dispatchEvent(event);
+      return { taken: event.defaultPrevented, moved: view.scrollTop - before, legacy: event.wheelDeltaY };
+    }`);
+    await sleep(300);
+    if (trackpad.taken || trackpad.moved) problems.push(`a trackpad's 7px was taken as a click (${JSON.stringify(trackpad)})`);
+    return problems.length ? problems.join("; ") : null;
+  });
+
+  await check("By hand: Space and PageDown turn a screen and land a line on the band; ↓ still steps a line", async () => {
+    await setSetting("scroll", "manual");
+    await clickAt("#notesView");
+    await sleep(300);
+    const problems = [];
+    for (const [label, keyName, code, keyCode, modifiers, sign] of [
+      ["Space", " ", "Space", 32, 0, 1], ["PageDown", "PageDown", "PageDown", 34, 0, 1], ["Shift+Space", " ", "Space", 32, 8, -1]
+    ]) {
+      const before = await onBand();
+      await key(keyName, code, keyCode, modifiers);
+      await sleep(700);
+      const after = await onBand();
+      const moved = (after.top - before.top) * sign;
+      if (after.phase !== "manual") problems.push(`${label} left it ${after.phase}`);
+      if (!(moved > 300)) problems.push(`${label} moved ${after.top - before.top}px`);
+      if (after.off == null || Math.abs(after.off) > 1.5) problems.push(`after ${label} the nearest line is ${after.off}px off the band`);
+    }
+    const before = await onBand();
+    await key("ArrowDown", "ArrowDown", 40);
+    await sleep(400);
+    const after = await onBand();
+    if (!(after.top > before.top) || after.off == null || Math.abs(after.off) > 1.5) problems.push(`By hand, ↓ moved ${after.top - before.top}px and left a line ${after.off}px off`);
+    await setSetting("scroll", "auto");
+    await page.evaluate(`() => window.__recall.api.exitTeleprompter()`);
+    return problems.length ? problems.join("; ") : null;
   });
 } finally {
   client.close();
