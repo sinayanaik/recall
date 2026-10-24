@@ -77,7 +77,13 @@ const BUDGET = {
   // re-laid out the note: 6-9 layouts a press and a run of 33-100ms frames, the
   // "going into focus mode feels very laggy" report. It now changes height once
   // (styles/67-focus-fold.css), which measures 2-3.
-  focusFoldLayouts: 4
+  focusFoldLayouts: 4,
+  // The app bar with a file open, at 390px: the title on one line and the
+  // folder and save status on another, 42px. The My Files button (fe63160)
+  // squeezed the name into a column where they wrapped to three lines, 60px —
+  // taller chrome over the page, and a readChromeHeights that went from ~0ms
+  // to 20-45ms here, because every re-measure re-laid out the wrapped text.
+  appbarPx: 48
 };
 
 function serveOn(dir) {
@@ -315,23 +321,31 @@ const READ_SRC = `() => {
 //                      tree had to re-resolve its variables. It runs on every
 //                      chrome fold and on every tick of the ResizeObserver that
 //                      watches the appbar while a phone reader scrolls.
+//
+// The MEDIAN of five, not the worst of three. Whole-document work makes every
+// sample cost hundreds of milliseconds at this throttle, so the median sees it
+// as plainly as the worst did; a garbage collection or a stray timer lands in
+// one sample, and the worst of three let that one sample decide — the same
+// build measured 31ms, 43ms and 46ms against the 40ms budget, run after run.
 const PLUMBING_SRC = `async () => {
   const overlays = await import("/src/ui/overlays.js?v=__BUILD__");
   const chrome = await import("/src/ui/chrome.js?v=__BUILD__");
   const flush = () => document.body.offsetHeight;
   const time = (fn) => { const t = performance.now(); fn(); flush(); return performance.now() - t; };
-  const worst = { lock: 0, unlock: 0, measure: 0 };
-  for (let i = 0; i < 3; i += 1) {
-    worst.lock = Math.max(worst.lock, time(() => overlays.lockPageScroll()));
-    worst.unlock = Math.max(worst.unlock, time(() => overlays.unlockPageScroll()));
-    worst.measure = Math.max(worst.measure, time(() => chrome.readChromeHeights()));
+  const runs = { lock: [], unlock: [], measure: [] };
+  for (let i = 0; i < 5; i += 1) {
+    runs.lock.push(time(() => overlays.lockPageScroll()));
+    runs.unlock.push(time(() => overlays.unlockPageScroll()));
+    runs.measure.push(time(() => chrome.readChromeHeights()));
   }
+  const median = (list) => list.slice().sort((a, b) => a - b)[Math.floor(list.length / 2)];
   return {
-    lock: Math.round(worst.lock),
-    unlock: Math.round(worst.unlock),
-    measure: Math.round(worst.measure),
+    lock: Math.round(median(runs.lock)),
+    unlock: Math.round(median(runs.unlock)),
+    measure: Math.round(median(runs.measure)),
     canScroll: overlays.pageCanScroll(),
-    stillLocked: document.documentElement.classList.contains("modal-scroll-lock")
+    stillLocked: document.documentElement.classList.contains("modal-scroll-lock"),
+    appbar: document.querySelector(".appbar")?.scrollHeight || 0
   };
 }`;
 
@@ -527,6 +541,11 @@ async function run() {
       plumbing.measure <= BUDGET.chromeMeasureMs,
       `readChromeHeights ${plumbing.measure}ms — this runs on every chrome fold and every ResizeObserver tick while a phone scrolls`,
       `${plumbing.measure}ms`);
+
+    push("the app bar keeps the file's name to two lines on a phone",
+      plumbing.appbar > 0 && plumbing.appbar <= BUDGET.appbarPx,
+      `the app bar is ${plumbing.appbar}px tall — its title, folder and save status have wrapped`,
+      `${plumbing.appbar}px`);
 
     push("focus mode folds without tweening a layout property",
       foldTweens.length === 0,

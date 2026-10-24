@@ -5925,6 +5925,47 @@ try {
       "state.notes is still the pre-sync body");
   }
 
+  // ...and the one reload that SHOULD move the reader: the paper they are
+  // looking at was removed on another device, so the tab has nothing to show.
+  // loadDeckSnapshot moves them off it — and only then. It used to ask "is there
+  // a document in this slot now?", which a deck that never had one also
+  // answers no to, so the reader who had just opened the "Attach a PDF" panel
+  // was sent back to Notes by the next autosave (see "...which opens to the
+  // offer of one, inside the panel").
+  {
+    const removed = await page.evaluate(`async () => {
+      const { api, settle } = window.__recall;
+      const entry = api.readLocalDeckIndex().find((m) => m.pdfPages || true);
+      if (!entry) return { error: "no deck in the library" };
+      await api.loadDeckFromLibrary(entry.id);
+      api.setViewMode("document");
+      await api.openDocumentView({ force: true });
+      await settle(400);
+      const before = api.state.viewMode;
+      const original = await api.readDeckSnapshot(entry.id);
+      const gone = JSON.parse(JSON.stringify(original));
+      delete gone.meta.pdf;
+      delete gone.meta.pdfs;
+      delete gone.meta.pdfActiveId;
+      api.writeDeckSnapshot(entry.id, gone);
+      await api.loadDeckFromLibrary(entry.id, { keepPlace: true });
+      await settle(300);
+      const after = api.state.viewMode;
+      const paperAfter = Boolean(api.state.meta?.pdf || api.state.meta?.pdfs?.length);
+      // Put the paper back for the cases below.
+      api.writeDeckSnapshot(entry.id, original);
+      await api.loadDeckFromLibrary(entry.id);
+      await settle(300);
+      return { before, after, paperAfter, restored: Boolean(api.state.meta?.pdf) };
+    }`);
+    if (removed.error) throw new Error(removed.error);
+    check("a paper removed on another device moves the reader off its tab",
+      removed.before === "document" && removed.after !== "document",
+      `on ${removed.before} before the reload, ${removed.after} after it (paper still in state.meta: ${removed.paperAfter})`);
+    check("...and the paper put back is a paper again", removed.restored === true,
+      "the fixture deck lost its PDF for the cases that follow");
+  }
+
   // ── The reopen that threw a reader off their page ────────────────────────
   //
   // "I am reading and it randomly throws me to a different page" — page 1, or
@@ -8227,7 +8268,12 @@ try {
         paper: sample(-12)
       };
       // A recolour: the live marks are back at once, and the page is baked
-      // again — composed, not drawn — once it is still.
+      // again — composed, not drawn — once it is still. Counted from a renderer
+      // with nothing out: the switch to a phone's width above still has pages
+      // to draw at the new size on a slow machine, and one of those landing in
+      // the window read as the recolour having drawn a page (seen on the CI
+      // runner, drawn 1, on the run after one that drew 0).
+      await until(() => { const c = counts(); return !c.workerJobs && !c.aheadBusy; });
       const before = counts();
       const next = record.color === "green" ? "pink" : "green";
       api.state.meta.pdfHighlights = api.state.meta.pdfHighlights.map((r) => (r.id === record.id ? { ...r, color: next, at: Date.now() } : r));

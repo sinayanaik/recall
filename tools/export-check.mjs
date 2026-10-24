@@ -71,10 +71,13 @@ try {
   const zipLite = await load("src/backup/zip-lite.js");
   const cards = await load("src/import/parse-cards.js");
 
-  // One case is excluded, by name, and has a case of its own below rather than
-  // being folded into a count: an unbalanced fence is a real and unfixed data
-  // loss, and it is worth a line somebody reads rather than a number.
-  const KNOWN_ROUND_TRIP_LOSS = "an unbalanced opening fence";
+  // The one corpus case whose text does not come back character for
+  // character, by design: a side that leaves a ``` fence open is exported with
+  // the fence closed (closeOpenCardFence), so it returns with one closing fence
+  // line more than it went out with. It renders identically — Markdown already
+  // runs an unclosed fence to the end — and before the exporter closed it, the
+  // card was lost outright. See the case of its own below.
+  const CLOSED_ON_EXPORT = "an unbalanced opening fence";
 
   // ── The round trip ──────────────────────────────────────────────────────
   //
@@ -150,10 +153,9 @@ try {
     const wrong = [];
     for (const c of ALL_CASES) {
       if (!c.text.trim()) continue;
-      if (c.name === KNOWN_ROUND_TRIP_LOSS) continue;
       const back = roundTrip([{ question: c.text, answer: "an answer" }]);
       if (back.length !== 1) { wrong.push(`${c.name}: ${back.length} card(s) back`); continue; }
-      const want = normalised(c.text);
+      const want = c.name === CLOSED_ON_EXPORT ? `${normalised(c.text)}\n\`\`\`` : normalised(c.text);
       if (back[0].question !== want) {
         wrong.push(`${c.name}: ${back[0].question.length} chars back, ${want.length} expected`);
       }
@@ -176,7 +178,6 @@ try {
       // An empty or whitespace-only side is not a card; skip those rather than
       // asserting something the format does not promise.
       if (!c.text.trim()) continue;
-      if (c.name === KNOWN_ROUND_TRIP_LOSS) continue;
       const back = roundTrip([{ question: c.text, answer: "an answer" }]);
       if (back.length !== 1) { lost.push(`${c.name}: came back as ${back.length} card(s)`); continue; }
       if (!/an answer/.test(back[0].answer)) lost.push(`${c.name}: the answer did not survive`);
@@ -184,32 +185,24 @@ try {
     return lost.length ? `${lost.length} lost — first: ${lost[0]}` : true;
   });
 
-  // ── The one that is really lost ─────────────────────────────────────────
+  // ── The one that used to be lost ────────────────────────────────────────
   //
-  // A card whose question leaves a code fence open is DELETED by export and
-  // re-import, and it takes the rest of the file with it.
+  // A card whose question leaves a code fence open was DELETED by export and
+  // re-import, and it took the rest of the file with it.
   //
   // Both sides track fences, and they agree: escapeCardSideSeparator does not
   // escape a "---" inside a fence, and parseDelimitedCards does not read one as
   // the front/back separator inside a fence. Symmetric, and right — as long as
-  // the fence closes.
+  // the fence closes. When it did not, the exporter wrote its separator while
+  // the importer was still inside the question's unterminated fence: the "---"
+  // was read as content so the card had no back and was dropped, and the
+  // closing "::" was missed too, so everything after it went with it.
   //
-  // When it does not, the exporter writes its separator while the importer is
-  // still inside the question's unterminated fence. So:
-  //
-  //   • the "---" between the two sides is read as content, `side` never
-  //     becomes "back", and flush() requires BOTH a question and an answer —
-  //     so the card is dropped
-  //   • the closing "::" is guarded by !inFence too, so the card boundary is
-  //     missed as well, and everything after it in the file is swallowed into
-  //     the card that is about to be thrown away
-  //
-  // Not fixed here, because every fix is a decision about the format rather
-  // than a bug to correct: making "::" a boundary regardless of fence state
-  // breaks a card whose content legitimately contains a bare "::" line inside
-  // a fence (reStructuredText, Nim), and having the exporter close what the
-  // author left open changes the card's content. See
-  // EXPORT_EXPECTED_FAILURES in tools/check.mjs.
+  // The exporter now closes a fence a side leaves open (closeOpenCardFence).
+  // That changes nothing a reader sees — Markdown runs an unclosed fence to the
+  // end anyway — and leaves the format, and every file already written, alone.
+  // Making "::" a boundary regardless of fence state was the alternative, and
+  // it breaks a card whose code legitimately contains a bare "::" line.
   must("a card whose question leaves a code fence open survives the round trip", () => {
     const original = [
       { question: "```js\nconst a = 1;\n\nand prose after it, forever", answer: "the answer" },
@@ -220,6 +213,20 @@ try {
       return `${back.length} of 2 cards came back — the unterminated fence swallowed the rest of the file`;
     }
     if (!/the answer/.test(back[0].answer)) return `card 1 lost its answer: ${show(back[0].answer)}`;
+    if (!/forever\n```$/.test(back[0].question)) return `card 1's question came back as ${show(back[0].question)}`;
+    if (back[1].question !== "an ordinary second card") return `card 2 came back as ${show(back[1].question)}`;
+    return true;
+  });
+
+  // ...and the same on the other side: an answer that leaves a fence open sits
+  // right before the closing "::", which the importer must still see.
+  must("...and so does a card whose ANSWER leaves one open", () => {
+    const back = roundTrip([
+      { question: "the question", answer: "```py\nprint(1)" },
+      { question: "the card after it", answer: "its answer" }
+    ]);
+    if (back.length !== 2) return `${back.length} of 2 cards came back`;
+    if (back[1].question !== "the card after it") return `card 2 came back as ${show(back[1].question)}`;
     return true;
   });
 
@@ -230,7 +237,6 @@ try {
     const lost = [];
     for (const c of GROUPS.shapes.concat(GROUPS.fences, GROUPS.links)) {
       if (!c.text.trim()) continue;
-      if (c.name === KNOWN_ROUND_TRIP_LOSS) continue;   // see the case above
       const back = roundTrip([{ question: c.text, answer: "x" }]);
       if (!back.length) { lost.push(`${c.name}: nothing came back`); continue; }
       const words = (s) => String(s).match(/[A-Za-z]{4,}/g) || [];

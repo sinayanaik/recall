@@ -80,7 +80,7 @@ import { initNotesResizeHold, noteSettledNotesPosition, scheduleSettledNotesCapt
 import { findRawOffsetForRenderedPoint } from "./notes/raw-offset.js?v=__BUILD__";
 import { flushReadingPositionSave } from "./notes/reading-position.js?v=__BUILD__";
 import { rawOffsetForCurrentNotesScroll, scheduleReadingAnchorCapture, setReadingAnchorCapturedHook } from "./notes/scroll-anchor.js?v=__BUILD__";
-import { beginSelectionGesture, currentNotesSelectionMarkdown, currentSelectionPlainText, endSelectionGesture, hideNotesSelectionButton, noteSelectionChanged, pillSelectionCapture, scheduleNotesSelectionCheck, setDocumentPillCaptureHook, setSelectionBarExpanded, suspendSelectionBarForScroll } from "./notes/selection.js?v=__BUILD__";
+import { beginSelectionGesture, currentNotesSelectionMarkdown, currentSelectionPlainText, endSelectionGesture, hideNotesSelectionButton, noteSelectionChanged, pillSelectionCapture, scheduleNotesSelectionCheck, selectionGestureIsLive, setDocumentPillCaptureHook, setSelectionBarExpanded, suspendSelectionBarForScroll } from "./notes/selection.js?v=__BUILD__";
 import { clearTouchSelection, initTouchSelection } from "./notes/touch-selection.js?v=__BUILD__";
 import { recordNotesTyping, redoNotes, undoNotes } from "./notes/notes-history.js?v=__BUILD__";
 import { initMarkMenu, setMarkMenuActions } from "./notes/mark-menu.js?v=__BUILD__";
@@ -771,9 +771,20 @@ document.addEventListener("pointerdown", (event) => {
 window.addEventListener("blur", endSelectionGesture);
 
 // Pay back a question refit that fitLiveQuestion skipped to avoid reflowing text
-// out from under a live selection.
+// out from under a live selection — once the reader has let go. A press that
+// starts the NEXT drag collapses the old selection first, and paying back on
+// that collapse refit the question two frames into the new drag: the text was
+// re-measured under the pointer while it was being selected, and on the CI
+// runner's fonts a mouse drag across a card's words then selected nothing at
+// all. The release pays it back instead.
 document.addEventListener("selectionchange", () => {
-  if (questionFitDeferredBySelection && !hasStudyTextSelection()) scheduleLiveQuestionFit();
+  if (questionFitDeferredBySelection && !hasStudyTextSelection() && !selectionGestureIsLive()) scheduleLiveQuestionFit();
+});
+
+["pointerup", "pointercancel"].forEach((type) => {
+  document.addEventListener(type, () => {
+    if (questionFitDeferredBySelection && !hasStudyTextSelection()) scheduleLiveQuestionFit();
+  }, { passive: true });
 });
 
 
@@ -2813,7 +2824,11 @@ el.card.addEventListener("click", (event) => {
     return;
   }
   if (hasCardTextSelection()) return;
-  const isDrag = Math.abs(state.dragCurrentX - state.dragStartX) >= 8 || Math.abs(state.dragCurrentY - state.dragStartY) >= 8;
+  // From where the press began to where the swipe last saw it — or to where the
+  // button came up, for a press on the words that the swipe left to the
+  // browser (isMousePressOnCardText in src/cards/swipe.js).
+  const isDrag = Math.max(Math.abs(state.dragCurrentX - state.dragStartX), Math.abs(event.clientX - state.dragStartX)) >= 8
+    || Math.max(Math.abs(state.dragCurrentY - state.dragStartY), Math.abs(event.clientY - state.dragStartY)) >= 8;
   if (isDrag || isCardActionTarget(event.target)) return;
   flipCard();
 });

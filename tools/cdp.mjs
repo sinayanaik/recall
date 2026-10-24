@@ -23,6 +23,8 @@ import path from "node:path";
 // it is a full `chrome` rather than the headless shell (which has no renderer
 // features some of this leans on). A system Chrome is used when present.
 export const CHROME_CANDIDATES = [
+  // Playwright's own stable link to whichever build it installed.
+  "/opt/pw-browsers/chromium",
   "/opt/pw-browsers/chromium-1194/chrome-linux/chrome",
   "/usr/bin/google-chrome-stable",
   "/usr/bin/google-chrome",
@@ -37,12 +39,19 @@ export function findChrome() {
   const globbed = CHROME_CANDIDATES.find(existsSync);
   if (globbed) return globbed;
   // The pinned build above moves with the image; fall back to any sibling.
+  // Newer Playwright builds unpack to chrome-linux64/ rather than chrome-linux/,
+  // and a lookup that knew only the old name found no Chrome at all — every
+  // browser check then failed for want of a browser that was on disk.
   const base = "/opt/pw-browsers";
   if (!existsSync(base)) return null;
   try {
-    const dir = readdirSync(base).find((d) => d.startsWith("chromium-"));
-    const guess = dir && path.join(base, dir, "chrome-linux", "chrome");
-    return guess && existsSync(guess) ? guess : null;
+    for (const dir of readdirSync(base).filter((d) => d.startsWith("chromium-"))) {
+      for (const sub of ["chrome-linux64", "chrome-linux"]) {
+        const guess = path.join(base, dir, sub, "chrome");
+        if (existsSync(guess)) return guess;
+      }
+    }
+    return null;
   } catch (_) {
     return null;
   }

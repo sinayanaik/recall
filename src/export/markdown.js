@@ -26,9 +26,27 @@ export function escapeCardSideSeparator(text) {
     .join("\n");
 }
 
+// A side that opens a ``` fence and never closes it would leave the importer
+// still inside that fence when it reaches the "---" between the sides and the
+// "::" after them — so the card was dropped, and every card after it in the
+// file was swallowed into it. Closing the fence at the end of the side changes
+// nothing a reader sees: Markdown already runs an unclosed fence to the end of
+// its block. Same toggle rule as escapeCardSideSeparator and parseDelimitedCards.
+export function closeOpenCardFence(text) {
+  let inFence = false;
+  for (const line of String(text || "").split("\n")) {
+    if (/^\s*```/.test(line.trim())) inFence = !inFence;
+  }
+  return inFence ? `${text}\n\`\`\`` : text;
+}
+
+function formatCardSide(text) {
+  return closeOpenCardFence(escapeCardSideSeparator(text.trim()));
+}
+
 export function formatCardList(title, cards) {
   const body = cards.length
-    ? cards.map((card) => `::\n${escapeCardSideSeparator(card.question.trim())}\n\n---\n\n${escapeCardSideSeparator(card.answer.trim())}\n::`).join("\n\n")
+    ? cards.map((card) => `::\n${formatCardSide(card.question)}\n\n---\n\n${formatCardSide(card.answer)}\n::`).join("\n\n")
     : "_None_";
   return `## ${title}\n\n${body}`;
 }

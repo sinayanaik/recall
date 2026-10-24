@@ -594,6 +594,62 @@ try {
   // extend a selection out of it into the row below. Kept as a guard, since
   // nothing about that is guaranteed and the row is one CSS change away from
   // being reachable.
+  // What a drag over a card face did, for when it selected nothing. The cause
+  // of that has differed between machines (it passed here and failed on the CI
+  // runner), so the failure says what it saw instead of only that it failed:
+  // what the press landed on, whether the browser started a selection and
+  // whether anything cancelled it, how long the selection got mid-drag, and
+  // whether the card's swipe took the gesture.
+  const armCardDragProbe = () => page.evaluate(() => {
+    const probe = { selectstart: 0, prevented: 0, changes: 0, longest: 0, swiping: false, down: "", redrawn: 0, refits: 0 };
+    const card = document.querySelector(".card");
+    // The face's own nodes replaced under the drag, and its font size rewritten
+    // (the question fitter): either takes the selection's anchor away.
+    new MutationObserver((records) => {
+      for (const record of records) {
+        if (record.type === "childList") probe.redrawn += 1;
+        else if (record.attributeName === "style") probe.refits += 1;
+      }
+    }).observe(card, { childList: true, subtree: true, attributes: true, attributeFilter: ["style"] });
+    const on = (type, fn) => document.addEventListener(type, fn, true);
+    on("pointerdown", (event) => {
+      const hit = document.elementFromPoint(event.clientX, event.clientY);
+      const caret = document.caretPositionFromPoint?.(event.clientX, event.clientY)?.offsetNode;
+      probe.down = `${hit?.tagName?.toLowerCase() || "?"}.${String(hit?.className || "").split(" ")[0]} caret=${caret?.nodeType === 3 ? "text" : caret?.nodeName || "none"} userSelect=${hit ? getComputedStyle(hit).userSelect : "?"}`;
+    });
+    on("selectstart", (event) => {
+      probe.selectstart += 1;
+      // Read after every listener has run.
+      setTimeout(() => { if (event.defaultPrevented) probe.prevented += 1; }, 0);
+    });
+    on("selectionchange", () => {
+      probe.changes += 1;
+      const sel = window.getSelection();
+      probe.longest = Math.max(probe.longest, String(sel || "").length);
+      const at = (node, offset) => `${node?.nodeType === 3 ? "#text" : node?.nodeName?.toLowerCase() || "-"}${node?.parentElement?.id ? "@" + node.parentElement.id : ""}:${offset}`;
+      const line = `${sel?.type || "?"} ${at(sel?.anchorNode, sel?.anchorOffset)}→${at(sel?.focusNode, sel?.focusOffset)}`;
+      (probe.seen ||= []).push(line);
+    });
+    for (const type of ["pointerdown", "pointermove", "pointerup", "mousedown", "mouseup", "click", "dragstart"]) {
+      card?.addEventListener(type, (event) => { (probe.events ||= {})[type] = ((probe.events || {})[type] || 0) + 1; if (type === "dragstart") probe.dragTarget = event.target?.nodeName; }, true);
+    }
+    on("pointermove", (event) => {
+      if (card?.classList.contains("is-dragging")) probe.swiping = true;
+      if (!probe.mid) {
+        const hit = document.elementFromPoint(event.clientX, event.clientY);
+        probe.mid = `${hit?.tagName?.toLowerCase() || "?"} userSelect=${hit ? getComputedStyle(hit).userSelect : "?"}`;
+      }
+    });
+    const media = (q) => (window.matchMedia(q).matches ? "y" : "n");
+    probe.editable = Boolean(document.querySelector("#questionView")?.isContentEditable);
+    probe.env = `pointer:coarse=${media("(pointer: coarse)")} hover:none=${media("(hover: none)")} any-pointer:fine=${media("(any-pointer: fine)")} touchPoints=${navigator.maxTouchPoints}`;
+    window.__cardDragProbe = probe;
+  });
+  const readCardDragProbe = async () => {
+    const p = await page.evaluate(() => window.__cardDragProbe || null);
+    return p ? ` [press on ${p.down}; selectstart ${p.selectstart}x (${p.prevented} cancelled), ${p.changes} selectionchange, longest ${p.longest} chars, swipe engaged ${p.swiping}, ${p.redrawn} node replacement(s) and ${p.refits} style rewrite(s) in the card; mid-drag on ${p.mid || "-"}; ${p.env}; selection ${(p.seen || []).slice(0, 3).concat((p.seen || []).length > 3 ? ["…", p.seen[p.seen.length - 1]] : []).join(" | ")}; card events ${JSON.stringify(p.events || {})}${p.dragTarget ? ` dragstart on ${p.dragTarget}` : ""}; editable=${p.editable}]` : "";
+  };
+
   await check("a card answer selects without pulling in the button row", async () => {
     await page.evaluate(async () => {
       const api = window.__api;
@@ -624,14 +680,88 @@ try {
     // selects the face's text. Asserted before the hazard below, because if
     // this fails then "the button row is not in the selection" is true for the
     // uninteresting reason that nothing is.
+    await armCardDragProbe();
     const within = await dragTo({ x: face.x, y: face.y }, { x: face.x + 220, y: face.y }, 25);
-    if (within.len === 0) return "a drag that stays on the card face selects nothing at all";
+    if (within.len === 0) return `a drag that stays on the card face selects nothing at all${await readCardDragProbe()}`;
     const sel = await dragTo({ x: face.x, y: face.y }, { x: face.x + 60, y: face.controlsTop + 20 }, 30);
     if (sel.len === 0) return "the selection collapsed to nothing";
     if (/Review|Prev|Known|Shuffle|Restart/.test(sel.text)) {
       return `the button row is in the selection: ${JSON.stringify(sel.text.slice(0, 70))}`;
     }
     return null;
+  });
+
+  // ...and the same drag when its FIRST move already crosses the swipe's 12px
+  // intent distance. The card swipe used to stand down only once a selection
+  // existed, and whether one did by then depended on how far the first move
+  // went and how wide the characters were — so this case passed here and failed
+  // on the CI runner's fonts, and a reader's mouse drag across a card's words
+  // sometimes selected nothing. Coarse moves take the fonts out of it.
+  await check("a drag across a card's words selects them even when its first move is a long one", async () => {
+    const charAt = () => page.evaluate(() => {
+      const t = document.querySelector("#questionView p")?.firstChild;
+      if (!t) return null;
+      const range = document.createRange();
+      range.setStart(t, 2);
+      range.setEnd(t, 3);
+      const r = range.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    });
+    // The drag above ended moments ago, and its release may refit the question
+    // (a new font size, so the words move). Aim at the character once it has
+    // stopped moving, not at where it was a frame before the press.
+    let face = null;
+    for (let i = 0; i < 30; i += 1) {
+      const a = await charAt();
+      await new Promise((r) => setTimeout(r, 120));
+      const b = await charAt();
+      face = b;
+      if (a && b && Math.abs(a.x - b.x) < 0.5 && Math.abs(a.y - b.y) < 0.5) break;
+    }
+    if (!face) return "the card face did not render";
+    await armCardDragProbe();
+    const sel = await dragTo({ x: face.x, y: face.y }, { x: face.x + 220, y: face.y }, 5);
+    return sel.len > 0 ? null : `five 44px moves across the words selected nothing${await readCardDragProbe()}`;
+  });
+
+  // ...while a drag that starts in the card's EMPTY space is still a swipe, and
+  // turns the card. Nothing drove a mouse swipe before this, and the guard above
+  // is a reason to start: it must not take the swipe away from the mouse.
+  await check("a mouse drag from the card's empty space still turns the card", async () => {
+    await page.evaluate(async () => {
+      const api = window.__api;
+      api.addCardFromNotes("A second card, to turn to", "Its answer.");
+      api.setViewMode("cards");
+      await new Promise((r) => setTimeout(r, 400));
+    });
+    await whenStill("#questionView");
+    const start = await page.evaluate(() => {
+      const card = document.querySelector(".card");
+      if (!card) return null;
+      const box = card.getBoundingClientRect();
+      // Down the card's right edge, inside its padding: the first point that is
+      // the card and is not text or a control. Dragged LEFT from there, which
+      // is "next" — the card just added is after this one.
+      for (let y = box.bottom - 12; y > box.top + 12; y -= 6) {
+        const x = box.right - 10;
+        const hit = document.elementFromPoint(x, y);
+        if (!hit || !card.contains(hit) || hit.closest("button, a, input, textarea, .card-actions")) continue;
+        const caret = document.caretRangeFromPoint?.(x, y);
+        const text = caret?.startContainer;
+        if (text?.nodeType === Node.TEXT_NODE) {
+          const range = document.createRange();
+          range.selectNodeContents(text);
+          if ([...range.getClientRects()].some((r) => x >= r.left && x <= r.right && y >= r.top && y <= r.bottom)) continue;
+        }
+        return { x, y, width: box.width, question: document.querySelector("#questionView")?.textContent || "" };
+      }
+      return null;
+    });
+    if (!start) return "found no empty point on the card to press";
+    await dragTo({ x: start.x, y: start.y }, { x: start.x - Math.max(200, start.width * 0.7), y: start.y }, 25);
+    await new Promise((r) => setTimeout(r, 500));
+    const after = await page.evaluate(() => document.querySelector("#questionView")?.textContent || "");
+    return after !== start.question ? null : "the card did not turn — a mouse can no longer swipe";
   });
 
   // Reported as "the categorisation of the text selection options ... can be
