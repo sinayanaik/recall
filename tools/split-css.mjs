@@ -65,6 +65,9 @@ const SECTIONS = [
 // Anything appearing in styles/ that is neither a slice nor listed here is
 // still a failure.
 const POST_SPLIT = {
+  "87-web-import.css":
+    "The review step's \"Keep everything\" switch for a web page whose ads and " +
+    "menus were removed (webPageToggleHtml in src/import/staging.js).",
   "86-heading-numbers.css":
     "LaTeX-style section numbers drawn before each heading in Notes, the " +
     "contents drawer and the highlights lists, and the section picker that " +

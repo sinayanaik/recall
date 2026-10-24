@@ -131,6 +131,10 @@
 //                   formula, a table or a picture — and do highlight and cloze
 //                   land on the same text? A selection is placed by its two
 //                   ends, block by block (src/format/source-blocks.js)
+//   web-import      does a saved or fetched web page come in as its article
+//                   and nothing else — no ads, menus or banners, pictures at
+//                   their real addresses and copied into Recall on confirm —
+//                   and is My Files' Import the only way in?
 //   note-link-brws  can you find a note to link to WITHOUT remembering its
 //                   name? Walks the [[ picker's folder tree and asks a
 //                   half-remembered query of it, then checks that neither route
@@ -552,6 +556,7 @@ const checks = [
     ["style         ", ["node", ["tools/style-check.mjs"], ROOT]],
     ["highlight     ", ["node", ["tools/highlight-check.mjs"], ROOT]],
     ["erase         ", ["node", ["tools/erase-check.mjs"], ROOT]],
+    ["web-import    ", ["node", ["tools/web-page-import-check.mjs"], ROOT]],
     ["note-editor   ", ["node", ["tools/note-editor-check.mjs"], ROOT]],
     // ...and the other place a note-shaped answer is written: the "Make a
     // flashcard" panels, the same editor since the answer stopped being a

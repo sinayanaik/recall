@@ -23,7 +23,7 @@ import { resolveStorageImages, resolveUnresolvedStorageImages } from "./cloud/st
 import { onS3ConfigAdopted } from "./cloud/s3-config-sync.js?v=__BUILD__";
 import { clearSupabaseConfig, initSupabaseClient, isSignedIn, onSigningReadyChange, reloadSupabaseLibrary, saveSupabaseConfig, setSignedIn, setSignedInListener, setSupabaseClient } from "./cloud/supabase-client.js?v=__BUILD__";
 import { closeWebDeckExportMenus, markWebDeckExportMenuOpen } from "./cloud/web-decks.js?v=__BUILD__";
-import { deckEmptyImportBtn2, deckEmptyNewBtn, deckEmptyWebBtn, el, onDomReady } from "./core/dom.js?v=__BUILD__";
+import { deckEmptyNewBtn, deckEmptyWebBtn, el, onDomReady } from "./core/dom.js?v=__BUILD__";
 import { noteWheelActivity, readerActedSince } from "./core/gesture.js?v=__BUILD__";
 import { assertBootLibraries } from "./core/lib-guard.js?v=__BUILD__";
 import { ensureTurndown } from "./core/lib-loader.js?v=__BUILD__";
@@ -44,10 +44,9 @@ import { markBrokenImages } from "./images/broken.js?v=__BUILD__";
 import { revokeLocalImageUrls } from "./images/outbox.js?v=__BUILD__";
 import { allImageFiles, dragContainsImage, animatedSourceUrlFromTransfer, insertTransferImages } from "./images/paste.js?v=__BUILD__";
 import { imagePickerActive } from "./images/upload.js?v=__BUILD__";
-import { importEpubFile, isEpubName, reportEpubImportCrash } from "./import/epub.js?v=__BUILD__";
 import { loadFiles, loadSample, showImportSourceDrawer, stagePastedMarkdown } from "./import/files.js?v=__BUILD__";
 import { htmlToMarkdown } from "./import/html-to-markdown.js?v=__BUILD__";
-import { clearImportStaging, commitStagedImport, importDestinationFolder, importStaging, renderImportReview, setPendingImportFolder } from "./import/staging.js?v=__BUILD__";
+import { clearImportStaging, commitStagedImport, importAimFolder, importDestinationFolder, importStaging, renderImportReview, toggleWebPageClutter } from "./import/staging.js?v=__BUILD__";
 import { fetchUrl } from "./import/url.js?v=__BUILD__";
 import { closeAllDeckTileMenus, createFolder, setAllFoldersExpanded } from "./library/folder-tree.js?v=__BUILD__";
 import { normalizeDeckCategory } from "./library/folders.js?v=__BUILD__";
@@ -55,7 +54,7 @@ import { flushIndexBatch, readLocalDeckIndex, reconcileOpenDeckWithStore, setDec
 import { checkDeckFreshness, startRealtimeSync, stopRealtimeSync } from "./sync/live-sync.js?v=__BUILD__";
 import { categorizeSelectedMyDecks, deleteSelectedMyDecks, loadSelectedMyDecks } from "./library/my-decks-actions.js?v=__BUILD__";
 import { hydrateMyDecksIcons } from "./library/my-decks-icons.js?v=__BUILD__";
-import { closeMyDecksMoreMenu, currentMyDecksFolder, importIntoFolder, myDecksImportFolder, myDecksSearchTimer, setMyDecksSearchTimer, toggleMyDecksMoreMenu } from "./library/my-decks-menu.js?v=__BUILD__";
+import { closeMyDecksMoreMenu, currentMyDecksFolder, myDecksSearchTimer, setMyDecksSearchTimer, toggleMyDecksMoreMenu } from "./library/my-decks-menu.js?v=__BUILD__";
 import { setMyDecksDisplay, setMyDecksSort, setMyDecksView } from "./library/my-decks-prefs.js?v=__BUILD__";
 import { renderMyDecksList, repaintMyDecks } from "./library/my-decks-render.js?v=__BUILD__";
 import { selectedMyDecks, selectedMyFolders, updateMyDecksBulkBar } from "./library/my-decks-selection.js?v=__BUILD__";
@@ -186,7 +185,7 @@ import { initReadingRail, refreshReadingRail, refreshReadingRailModes } from "./
 import { initTeleprompter, setTeleprompterChangedHook } from "./notes/teleprompter.js?v=__BUILD__";
 import { initPdfTeleprompter, setPdfTeleprompterChangedHook } from "./documents/pdf-teleprompter.js?v=__BUILD__";
 import { initScreenOrientation, setBeforeOrientationChangeHandler, setOrientationModesHandler, toggleLandscape } from "./ui/orientation.js?v=__BUILD__";
-import { attachPdfToOpenDeck, importPdfFile, reportPdfImportCrash } from "./import/pdf.js?v=__BUILD__";
+import { attachPdfToOpenDeck, reportPdfImportCrash } from "./import/pdf.js?v=__BUILD__";
 import { flushActivity, initActivityLog, noteViewSwitch } from "./stats/activity.js?v=__BUILD__";
 import { initReadingProgressToggles, noteDocumentProgress, noteNotesProgress, noteNotesScroll, toggleReadingProgressShown } from "./stats/reading-progress.js?v=__BUILD__";
 import { pushReadingStatsInBackground } from "./stats/stats-sync.js?v=__BUILD__";
@@ -2014,9 +2013,6 @@ el.fetchBtn.addEventListener("click", fetchUrl);
 el.urlInput.addEventListener("keydown", (event) => {
   if (event.key === "Enter") fetchUrl();
 });
-el.importBtn.addEventListener("click", () => {
-  openImportPanel();
-});
 el.myDecksBtn?.addEventListener("click", () => {
   openMyDecksPanel();
 });
@@ -2062,9 +2058,6 @@ el.myDecksRefreshBtn?.addEventListener("click", () => { closeMyDecksMoreMenu(); 
 
 el.myDecksMoreBtn?.addEventListener("click", (e) => { e.stopPropagation(); toggleMyDecksMoreMenu(); });
 document.getElementById("myDecksMoreCloseBtn")?.addEventListener("click", closeMyDecksMoreMenu);
-// The EPUB picker is a <label> whose click opens the file dialog; close the menu
-// alongside it so the sheet isn't still sitting there behind the OS dialog.
-document.getElementById("myDecksImportEpubBtn")?.addEventListener("click", () => closeMyDecksMoreMenu());
 document.addEventListener("click", (e) => {
   if (!e.target.closest(".my-decks-more")) closeMyDecksMoreMenu();
 });
@@ -2074,48 +2067,8 @@ el.myDecksNewFolderBtn?.addEventListener("click", () => createFolder(currentMyDe
 el.myDecksNewDeckBtn?.addEventListener("click", () => newDeckInFolder(currentMyDecksFolder()));
 
 
-el.myDecksImportBtn?.addEventListener("click", () => importIntoFolder(currentMyDecksFolder()));
-
-el.myDecksImportInput?.addEventListener("change", (event) => {
-  const files = Array.from(event.target.files || []);
-  event.target.value = "";
-  if (!files.length) return;
-  const folder = myDecksImportFolder;
-  // An EPUB has its own preview modal and re-renders My Decks itself when it is
-  // done, so the library stays open for it. EVERYTHING else goes through the
-  // Import panel's review step, which must be closed over — the library sits at
-  // z-index 100 and the import panel at 50, so leaving it open buried the whole
-  // review step behind it and picking files looked like it did nothing at all.
-  // (A batch still returns to the library afterwards: commitSeparateDecks
-  // reopens it at the folder it wrote to.)
-  const allEpub = files.every((file) => isEpubName(file.name) || /epub/i.test(file.type));
-  if (!allEpub) closeMyDecksPanel();
-  loadFiles(files, folder);
-});
-
-// A dismissed picker must not leave a folder armed for whatever import happens
-// next. (loadFile and loadDeckFromLibrary both reset it too — this is just the
-// earliest place to notice.)
-el.myDecksImportInput?.addEventListener("cancel", () => {
-  setPendingImportFolder(null);
-});
-el.myDecksImportEpubInput?.addEventListener("change", (event) => {
-  const file = event.target.files[0];
-  event.target.value = ""; // allow re-importing the same file again
-  if (file) importEpubFile(file).catch(reportEpubImportCrash);
-});
-
-// One deck per paper, so several papers picked at once is several decks —
-// sequentially, because each one uploads and each upload wants the connection
-// to itself.
-el.myDecksImportPdfInput?.addEventListener("change", async (event) => {
-  const files = Array.from(event.target.files || []);
-  event.target.value = ""; // allow re-importing the same file again
-  for (const file of files) {
-    await importPdfFile(file).catch(reportPdfImportCrash);
-  }
-});
-document.getElementById("myDecksImportPdfBtn")?.addEventListener("click", () => closeMyDecksMoreMenu());
+// The one Import: the full Import screen, aimed at the folder on screen.
+el.myDecksImportBtn?.addEventListener("click", () => openImportPanel({ folder: currentMyDecksFolder() }));
 
 // The same file, onto the deck already open, for a deck that was created without
 // a PDF. Not an import: nothing about the deck's title, category, cards or notes
@@ -2742,7 +2695,8 @@ el.themeMenu?.addEventListener("click", (event) => {
 el.fileInput.addEventListener("change", (event) => {
   const files = Array.from(event.target.files || []);
   event.target.value = ""; // re-picking the same files must still fire `change`
-  loadFiles(files, null);
+  // Into the folder My Files was showing when Import was opened.
+  loadFiles(files, importAimFolder);
 });
 el.importPasteSourceBtn?.addEventListener("click", () => {
   showImportSourceDrawer(el.importPasteRow?.hidden ? "paste" : null);
@@ -2757,6 +2711,11 @@ el.pasteMarkdownInput?.addEventListener("keydown", (event) => {
 });
 
 // ── Import review step ──────────────────────────────────────────────────────
+// A web page's "Keep everything" / "Remove ads and menus again" switch.
+el.importDetect?.addEventListener("click", (event) => {
+  if (!event.target.closest("[data-import-webpage-toggle]")) return;
+  toggleWebPageClutter();
+});
 el.importContentOptions?.addEventListener("click", (event) => {
   const button = event.target.closest("[data-import-choice]");
   if (!button || button.disabled || !importStaging) return;
@@ -3481,7 +3440,6 @@ if (el.deleteCardBtn) {
 
 
 if (deckEmptyNewBtn) deckEmptyNewBtn.addEventListener("click", () => createNewDeck());
-if (deckEmptyImportBtn2) deckEmptyImportBtn2.addEventListener("click", () => openImportPanel());
 if (deckEmptyWebBtn) deckEmptyWebBtn.addEventListener("click", () => openMyDecksPanel());
 
 // The home screen's own buttons, and the two ⌂ entries (app bar and drawer).

@@ -1,0 +1,16 @@
+/* The Import review step's controls for a web page (src/import/staging.js). */
+
+/* A web page's "Keep everything" switch sits with the chips that describe what
+   was removed, but it is a control: solid accent, and a pointer. */
+.import-chip.import-chip-action {
+  cursor: pointer;
+  border-color: var(--accent);
+  color: var(--accent-strong);
+  background: color-mix(in srgb, var(--accent) 12%, var(--panel));
+  font-family: inherit;
+}
+
+.import-chip.import-chip-action:hover,
+.import-chip.import-chip-action:focus-visible {
+  background: color-mix(in srgb, var(--accent) 22%, var(--panel));
+}

@@ -143,6 +143,7 @@
     <link rel="stylesheet" href="styles/84-toasts.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/85-resume.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/86-heading-numbers.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/87-web-import.css?v=__BUILD__">
 
     <!-- ── Module preloads ────────────────────────────────────────────────
          The app is ~130 ES modules and the browser discovers them by PARSING
@@ -297,6 +298,9 @@
     <link rel="modulepreload" href="src/import/sample.js?v=__BUILD__">
     <link rel="modulepreload" href="src/import/staging.js?v=__BUILD__">
     <link rel="modulepreload" href="src/import/url.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/import/web-images.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/import/web-page.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/import/web-text.js?v=__BUILD__">
     <link rel="modulepreload" href="src/library/categories.js?v=__BUILD__">
     <link rel="modulepreload" href="src/library/deck-rows.js?v=__BUILD__">
     <link rel="modulepreload" href="src/library/folder-deck.js?v=__BUILD__">
@@ -634,7 +638,6 @@
           <span class="drawer-section-label">Files</span>
           <button class="tool-button" id="homeBtn" type="button" title="Your home screen: recent files and quick actions">&#8962; Home</button>
           <button class="tool-button" id="newDeckBtn" type="button">&#43; New File</button>
-          <button class="tool-button" id="importBtn" type="button" title="Import a file, pasted Markdown, or a link — as notes, as cards, or both">&#8679; Import</button>
           <button class="tool-button" id="myDecksBtn" type="button" title="All your files — saved on this device and synced to the cloud automatically">&#128218; My Files</button>
           <!-- No "📄 Attach a PDF…" row here any more, and it is not a feature
                that went away. It existed because the Document surface only
@@ -780,9 +783,6 @@
             <button class="home-action" id="homeNewDeckBtn" type="button">
               <span class="home-action-icon" aria-hidden="true">&#10022;</span><span class="home-action-label">New File</span>
             </button>
-            <button class="home-action" id="homeImportBtn" type="button">
-              <span class="home-action-icon" aria-hidden="true">&#11014;</span><span class="home-action-label">Import</span>
-            </button>
             <button class="home-action" id="homeMyDecksBtn" type="button">
               <span class="home-action-icon" aria-hidden="true">&#128218;</span><span class="home-action-label">My Files</span>
             </button>
@@ -812,7 +812,7 @@
               <button class="home-link" id="homeSeeAllBtn" type="button">See all &#8594;</button>
             </div>
             <div class="home-recent" id="homeRecent"></div>
-            <p class="home-empty" id="homeRecentEmpty" hidden>No files yet — create your first file, or import notes, a PDF or a book.</p>
+            <p class="home-empty" id="homeRecentEmpty" hidden>No files yet — create your first file, or import notes, a PDF, a web page or a book from My Files.</p>
           </section>
 
           <!-- The time log, every device added up (src/stats/activity.js,
@@ -937,10 +937,6 @@
                 <button class="deck-empty-action" id="deckEmptyNewBtn" type="button">
                   <span class="deck-empty-action-icon" aria-hidden="true">✦</span>
                   New File
-                </button>
-                <button class="deck-empty-action" id="deckEmptyImportBtn" type="button">
-                  <span class="deck-empty-action-icon" aria-hidden="true">⬆</span>
-                  Import
                 </button>
                 <button class="deck-empty-action" id="deckEmptyWebBtn" type="button">
                   <span class="deck-empty-action-icon" aria-hidden="true">📚</span>
@@ -1841,7 +1837,7 @@
 
           <div class="import-source-row">
             <label class="file-pick import-action-btn" id="importFilePick">
-              <input id="fileInput" type="file" multiple accept=".recall,.md,.markdown,.txt,.json,.zip,.epub,.pdf,application/vnd.recall+zip,application/octet-stream,text/markdown,text/plain,application/json,application/zip,application/x-zip-compressed,application/epub+zip,application/pdf">
+              <input id="fileInput" type="file" multiple accept=".recall,.md,.markdown,.txt,.json,.zip,.epub,.pdf,.html,.htm,.mhtml,.mht,application/vnd.recall+zip,application/octet-stream,text/markdown,text/plain,application/json,application/zip,application/x-zip-compressed,application/epub+zip,application/pdf,text/html,application/xhtml+xml,multipart/related,message/rfc822,application/x-mimearchive">
               <span class="import-icon" aria-hidden="true">📁</span>
               <span>Choose files</span>
             </label>
@@ -1854,7 +1850,7 @@
               <span>From a link</span>
             </button>
           </div>
-          <p class="import-source-hint">Markdown or plain text, a Recall <code>.json</code> / <code>.zip</code> export, or an <code>.epub</code> book (one file per chapter). <strong>Pick as many as you like</strong> — you can turn each one into its own file, or merge them all into one.</p>
+          <p class="import-source-hint">Markdown or plain text, a Recall <code>.json</code> / <code>.zip</code> export, an <code>.epub</code> book (one file per chapter), a PDF, or a saved web page (<code>.html</code> or <code>.mhtml</code> — ads and menus are removed; in Chrome on a phone, ⋮ → Download page saves one). <strong>Pick as many as you like</strong> — you can turn each one into its own file, or merge them all into one.</p>
 
           <div class="import-source-drawer" id="importUrlRow" hidden>
             <div class="url-row-compact">
@@ -2134,12 +2130,11 @@
               </div>
               <button class="web-decks-refresh web-decks-primary-btn" id="myDecksNewDeckBtn" type="button" data-md-icon="newDeck" title="Create a new file in the current folder"><span class="md-btn-label">New file</span></button>
               <button class="web-decks-refresh" id="myDecksNewFolderBtn" type="button" data-md-icon="newFolder" title="Create a new folder"><span class="md-btn-label">New folder</span></button>
-              <!-- Import sits beside New deck / New folder because it's the third
-                   way to put something in the folder you're looking at. The
-                   picker below is shared with every folder row's own Import
-                   button; myDecksImportFolder records which one opened it. -->
-              <button class="web-decks-refresh" id="myDecksImportBtn" type="button" data-md-icon="importDeck" title="Import one or more files (.recall, .md, .txt, .json, .zip, .epub, .pdf) into this folder — you choose whether they become notes or cards, and whether each one gets its own file"><span class="md-btn-label">Import</span></button>
-              <input id="myDecksImportInput" type="file" multiple accept=".recall,.md,.markdown,.txt,.json,.zip,.epub,.pdf,application/vnd.recall+zip,application/octet-stream,text/markdown,text/plain,application/json,application/zip,application/epub+zip,application/pdf" hidden>
+              <!-- The one Import in the app. It sits beside New file / New folder
+                   because it is the third way to put something in the folder
+                   you're looking at, and it opens the full Import screen — files
+                   of every kind, pasted Markdown or a link — aimed at that folder. -->
+              <button class="web-decks-refresh" id="myDecksImportBtn" type="button" data-md-icon="importDeck" title="Import into this folder — files (Markdown, .recall, .epub, PDF, a saved web page), pasted Markdown or a link; you choose whether they become notes or cards"><span class="md-btn-label">Import</span></button>
               <!-- Everything else lives behind one "⋯" so the toolbar is a single
                    row at every width. Ids are unchanged, so the existing
                    listeners (and syncMyDecksChrome's hidden/label handling for
@@ -2153,18 +2148,6 @@
                   </div>
                   <button class="md-menu-item" id="myDecksRefreshBtn" type="button" data-md-icon="refresh"><span>Refresh</span></button>
                   <button class="md-menu-item" id="myDecksTreeToggleAll" type="button" data-md-icon="expand" title="Expand or collapse all folders" hidden><span>Expand all</span></button>
-                  <div class="md-menu-group">Import</div>
-                  <label class="md-menu-item file-pick" id="myDecksImportEpubBtn" data-md-icon="book" title="Import an EPUB book as one folder with a file per chapter">
-                    <input id="myDecksImportEpubInput" type="file" accept=".epub,application/epub+zip" hidden>
-                    <span>Import EPUB</span>
-                  </label>
-                  <!-- One deck per paper, opening on its PDF tab. Nothing
-                       is extracted: the PDF stays the document and the deck's
-                       Notes tab is yours to write in. -->
-                  <label class="md-menu-item file-pick" id="myDecksImportPdfBtn" data-md-icon="book" title="Import a PDF as a file you read, highlight and make cards from — the PDF itself, laid out as its author left it">
-                    <input id="myDecksImportPdfInput" type="file" multiple accept=".pdf,application/pdf" hidden>
-                    <span>Import PDF</span>
-                  </label>
                   <button class="md-menu-item" id="myDecksRestoreBtn" type="button" data-md-icon="upload" title="Restore your library from a backup (.recall, or an older .zip / .json)"><span>Restore backup</span></button>
                   <input id="restoreFileInput" type="file" accept=".recall,.zip,.json,application/vnd.recall+zip,application/zip,application/x-zip-compressed,application/json,application/octet-stream" hidden>
                   <button class="md-menu-item" id="myDecksCheckImagesBtn" type="button" data-md-icon="search" title="Check every file for image references that no longer resolve"><span>Check for broken images</span></button>
@@ -2289,9 +2272,9 @@
             <p>Home and the menu (<strong>☰</strong>, top-left) both offer:</p>
             <ul class="help-list">
               <li><strong>+ New File</strong> — start a blank file and add cards or notes</li>
-              <li><strong>Import</strong> — choose one file from your device or a whole batch of them, paste Markdown, or fetch a link. Recall then shows what it found and asks whether it should become <strong>notes</strong>, <strong>cards</strong>, or <strong>both</strong>, and where it lands: <strong>separate files</strong> (one per source), <strong>one new file</strong>, or appended to the file you already have open. Nothing is created until you confirm</li>
-              <li><strong>My Files</strong> — every file you've studied, saved on this device and mirrored to the cloud</li>
+              <li><strong>My Files</strong> — every file you've studied, saved on this device and mirrored to the cloud. Its <strong>Import</strong> button is where everything comes in: choose one file from your device or a whole batch of them (Markdown, a <code>.recall</code> package, an <code>.epub</code> book, a PDF, or a saved web page), paste Markdown, or fetch a link. Recall then shows what it found and asks whether it should become <strong>notes</strong>, <strong>cards</strong>, or <strong>both</strong>, and where it lands: <strong>separate files</strong> (one per source), <strong>one new file</strong>, or appended to the file you already have open. Nothing is created until you confirm</li>
             </ul>
+            <p><strong>Web pages.</strong> A link is fetched and turned into notes; for a page you are signed in to, save it in your browser first (Chrome on a phone: <strong>⋮ → Download page</strong>; on a computer: <strong>Save page as</strong>) and import the saved <code>.mhtml</code> or <code>.html</code>. Either way the page's ads, menus, cookie banners, sidebars and comments are removed and only the article is kept — the review step says what was taken out, and <strong>Keep everything</strong> brings the whole page back if something you wanted went with it. Its pictures are copied into your own image storage when you confirm, so they keep showing even if the site changes; a site that refuses direct copies is reached through the public image proxy <code>wsrv.nl</code>, which sees only the picture's address.</p>
             <p>A plain Markdown page with ordinary headings is imported as <strong>notes</strong> by default — it is a document, not a stack of cards. Pick <strong>Cards</strong> in the review step if you do want each heading turned into a card.</p>
           </section>
 
@@ -2322,7 +2305,7 @@
 
           <section class="help-section">
             <h3 class="help-section-title">PDFs 📄 — read the paper, not a translation of it</h3>
-            <p>Drop a <code>.pdf</code> into <strong>Import</strong> (or <strong>My Files → ⋯ → Import PDF</strong>) and you get one file per paper, opening on its <strong>PDFs</strong> tab, beside Cards and Notes. The page is the PDF itself, laid out exactly as its author left it — two columns, display maths, figures and all. Nothing is extracted and nothing is re-rendered to images, so nothing is lost on the way in.</p>
+            <p>Pick a <code>.pdf</code> in <strong>My Files → Import</strong> and you get one file per paper, opening on its <strong>PDFs</strong> tab, beside Cards and Notes. The page is the PDF itself, laid out exactly as its author left it — two columns, display maths, figures and all. Nothing is extracted and nothing is re-rendered to images, so nothing is lost on the way in.</p>
             <p><strong>Already have the file, and the paper turned up later?</strong> Open it and press its <strong>📄 PDFs</strong> tab. Every file has one; on a file with no PDF it opens to <strong>Attach a PDF to read it here</strong>, and the PDF you pick becomes that file's PDF — with any highlights already in it imported, exactly as an import would — while the file's title, cards and notes are left as they are. (The side menu used to carry <strong>📄 Attach a PDF…</strong> as well; it did the identical thing, and the tab is the place you are already standing when you want it.) A file that already <em>has</em> a PDF uses <strong>PDF ⋯ → Re-attach the PDF…</strong> instead, which checks it really is the same PDF first, because a highlight is a position in one exact PDF.</p>
             <p><strong>More than one PDF in a file?</strong> <strong>PDF ⋯ → Add another PDF…</strong> puts a second one beside the first, and a dropdown next to ⋯ switches between them. They are listed in the order they were added until you choose otherwise: <strong>⇅ Arrange PDFs…</strong> at the bottom of that dropdown (or in the ⋯ menu) opens a list you drag into your own order by each paper's <strong>⠿</strong> grip — with a finger on a phone, or the mouse — or move with its ↑ ↓ arrows. <strong>Done</strong> keeps the order, and it syncs to your other devices.</p>
             <p><strong>Where the file itself is kept.</strong> On this device first — which is what makes a paper readable with no connection — and in <strong>an S3-compatible bucket you supply</strong>, so the same paper opens on a phone that has never seen it. A bucket rather than your Supabase project, because one paper can outweigh a hundred figures and a handful of them would spend the free tier's whole gigabyte; Cloudflare R2 gives 10&nbsp;GB free with no charge for downloads. Set it up once under <strong>☰ → Storage &amp; Data → PDF storage</strong> — four values pasted once on any device, and every device you sign in on picks them up at its next sync. Until you do, papers still import and still open; they stay on the device you imported them on, and go up by themselves at the first sync after the bucket is added. Papers uploaded before this changed — to Google Drive, or to Supabase before that — are still where they were and still open, and the same panel moves them across when you want the space back.</p>
@@ -2506,7 +2489,7 @@
               <li><strong>Edits are combined, never thrown away</strong> — like merging in Git. If two devices (or two windows on one device) change different paragraphs, cards or highlights, both changes are kept. Two different edits to the same paragraph are even merged word by word. Only when both changed the <em>same words</em> differently does the pill say <strong>Both devices changed a paragraph — tap to choose</strong>: you see just that paragraph (or card), both versions side by side, and pick one or keep both. Each note is kept as one copy — there is no pile of old versions</li>
               <li><strong>The pill says where your edits are</strong> — <strong>Saved here · syncs soon</strong> means the edit is safe on this device and not in the cloud yet; <strong>Synced</strong> means the cloud has everything</li>
               <li><strong>My Files</strong> — every file, on this device and in the cloud, with a live sync-status column. Per file: <strong>Load</strong>, <strong>Export</strong> (PDF / Markdown / JSON / SQL), <strong>Rename</strong>, <strong>Delete</strong>, and an inline <strong>category editor</strong>. Filter by category, select several files for <strong>bulk Load / Categorize / Export / Delete</strong>, or <strong>Export All</strong> to back up the whole library. Deletes propagate to your other devices</li>
-              <li><strong>Back up &amp; share with .recall files</strong> — <strong>⋯ → Back up library (.recall)</strong> saves everything (files, cards, notes, PDFs, Canvas pages, highlights, ink, pictures, folders, reading positions and settings) in one .recall package, with a live panel showing every file, image and PDF as it goes; <strong>⋯ → Restore backup</strong> merges it back. To give files to someone else, select them and choose <strong>Export → Share (.recall — everything)</strong>: they open the package with <strong>Import</strong> (or drop it on the app) and get the files as their own, PDFs and all. Your study progress stays out unless you tick it in, and importing the same package again offers to <strong>update</strong> the files instead of duplicating them</li>
+              <li><strong>Back up &amp; share with .recall files</strong> — <strong>⋯ → Back up library (.recall)</strong> saves everything (files, cards, notes, PDFs, Canvas pages, highlights, ink, pictures, folders, reading positions and settings) in one .recall package, with a live panel showing every file, image and PDF as it goes; <strong>⋯ → Restore backup</strong> merges it back. To give files to someone else, select them and choose <strong>Export → Share (.recall — everything)</strong>: they open the package with <strong>My Files → Import</strong> (or drop it on the app) and get the files as their own, PDFs and all. Your study progress stays out unless you tick it in, and importing the same package again offers to <strong>update</strong> the files instead of duplicating them</li>
               <li><strong>Exporting the file you have open</strong> is not in this menu — it is the <strong>⇓</strong> beside the Cards / Notes / PDFs / Canvas tabs, which always offers the formats for the tab you are on: the cards as Cornell PDF, Markdown, JSON or SQL; the notes as PDF, HTML, Word or Markdown; a paper as its annotated pages, all its pages, the notes alone or the original file. <strong>Highlights…</strong> sits at the bottom of that menu on Notes and PDF</li>
             </ul>
             <p>Every cloud action gives you instant feedback: a notification slides up at the bottom of the screen confirming it worked — for example <span class="help-toast-chip"><span class="help-toast-chip-icon">✓</span> File deleted everywhere</span> or <span class="help-toast-chip help-toast-chip-err"><span class="help-toast-chip-icon">✕</span> Sync failed</span> — so you never have to wonder whether your sync, load, or delete went through. Tap ×, or swipe it away, to dismiss it early.</p>
