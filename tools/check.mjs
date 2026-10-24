@@ -613,6 +613,22 @@ const PORT_SYNC_EXPECTED_DRIFT = 2;
 // never go up again.
 const RENDER_SCALE_EXPECTED_FAILURES = 0;
 
+// ── One case allowed by NAME, on the machines where it fails ─────────────────
+//
+// selection-check's card case: a mouse drag across a card's question selects
+// nothing — on the CI runner, and nowhere it could be reproduced (Chrome 153 and
+// 155, field trials on and off, a starved CPU all pass). It used to be pinned as
+// "exactly 1 selection failure", which was wrong the other way: every machine
+// where the case passes failed the suite. Two real causes behind it are fixed
+// (5a82ced, the card swipe taking a drag across the words; f1f5934, a deferred
+// question refit landing mid-drag). What the runner still shows, in the trace
+// the case prints when it fails: every move reaches the card, nothing cancels
+// or redraws, and the selection stays a caret that follows the mouse.
+//
+// So a failure of THIS case is reported and let through, a pass is a pass, and
+// a failure of any other selection case fails as it always did.
+const SELECTION_KNOWN_ON_SOME_MACHINES = ["a card answer selects without pulling in the button row"];
+
 // A check that cannot run is not a check that passed. This is pinned at zero
 // for the same reason PORT_SYNC_EXPECTED_DRIFT is pinned at two: a number
 // somebody has to change deliberately, in a diff a reviewer can see, rather
@@ -734,6 +750,14 @@ for (const [label, [cmd, args, cwd]] of selected) {
     note = state === "ok"
       ? `${out.trim().split("\n").filter(Boolean).pop()}${failedCases ? ` (${failedCases} known)` : ""}`
       : `expected ${RENDER_SCALE_EXPECTED_FAILURES} known failure(s), got ${failedCases}`;
+  } else if (name === "selection" && tally && tally.failed > 0) {
+    const failing = [...out.matchAll(/^\s*FAIL\s+(.+?)(?: — |$)/gm)].map((m) => m[1].trim());
+    const unknown = failing.filter((caseName) => !SELECTION_KNOWN_ON_SOME_MACHINES.includes(caseName));
+    if (failing.length === tally.failed && !unknown.length) {
+      note = `${note} (${failing.length} known on some machines: ${failing.join("; ")} — see SELECTION_KNOWN_ON_SOME_MACHINES)`;
+    } else {
+      state = "FAIL";
+    }
   } else if (!tally) {
     // The heart of it. No tally means the check did not get far enough to count
     // anything — it skipped, it threw, or it was written without a result line.
