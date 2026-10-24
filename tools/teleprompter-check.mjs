@@ -15,7 +15,11 @@
 // suspended while it runs and returned after; the end of the note is said, not
 // silently sat at; another tab pauses it and the raw editor ends it; a press
 // on Home saves the place it had reached; and on a phone the bar fits and no
-// notification covers it or the selection pill.
+// notification covers it or the selection pill. Then: the text moves on every
+// frame by an even step (scrollTop alone holds whole pixels, and moved in
+// jumps), with no long task; paused, the note carries no transform; By hand
+// keeps the band and moves nothing; and the time left is what the run then
+// takes, on a note of lists, tables and code.
 //
 // Same harness as notes-menu-check: the app's own modules imported into the
 // page, a fake Supabase client, one fixture file created and opened in Notes.
@@ -79,6 +83,28 @@ const FIXTURE = [
   "# An imported article",
   "",
   ...Array.from({ length: 120 }, (_, i) => `Paragraph ${i + 1}. ${SENTENCE}. ${SENTENCE.toLowerCase()} once more, so the paragraph wraps onto several lines.\n`)
+].join("\n");
+
+
+// A note that is not all prose, for the time left: lists of links, tables and
+// code, each of which the markdown counts as words the reading does not, or
+// the reading scrolls past at a pace no word count gives it.
+const MIXED_FIXTURE = [
+  "# A mixed note",
+  "",
+  ...Array.from({ length: 6 }, (_, k) => [
+    ...Array.from({ length: 4 }, (_, i) => `Paragraph ${k * 4 + i + 1}. ${SENTENCE}. ${SENTENCE.toLowerCase()} once more.\n`),
+    ...Array.from({ length: 6 }, (_, i) => `- [Further reading ${k}.${i + 1}](https://example.com/articles/${k}/${i}/a-rather-long-path-name) — one line on why, part ${k}`),
+    "",
+    "| Term | Meaning | Where |",
+    "| --- | --- | --- |",
+    ...Array.from({ length: 5 }, (_, i) => `| term ${k}.${i} | what it means in a few words | section ${k}.${i} |`),
+    "",
+    "```js",
+    ...Array.from({ length: 10 }, (_, i) => `const value${k}_${i} = compute(${k * 10 + i}, "some argument", { option: true });`),
+    "```",
+    ""
+  ]).flat()
 ].join("\n");
 
 const SETUP_SRC = `async (apiSrc, fixture) => {
@@ -753,6 +779,194 @@ try {
     if (seen.pill.toast == null || seen.bar.toast == null) return "no toast showed";
     if (seen.pill.toast > seen.pill.top) return `the toast's foot (${Math.round(seen.pill.toast)}) is over the pill (top ${Math.round(seen.pill.top)})`;
     if (seen.bar.toast > seen.bar.top) return `the toast's foot (${Math.round(seen.bar.toast)}) is over the bar (top ${Math.round(seen.bar.top)})`;
+    return null;
+  });
+
+  // ── Smooth, by hand, and the time left ──────────────────────────────────
+  await emulateDesktop();
+  await page.goto(`${server.base}/index.html`);
+  await page.evaluate(SETUP_SRC, API_SRC, FIXTURE);
+
+  // A setting, through the sheet as the reader would set it.
+  const setSetting = (key, value) => page.evaluate(`(key, value) => {
+    const choice = document.querySelector('[data-tp-choice="' + key + '"][data-tp-choice-value="' + value + '"]');
+    if (choice) { choice.click(); return true; }
+    const box = document.querySelector('[data-tp-number="' + key + '"]');
+    if (!box) return false;
+    box.value = String(value);
+    box.dispatchEvent(new Event("change", { bubbles: true }));
+    return true;
+  }`, key, value);
+
+  await check("playing, the text moves on every frame by an even step — no whole-pixel judder, no long task", async () => {
+    await page.evaluate(`() => { if (!window.__recall.api.teleprompterActive()) window.__recall.api.toggleTeleprompter(); }`);
+    await setSetting("countdown", 0);
+    await setSetting("wpm", 200);
+    await page.evaluate(`() => window.__recall.api.resumeTeleprompter()`);
+    await waitPhase("playing", 3000);
+    await sleep(1200);
+    const seen = await page.evaluate(`async () => {
+      const view = document.getElementById("notesView");
+      const longs = [];
+      const observer = new PerformanceObserver((list) => { for (const entry of list.getEntries()) longs.push(Math.round(entry.duration)); });
+      observer.observe({ type: "longtask" });
+      // Where the text really is: scrollTop, and the part of a pixel the
+      // transform carries.
+      const at = () => view.scrollTop - (parseFloat((view.style.translate || "0 0").split(" ")[1]) || 0);
+      const steps = [];
+      await new Promise((resolve) => {
+        let last = at();
+        const started = performance.now();
+        const frame = (now) => {
+          const y = at();
+          steps.push(y - last);
+          last = y;
+          if (now - started < 6000) requestAnimationFrame(frame);
+          else resolve();
+        };
+        requestAnimationFrame(frame);
+      });
+      observer.disconnect();
+      const sorted = [...steps].sort((a, b) => a - b);
+      const median = sorted[sorted.length >> 1];
+      return {
+        frames: steps.length,
+        still: steps.filter((step) => step === 0).length,
+        uneven: steps.filter((step) => Math.abs(step - median) > median * 0.6).length,
+        median,
+        longs
+      };
+    }`);
+    if (seen.still > 0) return `${seen.still} of ${seen.frames} frames did not move the text`;
+    if (seen.uneven > seen.frames * 0.05) return `${seen.uneven} of ${seen.frames} steps were far from the usual ${seen.median.toFixed(3)}px`;
+    if (seen.longs.some((ms) => ms > 50)) return `long tasks while playing: ${seen.longs.join(", ")}ms`;
+    return null;
+  });
+
+  await check("paused, the note carries no transform: what is selected is where it looks", async () => {
+    const during = await pressText();
+    if (during?.phase !== "paused") return `the press left it ${during?.phase}`;
+    const seen = await page.evaluate(`() => {
+      const view = document.getElementById("notesView");
+      return { translate: view.style.translate, transform: view.style.transform, willChange: view.style.willChange };
+    }`);
+    if (seen.translate || seen.transform || seen.willChange) return `still on the note: ${JSON.stringify(seen)}`;
+    return null;
+  });
+
+  await check("By hand: the band, the dimming and the type stay, nothing moves the text but the reader", async () => {
+    await setSetting("scroll", "manual");
+    await sleep(300);
+    const first = await page.evaluate(`async () => {
+      const { api, settle } = window.__recall;
+      const view = document.getElementById("notesView");
+      const before = view.scrollTop;
+      await settle(1500);
+      const bar = document.querySelector(".tp-bar");
+      const shown = (selector) => { const node = bar.querySelector(selector); return Boolean(node && node.getBoundingClientRect().width > 0); };
+      return {
+        phase: api.teleprompterSnapshot().phase,
+        moved: view.scrollTop - before,
+        band: document.querySelector(".tp-overlay")?.classList.contains("has-band"),
+        overlay: getComputedStyle(document.querySelector(".tp-overlay")).opacity,
+        type: view.classList.contains("is-teleprompter") && Boolean(view.style.getPropertyValue("--notes-font-size")),
+        play: shown(".tp-play"),
+        slower: shown(".tp-slower"),
+        settings: shown(".tp-settings"),
+        close: shown(".tp-close"),
+        left: bar.querySelector(".tp-left").textContent,
+        status: bar.querySelector(".tp-status").textContent,
+        auto: api.notesAutoScrolling()
+      };
+    }`);
+    if (first.phase !== "manual") return `choosing By hand left it ${first.phase}`;
+    if (first.moved !== 0) return `the text moved ${first.moved}px by itself`;
+    if (!first.band || first.overlay !== "1") return `the band is not up (band ${first.band}, opacity ${first.overlay})`;
+    if (!first.type) return "the teleprompter's type was taken off";
+    if (first.play || first.slower) return "▶ or the speed buttons still show, with nothing to play";
+    if (!first.settings || !first.close) return "⚙ or ✕ is gone";
+    if (!/left/.test(first.left)) return `no time left on the bar ("${first.left}")`;
+    if (first.auto) return "notesAutoScrolling() is on, so the reading speed would not learn from this";
+    // A wheel is the reader scrolling: it moves the text and pauses nothing.
+    const box = await page.evaluate(`() => { const r = document.getElementById("notesView").getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; }`);
+    const top0 = await page.evaluate(`() => document.getElementById("notesView").scrollTop`);
+    await page.call("Input.dispatchMouseEvent", { type: "mouseWheel", x: box.x, y: box.y, deltaX: 0, deltaY: 400 });
+    await sleep(600);
+    const after = await page.evaluate(`() => ({ top: document.getElementById("notesView").scrollTop, phase: window.__recall.api.teleprompterSnapshot().phase })`);
+    if (!(after.top > top0 + 50)) return `the wheel moved the text ${after.top - top0}px`;
+    if (after.phase !== "manual") return `the wheel left it ${after.phase}`;
+    // Space is the browser's again, not ▶.
+    await key(" ", "Space", 32);
+    if ((await snap()).phase !== "manual") return "Space started it while scrolling by hand";
+    return null;
+  });
+
+  await check("By hand is kept for the next session, and By itself comes back paused, ▶ to press", async () => {
+    const seen = await page.evaluate(`async () => {
+      const { api, settle } = window.__recall;
+      api.exitTeleprompter();
+      await settle(200);
+      api.toggleTeleprompter();
+      await settle(400);
+      const again = api.teleprompterSnapshot();
+      const count = document.querySelector(".tp-countdown")?.hidden === false;
+      return { phase: again.phase, scroll: again.settings.scroll, count };
+    }`);
+    if (seen.phase !== "manual" || seen.scroll !== "manual") return `a new session started ${seen.phase} (scroll: ${seen.scroll})`;
+    if (seen.count) return "a countdown showed, with nothing to count down to";
+    await setSetting("scroll", "auto");
+    await sleep(300);
+    const back = await page.evaluate(`async () => {
+      const view = document.getElementById("notesView");
+      const before = view.scrollTop;
+      await window.__recall.settle(800);
+      const play = document.querySelector(".tp-bar .tp-play");
+      return { phase: window.__recall.api.teleprompterSnapshot().phase, moved: view.scrollTop - before, play: play.getBoundingClientRect().width > 0 };
+    }`);
+    if (back.phase !== "paused") return `By itself left it ${back.phase}`;
+    if (back.moved) return `the text moved ${back.moved}px before ▶ was pressed`;
+    if (!back.play) return "no ▶ to press";
+    return null;
+  });
+
+  await check("the time left is what the run then takes, on a note of lists, tables and code", async () => {
+    const words = await page.evaluate(`async (fixture) => {
+      const { api, settle } = window.__recall;
+      api.exitTeleprompter();
+      await settle(200);
+      api.state.notes = fixture;
+      api.setNotesScrolledSource(null);
+      await api.renderNotesView();
+      await settle(600);
+      document.getElementById("notesView").scrollTop = 0;
+      await settle(300);
+      api.toggleTeleprompter();
+      await settle(300);
+      return document.getElementById("notesView").textContent.split(/\\s+/).filter(Boolean).length;
+    }`, MIXED_FIXTURE);
+    await setSetting("wpm", 3000);
+    await page.evaluate(`() => window.__recall.api.resumeTeleprompter()`);
+    await waitPhase("playing", 3000);
+    await sleep(12000);
+    const estimates = [];
+    const first = await snap();
+    const estimate = first.leftMs;
+    const started = Date.now();
+    for (;;) {
+      const now = await snap();
+      if (now.phase === "ended") break;
+      if (Number.isFinite(now.leftMs)) estimates.push(now.leftMs);
+      if (Date.now() - started > 180000) return "the note never reached its end";
+      await sleep(500);
+    }
+    const actual = Date.now() - started;
+    const error = (estimate - actual) / actual;
+    let rises = 0;
+    for (let i = 1; i < estimates.length; i += 1) if (estimates[i] > estimates[i - 1] * 1.1 + 1000) rises += 1;
+    console.log(`        time left: said ${(estimate / 1000).toFixed(1)}s, took ${(actual / 1000).toFixed(1)}s (${(error * 100).toFixed(1)}%), ${words} words on screen, sigma ${first.sourceWordsPerPx?.toFixed(3)} vs ${first.wordsPerPx?.toFixed(3)} words/px`);
+    if (!Number.isFinite(estimate)) return "no estimate while playing";
+    if (Math.abs(error) > 0.1) return `said ${(estimate / 1000).toFixed(1)}s left, it took ${(actual / 1000).toFixed(1)}s`;
+    if (rises) return `the estimate went back up ${rises} time(s) along the way`;
     return null;
   });
 } finally {

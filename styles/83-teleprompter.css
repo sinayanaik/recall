@@ -293,6 +293,15 @@
   display: inline-flex;
 }
 
+/* Scrolling by hand: nothing to play and no speed to set, so only the time
+   left stays of the middle of the bar. */
+.tp-bar[data-phase="manual"] .tp-play,
+.tp-bar[data-phase="manual"] .tp-slower,
+.tp-bar[data-phase="manual"] .tp-faster,
+.tp-bar[data-phase="manual"] .tp-wpm {
+  display: none;
+}
+
 .tp-status {
   position: absolute;
   width: 1px;

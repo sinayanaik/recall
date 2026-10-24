@@ -539,7 +539,23 @@ export function noteNotesScroll() {
 export function noteNotesProgress(anchor, key) {
   if (state.viewMode !== "notes" || key !== currentDeckKey()) return;
   if (!Number.isFinite(anchor?.offset)) return;
-  adopt(settleReading(measureNotes(anchor.offset)));
+  const reading = settleReading(measureNotes(anchor.offset));
+  adopt(reading);
+  exactNotesReading = reading && isDisplayed(el.notesView) && !isNotesPaged()
+    ? { key, source: state.notes || "", wordsLeft: Math.max(0, reading.total - reading.pos), scrollTop: el.notesView.scrollTop, at: performance.now() }
+    : null;
+}
+
+// The last EXACT reading of the note on screen — a captured anchor, never the
+// scroll-following estimate between two — with the scrollTop it was taken at.
+// For the teleprompter's time left, which learns from these how many of the
+// note's words go to a pixel at its own type (src/notes/teleprompter.js).
+let exactNotesReading = null;
+
+export function lastExactNotesReading() {
+  const reading = exactNotesReading;
+  if (!reading || reading.key !== currentDeckKey() || reading.source !== (state.notes || "")) return null;
+  return reading;
 }
 
 // The heartbeat (src/stats/activity.js): re-measure, count the active time
