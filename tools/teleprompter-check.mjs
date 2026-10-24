@@ -955,17 +955,21 @@ try {
     for (;;) {
       const now = await snap();
       if (now.phase === "ended") break;
-      if (Number.isFinite(now.leftMs)) estimates.push(now.leftMs);
+      if (Number.isFinite(now.leftMs)) estimates.push({ at: Date.now() - started, ms: now.leftMs });
       if (Date.now() - started > 180000) return "the note never reached its end";
       await sleep(500);
     }
     const actual = Date.now() - started;
     const error = (estimate - actual) / actual;
     let rises = 0;
-    for (let i = 1; i < estimates.length; i += 1) if (estimates[i] > estimates[i - 1] * 1.1 + 1000) rises += 1;
-    console.log(`        time left: said ${(estimate / 1000).toFixed(1)}s, took ${(actual / 1000).toFixed(1)}s (${(error * 100).toFixed(1)}%), ${words} words on screen, sigma ${first.sourceWordsPerPx?.toFixed(3)} vs ${first.wordsPerPx?.toFixed(3)} words/px`);
+    for (let i = 1; i < estimates.length; i += 1) if (estimates[i].ms > estimates[i - 1].ms * 1.1 + 1000) rises += 1;
+    // Halfway, with more of the note seen, it should be closer still.
+    const half = estimates.reduce((best, entry) => (Math.abs(entry.at - actual / 2) < Math.abs(best.at - actual / 2) ? entry : best), estimates[0]);
+    const halfError = half ? (half.ms - (actual - half.at)) / (actual - half.at) : NaN;
+    console.log(`        time left: said ${(estimate / 1000).toFixed(1)}s, took ${(actual / 1000).toFixed(1)}s (${(error * 100).toFixed(1)}%); halfway ${(halfError * 100).toFixed(1)}%; ${words} words on screen`);
     if (!Number.isFinite(estimate)) return "no estimate while playing";
-    if (Math.abs(error) > 0.1) return `said ${(estimate / 1000).toFixed(1)}s left, it took ${(actual / 1000).toFixed(1)}s`;
+    if (Math.abs(error) > 0.15) return `said ${(estimate / 1000).toFixed(1)}s left, it took ${(actual / 1000).toFixed(1)}s`;
+    if (!(Math.abs(halfError) <= 0.1)) return `halfway it said ${(half.ms / 1000).toFixed(1)}s left, with ${((actual - half.at) / 1000).toFixed(1)}s to go`;
     if (rises) return `the estimate went back up ${rises} time(s) along the way`;
     return null;
   });

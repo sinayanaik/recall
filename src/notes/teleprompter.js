@@ -737,6 +737,10 @@ const SIGMA_MIN_PX = 200;
 // of the moment.
 const PACE_TRUST_S = 3;
 
+// A new exact reading corrects the estimate over this long rather than at
+// once, so the number keeps counting down instead of jumping back up.
+const LEFT_SETTLE_MS = 4000;
+
 function forgetTimeLeftLearning() {
   if (!teleprompterSession) return;
   teleprompterSession.sigma = 0;
@@ -746,22 +750,24 @@ function forgetTimeLeftLearning() {
   teleprompterSession.pacePx = 0;
   teleprompterSession.paceWpmSeconds = 0;
   teleprompterSession.paceSeconds = 0;
+  teleprompterSession.leftCarry = null;
 }
 
+// True when a reading was taken in.
 function foldExactReading() {
   const session = teleprompterSession;
   const exact = lastExactNotesReading();
-  if (!exact || exact.at <= session.exactAt || exact.at < session.typeAt) return;
+  if (!exact || exact.at <= session.exactAt || exact.at < session.typeAt) return false;
   session.exactAt = exact.at;
   // Taken with Notes' reading line still in the lead-in above the first line:
   // all the words are still to come at a scroll that has passed none of them,
   // which would have a pixel hold too few words for every reading after it.
-  if (exact.scrollTop + (session.readingLine || 0) < (session.textTop || 0)) return;
+  if (exact.scrollTop + (session.readingLine || 0) < (session.textTop || 0)) return false;
   const base = session.sigmaBase;
   const fix = session.leftFix;
   // Further down with more words still to go cannot be: an anchor that found
   // the same words earlier in the note. Not learned from, not shown.
-  if (fix && exact.scrollTop >= fix.scrollTop && exact.wordsLeft > fix.wordsLeft) return;
+  if (fix && exact.scrollTop >= fix.scrollTop && exact.wordsLeft > fix.wordsLeft) return false;
   // Back up the note is a new start, not a reading to learn from.
   if (!base || exact.scrollTop < base.scrollTop) {
     session.sigmaBase = exact;
@@ -771,16 +777,33 @@ function foldExactReading() {
     if (px >= SIGMA_MIN_PX && words > 0) session.sigma = words / px;
   }
   session.leftFix = exact;
+  return true;
+}
+
+// What is left of the last correction, fading to nothing over LEFT_SETTLE_MS.
+function leftCarryMs(now) {
+  const carry = teleprompterSession.leftCarry;
+  if (!carry) return 0;
+  return carry.ms * Math.max(0, 1 - (now - carry.at) / LEFT_SETTLE_MS);
 }
 
 function teleprompterTimeLeftMs() {
   const session = teleprompterSession;
-  const view = el.notesView;
   if (!session || session.phase === "ended") return null;
   // By hand: the reader's own speed, as the progress row reckons it.
   if (session.phase === "manual") return readingTimeLeft()?.leftMs ?? null;
   if (!session.wpm) return null;
-  foldExactReading();
+  const now = performance.now();
+  const before = session.leftFix ? rawTimeLeftMs() : null;
+  const after = foldExactReading() ? rawTimeLeftMs() : before;
+  if (after == null) return null;
+  if (before != null && after !== before) session.leftCarry = { ms: leftCarryMs(now) + before - after, at: now };
+  return Math.max(0, after + leftCarryMs(now));
+}
+
+function rawTimeLeftMs() {
+  const session = teleprompterSession;
+  const view = el.notesView;
   const rho = session.wordsPerPx;
   const fix = session.leftFix;
   if (fix && rho > 0 && view) {
@@ -873,6 +896,7 @@ export function startTeleprompter() {
     sigma: 0,
     sigmaBase: null,
     leftFix: null,
+    leftCarry: null,
     exactAt: 0,
     pacePx: 0,
     paceWpmSeconds: 0,
