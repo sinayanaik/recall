@@ -45,8 +45,9 @@
 // (src/notes/teleprompter-pace.js) counts that time as owed, and the segments
 // after it are read up to a quarter faster until it is made up.
 //
-// As in Notes, scrollTop and scrollLeft hold whole pixels only, and the part of
-// a pixel they cannot is a `translate` on the scroller while the frames run
+// As in Notes, scrollTop and scrollLeft hold whole pixels only, and on a screen
+// with more than one device pixel to a CSS pixel the part of one they cannot
+// is a `translate` on the scroller while the frames run, in device pixels
 // (placePdfSubPixel) — see the header of src/notes/teleprompter.js.
 //
 // ── By hand ────────────────────────────────────────────────────────────────
@@ -683,25 +684,50 @@ function writeScroll(view, top, left, { fine = false } = {}) {
 
 // ── The part of a pixel ─────────────────────────────────────────────────────
 //
-// As the note's (src/notes/teleprompter.js): the `translate` property on the
-// scroller, with `will-change` so the compositor moves the pages it has rather
-// than drawing them again. A transformed box is the offsetParent of the pages
-// inside it, which pageOffsetTop and pageOffsetLeft (pdf-view.js) allow for.
+// As the note's (src/notes/teleprompter.js): a `translate` on the scroller,
+// with `will-change` so the compositor moves the pages it has rather than
+// drawing them again. In device pixels, and only when that changes: a screen
+// with one device pixel to a CSS pixel gets none (it could only blur the
+// page), and every new value restyles the scroller and everything placed
+// under it. Through an animation held still, never the style attribute —
+// with the `[style*=…]` selectors in the frozen CSS, each write to that
+// re-checked the whole subtree, every text-layer span of every page drawn. A
+// transformed box is the offsetParent of the pages inside it, which
+// pageOffsetTop and pageOffsetLeft (pdf-view.js) allow for.
+
+function pdfDevicePixel(value) {
+  const ratio = typeof devicePixelRatio === "number" && devicePixelRatio > 0 ? devicePixelRatio : 1;
+  return ratio > 1 ? Math.round(value * ratio) / ratio : 0;
+}
 
 function placePdfSubPixel(view, fractionTop, fractionLeft) {
-  const top = Math.round(fractionTop * 100) / 100;
-  const left = Math.round(fractionLeft * 100) / 100;
+  const top = pdfDevicePixel(fractionTop);
+  const left = pdfDevicePixel(fractionLeft);
   const shown = pdfSession.subPixel;
-  if (shown.on && shown.top === top && shown.left === left) return;
-  if (!shown.on) view.style.willChange = "translate";
+  if (!shown.on && !top && !left) return;
+  if (shown.on && Math.abs(shown.top - top) < 0.001 && Math.abs(shown.left - left) < 0.001) return;
+  const at = `${-left}px ${-top}px`;
+  let motion = pdfSession.subPixelMotion;
+  if (!shown.on) {
+    view.style.willChange = "translate";
+    if (typeof view.animate === "function") {
+      motion = view.animate([{ translate: at }, { translate: at }], { duration: 1000, fill: "both" });
+      motion.pause();
+      pdfSession.subPixelMotion = motion;
+    }
+  } else if (motion) {
+    motion.effect.setKeyframes([{ translate: at }, { translate: at }]);
+  }
   pdfSession.subPixel = { on: true, top, left };
-  view.style.translate = `${-left}px ${-top}px`;
+  if (!motion) view.style.translate = at;
 }
 
 function clearPdfSubPixel(view) {
   if (!pdfSession?.subPixel.on || !view) return;
   pdfSession.subPixel = { on: false, top: 0, left: 0 };
-  view.style.translate = "";
+  if (pdfSession.subPixelMotion) pdfSession.subPixelMotion.cancel();
+  else view.style.translate = "";
+  pdfSession.subPixelMotion = null;
   view.style.willChange = "";
 }
 
@@ -1170,6 +1196,7 @@ export function startPdfTeleprompter() {
     wakeRequested: false,
     resizeObserver: null,
     subPixel: { on: false, top: 0, left: 0 },
+    subPixelMotion: null,
     clock: newWordClock(),
     pageMs: new Map(),
     pageMsKey: "",

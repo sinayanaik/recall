@@ -15,9 +15,11 @@
 // suspended while it runs and returned after; the end of the note is said, not
 // silently sat at; another tab pauses it and the raw editor ends it; a press
 // on Home saves the place it had reached; and on a phone the bar fits and no
-// notification covers it or the selection pill. Then: the text moves on every
-// frame by an even step (scrollTop alone holds whole pixels, and moved in
-// jumps), with no long task; paused, the note carries no transform; By hand
+// notification covers it or the selection pill; and by hand on a phone, taps
+// in quick succession keep the session and a resize under a finger moves
+// nothing. Then: the text moves evenly — a whole pixel at a time on a desktop,
+// a device pixel at a time on a phone — with nothing written to the note's
+// style and no long task; paused, the note carries no transform; By hand
 // keeps the band and moves nothing; and the time left is what the run then
 // takes, on a note of lists, tables and code. Last: the words a minute set are
 // the words a minute read — counted block by block as they cross the band — on
@@ -754,6 +756,92 @@ try {
     if (seen.small.length) return `too small to press: ${seen.small.join(", ")}`;
     return null;
   });
+
+  // By hand on a phone: a session opened and set to scroll by hand through the
+  // sheet, as the reader would.
+  const openByHand = () => page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    api.commitNotesEditIfActive();
+    if (!api.teleprompterActive()) api.toggleTeleprompter();
+    await settle(400);
+    [...document.querySelectorAll("[data-tp-choice]")].find((b) => b.dataset.tpChoice === "scroll" && b.dataset.tpChoiceValue === "manual")?.click();
+    await settle(300);
+    return api.teleprompterSnapshot()?.phase;
+  }`);
+  const handState = () => page.evaluate(`() => ({
+    phase: window.__recall.api.teleprompterSnapshot()?.phase ?? null,
+    editing: window.__recall.api.isNotesEditing(),
+    top: document.getElementById("notesView").scrollTop,
+    lead: document.getElementById("notesView").style.getPropertyValue("--tp-lead")
+  })`);
+  const touchDrag = async (x, from, to, steps = 10) => {
+    await page.call("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y: from }] });
+    for (let i = 1; i <= steps; i += 1) {
+      await page.call("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y: Math.round(from + ((to - from) * i) / steps) }] });
+      await sleep(16);
+    }
+  };
+
+  // "Touch and scroll takes me back to normal Notes": three quick taps are a
+  // triple click to the browser, and a triple click on the note opens the raw
+  // editor — which ended the session and dropped the reader at the top.
+  await check("on a phone, By hand: taps and drags in quick succession keep the teleprompter, and the place", async () => {
+    const phase = await openByHand();
+    if (phase !== "manual") return `choosing By hand left it ${phase}`;
+    await touchDrag(200, 600, 300);
+    await page.call("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    await sleep(700);
+    const scrolled = await handState();
+    if (!(scrolled.top > 100)) return `a finger drag moved the note to ${scrolled.top}px`;
+    for (let i = 0; i < 3; i += 1) {
+      await page.call("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: 200, y: 420 }] });
+      await page.call("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+      await sleep(110);
+    }
+    await sleep(700);
+    const after = await handState();
+    if (after.editing) return "three taps opened the raw editor";
+    if (after.phase !== "manual") return `three taps left it ${after.phase}`;
+    if (Math.abs(after.top - scrolled.top) > 2) return `three taps moved the note from ${scrolled.top}px to ${after.top}px`;
+    return null;
+  });
+
+  // The URL bar comes and goes as a phone scrolls by hand, and each time the
+  // note is resized. Resizing the lead-in then — with the scrollTop write that
+  // keeps the text still through it — moved the text under the finger.
+  await check("on a phone, By hand: a resize under a finger moves nothing until the finger lifts", async () => {
+    const phase = await openByHand();
+    if (phase !== "manual") return `choosing By hand left it ${phase}`;
+    await touchDrag(200, 600, 520, 6);
+    await sleep(300);
+    const held = await handState();
+    await page.call("Emulation.setDeviceMetricsOverride", { width: 390, height: 784, deviceScaleFactor: 2, mobile: true });
+    await sleep(400);
+    const resized = await handState();
+    await page.call("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    await sleep(900);
+    const lifted = await handState();
+    if (resized.top !== held.top) return `the resize moved the note under the finger, ${held.top}px → ${resized.top}px`;
+    if (resized.lead !== held.lead) return `the lead-in changed under the finger, ${held.lead} → ${resized.lead}`;
+    if (lifted.lead === held.lead) return `the lead-in was never put right after the finger lifted (still ${lifted.lead})`;
+    if (lifted.phase !== "manual") return `it left By hand (${lifted.phase})`;
+    return null;
+  });
+
+  // Whatever the two above found: the phone's size back, By itself kept for
+  // the cases after, and no session left open.
+  await emulatePhone(page, { width: 390, height: 844 });
+  await sleep(600);
+  await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    api.commitNotesEditIfActive();
+    if (!api.teleprompterActive()) api.toggleTeleprompter();
+    await settle(300);
+    [...document.querySelectorAll("[data-tp-choice]")].find((b) => b.dataset.tpChoice === "scroll" && b.dataset.tpChoiceValue === "auto")?.click();
+    api.exitTeleprompter();
+    await settle(300);
+  }`);
+
   // The selection pill pins itself to the foot of a phone's screen, where the
   // notifications now sit; a toast over it took the press meant for its button
   // (a tap on a toast dismisses it), and the button seemed to need two presses.
@@ -822,47 +910,112 @@ try {
     return true;
   }`, key, value);
 
-  await check("playing, the text moves on every frame by an even step — no whole-pixel judder, no long task", async () => {
+  // Where the text really is, frame by frame, on the page's own clock: the
+  // whole pixels of scrollTop and the part of one the session's transform
+  // carries (an animation's, never an inline style — see placeSubPixel). Also
+  // every write to the note's style attribute meanwhile: each one re-checks
+  // the whole note's styles, because of `[style*=…]` selectors in the frozen
+  // CSS, and that is the cost that dropped frames.
+  const TRACK_MOTION_SRC = `async (ms) => {
+    const { api } = window.__recall;
+    const view = document.getElementById("notesView");
+    const longs = [];
+    const observer = new PerformanceObserver((list) => { for (const entry of list.getEntries()) longs.push(Math.round(entry.duration)); });
+    observer.observe({ type: "longtask" });
+    let styleWrites = 0;
+    const mutations = new MutationObserver((list) => { styleWrites += list.length; });
+    mutations.observe(view, { attributes: true, attributeFilter: ["style"] });
+    const part = () => -(parseFloat((getComputedStyle(view).translate || "0 0").split(" ")[1]) || 0);
+    const samples = [];
+    await new Promise((resolve) => {
+      const started = performance.now();
+      const frame = (now) => {
+        samples.push({ t: now, top: view.scrollTop, part: part() });
+        if (now - started < ms) requestAnimationFrame(frame);
+        else resolve();
+      };
+      requestAnimationFrame(frame);
+    });
+    observer.disconnect();
+    mutations.disconnect();
+    const snap = api.teleprompterSnapshot();
+    return { samples, longs, styleWrites, dpr: devicePixelRatio, dropped: snap.subPixelDropped, phase: snap.phase };
+  }`;
+
+  // The text against where an even speed would have it: the average of its
+  // place over the frames either side, so a speed that eases (a new density
+  // under the band, the word clock's nudge) is not counted, and a step out of
+  // turn — a pixel late, a jump — is. And the longest it stood still.
+  const MOTION_SMOOTH_FRAMES = 12;
+  const judgeMotion = (seen) => {
+    const ys = seen.samples.map((sample) => sample.top + sample.part);
+    const ts = seen.samples.map((sample) => sample.t);
+    const first = 0;
+    const last = ys.length - 1;
+    const rate = (ys[last] - ys[first]) / (ts[last] - ts[first]);
+    let off = 0;
+    let still = 0;
+    let stillSince = ts[0];
+    for (let i = 0; i < ys.length; i += 1) {
+      if (i >= MOTION_SMOOTH_FRAMES && i < ys.length - MOTION_SMOOTH_FRAMES) {
+        // The line through the frames either side, at this frame's time.
+        const a = i - MOTION_SMOOTH_FRAMES;
+        const b = i + MOTION_SMOOTH_FRAMES;
+        const local = (ys[b] - ys[a]) / (ts[b] - ts[a]);
+        let mean = 0;
+        for (let k = a; k <= b; k += 1) mean += ys[k] - local * (ts[k] - ts[i]);
+        mean /= b - a + 1;
+        off = Math.max(off, Math.abs(ys[i] - mean));
+      }
+      if (i && ys[i] !== ys[i - 1]) stillSince = ts[i];
+      still = Math.max(still, ts[i] - stillSince);
+    }
+    const parts = new Set(seen.samples.map((sample) => Math.round(sample.part * 1000) / 1000));
+    return { rate, off, still, parts: [...parts] };
+  };
+
+  await check("playing on a desktop, the text moves a whole pixel at a time, evenly, with nothing written to the note's style", async () => {
     await page.evaluate(`() => { if (!window.__recall.api.teleprompterActive()) window.__recall.api.toggleTeleprompter(); }`);
     await setSetting("countdown", 0);
     await setSetting("wpm", 200);
     await page.evaluate(`() => window.__recall.api.resumeTeleprompter()`);
     await waitPhase("playing", 3000);
     await sleep(1200);
-    const seen = await page.evaluate(`async () => {
-      const view = document.getElementById("notesView");
-      const longs = [];
-      const observer = new PerformanceObserver((list) => { for (const entry of list.getEntries()) longs.push(Math.round(entry.duration)); });
-      observer.observe({ type: "longtask" });
-      // Where the text really is: scrollTop, and the part of a pixel the
-      // transform carries.
-      const at = () => view.scrollTop - (parseFloat((view.style.translate || "0 0").split(" ")[1]) || 0);
-      const steps = [];
-      await new Promise((resolve) => {
-        let last = at();
-        const started = performance.now();
-        const frame = (now) => {
-          const y = at();
-          steps.push(y - last);
-          last = y;
-          if (now - started < 6000) requestAnimationFrame(frame);
-          else resolve();
-        };
-        requestAnimationFrame(frame);
-      });
-      observer.disconnect();
-      const sorted = [...steps].sort((a, b) => a - b);
-      const median = sorted[sorted.length >> 1];
-      return {
-        frames: steps.length,
-        still: steps.filter((step) => step === 0).length,
-        uneven: steps.filter((step) => Math.abs(step - median) > median * 0.6).length,
-        median,
-        longs
-      };
-    }`);
-    if (seen.still > 0) return `${seen.still} of ${seen.frames} frames did not move the text`;
-    if (seen.uneven > seen.frames * 0.05) return `${seen.uneven} of ${seen.frames} steps were far from the usual ${seen.median.toFixed(3)}px`;
+    const seen = await page.evaluate(TRACK_MOTION_SRC, 6000);
+    const motion = judgeMotion(seen);
+    if (seen.phase !== "playing") return `it stopped playing (${seen.phase})`;
+    if (!(motion.rate > 0)) return "the text did not move";
+    // One device pixel to a CSS pixel: the part of one cannot be drawn, only
+    // blurred, and the transform that drew it cost frames.
+    if (motion.parts.some((value) => value !== 0)) return `a part of a pixel was drawn at a device pixel ratio of ${seen.dpr}: ${motion.parts.join(", ")}`;
+    if (seen.styleWrites) return `${seen.styleWrites} writes to the note's style attribute while it played`;
+    if (motion.off > 1) return `the text strayed ${motion.off.toFixed(2)}px from an even speed`;
+    if (motion.still > 1.6 / (motion.rate) + 40) return `the text stood still for ${Math.round(motion.still)}ms at ${(motion.rate * 1000).toFixed(1)}px/s`;
+    if (seen.longs.some((ms) => ms > 50)) return `long tasks while playing: ${seen.longs.join(", ")}ms`;
+    return null;
+  });
+
+  await check("playing on a phone, the text moves a device pixel at a time — no whole-pixel judder, no style writes", async () => {
+    // Long enough for the re-wrap at the new width to have landed: the hold
+    // that keeps the reader's line through it moves the text, and that is not
+    // the motion being judged.
+    await page.call("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
+    await sleep(2500);
+    const seen = await page.evaluate(TRACK_MOTION_SRC, 6000);
+    await emulateDesktop();
+    await sleep(500);
+    const motion = judgeMotion(seen);
+    if (seen.phase !== "playing") return `it stopped playing (${seen.phase})`;
+    if (!(motion.rate > 0)) return "the text did not move";
+    if (seen.styleWrites > 4) return `${seen.styleWrites} writes to the note's style attribute while it played`;
+    const offGrid = motion.parts.filter((value) => Math.abs(value * 3 - Math.round(value * 3)) > 0.01);
+    if (offGrid.length) return `parts of a pixel that are not device pixels: ${offGrid.join(", ")}`;
+    // A phone too slow for the transform gives it up (judgeSubPixel), and then
+    // moves as a desktop does — a coarser step, but on time.
+    const step = seen.dropped ? 1 : 1 / 3;
+    if (motion.off > step + 0.25) return `the text strayed ${motion.off.toFixed(2)}px from an even speed (sub-pixel ${seen.dropped ? "given up" : "on"})`;
+    if (motion.still > (step * 1.6) / motion.rate + 40) return `the text stood still for ${Math.round(motion.still)}ms at ${(motion.rate * 1000).toFixed(1)}px/s (sub-pixel ${seen.dropped ? "given up" : "on"})`;
+    if (!seen.dropped && motion.parts.length < 2) return "no part of a pixel was ever drawn on a 3× screen";
     if (seen.longs.some((ms) => ms > 50)) return `long tasks while playing: ${seen.longs.join(", ")}ms`;
     return null;
   });
@@ -872,9 +1025,13 @@ try {
     if (during?.phase !== "paused") return `the press left it ${during?.phase}`;
     const seen = await page.evaluate(`() => {
       const view = document.getElementById("notesView");
-      return { translate: view.style.translate, transform: view.style.transform, willChange: view.style.willChange };
+      const computed = getComputedStyle(view);
+      return {
+        translate: view.style.translate, transform: view.style.transform, willChange: view.style.willChange,
+        computed: computed.translate === "none" ? "" : computed.translate, animations: view.getAnimations().length
+      };
     }`);
-    if (seen.translate || seen.transform || seen.willChange) return `still on the note: ${JSON.stringify(seen)}`;
+    if (seen.translate || seen.transform || seen.willChange || seen.computed || seen.animations) return `still on the note: ${JSON.stringify(seen)}`;
     return null;
   });
 
@@ -916,8 +1073,8 @@ try {
     const top0 = await page.evaluate(`() => document.getElementById("notesView").scrollTop`);
     await page.call("Input.dispatchMouseEvent", { type: "mouseWheel", x: box.x, y: box.y, deltaX: 0, deltaY: 400 });
     await sleep(600);
-    const after = await page.evaluate(`() => ({ top: document.getElementById("notesView").scrollTop, phase: window.__recall.api.teleprompterSnapshot().phase })`);
-    if (!(after.top > top0 + 50)) return `the wheel moved the text ${after.top - top0}px`;
+    const after = await page.evaluate(`() => { const view = document.getElementById("notesView"); return { top: view.scrollTop, max: view.scrollHeight - view.clientHeight, line: parseFloat(getComputedStyle(view).lineHeight), phase: window.__recall.api.teleprompterSnapshot().phase }; }`);
+    if (!(after.top > top0 + 50)) return `the wheel moved the text ${after.top - top0}px (from ${top0} of ${after.max}, ${after.line}px lines)`;
     if (after.phase !== "manual") return `the wheel left it ${after.phase}`;
     // Space is the browser's again, not ▶.
     await key(" ", "Space", 32);

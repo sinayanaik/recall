@@ -691,12 +691,21 @@ try {
       // A page's place, read with the part-pixel translate on the scroller
       // (which makes it the pages' offsetParent) and again without.
       const pageEl = document.querySelector('#documentView .pdf-page[data-page-number="3"]');
-      const moving = { on: Boolean(view.style.translate), top: api.pageOffsetTop(pageEl), left: api.pageOffsetLeft(pageEl) };
+      const translated = () => Boolean(view.style.translate) || view.getAnimations().length > 0;
+      const moving = { on: translated(), top: api.pageOffsetTop(pageEl), left: api.pageOffsetLeft(pageEl) };
       api.pausePdfTeleprompter("reader");
-      const still = { on: Boolean(view.style.translate), top: api.pageOffsetTop(pageEl), left: api.pageOffsetLeft(pageEl) };
+      const still = { on: translated(), top: api.pageOffsetTop(pageEl), left: api.pageOffsetLeft(pageEl) };
       const reading = steps.filter((entry) => !entry.glide).map((entry) => entry.step).sort((a, b) => a - b);
       const median = reading[reading.length >> 1] || 0;
-      const slowAt = steps.map((entry, index) => (entry.step < median * 0.3 ? index : -1)).filter((index) => index >= 0);
+      // Over three frames, not one: the part of a pixel is drawn in device
+      // pixels, so a speed just under one a frame repeats a frame now and then
+      // — the screen cannot draw it finer — where a stop or a standing start
+      // runs on for several.
+      const slowAt = steps.map((entry, index) => {
+        if (index + 3 > steps.length) return -1;
+        const three = steps.slice(index, index + 3).reduce((sum, next) => sum + next.step, 0);
+        return three < median * 3 * 0.3 ? index : -1;
+      }).filter((index) => index >= 0);
       const around = slowAt.length ? steps.slice(Math.max(0, slowAt[0] - 3), slowAt[0] + 4).map((e) => e.step.toFixed(2) + (e.glide ? "g" : "") + "p" + e.page).join(" ") : "";
       return { pages: [...pages], frames: steps.length, median, slow: slowAt.length, around, carried, faded, moving, still };
     }`);
@@ -705,7 +714,7 @@ try {
     if (seen.faded) return "the band stepped back for a page turn in the same column";
     if (!seen.moving.on || seen.still.on) return `the translate was ${seen.moving.on ? "" : "not "}on while playing and ${seen.still.on ? "still" : "not"} on when paused`;
     if (seen.moving.top !== seen.still.top || seen.moving.left !== seen.still.left) return `page 3 is at ${JSON.stringify(seen.moving)} while playing, ${JSON.stringify(seen.still)} paused`;
-    if (seen.slow) return `${seen.slow} of ${seen.frames} frames moved under a third of the reading step (${seen.median.toFixed(3)}px): ${seen.around}`;
+    if (seen.slow) return `${seen.slow} of ${seen.frames} runs of three frames moved under a third of the reading step (${seen.median.toFixed(3)}px): ${seen.around}`;
     return null;
   });
 
