@@ -52,9 +52,17 @@
 // Speed is in words a minute, which is how reading speed is measured everywhere
 // else in the app (src/stats/reading-speed.js), and the default IS the reader's
 // measured speed once there is one. It is turned into pixels from how densely
-// the text on screen packs words — re-measured every 750ms, never per frame,
-// smoothed, and held to a band around what the type size predicts, so a picture
-// or a code block does not send the text racing past.
+// the text AT THE BAND packs words: the line just read and the fifteen coming,
+// counted in the teleprompter's own lines so a phone and a monitor measure the
+// same stretch of text — re-measured every 750ms, never per frame, and
+// smoothed. A picture or a code block has no words and is left out, so it
+// passes at the pace of the text around it. It used to be measured over the
+// whole screen, from its top edge down, and that made the speed the screen's:
+// a heading read a minute ago stayed in the sample until it scrolled off the
+// top, and a note of headings and lists took more or less of the screen by its
+// size — the same 600 wpm read 554 on a phone, 540 on a tablet and 601 on a
+// desktop (tools/teleprompter-check.mjs). Time a long frame on a slow phone did
+// not move the text by, the word clock makes up (src/notes/teleprompter-pace.js).
 //
 // ── Interrupting it ────────────────────────────────────────────────────────
 //
@@ -96,6 +104,9 @@ import {
   closeTeleprompterSheet, ensureTeleprompterPanel, isTeleprompterSheetOpen, paintTeleprompterPanel,
   placeTeleprompterBand, removeTeleprompterPanel, teleprompterPanelContains, toggleTeleprompterSheet, wakeTeleprompterBar
 } from "./teleprompter-panel.js?v=__BUILD__";
+import {
+  FRAME_COUNT_MAX_S, FRAME_MOVE_MAX_S, measuredClockWpm, newWordClock, paceFactor, rebaseWordClock, wordsDone, wordsDueFor
+} from "./teleprompter-pace.js?v=__BUILD__";
 import { touchSelectionRange } from "./touch-selection.js?v=__BUILD__";
 
 // ── Settings ────────────────────────────────────────────────────────────────
@@ -243,10 +254,14 @@ export function teleprompterSnapshot() {
     wpm: teleprompterSession.wpm,
     fontSize: teleprompterSession.fontSize,
     pauseReason: teleprompterSession.pauseReason,
-    pxPerSecond: teleprompterSession.wordsPerPx ? teleprompterSession.wpm / 60 / teleprompterSession.wordsPerPx : 0,
+    pxPerSecond: teleprompterPxPerSecond(),
     wordsPerPx: teleprompterSession.wordsPerPx,
+    pace: paceFactor(teleprompterSession.clock, teleprompterSession.wpm),
+    wordsDue: teleprompterSession.clock.due,
+    wordsDone: teleprompterSession.clock.done,
+    measuredWpm: measuredClockWpm(teleprompterSession.clock),
     subPixel: teleprompterSession.subPixel,
-    sourceWordsPerPx: teleprompterSession.sigma,
+    wordsPerMarkdownWord: teleprompterSession.lambda,
     leftMs: teleprompterTimeLeftMs(),
     settings: { ...teleprompterSession.settings }
   };
@@ -390,6 +405,10 @@ function resyncPosition() {
   if (!teleprompterSession || !view) return;
   teleprompterSession.pos = view.scrollTop;
   teleprompterSession.lastWritten = view.scrollTop;
+  // Carrying on from wherever the view is: nothing before this is owed, and
+  // the words counted since are not the words between here and there.
+  rebaseWordClock(teleprompterSession.clock);
+  teleprompterSession.moves += 1;
 }
 
 // ── The type, the runway and the band ───────────────────────────────────────
@@ -405,6 +424,8 @@ function applyTeleprompterType(view) {
   // Type of a different size packs words differently; measure it afresh.
   teleprompterSession.wordsPerPx = 0;
   teleprompterSession.densityTarget = 0;
+  teleprompterSession.screenWordsPerPx = 0;
+  rebaseWordClock(teleprompterSession.clock, { measure: true });
 }
 
 function clearTeleprompterType(view) {
@@ -469,10 +490,27 @@ const TELEPROMPTER_TEXT_BLOCKS = "p, ul, ol, dl, blockquote, h1, h2, h3, h4, h5,
 // the same blocks, and counting meant a regex over each one's text every time.
 const blockWordCounts = new WeakMap();
 
+// Text that is in the block and not read: KaTeX's MathML copy of a formula
+// (textContent has every formula twice), a fold's twisty, anything hidden.
+const UNREAD_TEXT = ".katex-mathml, [aria-hidden='true'], [hidden]";
+
+function readTextOf(block) {
+  if (!block.querySelector(UNREAD_TEXT)) return block.textContent;
+  let text = "";
+  const walker = document.createTreeWalker(block, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
+    acceptNode: (node) => {
+      if (node.nodeType === Node.TEXT_NODE) return NodeFilter.FILTER_ACCEPT;
+      return node.matches(UNREAD_TEXT) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_SKIP;
+    }
+  });
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) text += node.data;
+  return text;
+}
+
 function blockWords(block) {
   let words = blockWordCounts.get(block);
   if (words === undefined) {
-    words = (block.textContent.match(/\S+/g) || []).length;
+    words = (readTextOf(block).match(/\S+/g) || []).length;
     blockWordCounts.set(block, words);
   }
   return words;
@@ -488,43 +526,104 @@ function nextReadingBlock(node, view) {
   return chunk?.firstElementChild || null;
 }
 
-// Words per pixel of the text on screen: prose only — a picture or a table has
-// height and no words, and counting it would make the text after it race —
-// with each block's share of the gap to the next counted as its own, as the
-// progress row's measure does (visibleWordsPerPx in src/stats/reading-progress.js).
+// The stretch the density is measured over, in the teleprompter's own lines:
+// the line just read, and more of what is coming to the band. Not more behind
+// it: at a slow speed on a wide screen three lines take ten seconds to pass,
+// and a heading read that long ago went on making the prose after it race.
+// Fifteen ahead (or to the foot of the screen, if that is nearer) so a list or
+// a heading changes the speed over a few lines rather than at once; with
+// fewer, the words counted ran ahead through a list and behind after it, by
+// enough to move the time left a tenth.
+const DENSITY_LINES_BEFORE = 1;
+const DENSITY_LINES_AFTER = 15;
+
+// Words per pixel of the text at the band, with each block's share of the gap
+// to the next counted as its own, as the progress row's measure does
+// (visibleWordsPerPx in src/stats/reading-progress.js). A block only partly in
+// the window counts for the part that is, words and height alike.
+//
+// A picture, a table or a code block has height and no words to read at a
+// pace, and passes at the pace of the text around it: its pixels are counted
+// at the density of the text on the screen. Left out of the window instead,
+// it took the pace of whatever little text shared the window with it — a
+// list of links just before a table, say — and raced.
+//
+// The screen's own density is kept too, for that and for the time left while
+// it has nothing better to go by (see rawTimeLeftMs): a guess at the note's
+// words a pixel that must hold steady for the length of a screen, which the
+// band's does not.
 function measureTeleprompterDensity(view) {
   const box = view.getBoundingClientRect();
+  const geometry = bandGeometry(view);
+  const line = geometry.line;
+  const bandY = box.top + geometry.bandLine;
   const bottom = box.top + view.clientHeight;
+  // Never past the scrollport: a block out of sight may be one
+  // `content-visibility` has not laid out, with a height that is a guess.
+  const from = Math.max(box.top + 1, bandY - DENSITY_LINES_BEFORE * line);
+  const to = Math.min(bottom, bandY + DENSITY_LINES_AFTER * line);
   let block = notesBlockAtReadingLineGeometric(box.top + 1);
   let words = 0;
   let height = 0;
+  let wordless = 0;
+  let screenWords = 0;
+  let screenHeight = 0;
   let width = 0;
   for (let i = 0; block && i < 60; i += 1) {
     const rect = block.getBoundingClientRect();
     if (rect.top > bottom) break;
     const next = nextReadingBlock(block, view);
-    if (rect.height > 0 && block.matches(TELEPROMPTER_TEXT_BLOCKS)) {
+    if (rect.height > 0) {
       const slotBottom = next ? Math.max(rect.bottom, next.getBoundingClientRect().top) : rect.bottom;
-      words += blockWords(block);
-      height += slotBottom - rect.top;
-      width = width || block.clientWidth;
+      const slot = slotBottom - rect.top;
+      const inside = Math.max(0, Math.min(slotBottom, to) - Math.max(rect.top, from));
+      const text = block.matches(TELEPROMPTER_TEXT_BLOCKS);
+      if (!text) {
+        wordless += inside;
+      } else if (slot > 0) {
+        screenWords += blockWords(block);
+        screenHeight += slot;
+        if (inside > 0) {
+          words += (blockWords(block) * inside) / slot;
+          height += inside;
+          width = width || block.clientWidth;
+        }
+      }
     }
     block = next;
   }
   // What the type predicts: a word is about six characters with its space, a
-  // character about half an em; plus some paragraph spacing.
+  // character about half an em; plus some paragraph spacing. Only a fallback
+  // for a screen with too little text on it to measure, and a guard against a
+  // measure that is plainly not prose — never the speed of ordinary text. The
+  // floor is low because a wide line makes sparse text look sparser: a list of
+  // six-word points fills a third of a phone's lines and a sixth of a
+  // monitor's, and a floor of a third held the monitor's lists slow.
   const style = getComputedStyle(view);
   const fontPx = parseFloat(style.fontSize) || 16;
-  const line = teleprompterLineHeight(view);
   const wordsPerLine = Math.max(3, (width || view.clientWidth) / (fontPx * 0.5 * 6));
   const predicted = wordsPerLine / (line * 1.15);
-  const measured = words && height > line * 2 ? words / height : 0;
   const session = teleprompterSession;
-  const sample = measured ? Math.min(predicted * 2, Math.max(predicted * 0.5, measured)) : (session.densityTarget || predicted);
+  const screen = screenWords && screenHeight > line * 2
+    ? Math.min(predicted * 2, Math.max(predicted * 0.5, screenWords / screenHeight))
+    : (session.screenWordsPerPx || predicted);
+  session.screenWordsPerPx = session.screenWordsPerPx ? session.screenWordsPerPx + 0.5 * (screen - session.screenWordsPerPx) : screen;
+  words += wordless * session.screenWordsPerPx;
+  height += wordless;
+  const measured = words && height >= line * 2 ? words / height : 0;
+  const sample = measured ? Math.min(predicted * 3, Math.max(predicted / 5, measured)) : (session.densityTarget || predicted);
   // The target the speed eases toward (easeTeleprompterDensity); the first
   // measure of a type is taken as it is.
   session.densityTarget = session.densityTarget ? session.densityTarget + 0.5 * (sample - session.densityTarget) : sample;
   if (!session.wordsPerPx) session.wordsPerPx = session.densityTarget;
+}
+
+// The speed the loop moves at now: the words a minute set, through the text's
+// density, nudged by the word clock.
+function teleprompterPxPerSecond() {
+  const session = teleprompterSession;
+  if (!session?.wordsPerPx) return 0;
+  return (session.wpm / 60 / session.wordsPerPx) * paceFactor(session.clock, session.wpm);
 }
 
 function easeTeleprompterDensity(dt) {
@@ -614,7 +713,10 @@ function teleprompterFrame(now) {
     watchTeleprompter();
     return;
   }
-  const dt = teleprompterSession.lastFrameAt ? Math.min(100, now - teleprompterSession.lastFrameAt) / 1000 : 0;
+  // The time the text moves by, and the time the word clock counts — see
+  // src/notes/teleprompter-pace.js.
+  const elapsed = teleprompterSession.lastFrameAt ? (now - teleprompterSession.lastFrameAt) / 1000 : 0;
+  const dt = Math.min(FRAME_MOVE_MAX_S, elapsed);
   teleprompterSession.lastFrameAt = now;
   const target = teleprompterSession.phase === "playing" ? 1 : 0;
   if (reducedMotion()) teleprompterSession.ease = target;
@@ -639,16 +741,20 @@ function teleprompterFrame(now) {
     teleprompterSession.measuredAt = now;
   }
   easeTeleprompterDensity(dt);
-  if (Math.abs(view.scrollTop - teleprompterSession.lastWritten) > 1.5) teleprompterSession.pos = view.scrollTop;
+  // Moved by something else — the reader's step, scroll anchoring: carried on
+  // from, and not a lag to make up.
+  if (Math.abs(view.scrollTop - teleprompterSession.lastWritten) > 1.5) {
+    teleprompterSession.pos = view.scrollTop;
+    rebaseWordClock(teleprompterSession.clock);
+    teleprompterSession.moves += 1;
+  }
   const max = Math.max(0, view.scrollHeight - view.clientHeight);
-  const pxPerSecond = teleprompterSession.wpm / 60 / teleprompterSession.wordsPerPx;
-  const step = Math.min(max - teleprompterSession.pos, pxPerSecond * teleprompterSession.ease * dt);
-  teleprompterSession.pos = Math.min(max, teleprompterSession.pos + Math.max(0, step));
-  // The pace the time left divides by: at full speed only, and per word a minute.
-  if (teleprompterSession.ease >= 1 && step > 0) {
-    teleprompterSession.pacePx += step;
-    teleprompterSession.paceWpmSeconds += teleprompterSession.wpm * dt;
-    teleprompterSession.paceSeconds += dt;
+  const step = Math.max(0, Math.min(max - teleprompterSession.pos, teleprompterPxPerSecond() * teleprompterSession.ease * dt));
+  teleprompterSession.pos = Math.min(max, teleprompterSession.pos + step);
+  if (teleprompterSession.phase === "playing") {
+    const { clock } = teleprompterSession;
+    wordsDueFor(clock, teleprompterSession.wpm, teleprompterSession.ease, Math.min(FRAME_COUNT_MAX_S, elapsed));
+    wordsDone(clock, step * teleprompterSession.wordsPerPx, teleprompterSession.ease >= 1);
   }
   setNotesAutoScrolling(true);
   // The whole pixels to scrollTop, the rest to the transform — see the header.
@@ -711,34 +817,40 @@ const STATUS_TEXT = {
 
 // ── The time left ───────────────────────────────────────────────────────────
 //
-// How long the loop will take to bring the last line to the band: the rest of
-// the note as a DISTANCE, at the pace the loop really moves.
+// How long the loop will take to bring the last line to the band, counted in
+// WORDS: the loop moves the words at the band at the words a minute set (the
+// word clock, src/notes/teleprompter-pace.js, holds it there), so the time is
+// the words still to pass over the speed, as the clock counts them.
 //
 // The words left are the reading-progress line's (src/stats/reading-progress.js):
 // the note's markdown, list dashes and table bars and link targets and all,
-// counted from Notes' reading line. The speed is set in the words on screen.
-// Dividing the one by the other was most of what made the old number wrong —
-// and a picture or a table, which has no words and takes as long to pass the
-// band as the text it displaces, was not in it at all. So the session learns,
-// from the exact readings (a captured anchor, never the estimate between two),
-// how many of those markdown words go to a pixel of scroll at its own type
-// (sigma): anything that is in the markdown and not in the reading, or in the
-// reading and not the markdown, is then in both sides of the sum and cancels.
-// Pixels alone could not do it: a stretch of a long note not yet laid out is
-// as tall as estimated at Notes' smaller type, not the teleprompter's.
+// counted from Notes' reading line. Not the words the band counts — a table's
+// bars are not, a picture's height is counted at the text's pace, and a code
+// block's tokens are something between. So the session learns, from the exact
+// readings (a captured anchor, never the estimate between two), how many of
+// the band's words go to one of those markdown words (lambda): anything in the
+// one and not the other is then in both sides of the sum and cancels. Lambda
+// barely moves from prose to lists to tables, as both sides count the same
+// stretch of text.
 //
-// Left in pixels = (words left at the band) / sigma − scrolled since then;
-// the time = that / the pixels a second the loop has averaged so far. Not its
-// speed this instant: that follows the density of the screen, and swings by
-// a quarter between a page of prose and a page of tables. The average is kept
-// per word a minute, so a change of speed is in it at once. Between two
-// readings it is one scrollTop read, and it only goes down.
+// It used to be done in pixels — the markdown words a pixel held, over the
+// pixels a second the loop had averaged so far. But the speed in pixels now
+// follows the text at the band, faster through a list than through prose, and
+// the average of the part read was a poor guide to the part to come: halfway
+// down a note of prose, links, tables and code it was out by 15–20%.
+//
+// Left in words = (markdown words left at the last reading) × lambda − the
+// words between Notes' reading line and the band − the words the clock has
+// counted since. Between two readings it only goes down.
 
-const SIGMA_MIN_PX = 200;
+// Lambda starts at 1 as though this many words had been read at it, and only
+// leaves it as the words actually read outweigh them: the first readings span
+// a heading and a paragraph or two, and taken alone they tipped it by a tenth.
+const LAMBDA_PRIOR_WORDS = 300;
 
-// Three seconds at full speed before the average is trusted over the speed
-// of the moment.
-const PACE_TRUST_S = 3;
+// How much of the difference between a new reading and what the last one
+// said is kept: see foldExactReading.
+const READING_TRUST_KEEP = 0.5;
 
 // A new exact reading corrects the estimate over this long rather than at
 // once, so the number keeps counting down instead of jumping back up.
@@ -746,14 +858,19 @@ const LEFT_SETTLE_MS = 4000;
 
 function forgetTimeLeftLearning() {
   if (!teleprompterSession) return;
-  teleprompterSession.sigma = 0;
-  teleprompterSession.sigmaBase = null;
+  teleprompterSession.lambda = 0;
+  teleprompterSession.lambdaBase = null;
   teleprompterSession.leftFix = null;
   teleprompterSession.typeAt = performance.now();
-  teleprompterSession.pacePx = 0;
-  teleprompterSession.paceWpmSeconds = 0;
-  teleprompterSession.paceSeconds = 0;
   teleprompterSession.leftCarry = null;
+}
+
+// The clock's words at the moment a reading was taken: it is folded in up to a
+// watch tick later, and the text has moved on since.
+function clockWordsAt(at) {
+  const session = teleprompterSession;
+  const since = session.phase === "playing" && session.ease >= 1 ? Math.max(0, performance.now() - at) / 1000 : 0;
+  return session.clock.done - (session.wpm / 60) * since;
 }
 
 // True when a reading was taken in.
@@ -763,24 +880,41 @@ function foldExactReading() {
   if (!exact || exact.at <= session.exactAt || exact.at < session.typeAt) return false;
   session.exactAt = exact.at;
   // Taken with Notes' reading line still in the lead-in above the first line:
-  // all the words are still to come at a scroll that has passed none of them,
-  // which would have a pixel hold too few words for every reading after it.
+  // all the words are still to come at a scroll that has passed none of them.
   if (exact.scrollTop + (session.readingLine || 0) < (session.textTop || 0)) return false;
-  const base = session.sigmaBase;
+  const reading = { wordsLeft: exact.wordsLeft, scrollTop: exact.scrollTop, done: clockWordsAt(exact.at), moves: session.moves, trim: 0 };
+  const base = session.lambdaBase;
   const fix = session.leftFix;
   // Further down with more words still to go cannot be: an anchor that found
   // the same words earlier in the note. Not learned from, not shown.
-  if (fix && exact.scrollTop >= fix.scrollTop && exact.wordsLeft > fix.wordsLeft) return false;
-  // Back up the note is a new start, not a reading to learn from.
-  if (!base || exact.scrollTop < base.scrollTop) {
-    session.sigmaBase = exact;
+  if (fix && reading.scrollTop >= fix.scrollTop && reading.wordsLeft > fix.wordsLeft) return false;
+  // What the last reading says is left now, before this one is taken in.
+  const expected = fix && fix.moves === session.moves ? wordsLeftFrom(fix) : null;
+  // Back up the note, or moved by anything but the loop since (a step, a
+  // resume, a pause), is a new start: the clock did not count those words.
+  if (!base || base.moves !== reading.moves || reading.scrollTop < base.scrollTop) {
+    session.lambdaBase = reading;
   } else {
-    const px = exact.scrollTop - base.scrollTop;
-    const words = base.wordsLeft - exact.wordsLeft;
-    if (px >= SIGMA_MIN_PX && words > 0) session.sigma = words / px;
+    const words = base.wordsLeft - reading.wordsLeft;
+    const done = reading.done - base.done;
+    if (words > 0 && done > 0) session.lambda = (done + LAMBDA_PRIOR_WORDS) / (words + LAMBDA_PRIOR_WORDS);
   }
-  session.leftFix = exact;
+  // An anchor lands a few dozen words either side of where the band really
+  // is, and taken at its word the estimate jumped by that much at every one.
+  // Met halfway instead, the misses average out over the readings that
+  // follow, and a real difference is still made up within two or three.
+  if (expected != null) reading.trim = (expected - wordsLeftFrom(reading)) * READING_TRUST_KEEP;
+  session.leftFix = reading;
   return true;
+}
+
+// The band's words still to pass, from a reading: its markdown words, at
+// lambda, less those between Notes' reading line and the band, less what the
+// clock has counted since.
+function wordsLeftFrom(fix) {
+  const session = teleprompterSession;
+  return fix.wordsLeft * (session.lambda || 1) + fix.trim
+    - (session.lineGap || 0) * (session.wordsPerPx || 0) - (session.clock.done - fix.done);
 }
 
 // What is left of the last correction, fading to nothing over LEFT_SETTLE_MS.
@@ -806,20 +940,15 @@ function teleprompterTimeLeftMs() {
 
 function rawTimeLeftMs() {
   const session = teleprompterSession;
-  const view = el.notesView;
-  const rho = session.wordsPerPx;
+  const rate = session.wpm / 60;
+  // Until it is learned, a markdown word is a word: so it is, in prose.
+  const lambda = session.lambda || 1;
   const fix = session.leftFix;
-  if (fix && rho > 0 && view) {
-    const sigma = session.sigma || rho;
-    const wordsAtBand = Math.max(0, fix.wordsLeft - (session.lineGap || 0) * sigma);
-    const pxLeft = Math.max(0, wordsAtBand / sigma - (view.scrollTop - fix.scrollTop));
-    const pxPerSecond = session.paceSeconds >= PACE_TRUST_S
-      ? (session.pacePx / session.paceWpmSeconds) * session.wpm
-      : session.wpm / 60 / rho;
-    return pxPerSecond > 0 ? (pxLeft / pxPerSecond) * 1000 : null;
-  }
+  if (fix && fix.moves === session.moves) return (Math.max(0, wordsLeftFrom(fix)) / rate) * 1000;
+  // Moved since the last reading: the progress row's own estimate, until the
+  // next one.
   const words = liveNotesWordsLeft();
-  return words > 0 ? (words / session.wpm) * 60000 : null;
+  return words > 0 ? ((words * lambda) / rate) * 1000 : null;
 }
 
 function timeLeftText() {
@@ -893,17 +1022,17 @@ export function startTeleprompter() {
     lastFrameAt: 0,
     wordsPerPx: 0,
     densityTarget: 0,
+    screenWordsPerPx: 0,
+    clock: newWordClock(),
     measuredAt: 0,
     subPixel: 0,
     subPixelOn: false,
-    sigma: 0,
-    sigmaBase: null,
+    lambda: 0,
+    lambdaBase: null,
+    moves: 0,
     leftFix: null,
     leftCarry: null,
     exactAt: 0,
-    pacePx: 0,
-    paceWpmSeconds: 0,
-    paceSeconds: 0,
     typeAt: 0,
     lineGap: 0,
     readingLine: 0,
@@ -1043,6 +1172,7 @@ function playTeleprompter() {
   teleprompterSession.tucked = false;
   teleprompterSession.lastFrameAt = 0;
   resyncPosition();
+  rebaseWordClock(teleprompterSession.clock, { measure: true });
   holdScreenAwake();
   scheduleTeleprompterFrame();
   paintTeleprompter();
@@ -1402,6 +1532,7 @@ function setTeleprompterSetting(key, value, { commit = true } = {}) {
     if (next === null) return;
   }
   if (key === "wpm") {
+    if (next !== teleprompterSession.wpm) rebaseWordClock(teleprompterSession.clock, { measure: true });
     teleprompterSession.wpm = next;
   } else if (key === "fontSize") {
     if (next !== teleprompterSession.fontSize) {

@@ -38,6 +38,13 @@
 // every page. One that changes column or zoom still eases in and out, with
 // the band stepped back, because the eye has somewhere new to go.
 //
+// A glide or a zoom passes no words, and a page of short segments has many of
+// them: at the speed set, every one was time added to the reading, so the
+// words that really passed the band ran under the words a minute set — by more
+// on a screen where the glides are longer. The word clock
+// (src/notes/teleprompter-pace.js) counts that time as owed, and the segments
+// after it are read up to a quarter faster until it is made up.
+//
 // As in Notes, scrollTop and scrollLeft hold whole pixels only, and the part of
 // a pixel they cannot is a `translate` on the scroller while the frames run
 // (placePdfSubPixel) — see the header of src/notes/teleprompter.js.
@@ -72,6 +79,10 @@ import {
   closeTeleprompterSheet, ensureTeleprompterPanel, isTeleprompterSheetOpen, paintTeleprompterPanel,
   placeTeleprompterBand, removeTeleprompterPanel, teleprompterPanelContains, toggleTeleprompterSheet, wakeTeleprompterBar
 } from "../notes/teleprompter-panel.js?v=__BUILD__";
+import {
+  FRAME_COUNT_MAX_S, FRAME_MOVE_MAX_S, PACE_MAX, measuredClockWpm, newWordClock, paceFactor, rebaseWordClock,
+  wordsDone, wordsDueFor
+} from "../notes/teleprompter-pace.js?v=__BUILD__";
 import { isInkArmed } from "./pdf-ink.js?v=__BUILD__";
 import { isRegionSelectArmed } from "./pdf-region.js?v=__BUILD__";
 import { buildPathFromBoxes, buildPathFromInk } from "./pdf-reading-path.js?v=__BUILD__";
@@ -397,6 +408,10 @@ export function pdfTeleprompterSnapshot() {
     carrying: Boolean(pdfSession.glide?.carry),
     holding: pdfSession.holding,
     subPixel: { ...pdfSession.subPixel },
+    pace: paceFactor(pdfSession.clock, pdfSession.wpm),
+    wordsDue: pdfSession.clock.due,
+    wordsDone: pdfSession.clock.done,
+    measuredWpm: measuredClockWpm(pdfSession.clock),
     leftMs: pdfTimeLeftMs(),
     scale: openPdf?.scale || 0,
     baseScale: pdfSession.baseScale,
@@ -725,13 +740,13 @@ function zoomForCursor(scale) {
 }
 
 // How fast the camera goes down through a segment at full speed, in px a ms:
-// its span over the time its words take.
+// its span over the time its words take, at the word clock's pace.
 function segmentVelocity(cursor) {
   const segment = segmentAt(cursor);
   const box = cursor ? tpPageBox(cursor.page) : null;
   if (!segment || !box) return 0;
   const { start, end } = segmentSpan(segment);
-  return ((end - start) * box.height) / (segmentSeconds(segment) * 1000);
+  return ((end - start) * box.height * paceFactor(pdfSession.clock, pdfSession.wpm)) / (segmentSeconds(segment) * 1000);
 }
 
 function segmentSeconds(segment) {
@@ -844,7 +859,11 @@ function pdfFrame(now) {
     watchPdfTeleprompter();
     return;
   }
-  const dt = pdfSession.lastFrameAt ? Math.min(100, now - pdfSession.lastFrameAt) / 1000 : 0;
+  // The time the view moves by, and the time the word clock counts — see
+  // src/notes/teleprompter-pace.js.
+  const elapsed = pdfSession.lastFrameAt ? (now - pdfSession.lastFrameAt) / 1000 : 0;
+  const dt = Math.min(FRAME_MOVE_MAX_S, elapsed);
+  const counted = Math.min(FRAME_COUNT_MAX_S, elapsed);
   pdfSession.lastFrameAt = now;
   const target = pdfSession.phase === "playing" ? 1 : 0;
   if (pdfTpReducedMotion()) pdfSession.ease = target;
@@ -854,8 +873,11 @@ function pdfFrame(now) {
     stopFrames();
     return;
   }
-  // A zoom is landing, or a pinch is under way: stand still.
+  const playing = pdfSession.phase === "playing";
+  // A zoom is landing, or a pinch is under way: stand still. The landing is
+  // the loop's own doing, and its time is owed; a pinch is the reader's.
   if (pdfSession.holding || documentPinchEngaged()) {
+    if (playing && pdfSession.holding && !documentPinchEngaged()) wordsDueFor(pdfSession.clock, pdfSession.wpm, pdfSession.ease, counted);
     clearPdfSubPixel(view);
     setDocumentAutoScrolling(false);
     schedulePdfFrame();
@@ -877,6 +899,8 @@ function pdfFrame(now) {
     pdfSession.lastTop = view.scrollTop;
     pdfSession.lastLeft = view.scrollLeft;
     pdfSession.landing = false;
+    // Carrying on from somewhere new: nothing before this is owed.
+    rebaseWordClock(pdfSession.clock);
     moveCursorTo(found);
     if (pdfSession.holding) {
       schedulePdfFrame();
@@ -899,13 +923,19 @@ function pdfFrame(now) {
   }
   setDocumentAutoScrolling(true);
   if (pdfSession.glide) {
+    if (playing) wordsDueFor(pdfSession.clock, pdfSession.wpm, pdfSession.ease, counted);
     stepGlide(view, now);
     schedulePdfFrame();
     return;
   }
-  // Through the segment at the speed set: its words at so many a minute.
+  // Through the segment at the speed set: its words at so many a minute, and
+  // a little faster while the word clock is owed a glide's time. Not owed:
+  // the wait at a segment's end while the next page's path is being built.
   const seconds = segmentSeconds(segment);
-  pdfSession.cursor.t = Math.min(1, pdfSession.cursor.t + (pdfSession.ease * dt) / seconds);
+  const fromT = pdfSession.cursor.t;
+  if (playing && fromT < 1) wordsDueFor(pdfSession.clock, pdfSession.wpm, pdfSession.ease, counted);
+  pdfSession.cursor.t = Math.min(1, fromT + (pdfSession.ease * paceFactor(pdfSession.clock, pdfSession.wpm) * dt) / seconds);
+  if (playing) wordsDone(pdfSession.clock, (pdfSession.cursor.t - fromT) * segment.words, pdfSession.ease >= 1);
   if (pdfSession.cursor.t >= 1 && pdfSession.phase === "playing") {
     const next = nextCursor(pdfSession.cursor);
     if (next === null) {
@@ -994,15 +1024,17 @@ function transitionMs(from, to, box, view, nextPage) {
   return distance < 4 || pdfTpReducedMotion() ? 0 : glideMs(distance, view);
 }
 
-// A path from segment `fromIndex`, `fromT` of the way through it, to its end.
+// A path from segment `fromIndex`, `fromT` of the way through it, to its end:
+// the time its words take to read, and the time spent moving between them.
 function pathMs(path, fromIndex, fromT, box, view) {
   const segments = path.segments;
-  let ms = 0;
+  let read = 0;
+  let move = 0;
   for (let index = fromIndex; index < segments.length; index += 1) {
-    ms += segmentSeconds(segments[index]) * 1000 * (index === fromIndex ? 1 - fromT : 1);
-    if (index + 1 < segments.length) ms += transitionMs(segments[index], segments[index + 1], box, view, false);
+    read += segmentSeconds(segments[index]) * 1000 * (index === fromIndex ? 1 - fromT : 1);
+    if (index + 1 < segments.length) move += transitionMs(segments[index], segments[index + 1], box, view, false);
   }
-  return ms;
+  return { read, move };
 }
 
 function pdfTimeLeftMs() {
@@ -1022,8 +1054,8 @@ function pdfTimeLeftMs() {
     session.pageMsKey = key;
     session.pageMs = new Map();
   }
-  let ms = pathMs(path, cursor.index, Math.max(0, Math.min(1, cursor.t)), box, view);
-  if (session.glide) ms += Math.max(0, session.glide.ms - (performance.now() - session.glide.start));
+  let { read, move } = pathMs(path, cursor.index, Math.max(0, Math.min(1, cursor.t)), box, view);
+  if (session.glide) move += Math.max(0, session.glide.ms - (performance.now() - session.glide.start));
   const known = [pathMs(path, 0, 0, box, view)];
   let last = path.segments[path.segments.length - 1];
   let unknown = 0;
@@ -1040,15 +1072,19 @@ function pdfTimeLeftMs() {
       pageMs = pathMs(ahead, 0, 0, box, view);
       session.pageMs.set(n, pageMs);
     }
-    ms += pageMs + (last ? transitionMs(last, ahead.segments[0], box, view, true) : 0);
+    read += pageMs.read;
+    move += pageMs.move + (last ? transitionMs(last, ahead.segments[0], box, view, true) : 0);
     known.push(pageMs);
     last = ahead.segments[ahead.segments.length - 1];
   }
   if (unknown) {
-    const average = known.reduce((sum, value) => sum + value, 0) / known.length;
-    ms += unknown * (average + glideMs(box.height * 0.15, view));
+    const average = (key) => known.reduce((sum, value) => sum + value[key], 0) / known.length;
+    read += unknown * average("read");
+    move += unknown * (average("move") + glideMs(box.height * 0.15, view));
   }
-  return ms;
+  // The word clock reads the words faster to make up the moves, by as much as
+  // PACE_MAX allows: the moves cost nothing until they are more than that.
+  return Math.max(read, (read + move) / PACE_MAX);
 }
 
 function pdfTimeLeftText() {
@@ -1134,6 +1170,7 @@ export function startPdfTeleprompter() {
     wakeRequested: false,
     resizeObserver: null,
     subPixel: { on: false, top: 0, left: 0 },
+    clock: newWordClock(),
     pageMs: new Map(),
     pageMsKey: "",
     readingAhead: false,
@@ -1364,6 +1401,7 @@ function playPdfTeleprompter() {
   pdfSession.resumeProgress = null;
   pdfSession.tucked = false;
   pdfSession.lastFrameAt = 0;
+  rebaseWordClock(pdfSession.clock, { measure: true });
   // Where to start from: the cursor it had, put back under the band — unless
   // the reader has moved the view since, in which case the first frame finds
   // the line that is under it now.
@@ -1739,6 +1777,7 @@ function setPdfTeleprompterSetting(key, value, { commit = true } = {}) {
     if (next === null) return;
   }
   if (key === "wpm") {
+    if (next !== pdfSession.wpm) rebaseWordClock(pdfSession.clock, { measure: true });
     pdfSession.wpm = next;
   } else {
     const before = pdfSession.settings[key];
@@ -1792,6 +1831,7 @@ function resetPdfTeleprompterSettings() {
   const before = pdfSession.settings;
   pdfSession.settings = writePdfTeleprompterSettings({});
   pdfSession.wpm = measuredTeleprompterWpm() || PDF_TELEPROMPTER_FALLBACK_WPM;
+  rebaseWordClock(pdfSession.clock, { measure: true });
   if (before.columns !== pdfSession.settings.columns) {
     pdfSession.cursor = null;
     pdfSession.glide = null;

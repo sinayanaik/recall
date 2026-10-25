@@ -19,7 +19,9 @@
 // frame by an even step (scrollTop alone holds whole pixels, and moved in
 // jumps), with no long task; paused, the note carries no transform; By hand
 // keeps the band and moves nothing; and the time left is what the run then
-// takes, on a note of lists, tables and code.
+// takes, on a note of lists, tables and code. Last: the words a minute set are
+// the words a minute read — counted block by block as they cross the band — on
+// a phone, a tablet and a desktop alike, and on a phone whose frames stall.
 //
 // Same harness as notes-menu-check: the app's own modules imported into the
 // page, a fake Supabase client, one fixture file created and opened in Notes.
@@ -103,6 +105,26 @@ const MIXED_FIXTURE = [
     "```js",
     ...Array.from({ length: 10 }, (_, i) => `const value${k}_${i} = compute(${k * 10 + i}, "some argument", { option: true });`),
     "```",
+    ""
+  ]).flat()
+].join("\n");
+
+// A note of nothing but reading, in pieces of every size: headings, prose,
+// lists of short points, a line on its own, a quotation — so the density at
+// the band changes all the way down, and the speed with it. For the words a
+// minute on every screen: each of these is words the reader reads.
+const TEXT_MIX_FIXTURE = [
+  "# A note of mixed reading",
+  "",
+  ...Array.from({ length: 12 }, (_, k) => [
+    `## Section ${k + 1}`,
+    "",
+    ...Array.from({ length: 3 }, (_, i) => `Paragraph ${k * 3 + i + 1}. ${SENTENCE}. ${SENTENCE.toLowerCase()} once more.\n`),
+    ...Array.from({ length: 5 }, (_, i) => `- A short point ${k}.${i + 1} about the reading`),
+    "",
+    `Short line ${k}.`,
+    "",
+    `> A quoted remark ${k} that runs on for a little while so it wraps at least once on a phone.`,
     ""
   ]).flat()
 ].join("\n");
@@ -1127,6 +1149,123 @@ try {
     await setSetting("scroll", "auto");
     await page.evaluate(`() => window.__recall.api.exitTeleprompter()`);
     return problems.length ? problems.join("; ") : null;
+  });
+
+  // ── The words a minute it says, on every screen ────────────────────────
+  //
+  // The same 600 wpm on a phone (a slow one: the CPU throttled four times), a
+  // tablet and a desktop, counted the reader's way and not the session's: the
+  // moment each block's top crosses the middle of the band, and the words of
+  // the blocks between the first such moment and the last, over the time
+  // between them. Whole blocks, so no guess at where in a line the band is.
+  // The speed used to come from the density of the whole screen, from its top
+  // edge down — text read a minute ago, and more or less of it by the size of
+  // the screen — and this note read 8–10% slow on a phone and a tablet and
+  // right on a desktop.
+  const WPM_CHECKED = 600;
+  const WPM_TOLERANCE = 0.08;
+  const PROFILES = [
+    { name: "phone", metrics: { width: 390, height: 844, deviceScaleFactor: 3, mobile: true }, cpu: 4 },
+    { name: "tablet", metrics: { width: 820, height: 1180, deviceScaleFactor: 2, mobile: true }, cpu: 1 },
+    { name: "desktop", metrics: { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false }, cpu: 1 }
+  ];
+
+  const CROSSINGS_SRC = `async (ms) => {
+    const view = document.getElementById("notesView");
+    const TEXT = "p, ul, ol, dl, blockquote, h1, h2, h3, h4, h5, h6";
+    const blocks = [...view.querySelectorAll(":scope > *, :scope > .notes-chunk > *")].filter((node) => !node.classList.contains("notes-chunk"));
+    const words = (node) => {
+      if (!node.matches(TEXT)) return 0;
+      const copy = node.cloneNode(true);
+      copy.querySelectorAll(".katex-mathml, [aria-hidden='true'], [hidden]").forEach((n) => n.remove());
+      return (copy.textContent.match(/\\S+/g) || []).length;
+    };
+    const crossings = [];
+    let last = -1;
+    await new Promise((resolve) => {
+      const t0 = performance.now();
+      const frame = (now) => {
+        const band = document.querySelector(".tp-band").getBoundingClientRect();
+        const y = band.top + band.height / 2;
+        // The first block whose top is still below the band.
+        let lo = 0;
+        let hi = blocks.length;
+        while (lo < hi) {
+          const mid = (lo + hi) >> 1;
+          if (blocks[mid].getBoundingClientRect().top > y) hi = mid;
+          else lo = mid + 1;
+        }
+        if (last >= 0 && lo !== last) crossings.push([now, lo]);
+        last = lo;
+        if (now - t0 < ms) requestAnimationFrame(frame);
+        else resolve();
+      };
+      requestAnimationFrame(frame);
+    });
+    if (crossings.length < 2) return { error: "only " + crossings.length + " block(s) crossed the band" };
+    const [ta, from] = crossings[0];
+    const [tb, to] = crossings[crossings.length - 1];
+    let n = 0;
+    for (let i = from; i < to; i += 1) n += words(blocks[i]);
+    return { wpm: n / ((tb - ta) / 60000), words: n, seconds: (tb - ta) / 1000, phase: window.__recall.api.teleprompterSnapshot()?.phase };
+  }`;
+
+  // A fresh page on `profile`, the fixture opened, the teleprompter started
+  // from the twentieth paragraph at WPM_CHECKED with no countdown, and the
+  // words a minute read off it once it is up to speed. `stallMs`: a task that
+  // blocks the page that long every second, as a slow phone's layout does.
+  async function readWpm(profile, fixture, { stallMs = 0 } = {}) {
+    await page.call("Emulation.setCPUThrottlingRate", { rate: 1 });
+    await page.call("Emulation.setDeviceMetricsOverride", profile.metrics);
+    await page.call("Emulation.setTouchEmulationEnabled", { enabled: profile.metrics.mobile, maxTouchPoints: profile.metrics.mobile ? 5 : 1 });
+    await page.goto(`${server.base}/index.html`);
+    await page.evaluate(`() => localStorage.setItem("recall:teleprompter-v1", JSON.stringify({ wpm: ${WPM_CHECKED}, countdown: 0 }))`);
+    await page.goto(`${server.base}/index.html`);
+    await page.evaluate(SETUP_SRC, API_SRC, fixture);
+    await page.evaluate(`() => {
+      const view = document.getElementById("notesView");
+      const p = view.querySelectorAll("p")[20];
+      view.scrollTop += p.getBoundingClientRect().top - view.getBoundingClientRect().top - 100;
+    }`);
+    await sleep(300);
+    await page.call("Emulation.setCPUThrottlingRate", { rate: profile.cpu });
+    await page.evaluate(`(stallMs) => {
+      window.__recall.api.toggleTeleprompter();
+      if (stallMs) window.__stall = setInterval(() => { const t = performance.now(); while (performance.now() - t < stallMs) { /* busy */ } }, 1000);
+    }`, stallMs);
+    await sleep(3000);
+    const read = await page.evaluate(CROSSINGS_SRC, 25000);
+    await page.evaluate(`() => { clearInterval(window.__stall); window.__recall.api.exitTeleprompter(); }`);
+    await page.call("Emulation.setCPUThrottlingRate", { rate: 1 });
+    return read;
+  }
+
+  function wpmProblem(label, read) {
+    if (read.error) return `${label}: ${read.error}`;
+    if (read.phase !== "playing") return `${label}: it was ${read.phase} by the end`;
+    const off = read.wpm / WPM_CHECKED - 1;
+    console.log(`        ${label}: ${read.wpm.toFixed(0)} wpm read for ${WPM_CHECKED} set (${(off * 100).toFixed(1)}%), ${read.words} words in ${read.seconds.toFixed(1)}s`);
+    return Math.abs(off) > WPM_TOLERANCE ? `${label} read ${read.wpm.toFixed(0)} wpm for ${WPM_CHECKED} set` : null;
+  }
+
+  await check("the words a minute set are the words a minute read, on a phone, a tablet and a desktop", async () => {
+    const problems = [];
+    const rates = [];
+    for (const profile of PROFILES) {
+      const read = await readWpm(profile, TEXT_MIX_FIXTURE);
+      problems.push(wpmProblem(profile.name, read));
+      if (read.wpm) rates.push(read.wpm);
+    }
+    const spread = rates.length ? Math.max(...rates) / Math.min(...rates) - 1 : 0;
+    if (spread > WPM_TOLERANCE) problems.push(`the same speed read ${rates.map((r) => r.toFixed(0)).join(", ")} wpm across the three`);
+    return problems.filter(Boolean).join("; ") || null;
+  });
+
+  // A frame longer than the loop moves by is time the text did not move: it
+  // used to be lost, and a phone that janked read a fifth slow. The word clock
+  // makes it up.
+  await check("a slow phone's long frames are made up, not lost", async () => {
+    return wpmProblem("phone, 300ms stall every second", await readWpm(PROFILES[0], FIXTURE, { stallMs: 300 }));
   });
 } finally {
   client.close();

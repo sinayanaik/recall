@@ -17,7 +17,9 @@
 // in the same tick; Cards pauses it; Escape gives back the reader's own zoom;
 // and the bar fits a phone. Then: By hand, the band follows the column under it
 // and nothing else moves; a page turn in a one-column book carries on at the
-// reading speed, with the band kept; and the time left is what the run takes.
+// reading speed, with the band kept; the time left is what the run takes; and
+// the words a minute set are the words read, glides, climbs and page turns
+// and all, on a phone and a desktop.
 //
 // Same harness as pdf-preview-check: pdf.js from disk, the app's own modules
 // imported into the page, a client that refuses the network, and two PDFs
@@ -233,6 +235,42 @@ const WATCH_SRC = `async (ms, stopAt) => {
   }
   return seen;
 }`;
+
+// The words a minute that really reached the band over `ms` of playing,
+// glides, climbs, zooms and page turns and all: where the cursor is in the
+// PDF's words — every segment of every page before it, and its share of its
+// own — at the start and at the end, over the real time between. Not the word
+// clock's own count: the reading paths' words and the page's clock.
+const WORDS_READ_SRC = `async (ms) => {
+  const api = window.__recall.api;
+  const at = () => {
+    const s = api.pdfTeleprompterSnapshot();
+    if (!s?.cursor) return null;
+    let words = 0;
+    for (let n = 1; n <= s.cursor.page; n += 1) {
+      const path = api.pdfTeleprompterPath(n);
+      if (!path) return null;
+      const segments = n === s.cursor.page ? path.segments.slice(0, s.cursor.index) : path.segments;
+      words += segments.reduce((sum, segment) => sum + segment.words, 0);
+    }
+    return { words: words + s.cursor.t * s.segment.words, wpm: s.wpm, phase: s.phase, page: s.cursor.page, now: performance.now() };
+  };
+  const a = at();
+  await new Promise((r) => setTimeout(r, ms));
+  const b = at();
+  if (!a || !b) return { error: "no cursor to measure from" };
+  return { wpm: ((b.words - a.words) / (b.now - a.now)) * 60000, asked: a.wpm, words: b.words - a.words, pages: [a.page, b.page], phase: b.phase };
+}`;
+
+const PDF_WPM_TOLERANCE = 0.08;
+
+function pdfWpmProblem(label, read) {
+  if (read.error) return `${label}: ${read.error}`;
+  if (read.phase !== "playing") return `${label}: it was ${read.phase} by the end of the sample`;
+  const off = read.wpm / read.asked - 1;
+  console.log(`        ${label}: ${read.wpm.toFixed(0)} wpm read for ${read.asked} set (${(off * 100).toFixed(1)}%), ${read.words.toFixed(0)} words, pages ${read.pages.join("→")}`);
+  return Math.abs(off) > PDF_WPM_TOLERANCE ? `${label}: read ${read.wpm.toFixed(0)} wpm for ${read.asked} set` : null;
+}
 
 try {
   await emulatePhone(page);
@@ -742,6 +780,50 @@ try {
     await choose("scroll", "auto");
     await page.evaluate(`() => window.__recall.api.exitPdfTeleprompter()`);
     return problems.length ? problems.join("; ") : null;
+  });
+
+  // ── The words a minute it says, on every screen ──────────────────────────
+  //
+  // A glide from one segment to the next, a climb to the head of the next
+  // column, a zoom to fit it: none passes a word, and each used to be time
+  // added to the reading — so the words that reached the band ran under the
+  // speed set, by more on a screen where the glides are longer. Measured from
+  // the top, past the ramp, at 600 wpm.
+  const playFromTop = async (wpm, ms) => {
+    await page.evaluate(`async () => {
+      const { api, settle } = window.__recall;
+      if (api.pdfTeleprompterActive()) api.exitPdfTeleprompter();
+      await settle(300);
+      document.getElementById("documentView").scrollTop = 0;
+      await settle(300);
+      api.startPdfTeleprompter();
+    }`);
+    await choose("scroll", "auto");
+    await setNumber("wpm", wpm);
+    await page.evaluate(`() => window.__recall.api.resumePdfTeleprompter()`);
+    await waitPhase("playing", 4000);
+    await sleep(1500);
+    const read = await page.evaluate(WORDS_READ_SRC, ms);
+    await page.evaluate(`() => window.__recall.api.exitPdfTeleprompter()`);
+    return read;
+  };
+
+  await check("a book in one column reads at the words a minute set, page turns and all, on a phone and a desktop", async () => {
+    const problems = [];
+    problems.push(pdfWpmProblem("phone", await playFromTop(1200, 20000)));
+    await page.call("Emulation.setDeviceMetricsOverride", { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
+    await page.call("Emulation.setTouchEmulationEnabled", { enabled: false });
+    await sleep(800);
+    problems.push(pdfWpmProblem("desktop", await playFromTop(1200, 20000)));
+    await emulatePhone(page);
+    await sleep(800);
+    return problems.filter(Boolean).join("; ") || null;
+  });
+
+  await check("two columns read at the words a minute set, climbs and zooms and all", async () => {
+    const reopened = await page.evaluate(OPEN_SRC, Array.from(paper.bytes), "columns.pdf", paper.title);
+    if (reopened.error) return reopened.error;
+    return pdfWpmProblem("phone, two columns", await playFromTop(900, 20000));
   });
 } catch (error) {
   failures.push({ name: "the check itself", detail: String(error?.stack || error) });

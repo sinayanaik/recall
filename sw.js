@@ -577,6 +577,7 @@ const APP_SHELL = [
   `./src/notes/resume-loader.js?v=${STAMP}`,
   `./src/notes/scroll-anchor.js?v=${STAMP}`,
   `./src/notes/selection.js?v=${STAMP}`,
+  `./src/notes/teleprompter-pace.js?v=${STAMP}`,
   `./src/notes/teleprompter-panel.js?v=${STAMP}`,
   `./src/notes/teleprompter.js?v=${STAMP}`,
   `./src/notes/toc-tree.js?v=${STAMP}`,
