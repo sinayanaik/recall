@@ -182,7 +182,7 @@ const INK_NUDGE_KEYS = {
 import { initDocumentRegionSelect, noteRegionDocumentOpened, setRegionSelect, toggleRegionSelect } from "./documents/pdf-region.js?v=__BUILD__";
 import { paintPageNoteBadges, paintPdfPageNotesButton, readPdfPageNotesPreference, refreshPdfPageNotes, repaintPdfPageNotes, setDocumentNoteRevealHook, setPdfPageNotesFlag, togglePdfPageNotes } from "./documents/pdf-page-notes.js?v=__BUILD__";
 import { initReadingRail, refreshReadingRail, refreshReadingRailModes } from "./ui/reading-rail.js?v=__BUILD__";
-import { initTeleprompter, setTeleprompterChangedHook } from "./notes/teleprompter.js?v=__BUILD__";
+import { initTeleprompter, setTeleprompterChangedHook, teleprompterActive } from "./notes/teleprompter.js?v=__BUILD__";
 import { initPdfTeleprompter, setPdfTeleprompterChangedHook } from "./documents/pdf-teleprompter.js?v=__BUILD__";
 import { initScreenOrientation, setBeforeOrientationChangeHandler, setOrientationModesHandler, toggleLandscape } from "./ui/orientation.js?v=__BUILD__";
 import { attachPdfToOpenDeck, reportPdfImportCrash } from "./import/pdf.js?v=__BUILD__";
@@ -374,6 +374,12 @@ el.notesView?.addEventListener("click", (event) => {
   // nothing.
   if (event.detail < 3 || isNotesEditing()) return;
   if (event.target.closest("button, a")) return;
+  // Not under the teleprompter. On a phone a reader stops it, flicks and taps
+  // again in quick succession, and three of those taps are a triple click: the
+  // raw editor opened, which ends the teleprompter and drops the reader at the
+  // top of the note — "touch and scroll takes me back to normal Notes". ✎ and
+  // Ctrl+E are still the way into the editor from there.
+  if (teleprompterActive()) return;
   // ?? the reading-line resolver, not a bare null: an unmatchable click point
   // (a widget, a phrase the snippet search can't place) would otherwise open the
   // editor at offset 0, which is the same "took me to the top of the note"

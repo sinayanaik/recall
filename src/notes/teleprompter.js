@@ -43,11 +43,12 @@
 // scrollTop only holds whole CSS pixels (Chrome rounds 10.2 to 10 at any
 // device pixel ratio), so a note written there alone stood still for four or
 // five frames and then jumped a pixel — three device pixels on a phone — which
-// is the judder "stuttering sometimes" was. The part of a pixel it cannot hold
-// is a transform on the scroller instead (placeSubPixel): written on the
-// element itself, never as a variable the whole note would inherit, so it is
-// the compositor's alone — no style, layout or paint of the text. It is there
-// only while the frames run; a paused note has none.
+// is the judder "stuttering sometimes" was. On a screen with more than one
+// device pixel to a CSS pixel, the part of a pixel it cannot hold is a
+// transform on the scroller instead (placeSubPixel), counted in device pixels
+// and moved only when it changes by one — never on every frame, which cost
+// more than the scroll and dropped frames. It is there only while the frames
+// run; a paused note has none.
 //
 // Speed is in words a minute, which is how reading speed is measured everywhere
 // else in the app (src/stats/reading-speed.js), and the default IS the reader's
@@ -74,7 +75,7 @@
 // long-press into a scroll — "I have to press again and again".
 
 import { el, isDisplayed } from "../core/dom.js?v=__BUILD__";
-import { readerTouchDown, setNotesAutoScrolling, touchGestureHoldsSurface } from "../core/gesture.js?v=__BUILD__";
+import { notesAutoScrolling, readerTouchDown, setNotesAutoScrolling, touchGestureHoldsSurface } from "../core/gesture.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { NOTES_CHUNK_CLASS, NOTES_CHUNK_PENDING_CLASS, withChunkRendered } from "../render/block-cache.js?v=__BUILD__";
 import { formatDuration } from "../stats/combine.js?v=__BUILD__";
@@ -261,6 +262,7 @@ export function teleprompterSnapshot() {
     wordsDone: teleprompterSession.clock.done,
     measuredWpm: measuredClockWpm(teleprompterSession.clock),
     subPixel: teleprompterSession.subPixel,
+    subPixelDropped: teleprompterSession.subPixelDropped,
     wordsPerMarkdownWord: teleprompterSession.lambda,
     leftMs: teleprompterTimeLeftMs(),
     settings: { ...teleprompterSession.settings }
@@ -470,11 +472,16 @@ function placeBand(view, geometry = bandGeometry(view)) {
   });
 }
 
-function relayoutTeleprompter({ compensate = false } = {}) {
+function relayoutTeleprompter({ compensate = false, runway = true } = {}) {
   const view = el.notesView;
   if (!teleprompterSession || !view || !view.clientHeight) return;
   const geometry = bandGeometry(view);
-  sizeTeleprompterRunway(view, geometry, { compensate });
+  if (runway) {
+    sizeTeleprompterRunway(view, geometry, { compensate });
+    teleprompterSession.runwayStale = false;
+  } else {
+    teleprompterSession.runwayStale = true;
+  }
   placeBand(view, geometry);
   // How far below Notes' own reading line the band sits: the place a capture
   // reads off is that line, and the time left is counted from the band.
@@ -638,19 +645,73 @@ function easeTeleprompterDensity(dt) {
 
 // ── The part of a pixel ─────────────────────────────────────────────────────
 
-// `fraction` of a pixel further down than scrollTop says, as a transform on
-// the scroller — the `translate` property, which restyles in half the time
-// `transform` does. `will-change` with it, so the compositor moves the text it
-// already has rather than drawing it again at every new fraction.
+// `fraction` of a pixel further down than scrollTop says, as a `translate` on
+// the scroller — in DEVICE pixels, and only when that changes. Every new value
+// restyles the scroller and makes the browser re-place each of the note's
+// `content-visibility` blocks, a cost that grows with the note: written on
+// every frame, as it first was, it more than doubled the main thread's share
+// of a phone's frame (5.5ms against 2.5ms on a long note at 4× CPU throttle,
+// a fifth of the frames dropped) — the hitches "not smooth" was. A screen
+// with one device pixel to a CSS pixel cannot draw the part of a pixel at all
+// (a fractional translate only blurs the type), so there it is never written
+// and the text moves a whole pixel at a time, which is a device pixel; on a
+// phone it moves a device pixel at a time, a third of the step scrollTop
+// alone can make.
+//
+// Not an inline style: the note's own stylesheet has `[style*=…]` selectors
+// with descendants after them (the contents drawer's depth ladder, in the
+// frozen styles/12-notes.css), and with those any change to an element's style
+// attribute re-checks its whole subtree. A paused animation's time is not an
+// attribute, so moving it restyles the scroller alone. `will-change` is set
+// once, so the compositor moves the text it already has.
+function devicePixelStep() {
+  const ratio = typeof devicePixelRatio === "number" && devicePixelRatio > 0 ? devicePixelRatio : 1;
+  return ratio > 1 ? 1 / ratio : 0;
+}
+
 function placeSubPixel(view, fraction) {
-  const shown = Math.round(fraction * 100) / 100;
-  if (teleprompterSession.subPixelOn && shown === teleprompterSession.subPixel) return;
-  if (!teleprompterSession.subPixelOn) {
+  const session = teleprompterSession;
+  const step = devicePixelStep();
+  const shown = step ? Math.round(fraction / step) * step : 0;
+  if (!session.subPixelOn && !shown) return;
+  if (session.subPixelOn && Math.abs(shown - session.subPixel) < 0.001) return;
+  if (!session.subPixelOn) {
+    session.subPixelOn = true;
     view.style.willChange = "translate";
-    teleprompterSession.subPixelOn = true;
+    if (typeof view.animate === "function") {
+      session.subPixelMotion = view.animate([{ translate: "0 0" }, { translate: "0 -1px" }], { duration: 1000, fill: "both" });
+      session.subPixelMotion.pause();
+    }
   }
-  teleprompterSession.subPixel = shown;
-  view.style.translate = `0 ${-shown}px`;
+  session.subPixel = shown;
+  if (session.subPixelMotion) session.subPixelMotion.currentTime = shown * 1000;
+  else view.style.translate = `0 ${-shown}px`;
+}
+
+// ...and only on a screen with the time for it. The transform has a cost a
+// whole-pixel scroll does not, and on a slow phone with a long note it is the
+// difference between every frame and most of them (60 against 53 frames a
+// second, a long note at 4× CPU throttle in headless Chrome): a dropped frame
+// is a hitch every time, where a whole pixel on time is only a coarser step.
+// So the frames are watched while it is on, and if too many of them come late
+// it is given up for the rest of the session.
+const SUBPIXEL_WINDOW_FRAMES = 90;
+const SUBPIXEL_LATE_SHARE = 0.12;
+
+function judgeSubPixel(view, elapsed) {
+  const session = teleprompterSession;
+  if (session.subPixelDropped || !session.subPixelOn || session.ease < 1 || !(elapsed > 0)) return;
+  const times = session.frameTimes;
+  times.push(elapsed);
+  if (times.length < SUBPIXEL_WINDOW_FRAMES) return;
+  // The screen's own interval: most frames are on time even on a phone that
+  // drops a third of them, and a 60Hz and a 120Hz screen are judged alike.
+  const interval = [...times].sort((a, b) => a - b)[times.length >> 2];
+  const late = times.filter((ms) => ms > interval * 1.5).length;
+  times.length = 0;
+  if (late <= SUBPIXEL_WINDOW_FRAMES * SUBPIXEL_LATE_SHARE) return;
+  session.subPixelDropped = true;
+  clearSubPixel(view);
 }
 
 // Gone, with the text put on the nearer whole pixel: a paused note is plain,
@@ -661,7 +722,10 @@ function clearSubPixel(view) {
   const fraction = session.subPixel;
   session.subPixelOn = false;
   session.subPixel = 0;
-  view.style.translate = "";
+  session.frameTimes.length = 0;
+  if (session.subPixelMotion) session.subPixelMotion.cancel();
+  else view.style.translate = "";
+  session.subPixelMotion = null;
   view.style.willChange = "";
   if (fraction >= 0.5 && view.scrollTop + 1 <= view.scrollHeight - view.clientHeight) {
     markProgrammaticNotesScroll();
@@ -764,7 +828,10 @@ function teleprompterFrame(now) {
     view.scrollTop = whole;
   }
   teleprompterSession.lastWritten = view.scrollTop;
-  if (!reducedMotion()) placeSubPixel(view, view.scrollTop === whole ? teleprompterSession.pos - whole : 0);
+  judgeSubPixel(view, elapsed * 1000);
+  if (!reducedMotion() && !teleprompterSession.subPixelDropped) {
+    placeSubPixel(view, view.scrollTop === whole ? teleprompterSession.pos - whole : 0);
+  }
   if (teleprompterSession.phase === "playing" && teleprompterSession.pos >= max - 0.5 && !lastSpanPending(view)) {
     finishTeleprompter();
     return;
@@ -1027,6 +1094,9 @@ export function startTeleprompter() {
     measuredAt: 0,
     subPixel: 0,
     subPixelOn: false,
+    subPixelMotion: null,
+    subPixelDropped: false,
+    frameTimes: [],
     lambda: 0,
     lambdaBase: null,
     moves: 0,
@@ -1051,6 +1121,8 @@ export function startTeleprompter() {
     wakeLock: null,
     wakeRequested: false,
     resizeObserver: null,
+    runwayStale: false,
+    handScrollAt: 0,
     capturedAt: 0
   };
   if (pagedBefore) setNotesPagedSuspended(true);
@@ -1077,7 +1149,13 @@ export function startTeleprompter() {
   }
   if (typeof ResizeObserver === "function") {
     teleprompterSession.resizeObserver = new ResizeObserver(() => {
-      relayoutTeleprompter({ compensate: true });
+      // Under the reader's own scroll — a finger down, or the fling it left —
+      // only the band moves. On a phone the URL bar comes and goes as the note
+      // is scrolled by hand, each time a resize, and resizing the lead-in then
+      // (with the scrollTop write that keeps the text still through it) moved
+      // the text under the finger and stopped the fling dead. The runway is
+      // put right once the scroll has stopped (settleTeleprompterRunway).
+      relayoutTeleprompter({ compensate: true, runway: !readerScrollingTeleprompter() });
       // A new width re-wraps the text: the words a pixel holds are new too.
       forgetTimeLeftLearning();
     });
@@ -1085,6 +1163,7 @@ export function startTeleprompter() {
   }
   teleprompterSession.watchTimer = setInterval(watchTeleprompter, WATCH_MS);
   view.addEventListener("wheel", onTeleprompterWheel, { passive: false });
+  view.addEventListener("scroll", onTeleprompterScroll, { passive: true });
   paintTeleprompterToggles();
   if (settings.scroll === "manual") enterManualTeleprompter();
   else beginTeleprompterCountdown();
@@ -1103,6 +1182,7 @@ export function exitTeleprompter({ land = true } = {}) {
   letScreenSleep();
   ending.resizeObserver?.disconnect();
   view?.removeEventListener("wheel", onTeleprompterWheel);
+  view?.removeEventListener("scroll", onTeleprompterScroll);
   if (view) stopGlide(view);
   const canLand = land && view && isDisplayed(view) && !isNotesEditing();
   const anchor = canLand ? measureLineAnchor(view, bandLineY(view)) : null;
@@ -1304,6 +1384,23 @@ function teleprompterReaderBusy() {
     || isNotesHeadMoreOpen();
 }
 
+// The reader moving the note themselves: a finger on it, or a scroll that is
+// not the loop's within the last moment (a fling still coasting, the wheel, a
+// glide from the keys).
+const HAND_SCROLL_QUIET_MS = 200;
+
+function onTeleprompterScroll() {
+  if (teleprompterSession && !notesAutoScrolling()) teleprompterSession.handScrollAt = performance.now();
+}
+
+function readerScrollingTeleprompter() {
+  return readerTouchDown() || performance.now() - (teleprompterSession?.handScrollAt || 0) < HAND_SCROLL_QUIET_MS;
+}
+
+function settleTeleprompterRunway() {
+  if (teleprompterSession?.runwayStale && !readerScrollingTeleprompter()) relayoutTeleprompter({ compensate: true });
+}
+
 function watchTeleprompter() {
   if (!teleprompterSession) return;
   // A different note, or the raw editor: the place this session was keeping
@@ -1321,6 +1418,7 @@ function watchTeleprompter() {
     }
     return;
   }
+  settleTeleprompterRunway();
   if (teleprompterSession.phase === "manual") {
     // Back from another tab or the background: the browser let go of the
     // screen lock there, so it is asked for again — once, not every tick.
