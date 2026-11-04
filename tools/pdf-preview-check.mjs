@@ -510,7 +510,8 @@ try {
       const box = node?.getBoundingClientRect();
       return Boolean(box && box.width > 0 && box.height > 0);
     };
-    // The three adders are rows of the bar's + menu now, so the + is pressed
+    // The five adders (Text, Sticky note, Text block, Picture, Page at the end)
+    // are rows of the bar's + menu, so the + is pressed
     // first — the same press a reader makes — and the rows are asked for a box
     // with the menu open. The + itself has to have one before that.
     const addButton = document.getElementById("inkRailAddBtn");
@@ -553,7 +554,7 @@ try {
   check("the pen's rail is up on arriving at the Write tab",
     writeControls.railOpen, `rail has a box=${writeControls.railOpen}`);
   check("...with the page group on it — a + whose menu's every row is pressable",
-    writeControls.addBoxed && writeControls.pageGroup === 3 && writeControls.pageGroupBoxed === 3,
+    writeControls.addBoxed && writeControls.pageGroup === 5 && writeControls.pageGroupBoxed === 5,
     `+ has a box=${writeControls.addBoxed}; ${writeControls.pageGroupBoxed} of ${writeControls.pageGroup} rows with a box once it is open`);
   // Five: a heading of its own plus three papers and the tear-out.
   check("the ⋯ menu offers the notebook's rows and not the document's",
