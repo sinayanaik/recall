@@ -122,6 +122,9 @@ export function normalizeShape(shape) {
     fillOpacity: Math.round(clampNumber(shape.fillOpacity, 0.05, 1, SHAPE_FILL_OPACITY_DEFAULT) * 100) / 100,
     heads: [0, 1].map((i) => (SHAPE_HEADS.includes(heads[i]) ? heads[i] : "none")),
     text: typeof shape.text === "string" ? shape.text.slice(0, 20000) : "",
+    // Typewriter text (the Text button): its box is as wide as its longest
+    // line and its lines break only where the reader pressed Enter.
+    fit: shape.type === "text" && shape.fit === true,
     font: {
       size: clampNumber(font.size, SHAPE_FONT_RANGE.min, SHAPE_FONT_RANGE.max, SHAPE_DEFAULTS.font.size),
       bold: font.bold === true,
@@ -325,7 +328,7 @@ export function shapePrimitives(shape) {
     });
   }
   out.push({
-    kind: "text", rect, text: s.text, size: s.font.size, bold: s.font.bold, align: s.font.align,
+    kind: "text", rect, text: s.text, size: s.font.size, bold: s.font.bold, align: s.font.align, fit: s.fit,
     color: s.font.color || (s.type === "text" ? s.stroke : "#16181d")
   });
   return out;
@@ -506,8 +509,17 @@ export function shapeFromDrag(type, from, to, { snap = false, base = {} } = {}) 
   const merged = { ...SHAPE_DEFAULTS, ...shapeTypeDefaults(type), ...base, type };
   if (type === "sticky") return normalizeShape({ ...merged, p: [[from[0] - STICKY_SIZE / 2, from[1] + STICKY_SIZE / 2]] });
   if (type === "text") {
+    // A tap with the typewriter: a one-line box whose top-left is just above
+    // and left of the tap, so the cursor blinks where the finger landed. It is
+    // as wide as what is typed (see `fit`).
+    if (merged.fit && !far) {
+      const size = Number(merged.font?.size) || SHAPE_DEFAULTS.font.size;
+      const height = size * 1.3 + SHAPE_TEXT_PAD * 2;
+      const start = [from[0] - SHAPE_TEXT_PAD, from[1] + height / 2];
+      return normalizeShape({ ...merged, p: [start, [start[0] + size * 2, start[1] - height]] });
+    }
     const corner = far ? end : [from[0] + TEXT_BOX_DEFAULT.width, from[1] - TEXT_BOX_DEFAULT.height];
-    return normalizeShape({ ...merged, p: [from, corner] });
+    return normalizeShape({ ...merged, fit: false, p: [from, corner] });
   }
   if (!far) return null;
   if (type === "callout") {
@@ -619,7 +631,8 @@ function paintShapeText(ctx, prim, toPoint, scale) {
   ctx.fillStyle = prim.color;
   ctx.font = `${prim.bold ? "700" : "400"} ${size}px system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif`;
   ctx.textBaseline = "top";
-  const lines = wrapShapeText(prim.text, Math.max(1, width - pad * 2), (t) => ctx.measureText(t).width);
+  const lines = prim.fit ? String(prim.text).split("\n")
+    : wrapShapeText(prim.text, Math.max(1, width - pad * 2), (t) => ctx.measureText(t).width);
   const lineHeight = size * 1.3;
   lines.forEach((text, i) => {
     let x = left + pad;

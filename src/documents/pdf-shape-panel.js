@@ -16,7 +16,7 @@
 import { INK_PEN_COLORS } from "../format/ink-colors.js?v=__BUILD__";
 import { SHAPE_HEADS, SHAPE_LABELS, SHAPE_WIDTH_RANGE } from "../render/annot-shapes.js?v=__BUILD__";
 import { rememberInkRecentColor } from "../storage/ink-prefs.js?v=__BUILD__";
-import { displayedShapeSettings, selectedShapeRecord, setShapeSettings, shapeType } from "./pdf-shapes.js?v=__BUILD__";
+import { displayedShapeSettings, selectedShapeRecord, setShapeSettings, shapeButtonType, shapeType } from "./pdf-shapes.js?v=__BUILD__";
 
 // The shapes the flyout offers, in its order.
 export const SHAPE_MENU_TYPES = ["line", "arrow", "rect", "ellipse", "callout", "text", "sticky"];
@@ -47,9 +47,10 @@ export function buildShapeMenu(menu) {
 }
 
 export function refreshShapeMenu(menu, button) {
-  const type = shapeType();
+  const type = shapeButtonType();
+  const armedShape = shapeType();
   menu?.querySelectorAll("[data-shape-type]").forEach((item) => {
-    const on = item.dataset.shapeType === type;
+    const on = item.dataset.shapeType === armedShape;
     item.classList.toggle("is-current", on);
     item.setAttribute("aria-checked", String(on));
   });
@@ -166,7 +167,11 @@ export function buildShapePanel(shapePopover) {
     const input = event.target;
     if (input.matches("[data-shape-width]")) setShapeSettings({ width: widthFromSlider(Number(input.value)) });
     else if (input.matches("[data-shape-opacity]")) setShapeSettings({ opacity: Number(input.value) / 100 });
-    else if (input.matches("[data-shape-stroke-custom]")) { setShapeSettings({ stroke: input.value }); rememberInkRecentColor(input.value); }
+    else if (input.matches("[data-shape-stroke-custom]")) {
+      const type = panelShapeType();
+      setShapeSettings({ [type === "text" ? "textColor" : type === "sticky" ? "stickyColor" : "stroke"]: input.value });
+      rememberInkRecentColor(input.value);
+    }
     else if (input.matches("[data-shape-fill-custom]")) { setShapeSettings({ fill: input.value }); rememberInkRecentColor(input.value); }
     else return;
     refreshShapePanel(section);
@@ -183,7 +188,10 @@ function pressShapePanel(button) {
   const data = button.dataset;
   const s = displayedShapeSettings();
   const type = panelShapeType();
-  if (data.shapeStroke) setShapeSettings({ stroke: data.shapeStroke });
+  // The colour row is the line's — or, for typed text and a sticky note, their
+  // own colour (textColor, stickyColor), kept apart from the line's.
+  const colourKey = type === "text" ? "textColor" : type === "sticky" ? "stickyColor" : "stroke";
+  if (data.shapeStroke) setShapeSettings({ [colourKey]: data.shapeStroke });
   else if (data.shapeFill) setShapeSettings({ fill: data.shapeFill === "none" ? null : data.shapeFill });
   else if (data.shapeDash) setShapeSettings({ dash: data.shapeDash });
   else if (data.shapeHeadStart || data.shapeHeadEnd) {
@@ -206,7 +214,8 @@ export function refreshShapePanel(section) {
   const s = displayedShapeSettings();
   const type = panelShapeType();
   const markPressed = (selector, on) => section.querySelectorAll(selector).forEach((node) => node.setAttribute("aria-pressed", String(on(node))));
-  markPressed("[data-shape-stroke]", (n) => n.dataset.shapeStroke === s.stroke);
+  const colour = type === "text" ? s.textColor : type === "sticky" ? s.stickyColor : s.stroke;
+  markPressed("[data-shape-stroke]", (n) => n.dataset.shapeStroke === colour);
   markPressed("[data-shape-fill]", (n) => (n.dataset.shapeFill === "none" ? !s.fill : n.dataset.shapeFill === s.fill));
   markPressed("[data-shape-dash]", (n) => n.dataset.shapeDash === s.dash);
   const heads = s.heads[type] || s.heads.arrow;
@@ -223,7 +232,7 @@ export function refreshShapePanel(section) {
   section.querySelector("[data-shape-opacity-value]").textContent = `${Math.round(s.opacity * 100)}%`;
   section.querySelector("[data-shape-font-value]").textContent = `${s.fontSize} pt`;
   const stroke = section.querySelector("[data-shape-stroke-custom]");
-  if (stroke && document.activeElement !== stroke) stroke.value = s.stroke;
+  if (stroke && document.activeElement !== stroke) stroke.value = colour;
   // Only the rows this shape has. A line has no fill and no text; a box has no
   // heads; free text has no line to dash and no heads; a sticky note is a
   // colour and nothing else.

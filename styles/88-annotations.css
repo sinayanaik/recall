@@ -382,3 +382,23 @@
 #documentStage:not([data-doc-slot="notebook"]) .ink-rail-notebook-only {
   display: none;
 }
+
+/* Typewriter text (the Text button): as wide as its longest line, a line per
+   Enter. The same rule on the editor and on the words once typed, so they
+   cannot break differently. */
+.pdf-shape-text[data-fit],
+.pdf-shape-editor[data-fit] {
+  white-space: pre;
+  overflow-wrap: normal;
+}
+
+.pdf-shape-editor[data-fit] {
+  background: transparent;
+  outline-style: dotted;
+}
+
+/* The Text button on the pen's bar: a word, since it is the one people look
+   for by name. */
+.ink-rail-btn[data-ink-action="typewriter"] .ink-rail-word {
+  font-weight: 700;
+}

@@ -57,6 +57,7 @@ const API_SRC = `async () => {
     "/src/ui/view-mode.js?v=__BUILD__",
     "/src/format/ink-strokes.js?v=__BUILD__",
     "/src/notes/selection.js?v=__BUILD__",
+    "/src/format/render-toolbar.js?v=__BUILD__",
     "/src/ui/chrome.js?v=__BUILD__",
     "/src/ui/deck-header.js?v=__BUILD__",
     "/src/ui/boot-screens.js?v=__BUILD__",
@@ -615,7 +616,9 @@ sections.push(async () => {
   check("...an empty one is taken away when it loses focus", free.afterEmpty === 0, JSON.stringify(free));
   check("...a dragged one keeps its words", free.text === "see Fig. 3", JSON.stringify(free));
   check("...and is drawn the way the tool is set, not like the callout selected before it", free.fill === null, JSON.stringify(free));
-  check("...and a second tap on a selected one opens its words again", free.selectedFirst && free.reopened === "see Fig. 3", JSON.stringify(free));
+  // With the typewriter armed, the first tap already opens it (see the
+  // typewriter section); the second finds it open still.
+  check("...and a tap on it with Text armed opens its words again", free.reopened === "see Fig. 3", JSON.stringify(free));
 
   const sticky = await page.evaluate(`async () => {
     const { api, settle } = window.__recall;
@@ -798,15 +801,20 @@ sections.push(async () => {
     const text = menu.querySelector('[data-hw-action="add-text"]');
     const enabled = !text.disabled;
     text.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerType: "touch" }));
+    await settle(150);
+    const armed = api.inkTool() === "shape" && api.shapeType() === "text";
+    const lit = document.getElementById("inkRailTextBtn")?.getAttribute("aria-pressed") === "true";
+    // ...and the tap that says where.
+    await window.__drag("text", [window.__at(4, 0.3, 0.1)], { pointerType: "touch", id: 80 });
     await settle(250);
     const made = api.documentShapes(null).at(-1);
     const editor = document.querySelector(".pdf-shape-editor");
     if (editor) { editor.textContent = "typed with a finger"; editor.blur(); }
     await settle(150);
-    return { label: btn.textContent.trim(), shown, rows, enabled, made: api.documentShapes(null).length - before, type: made?.shape?.type, page: made?.page, opened: Boolean(editor), text: api.documentHighlightById(made?.id)?.shape?.text };
+    return { label: btn.textContent.trim(), shown, rows, enabled, armed, lit, made: api.documentShapes(null).length - before, type: made?.shape?.type, page: made?.page, opened: Boolean(editor), text: api.documentHighlightById(made?.id)?.shape?.text };
   }`);
   check("on a PDF the pen bar's + is there, with Text and Sticky note and no Page row", plus.shown && plus.rows.includes("Text") && plus.rows.includes("Sticky note") && plus.label === "+ Add" && plus.rows.includes("Text block") && !plus.rows.some((r) => /Page at the end/.test(r)) && plus.enabled, JSON.stringify(plus));
-  check("+ → Text puts a text box on the page in view and opens it to type in", plus.made === 1 && plus.type === "text" && plus.page === 4 && plus.opened && plus.text === "typed with a finger", JSON.stringify(plus));
+  check("+ → Text arms the typewriter (its Text button lit), and a tap puts a cursor there to type at", plus.armed && plus.lit && plus.made === 1 && plus.type === "text" && plus.page === 4 && plus.opened && plus.text === "typed with a finger", JSON.stringify(plus));
 
   const finger = await page.evaluate(`async () => {
     const { api, settle } = window.__recall;
@@ -835,6 +843,97 @@ sections.push(async () => {
   }`);
   check("a finger's tap with Sticky note armed places one and opens its note", finger.tapped === 1 && finger.opened, JSON.stringify(finger));
   check("...a finger that moves still scrolls, and a tap with Arrow armed makes nothing", finger.swiped === 0 && finger.arrowTap === 0, JSON.stringify(finger));
+});
+
+// ── The typewriter, and settings kept per tab ──────────────────────────────
+sections.push(async () => {
+  await page.evaluate(POINTER_SRC);
+  const typed = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    api.scrollToDocumentPage(4, 0, { smooth: false });
+    await settle(300);
+    api.toggleInkRail(true);
+    api.chooseInkTool("pen");
+    const button = document.getElementById("inkRailTextBtn");
+    const visible = Boolean(button) && getComputedStyle(button).display !== "none" && button.textContent.trim() === "Text";
+    button.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerType: "mouse" }));
+    await settle(100);
+    const armed = api.inkTool() === "shape" && api.shapeType() === "text";
+    const panelClosed = document.getElementById("inkRailPopover").hidden;
+    const before = api.documentShapes(4).length;
+    await window.__drag("text", [window.__at(4, 0.15, 0.2)]);
+    await settle(200);
+    const editor = document.querySelector(".pdf-shape-editor");
+    const focused = document.activeElement === editor;
+    const narrow = editor.getBoundingClientRect().width;
+    editor.textContent = "a typewriter line that is longer";
+    await settle(30);
+    const wide = editor.getBoundingClientRect().width;
+    // A tap somewhere else: the first is kept, a second cursor opens there.
+    await window.__drag("text", [window.__at(4, 0.6, 0.35)]);
+    await settle(200);
+    const second = document.querySelector(".pdf-shape-editor");
+    second.textContent = "second";
+    second.blur();
+    await settle(150);
+    const shapes = api.documentShapes(4).slice(before);
+    const first = shapes[0];
+    const w = Math.abs(first.shape.p[1][0] - first.shape.p[0][0]);
+    // One tap on typed text, the typewriter armed, opens it again.
+    const vp = api.pdfPageViewport(4);
+    const r = document.querySelector('.pdf-page[data-page-number="4"]').getBoundingClientRect();
+    const c = vp.convertToViewportPoint(first.shape.p[0][0] + 4, (first.shape.p[0][1] + first.shape.p[1][1]) / 2);
+    api.selectShape(null);
+    await window.__drag("text", [[r.left + c[0], r.top + c[1]]]);
+    await settle(150);
+    const reopened = document.querySelector(".pdf-shape-editor")?.textContent || null;
+    api.commitShapeTextEditor();
+    // The Shapes button keeps the last shape drawn, and goes back to it.
+    const shapesIcon = document.getElementById("inkRailShapeBtn").dataset.shapeIcon;
+    document.getElementById("inkRailShapeBtn").dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerType: "mouse" }));
+    await settle(80);
+    const backTo = api.shapeType();
+    const textUnlit = document.getElementById("inkRailTextBtn").getAttribute("aria-pressed") === "false";
+    return {
+      shapesIcon, backTo, textUnlit,
+      visible, armed, panelClosed, focused, grew: wide > narrow + 20, made: shapes.length,
+      texts: shapes.map((r) => r.shape.text), fit: first.shape.fit, width: w, colour: first.shape.font.color, reopened
+    };
+  }`);
+  check("the pen bar has a Text button; pressed, it arms the typewriter with no panel in the way", typed.visible && typed.armed && typed.panelClosed, JSON.stringify(typed));
+  check("a tap puts a cursor there, and the line grows as it is typed", typed.focused && typed.grew, JSON.stringify(typed));
+  check("a tap elsewhere keeps what was typed and starts again there", typed.made === 2 && typed.texts.join("|") === "a typewriter line that is longer|second", JSON.stringify(typed));
+  check("typed text is boxed to its words, in the tool's own text colour", typed.fit === true && typed.width > 60 && typed.colour === "#16181d", JSON.stringify(typed));
+  check("one tap on typed text, with Text armed, opens it to type in", typed.reopened === "a typewriter line that is longer", JSON.stringify(typed));
+  check("the Shapes button keeps the last shape drawn, and pressing it leaves the typewriter for it", typed.shapesIcon && typed.shapesIcon !== "text" && typed.backTo === typed.shapesIcon && typed.textUnlit, JSON.stringify(typed));
+
+  const tabs = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    // The pen: set on a PDF, untouched on a Canvas and on Notes.
+    const canvasBefore = api.inkPreferences("notebook").pen;
+    const notesBefore = api.inkPreferences("notes").pen;
+    api.writeInkPreferences({ pen: "violet" }, "doc");
+    const pen = { doc: api.inkPreferences("doc").pen, notebook: api.inkPreferences("notebook").pen, notes: api.inkPreferences("notes").pen, canvasBefore, notesBefore };
+    // Shapes on a PDF.
+    api.setShapeSettings({ stroke: "#0d9488" });
+    const shapeDoc = api.currentShapeSettings().stroke;
+    const shapeCanvas = api.normalizeShapeSettings(api.inkPreferences("notebook").shape).stroke;
+    // The highlight colour: set on the PDF tab, read on the Notes tab.
+    api.setRenderDefault("highlight", "blue");
+    const onPdf = api.renderFormatDefaults.highlight;
+    const mode = api.state.viewMode;
+    api.state.viewMode = "notes";
+    const onNotes = api.renderFormatDefaults.highlight;
+    api.setRenderDefault("highlight", "pink");
+    api.state.viewMode = mode;
+    const backOnPdf = api.renderFormatDefaults.highlight;
+    api.chooseInkTool("pen");
+    api.toggleInkRail(false);
+    return { pen, shapeDoc, shapeCanvas, onPdf, onNotes, backOnPdf };
+  }`);
+  check("the pen set on a PDF is not the Canvas's or the drawing sheet's", tabs.pen.doc === "violet" && tabs.pen.notebook === tabs.pen.canvasBefore && tabs.pen.notes === tabs.pen.notesBefore, JSON.stringify(tabs.pen));
+  check("shape settings set on a PDF are not the Canvas's", tabs.shapeDoc === "#0d9488" && tabs.shapeCanvas !== "#0d9488", JSON.stringify(tabs));
+  check("the highlight colour chosen on a PDF is not the Notes tab's, and back again", tabs.onPdf === "blue" && tabs.onNotes !== "blue" && tabs.backOnPdf === "blue", JSON.stringify(tabs));
 });
 
 // ── Saved with annotations: every mark as a real PDF annotation ────────────
@@ -1028,6 +1127,20 @@ try {
       await settle(200);
     }`);
     await snap("add-menu.png");
+    // The typewriter, mid-sentence.
+    await page.evaluate(POINTER_SRC);
+    await page.evaluate(`async () => {
+      const { api, settle } = window.__recall;
+      document.getElementById("inkRailAddMenu").hidden = true;
+      document.getElementById("inkRailTextBtn").dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerType: "mouse" }));
+      await settle(100);
+      await window.__drag("text", [window.__at(2, 0.62, 0.36)]);
+      await settle(200);
+      const editor = document.querySelector(".pdf-shape-editor");
+      if (editor) editor.textContent = "Typed straight onto the page";
+      await settle(100);
+    }`);
+    await snap("typewriter.png");
   }
 
   if (SHOT) {

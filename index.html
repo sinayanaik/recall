@@ -1302,6 +1302,13 @@
                 <button class="tool-button ink-rail-btn" type="button" data-ink-tool="highlighter" aria-pressed="false" title="Highlighter — sweep it along a line of words and the words are highlighted; over a scan, a figure or blank paper it lays a see-through band" aria-label="Highlighter"><svg class="ink-rail-svg" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M14.6 3.4l6 6-8.3 8.3H6.3v-6z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M6.3 11.7l6 6" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M3.5 21h10" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" opacity="0.55"/></svg></button>
                 <button class="tool-button ink-rail-btn" type="button" data-ink-tool="eraser" aria-pressed="false" title="Eraser — cross a stroke to remove it. The eraser end or the side button of a stylus does this without leaving the pen." aria-label="Eraser">&#9003;</button>
                 <button class="tool-button ink-rail-btn" type="button" data-ink-tool="lasso" aria-pressed="false" title="Lasso — circle strokes to move, turn, resize, restyle, copy, join, split or delete them" aria-label="Lasso">&#9711;</button>
+                <!-- Text, the typewriter: armed, a tap anywhere on a PDF or a
+                     Canvas puts a cursor there to type at, with a pen, a mouse
+                     or a finger. Styling comes after, from the chip. A word
+                     rather than a glyph, because it is the one people look for
+                     by name — and the select-words tool beside it is an I-beam,
+                     so the two are not both a T. -->
+                <button class="tool-button ink-rail-btn is-labelled" type="button" data-ink-action="typewriter" id="inkRailTextBtn" aria-pressed="false" title="Text — tap anywhere on the page and type. Pressed again: its size, colour and weight" aria-label="Text: tap anywhere and type"><span class="ink-rail-word" aria-hidden="true">Text</span></button>
                 <!-- Shapes: one button for seven of them (src/documents/
                      pdf-shapes.js). It wears the armed shape's icon; pressed
                      again it opens the flyout that picks another. The pen and a
@@ -1311,7 +1318,7 @@
                 <!-- The pen stops drawing and starts picking out words, so a
                      stylus can reach the highlighter that marks what you
                      SELECTED. A finger still scrolls. -->
-                <button class="tool-button ink-rail-btn" type="button" data-ink-tool="text" aria-pressed="false" title="Select text — the pen picks out words instead of drawing, so you can highlight them, make a cloze or copy them. Turn the stylus over and it still rubs out." aria-label="Select text">T</button>
+                <button class="tool-button ink-rail-btn" type="button" data-ink-tool="text" aria-pressed="false" title="Select text — the pen picks out words instead of drawing, so you can highlight them, make a cloze or copy them. Turn the stylus over and it still rubs out." aria-label="Select text"><svg class="ink-rail-svg" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 4h2.5a1.5 1.5 0 0 1 1.5 1.5v13a1.5 1.5 0 0 1-1.5 1.5H9M15 4h-2.5M15 20h-2.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M15.5 9.5h4v5h-4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-dasharray="1.6 1.6" opacity="0.8"/></svg></button>
               </div>
               <div class="ink-rail-group" role="group" aria-label="Pen settings">
                 <button class="tool-button ink-rail-btn ink-rail-chip" id="inkRailStyleChip" type="button" data-ink-action="style" aria-haspopup="dialog" aria-expanded="false" aria-controls="inkRailPopover" title="Size, colour and opacity" aria-label="Size, colour and opacity"><span class="ink-rail-chip-mark" aria-hidden="true"></span></button>

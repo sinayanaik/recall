@@ -53,7 +53,7 @@ export function shapeTextLines(prim, font) {
   const [x0, , x1, y1] = prim.rect;
   const inner = Math.max(1, (x1 - x0) - SHAPE_TEXT_PAD * 2);
   const text = encodableText(font, prim.text);
-  const lines = wrapShapeText(text, inner, (t) => font.widthOfTextAtSize(t, size));
+  const lines = prim.fit ? text.split("\n") : wrapShapeText(text, inner, (t) => font.widthOfTextAtSize(t, size));
   const lineHeight = size * 1.3;
   return lines.map((line, i) => {
     const width = font.widthOfTextAtSize(line, size);

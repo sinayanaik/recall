@@ -37,6 +37,8 @@ function rememberableTool(tool) {
   return tool === "pen" || tool === "highlighter" ? tool : INK_TOOL_DEFAULT;
 }
 import { inkPreferencesKey } from "./keys.js?v=__BUILD__";
+import { state } from "../core/state.js?v=__BUILD__";
+import { DOC_SLOT_NOTEBOOK, activeDocSlot } from "../documents/doc-slot.js?v=__BUILD__";
 
 // ── ...and whether the rail is up, per surface ─────────────────────────────
 //
@@ -84,10 +86,39 @@ export function writeInkRailOpen(slot, open) {
 // wants and is not believed. See inkPreferences.
 const INK_SNAP_PREFS_VERSION = 2;
 
-export function inkPreferences() {
+// ── Per tab ────────────────────────────────────────────────────────────────
+//
+// "Each tab should have separate styling options, and changing one should not
+// change the others." The pen on a paper, the pen on a Canvas and the drawing
+// sheet on Notes or Cards were one pen: a colour chosen on a Canvas was the
+// colour the next stroke on a PDF came out in. So every setting here is kept
+// per TAB — `cards`, `notes`, `doc` (PDFs) and `notebook` (Canvas) — under
+// `surfaces` in the same bag, and read for the tab the reader is on unless a
+// caller names another. A tab that has never been told anything reads the
+// settings as they were before this existed, so nobody's pen changes on update.
+// The reader's own colours (recentColors) stay one list: they are a palette,
+// not a setting.
+export const INK_SURFACES = ["cards", "notes", "doc", "notebook"];
+
+export function currentInkSurface() {
+  const mode = state.viewMode;
+  if (mode === "cards") return "cards";
+  if (mode === "notes") return "notes";
+  if (mode === "handwriting") return "notebook";
+  if (mode === "document") return activeDocSlot() === DOC_SLOT_NOTEBOOK ? "notebook" : "doc";
+  return "notes";
+}
+
+function inkSurfaceKey(surface) {
+  return INK_SURFACES.includes(surface) ? surface : currentInkSurface();
+}
+
+export function inkPreferences(surface = null) {
   try {
     const raw = localStorage.getItem(inkPreferencesKey);
-    const parsed = raw ? JSON.parse(raw) : null;
+    const stored = raw ? JSON.parse(raw) : null;
+    const own = stored?.surfaces?.[inkSurfaceKey(surface)];
+    const parsed = stored ? { ...stored, ...(own && typeof own === "object" ? own : {}), recentColors: stored.recentColors } : null;
     return {
       // A whole colour word now — a custom colour or an opacity rides in it — so
       // it is read back through the pen's own normaliser rather than the
@@ -157,13 +188,18 @@ export function inkPreferences() {
 // and written whether it was passed or not — and the drawing sheet passes three
 // of the six, so pressing a swatch on the sheet quietly reset the eraser's size,
 // its part/whole mode and the shape-snapper to their defaults on the paper too.
-export function writeInkPreferences(patch = {}) {
+export function writeInkPreferences(patch = {}, surface = null) {
   try {
     // Merged rather than assigned: railOpen lives in the same bag and a bare
     // write here would forget which surfaces the reader had shut the rail on.
     const raw = localStorage.getItem(inkPreferencesKey);
     const parsed = (raw ? JSON.parse(raw) : null) || {};
-    const next = { ...parsed };
+    const root = { ...parsed };
+    // The tab's own settings (see INK_SURFACES); everything but the palette.
+    const key = inkSurfaceKey(surface);
+    root.surfaces = { ...(parsed.surfaces && typeof parsed.surfaces === "object" ? parsed.surfaces : {}) };
+    const next = { ...(root.surfaces[key] || {}) };
+    root.surfaces[key] = next;
     const {
       pen, width, tool, eraserSize, eraseMode, snapShapes,
       hlPen, hlWidth, hlStraight, eraseTarget, tapDots, recentColors,
@@ -180,14 +216,14 @@ export function writeInkPreferences(patch = {}) {
     if (hlStraight !== undefined) next.hlStraight = hlStraight !== false;
     if (eraseTarget !== undefined) next.eraseTarget = normalizeInkEraseTarget(eraseTarget);
     if (tapDots !== undefined) next.tapDots = tapDots !== false;
-    if (recentColors !== undefined) next.recentColors = normalizeRecentColors(recentColors);
+    if (recentColors !== undefined) root.recentColors = normalizeRecentColors(recentColors);
     if (eraserSize !== undefined) next.eraserSize = normalizeInkEraserSize(eraserSize);
     if (eraseMode !== undefined) next.eraseMode = normalizeInkEraseMode(eraseMode);
     if (snapShapes !== undefined) {
       next.snapShapes = snapShapes === true;
       next.snapShapesV = INK_SNAP_PREFS_VERSION;
     }
-    localStorage.setItem(inkPreferencesKey, JSON.stringify(next));
+    localStorage.setItem(inkPreferencesKey, JSON.stringify(root));
   } catch (error) {
     // Quota or a private window. Losing the preference costs the reader one
     // press next time, never a stroke.
