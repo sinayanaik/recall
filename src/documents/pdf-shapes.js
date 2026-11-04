@@ -549,6 +549,21 @@ function handleAt(record, pageEl, clientX, clientY) {
   return best?.id || null;
 }
 
+// ── Placed, not drawn ─────────────────────────────────────────────────────
+//
+// Text and a sticky note from the bar's + menu: put at `at` (a point in PDF
+// space, the middle of the page in view) and opened straight away, the same as
+// a tap with the tool. The way in for a reader with no pen and no mouse — a
+// finger, which never draws.
+export function placeShapeInView(type, pageNumber, at) {
+  if ((type !== "text" && type !== "sticky") || !pdfPageViewport(pageNumber) || !at) return null;
+  const from = type === "text" ? [at.x - 80, at.y + 14] : [at.x, at.y];
+  const shape = shapeFromDrag(type, from, from, { base: newShapeBase(type) });
+  const record = shape && addDocumentShape(pageNumber, shape);
+  if (record) shapeOpenedHandler(record);
+  return record;
+}
+
 // ── The gesture ───────────────────────────────────────────────────────────
 
 let shapePress = null;
@@ -589,6 +604,49 @@ export function setShapeTextEditHandler(fn) {
 // the text editor, or the note editor. Registered by src/main.js.
 export function setShapeCreatedHandler(fn) {
   shapeOpenedHandler = typeof fn === "function" ? fn : () => {};
+}
+
+// A finger never draws — it scrolls — but a finger's TAP with Text or Sticky
+// note armed is not a scroll, and is the one way a reader with no pen can put
+// either on the page with the tool. Watched without taking the press, so a
+// finger that moves is a scroll as it always was.
+let shapeFingerTap = null;
+export const SHAPE_FINGER_TAP_MS = 350;
+export const SHAPE_FINGER_TAP_SLOP = 8;
+
+function fingerPlacesShape(event) {
+  if (event.pointerType !== "touch" || !event.isPrimary || !isShapeToolArmed()) return false;
+  const type = shapeType();
+  return type === "text" || type === "sticky";
+}
+
+function onShapeFingerDown(event) {
+  shapeFingerTap = null;
+  if (!fingerPlacesShape(event) || event.target?.closest?.(SHAPE_PRESS_EXCLUDED)) return;
+  const pageEl = shapePageAt(event.clientX, event.clientY);
+  const page = Number(pageEl?.dataset.pageNumber);
+  if (!page || !pdfPageViewport(page)) return;
+  const point = pdfPointOn(page, pageEl, event.clientX, event.clientY);
+  // On a shape, a tap is for the shape (its menu), not for a new one.
+  if (!point || shapeAtPoint(page, point[0], point[1])) return;
+  shapeFingerTap = { pointerId: event.pointerId, page, point, x: event.clientX, y: event.clientY, at: Date.now() };
+}
+
+function onShapeFingerMove(event) {
+  if (!shapeFingerTap || event.pointerId !== shapeFingerTap.pointerId) return;
+  if (Math.hypot(event.clientX - shapeFingerTap.x, event.clientY - shapeFingerTap.y) > SHAPE_FINGER_TAP_SLOP) shapeFingerTap = null;
+}
+
+function onShapeFingerUp(event) {
+  const tap = shapeFingerTap;
+  shapeFingerTap = null;
+  if (!tap || event.pointerId !== tap.pointerId || Date.now() - tap.at > SHAPE_FINGER_TAP_MS) return;
+  if (selectedShapeId) { selectShape(null); return; }
+  suppressShapeClickUntil = Date.now() + 500;
+  const type = shapeType();
+  const shape = shapeFromDrag(type, tap.point, tap.point, { base: newShapeBase(type) });
+  const record = shape && addDocumentShape(tap.page, shape);
+  if (record) shapeOpenedHandler(record);
 }
 
 function onShapePointerDown(event) {
@@ -857,6 +915,10 @@ export function initDocumentShapes() {
   view.addEventListener("pointerup", onShapePointerUp, true);
   view.addEventListener("pointercancel", onShapePointerCancel, true);
   view.addEventListener("click", onShapeClick, true);
+  view.addEventListener("pointerdown", onShapeFingerDown, { capture: true, passive: true });
+  view.addEventListener("pointermove", onShapeFingerMove, { capture: true, passive: true });
+  view.addEventListener("pointerup", onShapeFingerUp, { capture: true, passive: true });
+  view.addEventListener("pointercancel", () => { shapeFingerTap = null; }, { capture: true, passive: true });
   view.addEventListener("lostpointercapture", (event) => {
     if (shapePress && event.pointerId === shapePress.pointerId) onShapePointerCancel(event);
   });

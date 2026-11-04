@@ -367,3 +367,18 @@
   cursor: text;
   touch-action: manipulation;
 }
+
+
+/* ── + on the pen's bar, on a PDF too ───────────────────────────────────────
+   It used to be a Canvas's alone (styles/53-handwriting.css): + Text block,
+   + Picture and + Page. Text, a sticky note, a text block and a picture belong
+   on anybody's paper as much as on a Canvas, so the group shows on both, and
+   only "Page at the end" — there is nowhere to add a page to somebody else's
+   document — stays a Canvas's. */
+#documentStage .ink-rail-page {
+  display: flex;
+}
+
+#documentStage:not([data-doc-slot="notebook"]) .ink-rail-notebook-only {
+  display: none;
+}
