@@ -13,6 +13,8 @@
 
 import { el } from "../core/dom.js?v=__BUILD__";
 import { MARK_HIGHLIGHT_COLORS } from "../format/highlight-colors.js?v=__BUILD__";
+import { INK_PEN_COLORS } from "../format/ink-colors.js?v=__BUILD__";
+import { MARK_STYLES, MARK_STYLE_LABELS } from "../format/mark-styles.js?v=__BUILD__";
 import { recolourHighlightAt, removeHighlightAt } from "../format/highlight-edit.js?v=__BUILD__";
 import { highlightNoteTextAt, highlightRefAt, highlightRefIndex } from "../format/highlight-notes.js?v=__BUILD__";
 import { startHighlightAdjust } from "./highlight-adjust.js?v=__BUILD__";
@@ -208,6 +210,60 @@ function ensureMarkMenu() {
   });
   menuEl.appendChild(colours);
 
+  // ── On a PDF: how the words are marked, and more colours ────────────────
+  //
+  // A text highlight on a PDF can be a line under its words, a line through
+  // them, a wave or a box (src/format/mark-styles.js), in any of the pen's
+  // colours or one of the reader's own. Shown only where the handler set can
+  // restyle the key it was opened with — see `canRestyle`.
+  const styles = document.createElement("div");
+  styles.className = "mark-menu-styles";
+  styles.setAttribute("role", "group");
+  styles.setAttribute("aria-label", "How the words are marked");
+  styles.hidden = true;
+  MARK_STYLES.forEach((name) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "mark-menu-style";
+    button.dataset.markStyle = name;
+    button.title = MARK_STYLE_LABELS[name];
+    button.setAttribute("aria-label", MARK_STYLE_LABELS[name]);
+    button.innerHTML = `<span class="mark-style-glyph is-${name}" aria-hidden="true">A</span>`;
+    styles.appendChild(button);
+  });
+  menuEl.appendChild(styles);
+
+  const more = document.createElement("div");
+  more.className = "mark-menu-more-colors";
+  more.setAttribute("role", "group");
+  more.setAttribute("aria-label", "More colours");
+  more.hidden = true;
+  INK_PEN_COLORS.forEach((colour) => {
+    const swatch = document.createElement("button");
+    swatch.type = "button";
+    swatch.className = "mark-menu-swatch is-small";
+    swatch.style.setProperty("--sw", colour.swatch);
+    swatch.title = colour.name;
+    swatch.setAttribute("aria-label", `Recolour to ${colour.name}`);
+    swatch.dataset.markHex = colour.swatch;
+    more.appendChild(swatch);
+  });
+  const pick = document.createElement("label");
+  pick.className = "mark-menu-color-pick";
+  pick.title = "A colour of your own";
+  pick.innerHTML = '<span aria-hidden="true">&#65291;</span><input type="color" value="#7c3aed" aria-label="A colour of your own">';
+  more.appendChild(pick);
+  // `change` rather than a press: the picker is the browser's own and answers
+  // when it is closed. The menu stays open behind it, keyed as it was.
+  pick.querySelector("input").addEventListener("change", (event) => {
+    const index = openForIndex;
+    const set = markHandlers;
+    closeMarkMenu();
+    if (index == null || typeof set.restyle !== "function") return;
+    set.restyle(index, { hex: event.target.value });
+  });
+  menuEl.appendChild(more);
+
   // ── Row two: what you can do with the passage ───────────────────────────
   //
   // Rows with words on them, not a second run of glyphs. Six unlabelled circles
@@ -226,6 +282,18 @@ function ensureMarkMenu() {
   note.dataset.markColor = "note";
   note.innerHTML = '<span class="mmi-ico" aria-hidden="true">&#9998;</span><span class="mmi-label">Add a note</span>';
   actions.appendChild(note);
+
+  // A callout's or a text box's own words, typed in place
+  // (src/documents/pdf-shape-text.js) — shown only where the handler set can
+  // (`canEditText`).
+  const editText = document.createElement("button");
+  editText.type = "button";
+  editText.className = "mark-menu-item mark-menu-edit-text";
+  editText.title = "Edit the words in this box";
+  editText.dataset.markColor = "edit-text";
+  editText.hidden = true;
+  editText.innerHTML = '<span class="mmi-ico" aria-hidden="true">T</span><span class="mmi-label">Edit the text</span>';
+  actions.appendChild(editText);
 
   // Resize it — more words or fewer, same colour, same note. Built by hand like
   // the note row, and shown only where the handler set can do it: any of a
@@ -266,6 +334,21 @@ function ensureMarkMenu() {
   // click would first place a caret in the note, which collapses the very thing
   // being acted on and (on touch) dismisses the menu before the handler runs.
   menuEl.addEventListener("pointerdown", (event) => {
+    // The colour picker's own label opens the browser's picker on its click,
+    // which a preventDefault here would not stop but a close would orphan.
+    if (event.target.closest(".mark-menu-color-pick")) return;
+    const restyle = event.target.closest("[data-mark-style], [data-mark-hex]");
+    if (restyle) {
+      event.preventDefault();
+      event.stopPropagation();
+      const index = openForIndex;
+      const set = markHandlers;
+      closeMarkMenu();
+      if (index == null || typeof set.restyle !== "function") return;
+      if (restyle.dataset.markStyle) set.restyle(index, { style: restyle.dataset.markStyle });
+      else set.restyle(index, { hex: restyle.dataset.markHex });
+      return;
+    }
     const button = event.target.closest("[data-mark-color], [data-mark-action]");
     if (!button) {
       // A press on the menu's own padding still must not reach the note.
@@ -290,6 +373,12 @@ function ensureMarkMenu() {
       // "Highlight Notes" section at the end of the note) — resolved from
       // state.notes by ordinal rather than from the DOM attribute.
       set.openNote(index, rect);
+      return;
+    }
+    if (button.dataset.markColor === "edit-text") {
+      closeMarkMenu();
+      if (index == null || typeof set.editText !== "function") return;
+      set.editText(index);
       return;
     }
     if (button.dataset.markColor === "adjust") {
@@ -396,6 +485,26 @@ export function openMarkMenuWith(mark, key, handlerSet, currentColor = null) {
   // ...and the row says which of the two things pressing it will do. "Add a
   // note" over a highlight that already has one is a row that lies about what
   // is behind it — the same fault the bookmark buttons were fixed for.
+  // The PDF rows: shown where this key can be restyled, with its own style lit.
+  const canRestyle = typeof markHandlers.restyle === "function"
+    && (typeof markHandlers.canRestyle !== "function" || markHandlers.canRestyle(index));
+  const markStyleRow = menu.querySelector(".mark-menu-styles");
+  const markMoreRow = menu.querySelector(".mark-menu-more-colors");
+  if (markStyleRow) markStyleRow.hidden = !canRestyle;
+  if (markMoreRow) markMoreRow.hidden = !canRestyle;
+  if (canRestyle) {
+    const currentStyle = typeof markHandlers.styleOf === "function" ? markHandlers.styleOf(index) : "highlight";
+    menu.querySelectorAll("[data-mark-style]").forEach((button) => {
+      const on = button.dataset.markStyle === currentStyle;
+      button.classList.toggle("is-current", on);
+      button.setAttribute("aria-pressed", String(on));
+    });
+  }
+  const editTextRow = menu.querySelector(".mark-menu-edit-text");
+  if (editTextRow) {
+    editTextRow.hidden = typeof markHandlers.editText !== "function"
+      || (typeof markHandlers.canEditText === "function" && !markHandlers.canEditText(index));
+  }
   const adjustRow = menu.querySelector(".mark-menu-adjust");
   if (adjustRow) {
     adjustRow.hidden = typeof markHandlers.adjust !== "function"

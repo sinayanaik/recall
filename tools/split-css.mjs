@@ -65,6 +65,11 @@ const SECTIONS = [
 // Anything appearing in styles/ that is neither a slice nor listed here is
 // still a failure.
 const POST_SPLIT = {
+  "88-annotations.css":
+    "Annotations on a PDF or a Canvas page: text marks drawn as an underline, " +
+    "strike, squiggle or box in any colour (src/format/mark-styles.js), the " +
+    "style rows in the selection bar and mark menu, and the Shapes tool's " +
+    "layer, handles, text editor and sticky notes (src/documents/pdf-shapes.js).",
   "87-web-import.css":
     "The review step's \"Keep everything\" switch for a web page whose ads and " +
     "menus were removed (webPageToggleHtml in src/import/staging.js).",

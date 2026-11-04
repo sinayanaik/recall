@@ -457,6 +457,10 @@ const checks = [
   // a leaf and so is the shape fitter, deliberately, so this needs neither a
   // browser nor the pre-modular tag.
   ["ink           ", ["node", ["tools/ink-check.mjs"], ROOT]],
+  // The geometry of annotations — shapes (src/render/annot-shapes.js) and the
+  // way a text mark is drawn (src/format/mark-styles.js). Both are leaves, so
+  // pure Node, like the ink format above.
+  ["annot-shapes  ", ["node", ["tools/annot-shapes-check.mjs"], ROOT]],
   // The same shape once more, for the document several decks make when they are
   // read as one: does every deck get back exactly what it put in? The write-back
   // fires on every autosave over every deck in the selection, so anything the
@@ -590,6 +594,10 @@ const checks = [
     // heading" was.
     ["toc-binding   ", ["node", ["tools/toc-binding-check.mjs"], ROOT]],
     ["pdf-document  ", ["node", ["tools/pdf-preview-check.mjs"], ROOT]],
+    // Annotations on a PDF: underline, strike, squiggle and box in any colour,
+    // the Shapes tool's lines, arrows, boxes, callouts, text and sticky notes,
+    // and the file saved with them as real PDF annotations.
+    ["annotations   ", ["node", ["tools/annotations-check.mjs"], ROOT]],
     // What an export actually puts in the file: every picture inlined (the
     // PDFs never did, and an image added offline resolved nowhere), the look
     // asked for at export time, Word keeping a resized picture's width and a

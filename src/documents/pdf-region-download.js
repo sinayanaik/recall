@@ -26,13 +26,15 @@
 import { state } from "../core/state.js?v=__BUILD__";
 import { ensurePdfLib } from "../core/lib-loader.js?v=__BUILD__";
 import { decodeInkStrokes } from "../format/ink-strokes.js?v=__BUILD__";
+import { markGeometry, markStyleOf, normalizeMarkHex } from "../format/mark-styles.js?v=__BUILD__";
+import { drawShapesWithPdfLib } from "./pdf-lib-shapes.js?v=__BUILD__";
 import { slugifyFileName } from "../export/markdown.js?v=__BUILD__";
 import { inkPathRecorder } from "../format/ink-svg.js?v=__BUILD__";
 import { inkCentrelinePath, inkHighlighterWidth, inkStrokeOutline, resolveInkPaint } from "../render/ink-paint.js?v=__BUILD__";
 import { isHighlighterToken } from "../format/ink-colors.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
 import { affordableCropScale, regionDocumentBlob, regionImageRect, regionPdfPage, regionSource, renderRegionCrop } from "./pdf-region-embed.js?v=__BUILD__";
-import { AREA_FILL_ALPHA, blockPdfRect, highlightAlpha, highlightHex, rasteriseRegionBlocks, regionMarksOnPage } from "./pdf-region-marks.js?v=__BUILD__";
+import { AREA_FILL_ALPHA, CUSTOM_HIGHLIGHT_ALPHA, blockPdfRect, highlightAlpha, highlightHex, rasteriseRegionBlocks, regionMarksOnPage } from "./pdf-region-marks.js?v=__BUILD__";
 
 // Print resolution: 300 dots per inch of the paper, PDF points being 1/72in.
 // affordableCropScale lowers it for a box so large it would not fit the pixel
@@ -115,7 +117,9 @@ function pdfColour(css) {
 function drawHighlights(page, marks) {
   const { BlendMode } = window.PDFLib;
   marks.highlights.forEach((record) => {
-    const { color } = pdfColour(highlightHex(record.color));
+    const customHex = record.kind === "area" ? null : normalizeMarkHex(record.hex);
+    const { color } = pdfColour(customHex || highlightHex(record.color));
+    const style = record.kind === "area" ? "highlight" : markStyleOf(record);
     (record.quads || []).forEach((quad) => {
       if (Number(quad?.page) !== marks.page || !Array.isArray(quad.rect)) return;
       const [a, b, c, e] = quad.rect.map(Number);
@@ -132,8 +136,25 @@ function drawHighlights(page, marks) {
           x: x + line / 2, y: y + line / 2, width: Math.max(0, width - line), height: Math.max(0, height - line),
           borderColor: color, borderWidth: line, borderOpacity: 1
         });
+      } else if (style === "highlight") {
+        page.drawRectangle({ x, y, width, height, color, opacity: customHex ? CUSTOM_HIGHLIGHT_ALPHA : highlightAlpha(record.color), blendMode: BlendMode.Multiply });
       } else {
-        page.drawRectangle({ x, y, width, height, color, opacity: highlightAlpha(record.color), blendMode: BlendMode.Multiply });
+        // A line, a wave or a box (src/format/mark-styles.js). Its geometry is
+        // worked out with y running DOWN, as everywhere else, from a box whose
+        // top is the quad's top negated — and flipped back on the way out.
+        const geometry = markGeometry(style, x, -(y + height), width, height, 0.5);
+        if (geometry.bars) {
+          geometry.bars.forEach(([bx, by, bw, bh]) => page.drawRectangle({ x: bx, y: -(by + bh), width: bw, height: bh, color, blendMode: BlendMode.Multiply }));
+        } else if (geometry.outline) {
+          const [ox, oy, ow, oh] = geometry.outline;
+          page.drawRectangle({ x: ox, y: -(oy + oh), width: ow, height: oh, borderColor: color, borderWidth: geometry.width, blendMode: BlendMode.Multiply });
+        } else if (geometry.wave) {
+          for (let i = 1; i < geometry.wave.length; i += 1) {
+            const [x0, y0] = geometry.wave[i - 1];
+            const [x1, y1] = geometry.wave[i];
+            page.drawLine({ start: { x: x0, y: -y0 }, end: { x: x1, y: -y1 }, thickness: geometry.width, color, blendMode: BlendMode.Multiply });
+          }
+        }
       }
     });
   });
@@ -285,6 +306,8 @@ export async function cropPdfToRegion(paperBytes, pageNumber, rect, { marks = nu
   if (marks) {
     drawHighlights(page, marks);
     drawInk(page, marks);
+    // Shapes over the ink, as the page stacks them (src/documents/pdf-lib-shapes.js).
+    await drawShapesWithPdfLib(out, page, marks.shapes);
   }
   if (rasters.length && pdfPage) await drawBlocks(out, page, pdfPage, rasters);
   out.setTitle(`Page ${pageNumber} region`);

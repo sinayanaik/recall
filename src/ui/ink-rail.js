@@ -33,6 +33,8 @@ import { buildInkPanel, createInkPanel, paintInkChip } from "../handwriting/ink-
 import { inkPreferences, inkRailOpen, rememberInkRecentColor, writeInkPreferences, writeInkRailOpen } from "../storage/ink-prefs.js?v=__BUILD__";
 import { activeDocSlot } from "../documents/doc-slot.js?v=__BUILD__";
 import { isRegionSelectArmed, setRegionSelect } from "../documents/pdf-region.js?v=__BUILD__";
+import { displayedShapeSettings, setShapeChangedHandler, setShapeType } from "../documents/pdf-shapes.js?v=__BUILD__";
+import { buildShapeMenu, buildShapePanel, refreshShapeMenu, refreshShapePanel } from "../documents/pdf-shape-panel.js?v=__BUILD__";
 import { showConfirmModal } from "./feedback.js?v=__BUILD__";
 
 function pressed(node, on) {
@@ -50,6 +52,7 @@ let inkPanel = null;
 // shuts it — on CLICK, not on the press, because one of the rows is a <label>
 // round a file input and a label hidden under the press never fires its click.
 const MENUS = [
+  { button: "inkRailShapeBtn", menu: "inkRailShapeMenu" },
   { button: "inkRailMoreBtn", menu: "inkRailMoreMenu" },
   { button: "inkRailSelectionMoreBtn", menu: "inkRailSelectionMenu" },
   { button: "inkRailAddBtn", menu: "inkRailAddMenu" }
@@ -176,8 +179,11 @@ export function refreshInkRail() {
     pen: { token: inkPen(), width: inkWidth() },
     highlighter,
     eraser,
-    selecting: count > 0
+    selecting: count > 0,
+    shape: displayedShapeSettings()
   });
+  refreshShapeMenu(document.getElementById("inkRailShapeMenu"), document.getElementById("inkRailShapeBtn"));
+  refreshShapePanel(shapePanel);
   // Text takes the pen's colours and nibs down, and the panel with them.
   // Nothing is being drawn, so there is no nib and no ink colour to choose; and
   // the swatches' other job — recolouring a lasso selection — has nothing to act
@@ -259,7 +265,7 @@ const slotTools = { doc: INK_TOOL_DEFAULT, notebook: INK_TOOL_DEFAULT };
 // and a reader working down a scanned chapter with it should find it still in
 // hand after a glance at the notebook.
 function rememberableInkTool(tool) {
-  return tool === "text" || tool === "highlighter" ? tool : INK_TOOL_DEFAULT;
+  return tool === "text" || tool === "highlighter" || tool === "shape" ? tool : INK_TOOL_DEFAULT;
 }
 
 // Every setting the rail owns, read back off the engine rather than off the
@@ -364,14 +370,35 @@ const panelAdapter = {
   paper: () => inkPaper(),
   scale: () => inkPreviewScale(),
   changed: () => { rememberInkPreferences(); refreshInkRail(); },
-  suppressTap: () => suppressInkTap()
+  suppressTap: () => suppressInkTap(),
+  // The Shapes tool's section of this panel (src/documents/pdf-shape-panel.js).
+  shapePanel: () => Boolean(shapePanel)
 };
+
+let shapePanel = null;
 
 // One press on the bar, by pointer or by keyboard (bindInkRailActivation).
 function pressRail(button) {
   const {
-    inkPen: nextPen, inkWidth: nextWidth, inkEraserSize: nextEraser, inkTool: nextTool, inkAction: action
+    inkPen: nextPen, inkWidth: nextWidth, inkEraserSize: nextEraser, inkTool: nextTool, inkAction: action,
+    shapeType: nextShape
   } = button.dataset;
+  // A row of the Shapes flyout: that shape, armed.
+  if (nextShape) {
+    if (isRegionSelectArmed()) setRegionSelect(false);
+    setShapeType(nextShape);
+    if (inkTool() !== "shape") setInkTool("shape");
+    rememberInkPreferences();
+    closeInkRailMenus();
+    refreshInkRail();
+    return;
+  }
+  // The Shapes button pressed while armed opens its flyout, not the panel —
+  // which shape is the question its button is asked; how it looks is the chip's.
+  if (nextTool === "shape" && inkTool() === "shape") {
+    toggleInkRailMenu("inkRailShapeMenu");
+    return;
+  }
   // A row of a menu shuts the menu it is in — on click, see MENUS.
   if (nextPen) setInkPen(nextPen);
   else if (nextWidth) setInkWidth(Number(nextWidth));
@@ -428,6 +455,12 @@ export function initInkRail() {
     ids: { pens: "inkRailPens", widths: "inkRailWidths", eraser: "inkRailEraser", hlPens: "inkRailHlPens", hlWidths: "inkRailHlWidths" },
     tapDots: true
   });
+  shapePanel = buildShapePanel(el.inkRailPopover);
+  buildShapeMenu(document.getElementById("inkRailShapeMenu"));
+  setShapeChangedHandler(() => {
+    // A shape selected with no Shapes panel up still repaints the chip.
+    refreshInkRail();
+  });
   inkPanel = el.inkRailPopover
     ? createInkPanel({ rail, popover: el.inkRailPopover, chip: el.inkRailStyleChip, adapter: panelAdapter, onToggle: () => {} })
     : null;
@@ -455,7 +488,7 @@ export function initInkRail() {
   // stylus the two are a few pixels apart. And the keyboard's own press, which
   // is a click with no pointer behind it — see bindInkRailActivation. The panel
   // under the chip is inside the rail and handles its own presses first.
-  bindInkRailActivation(rail, pressRail, "[data-ink-pen], [data-ink-width], [data-ink-eraser-size], [data-ink-tool], [data-ink-action]");
+  bindInkRailActivation(rail, pressRail, "[data-ink-pen], [data-ink-width], [data-ink-eraser-size], [data-ink-tool], [data-ink-action], [data-shape-type]");
 
   // A row of a menu, chosen: the menu goes once the row has done its work.
   rail.addEventListener("click", (event) => {
@@ -466,7 +499,7 @@ export function initInkRail() {
   // handlers see a press that has already put the menu away.
   document.addEventListener("pointerdown", (event) => {
     if (!MENUS.some(({ menu }) => document.getElementById(menu)?.hidden === false)) return;
-    if (event.target.closest?.(".ink-rail-menu, #inkRailMoreBtn, #inkRailSelectionMoreBtn, #inkRailAddBtn")) return;
+    if (event.target.closest?.(".ink-rail-menu, #inkRailMoreBtn, #inkRailSelectionMoreBtn, #inkRailAddBtn, #inkRailShapeBtn")) return;
     closeInkRailMenus();
   }, true);
   rail.addEventListener("keydown", (event) => {

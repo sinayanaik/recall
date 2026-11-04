@@ -31,7 +31,9 @@ import { state } from "../core/state.js?v=__BUILD__";
 import { ensureHtmlToImage } from "../core/lib-loader.js?v=__BUILD__";
 import { MARK_HIGHLIGHT_DEFAULT, MARK_HIGHLIGHT_HEX } from "../format/highlight-colors.js?v=__BUILD__";
 import { decodeInkStrokes } from "../format/ink-strokes.js?v=__BUILD__";
+import { markGeometry, markStyleOf, normalizeMarkHex, paintMarkGeometry } from "../format/mark-styles.js?v=__BUILD__";
 import { paintInkLayers } from "../render/ink-paint.js?v=__BUILD__";
+import { paintShapeOnCanvas } from "../render/annot-shapes.js?v=__BUILD__";
 import { recordsForSurface } from "./pdf-multi.js?v=__BUILD__";
 
 // ── The colours, matching the live mark layer ───────────────────────────────
@@ -43,6 +45,10 @@ import { recordsForSurface } from "./pdf-multi.js?v=__BUILD__";
 export const HIGHLIGHT_FILL_ALPHA = { yellow: 0.35, green: 0.33, blue: 0.32, pink: 0.3 };
 
 export const AREA_FILL_ALPHA = 0.12;
+
+// A tint in a colour of the reader's own (a text record's `hex`), at the
+// strength the four sit at on average.
+export const CUSTOM_HIGHLIGHT_ALPHA = 0.33;
 
 export function highlightHex(color) {
   return MARK_HIGHLIGHT_HEX[color] || MARK_HIGHLIGHT_HEX[MARK_HIGHLIGHT_DEFAULT];
@@ -86,8 +92,9 @@ export function regionMarksOnPage(source, pageNumber, { excludeId = null, exclud
   });
   return {
     page,
-    highlights: kept.filter((record) => record.kind !== "ink"),
-    ink: kept.filter((record) => record.kind === "ink" && Number(record.page) === page)
+    highlights: kept.filter((record) => record.kind !== "ink" && record.kind !== "shape"),
+    ink: kept.filter((record) => record.kind === "ink" && Number(record.page) === page),
+    shapes: kept.filter((record) => record.kind === "shape" && Number(record.page) === page)
   };
 }
 
@@ -132,14 +139,18 @@ export function paintRegionMarks(ctx, viewport, marks, { paper = "light", areas 
     });
   };
   const paintTint = (record, composite) => {
-    const fill = hexWithAlpha(highlightHex(record.color), highlightAlpha(record.color));
+    const custom = normalizeMarkHex(record.hex);
+    const hex = custom || highlightHex(record.color);
+    const fill = hexWithAlpha(hex, custom ? CUSTOM_HIGHLIGHT_ALPHA : highlightAlpha(record.color));
+    const style = markStyleOf(record);
+    const minLine = Math.max(1, viewport.scale * 0.75);
     quadsOf(record, (left, top, width, height) => {
       ctx.save();
       // Multiply (screen on a dark page), so the words stay readable through
-      // the tint.
+      // the tint — and through a line, which is laid down the same way so a
+      // stroke through a word does not hide the word's own ink.
       if (composite) ctx.globalCompositeOperation = composite;
-      ctx.fillStyle = fill;
-      ctx.fillRect(left, top, width, height);
+      paintMarkGeometry(ctx, markGeometry(style, left, top, width, height, minLine), hex, fill);
       ctx.restore();
     });
   };
@@ -158,7 +169,13 @@ export function paintRegionMarks(ctx, viewport, marks, { paper = "light", areas 
       } else paintTint(record, blend);
     });
   }
-  if (!marks.ink.length) return;
+  // Shapes over the ink, as the page stacks them — but not on a page's kept
+  // picture, whose caller leaves them live (they are pressed, like regions).
+  const paintShapes = () => {
+    if (!areas || !marks.shapes?.length) return;
+    marks.shapes.forEach((record) => paintShapeOnCanvas(ctx, record.shape, ([x, y]) => viewport.convertToViewportPoint(x, y), viewport.scale));
+  };
+  if (!marks.ink.length) { paintShapes(); return; }
   // Strokes are stored in PDF user-space points; paintInkLayers expects the
   // context to carry that transform, as the live ink layer applies it.
   const t = viewport.transform;
@@ -171,6 +188,7 @@ export function paintRegionMarks(ctx, viewport, marks, { paper = "light", areas 
   marks.ink.forEach((record) => strokes.push(...decodeInkStrokes(record.ink?.s)));
   paintInkLayers(ctx, strokes, { root: null, paper: paper === "dark" ? "dark" : "light", blend });
   ctx.restore();
+  paintShapes();
 }
 
 // ── Blocks ──────────────────────────────────────────────────────────────────

@@ -558,6 +558,9 @@ function inkTakesPointer(event) {
   // own tooltip promises — "without leaving the pen" covers this mode too, and
   // there is nothing else flipping a stylus over could mean.
   if (inkTool() === "text" && !isEraserEvent(event)) return false;
+  // ...and the Shapes tool, which src/documents/pdf-shapes.js answers from its
+  // own capture-phase listener. The eraser end still rubs out, as above.
+  if (inkTool() === "shape" && !isEraserEvent(event)) return false;
   if (event.pointerType === "pen") return true;
   // A mouse only draws when the reader has opened the rail, because a mouse has
   // no way of saying which it meant and a click that inked instead of selecting
@@ -1124,6 +1127,7 @@ export function setInkTool(tool) {
   // shut, exactly as drawing does.
   setPenTextMode(next === "text");
   el.documentStage?.classList.toggle("is-pen-text", next === "text");
+  el.documentStage?.classList.toggle("is-shape-tool", next === "shape");
   onInkChanged();
 }
 

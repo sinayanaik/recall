@@ -15,6 +15,7 @@
 import { BLANK_PAPER_DEFAULT, normalizeBlankPaper } from "../documents/blank-pdf.js?v=__BUILD__";
 import { normalizeBlockStyle } from "../documents/block-style.js?v=__BUILD__";
 import { INK_ERASER_SIZE_DEFAULT, INK_ERASE_MODE_DEFAULT, INK_ERASE_TARGET_DEFAULT, INK_HL_TOKEN_DEFAULT, INK_HL_WIDTH_DEFAULT, INK_PEN_DEFAULT, INK_TOOL_DEFAULT, INK_WIDTH_DEFAULT, normalizeInkEraseMode, normalizeInkEraseTarget, normalizeInkEraserSize, normalizeInkHex, normalizeInkHlWidth, normalizeInkToken, normalizeInkTool, normalizeInkWidth } from "../format/ink-colors.js?v=__BUILD__";
+import { MARK_STYLE_DEFAULT, normalizeMarkHex, normalizeMarkStyle } from "../format/mark-styles.js?v=__BUILD__";
 
 // How many colours of the reader's own are kept to hand. Six is a row in the
 // pen's panel, and more is a palette nobody chose.
@@ -120,7 +121,15 @@ export function inkPreferences() {
       // So it is something the reader turns on, and a value saved before that
       // was true (INK_SNAP_PREFS_VERSION) is read as the old default it almost
       // always was, rather than as a choice: off, once.
-      snapShapes: parsed?.snapShapesV === INK_SNAP_PREFS_VERSION && parsed?.snapShapes === true
+      snapShapes: parsed?.snapShapesV === INK_SNAP_PREFS_VERSION && parsed?.snapShapes === true,
+      // How the selection bar marks words on a PDF (src/format/mark-styles.js)
+      // and the colour of the reader's own it last used, if any — null means the
+      // highlight colour the notes share (renderFormatDefaults.highlight).
+      markStyle: normalizeMarkStyle(parsed?.markStyle),
+      markHex: normalizeMarkHex(parsed?.markHex),
+      // The Shapes tool's settings, as src/documents/pdf-shapes.js last wrote
+      // them — normalised there, where what a shape can be is known.
+      shape: parsed?.shape && typeof parsed.shape === "object" ? parsed.shape : null
     };
   } catch (_) {
     return {
@@ -135,7 +144,10 @@ export function inkPreferences() {
       recentColors: [],
       eraserSize: INK_ERASER_SIZE_DEFAULT,
       eraseMode: INK_ERASE_MODE_DEFAULT,
-      snapShapes: false
+      snapShapes: false,
+      markStyle: MARK_STYLE_DEFAULT,
+      markHex: null,
+      shape: null
     };
   }
 }
@@ -154,8 +166,12 @@ export function writeInkPreferences(patch = {}) {
     const next = { ...parsed };
     const {
       pen, width, tool, eraserSize, eraseMode, snapShapes,
-      hlPen, hlWidth, hlStraight, eraseTarget, tapDots, recentColors
+      hlPen, hlWidth, hlStraight, eraseTarget, tapDots, recentColors,
+      markStyle, markHex, shape
     } = patch || {};
+    if (shape !== undefined) next.shape = shape && typeof shape === "object" ? shape : null;
+    if (markStyle !== undefined) next.markStyle = normalizeMarkStyle(markStyle);
+    if (markHex !== undefined) next.markHex = normalizeMarkHex(markHex);
     if (pen !== undefined) next.pen = normalizeInkToken(pen, "pen");
     if (width !== undefined) next.width = normalizeInkWidth(width);
     if (tool !== undefined) next.tool = normalizeInkTool(tool);

@@ -399,7 +399,9 @@ export function inkSliderFromWidth(width, range = INK_WIDTH_RANGE) {
 // stated here and checked against what is on screen (tools/note-editor-check.mjs).
 export const INK_DRAW_TOOLS = ["pen", "highlighter", "eraser", "lasso"];
 
-export const INK_TOOLS = [...INK_DRAW_TOOLS, "text"];
+// "shape" is the Shapes tool (src/documents/pdf-shapes.js): like "text", the
+// ink layer stands down for it, and something else answers the pen.
+export const INK_TOOLS = [...INK_DRAW_TOOLS, "text", "shape"];
 
 export const INK_TOOL_DEFAULT = "pen";
 

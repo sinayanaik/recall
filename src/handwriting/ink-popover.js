@@ -186,6 +186,9 @@ export function createInkPanel({ rail, popover: inkPopover, chip, adapter, onTog
   // empty lasso have none: nothing is being drawn, so there is nothing to set.
   function panelFor() {
     const tool = adapter.tool();
+    // The Shapes tool's own section (src/documents/pdf-shape-panel.js), on a
+    // surface whose adapter says it has one.
+    if (tool === "shape") return adapter.shapePanel?.() ? "shape" : null;
     if (tool === "eraser") return "eraser";
     if (tool === "highlighter") return "highlighter";
     if (tool === "pen") return "pen";
@@ -454,8 +457,22 @@ export function createInkPanel({ rail, popover: inkPopover, chip, adapter, onTog
 // pen, a band for the highlighter, a ring for the eraser; nothing for a tool
 // that does not draw. The colour goes through the same custom properties the
 // swatches use, so it is the paper's pen and not the theme's.
-export function paintInkChip(chip, { tool, pen, highlighter, eraser, selecting = false }) {
+export function paintInkChip(chip, { tool, pen, highlighter, eraser, selecting = false, shape = null }) {
   if (!chip) return;
+  if (tool === "shape") {
+    // The Shapes tool's colour and line: a dot like the pen's, in its colour.
+    chip.hidden = !shape;
+    if (!shape) return;
+    chip.dataset.kind = "pen";
+    const t = Math.log(Math.max(INK_WIDTH_RANGE.min, shape.width) / INK_WIDTH_RANGE.min) / Math.log(INK_WIDTH_RANGE.max / INK_WIDTH_RANGE.min);
+    chip.style.setProperty("--chip-colour", shape.stroke);
+    chip.style.setProperty("--chip-opacity", String(shape.opacity));
+    chip.style.setProperty("--chip-size", `${Math.round(5 + (t * 15))}px`);
+    const title = `Shape: ${shape.width.toFixed(1)} pt — colour, line, heads, fill and text`;
+    chip.title = title;
+    chip.setAttribute("aria-label", title);
+    return;
+  }
   let kind = tool;
   if (tool === "lasso") kind = selecting ? "pen" : null;
   if (tool === "text") kind = null;

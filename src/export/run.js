@@ -12,6 +12,7 @@ import { el } from "../core/dom.js?v=__BUILD__";
 import { notesForExport } from "./notes-body.js?v=__BUILD__";
 import { buildDocumentPrintDocument, documentExportBaseName, documentExportEmptyMessage, documentExportNoun, documentExportUnavailableReason, documentPrintPageCount } from "../documents/pdf-export.js?v=__BUILD__";
 import { saveDocumentCopy } from "../documents/pdf-view.js?v=__BUILD__";
+import { saveAnnotatedPdf } from "../documents/pdf-annot-export.js?v=__BUILD__";
 import { ensureMermaid } from "../core/lib-loader.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { escapeHtml } from "../core/text.js?v=__BUILD__";
@@ -833,6 +834,11 @@ export function handleExportDocumentAction(action, { theme } = {}) {
   if (el.viewExportMenu) el.viewExportMenu.hidden = true;
   if (action === "original") {
     saveDocumentCopy();
+    return;
+  }
+  if (action === "native") {
+    setStatus("Writing your marks into the PDF…");
+    saveAnnotatedPdf();
     return;
   }
   if (action === "notes-pdf") {

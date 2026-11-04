@@ -38,7 +38,9 @@ import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { escapeHtml } from "../core/text.js?v=__BUILD__";
 import { decodeInkStrokes } from "../format/ink-strokes.js?v=__BUILD__";
+import { markGeometry, markStyleOf, normalizeMarkHex, paintMarkGeometry } from "../format/mark-styles.js?v=__BUILD__";
 import { paintInkLayers } from "../render/ink-paint.js?v=__BUILD__";
+import { paintShapeOnCanvas } from "../render/annot-shapes.js?v=__BUILD__";
 import { markdownToSafeHtml } from "../render/preprocess.js?v=__BUILD__";
 import { setStatus } from "../ui/feedback.js?v=__BUILD__";
 import { DOC_SLOT_DOC, DOC_SLOT_NOTEBOOK, activeDocSlot, docSlotMeta } from "./doc-slot.js?v=__BUILD__";
@@ -116,6 +118,13 @@ async function renderPageForPrint(pageNumber, records) {
     //
     // Saved and restored around, because paintInkLayers leaves a transform and
     // a fill on the context and the highlight loop below runs in page pixels.
+    // A shape is drawn as the shape (src/render/annot-shapes.js) — its quad is
+    // a bounding box, like ink's — through this page's viewport, at its scale.
+    if (record.kind === "shape") {
+      if (Number(record.page) !== pageNumber) return;
+      paintShapeOnCanvas(context, record.shape, ([x, y]) => viewport.convertToViewportPoint(x, y), viewport.scale);
+      return;
+    }
     if (record.kind === "ink") {
       if (Number(record.page) !== pageNumber) return;
       const t = viewport.transform;
@@ -130,7 +139,9 @@ async function renderPageForPrint(pageNumber, records) {
       context.restore();
       return;
     }
-    context.fillStyle = highlightHex(record.color);
+    const customHex = normalizeMarkHex(record.hex);
+    const markHex = customHex || highlightHex(record.color);
+    context.fillStyle = markHex;
     (record.quads || []).forEach((quad) => {
       if (quad.page !== pageNumber) return;
       const [x0, y0, x1, y1] = viewport.convertToViewportRectangle(quad.rect);
@@ -150,10 +161,11 @@ async function renderPageForPrint(pageNumber, records) {
         return;
       }
       // Multiply, so the words stay readable through the tint. globalAlpha
-      // would lighten the glyphs as well as the paper.
+      // would lighten the glyphs as well as the paper. A line, a wave or a box
+      // (src/format/mark-styles.js) goes down the same way, in the solid colour.
       context.save();
       context.globalCompositeOperation = "multiply";
-      context.fillRect(left, top, width, height);
+      paintMarkGeometry(context, markGeometry(markStyleOf(record), left, top, width, height, 1.5), markHex, markHex);
       context.restore();
     });
   });
@@ -198,7 +210,7 @@ async function excerptHtmlFor(record) {
   if (record?.kind === "ink" && activeDocSlot() === DOC_SLOT_NOTEBOOK) {
     return `<span class="doc-print-note-excerpt">${escapeHtml(`Handwriting · page ${record.page || record.quads?.[0]?.page || ""}`.trim())}</span>`;
   }
-  if (record?.kind === "area" || record?.kind === "ink") {
+  if (record?.kind === "area" || record?.kind === "ink" || record?.kind === "shape") {
     const size = printRegionSize(record);
     const url = await renderRegionImage(record, { width: size.render }).catch(() => null);
     if (url) {

@@ -29,6 +29,9 @@ import { stripInvalidUnicode } from "../core/text.js?v=__BUILD__";
 import { quadToPageBox, textForAnchorRange, textItemBox } from "./pdf-selection.js?v=__BUILD__";
 import { pdfAreaLayer, pdfMarkLayer, pdfPageTextItems, pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
 import { MARK_HIGHLIGHT_DEFAULT, MARK_HIGHLIGHT_HEX } from "../format/highlight-colors.js?v=__BUILD__";
+import { inkFilingColor } from "../format/ink-colors.js?v=__BUILD__";
+import { markStyleOf, normalizeMarkHex, normalizeMarkStyle } from "../format/mark-styles.js?v=__BUILD__";
+import { SHAPE_LABELS, shapeHitsPoint } from "../render/annot-shapes.js?v=__BUILD__";
 import { decodeInkStrokes, inkStrokeHitsPoint } from "../format/ink-strokes.js?v=__BUILD__";
 import { notifyHighlightsChanged } from "../format/highlight-edit.js?v=__BUILD__";
 import { pruneOrphanHighlightNotes, readHighlightNotes, setHighlightNoteInSource } from "../format/highlight-notes.js?v=__BUILD__";
@@ -261,6 +264,12 @@ export function documentHighlightLabel(record) {
   // photograph is, because a blank row in a list of marks is indistinguishable
   // from a bug.
   if (record?.kind === "ink") return page ? `Ink · page ${page}` : "Ink";
+  // A shape is named by what it is — "Arrow · page 3" — unless it has words of
+  // its own (a callout, a text box), which are its `text` and returned above.
+  if (record?.kind === "shape") {
+    const name = SHAPE_LABELS[record.shape?.type] || "Shape";
+    return page ? `${name} · page ${page}` : name;
+  }
   return page ? `Region · page ${page}` : "Region";
 }
 
@@ -416,7 +425,8 @@ export function repairDocumentHighlightText(pageNumber) {
     // A region is named by where it is, not by what it says (see
     // documentHighlightLabel), and an imported annotation has no anchors to
     // read back from.
-    if (record.kind === "area") {
+    // ...and a shape's words are what the reader typed, not the page's.
+    if (record.kind === "area" || record.kind === "shape") {
       textRepairChecked.add(record);
       return;
     }
@@ -555,7 +565,8 @@ export function repairDocumentHighlightQuads(pageNumber) {
     // off the text layer, so there is nothing about it to correct — but it is
     // still STAMPED, so that "has this been looked at?" stays one comparison
     // instead of a kind test on every record on every page paint forever.
-    if (record.kind === "area") {
+    // A shape's box is its own geometry's, the same.
+    if (record.kind === "area" || record.kind === "shape") {
       changed = true;
       return { ...record, qv: QUAD_GEOMETRY_VERSION };
     }
@@ -597,11 +608,20 @@ export function repairDocumentHighlightQuads(pageNumber) {
 
 // ── Create / recolour / remove ──────────────────────────────────────────────
 
-export function addDocumentHighlight(capture, color = MARK_HIGHLIGHT_DEFAULT) {
+// `style` and `hex` are how the words are marked (src/format/mark-styles.js):
+// a tint, a line under or through them, a wave, a box, in one of the four
+// colours or in a colour of the reader's own. A text record only — a region is
+// a box already and ink is drawn as it was written.
+export function addDocumentHighlight(capture, color = MARK_HIGHLIGHT_DEFAULT, { style = null, hex = null } = {}) {
   if (!capture?.quads?.length) return null;
+  const isText = capture.kind !== "area";
+  const custom = isText ? normalizeMarkHex(hex) : null;
+  const markStyle = isText ? normalizeMarkStyle(style) : "highlight";
   const record = {
     id: freshDocumentHighlightId(),
-    color: MARK_HIGHLIGHT_HEX[color] ? color : MARK_HIGHLIGHT_DEFAULT,
+    // A custom colour is FILED under the nearest of the four, which is what the
+    // Highlights pane sorts by and what an older build paints.
+    color: custom ? inkFilingColor(`x${custom.slice(1)}`) : (MARK_HIGHLIGHT_HEX[color] ? color : MARK_HIGHLIGHT_DEFAULT),
     page: capture.page,
     anchor: capture.anchor,
     focus: capture.focus,
@@ -631,16 +651,55 @@ export function addDocumentHighlight(capture, color = MARK_HIGHLIGHT_DEFAULT) {
     // one device's afternoon of reading.
     at: Date.now()
   };
+  // Only when they say something: a tint in a palette colour is the record
+  // every build has always written, byte for byte.
+  if (markStyle !== "highlight") record.style = markStyle;
+  if (custom) record.hex = custom;
   commitDocumentHighlights([...documentHighlights(), record]);
   paintDocumentHighlights(record.page);
   return record;
 }
 
+// One of the four colours, which also puts aside any colour of the reader's own
+// the record was wearing — the swatch pressed is the colour it is now.
 export function recolourDocumentHighlight(id, color) {
-  const next = documentHighlights().map((record) =>
-    record.id === id ? { ...record, color, at: Date.now() } : record);
+  const next = documentHighlights().map((record) => {
+    if (record.id !== id) return record;
+    const { hex: _hex, ...rest } = record;
+    // A shape's colour is its line's: the swatch pressed in its menu is the
+    // colour it is drawn in, and the token it is filed under.
+    if (record.kind === "shape" && record.shape && MARK_HIGHLIGHT_HEX[color]) {
+      return { ...rest, color, shape: { ...record.shape, stroke: MARK_HIGHLIGHT_HEX[color] }, at: Date.now() };
+    }
+    return { ...rest, color, at: Date.now() };
+  });
   commitDocumentHighlights(next);
   repaintDocumentHighlights();
+}
+
+// How a text highlight is drawn, and/or a colour of the reader's own. Fields
+// left out keep what the record has; `hex: null` goes back to the token.
+export function restyleDocumentHighlight(id, { style, hex, color } = {}) {
+  const record = documentHighlightById(id);
+  if (!record || (record.kind && record.kind !== "text")) return false;
+  const next = documentHighlights().map((entry) => {
+    if (entry.id !== id) return entry;
+    const { style: _style, hex: oldHex, ...rest } = entry;
+    const nextStyle = style === undefined ? markStyleOf(entry) : normalizeMarkStyle(style);
+    const nextHex = hex === undefined ? normalizeMarkHex(oldHex) : normalizeMarkHex(hex);
+    const out = { ...rest, at: Date.now() };
+    if (nextStyle !== "highlight") out.style = nextStyle;
+    if (nextHex) {
+      out.hex = nextHex;
+      out.color = inkFilingColor(`x${nextHex.slice(1)}`);
+    } else if (color && MARK_HIGHLIGHT_HEX[color]) {
+      out.color = color;
+    }
+    return out;
+  });
+  commitDocumentHighlights(next);
+  repaintDocumentHighlights();
+  return true;
 }
 
 // `undo: false` is for a removal that is ITSELF an undo — the highlighter
@@ -847,7 +906,17 @@ export function clearDocumentHighlightNote(id, options) {
 // format/highlight-colors.js): an opaque swatch chosen at authoring time looks
 // wrong the moment the theme changes, and these are alpha tints over whatever
 // is behind them.
+// Shapes paint on a layer of their own (src/documents/pdf-shapes.js), which
+// imports this file — so it registers its painter here, and every repaint of a
+// page's marks repaints its shapes with them.
+let documentShapePainter = null;
+
+export function setDocumentShapePainter(fn) {
+  documentShapePainter = typeof fn === "function" ? fn : null;
+}
+
 export function paintDocumentHighlights(pageNumber) {
+  documentShapePainter?.(pageNumber);
   const layer = pdfMarkLayer(pageNumber);
   if (!layer) return;
   // Regions on a layer of their own, which does not blend: the text marks'
@@ -865,6 +934,8 @@ export function paintDocumentHighlights(pageNumber) {
     // on and the export knows where the mark is. Drawn as a mark div it would
     // be a tinted rectangle over the reader's own handwriting.
     if (record.kind === "ink") return;
+    // ...and so does a shape, for the same reason.
+    if (record.kind === "shape") return;
     (record.quads || []).forEach((quad) => {
       if (quad.page !== pageNumber) return;
       const box = quadToPageBox(quad);
@@ -876,6 +947,17 @@ export function paintDocumentHighlights(pageNumber) {
       // multiply` over a photograph washes out the figure being highlighted.
       // See styles/37-document-chrome.css.
       if (record.kind === "area") mark.dataset.kind = "area";
+      // A line, a wave or a box instead of a tint (styles/88-annotations.css),
+      // and a colour of the reader's own over the token's.
+      else {
+        const style = markStyleOf(record);
+        if (style !== "highlight") mark.dataset.style = style;
+        const hex = normalizeMarkHex(record.hex);
+        if (hex) {
+          mark.dataset.hex = "";
+          mark.style.setProperty("--mark-hex", hex);
+        }
+      }
       mark.dataset.highlightId = record.id;
       mark.style.left = `${box.left}px`;
       mark.style.top = `${box.top}px`;
@@ -973,7 +1055,19 @@ export function documentHighlightAtPoint(clientX, clientY, { skipInk = false } =
   // deliberate one is what the reader is pointing at. The region only answers
   // for a point nothing else claims, which is still every bare part of it.
   let region = null;
+  // A shape is drawn over everything else on the page, so it answers first,
+  // the last drawn first — tested against its geometry, like ink: a box drawn
+  // round a paragraph is hit on its line, not across the words inside it.
+  const shapes = documentHighlights().filter((record) => record.kind === "shape" && Number(record.page) === pageNumber);
+  if (shapes.length) {
+    const point = inkPagePoint(pageNumber, x, y);
+    const slack = INK_TAP_SLACK;
+    for (let i = shapes.length - 1; point && i >= 0; i -= 1) {
+      if (shapeHitsPoint(shapes[i].shape, point.x, point.y, slack)) return shapes[i];
+    }
+  }
   for (const record of documentHighlights()) {
+    if (record.kind === "shape") continue;
     // An ink mark is tested against the STROKES, not against the box round
     // them. A margin note and an arrow across a column share one large mostly
     // empty bounding box, and testing that box would make every tap inside it
@@ -1117,7 +1211,8 @@ export function setDocumentInkForPage(pageNumber, records, { notify = true } = {
 // pressed over text in a figure recoloured the figure's box instead of
 // highlighting the words — and ✕ deleted the box. The region has its own menu.
 function selectableByText(record, textOnly) {
-  return !textOnly || (record.kind !== "area" && record.kind !== "ink");
+  // A shape is not a run of words either, even where its box lies over some.
+  return !textOnly || (record.kind !== "area" && record.kind !== "ink" && record.kind !== "shape");
 }
 
 export function documentHighlightsUnderRects(rects, { textOnly = false } = {}) {
@@ -1309,6 +1404,14 @@ export function setDocumentHighlightAdjust(handlers) {
   documentHighlightAdjust = handlers && typeof handlers.start === "function" ? handlers : null;
 }
 
+// Typing into a shape's box (src/documents/pdf-shape-text.js) is handed in for
+// the reason Adjust is: that module is built on this one.
+let documentShapeTextEditor = null;
+
+export function setDocumentShapeTextEditor(fn) {
+  documentShapeTextEditor = typeof fn === "function" ? fn : null;
+}
+
 export const DOCUMENT_MARK_HANDLERS = {
   surface: "document",
   // No "pin". A Quick Note keeps a trimNoteAnchor'd anchor
@@ -1347,6 +1450,19 @@ export const DOCUMENT_MARK_HANDLERS = {
     return at === -1 ? [...base, ...saves] : [...base.slice(0, at), ...saves, ...base.slice(at)];
   },
   recolour: (id, color) => recolourDocumentHighlight(id, color),
+  // A run of words can be drawn as a line, a wave or a box and in a colour of
+  // the reader's own; a region and a stroke of ink cannot.
+  restyle: (id, fields) => restyleDocumentHighlight(id, fields),
+  canRestyle: (id) => {
+    const record = documentHighlightById(id);
+    return Boolean(record) && (!record.kind || record.kind === "text");
+  },
+  styleOf: (id) => markStyleOf(documentHighlightById(id)),
+  editText: (id) => documentShapeTextEditor?.(id),
+  canEditText: (id) => {
+    const type = documentHighlightById(id)?.shape?.type;
+    return Boolean(documentShapeTextEditor) && (type === "callout" || type === "text");
+  },
   remove: (id) => removeDocumentHighlight(id),
   noteText: (id) => documentHighlightNote(id),
   openNote: (id, rect) => openHighlightNoteEditor(id, rect, documentHighlightNote(id), DOCUMENT_NOTE_HANDLERS),
@@ -1434,9 +1550,20 @@ export function initDocumentMarkMenu() {
       return;
     }
     event.preventDefault();
+    // A sticky note IS its note: a tap opens it, rather than a menu with
+    // "Add a note" on it. Its menu is still the press-and-hold away that every
+    // other route to a mark is — the Highlights pane.
+    if (record.kind === "shape" && record.shape?.type === "sticky") {
+      const icon = view.querySelector(`.pdf-shape[data-highlight-id="${CSS.escape(record.id)}"]`);
+      closeMarkMenu();
+      openHighlightNoteEditor(record.id, icon?.getBoundingClientRect() || null, documentHighlightNote(record.id), DOCUMENT_NOTE_HANDLERS);
+      return;
+    }
     // Anchored to the highlight's own first painted quad, so the menu appears
     // over the words it acts on rather than wherever the finger landed.
-    const anchor = view.querySelector(`.${PDF_MARK_CLASS}[data-highlight-id="${CSS.escape(record.id)}"]`) || event.target;
+    const anchor = view.querySelector(`.${PDF_MARK_CLASS}[data-highlight-id="${CSS.escape(record.id)}"]`)
+      || view.querySelector(`.pdf-shape[data-highlight-id="${CSS.escape(record.id)}"]`)
+      || event.target;
     openMarkMenuWith(anchor, record.id, DOCUMENT_MARK_HANDLERS, record.color || MARK_HIGHLIGHT_DEFAULT);
   });
 

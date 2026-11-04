@@ -39,7 +39,7 @@ import { askExportTheme, chosenExportTheme, paintExportThemeOptions } from "./ex
 import { saveExportTheme } from "./export/themes.js?v=__BUILD__";
 import { eraseNotesSelection, makeClozeFromSelection } from "./format/cloze.js?v=__BUILD__";
 import { closeAllRenderMenus, handleRenderToolbarAction, initRenderToolbars, renderFormatDefaults, renderTargetConfig, setRenderDefault } from "./format/render-toolbar.js?v=__BUILD__";
-import { applyPillHighlight, buildPillHighlightMenu, clozeTextareaSelection, eraseTextareaSelection, extractSelectionToNote, hideNotesSelectionButtonUnlessPinned, pillActionTarget } from "./format/selection-tools.js?v=__BUILD__";
+import { applyPillHighlight, applyPillMarkHex, applyPillMarkStyle, buildPillHighlightMenu, refreshPillHighlightMenu, clozeTextareaSelection, eraseTextareaSelection, extractSelectionToNote, hideNotesSelectionButtonUnlessPinned, pillActionTarget } from "./format/selection-tools.js?v=__BUILD__";
 import { markBrokenImages } from "./images/broken.js?v=__BUILD__";
 import { revokeLocalImageUrls } from "./images/outbox.js?v=__BUILD__";
 import { allImageFiles, dragContainsImage, animatedSourceUrlFromTransfer, insertTransferImages } from "./images/paste.js?v=__BUILD__";
@@ -104,6 +104,7 @@ import { closeDiagramModal, zoomDiagramBy } from "./render/diagram-zoom.js?v=__B
 import { scheduleMarkdownTableFit } from "./render/tables.js?v=__BUILD__";
 import { deckSnapshotCache, deckStoreChannel, deckStoreRequest, indexedDbUnavailable, pendingDeckWrites, scheduleDeckAutosave, setDeckStoreChannel, setDeckWriteListener, touchDeckSnapshotCache } from "./storage/deck-store.js?v=__BUILD__";
 import { isQuotaExceededError } from "./storage/quota.js?v=__BUILD__";
+import { writeInkPreferences } from "./storage/ink-prefs.js?v=__BUILD__";
 import { deleteDocumentCopies, onDocumentBackfillDone, scheduleDocumentBackfill } from "./storage/document-migration.js?v=__BUILD__";
 import { bucketPanelOpen, closeBucketPanel, openBucketPanel, refreshBucketReport, runBucketAction, setBucketKeysChanged, setBucketSyncRunner } from "./storage/bucket-panel.js?v=__BUILD__";
 import { closeStoragePanel, offloadStorageDocument, openStoragePanel, refreshStorageReport, runStorageAction, setBucketPanelOpener } from "./storage/storage-panel.js?v=__BUILD__";
@@ -131,7 +132,7 @@ import { applyStyleDensity, detectStyleProfile, handleStyleControlChange, normal
 import { styleCoarsePointerMedia, styleMobileMedia, styleProfiles } from "./ui/style-tokens.js?v=__BUILD__";
 import { setTheme, setThemeMenuOpen, setThemeRepaintHook } from "./ui/theme.js?v=__BUILD__";
 import { FOCUS_MODE_KEY, closeViewExportMenu, paintViewExportMenu, setBlockEditFlushHook, setHandwritingViewHook, setSplitViewHook, setViewMode, setViewSwitchHook, switchToPreviousView } from "./ui/view-mode.js?v=__BUILD__";
-import { DOCUMENT_NOTE_HANDLERS, documentHighlightById, documentHighlightNote, flashDocumentRegion, initDocumentMarkMenu, repairDocumentHighlightQuads, repairDocumentHighlightText, setDocumentHighlightAdjust } from "./documents/pdf-highlights.js?v=__BUILD__";
+import { DOCUMENT_NOTE_HANDLERS, documentHighlightById, documentHighlightNote, flashDocumentRegion, initDocumentMarkMenu, repairDocumentHighlightQuads, repairDocumentHighlightText, setDocumentHighlightAdjust, setDocumentShapeTextEditor } from "./documents/pdf-highlights.js?v=__BUILD__";
 import { canAdjustDocumentHighlight, startDocumentHighlightAdjust } from "./documents/pdf-highlight-adjust.js?v=__BUILD__";
 import { pdfRegionRefForRecord, pdfRegionRefMarkdown } from "./documents/pdf-region-embed.js?v=__BUILD__";
 import { setRegionResizeNotesSurface } from "./documents/pdf-region-resize.js?v=__BUILD__";
@@ -152,6 +153,8 @@ import { closeBlockStylePopover, isBlockStylePopoverOpen } from "./documents/blo
 import { closeBlockActionsPopover, isBlockActionsPopoverOpen } from "./documents/block-actions-popover.js?v=__BUILD__";
 import { blocksForPaper, buildStaticBlock, canRedoBlocks, canUndoBlocks, commitBlockEdit, deleteBlock, duplicateBlock, editBlock, handleBlockPointerDown, nudgeBlock, paintDocumentBlocks, pdfPointAt, redoBlocks, repaintDocumentBlocks, restackBlock, selectBlock, selectedBlockId, setBlocksChangedHandler, undoBlocks } from "./documents/pdf-blocks.js?v=__BUILD__";
 import { applyInkRailPreference, initInkRail, refreshInkRail } from "./ui/ink-rail.js?v=__BUILD__";
+import { initDocumentShapes, setShapeCreatedHandler } from "./documents/pdf-shapes.js?v=__BUILD__";
+import { openShapeTextEditor } from "./documents/pdf-shape-text.js?v=__BUILD__";
 import { INK_NUDGE_STEP, INK_NUDGE_STEP_COARSE } from "./render/ink-engine.js?v=__BUILD__";
 
 // ── Which of the two undo rings on this surface Ctrl+Z means ───────────────
@@ -930,12 +933,24 @@ el.highlightSelectionMenuBtn?.addEventListener("pointerdown", (event) => {
   event.preventDefault();
   event.stopPropagation();
   buildPillHighlightMenu();
+  refreshPillHighlightMenu();
   const willOpen = el.highlightSelectionMenu.hidden;
   el.highlightSelectionMenu.hidden = !willOpen;
   el.highlightSelectionMenuBtn.setAttribute("aria-expanded", String(willOpen));
 });
 
 el.highlightSelectionMenu?.addEventListener("pointerdown", (event) => {
+  // On a PDF: how to mark the words, and the pen's colours. See
+  // buildPillHighlightMenu.
+  const styleBtn = event.target.closest("[data-pill-style]");
+  const hexBtn = event.target.closest("[data-pill-hex]");
+  if (styleBtn || hexBtn) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (styleBtn) applyPillMarkStyle(styleBtn.dataset.pillStyle);
+    else applyPillMarkHex(hexBtn.dataset.pillHex);
+    return;
+  }
   const btn = event.target.closest("[data-pill-highlight]");
   if (!btn) return;
   event.preventDefault();
@@ -944,7 +959,16 @@ el.highlightSelectionMenu?.addEventListener("pointerdown", (event) => {
   // "clear" is an action, not a default — setRenderDefault ignores it, and
   // highlightToggleInSource reads it as "strip the marks off this selection".
   setRenderDefault("highlight", value);
-  applyPillHighlight(value);
+  // One of the four puts aside a colour of the reader's own on a PDF.
+  if (value !== "clear") writeInkPreferences({ markHex: null });
+  applyPillHighlight(value, value === "clear" ? {} : { hex: null });
+});
+
+// A colour of the reader's own, from the picker on the third row. `change`,
+// not `input`: one mark per choice, not one per step of a drag.
+el.highlightSelectionMenu?.addEventListener("change", (event) => {
+  const input = event.target.closest("[data-pill-custom]");
+  if (input) applyPillMarkHex(input.value);
 });
 
 // The floater's eraser button: delete the selection from the source — every
@@ -1414,6 +1438,17 @@ onDomReady(() => {
         createCardFromNotesSelection(pdfRegionRefMarkdown(record.page, record.quads[0].rect, record.pdfId), anchor);
         return;
       }
+      // A shape is pictured the same way — a live picture of the spot it is
+      // drawn on, shape and all — with a callout's or a text box's own words
+      // under it, so the card says what the arrow was for.
+      if (record?.kind === "shape") {
+        const ref = pdfRegionRefForRecord(record);
+        if (ref) {
+          const words = String(record.text || "").trim();
+          createCardFromNotesSelection(words ? `${ref}\n\n${words}` : ref, anchor);
+          return;
+        }
+      }
       createCardFromNotesSelection(text, anchor);
     },
     // deckLocalId is added HERE and not in the index: a Quick Note is stored in
@@ -1514,6 +1549,21 @@ onDomReady(() => {
     refreshPdfPageNotes();
   });
   initDocumentInk();
+  // The Shapes tool (src/documents/pdf-shapes.js): its own capture-phase
+  // listeners on the same scroller, which the ink layer stands down for while
+  // it is armed — and the painter every repaint of a page's marks calls.
+  initDocumentShapes();
+  // What a new callout, text box or sticky note opens straight away: the box
+  // to type in, or — a sticky note being its note — the note editor.
+  setShapeCreatedHandler((record) => {
+    if (record.shape?.type === "sticky") {
+      const icon = el.documentView?.querySelector(`.pdf-shape[data-highlight-id="${CSS.escape(record.id)}"]`);
+      openHighlightNoteEditor(record.id, icon?.getBoundingClientRect() || null, documentHighlightNote(record.id), DOCUMENT_NOTE_HANDLERS);
+      return;
+    }
+    openShapeTextEditor(record);
+  });
+  setDocumentShapeTextEditor((id) => openShapeTextEditor(id));
   initInkRail();
   // A press on a markdown block belongs to the block. Capture, on the same
   // element pdf-ink.js listens on — stopPropagation does not silence a sibling
