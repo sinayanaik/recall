@@ -52,6 +52,7 @@ const API_SRC = `async () => {
     "/src/storage/deck-store.js?v=__BUILD__",
     "/src/storage/ink-prefs.js?v=__BUILD__",
     "/src/ui/view-mode.js?v=__BUILD__",
+    "/src/format/ink-strokes.js?v=__BUILD__",
     "/src/ui/chrome.js?v=__BUILD__",
     "/src/ui/deck-header.js?v=__BUILD__",
     "/src/ui/boot-screens.js?v=__BUILD__",
@@ -70,6 +71,8 @@ const API_SRC = `async () => {
     "/src/panels/highlights-panel.js?v=__BUILD__",
     "/src/documents/pdf-region-embed.js?v=__BUILD__",
     "/src/documents/pdf-lib-shapes.js?v=__BUILD__",
+    "/src/documents/pdf-annot-export.js?v=__BUILD__",
+    "/src/ui/view-mode.js?v=__BUILD__",
     "/src/boot.js?v=__BUILD__"
   ];
   const mods = await Promise.all(paths.map((p) => import(p)));
@@ -768,6 +771,94 @@ sections.push(async () => {
   check("the eraser crossing a shape removes it, and undo brings it back", erased.gone && erased.back, JSON.stringify(erased));
 });
 
+
+// ── Saved with annotations: every mark as a real PDF annotation ────────────
+sections.push(async () => {
+  if (!pdflib) return;
+  const written = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    // A note on an underline, to ride along as its Contents.
+    const underline = (api.state.meta.pdfHighlights || []).find((r) => r.style === "underline");
+    api.setDocumentHighlightNote(underline.id, "Compare with eq. 4");
+    // An ink mark — two strokes, pen and highlighter — as the pen stores one.
+    const strokes = [
+      { w: 2, c: "red", p: [100, 300, 0.5, 140, 320, 0.5, 180, 300, 0.5] },
+      { w: 14, c: "hyellowq35", p: [100, 260, 0.5, 220, 260, 0.5] }
+    ];
+    api.reinstateDocumentHighlight({
+      id: "hn-inktest", color: "pink", page: 4, anchor: null, focus: null, text: "", kind: "ink",
+      quads: [{ page: 4, rect: [90, 250, 230, 330] }], ink: { v: api.INK_FORMAT_VERSION, s: api.encodeInkStrokes(strokes) },
+      qv: api.QUAD_GEOMETRY_VERSION, at: Date.now()
+    });
+    const result = await api.annotatedPdfBytes();
+    if (!result) return { error: "no bytes" };
+    const size = result.bytes.length;
+    const { PDFDocument, PDFName, PDFDict, PDFArray } = window.PDFLib;
+    const copy = result.bytes.slice();
+    const doc = await PDFDocument.load(copy);
+    const found = [];
+    doc.getPages().forEach((p, i) => {
+      const annots = p.node.Annots();
+      if (!annots) return;
+      for (let k = 0; k < annots.size(); k += 1) {
+        const dict = doc.context.lookup(annots.get(k), PDFDict);
+        const subtype = dict.get(PDFName.of("Subtype"))?.toString();
+        found.push({
+          page: i + 1,
+          subtype,
+          nm: dict.get(PDFName.of("NM"))?.decodeText?.() || null,
+          ap: Boolean(dict.get(PDFName.of("AP"))),
+          contents: dict.get(PDFName.of("Contents"))?.decodeText?.() || null,
+          le: dict.get(PDFName.of("LE"))?.toString() || null,
+          it: dict.get(PDFName.of("IT"))?.toString() || null,
+          quads: dict.get(PDFName.of("QuadPoints")) ? dict.lookup(PDFName.of("QuadPoints"), PDFArray).size() : 0,
+          inkList: dict.get(PDFName.of("InkList")) ? dict.lookup(PDFName.of("InkList"), PDFArray).size() : 0,
+          popup: Boolean(dict.get(PDFName.of("Popup")))
+        });
+      }
+    });
+    // ...and pdf.js, which is what a browser's viewer is built on, reads them.
+    const pdfDoc = await window.pdfjsLib.getDocument({ data: result.bytes.slice() }).promise;
+    const seen = [];
+    for (let i = 1; i <= pdfDoc.numPages; i += 1) {
+      (await (await pdfDoc.getPage(i)).getAnnotations()).forEach((a) => seen.push(a.subtype));
+    }
+    return { size, count: result.count, name: result.name, found, seen, underlineId: underline.id };
+  }`);
+  if (written.error) { check("the annotated file is written", false, written.error); return; }
+  const subtypes = new Set(written.found.map((a) => a.subtype));
+  const want = ["/Highlight", "/Underline", "/StrikeOut", "/Squiggly", "/Square", "/Circle", "/Line", "/FreeText", "/Text"];
+  check("the annotated file is written, named for the paper", written.size > 1000 && / \(annotated\)\.pdf$/.test(written.name) && written.count >= 15, `${written.count} annotations · ${written.name}`);
+  check("every kind of mark becomes the PDF annotation made for it", want.every((t) => subtypes.has(t)), [...subtypes].join(" "));
+  // Ours carry the mark's id; the file's own (the fixture's comment) do not,
+  // and are left exactly as they came — not written a second time.
+  const own = written.found.filter((a) => a.nm);
+  const theirs = written.found.filter((a) => !a.nm && a.subtype !== "/Popup");
+  check("every annotation written carries its own appearance and the mark's id", own.length >= written.count && own.every((a) => a.ap || a.subtype === "/Text"), JSON.stringify(own.filter((a) => !a.ap)).slice(0, 300));
+  check("...and the file's own annotation is kept, once", theirs.length === 1 && /came in with the file/.test(theirs[0].contents || ""), JSON.stringify(theirs).slice(0, 300));
+  const underline = written.found.find((a) => a.nm === written.underlineId);
+  check("a note becomes the annotation's Contents, with a Popup to show it in", underline?.contents === "Compare with eq. 4" && underline?.popup && underline?.quads === 8, JSON.stringify(underline));
+  const line = written.found.find((a) => a.subtype === "/Line" && /Butt/.test(a.le || ""));
+  const arrow = written.found.find((a) => a.subtype === "/Line" && /ClosedArrow/.test(a.le || ""));
+  check("a line's and an arrow's heads are its line endings", Boolean(line) && Boolean(arrow), JSON.stringify(written.found.filter((a) => a.subtype === "/Line")));
+  const callout = written.found.find((a) => a.it === "/FreeTextCallout");
+  check("a callout is a FreeText callout whose Contents are its words", Boolean(callout) && /^Sign error/.test(callout.contents || ""), JSON.stringify(callout));
+  const sticky = written.found.find((a) => a.subtype === "/Text" && /appendix/.test(a.contents || ""));
+  check("a sticky note is a Text annotation with its note", Boolean(sticky), JSON.stringify(written.found.filter((a) => a.subtype === "/Text")));
+  const ink = written.found.find((a) => a.nm === "hn-inktest");
+  check("ink is an Ink annotation, one path per stroke", ink?.subtype === "/Ink" && ink.inkList === 2 && ink.ap, JSON.stringify(ink));
+  const seen = new Set(written.seen);
+  check("pdf.js reads them back as the same kinds", ["Highlight", "Underline", "StrikeOut", "Squiggly", "Line", "FreeText", "Text", "Ink"].every((t) => seen.has(t)), [...seen].join(" "));
+
+  const menu = await page.evaluate(`async () => {
+    const { api } = window.__recall;
+    api.paintViewExportMenu();
+    const row = document.querySelector('#viewExportMenu [data-view-export="doc:native"]');
+    return row ? row.textContent : null;
+  }`);
+  check("the PDF tab's export menu offers it", /With annotations/.test(menu || ""), String(menu));
+});
+
 try {
   await page.call("Emulation.setDeviceMetricsOverride", { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
   await page.call("Page.addScriptToEvaluateOnNewDocument", {
@@ -825,6 +916,27 @@ try {
       const file = n === 1 ? SHOT : SHOT.replace(/\.png$/, "") + "-p" + n + ".png";
       writeFileSync(file, Buffer.from(shot.data, "base64"));
       console.log(`  shot  ${file}`);
+    }
+    // ...and the file saved with its annotations, drawn by pdf.js from their
+    // appearance streams — what a browser's own viewer shows.
+    if (pdflib) {
+      for (const n of [1, 2, 3]) {
+        const url = await page.evaluate(`async (n) => {
+          const { api } = window.__recall;
+          const result = await api.annotatedPdfBytes();
+          const doc = await window.pdfjsLib.getDocument({ data: result.bytes }).promise;
+          const p = await doc.getPage(n);
+          const viewport = p.getViewport({ scale: 1.5 });
+          const canvas = document.createElement("canvas");
+          canvas.width = viewport.width;
+          canvas.height = viewport.height;
+          await p.render({ canvasContext: canvas.getContext("2d"), viewport, annotationMode: window.pdfjsLib.AnnotationMode.ENABLE }).promise;
+          return canvas.toDataURL("image/png");
+        }`, n);
+        const file = SHOT.replace(/\.png$/, "") + "-native-p" + n + ".png";
+        writeFileSync(file, Buffer.from(url.split(",")[1], "base64"));
+        console.log(`  shot  ${file}`);
+      }
     }
   }
 } catch (error) {

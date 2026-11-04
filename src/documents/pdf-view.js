@@ -6370,15 +6370,26 @@ export function togglePdfInvert() {
 
 // The original bytes, straight to disk. Not a re-export and not a print: the
 // point of keeping the PDF as the document is that you still have the PDF.
-export async function saveDocumentCopy() {
-  // The surface's own document, so "the original PDF" on the Write tab hands
-  // back the notebook's paper rather than a paper it is not showing.
+//
+// The surface's own document, so "the original PDF" on the Write tab hands back
+// the notebook's paper rather than a paper it is not showing. Resolves
+// { blob, name } — blob null when this device has no copy — or null when the
+// surface has no document at all. Also what "With annotations"
+// (src/documents/pdf-annot-export.js) writes into.
+export async function currentDocumentBlob() {
   const slot = activeDocSlot();
   const pdfId = slot === DOC_SLOT_DOC ? (openPdf?.pdfId || activePdfId(state.meta)) : null;
   const pdfMeta = slot === DOC_SLOT_DOC ? deckPdfById(state.meta, pdfId) : docSlotMeta(slot);
-  if (!pdfMeta) return false;
+  if (!pdfMeta) return null;
   const key = slot === DOC_SLOT_DOC ? pdfStoreKey(state.localDeckId, pdfId) : documentStoreKey(state.localDeckId, slot);
   const blob = await getDocument(key, pdfMeta);
+  return { blob: blob || null, name: pdfMeta.name || `${state.deckTitle || "document"}.pdf` };
+}
+
+export async function saveDocumentCopy() {
+  const source = await currentDocumentBlob();
+  if (!source) return false;
+  const { blob } = source;
   if (!blob) {
     setStatus("This device doesn't have a copy of the PDF to save.", "error");
     return false;
@@ -6386,7 +6397,7 @@ export async function saveDocumentCopy() {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = pdfMeta.name || `${state.deckTitle || "document"}.pdf`;
+  link.download = source.name;
   document.body.appendChild(link);
   link.click();
   link.remove();

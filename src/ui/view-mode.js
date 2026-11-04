@@ -435,6 +435,9 @@ const VIEW_EXPORT_MENUS = {
       ["doc:pages-pdf", "The whole document + notes", "Every page, marked, notes underneath"],
       ["doc:notes-pdf", "The notes on their own", "Every note, grouped by page"],
       ["doc:original", "The original PDF", "Byte for byte, as it arrived"],
+      // The marks as real PDF annotations (src/documents/pdf-annot-export.js),
+      // for a reader who will go on working on the file in another PDF app.
+      ["doc:native", "With annotations", "Your marks as real PDF annotations, editable in other PDF apps"],
       // Same row, same dialog, on the surface a reader marking up a paper is
       // actually standing on. The side-by-side pane's own ⇓
       // (#highlightCycleExportBtn) still opens it too — that one is reachable
@@ -454,6 +457,7 @@ const VIEW_EXPORT_MENUS = {
       ["doc:pages-pdf", "The whole canvas", "Every page, with your handwriting on it"],
       ["doc:notes-pdf", "The notes on their own", "Every note, grouped by page"],
       ["doc:original", "The blank paper", "The pages with nothing on them"],
+      ["doc:native", "With annotations", "Your marks as real PDF annotations, editable in other PDF apps"],
       ["hl:open", "Highlights…", "Every mark, with its note"]
     ]
   }
