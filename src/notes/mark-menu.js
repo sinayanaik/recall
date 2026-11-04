@@ -283,6 +283,18 @@ function ensureMarkMenu() {
   note.innerHTML = '<span class="mmi-ico" aria-hidden="true">&#9998;</span><span class="mmi-label">Add a note</span>';
   actions.appendChild(note);
 
+  // A callout's or a text box's own words, typed in place
+  // (src/documents/pdf-shape-text.js) — shown only where the handler set can
+  // (`canEditText`).
+  const editText = document.createElement("button");
+  editText.type = "button";
+  editText.className = "mark-menu-item mark-menu-edit-text";
+  editText.title = "Edit the words in this box";
+  editText.dataset.markColor = "edit-text";
+  editText.hidden = true;
+  editText.innerHTML = '<span class="mmi-ico" aria-hidden="true">T</span><span class="mmi-label">Edit the text</span>';
+  actions.appendChild(editText);
+
   // Resize it — more words or fewer, same colour, same note. Built by hand like
   // the note row, and shown only where the handler set can do it: any of a
   // note's highlights, and a paper's highlights of WORDS (a region or a stroke
@@ -361,6 +373,12 @@ function ensureMarkMenu() {
       // "Highlight Notes" section at the end of the note) — resolved from
       // state.notes by ordinal rather than from the DOM attribute.
       set.openNote(index, rect);
+      return;
+    }
+    if (button.dataset.markColor === "edit-text") {
+      closeMarkMenu();
+      if (index == null || typeof set.editText !== "function") return;
+      set.editText(index);
       return;
     }
     if (button.dataset.markColor === "adjust") {
@@ -481,6 +499,11 @@ export function openMarkMenuWith(mark, key, handlerSet, currentColor = null) {
       button.classList.toggle("is-current", on);
       button.setAttribute("aria-pressed", String(on));
     });
+  }
+  const editTextRow = menu.querySelector(".mark-menu-edit-text");
+  if (editTextRow) {
+    editTextRow.hidden = typeof markHandlers.editText !== "function"
+      || (typeof markHandlers.canEditText === "function" && !markHandlers.canEditText(index));
   }
   const adjustRow = menu.querySelector(".mark-menu-adjust");
   if (adjustRow) {

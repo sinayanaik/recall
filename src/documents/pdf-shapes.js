@@ -320,21 +320,26 @@ export function selectShape(id) {
   const before = selectedShapeId ? documentHighlightById(selectedShapeId) : null;
   selectedShapeId = next;
   if (before) paintDocumentShapes(Number(before.page));
-  if (next) {
-    const record = documentHighlightById(next);
-    paintDocumentShapes(Number(record.page));
-    // The panel shows the selected shape's own style, so a change made there is
-    // a change to it rather than a guess at it.
-    loadShapeSettings();
-    const s = record.shape;
-    const heads = { ...shapeSettings.heads };
-    if (heads[s.type]) heads[s.type] = s.heads;
-    shapeSettings = normalizeShapeSettings({
-      ...shapeSettings, type: shapeSettings.type, stroke: s.stroke, width: s.width, opacity: s.opacity, dash: s.dash,
-      fill: s.fill, fillOpacity: s.fillOpacity, heads, fontSize: s.font.size, bold: s.font.bold, align: s.font.align
-    });
-  }
+  if (next) paintDocumentShapes(Number(documentHighlightById(next).page));
   shapeChangedHandler();
+}
+
+// What the panel shows: the selected shape's own style when one is selected —
+// so a change made there is a change to IT rather than a guess at it — and the
+// tool's otherwise. Selecting a shape does not change the tool: the next shape
+// is drawn the way the reader set the tool, not the way the last one they
+// picked up happened to look.
+export function displayedShapeSettings() {
+  const tool = currentShapeSettings();
+  const selected = selectedShapeRecord();
+  const s = normalizeShape(selected?.shape);
+  if (!s) return tool;
+  const heads = { ...tool.heads };
+  if (heads[s.type]) heads[s.type] = s.heads;
+  return normalizeShapeSettings({
+    ...tool, stroke: s.stroke, width: s.width, opacity: s.opacity, dash: s.dash,
+    fill: s.fill, fillOpacity: s.fillOpacity, heads, fontSize: s.font.size, bold: s.font.bold, align: s.font.align
+  });
 }
 
 // ── Painting ──────────────────────────────────────────────────────────────
@@ -417,7 +422,7 @@ function buildShapeNodes(record, shape, viewport, { preview = false } = {}) {
   return { group, boxes };
 }
 
-function buildHandles(layer, viewport, record) {
+function buildHandles(layer, viewport, record, put = (node) => layer.appendChild(node)) {
   const toPoint = viewportMapper(viewport);
   const bounds = shapeBounds(record.shape);
   if (bounds) {
@@ -428,7 +433,7 @@ function buildHandles(layer, viewport, record) {
     frame.style.top = `${at.top}px`;
     frame.style.width = `${at.width}px`;
     frame.style.height = `${at.height}px`;
-    layer.appendChild(frame);
+    put(frame);
   }
   shapeHandles(record.shape).forEach((handle) => {
     const [x, y] = toPoint([handle.x, handle.y]);
@@ -437,7 +442,7 @@ function buildHandles(layer, viewport, record) {
     node.dataset.handle = handle.id;
     node.style.left = `${x}px`;
     node.style.top = `${y}px`;
-    layer.appendChild(node);
+    put(node);
   });
 }
 
@@ -452,14 +457,18 @@ export function paintDocumentShapes(pageNumber, { preview = null } = {}) {
   if (!shapes.length && !preview && !existing) return;
   const layer = existing || shapeLayer(pageNumber);
   if (!layer) return;
-  layer.textContent = "";
+  // Everything but an open text editor, which must not lose its focus (and with
+  // it the words being typed) to a repaint — the new nodes go in under it.
+  const editor = layer.querySelector(":scope > .pdf-shape-editor");
+  [...layer.children].forEach((node) => { if (node !== editor) node.remove(); });
+  const put = (node) => (editor ? layer.insertBefore(node, editor) : layer.appendChild(node));
   const svg = document.createElementNS(SVG_NS, "svg");
   svg.setAttribute("class", "pdf-shape-svg");
   svg.setAttribute("width", String(viewport.width));
   svg.setAttribute("height", String(viewport.height));
   svg.setAttribute("viewBox", `0 0 ${viewport.width} ${viewport.height}`);
   svg.setAttribute("aria-hidden", "true");
-  layer.appendChild(svg);
+  put(svg);
   const boxes = [];
   shapes.forEach((record) => {
     // The shape being dragged is drawn where the drag has it, not where it is.
@@ -473,11 +482,11 @@ export function paintDocumentShapes(pageNumber, { preview = null } = {}) {
     svg.appendChild(built.group);
     boxes.push(...built.boxes);
   }
-  boxes.forEach((box) => layer.appendChild(box));
+  boxes.forEach((box) => put(box));
   const selected = selectedShapeRecord();
   if (selected && Number(selected.page) === Number(pageNumber) && !editingShapeId) {
     const shape = preview && preview.id === selected.id ? preview.shape : selected.shape;
-    buildHandles(layer, viewport, { ...selected, shape });
+    buildHandles(layer, viewport, { ...selected, shape }, put);
   }
   shapePaintedHook(pageNumber, layer);
 }
@@ -567,6 +576,14 @@ function shapeTakesPointer(event) {
 const SHAPE_PRESS_EXCLUDED = "button, a[href], input, textarea, select, label, .pdf-note-badge, .pdf-block, .pdf-shape-editor, .ink-rail-popover";
 
 let shapeOpenedHandler = () => {};
+let shapeTextEditHandler = () => {};
+
+// A tap on a callout or a text box that is already selected opens its words
+// for editing (src/documents/pdf-shape-text.js, which imports this module and
+// so registers itself).
+export function setShapeTextEditHandler(fn) {
+  shapeTextEditHandler = typeof fn === "function" ? fn : () => {};
+}
 
 // What a new callout, text box or sticky note opens straight after it is made —
 // the text editor, or the note editor. Registered by src/main.js.
@@ -633,6 +650,9 @@ function onShapePointerDown(event) {
     // makes nothing — a tap to deselect is not a request for a text box.
     deselected: mode === "create" && Boolean(selectedShapeId)
   };
+  // Whether this shape was ALREADY the selected one — a second tap on a text
+  // box is a request to type in it, the first only picks it up.
+  shapePress.wasSelected = mode !== "create" && selectedShapeId === target.id;
   if (mode !== "create") selectShape(target.id);
   else if (selectedShapeId) selectShape(null);
 }
@@ -706,6 +726,12 @@ function onShapePointerUp(event) {
     return;
   }
   if (!drag.moved) {
+    const type = drag.target?.shape?.type;
+    if (drag.wasSelected && (type === "callout" || type === "text")) {
+      suppressShapeClickUntil = Date.now() + 400;
+      shapeTextEditHandler(drag.target);
+      return;
+    }
     // A tap on a shape: it is selected (above), and the click that follows is
     // let through so its menu opens — the note, the card, Remove.
     paintDocumentShapes(drag.page);

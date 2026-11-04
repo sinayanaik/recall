@@ -1395,6 +1395,14 @@ export function setDocumentHighlightAdjust(handlers) {
   documentHighlightAdjust = handlers && typeof handlers.start === "function" ? handlers : null;
 }
 
+// Typing into a shape's box (src/documents/pdf-shape-text.js) is handed in for
+// the reason Adjust is: that module is built on this one.
+let documentShapeTextEditor = null;
+
+export function setDocumentShapeTextEditor(fn) {
+  documentShapeTextEditor = typeof fn === "function" ? fn : null;
+}
+
 export const DOCUMENT_MARK_HANDLERS = {
   surface: "document",
   // No "pin". A Quick Note keeps a trimNoteAnchor'd anchor
@@ -1441,6 +1449,11 @@ export const DOCUMENT_MARK_HANDLERS = {
     return Boolean(record) && (!record.kind || record.kind === "text");
   },
   styleOf: (id) => markStyleOf(documentHighlightById(id)),
+  editText: (id) => documentShapeTextEditor?.(id),
+  canEditText: (id) => {
+    const type = documentHighlightById(id)?.shape?.type;
+    return Boolean(documentShapeTextEditor) && (type === "callout" || type === "text");
+  },
   remove: (id) => removeDocumentHighlight(id),
   noteText: (id) => documentHighlightNote(id),
   openNote: (id, rect) => openHighlightNoteEditor(id, rect, documentHighlightNote(id), DOCUMENT_NOTE_HANDLERS),
@@ -1528,6 +1541,15 @@ export function initDocumentMarkMenu() {
       return;
     }
     event.preventDefault();
+    // A sticky note IS its note: a tap opens it, rather than a menu with
+    // "Add a note" on it. Its menu is still the press-and-hold away that every
+    // other route to a mark is — the Highlights pane.
+    if (record.kind === "shape" && record.shape?.type === "sticky") {
+      const icon = view.querySelector(`.pdf-shape[data-highlight-id="${CSS.escape(record.id)}"]`);
+      closeMarkMenu();
+      openHighlightNoteEditor(record.id, icon?.getBoundingClientRect() || null, documentHighlightNote(record.id), DOCUMENT_NOTE_HANDLERS);
+      return;
+    }
     // Anchored to the highlight's own first painted quad, so the menu appears
     // over the words it acts on rather than wherever the finger landed.
     const anchor = view.querySelector(`.${PDF_MARK_CLASS}[data-highlight-id="${CSS.escape(record.id)}"]`)

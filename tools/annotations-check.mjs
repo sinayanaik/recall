@@ -65,6 +65,8 @@ const API_SRC = `async () => {
     "/src/documents/pdf-shapes.js?v=__BUILD__",
     "/src/documents/pdf-ink.js?v=__BUILD__",
     "/src/ui/ink-rail.js?v=__BUILD__",
+    "/src/documents/pdf-shape-text.js?v=__BUILD__",
+    "/src/notes/highlight-note-editor.js?v=__BUILD__",
     "/src/boot.js?v=__BUILD__"
   ];
   const mods = await Promise.all(paths.map((p) => import(p)));
@@ -525,6 +527,139 @@ sections.push(async () => {
   check("a page's picture never paints a shape as a tinted box", !deleted.inHighlights && deleted.inShapes >= 4, JSON.stringify(deleted));
 });
 
+
+// ── Callouts, text boxes and sticky notes ─────────────────────────────────
+sections.push(async () => {
+  await page.evaluate(POINTER_SRC);
+  const typed = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    api.scrollToDocumentPage(3, 0, { smooth: false });
+    await api.whenDocumentPageReady(3);
+    await settle(300);
+    api.toggleInkRail(true);
+    api.chooseInkTool("shape");
+    api.selectShape(null);
+    api.setShapeType("callout");
+    api.setShapeSettings({ stroke: "#dc2626", width: 1.2, fontSize: 12, bold: false });
+    await window.__drag("callout", [window.__at(3, 0.3, 0.15), window.__at(3, 0.45, 0.22), window.__at(3, 0.55, 0.28)]);
+    await settle(150);
+    const callout = api.documentShapes(3).at(-1);
+    const editor = document.querySelector(".pdf-shape-editor");
+    const opened = Boolean(editor) && document.activeElement === editor;
+    const before = callout.shape.p.map((p) => p.slice());
+    editor.textContent = "Sign error here: the second term should be negative, which changes the limit.";
+    editor.blur();
+    await settle(150);
+    const after = api.documentHighlightById(callout.id);
+    const box = document.querySelector('.pdf-shape-text[data-highlight-id="' + callout.id + '"]');
+    return {
+      type: callout.shape.type, target: callout.shape.p[2], opened,
+      text: after.shape.text, recordText: after.text,
+      grewDown: Math.min(after.shape.p[0][1], after.shape.p[1][1]) < Math.min(before[0][1], before[1][1]) - 1,
+      topKept: Math.abs(Math.max(after.shape.p[0][1], after.shape.p[1][1]) - Math.max(before[0][1], before[1][1])) < 0.5,
+      shown: box?.textContent || "", editorGone: !document.querySelector(".pdf-shape-editor"),
+      id: callout.id
+    };
+  }`);
+  check("a drag with the Callout tool makes a callout pointing where it began, and opens its box to type in", typed.type === "callout" && Array.isArray(typed.target) && typed.opened, JSON.stringify(typed).slice(0, 300));
+  check("...the words typed are stored on the shape and the record, and shown on the page", typed.text.startsWith("Sign error") && typed.recordText === typed.text && typed.shown === typed.text && typed.editorGone, JSON.stringify(typed).slice(0, 300));
+  check("...and the box grows down to hold them, its top edge where it was put", typed.grewDown && typed.topKept, JSON.stringify(typed).slice(0, 300));
+
+  const free = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    api.selectShape(null);
+    api.setShapeType("text");
+    const before = api.documentShapes(3).length;
+    // A tap makes a text box where it lands.
+    await window.__drag("text", [window.__at(3, 0.15, 0.4)]);
+    await settle(150);
+    const made = api.documentShapes(3).length - before;
+    const editor = document.querySelector(".pdf-shape-editor");
+    // Left empty, it is taken away again.
+    editor?.blur();
+    await settle(150);
+    const afterEmpty = api.documentShapes(3).length - before;
+    api.selectShape(null);
+    await window.__drag("text", [window.__at(3, 0.15, 0.45), window.__at(3, 0.3, 0.47), window.__at(3, 0.45, 0.5)]);
+    await settle(150);
+    const box = api.documentShapes(3).at(-1);
+    const ed2 = document.querySelector(".pdf-shape-editor");
+    ed2.textContent = "see Fig. 3";
+    ed2.blur();
+    await settle(150);
+    const kept = api.documentHighlightById(box.id);
+    // Tapped twice with the tool armed, its words open again.
+    const vp = api.pdfPageViewport(3);
+    const r = document.querySelector('.pdf-page[data-page-number="3"]').getBoundingClientRect();
+    const c = vp.convertToViewportPoint((kept.shape.p[0][0] + kept.shape.p[1][0]) / 2, (kept.shape.p[0][1] + kept.shape.p[1][1]) / 2);
+    api.selectShape(null);
+    await window.__drag("text", [[r.left + c[0], r.top + c[1]]]);
+    const selectedFirst = api.selectedShapeRecord()?.id === box.id && !document.querySelector(".pdf-shape-editor");
+    await window.__drag("text", [[r.left + c[0], r.top + c[1]]]);
+    await settle(100);
+    const reopened = document.querySelector(".pdf-shape-editor")?.textContent || null;
+    api.commitShapeTextEditor();
+    return { made, afterEmpty, text: kept?.shape?.text, fill: kept?.shape?.fill, selectedFirst, reopened };
+  }`);
+  check("a tap with the Text tool makes a text box and opens it", free.made === 1, JSON.stringify(free));
+  check("...an empty one is taken away when it loses focus", free.afterEmpty === 0, JSON.stringify(free));
+  check("...a dragged one keeps its words", free.text === "see Fig. 3", JSON.stringify(free));
+  check("...and is drawn the way the tool is set, not like the callout selected before it", free.fill === null, JSON.stringify(free));
+  check("...and a second tap on a selected one opens its words again", free.selectedFirst && free.reopened === "see Fig. 3", JSON.stringify(free));
+
+  const sticky = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    api.selectShape(null);
+    api.setShapeType("sticky");
+    api.setShapeSettings({ stroke: "#e0b400" });
+    await window.__drag("sticky", [window.__at(3, 0.85, 0.1)]);
+    await settle(200);
+    const note = api.documentShapes(3).at(-1);
+    const opened = api.isHighlightNoteEditorOpen();
+    api.setDocumentHighlightNote(note.id, "Check this against the appendix.");
+    api.closeHighlightNoteEditor?.();
+    await settle(100);
+    // With no tool armed, a finger's tap on it opens the note, not a menu.
+    api.chooseInkTool("pen");
+    api.toggleInkRail(false);
+    const icon = document.querySelector('.pdf-shape[data-highlight-id="' + note.id + '"]').getBoundingClientRect();
+    const x = icon.left + icon.width / 2;
+    const y = icon.top + icon.height / 2;
+    (document.elementFromPoint(x, y) || document.getElementById("documentView")).dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, clientX: x, clientY: y, detail: 1 }));
+    await settle(150);
+    const reopened = api.isHighlightNoteEditorOpen();
+    api.closeHighlightNoteEditor?.();
+    // ...and a callout's menu offers its words.
+    const callout = api.documentShapes(3).find((r) => r.shape.type === "callout");
+    const anchor = document.querySelector('.pdf-shape[data-highlight-id="' + callout.id + '"]');
+    api.openMarkMenuWith(anchor, callout.id, api.DOCUMENT_MARK_HANDLERS, callout.color);
+    const editRow = document.querySelector(".mark-menu .mark-menu-edit-text");
+    const offered = Boolean(editRow && !editRow.hidden);
+    const styleRows = !document.querySelector(".mark-menu .mark-menu-styles").hidden;
+    api.closeMarkMenu();
+    return { type: note.shape.type, opened, reopened, note: api.documentHighlightNote(note.id), offered, styleRows };
+  }`);
+  check("a tap with the Sticky note tool places a note and opens it", sticky.type === "sticky" && sticky.opened, JSON.stringify(sticky));
+  check("...a tap on it later opens the note again", sticky.reopened && sticky.note.startsWith("Check this"), JSON.stringify(sticky));
+  check("a callout's menu offers Edit the text, and no word styles", sticky.offered && !sticky.styleRows, JSON.stringify(sticky));
+
+  const survived = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const before = api.documentShapes(null).map((r) => r.id + ":" + r.shape.type + ":" + r.shape.text).sort();
+    await api.flushPendingDeckAutosave();
+    await settle(300);
+    await api.loadDeckFromLibrary(api.readLocalDeckIndex()[0].id);
+    await settle(600);
+    api.closeMyDecksPanel();
+    api.setViewMode("document");
+    await api.openDocumentView();
+    await settle(500);
+    const after = api.documentShapes(null).map((r) => r.id + ":" + r.shape.type + ":" + r.shape.text).sort();
+    return { before, after, painted: document.querySelectorAll(".pdf-shape").length };
+  }`);
+  check("every shape survives a reload, words and all", survived.before.length >= 7 && JSON.stringify(survived.before) === JSON.stringify(survived.after), `${survived.before.length} → ${survived.after.length}`);
+});
+
 try {
   await page.call("Emulation.setDeviceMetricsOverride", { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
   await page.call("Page.addScriptToEvaluateOnNewDocument", {
@@ -567,7 +702,7 @@ try {
     // One picture per page that has something on it: page 1's text marks and
     // page 2's shapes. The first goes to SHOT, the second beside it.
     const { writeFileSync } = await import("node:fs");
-    for (const n of [1, 2]) {
+    for (const n of [1, 2, 3]) {
       const clip = await page.evaluate(`async (n) => {
         const { api, settle } = window.__recall;
         api.closeMyDecksPanel();

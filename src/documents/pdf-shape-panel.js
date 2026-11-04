@@ -16,7 +16,7 @@
 import { INK_PEN_COLORS } from "../format/ink-colors.js?v=__BUILD__";
 import { SHAPE_HEADS, SHAPE_LABELS, SHAPE_WIDTH_RANGE } from "../render/annot-shapes.js?v=__BUILD__";
 import { rememberInkRecentColor } from "../storage/ink-prefs.js?v=__BUILD__";
-import { currentShapeSettings, selectedShapeRecord, setShapeSettings, shapeType } from "./pdf-shapes.js?v=__BUILD__";
+import { displayedShapeSettings, selectedShapeRecord, setShapeSettings, shapeType } from "./pdf-shapes.js?v=__BUILD__";
 
 // The shapes the flyout offers, in its order.
 export const SHAPE_MENU_TYPES = ["line", "arrow", "rect", "ellipse", "callout", "text", "sticky"];
@@ -181,7 +181,7 @@ function panelShapeType() {
 
 function pressShapePanel(button) {
   const data = button.dataset;
-  const s = currentShapeSettings();
+  const s = displayedShapeSettings();
   const type = panelShapeType();
   if (data.shapeStroke) setShapeSettings({ stroke: data.shapeStroke });
   else if (data.shapeFill) setShapeSettings({ fill: data.shapeFill === "none" ? null : data.shapeFill });
@@ -203,7 +203,7 @@ function pressShapePanel(button) {
 
 export function refreshShapePanel(section) {
   if (!section) return;
-  const s = currentShapeSettings();
+  const s = displayedShapeSettings();
   const type = panelShapeType();
   const markPressed = (selector, on) => section.querySelectorAll(selector).forEach((node) => node.setAttribute("aria-pressed", String(on(node))));
   markPressed("[data-shape-stroke]", (n) => n.dataset.shapeStroke === s.stroke);

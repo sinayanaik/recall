@@ -167,7 +167,7 @@ export function shapeTextRect(shape) {
 
 // How far an arrowhead reaches back from its tip, in points.
 export function arrowHeadLength(width) {
-  return Math.max(5, width * 4.2);
+  return Math.max(7.5, width * 4.2);
 }
 
 // Everything the shape covers, padded by half its line and its heads, in PDF

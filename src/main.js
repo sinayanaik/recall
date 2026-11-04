@@ -132,7 +132,7 @@ import { applyStyleDensity, detectStyleProfile, handleStyleControlChange, normal
 import { styleCoarsePointerMedia, styleMobileMedia, styleProfiles } from "./ui/style-tokens.js?v=__BUILD__";
 import { setTheme, setThemeMenuOpen, setThemeRepaintHook } from "./ui/theme.js?v=__BUILD__";
 import { FOCUS_MODE_KEY, closeViewExportMenu, paintViewExportMenu, setBlockEditFlushHook, setHandwritingViewHook, setSplitViewHook, setViewMode, setViewSwitchHook, switchToPreviousView } from "./ui/view-mode.js?v=__BUILD__";
-import { DOCUMENT_NOTE_HANDLERS, documentHighlightById, documentHighlightNote, flashDocumentRegion, initDocumentMarkMenu, repairDocumentHighlightQuads, repairDocumentHighlightText, setDocumentHighlightAdjust } from "./documents/pdf-highlights.js?v=__BUILD__";
+import { DOCUMENT_NOTE_HANDLERS, documentHighlightById, documentHighlightNote, flashDocumentRegion, initDocumentMarkMenu, repairDocumentHighlightQuads, repairDocumentHighlightText, setDocumentHighlightAdjust, setDocumentShapeTextEditor } from "./documents/pdf-highlights.js?v=__BUILD__";
 import { canAdjustDocumentHighlight, startDocumentHighlightAdjust } from "./documents/pdf-highlight-adjust.js?v=__BUILD__";
 import { pdfRegionRefForRecord, pdfRegionRefMarkdown } from "./documents/pdf-region-embed.js?v=__BUILD__";
 import { setRegionResizeNotesSurface } from "./documents/pdf-region-resize.js?v=__BUILD__";
@@ -153,7 +153,8 @@ import { closeBlockStylePopover, isBlockStylePopoverOpen } from "./documents/blo
 import { closeBlockActionsPopover, isBlockActionsPopoverOpen } from "./documents/block-actions-popover.js?v=__BUILD__";
 import { blocksForPaper, buildStaticBlock, canRedoBlocks, canUndoBlocks, commitBlockEdit, deleteBlock, duplicateBlock, editBlock, handleBlockPointerDown, nudgeBlock, paintDocumentBlocks, pdfPointAt, redoBlocks, repaintDocumentBlocks, restackBlock, selectBlock, selectedBlockId, setBlocksChangedHandler, undoBlocks } from "./documents/pdf-blocks.js?v=__BUILD__";
 import { applyInkRailPreference, initInkRail, refreshInkRail } from "./ui/ink-rail.js?v=__BUILD__";
-import { initDocumentShapes } from "./documents/pdf-shapes.js?v=__BUILD__";
+import { initDocumentShapes, setShapeCreatedHandler } from "./documents/pdf-shapes.js?v=__BUILD__";
+import { openShapeTextEditor } from "./documents/pdf-shape-text.js?v=__BUILD__";
 import { INK_NUDGE_STEP, INK_NUDGE_STEP_COARSE } from "./render/ink-engine.js?v=__BUILD__";
 
 // ── Which of the two undo rings on this surface Ctrl+Z means ───────────────
@@ -1541,6 +1542,17 @@ onDomReady(() => {
   // listeners on the same scroller, which the ink layer stands down for while
   // it is armed — and the painter every repaint of a page's marks calls.
   initDocumentShapes();
+  // What a new callout, text box or sticky note opens straight away: the box
+  // to type in, or — a sticky note being its note — the note editor.
+  setShapeCreatedHandler((record) => {
+    if (record.shape?.type === "sticky") {
+      const icon = el.documentView?.querySelector(`.pdf-shape[data-highlight-id="${CSS.escape(record.id)}"]`);
+      openHighlightNoteEditor(record.id, icon?.getBoundingClientRect() || null, documentHighlightNote(record.id), DOCUMENT_NOTE_HANDLERS);
+      return;
+    }
+    openShapeTextEditor(record);
+  });
+  setDocumentShapeTextEditor((id) => openShapeTextEditor(id));
   initInkRail();
   // A press on a markdown block belongs to the block. Capture, on the same
   // element pdf-ink.js listens on — stopPropagation does not silence a sibling

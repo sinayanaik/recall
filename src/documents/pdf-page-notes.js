@@ -207,7 +207,10 @@ export function paintPageNoteBadges(pageNumber, all = null) {
   const pageEl = pdfPageElement(pageNumber);
   if (!pageEl) return;
   let layer = pageEl.querySelector(`.${BADGE_LAYER_CLASS}`);
+  // A sticky note is a note already, drawn as one: a fold on its corner would
+  // say the same thing twice.
   const annotated = (all || annotatedDocumentHighlights())
+    .filter(({ record }) => !(record.kind === "shape" && record.shape?.type === "sticky"))
     .filter(({ record }) => (record.quads || []).some((quad) => quad.page === pageNumber));
   if (!annotated.length) {
     layer?.remove();

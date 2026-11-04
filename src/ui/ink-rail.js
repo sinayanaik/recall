@@ -33,7 +33,7 @@ import { buildInkPanel, createInkPanel, paintInkChip } from "../handwriting/ink-
 import { inkPreferences, inkRailOpen, rememberInkRecentColor, writeInkPreferences, writeInkRailOpen } from "../storage/ink-prefs.js?v=__BUILD__";
 import { activeDocSlot } from "../documents/doc-slot.js?v=__BUILD__";
 import { isRegionSelectArmed, setRegionSelect } from "../documents/pdf-region.js?v=__BUILD__";
-import { currentShapeSettings, setShapeChangedHandler, setShapeType } from "../documents/pdf-shapes.js?v=__BUILD__";
+import { displayedShapeSettings, setShapeChangedHandler, setShapeType } from "../documents/pdf-shapes.js?v=__BUILD__";
 import { buildShapeMenu, buildShapePanel, refreshShapeMenu, refreshShapePanel } from "../documents/pdf-shape-panel.js?v=__BUILD__";
 import { showConfirmModal } from "./feedback.js?v=__BUILD__";
 
@@ -180,7 +180,7 @@ export function refreshInkRail() {
     highlighter,
     eraser,
     selecting: count > 0,
-    shape: currentShapeSettings()
+    shape: displayedShapeSettings()
   });
   refreshShapeMenu(document.getElementById("inkRailShapeMenu"), document.getElementById("inkRailShapeBtn"));
   refreshShapePanel(shapePanel);
