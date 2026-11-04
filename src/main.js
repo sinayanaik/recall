@@ -153,6 +153,7 @@ import { closeBlockStylePopover, isBlockStylePopoverOpen } from "./documents/blo
 import { closeBlockActionsPopover, isBlockActionsPopoverOpen } from "./documents/block-actions-popover.js?v=__BUILD__";
 import { blocksForPaper, buildStaticBlock, canRedoBlocks, canUndoBlocks, commitBlockEdit, deleteBlock, duplicateBlock, editBlock, handleBlockPointerDown, nudgeBlock, paintDocumentBlocks, pdfPointAt, redoBlocks, repaintDocumentBlocks, restackBlock, selectBlock, selectedBlockId, setBlocksChangedHandler, undoBlocks } from "./documents/pdf-blocks.js?v=__BUILD__";
 import { applyInkRailPreference, initInkRail, refreshInkRail } from "./ui/ink-rail.js?v=__BUILD__";
+import { initDocumentShapes } from "./documents/pdf-shapes.js?v=__BUILD__";
 import { INK_NUDGE_STEP, INK_NUDGE_STEP_COARSE } from "./render/ink-engine.js?v=__BUILD__";
 
 // ── Which of the two undo rings on this surface Ctrl+Z means ───────────────
@@ -1536,6 +1537,10 @@ onDomReady(() => {
     refreshPdfPageNotes();
   });
   initDocumentInk();
+  // The Shapes tool (src/documents/pdf-shapes.js): its own capture-phase
+  // listeners on the same scroller, which the ink layer stands down for while
+  // it is armed — and the painter every repaint of a page's marks calls.
+  initDocumentShapes();
   initInkRail();
   // A press on a markdown block belongs to the block. Capture, on the same
   // element pdf-ink.js listens on — stopPropagation does not silence a sibling

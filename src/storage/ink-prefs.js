@@ -126,7 +126,10 @@ export function inkPreferences() {
       // and the colour of the reader's own it last used, if any — null means the
       // highlight colour the notes share (renderFormatDefaults.highlight).
       markStyle: normalizeMarkStyle(parsed?.markStyle),
-      markHex: normalizeMarkHex(parsed?.markHex)
+      markHex: normalizeMarkHex(parsed?.markHex),
+      // The Shapes tool's settings, as src/documents/pdf-shapes.js last wrote
+      // them — normalised there, where what a shape can be is known.
+      shape: parsed?.shape && typeof parsed.shape === "object" ? parsed.shape : null
     };
   } catch (_) {
     return {
@@ -143,7 +146,8 @@ export function inkPreferences() {
       eraseMode: INK_ERASE_MODE_DEFAULT,
       snapShapes: false,
       markStyle: MARK_STYLE_DEFAULT,
-      markHex: null
+      markHex: null,
+      shape: null
     };
   }
 }
@@ -163,8 +167,9 @@ export function writeInkPreferences(patch = {}) {
     const {
       pen, width, tool, eraserSize, eraseMode, snapShapes,
       hlPen, hlWidth, hlStraight, eraseTarget, tapDots, recentColors,
-      markStyle, markHex
+      markStyle, markHex, shape
     } = patch || {};
+    if (shape !== undefined) next.shape = shape && typeof shape === "object" ? shape : null;
     if (markStyle !== undefined) next.markStyle = normalizeMarkStyle(markStyle);
     if (markHex !== undefined) next.markHex = normalizeMarkHex(markHex);
     if (pen !== undefined) next.pen = normalizeInkToken(pen, "pen");

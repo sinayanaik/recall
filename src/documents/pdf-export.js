@@ -40,6 +40,7 @@ import { escapeHtml } from "../core/text.js?v=__BUILD__";
 import { decodeInkStrokes } from "../format/ink-strokes.js?v=__BUILD__";
 import { markGeometry, markStyleOf, normalizeMarkHex, paintMarkGeometry } from "../format/mark-styles.js?v=__BUILD__";
 import { paintInkLayers } from "../render/ink-paint.js?v=__BUILD__";
+import { paintShapeOnCanvas } from "../render/annot-shapes.js?v=__BUILD__";
 import { markdownToSafeHtml } from "../render/preprocess.js?v=__BUILD__";
 import { setStatus } from "../ui/feedback.js?v=__BUILD__";
 import { DOC_SLOT_DOC, DOC_SLOT_NOTEBOOK, activeDocSlot, docSlotMeta } from "./doc-slot.js?v=__BUILD__";
@@ -117,6 +118,13 @@ async function renderPageForPrint(pageNumber, records) {
     //
     // Saved and restored around, because paintInkLayers leaves a transform and
     // a fill on the context and the highlight loop below runs in page pixels.
+    // A shape is drawn as the shape (src/render/annot-shapes.js) — its quad is
+    // a bounding box, like ink's — through this page's viewport, at its scale.
+    if (record.kind === "shape") {
+      if (Number(record.page) !== pageNumber) return;
+      paintShapeOnCanvas(context, record.shape, ([x, y]) => viewport.convertToViewportPoint(x, y), viewport.scale);
+      return;
+    }
     if (record.kind === "ink") {
       if (Number(record.page) !== pageNumber) return;
       const t = viewport.transform;

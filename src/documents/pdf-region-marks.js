@@ -33,6 +33,7 @@ import { MARK_HIGHLIGHT_DEFAULT, MARK_HIGHLIGHT_HEX } from "../format/highlight-
 import { decodeInkStrokes } from "../format/ink-strokes.js?v=__BUILD__";
 import { markGeometry, markStyleOf, normalizeMarkHex, paintMarkGeometry } from "../format/mark-styles.js?v=__BUILD__";
 import { paintInkLayers } from "../render/ink-paint.js?v=__BUILD__";
+import { paintShapeOnCanvas } from "../render/annot-shapes.js?v=__BUILD__";
 import { recordsForSurface } from "./pdf-multi.js?v=__BUILD__";
 
 // ── The colours, matching the live mark layer ───────────────────────────────
@@ -91,8 +92,9 @@ export function regionMarksOnPage(source, pageNumber, { excludeId = null, exclud
   });
   return {
     page,
-    highlights: kept.filter((record) => record.kind !== "ink"),
-    ink: kept.filter((record) => record.kind === "ink" && Number(record.page) === page)
+    highlights: kept.filter((record) => record.kind !== "ink" && record.kind !== "shape"),
+    ink: kept.filter((record) => record.kind === "ink" && Number(record.page) === page),
+    shapes: kept.filter((record) => record.kind === "shape" && Number(record.page) === page)
   };
 }
 
@@ -167,7 +169,13 @@ export function paintRegionMarks(ctx, viewport, marks, { paper = "light", areas 
       } else paintTint(record, blend);
     });
   }
-  if (!marks.ink.length) return;
+  // Shapes over the ink, as the page stacks them — but not on a page's kept
+  // picture, whose caller leaves them live (they are pressed, like regions).
+  const paintShapes = () => {
+    if (!areas || !marks.shapes?.length) return;
+    marks.shapes.forEach((record) => paintShapeOnCanvas(ctx, record.shape, ([x, y]) => viewport.convertToViewportPoint(x, y), viewport.scale));
+  };
+  if (!marks.ink.length) { paintShapes(); return; }
   // Strokes are stored in PDF user-space points; paintInkLayers expects the
   // context to carry that transform, as the live ink layer applies it.
   const t = viewport.transform;
@@ -180,6 +188,7 @@ export function paintRegionMarks(ctx, viewport, marks, { paper = "light", areas 
   marks.ink.forEach((record) => strokes.push(...decodeInkStrokes(record.ink?.s)));
   paintInkLayers(ctx, strokes, { root: null, paper: paper === "dark" ? "dark" : "light", blend });
   ctx.restore();
+  paintShapes();
 }
 
 // ── Blocks ──────────────────────────────────────────────────────────────────

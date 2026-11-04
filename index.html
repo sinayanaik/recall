@@ -261,6 +261,9 @@
     <link rel="modulepreload" href="src/format/highlight.js?v=__BUILD__">
     <link rel="modulepreload" href="src/format/ink-colors.js?v=__BUILD__">
     <link rel="modulepreload" href="src/format/mark-styles.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/render/annot-shapes.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/documents/pdf-shapes.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/documents/pdf-shape-panel.js?v=__BUILD__">
     <link rel="modulepreload" href="src/format/ink-strokes.js?v=__BUILD__">
     <link rel="modulepreload" href="src/format/ink-svg.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/blank-pdf.js?v=__BUILD__">
@@ -1296,6 +1299,12 @@
                 <button class="tool-button ink-rail-btn" type="button" data-ink-tool="highlighter" aria-pressed="false" title="Highlighter — sweep it along a line of words and the words are highlighted; over a scan, a figure or blank paper it lays a see-through band" aria-label="Highlighter"><svg class="ink-rail-svg" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M14.6 3.4l6 6-8.3 8.3H6.3v-6z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M6.3 11.7l6 6" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M3.5 21h10" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" opacity="0.55"/></svg></button>
                 <button class="tool-button ink-rail-btn" type="button" data-ink-tool="eraser" aria-pressed="false" title="Eraser — cross a stroke to remove it. The eraser end or the side button of a stylus does this without leaving the pen." aria-label="Eraser">&#9003;</button>
                 <button class="tool-button ink-rail-btn" type="button" data-ink-tool="lasso" aria-pressed="false" title="Lasso — circle strokes to move, turn, resize, restyle, copy, join, split or delete them" aria-label="Lasso">&#9711;</button>
+                <!-- Shapes: one button for seven of them (src/documents/
+                     pdf-shapes.js). It wears the armed shape's icon; pressed
+                     again it opens the flyout that picks another. The pen and a
+                     mouse draw them, a finger scrolls. -->
+                <button class="tool-button ink-rail-btn" type="button" data-ink-tool="shape" id="inkRailShapeBtn" aria-pressed="false" aria-haspopup="menu" aria-expanded="false" aria-controls="inkRailShapeMenu" title="Shapes — press again to pick a line, arrow, box, ellipse, callout, text or sticky note" aria-label="Shapes"><svg class="ink-rail-shape-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 19L19 6"/><path d="M11 5.5h8.5V14"/></svg></button>
+                <div class="ink-rail-menu" id="inkRailShapeMenu" role="menu" aria-label="Shapes" hidden></div>
                 <!-- The pen stops drawing and starts picking out words, so a
                      stylus can reach the highlighter that marks what you
                      SELECTED. A finger still scrolls. -->

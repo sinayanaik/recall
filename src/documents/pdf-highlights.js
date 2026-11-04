@@ -31,6 +31,7 @@ import { pdfAreaLayer, pdfMarkLayer, pdfPageTextItems, pdfPageViewport } from ".
 import { MARK_HIGHLIGHT_DEFAULT, MARK_HIGHLIGHT_HEX } from "../format/highlight-colors.js?v=__BUILD__";
 import { inkFilingColor } from "../format/ink-colors.js?v=__BUILD__";
 import { markStyleOf, normalizeMarkHex, normalizeMarkStyle } from "../format/mark-styles.js?v=__BUILD__";
+import { shapeHitsPoint } from "../render/annot-shapes.js?v=__BUILD__";
 import { decodeInkStrokes, inkStrokeHitsPoint } from "../format/ink-strokes.js?v=__BUILD__";
 import { notifyHighlightsChanged } from "../format/highlight-edit.js?v=__BUILD__";
 import { pruneOrphanHighlightNotes, readHighlightNotes, setHighlightNoteInSource } from "../format/highlight-notes.js?v=__BUILD__";
@@ -657,6 +658,11 @@ export function recolourDocumentHighlight(id, color) {
   const next = documentHighlights().map((record) => {
     if (record.id !== id) return record;
     const { hex: _hex, ...rest } = record;
+    // A shape's colour is its line's: the swatch pressed in its menu is the
+    // colour it is drawn in, and the token it is filed under.
+    if (record.kind === "shape" && record.shape && MARK_HIGHLIGHT_HEX[color]) {
+      return { ...rest, color, shape: { ...record.shape, stroke: MARK_HIGHLIGHT_HEX[color] }, at: Date.now() };
+    }
     return { ...rest, color, at: Date.now() };
   });
   commitDocumentHighlights(next);
@@ -892,7 +898,17 @@ export function clearDocumentHighlightNote(id, options) {
 // format/highlight-colors.js): an opaque swatch chosen at authoring time looks
 // wrong the moment the theme changes, and these are alpha tints over whatever
 // is behind them.
+// Shapes paint on a layer of their own (src/documents/pdf-shapes.js), which
+// imports this file — so it registers its painter here, and every repaint of a
+// page's marks repaints its shapes with them.
+let documentShapePainter = null;
+
+export function setDocumentShapePainter(fn) {
+  documentShapePainter = typeof fn === "function" ? fn : null;
+}
+
 export function paintDocumentHighlights(pageNumber) {
+  documentShapePainter?.(pageNumber);
   const layer = pdfMarkLayer(pageNumber);
   if (!layer) return;
   // Regions on a layer of their own, which does not blend: the text marks'
@@ -910,6 +926,8 @@ export function paintDocumentHighlights(pageNumber) {
     // on and the export knows where the mark is. Drawn as a mark div it would
     // be a tinted rectangle over the reader's own handwriting.
     if (record.kind === "ink") return;
+    // ...and so does a shape, for the same reason.
+    if (record.kind === "shape") return;
     (record.quads || []).forEach((quad) => {
       if (quad.page !== pageNumber) return;
       const box = quadToPageBox(quad);
@@ -1029,7 +1047,19 @@ export function documentHighlightAtPoint(clientX, clientY, { skipInk = false } =
   // deliberate one is what the reader is pointing at. The region only answers
   // for a point nothing else claims, which is still every bare part of it.
   let region = null;
+  // A shape is drawn over everything else on the page, so it answers first,
+  // the last drawn first — tested against its geometry, like ink: a box drawn
+  // round a paragraph is hit on its line, not across the words inside it.
+  const shapes = documentHighlights().filter((record) => record.kind === "shape" && Number(record.page) === pageNumber);
+  if (shapes.length) {
+    const point = inkPagePoint(pageNumber, x, y);
+    const slack = INK_TAP_SLACK;
+    for (let i = shapes.length - 1; point && i >= 0; i -= 1) {
+      if (shapeHitsPoint(shapes[i].shape, point.x, point.y, slack)) return shapes[i];
+    }
+  }
   for (const record of documentHighlights()) {
+    if (record.kind === "shape") continue;
     // An ink mark is tested against the STROKES, not against the box round
     // them. A margin note and an arrow across a column share one large mostly
     // empty bounding box, and testing that box would make every tap inside it
@@ -1500,7 +1530,9 @@ export function initDocumentMarkMenu() {
     event.preventDefault();
     // Anchored to the highlight's own first painted quad, so the menu appears
     // over the words it acts on rather than wherever the finger landed.
-    const anchor = view.querySelector(`.${PDF_MARK_CLASS}[data-highlight-id="${CSS.escape(record.id)}"]`) || event.target;
+    const anchor = view.querySelector(`.${PDF_MARK_CLASS}[data-highlight-id="${CSS.escape(record.id)}"]`)
+      || view.querySelector(`.pdf-shape[data-highlight-id="${CSS.escape(record.id)}"]`)
+      || event.target;
     openMarkMenuWith(anchor, record.id, DOCUMENT_MARK_HANDLERS, record.color || MARK_HIGHLIGHT_DEFAULT);
   });
 

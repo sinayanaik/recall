@@ -61,6 +61,10 @@ const API_SRC = `async () => {
     "/src/format/selection-tools.js?v=__BUILD__",
     "/src/notes/mark-menu.js?v=__BUILD__",
     "/src/render/canvas-record.js?v=__BUILD__",
+    "/src/render/annot-shapes.js?v=__BUILD__",
+    "/src/documents/pdf-shapes.js?v=__BUILD__",
+    "/src/documents/pdf-ink.js?v=__BUILD__",
+    "/src/ui/ink-rail.js?v=__BUILD__",
     "/src/boot.js?v=__BUILD__"
   ];
   const mods = await Promise.all(paths.map((p) => import(p)));
@@ -116,6 +120,37 @@ const SELECT_SRC = `async (pageNumber, nth) => {
   const selection = window.getSelection();
   selection.removeAllRanges();
   selection.addRange(range);
+  return true;
+}`;
+
+
+// Synthetic pointer events at page coordinates, on whatever is under them —
+// the same route a real press takes into the scroller's capture listeners.
+const POINTER_SRC = `() => {
+  window.__drag = async (type, points, { pointerType = "mouse", shiftKey = false, id = 41 } = {}) => {
+    const settle = (ms) => new Promise((r) => setTimeout(r, ms));
+    // The press lands on what is under it; the rest goes to the scroller, as
+    // the pointer capture the press takes would send it.
+    const fire = (name, [x, y], buttons) => {
+      const view = document.getElementById("documentView");
+      const target = name === "pointerdown" ? (document.elementFromPoint(x, y) || view) : view;
+      target.dispatchEvent(new PointerEvent(name, {
+        bubbles: true, cancelable: true, composed: true, pointerId: id, pointerType, isPrimary: true,
+        button: name === "pointermove" ? -1 : 0, buttons, clientX: x, clientY: y, pressure: buttons ? 0.5 : 0, shiftKey
+      }));
+    };
+    // A toast left by an earlier step would take the press.
+    document.querySelectorAll(".toast, #toastHost > *").forEach((n) => n.remove());
+    fire("pointerdown", points[0], 1);
+    for (let i = 1; i < points.length; i += 1) { fire("pointermove", points[i], 1); await new Promise((r) => requestAnimationFrame(r)); }
+    fire("pointerup", points[points.length - 1], 0);
+    await settle(120);
+  };
+  // A point on page n, as fractions of its box.
+  window.__at = (n, fx, fy) => {
+    const r = document.querySelector('.pdf-page[data-page-number="' + n + '"]').getBoundingClientRect();
+    return [r.left + r.width * fx, r.top + r.height * fy];
+  };
   return true;
 }`;
 
@@ -331,6 +366,165 @@ sections.push(async () => {
   check("styles and colours survive a reload", reloaded.before.length >= 5 && JSON.stringify(reloaded.before) === JSON.stringify(reloaded.after), `${reloaded.before.length} → ${reloaded.after.length}`);
 });
 
+
+// ── Shapes: line, arrow, rectangle, ellipse ────────────────────────────────
+sections.push(async () => {
+  await page.evaluate(POINTER_SRC);
+  const drawn = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    api.scrollToDocumentPage(2, 0, { smooth: false });
+    await api.whenDocumentPageReady(2);
+    await settle(300);
+    api.toggleInkRail(true);
+    api.chooseInkTool("shape");
+    api.setShapeType("arrow");
+    api.setShapeSettings({ stroke: "#2563eb", width: 2, snap: false });
+    const before = api.documentShapes(2).length;
+
+    await window.__drag("arrow", [window.__at(2, 0.2, 0.3), window.__at(2, 0.3, 0.35), window.__at(2, 0.45, 0.4)]);
+    const shapes = api.documentShapes(2);
+    const arrow = shapes[shapes.length - 1];
+    const painted = arrow && document.querySelector('.pdf-shape[data-highlight-id="' + arrow.id + '"]');
+    return {
+      made: shapes.length - before,
+      type: arrow?.shape?.type, heads: arrow?.shape?.heads, stroke: arrow?.shape?.stroke, color: arrow?.color,
+      quads: arrow?.quads?.length, paths: painted ? painted.querySelectorAll("path").length : 0,
+      selected: api.selectedShapeRecord()?.id === arrow?.id,
+      handles: document.querySelectorAll(".pdf-shape-handle").length,
+      id: arrow?.id
+    };
+  }`);
+  check("a mouse drag with the Shapes tool draws an arrow, filed as a shape", drawn.made === 1 && drawn.type === "arrow" && drawn.heads?.[1] === "filled" && drawn.stroke === "#2563eb" && drawn.color === "blue" && drawn.quads === 1, JSON.stringify(drawn));
+  check("...painted as a shaft and a head, and left selected with its two handles", drawn.paths >= 2 && drawn.selected && drawn.handles === 2, JSON.stringify(drawn));
+
+  const finger = await page.evaluate(`async () => {
+    const { api } = window.__recall;
+    const before = api.documentShapes(2).length;
+    await window.__drag("arrow", [window.__at(2, 0.6, 0.6), window.__at(2, 0.7, 0.7)], { pointerType: "touch", id: 42 });
+    return api.documentShapes(2).length - before;
+  }`);
+  check("a finger drag draws nothing — it is a scroll", finger === 0, `${finger} made`);
+
+  const edited = await page.evaluate(`async (id) => {
+    const { api, settle } = window.__recall;
+    const before = api.documentHighlightById(id).shape.p.map((p) => p.slice());
+    // The finger's scroll put it down; picked up again.
+    api.selectShape(id);
+    await settle(40);
+    // Its end handle, dragged further right.
+    const handle = document.querySelector('.pdf-shape-handle[data-handle="p1"]').getBoundingClientRect();
+    const from = [handle.left + handle.width / 2, handle.top + handle.height / 2];
+
+    await window.__drag("arrow", [from, [from[0] + 30, from[1]], [from[0] + 60, from[1]]]);
+    const P = () => api.documentHighlightById(id)?.shape?.p?.map((p) => p.slice()) || null;
+    const count0 = api.documentShapes(2).length;
+    const afterHandle = P();
+    if (!afterHandle) return { error: "gone after the handle drag", count0 };
+    // Its body, dragged down.
+    const r = document.querySelector('.pdf-page[data-page-number="2"]').getBoundingClientRect();
+    const vp = api.pdfPageViewport(2);
+    const mid = vp.convertToViewportPoint((afterHandle[0][0] + afterHandle[1][0]) / 2, (afterHandle[0][1] + afterHandle[1][1]) / 2);
+    const at = [r.left + mid[0], r.top + mid[1]];
+    await window.__drag("arrow", [at, [at[0], at[1] + 20], [at[0], at[1] + 40]]);
+    const afterMove = P();
+    const count1 = api.documentShapes(2).length;
+    api.undoInk(); await settle(80);
+    const undoneMove = P();
+    api.undoInk(); await settle(80);
+    const undoneHandle = P();
+    api.redoInk(); api.redoInk(); await settle(80);
+    const redone = P();
+    return { before, afterHandle, afterMove, undoneMove, undoneHandle, redone, count0, count1 };
+  }`, drawn.id);
+  const near = (a, b) => Math.abs(a - b) < 0.6;
+  if (edited.error || !edited.afterMove || !edited.undoneHandle || !edited.redone) { check("editing an arrow", false, JSON.stringify(edited)); return; }
+  check("dragging the end handle moves that end, and only that end", edited.afterHandle[1][0] > edited.before[1][0] + 20 && near(edited.afterHandle[0][0], edited.before[0][0]) && near(edited.afterHandle[0][1], edited.before[0][1]), JSON.stringify(edited.afterHandle));
+  check("dragging the body moves the whole arrow", edited.afterMove[0][1] < edited.afterHandle[0][1] - 10 && edited.afterMove[1][1] < edited.afterHandle[1][1] - 10, JSON.stringify(edited.afterMove));
+  check("undo takes back the move, then the handle; redo puts both back", JSON.stringify(edited.undoneMove) === JSON.stringify(edited.afterHandle) && JSON.stringify(edited.undoneHandle) === JSON.stringify(edited.before) && JSON.stringify(edited.redone) === JSON.stringify(edited.afterMove), JSON.stringify(edited));
+
+  const boxes = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    // Every drag inside the part of page 2 on screen; each new shape's look set
+    // with nothing selected, so the last one is not restyled by it.
+    api.selectShape(null);
+    api.setShapeType("rect");
+    api.setShapeSettings({ fill: "#16a34a", dash: "dash" });
+    await window.__drag("rect", [window.__at(2, 0.55, 0.1), window.__at(2, 0.62, 0.13), window.__at(2, 0.7, 0.14)], { shiftKey: true });
+    const rect = api.documentShapes(2).at(-1);
+    const dashed = document.querySelector('.pdf-shape[data-highlight-id="' + rect.id + '"] path')?.getAttribute("stroke-dasharray") || "";
+    api.selectShape(null);
+    api.setShapeType("ellipse");
+    api.setShapeSettings({ fill: null, dash: "solid" });
+    await window.__drag("ellipse", [window.__at(2, 0.1, 0.42), window.__at(2, 0.2, 0.44), window.__at(2, 0.3, 0.47)]);
+    const ellipse = api.documentShapes(2).at(-1);
+    api.selectShape(null);
+    api.setShapeType("line");
+    await window.__drag("line", [window.__at(2, 0.5, 0.45), window.__at(2, 0.65, 0.452), window.__at(2, 0.8, 0.455)], { shiftKey: true });
+    const line = api.documentShapes(2).at(-1);
+    const rw = Math.abs(rect.shape.p[1][0] - rect.shape.p[0][0]);
+    const rh = Math.abs(rect.shape.p[1][1] - rect.shape.p[0][1]);
+    const dy = Math.abs(line.shape.p[1][1] - line.shape.p[0][1]);
+    return {
+      rect: { type: rect.shape.type, fill: rect.shape.fill, dash: rect.shape.dash, square: Math.abs(rw - rh) < 0.5, rw, rh },
+      ellipse: { type: ellipse.shape.type, fill: ellipse.shape.fill, paths: document.querySelectorAll('.pdf-shape[data-highlight-id="' + ellipse.id + '"] path').length },
+      line: { type: line.shape.type, heads: line.shape.heads, level: dy < 0.5 },
+      dashed
+    };
+  }`);
+  check("Shift makes a rectangle square, filled and dashed as set", boxes.rect.type === "rect" && boxes.rect.square && boxes.rect.fill === "#16a34a" && boxes.rect.dash === "dash" && boxes.dashed.length > 0, JSON.stringify(boxes.rect) + " " + boxes.dashed);
+  check("an ellipse is drawn, unfilled", boxes.ellipse.type === "ellipse" && !boxes.ellipse.fill && boxes.ellipse.paths === 1, JSON.stringify(boxes.ellipse));
+  check("Shift levels a line, and a line has no heads", boxes.line.type === "line" && boxes.line.level && boxes.line.heads.join() === "none,none", JSON.stringify(boxes.line));
+
+  const restyled = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const line = api.documentShapes(2).at(-1);
+    api.selectShape(line.id);
+    api.setShapeSettings({ stroke: "#7c3aed", width: 5, heads: { line: ["dot", "bar"] } });
+    const after = api.documentHighlightById(line.id).shape;
+    api.undoInk(); await settle(60);
+    const undone = api.documentHighlightById(line.id).shape;
+    api.redoInk(); await settle(60);
+    return { after: { stroke: after.stroke, width: after.width, heads: after.heads }, undone: { stroke: undone.stroke, width: undone.width } };
+  }`);
+  check("the panel restyles the selected shape: colour, width and heads", restyled.after.stroke === "#7c3aed" && restyled.after.width === 5 && restyled.after.heads.join() === "dot,bar", JSON.stringify(restyled));
+
+  const tapped = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const rect = api.documentShapes(2).find((r) => r.shape.type === "rect");
+    api.chooseInkTool("pen");
+    api.selectShape(null);
+    const vp = api.pdfPageViewport(2);
+    const r = document.querySelector('.pdf-page[data-page-number="2"]').getBoundingClientRect();
+    const corner = vp.convertToViewportPoint(rect.shape.p[0][0], rect.shape.p[0][1]);
+    const edge = api.documentHighlightAtPoint(r.left + corner[0], r.top + corner[1]);
+    // Inside a FILLED box is on it; a tap in an unfilled ellipse's middle is not.
+    const ellipse = api.documentShapes(2).find((r) => r.shape.type === "ellipse");
+    const c = vp.convertToViewportPoint((ellipse.shape.p[0][0] + ellipse.shape.p[1][0]) / 2, (ellipse.shape.p[0][1] + ellipse.shape.p[1][1]) / 2);
+    const middle = api.documentHighlightAtPoint(r.left + c[0], r.top + c[1]);
+    return { edge: edge?.id === rect.id, middle: middle?.kind === "shape" ? middle.shape.type : null };
+  }`);
+  check("a tap on a shape's line finds it, with no tool armed", tapped.edge, JSON.stringify(tapped));
+  check("...and a tap inside an unfilled ellipse does not", tapped.middle !== "ellipse", JSON.stringify(tapped));
+
+  const deleted = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    api.chooseInkTool("shape");
+    const ellipse = api.documentShapes(2).find((r) => r.shape.type === "ellipse");
+    api.selectShape(ellipse.id);
+    document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Delete", bubbles: true, cancelable: true }));
+    await settle(80);
+    const gone = !api.documentHighlightById(ellipse.id);
+    api.undoInk(); await settle(80);
+    const back = Boolean(api.documentHighlightById(ellipse.id));
+    const baked = api.regionMarksOnPage({ slot: "doc", pdfId: null }, 2);
+    api.chooseInkTool("pen");
+    api.toggleInkRail(false);
+    return { gone, back, inHighlights: baked.highlights.some((r) => r.kind === "shape"), inShapes: baked.shapes.length };
+  }`);
+  check("Delete removes the selected shape, and undo brings it back", deleted.gone && deleted.back, JSON.stringify(deleted));
+  check("a page's picture never paints a shape as a tinted box", !deleted.inHighlights && deleted.inShapes >= 4, JSON.stringify(deleted));
+});
+
 try {
   await page.call("Emulation.setDeviceMetricsOverride", { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
   await page.call("Page.addScriptToEvaluateOnNewDocument", {
@@ -370,19 +564,25 @@ try {
   for (const section of sections) await section();
 
   if (SHOT) {
-    const clip = await page.evaluate(`async () => {
-      const { api, settle } = window.__recall;
-      api.closeMyDecksPanel();
-      document.querySelectorAll(".toast, #toastHost > *").forEach((n) => n.remove());
-      api.scrollToDocumentPage(1, 0, { smooth: false });
-      await settle(800);
-      const r = document.querySelector('.pdf-page[data-page-number="1"]').getBoundingClientRect();
-      return { x: Math.max(0, r.left), y: Math.max(0, r.top), width: Math.min(r.width, 1280), height: Math.min(r.height, 900 - Math.max(0, r.top)), scale: 1 };
-    }`);
-    const shot = await page.call("Page.captureScreenshot", { format: "png", clip });
+    // One picture per page that has something on it: page 1's text marks and
+    // page 2's shapes. The first goes to SHOT, the second beside it.
     const { writeFileSync } = await import("node:fs");
-    writeFileSync(SHOT, Buffer.from(shot.data, "base64"));
-    console.log(`  shot  ${SHOT}`);
+    for (const n of [1, 2]) {
+      const clip = await page.evaluate(`async (n) => {
+        const { api, settle } = window.__recall;
+        api.closeMyDecksPanel();
+        api.selectShape?.(null);
+        document.querySelectorAll(".toast, #toastHost > *").forEach((node) => node.remove());
+        api.scrollToDocumentPage(n, 0, { smooth: false });
+        await settle(800);
+        const r = document.querySelector('.pdf-page[data-page-number="' + n + '"]').getBoundingClientRect();
+        return { x: Math.max(0, r.left), y: Math.max(0, r.top), width: Math.min(r.width, 1280), height: Math.min(r.height, 900 - Math.max(0, r.top)), scale: 1 };
+      }`, n);
+      const shot = await page.call("Page.captureScreenshot", { format: "png", clip });
+      const file = n === 1 ? SHOT : SHOT.replace(/\.png$/, "") + "-p" + n + ".png";
+      writeFileSync(file, Buffer.from(shot.data, "base64"));
+      console.log(`  shot  ${file}`);
+    }
   }
 } catch (error) {
   check("the check itself", false, error?.stack || String(error));
