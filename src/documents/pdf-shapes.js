@@ -43,11 +43,12 @@
 // and highlights are.
 
 import { el } from "../core/dom.js?v=__BUILD__";
+import { DOC_SLOT_NOTEBOOK, activeDocSlot } from "./doc-slot.js?v=__BUILD__";
 import { setInkPenDown } from "../core/gesture.js?v=__BUILD__";
 import { inkFilingColor } from "../format/ink-colors.js?v=__BUILD__";
 import { isEraserEvent } from "../render/ink-engine.js?v=__BUILD__";
 import {
-  SHAPE_DEFAULTS, SHAPE_HEADS, SHAPE_TEXT_PAD, SHAPE_TYPES, moveShapeHandle, normalizeShape,
+  SHAPE_DEFAULTS, SHAPE_HEADS, SHAPE_TEXT_PAD, SHAPE_TYPES, moveShapeHandle, normalizeShape, normalizeShapeHex,
   polyPathData, shapeBounds, shapeCrossesSegment, shapeDashArray, shapeFromDrag, shapeHandles, shapeHitsPoint, shapeLabel, shapePrimitives,
   shapeTypeDefaults, snapShapeAngle, stickyIconPolys, translateShape
 } from "../render/annot-shapes.js?v=__BUILD__";
@@ -97,7 +98,14 @@ function defaultShapeSettings() {
     snap: false,
     fontSize: SHAPE_DEFAULTS.font.size,
     bold: false,
-    align: "left"
+    align: "left",
+    // Typed text and a sticky note have colours of their own: the arrow's red
+    // is no reason for the next words typed to be red, or yellow for a note.
+    textColor: "#16181d",
+    stickyColor: "#e0b400",
+    // The last shape that is not typed text — what the Shapes button wears and
+    // goes back to while the Text button has the typewriter armed.
+    lastShape: "arrow"
   };
 }
 
@@ -126,22 +134,25 @@ export function normalizeShapeSettings(raw) {
     snap: raw.snap === true,
     fontSize: shape.font.size,
     bold: shape.font.bold,
-    align: shape.font.align
+    align: shape.font.align,
+    textColor: normalizeShapeHex(raw.textColor) || base.textColor,
+    stickyColor: normalizeShapeHex(raw.stickyColor) || base.stickyColor,
+    lastShape: SHAPE_SETTING_TYPES.includes(raw.lastShape) && raw.lastShape !== "text" ? raw.lastShape : base.lastShape
   };
 }
 
-let shapeSettings = normalizeShapeSettings(null);
-let shapeSettingsLoaded = false;
+// Per tab: a PDF's shapes and a Canvas's are set apart, as the pen is
+// (src/storage/ink-prefs.js, INK_SURFACES).
+const shapeSettingsBySurface = new Map();
 
-function loadShapeSettings() {
-  if (shapeSettingsLoaded) return;
-  shapeSettingsLoaded = true;
-  shapeSettings = normalizeShapeSettings(inkPreferences().shape);
+function shapeSurface() {
+  return activeDocSlot() === DOC_SLOT_NOTEBOOK ? "notebook" : "doc";
 }
 
 export function currentShapeSettings() {
-  loadShapeSettings();
-  return shapeSettings;
+  const key = shapeSurface();
+  if (!shapeSettingsBySurface.has(key)) shapeSettingsBySurface.set(key, normalizeShapeSettings(inkPreferences(key).shape));
+  return shapeSettingsBySurface.get(key);
 }
 
 let shapeChangedHandler = () => {};
@@ -156,11 +167,12 @@ export function setShapeChangedHandler(fn) {
 // "make THIS that", as a press on a swatch with a lasso selection does — and the
 // next shape carries on in the same style.
 export function setShapeSettings(patch = {}) {
-  loadShapeSettings();
-  const next = { ...shapeSettings, ...patch };
-  if (patch.heads) next.heads = { ...shapeSettings.heads, ...patch.heads };
-  shapeSettings = normalizeShapeSettings(next);
-  writeInkPreferences({ shape: shapeSettings });
+  const before = currentShapeSettings();
+  const next = { ...before, ...patch };
+  if (patch.heads) next.heads = { ...before.heads, ...patch.heads };
+  const shapeSettings = normalizeShapeSettings(next);
+  shapeSettingsBySurface.set(shapeSurface(), shapeSettings);
+  writeInkPreferences({ shape: shapeSettings }, shapeSurface());
   const selected = selectedShapeRecord();
   if (selected) {
     const restyle = {};
@@ -172,6 +184,8 @@ export function setShapeSettings(patch = {}) {
     if ("fontSize" in patch) font.size = shapeSettings.fontSize;
     if ("bold" in patch) font.bold = shapeSettings.bold;
     if ("align" in patch) font.align = shapeSettings.align;
+    if ("textColor" in patch && selected.shape.type === "text") font.color = shapeSettings.textColor;
+    if ("stickyColor" in patch && selected.shape.type === "sticky") restyle.stroke = shapeSettings.stickyColor;
     if (Object.keys(font).length) restyle.font = { ...selected.shape.font, ...font };
     if (Object.keys(restyle).length) updateShape(selected.id, { ...selected.shape, ...restyle });
   }
@@ -184,7 +198,14 @@ export function shapeType() {
 
 export function setShapeType(type) {
   if (!SHAPE_TYPES.includes(type)) return;
-  setShapeSettings({ type });
+  setShapeSettings(type === "text" ? { type } : { type, lastShape: type });
+}
+
+// The shape the Shapes button stands for: the armed one, or — while the Text
+// button has the typewriter — the last one drawn.
+export function shapeButtonType() {
+  const s = currentShapeSettings();
+  return s.type === "text" ? s.lastShape : s.type;
 }
 
 // The look a new shape of `type` is drawn with.
@@ -207,7 +228,12 @@ function newShapeBase(type) {
       base.fillOpacity = s.fillOpacity;
     }
   }
-  if (type === "text") base.width = 0.3;
+  if (type === "text") {
+    base.width = 0.3;
+    base.fit = true;
+    base.font = { ...base.font, color: s.textColor };
+  }
+  if (type === "sticky") base.stroke = s.stickyColor;
   return base;
 }
 
@@ -338,7 +364,9 @@ export function displayedShapeSettings() {
   if (heads[s.type]) heads[s.type] = s.heads;
   return normalizeShapeSettings({
     ...tool, stroke: s.stroke, width: s.width, opacity: s.opacity, dash: s.dash,
-    fill: s.fill, fillOpacity: s.fillOpacity, heads, fontSize: s.font.size, bold: s.font.bold, align: s.font.align
+    fill: s.fill, fillOpacity: s.fillOpacity, heads, fontSize: s.font.size, bold: s.font.bold, align: s.font.align,
+    textColor: s.type === "text" ? (s.font.color || s.stroke) : tool.textColor,
+    stickyColor: s.type === "sticky" ? s.stroke : tool.stickyColor
   });
 }
 
@@ -408,7 +436,10 @@ function buildShapeNodes(record, shape, viewport, { preview = false } = {}) {
       const at = screenRect(viewport, prim.rect);
       box.style.left = `${at.left}px`;
       box.style.top = `${at.top}px`;
-      box.style.width = `${at.width}px`;
+      // Typewriter text is as wide as its longest line, on screen as in the
+      // editor it was typed in, so the two cannot wrap differently.
+      if (prim.fit) box.dataset.fit = "";
+      else box.style.width = `${at.width}px`;
       box.style.minHeight = `${at.height}px`;
       box.style.padding = `${SHAPE_TEXT_PAD * scale}px`;
       box.style.fontSize = `${prim.size * scale}px`;
@@ -627,9 +658,12 @@ function onShapeFingerDown(event) {
   const page = Number(pageEl?.dataset.pageNumber);
   if (!page || !pdfPageViewport(page)) return;
   const point = pdfPointOn(page, pageEl, event.clientX, event.clientY);
-  // On a shape, a tap is for the shape (its menu), not for a new one.
-  if (!point || shapeAtPoint(page, point[0], point[1])) return;
-  shapeFingerTap = { pointerId: event.pointerId, page, point, x: event.clientX, y: event.clientY, at: Date.now() };
+  if (!point) return;
+  // On a shape, a tap is for the shape (its menu), not for a new one — except
+  // typed text with the typewriter armed, which a tap opens to type in.
+  const hit = shapeAtPoint(page, point[0], point[1]);
+  if (hit && !(hit.shape.type === "text" && shapeType() === "text")) return;
+  shapeFingerTap = { pointerId: event.pointerId, page, point, x: event.clientX, y: event.clientY, at: Date.now(), edit: hit || null };
 }
 
 function onShapeFingerMove(event) {
@@ -641,8 +675,9 @@ function onShapeFingerUp(event) {
   const tap = shapeFingerTap;
   shapeFingerTap = null;
   if (!tap || event.pointerId !== tap.pointerId || Date.now() - tap.at > SHAPE_FINGER_TAP_MS) return;
-  if (selectedShapeId) { selectShape(null); return; }
   suppressShapeClickUntil = Date.now() + 500;
+  if (tap.edit) { shapeTextEditHandler(tap.edit); return; }
+  if (selectedShapeId && shapeType() !== "text") { selectShape(null); return; }
   const type = shapeType();
   const shape = shapeFromDrag(type, tap.point, tap.point, { base: newShapeBase(type) });
   const record = shape && addDocumentShape(tap.page, shape);
@@ -706,7 +741,7 @@ function onShapePointerDown(event) {
     preview: null,
     // A press on bare paper while a shape was selected puts it down and
     // makes nothing — a tap to deselect is not a request for a text box.
-    deselected: mode === "create" && Boolean(selectedShapeId)
+    deselected: mode === "create" && Boolean(selectedShapeId) && shapeType() !== "text"
   };
   // Whether this shape was ALREADY the selected one — a second tap on a text
   // box is a request to type in it, the first only picks it up.
@@ -785,7 +820,8 @@ function onShapePointerUp(event) {
   }
   if (!drag.moved) {
     const type = drag.target?.shape?.type;
-    if (drag.wasSelected && (type === "callout" || type === "text")) {
+    // With the typewriter armed, one tap on typed text is enough to type in it.
+    if ((drag.wasSelected && (type === "callout" || type === "text")) || (type === "text" && shapeType() === "text")) {
       suppressShapeClickUntil = Date.now() + 400;
       shapeTextEditHandler(drag.target);
       return;

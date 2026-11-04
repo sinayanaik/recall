@@ -31,9 +31,9 @@ import { INK_TOOL_DEFAULT } from "../format/ink-colors.js?v=__BUILD__";
 import { bindInkRailActivation, paintInkRailPressed } from "../handwriting/rail.js?v=__BUILD__";
 import { buildInkPanel, createInkPanel, paintInkChip } from "../handwriting/ink-popover.js?v=__BUILD__";
 import { inkPreferences, inkRailOpen, rememberInkRecentColor, writeInkPreferences, writeInkRailOpen } from "../storage/ink-prefs.js?v=__BUILD__";
-import { activeDocSlot } from "../documents/doc-slot.js?v=__BUILD__";
+import { DOC_SLOT_NOTEBOOK, activeDocSlot } from "../documents/doc-slot.js?v=__BUILD__";
 import { isRegionSelectArmed, setRegionSelect } from "../documents/pdf-region.js?v=__BUILD__";
-import { displayedShapeSettings, setShapeChangedHandler, setShapeType } from "../documents/pdf-shapes.js?v=__BUILD__";
+import { displayedShapeSettings, setShapeChangedHandler, setShapeType, shapeButtonType, shapeType } from "../documents/pdf-shapes.js?v=__BUILD__";
 import { buildShapeMenu, buildShapePanel, refreshShapeMenu, refreshShapePanel } from "../documents/pdf-shape-panel.js?v=__BUILD__";
 import { showConfirmModal } from "./feedback.js?v=__BUILD__";
 
@@ -183,6 +183,11 @@ export function refreshInkRail() {
     shape: displayedShapeSettings()
   });
   refreshShapeMenu(document.getElementById("inkRailShapeMenu"), document.getElementById("inkRailShapeBtn"));
+  // The typewriter is the Shapes tool on Text, but its own button: lit for
+  // that, and Shapes lit for every other shape.
+  const typing = tool === "shape" && shapeType() === "text";
+  pressed(document.getElementById("inkRailTextBtn"), typing);
+  if (typing) pressed(document.getElementById("inkRailShapeBtn"), false);
   refreshShapePanel(shapePanel);
   // Text takes the pen's colours and nibs down, and the panel with them.
   // Nothing is being drawn, so there is no nib and no ink colour to choose; and
@@ -272,6 +277,24 @@ function rememberableInkTool(tool) {
 // button that was pressed, so what is remembered cannot come to disagree with
 // what is armed. One statement of it, because there are two doors to the tool
 // now — this rail, and the reading rail's own row.
+// Which tab's settings the paper's pen reads and writes: a PDF's or a Canvas's
+// (src/storage/ink-prefs.js, INK_SURFACES). The two share one engine, so the
+// engine is reloaded from the tab's own settings whenever a document opens.
+function inkRailSurface() {
+  return activeDocSlot() === DOC_SLOT_NOTEBOOK ? "notebook" : "doc";
+}
+
+function applyRailInkSettings(saved) {
+  setInkPen(saved.pen, { keepOpacity: false });
+  setInkWidth(saved.width);
+  setInkHighlighter({ token: saved.hlPen, width: saved.hlWidth, straight: saved.hlStraight });
+  setInkEraserSize(saved.eraserSize);
+  setInkEraseMode(saved.eraseMode);
+  setInkEraseTarget(saved.eraseTarget);
+  setInkSnapShapes(saved.snapShapes);
+  setInkTapDots(saved.tapDots);
+}
+
 function rememberInkPreferences() {
   slotTools[activeDocSlot()] = rememberableInkTool(inkTool());
   const highlighter = inkHighlighter();
@@ -287,7 +310,7 @@ function rememberInkPreferences() {
     hlStraight: highlighter.straight,
     eraseTarget: inkEraseTarget(),
     tapDots: inkTapDots()
-  });
+  }, inkRailSurface());
 }
 
 // The tool, chosen from somewhere that is not this rail: the reading rail's
@@ -334,6 +357,8 @@ export function toggleInkRail(force = null) {
 // notebook this is not only about which panel is visible.
 export function applyInkRailPreference() {
   const slot = activeDocSlot();
+  // This tab's own pen — a PDF's and a Canvas's are set apart.
+  applyRailInkSettings(inkPreferences(inkRailSurface()));
   setInkArmed(inkRailOpen(slot));
   // AFTER setInkArmed, which resets the tool when it shuts the rail: this slot's
   // tool is the last word on what the pen does here, open rail or shut. A stylus
@@ -383,6 +408,23 @@ function pressRail(button) {
     inkPen: nextPen, inkWidth: nextWidth, inkEraserSize: nextEraser, inkTool: nextTool, inkAction: action,
     shapeType: nextShape
   } = button.dataset;
+  // Text, the typewriter: the Shapes tool's Text, armed from a button of its
+  // own. Pressed again it opens its settings — the styling that comes after.
+  if (action === "typewriter") {
+    if (isRegionSelectArmed()) setRegionSelect(false);
+    if (inkTool() === "shape" && shapeType() === "text") {
+      closeInkRailMenus();
+      inkPanel?.toggle();
+      refreshInkRail();
+      return;
+    }
+    setShapeType("text");
+    setInkTool("shape");
+    rememberInkPreferences();
+    closeInkRailMenus();
+    refreshInkRail();
+    return;
+  }
   // A row of the Shapes flyout: that shape, armed.
   if (nextShape) {
     if (isRegionSelectArmed()) setRegionSelect(false);
@@ -395,6 +437,16 @@ function pressRail(button) {
   }
   // The Shapes button pressed while armed opens its flyout, not the panel —
   // which shape is the question its button is asked; how it looks is the chip's.
+  // ...unless the typewriter has it: then the Shapes button means the shapes
+  // again, the last one drawn.
+  if (nextTool === "shape" && shapeType() === "text") {
+    if (isRegionSelectArmed()) setRegionSelect(false);
+    setShapeType(shapeButtonType());
+    setInkTool("shape");
+    rememberInkPreferences();
+    refreshInkRail();
+    return;
+  }
   if (nextTool === "shape" && inkTool() === "shape") {
     toggleInkRailMenu("inkRailShapeMenu");
     return;
@@ -467,19 +519,12 @@ export function initInkRail() {
 
   // The pen, the nib and the tool are remembered per device rather than per
   // deck: which colour you write in is a fact about you, not about the paper.
-  const saved = inkPreferences();
+  const saved = inkPreferences(inkRailSurface());
   // Whole, opacity and all — this is the saved pen, not a colour pressed on it.
-  setInkPen(saved.pen, { keepOpacity: false });
-  setInkWidth(saved.width);
-  setInkHighlighter({ token: saved.hlPen, width: saved.hlWidth, straight: saved.hlStraight });
+  applyRailInkSettings(saved);
   setInkTool(saved.tool);
-  slotTools.doc = saved.tool;
-  slotTools.notebook = saved.tool;
-  setInkEraserSize(saved.eraserSize);
-  setInkEraseMode(saved.eraseMode);
-  setInkEraseTarget(saved.eraseTarget);
-  setInkSnapShapes(saved.snapShapes);
-  setInkTapDots(saved.tapDots);
+  slotTools.doc = inkPreferences("doc").tool;
+  slotTools.notebook = inkPreferences("notebook").tool;
 
   el.documentInkBtn?.addEventListener("click", () => toggleInkRail());
 

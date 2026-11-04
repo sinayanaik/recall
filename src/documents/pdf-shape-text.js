@@ -37,7 +37,16 @@ function placeShapeEditor(node, viewport, shape) {
   const [bx, by] = viewport.convertToViewportPoint(x1, y0);
   node.style.left = `${Math.min(ax, bx)}px`;
   node.style.top = `${Math.min(ay, by)}px`;
-  node.style.width = `${Math.abs(bx - ax)}px`;
+  if (shape.fit) {
+    // The typewriter: as wide as what is typed, a line per Enter, never past
+    // the page's right edge.
+    node.dataset.fit = "";
+    node.style.width = "auto";
+    node.style.minWidth = `${shape.font.size * scale * 1.5}px`;
+    node.style.maxWidth = `${Math.max(40, viewport.width - Math.min(ax, bx))}px`;
+  } else {
+    node.style.width = `${Math.abs(bx - ax)}px`;
+  }
   node.style.minHeight = `${Math.abs(by - ay)}px`;
   node.style.padding = `${SHAPE_TEXT_PAD * scale}px`;
   node.style.fontSize = `${shape.font.size * scale}px`;
@@ -124,12 +133,25 @@ export function commitShapeTextEditor() {
   const record = documentHighlightById(editor.id);
   const text = String(editor.node.innerText ?? editor.node.textContent ?? "").replace(/\r/g, "").replace(/\n+$/, "");
   const viewport = pdfPageViewport(editor.page);
-  const height = editor.node.getBoundingClientRect().height;
+  const measured = editor.node.getBoundingClientRect();
+  const pageBox = editor.node.closest(".pdf-page")?.getBoundingClientRect() || null;
+  const height = measured.height;
   editor.node.remove();
   if (!record) { paintDocumentShapes(editor.page); return; }
   const shape = normalizeShape(record.shape);
   if (shape.type === "text" && !text.trim()) {
     deleteShape(record.id);
+    return;
+  }
+  // Typewriter text is boxed to exactly what was typed: its top-left stays
+  // where the reader tapped, and the box ends where the words do.
+  if (shape.fit && viewport && pageBox && measured.width > 0) {
+    const [ax, ay] = viewport.convertToPdfPoint(measured.left - pageBox.left, measured.top - pageBox.top);
+    const [bx, by] = viewport.convertToPdfPoint(measured.right - pageBox.left, measured.bottom - pageBox.top);
+    const fitted = [[Math.min(ax, bx), Math.min(ay, by)], [Math.max(ax, bx), Math.max(ay, by)]];
+    const changedFit = updateShape(record.id, { ...shape, text, p: fitted });
+    if (!changedFit) paintDocumentShapes(editor.page);
+    selectShape(record.id);
     return;
   }
   // Down, never up: the box's top edge is where the reader put it.

@@ -56,7 +56,8 @@ import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { hasActiveDeck, refreshHandwritingTab } from "../cards/card-status.js?v=__BUILD__";
 import { showConfirmModal, showToast } from "../ui/feedback.js?v=__BUILD__";
-import { placeShapeInView } from "../documents/pdf-shapes.js?v=__BUILD__";
+import { placeShapeInView, setShapeType } from "../documents/pdf-shapes.js?v=__BUILD__";
+import { chooseInkTool, refreshInkRail } from "../ui/ink-rail.js?v=__BUILD__";
 
 let wired = false;
 
@@ -208,7 +209,14 @@ function wire() {
     const action = button.dataset.hwAction;
     if (action === "add-page") addPage();
     else if (action === "add-block") addBlock();
-    else if (action === "add-text") placeShapeInView("text", currentDocumentPage(), handwritingDropPoint(currentDocumentPage()));
+    // Text arms the typewriter rather than dropping a box in the middle: the
+    // reader says where, with one tap, and types there.
+    else if (action === "add-text") {
+      chooseInkTool("shape");
+      setShapeType("text");
+      refreshInkRail();
+      showToast("Tap where you want to type");
+    }
     else if (action === "add-sticky") placeShapeInView("sticky", currentDocumentPage(), handwritingDropPoint(currentDocumentPage()));
   }, "[data-hw-action]");
 }

@@ -958,8 +958,12 @@ try {
     const chosen = api.inkPen();
     // Put back. The pen is the reader's and now survives a document being opened
     // (it used to be quietly reset by the next one), so a red left here would be
-    // the colour of every stroke the cases below draw and measure.
+    // the colour of every stroke the cases below draw and measure. And it is
+    // kept per tab (src/storage/ink-prefs.js, INK_SURFACES), reloaded from what
+    // the rail saved whenever a document opens — so it is put back THERE too.
     api.setInkPen("ink", { keepOpacity: false });
+    api.writeInkPreferences({ pen: "ink" }, "doc");
+    api.writeInkPreferences({ pen: "ink" }, "notebook");
     return { drew: after > before, pen: chosen, hadSwatch: Boolean(swatch) };
   }`, PEN_SRC);
 
@@ -2535,8 +2539,13 @@ try {
     await settle(300);
 
     // ── The pen the reader chose, on a document opened after choosing it ──
-    api.setInkPen("red", { keepOpacity: false });
-    api.setInkWidth(3.4);
+    //
+    // Chosen FOR THE CANVAS: each tab keeps its own pen now (INK_SURFACES), so
+    // a pen set on a PDF is the PDF's and the Canvas opens with its own. What
+    // the rail saves for the Canvas is what the Canvas draws with when it opens.
+    api.writeInkPreferences({ pen: "red", width: 3.4 }, "notebook");
+    api.setInkPen("blue", { keepOpacity: false });
+    api.setInkWidth(2);
     api.setViewMode("handwriting");
     for (let i = 0; i < 60 && !document.querySelector("#documentStage[data-doc-slot='notebook'] .pdf-page[data-page-number='1'] canvas.pdf-canvas"); i += 1) await settle(100);
     await settle(600);
@@ -2552,6 +2561,8 @@ try {
     api.undoInk();
     api.setInkPen("ink", { keepOpacity: false });
     api.setInkWidth(2);
+    api.writeInkPreferences({ pen: "ink", width: 2 }, "notebook");
+    api.writeInkPreferences({ pen: "ink", width: 2 }, "doc");
     api.setTheme("light-paper");
     await settle(400);
     return {
@@ -2598,9 +2609,9 @@ try {
       sw && sw.afterUndo === false && sw.afterRedo === true && sw.afterSecondUndo === false,
       sw ? `after undo live=${sw.afterUndo}, after redo=${sw.afterRedo}, after undo again=${sw.afterSecondUndo}` : "not run");
   }
-  check("the pen the reader chose is the pen on the next document opened",
+  check("the pen chosen for the Canvas is the pen on the Canvas when it opens — not the PDF's",
     paperInk.nbStroke?.c === "red" && paperInk.nbStroke?.w === 3.4,
-    `a stroke on the notebook opened after choosing red 3.4pt came out ${JSON.stringify(paperInk.nbStroke)}`);
+    `a stroke on the Canvas, whose pen is red 3.4pt, opened from a PDF on blue 2pt, came out ${JSON.stringify(paperInk.nbStroke)}`);
   check("...with nothing thrown on the way", (paperInk.errs || []).length === 0, (paperInk.errs || []).join(" | "));
 
   // ── 8c. A stroke whose pen-up never came ──────────────────────────────

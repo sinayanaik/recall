@@ -22,6 +22,7 @@ import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { pushNotesUndo, syncNotesHistoryBaseline } from "../notes/notes-history.js?v=__BUILD__";
 import { setStatus } from "../ui/feedback.js?v=__BUILD__";
 import { toggleEditMode } from "../ui/edit-mode.js?v=__BUILD__";
+import { currentInkSurface } from "../storage/ink-prefs.js?v=__BUILD__";
 
 // Persist a question/answer edit to both the active deck and the master list
 // (mirrors the save path in toggleEditMode / commitEditIfActive).
@@ -173,11 +174,32 @@ export const RENDER_TEXT_COLORS = [
 // value under the highlight key predates data-color tokens (it was a hex
 // background colour) — falling back to the default token instead of trusting
 // it keeps an old install from writing an unrecognised data-color into notes.
+//
+// Per TAB (src/storage/ink-prefs.js, currentInkSurface): the colour a highlight
+// is made in on Cards, on Notes, on a PDF and on a Canvas are four settings, so
+// choosing green on a PDF leaves the notes' yellow alone. Read through getters,
+// so every caller that reads renderFormatDefaults.highlight gets the tab it is
+// on; a tab never told reads the one shared value there used to be.
+const RENDER_DEFAULT_KEYS = { color: "recall:renderColorDefault", highlight: "recall:renderHighlightDefault" };
+const renderDefaultCache = new Map();
+
+function readRenderDefault(prop) {
+  const surface = currentInkSurface();
+  const key = `${prop}:${surface}`;
+  if (renderDefaultCache.has(key)) return renderDefaultCache.get(key);
+  let value = null;
+  try {
+    value = localStorage.getItem(`${RENDER_DEFAULT_KEYS[prop]}:${surface}`) || localStorage.getItem(RENDER_DEFAULT_KEYS[prop]);
+  } catch (_) { /* private window: the defaults below */ }
+  if (prop === "highlight") value = MARK_HIGHLIGHT_HEX[value] ? value : MARK_HIGHLIGHT_DEFAULT;
+  else value = value || RENDER_TEXT_COLORS[0].value;
+  renderDefaultCache.set(key, value);
+  return value;
+}
+
 export const renderFormatDefaults = {
-  color: localStorage.getItem("recall:renderColorDefault") || RENDER_TEXT_COLORS[0].value,
-  highlight: MARK_HIGHLIGHT_HEX[localStorage.getItem("recall:renderHighlightDefault")]
-    ? localStorage.getItem("recall:renderHighlightDefault")
-    : MARK_HIGHLIGHT_DEFAULT,
+  get color() { return readRenderDefault("color"); },
+  get highlight() { return readRenderDefault("highlight"); }
 };
 
 // The split button's face IS the preview: an "A" wearing the colour it will
@@ -533,8 +555,10 @@ export function applyRenderColor(config, prop, value) {
 
 export function setRenderDefault(prop, value) {
   if (value === "clear") return; // "clear" is an action, never a default
-  renderFormatDefaults[prop] = value;
-  try { localStorage.setItem(prop === "highlight" ? "recall:renderHighlightDefault" : "recall:renderColorDefault", value); } catch (_) {}
+  if (!RENDER_DEFAULT_KEYS[prop]) return;
+  const surface = currentInkSurface();
+  renderDefaultCache.set(`${prop}:${surface}`, value);
+  try { localStorage.setItem(`${RENDER_DEFAULT_KEYS[prop]}:${surface}`, value); } catch (_) {}
   refreshRenderSwatches();
 }
 
