@@ -8,6 +8,7 @@
 
 import { closeAllCardsPanel } from "../cards/all-cards-edit.js?v=__BUILD__";
 import { closeStylePanel } from "../cloud/style-sync.js?v=__BUILD__";
+import { closeSectionStyle, isSectionStyleOpen } from "./style-popover.js?v=__BUILD__";
 import { closeWebDeckExportMenus, isAnyWebDeckExportMenuOpen } from "../cloud/web-decks.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { closeMainMenu, isMainMenuOpen } from "../editor/toolbars.js?v=__BUILD__";
@@ -113,6 +114,9 @@ export const OVERLAY_LAYERS = [
   // what to do with it.
   { isOpen: () => Boolean(el.confirmModal && !el.confirmModal.hidden), close: () => el.confirmModalCancelBtn?.click() },
   { isOpen: () => Boolean(el.promptModal && !el.promptModal.hidden), close: () => el.promptModalCancelBtn?.click() },
+  // A section's style popover (src/ui/style-popover.js): over whatever it was
+  // opened on — the note window, a panel, the page — so it goes before them.
+  { isOpen: () => isSectionStyleOpen(), close: () => closeSectionStyle() },
   // Flashcard panels are windows over the page, not dialogs (see
   // src/notes/frame-card.js) — several can be open, and one press takes the
   // frontmost draft, the same one-layer-per-press rule as everything here.

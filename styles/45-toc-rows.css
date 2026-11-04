@@ -51,8 +51,10 @@
   border-left-width: 2px;
   background: transparent;
   font: inherit;
-  font-size: 0.82rem;
-  line-height: 1.35;
+  /* ◐ Contents (src/ui/style-schema.js). The ladder below is kept as ratios of
+     this, so a reader's size moves every level together. */
+  font-size: var(--toc-font-size, 0.82rem);
+  line-height: var(--toc-line-height, 1.35);
   text-align: left;
   cursor: pointer;
   /* A row is a jump target on a touch screen, and the twisty beside it is a
@@ -69,7 +71,7 @@
    third-level heading looks like a footnote. The frozen file bolds depth 0
    already; these carry the ladder on from there. */
 .notes-toc-link[style*="--toc-depth: 0"] {
-  font-size: 0.845rem;
+  font-size: calc(var(--toc-font-size, 0.82rem) * 1.0305);
 }
 
 .notes-toc-link[style*="--toc-depth: 1"] .notes-toc-text {
@@ -79,7 +81,7 @@
 .notes-toc-link[style*="--toc-depth: 2"],
 .notes-toc-link[style*="--toc-depth: 3"],
 .notes-toc-link[style*="--toc-depth: 4"] {
-  font-size: 0.8rem;
+  font-size: calc(var(--toc-font-size, 0.82rem) * 0.9756);
 }
 
 .notes-toc-link[style*="--toc-depth: 3"] .notes-toc-text,
@@ -182,7 +184,7 @@
      is — the title needs room to breathe between those lines, and the row needs
      to stop being 34px tall the moment it holds more than one of them. */
   .notes-toc-text {
-    line-height: 1.4;
+    line-height: var(--toc-line-height, 1.4);
   }
 
   .notes-toc-link {

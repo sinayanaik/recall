@@ -31,6 +31,7 @@
 // corner, and remembers both — a reader who parks it on the right-hand margin
 // gets it there for every highlight afterwards.
 
+import { STYLE_ICON_SVG } from "../ui/style-icon.js?v=__BUILD__";
 import { installModeKeys } from "../editor/markdown-keys.js?v=__BUILD__";
 import { clearHighlightNoteAt, highlightRefAt, setHighlightNoteAt } from "../format/highlight-notes.js?v=__BUILD__";
 import { createNoteEditorKit } from "./note-editor-kit.js?v=__BUILD__";
@@ -105,7 +106,20 @@ function ensureHighlightNoteEditor() {
   closeBtn.className = "highlight-note-editor-close";
   closeBtn.setAttribute("aria-label", "Close");
   closeBtn.textContent = "×";
-  header.append(title, closeBtn);
+  // ◐ This window's own style — its text sizes, width and corners
+  // (src/ui/style-popover.js, section "noteEditor"). Opened by the one listener
+  // in src/main.js that every [data-style-scope-btn] goes through; a button, so
+  // the header's drag (below) stands down for it like it does for ×.
+  const styleBtn = document.createElement("button");
+  styleBtn.type = "button";
+  styleBtn.className = "highlight-note-editor-close highlight-note-editor-style";
+  styleBtn.dataset.styleScopeBtn = "noteEditor";
+  styleBtn.setAttribute("aria-haspopup", "dialog");
+  styleBtn.setAttribute("aria-expanded", "false");
+  styleBtn.setAttribute("aria-label", "Style the note window");
+  styleBtn.title = "Style the note window";
+  styleBtn.innerHTML = STYLE_ICON_SVG;
+  header.append(title, styleBtn, closeBtn);
 
   // ── The editor itself ───────────────────────────────────────────────────
   //

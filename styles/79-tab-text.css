@@ -27,6 +27,68 @@
   --code-font-size: var(--doc-code-font-size);
 }
 
+/* ── v6: one section per surface ─────────────────────────────────────────────
+ *
+ * The same device, for the settings that were still shared after v5. Each
+ * section's ◐ now owns them (src/ui/style-schema.js), and every one was seeded
+ * from the shared value it split from, so none of this moved anything the day
+ * it shipped. The :root values stay the Cards' — what a card face, All Cards
+ * and every surface not named here use.
+ */
+
+/* Headings: the Notes' six, for everything written as a document — notes, the
+   Highlights pane, Quick Notes and the text blocks on a PDF or a Canvas. The
+   cards keep the :root six (◐ Cards → Headings). */
+#notesStage,
+.highlight-cycle,
+#quickNotesBoard,
+#documentStage {
+  --heading-h1-scale: var(--notes-heading-h1-scale, 1.2);
+  --heading-h2-scale: var(--notes-heading-h2-scale, 1.12);
+  --heading-h3-scale: var(--notes-heading-h3-scale, 1.06);
+  --heading-h4-scale: var(--notes-heading-h4-scale, 1);
+  --heading-h5-scale: var(--notes-heading-h5-scale, 1);
+  --heading-h6-scale: var(--notes-heading-h6-scale, 1);
+}
+
+/* Inside the notes, the Cards' text size only ever reached tables and cards
+   shown in a note (.notes-rendered sets its own size), and the Cards' image
+   width every picture. Each is the Notes' own now. */
+#notesStage {
+  --content-font-size: var(--notes-table-font-size, 18px);
+  --visual-max-width: var(--notes-visual-max-width, 50%);
+}
+
+/* The Notes frame: the stage, both contents drawers and the Highlights pane
+   took the CARD's corners and border (styles/12-notes.css, 11-chrome.css,
+   46-highlight-cycle.css), so rounding a card rounded the notes. */
+#notesStage,
+.notes-toc-drawer,
+.highlight-cycle {
+  --card-radius: var(--notes-frame-radius, 14px);
+  --card-border-width: var(--notes-frame-border, 1px);
+}
+
+/* The Highlights pane's note text. Each note is a `.rendered` block, and
+   `.rendered` sizes itself from --content-font-size — the CARDS' text size — so
+   the pane's own Text size (and "follow Notes", its default) only ever reached
+   the head and the quote. Re-pointed here, the pane is on its own scale, as it
+   always claimed to be. */
+.highlight-cycle {
+  --content-font-size: var(--hl-note-font-size, var(--notes-font-size, 18px));
+  --content-line-height: var(--hl-note-line-height, var(--notes-line-height, 1.58));
+}
+
+/* A Canvas's text blocks: its own three sizes, where they were the PDF's.
+   data-doc-slot is set on the stage by setViewMode (src/ui/view-mode.js), and
+   the rules below this one read these three variables, so redeclaring them on
+   the stage is all it takes. */
+#documentStage[data-doc-slot="notebook"] {
+  --doc-block-font-size: var(--canvas-block-font-size, 0.82rem);
+  --doc-block-line-height: var(--canvas-block-line-height, 1.4);
+  --doc-code-font-size: var(--canvas-code-font-size, 1em);
+}
+
 /* Text blocks on PDF and handwriting pages. Same specificity as the rules in
    styles/53-handwriting.css and styles/58-block-style.css it replaces, and
    later, so it wins over them — while a block given its own size or code size

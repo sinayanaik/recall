@@ -17,7 +17,7 @@ import { createNewDeck, newDeckInFolder } from "./cards/new-deck.js?v=__BUILD__"
 import { questionFitDeferredBySelection, scheduleLiveQuestionFit } from "./cards/question-fit.js?v=__BUILD__";
 import { handleDiagramPointerDown, handleDiagramPointerEnd, handleDiagramPointerMove, handleDiagramWheel, handlePointerCancel, handlePointerDown, handlePointerMove, handlePointerUp, handleStylePanelTouchMove, handleStylePanelTouchStart, handleStylePanelWheel, handleTouchCancel, handleTouchEnd, handleTouchMove, handleTouchStart, hasCardTextSelection, isCardActionTarget } from "./cards/swipe.js?v=__BUILD__";
 import { describeAuthError, getCachedSession, handleLogin, handleLogout, handleSignup } from "./cloud/auth.js?v=__BUILD__";
-import { closeStylePanel, handleStyleEnvironmentChange, loadStyleFromWeb, openStylePanel, switchStyleEditProfile, syncStyleToWeb } from "./cloud/style-sync.js?v=__BUILD__";
+import { closeStylePanel, handleStyleEnvironmentChange, loadStyleFromWeb, openStylePanel, syncStyleToWeb } from "./cloud/style-sync.js?v=__BUILD__";
 import { onS3ImageIndexChange, refreshS3ImageIndex } from "./cloud/s3-images.js?v=__BUILD__";
 import { resolveStorageImages, resolveUnresolvedStorageImages } from "./cloud/storage-urls.js?v=__BUILD__";
 import { onS3ConfigAdopted } from "./cloud/s3-config-sync.js?v=__BUILD__";
@@ -82,7 +82,7 @@ import { rawOffsetForCurrentNotesScroll, scheduleReadingAnchorCapture, setReadin
 import { beginSelectionGesture, currentNotesSelectionMarkdown, currentSelectionPlainText, endSelectionGesture, hideNotesSelectionButton, noteSelectionChanged, pillSelectionCapture, scheduleNotesSelectionCheck, selectionGestureIsLive, setDocumentPillCaptureHook, setSelectionBarExpanded, suspendSelectionBarForScroll } from "./notes/selection.js?v=__BUILD__";
 import { clearTouchSelection, initTouchSelection } from "./notes/touch-selection.js?v=__BUILD__";
 import { recordNotesTyping, redoNotes, undoNotes } from "./notes/notes-history.js?v=__BUILD__";
-import { initMarkMenu, setMarkMenuActions } from "./notes/mark-menu.js?v=__BUILD__";
+import { closeMarkMenu, initMarkMenu, setMarkMenuActions } from "./notes/mark-menu.js?v=__BUILD__";
 import { markDrawerHighlightsDirty, setDrawerHighlightsOnlyHandler, setDrawerRowJumpHook, setDrawerSideBySideHandler } from "./panels/drawer-highlights.js?v=__BUILD__";
 import { cycleToLocator, initHighlightCycle, isHighlightSplitOpen, openHighlightSplit, refreshHighlightCycle, refreshHighlightSplitSpace, repaintHighlightLink, splitFollowsViewMode } from "./panels/highlight-cycle.js?v=__BUILD__";
 // The two index builders the contents drawer's Highlights half already uses.
@@ -127,11 +127,11 @@ import { initShutdown } from "./ui/shutdown.js?v=__BUILD__";
 import { goNavBack, recordNavHistory, refreshNavBack } from "./ui/nav-history.js?v=__BUILD__";
 import { anyModalOpen, lockPageScroll, unlockPageScroll } from "./ui/overlays.js?v=__BUILD__";
 import { chooseDeckCategory } from "./ui/pickers.js?v=__BUILD__";
-import { defaultStyleProfiles, styleDefaults } from "./ui/style-schema.js?v=__BUILD__";
-import { applyStyleDensity, detectStyleProfile, handleStyleControlChange, normalizeStyleValue, resetStyleField, resetStyleProfile, setStyleTextTab, styleDisplayValue, trackKeyboardInset } from "./ui/style-settings.js?v=__BUILD__";
-import { styleCoarsePointerMedia, styleMobileMedia, styleProfiles } from "./ui/style-tokens.js?v=__BUILD__";
+import { detectStyleProfile, resetStyleProfile, trackKeyboardInset, wireStyleHost } from "./ui/style-settings.js?v=__BUILD__";
+import { openSectionStyle, openSectionStyleFromPanel, setOpenAppStyleHandler, setSectionStyleSiblings, toggleSectionStyle } from "./ui/style-popover.js?v=__BUILD__";
+import { styleCoarsePointerMedia, styleMobileMedia } from "./ui/style-tokens.js?v=__BUILD__";
 import { setTheme, setThemeMenuOpen, setThemeRepaintHook } from "./ui/theme.js?v=__BUILD__";
-import { FOCUS_MODE_KEY, closeViewExportMenu, paintViewExportMenu, setBlockEditFlushHook, setHandwritingViewHook, setSplitViewHook, setViewMode, setViewSwitchHook, switchToPreviousView } from "./ui/view-mode.js?v=__BUILD__";
+import { FOCUS_MODE_KEY, closeViewExportMenu, currentViewStyleScope, paintViewExportMenu, paintViewStyleButton, setBlockEditFlushHook, setHandwritingViewHook, setSplitViewHook, setViewMode, setViewSwitchHook, switchToPreviousView } from "./ui/view-mode.js?v=__BUILD__";
 import { DOCUMENT_NOTE_HANDLERS, documentHighlightById, documentHighlightNote, flashDocumentRegion, initDocumentMarkMenu, repairDocumentHighlightQuads, repairDocumentHighlightText, setDocumentHighlightAdjust, setDocumentShapeTextEditor } from "./documents/pdf-highlights.js?v=__BUILD__";
 import { canAdjustDocumentHighlight, startDocumentHighlightAdjust } from "./documents/pdf-highlight-adjust.js?v=__BUILD__";
 import { pdfRegionRefForRecord, pdfRegionRefMarkdown } from "./documents/pdf-region-embed.js?v=__BUILD__";
@@ -152,7 +152,7 @@ import { addHandwritingImage, enterHandwritingView, initHandwritingRail, refresh
 import { closeBlockStylePopover, isBlockStylePopoverOpen } from "./documents/block-style-bar.js?v=__BUILD__";
 import { closeBlockActionsPopover, isBlockActionsPopoverOpen } from "./documents/block-actions-popover.js?v=__BUILD__";
 import { blocksForPaper, buildStaticBlock, canRedoBlocks, canUndoBlocks, commitBlockEdit, deleteBlock, duplicateBlock, editBlock, handleBlockPointerDown, nudgeBlock, paintDocumentBlocks, pdfPointAt, redoBlocks, repaintDocumentBlocks, restackBlock, selectBlock, selectedBlockId, setBlocksChangedHandler, undoBlocks } from "./documents/pdf-blocks.js?v=__BUILD__";
-import { applyInkRailPreference, initInkRail, refreshInkRail } from "./ui/ink-rail.js?v=__BUILD__";
+import { applyInkRailPreference, closeInkRailPopups, initInkRail, refreshInkRail } from "./ui/ink-rail.js?v=__BUILD__";
 import { initDocumentShapes, setShapeCreatedHandler } from "./documents/pdf-shapes.js?v=__BUILD__";
 import { openShapeTextEditor } from "./documents/pdf-shape-text.js?v=__BUILD__";
 import { INK_NUDGE_STEP, INK_NUDGE_STEP_COARSE } from "./render/ink-engine.js?v=__BUILD__";
@@ -1378,6 +1378,9 @@ onDomReady(() => {
   // imports through highlights-panel.js, so an import back would close a cycle
   // straight through the document surface. This file already imports both ends.
   setMarkMenuActions({
+    // "Style highlights": how every highlight in the text is drawn, opened on
+    // the highlight that was tapped (src/ui/style-popover.js).
+    styleHighlights: (markEl) => openSectionStyle("marks", markEl?.isConnected ? markEl : null),
     // The highlight as the contents drawer already describes it — same scan,
     // same text, same anchor, same locator, so a card framed from the mark menu
     // and a jump from the drawer cannot disagree about which highlight it was.
@@ -2283,6 +2286,39 @@ document.getElementById("myDecksBulkDeleteBtn")?.addEventListener("click", () =>
 }
 el.styleBtn.addEventListener("click", openStylePanel);
 el.closeStyleBtn.addEventListener("click", closeStylePanel);
+
+// ── Each section's own ◐ ────────────────────────────────────────────────────
+//
+// One listener for every [data-style-scope-btn] in the app, static or built
+// later (the note window's head is built in JS). The view row's one opens
+// whichever of Cards / Notes / PDFs / Canvas is showing; a row inside a menu
+// (My Files ⋯) anchors on the menu's own button, since the row goes with it.
+// The popover shuts every other floating thing first — this panel included —
+// so there is only ever one set of style controls, and one popover, on screen.
+setOpenAppStyleHandler(openStylePanel);
+setSectionStyleSiblings([
+  closeStylePanel,
+  closeViewExportMenu,
+  closeMyDecksMoreMenu,
+  closeMarkMenu,
+  closeBlockStylePopover,
+  closeBlockActionsPopover,
+  closeInkRailPopups
+]);
+paintViewStyleButton();
+document.addEventListener("click", (event) => {
+  const button = event.target.closest?.("[data-style-scope-btn]");
+  if (!button || button.disabled) return;
+  event.preventDefault();
+  if (button === el.viewStyleBtn) {
+    paintViewStyleButton();
+    toggleSectionStyle(currentViewStyleScope(), button);
+    return;
+  }
+  const inMenu = button.closest("#myDecksMoreMenu");
+  const anchor = inMenu ? document.getElementById("myDecksMoreBtn") : button;
+  toggleSectionStyle(button.dataset.styleScopeBtn, anchor);
+});
 el.bucketBtn?.addEventListener("click", openBucketPanel);
 el.closeBucketBtn?.addEventListener("click", closeBucketPanel);
 el.bucketRefreshBtn?.addEventListener("click", () => refreshBucketReport());
@@ -2308,57 +2344,10 @@ el.storageBody?.addEventListener("click", (event) => {
 el.resetStyleBtn?.addEventListener("click", resetStyleProfile);
 el.syncUpBtn.addEventListener("click", syncStyleToWeb);
 el.syncDownBtn.addEventListener("click", () => loadStyleFromWeb(true));
-// `button[...]`, not a bare attribute selector. applyActiveStyleSettings puts
-// data-style-profile on <html>, and closest() walks all the way to the root —
-// so `closest("[data-style-profile]")` matched the DOCUMENT ELEMENT for every
-// click that landed anywhere in this panel. Two consequences, one of them old:
-// it silently called switchStyleEditProfile(<device profile>), so clicking a
-// label while editing the Mobile profile on a desktop screen bounced you back
-// to Desktop; and it made every branch below it unreachable, because the first
-// one always matched. The buttons are the only real targets here, so say so.
-el.styleControls.addEventListener("click", (event) => {
-  const profileButton = event.target.closest("button[data-style-profile]");
-  if (profileButton) { switchStyleEditProfile(profileButton.dataset.styleProfile); return; }
-
-  const tabButton = event.target.closest("button[data-style-tab]");
-  if (tabButton) { setStyleTextTab(tabButton.dataset.styleTab); return; }
-
-  const densityButton = event.target.closest("button[data-style-density]");
-  if (densityButton) { applyStyleDensity(densityButton.dataset.styleDensity); return; }
-
-  const resetButton = event.target.closest("button[data-style-reset]");
-  if (resetButton) { resetStyleField(resetButton.dataset.styleReset); return; }
-});
-el.styleControls.addEventListener("input", (event) => {
-  if (event.target.matches("[data-style-key]")) {
-    handleStyleControlChange();
-  }
-});
-el.styleControls.addEventListener("change", (event) => {
-  if (event.target.matches("[data-style-key]")) {
-    handleStyleControlChange();
-  }
-});
-// Normalization happens HERE, not on every keystroke. updateStyleControls
-// refuses to touch the focused field (that's what fixed typing), so this is
-// where "28" finally becomes "28px" and a field left empty gets the default
-// put back into it.
-el.styleControls.addEventListener("focusout", (event) => {
-  if (!event.target.matches("[data-style-key]")) return;
-  const editProfile = styleProfiles.includes(state.styleEditProfile) ? state.styleEditProfile : detectStyleProfile();
-  const defaults = defaultStyleProfiles[editProfile] || styleDefaults;
-  const key = event.target.dataset.styleKey;
-  // An emptied follows-Notes box stays empty: that IS its "follow" state, and
-  // its placeholder says so. Writing "inherit" back into it is what made the
-  // option look like a magic word you had to already know.
-  const normalized = styleDisplayValue(key, normalizeStyleValue(key, event.target.value, defaults[key]));
-  // Leaving a field you didn't touch is not an edit. Without this, tabbing
-  // through the panel would mark the profile "Unsynced" and set styleTouched,
-  // which also makes Sync Down refuse to overwrite (see loadStyleFromWeb).
-  if (normalized === event.target.value) return;
-  event.target.value = normalized;
-  handleStyleControlChange();
-});
+// The panel's controls, wired by the same function as every section popover's
+// (src/ui/style-settings.js, wireStyleHost). Its "Section styles" list hands a
+// section to the popover, on that section's own ◐ when one is on screen.
+wireStyleHost(el.styleControls, { onOpenScope: (scope) => openSectionStyleFromPanel(scope, closeStylePanel) });
 el.stylePanel.addEventListener("touchstart", handleStylePanelTouchStart, { passive: true });
 el.stylePanel.addEventListener("touchmove", handleStylePanelTouchMove, { passive: false });
 el.stylePanel.addEventListener("wheel", handleStylePanelWheel, { passive: false });

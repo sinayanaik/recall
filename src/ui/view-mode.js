@@ -15,6 +15,7 @@ import { state } from "../core/state.js?v=__BUILD__";
 import { deckTabKey, rememberDeckTab } from "../storage/deck-tab.js?v=__BUILD__";
 import { closeHighlightsEditor } from "../panels/highlights-editor.js?v=__BUILD__";
 import { activeDocSlot } from "../documents/doc-slot.js?v=__BUILD__";
+import { currentInkSurface } from "../storage/ink-prefs.js?v=__BUILD__";
 import { openDocumentView } from "../documents/pdf-view.js?v=__BUILD__";
 import { refreshHighlightBackdrop } from "../editor/highlight-mirror.js?v=__BUILD__";
 import { readerNotesBody } from "../format/notes-fence.js?v=__BUILD__";
@@ -203,6 +204,7 @@ export function setViewMode(mode, options = {}) {
     });
   });
   paintViewExportMenu();
+  paintViewStyleButton();
   hideNotesSelectionButton();
   // Leaving the notes is the moment the reading position is final — write out
   // an armed-but-unfired save now rather than letting its timer fire against a
@@ -504,3 +506,30 @@ export function closeViewExportMenu() {
   if (el.viewExportMenu) el.viewExportMenu.hidden = true;
   el.viewExportBtn?.setAttribute("aria-expanded", "false");
 }
+
+// ── The ◐ beside ⇓: this view's own style ──────────────────────────────────
+//
+// Which section it opens follows the tab the reader is on, by the same rule the
+// pen's per-tab settings use (src/storage/ink-prefs.js, currentInkSurface) —
+// not state.viewMode alone, because the document view can be showing a
+// Canvas. The section ids are the style schema's (src/ui/style-schema.js).
+const VIEW_STYLE_SCOPES = {
+  cards: { scope: "cards", label: "Cards" },
+  notes: { scope: "notes", label: "Notes" },
+  doc: { scope: "document", label: "PDFs" },
+  notebook: { scope: "handwriting", label: "Canvas" }
+};
+
+export function currentViewStyleScope() {
+  return (VIEW_STYLE_SCOPES[currentInkSurface()] || VIEW_STYLE_SCOPES.cards).scope;
+}
+
+export function paintViewStyleButton() {
+  const button = el.viewStyleBtn;
+  if (!button) return;
+  const { scope, label } = VIEW_STYLE_SCOPES[currentInkSurface()] || VIEW_STYLE_SCOPES.cards;
+  button.dataset.styleScopeBtn = scope;
+  button.title = `Style ${label} — text sizes, spacing and layout`;
+  button.setAttribute("aria-label", `Style ${label}`);
+}
+

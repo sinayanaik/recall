@@ -65,6 +65,13 @@ const SECTIONS = [
 // Anything appearing in styles/ that is neither a slice nor listed here is
 // still a failure.
 const POST_SPLIT = {
+  "13a-section-style.css":
+    "The values in the 13 slices that a section's ◐ style controls now set " +
+    "(src/ui/style-schema.js), taken over by the same selectors right after the " +
+    "slices, so the slices stay byte-for-byte what styles.css was.",
+  "89-style-popover.css":
+    "A section's own style controls in a popover on that section's ◐ button " +
+    "(src/ui/style-popover.js), and the ◐ buttons themselves.",
   "88-annotations.css":
     "Annotations on a PDF or a Canvas page: text marks drawn as an underline, " +
     "strike, squiggle or box in any colour (src/format/mark-styles.js), the " +
