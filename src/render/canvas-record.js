@@ -24,13 +24,15 @@
 
 const STATE_PROPS = [
   "fillStyle", "strokeStyle", "lineWidth", "lineCap", "lineJoin", "globalAlpha",
-  "globalCompositeOperation", "imageSmoothingEnabled", "miterLimit", "lineDashOffset"
+  "globalCompositeOperation", "imageSmoothingEnabled", "miterLimit", "lineDashOffset",
+  "font", "textAlign", "textBaseline"
 ];
 
 const METHODS = [
   "save", "restore", "setTransform", "transform", "translate", "scale", "rotate", "resetTransform",
   "beginPath", "closePath", "moveTo", "lineTo", "quadraticCurveTo", "bezierCurveTo", "arc", "arcTo",
-  "ellipse", "rect", "roundRect", "fill", "stroke", "clip", "fillRect", "strokeRect", "clearRect", "setLineDash"
+  "ellipse", "rect", "roundRect", "fill", "stroke", "clip", "fillRect", "strokeRect", "clearRect", "setLineDash",
+  "fillText"
 ];
 
 const DEFAULTS = {
@@ -43,8 +45,27 @@ const DEFAULTS = {
   globalCompositeOperation: "source-over",
   imageSmoothingEnabled: true,
   miterLimit: 10,
-  lineDashOffset: 0
+  lineDashOffset: 0,
+  font: "10px sans-serif",
+  textAlign: "start",
+  textBaseline: "alphabetic"
 };
+
+// Text is measured where it is recorded, against a real context in the same
+// font: a shape's words are wrapped to their box before the calls are made, and
+// the worker that replays them has no say in where the lines break.
+let recordingMeasure = null;
+
+function measureRecordedText(font, text) {
+  if (!recordingMeasure) {
+    const canvas = typeof OffscreenCanvas === "function" ? new OffscreenCanvas(1, 1)
+      : (typeof document !== "undefined" ? document.createElement("canvas") : null);
+    recordingMeasure = canvas?.getContext("2d") || null;
+  }
+  if (!recordingMeasure) return { width: String(text || "").length * 6 };
+  recordingMeasure.font = font;
+  return recordingMeasure.measureText(String(text || ""));
+}
 
 export function createRecordingContext() {
   const ops = [];
@@ -56,7 +77,8 @@ export function createRecordingContext() {
     // would have to blend piece by piece.
     isRecording: true,
     beginLayer() { ops.push(["layer:begin"]); },
-    endLayer(blend = "source-over") { ops.push(["layer:end", blend]); }
+    endLayer(blend = "source-over") { ops.push(["layer:end", blend]); },
+    measureText(text) { return measureRecordedText(current.font, text); }
   };
   STATE_PROPS.forEach((prop) => {
     Object.defineProperty(ctx, prop, {

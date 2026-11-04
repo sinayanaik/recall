@@ -374,7 +374,7 @@ export function collectDeckHighlightsForExport({ contextLines = 0, includeChapte
       const note = documentNotes.get(record.id) || null;
       if (annotatedOnly && !note) return;
       if (onCanvas && record.kind === "ink" && !note) return;
-      const pictured = record.kind === "area" || record.kind === "ink";
+      const pictured = record.kind === "area" || record.kind === "ink" || record.kind === "shape";
       items.push({
         // documentHighlightLabel, so a region round a figure exports as
         // "Region · page 12" rather than as a blank bullet with a colour on it
@@ -455,7 +455,7 @@ export function collectHighlightEntries() {
     records.forEach((record) => {
       const words = String(record.text || "").trim();
       const text = words || documentHighlightLabel(record);
-      const pictured = record.kind === "area" || record.kind === "ink";
+      const pictured = record.kind === "area" || record.kind === "ink" || record.kind === "shape";
       entries.push({
         highlightId: record.id,
         color: record.color,

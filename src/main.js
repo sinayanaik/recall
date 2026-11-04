@@ -1438,6 +1438,17 @@ onDomReady(() => {
         createCardFromNotesSelection(pdfRegionRefMarkdown(record.page, record.quads[0].rect, record.pdfId), anchor);
         return;
       }
+      // A shape is pictured the same way — a live picture of the spot it is
+      // drawn on, shape and all — with a callout's or a text box's own words
+      // under it, so the card says what the arrow was for.
+      if (record?.kind === "shape") {
+        const ref = pdfRegionRefForRecord(record);
+        if (ref) {
+          const words = String(record.text || "").trim();
+          createCardFromNotesSelection(words ? `${ref}\n\n${words}` : ref, anchor);
+          return;
+        }
+      }
       createCardFromNotesSelection(text, anchor);
     },
     // deckLocalId is added HERE and not in the index: a Quick Note is stored in

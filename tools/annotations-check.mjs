@@ -67,6 +67,9 @@ const API_SRC = `async () => {
     "/src/ui/ink-rail.js?v=__BUILD__",
     "/src/documents/pdf-shape-text.js?v=__BUILD__",
     "/src/notes/highlight-note-editor.js?v=__BUILD__",
+    "/src/panels/highlights-panel.js?v=__BUILD__",
+    "/src/documents/pdf-region-embed.js?v=__BUILD__",
+    "/src/documents/pdf-lib-shapes.js?v=__BUILD__",
     "/src/boot.js?v=__BUILD__"
   ];
   const mods = await Promise.all(paths.map((p) => import(p)));
@@ -658,6 +661,111 @@ sections.push(async () => {
     return { before, after, painted: document.querySelectorAll(".pdf-shape").length };
   }`);
   check("every shape survives a reload, words and all", survived.before.length >= 7 && JSON.stringify(survived.before) === JSON.stringify(survived.after), `${survived.before.length} → ${survived.after.length}`);
+});
+
+
+// ── Shapes everywhere else: the pane, cards, pictures, the eraser ──────────
+sections.push(async () => {
+  await page.evaluate(POINTER_SRC);
+  const listed = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const entries = api.collectHighlightEntries();
+    const shapes = api.documentShapes(null);
+    const arrow = shapes.find((r) => r.shape.type === "arrow");
+    const callout = shapes.find((r) => r.shape.type === "callout");
+    const arrowEntry = entries.find((e) => e.highlightId === arrow?.id);
+    const calloutEntry = entries.find((e) => e.highlightId === callout?.id);
+    return {
+      arrowLabel: api.documentHighlightLabel(arrow),
+      calloutLabel: api.documentHighlightLabel(callout),
+      arrowListed: Boolean(arrowEntry),
+      arrowPictured: Boolean(arrowEntry && (arrowEntry.region || arrowEntry.pictured)),
+      calloutText: calloutEntry?.anchor?.text || null,
+      calloutQuote: calloutEntry?.markdown || "",
+      ref: api.pdfRegionRefForRecord(arrow)
+    };
+  }`);
+  check("a shape is listed in the Highlights pane as a picture, named by what it is", listed.arrowListed && listed.arrowPictured && /^Arrow · page 2$/.test(listed.arrowLabel), JSON.stringify(listed));
+  check("...and a callout by its words, quoted under its picture", listed.calloutLabel.startsWith("Sign error") && listed.calloutText?.startsWith("Sign error") && /Sign error/.test(listed.calloutQuote), JSON.stringify(listed));
+  check("a shape has a location to make a card of — a live picture of the spot it is on", /^!\[\]\(pdfref:2:/.test(listed.ref || ""), listed.ref);
+
+  const pictured = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const callout = api.documentShapes(3).find((r) => r.shape.type === "callout");
+    // The recorded picture of the page has the callout's lines and its words.
+    const doc = api.currentPdfDocument();
+    const pdfPage = await doc.getPage(3);
+    const viewport = pdfPage.getViewport({ scale: 1 });
+    const ctx = api.createRecordingContext();
+    api.paintRegionMarks(ctx, viewport, api.regionMarksOnPage({ slot: "doc", pdfId: null }, 3), { paper: "light", areas: true });
+    const texts = ctx.ops.filter((op) => op[0] === "fillText").map((op) => op[1]);
+    const strokes = ctx.ops.filter((op) => op[0] === "stroke").length;
+    // ...and a picture of the region round it is made (the pane's thumbnail).
+    const url = await api.renderRegionImage(callout, { width: 240 });
+    return { texts, strokes, thumb: typeof url === "string" && url.startsWith("data:image") };
+  }`);
+  check("a page's picture draws a shape's lines and its words", pictured.strokes >= 2 && pictured.texts.some((t) => t.startsWith("Sign error")), JSON.stringify(pictured).slice(0, 300));
+  check("...and a shape's thumbnail is drawn", pictured.thumb, JSON.stringify(pictured).slice(0, 200));
+
+  if (pdflib) {
+    const vector = await page.evaluate(`async () => {
+      const { api } = window.__recall;
+      const { PDFDocument } = window.PDFLib;
+      const out = await PDFDocument.create();
+      const pdfPage = out.addPage([612, 792]);
+      await api.drawShapesWithPdfLib(out, pdfPage, api.documentShapes(null));
+      const bytes = await out.save({ useObjectStreams: false });
+      const size = bytes.length;
+      // Read it back with pdf.js (which takes the buffer): the words are real
+      // text, not pixels.
+      const doc = await window.pdfjsLib.getDocument({ data: bytes }).promise;
+      const text = (await (await doc.getPage(1)).getTextContent()).items.map((i) => i.str).join(" ");
+      return { size, text };
+    }`);
+    check("a region saved as a PDF draws shapes as vectors, with their words as real text", vector.size > 500 && /Sign error/.test(vector.text) && /see Fig\. 3/.test(vector.text), JSON.stringify(vector).slice(0, 300));
+  }
+
+  const printed = await page.evaluate(`async () => {
+    const { api } = window.__recall;
+    // The printed export draws a page through the same canvas painter; asked of
+    // the painter directly, with a canvas that remembers what it was told.
+    const calls = [];
+    const ctx = new Proxy(document.createElement("canvas").getContext("2d"), {
+      get(target, key) {
+        const value = target[key];
+        if (typeof value === "function") return (...args) => { calls.push(String(key)); return value.apply(target, args); };
+        return value;
+      },
+      set(target, key, value) { target[key] = value; return true; }
+    });
+    const shape = api.documentShapes(null).find((r) => r.shape.type === "rect").shape;
+    api.paintShapeOnCanvas(ctx, shape, ([x, y]) => [x, 792 - y], 1);
+    return { fill: calls.includes("fill"), stroke: calls.includes("stroke"), dash: calls.includes("setLineDash") };
+  }`);
+  check("the printed export's painter fills, dashes and strokes a box", printed.fill && printed.stroke && printed.dash, JSON.stringify(printed));
+
+  const erased = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    api.scrollToDocumentPage(2, 0, { smooth: false });
+    await settle(300);
+    const line = api.documentShapes(2).find((r) => r.shape.type === "line");
+    api.toggleInkRail(true);
+    api.chooseInkTool("eraser");
+    const vp = api.pdfPageViewport(2);
+    const r = document.querySelector('.pdf-page[data-page-number="2"]').getBoundingClientRect();
+    const mid = vp.convertToViewportPoint((line.shape.p[0][0] + line.shape.p[1][0]) / 2, line.shape.p[0][1]);
+    const x = r.left + mid[0];
+    const y = r.top + mid[1];
+    await window.__drag("eraser", [[x, y - 25], [x, y - 8], [x, y + 8], [x, y + 25]]);
+    const gone = !api.documentHighlightById(line.id);
+    api.undoInk();
+    await settle(80);
+    const back = Boolean(api.documentHighlightById(line.id));
+    api.chooseInkTool("pen");
+    api.toggleInkRail(false);
+    return { gone, back };
+  }`);
+  check("the eraser crossing a shape removes it, and undo brings it back", erased.gone && erased.back, JSON.stringify(erased));
 });
 
 try {

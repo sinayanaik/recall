@@ -31,7 +31,7 @@ import { pdfAreaLayer, pdfMarkLayer, pdfPageTextItems, pdfPageViewport } from ".
 import { MARK_HIGHLIGHT_DEFAULT, MARK_HIGHLIGHT_HEX } from "../format/highlight-colors.js?v=__BUILD__";
 import { inkFilingColor } from "../format/ink-colors.js?v=__BUILD__";
 import { markStyleOf, normalizeMarkHex, normalizeMarkStyle } from "../format/mark-styles.js?v=__BUILD__";
-import { shapeHitsPoint } from "../render/annot-shapes.js?v=__BUILD__";
+import { SHAPE_LABELS, shapeHitsPoint } from "../render/annot-shapes.js?v=__BUILD__";
 import { decodeInkStrokes, inkStrokeHitsPoint } from "../format/ink-strokes.js?v=__BUILD__";
 import { notifyHighlightsChanged } from "../format/highlight-edit.js?v=__BUILD__";
 import { pruneOrphanHighlightNotes, readHighlightNotes, setHighlightNoteInSource } from "../format/highlight-notes.js?v=__BUILD__";
@@ -264,6 +264,12 @@ export function documentHighlightLabel(record) {
   // photograph is, because a blank row in a list of marks is indistinguishable
   // from a bug.
   if (record?.kind === "ink") return page ? `Ink · page ${page}` : "Ink";
+  // A shape is named by what it is — "Arrow · page 3" — unless it has words of
+  // its own (a callout, a text box), which are its `text` and returned above.
+  if (record?.kind === "shape") {
+    const name = SHAPE_LABELS[record.shape?.type] || "Shape";
+    return page ? `${name} · page ${page}` : name;
+  }
   return page ? `Region · page ${page}` : "Region";
 }
 

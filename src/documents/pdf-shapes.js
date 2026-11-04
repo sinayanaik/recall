@@ -48,7 +48,7 @@ import { inkFilingColor } from "../format/ink-colors.js?v=__BUILD__";
 import { isEraserEvent } from "../render/ink-engine.js?v=__BUILD__";
 import {
   SHAPE_DEFAULTS, SHAPE_HEADS, SHAPE_TEXT_PAD, SHAPE_TYPES, moveShapeHandle, normalizeShape,
-  polyPathData, shapeBounds, shapeDashArray, shapeFromDrag, shapeHandles, shapeHitsPoint, shapeLabel, shapePrimitives,
+  polyPathData, shapeBounds, shapeCrossesSegment, shapeDashArray, shapeFromDrag, shapeHandles, shapeHitsPoint, shapeLabel, shapePrimitives,
   shapeTypeDefaults, snapShapeAngle, stickyIconPolys, translateShape
 } from "../render/annot-shapes.js?v=__BUILD__";
 import { inkPreferences, writeInkPreferences } from "../storage/ink-prefs.js?v=__BUILD__";
@@ -56,7 +56,7 @@ import {
   QUAD_GEOMETRY_VERSION, documentHighlightById, documentHighlights, freshDocumentHighlightId, reinstateDocumentHighlight,
   removeDocumentHighlight, setDocumentShapePainter, updateDocumentHighlight
 } from "./pdf-highlights.js?v=__BUILD__";
-import { inkTool, isInkArmed, pushInkHistoryAction } from "./pdf-ink.js?v=__BUILD__";
+import { inkEraseTarget, inkTool, isInkArmed, pushInkHistoryAction } from "./pdf-ink.js?v=__BUILD__";
 import { pdfPageElement, pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
 
 export const PDF_SHAPE_LAYER_CLASS = "pdf-shape-layer";
@@ -787,6 +787,55 @@ function onShapeKeyDown(event) {
   }
 }
 
+// ── The eraser, crossing a shape ──────────────────────────────────────────
+//
+// The ink engine rubs out strokes; a shape is not a stroke, so it is crossed
+// here, from the same press: with the eraser armed (or a stylus turned over),
+// the path the eraser takes is tested against every shape on the page, and a
+// shape it touches goes — one undo step each, on the same ring. Only when the
+// eraser takes everything: set to the pen's ink or the highlighter's bands
+// alone, it leaves shapes be, as it leaves the other kind of stroke.
+let shapeEraser = null;
+
+function eraserTakesShapes(event) {
+  const erasing = isEraserEvent(event) || inkTool() === "eraser";
+  if (!erasing || inkEraseTarget() !== "all") return false;
+  if (event.pointerType === "pen") return true;
+  return event.pointerType === "mouse" && isInkArmed();
+}
+
+function eraseShapesAlong(event) {
+  const eraser = shapeEraser;
+  const point = pdfPointOn(eraser.page, eraser.pageEl, event.clientX, event.clientY);
+  if (!point) return;
+  const from = eraser.last || point;
+  eraser.last = point;
+  const viewport = pdfPageViewport(eraser.page);
+  const slack = SHAPE_HIT_REACH / (viewport?.scale || 1);
+  documentShapes(eraser.page).forEach((record) => {
+    if (shapeCrossesSegment(record.shape, from, point, slack)) deleteShape(record.id);
+  });
+}
+
+function onShapeEraserDown(event) {
+  if (!eraserTakesShapes(event)) return;
+  const pageEl = shapePageAt(event.clientX, event.clientY);
+  const page = Number(pageEl?.dataset.pageNumber);
+  if (!page || !documentShapes(page).length) return;
+  shapeEraser = { pointerId: event.pointerId, page, pageEl, last: null };
+  eraseShapesAlong(event);
+}
+
+function onShapeEraserMove(event) {
+  if (!shapeEraser || event.pointerId !== shapeEraser.pointerId) return;
+  const samples = typeof event.getCoalescedEvents === "function" ? event.getCoalescedEvents() : [];
+  (samples.length ? samples : [event]).forEach(eraseShapesAlong);
+}
+
+function onShapeEraserUp(event) {
+  if (shapeEraser && event.pointerId === shapeEraser.pointerId) shapeEraser = null;
+}
+
 // Whether a press would start or move a shape — for the toast that lets a pen
 // pass through it (src/ui/feedback.js), and for checks.
 export function shapeClaimsPointer(event) {
@@ -798,6 +847,12 @@ export function initDocumentShapes() {
   const view = el.documentView;
   if (!view) return;
   view.addEventListener("pointerdown", onShapePointerDown, true);
+  // Passive, and not capture-stopped: the ink layer owns the eraser's press,
+  // and this only watches where it goes.
+  view.addEventListener("pointerdown", onShapeEraserDown, { capture: true, passive: true });
+  view.addEventListener("pointermove", onShapeEraserMove, { capture: true, passive: true });
+  window.addEventListener("pointerup", onShapeEraserUp, { passive: true });
+  window.addEventListener("pointercancel", onShapeEraserUp, { passive: true });
   view.addEventListener("pointermove", onShapePointerMove, true);
   view.addEventListener("pointerup", onShapePointerUp, true);
   view.addEventListener("pointercancel", onShapePointerCancel, true);

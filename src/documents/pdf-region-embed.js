@@ -24,6 +24,7 @@ import { buildTextLayer, canvasOutputScale, clampScale, currentPdfDocument, kept
 import { composePagePicture, renderPageBitmap } from "./pdf-render-worker.js?v=__BUILD__";
 import { createRecordingContext } from "../render/canvas-record.js?v=__BUILD__";
 import { attachRegionResizeHandle } from "./pdf-region-resize.js?v=__BUILD__";
+import { SHAPE_LABELS } from "../render/annot-shapes.js?v=__BUILD__";
 
 export const PDFREF_SCHEME = "pdfref:";
 
@@ -442,8 +443,12 @@ async function paintRegionImageInWorker(record, rect, pageNumber, source, width,
 // on this device, or offline before it ever was) — never a loading state.
 export function mountRegionPreview(container, record, { width = REGION_IMAGE_WIDTH, className = "" } = {}) {
   const isInk = record?.kind === "ink";
+  const isShape = record?.kind === "shape";
   const page = record?.page || record?.quads?.[0]?.page || "";
-  const words = isInk ? `Ink · page ${page}` : `Region · page ${page}`;
+  // A shape's own words where it has them; otherwise what it is, as the pane
+  // names it (documentHighlightLabel, which this module cannot import).
+  const shapeName = isShape ? (String(record.text || "").trim() || `${SHAPE_LABELS[record.shape?.type] || "Shape"} · page ${page}`) : "";
+  const words = isInk ? `Ink · page ${page}` : isShape ? shapeName : `Region · page ${page}`;
   const box = document.createElement("span");
   box.className = `highlight-region-preview is-loading${className ? ` ${className}` : ""}`;
   box.style.maxWidth = `${width}px`;
@@ -454,14 +459,14 @@ export function mountRegionPreview(container, record, { width = REGION_IMAGE_WID
     box.style.aspectRatio = `${w} / ${h}`;
   }
   box.setAttribute("role", "img");
-  box.setAttribute("aria-label", isInk ? `Ink written on page ${page}` : `Region highlighted on page ${page}`);
+  box.setAttribute("aria-label", isInk ? `Ink written on page ${page}` : isShape ? `${shapeName}, drawn on page ${page}` : `Region highlighted on page ${page}`);
   container.appendChild(box);
   const fallback = () => {
     box.classList.remove("is-loading");
     box.classList.add("is-fallback");
     box.style.aspectRatio = "";
     // The same glyphs the region-select and pen buttons wear.
-    box.textContent = `${isInk ? "✎" : "▣"} ${words}`;
+    box.textContent = `${isInk ? "✎" : isShape ? "◇" : "▣"} ${words}`;
   };
   renderRegionImage(record, { width }).then((url) => {
     if (!url) return fallback();

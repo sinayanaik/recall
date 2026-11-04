@@ -27,6 +27,7 @@ import { state } from "../core/state.js?v=__BUILD__";
 import { ensurePdfLib } from "../core/lib-loader.js?v=__BUILD__";
 import { decodeInkStrokes } from "../format/ink-strokes.js?v=__BUILD__";
 import { markGeometry, markStyleOf, normalizeMarkHex } from "../format/mark-styles.js?v=__BUILD__";
+import { drawShapesWithPdfLib } from "./pdf-lib-shapes.js?v=__BUILD__";
 import { slugifyFileName } from "../export/markdown.js?v=__BUILD__";
 import { inkPathRecorder } from "../format/ink-svg.js?v=__BUILD__";
 import { inkCentrelinePath, inkHighlighterWidth, inkStrokeOutline, resolveInkPaint } from "../render/ink-paint.js?v=__BUILD__";
@@ -305,6 +306,8 @@ export async function cropPdfToRegion(paperBytes, pageNumber, rect, { marks = nu
   if (marks) {
     drawHighlights(page, marks);
     drawInk(page, marks);
+    // Shapes over the ink, as the page stacks them (src/documents/pdf-lib-shapes.js).
+    await drawShapesWithPdfLib(out, page, marks.shapes);
   }
   if (rasters.length && pdfPage) await drawBlocks(out, page, pdfPage, rasters);
   out.setTitle(`Page ${pageNumber} region`);

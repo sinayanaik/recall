@@ -356,7 +356,7 @@ function noteBlockFor(pageNumber, entries) {
 }
 
 function isPictured(record) {
-  return record?.kind === "area" || record?.kind === "ink";
+  return record?.kind === "area" || record?.kind === "ink" || record?.kind === "shape";
 }
 
 // Narrower than the pane's picture: this sits under a page, in a column, with

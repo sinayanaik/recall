@@ -210,7 +210,7 @@ async function excerptHtmlFor(record) {
   if (record?.kind === "ink" && activeDocSlot() === DOC_SLOT_NOTEBOOK) {
     return `<span class="doc-print-note-excerpt">${escapeHtml(`Handwriting · page ${record.page || record.quads?.[0]?.page || ""}`.trim())}</span>`;
   }
-  if (record?.kind === "area" || record?.kind === "ink") {
+  if (record?.kind === "area" || record?.kind === "ink" || record?.kind === "shape") {
     const size = printRegionSize(record);
     const url = await renderRegionImage(record, { width: size.render }).catch(() => null);
     if (url) {

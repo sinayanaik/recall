@@ -460,6 +460,7 @@ const APP_SHELL = [
   `./src/documents/pdf-shapes.js?v=${STAMP}`,
   `./src/documents/pdf-shape-panel.js?v=${STAMP}`,
   `./src/documents/pdf-shape-text.js?v=${STAMP}`,
+  `./src/documents/pdf-lib-shapes.js?v=${STAMP}`,
   `./src/documents/pdf-region-resize.js?v=${STAMP}`,
   `./src/documents/pdf-region.js?v=${STAMP}`,
   `./src/documents/pdf-reading-path.js?v=${STAMP}`,
