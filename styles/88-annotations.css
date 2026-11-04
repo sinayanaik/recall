@@ -1,0 +1,170 @@
+/* ── Annotations on a PDF or a Canvas page ───────────────────────────────────
+ *
+ * Text marks drawn as something other than a tint (src/format/mark-styles.js):
+ * a line under the words, a line through them, a wave under them, a box round
+ * them — in one of the four colours, or in a colour of the reader's own
+ * (`data-hex` with `--mark-hex`). The geometry is the same fractions the
+ * canvas painter uses, so a baked page and a live one agree.
+ *
+ * ...and the shapes the Shapes tool draws (src/documents/pdf-shapes.js): their
+ * SVG layer, the handles of a selected one, the in-place text editor and the
+ * sticky note's icon.
+ */
+
+.pdf-mark[data-color="yellow"] { --mark-ink: #e0b400; }
+.pdf-mark[data-color="green"]  { --mark-ink: #22c55e; }
+.pdf-mark[data-color="blue"]   { --mark-ink: #3b82f6; }
+.pdf-mark[data-color="pink"]   { --mark-ink: #ec4899; }
+.pdf-mark[data-hex] { --mark-ink: var(--mark-hex); }
+
+/* A tint in a colour of the reader's own. */
+.pdf-mark[data-hex]:not([data-style]):not([data-kind]) {
+  background: color-mix(in srgb, var(--mark-hex) 33%, transparent);
+}
+
+.pdf-mark[data-style] {
+  background: transparent;
+  border-radius: 0;
+}
+
+.pdf-mark[data-style="underline"],
+.pdf-mark[data-style="strike"] {
+  background-image: linear-gradient(var(--mark-ink), var(--mark-ink));
+  background-repeat: no-repeat;
+  background-size: 100% max(1.5px, 7.5%);
+}
+
+/* Centred at 88% and 50% of the box, as MARK_LINE says. A percentage position
+   places the bar's own matching point there, which for a thin bar is close
+   enough to centred that the two paths are indistinguishable on screen. */
+.pdf-mark[data-style="underline"] { background-position: 0 88%; }
+.pdf-mark[data-style="strike"]    { background-position: 0 50%; }
+
+.pdf-mark[data-style="squiggly"]::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 74%;
+  height: max(3.5px, 24%);
+  background: var(--mark-ink);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='22' height='10' viewBox='0 0 22 10'%3E%3Cpath d='M0 5 Q2.75 0 5.5 5 T11 5 T16.5 5 T22 5' fill='none' stroke='black' stroke-width='3'/%3E%3C/svg%3E") repeat-x 0 0 / auto 100%;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='22' height='10' viewBox='0 0 22 10'%3E%3Cpath d='M0 5 Q2.75 0 5.5 5 T11 5 T16.5 5 T22 5' fill='none' stroke='black' stroke-width='3'/%3E%3C/svg%3E") repeat-x 0 0 / auto 100%;
+}
+
+.pdf-mark[data-style="box"] {
+  box-shadow: inset 0 0 0 max(1px, 0.12em) var(--mark-ink);
+}
+
+/* A baked page has the marks in its picture; the live divs paint nothing
+   (styles/36-document.css), and that covers these too. */
+.pdf-page.is-baked .pdf-mark-layer:not(.is-area) > .pdf-mark[data-style] {
+  background-image: none;
+  box-shadow: none;
+}
+
+.pdf-page.is-baked .pdf-mark-layer:not(.is-area) > .pdf-mark[data-style]::after {
+  display: none;
+}
+
+/* ── How to mark the words, in the selection bar and the mark menu ───────── */
+
+.selection-float-menu.has-mark-rows {
+  flex-direction: column;
+  align-items: stretch;
+  border-radius: 14px;
+  gap: 7px;
+}
+
+.pill-mark-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pill-mark-row[hidden] {
+  display: none;
+}
+
+.pill-style-btn,
+.mark-menu-style {
+  display: inline-grid;
+  place-items: center;
+  min-width: 30px;
+  height: 26px;
+  padding: 0 6px;
+  border: 1px solid color-mix(in srgb, var(--text) 22%, transparent);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.82rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.pill-style-btn.is-current,
+.mark-menu-style.is-current {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.mark-style-glyph {
+  display: inline-block;
+  min-width: 1em;
+  text-align: center;
+  font-weight: 600;
+}
+
+.mark-style-glyph.is-highlight { background: color-mix(in srgb, #e0b400 45%, transparent); padding: 0 2px; border-radius: 2px; }
+.mark-style-glyph.is-underline { text-decoration: underline; text-decoration-thickness: 2px; }
+.mark-style-glyph.is-strike    { text-decoration: line-through; text-decoration-thickness: 2px; }
+.mark-style-glyph.is-squiggly  { text-decoration: underline wavy; text-decoration-thickness: 1.5px; }
+.mark-style-glyph.is-box       { outline: 1.5px solid currentColor; outline-offset: 1px; padding: 0 2px; }
+
+.pill-swatch-btn.is-small,
+.mark-menu-swatch.is-small {
+  width: 18px;
+  height: 18px;
+}
+
+.pill-color-pick,
+.mark-menu-color-pick {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  border: 1px dashed color-mix(in srgb, var(--text) 42%, transparent);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 0.85rem;
+  line-height: 1;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.pill-color-pick input,
+.mark-menu-color-pick input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  width: 100%;
+  height: 100%;
+  cursor: pointer;
+}
+
+.mark-menu-styles,
+.mark-menu-more-colors {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 8px 0;
+}
+
+.mark-menu-styles[hidden],
+.mark-menu-more-colors[hidden] {
+  display: none;
+}

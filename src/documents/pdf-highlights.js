@@ -29,6 +29,8 @@ import { stripInvalidUnicode } from "../core/text.js?v=__BUILD__";
 import { quadToPageBox, textForAnchorRange, textItemBox } from "./pdf-selection.js?v=__BUILD__";
 import { pdfAreaLayer, pdfMarkLayer, pdfPageTextItems, pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
 import { MARK_HIGHLIGHT_DEFAULT, MARK_HIGHLIGHT_HEX } from "../format/highlight-colors.js?v=__BUILD__";
+import { inkFilingColor } from "../format/ink-colors.js?v=__BUILD__";
+import { markStyleOf, normalizeMarkHex, normalizeMarkStyle } from "../format/mark-styles.js?v=__BUILD__";
 import { decodeInkStrokes, inkStrokeHitsPoint } from "../format/ink-strokes.js?v=__BUILD__";
 import { notifyHighlightsChanged } from "../format/highlight-edit.js?v=__BUILD__";
 import { pruneOrphanHighlightNotes, readHighlightNotes, setHighlightNoteInSource } from "../format/highlight-notes.js?v=__BUILD__";
@@ -597,11 +599,20 @@ export function repairDocumentHighlightQuads(pageNumber) {
 
 // ── Create / recolour / remove ──────────────────────────────────────────────
 
-export function addDocumentHighlight(capture, color = MARK_HIGHLIGHT_DEFAULT) {
+// `style` and `hex` are how the words are marked (src/format/mark-styles.js):
+// a tint, a line under or through them, a wave, a box, in one of the four
+// colours or in a colour of the reader's own. A text record only — a region is
+// a box already and ink is drawn as it was written.
+export function addDocumentHighlight(capture, color = MARK_HIGHLIGHT_DEFAULT, { style = null, hex = null } = {}) {
   if (!capture?.quads?.length) return null;
+  const isText = capture.kind !== "area";
+  const custom = isText ? normalizeMarkHex(hex) : null;
+  const markStyle = isText ? normalizeMarkStyle(style) : "highlight";
   const record = {
     id: freshDocumentHighlightId(),
-    color: MARK_HIGHLIGHT_HEX[color] ? color : MARK_HIGHLIGHT_DEFAULT,
+    // A custom colour is FILED under the nearest of the four, which is what the
+    // Highlights pane sorts by and what an older build paints.
+    color: custom ? inkFilingColor(`x${custom.slice(1)}`) : (MARK_HIGHLIGHT_HEX[color] ? color : MARK_HIGHLIGHT_DEFAULT),
     page: capture.page,
     anchor: capture.anchor,
     focus: capture.focus,
@@ -631,16 +642,50 @@ export function addDocumentHighlight(capture, color = MARK_HIGHLIGHT_DEFAULT) {
     // one device's afternoon of reading.
     at: Date.now()
   };
+  // Only when they say something: a tint in a palette colour is the record
+  // every build has always written, byte for byte.
+  if (markStyle !== "highlight") record.style = markStyle;
+  if (custom) record.hex = custom;
   commitDocumentHighlights([...documentHighlights(), record]);
   paintDocumentHighlights(record.page);
   return record;
 }
 
+// One of the four colours, which also puts aside any colour of the reader's own
+// the record was wearing — the swatch pressed is the colour it is now.
 export function recolourDocumentHighlight(id, color) {
-  const next = documentHighlights().map((record) =>
-    record.id === id ? { ...record, color, at: Date.now() } : record);
+  const next = documentHighlights().map((record) => {
+    if (record.id !== id) return record;
+    const { hex: _hex, ...rest } = record;
+    return { ...rest, color, at: Date.now() };
+  });
   commitDocumentHighlights(next);
   repaintDocumentHighlights();
+}
+
+// How a text highlight is drawn, and/or a colour of the reader's own. Fields
+// left out keep what the record has; `hex: null` goes back to the token.
+export function restyleDocumentHighlight(id, { style, hex, color } = {}) {
+  const record = documentHighlightById(id);
+  if (!record || (record.kind && record.kind !== "text")) return false;
+  const next = documentHighlights().map((entry) => {
+    if (entry.id !== id) return entry;
+    const { style: _style, hex: oldHex, ...rest } = entry;
+    const nextStyle = style === undefined ? markStyleOf(entry) : normalizeMarkStyle(style);
+    const nextHex = hex === undefined ? normalizeMarkHex(oldHex) : normalizeMarkHex(hex);
+    const out = { ...rest, at: Date.now() };
+    if (nextStyle !== "highlight") out.style = nextStyle;
+    if (nextHex) {
+      out.hex = nextHex;
+      out.color = inkFilingColor(`x${nextHex.slice(1)}`);
+    } else if (color && MARK_HIGHLIGHT_HEX[color]) {
+      out.color = color;
+    }
+    return out;
+  });
+  commitDocumentHighlights(next);
+  repaintDocumentHighlights();
+  return true;
 }
 
 // `undo: false` is for a removal that is ITSELF an undo — the highlighter
@@ -876,6 +921,17 @@ export function paintDocumentHighlights(pageNumber) {
       // multiply` over a photograph washes out the figure being highlighted.
       // See styles/37-document-chrome.css.
       if (record.kind === "area") mark.dataset.kind = "area";
+      // A line, a wave or a box instead of a tint (styles/88-annotations.css),
+      // and a colour of the reader's own over the token's.
+      else {
+        const style = markStyleOf(record);
+        if (style !== "highlight") mark.dataset.style = style;
+        const hex = normalizeMarkHex(record.hex);
+        if (hex) {
+          mark.dataset.hex = "";
+          mark.style.setProperty("--mark-hex", hex);
+        }
+      }
       mark.dataset.highlightId = record.id;
       mark.style.left = `${box.left}px`;
       mark.style.top = `${box.top}px`;
@@ -1347,6 +1403,14 @@ export const DOCUMENT_MARK_HANDLERS = {
     return at === -1 ? [...base, ...saves] : [...base.slice(0, at), ...saves, ...base.slice(at)];
   },
   recolour: (id, color) => recolourDocumentHighlight(id, color),
+  // A run of words can be drawn as a line, a wave or a box and in a colour of
+  // the reader's own; a region and a stroke of ink cannot.
+  restyle: (id, fields) => restyleDocumentHighlight(id, fields),
+  canRestyle: (id) => {
+    const record = documentHighlightById(id);
+    return Boolean(record) && (!record.kind || record.kind === "text");
+  },
+  styleOf: (id) => markStyleOf(documentHighlightById(id)),
   remove: (id) => removeDocumentHighlight(id),
   noteText: (id) => documentHighlightNote(id),
   openNote: (id, rect) => openHighlightNoteEditor(id, rect, documentHighlightNote(id), DOCUMENT_NOTE_HANDLERS),

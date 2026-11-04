@@ -3783,7 +3783,7 @@ function desiredPicture(pageNumber, entry = openPdf?.pages.get(pageNumber)) {
   // Exactly what will be drawn, and nothing else: a record that moves, changes
   // colour or gains a stroke is a different picture.
   const parts = [picturePaper()];
-  marks.highlights.forEach((record) => parts.push(record.id, record.color || "", JSON.stringify((record.quads || [])
+  marks.highlights.forEach((record) => parts.push(record.id, record.color || "", record.style || "", record.hex || "", JSON.stringify((record.quads || [])
     .filter((quad) => Number(quad?.page) === pageNumber).map((quad) => quad.rect))));
   marks.ink.forEach((record) => parts.push(record.id, String(record.ink?.s || "")));
   return { kind: "marked", stamp: hash32(parts.join("|")), marks };

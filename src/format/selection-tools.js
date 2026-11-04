@@ -3,11 +3,14 @@
 
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
-import { addDocumentHighlight, documentHighlightsCovering, documentHighlightsUnderRects, recolourDocumentHighlight, removeDocumentHighlight } from "../documents/pdf-highlights.js?v=__BUILD__";
+import { addDocumentHighlight, documentHighlightsCovering, documentHighlightsUnderRects, recolourDocumentHighlight, removeDocumentHighlight, restyleDocumentHighlight } from "../documents/pdf-highlights.js?v=__BUILD__";
 import { captureDocumentSelection } from "../documents/pdf-selection.js?v=__BUILD__";
 import { isDocumentViewActive } from "../documents/pdf-view.js?v=__BUILD__";
 import { toggleWrapPair } from "../editor/text-transforms.js?v=__BUILD__";
 import { MARK_HIGHLIGHT_COLORS } from "./highlight-colors.js?v=__BUILD__";
+import { INK_PEN_COLORS } from "./ink-colors.js?v=__BUILD__";
+import { MARK_STYLES, MARK_STYLE_LABELS, markStyleOf, normalizeMarkHex, normalizeMarkStyle } from "./mark-styles.js?v=__BUILD__";
+import { inkPreferences, rememberInkRecentColor, writeInkPreferences } from "../storage/ink-prefs.js?v=__BUILD__";
 import { codeSelectionContext, makeHighlightFromSelection, toggleMarkColorInText } from "./highlight.js?v=__BUILD__";
 import { balancedHit, locateSelectionInSource, renderedSelectionStrings } from "./locate-selection.js?v=__BUILD__";
 import { sourceRangeForSelection } from "./source-blocks.js?v=__BUILD__";
@@ -232,10 +235,17 @@ function selectionRects(target) {
 // `keepExisting` is the highlight-and-note button's: pressing it over a passage
 // that is already highlighted means "write on THAT one", never "toggle it off",
 // which is what the plain swatch does with a repeated colour.
-export function applyPillHighlight(color, { keepExisting = false } = {}) {
+// `style` and `hex` say how the words on a PDF are marked
+// (src/format/mark-styles.js). Left out, they are what the reader last chose in
+// the bar — so the bar's one-press button repeats the last underline as readily
+// as the last highlight. Ignored on the notes, where a mark is a <mark>.
+export function applyPillHighlight(color, { keepExisting = false, style, hex } = {}) {
   let made = null;
   const target = pillActionTarget();
   if (target?.kind === "document") {
+    const prefs = inkPreferences();
+    const markStyle = normalizeMarkStyle(style === undefined ? prefs.markStyle : style);
+    const markHex = hex === undefined ? prefs.markHex : normalizeMarkHex(hex);
     // "clear" on the document surface means "un-highlight what I have
     // selected", the same as it does in a note — resolved against the
     // selection's own geometry rather than by stripping tags, since there are
@@ -279,13 +289,22 @@ export function applyPillHighlight(color, { keepExisting = false } = {}) {
       const rects = selectionRects(target);
       // Text highlights only: a region drawn round this passage is not "already
       // highlighting" it — see documentHighlightsUnderRects.
-      const covering = documentHighlightsCovering(rects, { textOnly: true });
+      //
+      // ...and covered by a mark of the SAME style. Underlining words that are
+      // already highlighted is a second mark on them, not the highlight turned
+      // into a line: a reader who wants it gone has ✕.
+      const covering = documentHighlightsCovering(rects, { textOnly: true })
+        .filter((record) => markStyleOf(record) === markStyle);
       if (covering.length) {
-        covering.forEach((record) => recolourDocumentHighlight(record.id, color));
+        covering.forEach((record) => {
+          if (markHex) restyleDocumentHighlight(record.id, { hex: markHex });
+          else if (normalizeMarkHex(record.hex)) restyleDocumentHighlight(record.id, { hex: null, color });
+          else recolourDocumentHighlight(record.id, color);
+        });
         // The one the reader was pointing at, when the press covered several.
         made = { surface: "document", id: covering[0].id };
       } else {
-        const record = addDocumentHighlight(target.capture, color);
+        const record = addDocumentHighlight(target.capture, color, { style: markStyle, hex: markHex });
         if (record) made = { surface: "document", id: record.id };
       }
     }
@@ -316,14 +335,66 @@ export function closePillHighlightMenu() {
   el.highlightSelectionMenuBtn?.setAttribute("aria-expanded", "false");
 }
 
+// Three rows on a PDF, one everywhere else. The first is the four colours and
+// ✕, as it always was. On a PDF a second says HOW the words are marked — a tint,
+// a line under or through them, a wave, a box — and a third offers the pen's
+// palette and a colour of the reader's own. Notes have no such marks (a <mark>
+// is a tint), so the two rows are hidden there rather than offered and refused.
 export function buildPillHighlightMenu() {
   if (!el.highlightSelectionMenu || el.highlightSelectionMenu.childElementCount) return;
-  el.highlightSelectionMenu.innerHTML =
-    MARK_HIGHLIGHT_COLORS.map(
-      (c) =>
-        `<button type="button" class="pill-swatch-btn" data-pill-highlight="${c.value}" style="--sw:${c.swatch};" title="${c.name}" aria-label="${c.name}"></button>`
-    ).join("") +
+  const colours = MARK_HIGHLIGHT_COLORS.map(
+    (c) =>
+      `<button type="button" class="pill-swatch-btn" data-pill-highlight="${c.value}" style="--sw:${c.swatch};" title="${c.name}" aria-label="${c.name}"></button>`
+  ).join("") +
     '<button type="button" class="pill-swatch-clear" data-pill-highlight="clear" title="Remove highlight" aria-label="Remove highlight">&#10005;</button>';
+  // Each style button is the letter A marked that way — the one glyph every
+  // font has, so the five read alike on every platform.
+  const styles = MARK_STYLES.map((name) =>
+    `<button type="button" class="pill-style-btn" data-pill-style="${name}" title="${MARK_STYLE_LABELS[name]}" aria-label="${MARK_STYLE_LABELS[name]}"><span class="mark-style-glyph is-${name}" aria-hidden="true">A</span></button>`
+  ).join("");
+  const more = INK_PEN_COLORS.map((c) =>
+    `<button type="button" class="pill-swatch-btn is-small" data-pill-hex="${c.swatch}" style="--sw:${c.swatch};" title="${c.name}" aria-label="${c.name}"></button>`
+  ).join("") +
+    '<label class="pill-color-pick" title="A colour of your own" aria-label="A colour of your own"><span aria-hidden="true">&#65291;</span><input type="color" data-pill-custom value="#7c3aed"></label>';
+  el.highlightSelectionMenu.innerHTML =
+    `<div class="pill-mark-row" data-pill-row="colours">${colours}</div>` +
+    `<div class="pill-mark-row" data-pill-row="styles" role="group" aria-label="How to mark the words" hidden>${styles}</div>` +
+    `<div class="pill-mark-row" data-pill-row="more" role="group" aria-label="More colours" hidden>${more}</div>`;
+}
+
+// Show the PDF rows when the selection is on a PDF, and say which style is the
+// one a press will use. Called each time the menu opens.
+export function refreshPillHighlightMenu() {
+  const menu = el.highlightSelectionMenu;
+  if (!menu) return;
+  const onPaper = isDocumentViewActive() && !noteEditorHoldsSelection();
+  menu.classList.toggle("has-mark-rows", onPaper);
+  menu.querySelectorAll('[data-pill-row="styles"], [data-pill-row="more"]').forEach((row) => { row.hidden = !onPaper; });
+  if (!onPaper) return;
+  const prefs = inkPreferences();
+  menu.querySelectorAll("[data-pill-style]").forEach((button) => {
+    const current = button.dataset.pillStyle === prefs.markStyle;
+    button.classList.toggle("is-current", current);
+    button.setAttribute("aria-pressed", String(current));
+  });
+}
+
+// The bar's own style buttons and colour rows, on a PDF. A style is
+// remembered and applied at once, in the colour last used; a colour from the
+// pen's palette or of the reader's own is remembered as `markHex` until one of
+// the four is pressed again.
+export function applyPillMarkStyle(style) {
+  const markStyle = normalizeMarkStyle(style);
+  writeInkPreferences({ markStyle });
+  return applyPillHighlight(renderFormatDefaults.highlight, { style: markStyle });
+}
+
+export function applyPillMarkHex(hex) {
+  const markHex = normalizeMarkHex(hex);
+  if (!markHex) return null;
+  writeInkPreferences({ markHex });
+  rememberInkRecentColor(markHex);
+  return applyPillHighlight(renderFormatDefaults.highlight, { hex: markHex });
 }
 
 // ── Split a note: selection → its own note, with a link left behind ─────────

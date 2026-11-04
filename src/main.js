@@ -39,7 +39,7 @@ import { askExportTheme, chosenExportTheme, paintExportThemeOptions } from "./ex
 import { saveExportTheme } from "./export/themes.js?v=__BUILD__";
 import { eraseNotesSelection, makeClozeFromSelection } from "./format/cloze.js?v=__BUILD__";
 import { closeAllRenderMenus, handleRenderToolbarAction, initRenderToolbars, renderFormatDefaults, renderTargetConfig, setRenderDefault } from "./format/render-toolbar.js?v=__BUILD__";
-import { applyPillHighlight, buildPillHighlightMenu, clozeTextareaSelection, eraseTextareaSelection, extractSelectionToNote, hideNotesSelectionButtonUnlessPinned, pillActionTarget } from "./format/selection-tools.js?v=__BUILD__";
+import { applyPillHighlight, applyPillMarkHex, applyPillMarkStyle, buildPillHighlightMenu, refreshPillHighlightMenu, clozeTextareaSelection, eraseTextareaSelection, extractSelectionToNote, hideNotesSelectionButtonUnlessPinned, pillActionTarget } from "./format/selection-tools.js?v=__BUILD__";
 import { markBrokenImages } from "./images/broken.js?v=__BUILD__";
 import { revokeLocalImageUrls } from "./images/outbox.js?v=__BUILD__";
 import { allImageFiles, dragContainsImage, animatedSourceUrlFromTransfer, insertTransferImages } from "./images/paste.js?v=__BUILD__";
@@ -104,6 +104,7 @@ import { closeDiagramModal, zoomDiagramBy } from "./render/diagram-zoom.js?v=__B
 import { scheduleMarkdownTableFit } from "./render/tables.js?v=__BUILD__";
 import { deckSnapshotCache, deckStoreChannel, deckStoreRequest, indexedDbUnavailable, pendingDeckWrites, scheduleDeckAutosave, setDeckStoreChannel, setDeckWriteListener, touchDeckSnapshotCache } from "./storage/deck-store.js?v=__BUILD__";
 import { isQuotaExceededError } from "./storage/quota.js?v=__BUILD__";
+import { writeInkPreferences } from "./storage/ink-prefs.js?v=__BUILD__";
 import { deleteDocumentCopies, onDocumentBackfillDone, scheduleDocumentBackfill } from "./storage/document-migration.js?v=__BUILD__";
 import { bucketPanelOpen, closeBucketPanel, openBucketPanel, refreshBucketReport, runBucketAction, setBucketKeysChanged, setBucketSyncRunner } from "./storage/bucket-panel.js?v=__BUILD__";
 import { closeStoragePanel, offloadStorageDocument, openStoragePanel, refreshStorageReport, runStorageAction, setBucketPanelOpener } from "./storage/storage-panel.js?v=__BUILD__";
@@ -930,12 +931,24 @@ el.highlightSelectionMenuBtn?.addEventListener("pointerdown", (event) => {
   event.preventDefault();
   event.stopPropagation();
   buildPillHighlightMenu();
+  refreshPillHighlightMenu();
   const willOpen = el.highlightSelectionMenu.hidden;
   el.highlightSelectionMenu.hidden = !willOpen;
   el.highlightSelectionMenuBtn.setAttribute("aria-expanded", String(willOpen));
 });
 
 el.highlightSelectionMenu?.addEventListener("pointerdown", (event) => {
+  // On a PDF: how to mark the words, and the pen's colours. See
+  // buildPillHighlightMenu.
+  const styleBtn = event.target.closest("[data-pill-style]");
+  const hexBtn = event.target.closest("[data-pill-hex]");
+  if (styleBtn || hexBtn) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (styleBtn) applyPillMarkStyle(styleBtn.dataset.pillStyle);
+    else applyPillMarkHex(hexBtn.dataset.pillHex);
+    return;
+  }
   const btn = event.target.closest("[data-pill-highlight]");
   if (!btn) return;
   event.preventDefault();
@@ -944,7 +957,16 @@ el.highlightSelectionMenu?.addEventListener("pointerdown", (event) => {
   // "clear" is an action, not a default — setRenderDefault ignores it, and
   // highlightToggleInSource reads it as "strip the marks off this selection".
   setRenderDefault("highlight", value);
-  applyPillHighlight(value);
+  // One of the four puts aside a colour of the reader's own on a PDF.
+  if (value !== "clear") writeInkPreferences({ markHex: null });
+  applyPillHighlight(value, value === "clear" ? {} : { hex: null });
+});
+
+// A colour of the reader's own, from the picker on the third row. `change`,
+// not `input`: one mark per choice, not one per step of a drag.
+el.highlightSelectionMenu?.addEventListener("change", (event) => {
+  const input = event.target.closest("[data-pill-custom]");
+  if (input) applyPillMarkHex(input.value);
 });
 
 // The floater's eraser button: delete the selection from the source — every
