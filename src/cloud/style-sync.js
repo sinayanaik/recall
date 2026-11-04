@@ -12,38 +12,39 @@ import { state } from "../core/state.js?v=__BUILD__";
 import { cachedUserId } from "../quick-notes/categories.js?v=__BUILD__";
 import { setStatus } from "../ui/feedback.js?v=__BUILD__";
 import { lockPageScroll, unlockPageScroll } from "../ui/overlays.js?v=__BUILD__";
-import { applyActiveStyleSettings, detectStyleProfile, hasMeaningfulStyleSettings, setStyleProfileSettings, setStyleProfiles, setStyleStatus, setStyleTextTab, styleProfileLabel, styleProfilesPayload, styleSettingsFromControls, updateStyleControls, updateStyleProfileUi } from "../ui/style-settings.js?v=__BUILD__";
+import { applyActiveStyleSettings, detectStyleProfile, hasMeaningfulStyleSettings, isStyleEditorOpen, setStyleProfileSettings, setStyleProfiles, setStyleStatus, styleProfilesPayload, styleSettingsFromControls, switchStyleEditProfile, updateStyleControls, updateStyleProfileUi } from "../ui/style-settings.js?v=__BUILD__";
+import { closeSectionStyle } from "../ui/style-popover.js?v=__BUILD__";
 import { styleProfiles } from "../ui/style-tokens.js?v=__BUILD__";
 import { setTheme } from "../ui/theme.js?v=__BUILD__";
 
+// The Theme & App panel: the theme, what is true of the whole app, Density,
+// sync, and a way into every section. Each section's own controls are a popover
+// on its own ◐ (src/ui/style-popover.js); only one of the two is ever open, so
+// there is only ever one set of controls on screen to read.
 export function openStylePanel() {
+  closeSectionStyle();
+  if (!el.stylePanel.hidden) return;
   lockPageScroll();
   state.styleEditProfile = detectStyleProfile();
   state.styleEditProfileFollowsDevice = true;
   el.stylePanel.hidden = false;
   updateStyleControls();
-  // The Text section opens on the surface you were looking at.
-  const view = state.viewMode;
-  setStyleTextTab(view === "notes" ? "notes" : view === "document" || view === "handwriting" ? "document" : "cards");
 }
 
 export function closeStylePanel() {
+  if (el.stylePanel.hidden) return;
   el.stylePanel.hidden = true;
   unlockPageScroll();
 }
 
-export function switchStyleEditProfile(profile, options = {}) {
-  if (!styleProfiles.includes(profile)) return;
-  state.styleEditProfile = profile;
-  state.styleEditProfileFollowsDevice = options.followDevice ?? false;
-  updateStyleControls();
-  setStyleStatus(`Editing ${styleProfileLabel(profile).toLowerCase()} style`);
-}
+// Moved to src/ui/style-settings.js, where the popovers can reach it without
+// importing this module; re-exported for everything that already imports it here.
+export { switchStyleEditProfile };
 
 export function handleStyleEnvironmentChange() {
   const previousProfile = state.activeStyleProfile;
   applyActiveStyleSettings({ force: true });
-  if (!el.stylePanel?.hidden && (state.styleEditProfileFollowsDevice || state.styleEditProfile === previousProfile)) {
+  if (isStyleEditorOpen() && (state.styleEditProfileFollowsDevice || state.styleEditProfile === previousProfile)) {
     switchStyleEditProfile(detectStyleProfile(), { followDevice: true });
   } else {
     updateStyleProfileUi();

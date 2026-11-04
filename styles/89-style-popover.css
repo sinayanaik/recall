@@ -1,0 +1,228 @@
+/* ── A section's own style: the ◐ popover ────────────────────────────────────
+ *
+ * src/ui/style-popover.js. One small box per section of the app, opened from a
+ * ◐ in that section's own chrome, holding only that section's controls. The
+ * rows inside are the Theme & App panel's (.style-block, .style-field —
+ * styles/08-panels.css and 79-tab-text.css), so a control looks the same from
+ * wherever it is reached; what is here is the box.
+ *
+ * Stacking (styles/54-stacking.css): 650 — over the editing sheets (620/640)
+ * and the note window (260) it can be opened from, under the dialog band
+ * (660). The one dialog it opens itself, "Reset this section"'s confirm, is
+ * lifted over it below.
+ */
+.style-pop {
+  position: fixed;
+  z-index: 650;
+  top: 0;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  width: min(360px, calc(100vw - 16px));
+  max-height: min(70vh, 560px);
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--line));
+  border-radius: 12px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 14px 38px rgba(0, 0, 0, 0.34);
+  /* The page's own font size, not the section's: the popover is chrome. */
+  font-size: 1rem;
+  outline: none;
+  overflow: hidden;
+}
+
+/* Nothing on screen to sit beside (opened from the panel's list, or from the
+   reading rail, whose tray folds as it opens): the middle of the screen. */
+.style-pop.is-centred {
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+}
+
+/* A narrow screen: a sheet along the bottom, over the keyboard rather than
+   under it (--kb-inset, src/ui/style-settings.js trackKeyboardInset). */
+.style-pop.is-sheet {
+  top: auto;
+  left: 0;
+  right: 0;
+  bottom: var(--kb-inset, 0px);
+  width: 100%;
+  max-height: min(70dvh, 560px);
+  border-radius: 16px 16px 0 0;
+  border-bottom: 0;
+  transform: none;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+.style-pop-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--line);
+  padding: 8px 8px 8px 12px;
+}
+
+.style-pop-title {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 0.92rem;
+  font-weight: 900;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.style-pop .style-pop-close {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  min-height: 30px;
+  padding: 0;
+  font-size: 1.1rem;
+}
+
+.style-pop-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 10px 12px;
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+}
+
+.style-pop-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.76rem;
+  line-height: 1.35;
+}
+
+.style-pop-foot {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+  flex: 0 0 auto;
+  border-top: 1px solid var(--line);
+  padding: 8px 12px;
+}
+
+.style-pop-foot button {
+  min-height: 34px;
+  border: 1px solid var(--line);
+  border-radius: var(--toolbar-button-radius);
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 0.82rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.style-pop-foot button:hover,
+.style-pop-foot button:focus-visible {
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--line));
+}
+
+/* The profile switch, smaller: in a box this size the panel's 38px buttons and
+   two-line hint were a third of the height. */
+.style-profile-field.is-compact {
+  gap: 6px;
+  padding: 8px 10px;
+}
+
+.style-profile-field.is-compact .style-profile-toggle button {
+  min-height: 30px;
+}
+
+.style-profile-field.is-compact small {
+  font-size: 0.72rem;
+}
+
+/* A two-column row is cramped at 360px: the name over its box instead. */
+.style-pop .style-section-body > .style-field {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 9.5em);
+}
+
+/* "Reset this section" opens a confirm, which sits in the dialog band (230)
+   under this popover unless lifted while one is open. */
+body.style-pop-open .confirm-modal {
+  z-index: 670;
+}
+
+/* The drawn ◐ (src/ui/style-icon.js): text-sized, sitting on the baseline like
+   the glyph it replaces. */
+.style-ico {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  flex: 0 0 auto;
+  vertical-align: -0.14em;
+}
+
+.style-pop-title .style-ico {
+  margin-right: 4px;
+  color: var(--accent);
+}
+
+/* ── The ◐ buttons ───────────────────────────────────────────────────────────
+ * Each takes its neighbour's look (the ⇓ in the tab row, the ⇓ in the
+ * Highlights pane, the drawer's fold-all, the panels' ×), so a section's style
+ * reads as one more control of that section rather than a foreign one. Only
+ * what the neighbour does not give is here. */
+.view-mode-row > .view-style-btn {
+  font-size: 0.95rem;
+}
+
+.view-mode-row > .view-style-btn[aria-expanded="true"],
+.hc-head > .hc-style[aria-expanded="true"],
+.notes-toc-head > .notes-toc-style[aria-expanded="true"],
+.section-style-btn[aria-expanded="true"] {
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--line));
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--accent);
+}
+
+/* The contents drawer's head is narrow (styles/12-notes.css, --toc-width) and
+   its × must stay on it: the ◐ is the fold-all's size and never grows. */
+.notes-toc-head > .notes-toc-style {
+  flex: 0 0 auto;
+  margin-left: 4px;
+  font-size: 0.95rem;
+}
+
+/* Every button sits together at the end, shown or not: the title takes the free
+   space, the way the PDF drawer's already does (styles/81-pdf-contents-edit.css),
+   rather than a second `margin-left: auto` splitting it. */
+.notes-toc-head > .notes-toc-title {
+  margin-right: auto;
+}
+
+/* The Highlights pane: ⇓ already pushes the end group over (margin-left: auto
+   in styles/46-highlight-cycle.css), and the ◐ wears its class for its look, so
+   it must not push as well — two auto margins split the space between them. */
+.hc-head > .hc-style {
+  margin-left: 0;
+}
+
+/* The note window's head puts the title left and × right (space-between); the
+   ◐ goes beside the ×, not in the middle. */
+.highlight-note-editor-head > .highlight-note-editor-style {
+  margin-left: auto;
+  font-size: 1rem;
+}
+
+/* Home has no head to put it in: the top right of the hero. */
+.home-hero {
+  position: relative;
+}
+
+.home-hero > .home-style-btn {
+  position: absolute;
+  top: 0;
+  right: 0;
+}

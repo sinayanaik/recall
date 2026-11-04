@@ -72,12 +72,13 @@ import { openHome } from "./home.js?v=__BUILD__";
 import { shutDownApp } from "./shutdown.js?v=__BUILD__";
 import { isFocusModeActive, setFocusMode, toggleImmersiveMode } from "./chrome.js?v=__BUILD__";
 import { toggleLandscape } from "./orientation.js?v=__BUILD__";
-import { setViewMode } from "./view-mode.js?v=__BUILD__";
+import { currentViewStyleScope, setViewMode } from "./view-mode.js?v=__BUILD__";
 import { toggleNotesToc } from "../notes/toc.js?v=__BUILD__";
 import { goToBookmark } from "../notes/bookmark.js?v=__BUILD__";
 import { toggleTeleprompter } from "../notes/teleprompter.js?v=__BUILD__";
 import { togglePdfTeleprompter } from "../documents/pdf-teleprompter.js?v=__BUILD__";
 import { openStylePanel } from "../cloud/style-sync.js?v=__BUILD__";
+import { openSectionStyle } from "./style-popover.js?v=__BUILD__";
 import { reconcileAllDecks } from "../sync/reconcile.js?v=__BUILD__";
 import { fitDocumentToWidth, togglePdfInvert } from "../documents/pdf-view.js?v=__BUILD__";
 import { chooseInkTool, toggleInkRail } from "./ink-rail.js?v=__BUILD__";
@@ -421,6 +422,10 @@ export function initReadingRail() {
     else if (action === "teleprompter") toggleTeleprompter();
     else if (action === "pdf-teleprompter") togglePdfTeleprompter();
     else if (action === "style") openStylePanel();
+    // This view's own section, the same one the ◐ in the tab row opens — which
+    // focus mode folds away with the row. No anchor: the tray shuts as the
+    // popover opens, so it is centred (or a sheet, on a phone).
+    else if (action === "view-style") openSectionStyle(currentViewStyleScope(), null);
     else if (action === "sync") reconcileAllDecks({ explicit: true });
     else if (action === "shutdown") shutDownApp();
     else if (action === "immersive") toggleImmersiveMode();

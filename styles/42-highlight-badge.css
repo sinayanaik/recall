@@ -31,8 +31,11 @@
    a link (solid) or a spelling error (red, wavy) — and which the mark's own
    background tint sits behind rather than fights with. */
 #notesView mark.has-note {
-  text-decoration: underline dotted;
-  text-decoration-thickness: 1.5px;
+  /* Longhands, so ◐ Highlights in text can choose the line and its style apart
+     ("none" is a line, the rest are styles); the defaults are what it was. */
+  text-decoration-line: var(--mark-note-line, underline);
+  text-decoration-style: var(--mark-note-style, dotted);
+  text-decoration-thickness: var(--mark-note-underline-width, 1.5px);
   text-decoration-color: color-mix(in srgb, var(--accent) 62%, transparent);
   text-underline-offset: 2.5px;
   /* The containing block for the badge, and nothing else: an inline element
@@ -81,7 +84,7 @@
   position: absolute;
   top: auto;
   right: auto;
-  --hl-fold: 0.36em;
+  --hl-fold: var(--mark-note-fold-size, 0.36em);
   width: var(--hl-fold);
   height: var(--hl-fold);
   /* Back by its own width, plus the 1px of padding a mark's tint has past its

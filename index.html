@@ -68,6 +68,10 @@
     <link rel="stylesheet" href="styles/11-chrome.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/12-notes.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/13-quick-notes.css?v=__BUILD__">
+    <!-- Not a slice: the values in the 13 slices above that a section's ◐ now
+         controls, taken over by the same selectors (see the file's head). Here,
+         straight after them, so it lands where an in-place edit would have. -->
+    <link rel="stylesheet" href="styles/13a-section-style.css?v=__BUILD__">
     <!-- Not part of the split: added afterwards, and kept in its own file so
          the 13 slices above stay byte-for-byte comparable to the stylesheet
          they came from. Last, so it wins ties rather than out-specifying. -->
@@ -145,6 +149,7 @@
     <link rel="stylesheet" href="styles/86-heading-numbers.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/87-web-import.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/88-annotations.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/89-style-popover.css?v=__BUILD__">
 
     <!-- ── Module preloads ────────────────────────────────────────────────
          The app is ~130 ES modules and the browser discovers them by PARSING
@@ -454,6 +459,8 @@
     <link rel="modulepreload" href="src/ui/shutdown.js?v=__BUILD__">
     <link rel="modulepreload" href="src/ui/style-schema.js?v=__BUILD__">
     <link rel="modulepreload" href="src/ui/style-settings.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/ui/style-icon.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/ui/style-popover.js?v=__BUILD__">
     <link rel="modulepreload" href="src/ui/style-tokens.js?v=__BUILD__">
     <link rel="modulepreload" href="src/ui/theme-catalog.js?v=__BUILD__">
     <link rel="modulepreload" href="src/ui/theme.js?v=__BUILD__">
@@ -730,7 +737,7 @@
               <option value="30">Every 30 min</option>
             </select>
           </div>
-          <button class="tool-button" id="styleBtn" type="button" title="Themes &amp; Style" aria-label="Themes and style">&#9711; Themes &amp; Style</button>
+          <button class="tool-button" id="styleBtn" type="button" title="Theme, and the sizes that are true of the whole app. Each part of the app has its own ◐ for its own style." aria-label="Theme and app style"><svg class="style-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="8.4"/><path d="M12 3.6a8.4 8.4 0 0 1 0 16.8Z" fill="currentColor" stroke="none"/></svg> Theme &amp; App</button>
           <button class="tool-button" id="bucketBtn" type="button" title="Your own bucket for papers and images: its keys, and moving what is still in Supabase or Google Drive into it">&#9729; Cloud bucket</button>
           <button class="tool-button" id="storageBtn" type="button" title="What your account is storing — files, cards and images — and how to clean it up">&#128451; Storage &amp; Data</button>
           <button class="tool-button tool-button-info" id="helpBtn" type="button" title="How to use this app" aria-label="Help">&#63; Help &amp; Guide</button>
@@ -771,6 +778,7 @@
       <section class="home-view" id="homeView" hidden aria-label="Home">
         <div class="home-inner">
           <header class="home-hero">
+            <button class="icon-button section-style-btn home-style-btn" id="homeStyleBtn" type="button" data-style-scope-btn="home" aria-haspopup="dialog" aria-expanded="false" title="Style Home" aria-label="Style Home"><svg class="style-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="8.4"/><path d="M12 3.6a8.4 8.4 0 0 1 0 16.8Z" fill="currentColor" stroke="none"/></svg></button>
             <p class="home-greeting" id="homeGreeting">Welcome back</p>
             <h1 class="home-title">Recall</h1>
             <p class="home-summary" id="homeSummary"></p>
@@ -917,6 +925,14 @@
                  now, and the highlights dialog they sat beside is a row HERE
                  (on notes and document) rather than in the app menu. So this is
                  the way in, not a second one. -->
+            <!-- ◐ This view's own style: Cards, Notes, PDFs or Canvas, whichever is
+                 showing (src/ui/style-popover.js). Shaped like the ⇓ beside it,
+                 because it is the same kind of control: a small square in this
+                 row that opens something over the page. Each smaller part of
+                 the app (the Highlights pane, the contents drawer, All Cards,
+                 Quick Notes, Home, My Files, a tapped highlight, the note
+                 window) has a ◐ of its own, in its own head. -->
+            <button class="tool-button view-export-btn view-style-btn" id="viewStyleBtn" type="button" data-style-scope-btn="cards" aria-haspopup="dialog" aria-expanded="false" aria-label="Style this view" title="Style this view — its text sizes, spacing and layout"><svg class="style-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="8.4"/><path d="M12 3.6a8.4 8.4 0 0 1 0 16.8Z" fill="currentColor" stroke="none"/></svg></button>
             <button class="tool-button view-export-btn" id="viewExportBtn" type="button" aria-haspopup="true" aria-expanded="false" aria-label="Export" title="Export what you are looking at">&#8659;</button>
             <div class="view-export-menu" id="viewExportMenu" role="menu" hidden></div>
             <!-- A PDF deck's document controls (dark page, region, ink, the
@@ -1144,6 +1160,7 @@
                      hides itself when the note has no nested headings, where
                      there is nothing for it to do. -->
                 <button class="notes-toc-fold-all" id="notesTocFoldAllBtn" type="button" title="Expand all sections" aria-label="Expand all sections" hidden>&#8862;</button>
+                <button class="notes-toc-fold-all notes-toc-style" id="notesTocStyleBtn" type="button" data-style-scope-btn="toc" aria-haspopup="dialog" aria-expanded="false" title="Style the contents" aria-label="Style the contents"><svg class="style-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="8.4"/><path d="M12 3.6a8.4 8.4 0 0 1 0 16.8Z" fill="currentColor" stroke="none"/></svg></button>
                 <button class="notes-toc-close" id="notesTocCloseBtn" type="button" title="Close" aria-label="Close table of contents">&times;</button>
               </div>
               <div class="notes-toc-scroll">
@@ -1437,6 +1454,7 @@
                      onto the middle of another row to nest them. -->
                 <button class="notes-toc-fold-all document-toc-bookmark" id="documentTocBookmarkBtn" type="button" title="Bookmark this place (Ctrl+D). Drag rows to rearrange, or onto another row to nest them; F2 renames a row, Delete removes it" aria-label="Bookmark this place" hidden>&#128278;&#xFE0E;</button>
                 <button class="notes-toc-fold-all document-toc-reset" id="documentTocResetBtn" type="button" title="Reset contents — remove your bookmarks and changes and go back to the PDF's own" aria-label="Reset contents" hidden>&#10226;</button>
+                <button class="notes-toc-fold-all notes-toc-style" id="documentTocStyleBtn" type="button" data-style-scope-btn="toc" aria-haspopup="dialog" aria-expanded="false" title="Style the contents" aria-label="Style the contents"><svg class="style-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="8.4"/><path d="M12 3.6a8.4 8.4 0 0 1 0 16.8Z" fill="currentColor" stroke="none"/></svg></button>
                 <button class="notes-toc-close" id="documentTocCloseBtn" type="button" title="Close" aria-label="Close contents">&times;</button>
               </div>
               <div class="notes-toc-scroll">
@@ -1488,6 +1506,7 @@
                    aria-pressed rather than leaving the reader to press it and
                    find out. A press on any "Go to →" stands it back down —
                    a hidden reading surface has no geometry to scroll. -->
+              <button class="hc-export hc-style" id="highlightCycleStyleBtn" type="button" data-style-scope-btn="highlightsPane" aria-haspopup="dialog" aria-expanded="false" title="Style the Highlights pane" aria-label="Style the Highlights pane"><svg class="style-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="8.4"/><path d="M12 3.6a8.4 8.4 0 0 1 0 16.8Z" fill="currentColor" stroke="none"/></svg></button>
               <button class="hc-wide" id="highlightCycleWideBtn" type="button" aria-pressed="false" title="Highlights only" aria-label="Highlights only">&#8801;</button>
               <button class="hc-close" id="highlightCycleCloseBtn" type="button" title="Close side by side" aria-label="Close side by side">&times;</button>
             </div>
@@ -1804,7 +1823,8 @@
                focus mode folds both of those away. -->
           <button class="reading-rail-btn" type="button" data-rail-group="App" data-rail-action="home" title="Home — recent files and quick actions" aria-label="Home"><span class="rr-ico" aria-hidden="true">&#8962;</span><span class="rr-label">Home</span></button>
           <button class="reading-rail-btn" type="button" data-rail-group="App" data-rail-action="decks" title="My Files" aria-label="My Files"><span class="rr-ico" aria-hidden="true">&#128218;</span><span class="rr-label">My Files</span></button>
-          <button class="reading-rail-btn" type="button" data-rail-group="App" data-rail-action="style" title="Themes &amp; style" aria-label="Themes and style"><span class="rr-ico" aria-hidden="true">&#127912;</span><span class="rr-label">Themes &amp; style</span></button>
+          <button class="reading-rail-btn" type="button" data-rail-group="App" data-rail-action="view-style" title="Style this view — its text sizes, spacing and layout" aria-label="Style this view"><span class="rr-ico" aria-hidden="true"><svg class="style-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="8.4"/><path d="M12 3.6a8.4 8.4 0 0 1 0 16.8Z" fill="currentColor" stroke="none"/></svg></span><span class="rr-label">Style this view</span></button>
+          <button class="reading-rail-btn" type="button" data-rail-group="App" data-rail-action="style" title="Theme, and the sizes that are true of the whole app" aria-label="Theme and app style"><span class="rr-ico" aria-hidden="true">&#127912;</span><span class="rr-label">Theme &amp; App</span></button>
           <button class="reading-rail-btn" type="button" data-rail-group="App" data-rail-action="sync" title="Sync all files with the cloud now, and save where you are reading" aria-label="Sync now"><span class="rr-ico" aria-hidden="true">&#8635;</span><span class="rr-label">Sync now</span></button>
           <button class="reading-rail-btn" type="button" data-rail-group="App" data-rail-action="shutdown" title="Shut down — save and sync everything, then close Recall" aria-label="Shut down"><span class="rr-ico" aria-hidden="true">&#9211;</span><span class="rr-label">Shut down</span></button>
           <!-- ── The two reading modes, pinned ──────────────────────────
@@ -1971,6 +1991,7 @@
             </div>
             <button class="all-answers-toggle" id="toggleCompactBtn" type="button" aria-pressed="false" title="Toggle a dense, one-line-per-card view">Compact</button>
             <button class="all-answers-toggle" id="toggleAllAnswersBtn" type="button" aria-pressed="false">Show answers</button>
+            <button class="icon-button section-style-btn" id="allCardsStyleBtn" type="button" data-style-scope-btn="allCards" aria-haspopup="dialog" aria-expanded="false" title="Style All Cards" aria-label="Style All Cards"><svg class="style-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="8.4"/><path d="M12 3.6a8.4 8.4 0 0 1 0 16.8Z" fill="currentColor" stroke="none"/></svg></button>
             <button class="icon-button" id="closeAllCardsBtn" type="button" aria-label="Close all cards">&#215;</button>
           </div>
         </div>
@@ -2001,6 +2022,7 @@
               <input class="qn-search" id="qnSearch" type="search" placeholder="Search notes&#8230;" autocomplete="off" spellcheck="false" aria-label="Search quick notes">
             </div>
             <button class="qn-manage-btn" id="qnManageBtn" type="button" title="Add, rename, recolour or remove categories">&#9881; Manage categories</button>
+            <button class="icon-button section-style-btn" id="qnStyleBtn" type="button" data-style-scope-btn="quickNotes" aria-haspopup="dialog" aria-expanded="false" title="Style Quick Notes" aria-label="Style Quick Notes"><svg class="style-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="8.4"/><path d="M12 3.6a8.4 8.4 0 0 1 0 16.8Z" fill="currentColor" stroke="none"/></svg></button>
             <button class="icon-button" id="qnCloseBtn" type="button" aria-label="Close quick notes">&#215;</button>
           </div>
         </div>
@@ -2037,14 +2059,14 @@
       <div class="diagram-modal-body" id="diagramModalBody"></div>
     </section>
 
-    <section class="style-panel" id="stylePanel" hidden aria-label="Style settings">
+    <section class="style-panel" id="stylePanel" hidden aria-label="Theme and app style">
       <div class="style-shell">
         <div class="style-head">
           <div>
-            <h1>Themes &amp; Style</h1>
+            <h1>Theme &amp; App</h1>
             <p id="styleSyncStatus">Local style</p>
           </div>
-          <button class="icon-button" id="closeStyleBtn" type="button" aria-label="Close style settings">&#215;</button>
+          <button class="icon-button" id="closeStyleBtn" type="button" aria-label="Close theme and app style">&#215;</button>
         </div>
         <div class="style-grid" id="styleControls">
           <label class="style-field">
@@ -2072,7 +2094,7 @@
              panel you'd need to fix it in. -->
         <div class="style-actions">
           <button id="syncDownBtn" type="button">Sync Down</button>
-          <button id="resetStyleBtn" type="button" title="Put every control on this profile back to its default">Reset profile</button>
+          <button id="resetStyleBtn" type="button" title="Put every control, in every section, on this profile back to its default">Reset all</button>
           <button id="syncUpBtn" type="button">Sync Up</button>
         </div>
       </div>
@@ -2178,6 +2200,7 @@
                   <button class="md-menu-item" id="myDecksTreeToggleAll" type="button" data-md-icon="expand" title="Expand or collapse all folders" hidden><span>Expand all</span></button>
                   <button class="md-menu-item" id="myDecksRestoreBtn" type="button" data-md-icon="upload" title="Restore your library from a backup (.recall, or an older .zip / .json)"><span>Restore backup</span></button>
                   <input id="restoreFileInput" type="file" accept=".recall,.zip,.json,application/vnd.recall+zip,application/zip,application/x-zip-compressed,application/json,application/octet-stream" hidden>
+                  <button class="md-menu-item" id="myDecksStyleBtn" type="button" data-md-icon="style" data-style-scope-btn="myFiles" title="Text size, tile width and spacing of My Files"><span>Style My Files</span></button>
                   <button class="md-menu-item" id="myDecksCheckImagesBtn" type="button" data-md-icon="search" title="Check every file for image references that no longer resolve"><span>Check for broken images</span></button>
                   <div class="md-menu-group" id="myDecksBackupStatus">Never backed up</div>
                   <div class="md-menu-group">Export all files</div>
@@ -2322,7 +2345,7 @@
               <li><strong>Split a note that got too long</strong> — select the part that has outgrown its home and tap <strong>↪</strong> in the selection strip. It moves into a note of its own and leaves a link in its place</li>
               <li><strong>See what points here</strong> — open the <strong>contents</strong> drawer beside the tabs (the icon of three lines with dots beside them — <strong>not</strong> the ☰ at top-left, which is the app's own menu); under the headings, <strong>Linked from</strong> lists every note that references the one you're reading</li>
               <li><strong>...and what you marked, beside what you marked it in</strong> — that drawer's <strong>Highlights</strong> half lists every highlight in this note, and <strong>Side by side</strong> at the top of it splits the panel: the note on one side, its highlights with their notes on the other, <strong>◀ ▶</strong> to walk through them. Drag the divider to resize the two — they start at 3:2 and stack top-and-bottom on a phone</li>
-              <li><strong>Numbered headings</strong> — headings are numbered the way a paper is: <strong>1</strong>, <strong>1.1</strong>, <strong>1.2</strong>, <strong>1.2.1</strong>, and so on, in the note, in the contents drawer and in the highlights lists. The numbers follow the note as you write it — add or move a section and everything after it renumbers itself — and they are never typed into your text, so the Markdown stays exactly as you wrote it. Your top headings are <strong>1, 2, 3</strong> whether they are <code>#</code> or <code>##</code>, and a heading that skips a level (a <code>###</code> straight under a <code>#</code>) is still <strong>1.1</strong>. PDF, Word and HTML exports of the notes keep the numbers. Turn them off under <strong>Themes &amp; Style → Text → Notes → Number headings</strong></li>
+              <li><strong>Numbered headings</strong> — headings are numbered the way a paper is: <strong>1</strong>, <strong>1.1</strong>, <strong>1.2</strong>, <strong>1.2.1</strong>, and so on, in the note, in the contents drawer and in the highlights lists. The numbers follow the note as you write it — add or move a section and everything after it renumbers itself — and they are never typed into your text, so the Markdown stays exactly as you wrote it. Your top headings are <strong>1, 2, 3</strong> whether they are <code>#</code> or <code>##</code>, and a heading that skips a level (a <code>###</code> straight under a <code>#</code>) is still <strong>1.1</strong>. PDF, Word and HTML exports of the notes keep the numbers. Turn them off with the <strong>◐</strong> beside <strong>⇓</strong> on the Notes tab: <strong>Headings → Number headings</strong></li>
               <li><strong>Highlights from some sections only</strong> — the <strong>All sections ▾</strong> button above the highlights (in the drawer's <strong>Highlights</strong> half and at the top of <strong>Side by side</strong>) opens a checklist shaped like the contents, with how many highlights each section holds. Tick one or more sections — a section brings its subsections with it — and the list, the counter and <strong>◀ ▶</strong> keep to them. The drawer and the side-by-side pane share the choice, and it goes back to all sections when you close side by side or open another file. On a PDF the sections are the PDF's own contents, or its pages when it has none. <strong>Export highlights</strong> has the same checklist, so you can export just one chapter</li>
               <li>Notes save, sync, and export together with the rest of the file — or skip notes entirely and make cards directly, as before</li>
               <li><strong>Let the text come to you</strong> — <strong>⋯ → Teleprompter</strong> (or <strong>&#9654; Teleprompter</strong> on the <strong>‹</strong> tab at the right edge) scrolls the notes by themselves, under a soft band that marks the line to read. The bar at the foot sets the speed in words a minute (it starts at your own reading speed once Recall has measured it), the text size with <strong>A− A+</strong>, and everything else under <strong>⚙</strong>: spacing, width, font, where the band sits and how many lines tall it is, how much the rest is dimmed, a countdown, and keeping the screen on. <strong>Touch the text and it stops</strong> — select, highlight, open a highlight, make a card, exactly as usual — then <strong>&#9654; Resume</strong> carries on from wherever the text is. Turn on <em>Carry on by itself</em> and it resumes a few seconds after you stop touching it. Going to Cards, a PDF or Home pauses it; <strong>✕</strong>, <kbd>Esc</kbd> or Back puts the normal Notes text back, on the same line</li>
@@ -2561,8 +2584,17 @@ What year was the Eiffel Tower built?
           </section>
 
           <section class="help-section">
-            <h3 class="help-section-title">12. Themes &amp; Style</h3>
-            <p>Click <button type="button" class="tool-button help-demo-btn" tabindex="-1">◯ Themes &amp; Style</button> to choose from 10 built-in themes and a density preset. Everything else — font sizes, spacing, corner radii — lives under <strong>Advanced</strong>. <strong>Reset profile</strong> puts it all back. Desktop and mobile save separate style profiles, and your theme syncs with them.</p>
+            <h3 class="help-section-title">12. Theme &amp; style</h3>
+            <p><strong>Each part of the app has its own style button, ◐, right beside it</strong>, holding only that part's text sizes, spacing and shapes — so the control for a thing is where the thing is. Changes show as you type, and <strong>Reset this section</strong> puts back that part alone.</p>
+            <ul>
+              <li><strong>Cards, Notes, PDFs and Canvas</strong> — the ◐ beside <strong>⇓</strong> in the tab row styles whichever tab you are on. In focus mode it is on the reading rail as <strong>Style this view</strong></li>
+              <li><strong>The Highlights pane</strong> — ◐ in the pane's head: its text, the quoted line, and the cards' padding, gaps and corners</li>
+              <li><strong>Highlights in the text</strong> — tap a highlight → <strong>Style highlights</strong>: how strongly the tint shows, its corners, and the underline and corner marker on a highlight that has a note</li>
+              <li><strong>The note window</strong> — ◐ in its head: its text sizes, width, padding and corners</li>
+              <li><strong>Contents</strong> — ◐ in the contents drawer's head, for Notes and PDFs alike: entry size, spacing, padding and the drawer's width</li>
+              <li><strong>All Cards, Quick Notes and Home</strong> — ◐ in each one's head; <strong>My Files</strong> — <strong>⋯ → Style My Files</strong></li>
+            </ul>
+            <p>Click <button type="button" class="tool-button help-demo-btn" tabindex="-1"><svg class="style-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="8.4"/><path d="M12 3.6a8.4 8.4 0 0 1 0 16.8Z" fill="currentColor" stroke="none"/></svg> Theme &amp; App</button> in the menu for what is true of the whole app: the 10 built-in themes, the app's font and interface size, buttons and inputs, dialogs, and <strong>Density</strong>, which sets the spacing of every section at once. It also lists every section, so each one can be opened from there too. <strong>Reset all</strong> puts everything back. Desktop and mobile save separate style profiles — each ◐ has a Desktop/Mobile switch to edit the other one — and <strong>Sync Up</strong> carries your style and theme to your other devices. A box left empty uses the app's own value, shown greyed inside it. The pen, highlighter and Text tool on PDFs and Canvas keep their own look, set from the chip on the pen's bar.</p>
           </section>
 
         </div>

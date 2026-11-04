@@ -18,7 +18,7 @@ import { setNotesReadingMode } from "../notes/paged-view.js?v=__BUILD__";
 import { setHeadingNumbersOn } from "../notes/heading-numbers.js?v=__BUILD__";
 import { scheduleMarkdownTableFit } from "../render/tables.js?v=__BUILD__";
 import { showConfirmModal, showToast } from "./feedback.js?v=__BUILD__";
-import { defaultStyleProfiles, legacySpacingDefaults, styleControlGroups, styleCssVariables, styleDefaults, styleDensityPresets, styleFieldByKey, styleTextTabs } from "./style-schema.js?v=__BUILD__";
+import { defaultStyleProfiles, legacySpacingDefaults, styleControlGroups, styleCssVariables, styleDefaults, styleDensityPresets, styleFieldByKey, styleScopeById, styleScopeKeys, styleScopes, styleV6Seeds } from "./style-schema.js?v=__BUILD__";
 import { prefersMobileStyleProfile, styleProfiles } from "./style-tokens.js?v=__BUILD__";
 import { resolveFontFamily } from "./fonts.js?v=__BUILD__";
 import { currentThemeId } from "./theme.js?v=__BUILD__";
@@ -61,11 +61,25 @@ export function normalizeStyleValue(key, value, customDefault) {
 // `probe: "number"` is for the percent controls: they store a bare number that
 // applyStyleSettings turns into `${n}%`, and CSS.supports would reject the bare
 // number on its own.
+// The two kinds of field whose default is an EMPTY box (see style-schema.js):
+// `inherits` follows another setting, `auto` keeps the stylesheet's own value.
+// In that state the field writes nothing — applyStyleSettings removes its
+// variable — and this is the one test of whether a value IS that state.
+export function styleFieldFollows(field) {
+  return Boolean(field?.inherits || field?.auto);
+}
+
+export function isStyleFollowValue(field, value) {
+  if (!styleFieldFollows(field)) return false;
+  const raw = String(value ?? "").trim();
+  return raw === "" || (field.inherits && raw === "inherit") || (field.auto && raw === "auto");
+}
+
 export function isStyleValueUsable(field, value) {
   if (!field || field.type === "select") return true;
   const raw = String(value ?? "").trim();
-  if (!raw) return Boolean(field.inherits);
-  if (field.inherits && raw === "inherit") return true;
+  if (!raw) return styleFieldFollows(field);
+  if (isStyleFollowValue(field, raw)) return true;
   if (field.probe === "number") return /^-?\d*\.?\d+%?$/.test(raw) && Number.isFinite(parseFloat(raw));
   // The layout boxes: a bare number is a percent (of whatever unit
   // applyStyleSettings gives that box), anything else must be a CSS length.
@@ -87,25 +101,73 @@ export function isStyleValueUsable(field, value) {
 // so emptying the box is how you get back there.
 export function styleDisplayValue(key, value) {
   const field = styleFieldByKey[key];
-  if (field?.inherits && (value === "inherit" || value === "")) return "";
+  if (isStyleFollowValue(field, value)) return "";
   return value ?? "";
 }
 
 // The placeholder: the default for most boxes; for a follows-another-setting
-// box, what it follows and that setting's current value.
+// box, what it follows and that setting's current value; for an `auto` box, the
+// value the app uses on its own.
 function stylePlaceholder(key, settings, defaults) {
   const field = styleFieldByKey[key];
   if (field?.inherits) return `${field.inherits.label} · ${settings?.[field.inherits.key] ?? defaults[field.inherits.key] ?? ""}`;
+  // Just the value: the box is narrow, and a placeholder is already greyed —
+  // which is the whole of "this is the app's own, not something you typed".
+  if (field?.auto) return field.auto;
   return defaults[key] || "";
+}
+
+// ── Where the controls are ──────────────────────────────────────────────────
+//
+// The Theme & App panel (#styleControls) and, while one is open, a section's
+// popover (src/ui/style-popover.js). Every input carries data-style-key, so
+// everything below works on whichever of them holds the key — and never assumes
+// one host holds every key, which is what the single panel used to let it do.
+const extraStyleHosts = new Set();
+
+export function registerStyleHost(root) {
+  if (root) extraStyleHosts.add(root);
+}
+
+export function unregisterStyleHost(root) {
+  extraStyleHosts.delete(root);
+}
+
+function isStylePanelOpen() {
+  return Boolean(el.stylePanel && !el.stylePanel.hidden);
+}
+
+// Is any place that edits style on screen? (The panel, or a section popover.)
+export function isStyleEditorOpen() {
+  return isStylePanelOpen() || [...extraStyleHosts].some((root) => root.isConnected);
+}
+
+// Every rendered host, open or not: painting a hidden one is harmless and keeps
+// it right for when it next opens.
+function allStyleHosts() {
+  return [el.styleControls, ...extraStyleHosts].filter((root) => root && root.isConnected);
+}
+
+// Only the hosts on screen — the ones whose values are the reader's, as opposed
+// to a hidden panel still holding what it said the last time it was open.
+function openStyleHosts() {
+  return [isStylePanelOpen() ? el.styleControls : null, ...extraStyleHosts].filter((root) => root && root.isConnected);
+}
+
+function styleInputs(hosts = allStyleHosts()) {
+  return hosts.flatMap((root) => [...root.querySelectorAll("[data-style-key]")]);
+}
+
+function currentEditProfile() {
+  return styleProfiles.includes(state.styleEditProfile) ? state.styleEditProfile : detectStyleProfile();
 }
 
 // Paints the two per-field affordances: the invalid marker, and the ↺ that only
 // appears once a value differs from this profile's default.
 export function updateStyleFieldStates() {
-  if (!el.styleControls) return;
-  const editProfile = styleProfiles.includes(state.styleEditProfile) ? state.styleEditProfile : detectStyleProfile();
+  const editProfile = currentEditProfile();
   const defaults = defaultStyleProfiles[editProfile] || styleDefaults;
-  el.styleControls.querySelectorAll("[data-style-key]").forEach((input) => {
+  styleInputs().forEach((input) => {
     const key = input.dataset.styleKey;
     const field = styleFieldByKey[key];
     const usable = isStyleValueUsable(field, input.value);
@@ -203,7 +265,28 @@ const CODE_MARK_SCALES = { subtle: "0.7", medium: "1", strong: "1.5" };
 
 // 5: the panel became Global / Text per tab / Spacing & controls. Notes got its
 // own raw-editor and code sizes, and the spacing defaults went tight.
-export const STYLE_SETTINGS_VERSION = 5;
+// 6: one section per surface, each edited from its own ◐. Settings that several
+// surfaces used to share were split, one per section (styleV6Seeds).
+export const STYLE_SETTINGS_VERSION = 6;
+
+// The v6 upgrade, applied to a profile stored before it: each split-off key
+// starts as a copy of the shared value it came from, so no section changes the
+// day it gets its own control. Only where the new key is absent — a v6 value
+// somebody chose is never overwritten — and only from a value that was actually
+// stored; an absent source leaves the default, which equals the source's.
+//
+// Also what makes a sync from an older build harmless: its payload says v5 and
+// carries none of these keys, so they are re-seeded from the shared values it
+// does carry rather than reset.
+function upgradeToV6(settings) {
+  if (!settings || typeof settings !== "object") return settings;
+  const has = (key) => Object.prototype.hasOwnProperty.call(settings, key);
+  const next = { ...settings };
+  styleV6Seeds.forEach(([key, source]) => {
+    if (!has(key) && has(source)) next[key] = settings[source];
+  });
+  return next;
+}
 
 // The v5 upgrade, applied once to a profile stored before it.
 //
@@ -243,7 +326,12 @@ export function normalizeStyleProfiles(raw = {}) {
     return rest;
   };
 
-  const upgrade = (settings, profile) => (storedVersion >= 5 ? settings : upgradeToV5(dropPreV3(settings), profile));
+  const upgrade = (settings, profile) => {
+    let out = settings;
+    if (storedVersion < 5) out = upgradeToV5(dropPreV3(out), profile);
+    if (storedVersion < 6) out = upgradeToV6(out);
+    return out;
+  };
 
   if (!hasProfiles) {
     const legacy = normalizeStyleSettings(upgrade(migrateLegacyStyleSettings(source), "desktop"), "desktop");
@@ -315,28 +403,7 @@ export function setStyleStatus(message) {
   if (el.styleSyncStatus) el.styleSyncStatus.textContent = message;
 }
 
-// The tab the Text section is showing. Module state, not persisted: the panel
-// opens on whatever surface you were looking at (see openStylePanel), which is
-// almost always the one you meant to tune.
-let styleTextTab = styleTextTabs[0].id;
-
-export function currentStyleTextTab() {
-  return styleTextTab;
-}
-
-export function setStyleTextTab(tab) {
-  if (!styleTextTabs.some(({ id }) => id === tab)) return;
-  styleTextTab = tab;
-  if (!el.styleControls) return;
-  el.styleControls.querySelectorAll("button[data-style-tab]").forEach((button) => {
-    const active = button.dataset.styleTab === tab;
-    button.classList.toggle("is-active", active);
-    button.setAttribute("aria-selected", String(active));
-  });
-  el.styleControls.querySelectorAll("[data-style-tab-body]").forEach((body) => {
-    body.hidden = body.dataset.styleTabBody !== tab;
-  });
-}
+// ── Building the controls ───────────────────────────────────────────────────
 
 // One row: name (with its ↺), the control, and a one-line hint the stylesheet
 // only shows while the row has focus — the hints were half the panel's height.
@@ -386,7 +453,7 @@ function buildStyleField(field) {
     control = document.createElement("input");
     control.type = "text";
     control.spellcheck = false;
-    control.placeholder = styleDefaults[field.key] || "";
+    control.placeholder = stylePlaceholder(field.key, null, styleDefaults);
     control.dataset.unit = field.unit || "";
   }
   control.dataset.styleKey = field.key;
@@ -417,21 +484,25 @@ function buildStyleBlock(section, title) {
   return block;
 }
 
-function buildStyleSubhead(text) {
-  const sub = document.createElement("h3");
-  sub.className = "style-subhead";
-  sub.textContent = text;
-  return sub;
+// One section's controls: a box per group, in schema order. The same builder
+// fills the Theme & App panel and every section popover, so a control looks and
+// behaves the same wherever it is reached from.
+export function buildStyleScope(scope) {
+  const fragment = document.createDocumentFragment();
+  styleControlGroups.filter((group) => group.scope === scope).forEach((group) => {
+    const block = buildStyleBlock(scope, group.title);
+    block.dataset.styleGroup = group.title;
+    block.appendChild(buildStyleFieldList(group.fields));
+    fragment.appendChild(block);
+  });
+  return fragment;
 }
 
-export function renderStyleControls() {
-  if (!el.styleControls || el.styleControls.dataset.rendered === "true") return;
-  const themeField = el.styleControls.querySelector(".style-field");
-  el.styleControls.innerHTML = "";
-  if (themeField) el.styleControls.appendChild(themeField);
-
+// The Desktop / Mobile switch: which profile these controls edit. Shared by the
+// panel and the popovers; the buttons are found by data-style-profile.
+export function buildStyleProfileToggle({ compact = false } = {}) {
   const profileField = document.createElement("section");
-  profileField.className = "style-profile-field";
+  profileField.className = compact ? "style-profile-field is-compact" : "style-profile-field";
   profileField.setAttribute("aria-label", "Style profile");
 
   const profileHeader = document.createElement("div");
@@ -439,7 +510,7 @@ export function renderStyleControls() {
   const profileTitle = document.createElement("span");
   profileTitle.textContent = "Editing profile";
   const profileBadge = document.createElement("strong");
-  profileBadge.id = "styleProfileBadge";
+  profileBadge.dataset.styleProfileBadge = "";
   profileHeader.append(profileTitle, profileBadge);
   profileField.appendChild(profileHeader);
 
@@ -455,48 +526,25 @@ export function renderStyleControls() {
   profileField.appendChild(profileButtons);
 
   const profileHint = document.createElement("small");
-  profileHint.id = "styleProfileHint";
+  profileHint.dataset.styleProfileHint = "";
   profileField.appendChild(profileHint);
-  el.styleControls.appendChild(profileField);
+  return profileField;
+}
 
-  const groupsIn = (section) => styleControlGroups.filter((group) => group.section === section);
+// The Theme & App panel: the theme picker (static, in index.html), the profile,
+// Density, the `app` section, and a list of every other section — each of which
+// has its own ◐ where it lives, and can also be opened from here.
+export function renderStyleControls() {
+  if (!el.styleControls || el.styleControls.dataset.rendered === "true") return;
+  const themeField = el.styleControls.querySelector(".style-field");
+  el.styleControls.innerHTML = "";
+  if (themeField) el.styleControls.appendChild(themeField);
 
-  // ── 1 Global ──────────────────────────────────────────────────────────
-  const global = buildStyleBlock("global", "Global");
-  groupsIn("global").forEach((group, index) => {
-    if (index > 0) global.appendChild(buildStyleSubhead(group.title));
-    global.appendChild(buildStyleFieldList(group.fields));
-  });
-  el.styleControls.appendChild(global);
+  el.styleControls.appendChild(buildStyleProfileToggle());
 
-  // ── 2 Text, one tab at a time ─────────────────────────────────────────
-  const text = buildStyleBlock("text", "Text");
-  const tabRow = document.createElement("div");
-  tabRow.className = "style-tab-toggle";
-  tabRow.setAttribute("role", "tablist");
-  tabRow.setAttribute("aria-label", "Text settings for");
-  styleTextTabs.forEach(({ id, label }) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.setAttribute("role", "tab");
-    button.dataset.styleTab = id;
-    button.textContent = label;
-    tabRow.appendChild(button);
-  });
-  text.appendChild(tabRow);
-  groupsIn("text").forEach((group) => {
-    const body = buildStyleFieldList(group.fields);
-    body.dataset.styleTabBody = group.tab;
-    body.setAttribute("role", "tabpanel");
-    body.setAttribute("aria-label", group.title);
-    text.appendChild(body);
-  });
-  el.styleControls.appendChild(text);
-
-  // ── 3 Spacing & controls ──────────────────────────────────────────────
-  // Density sits here because it only ever writes these fields (see
-  // styleDensityPresets): a shortcut, not a mode — the fields stay what decides.
-  const spacing = buildStyleBlock("spacing", "Spacing & controls");
+  // Density writes the spacing fields of EVERY section (see styleDensityPresets):
+  // a shortcut, not a mode — the fields stay what decides.
+  const density = buildStyleBlock("density", "Density — spacing in every section");
   const densityButtons = document.createElement("div");
   densityButtons.className = "style-density-toggle";
   densityButtons.setAttribute("aria-label", "Density");
@@ -507,32 +555,35 @@ export function renderStyleControls() {
     button.textContent = preset.charAt(0).toUpperCase() + preset.slice(1);
     densityButtons.appendChild(button);
   });
-  spacing.appendChild(densityButtons);
-  groupsIn("spacing").forEach((group) => {
-    spacing.appendChild(buildStyleSubhead(group.title));
-    spacing.appendChild(buildStyleFieldList(group.fields));
-  });
-  el.styleControls.appendChild(spacing);
+  density.appendChild(densityButtons);
+  el.styleControls.appendChild(density);
 
-  // ── More: everything that isn't a size, folded shut ───────────────────
-  const more = document.createElement("details");
-  more.className = "style-advanced";
-  more.dataset.styleSection = "more";
-  more.open = false;
-  const moreHeading = document.createElement("summary");
-  moreHeading.textContent = "More";
-  more.appendChild(moreHeading);
-  const moreBody = document.createElement("div");
-  moreBody.className = "style-advanced-body";
-  groupsIn("more").forEach((group) => {
-    moreBody.appendChild(buildStyleSubhead(group.title));
-    moreBody.appendChild(buildStyleFieldList(group.fields));
+  el.styleControls.appendChild(buildStyleScope("app"));
+
+  const sections = buildStyleBlock("sections", "Section styles");
+  const intro = document.createElement("p");
+  intro.className = "style-sections-intro";
+  intro.textContent = "Each part of the app has its own ◐ button, beside it. These open the same controls from here.";
+  sections.appendChild(intro);
+  const list = document.createElement("div");
+  list.className = "style-sections-list";
+  styleScopes.filter(({ id }) => id !== "app").forEach(({ id, label, entry }) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "style-section-link";
+    button.dataset.styleOpenScope = id;
+    const name = document.createElement("span");
+    name.className = "style-section-link-name";
+    name.textContent = label;
+    const where = document.createElement("small");
+    where.textContent = entry;
+    button.append(name, where);
+    list.appendChild(button);
   });
-  more.appendChild(moreBody);
-  el.styleControls.appendChild(more);
+  sections.appendChild(list);
+  el.styleControls.appendChild(sections);
 
   el.styleControls.dataset.rendered = "true";
-  setStyleTextTab(styleTextTab);
 }
 
 export function numericStyleValue(value) {
@@ -541,35 +592,34 @@ export function numericStyleValue(value) {
 }
 
 export function updateStyleProfileUi() {
-  if (!el.styleControls) return;
   const activeProfile = detectStyleProfile();
-  const editProfile = styleProfiles.includes(state.styleEditProfile) ? state.styleEditProfile : activeProfile;
-  const badge = el.styleControls.querySelector("#styleProfileBadge");
-  const hint = el.styleControls.querySelector("#styleProfileHint");
-  if (badge) badge.textContent = styleProfileLabel(editProfile);
-  if (hint) {
-    const activeLabel = styleProfileLabel(activeProfile);
-    const editLabel = styleProfileLabel(editProfile);
-    hint.textContent = editProfile === activeProfile
-      ? `${activeLabel} values are active on this screen.`
-      : `Editing ${editLabel} values. This screen is currently using ${activeLabel}.`;
-  }
-  el.styleControls.querySelectorAll("[data-style-profile]").forEach((button) => {
-    const isEditProfile = button.dataset.styleProfile === editProfile;
-    const isActiveProfile = button.dataset.styleProfile === activeProfile;
-    button.classList.toggle("is-active", isEditProfile);
-    button.classList.toggle("is-device", isActiveProfile);
-    button.setAttribute("aria-pressed", String(isEditProfile));
+  const editProfile = currentEditProfile();
+  allStyleHosts().forEach((root) => {
+    root.querySelectorAll("[data-style-profile-badge]").forEach((badge) => { badge.textContent = styleProfileLabel(editProfile); });
+    root.querySelectorAll("[data-style-profile-hint]").forEach((hint) => {
+      const activeLabel = styleProfileLabel(activeProfile);
+      const editLabel = styleProfileLabel(editProfile);
+      hint.textContent = editProfile === activeProfile
+        ? `${activeLabel} values are active on this screen.`
+        : `Editing ${editLabel} values. This screen is currently using ${activeLabel}.`;
+    });
+    root.querySelectorAll("button[data-style-profile]").forEach((button) => {
+      const isEditProfile = button.dataset.styleProfile === editProfile;
+      const isActiveProfile = button.dataset.styleProfile === activeProfile;
+      button.classList.toggle("is-active", isEditProfile);
+      button.classList.toggle("is-device", isActiveProfile);
+      button.setAttribute("aria-pressed", String(isEditProfile));
+    });
   });
 }
 
 export function updateStyleControls() {
   renderStyleControls();
-  const editProfile = styleProfiles.includes(state.styleEditProfile) ? state.styleEditProfile : detectStyleProfile();
+  const editProfile = currentEditProfile();
   const settings = getStyleProfileSettings(editProfile);
   const defaults = defaultStyleProfiles[editProfile] || styleDefaults;
   updateStyleProfileUi();
-  el.styleControls?.querySelectorAll("[data-style-key]").forEach((input) => {
+  styleInputs().forEach((input) => {
     // NEVER rewrite the field being typed in. This runs on every keystroke —
     // the input listener applies the change, applyStyleSettings calls back in
     // here, and this line used to overwrite the caret out from under you. The
@@ -579,7 +629,7 @@ export function updateStyleControls() {
     // property, taking out whatever read it. Two keystrokes to break the app's
     // text sizing, with no way to type a two-digit number at all.
     //
-    // The field is normalized on focusout instead (see the listener below), so
+    // The field is normalized on focusout instead (see wireStyleHost), so
     // "28" still becomes "28px" — just once you've finished saying it.
     const key = input.dataset.styleKey;
     input.placeholder = stylePlaceholder(key, settings, defaults);
@@ -587,6 +637,72 @@ export function updateStyleControls() {
     input.value = styleDisplayValue(key, settings[key]);
   });
   updateStyleFieldStates();
+}
+
+// Which profile the controls edit. Lives here rather than in the cloud module
+// that used to own it so the section popovers can switch it without importing
+// the sync code; src/cloud/style-sync.js re-exports it.
+export function switchStyleEditProfile(profile, options = {}) {
+  if (!styleProfiles.includes(profile)) return;
+  state.styleEditProfile = profile;
+  state.styleEditProfileFollowsDevice = options.followDevice ?? false;
+  updateStyleControls();
+  setStyleStatus(`Editing ${styleProfileLabel(profile).toLowerCase()} style`);
+}
+
+// ── One set of listeners, for every host ─────────────────────────────────────
+//
+// The panel and each popover are wired by the same function, so a control does
+// exactly the same thing wherever it was reached from. `onOpenScope` is how the
+// panel's "Section styles" list asks for a section (the popover module answers).
+export function wireStyleHost(root, { onOpenScope = null, onResetScope = null } = {}) {
+  if (!root || root.dataset.styleWired === "true") return;
+  root.dataset.styleWired = "true";
+  // `button[...]`, not a bare attribute selector. applyActiveStyleSettings puts
+  // data-style-profile on <html>, and closest() walks all the way to the root —
+  // so `closest("[data-style-profile]")` matched the DOCUMENT ELEMENT for every
+  // click that landed anywhere in this panel. The buttons are the only real
+  // targets here, so say so.
+  root.addEventListener("click", (event) => {
+    const profileButton = event.target.closest("button[data-style-profile]");
+    if (profileButton) { switchStyleEditProfile(profileButton.dataset.styleProfile); return; }
+
+    const densityButton = event.target.closest("button[data-style-density]");
+    if (densityButton) { applyStyleDensity(densityButton.dataset.styleDensity); return; }
+
+    const resetButton = event.target.closest("button[data-style-reset]");
+    if (resetButton) { resetStyleField(resetButton.dataset.styleReset); return; }
+
+    const scopeReset = event.target.closest("button[data-style-reset-scope]");
+    if (scopeReset) { (onResetScope || resetStyleScope)(scopeReset.dataset.styleResetScope); return; }
+
+    const scopeButton = event.target.closest("button[data-style-open-scope]");
+    if (scopeButton && onOpenScope) { onOpenScope(scopeButton.dataset.styleOpenScope, scopeButton); return; }
+  });
+  root.addEventListener("input", (event) => {
+    if (event.target.matches("[data-style-key]")) handleStyleControlChange();
+  });
+  root.addEventListener("change", (event) => {
+    if (event.target.matches("[data-style-key]")) handleStyleControlChange();
+  });
+  // Normalization happens HERE, not on every keystroke. updateStyleControls
+  // refuses to touch the focused field (that's what fixed typing), so this is
+  // where "28" finally becomes "28px" and a field left empty gets the default
+  // put back into it.
+  root.addEventListener("focusout", (event) => {
+    if (!event.target.matches("[data-style-key]")) return;
+    const defaults = defaultStyleProfiles[currentEditProfile()] || styleDefaults;
+    const key = event.target.dataset.styleKey;
+    // An emptied follows-Notes (or automatic) box stays empty: that IS its
+    // follow state, and its placeholder says so.
+    const normalized = styleDisplayValue(key, normalizeStyleValue(key, event.target.value, defaults[key]));
+    // Leaving a field you didn't touch is not an edit. Without this, tabbing
+    // through the panel would mark the profile "Unsynced" and set styleTouched,
+    // which also makes Sync Down refuse to overwrite (see loadStyleFromWeb).
+    if (normalized === event.target.value) return;
+    event.target.value = normalized;
+    handleStyleControlChange();
+  });
 }
 
 export function applyStyleSettings(rawSettings, options = {}) {
@@ -635,29 +751,31 @@ export function applyStyleSettings(rawSettings, options = {}) {
   } else {
     root.style.removeProperty("--notes-font-family");
   }
-  // ── The highlights pane's three type fields ──────────────────────────────
-  //
-  // Same device as notesFontFamily above, for the same reason and with the same
-  // effect: "inherit" is not a value to write, it is an instruction NOT to. The
-  // rules in styles/44-highlights-editor.css read each of these as
-  // `var(--hl-note-font-size, var(--notes-font-size))`, so removing ours hands
-  // the surface back to the Notes scale — which is what it has always claimed to
-  // use and, until this commit, silently did not. Writing the literal word
-  // "inherit" would be a different thing entirely: `font-size: inherit` on
-  // .hl-notes inherits from the PANE, not from the notes.
-  [
-    ["hlNoteFontSize", "--hl-note-font-size"],
-    ["hlNoteLineHeight", "--hl-note-line-height"],
-    ["hlNoteWeight", "--hl-note-weight"]
-  ].forEach(([key, cssVariable]) => {
-    const value = settings[key];
-    if (!value || value === "inherit") root.style.removeProperty(cssVariable);
-    else root.style.setProperty(cssVariable, usable(key));
-  });
   root.style.setProperty("--question-justify-items", questionJustifyItems(settings.questionAlign));
+  // The generic writes. An `inherits` or `auto` field in its empty state is not
+  // a value to write, it is an instruction NOT to: same device as
+  // notesFontFamily above. The rules that read one carry their own fallback —
+  // `var(--hl-note-font-size, var(--notes-font-size))`, `var(--toc-font-size,
+  // 0.82rem)` — so removing ours hands the surface back to what it follows, or
+  // to the stylesheet's own value. Writing the literal word "inherit" would be a
+  // different thing entirely: `font-size: inherit` on .hl-notes inherits from
+  // the PANE, not from the notes. And the fallback for an unusable value is
+  // checked too: an `auto` field's default IS "auto", which must not be written.
   Object.entries(styleCssVariables).forEach(([key, cssVariable]) => {
-    root.style.setProperty(cssVariable, usable(key));
+    const field = styleFieldByKey[key];
+    const value = usable(key);
+    if (isStyleFollowValue(field, value)) root.style.removeProperty(cssVariable);
+    else root.style.setProperty(cssVariable, value);
   });
+  // Highlights in text. The tint is a bare number in storage and a factor on the
+  // page (styles/12-notes.css multiplies each colour's own strength by it); the
+  // note underline is a choice that is two properties, because "none" is a
+  // text-decoration-line and the rest are text-decoration-styles.
+  const tint = numericStyleValue(settings.markTintPercent) ?? numericStyleValue(profileDefaults.markTintPercent) ?? 100;
+  root.style.setProperty("--mark-tint", String(Math.max(0, tint) / 100));
+  const underline = settings.markNoteUnderline || "dotted";
+  root.style.setProperty("--mark-note-line", underline === "none" ? "none" : "underline");
+  root.style.setProperty("--mark-note-style", underline === "none" ? "dotted" : underline);
   // --question-padding/--answer-padding and --textarea-min-height are NOT set
   // here: their controls were removed (the first padded inside cardPadding —
   // two ways to push the same text inward; the second only sized the import
@@ -692,8 +810,9 @@ export function applyStyleSettings(rawSettings, options = {}) {
   root.style.setProperty("--card-mobile-max-height", layout("cardMaxHeightPercent", "dvh"));
   root.style.setProperty("--modal-width", layout("modalWidthPercent", "vw"));
   root.style.setProperty("--visual-max-width", layout("visualMaxWidthPercent", "%"));
+  root.style.setProperty("--notes-visual-max-width", layout("notesVisualMaxWidthPercent", "%"));
 
-  if (!el.stylePanel || el.stylePanel.hidden || state.styleEditProfile === state.activeStyleProfile) {
+  if (!isStyleEditorOpen() || state.styleEditProfile === state.activeStyleProfile) {
     updateStyleControls();
   } else {
     updateStyleProfileUi();
@@ -782,15 +901,23 @@ export function questionJustifyItems(align) {
   return "start";
 }
 
+// What the controls on screen say, ON TOP OF what is stored.
+//
+// The merge is the whole point. This used to read every control in the one
+// panel and normalize the result, which was right while the panel held every
+// key; a section popover holds five, and normalizing five keys back-fills the
+// other ninety with defaults — one keystroke in "Contents" would have reset
+// everyone's card sizes. Only hosts on screen are read, so a hidden panel still
+// holding what it said the last time it was open cannot overwrite anything.
 export function styleSettingsFromControls() {
-  const settings = {};
-  el.styleControls?.querySelectorAll("[data-style-key]").forEach((input) => {
-    settings[input.dataset.styleKey] = input.value;
-  });
   // Normalize against the profile being EDITED. Without the argument this
   // defaulted to "desktop", so anything the controls didn't supply was
   // back-filled with desktop values while you were editing the Mobile profile.
-  const editProfile = styleProfiles.includes(state.styleEditProfile) ? state.styleEditProfile : detectStyleProfile();
+  const editProfile = currentEditProfile();
+  const settings = { ...getStyleProfileSettings(editProfile) };
+  styleInputs(openStyleHosts()).forEach((input) => {
+    settings[input.dataset.styleKey] = input.value;
+  });
   return normalizeStyleSettings(settings, editProfile);
 }
 
@@ -809,17 +936,27 @@ export function scheduleStyleRefit() {
   }, 200);
 }
 
-export function handleStyleControlChange() {
+// Save these settings to the profile being edited, put them on the page if that
+// profile is this screen's, and repaint the controls. Every edit path ends here
+// — typing, ↺, Reset this section, Density — so they cannot drift apart.
+function commitStyleEdit(settings, { repaint = false, force = false, status = null } = {}) {
   state.styleTouched = true;
-  const editProfile = styleProfiles.includes(state.styleEditProfile) ? state.styleEditProfile : detectStyleProfile();
-  const settings = setStyleProfileSettings(editProfile, styleSettingsFromControls());
-  if (editProfile === detectStyleProfile()) applyActiveStyleSettings();
+  const editProfile = currentEditProfile();
+  const saved = setStyleProfileSettings(editProfile, settings);
+  if (editProfile === detectStyleProfile()) applyActiveStyleSettings(force ? { force: true } : {});
   else updateStyleProfileUi();
+  // A path that did not type into the controls has to tell them: applying only
+  // repaints them when this screen's profile is the one being edited.
+  if (repaint) updateStyleControls();
   scheduleMarkdownTableFit();
   scheduleStyleRefit();
   updateStyleFieldStates();
-  setStyleStatus(`Unsynced ${styleProfileLabel(editProfile).toLowerCase()} style`);
-  return settings;
+  setStyleStatus(status || `Unsynced ${styleProfileLabel(editProfile).toLowerCase()} style`);
+  return saved;
+}
+
+export function handleStyleControlChange() {
+  return commitStyleEdit(styleSettingsFromControls());
 }
 
 // ── Reset ──────────────────────────────────────────────────────────
@@ -829,20 +966,43 @@ export function handleStyleControlChange() {
 // decks with it.
 export function resetStyleField(key) {
   if (!styleFieldByKey[key]) return;
-  const editProfile = styleProfiles.includes(state.styleEditProfile) ? state.styleEditProfile : detectStyleProfile();
-  const defaults = defaultStyleProfiles[editProfile] || styleDefaults;
-  const input = el.styleControls?.querySelector(`[data-style-key="${key}"]`);
-  if (!input) return;
-  input.value = styleDisplayValue(key, defaults[key]);
-  handleStyleControlChange();
+  const defaults = defaultStyleProfiles[currentEditProfile()] || styleDefaults;
+  // Straight to the settings, not through the box: the box may be the one with
+  // focus, which updateStyleControls will not touch, so it is set here too.
+  styleInputs().filter((input) => input.dataset.styleKey === key).forEach((input) => {
+    input.value = styleDisplayValue(key, defaults[key]);
+  });
+  commitStyleEdit({ ...styleSettingsFromControls(), [key]: defaults[key] }, { repaint: true });
+}
+
+// One section back to its defaults, and nothing else: the reason sections exist
+// is that tuning one cannot move another, and a reset is a tuning too.
+export function resetStyleScope(scope) {
+  const keys = styleScopeKeys(scope);
+  if (!keys.length) return;
+  const editProfile = currentEditProfile();
+  const label = styleProfileLabel(editProfile);
+  const sectionLabel = styleScopeById[scope]?.label || scope;
+  showConfirmModal(
+    `Put the ${sectionLabel} style controls on the ${label.toLowerCase()} profile back to their defaults? Every other section is left alone.`,
+    () => {
+      const defaults = defaultStyleProfiles[editProfile] || styleDefaults;
+      const next = { ...getStyleProfileSettings(editProfile) };
+      keys.forEach((key) => { next[key] = defaults[key]; });
+      commitStyleEdit(next, { repaint: true, force: true, status: `${sectionLabel} style reset to defaults` });
+      if (state.previewCard || state.cards[state.current]) showCard();
+      showToast(`${sectionLabel} style reset`, "success");
+    },
+    { confirmLabel: "Reset" }
+  );
 }
 
 export function resetStyleProfile() {
-  const editProfile = styleProfiles.includes(state.styleEditProfile) ? state.styleEditProfile : detectStyleProfile();
+  const editProfile = currentEditProfile();
   const label = styleProfileLabel(editProfile);
   const other = editProfile === "desktop" ? "mobile" : "desktop";
   showConfirmModal(
-    `Put every ${label.toLowerCase()} style control back to its default? Your theme and your ${other} profile are left alone.`,
+    `Put every ${label.toLowerCase()} style control, in every section, back to its default? Your theme and your ${other} profile are left alone.`,
     () => {
       state.styleTouched = true;
       setStyleProfileSettings(editProfile, { ...defaultStyleProfiles[editProfile] });
@@ -856,19 +1016,18 @@ export function resetStyleProfile() {
   );
 }
 
-// Writes the preset's real control values, then hands off to the normal change
-// path so it saves, applies and re-paints exactly like typing them would.
+// Writes the preset's real values — into every section it covers, most of which
+// are not on screen — then saves, applies and re-paints exactly like typing
+// them would.
 export function applyStyleDensity(preset) {
-  const editProfile = styleProfiles.includes(state.styleEditProfile) ? state.styleEditProfile : detectStyleProfile();
+  const editProfile = currentEditProfile();
   const values = styleDensityPresets[editProfile]?.[preset];
   if (!values) return;
-  Object.entries(values).forEach(([key, value]) => {
-    const input = el.styleControls?.querySelector(`[data-style-key="${key}"]`);
-    if (input) input.value = value;
+  commitStyleEdit({ ...styleSettingsFromControls(), ...values }, {
+    repaint: true,
+    force: true,
+    status: `${styleProfileLabel(editProfile)} density: ${preset}`
   });
-  handleStyleControlChange();
-  if (editProfile === detectStyleProfile()) applyActiveStyleSettings({ force: true });
-  setStyleStatus(`${styleProfileLabel(editProfile)} density: ${preset}`);
 }
 
 export function forceStyleRefresh() {

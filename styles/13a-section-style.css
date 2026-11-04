@@ -1,0 +1,117 @@
+/* ── Section styles over the original slices ─────────────────────────────────
+ *
+ * The 13 slices before this file stay byte-for-byte what styles.css was
+ * (tools/split-css.mjs), so a value in them that a section's ◐ now controls
+ * (src/ui/style-schema.js) is taken over HERE, by the same selector, rather
+ * than edited in place. Loaded straight after the last slice and before every
+ * file added since, so each rule lands where an in-place edit would have —
+ * every later file that already overrode it still does. A rule a later SLICE
+ * overrode (a phone layout, mostly) is restated below in the same media query,
+ * with that slice's value as its fallback.
+ *
+ * Every var() falls back to the literal it replaces. The new controls default
+ * to "auto", which writes nothing (applyStyleSettings), so until somebody types
+ * a value this file changes nothing at all.
+ */
+
+/* ── Theme & App → Dialog corners ─────────────────────────────────────────────
+   It was the study panel's corners too (styles/01-tokens.css); split in v6. */
+:root {
+  --modal-radius: var(--dialog-corner-radius, var(--panel-corner-radius));
+}
+
+/* ── ◐ Highlights in text (styles/12-notes.css) ──────────────────────────────
+   The tint's strength is a factor on each colour's own, and the corners are the
+   reader's to round. */
+.rendered mark {
+  background: color-mix(in srgb, #e0b400 calc(35% * var(--mark-tint, 1)), transparent);
+  border-radius: var(--mark-radius, 3px);
+}
+
+.rendered mark[data-color="yellow"] { background: color-mix(in srgb, #e0b400 calc(35% * var(--mark-tint, 1)), transparent); }
+.rendered mark[data-color="green"]  { background: color-mix(in srgb, #22c55e calc(33% * var(--mark-tint, 1)), transparent); }
+.rendered mark[data-color="blue"]   { background: color-mix(in srgb, #3b82f6 calc(32% * var(--mark-tint, 1)), transparent); }
+.rendered mark[data-color="pink"]   { background: color-mix(in srgb, #ec4899 calc(30% * var(--mark-tint, 1)), transparent); }
+.rendered mark[data-color="orange"] { background: color-mix(in srgb, #f97316 calc(33% * var(--mark-tint, 1)), transparent); }
+.rendered mark[data-color="purple"] { background: color-mix(in srgb, #8b5cf6 calc(30% * var(--mark-tint, 1)), transparent); }
+
+/* ── ◐ Contents (styles/11-chrome.css, 12-notes.css) ─────────────────────────
+   The drawer's width is one variable on the stage, declared in three places
+   for three states; all three take the reader's width when there is one. */
+.notes-stage {
+  --toc-width: var(--toc-width-setting, min(300px, 82%));
+}
+
+.quiz-panel.notes-mode .notes-stage:not([hidden]) {
+  --toc-width: var(--toc-width-setting, min(300px, 82%));
+}
+
+@media (max-width: 720px) {
+  .notes-stage {
+    --toc-width: var(--toc-width-setting, min(320px, 88%));
+  }
+}
+
+.notes-toc-link {
+  padding: var(--toc-row-padding, 3px 8px);
+}
+
+/* ── ◐ All Cards (styles/09-all-cards.css) ───────────────────────────────── */
+.all-card .rendered {
+  font-size: var(--all-cards-font-size, 0.95rem);
+  line-height: var(--all-cards-line-height, 1.45);
+}
+
+/* ── ◐ Quick Notes (styles/13-quick-notes.css) ───────────────────────────── */
+.qn-grid {
+  grid-template-columns: repeat(auto-fill, minmax(var(--qn-column-width, 240px), 1fr));
+}
+
+.qn-card {
+  border-radius: var(--qn-card-radius, 10px);
+  padding: var(--qn-card-padding, 11px 13px);
+}
+
+.qn-card-body {
+  font-size: var(--qn-font-size, 0.92rem);
+  line-height: var(--qn-line-height, 1.5);
+}
+
+/* A phone keeps its one column — a column width is about how many fit side by
+   side, and there is room for one — and its tighter padding unless one is set. */
+@media (max-width: 640px) {
+  .qn-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .qn-card {
+    padding: var(--qn-card-padding, 10px 11px);
+  }
+}
+
+/* ── ◐ My Files (styles/07-library.css) ──────────────────────────────────── */
+.my-decks-table th,
+.my-decks-table td {
+  font-size: var(--my-files-text-size, 0.84rem);
+}
+
+#myDecksPanel .web-decks-shell {
+  width: var(--my-files-width, min(85vw, 1160px));
+}
+
+.my-decks-grid {
+  grid-template-columns: repeat(auto-fill, minmax(var(--my-files-tile-width, 190px), 1fr));
+}
+
+@media (max-width: 720px) {
+  .my-decks-grid {
+    grid-template-columns: repeat(auto-fill, minmax(var(--my-files-tile-width, 150px), 1fr));
+  }
+}
+
+/* Its own padding, which it used to share with the Import dialog: the variable
+   re-pointed for this panel only, so the rule that reads it (06-rendered.css)
+   and the phone layout's own 14px over it (09-all-cards.css) stay as they are. */
+#myDecksPanel {
+  --modal-padding: var(--my-files-padding, 12px);
+}

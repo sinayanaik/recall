@@ -11,6 +11,7 @@
 // would go through the source search, which is exactly what cannot reliably
 // find a span that already has tags around it.
 
+import { STYLE_ICON_SVG } from "../ui/style-icon.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { MARK_HIGHLIGHT_COLORS } from "../format/highlight-colors.js?v=__BUILD__";
 import { INK_PEN_COLORS } from "../format/ink-colors.js?v=__BUILD__";
@@ -57,7 +58,9 @@ let openedAt = 0;
 // `keyIndex` turns the key back into the ordinal the shared resolvers want.
 const NOTES_MARK_HANDLERS = {
   surface: "notes",
-  actions: ["card", "pin", "highlights", "copy", "share", "search"],
+  // "style" is the Notes' alone: the look it opens is how a highlight is drawn
+  // in rendered text (◐ Highlights in text), which a PDF's marks are not.
+  actions: ["card", "pin", "highlights", "copy", "share", "search", "style"],
   keyIndex: (ref) => highlightRefIndex(ref),
   recolour: (ref, color) => recolourHighlightAt(ref, color),
   remove: (ref) => removeHighlightAt(ref),
@@ -166,7 +169,11 @@ const MARK_MENU_ACTIONS = [
   { id: "saveImage", verb: "saveRegionImage", label: "Save as image", icon: SAVE_IMAGE_ICON, run: "send" },
   { id: "savePdf", verb: "saveRegionPdf", label: "Save as PDF", icon: SAVE_PDF_ICON, run: "send" },
   { id: "share", verb: "share", label: "Share", icon: "&#8599;", run: "send" },
-  { id: "search", verb: "search", label: "Search the web", icon: SEARCH_ICON, run: "send" }
+  { id: "search", verb: "search", label: "Search the web", icon: SEARCH_ICON, run: "send" },
+  // How every highlight in the text is drawn — the tint, its corners, the line
+  // under one with a note (src/ui/style-popover.js, section "marks"). Its own
+  // run: it is about all highlights, not this one.
+  { id: "style", verb: "styleHighlights", label: "Style highlights", icon: STYLE_ICON_SVG, run: "style" }
 ];
 
 export function isMarkMenuOpen() {
@@ -402,7 +409,10 @@ function ensureMarkMenu() {
     // tap is not a scroll frame.
     const action = button.dataset.markAction;
     const surface = set.surface || "notes";
+    const markEl = openForMark;
     closeMarkMenu();
+    // Not about this highlight's words, so it needs none of what follows.
+    if (action === "style") { markActions.styleHighlights?.(markEl); return; }
     if (index == null) return;
     const resolvedKey = typeof set.keyIndex === "function" ? set.keyIndex(index) : index;
     if (resolvedKey == null || resolvedKey < 0) return;

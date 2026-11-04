@@ -42,16 +42,20 @@
      viewport for anything narrower. max-height, not height, so an empty note
      opens as a small box rather than a 560px slab — a size the reader sets
      explicitly overrides it with a real `height`. */
-  width: min(460px, calc(100vw - 24px));
+  width: var(--note-ed-width, min(460px, calc(100vw - 24px)));
   max-height: min(75vh, 560px);
   display: flex;
   flex-direction: column;
   gap: 8px;
   background: var(--card);
   border: 1px solid var(--line);
-  border-radius: 14px;
+  border-radius: var(--note-ed-radius, 14px);
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
-  padding: 12px;
+  padding: var(--note-ed-padding, 12px);
+  /* ◐ Highlight note window: the Markdown box takes this window's own editor
+     size rather than the Cards' raw size it used to share (styles/10-editor.css
+     reads --raw-markdown-font-size). */
+  --raw-markdown-font-size: var(--note-ed-raw-font-size, 18px);
 }
 
 /* An explicit height (the reader resized it) has to beat the max-height above,
@@ -215,6 +219,8 @@
    a note in a list that scrolled inside its own 140px box would be a second
    scroller inside a scroller. */
 .highlight-note-editor .note-editor-rendered {
+  font-size: var(--note-ed-text-size, 0.88rem);
+  line-height: var(--note-ed-line-height, 1.4);
   flex: 1 1 auto;
   min-height: 140px;
   overflow-y: auto;

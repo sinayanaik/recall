@@ -238,29 +238,145 @@ const PROBE = `async (api) => {
     });
   }
 
-  // ── The panel is three sections and a fold ───────────────────────────────
+  // ── The panel is Theme & App; every other section is its own popover ────
+  const fontPx = (node) => parseFloat(getComputedStyle(node).fontSize) || 0;
+  const baseline = { ...api.getStyleProfileSettings(profile) };
   api.updateStyleControls();
   const controls = document.getElementById("styleControls");
-  push("the panel renders Global, Text, Spacing & controls and More", (() => {
-    const sections = [...controls.querySelectorAll("[data-style-section]")].map((node) => node.dataset.styleSection);
-    if (sections.join(",") !== "global,text,spacing,more") return "sections are " + JSON.stringify(sections);
-    if (controls.querySelector('[data-style-section="more"]').open) return "More starts open";
+  push("the Theme & App panel holds the app section and nothing of any other", (() => {
+    const shown = [...controls.querySelectorAll("[data-style-key]")].map((node) => node.dataset.styleKey);
+    const want = api.styleScopeKeys("app");
+    if (shown.join(",") !== want.join(",")) return "the panel holds " + shown.join(",") + ", expected " + want.join(",");
+    const links = [...controls.querySelectorAll("[data-style-open-scope]")].map((node) => node.dataset.styleOpenScope);
+    const others = api.styleScopes.map((scope) => scope.id).filter((id) => id !== "app");
+    if (links.join(",") !== others.join(",")) return "the section list is " + links.join(",");
     return true;
   })());
 
-  push("each Text tab holds exactly its own fields, one tab shown at a time", (() => {
+  push("each section's popover holds exactly that section's fields, and only one is ever open", (() => {
     const problems = [];
-    for (const group of api.styleControlGroups.filter((g) => g.section === "text")) {
-      const body = controls.querySelector('[data-style-tab-body="' + group.tab + '"]');
-      if (!body) { problems.push("no body for " + group.tab); continue; }
-      const keys = [...body.querySelectorAll("[data-style-key]")].map((node) => node.dataset.styleKey).join(",");
-      if (keys !== group.fields.map((f) => f.key).join(",")) problems.push(group.tab + " holds " + keys);
+    for (const { id } of api.styleScopes.filter((scope) => scope.id !== "app")) {
+      api.openSectionStyle(id, null);
+      const pops = document.querySelectorAll(".style-pop");
+      if (pops.length !== 1) { problems.push(pops.length + " popovers open for " + id); continue; }
+      const keys = [...pops[0].querySelectorAll("[data-style-key]")].map((node) => node.dataset.styleKey).join(",");
+      if (keys !== api.styleScopeKeys(id).join(",")) problems.push(id + " holds " + keys);
     }
-    api.setStyleTextTab("notes");
-    const shown = [...controls.querySelectorAll("[data-style-tab-body]")].filter((node) => !node.hidden).map((node) => node.dataset.styleTabBody);
-    if (shown.join(",") !== "notes") problems.push("showing " + JSON.stringify(shown) + " after choosing notes");
+    api.closeSectionStyle();
+    if (document.querySelector(".style-pop")) problems.push("closing left a popover behind");
     return problems.length ? problems.join(" · ") : true;
   })());
+
+  push("every section with controls has a ◐ somewhere in the app", (() => {
+    // The view row's one carries whichever of the four views is showing, so it
+    // answers for all four; the note window's is built when it first opens.
+    const viewScopes = ["cards", "notes", "document", "handwriting"];
+    const built = new Set([...document.querySelectorAll("[data-style-scope-btn]")].map((node) => node.dataset.styleScopeBtn));
+    const missing = api.styleScopes.map((scope) => scope.id)
+      .filter((id) => id !== "app" && id !== "marks" && id !== "noteEditor" && !viewScopes.includes(id) && !built.has(id));
+    if (!document.getElementById("viewStyleBtn")) missing.push("the view row's ◐");
+    return missing.length ? "no ◐ for " + missing.join(", ") : true;
+  })());
+
+  push("typing in a section popover changes that one setting and leaves every other stored", (() => {
+    const before = { ...api.getStyleProfileSettings(profile), cardPadding: "21px", notesPadding: "9px" };
+    api.setStyleProfileSettings(profile, before);
+    api.openSectionStyle("toc", null);
+    const box = document.querySelector('.style-pop [data-style-key="tocFontSize"]');
+    if (!box) { api.closeSectionStyle(); return "no Contents text-size box"; }
+    box.value = "15px";
+    box.dispatchEvent(new Event("input", { bubbles: true }));
+    const after = api.getStyleProfileSettings(profile);
+    api.closeSectionStyle();
+    const changed = Object.keys(after).filter((key) => after[key] !== before[key]);
+    if (changed.join(",") !== "tocFontSize") return "changed: " + changed.join(", ");
+    if (after.tocFontSize !== "15px") return "tocFontSize stored " + after.tocFontSize;
+    return true;
+  })());
+
+  push("a section's reset puts back that section and nothing else", await (async () => {
+    api.setStyleProfileSettings(profile, { ...api.getStyleProfileSettings(profile), tocFontSize: "15px", qnFontSize: "19px" });
+    api.resetStyleScope("toc");
+    await settle(50);
+    document.getElementById("confirmModalOkBtn")?.click();
+    await settle(100);
+    const now = api.getStyleProfileSettings(profile);
+    if (now.tocFontSize !== "auto") return "tocFontSize is " + now.tocFontSize;
+    if (now.qnFontSize !== "19px") return "Quick Notes moved to " + now.qnFontSize;
+    return true;
+  })());
+  await setHighlightStyle(baseline);
+
+  // ── The new controls reach what they name ────────────────────────────────
+  {
+    const tocLink = document.createElement("a");
+    tocLink.className = "notes-toc-link";
+    tocLink.textContent = "Section";
+    document.body.appendChild(tocLink);
+    const qn = document.createElement("div");
+    qn.className = "qn-card-body";
+    qn.textContent = "quick";
+    document.body.appendChild(qn);
+    const mark = document.createElement("mark");
+    mark.dataset.color = "green";
+    mark.textContent = "marked";
+    notes.appendChild(mark);
+    const tint = () => getComputedStyle(mark).backgroundColor;
+    try {
+      const tocBefore = fontPx(tocLink);
+      const qnBefore = fontPx(qn);
+      const tintBefore = tint();
+      push("an automatic control writes nothing, so the app's own sizes stand", (() => {
+        const written = ["--toc-font-size", "--qn-font-size", "--mark-radius", "--note-ed-width"].filter((name) => document.documentElement.style.getPropertyValue(name));
+        if (written.length) return "written: " + written.join(", ");
+        if (Math.abs(tocBefore - 0.82 * 16) > 0.6) return "contents text is " + tocBefore + "px";
+        if (Math.abs(qnBefore - 0.92 * 16) > 0.6) return "quick note text is " + qnBefore + "px";
+        return true;
+      })());
+      await setHighlightStyle({ tocFontSize: "21px", qnFontSize: "23px", markTintPercent: "200" });
+      push("Contents, Quick Notes and the highlight tint each reach their own element", (() => {
+        const problems = [];
+        if (Math.abs(fontPx(tocLink) - 21) > 0.5) problems.push("contents text is " + fontPx(tocLink));
+        if (Math.abs(fontPx(qn) - 23) > 0.5) problems.push("quick note text is " + fontPx(qn));
+        if (tint() === tintBefore) problems.push("the tint did not change (" + tint() + ")");
+        if (Math.abs(fontPx(notes) - api.getStyleProfileSettings(profile).notesFontSize.replace("px", "") * 1) > 0.5) problems.push("the notes moved");
+        return problems.length ? problems.join(" · ") : true;
+      })());
+      await setHighlightStyle({ tocFontSize: "garbage(", qnFontSize: "auto" });
+      push("an unusable value falls back to the app's own size, not to the word auto", (() => {
+        if (document.documentElement.style.getPropertyValue("--toc-font-size")) return "--toc-font-size is " + document.documentElement.style.getPropertyValue("--toc-font-size");
+        if (Math.abs(fontPx(tocLink) - tocBefore) > 0.5) return "contents text is " + fontPx(tocLink) + "px";
+        return true;
+      })());
+    } finally {
+      tocLink.remove();
+      qn.remove();
+      mark.remove();
+      await setHighlightStyle(baseline);
+    }
+  }
+
+  // ── The Highlights pane's note text follows the pane, not the Cards ──────
+  {
+    const pane = document.createElement("aside");
+    pane.className = "highlight-cycle";
+    pane.innerHTML = '<div class="hl-notes"><article class="hl-note"><div class="hl-note-body rendered">note</div></article></div>';
+    document.body.appendChild(pane);
+    const body = pane.querySelector(".hl-note-body");
+    try {
+      await setHighlightStyle({ baseFontSize: "11px", notesFontSize: "17px", hlNoteFontSize: "inherit" });
+      push("the pane's note text follows Notes when its own size is empty", (() => {
+        return Math.abs(fontPx(body) - 17) > 0.5 ? "the note body is " + fontPx(body) + "px; Notes is 17, Cards 11" : true;
+      })());
+      await setHighlightStyle({ hlNoteFontSize: "25px" });
+      push("...and its own Text size when one is set", (() => {
+        return Math.abs(fontPx(body) - 25) > 0.5 ? "the note body is " + fontPx(body) + "px, expected 25" : true;
+      })());
+    } finally {
+      pane.remove();
+      await setHighlightStyle(baseline);
+    }
+  }
 
   // ── A tab's code and raw-editor sizes are its own ────────────────────────
   const notesPre = document.createElement("pre");
@@ -299,9 +415,8 @@ const PROBE = `async (api) => {
   }
 
   // ── "Follow Notes" is an empty box, not a magic word ─────────────────────
-  api.setStyleTextTab("highlights");
-  api.updateStyleControls();
-  const hlSize = controls.querySelector('[data-style-key="hlNoteFontSize"]');
+  api.openSectionStyle("highlightsPane", null);
+  const hlSize = document.querySelector('.style-pop [data-style-key="hlNoteFontSize"]');
   push("a follows-Notes box is empty and its placeholder says what it follows", (() => {
     if (!hlSize) return "no hlNoteFontSize box";
     if (hlSize.value !== "") return "the box shows " + JSON.stringify(hlSize.value);
@@ -310,6 +425,7 @@ const PROBE = `async (api) => {
     return true;
   })());
   push("clearing a follows-Notes box puts it back to following", (() => {
+    if (!hlSize) return "no hlNoteFontSize box in the Highlights pane popover";
     hlSize.value = "24px";
     hlSize.dispatchEvent(new Event("input", { bubbles: true }));
     if (api.getStyleProfileSettings(profile).hlNoteFontSize !== "24px") return "typing 24px stored " + api.getStyleProfileSettings(profile).hlNoteFontSize;
@@ -322,10 +438,12 @@ const PROBE = `async (api) => {
     if (document.documentElement.style.getPropertyValue("--hl-note-font-size")) return "--hl-note-font-size is still written";
     return true;
   })());
+  api.openSectionStyle("notes", null);
   push("the notes font offers 'Same as Global font', not 'Inherit'", (() => {
-    const option = controls.querySelector('[data-style-key="notesFontFamily"] option[value="inherit"]');
+    const option = document.querySelector('.style-pop [data-style-key="notesFontFamily"] option[value="inherit"]');
     return option?.textContent === "Same as Global font" ? true : "the option reads " + JSON.stringify(option?.textContent);
   })());
+  api.closeSectionStyle();
 
   // ── No caps: what is typed is what is drawn ──────────────────────────────
   try {
@@ -367,11 +485,26 @@ const PROBE = `async (api) => {
       const got = ["h1", "h2", "h3", "h4"].map((h) => ratio(h).toFixed(2)).join(",");
       return got === "1.20,1.12,1.06,1.00" ? true : "ratios are " + got;
     })());
-    await setHighlightStyle({ headingH1Scale: "1.5", headingH3Scale: "0.9" });
-    push("each heading level takes its own typed factor", (() => {
+    await setHighlightStyle({ notesHeadingH1Scale: "1.5", notesHeadingH3Scale: "0.9" });
+    push("each Notes heading level takes its own typed factor", (() => {
       const got = ["h1", "h2", "h3"].map((h) => ratio(h).toFixed(2)).join(",");
       return got === "1.50,1.12,0.90" ? true : "ratios are " + got;
     })());
+    // A card's headings are the Cards' six, outside every re-pointed section.
+    const cardish = document.createElement("div");
+    cardish.className = "rendered";
+    cardish.innerHTML = "<h1>a</h1><p>b</p>";
+    document.body.appendChild(cardish);
+    const cardRatio = () => size(cardish.querySelector("h1")) / size(cardish.querySelector("p"));
+    push("Notes headings leave the Cards' headings alone", (() => {
+      return Math.abs(cardRatio() - 1.2) > 0.01 ? "a card h1 is " + cardRatio().toFixed(2) + "x" : true;
+    })());
+    await setHighlightStyle({ headingH1Scale: "1.8" });
+    push("...and Cards headings leave the Notes' alone", (() => {
+      if (Math.abs(cardRatio() - 1.8) > 0.01) return "a card h1 is " + cardRatio().toFixed(2) + "x, expected 1.80";
+      return Math.abs(ratio("h1") - 1.5) > 0.01 ? "a notes h1 is " + ratio("h1").toFixed(2) + "x, expected 1.50" : true;
+    })());
+    cardish.remove();
     push("the question face keeps its auto-fitted, text-sized headings", (() => {
       const got = size(qHeading) / size(question);
       return Math.abs(got - 1) < 0.01 ? true : "question h1 is " + got.toFixed(2) + "x";
@@ -383,15 +516,26 @@ const PROBE = `async (api) => {
   }
 
   // ── Density only touches spacing and controls ────────────────────────────
-  push("every density preset writes only Spacing & controls fields", (() => {
-    const spacingKeys = new Set(api.styleControlGroups.filter((g) => g.section === "spacing").flatMap((g) => g.fields.map((f) => f.key)));
+  push("every density preset writes only spacing fields", (() => {
+    const spacingKeys = new Set(Object.values(api.styleFieldByKey).filter((field) => field.spacing).map((field) => field.key));
     const stray = [];
     for (const byDensity of Object.values(api.styleDensityPresets)) {
       for (const preset of Object.values(byDensity)) {
         for (const key of Object.keys(preset)) if (!spacingKeys.has(key)) stray.push(key);
       }
     }
-    return stray.length ? "outside Spacing & controls: " + [...new Set(stray)].join(", ") : true;
+    return stray.length ? "not spacing: " + [...new Set(stray)].join(", ") : true;
+  })());
+
+  // ── The v6 split ─────────────────────────────────────────────────────────
+  push("a v5 profile gets every split-off setting as a copy of the shared one it came from", (() => {
+    const v5desktop = { ...api.defaultStyleProfiles.desktop, baseFontSize: "21px", headingH2Scale: "1.3", cardCornerRadius: "4px", docBlockFontSize: "15px", modalPadding: "20px", panelCornerRadius: "3px", rawMarkdownFontSize: "17px" };
+    for (const [key] of api.styleV6Seeds) delete v5desktop[key];
+    const out = api.normalizeStyleProfiles({ version: 5, desktop: v5desktop, mobile: { ...api.defaultStyleProfiles.mobile } }).desktop;
+    const wrong = api.styleV6Seeds.filter(([key, source]) => out[key] !== v5desktop[source]).map(([key, source]) => key + "=" + out[key] + " (" + source + "=" + v5desktop[source] + ")");
+    if (wrong.length) return wrong.join(" · ");
+    const kept = api.normalizeStyleProfiles({ version: 6, desktop: { ...out, notesHeadingH2Scale: "2" }, mobile: api.defaultStyleProfiles.mobile }).desktop;
+    return kept.notesHeadingH2Scale === "2" ? true : "a v6 value was re-seeded to " + kept.notesHeadingH2Scale;
   })());
 
   // ── The v5 upgrade ───────────────────────────────────────────────────────
@@ -415,6 +559,7 @@ const PROBE = `async (api) => {
 const API_SRC = `async () => {
   const mods = await Promise.all([
     import("/src/ui/style-settings.js?v=__BUILD__"),
+    import("/src/ui/style-popover.js?v=__BUILD__"),
     import("/src/ui/style-schema.js?v=__BUILD__"),
     import("/src/ui/view-mode.js?v=__BUILD__"),
     import("/src/ui/boot-screens.js?v=__BUILD__"),

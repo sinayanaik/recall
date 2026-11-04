@@ -584,12 +584,12 @@ body.has-touch-select .pdf-page:not(.is-text-awake) > .pdf-text-layer {
  * contents drawer is a different width is a difference with nothing behind it.
  */
 .document-stage {
-  --toc-width: min(300px, 82%);
+  --toc-width: var(--toc-width-setting, min(300px, 82%));
 }
 
 @media (max-width: 720px) {
   .document-stage {
-    --toc-width: min(320px, 88%);
+    --toc-width: var(--toc-width-setting, min(320px, 88%));
   }
 }
 

@@ -209,6 +209,7 @@ export const el = {
   answerEditToolbar: document.querySelector("#answerEditToolbar"),
   viewModeToggle: document.querySelector("#viewModeToggle"),
   viewExportBtn: document.querySelector("#viewExportBtn"),
+  viewStyleBtn: document.querySelector("#viewStyleBtn"),
   viewExportMenu: document.querySelector("#viewExportMenu"),
   notesStage: document.querySelector("#notesStage"),
   notesView: document.querySelector("#notesView"),

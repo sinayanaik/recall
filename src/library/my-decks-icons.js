@@ -41,6 +41,8 @@ export const MD_ICONS = {
   // Row + menu actions
   more: `${MD_DOT(5, 12)}${MD_DOT(12, 12)}${MD_DOT(19, 12)}`,
   play: `<path d="M7.6 4.9 19 12 7.6 19.1Z" fill="currentColor"/>`,
+  // Style: a half-filled circle, the ◐ every section's style button wears.
+  style: `<circle cx="12" cy="12" r="8.4"/><path d="M12 3.6a8.4 8.4 0 0 1 0 16.8Z" fill="currentColor" stroke="none"/>`,
   pencil: `<path d="M4 20.6 4.9 16 16.3 4.6a1.9 1.9 0 0 1 2.7 0l1.4 1.4a1.9 1.9 0 0 1 0 2.7L9 20.1Z"/><path d="m15 6.6 3.4 3.4"/>`,
   trash: `<path d="M4 6.4h16M9.6 6.4V4.7a1.3 1.3 0 0 1 1.3-1.3h2.2a1.3 1.3 0 0 1 1.3 1.3v1.7"/><path d="m6.6 6.4.9 13.3a1.5 1.5 0 0 0 1.5 1.4h6a1.5 1.5 0 0 0 1.5-1.4l.9-13.3"/><path d="M10.2 10.4v6.8M13.8 10.4v6.8"/>`,
   // Tree expand / collapse — arrows apart, arrows together
