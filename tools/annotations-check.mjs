@@ -21,6 +21,9 @@ import { buildFixturePdf } from "./pdf-fixture.mjs";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 // --shot=file.png saves a picture of page 1 once every section has run.
 const SHOT = (process.argv.slice(2).find((a) => a.startsWith("--shot=")) || "").slice(7);
+// --shot-ui=dir saves pictures of the controls: the selection bar's style and
+// colour rows, a mark's menu, the Shapes flyout and the shape panel.
+const SHOT_UI = (process.argv.slice(2).find((a) => a.startsWith("--shot-ui=")) || "").slice(10);
 const WATCHDOG_MS = 5 * 60 * 1000;
 
 function serveOn(dir) {
@@ -53,6 +56,7 @@ const API_SRC = `async () => {
     "/src/storage/ink-prefs.js?v=__BUILD__",
     "/src/ui/view-mode.js?v=__BUILD__",
     "/src/format/ink-strokes.js?v=__BUILD__",
+    "/src/notes/selection.js?v=__BUILD__",
     "/src/ui/chrome.js?v=__BUILD__",
     "/src/ui/deck-header.js?v=__BUILD__",
     "/src/ui/boot-screens.js?v=__BUILD__",
@@ -896,6 +900,64 @@ try {
   check("the fixture opens on its PDF tab", imported.pages > 0, `${imported.pages} page(s)`);
 
   for (const section of sections) await section();
+
+  if (SHOT_UI) {
+    const { writeFileSync, mkdirSync } = await import("node:fs");
+    mkdirSync(SHOT_UI, { recursive: true });
+    await page.call("Emulation.setDeviceMetricsOverride", { width: 1100, height: 760, deviceScaleFactor: 2, mobile: false });
+    const snap = async (name) => {
+      const shot = await page.call("Page.captureScreenshot", { format: "png" });
+      writeFileSync(path.join(SHOT_UI, name), Buffer.from(shot.data, "base64"));
+      console.log(`  shot  ${path.join(SHOT_UI, name)}`);
+    };
+    const tidy = `() => { window.__recall.api.closeMyDecksPanel(); document.querySelectorAll(".toast, #toastHost > *").forEach((n) => n.remove()); }`;
+    // The selection bar on a PDF, its colour menu open.
+    await page.evaluate(tidy);
+    await page.evaluate(SELECT_SRC, 1, 9);
+    await page.evaluate(`async () => {
+      const { settle } = window.__recall;
+      document.dispatchEvent(new Event("selectionchange"));
+      await settle(700);
+      document.getElementById("highlightSelectionMenuBtn")?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true }));
+      await settle(200);
+    }`);
+    await snap("selection-bar.png");
+    // A text mark's menu.
+    await page.evaluate(`async () => {
+      const { api, settle } = window.__recall;
+      window.getSelection().removeAllRanges();
+      document.getElementById("highlightSelectionMenu").hidden = true;
+      api.hideNotesSelectionButton?.();
+      const record = (api.state.meta.pdfHighlights || []).find((r) => r.style === "squiggly");
+      const anchor = document.querySelector('.pdf-mark[data-highlight-id="' + record.id + '"]');
+      api.openMarkMenuWith(anchor, record.id, api.DOCUMENT_MARK_HANDLERS, record.color);
+      await settle(150);
+    }`);
+    await snap("mark-menu.png");
+    // The Shapes flyout, and the shape panel.
+    await page.evaluate(`async () => {
+      const { api, settle } = window.__recall;
+      api.closeMarkMenu();
+      api.scrollToDocumentPage(2, 0, { smooth: false });
+      await settle(400);
+      api.toggleInkRail(true);
+      api.chooseInkTool("shape");
+      api.setShapeType("arrow");
+      await settle(100);
+      document.getElementById("inkRailShapeBtn").dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerType: "mouse" }));
+      await settle(200);
+    }`);
+    await snap("shapes-flyout.png");
+    await page.evaluate(`async () => {
+      const { api, settle } = window.__recall;
+      document.getElementById("inkRailShapeMenu").hidden = true;
+      const arrow = api.documentShapes(2).find((r) => r.shape.type === "arrow");
+      api.selectShape(arrow.id);
+      document.getElementById("inkRailStyleChip").dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerType: "mouse" }));
+      await settle(250);
+    }`);
+    await snap("shape-panel.png");
+  }
 
   if (SHOT) {
     // One picture per page that has something on it: page 1's text marks and

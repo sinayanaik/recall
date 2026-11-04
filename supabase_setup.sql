@@ -48,7 +48,12 @@ CREATE TABLE IF NOT EXISTS decks (
   --                        PDF tab, and it is only ever written, never
   --                        removed ("Remove from cloud" sets offloaded: true)
   --   pdfHighlights        one record per highlight on that PDF: page, colour,
-  --                        quads, and two independent stamps (at, noteAt)
+  --                        quads, and two independent stamps (at, noteAt).
+  --                        `kind` says what it is — words (with a `style`:
+  --                        underline, strike, squiggly or box, and a `hex`
+  --                        colour of the reader's own), a region, ink, or a
+  --                        shape (`shape`: a line, arrow, box, ellipse,
+  --                        callout, text box or sticky note, in points)
   --   deletedHighlightIds  { id: iso } tombstones, so a deleted highlight
   --                        stays deleted across devices
   --   pdfToc               a contents read out of the pages, cached so

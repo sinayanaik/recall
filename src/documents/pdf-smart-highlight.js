@@ -44,7 +44,7 @@ import { inkFilingColor } from "../format/ink-colors.js?v=__BUILD__";
 import { closeMarkMenu } from "../notes/mark-menu.js?v=__BUILD__";
 import {
   addDocumentHighlight, documentHighlightById, documentHighlightNote, documentHighlightsCovering,
-  documentHighlightsUnderRects, flashDocumentHighlight, recolourDocumentHighlight, reinstateDocumentHighlight,
+  documentHighlightsUnderRects, flashDocumentHighlight, recolourDocumentHighlight, reinstateDocumentHighlight, restyleDocumentHighlight,
   removeDocumentHighlight, setDocumentHighlightNote, updateDocumentHighlight
 } from "./pdf-highlights.js?v=__BUILD__";
 import {
@@ -411,20 +411,23 @@ export function smartHlApply(made, color) {
   const capture = made?.capture;
   if (!capture) return { kind: "none", id: null };
   const rects = made.rects || [];
-  const covering = documentHighlightsCovering(rects, { textOnly: true });
+  // Tints only: words already underlined or boxed are given a highlight as
+  // well, the rule the selection bar keeps (applyPillHighlight).
+  const covering = documentHighlightsCovering(rects, { textOnly: true }).filter((record) => !record.style);
   if (covering.length) {
-    if (covering.every((record) => record.color === color)) {
+    if (covering.every((record) => record.color === color && !record.hex)) {
       flashDocumentHighlight(covering[0].id);
       return { kind: "none", id: covering[0].id };
     }
-    const before = covering.map((record) => ({ id: record.id, color: record.color }));
+    const before = covering.map((record) => ({ id: record.id, color: record.color, hex: record.hex || null }));
     before.forEach(({ id }) => recolourDocumentHighlight(id, color));
     smartHlUndoSink({
       undo: () => {
         let changed = false;
-        before.forEach(({ id, color: was }) => {
+        before.forEach(({ id, color: was, hex }) => {
           if (!documentHighlightById(id)) return;
-          recolourDocumentHighlight(id, was);
+          if (hex) restyleDocumentHighlight(id, { hex });
+          else recolourDocumentHighlight(id, was);
           changed = true;
         });
         return changed;
@@ -451,7 +454,10 @@ export function smartHlApply(made, color) {
 
 function smartHlMerge(range, rects, color) {
   const touching = documentHighlightsUnderRects(rects, { textOnly: true })
-    .filter((record) => record.color === color && record.kind !== "area" && record.kind !== "ink");
+    // A tint only: the highlighter makes tints, and growing an underline or a
+    // box of the same colour into one would change what that mark is.
+    .filter((record) => record.color === color && record.kind !== "area" && record.kind !== "ink" && record.kind !== "shape"
+      && !record.style && !record.hex);
   if (!touching.length) return null;
   const noted = touching.filter((record) => documentHighlightNote(record.id));
   if (noted.length > 1) return null;

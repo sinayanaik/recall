@@ -425,7 +425,8 @@ export function repairDocumentHighlightText(pageNumber) {
     // A region is named by where it is, not by what it says (see
     // documentHighlightLabel), and an imported annotation has no anchors to
     // read back from.
-    if (record.kind === "area") {
+    // ...and a shape's words are what the reader typed, not the page's.
+    if (record.kind === "area" || record.kind === "shape") {
       textRepairChecked.add(record);
       return;
     }
@@ -564,7 +565,8 @@ export function repairDocumentHighlightQuads(pageNumber) {
     // off the text layer, so there is nothing about it to correct — but it is
     // still STAMPED, so that "has this been looked at?" stays one comparison
     // instead of a kind test on every record on every page paint forever.
-    if (record.kind === "area") {
+    // A shape's box is its own geometry's, the same.
+    if (record.kind === "area" || record.kind === "shape") {
       changed = true;
       return { ...record, qv: QUAD_GEOMETRY_VERSION };
     }
@@ -1209,7 +1211,8 @@ export function setDocumentInkForPage(pageNumber, records, { notify = true } = {
 // pressed over text in a figure recoloured the figure's box instead of
 // highlighting the words — and ✕ deleted the box. The region has its own menu.
 function selectableByText(record, textOnly) {
-  return !textOnly || (record.kind !== "area" && record.kind !== "ink");
+  // A shape is not a run of words either, even where its box lies over some.
+  return !textOnly || (record.kind !== "area" && record.kind !== "ink" && record.kind !== "shape");
 }
 
 export function documentHighlightsUnderRects(rects, { textOnly = false } = {}) {
