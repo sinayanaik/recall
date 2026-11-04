@@ -49,13 +49,14 @@ import { addNotebookPage, deleteNotebookPage, ensureNotebookDocument, hasNoteboo
 import { BLANK_PAPERS } from "../documents/blank-pdf.js?v=__BUILD__";
 import { notebookPaperPreference, writeNotebookPaperPreference } from "../storage/ink-prefs.js?v=__BUILD__";
 import { addDocumentBlock, addDocumentImageBlock } from "../documents/pdf-blocks.js?v=__BUILD__";
-import { DOC_SLOT_NOTEBOOK, deckHasHandwrittenPages } from "../documents/doc-slot.js?v=__BUILD__";
+import { DOC_SLOT_NOTEBOOK, activeDocSlot, deckHasHandwrittenPages } from "../documents/doc-slot.js?v=__BUILD__";
 import { currentDocumentPage, openDocumentView, pdfPageViewport, scrollToDocumentPage } from "../documents/pdf-view.js?v=__BUILD__";
 import { bindInkRailActivation } from "./rail.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { hasActiveDeck, refreshHandwritingTab } from "../cards/card-status.js?v=__BUILD__";
 import { showConfirmModal, showToast } from "../ui/feedback.js?v=__BUILD__";
+import { placeShapeInView } from "../documents/pdf-shapes.js?v=__BUILD__";
 
 let wired = false;
 
@@ -77,14 +78,17 @@ export function paintHandwritingControls() {
   const ready = hasNotebook();
   const paper = notebookPaper();
 
-  // The rail's page group.
+  // The rail's page group. Shown on a PDF as well now (text, a sticky note, a
+  // text block and a picture go on anybody's paper), where there is always a
+  // page to put them on — so it stands down only on a Canvas not yet started.
+  const standDown = !ready && activeDocSlot() === DOC_SLOT_NOTEBOOK;
   el.documentInkRail?.querySelectorAll("[data-hw-action]").forEach((node) => {
-    node.toggleAttribute("disabled", !ready);
+    node.toggleAttribute("disabled", standDown);
   });
   // A <label> carries no `disabled`, so the picker inside it is what is turned
   // off — and the class is what CSS greys, matching the buttons beside it.
-  el.handwritingImageBtn?.classList.toggle("is-disabled", !ready);
-  if (el.handwritingImageInput) el.handwritingImageInput.disabled = !ready;
+  el.handwritingImageBtn?.classList.toggle("is-disabled", standDown);
+  if (el.handwritingImageInput) el.handwritingImageInput.disabled = standDown;
 
   // The ⋯ menu's notebook rows. The paper rows are a choice, so they carry the
   // same switch the page-notes row does and one of them is always on — a picker
@@ -180,6 +184,13 @@ export function runHandwritingMenuAction(action) {
   return false;
 }
 
+// The rail's + menu, wired when the app starts rather than when a Canvas is
+// first opened: its rows work on a PDF too, and a reader who never opens a
+// Canvas still presses them.
+export function initHandwritingRail() {
+  wire();
+}
+
 function wire() {
   if (wired) return;
   wired = true;
@@ -197,6 +208,8 @@ function wire() {
     const action = button.dataset.hwAction;
     if (action === "add-page") addPage();
     else if (action === "add-block") addBlock();
+    else if (action === "add-text") placeShapeInView("text", currentDocumentPage(), handwritingDropPoint(currentDocumentPage()));
+    else if (action === "add-sticky") placeShapeInView("sticky", currentDocumentPage(), handwritingDropPoint(currentDocumentPage()));
   }, "[data-hw-action]");
 }
 

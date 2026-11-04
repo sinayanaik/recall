@@ -148,7 +148,7 @@ import { removePdfFromDeck, renamePdf } from "./documents/pdf-multi-actions.js?v
 import { closePdfPanel, initPdfSwitcher } from "./documents/pdf-switcher.js?v=__BUILD__";
 import { currentPdfDocument, currentPdfPageCount, documentFittedWidth, refreshBakedDocumentPages, fitDocumentToWidth, initDocumentCanvasRecovery, initDocumentPinchZoom, isDocumentFitWidth, openDocumentIsCurrent, openDocumentPdfId, noteSettledDocumentPosition, openDocumentView, reattachDocument, relayoutDocumentHoldingReader, repaintOpenDocumentPages, scheduleDocumentPositionSave, scrollToDocumentPage, refreshDocumentPaperForTheme, setDocumentAttachHandler, setDocumentCanvasRecoveredHook, setDocumentOpenedHook, setDocumentPagePaintedHook, setNotebookStartHandler, setPageIndicatorUpdatedHook, setPaperChangedHook, switchToPdf, togglePdfInvert, updatePageIndicator, zoomDocument, retryMissingDocumentOpen } from "./documents/pdf-view.js?v=__BUILD__";
 import { adoptDocumentInk, canRedoInk, canUndoInk, copyInkSelection, cutInkSelection, duplicateInkSelection, hasInkClipboard, initDocumentInk, inkMarkImageMarkdown, inkMarkIsHighlight, inkSelectionCount, isInkMarkId, nudgeInkSelection, paintDocumentInk, pasteInkSelection, redoInk, repaintDocumentInk, setInkChangedHandler, undoInk } from "./documents/pdf-ink.js?v=__BUILD__";
-import { addHandwritingImage, enterHandwritingView, refreshHandwritingBoard, runHandwritingMenuAction, startHandwritingNotebook } from "./handwriting/board.js?v=__BUILD__";
+import { addHandwritingImage, enterHandwritingView, initHandwritingRail, refreshHandwritingBoard, runHandwritingMenuAction, startHandwritingNotebook } from "./handwriting/board.js?v=__BUILD__";
 import { closeBlockStylePopover, isBlockStylePopoverOpen } from "./documents/block-style-bar.js?v=__BUILD__";
 import { closeBlockActionsPopover, isBlockActionsPopoverOpen } from "./documents/block-actions-popover.js?v=__BUILD__";
 import { blocksForPaper, buildStaticBlock, canRedoBlocks, canUndoBlocks, commitBlockEdit, deleteBlock, duplicateBlock, editBlock, handleBlockPointerDown, nudgeBlock, paintDocumentBlocks, pdfPointAt, redoBlocks, repaintDocumentBlocks, restackBlock, selectBlock, selectedBlockId, setBlocksChangedHandler, undoBlocks } from "./documents/pdf-blocks.js?v=__BUILD__";
@@ -1549,6 +1549,9 @@ onDomReady(() => {
     refreshPdfPageNotes();
   });
   initDocumentInk();
+  // The pen bar's + menu (Text, Sticky note, Text block, Picture, Page), on a
+  // PDF as on a Canvas — see initHandwritingRail.
+  initHandwritingRail();
   // The Shapes tool (src/documents/pdf-shapes.js): its own capture-phase
   // listeners on the same scroller, which the ink layer stands down for while
   // it is armed — and the painter every repaint of a page's marks calls.

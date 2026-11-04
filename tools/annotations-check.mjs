@@ -776,6 +776,67 @@ sections.push(async () => {
 });
 
 
+// ── Text on a PDF without a pen: the bar's + menu, and a finger's tap ─────
+sections.push(async () => {
+  await page.evaluate(POINTER_SRC);
+  const plus = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    api.scrollToDocumentPage(4, 0, { smooth: false });
+    await api.whenDocumentPageReady(4);
+    await settle(300);
+    api.toggleInkRail(true);
+    api.chooseInkTool("pen");
+    await settle(100);
+    const group = document.querySelector("#documentInkRail .ink-rail-page");
+    const shown = group && getComputedStyle(group).display !== "none";
+    const btn = document.getElementById("inkRailAddBtn");
+    btn.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerType: "mouse" }));
+    await settle(100);
+    const menu = document.getElementById("inkRailAddMenu");
+    const rows = Array.from(menu.querySelectorAll(".ink-rail-menu-item")).filter((n) => getComputedStyle(n).display !== "none").map((n) => n.textContent.trim());
+    const before = api.documentShapes(null).length;
+    const text = menu.querySelector('[data-hw-action="add-text"]');
+    const enabled = !text.disabled;
+    text.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerType: "touch" }));
+    await settle(250);
+    const made = api.documentShapes(null).at(-1);
+    const editor = document.querySelector(".pdf-shape-editor");
+    if (editor) { editor.textContent = "typed with a finger"; editor.blur(); }
+    await settle(150);
+    return { label: btn.textContent.trim(), shown, rows, enabled, made: api.documentShapes(null).length - before, type: made?.shape?.type, page: made?.page, opened: Boolean(editor), text: api.documentHighlightById(made?.id)?.shape?.text };
+  }`);
+  check("on a PDF the pen bar's + is there, with Text and Sticky note and no Page row", plus.shown && plus.rows.includes("Text") && plus.rows.includes("Sticky note") && plus.label === "+ Add" && plus.rows.includes("Text block") && !plus.rows.some((r) => /Page at the end/.test(r)) && plus.enabled, JSON.stringify(plus));
+  check("+ → Text puts a text box on the page in view and opens it to type in", plus.made === 1 && plus.type === "text" && plus.page === 4 && plus.opened && plus.text === "typed with a finger", JSON.stringify(plus));
+
+  const finger = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    api.chooseInkTool("shape");
+    api.selectShape(null);
+    api.setShapeType("sticky");
+    const before = api.documentShapes(4).length;
+    await window.__drag("sticky", [window.__at(4, 0.8, 0.12)], { pointerType: "touch", id: 77 });
+    await settle(200);
+    const tapped = api.documentShapes(4).length - before;
+    const opened = api.isHighlightNoteEditorOpen();
+    api.closeHighlightNoteEditor?.();
+    // ...and a finger that moves is still a scroll.
+    api.setShapeType("text");
+    await window.__drag("text", [window.__at(4, 0.3, 0.2), window.__at(4, 0.3, 0.3), window.__at(4, 0.3, 0.4)], { pointerType: "touch", id: 78 });
+    await settle(150);
+    const swiped = api.documentShapes(4).length - before - tapped;
+    // ...and with a line armed, a finger's tap makes nothing.
+    api.setShapeType("arrow");
+    await window.__drag("arrow", [window.__at(4, 0.6, 0.3)], { pointerType: "touch", id: 79 });
+    await settle(150);
+    const arrowTap = api.documentShapes(4).length - before - tapped - swiped;
+    api.chooseInkTool("pen");
+    api.toggleInkRail(false);
+    return { tapped, opened, swiped, arrowTap };
+  }`);
+  check("a finger's tap with Sticky note armed places one and opens its note", finger.tapped === 1 && finger.opened, JSON.stringify(finger));
+  check("...a finger that moves still scrolls, and a tap with Arrow armed makes nothing", finger.swiped === 0 && finger.arrowTap === 0, JSON.stringify(finger));
+});
+
 // ── Saved with annotations: every mark as a real PDF annotation ────────────
 sections.push(async () => {
   if (!pdflib) return;
@@ -957,6 +1018,16 @@ try {
       await settle(250);
     }`);
     await snap("shape-panel.png");
+    await page.evaluate(`async () => {
+      const { api, settle } = window.__recall;
+      api.selectShape(null);
+      api.closeInkRailPopups?.();
+      api.chooseInkTool("pen");
+      await settle(100);
+      document.getElementById("inkRailAddBtn").dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerType: "mouse" }));
+      await settle(200);
+    }`);
+    await snap("add-menu.png");
   }
 
   if (SHOT) {
