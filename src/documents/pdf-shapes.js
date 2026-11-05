@@ -796,6 +796,8 @@ function onShapeFingerDown(event) {
   // typed text with the typewriter armed, which a tap opens to type in.
   const hit = shapeAtPoint(page, point[0], point[1]);
   if (hit && !(hit.shape.type === "text" && shapeType() === "text")) return;
+  // One box per press of T — see onShapePointerDown.
+  if (!hit && editingShapeId && shapeType() === "text") return;
   shapeFingerTap = { pointerId: event.pointerId, page, point, x: event.clientX, y: event.clientY, at: Date.now(), edit: hit || null };
 }
 
@@ -897,6 +899,11 @@ function onShapePointerDown(event) {
       target = hit;
     }
   }
+  // Text is one box per press of T. A press on bare paper while those words are
+  // still being typed puts them down (the editor's blur commits them, and that
+  // puts the Text tool away — src/ui/ink-rail.js) and starts nothing new: it is
+  // the reader saying they have finished, not asking for a second box.
+  if (mode === "create" && editingShapeId && shapeType() === "text") return;
   beginShapePress(event, { mode, target, handle, page, pageEl, point });
 }
 

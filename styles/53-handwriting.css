@@ -351,7 +351,8 @@
    only document is a notebook — see the rule it answers in styles/52-ink.css.
    Over the OFFER of a notebook there is still nothing to draw on, so the rail
    stands down there, asked of `.has-no-notebook` rather than of meta.pdf. */
-#documentStage.has-no-notebook[data-doc-slot="notebook"] .document-ink-rail {
+#documentStage.has-no-notebook[data-doc-slot="notebook"] .document-ink-rail,
+.document-ink-rail.is-inline.on-no-notebook[data-doc-slot="notebook"] {
   display: none;
 }
 
@@ -387,7 +388,8 @@
   display: none;
 }
 
-#documentStage[data-doc-slot="notebook"] .ink-rail-page {
+#documentStage[data-doc-slot="notebook"] .ink-rail-page,
+.document-ink-rail.is-inline[data-doc-slot="notebook"] .ink-rail-page {
   display: flex;
 }
 

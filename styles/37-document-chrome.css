@@ -1334,3 +1334,25 @@
     transition: none;
   }
 }
+
+/* ── Dark page: a moon, or a sun while the page is dark ────────────────────
+   It was the character ◑, a circle with its right half filled, and it sat two
+   buttons along from ◐ "Style this view", which is drawn as the same circle.
+   Two controls that do different things looked like one. The moon says what
+   pressing it does; while the paper is dark it turns into a sun, for the way
+   back. Both glyphs are in the markup and aria-pressed picks one, so the
+   reading rail's copy (which mirrors aria-pressed) follows with no code. */
+.dark-ico {
+  width: 1.15em;
+  height: 1.15em;
+  vertical-align: -0.2em;
+}
+
+.dark-ico-sun,
+[aria-pressed="true"] .dark-ico-moon {
+  display: none;
+}
+
+[aria-pressed="true"] .dark-ico-sun {
+  display: inline;
+}

@@ -12,6 +12,7 @@ import { SESSION_EXPIRED_MESSAGE, isSessionExpiredError, refreshSessionOnce, ver
 import { CARD_FETCH_DECK_CHUNK, DECK_SYNC_INDEX_COLUMNS, deckTombstoneTableMissing, fetchCardsForDecks, fetchCloudDeckIndex, fetchCloudDeckRows, fetchDeletedDeckIds, isMissingNotesColumnError, isMissingRelationError } from "../cloud/deck-list.js?v=__BUILD__";
 import { CLOUD_TIMEOUT_MS, abortable, isTransientCloudError, mapWithConcurrency, withRetry, withTimeout } from "../cloud/net.js?v=__BUILD__";
 import { syncS3ConfigWithCloud } from "../cloud/s3-config-sync.js?v=__BUILD__";
+import { syncFoldersWithCloud } from "../cloud/folder-sync.js?v=__BUILD__";
 import { syncReadingStatsWithCloud } from "../stats/stats-sync.js?v=__BUILD__";
 import { flushPendingStyleSync } from "../cloud/style-sync.js?v=__BUILD__";
 import { isSignedIn, supabaseClient } from "../cloud/supabase-client.js?v=__BUILD__";
@@ -1538,6 +1539,11 @@ async function reconcileAllDecksHeld({ explicit = false } = {}) {
     // fails a sync — a project without the table just keeps its stats per device.
     syncReadingStatsWithCloud(cloudUserId).catch((error) => {
       console.warn("Could not sync reading stats", error);
+    });
+    // The folders of My Files, so one made empty on this device is on the
+    // others too (src/cloud/folder-sync.js). Never fails a sync either.
+    syncFoldersWithCloud(cloudUserId).catch((error) => {
+      console.warn("Could not sync folders", error);
     });
     // Images queued while offline. Awaited BEFORE the deck list is read: each
     // upload rewrites its recall-img: placeholder in the owning deck's snapshot

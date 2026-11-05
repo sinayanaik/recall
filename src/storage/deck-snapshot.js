@@ -152,7 +152,7 @@ export function clearBrowserPersistence() {
 // the same reason the resume below is in a microtask. Passed in rather than
 // read, so that the one thing needing it does not depend on an ordering the rest
 // of the function is deliberately free of.
-export function loadDeckSnapshot(payload, titleHint = "", append = false, { keepPlace = false, deckKey = null } = {}) {
+export function loadDeckSnapshot(payload, titleHint = "", append = false, { keepPlace = false, deckKey = null, allowEmpty = false } = {}) {
   setDeckAutosaveStorageFailed(false);
   if (!payload || !Array.isArray(payload.cards)) {
     throw new Error("Invalid card JSON");
@@ -195,7 +195,7 @@ export function loadDeckSnapshot(payload, titleHint = "", append = false, { keep
   const payloadNotes = String(payload.notes || "");
   // `cards` here is the PARSED list (blank-question rows already dropped), not
   // payload.cards — a file of nothing but unusable rows is still empty.
-  if (!deckPayloadHasContent({ cards, notes: payloadNotes, meta: payload.meta })) {
+  if (!allowEmpty && !deckPayloadHasContent({ cards, notes: payloadNotes, meta: payload.meta })) {
     throw new Error("No cards in card JSON");
   }
 

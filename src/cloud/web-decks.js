@@ -427,7 +427,9 @@ export async function loadWebDeck(deckId) {
     // deck is actually on screen now.
     if (loadToken === activeDeckLoadToken) {
       state.localDeckId = null;
-      const mirroredMeta = await saveDeckToLibrary({ silent: true, updatedAt: deckData.updated_at, lastSyncedAt: deckData.updated_at, synced: true });
+      // allowEmpty: a file in the cloud with nothing in it yet is still a file,
+      // and this is the copy that keeps it on this device.
+      const mirroredMeta = await saveDeckToLibrary({ silent: true, updatedAt: deckData.updated_at, lastSyncedAt: deckData.updated_at, synced: true, allowEmpty: true });
       if (loadToken === activeDeckLoadToken) {
         if (mirroredMeta) touchLocalDeckAccess(mirroredMeta.id);
         refreshSyncIndicatorBaseline();

@@ -142,6 +142,19 @@ export function deckPagesMarker(pages) {
   return span;
 }
 
+// The Title cell: a page icon, then the name. The icon is what tells a file
+// from a folder down a long list — folder rows wear a folder in the accent
+// colour — and it adds no text, so the cell's textContent is still the title.
+function deckTitleCell(deck) {
+  const td = document.createElement("td");
+  td.dataset.label = "Title";
+  const icon = document.createElement("span");
+  icon.className = "deck-file-icon";
+  icon.innerHTML = mdIcon("file");
+  td.append(icon, document.createTextNode(deck.title || "Untitled file"));
+  return td;
+}
+
 export function buildLocalDeckRow(deck, cloudById = null, categories = webDeckCategories) {
   const tr = document.createElement("tr");
   // Tagged here rather than in decorateDeckRow, which only the Tree renderer
@@ -153,9 +166,7 @@ export function buildLocalDeckRow(deck, cloudById = null, categories = webDeckCa
   const sel = deckSelOf(deck, "local");
   const { count, hasNotes } = deckCardInfo(deck, "local");
 
-  const tdTitle = document.createElement("td");
-  tdTitle.dataset.label = "Title";
-  tdTitle.textContent = deck.title || "Untitled file";
+  const tdTitle = deckTitleCell(deck);
 
   const tdCategory = document.createElement("td");
   tdCategory.dataset.label = "Category";
@@ -197,9 +208,7 @@ export function buildCloudDeckRow(deck, categories = webDeckCategories) {
   const sel = deckSelOf(deck, "cloud");
   const { count, hasNotes } = deckCardInfo(deck, "cloud");
 
-  const tdTitle = document.createElement("td");
-  tdTitle.dataset.label = "Title";
-  tdTitle.textContent = deck.title || "Untitled file";
+  const tdTitle = deckTitleCell(deck);
 
   const tdCategory = document.createElement("td");
   tdCategory.dataset.label = "Category";

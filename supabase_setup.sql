@@ -328,6 +328,39 @@ END $$;
 -- changed. The primary key leads with user_id, so it is also the index the
 -- one query this table sees (every row of one account) needs.
 
+-- ============================================================================
+-- 4d. library_folders — one row PER USER: the folders in My Files
+-- ============================================================================
+-- A folder has no row of its own in `decks`: it is the `category` path of the
+-- files inside it. So a folder with nothing in it yet had nowhere to live but
+-- the browser it was made in — it never reached another device, and a new
+-- device never saw it. This row is the account's list of folders:
+--
+--   { "<folder path>": { "at": <ms since epoch>, "deleted": <true|false> } }
+--
+-- Every device merges it with its own list path by path on each sync, the
+-- newer `at` winning, so a folder made on one device and deleted on another
+-- settles the same way everywhere. Folders that hold files also persist through
+-- those files' `category`; this row is what keeps the empty ones.
+CREATE TABLE IF NOT EXISTS library_folders (
+  user_id UUID PRIMARY KEY DEFAULT auth.uid() REFERENCES auth.users(id) ON DELETE CASCADE,
+  folders JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'library_folders_object' AND conrelid = 'library_folders'::regclass
+  ) THEN
+    ALTER TABLE library_folders
+      ADD CONSTRAINT library_folders_object
+      CHECK (jsonb_typeof(folders) = 'object');
+  END IF;
+END $$;
+
 
 -- ============================================================================
 -- 5. Indexes
@@ -387,6 +420,7 @@ ALTER TABLE deleted_decks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE app_style_settings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE app_storage_settings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE reading_stats ENABLE ROW LEVEL SECURITY;
+ALTER TABLE library_folders ENABLE ROW LEVEL SECURITY;
 
 -- Postgres has no CREATE POLICY IF NOT EXISTS, so each policy is dropped first
 -- — which is also what lets re-running this file repair a deployment whose
@@ -413,6 +447,7 @@ DROP POLICY IF EXISTS "Users manage own deck tombstones" ON deleted_decks;
 DROP POLICY IF EXISTS "Users manage own app style settings" ON app_style_settings;
 DROP POLICY IF EXISTS "Users manage own storage settings" ON app_storage_settings;
 DROP POLICY IF EXISTS "Users manage own reading stats" ON reading_stats;
+DROP POLICY IF EXISTS "Users manage own folders" ON library_folders;
 
 -- auth.uid() is wrapped in a scalar subquery in every policy below. Called
 -- bare, it is re-evaluated once PER ROW; as `(select auth.uid())` the planner
@@ -465,6 +500,12 @@ CREATE POLICY "Users manage own storage settings" ON app_storage_settings
 
 -- Every device of the account reads every row and writes its own.
 CREATE POLICY "Users manage own reading stats" ON reading_stats
+  FOR ALL TO authenticated
+  USING (user_id = (select auth.uid()))
+  WITH CHECK (user_id = (select auth.uid()));
+
+-- One's own folder list, and nobody else's.
+CREATE POLICY "Users manage own folders" ON library_folders
   FOR ALL TO authenticated
   USING (user_id = (select auth.uid()))
   WITH CHECK (user_id = (select auth.uid()));
@@ -717,3 +758,4 @@ COMMENT ON TABLE deleted_decks IS 'Durable cross-device delete tombstones. Never
 COMMENT ON TABLE app_style_settings IS 'Per-user layout/typography settings (row id = auth.uid()), plus a legacy shared ''global'' row that accounts with no style of their own inherit. The theme is stored here too, as a `theme` key holding a theme ID (e.g. ''dark-amoled'') alongside the ''desktop''/''mobile'' profiles, so a device that syncs its style down also gets the theme that went with it. Colour VALUES are still not included — those live in CSS, keyed off that ID.';
 COMMENT ON TABLE app_storage_settings IS 'Per-user keys to the S3-compatible bucket that holds PDFs (row key = auth.uid()), so they are pasted once per account rather than once per device. s3_config NULL means the reader pressed Forget; updated_at is written by the client and compared, so it has no trigger.';
 COMMENT ON TABLE reading_stats IS 'Per-device reading progress and active time (row key = auth.uid() + the app''s device id). Each device writes only its own row and reads all of them; Home adds them up. updated_at is written by the client.';
+COMMENT ON TABLE library_folders IS 'Per-user list of My Files folders (row key = auth.uid()), so a folder with no files in it yet reaches every device. folders is { path: { at, deleted } }, merged path by path with the newer `at` winning; updated_at is written by the client.';

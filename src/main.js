@@ -49,7 +49,7 @@ import { htmlToMarkdown } from "./import/html-to-markdown.js?v=__BUILD__";
 import { clearImportStaging, commitStagedImport, importAimFolder, importDestinationFolder, importStaging, renderImportReview, toggleWebPageClutter } from "./import/staging.js?v=__BUILD__";
 import { fetchUrl } from "./import/url.js?v=__BUILD__";
 import { closeAllDeckTileMenus, createFolder, setAllFoldersExpanded } from "./library/folder-tree.js?v=__BUILD__";
-import { normalizeDeckCategory } from "./library/folders.js?v=__BUILD__";
+import { normalizeDeckCategory, setKnownFoldersChangedHook } from "./library/folders.js?v=__BUILD__";
 import { flushIndexBatch, readLocalDeckIndex, reconcileOpenDeckWithStore, setDeckContentSavedHook, setDeckOpenedHook, setDeckReloadedInPlaceHook } from "./library/local-library.js?v=__BUILD__";
 import { checkDeckFreshness, startRealtimeSync, stopRealtimeSync } from "./sync/live-sync.js?v=__BUILD__";
 import { categorizeSelectedMyDecks, deleteSelectedMyDecks, loadSelectedMyDecks } from "./library/my-decks-actions.js?v=__BUILD__";
@@ -57,6 +57,7 @@ import { hydrateMyDecksIcons } from "./library/my-decks-icons.js?v=__BUILD__";
 import { closeMyDecksMoreMenu, currentMyDecksFolder, myDecksSearchTimer, setMyDecksSearchTimer, toggleMyDecksMoreMenu } from "./library/my-decks-menu.js?v=__BUILD__";
 import { setMyDecksDisplay, setMyDecksSort, setMyDecksView } from "./library/my-decks-prefs.js?v=__BUILD__";
 import { renderMyDecksList, repaintMyDecks } from "./library/my-decks-render.js?v=__BUILD__";
+import { FOLDERS_SYNCED_EVENT, pushFoldersSoon } from "./cloud/folder-sync.js?v=__BUILD__";
 import { selectedMyDecks, selectedMyFolders, updateMyDecksBulkBar } from "./library/my-decks-selection.js?v=__BUILD__";
 import { captureNotesAnchor, captureSourceAnchor, jumpToNoteForCurrentCard, scheduleNoteJump } from "./notes/anchors.js?v=__BUILD__";
 import { createCardFromNotesSelection } from "./notes/frame-card.js?v=__BUILD__";
@@ -152,9 +153,9 @@ import { addHandwritingImage, enterHandwritingView, initHandwritingRail, refresh
 import { closeBlockStylePopover, isBlockStylePopoverOpen } from "./documents/block-style-bar.js?v=__BUILD__";
 import { closeBlockActionsPopover, isBlockActionsPopoverOpen } from "./documents/block-actions-popover.js?v=__BUILD__";
 import { blocksForPaper, buildStaticBlock, canRedoBlocks, canUndoBlocks, commitBlockEdit, deleteBlock, duplicateBlock, editBlock, handleBlockPointerDown, nudgeBlock, paintDocumentBlocks, pdfPointAt, redoBlocks, repaintDocumentBlocks, restackBlock, selectBlock, selectedBlockId, setBlocksChangedHandler, undoBlocks } from "./documents/pdf-blocks.js?v=__BUILD__";
-import { applyInkRailPreference, closeInkRailPopups, initInkRail, refreshInkRail } from "./ui/ink-rail.js?v=__BUILD__";
+import { applyInkRailPreference, closeInkRailPopups, finishTypewriterBox, initInkRail, refreshInkRail } from "./ui/ink-rail.js?v=__BUILD__";
 import { initDocumentShapes, setShapeCreatedHandler } from "./documents/pdf-shapes.js?v=__BUILD__";
-import { openShapeTextEditor } from "./documents/pdf-shape-text.js?v=__BUILD__";
+import { openShapeTextEditor, setShapeTextCommittedHandler } from "./documents/pdf-shape-text.js?v=__BUILD__";
 import { initShapeStylePopover } from "./documents/pdf-shape-style-popover.js?v=__BUILD__";
 import { buildStaticShapeText } from "./documents/pdf-shape-markdown.js?v=__BUILD__";
 import { INK_NUDGE_STEP, INK_NUDGE_STEP_COARSE } from "./render/ink-engine.js?v=__BUILD__";
@@ -1572,6 +1573,8 @@ onDomReady(() => {
     openShapeTextEditor(record);
   });
   setDocumentShapeTextEditor((id) => openShapeTextEditor(id));
+  // One press of T, one box: putting the words down puts the Text tool away.
+  setShapeTextCommittedHandler(finishTypewriterBox);
   // A shape's Style row, and the popover at a selected shape.
   initShapeStylePopover();
   initInkRail();
@@ -2120,6 +2123,13 @@ hydrateMyDecksIcons();
 
 el.closeMyDecksBtn?.addEventListener("click", closeMyDecksPanel);
 el.myDecksRefreshBtn?.addEventListener("click", () => { closeMyDecksMoreMenu(); renderMyDecksList(); });
+// Empty folders sync (src/cloud/folder-sync.js): one made, renamed or deleted
+// here goes up shortly after; one that arrives from another device repaints My
+// Files if it is open.
+setKnownFoldersChangedHook(() => pushFoldersSoon());
+window.addEventListener(FOLDERS_SYNCED_EVENT, () => {
+  if (el.myDecksPanel && !el.myDecksPanel.hidden) renderMyDecksList();
+});
 
 
 el.myDecksMoreBtn?.addEventListener("click", (e) => { e.stopPropagation(); toggleMyDecksMoreMenu(); });

@@ -113,7 +113,7 @@ export function openShapeTextEditor(recordOrId) {
     }
     // Anywhere else — the rail's panel, a slider, the page — commits, which is
     // what lets a press on the rail's panel restyle the box it was about.
-    commitShapeTextEditor();
+    commitShapeTextEditor({ to });
   });
   for (const type of ["pointerdown", "touchstart", "mousedown"]) {
     node.addEventListener(type, (event) => event.stopPropagation(), { passive: true });
@@ -134,8 +134,26 @@ function hideStaticText(layer, id) {
   layer.querySelectorAll(`.pdf-shape-text[data-highlight-id="${CSS.escape(id)}"]`).forEach((box) => { box.style.visibility = "hidden"; });
 }
 
+// Told after every commit, whether the words were kept or (empty) dropped —
+// src/ui/ink-rail.js puts the Text tool away here, so one press of T is one
+// box and nobody has to press Done after every line. A hook rather than an
+// import because ink-rail.js already imports this module's neighbours.
+let shapeTextCommittedHook = () => {};
+
+export function setShapeTextCommittedHandler(fn) {
+  shapeTextCommittedHook = typeof fn === "function" ? fn : () => {};
+}
+
 // The words typed, and the box grown to hold them — one undo step.
-export function commitShapeTextEditor() {
+// `to` is where the focus went when a blur committed it, so the hook can tell
+// "finished" from "went to restyle these words on the pen's bar".
+export function commitShapeTextEditor({ to = null } = {}) {
+  if (!shapeEditor) return;
+  putShapeTextDown();
+  shapeTextCommittedHook({ to });
+}
+
+function putShapeTextDown() {
   const editor = shapeEditor;
   if (!editor) return;
   shapeEditor = null;

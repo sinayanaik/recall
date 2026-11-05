@@ -665,7 +665,7 @@ function adoptIntoOpenDeck(snapshot, localId) {
   // no content) is still correct on disk — the screen simply keeps what it had
   // until the next open.
   try {
-    loadDeckSnapshot(snapshot, snapshot.sourceTitle || snapshot.deckTitle || "", false, { keepPlace: true, deckKey: localId });
+    loadDeckSnapshot(snapshot, snapshot.sourceTitle || snapshot.deckTitle || "", false, { keepPlace: true, deckKey: localId, allowEmpty: true });
   } catch (error) {
     console.warn("Could not show the merged copy of the open deck", error);
   }
@@ -941,14 +941,20 @@ export function deckHasNothingToSave() {
   return !deckPayloadHasContent({ cards: state.masterCards, notes: state.notes, meta: state.meta });
 }
 
-export async function saveDeckToLibrary({ id = null, silent = false, updatedAt = null, lastSyncedAt = undefined, synced = false } = {}) {
+// allowEmpty: the one save that may write a file with nothing in it yet — a
+// file the reader has just CREATED (src/cards/new-deck.js). Until then a new
+// file lived only in memory until its first card or line of notes, so a file
+// made and left empty was gone on reload and never reached another device.
+// Every other save keeps the gate: autosave must never write an emptied
+// screen over a file whose real contents are on disk.
+export async function saveDeckToLibrary({ id = null, silent = false, updatedAt = null, lastSyncedAt = undefined, synced = false, allowEmpty = false } = {}) {
   // A whole folder is open as one document. There is no such deck, and
   // resolveSaveTarget below would happily invent one — mint a local id, write
   // every deck in the folder glued together into IndexedDB, and let the next
   // reconcile push that to every device. The edits belong to the decks the
   // document was built from; saveFolderDeck puts them there.
   if (!id && isFolderDeckActive()) return saveFolderDeck({ silent });
-  if (deckHasNothingToSave()) {
+  if (!allowEmpty && deckHasNothingToSave()) {
     if (!silent) setStatus("Add some cards or notes before saving a file.", "error");
     return null;
   }
@@ -1142,7 +1148,9 @@ export async function loadDeckFromLibrary(id, { keepPlace = false } = {}) {
     // it. Recorded only once the deck is known to exist — a failed open doesn't
     // move anyone.
     if (!keepPlace) recordNavHistory();
-    loadDeckSnapshot(payload, payload.sourceTitle || payload.deckTitle || "", false, { keepPlace, deckKey: id });
+    // allowEmpty: a file in the library may be empty — one just created and
+    // not written in yet. Only imports still refuse a payload with nothing in it.
+    loadDeckSnapshot(payload, payload.sourceTitle || payload.deckTitle || "", false, { keepPlace, deckKey: id, allowEmpty: true });
     state.localDeckId = id;
     // The agreement every later save of this window is measured from.
     setOpenDeckBase(id, { rev: payload.rev || null, loaded: payload, snapshot: deckSnapshot() });
