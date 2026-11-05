@@ -76,22 +76,55 @@ The popup shows the few settings most people change:
     pages**, or a custom length. Each cut goes in the best place near that
     length: before a heading if there is one, between paragraphs otherwise, and
     never through a picture, table, code block, formula or list item. Each page
-    is then trimmed to its own content, so no page ends in a band of white.
+    is then trimmed to exactly where its own content ends, so no page ends in
+    a band of white. A list or a table longer than a page is cut between its
+    items or rows (a table's header row repeats on the next page).
     With **Show the page breaks on the page first** (on by default) the page is
-    laid out as it will print and the cuts appear as dashed lines: click a line
-    to remove it, click anywhere to cut above that point, change the page
-    length, then press **Save PDF** (or Enter; Esc cancels).
+    laid out as it will print, each page shaded with its number and how full
+    it is (amber when longer than the page length), and the cuts appear as
+    dashed lines:
+    - **drag** a line to move it — it snaps to the nearest clean place; hold
+      **Alt** to put it before any block;
+    - **click** the page to add a cut at the nearest clean place;
+    - **✕** on a line removes it; **↑ / ↓** move the last cut you touched and
+      **Delete** removes it;
+    - **Undo / Redo** (Ctrl+Z, Ctrl+Shift+Z), **Auto** to plan the cuts again,
+      or another page length;
+    - then **Save PDF** (or Enter; Esc cancels).
   - **One long page**: as tall as the content (split into a few pages past
     200 in). Very tall pages are slow to scroll in any PDF reader.
   - **Paper pages**: A4, Letter, Legal, A3, A5, Tabloid or custom.
-- **Images**: Original, High, Medium, Low, Custom or none.
+- **Images**: Original, High, Medium, Low, Custom or none. Every picture
+  the print shows — from any site, CSS backgrounds included — is re-encoded
+  at the size it prints: JPEG for photos, PNG for pictures with see-through
+  parts or few colours (diagrams, screenshots of text). Original keeps each
+  size but still turns WebP and AVIF into JPEG.
 - **Margins**: none, left and right, top and bottom, all sides, or custom.
 
 **More options** holds the rest: presets, the visible-area capture, paper size
 and orientation, margin sizes, scale or layout width, text size, print or
-screen styles, colour scheme, picture details, fixed bars, collapsed sections,
-breaks before headings, embeds, header and footer, source box, bookmarks,
-tagged PDF, file name and folder.
+screen styles, colour scheme, shadows and effects, fonts, picture details,
+fixed bars, collapsed sections, breaks before headings, embeds, header and
+footer, source box, bookmarks, tagged PDF, file name and folder.
+
+### A PDF that opens fast
+
+What makes a printed web page slow to open — in any PDF reader — is mostly
+what Chrome's PDF engine cannot keep as vectors or as the original file. Save
+as PDF keeps those out by default:
+
+| Cause | What Chrome would write | What Save as PDF does |
+|---|---|---|
+| A blurred `box-shadow`, `text-shadow`, `filter: blur()`/`drop-shadow()`, `backdrop-filter` | each one a separate 300-DPI picture (a page of cards: hundreds) | leaves them out; **Keep shadows and blur effects** puts them back |
+| WebP, AVIF, PNG pictures | their raw pixels, deflated — megabytes per photo | re-encodes each at the size it prints (see Images) |
+| Pictures from other sites | could not be re-encoded at all without extra permission | reads them through the debugger it already uses, so no permission is needed |
+| A variable web font | a Type 3 font: every letter a little drawing, slower and blurrier | **Fonts → Automatic** prints that text in the page's own fallback font; **Standard fonts only** does it for every web font but code and icon fonts |
+| Bookmarks | only in a tagged PDF, which made a long page 5–6× bigger and 3–4× slower to make | bookmarks are written from the headings' named destinations; **Tagged PDF** is off unless you want it for a screen reader |
+
+On a test page with 30 shadowed cards, four large photos from another site, a
+variable font, a 120-item list and an 80-row table, the PDF went from 13.6 MB
+with 133 pictures to 2.4 MB with 7, and drawing all of its pages in poppler
+from 4.0 s to 1.9 s.
 
 While a PDF is made, Chrome shows a bar saying the extension "started debugging
 this browser": that is how it prints with Chrome's own engine, and the bar goes
@@ -100,8 +133,17 @@ away when the PDF is saved. The page is put back exactly as it was.
 Every PDF carries the page's title, author and address, and Recall's own
 fields (`/RecallSourceURL`, `/RecallSiteName`, `/RecallCapturedAt`,
 `/RecallPublished`, `/RecallDescription`), which the app reads on import.
-`lib/pdf-info.js` writes them, and `lib/pdf-pages.js` gives each smart page its
-own height — both as incremental updates, leaving Chrome's bytes as they were.
+`lib/pdf-info.js` writes them, `lib/pdf-pages.js` gives each smart page its
+own height and `lib/pdf-outline.js` adds the bookmarks — all as incremental
+updates, leaving Chrome's bytes as they were.
+
+Two things come back from Chrome itself, through named destinations: Chrome
+writes one, with its printed page and position, for every element an in-page
+link points at — even a hidden link. `content/prepare.js` gives each heading,
+and the end of each smart page's content, an empty marker with an id and a
+hidden link to it; the bookmarks point at the headings' destinations, and each
+page is trimmed at its end marker (the height measured on screen is the
+fallback where a marker cannot go, as between list items).
 
 ---
 
@@ -256,14 +298,18 @@ Two more things happen on the way out:
   | `debugger` | Save as PDF prints with Chrome's own PDF engine (`Page.printToPDF`) and lays the page out at the print width. This is the "debugging this browser" bar. |
   | `downloads` | Saves the PDF. |
   | `storage` | Your PDF options and presets, the cleaner's mode and level, and the per-site cleaning rules you chose to remember. |
-  | *optional* access to all sites | Asked for only when you choose a reduced image quality and press **Allow**, to read pictures served from other sites so they can be made smaller. |
+
+  Pictures and fonts from other sites are read through the same debugger
+  connection (`Page.getResourceContent`, else `Network.loadNetworkResource`),
+  so no access to other sites is asked for.
 
 - `background.js` wires the three jobs: it injects the picker or the cleaner on
   demand (re-injecting toggles either off) and hands PDF jobs to `pdf-job.js`.
 - `popup.html`, `popup.css` and `popup.js` are the toolbar popup.
-- `pdf-job.js` runs one PDF job per tab: attach, prepare, find the page breaks,
-  print, restore, stamp the metadata, download. Because it runs in the service
-  worker, closing the popup does not stop it.
+- `pdf-job.js` runs one PDF job per tab: attach, prepare, check the fonts,
+  re-encode the pictures, find the page breaks, print, restore, trim the
+  pages, add the bookmarks, stamp the metadata, download. Because it runs in
+  the service worker, closing the popup does not stop it.
 - `content/prepare.js` applies the PDF options to the page in an isolated world,
   plans the smart page breaks and shows them for editing, then puts every
   change back.
@@ -272,8 +318,11 @@ Two more things happen on the way out:
   toolbar, marking, apply and undo; `content/cleaner.css` blurs marked blocks.
 - `lib/options.js` holds every PDF option, its default, the presets, the page
   geometry and the smart page lengths. `lib/pdf-info.js` writes the metadata,
-  `lib/pdf-pages.js` trims each smart page to its content, and
-  `lib/image-pdf.js` builds the PDF for the visible-area screenshot.
+  `lib/pdf-pages.js` trims each smart page to its content, `lib/pdf-outline.js`
+  writes the bookmarks, `lib/pdf-objects.js` reads and appends PDF objects for
+  both, `lib/font-check.js` tells a variable font by its `fvar` table (TTF,
+  WOFF or WOFF2) and reads `@font-face` rules, and `lib/image-pdf.js` builds
+  the PDF for the visible-area screenshot.
 - `content/picker.js` is the element picker + converter (runs in the page's
   isolated world). `content/picker.css` is its self-contained, `!important`-hardened UI.
 - `content/mathjax-source.js` is the only file that runs in the page's **MAIN
@@ -341,6 +390,8 @@ Fixtures live in `tools/fixtures/`:
 | `structure.html` | ordered-list indentation, nested lists, `dl`, header-less and spanned tables, `sup`/`sub`, `mark`/`u`/`kbd`/`abbr`, `details`, `figure`, callouts, ARIA headings, embeds, lazy images |
 | `page.html` | shadow DOM, and the whole-page "Remove mode" clip's site-chrome stripping |
 | `clutter.html` | the page `tools/extensions-browser-check.mjs` in the Recall repository cleans and saves as a PDF |
+| `long.html` | smart pages, bookmarks and the break editor in the same check |
+| `heavy.html` + `variable-font.woff2` | what makes a PDF slow to open — shadows, large WebP/PNG photos from another origin, a variable font (DejaVu Sans, Bitstream Vera licence, cut down to ASCII, with an `fvar` table), a long list and table — in the same check |
 
 Two assertions are worth more than the rest: every math span in the output is
 **parsed with the KaTeX a deck actually ships** (capturing the wrong TeX is not a
@@ -350,8 +401,9 @@ is how the preview's fidelity to a deck is checked.
 `tools/extensions-check.mjs` (no browser) and `tools/extensions-browser-check.mjs`
 (Chromium, the extension loaded unpacked) in the Recall repository check the
 cleaner and Save as PDF: what Auto marks, Apply and Undo, smart page breaks and
-their editor, page sizes, the trimmed heights, the metadata, and that the page
-is restored afterwards.
+their editor (drag, add, ✕, undo), page sizes, the trimmed heights, the
+bookmarks, the pictures and fonts in the heavy page's PDF against the old
+defaults, the metadata, and that the page is restored afterwards.
 
 `tools/generate-icons.js` regenerates the PNG icons.
 Nothing in this extension imports from or writes to the Recall app.

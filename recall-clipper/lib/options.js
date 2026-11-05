@@ -16,8 +16,10 @@ export const CSS_PX_PER_IN = 96;
 // The tallest page most PDF viewers will show (the PDF spec's 14 400 units).
 export const MAX_PAGE_IN = 200;
 
+// dpi null: the picture's own size. "Original" still re-encodes WebP and AVIF
+// (as JPEG at 92%), which Chrome would otherwise store as raw pixels.
 export const QUALITY = {
-  original: null,
+  original: { dpi: null, jpeg: 92 },
   high: { dpi: 200, jpeg: 85 },
   medium: { dpi: 150, jpeg: 75 },
   low: { dpi: 100, jpeg: 60 },
@@ -54,6 +56,8 @@ export const DEFAULTS = Object.freeze({
   colorScheme: "page",          // page | light | dark
   backgrounds: true,
   forceLight: false,
+  effects: false,               // keep shadows and blur effects (each becomes a picture in the PDF)
+  fonts: "auto",                // auto | page | standard (auto: variable fonts → the page's fallback font)
   // Images
   imageQuality: "high",         // original | high | medium | low | custom | none
   customDpi: 200,
@@ -76,7 +80,7 @@ export const DEFAULTS = Object.freeze({
   hfFontSize: 8,
   linkUrls: false,
   outline: true,
-  tagged: true,
+  tagged: false,                // several times bigger and slower; bookmarks no longer need it
   banner: true,
   filename: "{title} - {site}",
   subfolder: "",
@@ -123,6 +127,7 @@ const ENUMS = {
   layoutWidth: ["1280", "1024", "768", "390", "custom"],
   media: ["print", "screen"],
   colorScheme: ["page", "light", "dark"],
+  fonts: ["auto", "page", "standard"],
   imageQuality: ["original", "high", "medium", "low", "custom", "none"],
   breakBefore: ["none", "h1", "h2"],
   embeds: ["placeholder", "keep", "hide"],
@@ -229,7 +234,7 @@ export function pageContentPx(o, geo = geometry(o), length = o.pageLength) {
 
 export function imageSettings(o) {
   if (o.imageQuality === "custom") return { dpi: o.customDpi, jpeg: o.customJpeg };
-  return QUALITY[o.imageQuality] || null;
+  return QUALITY[o.imageQuality] || null; // null: no pictures at all
 }
 
 const UNSAFE = /[\u0000-\u001f\u007f<>:"/\\|?*]+/g;

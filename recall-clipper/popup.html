@@ -71,8 +71,8 @@
         </div>
         <div class="field" data-show="pageLength=custom"><label for="customPageLength">Length (<span class="unit"></span>)</label><input type="number" name="customPageLength" id="customPageLength" step="1" min="20"></div>
       </div>
-      <label class="check" data-show="layout=smart"><input type="checkbox" name="adjustBreaks"> Show the page breaks on the page first, so I can move them</label>
-      <p class="note" data-show="layout=smart">Pages are cut before headings and between paragraphs, never through a picture, table or code, and each page is trimmed to its content.</p>
+      <label class="check" data-show="layout=smart"><input type="checkbox" name="adjustBreaks"> Show the page breaks on the page first, so I can change them</label>
+      <p class="note" data-show="layout=smart">Pages are cut before headings and between paragraphs, never through a picture or code, and each page is trimmed to its content. On the page, drag a break to move it, click to add one, ✕ to remove one.</p>
       <p class="note" data-show="layout=continuous">One page as tall as the content (a page over 200 in is split into a few). Very long pages are slower to scroll in any PDF reader — Smart pages read better.</p>
 
       <div class="row">
@@ -98,10 +98,6 @@
           </select>
         </div>
       </div>
-      <p class="note" id="hostNote" data-show="imageQuality=high|medium|low|custom" hidden>
-        Pictures from other sites can only be made smaller with permission to read them.
-        <button type="button" id="grantHost" class="link">Allow</button>
-      </p>
 
       <details class="more">
         <summary>More options</summary>
@@ -212,10 +208,20 @@
           </div>
         </div>
         <label class="check"><input type="checkbox" name="backgrounds"> Print background colours and images</label>
+        <label class="check"><input type="checkbox" name="effects"> Keep shadows and blur effects (each becomes a picture: a bigger PDF, slower to open)</label>
+        <div class="field">
+          <label for="fonts">Fonts</label>
+          <select name="fonts" id="fonts">
+            <option value="auto">Automatic: replace fonts that would print as pictures</option>
+            <option value="page">As the page</option>
+            <option value="standard">Standard fonts only (smallest, fastest)</option>
+          </select>
+        </div>
         <label class="check"><input type="checkbox" name="forceLight"> Force light: dark boxes become white with dark text</label>
 
         <h2>Pictures</h2>
-        <p class="note" data-show="imageQuality=high|medium|low">High is 200 DPI at JPEG 85%, Medium 150 DPI at 75%, Low 100 DPI at 60%. Pictures are resized to the size they print at.</p>
+        <p class="note" data-show="imageQuality=high|medium|low">High is 200 DPI at JPEG 85%, Medium 150 DPI at 75%, Low 100 DPI at 60%. Pictures, from any site, are resized to the size they print at.</p>
+        <p class="note" data-show="imageQuality=original">Original keeps each picture's size; WebP and AVIF pictures still become JPEG, which PDF readers draw far faster.</p>
         <div class="row" data-show="imageQuality=custom">
           <div class="field"><label for="customDpi">Max DPI</label><input type="number" name="customDpi" id="customDpi" min="36" max="600" step="10"></div>
           <div class="field"><label for="customJpeg">JPEG quality <output data-for="customJpeg"></output>%</label><input type="range" name="customJpeg" id="customJpeg" min="10" max="100" step="5"></div>
@@ -283,7 +289,7 @@
         <label class="check"><input type="checkbox" name="banner"> Source box on the first page (title, address, date)</label>
         <label class="check"><input type="checkbox" name="outline"> Bookmarks from the page’s headings</label>
         <label class="check"><input type="checkbox" name="linkUrls"> Print link addresses after links</label>
-        <label class="check"><input type="checkbox" name="tagged"> Tagged PDF (screen readers, reflow)</label>
+        <label class="check"><input type="checkbox" name="tagged"> Tagged PDF for screen readers and reflow (several times bigger and slower to make)</label>
         <div class="field">
           <label for="filename">File name</label>
           <input type="text" name="filename" id="filename" spellcheck="false">

@@ -4,15 +4,30 @@
 // an isolated world (content/prepare.js), lay it out at the chosen width, print
 // it with Page.printToPDF (a real vector PDF with selectable text), put the
 // page back, stamp Recall's metadata into the PDF and save it with
-// chrome.downloads. Running in the service worker rather than the popup means
-// closing the popup — or clicking the page to pick a block or move a page
-// break — never kills a job.
+// chrome.downloads.
+//
+// What makes a printed web page heavy to open is mostly what Chrome cannot
+// draw as vectors, so the job keeps those out of the PDF:
+// - pictures are re-encoded at the size they print (shrinkImages), read
+//   through the debugger, so pictures from other sites need no permission;
+// - shadows and blur filters are switched off (content/prepare.js), since
+//   each one would become a 300-DPI picture of its own;
+// - text in a variable web font is printed in the page's fallback font
+//   (variableFamilies), since Chrome embeds a variable font as a Type 3 font;
+// - bookmarks come from named destinations (lib/pdf-outline.js), so the PDF
+//   need not be tagged — tagging a long page makes it several times bigger.
+//
+// Running in the service worker rather than the popup means closing the popup
+// — or clicking the page to pick a block or move a page break — never kills a
+// job.
 //
 // While attached, Chrome shows its "started debugging this browser" bar on the
 // tab; it goes away when the job detaches.
 
 import { setPdfInfo, countPages } from "./lib/pdf-info.js";
-import { trimPageHeights } from "./lib/pdf-pages.js";
+import { trimPageHeights, pageHeightsFromMarkers } from "./lib/pdf-pages.js";
+import { addOutline } from "./lib/pdf-outline.js";
+import { isVariableFont, fontFaces } from "./lib/font-check.js";
 import { imagesToPdf } from "./lib/image-pdf.js";
 import {
   normalize, geometry, imageSettings, fileNameFor, folderFor, pageContentPx,
@@ -54,10 +69,6 @@ function bytesToB64(bytes) {
   return btoa(bin);
 }
 
-function blobToDataUrl(blob) {
-  return blob.arrayBuffer().then((buf) => `data:${blob.type};base64,${bytesToB64(new Uint8Array(buf))}`);
-}
-
 // JPEG pixel size, from its start-of-frame marker.
 function jpegSize(bytes) {
   let i = 2;
@@ -77,35 +88,207 @@ async function sourceOf(path) {
   return (await fetch(chrome.runtime.getURL(path))).text();
 }
 
-// Re-encode the images the page itself could not read (cross-origin, no
-// CORS). Needs the optional host permission; without it they print as served.
-async function reencodeInBackground(items, settings) {
+// ---------------------------------------------------------------- resources
+
+// A resource's bytes, as the page loaded it: from the page's own cache through
+// the debugger (Page.getResourceContent — any origin, no CORS, no host
+// permission), else fetched the way the page would (Network.loadNetworkResource),
+// unless `network` is false. Null when neither works.
+async function resourceBytes(target, frameId, url, { network = true } = {}) {
+  if (url.startsWith("data:")) {
+    const m = /^data:([^,]*?)(;base64)?,([\s\S]*)$/.exec(url);
+    if (!m) return null;
+    try { return m[2] ? b64ToBytes(m[3]) : new TextEncoder().encode(decodeURIComponent(m[3])); } catch { return null; }
+  }
+  try {
+    const r = await send(target, "Page.getResourceContent", { frameId, url });
+    if (r && r.content != null) return r.base64Encoded ? b64ToBytes(r.content) : new TextEncoder().encode(r.content);
+  } catch { /* not in the page's cache */ }
+  if (!network) return null;
+  let handle = null;
+  try {
+    const { resource } = await send(target, "Network.loadNetworkResource", {
+      frameId, url, options: { disableCache: false, includeCredentials: true }
+    });
+    if (!resource || !resource.success || !resource.stream) return null;
+    handle = resource.stream;
+    const parts = [];
+    let total = 0;
+    for (let i = 0; i < 4096; i += 1) {
+      const chunk = await send(target, "IO.read", { handle, size: 1 << 20 });
+      const bytes = chunk.base64Encoded ? b64ToBytes(chunk.data) : new TextEncoder().encode(chunk.data);
+      parts.push(bytes);
+      total += bytes.length;
+      if (chunk.eof || total > 64 * 1048576) break;
+    }
+    const out = new Uint8Array(total);
+    let at = 0;
+    for (const p of parts) { out.set(p, at); at += p.length; }
+    return out;
+  } catch {
+    return null;
+  } finally {
+    if (handle) send(target, "IO.close", { handle }).catch(() => {});
+  }
+}
+
+function sniffImage(b) {
+  if (b[0] === 0xff && b[1] === 0xd8) return "jpeg";
+  if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return "png";
+  if (b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46) return "gif";
+  const at = (i, s) => String.fromCharCode(...b.subarray(i, i + s.length)) === s;
+  if (at(0, "RIFF") && at(8, "WEBP")) return "webp";
+  if (at(4, "ftyp") && (at(8, "avif") || at(8, "avis"))) return "avif";
+  if (at(0, "<") || at(0, "<?xml") || at(0, "<svg")) return "svg";
+  return "other";
+}
+
+// Whether a picture has see-through pixels, and whether it is drawn in few
+// colours (a diagram or a screenshot of text, which JPEG would smear) — from
+// a sample of its pixels.
+function inspectPixels(ctx, w, h) {
+  const data = ctx.getImageData(0, 0, w, h).data;
+  const step = Math.max(1, Math.floor((w * h) / 60000));
+  let alpha = false;
+  const colours = new Set();
+  for (let p = 0; p < w * h; p += step) {
+    const i = p * 4;
+    if (data[i + 3] < 250) alpha = true;
+    if (colours.size <= 256) colours.add((data[i] << 16) | (data[i + 1] << 8) | data[i + 2]);
+    if (alpha && colours.size > 256) break;
+  }
+  return { alpha, few: colours.size <= 256 };
+}
+
+// How wide a picture is drawn, in CSS pixels, given its own pixel size.
+function drawnWidth(item, nw, nh, maxCss) {
+  const ar = nw / Math.max(1, nh);
+  let w = item.cssWidth;
+  if (item.fit === "cover") w = Math.max(item.cssWidth, item.cssHeight * ar);
+  else if (item.fit === "contain") w = Math.min(item.cssWidth, item.cssHeight * ar);
+  return Math.min(w, maxCss * (item.fit === "cover" ? 2 : 1));
+}
+
+/**
+ * Every picture the print shows, re-encoded at the size it prints: JPEG for a
+ * photo, PNG for a picture with see-through pixels or few colours. A JPEG that
+ * is already small enough is left as it is. WebP and AVIF are always
+ * re-encoded, even at "Original" size: Chrome would store their raw pixels.
+ * One result per distinct picture, for every element that shows it.
+ */
+async function shrinkImages(target, frameId, items, settings, geo, grayscale) {
+  const groups = new Map();
+  for (const item of items) {
+    if (!groups.has(item.src)) groups.set(item.src, []);
+    groups.get(item.src).push(item);
+  }
+  const queue = [...groups.entries()];
   const results = [];
-  let i = 0;
+  let shrunk = 0;
   const worker = async () => {
-    while (i < items.length) {
-      const item = items[i];
-      i += 1;
+    while (queue.length) {
+      const [src, uses] = queue.shift();
       try {
-        const res = await fetch(item.src, { credentials: "omit" });
-        if (!res.ok) continue;
-        const blob = await res.blob();
-        const bitmap = await createImageBitmap(blob);
-        const canvas = new OffscreenCanvas(item.width, item.height);
-        const ctx = canvas.getContext("2d");
-        const png = /png|gif|webp/.test(blob.type) && !/jpe?g/.test(blob.type);
-        if (!png) { ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, item.width, item.height); }
-        if (settings.grayscale) ctx.filter = "grayscale(1)";
+        const bytes = await resourceBytes(target, frameId, src);
+        if (!bytes || bytes.length < 64) continue;
+        const kind = sniffImage(bytes);
+        if (kind === "svg" || kind === "other") continue;
+        // Original size: only what Chrome would store as raw pixels changes.
+        if (!settings.dpi && kind !== "webp" && kind !== "avif" && !grayscale) continue;
+        const bitmap = await createImageBitmap(new Blob([bytes]));
+        const nw = bitmap.width;
+        const nh = bitmap.height;
+        const cssW = Math.max(...uses.map((u) => drawnWidth(u, nw, nh, geo.layoutWidthPx)));
+        const targetW = settings.dpi ? Math.max(16, Math.round(((cssW * geo.scale) / CSS_PX_PER_IN) * settings.dpi)) : nw;
+        const shrink = nw > targetW * 1.15;
+        const w = shrink ? targetW : nw;
+        const h = Math.max(1, Math.round((w * nh) / nw));
+        if (!shrink && kind === "jpeg" && !grayscale) { bitmap.close(); continue; }
+        // Big enough to matter: a small icon is cheap whatever it is.
+        if (!shrink && w * h < 120 * 120 && kind !== "webp" && kind !== "avif") { bitmap.close(); continue; }
+        const canvas = new OffscreenCanvas(w, h);
+        const ctx = canvas.getContext("2d", { willReadFrequently: true });
         ctx.imageSmoothingQuality = "high";
-        ctx.drawImage(bitmap, 0, 0, item.width, item.height);
+        if (grayscale) ctx.filter = "grayscale(1)";
+        ctx.drawImage(bitmap, 0, 0, w, h);
+        const { alpha, few } = inspectPixels(ctx, w, h);
+        // A PNG or GIF kept at its size and kept lossless gains nothing.
+        if (!shrink && (kind === "png" || kind === "gif") && (alpha || few) && !grayscale) { bitmap.close(); continue; }
+        let out;
+        if (alpha || few) out = await canvas.convertToBlob({ type: "image/png" });
+        else {
+          const flat = new OffscreenCanvas(w, h);
+          const fctx = flat.getContext("2d");
+          fctx.fillStyle = "#fff";
+          fctx.fillRect(0, 0, w, h);
+          fctx.imageSmoothingQuality = "high";
+          if (grayscale) fctx.filter = "grayscale(1)";
+          fctx.drawImage(bitmap, 0, 0, w, h);
+          out = await flat.convertToBlob({ type: "image/jpeg", quality: settings.jpeg / 100 });
+        }
         bitmap.close();
-        const out = await canvas.convertToBlob(png ? { type: "image/png" } : { type: "image/jpeg", quality: settings.jpeg / 100 });
-        results.push({ id: item.id, dataUrl: await blobToDataUrl(out) });
-      } catch { /* leave this one as served */ }
+        // Re-encoding a same-size JPEG or PNG that came out bigger: keep the original.
+        if (!shrink && (kind === "jpeg" || kind === "png") && out.size >= bytes.length) continue;
+        results.push({ ids: uses.map((u) => u.id), type: out.type, b64: bytesToB64(new Uint8Array(await out.arrayBuffer())) });
+        if (shrink) shrunk += uses.length;
+      } catch { /* this one prints as served */ }
     }
   };
-  await Promise.all(Array.from({ length: Math.min(6, items.length) }, worker));
-  return results;
+  await Promise.all(Array.from({ length: Math.min(4, queue.length) }, worker));
+  return { results, shrunk };
+}
+
+/**
+ * The font families the page shows in a variable font: every @font-face in
+ * the page's style sheets (read through the CSS domain, so sheets from other
+ * sites are readable too), checked by the first of its files the page loaded.
+ * Chrome keeps no copy of a font's bytes for Page.getResourceContent, so a
+ * loaded font is read again with Network.loadNetworkResource (from the cache,
+ * as a rule); files the page never loaded are not fetched.
+ */
+async function variableFamilies(target, frameId, pageUrl) {
+  const headers = [];
+  const onEvent = (source, method, params) => {
+    if (source.tabId === target.tabId && method === "CSS.styleSheetAdded" && params && params.header) headers.push(params.header);
+  };
+  chrome.debugger.onEvent.addListener(onEvent);
+  const families = new Map();
+  try {
+    await send(target, "DOM.enable");
+    await send(target, "CSS.enable");
+    await new Promise((r) => setTimeout(r, 120));
+    const loaded = new Set();
+    try {
+      const { frameTree } = await send(target, "Page.getResourceTree");
+      for (const r of frameTree.resources || []) if (r.type === "Font") loaded.add(r.url);
+    } catch { /* then nothing is fetched */ }
+    const checked = new Map();
+    for (const header of headers.slice(0, 300)) {
+      if (header.frameId && header.frameId !== frameId) continue;
+      let text = "";
+      try { ({ text } = await send(target, "CSS.getStyleSheetText", { styleSheetId: header.styleSheetId })); } catch { continue; }
+      if (!/@font-face/i.test(text)) continue;
+      for (const face of fontFaces(text, header.sourceURL || pageUrl)) {
+        const key = face.family.toLowerCase();
+        if (families.has(key)) continue;
+        // The first file the page loaded decides; files it never needed say nothing.
+        const url = face.urls.find((u) => u.startsWith("data:") || loaded.has(u));
+        if (!url) continue;
+        let variable = checked.get(url);
+        if (variable === undefined) {
+          const bytes = await resourceBytes(target, frameId, url);
+          variable = bytes ? isVariableFont(bytes) : false;
+          checked.set(url, variable);
+        }
+        if (variable) families.set(key, face.family);
+      }
+    }
+  } catch { /* fonts stay as they are */ } finally {
+    chrome.debugger.onEvent.removeListener(onEvent);
+    await send(target, "CSS.disable").catch(() => {});
+    await send(target, "DOM.disable").catch(() => {});
+  }
+  return [...families.values()];
 }
 
 function mediaFeatures(o) {
@@ -149,7 +332,6 @@ export async function runJob(tabId, rawOptions) {
   const o = normalize(rawOptions);
   const geo = geometry(o);
   const settings = imageSettings(o);
-  o.reencode = settings ? { ...settings, grayscale: o.grayscale } : null;
 
   const tab = await chrome.tabs.get(tabId);
   if (RESTRICTED.test(tab.url || "") || STORE.test(tab.url || "")) throw new Error("Chrome does not let extensions read this page.");
@@ -171,8 +353,9 @@ export async function runJob(tabId, rawOptions) {
   try {
     await send(target, "Page.enable");
     const { frameTree } = await send(target, "Page.getFrameTree");
+    const frameId = frameTree.frame.id;
     ({ executionContextId: world } = await send(target, "Page.createIsolatedWorld", {
-      frameId: frameTree.frame.id, worldName: "Recall Web Clipper"
+      frameId, worldName: "Recall Web Clipper"
     }));
     const [coreSrc, prepSrc] = await Promise.all([sourceOf("content/cleaner-core.js"), sourceOf("content/prepare.js")]);
     await evaluate(`${coreSrc}\n;\n${prepSrc}\n;true`);
@@ -187,24 +370,32 @@ export async function runJob(tabId, rawOptions) {
 
     status(tabId, { step: "Preparing the page…" });
     prepared = true;
-    const report = await evaluate(`__recallPdf.prepare(${JSON.stringify(o)}, ${JSON.stringify(geo)})`);
+    const report = await evaluate(`__recallPdf.prepare(${JSON.stringify(o)})`);
     const facts = report.facts;
-    report.resized = report.resized || 0;
 
-    if (report.images.length && settings) {
-      const allowed = await chrome.permissions.contains({ origins: ["<all_urls>"] }).catch(() => false);
-      if (allowed) {
-        status(tabId, { step: `Resizing ${report.images.length} image${report.images.length === 1 ? "" : "s"}…` });
-        const results = await reencodeInBackground(report.images, o.reencode);
-        report.resized += results.length;
-        for (let i = 0; i < results.length; i += 8) {
-          await evaluate(`__recallPdf.swapImages(${JSON.stringify(results.slice(i, i + 8))})`);
-        }
+    if (o.fonts === "auto" && o.capture !== "visible") {
+      status(tabId, { step: "Checking the fonts…" });
+      const families = await variableFamilies(target, frameId, facts.url || tab.url);
+      if (families.length) report.fonts = await evaluate(`__recallPdf.replaceFonts(${JSON.stringify(families)})`);
+    }
+
+    report.resized = 0;
+    if (report.images.length && settings && o.capture !== "visible") {
+      status(tabId, { step: `Sizing ${report.images.length} picture${report.images.length === 1 ? "" : "s"} for print…` });
+      const { results, shrunk } = await shrinkImages(target, frameId, report.images, settings, geo, o.grayscale);
+      report.resized = shrunk;
+      // In batches of about 4 MB, so no single message gets huge.
+      for (let i = 0; i < results.length;) {
+        const batch = [];
+        let size = 0;
+        while (i < results.length && (size < 4 * 1048576 || !batch.length)) { size += results[i].b64.length; batch.push(results[i]); i += 1; }
+        await evaluate(`__recallPdf.swapImages(${JSON.stringify(batch)})`);
       }
     }
 
     let bytes;
     let pages = 1;
+    let markedPages = 0;
     if (o.capture === "visible") {
       status(tabId, { step: "Capturing the visible area…" });
       const shot = await send(target, "Page.captureScreenshot", { format: "jpeg", quality: settings ? settings.jpeg : 92 });
@@ -215,8 +406,15 @@ export async function runJob(tabId, rawOptions) {
       const printed = await print(target, o, geo, evaluate, tabId);
       bytes = printed.bytes;
       pages = countPages(bytes);
-      // Smart pages: each page as tall as its own content (see lib/pdf-pages.js).
-      if (printed.trimTo) bytes = trimPageHeights(bytes, printed.trimTo);
+      // Smart pages: each page as tall as its own content (see lib/pdf-pages.js),
+      // where the PDF says that content ends, else as measured on screen.
+      if (printed.trim) {
+        const { measured, bottomPt } = printed.trim;
+        const marked = pageHeightsFromMarkers(bytes, measured.length, { bottomPt });
+        markedPages = marked.filter((h) => h != null).length;
+        bytes = trimPageHeights(bytes, measured.map((h, i) => marked[i] ?? h));
+      }
+      if (o.outline && !o.tagged && report.headings.length) bytes = addOutline(bytes, report.headings);
     }
 
     await evaluate("__recallPdf.restore()").catch(() => {});
@@ -254,7 +452,10 @@ export async function runJob(tabId, rawOptions) {
     });
     if (o.showAfter && id != null) whenComplete(id, () => chrome.downloads.show(id));
     status(tabId, { step: `Saved ${name} (${(bytes.length / 1048576).toFixed(1)} MB, ${pages} page${pages === 1 ? "" : "s"})`, done: true });
-    return { ok: true, name, bytes: bytes.length, pages, cleaned: report.cleaned, resized: report.resized };
+    return {
+      ok: true, name, bytes: bytes.length, pages, cleaned: report.cleaned, resized: report.resized,
+      fonts: report.fonts || 0, bookmarks: report.headings.length, markedPages
+    };
   } catch (err) {
     if (prepared) await evaluate("__recallPdf.restore()").catch(() => {});
     await send(target, "Emulation.clearDeviceMetricsOverride").catch(() => {});
@@ -281,7 +482,9 @@ async function print(target, o, geo, evaluate, tabId) {
     marginRight: geo.margin.right,
     preferCSSPageSize: false,
     generateTaggedPDF: o.tagged,
-    generateDocumentOutline: o.outline,
+    // Chrome writes its own outline only into a tagged PDF; otherwise
+    // lib/pdf-outline.js adds one afterwards.
+    generateDocumentOutline: o.outline && o.tagged,
     transferMode: "ReturnAsBase64"
   };
 
@@ -375,11 +578,15 @@ async function printSmart(target, o, geo, evaluate, tabId, base) {
   }
   // Each page cut to its own content — only when the print came out exactly as
   // planned, and never under a footer, which sits at the bottom of the paper.
+  // The measured heights are the fallback for a page without an end marker.
   const fits = got === plan.pages && o.footer === "none";
-  const trimTo = fits
-    ? contentIn.map((h) => Math.min(height, h + slackIn(h) + marginsIn) * 72)
+  const trim = fits
+    ? {
+      measured: contentIn.map((h) => Math.min(height, h + slackIn(h) + marginsIn) * 72),
+      bottomPt: geo.margin.bottom * 72
+    }
     : null;
-  return { bytes, trimTo };
+  return { bytes, trim };
 }
 
 function whenComplete(id, fn) {

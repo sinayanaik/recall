@@ -21,7 +21,6 @@ const presetSelect = document.getElementById("preset");
 const statusEl = document.getElementById("status");
 const summaryEl = document.getElementById("summary");
 const goBtn = document.getElementById("go");
-const hostNote = document.getElementById("hostNote");
 const linkMargins = document.getElementById("linkMargins");
 const pdfButton = document.getElementById("actPdf");
 const pdfFooter = document.getElementById("pdfFooter");
@@ -85,7 +84,6 @@ function refresh() {
     out.textContent = input ? input.value : "";
   });
   form.querySelectorAll(".unit").forEach((u) => { u.textContent = o.marginUnit; });
-  updateHostNote(o);
   summaryEl.textContent = summarize(o);
 }
 
@@ -100,15 +98,8 @@ function summarize(o) {
     ? `pages ${fmt(g.paperWidthIn)} wide, up to ${fmt(pageLengthIn(o, g))} long`
     : o.layout === "continuous" ? `one page ${fmt(g.paperWidthIn)} wide` : `${o.paper === "custom" ? "custom" : o.paper} pages`;
   const img = imageSettings(o);
-  const images = o.imageQuality === "none" ? "no images" : img ? `images ≤ ${img.dpi} DPI` : "original images";
+  const images = o.imageQuality === "none" ? "no images" : img && img.dpi ? `images ≤ ${img.dpi} DPI` : "original images";
   return `${pages} · ${margins} · laid out ${g.layoutWidthPx} px wide at ${Math.round(g.scale * 100)}% · ${images}`;
-}
-
-async function updateHostNote(o) {
-  const wants = Boolean(imageSettings(o));
-  if (!wants) { hostNote.hidden = true; return; }
-  const granted = await chrome.permissions.contains({ origins: ["<all_urls>"] }).catch(() => false);
-  hostNote.hidden = granted;
 }
 
 // ---------------------------------------------------------------- presets
@@ -200,12 +191,6 @@ form.addEventListener("input", (e) => {
 });
 form.addEventListener("change", (e) => { if (notAnOption(e.target)) return; refresh(); saveLast(); });
 
-document.getElementById("grantHost").addEventListener("click", async () => {
-  const ok = await chrome.permissions.request({ origins: ["<all_urls>"] }).catch(() => false);
-  showStatus(ok ? "Images from any site can now be resized." : "Without it, only this site’s own images are resized.");
-  refresh();
-});
-
 function showStatus(text, error = false) {
   statusEl.hidden = !text;
   statusEl.textContent = text || "";
@@ -228,7 +213,7 @@ goBtn.addEventListener("click", async () => {
   const options = readForm();
   await saveLast();
   if (options.capture === "element") showStatus("Click the block you want on the page…");
-  else if (options.layout === "smart" && options.adjustBreaks) showStatus("The page breaks appear on the page: move them there, then press Save PDF.");
+  else if (options.layout === "smart" && options.adjustBreaks) showStatus("The page breaks appear on the page: drag, add or remove them there, then press Save PDF.");
   goBtn.disabled = true;
   const res = await chrome.runtime.sendMessage({ type: "rwc-start-pdf", tabId, options }).catch((err) => ({ ok: false, error: String(err) }));
   if (res && !res.ok) paintJob({ step: res.error || "Something went wrong.", error: true });

@@ -4,7 +4,11 @@
 //    the PDF job or the popup names is on disk;
 //  - there is one extension: the three it replaced are gone;
 //  - lib/pdf-info.js writes a well-formed incremental update;
-//  - lib/pdf-pages.js gives each page its own height, the same way;
+//  - lib/pdf-pages.js gives each page its own height, the same way, read
+//    from the end-of-page markers' named destinations where there are some;
+//  - lib/pdf-outline.js adds bookmarks that point at named destinations;
+//  - lib/font-check.js finds the variable fonts (TTF, WOFF, WOFF2) and the
+//    @font-face rules;
 //  - lib/options.js turns options into the right page geometry, smart page
 //    lengths and file names.
 //
@@ -112,6 +116,72 @@ check("pdf-pages: the metadata goes on after a trim", readTrailer(both).info && 
 check("pdf-pages: wrong number of heights → bytes unchanged", trimPageHeights(base, [100]) === base);
 check("pdf-pages: nothing to trim → bytes unchanged", trimPageHeights(base, [100000, 100000]) === base);
 
+// ---------------------------------------------------------------- named destinations, markers, outline
+
+const { readDoc, catalogOf, appendObjects, readDestsOf } = await import(pathToFileURL(path.join(ROOT, "recall-clipper/lib/pdf-objects.js")).href);
+const { pageHeightsFromMarkers, readDests } = await import(pathToFileURL(path.join(ROOT, "recall-clipper/lib/pdf-pages.js")).href);
+const { addOutline } = await import(pathToFileURL(path.join(ROOT, "recall-clipper/lib/pdf-outline.js")).href);
+
+// `base` again, with the named destinations Chrome writes for in-page link
+// targets: page 1 ends at y = 300 (its MediaBox top is top0), page 2 has none.
+const baseDoc = readDoc(base);
+const [p1, p2] = readPages(base);
+const withDests = appendObjects(base, baseDoc, [{
+  num: catalogOf(baseDoc).num,
+  body: catalogOf(baseDoc).dict.replace(/>>\s*$/, ` /Dests << /recall-h-0 [${p1.num} 0 R /XYZ 0 ${top0 - 10} 0] /recall-h-1 [${p1.num} 0 R /XYZ 0 ${top0 - 40} 0] /recall-h-2 [${p2.num} 0 R /XYZ 0 15 0] /recall-end-0 [${p1.num} 0 R /XYZ 6 300 0] /recall-end-1 [${p1.num} 0 R /XYZ 6 5 0] >> >>`)
+}]);
+const dests = readDests(withDests);
+check("dests: read from the catalog, with their page and position", dests.size === 5 && dests.get("recall-h-2").page === 1 && dests.get("recall-end-0").y === 300, JSON.stringify([...dests.keys()]));
+const marked = pageHeightsFromMarkers(withDests, 2, { bottomPt: 10, padPt: 4 });
+check("markers: page 1 ends where its marker is, plus the bottom margin", close2(marked[0], top0 - 300 + 14), String(marked[0]));
+check("markers: a marker printed on another page counts for nothing", marked[1] === null, String(marked[1]));
+check("markers: none at all → nulls", pageHeightsFromMarkers(base, 2).every((h) => h === null));
+
+const outlined = addOutline(withDests, [
+  { id: "recall-h-0", level: 1, text: "Tides" },
+  { id: "recall-h-1", level: 2, text: "  The   moon " },
+  { id: "recall-h-missing", level: 2, text: "Not printed" },
+  { id: "recall-h-2", level: 2, text: "The sun" }
+]);
+const ot = latin(outlined);
+check("outline: original bytes untouched", Buffer.compare(Buffer.from(outlined.subarray(0, withDests.length)), Buffer.from(withDests)) === 0);
+const odoc = readDoc(outlined);
+const ocat = catalogOf(odoc);
+check("outline: the catalog names it and opens with it", /\/Outlines \d+ 0 R/.test(ocat.dict) && /\/PageMode \/UseOutlines/.test(ocat.dict) && /\/Dests/.test(ocat.dict), ocat.dict);
+check("outline: titles as UTF-16, whitespace tidied, missing headings left out",
+  ot.includes(pdfString("Tides")) && ot.includes(pdfString("The moon")) && ot.includes(pdfString("The sun")) && !ot.includes(pdfString("Not printed")));
+check("outline: nested — the H2s under the H1", (ot.slice(withDests.length).match(/\/Parent (\d+) 0 R/g) || []).length === 3
+  && new RegExp(`/Title ${pdfString("The sun")} /Parent (\\d+) 0 R`).exec(ot)?.[1] === new RegExp(`/Title ${pdfString("The moon")} /Parent (\\d+) 0 R`).exec(ot)?.[1]);
+check("outline: each entry points at its destination", ot.includes(`/Dest [${p2.num} 0 R /XYZ 0 15 0]`));
+check("outline: the trailer grows by the new objects", readTrailer(outlined).size === readTrailer(withDests).size + 4, String(readTrailer(outlined).size));
+check("outline: the metadata goes on after it", readTrailer(setPdfInfo(outlined, { Title: "x" })).root === readTrailer(outlined).root);
+check("outline: no destinations → bytes unchanged", addOutline(base, [{ id: "recall-h-0", level: 1, text: "x" }]) === base);
+check("outline: a PDF that has one already → bytes unchanged", addOutline(outlined, [{ id: "recall-h-0", level: 1, text: "x" }]) === outlined);
+check("outline: dests survive a page trim", readDestsOf(readDoc(trimPageHeights(withDests, [200, 0]))).size === 5);
+
+// ---------------------------------------------------------------- font-check
+
+const { isVariableFont, fontFaces } = await import(pathToFileURL(path.join(ROOT, "recall-clipper/lib/font-check.js")).href);
+const bytesOf = (...parts) => Uint8Array.from(parts.flatMap((p) => (typeof p === "string" ? [...p].map((c) => c.charCodeAt(0)) : p)));
+const u16be = (n) => [n >> 8, n & 255];
+const sfnt = (tags) => bytesOf([0, 1, 0, 0], u16be(tags.length), [0, 0, 0, 0, 0, 0], ...tags.flatMap((t) => [t, new Array(12).fill(0)]));
+const woff = (tags) => bytesOf("wOFF", [0, 1, 0, 0], [0, 0, 0, 0], u16be(tags.length), new Array(30).fill(0), ...tags.flatMap((t) => [t, new Array(16).fill(0)]));
+// WOFF2 table entries: flags (tag index | transform << 6), [tag], UIntBase128 lengths.
+const woff2 = (entries) => bytesOf("wOF2", [0, 1, 0, 0], [0, 0, 0, 0], u16be(entries.length), new Array(34).fill(0), ...entries);
+check("fonts: a TrueType font with fvar is variable, one without is not", isVariableFont(sfnt(["cmap", "fvar", "glyf"])) && !isVariableFont(sfnt(["cmap", "glyf", "head"])));
+check("fonts: WOFF too", isVariableFont(woff(["cmap", "fvar"])) && !isVariableFont(woff(["cmap", "name"])));
+check("fonts: WOFF2 by known-tag index, past transformed glyf/loca", isVariableFont(woff2([[0, 0x81, 0x00], [10, 0x90, 0x00, 0x05], [11, 0x10, 0x05], [47, 0x20]]))
+  && !isVariableFont(woff2([[0, 0x81, 0x00], [10, 0x90, 0x00, 0x05], [11, 0x10, 0x05], [5, 0x20]])));
+check("fonts: WOFF2 by a literal tag", isVariableFont(woff2([[63], "fvar", [0x10]])) && !isVariableFont(woff2([[63], "abcd", [0x10]])));
+check("fonts: anything else is not a variable font", !isVariableFont(bytesOf("<html>hello world")) && !isVariableFont(new Uint8Array(4)));
+const faces = fontFaces(`/* @font-face { font-family: Gone; src: url(gone.woff2) } */
+  @font-face { font-family: "Inter var"; font-weight: 100 900; src: url(../f/inter.woff2) format("woff2"), url('inter.woff') format("woff"); }
+  @font-face { font-family: Plain; src: url(data:font/woff2;base64,AAAA) format("woff2"); font-display: swap }`, "https://ex.org/css/site.css");
+check("fonts: @font-face families and files, resolved, comments skipped", JSON.stringify(faces) === JSON.stringify([
+  { family: "Inter var", urls: ["https://ex.org/f/inter.woff2", "https://ex.org/css/inter.woff"] },
+  { family: "Plain", urls: ["data:font/woff2;base64,AAAA"] }
+]), JSON.stringify(faces));
+
 // ---------------------------------------------------------------- options
 
 const { normalize, geometry, fileNameFor, folderFor, pageLengthIn, pageContentPx, SMART_SLACK_IN, DEFAULTS, BUILTIN_PRESETS } = await import(pathToFileURL(path.join(ROOT, "recall-clipper/lib/options.js")).href);
@@ -128,6 +198,8 @@ const tbm = normalize({ marginPreset: "all", marginSize: 1, marginUnit: "in" });
 check("smart pages: content height leaves out the margins and the slack, in layout pixels", pageContentPx(tbm) === Math.round((297 / 25.4 - 2 - SMART_SLACK_IN) * 96 / geometry(tbm).scale));
 check("smart pages: an unknown length falls back to A4", normalize({ pageLength: "huge" }).pageLength === "a4");
 check("defaults: High images", DEFAULTS.imageQuality === "high");
+check("defaults: not tagged, bookmarks on, no shadows, variable fonts replaced", DEFAULTS.tagged === false && DEFAULTS.outline === true && DEFAULTS.effects === false && DEFAULTS.fonts === "auto");
+check("fonts: an unknown choice falls back to automatic", normalize({ fonts: "comic" }).fonts === "auto" && normalize({ fonts: "standard" }).fonts === "standard");
 const tb = geometry(normalize({ marginPreset: "topbottom", marginSize: 0.5, marginUnit: "in" }));
 check("margins: top and bottom only, in inches", tb.margin.top === 0.5 && tb.margin.bottom === 0.5 && tb.margin.left === 0);
 const custom = geometry(normalize({ marginPreset: "custom", margins: { top: 1, right: 2, bottom: 3, left: 4 }, marginUnit: "mm" }));
