@@ -35,6 +35,7 @@ import { DOC_SLOT_NOTEBOOK, activeDocSlot } from "../documents/doc-slot.js?v=__B
 import { isRegionSelectArmed, setRegionSelect } from "../documents/pdf-region.js?v=__BUILD__";
 import { displayedShapeSettings, setShapeChangedHandler, setShapeType, shapeButtonType, shapeType } from "../documents/pdf-shapes.js?v=__BUILD__";
 import { buildShapeMenu, buildShapePanel, refreshShapeMenu, refreshShapePanel } from "../documents/pdf-shape-panel.js?v=__BUILD__";
+import { syncShapeStylePopover } from "../documents/pdf-shape-style-popover.js?v=__BUILD__";
 import { showConfirmModal } from "./feedback.js?v=__BUILD__";
 
 function pressed(node, on) {
@@ -123,13 +124,72 @@ function refreshBlockRail() {
   }
 }
 
+// ── Text, a button of its own ──────────────────────────────────────────────
+//
+// The typewriter is the Shapes tool on Text, underneath — but it was reached by
+// pressing ✎ and then finding Text among the pen's tools, and "text should have
+// a separate button instead of a hierarchy inside the pen". So it has its own
+// button in the top row (#documentTextBtn), and while it is armed the pen's bar
+// becomes the TEXT bar (`.is-typing`, styles/88-annotations.css): the pen's
+// tools step aside and what is left is the style chip, undo and redo, and Done.
+//
+// Typing is read off the engine — the tool and the shape — never kept as a flag
+// of its own, so nothing can come to disagree with what a tap actually does.
+export function isTypewriterArmed() {
+  return inkTool() === "shape" && shapeType() === "text";
+}
+
+// What Text was pressed from, so pressing it again (or Done) puts that back:
+// the tool, and whether the bar was open before Text opened it. Per slot, and
+// dropped when a document opens (applyInkRailPreference).
+let typewriterReturn = null;
+
+export function toggleTypewriter(force = null) {
+  const typing = isTypewriterArmed();
+  const on = force === null ? !typing : Boolean(force);
+  if (isRegionSelectArmed()) setRegionSelect(false);
+  closeInkRailMenus();
+  if (on) {
+    if (!typing) {
+      typewriterReturn = { slot: activeDocSlot(), tool: inkTool(), railWasOpen: isInkArmed() };
+      // A mouse types only while the bar is armed (shapeTakesPointer,
+      // src/documents/pdf-shapes.js), as it draws only then. NOT written to
+      // ink-prefs: Text opening the bar is not the reader opening the pen's.
+      if (!isInkArmed()) setInkArmed(true);
+      setShapeType("text");
+      setInkTool("shape");
+      inkPanel?.close();
+    }
+  } else if (typing) {
+    const back = typewriterReturn?.slot === activeDocSlot()
+      ? typewriterReturn
+      : { tool: INK_TOOL_DEFAULT, railWasOpen: inkRailOpen(activeDocSlot()) };
+    typewriterReturn = null;
+    inkPanel?.close();
+    if (back.tool === "shape") {
+      setShapeType(shapeButtonType());
+      setInkTool("shape");
+    } else {
+      setInkTool(back.tool && back.tool !== "shape" ? back.tool : INK_TOOL_DEFAULT);
+    }
+    if (!back.railWasOpen) setInkArmed(false);
+  }
+  rememberInkPreferences();
+  refreshInkRail();
+}
+
 export function refreshInkRail() {
   const rail = el.documentInkRail;
   if (!rail) return;
   const open = isInkArmed();
+  const typingNow = isTypewriterArmed();
+  pressed(el.documentTextBtn, typingNow);
+  rail.classList.toggle("is-typing", typingNow);
+  rail.setAttribute("aria-label", typingNow ? "Text" : "Pen");
   if (!open) {
     rail.hidden = true;
     pressed(el.documentInkBtn, open);
+    syncShapeStylePopover();
     return;
   }
 
@@ -162,7 +222,8 @@ export function refreshInkRail() {
   const eraser = { size: inkEraserSize(), mode: inkEraseMode(), target: inkEraseTarget() };
 
   rail.hidden = false;
-  pressed(el.documentInkBtn, open);
+  // While Text has the bar, it is Text that is lit, not the pen.
+  pressed(el.documentInkBtn, open && !typingNow);
   paintInkRailPressed(rail, {
     pen: inkPen(),
     width: inkWidth(),
@@ -183,11 +244,9 @@ export function refreshInkRail() {
     shape: displayedShapeSettings()
   });
   refreshShapeMenu(document.getElementById("inkRailShapeMenu"), document.getElementById("inkRailShapeBtn"));
-  // The typewriter is the Shapes tool on Text, but its own button: lit for
-  // that, and Shapes lit for every other shape.
-  const typing = tool === "shape" && shapeType() === "text";
-  pressed(document.getElementById("inkRailTextBtn"), typing);
-  if (typing) pressed(document.getElementById("inkRailShapeBtn"), false);
+  // The typewriter is the Shapes tool on Text, but its own button (in the top
+  // row): Shapes is lit for every other shape, not for that.
+  if (typingNow) pressed(document.getElementById("inkRailShapeBtn"), false);
   refreshShapePanel(shapePanel);
   // Text takes the pen's colours and nibs down, and the panel with them.
   // Nothing is being drawn, so there is no nib and no ink colour to choose; and
@@ -236,6 +295,9 @@ export function refreshInkRail() {
   });
   rail.querySelectorAll('[data-ink-action="paste"]').forEach((node) => node.toggleAttribute("disabled", !pasteable));
   inkPanel?.refresh();
+  // The style popover at a selected shape — unless the chip's panel is up and
+  // already showing the same controls (pdf-shape-style-popover.js).
+  syncShapeStylePopover();
 }
 
 // ── Which tool each of the deck's two papers was left on ──────────────────
@@ -365,6 +427,12 @@ export function applyInkRailPreference() {
   // draws — or selects — whether the rail is up or not, so the tool cannot be a
   // property of the rail's visibility.
   setInkTool(slotTools[slot] || INK_TOOL_DEFAULT);
+  // ...and a tab left typing comes back typing, with its Text bar up — a tap
+  // that makes text needs the bar that says so, and a mouse needs it armed.
+  typewriterReturn = null;
+  if (isTypewriterArmed() && !isInkArmed()) setInkArmed(true);
+  // ...and that repaint takes a shape picked up on the other document's style
+  // popover away with it (syncShapeStylePopover).
   refreshInkRail();
 }
 
@@ -408,21 +476,9 @@ function pressRail(button) {
     inkPen: nextPen, inkWidth: nextWidth, inkEraserSize: nextEraser, inkTool: nextTool, inkAction: action,
     shapeType: nextShape
   } = button.dataset;
-  // Text, the typewriter: the Shapes tool's Text, armed from a button of its
-  // own. Pressed again it opens its settings — the styling that comes after.
-  if (action === "typewriter") {
-    if (isRegionSelectArmed()) setRegionSelect(false);
-    if (inkTool() === "shape" && shapeType() === "text") {
-      closeInkRailMenus();
-      inkPanel?.toggle();
-      refreshInkRail();
-      return;
-    }
-    setShapeType("text");
-    setInkTool("shape");
-    rememberInkPreferences();
-    closeInkRailMenus();
-    refreshInkRail();
+  // Done, on the Text bar: typing put down, and what was armed before is back.
+  if (action === "typewriter-done") {
+    toggleTypewriter(false);
     return;
   }
   // A row of the Shapes flyout: that shape, armed.
@@ -510,7 +566,8 @@ export function initInkRail() {
   shapePanel = buildShapePanel(el.inkRailPopover);
   buildShapeMenu(document.getElementById("inkRailShapeMenu"));
   setShapeChangedHandler(() => {
-    // A shape selected with no Shapes panel up still repaints the chip.
+    // A shape selected with no Shapes panel up still repaints the chip, and
+    // its style popover comes up at it, or goes with it (refreshInkRail).
     refreshInkRail();
   });
   inkPanel = el.inkRailPopover
@@ -526,7 +583,20 @@ export function initInkRail() {
   slotTools.doc = inkPreferences("doc").tool;
   slotTools.notebook = inkPreferences("notebook").tool;
 
-  el.documentInkBtn?.addEventListener("click", () => toggleInkRail());
+  el.documentInkBtn?.addEventListener("click", () => {
+    // ✎ while Text has the bar: the pen, with its whole bar — not the bar shut.
+    if (isTypewriterArmed() && isInkArmed()) {
+      typewriterReturn = null;
+      inkPanel?.close();
+      setInkTool(INK_TOOL_DEFAULT);
+      writeInkRailOpen(activeDocSlot(), true);
+      rememberInkPreferences();
+      refreshInkRail();
+      return;
+    }
+    toggleInkRail();
+  });
+  el.documentTextBtn?.addEventListener("click", () => toggleTypewriter());
 
   // pointerdown, not click, and preventDefault with it: a press on the rail
   // must not travel on to the page underneath and start a stroke, and on a

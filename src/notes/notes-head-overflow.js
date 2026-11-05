@@ -70,6 +70,8 @@ const ROW_TRAIL_SELECTORS = [
   // asserting this one button, because the fault was the list and not the
   // button.
   ".document-head > #documentInkBtn",
+  // Text, beside the pen and not inside it (src/ui/ink-rail.js, toggleTypewriter).
+  ".document-head > #documentTextBtn",
   ".document-head > #documentPdfSwitcher",
   ".document-head > #documentMoreBtn",
   ".document-head > #documentMoreMenu",

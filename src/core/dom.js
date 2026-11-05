@@ -293,6 +293,7 @@ export const el = {
   documentDarkBtn: document.querySelector("#documentDarkBtn"),
   documentRegionBtn: document.querySelector("#documentRegionBtn"),
   documentInkBtn: document.querySelector("#documentInkBtn"),
+  documentTextBtn: document.querySelector("#documentTextBtn"),
   documentInkRail: document.querySelector("#documentInkRail"),
   // The pen's colours, nibs and eraser rings are no longer on the bar but in
   // the panel under its chip, which is BUILT (buildInkPanel) — after this table

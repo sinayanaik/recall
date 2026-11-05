@@ -16,10 +16,11 @@
 import { INK_PEN_COLORS } from "../format/ink-colors.js?v=__BUILD__";
 import { SHAPE_HEADS, SHAPE_LABELS, SHAPE_WIDTH_RANGE } from "../render/annot-shapes.js?v=__BUILD__";
 import { rememberInkRecentColor } from "../storage/ink-prefs.js?v=__BUILD__";
-import { displayedShapeSettings, selectedShapeRecord, setShapeSettings, shapeButtonType, shapeType } from "./pdf-shapes.js?v=__BUILD__";
+import { displayedShapeSettings, setShapeSettings, shapeButtonType, shapeType, targetShapeRecord } from "./pdf-shapes.js?v=__BUILD__";
 
-// The shapes the flyout offers, in its order.
-export const SHAPE_MENU_TYPES = ["line", "arrow", "rect", "ellipse", "callout", "text", "sticky"];
+// The shapes the flyout offers, in its order. Not typed text: that is the Text
+// button's own, in the top row beside the pen (src/ui/ink-rail.js).
+export const SHAPE_MENU_TYPES = ["line", "arrow", "rect", "ellipse", "callout", "sticky"];
 
 const ICON_ATTRS = 'viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"';
 
@@ -57,7 +58,7 @@ export function refreshShapeMenu(menu, button) {
   if (button && button.dataset.shapeIcon !== type) {
     button.dataset.shapeIcon = type;
     button.innerHTML = shapeIconSvg(type);
-    const label = `Shapes: ${SHAPE_LABELS[type]} — press again to pick a line, arrow, box, ellipse, callout, text or sticky note`;
+    const label = `Shapes: ${SHAPE_LABELS[type]} — press again to pick a line, arrow, box, ellipse, callout or sticky note`;
     button.title = label;
     button.setAttribute("aria-label", `Shapes (${SHAPE_LABELS[type]})`);
   }
@@ -108,13 +109,17 @@ function sliderFromWidth(width) {
   return Math.round((Math.log(Math.max(min, width) / min) / Math.log(max / min)) * SHAPE_SLIDER_STEPS);
 }
 
-export function buildShapePanel(shapePopover) {
-  if (!shapePopover || shapePopover.querySelector('[data-ink-panel="shape"]')) return null;
+// Built twice: as a section of the pen's panel (the rail's chip opens it), and
+// `floating` — in the style popover at a selected shape (src/documents/pdf-
+// shape-style-popover.js), which has no Snap row, since snapping is how the
+// NEXT shape is drawn and not something a shape on the page has.
+export function buildShapePanel(shapePopover, { floating = false } = {}) {
+  if (!shapePopover || (!floating && shapePopover.querySelector('[data-ink-panel="shape"]'))) return null;
   const section = document.createElement("section");
-  section.className = "ink-pop-panel shape-pop-panel";
-  section.dataset.inkPanel = "shape";
+  section.className = `ink-pop-panel shape-pop-panel${floating ? " is-floating" : ""}`;
+  if (!floating) section.dataset.inkPanel = "shape";
   section.setAttribute("aria-label", "Shape");
-  section.hidden = true;
+  section.hidden = !floating;
   section.innerHTML = `
     <div class="shape-pop-row" role="group" aria-label="Line colour"><span class="shape-pop-label">Colour</span>${shapeSwatchRow("stroke")}</div>
     <div class="shape-pop-row" data-shape-row="width"><span class="shape-pop-label">Width</span>
@@ -136,7 +141,7 @@ export function buildShapePanel(shapePopover) {
       <button type="button" class="shape-pop-seg" data-shape-font-step="1" title="Larger text" aria-label="Larger text">A+</button>
       <button type="button" class="shape-pop-seg" data-shape-bold title="Bold" aria-label="Bold" aria-pressed="false"><b>B</b></button>
       ${["left", "center", "right"].map((a) => `<button type="button" class="shape-pop-seg" data-shape-align="${a}" title="Align ${a}" aria-label="Align ${a}" aria-pressed="false">${{ left: "&#8676;", center: "&#8596;", right: "&#8677;" }[a]}</button>`).join("")}</div>
-    <div class="shape-pop-row"><button type="button" class="shape-pop-seg" data-shape-snap aria-pressed="false" title="Snap — lines at 15° steps, boxes square and ellipses round (Shift does this for one drag)">Snap angles</button></div>`;
+    <div class="shape-pop-row" data-shape-row="snap"><button type="button" class="shape-pop-seg" data-shape-snap aria-pressed="false" title="Snap — lines at 15° steps, boxes square and ellipses round (Shift does this for one drag)">Snap angles</button></div>`;
   shapePopover.appendChild(section);
 
   section.addEventListener("pointerdown", (event) => {
@@ -179,9 +184,10 @@ export function buildShapePanel(shapePopover) {
   return section;
 }
 
-// The type the panel is about: the selected shape's, or the armed one's.
+// The type the panel is about: the selected shape's (or the one being typed
+// in), or the armed one's.
 function panelShapeType() {
-  return selectedShapeRecord()?.shape?.type || shapeType();
+  return targetShapeRecord()?.shape?.type || shapeType();
 }
 
 function pressShapePanel(button) {
@@ -241,7 +247,8 @@ export function refreshShapePanel(section) {
     dash: type !== "sticky" && type !== "text",
     heads: type === "line" || type === "arrow" || type === "callout",
     fill: type === "rect" || type === "ellipse" || type === "callout" || type === "text",
-    font: type === "callout" || type === "text"
+    font: type === "callout" || type === "text",
+    snap: !section.classList.contains("is-floating")
   };
   section.querySelectorAll("[data-shape-row]").forEach((row) => { row.hidden = !rows[row.dataset.shapeRow]; });
 }

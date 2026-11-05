@@ -72,6 +72,8 @@ const API_SRC = `async () => {
     "/src/documents/pdf-ink.js?v=__BUILD__",
     "/src/ui/ink-rail.js?v=__BUILD__",
     "/src/documents/pdf-shape-text.js?v=__BUILD__",
+    "/src/documents/pdf-shape-style-popover.js?v=__BUILD__",
+    "/src/format/highlight-colors.js?v=__BUILD__",
     "/src/notes/highlight-note-editor.js?v=__BUILD__",
     "/src/panels/highlights-panel.js?v=__BUILD__",
     "/src/documents/pdf-region-embed.js?v=__BUILD__",
@@ -803,7 +805,7 @@ sections.push(async () => {
     text.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerType: "touch" }));
     await settle(150);
     const armed = api.inkTool() === "shape" && api.shapeType() === "text";
-    const lit = document.getElementById("inkRailTextBtn")?.getAttribute("aria-pressed") === "true";
+    const lit = document.getElementById("documentTextBtn")?.getAttribute("aria-pressed") === "true";
     // ...and the tap that says where.
     await window.__drag("text", [window.__at(4, 0.3, 0.1)], { pointerType: "touch", id: 80 });
     await settle(250);
@@ -852,16 +854,27 @@ sections.push(async () => {
     const { api, settle } = window.__recall;
     api.scrollToDocumentPage(4, 0, { smooth: false });
     await settle(300);
-    api.toggleInkRail(true);
+    // The bar shut and the pen armed: Text is one press from the top row.
     api.chooseInkTool("pen");
-    const button = document.getElementById("inkRailTextBtn");
-    const visible = Boolean(button) && getComputedStyle(button).display !== "none" && button.textContent.trim() === "Text";
-    button.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerType: "mouse" }));
+    api.toggleInkRail(false);
+    await settle(80);
+    const button = document.getElementById("documentTextBtn");
+    const box = button?.getBoundingClientRect();
+    const visible = Boolean(box && box.width > 0 && box.height > 0) && Boolean(button.closest("#viewModeRow"));
+    const inRail = Boolean(document.querySelector('#documentInkRail [data-ink-action="typewriter"]'));
+    const flyoutText = Boolean(document.querySelector('#inkRailShapeMenu [data-shape-type="text"]'));
+    button.click();
     await settle(100);
     const armed = api.inkTool() === "shape" && api.shapeType() === "text";
     const panelClosed = document.getElementById("inkRailPopover").hidden;
+    const rail = document.getElementById("documentInkRail");
+    const textBar = !rail.hidden && rail.classList.contains("is-typing")
+      && getComputedStyle(rail.querySelector(".ink-rail-tools")).display === "none"
+      && getComputedStyle(rail.querySelector(".ink-rail-typing")).display !== "none";
+    const lit = button.getAttribute("aria-pressed") === "true" && document.getElementById("documentInkBtn").getAttribute("aria-pressed") === "false";
     const before = api.documentShapes(4).length;
-    await window.__drag("text", [window.__at(4, 0.15, 0.2)]);
+    // A MOUSE types, with the bar opened by Text alone.
+    await window.__drag("text", [window.__at(4, 0.15, 0.2)], { pointerType: "mouse" });
     await settle(200);
     const editor = document.querySelector(".pdf-shape-editor");
     const focused = document.activeElement === editor;
@@ -888,24 +901,137 @@ sections.push(async () => {
     await settle(150);
     const reopened = document.querySelector(".pdf-shape-editor")?.textContent || null;
     api.commitShapeTextEditor();
-    // The Shapes button keeps the last shape drawn, and goes back to it.
-    const shapesIcon = document.getElementById("inkRailShapeBtn").dataset.shapeIcon;
-    document.getElementById("inkRailShapeBtn").dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerType: "mouse" }));
+    api.selectShape(null);
+    // Text pressed again: the pen back, and the bar shut as it was.
+    button.click();
     await settle(80);
-    const backTo = api.shapeType();
-    const textUnlit = document.getElementById("inkRailTextBtn").getAttribute("aria-pressed") === "false";
+    const backToPen = api.inkTool() === "pen" && document.getElementById("documentInkRail").hidden;
+    const textUnlit = button.getAttribute("aria-pressed") === "false";
+    // ...and from the pen's open bar, Done on the Text bar puts the pen back with its bar.
+    api.toggleInkRail(true);
+    api.chooseInkTool("pen");
+    button.click();
+    await settle(60);
+    rail.querySelector('[data-ink-action="typewriter-done"]').dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerType: "mouse" }));
+    await settle(60);
+    const doneBack = api.inkTool() === "pen" && !rail.hidden && !rail.classList.contains("is-typing");
+    api.toggleInkRail(false);
     return {
-      shapesIcon, backTo, textUnlit,
+      backToPen, textUnlit, doneBack, inRail, flyoutText, textBar, lit,
       visible, armed, panelClosed, focused, grew: wide > narrow + 20, made: shapes.length,
       texts: shapes.map((r) => r.shape.text), fit: first.shape.fit, width: w, colour: first.shape.font.color, reopened
     };
   }`);
-  check("the pen bar has a Text button; pressed, it arms the typewriter with no panel in the way", typed.visible && typed.armed && typed.panelClosed, JSON.stringify(typed));
-  check("a tap puts a cursor there, and the line grows as it is typed", typed.focused && typed.grew, JSON.stringify(typed));
+  check("Text is a button of its own in the top row, not on the pen's bar nor in the Shapes list", typed.visible && !typed.inRail && !typed.flyoutText, JSON.stringify(typed));
+  check("one press arms the typewriter with the bar as a Text bar, Text lit and the pen not", typed.armed && typed.panelClosed && typed.textBar && typed.lit, JSON.stringify(typed));
+  check("a tap puts a cursor there (a mouse too), and the line grows as it is typed", typed.focused && typed.grew, JSON.stringify(typed));
   check("a tap elsewhere keeps what was typed and starts again there", typed.made === 2 && typed.texts.join("|") === "a typewriter line that is longer|second", JSON.stringify(typed));
   check("typed text is boxed to its words, in the tool's own text colour", typed.fit === true && typed.width > 60 && typed.colour === "#16181d", JSON.stringify(typed));
   check("one tap on typed text, with Text armed, opens it to type in", typed.reopened === "a typewriter line that is longer", JSON.stringify(typed));
-  check("the Shapes button keeps the last shape drawn, and pressing it leaves the typewriter for it", typed.shapesIcon && typed.shapesIcon !== "text" && typed.backTo === typed.shapesIcon && typed.textUnlit, JSON.stringify(typed));
+  check("Text pressed again puts the pen back and the bar shut as it was; Done does the same from an open bar", typed.backToPen && typed.textUnlit && typed.doneBack, JSON.stringify(typed));
+
+  // ── Restyling what is already on the page ──────────────────────────────
+  const restyle = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const pop = () => document.querySelector(".shape-style-popover");
+    const popUp = () => Boolean(pop() && !pop().hidden && pop().getBoundingClientRect().width > 0);
+    const text = api.documentShapes(4).find((r) => r.shape.type === "text" && r.shape.text === "second");
+    // The pen armed and its bar shut: a tap on typed text opens its menu, which has Style.
+    api.chooseInkTool("pen");
+    api.toggleInkRail(false);
+    api.selectShape(null);
+    await settle(80);
+    const box = document.querySelector('.pdf-shape-text[data-highlight-id="' + text.id + '"]').getBoundingClientRect();
+    const x = box.left + 6, y = box.top + box.height / 2;
+    (document.elementFromPoint(x, y) || document.getElementById("documentView")).dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, clientX: x, clientY: y, detail: 1 }));
+    await settle(150);
+    const styleRow = document.querySelector(".mark-menu .mark-menu-style-shape");
+    const offered = Boolean(styleRow && !styleRow.hidden);
+    // A highlight's menu does not have it.
+    styleRow.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerType: "mouse" }));
+    await settle(150);
+    const opened = popUp() && api.selectedShapeRecord()?.id === text.id;
+    // Under the text, or over it where there is no room under — never on it.
+    const pr0 = pop().getBoundingClientRect();
+    const below = opened && (pr0.top >= box.bottom - 2 || pr0.bottom <= box.top + 2);
+    const rows = Array.from(pop().querySelectorAll("[data-shape-row]")).filter((n) => !n.hidden).map((n) => n.dataset.shapeRow);
+    const sizeBefore = api.documentHighlightById(text.id).shape.font.size;
+    const fire = (sel) => pop().querySelector(sel).dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerType: "mouse" }));
+    fire('[data-shape-font-step="1"]');
+    fire("[data-shape-bold]");
+    fire('[data-shape-stroke="' + pop().querySelector("[data-shape-stroke]:nth-of-type(3)").dataset.shapeStroke + '"]');
+    await settle(80);
+    const after = api.documentHighlightById(text.id).shape;
+    const grown = after.font.size > sizeBefore && after.font.bold === true && after.font.color !== "#16181d";
+    const painted = document.querySelector('.pdf-shape-text[data-highlight-id="' + text.id + '"]');
+    const paintedBold = painted && getComputedStyle(painted).fontWeight === "700";
+    // One undo takes the colour back, as one step of the pen's ring.
+    api.undoInk();
+    await settle(60);
+    const undone = api.documentHighlightById(text.id).shape.font.color !== after.font.color && api.documentHighlightById(text.id).shape.font.bold === true;
+    // Done puts it down, and the popover with it.
+    fire('[data-shape-style-action="done"]');
+    await settle(60);
+    const closed = !popUp() && !api.selectedShapeRecord();
+
+    // An arrow, tapped with Shapes armed: the popover is up at once, no menu.
+    api.toggleInkRail(true);
+    api.chooseInkTool("shape");
+    api.setShapeType("arrow");
+    api.selectShape(null);
+    await window.__drag("arrow", [window.__at(4, 0.1, 0.42), window.__at(4, 0.2, 0.45), window.__at(4, 0.35, 0.48)], { pointerType: "pen", id: 91 });
+    await settle(150);
+    const arrow = api.documentShapes(4).at(-1);
+    api.selectShape(null);
+    await settle(50);
+    const vp = api.pdfPageViewport(4);
+    const pr = document.querySelector('.pdf-page[data-page-number="4"]').getBoundingClientRect();
+    const mid = vp.convertToViewportPoint((arrow.shape.p[0][0] + arrow.shape.p[1][0]) / 2, (arrow.shape.p[0][1] + arrow.shape.p[1][1]) / 2);
+    await window.__drag("arrow", [[pr.left + mid[0], pr.top + mid[1]]], { pointerType: "pen", id: 92 });
+    const mx = pr.left + mid[0], my = pr.top + mid[1];
+    (document.elementFromPoint(mx, my) || document.getElementById("documentView")).dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, clientX: mx, clientY: my, detail: 1 }));
+    await settle(150);
+    const arrowPop = popUp() && api.selectedShapeRecord()?.id === arrow.id && !api.isMarkMenuOpen?.();
+    const arrowRows = Array.from(pop().querySelectorAll("[data-shape-row]")).filter((n) => !n.hidden).map((n) => n.dataset.shapeRow);
+    fire('[data-shape-dash="dash"]');
+    await settle(60);
+    const dashed = api.documentHighlightById(arrow.id).shape.dash === "dash";
+    api.selectShape(null);
+
+    // While typing: A+ grows the words under the cursor, and the typing goes on.
+    api.toggleTypewriter(true);
+    await window.__drag("text", [window.__at(4, 0.1, 0.3)]);
+    await settle(200);
+    const editor = document.querySelector(".pdf-shape-editor");
+    editor.textContent = "styled mid-sentence";
+    const typingPop = popUp();
+    const fontBefore = parseFloat(editor.style.fontSize);
+    fire('[data-shape-font-step="1"]');
+    fire('[data-shape-font-step="1"]');
+    await settle(80);
+    const liveEditor = document.querySelector(".pdf-shape-editor");
+    const live = Boolean(liveEditor) && parseFloat(liveEditor.style.fontSize) > fontBefore && liveEditor.textContent === "styled mid-sentence";
+    api.commitShapeTextEditor();
+    await settle(80);
+    const typedRec = api.documentShapes(4).at(-1);
+    const keptText = typedRec.shape.text === "styled mid-sentence" && typedRec.shape.font.size > 12;
+    api.selectShape(null);
+    api.toggleTypewriter(false);
+
+    // The menu's own swatch on typed text changes the WORDS' colour.
+    api.recolourDocumentHighlight(typedRec.id, "green");
+    const recoloured = api.documentHighlightById(typedRec.id).shape.font.color === api.MARK_HIGHLIGHT_HEX.green;
+    api.chooseInkTool("pen");
+    api.toggleInkRail(false);
+    return { offered, opened, below, rows, grown, paintedBold, undone, closed, arrowPop, arrowRows, dashed, typingPop, live, keptText, recoloured };
+  }`);
+  check("tapping typed text with the pen opens its menu, which has Style", restyle.offered, JSON.stringify(restyle));
+  check("Style puts the style popover up beside the text (not over it), with its colour, size and weight", restyle.opened && restyle.below && restyle.rows.includes("font") && !restyle.rows.includes("snap"), JSON.stringify(restyle));
+  check("...A+, bold and a colour there restyle that text, and it is painted so", restyle.grown && restyle.paintedBold, JSON.stringify(restyle));
+  check("...each a step undo takes back, and Done puts it down", restyle.undone && restyle.closed, JSON.stringify(restyle));
+  check("an arrow tapped with Shapes armed has the popover at once, with its line and heads", restyle.arrowPop && restyle.arrowRows.includes("heads") && restyle.arrowRows.includes("dash") && restyle.dashed, JSON.stringify(restyle));
+  check("while typing, the popover is up and A+ grows the words under the cursor, which are kept", restyle.typingPop && restyle.live && restyle.keptText, JSON.stringify(restyle));
+  check("a menu swatch on typed text changes the words' colour", restyle.recoloured, JSON.stringify(restyle));
 
   const tabs = await page.evaluate(`async () => {
     const { api, settle } = window.__recall;
@@ -1132,15 +1258,40 @@ try {
     await page.evaluate(`async () => {
       const { api, settle } = window.__recall;
       document.getElementById("inkRailAddMenu").hidden = true;
-      document.getElementById("inkRailTextBtn").dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerType: "mouse" }));
+      api.closeInkRailPopups?.();
+      api.toggleInkRail(false);
+      document.getElementById("documentTextBtn").click();
       await settle(100);
       await window.__drag("text", [window.__at(2, 0.62, 0.36)]);
       await settle(200);
       const editor = document.querySelector(".pdf-shape-editor");
       if (editor) editor.textContent = "Typed straight onto the page";
-      await settle(100);
+      await settle(150);
     }`);
+    // The Text bar, and the style popover under the words being typed.
     await snap("typewriter.png");
+    // An arrow already on the page, picked up from its menu's Style row.
+    await page.evaluate(`async () => {
+      const { api, settle } = window.__recall;
+      api.commitShapeTextEditor();
+      api.selectShape(null);
+      api.toggleTypewriter(false);
+      api.chooseInkTool("pen");
+      api.toggleInkRail(false);
+      const arrow = api.documentShapes(2).find((r) => r.shape.type === "arrow");
+      const anchor = document.querySelector('.pdf-shape[data-highlight-id="' + arrow.id + '"]');
+      api.openMarkMenuWith(anchor, arrow.id, api.DOCUMENT_MARK_HANDLERS, arrow.color);
+      await settle(150);
+      document.querySelector(".mark-menu .mark-menu-style-shape").dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerType: "mouse" }));
+      await settle(250);
+    }`);
+    await snap("shape-style-popover.png");
+    // The top row on a phone: ✎ and Text beside the tabs, nothing clipped.
+    await page.evaluate(`async () => { window.__recall.api.selectShape(null); }`);
+    await page.call("Emulation.setDeviceMetricsOverride", { width: 390, height: 760, deviceScaleFactor: 2, mobile: true });
+    await page.evaluate(`async () => { await window.__recall.settle(500); }`);
+    await snap("phone-row.png");
+    await page.call("Emulation.setDeviceMetricsOverride", { width: 1100, height: 760, deviceScaleFactor: 2, mobile: false });
   }
 
   if (SHOT) {

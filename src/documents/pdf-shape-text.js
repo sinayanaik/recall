@@ -100,10 +100,20 @@ export function openShapeTextEditor(recordOrId) {
     event.preventDefault();
     document.execCommand("insertText", false, text);
   });
-  node.addEventListener("blur", () => {
-    // A press on the rail's panel (the text size, bold) blurs the editor first;
-    // committing then is what lets that press restyle the box it was about.
-    if (shapeEditor?.node === node) commitShapeTextEditor();
+  node.addEventListener("blur", (event) => {
+    if (shapeEditor?.node !== node) return;
+    // A press on a BUTTON of the style popover (A+, bold, a swatch) restyles
+    // these words as they are typed (setShapeSettings acts on the shape being
+    // edited) — so typing carries on, rather than the words being put down.
+    // The popover keeps focus off itself for a mouse; this is the backstop.
+    const to = event.relatedTarget;
+    if (to?.closest?.(".shape-style-popover") && to.matches?.("button")) {
+      requestAnimationFrame(() => { if (shapeEditor?.node === node) node.focus({ preventScroll: true }); });
+      return;
+    }
+    // Anywhere else — the rail's panel, a slider, the page — commits, which is
+    // what lets a press on the rail's panel restyle the box it was about.
+    commitShapeTextEditor();
   });
   for (const type of ["pointerdown", "touchstart", "mousedown"]) {
     node.addEventListener(type, (event) => event.stopPropagation(), { passive: true });
@@ -172,9 +182,14 @@ export function commitShapeTextEditor() {
 
 // A repaint of the page clears its layer; the editor is kept, and the static
 // copy of the words it is standing over is hidden again.
+// ...and laid over the shape as it is NOW, so a restyle while typing (bigger,
+// bold, another colour, from the style popover) shows under the cursor at once.
 setShapePaintedHook((pageNumber, layer) => {
   if (!shapeEditor || shapeEditor.page !== pageNumber) return;
   if (!shapeEditor.node.isConnected) layer.appendChild(shapeEditor.node);
+  const shape = normalizeShape(documentHighlightById(shapeEditor.id)?.shape);
+  const viewport = pdfPageViewport(pageNumber);
+  if (shape && viewport) placeShapeEditor(shapeEditor.node, viewport, shape);
   hideStaticText(layer, shapeEditor.id);
 });
 
