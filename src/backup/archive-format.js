@@ -364,6 +364,7 @@ export const BACKED_UP_SETTINGS_KEYS = {
   "recall:highlightNoteBox": "The size of the highlight-note editor.",
   "recall:renderHighlightDefault": "The default highlight colour.",
   "recall:renderColorDefault": "The default text colour.",
+  "recall:exportTheme": "The look an export is made in (Plain, Minimal or Fancy).",
   "recall:allCardsFilter": "The All Cards panel's filter.",
   "recall:allCardsCompact": "The All Cards panel's density.",
   recall_autosync_minutes: "How often the library syncs by itself.",
@@ -427,12 +428,64 @@ export const NOT_BACKED_UP_SETTINGS_KEYS = {
   "recall:reading-speed-v1": "How fast the reader reads on THIS device — what its time-left estimates divide by; wrong on any other."
 };
 
+// Families of keys built at run time — `<prefix><something>` — where the
+// something is not known until the app runs. The same decision as the tables
+// above, one level up: tools/backup-check.mjs resolves every key spelled as a
+// template in src/ to its fixed front and fails on one neither table names.
+//
+// A prefix ends at a separator on purpose, so it can only ever match its own
+// family: "recall:renderColorDefault:" takes the per-tab keys and never a
+// hand-edited "recall:renderColorDefaultX".
+export const BACKED_UP_SETTINGS_PREFIXES = {
+  "recall:renderColorDefault:": "The text colour chosen on each tab (Cards, Notes, PDFs, Canvas), "
+    + "one key per tab beside the shared default above (src/format/render-toolbar.js).",
+  "recall:renderHighlightDefault:": "The highlight colour chosen on each tab, the same way."
+};
+
+export const NOT_BACKED_UP_SETTINGS_PREFIXES = {
+  // Nothing today; same rule as the tables above.
+};
+
+function isBackedUpSettingsKey(key) {
+  if (Object.hasOwn(BACKED_UP_SETTINGS_KEYS, key)) return true;
+  return Object.keys(BACKED_UP_SETTINGS_PREFIXES).some((prefix) => key.startsWith(prefix) && key.length > prefix.length);
+}
+
+// Every key the storage holds right now. Through the Storage API's own
+// length/key(i) where there is one, which is the only enumeration a real
+// localStorage promises; Object.keys as the fallback for a plain stand-in.
+function storageKeys(storage) {
+  const out = [];
+  try {
+    const length = Number(storage?.length);
+    if (Number.isFinite(length) && typeof storage?.key === "function") {
+      for (let i = 0; i < length; i += 1) {
+        const key = storage.key(i);
+        if (typeof key === "string") out.push(key);
+      }
+      return out;
+    }
+  } catch {
+    // Fall through to the plain-object view.
+  }
+  try {
+    return Object.keys(storage || {});
+  } catch {
+    return [];
+  }
+}
+
 // The settings a library backup carries, read off this device. Values are
 // carried as the raw strings localStorage holds, so a restore writes back
 // exactly what was read and no setting's own format has to be known here.
 export function collectBackupSettings(storage = globalThis.localStorage) {
   const values = {};
-  for (const key of Object.keys(BACKED_UP_SETTINGS_KEYS)) {
+  const prefixes = Object.keys(BACKED_UP_SETTINGS_PREFIXES);
+  const wanted = [
+    ...Object.keys(BACKED_UP_SETTINGS_KEYS),
+    ...(prefixes.length ? storageKeys(storage).filter((key) => isBackedUpSettingsKey(key) && !Object.hasOwn(BACKED_UP_SETTINGS_KEYS, key)) : [])
+  ];
+  for (const key of wanted) {
     try {
       const value = storage?.getItem(key);
       if (value !== null && value !== undefined) values[key] = String(value);
@@ -449,13 +502,14 @@ export function collectBackupSettings(storage = globalThis.localStorage) {
   };
 }
 
-// Write a settings file back. Only keys the table names are ever written: a
-// hand-edited file cannot be used to plant a credential or anything else.
+// Write a settings file back. Only keys the table (or a prefix family) names
+// are ever written: a hand-edited file cannot be used to plant a credential or
+// anything else.
 export function applyBackupSettings(settings, storage = globalThis.localStorage) {
   const values = settings && typeof settings === "object" && settings.values && typeof settings.values === "object" ? settings.values : {};
   let applied = 0;
   for (const [key, value] of Object.entries(values)) {
-    if (!Object.hasOwn(BACKED_UP_SETTINGS_KEYS, key) || typeof value !== "string") continue;
+    if (!isBackedUpSettingsKey(key) || typeof value !== "string") continue;
     try {
       storage?.setItem(key, value);
       applied += 1;

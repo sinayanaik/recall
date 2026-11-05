@@ -291,7 +291,17 @@ export async function rewriteLocalImageReferences(replacements) {
   // `at` moves with the rewrite because the record genuinely changed: the other
   // device is holding the same block with the token still in it, and a merge by
   // id settles on the stamp.
-  const blocksHold = (blocks) => (Array.isArray(blocks) ? blocks : []).some((block) => touched(block?.src));
+  //
+  // A block's `md` and the words typed in a text box, callout or sticky note
+  // (a shape record in pdfHighlights, `shape.text` and its `text` copy) are
+  // markdown that can hold a picture too — a restore into another account puts
+  // a token in exactly those places when it adopts one (applyBackupAssetRewrites
+  // in src/backup/restore.js). Swapped here with the rest, or the outbox entry
+  // deleted straight after this pass takes the only copy of the bytes with it.
+  const blockTouched = (block) => touched(block?.src) || touched(block?.md);
+  const shapeTouched = (record) => record?.kind === "shape" && (touched(record?.shape?.text) || touched(record?.text));
+  const blocksHold = (blocks) => (Array.isArray(blocks) ? blocks : []).some(blockTouched);
+  const shapesHold = (records) => (Array.isArray(records) ? records : []).some(shapeTouched);
   // One stamp for the whole pass, not one per block. The same block is rewritten
   // twice — once in the open deck's memory and once in its stored snapshot — and
   // two calls to Date.now() would give the durable copy and the visible one
@@ -302,9 +312,23 @@ export async function rewriteLocalImageReferences(replacements) {
   // identity comparisons that an in-place edit would walk straight past.
   const swappedBlocks = (blocks) => {
     if (!blocksHold(blocks)) return null;
-    return blocks.map((block) => (touched(block?.src)
-      ? { ...block, src: swap(block.src), at: stampedAt }
-      : block));
+    return blocks.map((block) => {
+      if (!blockTouched(block)) return block;
+      const next = { ...block, at: stampedAt };
+      if (touched(block.src)) next.src = swap(block.src);
+      if (touched(block.md)) next.md = swap(block.md);
+      return next;
+    });
+  };
+  const swappedShapes = (records) => {
+    if (!shapesHold(records)) return null;
+    return records.map((record) => {
+      if (!shapeTouched(record)) return record;
+      const next = { ...record, at: stampedAt };
+      if (touched(record.text)) next.text = swap(record.text);
+      if (record.shape && touched(record.shape.text)) next.shape = { ...record.shape, text: swap(record.shape.text) };
+      return next;
+    });
   };
 
   if (touched(state.notes)) state.notes = swap(state.notes);
@@ -316,6 +340,8 @@ export async function rewriteLocalImageReferences(replacements) {
   }
   const openBlocks = swappedBlocks(state.meta?.pdfBlocks);
   if (openBlocks) state.meta = { ...state.meta, pdfBlocks: openBlocks };
+  const openShapes = swappedShapes(state.meta?.pdfHighlights);
+  if (openShapes) state.meta = { ...state.meta, pdfHighlights: openShapes };
 
   const now = new Date().toISOString();
   // Cursor-streamed for the same reason as the math repair: this scans the
@@ -334,7 +360,7 @@ export async function rewriteLocalImageReferences(replacements) {
     const touchedCards = (snapshot.cards || []).some((card) => touched(card.question) || touched(card.answer));
     // The blocks too, or the deck holding the only reference is never even
     // visited and the rewrite below has nothing to run against.
-    if (!notesTouched && !touchedCards && !blocksHold(snapshot.meta?.pdfBlocks)) return;
+    if (!notesTouched && !touchedCards && !blocksHold(snapshot.meta?.pdfBlocks) && !shapesHold(snapshot.meta?.pdfHighlights)) return;
     candidates.push(String(id));
   });
 
@@ -345,10 +371,12 @@ export async function rewriteLocalImageReferences(replacements) {
       const notesTouched = touched(snapshot.notes);
       const touchedCards = (snapshot.cards || []).filter((card) => touched(card.question) || touched(card.answer));
       const nextBlocks = swappedBlocks(snapshot.meta?.pdfBlocks);
+      const nextShapes = swappedShapes(snapshot.meta?.pdfHighlights);
       // The placeholder is gone from the fresh copy — another pass got there
       // first, or the deck was edited. Nothing owed.
-      if (!notesTouched && !touchedCards.length && !nextBlocks) return null;
+      if (!notesTouched && !touchedCards.length && !nextBlocks && !nextShapes) return null;
       if (nextBlocks) snapshot.meta = { ...snapshot.meta, pdfBlocks: nextBlocks };
+      if (nextShapes) snapshot.meta = { ...snapshot.meta, pdfHighlights: nextShapes };
       if (notesTouched) snapshot.notes = swap(snapshot.notes);
       for (const card of touchedCards) {
         card.question = swap(card.question);

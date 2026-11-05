@@ -132,6 +132,28 @@ export function restoredHighlightCount(localMeta, mergedMeta) {
   return merged.pdfHighlights.filter((record) => !had.has(String(record?.id))).length;
 }
 
+// The same count, by what each record IS. pdfHighlights holds far more than
+// highlights now — pen strokes, shapes, typed text, callouts, sticky notes —
+// and "12 highlights restored" for a page of handwriting and three sticky
+// notes is a sentence about the storage, not about what comes back.
+//   marks   text highlights, underlines, strikes, squiggles, boxes on words
+//   shapes  lines, arrows, boxes, ellipses, typed text, callouts, sticky notes
+//   ink     pen strokes
+export function restoredAnnotationCounts(localMeta, mergedMeta) {
+  const local = normalizeBackupMeta(localMeta);
+  const merged = normalizeBackupMeta(mergedMeta);
+  const counts = { marks: 0, shapes: 0, ink: 0 };
+  if (!Array.isArray(merged.pdfHighlights)) return counts;
+  const had = new Set((Array.isArray(local.pdfHighlights) ? local.pdfHighlights : []).map((record) => String(record?.id)));
+  for (const record of merged.pdfHighlights) {
+    if (had.has(String(record?.id))) continue;
+    if (record?.kind === "ink") counts.ink += 1;
+    else if (record?.kind === "shape") counts.shapes += 1;
+    else counts.marks += 1;
+  }
+  return counts;
+}
+
 // Coerce any deck shape we might read from an archive — a per-deck backup file,
 // a legacy deckPayloadSnapshot, or a normalizeWebDeckPayload deck+cards bundle —
 // into the single shape planRestore/applyRestore work with.
@@ -258,7 +280,27 @@ export function collectBackupImageRefs(snapshot, into = new Set()) {
     if (typeof block.src === "string" && isPackableImageRef(block.src)) into.add(block.src);
     scan(block.md);
   }
+  // The words in a text box, a callout or a sticky note are markdown too
+  // (src/documents/pdf-shape-markdown.js), pictures included — and they live on
+  // a RECORD in pdfHighlights, which this never looked at. Both copies are
+  // scanned: `shape.text` is what is drawn, `text` the copy the Highlights pane
+  // and search read, and the two are rewritten together on restore.
+  for (const record of Array.isArray(snapshot?.meta?.pdfHighlights) ? snapshot.meta.pdfHighlights : []) {
+    if (!isShapeTextRecord(record)) continue;
+    scan(record.shape.text);
+    scan(record.text);
+  }
   return into;
+}
+
+// A pdfHighlights record that carries typed words: a shape with a text field.
+// Shared by the scan above and the rewrite in restore.js, so the two cannot
+// disagree about where a shape's words are. src/images/outbox.js spells the
+// same test inline (`shapeTouched`) rather than import this module, which
+// already imports it.
+export function isShapeTextRecord(record) {
+  return Boolean(record && typeof record === "object" && record.kind === "shape"
+    && record.shape && typeof record.shape === "object" && typeof record.shape.text === "string");
 }
 
 // A `<img src="…&amp;x=1">` in stored HTML holds entity-escaped text; the fetch

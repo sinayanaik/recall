@@ -110,7 +110,25 @@ const META_FIXTURES = {
   // marks fails here rather than passing on the half it kept.
   pdfHighlights: [
     { id: "hn-h1", page: 1, quads: [[1, 2, 3, 4]], color: "yellow", at: 1_800_000_000_000 },
-    { id: "hn-h2", page: 1, quads: [[5, 6, 7, 8]], color: "yellow", kind: "ink", doc: "notebook", ink: { v: 1, s: "1:20:ink:A" }, at: 1_800_000_000_000 }
+    { id: "hn-h2", page: 1, quads: [[5, 6, 7, 8]], color: "yellow", kind: "ink", doc: "notebook", ink: { v: 1, s: "1:20:ink:A" }, at: 1_800_000_000_000 },
+    // Everything the annotation tools grew on 2026-11-04/05 rides in this same
+    // array (src/documents/pdf-shapes.js, pdf-highlights.js). One record per
+    // kind, each with the fields that are written ONLY when set — a style, a
+    // hex, a rotation, a border, a typewriter fit — so a round trip that
+    // normalised any of them away fails on the record it broke.
+    { id: "hn-u1", page: 2, quads: [[1, 2, 3, 4]], color: "x3366ff", style: "underline", hex: "#3366ff", anchor: null, focus: null, at: 1_800_000_000_000 },
+    { id: "hn-s1", page: 1, kind: "shape", color: "red", text: "", quads: [{ page: 1, rect: [10, 10, 90, 60] }], qv: 2, anchor: null, focus: null,
+      shape: { type: "rect", p: [[10, 10], [90, 60]], stroke: "#e53935", width: 2, opacity: 1, dash: "dashed", fill: "#fffbe6", fillOpacity: 0.4, heads: ["none", "none"], text: "", fit: false, font: { size: 14, bold: false, align: "left", color: null }, rot: 30 },
+      at: 1_800_000_000_000 },
+    { id: "hn-s2", page: 1, kind: "shape", doc: "notebook", color: "black", text: "**Typed** on the page", quads: [{ page: 1, rect: [100, 100, 260, 130] }], qv: 2, anchor: null, focus: null,
+      shape: { type: "text", p: [[100, 100], [260, 130]], stroke: "#000000", width: 0.3, opacity: 1, dash: "solid", fill: null, fillOpacity: 0.25, heads: ["none", "none"], text: "**Typed** on the page", fit: true, font: { size: 18, bold: true, align: "center", color: "#1e88e5" }, border: true, rot: 90 },
+      at: 1_800_000_000_000 },
+    { id: "hn-s3", page: 2, kind: "shape", color: "yellow", text: "Look here", quads: [{ page: 2, rect: [20, 20, 200, 120] }], qv: 2, anchor: null, focus: null,
+      shape: { type: "callout", p: [[20, 20], [200, 80], [60, 120]], stroke: "#000000", width: 1, opacity: 1, dash: "solid", fill: "#fffbe6", fillOpacity: 1, heads: ["none", "filled"], text: "Look here", fit: false, font: { size: 12, bold: false, align: "left", color: null } },
+      at: 1_800_000_000_000 },
+    { id: "hn-s4", page: 3, kind: "shape", color: "yellow", text: "A sticky note", quads: [{ page: 3, rect: [300, 300, 324, 324] }], qv: 2, anchor: null, focus: null,
+      shape: { type: "sticky", p: [[300, 300]], stroke: "#e0b400", width: 1, opacity: 1, dash: "solid", fill: null, fillOpacity: 0.25, heads: ["none", "none"], text: "A sticky note", fit: false, font: { size: 12, bold: false, align: "left", color: null } },
+      at: 1_800_000_000_000 }
   ],
   deletedHighlightIds: { "hn-hz": "2027-01-01T00:00:00.000Z" },
   pdfToc: [{ title: "Intro", page: 1 }],
@@ -1524,19 +1542,46 @@ try {
     for (const [, text] of sources) {
       for (const match of text.matchAll(/(?:export )?const ([A-Za-z_$][\w$]*) = "([^"]+)"/g)) consts[match[1]] = match[2];
     }
-    const found = new Set();
+    // Literal values of `const MAP = { a: "x", b: "y" }` entries too, so a key
+    // spelled `${MAP[prop]}:${tab}` resolves to the family it belongs to.
+    const mapValues = {};
     for (const [, text] of sources) {
-      for (const match of text.matchAll(/localStorage\.(?:getItem|setItem|removeItem)\(\s*"([^"]+)"/g)) found.add(match[1]);
-      for (const match of text.matchAll(/localStorage\.(?:getItem|setItem|removeItem)\(\s*([A-Za-z_$][\w$]*)\s*[,)]/g)) {
+      for (const match of text.matchAll(/const ([A-Za-z_$][\w$]*) = \{([^{}]*)\}/g)) {
+        const values = [...match[2].matchAll(/:\s*"([^"]+)"/g)].map((m) => m[1]);
+        if (values.length) mapValues[match[1]] = values;
+      }
+    }
+    // `localStorage.`, `localStorage?.` and `globalThis.localStorage?.` alike —
+    // the export theme was read through the last of those, and a scan that
+    // matched only the first never saw it.
+    const ACCESS = String.raw`localStorage\??\.(?:getItem|setItem|removeItem)\(\s*`;
+    const found = new Set();
+    const families = new Set();
+    for (const [, text] of sources) {
+      for (const match of text.matchAll(new RegExp(`${ACCESS}"([^"]+)"`, "g"))) found.add(match[1]);
+      for (const match of text.matchAll(new RegExp(`${ACCESS}([A-Za-z_$][\\w$]*)\\s*[,)]`, "g"))) {
         if (consts[match[1]]) found.add(consts[match[1]]);
+      }
+      // A key built at run time: `${CONST}…` or `${MAP[x]}…`. What is fixed is
+      // its front, up to the first separator after the interpolation — that is
+      // the family a table has to name.
+      for (const match of text.matchAll(new RegExp(`${ACCESS}\`\\$\\{([A-Za-z_$][\\w$]*)(?:\\[[^\\]]*\\])?\\}([^$\`]*)`, "g"))) {
+        const heads = consts[match[1]] ? [consts[match[1]]] : (mapValues[match[1]] || []);
+        for (const head of heads) families.add(`${head}${match[2]}`);
       }
     }
     const known = new Set([...Object.keys(archiveFormat.BACKED_UP_SETTINGS_KEYS), ...Object.keys(archiveFormat.NOT_BACKED_UP_SETTINGS_KEYS)]);
+    const prefixes = [...Object.keys(archiveFormat.BACKED_UP_SETTINGS_PREFIXES || {}), ...Object.keys(archiveFormat.NOT_BACKED_UP_SETTINGS_PREFIXES || {})];
     const unnamed = [...found].filter((key) => !known.has(key));
+    const unnamedFamilies = [...families].filter((family) => !prefixes.includes(family));
     if (found.size < 20) return `the scan found only ${found.size} keys, which means it has stopped working`;
-    return unnamed.length === 0
-      || `localStorage key(s) nobody has decided about: ${unnamed.join(", ")}. `
+    if (unnamed.length) {
+      return `localStorage key(s) nobody has decided about: ${unnamed.join(", ")}. `
         + "Add each to BACKED_UP_SETTINGS_KEYS or NOT_BACKED_UP_SETTINGS_KEYS in src/backup/archive-format.js, with the reason.";
+    }
+    return unnamedFamilies.length === 0
+      || `localStorage key famil(ies) built at run time that nobody has decided about: ${unnamedFamilies.map((f) => `${f}…`).join(", ")}. `
+        + "Add each prefix to BACKED_UP_SETTINGS_PREFIXES or NOT_BACKED_UP_SETTINGS_PREFIXES in src/backup/archive-format.js, with the reason.";
   });
 
   await must("a library backup carries the settings, and restores them only when asked", async () => {
@@ -1556,6 +1601,194 @@ try {
     report.settings = (await restore.readBackupArchive(archiveFile(bytes))).settings;
     await restore.applyRestore(report, { autoBackup: false, includeSettings: true });
     return localStorage.getItem("swipe-notes-theme") === "midnight" || "the settings did not come back when asked for";
+  });
+
+  // ── O. What the annotation tools, empty files and per-tab settings added ──
+  //
+  // Shapes, callouts, sticky notes, typed text with markdown in it, underline
+  // and strike marks, a colour per tab, an export look and empty files all
+  // arrived after the cases above were written, and none of them touched
+  // src/backup/. The round trip above carries one record of each kind
+  // (META_FIXTURES.pdfHighlights); these are the paths that a record's bare
+  // presence in the archive does not prove.
+
+  const shapeWithText = (id, text, at = T0, p = [[10, 10], [120, 40]]) => ({
+    id, page: 1, kind: "shape", color: "black", text, quads: [{ page: 1, rect: [10, 10, 120, 40] }], qv: 2, anchor: null, focus: null,
+    shape: { type: "text", p, stroke: "#000000", width: 0.3, opacity: 1, dash: "solid", fill: null, fillOpacity: 0.25, heads: ["none", "none"], text, fit: true, font: { size: 14, bold: false, align: "left", color: null } },
+    at
+  });
+
+  async function seedPictureInText() {
+    resetWorld();
+    localStorage.setItem(USER_KEY, "user-A");
+    await outbox.putOutboxImage({ token: "tokShape", blob: tokenBlob(31), folder: null, savedAt: iso(T0) });
+    await outbox.putOutboxImage({ token: "tokMd", blob: tokenBlob(32), folder: null, savedAt: iso(T0) });
+    await seedDeck({
+      localId: "ld_pic", deckId: "cloud-pic", title: "Pictures in text",
+      notes: "body",
+      meta: {
+        pdf: { name: "p.pdf", pages: 1, sha256: "" },
+        pdfHighlights: [shapeWithText("hn-pic", "Figure: ![](recall-img:tokShape)")],
+        pdfBlocks: [{ id: "bk-md", page: 1, x: 1, y: 1, w: 100, h: 40, z: 0, kind: "text", md: "See ![](recall-img:tokMd)", at: T0 }]
+      },
+      cards: [{ id: "pic", question: "q" }], pdf: pdfBytes(33), updatedAt: T0
+    });
+  }
+
+  await must("a picture typed into a text box, and one in a text block's markdown, are packed", async () => {
+    await seedPictureInText();
+    const bytes = await takeBackup();
+    const index = JSON.parse(await readEntry(bytes, "assets/index.json") || "{}");
+    const urls = (index.assets || []).map((asset) => asset.url);
+    const missing = ["recall-img:tokShape", "recall-img:tokMd"].filter((ref) => !urls.includes(ref));
+    return missing.length === 0 || `not in the archive: ${missing.join(", ")} (packed: ${JSON.stringify(urls)})`;
+  });
+
+  await must("...restored into another account, both are re-homed, and the upload settles both", async () => {
+    await seedPictureInText();
+    const bytes = await takeBackup();
+    resetWorld();
+    localStorage.setItem(USER_KEY, "user-B");
+    await restoreArchive(bytes);
+    const deck = localLibrary.readLocalDeckIndex()[0];
+    const snapshot = deck ? await deckStore.readDeckSnapshot(deck.id) : null;
+    const shape = snapshot?.meta?.pdfHighlights?.find((record) => record.id === "hn-pic");
+    const block = snapshot?.meta?.pdfBlocks?.find((entry) => entry.id === "bk-md");
+    const shapeToken = /recall-img:([\w-]+)/.exec(shape?.shape?.text || "")?.[1];
+    const mdToken = /recall-img:([\w-]+)/.exec(block?.md || "")?.[1];
+    if (!shapeToken || shapeToken === "tokShape" || !(await outbox.getOutboxImage(shapeToken))) return `the text box's picture was not adopted: ${shape?.shape?.text}`;
+    if (!shape.text.includes(`recall-img:${shapeToken}`)) return `the record's own copy of the words still names the old picture: ${shape.text}`;
+    if (!mdToken || mdToken === "tokMd" || !(await outbox.getOutboxImage(mdToken))) return `the text block's picture was not adopted: ${block?.md}`;
+    // What flushPendingImageUploads does once each picture is uploaded — and
+    // straight after it, the outbox entry is DELETED. A token left anywhere
+    // after this names bytes that no longer exist on any device.
+    await outbox.rewriteLocalImageReferences(new Map([
+      [shapeToken, "https://example.supabase.co/storage/v1/object/public/images/user-B/a.png"],
+      [mdToken, "https://example.supabase.co/storage/v1/object/public/images/user-B/b.png"]
+    ]));
+    const after = await deckStore.readDeckSnapshot(deck.id);
+    const left = JSON.stringify(after.meta).match(/recall-img:[\w-]+/g);
+    return !left || `still pointing at the outbox after the upload: ${left.join(", ")}`;
+  });
+
+  await must("a restore over a deck that moved a shape keeps the move, and brings back the rest", async () => {
+    resetWorld();
+    const a = shapeWithText("hn-A", "A", T0, [[10, 10], [50, 30]]);
+    const b = shapeWithText("hn-B", "B", T0);
+    const c = shapeWithText("hn-C", "C", T0);
+    await seedDeck({ localId: "ld_mv", deckId: "cloud-mv", title: "Moves", notes: "n", meta: { pdfHighlights: [a, b, c] }, cards: [{ id: "mv", question: "q" }], updatedAt: T0 });
+    const bytes = await takeBackup();
+    const snapshot = await deckStore.readDeckSnapshot("ld_mv");
+    const moved = { ...a, shape: { ...a.shape, p: [[200, 200], [240, 220]] }, at: T0 + 5000 };
+    snapshot.meta = { pdfHighlights: [moved], deletedHighlightIds: { "hn-C": iso(T0 + 10000) } };
+    deckStore.writeDeckSnapshot("ld_mv", snapshot);
+    await deckStore.deckWriteSettled("ld_mv");
+    await restoreArchive(bytes);
+    const after = await deckStore.readDeckSnapshot("ld_mv");
+    const byId = new Map((after.meta.pdfHighlights || []).map((record) => [record.id, record]));
+    if (JSON.stringify(byId.get("hn-A")?.shape?.p) !== JSON.stringify(moved.shape.p)) return `the local move was undone: ${JSON.stringify(byId.get("hn-A")?.shape?.p)}`;
+    if (!byId.has("hn-B")) return "the shape this device had lost did not come back";
+    if (byId.has("hn-C")) return "a shape deleted on purpose was resurrected";
+    return true;
+  });
+
+  await must("the preview names shapes and pen marks, not only highlights", async () => {
+    const local = { pdfHighlights: [] };
+    const merged = { pdfHighlights: [
+      { id: "m1", page: 1, quads: [[1, 1, 2, 2]], at: T0 },
+      { id: "m2", page: 1, quads: [[1, 1, 2, 2]], style: "underline", at: T0 },
+      shapeWithText("s1", "x"),
+      { id: "i1", page: 1, kind: "ink", ink: { v: 1, s: "" }, at: T0 }
+    ] };
+    const counts = backup.restoredAnnotationCounts?.(local, merged);
+    if (!counts) return "restoredAnnotationCounts is missing";
+    if (counts.marks !== 2 || counts.shapes !== 1 || counts.ink !== 1) return `counted ${JSON.stringify(counts)}`;
+    return backup.restoredHighlightCount(local, merged) === 4 || "the total no longer adds up";
+  });
+
+  await must("every meta key a restore can bring back has a name in the preview", () => {
+    const counted = new Set(["pdfHighlights", "deletedHighlightIds"]);
+    const unlabelled = Object.keys(archiveFormat.BACKED_UP_META_KEYS).filter((key) => !counted.has(key) && !restore.META_KEY_LABELS[key]);
+    if (unlabelled.length) return `no preview label for: ${unlabelled.join(", ")}`;
+    // The preview is read by a person, so it says what NOMENCLATURE.md says.
+    const worded = Object.entries(restore.META_KEY_LABELS).filter(([, label]) => /\bpapers?\b|\bdecks?\b|\bnotebooks?\b/i.test(label));
+    return worded.length === 0 || `labels using retired words: ${worded.map(([k, v]) => `${k}="${v}"`).join(", ")}`;
+  });
+
+  await must("an empty file is backed up and comes back", async () => {
+    resetWorld();
+    await seedDeck({ localId: "ld_empty", deckId: "cloud-empty", title: "Fill me in later", category: "Plans", notes: "", meta: {}, cards: [], updatedAt: T0 });
+    const bytes = await takeBackup();
+    const manifest = JSON.parse(await readEntry(bytes, "manifest.json"));
+    if (manifest.deckCount !== 1) return `the manifest lists ${manifest.deckCount} files`;
+    resetWorld();
+    await restoreArchive(bytes);
+    const index = localLibrary.readLocalDeckIndex();
+    if (index.length !== 1) return `${index.length} files after restoring one empty file`;
+    if (index[0].title !== "Fill me in later" || index[0].category !== "Plans") return `came back as ${JSON.stringify(index[0])}`;
+    return Boolean(await deckStore.readDeckSnapshot(index[0].id)) || "the index names a file with no snapshot behind it";
+  });
+
+  await must("each tab's own colour defaults and the export look are carried, and restored when asked", async () => {
+    resetWorld();
+    localStorage.setItem("recall:renderColorDefault:document", "#e53935");
+    localStorage.setItem("recall:renderHighlightDefault:handwriting", "green");
+    localStorage.setItem("recall:renderHighlightDefault", "yellow");
+    localStorage.setItem("recall:exportTheme", "fancy");
+    await seedDeck({ localId: "ld_tab", deckId: "cloud-tab", title: "Tabs", notes: "n", cards: [{ id: "t", question: "q" }], updatedAt: T0 });
+    const bytes = await takeBackup();
+    const settings = JSON.parse(await readEntry(bytes, "settings.json"));
+    const want = {
+      "recall:renderColorDefault:document": "#e53935",
+      "recall:renderHighlightDefault:handwriting": "green",
+      "recall:renderHighlightDefault": "yellow",
+      "recall:exportTheme": "fancy"
+    };
+    const lost = Object.keys(want).filter((key) => settings.values?.[key] !== want[key]);
+    if (lost.length) return `not carried: ${lost.join(", ")}`;
+    resetWorld();
+    const report = await restoreArchive(bytes, { confirm: false });
+    report.settings = (await restore.readBackupArchive(archiveFile(bytes))).settings;
+    await restore.applyRestore(report, { autoBackup: false, includeSettings: true });
+    const back = Object.keys(want).filter((key) => localStorage.getItem(key) !== want[key]);
+    return back.length === 0 || `not restored: ${back.join(", ")}`;
+  });
+
+  await must("a hand-edited settings file cannot plant a key outside the tables, prefix or not", () => {
+    resetWorld();
+    const applied = archiveFormat.applyBackupSettings({ values: {
+      "recall:renderColorDefault:notes": "#1e88e5",
+      "recall:renderColorDefaultX": "planted",
+      "recall:s3Config": "{\"secret\":1}",
+      flashcards_supabase_config: "{\"anonKey\":\"x\"}"
+    } }, localStorage);
+    if (localStorage.getItem("recall:renderColorDefault:notes") !== "#1e88e5") return "a per-tab colour was refused";
+    if (localStorage.getItem("recall:renderColorDefaultX") || localStorage.getItem("recall:s3Config") || localStorage.getItem("flashcards_supabase_config")) return "a key outside the tables was written";
+    return applied === 1 || `applied ${applied}`;
+  });
+
+  await must("a shared file's typed text arrives with its pictures", async () => {
+    resetWorld();
+    localStorage.setItem(USER_KEY, "user-A");
+    await outbox.putOutboxImage({ token: "tokSharedShape", blob: tokenBlob(41), folder: null, savedAt: iso(T0) });
+    await seedDeck({
+      localId: "ld_sh", deckId: "cloud-sh", title: "Shared shapes", notes: "n",
+      meta: { pdfHighlights: [shapeWithText("hn-sh", "![](recall-img:tokSharedShape)")] },
+      cards: [{ id: "sh", question: "q" }], updatedAt: T0
+    });
+    lastDownload = null;
+    await backup.runLibraryBackup({ packageKind: "share", selections: [{ localId: "ld_sh", deckId: "cloud-sh" }], includeImages: true, progress: null });
+    if (!lastDownload) return "no package was produced";
+    const bytes = new Uint8Array(await lastDownload.arrayBuffer());
+    resetWorld();
+    localStorage.setItem(USER_KEY, "user-B");
+    await importPackage(bytes);
+    const entry = localLibrary.readLocalDeckIndex().find((deck) => deck.title === "Shared shapes");
+    const snapshot = entry ? await deckStore.readDeckSnapshot(entry.id) : null;
+    const record = snapshot?.meta?.pdfHighlights?.find((r) => r.kind === "shape");
+    const token = /recall-img:([\w-]+)/.exec(record?.shape?.text || "")?.[1];
+    if (!token || token === "tokSharedShape" || !(await outbox.getOutboxImage(token))) return `the picture did not arrive: ${record?.shape?.text}`;
+    return true;
   });
 
   console.warn = realWarn;

@@ -5,7 +5,7 @@
 // backup does not mention is left completely alone. Restored images are
 // re-uploaded and every reference rewritten to the new URLs.
 
-import { backupCategoryFromArchivePath, backupTimestamp, backupZipFactory, collectBackupImageRefs, exportLibraryBackupZip, formatBackupSize, mergeBackupMeta, normalizeBackupDeck, normalizeBackupMeta, restoredHighlightCount, restoredMetaKeys, showBackupProgress } from "./backup.js?v=__BUILD__";
+import { backupCategoryFromArchivePath, backupTimestamp, backupZipFactory, collectBackupImageRefs, exportLibraryBackupZip, formatBackupSize, isShapeTextRecord, mergeBackupMeta, normalizeBackupDeck, normalizeBackupMeta, restoredAnnotationCounts, restoredHighlightCount, restoredMetaKeys, showBackupProgress } from "./backup.js?v=__BUILD__";
 import {
   BACKUP_ASSET_INDEX, BACKUP_DOCUMENT_DIR, BACKUP_MANIFEST_FILE, BACKUP_SETTINGS_FILE,
   PACKAGE_EXT, PACKAGE_KIND_LIBRARY, PACKAGE_KIND_SHARE,
@@ -415,6 +415,18 @@ export function applyBackupAssetRewrites(decks, rewrites) {
         return next;
       });
     }
+    // ...and the words typed on the page — a text box, a callout, a sticky
+    // note — whose markdown can hold a picture exactly as a block's can. Both
+    // copies of the words, so the Highlights pane and the page agree.
+    if (Array.isArray(deck.meta?.pdfHighlights)) {
+      deck.meta.pdfHighlights = deck.meta.pdfHighlights.map((record) => {
+        if (!isShapeTextRecord(record)) return record;
+        const text = swap(record.shape.text);
+        const words = typeof record.text === "string" ? swap(record.text) : record.text;
+        if (text === record.shape.text && words === record.text) return record;
+        return { ...record, text: words, shape: { ...record.shape, text } };
+      });
+    }
   });
 }
 
@@ -556,6 +568,7 @@ export async function planRestore(backupDecks) {
     const mergedMeta = mergeBackupMeta(localMetaBag, backupDeck.meta);
     const metaKeysRestored = restoredMetaKeys(localMetaBag, mergedMeta);
     const highlightsRestored = restoredHighlightCount(localMetaBag, mergedMeta);
+    const annotationsRestored = restoredAnnotationCounts(localMetaBag, mergedMeta);
     const metaRestored = metaKeysRestored.length > 0;
 
     // What will actually be written, given the direction.
@@ -592,6 +605,7 @@ export async function planRestore(backupDecks) {
         notesHeldLocal: notesHeldLocal ? 1 : 0,
         metaRestored: metaRestored ? 1 : 0,
         highlightsRestored,
+        annotationsRestored,
         // Named, not just counted. "34 highlights restored · bookmark restored"
         // is what someone needs in front of a button they are about to press;
         // "meta restored" is a sentence about the implementation.
@@ -798,8 +812,8 @@ export function upsertRestoredMeta(localId, snapshot, backupDeck) {
 // implementation ("pdfToc", "linkIds"); a preview row is read by someone
 // deciding whether to press a button.
 export const META_KEY_LABELS = {
-  pdf: "paper",
-  pdfs: "papers",
+  pdf: "PDF",
+  pdfs: "PDFs",
   notebook: "Canvas pages",
   pdfToc: "PDF contents",
   pdfTocByPdfId: "PDF contents",
@@ -812,16 +826,16 @@ export const META_KEY_LABELS = {
   bookmark: "bookmark",
   readingPosition: "reading position",
   readingPositionPdf: "place in the PDF",
-  readingPositionNotebook: "place in the canvas",
+  readingPositionNotebook: "place in the Canvas",
   pdfReadingPositions: "places in the PDFs",
   linkIds: "note links",
   quickNoteCategories: "note categories",
   noteAnchors: "pinned notes",
   importedFrom: "package origin",
-  pages: "canvas pages (older format)",
-  textBoxes: "canvas text (older format)",
-  deletedPageIds: "deleted canvas pages",
-  deletedTextBoxIds: "deleted canvas text"
+  pages: "Canvas pages (older format)",
+  textBoxes: "Canvas text (older format)",
+  deletedPageIds: "deleted Canvas pages",
+  deletedTextBoxIds: "deleted Canvas text"
 };
 
 // Confirmation preview — resolves true to apply, false to cancel. Nothing is
@@ -912,7 +926,20 @@ export function showRestorePreview(report) {
         // for every kind of meta change there is, because the count behind it
         // only ever asked about quick-note categories — so a restore bringing
         // back fifty highlights and a bookmark said nothing at all about either.
-        if (c.highlightsRestored) bits.push(`${c.highlightsRestored} highlight${c.highlightsRestored === 1 ? "" : "s"} restored`);
+        // By kind, because pdfHighlights holds pen strokes, shapes and sticky
+        // notes as well as highlights. A report from an older planner has only
+        // the total, and says it the way it always did.
+        const kinds = c.annotationsRestored;
+        if (kinds && c.highlightsRestored) {
+          const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+          const parts = [];
+          if (kinds.marks) parts.push(plural(kinds.marks, "highlight", "highlights"));
+          if (kinds.shapes) parts.push(plural(kinds.shapes, "shape or text box", "shapes and text boxes"));
+          if (kinds.ink) parts.push(plural(kinds.ink, "pen mark", "pen marks"));
+          if (parts.length) bits.push(`${parts.join(", ")} restored`);
+        } else if (c.highlightsRestored) {
+          bits.push(`${c.highlightsRestored} highlight${c.highlightsRestored === 1 ? "" : "s"} restored`);
+        }
         for (const key of c.metaKeysRestored || []) {
           if (key === "pdfHighlights" || key === "deletedHighlightIds") continue; // counted above
           bits.push(`${META_KEY_LABELS[key] || key} restored`);
