@@ -1104,9 +1104,12 @@ export function repaintDocumentBlocks() {
 export function addDocumentBlock(pageNumber, at = null) {
   const viewport = pdfPageViewport(pageNumber);
   if (!viewport) return null;
-  const [pageWidth, pageHeight] = [viewport.viewBox[2] - viewport.viewBox[0], viewport.viewBox[3] - viewport.viewBox[1]];
+  // The page box, which need not start at 0,0: a PDF with margins added on the
+  // left or at the foot (src/documents/pdf-margins.js) runs below it, and a box
+  // dropped in that margin must stay there rather than be pushed onto the text.
+  const [vx0, vy0, vx1, vy1] = viewport.viewBox;
   const blocks = documentBlocks();
-  const wanted = at || { x: pageWidth / 2, y: pageHeight / 2 };
+  const wanted = at || { x: (vx0 + vx1) / 2, y: (vy0 + vy1) / 2 };
   const inherited = freshBlockStyle(PDF_BLOCK_TEXT);
   const block = {
     // Unique across the DECK, not the surface: a block id is a sync key, and a
@@ -1114,8 +1117,8 @@ export function addDocumentBlock(pageNumber, at = null) {
     // make the two records one record on the next merge.
     id: freshBlockId(new Set(allDocumentBlocks().map((b) => b?.id))),
     page: Number(pageNumber),
-    x: Math.round(Math.max(12, Math.min(pageWidth - PDF_BLOCK_DEFAULT_WIDTH - 12, wanted.x - (PDF_BLOCK_DEFAULT_WIDTH / 2)))),
-    y: Math.round(Math.max(12, Math.min(pageHeight - PDF_BLOCK_DEFAULT_HEIGHT - 12, wanted.y - (PDF_BLOCK_DEFAULT_HEIGHT / 2)))),
+    x: Math.round(Math.max(vx0 + 12, Math.min(vx1 - PDF_BLOCK_DEFAULT_WIDTH - 12, wanted.x - (PDF_BLOCK_DEFAULT_WIDTH / 2)))),
+    y: Math.round(Math.max(vy0 + 12, Math.min(vy1 - PDF_BLOCK_DEFAULT_HEIGHT - 12, wanted.y - (PDF_BLOCK_DEFAULT_HEIGHT / 2)))),
     w: PDF_BLOCK_DEFAULT_WIDTH,
     h: PDF_BLOCK_DEFAULT_HEIGHT,
     z: blocks.length,
@@ -1151,7 +1154,9 @@ export async function addDocumentImageBlock(pageNumber, file, at = null) {
     showToast("That file is not an image", "error");
     return null;
   }
-  const [pageWidth, pageHeight] = [viewport.viewBox[2] - viewport.viewBox[0], viewport.viewBox[3] - viewport.viewBox[1]];
+  // The page box, which need not start at 0,0 — see addDocumentBlock.
+  const [vx0, vy0, vx1, vy1] = viewport.viewBox;
+  const [pageWidth, pageHeight] = [vx1 - vx0, vy1 - vy0];
   const ratio = await imageAspectRatio(file);
   const maxW = Math.max(PDF_BLOCK_MIN_WIDTH, pageWidth * 0.62);
   const maxH = Math.max(PDF_BLOCK_MIN_HEIGHT, pageHeight * 0.42);
@@ -1169,13 +1174,13 @@ export async function addDocumentImageBlock(pageNumber, file, at = null) {
   if (stored.queued) showToast("Image saved here — it uploads when you're back online", "info");
 
   const blocks = documentBlocks();
-  const wanted = at || { x: pageWidth / 2, y: pageHeight / 2 };
+  const wanted = at || { x: (vx0 + vx1) / 2, y: (vy0 + vy1) / 2 };
   const inherited = freshBlockStyle(PDF_BLOCK_IMAGE);
   const block = {
     id: freshBlockId(new Set(allDocumentBlocks().map((b) => b?.id))),
     page: Number(pageNumber),
-    x: Math.round(Math.max(12, Math.min(pageWidth - w - 12, wanted.x - (w / 2)))),
-    y: Math.round(Math.max(12, Math.min(pageHeight - h - 12, wanted.y - (h / 2)))),
+    x: Math.round(Math.max(vx0 + 12, Math.min(vx1 - w - 12, wanted.x - (w / 2)))),
+    y: Math.round(Math.max(vy0 + 12, Math.min(vy1 - h - 12, wanted.y - (h / 2)))),
     w: Math.round(w),
     h: Math.round(h),
     z: blocks.length,

@@ -364,6 +364,12 @@ const checks = [
   // dragged with everything under it, a heading nested into another — and the
   // reading of where a link inside a PDF goes. Pure, imports nothing.
   ["toc-arrange   ", ["node", ["tools/pdf-toc-arrange-check.mjs"], ROOT]],
+  // A PDF's page margins (src/documents/pdf-margins-core.js): the page grows
+  // outward with its origin kept, so nothing written on it moves; a second
+  // change starts from the page as it came; "None" restores it; a turned page
+  // gets its margin on the side the reader sees; and the Canvas's own paper is
+  // byte-for-byte unchanged. pdf-lib from disk, no browser.
+  ["pdf-margins   ", ["node", ["tools/pdf-margins-check.mjs"], ROOT]],
   // The section numbers on a note's headings (1, 1.1, 1.2 …) and the section
   // filter on its highlights: the counting, the section index the highlight
   // lists use agreeing with what the note draws, and which highlights a pick
@@ -614,6 +620,10 @@ const checks = [
     // the Shapes tool's lines, arrows, boxes, callouts, text and sticky notes,
     // and the file saved with them as real PDF annotations.
     ["annotations   ", ["node", ["tools/annotations-check.mjs"], ROOT]],
+    // ⋯ → Page margins… in the app: what was written stays put, the page is
+    // wider, a typed box goes in the margin, the file saved with annotations
+    // carries the margin and the typed boxes, None and a re-attach both hold.
+    ["pdf-margins-ui", ["node", ["tools/pdf-margins-browser-check.mjs"], ROOT]],
     // What an export actually puts in the file: every picture inlined (the
     // PDFs never did, and an image added offline resolved nowhere), the look
     // asked for at export time, Word keeping a resized picture's width and a

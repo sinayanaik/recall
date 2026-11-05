@@ -691,6 +691,19 @@ function renderStartNotebookPrompt() {
 // is present but which the reader wants to re-point at a local copy.
 export async function reattachDocument(file, pdfMeta, pdfId = PDF_PRIMARY_ID) {
   const hash = await sha256(file);
+  // A PDF that has had margins added (src/documents/pdf-margins.js) is no longer
+  // the file the reader has on their disk — but that file is still this PDF,
+  // and every mark lands in the same place on it. So the original is accepted
+  // and the margins are put back on it. Imported here, not at the top: that
+  // module opens documents through this one.
+  if (pdfMeta?.baseSha256 && hash === pdfMeta.baseSha256 && hash !== pdfMeta.sha256) {
+    if (!state.localDeckId) {
+      showToast("Save this file before re-attaching its PDF", "error");
+      return false;
+    }
+    const { reattachOriginal } = await import("./pdf-margins.js?v=__BUILD__");
+    return reattachOriginal(file, pdfMeta, pdfId);
+  }
   if (pdfMeta?.sha256 && hash && hash !== pdfMeta.sha256) {
     showToast("That's a different file — the highlights would land in the wrong places", "error");
     return false;

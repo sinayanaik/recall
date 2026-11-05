@@ -65,6 +65,9 @@ const SECTIONS = [
 // Anything appearing in styles/ that is neither a slice nor listed here is
 // still a failure.
 const POST_SPLIT = {
+  "93-pdf-margins.css":
+    "⋯ → Page margins…: the preset and paper chips and the four mm fields " +
+    "(src/documents/pdf-margins.js), on the .confirm-modal chrome.",
   "92-extensions.css":
     "☰ → Extensions: one card per browser extension with its Download .zip " +
     "button, and the install steps (src/extensions/extension-store.js).",
