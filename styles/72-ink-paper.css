@@ -65,7 +65,8 @@
    Scoped to the rail and nothing else. Blocks on a page read the same custom
    properties for their text, over fills tinted for the theme
    (styles/58-block-style.css), and they must go on following the theme. */
-.document-stage:not(.is-pdf-inverted) .document-ink-rail {
+.document-stage:not(.is-pdf-inverted) .document-ink-rail,
+.document-ink-rail.is-inline:not(.on-dark-page) {
   --ink-pen-ink: #16181d;
   --ink-pen-red: #dc2626;
   --ink-pen-blue: #2563eb;
@@ -76,7 +77,8 @@
   --ink-pen-pink: #db2777;
 }
 
-.document-stage.is-pdf-inverted .document-ink-rail {
+.document-stage.is-pdf-inverted .document-ink-rail,
+.document-ink-rail.is-inline.on-dark-page {
   --ink-pen-ink: #e8eaed;
   --ink-pen-red: #f87171;
   --ink-pen-blue: #7aa7ff;

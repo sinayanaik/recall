@@ -152,6 +152,7 @@ export function toggleTypewriter(force = null) {
   if (on) {
     if (!typing) {
       typewriterReturn = { slot: activeDocSlot(), tool: inkTool(), railWasOpen: isInkArmed() };
+      typewriterDoneWhenPanelCloses = false;
       // A mouse types only while the bar is armed (shapeTakesPointer,
       // src/documents/pdf-shapes.js), as it draws only then. NOT written to
       // ink-prefs: Text opening the bar is not the reader opening the pen's.
@@ -178,7 +179,145 @@ export function toggleTypewriter(force = null) {
   refreshInkRail();
 }
 
+// ── Text is one box per press ───────────────────────────────────────────────
+//
+// It used to stay armed after the words were put down, so every line ended
+// with a trip to Done before the reader could do anything else on the page.
+// Now putting the words down (a press elsewhere, Escape, Ctrl+Enter, the ✓)
+// puts the Text tool away too, and what was in hand before T comes back.
+//
+// The one exception is focus moving onto the pen's own bar: that is the
+// reader opening the style panel to colour or resize what they just typed,
+// and putting the tool away would shut the panel under them. Then the tool
+// goes when that panel does.
+let typewriterDoneWhenPanelCloses = false;
+
+export function finishTypewriterBox({ to = null } = {}) {
+  if (!isTypewriterArmed()) return;
+  if (to?.closest?.(".document-ink-rail")) {
+    typewriterDoneWhenPanelCloses = true;
+    return;
+  }
+  typewriterDoneWhenPanelCloses = false;
+  toggleTypewriter(false);
+}
+
+function onInkPanelToggle(open) {
+  if (open || !typewriterDoneWhenPanelCloses) return;
+  typewriterDoneWhenPanelCloses = false;
+  if (isTypewriterArmed()) queueMicrotask(() => { if (isTypewriterArmed()) toggleTypewriter(false); });
+}
+
+// ── On a wide screen, the bar sits in the tab row ───────────────────────────
+//
+// Pressing ✎ or T used to open the bar as a row of its own between the tabs and
+// the page, pushing the page down — on a desktop, under a tab row with most of
+// its width empty. So with a mouse on a wide window the bar is MOVED (not
+// cloned: every control in it is wired by delegation on the bar itself) into
+// #viewModeRow after the document's tools, and styled as one tinted group there
+// (styles/91-ink-rail-inline.css) so it reads as the tools' settings and not as
+// more tabs. Everywhere else it stays where it is written in the stage.
+//
+// It goes back to the stage when the row cannot hold it: a narrower window, a
+// touch screen, focus mode (which folds the whole row away, and the pen must not
+// go with it), or a row that turns out too full — tabs squeezed to "CAR…" —
+// which is measured once per shape of the bar and remembered for that width.
+const INLINE_RAIL_QUERY = "(min-width: 1100px) and (hover: hover) and (pointer: fine)";
+let inlineRailMedia = null;
+let railHomeMarker = null;
+const inlineRailRefusedAt = { typing: 0, full: 0 };
+let inlineFitSignature = "";
+
+function railShape(rail) {
+  return rail.classList.contains("is-typing") ? "typing" : "full";
+}
+
+function wantsInlineRail(rail) {
+  if (!inlineRailMedia?.matches || !railHomeMarker) return false;
+  if (document.body.classList.contains("chrome-collapsed")) return false;
+  const refused = inlineRailRefusedAt[railShape(rail)];
+  return !refused || window.innerWidth > refused;
+}
+
+// The stage's facts the bar's own rules are written against (no document, the
+// notebook's slot, a dark page), copied onto the bar so they still hold once it
+// has left the stage.
+function mirrorStageOntoRail(rail) {
+  const stage = el.documentStage;
+  if (!stage) return;
+  const slot = stage.dataset.docSlot || "";
+  if (rail.dataset.docSlot !== slot) rail.dataset.docSlot = slot;
+  rail.classList.toggle("on-no-document", stage.classList.contains("has-no-document"));
+  rail.classList.toggle("on-no-notebook", stage.classList.contains("has-no-notebook"));
+  rail.classList.toggle("on-dark-page", stage.classList.contains("is-pdf-inverted"));
+}
+
+export function placeInkRail() {
+  const rail = el.documentInkRail;
+  const row = document.getElementById("viewModeRow");
+  if (!rail || !row || !railHomeMarker) return;
+  mirrorStageOntoRail(rail);
+  const inline = wantsInlineRail(rail);
+  if (inline !== (rail.parentElement === row)) {
+    if (inline) {
+      // Right after the button that opened it (✎ and T sit together), so the
+      // settings are beside what they set; the PDF switcher and ⋯ follow.
+      const after = el.documentTextBtn?.parentElement === row ? el.documentTextBtn
+        : el.documentInkBtn?.parentElement === row ? el.documentInkBtn
+          : row.querySelector(":scope > .view-mode-row-break");
+      row.insertBefore(rail, after ? after.nextSibling : null);
+    } else {
+      railHomeMarker.parentNode?.insertBefore(rail, railHomeMarker.nextSibling);
+    }
+    rail.classList.toggle("is-inline", inline);
+    inlineFitSignature = "";
+  }
+  if (!inline || rail.hidden) return;
+  // Measured only when the bar's shape changes — this runs on every pen lift,
+  // and a layout read there is the cost refreshInkRail is written to avoid.
+  const signature = [railShape(rail), rail.classList.contains("is-selecting"), rail.classList.contains("has-clipboard"), window.innerWidth].join("|");
+  if (signature === inlineFitSignature) return;
+  inlineFitSignature = signature;
+  requestAnimationFrame(() => {
+    if (rail.parentElement !== row || rail.hidden) return;
+    const squeezed = row.scrollWidth > row.clientWidth + 1
+      || [...row.querySelectorAll(":scope > .view-mode-toggle > button:not([hidden])")].some((tab) => tab.scrollWidth > tab.clientWidth + 1);
+    if (!squeezed) return;
+    inlineRailRefusedAt[railShape(rail)] = window.innerWidth;
+    placeInkRail();
+  });
+}
+
+function initInlineRail() {
+  const rail = el.documentInkRail;
+  if (!rail || !rail.parentNode || typeof window.matchMedia !== "function") return;
+  railHomeMarker = document.createComment(" #documentInkRail's home on a narrow screen (placeInkRail) ");
+  rail.parentNode.insertBefore(railHomeMarker, rail);
+  inlineRailMedia = window.matchMedia(INLINE_RAIL_QUERY);
+  inlineRailMedia.addEventListener?.("change", () => {
+    inlineRailRefusedAt.typing = 0;
+    inlineRailRefusedAt.full = 0;
+    placeInkRail();
+  });
+  let resizeFrame = 0;
+  window.addEventListener("resize", () => {
+    if (resizeFrame) return;
+    resizeFrame = requestAnimationFrame(() => { resizeFrame = 0; placeInkRail(); });
+  });
+  // Focus mode (body.chrome-collapsed) and the stage's own state: both change
+  // through class and attribute writes that do not pass through here.
+  const observer = new MutationObserver(() => placeInkRail());
+  observer.observe(document.body, { attributes: true, attributeFilter: ["class"] });
+  if (el.documentStage) observer.observe(el.documentStage, { attributes: true, attributeFilter: ["class", "data-doc-slot"] });
+  placeInkRail();
+}
+
 export function refreshInkRail() {
+  paintInkRail();
+  placeInkRail();
+}
+
+function paintInkRail() {
   const rail = el.documentInkRail;
   if (!rail) return;
   const open = isInkArmed();
@@ -571,7 +710,7 @@ export function initInkRail() {
     refreshInkRail();
   });
   inkPanel = el.inkRailPopover
-    ? createInkPanel({ rail, popover: el.inkRailPopover, chip: el.inkRailStyleChip, adapter: panelAdapter, onToggle: () => {} })
+    ? createInkPanel({ rail, popover: el.inkRailPopover, chip: el.inkRailStyleChip, adapter: panelAdapter, onToggle: onInkPanelToggle })
     : null;
 
   // The pen, the nib and the tool are remembered per device rather than per
@@ -597,6 +736,7 @@ export function initInkRail() {
     toggleInkRail();
   });
   el.documentTextBtn?.addEventListener("click", () => toggleTypewriter());
+  initInlineRail();
 
   // pointerdown, not click, and preventDefault with it: a press on the rail
   // must not travel on to the page underneath and start a stroke, and on a

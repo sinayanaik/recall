@@ -70,11 +70,136 @@ export function readKnownFolders() {
   }
 }
 
-export function writeKnownFolders(list) {
+// `stamp`: record what this write added and removed in the folder sync map
+// below, so the change reaches the account's other devices. Off only for the
+// write that APPLIES a merge from the cloud — that is not a change made here.
+export function writeKnownFolders(list, { stamp = true } = {}) {
   const unique = Array.from(new Set((list || []).map(normalizeDeckCategory)))
     .filter((p) => p !== defaultDeckCategory);
+  const before = stamp ? readKnownFolders() : null;
   try { localStorage.setItem(KNOWN_FOLDERS_KEY, JSON.stringify(unique)); } catch (_) {}
+  if (stamp) {
+    const now = Date.now();
+    const map = readFolderSyncMap();
+    const next = new Set(unique);
+    const was = new Set(before);
+    let changed = false;
+    unique.forEach((path) => {
+      if (was.has(path) && map[path] && !map[path].deleted) return;
+      map[path] = { at: now, deleted: false };
+      changed = true;
+    });
+    was.forEach((path) => {
+      if (next.has(path)) return;
+      map[path] = { at: now, deleted: true };
+      changed = true;
+    });
+    if (changed) {
+      writeFolderSyncMap(map);
+      knownFoldersChangedHook();
+    }
+  }
   return unique;
+}
+
+// ── Empty folders across devices ───────────────────────────────────────────
+// The list above was this device's alone, so a folder made here with nothing
+// in it yet never reached another device — and was lost with this browser's
+// storage. This side map records WHEN each folder was made or removed:
+//
+//   { "<path>": { at: <ms>, deleted: <bool> } }
+//
+// src/cloud/folder-sync.js merges it with the account's copy (the
+// library_folders table) path by path, newer `at` winning, and hands the result
+// back through applyFolderSyncMap. A path in the known list with no entry here
+// (from before this existed) counts as made at time 0: kept and uploaded, but
+// any deletion of it on another device wins.
+export const FOLDER_SYNC_KEY = "flashcards_folders_sync_v1";
+
+// How long a deleted folder's tombstone is kept. A device away for longer than
+// this could bring a deleted empty folder back — an empty folder, and a cost
+// worth paying for a row that does not grow forever.
+export const FOLDER_TOMBSTONE_TTL_MS = 90 * 24 * 60 * 60 * 1000;
+
+let knownFoldersChangedHook = () => {};
+
+// Told after every write that changed the list (src/main.js asks for a sync).
+export function setKnownFoldersChangedHook(fn) {
+  knownFoldersChangedHook = typeof fn === "function" ? fn : () => {};
+}
+
+export function cleanFolderSyncMap(raw) {
+  const out = {};
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return out;
+  Object.keys(raw).forEach((key) => {
+    const path = normalizeDeckCategory(key);
+    if (path === defaultDeckCategory) return;
+    const entry = raw[key];
+    const at = Number(entry?.at);
+    if (!entry || typeof entry !== "object" || !Number.isFinite(at) || at < 0) return;
+    const clean = { at, deleted: entry.deleted === true };
+    if (!out[path] || out[path].at < clean.at) out[path] = clean;
+  });
+  return out;
+}
+
+export function readFolderSyncMap() {
+  try {
+    return cleanFolderSyncMap(JSON.parse(localStorage.getItem(FOLDER_SYNC_KEY) || "{}"));
+  } catch (_) {
+    return {};
+  }
+}
+
+function writeFolderSyncMap(map) {
+  try { localStorage.setItem(FOLDER_SYNC_KEY, JSON.stringify(map)); } catch (_) {}
+}
+
+// This device's side of a sync: the map, with every known folder that has no
+// entry yet seeded at time 0.
+export function localFolderSyncMap() {
+  const map = readFolderSyncMap();
+  readKnownFolders().forEach((path) => {
+    if (!map[path]) map[path] = { at: 0, deleted: false };
+  });
+  return map;
+}
+
+// Path by path, the newer change wins; on a tie, a deletion does (it was
+// meant). Tombstones older than the TTL are dropped. Pure, for the checks.
+export function mergeFolderSyncMaps(local, cloud, now = Date.now()) {
+  const a = cleanFolderSyncMap(local);
+  const b = cleanFolderSyncMap(cloud);
+  const merged = {};
+  new Set([...Object.keys(a), ...Object.keys(b)]).forEach((path) => {
+    const x = a[path];
+    const y = b[path];
+    let pick = x || y;
+    if (x && y) pick = x.at !== y.at ? (x.at > y.at ? x : y) : (x.deleted ? x : y);
+    if (pick.deleted && now - pick.at > FOLDER_TOMBSTONE_TTL_MS) return;
+    merged[path] = { at: pick.at, deleted: pick.deleted };
+  });
+  return merged;
+}
+
+export function sameFolderSyncMap(a, b) {
+  const left = cleanFolderSyncMap(a);
+  const right = cleanFolderSyncMap(b);
+  const keys = Object.keys(left);
+  if (keys.length !== Object.keys(right).length) return false;
+  return keys.every((path) => right[path] && right[path].at === left[path].at && right[path].deleted === left[path].deleted);
+}
+
+// The merge, made this device's truth: the map as it came, and the known list
+// as its live paths. Returns whether the visible list of folders changed.
+export function applyFolderSyncMap(merged) {
+  const map = cleanFolderSyncMap(merged);
+  const before = readKnownFolders();
+  const live = Object.keys(map).filter((path) => !map[path].deleted).sort();
+  writeFolderSyncMap(map);
+  writeKnownFolders(live, { stamp: false });
+  const after = readKnownFolders();
+  return before.length !== after.length || before.some((path) => !after.includes(path));
 }
 
 export function addKnownFolder(path) {

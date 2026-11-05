@@ -187,7 +187,8 @@
    the attribute is written by setViewMode, and a stage that has not been through
    it yet must keep behaving exactly as it did. The notebook's own version of
    this rule is in styles/53-handwriting.css, asked of the fact that applies. */
-#documentStage.has-no-document:not([data-doc-slot="notebook"]) .document-ink-rail {
+#documentStage.has-no-document:not([data-doc-slot="notebook"]) .document-ink-rail,
+.document-ink-rail.is-inline.on-no-document:not([data-doc-slot="notebook"]) {
   display: none;
 }
 

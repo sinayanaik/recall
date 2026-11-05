@@ -7,6 +7,7 @@ import { resetStudyDeck } from "./study.js?v=__BUILD__";
 import { defaultDeckCategory } from "../core/constants.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
+import { saveDeckToLibrary } from "../library/local-library.js?v=__BUILD__";
 import { setDeckAutosaveStorageFailed } from "../storage/quota.js?v=__BUILD__";
 import { closeImportPanel, closeMyDecksPanel } from "../ui/deck-header.js?v=__BUILD__";
 import { setStatus, showConfirmModal, showPromptModal, showToast } from "../ui/feedback.js?v=__BUILD__";
@@ -40,6 +41,13 @@ export function createNewDeck({ title = "New File", category = defaultDeckCatego
     hideHome();
     showCard();
     setStatus("Created new file.");
+    // Into the library NOW, empty as it is. It used to wait for the first card
+    // or line of notes, so a file made and left empty (to fill in later, or on
+    // another device) vanished on reload and never reached the cloud. The save
+    // starts the usual post-edit sync, which pushes it like any other file.
+    saveDeckToLibrary({ silent: true, allowEmpty: true }).catch((error) => {
+      console.warn("Could not save the new file", error);
+    });
   };
   if (hasActiveDeck()) {
     showConfirmModal("Create a new file? Unsaved local progress will be lost.", doCreate, { confirmLabel: "Create New" });
@@ -51,8 +59,8 @@ export function createNewDeck({ title = "New File", category = defaultDeckCatego
 // Creates a deck inside a folder from the My Decks library: prompts for a title,
 // files it under `folderPath`, closes the panel, and drops the user into the new
 // deck in notes mode ready to write. The deck is filed under `folderPath` (set on
-// state.deckCategory) and persists to the library + cloud on the first edit via
-// autosave — the library never stores a truly empty deck.
+// state.deckCategory) and saved to the library at once, empty, by
+// createNewDeck — and from there synced like any other file.
 export function newDeckInFolder(folderPath = "") {
   const cat = normalizeDeckCategory(folderPath);
   const where = cat === defaultDeckCategory ? "" : ` in "${cat}"`;
@@ -62,6 +70,6 @@ export function newDeckInFolder(folderPath = "") {
     const name = String(title || "").trim() || "New File";
     createNewDeck({ title: name, category: cat, notesMode: true });
     closeMyDecksPanel();
-    showToast(`New file "${name}"${where} — add notes or cards to save it`);
+    showToast(`New file "${name}"${where} created`);
   }, { placeholder: "New File" });
 }

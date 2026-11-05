@@ -87,7 +87,9 @@
 }
 
 #documentStage .document-ink-rail.is-selecting .ink-rail-page,
-#documentStage .document-ink-rail.has-clipboard .ink-rail-page {
+#documentStage .document-ink-rail.has-clipboard .ink-rail-page,
+.view-mode-row > .document-ink-rail.is-selecting .ink-rail-page,
+.view-mode-row > .document-ink-rail.has-clipboard .ink-rail-page {
   display: none;
 }
 

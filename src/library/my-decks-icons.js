@@ -19,6 +19,11 @@ export const MD_ICONS = {
   // Views: every deck at once · one folder at a time · the whole hierarchy
   grid: `<rect x="3" y="3" width="7.5" height="7.5" rx="1.6"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="1.6"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="1.6"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.6"/>`,
   folder: `<path d="M3 6.6A1.6 1.6 0 0 1 4.6 5h4.1l2 2.6h8.7A1.6 1.6 0 0 1 21 9.2v8.8a1.6 1.6 0 0 1-1.6 1.6H4.6A1.6 1.6 0 0 1 3 18Z"/>`,
+  // A folder with its body filled in at low strength — the library's rows and
+  // tiles, where it has to read as a CONTAINER at a glance, next to files.
+  folderFilled: `<path d="M3 6.6A1.6 1.6 0 0 1 4.6 5h4.1l2 2.6h8.7A1.6 1.6 0 0 1 21 9.2v8.8a1.6 1.6 0 0 1-1.6 1.6H4.6A1.6 1.6 0 0 1 3 18Z" fill="currentColor" fill-opacity="0.22"/><path d="M3 9.6h18"/>`,
+  // A page with a folded corner: one file in the library, set against folders.
+  file: `<path d="M6.6 2.8h7.2l4.6 4.6v12.2a1.6 1.6 0 0 1-1.6 1.6H6.6A1.6 1.6 0 0 1 5 19.6V4.4a1.6 1.6 0 0 1 1.6-1.6Z"/><path d="M13.6 2.8v4.8h4.8M8.4 12.4h7.2M8.4 16h5"/>`,
   tree: `<rect x="2.5" y="1.8" width="10" height="4.2" rx="1.4"/><path d="M5.2 6v10.6a2 2 0 0 0 2 2h3.6M5.2 10.9h5.6"/><rect x="12" y="8.4" width="9.5" height="5" rx="1.4"/><rect x="12" y="16.2" width="9.5" height="5" rx="1.4"/>`,
   // Display: side-by-side cards · a dotted list
   tiles: `<rect x="2.6" y="4.4" width="8.4" height="15.2" rx="1.7"/><rect x="13" y="4.4" width="8.4" height="15.2" rx="1.7"/>`,

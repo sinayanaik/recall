@@ -379,6 +379,8 @@ const APP_SHELL = [
   `./styles/87-web-import.css?v=${STAMP}`,
   `./styles/88-annotations.css?v=${STAMP}`,
   `./styles/89-style-popover.css?v=${STAMP}`,
+  `./styles/90-library-kinds.css?v=${STAMP}`,
+  `./styles/91-ink-rail-inline.css?v=${STAMP}`,
   // The module entry point. Everything it imports is stamped with the same
   // ?v=, so those URLs change with every release too — which is what lets the
   // cache-first handler below serve them without revalidating and still never
@@ -413,6 +415,7 @@ const APP_SHELL = [
   `./src/cloud/deck-list.js?v=${STAMP}`,
   `./src/cloud/drive-client.js?v=${STAMP}`,
   `./src/cloud/drive-files.js?v=${STAMP}`,
+  `./src/cloud/folder-sync.js?v=${STAMP}`,
   `./src/cloud/net.js?v=${STAMP}`,
   `./src/cloud/s3-config.js?v=${STAMP}`,
   `./src/cloud/s3-config-sync.js?v=${STAMP}`,

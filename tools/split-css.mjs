@@ -69,6 +69,13 @@ const POST_SPLIT = {
     "The values in the 13 slices that a section's ◐ style controls now set " +
     "(src/ui/style-schema.js), taken over by the same selectors right after the " +
     "slices, so the slices stay byte-for-byte what styles.css was.",
+  "91-ink-rail-inline.css":
+    "The pen's bar in the tab row on a wide screen with a mouse, rather than a " +
+    "second row over the page (src/ui/ink-rail.js, placeInkRail).",
+  "90-library-kinds.css":
+    "My Files: folders and files told apart at a glance — an accent bar, tint " +
+    "and filled folder for a folder, a page icon and plain surface for a file, " +
+    "in the list, the tree and the grid (src/library/deck-rows.js).",
   "89-style-popover.css":
     "A section's own style controls in a popover on that section's ◐ button " +
     "(src/ui/style-popover.js), and the ◐ buttons themselves.",

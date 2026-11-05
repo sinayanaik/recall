@@ -343,7 +343,7 @@ export function buildFolderRow(node, depth, isCollapsed) {
   const label = document.createElement("button");
   label.type = "button";
   label.className = "deck-folder-label";
-  label.innerHTML = `<span class="deck-folder-icon">${mdIcon("folder")}</span><span class="deck-folder-name"></span>`;
+  label.innerHTML = `<span class="deck-folder-icon">${mdIcon("folderFilled")}</span><span class="deck-folder-name"></span>`;
   label.querySelector(".deck-folder-name").textContent = node.name;
   label.addEventListener("click", () => toggleFolderCollapsed(node.path));
 
@@ -658,7 +658,7 @@ export function buildFolderTile(node) {
 
   const main = document.createElement("div");
   main.className = "folder-tile-main";
-  main.innerHTML = `<span class="folder-tile-icon">${mdIcon("folder")}</span><span class="folder-tile-name"></span>`;
+  main.innerHTML = `<span class="folder-tile-icon">${mdIcon("folderFilled")}</span><span class="folder-tile-name"></span>`;
   main.querySelector(".folder-tile-name").textContent = node.name;
   const count = document.createElement("span");
   count.className = "folder-tile-count";
@@ -717,7 +717,7 @@ export function buildFolderNavRow(node) {
   const label = document.createElement("button");
   label.type = "button";
   label.className = "deck-folder-label";
-  label.innerHTML = `<span class="deck-folder-icon">${mdIcon("folder")}</span><span class="deck-folder-name"></span>`;
+  label.innerHTML = `<span class="deck-folder-icon">${mdIcon("folderFilled")}</span><span class="deck-folder-name"></span>`;
   label.querySelector(".deck-folder-name").textContent = node.name;
   label.addEventListener("click", () => setMyDecksCwdAndRender(node.path));
   const total = folderTotalDeckCount(node);
@@ -824,7 +824,12 @@ export function buildDeckTile(entry, ctx) {
 
   const title = document.createElement("div");
   title.className = "deck-tile-title";
-  title.textContent = deck.title || "Untitled file";
+  // A page icon before the name, as in the list's rows: what tells a file
+  // tile from a folder tile at a glance. No text, so textContent is the title.
+  const titleIcon = document.createElement("span");
+  titleIcon.className = "deck-file-icon";
+  titleIcon.innerHTML = mdIcon("file");
+  title.append(titleIcon, document.createTextNode(deck.title || "Untitled file"));
   title.title = deck.title || "";
 
   const chip = document.createElement("span");

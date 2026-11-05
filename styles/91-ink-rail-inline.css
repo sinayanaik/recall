@@ -1,0 +1,82 @@
+/* ── The pen's bar, in the tab row, on a wide screen ───────────────────────
+   src/ui/ink-rail.js (placeInkRail) moves #documentInkRail into #viewModeRow
+   when there is a mouse and room for it, instead of opening it as a second row
+   that pushes the page down. Here it is one tinted group at the end of the
+   row: accent-washed, with an accent edge and a "settings" divider before it,
+   so it reads as the settings of the ✎ or T beside it and not as more tabs.
+
+   Everything about WHICH controls show is the same rules as in the stage (each
+   stage-scoped one has an `.is-inline` twin keyed on the facts placeInkRail
+   copies onto the bar); this file is only where it sits and how it looks. */
+
+/* In the row for the whole session once placed, so hidden unless the document
+   view is the one showing — exactly as the document's other lifted tools are
+   (styles/37-document-chrome.css). */
+.view-mode-row > .document-ink-rail {
+  display: none;
+}
+
+:is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > .document-ink-rail {
+  order: 0;
+  display: flex;
+  flex: 0 1 auto;
+  flex-wrap: nowrap;
+  align-self: center;
+  gap: 3px;
+  min-width: 0;
+  max-width: none;
+  margin: 0 4px;
+  padding: 1px 4px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel));
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+/* The bar's own "no paper, no pen" rules, asked of the copied facts. Repeated
+   at this specificity because the rule above outranks them. */
+:is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > .document-ink-rail.on-no-document:not([data-doc-slot="notebook"]),
+:is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > .document-ink-rail.on-no-notebook[data-doc-slot="notebook"] {
+  display: none;
+}
+
+/* One line: the groups do not wrap inside a row that does not. */
+.view-mode-row > .document-ink-rail .ink-rail-group {
+  flex-wrap: nowrap;
+}
+
+.view-mode-row > .document-ink-rail .ink-rail-group + .ink-rail-group {
+  padding-left: 4px;
+}
+
+/* The row's own 26px, rather than the stage's 30px, so opening the bar does
+   not make the row any taller. */
+.view-mode-row > .document-ink-rail .ink-rail-btn {
+  width: 26px;
+  height: 26px;
+  min-width: 26px;
+  min-height: 26px;
+  border-radius: 7px;
+}
+
+.view-mode-row > .document-ink-rail .ink-rail-btn.is-labelled {
+  width: auto;
+  padding: 0 8px;
+}
+
+/* The tab row widens to hold it, and the tabs drop their emoji — the words
+   are the part that has to survive, as on a narrow screen. */
+:is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row:has(> .document-ink-rail:not([hidden])) {
+  width: min(1320px, 100%);
+}
+
+.view-mode-row:has(> .document-ink-rail:not([hidden])) .view-mode-toggle .vm-ico {
+  display: none;
+}
+
+/* The panel and the bar's menus drop down over the page, above it. */
+.view-mode-row > .document-ink-rail .ink-rail-popover,
+.view-mode-row > .document-ink-rail .ink-rail-menu {
+  z-index: 60;
+}

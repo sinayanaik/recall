@@ -385,6 +385,7 @@ export const NOT_BACKED_UP_SETTINGS_KEYS = {
   // re-key them onto the decks it writes (src/backup/library-state.js).
   flashcards_folders_v1: "In library.json — folders that hold no decks yet.",
   flashcards_folder_collapsed_v1: "In library.json — which folds are closed.",
+  flashcards_folders_sync_v1: "When each folder was made or removed, for syncing empty folders between devices. About this device's sync, and the account's copy is in the cloud.",
   flashcards_folder_expanded_v1: "In library.json — which folds are open.",
   "swipe-notes-reading-positions-v1": "In library.json — where you were in each note.",
   "swipe-notes-bookmark-prompts-v1": "In library.json — which bookmark prompts were answered.",

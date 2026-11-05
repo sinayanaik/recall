@@ -1,0 +1,45 @@
+/* My Files: folders and files told apart at a glance (src/library/deck-rows.js,
+   src/library/folder-tree.js). After the slices, so it wins at equal specificity. */
+
+/* ── Folders and files, told apart at a glance ─────────────────────────────
+   A folder row and a file row used to differ by a faint tint and a folder icon
+   on one side only, so a long list read as one column of names. Now each kind
+   has its own look, in list, tree and grid alike:
+
+     folder  an accent bar down its left edge, a stronger accent tint, a filled
+             folder in the accent colour, and a bold name
+     file    the plain surface, a muted page icon, and a lighter title
+
+   The bar is an inset box-shadow, not a border, so it adds no width and works
+   whether the row is a table row (desktop) or a block bar (phone). */
+.deck-folder-row:not(.deck-root-row) > td {
+  background: color-mix(in srgb, var(--accent) 11%, var(--panel-2));
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.deck-folder-row:not(.deck-root-row) .deck-folder-name { font-weight: 800; }
+.deck-folder-label .md-ico { --md-ico: 17px; }
+
+.deck-file-icon {
+  display: inline-flex;
+  vertical-align: -0.2em;
+  margin-right: 7px;
+  color: var(--muted);
+  flex: 0 0 auto;
+}
+.deck-file-icon .md-ico { --md-ico: 15px; }
+.my-decks-table td[data-label="Title"] { font-weight: 600; }
+.my-decks-table tr.is-current-local-deck .deck-file-icon { color: var(--accent); }
+
+/* Tiles: a folder is tinted with a tab of accent along its top edge; a file
+   keeps the neutral card. */
+.folder-tile {
+  background: color-mix(in srgb, var(--accent) 9%, var(--card));
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--line));
+  box-shadow: inset 0 3px 0 var(--accent);
+}
+.folder-tile-icon .md-ico { --md-ico: 22px; }
+.deck-tile-title { font-weight: 700; }
+.deck-tile-title .deck-file-icon { margin-right: 6px; }
+.folder-tile:hover {
+  box-shadow: inset 0 3px 0 var(--accent), 0 3px 12px color-mix(in srgb, var(--accent) 12%, transparent);
+}

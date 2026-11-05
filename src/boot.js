@@ -15,6 +15,7 @@ import { deckStorageKey, themeStorageKey } from "./core/constants.js?v=__BUILD__
 import { warmDeferredLibraries } from "./core/lib-loader.js?v=__BUILD__";
 import { state } from "./core/state.js?v=__BUILD__";
 import { discardIndexBatch, pruneOrphanedDeckSnapshots, readLocalDeckIndex, runEscapedMathRepair } from "./library/local-library.js?v=__BUILD__";
+import { FOLDER_SYNC_KEY, KNOWN_FOLDERS_KEY } from "./library/folders.js?v=__BUILD__";
 import { discardNotesEditingForDeckSwap, runDeckSwapHooks } from "./notes/notes-view.js?v=__BUILD__";
 import { forgetAllReadingPositions } from "./notes/reading-position.js?v=__BUILD__";
 import { forgetAllReadingStats } from "./stats/reading-stats-store.js?v=__BUILD__";
@@ -166,6 +167,11 @@ export async function resetLocalLibrary() {
   // they are deck ids and a mode — but they describe one account's library and
   // have no business outliving it on a shared device.
   forgetAllDeckTabs();
+  // The empty folders of the previous account's library. They sync now
+  // (src/cloud/folder-sync.js), so leaving them would upload one account's
+  // folders into the next one's My Files.
+  localStorage.removeItem(KNOWN_FOLDERS_KEY);
+  localStorage.removeItem(FOLDER_SYNC_KEY);
   // A signed storage URL is a bearer token for one account's private objects,
   // and the bag survives a reload by design (see SIGNED_URL_CACHE_KEY). Leaving
   // it behind on an account switch or a sign-out would leave the previous
