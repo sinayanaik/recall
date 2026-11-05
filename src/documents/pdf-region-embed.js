@@ -18,7 +18,7 @@ import { ensurePdfJs, openPdfDocument } from "../core/lib-loader.js?v=__BUILD__"
 import { centerDiagramContent, openDiagramModal } from "../render/diagram-zoom.js?v=__BUILD__";
 import { DOC_SLOT_DOC, docSlotMeta, documentStoreKey, recordDocSlot } from "./doc-slot.js?v=__BUILD__";
 import { deckPdfById, PDF_PRIMARY_ID, pdfStoreKey, recordPdfId } from "./pdf-multi.js?v=__BUILD__";
-import { drawRegionBlocks, mountRegionBlockLayer, paintRegionMarks, rasteriseRegionBlocks, regionAnnotationStamp, regionBlocksInBox, regionMarksOnPage } from "./pdf-region-marks.js?v=__BUILD__";
+import { drawRegionBlocks, mountRegionBlockLayer, paintRegionMarks, rasteriseRegionBlocks, regionAnnotationStamp, regionBlocksInBox, regionMarksOnPage, regionRichShapeTexts, shapeTextRasterIds } from "./pdf-region-marks.js?v=__BUILD__";
 import { getDocument } from "./pdf-store.js?v=__BUILD__";
 import { buildTextLayer, canvasOutputScale, clampScale, currentPdfDocument, keptPagePictureFor, openRenderDocumentFor, PDF_MAX_SCALE, whenPageDrawsIdle } from "./pdf-view.js?v=__BUILD__";
 import { composePagePicture, renderPageBitmap } from "./pdf-render-worker.js?v=__BUILD__";
@@ -291,7 +291,10 @@ function blobDataUrl(blob) {
 }
 
 async function paintRegionImageFromKept(record, rect, pageNumber, source, width) {
-  if (regionBlocksInBox(source, pageNumber, rect).length) return null;
+  // A kept picture is composed from recorded canvas operations alone, and a
+  // block or a text box whose words are markdown is a rasterised node — so
+  // either sends the picture down the drawn path below, which can carry both.
+  if (regionBlocksInBox(source, pageNumber, rect).length || regionRichShapeTexts(source, pageNumber, rect).length) return null;
   const kept = await keptPagePictureFor(source.slot, source.pdfId, pageNumber);
   if (!kept) return null;
   const { picture, blob, page } = kept;
@@ -382,11 +385,13 @@ async function paintRegionImage(record, rect, pageNumber, source, width) {
   // stands in for its stored copy, which may be a stroke behind it, and is
   // never left out: the page under a margin note is blank paper, and without
   // the mark it would be pictured as an empty white box.
+  // Rasterised FIRST, so the marks can be told which text boxes' words are in
+  // the rasters (rendered markdown) and must not also be printed plain.
+  const { rasters } = await rasteriseRegionBlocks(page, source, pageNumber, rect, scale * outputScale);
   paintRegionMarks(ctx, paintViewport, regionMarksOnPage(source, pageNumber, {
     excludeId: record.kind === "area" ? record.id : null,
     stand: record.kind === "ink" ? record : null
-  }));
-  const { rasters } = await rasteriseRegionBlocks(page, source, pageNumber, rect, scale * outputScale);
+  }), { skipTextIds: shapeTextRasterIds(rasters) });
   drawRegionBlocks(ctx, paintViewport, rasters);
   return canvasDataUrl(canvas);
 }
@@ -426,11 +431,13 @@ async function paintRegionImageInWorker(record, rect, pageNumber, source, width,
   const ctx = canvas.getContext("2d", { alpha: false });
   ctx.drawImage(bitmap, 0, 0);
   bitmap.close();
+  // Rasterised FIRST, so the marks can be told which text boxes' words are in
+  // the rasters (rendered markdown) and must not also be printed plain.
+  const { rasters } = await rasteriseRegionBlocks(page, source, pageNumber, rect, scale * outputScale);
   paintRegionMarks(ctx, paintViewport, regionMarksOnPage(source, pageNumber, {
     excludeId: record.kind === "area" ? record.id : null,
     stand: record.kind === "ink" ? record : null
-  }));
-  const { rasters } = await rasteriseRegionBlocks(page, source, pageNumber, rect, scale * outputScale);
+  }), { skipTextIds: shapeTextRasterIds(rasters) });
   drawRegionBlocks(ctx, paintViewport, rasters);
   return canvasDataUrl(canvas);
 }
@@ -624,8 +631,8 @@ export async function renderRegionCrop(page, rect, scale, source, { excludeId = 
   ctx.fillStyle = "#ffffff";
   ctx.fillRect(0, 0, crop.width, crop.height);
   await page.render({ canvasContext: ctx, viewport: cropViewport }).promise;
-  paintRegionMarks(ctx, cropViewport, regionMarksOnPage(source, page.pageNumber, { excludeId, excludeRect }));
   const { rasters, failed } = await rasteriseRegionBlocks(page, source, page.pageNumber, rect, scale);
+  paintRegionMarks(ctx, cropViewport, regionMarksOnPage(source, page.pageNumber, { excludeId, excludeRect }), { skipTextIds: shapeTextRasterIds(rasters) });
   drawRegionBlocks(ctx, cropViewport, rasters);
   crop.failedBlocks = failed;
   return crop;
@@ -809,7 +816,12 @@ export async function mountPdfRegionEmbed(img, { resizable = false } = {}) {
     // composited onto the same canvas the PDF itself just rendered to, less the
     // frame of the region this embed was made from (see pdf-region-marks.js).
     const source = { slot: DOC_SLOT_DOC, pdfId, storeKey, pdfMeta };
-    paintRegionMarks(ctx, paintViewport, regionMarksOnPage(source, parsed.page, { excludeRect: parsed.rect }));
+    // A text box whose words are markdown is shown as live DOM over the page
+    // by mountRegionBlockLayer below, like a block — so the canvas draws its
+    // box and fill but not a plain copy of its words.
+    paintRegionMarks(ctx, paintViewport, regionMarksOnPage(source, parsed.page, { excludeRect: parsed.rect }), {
+      skipTextIds: new Set(regionRichShapeTexts(source, parsed.page, parsed.rect).map(({ record }) => record.id))
+    });
 
     // Real, positioned, selectable text — the exact function the Document
     // surface itself renders every page's text layer with. Nothing here is

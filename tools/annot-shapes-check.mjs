@@ -60,14 +60,58 @@ try {
     if (S.normalizeShape({ type: "rect", p: [[0, 0], ["x", 1]] }) !== null) return "a non-numeric point was accepted";
     return true;
   });
-  must("every field is clamped to what the controls can set", () => {
+  must("every field is brought to something drawable; sizes are NOT capped", () => {
     const s = S.normalizeShape({ type: "arrow", p: [[0, 0], [10, 10]], width: 999, opacity: 0, dash: "wiggly", heads: ["spike", "dot"], stroke: "red", fill: "#ABC" });
-    if (s.width !== S.SHAPE_WIDTH_RANGE.max) return `width ${s.width}`;
+    if (s.width !== 999) return `width ${s.width} (a typed width must be kept)`;
     if (s.opacity !== 0.1) return `opacity ${s.opacity}`;
     if (s.dash !== "solid") return `dash ${s.dash}`;
     if (s.heads.join() !== "none,dot") return `heads ${s.heads}`;
     if (s.stroke !== S.SHAPE_DEFAULTS.stroke) return `stroke ${s.stroke}`;
     if (s.fill !== "#aabbcc") return `fill ${s.fill}`;
+    return true;
+  });
+  must("a type size is any positive number — tiny, huge — and nothing else", () => {
+    const at = (size) => S.normalizeShape({ type: "text", p: [[0, 0], [10, 10]], font: { size } }).font.size;
+    for (const size of [0.5, 3, 200, 5000, 123456]) if (at(size) !== size) return `size ${size} became ${at(size)}`;
+    for (const bad of [0, -4, "abc", NaN, Infinity, null]) {
+      if (at(bad) !== S.SHAPE_DEFAULTS.font.size) return `size ${String(bad)} became ${at(bad)}`;
+    }
+    const w = (width) => S.normalizeShape({ type: "rect", p: [[0, 0], [10, 10]], width }).width;
+    if (w(0.05) !== 0.05 || w(60) !== 60) return `widths ${w(0.05)}, ${w(60)}`;
+    if (w(0) !== S.SHAPE_DEFAULTS.width || w(-2) !== S.SHAPE_DEFAULTS.width) return "a zero or negative width was kept";
+    return true;
+  });
+  must("typed text: Enter is a new line, but not inside code or display maths", () => {
+    const md = S.typedTextMarkdown;
+    if (md("a\nb") !== "a  \nb") return JSON.stringify(md("a\nb"));
+    if (md("a\n\nb") !== "a\n\nb") return "a blank line grew a hard break";
+    if (md("a") !== "a" || md("") !== "") return "a single line changed";
+    if (md("a  \nb") !== "a  \nb") return "an existing hard break was doubled";
+    const code = "```\nx = 1\ny = 2\n```\nafter";
+    if (md(code) !== code) return JSON.stringify(md(code));
+    const maths = "$$\na\nb\n$$\nc\nd";
+    if (md(maths) !== "$$\na\nb\n$$\nc  \nd") return JSON.stringify(md(maths));
+    if (md("a\r\nb") !== "a  \nb") return "CRLF was not read as one break";
+    return true;
+  });
+  must("markdown, reduced to its words for the renderers that cannot draw it", () => {
+    const plain = S.markdownToPlainText;
+    const cases = [
+      ["**bold** and _it_", "bold and it"],
+      ["# Title", "Title"],
+      ["see [the paper](https://x.y) now", "see the paper now"],
+      ["![fig](a.png)", "fig"],
+      ["`code`", "code"],
+      ["- one\n- two", "• one\n• two"],
+      ["```js\nlet a = 1;\n```", "let a = 1;"],
+      ["> quoted", "quoted"],
+      ["plain line\nsecond", "plain line\nsecond"],
+      ["2 * 3 * 4", "2 * 3 * 4"]
+    ];
+    for (const [input, want] of cases) {
+      const got = plain(input);
+      if (got !== want) return `${JSON.stringify(input)} → ${JSON.stringify(got)}, wanted ${JSON.stringify(want)}`;
+    }
     return true;
   });
   must("a callout keeps at most four points; a sticky one", () => {

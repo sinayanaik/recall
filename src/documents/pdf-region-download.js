@@ -34,7 +34,7 @@ import { inkCentrelinePath, inkHighlighterWidth, inkStrokeOutline, resolveInkPai
 import { isHighlighterToken } from "../format/ink-colors.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
 import { affordableCropScale, regionDocumentBlob, regionImageRect, regionPdfPage, regionSource, renderRegionCrop } from "./pdf-region-embed.js?v=__BUILD__";
-import { AREA_FILL_ALPHA, CUSTOM_HIGHLIGHT_ALPHA, blockPdfRect, highlightAlpha, highlightHex, rasteriseRegionBlocks, regionMarksOnPage } from "./pdf-region-marks.js?v=__BUILD__";
+import { AREA_FILL_ALPHA, CUSTOM_HIGHLIGHT_ALPHA, blockPdfRect, highlightAlpha, highlightHex, rasteriseRegionBlocks, regionMarksOnPage, shapeTextRasterIds } from "./pdf-region-marks.js?v=__BUILD__";
 
 // Print resolution: 300 dots per inch of the paper, PDF points being 1/72in.
 // affordableCropScale lowers it for a box so large it would not fit the pixel
@@ -307,7 +307,9 @@ export async function cropPdfToRegion(paperBytes, pageNumber, rect, { marks = nu
     drawHighlights(page, marks);
     drawInk(page, marks);
     // Shapes over the ink, as the page stacks them (src/documents/pdf-lib-shapes.js).
-    await drawShapesWithPdfLib(out, page, marks.shapes);
+    // ...less the words of a text box that are markdown, which come in the
+    // rasters below rendered (src/documents/pdf-region-marks.js).
+    await drawShapesWithPdfLib(out, page, marks.shapes, { skipTextIds: shapeTextRasterIds(rasters) });
   }
   if (rasters.length && pdfPage) await drawBlocks(out, page, pdfPage, rasters);
   out.setTitle(`Page ${pageNumber} region`);

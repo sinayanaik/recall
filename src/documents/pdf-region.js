@@ -53,7 +53,7 @@
 // cancels. It also goes by itself the moment the reader leaves the paper —
 // another tab, another document, or picking up the pen bar's own tools.
 
-import { PDF_BLOCK_CLASS } from "../core/constants.js?v=__BUILD__";
+import { PDF_PICKUP_SELECTOR } from "../core/constants.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { inkPenIsDown, setInkPenDown } from "../core/gesture.js?v=__BUILD__";
 import { MARK_HIGHLIGHT_DEFAULT } from "../format/highlight-colors.js?v=__BUILD__";
@@ -509,7 +509,8 @@ export function initDocumentRegionSelect() {
     if (event.button !== undefined && event.button !== 0) return;
     // A press on a markdown block belongs to the block — picked up, dragged,
     // edited — exactly as it is with the mode off.
-    if (event.target?.closest?.(`.${PDF_BLOCK_CLASS}`)) return;
+    // ...and so does the text typed with the Text button (PDF_PICKUP_SELECTOR).
+    if (event.target?.closest?.(PDF_PICKUP_SELECTOR)) return;
     // The menu of the last region closes before anything is measured: it sits
     // over the highlight it belongs to, which is where a reader is likely to
     // drag next.

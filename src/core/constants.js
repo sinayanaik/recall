@@ -69,3 +69,16 @@ export const PDF_INK_HL_LAYER_CLASS = "pdf-ink-hl-layer";
 // — a pen press that lands on a block belongs to the block, not to the paper.
 export const PDF_BLOCK_LAYER_CLASS = "pdf-block-layer";
 export const PDF_BLOCK_CLASS = "pdf-block";
+
+// ...and the words typed with the Text button (a text shape's box, painted by
+// src/documents/pdf-shapes.js), which are picked up and dragged by a press on
+// them exactly as a block is — with any pointer, no tool armed.
+export const PDF_SHAPE_TEXT_CLASS = "pdf-shape-text";
+
+// Everything on a page that a press PICKS UP rather than writes, selects words
+// or marks a region under. One selector for every module that has to stand down
+// for such a press — the pen (src/documents/pdf-ink.js), the selection
+// controller (src/notes/touch-selection.js) and region select
+// (src/documents/pdf-region.js) — so a new kind of placed thing is one edit
+// here and not a hunt through four files for the ones that forgot it.
+export const PDF_PICKUP_SELECTOR = `.${PDF_BLOCK_CLASS}, .${PDF_SHAPE_TEXT_CLASS}`;

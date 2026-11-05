@@ -103,7 +103,7 @@
 // than by dispatch order. The flag and the guard's own `press?.live` test are
 // unchanged and still carry everything else.
 
-import { PDF_BLOCK_CLASS, PDF_INK_HL_LAYER_CLASS, PDF_INK_LAYER_CLASS } from "../core/constants.js?v=__BUILD__";
+import { PDF_INK_HL_LAYER_CLASS, PDF_INK_LAYER_CLASS, PDF_PICKUP_SELECTOR, PDF_SHAPE_TEXT_CLASS } from "../core/constants.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { inkPenIsDown, noteInkContact, noteInkStrokeCommitted, setInkPenDown, setPenTextMode } from "../core/gesture.js?v=__BUILD__";
 import { QUAD_GEOMETRY_VERSION, documentHighlightAtPoint, documentInkMarks, freshDocumentHighlightId, setDocumentInkForPage } from "./pdf-highlights.js?v=__BUILD__";
@@ -619,7 +619,15 @@ function beginInkPress(event) {
   // before anything else on the page, so it has to be able to stand down without
   // a dependency on what it is standing down FOR. Without this a pen aimed at a
   // block's drag bar moved the block and drew a stroke across the page.
-  if (event.target?.closest?.(`.${PDF_BLOCK_CLASS}`)) return false;
+  // The words typed with the Text button are picked up the same way, so the
+  // same selector covers both (PDF_PICKUP_SELECTOR, src/core/constants.js) —
+  // except for the ERASER on typed text: those words used to let every press
+  // through to the paper, and rubbing out across a page has to keep working
+  // where a stroke happens to start on a label (src/documents/pdf-shapes.js
+  // rubs the label itself out from the same press).
+  const pickup = event.target?.closest?.(PDF_PICKUP_SELECTOR);
+  const erasing = isEraserEvent(event) || inkTool() === "eraser";
+  if (pickup && !(erasing && pickup.classList.contains(PDF_SHAPE_TEXT_CLASS))) return false;
   const pageEl = inkPageAtPoint(event.clientX, event.clientY);
   if (!pageEl) return false;
   const page = Number(pageEl.dataset.pageNumber);
@@ -818,7 +826,7 @@ function tapInk(tap) {
   const erasing = isEraserEvent(tap.down) || inkTool() === "eraser";
   if (!erasing && (inkTool() !== "pen" || !inkSettings.tapDots)) return;
   if (tapSuppressed()) return;
-  if (tap.target?.closest?.(`${INK_TAP_PRESSES}, .${PDF_BLOCK_CLASS}`)) return;
+  if (tap.target?.closest?.(`${INK_TAP_PRESSES}, ${PDF_PICKUP_SELECTOR}`)) return;
   // The mean of the samples, not the first: a tap is a few samples a pixel or
   // two apart, and the middle of them is where the nib actually was. The
   // pressure is the firmest of them, which is what a dot pressed into the paper

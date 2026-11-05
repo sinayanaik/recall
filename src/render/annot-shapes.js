@@ -46,8 +46,10 @@ export const SHAPE_HEADS = ["none", "open", "filled", "dot", "bar"];
 export const SHAPE_DASHES = ["solid", "dash", "dot"];
 export const SHAPE_ALIGNS = ["left", "center", "right"];
 
+// The width SLIDER's travel, and nothing more: a line may be any width the
+// reader types (see positiveNumber below). Below the slider's floor or past its
+// ceiling the slider simply rests at its end and the number box says the truth.
 export const SHAPE_WIDTH_RANGE = Object.freeze({ min: 0.3, max: 24 });
-export const SHAPE_FONT_RANGE = Object.freeze({ min: 5, max: 96 });
 export const SHAPE_FILL_OPACITY_DEFAULT = 0.25;
 
 // A sticky note's icon, in points: big enough to find on a page, small enough
@@ -71,6 +73,18 @@ export const SHAPE_DEFAULTS = Object.freeze({
   text: "",
   font: Object.freeze({ size: 11, bold: false, align: "left", color: null })
 });
+
+// ── Sizes are the reader's, uncapped ──────────────────────────────────────
+//
+// A type size and a line width used to be clamped to 5–96pt and 0.3–24pt —
+// "caps in the text sizings which I don't want, I want complete freedom on
+// values". So the only judgement left is that a size is a POSITIVE, FINITE
+// number: 0, a negative, NaN and Infinity are not a size anybody can draw, and
+// fall back to the default rather than to an invisible or unbounded shape.
+export function positiveNumber(value, fallback) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
 
 function clampNumber(value, min, max, fallback) {
   const n = Number(value);
@@ -115,7 +129,7 @@ export function normalizeShape(shape) {
     type,
     p: points.slice(0, most),
     stroke: normalizeShapeHex(shape.stroke) || SHAPE_DEFAULTS.stroke,
-    width: clampNumber(shape.width, SHAPE_WIDTH_RANGE.min, SHAPE_WIDTH_RANGE.max, SHAPE_DEFAULTS.width),
+    width: positiveNumber(shape.width, SHAPE_DEFAULTS.width),
     opacity: Math.round(clampNumber(shape.opacity, 0.1, 1, 1) * 100) / 100,
     dash: SHAPE_DASHES.includes(shape.dash) ? shape.dash : "solid",
     fill,
@@ -126,7 +140,7 @@ export function normalizeShape(shape) {
     // line and its lines break only where the reader pressed Enter.
     fit: shape.type === "text" && shape.fit === true,
     font: {
-      size: clampNumber(font.size, SHAPE_FONT_RANGE.min, SHAPE_FONT_RANGE.max, SHAPE_DEFAULTS.font.size),
+      size: positiveNumber(font.size, SHAPE_DEFAULTS.font.size),
       bold: font.bold === true,
       align: SHAPE_ALIGNS.includes(font.align) ? font.align : "left",
       color: normalizeShapeHex(font.color)
@@ -585,7 +599,14 @@ export function wrapShapeText(text, maxWidth, measure) {
 // and `scale` is canvas pixels per point. Text is drawn with fillText, wrapped
 // to its box; on a rotated page it is drawn upright in the box's screen
 // rectangle, as the live page shows it.
-export function paintShapeOnCanvas(ctx, shape, toPoint, scale = 1) {
+//
+// The words are MARKDOWN (see typedTextMarkdown). A canvas cannot draw that, so
+// a caller that can — the region pictures and the print export, through
+// html-to-image (src/documents/pdf-region-marks.js) — passes `skipText` and
+// lays the rendered words over the box itself; without it, this draws the
+// words with their syntax taken off (markdownToPlainText), which is never worse
+// than the plain text every box held before markdown.
+export function paintShapeOnCanvas(ctx, shape, toPoint, scale = 1, { skipText = false } = {}) {
   const prims = shapePrimitives(shape);
   const polys = [];
   prims.forEach((prim) => {
@@ -593,7 +614,7 @@ export function paintShapeOnCanvas(ctx, shape, toPoint, scale = 1) {
     else polys.push(prim);
   });
   polys.forEach((prim) => {
-    if (prim.kind === "text") { paintShapeText(ctx, prim, toPoint, scale); return; }
+    if (prim.kind === "text") { if (!skipText) paintShapeText(ctx, prim, toPoint, scale); return; }
     const pts = prim.pts.map(toPoint);
     if (!pts.length) return;
     ctx.save();
@@ -618,8 +639,18 @@ export function paintShapeOnCanvas(ctx, shape, toPoint, scale = 1) {
   });
 }
 
+// Only the words of a callout or a text box, plain — the fallback a picture
+// draws when the rendered markdown could not be made
+// (src/documents/pdf-region-marks.js, plainShapeTextRaster).
+export function paintShapeTextOnCanvas(ctx, shape, toPoint, scale = 1) {
+  shapePrimitives(shape).forEach((prim) => {
+    if (prim.kind === "text") paintShapeText(ctx, prim, toPoint, scale);
+  });
+}
+
 function paintShapeText(ctx, prim, toPoint, scale) {
   if (!prim.text || typeof ctx.fillText !== "function") return;
+  const words = markdownToPlainText(prim.text);
   const a = toPoint([prim.rect[0], prim.rect[3]]);
   const b = toPoint([prim.rect[2], prim.rect[1]]);
   const left = Math.min(a[0], b[0]);
@@ -631,8 +662,8 @@ function paintShapeText(ctx, prim, toPoint, scale) {
   ctx.fillStyle = prim.color;
   ctx.font = `${prim.bold ? "700" : "400"} ${size}px system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif`;
   ctx.textBaseline = "top";
-  const lines = prim.fit ? String(prim.text).split("\n")
-    : wrapShapeText(prim.text, Math.max(1, width - pad * 2), (t) => ctx.measureText(t).width);
+  const lines = prim.fit ? words.split("\n")
+    : wrapShapeText(words, Math.max(1, width - pad * 2), (t) => ctx.measureText(t).width);
   const lineHeight = size * 1.3;
   lines.forEach((text, i) => {
     let x = left + pad;
@@ -642,6 +673,97 @@ function paintShapeText(ctx, prim, toPoint, scale) {
     ctx.fillText(text, x, top + pad + i * lineHeight);
   });
   ctx.restore();
+}
+
+// ── Typed text is markdown ────────────────────────────────────────────────
+//
+// A text box or a callout holds MARKDOWN — the same as a note — and is shown
+// rendered everywhere it is drawn (src/documents/pdf-shape-markdown.js).
+//
+// One rule is bent on the way in: in markdown a single line break is a space,
+// and on this surface Enter has always meant "a new line" — every text box typed
+// before markdown existed was written that way, and a reader typing a list of
+// three words on three lines expects three lines. So a lone newline becomes a
+// hard break ("  \n"), which is what marked's `breaks` option does, applied
+// here rather than globally so the Notes panel keeps its own rules.
+//
+// Left alone inside fenced code (``` / ~~~) and display maths ($$ … $$), where a
+// trailing pair of spaces would be part of the code or the formula.
+export function typedTextMarkdown(text) {
+  const lines = String(text || "").replace(/\r\n?/g, "\n").split("\n");
+  let fence = null;
+  let maths = false;
+  return lines.map((line, i) => {
+    const trimmed = line.trim();
+    const opener = /^(```+|~~~+)/.exec(trimmed);
+    if (fence) {
+      if (opener && opener[1][0] === fence[0] && opener[1].length >= fence.length) fence = null;
+      return line;
+    }
+    if (opener) { fence = opener[1]; return line; }
+    if (trimmed === "$$" || (trimmed.startsWith("$$") && !trimmed.slice(2).includes("$$"))) {
+      maths = !maths;
+      return line;
+    }
+    if (maths) {
+      if (trimmed.endsWith("$$")) maths = false;
+      return line;
+    }
+    const next = lines[i + 1];
+    // A hard break only BETWEEN two lines of text: before a blank line the
+    // paragraph is ending anyway, and on the last line there is nothing to break.
+    if (next === undefined || !trimmed || !next.trim() || / {2,}$/.test(line) || line.endsWith("\\")) return line;
+    return `${line}  `;
+  }).join("\n");
+}
+
+// The words of a piece of markdown with its syntax taken off — for the two
+// renderers that cannot carry rich text at all: a real PDF annotation
+// (src/documents/pdf-annot-export.js) and the vector text drawn by pdf-lib
+// (src/documents/pdf-lib-shapes.js), and the canvas fallback when a rendered
+// picture of the words could not be made. Line structure is kept; emphasis,
+// headings, links, images and fences are reduced to their words.
+export function markdownToPlainText(text) {
+  const out = [];
+  let fence = null;
+  String(text || "").replace(/\r\n?/g, "\n").split("\n").forEach((line) => {
+    const opener = /^\s*(```+|~~~+)/.exec(line);
+    if (fence) {
+      if (opener && opener[1][0] === fence[0]) { fence = null; return; }
+      out.push(line);
+      return;
+    }
+    if (opener) { fence = opener[1]; return; }
+    let t = line
+      .replace(/^\s{0,3}#{1,6}\s+/, "")
+      .replace(/^\s{0,3}>\s?/, "")
+      .replace(/^(\s*)[-*+]\s+\[[ xX]\]\s+/, "$1")
+      .replace(/^(\s*)[-*+]\s+/, "$1• ")
+      .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
+      .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+      .replace(/`([^`]*)`/g, "$1")
+      .replace(/(\*\*|__)(?=\S)([\s\S]*?\S)\1/g, "$2")
+      .replace(/(\*|_)(?=\S)([\s\S]*?\S)\1/g, "$2")
+      .replace(/~~(?=\S)([\s\S]*?\S)~~/g, "$1")
+      .replace(/<[^>]+>/g, "")
+      .replace(/\\([\\`*_{}[\]()#+\-.!~|>])/g, "$1");
+    if (/^\s{0,3}([-*_])(\s*\1){2,}\s*$/.test(line)) t = "";
+    out.push(t.replace(/\s+$/, ""));
+  });
+  return out.join("\n");
+}
+
+// Whether a box's words need the markdown renderer at all, or read the same as
+// the plain text they are. Most labels typed on a page — "see Fig. 3", "sign
+// error here" — have no syntax in them, and those are drawn exactly as they
+// always were: synchronously, as text, with no render pass to wait for and no
+// picture to rasterise in an export. Anything that markdown would change, or
+// maths, HTML or an escape, goes through the renderer.
+export function shapeTextNeedsRendering(text) {
+  const value = String(text || "");
+  if (!value.trim()) return false;
+  if (/\$|\\|<[a-zA-Z!/]|^\s*\|/m.test(value)) return true;
+  return markdownToPlainText(value) !== value.replace(/\r\n?/g, "\n").split("\n").map((line) => line.replace(/\s+$/, "")).join("\n");
 }
 
 // A word for the shape, for the Highlights pane and the mark's label.

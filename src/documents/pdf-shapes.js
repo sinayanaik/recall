@@ -48,11 +48,14 @@ import { setInkPenDown } from "../core/gesture.js?v=__BUILD__";
 import { inkFilingColor } from "../format/ink-colors.js?v=__BUILD__";
 import { isEraserEvent } from "../render/ink-engine.js?v=__BUILD__";
 import {
-  SHAPE_DEFAULTS, SHAPE_HEADS, SHAPE_TEXT_PAD, SHAPE_TYPES, moveShapeHandle, normalizeShape, normalizeShapeHex,
+  SHAPE_DEFAULTS, SHAPE_HEADS, SHAPE_TYPES, moveShapeHandle, normalizeShape, normalizeShapeHex,
   polyPathData, shapeBounds, shapeCrossesSegment, shapeDashArray, shapeFromDrag, shapeHandles, shapeHitsPoint, shapeLabel, shapePrimitives,
   shapeTypeDefaults, snapShapeAngle, stickyIconPolys, translateShape
 } from "../render/annot-shapes.js?v=__BUILD__";
 import { inkPreferences, writeInkPreferences } from "../storage/ink-prefs.js?v=__BUILD__";
+import { PDF_SHAPE_TEXT_CLASS } from "../core/constants.js?v=__BUILD__";
+import { mountShapeTextBody, setShapeTextRenderedHandler, shapeTextBodyState, styleShapeTextBox } from "./pdf-shape-markdown.js?v=__BUILD__";
+import { notePdfGesture } from "./pdf-timing.js?v=__BUILD__";
 import {
   QUAD_GEOMETRY_VERSION, documentHighlightById, documentHighlights, freshDocumentHighlightId, reinstateDocumentHighlight,
   removeDocumentHighlight, setDocumentShapePainter, updateDocumentHighlight
@@ -457,23 +460,17 @@ function buildShapeNodes(record, shape, viewport, { preview = false } = {}) {
     if (prim.kind === "poly") group.appendChild(svgPathFor(prim, toPoint, scale));
     else if (prim.kind === "sticky") stickyIconPolys(prim.rect, prim.color).forEach((poly) => group.appendChild(svgPathFor(poly, toPoint, scale)));
     else if (prim.kind === "text") {
+      // The words, as MARKDOWN (src/documents/pdf-shape-markdown.js): styled
+      // from the shape's font by the same function the static copy in a
+      // picture uses, and filled with a body rendered once per text — adopted
+      // from the cache on every repaint after the first, so a drag moves a
+      // rendered node and renders nothing.
       const box = document.createElement("div");
-      box.className = "pdf-shape-text";
+      box.className = PDF_SHAPE_TEXT_CLASS;
       if (record?.id) box.dataset.highlightId = record.id;
-      const at = screenRect(viewport, prim.rect);
-      box.style.left = `${at.left}px`;
-      box.style.top = `${at.top}px`;
-      // Typewriter text is as wide as its longest line, on screen as in the
-      // editor it was typed in, so the two cannot wrap differently.
-      if (prim.fit) box.dataset.fit = "";
-      else box.style.width = `${at.width}px`;
-      box.style.minHeight = `${at.height}px`;
-      box.style.padding = `${SHAPE_TEXT_PAD * scale}px`;
-      box.style.fontSize = `${prim.size * scale}px`;
-      box.style.fontWeight = prim.bold ? "700" : "400";
-      box.style.textAlign = prim.align;
-      box.style.color = prim.color;
-      box.textContent = prim.text;
+      box.dataset.shapeType = shape.type;
+      styleShapeTextBox(box, prim, viewport);
+      mountShapeTextBody(box, preview ? null : record?.id, prim.text);
       boxes.push(box);
     }
   });
@@ -547,6 +544,99 @@ export function paintDocumentShapes(pageNumber, { preview = null } = {}) {
     buildHandles(layer, viewport, { ...selected, shape }, put);
   }
   shapePaintedHook(pageNumber, layer);
+  // Never mid-drag: the box being dragged is a preview, and measuring every
+  // frame is a forced layout per frame for an answer the drop will repeat.
+  if (!shapePress) scheduleShapeTextFit(pageNumber);
+}
+
+// ── A text box is as big as its rendered words ─────────────────────────────
+//
+// The record stores the box's rectangle, and that rectangle is what a press is
+// hit-tested against (shapeHitsPoint), what the Highlights pane crops to and
+// what a picture or an export draws the words into. For plain text it was set
+// once, from the editor the words were typed in, and the box shows the same
+// words the same way — so they agree. RENDERED markdown does not: "**bold**"
+// shows four characters narrower, a heading or a formula a different height. So
+// once a box's markdown has rendered, its size is measured and, if it disagrees
+// with the record by more than a point, written back — typewriter text to its
+// exact size (top-left fixed, as the reader tapped it), a sized box only ever
+// downwards, never cropping what the reader chose.
+//
+// Not an undo step: this is the record agreeing with its own words, not a
+// change the reader made (the same rule as queueFit in pdf-blocks.js). Batched
+// per page and a frame away, because it is called from inside a paint and the
+// write repaints.
+const SHAPE_TEXT_FIT_SLACK = 1;
+
+const shapeTextFitPages = new Set();
+let shapeTextFitFrame = 0;
+
+function scheduleShapeTextFit(pageNumber) {
+  if (!pageNumber) return;
+  shapeTextFitPages.add(Number(pageNumber));
+  if (shapeTextFitFrame) return;
+  shapeTextFitFrame = requestAnimationFrame(() => {
+    shapeTextFitFrame = 0;
+    const pages = [...shapeTextFitPages];
+    shapeTextFitPages.clear();
+    pages.forEach(fitShapeTextBoxes);
+  });
+}
+
+setShapeTextRenderedHandler((id) => {
+  const record = documentHighlightById(id);
+  if (record) scheduleShapeTextFit(Number(record.page));
+});
+
+function fitShapeTextBoxes(pageNumber) {
+  if (shapePress) return;
+  const layer = shapeLayer(pageNumber, false);
+  const viewport = pdfPageViewport(pageNumber);
+  const pageEl = pdfPageElement(pageNumber);
+  if (!layer || !viewport || !pageEl) return;
+  const pageBox = pageEl.getBoundingClientRect();
+  if (!pageBox.width || !pageBox.height) return;
+  const writes = [];
+  layer.querySelectorAll(`:scope > .${PDF_SHAPE_TEXT_CLASS}[data-highlight-id]`).forEach((box) => {
+    const id = box.dataset.highlightId;
+    if (!id || id === editingShapeId) return;
+    // Only a box whose markdown has FINISHED: a plain one keeps the size it was
+    // typed at (exactly as before markdown), and a pending one is showing a
+    // placeholder that is about to be replaced.
+    const state = shapeTextBodyState(id);
+    if (state !== "rendered" && state !== "failed") return;
+    const record = documentHighlightById(id);
+    const shape = normalizeShape(record?.shape);
+    if (!shape || (shape.type !== "text" && shape.type !== "callout")) return;
+    const next = shapeFittedToBox(shape, box.getBoundingClientRect(), pageBox, viewport);
+    if (next) writes.push({ id, shape: next });
+  });
+  writes.forEach(({ id, shape }) => {
+    notePdfGesture("text", "fitted to its words", { id, page: pageNumber });
+    updateShape(id, shape, { undo: false });
+  });
+}
+
+// The shape with its box brought to the measured one, or null when they agree.
+function shapeFittedToBox(shape, measured, pageBox, viewport) {
+  if (!measured.width || !measured.height) return null;
+  const [x0, y0, x1, y1] = [Math.min(shape.p[0][0], shape.p[1][0]), Math.min(shape.p[0][1], shape.p[1][1]),
+    Math.max(shape.p[0][0], shape.p[1][0]), Math.max(shape.p[0][1], shape.p[1][1])];
+  if (shape.fit) {
+    const [ax, ay] = viewport.convertToPdfPoint(measured.left - pageBox.left, measured.top - pageBox.top);
+    const [bx, by] = viewport.convertToPdfPoint(measured.right - pageBox.left, measured.bottom - pageBox.top);
+    const fitted = [Math.min(ax, bx), Math.min(ay, by), Math.max(ax, bx), Math.max(ay, by)];
+    const same = [x0, y0, x1, y1].every((value, i) => Math.abs(value - fitted[i]) <= SHAPE_TEXT_FIT_SLACK);
+    if (same) return null;
+    return { ...shape, p: [[fitted[0], fitted[1]], [fitted[2], fitted[3]], ...shape.p.slice(2)] };
+  }
+  const needed = measured.height / (viewport.scale || 1);
+  if (needed <= (y1 - y0) + SHAPE_TEXT_FIT_SLACK) return null;
+  // Down, never up: the box's top edge is where the reader put it.
+  const p = shape.p.map((point) => point.slice());
+  const lowIndex = p[0][1] <= p[1][1] ? 0 : 1;
+  p[lowIndex][1] = y1 - needed;
+  return { ...shape, p };
 }
 
 let shapePaintedHook = () => {};
@@ -639,6 +729,13 @@ export function setEditingShapeId(id) {
   shapeChangedHandler();
 }
 
+// Which shape's words are open in the text editor, if any — said by the
+// editor (setEditingShapeId) before its own state is set up, so this is the
+// earliest truthful answer to "is the reader typing in a shape".
+export function editingShapeTextId() {
+  return editingShapeId;
+}
+
 export function isShapeToolArmed() {
   return inkTool() === "shape";
 }
@@ -685,6 +782,10 @@ function fingerPlacesShape(event) {
 
 function onShapeFingerDown(event) {
   shapeFingerTap = null;
+  // A press that picked a text box up (onShapePointerDown, which runs first)
+  // is that gesture's — its tap is answered by onShapePointerUp, and answering
+  // it here too would open the editor twice.
+  if (shapePress) return;
   if (!fingerPlacesShape(event) || event.target?.closest?.(SHAPE_PRESS_EXCLUDED)) return;
   const pageEl = shapePageAt(event.clientX, event.clientY);
   const page = Number(pageEl?.dataset.pageNumber);
@@ -716,8 +817,51 @@ function onShapeFingerUp(event) {
   if (record) shapeOpenedHandler(record);
 }
 
+// ── Picked up with no tool armed ────────────────────────────────────────────
+//
+// "The text elements written on top of PDFs are too difficult to move once
+// written." They were: a shape answered a press only with the Shapes or Text
+// tool armed, and then only for a stylus — or a mouse with the pen's bar open —
+// so a finger could never move one, and with the tool put away nothing could.
+// The words typed with the Text button are a thing the reader PUT on the page,
+// like a text block or a picture, and they are picked up the same way: a press
+// on the box, with any pointer, whatever is armed.
+//
+//   press and drag   moves it (clamped so it cannot be lost off the page)
+//   tap              selects it — its handles, and the small Style bar
+//   tap again        types in it (a double-click, the same)
+//   a handle of the selected shape, dragged, resizes it — with any pointer too
+//
+// `.pdf-shape-text` takes the press (styles/88-annotations.css), so the press's
+// target says which box; the ink, the selection controller and region select
+// stand down for it (PDF_PICKUP_SELECTOR, src/core/constants.js). The eraser is
+// the one exception: rubbing across a box still rubs it out.
+function pickupAt(event) {
+  if (isEraserEvent(event) || inkTool() === "eraser") return null;
+  if (event.button !== undefined && event.button > 0) return null;
+  if (event.pointerType === "touch" && event.isPrimary === false) return null;
+  const box = event.target?.closest?.(`.${PDF_SHAPE_TEXT_CLASS}[data-highlight-id]:not(.is-static)`);
+  const pageEl = (box || event.target)?.closest?.(".pdf-page[data-page-number]") || null;
+  const page = Number(pageEl?.dataset.pageNumber);
+  if (!page || !el.documentView?.contains(pageEl)) return null;
+  const selected = selectedShapeRecord();
+  if (selected && Number(selected.page) === page) {
+    const handle = handleAt(selected, pageEl, event.clientX, event.clientY);
+    if (handle) return { mode: "handle", target: selected, handle, page, pageEl };
+  }
+  if (!box) return null;
+  const record = documentHighlightById(box.dataset.highlightId);
+  if (!record || record.kind !== "shape" || !normalizeShape(record.shape)) return null;
+  return { mode: "move", target: record, handle: null, page, pageEl };
+}
+
 function onShapePointerDown(event) {
   if (shapePress) return;
+  const pickup = shapeTakesPointer(event) ? null : pickupAt(event);
+  if (pickup) {
+    beginShapePress(event, pickup);
+    return;
+  }
   if (!shapeTakesPointer(event)) {
     // A press anywhere else, by anything, puts a selected shape down — unless it
     // is on the rail, whose panel is restyling it.
@@ -753,6 +897,15 @@ function onShapePointerDown(event) {
       target = hit;
     }
   }
+  beginShapePress(event, { mode, target, handle, page, pageEl, point });
+}
+
+// The press, claimed: the pointer captured, the page told a pen is down (so it
+// does not scroll or select under it), and the gesture's state set up. Shared
+// by the tool's own presses and by a pick-up with no tool (pickupAt).
+function beginShapePress(event, { mode, target = null, handle = null, page, pageEl, point = null }) {
+  const from = point || pdfPointOn(page, pageEl, event.clientX, event.clientY);
+  if (!from) return;
   event.preventDefault();
   event.stopPropagation();
   setInkPenDown(true);
@@ -760,12 +913,13 @@ function onShapePointerDown(event) {
   el.documentView?.addEventListener("touchmove", onShapeTouchMove, { passive: false });
   shapePress = {
     pointerId: event.pointerId,
+    pointerType: event.pointerType || "",
     page,
     pageEl,
     mode,
     target,
     handle,
-    from: point,
+    from,
     startX: event.clientX,
     startY: event.clientY,
     moved: false,
@@ -780,6 +934,7 @@ function onShapePointerDown(event) {
   shapePress.wasSelected = mode !== "create" && selectedShapeId === target.id;
   if (mode !== "create") selectShape(target.id);
   else if (selectedShapeId) selectShape(null);
+  if (mode !== "create") notePdfGesture("shape", `press (${mode})`, { id: target.id, pointer: shapePress.pointerType, page });
 }
 
 function onShapeTouchMove(event) {
@@ -794,7 +949,8 @@ function pressShape(drag, event) {
     return shapeFromDrag(drag.type, drag.from, point, { snap, base: newShapeBase(drag.type) });
   }
   if (drag.mode === "move") {
-    return translateShape(drag.target.shape, point[0] - drag.from[0], point[1] - drag.from[1]);
+    const [dx, dy] = clampShapeMove(drag.target.shape, drag.page, point[0] - drag.from[0], point[1] - drag.from[1]);
+    return translateShape(drag.target.shape, dx, dy);
   }
   // A line's end, with Shift, swings round its other end in 15° steps.
   const shape = drag.target.shape;
@@ -804,6 +960,26 @@ function pressShape(drag, event) {
     to = snapShapeAngle(other, point);
   }
   return moveShapeHandle(shape, drag.handle, to[0], to[1]);
+}
+
+// ── Never off the page ─────────────────────────────────────────────────────
+//
+// A box dragged past the edge of the page is gone: nothing is drawn outside the
+// page, so there is nothing left to press to bring it back. A move is held so
+// at least this many points of the shape stay on the paper.
+export const SHAPE_KEEP_ON_PAGE = 16;
+
+function clampShapeMove(shape, pageNumber, dx, dy) {
+  const viewport = pdfPageViewport(pageNumber);
+  const bounds = shapeBounds(normalizeShape(shape));
+  if (!viewport || !bounds) return [dx, dy];
+  const [vx0, vy0, vx1, vy1] = viewport.viewBox;
+  const keep = SHAPE_KEEP_ON_PAGE;
+  const clamp = (value, low, high) => (low > high ? value : Math.min(high, Math.max(low, value)));
+  return [
+    clamp(dx, (vx0 + keep) - bounds[2], (vx1 - keep) - bounds[0]),
+    clamp(dy, (vy0 + keep) - bounds[3], (vy1 - keep) - bounds[1])
+  ];
 }
 
 function onShapePointerMove(event) {
@@ -834,6 +1010,7 @@ function onShapePointerUp(event) {
   event.preventDefault();
   event.stopPropagation();
   endShapePress();
+  if (drag.mode !== "create") notePdfGesture("shape", drag.moved ? `${drag.mode === "move" ? "moved" : "reshaped"}` : "tapped", { id: drag.target?.id, pointer: drag.pointerType });
   if (drag.mode === "create") {
     // A tap makes a text box or a sticky note where it lands; for anything
     // else a tap makes nothing (and puts a selection down, above).
@@ -853,7 +1030,10 @@ function onShapePointerUp(event) {
   if (!drag.moved) {
     const type = drag.target?.shape?.type;
     // With the typewriter armed, one tap on typed text is enough to type in it.
-    if ((drag.wasSelected && (type === "callout" || type === "text")) || (type === "text" && shapeType() === "text")) {
+    // ARMED, not merely remembered: shapeType() stays "text" after Text is put
+    // down, and a press picked up with the pen in hand (pickupAt) is a select.
+    const typewriterArmed = isShapeToolArmed() && shapeType() === "text";
+    if ((drag.wasSelected && (type === "callout" || type === "text")) || (type === "text" && typewriterArmed)) {
       suppressShapeClickUntil = Date.now() + 400;
       shapeTextEditHandler(drag.target);
       return;
@@ -873,10 +1053,21 @@ function onShapePointerUp(event) {
   else paintDocumentShapes(drag.page);
 }
 
+// The browser took the pointer back — a pan won, a system gesture, the capture
+// lost. A move or a reshape that had already gone somewhere is KEPT where it
+// got to, rather than snapped back: what the reader saw under their finger is
+// where they left it, and a drag that silently undid itself is exactly "almost
+// impossible to move". A shape being drawn is dropped, as it always was.
+// Noted for ☰ → Diagnostics, because a cut-off drag is otherwise invisible.
 function onShapePointerCancel(event) {
   const drag = shapePress;
   if (!drag || event.pointerId !== drag.pointerId) return;
   endShapePress();
+  notePdfGesture("shape", "cancelled", { id: drag.target?.id, mode: drag.mode, pointer: drag.pointerType, cause: event.type, moved: drag.moved ? "yes" : "no" });
+  if (drag.mode !== "create" && drag.moved && drag.preview) {
+    suppressShapeClickUntil = Date.now() + 400;
+    if (updateShape(drag.target.id, drag.preview)) return;
+  }
   paintDocumentShapes(drag.page);
 }
 
@@ -991,7 +1182,11 @@ export function initDocumentShapes() {
   view.addEventListener("pointermove", onShapeFingerMove, { capture: true, passive: true });
   view.addEventListener("pointerup", onShapeFingerUp, { capture: true, passive: true });
   view.addEventListener("pointercancel", () => { shapeFingerTap = null; }, { capture: true, passive: true });
+  // The scroller's OWN capture, lost — not one bubbling up from inside it: a
+  // finger's press is captured implicitly by what it landed on (a text box),
+  // and taking the capture to the scroller is heard there as a lost capture.
   view.addEventListener("lostpointercapture", (event) => {
+    if (event.target !== view) return;
     if (shapePress && event.pointerId === shapePress.pointerId) onShapePointerCancel(event);
   });
   document.addEventListener("keydown", onShapeKeyDown, true);

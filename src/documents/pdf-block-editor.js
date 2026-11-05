@@ -50,7 +50,21 @@ function buildBlockSheet() {
   const title = document.createElement("h2");
   title.className = "pdf-block-editor-title";
   title.textContent = "Block";
-  head.appendChild(title);
+  // ── Style, folded until asked for ───────────────────────────────────────
+  //
+  // The style controls used to sit open under the editor every time it
+  // opened — on every block, including a new one, whose style is already the
+  // last one used on this device (freshBlockStyle in pdf-blocks.js). "Whenever
+  // a new text needs to be inserted the styling overhead is too much — let me
+  // write with the previously set styling, and give me an option to change it."
+  // So they are behind this one button, shut on every open.
+  const styleToggle = document.createElement("button");
+  styleToggle.type = "button";
+  styleToggle.className = "tool-button pdf-block-editor-style-toggle";
+  styleToggle.textContent = "Aa Style";
+  styleToggle.title = "Style this text — size, face, colour, frame";
+  styleToggle.setAttribute("aria-expanded", "false");
+  head.append(title, styleToggle);
 
   // The kit: Write/Preview, the full formatting strip, the syntax-highlight
   // mirror, the undo ring, the image and diagram grips, and the registration
@@ -83,7 +97,9 @@ function buildBlockSheet() {
 
   root.append(head, kit.root, styleHost, foot);
   document.body.appendChild(root);
-  blockSheet = { root, title, kit, styleHost, cancel, done };
+  blockSheet = { root, title, kit, styleHost, styleToggle, cancel, done };
+
+  styleToggle.addEventListener("click", () => setBlockSheetStyleOpen(styleHost.hidden));
 
   cancel.addEventListener("click", () => closeBlockSheet(false));
   done.addEventListener("click", () => closeBlockSheet(true));
@@ -114,6 +130,14 @@ function buildBlockSheet() {
   });
 
   return blockSheet;
+}
+
+function setBlockSheetStyleOpen(open) {
+  if (!blockSheet) return;
+  const show = Boolean(open) && !blockSheet.styleToggle.hidden;
+  blockSheet.styleHost.hidden = !show;
+  blockSheet.styleToggle.setAttribute("aria-expanded", String(show));
+  blockSheet.styleToggle.setAttribute("aria-pressed", String(show));
 }
 
 export function isBlockEditorOpen() {
@@ -149,7 +173,9 @@ export function openBlockEditor({
   // rows and a paragraph's carries seven, so the two are not the same control
   // wearing different values.
   built.styleHost.replaceChildren();
-  built.styleHost.hidden = !onStyle;
+  // Shut on every open — see the toggle in buildBlockSheet.
+  built.styleToggle.hidden = !onStyle;
+  setBlockSheetStyleOpen(false);
   if (onStyle) {
     built.styleHost.appendChild(createBlockStyleBar({ style, kind, onChange: onStyle }).root);
   }

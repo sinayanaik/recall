@@ -17,6 +17,24 @@
 // shows the change under the cursor — src/documents/pdf-shape-text.js).
 // Underneath: Edit text, its note, Delete, and ⋯ for the rest of its menu.
 //
+// ── Small until asked ─────────────────────────────────────────────────────
+//
+// It used to open with the WHOLE panel every time a shape was selected — and
+// that includes every time text was typed: the Text tool opens the words to
+// type in, and the panel came up under the cursor with nine rows of controls.
+// "Whenever a new text needs to be inserted the styling overhead is too much —
+// let me write with the previously set styling, and if I want to change it
+// give an option to change." A new text already starts from the last style
+// used (src/documents/pdf-shapes.js, currentShapeSettings, kept per device), so
+// what is shown now is that OPTION, not the settings:
+//
+//   while typing      Aa Style · ✓
+//   picked up         Aa Style · Edit text · Note · Delete · ⋯ · ✓
+//
+// and the panel itself opens only from Aa Style (or the mark menu's Style row,
+// which is the reader asking for it by name). It folds away again for the next
+// shape; `expandedFor` is the one shape it is open for.
+//
 // It follows the selection rather than being opened and shut by hand: ink-rail
 // calls syncShapeStylePopover from the shapes' one change hook, so whatever puts
 // a shape down — a tap elsewhere, Escape, Delete, undo — takes this with it.
@@ -28,7 +46,7 @@ import { openMarkMenuWith } from "../notes/mark-menu.js?v=__BUILD__";
 import { DOCUMENT_MARK_HANDLERS, DOCUMENT_NOTE_HANDLERS, documentHighlightNote, setDocumentShapeStyler } from "./pdf-highlights.js?v=__BUILD__";
 import { buildShapePanel, refreshShapePanel } from "./pdf-shape-panel.js?v=__BUILD__";
 import { commitShapeTextEditor, isEditingShapeText, openShapeTextEditor } from "./pdf-shape-text.js?v=__BUILD__";
-import { deleteShape, selectShape, shapeScreenRect, targetShapeRecord } from "./pdf-shapes.js?v=__BUILD__";
+import { deleteShape, editingShapeTextId, selectShape, shapeScreenRect, targetShapeRecord } from "./pdf-shapes.js?v=__BUILD__";
 
 export const SHAPE_STYLE_POPOVER_CLASS = "shape-style-popover";
 
@@ -53,6 +71,7 @@ function buildShapeStylePopover() {
   const footer = document.createElement("div");
   footer.className = "shape-style-foot";
   footer.innerHTML = [
+    shapeStyleFootButton("style", "Style — colour, size, weight, alignment", { word: "Aa Style" }),
     shapeStyleFootButton("edit-text", "Edit the text", { word: "Edit text" }),
     shapeStyleFootButton("note", "Add or edit a note", { word: "Note" }),
     shapeStyleFootButton("delete", "Delete", { danger: true }),
@@ -104,7 +123,7 @@ function buildShapeStylePopover() {
   if (el.documentStage && typeof MutationObserver === "function") {
     new MutationObserver(() => syncShapeStylePopover()).observe(el.documentStage, { attributes: true, attributeFilter: ["hidden"] });
   }
-  shapeStylePop = { root, section, footer, id: null };
+  shapeStylePop = { root, section, footer, id: null, expandedFor: null };
   return shapeStylePop;
 }
 
@@ -112,6 +131,11 @@ function pressShapeStyle(action) {
   const record = targetShapeRecord();
   if (!record) return;
   const id = record.id;
+  if (action === "style") {
+    shapeStylePop.expandedFor = shapeStylePop.expandedFor === id ? null : id;
+    syncShapeStylePopover();
+    return;
+  }
   if (action === "edit-text") {
     openShapeTextEditor(id);
   } else if (action === "note") {
@@ -168,13 +192,44 @@ export function syncShapeStylePopover() {
   }
   const pop = shapeStylePop || buildShapeStylePopover();
   const type = record.shape?.type;
+  // A different shape folds the panel away again — it was opened for that one.
+  if (pop.expandedFor && pop.expandedFor !== record.id) pop.expandedFor = null;
+  const expanded = pop.expandedFor === record.id;
+  // Asked of pdf-shapes.js as well as of the editor: the editor says which
+  // shape it is opening for (setEditingShapeId) a moment BEFORE it is up, and
+  // that announcement is what brings this popover here — so at that instant
+  // isEditingShapeText() is still false.
+  const typing = isEditingShapeText() || editingShapeTextId() === record.id;
   pop.id = record.id;
   pop.root.dataset.shapeType = type || "";
-  refreshShapePanel(pop.section);
-  const editText = pop.footer.querySelector('[data-shape-style-action="edit-text"]');
-  editText.hidden = !(type === "text" || type === "callout") || isEditingShapeText();
+  pop.root.classList.toggle("is-compact", !expanded);
+  pop.section.hidden = !expanded;
+  if (expanded) refreshShapePanel(pop.section);
+  const styleButton = pop.footer.querySelector('[data-shape-style-action="style"]');
+  styleButton.setAttribute("aria-expanded", String(expanded));
+  styleButton.setAttribute("aria-pressed", String(expanded));
+  // While typing, the words are what the reader is doing: the style, if they
+  // want it, and Done — nothing else to read past.
+  pop.footer.querySelectorAll("[data-shape-style-action]").forEach((button) => {
+    const action = button.dataset.shapeStyleAction;
+    if (action === "style" || action === "done") { button.hidden = false; return; }
+    if (action === "edit-text") { button.hidden = typing || !(type === "text" || type === "callout"); return; }
+    button.hidden = typing;
+  });
   pop.root.hidden = false;
   placeShapeStylePopover();
+}
+
+// The panel opened for this shape, as if Aa Style had been pressed — for the
+// mark menu's Style row, which is the reader asking for the style by name.
+export function expandShapeStylePopover(id) {
+  const pop = shapeStylePop || buildShapeStylePopover();
+  pop.expandedFor = id || null;
+  syncShapeStylePopover();
+}
+
+export function isShapeStylePanelExpanded() {
+  return Boolean(shapeStylePop && !shapeStylePop.root.hidden && !shapeStylePop.section.hidden);
 }
 
 export function initShapeStylePopover() {
@@ -182,6 +237,6 @@ export function initShapeStylePopover() {
   // shape picked up, so its popover comes up at it, with any tool armed.
   setDocumentShapeStyler((id) => {
     selectShape(id);
-    syncShapeStylePopover();
+    expandShapeStylePopover(id);
   });
 }

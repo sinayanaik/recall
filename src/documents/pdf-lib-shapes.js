@@ -10,7 +10,7 @@
 // user space, in Helvetica — a standard font every reader has, so nothing is
 // embedded — and wrapped to its box by the same rule the screen wraps by.
 
-import { SHAPE_TEXT_PAD, polyPathData, shapeDashArray, shapePrimitives, stickyIconPolys, wrapShapeText } from "../render/annot-shapes.js?v=__BUILD__";
+import { SHAPE_TEXT_PAD, markdownToPlainText, polyPathData, shapeDashArray, shapePrimitives, stickyIconPolys, wrapShapeText } from "../render/annot-shapes.js?v=__BUILD__";
 
 export function pdfLibColour(hex) {
   const { rgb } = window.PDFLib;
@@ -52,7 +52,10 @@ export function shapeTextLines(prim, font) {
   const size = prim.size;
   const [x0, , x1, y1] = prim.rect;
   const inner = Math.max(1, (x1 - x0) - SHAPE_TEXT_PAD * 2);
-  const text = encodableText(font, prim.text);
+  // The words are markdown (src/render/annot-shapes.js, typedTextMarkdown); a
+  // PDF's own text can only be plain, so the syntax is taken off — "**bold**"
+  // is printed "bold", never with its asterisks.
+  const text = encodableText(font, markdownToPlainText(prim.text));
   const lines = prim.fit ? text.split("\n") : wrapShapeText(text, inner, (t) => font.widthOfTextAtSize(t, size));
   const lineHeight = size * 1.3;
   return lines.map((line, i) => {
@@ -68,7 +71,10 @@ export function shapeTextLines(prim, font) {
 }
 
 // Every shape record onto a pdf-lib page.
-export async function drawShapesWithPdfLib(out, page, records) {
+// `skipTextIds`: shapes whose words the caller draws itself, rendered (the
+// region PDF lays rasterised markdown over them) — their box is drawn here,
+// their words are not.
+export async function drawShapesWithPdfLib(out, page, records, { skipTextIds = null } = {}) {
   if (!records?.length) return;
   const { pushGraphicsState, popGraphicsState, concatTransformationMatrix, StandardFonts, LineCapStyle } = window.PDFLib;
   const lists = records.map((record) => shapeDrawList(record.shape));
@@ -93,7 +99,7 @@ export async function drawShapesWithPdfLib(out, page, records) {
     page.drawSvgPath(path, options);
   }));
   page.pushOperators(popGraphicsState());
-  const texts = lists.flat().filter((prim) => prim.kind === "text" && prim.text);
+  const texts = lists.filter((list, i) => !skipTextIds?.has?.(records[i].id)).flat().filter((prim) => prim.kind === "text" && prim.text);
   if (!texts.length) return;
   const regular = await out.embedFont(StandardFonts.Helvetica);
   const bold = await out.embedFont(StandardFonts.HelveticaBold);

@@ -23,6 +23,7 @@ import { trimNoteAnchor } from "../quick-notes/anchors.js?v=__BUILD__";
 import { documentHighlightLabel, documentHighlightsInReadingOrder, isPdfDeck } from "../documents/pdf-highlights.js?v=__BUILD__";
 import { activeDocSlot, DOC_SLOT_NOTEBOOK } from "../documents/doc-slot.js?v=__BUILD__";
 import { mountRegionPreview } from "../documents/pdf-region-embed.js?v=__BUILD__";
+import { normalizeShape, typedTextMarkdown } from "../render/annot-shapes.js?v=__BUILD__";
 
 // ── Highlights view ────────────────────────────────────────────────────────
 // A highlight is a literal <mark>…</mark> pair sitting in state.notes — same
@@ -455,7 +456,24 @@ export function collectHighlightEntries() {
     records.forEach((record) => {
       const words = String(record.text || "").trim();
       const text = words || documentHighlightLabel(record);
-      const pictured = record.kind === "area" || record.kind === "ink" || record.kind === "shape";
+      // ── Typed text is listed ONCE ───────────────────────────────────────
+      //
+      // A shape is pictured (below) — and a text box's words are also its
+      // `text`, so its card used to show the box twice: a picture of the page
+      // with the words drawn in it, and the same words again under it as a
+      // quote. "I am seeing the text part and the rendered part separately,
+      // which is redundant." So, one of each, never both:
+      //
+      //   text box   its words, RENDERED as the markdown they are — at the
+      //              pane's own width, crisp, in the theme's colours. A picture
+      //              of a text box is only its words, smaller.
+      //   callout    the picture and no quote: a callout points AT something
+      //              on the page, and the picture is the only form that shows
+      //              what.
+      const shape = record.kind === "shape" ? normalizeShape(record.shape) : null;
+      const typedText = shape?.type === "text" && Boolean(words);
+      const typedCallout = shape?.type === "callout" && Boolean(words);
+      const pictured = !typedText && (record.kind === "area" || record.kind === "ink" || record.kind === "shape");
       entries.push({
         highlightId: record.id,
         color: record.color,
@@ -476,7 +494,12 @@ export function collectHighlightEntries() {
         // A region or ink mark that covered no words has NO quote: the picture
         // above it is what it is, and "Region · page 12" printed under the
         // picture of it would be saying the same thing twice, worse.
-        markdown: (pictured && !words ? "" : text).replace(/([\\`*_{}[\]()#+\-.!])/g, "\\$1"),
+        // A text box's words are markdown already (src/documents/
+        // pdf-shape-markdown.js) and are rendered as such — through the same
+        // Enter-is-a-line rule the page uses, so they break the same way.
+        markdown: typedText
+          ? typedTextMarkdown(words)
+          : ((pictured && (!words || typedCallout)) ? "" : text).replace(/([\\`*_{}[\]()#+\-.!])/g, "\\$1"),
         span: null,
         note: notes.get(record.id) || "",
         anchor: {

@@ -197,6 +197,12 @@
   opacity: 0.85;
 }
 
+/* ── The words typed with the Text button ─────────────────────────────────
+   Picked up and dragged by a press on them, with any pointer and no tool
+   armed — the one thing in this layer, besides the open editor, that takes a
+   press (src/documents/pdf-shapes.js, onShapePointerDown). `touch-action: none`
+   is what lets a finger drag it rather than scroll the page; the same promise a
+   text block makes (styles/53-handwriting.css). */
 .pdf-shape-text {
   position: absolute;
   box-sizing: border-box;
@@ -204,7 +210,72 @@
   overflow-wrap: anywhere;
   line-height: 1.3;
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+  pointer-events: auto;
+  touch-action: none;
+  cursor: grab;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.pdf-shape-text:active { cursor: grabbing; }
+
+/* A static copy — a picture of the page, an embed — is only looked at. */
+.pdf-shape-text.is-static {
   pointer-events: none;
+  cursor: auto;
+}
+
+/* The words themselves (src/documents/pdf-shape-markdown.js). Rendered
+   markdown carries `.rendered`, whose rules are written for the notes column:
+   the app's content size, its line height, theme colours for headings and
+   links. On a page those would be wrong twice over — the size is the shape's
+   own (set on the box, in points × zoom) and the paper is white whatever the
+   theme, so a heading in the dark theme's text colour would vanish. So the box's
+   font and colour win, here, for everything that is words; code keeps its own
+   panel, which carries its own background. */
+.pdf-shape-text .pdf-shape-text-body.rendered {
+  font-size: inherit;
+  line-height: inherit;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  color: inherit;
+  -webkit-user-select: none;
+  user-select: none;
+  --code-font-size: 0.92em;
+}
+
+.pdf-shape-text .pdf-shape-text-body.rendered :is(h1, h2, h3, h4, h5, h6, p, li, blockquote, strong, b, em, i, a, del, s, td, th, dt, dd) {
+  color: inherit;
+}
+
+.pdf-shape-text .pdf-shape-text-body.rendered :is(h1, h2, h3, h4, h5, h6) {
+  margin: 0.3em 0 0.15em;
+}
+
+.pdf-shape-text .pdf-shape-text-body.rendered :is(p, ul, ol, pre, blockquote, table) {
+  margin: 0.25em 0;
+}
+
+.pdf-shape-text .pdf-shape-text-body.rendered > :first-child { margin-top: 0; }
+.pdf-shape-text .pdf-shape-text-body.rendered > :last-child { margin-bottom: 0; }
+
+.pdf-shape-text .pdf-shape-text-body img {
+  max-width: 100%;
+  -webkit-user-drag: none;
+  -webkit-touch-callout: none;
+}
+
+/* Typewriter text that is markdown: as wide as its widest line, up to the
+   page's right edge (an absolutely placed box shrinks to fit the room it has),
+   wrapping only past that. Plain typewriter text keeps `white-space: pre`. */
+.pdf-shape-text[data-fit] .pdf-shape-text-body.rendered {
+  width: max-content;
+  max-width: 100%;
+}
+
+.pdf-shape-text .pdf-shape-text-body.is-pending {
+  opacity: 0.75;
 }
 
 /* The selected shape: a dashed frame round it and a handle on every point it
@@ -326,6 +397,25 @@
   color: var(--muted);
   font-size: 0.78rem;
   text-align: right;
+}
+
+/* The typed size boxes beside A−/A+ and the width slider: any number. */
+.shape-pop-number {
+  width: 4.6em;
+  min-width: 0;
+  padding: 2px 4px;
+  border: 1px solid color-mix(in srgb, var(--text) 24%, transparent);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.8rem;
+  text-align: right;
+}
+
+.shape-pop-unit {
+  color: var(--muted);
+  font-size: 0.75rem;
 }
 
 .shape-pop-colour {
@@ -464,6 +554,24 @@
   display: none;
 }
 
+/* Folded: only the row of actions — Aa Style opens the panel above it. */
+.shape-style-popover.is-compact {
+  width: auto;
+  max-width: calc(100vw - 16px);
+  padding: 6px;
+}
+
+.shape-style-popover.is-compact .shape-style-foot {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+
+.shape-style-btn[data-shape-style-action="style"][aria-pressed="true"] {
+  background: color-mix(in srgb, var(--accent) 18%, var(--panel));
+  border-color: var(--accent);
+}
+
 .shape-pop-panel.is-floating .shape-pop-row {
   margin-top: 6px;
 }
@@ -499,7 +607,7 @@
   color: var(--danger, #c0392b);
 }
 
-/* Done last, pushed to the far end. */
-.shape-style-btn[data-shape-style-action="done"] {
+/* Done last, pushed to the far end — when there is a far end to push to. */
+.shape-style-popover:not(.is-compact) .shape-style-btn[data-shape-style-action="done"] {
   margin-left: auto;
 }

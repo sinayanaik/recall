@@ -49,7 +49,7 @@ import { exportThemeClass } from "../export/themes.js?v=__BUILD__";
 import { annotatedDocumentHighlights, documentHighlightLabel, documentHighlights } from "./pdf-highlights.js?v=__BUILD__";
 import { currentPdfDocument, currentPdfPageCount, pdfOpenToken } from "./pdf-view.js?v=__BUILD__";
 import { regionImageRect, renderRegionImage } from "./pdf-region-embed.js?v=__BUILD__";
-import { drawRegionBlocks, highlightHex, rasteriseRegionBlocks, regionBlocksInBox } from "./pdf-region-marks.js?v=__BUILD__";
+import { drawRegionBlocks, highlightHex, rasteriseRegionBlocks, regionBlocksInBox, shapeTextRasterIds } from "./pdf-region-marks.js?v=__BUILD__";
 
 // The rendered width of a page in the print document, in device pixels. A4 at
 // 14mm margins (installPdfPrintStyle) is ~182mm of content, and the page is
@@ -108,7 +108,11 @@ async function renderPageForPrint(pageNumber, records) {
       return { rasters: [] };
     });
   if (token !== pdfOpenToken) return null;
-  drawRegionBlocks(context, viewport, rasters);
+  drawRegionBlocks(context, viewport, rasters, { only: "block" });
+  // The words of a text box that are markdown come back from the same
+  // rasteriser (src/documents/pdf-region-marks.js) and go on AFTER the marks,
+  // over their own box and fill — the canvas draws the box, not the words.
+  const textRasterIds = shapeTextRasterIds(rasters);
 
   records.forEach((record) => {
     // Ink is drawn as ink. Its quad is a bounding box round handwriting, so
@@ -122,7 +126,9 @@ async function renderPageForPrint(pageNumber, records) {
     // a bounding box, like ink's — through this page's viewport, at its scale.
     if (record.kind === "shape") {
       if (Number(record.page) !== pageNumber) return;
-      paintShapeOnCanvas(context, record.shape, ([x, y]) => viewport.convertToViewportPoint(x, y), viewport.scale);
+      paintShapeOnCanvas(context, record.shape, ([x, y]) => viewport.convertToViewportPoint(x, y), viewport.scale, {
+        skipText: textRasterIds.has(record.id)
+      });
       return;
     }
     if (record.kind === "ink") {
@@ -169,6 +175,7 @@ async function renderPageForPrint(pageNumber, records) {
       context.restore();
     });
   });
+  drawRegionBlocks(context, viewport, rasters, { only: "shape-text" });
   return canvas.toDataURL("image/jpeg", PRINT_PAGE_QUALITY);
 }
 
