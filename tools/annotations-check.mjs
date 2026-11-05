@@ -17,6 +17,7 @@ import { findChrome, launchChrome, connect, openPage } from "./cdp.mjs";
 import { PDFJS_VERSION, pdfjsSources, servePdfjsFromDisk } from "./pdfjs-source.mjs";
 import { PDFLIB_VERSION, pdflibSource } from "./pdflib-source.mjs";
 import { buildFixturePdf } from "./pdf-fixture.mjs";
+import { HTMLTOIMAGE_VERSION, htmlToImageSource } from "./htmltoimage-source.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 // --shot=file.png saves a picture of page 1 once every section has run.
@@ -73,6 +74,12 @@ const API_SRC = `async () => {
     "/src/ui/ink-rail.js?v=__BUILD__",
     "/src/documents/pdf-shape-text.js?v=__BUILD__",
     "/src/documents/pdf-shape-style-popover.js?v=__BUILD__",
+    "/src/documents/pdf-shape-markdown.js?v=__BUILD__",
+    "/src/documents/pdf-shape-panel.js?v=__BUILD__",
+    "/src/documents/pdf-blocks.js?v=__BUILD__",
+    "/src/documents/pdf-timing.js?v=__BUILD__",
+    "/src/documents/pdf-multi.js?v=__BUILD__",
+    "/src/panels/highlight-cycle.js?v=__BUILD__",
     "/src/format/highlight-colors.js?v=__BUILD__",
     "/src/notes/highlight-note-editor.js?v=__BUILD__",
     "/src/panels/highlights-panel.js?v=__BUILD__",
@@ -182,6 +189,14 @@ try {
 } catch (error) {
   console.log(`annotations-check: could not obtain pdf.js ${PDFJS_VERSION} (${error?.message || error}) — skipping.`);
   process.exit(0);
+}
+// A text box's markdown is pictured by html-to-image (src/documents/
+// pdf-region-marks.js). Without it that one case says so and is skipped.
+let htmlToImage = null;
+try {
+  htmlToImage = htmlToImageSource();
+} catch (error) {
+  console.log(`annotations-check: could not obtain html-to-image ${HTMLTOIMAGE_VERSION} (${error?.message || error}) — the rendered-picture case will be skipped.`);
 }
 let pdflib = null;
 try {
@@ -685,9 +700,15 @@ sections.push(async () => {
     const shapes = api.documentShapes(null);
     const arrow = shapes.find((r) => r.shape.type === "arrow");
     const callout = shapes.find((r) => r.shape.type === "callout");
+    const typed = shapes.find((r) => r.shape.type === "text" && r.shape.text.trim());
     const arrowEntry = entries.find((e) => e.highlightId === arrow?.id);
     const calloutEntry = entries.find((e) => e.highlightId === callout?.id);
+    const typedEntry = entries.find((e) => e.highlightId === typed?.id);
     return {
+      calloutPictured: Boolean(calloutEntry?.region),
+      typedWords: typed?.shape.text || null,
+      typedPictured: Boolean(typedEntry?.region),
+      typedQuote: typedEntry?.markdown || "",
       arrowLabel: api.documentHighlightLabel(arrow),
       calloutLabel: api.documentHighlightLabel(callout),
       arrowListed: Boolean(arrowEntry),
@@ -698,7 +719,10 @@ sections.push(async () => {
     };
   }`);
   check("a shape is listed in the Highlights pane as a picture, named by what it is", listed.arrowListed && listed.arrowPictured && /^Arrow · page 2$/.test(listed.arrowLabel), JSON.stringify(listed));
-  check("...and a callout by its words, quoted under its picture", listed.calloutLabel.startsWith("Sign error") && listed.calloutText?.startsWith("Sign error") && /Sign error/.test(listed.calloutQuote), JSON.stringify(listed));
+  // Listed ONCE: a callout as its picture (it points at something on the page),
+  // a text box as its words rendered — never a picture AND the same words again.
+  check("...a callout is named by its words and shown as its picture, with no second copy of the words", listed.calloutLabel.startsWith("Sign error") && listed.calloutText?.startsWith("Sign error") && listed.calloutPictured && listed.calloutQuote === "", JSON.stringify(listed));
+  check("...a text box is listed once, as its words (markdown, unescaped), with no picture", Boolean(listed.typedWords) && !listed.typedPictured && listed.typedQuote.replace(/ {2}\n/g, "\n") === listed.typedWords, JSON.stringify(listed));
   check("a shape has a location to make a card of — a live picture of the spot it is on", /^!\[\]\(pdfref:2:/.test(listed.ref || ""), listed.ref);
 
   const pictured = await page.evaluate(`async () => {
@@ -992,6 +1016,13 @@ sections.push(async () => {
     (document.elementFromPoint(mx, my) || document.getElementById("documentView")).dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, clientX: mx, clientY: my, detail: 1 }));
     await settle(150);
     const arrowPop = popUp() && api.selectedShapeRecord()?.id === arrow.id && !api.isMarkMenuOpen?.();
+    // Small until asked: picked up, the popover is a row of actions and the
+    // panel is folded away; Aa Style opens it.
+    const panelOf = () => pop().querySelector(".shape-pop-panel");
+    const arrowCompact = pop().classList.contains("is-compact") && panelOf().hidden;
+    fire('[data-shape-style-action="style"]');
+    await settle(60);
+    const arrowExpanded = !panelOf().hidden && !pop().classList.contains("is-compact");
     const arrowRows = Array.from(pop().querySelectorAll("[data-shape-row]")).filter((n) => !n.hidden).map((n) => n.dataset.shapeRow);
     fire('[data-shape-dash="dash"]');
     await settle(60);
@@ -1005,6 +1036,13 @@ sections.push(async () => {
     const editor = document.querySelector(".pdf-shape-editor");
     editor.textContent = "styled mid-sentence";
     const typingPop = popUp();
+    // While typing: the style as an option, not as the panel — Aa Style and
+    // Done, and nothing else on screen.
+    const typingButtons = Array.from(pop().querySelectorAll("[data-shape-style-action]")).filter((n) => !n.hidden).map((n) => n.dataset.shapeStyleAction);
+    const typingCompact = panelOf().hidden && typingButtons.join() === "style,done";
+    fire('[data-shape-style-action="style"]');
+    await settle(60);
+    const typingStillTyping = Boolean(document.querySelector(".pdf-shape-editor")) && !panelOf().hidden;
     const fontBefore = parseFloat(editor.style.fontSize);
     fire('[data-shape-font-step="1"]');
     fire('[data-shape-font-step="1"]');
@@ -1023,13 +1061,15 @@ sections.push(async () => {
     const recoloured = api.documentHighlightById(typedRec.id).shape.font.color === api.MARK_HIGHLIGHT_HEX.green;
     api.chooseInkTool("pen");
     api.toggleInkRail(false);
-    return { offered, opened, below, rows, grown, paintedBold, undone, closed, arrowPop, arrowRows, dashed, typingPop, live, keptText, recoloured };
+    return { offered, opened, below, rows, grown, paintedBold, undone, closed, arrowPop, arrowCompact, arrowExpanded, arrowRows, dashed, typingPop, typingButtons, typingCompact, typingStillTyping, live, keptText, recoloured };
   }`);
   check("tapping typed text with the pen opens its menu, which has Style", restyle.offered, JSON.stringify(restyle));
   check("Style puts the style popover up beside the text (not over it), with its colour, size and weight", restyle.opened && restyle.below && restyle.rows.includes("font") && !restyle.rows.includes("snap"), JSON.stringify(restyle));
   check("...A+, bold and a colour there restyle that text, and it is painted so", restyle.grown && restyle.paintedBold, JSON.stringify(restyle));
   check("...each a step undo takes back, and Done puts it down", restyle.undone && restyle.closed, JSON.stringify(restyle));
-  check("an arrow tapped with Shapes armed has the popover at once, with its line and heads", restyle.arrowPop && restyle.arrowRows.includes("heads") && restyle.arrowRows.includes("dash") && restyle.dashed, JSON.stringify(restyle));
+  check("an arrow tapped with Shapes armed has the popover at once — folded, with Aa Style to open it", restyle.arrowPop && restyle.arrowCompact && restyle.arrowExpanded, JSON.stringify(restyle));
+  check("...and Aa Style shows its line and heads, which restyle it", restyle.arrowRows.includes("heads") && restyle.arrowRows.includes("dash") && restyle.dashed, JSON.stringify(restyle));
+  check("while typing, only Aa Style and Done are offered — no panel until asked, and asking keeps the typing going", restyle.typingCompact && restyle.typingStillTyping, JSON.stringify(restyle));
   check("while typing, the popover is up and A+ grows the words under the cursor, which are kept", restyle.typingPop && restyle.live && restyle.keptText, JSON.stringify(restyle));
   check("a menu swatch on typed text changes the words' colour", restyle.recoloured, JSON.stringify(restyle));
 
@@ -1060,6 +1100,293 @@ sections.push(async () => {
   check("the pen set on a PDF is not the Canvas's or the drawing sheet's", tabs.pen.doc === "violet" && tabs.pen.notebook === tabs.pen.canvasBefore && tabs.pen.notes === tabs.pen.notesBefore, JSON.stringify(tabs.pen));
   check("shape settings set on a PDF are not the Canvas's", tabs.shapeDoc === "#0d9488" && tabs.shapeCanvas !== "#0d9488", JSON.stringify(tabs));
   check("the highlight colour chosen on a PDF is not the Notes tab's, and back again", tabs.onPdf === "blue" && tabs.onNotes !== "blue" && tabs.backOnPdf === "blue", JSON.stringify(tabs));
+});
+
+// ── Text and pictures placed on a page: markdown, picked up, listed once ──────
+//
+// Driven with TRUSTED input (Input.dispatchMouseEvent / dispatchTouchEvent)
+// where it matters: a drag that "stops after a few pixels" on a phone is the
+// browser cancelling the pointer — touch-action, a native image drag — and a
+// dispatchEvent from inside the page goes round every one of those.
+sections.push(async () => {
+  await page.evaluate(POINTER_SRC);
+  const mouse = async (type, x, y, buttons) => page.call("Input.dispatchMouseEvent", {
+    type, x, y, button: "left", buttons, clickCount: 1, pointerType: "mouse"
+  });
+  const touch = async (type, points) => page.call("Input.dispatchTouchEvent", {
+    type, touchPoints: points.map(([x, y]) => ({ x, y, radiusX: 8, radiusY: 8, force: 1 }))
+  });
+  const glide = async (from, to, steps, step) => {
+    for (let i = 1; i <= steps; i += 1) {
+      await step(from[0] + ((to[0] - from[0]) * i) / steps, from[1] + ((to[1] - from[1]) * i) / steps);
+      await new Promise((r) => setTimeout(r, 16));
+    }
+  };
+
+  // A text box of markdown, made the way the Text tool makes one, on page 1.
+  const made = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    // Gestures are traced while diagnostics are on — read back into a failing
+    // case's detail, which is what the trace is for.
+    api.setPdfDiagnostics(true);
+    api.toggleTypewriter?.(false);
+    api.chooseInkTool("pen");
+    api.toggleInkRail(false);
+    api.selectShape(null);
+    document.querySelector('.pdf-page[data-page-number="1"]').scrollIntoView({ block: "start" });
+    await settle(700);
+    const record = api.addDocumentShape(1, {
+      type: "text", p: [[90, 620], [130, 640]], fit: true, width: 0.3, stroke: "#16181d",
+      font: { size: 13, bold: false, align: "left", color: "#16181d" },
+      text: "**Bold claim** and $x^2$\\nsecond line"
+    });
+    for (let i = 0; i < 40; i += 1) {
+      await settle(100);
+      if (api.shapeTextBodyState(record.id) === "rendered") break;
+    }
+    await settle(300);
+    // Settled means settled: the fitter writes only when the box and the record
+    // disagree, so once they agree nothing more is written — no loop of fits
+    // (each one an autosave and a sync push) on a box nobody is touching.
+    const fits = () => api.pdfGestureLog().filter((g) => g.what === "fitted to its words").length;
+    const fitsBefore = fits();
+    await settle(1500);
+    const fitsAfter = fits();
+    const box = document.querySelector('.pdf-shape-text[data-highlight-id="' + record.id + '"]');
+    const rect = box.getBoundingClientRect();
+    const vp = api.pdfPageViewport(1);
+    const stored = api.documentHighlightById(record.id).shape.p;
+    const storedWidth = Math.abs(stored[1][0] - stored[0][0]) * vp.scale;
+    const storedHeight = Math.abs(stored[1][1] - stored[0][1]) * vp.scale;
+    return {
+      id: record.id,
+      state: api.shapeTextBodyState(record.id),
+      strong: box.querySelector("strong")?.textContent || "",
+      katex: Boolean(box.querySelector(".katex")),
+      lines: box.querySelectorAll("br").length,
+      fitted: Math.abs(storedWidth - rect.width) <= 2 * vp.scale && Math.abs(storedHeight - rect.height) <= 2 * vp.scale,
+      sizes: [Math.round(storedWidth), Math.round(rect.width), Math.round(storedHeight), Math.round(rect.height)],
+      takesPress: getComputedStyle(box).pointerEvents === "auto" && getComputedStyle(box).touchAction === "none",
+      centre: [rect.left + rect.width / 2, rect.top + rect.height / 2],
+      scale: vp.scale,
+      p0: stored[0].slice(),
+      fitsBefore,
+      fitsAfter
+    };
+  }`);
+  check("...and once it agrees with its words it is left alone — no stream of re-fits", made.fitsAfter === made.fitsBefore, `${made.fitsBefore} → ${made.fitsAfter} fits`);
+  check("a text box holds markdown: bold and maths rendered on the page, Enter still a new line", made.state === "rendered" && made.strong === "Bold claim" && made.katex && made.lines >= 1, JSON.stringify(made));
+  check("...and its stored box follows the rendered words, so a press lands where they are", made.fitted, JSON.stringify(made.sizes));
+  check("...and the box takes a press, with a finger too (touch-action: none)", made.takesPress, JSON.stringify(made));
+
+  // Picked up with the PEN tool armed and its bar shut — no Shapes, no Text.
+  const [cx, cy] = made.centre;
+  await mouse("mouseMoved", cx, cy, 0);
+  await mouse("mousePressed", cx, cy, 1);
+  await glide([cx, cy], [cx + 60, cy + 40], 6, (x, y) => mouse("mouseMoved", x, y, 1));
+  await mouse("mouseReleased", cx + 60, cy + 40, 0);
+  const afterMouse = await page.evaluate(`async (id) => {
+    const { api, settle } = window.__recall;
+    await settle(250);
+    return { p0: api.documentHighlightById(id).shape.p[0].slice(), inked: (api.state.meta.pdfHighlights || []).filter((r) => r.kind === "ink" && r.page === 1).length };
+  }`, made.id);
+  const mdx = (afterMouse.p0[0] - made.p0[0]) * made.scale;
+  const mdy = (afterMouse.p0[1] - made.p0[1]) * made.scale;
+  check("a mouse drags typed text with no tool armed, by the distance dragged", Math.abs(mdx - 60) <= 3 && Math.abs(mdy + 40) <= 3, `moved ${mdx.toFixed(1)}, ${mdy.toFixed(1)} px`);
+
+  // ...and a finger, which before could never move one.
+  const at = await page.evaluate(`async (id) => {
+    const { api, settle } = window.__recall;
+    api.selectShape(null);
+    await settle(120);
+    const r = document.querySelector('.pdf-shape-text[data-highlight-id="' + id + '"]').getBoundingClientRect();
+    return { centre: [r.left + r.width / 2, r.top + r.height / 2], p0: api.documentHighlightById(id).shape.p[0].slice(), scroll: document.getElementById("documentView").scrollTop };
+  }`, made.id);
+  const [tx, ty] = at.centre;
+  await touch("touchStart", [[tx, ty]]);
+  await glide([tx, ty], [tx - 50, ty + 30], 6, (x, y) => touch("touchMove", [[x, y]]));
+  await touch("touchEnd", []);
+  const afterTouch = await page.evaluate(`async (id) => {
+    const { api, settle } = window.__recall;
+    await settle(250);
+    return { p0: api.documentHighlightById(id).shape.p[0].slice(), scroll: document.getElementById("documentView").scrollTop };
+  }`, made.id);
+  const tdx = (afterTouch.p0[0] - at.p0[0]) * made.scale;
+  const tdy = (afterTouch.p0[1] - at.p0[1]) * made.scale;
+  check("a finger drags typed text too, and the page does not scroll under it", Math.abs(tdx + 50) <= 4 && Math.abs(tdy + 30) <= 4 && afterTouch.scroll === at.scroll, `moved ${tdx.toFixed(1)}, ${tdy.toFixed(1)} px · scroll ${at.scroll} → ${afterTouch.scroll}`);
+
+  // A tap selects it (the small bar); a second tap opens it to type in.
+  const tapped = await page.evaluate(`async (id) => {
+    const { api, settle } = window.__recall;
+    // The drag above left it picked up; put down, so the first tap is a FIRST tap.
+    api.selectShape(null);
+    await settle(100);
+    const r = document.querySelector('.pdf-shape-text[data-highlight-id="' + id + '"]').getBoundingClientRect();
+    const pt = [r.left + r.width / 2, r.top + r.height / 2];
+    await window.__drag("text", [pt], { pointerType: "touch", id: 77 });
+    await settle(150);
+    const pop = document.querySelector(".shape-style-popover");
+    const selected = api.selectedShapeRecord()?.id === id;
+    const compact = Boolean(pop && !pop.hidden && pop.classList.contains("is-compact"));
+    await window.__drag("text", [pt], { pointerType: "touch", id: 78 });
+    await settle(200);
+    const editor = document.querySelector('.pdf-shape-editor[data-highlight-id="' + id + '"]');
+    const source = editor?.textContent || "";
+    api.commitShapeTextEditor();
+    await settle(200);
+    return { selected, compact, editing: Boolean(editor), source };
+  }`, made.id);
+  check("a tap on typed text selects it with the small Style bar; a second tap types in it, as markdown source", tapped.selected && tapped.compact && tapped.editing && tapped.source.startsWith("**Bold claim**"), JSON.stringify(tapped));
+
+  // No caps: a size typed into the box is the size, however large or small.
+  const sized = await page.evaluate(`async (id) => {
+    const { api, settle } = window.__recall;
+    api.selectShape(id);
+    api.expandShapeStylePopover(id);
+    await settle(100);
+    const input = document.querySelector(".shape-style-popover [data-shape-font-value]");
+    input.focus();
+    input.value = "300";
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle(150);
+    const big = api.documentHighlightById(id).shape.font.size;
+    input.value = "2.5";
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle(150);
+    const small = api.documentHighlightById(id).shape.font.size;
+    input.value = "abc";
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle(150);
+    const refused = api.documentHighlightById(id).shape.font.size;
+    input.blur();
+    const stepped = api.steppedFontSize(2.5, -1) > 0 && api.steppedFontSize(96, 1) === 98;
+    api.setShapeSettings({ fontSize: 13 });
+    api.selectShape(null);
+    await settle(150);
+    return { big, small, refused, stepped };
+  }`, made.id);
+  check("a type size is any number typed — 300pt and 2.5pt both kept, nonsense refused, A± uncapped", sized.big === 300 && sized.small === 2.5 && sized.refused === 2.5 && sized.stepped, JSON.stringify(sized));
+
+  // The side-by-side pane: listed once, and lit on the page as the list reaches it.
+  const pane = await page.evaluate(`async (id) => {
+    const { api, settle } = window.__recall;
+    const envelopes = api.documentHighlightMarks(id).filter((n) => n.classList.contains("pdf-mark-envelope")).length;
+    api.openHighlightSplit("document");
+    await settle(900);
+    const card = document.querySelector('#highlightCycleBody .hl-note[data-highlight-key="doc:' + id + '"]');
+    const pictured = Boolean(card?.querySelector(".hl-note-region"));
+    const rendered = Boolean(card?.querySelector(".hl-note-quote strong"));
+    let lit = false;
+    for (let i = 0; i < 60 && !lit; i += 1) {
+      const current = document.querySelector("#highlightCycleBody .hl-note.is-current")?.dataset.highlightKey || "";
+      if (current === "doc:" + id) {
+        await settle(200);
+        lit = Boolean(document.querySelector('.pdf-mark-envelope.is-linked[data-highlight-id="' + id + '"]'));
+        break;
+      }
+      api.cycleHighlightBy(1);
+      await settle(120);
+    }
+    const glow = getComputedStyle(document.querySelector('.pdf-mark-envelope[data-highlight-id="' + id + '"]') || document.body).boxShadow;
+    api.closeHighlightSplit();
+    await settle(400);
+    const flashed = api.flashDocumentHighlight(id);
+    return { envelopes, listed: Boolean(card), pictured, rendered, lit, glow: glow !== "none", flashed };
+  }`, made.id);
+  check("the side-by-side pane lists typed text once — its words rendered, no picture of them as well", pane.listed && !pane.pictured && pane.rendered, JSON.stringify(pane));
+  check("...and as the list reaches it, it glows on the page; a jump to it pulses", pane.envelopes >= 1 && pane.lit && pane.glow && pane.flashed, JSON.stringify(pane));
+
+  // A picture on a PDF page, dragged by its body with a finger and a mouse.
+  const pic = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    // Placed as a block and turned into a picture in place: the upload path
+    // (storeImageOrQueue) needs an account, and what is asserted here is the
+    // picture on the page, not where its bytes went. The record is exactly the
+    // shape addDocumentImageBlock writes.
+    const text = api.addDocumentBlock(1, { x: 300, y: 400 });
+    api.commitBlockEdit();
+    await settle(200);
+    const record = api.state.meta.pdfBlocks.find((entry) => entry.id === text.id);
+    Object.assign(record, { kind: "image", md: "", w: 120, h: 60, alt: "",
+      src: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAYAAAD0In+KAAAAEklEQVR4nGP8//8/AzJgYkAFAB8FAv3EhrhCAAAAAElFTkSuQmCC" });
+    document.querySelector('[data-pdf-block="' + text.id + '"]')?.remove();
+    api.repaintDocumentBlocks();
+    await settle(500);
+    const added = api.documentBlocks().find((entry) => entry.id === text.id);
+    if (!added || added.kind !== "image") return { error: "no picture block" };
+    api.selectBlock(null);
+    await settle(100);
+    const node = document.querySelector('[data-pdf-block="' + added.id + '"]');
+    const img = node.querySelector("img");
+    const r = node.getBoundingClientRect();
+    return { id: added.id, x: added.x, y: added.y, draggable: img.draggable, centre: [r.left + r.width / 2, r.top + r.height / 2], scale: api.pdfPageViewport(1).scale };
+  }`);
+  if (pic.error) { check("a picture is placed on a PDF page", false, pic.error); return; }
+  check("a picture's image is never the browser's to drag (draggable=false)", pic.draggable === false, JSON.stringify(pic));
+  const [ix, iy] = pic.centre;
+  await touch("touchStart", [[ix, iy]]);
+  await glide([ix, iy], [ix + 40, iy + 50], 6, (x, y) => touch("touchMove", [[x, y]]));
+  await touch("touchEnd", []);
+  const picAfter = await page.evaluate(`async (id) => {
+    const { api, settle } = window.__recall;
+    await settle(250);
+    const b = api.documentBlocks().find((entry) => entry.id === id);
+    return { x: b.x, y: b.y };
+  }`, pic.id);
+  const pdx = (picAfter.x - pic.x) * pic.scale;
+  picAfter.trace = await page.evaluate(`() => window.__recall.api.pdfGestureLog().slice(-4).map((g) => g.scope + " " + g.what + " " + g.detail)`);
+  const pdy = (picAfter.y - pic.y) * pic.scale;
+  check("a finger drags a picture by its body", Math.abs(pdx - 40) <= 4 && Math.abs(pdy + 50) <= 4, `moved ${pdx.toFixed(1)}, ${pdy.toFixed(1)} px · ${picAfter.trace.join(" | ")}`);
+  const offPage = await page.evaluate(`async (id) => {
+    const { api, settle } = window.__recall;
+    document.querySelector('[data-pdf-block="' + id + '"]').scrollIntoView({ block: "center" });
+    await settle(400);
+    const node = document.querySelector('[data-pdf-block="' + id + '"]');
+    const r = node.getBoundingClientRect();
+    const pageBox = document.querySelector('.pdf-page[data-page-number="1"]').getBoundingClientRect();
+    const from = [r.left + r.width / 2, r.top + r.height / 2];
+    const hit = document.elementFromPoint(from[0], from[1]);
+    return { from, to: [pageBox.left - 600, r.top + r.height / 2], hit: hit ? hit.tagName + "." + hit.className : "none", inView: [window.innerWidth, window.innerHeight] };
+  }`, pic.id);
+  await mouse("mouseMoved", offPage.from[0], offPage.from[1], 0);
+  await mouse("mousePressed", offPage.from[0], offPage.from[1], 1);
+  await glide(offPage.from, offPage.to, 8, (x, y) => mouse("mouseMoved", x, y, 1));
+  await mouse("mouseReleased", offPage.to[0], offPage.to[1], 0);
+  const clamped = await page.evaluate(`async (id) => {
+    const { api, settle } = window.__recall;
+    await settle(250);
+    const b = api.documentBlocks().find((entry) => entry.id === id);
+    const vb = api.pdfPageViewport(1).viewBox;
+    api.deleteBlock(id);
+    return { right: b.x + b.w, keep: vb[0] + api.PDF_BLOCK_KEEP_ON_PAGE, trace: api.pdfGestureLog().slice(-4).map((g) => g.scope + " " + g.what + " " + g.detail) };
+  }`, pic.id);
+  check("a mouse drags it too — and a drag off the page edge stops with part of it still on the paper", clamped.right >= clamped.keep - 0.5 && clamped.right <= clamped.keep + 1.5, JSON.stringify({ ...clamped, from: offPage.from, hit: offPage.hit, view: offPage.inView }));
+
+  // The markdown in a picture of the page: the words rendered, not printed plain.
+  const pictured = await page.evaluate(`async (id) => {
+    const { api } = window.__recall;
+    const record = api.documentHighlightById(id);
+    const source = { slot: "doc", pdfId: api.activePdfId(api.state.meta) };
+    const doc = api.currentPdfDocument();
+    const pdfPage = await doc.getPage(1);
+    // What went wrong, if it did, is in the detail: the rasteriser warns and
+    // falls back to plain words rather than throwing.
+    const warned = [];
+    const warn = console.warn;
+    console.warn = (...args) => { warned.push(args.map((a) => String(a?.stack || a?.message || a)).join(" ").slice(0, 300)); warn.apply(console, args); };
+    let rasters = [];
+    try {
+      ({ rasters } = await api.rasteriseRegionBlocks(pdfPage, source, 1, record.quads[0].rect, 2));
+    } finally {
+      console.warn = warn;
+    }
+    const mine = rasters.find((r) => r.kind === "shape-text" && r.block.id === id);
+    api.removeDocumentHighlight(id, { undo: false });
+    return { found: Boolean(mine), plain: Boolean(mine?.plain), size: mine ? [mine.canvas.width, mine.canvas.height] : null, warned };
+  }`, made.id);
+  if (htmlToImage) check("a picture of the page draws a text box's markdown rendered, over its box", pictured.found && !pictured.plain, JSON.stringify(pictured));
+  else console.log("  skip  a text box's markdown in a picture — html-to-image not available");
+  check("...and never loses the words: without the renderer they are drawn plain", pictured.found, JSON.stringify(pictured));
 });
 
 // ── Saved with annotations: every mark as a real PDF annotation ────────────
@@ -1162,6 +1489,7 @@ try {
   });
   await servePdfjsFromDisk(client, page, sources);
   if (pdflib) await page.call("Page.addScriptToEvaluateOnNewDocument", { source: pdflib });
+  if (htmlToImage) await page.call("Page.addScriptToEvaluateOnNewDocument", { source: htmlToImage });
   await page.goto(`${server.base}/index.html`);
   await page.evaluate(SETUP_SRC, API_SRC);
 

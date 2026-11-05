@@ -67,6 +67,7 @@ import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { blockStylePreference, writeBlockStylePreference } from "../storage/ink-prefs.js?v=__BUILD__";
 import { dropMetaTombstonesForLiveIds, recordDeletedMetaId } from "../sync/document-sync.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
+import { notePdfGesture } from "./pdf-timing.js?v=__BUILD__";
 import { resolveFontFamily } from "../ui/fonts.js?v=__BUILD__";
 
 // A block with no `kind` is text — see the header. Named constants rather than
@@ -75,10 +76,12 @@ export const PDF_BLOCK_TEXT = "text";
 
 export const PDF_BLOCK_IMAGE = "image";
 
-// In PDF points. A block narrower than this cannot show a line of text, and one
-// shorter cannot be grabbed by its own bar.
-export const PDF_BLOCK_MIN_WIDTH = 90;
-export const PDF_BLOCK_MIN_HEIGHT = 34;
+// In PDF points. These were 90 × 34, sized for a header bar the block no longer
+// has — which made a one-word label or a single symbol a box three times wider
+// than its words, with no way to drag it smaller. What is left to protect is
+// the corner grip (16px) and the body's own padding, so the floor is just that.
+export const PDF_BLOCK_MIN_WIDTH = 24;
+export const PDF_BLOCK_MIN_HEIGHT = 16;
 // A picture has no line of text to protect and no bar to grab, and its frame is
 // always the picture's own shape (see fitImageBlockFrame) — so a wide, short
 // photograph held to a text block's 34pt floor was a letterbox the reader could
@@ -562,6 +565,19 @@ function buildBlock(block) {
   grip.title = "Drag to resize";
 
   node.append(body, grip);
+  // ── Nothing of the browser's own between a press and a drag ─────────────
+  //
+  // A long press on a picture opens the system's image menu on a phone, and a
+  // press-and-move on an <img> starts the browser's own image drag on a
+  // desktop (Firefox ignores -webkit-user-drag). Either one CANCELS the pointer
+  // this block was being dragged by — a pointercancel nobody sees, and a
+  // picture that moves a few pixels and stops: "once inserted it is almost
+  // impossible to move". The images are made undraggable where they are
+  // created (paintBlock, renderBlockBody); this takes the menu away while the
+  // block is a thing being picked up rather than typed into.
+  node.addEventListener("contextmenu", (event) => {
+    if (!node.classList.contains("is-editing") && !node.classList.contains("is-static")) event.preventDefault();
+  });
   return node;
 }
 
@@ -680,6 +696,8 @@ function paintBlock(node, block) {
       img = document.createElement("img");
       img.className = "pdf-block-img";
       img.decoding = "async";
+      // See buildBlock: a native image drag would cancel the block's own.
+      img.draggable = false;
       body.appendChild(img);
     }
     // Compared with the SOURCE this element was last given, not with its live
@@ -709,7 +727,7 @@ function paintBlock(node, block) {
   // exactly what one added and not yet typed into would otherwise be.
   if (!block.md.trim()) {
     renderedMarkdown.delete(body);
-    body.innerHTML = '<p class="pdf-block-empty">Empty — press &#9998; to write</p>';
+    body.innerHTML = '<p class="pdf-block-empty">Empty — select it and press Edit to write</p>';
     return;
   }
   // ── The same renderer the Notes panel uses, and why it was not ──────────
@@ -982,6 +1000,9 @@ async function renderBlockBody(body, md, node = null, block = null) {
     // private bucket will not serve as they stand — the same swap a note's
     // pictures get (cloud/storage-urls.js).
     await resolveStorageImages(body);
+    // A picture inside the words is part of a block that is dragged by any
+    // press on it — see buildBlock on why a native image drag must not start.
+    body.querySelectorAll("img").forEach((img) => { img.draggable = false; });
   } catch (error) {
     console.warn("Could not render a block", error);
   }
@@ -1425,7 +1446,7 @@ function beginGesture(event, node, mode) {
     // wrong way under a finger.
     const dy = -(moveEvent.clientY - start.y) * perPixel;
     if (mode === "drag") {
-      live = { ...block, x: Math.round(block.x + dx), y: Math.round(block.y + dy) };
+      live = { ...block, ...clampBlockToPage(viewport, block, block.x + dx, block.y + dy) };
     } else {
       // The grip is the bottom-right on screen, which is the bottom-right in
       // points too — so it grows the width and moves the origin DOWN.
@@ -1457,6 +1478,16 @@ function beginGesture(event, node, mode) {
     document.removeEventListener("pointermove", move);
     document.removeEventListener("pointerup", finish);
     document.removeEventListener("pointercancel", finish);
+    node.removeEventListener("lostpointercapture", onLostCapture);
+    // What ended it, for ☰ → Diagnostics: a pointerup is the reader letting
+    // go; a pointercancel or a lost capture is the BROWSER taking the pointer
+    // back (a pan, a system gesture, a native drag), which is the one ending a
+    // reader cannot see and the first thing to look for when a drag "stops".
+    // The move made so far is kept either way (below).
+    notePdfGesture("block", upEvent?.type === "pointerup" ? (captured ? "dropped" : "tapped") : "cancelled", {
+      id, kind: block.kind, mode, pointer: event.pointerType, cause: upEvent?.type || "",
+      dx: live.x - block.x, dy: live.y - block.y
+    });
     // A press that never crossed the slop was never captured and never moved
     // `live` off the block's own values — nothing to release and nothing to
     // re-place.
@@ -1475,9 +1506,46 @@ function beginGesture(event, node, mode) {
     writeBlocks(documentBlocks().map((entry) => (entry.id === id ? { ...entry, ...live, at: Date.now() } : entry)));
   };
 
+  // ── Only the BLOCK's own capture ────────────────────────────────────────
+  //
+  // lostpointercapture bubbles. A finger's press is captured IMPLICITLY by
+  // whatever it landed on — the <img> of a picture, a word in a text block —
+  // and the moment the drag proves itself, setPointerCapture moves that capture
+  // to the block, which the <img> hears as a lost capture and the event bubbles
+  // up to here. Ending the gesture on THAT is what cut a finger's drag of a
+  // picture off after its first few pixels. Only the block losing the capture
+  // it took is the end of the gesture.
+  const onLostCapture = (lostEvent) => {
+    if (lostEvent.target !== node || !captured) return;
+    finish(lostEvent);
+  };
+
   document.addEventListener("pointermove", move);
   document.addEventListener("pointerup", finish);
   document.addEventListener("pointercancel", finish);
+  // The capture can be lost without a pointercancel (the node re-parented, a
+  // second capture elsewhere) — and then neither listener above ever hears the
+  // end of the gesture, and `gestureLive` stays true, freezing every height
+  // fit on the page. Ending the gesture here is the backstop.
+  node.addEventListener("lostpointercapture", onLostCapture);
+  notePdfGesture("block", mode === "resize" ? "resize start" : "press", { id, kind: block.kind, pointer: event.pointerType });
+}
+
+// ── Never off the page ─────────────────────────────────────────────────────
+//
+// A block dragged past the edge of the page is gone — nothing is drawn outside
+// the page, so there is nothing left to press to bring it back. The drag is
+// held so at least this many points of the block stay on the paper.
+export const PDF_BLOCK_KEEP_ON_PAGE = 16;
+
+function clampBlockToPage(viewport, block, x, y) {
+  const [vx0, vy0, vx1, vy1] = viewport.viewBox;
+  const keep = Math.min(PDF_BLOCK_KEEP_ON_PAGE, block.w, block.h);
+  const clamp = (value, low, high) => (low > high ? value : Math.min(high, Math.max(low, value)));
+  return {
+    x: Math.round(clamp(x, vx0 + keep - block.w, vx1 - keep)),
+    y: Math.round(clamp(y, vy0 + keep - block.h, vy1 - keep))
+  };
 }
 
 // One delegated listener, bound by src/main.js on the scroller. Returns true

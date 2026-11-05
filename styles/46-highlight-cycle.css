@@ -446,6 +446,42 @@
   outline: 2px solid var(--accent-strong, var(--accent));
   outline-offset: 1px;
   border-radius: 2px;
+  /* A soft glow round the ring, so the mark the list is on is found at a
+     glance on a busy page and not only by looking for a 2px line. */
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-strong, var(--accent)) 22%, transparent),
+    0 0 14px 2px color-mix(in srgb, var(--accent-strong, var(--accent)) 45%, transparent);
+}
+
+/* ── The envelope round a text box, a shape or a note in ink ──────────────
+ *
+ * Those have no painted quad to ring (see markEnvelopeFor in
+ * src/documents/pdf-highlights.js), so each carries an invisible box round
+ * itself and THAT is what lights: a glowing envelope as the reader moves
+ * through the list to it, gone again as they move on. A faint wash inside, so
+ * a box the size of a word still reads as lit. */
+.pdf-mark-envelope {
+  position: absolute;
+  box-sizing: border-box;
+  border-radius: 6px;
+  pointer-events: none;
+}
+
+.pdf-mark-envelope.is-linked {
+  outline: 2px solid var(--accent-strong, var(--accent));
+  outline-offset: 0;
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent-strong, var(--accent)) 20%, transparent),
+    0 0 18px 4px color-mix(in srgb, var(--accent-strong, var(--accent)) 50%, transparent);
+  animation: pdf-envelope-glow 2.4s ease-in-out infinite;
+}
+
+@keyframes pdf-envelope-glow {
+  0%, 100% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent-strong, var(--accent)) 20%, transparent), 0 0 18px 4px color-mix(in srgb, var(--accent-strong, var(--accent)) 50%, transparent); }
+  50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent-strong, var(--accent)) 12%, transparent), 0 0 10px 2px color-mix(in srgb, var(--accent-strong, var(--accent)) 30%, transparent); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pdf-mark-envelope.is-linked { animation: none; }
 }
 
 /* The card end of the same pairing. Quieter than .is-current — that one says

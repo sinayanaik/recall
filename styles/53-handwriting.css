@@ -530,8 +530,43 @@
    there. No heavier than the outline a text block carries all the time. */
 [data-pdf-block-kind="image"]:hover,
 [data-pdf-block-kind="image"]:focus-within,
+[data-pdf-block-kind="image"].is-selected,
 [data-pdf-block-kind="image"].is-editing {
   border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+}
+
+/* A finger has no hover, so on a touch screen the edge above was never shown
+   at all: a picture laid on white paper had no sign it was a thing you could
+   pick up, and no corner to find. A faint dashed edge, always, where the
+   pointer is coarse. */
+@media (pointer: coarse) {
+  [data-pdf-block-kind="image"]:not(.is-static) {
+    border-color: color-mix(in srgb, var(--accent) 28%, transparent);
+    border-style: dashed;
+  }
+}
+
+/* ── Nothing inside a block may pan the page ──────────────────────────────
+
+   `.pdf-block { touch-action: none }` says a finger on a block drags it — but
+   touch-action is decided per element, and a text block's body is
+   `overflow: auto`, a scroll container, inside which the browser turns panning
+   back ON. `.rendered pre` on a coarse pointer, and the maths and diagram
+   wrappers, ask for panning by name. So a finger landing on the WORDS of a
+   block started a page scroll, the browser sent pointercancel, and the drag
+   stopped after a few pixels. Every descendant of a block that is not being
+   typed into is told the same thing as the block. */
+.pdf-block:not(.is-editing):not(.is-static),
+.pdf-block:not(.is-editing):not(.is-static) * {
+  touch-action: none;
+}
+
+/* Pictures in a block, whatever kind: no system image menu on a long press,
+   no browser image drag — either would cancel the block's own drag. */
+.pdf-block img {
+  -webkit-user-drag: none;
+  -webkit-touch-callout: none;
+  user-select: none;
 }
 
 /* ── A picture inside a TEXT block ────────────────────────────────────────
@@ -656,6 +691,26 @@
   color: var(--text);
 }
 
+/* Aa Style, at the far end of the head: the block's style controls open from
+   here and are shut each time the window opens. */
+.pdf-block-editor-style-toggle {
+  margin-left: auto;
+  width: auto;
+  height: 30px;
+  padding: 0 12px;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.pdf-block-editor-style-toggle[hidden] {
+  display: none;
+}
+
+.pdf-block-editor-style-toggle[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--accent) 18%, var(--panel));
+  border-color: var(--accent);
+}
+
 .pdf-block-editor-foot {
   justify-content: flex-end;
   gap: 8px;
@@ -695,4 +750,24 @@
   cursor: nwse-resize;
   touch-action: none;
   background: linear-gradient(135deg, transparent 45%, color-mix(in srgb, var(--accent) 60%, transparent) 45%);
+}
+
+/* A 16px corner is a mouse's target, not a fingertip's. On a coarse pointer
+   the grip draws the same but answers a press over 32px, reaching back into the
+   block from its corner — the drawn corner stays small so a picture is not
+   covered by it. (A block clips its overflow, so the reach goes inwards.) */
+@media (pointer: coarse) {
+  .pdf-block-grip {
+    width: 22px;
+    height: 22px;
+  }
+
+  .pdf-block-grip::before {
+    content: "";
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    width: 32px;
+    height: 32px;
+  }
 }

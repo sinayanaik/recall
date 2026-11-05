@@ -123,14 +123,13 @@ export function blockInkVar(token) {
 // is a different thing from a number the reader typed.
 //
 // No clamping and no rounding to a step, per the Style panel's rule. The only
-// judgements are that a size is a POSITIVE, FINITE number — 0, -4, "abc" and an
+// judgement is that a size is a POSITIVE, FINITE number — 0, -4, "abc" and an
 // empty box are all a reader saying "no size", not a reader asking for invisible
-// type — and a ceiling far above any real answer, because a stray keystroke in a
-// box that previews live should not paint a single letter a mile high while the
-// second digit is still being typed.
-export const BLOCK_SIZE_MAX = 400;
-
-export function normalizeBlockNumber(value, max = BLOCK_SIZE_MAX) {
+// type. There used to be a 400pt ceiling as well; "I want complete freedom on
+// values" took it away, so a type size is uncapped. `max` is still taken by the
+// one caller with a real domain — a picture's width as a PERCENT of its block,
+// where 100 is the whole block and not an opinion.
+export function normalizeBlockNumber(value, max = Infinity) {
   if (value === null || value === undefined || value === "") return null;
   const number = Number(value);
   if (!Number.isFinite(number) || number <= 0) return null;

@@ -39,7 +39,7 @@ import { MARK_HIGHLIGHT_DEFAULT, MARK_HIGHLIGHT_HEX } from "../format/highlight-
 import { readHighlightNotes } from "../format/highlight-notes.js?v=__BUILD__";
 import { decodeInkStrokes } from "../format/ink-strokes.js?v=__BUILD__";
 import { markGeometry, markStyleOf, normalizeMarkHex } from "../format/mark-styles.js?v=__BUILD__";
-import { calloutLeaderStart, normalizeShape, rectFromPoints, shapeBounds, shapeDashArray, shapeTextRect } from "../render/annot-shapes.js?v=__BUILD__";
+import { calloutLeaderStart, markdownToPlainText, normalizeShape, rectFromPoints, shapeBounds, shapeDashArray, shapeTextRect } from "../render/annot-shapes.js?v=__BUILD__";
 import { resolveInkPaint } from "../render/ink-paint.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
 import { AREA_FILL_ALPHA, CUSTOM_HIGHLIGHT_ALPHA, highlightAlpha } from "./pdf-region-marks.js?v=__BUILD__";
@@ -310,7 +310,9 @@ async function writeShape(doc, page, record, note) {
     // Callout and text: Contents is the words in the box. The note, if any,
     // is a reply to it.
     dict = baseAnnot(doc, record, "FreeText", bounds, s.stroke, null);
-    dict.Contents = PDFHexString.fromText(s.text || "");
+    // The words with their markdown syntax taken off: another PDF reader
+    // shows Contents as plain text, and "**bold**" there is four asterisks.
+    dict.Contents = PDFHexString.fromText(markdownToPlainText(s.text || ""));
     const colour = hexRgb(s.font.color || (s.type === "text" ? s.stroke : "#16181d"));
     dict.DA = window.PDFLib.PDFString.of(`/${s.font.bold ? "HeBo" : "Helv"} ${s.font.size} Tf ${colour.join(" ")} rg`);
     dict.Q = { left: 0, center: 1, right: 2 }[s.font.align] ?? 0;

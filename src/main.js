@@ -156,6 +156,7 @@ import { applyInkRailPreference, closeInkRailPopups, initInkRail, refreshInkRail
 import { initDocumentShapes, setShapeCreatedHandler } from "./documents/pdf-shapes.js?v=__BUILD__";
 import { openShapeTextEditor } from "./documents/pdf-shape-text.js?v=__BUILD__";
 import { initShapeStylePopover } from "./documents/pdf-shape-style-popover.js?v=__BUILD__";
+import { buildStaticShapeText } from "./documents/pdf-shape-markdown.js?v=__BUILD__";
 import { INK_NUDGE_STEP, INK_NUDGE_STEP_COARSE } from "./render/ink-engine.js?v=__BUILD__";
 
 // ── Which of the two undo rings on this surface Ctrl+Z means ───────────────
@@ -1363,7 +1364,7 @@ onDomReady(() => {
   // ...and the blocks on a page, for every picture of a region that shows
   // them (pdf-region-marks.js). Registered for the same reason: pdf-blocks.js
   // renders through render/enhance.js, which reaches that module back.
-  setRegionBlockSource({ blocksForPaper, buildStaticBlock });
+  setRegionBlockSource({ blocksForPaper, buildStaticBlock, buildStaticShapeText });
 
   // ── What a highlight can be turned into ─────────────────────────────────
   //

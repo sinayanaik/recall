@@ -929,7 +929,7 @@ export function paintDocumentHighlights(pageNumber) {
   // it would be multiplied along with them.
   const areaLayer = pdfAreaLayer(pageNumber);
   layer.innerHTML = "";
-  if (areaLayer !== layer) areaLayer.querySelectorAll(`.${PDF_MARK_CLASS}`).forEach((node) => node.remove());
+  if (areaLayer !== layer) areaLayer.querySelectorAll(`.${PDF_MARK_CLASS}, .${PDF_MARK_ENVELOPE_CLASS}`).forEach((node) => node.remove());
   const frag = document.createDocumentFragment();
   const areaFrag = document.createDocumentFragment();
   documentHighlights().forEach((record) => {
@@ -938,9 +938,18 @@ export function paintDocumentHighlights(pageNumber) {
     // Highlights pane can crop a thumbnail, the note badge has a corner to sit
     // on and the export knows where the mark is. Drawn as a mark div it would
     // be a tinted rectangle over the reader's own handwriting.
-    if (record.kind === "ink") return;
-    // ...and so does a shape, for the same reason.
-    if (record.kind === "shape") return;
+    //
+    // ...but each still gets an ENVELOPE: an invisible box round the mark, on
+    // the area layer (which does not blend), that the Highlights pane can light
+    // as the reader moves through the list and a jump can pulse — the two
+    // things a painted quad does for a highlight. Without it a text box, an
+    // arrow or a note in ink had nothing on the page to light up: "while moving
+    // in this I am not seeing a highlighting glowing envelope over these texts".
+    if (record.kind === "ink" || record.kind === "shape") {
+      const envelope = markEnvelopeFor(record, pageNumber);
+      if (envelope) areaFrag.appendChild(envelope);
+      return;
+    }
     (record.quads || []).forEach((quad) => {
       if (quad.page !== pageNumber) return;
       const box = quadToPageBox(quad);
@@ -986,10 +995,40 @@ export function repaintDocumentHighlights() {
 
 // Every painted quad belonging to one highlight. One highlight is several of
 // them — a phrase spanning three lines is three boxes — so everything that acts
-// on "the highlight on the page" acts on a list.
+// on "the highlight on the page" acts on a list. A shape or an ink mark has no
+// quad of its own on the page and answers with its envelope instead (see
+// markEnvelopeFor), so the pane's ring and a jump's pulse reach those too.
 export function documentHighlightMarks(id) {
   if (!id) return [];
-  return [...document.querySelectorAll(`.${PDF_MARK_CLASS}[data-highlight-id="${CSS.escape(id)}"]`)];
+  const key = CSS.escape(id);
+  return [...document.querySelectorAll(`.${PDF_MARK_CLASS}[data-highlight-id="${key}"], .${PDF_MARK_ENVELOPE_CLASS}[data-highlight-id="${key}"]`)];
+}
+
+// ── The envelope round a shape or an ink mark ──────────────────────────────
+//
+// Transparent until something lights it (styles/46-highlight-cycle.css,
+// `.is-linked`; styles/36-document.css, `.is-flashing`), and never pressed —
+// the area layer takes no pointer events. Built from the record's own bounding
+// box, the quad every shape and ink record already carries for the pane's crop,
+// padded a little so the glow sits round the mark rather than on its edge.
+export const PDF_MARK_ENVELOPE_CLASS = "pdf-mark-envelope";
+
+const PDF_MARK_ENVELOPE_PAD = 3;
+
+function markEnvelopeFor(record, pageNumber) {
+  const quad = (record.quads || []).find((entry) => Number(entry?.page) === Number(pageNumber));
+  const box = quad ? quadToPageBox(quad) : null;
+  if (!box || !(box.width > 0) || !(box.height > 0)) return null;
+  const node = document.createElement("div");
+  node.className = PDF_MARK_ENVELOPE_CLASS;
+  node.dataset.highlightId = record.id;
+  node.dataset.kind = record.kind;
+  node.setAttribute("aria-hidden", "true");
+  node.style.left = `${box.left - PDF_MARK_ENVELOPE_PAD}px`;
+  node.style.top = `${box.top - PDF_MARK_ENVELOPE_PAD}px`;
+  node.style.width = `${box.width + PDF_MARK_ENVELOPE_PAD * 2}px`;
+  node.style.height = `${box.height + PDF_MARK_ENVELOPE_PAD * 2}px`;
+  return node;
 }
 
 // Pulse one highlight's quads, so a jump from a card or the highlights pane

@@ -33,7 +33,7 @@ import { MARK_HIGHLIGHT_DEFAULT, MARK_HIGHLIGHT_HEX } from "../format/highlight-
 import { decodeInkStrokes } from "../format/ink-strokes.js?v=__BUILD__";
 import { markGeometry, markStyleOf, normalizeMarkHex, paintMarkGeometry } from "../format/mark-styles.js?v=__BUILD__";
 import { paintInkLayers } from "../render/ink-paint.js?v=__BUILD__";
-import { paintShapeOnCanvas } from "../render/annot-shapes.js?v=__BUILD__";
+import { normalizeShape, paintShapeOnCanvas, paintShapeTextOnCanvas, shapeTextNeedsRendering, shapeTextRect } from "../render/annot-shapes.js?v=__BUILD__";
 import { recordsForSurface } from "./pdf-multi.js?v=__BUILD__";
 
 // ── The colours, matching the live mark layer ───────────────────────────────
@@ -112,7 +112,12 @@ export function regionMarksOnPage(source, pageNumber, { excludeId = null, exclud
 // text tints go down as one group, blended once — the way the page's mark layer
 // is blended on screen, so two overlapping highlights read as one there and
 // here. On a real context each is blended as it is drawn, as it always was.
-export function paintRegionMarks(ctx, viewport, marks, { paper = "light", areas = true } = {}) {
+//
+// `skipTextIds` names shapes whose WORDS the caller draws itself, over the
+// shape, from rendered markdown (rasteriseRegionBlocks below, or a static DOM
+// copy in an embed) — their box, fill and leader are still drawn here; only the
+// canvas's plain-text copy of the words is left out, so the two never overlap.
+export function paintRegionMarks(ctx, viewport, marks, { paper = "light", areas = true, skipTextIds = null } = {}) {
   const blend = paper === "dark" ? "screen" : "multiply";
   const grouped = typeof ctx.beginLayer === "function";
   const quadsOf = (record, paint) => {
@@ -173,7 +178,9 @@ export function paintRegionMarks(ctx, viewport, marks, { paper = "light", areas 
   // picture, whose caller leaves them live (they are pressed, like regions).
   const paintShapes = () => {
     if (!areas || !marks.shapes?.length) return;
-    marks.shapes.forEach((record) => paintShapeOnCanvas(ctx, record.shape, ([x, y]) => viewport.convertToViewportPoint(x, y), viewport.scale));
+    marks.shapes.forEach((record) => paintShapeOnCanvas(ctx, record.shape, ([x, y]) => viewport.convertToViewportPoint(x, y), viewport.scale, {
+      skipText: Boolean(skipTextIds?.has?.(record.id))
+    }));
   };
   if (!marks.ink.length) { paintShapes(); return; }
   // Strokes are stored in PDF user-space points; paintInkLayers expects the
@@ -196,13 +203,62 @@ export function paintRegionMarks(ctx, viewport, marks, { paper = "light", areas 
 // Registered rather than imported: pdf-blocks.js renders a block through
 // render/enhance.js, which reaches pdf-region-embed.js (and so this module)
 // back — the same cycle setPdfRegionGoToHandler exists to avoid. src/main.js
-// hands over { blocksForPaper, buildStaticBlock }.
+// hands over { blocksForPaper, buildStaticBlock, buildStaticShapeText } — the
+// last from src/documents/pdf-shape-markdown.js, for the typed words of a text
+// box or a callout, which are markdown and are pictured the way a block is.
 let blockSource = null;
 
 export function setRegionBlockSource(source) {
   blockSource = source && typeof source.blocksForPaper === "function" && typeof source.buildStaticBlock === "function"
     ? source
     : null;
+}
+
+// ── Typed text that is markdown ─────────────────────────────────────────────
+//
+// A text box's or a callout's words are markdown (src/documents/
+// pdf-shape-markdown.js). A canvas can only draw them as plain text, so where
+// the words actually need the renderer (shapeTextNeedsRendering) they are
+// pictured like a block — built as a static node and rasterised — and laid OVER
+// the shape's own box and fill, which the canvas still draws. Plain words stay
+// on the canvas exactly as before, at no cost.
+//
+// Each returns { record, rect } with `rect` the text box in PDF points.
+export function regionRichShapeTexts(source, pageNumber, rect = null) {
+  if (typeof blockSource?.buildStaticShapeText !== "function") return [];
+  const page = Number(pageNumber);
+  const box = rect ? [Math.min(rect[0], rect[2]), Math.min(rect[1], rect[3]), Math.max(rect[0], rect[2]), Math.max(rect[1], rect[3])] : null;
+  return recordsForSurface(state.meta?.pdfHighlights, source.slot, source.pdfId)
+    .filter((record) => record?.kind === "shape" && Number(record.page) === page)
+    .map((record) => ({ record, shape: normalizeShape(record.shape) }))
+    .filter(({ shape }) => shape && (shape.type === "text" || shape.type === "callout") && shapeTextNeedsRendering(shape.text))
+    .map(({ record, shape }) => ({ record, rect: shapeTextRect(shape) }))
+    .filter(({ rect: r }) => !box || (r[0] < box[2] && r[2] > box[0] && r[1] < box[3] && r[3] > box[1]));
+}
+
+// The ids of the shapes a set of rasters drew the words of — what
+// paintRegionMarks is told to leave the words of alone.
+export function shapeTextRasterIds(rasters) {
+  return new Set((rasters || []).filter((raster) => raster.kind === "shape-text").map((raster) => raster.block.id));
+}
+
+// A text box as a pseudo-block: the rectangle drawRegionBlocks and the region
+// PDF's drawBlocks place a raster into, by the same blockPdfRect as a block.
+function shapeTextBlock({ record, rect }) {
+  return { id: record.id, x: rect[0], y: rect[1], w: rect[2] - rect[0], h: rect[3] - rect[1], z: Infinity };
+}
+
+// The words drawn as PLAIN text onto a canvas of their own — the fallback when
+// the rendered picture could not be made (no html-to-image, a tainted canvas),
+// so a failure costs the formatting and never the words.
+function plainShapeTextRaster(item, pixelRatio) {
+  const [x0, , x1, y1] = item.rect;
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.ceil((x1 - x0) * pixelRatio));
+  canvas.height = Math.max(1, Math.ceil((item.rect[3] - item.rect[1]) * pixelRatio));
+  const ctx = canvas.getContext("2d");
+  paintShapeTextOnCanvas(ctx, item.record.shape, ([x, y]) => [(x - x0) * pixelRatio, (y1 - y) * pixelRatio], pixelRatio);
+  return { block: shapeTextBlock(item), canvas, kind: "shape-text", plain: true };
 }
 
 // The blocks on that page whose box overlaps the region, bottom first.
@@ -241,11 +297,19 @@ export async function mountRegionBlockLayer(pageGroup, viewport, source, pageNum
   // and its marks, not the blocks.
   if (pageGroup.closest(".pdf-block.is-static, .pdf-region-embed-blocks")) return null;
   const blocks = regionBlocksInBox(source, pageNumber, rect);
-  if (!blocks.length) return null;
-  const nodes = await Promise.all(blocks.map((block) => blockSource.buildStaticBlock(block, viewport).catch((error) => {
-    console.warn("Could not show a block inside a region", error);
-    return null;
-  })));
+  const texts = regionRichShapeTexts(source, pageNumber, rect);
+  if (!blocks.length && !texts.length) return null;
+  const nodes = await Promise.all([
+    ...blocks.map((block) => blockSource.buildStaticBlock(block, viewport).catch((error) => {
+      console.warn("Could not show a block inside a region", error);
+      return null;
+    })),
+    // Over the blocks, as the shape layer's words are over nothing but ink.
+    ...texts.map(({ record }) => blockSource.buildStaticShapeText(record, viewport).catch((error) => {
+      console.warn("Could not show a text box's words inside a region", error);
+      return null;
+    }))
+  ]);
   const layer = document.createElement("div");
   layer.className = "pdf-block-layer pdf-region-embed-blocks";
   nodes.forEach((node) => { if (node) layer.appendChild(node); });
@@ -269,10 +333,20 @@ export async function mountRegionBlockLayer(pageGroup, viewport, source, pageNum
 // `print-tokens`, which rebinds the theme's tokens and the block fills to the
 // print palette (styles/82-export-themes.css). Otherwise a block is drawn as
 // the reader sees it, which is what the zoom and the pane's pictures want.
+//
+// The typed words of a text box or a callout that are markdown come back here
+// too, as rasters with `kind: "shape-text"` placed by the same rectangle rule
+// (see regionRichShapeTexts) — after the blocks, so they are drawn on top. A
+// caller hands shapeTextRasterIds(rasters) to paintRegionMarks so the canvas
+// does not also print the words plain. One that cannot be rendered comes back
+// as a plain-text raster rather than as nothing.
 export async function rasteriseRegionBlocks(page, source, pageNumber, rect, pixelRatio, { paper = "theme" } = {}) {
   const blocks = regionBlocksInBox(source, pageNumber, rect);
-  if (!blocks.length) return { rasters: [], failed: 0 };
-  if (!(await ensureHtmlToImage())) return { rasters: [], failed: blocks.length };
+  const texts = regionRichShapeTexts(source, pageNumber, rect);
+  if (!blocks.length && !texts.length) return { rasters: [], failed: 0 };
+  if (!(await ensureHtmlToImage())) {
+    return { rasters: texts.map((item) => plainShapeTextRaster(item, pixelRatio)), failed: blocks.length };
+  }
   const viewport = page.getViewport({ scale: 1 });
   const host = document.createElement("div");
   host.setAttribute("aria-hidden", "true");
@@ -322,6 +396,36 @@ export async function rasteriseRegionBlocks(page, source, pageNumber, rect, pixe
       }
       node.remove();
     }
+    for (const item of texts) {
+      // eslint-disable-next-line no-await-in-loop
+      const node = await blockSource.buildStaticShapeText(item.record, viewport).catch((error) => {
+        console.warn("Could not render a text box's words for a picture", error);
+        return null;
+      });
+      if (!node) { rasters.push(plainShapeTextRaster(item, pixelRatio)); continue; }
+      node.style.left = "0px";
+      node.style.top = "0px";
+      host.appendChild(node);
+      const block = shapeTextBlock(item);
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        if (fontEmbedCSS === undefined) fontEmbedCSS = await window.htmlToImage.getFontEmbedCSS(node).catch(() => "");
+        // eslint-disable-next-line no-await-in-loop
+        const canvas = await window.htmlToImage.toCanvas(node, {
+          pixelRatio,
+          width: Math.max(1, block.w),
+          height: Math.max(1, block.h),
+          fontEmbedCSS,
+          imagePlaceholder: "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw=="
+        });
+        canvas.getContext("2d").getImageData(0, 0, 1, 1);
+        rasters.push({ block, canvas, kind: "shape-text" });
+      } catch (error) {
+        console.warn("Could not picture a text box's words; drawing them plain", error);
+        rasters.push(plainShapeTextRaster(item, pixelRatio));
+      }
+      node.remove();
+    }
   } finally {
     host.remove();
   }
@@ -329,8 +433,11 @@ export async function rasteriseRegionBlocks(page, source, pageNumber, rect, pixe
 }
 
 // The rasterised blocks onto a canvas whose drawing space is `viewport`.
-export function drawRegionBlocks(ctx, viewport, rasters) {
-  rasters.forEach(({ block, canvas }) => {
+// `only` draws one kind — "block" or "shape-text" — for a caller that has to
+// put something between the two (the page export draws the marks there).
+export function drawRegionBlocks(ctx, viewport, rasters, { only = null } = {}) {
+  rasters.forEach(({ block, canvas, kind = "block" }) => {
+    if (only && kind !== only) return;
     const [vx0, vy0, vx1, vy1] = viewport.convertToViewportRectangle(blockPdfRect(block));
     ctx.drawImage(canvas, Math.min(vx0, vx1), Math.min(vy0, vy1), Math.abs(vx1 - vx0), Math.abs(vy1 - vy0));
   });

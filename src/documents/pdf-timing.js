@@ -57,6 +57,7 @@ export function onPdfDiagnosticsChange(listener) {
 }
 
 function clearPdfTimings() {
+  pdfGestureEvents.length = 0;
   pdfTimingEvents.length = 0;
   Object.values(pdfTimingSamples).forEach((list) => { list.length = 0; });
   pdfTimingWasted = { cancelled: 0, dropped: 0 };
@@ -64,6 +65,43 @@ function clearPdfTimings() {
   pdfTimingFrames.length = 0;
   pdfTimingJank.length = 0;
   pdfTimingPending = null;
+}
+
+// ── What the reader's hands did to things placed on a page ──────────────────
+//
+// "Once inserted it is almost impossible to move" is a report nobody can debug
+// from the outside: a drag on a phone can be cut short by the browser (a native
+// image drag, a long-press menu, a pan that wins) and the only trace of that is
+// a `pointercancel` nobody sees. So the gestures on blocks, pictures and typed
+// text say what happened here — started, moved, finished, CANCELLED and why —
+// and the Diagnostics readout prints the last few, beside the timings, with the
+// Copy button that already exists for exactly this.
+//
+// Recorded only while diagnostics are on, like everything else here. Always
+// mirrored to console.debug (hidden unless the console is set to Verbose), so a
+// desktop session can watch them live with no switch at all.
+export const PDF_GESTURE_EVENTS_MAX = 30;
+
+const pdfGestureEvents = [];
+
+export function notePdfGesture(scope, what, detail = null) {
+  try { console.debug("[pdf-gesture]", scope, what, detail || ""); } catch (_) { /* no console */ }
+  if (!pdfDiagnosticsEnabled) return;
+  pdfGestureEvents.push({ scope: String(scope), what: String(what), detail: detail ? pdfGestureDetail(detail) : "", at: Date.now() });
+  if (pdfGestureEvents.length > PDF_GESTURE_EVENTS_MAX) pdfGestureEvents.shift();
+}
+
+// A detail as one short line: `{ pointer: "touch", dx: 12 }` → "pointer touch · dx 12".
+function pdfGestureDetail(detail) {
+  if (typeof detail !== "object") return String(detail);
+  return Object.entries(detail)
+    .filter(([, value]) => value !== undefined && value !== null && value !== "")
+    .map(([key, value]) => `${key} ${typeof value === "number" ? Math.round(value * 10) / 10 : value}`)
+    .join(" · ");
+}
+
+export function pdfGestureLog() {
+  return pdfGestureEvents.slice();
 }
 
 export const PDF_TIMING_SAMPLES_MAX = 60;
@@ -360,6 +398,12 @@ export function pdfTimingReport() {
     lines.push("recent:");
     [...pdfTimingEvents].reverse().forEach((event) => {
       lines.push(`  ${PDF_TIMING_LABELS[event.kind] || event.kind}: ${event.ms}ms${event.detail ? ` (${event.detail})` : ""} · ${pdfTimingAgo(event.at)}`);
+    });
+  }
+  if (pdfGestureEvents.length) {
+    lines.push("placed text and pictures (most recent first):");
+    [...pdfGestureEvents].reverse().forEach((event) => {
+      lines.push(`  ${event.scope} ${event.what}${event.detail ? ` (${event.detail})` : ""} · ${pdfTimingAgo(event.at)}`);
     });
   }
   if (pdfReaderTestResult) lines.push(pdfReaderTestResult);

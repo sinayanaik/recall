@@ -105,7 +105,7 @@
 //      never took it over.
 
 import { resetCardDrag } from "../cards/swipe.js?v=__BUILD__";
-import { PDF_BLOCK_CLASS } from "../core/constants.js?v=__BUILD__";
+import { PDF_PICKUP_SELECTOR } from "../core/constants.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { inkPenIsDown, penTextMode, setInkPenDown, setTouchGestureHoldsSurface, wakeDocumentTextAt } from "../core/gesture.js?v=__BUILD__";
 import { wordBoundsAt } from "../core/word-bounds.js?v=__BUILD__";
@@ -2115,7 +2115,7 @@ function onRootTouchStart(event) {
   // gesture won depended on nothing the reader did — how long the finger
   // happened to rest, how far it happened to drift — which is exactly
   // "sometimes it starts a selection and sometimes not".
-  if (event.target?.closest?.(`.${PDF_BLOCK_CLASS}`)) {
+  if (event.target?.closest?.(PDF_PICKUP_SELECTOR)) {
     cancelPress();
     dismissPending = false;
     return;
@@ -2590,7 +2590,7 @@ function onPenPointerDown(event) {
   // and the region marquee is a drag of its own. Asked of the DOM rather than by
   // importing either module, which is the discipline this file keeps everywhere
   // it has to know something about the paper.
-  if (event.target?.closest?.(`.${PDF_BLOCK_CLASS}`)) return;
+  if (event.target?.closest?.(PDF_PICKUP_SELECTOR)) return;
   if (el.documentStage?.classList.contains("is-region-select")) return;
   // Said before the touchstart of this same contact arrives — pointerdown
   // precedes it — so onRootTouchStart stands its press timer down instead of

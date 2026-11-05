@@ -401,7 +401,8 @@ body.has-touch-select .pdf-page:not(.is-text-awake) > .pdf-text-layer {
 
 /* The arrival pulse for a jump from a card or the Highlights panel — the
    document surface's answer to revealNoteMark's flash, and timed to match it. */
-.pdf-mark.is-flashing {
+.pdf-mark.is-flashing,
+.pdf-mark-envelope.is-flashing {
   animation: pdf-mark-flash 1.4s ease-out;
 }
 
@@ -412,7 +413,8 @@ body.has-touch-select .pdf-page:not(.is-text-awake) > .pdf-text-layer {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .pdf-mark.is-flashing { animation: none; outline: 3px solid var(--accent-strong); }
+  .pdf-mark.is-flashing,
+  .pdf-mark-envelope.is-flashing { animation: none; outline: 3px solid var(--accent-strong); }
 }
 
 /* ── Dark page ─────────────────────────────────────────────────────────────

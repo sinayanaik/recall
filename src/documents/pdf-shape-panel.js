@@ -109,6 +109,38 @@ function sliderFromWidth(width) {
   return Math.round((Math.log(Math.max(min, width) / min) / Math.log(max / min)) * SHAPE_SLIDER_STEPS);
 }
 
+// ── Sizes, typed ──────────────────────────────────────────────────────────
+//
+// A−/A+ and the width slider are quick steps; the number box beside each is the
+// whole range — any positive number of points, uncapped.
+
+// Up to two decimals, no trailing zeros: 11, 0.35, 1234.5.
+function formatPoints(value) {
+  return String(Math.round(Number(value) * 100) / 100);
+}
+
+// What a typed box holds, as a size — or null when it is not one.
+export function typedPoints(raw) {
+  const value = Number(String(raw ?? "").trim().replace(",", "."));
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+// One press of A− or A+. Steps of 1pt below 20 and 2pt above, as before — and
+// no floor or ceiling: A+ keeps going, and A− below one step halves instead,
+// so it approaches zero without ever reaching a size that cannot be drawn.
+export function steppedFontSize(size, step) {
+  const by = size >= 20 ? 2 : 1;
+  const next = size + step * by;
+  if (next > 0) return Math.round(next * 100) / 100;
+  return Math.round((size / 2) * 100) / 100 || size;
+}
+
+// A box the reader is typing in is left alone; every other one says the truth.
+function setNumberBox(box, value) {
+  if (!box || document.activeElement === box) return;
+  box.value = formatPoints(value);
+}
+
 // Built twice: as a section of the pen's panel (the rail's chip opens it), and
 // `floating` — in the style popover at a selected shape (src/documents/pdf-
 // shape-style-popover.js), which has no Snap row, since snapping is how the
@@ -124,7 +156,7 @@ export function buildShapePanel(shapePopover, { floating = false } = {}) {
     <div class="shape-pop-row" role="group" aria-label="Line colour"><span class="shape-pop-label">Colour</span>${shapeSwatchRow("stroke")}</div>
     <div class="shape-pop-row" data-shape-row="width"><span class="shape-pop-label">Width</span>
       <input class="shape-pop-slider" type="range" min="0" max="${SHAPE_SLIDER_STEPS}" step="1" data-shape-width aria-label="Line width">
-      <output class="shape-pop-value" data-shape-width-value></output></div>
+      <input class="shape-pop-number" type="number" min="0" step="any" inputmode="decimal" data-shape-width-value aria-label="Line width in points" title="Any width, in points"><span class="shape-pop-unit">pt</span></div>
     <div class="shape-pop-row"><span class="shape-pop-label">Opacity</span>
       <input class="shape-pop-slider" type="range" min="10" max="100" step="1" data-shape-opacity aria-label="Opacity">
       <output class="shape-pop-value" data-shape-opacity-value></output></div>
@@ -137,7 +169,7 @@ export function buildShapePanel(shapePopover, { floating = false } = {}) {
     <div class="shape-pop-row" role="group" aria-label="Fill" data-shape-row="fill"><span class="shape-pop-label">Fill</span>${shapeSwatchRow("fill", { none: true })}</div>
     <div class="shape-pop-row" role="group" aria-label="Text" data-shape-row="font"><span class="shape-pop-label">Text</span>
       <button type="button" class="shape-pop-seg" data-shape-font-step="-1" title="Smaller text" aria-label="Smaller text">A&#8722;</button>
-      <output class="shape-pop-value" data-shape-font-value></output>
+      <input class="shape-pop-number" type="number" min="0" step="any" inputmode="decimal" data-shape-font-value aria-label="Text size in points" title="Any size, in points"><span class="shape-pop-unit">pt</span>
       <button type="button" class="shape-pop-seg" data-shape-font-step="1" title="Larger text" aria-label="Larger text">A+</button>
       <button type="button" class="shape-pop-seg" data-shape-bold title="Bold" aria-label="Bold" aria-pressed="false"><b>B</b></button>
       ${["left", "center", "right"].map((a) => `<button type="button" class="shape-pop-seg" data-shape-align="${a}" title="Align ${a}" aria-label="Align ${a}" aria-pressed="false">${{ left: "&#8676;", center: "&#8596;", right: "&#8677;" }[a]}</button>`).join("")}</div>
@@ -165,12 +197,23 @@ export function buildShapePanel(shapePopover, { floating = false } = {}) {
   // A drag previews its number; the release commits, once.
   section.addEventListener("input", (event) => {
     const input = event.target;
-    if (input.matches("[data-shape-width]")) section.querySelector("[data-shape-width-value]").textContent = `${widthFromSlider(Number(input.value)).toFixed(1)} pt`;
+    if (input.matches("[data-shape-width]")) section.querySelector("[data-shape-width-value]").value = formatPoints(widthFromSlider(Number(input.value)));
     else if (input.matches("[data-shape-opacity]")) section.querySelector("[data-shape-opacity-value]").textContent = `${input.value}%`;
   });
   section.addEventListener("change", (event) => {
     const input = event.target;
     if (input.matches("[data-shape-width]")) setShapeSettings({ width: widthFromSlider(Number(input.value)) });
+    // The typed boxes: any positive number, applied as typed (see
+    // positiveNumber in src/render/annot-shapes.js). Something that is not a
+    // size — empty, 0, "abc" — is refused here rather than handed on, and the
+    // box goes back to the value the shape actually has.
+    else if (input.matches("[data-shape-width-value]")) {
+      const width = typedPoints(input.value);
+      if (width !== null) setShapeSettings({ width });
+    } else if (input.matches("[data-shape-font-value]")) {
+      const fontSize = typedPoints(input.value);
+      if (fontSize !== null) setShapeSettings({ fontSize });
+    }
     else if (input.matches("[data-shape-opacity]")) setShapeSettings({ opacity: Number(input.value) / 100 });
     else if (input.matches("[data-shape-stroke-custom]")) {
       const type = panelShapeType();
@@ -208,8 +251,7 @@ function pressShapePanel(button) {
     setShapeSettings({ heads: { [headsType]: pair } });
   } else if (data.shapeFontStep) {
     const step = Number(data.shapeFontStep);
-    const size = Math.max(5, Math.min(96, Math.round(s.fontSize + step * (s.fontSize >= 20 ? 2 : 1))));
-    setShapeSettings({ fontSize: size });
+    setShapeSettings({ fontSize: steppedFontSize(s.fontSize, step) });
   } else if ("shapeBold" in data) setShapeSettings({ bold: !s.bold });
   else if (data.shapeAlign) setShapeSettings({ align: data.shapeAlign });
   else if ("shapeSnap" in data) setShapeSettings({ snap: !s.snap });
@@ -232,11 +274,11 @@ export function refreshShapePanel(section) {
   markPressed("[data-shape-snap]", () => s.snap);
   const width = section.querySelector("[data-shape-width]");
   if (width && document.activeElement !== width) width.value = String(sliderFromWidth(s.width));
-  section.querySelector("[data-shape-width-value]").textContent = `${s.width.toFixed(1)} pt`;
+  setNumberBox(section.querySelector("[data-shape-width-value]"), s.width);
   const opacity = section.querySelector("[data-shape-opacity]");
   if (opacity && document.activeElement !== opacity) opacity.value = String(Math.round(s.opacity * 100));
   section.querySelector("[data-shape-opacity-value]").textContent = `${Math.round(s.opacity * 100)}%`;
-  section.querySelector("[data-shape-font-value]").textContent = `${s.fontSize} pt`;
+  setNumberBox(section.querySelector("[data-shape-font-value]"), s.fontSize);
   const stroke = section.querySelector("[data-shape-stroke-custom]");
   if (stroke && document.activeElement !== stroke) stroke.value = colour;
   // Only the rows this shape has. A line has no fill and no text; a box has no
