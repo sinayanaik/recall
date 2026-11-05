@@ -301,6 +301,23 @@
   pointer-events: none;
 }
 
+/* The turning handle of a box (src/documents/pdf-shapes.js, buildHandles): a
+   round handle above its top edge, on a stem. */
+.pdf-shape-handle.is-rotate {
+  width: 14px;
+  height: 14px;
+  margin: -7px 0 0 -7px;
+  border-radius: 50%;
+}
+
+.pdf-shape-rotate-stem {
+  position: absolute;
+  height: 0;
+  border-top: 1px solid var(--accent);
+  transform-origin: 0 0;
+  pointer-events: none;
+}
+
 /* The armed Shapes tool says so to a mouse. */
 .document-stage.is-shape-tool .pdf-page {
   cursor: crosshair;

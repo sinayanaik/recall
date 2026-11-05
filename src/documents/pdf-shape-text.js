@@ -16,7 +16,8 @@
 
 import { SHAPE_TEXT_PAD, normalizeShape } from "../render/annot-shapes.js?v=__BUILD__";
 import { documentHighlightById } from "./pdf-highlights.js?v=__BUILD__";
-import { deleteShape, paintDocumentShapes, selectShape, setEditingShapeId, setShapePaintedHook, setShapeTextEditHandler, updateShape } from "./pdf-shapes.js?v=__BUILD__";
+import { applyShapeTextTurn } from "./pdf-shape-markdown.js?v=__BUILD__";
+import { deleteShape, paintDocumentShapes, selectShape, setEditingShapeId, setShapePaintedHook, setShapeTextEditHandler, untransformedClientRect, updateShape } from "./pdf-shapes.js?v=__BUILD__";
 import { pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
 
 export const PDF_SHAPE_EDITOR_CLASS = "pdf-shape-editor";
@@ -45,6 +46,10 @@ function placeShapeEditor(node, viewport, shape) {
     node.style.minWidth = `${shape.font.size * scale * 1.5}px`;
     node.style.maxWidth = `${Math.max(40, viewport.width - Math.min(ax, bx))}px`;
   } else {
+    // Wrapping at the box's width (Wrap, or a box given a width by hand).
+    delete node.dataset.fit;
+    node.style.minWidth = "";
+    node.style.maxWidth = "";
     node.style.width = `${Math.abs(bx - ax)}px`;
   }
   node.style.minHeight = `${Math.abs(by - ay)}px`;
@@ -53,6 +58,8 @@ function placeShapeEditor(node, viewport, shape) {
   node.style.fontWeight = shape.font.bold ? "700" : "400";
   node.style.textAlign = shape.font.align;
   node.style.color = shape.font.color || (shape.type === "text" ? shape.stroke : "#16181d");
+  // Typed in turned, as it will be shown.
+  applyShapeTextTurn(node, shape.rot || 0);
 }
 
 // Open the editor over a callout's or a text box's words.
@@ -161,8 +168,9 @@ function putShapeTextDown() {
   const record = documentHighlightById(editor.id);
   const text = String(editor.node.innerText ?? editor.node.textContent ?? "").replace(/\r/g, "").replace(/\n+$/, "");
   const viewport = pdfPageViewport(editor.page);
-  const measured = editor.node.getBoundingClientRect();
-  const pageBox = editor.node.closest(".pdf-page")?.getBoundingClientRect() || null;
+  const pageEl = editor.node.closest(".pdf-page");
+  const measured = untransformedClientRect(editor.node, pageEl);
+  const pageBox = pageEl?.getBoundingClientRect() || null;
   const height = measured.height;
   editor.node.remove();
   if (!record) { paintDocumentShapes(editor.page); return; }

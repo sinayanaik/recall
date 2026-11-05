@@ -39,7 +39,7 @@ import { MARK_HIGHLIGHT_DEFAULT, MARK_HIGHLIGHT_HEX } from "../format/highlight-
 import { readHighlightNotes } from "../format/highlight-notes.js?v=__BUILD__";
 import { decodeInkStrokes } from "../format/ink-strokes.js?v=__BUILD__";
 import { markGeometry, markStyleOf, normalizeMarkHex } from "../format/mark-styles.js?v=__BUILD__";
-import { calloutLeaderStart, markdownToPlainText, normalizeShape, rectFromPoints, shapeBounds, shapeDashArray, shapeTextRect } from "../render/annot-shapes.js?v=__BUILD__";
+import { calloutStart, markdownToPlainText, normalizeShape, rectFromPoints, shapeBounds, shapeDashArray, shapeTextRect, shapeTextRotationMatrix } from "../render/annot-shapes.js?v=__BUILD__";
 import { resolveInkPaint } from "../render/ink-paint.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
 import { AREA_FILL_ALPHA, CUSTOM_HIGHLIGHT_ALPHA, highlightAlpha } from "./pdf-region-marks.js?v=__BUILD__";
@@ -134,10 +134,13 @@ function appearanceBuilder(doc) {
       }
       const name = prim.bold ? "HeBo" : "Helv";
       const font = fonts[name];
+      const turn = shapeTextRotationMatrix(prim);
+      if (turn) ops.push(P.pushGraphicsState(), P.concatTransformationMatrix(...turn));
       shapeTextLines(prim, font).forEach((line) => {
         ops.push(P.beginText(), P.setFontAndSize(name, line.size), P.setFillingRgbColor(...hexRgb(prim.color)),
           P.moveText(line.x, line.y), P.showText(font.encodeText(line.text)), P.endText());
       });
+      if (turn) ops.push(P.popGraphicsState());
     },
     form(rect) {
       const resources = { ExtGState: states };
@@ -294,6 +297,15 @@ async function writeShape(doc, page, record, note) {
     dict.LE = s.heads.map((h) => LINE_ENDINGS[h] || "None");
     dict.BS = border;
     dict.CA = s.opacity;
+  } else if ((s.type === "rect" || s.type === "ellipse") && s.rot) {
+    // A turned box: a Square or a Circle can only be upright, so it is the
+    // polygon it is drawn as, which any reader draws turned.
+    const outline = list.find((prim) => prim.kind === "poly" && prim.closed);
+    dict = baseAnnot(doc, record, "Polygon", bounds, s.stroke, note);
+    dict.Vertices = (outline?.pts || []).flat().map((n) => Math.round(n * 100) / 100);
+    dict.BS = border;
+    dict.CA = s.opacity;
+    if (s.fill) dict.IC = hexRgb(s.fill);
   } else if (s.type === "rect" || s.type === "ellipse") {
     dict = baseAnnot(doc, record, s.type === "rect" ? "Square" : "Circle", bounds, s.stroke, note);
     dict.BS = border;
@@ -316,7 +328,7 @@ async function writeShape(doc, page, record, note) {
     const colour = hexRgb(s.font.color || (s.type === "text" ? s.stroke : "#16181d"));
     dict.DA = window.PDFLib.PDFString.of(`/${s.font.bold ? "HeBo" : "Helv"} ${s.font.size} Tf ${colour.join(" ")} rg`);
     dict.Q = { left: 0, center: 1, right: 2 }[s.font.align] ?? 0;
-    dict.BS = s.type === "text" ? { W: 0 } : border;
+    dict.BS = s.type === "text" && !s.border ? { W: 0 } : border;
     if (s.fill) dict.IC = hexRgb(s.fill);
     const box = shapeTextRect(s);
     dict.RD = [box[0] - bounds[0], box[1] - bounds[1], bounds[2] - box[2], bounds[3] - box[3]].map((n) => Math.max(0, Math.round(n * 100) / 100));
@@ -324,7 +336,7 @@ async function writeShape(doc, page, record, note) {
       dict.IT = "FreeTextCallout";
       const target = s.p[2];
       const knee = s.p[3] || null;
-      const start = calloutLeaderStart(box, knee || target);
+      const start = calloutStart(s);
       dict.CL = knee ? [...target, ...knee, ...start] : [...target, ...start];
       dict.LE = LINE_ENDINGS[s.heads[1]] || "None";
     }

@@ -297,6 +297,103 @@ try {
   });
 
   // ── Sync ────────────────────────────────────────────────────────────────
+  // ── Wrapping, a border, and a turn ─────────────────────────────────────
+  must("rot and border are only kept where they mean something, and absent when off", () => {
+    const plain = S.normalizeShape({ type: "text", p: [[0, 0], [10, 10]] });
+    if ("rot" in plain || "border" in plain) return `an untouched text box carries ${JSON.stringify(plain)}`;
+    if (S.normalizeShape({ type: "text", p: [[0, 0], [10, 10]], border: true, rot: 30 }).border !== true) return "text lost its border";
+    if ("border" in S.normalizeShape({ type: "rect", p: [[0, 0], [10, 10]], border: true })) return "a rectangle took a text border";
+    if ("rot" in S.normalizeShape({ type: "arrow", p: [[0, 0], [10, 10]], rot: 30 })) return "an arrow took a turn";
+    if ("rot" in S.normalizeShape({ type: "sticky", p: [[0, 0]], rot: 30 })) return "a sticky note took a turn";
+    const at = (rot) => S.normalizeShape({ type: "rect", p: [[0, 0], [10, 10]], rot }).rot;
+    const cases = [[30, 30], [450, 90], [-90, -90], [270, -90], [180, 180], [-180, 180], [12.34, 12.3]];
+    for (const [given, want] of cases) if (at(given) !== want) return `rot ${given} became ${at(given)}, not ${want}`;
+    for (const off of [0, 360, "abc", NaN, null]) if (at(off) !== undefined) return `rot ${String(off)} was kept as ${at(off)}`;
+    return true;
+  });
+  must("a text border is drawn only when asked for", () => {
+    const outline = (border) => S.shapePrimitives({ type: "text", p: [[0, 0], [100, 20]], width: 1, border, text: "x" }).filter((p) => p.kind === "poly" && p.width > 0).length;
+    return outline(false) === 0 && outline(true) === 1 ? true : `${outline(false)} without, ${outline(true)} with`;
+  });
+  must("a box turned a quarter has its outline, bounds and text turned with it", () => {
+    const s = S.normalizeShape({ type: "rect", p: [[0, 0], [100, 20]], rot: 90, width: 0.1 });
+    const pts = S.shapePrimitives(s)[0].pts;
+    // About (50, 10): the bottom-left corner (0, 0) goes to (60, -40).
+    if (!near(pts[0][0], 60) || !near(pts[0][1], -40)) return `first corner ${pts[0]}`;
+    const b = S.shapeBounds(s);
+    if (!near(b[0], 40 - 1.05) || !near(b[2], 60 + 1.05) || !near(b[1], -40 - 1.05) || !near(b[3], 60 + 1.05)) return `bounds ${b}`;
+    const text = S.shapePrimitives({ type: "text", p: [[0, 0], [100, 20]], rot: 45, text: "hi" }).find((p) => p.kind === "text");
+    return text.rot === 45 && text.centre.join() === "50,10" && text.rect.join() === "0,0,100,20" ? true : JSON.stringify(text);
+  });
+  must("an unturned shape draws exactly as before", () => {
+    const pts = S.shapePrimitives({ type: "rect", p: [[0, 0], [100, 20]] })[0].pts;
+    return JSON.stringify(pts) === JSON.stringify([[0, 0], [100, 0], [100, 20], [0, 20]]) ? true : JSON.stringify(pts);
+  });
+  must("a turned text box is hit inside its turned outline, not its upright one", () => {
+    const s = { type: "text", p: [[0, 0], [100, 20]], rot: 90 };
+    if (!S.shapeHitsPoint(s, 50, 45, 0)) return "a point inside the turned box missed";
+    if (S.shapeHitsPoint(s, 90, 10, 0)) return "a point only in the upright box hit";
+    return true;
+  });
+  must("a turned box's handles turn with it, and a turning handle sits above its top", () => {
+    const hs = S.shapeHandles({ type: "rect", p: [[0, 0], [100, 20]], rot: 90 }, { rotateReach: 10 });
+    const n = hs.find((h) => h.id === "n");
+    const rot = hs.find((h) => h.id === "rot");
+    if (hs.length !== 9) return `${hs.length} handles`;
+    // Top middle (50, 20) about (50, 10), a quarter turn: (40, 10). The turner, 10 further: (30, 10).
+    if (!near(n.x, 40) || !near(n.y, 10)) return `n at ${n.x},${n.y}`;
+    if (!near(rot.x, 30) || !near(rot.y, 10)) return `rot at ${rot.x},${rot.y}`;
+    if (S.shapeHandles({ type: "line", p: [[0, 0], [1, 1]] }, { rotateReach: 10 }).some((h) => h.id === "rot")) return "a line has a turning handle";
+    if (S.shapeHandles({ type: "sticky", p: [[0, 0]] }, { rotateReach: 10 }).length) return "a sticky note has handles";
+    return true;
+  });
+  must("dragging the turning handle turns the box; it snaps in 15° steps, and to a quarter nearby", () => {
+    const box = { type: "rect", p: [[0, 0], [100, 20]] };
+    const to = (deg, snap = false) => {
+      const rad = ((deg + 90) * Math.PI) / 180;
+      return S.moveShapeHandle(box, "rot", 50 + Math.cos(rad) * 40, 10 + Math.sin(rad) * 40, { snap }).rot;
+    };
+    if (to(0) !== undefined) return `upright gave ${to(0)}`;
+    if (to(37) !== 37) return `37° gave ${to(37)}`;
+    if (to(-37) !== -37) return `-37° gave ${to(-37)}`;
+    if (to(37, true) !== 30) return `37° snapped gave ${to(37, true)}`;
+    if (to(88) !== 90) return `88° gave ${to(88)} (the quarter should pull it in)`;
+    return true;
+  });
+  must("resizing a turned box keeps the opposite corner where it was on the page", () => {
+    const s = S.normalizeShape({ type: "rect", p: [[0, 0], [100, 20]], rot: 30 });
+    const corner = (shape, id) => S.shapeHandles(shape).find((h) => h.id === id);
+    const sw = corner(s, "sw");
+    const ne = corner(s, "ne");
+    const moved = S.moveShapeHandle(s, "ne", ne.x + 15, ne.y + 25);
+    const after = corner(moved, "sw");
+    if (moved.rot !== 30) return `the turn was lost (${moved.rot})`;
+    return near(after.x, sw.x) && near(after.y, sw.y) ? true : `sw moved from ${sw.x},${sw.y} to ${after.x},${after.y}`;
+  });
+  must("giving typed text that grows with its words a width by hand makes it wrap", () => {
+    const grown = S.normalizeShape({ type: "text", p: [[0, 0], [60, 20]], fit: true });
+    const e = S.moveShapeHandle(grown, "e", 120, 10);
+    if (e.fit !== false) return "a side handle left it growing";
+    if (S.rectFromPoints(e.p[0], e.p[1])[2] !== 120) return `width ${S.rectFromPoints(e.p[0], e.p[1])}`;
+    return S.moveShapeHandle(grown, "rot", 100, 10).fit === true ? true : "turning it stopped it growing";
+  });
+  must("a turned callout's leader leaves the turned box, and still reaches its target", () => {
+    const c = { type: "callout", p: [[0, 0], [100, 20], [50, -100]], rot: 90, heads: ["none", "none"] };
+    const leader = S.shapePrimitives(c)[0].pts;
+    const start = leader[0];
+    const end = leader[leader.length - 1];
+    if (!near(end[0], 50) || !near(end[1], -100)) return `leader ends at ${end}`;
+    // The turned box spans y −40 … 60 at x 40 … 60; the edge facing the target is y = −40.
+    return near(start[1], -40) && start[0] >= 40 - 0.01 && start[0] <= 60 + 0.01 ? true : `leader starts at ${start}`;
+  });
+  must("a turned text's words are turned about the middle of their box, in a PDF", () => {
+    const m = S.shapeTextRotationMatrix({ rot: 90, centre: [50, 10] });
+    if (S.shapeTextRotationMatrix({ rot: 0, centre: [0, 0] }) !== null) return "an upright text asked for a matrix";
+    const apply = ([x, y]) => [m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]];
+    const c = apply([50, 10]);
+    const p = apply([60, 10]);
+    return near(c[0], 50) && near(c[1], 10) && near(p[0], 50) && near(p[1], 20) ? true : `centre ${c}, (60,10) → ${p}`;
+  });
   must("a shape record merges by id like any mark: newest wins, tombstones hold", () => {
     const base = { id: "hn-s1", kind: "shape", page: 1, quads: [], shape: { type: "line", p: [[0, 0], [1, 1]] } };
     const older = { ...base, at: 100, shape: { ...base.shape, stroke: "#000000" } };

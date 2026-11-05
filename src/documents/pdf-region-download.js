@@ -28,6 +28,7 @@ import { ensurePdfLib } from "../core/lib-loader.js?v=__BUILD__";
 import { decodeInkStrokes } from "../format/ink-strokes.js?v=__BUILD__";
 import { markGeometry, markStyleOf, normalizeMarkHex } from "../format/mark-styles.js?v=__BUILD__";
 import { drawShapesWithPdfLib } from "./pdf-lib-shapes.js?v=__BUILD__";
+import { shapeTextRotationMatrix } from "../render/annot-shapes.js?v=__BUILD__";
 import { slugifyFileName } from "../export/markdown.js?v=__BUILD__";
 import { inkPathRecorder } from "../format/ink-svg.js?v=__BUILD__";
 import { inkCentrelinePath, inkHighlighterWidth, inkStrokeOutline, resolveInkPaint } from "../render/ink-paint.js?v=__BUILD__";
@@ -227,8 +228,12 @@ async function drawBlocks(out, page, pdfPage, rasters) {
     const [p10x, p10y] = viewport.convertToPdfPoint(right, bottom);
     const [p01x, p01y] = viewport.convertToPdfPoint(left, top);
     const name = page.node.newXObject("Image", image.ref);
+    // A turned text box's words: turned about the middle of their box.
+    const [bx0, by0, bx1, by1] = blockPdfRect(block);
+    const turn = block.rot ? shapeTextRotationMatrix({ rot: block.rot, centre: [(bx0 + bx1) / 2, (by0 + by1) / 2] }) : null;
     page.pushOperators(
       pushGraphicsState(),
+      ...(turn ? [concatTransformationMatrix(...turn)] : []),
       concatTransformationMatrix(p10x - p00x, p10y - p00y, p01x - p00x, p01y - p00y, p00x, p00y),
       drawObject(name),
       popGraphicsState()

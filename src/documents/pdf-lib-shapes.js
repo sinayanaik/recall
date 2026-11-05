@@ -10,7 +10,7 @@
 // user space, in Helvetica — a standard font every reader has, so nothing is
 // embedded — and wrapped to its box by the same rule the screen wraps by.
 
-import { SHAPE_TEXT_PAD, markdownToPlainText, polyPathData, shapeDashArray, shapePrimitives, stickyIconPolys, wrapShapeText } from "../render/annot-shapes.js?v=__BUILD__";
+import { SHAPE_TEXT_PAD, markdownToPlainText, polyPathData, shapeDashArray, shapePrimitives, shapeTextRotationMatrix, stickyIconPolys, wrapShapeText } from "../render/annot-shapes.js?v=__BUILD__";
 
 export function pdfLibColour(hex) {
   const { rgb } = window.PDFLib;
@@ -105,8 +105,13 @@ export async function drawShapesWithPdfLib(out, page, records, { skipTextIds = n
   const bold = await out.embedFont(StandardFonts.HelveticaBold);
   texts.forEach((prim) => {
     const font = prim.bold ? bold : regular;
+    // Turned words: laid out upright in their box, inside a matrix that turns
+    // the box about its middle (the polys are turned already).
+    const turn = shapeTextRotationMatrix(prim);
+    if (turn) page.pushOperators(pushGraphicsState(), concatTransformationMatrix(...turn));
     shapeTextLines(prim, font).forEach((line) => {
       page.drawText(line.text, { x: line.x, y: line.y, size: line.size, font, color: pdfLibColour(prim.color) });
     });
+    if (turn) page.pushOperators(popGraphicsState());
   });
 }

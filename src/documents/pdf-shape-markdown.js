@@ -88,6 +88,14 @@ export function styleShapeTextBox(box, prim, viewport, { exact = false } = {}) {
   box.style.fontWeight = prim.bold ? "700" : "400";
   box.style.textAlign = prim.align;
   box.style.color = prim.color;
+  applyShapeTextTurn(box, prim.rot);
+}
+
+// A turned box: laid out upright where the record puts it, then turned about
+// its middle. Counter-clockwise on the page is a negative CSS turn (y DOWN).
+export function applyShapeTextTurn(node, rot) {
+  node.style.transformOrigin = rot ? "50% 50%" : "";
+  node.style.transform = rot ? `rotate(${-rot}deg)` : "";
 }
 
 // ── The body: rendered once per text ────────────────────────────────────────
