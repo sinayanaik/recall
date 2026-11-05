@@ -13,18 +13,18 @@ export const EXTENSIONS = [
     "details": [
       "Clean this page: Auto marks ads, popups, cookie banners, sticky bars, share buttons, comments and related links (Gentle, Balanced or Reader); or click blocks yourself. Marked blocks turn blurred and red, Apply removes them, and everything can be undone.",
       "Copy as Markdown: click the blocks you want and see them exactly as Recall will show them — math, diagrams and code included — then paste into a file's Notes.",
-      "Save as PDF: smart pages cut before headings and between paragraphs, about one A4 page each (or the length you choose); the breaks are shown on the page so you can move them first. Import it from My Files → Import: the file is named after the page and its Notes link back to it."
+      "Save as PDF: smart pages cut before headings and between paragraphs, about one A4 page each (or the length you choose); the breaks are shown on the page so you can drag, add or remove them first. Pictures are sized for print and shadows left out, so the PDF stays small and quick to open. Import it from My Files → Import: the file is named after the page and its Notes link back to it."
     ],
     "shortcut": "Alt+Shift+C clean · Alt+Shift+M copy as Markdown · Alt+Shift+P save as PDF · Alt+Shift+O open",
     "permissions": "Runs only on the tab you use it on, and uploads nothing. Saving a PDF uses Chrome's own print engine through its debugging interface, so Chrome shows a “debugging this browser” bar while it works.",
     "name": "Recall Web Clipper",
-    "version": "2.0.0",
+    "version": "2.1.0",
     "description": "Bring any web page into Recall: clean it up, copy any part as Markdown for a file's Notes, or save it as a PDF with smart page breaks.",
-    "bytes": 4444927,
+    "bytes": 4491965,
     "files": [
       {
         "path": "README.md",
-        "size": 22620
+        "size": 26380
       },
       {
         "path": "background.js",
@@ -56,7 +56,7 @@ export const EXTENSIONS = [
       },
       {
         "path": "content/prepare.js",
-        "size": 37673
+        "size": 57858
       },
       {
         "path": "content/recall-math.js",
@@ -79,28 +79,40 @@ export const EXTENSIONS = [
         "size": 200
       },
       {
+        "path": "lib/font-check.js",
+        "size": 4113
+      },
+      {
         "path": "lib/image-pdf.js",
         "size": 2432
       },
       {
         "path": "lib/options.js",
-        "size": 10298
+        "size": 10825
       },
       {
         "path": "lib/pdf-info.js",
         "size": 5847
       },
       {
+        "path": "lib/pdf-objects.js",
+        "size": 8278
+      },
+      {
+        "path": "lib/pdf-outline.js",
+        "size": 3919
+      },
+      {
         "path": "lib/pdf-pages.js",
-        "size": 7355
+        "size": 3659
       },
       {
         "path": "manifest.json",
-        "size": 1637
+        "size": 1582
       },
       {
         "path": "pdf-job.js",
-        "size": 18668
+        "size": 28708
       },
       {
         "path": "popup.css",
@@ -108,11 +120,11 @@ export const EXTENSIONS = [
       },
       {
         "path": "popup.html",
-        "size": 17120
+        "size": 17709
       },
       {
         "path": "popup.js",
-        "size": 11768
+        "size": 11146
       },
       {
         "path": "vendor/katex/auto-render.min.js",

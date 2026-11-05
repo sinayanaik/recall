@@ -251,6 +251,28 @@ try {
     }, bytes.toString("base64"));
   }
 
+  // The bookmarks pdf.js reads, where "Section 12" leads, and whether the PDF is tagged.
+  async function readOutline(file) {
+    const bytes = readFileSync(file);
+    return reader.evaluate(async (b64) => {
+      const data = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+      const doc = await pdfjsLib.getDocument({ data, isEvalSupported: false }).promise;
+      const outline = (await doc.getOutline()) || [];
+      const titles = [];
+      let section12 = -1;
+      const walk = async (items) => {
+        for (const it of items) {
+          titles.push(it.title);
+          if (it.title === "Section 12" && Array.isArray(it.dest)) section12 = await doc.getPageIndex(it.dest[0]);
+          await walk(it.items || []);
+        }
+      };
+      await walk(outline);
+      const tagged = Boolean((await doc.getMarkInfo())?.Marked);
+      return { titles, section12, tagged };
+    }, bytes.toString("base64"));
+  }
+
   let lastJob = null;
   // Started without waiting, so a check can work the page while the job runs.
   function startJob(tab, options) {
@@ -307,6 +329,11 @@ try {
     const found = new Set(smartPages.flatMap((p) => [...p.flat.matchAll(/Section(\d+)(?=[A-Za-z])/g)].map((m) => Number(m[1]))));
     const missing = Array.from({ length: 24 }, (_, i) => i + 1).filter((n) => !found.has(n));
     check("smart: nothing lost — every section is in the PDF", missing.length === 0, missing.length ? `missing ${missing.join(", ")}` : "");
+    check("smart: every page trimmed where the PDF says its content ends", lastJob.markedPages >= smartPages.length - 1, `${lastJob.markedPages} of ${smartPages.length} pages`);
+    const outline = await readOutline(smart);
+    check("smart: bookmarks for the headings, without a tagged PDF", outline.titles.length >= 24 && outline.titles.includes("Section 12") && !outline.tagged,
+      `${outline.titles.length} bookmarks${outline.tagged ? ", tagged" : ""}`);
+    check("smart: a bookmark opens the page its heading is on", outline.section12 >= 0 && smartPages[outline.section12] && /Section12/.test(smartPages[outline.section12].flat), `page ${outline.section12 + 1}`);
   }
   const afterSmart = await long.evaluate(() => ({
     len: document.documentElement.outerHTML.length,
@@ -314,24 +341,58 @@ try {
   }));
   check("smart: the page is put back afterwards", afterSmart.breaks === 0 && Math.abs(afterSmart.len - longPristine) < 80, `${longPristine} → ${afterSmart.len}, ${afterSmart.breaks} breaks left`);
 
-  // The break editor: the cuts appear on the page as dashed lines; one is
-  // removed, one added by clicking the page, and Save PDF prints that.
+  // The break editor: the cuts appear on the page as dashed lines over shaded
+  // pages; one is removed with its ✕ (and the removal undone and redone),
+  // one dragged with a real mouse to a new place, one added by clicking the
+  // page, and Save PDF prints that.
   await startJob(longTab, { layout: "smart", pageLength: "a4", adjustBreaks: true, clean: "off", banner: false, filename: "{title} - edited" });
   const linesOf = () => long.evaluate(() => {
     const host = [...document.querySelectorAll("[data-recall-pdf-ui]")].find((h) => h.shadowRoot && h.shadowRoot.querySelector(".lines"));
     if (!host) return null;
     const root = host.shadowRoot;
-    return { cuts: root.querySelectorAll(".cut").length, count: root.querySelector(".count").textContent };
+    const cuts = [...root.querySelectorAll(".cut")].filter((c) => c.style.display !== "none");
+    return {
+      cuts: cuts.length,
+      count: root.querySelector(".count").textContent,
+      tops: cuts.map((c) => parseFloat(c.style.top)),
+      bands: [...root.querySelectorAll(".band")].filter((b) => b.style.display !== "none").length
+    };
   });
+  const editorKey = (key, shift = false) => long.evaluate((key, shift) => {
+    dispatchEvent(new KeyboardEvent("keydown", { key, ctrlKey: true, shiftKey: shift, bubbles: true, cancelable: true }));
+  }, key, shift);
   await long.waitFor(() => [...document.querySelectorAll("[data-recall-pdf-ui]")].some((h) => h.shadowRoot && h.shadowRoot.querySelectorAll(".cut").length > 0), { label: "break editor", timeout: 20000 });
   const shown = await linesOf();
-  check("editor: the planned cuts are shown on the page", shown && shown.cuts === Math.max(0, smartPages.length - 1), JSON.stringify(shown));
+  check("editor: the planned cuts are shown on the page", shown && shown.cuts === Math.max(0, smartPages.length - 1), JSON.stringify(shown && shown.count));
+  check("editor: every page is shown as a band", shown && shown.bands === shown.cuts + 1, `${shown && shown.bands} bands`);
   await long.evaluate(() => {
     const host = [...document.querySelectorAll("[data-recall-pdf-ui]")].find((h) => h.shadowRoot && h.shadowRoot.querySelector(".lines"));
-    host.shadowRoot.querySelectorAll(".cut")[1].click();
+    host.shadowRoot.querySelectorAll(".cut")[1].querySelector(".x").click();
   });
   const removed = await linesOf();
-  check("editor: clicking a line removes that cut", removed && removed.cuts === shown.cuts - 1, JSON.stringify(removed));
+  check("editor: ✕ removes that cut", removed && removed.cuts === shown.cuts - 1, JSON.stringify(removed && removed.count));
+  await editorKey("z");
+  const unremoved = await linesOf();
+  await editorKey("z", true);
+  const redone = await linesOf();
+  check("editor: Ctrl+Z puts the cut back, Ctrl+Shift+Z removes it again", unremoved.cuts === shown.cuts && redone.cuts === removed.cuts, `${unremoved.cuts}, ${redone.cuts}`);
+
+  // A real drag: press on the first cut, move down, let go.
+  const grip = await long.evaluate(() => {
+    const host = [...document.querySelectorAll("[data-recall-pdf-ui]")].find((h) => h.shadowRoot && h.shadowRoot.querySelector(".lines"));
+    const cut = host.shadowRoot.querySelectorAll(".cut")[0];
+    cut.scrollIntoView({ block: "center" });
+    const r = cut.querySelector(".grip").getBoundingClientRect();
+    return { x: r.left + 12, y: r.top + r.height / 2 };
+  });
+  const mouse = (type, y, buttons = 1) => long.call("Input.dispatchMouseEvent", { type, x: grip.x, y, button: "left", buttons, clickCount: type === "mouseMoved" ? 0 : 1 });
+  await mouse("mouseMoved", grip.y, 0);
+  await mouse("mousePressed", grip.y);
+  for (let dy = 20; dy <= 220; dy += 20) await mouse("mouseMoved", grip.y + dy);
+  await mouse("mouseReleased", grip.y + 220, 0);
+  const dragged = await linesOf();
+  check("editor: dragging a cut moves it to another place", dragged.cuts === redone.cuts && Math.abs(dragged.tops[0] - redone.tops[0]) > 40, `${redone.tops[0]} → ${dragged.tops[0]}`);
+  const removedCount = dragged;
   await long.evaluate(() => {
     const p = document.querySelector("#section-2 + p + p");
     p.scrollIntoView({ block: "center" });
@@ -339,7 +400,7 @@ try {
     p.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, clientX: r.left + 10, clientY: r.top + r.height / 2 }));
   });
   const added = await linesOf();
-  check("editor: clicking the page adds a cut", added && added.cuts === removed.cuts + 1, JSON.stringify(added));
+  check("editor: clicking the page adds a cut", added && added.cuts === removedCount.cuts + 1, JSON.stringify(added && added.count));
   await long.evaluate(() => {
     const host = [...document.querySelectorAll("[data-recall-pdf-ui]")].find((h) => h.shadowRoot && h.shadowRoot.querySelector(".lines"));
     host.shadowRoot.querySelector(".go").click();
@@ -437,6 +498,130 @@ try {
     const r = await readPdf(paged);
     check("paged: several A4 pages", r.pages >= 2 && Math.abs(r.width - 595.3) < 2 && Math.abs(r.height - 841.9) < 2, `${r.pages} × ${r.width}×${r.height}`);
   }
+
+  // ------------------------------------------------------------ a heavy page
+  //
+  // What made a printed page slow to open: shadows, full-size WebP and PNG
+  // pictures from another site, a variable font, a tagged PDF. The pictures
+  // are made here by Chrome itself (noise, so they do not compress away) and
+  // served from a second origin that sends no CORS headers; the font is
+  // served with CORS, as a font must be.
+  const pictures = await reader.evaluate(async () => {
+    const make = async (w, h, type, opaque = true) => {
+      const c = new OffscreenCanvas(w, h);
+      const x = c.getContext("2d");
+      const img = x.createImageData(w, h);
+      let seed = w * 7 + h;
+      for (let i = 0; i < img.data.length; i += 4) {
+        seed = (seed * 1103515245 + 12345) >>> 0;
+        const v = (seed >>> 16) & 255;
+        img.data[i] = v; img.data[i + 1] = (v * 3 + i / 4 / w) & 255; img.data[i + 2] = 255 - v; img.data[i + 3] = 255;
+      }
+      x.putImageData(img, 0, 0);
+      if (!opaque) {
+        x.clearRect(0, 0, w, h);
+        x.fillStyle = "#4f5bd5"; x.fillRect(40, 40, w / 2, h / 2);
+        x.fillStyle = "#222"; x.font = "48px sans-serif"; x.fillText("diagram", 60, h - 60);
+      }
+      const blob = await c.convertToBlob({ type, quality: 0.8 });
+      const b = new Uint8Array(await blob.arrayBuffer());
+      let s = "";
+      for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode(...b.subarray(i, i + 0x8000));
+      return btoa(s);
+    };
+    return {
+      "photo-1.webp": await make(2400, 1600, "image/webp"),
+      "photo-2.webp": await make(2000, 1400, "image/webp"),
+      "photo-3.png": await make(1800, 1200, "image/png"),
+      "diagram.png": await make(900, 500, "image/png", false)
+    };
+  });
+  const http = await import("node:http");
+  const assets = http.createServer((req, res) => {
+    const name = decodeURIComponent(req.url.split("?")[0].slice(1));
+    if (name === "variable-font.woff2") {
+      res.writeHead(200, { "content-type": "font/woff2", "access-control-allow-origin": "*" });
+      res.end(readFileSync(path.join(EXT, "tools/fixtures/variable-font.woff2")));
+    } else if (pictures[name]) {
+      res.writeHead(200, { "content-type": name.endsWith(".png") ? "image/png" : "image/webp" });
+      res.end(Buffer.from(pictures[name], "base64"));
+    } else { res.writeHead(404); res.end(); }
+  });
+  const assetPort = await new Promise((resolve) => assets.listen(0, "127.0.0.1", function () { resolve(this.address().port); }));
+  // localhost against the page's 127.0.0.1: another origin.
+  const HEAVY = `http://127.0.0.1:${port}/recall-clipper/tools/fixtures/heavy.html?assets=${encodeURIComponent(`http://localhost:${assetPort}`)}`;
+  const heavyPage = await openPage(client);
+  await heavyPage.call("Emulation.setDeviceMetricsOverride", { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
+  await heavyPage.goto(HEAVY);
+  await heavyPage.waitFor(() => document.getElementById("table") && [...document.images].every((i) => i.complete && i.naturalWidth > 0)
+    && document.fonts.check('16px "Recall Test Variable"'), { label: "heavy fixture", timeout: 20000 });
+  const heavyPristine = await heavyPage.evaluate(() => document.documentElement.outerHTML.length);
+  const heavyTab = await tabIdOf(HEAVY);
+
+  // The PDF's own objects: every picture in it, its fonts, and whether it is tagged.
+  const pdfFacts = (file) => {
+    const text = readFileSync(file).toString("latin1");
+    const images = [];
+    for (const m of text.matchAll(/<<((?:(?!>>\s*stream)[\s\S]){0,600}?\/Subtype\s*\/Image[\s\S]{0,600}?)>>\s*stream/g)) {
+      const d = m[1];
+      const num = (k) => Number((new RegExp(`/${k}\\s+(\\d+)`).exec(d) || [])[1] || 0);
+      images.push({ width: num("Width"), height: num("Height"), filter: (/\/Filter\s*\/(\w+)/.exec(d) || [])[1] || "", mask: /\/DeviceGray/.test(d) });
+    }
+    return { images, type3: /\/Subtype\s*\/Type3/.test(text), tagged: /\/StructTreeRoot/.test(text), size: text.length };
+  };
+
+  const heavyStart = Date.now();
+  const heavy = await job({ layout: "smart", pageLength: "a4", adjustBreaks: false, clean: "off", banner: false, filename: "{title} - heavy" }, "heavy page", heavyTab);
+  const heavyMs = Date.now() - heavyStart;
+  if (heavy) {
+    const f = pdfFacts(heavy);
+    // The 24 px icon's invert() filter is drawn as a small picture: filters
+    // other than blur and drop-shadow are left alone.
+    const photos = f.images.filter((i) => !i.mask && i.width > 100);
+    const big = f.images.filter((i) => i.width > 100);
+    console.log(`     heavy page: ${(f.size / 1048576).toFixed(2)} MB, ${f.images.length} pictures, ${heavyMs} ms`);
+    check("heavy: no shadow turned into a picture (only the 5 pictures shown, and the diagram's mask)", big.length <= 6, JSON.stringify(big));
+    check("heavy: photos from another site are sized for print (≤ 200 DPI at A4 width)", photos.every((i) => i.width <= 1700), photos.map((i) => i.width).join(", "));
+    check("heavy: photos are JPEG, the diagram stays lossless", photos.filter((i) => i.filter === "DCTDecode").length === 3 && photos.some((i) => i.filter === "FlateDecode" && i.width <= 900),
+      photos.map((i) => `${i.width}:${i.filter}`).join(", "));
+    check("heavy: the variable font is not embedded as a Type 3 font", !f.type3 && lastJob.fonts >= 1, `${lastJob.fonts} elements changed`);
+    check("heavy: not tagged by default", !f.tagged);
+    check("heavy: the PDF is small", f.size < 2.5 * 1048576, `${(f.size / 1048576).toFixed(2)} MB`);
+    const hp = await readPages(heavy);
+    const pageOf = (re) => hp.findIndex((p) => re.test(p.flat));
+    check("heavy: a list longer than a page is cut between its items", pageOf(/Item1:/) >= 0 && pageOf(/Item120:/) > pageOf(/Item1:/), `${pageOf(/Item1:/)} → ${pageOf(/Item120:/)}`);
+    check("heavy: a table longer than a page is cut between its rows", pageOf(/Row1Pictures/) >= 0 && pageOf(/Row80/) > pageOf(/Row1Pictures/), `${pageOf(/Row1Pictures/)} → ${pageOf(/Row80/)}`);
+    const all = hp.map((p) => p.flat).join("");
+    const lost = Array.from({ length: 120 }, (_, i) => i + 1).filter((n) => !all.includes(`Item${n}:`));
+    check("heavy: nothing of the list lost", lost.length === 0, lost.join(", "));
+    const rowsLost = Array.from({ length: 80 }, (_, i) => i + 1).filter((n) => !new RegExp(`Row${n}(?!\\d)`).test(all));
+    check("heavy: nothing of the table lost (its header repeats on the next page)", rowsLost.length === 0, rowsLost.join(", "));
+    const cardsLost = Array.from({ length: 30 }, (_, i) => i + 1).filter((n) => !new RegExp(`Card${n}(?!\\d)`).test(all));
+    check("heavy: nothing of the cards lost", cardsLost.length === 0, cardsLost.join(", "));
+    check("heavy: no page taller than one A4 page", hp.every((p) => p.height <= A4H + 1), hp.map((p) => Math.round(p.height)).join(", "));
+  }
+  const heavyAfter = await heavyPage.evaluate(() => ({
+    len: document.documentElement.outerHTML.length,
+    blobs: [...document.images].filter((i) => i.src.startsWith("blob:")).length,
+    shadow: getComputedStyle(document.querySelector(".card")).boxShadow,
+    icon: getComputedStyle(document.getElementById("icon")).filter,
+    font: getComputedStyle(document.querySelector("p")).fontFamily
+  }));
+  check("heavy: the page is put back (pictures, shadows, fonts)", Math.abs(heavyAfter.len - heavyPristine) < 80 && heavyAfter.blobs === 0
+    && heavyAfter.shadow !== "none" && /Recall Test Variable/.test(heavyAfter.font), JSON.stringify({ ...heavyAfter, pristine: heavyPristine }));
+
+  // The same page with everything the old defaults did: shadows, page fonts,
+  // pictures as served, tagged — for the numbers.
+  const oldStart = Date.now();
+  const heavyOld = await job({ layout: "smart", pageLength: "a4", adjustBreaks: false, clean: "off", banner: false, effects: true, fonts: "page", tagged: true, imageQuality: "original", filename: "{title} - heavy as before" }, "heavy page, old defaults", heavyTab);
+  if (heavyOld && heavy) {
+    const a = pdfFacts(heavyOld);
+    const b = pdfFacts(heavy);
+    console.log(`     as before: ${(a.size / 1048576).toFixed(2)} MB, ${a.images.length} pictures, ${Date.now() - oldStart} ms`);
+    check("heavy: the new defaults make a far smaller PDF than the old ones", b.size * 3 < a.size, `${(a.size / 1048576).toFixed(2)} MB → ${(b.size / 1048576).toFixed(2)} MB`);
+  }
+  assets.close();
+  await client.send("Target.closeTarget", { targetId: heavyPage.targetId });
 
 } catch (err) {
   check("ran to the end", false, err && err.stack || String(err));

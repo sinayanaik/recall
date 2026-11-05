@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>A Heavy Page | The Daily Example</title>
+  <meta property="og:site_name" content="The Daily Example">
+  <!--
+    What makes a printed web page slow to open, all on one page, for
+    tools/extensions-browser-check.mjs in the Recall repository:
+    - cards with blurred box shadows, a drop-shadow filter and a frosted bar
+      (each would become a picture of its own in the PDF);
+    - large WebP and PNG photos from another origin that sends no CORS
+      headers, one of them shown twice, plus a few-colour PNG diagram with
+      see-through pixels;
+    - a variable font (variable-font.woff2: DejaVu Sans, Bitstream Vera
+      licence, cut down to ASCII, with an fvar table), which Chrome would
+      embed as a Type 3 font;
+    - a list and a table each longer than a page, for the page breaks.
+    The pictures' origin comes from ?assets=, served by the check itself.
+  -->
+  <style>
+    body { font: 16px/1.6 "Recall Test Variable", Georgia, sans-serif; margin: 0; color: #222; background: #fafafa; }
+    main { max-width: 860px; margin: 0 auto; padding: 24px; }
+    h2 { font-size: 26px; margin: 34px 0 10px; }
+    .card { background: #fff; border-radius: 12px; padding: 14px 18px; margin: 18px 0; box-shadow: 0 6px 24px rgba(0, 0, 0, .18); text-shadow: 0 1px 2px rgba(0, 0, 0, .2); }
+    .frost { backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); background: rgba(255, 255, 255, .6); padding: 8px 12px; border-radius: 8px; }
+    .photo { width: 100%; display: block; border-radius: 8px; }
+    .shadowed { filter: drop-shadow(0 4px 12px rgba(0, 0, 0, .35)); }
+    .icon { filter: invert(1); background: #222; width: 24px; height: 24px; display: inline-block; vertical-align: middle; }
+    table { border-collapse: collapse; width: 100%; }
+    td, th { border: 1px solid #ccc; padding: 4px 8px; }
+    code { font-family: monospace; }
+  </style>
+</head>
+<body>
+  <main id="article">
+    <h1 id="headline">A Heavy Page</h1>
+    <p class="frost">A page full of the things that make a PDF slow to open. <span class="icon" id="icon"></span></p>
+  </main>
+  <script>
+    const assets = new URLSearchParams(location.search).get("assets") || "";
+    const font = document.createElement("style");
+    font.textContent = `@font-face { font-family: "Recall Test Variable"; src: url("${assets}/variable-font.woff2") format("woff2"); font-weight: 400 700; }`;
+    document.head.append(font);
+
+    const main = document.getElementById("article");
+    const words = "Pictures shadows and fonts are what a reader has to draw on every page so a page light on them opens at once".split(" ");
+    const sentence = (n) => Array.from({ length: 22 }, (_, i) => words[(n * 5 + i) % words.length]).join(" ");
+    const add = (html) => main.insertAdjacentHTML("beforeend", html);
+    const img = (name, cls = "photo") => `<img class="${cls}" src="${assets}/${name}" alt="${name}">`;
+
+    add(`<h2 id="s-photos">Photos</h2>`);
+    add(img("photo-1.webp"));
+    for (let i = 0; i < 10; i += 1) add(`<div class="card"><h3>Card ${i + 1}</h3><p>${sentence(i)}.</p></div>`);
+    add(img("photo-2.webp", "photo shadowed"));
+    add(`<h2 id="s-more">More photos</h2>`);
+    add(img("photo-3.png"));
+    for (let i = 10; i < 20; i += 1) add(`<div class="card"><h3>Card ${i + 1}</h3><p>${sentence(i)}.</p></div>`);
+    add(img("photo-1.webp"));
+    add(`<p>${img("diagram.png", "diagram")}</p>`);
+
+    add(`<h2 id="s-list">A long list</h2>`);
+    add(`<ul id="list">${Array.from({ length: 120 }, (_, i) => `<li>Item ${i + 1}: ${sentence(i).slice(0, 60)}</li>`).join("")}</ul>`);
+
+    add(`<h2 id="s-table">A long table</h2>`);
+    add(`<table id="table"><thead><tr><th>Row</th><th>Value</th></tr></thead><tbody>${Array.from({ length: 80 }, (_, i) => `<tr><td>Row ${i + 1}</td><td>${sentence(i).slice(0, 50)}</td></tr>`).join("")}</tbody></table>`);
+
+    add(`<h2 id="s-cards">Cards</h2>`);
+    for (let i = 20; i < 30; i += 1) add(`<div class="card"><h3>Card ${i + 1}</h3><p>${sentence(i)}.</p></div>`);
+    add(`<h2 id="s-end">The end</h2><p>${sentence(99)}.</p>`);
+  </script>
+</body>
+</html>

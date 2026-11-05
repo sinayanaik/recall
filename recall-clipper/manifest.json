@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Recall Web Clipper",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Bring any web page into Recall: clean it up, copy any part as Markdown for a file's Notes, or save it as a PDF with smart page breaks.",
   "permissions": [
     "activeTab",
@@ -9,9 +9,6 @@
     "debugger",
     "downloads",
     "storage"
-  ],
-  "optional_host_permissions": [
-    "<all_urls>"
   ],
   "action": {
     "default_title": "Recall Web Clipper — clean, copy as Markdown or save as PDF",
