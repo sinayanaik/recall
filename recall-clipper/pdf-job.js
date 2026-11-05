@@ -1,22 +1,24 @@
-// Recall Web to PDF — background service worker (Manifest V3, module).
+// Recall Web Clipper — Save as PDF, run from the background service worker.
 //
-// Runs one job per tab: attach the DevTools protocol to the tab, prepare the
-// page in an isolated world (content/prepare.js), lay it out at the chosen
-// width, print it with Page.printToPDF (a real vector PDF with selectable
-// text), put the page back, stamp Recall's metadata into the PDF and save it
-// with chrome.downloads. Running here rather than in the popup means closing
-// the popup never kills a job.
+// One job per tab: attach the DevTools protocol to the tab, prepare the page in
+// an isolated world (content/prepare.js), lay it out at the chosen width, print
+// it with Page.printToPDF (a real vector PDF with selectable text), put the
+// page back, stamp Recall's metadata into the PDF and save it with
+// chrome.downloads. Running in the service worker rather than the popup means
+// closing the popup — or clicking the page to pick a block or move a page
+// break — never kills a job.
 //
-// While attached, Chrome shows its "started debugging this browser" bar on
-// the tab; it goes away when the job detaches.
+// While attached, Chrome shows its "started debugging this browser" bar on the
+// tab; it goes away when the job detaches.
 
 import { setPdfInfo, countPages } from "./lib/pdf-info.js";
+import { trimPageHeights } from "./lib/pdf-pages.js";
 import { imagesToPdf } from "./lib/image-pdf.js";
-import { normalize, geometry, imageSettings, fileNameFor, folderFor, MAX_PAGE_IN, CSS_PX_PER_IN } from "./lib/options.js";
+import {
+  normalize, geometry, imageSettings, fileNameFor, folderFor, pageContentPx,
+  MAX_PAGE_IN, CSS_PX_PER_IN, SMART_SLACK_IN
+} from "./lib/options.js";
 
-// Recall Page Cleaner's fixed ID (from the "key" in its manifest.json). Only
-// it may ask this extension to print a tab.
-const PAGE_CLEANER_ID = "klhlbnklncdmdlgepekhegakilnccgji";
 const RESTRICTED = /^(chrome|edge|brave|about|chrome-extension|devtools|view-source|file):/i;
 const STORE = /^https:\/\/(chromewebstore\.google\.com|chrome\.google\.com\/webstore)/;
 
@@ -27,7 +29,7 @@ const jobs = new Map(); // tabId → { step, error, done }
 function status(tabId, patch) {
   const job = { ...(jobs.get(tabId) || {}), ...patch };
   jobs.set(tabId, job);
-  chrome.runtime.sendMessage({ type: "rwp-status", tabId, job }).catch(() => {});
+  chrome.runtime.sendMessage({ type: "rwc-status", tabId, job }).catch(() => {});
   const text = job.error ? "!" : job.done ? "✓" : "…";
   chrome.action.setBadgeBackgroundColor({ tabId, color: job.error ? "#c62828" : "#4f5bd5" }).catch(() => {});
   chrome.action.setBadgeText({ tabId, text }).catch(() => {});
@@ -142,7 +144,7 @@ function headerFooter(o) {
 
 // ---------------------------------------------------------------- the job
 
-async function runJob(tabId, rawOptions) {
+export async function runJob(tabId, rawOptions) {
   if (jobs.get(tabId) && !jobs.get(tabId).done && !jobs.get(tabId).error) throw new Error("A PDF is already being made for this tab.");
   const o = normalize(rawOptions);
   const geo = geometry(o);
@@ -170,7 +172,7 @@ async function runJob(tabId, rawOptions) {
     await send(target, "Page.enable");
     const { frameTree } = await send(target, "Page.getFrameTree");
     ({ executionContextId: world } = await send(target, "Page.createIsolatedWorld", {
-      frameId: frameTree.frame.id, worldName: "Recall Web to PDF"
+      frameId: frameTree.frame.id, worldName: "Recall Web Clipper"
     }));
     const [coreSrc, prepSrc] = await Promise.all([sourceOf("content/cleaner-core.js"), sourceOf("content/prepare.js")]);
     await evaluate(`${coreSrc}\n;\n${prepSrc}\n;true`);
@@ -202,6 +204,7 @@ async function runJob(tabId, rawOptions) {
     }
 
     let bytes;
+    let pages = 1;
     if (o.capture === "visible") {
       status(tabId, { step: "Capturing the visible area…" });
       const shot = await send(target, "Page.captureScreenshot", { format: "jpeg", quality: settings ? settings.jpeg : 92 });
@@ -209,7 +212,11 @@ async function runJob(tabId, rawOptions) {
       const size = jpegSize(jpeg) || { width: 1280, height: 800 };
       bytes = imagesToPdf([{ jpeg, ...size }], { pageWidthPt: geo.paperWidthIn * 72 });
     } else {
-      bytes = await print(target, o, geo, evaluate, tabId);
+      const printed = await print(target, o, geo, evaluate, tabId);
+      bytes = printed.bytes;
+      pages = countPages(bytes);
+      // Smart pages: each page as tall as its own content (see lib/pdf-pages.js).
+      if (printed.trimTo) bytes = trimPageHeights(bytes, printed.trimTo);
     }
 
     await evaluate("__recallPdf.restore()").catch(() => {});
@@ -225,8 +232,8 @@ async function runJob(tabId, rawOptions) {
       Author: facts.author,
       Subject: facts.url,
       Keywords: [facts.site, facts.keywords].filter(Boolean).join(", ").slice(0, 500),
-      Creator: "Recall Web to PDF",
-      Producer: "Chrome (Skia/PDF) via Recall Web to PDF",
+      Creator: "Recall Web Clipper",
+      Producer: "Chrome (Skia/PDF) via Recall Web Clipper",
       CreationDate: capturedAt,
       custom: {
         RecallSourceURL: facts.url,
@@ -246,8 +253,8 @@ async function runJob(tabId, rawOptions) {
       conflictAction: "uniquify"
     });
     if (o.showAfter && id != null) whenComplete(id, () => chrome.downloads.show(id));
-    status(tabId, { step: `Saved ${name} (${(bytes.length / 1048576).toFixed(1)} MB, ${countPages(bytes)} page${countPages(bytes) === 1 ? "" : "s"})`, done: true });
-    return { ok: true, name, bytes: bytes.length, pages: countPages(bytes), cleaned: report.cleaned, resized: report.resized };
+    status(tabId, { step: `Saved ${name} (${(bytes.length / 1048576).toFixed(1)} MB, ${pages} page${pages === 1 ? "" : "s"})`, done: true });
+    return { ok: true, name, bytes: bytes.length, pages, cleaned: report.cleaned, resized: report.resized };
   } catch (err) {
     if (prepared) await evaluate("__recallPdf.restore()").catch(() => {});
     await send(target, "Emulation.clearDeviceMetricsOverride").catch(() => {});
@@ -280,24 +287,18 @@ async function print(target, o, geo, evaluate, tabId) {
 
   if (o.layout === "paged") {
     status(tabId, { step: "Printing…" });
-    return b64ToBytes((await send(target, "Page.printToPDF", { ...base, paperHeight: geo.paperHeightIn })).data);
+    return { bytes: b64ToBytes((await send(target, "Page.printToPDF", { ...base, paperHeight: geo.paperHeightIn })).data) };
   }
+
+  if (o.layout === "smart") return printSmart(target, o, geo, evaluate, tabId, base);
 
   // Continuous: lay the page out at the print width, measure it, and make the
   // paper that tall. Past MAX_PAGE_IN it becomes a few equally tall pages, and
   // the injected break-inside rules keep each cut between blocks.
   status(tabId, { step: "Measuring the page…" });
-  const viewport = await evaluate("({ h: innerHeight })");
-  await send(target, "Emulation.setDeviceMetricsOverride", {
-    width: geo.layoutWidthPx, height: Math.max(600, viewport.h), deviceScaleFactor: 1, mobile: false
-  });
-  // Measured under the media the print will use; the colour scheme rides along,
-  // since each call replaces the emulated features as a whole.
-  if (o.media !== "screen") await send(target, "Emulation.setEmulatedMedia", { media: "print", features: mediaFeatures(o) });
-  await new Promise((r) => setTimeout(r, 250));
+  await layOutForPrint(target, o, geo, evaluate);
   const size = await evaluate("__recallPdf.measure()");
-  await send(target, "Emulation.clearDeviceMetricsOverride");
-  if (o.media !== "screen") await send(target, "Emulation.setEmulatedMedia", { media: "", features: mediaFeatures(o) });
+  await layOutForScreen(target, o);
 
   const marginsIn = geo.margin.top + geo.margin.bottom;
   const contentIn = (size.height * geo.scale) / CSS_PX_PER_IN;
@@ -312,7 +313,73 @@ async function print(target, o, geo, evaluate, tabId) {
     // Print layout came out taller than the measurement: grow and retry.
     height = Math.min(MAX_PAGE_IN, height * (1 + 0.12 * (got - pages)) + 0.5);
   }
-  return bytes;
+  return { bytes };
+}
+
+// Lays the page out at its print width under the media the print will use —
+// the colour scheme rides along, since each call replaces the emulated
+// features as a whole — so what is measured is what prints.
+async function layOutForPrint(target, o, geo, evaluate) {
+  const viewport = await evaluate("({ h: innerHeight })");
+  await send(target, "Emulation.setDeviceMetricsOverride", {
+    width: geo.layoutWidthPx, height: Math.max(600, viewport.h), deviceScaleFactor: 1, mobile: false
+  });
+  if (o.media !== "screen") await send(target, "Emulation.setEmulatedMedia", { media: "print", features: mediaFeatures(o) });
+  await new Promise((r) => setTimeout(r, 250));
+}
+
+async function layOutForScreen(target, o) {
+  await send(target, "Emulation.clearDeviceMetricsOverride");
+  if (o.media !== "screen") await send(target, "Emulation.setEmulatedMedia", { media: "", features: mediaFeatures(o) });
+}
+
+// Smart pages: the page is cut into pages of about the chosen length, at the
+// best place near each length (content/prepare.js planBreaks) — and, if asked,
+// the cuts are shown on the page to move first (editBreaks). Chrome prints
+// every page on one paper size, as tall as the tallest page; then each page is
+// given its own height, so none ends in a band of white.
+async function printSmart(target, o, geo, evaluate, tabId, base) {
+  status(tabId, { step: "Finding page breaks…" });
+  await layOutForPrint(target, o, geo, evaluate);
+  const lengths = {};
+  for (const key of ["screen", "a4", "2a4"]) lengths[key] = pageContentPx(o, geo, key);
+  if (o.pageLength === "custom") lengths.custom = pageContentPx(o, geo, "custom");
+  const targetPx = pageContentPx(o, geo);
+  let plan;
+  try {
+    plan = await evaluate(`__recallPdf.planBreaks(${targetPx}, ${JSON.stringify(lengths)})`);
+    if (o.adjustBreaks) {
+      status(tabId, { step: `Check the ${plan.pages} page break${plan.pages === 2 ? "" : "s"} on the page, then press Save PDF there…` });
+      plan = await evaluate("__recallPdf.editBreaks()");
+    }
+    plan = await evaluate("__recallPdf.applyBreaks()");
+  } finally {
+    await layOutForScreen(target, o).catch(() => {});
+  }
+
+  const marginsIn = geo.margin.top + geo.margin.bottom;
+  const contentIn = plan.heights.map((px) => (px * geo.scale) / CSS_PX_PER_IN);
+  // Room for what the measurement cannot see coming: a font that prints a
+  // touch larger, a margin that does not collapse at the top of a page.
+  const slackIn = (h) => Math.min(SMART_SLACK_IN, Math.max(0.12, h * 0.02));
+  let height = Math.min(MAX_PAGE_IN, Math.max(...contentIn.map((h) => h + SMART_SLACK_IN)) + marginsIn);
+  let bytes = null;
+  let got = 0;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    status(tabId, { step: attempt ? "Fitting the pages…" : `Printing ${plan.pages} page${plan.pages === 1 ? "" : "s"}…` });
+    bytes = b64ToBytes((await send(target, "Page.printToPDF", { ...base, paperHeight: height })).data);
+    got = countPages(bytes);
+    if (got <= plan.pages || height >= MAX_PAGE_IN) break;
+    // A page printed taller than measured spilled onto a page of its own.
+    height = Math.min(MAX_PAGE_IN, height * 1.15 + 0.5);
+  }
+  // Each page cut to its own content — only when the print came out exactly as
+  // planned, and never under a footer, which sits at the bottom of the paper.
+  const fits = got === plan.pages && o.footer === "none";
+  const trimTo = fits
+    ? contentIn.map((h) => Math.min(height, h + slackIn(h) + marginsIn) * 72)
+    : null;
+  return { bytes, trimTo };
 }
 
 function whenComplete(id, fn) {
@@ -324,44 +391,16 @@ function whenComplete(id, fn) {
   chrome.downloads.onChanged.addListener(listener);
 }
 
-async function lastOptions() {
+export async function lastOptions() {
   try {
     const { last } = await chrome.storage.sync.get("last");
     return last || {};
   } catch { return {}; }
 }
 
-// ---------------------------------------------------------------- wiring
-
-chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (!msg || sender.id !== chrome.runtime.id) return false;
-  if (msg.type === "rwp-start") {
-    runJob(msg.tabId, msg.options).then((r) => sendResponse(r)).catch((err) => sendResponse({ ok: false, error: String(err && err.message || err) }));
-    return true;
-  }
-  if (msg.type === "rwp-status") return false;
-  if (msg.type === "rwp-get-status") { sendResponse(jobs.get(msg.tabId) || null); return false; }
-  return false;
-});
-
-// The hand-off from Recall Page Cleaner: print the tab it just cleaned, with
-// the options last used here. Cleaning first is skipped — it already happened.
-chrome.runtime.onMessageExternal.addListener((msg, sender, sendResponse) => {
-  if (sender.id !== PAGE_CLEANER_ID || !msg || msg.type !== "recall-print" || msg.tabId == null) return false;
-  lastOptions()
-    .then((opts) => runJob(msg.tabId, { ...opts, clean: "off", capture: "page" }))
-    .then((r) => sendResponse(r))
-    .catch((err) => sendResponse({ ok: false, error: String(err && err.message || err) }));
-  return true;
-});
-
-chrome.commands.onCommand.addListener(async (command) => {
-  if (command !== "save-pdf") return;
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab) return;
-  const opts = await lastOptions();
-  runJob(tab.id, { ...opts, capture: opts.capture === "element" || opts.capture === "selection" ? opts.capture : "page" }).catch(() => {});
-});
+export function jobFor(tabId) {
+  return jobs.get(tabId) || null;
+}
 
 chrome.debugger.onDetach.addListener((source, reason) => {
   if (source.tabId != null && reason === "canceled_by_user") {

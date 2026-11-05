@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Recall Web Clipper</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header class="top">
+    <img src="icons/icon-48.png" alt="" width="22" height="22">
+    <h1>Recall Web Clipper</h1>
+  </header>
+
+  <main id="scroll">
+    <p id="blocked" class="status error" role="status" hidden></p>
+
+    <nav class="actions" aria-label="What to do with this page">
+      <button type="button" class="action" id="actClean">
+        <span class="icon" aria-hidden="true">🧹</span>
+        <span class="what"><b>Clean this page</b><span>Remove ads, popups and clutter. Everything can be undone.</span></span>
+        <kbd>Alt+Shift+C</kbd>
+      </button>
+      <button type="button" class="action" id="actCopy">
+        <span class="icon" aria-hidden="true">📋</span>
+        <span class="what"><b>Copy as Markdown</b><span>Pick parts of the page and copy them for a file’s Notes.</span></span>
+        <kbd>Alt+Shift+M</kbd>
+      </button>
+      <button type="button" class="action" id="actPdf" aria-expanded="false" aria-controls="form">
+        <span class="icon" aria-hidden="true">📄</span>
+        <span class="what"><b>Save as PDF</b><span>Clean pages, cut in the right places, ready for My Files → Import.</span></span>
+        <kbd>Alt+Shift+P</kbd>
+      </button>
+    </nav>
+
+    <form id="form" hidden onsubmit="return false">
+      <div class="field">
+        <span class="label">What to save</span>
+        <div class="seg">
+          <label><input type="radio" name="capture" value="page"> Whole page</label>
+          <label><input type="radio" name="capture" value="selection"> Selected text</label>
+          <label><input type="radio" name="capture" value="element"> Pick a block</label>
+        </div>
+      </div>
+      <div class="field" data-show="capture=page|visible">
+        <label for="clean">Clean first</label>
+        <select name="clean" id="clean">
+          <option value="off">Off — keep everything</option>
+          <option value="gentle">Gentle — popups, cookie banners, ads</option>
+          <option value="balanced">Balanced — also sticky bars, share, comments, related</option>
+          <option value="reader">Reader — only the article</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <span class="label">Pages</span>
+        <div class="seg">
+          <label title="Cut into pages of the length you choose, before headings and between paragraphs"><input type="radio" name="layout" value="smart"> Smart pages</label>
+          <label title="One page as tall as the whole site"><input type="radio" name="layout" value="continuous"> One long page</label>
+          <label title="Printed pages of a paper size"><input type="radio" name="layout" value="paged"> Paper pages</label>
+        </div>
+      </div>
+      <div class="row" data-show="layout=smart">
+        <div class="field">
+          <label for="pageLength">Each page about</label>
+          <select name="pageLength" id="pageLength">
+            <option value="screen">One screen long</option>
+            <option value="a4">One A4 page long</option>
+            <option value="2a4">Two A4 pages long</option>
+            <option value="custom">Custom…</option>
+          </select>
+        </div>
+        <div class="field" data-show="pageLength=custom"><label for="customPageLength">Length (<span class="unit"></span>)</label><input type="number" name="customPageLength" id="customPageLength" step="1" min="20"></div>
+      </div>
+      <label class="check" data-show="layout=smart"><input type="checkbox" name="adjustBreaks"> Show the page breaks on the page first, so I can move them</label>
+      <p class="note" data-show="layout=smart">Pages are cut before headings and between paragraphs, never through a picture, table or code, and each page is trimmed to its content.</p>
+      <p class="note" data-show="layout=continuous">One page as tall as the content (a page over 200 in is split into a few). Very long pages are slower to scroll in any PDF reader — Smart pages read better.</p>
+
+      <div class="row">
+        <div class="field">
+          <label for="imageQuality">Images</label>
+          <select name="imageQuality" id="imageQuality">
+            <option value="original">Original (largest)</option>
+            <option value="high">High</option>
+            <option value="medium">Medium</option>
+            <option value="low">Low (smallest)</option>
+            <option value="custom">Custom…</option>
+            <option value="none">No images</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="marginPreset">Margins</label>
+          <select name="marginPreset" id="marginPreset">
+            <option value="none">None</option>
+            <option value="sides">Left and right</option>
+            <option value="topbottom">Top and bottom</option>
+            <option value="all">All sides</option>
+            <option value="custom">Custom…</option>
+          </select>
+        </div>
+      </div>
+      <p class="note" id="hostNote" data-show="imageQuality=high|medium|low|custom" hidden>
+        Pictures from other sites can only be made smaller with permission to read them.
+        <button type="button" id="grantHost" class="link">Allow</button>
+      </p>
+
+      <details class="more">
+        <summary>More options</summary>
+
+        <h2>Presets</h2>
+        <div class="row">
+          <select id="preset" aria-label="Preset"></select>
+        </div>
+        <div class="row">
+          <input type="text" id="presetName" placeholder="Name these options" aria-label="Preset name">
+          <button type="button" id="savePreset">Save</button>
+        </div>
+        <div class="row">
+          <button type="button" id="deletePreset">Delete preset</button>
+          <button type="button" id="resetDefaults">Reset to defaults</button>
+        </div>
+
+        <h2>Capture</h2>
+        <label class="check"><input type="radio" name="capture" value="visible"> Visible area only (a picture: its text is not selectable)</label>
+
+        <h2>Paper &amp; margins</h2>
+        <div class="row">
+          <div class="field">
+            <label for="paper"><span data-show="layout=paged">Paper size</span><span data-show="layout!=paged">Page width of</span></label>
+            <select name="paper" id="paper">
+              <option value="A4">A4 (210 mm)</option>
+              <option value="Letter">Letter (8.5 in)</option>
+              <option value="Legal">Legal (8.5 in)</option>
+              <option value="A3">A3 (297 mm)</option>
+              <option value="A5">A5 (148 mm)</option>
+              <option value="Tabloid">Tabloid (11 in)</option>
+              <option value="custom">Custom…</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="orientation">Orientation</label>
+            <select name="orientation" id="orientation">
+              <option value="portrait">Portrait</option>
+              <option value="landscape">Landscape</option>
+            </select>
+          </div>
+        </div>
+        <div class="row" data-show="paper=custom">
+          <div class="field"><label for="customWidth">Width (<span class="unit"></span>)</label><input type="number" name="customWidth" id="customWidth" step="0.1" min="10"></div>
+          <div class="field" data-show="layout=paged"><label for="customHeight">Height (<span class="unit"></span>)</label><input type="number" name="customHeight" id="customHeight" step="0.1" min="10"></div>
+        </div>
+        <div class="row" data-show="marginPreset!=none">
+          <div class="field" data-show="marginPreset!=custom"><label for="marginSize">Margin</label><input type="number" name="marginSize" id="marginSize" step="0.5" min="0"></div>
+          <div class="field"><label for="marginUnit">Unit</label>
+            <select name="marginUnit" id="marginUnit"><option value="mm">mm</option><option value="in">inches</option></select>
+          </div>
+        </div>
+        <div class="grid4" data-show="marginPreset=custom">
+          <div class="field"><label for="m-top">Top</label><input type="number" name="margins.top" id="m-top" step="0.5" min="0"></div>
+          <div class="field"><label for="m-right">Right</label><input type="number" name="margins.right" id="m-right" step="0.5" min="0"></div>
+          <div class="field"><label for="m-bottom">Bottom</label><input type="number" name="margins.bottom" id="m-bottom" step="0.5" min="0"></div>
+          <div class="field"><label for="m-left">Left</label><input type="number" name="margins.left" id="m-left" step="0.5" min="0"></div>
+          <label class="check span4"><input type="checkbox" id="linkMargins"> Same on every side</label>
+        </div>
+
+        <h2>Scale &amp; text</h2>
+        <div class="field">
+          <span class="label">Size the page by</span>
+          <div class="seg">
+            <label><input type="radio" name="scaleMode" value="percent"> Scale %</label>
+            <label><input type="radio" name="scaleMode" value="width"> Layout width</label>
+          </div>
+        </div>
+        <div class="field" data-show="scaleMode=percent">
+          <label for="scale">Scale <output data-for="scale"></output>%</label>
+          <input type="range" name="scale" id="scale" min="25" max="200" step="5">
+        </div>
+        <div class="row" data-show="scaleMode=width">
+          <div class="field">
+            <label for="layoutWidth">Lay the page out as</label>
+            <select name="layoutWidth" id="layoutWidth">
+              <option value="1280">Desktop (1280 px)</option>
+              <option value="1024">Laptop (1024 px)</option>
+              <option value="768">Tablet (768 px)</option>
+              <option value="390">Phone (390 px)</option>
+              <option value="custom">Custom…</option>
+            </select>
+          </div>
+          <div class="field" data-show="layoutWidth=custom"><label for="customLayoutWidth">Width (px)</label><input type="number" name="customLayoutWidth" id="customLayoutWidth" min="240" step="10"></div>
+        </div>
+        <div class="field">
+          <label for="textSize">Text size <output data-for="textSize"></output>%</label>
+          <input type="range" name="textSize" id="textSize" min="70" max="160" step="5">
+        </div>
+        <label class="check"><input type="checkbox" name="wrapCode"> Wrap long code lines instead of cutting them off</label>
+
+        <h2>Colour &amp; styles</h2>
+        <div class="row">
+          <div class="field">
+            <label for="media">Page styles</label>
+            <select name="media" id="media">
+              <option value="print">Print styles (as the site prints)</option>
+              <option value="screen">Screen styles (as you see it)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="colorScheme">Colour scheme</label>
+            <select name="colorScheme" id="colorScheme">
+              <option value="page">As the page</option>
+              <option value="light">Light</option>
+              <option value="dark">Dark</option>
+            </select>
+          </div>
+        </div>
+        <label class="check"><input type="checkbox" name="backgrounds"> Print background colours and images</label>
+        <label class="check"><input type="checkbox" name="forceLight"> Force light: dark boxes become white with dark text</label>
+
+        <h2>Pictures</h2>
+        <p class="note" data-show="imageQuality=high|medium|low">High is 200 DPI at JPEG 85%, Medium 150 DPI at 75%, Low 100 DPI at 60%. Pictures are resized to the size they print at.</p>
+        <div class="row" data-show="imageQuality=custom">
+          <div class="field"><label for="customDpi">Max DPI</label><input type="number" name="customDpi" id="customDpi" min="36" max="600" step="10"></div>
+          <div class="field"><label for="customJpeg">JPEG quality <output data-for="customJpeg"></output>%</label><input type="range" name="customJpeg" id="customJpeg" min="10" max="100" step="5"></div>
+        </div>
+        <label class="check" data-show="imageQuality!=none"><input type="checkbox" name="grayscale"> Grayscale pictures</label>
+        <div class="field" data-show="imageQuality!=none">
+          <label for="minImagePx">Drop pictures smaller than (px, 0 keeps all)</label>
+          <input type="number" name="minImagePx" id="minImagePx" min="0" step="8">
+        </div>
+        <label class="check" data-show="imageQuality!=none"><input type="checkbox" name="lazyLoad"> Load lazy pictures first (scrolls the page)</label>
+        <div class="field" data-show="lazyLoad=true">
+          <label for="lazyWaitMs">Then wait (ms)</label>
+          <input type="number" name="lazyWaitMs" id="lazyWaitMs" min="0" step="100">
+        </div>
+
+        <h2>Page handling</h2>
+        <label class="check"><input type="checkbox" name="hideFixed"> Hide fixed bars (they would repeat on every page)</label>
+        <label class="check"><input type="checkbox" name="expand"> Expand collapsed sections and “read more”</label>
+        <label class="check"><input type="checkbox" name="avoidBreaks"> Don’t cut pictures, tables, code or figures across pages</label>
+        <div class="row">
+          <div class="field">
+            <label for="breakBefore">New page before</label>
+            <select name="breakBefore" id="breakBefore">
+              <option value="none">Nothing</option>
+              <option value="h1">Each top heading (H1)</option>
+              <option value="h2">Each H1 and H2</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="embeds">Videos and embeds</label>
+            <select name="embeds" id="embeds">
+              <option value="placeholder">Replace with a link</option>
+              <option value="keep">Keep as they are</option>
+              <option value="hide">Hide</option>
+            </select>
+          </div>
+        </div>
+
+        <h2>Extras</h2>
+        <div class="row">
+          <div class="field">
+            <label for="header">Header</label>
+            <select name="header" id="header">
+              <option value="none">None</option>
+              <option value="title">Title</option>
+              <option value="url">Address</option>
+              <option value="title-url">Title and address</option>
+              <option value="custom">Custom…</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="footer">Footer</label>
+            <select name="footer" id="footer">
+              <option value="none">None</option>
+              <option value="page">Page numbers</option>
+              <option value="date-page">Date and page numbers</option>
+              <option value="url-page">Address and page numbers</option>
+              <option value="custom">Custom…</option>
+            </select>
+          </div>
+        </div>
+        <div class="field" data-show="header=custom"><label for="headerCustom">Header text</label><input type="text" name="headerCustom" id="headerCustom"></div>
+        <div class="field" data-show="footer=custom"><label for="footerCustom">Footer text</label><input type="text" name="footerCustom" id="footerCustom"></div>
+        <p class="note" data-show="header!=none|footer!=none">Tokens: {title} {url} {date} {page} {pages}. A header or footer needs at least 0.45 in of margin, which is added for you. With a footer, smart pages all keep the same height.</p>
+        <label class="check"><input type="checkbox" name="banner"> Source box on the first page (title, address, date)</label>
+        <label class="check"><input type="checkbox" name="outline"> Bookmarks from the page’s headings</label>
+        <label class="check"><input type="checkbox" name="linkUrls"> Print link addresses after links</label>
+        <label class="check"><input type="checkbox" name="tagged"> Tagged PDF (screen readers, reflow)</label>
+        <div class="field">
+          <label for="filename">File name</label>
+          <input type="text" name="filename" id="filename" spellcheck="false">
+          <span class="note">{title} {site} {domain} {date} {time} {author}</span>
+        </div>
+        <div class="field">
+          <label for="subfolder">Folder inside Downloads (optional)</label>
+          <input type="text" name="subfolder" id="subfolder" placeholder="e.g. Recall" spellcheck="false">
+        </div>
+        <label class="check"><input type="checkbox" name="saveAs"> Ask where to save each time</label>
+        <label class="check"><input type="checkbox" name="showAfter"> Show the file in its folder when done</label>
+      </details>
+    </form>
+  </main>
+
+  <footer class="bottom" id="pdfFooter" hidden>
+    <p id="summary" class="summary"></p>
+    <p id="status" class="status" role="status" hidden></p>
+    <button type="button" id="go" class="primary">Save as PDF</button>
+  </footer>
+
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

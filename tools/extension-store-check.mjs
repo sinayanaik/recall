@@ -90,7 +90,8 @@ try {
   })));
   check("one card per extension, each with a Download button", cards.length === catalog.length && cards.every((c) => c.hasButton),
     cards.map((c) => c.name).join(", "));
-  check("Recall Clipper is in the store", cards.some((c) => c.id === "recall-clipper" && c.name === "Recall Clipper"));
+  check("one extension, Recall Web Clipper, is in the store", cards.length === 1 && cards[0].id === "recall-clipper" && cards[0].name === "Recall Web Clipper",
+    JSON.stringify(cards.map((c) => c.name)));
   check("cards show each version", catalog.every((e) => cards.find((c) => c.id === e.id)?.meta?.includes(`Version ${e.version}`)));
   const icons = await page.evaluate(() => Promise.all([...document.querySelectorAll("#extensionsList .ext-card-icon")].map((img) =>
     img.complete ? img.naturalWidth : new Promise((r) => { img.onload = () => r(img.naturalWidth); img.onerror = () => r(0); }))));

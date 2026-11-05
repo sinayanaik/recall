@@ -1,40 +1,114 @@
-# Recall Clipper
+# Recall Web Clipper
 
-A tiny, standalone Chrome/Brave extension that lets you **pick or trim any part of
-a web page and copy it as clean GFM Markdown** — ready to paste straight into the
-**Notes** of a new file in the [Recall](../recall) app.
+One Chrome / Edge / Brave extension that brings web pages into the
+[Recall](../README.md) app. Click its icon on any page and choose:
+
+| | Shortcut | |
+|---|---|---|
+| 🧹 **Clean this page** | Alt+Shift+C | Remove ads, popups, cookie banners and clutter in place. Everything can be undone. |
+| 📋 **Copy as Markdown** | Alt+Shift+M | Pick or trim any part of the page and copy it as clean GFM Markdown, ready to paste into a file's **Notes**. |
+| 📄 **Save as PDF** | Alt+Shift+P | A PDF with selectable text, cut into pages in the right places, that **My Files → Import** names after the page with a link back to it. |
+
+Alt+Shift+O opens the popup. It replaces the three separate extensions there
+used to be (Recall Clipper, Recall Web to PDF and Recall Page Cleaner): if you
+had those, remove them from `chrome://extensions`.
 
 It ships **separately from the Recall web app**: its own folder, no imports, no
-build step, no network calls, no account. What the two share is a *format* and a
-handful of deliberately duplicated functions — `content/recall-math.js` and
-`content/recall-render.js` are ports of Recall's own math scanner and render
-pipeline, so "what counts as math" and "what a note looks like" mean the same
-thing on both sides. Both files list the `src/` module each function came from;
-keep them in step.
+build step, no account, and nothing is uploaded anywhere. What the two share is
+a *format* and a handful of deliberately duplicated functions —
+`content/recall-math.js` and `content/recall-render.js` are ports of Recall's
+own math scanner and render pipeline, so "what counts as math" and "what a note
+looks like" mean the same thing on both sides. Both files list the `src/`
+module each function came from; keep them in step.
 
 ---
 
 ## Install (unpacked)
 
-The easiest way is from the Recall app itself: **☰ → Extensions → Recall
-Clipper → Download .zip**, then unzip it and load the folder as below. (Its
-two siblings, **Recall Web to PDF** and **Recall Page Cleaner**, are offered
-there too.)
+The easiest way is from the Recall app itself: **☰ → Extensions → Recall Web
+Clipper → Download .zip**, then unzip it and load the folder as below.
 
-1. Open `chrome://extensions` (or `brave://extensions`).
+1. Open `chrome://extensions` (or `edge://extensions`, `brave://extensions`).
 2. Turn on **Developer mode** (top-right).
 3. Click **Load unpacked** and select the `recall-clipper/` folder (the unzipped
    download, or this folder in a copy of the repository).
-4. Pin the teal **Recall Clipper** icon to the toolbar if you like.
+4. Pin the icon to the toolbar if you like.
 
-No build step. Works fully offline. Nothing is uploaded anywhere.
+To update, download it again, replace the folder, and press the reload arrow on
+the extension's card.
 
 ---
 
-## Use
+## Clean this page
+
+A toolbar appears on the page.
+
+- **Auto** marks everything the chosen level would remove:
+  - **Gentle**: popups, overlays, cookie banners and ads.
+  - **Balanced** (the default): Gentle, plus sticky headers and footers, share
+    buttons, comments, related links and newsletter boxes.
+  - **Reader**: only the main article is kept.
+
+  Click a red block to keep it, or click any other block to mark it too. A
+  chip such as `Ad ×4` unmarks a whole group at once.
+- **Manual**: a dashed outline follows the mouse. Click a block to mark it;
+  marked blocks are **blurred and covered in red**. **↑** widens to the parent
+  block, **↓** narrows back, **Space** marks, **K** keeps only that block.
+- **Enter** or **Apply** removes the marked blocks. **Ctrl+Z** and
+  **Ctrl+Shift+Z** undo and redo, including Apply. **Restore page** puts back
+  everything the cleaner removed.
+- **Remember for this site** saves what you remove as rules for that site; they
+  are applied the next time you clean there, and **Forget site** clears them.
+- After Apply, **Save as PDF** prints the cleaned page with your last PDF
+  options, and **Copy as Markdown** opens the picker on it.
+
+**Esc** closes the toolbar; the page stays cleaned.
+
+## Save as PDF
+
+The popup shows the few settings most people change:
+
+- **What to save**: the whole page, the selected text, or a block you pick.
+- **Clean first**: Off, Gentle, Balanced or Reader (the same rules as Clean this page).
+- **Pages**:
+  - **Smart pages** (the default). The page is cut into pages of about the
+    length you choose — **one screen**, **one A4 page** (the default), **two A4
+    pages**, or a custom length. Each cut goes in the best place near that
+    length: before a heading if there is one, between paragraphs otherwise, and
+    never through a picture, table, code block, formula or list item. Each page
+    is then trimmed to its own content, so no page ends in a band of white.
+    With **Show the page breaks on the page first** (on by default) the page is
+    laid out as it will print and the cuts appear as dashed lines: click a line
+    to remove it, click anywhere to cut above that point, change the page
+    length, then press **Save PDF** (or Enter; Esc cancels).
+  - **One long page**: as tall as the content (split into a few pages past
+    200 in). Very tall pages are slow to scroll in any PDF reader.
+  - **Paper pages**: A4, Letter, Legal, A3, A5, Tabloid or custom.
+- **Images**: Original, High, Medium, Low, Custom or none.
+- **Margins**: none, left and right, top and bottom, all sides, or custom.
+
+**More options** holds the rest: presets, the visible-area capture, paper size
+and orientation, margin sizes, scale or layout width, text size, print or
+screen styles, colour scheme, picture details, fixed bars, collapsed sections,
+breaks before headings, embeds, header and footer, source box, bookmarks,
+tagged PDF, file name and folder.
+
+While a PDF is made, Chrome shows a bar saying the extension "started debugging
+this browser": that is how it prints with Chrome's own engine, and the bar goes
+away when the PDF is saved. The page is put back exactly as it was.
+
+Every PDF carries the page's title, author and address, and Recall's own
+fields (`/RecallSourceURL`, `/RecallSiteName`, `/RecallCapturedAt`,
+`/RecallPublished`, `/RecallDescription`), which the app reads on import.
+`lib/pdf-info.js` writes them, and `lib/pdf-pages.js` gives each smart page its
+own height — both as incremental updates, leaving Chrome's bytes as they were.
+
+---
+
+## Copy as Markdown
 
 1. Go to any web page.
-2. Click the **Recall Clipper** toolbar icon (or press **Alt+Shift+M**). A small
+2. Click the toolbar icon and choose **Copy as Markdown** (or press **Alt+Shift+M**). A small
    toolbar appears at the top of the page and the tool turns on.
 3. Pick your content — the picker actually **sculpts the live page** so what you
    see is what you'll copy:
@@ -57,7 +131,7 @@ No build step. Works fully offline. Nothing is uploaded anywhere.
    elements every frame, so they stay put while you scroll and survive pages that
    re-render. Every live change (removed blocks, Isolate) is **fully reversible**:
    **Clear** or closing the tool restores the page exactly as it was — the page is
-   never left modified once Recall Clipper is off.
+   never left modified once Copy as Markdown is off.
 4. Click **Preview** to see a **rendered** preview of the Markdown (toggle
    **Rendered / Raw Markdown** at the top of the panel), then **Copy Markdown**
    (or the panel's **Copy**) to put the raw Markdown on your clipboard. The
@@ -72,8 +146,8 @@ to Markdown and how many to HTML, how many formulas were recovered as LaTeX, and
 how many had **no readable source** (those are the only things worth checking by
 eye; see *Math*, below).
 
-Press **Esc** or click **✕** to turn the tool off. Double-click the "Recall
-Clipper" label to dock the toolbar to the bottom if it covers something.
+Press **Esc** or click **✕** to turn the tool off. Double-click the "Copy as
+Markdown" label to dock the toolbar to the bottom if it covers something.
 
 ---
 
@@ -173,10 +247,33 @@ Two more things happen on the way out:
 
 ## How it's built
 
-- **Manifest V3**, minimal permissions: `activeTab` + `scripting`. It can only
-  touch a tab **after you click the icon on it** — no host permissions, no
-  always-on content scripts, no background network.
-- `background.js` injects the picker on demand; re-injecting toggles it off.
+- **Manifest V3**. It can only touch a tab **after you use it on that tab** —
+  no always-on content scripts, no background network. Permissions:
+
+  | Permission | Why |
+  |---|---|
+  | `activeTab`, `scripting` | Inject the picker or the cleaner into the tab you used it on, and nowhere else. |
+  | `debugger` | Save as PDF prints with Chrome's own PDF engine (`Page.printToPDF`) and lays the page out at the print width. This is the "debugging this browser" bar. |
+  | `downloads` | Saves the PDF. |
+  | `storage` | Your PDF options and presets, the cleaner's mode and level, and the per-site cleaning rules you chose to remember. |
+  | *optional* access to all sites | Asked for only when you choose a reduced image quality and press **Allow**, to read pictures served from other sites so they can be made smaller. |
+
+- `background.js` wires the three jobs: it injects the picker or the cleaner on
+  demand (re-injecting toggles either off) and hands PDF jobs to `pdf-job.js`.
+- `popup.html`, `popup.css` and `popup.js` are the toolbar popup.
+- `pdf-job.js` runs one PDF job per tab: attach, prepare, find the page breaks,
+  print, restore, stamp the metadata, download. Because it runs in the service
+  worker, closing the popup does not stop it.
+- `content/prepare.js` applies the PDF options to the page in an isolated world,
+  plans the smart page breaks and shows them for editing, then puts every
+  change back.
+- `content/cleaner-core.js` is the cleaning rule engine (used by Clean this page
+  and by Save as PDF's "Clean first"); `content/cleaner-ui.js` is the cleaner's
+  toolbar, marking, apply and undo; `content/cleaner.css` blurs marked blocks.
+- `lib/options.js` holds every PDF option, its default, the presets, the page
+  geometry and the smart page lengths. `lib/pdf-info.js` writes the metadata,
+  `lib/pdf-pages.js` trims each smart page to its content, and
+  `lib/image-pdf.js` builds the PDF for the visible-area screenshot.
 - `content/picker.js` is the element picker + converter (runs in the page's
   isolated world). `content/picker.css` is its self-contained, `!important`-hardened UI.
 - `content/mathjax-source.js` is the only file that runs in the page's **MAIN
@@ -243,11 +340,18 @@ Fixtures live in `tools/fixtures/`:
 | `mathjax3.html` | the MAIN-world source recovery — a page with no annotation and no copytext, where taking the MathML instead would be visibly worse |
 | `structure.html` | ordered-list indentation, nested lists, `dl`, header-less and spanned tables, `sup`/`sub`, `mark`/`u`/`kbd`/`abbr`, `details`, `figure`, callouts, ARIA headings, embeds, lazy images |
 | `page.html` | shadow DOM, and the whole-page "Remove mode" clip's site-chrome stripping |
+| `clutter.html` | the page `tools/extensions-browser-check.mjs` in the Recall repository cleans and saves as a PDF |
 
 Two assertions are worth more than the rest: every math span in the output is
 **parsed with the KaTeX a deck actually ships** (capturing the wrong TeX is not a
 success), and the clipped Markdown is run back through `recall-render.js`, which
 is how the preview's fidelity to a deck is checked.
+
+`tools/extensions-check.mjs` (no browser) and `tools/extensions-browser-check.mjs`
+(Chromium, the extension loaded unpacked) in the Recall repository check the
+cleaner and Save as PDF: what Auto marks, Apply and Undo, smart page breaks and
+their editor, page sizes, the trimmed heights, the metadata, and that the page
+is restored afterwards.
 
 `tools/generate-icons.js` regenerates the PNG icons.
 Nothing in this extension imports from or writes to the Recall app.

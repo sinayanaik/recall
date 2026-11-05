@@ -1,8 +1,7 @@
-// Recall Page Cleaner — the rule engine.
+// Recall Web Clipper — the cleaning rule engine.
 //
-// SHARED FILE. A byte-identical copy lives at
-// recall-web-to-pdf/content/cleaner-core.js ("Clean first" in the PDF popup);
-// tools/extensions-check.mjs fails if the two drift. Edit one, copy it over.
+// Used twice: by Clean this page (content/cleaner-ui.js) and by Save as PDF's
+// "Clean first" (pdf-job.js evaluates it before content/prepare.js).
 //
 // Pure DOM reading: nothing here changes the page. findCandidates() returns the
 // elements a level would remove, each with a short human reason, and the UI (or

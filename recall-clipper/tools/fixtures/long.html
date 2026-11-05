@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>A Long Read | The Daily Example</title>
+  <meta property="og:site_name" content="The Daily Example">
+  <link rel="canonical" href="https://example.org/science/a-long-read">
+  <style>
+    body { font: 17px/1.6 Georgia, serif; margin: 0; color: #222; }
+    .wrap { display: flex; gap: 32px; max-width: 1100px; margin: 0 auto; padding: 24px; }
+    main { flex: 1; min-width: 0; }
+    aside { width: 220px; flex: none; font: 14px/1.4 system-ui, sans-serif; color: #555; }
+    h2 { font: 700 26px/1.25 system-ui, sans-serif; margin: 36px 0 10px; }
+    table { border-collapse: collapse; width: 100%; }
+    td, th { border: 1px solid #ccc; padding: 6px 8px; }
+    pre { background: #f4f4f4; padding: 12px; }
+    figure { margin: 18px 0; }
+    .tall { height: 420px; background: linear-gradient(#cde, #9ab); }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <main id="article">
+      <h1 id="headline">A Long Read</h1>
+      <p class="lede">A page long enough to need many pages, with a heading every few paragraphs.</p>
+    </main>
+    <aside id="sidebar">
+      <p>Sidebar: more from the site.</p>
+      <p>A narrow column beside the article, as tall as a few paragraphs.</p>
+    </aside>
+  </div>
+  <script>
+    // Twenty-four short sections, with a table, a code block and a figure
+    // along the way — written out here so the fixture stays small. A section
+    // is shorter than half a page, so a heading is always near the end of one.
+    const main = document.getElementById("article");
+    const words = "Tides rise and fall twice a day because the moon and the sun pull on the oceans, and the earth turns beneath the bulges that pull raises".split(" ");
+    const sentence = (n) => Array.from({ length: 18 }, (_, i) => words[(n * 7 + i) % words.length]).join(" ");
+    for (let s = 1; s <= 24; s += 1) {
+      const h = document.createElement("h2");
+      h.id = `section-${s}`;
+      h.textContent = `Section ${s}`;
+      main.append(h);
+      for (let p = 1; p <= 2; p += 1) {
+        const para = document.createElement("p");
+        para.textContent = `${sentence(s * 10 + p)}. ${sentence(s * 10 + p + 3)}.`;
+        main.append(para);
+        if (s === 5 && p === 1) {
+          const t = document.createElement("table");
+          t.id = "table";
+          t.innerHTML = "<tr><th>Place</th><th>Range (m)</th></tr>" + Array.from({ length: 8 }, (_, i) => `<tr><td>Harbour ${"ABCDEFGH"[i]}</td><td>${(i * 0.7 + 1).toFixed(1)}</td></tr>`).join("");
+          main.append(t);
+        }
+        if (s === 11 && p === 1) {
+          const pre = document.createElement("pre");
+          pre.id = "code";
+          pre.textContent = Array.from({ length: 8 }, (_, i) => `h[${i}] = a * cos(w * t + phase[${i}])`).join("\n");
+          main.append(pre);
+        }
+        if (s === 17 && p === 2) {
+          const fig = document.createElement("figure");
+          fig.id = "figure";
+          fig.innerHTML = '<div class="tall"></div><figcaption>A tall figure that must not be cut.</figcaption>';
+          main.append(fig);
+        }
+      }
+    }
+  </script>
+</body>
+</html>

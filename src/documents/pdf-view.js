@@ -2719,9 +2719,9 @@ function renderConcurrency() {
 const renderWaiters = [];
 const renderSlots = new Set();
 
-function acquireRenderSlot(pageNumber, entry, stale, { detail = false } = {}) {
+function acquireRenderSlot(pageNumber, entry, stale, { detail = false, band = false } = {}) {
   return new Promise((resolve) => {
-    renderWaiters.push({ pageNumber, entry, stale, resolve, detail });
+    renderWaiters.push({ pageNumber, entry, stale, resolve, detail, band });
     pumpRenderQueue();
   });
 }
@@ -3133,6 +3133,7 @@ function watchDocumentInteraction() {
     const at = performance.now();
     const previous = lastScroll;
     lastScroll = { at, top: view.scrollTop };
+    if (previous && view.scrollTop !== previous.top) bandScrollDirection = view.scrollTop > previous.top ? 1 : -1;
     if (previous && at > previous.at && at - previous.at < 200) {
       const screensPerSecond = (Math.abs(view.scrollTop - previous.top) / Math.max(1, view.clientHeight))
         / ((at - previous.at) / 1000);
@@ -3151,6 +3152,8 @@ function watchDocumentInteraction() {
     // unless it is the teleprompter moving the view a pixel a frame, which
     // otherwise threw away every sharp tile it started for as long as it played.
     if (!documentAutoScrolling()) cancelDetailRenders();
+    // ...but a tall page's bands follow the reader (see "Bands for tall pages").
+    scheduleBandUpdate();
   }, { passive: true });
 }
 
@@ -3198,6 +3201,10 @@ function pumpRenderQueue() {
       if (held?.releaseSlot) abandonPageRender(held);
     }
   }
+  // A tall page's band may start mid-scroll when the worker draws it and no
+  // page on screen is still blank (see "Bands for tall pages").
+  const bandsMayStart = moving && !flinging && bandsDrawWhileMoving()
+    && !renderWaiters.some((waiter) => !waiter.detail && pageBlankOnScreen(waiter.pageNumber));
   while (renderSlots.size < limit && renderWaiters.length) {
     let best = -1;
     let bestRank = Infinity;
@@ -3206,12 +3213,13 @@ function pumpRenderQueue() {
       if (!urgent && moving) {
         // Mid-gesture only a blank page on screen may start, and not even
         // that mid-fling.
-        if (flinging || waiter.detail || !pageBlankOnScreen(waiter.pageNumber)) return;
+        if (waiter.band ? !bandsMayStart : (flinging || waiter.detail || !pageBlankOnScreen(waiter.pageNumber))) return;
       }
       // On screen first, nearest first; a detail tile just behind the first
-      // pass of its own page and ahead of the pages either side of it.
+      // pass of its own page and ahead of the pages either side of it, and a
+      // band (in the order its page asked) a little ahead of a tile.
       const rank = urgent ? -1
-        : Math.abs(waiter.pageNumber - current) + (waiter.detail ? 0.5 : 0);
+        : Math.abs(waiter.pageNumber - current) + (waiter.band ? 0.25 : waiter.detail ? 0.5 : 0);
       if (rank < bestRank) { best = index; bestRank = rank; }
     });
     // Mid-interaction and nothing that cannot wait: the settle timer pumps
@@ -3294,8 +3302,9 @@ function cancelDetailRenders() {
   });
 }
 
-function dropDetail(entry) {
+function dropDetail(entry, { keepBands = false } = {}) {
   if (!entry) return;
+  if (!keepBands) dropBands(entry);
   const task = entry.detailTask;
   entry.detailTask = null;
   if (task) { try { task.cancel(); } catch (_) { /* already settled */ } }
@@ -3366,7 +3375,14 @@ function drawDetailTiles() {
   }
   openPdf.rendered.forEach((pageNumber) => {
     const entry = openPdf.pages.get(pageNumber);
-    if (!entry || entry.task || entry.detailTask || entry.detailWaiting) return;
+    if (!entry || entry.task) return;
+    // A tall page is sharpened in bands (see "Bands for tall pages").
+    if (entry.bands?.size && !isPageOnScreen(pageNumber)) {
+      dropBands(entry);
+      return;
+    }
+    if (isPageOnScreen(pageNumber) && updateBands(pageNumber, entry)) return;
+    if (entry.detailTask || entry.detailWaiting) return;
     // A page shown as a picture wants a tile only past what a picture may be
     // (pictureTarget), not every time its picture is a shade under the screen.
     const wantsDetail = entry.el.querySelector(".pdf-picture") ? Boolean(entry.pictureDetail) : pageWantsDetail(entry.renderOutputScale || 1);
@@ -3444,6 +3460,240 @@ async function drawDetailTile(pageNumber, entry, region) {
   }
 }
 
+
+// ── Bands for tall pages ────────────────────────────────────────────────────
+//
+// "When I import a long website as one PDF page, scrolling shows a blur that
+// then clears." A page saved from a web site can be 200 inches tall: at fit
+// width that is tens of millions of device pixels, so its base canvas is drawn
+// at a fraction of the screen's density (canvasOutputScale) and only the detail
+// tile above is sharp. But the tile covers one screenful, every scroll cancelled
+// it, and the next one started only once the reader had stopped — so every
+// scroll showed the soft page first and the sharp one a beat later.
+//
+// A page more than PDF_BAND_TALL_SCREENS views tall (and no wider than the
+// view, which is how such a page is read) gets BANDS instead of the one tile:
+// the page cut into a fixed grid of full-width strips, each drawn at the
+// screen's density as a `.pdf-detail` canvas, so the dark page and the probes
+// treat them exactly as a tile. The bands that cover what is on screen, plus
+// PDF_BAND_AHEAD_SCREENS in the direction of travel and PDF_BAND_BEHIND_SCREENS
+// the other way, are kept; the rest are dropped, and never more than
+// PDF_BAND_MAX are kept at once, so memory stays at a few screens' worth.
+//
+// What keeps this from costing the reader a frame:
+//
+//   • bands are drawn while the page is MOVING only when the page renderer's
+//     worker draws them (src/documents/pdf-render-worker.js) — the main thread
+//     pays a bitmap swap, not a render — and never mid-fling, mid-pinch, or
+//     while a page on screen is still blank (pumpRenderQueue);
+//   • without the worker they wait for the page to be still, as the tile does,
+//     and the ones already drawn stay — scrolling back over them is sharp;
+//   • a scroll cancels only the bands it has left behind, not the ones it is
+//     heading into.
+export const PDF_BAND_TALL_SCREENS = 2;
+
+export const PDF_BAND_AHEAD_SCREENS = 1;
+
+export const PDF_BAND_BEHIND_SCREENS = 0.5;
+
+export const PDF_BAND_MAX = 4;
+
+let bandScrollDirection = 1;
+let bandFrame = 0;
+
+function bandsDrawWhileMoving() {
+  return Boolean(openPdf?.renderDoc) && pageRendererActive() && !documentPinchEngaged();
+}
+
+// Whether this page is read in bands: tall, no wider than the view, and soft
+// without help (or a picture that wants a tile).
+function pageUsesBands(entry) {
+  const view = el.documentView;
+  if (!view || !entry?.viewport || !entry.el) return false;
+  const wantsDetail = entry.el.querySelector(".pdf-picture") ? Boolean(entry.pictureDetail) : pageWantsDetail(entry.renderOutputScale || 1);
+  if (!wantsDetail) return false;
+  return entry.viewport.height > view.clientHeight * PDF_BAND_TALL_SCREENS
+    && entry.viewport.width <= view.clientWidth * 1.25;
+}
+
+// The grid for the page as it is laid out now: band height and density. The
+// bands share a pixel allowance of two to three per-canvas budgets, split
+// PDF_BAND_MAX ways; a band is between a third of a view and a view and a half
+// tall, and drawn softer only if even the shortest band would not fit.
+//
+// Sized by the SCREEN, as canvasPixelBudget is: the view's height moves every
+// time a phone's URL bar shows or hides, and a grid that moved with it would
+// throw every band away and draw them all again.
+function bandGrid(entry) {
+  const viewHeight = Math.max(200, window.screen?.height || el.documentView.clientHeight || 800);
+  const width = Math.max(1, entry.viewport.width);
+  const wanted = Math.min(PDF_MAX_CANVAS_SCALE, window.devicePixelRatio || 1);
+  const lowMemory = Number(navigator.deviceMemory) > 0 && Number(navigator.deviceMemory) <= 4;
+  const perBand = (canvasPixelBudget() * (lowMemory ? 2 : 3)) / PDF_BAND_MAX;
+  let height = perBand / (width * wanted * wanted);
+  height = Math.min(viewHeight * 1.5, Math.max(viewHeight * 0.35, height));
+  height = Math.max(64, Math.floor(height));
+  const density = Math.min(wanted, Math.sqrt(perBand / (width * height)));
+  const key = `${entry.renderScale}|${Math.round(width)}|${height}|${density.toFixed(3)}`;
+  const grid = { key, height, density, count: Math.ceil(entry.viewport.height / height) };
+  if (entry.bandGrid?.key !== key) {
+    dropBands(entry);
+    entry.bandGrid = grid;
+  }
+  return entry.bandGrid;
+}
+
+function bandRegion(entry, grid, index) {
+  const y = index * grid.height;
+  return { x: 0, y, width: entry.viewport.width, height: Math.min(grid.height, entry.viewport.height - y) };
+}
+
+// The bands to keep, most wanted first: what is on screen (nearest the middle
+// first), then ahead in the direction of travel, then behind.
+function wantedBands(entry, grid) {
+  const view = el.documentView;
+  const viewRect = view.getBoundingClientRect();
+  const pageRect = entry.el.getBoundingClientRect();
+  if (!pageRect.height) return [];
+  const sy = entry.viewport.height / pageRect.height;
+  const top = (viewRect.top - pageRect.top) * sy;
+  const bottom = (viewRect.bottom - pageRect.top) * sy;
+  const screen = Math.max(1, bottom - top);
+  const down = bandScrollDirection >= 0;
+  const from = Math.max(0, top - screen * (down ? PDF_BAND_BEHIND_SCREENS : PDF_BAND_AHEAD_SCREENS));
+  const to = Math.min(entry.viewport.height, bottom + screen * (down ? PDF_BAND_AHEAD_SCREENS : PDF_BAND_BEHIND_SCREENS));
+  if (to <= from) return [];
+  const middle = (top + bottom) / 2;
+  const first = Math.max(0, Math.floor(from / grid.height));
+  const last = Math.min(grid.count - 1, Math.floor((to - 0.5) / grid.height));
+  const list = [];
+  for (let index = first; index <= last; index += 1) {
+    const y0 = index * grid.height;
+    const y1 = y0 + grid.height;
+    const onScreen = y1 > top && y0 < bottom;
+    const ahead = down ? y0 >= bottom : y1 <= top;
+    const rank = onScreen ? Math.abs((y0 + y1) / 2 - middle) / screen : (ahead ? 10 : 20) + Math.abs((y0 + y1) / 2 - middle) / screen;
+    list.push({ index, rank });
+  }
+  return list.sort((a, b) => a.rank - b.rank).slice(0, PDF_BAND_MAX).map((b) => b.index);
+}
+
+function hasSharpLayer(entry) {
+  if (entry?.detail) return true;
+  if (!entry?.bands) return false;
+  for (const band of entry.bands.values()) if (band.canvas) return true;
+  return false;
+}
+
+function dropBand(entry, index) {
+  const band = entry?.bands?.get(index);
+  if (!band) return false;
+  entry.bands.delete(index);
+  const task = band.task;
+  band.task = null;
+  if (task) { try { task.cancel(); } catch (_) { /* already settled */ } }
+  if (!band.canvas) return false;
+  band.canvas.remove();
+  releaseCanvasBitmap(band.canvas);
+  band.canvas = null;
+  return true;
+}
+
+function dropBands(entry) {
+  if (!entry?.bands?.size) return;
+  let had = false;
+  [...entry.bands.keys()].forEach((index) => { had = dropBand(entry, index) || had; });
+  const pageNumber = Number(entry.el?.dataset.pageNumber) || 0;
+  if (had && pageNumber) queueMicrotask(() => refreshBakedPage(pageNumber));
+}
+
+// Keeps a tall page's bands where the reader is: those that left the window
+// go, the missing ones are asked for. Returns whether the page uses bands.
+function updateBands(pageNumber, entry) {
+  if (!pageUsesBands(entry)) {
+    dropBands(entry);
+    return false;
+  }
+  // The single tile is the bands' job on this page now.
+  if (entry.detail || entry.detailTask) dropDetail(entry, { keepBands: true });
+  const grid = bandGrid(entry);
+  const wanted = wantedBands(entry, grid);
+  entry.bands?.forEach((_band, index) => { if (!wanted.includes(index)) dropBand(entry, index); });
+  wanted.forEach((index) => { if (!entry.bands?.has(index)) drawBand(pageNumber, entry, index, grid); });
+  return true;
+}
+
+// On every scroll frame: the bands follow the reader.
+function scheduleBandUpdate() {
+  if (bandFrame || !openPdf) return;
+  bandFrame = requestAnimationFrame(() => {
+    bandFrame = 0;
+    if (!openPdf || documentSurfaceHidden() || performance.now() < flingUntil) return;
+    openPdf.rendered.forEach((pageNumber) => {
+      const entry = openPdf.pages.get(pageNumber);
+      if (!entry?.bands?.size && !isPageOnScreen(pageNumber)) return;
+      if (!entry || entry.task) return;
+      if (!isPageOnScreen(pageNumber)) { dropBands(entry); return; }
+      updateBands(pageNumber, entry);
+    });
+  });
+}
+
+async function drawBand(pageNumber, entry, index, grid) {
+  const token = pdfOpenToken;
+  const generation = entry.generation;
+  const viewport = entry.viewport;
+  const scale = entry.renderScale;
+  const region = bandRegion(entry, grid, index);
+  const band = { index, region, scale, canvas: null, task: null };
+  if (!entry.bands) entry.bands = new Map();
+  entry.bands.set(index, band);
+  const stale = () => token !== pdfOpenToken || entry.generation !== generation
+    || !openPdf?.rendered.has(pageNumber) || entry.viewport !== viewport
+    || entry.bands?.get(index) !== band || entry.bandGrid !== grid;
+  const forget = () => { if (entry.bands?.get(index) === band && !band.canvas) entry.bands.delete(index); };
+  let slot = null;
+  try {
+    slot = await acquireRenderSlot(pageNumber, entry, stale, { detail: true, band: true });
+    if (!slot || stale()) { forget(); return; }
+    const page = await openPdf.doc.getPage(pageNumber);
+    if (stale()) { forget(); return; }
+    band.task = startPageDraw({ entry, pageNumber, page, viewport, region, density: grid.density });
+    const { canvas } = await band.task.promise;
+    band.task = null;
+    const base = entry.el.querySelector(".pdf-canvas:not(.is-stale)");
+    if (stale() || !base) {
+      releaseCanvasBitmap(canvas);
+      forget();
+      return;
+    }
+    canvas.classList.add("pdf-band");
+    canvas.style.left = `${region.x}px`;
+    canvas.style.top = `${region.y}px`;
+    canvas.style.width = `${region.width}px`;
+    canvas.style.height = `${region.height}px`;
+    const firstSharp = !hasSharpLayer(entry);
+    base.after(canvas);
+    band.canvas = canvas;
+    // A band is the plain page, as a tile is: the marks go back on live.
+    if (firstSharp) refreshBakedPage(pageNumber);
+  } catch (error) {
+    forget();
+    if (error?.name !== "RenderingCancelledException") console.warn(`Could not draw part of page ${pageNumber}`, error);
+  } finally {
+    band.task = null;
+    slot?.release();
+  }
+}
+
+// For tools/pdf-preview-check.mjs: the bands a page has drawn, in page pixels.
+export function documentPageBands(pageNumber) {
+  const entry = openPdf?.pages.get(pageNumber);
+  if (!entry?.bands) return [];
+  return [...entry.bands.values()].filter((band) => band.canvas)
+    .map((band) => ({ ...band.region, density: band.canvas.width / Math.max(1, band.region.width) }))
+    .sort((a, b) => a.y - b.y);
+}
 
 // ── A page's canvas, and the pixels it can lose ─────────────────────────────
 //
@@ -3774,7 +4024,7 @@ function pageMarksSource() {
 function desiredPicture(pageNumber, entry = openPdf?.pages.get(pageNumber)) {
   const plain = { kind: "plain", stamp: "", marks: null };
   if (!openPdf || !picturesActive() || normalizeDocSlot(openPdf.slot) === DOC_SLOT_NOTEBOOK) return plain;
-  if (documentInkLive() || documentMarksEditing || entry?.detail) return plain;
+  if (documentInkLive() || documentMarksEditing || hasSharpLayer(entry)) return plain;
   const until = inkActivePages.get(pageNumber);
   if (until && until > performance.now()) return plain;
   const marks = regionMarksOnPage(pageMarksSource(), pageNumber);
@@ -3800,7 +4050,7 @@ export function documentPageBakeState(pageNumber) {
     stampMatches: Boolean(shown) && shown.stamp === want.stamp,
     pictures: picturesActive(),
     inkLive: documentInkLive(),
-    detail: Boolean(entry?.detail),
+    detail: hasSharpLayer(entry),
     baked: Boolean(entry?.el.classList.contains(PDF_BAKED_CLASS))
   };
 }
@@ -4615,7 +4865,8 @@ function repaperPages() {
   const pages = [...openPdf.rendered].sort((a, b) => Math.abs(a - current) - Math.abs(b - current));
   pages.forEach((pageNumber) => {
     const entry = openPdf.pages.get(pageNumber);
-    if (entry?.detail && !canvasPaperMatches(entry.detail.canvas)) {
+    if ((entry?.detail && !canvasPaperMatches(entry.detail.canvas))
+      || [...(entry?.bands?.values() || [])].some((band) => band.canvas && !canvasPaperMatches(band.canvas))) {
       dropDetail(entry);
       scheduleDetail();
     }
@@ -4755,7 +5006,8 @@ export function recoverLostPageCanvases() {
     const entry = openPdf.pages.get(pageNumber);
     // A detail tile is only ever an upgrade: one that lost its pixels is
     // dropped, and drawn again once the reader is still.
-    if (entry?.detail && canvasLostItsPixels(entry.detail.canvas)) {
+    if ((entry?.detail && canvasLostItsPixels(entry.detail.canvas))
+      || [...(entry?.bands?.values() || [])].some((band) => band.canvas && canvasLostItsPixels(band.canvas))) {
       dropDetail(entry);
       scheduleDetail();
     }

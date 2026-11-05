@@ -110,10 +110,10 @@ try {
   const lang = await load("src/render/code-language.js");
   const capture = await load("src/import/web-capture.js");
 
-  // ── web-capture: a PDF from the Recall Web to PDF extension ─────────────
+  // ── web-capture: a PDF from the Recall Web Clipper extension ────────────
   //
   // The metadata as pdf.js hands it back (custom keys under info.Custom),
-  // exactly as recall-web-to-pdf/lib/pdf-info.js writes it.
+  // exactly as recall-clipper/lib/pdf-info.js writes it.
   {
     const meta = {
       info: {

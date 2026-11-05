@@ -1,4 +1,4 @@
-// Recall Clipper — injected element picker + Markdown converter.
+// Recall Web Clipper — Copy as Markdown: injected element picker + Markdown converter.
 //
 // Runs in the page's isolated content-script world. Re-injecting this file
 // toggles the tool off (the background worker just re-runs it), so the whole
@@ -24,7 +24,7 @@
     return;
   }
   if (typeof TurndownService !== "function") {
-    console.error("Recall Clipper: Turndown failed to load.");
+    console.error("Recall Web Clipper: Turndown failed to load.");
     return;
   }
 
@@ -1407,7 +1407,7 @@
   ui.id = UI_ID;
   ui.innerHTML = `
     <div class="rc-bar">
-      <span class="rc-logo" title="Double-click to move the bar to the bottom">Recall Clipper</span>
+      <span class="rc-logo" title="Double-click to move the bar to the bottom">Copy as Markdown</span>
       <div class="rc-modes" role="group" aria-label="Pick mode">
         <button type="button" data-mode="select" class="rc-mode is-active" title="Press S · click blocks to KEEP them">➕ Select</button>
         <button type="button" data-mode="remove" class="rc-mode" title="Press R · click blocks to TRIM them out">🗑 Remove</button>
@@ -1661,5 +1661,5 @@
   // going through the clipboard.
   window.__recallClipper = { destroy, convert };
   updateCount();
-  toast("Recall Clipper on — Remove deletes blocks from the page (Ctrl+Z undoes), Select + 🎯 Isolate keeps only what you pick. Esc closes & restores.");
+  toast("Copy as Markdown on — Remove deletes blocks from the page (Ctrl+Z undoes), Select + 🎯 Isolate keeps only what you pick. Esc closes & restores.");
 })();

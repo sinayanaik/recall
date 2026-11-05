@@ -143,7 +143,7 @@ function scanHtml(file) {
     failures.push({ file, line: lineOf(src, m.index), word: "Write", use: "Canvas", text: m[0] });
   }
 }
-for (const file of ["index.html", "recall-web-to-pdf/popup.html"]) scanHtml(file);
+for (const file of ["index.html", "recall-clipper/popup.html"]) scanHtml(file);
 
 // ── src/**/*.js ─────────────────────────────────────────────────────────────
 function walk(dir) {
@@ -156,10 +156,15 @@ function walk(dir) {
   return out;
 }
 
-// The two extensions written after the rename are read like src/ (their
-// tools/ are tests). Recall Clipper predates this check and keeps its own words.
-const EXTENSION_JS = ["recall-web-to-pdf", "recall-page-cleaner"].flatMap((dir) =>
-  walk(path.join(ROOT, dir)).filter((p) => !p.includes(`${path.sep}tools${path.sep}`)));
+// The extension's files written after the rename are read like src/: the
+// popup, the PDF job and its libraries, the page cleaner. The Copy as Markdown
+// files (picker, math, render ports, vendor) predate this check and keep their
+// own words.
+const EXTENSION_JS = [
+  "recall-clipper/background.js", "recall-clipper/popup.js", "recall-clipper/pdf-job.js",
+  "recall-clipper/content/prepare.js", "recall-clipper/content/cleaner-core.js", "recall-clipper/content/cleaner-ui.js",
+  ...walk(path.join(ROOT, "recall-clipper/lib")).map((p) => path.relative(ROOT, p))
+].map((rel) => path.join(ROOT, rel));
 
 for (const abs of [...walk(path.join(ROOT, "src")), ...EXTENSION_JS]) {
   const file = path.relative(ROOT, abs).split(path.sep).join("/");
@@ -178,7 +183,7 @@ for (const abs of [...walk(path.join(ROOT, "src")), ...EXTENSION_JS]) {
 }
 
 // ── manifests ───────────────────────────────────────────────────────────────
-for (const file of ["manifest.webmanifest", "recall-clipper/manifest.json", "recall-web-to-pdf/manifest.json", "recall-page-cleaner/manifest.json"]) {
+for (const file of ["manifest.webmanifest", "recall-clipper/manifest.json"]) {
   const json = JSON.parse(fs.readFileSync(path.join(ROOT, file), "utf8"));
   for (const key of ["name", "short_name", "description"]) {
     if (typeof json[key] === "string") test(file, 0, json[key]);

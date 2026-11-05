@@ -1,9 +1,9 @@
-// Recall Page Cleaner — the on-page toolbar, marking and undo.
+// Recall Web Clipper — Clean this page: the on-page toolbar, marking and undo.
 //
-// Injected (with cleaner-core.js before it and cleaner.css alongside) when the
-// toolbar icon is clicked. Self-toggling: a second click closes it. Closing
-// never puts removed blocks back — the point is a cleaned page that Recall
-// Clipper or Recall Web to PDF can then work on — but the undo history
+// Injected (with cleaner-core.js before it and cleaner.css alongside) from the
+// popup or Alt+Shift+C. Self-toggling: a second time closes it. Closing never
+// puts removed blocks back — the point is a cleaned page to copy as Markdown
+// or save as a PDF next — but the undo history
 // survives, so reopening the cleaner and pressing Undo (or "Restore page")
 // brings everything back.
 //
@@ -160,18 +160,18 @@
     const chips = h("div", { class: "chips" });
     const hint = h("div", { class: "hint" });
     const removedNote = h("span", {});
-    const pdf = h("button", { type: "button", title: "Hand this cleaned page to Recall Web to PDF" }, "Save as PDF");
+    const pdf = h("button", { type: "button", class: "primary", title: "Save this cleaned page as a PDF, with your last PDF options" }, "Save as PDF");
+    const copy = h("button", { type: "button", title: "Pick what to copy from this cleaned page as Markdown (Alt+Shift+M)" }, "Copy as Markdown");
     const handoff = h("div", { class: "handoff", hidden: true },
       h("div", { class: "row" }, removedNote),
-      h("div", { class: "row" }, pdf,
-        h("span", { class: "hint" }, "Clip as Markdown: press ", h("kbd", {}, "Alt+Shift+M"), " (Recall Clipper)")));
+      h("div", { class: "row" }, pdf, copy));
     const toastText = h("span", {});
     const toastAction = h("button", { type: "button", hidden: true });
     const toast = h("div", { class: "toast", hidden: true, role: "status" }, toastText, toastAction);
 
-    const bar = h("div", { class: "bar", role: "toolbar", "aria-label": "Recall Page Cleaner" },
+    const bar = h("div", { class: "bar", role: "toolbar", "aria-label": "Clean this page" },
       h("div", { class: "row" },
-        h("span", { class: "title" }, h("span", { class: "dot" }), "Page Cleaner"),
+        h("span", { class: "title" }, h("span", { class: "dot" }), "Clean this page"),
         move, close),
       h("div", { class: "row" },
         h("span", { class: "seg" }, modeAuto, modeManual), level),
@@ -200,11 +200,12 @@
     move.addEventListener("click", () => bar.classList.toggle("bottom"));
     close.addEventListener("click", () => closeCleaner());
     pdf.addEventListener("click", () => handOffToPdf());
+    copy.addEventListener("click", () => handOffToClipper());
     toastAction.addEventListener("click", () => { const fn = toastAction._fn; hideToast(); if (fn) fn(); });
 
     S.host = host;
     S.root = root;
-    S.els = { layer, hover, modeAuto, modeManual, level, count, apply, undo, redo, clear, restore, remember, chips, hint, handoff, removedNote, toast, toastText, toastAction, bar, pdf };
+    S.els = { layer, hover, modeAuto, modeManual, level, count, apply, undo, redo, clear, restore, remember, chips, hint, handoff, removedNote, toast, toastText, toastAction, bar, pdf, copy };
   }
 
   let toastTimer = 0;
@@ -514,13 +515,19 @@
     pdf.textContent = "Starting…";
     closeCleaner({ keepToast: true });
     let res = null;
-    try { res = await chrome.runtime.sendMessage({ type: "rpc-handoff-pdf" }); } catch (err) { res = { ok: false, error: String(err && err.message || err) }; }
+    try { res = await chrome.runtime.sendMessage({ type: "rwc-save-pdf" }); } catch (err) { res = { ok: false, error: String(err && err.message || err) }; }
     if (!res || !res.ok) {
       openCleaner();
-      showToast("Recall Web to PDF did not answer. Install it from Recall (☰ → Extensions), or click its icon / press Alt+Shift+P.");
+      const why = res && res.error && !/cancelled/i.test(res.error) ? res.error : "";
+      showToast(why ? `The PDF was not saved: ${why}` : "The PDF was not saved.");
     }
     pdf.disabled = false;
     pdf.textContent = "Save as PDF";
+  }
+
+  async function handOffToClipper() {
+    closeCleaner();
+    try { await chrome.runtime.sendMessage({ type: "rwc-clip" }); } catch { /* the picker says nothing if it cannot start */ }
   }
 
   // ---------------------------------------------------------------- events

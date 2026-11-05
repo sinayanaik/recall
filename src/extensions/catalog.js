@@ -9,25 +9,38 @@ export const EXTENSIONS = [
   {
     "id": "recall-clipper",
     "folder": "recall-clipper",
-    "tagline": "Pick any part of a page and copy it as Markdown for a file's Notes.",
+    "tagline": "One extension for bringing web pages into Recall: clean a page, copy any part of it as Markdown, or save it as a PDF.",
     "details": [
-      "Click blocks to keep them, or remove what you don't want, and see a preview rendered exactly as Recall will show it — math, diagrams and code included.",
-      "Copy, then paste into a file's Notes."
+      "Clean this page: Auto marks ads, popups, cookie banners, sticky bars, share buttons, comments and related links (Gentle, Balanced or Reader); or click blocks yourself. Marked blocks turn blurred and red, Apply removes them, and everything can be undone.",
+      "Copy as Markdown: click the blocks you want and see them exactly as Recall will show them — math, diagrams and code included — then paste into a file's Notes.",
+      "Save as PDF: smart pages cut before headings and between paragraphs, about one A4 page each (or the length you choose); the breaks are shown on the page so you can move them first. Import it from My Files → Import: the file is named after the page and its Notes link back to it."
     ],
-    "shortcut": "Alt+Shift+M",
-    "permissions": "Runs only on the tab you click it on. No network, no account.",
-    "name": "Recall Clipper",
-    "version": "1.1.0",
-    "description": "Select or trim any part of a web page and copy it as clean GFM Markdown — ready to paste into a Recall file's Notes.",
-    "bytes": 4272753,
+    "shortcut": "Alt+Shift+C clean · Alt+Shift+M copy as Markdown · Alt+Shift+P save as PDF · Alt+Shift+O open",
+    "permissions": "Runs only on the tab you use it on, and uploads nothing. Saving a PDF uses Chrome's own print engine through its debugging interface, so Chrome shows a “debugging this browser” bar while it works.",
+    "name": "Recall Web Clipper",
+    "version": "2.0.0",
+    "description": "Bring any web page into Recall: clean it up, copy any part as Markdown for a file's Notes, or save it as a PDF with smart page breaks.",
+    "bytes": 4444927,
     "files": [
       {
         "path": "README.md",
-        "size": 16337
+        "size": 22620
       },
       {
         "path": "background.js",
-        "size": 5400
+        "size": 7733
+      },
+      {
+        "path": "content/cleaner-core.js",
+        "size": 19201
+      },
+      {
+        "path": "content/cleaner-ui.js",
+        "size": 27674
+      },
+      {
+        "path": "content/cleaner.css",
+        "size": 646
       },
       {
         "path": "content/mathjax-source.js",
@@ -39,7 +52,11 @@ export const EXTENSIONS = [
       },
       {
         "path": "content/picker.js",
-        "size": 79472
+        "size": 79502
+      },
+      {
+        "path": "content/prepare.js",
+        "size": 37673
       },
       {
         "path": "content/recall-math.js",
@@ -62,8 +79,40 @@ export const EXTENSIONS = [
         "size": 200
       },
       {
+        "path": "lib/image-pdf.js",
+        "size": 2432
+      },
+      {
+        "path": "lib/options.js",
+        "size": 10298
+      },
+      {
+        "path": "lib/pdf-info.js",
+        "size": 5847
+      },
+      {
+        "path": "lib/pdf-pages.js",
+        "size": 7355
+      },
+      {
         "path": "manifest.json",
-        "size": 979
+        "size": 1637
+      },
+      {
+        "path": "pdf-job.js",
+        "size": 18668
+      },
+      {
+        "path": "popup.css",
+        "size": 4188
+      },
+      {
+        "path": "popup.html",
+        "size": 17120
+      },
+      {
+        "path": "popup.js",
+        "size": 11768
       },
       {
         "path": "vendor/katex/auto-render.min.js",
@@ -196,132 +245,6 @@ export const EXTENSIONS = [
       {
         "path": "vendor/turndown.js",
         "size": 26684
-      }
-    ]
-  },
-  {
-    "id": "recall-web-to-pdf",
-    "folder": "recall-web-to-pdf",
-    "tagline": "Turn any page into a clean PDF that Recall imports with its title and source.",
-    "details": [
-      "One continuous page or printed pages; margins on no side, left and right only, top and bottom only, or all sides; image quality from original to text only; scale, layout width, headers and footers, bookmarks and presets.",
-      "Import the PDF from My Files → Import: the file is named after the page and its Notes link back to it."
-    ],
-    "shortcut": "Alt+Shift+P saves with your last options · Alt+Shift+O opens them",
-    "permissions": "Uses Chrome's own print engine through its debugging interface, so Chrome shows a “debugging this browser” bar while a PDF is made.",
-    "name": "Recall Web to PDF",
-    "version": "1.0.0",
-    "description": "Turn any web page into a clean PDF — one long page or printed pages, your margins, your image quality — ready to import into Recall.",
-    "bytes": 110329,
-    "files": [
-      {
-        "path": "README.md",
-        "size": 5890
-      },
-      {
-        "path": "background.js",
-        "size": 16952
-      },
-      {
-        "path": "content/cleaner-core.js",
-        "size": 19248
-      },
-      {
-        "path": "content/prepare.js",
-        "size": 21478
-      },
-      {
-        "path": "icons/icon-128.png",
-        "size": 1140
-      },
-      {
-        "path": "icons/icon-16.png",
-        "size": 211
-      },
-      {
-        "path": "icons/icon-48.png",
-        "size": 426
-      },
-      {
-        "path": "lib/image-pdf.js",
-        "size": 2432
-      },
-      {
-        "path": "lib/options.js",
-        "size": 8694
-      },
-      {
-        "path": "lib/pdf-info.js",
-        "size": 5451
-      },
-      {
-        "path": "manifest.json",
-        "size": 1576
-      },
-      {
-        "path": "popup.css",
-        "size": 3247
-      },
-      {
-        "path": "popup.html",
-        "size": 14290
-      },
-      {
-        "path": "popup.js",
-        "size": 9294
-      }
-    ]
-  },
-  {
-    "id": "recall-page-cleaner",
-    "folder": "recall-page-cleaner",
-    "tagline": "Clean a page before you clip it or save it: Auto removes the clutter, Manual lets you pick.",
-    "details": [
-      "Auto marks ads, popups, cookie banners, sticky bars, share buttons, comments and related links (Gentle, Balanced or Reader). In Manual, each block you click turns blurred and red; Apply removes them, and everything can be undone.",
-      "Remembers what you removed on a site if you ask it to, then hands the page to Web to PDF or the Clipper."
-    ],
-    "shortcut": "Alt+Shift+C",
-    "permissions": "Runs only on the tab you click it on. No network.",
-    "name": "Recall Page Cleaner",
-    "version": "1.0.0",
-    "description": "Clean up any web page before you clip it or save it as a PDF: Auto removes ads, popups and clutter; Manual lets you mark blocks yourself.",
-    "bytes": 55876,
-    "files": [
-      {
-        "path": "README.md",
-        "size": 3569
-      },
-      {
-        "path": "background.js",
-        "size": 2037
-      },
-      {
-        "path": "content/cleaner-core.js",
-        "size": 19248
-      },
-      {
-        "path": "content/cleaner-ui.js",
-        "size": 27322
-      },
-      {
-        "path": "content/cleaner.css",
-        "size": 646
-      },
-      {
-        "path": "icons/icon-128.png",
-        "size": 1056
-      },
-      {
-        "path": "icons/icon-16.png",
-        "size": 237
-      },
-      {
-        "path": "icons/icon-48.png",
-        "size": 462
-      },
-      {
-        "path": "manifest.json",
-        "size": 1299
       }
     ]
   }
