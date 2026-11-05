@@ -506,8 +506,8 @@ const checks = [
     ["sync          ", ["node", ["tools/sync-parity.mjs"], ROOT]],
     ["reconcile     ", ["node", ["tools/reconcile-parity.mjs"], ROOT]],
     ["ui-smoke      ", ["node", ["tools/ui-smoke.mjs"], ROOT]],
-    // ☰ → Extensions downloads each zip, and Chrome loads every one unzipped;
-    // then the Page Cleaner and Web to PDF themselves, loaded unpacked.
+    // ☰ → Extensions downloads the zip, and Chrome loads it unzipped; then
+    // Recall Web Clipper itself — Clean this page and Save as PDF — loaded unpacked.
     ["ext-store     ", ["node", ["tools/extension-store-check.mjs"], ROOT]],
     ["ext-browser   ", ["node", ["tools/extensions-browser-check.mjs"], ROOT]],
     ["selection     ", ["node", ["tools/selection-check.mjs"], ROOT]],
@@ -604,6 +604,12 @@ const checks = [
     // heading" was.
     ["toc-binding   ", ["node", ["tools/toc-binding-check.mjs"], ROOT]],
     ["pdf-document  ", ["node", ["tools/pdf-preview-check.mjs"], ROOT]],
+    // A web page saved as ONE very tall PDF page: what is on screen must stay
+    // sharp WHILE the reader scrolls (bands for tall pages), not a beat after
+    // they stop — at 1x, on a 2x screen, and on a phone with its CPU slowed.
+    ["pdf-tall      ", ["node", ["tools/pdf-tall-page-check.mjs"], ROOT]],
+    ["pdf-tall-2x   ", ["node", ["tools/pdf-tall-page-check.mjs", "--dpr=2"], ROOT]],
+    ["pdf-tall-phone", ["node", ["tools/pdf-tall-page-check.mjs", "--phone"], ROOT]],
     // Annotations on a PDF: underline, strike, squiggle and box in any colour,
     // the Shapes tool's lines, arrows, boxes, callouts, text and sticky notes,
     // and the file saved with them as real PDF annotations.

@@ -1,11 +1,21 @@
 {
   "manifest_version": 3,
-  "name": "Recall Clipper",
-  "version": "1.1.0",
-  "description": "Select or trim any part of a web page and copy it as clean GFM Markdown — ready to paste into a Recall file's Notes.",
-  "permissions": ["activeTab", "scripting"],
+  "name": "Recall Web Clipper",
+  "version": "2.0.0",
+  "description": "Bring any web page into Recall: clean it up, copy any part as Markdown for a file's Notes, or save it as a PDF with smart page breaks.",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "debugger",
+    "downloads",
+    "storage"
+  ],
+  "optional_host_permissions": [
+    "<all_urls>"
+  ],
   "action": {
-    "default_title": "Recall Clipper — click, then pick content to copy as Markdown",
+    "default_title": "Recall Web Clipper — clean, copy as Markdown or save as PDF",
+    "default_popup": "popup.html",
     "default_icon": {
       "16": "icons/icon-16.png",
       "48": "icons/icon-48.png",
@@ -18,7 +28,8 @@
     "128": "icons/icon-128.png"
   },
   "background": {
-    "service_worker": "background.js"
+    "service_worker": "background.js",
+    "type": "module"
   },
   "web_accessible_resources": [
     {
@@ -27,11 +38,29 @@
     }
   ],
   "commands": {
+    "_execute_action": {
+      "suggested_key": {
+        "default": "Alt+Shift+O"
+      },
+      "description": "Open Recall Web Clipper"
+    },
     "toggle-clipper": {
       "suggested_key": {
         "default": "Alt+Shift+M"
       },
-      "description": "Toggle Recall Clipper on the current page"
+      "description": "Copy as Markdown: pick content on the current page"
+    },
+    "toggle-cleaner": {
+      "suggested_key": {
+        "default": "Alt+Shift+C"
+      },
+      "description": "Clean the current page"
+    },
+    "save-pdf": {
+      "suggested_key": {
+        "default": "Alt+Shift+P"
+      },
+      "description": "Save the current page as a PDF with your last options"
     }
   }
 }

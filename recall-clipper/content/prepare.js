@@ -1,6 +1,6 @@
-// Recall Web to PDF — page preparation.
+// Recall Web Clipper — page preparation for Save as PDF.
 //
-// Evaluated by background.js through the DevTools protocol, in an isolated
+// Evaluated by pdf-job.js through the DevTools protocol, in an isolated
 // world of its own (so the page's scripts cannot see or tamper with it), with
 // cleaner-core.js evaluated just before it. It applies the popup's options to
 // the live page, reports what the PDF needs to know, and — once the print is
@@ -20,10 +20,15 @@
   const isUi = (el) => el && el.closest && el.closest("[data-recall-pdf-ui], [data-recall-cleaner-ui]");
 
   function setStyle(el, prop, value) {
+    const hadAttr = el.hasAttribute("style");
     const before = el.style.getPropertyValue(prop);
     const prio = el.style.getPropertyPriority(prop);
     el.style.setProperty(prop, value, "important");
-    undo(() => { if (before) el.style.setProperty(prop, before, prio); else el.style.removeProperty(prop); });
+    undo(() => {
+      if (before) el.style.setProperty(prop, before, prio); else el.style.removeProperty(prop);
+      // Back to no style attribute at all, not an empty one.
+      if (!hadAttr && !el.getAttribute("style")) el.removeAttribute("style");
+    });
   }
   function setAttr(el, name, value) {
     const had = el.hasAttribute(name);
@@ -408,6 +413,360 @@
     });
   }
 
+  // ---------------------------------------------------------------- smart page breaks
+  //
+  // Smart pages: instead of one page as tall as the whole site, the page is cut
+  // into pages of about the chosen length, at the best place near each length:
+  // before a heading if there is one, between two blocks otherwise, and never
+  // through a picture, a table, a code block, a formula or a list item. Measured
+  // while background.js lays the page out at its print width under print styles,
+  // so the positions are the printed ones. The cuts can then be moved on the
+  // page itself (editBreaks), and applyBreaks turns them into
+  // `break-before: page`.
+
+  const AVOID_INSIDE = "img, picture, svg, math, figure, pre, table, blockquote, li, dt, dd, video, canvas, iframe, "
+    + ".katex, .katex-display, mjx-container, .MathJax, .mermaid, [data-recall-pdf-ui], [data-recall-cleaner-ui]";
+  const BLOCKISH = /^(block|flow-root|list-item|flex|grid|table)$/;
+  const HEADING = /^H[1-6]$/;
+  const HEADING_SCORE = { H1: 5, H2: 4, H3: 3, H4: 2, H5: 2, H6: 2 };
+
+  let plan = null; // { candidates: [{el, y, score}], breaks: [el], target, height, lengths }
+
+  // One page's worth of geometry, read once: collectCandidates looks at each
+  // element's neighbours many times over, and a long page has thousands.
+  let cache = null;
+  const rectOf = (el) => {
+    if (!cache) return el.getBoundingClientRect();
+    let r = cache.rects.get(el);
+    if (!r) { r = el.getBoundingClientRect(); cache.rects.set(el, r); }
+    return r;
+  };
+  const docTop = (el) => rectOf(el).top + scrollY;
+
+  function laidOut(el) {
+    let s;
+    if (cache && cache.styles.has(el)) s = cache.styles.get(el);
+    else {
+      s = style(el);
+      s = s && s.display !== "none" && s.visibility !== "hidden" && s.position !== "fixed" && s.position !== "absolute"
+        ? { display: s.display, float: s.float !== "none" } : null;
+      if (cache) cache.styles.set(el, s);
+    }
+    return s;
+  }
+
+  // The previous sibling that takes up room in the flow, if any.
+  function previousInFlow(el) {
+    for (let p = el.previousElementSibling; p; p = p.previousElementSibling) {
+      if (isUi(p) || /^(SCRIPT|STYLE|LINK|META|TEMPLATE)$/.test(p.tagName)) continue;
+      if (!laidOut(p)) continue;
+      const r = rectOf(p);
+      if (r.height === 0 && r.width === 0) continue;
+      return p;
+    }
+    return null;
+  }
+
+  // A cut at the top of `el` is clean when nothing beside it on the way up to
+  // <body> runs across that line: no column as wide as it, no float, no
+  // picture or table. A narrower side column (a site's sidebar) does not stop
+  // the cut — it is cut too, which costs far less than no cut at all.
+  function cleanCutAt(el, y) {
+    for (let node = el; node && node !== document.body && node !== document.documentElement; node = node.parentElement) {
+      const parent = node.parentElement;
+      if (!parent) break;
+      const siblings = parent.children;
+      if (siblings.length > 400) return false; // a grid of hundreds: not a place to cut
+      const width = rectOf(node).width;
+      for (const sib of siblings) {
+        if (sib === node || isUi(sib)) continue;
+        const s = laidOut(sib);
+        if (!s) continue;
+        const r = rectOf(sib);
+        if (r.height === 0) continue;
+        // Something beside it that starts above the line and ends below it.
+        if (r.top + scrollY >= y - 2 || r.bottom + scrollY <= y + 2) continue;
+        if (s.float || r.width >= width * 0.75 || sib.matches(AVOID_INSIDE) || crossedInside(sib, y)) return false;
+      }
+    }
+    return true;
+  }
+
+  // A picture, table or code block inside `box` that the line at `y` would cut.
+  function crossedInside(box, y) {
+    const items = box.querySelectorAll("img, picture, svg, table, figure, video, canvas, pre, iframe");
+    for (let i = 0; i < items.length && i < 60; i += 1) {
+      const r = rectOf(items[i]);
+      if (r.height > 0 && r.top + scrollY < y - 2 && r.bottom + scrollY > y + 2) return true;
+    }
+    return items.length > 60;
+  }
+
+  function scoreOf(el) {
+    if (HEADING.test(el.tagName)) return HEADING_SCORE[el.tagName];
+    const first = el.firstElementChild;
+    if (first && HEADING.test(first.tagName) && Math.abs(rectOf(first).top - rectOf(el).top) < 40) {
+      return HEADING_SCORE[first.tagName];
+    }
+    if (/^(HR|SECTION|ARTICLE)$/.test(el.tagName)) return 2;
+    return 1;
+  }
+
+  function collectCandidates() {
+    cache = { rects: new Map(), styles: new Map() };
+    try { return collectCandidatesNow(); } finally { cache = null; }
+  }
+
+  function collectCandidatesNow() {
+    const height = measure().height;
+    const byY = new Map();
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT, {
+      acceptNode: (node) => {
+        if (isUi(node)) return NodeFilter.FILTER_REJECT;
+        if (node.matches(AVOID_INSIDE)) return NodeFilter.FILTER_REJECT;
+        const s = laidOut(node);
+        if (!s) return NodeFilter.FILTER_REJECT;
+        return BLOCKISH.test(s.display) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
+      }
+    });
+    let n = 0;
+    for (let el = walker.nextNode(); el && n < 20000; el = walker.nextNode()) {
+      n += 1;
+      const r = rectOf(el);
+      if (r.height < 1 || r.width < 1) continue;
+      const y = Math.round(r.top + scrollY);
+      if (y < 24 || y > height - 24) continue;
+      // Never leave a heading alone at the bottom of a page.
+      const prev = previousInFlow(el);
+      if (prev && HEADING.test(prev.tagName)) continue;
+      const score = scoreOf(el);
+      const had = byY.get(y);
+      // Same line: keep the higher score; on a tie, the outer element (seen first).
+      if (had && had.score >= score) continue;
+      if (!cleanCutAt(el, y)) continue;
+      byY.set(y, { el: had && had.score === score ? had.el : el, y, score });
+    }
+    return { height, candidates: [...byY.values()].sort((a, b) => a.y - b.y) };
+  }
+
+  // Greedy: from the top of each page, the best cut between 55% and 100% of the
+  // page length — a heading beats a paragraph, a fuller page beats an emptier one.
+  function chooseBreaks(candidates, height, target) {
+    const breaks = [];
+    let start = 0;
+    let uncut = false;
+    let guard = 0;
+    while (height - start > target && guard < 2000) {
+      guard += 1;
+      let best = null;
+      let bestValue = -Infinity;
+      for (const c of candidates) {
+        if (c.y <= start + target * 0.55) continue;
+        if (c.y > start + target) break;
+        const value = c.score + 1.5 * ((c.y - start) / target);
+        if (value >= bestValue) { best = c; bestValue = value; }
+      }
+      if (!best) {
+        // Nothing in the window: the last cut there is at all before the end
+        // of the page, however short that leaves it.
+        for (const c of candidates) {
+          if (c.y <= start + 40) continue;
+          if (c.y > start + target) break;
+          best = c;
+        }
+      }
+      if (!best) {
+        // One block taller than a page (a giant picture or table): the print
+        // cuts it where the paper ends.
+        uncut = true;
+        start += target;
+        continue;
+      }
+      breaks.push(best.el);
+      start = best.y;
+    }
+    return { breaks, uncut };
+  }
+
+  function chunkHeights(breaks, height) {
+    const ys = breaks.map(docTop).sort((a, b) => a - b);
+    const edges = [0, ...ys, height];
+    const out = [];
+    for (let i = 1; i < edges.length; i += 1) out.push(Math.max(1, Math.round(edges[i] - edges[i - 1])));
+    return out;
+  }
+
+  function planReport() {
+    const heights = chunkHeights(plan.breaks, plan.height);
+    return { pages: heights.length, heights, uncut: plan.uncut, target: plan.target };
+  }
+
+  /** Plans the cuts for pages `target` layout pixels tall. */
+  function planBreaks(target, lengths = {}) {
+    const { height, candidates } = collectCandidates();
+    const { breaks, uncut } = chooseBreaks(candidates, height, Math.max(200, target));
+    plan = { candidates, breaks, uncut, target, height, lengths };
+    return planReport();
+  }
+
+  /**
+   * Shows the planned cuts on the page as dashed lines, to move before saving.
+   * Click a line to remove it; click anywhere in the page to cut above that
+   * point. Resolves with the final plan, or rejects "cancelled" (Esc).
+   */
+  function editBreaks() {
+    if (!plan) throw new Error("no page breaks planned");
+    return new Promise((resolve, reject) => {
+      const host = document.createElement("div");
+      host.setAttribute("data-recall-pdf-ui", "");
+      host.style.cssText = "position:absolute;left:0;top:0;width:100%;height:0;z-index:2147483647;pointer-events:none;";
+      const root = host.attachShadow({ mode: "open" });
+      root.innerHTML = `<style>
+        :host { all: initial; }
+        .cut { position: absolute; left: 0; right: 0; height: 18px; margin-top: -9px; pointer-events: auto; cursor: pointer; }
+        .cut::before { content: ""; position: absolute; left: 0; right: 0; top: 8px; border-top: 2px dashed #4f5bd5; }
+        .cut:hover::before { border-top-color: #c62828; }
+        .tag { position: absolute; right: 8px; top: -2px; font: 600 11px/1.6 system-ui, sans-serif; color: #fff;
+          background: #4f5bd5; padding: 0 8px; border-radius: 999px; white-space: nowrap; }
+        .cut:hover .tag { background: #c62828; }
+        .cut:hover .tag::after { content: "  ✕ remove"; }
+        .ghost { position: absolute; left: 0; right: 0; border-top: 2px dotted rgba(79,91,213,.55); pointer-events: none; display: none; }
+        .bar { position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%); pointer-events: auto;
+          display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: center;
+          max-width: calc(100vw - 24px); box-sizing: border-box;
+          background: #1f2430; color: #fff; font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+          padding: 8px 10px; border-radius: 12px; box-shadow: 0 10px 28px rgba(0,0,0,.3); }
+        .bar b { font-weight: 700; }
+        .hint { color: #b8bfd0; font-size: 12px; }
+        button, select { font: inherit; border-radius: 8px; border: 1px solid #4a5268; background: #2b3242; color: #fff; padding: 4px 10px; cursor: pointer; }
+        button:hover { background: #374058; }
+        button.go { background: #4f5bd5; border-color: #4f5bd5; font-weight: 650; }
+        button.go:hover { background: #5e69e0; }
+      </style>
+      <div class="lines"></div>
+      <div class="ghost"></div>
+      <div class="bar" role="toolbar" aria-label="Page breaks">
+        <span><b class="count"></b></span>
+        <label class="hint">Page length <select class="length"></select></label>
+        <span class="hint">Click a dashed line to remove it · click the page to cut there</span>
+        <button type="button" class="reset">Reset</button>
+        <button type="button" class="cancel">Cancel</button>
+        <button type="button" class="go">Save PDF</button>
+      </div>`;
+      const lines = root.querySelector(".lines");
+      const ghost = root.querySelector(".ghost");
+      const count = root.querySelector(".count");
+      const lengthSelect = root.querySelector(".length");
+      const LABELS = { screen: "About one screen", a4: "About one A4 page", "2a4": "About two A4 pages", custom: "Custom" };
+      for (const [key, px] of Object.entries(plan.lengths || {})) {
+        const opt = document.createElement("option");
+        opt.value = String(px);
+        opt.textContent = LABELS[key] || key;
+        if (px === plan.target) opt.selected = true;
+        lengthSelect.append(opt);
+      }
+      if (!lengthSelect.options.length) lengthSelect.closest("label").remove();
+      document.documentElement.append(host);
+      const original = plan.breaks.slice();
+
+      const paint = () => {
+        const ys = plan.breaks.map((el) => ({ el, y: docTop(el) })).sort((a, b) => a.y - b.y);
+        plan.breaks = ys.map((b) => b.el);
+        lines.replaceChildren(...ys.map(({ el, y }, i) => {
+          const cut = document.createElement("div");
+          cut.className = "cut";
+          cut.style.top = `${y}px`;
+          cut.title = "Remove this page break";
+          const tag = document.createElement("span");
+          tag.className = "tag";
+          tag.textContent = `Page ${i + 2}`;
+          cut.append(tag);
+          cut.addEventListener("click", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            plan.breaks = plan.breaks.filter((b) => b !== el);
+            paint();
+          });
+          return cut;
+        }));
+        const report = planReport();
+        const longest = Math.max(...report.heights);
+        count.textContent = `${report.pages} page${report.pages === 1 ? "" : "s"}${longest > plan.target * 1.05 ? " · some longer than the page length" : ""}`;
+      };
+
+      // Where a click in the page would cut: the nearest clean cut above it.
+      const cutAbove = (y) => {
+        let best = null;
+        for (const c of plan.candidates) {
+          if (c.y > y) break;
+          best = c;
+        }
+        return best;
+      };
+
+      const finish = (err) => {
+        removeEventListener("click", onClick, true);
+        removeEventListener("mousedown", swallow, true);
+        removeEventListener("mousemove", onMove, true);
+        removeEventListener("keydown", onKey, true);
+        host.remove();
+        if (err) reject(err); else resolve(planReport());
+      };
+      const fromUi = (e) => e.composedPath().includes(host);
+      const swallow = (e) => { if (!fromUi(e)) { e.preventDefault(); e.stopPropagation(); } };
+      const onMove = (e) => {
+        if (fromUi(e)) { ghost.style.display = "none"; return; }
+        const c = cutAbove(e.clientY + scrollY);
+        if (!c || plan.breaks.includes(c.el)) { ghost.style.display = "none"; return; }
+        ghost.style.display = "block";
+        ghost.style.top = `${c.y}px`;
+      };
+      const onClick = (e) => {
+        if (fromUi(e)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const c = cutAbove(e.clientY + scrollY);
+        if (!c || plan.breaks.includes(c.el)) return;
+        plan.breaks.push(c.el);
+        ghost.style.display = "none";
+        paint();
+      };
+      const onKey = (e) => {
+        if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); finish(new Error("cancelled")); }
+        else if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); finish(); }
+      };
+      root.querySelector(".go").addEventListener("click", () => finish());
+      root.querySelector(".cancel").addEventListener("click", () => finish(new Error("cancelled")));
+      root.querySelector(".reset").addEventListener("click", () => { plan.breaks = original.slice(); paint(); });
+      lengthSelect.addEventListener("change", () => {
+        const target = Number(lengthSelect.value);
+        const { breaks, uncut } = chooseBreaks(plan.candidates, plan.height, target);
+        Object.assign(plan, { breaks, uncut, target });
+        paint();
+      });
+      addEventListener("click", onClick, true);
+      addEventListener("mousedown", swallow, true);
+      addEventListener("mousemove", onMove, true);
+      addEventListener("keydown", onKey, true);
+      paint();
+      // Start where the first cut is, so the reader sees what this is about.
+      if (plan.breaks.length) scrollTo(0, Math.max(0, docTop(plan.breaks[0]) - innerHeight * 0.6));
+    });
+  }
+
+  /** Turns the planned cuts into page breaks; returns each page's content height. */
+  function applyBreaks() {
+    if (!plan) return { pages: 1, heights: [measure().height], uncut: false };
+    plan.breaks.forEach((el) => {
+      setStyle(el, "break-before", "page");
+      setStyle(el, "page-break-before", "always");
+    });
+    plan.height = measure().height;
+    const report = planReport();
+    scrollTo(0, 0);
+    return report;
+  }
+
   // ---------------------------------------------------------------- entry points
 
   async function prepare(o, geo) {
@@ -459,9 +818,13 @@
     }
     journal = [];
     picked = null;
+    plan = null;
     scrollTo(startScroll[0], startScroll[1]);
     return true;
   }
 
-  globalThis.__recallPdf = { prepare, measure, restore, pickElement, swapImages, facts: () => core && core.pageFacts() };
+  globalThis.__recallPdf = {
+    prepare, measure, restore, pickElement, swapImages, planBreaks, editBreaks, applyBreaks,
+    facts: () => core && core.pageFacts()
+  };
 })();

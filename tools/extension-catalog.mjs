@@ -26,35 +26,14 @@ export const EXTENSIONS = [
   {
     id: "recall-clipper",
     folder: "recall-clipper",
-    tagline: "Pick any part of a page and copy it as Markdown for a file's Notes.",
+    tagline: "One extension for bringing web pages into Recall: clean a page, copy any part of it as Markdown, or save it as a PDF.",
     details: [
-      "Click blocks to keep them, or remove what you don't want, and see a preview rendered exactly as Recall will show it — math, diagrams and code included.",
-      "Copy, then paste into a file's Notes."
+      "Clean this page: Auto marks ads, popups, cookie banners, sticky bars, share buttons, comments and related links (Gentle, Balanced or Reader); or click blocks yourself. Marked blocks turn blurred and red, Apply removes them, and everything can be undone.",
+      "Copy as Markdown: click the blocks you want and see them exactly as Recall will show them — math, diagrams and code included — then paste into a file's Notes.",
+      "Save as PDF: smart pages cut before headings and between paragraphs, about one A4 page each (or the length you choose); the breaks are shown on the page so you can move them first. Import it from My Files → Import: the file is named after the page and its Notes link back to it."
     ],
-    shortcut: "Alt+Shift+M",
-    permissions: "Runs only on the tab you click it on. No network, no account."
-  },
-  {
-    id: "recall-web-to-pdf",
-    folder: "recall-web-to-pdf",
-    tagline: "Turn any page into a clean PDF that Recall imports with its title and source.",
-    details: [
-      "One continuous page or printed pages; margins on no side, left and right only, top and bottom only, or all sides; image quality from original to text only; scale, layout width, headers and footers, bookmarks and presets.",
-      "Import the PDF from My Files → Import: the file is named after the page and its Notes link back to it."
-    ],
-    shortcut: "Alt+Shift+P saves with your last options · Alt+Shift+O opens them",
-    permissions: "Uses Chrome's own print engine through its debugging interface, so Chrome shows a “debugging this browser” bar while a PDF is made."
-  },
-  {
-    id: "recall-page-cleaner",
-    folder: "recall-page-cleaner",
-    tagline: "Clean a page before you clip it or save it: Auto removes the clutter, Manual lets you pick.",
-    details: [
-      "Auto marks ads, popups, cookie banners, sticky bars, share buttons, comments and related links (Gentle, Balanced or Reader). In Manual, each block you click turns blurred and red; Apply removes them, and everything can be undone.",
-      "Remembers what you removed on a site if you ask it to, then hands the page to Web to PDF or the Clipper."
-    ],
-    shortcut: "Alt+Shift+C",
-    permissions: "Runs only on the tab you click it on. No network."
+    shortcut: "Alt+Shift+C clean · Alt+Shift+M copy as Markdown · Alt+Shift+P save as PDF · Alt+Shift+O open",
+    permissions: "Runs only on the tab you use it on, and uploads nothing. Saving a PDF uses Chrome's own print engine through its debugging interface, so Chrome shows a “debugging this browser” bar while it works."
   }
 ];
 

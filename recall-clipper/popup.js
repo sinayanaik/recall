@@ -1,14 +1,20 @@
-// Recall Web to PDF — the options popup.
+// Recall Web Clipper — the toolbar popup.
 //
-// Every control carries the option's key as its `name` (margins.* for the
+// Three things to do with the page: Clean this page and Copy as Markdown start
+// their on-page tool and close the popup; Save as PDF opens its settings here.
+// The few settings most people change are on top; everything else is under
+// "More options".
+//
+// Every PDF control carries the option's key as its `name` (margins.* for the
 // per-side margins), so reading and writing the form is generic. data-show
 // attributes ("paper=custom", "imageQuality!=none", "a=b|c") hide what does
 // not apply. Options are remembered in chrome.storage.sync as "last", and
 // named presets as "presets"; the built-in presets in lib/options.js cannot be
-// deleted. Saving hands the job to background.js, so closing the popup (or
-// clicking the page to pick a block) does not stop it.
+// deleted. Saving hands the job to the background (pdf-job.js), so closing
+// the popup — or clicking the page to pick a block or move a page break —
+// does not stop it.
 
-import { DEFAULTS, BUILTIN_PRESETS, normalize, geometry, imageSettings } from "./lib/options.js";
+import { DEFAULTS, BUILTIN_PRESETS, normalize, geometry, imageSettings, pageLengthIn } from "./lib/options.js";
 
 const form = document.getElementById("form");
 const presetSelect = document.getElementById("preset");
@@ -17,6 +23,9 @@ const summaryEl = document.getElementById("summary");
 const goBtn = document.getElementById("go");
 const hostNote = document.getElementById("hostNote");
 const linkMargins = document.getElementById("linkMargins");
+const pdfButton = document.getElementById("actPdf");
+const pdfFooter = document.getElementById("pdfFooter");
+const blockedEl = document.getElementById("blocked");
 
 let userPresets = {};
 let tabId = null;
@@ -87,7 +96,9 @@ function summarize(o) {
   const margins = [m.top, m.right, m.bottom, m.left].every((v) => v === 0)
     ? "no margins"
     : `margins ${fmt(m.top)} / ${fmt(m.right)} / ${fmt(m.bottom)} / ${fmt(m.left)}`;
-  const pages = o.layout === "continuous" ? `one page ${fmt(g.paperWidthIn)} wide` : `${o.paper === "custom" ? "custom" : o.paper} pages`;
+  const pages = o.layout === "smart"
+    ? `pages ${fmt(g.paperWidthIn)} wide, up to ${fmt(pageLengthIn(o, g))} long`
+    : o.layout === "continuous" ? `one page ${fmt(g.paperWidthIn)} wide` : `${o.paper === "custom" ? "custom" : o.paper} pages`;
   const img = imageSettings(o);
   const images = o.imageQuality === "none" ? "no images" : img ? `images ≤ ${img.dpi} DPI` : "original images";
   return `${pages} · ${margins} · laid out ${g.layoutWidthPx} px wide at ${Math.round(g.scale * 100)}% · ${images}`;
@@ -174,8 +185,12 @@ document.getElementById("resetDefaults").addEventListener("click", () => {
 
 // ---------------------------------------------------------------- events
 
+// The preset picker and its name box live in the form but are not options.
+const notAnOption = (t) => !t.name;
+
 form.addEventListener("input", (e) => {
   const t = e.target;
+  if (notAnOption(t)) return;
   if (linkMargins.checked && t.name && t.name.startsWith("margins.")) {
     form.querySelectorAll('[name^="margins."]').forEach((el) => { el.value = t.value; });
   }
@@ -183,7 +198,7 @@ form.addEventListener("input", (e) => {
   refresh();
   saveLast();
 });
-form.addEventListener("change", () => { refresh(); saveLast(); });
+form.addEventListener("change", (e) => { if (notAnOption(e.target)) return; refresh(); saveLast(); });
 
 document.getElementById("grantHost").addEventListener("click", async () => {
   const ok = await chrome.permissions.request({ origins: ["<all_urls>"] }).catch(() => false);
@@ -206,19 +221,46 @@ function paintJob(job) {
 }
 
 chrome.runtime.onMessage.addListener((msg) => {
-  if (msg && msg.type === "rwp-status" && msg.tabId === tabId) paintJob(msg.job);
+  if (msg && msg.type === "rwc-status" && msg.tabId === tabId) paintJob(msg.job);
 });
 
 goBtn.addEventListener("click", async () => {
   const options = readForm();
   await saveLast();
   if (options.capture === "element") showStatus("Click the block you want on the page…");
+  else if (options.layout === "smart" && options.adjustBreaks) showStatus("The page breaks appear on the page: move them there, then press Save PDF.");
   goBtn.disabled = true;
-  const res = await chrome.runtime.sendMessage({ type: "rwp-start", tabId, options }).catch((err) => ({ ok: false, error: String(err) }));
+  const res = await chrome.runtime.sendMessage({ type: "rwc-start-pdf", tabId, options }).catch((err) => ({ ok: false, error: String(err) }));
   if (res && !res.ok) paintJob({ step: res.error || "Something went wrong.", error: true });
   goBtn.disabled = false;
   goBtn.textContent = "Save as PDF";
 });
+
+// ---------------------------------------------------------------- the three actions
+
+const RESTRICTED = /^(chrome|edge|brave|about|chrome-extension|devtools|view-source):/i;
+const STORE = /^https:\/\/(chromewebstore\.google\.com|chrome\.google\.com\/webstore)/;
+
+function showPdfPanel(open) {
+  form.hidden = !open;
+  pdfFooter.hidden = !open;
+  pdfButton.setAttribute("aria-expanded", String(open));
+  try { chrome.storage.local.set({ pdfOpen: open }); } catch { /* a nicety */ }
+  if (open) refresh();
+}
+
+pdfButton.addEventListener("click", () => showPdfPanel(form.hidden));
+
+async function startTool(type) {
+  const res = await chrome.runtime.sendMessage({ type, tabId }).catch((err) => ({ ok: false, error: String(err) }));
+  if (res && res.ok) window.close();
+  else {
+    blockedEl.hidden = false;
+    blockedEl.textContent = "That could not start on this page. Reload the page and try again.";
+  }
+}
+document.getElementById("actClean").addEventListener("click", () => startTool("rwc-clean"));
+document.getElementById("actCopy").addEventListener("click", () => startTool("rwc-copy"));
 
 // ---------------------------------------------------------------- start
 
@@ -228,13 +270,21 @@ goBtn.addEventListener("click", async () => {
   const last = await loadStored();
   paintPresets("");
   writeForm(last);
-  if (tab && /^(chrome|edge|brave|about|chrome-extension|devtools|view-source|file):/i.test(tab.url || "")) {
-    goBtn.disabled = true;
-    showStatus("Chrome does not let extensions save this kind of page.", true);
+  document.body.dataset.ready = "true";
+  let pdfOpen = false;
+  try { ({ pdfOpen = false } = await chrome.storage.local.get("pdfOpen")); } catch { /* closed */ }
+  const url = (tab && tab.url) || "";
+  if (!tab || RESTRICTED.test(url) || STORE.test(url) || /^file:/i.test(url)) {
+    document.querySelectorAll("button.action, #go").forEach((b) => { b.disabled = true; });
+    blockedEl.hidden = false;
+    blockedEl.textContent = "Chrome does not let extensions work on this kind of page. Open a web page and try again.";
+    return;
   }
-  const job = await chrome.runtime.sendMessage({ type: "rwp-get-status", tabId }).catch(() => null);
+  const job = await chrome.runtime.sendMessage({ type: "rwc-get-status", tabId }).catch(() => null);
+  // A PDF in progress (or just finished) for this tab: show it.
+  showPdfPanel(Boolean(pdfOpen || (job && !job.done && !job.error)));
   paintJob(job);
 })();
 
 // For a reader poking at the console (and the checks): what would be sent.
-globalThis.__rwpOptions = () => readForm();
+globalThis.__rwcOptions = () => readForm();

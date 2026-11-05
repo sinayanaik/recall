@@ -1,6 +1,7 @@
-// A PDF made by the Recall Web to PDF browser extension carries where it came
+// A PDF made by the Recall Web Clipper browser extension (Save as PDF; before
+// it, the Recall Web to PDF extension) carries where it came
 // from in its document info: the page's address, site, the time it was
-// captured and when the page was published (recall-web-to-pdf/lib/pdf-info.js
+// captured and when the page was published (recall-clipper/lib/pdf-info.js
 // writes them). importPdfFile (src/import/pdf.js) reads them here, so the new
 // file remembers its source and its Notes open with a link back to the page.
 //

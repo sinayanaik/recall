@@ -1,6 +1,6 @@
-// Every option the popup offers, its default, the built-in presets, and the
-// page geometry they add up to. Shared by popup.js and background.js so the
-// two can never disagree about what an option means.
+// Every option the popup's Save as PDF offers, its default, the built-in
+// presets, and the page geometry they add up to. Shared by popup.js and
+// pdf-job.js so the two can never disagree about what an option means.
 
 export const PAPERS = {
   A4: [210, 297],
@@ -29,7 +29,10 @@ export const DEFAULTS = Object.freeze({
   capture: "page",              // page | selection | element | visible
   clean: "gentle",              // off | gentle | balanced | reader
   // Layout
-  layout: "continuous",         // continuous | paged
+  layout: "smart",              // smart | continuous | paged
+  pageLength: "a4",             // screen | a4 | 2a4 | custom (smart pages: how tall one page may be)
+  customPageLength: 297,        // in marginUnit
+  adjustBreaks: true,           // show the page breaks on the page before saving
   paper: "A4",                  // A4 | Letter | Legal | A3 | A5 | Tabloid | custom
   customWidth: 210,             // in marginUnit
   customHeight: 297,
@@ -83,8 +86,11 @@ export const DEFAULTS = Object.freeze({
 
 export const BUILTIN_PRESETS = {
   "Recall reading (default)": {},
+  "One long page": {
+    layout: "continuous"
+  },
   "Clean article": {
-    clean: "reader", layout: "continuous", imageQuality: "medium", banner: true, textSize: 105
+    clean: "reader", layout: "smart", imageQuality: "medium", banner: true, textSize: 105
   },
   "Print A4": {
     clean: "gentle", layout: "paged", paper: "A4", marginPreset: "all", marginSize: 15,
@@ -107,7 +113,8 @@ export const BUILTIN_PRESETS = {
 const ENUMS = {
   capture: ["page", "selection", "element", "visible"],
   clean: ["off", "gentle", "balanced", "reader"],
-  layout: ["continuous", "paged"],
+  layout: ["smart", "continuous", "paged"],
+  pageLength: ["screen", "a4", "2a4", "custom"],
   paper: [...Object.keys(PAPERS), "custom"],
   orientation: ["portrait", "landscape"],
   marginPreset: ["none", "sides", "topbottom", "all", "custom"],
@@ -124,7 +131,7 @@ const ENUMS = {
 };
 
 const RANGES = {
-  customWidth: [10, 5000], customHeight: [10, 5000], marginSize: [0, 200], scale: [10, 200],
+  customWidth: [10, 5000], customHeight: [10, 5000], customPageLength: [20, 5000], marginSize: [0, 200], scale: [10, 200],
   customLayoutWidth: [240, 4000], textSize: [50, 250], customDpi: [36, 600], customJpeg: [10, 100],
   minImagePx: [0, 2000], lazyWaitMs: [0, 10000], hfFontSize: [5, 16]
 };
@@ -189,6 +196,35 @@ export function geometry(o) {
   scale = Math.min(2, Math.max(0.1, scale));
   const layoutWidthPx = Math.round((printableWidthIn * CSS_PX_PER_IN) / scale);
   return { paperWidthIn: w, paperHeightIn: h, margin, printableWidthIn, layoutWidthPx, scale };
+}
+
+/**
+ * Smart pages: how tall one page may be, in inches of paper (margins included).
+ * "screen" is a landscape-shaped page, about what a laptop screen shows at
+ * once; "a4" is the chosen paper's own height.
+ */
+export function pageLengthIn(o, geo = geometry(o), length = o.pageLength) {
+  const inches = {
+    screen: geo.paperWidthIn * 0.75,
+    a4: geo.paperHeightIn,
+    "2a4": geo.paperHeightIn * 2,
+    custom: toIn(o.customPageLength, o.marginUnit)
+  }[length] ?? geo.paperHeightIn;
+  return Math.min(MAX_PAGE_IN, Math.max(1, inches));
+}
+
+// What pdf-job.js adds below a smart page's measured content, so a page that
+// prints a touch taller than it measured is not cut short. Taken off the
+// content's share up front, so the finished page is never longer than asked.
+export const SMART_SLACK_IN = 0.25;
+
+/**
+ * The same, as the height of page CONTENT in the page's own layout pixels —
+ * what content/prepare.js plans the page breaks against.
+ */
+export function pageContentPx(o, geo = geometry(o), length = o.pageLength) {
+  const contentIn = Math.max(1, pageLengthIn(o, geo, length) - geo.margin.top - geo.margin.bottom - SMART_SLACK_IN);
+  return Math.round((contentIn * CSS_PX_PER_IN) / geo.scale);
 }
 
 export function imageSettings(o) {

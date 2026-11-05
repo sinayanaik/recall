@@ -117,9 +117,18 @@ export function setPdfInfo(bytes, info) {
   return out;
 }
 
-/** How many pages a PDF has, by counting page objects (good enough to check a print). */
+/**
+ * How many pages a PDF has, by counting page objects (good enough to check a
+ * print). An object written again by an incremental update (pdf-pages.js
+ * gives pages new heights that way) counts once.
+ */
 export function countPages(bytes) {
   const text = latin1.decode(bytes);
-  const m = text.match(/\/Type\s*\/Page(?![s\w])/g);
-  return m ? m.length : 0;
+  const seen = new Set();
+  let loose = 0;
+  for (const m of text.matchAll(/\/Type\s*\/Page(?![s\w])/g)) {
+    const head = /(\d+)\s+(\d+)\s+obj\s*$/.exec(text.slice(Math.max(0, text.lastIndexOf("obj", m.index) - 24), text.lastIndexOf("obj", m.index) + 3));
+    if (head) seen.add(`${head[1]} ${head[2]}`); else loose += 1;
+  }
+  return seen.size + loose;
 }

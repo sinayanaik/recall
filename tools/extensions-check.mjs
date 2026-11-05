@@ -1,25 +1,23 @@
-// Static checks for the browser extensions (no browser needed):
+// Static checks for Recall Web Clipper, the browser extension (no browser needed):
 //
-//  - every manifest parses, and every file a manifest, a background script or
-//    the popup names is on disk;
-//  - the fixed extension IDs (from each manifest's "key") are the ones the
-//    other extension and the checks message;
-//  - Recall Page Cleaner's rule engine and Recall Web to PDF's copy of it are
-//    byte-identical;
+//  - its manifest parses, and every file the manifest, a background script,
+//    the PDF job or the popup names is on disk;
+//  - there is one extension: the three it replaced are gone;
 //  - lib/pdf-info.js writes a well-formed incremental update;
-//  - lib/options.js turns options into the right page geometry and file names.
+//  - lib/pdf-pages.js gives each page its own height, the same way;
+//  - lib/options.js turns options into the right page geometry, smart page
+//    lengths and file names.
 //
 //   node tools/extensions-check.mjs
 //
-// tools/extensions-browser-check.mjs drives both extensions in Chromium.
+// tools/extensions-browser-check.mjs drives the extension in Chromium.
 
-import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const EXTENSIONS = ["recall-clipper", "recall-web-to-pdf", "recall-page-cleaner"];
+const EXTENSIONS = ["recall-clipper"];
 
 const results = [];
 const check = (name, ok, detail = "") => {
@@ -27,16 +25,11 @@ const check = (name, ok, detail = "") => {
   console.log(`${ok ? "ok  " : "FAIL"} ${name}${!ok && detail ? ` — ${detail}` : ""}`);
 };
 const read = (rel) => readFileSync(path.join(ROOT, rel), "utf8");
+const close = (a, b, eps = 0.01) => Math.abs(a - b) < eps;
+const close2 = (a, b) => Math.abs(a - b) < 0.01;
 
 // ---------------------------------------------------------------- manifests & files
 
-function idFromKey(key) {
-  const der = Buffer.from(key, "base64");
-  return createHash("sha256").update(der).digest("hex").slice(0, 32)
-    .split("").map((h) => String.fromCharCode(97 + parseInt(h, 16))).join("");
-}
-
-const ids = {};
 for (const ext of EXTENSIONS) {
   let manifest = null;
   try { manifest = JSON.parse(read(`${ext}/manifest.json`)); } catch (err) { check(`${ext}: manifest.json parses`, false, err.message); continue; }
@@ -47,7 +40,7 @@ for (const ext of EXTENSIONS) {
   if (manifest.action && manifest.action.default_popup) named.add(manifest.action.default_popup);
   if (manifest.background && manifest.background.service_worker) named.add(manifest.background.service_worker);
   // Files a script injects or fetches by path.
-  for (const script of [manifest.background && manifest.background.service_worker, manifest.action && manifest.action.default_popup].filter(Boolean)) {
+  for (const script of [manifest.background && manifest.background.service_worker, manifest.action && manifest.action.default_popup, "pdf-job.js", "popup.js"].filter((f) => f && existsSync(path.join(ROOT, ext, f)))) {
     const src = read(`${ext}/${script}`);
     for (const m of src.matchAll(/["']((?:content|vendor|lib|icons)\/[\w./-]+\.(?:js|css|png|html))["']/g)) named.add(m[1]);
     for (const m of src.matchAll(/(?:src|href)="([\w./-]+\.(?:js|css|png))"/g)) named.add(m[1]);
@@ -55,27 +48,21 @@ for (const ext of EXTENSIONS) {
   }
   const missing = [...named].filter((f) => !existsSync(path.join(ROOT, ext, f)));
   check(`${ext}: every file its manifest and scripts name exists (${named.size})`, missing.length === 0, missing.join(", "));
-  if (manifest.key) ids[ext] = idFromKey(manifest.key);
+  check(`${ext}: no fixed key (nothing messages it from outside)`, !manifest.key);
+  check(`${ext}: at most four shortcuts (Chrome's limit)`, Object.values(manifest.commands || {}).filter((c) => c.suggested_key).length <= 4);
 }
 
-check("Web to PDF has a fixed ID", Boolean(ids["recall-web-to-pdf"]));
-check("Page Cleaner has a fixed ID", Boolean(ids["recall-page-cleaner"]));
-const cleanerBg = read("recall-page-cleaner/background.js");
-const pdfBg = read("recall-web-to-pdf/background.js");
-const browserCheck = read("tools/extensions-browser-check.mjs");
-check("the Cleaner messages Web to PDF's real ID", cleanerBg.includes(`"${ids["recall-web-to-pdf"]}"`));
-check("Web to PDF trusts the Cleaner's real ID", pdfBg.includes(`"${ids["recall-page-cleaner"]}"`));
-check("the browser check uses both real IDs", browserCheck.includes(ids["recall-web-to-pdf"]) && browserCheck.includes(ids["recall-page-cleaner"]));
-
-const coreA = read("recall-page-cleaner/content/cleaner-core.js");
-const coreB = read("recall-web-to-pdf/content/cleaner-core.js");
-check("cleaner-core.js is byte-identical in both extensions", coreA === coreB,
-  "copy recall-page-cleaner/content/cleaner-core.js over recall-web-to-pdf/content/cleaner-core.js");
+check("one extension: the separate Web to PDF and Page Cleaner folders are gone",
+  !existsSync(path.join(ROOT, "recall-web-to-pdf")) && !existsSync(path.join(ROOT, "recall-page-cleaner")));
+const bg = read("recall-clipper/background.js");
+check("the background starts all three jobs", ["startClipper", "startCleaner", "runJob"].every((f) => bg.includes(f)));
+const ui = read("recall-clipper/content/cleaner-ui.js");
+check("the cleaner hands its page on inside the extension", ui.includes("rwc-save-pdf") && ui.includes("rwc-clip") && !/sendMessage\(\s*"[a-p]{32}"/.test(ui));
 
 // ---------------------------------------------------------------- pdf-info
 
-const { setPdfInfo, readTrailer, countPages, pdfString } = await import(pathToFileURL(path.join(ROOT, "recall-web-to-pdf/lib/pdf-info.js")).href);
-const { imagesToPdf } = await import(pathToFileURL(path.join(ROOT, "recall-web-to-pdf/lib/image-pdf.js")).href);
+const { setPdfInfo, readTrailer, countPages, pdfString } = await import(pathToFileURL(path.join(ROOT, "recall-clipper/lib/pdf-info.js")).href);
+const { imagesToPdf } = await import(pathToFileURL(path.join(ROOT, "recall-clipper/lib/image-pdf.js")).href);
 
 // A tiny real JPEG is not needed for structure: the image bytes are opaque here.
 const base = imagesToPdf([{ jpeg: new Uint8Array([0xff, 0xd8, 0xff, 0xd9]), width: 10, height: 20 }, { jpeg: new Uint8Array([0xff, 0xd8, 0xff, 0xd9]), width: 10, height: 10 }]);
@@ -85,7 +72,7 @@ const t0 = readTrailer(base);
 check("image-pdf: its trailer reads back", t0.root === "1 0 R" && t0.size === 9, JSON.stringify(t0));
 
 const stamped = setPdfInfo(base, {
-  Title: "Tides — “how they work”", Subject: "https://example.org/a?b=1&c=(2)", Creator: "Recall Web to PDF",
+  Title: "Tides — “how they work”", Subject: "https://example.org/a?b=1&c=(2)", Creator: "Recall Web Clipper",
   CreationDate: new Date("2026-11-05T10:20:30Z"), custom: { RecallSourceURL: "https://example.org/a", "Bad Key": "x", Empty: "" }
 });
 const text = latin(stamped);
@@ -106,13 +93,40 @@ let threw = false;
 try { setPdfInfo(new TextEncoder().encode("not a pdf"), {}); } catch { threw = true; }
 check("pdf-info: refuses something that is not a PDF", threw);
 
+// ---------------------------------------------------------------- pdf-pages
+
+const { trimPageHeights, readPages } = await import(pathToFileURL(path.join(ROOT, "recall-clipper/lib/pdf-pages.js")).href);
+const before = readPages(base);
+check("pdf-pages: reads the pages in order with their boxes", before && before.length === 2 && before.every((p) => p.mediaBox.length === 4), JSON.stringify(before && before.map((p) => p.mediaBox)));
+const [, , , top0] = before[0].mediaBox;
+const trimmed = trimPageHeights(base, [100, 0]);
+check("pdf-pages: original bytes untouched", Buffer.compare(Buffer.from(trimmed.subarray(0, base.length)), Buffer.from(base)) === 0);
+const after = readPages(trimmed);
+check("pdf-pages: page 1 keeps its top and is 100 pt tall", after && close2(after[0].mediaBox[3], top0) && close2(after[0].mediaBox[3] - after[0].mediaBox[1], 100), JSON.stringify(after && after[0].mediaBox));
+check("pdf-pages: a height of 0 leaves a page alone", after && JSON.stringify(after[1].mediaBox) === JSON.stringify(before[1].mediaBox));
+check("pdf-pages: still two pages, counted once each", countPages(trimmed) === 2, String(countPages(trimmed)));
+const tt = readTrailer(trimmed);
+check("pdf-pages: the new trailer chains onto the old one", tt.root === t0.root && tt.size === t0.size && new RegExp(`/Prev ${t0.startxref}\\b`).test(latin(trimmed).slice(tt.startxref)));
+const both = setPdfInfo(trimmed, { Title: "After a trim" });
+check("pdf-pages: the metadata goes on after a trim", readTrailer(both).info && readPages(both)[0].mediaBox[1] === after[0].mediaBox[1]);
+check("pdf-pages: wrong number of heights → bytes unchanged", trimPageHeights(base, [100]) === base);
+check("pdf-pages: nothing to trim → bytes unchanged", trimPageHeights(base, [100000, 100000]) === base);
+
 // ---------------------------------------------------------------- options
 
-const { normalize, geometry, fileNameFor, folderFor, DEFAULTS, BUILTIN_PRESETS } = await import(pathToFileURL(path.join(ROOT, "recall-web-to-pdf/lib/options.js")).href);
-const close = (a, b, eps = 0.01) => Math.abs(a - b) < eps;
+const { normalize, geometry, fileNameFor, folderFor, pageLengthIn, pageContentPx, SMART_SLACK_IN, DEFAULTS, BUILTIN_PRESETS } = await import(pathToFileURL(path.join(ROOT, "recall-clipper/lib/options.js")).href);
 
 const d = geometry(normalize({}));
-check("defaults: A4 width, continuous, left/right 12 mm", close(d.paperWidthIn, 210 / 25.4) && close(d.margin.left, 12 / 25.4) && d.margin.top === 0 && DEFAULTS.layout === "continuous");
+check("defaults: A4 width, smart pages, left/right 12 mm", close(d.paperWidthIn, 210 / 25.4) && close(d.margin.left, 12 / 25.4) && d.margin.top === 0 && DEFAULTS.layout === "smart");
+check("defaults: about one A4 page per page, breaks shown first", DEFAULTS.pageLength === "a4" && DEFAULTS.adjustBreaks === true);
+const sd = normalize({});
+check("smart pages: one A4 is the paper's height", close(pageLengthIn(sd), 297 / 25.4));
+check("smart pages: two A4, one screen", close(pageLengthIn(sd, geometry(sd), "2a4"), 2 * 297 / 25.4) && close(pageLengthIn(sd, geometry(sd), "screen"), 0.75 * 210 / 25.4));
+check("smart pages: a custom length in the margin unit", close(pageLengthIn(normalize({ pageLength: "custom", customPageLength: 20, marginUnit: "in" })), 20));
+check("smart pages: never past the tallest page a viewer shows", pageLengthIn(normalize({ pageLength: "custom", customPageLength: 9999, marginUnit: "in" })) === 200);
+const tbm = normalize({ marginPreset: "all", marginSize: 1, marginUnit: "in" });
+check("smart pages: content height leaves out the margins and the slack, in layout pixels", pageContentPx(tbm) === Math.round((297 / 25.4 - 2 - SMART_SLACK_IN) * 96 / geometry(tbm).scale));
+check("smart pages: an unknown length falls back to A4", normalize({ pageLength: "huge" }).pageLength === "a4");
 check("defaults: High images", DEFAULTS.imageQuality === "high");
 const tb = geometry(normalize({ marginPreset: "topbottom", marginSize: 0.5, marginUnit: "in" }));
 check("margins: top and bottom only, in inches", tb.margin.top === 0.5 && tb.margin.bottom === 0.5 && tb.margin.left === 0);
@@ -125,7 +139,7 @@ check("landscape swaps the paper", close(land.paperWidthIn, 11) && close(land.pa
 const wide = geometry(normalize({ scaleMode: "width", layoutWidth: "1280", marginPreset: "none" }));
 check("layout width: A4 laid out at 1280 px", wide.layoutWidthPx === 1280 && close(wide.scale, (210 / 25.4 * 96) / 1280));
 const n = normalize({ scale: 999, imageQuality: "bogus", layout: "x", margins: { top: -5 } });
-check("normalize clamps and rejects nonsense", n.scale === 200 && n.imageQuality === "high" && n.layout === "continuous" && n.margins.top === 0);
+check("normalize clamps and rejects nonsense", n.scale === 200 && n.imageQuality === "high" && n.layout === "smart" && n.margins.top === 0);
 check("every built-in preset normalizes to valid options", Object.values(BUILTIN_PRESETS).every((p) => {
   const o = normalize({ ...DEFAULTS, ...p });
   return Object.keys(p).every((k) => JSON.stringify(o[k]) === JSON.stringify(p[k]));

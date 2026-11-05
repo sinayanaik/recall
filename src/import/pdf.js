@@ -259,7 +259,7 @@ export async function importPdfFile(file, folderPath = null) {
     // Imported comments become highlight notes in the deck's own note, through
     // the same writer the note editor uses — so the section is byte-identical
     // in shape to one this app wrote itself.
-    // A page saved by the Recall Web to PDF extension says where it came from;
+    // A page saved by the Recall Web Clipper extension says where it came from;
     // the file's Notes then open with a link back to it.
     const webCapture = webCaptureOf(metadata);
     let deckNotes = webCapture ? `${webCaptureNoteLine(webCapture, sanitizedTitle)}\n` : "";
