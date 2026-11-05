@@ -69,6 +69,7 @@
     .box { position: fixed; box-sizing: border-box; pointer-events: auto; cursor: pointer;
       background: rgba(229, 57, 53, 0.30); border: 2px solid #e53935; border-radius: 3px; }
     .box:hover { background: rgba(229, 57, 53, 0.15); border-style: dashed; }
+    .box.big { background: rgba(229, 57, 53, 0.07); border-width: 3px; }
     .box .tag { position: absolute; top: -1px; left: -1px; font: 600 11px/1.4 system-ui, sans-serif;
       color: #fff; background: #e53935; padding: 1px 6px; border-radius: 0 0 4px 0; white-space: nowrap;
       max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
@@ -292,6 +293,9 @@
     if (box.classList.contains("box")) {
       const big = (Math.min(r.width, innerWidth) * Math.min(r.height, innerHeight)) / (innerWidth * innerHeight) > 0.6;
       box.style.pointerEvents = big ? "none" : "auto";
+      // A backdrop or a whole column: outline it, but keep the page under it
+      // readable rather than painting the whole screen red.
+      box.classList.toggle("big", big);
       el.classList.toggle("rpc-passthrough", big);
     }
     box.style.left = `${Math.max(r.left, -4)}px`;

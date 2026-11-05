@@ -285,7 +285,7 @@ export const EXTENSIONS = [
     "name": "Recall Page Cleaner",
     "version": "1.0.0",
     "description": "Clean up any web page before you clip it or save it as a PDF: Auto removes ads, popups and clutter; Manual lets you mark blocks yourself.",
-    "bytes": 55876,
+    "bytes": 56128,
     "files": [
       {
         "path": "README.md",
@@ -301,7 +301,7 @@ export const EXTENSIONS = [
       },
       {
         "path": "content/cleaner-ui.js",
-        "size": 27322
+        "size": 27574
       },
       {
         "path": "content/cleaner.css",
