@@ -608,6 +608,9 @@ sections.push(async () => {
     await settle(150);
     const afterEmpty = api.documentShapes(3).length - before;
     api.selectShape(null);
+    // One box per press of Text: the commit above put the tool away, so it is
+    // pressed again for the next one (finishTypewriterBox, src/ui/ink-rail.js).
+    api.toggleTypewriter(true);
     await window.__drag("text", [window.__at(3, 0.15, 0.45), window.__at(3, 0.3, 0.47), window.__at(3, 0.45, 0.5)]);
     await settle(150);
     const box = api.documentShapes(3).at(-1);
@@ -621,6 +624,7 @@ sections.push(async () => {
     const r = document.querySelector('.pdf-page[data-page-number="3"]').getBoundingClientRect();
     const c = vp.convertToViewportPoint((kept.shape.p[0][0] + kept.shape.p[1][0]) / 2, (kept.shape.p[0][1] + kept.shape.p[1][1]) / 2);
     api.selectShape(null);
+    api.toggleTypewriter(true);
     await window.__drag("text", [[r.left + c[0], r.top + c[1]]]);
     const selectedFirst = api.selectedShapeRecord()?.id === box.id && !document.querySelector(".pdf-shape-editor");
     await window.__drag("text", [[r.left + c[0], r.top + c[1]]]);
@@ -1238,6 +1242,86 @@ sections.push(async () => {
   }`, made.id);
   check("a tap on typed text selects it with the small Style bar; a second tap types in it, as markdown source", tapped.selected && tapped.compact && tapped.editing && tapped.source.startsWith("**Bold claim**"), JSON.stringify(tapped));
 
+  // Wrap, a border and a turn, from the Style panel; then the turning handle.
+  const styled = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    api.selectShape(null);
+    const record = api.addDocumentShape(1, {
+      type: "text", p: [[320, 520], [360, 536]], fit: true, width: 0.3, stroke: "#16181d",
+      font: { size: 12, bold: false, align: "left", color: "#16181d" },
+      text: "one two three four five six seven eight nine ten"
+    });
+    const id = record.id;
+    await settle(200);
+    api.selectShape(id);
+    api.expandShapeStylePopover(id);
+    await settle(150);
+    const pop = document.querySelector(".shape-style-popover");
+    const press = (selector) => pop.querySelector(selector).dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerType: "mouse", button: 0 }));
+    const shape = () => api.documentHighlightById(id).shape;
+    const box = () => document.querySelector('.pdf-shape-text[data-highlight-id="' + id + '"]');
+    const out = { id };
+    out.rowsBefore = ["wrap", "rotate"].map((r) => !pop.querySelector('[data-shape-row="' + r + '"]').hidden).concat(Boolean(pop.querySelector('[data-shape-row="wrap"] [data-shape-border]')));
+    out.edgeHidden = pop.querySelector('[data-shape-row="edge"]').hidden;
+
+    press('[data-shape-wrap="on"]');
+    await settle(400);
+    const vp = api.pdfPageViewport(1);
+    const p = shape().p;
+    const storedHeight = Math.abs(p[1][1] - p[0][1]) * vp.scale;
+    out.wrap = { fit: shape().fit, dataFit: box().hasAttribute("data-fit"), height: Math.round(box().getBoundingClientRect().height), storedHeight: Math.round(storedHeight), lineHeight: Math.round(12 * 1.3 * vp.scale) };
+
+    press("[data-shape-border]");
+    await settle(200);
+    const outline = [...document.querySelectorAll('.pdf-shape[data-highlight-id="' + id + '"] path')].filter((n) => n.getAttribute("stroke") && n.getAttribute("stroke") !== "none");
+    out.border = { on: shape().border === true, paths: outline.length, edgeShown: !pop.querySelector('[data-shape-row="edge"]').hidden, widthShown: !pop.querySelector('[data-shape-row="width"]').hidden, colour: box().style.color };
+
+    press('[data-shape-rotate-by="-90"]');
+    await settle(200);
+    out.quarter = { rot: shape().rot, transform: box().style.transform };
+    const input = pop.querySelector("[data-shape-rot-value]");
+    input.value = "30";
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle(200);
+    out.typed = { rot: shape().rot, transform: box().style.transform, turner: Boolean(document.querySelector(".pdf-shape-handle.is-rotate")) };
+    press("[data-shape-rotate-reset]");
+    await settle(200);
+    out.reset = { rot: shape().rot ?? 0, transform: box().style.transform };
+    // Folded back to its small bar, as a reader picking a box up sees it.
+    pop.querySelector('[data-shape-style-action="style"]').dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerType: "mouse", button: 0 }));
+    await settle(200);
+    const handle = document.querySelector('.pdf-shape-handle.is-rotate').getBoundingClientRect();
+    const r = box().getBoundingClientRect();
+    out.handle = [handle.left + handle.width / 2, handle.top + handle.height / 2];
+    out.centre = [r.left + r.width / 2, r.top + r.height / 2];
+    // Nothing of the Style bar over the handle it is pressed by.
+    out.covered = Boolean(document.elementFromPoint(out.handle[0], out.handle[1])?.closest(".shape-style-popover"));
+    return out;
+  }`);
+  check("typed text's Style panel offers Lines, Box and Rotate (and the border colour only once there is a border)", styled.rowsBefore.every(Boolean) && styled.edgeHidden, JSON.stringify(styled));
+  check("Wrap makes typed text wrap at its box's width, and the box grows to its lines", styled.wrap.fit === false && !styled.wrap.dataFit && styled.wrap.height > styled.wrap.lineHeight * 2 && Math.abs(styled.wrap.height - styled.wrap.storedHeight) <= 3, JSON.stringify(styled.wrap));
+  check("Border draws an outline round typed text, without recolouring its words", styled.border.on && styled.border.paths === 1 && styled.border.edgeShown && styled.border.widthShown && /22, 24, 29|#16181d/i.test(styled.border.colour), JSON.stringify(styled.border));
+  check("↻ turns typed text a quarter clockwise; a typed angle turns it that far; 0° puts it upright", styled.quarter.rot === -90 && /rotate\(90deg\)/.test(styled.quarter.transform) && styled.typed.rot === 30 && /rotate\(-30deg\)/.test(styled.typed.transform) && styled.typed.turner && !styled.reset.rot && !styled.reset.transform, JSON.stringify([styled.quarter, styled.typed, styled.reset]));
+
+  // The turning handle, dragged a quarter round to the right of the middle.
+  const [hx, hy] = styled.handle;
+  const [ox, oy] = styled.centre;
+  const reach = Math.hypot(hx - ox, hy - oy);
+  await mouse("mouseMoved", hx, hy, 0);
+  await mouse("mousePressed", hx, hy, 1);
+  await glide([hx, hy], [ox + reach, oy], 8, (x, y) => mouse("mouseMoved", x, y, 1));
+  await mouse("mouseReleased", ox + reach, oy, 0);
+  const turned = await page.evaluate(`async (id) => {
+    const { api, settle } = window.__recall;
+    await settle(250);
+    const shape = api.documentHighlightById(id).shape;
+    const box = document.querySelector('.pdf-shape-text[data-highlight-id="' + id + '"]').getBoundingClientRect();
+    api.deleteShape(id);
+    await settle(150);
+    return { rot: shape.rot, p: shape.p, centre: [box.left + box.width / 2, box.top + box.height / 2] };
+  }`, styled.id);
+  check("dragging the turning handle turns the box about its middle (a quarter clockwise here), and it stays put", !styled.covered && turned.rot === -90 && Math.abs(turned.centre[0] - ox) <= 2 && Math.abs(turned.centre[1] - oy) <= 2, JSON.stringify({ ...turned, was: styled.centre, covered: styled.covered }));
+
   // No caps: a size typed into the box is the size, however large or small.
   const sized = await page.evaluate(`async (id) => {
     const { api, settle } = window.__recall;
@@ -1407,6 +1491,9 @@ sections.push(async () => {
       quads: [{ page: 4, rect: [90, 250, 230, 330] }], ink: { v: api.INK_FORMAT_VERSION, s: api.encodeInkStrokes(strokes) },
       qv: api.QUAD_GEOMETRY_VERSION, at: Date.now()
     });
+    // A turned rectangle and turned, bordered text.
+    const turnedRect = api.addDocumentShape(4, { type: "rect", p: [[300, 300], [380, 340]], rot: 30, stroke: "#2563eb", width: 2 }, { undo: false });
+    const turnedText = api.addDocumentShape(4, { type: "text", p: [[300, 200], [400, 230]], rot: -45, border: true, width: 1, stroke: "#16181d", text: "turned words", font: { size: 11, color: "#16181d" } }, { undo: false });
     const result = await api.annotatedPdfBytes();
     if (!result) return { error: "no bytes" };
     const size = result.bytes.length;
@@ -1430,7 +1517,9 @@ sections.push(async () => {
           it: dict.get(PDFName.of("IT"))?.toString() || null,
           quads: dict.get(PDFName.of("QuadPoints")) ? dict.lookup(PDFName.of("QuadPoints"), PDFArray).size() : 0,
           inkList: dict.get(PDFName.of("InkList")) ? dict.lookup(PDFName.of("InkList"), PDFArray).size() : 0,
-          popup: Boolean(dict.get(PDFName.of("Popup")))
+          popup: Boolean(dict.get(PDFName.of("Popup"))),
+          vertices: dict.get(PDFName.of("Vertices")) ? dict.lookup(PDFName.of("Vertices"), PDFArray).size() : 0,
+          bs: dict.get(PDFName.of("BS")) ? String(dict.lookup(PDFName.of("BS"), PDFDict).get(PDFName.of("W"))) : null
         });
       }
     });
@@ -1440,7 +1529,9 @@ sections.push(async () => {
     for (let i = 1; i <= pdfDoc.numPages; i += 1) {
       (await (await pdfDoc.getPage(i)).getAnnotations()).forEach((a) => seen.push(a.subtype));
     }
-    return { size, count: result.count, name: result.name, found, seen, underlineId: underline.id };
+    api.removeDocumentHighlight(turnedRect.id, { undo: false });
+    api.removeDocumentHighlight(turnedText.id, { undo: false });
+    return { size, count: result.count, name: result.name, found, seen, underlineId: underline.id, turnedRectId: turnedRect.id, turnedTextId: turnedText.id };
   }`);
   if (written.error) { check("the annotated file is written", false, written.error); return; }
   const subtypes = new Set(written.found.map((a) => a.subtype));
@@ -1453,6 +1544,9 @@ sections.push(async () => {
   const theirs = written.found.filter((a) => !a.nm && a.subtype !== "/Popup");
   check("every annotation written carries its own appearance and the mark's id", own.length >= written.count && own.every((a) => a.ap || a.subtype === "/Text"), JSON.stringify(own.filter((a) => !a.ap)).slice(0, 300));
   check("...and the file's own annotation is kept, once", theirs.length === 1 && /came in with the file/.test(theirs[0].contents || ""), JSON.stringify(theirs).slice(0, 300));
+  const turnedRect = written.found.find((a) => a.nm === written.turnedRectId);
+  const turnedText = written.found.find((a) => a.nm === written.turnedTextId);
+  check("a turned rectangle is written as the polygon it is drawn as; turned text keeps its words and its border", turnedRect?.subtype === "/Polygon" && turnedRect.vertices === 8 && turnedRect.ap && turnedText?.subtype === "/FreeText" && turnedText.contents === "turned words" && turnedText.bs === "1" && turnedText.ap && written.seen.includes("Polygon"), JSON.stringify([turnedRect, turnedText]));
   const underline = written.found.find((a) => a.nm === written.underlineId);
   check("a note becomes the annotation's Contents, with a Popup to show it in", underline?.contents === "Compare with eq. 4" && underline?.popup && underline?.quads === 8, JSON.stringify(underline));
   const line = written.found.find((a) => a.subtype === "/Line" && /Butt/.test(a.le || ""));

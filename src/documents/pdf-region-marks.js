@@ -244,8 +244,12 @@ export function shapeTextRasterIds(rasters) {
 
 // A text box as a pseudo-block: the rectangle drawRegionBlocks and the region
 // PDF's drawBlocks place a raster into, by the same blockPdfRect as a block.
+// A turned box carries its turn: the raster is made upright, and turned about
+// the middle of its rectangle where it is drawn (drawRegionBlocks, and the
+// region PDF's drawBlocks).
 function shapeTextBlock({ record, rect }) {
-  return { id: record.id, x: rect[0], y: rect[1], w: rect[2] - rect[0], h: rect[3] - rect[1], z: Infinity };
+  const rot = normalizeShape(record.shape)?.rot || 0;
+  return { id: record.id, x: rect[0], y: rect[1], w: rect[2] - rect[0], h: rect[3] - rect[1], z: Infinity, ...(rot ? { rot } : {}) };
 }
 
 // The words drawn as PLAIN text onto a canvas of their own — the fallback when
@@ -257,7 +261,7 @@ function plainShapeTextRaster(item, pixelRatio) {
   canvas.width = Math.max(1, Math.ceil((x1 - x0) * pixelRatio));
   canvas.height = Math.max(1, Math.ceil((item.rect[3] - item.rect[1]) * pixelRatio));
   const ctx = canvas.getContext("2d");
-  paintShapeTextOnCanvas(ctx, item.record.shape, ([x, y]) => [(x - x0) * pixelRatio, (y1 - y) * pixelRatio], pixelRatio);
+  paintShapeTextOnCanvas(ctx, item.record.shape, ([x, y]) => [(x - x0) * pixelRatio, (y1 - y) * pixelRatio], pixelRatio, { ignoreRotation: true });
   return { block: shapeTextBlock(item), canvas, kind: "shape-text", plain: true };
 }
 
@@ -405,6 +409,8 @@ export async function rasteriseRegionBlocks(page, source, pageNumber, rect, pixe
       if (!node) { rasters.push(plainShapeTextRaster(item, pixelRatio)); continue; }
       node.style.left = "0px";
       node.style.top = "0px";
+      // Pictured upright; turned where the picture is drawn.
+      node.style.transform = "";
       host.appendChild(node);
       const block = shapeTextBlock(item);
       try {
@@ -439,6 +445,16 @@ export function drawRegionBlocks(ctx, viewport, rasters, { only = null } = {}) {
   rasters.forEach(({ block, canvas, kind = "block" }) => {
     if (only && kind !== only) return;
     const [vx0, vy0, vx1, vy1] = viewport.convertToViewportRectangle(blockPdfRect(block));
-    ctx.drawImage(canvas, Math.min(vx0, vx1), Math.min(vy0, vy1), Math.abs(vx1 - vx0), Math.abs(vy1 - vy0));
+    const left = Math.min(vx0, vx1);
+    const top = Math.min(vy0, vy1);
+    const width = Math.abs(vx1 - vx0);
+    const height = Math.abs(vy1 - vy0);
+    if (!block.rot) { ctx.drawImage(canvas, left, top, width, height); return; }
+    // Counter-clockwise on the page is a negative turn on a canvas (y DOWN).
+    ctx.save();
+    ctx.translate(left + width / 2, top + height / 2);
+    ctx.rotate((-block.rot * Math.PI) / 180);
+    ctx.drawImage(canvas, -width / 2, -height / 2, width, height);
+    ctx.restore();
   });
 }

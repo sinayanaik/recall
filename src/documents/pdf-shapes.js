@@ -48,9 +48,9 @@ import { setInkPenDown } from "../core/gesture.js?v=__BUILD__";
 import { inkFilingColor } from "../format/ink-colors.js?v=__BUILD__";
 import { isEraserEvent } from "../render/ink-engine.js?v=__BUILD__";
 import {
-  SHAPE_DEFAULTS, SHAPE_HEADS, SHAPE_TYPES, moveShapeHandle, normalizeShape, normalizeShapeHex,
-  polyPathData, shapeBounds, shapeCrossesSegment, shapeDashArray, shapeFromDrag, shapeHandles, shapeHitsPoint, shapeLabel, shapePrimitives,
-  shapeTypeDefaults, snapShapeAngle, stickyIconPolys, translateShape
+  SHAPE_DEFAULTS, SHAPE_HEADS, SHAPE_ROTATABLE, SHAPE_TYPES, moveShapeHandle, normalizeShape, normalizeShapeHex,
+  normalizeShapeRotation, polyPathData, positiveNumber, shapeBounds, shapeCrossesSegment, shapeDashArray, shapeFromDrag, shapeHandles, shapeHitsPoint, shapeLabel, shapePrimitives,
+  shapeTextRect, shapeTypeDefaults, snapShapeAngle, stickyIconPolys, translateShape
 } from "../render/annot-shapes.js?v=__BUILD__";
 import { inkPreferences, writeInkPreferences } from "../storage/ink-prefs.js?v=__BUILD__";
 import { PDF_SHAPE_TEXT_CLASS } from "../core/constants.js?v=__BUILD__";
@@ -106,6 +106,13 @@ function defaultShapeSettings() {
     // is no reason for the next words typed to be red, or yellow for a note.
     textColor: "#16181d",
     stickyColor: "#e0b400",
+    // Typed text: whether its words wrap at the box's width (or grow with
+    // them, a line per Enter), and whether the box has an outline — of its
+    // own colour and width, apart from an arrow's.
+    wrap: false,
+    textBorder: false,
+    textBorderColor: "#16181d",
+    textBorderWidth: 1,
     // The last shape that is not typed text — what the Shapes button wears and
     // goes back to while the Text button has the typewriter armed.
     lastShape: "arrow"
@@ -140,6 +147,10 @@ export function normalizeShapeSettings(raw) {
     align: shape.font.align,
     textColor: normalizeShapeHex(raw.textColor) || base.textColor,
     stickyColor: normalizeShapeHex(raw.stickyColor) || base.stickyColor,
+    wrap: raw.wrap === true,
+    textBorder: raw.textBorder === true,
+    textBorderColor: normalizeShapeHex(raw.textBorderColor) || base.textBorderColor,
+    textBorderWidth: positiveNumber(raw.textBorderWidth, base.textBorderWidth),
     lastShape: SHAPE_SETTING_TYPES.includes(raw.lastShape) && raw.lastShape !== "text" ? raw.lastShape : base.lastShape
   };
 }
@@ -189,10 +200,53 @@ export function setShapeSettings(patch = {}) {
     if ("align" in patch) font.align = shapeSettings.align;
     if ("textColor" in patch && selected.shape.type === "text") font.color = shapeSettings.textColor;
     if ("stickyColor" in patch && selected.shape.type === "sticky") restyle.stroke = shapeSettings.stickyColor;
+    if (selected.shape.type === "text") Object.assign(restyle, textRestyle(selected, patch, shapeSettings, font));
     if (Object.keys(font).length) restyle.font = { ...selected.shape.font, ...font };
     if (Object.keys(restyle).length) updateShape(selected.id, { ...selected.shape, ...restyle });
   }
   shapeChangedHandler();
+}
+
+// Wrap, border and the border's look, for one piece of typed text. A border is
+// drawn in the shape's `stroke` — which older text also took its words' colour
+// from — so the words' colour is pinned first, and an outline never recolours
+// the text inside it. Turning the border on gives it the tool's border colour
+// and width, rather than the hairline a borderless text box is stored with.
+function textRestyle(selected, patch, settings, font) {
+  const restyle = {};
+  const shape = normalizeShape(selected.shape);
+  if ("wrap" in patch) {
+    restyle.fit = !settings.wrap;
+    // Measured to its words on the next frame, plain or not: back to growing,
+    // the box is the words; wrapping, it is as tall as the lines they now take.
+    shapeTextRefitIds.add(selected.id);
+  }
+  const drawsBorder = ("textBorder" in patch) ? settings.textBorder : shape.border === true;
+  if ("textBorder" in patch) restyle.border = settings.textBorder;
+  if ("textBorderColor" in patch || ("textBorder" in patch && drawsBorder)) restyle.stroke = settings.textBorderColor;
+  if ("textBorderWidth" in patch || ("textBorder" in patch && drawsBorder)) restyle.width = settings.textBorderWidth;
+  if (restyle.stroke && !shape.font.color && !("color" in font)) font.color = shape.stroke;
+  return restyle;
+}
+
+// ── Turning a box ─────────────────────────────────────────────────────────
+//
+// A turn is the shape's own, not the tool's: the next box is drawn upright
+// whatever the last one was turned to. One undo step each.
+export function setShapeRotation(deg, id = targetShapeRecord()?.id) {
+  const record = id ? documentHighlightById(id) : null;
+  const shape = normalizeShape(record?.shape);
+  if (!record || record.kind !== "shape" || !shape || !SHAPE_ROTATABLE.includes(shape.type)) return false;
+  const next = { ...shape, rot: normalizeShapeRotation(deg) };
+  if (!next.rot) delete next.rot;
+  const changed = updateShape(id, next);
+  shapeChangedHandler();
+  return changed;
+}
+
+export function rotateShapeBy(delta, id = targetShapeRecord()?.id) {
+  const record = id ? documentHighlightById(id) : null;
+  return setShapeRotation((normalizeShape(record?.shape)?.rot || 0) + Number(delta || 0), id);
 }
 
 export function shapeType() {
@@ -232,8 +286,10 @@ function newShapeBase(type) {
     }
   }
   if (type === "text") {
-    base.width = 0.3;
-    base.fit = true;
+    base.fit = !s.wrap;
+    base.border = s.textBorder;
+    base.stroke = s.textBorderColor;
+    base.width = s.textBorder ? s.textBorderWidth : 0.3;
     base.font = { ...base.font, color: s.textColor };
   }
   if (type === "sticky") base.stroke = s.stickyColor;
@@ -396,7 +452,11 @@ export function displayedShapeSettings() {
     ...tool, stroke: s.stroke, width: s.width, opacity: s.opacity, dash: s.dash,
     fill: s.fill, fillOpacity: s.fillOpacity, heads, fontSize: s.font.size, bold: s.font.bold, align: s.font.align,
     textColor: s.type === "text" ? (s.font.color || s.stroke) : tool.textColor,
-    stickyColor: s.type === "sticky" ? s.stroke : tool.stickyColor
+    stickyColor: s.type === "sticky" ? s.stroke : tool.stickyColor,
+    wrap: s.type === "text" ? !s.fit : tool.wrap,
+    textBorder: s.type === "text" ? s.border === true : tool.textBorder,
+    textBorderColor: s.type === "text" && s.border ? s.stroke : tool.textBorderColor,
+    textBorderWidth: s.type === "text" && s.border ? s.width : tool.textBorderWidth
   });
 }
 
@@ -477,24 +537,55 @@ function buildShapeNodes(record, shape, viewport, { preview = false } = {}) {
   return { group, boxes };
 }
 
+// How far above a box's top edge its turning handle sits, in CSS pixels.
+export const SHAPE_ROTATE_HANDLE_GAP = 24;
+
+// The handles of a selected shape, with the turning handle placed a fixed
+// distance from the box on screen whatever the zoom.
+function selectedShapeHandles(shape, viewport) {
+  return shapeHandles(shape, { rotateReach: SHAPE_ROTATE_HANDLE_GAP / (viewport?.scale || 1) });
+}
+
 function buildHandles(layer, viewport, record, put = (node) => layer.appendChild(node)) {
   const toPoint = viewportMapper(viewport);
-  const bounds = shapeBounds(record.shape);
-  if (bounds) {
-    const at = screenRect(viewport, bounds);
+  const s = normalizeShape(record.shape);
+  // A turned box is framed by its own outline, turned with it; anything else
+  // by the box round everything it covers.
+  const turned = Boolean(s?.rot);
+  const pad = turned ? s.width / 2 + 1 : 0;
+  const frameRect = turned ? (([x0, y0, x1, y1]) => [x0 - pad, y0 - pad, x1 + pad, y1 + pad])(shapeTextRect(s)) : shapeBounds(record.shape);
+  if (frameRect) {
+    const at = screenRect(viewport, frameRect);
     const frame = document.createElement("div");
     frame.className = "pdf-shape-frame";
     frame.style.left = `${at.left}px`;
     frame.style.top = `${at.top}px`;
     frame.style.width = `${at.width}px`;
     frame.style.height = `${at.height}px`;
+    if (turned) frame.style.transform = `rotate(${-s.rot}deg)`;
     put(frame);
   }
-  shapeHandles(record.shape).forEach((handle) => {
+  const handles = selectedShapeHandles(record.shape, viewport);
+  const turn = handles.find((handle) => handle.id === "rot");
+  const top = handles.find((handle) => handle.id === "n");
+  if (turn && top) {
+    // The stem from the top edge to the turning handle.
+    const [ax, ay] = toPoint([top.x, top.y]);
+    const [bx, by] = toPoint([turn.x, turn.y]);
+    const stem = document.createElement("div");
+    stem.className = "pdf-shape-rotate-stem";
+    stem.style.left = `${ax}px`;
+    stem.style.top = `${ay}px`;
+    stem.style.width = `${Math.hypot(bx - ax, by - ay)}px`;
+    stem.style.transform = `rotate(${Math.atan2(by - ay, bx - ax)}rad)`;
+    put(stem);
+  }
+  handles.forEach((handle) => {
     const [x, y] = toPoint([handle.x, handle.y]);
     const node = document.createElement("div");
-    node.className = "pdf-shape-handle";
+    node.className = `pdf-shape-handle${handle.id === "rot" ? " is-rotate" : ""}`;
     node.dataset.handle = handle.id;
+    if (handle.id === "rot") node.title = "Turn — drag round; Shift for 15° steps";
     node.style.left = `${x}px`;
     node.style.top = `${y}px`;
     put(node);
@@ -571,6 +662,35 @@ const SHAPE_TEXT_FIT_SLACK = 1;
 const shapeTextFitPages = new Set();
 let shapeTextFitFrame = 0;
 
+// Text switched back to growing with its words, measured on the next pass even
+// if its words are plain (whose size is otherwise the one they were typed at).
+const shapeTextRefitIds = new Set();
+
+// A node's box on screen as laid out, BEFORE any CSS turn: a turned node's
+// getBoundingClientRect is the upright box round the turned one, which is not
+// the box the record stores. Measured from offsets (scaled by however the page
+// itself is scaled on screen); an unturned node is measured as it always was.
+export function untransformedClientRect(node, pageEl) {
+  const plain = node.getBoundingClientRect();
+  if (!node.style.transform || !pageEl) return plain;
+  const pageBox = pageEl.getBoundingClientRect();
+  const k = pageEl.offsetWidth ? pageBox.width / pageEl.offsetWidth : 1;
+  let left = 0;
+  let top = 0;
+  let at = node;
+  while (at && at !== pageEl) {
+    left += at.offsetLeft;
+    top += at.offsetTop;
+    at = at.offsetParent;
+  }
+  if (at !== pageEl) return plain;
+  const width = node.offsetWidth * k;
+  const height = node.offsetHeight * k;
+  const x = pageBox.left + left * k;
+  const y = pageBox.top + top * k;
+  return { left: x, top: y, right: x + width, bottom: y + height, width, height };
+}
+
 function scheduleShapeTextFit(pageNumber) {
   if (!pageNumber) return;
   shapeTextFitPages.add(Number(pageNumber));
@@ -600,15 +720,20 @@ function fitShapeTextBoxes(pageNumber) {
   layer.querySelectorAll(`:scope > .${PDF_SHAPE_TEXT_CLASS}[data-highlight-id]`).forEach((box) => {
     const id = box.dataset.highlightId;
     if (!id || id === editingShapeId) return;
-    // Only a box whose markdown has FINISHED: a plain one keeps the size it was
-    // typed at (exactly as before markdown), and a pending one is showing a
-    // placeholder that is about to be replaced.
+    // Only a box whose markdown has FINISHED: a plain one that grows with its
+    // words keeps the size it was typed at (exactly as before markdown), and a
+    // pending one is showing a placeholder that is about to be replaced.
     const state = shapeTextBodyState(id);
-    if (state !== "rendered" && state !== "failed") return;
     const record = documentHighlightById(id);
     const shape = normalizeShape(record?.shape);
     if (!shape || (shape.type !== "text" && shape.type !== "callout")) return;
-    const next = shapeFittedToBox(shape, box.getBoundingClientRect(), pageBox, viewport);
+    // Plain words in a box that WRAPS are measured too: such a box only ever
+    // grows down to its lines (shapeFittedToBox), and words spilling out of
+    // the bottom of a border are plainly wrong.
+    const plainOk = state === "plain" && (shapeTextRefitIds.has(id) || (shape.type === "text" && !shape.fit));
+    if (state !== "rendered" && state !== "failed" && !plainOk) return;
+    shapeTextRefitIds.delete(id);
+    const next = shapeFittedToBox(shape, untransformedClientRect(box, pageEl), pageBox, viewport);
     if (next) writes.push({ id, shape: next });
   });
   writes.forEach(({ id, shape }) => {
@@ -689,7 +814,7 @@ function handleAt(record, pageEl, clientX, clientY) {
   const box = pageEl.getBoundingClientRect();
   const toPoint = viewportMapper(viewport);
   let best = null;
-  shapeHandles(record.shape).forEach((handle) => {
+  selectedShapeHandles(record.shape, viewport).forEach((handle) => {
     const [sx, sy] = toPoint([handle.x, handle.y]);
     const d = Math.hypot(box.left + sx - clientX, box.top + sy - clientY);
     if (d <= SHAPE_HANDLE_REACH && (!best || d < best.d)) best = { id: handle.id, d };
@@ -966,7 +1091,7 @@ function pressShape(drag, event) {
     const other = shape.p[drag.handle === "p0" ? 1 : 0];
     to = snapShapeAngle(other, point);
   }
-  return moveShapeHandle(shape, drag.handle, to[0], to[1]);
+  return moveShapeHandle(shape, drag.handle, to[0], to[1], { snap });
 }
 
 // ── Never off the page ─────────────────────────────────────────────────────
@@ -1056,6 +1181,9 @@ function onShapePointerUp(event) {
   }
   suppressShapeClickUntil = Date.now() + 400;
   const shape = drag.preview || pressShape(drag, event);
+  // Typed text given a new width wraps differently: its height is measured
+  // again, plain words or not.
+  if (shape && drag.mode === "handle" && shape.type === "text" && drag.handle !== "rot") shapeTextRefitIds.add(drag.target.id);
   if (shape) updateShape(drag.target.id, shape);
   else paintDocumentShapes(drag.page);
 }

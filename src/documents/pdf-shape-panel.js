@@ -14,9 +14,9 @@
 // shape as well as setting the next one's look.
 
 import { INK_PEN_COLORS } from "../format/ink-colors.js?v=__BUILD__";
-import { SHAPE_HEADS, SHAPE_LABELS, SHAPE_WIDTH_RANGE } from "../render/annot-shapes.js?v=__BUILD__";
+import { SHAPE_HEADS, SHAPE_LABELS, SHAPE_ROTATABLE, SHAPE_WIDTH_RANGE, normalizeShape } from "../render/annot-shapes.js?v=__BUILD__";
 import { rememberInkRecentColor } from "../storage/ink-prefs.js?v=__BUILD__";
-import { displayedShapeSettings, setShapeSettings, shapeButtonType, shapeType, targetShapeRecord } from "./pdf-shapes.js?v=__BUILD__";
+import { displayedShapeSettings, rotateShapeBy, setShapeRotation, setShapeSettings, shapeButtonType, shapeType, targetShapeRecord } from "./pdf-shapes.js?v=__BUILD__";
 
 // The shapes the flyout offers, in its order. Not typed text: that is the Text
 // button's own, in the top row beside the pen (src/ui/ink-rail.js).
@@ -135,6 +135,15 @@ export function steppedFontSize(size, step) {
   return Math.round((size / 2) * 100) / 100 || size;
 }
 
+// What a typed angle box holds, in degrees — any finite number, a turn past
+// 180° or below −180° wrapped round — or null when it is not one.
+export function typedDegrees(raw) {
+  const text = String(raw ?? "").trim().replace(",", ".").replace(/°$/, "");
+  if (!text) return null;
+  const value = Number(text);
+  return Number.isFinite(value) ? value : null;
+}
+
 // A box the reader is typing in is left alone; every other one says the truth.
 function setNumberBox(box, value) {
   if (!box || document.activeElement === box) return;
@@ -173,6 +182,16 @@ export function buildShapePanel(shapePopover, { floating = false } = {}) {
       <button type="button" class="shape-pop-seg" data-shape-font-step="1" title="Larger text" aria-label="Larger text">A+</button>
       <button type="button" class="shape-pop-seg" data-shape-bold title="Bold" aria-label="Bold" aria-pressed="false"><b>B</b></button>
       ${["left", "center", "right"].map((a) => `<button type="button" class="shape-pop-seg" data-shape-align="${a}" title="Align ${a}" aria-label="Align ${a}" aria-pressed="false">${{ left: "&#8676;", center: "&#8596;", right: "&#8677;" }[a]}</button>`).join("")}</div>
+    <div class="shape-pop-row" role="group" aria-label="Box" data-shape-row="wrap"><span class="shape-pop-label">Box</span>
+      <button type="button" class="shape-pop-seg" data-shape-wrap="off" title="Grow with the words — a new line only where you press Enter" aria-pressed="false">Grow</button>
+      <button type="button" class="shape-pop-seg" data-shape-wrap="on" title="Wrap the words at the box's width — drag a side handle to change it" aria-pressed="false">Wrap</button>
+      <button type="button" class="shape-pop-seg" data-shape-border title="An outline round the text" aria-pressed="false">Border</button></div>
+    <div class="shape-pop-row" role="group" aria-label="Border colour" data-shape-row="edge"><span class="shape-pop-label">Border</span>${shapeSwatchRow("edge")}</div>
+    <div class="shape-pop-row" role="group" aria-label="Rotate" data-shape-row="rotate"><span class="shape-pop-label">Rotate</span>
+      <button type="button" class="shape-pop-seg" data-shape-rotate-by="90" title="Turn 90° anticlockwise" aria-label="Turn 90° anticlockwise">&#8634;</button>
+      <input class="shape-pop-number" type="number" step="any" inputmode="decimal" data-shape-rot-value aria-label="Angle in degrees" title="Any angle, in degrees, anticlockwise"><span class="shape-pop-unit">&#176;</span>
+      <button type="button" class="shape-pop-seg" data-shape-rotate-by="-90" title="Turn 90° clockwise" aria-label="Turn 90° clockwise">&#8635;</button>
+      <button type="button" class="shape-pop-seg" data-shape-rotate-reset title="Upright again" aria-label="Upright again">0&#176;</button></div>
     <div class="shape-pop-row" data-shape-row="snap"><button type="button" class="shape-pop-seg" data-shape-snap aria-pressed="false" title="Snap — lines at 15° steps, boxes square and ellipses round (Shift does this for one drag)">Snap angles</button></div>`;
   shapePopover.appendChild(section);
 
@@ -202,14 +221,14 @@ export function buildShapePanel(shapePopover, { floating = false } = {}) {
   });
   section.addEventListener("change", (event) => {
     const input = event.target;
-    if (input.matches("[data-shape-width]")) setShapeSettings({ width: widthFromSlider(Number(input.value)) });
+    if (input.matches("[data-shape-width]")) setShapeSettings({ [widthKey()]: widthFromSlider(Number(input.value)) });
     // The typed boxes: any positive number, applied as typed (see
     // positiveNumber in src/render/annot-shapes.js). Something that is not a
     // size — empty, 0, "abc" — is refused here rather than handed on, and the
     // box goes back to the value the shape actually has.
     else if (input.matches("[data-shape-width-value]")) {
       const width = typedPoints(input.value);
-      if (width !== null) setShapeSettings({ width });
+      if (width !== null) setShapeSettings({ [widthKey()]: width });
     } else if (input.matches("[data-shape-font-value]")) {
       const fontSize = typedPoints(input.value);
       if (fontSize !== null) setShapeSettings({ fontSize });
@@ -221,6 +240,11 @@ export function buildShapePanel(shapePopover, { floating = false } = {}) {
       rememberInkRecentColor(input.value);
     }
     else if (input.matches("[data-shape-fill-custom]")) { setShapeSettings({ fill: input.value }); rememberInkRecentColor(input.value); }
+    else if (input.matches("[data-shape-edge-custom]")) { setShapeSettings({ textBorderColor: input.value }); rememberInkRecentColor(input.value); }
+    else if (input.matches("[data-shape-rot-value]")) {
+      const deg = typedDegrees(input.value);
+      if (deg !== null) setShapeRotation(deg);
+    }
     else return;
     refreshShapePanel(section);
   });
@@ -231,6 +255,18 @@ export function buildShapePanel(shapePopover, { floating = false } = {}) {
 // in), or the armed one's.
 function panelShapeType() {
   return targetShapeRecord()?.shape?.type || shapeType();
+}
+
+// The width row is the line's — or, for typed text, its border's, kept apart
+// from an arrow's (textBorderWidth).
+function widthKey() {
+  return panelShapeType() === "text" ? "textBorderWidth" : "width";
+}
+
+// The turn of the shape the panel is about, or null when there is none to turn.
+function panelShapeRotation() {
+  const shape = normalizeShape(targetShapeRecord()?.shape);
+  return shape && SHAPE_ROTATABLE.includes(shape.type) ? (shape.rot || 0) : null;
 }
 
 function pressShapePanel(button) {
@@ -255,6 +291,11 @@ function pressShapePanel(button) {
   } else if ("shapeBold" in data) setShapeSettings({ bold: !s.bold });
   else if (data.shapeAlign) setShapeSettings({ align: data.shapeAlign });
   else if ("shapeSnap" in data) setShapeSettings({ snap: !s.snap });
+  else if (data.shapeWrap) setShapeSettings({ wrap: data.shapeWrap === "on" });
+  else if ("shapeBorder" in data) setShapeSettings({ textBorder: !s.textBorder });
+  else if (data.shapeEdge) setShapeSettings({ textBorderColor: data.shapeEdge });
+  else if (data.shapeRotateBy) rotateShapeBy(Number(data.shapeRotateBy));
+  else if ("shapeRotateReset" in data) setShapeRotation(0);
 }
 
 export function refreshShapePanel(section) {
@@ -272,9 +313,18 @@ export function refreshShapePanel(section) {
   markPressed("[data-shape-bold]", () => s.bold);
   markPressed("[data-shape-align]", (n) => n.dataset.shapeAlign === s.align);
   markPressed("[data-shape-snap]", () => s.snap);
+  markPressed("[data-shape-wrap]", (n) => (n.dataset.shapeWrap === "on") === s.wrap);
+  markPressed("[data-shape-border]", () => s.textBorder);
+  markPressed("[data-shape-edge]", (n) => n.dataset.shapeEdge === s.textBorderColor);
+  const lineWidth = type === "text" ? s.textBorderWidth : s.width;
   const width = section.querySelector("[data-shape-width]");
-  if (width && document.activeElement !== width) width.value = String(sliderFromWidth(s.width));
-  setNumberBox(section.querySelector("[data-shape-width-value]"), s.width);
+  if (width && document.activeElement !== width) width.value = String(sliderFromWidth(lineWidth));
+  setNumberBox(section.querySelector("[data-shape-width-value]"), lineWidth);
+  const edge = section.querySelector("[data-shape-edge-custom]");
+  if (edge && document.activeElement !== edge) edge.value = s.textBorderColor;
+  const rotation = panelShapeRotation();
+  const rotBox = section.querySelector("[data-shape-rot-value]");
+  if (rotBox && document.activeElement !== rotBox) rotBox.value = String(rotation || 0);
   const opacity = section.querySelector("[data-shape-opacity]");
   if (opacity && document.activeElement !== opacity) opacity.value = String(Math.round(s.opacity * 100));
   section.querySelector("[data-shape-opacity-value]").textContent = `${Math.round(s.opacity * 100)}%`;
@@ -282,11 +332,16 @@ export function refreshShapePanel(section) {
   const stroke = section.querySelector("[data-shape-stroke-custom]");
   if (stroke && document.activeElement !== stroke) stroke.value = colour;
   // Only the rows this shape has. A line has no fill and no text; a box has no
-  // heads; free text has no line to dash and no heads; a sticky note is a
-  // colour and nothing else.
+  // heads; free text has no line to dash and no heads unless it has a border;
+  // a sticky note is a colour and nothing else. Rotate is for a box that is ON
+  // the page — a turn belongs to one shape, never to the next one drawn.
+  const textLine = type !== "text" || s.textBorder;
   const rows = {
-    width: type !== "sticky" && type !== "text",
-    dash: type !== "sticky" && type !== "text",
+    width: type !== "sticky" && textLine,
+    dash: type !== "sticky" && textLine,
+    wrap: type === "text",
+    edge: type === "text" && s.textBorder,
+    rotate: rotation !== null,
     heads: type === "line" || type === "arrow" || type === "callout",
     fill: type === "rect" || type === "ellipse" || type === "callout" || type === "text",
     font: type === "callout" || type === "text",

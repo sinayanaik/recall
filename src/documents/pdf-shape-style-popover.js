@@ -46,7 +46,8 @@ import { openMarkMenuWith } from "../notes/mark-menu.js?v=__BUILD__";
 import { DOCUMENT_MARK_HANDLERS, DOCUMENT_NOTE_HANDLERS, documentHighlightNote, setDocumentShapeStyler } from "./pdf-highlights.js?v=__BUILD__";
 import { buildShapePanel, refreshShapePanel } from "./pdf-shape-panel.js?v=__BUILD__";
 import { commitShapeTextEditor, isEditingShapeText, openShapeTextEditor } from "./pdf-shape-text.js?v=__BUILD__";
-import { deleteShape, editingShapeTextId, selectShape, shapeScreenRect, targetShapeRecord } from "./pdf-shapes.js?v=__BUILD__";
+import { SHAPE_ROTATABLE } from "../render/annot-shapes.js?v=__BUILD__";
+import { SHAPE_ROTATE_HANDLE_GAP, deleteShape, editingShapeTextId, selectShape, shapeScreenRect, targetShapeRecord } from "./pdf-shapes.js?v=__BUILD__";
 
 export const SHAPE_STYLE_POPOVER_CLASS = "shape-style-popover";
 
@@ -71,7 +72,7 @@ function buildShapeStylePopover() {
   const footer = document.createElement("div");
   footer.className = "shape-style-foot";
   footer.innerHTML = [
-    shapeStyleFootButton("style", "Style — colour, size, weight, alignment", { word: "Aa Style" }),
+    shapeStyleFootButton("style", "Style — colour, size, weight, alignment, wrapping, border, rotation", { word: "Aa Style" }),
     shapeStyleFootButton("edit-text", "Edit the text", { word: "Edit text" }),
     shapeStyleFootButton("note", "Add or edit a note", { word: "Note" }),
     shapeStyleFootButton("delete", "Delete", { danger: true }),
@@ -171,10 +172,17 @@ function placeShapeStylePopover() {
   const root = shapeStylePop.root;
   const size = root.getBoundingClientRect();
   const margin = 8;
-  const below = box.bottom + margin;
-  const top = below + size.height > window.innerHeight - margin
-    ? Math.max(margin, box.top - size.height - margin)
-    : below;
+  // A box that can be turned has its turning handle just outside it — above
+  // when upright, wherever the turn puts it otherwise — and this must not sit
+  // on top of it.
+  // Covering the words is worse than covering the handle, so where there is
+  // no room for both the clearance goes first.
+  const clear = !editor && SHAPE_ROTATABLE.includes(record.shape?.type) ? SHAPE_ROTATE_HANDLE_GAP + 10 : 0;
+  const fits = (y) => y >= margin && y + size.height <= window.innerHeight - margin;
+  const top = [box.bottom + margin + clear, box.top - size.height - margin - clear, box.bottom + margin, box.top - size.height - margin]
+    .find(fits) ?? (box.bottom + margin + size.height > window.innerHeight - margin
+      ? Math.max(margin, box.top - size.height - margin)
+      : box.bottom + margin);
   const left = Math.min(Math.max(margin, box.left), Math.max(margin, window.innerWidth - size.width - margin));
   root.style.top = `${Math.round(top)}px`;
   root.style.left = `${Math.round(left)}px`;
