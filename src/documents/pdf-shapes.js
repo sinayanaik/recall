@@ -163,9 +163,9 @@ export function setShapeChangedHandler(fn) {
   shapeChangedHandler = typeof fn === "function" ? fn : () => {};
 }
 
-// A patch of settings. With a shape selected it restyles that shape as well —
-// "make THIS that", as a press on a swatch with a lasso selection does — and the
-// next shape carries on in the same style.
+// A patch of settings. With a shape selected — or its words open to type in —
+// it restyles that shape as well: "make THIS that", as a press on a swatch with
+// a lasso selection does, and the next shape carries on in the same style.
 export function setShapeSettings(patch = {}) {
   const before = currentShapeSettings();
   const next = { ...before, ...patch };
@@ -173,7 +173,7 @@ export function setShapeSettings(patch = {}) {
   const shapeSettings = normalizeShapeSettings(next);
   shapeSettingsBySurface.set(shapeSurface(), shapeSettings);
   writeInkPreferences({ shape: shapeSettings }, shapeSurface());
-  const selected = selectedShapeRecord();
+  const selected = targetShapeRecord();
   if (selected) {
     const restyle = {};
     ["stroke", "width", "opacity", "dash", "fill", "fillOpacity"].forEach((key) => {
@@ -340,6 +340,33 @@ export function selectedShapeRecord() {
   return record;
 }
 
+// The shape a style change is about: the one selected, or the one whose words
+// are open in the text editor (which deselects it, so no handles sit over the
+// words being typed — but a press on A+ mid-sentence still means THAT text).
+export function targetShapeRecord() {
+  const selected = selectedShapeRecord();
+  if (selected) return selected;
+  if (!editingShapeId) return null;
+  const record = documentHighlightById(editingShapeId);
+  return record?.kind === "shape" ? record : null;
+}
+
+// Where a shape is on screen, in client pixels — what a popover about it is
+// placed against. From its geometry and its page's box, not from its painted
+// nodes, so it is right mid-repaint and while its words are being edited.
+export function shapeScreenRect(record) {
+  const page = Number(record?.page);
+  const viewport = page ? pdfPageViewport(page) : null;
+  const pageEl = page ? pdfPageElement(page) : null;
+  const bounds = record?.shape ? shapeBounds(normalizeShape(record.shape)) : null;
+  if (!viewport || !pageEl || !bounds) return null;
+  const box = pageEl.getBoundingClientRect();
+  const at = screenRect(viewport, bounds);
+  const left = box.left + at.left;
+  const top = box.top + at.top;
+  return { left, top, right: left + at.width, bottom: top + at.height, width: at.width, height: at.height };
+}
+
 export function selectShape(id) {
   const next = id && documentHighlightById(id)?.kind === "shape" ? id : null;
   if (next === selectedShapeId) return;
@@ -357,7 +384,7 @@ export function selectShape(id) {
 // picked up happened to look.
 export function displayedShapeSettings() {
   const tool = currentShapeSettings();
-  const selected = selectedShapeRecord();
+  const selected = targetShapeRecord();
   const s = normalizeShape(selected?.shape);
   if (!s) return tool;
   const heads = { ...tool.heads };
@@ -604,7 +631,12 @@ let editingShapeId = null;
 // The text editor says which shape it is writing in, so no handles are drawn
 // over the words and a press inside it is the editor's.
 export function setEditingShapeId(id) {
-  editingShapeId = id || null;
+  const next = id || null;
+  if (next === editingShapeId) return;
+  editingShapeId = next;
+  // The style popover follows the text being typed in, as it follows a
+  // selection (src/documents/pdf-shape-style-popover.js).
+  shapeChangedHandler();
 }
 
 export function isShapeToolArmed() {
@@ -826,8 +858,12 @@ function onShapePointerUp(event) {
       shapeTextEditHandler(drag.target);
       return;
     }
-    // A tap on a shape: it is selected (above), and the click that follows is
-    // let through so its menu opens — the note, the card, Remove.
+    // A tap on a shape: it is selected (above), and its style popover is up
+    // at it (src/documents/pdf-shape-style-popover.js) — colour, size, line —
+    // with its note, Delete and ⋯ for the rest of its menu. The click that
+    // follows is swallowed, so the menu does not open on top of it. A sticky
+    // note IS its note, so for one the click goes through and opens it.
+    if (type !== "sticky") suppressShapeClickUntil = Date.now() + 400;
     paintDocumentShapes(drag.page);
     return;
   }

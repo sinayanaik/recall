@@ -290,6 +290,20 @@ function ensureMarkMenu() {
   note.innerHTML = '<span class="mmi-ico" aria-hidden="true">&#9998;</span><span class="mmi-label">Add a note</span>';
   actions.appendChild(note);
 
+  // A shape's whole look — typed text's size, weight and colour; an arrow's
+  // line and heads; a box's fill — in the style popover at the shape
+  // (src/documents/pdf-shape-style-popover.js). Shown only where the handler set
+  // can (`canStyle`): the swatches above are a highlight's five colours, and a
+  // shape has far more to it than that.
+  const styleShape = document.createElement("button");
+  styleShape.type = "button";
+  styleShape.className = "mark-menu-item mark-menu-style-shape";
+  styleShape.title = "Size, colour, weight, line and fill";
+  styleShape.dataset.markColor = "style-shape";
+  styleShape.hidden = true;
+  styleShape.innerHTML = '<span class="mmi-ico" aria-hidden="true">&#9680;</span><span class="mmi-label">Style</span>';
+  actions.appendChild(styleShape);
+
   // A callout's or a text box's own words, typed in place
   // (src/documents/pdf-shape-text.js) — shown only where the handler set can
   // (`canEditText`).
@@ -380,6 +394,12 @@ function ensureMarkMenu() {
       // "Highlight Notes" section at the end of the note) — resolved from
       // state.notes by ordinal rather than from the DOM attribute.
       set.openNote(index, rect);
+      return;
+    }
+    if (button.dataset.markColor === "style-shape") {
+      closeMarkMenu();
+      if (index == null || typeof set.style !== "function") return;
+      set.style(index);
       return;
     }
     if (button.dataset.markColor === "edit-text") {
@@ -509,6 +529,11 @@ export function openMarkMenuWith(mark, key, handlerSet, currentColor = null) {
       button.classList.toggle("is-current", on);
       button.setAttribute("aria-pressed", String(on));
     });
+  }
+  const styleShapeRow = menu.querySelector(".mark-menu-style-shape");
+  if (styleShapeRow) {
+    styleShapeRow.hidden = typeof markHandlers.style !== "function"
+      || (typeof markHandlers.canStyle === "function" && !markHandlers.canStyle(index));
   }
   const editTextRow = menu.querySelector(".mark-menu-edit-text");
   if (editTextRow) {

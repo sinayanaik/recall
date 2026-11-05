@@ -669,7 +669,12 @@ export function recolourDocumentHighlight(id, color) {
     // A shape's colour is its line's: the swatch pressed in its menu is the
     // colour it is drawn in, and the token it is filed under.
     if (record.kind === "shape" && record.shape && MARK_HIGHLIGHT_HEX[color]) {
-      return { ...rest, color, shape: { ...record.shape, stroke: MARK_HIGHLIGHT_HEX[color] }, at: Date.now() };
+      const shape = { ...record.shape, stroke: MARK_HIGHLIGHT_HEX[color] };
+      // ...and typed text's colour is its WORDS' (font.color, which the
+      // typewriter sets), so recolouring only the line changed nothing that
+      // could be seen.
+      if (shape.type === "text") shape.font = { ...(shape.font || {}), color: MARK_HIGHLIGHT_HEX[color] };
+      return { ...rest, color, shape, at: Date.now() };
     }
     return { ...rest, color, at: Date.now() };
   });
@@ -1412,6 +1417,14 @@ export function setDocumentShapeTextEditor(fn) {
   documentShapeTextEditor = typeof fn === "function" ? fn : null;
 }
 
+// Restyling a shape from its menu (src/documents/pdf-shape-style-popover.js),
+// handed in for the same reason.
+let documentShapeStyler = null;
+
+export function setDocumentShapeStyler(fn) {
+  documentShapeStyler = typeof fn === "function" ? fn : null;
+}
+
 export const DOCUMENT_MARK_HANDLERS = {
   surface: "document",
   // No "pin". A Quick Note keeps a trimNoteAnchor'd anchor
@@ -1458,6 +1471,10 @@ export const DOCUMENT_MARK_HANDLERS = {
     return Boolean(record) && (!record.kind || record.kind === "text");
   },
   styleOf: (id) => markStyleOf(documentHighlightById(id)),
+  // A shape's whole look, in its style popover at the shape — handed in, for
+  // the reason the text editor is (setDocumentShapeStyler).
+  style: (id) => documentShapeStyler?.(id),
+  canStyle: (id) => Boolean(documentShapeStyler) && documentHighlightById(id)?.kind === "shape",
   editText: (id) => documentShapeTextEditor?.(id),
   canEditText: (id) => {
     const type = documentHighlightById(id)?.shape?.type;

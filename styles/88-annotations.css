@@ -397,8 +397,109 @@
   outline-style: dotted;
 }
 
-/* The Text button on the pen's bar: a word, since it is the one people look
-   for by name. */
-.ink-rail-btn[data-ink-action="typewriter"] .ink-rail-word {
+/* ── The Text bar ───────────────────────────────────────────────────────
+   Text has its own button in the top row (#documentTextBtn). While it is armed
+   the pen's bar is the Text bar: the pen's tools, the selection's and the
+   page's slot step aside, and what is left is a "Text" head with Done, the
+   style chip, undo and redo, and ⋯ (toggleTypewriter, src/ui/ink-rail.js). */
+.ink-rail-typing {
+  display: none;
+}
+
+/* The Text head is first in the bar and hidden by default, so the group after
+   it would draw a divider against nothing. */
+.document-ink-rail:not(.is-typing) .ink-rail-typing + .ink-rail-group {
+  padding-left: 0;
+  border-left: 0;
+}
+
+.document-ink-rail.is-typing .ink-rail-typing {
+  display: flex;
+}
+
+.document-ink-rail.is-typing .ink-rail-tools,
+.document-ink-rail.is-typing .ink-rail-context {
+  display: none;
+}
+
+.ink-rail-typing-label {
+  padding: 0 4px 0 6px;
+  font-size: 0.78rem;
   font-weight: 700;
+  letter-spacing: 0.01em;
+  color: var(--accent, currentColor);
+}
+
+/* The head row's Text button: the same box as ✎ beside it, a drawn T. */
+.document-text-glyph {
+  width: 18px;
+  height: 18px;
+  display: block;
+  margin: auto;
+}
+
+/* ── The style popover at a shape ──────────────────────────────────────────
+   Up under a selected shape — or text being typed — with the shape panel
+   built a second time (src/documents/pdf-shape-style-popover.js), so a shape
+   already on the page is restyled where it is, with any tool armed. The box
+   is the pen panel's own; the tier is the block popovers'. */
+.shape-style-popover {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 610;
+  width: min(320px, calc(100vw - 16px));
+  max-height: min(60vh, 460px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 4px 10px 8px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 14px 34px rgb(0 0 0 / 0.34);
+}
+
+.shape-style-popover[hidden] {
+  display: none;
+}
+
+.shape-pop-panel.is-floating .shape-pop-row {
+  margin-top: 6px;
+}
+
+.shape-pop-panel.is-floating .shape-pop-label {
+  min-width: 50px;
+}
+
+.shape-style-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.shape-style-btn {
+  width: auto;
+  min-width: 34px;
+  height: 30px;
+  padding: 0 10px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.shape-style-btn[hidden] {
+  display: none;
+}
+
+.shape-style-btn.is-danger {
+  color: var(--danger, #c0392b);
+}
+
+/* Done last, pushed to the far end. */
+.shape-style-btn[data-shape-style-action="done"] {
+  margin-left: auto;
 }

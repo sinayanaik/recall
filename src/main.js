@@ -155,6 +155,7 @@ import { blocksForPaper, buildStaticBlock, canRedoBlocks, canUndoBlocks, commitB
 import { applyInkRailPreference, closeInkRailPopups, initInkRail, refreshInkRail } from "./ui/ink-rail.js?v=__BUILD__";
 import { initDocumentShapes, setShapeCreatedHandler } from "./documents/pdf-shapes.js?v=__BUILD__";
 import { openShapeTextEditor } from "./documents/pdf-shape-text.js?v=__BUILD__";
+import { initShapeStylePopover } from "./documents/pdf-shape-style-popover.js?v=__BUILD__";
 import { INK_NUDGE_STEP, INK_NUDGE_STEP_COARSE } from "./render/ink-engine.js?v=__BUILD__";
 
 // ── Which of the two undo rings on this surface Ctrl+Z means ───────────────
@@ -1570,6 +1571,8 @@ onDomReady(() => {
     openShapeTextEditor(record);
   });
   setDocumentShapeTextEditor((id) => openShapeTextEditor(id));
+  // A shape's Style row, and the popover at a selected shape.
+  initShapeStylePopover();
   initInkRail();
   // A press on a markdown block belongs to the block. Capture, on the same
   // element pdf-ink.js listens on — stopPropagation does not silence a sibling
