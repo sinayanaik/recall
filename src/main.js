@@ -97,6 +97,7 @@ import { closeNotesToc, ensureNotesTocBuilt, flashNotesHeading, initNotesTocFold
 import { closeClozePanel, openClozePanel, toggleClozePanelAll } from "./panels/cloze-panel.js?v=__BUILD__";
 import { appInfoBtn, appInfoCheckBtn, appInfoCloseBtn, appInfoHealthBtn, appInfoModal, appInfoReloadBtn, closeAppInfoModal, forceRefreshAppInfo, openAppInfoModal, runProjectHealthCheck } from "./pwa/app-info.js?v=__BUILD__";
 import { initDiagnosticsPanel } from "./pwa/diagnostics-panel.js?v=__BUILD__";
+import { initExtensionStore } from "./extensions/extension-store.js?v=__BUILD__";
 import { FOREGROUND_SYNC_IDLE_MS, lastHiddenAt, onlineReconcileTimer, setLastHiddenAt, setOnlineReconcileTimer, updateOnlineIndicator } from "./pwa/online.js?v=__BUILD__";
 import { installIncomingFiles } from "./pwa/incoming-files.js?v=__BUILD__";
 import { applyUpdate, installManifestLink, registerServiceWorker } from "./pwa/service-worker-client.js?v=__BUILD__";
@@ -3537,6 +3538,7 @@ if (helpModal) {
 
 if (appInfoHealthBtn) appInfoHealthBtn.addEventListener("click", runProjectHealthCheck);
 initDiagnosticsPanel();
+initExtensionStore();
 
 
 if (appInfoBtn) appInfoBtn.addEventListener("click", openAppInfoModal);

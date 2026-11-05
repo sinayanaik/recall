@@ -26,6 +26,7 @@ import { closeTeleprompterSheet, isTeleprompterSheetOpen } from "../notes/telepr
 import { closeClozePanel } from "../panels/cloze-panel.js?v=__BUILD__";
 import { closeAppInfoModal } from "../pwa/app-info.js?v=__BUILD__";
 import { closeDiagnosticsPanel } from "../pwa/diagnostics-panel.js?v=__BUILD__";
+import { closeExtensionStore } from "../extensions/extension-store.js?v=__BUILD__";
 import { closeQnCatMenu, closeQnCatModal, closeQuickNotesBoard } from "../quick-notes/board.js?v=__BUILD__";
 import { closeDiagramModal } from "../render/diagram-zoom.js?v=__BUILD__";
 import { closeBucketPanel } from "../storage/bucket-panel.js?v=__BUILD__";
@@ -135,6 +136,7 @@ export const OVERLAY_LAYERS = [
   { isOpen: () => Boolean(document.getElementById("helpModal")?.hidden === false), close: () => closeHelpModal() },
   { isOpen: () => Boolean(document.getElementById("appInfoModal")?.hidden === false), close: () => closeAppInfoModal() },
   { isOpen: () => Boolean(document.getElementById("diagnosticsModal")?.hidden === false), close: () => closeDiagnosticsPanel() },
+  { isOpen: () => Boolean(document.getElementById("extensionsModal")?.hidden === false), close: () => closeExtensionStore() },
   { isOpen: () => Boolean(el.syncModal && !el.syncModal.hidden), close: () => { el.syncModal.hidden = true; } },
   { isOpen: () => Boolean(el.diagramModal && !el.diagramModal.hidden), close: () => closeDiagramModal() },
 

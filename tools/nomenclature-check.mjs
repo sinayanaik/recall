@@ -118,8 +118,8 @@ function decodeEntities(s) {
 }
 
 // ── index.html ───────────────────────────────────────────────────────────────
-{
-  const file = "index.html";
+// …and the new extensions' popup, read the same way.
+function scanHtml(file) {
   const src = fs.readFileSync(path.join(ROOT, file), "utf8");
   let s = blank(src, /<!--[\s\S]*?-->/g);
   s = blank(s, /<script\b[\s\S]*?<\/script>/gi);
@@ -143,6 +143,7 @@ function decodeEntities(s) {
     failures.push({ file, line: lineOf(src, m.index), word: "Write", use: "Canvas", text: m[0] });
   }
 }
+for (const file of ["index.html", "recall-web-to-pdf/popup.html"]) scanHtml(file);
 
 // ── src/**/*.js ─────────────────────────────────────────────────────────────
 function walk(dir) {
@@ -155,7 +156,12 @@ function walk(dir) {
   return out;
 }
 
-for (const abs of walk(path.join(ROOT, "src"))) {
+// The two extensions written after the rename are read like src/ (their
+// tools/ are tests). Recall Clipper predates this check and keeps its own words.
+const EXTENSION_JS = ["recall-web-to-pdf", "recall-page-cleaner"].flatMap((dir) =>
+  walk(path.join(ROOT, dir)).filter((p) => !p.includes(`${path.sep}tools${path.sep}`)));
+
+for (const abs of [...walk(path.join(ROOT, "src")), ...EXTENSION_JS]) {
   const file = path.relative(ROOT, abs).split(path.sep).join("/");
   const src = fs.readFileSync(abs, "utf8");
   const blanked = blankLiterals(src);
@@ -172,7 +178,7 @@ for (const abs of walk(path.join(ROOT, "src"))) {
 }
 
 // ── manifests ───────────────────────────────────────────────────────────────
-for (const file of ["manifest.webmanifest", "recall-clipper/manifest.json"]) {
+for (const file of ["manifest.webmanifest", "recall-clipper/manifest.json", "recall-web-to-pdf/manifest.json", "recall-page-cleaner/manifest.json"]) {
   const json = JSON.parse(fs.readFileSync(path.join(ROOT, file), "utf8"));
   for (const key of ["name", "short_name", "description"]) {
     if (typeof json[key] === "string") test(file, 0, json[key]);

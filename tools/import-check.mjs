@@ -108,6 +108,47 @@ try {
   const cards = await load("src/import/parse-cards.js");
   const mathml = await load("src/import/mathml-to-tex.js");
   const lang = await load("src/render/code-language.js");
+  const capture = await load("src/import/web-capture.js");
+
+  // ── web-capture: a PDF from the Recall Web to PDF extension ─────────────
+  //
+  // The metadata as pdf.js hands it back (custom keys under info.Custom),
+  // exactly as recall-web-to-pdf/lib/pdf-info.js writes it.
+  {
+    const meta = {
+      info: {
+        Title: "How Tides Work", Author: "Ada Example", Subject: "https://example.org/tides",
+        Creator: "Recall Web to PDF",
+        Custom: {
+          RecallSourceURL: "https://example.org/tides", RecallSiteName: "The Daily Example",
+          RecallCapturedAt: "2026-11-05T10:20:30.000Z", RecallPublished: "2026-10-01T09:00:00Z"
+        }
+      }
+    };
+    const got = capture.webCaptureOf(meta);
+    must("web capture: the source is read from the PDF's info", () =>
+      (got && got.url === "https://example.org/tides" && got.site === "The Daily Example" && got.author === "Ada Example"
+        && got.capturedAt === "2026-11-05T10:20:30.000Z") || JSON.stringify(got));
+    must("web capture: the Notes line links back to the page", () => {
+      const line = capture.webCaptureNoteLine(got);
+      return line === "Source: [How Tides Work](https://example.org/tides) · The Daily Example · by Ada Example · published 1 Oct 2026 · saved 5 Nov 2026" || show(line);
+    });
+    must("web capture: any other PDF is left alone", () =>
+      (capture.webCaptureOf({ info: { Title: "A paper" } }) === null && capture.webCaptureOf(null) === null) || "not null");
+    must("web capture: only http(s) addresses count", () =>
+      (capture.webCaptureOf({ info: { Custom: { RecallSourceURL: "javascript:alert(1)" } } }) === null
+        && capture.webCaptureOf({ info: { Custom: { RecallSourceURL: "file:///etc/passwd" } } }) === null) || "accepted");
+    must("web capture: a missing site name falls back to the host", () =>
+      capture.webCaptureOf({ info: { Custom: { RecallSourceURL: "https://www.example.org/x" } } }).site === "example.org" || "no host");
+    must("web capture: brackets in a title and parentheses in an address survive as Markdown", () => {
+      const line = capture.webCaptureNoteLine({ url: "https://en.wikipedia.org/wiki/Tide_(disambiguation)", title: "Tide [physics]", site: "", author: "", published: "", capturedAt: "not a date" });
+      return line === "Source: [Tide \\[physics\\]](<https://en.wikipedia.org/wiki/Tide_(disambiguation)>)" || show(line);
+    });
+    must("web capture: junk dates are dropped, not shown", () => {
+      const c = capture.webCaptureOf({ info: { Custom: { RecallSourceURL: "https://a.org", RecallCapturedAt: "yesterday-ish" } } });
+      return (c.capturedAt === "" && !capture.webCaptureNoteLine(c).includes("saved")) || JSON.stringify(c);
+    });
+  }
 
   // ── parse-cards: it must never throw, and never lose the text ────────────
   //

@@ -16,9 +16,15 @@ keep them in step.
 
 ## Install (unpacked)
 
+The easiest way is from the Recall app itself: **☰ → Extensions → Recall
+Clipper → Download .zip**, then unzip it and load the folder as below. (Its
+two siblings, **Recall Web to PDF** and **Recall Page Cleaner**, are offered
+there too.)
+
 1. Open `chrome://extensions` (or `brave://extensions`).
 2. Turn on **Developer mode** (top-right).
-3. Click **Load unpacked** and select this `recall-clipper/` folder.
+3. Click **Load unpacked** and select the `recall-clipper/` folder (the unzipped
+   download, or this folder in a copy of the repository).
 4. Pin the teal **Recall Clipper** icon to the toolbar if you like.
 
 No build step. Works fully offline. Nothing is uploaded anywhere.
