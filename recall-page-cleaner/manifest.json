@@ -1,0 +1,36 @@
+{
+  "manifest_version": 3,
+  "name": "Recall Page Cleaner",
+  "version": "1.0.0",
+  "description": "Clean up any web page before you clip it or save it as a PDF: Auto removes ads, popups and clutter; Manual lets you mark blocks yourself.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAnXiIYmM12fpdKBhCzIJnfFVZDSM3XN2x4ec3VzB8nsDiLvhRuxkhJvs86DrDMHeW2KgkL2saLVYfIpEdHB+vhHroQqFPi6bBVQ4w+XEG9hR9BB1+VpvPSN3Z3Kk4+UNjryrO+EsI6MblnWNZCgtaQ4eDZ7/iQ2C9pR1n3N6XG7Bbj2J9nfcmWNtpuyttgC1vLa7MQkIrYYBbWTPi+VmYlzkaqHV4gHi7uhQb5FqhgJvU+v07g4SymeXtBJM5dbl2aY/tsSmGVaawmQQIpWzAfBk6Eb49nuXkcyIdBT5be3K8y1O44GbgUgn/+Gi7zMcQJ8CL8NT6tH2wiDzGEDAYYQIDAQAB",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage"
+  ],
+  "action": {
+    "default_title": "Recall Page Cleaner — click to clean this page",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon-16.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "commands": {
+    "toggle-cleaner": {
+      "suggested_key": {
+        "default": "Alt+Shift+C"
+      },
+      "description": "Toggle Recall Page Cleaner on the current page"
+    }
+  }
+}

@@ -152,6 +152,7 @@
     <link rel="stylesheet" href="styles/89-style-popover.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/90-library-kinds.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/91-ink-rail-inline.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/92-extensions.css?v=__BUILD__">
 
     <!-- ── Module preloads ────────────────────────────────────────────────
          The app is ~130 ES modules and the browser discovers them by PARSING
@@ -180,6 +181,8 @@
     <link rel="modulepreload" href="src/backup/share-dialog.js?v=__BUILD__">
     <link rel="modulepreload" href="src/backup/share-import.js?v=__BUILD__">
     <link rel="modulepreload" href="src/backup/zip-lite.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/extensions/catalog.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/extensions/extension-store.js?v=__BUILD__">
     <link rel="modulepreload" href="src/boot.js?v=__BUILD__">
     <link rel="modulepreload" href="src/cards/all-cards-edit.js?v=__BUILD__">
     <link rel="modulepreload" href="src/cards/all-cards.js?v=__BUILD__">
@@ -313,6 +316,7 @@
     <link rel="modulepreload" href="src/import/mathml-to-tex.js?v=__BUILD__">
     <link rel="modulepreload" href="src/import/parse-cards.js?v=__BUILD__">
     <link rel="modulepreload" href="src/import/pdf.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/import/web-capture.js?v=__BUILD__">
     <link rel="modulepreload" href="src/import/sample.js?v=__BUILD__">
     <link rel="modulepreload" href="src/import/staging.js?v=__BUILD__">
     <link rel="modulepreload" href="src/import/url.js?v=__BUILD__">
@@ -747,6 +751,7 @@
           <button class="tool-button" id="storageBtn" type="button" title="What your account is storing — files, cards and images — and how to clean it up">&#128451; Storage &amp; Data</button>
           <button class="tool-button tool-button-info" id="helpBtn" type="button" title="How to use this app" aria-label="Help">&#63; Help &amp; Guide</button>
           <button class="tool-button" id="appInfoBtn" type="button" title="App version and update status" aria-label="App info">&#8505; App Info</button>
+          <button class="tool-button" id="extensionsBtn" type="button" title="Browser extensions that bring web pages into Recall — download them here" aria-label="Extensions">&#129513; Extensions</button>
           <button class="tool-button" id="diagnosticsBtn" type="button" title="How the PDF reader is performing on this device" aria-label="Diagnostics">&#128200; Diagnostics</button>
           <button class="tool-button" id="logoutBtn" type="button" title="Sign out" hidden>&#8594; Sign Out</button>
           <!-- Shut down: save, sync everything, then close — instead of closing
@@ -2755,6 +2760,33 @@ What year was the Eiffel Tower built?
             <button class="sync-modal-btn" id="diagnosticsCopyBtn" type="button">Copy</button>
           </div>
           <pre class="diagnostics-readout" id="diagnosticsReadout">—</pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- ☰ → Extensions. The cards are built from src/extensions/catalog.js by
+         src/extensions/extension-store.js; each download is zipped in the
+         browser from the extension's folder on this site. -->
+    <section class="help-modal" id="extensionsModal" hidden aria-label="Extensions">
+      <div class="help-modal-content ext-content">
+        <div class="help-modal-head">
+          <h2 class="help-modal-title">Extensions</h2>
+          <button class="icon-button" id="extensionsCloseBtn" type="button" aria-label="Close extensions">&#215;</button>
+        </div>
+        <div class="help-modal-body ext-body">
+          <p class="ext-intro">Browser extensions that bring web pages into Recall. They work in Chrome, Edge and Brave on a computer. Each one downloads as a .zip you load into your browser once.</p>
+          <details class="ext-install" open>
+            <summary>How to install one</summary>
+            <ol>
+              <li>Download its .zip below and unzip it. You get one folder.</li>
+              <li>Open <code>chrome://extensions</code> (in Edge, <code>edge://extensions</code>).</li>
+              <li>Turn on <strong>Developer mode</strong>.</li>
+              <li>Choose <strong>Load unpacked</strong> and pick the folder. Pin its icon if you like.</li>
+            </ol>
+            <p class="ext-note">To update: download it again, replace the folder, and press the reload arrow on the extension's card. Keep the folder: the browser loads it from there.</p>
+          </details>
+          <div class="ext-list" id="extensionsList"></div>
+          <p class="ext-note">They work together: clean a page with Page Cleaner, then clip it with the Clipper or save it with Web to PDF. Import a saved PDF from My Files → Import.</p>
         </div>
       </div>
     </section>

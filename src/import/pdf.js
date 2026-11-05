@@ -39,6 +39,7 @@ import { openMyDecksPanel } from "../ui/deck-header.js?v=__BUILD__";
 import { openDocumentView } from "../documents/pdf-view.js?v=__BUILD__";
 import { setStatus, showToast } from "../ui/feedback.js?v=__BUILD__";
 import { setViewMode } from "../ui/view-mode.js?v=__BUILD__";
+import { webCaptureNoteLine, webCaptureOf } from "./web-capture.js?v=__BUILD__";
 
 export function isPdfName(name) {
   return /\.pdf$/i.test(String(name || ""));
@@ -258,7 +259,10 @@ export async function importPdfFile(file, folderPath = null) {
     // Imported comments become highlight notes in the deck's own note, through
     // the same writer the note editor uses — so the section is byte-identical
     // in shape to one this app wrote itself.
-    let deckNotes = "";
+    // A page saved by the Recall Web to PDF extension says where it came from;
+    // the file's Notes then open with a link back to it.
+    const webCapture = webCaptureOf(metadata);
+    let deckNotes = webCapture ? `${webCaptureNoteLine(webCapture, sanitizedTitle)}\n` : "";
     notes.forEach((note) => {
       deckNotes = setHighlightNoteInSource(deckNotes, note.id, note.text, note.label);
     });
@@ -280,7 +284,8 @@ export async function importPdfFile(file, folderPath = null) {
         // perfectly good device-local PDF deck — which is exactly what a failed
         // or offline import should leave behind.
         path: null,
-        importedAt: new Date().toISOString()
+        importedAt: new Date().toISOString(),
+        ...(webCapture ? { source: webCapture } : {})
       },
       pdfHighlights: records
     };

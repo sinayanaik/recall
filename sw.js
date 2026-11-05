@@ -381,6 +381,7 @@ const APP_SHELL = [
   `./styles/89-style-popover.css?v=${STAMP}`,
   `./styles/90-library-kinds.css?v=${STAMP}`,
   `./styles/91-ink-rail-inline.css?v=${STAMP}`,
+  `./styles/92-extensions.css?v=${STAMP}`,
   // The module entry point. Everything it imports is stamped with the same
   // ?v=, so those URLs change with every release too — which is what lets the
   // cache-first handler below serve them without revalidating and still never
@@ -401,6 +402,8 @@ const APP_SHELL = [
   `./src/backup/share-dialog.js?v=${STAMP}`,
   `./src/backup/share-import.js?v=${STAMP}`,
   `./src/backup/zip-lite.js?v=${STAMP}`,
+  `./src/extensions/catalog.js?v=${STAMP}`,
+  `./src/extensions/extension-store.js?v=${STAMP}`,
   `./src/boot.js?v=${STAMP}`,
   `./src/cards/all-cards-edit.js?v=${STAMP}`,
   `./src/cards/all-cards.js?v=${STAMP}`,
@@ -533,6 +536,7 @@ const APP_SHELL = [
   `./src/import/mathml-to-tex.js?v=${STAMP}`,
   `./src/import/parse-cards.js?v=${STAMP}`,
   `./src/import/pdf.js?v=${STAMP}`,
+  `./src/import/web-capture.js?v=${STAMP}`,
   `./src/import/sample.js?v=${STAMP}`,
   `./src/import/staging.js?v=${STAMP}`,
   `./src/import/url.js?v=${STAMP}`,

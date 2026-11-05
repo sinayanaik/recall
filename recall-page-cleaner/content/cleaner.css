@@ -1,0 +1,16 @@
+/* Recall Page Cleaner — the only styles that touch the page itself. The
+   toolbar and the red boxes live in a shadow root (cleaner-ui.js); this just
+   blurs a marked block underneath its red box, and sets the cursor. */
+.rpc-marked {
+  filter: blur(3px) !important;
+}
+/* A marked block that covers most of the screen (a backdrop, a whole column
+   in Reader) lets clicks through, so the page under it can still be marked.
+   It is unmarked from its chip in the toolbar instead. */
+.rpc-marked.rpc-passthrough {
+  pointer-events: none !important;
+}
+html.rpc-active.rpc-manual,
+html.rpc-active.rpc-manual * {
+  cursor: crosshair !important;
+}

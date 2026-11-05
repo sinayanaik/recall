@@ -322,6 +322,12 @@ const checks = [
   ["module-symbols", ["node", ["tools/module-symbols.mjs"], ROOT]],
   ["css-parity   ", ["node", ["tools/split-css.mjs", "--check"], ROOT]],
   ["port-sync     ", ["node", ["tools/port-sync.mjs"], path.join(ROOT, "recall-clipper")]],
+  // The browser extensions ☰ → Extensions offers: the catalog the download
+  // zips from must list exactly what is in each folder, and the extensions'
+  // manifests, fixed IDs, shared rule engine, PDF metadata writer and page
+  // geometry are checked without a browser.
+  ["ext-catalog   ", ["node", ["tools/extension-catalog.mjs", "--check"], ROOT]],
+  ["extensions    ", ["node", ["tools/extensions-check.mjs"], ROOT]],
   ["readme-sql    ", ["node", ["tools/readme-sql-check.mjs"], ROOT]],
   // Does every word a person reads say File, Cards, Notes, PDFs and Canvas?
   // The code keeps deck / notebook / handwriting — they are in the schema, the
@@ -500,6 +506,10 @@ const checks = [
     ["sync          ", ["node", ["tools/sync-parity.mjs"], ROOT]],
     ["reconcile     ", ["node", ["tools/reconcile-parity.mjs"], ROOT]],
     ["ui-smoke      ", ["node", ["tools/ui-smoke.mjs"], ROOT]],
+    // ☰ → Extensions downloads each zip, and Chrome loads every one unzipped;
+    // then the Page Cleaner and Web to PDF themselves, loaded unpacked.
+    ["ext-store     ", ["node", ["tools/extension-store-check.mjs"], ROOT]],
+    ["ext-browser   ", ["node", ["tools/extensions-browser-check.mjs"], ROOT]],
     ["selection     ", ["node", ["tools/selection-check.mjs"], ROOT]],
     ["mobile-select ", ["node", ["tools/mobile-selection-check.mjs"], ROOT]],
     ["touch-select  ", ["node", ["tools/touch-selection-check.mjs"], ROOT]],

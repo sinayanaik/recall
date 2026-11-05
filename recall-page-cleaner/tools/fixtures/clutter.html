@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>How Tides Work | The Daily Example</title>
+  <meta name="author" content="Ada Example">
+  <meta property="og:site_name" content="The Daily Example">
+  <meta property="article:published_time" content="2026-10-01T09:00:00Z">
+  <meta name="keywords" content="tides, moon, oceans">
+  <link rel="canonical" href="https://example.org/science/how-tides-work">
+  <style>
+    body { margin: 0; font: 17px/1.6 Georgia, serif; color: #222; }
+    .site-header { position: sticky; top: 0; background: #123; color: #fff; padding: 12px 20px; z-index: 50; }
+    .layout { display: flex; gap: 24px; max-width: 1100px; margin: 0 auto; padding: 20px; }
+    article { flex: 1; min-width: 0; }
+    .sidebar { width: 260px; }
+    .ad-slot { background: #ffe; border: 1px dashed #cc9; height: 250px; text-align: center; }
+    .cookie-banner { position: fixed; left: 0; right: 0; bottom: 0; background: #333; color: #fff; padding: 16px; z-index: 1000; }
+    .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 900; }
+    .newsletter-popup { position: fixed; top: 20%; left: 30%; width: 40%; background: #fff; padding: 24px; z-index: 950; }
+    .share-bar a { margin-right: 8px; }
+    pre { background: #f4f4f4; padding: 10px; }
+    table { border-collapse: collapse; }
+    td, th { border: 1px solid #ccc; padding: 4px 8px; }
+    th { position: sticky; top: 0; background: #eee; }
+  </style>
+</head>
+<body class="modal-open" style="overflow: hidden">
+  <header class="site-header" id="siteHeader"><a href="/" style="color:#fff">The Daily Example</a> · <a href="/science" style="color:#fff">Science</a></header>
+  <div class="layout">
+    <article id="article">
+      <h1 id="headline">How Tides Work</h1>
+      <p class="byline">By Ada Example · 1 October 2026</p>
+      <div class="share-bar" id="shareBar"><a href="#">Share on X</a><a href="#">Facebook</a><a href="#">Email</a></div>
+      <p id="p1">The tides are the regular rise and fall of the sea, caused mostly by the Moon's gravity pulling on the oceans, and to a lesser extent by the Sun. Because the Earth rotates beneath these bulges of water, most coasts see two high tides and two low tides a day, roughly twelve hours and twenty-five minutes apart.</p>
+      <div class="ad-slot" id="adInArticle">Advertisement</div>
+      <p id="p2">The difference between high and low water, the tidal range, varies enormously from place to place. In the open ocean it may be less than a metre, while in funnel-shaped bays, such as the Bay of Fundy, it can exceed fifteen metres, because the shape of the coast amplifies the incoming wave.</p>
+      <figure id="figure"><img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='200'%3E%3Crect width='400' height='200' fill='%2389c'/%3E%3C/svg%3E" alt="A diagram of the tidal bulges" width="400" height="200"><figcaption>The two tidal bulges, on the side facing the Moon and the side opposite.</figcaption></figure>
+      <p><img id="photo" src="/icons/icon-512.png" width="120" height="120" alt="The app's icon, served large and shown small"></p>
+      <p id="p3">Spring tides, with the largest range, happen near new and full moon, when the Sun and Moon line up and their pulls add together. Neap tides, with the smallest range, come at the quarter moons, when the two pulls are at right angles and partly cancel out.</p>
+      <table id="table"><thead><tr><th>Place</th><th>Range (m)</th></tr></thead><tbody><tr><td>Bay of Fundy</td><td>16.3</td></tr><tr><td>Bristol Channel</td><td>14.6</td></tr></tbody></table>
+      <pre id="code">range = high_water - low_water</pre>
+      <p id="p4">Tide tables are computed by harmonic analysis: the observed water level at a port is broken down into dozens of regular components, each tied to a motion of the Earth, Moon or Sun, and these are then added back together to predict the water level years ahead.</p>
+      <section class="related-posts" id="related"><h3>Related</h3><ul><li><a href="#">Why the Moon is drifting away</a></li><li><a href="#">Ocean currents explained</a></li><li><a href="#">Storm surges</a></li></ul></section>
+      <section id="comments" class="comments-area"><h3>Comments</h3><p>Great article! First comment here.</p></section>
+    </article>
+    <aside class="sidebar" id="sidebar">
+      <div class="ad-slot" id="adSidebar" data-ad-slot="123">Ad</div>
+      <div class="newsletter" id="newsletterBox"><p>Subscribe to our newsletter for weekly science.</p><input type="email" placeholder="you@example.org"><button>Sign up</button></div>
+    </aside>
+  </div>
+  <footer id="pageFooter"><p>© The Daily Example · <a href="#">About</a> · <a href="#">Contact</a></p></footer>
+  <div class="modal-backdrop" id="backdrop"></div>
+  <div class="newsletter-popup modal" id="popup" role="dialog" aria-modal="true"><p>Don't miss out! Subscribe to our newsletter.</p><input type="email"><button>Subscribe</button></div>
+  <div class="cookie-banner" id="cookieBanner"><p>We use cookies to improve your experience. <button>Accept all cookies</button></p></div>
+</body>
+</html>

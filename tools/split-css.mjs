@@ -65,6 +65,9 @@ const SECTIONS = [
 // Anything appearing in styles/ that is neither a slice nor listed here is
 // still a failure.
 const POST_SPLIT = {
+  "92-extensions.css":
+    "☰ → Extensions: one card per browser extension with its Download .zip " +
+    "button, and the install steps (src/extensions/extension-store.js).",
   "13a-section-style.css":
     "The values in the 13 slices that a section's ◐ style controls now set " +
     "(src/ui/style-schema.js), taken over by the same selectors right after the " +
