@@ -124,6 +124,9 @@ export const OVERLAY_LAYERS = [
   { isOpen: () => isFrameCardOpen(), close: () => cancelFrontFrameCard() },
   { isOpen: () => Boolean(el.exportHighlightsModal && !el.exportHighlightsModal.hidden), close: () => el.exportHighlightsCancelBtn?.click() },
   { isOpen: () => Boolean(el.exportThemeModal && !el.exportThemeModal.hidden), close: () => el.exportThemeCancelBtn?.click() },
+  // ⋯ → Page margins… — built on first use by src/documents/pdf-margins.js, so
+  // read off the DOM rather than through `el`.
+  { isOpen: () => document.getElementById("pdfMarginsModal")?.hidden === false, close: () => document.querySelector("#pdfMarginsModal [data-margin-action=\"cancel\"]")?.click() },
   { isOpen: () => Boolean(el.qnCatModal && !el.qnCatModal.hidden), close: () => closeQnCatModal() },
   // These two are read off the DOM rather than through their `helpModal` /
   // `appInfoModal` bindings, which are top-level `const`s declared thousands of

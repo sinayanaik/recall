@@ -359,7 +359,8 @@ export function setButtonLoading(btn, loading, text = "…") {
   }
 }
 
-export function showConfirmModal(message, onConfirm, { confirmLabel = "Confirm", danger = false } = {}) {
+// `onCancel`, as on showPromptModal below, is for a caller awaiting the answer.
+export function showConfirmModal(message, onConfirm, { confirmLabel = "Confirm", danger = false, onCancel = null } = {}) {
   if (!el.confirmModal) return onConfirm();
   el.confirmModalMessage.textContent = message;
   el.confirmModalOkBtn.textContent = confirmLabel;
@@ -372,6 +373,7 @@ export function showConfirmModal(message, onConfirm, { confirmLabel = "Confirm",
     el.confirmModalOkBtn.onclick = null;
     el.confirmModalCancelBtn.onclick = null;
     if (confirmed) onConfirm();
+    else onCancel?.();
   };
   el.confirmModalOkBtn.onclick = () => cleanup(true);
   el.confirmModalCancelBtn.onclick = () => cleanup(false);

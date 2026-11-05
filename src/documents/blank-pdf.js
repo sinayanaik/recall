@@ -99,14 +99,29 @@ export function normalizeBlankPaper(kind) {
 // you were writing on, exports as it, and looks the same in any other PDF
 // reader. Grey, and light — 0.86 is visible on screen and disappears at a
 // glance, which is what paper does.
-function paperStream(kind) {
-  const width = BLANK_PAGE_WIDTH;
-  const height = BLANK_PAGE_HEIGHT;
+//
+// `box` is where on the page the sheet goes, and how the ruled lines sit in it.
+// A Canvas page is the whole sheet at 0,0 — the default, and the output for it
+// is byte-for-byte what it always was (tools/pdf-margins-check.mjs holds it
+// there, since a notebook's hash is its identity). A PDF's margins
+// (src/documents/pdf-margins-core.js) ask for the paper over a page of their
+// own size, clipped to the margin, with the ruled lines run edge to edge and no
+// margin line: a margin is the space beside the text, not a notebook page.
+export function paperStream(kind, {
+  x = 0,
+  y = 0,
+  width = BLANK_PAGE_WIDTH,
+  height = BLANK_PAGE_HEIGHT,
+  ruleFrom = MARGIN_X,
+  ruleInset = 32,
+  marginLine = true
+} = {}) {
+  const n = pdfNumber;
   const out = [];
   // White page. Without it the "page" is whatever the reader's viewer puts
   // behind a transparent one, and dark-page mode inverts a known white rather
   // than a guess.
-  out.push("1 1 1 rg", `0 0 ${width} ${height} re`, "f");
+  out.push("1 1 1 rg", `${n(x)} ${n(y)} ${n(width)} ${n(height)} re`, "f");
   if (kind === "grid") {
     // Two passes rather than one line at a time, because a colour and a width
     // are graphics STATE in a content stream: setting them per line would be
@@ -114,11 +129,11 @@ function paperStream(kind) {
     // lines, then all the major ones over the top.
     const minor = [];
     const major = [];
-    for (let x = GRID_PITCH, n = 1; x < width; x += GRID_PITCH, n += 1) {
-      (n % GRID_MAJOR_EVERY ? minor : major).push(`${x} 0 m ${x} ${height} l S`);
+    for (let gx = GRID_PITCH, i = 1; gx < width; gx += GRID_PITCH, i += 1) {
+      (i % GRID_MAJOR_EVERY ? minor : major).push(`${n(x + gx)} ${n(y)} m ${n(x + gx)} ${n(y + height)} l S`);
     }
-    for (let y = GRID_PITCH, n = 1; y < height; y += GRID_PITCH, n += 1) {
-      (n % GRID_MAJOR_EVERY ? minor : major).push(`0 ${y} m ${width} ${y} l S`);
+    for (let gy = GRID_PITCH, i = 1; gy < height; gy += GRID_PITCH, i += 1) {
+      (i % GRID_MAJOR_EVERY ? minor : major).push(`${n(x)} ${n(y + gy)} m ${n(x + width)} ${n(y + gy)} l S`);
     }
     out.push(`${GRID_MINOR_GREY} ${GRID_MINOR_GREY} ${GRID_MINOR_GREY} RG`, "0.4 w", ...minor);
     out.push(`${GRID_MAJOR_GREY} ${GRID_MAJOR_GREY} ${GRID_MAJOR_GREY} RG`, "0.8 w", ...major);
@@ -127,15 +142,23 @@ function paperStream(kind) {
     // paper the right way up reads as a colour cast upside down, and half this
     // app's readers are on a theme that turns the page over.
     out.push(`${RULE_GREY} ${RULE_GREY} ${RULE_GREY} RG`, "0.6 w");
-    for (let y = RULE_PITCH; y < height - RULE_PITCH; y += RULE_PITCH) {
-      out.push(`${MARGIN_X} ${y} m ${width - 32} ${y} l S`);
+    for (let ry = RULE_PITCH; ry < height - RULE_PITCH; ry += RULE_PITCH) {
+      out.push(`${n(x + ruleFrom)} ${n(y + ry)} m ${n(x + width - ruleInset)} ${n(y + ry)} l S`);
     }
     // The margin line, because a ruled page without one is a lined page rather
     // than a notebook — and because it is what tells you which way up the page
     // is when it is scrolled to halfway.
-    out.push(`${MARGIN_GREY.join(" ")} RG`, "0.7 w", `${MARGIN_X} 0 m ${MARGIN_X} ${height} l S`);
+    if (marginLine) {
+      out.push(`${MARGIN_GREY.join(" ")} RG`, "0.7 w", `${n(x + ruleFrom)} ${n(y)} m ${n(x + ruleFrom)} ${n(y + height)} l S`);
+    }
   }
   return out.join("\n");
+}
+
+// A number as a content stream wants it: no exponent, no long binary tail.
+// Whole numbers print exactly as they did before this existed.
+function pdfNumber(value) {
+  return String(Number(Number(value).toFixed(2)));
 }
 
 // `pages` blank pages of `paper`. Returns the bytes as a Uint8Array, ready for

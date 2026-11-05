@@ -382,6 +382,7 @@ const APP_SHELL = [
   `./styles/90-library-kinds.css?v=${STAMP}`,
   `./styles/91-ink-rail-inline.css?v=${STAMP}`,
   `./styles/92-extensions.css?v=${STAMP}`,
+  `./styles/93-pdf-margins.css?v=${STAMP}`,
   // The module entry point. Everything it imports is stamped with the same
   // ?v=, so those URLs change with every release too — which is what lets the
   // cache-first handler below serve them without revalidating and still never
@@ -451,6 +452,8 @@ const APP_SHELL = [
   `./src/documents/pdf-highlights.js?v=${STAMP}`,
   `./src/documents/pdf-ink.js?v=${STAMP}`,
   `./src/documents/pdf-multi-actions.js?v=${STAMP}`,
+  `./src/documents/pdf-margins.js?v=${STAMP}`,
+  `./src/documents/pdf-margins-core.js?v=${STAMP}`,
   `./src/documents/pdf-switcher.js?v=${STAMP}`,
   `./src/documents/pdf-timing.js?v=${STAMP}`,
   `./src/documents/pdf-render-worker.js?v=${STAMP}`,

@@ -146,6 +146,7 @@ import { initDocumentLinks, prefetchDocumentPageLinks, resetDocumentLinks } from
 import { initDocumentBookmarks } from "./documents/pdf-bookmarks.js?v=__BUILD__";
 import { initDocumentOutlineDrag } from "./documents/pdf-outline-drag.js?v=__BUILD__";
 import { activePdfId, deckPdfById, deckPdfs, PDF_PRIMARY_ID, withDeckPdfs } from "./documents/pdf-multi.js?v=__BUILD__";
+import { openPdfMarginsDialog } from "./documents/pdf-margins.js?v=__BUILD__";
 import { removePdfFromDeck, renamePdf } from "./documents/pdf-multi-actions.js?v=__BUILD__";
 import { closePdfPanel, initPdfSwitcher } from "./documents/pdf-switcher.js?v=__BUILD__";
 import { currentPdfDocument, currentPdfPageCount, documentFittedWidth, refreshBakedDocumentPages, fitDocumentToWidth, initDocumentCanvasRecovery, initDocumentPinchZoom, isDocumentFitWidth, openDocumentIsCurrent, openDocumentPdfId, noteSettledDocumentPosition, openDocumentView, reattachDocument, relayoutDocumentHoldingReader, repaintOpenDocumentPages, scheduleDocumentPositionSave, scrollToDocumentPage, refreshDocumentPaperForTheme, setDocumentAttachHandler, setDocumentCanvasRecoveredHook, setDocumentOpenedHook, setDocumentPagePaintedHook, setNotebookStartHandler, setPageIndicatorUpdatedHook, setPaperChangedHook, switchToPdf, togglePdfInvert, updatePageIndicator, zoomDocument, retryMissingDocumentOpen } from "./documents/pdf-view.js?v=__BUILD__";
@@ -4311,6 +4312,7 @@ el.documentMoreMenu?.addEventListener("click", async (event) => {
   // took the press.
   if (runHandwritingMenuAction(action)) return;
   if (action === "offload") await offloadCurrentDocument();
+  if (action === "margins") openPdfMarginsDialog();
   if (action === "rename-pdf") renameCurrentPdf();
   if (action === "remove-pdf") removeCurrentPdf();
 });
