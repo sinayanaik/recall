@@ -370,6 +370,10 @@ const checks = [
   // gets its margin on the side the reader sees; and the Canvas's own paper is
   // byte-for-byte unchanged. pdf-lib from disk, no browser.
   ["pdf-margins   ", ["node", ["tools/pdf-margins-check.mjs"], ROOT]],
+  // The fixes made to pdf.js's own source as the app loads it
+  // (src/core/pdfjs-patches.js): each applies once to the pinned build, and the
+  // patched code does what it says. pdf.js from disk, no browser.
+  ["pdfjs-patches ", ["node", ["tools/pdfjs-patch-check.mjs"], ROOT]],
   // The section numbers on a note's headings (1, 1.1, 1.2 …) and the section
   // filter on its highlights: the counting, the section index the highlight
   // lists use agreeing with what the note draws, and which highlights a pick
@@ -622,6 +626,11 @@ const checks = [
     ["pdf-tall      ", ["node", ["tools/pdf-tall-page-check.mjs"], ROOT]],
     ["pdf-tall-2x   ", ["node", ["tools/pdf-tall-page-check.mjs", "--dpr=2"], ROOT]],
     ["pdf-tall-phone", ["node", ["tools/pdf-tall-page-check.mjs", "--phone"], ROOT]],
+    // ...and painted through a page-sized tiling pattern, as Chrome prints a
+    // page's CSS mask: read in bands it must not grow "page breaks" the PDF
+    // does not have (src/core/pdfjs-patches.js). pdf.js loaded the app's way.
+    ["pdf-pattern   ", ["node", ["tools/pdf-pattern-band-check.mjs"], ROOT]],
+    ["pdf-pattern-2x", ["node", ["tools/pdf-pattern-band-check.mjs", "--dpr=2"], ROOT]],
     // Annotations on a PDF: underline, strike, squiggle and box in any colour,
     // the Shapes tool's lines, arrows, boxes, callouts, text and sticky notes,
     // and the file saved with them as real PDF annotations.

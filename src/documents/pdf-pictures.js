@@ -49,8 +49,9 @@ export const PDF_PICTURES_DB = "recall-pdf-pictures";
 const STORE = "pictures";
 
 // Bump when what a picture LOOKS like changes for the same inputs — the encode
-// quality, the dark bake, how marks are painted.
-export const PDF_PICTURE_RECIPE = 1;
+// quality, the dark bake, how marks are painted — or what pdf.js draws (2: the
+// tiling-pattern fix in src/core/pdfjs-patches.js).
+export const PDF_PICTURE_RECIPE = 2;
 
 export const PDF_PICTURES_MAX_BYTES = 200 * 1024 * 1024;
 export const PDF_PICTURES_QUOTA_FRACTION = 0.1;

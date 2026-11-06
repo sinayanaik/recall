@@ -438,6 +438,7 @@ const APP_SHELL = [
   `./src/core/word-bounds.js?v=${STAMP}`,
   `./src/core/lib-guard.js?v=${STAMP}`,
   `./src/core/lib-loader.js?v=${STAMP}`,
+  `./src/core/pdfjs-patches.js?v=${STAMP}`,
   `./src/core/state.js?v=${STAMP}`,
   `./src/core/text.js?v=${STAMP}`,
   `./src/documents/blank-pdf.js?v=${STAMP}`,
@@ -868,8 +869,8 @@ const CDN_ASSETS = [
   `${CDN}turndown@7.1.2/dist/turndown.js`,
   `${CDN}turndown-plugin-gfm@1.0.2/dist/turndown-plugin-gfm.js`,
   // pdf.js and its worker. Both must stay byte-identical to LIB_URLS.pdfjs /
-  // LIB_URLS.pdfjsWorker: the library is injected as a <script src> and the
-  // WORKER is fetch()ed by ensurePdfJs and wrapped in a Blob, so both requests
+  // LIB_URLS.pdfjsWorker: both are fetch()ed by ensurePdfJs and wrapped in a
+  // Blob (the library patched first, src/core/pdfjs-patches.js), so both requests
   // are answered from this cache with no connection — which is what makes an
   // already-imported paper readable offline.
   `${CDN}pdfjs-dist@3.11.174/legacy/build/pdf.min.js`,

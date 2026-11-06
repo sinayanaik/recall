@@ -19,6 +19,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { patchPdfjsSource } from "../src/core/pdfjs-patches.js";
 
 export const PDFJS_VERSION = "3.11.174";
 const CACHE_DIR = "/tmp/recall-pdfjs";
@@ -39,7 +40,12 @@ export function pdfjsSources() {
       "package/legacy/build/pdf.worker.min.js"
     ], { cwd: CACHE_DIR, stdio: "ignore" });
   }
-  return { main: readFileSync(main, "utf8"), worker: readFileSync(worker, "utf8") };
+  // `main` is what the app RUNS — the CDN copy with src/core/pdfjs-patches.js
+  // applied, as ensurePdfJs does — so a check that injects it draws pages the
+  // way the app does. `raw` is what the CDN SERVES, which is what
+  // servePdfjsFromDisk answers the app's own fetch with.
+  const raw = readFileSync(main, "utf8");
+  return { main: patchPdfjsSource(raw).text, raw, worker: readFileSync(worker, "utf8") };
 }
 
 // ...and the same files, ANSWERED for the CDN URLs the app asks for them by.
@@ -53,7 +59,7 @@ export function pdfjsSources() {
 // legacy build the app ships or the untranspiled one tools/pdf-perf.mjs can try.
 export async function servePdfjsFromDisk(client, page, sources = pdfjsSources()) {
   const body = {
-    main: Buffer.from(sources.main, "utf8").toString("base64"),
+    main: Buffer.from(sources.raw ?? sources.main, "utf8").toString("base64"),
     worker: Buffer.from(sources.worker, "utf8").toString("base64")
   };
   client.on((message) => {
