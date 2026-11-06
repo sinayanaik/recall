@@ -43,7 +43,7 @@ import { el } from "../core/dom.js?v=__BUILD__";
 import { MARK_HIGHLIGHT_DEFAULT } from "../format/highlight-colors.js?v=__BUILD__";
 import { openHighlightNoteEditor } from "../notes/highlight-note-editor.js?v=__BUILD__";
 import { openMarkMenuWith } from "../notes/mark-menu.js?v=__BUILD__";
-import { DOCUMENT_MARK_HANDLERS, DOCUMENT_NOTE_HANDLERS, documentHighlightNote, setDocumentShapeStyler } from "./pdf-highlights.js?v=__BUILD__";
+import { DOCUMENT_MARK_HANDLERS, DOCUMENT_NOTE_HANDLERS, documentHighlightNote, documentMarkAnchor, setDocumentShapeStyler } from "./pdf-highlights.js?v=__BUILD__";
 import { buildShapePanel, refreshShapePanel } from "./pdf-shape-panel.js?v=__BUILD__";
 import { commitShapeTextEditor, isEditingShapeText, openShapeTextEditor } from "./pdf-shape-text.js?v=__BUILD__";
 import { SHAPE_ROTATABLE } from "../render/annot-shapes.js?v=__BUILD__";
@@ -150,8 +150,7 @@ function pressShapeStyle(action) {
   } else if (action === "more") {
     if (isEditingShapeText()) commitShapeTextEditor();
     selectShape(null);
-    const anchor = el.documentView?.querySelector(`.pdf-shape[data-highlight-id="${CSS.escape(id)}"]`)
-      || el.documentView?.querySelector(`.pdf-shape-text[data-highlight-id="${CSS.escape(id)}"]`);
+    const anchor = documentMarkAnchor(el.documentView, id);
     if (anchor) openMarkMenuWith(anchor, id, DOCUMENT_MARK_HANDLERS, record.color || MARK_HIGHLIGHT_DEFAULT);
   } else if (action === "done") {
     if (isEditingShapeText()) commitShapeTextEditor();

@@ -1242,6 +1242,107 @@ sections.push(async () => {
   }`, made.id);
   check("a tap on typed text selects it with the small Style bar; a second tap types in it, as markdown source", tapped.selected && tapped.compact && tapped.editing && tapped.source.startsWith("**Bold claim**"), JSON.stringify(tapped));
 
+  // ── Typing in a box: no highlight menu, and a small bar for picked words ──
+  //
+  // "When I am writing in a text box, this text-select highlighter keeps coming
+  // up, and changing the colour of selected words does not work." A click in
+  // the editor reached the page's tap handler and opened the box's highlight
+  // menu, pinned to the window's corner; its swatches recoloured the whole box.
+  const typingBox = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    api.selectShape(null);
+    const record = api.addDocumentShape(1, {
+      type: "text", p: [[320, 470], [360, 486]], fit: true, width: 0.3, stroke: "#16181d",
+      font: { size: 13, bold: false, align: "left", color: "#16181d" },
+      text: "alpha beta gamma"
+    });
+    await settle(200);
+    api.openShapeTextEditor(record.id);
+    await settle(250);
+    const editor = document.querySelector('.pdf-shape-editor[data-highlight-id="' + record.id + '"]');
+    // Inside the box's STORED rectangle — what the page's tap handler hit-tests.
+    const r = editor.getBoundingClientRect();
+    return { id: record.id, at: [r.left + 6, r.top + r.height / 2], hit: api.documentHighlightAtPoint(r.left + 6, r.top + r.height / 2)?.id === record.id };
+  }`);
+  await mouse("mouseMoved", typingBox.at[0], typingBox.at[1], 0);
+  await mouse("mousePressed", typingBox.at[0], typingBox.at[1], 1);
+  await mouse("mouseReleased", typingBox.at[0], typingBox.at[1], 0);
+  const typed = await page.evaluate(`async (id) => {
+    const { api, settle } = window.__recall;
+    await settle(200);
+    const hit = api.documentHighlightAtPoint(${typingBox.at[0]}, ${typingBox.at[1]})?.id === id;
+    const menu = document.querySelector(".mark-menu");
+    const menuOpen = Boolean(menu && !menu.hidden);
+    const editor = document.querySelector('.pdf-shape-editor[data-highlight-id="' + id + '"]');
+    const bar = () => document.querySelector(".shape-text-format-bar");
+    const barShown = () => Boolean(bar() && !bar().hidden);
+    const shownOnCaret = barShown();
+    // Pick "beta".
+    const text = editor.firstChild;
+    const range = document.createRange();
+    range.setStart(text, 6);
+    range.setEnd(text, 10);
+    getSelection().removeAllRanges();
+    getSelection().addRange(range);
+    await settle(150);
+    const shownOnPick = barShown();
+    // ...and only that bar: not the page's selection pill as well.
+    await settle(250);
+    const pill = document.getElementById("selectionFloat");
+    const pillShown = Boolean(pill && !pill.hidden);
+    const barRect = bar()?.getBoundingClientRect();
+    const wordRect = range.getBoundingClientRect();
+    const near = Boolean(barRect) && Math.abs(barRect.bottom - wordRect.top) < 40 && barRect.left <= wordRect.right;
+    const press = (selector) => bar().querySelector(selector).dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerType: "mouse" }));
+    press('[data-format="highlight"][data-color="green"]');
+    await settle(80);
+    press('[data-format="bold"]');
+    await settle(80);
+    press('[data-format="color"][data-hex="#dc2626"]');
+    await settle(80);
+    const source = editor.innerText;
+    const stillTyping = document.activeElement === editor && api.isEditingShapeText();
+    // Pressed again, bold comes off the same words.
+    press('[data-format="bold"]');
+    await settle(80);
+    const unbolded = editor.innerText;
+    getSelection().collapseToEnd();
+    await settle(150);
+    const hiddenOnCaret = !barShown();
+    api.commitShapeTextEditor();
+    await settle(200);
+    return {
+      hit, menuOpen, shownOnCaret, shownOnPick, pillShown, near, source, unbolded, stillTyping, hiddenOnCaret,
+      stored: api.documentHighlightById(id).shape.text,
+      barAfterCommit: barShown()
+    };
+  }`, typingBox.id);
+  check("a click inside a text box being typed in opens no highlight menu", typed.hit && !typed.menuOpen, JSON.stringify(typed));
+  check("...the format bar is not up for a caret, only for picked words, and sits over them", !typed.shownOnCaret && typed.shownOnPick && typed.near && !typed.pillShown, JSON.stringify(typed));
+  check("...highlight, bold and colour change only the picked words, and the box stays open to type in",
+    typed.source === 'alpha <mark data-color="green">**<span style="color: #dc2626;">beta</span>**</mark> gamma' && typed.stillTyping, typed.source);
+  check("...bold pressed again comes off", typed.unbolded === 'alpha <mark data-color="green"><span style="color: #dc2626;">beta</span></mark> gamma', typed.unbolded);
+  check("...and the bar goes with the selection and with the box", typed.hiddenOnCaret && !typed.barAfterCommit && typed.stored === typed.unbolded, JSON.stringify(typed));
+
+  // The box's menu (⋯ on its style bar) opens AT the box, not in the corner:
+  // its SVG group is empty for typed text and measures 0×0 at (0,0).
+  const moreMenu = await page.evaluate(`async (id) => {
+    const { api, settle } = window.__recall;
+    api.selectShape(id);
+    await settle(150);
+    document.querySelector('.shape-style-popover [data-shape-style-action="more"]')
+      .dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerType: "mouse" }));
+    await settle(150);
+    const menu = document.querySelector(".mark-menu");
+    const m = menu.getBoundingClientRect();
+    const b = document.querySelector('.pdf-shape-text[data-highlight-id="' + id + '"]').getBoundingClientRect();
+    const open = !menu.hidden;
+    api.closeMarkMenu();
+    return { open, menu: [Math.round(m.left), Math.round(m.top), Math.round(m.bottom)], box: [Math.round(b.left), Math.round(b.top), Math.round(b.bottom)] };
+  }`, typingBox.id);
+  check("a text box's menu opens at the box, not in the window's corner",
+    moreMenu.open && (Math.abs(moreMenu.menu[2] - moreMenu.box[1]) < 30 || Math.abs(moreMenu.menu[1] - moreMenu.box[2]) < 30), JSON.stringify(moreMenu));
+
   // Wrap, a border and a turn, from the Style panel; then the turning handle.
   const styled = await page.evaluate(`async () => {
     const { api, settle } = window.__recall;
@@ -1692,6 +1793,18 @@ try {
     }`);
     // The Text bar, and the style popover under the words being typed.
     await snap("typewriter.png");
+    // ...and the small bar over words picked in it.
+    await page.evaluate(`async () => {
+      const editor = document.querySelector(".pdf-shape-editor");
+      if (!editor?.firstChild) return;
+      const range = document.createRange();
+      range.setStart(editor.firstChild, 6);
+      range.setEnd(editor.firstChild, 14);
+      getSelection().removeAllRanges();
+      getSelection().addRange(range);
+      await window.__recall.settle(200);
+    }`);
+    await snap("text-format-bar.png");
     // An arrow already on the page, picked up from its menu's Style row.
     await page.evaluate(`async () => {
       const { api, settle } = window.__recall;

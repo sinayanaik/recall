@@ -19,6 +19,8 @@ import { documentHighlightById } from "./pdf-highlights.js?v=__BUILD__";
 import { applyShapeTextTurn } from "./pdf-shape-markdown.js?v=__BUILD__";
 import { deleteShape, paintDocumentShapes, selectShape, setEditingShapeId, setShapePaintedHook, setShapeTextEditHandler, untransformedClientRect, updateShape } from "./pdf-shapes.js?v=__BUILD__";
 import { pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
+import { attachShapeTextFormatBar, detachShapeTextFormatBar, SHAPE_TEXT_FORMAT_BAR_CLASS } from "./pdf-shape-text-format.js?v=__BUILD__";
+import { closeMarkMenu } from "../notes/mark-menu.js?v=__BUILD__";
 
 export const PDF_SHAPE_EDITOR_CLASS = "pdf-shape-editor";
 
@@ -68,6 +70,8 @@ export function openShapeTextEditor(recordOrId) {
   const shape = normalizeShape(record?.shape);
   if (!record || !shape || (shape.type !== "callout" && shape.type !== "text")) return false;
   if (shapeEditor) commitShapeTextEditor();
+  // A highlight menu left open is about something else now.
+  closeMarkMenu();
   const page = Number(record.page);
   const viewport = pdfPageViewport(page);
   if (!viewport) return false;
@@ -114,7 +118,8 @@ export function openShapeTextEditor(recordOrId) {
     // edited) — so typing carries on, rather than the words being put down.
     // The popover keeps focus off itself for a mouse; this is the backstop.
     const to = event.relatedTarget;
-    if (to?.closest?.(".shape-style-popover") && to.matches?.("button")) {
+    // ...and the same for the bar over the picked words (B, I, a colour).
+    if ((to?.closest?.(".shape-style-popover") && to.matches?.("button")) || to?.closest?.(`.${SHAPE_TEXT_FORMAT_BAR_CLASS}`)) {
       requestAnimationFrame(() => { if (shapeEditor?.node === node) node.focus({ preventScroll: true }); });
       return;
     }
@@ -122,9 +127,16 @@ export function openShapeTextEditor(recordOrId) {
     // what lets a press on the rail's panel restyle the box it was about.
     commitShapeTextEditor({ to });
   });
-  for (const type of ["pointerdown", "touchstart", "mousedown"]) {
+  // A press inside the box is the box's — placing the caret, picking words.
+  // `click` too: let through, the page's tap handler hit-tested the box's own
+  // record and opened its highlight menu over the words being typed (pinned to
+  // the window's corner, and recolouring the whole box from there).
+  for (const type of ["pointerdown", "touchstart", "mousedown", "click", "dblclick"]) {
     node.addEventListener(type, (event) => event.stopPropagation(), { passive: true });
   }
+  // B, I and colours for words picked in the box (src/documents/pdf-shape-
+  // text-format.js) — up only while there is a selection here.
+  attachShapeTextFormatBar(node);
   requestAnimationFrame(() => {
     node.focus({ preventScroll: true });
     const range = document.createRange();
@@ -164,6 +176,7 @@ function putShapeTextDown() {
   const editor = shapeEditor;
   if (!editor) return;
   shapeEditor = null;
+  detachShapeTextFormatBar();
   setEditingShapeId(null);
   const record = documentHighlightById(editor.id);
   const text = String(editor.node.innerText ?? editor.node.textContent ?? "").replace(/\r/g, "").replace(/\n+$/, "");

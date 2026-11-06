@@ -506,6 +506,77 @@
   outline-style: dotted;
 }
 
+/* ── B, I and colours for words picked in a text box ───────────────────────
+   One short row over the selection, only while there is one in the box being
+   typed in (src/documents/pdf-shape-text-format.js). Chrome, not content: it
+   never takes the focus or the selection. Above the shape's style bar (610). */
+.shape-text-format-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 620;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px 5px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 6px 18px rgb(0 0 0 / 0.3);
+  -webkit-user-select: none;
+  user-select: none;
+  touch-action: manipulation;
+}
+
+.shape-text-format-bar[hidden] {
+  display: none;
+}
+
+.shape-text-format-bar .stf-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  font: 600 14px/1 system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+  cursor: pointer;
+}
+
+.shape-text-format-bar .stf-btn:hover,
+.shape-text-format-bar .stf-btn:focus-visible {
+  background: color-mix(in srgb, var(--text) 12%, transparent);
+}
+
+.shape-text-format-bar .stf-hl::before {
+  content: "";
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--sw) 70%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--sw) 90%, black);
+}
+
+.shape-text-format-bar .stf-color {
+  color: var(--sw);
+  font-weight: 800;
+}
+
+.shape-text-format-bar .stf-clear {
+  color: var(--muted);
+}
+
+.shape-text-format-bar .stf-sep {
+  width: 1px;
+  height: 16px;
+  margin: 0 3px;
+  background: var(--line);
+}
+
 /* ── The Text bar ───────────────────────────────────────────────────────
    Text has its own button in the top row (#documentTextBtn). While it is armed
    the pen's bar is the Text bar: the pen's tools, the selection's and the
