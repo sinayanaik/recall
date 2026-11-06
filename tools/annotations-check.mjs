@@ -979,12 +979,19 @@ sections.push(async () => {
     styleRow.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerType: "mouse" }));
     await settle(150);
     const opened = popUp() && api.selectedShapeRecord()?.id === text.id;
-    // Under the text, or over it where there is no room under — never on it.
+    const fire = (sel) => pop().querySelector(sel).dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerType: "mouse" }));
+    const visibleRows = () => Array.from(pop().querySelectorAll("[data-shape-row]")).filter((n) => !n.hidden).map((n) => n.dataset.shapeRow);
+    // Asked for by name, it comes up with its colours open; the bar's other
+    // icons open their own trays, one at a time.
+    const colourRows = visibleRows();
+    const triggers = Array.from(pop().querySelectorAll(".shape-bar > [data-shape-tray]")).filter((n) => !n.hidden).map((n) => n.dataset.shapeTray);
+    fire('[data-shape-tray="size"]');
+    await settle(60);
+    const rows = visibleRows();
+    // Over the text, or under it where there is no room over — never on it.
     const pr0 = pop().getBoundingClientRect();
     const below = opened && (pr0.top >= box.bottom - 2 || pr0.bottom <= box.top + 2);
-    const rows = Array.from(pop().querySelectorAll("[data-shape-row]")).filter((n) => !n.hidden).map((n) => n.dataset.shapeRow);
     const sizeBefore = api.documentHighlightById(text.id).shape.font.size;
-    const fire = (sel) => pop().querySelector(sel).dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerType: "mouse" }));
     fire('[data-shape-font-step="1"]');
     fire("[data-shape-bold]");
     fire('[data-shape-stroke="' + pop().querySelector("[data-shape-stroke]:nth-of-type(3)").dataset.shapeStroke + '"]');
@@ -1020,17 +1027,22 @@ sections.push(async () => {
     (document.elementFromPoint(mx, my) || document.getElementById("documentView")).dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, clientX: mx, clientY: my, detail: 1 }));
     await settle(150);
     const arrowPop = popUp() && api.selectedShapeRecord()?.id === arrow.id && !api.isMarkMenuOpen?.();
-    // Small until asked: picked up, the popover is a row of actions and the
-    // panel is folded away; Aa Style opens it.
-    const panelOf = () => pop().querySelector(".shape-pop-panel");
-    const arrowCompact = pop().classList.contains("is-compact") && panelOf().hidden;
-    fire('[data-shape-style-action="style"]');
+    // Small until asked: picked up, the popover is one slim row of icons with
+    // no tray open; an icon opens its own.
+    const trayOf = () => pop().querySelector(".shape-sheet");
+    const barRect = pop().getBoundingClientRect();
+    const arrowCompact = trayOf().hidden && barRect.height <= 44 && barRect.width <= 340;
+    const arrowTriggers = Array.from(pop().querySelectorAll(".shape-bar > [data-shape-tray]")).filter((n) => !n.hidden).map((n) => n.dataset.shapeTray);
+    fire('[data-shape-tray="line"]');
     await settle(60);
-    const arrowExpanded = !panelOf().hidden && !pop().classList.contains("is-compact");
-    const arrowRows = Array.from(pop().querySelectorAll("[data-shape-row]")).filter((n) => !n.hidden).map((n) => n.dataset.shapeRow);
+    const arrowExpanded = !trayOf().hidden;
+    const lineRows = visibleRows();
     fire('[data-shape-dash="dash"]');
     await settle(60);
     const dashed = api.documentHighlightById(arrow.id).shape.dash === "dash";
+    fire('[data-shape-tray="heads"]');
+    await settle(60);
+    const arrowRows = lineRows.concat(visibleRows());
     api.selectShape(null);
 
     // While typing: A+ grows the words under the cursor, and the typing goes on.
@@ -1040,13 +1052,14 @@ sections.push(async () => {
     const editor = document.querySelector(".pdf-shape-editor");
     editor.textContent = "styled mid-sentence";
     const typingPop = popUp();
-    // While typing: the style as an option, not as the panel — Aa Style and
-    // Done, and nothing else on screen.
+    // While typing: the bar with the style straight away, and Done — no
+    // Delete, no ⋯, no tray until one is asked for.
     const typingButtons = Array.from(pop().querySelectorAll("[data-shape-style-action]")).filter((n) => !n.hidden).map((n) => n.dataset.shapeStyleAction);
-    const typingCompact = panelOf().hidden && typingButtons.join() === "style,done";
-    fire('[data-shape-style-action="style"]');
+    const typingTriggers = Array.from(pop().querySelectorAll(".shape-bar > [data-shape-tray]")).filter((n) => !n.hidden).map((n) => n.dataset.shapeTray);
+    const typingCompact = trayOf().hidden && typingButtons.join() === "done" && typingTriggers.includes("size") && typingTriggers.includes("colour");
+    fire('[data-shape-tray="size"]');
     await settle(60);
-    const typingStillTyping = Boolean(document.querySelector(".pdf-shape-editor")) && !panelOf().hidden;
+    const typingStillTyping = Boolean(document.querySelector(".pdf-shape-editor")) && !trayOf().hidden;
     const fontBefore = parseFloat(editor.style.fontSize);
     fire('[data-shape-font-step="1"]');
     fire('[data-shape-font-step="1"]');
@@ -1065,15 +1078,15 @@ sections.push(async () => {
     const recoloured = api.documentHighlightById(typedRec.id).shape.font.color === api.MARK_HIGHLIGHT_HEX.green;
     api.chooseInkTool("pen");
     api.toggleInkRail(false);
-    return { offered, opened, below, rows, grown, paintedBold, undone, closed, arrowPop, arrowCompact, arrowExpanded, arrowRows, dashed, typingPop, typingButtons, typingCompact, typingStillTyping, live, keptText, recoloured };
+    return { offered, opened, below, colourRows, triggers, rows, grown, paintedBold, undone, closed, arrowPop, arrowCompact, arrowTriggers, arrowExpanded, arrowRows, dashed, typingPop, typingButtons, typingCompact, typingStillTyping, live, keptText, recoloured };
   }`);
   check("tapping typed text with the pen opens its menu, which has Style", restyle.offered, JSON.stringify(restyle));
-  check("Style puts the style popover up beside the text (not over it), with its colour, size and weight", restyle.opened && restyle.below && restyle.rows.includes("font") && !restyle.rows.includes("snap"), JSON.stringify(restyle));
+  check("Style puts the style bar up beside the text (not over it), its colours open, and its size in a tray of its own", restyle.opened && restyle.below && restyle.colourRows.join() === "colour,opacity" && ["colour", "size", "align", "box"].every((t) => restyle.triggers.includes(t)) && restyle.rows.join() === "size" && !restyle.rows.includes("snap"), JSON.stringify(restyle));
   check("...A+, bold and a colour there restyle that text, and it is painted so", restyle.grown && restyle.paintedBold, JSON.stringify(restyle));
   check("...each a step undo takes back, and Done puts it down", restyle.undone && restyle.closed, JSON.stringify(restyle));
-  check("an arrow tapped with Shapes armed has the popover at once — folded, with Aa Style to open it", restyle.arrowPop && restyle.arrowCompact && restyle.arrowExpanded, JSON.stringify(restyle));
-  check("...and Aa Style shows its line and heads, which restyle it", restyle.arrowRows.includes("heads") && restyle.arrowRows.includes("dash") && restyle.dashed, JSON.stringify(restyle));
-  check("while typing, only Aa Style and Done are offered — no panel until asked, and asking keeps the typing going", restyle.typingCompact && restyle.typingStillTyping, JSON.stringify(restyle));
+  check("an arrow tapped with Shapes armed has the bar at once — one slim row, no tray until an icon is pressed", restyle.arrowPop && restyle.arrowCompact && restyle.arrowExpanded && !restyle.arrowTriggers.includes("size") && !restyle.arrowTriggers.includes("fill"), JSON.stringify(restyle));
+  check("...and its Line and Heads icons open its line and heads, which restyle it", restyle.arrowRows.includes("heads") && restyle.arrowRows.includes("dash") && restyle.dashed, JSON.stringify(restyle));
+  check("while typing, the bar offers the style and Done (no Delete, no ⋯), and opening a tray keeps the typing going", restyle.typingCompact && restyle.typingStillTyping, JSON.stringify(restyle));
   check("while typing, the popover is up and A+ grows the words under the cursor, which are kept", restyle.typingPop && restyle.live && restyle.keptText, JSON.stringify(restyle));
   check("a menu swatch on typed text changes the words' colour", restyle.recoloured, JSON.stringify(restyle));
 
@@ -1231,7 +1244,7 @@ sections.push(async () => {
     await settle(150);
     const pop = document.querySelector(".shape-style-popover");
     const selected = api.selectedShapeRecord()?.id === id;
-    const compact = Boolean(pop && !pop.hidden && pop.classList.contains("is-compact"));
+    const compact = Boolean(pop && !pop.hidden && pop.querySelector(".shape-sheet").hidden);
     await window.__drag("text", [pt], { pointerType: "touch", id: 78 });
     await settle(200);
     const editor = document.querySelector('.pdf-shape-editor[data-highlight-id="' + id + '"]');
@@ -1330,9 +1343,12 @@ sections.push(async () => {
     const { api, settle } = window.__recall;
     api.selectShape(id);
     await settle(150);
-    document.querySelector('.shape-style-popover [data-shape-style-action="more"]')
-      .dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerType: "mouse" }));
-    await settle(150);
+    // ⋯ opens its tray; Menu there is the box's menu.
+    for (const action of ["more", "menu"]) {
+      document.querySelector('.shape-style-popover [data-shape-style-action="' + action + '"]')
+        .dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerType: "mouse" }));
+      await settle(150);
+    }
     const menu = document.querySelector(".mark-menu");
     const m = menu.getBoundingClientRect();
     const b = document.querySelector('.pdf-shape-text[data-highlight-id="' + id + '"]').getBoundingClientRect();
@@ -1512,7 +1528,11 @@ sections.push(async () => {
     const shape = () => api.documentHighlightById(id).shape;
     const box = () => document.querySelector('.pdf-shape-text[data-highlight-id="' + id + '"]');
     const out = { id };
-    out.rowsBefore = ["wrap", "rotate"].map((r) => !pop.querySelector('[data-shape-row="' + r + '"]').hidden).concat(Boolean(pop.querySelector('[data-shape-row="wrap"] [data-shape-border]')));
+    const trigger = (tray) => !pop.querySelector('.shape-bar > [data-shape-tray="' + tray + '"]').hidden;
+    out.rowsBefore = [trigger("box"), trigger("rotate"), Boolean(pop.querySelector('[data-shape-row="wrap"] [data-shape-border]'))];
+    press('[data-shape-tray="box"]');
+    await settle(100);
+    out.rowsBefore.push(!pop.querySelector('[data-shape-row="wrap"]').hidden);
     out.edgeHidden = pop.querySelector('[data-shape-row="edge"]').hidden;
 
     press('[data-shape-wrap="on"]');
@@ -1527,6 +1547,8 @@ sections.push(async () => {
     const outline = [...document.querySelectorAll('.pdf-shape[data-highlight-id="' + id + '"] path')].filter((n) => n.getAttribute("stroke") && n.getAttribute("stroke") !== "none");
     out.border = { on: shape().border === true, paths: outline.length, edgeShown: !pop.querySelector('[data-shape-row="edge"]').hidden, widthShown: !pop.querySelector('[data-shape-row="width"]').hidden, colour: box().style.color };
 
+    press('[data-shape-tray="rotate"]');
+    await settle(100);
     press('[data-shape-rotate-by="-90"]');
     await settle(200);
     out.quarter = { rot: shape().rot, transform: box().style.transform };
@@ -1539,7 +1561,7 @@ sections.push(async () => {
     await settle(200);
     out.reset = { rot: shape().rot ?? 0, transform: box().style.transform };
     // Folded back to its small bar, as a reader picking a box up sees it.
-    pop.querySelector('[data-shape-style-action="style"]').dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerType: "mouse", button: 0 }));
+    press('[data-shape-tray="rotate"]');
     await settle(200);
     const handle = document.querySelector('.pdf-shape-handle.is-rotate').getBoundingClientRect();
     const r = box().getBoundingClientRect();
@@ -1549,7 +1571,7 @@ sections.push(async () => {
     out.covered = Boolean(document.elementFromPoint(out.handle[0], out.handle[1])?.closest(".shape-style-popover"));
     return out;
   }`);
-  check("typed text's Style panel offers Lines, Box and Rotate (and the border colour only once there is a border)", styled.rowsBefore.every(Boolean) && styled.edgeHidden, JSON.stringify(styled));
+  check("typed text's style bar offers Box and Rotate (and the border colour only once there is a border)", styled.rowsBefore.every(Boolean) && styled.edgeHidden, JSON.stringify(styled));
   check("Wrap makes typed text wrap at its box's width, and the box grows to its lines", styled.wrap.fit === false && !styled.wrap.dataFit && styled.wrap.height > styled.wrap.lineHeight * 2 && Math.abs(styled.wrap.height - styled.wrap.storedHeight) <= 3, JSON.stringify(styled.wrap));
   check("Border draws an outline round typed text, without recolouring its words", styled.border.on && styled.border.paths === 1 && styled.border.edgeShown && styled.border.widthShown && /22, 24, 29|#16181d/i.test(styled.border.colour), JSON.stringify(styled.border));
   check("↻ turns typed text a quarter clockwise; a typed angle turns it that far; 0° puts it upright", styled.quarter.rot === -90 && /rotate\(90deg\)/.test(styled.quarter.transform) && styled.typed.rot === 30 && /rotate\(-30deg\)/.test(styled.typed.transform) && styled.typed.turner && !styled.reset.rot && !styled.reset.transform, JSON.stringify([styled.quarter, styled.typed, styled.reset]));
@@ -1971,6 +1993,24 @@ try {
       await settle(250);
     }`);
     await snap("shape-style-popover.png");
+    // Typed text picked up: the bar alone, above it; then its Box tray open.
+    const shapeBar = (tray) => `async () => {
+      const { api, settle } = window.__recall;
+      const text = api.documentShapes(2).find((r) => r.shape.type === "text") || api.addDocumentShape(2, {
+        type: "text", p: [[90, 400], [260, 416]], fit: true, width: 0.3, stroke: "#16181d",
+        font: { size: 12, bold: false, align: "left", color: "#16181d" }, text: "a line typed on the page"
+      });
+      await settle(150);
+      api.selectShape(text.id);
+      await settle(150);
+      const tray = ${JSON.stringify(tray)};
+      if (tray) document.querySelector('.shape-style-popover [data-shape-tray="' + tray + '"]').dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerType: "mouse" }));
+      await settle(250);
+    }`;
+    await page.evaluate(shapeBar(null));
+    await snap("shape-style-bar.png");
+    await page.evaluate(shapeBar("box"));
+    await snap("shape-style-bar-box.png");
     // The top row on a phone: ✎ and Text beside the tabs, nothing clipped.
     await page.evaluate(`async () => { window.__recall.api.selectShape(null); }`);
     await page.call("Emulation.setDeviceMetricsOverride", { width: 390, height: 760, deviceScaleFactor: 2, mobile: true });

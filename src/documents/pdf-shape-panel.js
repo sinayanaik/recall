@@ -150,9 +150,172 @@ function setNumberBox(box, value) {
   box.value = formatPoints(value);
 }
 
+// ── The rows, as pieces ───────────────────────────────────────────────────
+//
+// Both panels are built from these: the pen's panel lays them out as labelled
+// rows, the floating bar puts each behind its own icon.
+
+function panelRow(key, label, inner, aria = "") {
+  const group = aria ? ` role="group" aria-label="${aria}"` : "";
+  const data = key ? ` data-shape-row="${key}"` : "";
+  return `<div class="shape-pop-row"${group}${data}><span class="shape-pop-label">${label}</span>${inner}</div>`;
+}
+
+const WIDTH_INNER = `
+      <input class="shape-pop-slider" type="range" min="0" max="${SHAPE_SLIDER_STEPS}" step="1" data-shape-width aria-label="Line width">
+      <input class="shape-pop-number" type="number" min="0" step="any" inputmode="decimal" data-shape-width-value aria-label="Line width in points" title="Any width, in points"><span class="shape-pop-unit">pt</span>`;
+const OPACITY_INNER = `
+      <input class="shape-pop-slider" type="range" min="10" max="100" step="1" data-shape-opacity aria-label="Opacity">
+      <output class="shape-pop-value" data-shape-opacity-value></output>`;
+const DASH_INNER = ["solid", "dash", "dot"].map((d) => `<button type="button" class="shape-pop-seg" data-shape-dash="${d}" title="${DASH_LABELS[d]}" aria-label="${DASH_LABELS[d]}" aria-pressed="false">${dashIcon(d)}</button>`).join("");
+const HEAD_START_INNER = SHAPE_HEADS.map((h) => `<button type="button" class="shape-pop-seg" data-shape-head-start="${h}" title="Start: ${HEAD_LABELS[h]}" aria-label="Start: ${HEAD_LABELS[h]}" aria-pressed="false">${headIcon(h, "start")}</button>`).join("");
+const HEAD_END_INNER = SHAPE_HEADS.map((h) => `<button type="button" class="shape-pop-seg" data-shape-head-end="${h}" title="End: ${HEAD_LABELS[h]}" aria-label="End: ${HEAD_LABELS[h]}" aria-pressed="false">${headIcon(h, "end")}</button>`).join("");
+const SIZE_INNER = `
+      <button type="button" class="shape-pop-seg" data-shape-font-step="-1" title="Smaller text" aria-label="Smaller text">A&#8722;</button>
+      <input class="shape-pop-number" type="number" min="0" step="any" inputmode="decimal" data-shape-font-value aria-label="Text size in points" title="Any size, in points"><span class="shape-pop-unit">pt</span>
+      <button type="button" class="shape-pop-seg" data-shape-font-step="1" title="Larger text" aria-label="Larger text">A+</button>`;
+const BOLD_BUTTON = `<button type="button" class="shape-pop-seg" data-shape-bold title="Bold" aria-label="Bold" aria-pressed="false"><b>B</b></button>`;
+const ALIGN_GLYPHS = { left: "&#8676;", center: "&#8596;", right: "&#8677;" };
+const ALIGN_INNER = ["left", "center", "right"].map((a) => `<button type="button" class="shape-pop-seg" data-shape-align="${a}" title="Align ${a}" aria-label="Align ${a}" aria-pressed="false">${ALIGN_GLYPHS[a]}</button>`).join("");
+const WRAP_INNER = `
+      <button type="button" class="shape-pop-seg" data-shape-wrap="off" title="Grow with the words — a new line only where you press Enter" aria-pressed="false">Grow</button>
+      <button type="button" class="shape-pop-seg" data-shape-wrap="on" title="Wrap the words at the box's width — drag a side handle to change it" aria-pressed="false">Wrap</button>
+      <button type="button" class="shape-pop-seg" data-shape-border title="An outline round the text" aria-pressed="false">Border</button>`;
+const ROTATE_INNER = `
+      <button type="button" class="shape-pop-seg" data-shape-rotate-by="90" title="Turn 90° anticlockwise" aria-label="Turn 90° anticlockwise">&#8634;</button>
+      <input class="shape-pop-number" type="number" step="any" inputmode="decimal" data-shape-rot-value aria-label="Angle in degrees" title="Any angle, in degrees, anticlockwise"><span class="shape-pop-unit">&#176;</span>
+      <button type="button" class="shape-pop-seg" data-shape-rotate-by="-90" title="Turn 90° clockwise" aria-label="Turn 90° clockwise">&#8635;</button>
+      <button type="button" class="shape-pop-seg" data-shape-rotate-reset title="Upright again" aria-label="Upright again">0&#176;</button>`;
+
+function railPanelHtml() {
+  return `
+    ${panelRow("", "Colour", shapeSwatchRow("stroke"), "Line colour")}
+    ${panelRow("width", "Width", WIDTH_INNER)}
+    ${panelRow("", "Opacity", OPACITY_INNER)}
+    ${panelRow("dash", "Line", DASH_INNER, "Line style")}
+    ${panelRow("heads", "Start", HEAD_START_INNER, "Start")}
+    ${panelRow("heads", "End", HEAD_END_INNER, "End")}
+    ${panelRow("fill", "Fill", shapeSwatchRow("fill", { none: true }), "Fill")}
+    ${panelRow("font", "Text", SIZE_INNER + BOLD_BUTTON + ALIGN_INNER, "Text")}
+    ${panelRow("wrap", "Box", WRAP_INNER, "Box")}
+    ${panelRow("edge", "Border", shapeSwatchRow("edge"), "Border colour")}
+    ${panelRow("rotate", "Rotate", ROTATE_INNER, "Rotate")}
+    <div class="shape-pop-row" data-shape-row="snap"><button type="button" class="shape-pop-seg" data-shape-snap aria-pressed="false" title="Snap — lines at 15° steps, boxes square and ellipses round (Shift does this for one drag)">Snap angles</button></div>`;
+}
+
+// ── The floating bar ──────────────────────────────────────────────────────
+//
+// At a shape on the page the panel is not laid out at all: one slim row of
+// icons, each opening a small tray of its own controls, one tray at a time.
+// "The styling options are too obtrusive, overshadowing the text — a compact,
+// minimal option UI." Each icon wears what it sets: the colour's dot, the
+// size's number, the alignment's lines, the fill's square.
+
+// Which rows each tray shows. `actions` is the popover's own row (Edit text,
+// Note, the menu) — pdf-shape-style-popover.js puts it in the tray box.
+export const SHAPE_TRAYS = {
+  colour: ["colour", "opacity"],
+  size: ["size"],
+  align: ["align"],
+  box: ["fill", "wrap", "edge", "width", "dash"],
+  fill: ["fill"],
+  line: ["width", "dash"],
+  heads: ["heads"],
+  rotate: ["rotate"],
+  more: ["actions"]
+};
+
+// A press in one of these trays is the whole choice: it shuts behind it.
+const ONE_TAP_TRAYS = new Set(["colour", "align", "fill"]);
+
+const BAR_ICON = 'viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"';
+const ALIGN_ICON_PATHS = {
+  left: "M4 6h16M4 10h10M4 14h16M4 18h10",
+  center: "M4 6h16M7 10h10M4 14h16M7 18h10",
+  right: "M4 6h16M10 10h10M4 14h16M10 18h10"
+};
+
+function alignIcon(align) {
+  return `<svg ${BAR_ICON}><path d="${ALIGN_ICON_PATHS[align] || ALIGN_ICON_PATHS.left}"/></svg>`;
+}
+
+export const SHAPE_BAR_ICONS = {
+  box: `<svg ${BAR_ICON}><rect x="3.5" y="5" width="17" height="14" rx="2"/><path d="M8 10h8M8 14h5"/></svg>`,
+  line: `<svg ${BAR_ICON}><path d="M4 6h16" stroke-width="1.2"/><path d="M4 12h16" stroke-width="2.4"/><path d="M4 18h16" stroke-width="2.4" stroke-dasharray="3 3"/></svg>`,
+  heads: `<svg ${BAR_ICON}>${SHAPE_ICONS.arrow}</svg>`,
+  rotate: `<svg ${BAR_ICON}><path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3"/><path d="M19.5 4.5v4.5H15"/></svg>`,
+  trash: `<svg ${BAR_ICON}><path d="M5 7h14M10 7V5h4v2M7 7l1 12h8l1-12"/></svg>`,
+  done: `<svg ${BAR_ICON}><path d="M5 12.5l4.5 4.5L19 7"/></svg>`
+};
+
+function barTrigger(tray, label, face) {
+  return `<button type="button" class="shape-bar-btn" data-shape-tray="${tray}" title="${label}" aria-label="${label}" aria-haspopup="true" aria-expanded="false">${face}</button>`;
+}
+
+function floatingPanelHtml() {
+  return `
+    <div class="shape-bar" role="toolbar" aria-label="Style">
+      ${barTrigger("colour", "Colour and opacity", '<span class="shape-bar-dot" data-shape-colour-face></span>')}
+      ${barTrigger("size", "Text size", '<span class="shape-bar-num" data-shape-size-face></span>')}
+      <button type="button" class="shape-bar-btn" data-shape-bold title="Bold" aria-label="Bold" aria-pressed="false"><b>B</b></button>
+      ${barTrigger("align", "Alignment", `<span class="shape-bar-glyph" data-shape-align-face>${alignIcon("left")}</span>`)}
+      ${barTrigger("box", "Box — background, wrapping, border", SHAPE_BAR_ICONS.box)}
+      ${barTrigger("fill", "Fill", '<span class="shape-bar-fill" data-shape-fill-face></span>')}
+      ${barTrigger("line", "Line — width and style", SHAPE_BAR_ICONS.line)}
+      ${barTrigger("heads", "Arrow heads", SHAPE_BAR_ICONS.heads)}
+      ${barTrigger("rotate", "Rotate", SHAPE_BAR_ICONS.rotate)}
+      <span class="shape-bar-end" data-shape-bar-end></span>
+    </div>
+    <div class="shape-sheet" hidden>
+      ${panelRow("colour", "Colour", shapeSwatchRow("stroke"), "Colour")}
+      ${panelRow("opacity", "Opacity", OPACITY_INNER)}
+      ${panelRow("size", "Size", SIZE_INNER, "Text size")}
+      ${panelRow("align", "Align", ALIGN_INNER, "Alignment")}
+      ${panelRow("fill", "Fill", shapeSwatchRow("fill", { none: true }), "Fill")}
+      ${panelRow("wrap", "Box", WRAP_INNER, "Box")}
+      ${panelRow("edge", "Border", shapeSwatchRow("edge"), "Border colour")}
+      ${panelRow("width", "Width", WIDTH_INNER)}
+      ${panelRow("dash", "Line", DASH_INNER, "Line style")}
+      ${panelRow("heads", "Start", HEAD_START_INNER, "Start")}
+      ${panelRow("heads", "End", HEAD_END_INNER, "End")}
+      ${panelRow("rotate", "Rotate", ROTATE_INNER, "Rotate")}
+    </div>`;
+}
+
+// The tray open in a floating panel, or null for none — the bar alone.
+export function shapeTray(section) {
+  return section?.dataset.shapeTray || null;
+}
+
+export function setShapeTray(section, tray) {
+  if (!section) return;
+  if (tray && SHAPE_TRAYS[tray]) section.dataset.shapeTray = tray;
+  else delete section.dataset.shapeTray;
+  refreshShapePanel(section);
+}
+
+// One press inside the panel. A press on the popover's own actions is left to
+// it (src/documents/pdf-shape-style-popover.js), so it is not stopped here.
+function pressInPanel(section, event) {
+  const button = event.target.closest("button");
+  if (!button || !section.contains(button) || button.dataset.shapeStyleAction) return;
+  event.preventDefault();
+  event.stopPropagation();
+  if (button.dataset.shapeTray) {
+    const tray = button.dataset.shapeTray;
+    setShapeTray(section, shapeTray(section) === tray ? null : tray);
+    return;
+  }
+  pressShapePanel(button);
+  const tray = shapeTray(section);
+  const oneTap = button.dataset.shapeStroke || button.dataset.shapeAlign || (tray === "fill" && button.dataset.shapeFill);
+  if (tray && ONE_TAP_TRAYS.has(tray) && oneTap) delete section.dataset.shapeTray;
+  refreshShapePanel(section);
+}
+
 // Built twice: as a section of the pen's panel (the rail's chip opens it), and
-// `floating` — in the style popover at a selected shape (src/documents/pdf-
-// shape-style-popover.js), which has no Snap row, since snapping is how the
+// `floating` — the bar in the style popover at a selected shape (src/documents/
+// pdf-shape-style-popover.js), which has no Snap row, since snapping is how the
 // NEXT shape is drawn and not something a shape on the page has.
 export function buildShapePanel(shapePopover, { floating = false } = {}) {
   if (!shapePopover || (!floating && shapePopover.querySelector('[data-ink-panel="shape"]'))) return null;
@@ -161,57 +324,14 @@ export function buildShapePanel(shapePopover, { floating = false } = {}) {
   if (!floating) section.dataset.inkPanel = "shape";
   section.setAttribute("aria-label", "Shape");
   section.hidden = !floating;
-  section.innerHTML = `
-    <div class="shape-pop-row" role="group" aria-label="Line colour"><span class="shape-pop-label">Colour</span>${shapeSwatchRow("stroke")}</div>
-    <div class="shape-pop-row" data-shape-row="width"><span class="shape-pop-label">Width</span>
-      <input class="shape-pop-slider" type="range" min="0" max="${SHAPE_SLIDER_STEPS}" step="1" data-shape-width aria-label="Line width">
-      <input class="shape-pop-number" type="number" min="0" step="any" inputmode="decimal" data-shape-width-value aria-label="Line width in points" title="Any width, in points"><span class="shape-pop-unit">pt</span></div>
-    <div class="shape-pop-row"><span class="shape-pop-label">Opacity</span>
-      <input class="shape-pop-slider" type="range" min="10" max="100" step="1" data-shape-opacity aria-label="Opacity">
-      <output class="shape-pop-value" data-shape-opacity-value></output></div>
-    <div class="shape-pop-row" role="group" aria-label="Line style" data-shape-row="dash"><span class="shape-pop-label">Line</span>
-      ${["solid", "dash", "dot"].map((d) => `<button type="button" class="shape-pop-seg" data-shape-dash="${d}" title="${DASH_LABELS[d]}" aria-label="${DASH_LABELS[d]}" aria-pressed="false">${dashIcon(d)}</button>`).join("")}</div>
-    <div class="shape-pop-row" role="group" aria-label="Start" data-shape-row="heads"><span class="shape-pop-label">Start</span>
-      ${SHAPE_HEADS.map((h) => `<button type="button" class="shape-pop-seg" data-shape-head-start="${h}" title="Start: ${HEAD_LABELS[h]}" aria-label="Start: ${HEAD_LABELS[h]}" aria-pressed="false">${headIcon(h, "start")}</button>`).join("")}</div>
-    <div class="shape-pop-row" role="group" aria-label="End" data-shape-row="heads"><span class="shape-pop-label">End</span>
-      ${SHAPE_HEADS.map((h) => `<button type="button" class="shape-pop-seg" data-shape-head-end="${h}" title="End: ${HEAD_LABELS[h]}" aria-label="End: ${HEAD_LABELS[h]}" aria-pressed="false">${headIcon(h, "end")}</button>`).join("")}</div>
-    <div class="shape-pop-row" role="group" aria-label="Fill" data-shape-row="fill"><span class="shape-pop-label">Fill</span>${shapeSwatchRow("fill", { none: true })}</div>
-    <div class="shape-pop-row" role="group" aria-label="Text" data-shape-row="font"><span class="shape-pop-label">Text</span>
-      <button type="button" class="shape-pop-seg" data-shape-font-step="-1" title="Smaller text" aria-label="Smaller text">A&#8722;</button>
-      <input class="shape-pop-number" type="number" min="0" step="any" inputmode="decimal" data-shape-font-value aria-label="Text size in points" title="Any size, in points"><span class="shape-pop-unit">pt</span>
-      <button type="button" class="shape-pop-seg" data-shape-font-step="1" title="Larger text" aria-label="Larger text">A+</button>
-      <button type="button" class="shape-pop-seg" data-shape-bold title="Bold" aria-label="Bold" aria-pressed="false"><b>B</b></button>
-      ${["left", "center", "right"].map((a) => `<button type="button" class="shape-pop-seg" data-shape-align="${a}" title="Align ${a}" aria-label="Align ${a}" aria-pressed="false">${{ left: "&#8676;", center: "&#8596;", right: "&#8677;" }[a]}</button>`).join("")}</div>
-    <div class="shape-pop-row" role="group" aria-label="Box" data-shape-row="wrap"><span class="shape-pop-label">Box</span>
-      <button type="button" class="shape-pop-seg" data-shape-wrap="off" title="Grow with the words — a new line only where you press Enter" aria-pressed="false">Grow</button>
-      <button type="button" class="shape-pop-seg" data-shape-wrap="on" title="Wrap the words at the box's width — drag a side handle to change it" aria-pressed="false">Wrap</button>
-      <button type="button" class="shape-pop-seg" data-shape-border title="An outline round the text" aria-pressed="false">Border</button></div>
-    <div class="shape-pop-row" role="group" aria-label="Border colour" data-shape-row="edge"><span class="shape-pop-label">Border</span>${shapeSwatchRow("edge")}</div>
-    <div class="shape-pop-row" role="group" aria-label="Rotate" data-shape-row="rotate"><span class="shape-pop-label">Rotate</span>
-      <button type="button" class="shape-pop-seg" data-shape-rotate-by="90" title="Turn 90° anticlockwise" aria-label="Turn 90° anticlockwise">&#8634;</button>
-      <input class="shape-pop-number" type="number" step="any" inputmode="decimal" data-shape-rot-value aria-label="Angle in degrees" title="Any angle, in degrees, anticlockwise"><span class="shape-pop-unit">&#176;</span>
-      <button type="button" class="shape-pop-seg" data-shape-rotate-by="-90" title="Turn 90° clockwise" aria-label="Turn 90° clockwise">&#8635;</button>
-      <button type="button" class="shape-pop-seg" data-shape-rotate-reset title="Upright again" aria-label="Upright again">0&#176;</button></div>
-    <div class="shape-pop-row" data-shape-row="snap"><button type="button" class="shape-pop-seg" data-shape-snap aria-pressed="false" title="Snap — lines at 15° steps, boxes square and ellipses round (Shift does this for one drag)">Snap angles</button></div>`;
+  section.innerHTML = floating ? floatingPanelHtml() : railPanelHtml();
   shapePopover.appendChild(section);
 
-  section.addEventListener("pointerdown", (event) => {
-    const button = event.target.closest("button");
-    if (!button || !section.contains(button)) return;
-    event.preventDefault();
-    event.stopPropagation();
-    pressShapePanel(button);
-    refreshShapePanel(section);
-  });
+  section.addEventListener("pointerdown", (event) => pressInPanel(section, event));
   // The keyboard's own press — a click with no pointer behind it.
   section.addEventListener("click", (event) => {
     if (event.detail !== 0) return;
-    const button = event.target.closest("button");
-    if (!button || !section.contains(button)) return;
-    event.preventDefault();
-    event.stopPropagation();
-    pressShapePanel(button);
-    refreshShapePanel(section);
+    pressInPanel(section, event);
   });
   // A drag previews its number; the release commits, once.
   section.addEventListener("input", (event) => {
@@ -336,7 +456,11 @@ export function refreshShapePanel(section) {
   // a sticky note is a colour and nothing else. Rotate is for a box that is ON
   // the page — a turn belongs to one shape, never to the next one drawn.
   const textLine = type !== "text" || s.textBorder;
+  const floating = section.classList.contains("is-floating");
+  const font = type === "callout" || type === "text";
   const rows = {
+    colour: true,
+    opacity: true,
     width: type !== "sticky" && textLine,
     dash: type !== "sticky" && textLine,
     wrap: type === "text",
@@ -344,8 +468,63 @@ export function refreshShapePanel(section) {
     rotate: rotation !== null,
     heads: type === "line" || type === "arrow" || type === "callout",
     fill: type === "rect" || type === "ellipse" || type === "callout" || type === "text",
-    font: type === "callout" || type === "text",
-    snap: !section.classList.contains("is-floating")
+    font,
+    size: font,
+    align: font,
+    actions: true,
+    snap: !floating
   };
-  section.querySelectorAll("[data-shape-row]").forEach((row) => { row.hidden = !rows[row.dataset.shapeRow]; });
+  if (!floating) {
+    section.querySelectorAll("[data-shape-row]").forEach((row) => { row.hidden = !rows[row.dataset.shapeRow]; });
+    return;
+  }
+  // The bar: the icons this shape has. Typed text keeps its background, its
+  // wrapping and its border together under Box; a box or a callout has Fill and
+  // Line of its own.
+  const triggers = {
+    colour: true,
+    size: font,
+    align: font,
+    box: type === "text",
+    fill: rows.fill && type !== "text",
+    line: rows.width && type !== "text",
+    heads: rows.heads,
+    rotate: rows.rotate
+  };
+  let tray = shapeTray(section);
+  // A tray this shape has no icon for (the popover's own `more` aside) is shut.
+  if (tray && tray !== "more" && !triggers[tray]) { delete section.dataset.shapeTray; tray = null; }
+  section.querySelectorAll("[data-shape-tray]").forEach((button) => {
+    const name = button.dataset.shapeTray;
+    button.hidden = name in triggers ? !triggers[name] : false;
+    button.setAttribute("aria-expanded", String(name === tray));
+  });
+  const bold = section.querySelector(".shape-bar [data-shape-bold]");
+  if (bold) bold.hidden = !font;
+  const inTray = new Set(tray ? SHAPE_TRAYS[tray] : []);
+  section.querySelectorAll("[data-shape-row]").forEach((row) => {
+    const key = row.dataset.shapeRow;
+    row.hidden = !rows[key] || !inTray.has(key);
+  });
+  const trayBox = section.querySelector(".shape-sheet");
+  if (trayBox) {
+    trayBox.hidden = !tray;
+    if (tray) trayBox.dataset.tray = tray;
+    else delete trayBox.dataset.tray;
+  }
+  // What each icon wears.
+  const dot = section.querySelector("[data-shape-colour-face]");
+  if (dot) dot.style.background = colour;
+  const sizeFace = section.querySelector("[data-shape-size-face]");
+  if (sizeFace) sizeFace.textContent = formatPoints(s.fontSize);
+  const alignFace = section.querySelector("[data-shape-align-face]");
+  if (alignFace && alignFace.dataset.align !== s.align) {
+    alignFace.dataset.align = s.align;
+    alignFace.innerHTML = alignIcon(s.align);
+  }
+  const fillFace = section.querySelector("[data-shape-fill-face]");
+  if (fillFace) {
+    fillFace.classList.toggle("is-none", !s.fill);
+    fillFace.style.background = s.fill || "";
+  }
 }
