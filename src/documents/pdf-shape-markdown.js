@@ -5,7 +5,7 @@
 // The Text button typed plain text: `box.textContent` on the page, `fillText`
 // in every picture and export. "Extend these text inputs over PDFs to have
 // complete markdown support" — so the words are now the same markdown a note
-// is, put through the same pipeline a note and a text block use
+// is, put through the same pipeline a note and a block use
 // (renderMarkdown + enhanceRenderedMarkdown): emphasis, lists, headings, code
 // with highlighting, KaTeX maths, links, tables, pictures, diagrams.
 //
@@ -230,7 +230,7 @@ async function renderShapeMarkdown(body, source, stale = () => false) {
   await resolveStorageImages(body);
   // A picture in the words is part of something that is picked up and dragged;
   // the browser's own image drag would cancel that drag (see the same rule on
-  // the text blocks, src/documents/pdf-blocks.js).
+  // the blocks, src/documents/pdf-blocks.js).
   body.querySelectorAll("img").forEach((img) => { img.draggable = false; });
 }
 

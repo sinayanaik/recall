@@ -116,7 +116,7 @@
   overflow-wrap: anywhere;
 }
 
-/* A picture in a text block fills the block's width (styles/53-handwriting.css),
+/* A picture in a markdown block fills the block's width (styles/53-handwriting.css),
    which is the right default and was the only answer. `!important` and the extra
    attribute for the reason written there: `.diagram-shell img` sets width with
    !important of its own, and only a more specific !important beats it. */

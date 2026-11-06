@@ -298,7 +298,7 @@ export async function migrateLegacyNotebook() {
     : "";
   showToast(
     `Your Canvas pages are on real paper now — ${plan.pages} page${plan.pages === 1 ? "" : "s"}`
-    + `${marks ? `, ${marks} with writing on` : ""}${blocks ? `, ${blocks} text block${blocks === 1 ? "" : "s"}` : ""}.${lost}`
+    + `${marks ? `, ${marks} with writing on` : ""}${blocks ? `, ${blocks} block${blocks === 1 ? "" : "s"}` : ""}.${lost}`
   );
   return true;
 }

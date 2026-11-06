@@ -377,7 +377,7 @@
 
 /* ── The notebook's group on the pen's rail ────────────────────────────────
    + Text, + Image and + Page. Only on a notebook: there is nowhere to add a
-   page to somebody else's document, and a text block over their figure goes on
+   page to somebody else's document, and a block over their figure goes on
    through the same button on the Document tab, which is why the group is the
    only part of the rail that comes and goes. */
 .ink-rail-page {
@@ -525,7 +525,7 @@
 
 /* Something has to say where the edge is while you are reaching for it, or a
    picture on white paper has no grip to find and no ring to show it is even
-   there. No heavier than the outline a text block carries all the time. */
+   there. No heavier than the outline a block carries all the time. */
 [data-pdf-block-kind="image"]:hover,
 [data-pdf-block-kind="image"]:focus-within,
 [data-pdf-block-kind="image"].is-selected,
@@ -547,7 +547,7 @@
 /* ── Nothing inside a block may pan the page ──────────────────────────────
 
    `.pdf-block { touch-action: none }` says a finger on a block drags it — but
-   touch-action is decided per element, and a text block's body is
+   touch-action is decided per element, and a block's body is
    `overflow: auto`, a scroll container, inside which the browser turns panning
    back ON. `.rendered pre` on a coarse pointer, and the maths and diagram
    wrappers, ask for panning by name. So a finger landing on the WORDS of a
@@ -567,7 +567,7 @@
   user-select: none;
 }
 
-/* ── A picture inside a TEXT block ────────────────────────────────────────
+/* ── A picture inside a MARKDOWN block ────────────────────────────────────
 
    The other half of the same report, and a different mechanism. A `![](…)` in a
    block's markdown goes through the app's ordinary render, which wraps every

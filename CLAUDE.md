@@ -16,4 +16,4 @@ not be renamed; only user-visible text uses the new ones.
     node tools/check.mjs           # everything except the release cycle
 
 `tools/nomenclature-check.mjs` fails if user-visible text says deck, flashcard,
-notebook, handwritten notes or Study Notes.
+notebook, handwritten notes, Study Notes or text block.

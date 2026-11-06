@@ -202,7 +202,7 @@
    armed — the one thing in this layer, besides the open editor, that takes a
    press (src/documents/pdf-shapes.js, onShapePointerDown). `touch-action: none`
    is what lets a finger drag it rather than scroll the page; the same promise a
-   text block makes (styles/53-handwriting.css). */
+   block makes (styles/53-handwriting.css). */
 .pdf-shape-text {
   position: absolute;
   box-sizing: border-box;
@@ -522,8 +522,9 @@
 
 /* ── + on the pen's bar, on a PDF too ───────────────────────────────────────
    It used to be a Canvas's alone (styles/53-handwriting.css): + Text block,
-   + Picture and + Page. Text, a sticky note, a text block and a picture belong
-   on anybody's paper as much as on a Canvas, so the group shows on both, and
+   + Picture and + Page. Its rows now are Text, Block and Picture (a sticky
+   note is the Shapes tool's alone), and they belong on anybody's paper as
+   much as on a Canvas, so the group shows on both, and
    only "Page at the end" — there is nowhere to add a page to somebody else's
    document — stays a Canvas's. */
 #documentStage .ink-rail-page,

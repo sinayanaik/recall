@@ -37,7 +37,7 @@
  */
 
 /* Headings: the Notes' six, for everything written as a document — notes, the
-   Highlights pane, Quick Notes and the text blocks on a PDF or a Canvas. The
+   Highlights pane, Quick Notes and the blocks on a PDF or a Canvas. The
    cards keep the :root six (◐ Cards → Headings). */
 #notesStage,
 .highlight-cycle,
@@ -79,7 +79,7 @@
   --content-line-height: var(--hl-note-line-height, var(--notes-line-height, 1.58));
 }
 
-/* A Canvas's text blocks: its own three sizes, where they were the PDF's.
+/* A Canvas's blocks: its own three sizes, where they were the PDF's.
    data-doc-slot is set on the stage by setViewMode (src/ui/view-mode.js), and
    the rules below this one read these three variables, so redeclaring them on
    the stage is all it takes. */
@@ -89,7 +89,7 @@
   --doc-code-font-size: var(--canvas-code-font-size, 1em);
 }
 
-/* Text blocks on PDF and handwriting pages. Same specificity as the rules in
+/* Blocks on PDF and handwriting pages. Same specificity as the rules in
    styles/53-handwriting.css and styles/58-block-style.css it replaces, and
    later, so it wins over them — while a block given its own size or code size
    (`.pdf-block[data-block-size] …`, 0,3,0) still wins over this. */

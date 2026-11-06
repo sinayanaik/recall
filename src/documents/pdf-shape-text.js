@@ -2,7 +2,7 @@
 //
 // Plain text, typed in place: the words appear in the box on the paper, at the
 // size and in the colour they will be shown in, and the box grows downward as
-// the lines run out. Markdown, maths and pictures are what a text block is for
+// the lines run out. Markdown, maths and pictures are what a block is for
 // (src/documents/pdf-blocks.js); this is the quick label — "see Fig. 3", "sign
 // error here" — and it is quick because there is nothing between the reader and
 // the box: no sheet, no Done button.

@@ -1021,7 +1021,7 @@ try {
 
     // ── ...and a BLOCK on each page, which is the half that was missing ────
     //
-    // Tearing a page out renumbered the highlights and stopped, so a text block
+    // Tearing a page out renumbered the highlights and stopped, so a block
     // on the torn-out page survived onto whichever page inherited its number and
     // every block below the gap stayed one page too far down. One block on the
     // page about to go and one on the page that has to move, so the case can
@@ -2671,7 +2671,7 @@ try {
   // "the handwritten note is something like one note where in a canvas multiple
   // things can be there like markdown blocks, handwritten strokes, images". A
   // picture is a block with a kind, so it inherits the geometry, the drag, the
-  // resize, the tombstone and the merge the text blocks already have — and what
+  // resize, the tombstone and the merge the blocks already have — and what
   // is worth asserting is the part that is NOT inherited: that it survives the
   // round trip through the store as a picture rather than as a paragraph.
   const picture = await page.evaluate(`async () => {
@@ -2837,6 +2837,62 @@ try {
   check("...and comes back out of the store as a picture, on the notebook's pages",
     picture.stored?.kind === "image" && picture.stored?.hasSrc && picture.stored?.doc === "notebook",
     JSON.stringify(picture.stored));
+  // ── A picture pasted onto a PDF's page ──────────────────────────────────
+  //
+  // Ctrl+V with nothing focused (a press on a page leaves <body> focused) puts
+  // the clipboard's picture on the page in view as a picture block — on a PDF
+  // now, not only on a Canvas — and asks how to compress it first, the way a
+  // picture pasted into a note or a block's editor is asked about. Cancelling
+  // the dialog adds nothing.
+  const pastedPicture = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    api.setViewMode("document");
+    for (let i = 0; i < 80 && !document.querySelector("#documentStage[data-doc-slot='doc'] .pdf-page[data-page-number='1'] canvas.pdf-canvas"); i += 1) await settle(100);
+    await settle(400);
+    document.activeElement?.blur?.();
+    const png = Uint8Array.from(atob("iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAYAAAD0In+KAAAAEklEQVR4nGP8//8/AzJgYkAFAB8FAv3EhrhCAAAAAElFTkSuQmCC"), (c) => c.charCodeAt(0));
+    const paste = () => {
+      const data = new DataTransfer();
+      data.items.add(new File([png], "screenshot.png", { type: "image/png" }));
+      const event = new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true });
+      document.body.dispatchEvent(event);
+      return event.defaultPrevented;
+    };
+    const images = () => api.documentBlocks().filter((b) => b.kind === "image").map((b) => b.id);
+    const waitFor = async (test) => { for (let i = 0; i < 60 && !test(); i += 1) await settle(100); return Boolean(test()); };
+    const before = images();
+
+    // Cancelled: the dialog came, and nothing was added.
+    const takenCancelled = paste();
+    const askedCancelled = await waitFor(() => document.querySelector(".image-compress-modal"));
+    document.querySelector(".image-compress-modal [data-compress-cancel]")?.click();
+    await settle(400);
+    const afterCancel = images().length - before.length;
+
+    // Confirmed: one picture block, on the PDF's page.
+    const taken = paste();
+    const asked = await waitFor(() => document.querySelector(".image-compress-modal"));
+    await waitFor(() => document.querySelector(".image-compress-modal [data-compress-confirm]:not([disabled])"));
+    document.querySelector(".image-compress-modal [data-compress-confirm]")?.click();
+    await waitFor(() => images().length > before.length);
+    await settle(300);
+    const made = api.documentBlocks().find((b) => b.kind === "image" && !before.includes(b.id)) || null;
+    const slot = document.getElementById("documentStage")?.dataset.docSlot || "";
+    const mounted = Boolean(made && document.querySelector('[data-pdf-block="' + made.id + '"]'));
+    if (made) api.deleteBlock(made.id);
+    await settle(200);
+    api.setViewMode("handwriting");
+    for (let i = 0; i < 60 && !document.querySelector("#documentStage[data-doc-slot='notebook'] .pdf-page[data-page-number='1'] canvas.pdf-canvas"); i += 1) await settle(100);
+    await settle(400);
+    return { takenCancelled, askedCancelled, afterCancel, taken, asked, made: Boolean(made), slot, mounted, hasSrc: Boolean(made?.src) };
+  }`);
+  check("Ctrl+V of a picture onto a PDF's page asks how to compress it, and Cancel adds nothing",
+    pastedPicture.takenCancelled && pastedPicture.askedCancelled && pastedPicture.afterCancel === 0,
+    JSON.stringify(pastedPicture));
+  check("...and Upload puts it on that PDF's page as a picture block",
+    pastedPicture.taken && pastedPicture.asked && pastedPicture.made && pastedPicture.mounted && pastedPicture.hasSrc && pastedPicture.slot === "doc",
+    JSON.stringify(pastedPicture));
+
   // ── ...and the same picture, added with no connection ───────────────────
   //
   // The report: an image on a page of handwriting showed on the tablet it was
@@ -3369,7 +3425,7 @@ try {
   // "Only one dark and one light mode, and the pen strokes and the text boxes'
   // borders aren't adaptive to the mode changing." The page now has five tones
   // (src/format/paper-tones.js), and three things have to come with it when it
-  // changes: a text block's card and border (which used to be the THEME's), a
+  // changes: a block's card and border (which used to be the THEME's), a
   // stroke in a colour the reader picked (stored as the hex — black, here), and
   // a typed text box with a black border (likewise). Each is read off what is
   // actually drawn: computed style for the block, pixels for the ink, the SVG
@@ -3547,7 +3603,7 @@ try {
   check("...and a tinted tone is the page's colour, baked into the pixels or blended onto them",
     ["sepia", "dim", "theme"].every((id) => paperShown(T[id])),
     ["sepia", "dim", "theme"].map((id) => `${id}: tint ${T[id].paper.tint} canvas ${T[id].paper.canvasTint || "-"} corner ${T[id].paper.corner} blend ${T[id].paper.blend}`).join(" · "));
-  check("a text block is a card of the PAPER: light on White and Sepia, dark on Dim and Black",
+  check("a block is a card of the PAPER: light on White and Sepia, dark on Dim and Black",
     tones.blockMade && T.white.over.blockBg > 200 && T.sepia.over.blockBg > 190 && T.dim.over.blockBg < 80 && T.black.over.blockBg < 60,
     ["white", "sepia", "dim", "black"].map((id) => `${id} ${Math.round(T[id].over.blockBg)}`).join(", "));
   check("...and its border changes with the page",

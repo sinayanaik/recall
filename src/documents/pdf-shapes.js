@@ -828,21 +828,6 @@ function handleAt(record, pageEl, clientX, clientY) {
   return best?.id || null;
 }
 
-// ── Placed, not drawn ─────────────────────────────────────────────────────
-//
-// Text and a sticky note from the bar's + menu: put at `at` (a point in PDF
-// space, the middle of the page in view) and opened straight away, the same as
-// a tap with the tool. The way in for a reader with no pen and no mouse — a
-// finger, which never draws.
-export function placeShapeInView(type, pageNumber, at) {
-  if ((type !== "text" && type !== "sticky") || !pdfPageViewport(pageNumber) || !at) return null;
-  const from = type === "text" ? [at.x - 80, at.y + 14] : [at.x, at.y];
-  const shape = shapeFromDrag(type, from, from, { base: newShapeBase(type) });
-  const record = shape && addDocumentShape(pageNumber, shape);
-  if (record) shapeOpenedHandler(record);
-  return record;
-}
-
 // ── The gesture ───────────────────────────────────────────────────────────
 
 let shapePress = null;
@@ -957,7 +942,7 @@ function onShapeFingerUp(event) {
 // tool armed, and then only for a stylus — or a mouse with the pen's bar open —
 // so a finger could never move one, and with the tool put away nothing could.
 // The words typed with the Text button are a thing the reader PUT on the page,
-// like a text block or a picture, and they are picked up the same way: a press
+// like a block or a picture, and they are picked up the same way: a press
 // on the box, with any pointer, whatever is armed.
 //
 //   press and drag   moves it (clamped so it cannot be lost off the page)

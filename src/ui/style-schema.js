@@ -486,7 +486,7 @@ export const styleControlGroups = [
         optionLabels: { on: "On — 1, 1.1, 1.2…", off: "Off" },
         hint: "Numbers each heading by its place in the note, like 1, 1.1, 1.2. The numbers are only drawn: your text is not changed."
       },
-      ...headingFields("notesHeadingH", "in notes, the Highlights pane, Quick Notes and text blocks on PDFs and Canvas")
+      ...headingFields("notesHeadingH", "in notes, the Highlights pane, Quick Notes and blocks on PDFs and Canvas")
     ]
   },
   {
@@ -582,22 +582,22 @@ export const styleControlGroups = [
 
   // ── PDFs ─────────────────────────────────────────────────────────────────
   {
-    title: "Text blocks",
+    title: "Blocks",
     scope: "document",
     fields: [
-      pxField("docBlockFontSize", "Text block size", "Text blocks on a PDF's pages. A block given its own size keeps it."),
-      lineField("docBlockLineHeight", "Line spacing", "Line spacing inside text blocks."),
+      pxField("docBlockFontSize", "Block text size", "Blocks on a PDF's pages. A block given its own size keeps it."),
+      lineField("docBlockLineHeight", "Line spacing", "Line spacing inside blocks."),
       pxField("docCodeFontSize", "Code size", "Code inside blocks and PDF notes. 1em is the size of the words around it."),
     ]
   },
 
   // ── Canvas ───────────────────────────────────────────────────────────────
   {
-    title: "Text blocks",
+    title: "Blocks",
     scope: "handwriting",
     fields: [
-      pxField("canvasBlockFontSize", "Text block size", "Text blocks on Canvas pages. A block given its own size keeps it."),
-      lineField("canvasBlockLineHeight", "Line spacing", "Line spacing inside text blocks."),
+      pxField("canvasBlockFontSize", "Block text size", "Blocks on Canvas pages. A block given its own size keeps it."),
+      lineField("canvasBlockLineHeight", "Line spacing", "Line spacing inside blocks."),
       pxField("canvasCodeFontSize", "Code size", "Code inside blocks. 1em is the size of the words around it."),
     ]
   },

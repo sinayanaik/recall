@@ -843,7 +843,7 @@ sections.push(async () => {
     await settle(150);
     return { label: btn.textContent.trim(), shown, rows, enabled, armed, lit, made: api.documentShapes(null).length - before, type: made?.shape?.type, page: made?.page, opened: Boolean(editor), text: api.documentHighlightById(made?.id)?.shape?.text };
   }`);
-  check("on a PDF the pen bar's + is there, with Text and Sticky note and no Page row", plus.shown && plus.rows.includes("Text") && plus.rows.includes("Sticky note") && plus.label === "+ Add" && plus.rows.includes("Text block") && !plus.rows.some((r) => /Page at the end/.test(r)) && plus.enabled, JSON.stringify(plus));
+  check("on a PDF the pen bar's + is there, with Text, Block and Picture, no Sticky note and no Page row", plus.shown && plus.rows.includes("Text") && !plus.rows.includes("Sticky note") && plus.label === "+ Add" && plus.rows.includes("Block") && plus.rows.some((r) => /^Picture/.test(r)) && !plus.rows.some((r) => /Page at the end/.test(r)) && plus.enabled, JSON.stringify(plus));
   check("+ → Text arms the typewriter (its Text button lit), and a tap puts a cursor there to type at", plus.armed && plus.lit && plus.made === 1 && plus.type === "text" && plus.page === 4 && plus.opened && plus.text === "typed with a finger", JSON.stringify(plus));
 
   const finger = await page.evaluate(`async () => {

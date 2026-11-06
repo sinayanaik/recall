@@ -86,7 +86,7 @@ export async function collectReferencedStoragePaths(onProgress) {
     }
   };
 
-  // A PDF deck's image blocks (`src`) and text blocks (`md`) point at figures
+  // A PDF deck's image blocks (`src`) and markdown blocks (`md`) point at figures
   // too, and this scan used to read neither — so every picture placed on a
   // page read as referenced by nothing, sat in the Unused tile, and went with
   // the next "Delete unused images". Read here and from the cloud below.
