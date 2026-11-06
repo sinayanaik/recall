@@ -483,6 +483,11 @@ const checks = [
   // under it — a colour that reads is never touched. Pure Node, like the two
   // above.
   ["paper-tones   ", ["node", ["tools/paper-tones-check.mjs"], ROOT]],
+  // Dark page keeping a page's photographs (src/documents/pdf-image-keep.js):
+  // where an operator list paints pictures, which are paper and which are not,
+  // and the real pdf.js's list for a fixture page. Node only here; the browser
+  // half is `pdf-image-keep` below.
+  ["image-keep    ", ["node", ["tools/pdf-image-keep-check.mjs", "--quick"], ROOT]],
   // The same shape once more, for the document several decks make when they are
   // read as one: does every deck get back exactly what it put in? The write-back
   // fires on every autosave over every deck in the selection, so anything the
@@ -631,6 +636,10 @@ const checks = [
     // does not have (src/core/pdfjs-patches.js). pdf.js loaded the app's way.
     ["pdf-pattern   ", ["node", ["tools/pdf-pattern-band-check.mjs"], ROOT]],
     ["pdf-pattern-2x", ["node", ["tools/pdf-pattern-band-check.mjs", "--dpr=2"], ROOT]],
+    // A photograph on a dark page keeps its own colours while the page, its
+    // words and a line drawing beside it go dark — Black, Dim and back to
+    // White, for kept pictures, the worker's canvases and the main thread.
+    ["pdf-image-keep", ["node", ["tools/pdf-image-keep-check.mjs"], ROOT]],
     // Annotations on a PDF: underline, strike, squiggle and box in any colour,
     // the Shapes tool's lines, arrows, boxes, callouts, text and sticky notes,
     // and the file saved with them as real PDF annotations.

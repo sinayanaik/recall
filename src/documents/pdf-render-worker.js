@@ -38,7 +38,9 @@
 // MessageChannel, so "stop drawing that page" is heard between slices.
 //
 // Dark page is drawn into the pixels here too (the same filtered copy the main
-// thread made in bakePagePaper), at no cost to the reader's frames.
+// thread made in bakePagePaper), at no cost to the reader's frames — with the
+// page's photographs and figures kept as they are (src/documents/pdf-image-
+// keep.js, handed to the worker as `kit`).
 //
 // ── And when it cannot ─────────────────────────────────────────────────────
 //
@@ -49,6 +51,7 @@
 // that, so the two can be compared from App Info on the device itself.
 
 import { pdfjsWorkerSources } from "../core/lib-loader.js?v=__BUILD__";
+import { imageKeepKit } from "./pdf-image-keep.js?v=__BUILD__";
 
 export const PDF_RENDER_WORKER_KEY = "recall:pdfRenderWorker";
 
@@ -59,14 +62,18 @@ export const PDF_RENDER_WORKER_START_MS = 8000;
 //
 // Shipped as the source of this function, in a Blob: one module, nothing new to
 // precache or version, and the code that runs in the worker sits beside the code
-// that talks to it. It must not close over anything outside itself.
-function pageRendererWorker() {
+// that talks to it. It must not close over anything outside itself: what it
+// needs from elsewhere is `kit`, imageKeepKit() — shipped as source the same way.
+function pageRendererWorker(kit) {
   "use strict";
   let lib = null;
   let core = null;
   let cpu = true;
   let canDark = false;
   const docs = new Map();
+  // The pictures each page keeps on a dark page, by "doc:page" — decided once,
+  // from the first whole page drawn, so every zoom and tile agrees.
+  const keeps = new Map();
   const tasks = new Map();
   const cancelled = new Set();
 
@@ -162,16 +169,40 @@ function pageRendererWorker() {
     ctx.restore();
   }
 
-  // The paper a page asked for, into its pixels. Returns what was actually
-  // baked — { dark, tint } — which is what the main thread files it under.
-  function bakePaper(canvas, ctx, dark, tint) {
+  // The paper a page asked for, into its pixels, keeping the pixels under
+  // `kept` (quads on the page; `map` puts them on this canvas). Returns what
+  // was actually baked — { dark, tint } — which is what the main thread files
+  // it under.
+  function bakePaper(canvas, ctx, dark, tint, kept = null, map = null) {
     if (dark) {
       if (!canDark) return { dark: false, tint: null };
-      bakeDark(canvas, ctx, tint);
+      kit.bake(ctx, kept, map, () => bakeDark(canvas, ctx, tint));
       return { dark: true, tint: tint || null };
     }
-    if (tint) bakeTint(canvas, ctx, "multiply", tint);
+    if (tint) kit.bake(ctx, kept, map, () => bakeTint(canvas, ctx, "multiply", tint), { floor: false });
     return { dark: false, tint: tint || null };
+  }
+
+  // The pictures on a page worth keeping through a paper, judged from the
+  // page as just drawn on `canvas` (light, nothing baked yet). The operator
+  // list is the one the render drew from (src/core/pdfjs-patches.js,
+  // render-task-operator-list), asked for again only if that is missing. A
+  // detail tile judges what it can see and files nothing; a whole page files
+  // its answer for the rest.
+  async function keptPictures(id, pageNumber, page, task, viewport, canvas, map, whole) {
+    const key = `${id}:${pageNumber}`;
+    if (keeps.has(key)) return keeps.get(key);
+    let kept = [];
+    try {
+      let ops = task.recallOperatorList;
+      if (!ops || !ops.fnArray) ops = await page.getOperatorList();
+      const list = kit.quads(ops, lib.OPS, viewport);
+      kept = list.length ? kit.classify(canvas, list, map) : [];
+    } catch (_) {
+      kept = [];
+    }
+    if (whole) keeps.set(key, kept);
+    return kept;
   }
 
   function cancelledError(job) {
@@ -252,15 +283,20 @@ function pageRendererWorker() {
       yieldThen(proceed);
     };
     tasks.set(job, task);
+    let kept = [];
+    const map = kit.pageMap(viewport.width, viewport.height);
     try {
       await task.promise;
+      // Always, not only for a dark one: a kept picture of either paper is
+      // what the other is composed from, and it carries this with it.
+      if (!cancelled.has(job)) kept = await keptPictures(id, pageNumber, page, task, viewport, canvas, map, true);
     } finally {
       tasks.delete(job);
       try { page.cleanup(); } catch (_) { /* still busy: the next cleanup has it */ }
     }
     if (cancelled.has(job)) throw cancelledError(job);
     const drawnAt = performance.now();
-    const baked = bakePaper(canvas, ctx, dark, tint);
+    const baked = bakePaper(canvas, ctx, dark, tint, kept, map);
     const plain = await encode(canvas, quality);
     let marked = null;
     if (ops && ops.length) {
@@ -280,6 +316,7 @@ function pageRendererWorker() {
       pixelHeight: Math.round(viewport.height),
       dark: baked.dark,
       tint: baked.tint,
+      keep: kept,
       firstSliceMs: firstSliceAt ? firstSliceAt - started : drawnAt - started,
       drawMs: firstSliceAt ? drawnAt - firstSliceAt : 0,
       encodeMs: encodedAt - drawnAt
@@ -288,11 +325,14 @@ function pageRendererWorker() {
 
   // A picture made from another one, with no pdf.js in it: the plain picture of
   // a page decoded, optionally cropped and scaled, dark page baked in if the
-  // source was light and the result is not, the marks painted on, and encoded.
+  // source was light and the result is not (or taken out, if the other way),
+  // the marks painted on, and encoded. `keep` is the page's kept pictures, from
+  // the source picture's record: what was not inverted going one way is not
+  // inverted coming back either.
   // What a new highlight, a dark page toggle and a region's picture cost once
   // the page has been drawn: a decode and an encode.
   async function composePicture(message) {
-    const { job, source, crop, outWidth, outHeight, bakeDarkPage, tint, tintDark, ops, quality, as } = message;
+    const { job, source, crop, outWidth, outHeight, bakeDarkPage, tint, tintDark, keep, ops, quality, as } = message;
     const started = performance.now();
     const bitmap = crop
       ? await createImageBitmap(source, crop.x, crop.y, crop.width, crop.height)
@@ -304,10 +344,17 @@ function pageRendererWorker() {
     ctx.imageSmoothingQuality = "high";
     ctx.drawImage(bitmap, 0, 0, width, height);
     bitmap.close();
-    if (bakeDarkPage && canDark) bakeDark(canvas, ctx);
     // A tint on top of a page already on the right polarity: lightened into a
     // dark one, multiplied into a light one.
-    if (tint) bakeTint(canvas, ctx, tintDark ? "lighten" : "multiply", tint);
+    const paint = () => {
+      if (bakeDarkPage && canDark) bakeDark(canvas, ctx);
+      if (tint) bakeTint(canvas, ctx, tintDark ? "lighten" : "multiply", tint);
+    };
+    if ((bakeDarkPage && canDark) || tint) {
+      // Quads are fractions of the whole page; a crop is a part of one, which
+      // no caller bakes a paper into.
+      kit.bake(ctx, crop ? null : keep, crop ? null : kit.pictureMap(width, height), paint, { floor: Boolean(tintDark) });
+    }
     if (ops && ops.length) replayOps(canvas, ctx, ops);
     let blob = null;
     let image = null;
@@ -346,14 +393,20 @@ function pageRendererWorker() {
       yieldThen(proceed);
     };
     tasks.set(job, task);
+    let kept = null;
+    const map = region ? kit.regionMap(viewport.width, viewport.height, region, density) : kit.pageMap(viewport.width, viewport.height, outputScale);
     try {
       await task.promise;
+      // Only when a paper is going on: a plain white page keeps everything.
+      if (!cancelled.has(job) && ((dark && canDark) || tint)) {
+        kept = await keptPictures(id, pageNumber, page, task, viewport, canvas, map, !region);
+      }
     } finally {
       tasks.delete(job);
     }
     if (cancelled.has(job)) throw cancelledError(job);
     const drawnAt = performance.now();
-    const baked = bakePaper(canvas, ctx, dark, tint);
+    const baked = bakePaper(canvas, ctx, dark, tint, kept, map);
     const bitmap = canvas.transferToImageBitmap();
     post({
       type: "rendered",
@@ -361,6 +414,7 @@ function pageRendererWorker() {
       bitmap,
       dark: baked.dark,
       tint: baked.tint,
+      keep: kept,
       firstSliceMs: firstSliceAt ? firstSliceAt - started : drawnAt - started,
       drawMs: firstSliceAt ? drawnAt - firstSliceAt : 0
     }, [bitmap]);
@@ -434,6 +488,7 @@ function pageRendererWorker() {
         case "close": {
           const doc = docs.get(message.id);
           docs.delete(message.id);
+          for (const key of [...keeps.keys()]) if (key.startsWith(`${message.id}:`)) keeps.delete(key);
           if (doc) doc.destroy().catch(() => {});
           break;
         }
@@ -610,7 +665,7 @@ export function startPageRenderer() {
     }
     let url = "";
     try {
-      url = URL.createObjectURL(new Blob([`(${pageRendererWorker.toString()})();`], { type: "text/javascript" }));
+      url = URL.createObjectURL(new Blob([`(${pageRendererWorker.toString()})((${imageKeepKit.toString()})());`], { type: "text/javascript" }));
       const created = new Worker(url, { name: "recall-page-renderer" });
       const answer = await new Promise((resolve) => {
         const timer = setTimeout(() => resolve({ type: "error", message: "it did not start in time" }), PDF_RENDER_WORKER_START_MS);
@@ -701,18 +756,20 @@ function rendererJob(message) {
 // Draw one page for keeping: `width` device pixels across, dark page baked in
 // when `dark`, and — when `ops` (recorded mark drawing, see
 // src/render/canvas-record.js) are given — a second, marked picture as well.
-// Resolves { plain, marked, width, height, pixelWidth, pixelHeight, dark,
-// firstSliceMs, drawMs, encodeMs }, the pictures as JPEG blobs.
+// Resolves { plain, marked, width, height, pixelWidth, pixelHeight, dark, tint,
+// keep, firstSliceMs, drawMs, encodeMs }, the pictures as JPEG blobs; `keep` is
+// the page's kept pictures (src/documents/pdf-image-keep.js), for its record.
 export function renderPagePicture({ id, pageNumber, width, dark = false, tint = null, ops = null, quality = 0.9 }) {
   return rendererJob({ type: "picture", id, pageNumber, width, dark, tint, ops, quality });
 }
 
 // Make a picture from a kept one, no pdf.js involved: `source` (a blob)
 // decoded, cropped to `crop` (source pixels) if given, scaled to
-// outWidth × outHeight, dark page baked in when `bakeDarkPage`, `ops` painted
-// on. Resolves { blob } — or { bitmap } with `as: "bitmap"`.
-export function composePagePicture({ source, crop = null, outWidth = 0, outHeight = 0, bakeDarkPage = false, tint = null, tintDark = false, ops = null, quality = 0.9, as = "blob" }) {
-  return rendererJob({ type: "compose", source, crop, outWidth, outHeight, bakeDarkPage, tint, tintDark, ops, quality, as });
+// outWidth × outHeight, dark page baked in when `bakeDarkPage` (keeping the
+// pictures `keep` names, src/documents/pdf-image-keep.js), `ops` painted on.
+// Resolves { blob } — or { bitmap } with `as: "bitmap"`.
+export function composePagePicture({ source, crop = null, outWidth = 0, outHeight = 0, bakeDarkPage = false, tint = null, tintDark = false, keep = null, ops = null, quality = 0.9, as = "blob" }) {
+  return rendererJob({ type: "compose", source, crop, outWidth, outHeight, bakeDarkPage, tint, tintDark, keep, ops, quality, as });
 }
 
 export function cleanupRenderPage(id, pageNumber) {
@@ -721,7 +778,7 @@ export function cleanupRenderPage(id, pageNumber) {
 }
 
 // Draw one page (or, with `region` and `density`, the detail tile over part of
-// one). Resolves { bitmap, dark, firstSliceMs, drawMs }; a cancel rejects with a
+// one). Resolves { bitmap, dark, tint, keep, firstSliceMs, drawMs }; a cancel rejects with a
 // RenderingCancelledException, as a pdf.js render task does.
 export function renderPageBitmap({ id, pageNumber, scale, outputScale = 1, region = null, density = 1, dark = false, tint = null }) {
   if (!pageRendererActive()) {

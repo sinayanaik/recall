@@ -233,6 +233,42 @@ function scannedPageImage(linesPerPage) {
   return { rows, pixels };
 }
 
+// ── Pictures beside the text ────────────────────────────────────────────────
+//
+// For dark page keeping a page's photographs (src/documents/pdf-image-keep.js):
+// below the text on every page, a PHOTO — a colourful RGB gradient, the kind
+// of picture an invert makes a negative of — and beside it a LINE DRAWING —
+// black bars on white, the kind of picture that should go dark with the page.
+// Rectangles in PDF user space: [x, y, width, height].
+export const PHOTO_RECT = [72, 200, 200, 150];
+export const LINE_ART_RECT = [330, 200, 200, 150];
+const PHOTO_SIDE = 32;
+
+// Each pixel's colour is a function of where it is, so a check can say what
+// any point of the photo should look like: red across, green down, blue
+// against both.
+export function photoPixel(u, v) {
+  return [Math.round(40 + 200 * u), Math.round(40 + 160 * v), Math.round(220 - 140 * u)];
+}
+
+function photoImage() {
+  let pixels = "";
+  for (let row = 0; row < PHOTO_SIDE; row += 1) {
+    for (let col = 0; col < PHOTO_SIDE; col += 1) {
+      const [r, g, b] = photoPixel((col + 0.5) / PHOTO_SIDE, (row + 0.5) / PHOTO_SIDE);
+      pixels += String.fromCharCode(r, g, b);
+    }
+  }
+  return pixels;
+}
+
+function lineArtImage() {
+  // 16 rows, one black in every eight: a drawing that is mostly paper.
+  let pixels = "";
+  for (let row = 0; row < 16; row += 1) pixels += row % 8 < 1 ? "\x00" : "\xff";
+  return pixels;
+}
+
 // { bytes, pages, linesPerPage, annotation } — everything the check needs to
 // know about what it is looking at.
 // `annotate: false` builds the SAME document with no Highlight annotation in
@@ -264,7 +300,7 @@ export function buildFixturePdf({
   pages = 4, linesPerPage = 12, annotate = true,
   width = PAGE_WIDTH, height = PAGE_HEIGHT,
   outline = true, headingSize = 0, heightForPage = null, scanned = false, splitWords = false,
-  overprint = false, links = false
+  overprint = false, links = false, photo = false
 } = {}) {
   const objects = [];       // 1-based; objects[i] is object i+1
   const push = (body) => { objects.push(body); return objects.length; };
@@ -309,15 +345,28 @@ export function buildFixturePdf({
   } : null;
   const linkIds = linkSpec ? [push(""), push(""), push("")] : [];
 
+  const photoIds = photo
+    ? [
+      push(`<< /Type /XObject /Subtype /Image /Width ${PHOTO_SIDE} /Height ${PHOTO_SIDE} /ColorSpace /DeviceRGB `
+        + `/BitsPerComponent 8 /Length ${PHOTO_SIDE * PHOTO_SIDE * 3} >>\nstream\n${photoImage()}\nendstream`),
+      push(`<< /Type /XObject /Subtype /Image /Width 1 /Height 16 /ColorSpace /DeviceGray `
+        + `/BitsPerComponent 8 /Length 16 >>\nstream\n${lineArtImage()}\nendstream`)
+    ]
+    : null;
+
   const pageIds = [];
   for (let pageNumber = 1; pageNumber <= pages; pageNumber++) {
-    const stream = scan
+    const pictures = photoIds
+      ? `\nq ${PHOTO_RECT[2]} 0 0 ${PHOTO_RECT[3]} ${PHOTO_RECT[0]} ${PHOTO_RECT[1]} cm /Ph Do Q`
+        + `\nq ${LINE_ART_RECT[2]} 0 0 ${LINE_ART_RECT[3]} ${LINE_ART_RECT[0]} ${LINE_ART_RECT[1]} cm /La Do Q`
+      : "";
+    const stream = (scan
       ? `q ${SCAN_MEASURE} 0 0 ${scan.rows} ${MARGIN_LEFT} ${SCAN_TOP - scan.rows} cm /Im1 Do Q`
       : splitWords
         ? splitWordStream()
         : overprint
           ? overprintStream()
-          : contentStreamFor(fixturePageLines(pageNumber, linesPerPage, { headingSize }));
+          : contentStreamFor(fixturePageLines(pageNumber, linesPerPage, { headingSize }))) + pictures;
     const contentId = push(`<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`);
     const pageAnnots = [
       ...(pageNumber === annotatedPage ? [annotationId] : []),
@@ -328,7 +377,9 @@ export function buildFixturePdf({
     const fonts = `/F1 ${fontId} 0 R`
       + (obliqueId ? ` /F2 ${obliqueId} 0 R` : "")
       + (courierId ? ` /F3 ${courierId} 0 R` : "");
-    const resources = scan ? `<< /XObject << /Im1 ${scanId} 0 R >> >>` : `<< /Font << ${fonts} >> >>`;
+    const resources = scan
+      ? `<< /XObject << /Im1 ${scanId} 0 R >> >>`
+      : `<< /Font << ${fonts} >>${photoIds ? ` /XObject << /Ph ${photoIds[0]} 0 R /La ${photoIds[1]} 0 R >>` : ""} >>`;
     pageIds.push(push(
       `<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 ${width} ${pageHeight}] `
       + `/Resources ${resources} /Contents ${contentId} 0 R${annots} >>`

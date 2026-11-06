@@ -47,10 +47,26 @@ const TILING_CALLS_TO = "v=this.getSizeAndScale(s,this.ctx.canvas.width,b[0],p-d
 const TILING_SIZE_FROM = "getSizeAndScale(t,e,n){t=Math.abs(t);const i=Math.max(TilingPattern.MAX_PATTERN_SIZE,e);let r=Math.ceil(t*n);r>=i?r=i:n=r/t;return{scale:n,size:r}}";
 const TILING_SIZE_TO = "getSizeAndScale(t,e,n,w){t=Math.abs(t);const i=Math.max(TilingPattern.MAX_PATTERN_SIZE,e);let r=Math.ceil(t*n);if(r>=i){r=i;if(Math.abs(w||0)*n>=i)n=r/t}else n=r/t;return{scale:n,size:r}}";
 
+// ── The operator list a render task drew from ───────────────────────────────
+//
+// Dark page keeps a page's pictures as they are (src/documents/pdf-image-
+// keep.js), and finds them in the operator list pdf.js built to draw the page.
+// A RenderTask holds that list on its internal task, in a private field (#m) no
+// caller can reach, so asking for it again meant page.getOperatorList(): the
+// whole content stream parsed a second time, every image decoded again. This
+// adds a read-only getter for the list the render already has. Missing, the
+// app falls back to getOperatorList().
+const RENDER_TASK_FROM = "class RenderTask{#m=null;constructor(t){this.#m=t;this.onContinue=null}";
+const RENDER_TASK_TO = "class RenderTask{#m=null;constructor(t){this.#m=t;this.onContinue=null}get recallOperatorList(){return this.#m.operatorList}";
+
 export const PDFJS_PATCHES = [
   {
     name: "tiling-pattern-clamp",
     edits: [[TILING_CALLS_FROM, TILING_CALLS_TO], [TILING_SIZE_FROM, TILING_SIZE_TO]]
+  },
+  {
+    name: "render-task-operator-list",
+    edits: [[RENDER_TASK_FROM, RENDER_TASK_TO]]
   }
 ];
 

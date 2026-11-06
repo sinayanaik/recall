@@ -36,6 +36,7 @@ import { cleanupRenderDocument, cleanupRenderPage, closeRenderDocument, composeP
 import { createRecordingContext } from "../render/canvas-record.js?v=__BUILD__";
 import { hash32 } from "../core/text.js?v=__BUILD__";
 import { paintRegionMarks, regionMarksOnPage } from "./pdf-region-marks.js?v=__BUILD__";
+import { imageKeepKit } from "./pdf-image-keep.js?v=__BUILD__";
 import { dropPicture, getPictureBlob, holdPictureUrl, loadPaperPictures, pagesWithPictures, widestStoredPicture, pdfPicturesTurnedOff, pictureKey, putPicture, releasePictureUrl, setPdfPicturesTurnedOff, storedPicture, touchPicture } from "./pdf-pictures.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { paintDocumentHighlights } from "./pdf-highlights.js?v=__BUILD__";
@@ -4135,9 +4136,12 @@ async function obtainPagePicture({ entry, pageNumber, viewport, stale, takeSlot,
     // never turned into another tint, which would compound the two.
     const wanted = paperKeyParts(paper);
     let other = null;
+    // A source must say which of its pictures were kept through the paper
+    // (src/documents/pdf-image-keep.js); one that does not is drawn afresh.
     for (const sourcePaper of (wanted.dark ? ["dark", "light"] : ["light", "dark"])) {
       if (sourcePaper === paper) continue;
       other = storedPicture({ sha, page: pageNumber, paper: sourcePaper, minWidth });
+      if (other && !Array.isArray(other.keep)) other = null;
       if (other) break;
     }
     const source = other ? await getPictureBlob(other.key) : null;
@@ -4146,9 +4150,9 @@ async function obtainPagePicture({ entry, pageNumber, viewport, stale, takeSlot,
       const started = performance.now();
       yieldPrerender();
       const invert = paperKeyParts(other.paper).dark !== wanted.dark;
-      const composed = await composePagePicture({ source, bakeDarkPage: invert, tint: wanted.tint, tintDark: wanted.dark, quality }).promise;
+      const composed = await composePagePicture({ source, bakeDarkPage: invert, tint: wanted.tint, tintDark: wanted.dark, keep: other.keep, quality }).promise;
       if (stale()) return null;
-      const meta = { sha, page: pageNumber, width: other.width, height: other.height, paper, kind: "plain", stamp: "" };
+      const meta = { sha, page: pageNumber, width: other.width, height: other.height, paper, kind: "plain", stamp: "", keep: other.keep };
       meta.key = pictureKey(meta);
       putPicture(meta, composed.blob);
       samplePdfTiming("compose", performance.now() - started);
@@ -4177,7 +4181,7 @@ async function obtainPagePicture({ entry, pageNumber, viewport, stale, takeSlot,
     } finally {
       if (entry.renderTask === job) entry.renderTask = null;
     }
-    const base = { sha, page: pageNumber, width: result.pixelWidth, height: result.pixelHeight, paper: paperKey(result.dark, result.tint) };
+    const base = { sha, page: pageNumber, width: result.pixelWidth, height: result.pixelHeight, paper: paperKey(result.dark, result.tint), keep: result.keep || [] };
     const meta = { ...base, kind: "plain", stamp: "" };
     meta.key = pictureKey(meta);
     // Kept whatever happens next — a page drawn for a zoom that has since gone
@@ -4208,7 +4212,7 @@ async function obtainPagePicture({ entry, pageNumber, viewport, stale, takeSlot,
   yieldPrerender();
   const composed = await composePagePicture({ source: plain.blob, ops, quality }).promise;
   if (stale()) return null;
-  const marked = { sha, page: pageNumber, width: plain.picture.width, height: plain.picture.height, paper, kind: "marked", stamp: want.stamp };
+  const marked = { sha, page: pageNumber, width: plain.picture.width, height: plain.picture.height, paper, kind: "marked", stamp: want.stamp, keep: plain.picture.keep };
   marked.key = pictureKey(marked);
   putPicture(marked, composed.blob);
   samplePdfTiming("compose", performance.now() - started);
@@ -4464,7 +4468,7 @@ async function runPrerender() {
   const started = performance.now();
   try {
     const result = await job.promise;
-    const meta = { sha, page: next, width: result.pixelWidth, height: result.pixelHeight, paper: paperKey(result.dark, result.tint), kind: "plain", stamp: "" };
+    const meta = { sha, page: next, width: result.pixelWidth, height: result.pixelHeight, paper: paperKey(result.dark, result.tint), kind: "plain", stamp: "", keep: result.keep || [] };
     await putPicture(meta, result.plain);
     pictureCounts.ahead += 1;
   } catch (error) {
@@ -4633,10 +4637,15 @@ function startPageDraw({ entry, pageNumber, page, viewport, outputScale = 1, reg
       proceed();
     };
     return renderTask.promise
-      .then(() => {
+      .then(async () => {
         const drawnAt = performance.now();
-        // Dark page goes into the pixels here, before anyone sees them.
-        bakePagePaper(canvas);
+        // Dark page goes into the pixels here, before anyone sees them — the
+        // page's photographs and figures left as they are.
+        const map = region
+          ? imageKeep.regionMap(viewport.width, viewport.height, region, density)
+          : imageKeep.pageMap(viewport.width, viewport.height, outputScale);
+        const kept = await keptPicturesOnMain({ pageNumber, page, renderTask, viewport, canvas, map, whole: !region });
+        bakePagePaper(canvas, kept, map);
         const first = firstSliceAt || drawnAt;
         return { canvas, firstSliceMs: first - startedAt, drawMs: Math.max(0, drawnAt - first - heldMs), heldMs, swapMs: 0, where: "main" };
       })
@@ -4829,8 +4838,8 @@ function noteCanvasSetup(dark = null) {
     slots: renderConcurrency(),
     drawn: worker ? "in a background thread" : `on the main thread (${pageRendererStatus() || "renderer not in use"})`,
     dark: worker
-      ? (pageRendererBakesDark() ? "drawn into the page" : "CSS filter")
-      : (mainThreadDarkNote || (canBakeDarkPage() ? "drawn into the page" : "CSS filter"))
+      ? (pageRendererBakesDark() ? "drawn into the page, pictures kept" : "CSS filter")
+      : (mainThreadDarkNote || (canBakeDarkPage() ? "drawn into the page, pictures kept" : "CSS filter"))
   });
 }
 
@@ -4887,7 +4896,10 @@ function noteDarkBakeTime(ms) {
 // A tone's tint goes in with it: the floor a dark page is lifted to IS the
 // paper's colour (lighten leaves the inverted print, which is lighter, alone),
 // and a light tint is multiplied into the white (black print stays black).
-function bakePagePaper(canvas) {
+//
+// `kept` are the page's pictures worth keeping (keptPicturesOnMain), put back
+// as they were drawn once the paper is on; `map` places them on this canvas.
+function bakePagePaper(canvas, kept = null, map = null) {
   if (!canvas || !canBakeDarkPage()) return;
   const dark = stageIsDark();
   const tint = stageTone.tint;
@@ -4896,26 +4908,56 @@ function bakePagePaper(canvas) {
   try {
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
-    ctx.save();
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    if (dark) {
-      ctx.filter = PDF_DARK_FILTER;
-      ctx.globalCompositeOperation = "copy";
-      ctx.drawImage(canvas, 0, 0);
-      ctx.filter = "none";
-      ctx.globalCompositeOperation = "lighten";
-      ctx.fillStyle = tint || "#030303";
-    } else {
-      ctx.globalCompositeOperation = "multiply";
-      ctx.fillStyle = tint;
-    }
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.restore();
+    imageKeep.bake(ctx, kept, map, () => {
+      ctx.save();
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      if (dark) {
+        ctx.filter = PDF_DARK_FILTER;
+        ctx.globalCompositeOperation = "copy";
+        ctx.drawImage(canvas, 0, 0);
+        ctx.filter = "none";
+        ctx.globalCompositeOperation = "lighten";
+        ctx.fillStyle = tint || "#030303";
+      } else {
+        ctx.globalCompositeOperation = "multiply";
+        ctx.fillStyle = tint;
+      }
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.restore();
+    }, { floor: dark });
     markPixelsPaper(canvas, dark, tint);
     noteDarkBakeTime(performance.now() - started);
   } catch (error) {
     console.warn("Could not darken the page in place — the CSS filter will do it", error);
   }
+}
+
+// ── Pictures kept through the paper ─────────────────────────────────────────
+//
+// Which of a page's pictures keep their own pixels on a dark (or tinted) page:
+// src/documents/pdf-image-keep.js finds them in the operator list the render
+// just drew from and judges each from the page as drawn. Decided once per page
+// from a whole page and filed on the open paper, so a detail tile over a zoomed
+// page keeps the same pictures as the page under it. Pages drawn in the worker
+// are judged there (pdf-render-worker.js); this is the main thread's half.
+const imageKeep = imageKeepKit();
+
+async function keptPicturesOnMain({ pageNumber, page, renderTask, viewport, canvas, map, whole }) {
+  const open = openPdf;
+  if (!open || !canBakeDarkPage() || (!stageIsDark() && !stageTone.tint)) return null;
+  if (!open.keptPictures) open.keptPictures = new Map();
+  if (open.keptPictures.has(pageNumber)) return open.keptPictures.get(pageNumber);
+  let kept = [];
+  try {
+    let ops = renderTask.recallOperatorList;
+    if (!ops?.fnArray) ops = await page.getOperatorList();
+    const list = imageKeep.quads(ops, window.pdfjsLib?.OPS, viewport);
+    kept = list.length ? imageKeep.classify(canvas, list, map) : [];
+  } catch (_) {
+    kept = [];
+  }
+  if (whole && openPdf === open) open.keptPictures.set(pageNumber, kept);
+  return kept;
 }
 
 // The reader flipped dark page (or a notebook's paper followed the theme): every
