@@ -661,86 +661,200 @@
   margin: auto;
 }
 
-/* ── The style popover at a shape ──────────────────────────────────────────
-   Up under a selected shape — or text being typed — with the shape panel
-   built a second time (src/documents/pdf-shape-style-popover.js), so a shape
-   already on the page is restyled where it is, with any tool armed. The box
-   is the pen panel's own; the tier is the block popovers'. */
+/* ── The style bar at a shape ──────────────────────────────────────────────
+   Up above a selected shape — or text being typed — with the shape panel
+   built a second time as one slim row of icons (src/documents/pdf-shape-style-
+   popover.js, src/documents/pdf-shape-panel.js), each opening a small tray on
+   the side away from the shape. The tier is the block popovers'. */
 .shape-style-popover {
   position: fixed;
   top: 0;
   left: 0;
   z-index: 610;
-  width: min(320px, calc(100vw - 16px));
-  max-height: min(60vh, 460px);
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  padding: 4px 10px 8px;
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  max-width: calc(100vw - 16px);
+  padding: 3px;
+  border: 1px solid color-mix(in srgb, var(--line) 80%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel) 90%, transparent);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
   color: var(--text);
-  box-shadow: 0 14px 34px rgb(0 0 0 / 0.34);
+  box-shadow: 0 4px 14px rgb(0 0 0 / 0.22);
 }
 
 .shape-style-popover[hidden] {
   display: none;
 }
 
-/* Folded: only the row of actions — Aa Style opens the panel above it. */
-.shape-style-popover.is-compact {
-  width: auto;
-  max-width: calc(100vw - 16px);
-  padding: 6px;
-}
-
-.shape-style-popover.is-compact .shape-style-foot {
-  margin-top: 0;
-  padding-top: 0;
-  border-top: 0;
-}
-
-.shape-style-btn[data-shape-style-action="style"][aria-pressed="true"] {
-  background: color-mix(in srgb, var(--accent) 18%, var(--panel));
-  border-color: var(--accent);
-}
-
-.shape-pop-panel.is-floating .shape-pop-row {
-  margin-top: 6px;
-}
-
-.shape-pop-panel.is-floating .shape-pop-label {
-  min-width: 50px;
-}
-
-.shape-style-foot {
+.shape-pop-panel.is-floating {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px solid var(--line);
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+  min-width: 0;
+  max-width: 100%;
 }
 
-.shape-style-btn {
-  width: auto;
-  min-width: 34px;
-  height: 30px;
-  padding: 0 10px;
-  font-size: 0.78rem;
-  font-weight: 600;
-  white-space: nowrap;
+/* Over the shape: the tray opens upward, away from it, and the bar stays
+   against the shape. */
+.shape-style-popover.is-above .shape-pop-panel.is-floating {
+  flex-direction: column-reverse;
 }
 
-.shape-style-btn[hidden] {
+.shape-bar {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 2px;
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.shape-bar-end {
+  display: contents;
+}
+
+.shape-bar-btn {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  min-width: 28px;
+  height: 28px;
+  padding: 0 4px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.8rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.shape-bar-btn[hidden] {
   display: none;
 }
 
-.shape-style-btn.is-danger {
+.shape-bar-btn:hover {
+  background: color-mix(in srgb, var(--text) 9%, transparent);
+}
+
+.shape-bar-btn[aria-expanded="true"],
+.shape-bar-btn[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--accent) 70%, transparent);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.shape-bar-btn svg {
+  display: block;
+  width: 18px;
+  height: 18px;
+}
+
+.shape-bar-btn.is-danger {
   color: var(--danger, #c0392b);
 }
 
-/* Done last, pushed to the far end — when there is a far end to push to. */
-.shape-style-popover:not(.is-compact) .shape-style-btn[data-shape-style-action="done"] {
-  margin-left: auto;
+/* Done, set a little apart from the rest. */
+.shape-bar-btn[data-shape-style-action="done"] {
+  margin-left: 4px;
+  color: var(--accent);
+}
+
+/* What each icon wears: the colour's dot, the size's number, the fill. */
+.shape-bar-dot,
+.shape-bar-fill {
+  display: block;
+  width: 16px;
+  height: 16px;
+  border: 1px solid color-mix(in srgb, var(--text) 35%, transparent);
+  border-radius: 999px;
+}
+
+.shape-bar-fill {
+  border-radius: 4px;
+}
+
+.shape-bar-fill.is-none {
+  background: linear-gradient(135deg, transparent 44%, #dc2626 44%, #dc2626 56%, transparent 56%), var(--panel);
+}
+
+.shape-bar-num {
+  min-width: 1.4em;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.shape-bar-glyph {
+  display: block;
+}
+
+/* The tray: the controls of one icon, and nothing else. */
+.shape-sheet {
+  max-width: min(330px, calc(100vw - 24px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  margin-top: 3px;
+  padding: 2px 5px 5px;
+  border-top: 1px solid var(--line);
+}
+
+.shape-style-popover.is-above .shape-sheet {
+  margin-top: 0;
+  margin-bottom: 3px;
+  border-top: 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.shape-sheet[hidden] {
+  display: none;
+}
+
+.shape-pop-panel.is-floating .shape-pop-row {
+  margin-top: 5px;
+  gap: 5px;
+}
+
+/* A tray of one row says what it is by its icon; only Box and the heads,
+   with rows that would otherwise look alike, keep their small words. */
+.shape-pop-panel.is-floating .shape-pop-label {
+  display: none;
+}
+
+.shape-sheet[data-tray="box"] .shape-pop-label,
+.shape-sheet[data-tray="heads"] .shape-pop-label {
+  display: inline;
+  min-width: 42px;
+  font-size: 0.7rem;
+}
+
+.shape-pop-panel.is-floating .shape-pop-slider {
+  flex: 1 1 110px;
+  min-width: 90px;
+}
+
+.shape-pop-panel.is-floating .shape-pop-swatch,
+.shape-pop-panel.is-floating .shape-pop-colour {
+  width: 20px;
+  height: 20px;
+}
+
+.shape-pop-panel.is-floating .shape-pop-row[role="group"] {
+  gap: 4px;
+}
+
+.shape-pop-panel.is-floating .shape-pop-number {
+  width: 3.6em;
+  height: 26px;
+  box-sizing: border-box;
+}
+
+.shape-pop-panel.is-floating .shape-pop-seg {
+  min-width: 30px;
+  height: 26px;
+  padding: 0 7px;
 }
