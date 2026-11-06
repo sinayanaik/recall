@@ -9,7 +9,7 @@
 
 const WEB_CAPTURE_MAX = 2048;
 
-function clean(value, max = 300) {
+function cleanInfoField(value, max = 300) {
   return String(value ?? "")
     .replace(/[\u0000-\u001f\u007f]/g, " ")
     .replace(/\s+/g, " ")
@@ -25,21 +25,21 @@ function clean(value, max = 300) {
 export function webCaptureOf(metadata) {
   const info = (metadata && metadata.info) || {};
   const custom = info.Custom || {};
-  const url = clean(custom.RecallSourceURL, WEB_CAPTURE_MAX);
+  const url = cleanInfoField(custom.RecallSourceURL, WEB_CAPTURE_MAX);
   if (!/^https?:\/\/\S+$/i.test(url)) return null;
-  let site = clean(custom.RecallSiteName, 120);
+  let site = cleanInfoField(custom.RecallSiteName, 120);
   if (!site) {
     try { site = new URL(url).hostname.replace(/^www\./, ""); } catch { site = ""; }
   }
-  const capturedAt = clean(custom.RecallCapturedAt, 40);
-  const published = clean(custom.RecallPublished, 40);
+  const capturedAt = cleanInfoField(custom.RecallCapturedAt, 40);
+  const published = cleanInfoField(custom.RecallPublished, 40);
   return {
     url,
     site,
     capturedAt: Number.isNaN(Date.parse(capturedAt)) ? "" : capturedAt,
     published: Number.isNaN(Date.parse(published)) ? "" : published,
-    author: clean(info.Author, 200),
-    title: clean(info.Title, 300)
+    author: cleanInfoField(info.Author, 200),
+    title: cleanInfoField(info.Title, 300)
   };
 }
 

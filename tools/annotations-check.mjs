@@ -644,6 +644,9 @@ sections.push(async () => {
   const sticky = await page.evaluate(`async () => {
     const { api, settle } = window.__recall;
     api.selectShape(null);
+    // The Text box above put Text away (one box per press of T), so the Shapes
+    // tool is taken up again before its Sticky note.
+    api.chooseInkTool("shape");
     api.setShapeType("sticky");
     api.setShapeSettings({ stroke: "#e0b400" });
     await window.__drag("sticky", [window.__at(3, 0.85, 0.1)]);
@@ -910,7 +913,16 @@ sections.push(async () => {
     editor.textContent = "a typewriter line that is longer";
     await settle(30);
     const wide = editor.getBoundingClientRect().width;
-    // A tap somewhere else: the first is kept, a second cursor opens there.
+    // Putting the words down — a tap elsewhere moves focus off the box, which is
+    // this blur — keeps them and puts Text away: one box per press of T
+    // (finishTypewriterBox, src/ui/ink-rail.js).
+    editor.blur();
+    await settle(150);
+    const putAway = api.inkTool() === "pen" && !document.querySelector(".pdf-shape-editor")
+      && button.getAttribute("aria-pressed") === "false";
+    // Text pressed again, and a tap somewhere else opens a second box there.
+    button.click();
+    await settle(80);
     await window.__drag("text", [window.__at(4, 0.6, 0.35)]);
     await settle(200);
     const second = document.querySelector(".pdf-shape-editor");
@@ -920,17 +932,24 @@ sections.push(async () => {
     const shapes = api.documentShapes(4).slice(before);
     const first = shapes[0];
     const w = Math.abs(first.shape.p[1][0] - first.shape.p[0][0]);
-    // One tap on typed text, the typewriter armed, opens it again.
+    // One tap on typed text, the typewriter armed, opens it again. Text is
+    // pressed first: its bar can move the page, so the tap is aimed after.
+    api.selectShape(null);
+    button.click();
+    await settle(80);
     const vp = api.pdfPageViewport(4);
     const r = document.querySelector('.pdf-page[data-page-number="4"]').getBoundingClientRect();
     const c = vp.convertToViewportPoint(first.shape.p[0][0] + 4, (first.shape.p[0][1] + first.shape.p[1][1]) / 2);
-    api.selectShape(null);
     await window.__drag("text", [[r.left + c[0], r.top + c[1]]]);
     await settle(150);
     const reopened = document.querySelector(".pdf-shape-editor")?.textContent || null;
     api.commitShapeTextEditor();
     api.selectShape(null);
-    // Text pressed again: the pen back, and the bar shut as it was.
+    await settle(80);
+    // Text pressed and pressed again, with nothing typed: the pen back, and the
+    // bar shut as it was.
+    button.click();
+    await settle(80);
     button.click();
     await settle(80);
     const backToPen = api.inkTool() === "pen" && document.getElementById("documentInkRail").hidden;
@@ -945,7 +964,7 @@ sections.push(async () => {
     const doneBack = api.inkTool() === "pen" && !rail.hidden && !rail.classList.contains("is-typing");
     api.toggleInkRail(false);
     return {
-      backToPen, textUnlit, doneBack, inRail, flyoutText, textBar, lit,
+      putAway, backToPen, textUnlit, doneBack, inRail, flyoutText, textBar, lit,
       visible, armed, panelClosed, focused, grew: wide > narrow + 20, made: shapes.length,
       texts: shapes.map((r) => r.shape.text), fit: first.shape.fit, width: w, colour: first.shape.font.color, reopened
     };
@@ -953,7 +972,7 @@ sections.push(async () => {
   check("Text is a button of its own in the top row, not on the pen's bar nor in the Shapes list", typed.visible && !typed.inRail && !typed.flyoutText, JSON.stringify(typed));
   check("one press arms the typewriter with the bar as a Text bar, Text lit and the pen not", typed.armed && typed.panelClosed && typed.textBar && typed.lit, JSON.stringify(typed));
   check("a tap puts a cursor there (a mouse too), and the line grows as it is typed", typed.focused && typed.grew, JSON.stringify(typed));
-  check("a tap elsewhere keeps what was typed and starts again there", typed.made === 2 && typed.texts.join("|") === "a typewriter line that is longer|second", JSON.stringify(typed));
+  check("putting the words down keeps them and puts Text away; Text again types a second box", typed.putAway && typed.made === 2 && typed.texts.join("|") === "a typewriter line that is longer|second", JSON.stringify(typed));
   check("typed text is boxed to its words, in the tool's own text colour", typed.fit === true && typed.width > 60 && typed.colour === "#16181d", JSON.stringify(typed));
   check("one tap on typed text, with Text armed, opens it to type in", typed.reopened === "a typewriter line that is longer", JSON.stringify(typed));
   check("Text pressed again puts the pen back and the bar shut as it was; Done does the same from an open bar", typed.backToPen && typed.textUnlit && typed.doneBack, JSON.stringify(typed));
@@ -1637,8 +1656,14 @@ sections.push(async () => {
     for (let i = 0; i < 60 && !lit; i += 1) {
       const current = document.querySelector("#highlightCycleBody .hl-note.is-current")?.dataset.highlightKey || "";
       if (current === "doc:" + id) {
-        await settle(200);
-        lit = Boolean(document.querySelector('.pdf-mark-envelope.is-linked[data-highlight-id="' + id + '"]'));
+        // Waited for, not read once: stepping to it scrolls the paper, and a
+        // page repainting its marks rebuilds the layer and lights the mark
+        // again a moment later (repaintHighlightLink) — read at 200ms, that
+        // moment was sometimes still to come.
+        for (let wait = 0; wait < 10 && !lit; wait += 1) {
+          await settle(200);
+          lit = Boolean(document.querySelector('.pdf-mark-envelope.is-linked[data-highlight-id="' + id + '"]'));
+        }
         break;
       }
       api.cycleHighlightBy(1);
@@ -1841,6 +1866,75 @@ sections.push(async () => {
     return row ? row.textContent : null;
   }`);
   check("the PDF tab's export menu offers it", /With annotations/.test(menu || ""), String(menu));
+});
+
+// ── Words typed with Text, put down by a REAL click elsewhere ──────────────
+//
+// One press of T is one box (860bd79): a click elsewhere puts the words down
+// and the Text tool away. The typewriter section above drives that with
+// dispatched events and a blur(), which cannot tell whether a real press moves
+// focus off the box — and if it did not, the words would sit in an open editor
+// that nothing saves. Its old version, still expecting Text to stay armed,
+// overwrote the open box's words itself and read as "the first line was lost".
+// So here it is with the browser's own input: typed, clicked away from, saved,
+// read back from the library.
+sections.push(async () => {
+  await page.evaluate(POINTER_SRC);
+  const mouse = async (type, x, y, buttons) => page.call("Input.dispatchMouseEvent", {
+    type, x, y, button: "left", buttons, clickCount: 1, pointerType: "mouse"
+  });
+  const click = async ([x, y]) => {
+    await mouse("mouseMoved", x, y, 0);
+    await mouse("mousePressed", x, y, 1);
+    await mouse("mouseReleased", x, y, 0);
+  };
+  const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+  const armed = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    api.selectShape(null);
+    api.chooseInkTool("pen");
+    api.toggleInkRail(false);
+    // Page 2, near its top, and away from the boxes the sections above left on
+    // pages 1, 3 and 4: a click on typed text with Text armed opens THAT box
+    // rather than putting a new one down. Asserted below, not assumed.
+    api.scrollToDocumentPage(2, 0, { smooth: false });
+    await settle(300);
+    document.getElementById("documentTextBtn").click();
+    await settle(150);
+    const at = window.__at(2, 0.15, 0.12);
+    const away = window.__at(2, 0.6, 0.4);
+    const free = [at, away].every(([x, y]) => y > 0 && y < innerHeight && document.elementFromPoint(x, y)?.closest('.pdf-page[data-page-number="2"]') && !document.elementFromPoint(x, y)?.closest(".pdf-shape, .pdf-shape-text"));
+    return { before: api.documentShapes(2).length, at, away, free };
+  }`);
+  check("(the two clicks below land on page 2, on nothing already there)", armed.free, JSON.stringify(armed));
+  await click(armed.at);
+  await pause(300);
+  await page.call("Input.insertText", { text: "typed, then clicked away from" });
+  await pause(200);
+  await click(armed.away);
+  await pause(400);
+  const put = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const made = api.documentShapes(2).slice(${armed.before});
+    const out = {
+      texts: made.map((r) => r.shape.text),
+      editorOpen: Boolean(document.querySelector(".pdf-shape-editor")),
+      tool: api.inkTool(),
+      textLit: document.getElementById("documentTextBtn").getAttribute("aria-pressed") === "true"
+    };
+    await api.flushPendingDeckAutosave();
+    await settle(300);
+    await api.loadDeckFromLibrary(api.readLocalDeckIndex()[0].id);
+    await settle(600);
+    api.closeMyDecksPanel();
+    api.setViewMode("document");
+    await api.openDocumentView();
+    await settle(500);
+    out.afterReload = api.documentShapes(null).filter((r) => r.shape.text === "typed, then clicked away from").length;
+    return out;
+  }`);
+  check("a real click elsewhere puts typed words down: kept, the box closed, Text put away", put.texts.length === 1 && put.texts[0] === "typed, then clicked away from" && !put.editorOpen && put.tool === "pen" && !put.textLit, JSON.stringify(put));
+  check("...and the words are in the file when it is opened again", put.afterReload === 1, JSON.stringify(put));
 });
 
 try {
