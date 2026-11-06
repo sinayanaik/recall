@@ -133,7 +133,11 @@ function pageRendererWorker() {
   // The same two filters the CSS applies, once, into the pixels — and floored
   // at #030303 so a dark page is never PURE black, which is how the main thread
   // recognises a canvas the browser cleared.
-  function bakeDark(canvas, ctx) {
+  //
+  // `floor` is the paper's colour on a tinted dark tone (src/format/paper-
+  // tones.js): lightening with it turns the inverted black into that paper and
+  // leaves the inverted print, which is lighter, as it was.
+  function bakeDark(canvas, ctx, floor) {
     ctx.save();
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.filter = DARK_FILTER;
@@ -141,9 +145,33 @@ function pageRendererWorker() {
     ctx.drawImage(canvas, 0, 0);
     ctx.filter = "none";
     ctx.globalCompositeOperation = "lighten";
-    ctx.fillStyle = "#030303";
+    ctx.fillStyle = floor || "#030303";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.restore();
+  }
+
+  // A tinted LIGHT tone (sepia): the white of the page multiplied into the
+  // paper's colour, black print left black. Needs no filter, so it works
+  // wherever a canvas does.
+  function bakeTint(canvas, ctx, mode, colour) {
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalCompositeOperation = mode;
+    ctx.fillStyle = colour;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.restore();
+  }
+
+  // The paper a page asked for, into its pixels. Returns what was actually
+  // baked — { dark, tint } — which is what the main thread files it under.
+  function bakePaper(canvas, ctx, dark, tint) {
+    if (dark) {
+      if (!canDark) return { dark: false, tint: null };
+      bakeDark(canvas, ctx, tint);
+      return { dark: true, tint: tint || null };
+    }
+    if (tint) bakeTint(canvas, ctx, "multiply", tint);
+    return { dark: false, tint: tint || null };
   }
 
   function cancelledError(job) {
@@ -206,7 +234,7 @@ function pageRendererWorker() {
   // is drawn once per paper per device, not once per zoom, so nothing is gained
   // by holding it.
   async function renderPicture(message) {
-    const { job, id, pageNumber, width, dark, ops, quality } = message;
+    const { job, id, pageNumber, width, dark, tint, ops, quality } = message;
     const doc = docs.get(id);
     if (!doc) throw new Error("that document is not open in the page renderer");
     const started = performance.now();
@@ -232,8 +260,7 @@ function pageRendererWorker() {
     }
     if (cancelled.has(job)) throw cancelledError(job);
     const drawnAt = performance.now();
-    const baked = Boolean(dark && canDark);
-    if (baked) bakeDark(canvas, ctx);
+    const baked = bakePaper(canvas, ctx, dark, tint);
     const plain = await encode(canvas, quality);
     let marked = null;
     if (ops && ops.length) {
@@ -251,7 +278,8 @@ function pageRendererWorker() {
       height: viewport.height,
       pixelWidth: Math.round(viewport.width),
       pixelHeight: Math.round(viewport.height),
-      dark: baked,
+      dark: baked.dark,
+      tint: baked.tint,
       firstSliceMs: firstSliceAt ? firstSliceAt - started : drawnAt - started,
       drawMs: firstSliceAt ? drawnAt - firstSliceAt : 0,
       encodeMs: encodedAt - drawnAt
@@ -264,7 +292,7 @@ function pageRendererWorker() {
   // What a new highlight, a dark page toggle and a region's picture cost once
   // the page has been drawn: a decode and an encode.
   async function composePicture(message) {
-    const { job, source, crop, outWidth, outHeight, bakeDarkPage, ops, quality, as } = message;
+    const { job, source, crop, outWidth, outHeight, bakeDarkPage, tint, tintDark, ops, quality, as } = message;
     const started = performance.now();
     const bitmap = crop
       ? await createImageBitmap(source, crop.x, crop.y, crop.width, crop.height)
@@ -277,6 +305,9 @@ function pageRendererWorker() {
     ctx.drawImage(bitmap, 0, 0, width, height);
     bitmap.close();
     if (bakeDarkPage && canDark) bakeDark(canvas, ctx);
+    // A tint on top of a page already on the right polarity: lightened into a
+    // dark one, multiplied into a light one.
+    if (tint) bakeTint(canvas, ctx, tintDark ? "lighten" : "multiply", tint);
     if (ops && ops.length) replayOps(canvas, ctx, ops);
     let blob = null;
     let image = null;
@@ -287,7 +318,7 @@ function pageRendererWorker() {
   }
 
   async function render(message) {
-    const { job, id, pageNumber, scale, outputScale, region, density, dark } = message;
+    const { job, id, pageNumber, scale, outputScale, region, density, dark, tint } = message;
     const doc = docs.get(id);
     if (!doc) throw new Error("that document is not open in the page renderer");
     const started = performance.now();
@@ -322,14 +353,14 @@ function pageRendererWorker() {
     }
     if (cancelled.has(job)) throw cancelledError(job);
     const drawnAt = performance.now();
-    const baked = Boolean(dark && canDark);
-    if (baked) bakeDark(canvas, ctx);
+    const baked = bakePaper(canvas, ctx, dark, tint);
     const bitmap = canvas.transferToImageBitmap();
     post({
       type: "rendered",
       job,
       bitmap,
-      dark: baked,
+      dark: baked.dark,
+      tint: baked.tint,
       firstSliceMs: firstSliceAt ? firstSliceAt - started : drawnAt - started,
       drawMs: firstSliceAt ? drawnAt - firstSliceAt : 0
     }, [bitmap]);
@@ -672,16 +703,16 @@ function rendererJob(message) {
 // src/render/canvas-record.js) are given — a second, marked picture as well.
 // Resolves { plain, marked, width, height, pixelWidth, pixelHeight, dark,
 // firstSliceMs, drawMs, encodeMs }, the pictures as JPEG blobs.
-export function renderPagePicture({ id, pageNumber, width, dark = false, ops = null, quality = 0.9 }) {
-  return rendererJob({ type: "picture", id, pageNumber, width, dark, ops, quality });
+export function renderPagePicture({ id, pageNumber, width, dark = false, tint = null, ops = null, quality = 0.9 }) {
+  return rendererJob({ type: "picture", id, pageNumber, width, dark, tint, ops, quality });
 }
 
 // Make a picture from a kept one, no pdf.js involved: `source` (a blob)
 // decoded, cropped to `crop` (source pixels) if given, scaled to
 // outWidth × outHeight, dark page baked in when `bakeDarkPage`, `ops` painted
 // on. Resolves { blob } — or { bitmap } with `as: "bitmap"`.
-export function composePagePicture({ source, crop = null, outWidth = 0, outHeight = 0, bakeDarkPage = false, ops = null, quality = 0.9, as = "blob" }) {
-  return rendererJob({ type: "compose", source, crop, outWidth, outHeight, bakeDarkPage, ops, quality, as });
+export function composePagePicture({ source, crop = null, outWidth = 0, outHeight = 0, bakeDarkPage = false, tint = null, tintDark = false, ops = null, quality = 0.9, as = "blob" }) {
+  return rendererJob({ type: "compose", source, crop, outWidth, outHeight, bakeDarkPage, tint, tintDark, ops, quality, as });
 }
 
 export function cleanupRenderPage(id, pageNumber) {
@@ -692,7 +723,7 @@ export function cleanupRenderPage(id, pageNumber) {
 // Draw one page (or, with `region` and `density`, the detail tile over part of
 // one). Resolves { bitmap, dark, firstSliceMs, drawMs }; a cancel rejects with a
 // RenderingCancelledException, as a pdf.js render task does.
-export function renderPageBitmap({ id, pageNumber, scale, outputScale = 1, region = null, density = 1, dark = false }) {
+export function renderPageBitmap({ id, pageNumber, scale, outputScale = 1, region = null, density = 1, dark = false, tint = null }) {
   if (!pageRendererActive()) {
     return { promise: Promise.reject(Object.assign(new Error(rendererUnavailable), { name: "PageRendererUnavailable" })), cancel() {} };
   }
@@ -705,7 +736,7 @@ export function renderPageBitmap({ id, pageNumber, scale, outputScale = 1, regio
     });
   });
   workerJobsOut.add(job);
-  rendererWorker.postMessage({ type: "render", job, id, pageNumber, scale, outputScale, region, density, dark });
+  rendererWorker.postMessage({ type: "render", job, id, pageNumber, scale, outputScale, region, density, dark, tint });
   return {
     promise,
     cancel() {

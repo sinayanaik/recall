@@ -138,7 +138,11 @@ const API_SRC = `async () => {
     "/src/storage/deck-tab.js?v=__BUILD__",
     "/src/ui/reading-rail.js?v=__BUILD__",
     // Focus mode itself, for the strip of tabs it keeps at the top.
-    "/src/ui/chrome.js?v=__BUILD__"
+    "/src/ui/chrome.js?v=__BUILD__",
+    // The paper tones and the shapes whose colours follow them (case 11b).
+    "/src/documents/pdf-shapes.js?v=__BUILD__",
+    "/src/documents/pdf-block-editor.js?v=__BUILD__",
+    "/src/format/paper-tones.js?v=__BUILD__"
   ];
   const mods = await Promise.all(paths.map((p) => import(p)));
   const api = {};
@@ -2947,12 +2951,25 @@ try {
     document.getElementById("documentInkBtn").click();
     await settle(300);
 
-    // (b) DARK PAGE, which has no business on paper that follows the theme.
-    const darkShown = boxed(document.getElementById("documentDarkBtn"));
-    const invertedBefore = document.getElementById("documentStage").classList.contains("is-pdf-inverted");
-    api.togglePdfInvert();
+    // (b) THE PAPER. This was a dark page on/off and was hidden here: the pen
+    // followed the THEME, so an inverted light page was white ink on white
+    // paper. It is a tone picker now and the pen follows the PAPER, so a Canvas
+    // has it too — and "Match theme" is where it starts and where it is put back.
+    const paperBtn = document.getElementById("documentDarkBtn");
+    const darkShown = boxed(paperBtn);
+    const startedThemed = document.getElementById("documentStage").dataset.paper === "theme";
+    paperBtn.click();
     await settle(200);
-    const invertedAfter = document.getElementById("documentStage").classList.contains("is-pdf-inverted");
+    const paperMenu = document.getElementById("paperMenu");
+    // Styled, too: a menu that lost its class is a list at the foot of the page,
+    // which is boxed and open and nobody can see.
+    const menuOpen = Boolean(paperMenu && !paperMenu.hidden && boxed(paperMenu)
+      && paperMenu.classList.contains("paper-menu") && getComputedStyle(paperMenu).position === "fixed");
+    const toneIds = paperMenu ? [...paperMenu.querySelectorAll("[data-paper-tone]")].map((node) => node.dataset.paperTone) : [];
+    paperMenu?.querySelector('[data-paper-tone="theme"]')?.click();
+    await settle(250);
+    const invertedBefore = startedThemed;
+    const invertedAfter = document.getElementById("documentStage").dataset.paper === "theme" && Boolean(paperMenu?.hidden);
 
     // (c) SELECT, DRAG AND RESIZE — all three already existed and all three were
     // behind the rail nobody could open. A lasso round a stroke gives a dashed
@@ -3177,7 +3194,7 @@ try {
 
     return {
       railOnArrival, pens, nibs, lasso, armedForMouse, shut, stayedShut,
-      darkShown, invertedBefore, invertedAfter,
+      darkShown, invertedBefore, invertedAfter, menuOpen, toneIds,
       drawn, selected, selectionTools,
       before, recoloured, wasCount, afterDuplicate, marksAfterDuplicate,
       clipboardHolds, pastedOk, onPageTwo,
@@ -3197,11 +3214,12 @@ try {
   check("...and closing it is remembered rather than undone on the way back",
     reported.shut && reported.stayedShut,
     `shut=${reported.shut}, still shut after a tab round-trip=${reported.stayedShut}`);
-  check("dark page is not offered on paper that follows the theme",
-    !reported.darkShown, `the ◐ button has a box=${reported.darkShown}`);
-  check("...and cannot be reached round the back of the missing button either",
-    reported.invertedBefore === reported.invertedAfter,
-    `togglePdfInvert took the page from ${reported.invertedBefore} to ${reported.invertedAfter}`);
+  check("the paper button is offered on a Canvas, and opens the tones",
+    reported.darkShown && reported.menuOpen && ["white", "sepia", "dim", "black", "theme"].every((id) => reported.toneIds.includes(id)),
+    `button has a box=${reported.darkShown}, menu open=${reported.menuOpen}, tones=${reported.toneIds.join(",")}`);
+  check("...a Canvas starts on Match theme, and picking it shuts the menu with the page still on it",
+    reported.invertedBefore && reported.invertedAfter,
+    `started themed=${reported.invertedBefore}, themed and shut after=${reported.invertedAfter}`);
   // Exactly as many strokes change colour as were lassoed, and no more: a press
   // on a swatch with a selection up must not repaint the page.
   check("a press on a colour restyles what is lassoed, and only that",
@@ -3345,6 +3363,210 @@ try {
   check("...and a heavier one every fourth square, which is what makes it legible small",
     paper.major >= paper.minor * 1.5,
     `major ${paper.major} vs minor ${paper.minor}`);
+
+  // ── 11b. Paper tones, and what follows them ─────────────────────────────
+  //
+  // "Only one dark and one light mode, and the pen strokes and the text boxes'
+  // borders aren't adaptive to the mode changing." The page now has five tones
+  // (src/format/paper-tones.js), and three things have to come with it when it
+  // changes: a text block's card and border (which used to be the THEME's), a
+  // stroke in a colour the reader picked (stored as the hex — black, here), and
+  // a typed text box with a black border (likewise). Each is read off what is
+  // actually drawn: computed style for the block, pixels for the ink, the SVG
+  // attribute for the shape.
+  const tones = await page.evaluate(`async (penSrc) => {
+    const { api, settle } = window.__recall;
+    const pen = (0, eval)(penSrc);
+    const stage = document.getElementById("documentStage");
+    const view = document.getElementById("documentView");
+    api.setTheme("light-paper");
+    api.setViewMode("handwriting");
+    for (let i = 0; i < 80 && !document.querySelector("#documentStage .pdf-page[data-page-number='1'] canvas.pdf-canvas"); i += 1) await settle(100);
+    await settle(400);
+    // rgb() from a plain colour, color(srgb 0…1) from a color-mix().
+    const lum = (css) => {
+      const text = css || "";
+      const srgb = /color\\(srgb ([^)]+)\\)/.exec(text);
+      if (srgb) {
+        const [r, g, b] = srgb[1].split(/[ \\/]+/).filter(Boolean).map(Number);
+        return ((r + g + b) / 3) * 255;
+      }
+      const m = /rgba?\\(([^)]+)\\)/.exec(text);
+      if (!m) return -1;
+      const [r, g, b] = m[1].split(/[ ,\\/]+/).filter(Boolean).map(Number);
+      return (r + g + b) / 3;
+    };
+    const hexLum = (hex) => {
+      const rgb = api.parseHex(hex);
+      return rgb ? (rgb[0] + rgb[1] + rgb[2]) / 3 : -1;
+    };
+
+    // The page paper, per tone: either baked into the canvas (it carries the
+    // tint it was drawn for) or blended onto a page box of the paper's colour.
+    const paperOf = async (id) => {
+      api.setPaperTone(id);
+      await settle(700);
+      const tone = api.currentPaperTone();
+      const pageEl = document.querySelector("#documentStage .pdf-page[data-page-number='1']");
+      const canvas = pageEl?.querySelector("canvas.pdf-canvas:not(.is-stale)");
+      let corner = null;
+      try {
+        const px = canvas.getContext("2d", { willReadFrequently: true }).getImageData(2, 2, 1, 1).data;
+        corner = [px[0], px[1], px[2]];
+      } catch (_) { corner = null; }
+      return {
+        id, stageTone: stage.dataset.paper, bg: tone.bg, dark: tone.dark, tint: tone.tint,
+        inverted: stage.classList.contains("is-pdf-inverted"),
+        canvasTint: canvas?.dataset.paperTint || "",
+        darkPixels: Boolean(canvas?.classList.contains("is-dark-pixels")),
+        blend: canvas ? getComputedStyle(canvas).mixBlendMode : "",
+        filter: canvas ? getComputedStyle(canvas).filter : "",
+        pageBg: pageEl ? getComputedStyle(pageEl).backgroundColor : "",
+        corner
+      };
+    };
+
+    // The stroke first: a block just made is selected (and may be open in its
+    // editor), and a press over the page then belongs to it, not to the pen.
+    api.setInkArmed?.(true);
+    api.setInkTool("pen");
+    api.setInkPen("x000000", { keepOpacity: false });
+    // Wide enough that the stroke has a core the anti-aliasing does not reach.
+    const widthBefore = api.inkWidth?.();
+    api.setInkWidth?.(5);
+    const pageEl = document.querySelector("#documentStage .pdf-page[data-page-number='1']");
+    view.scrollTop = Math.max(0, view.scrollTop + pageEl.getBoundingClientRect().top - view.getBoundingClientRect().top);
+    await settle(300);
+    const box = pageEl.getBoundingClientRect();
+    // Low on the page, clear of the ink the earlier cases left near the top: the
+    // pixels measured below are this stroke's and nobody else's.
+    const x0 = box.left + (box.width * 0.2);
+    const y0 = Math.min(window.innerHeight - 80, box.top + (box.height * 0.7));
+    if (!api.isInkArmed()) document.getElementById("documentInkBtn").click();
+    await settle(150);
+    const marksBefore = api.documentInkMarks(1).map((record) => record.id);
+    pen(view, "pointerdown", x0, y0, 1);
+    for (let i = 1; i <= 14; i += 1) pen(view, "pointermove", x0 + (i * 10), y0 + (Math.sin(i) * 5), 1);
+    pen(view, "pointerup", x0 + 140, y0, 0);
+    await settle(500);
+    const madeMark = api.documentInkMarks(1).find((record) => !marksBefore.includes(record.id)) || null;
+    const strokeMade = Boolean(madeMark);
+    // Where the stroke is, in PDF points — from what was STORED, so a scroll or
+    // a repaint between drawing it and measuring it cannot move the box.
+    const strokePts = madeMark ? api.decodeInkStrokes(madeMark.ink?.s).flatMap((stroke) => {
+      const out = [];
+      for (let i = 0; i + 2 < stroke.p.length; i += 3) out.push([stroke.p[i], stroke.p[i + 1]]);
+      return out;
+    }) : [];
+    // What is laid over it.
+    const block = api.addDocumentBlock(1, { x: 160, y: 260 });
+    const shape = api.addDocumentShape(1, { type: "text", p: [[80, 420], [260, 446]], stroke: "#000000", border: true, text: "Boxed", width: 1.2 });
+    api.closeBlockEditor?.();
+    api.selectBlock?.(null);
+    api.selectShape?.(null);
+    await settle(300);
+    const inkExtremes = () => {
+      const dry = document.querySelector("#documentStage .pdf-page[data-page-number='1'] .pdf-ink-layer .is-ink-dry");
+      if (!dry) return { darkest: -1, brightest: -1 };
+      // The stroke's box, in the canvas's own pixels, measured NOW (a repaint
+      // may have resized the canvas): PDF points → page CSS pixels → canvas.
+      if (!strokePts.length) return { darkest: -1, brightest: -1 };
+      const viewport = api.pdfPageViewport(1);
+      const r = dry.getBoundingClientRect();
+      const sx = dry.width / r.width;
+      const sy = dry.height / r.height;
+      const css = strokePts.map(([x, y]) => viewport.convertToViewportPoint(x, y));
+      const xs = css.map((p) => p[0]);
+      const ys = css.map((p) => p[1]);
+      const pad = 10;
+      const left = Math.max(0, Math.floor((Math.min(...xs) - pad) * sx));
+      const top = Math.max(0, Math.floor((Math.min(...ys) - pad) * sy));
+      const width = Math.max(1, Math.min(dry.width - left, Math.ceil((Math.max(...xs) - Math.min(...xs) + (pad * 2)) * sx)));
+      const height = Math.max(1, Math.min(dry.height - top, Math.ceil((Math.max(...ys) - Math.min(...ys) + (pad * 2)) * sy)));
+      const px = dry.getContext("2d").getImageData(left, top, width, height).data;
+      let darkest = 255;
+      let brightest = 0;
+      for (let i = 0; i < px.length; i += 4) {
+        if (px[i + 3] < 200) continue;
+        const l = (px[i] + px[i + 1] + px[i + 2]) / 3;
+        if (l < darkest) darkest = l;
+        if (l > brightest) brightest = l;
+      }
+      return { darkest, brightest };
+    };
+    const overlay = () => {
+      const node = document.querySelector("#documentStage .pdf-block[data-pdf-block='" + block?.id + "']")
+        || document.querySelector("#documentStage .pdf-page[data-page-number='1'] .pdf-block");
+      const group = document.querySelector("#documentStage .pdf-shape-layer [data-highlight-id='" + shape?.id + "']");
+      const words = document.querySelector("#documentStage .pdf-shape-text[data-highlight-id='" + shape?.id + "']");
+      const border = group?.querySelector("path[stroke]:not([stroke='none'])")?.getAttribute("stroke") || "";
+      return {
+        blockBg: node ? lum(getComputedStyle(node).backgroundColor) : -1,
+        blockBorder: node ? getComputedStyle(node).borderTopColor : "",
+        shapeBorder: border,
+        shapeBorderLum: hexLum(border),
+        wordsLum: words ? lum(getComputedStyle(words).color) : -1,
+        ink: inkExtremes()
+      };
+    };
+
+    const results = {};
+    for (const id of ["white", "sepia", "dim", "black", "theme"]) {
+      results[id] = { paper: await paperOf(id), over: overlay() };
+    }
+    // Match theme follows the theme, colour and all.
+    api.setTheme("dark-navy");
+    await settle(700);
+    const navy = { bg: stage.dataset.paperBg, inverted: stage.classList.contains("is-pdf-inverted"), over: overlay() };
+    api.setTheme("light-paper");
+    await settle(700);
+    const lightAgain = { bg: stage.dataset.paperBg, inverted: stage.classList.contains("is-pdf-inverted") };
+
+    // Put everything back for the cases after this one.
+    if (shape?.id) api.deleteShape(shape.id);
+    if (block?.id) api.deleteBlock(block.id);
+    api.undoInk?.();
+    api.setInkPen("ink", { keepOpacity: false });
+    if (widthBefore) api.setInkWidth?.(widthBefore);
+    api.setPaperTone("theme");
+    await settle(400);
+    return { results, navy, lightAgain, strokeMade, blockMade: Boolean(block), shapeMade: Boolean(shape), errs: window.__errs.slice(0, 4) };
+  }`, PEN_SRC);
+
+  const T = tones.results;
+  const near = (rgb, hex, slack = 12) => {
+    if (!rgb) return false;
+    const want = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+    return rgb.every((v, i) => Math.abs(v - want[i]) <= slack);
+  };
+  const paperShown = (r) => (r.paper.canvasTint === (r.paper.tint || "") && (r.paper.tint ? near(r.paper.corner, r.paper.tint) : true))
+    || (r.paper.tint && r.paper.blend !== "normal");
+  check("every tone goes on the stage with its polarity",
+    ["white", "sepia", "dim", "black", "theme"].every((id) => T[id].paper.stageTone === id && T[id].paper.inverted === T[id].paper.dark),
+    JSON.stringify(Object.fromEntries(Object.entries(T).map(([id, r]) => [id, `${r.paper.stageTone}/${r.paper.inverted}`]))));
+  check("...and a tinted tone is the page's colour, baked into the pixels or blended onto them",
+    ["sepia", "dim", "theme"].every((id) => paperShown(T[id])),
+    ["sepia", "dim", "theme"].map((id) => `${id}: tint ${T[id].paper.tint} canvas ${T[id].paper.canvasTint || "-"} corner ${T[id].paper.corner} blend ${T[id].paper.blend}`).join(" · "));
+  check("a text block is a card of the PAPER: light on White and Sepia, dark on Dim and Black",
+    tones.blockMade && T.white.over.blockBg > 200 && T.sepia.over.blockBg > 190 && T.dim.over.blockBg < 80 && T.black.over.blockBg < 60,
+    ["white", "sepia", "dim", "black"].map((id) => `${id} ${Math.round(T[id].over.blockBg)}`).join(", "));
+  check("...and its border changes with the page",
+    T.white.over.blockBorder !== T.black.over.blockBorder && T.sepia.over.blockBorder !== T.dim.over.blockBorder,
+    `white ${T.white.over.blockBorder} · black ${T.black.over.blockBorder} · sepia ${T.sepia.over.blockBorder} · dim ${T.dim.over.blockBorder}`);
+  check("a stroke in a black the reader picked is drawn light on Black and Dim, and black on White",
+    tones.strokeMade && T.white.over.ink.darkest < 60 && T.black.over.ink.brightest > 160 && T.dim.over.ink.brightest > 160,
+    `stroke made=${tones.strokeMade} · white darkest ${T.white.over.ink.darkest} · black brightest ${T.black.over.ink.brightest} · dim brightest ${T.dim.over.ink.brightest}`);
+  check("a text box's black border (and its words) are light on Black, and black on White",
+    tones.shapeMade && T.white.over.shapeBorder === "#000000" && T.black.over.shapeBorderLum > 160 && T.dim.over.shapeBorderLum > 160
+      && T.black.over.wordsLum > 160 && T.white.over.wordsLum < 60,
+    `border white ${T.white.over.shapeBorder} · black ${T.black.over.shapeBorder} · dim ${T.dim.over.shapeBorder}; words white ${T.white.over.wordsLum} · black ${T.black.over.wordsLum}`);
+  check("Match theme takes the theme's colour — Navy's own panel, then Paper Light's",
+    tones.navy.bg === "#121a2b" && tones.navy.inverted && !tones.lightAgain.inverted && tones.lightAgain.bg === "#fffdf8",
+    `navy ${tones.navy.bg}/${tones.navy.inverted} · light ${tones.lightAgain.bg}/${tones.lightAgain.inverted}`);
+  check("...and the ink and the text box follow it there too",
+    tones.navy.over.ink.brightest > 160 && tones.navy.over.shapeBorderLum > 160,
+    `ink brightest ${tones.navy.over.ink.brightest} · border ${tones.navy.over.shapeBorder}`);
+  check("nothing threw while the paper changed", tones.errs.length === 0, tones.errs.join(" | "));
 
   // ── The rail and the pager, at every width ──────────────────────────────
   //

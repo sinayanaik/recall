@@ -65,6 +65,10 @@ const SECTIONS = [
 // Anything appearing in styles/ that is neither a slice nor listed here is
 // still a failure.
 const POST_SPLIT = {
+  "94-paper-tones.css":
+    "The paper menu (White, Sepia, Dim, Black, Match theme — src/format/paper-" +
+    "tones.js), and the page's own tokens: what a text block, its border and " +
+    "its ink take their colours from, so they follow the paper, not the theme.",
   "93-pdf-margins.css":
     "⋯ → Page margins…: the preset and paper chips and the four mm fields " +
     "(src/documents/pdf-margins.js), on the .confirm-modal chrome.",

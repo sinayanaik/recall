@@ -149,14 +149,15 @@ import { activePdfId, deckPdfById, deckPdfs, PDF_PRIMARY_ID, withDeckPdfs } from
 import { openPdfMarginsDialog } from "./documents/pdf-margins.js?v=__BUILD__";
 import { removePdfFromDeck, renamePdf } from "./documents/pdf-multi-actions.js?v=__BUILD__";
 import { closePdfPanel, initPdfSwitcher } from "./documents/pdf-switcher.js?v=__BUILD__";
-import { currentPdfDocument, currentPdfPageCount, documentFittedWidth, refreshBakedDocumentPages, fitDocumentToWidth, initDocumentCanvasRecovery, initDocumentPinchZoom, isDocumentFitWidth, openDocumentIsCurrent, openDocumentPdfId, noteSettledDocumentPosition, openDocumentView, reattachDocument, relayoutDocumentHoldingReader, repaintOpenDocumentPages, scheduleDocumentPositionSave, scrollToDocumentPage, refreshDocumentPaperForTheme, setDocumentAttachHandler, setDocumentCanvasRecoveredHook, setDocumentOpenedHook, setDocumentPagePaintedHook, setNotebookStartHandler, setPageIndicatorUpdatedHook, setPaperChangedHook, switchToPdf, togglePdfInvert, updatePageIndicator, zoomDocument, retryMissingDocumentOpen } from "./documents/pdf-view.js?v=__BUILD__";
+import { currentPdfDocument, currentPdfPageCount, documentFittedWidth, refreshBakedDocumentPages, fitDocumentToWidth, initDocumentCanvasRecovery, initDocumentPinchZoom, isDocumentFitWidth, openDocumentIsCurrent, openDocumentPdfId, noteSettledDocumentPosition, openDocumentView, reattachDocument, relayoutDocumentHoldingReader, repaintOpenDocumentPages, scheduleDocumentPositionSave, scrollToDocumentPage, refreshDocumentPaperForTheme, setDocumentAttachHandler, setDocumentCanvasRecoveredHook, setDocumentOpenedHook, setDocumentPagePaintedHook, setNotebookStartHandler, setPageIndicatorUpdatedHook, setPaperChangedHook, switchToPdf, updatePageIndicator, zoomDocument, retryMissingDocumentOpen } from "./documents/pdf-view.js?v=__BUILD__";
 import { adoptDocumentInk, canRedoInk, canUndoInk, copyInkSelection, cutInkSelection, duplicateInkSelection, hasInkClipboard, initDocumentInk, inkMarkImageMarkdown, inkMarkIsHighlight, inkSelectionCount, isInkMarkId, nudgeInkSelection, paintDocumentInk, pasteInkSelection, redoInk, repaintDocumentInk, setInkChangedHandler, undoInk } from "./documents/pdf-ink.js?v=__BUILD__";
 import { addHandwritingImage, enterHandwritingView, initHandwritingRail, refreshHandwritingBoard, runHandwritingMenuAction, startHandwritingNotebook } from "./handwriting/board.js?v=__BUILD__";
 import { closeBlockStylePopover, isBlockStylePopoverOpen } from "./documents/block-style-bar.js?v=__BUILD__";
 import { closeBlockActionsPopover, isBlockActionsPopoverOpen } from "./documents/block-actions-popover.js?v=__BUILD__";
 import { blocksForPaper, buildStaticBlock, canRedoBlocks, canUndoBlocks, commitBlockEdit, deleteBlock, duplicateBlock, editBlock, handleBlockPointerDown, nudgeBlock, paintDocumentBlocks, pdfPointAt, redoBlocks, repaintDocumentBlocks, restackBlock, selectBlock, selectedBlockId, setBlocksChangedHandler, undoBlocks } from "./documents/pdf-blocks.js?v=__BUILD__";
 import { applyInkRailPreference, closeInkRailPopups, finishTypewriterBox, initInkRail, refreshInkRail } from "./ui/ink-rail.js?v=__BUILD__";
-import { initDocumentShapes, setShapeCreatedHandler } from "./documents/pdf-shapes.js?v=__BUILD__";
+import { initDocumentShapes, repaintDocumentShapes, setShapeCreatedHandler } from "./documents/pdf-shapes.js?v=__BUILD__";
+import { openPaperMenu } from "./documents/paper-menu.js?v=__BUILD__";
 import { openShapeTextEditor, setShapeTextCommittedHandler } from "./documents/pdf-shape-text.js?v=__BUILD__";
 import { initShapeStylePopover } from "./documents/pdf-shape-style-popover.js?v=__BUILD__";
 import { buildStaticShapeText } from "./documents/pdf-shape-markdown.js?v=__BUILD__";
@@ -2407,13 +2408,17 @@ setHandwritingViewHook(() => { enterHandwritingView(); });
 // is a bitmap: a stroke stores a pen token and the token resolves per theme, so
 // until the canvas is drawn again it keeps the colour it was painted in — which
 // on the other theme can be the colour of the paper. And a notebook's paper is
-// itself decided by the theme (invertForDocumentSlot), so it has to be re-asked
+// itself decided by the theme when it is on "Match theme" (paperToneForSlot), so it has to be re-asked
 // in the same pass or the ink and the page it is on disagree for a frame.
 // The paper flipping between white and dark is a repaint of the ink for the
 // same reason a theme change is: the pens are chosen for the paper they are on.
 // And of the rail, whose swatches are that paper's pens.
+// The shapes too: a colour the reader picked is drawn readable on the paper
+// under it (paperRecolor in src/format/paper-tones.js), so a new paper is a new
+// answer for a black text box and its border.
 setPaperChangedHook(() => {
   repaintDocumentInk();
+  repaintDocumentShapes();
   refreshInkRail();
 });
 setThemeRepaintHook(() => {
@@ -3989,7 +3994,7 @@ document.addEventListener("click", (e) => {
 // the menu ("I am not seeing any option where I can select dark mode"). Their
 // aria-pressed is painted by the functions that own the state, so the button is
 // right however the mode was flipped.
-el.documentDarkBtn?.addEventListener("click", () => { togglePdfInvert(); });
+el.documentDarkBtn?.addEventListener("click", () => { openPaperMenu(el.documentDarkBtn); });
 el.documentRegionBtn?.addEventListener("click", () => { toggleRegionSelect(); });
 
 el.documentZoomInBtn?.addEventListener("click", () => zoomDocument(1.25));

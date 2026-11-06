@@ -197,8 +197,9 @@ function drawInk(page, marks) {
     const recorder = inkPathRecorder();
     if (!inkStrokeOutline(recorder.ctx, stroke)) return;
     // On white paper: this is the PDF's own page, printed white whatever theme
-    // the reader had on when they wrote over it.
-    const paint = resolveInkPaint(stroke?.c, { paper: "light" });
+    // (or paper tone) the reader had on when they wrote over it — so a colour
+    // they picked that would vanish on white is drawn as its readable twin.
+    const paint = resolveInkPaint(stroke?.c, { paper: "light", paperBg: "#ffffff" });
     const { color, opacity } = pdfColour(paint.color);
     page.drawSvgPath(recorder.path(), { x: 0, y: 0, color, opacity: opacity * paint.alpha });
   });

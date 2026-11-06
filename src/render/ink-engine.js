@@ -356,6 +356,10 @@ export function createInkEngine({
   // its own dark-page mode; the drawing sheet, whose paper follows the theme,
   // passes nothing.
   getPaper = null,
+  // The paper's own colour, "#rrggbb" or null — what a colour the reader picked
+  // themselves is kept readable against (resolveInkPaint). Asked fresh on every
+  // paint, like getPaper, and for the same reason.
+  getPaperBg = null,
   // The element a host's highlighter strokes are drawn into, or null — see the
   // header. Called whenever the host has highlighter ink to paint, and expected
   // to hand back the same element every time for as long as the host lives.
@@ -488,8 +492,18 @@ export function createInkEngine({
     }
   }
 
+  function paperBgFor(key) {
+    if (!getPaperBg) return null;
+    try {
+      const bg = getPaperBg(key);
+      return /^#[0-9a-f]{6}$/i.test(String(bg || "")) ? bg : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
   function paintOptions(key) {
-    return { root, paper: paperFor(key) };
+    return { root, paper: paperFor(key), paperBg: paperBgFor(key) };
   }
 
   // The host's highlighter canvas, made and mounted on first need and re-mounted
@@ -726,7 +740,7 @@ export function createInkEngine({
     // the whole of it rather than trusting the count — which cannot notice,
     // since committing the stroke grows entry.strokes by exactly the amount the
     // count would expect.
-    entry.painted = { count: entry.strokes.length, width: size.width, height: size.height, matrix: m, paper: options.paper, under: Boolean(under) };
+    entry.painted = { count: entry.strokes.length, width: size.width, height: size.height, matrix: m, paper: options.paper, paperBg: options.paperBg, under: Boolean(under) };
     // ...and whether the replay above just put ink on it that `painted` does not
     // account for. Recomputed here rather than merely set, so a repaint after
     // reclaimSettled — which empties `settled` — clears it again.
@@ -804,7 +818,7 @@ export function createInkEngine({
     // Painted for a different paper than the one under it now — the reader
     // inverted the page — so the strokes already there are in the wrong set.
     const options = paintOptions(key);
-    if (entry.painted.paper !== options.paper) return false;
+    if (entry.painted.paper !== options.paper || entry.painted.paperBg !== options.paperBg) return false;
     // A highlighter band can only be ADDED where it will end up under the ink:
     // on a highlighter canvas that the last repaint sized and drew. Without one
     // it belongs beneath every pen stroke already on the dry canvas, which only

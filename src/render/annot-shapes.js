@@ -370,7 +370,51 @@ export function calloutLeaderStart(rect, toward) {
   return [x, y];
 }
 
-export function shapePrimitives(shape) {
+// `recolor`, when given, is handed the colours a shape draws its INK in — a
+// line's stroke (and a filled arrowhead's, which is the same colour), a box's
+// border, the words — and what it returns is drawn instead. It is how a shape
+// stays legible on the paper under it: the stored colour is the one the reader
+// picked on the paper they were looking at, and the live page passes a function
+// that flips it only when it would not read on this one (readableOnPaper,
+// src/format/paper-tones.js). A function rather than an import so this file
+// stays a leaf. Without it the output is exactly what it always was.
+//
+// Left alone, on purpose:
+//   • a box's fill — a wash at a quarter strength, like a highlighter, whose
+//     job is to tint and not to be read; flipping a pale yellow wash on white
+//     paper into a dark one would be a different thing, not a legible one
+//   • a sticky note's body — it carries its own dark outline, so it reads on
+//     any paper as the colour it is
+//   • words over an opaque fill — they sit on the fill, not on the paper, and
+//     a function that knows only the paper would get them wrong
+export function shapePrimitives(shape, { recolor = null } = {}) {
+  const prims = baseShapePrimitives(shape);
+  if (typeof recolor !== "function") return prims;
+  const s = normalizeShape(shape);
+  const wordsOnFill = Boolean(s?.fill) && Number(s?.fillOpacity) >= 0.5;
+  return prims.map((prim) => {
+    if (prim.kind === "sticky") return prim;
+    if (prim.kind === "text") return wordsOnFill ? prim : recolorPrimitive(prim, recolor, ["color"]);
+    // A filled arrowhead (or dot) is filled in the line's own colour at the
+    // line's own opacity: that fill is ink. A box's wash is its own colour at
+    // its own, quarter, strength.
+    const inkFill = Boolean(prim.fill) && prim.fill === prim.stroke && prim.fillOpacity === prim.opacity;
+    return recolorPrimitive(prim, recolor, inkFill ? ["stroke", "fill"] : ["stroke"]);
+  });
+}
+
+export function recolorPrimitive(prim, recolor, keys = ["stroke", "color"]) {
+  if (!prim || typeof recolor !== "function") return prim;
+  const out = { ...prim };
+  keys.forEach((key) => {
+    if (typeof out[key] !== "string" || !out[key]) return;
+    const next = recolor(out[key]);
+    if (typeof next === "string" && next) out[key] = next;
+  });
+  return out;
+}
+
+function baseShapePrimitives(shape) {
   const s = normalizeShape(shape);
   if (!s) return [];
   const line = { stroke: s.stroke, width: s.width, opacity: s.opacity, dash: s.dash };
@@ -736,8 +780,8 @@ export function wrapShapeText(text, maxWidth, measure) {
 // lays the rendered words over the box itself; without it, this draws the
 // words with their syntax taken off (markdownToPlainText), which is never worse
 // than the plain text every box held before markdown.
-export function paintShapeOnCanvas(ctx, shape, toPoint, scale = 1, { skipText = false } = {}) {
-  const prims = shapePrimitives(shape);
+export function paintShapeOnCanvas(ctx, shape, toPoint, scale = 1, { skipText = false, recolor = null } = {}) {
+  const prims = shapePrimitives(shape, { recolor });
   const polys = [];
   prims.forEach((prim) => {
     if (prim.kind === "sticky") polys.push(...stickyIconPolys(prim.rect, prim.color));
@@ -773,8 +817,8 @@ export function paintShapeOnCanvas(ctx, shape, toPoint, scale = 1, { skipText = 
 // draws when the rendered markdown could not be made
 // (src/documents/pdf-region-marks.js, plainShapeTextRaster). `ignoreRotation`
 // draws them unturned, for a picture that is turned where it is placed.
-export function paintShapeTextOnCanvas(ctx, shape, toPoint, scale = 1, { ignoreRotation = false } = {}) {
-  shapePrimitives(shape).forEach((prim) => {
+export function paintShapeTextOnCanvas(ctx, shape, toPoint, scale = 1, { ignoreRotation = false, recolor = null } = {}) {
+  shapePrimitives(shape, { recolor }).forEach((prim) => {
     if (prim.kind === "text") paintShapeText(ctx, ignoreRotation ? { ...prim, rot: 0 } : prim, toPoint, scale);
   });
 }

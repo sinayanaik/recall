@@ -973,6 +973,20 @@ try {
       if (read(light, token) !== INK_PEN_HEX[token]) return `light ${token}: css ${read(light, token)}, js ${INK_PEN_HEX[token]}`;
       if (read(dark, token) !== INK_PEN_HEX_DARK[token]) return `dark ${token}: css ${read(dark, token)}, js ${INK_PEN_HEX_DARK[token]}`;
     }
+    // ...and the copy inside a page (styles/94-paper-tones.css), which is what a
+    // text block's ink colour reads on the paper it is on.
+    const paperCss = readFileSync(path.join(ROOT, "styles/94-paper-tones.css"), "utf8");
+    const paperBlock = (selector) => {
+      const at = paperCss.indexOf(selector);
+      if (at < 0) return "";
+      return paperCss.slice(paperCss.indexOf("{", at) + 1, paperCss.indexOf("}", at));
+    };
+    const pageLight = paperBlock(".document-stage .pdf-page,\n.paper-tokens {");
+    const pageDark = paperBlock(".document-stage.is-pdf-inverted .pdf-page,");
+    for (const token of Object.keys(INK_PEN_HEX)) {
+      if (read(pageLight, token) !== INK_PEN_HEX[token]) return `page, light ${token}: css ${read(pageLight, token)}, js ${INK_PEN_HEX[token]}`;
+      if (read(pageDark, token) !== INK_PEN_HEX_DARK[token]) return `page, dark ${token}: css ${read(pageDark, token)}, js ${INK_PEN_HEX_DARK[token]}`;
+    }
     return true;
   });
 
@@ -1106,6 +1120,13 @@ try {
     if (resolveInkPaint("ink", { paper: "dark" }).color !== INK_PEN_HEX_DARK.ink) return "ink on dark paper is not the dark pen";
     const custom = resolveInkPaint("x1e90ffq40", { paper: "dark" });
     if (custom.color !== "#1e90ff" || custom.alpha !== 0.4 || custom.hl) return `a custom pen painted as ${JSON.stringify(custom)}`;
+    // A custom colour that reads on the paper is painted as picked; one that is
+    // the colour of the paper is painted as its readable twin.
+    if (resolveInkPaint("x1e90ff", { paper: "dark", paperBg: "#030303" }).color !== "#1e90ff") return "a readable custom pen was changed";
+    const black = resolveInkPaint("x000000", { paper: "dark", paperBg: "#030303" }).color;
+    if (black === "#000000") return "a black custom pen stayed black on Black paper";
+    if (resolveInkPaint("xffffff", { paper: "light", paperBg: "#ffffff" }).color === "#ffffff") return "a white custom pen stayed white on White paper";
+    if (resolveInkPaint("hx000000", { paper: "dark", paperBg: "#030303" }).color !== "#000000") return "a highlighter's custom colour was changed";
     const band = resolveInkPaint("hgreenq35", { paper: "light" });
     if (band.color !== INK_HL_HEX.green || band.alpha !== 0.35 || !band.hl) return `a highlighter painted as ${JSON.stringify(band)}`;
     const unknown = resolveInkPaint("zebra", { paper: "light" });

@@ -41,6 +41,13 @@ import { decodeInkStrokes } from "../format/ink-strokes.js?v=__BUILD__";
 import { markGeometry, markStyleOf, normalizeMarkHex, paintMarkGeometry } from "../format/mark-styles.js?v=__BUILD__";
 import { paintInkLayers } from "../render/ink-paint.js?v=__BUILD__";
 import { paintShapeOnCanvas } from "../render/annot-shapes.js?v=__BUILD__";
+import { PAPER_WHITE, paperRecolor } from "../format/paper-tones.js?v=__BUILD__";
+
+// Printed white, whatever paper the reader wrote on: a colour they picked on
+// a dark tone (a pale custom pen, a white text box) would be the colour of the
+// page here, so it is drawn as its readable twin — the same rule the screen
+// applies to the paper it shows (src/format/paper-tones.js).
+const PRINT_RECOLOR = paperRecolor(PAPER_WHITE);
 import { markdownToSafeHtml } from "../render/preprocess.js?v=__BUILD__";
 import { setStatus } from "../ui/feedback.js?v=__BUILD__";
 import { DOC_SLOT_DOC, DOC_SLOT_NOTEBOOK, activeDocSlot, docSlotMeta } from "./doc-slot.js?v=__BUILD__";
@@ -127,7 +134,8 @@ async function renderPageForPrint(pageNumber, records) {
     if (record.kind === "shape") {
       if (Number(record.page) !== pageNumber) return;
       paintShapeOnCanvas(context, record.shape, ([x, y]) => viewport.convertToViewportPoint(x, y), viewport.scale, {
-        skipText: textRasterIds.has(record.id)
+        skipText: textRasterIds.has(record.id),
+        recolor: PRINT_RECOLOR
       });
       return;
     }
@@ -141,7 +149,7 @@ async function renderPageForPrint(pageNumber, records) {
       // MULTIPLIED onto the page and laid under its pen strokes, as the screen
       // stacks its two layers. A band from a later mark multiplies over earlier
       // ink, which leaves that ink as dark as it was: multiply cannot cover.
-      paintInkLayers(context, decodeInkStrokes(record.ink?.s), { root: null, paper: "light", blend: "multiply" });
+      paintInkLayers(context, decodeInkStrokes(record.ink?.s), { root: null, paper: "light", paperBg: PAPER_WHITE, blend: "multiply" });
       context.restore();
       return;
     }

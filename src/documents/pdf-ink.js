@@ -266,9 +266,13 @@ function ensureEngine() {
     onCommit: (page, strokes, meta) => commitInkPage(page, strokes, meta),
     onSelectionChange: () => onInkChanged(),
     // The paper is whatever the page shows: white unless the reader inverted it,
-    // which on a notebook follows the theme (invertForDocumentSlot). Asked of the
+    // or picked another dark tone — a Canvas starts on its theme's (applyPaperTone). Asked of the
     // class rather than of the preference, because the class is what is drawn.
     getPaper: () => (el.documentStage?.classList.contains(PDF_DARK_CLASS) ? "dark" : "light"),
+    // ...and the paper's own colour, which pdf-view.js writes onto the stage
+    // with the tone (applyPaperTone): a colour the reader picked is kept
+    // readable against it.
+    getPaperBg: () => inkPaperBg(),
     // The highlighter's layer: a sibling of the ink layer, so it can blend with
     // the page canvas under both (styles/72-ink-paper.css says why it cannot be
     // inside the ink layer). Made on the first band a page carries and found
@@ -1348,6 +1352,10 @@ export function inkPreviewScale() {
 // The paper under the ink, as the engine is told it (see ensureEngine).
 export function inkPaper() {
   return el.documentStage?.classList.contains(PDF_DARK_CLASS) ? "dark" : "light";
+}
+
+export function inkPaperBg() {
+  return el.documentStage?.dataset.paperBg || (inkPaper() === "dark" ? "#030303" : "#ffffff");
 }
 
 // The page the reader is looking at — the same answer the pager and the contents

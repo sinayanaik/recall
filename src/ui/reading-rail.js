@@ -80,7 +80,8 @@ import { togglePdfTeleprompter } from "../documents/pdf-teleprompter.js?v=__BUIL
 import { openStylePanel } from "../cloud/style-sync.js?v=__BUILD__";
 import { openSectionStyle } from "./style-popover.js?v=__BUILD__";
 import { reconcileAllDecks } from "../sync/reconcile.js?v=__BUILD__";
-import { fitDocumentToWidth, togglePdfInvert } from "../documents/pdf-view.js?v=__BUILD__";
+import { fitDocumentToWidth } from "../documents/pdf-view.js?v=__BUILD__";
+import { openPaperMenu } from "../documents/paper-menu.js?v=__BUILD__";
 import { chooseInkTool, toggleInkRail, toggleTypewriter } from "./ink-rail.js?v=__BUILD__";
 import { toggleRegionSelect } from "../documents/pdf-region.js?v=__BUILD__";
 import { inkTool } from "../documents/pdf-ink.js?v=__BUILD__";
@@ -208,11 +209,11 @@ export function refreshReadingRailRows() {
     ? (state.meta?.notebook || state.meta?.pdf?.notebook)
     : deckHasPdf(state.meta));
   // Two of the document's rows mean nothing on a notebook, and the rail must not
-  // be the back door to a control the view itself has taken away: dark page is
-  // decided by the theme on generated paper (see togglePdfInvert, which refuses
-  // there), and there are no figures on blank paper to draw a region round.
+  // be the back door to a control the view itself has taken away: there are no
+  // figures on blank paper to draw a region round, and nothing to teleprompt.
+  // The paper row stays — a Canvas has a tone of its own to pick.
   const onNotebook = state.viewMode === "handwriting";
-  const NOT_ON_NOTEBOOK = new Set(["dark-page", "region", "pdf-teleprompter"]);
+  const NOT_ON_NOTEBOOK = new Set(["region", "pdf-teleprompter"]);
   tray.querySelectorAll("[data-rail-scope]").forEach((node) => {
     const scope = node.dataset.railScope;
     const inScope = scope === "document" ? documentSurfaceUp : scope === state.viewMode;
@@ -432,7 +433,9 @@ export function initReadingRail() {
     else if (action === "immersive") toggleImmersiveMode();
     else if (action === "rotate") toggleLandscape();
     else if (action === "fit-width") fitDocumentToWidth();
-    else if (action === "dark-page") togglePdfInvert();
+    // The paper menu, anchored to the tab row's own paper button when it is on
+    // screen and centred when focus mode has folded the row away.
+    else if (action === "dark-page") openPaperMenu(el.documentDarkBtn?.getClientRects().length ? el.documentDarkBtn : null);
     else if (action === "ink") toggleInkRail();
     else if (action === "region") toggleRegionSelect();
     // Back to the pen rather than to whatever was armed before it: the two
