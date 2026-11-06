@@ -11,10 +11,16 @@
 // (its size, padding and font are the ones paintDocumentShapes gives that box),
 // in the shape layer, the one element there that takes pointer events. It
 // commits when it loses focus or on Escape, as one undo step: the words, and
-// the box's new height. A text box left empty is taken away again — an empty
+// the box's new size. A text box left empty is taken away again — an empty
 // one is a thing on the page nobody can see.
+//
+// A box that wraps (Wrap, or one given a width by hand) carries two grips while
+// it is typed in — its right edge and its bottom-right corner — so it can be
+// made wider, narrower or taller without putting the words down first. A drag
+// moves only the editor; the size it leaves is written with the words, in the
+// same undo step.
 
-import { SHAPE_TEXT_PAD, normalizeShape } from "../render/annot-shapes.js?v=__BUILD__";
+import { SHAPE_TEXT_PAD, TEXT_BOX_DEFAULT, moveShapeHandle, normalizeShape, shapeHandles } from "../render/annot-shapes.js?v=__BUILD__";
 import { documentHighlightById } from "./pdf-highlights.js?v=__BUILD__";
 import { applyShapeTextTurn } from "./pdf-shape-markdown.js?v=__BUILD__";
 import { deleteShape, paintDocumentShapes, selectShape, setEditingShapeId, setShapePaintedHook, setShapeTextEditHandler, untransformedClientRect, updateShape } from "./pdf-shapes.js?v=__BUILD__";
@@ -23,8 +29,14 @@ import { attachShapeTextFormatBar, detachShapeTextFormatBar, SHAPE_TEXT_FORMAT_B
 import { closeMarkMenu } from "../notes/mark-menu.js?v=__BUILD__";
 
 export const PDF_SHAPE_EDITOR_CLASS = "pdf-shape-editor";
+export const PDF_SHAPE_EDITOR_GRIP_CLASS = "pdf-shape-editor-grip";
+
+// The handles of src/render/annot-shapes.js shapeHandles a grip stands for.
+const EDITOR_GRIPS = ["e", "se"];
 
 let shapeEditor = null;
+// A grip being dragged: the editor must not take the focus going for a blur.
+let gripDrag = null;
 
 export function isEditingShapeText() {
   return Boolean(shapeEditor);
@@ -64,6 +76,139 @@ function placeShapeEditor(node, viewport, shape) {
   applyShapeTextTurn(node, shape.rot || 0);
 }
 
+// The shape the editor is showing: the record's, at the size a grip has
+// dragged it to (nothing is written until the words are put down).
+function editorShape(editor, shape) {
+  return editor?.geometry && shape && !shape.fit ? { ...shape, p: editor.geometry } : shape;
+}
+
+// ── The grips ───────────────────────────────────────────────────────────────
+
+// Up on a box that wraps, gone from one that grows with its words — and laid on
+// the editor as it is laid out NOW (its words may have made it taller than the
+// record), turned with it about its middle.
+function placeEditorGrips(editor, shape) {
+  const { node } = editor;
+  const layer = node.parentNode;
+  if (!shape || shape.fit || !layer) {
+    removeEditorGrips(editor);
+    return;
+  }
+  if (!editor.grips) {
+    editor.grips = EDITOR_GRIPS.map((id) => makeEditorGrip(id));
+  }
+  const width = node.offsetWidth;
+  const height = node.offsetHeight;
+  const cx = (parseFloat(node.style.left) || 0) + width / 2;
+  const cy = (parseFloat(node.style.top) || 0) + height / 2;
+  const turn = -(shape.rot || 0);
+  const rad = (turn * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  editor.grips.forEach((grip) => {
+    if (grip.parentNode !== layer) layer.appendChild(grip);
+    const lx = width / 2;
+    const ly = grip.dataset.grip === "se" ? height / 2 : 0;
+    grip.style.left = `${cx + lx * cos - ly * sin}px`;
+    grip.style.top = `${cy + lx * sin + ly * cos}px`;
+    grip.style.setProperty("--grip-turn", `${turn}deg`);
+  });
+}
+
+function removeEditorGrips(editor) {
+  editor?.grips?.forEach((grip) => grip.remove());
+  if (editor) editor.grips = null;
+}
+
+function makeEditorGrip(id) {
+  const grip = document.createElement("div");
+  grip.className = PDF_SHAPE_EDITOR_GRIP_CLASS;
+  grip.dataset.grip = id;
+  grip.setAttribute("aria-hidden", "true");
+  grip.addEventListener("pointerdown", onGripDown);
+  grip.addEventListener("pointermove", onGripMove);
+  grip.addEventListener("pointerup", onGripUp);
+  grip.addEventListener("pointercancel", onGripUp);
+  grip.addEventListener("lostpointercapture", onGripUp);
+  // Neither the focus nor the page's own press: the words stay open.
+  for (const type of ["mousedown", "touchstart"]) {
+    grip.addEventListener(type, (event) => { event.preventDefault(); event.stopPropagation(); }, { passive: false });
+  }
+  for (const type of ["click", "dblclick"]) {
+    grip.addEventListener(type, (event) => { event.preventDefault(); event.stopPropagation(); });
+  }
+  return grip;
+}
+
+// A point on the page, in PDF space — as src/documents/pdf-shapes.js reads one.
+function gripPdfPoint(editor, clientX, clientY) {
+  const viewport = pdfPageViewport(editor.page);
+  const pageEl = editor.node.closest(".pdf-page");
+  if (!viewport || !pageEl) return null;
+  const box = pageEl.getBoundingClientRect();
+  return viewport.convertToPdfPoint(clientX - box.left, clientY - box.top);
+}
+
+function onGripDown(event) {
+  const editor = shapeEditor;
+  const grip = event.currentTarget;
+  event.preventDefault();
+  event.stopPropagation();
+  if (!editor || (event.button !== undefined && event.button > 0)) return;
+  const record = documentHighlightById(editor.id);
+  const viewport = pdfPageViewport(editor.page);
+  let base = editorShape(editor, normalizeShape(record?.shape));
+  const from = gripPdfPoint(editor, event.clientX, event.clientY);
+  if (!base || base.fit || !viewport || !from) return;
+  // Words that have made the box taller than the record: the drag starts from
+  // the box as it is on screen, so the corner does not jump up to the record's.
+  const handles = shapeHandles(base);
+  const n = handles.find((h) => h.id === "n");
+  const s = handles.find((h) => h.id === "s");
+  const stored = n && s ? Math.hypot(s.x - n.x, s.y - n.y) : 0;
+  const shown = editor.node.offsetHeight / (viewport.scale || 1);
+  if (stored > 0 && shown > stored + 0.5) {
+    const k = shown / stored;
+    base = moveShapeHandle(base, "s", n.x + (s.x - n.x) * k, n.y + (s.y - n.y) * k);
+  }
+  const start = shapeHandles(base).find((h) => h.id === grip.dataset.grip);
+  if (!start) return;
+  gripDrag = { pointerId: event.pointerId, grip, id: grip.dataset.grip, base, from, start };
+  grip.classList.add("is-dragging");
+  try { grip.setPointerCapture(event.pointerId); } catch (_) { /* synthetic */ }
+}
+
+function onGripMove(event) {
+  const drag = gripDrag;
+  const editor = shapeEditor;
+  if (!drag || event.pointerId !== drag.pointerId || !editor) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const at = gripPdfPoint(editor, event.clientX, event.clientY);
+  const viewport = pdfPageViewport(editor.page);
+  if (!at || !viewport) return;
+  const next = moveShapeHandle(drag.base, drag.id,
+    drag.start.x + (at[0] - drag.from[0]), drag.start.y + (at[1] - drag.from[1]));
+  // Never narrower than a couple of letters, nor turned inside out.
+  const size = drag.base.font.size;
+  const wide = next.p[1][0] - next.p[0][0];
+  const tall = next.p[1][1] - next.p[0][1];
+  if (wide < size * 2 || tall < size * 1.3 + SHAPE_TEXT_PAD * 2 - 0.5) return;
+  editor.geometry = next.p.map((point) => point.slice());
+  placeShapeEditor(editor.node, viewport, next);
+  placeEditorGrips(editor, next);
+}
+
+function onGripUp(event) {
+  const drag = gripDrag;
+  if (!drag || event.pointerId !== drag.pointerId) return;
+  gripDrag = null;
+  drag.grip.classList.remove("is-dragging");
+  try { drag.grip.releasePointerCapture(event.pointerId); } catch (_) { /* gone */ }
+  const editor = shapeEditor;
+  if (editor && document.activeElement !== editor.node) editor.node.focus({ preventScroll: true });
+}
+
 // Open the editor over a callout's or a text box's words.
 export function openShapeTextEditor(recordOrId) {
   const record = typeof recordOrId === "string" ? documentHighlightById(recordOrId) : recordOrId;
@@ -92,8 +237,18 @@ export function openShapeTextEditor(recordOrId) {
   node.textContent = shape.text;
   placeShapeEditor(node, viewport, shape);
   layer.appendChild(node);
-  shapeEditor = { node, id: record.id, page, before: shape };
+  shapeEditor = { node, id: record.id, page, before: shape, geometry: null, grips: null, resize: null };
   hideStaticText(layer, record.id);
+  // The grips follow the box as its words make it taller.
+  placeEditorGrips(shapeEditor, shape);
+  if (typeof ResizeObserver === "function") {
+    const editor = shapeEditor;
+    editor.resize = new ResizeObserver(() => {
+      if (shapeEditor !== editor) return;
+      placeEditorGrips(editor, editorShape(editor, normalizeShape(documentHighlightById(editor.id)?.shape)));
+    });
+    editor.resize.observe(node);
+  }
 
   node.addEventListener("keydown", (event) => {
     // Inside the box, keys are the box's: nothing here is a shortcut for the
@@ -113,11 +268,16 @@ export function openShapeTextEditor(recordOrId) {
   });
   node.addEventListener("blur", (event) => {
     if (shapeEditor?.node !== node) return;
+    const to = event.relatedTarget;
+    // A grip being dragged is resizing this box, not finishing it.
+    if (gripDrag || to?.closest?.(`.${PDF_SHAPE_EDITOR_GRIP_CLASS}`)) {
+      requestAnimationFrame(() => { if (shapeEditor?.node === node) node.focus({ preventScroll: true }); });
+      return;
+    }
     // A press on a BUTTON of the style popover (A+, bold, a swatch) restyles
     // these words as they are typed (setShapeSettings acts on the shape being
     // edited) — so typing carries on, rather than the words being put down.
     // The popover keeps focus off itself for a mouse; this is the backstop.
-    const to = event.relatedTarget;
     // ...and the same for the bar over the picked words (B, I, a colour).
     if ((to?.closest?.(".shape-style-popover") && to.matches?.("button")) || to?.closest?.(`.${SHAPE_TEXT_FORMAT_BAR_CLASS}`)) {
       requestAnimationFrame(() => { if (shapeEditor?.node === node) node.focus({ preventScroll: true }); });
@@ -176,6 +336,9 @@ function putShapeTextDown() {
   const editor = shapeEditor;
   if (!editor) return;
   shapeEditor = null;
+  gripDrag = null;
+  editor.resize?.disconnect();
+  removeEditorGrips(editor);
   detachShapeTextFormatBar();
   setEditingShapeId(null);
   const record = documentHighlightById(editor.id);
@@ -203,8 +366,9 @@ function putShapeTextDown() {
     selectShape(record.id);
     return;
   }
-  // Down, never up: the box's top edge is where the reader put it.
-  const p = shape.p.map((point) => point.slice());
+  // Down, never up: the box's top edge is where the reader put it — at the
+  // size the grips left it, if they were used.
+  const p = editorShape(editor, shape).p.map((point) => point.slice());
   if (viewport && height > 0) {
     const top = Math.max(p[0][1], p[1][1]);
     const bottom = Math.min(p[0][1], p[1][1]);
@@ -226,10 +390,38 @@ function putShapeTextDown() {
 setShapePaintedHook((pageNumber, layer) => {
   if (!shapeEditor || shapeEditor.page !== pageNumber) return;
   if (!shapeEditor.node.isConnected) layer.appendChild(shapeEditor.node);
-  const shape = normalizeShape(documentHighlightById(shapeEditor.id)?.shape);
+  const editor = shapeEditor;
+  const shape = normalizeShape(documentHighlightById(editor.id)?.shape);
   const viewport = pdfPageViewport(pageNumber);
-  if (shape && viewport) placeShapeEditor(shapeEditor.node, viewport, shape);
-  hideStaticText(layer, shapeEditor.id);
+  if (shape && viewport) {
+    // Wrap turned on while typing in text that grew with its words: its record
+    // is still the box the first tap made (a couple of letters wide), so it
+    // wraps from the box on screen instead — no narrower than a new text box.
+    if (!shape.fit && editor.node.hasAttribute("data-fit") && !editor.geometry) {
+      editor.geometry = wrapFromTypewriter(editor, shape, viewport);
+    }
+    if (shape.fit) editor.geometry = null;
+    const shown = editorShape(editor, shape);
+    placeShapeEditor(editor.node, viewport, shown);
+    placeEditorGrips(editor, shown);
+  }
+  hideStaticText(layer, editor.id);
 });
+
+// The box the typewriter editor is showing, as a box that wraps: its top-left
+// where it is, as wide as its longest line or a new text box, whichever is
+// wider (but not past the page's right edge), and as tall as it is.
+function wrapFromTypewriter(editor, shape, viewport) {
+  const scale = viewport.scale || 1;
+  const left = parseFloat(editor.node.style.left) || 0;
+  const top = parseFloat(editor.node.style.top) || 0;
+  const room = Math.max(0, viewport.width - left);
+  const width = Math.min(room, Math.max(editor.node.offsetWidth, TEXT_BOX_DEFAULT.width * scale));
+  const height = editor.node.offsetHeight;
+  if (!(width > 0) || !(height > 0)) return null;
+  const [ax, ay] = viewport.convertToPdfPoint(left, top);
+  const [bx, by] = viewport.convertToPdfPoint(left + width, top + height);
+  return [[Math.min(ax, bx), Math.min(ay, by)], [Math.max(ax, bx), Math.max(ay, by)], ...shape.p.slice(2)];
+}
 
 setShapeTextEditHandler((record) => openShapeTextEditor(record));

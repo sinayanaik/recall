@@ -1575,7 +1575,7 @@ export function initDocumentMarkMenu() {
     // already up, and the words have their own format bar
     // (src/documents/pdf-shape-text-format.js). The editor stops its clicks
     // itself; this is the backstop.
-    if (event.target?.closest?.(".pdf-shape-editor")) {
+    if (event.target?.closest?.(".pdf-shape-editor, .pdf-shape-editor-grip")) {
       closeMarkMenu();
       return;
     }

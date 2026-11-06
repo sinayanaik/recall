@@ -609,9 +609,10 @@ export function paintDocumentShapes(pageNumber, { preview = null } = {}) {
   const layer = existing || shapeLayer(pageNumber);
   if (!layer) return;
   // Everything but an open text editor, which must not lose its focus (and with
-  // it the words being typed) to a repaint — the new nodes go in under it.
+  // it the words being typed) to a repaint — the new nodes go in under it —
+  // and its grips, one of which may be mid-drag with the pointer captured.
   const editor = layer.querySelector(":scope > .pdf-shape-editor");
-  [...layer.children].forEach((node) => { if (node !== editor) node.remove(); });
+  [...layer.children].forEach((node) => { if (node !== editor && !node.classList.contains("pdf-shape-editor-grip")) node.remove(); });
   const put = (node) => (editor ? layer.insertBefore(node, editor) : layer.appendChild(node));
   const svg = document.createElementNS(SVG_NS, "svg");
   svg.setAttribute("class", "pdf-shape-svg");
@@ -878,7 +879,7 @@ function shapeTakesPointer(event) {
 }
 
 // Presses that belong to something else on the page.
-const SHAPE_PRESS_EXCLUDED = "button, a[href], input, textarea, select, label, .pdf-note-badge, .pdf-block, .pdf-shape-editor, .ink-rail-popover";
+const SHAPE_PRESS_EXCLUDED = "button, a[href], input, textarea, select, label, .pdf-note-badge, .pdf-block, .pdf-shape-editor, .pdf-shape-editor-grip, .ink-rail-popover";
 
 let shapeOpenedHandler = () => {};
 let shapeTextEditHandler = () => {};

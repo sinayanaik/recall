@@ -1343,6 +1343,156 @@ sections.push(async () => {
   check("a text box's menu opens at the box, not in the window's corner",
     moreMenu.open && (Math.abs(moreMenu.menu[2] - moreMenu.box[1]) < 30 || Math.abs(moreMenu.menu[1] - moreMenu.box[2]) < 30), JSON.stringify(moreMenu));
 
+  // ── A box that wraps, typed in: no wash, and grips to size it ─────────────
+  //
+  // "When selecting Wrap for inserted text I see this weird white-grey
+  // background, and there is no intuitive way to resize the wrap box." The
+  // editor painted a 55% white wash — a grey slab on dark paper — and had no
+  // handles at all: a box's width could only be changed after putting the
+  // words down, selecting it and finding its 10px handles.
+  const wrapBox = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    api.selectShape(null);
+    const record = api.addDocumentShape(1, {
+      type: "text", p: [[120, 560], [280, 532]], fit: false, width: 0.3, stroke: "#16181d",
+      font: { size: 12, bold: false, align: "left", color: "#16181d" },
+      text: "one two three four five six seven eight nine ten"
+    });
+    await settle(200);
+    api.openShapeTextEditor(record.id);
+    await settle(250);
+    const editor = document.querySelector('.pdf-shape-editor[data-highlight-id="' + record.id + '"]');
+    editor.scrollIntoView({ block: "center" });
+    await settle(250);
+    const grip = (id) => document.querySelector('.pdf-shape-editor-grip[data-grip="' + id + '"]');
+    const g = grip("e")?.getBoundingClientRect();
+    const r = editor.getBoundingClientRect();
+    return {
+      id: record.id,
+      background: getComputedStyle(editor).backgroundColor,
+      grips: [grip("e"), grip("se")].map(Boolean),
+      onEdge: Boolean(g) && Math.abs((g.left + g.width / 2) - r.right) < 2 && Math.abs((g.top + g.height / 2) - (r.top + r.height / 2)) < 2,
+      at: g ? [g.left + g.width / 2, g.top + g.height / 2] : null,
+      width: r.width
+    };
+  }`);
+  check("a box that wraps is typed in over the page itself, with no wash", /rgba\(0, 0, 0, 0\)|transparent/.test(wrapBox.background), wrapBox.background);
+  check("...with a grip on its right edge and one on its corner", wrapBox.grips.every(Boolean) && wrapBox.onEdge, JSON.stringify(wrapBox));
+  if (wrapBox.at) {
+    const [gx, gy] = wrapBox.at;
+    await mouse("mouseMoved", gx, gy, 0);
+    await mouse("mousePressed", gx, gy, 1);
+    await glide([gx, gy], [gx + 80, gy], 8, (x, y) => mouse("mouseMoved", x, y, 1));
+    await mouse("mouseReleased", gx + 80, gy, 0);
+  }
+  const wrapDragged = await page.evaluate(`async (id) => {
+    const { api, settle } = window.__recall;
+    await settle(150);
+    const editor = document.querySelector('.pdf-shape-editor[data-highlight-id="' + id + '"]');
+    const scale = api.pdfPageViewport(1).scale;
+    const out = {
+      open: Boolean(editor) && api.isEditingShapeText(),
+      focused: document.activeElement === editor,
+      width: editor?.getBoundingClientRect().width || 0,
+      menu: Boolean(document.querySelector(".mark-menu:not([hidden])")),
+      recordUntouched: Math.round(api.documentHighlightById(id).shape.p[1][0]) === 280
+    };
+    const g = document.querySelector('.pdf-shape-editor-grip[data-grip="e"]').getBoundingClientRect();
+    out.gripFollows = Math.abs((g.left + g.width / 2) - editor.getBoundingClientRect().right) < 2;
+    editor.focus();
+    const end = document.createRange();
+    end.selectNodeContents(editor);
+    end.collapse(false);
+    getSelection().removeAllRanges();
+    getSelection().addRange(end);
+    document.execCommand("insertText", false, " eleven");
+    api.commitShapeTextEditor();
+    await settle(250);
+    const shape = api.documentHighlightById(id).shape;
+    out.storedWidth = Math.abs(shape.p[1][0] - shape.p[0][0]);
+    out.expectedWidth = 160 + 80 / scale;
+    out.text = shape.text;
+    out.gripsGone = !document.querySelector(".pdf-shape-editor-grip");
+    api.undoInk();
+    await settle(150);
+    const undone = api.documentHighlightById(id).shape;
+    out.undone = { width: Math.abs(undone.p[1][0] - undone.p[0][0]), text: undone.text };
+    return out;
+  }`, wrapBox.id);
+  check("dragging the edge grip widens the box under the cursor, and the words stay open to type in",
+    wrapDragged.open && wrapDragged.focused && !wrapDragged.menu && wrapDragged.width > wrapBox.width + 60 && wrapDragged.gripFollows && wrapDragged.recordUntouched, JSON.stringify(wrapDragged));
+  check("...the width is written with the words, and one undo takes back both",
+    Math.abs(wrapDragged.storedWidth - wrapDragged.expectedWidth) < 3 && wrapDragged.text.endsWith(" eleven") && wrapDragged.gripsGone
+      && Math.abs(wrapDragged.undone.width - 160) < 0.5 && !wrapDragged.undone.text.includes("eleven"), JSON.stringify(wrapDragged));
+
+  const wrapMore = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const handles = (shape, id) => api.shapeHandles(shape).find((h) => h.id === id);
+    const grip = (id) => document.querySelector('.pdf-shape-editor-grip[data-grip="' + id + '"]');
+    const press = (node, type, x, y) => node.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, pointerType: "mouse", pointerId: 9, button: 0, clientX: x, clientY: y }));
+    const drag = async (node, dx, dy) => {
+      const r = node.getBoundingClientRect();
+      const x = r.left + r.width / 2;
+      const y = r.top + r.height / 2;
+      press(node, "pointerdown", x, y);
+      for (let i = 1; i <= 5; i += 1) press(node, "pointermove", x + (dx * i) / 5, y + (dy * i) / 5);
+      press(node, "pointerup", x + dx, y + dy);
+      await settle(80);
+    };
+    // A turned box: the corner grip resizes it in its own frame, and its left
+    // edge stays where it was on the page.
+    const turned = api.addDocumentShape(1, {
+      type: "text", p: [[140, 470], [300, 442]], rot: 30, fit: false, width: 0.3, stroke: "#16181d",
+      font: { size: 12, bold: false, align: "left", color: "#16181d" }, text: "turned words"
+    });
+    await settle(150);
+    api.openShapeTextEditor(turned.id);
+    await settle(250);
+    const before = api.documentHighlightById(turned.id).shape;
+    await drag(grip("se"), 50, 40);
+    api.commitShapeTextEditor();
+    await settle(200);
+    const after = api.documentHighlightById(turned.id).shape;
+    const wb = handles(before, "nw");
+    const wa = handles(after, "nw");
+    const turnedOut = {
+      nwStays: Math.hypot(wa.x - wb.x, wa.y - wb.y) < 0.5,
+      grew: Math.abs(after.p[1][0] - after.p[0][0]) > 165 && Math.abs(after.p[1][1] - after.p[0][1]) > 30,
+      rot: after.rot
+    };
+    // Typewriter text has no grips: it is as wide as its words.
+    const typed = api.addDocumentShape(1, {
+      type: "text", p: [[140, 400], [164, 382]], fit: true, width: 0.3, stroke: "#16181d",
+      font: { size: 12, bold: false, align: "left", color: "#16181d" }, text: "a label"
+    });
+    await settle(150);
+    api.openShapeTextEditor(typed.id);
+    await settle(250);
+    const typewriterGrips = document.querySelectorAll(".pdf-shape-editor-grip").length;
+    // ...until Wrap is turned on as it is typed in: then it wraps from the box
+    // on screen, no narrower than a new text box — not from the two letters'
+    // width the first tap stored.
+    api.setShapeSettings({ wrap: true });
+    await settle(250);
+    const editor = document.querySelector('.pdf-shape-editor[data-highlight-id="' + typed.id + '"]');
+    const scale = api.pdfPageViewport(1).scale;
+    const wrapped = {
+      grips: document.querySelectorAll(".pdf-shape-editor-grip").length,
+      wide: editor.getBoundingClientRect().width >= 160 * scale - 1,
+      stillOpen: api.isEditingShapeText()
+    };
+    api.commitShapeTextEditor();
+    await settle(200);
+    const stored = api.documentHighlightById(typed.id).shape;
+    wrapped.storedWide = Math.abs(stored.p[1][0] - stored.p[0][0]) >= 159;
+    api.setShapeSettings({ wrap: false });
+    api.selectShape(null);
+    await settle(100);
+    return { turnedOut, typewriterGrips, wrapped };
+  }`);
+  check("a turned box is sized by its corner grip in its own frame, its opposite corner fixed", wrapMore.turnedOut.nwStays && wrapMore.turnedOut.grew && wrapMore.turnedOut.rot === 30, JSON.stringify(wrapMore.turnedOut));
+  check("typewriter text carries no grips; Wrap turned on as it is typed wraps at a usable width", wrapMore.typewriterGrips === 0 && wrapMore.wrapped.grips === 2 && wrapMore.wrapped.wide && wrapMore.wrapped.stillOpen && wrapMore.wrapped.storedWide, JSON.stringify(wrapMore));
+
   // Wrap, a border and a turn, from the Style panel; then the turning handle.
   const styled = await page.evaluate(`async () => {
     const { api, settle } = window.__recall;
