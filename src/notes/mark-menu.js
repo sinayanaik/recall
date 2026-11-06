@@ -34,6 +34,16 @@ let openForMark = null;
 // reader of this.
 let openedAt = 0;
 
+// Where the last press landed — what the menu is placed at when the element it
+// was handed has no box on screen (an empty SVG group measures 0×0 at the
+// viewport's corner, which put the menu in the top-left of the window).
+let lastPress = null;
+if (typeof document !== "undefined") {
+  document.addEventListener("pointerdown", (event) => {
+    lastPress = { x: event.clientX, y: event.clientY };
+  }, { capture: true, passive: true });
+}
+
 // ── Whose highlight is this? ────────────────────────────────────────────────
 //
 // What differs between a note's <mark> and a paper's record is what "recolour"
@@ -572,7 +582,10 @@ export function openMarkMenuWith(mark, key, handlerSet, currentColor = null) {
     if (!button.hidden) lastRun = row?.run ?? null;
   });
 
-  const rect = mark.getBoundingClientRect();
+  let rect = mark.getBoundingClientRect();
+  if (!rect.width && !rect.height && lastPress) {
+    rect = { left: lastPress.x, right: lastPress.x, top: lastPress.y, bottom: lastPress.y, width: 0, height: 0 };
+  }
   const box = menu.getBoundingClientRect();
   const margin = 8;
   let top = rect.top - box.height - margin;

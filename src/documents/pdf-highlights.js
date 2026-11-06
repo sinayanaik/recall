@@ -1545,10 +1545,40 @@ export const DOCUMENT_NOTE_HANDLERS = {
 // it. Deliberately a click and not a selection, exactly as in a note: selecting
 // a highlight to change it would go through the text layer, which is the one
 // thing that cannot tell you WHICH highlight you meant.
+// What a highlight's menu is placed against: the first of its painted nodes
+// that is actually somewhere on screen. Typed text is drawn as a box
+// (.pdf-shape-text) and its SVG group (.pdf-shape) is EMPTY — a 0×0 rect at the
+// viewport's corner — so asking the group first opened the menu in the top-left
+// of the window, nowhere near the words.
+export function documentMarkAnchor(view, id, fallback = null) {
+  if (!view || !id) return fallback;
+  const key = CSS.escape(id);
+  const candidates = [
+    `.${PDF_MARK_CLASS}[data-highlight-id="${key}"]`,
+    `.pdf-shape-text[data-highlight-id="${key}"]`,
+    `.pdf-shape[data-highlight-id="${key}"]`
+  ];
+  for (const selector of candidates) {
+    const node = view.querySelector(selector);
+    const rect = node?.getBoundingClientRect?.();
+    if (rect && (rect.width > 0 || rect.height > 0)) return node;
+  }
+  return fallback;
+}
+
 export function initDocumentMarkMenu() {
   const view = el.documentView;
   if (!view) return;
   view.addEventListener("click", (event) => {
+    // A click inside a text box being typed in is the reader placing the
+    // caret or picking words, not asking about the box: its style bar is
+    // already up, and the words have their own format bar
+    // (src/documents/pdf-shape-text-format.js). The editor stops its clicks
+    // itself; this is the backstop.
+    if (event.target?.closest?.(".pdf-shape-editor")) {
+      closeMarkMenu();
+      return;
+    }
     // While a highlight's grips are up a tap moves one of its ends
     // (src/ui/adjust-handles.js), it does not open a menu.
     if (isAdjustHandlesOpen()) return;
@@ -1617,9 +1647,12 @@ export function initDocumentMarkMenu() {
     }
     // Anchored to the highlight's own first painted quad, so the menu appears
     // over the words it acts on rather than wherever the finger landed.
-    const anchor = view.querySelector(`.${PDF_MARK_CLASS}[data-highlight-id="${CSS.escape(record.id)}"]`)
-      || view.querySelector(`.pdf-shape[data-highlight-id="${CSS.escape(record.id)}"]`)
-      || event.target;
+    // The box being typed in is the reader's, not the menu's.
+    if (view.querySelector(`.pdf-shape-editor[data-highlight-id="${CSS.escape(record.id)}"]`)) {
+      closeMarkMenu();
+      return;
+    }
+    const anchor = documentMarkAnchor(view, record.id, event.target);
     openMarkMenuWith(anchor, record.id, DOCUMENT_MARK_HANDLERS, record.color || MARK_HIGHLIGHT_DEFAULT);
   });
 

@@ -1724,7 +1724,14 @@ export function positionNotesSelectionButton() {
       && !noteEditorHoldsSelection()) {
     const documentRange = window.getSelection()?.rangeCount ? window.getSelection().getRangeAt(0) : null;
     const documentText = documentRange ? documentRange.toString().trim() : "";
-    if (!documentText || !el.documentView?.contains(documentRange.startContainer)) {
+    // Words picked inside a text box being typed in are not a passage of the
+    // PDF: they have their own small bar (src/documents/pdf-shape-text-format.js),
+    // and this pill over it was a second, useless one.
+    const startEl = documentRange?.startContainer?.nodeType === Node.TEXT_NODE
+      ? documentRange.startContainer.parentElement
+      : documentRange?.startContainer;
+    if (!documentText || !el.documentView?.contains(documentRange.startContainer)
+        || startEl?.closest?.(".pdf-shape-editor")) {
       hideNotesSelectionButton();
       return;
     }
