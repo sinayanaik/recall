@@ -7,6 +7,7 @@
 // be deferred without giving up offline support.
 
 import { configureMermaid, currentThemeId } from "../ui/theme.js?v=__BUILD__";
+import { patchPdfjsSource } from "./pdfjs-patches.js?v=__BUILD__";
 
 // ── Deferred third-party libraries ──────────────────────────────────────────
 //
@@ -244,9 +245,66 @@ export async function ensureHtmlToImage() {
 // used to sit here turned out to be wrong about what pdf.js actually does.
 export let pdfWorkerBlobUrl = "";
 
+// ── The library itself: fetched, patched, run from a Blob ─────────────────
+//
+// pdf.js is not run as the CDN serves it: a few of its drawing bugs are fixed
+// in its source first (src/core/pdfjs-patches.js — the "page breaks" a tall
+// page grew while it was read in bands, for one). So the library is fetched
+// rather than named in a <script src>: through the page, which the service
+// worker answers from the precache with no connection, exactly as the worker
+// source below is. The patched copy is a Blob URL, run here with the same
+// classic <script> as before and handed to the page renderer's worker too
+// (pdfjsWorkerSources), so every page is drawn by the same pdf.js.
+//
+// If the fetch fails the CDN URL is loaded as it always was — unpatched, and
+// said so in the console — rather than not at all.
+let pdfjsLibraryBlobUrl = "";
+let pdfjsLibraryPending = null;
+let pdfjsPatches = { applied: [], missing: [], loaded: "" };
+
+// What was patched into the pdf.js this page runs ("cdn" when it was loaded
+// unpatched, "external" when something else put pdf.js on the page first), for
+// App Info and the checks.
+export function pdfjsPatchStatus() {
+  return { ...pdfjsPatches, applied: [...pdfjsPatches.applied], missing: [...pdfjsPatches.missing] };
+}
+
+function patchedPdfjsBlobUrl() {
+  if (pdfjsLibraryBlobUrl) return Promise.resolve(pdfjsLibraryBlobUrl);
+  if (pdfjsLibraryPending) return pdfjsLibraryPending;
+  pdfjsLibraryPending = (async () => {
+    try {
+      const response = await fetch(LIB_URLS.pdfjs);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const { text, applied, missing } = patchPdfjsSource(await response.text());
+      if (missing.length) console.warn(`pdf.js: could not apply ${missing.join(", ")} — that part runs as published`);
+      pdfjsLibraryBlobUrl = URL.createObjectURL(new Blob([text], { type: "text/javascript" }));
+      pdfjsPatches = { ...pdfjsPatches, applied, missing };
+      return pdfjsLibraryBlobUrl;
+    } catch (error) {
+      console.warn("pdf.js could not be fetched to patch", error);
+      return "";
+    } finally {
+      pdfjsLibraryPending = null;
+    }
+  })();
+  return pdfjsLibraryPending;
+}
+
 export async function ensurePdfJs() {
   if (!window.pdfjsLib) {
-    if (!(await loadScriptOnce(LIB_URLS.pdfjs))) return false;
+    const patched = await patchedPdfjsBlobUrl();
+    if (!window.pdfjsLib) {
+      if (patched && (await loadScriptOnce(patched))) {
+        pdfjsPatches.loaded = "patched";
+      } else {
+        if (!(await loadScriptOnce(LIB_URLS.pdfjs))) return false;
+        pdfjsPatches.loaded = "cdn";
+        console.warn("pdf.js loaded from the CDN unpatched");
+      }
+    }
+  } else if (!pdfjsPatches.loaded) {
+    pdfjsPatches.loaded = "external";
   }
   if (!window.pdfjsLib) return false;
   if (pdfWorkerBlobUrl || window.pdfjsLib.GlobalWorkerOptions?.workerSrc) return true;
@@ -293,31 +351,21 @@ export async function ensurePdfJs() {
 // The PDF page renderer (src/documents/pdf-render-worker.js) runs pdf.js's
 // drawing code in a worker, which loads the library with importScripts — and a
 // worker cannot importScripts the CDN URL and rely on the service worker the
-// way a page <script> does. So the library's source is fetched here, through
-// the page (answered from the precache offline, exactly as the core worker's is
-// above), and handed over as a same-origin Blob URL. The core worker's URL goes
-// with it: the renderer starts its own copy from the same blob.
+// way a page <script> does. So it is handed the same patched Blob URL the page
+// ran (patchedPdfjsBlobUrl above — fetched now if the page's pdf.js came from
+// elsewhere), so the worker draws with the same fixes. The core worker's URL
+// goes with it: the renderer starts its own copy from the same blob.
 //
 // Null when either cannot be had — the renderer then reports itself unavailable
 // and pages are drawn on the main thread as they always were.
-let pdfjsLibraryBlobUrl = "";
-
 export async function pdfjsWorkerSources() {
   if (!(await ensurePdfJs())) return null;
-  if (!pdfjsLibraryBlobUrl) {
-    try {
-      const response = await fetch(LIB_URLS.pdfjs);
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      pdfjsLibraryBlobUrl = URL.createObjectURL(new Blob([await response.blob()], { type: "text/javascript" }));
-    } catch (error) {
-      console.warn("pdf.js could not be fetched for the page renderer", error);
-      return null;
-    }
-  }
+  const library = await patchedPdfjsBlobUrl();
+  if (!library) return null;
   const core = pdfWorkerBlobUrl || window.pdfjsLib?.GlobalWorkerOptions?.workerSrc || "";
   // A cross-origin URL cannot be started as a worker from inside a worker.
   if (!core.startsWith("blob:")) return null;
-  return { library: pdfjsLibraryBlobUrl, core };
+  return { library, core };
 }
 
 // ── One pdf.js worker for the whole session ────────────────────────────────
