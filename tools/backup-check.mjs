@@ -1635,7 +1635,7 @@ try {
     });
   }
 
-  await must("a picture typed into a text box, and one in a text block's markdown, are packed", async () => {
+  await must("a picture typed into a text box, and one in a block's markdown, are packed", async () => {
     await seedPictureInText();
     const bytes = await takeBackup();
     const index = JSON.parse(await readEntry(bytes, "assets/index.json") || "{}");
@@ -1658,7 +1658,7 @@ try {
     const mdToken = /recall-img:([\w-]+)/.exec(block?.md || "")?.[1];
     if (!shapeToken || shapeToken === "tokShape" || !(await outbox.getOutboxImage(shapeToken))) return `the text box's picture was not adopted: ${shape?.shape?.text}`;
     if (!shape.text.includes(`recall-img:${shapeToken}`)) return `the record's own copy of the words still names the old picture: ${shape.text}`;
-    if (!mdToken || mdToken === "tokMd" || !(await outbox.getOutboxImage(mdToken))) return `the text block's picture was not adopted: ${block?.md}`;
+    if (!mdToken || mdToken === "tokMd" || !(await outbox.getOutboxImage(mdToken))) return `the block's picture was not adopted: ${block?.md}`;
     // What flushPendingImageUploads does once each picture is uploaded — and
     // straight after it, the outbox entry is DELETED. A token left anywhere
     // after this names bytes that no longer exist on any device.

@@ -974,7 +974,7 @@ try {
       if (read(dark, token) !== INK_PEN_HEX_DARK[token]) return `dark ${token}: css ${read(dark, token)}, js ${INK_PEN_HEX_DARK[token]}`;
     }
     // ...and the copy inside a page (styles/94-paper-tones.css), which is what a
-    // text block's ink colour reads on the paper it is on.
+    // block's ink colour reads on the paper it is on.
     const paperCss = readFileSync(path.join(ROOT, "styles/94-paper-tones.css"), "utf8");
     const paperBlock = (selector) => {
       const at = paperCss.indexOf(selector);

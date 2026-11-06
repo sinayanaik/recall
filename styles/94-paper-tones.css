@@ -25,7 +25,7 @@
 
 /* ── Everything on the page takes its colours from the PAPER ───────────────
  *
- * A text block was a card of the THEME: its fill was --card, its words --text,
+ * A block was a card of the THEME: its fill was --card, its words --text,
  * its border a mix of --accent and --line. On a Canvas that followed the theme
  * that was nearly right, and on a PDF it never was — a white paper on a dark
  * theme carried dark cards with pale words, and Black on a light theme carried

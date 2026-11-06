@@ -42,7 +42,11 @@ const TERMS = [
   // your handwriting"); what is banned is naming the PART with it.
   { re: /(?<![\w\-.#/:$@])handwrit(?:ing|ten) (?:notes?|pages?|tab|view|surface)(?![\w\-])|^\s*handwriting\s*$/i, use: "canvas" },
   { re: /(?<![\w\-.#/:$@])notebooks?(?![\w\-])/i, use: "canvas" },
-  { re: /(?<![\w\-.#/:$@])study notes(?![\w\-])/i, use: "notes" }
+  { re: /(?<![\w\-.#/:$@])study notes(?![\w\-])/i, use: "notes" },
+  // A meta.pdfBlocks record holds markdown — maths, code, tables and pictures
+  // as much as words — or a picture alone, so it is a "block", not a "text
+  // block". "Text" on a page is the typed text the T tool makes.
+  { re: /(?<![\w\-.#/:$@])text[ -]blocks?(?![\w\-])/i, use: "block / blocks" }
 ];
 
 // [file, a substring of the offending text ("" for the whole file), why it stays]

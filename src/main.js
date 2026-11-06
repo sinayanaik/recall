@@ -151,7 +151,7 @@ import { removePdfFromDeck, renamePdf } from "./documents/pdf-multi-actions.js?v
 import { closePdfPanel, initPdfSwitcher } from "./documents/pdf-switcher.js?v=__BUILD__";
 import { currentPdfDocument, currentPdfPageCount, documentFittedWidth, refreshBakedDocumentPages, fitDocumentToWidth, initDocumentCanvasRecovery, initDocumentPinchZoom, isDocumentFitWidth, openDocumentIsCurrent, openDocumentPdfId, noteSettledDocumentPosition, openDocumentView, reattachDocument, relayoutDocumentHoldingReader, repaintOpenDocumentPages, scheduleDocumentPositionSave, scrollToDocumentPage, refreshDocumentPaperForTheme, setDocumentAttachHandler, setDocumentCanvasRecoveredHook, setDocumentOpenedHook, setDocumentPagePaintedHook, setNotebookStartHandler, setPageIndicatorUpdatedHook, setPaperChangedHook, switchToPdf, updatePageIndicator, zoomDocument, retryMissingDocumentOpen } from "./documents/pdf-view.js?v=__BUILD__";
 import { adoptDocumentInk, canRedoInk, canUndoInk, copyInkSelection, cutInkSelection, duplicateInkSelection, hasInkClipboard, initDocumentInk, inkMarkImageMarkdown, inkMarkIsHighlight, inkSelectionCount, isInkMarkId, nudgeInkSelection, paintDocumentInk, pasteInkSelection, redoInk, repaintDocumentInk, setInkChangedHandler, undoInk } from "./documents/pdf-ink.js?v=__BUILD__";
-import { addHandwritingImage, enterHandwritingView, initHandwritingRail, refreshHandwritingBoard, runHandwritingMenuAction, startHandwritingNotebook } from "./handwriting/board.js?v=__BUILD__";
+import { addHandwritingImages, enterHandwritingView, initHandwritingRail, refreshHandwritingBoard, runHandwritingMenuAction, startHandwritingNotebook } from "./handwriting/board.js?v=__BUILD__";
 import { closeBlockStylePopover, isBlockStylePopoverOpen } from "./documents/block-style-bar.js?v=__BUILD__";
 import { closeBlockActionsPopover, isBlockActionsPopoverOpen } from "./documents/block-actions-popover.js?v=__BUILD__";
 import { blocksForPaper, buildStaticBlock, canRedoBlocks, canUndoBlocks, commitBlockEdit, deleteBlock, duplicateBlock, editBlock, handleBlockPointerDown, nudgeBlock, paintDocumentBlocks, pdfPointAt, redoBlocks, repaintDocumentBlocks, restackBlock, selectBlock, selectedBlockId, setBlocksChangedHandler, undoBlocks } from "./documents/pdf-blocks.js?v=__BUILD__";
@@ -1558,7 +1558,7 @@ onDomReady(() => {
     refreshPdfPageNotes();
   });
   initDocumentInk();
-  // The pen bar's + menu (Text, Sticky note, Text block, Picture, Page), on a
+  // The pen bar's + menu (Text, Block, Picture, Page), on a
   // PDF as on a Canvas — see initHandwritingRail.
   initHandwritingRail();
   // The Shapes tool (src/documents/pdf-shapes.js): its own capture-phase
@@ -2428,12 +2428,13 @@ setThemeRepaintHook(() => {
 });
 setBlockEditFlushHook(() => commitBlockEdit());
 setNotebookStartHandler(() => { startHandwritingNotebook(); });
-// The + 📷 picker. The paste and drop paths land on the same function, so an
-// image arrives on the page the same way however it was offered.
+// The + Add → Picture… picker. The paste and drop paths land on the same
+// function, so a picture arrives on the page the same way — compressed, and as
+// a block — however it was offered. Several can be picked at once.
 el.handwritingImageInput?.addEventListener("change", () => {
-  const file = el.handwritingImageInput.files?.[0];
+  const files = Array.from(el.handwritingImageInput.files || []);
   el.handwritingImageInput.value = "";
-  if (file) addHandwritingImage(file);
+  if (files.length) addHandwritingImages(files);
 });
 el.appBackBtn?.addEventListener("click", goNavBack);
 el.qnCloseBtn?.addEventListener("click", closeQuickNotesBoard);
@@ -3608,39 +3609,43 @@ if (appInfoModal) {
 // its URL plainly names an animation (src/images/paste.js).
 
 
-// ── A picture pasted or dropped onto a page of handwriting ────────────────
+// ── A picture pasted or dropped onto a page — a PDF's or a Canvas's ───────
 //
 // The three handlers below all begin "is this a TEXTAREA?", because every other
 // surface in this app that takes an image takes it into markdown at a caret. A
-// notebook page has no caret and no markdown: a picture lands on it as a block
-// of its own, where it was dropped. So this is checked first, on the Write tab
-// only, and hands the file to the same addHandwritingImage the + 📷 uses.
+// page has no caret and no markdown: a picture lands on it as a block of its
+// own, where it was dropped. So this is checked first, on either tab that shows
+// pages, and hands the files to the same addHandwritingImages the + Add →
+// Picture… row uses — which asks how to compress them first, as a note does.
+//
+// A paste into a block's editor, a text box or any other field is that field's:
+// it is left to the textarea path below (which compresses too) or to the
+// field's own handler. A paste with nothing focused arrives on <body>, which is
+// what a press on a page leaves focused — the page is not focusable — so that
+// counts as a paste onto the page in view.
+function pageImageTarget(target) {
+  if (!target || target.matches?.("input, textarea, select") || target.isContentEditable) return false;
+  if (el.documentView?.contains(target)) return true;
+  // ...unless a dialog or panel is open over the page: a picture pasted then
+  // would land, unseen, on the page behind it.
+  return target === document.body && document.activeElement === document.body
+    && !anyModalOpen() && !document.querySelector(".image-compress-modal, .pdf-block-editor:not([hidden])");
+}
+
 function handwritingImageDrop(event, files) {
-  if (state.viewMode !== "handwriting") return false;
-  if (!el.documentView?.contains(event.target)) return false;
+  if (!onDocumentSurface()) return false;
+  if (!pageImageTarget(event.target)) return false;
   const list = Array.from(files || []);
   if (!list.length) return false;
   event.preventDefault();
   // Where the pointer was, in the page's own points. A paste has no coordinates
-  // of its own, so it falls back to the middle of the page in view — which is
-  // where every one of these used to land, drop included.
+  // of its own, so it falls back to the middle of the page in view.
   const at = Number.isFinite(event.clientX) && Number.isFinite(event.clientY)
     ? pdfPointAt(event.clientX, event.clientY)
     : null;
-  // One at a time and in order, so a multi-file drop does not stack every
-  // picture in the middle of the page on top of the last — and each one a step
-  // further down and to the right, because four photographs dropped together
-  // land on one point and the pile looks like a single picture until it is
-  // dragged apart.
-  list.reduce((chain, file, index) => chain.then(() => addHandwritingImage(
-    file,
-    at ? { ...at, x: at.x + (index * IMAGE_DROP_CASCADE), y: at.y - (index * IMAGE_DROP_CASCADE) } : null
-  )), Promise.resolve());
+  addHandwritingImages(list, at);
   return true;
 }
-
-// In PDF points, and the same offset a duplicated block takes.
-const IMAGE_DROP_CASCADE = 14;
 
 // Copying out of a highlighted code block copies the code — not its marks, not
 // the digit on a note badge. See src/render/code-marks.js.
@@ -3717,7 +3722,7 @@ document.addEventListener("dragover", (event) => {
     return;
   }
   // Without this the browser refuses the drop and navigates to the file instead.
-  if (state.viewMode === "handwriting" && el.documentView?.contains(event.target)
+  if (onDocumentSurface() && el.documentView?.contains(event.target)
       && dragContainsImage(event.dataTransfer)) {
     event.preventDefault();
   }

@@ -27,7 +27,7 @@ export function collectDeckImageUrls(snapshot) {
     scan(card.question);
     scan(card.answer);
   }
-  // A PDF deck's image and text blocks hold figures of their own, which a note
+  // A PDF deck's image and markdown blocks hold figures of their own, which a note
   // scan never sees.
   for (const block of Array.isArray(snapshot?.meta?.pdfBlocks) ? snapshot.meta.pdfBlocks : []) {
     scan(block?.src);

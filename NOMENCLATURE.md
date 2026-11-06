@@ -14,10 +14,23 @@ The library holds **files**. Each file has up to four **parts**, one per tab:
 | **Cards** | The file's question/answer flashcards | ▢ Cards |
 | **Notes** | The file's one Markdown document | 📝 Notes |
 | **PDFs** | The PDF documents attached to the file (papers, books), read and highlighted in place | 📄 PDFs |
-| **Canvas** | The file's handwritten pages: blank paper you write on with a pen, plus text blocks and pictures | ✎ Canvas |
+| **Canvas** | The file's handwritten pages: blank paper you write on with a pen, plus blocks and pictures | ✎ Canvas |
 
 "Folder" (a file's category path), "Quick Notes", "Highlights" and "Clozes" keep
 their names.
+
+## On a page
+
+What the pen bar's **+ Add** menu puts on a PDF's or a Canvas's page:
+
+| Say | Meaning | Data | Code |
+|---|---|---|---|
+| **Text** | Words typed straight onto the page: press **T** (or + Add → Text) and tap where | a shape with `type: "text"` in `meta.pdfHighlights` | `src/documents/pdf-shapes.js`, `pdf-shape-text.js` |
+| **Block** | A box of markdown — words, maths, code, tables and pictures — rendered like a note, dragged and resized on the page. Not "text block": it holds more than text | a record in `meta.pdfBlocks`; `kind` `"text"` (or none) is markdown | `src/documents/pdf-blocks.js` (`PDF_BLOCK_MARKDOWN`), `pdf-block-editor.js` |
+| **Picture** | A block that is a picture alone, from + Add → Picture…, or pasted (Ctrl+V) or dropped onto the page; compressed first, as a note's picture is | a `meta.pdfBlocks` record with `kind: "image"` and a `src` | `PDF_BLOCK_IMAGE`; `addHandwritingImages` in `src/handwriting/board.js` |
+
+A **sticky note** is one of the Shapes tool's shapes (with lines, arrows, boxes,
+ellipses and callouts), not a row of + Add.
 
 ## Where each name lives
 
@@ -61,6 +74,6 @@ wrong PDF" points at `meta.pdfs`, `pdfActiveId` and `src/documents/pdf-switcher.
 
 `tools/nomenclature-check.mjs` (part of `node tools/check.mjs`, and of CI) reads
 every user-visible string in `index.html`, `src/**/*.js` and the two manifests,
-and fails on *deck*, *flashcard*, *notebook*, *handwritten notes* or *Study
-Notes*. A string that genuinely needs an old word — SQL naming the real `decks`
-table, say — goes in its `ALLOWED` list with the reason.
+and fails on *deck*, *flashcard*, *notebook*, *handwritten notes*, *Study
+Notes* or *text block*. A string that genuinely needs an old word — SQL naming
+the real `decks` table, say — goes in its `ALLOWED` list with the reason.

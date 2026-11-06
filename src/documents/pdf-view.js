@@ -690,7 +690,7 @@ export function setNotebookStartHandler(fn) {
 function renderStartNotebookPrompt() {
   renderDocumentPickPrompt({
     heading: "Start a Canvas",
-    body: "Blank pages of your own, beside this file's cards, notes and any PDF it already has. Write on them with a stylus, drop in text blocks and images, and add as many pages as you need.",
+    body: "Blank pages of your own, beside this file's cards, notes and any PDF it already has. Write on them with a stylus, drop in blocks and pictures, and add as many pages as you need.",
     pick: "Start a Canvas",
     note: "Grid, ruled or blank — you can change the paper at any time, and what you have written stays where it is.",
     onPress: () => { onStartNotebook?.(); }
@@ -6649,7 +6649,7 @@ export function scheduleDocumentPositionSave() {
 // the page notes, the rail's swatches), plus a paper colour that goes into the
 // page's pixels (bakePagePaper and the page renderer) and onto the stage as
 // --paper-bg, which everything laid over the page takes its colours from
-// (styles/94-paper-tones.css): a text block is a card of the PAPER now, not of
+// (styles/94-paper-tones.css): a block is a card of the PAPER now, not of
 // the theme, so it changes with the page.
 //
 // The canvas's own pixels only, never the text or mark layers: inverting the

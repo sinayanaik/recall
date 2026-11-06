@@ -37,7 +37,7 @@
 //
 // So they went where the Document surface already puts what acts on the page:
 //
-//   • + Text, + Image and + Page are a group in the pen's rail, which floats
+//   • + Add (Text, Block, Picture…, Page) is a menu in the pen's rail, which floats
 //     over the page, wraps on a phone and dims while the nib is down;
 //   • the paper and the tear-out are rows of ⋯, because a thing you do once a
 //     session does not need to be on screen for the whole of it.
@@ -56,7 +56,7 @@ import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { hasActiveDeck, refreshHandwritingTab } from "../cards/card-status.js?v=__BUILD__";
 import { showConfirmModal, showToast } from "../ui/feedback.js?v=__BUILD__";
-import { placeShapeInView } from "../documents/pdf-shapes.js?v=__BUILD__";
+import { chooseImageCompression } from "../images/compress-dialog.js?v=__BUILD__";
 import { toggleTypewriter } from "../ui/ink-rail.js?v=__BUILD__";
 
 let wired = false;
@@ -79,8 +79,8 @@ export function paintHandwritingControls() {
   const ready = hasNotebook();
   const paper = notebookPaper();
 
-  // The rail's page group. Shown on a PDF as well now (text, a sticky note, a
-  // text block and a picture go on anybody's paper), where there is always a
+  // The rail's page group. Shown on a PDF as well now (text, a block and a
+  // picture go on anybody's paper), where there is always a
   // page to put them on — so it stands down only on a Canvas not yet started.
   const standDown = !ready && activeDocSlot() === DOC_SLOT_NOTEBOOK;
   el.documentInkRail?.querySelectorAll("[data-hw-action]").forEach((node) => {
@@ -215,7 +215,6 @@ function wire() {
       toggleTypewriter(true);
       showToast("Tap where you want to type");
     }
-    else if (action === "add-sticky") placeShapeInView("sticky", currentDocumentPage(), handwritingDropPoint(currentDocumentPage()));
   }, "[data-hw-action]");
 }
 
@@ -262,17 +261,42 @@ function addBlock() {
   paintHandwritingControls();
 }
 
-// The + 📷 picker, and the paste/drop path in src/main.js, both land here.
+// The + Add → Picture… picker, and the paste/drop path in src/main.js, all land
+// here — on a PDF's pages as on a Canvas.
+//
+// Every picture goes through chooseImageCompression first: the same dialog a
+// picture pasted into a note or a block's editor gets, which remembers the last
+// level chosen. A page used to be the one place a picture skipped it, so a phone
+// photograph dropped on a page was stored at its full eight megapixels. One
+// dialog covers the whole batch, and cancelling it adds nothing.
 //
 // `at` is a point on a page ({ page, x, y }, from pdfPointAt) when the caller has
 // one, and only a drop or a paste does: the picker in the rail has no position to
 // speak of, so it keeps the middle of the page in view. A drop that ignored the
 // place it was dropped is the reason four pictures dragged in together used to
 // land in one pile in the centre of the page.
-export async function addHandwritingImage(file, at = null) {
+//
+// In order and one at a time, each a step further down and to the right, because
+// four photographs dropped together land on one point and the pile looks like a
+// single picture until it is dragged apart.
+export async function addHandwritingImages(files, at = null) {
+  const list = Array.from(files || []).filter((file) => file && String(file.type || "").startsWith("image/"));
+  if (!list.length) return [];
   const page = Number(at?.page) || currentDocumentPage();
-  if (!pdfPageViewport(page)) return false;
-  const added = await addDocumentImageBlock(page, file, at || handwritingDropPoint(page));
-  if (added) paintHandwritingControls();
+  if (!pdfPageViewport(page)) return [];
+  const chosen = await chooseImageCompression(list);
+  if (!chosen?.items?.length) return [];
+  const start = at || handwritingDropPoint(page);
+  const added = [];
+  for (const [index, item] of chosen.items.entries()) {
+    const point = start ? { x: start.x + (index * IMAGE_DROP_CASCADE), y: start.y - (index * IMAGE_DROP_CASCADE) } : null;
+    const block = await addDocumentImageBlock(page, item.upload, point);
+    if (block) added.push(block);
+  }
+  if (added.length) paintHandwritingControls();
   return added;
 }
+
+// In PDF points, and the same offset a duplicated block takes.
+const IMAGE_DROP_CASCADE = 14;
+

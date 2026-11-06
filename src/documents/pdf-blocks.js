@@ -9,7 +9,7 @@
 // ── ...and why a picture is one of these rather than a thing of its own ────
 //
 // A photograph of a whiteboard beside the working you did from it is the other
-// half of the same page, and it wants exactly what a text block wants: a
+// half of the same page, and it wants exactly what a markdown block wants: a
 // rectangle in the page's own points, a drag, a resize, a delete, a tombstone
 // when it goes, and a merge by id on the next sync. All of that is already here
 // and all of it is already checked, so an image is a block with `kind: "image"`
@@ -70,9 +70,15 @@ import { showToast } from "../ui/feedback.js?v=__BUILD__";
 import { notePdfGesture } from "./pdf-timing.js?v=__BUILD__";
 import { resolveFontFamily } from "../ui/fonts.js?v=__BUILD__";
 
-// A block with no `kind` is text — see the header. Named constants rather than
-// bare strings so the record, the builder and the painter cannot drift.
-export const PDF_BLOCK_TEXT = "text";
+// A block with no `kind` is markdown — see the header. Named constants rather
+// than bare strings so the record, the builder and the painter cannot drift.
+//
+// The markdown kind is STORED as "text", and stays "text": it is in every
+// meta.pdfBlocks record ever synced or backed up. The constant is named for
+// what the block is — markdown, which holds maths, code, tables and pictures as
+// readily as words — and the UI calls the whole thing a "Block", not a "text
+// block" (NOMENCLATURE.md).
+export const PDF_BLOCK_MARKDOWN = "text";
 
 export const PDF_BLOCK_IMAGE = "image";
 
@@ -84,7 +90,7 @@ export const PDF_BLOCK_MIN_WIDTH = 24;
 export const PDF_BLOCK_MIN_HEIGHT = 16;
 // A picture has no line of text to protect and no bar to grab, and its frame is
 // always the picture's own shape (see fitImageBlockFrame) — so a wide, short
-// photograph held to a text block's 34pt floor was a letterbox the reader could
+// photograph held to a markdown block's 34pt floor was a letterbox the reader could
 // not drag away. Its floor only has to leave the corner grip reachable.
 export const PDF_BLOCK_IMAGE_MIN_SIDE = 24;
 const PDF_BLOCK_DEFAULT_WIDTH = 240;
@@ -196,7 +202,7 @@ function normalizeBlocks(list) {
       w: Math.max(block.kind === PDF_BLOCK_IMAGE ? PDF_BLOCK_IMAGE_MIN_SIDE : PDF_BLOCK_MIN_WIDTH, Number(block.w) || PDF_BLOCK_DEFAULT_WIDTH),
       h: Math.max(block.kind === PDF_BLOCK_IMAGE ? PDF_BLOCK_IMAGE_MIN_SIDE : PDF_BLOCK_MIN_HEIGHT, Number(block.h) || PDF_BLOCK_DEFAULT_HEIGHT),
       z: Number(block.z) || 0,
-      kind: block.kind === PDF_BLOCK_IMAGE ? PDF_BLOCK_IMAGE : PDF_BLOCK_TEXT,
+      kind: block.kind === PDF_BLOCK_IMAGE ? PDF_BLOCK_IMAGE : PDF_BLOCK_MARKDOWN,
       md: typeof block.md === "string" ? block.md : "",
       src: typeof block.src === "string" ? block.src : "",
       alt: typeof block.alt === "string" ? block.alt : "",
@@ -234,7 +240,7 @@ export function allDocumentBlocks() {
 }
 
 // The surface's blocks, stamped with the paper they are on, plus the other
-// paper's untouched. Without the second half, adding a text block to a notebook
+// paper's untouched. Without the second half, adding a markdown block to a notebook
 // would delete every block typed over the preprint beside it — see the same
 // argument spelled out on wholeHighlightArray in ./pdf-highlights.js.
 // `removed` is one id or a list of them. A list, because tearing a page out of a
@@ -395,7 +401,7 @@ export function redoBlocks() {
 // exists because tearing a page out of a notebook called that one and stopped.
 // A block is a rectangle on a numbered page in the same way a highlight is, so
 // every fault that function was written to prevent applied here unanswered: a
-// text block on the torn-out page SURVIVED, floating on whatever page inherited
+// markdown block on the torn-out page SURVIVED, floating on whatever page inherited
 // its number, and every block after the gap went on describing a page that had
 // just moved down by one.
 //
@@ -539,7 +545,7 @@ function buildBlock(block) {
   const body = document.createElement("div");
   // ── `rendered` on a PICTURE was costing the picture most of its own frame ──
   //
-  // Both kinds of block used to carry it. On a text block it is right and load-
+  // Both kinds of block used to carry it. On a markdown block it is right and load-
   // bearing: the body holds markdown put through the same pipeline as a note, and
   // every rule that styles that output is written against `.rendered`. On a
   // picture block there is no markdown — paintBlock puts a bare <img class=
@@ -614,7 +620,7 @@ function paintBlockStyle(node, block) {
   // this surface one CSS pixel at scale 1 IS one PDF point.
   setBlockNumber(node, "blockSize", "--pdf-block-size", style.size);
   setBlockNumber(node, "blockCodeSize", "--pdf-block-code-size", style.codeSize);
-  // "Picture %" is about a picture INSIDE a text block. On a picture block it
+  // "Picture %" is about a picture INSIDE a markdown block. On a picture block it
   // would shrink the image inside a frame that stays the same size — the empty
   // frame this app's picture blocks exist not to have.
   setBlockNumber(node, "blockImageWidth", "--pdf-block-image-width", block.kind === PDF_BLOCK_IMAGE ? null : style.imageWidth);
@@ -1110,7 +1116,7 @@ export function addDocumentBlock(pageNumber, at = null) {
   const [vx0, vy0, vx1, vy1] = viewport.viewBox;
   const blocks = documentBlocks();
   const wanted = at || { x: (vx0 + vx1) / 2, y: (vy0 + vy1) / 2 };
-  const inherited = freshBlockStyle(PDF_BLOCK_TEXT);
+  const inherited = freshBlockStyle(PDF_BLOCK_MARKDOWN);
   const block = {
     // Unique across the DECK, not the surface: a block id is a sync key, and a
     // notebook minting the same one as a block over the paper beside it would
@@ -1122,7 +1128,7 @@ export function addDocumentBlock(pageNumber, at = null) {
     w: PDF_BLOCK_DEFAULT_WIDTH,
     h: PDF_BLOCK_DEFAULT_HEIGHT,
     z: blocks.length,
-    kind: PDF_BLOCK_TEXT,
+    kind: PDF_BLOCK_MARKDOWN,
     md: "",
     at: Date.now(),
     ...(inherited ? { style: inherited } : {})
@@ -1144,7 +1150,7 @@ export function addDocumentBlock(pageNumber, at = null) {
 // including the part where it uploads by itself later.
 //
 // The block is sized from the image's own aspect ratio, capped to fit the page
-// with a margin — an 8-megapixel photograph placed at a text block's default
+// with a margin — an 8-megapixel photograph placed at a markdown block's default
 // 240x90 would be an unreadable letterbox that the reader then has to drag out
 // to something sensible before they can see what it is.
 export async function addDocumentImageBlock(pageNumber, file, at = null) {
@@ -1514,7 +1520,7 @@ function beginGesture(event, node, mode) {
   // ── Only the BLOCK's own capture ────────────────────────────────────────
   //
   // lostpointercapture bubbles. A finger's press is captured IMPLICITLY by
-  // whatever it landed on — the <img> of a picture, a word in a text block —
+  // whatever it landed on — the <img> of a picture, a word in a markdown block —
   // and the moment the drag proves itself, setPointerCapture moves that capture
   // to the block, which the <img> hears as a lost capture and the event bubbles
   // up to here. Ending the gesture on THAT is what cut a finger's drag of a

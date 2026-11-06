@@ -283,12 +283,12 @@ export function describeSyncStats(stats = {}, { asTotals = false } = {}) {
   if (stats.highlightsMerged) parts.push(`${plural(stats.highlightsMerged, "highlight or ink mark", "highlights and ink marks")} from another device`);
   if (stats.highlightsRemovedHere) parts.push(`${plural(stats.highlightsRemovedHere, "highlight", "highlights")} deleted on another device`);
   if (stats.highlightNotesMerged) parts.push(`${plural(stats.highlightNotesMerged, "highlight note", "highlight notes")} combined`);
-  // "text block" is the app's own word for a meta.pdfBlocks record — the + Text
-  // button's own tooltip says "Add a markdown text block to the page you are
-  // looking at" — so the report calls it what the control that made it calls it.
-  if (stats.blocksSent) parts.push(`${plural(stats.blocksSent, "text block", "text blocks")} sent`);
-  if (stats.blocksMerged) parts.push(`${plural(stats.blocksMerged, "text block", "text blocks")} from another device`);
-  if (stats.blocksRemovedHere) parts.push(`${plural(stats.blocksRemovedHere, "text block", "text blocks")} deleted on another device`);
+  // "block" is the app's own word for a meta.pdfBlocks record — markdown or a
+  // picture; the + Add menu's row is "Block" — so the report calls it what the
+  // control that made it calls it.
+  if (stats.blocksSent) parts.push(`${plural(stats.blocksSent, "block", "blocks")} sent`);
+  if (stats.blocksMerged) parts.push(`${plural(stats.blocksMerged, "block", "blocks")} from another device`);
+  if (stats.blocksRemovedHere) parts.push(`${plural(stats.blocksRemovedHere, "block", "blocks")} deleted on another device`);
   flag(stats.documentSent, "document updated");
   flag(stats.documentAttached, "document attached on another device");
   flag(stats.documentPagesChanged, "document pages changed on another device");
