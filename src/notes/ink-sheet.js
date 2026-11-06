@@ -45,6 +45,8 @@ import { transformInkStroke } from "../format/ink-strokes.js?v=__BUILD__";
 import { insertPreparedImageUpload } from "../images/outbox.js?v=__BUILD__";
 import { inkPreferences, rememberInkRecentColor, writeInkPreferences } from "../storage/ink-prefs.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
+import { isDarkThemeActive } from "../ui/theme-catalog.js?v=__BUILD__";
+import { parseHex, resolvePaperTone } from "../format/paper-tones.js?v=__BUILD__";
 import { lockPageScroll, unlockPageScroll } from "../ui/overlays.js?v=__BUILD__";
 
 let sheet = null;
@@ -327,7 +329,8 @@ const sheetPanelAdapter = {
   recentColours: () => inkPreferences().recentColors,
   rememberColour: (hex) => rememberInkRecentColor(hex),
   // The sheet's paper follows the theme, so the preview does too.
-  paper: () => (/^light/.test(document.documentElement.dataset.theme || "") ? "light" : "dark"),
+  paper: () => sheetPaperKind(),
+  paperBg: () => sheetPaperBg(),
   scale: () => sheetPaper?.scale() || 1,
   changed: () => {
     const pen = sheetEngine();
@@ -413,11 +416,32 @@ function bindSheetPointer(scroller) {
   }, { passive: false });
 }
 
+// The sheet's paper follows the theme: it is the theme's own card colour
+// (.hw-page, styles/53-handwriting.css). Asked of the theme CATALOG for the
+// polarity — the same answer the Canvas gets — rather than of the id's prefix,
+// which used to be how this decided and would hand a theme not named "light-…"
+// a white pen on a white sheet.
+function sheetPaperKind() {
+  return isDarkThemeActive() ? "dark" : "light";
+}
+
+function sheetPaperBg() {
+  let card = "";
+  try {
+    card = getComputedStyle(document.documentElement).getPropertyValue("--card").trim();
+  } catch (_) {
+    card = "";
+  }
+  return parseHex(card) ? card : resolvePaperTone("theme").bg;
+}
+
 function ensureSheetPaper() {
   if (sheetPaper) return sheetPaper;
   sheetPaper = createHandwritingPaper({
     scroller: sheet.scroller,
     getPages: () => sheetPages,
+    getPaper: () => sheetPaperKind(),
+    getPaperBg: () => sheetPaperBg(),
     onCommit: () => refreshSheetRail(),
     onSelectionChange: () => refreshSheetRail()
   });

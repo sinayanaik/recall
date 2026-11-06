@@ -294,17 +294,14 @@
    round a figure in somebody's paper, and there are no figures on paper you have
    not drawn on yet — the pen's own lasso is what selects handwriting.
 
-   **Dark page** is the asked-for one. On a document it is a judgement only the
-   reader can make: a paper full of photographs looks wrong inverted. A notebook
-   has nothing on it but what you put there, and the pen resolves per theme —
-   near-white on a dark theme, near-black on a light one — so the page has
-   exactly one correct state and the reader is not the one who knows it. It
-   follows the theme (invertForDocumentSlot in src/documents/pdf-view.js) and the
-   control that would disagree with the theme is gone. togglePdfInvert refuses on
-   this slot as well: a hidden button is not the same as an unreachable mode, and
-   the reading rail has a row for it too. */
-:is(.cs-notebook-shown, #cs-specificity).cs-notebook-shown.cs-notebook-shown .quiz-panel.notes-mode .view-mode-row > #documentRegionBtn,
-:is(.cs-notebook-shown, #cs-specificity).cs-notebook-shown.cs-notebook-shown .quiz-panel.notes-mode .view-mode-row > #documentDarkBtn {
+   The paper button (#documentDarkBtn) used to be the other. It was a dark page
+   on/off, and the pen resolved per THEME, so an inverted light page or an
+   uninverted dark one was white ink on white paper — the page had one correct
+   state and the button could only break it. It is a tone picker now, and the
+   pens resolve per PAPER (resolveInkPaint), so every tone is a correct state and
+   the button is back: a Canvas starts on the theme's own colour and the reader
+   can choose another (src/format/paper-tones.js). */
+:is(.cs-notebook-shown, #cs-specificity).cs-notebook-shown.cs-notebook-shown .quiz-panel.notes-mode .view-mode-row > #documentRegionBtn {
   display: none;
 }
 
@@ -330,8 +327,7 @@
   min-height: 26px;
 }
 
-:is(.cs-notebook-open, #cs-specificity).cs-notebook-open.cs-notebook-open .quiz-panel.notes-mode .view-mode-row > #documentRegionBtn,
-:is(.cs-notebook-open, #cs-specificity).cs-notebook-open.cs-notebook-open .quiz-panel.notes-mode .view-mode-row > #documentDarkBtn {
+:is(.cs-notebook-open, #cs-specificity).cs-notebook-open.cs-notebook-open .quiz-panel.notes-mode .view-mode-row > #documentRegionBtn {
   display: none;
 }
 

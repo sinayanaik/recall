@@ -60,7 +60,8 @@ import {
   QUAD_GEOMETRY_VERSION, documentHighlightById, documentHighlights, freshDocumentHighlightId, reinstateDocumentHighlight,
   removeDocumentHighlight, setDocumentShapePainter, updateDocumentHighlight
 } from "./pdf-highlights.js?v=__BUILD__";
-import { inkEraseTarget, inkTool, isInkArmed, pushInkHistoryAction } from "./pdf-ink.js?v=__BUILD__";
+import { inkEraseTarget, inkPaperBg, inkTool, isInkArmed, pushInkHistoryAction } from "./pdf-ink.js?v=__BUILD__";
+import { paperRecolor } from "../format/paper-tones.js?v=__BUILD__";
 import { pdfPageElement, pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
 
 export const PDF_SHAPE_LAYER_CLASS = "pdf-shape-layer";
@@ -516,7 +517,11 @@ function buildShapeNodes(record, shape, viewport, { preview = false } = {}) {
   if (record?.id) group.dataset.highlightId = record.id;
   group.dataset.shapeType = shape.type;
   const boxes = [];
-  shapePrimitives(shape).forEach((prim) => {
+  // Drawn in colours that read on the paper under them: a black text box and
+  // its border, picked on a white page, are the colour of the page on Black or
+  // Dim. The record keeps what the reader picked; only what is drawn here moves
+  // (paperRecolor, src/format/paper-tones.js), and only when it would not read.
+  shapePrimitives(shape, { recolor: paperRecolor(inkPaperBg()) }).forEach((prim) => {
     if (prim.kind === "poly") group.appendChild(svgPathFor(prim, toPoint, scale));
     else if (prim.kind === "sticky") stickyIconPolys(prim.rect, prim.color).forEach((poly) => group.appendChild(svgPathFor(poly, toPoint, scale)));
     else if (prim.kind === "text") {

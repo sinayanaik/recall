@@ -31,6 +31,7 @@
 // simplification can be as aggressive as it is without anything looking faceted.
 
 import { INK_HL_HEX, INK_PEN_HEX, INK_PEN_HEX_DARK, inkPenVar, normalizeInkPen, parseInkToken } from "../format/ink-colors.js?v=__BUILD__";
+import { readableOnPaper } from "../format/paper-tones.js?v=__BUILD__";
 
 // How much of the nib a zero-pressure sample still puts down, and how much of it
 // pressure controls. A pen that tapers to nothing looks like a dying felt tip;
@@ -137,13 +138,22 @@ export function resolveInkColor(token, root = null) {
 // resolved to near-white and was drawn, near-invisibly, on white paper — and was
 // exported that way too. A surface that knows its paper passes it, and the pen
 // takes the set made for that paper. Without it, nothing changes.
-export function resolveInkPaint(token, { root = null, paper = null } = {}) {
+//
+// `paperBg` is the paper's own colour, when the caller knows it, and it is for
+// the one kind of pen the two sets cannot help: a colour the reader picked
+// themselves. That is stored as the hex they picked on whatever paper they were
+// looking at — black on White is the common one — and on Black or Dim it is the
+// colour of the page. It is painted as picked whenever it reads, and as its
+// lightness-flipped twin when it does not (readableOnPaper, src/format/paper-
+// tones.js). The stroke itself is never changed. Highlighters are left alone:
+// they multiply (or screen) with the page, which is what keeps them a wash.
+export function resolveInkPaint(token, { root = null, paper = null, paperBg = null } = {}) {
   const parsed = parseInkToken(token);
   const alpha = parsed ? parsed.opacity : 1;
   if (parsed?.kind === "highlighter") {
     return { color: parsed.hex || INK_HL_HEX[parsed.name], alpha, hl: true };
   }
-  if (parsed?.hex) return { color: parsed.hex, alpha, hl: false };
+  if (parsed?.hex) return { color: paperBg ? readableOnPaper(parsed.hex, paperBg) : parsed.hex, alpha, hl: false };
   const pen = normalizeInkPen(parsed?.name);
   if (paper === "light") return { color: INK_PEN_HEX[pen], alpha, hl: false };
   if (paper === "dark") return { color: INK_PEN_HEX_DARK[pen], alpha, hl: false };
@@ -424,8 +434,8 @@ export function inkHighlighterWidth(stroke) {
 // translucent because the last one was. It MULTIPLIES whatever alpha the caller
 // had set rather than replacing it, so a canvas painted at half strength stays
 // at half strength.
-export function paintInkStroke(ctx, stroke, { root = null, color = null, paper = null } = {}) {
-  const paint = resolveInkPaint(stroke?.c, { root, paper });
+export function paintInkStroke(ctx, stroke, { root = null, color = null, paper = null, paperBg = null } = {}) {
+  const paint = resolveInkPaint(stroke?.c, { root, paper, paperBg });
   const before = ctx.globalAlpha;
   if (paint.alpha < 1) ctx.globalAlpha = before * paint.alpha;
   if (paint.hl) {
@@ -457,7 +467,7 @@ export function paintInkStrokes(ctx, strokes, options) {
 // on a raster of white paper, which is what leaves the scanned words under it
 // legible — the same arithmetic the screen does with mix-blend-mode. Left at the
 // canvas's own (source-over) when not given, for a caller drawing onto nothing.
-export function paintInkLayers(ctx, strokes, { root = null, paper = null, blend = null } = {}) {
+export function paintInkLayers(ctx, strokes, { root = null, paper = null, paperBg = null, blend = null } = {}) {
   const list = Array.isArray(strokes) ? strokes : [];
   const bands = [];
   const ink = [];
@@ -465,8 +475,8 @@ export function paintInkLayers(ctx, strokes, { root = null, paper = null, blend 
   if (bands.length) {
     const before = ctx.globalCompositeOperation;
     if (blend) ctx.globalCompositeOperation = blend;
-    bands.forEach((stroke) => paintInkStroke(ctx, stroke, { root, paper }));
+    bands.forEach((stroke) => paintInkStroke(ctx, stroke, { root, paper, paperBg }));
     ctx.globalCompositeOperation = before;
   }
-  ink.forEach((stroke) => paintInkStroke(ctx, stroke, { root, paper }));
+  ink.forEach((stroke) => paintInkStroke(ctx, stroke, { root, paper, paperBg }));
 }

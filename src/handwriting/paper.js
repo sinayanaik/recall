@@ -89,6 +89,10 @@ export function createHandwritingPaper({
   onCommit = () => {},
   onSelectionChange = () => {},
   onToolChange = () => {},
+  // What the sheet is drawn on, handed straight to the engine (see getPaper and
+  // getPaperBg in src/render/ink-engine.js). Null leaves the pens to the theme.
+  getPaper = null,
+  getPaperBg = null,
   pageControls = false
 }) {
   let zoom = 1;
@@ -151,6 +155,8 @@ export function createHandwritingPaper({
     onCommit: (id, strokes, meta) => onCommit(id, strokes, meta),
     onSelectionChange,
     onToolChange,
+    getPaper,
+    getPaperBg,
     className: "hw-page-canvas"
   });
 

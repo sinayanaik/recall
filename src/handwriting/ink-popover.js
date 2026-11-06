@@ -174,6 +174,7 @@ export function buildInkPanel(inkPopover, { ids = {}, tapDots = true } = {}) {
 //   snapShapes(), setSnapShapes(on), tapDots(), setTapDots(on)
 //   recentColours(), rememberColour(hex)
 //   paper()                      "light" | "dark" | null — what the preview is drawn on
+//   paperBg()                    "#rrggbb" | null — that paper's own colour (a tone)
 //   scale()                      screen pixels per point, so the preview is true size
 //   changed()                    after every commit: remember, repaint
 //   suppressTap()                the press that shuts the panel is not a dot
@@ -275,10 +276,13 @@ export function createInkPanel({ rail, popover: inkPopover, chip, adapter, onTog
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
     const paper = adapter.paper?.() || null;
+    // The tone's own colour when the surface has one, so a custom colour is
+    // previewed as it will be drawn there — flipped, if it would not read.
+    const paperBg = adapter.paperBg?.() || null;
     const scale = Math.max(0.2, Number(adapter.scale?.()) || 1);
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.fillStyle = paper === "dark" ? "#16181d" : "#ffffff";
+    ctx.fillStyle = paperBg || (paper === "dark" ? "#16181d" : "#ffffff");
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     // Model units are points, drawn at `scale` CSS pixels each.
     ctx.setTransform(dpr * scale, 0, 0, dpr * scale, 0, 0);
@@ -291,7 +295,7 @@ export function createInkPanel({ rail, popover: inkPopover, chip, adapter, onTog
       const size = override.width ?? adapter.eraser().size;
       const ink = paper === "dark" ? "#e8eaed" : "#16181d";
       const pen = adapter.pen();
-      paintInkStroke(ctx, { w: Math.min(pen.width, 4), c: pen.token, p: [w * 0.06, h / 2, 0.6, w * 0.94, h / 2, 0.6] }, { paper });
+      paintInkStroke(ctx, { w: Math.min(pen.width, 4), c: pen.token, p: [w * 0.06, h / 2, 0.6, w * 0.94, h / 2, 0.6] }, { paper, paperBg });
       const radius = Math.max(4 / scale, size);
       ctx.beginPath();
       ctx.arc(w / 2, h / 2, radius, 0, Math.PI * 2);
@@ -322,7 +326,7 @@ export function createInkPanel({ rail, popover: inkPopover, chip, adapter, onTog
       const t = i / 40;
       points.push(w * (0.06 + (0.88 * t)), (h / 2) + (Math.sin(t * Math.PI * 2) * h * 0.22), 0.45 + (0.45 * Math.sin(t * Math.PI)));
     }
-    paintInkStroke(ctx, { w: width, c: token, p: points }, { paper });
+    paintInkStroke(ctx, { w: width, c: token, p: points }, { paper, paperBg });
   }
 
   function refresh() {

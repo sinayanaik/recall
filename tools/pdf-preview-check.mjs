@@ -560,10 +560,13 @@ try {
   check("the ⋯ menu offers the notebook's rows and not the document's",
     writeControls.menuRows === 5 && writeControls.menuRowsBoxed === 5 && writeControls.docRowsBoxed === 0,
     `${writeControls.menuRowsBoxed}/${writeControls.menuRows} notebook row(s), ${writeControls.docRowsBoxed} document row(s)`);
-  check("...while the controls that mean nothing on generated paper stand down",
-    !writeControls.darkShown && !writeControls.regionShown
+  // The paper button is the one that came BACK: it was a dark page on/off,
+  // hidden here because the pen followed the theme; it is a tone picker now
+  // (src/documents/paper-menu.js) and the pen follows the paper.
+  check("...while the control that means nothing on generated paper stands down, and the paper picker stays",
+    writeControls.darkShown && !writeControls.regionShown
       && writeControls.inkShown && writeControls.tocShown && writeControls.moreShown,
-    `dark=${writeControls.darkShown} region=${writeControls.regionShown} `
+    `paper=${writeControls.darkShown} region=${writeControls.regionShown} `
     + `pen=${writeControls.inkShown} contents=${writeControls.tocShown} more=${writeControls.moreShown}`);
 
   check("the pen button opens the rail", controls.railWasShut && controls.railOpen,

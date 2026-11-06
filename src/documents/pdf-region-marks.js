@@ -33,6 +33,7 @@ import { MARK_HIGHLIGHT_DEFAULT, MARK_HIGHLIGHT_HEX } from "../format/highlight-
 import { decodeInkStrokes } from "../format/ink-strokes.js?v=__BUILD__";
 import { markGeometry, markStyleOf, normalizeMarkHex, paintMarkGeometry } from "../format/mark-styles.js?v=__BUILD__";
 import { paintInkLayers } from "../render/ink-paint.js?v=__BUILD__";
+import { paperKeyBg, paperKeyParts, paperRecolor } from "../format/paper-tones.js?v=__BUILD__";
 import { normalizeShape, paintShapeOnCanvas, paintShapeTextOnCanvas, shapeTextNeedsRendering, shapeTextRect } from "../render/annot-shapes.js?v=__BUILD__";
 import { recordsForSurface } from "./pdf-multi.js?v=__BUILD__";
 
@@ -117,8 +118,16 @@ export function regionMarksOnPage(source, pageNumber, { excludeId = null, exclud
 // shape, from rendered markdown (rasteriseRegionBlocks below, or a static DOM
 // copy in an embed) — their box, fill and leader are still drawn here; only the
 // canvas's plain-text copy of the words is left out, so the two never overlap.
+//
+// `paper` may also be a paper KEY (src/format/paper-tones.js) — "dark~26282d"
+// — for a page shown on a tinted tone: the polarity decides the blend and the
+// pen set, and the paper's colour is what a reader's own colours (a custom pen,
+// a shape) are kept readable against.
 export function paintRegionMarks(ctx, viewport, marks, { paper = "light", areas = true, skipTextIds = null } = {}) {
-  const blend = paper === "dark" ? "screen" : "multiply";
+  const dark = paperKeyParts(paper).dark;
+  const paperBg = paperKeyBg(paper);
+  const recolor = paperRecolor(paperBg);
+  const blend = dark ? "screen" : "multiply";
   const grouped = typeof ctx.beginLayer === "function";
   const quadsOf = (record, paint) => {
     (record.quads || []).forEach((quad) => {
@@ -179,7 +188,8 @@ export function paintRegionMarks(ctx, viewport, marks, { paper = "light", areas 
   const paintShapes = () => {
     if (!areas || !marks.shapes?.length) return;
     marks.shapes.forEach((record) => paintShapeOnCanvas(ctx, record.shape, ([x, y]) => viewport.convertToViewportPoint(x, y), viewport.scale, {
-      skipText: Boolean(skipTextIds?.has?.(record.id))
+      skipText: Boolean(skipTextIds?.has?.(record.id)),
+      recolor
     }));
   };
   if (!marks.ink.length) { paintShapes(); return; }
@@ -193,7 +203,7 @@ export function paintRegionMarks(ctx, viewport, marks, { paper = "light", areas 
   // screen's two layers stack in. On white paper: this is a picture of the PDF.
   const strokes = [];
   marks.ink.forEach((record) => strokes.push(...decodeInkStrokes(record.ink?.s)));
-  paintInkLayers(ctx, strokes, { root: null, paper: paper === "dark" ? "dark" : "light", blend });
+  paintInkLayers(ctx, strokes, { root: null, paper: dark ? "dark" : "light", paperBg, blend });
   ctx.restore();
   paintShapes();
 }
@@ -354,8 +364,18 @@ export async function rasteriseRegionBlocks(page, source, pageNumber, rect, pixe
   const viewport = page.getViewport({ scale: 1 });
   const host = document.createElement("div");
   host.setAttribute("aria-hidden", "true");
-  if (paper === "light") host.className = "print-tokens";
   host.style.cssText = `position:fixed;left:-100000px;top:0;width:${Math.ceil(viewport.width)}px;height:${Math.ceil(viewport.height)}px;pointer-events:none;`;
+  if (paper === "light") host.className = "print-tokens";
+  else {
+    // As the reader sees it: a block on the page takes its colours from the
+    // paper it is on (styles/94-paper-tones.css), not from the theme, so the
+    // copy drawn here is told the same paper.
+    const stage = document.getElementById("documentStage");
+    const dark = Boolean(stage?.classList.contains("is-pdf-inverted"));
+    host.className = dark ? "paper-tokens is-dark-paper" : "paper-tokens";
+    host.style.setProperty("--paper-bg", stage?.dataset.paperBg || (dark ? "#030303" : "#ffffff"));
+    host.style.setProperty("--paper-text", dark ? "#e8eaed" : "#16181d");
+  }
   document.body.appendChild(host);
   const rasters = [];
   let failed = 0;

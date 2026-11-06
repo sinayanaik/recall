@@ -473,6 +473,12 @@ const checks = [
   // way a text mark is drawn (src/format/mark-styles.js). Both are leaves, so
   // pure Node, like the ink format above.
   ["annot-shapes  ", ["node", ["tools/annot-shapes-check.mjs"], ROOT]],
+  // The paper tones (src/format/paper-tones.js): every tone under every theme,
+  // the picture keys White and Black must keep, a dark page never pure black,
+  // and the rule that keeps a reader's own colour readable on whatever paper is
+  // under it — a colour that reads is never touched. Pure Node, like the two
+  // above.
+  ["paper-tones   ", ["node", ["tools/paper-tones-check.mjs"], ROOT]],
   // The same shape once more, for the document several decks make when they are
   // read as one: does every deck get back exactly what it put in? The write-back
   // fires on every autosave over every deck in the selection, so anything the

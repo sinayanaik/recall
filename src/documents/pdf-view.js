@@ -45,7 +45,7 @@ import { buildDocumentOutline, clearDocumentOutline, setDocumentOutlinePage } fr
 import { documentAutoScrolling, inkPenIsDown, setDocumentTextWake, touchGestureHoldsSurface } from "../core/gesture.js?v=__BUILD__";
 import { DOC_SLOT_DOC, DOC_SLOT_NOTEBOOK, activeDocSlot, docSlotMeta, docSlotReadingPositionKey, documentStoreKey, normalizeDocSlot, onDocumentSurface } from "./doc-slot.js?v=__BUILD__";
 import { activePdfId, deckPdfById, deckPdfs, PDF_PRIMARY_ID, pdfStoreKey } from "./pdf-multi.js?v=__BUILD__";
-import { isDarkThemeActive } from "../ui/theme-catalog.js?v=__BUILD__";
+import { PAPER_TONE_THEME, normalizePaperToneId, paperKey, paperKeyParts, resolvePaperTone } from "../format/paper-tones.js?v=__BUILD__";
 import { getDocument, putDocument, sha256 } from "./pdf-store.js?v=__BUILD__";
 import { betterReadingPosition, scheduleReadingPositionSave } from "../notes/reading-position.js?v=__BUILD__";
 import { currentDeckKey } from "../notes/scroll-anchor.js?v=__BUILD__";
@@ -205,6 +205,16 @@ function pageWantsDetail(outputScale) {
 export const PDF_DARK_CLASS = "is-pdf-inverted";
 
 export const PDF_DARK_KEY = "recall:pdfInvert";
+
+// The paper tone a PDF is shown on, and the one a Canvas is (src/format/paper-
+// tones.js) — remembered per device, apart, because a paper of somebody else's
+// and a page the reader writes on want different things: a scan full of
+// photographs is best left White, and a Canvas reads best on the theme's own
+// colour. PDF_DARK_KEY is the boolean this replaced; it is kept written, so an
+// older build on the same device still sees dark page on or off as the reader
+// left it, and read back (readPaperPreference) so a change made there wins.
+export const PDF_PAPER_KEY = "recall:pdfPaper";
+export const CANVAS_PAPER_KEY = "recall:canvasPaper";
 
 // ── Two hooks, so this module keeps its one direction of import ────────────
 //
@@ -1422,7 +1432,7 @@ function finishDocumentOpen(view, token, openSlot, at, { restored = false, refit
   if (!restored) buildPagePlaceholders();
   observePages();
   watchDocumentViewSize();
-  applyPdfInvert(invertForDocumentSlot(openSlot), { remember: false });
+  applyPaperTone(paperToneForSlot(openSlot), { remember: false });
   updatePageIndicator();
   // The pages exist now, so the printed notes have something to be inserted
   // after. Before the outline, which is deliberately off the critical path.
@@ -3894,12 +3904,17 @@ function picturesActive() {
   return Boolean(openPdf?.pictureSha) && pageRendererKeepsPictures() && !pdfPicturesTurnedOff();
 }
 
+// The paper KEY a kept picture is filed under (src/format/paper-tones.js):
+// "light" or "dark" for the two plain papers, which is what every picture was
+// filed under before tones existed, or "dark~26282d" for a tinted one. When the
+// renderer cannot bake, every picture is the plain light page and the CSS does
+// the rest, as it always did.
 function picturePaper() {
-  return stageIsDark() && pageRendererBakesDark() ? "dark" : "light";
+  return pageRendererBakesDark() ? stageTone.key : "light";
 }
 
 function pictureQuality(paper) {
-  return paper === "dark" ? PDF_PICTURE_QUALITY_DARK : PDF_PICTURE_QUALITY;
+  return paperKeyParts(paper).dark ? PDF_PICTURE_QUALITY_DARK : PDF_PICTURE_QUALITY;
 }
 
 function pictureTarget(viewport) {
@@ -3942,7 +3957,8 @@ async function pictureImage(meta, blob) {
   img.decoding = "async";
   pictureElements.set(img, { key: meta.key, width: meta.width, height: meta.height, paper: meta.paper, kind: meta.kind, stamp: meta.stamp || "" });
   img.src = holdPictureUrl(meta.key, blob);
-  if (meta.paper === "dark") img.classList.add(PDF_DARK_PIXELS_CLASS);
+  const pixels = paperKeyParts(meta.paper);
+  markPixelsPaper(img, pixels.dark, pixels.tint);
   try {
     await img.decode();
   } catch (_) {
@@ -4113,13 +4129,24 @@ async function obtainPagePicture({ entry, pageNumber, viewport, stale, takeSlot,
     plain = { picture: kept, blob: keptBlob, where: "kept" };
   }
   if (!plain && pageRendererBakesDark()) {
-    const other = storedPicture({ sha, page: pageNumber, paper: paper === "dark" ? "light" : "dark", minWidth });
+    // From a plain picture of either polarity: the same one first (a tint over
+    // it is all that is missing), then the other (its own inverse, then the
+    // tint). Only the two untinted papers are sources — a tinted picture is
+    // never turned into another tint, which would compound the two.
+    const wanted = paperKeyParts(paper);
+    let other = null;
+    for (const sourcePaper of (wanted.dark ? ["dark", "light"] : ["light", "dark"])) {
+      if (sourcePaper === paper) continue;
+      other = storedPicture({ sha, page: pageNumber, paper: sourcePaper, minWidth });
+      if (other) break;
+    }
     const source = other ? await getPictureBlob(other.key) : null;
     if (stale()) return null;
     if (source) {
       const started = performance.now();
       yieldPrerender();
-      const composed = await composePagePicture({ source, bakeDarkPage: true, quality }).promise;
+      const invert = paperKeyParts(other.paper).dark !== wanted.dark;
+      const composed = await composePagePicture({ source, bakeDarkPage: invert, tint: wanted.tint, tintDark: wanted.dark, quality }).promise;
       if (stale()) return null;
       const meta = { sha, page: pageNumber, width: other.width, height: other.height, paper, kind: "plain", stamp: "" };
       meta.key = pictureKey(meta);
@@ -4141,7 +4168,8 @@ async function obtainPagePicture({ entry, pageNumber, viewport, stale, takeSlot,
     if (id == null) throw Object.assign(new Error("the page renderer could not open this paper"), { name: "PageRendererUnavailable" });
     const started = performance.now();
     yieldPrerender();
-    const job = renderPagePicture({ id, pageNumber, width: target.width, dark: paper === "dark", ops, quality });
+    const wanted = paperKeyParts(paper);
+    const job = renderPagePicture({ id, pageNumber, width: target.width, dark: wanted.dark, tint: wanted.tint, ops, quality });
     entry.renderTask = job;
     let result;
     try {
@@ -4149,7 +4177,7 @@ async function obtainPagePicture({ entry, pageNumber, viewport, stale, takeSlot,
     } finally {
       if (entry.renderTask === job) entry.renderTask = null;
     }
-    const base = { sha, page: pageNumber, width: result.pixelWidth, height: result.pixelHeight, paper: result.dark ? "dark" : "light" };
+    const base = { sha, page: pageNumber, width: result.pixelWidth, height: result.pixelHeight, paper: paperKey(result.dark, result.tint) };
     const meta = { ...base, kind: "plain", stamp: "" };
     meta.key = pictureKey(meta);
     // Kept whatever happens next — a page drawn for a zoom that has since gone
@@ -4403,7 +4431,8 @@ async function runPrerender() {
   // Kept on either paper is kept enough: the other one is a compose away, made
   // when the page is shown on it.
   const have = pagesWithPictures(sha, paper, minWidth);
-  pagesWithPictures(sha, paper === "dark" ? "light" : "dark", minWidth).forEach((pageNumber) => have.add(pageNumber));
+  ["light", "dark"].filter((other) => other !== paper)
+    .forEach((other) => pagesWithPictures(sha, other, minWidth).forEach((pageNumber) => have.add(pageNumber)));
   const current = currentDocumentPage();
   let next = 0;
   for (let distance = 0; distance <= PDF_PRERENDER_RADIUS && !next; distance += 1) {
@@ -4429,12 +4458,13 @@ async function runPrerender() {
     schedulePrerender();
     return;
   }
-  const job = renderPagePicture({ id, pageNumber: next, width: target.width, dark: paper === "dark", quality: pictureQuality(paper) });
+  const ahead = paperKeyParts(paper);
+  const job = renderPagePicture({ id, pageNumber: next, width: target.width, dark: ahead.dark, tint: ahead.tint, quality: pictureQuality(paper) });
   prerenderJob = job;
   const started = performance.now();
   try {
     const result = await job.promise;
-    const meta = { sha, page: next, width: result.pixelWidth, height: result.pixelHeight, paper: result.dark ? "dark" : "light", kind: "plain", stamp: "" };
+    const meta = { sha, page: next, width: result.pixelWidth, height: result.pixelHeight, paper: paperKey(result.dark, result.tint), kind: "plain", stamp: "" };
     await putPicture(meta, result.plain);
     pictureCounts.ahead += 1;
   } catch (error) {
@@ -4631,7 +4661,7 @@ function startPageDraw({ entry, pageNumber, page, viewport, outputScale = 1, reg
       return onMain();
     }
     yieldPrerender();
-    const job = renderPageBitmap({ id, pageNumber, scale: viewport.scale, outputScale, region, density, dark: stageIsDark() });
+    const job = renderPageBitmap({ id, pageNumber, scale: viewport.scale, outputScale, region, density, dark: stageIsDark(), tint: pageRendererBakesDark() ? stageTone.tint : null });
     inner = job;
     let result;
     try {
@@ -4653,7 +4683,7 @@ function startPageDraw({ entry, pageNumber, page, viewport, outputScale = 1, reg
       canvas.style.width = `${Math.round(viewport.width)}px`;
       canvas.style.height = `${Math.round(viewport.height)}px`;
     }
-    if (result.dark) canvas.classList.add(PDF_DARK_PIXELS_CLASS);
+    markPixelsPaper(canvas, result.dark, result.tint);
     return {
       canvas,
       firstSliceMs: result.firstSliceMs,
@@ -4809,9 +4839,22 @@ function stageIsDark() {
 }
 
 // Whether a page canvas's pixels are for the paper the stage is showing now.
+//
+// Both halves of the paper: which way up the pixels are (is-dark-pixels) and
+// which tint is baked into them (data-paper-tint), so a move between two tones
+// of the same polarity — Black to Dim, White to Sepia — repapers too.
 function canvasPaperMatches(canvas) {
   if (!canvas || !darkPageBakes()) return true;
-  return canvas.classList.contains(PDF_DARK_PIXELS_CLASS) === stageIsDark();
+  return canvas.classList.contains(PDF_DARK_PIXELS_CLASS) === stageIsDark()
+    && (canvas.dataset?.paperTint || "") === (stageTone.tint || "");
+}
+
+// Say on a canvas (or a kept picture's <img>) what paper its pixels are for.
+function markPixelsPaper(node, dark, tint) {
+  if (!node) return;
+  node.classList.toggle(PDF_DARK_PIXELS_CLASS, Boolean(dark));
+  if (tint) node.dataset.paperTint = tint;
+  else delete node.dataset.paperTint;
 }
 
 // Turn a freshly drawn canvas into the paper the stage is on. A no-op for white
@@ -4840,23 +4883,35 @@ function noteDarkBakeTime(ms) {
   noteCanvasSetup(`CSS filter (drawing it in cost ${Math.round(median)}ms a page here)`);
 }
 
+//
+// A tone's tint goes in with it: the floor a dark page is lifted to IS the
+// paper's colour (lighten leaves the inverted print, which is lighter, alone),
+// and a light tint is multiplied into the white (black print stays black).
 function bakePagePaper(canvas) {
-  if (!canvas || !stageIsDark() || !canBakeDarkPage()) return;
+  if (!canvas || !canBakeDarkPage()) return;
+  const dark = stageIsDark();
+  const tint = stageTone.tint;
+  if (!dark && !tint) return;
   const started = performance.now();
   try {
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
     ctx.save();
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.filter = PDF_DARK_FILTER;
-    ctx.globalCompositeOperation = "copy";
-    ctx.drawImage(canvas, 0, 0);
-    ctx.filter = "none";
-    ctx.globalCompositeOperation = "lighten";
-    ctx.fillStyle = "#030303";
+    if (dark) {
+      ctx.filter = PDF_DARK_FILTER;
+      ctx.globalCompositeOperation = "copy";
+      ctx.drawImage(canvas, 0, 0);
+      ctx.filter = "none";
+      ctx.globalCompositeOperation = "lighten";
+      ctx.fillStyle = tint || "#030303";
+    } else {
+      ctx.globalCompositeOperation = "multiply";
+      ctx.fillStyle = tint;
+    }
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.restore();
-    canvas.classList.add(PDF_DARK_PIXELS_CLASS);
+    markPixelsPaper(canvas, dark, tint);
     noteDarkBakeTime(performance.now() - started);
   } catch (error) {
     console.warn("Could not darken the page in place — the CSS filter will do it", error);
@@ -6543,92 +6598,162 @@ export function scheduleDocumentPositionSave() {
   }
 }
 
-// ── Dark themes ─────────────────────────────────────────────────────────────
+// ── The paper ───────────────────────────────────────────────────────────────
 //
-// A CSS filter on the canvas alone, never on the text or mark layers: inverting
-// the whole page would invert the highlight colours too and turn a yellow
-// highlight into a blue one. Off by default, because a paper with photographs
-// or coloured figures in it looks wrong inverted and only the reader knows
-// which kind of document this is.
+// What the page is shown on: a TONE (src/format/paper-tones.js) — White, Sepia,
+// Dim, Black, or the theme's own colour — where there used to be a dark page
+// that was on or off. A tone is a polarity, which the rest of the surface reads
+// off PDF_DARK_CLASS exactly as before (the highlighter's blend, the pen set,
+// the page notes, the rail's swatches), plus a paper colour that goes into the
+// page's pixels (bakePagePaper and the page renderer) and onto the stage as
+// --paper-bg, which everything laid over the page takes its colours from
+// (styles/94-paper-tones.css): a text block is a card of the PAPER now, not of
+// the theme, so it changes with the page.
 //
-// ── ...except on paper this app wrote itself ──────────────────────────────
+// The canvas's own pixels only, never the text or mark layers: inverting the
+// whole page would invert the highlight colours too and turn a yellow highlight
+// into a blue one.
 //
-// The argument above is entirely about somebody else's document. A notebook's
-// page has nothing on it but what the reader put there, and the pen resolves per
-// theme — near-white on a dark theme, near-black on a light one — so a notebook
-// left permanently white means that on seven of this app's ten themes you write
-// in white ink on white paper and see nothing at all. Not a theme-switching bug:
-// the very first stroke is invisible.
+// ── Which tone, where ──────────────────────────────────────────────────────
 //
-// So the notebook's paper follows the theme, and the reader's saved preference
-// is left to the documents it was made about. A manual ◐ on a notebook still
-// works for the session — it is the class that moves, not the preference — and
-// the next theme change puts the paper back in step, which is what "follows the
-// theme" has to mean.
-export function invertForDocumentSlot(slot) {
-  return normalizeDocSlot(slot) === DOC_SLOT_NOTEBOOK ? isDarkThemeActive() : readPdfInvertPreference();
+// A PDF starts White, because a paper with photographs or coloured figures in it
+// looks wrong inverted and only the reader knows which kind of document this is.
+// A Canvas starts on "Match theme": its page has nothing on it but what the
+// reader put there, and the theme's own colour is what it should look like. Each
+// is remembered on its own (PDF_PAPER_KEY, CANVAS_PAPER_KEY), so picking Black
+// for a scan does not turn the next Canvas black.
+let stageTone = resolvePaperTone("white");
+
+// The tone on the stage now — { id, dark, bg, tint, key }.
+export function currentPaperTone() {
+  return stageTone;
 }
 
-// Re-assert the paper for whatever is on the surface now. Called on a theme
-// change; a no-op when what is open is a document, whose paper is the reader's
-// to decide.
-export function refreshDocumentPaperForTheme() {
-  if (openPdf?.slot !== DOC_SLOT_NOTEBOOK) return;
-  applyPdfInvert(isDarkThemeActive(), { remember: false });
+function paperDefaultFor(slot) {
+  return normalizeDocSlot(slot) === DOC_SLOT_NOTEBOOK ? PAPER_TONE_THEME : "white";
+}
+
+function paperStorageKeyFor(slot) {
+  return normalizeDocSlot(slot) === DOC_SLOT_NOTEBOOK ? CANVAS_PAPER_KEY : PDF_PAPER_KEY;
+}
+
+// The tone id the reader chose for this slot's paper.
+export function readPaperPreference(slot) {
+  const fallback = paperDefaultFor(slot);
+  try {
+    const stored = localStorage.getItem(paperStorageKeyFor(slot));
+    const tone = stored ? normalizePaperToneId(stored, fallback) : fallback;
+    if (normalizeDocSlot(slot) === DOC_SLOT_NOTEBOOK) return tone;
+    // The on/off this replaced is still written beside the tone, and an older
+    // build on this device writes ONLY it. Where the two disagree about which
+    // way up the page is, the on/off was set more recently: its "on" was Black
+    // and its "off" White. (Also a device that only ever had the on/off.)
+    const invert = localStorage.getItem(PDF_DARK_KEY);
+    if (invert === "1" || invert === "0") {
+      const wantDark = invert === "1";
+      if (resolvePaperTone(tone).dark !== wantDark) return wantDark ? "black" : "white";
+    }
+    return tone;
+  } catch (_) { /* private mode — the default, then */ }
+  return fallback;
+}
+
+export function paperToneForSlot(slot) {
+  return resolvePaperTone(readPaperPreference(slot));
+}
+
+// Kept for the callers that only ask "is it a dark page" of a slot.
+export function invertForDocumentSlot(slot) {
+  return paperToneForSlot(slot).dark;
 }
 
 export function readPdfInvertPreference() {
-  try {
-    return localStorage.getItem(PDF_DARK_KEY) === "1";
-  } catch (_) {
-    return false;
-  }
+  return paperToneForSlot(DOC_SLOT_DOC).dark;
 }
 
-// `remember: false` is the notebook's own paper following the theme. A dark
-// theme would otherwise write "dark page: on" into the preference and hand it to
-// the next PDF the reader opened, which is a document they never asked to have
-// inverted.
-// Told when the page turns from white to dark or back. The pen's colours are
-// chosen for the paper they are drawn on (resolveInkPaint, src/render/ink-
-// paint.js), and the ink canvas is a bitmap, so a flip of the paper is a
-// repaint of the ink — which lives in a module this one must not import.
+// Re-assert the paper for whatever is on the surface now. Called on a theme
+// change: a no-op unless the paper is "Match theme", which now has a different
+// colour (and maybe a different polarity) to match.
+export function refreshDocumentPaperForTheme() {
+  if (!openPdf) return;
+  const tone = paperToneForSlot(openPdf.slot);
+  if (tone.key !== stageTone.key || tone.id !== stageTone.id || tone.bg !== stageTone.bg) applyPaperTone(tone, { remember: false });
+}
+
+// Told when the paper changes. The pen's colours are chosen for the paper they
+// are drawn on (resolveInkPaint, src/render/ink-paint.js), and the ink canvas is
+// a bitmap, so a change of paper is a repaint of the ink — which lives in a
+// module this one must not import. So are the shapes, whose colours are kept
+// readable against it.
 let paperChangedHook = () => {};
 
 export function setPaperChangedHook(fn) {
   paperChangedHook = typeof fn === "function" ? fn : () => {};
 }
 
-export function applyPdfInvert(on, { remember = true } = {}) {
-  const was = Boolean(el.documentStage?.classList.contains(PDF_DARK_CLASS));
-  el.documentStage?.classList.toggle(PDF_DARK_CLASS, Boolean(on));
-  if (was !== Boolean(on)) {
+// ...and the paper menu, which shows the one that is ticked.
+let paperShownHook = () => {};
+
+export function setPaperShownHook(fn) {
+  paperShownHook = typeof fn === "function" ? fn : () => {};
+}
+
+// Put `tone` on the stage. `remember` writes it as the reader's choice for the
+// slot that is open; without it, it is the paper following something else (a
+// slot being opened, the theme changing) and must not be written down — a
+// Canvas following a dark theme would otherwise hand "Black" to the next PDF.
+export function applyPaperTone(tone, { remember = true, slot = openPdf?.slot ?? activeDocSlot() } = {}) {
+  const next = tone && typeof tone === "object" ? tone : resolvePaperTone(tone);
+  const stage = el.documentStage;
+  const was = stageTone;
+  const wasDark = Boolean(stage?.classList.contains(PDF_DARK_CLASS));
+  stageTone = next;
+  if (stage) {
+    stage.classList.toggle(PDF_DARK_CLASS, next.dark);
+    stage.dataset.paper = next.id;
+    stage.dataset.paperBg = next.bg;
+    stage.style.setProperty("--paper-bg", next.bg);
+    if (next.tint) stage.dataset.paperTint = next.tint;
+    else delete stage.dataset.paperTint;
+  }
+  if (wasDark !== next.dark || was.key !== next.key || was.bg !== next.bg) {
     paperChangedHook();
     // The pages' own pixels are the old paper now; see bakePagePaper.
     repaperPages();
   }
-  // The button says which way the mode is set without being pressed — the same
-  // rule every other toggle in this app's chrome follows, and the reason this
-  // moved out of the ⋯ menu in the first place: a mode nobody can see the state
-  // of reads as a mode that is not there.
-  el.documentDarkBtn?.setAttribute("aria-pressed", on ? "true" : "false");
+  // The button says which way the paper is without being pressed — the same
+  // rule every other toggle in this app's chrome follows: a mode nobody can see
+  // the state of reads as a mode that is not there.
+  el.documentDarkBtn?.setAttribute("aria-pressed", next.dark ? "true" : "false");
+  el.documentDarkBtn?.setAttribute("data-paper", next.id);
+  paperShownHook(next);
   if (!remember) return;
   try {
-    localStorage.setItem(PDF_DARK_KEY, on ? "1" : "0");
+    localStorage.setItem(paperStorageKeyFor(slot), next.id);
+    if (normalizeDocSlot(slot) !== DOC_SLOT_NOTEBOOK) localStorage.setItem(PDF_DARK_KEY, next.dark ? "1" : "0");
   } catch (_) { /* private mode — the preference just doesn't persist */ }
 }
 
-// Refused on a notebook, and the button is hidden there too
-// (styles/53-handwriting.css) — but hiding a control is not the same as removing
-// a mode, and this one is reachable from the reading rail's own row as well. The
-// paper on generated pages is decided by the theme (invertForDocumentSlot) and
-// there is no second opinion to be had: the pen resolves per theme, so an
-// inverted light page or an uninverted dark one is white ink on white paper.
+// The reader picked a tone from the paper menu (src/documents/paper-menu.js).
+export function setPaperTone(id) {
+  applyPaperTone(resolvePaperTone(id), { remember: true });
+  return stageTone;
+}
+
+// The on/off this used to be: Black or White, for the checks and tools that
+// still speak it.
+export function applyPdfInvert(on, { remember = true } = {}) {
+  applyPaperTone(resolvePaperTone(on ? "black" : "white"), { remember });
+}
+
+// White ↔ Black, the old toggle, for a caller with no menu to open. It used to
+// be refused on a Canvas, whose pens followed the THEME and so went white-on-
+// white on an inverted light page; they follow the paper now (resolveInkPaint
+// is told the paper), so any tone is safe on any slot.
 export function togglePdfInvert() {
-  if (openPdf?.slot === DOC_SLOT_NOTEBOOK) return el.documentStage?.classList.contains(PDF_DARK_CLASS) || false;
-  const next = !el.documentStage?.classList.contains(PDF_DARK_CLASS);
-  applyPdfInvert(next);
-  return next;
+  const dark = !stageIsDark();
+  setPaperTone(dark ? "black" : "white");
+  return dark;
 }
 
 // ── Save a copy ─────────────────────────────────────────────────────────────
