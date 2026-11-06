@@ -467,12 +467,56 @@
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
   outline: 1.5px dashed var(--accent);
   outline-offset: 1px;
-  background: color-mix(in srgb, #ffffff 55%, transparent);
+  /* The page itself, as the words will be shown on it: no wash. A white one
+     read as a grey slab on dark paper, and the box's own fill (drawn under
+     the editor) is what it is going to look like. */
+  background: transparent;
   pointer-events: auto;
   -webkit-user-select: text;
   user-select: text;
   cursor: text;
   touch-action: manipulation;
+}
+
+/* Its grips, while it wraps: the right edge for its width, the bottom-right
+   corner for its width and height (src/documents/pdf-shape-text.js). Drawn
+   like a selected shape's handles; reached from a fingertip away. */
+.pdf-shape-editor-grip {
+  position: absolute;
+  z-index: 1;
+  box-sizing: border-box;
+  border: 1.5px solid #ffffff;
+  background: var(--accent);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+  transform: translate(-50%, -50%) rotate(var(--grip-turn, 0deg));
+  pointer-events: auto;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.pdf-shape-editor-grip::before {
+  content: "";
+  position: absolute;
+  inset: -10px;
+}
+
+.pdf-shape-editor-grip[data-grip="e"] {
+  width: 7px;
+  height: 22px;
+  border-radius: 999px;
+  cursor: ew-resize;
+}
+
+.pdf-shape-editor-grip[data-grip="se"] {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  cursor: nwse-resize;
+}
+
+.pdf-shape-editor-grip.is-dragging {
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 30%, transparent);
 }
 
 
@@ -502,7 +546,6 @@
 }
 
 .pdf-shape-editor[data-fit] {
-  background: transparent;
   outline-style: dotted;
 }
 
