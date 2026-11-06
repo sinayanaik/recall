@@ -50,8 +50,10 @@ const STORE = "pictures";
 
 // Bump when what a picture LOOKS like changes for the same inputs — the encode
 // quality, the dark bake, how marks are painted — or what pdf.js draws (2: the
-// tiling-pattern fix in src/core/pdfjs-patches.js).
-export const PDF_PICTURE_RECIPE = 2;
+// tiling-pattern fix in src/core/pdfjs-patches.js; 3: dark page keeps the
+// page's photographs as they are, src/documents/pdf-image-keep.js, and every
+// plain picture records which it kept, as `keep`).
+export const PDF_PICTURE_RECIPE = 3;
 
 export const PDF_PICTURES_MAX_BYTES = 200 * 1024 * 1024;
 export const PDF_PICTURES_QUOTA_FRACTION = 0.1;

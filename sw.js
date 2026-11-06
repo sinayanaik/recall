@@ -461,6 +461,7 @@ const APP_SHELL = [
   `./src/documents/pdf-switcher.js?v=${STAMP}`,
   `./src/documents/pdf-timing.js?v=${STAMP}`,
   `./src/documents/pdf-render-worker.js?v=${STAMP}`,
+  `./src/documents/pdf-image-keep.js?v=${STAMP}`,
   `./src/documents/pdf-pictures.js?v=${STAMP}`,
   `./src/documents/pdf-multi.js?v=${STAMP}`,
   `./src/documents/pdf-bookmarks.js?v=${STAMP}`,
