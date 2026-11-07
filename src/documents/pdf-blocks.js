@@ -62,7 +62,7 @@ import { pdfPageElement, pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
 import { resolveStorageImages } from "../cloud/storage-urls.js?v=__BUILD__";
 import { hydrateLocalImages, storeImageOrQueue } from "../images/outbox.js?v=__BUILD__";
 import { renderMarkdown } from "../render/block-cache.js?v=__BUILD__";
-import { enhanceRenderedMarkdown } from "../render/enhance.js?v=__BUILD__";
+import { enhanceRenderedMarkdown, tagDiagramNaturalWidths } from "../render/enhance.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { blockStylePreference, writeBlockStylePreference } from "../storage/ink-prefs.js?v=__BUILD__";
 import { dropMetaTombstonesForLiveIds, recordDeletedMetaId } from "../sync/document-sync.js?v=__BUILD__";
@@ -1074,17 +1074,10 @@ function shrinkBlockWidthToContent(node, block) {
 // mermaid and nomnoml draw at a natural width (the SVG's viewBox), and the app
 // stretches every diagram to a share of its column. In a block that was either
 // half the frame (the Notes column's 50%) or, at 100%, a tall narrow flowchart
-// blown up to fill a wide block. Each diagram's own width is handed to the CSS
-// here, which draws it at that width times the page's zoom — the same scaling
-// the block's type gets — and shrinks it only when the block is narrower.
-function sizeBlockDiagrams(body) {
-  body.querySelectorAll(".mermaid svg, .nomnoml-diagram svg").forEach((svg) => {
-    const width = svg.viewBox?.baseVal?.width
-      || parseFloat(svg.style.maxWidth)
-      || parseFloat(svg.getAttribute("width"));
-    if (width > 0) svg.style.setProperty("--diagram-natural-w", String(Math.round(width)));
-  });
-}
+// blown up to fill a wide block. tagDiagramNaturalWidths (src/render/enhance.js)
+// hands each diagram's own width to the CSS, which draws it at that width times
+// the page's zoom — the same scaling the block's type gets — and shrinks it only
+// when the block is narrower. A text box's words get the same treatment.
 
 // What each block body was last rendered FROM. A WeakMap rather than a dataset
 // attribute: the markdown can be a page of text, and the entry goes when the
@@ -1106,7 +1099,7 @@ async function renderBlockBody(body, md, node = null, block = null) {
     if (renderedMarkdown.get(body) !== md || !body.isConnected) return;
     await enhanceRenderedMarkdown(body);
     if (renderedMarkdown.get(body) !== md || !body.isConnected) return;
-    sizeBlockDiagrams(body);
+    tagDiagramNaturalWidths(body);
     // The words are on the page now, so this is the first moment a block that
     // follows its text can be measured. Before the images below, which is a
     // compromise: a picture that has not decoded yet has no height to include,
@@ -1185,7 +1178,7 @@ export async function buildStaticBlock(block, viewport, { mountIn = null } = {})
     try {
       await renderMarkdown(body, block.md);
       await enhanceRenderedMarkdown(body);
-      sizeBlockDiagrams(body);
+      tagDiagramNaturalWidths(body);
     } catch (error) {
       console.warn("Could not render a block for a region picture", error);
     }

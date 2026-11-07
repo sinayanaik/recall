@@ -274,6 +274,46 @@
   max-width: 100%;
 }
 
+/* A diagram in a text box: the drawing, not a card round it. The notes
+   column's .diagram-shell is a bordered, padded panel that draws mermaid and
+   nomnoml at --visual-max-width (50% on a desktop) with the Zoom pill on a line
+   of its own underneath — on a page that was empty frame beside and under every
+   diagram. As in a Block (styles/53-handwriting.css): no panel, the drawing at
+   its own width (--diagram-natural-w, set by tagDiagramNaturalWidths in
+   src/render/enhance.js) times the page's zoom (--pdf-shape-scale, set by
+   styleShapeTextBox), never wider than the box, and the pill over its corner
+   while the box is pointed at. */
+.pdf-shape-text .pdf-shape-text-body .diagram-shell {
+  border: 0;
+  background: none;
+  padding: 0;
+  border-radius: 0;
+}
+
+.pdf-shape-text .pdf-shape-text-body .diagram-shell .mermaid svg,
+.pdf-shape-text .pdf-shape-text-body .diagram-shell .nomnoml-diagram svg {
+  width: min(100%, calc(var(--diagram-natural-w, 100000) * 1px * var(--pdf-shape-scale, 1))) !important;
+  max-width: 100% !important;
+}
+
+.pdf-shape-text .pdf-shape-text-body .mermaid,
+.pdf-shape-text .pdf-shape-text-body .nomnoml-diagram {
+  padding: 0;
+}
+
+.pdf-shape-text .pdf-shape-text-body .diagram-shell .diagram-zoom {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  float: none;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.pdf-shape-text:not(.is-static):hover .diagram-zoom {
+  opacity: 1;
+}
+
 .pdf-shape-text .pdf-shape-text-body.is-pending {
   opacity: 0.75;
 }

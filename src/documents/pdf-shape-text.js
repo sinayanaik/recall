@@ -20,7 +20,7 @@
 // moves only the editor; the size it leaves is written with the words, in the
 // same undo step.
 
-import { SHAPE_TEXT_PAD, TEXT_BOX_DEFAULT, moveShapeHandle, normalizeShape, shapeHandles } from "../render/annot-shapes.js?v=__BUILD__";
+import { SHAPE_TEXT_PAD, TEXT_BOX_DEFAULT, moveShapeHandle, normalizeShape, shapeHandles, shapeTextNeedsRendering } from "../render/annot-shapes.js?v=__BUILD__";
 import { documentHighlightById } from "./pdf-highlights.js?v=__BUILD__";
 import { applyShapeTextTurn } from "./pdf-shape-markdown.js?v=__BUILD__";
 import { deleteShape, paintDocumentShapes, selectShape, setEditingShapeId, setShapePaintedHook, setShapeTextEditHandler, untransformedClientRect, updateShape } from "./pdf-shapes.js?v=__BUILD__";
@@ -366,10 +366,15 @@ function putShapeTextDown() {
     selectShape(record.id);
     return;
   }
-  // Down, never up: the box's top edge is where the reader put it — at the
-  // size the grips left it, if they were used.
+  // The box's top edge is where the reader put it, and its width is the one
+  // the grips left it. Its height is the words' — but only PLAIN words are
+  // shown here as they will be on the page. Markdown is typed as its source,
+  // and a mermaid fence, a table or a list of `**…**` is far taller as source
+  // than rendered: sizing the box to the editor gave it the source's height,
+  // an empty tail under the words. For those the fitter (fitShapeTextBoxes in
+  // pdf-shapes.js) sets the height from the rendered words once they are in.
   const p = editorShape(editor, shape).p.map((point) => point.slice());
-  if (viewport && height > 0) {
+  if (viewport && height > 0 && !shapeTextNeedsRendering(text)) {
     const top = Math.max(p[0][1], p[1][1]);
     const bottom = Math.min(p[0][1], p[1][1]);
     const needed = height / (viewport.scale || 1);

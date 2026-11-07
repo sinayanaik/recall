@@ -1215,6 +1215,85 @@ sections.push(async () => {
   check("...and its stored box follows the rendered words, so a press lands where they are", made.fitted, JSON.stringify(made.sizes));
   check("...and the box takes a press, with a finger too (touch-action: none)", made.takesPress, JSON.stringify(made));
 
+  // ── A box that wraps is as tall as its words, both ways ───────────────────
+  //
+  // Reported as "the content finished but the bounding box is far exceeding
+  // it": a wrapping box's stored height was a floor on the live box and the
+  // fitter only ever grew it, so any moment it was taller than its words — the
+  // markdown SOURCE in the editor, a diagram mid-layout, a line deleted — was
+  // kept for good, frame, selection and export with it.
+  const hug = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const vp = api.pdfPageViewport(1);
+    const box = (id) => document.querySelector('.pdf-shape-text[data-highlight-id="' + id + '"]');
+    const stored = (id) => {
+      const p = api.documentHighlightById(id).shape.p;
+      return { top: Math.max(p[0][1], p[1][1]), height: Math.abs(p[1][1] - p[0][1]), width: Math.abs(p[1][0] - p[0][0]) };
+    };
+    const rendered = async (id) => {
+      for (let i = 0; i < 40; i += 1) {
+        await settle(100);
+        if (api.shapeTextBodyState(id) === "rendered") break;
+      }
+      await settle(300);
+    };
+    const agrees = (id) => Math.abs(stored(id).height * vp.scale - box(id).getBoundingClientRect().height) <= 2 * vp.scale;
+    const out = {};
+    // Stored 300pt tall for two lines of markdown: brought up to the words.
+    const tall = api.addDocumentShape(1, {
+      type: "text", p: [[300, 500], [460, 200]], fit: false, width: 0.3, stroke: "#16181d", border: true,
+      font: { size: 12, bold: false, align: "left", color: "#16181d" }, text: "**Two** short\\nlines"
+    });
+    await rendered(tall.id);
+    out.tall = { height: stored(tall.id).height, topKept: Math.abs(stored(tall.id).top - 500) < 0.5, agrees: agrees(tall.id) };
+    const fits = () => api.pdfGestureLog().filter((g) => g.what === "fitted to its words").length;
+    const before = fits();
+    await settle(1200);
+    out.settled = fits() === before;
+    // Wider: it wraps to fewer lines, and is shorter for it.
+    const long = api.addDocumentShape(1, {
+      type: "text", p: [[300, 500], [380, 480]], fit: false, width: 0.3, stroke: "#16181d",
+      font: { size: 12, bold: false, align: "left", color: "#16181d" },
+      text: "**Words** that wrap onto several lines in a narrow box and fewer in a wide one"
+    });
+    await rendered(long.id);
+    const narrowH = stored(long.id).height;
+    const s0 = api.documentHighlightById(long.id).shape;
+    api.updateShape(long.id, { ...s0, p: [s0.p[0].slice(), [s0.p[0][0] + 260, s0.p[1][1]]] }, { undo: false });
+    await settle(400);
+    out.wider = { narrowH, wideH: stored(long.id).height, agrees: agrees(long.id) };
+    // Typed in as SOURCE much taller than it renders: a link whose URL wraps
+    // over many lines in the editor and is one word on the page.
+    const typed = api.addDocumentShape(1, {
+      type: "text", p: [[300, 500], [400, 470]], fit: false, width: 0.3, stroke: "#16181d",
+      font: { size: 12, bold: false, align: "left", color: "#16181d" }, text: "start"
+    });
+    await settle(200);
+    api.openShapeTextEditor(typed.id);
+    await settle(250);
+    const editor = document.querySelector(".pdf-shape-editor");
+    editor.textContent = "[see here](https://example.com/" + "a".repeat(240) + ")";
+    await settle(100);
+    out.editorH = editor.getBoundingClientRect().height;
+    api.commitShapeTextEditor();
+    await rendered(typed.id);
+    out.typed = { shownH: box(typed.id).getBoundingClientRect().height, storedH: stored(typed.id).height * vp.scale, agrees: agrees(typed.id) };
+    // Selected: no top or bottom handle to drag (the words set that edge).
+    api.selectShape(tall.id);
+    await settle(150);
+    const handle = (id) => Boolean(document.querySelector('.pdf-shape-handle[data-handle="' + id + '"]'));
+    out.handles = { n: handle("n"), s: handle("s"), e: handle("e"), se: handle("se"), rot: handle("rot") };
+    api.selectShape(null);
+    [tall.id, long.id, typed.id].forEach((id) => api.deleteShape(id));
+    await settle(200);
+    return out;
+  }`);
+  check("a wrapping box stored far taller than its words comes up to them, its top edge where it was", hug.tall.agrees && hug.tall.topKept && hug.tall.height < 60, JSON.stringify(hug.tall));
+  check("...and then is left alone — no stream of re-fits", hug.settled, JSON.stringify(hug));
+  check("...made wider, it wraps to fewer lines and is shorter for it", hug.wider.agrees && hug.wider.wideH < hug.wider.narrowH - 5, JSON.stringify(hug.wider));
+  check("...typed in as markdown source taller than it renders, it is as tall as the rendered words, not the source", hug.typed.agrees && hug.typed.storedH < hug.editorH / 2, JSON.stringify({ editorH: hug.editorH, ...hug.typed }));
+  check("...and selected, it has side and corner handles and a turning handle, but no top or bottom one", !hug.handles.n && !hug.handles.s && hug.handles.e && hug.handles.se && hug.handles.rot, JSON.stringify(hug.handles));
+
   // Picked up with the PEN tool armed and its bar shut — no Shapes, no Text.
   const [cx, cy] = made.centre;
   await mouse("mouseMoved", cx, cy, 0);
@@ -1492,7 +1571,9 @@ sections.push(async () => {
     const wa = handles(after, "nw");
     const turnedOut = {
       nwStays: Math.hypot(wa.x - wb.x, wa.y - wb.y) < 0.5,
-      grew: Math.abs(after.p[1][0] - after.p[0][0]) > 165 && Math.abs(after.p[1][1] - after.p[0][1]) > 30,
+      // Wider, from the grip; as tall as its one line of words, not as tall as
+      // the grip was dragged — a box that wraps is as tall as what is in it.
+      grew: Math.abs(after.p[1][0] - after.p[0][0]) > 165 && Math.abs(after.p[1][1] - after.p[0][1]) < 30,
       rot: after.rot
     };
     // Typewriter text has no grips: it is as wide as its words.
@@ -1525,7 +1606,7 @@ sections.push(async () => {
     await settle(100);
     return { turnedOut, typewriterGrips, wrapped };
   }`);
-  check("a turned box is sized by its corner grip in its own frame, its opposite corner fixed", wrapMore.turnedOut.nwStays && wrapMore.turnedOut.grew && wrapMore.turnedOut.rot === 30, JSON.stringify(wrapMore.turnedOut));
+  check("a turned box is sized by its corner grip in its own frame, its opposite corner fixed, its height its words'", wrapMore.turnedOut.nwStays && wrapMore.turnedOut.grew && wrapMore.turnedOut.rot === 30, JSON.stringify(wrapMore.turnedOut));
   check("typewriter text carries no grips; Wrap turned on as it is typed wraps at a usable width", wrapMore.typewriterGrips === 0 && wrapMore.wrapped.grips === 2 && wrapMore.wrapped.wide && wrapMore.wrapped.stillOpen && wrapMore.wrapped.storedWide, JSON.stringify(wrapMore));
 
   // Wrap, a border and a turn, from the Style panel; then the turning handle.

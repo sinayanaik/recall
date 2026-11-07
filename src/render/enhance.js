@@ -302,6 +302,20 @@ export async function enhanceRenderedMarkdown(container, roots = null) {
   await Promise.all(regionPictures);
 }
 
+// Each mermaid or nomnoml drawing's own width (its viewBox), handed to the CSS
+// as --diagram-natural-w. A surface on a page — a Block, a text box — draws a
+// diagram at that width times the page's zoom, shrinking it only when the box
+// is narrower, instead of at the Notes column's share of whatever box it is in
+// (styles/53-handwriting.css, styles/88-annotations.css).
+export function tagDiagramNaturalWidths(root) {
+  root.querySelectorAll(".mermaid svg, .nomnoml-diagram svg").forEach((svg) => {
+    const width = svg.viewBox?.baseVal?.width
+      || parseFloat(svg.style.maxWidth)
+      || parseFloat(svg.getAttribute("width"));
+    if (width > 0) svg.style.setProperty("--diagram-natural-w", String(Math.round(width)));
+  });
+}
+
 // Grey out any [[reference]] whose target no longer exists, so a broken link is
 // visible while reading rather than only on the click that fails.
 //
