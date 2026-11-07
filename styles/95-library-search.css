@@ -1,0 +1,66 @@
+/* Library search results (src/library/my-decks-render.js,
+ * renderMyDecksSearchResults).
+ *
+ * A file of its own for the reason tools/split-css.mjs gives: the thirteen
+ * slices are compared byte for byte against the stylesheet they were cut from,
+ * so anything written since lives in a numbered file.
+ */
+
+/* While something is typed the library is a ranked list of matching files from
+   every folder (renderMyDecksSearchResults). The breadcrumb says so instead of
+   naming a folder the results ignore; the letters that matched are marked; and
+   when folders match too, "N files" / "N folders" headings split the groups. */
+.breadcrumb-search-note {
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 800;
+  padding: 4px 8px;
+  white-space: nowrap;
+}
+mark.my-decks-match {
+  background: color-mix(in srgb, var(--accent) 24%, transparent);
+  color: inherit;
+  border-radius: 3px;
+  padding: 0;
+}
+#myDecksBody tr.my-decks-results-label > td,
+div.my-decks-results-label {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 10px 8px 4px;
+  text-align: left;
+}
+div.my-decks-results-label { grid-column: 1 / -1; padding-bottom: 0; }
+
+/* Below 720px every list row is drawn as a card (styles/09-all-cards.css); a
+   group heading is not a file, so it stays a plain line of text. */
+@media (max-width: 720px) {
+  #myDecksBody tr.my-decks-results-label {
+    display: block;
+    border: 0;
+    background: none;
+    padding: 6px 2px 0;
+  }
+  #myDecksBody tr.my-decks-results-label > td { display: block; padding: 0; }
+}
+
+/* Which folder a result is in, under its title — phone only, since the list's
+   Folder column says it everywhere else (see addResultFolderLine). */
+.deck-result-path { display: none; }
+@media (max-width: 720px) {
+  #myDecksBody tr.is-search-result > td[data-label="Title"] { flex-wrap: wrap; }
+  #myDecksBody tr.is-search-result .deck-result-path {
+    display: block;
+    flex: 1 0 100%;
+    color: var(--muted);
+    font-size: 0.75rem;
+    font-weight: 700;
+    margin-top: 2px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}

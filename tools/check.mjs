@@ -455,6 +455,10 @@ const checks = [
   // bugs have already landed in this area (8e1a552, 9e0291b); merged-notes
   // covers the document side and this covers the path side.
   ["library       ", ["node", ["tools/library-check.mjs"], ROOT]],
+  // What the library's search box finds, and in what order: words in any
+  // order, folder names, typos, accents, and that a folder which matches never
+  // has files inside it that do not (selection depends on that). Pure Node.
+  ["library-search", ["node", ["tools/library-search-check.mjs"], ROOT]],
   // Pure Node again, and for the same reason: the sanitizer and the repair are
   // string-and-object work with no imports worth speaking of. It asks the one
   // question a whole book's sync once turned on — can a character that came out
@@ -602,6 +606,10 @@ const checks = [
     // over eight alphabetical rows, which is the arrangement that made it worth
     // replacing — see the file's header.
     ["note-link-brws", ["node", ["tools/note-link-browser-check.mjs"], ROOT]],
+    // ...and finding a file in the library. Searching used to filter the files
+    // and then draw the survivors as the folders they were in (Folder view, the
+    // default), so a search for a file showed a folder. This drives every view.
+    ["library-srch-b", ["node", ["tools/library-search-browser-check.mjs"], ROOT]],
     // The two halves of handwriting a browser is the only instrument for.
     // tools/ink-check.mjs can ask whether a stroke survives being stored; it
     // cannot ask whether the line follows the nib. So: a stroke held still

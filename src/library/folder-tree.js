@@ -10,12 +10,12 @@ import { defaultDeckCategory } from "../core/constants.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { buildFolderTree } from "./categories.js?v=__BUILD__";
-import { buildCloudDeckRow, buildDeckDeleteButton, buildDeckLoadButton, buildLocalDeckRow } from "./deck-rows.js?v=__BUILD__";
+import { appendMarkedTitle, buildCloudDeckRow, buildDeckDeleteButton, buildDeckLoadButton, buildLocalDeckRow } from "./deck-rows.js?v=__BUILD__";
 import { openFolderAsDeck } from "./folder-deck.js?v=__BUILD__";
 import { FOLDER_SEP, addKnownFolder, folderSegments, isCategoryUnder, normalizeDeckCategory, readExpandedFolders, readKnownFolders, rewriteCategoryPrefix, writeExpandedFolders, writeKnownFolders } from "./folders.js?v=__BUILD__";
 import { createDeckExportControl, deckCardInfo, deckSelOf, loadDeckEntry } from "./my-decks-actions.js?v=__BUILD__";
 import { mdIcon } from "./my-decks-icons.js?v=__BUILD__";
-import { setMyDecksCwd } from "./my-decks-prefs.js?v=__BUILD__";
+import { setMyDecksCwd, setMyDecksView } from "./my-decks-prefs.js?v=__BUILD__";
 import { renderMyDecksList, repaintMyDecks } from "./my-decks-render.js?v=__BUILD__";
 import { createDeckSelectControl, createFolderSelectControl, renameMyDeck, setMyDeckCategory } from "./my-decks-selection.js?v=__BUILD__";
 import { showConfirmModal, showPromptModal, showToast } from "../ui/feedback.js?v=__BUILD__";
@@ -441,7 +441,17 @@ export function renderFolderChildren(tbody, node, depth, ctx) {
 // beneath, and Uncategorized decks loose at the root. `cloudById` (a Map, or
 // null before/without a cloud fetch) drives the per-deck Sync column.
 // ── Folder-view navigation helpers ─────────────────────────────────────────
+//
+// Opening a folder from search results is a request to see the folder, so it
+// ends the search and lands in Folder view (Grid and Tree have no "inside a
+// folder" to land in) — otherwise the repaint would just draw the same
+// results again and the click would look dead.
 export function setMyDecksCwdAndRender(path) {
+  if (String(state.myDecksSearch || "").trim()) {
+    state.myDecksSearch = "";
+    if (el.myDecksSearch) el.myDecksSearch.value = "";
+    if (state.myDecksView !== "folder") setMyDecksView("folder");
+  }
   setMyDecksCwd(path);
   repaintMyDecks();
 }
@@ -829,7 +839,8 @@ export function buildDeckTile(entry, ctx) {
   const titleIcon = document.createElement("span");
   titleIcon.className = "deck-file-icon";
   titleIcon.innerHTML = mdIcon("file");
-  title.append(titleIcon, document.createTextNode(deck.title || "Untitled file"));
+  title.append(titleIcon);
+  appendMarkedTitle(title, deck.title, entry.ranges);
   title.title = deck.title || "";
 
   const chip = document.createElement("span");

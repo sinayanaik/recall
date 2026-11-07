@@ -155,6 +155,7 @@
     <link rel="stylesheet" href="styles/92-extensions.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/93-pdf-margins.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/94-paper-tones.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/95-library-search.css?v=__BUILD__">
 
     <!-- ── Module preloads ────────────────────────────────────────────────
          The app is ~130 ES modules and the browser discovers them by PARSING
@@ -337,6 +338,7 @@
     <link rel="modulepreload" href="src/library/folder-deck.js?v=__BUILD__">
     <link rel="modulepreload" href="src/library/folder-tree.js?v=__BUILD__">
     <link rel="modulepreload" href="src/library/folders.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/library/library-search.js?v=__BUILD__">
     <link rel="modulepreload" href="src/library/local-library.js?v=__BUILD__">
     <link rel="modulepreload" href="src/library/my-decks-actions.js?v=__BUILD__">
     <link rel="modulepreload" href="src/library/my-decks-icons.js?v=__BUILD__">
@@ -2253,7 +2255,7 @@
           <div class="web-decks-tools-row web-decks-tools-secondary">
             <nav class="my-decks-breadcrumb" id="myDecksBreadcrumb" aria-label="Folder path" hidden></nav>
             <div class="my-decks-search" data-md-icon="search">
-              <input type="search" id="myDecksSearch" placeholder="Search files…" aria-label="Search files by title" autocomplete="off">
+              <input type="search" id="myDecksSearch" placeholder="Search files and folders…" aria-label="Search files and folders — Enter opens the best match" title="Searches every folder. Words in any order; small typos are fine. Enter opens the best match, Escape clears." autocomplete="off" spellcheck="false" enterkeyhint="go">
             </div>
             <label class="my-decks-filter" data-md-icon="sort">
               <span>Sort</span>
@@ -2579,6 +2581,7 @@
               <li><strong>Edits are combined, never thrown away</strong> — like merging in Git. If two devices (or two windows on one device) change different paragraphs, cards or highlights, both changes are kept. Two different edits to the same paragraph are even merged word by word. Only when both changed the <em>same words</em> differently does the pill say <strong>Both devices changed a paragraph — tap to choose</strong>: you see just that paragraph (or card), both versions side by side, and pick one or keep both. Each note is kept as one copy — there is no pile of old versions</li>
               <li><strong>The pill says where your edits are</strong> — <strong>Saved here · syncs soon</strong> means the edit is safe on this device and not in the cloud yet; <strong>Synced</strong> means the cloud has everything</li>
               <li><strong>My Files</strong> — every file, on this device and in the cloud, with a live sync-status column. Per file: <strong>Load</strong>, <strong>Export</strong> (PDF / Markdown / JSON / SQL), <strong>Rename</strong>, <strong>Delete</strong>, and an inline <strong>category editor</strong>. Filter by category, select several files for <strong>bulk Load / Categorize / Export / Delete</strong>, or <strong>Export All</strong> to back up the whole library. Deletes propagate to your other devices</li>
+              <li><strong>Search My Files</strong> — the search box looks in every folder at once and lists the matching <em>files</em>, best match first, each with the folder it lives in and the letters that matched highlighted. Words can come in any order, a word from the folder's name counts (<code>calculus</code> finds everything filed under Calculus), accents don't matter, and a small typo or a rough abbreviation is fine — <code>eignvalues</code> finds <em>Eigenvalues</em>, <code>chnrl</code> finds <em>Chain Rule</em>. Folders whose name matches are listed after the files; open one to go there. <strong>Enter</strong> opens the top result and <strong>Esc</strong> clears the search</li>
               <li><strong>Back up &amp; share with .recall files</strong> — <strong>⋯ → Back up library (.recall)</strong> saves everything (files, cards, notes, PDFs, Canvas pages, highlights, ink, pictures, folders, reading positions and settings) in one .recall package, with a live panel showing every file, image and PDF as it goes; <strong>⋯ → Restore backup</strong> merges it back. To give files to someone else, select them and choose <strong>Export → Share (.recall — everything)</strong>: they open the package with <strong>My Files → Import</strong> (or drop it on the app) and get the files as their own, PDFs and all. Your study progress stays out unless you tick it in, and importing the same package again offers to <strong>update</strong> the files instead of duplicating them</li>
               <li><strong>Exporting the file you have open</strong> is not in this menu — it is the <strong>⇓</strong> beside the Cards / Notes / PDFs / Canvas tabs, which always offers the formats for the tab you are on: the cards as Cornell PDF, Markdown, JSON or SQL; the notes as PDF, HTML, Word or Markdown; a paper as its annotated pages, all its pages, the notes alone or the original file. <strong>Highlights…</strong> sits at the bottom of that menu on Notes and PDF</li>
             </ul>
