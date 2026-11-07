@@ -39,7 +39,7 @@
 
 import { SHAPE_TEXT_PAD, markdownToPlainText, normalizeShape, shapePrimitives, shapeTextNeedsRendering, typedTextMarkdown } from "../render/annot-shapes.js?v=__BUILD__";
 import { renderMarkdown } from "../render/block-cache.js?v=__BUILD__";
-import { enhanceRenderedMarkdown } from "../render/enhance.js?v=__BUILD__";
+import { enhanceRenderedMarkdown, tagDiagramNaturalWidths } from "../render/enhance.js?v=__BUILD__";
 import { hydrateLocalImages } from "../images/outbox.js?v=__BUILD__";
 import { resolveStorageImages } from "../cloud/storage-urls.js?v=__BUILD__";
 import { PDF_SHAPE_TEXT_CLASS } from "../core/constants.js?v=__BUILD__";
@@ -78,11 +78,22 @@ export function styleShapeTextBox(box, prim, viewport, { exact = false } = {}) {
   // pdf-shapes.js).
   if (prim.fit && !exact) box.dataset.fit = "";
   else box.style.width = `${width}px`;
-  // Typewriter text is as TALL as its lines, too: a stored height as a floor
-  // would let the box grow with its words and never shrink back (a smaller
-  // size, a line deleted), and the fitter would measure the floor, not the words.
+  // ── Every live box is as TALL as its words ─────────────────────────────────
+  //
+  // A box that wraps used to take its stored height as a FLOOR (min-height).
+  // With the fitter only ever growing a box, that was a ratchet: anything that
+  // was once taller than the words — the raw markdown in the editor (a mermaid
+  // fence is a dozen lines of source for one drawing), a diagram mid-layout, a
+  // line deleted, the box dragged wider so it wraps to fewer lines — became the
+  // box's height for good, and the frame, the selection, the hit-test and every
+  // export carried an empty tail under the words. The reader sets the width;
+  // the words set the height, and fitShapeTextBoxes (pdf-shapes.js) writes it
+  // back both ways. The static copy is drawn into the stored rectangle exactly,
+  // which the live page keeps equal to what it shows.
   if (exact) box.style.height = `${height}px`;
-  else if (!prim.fit) box.style.minHeight = `${height}px`;
+  // A diagram in the words is drawn at its own width times the page's zoom
+  // (see the .pdf-shape-text rules in styles/88-annotations.css).
+  box.style.setProperty("--pdf-shape-scale", String(scale));
   box.style.padding = `${SHAPE_TEXT_PAD * scale}px`;
   box.style.fontSize = `${prim.size * scale}px`;
   box.style.fontWeight = prim.bold ? "700" : "400";
@@ -226,6 +237,7 @@ async function renderShapeMarkdown(body, source, stale = () => false) {
   if (stale()) return;
   await enhanceRenderedMarkdown(body);
   if (stale()) return;
+  tagDiagramNaturalWidths(body);
   await hydrateLocalImages(body);
   await resolveStorageImages(body);
   // A picture in the words is part of something that is picked up and dragged;

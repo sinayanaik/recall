@@ -551,6 +551,21 @@ function selectedShapeHandles(shape, viewport) {
   return shapeHandles(shape, { rotateReach: SHAPE_ROTATE_HANDLE_GAP / (viewport?.scale || 1) });
 }
 
+// A box whose height its words set — one that wraps, or a callout — has no top
+// or bottom edge handle: a drag there would only snap back to the words. The
+// corners and the sides still set its width. The `n` point still anchors the
+// turning handle's stem; it is just not drawn or pressed.
+function heightFollowsWords(shape) {
+  const s = normalizeShape(shape);
+  return Boolean(s) && ((s.type === "text" && !s.fit) || s.type === "callout");
+}
+
+function pressableShapeHandles(shape, viewport) {
+  const handles = selectedShapeHandles(shape, viewport);
+  if (!heightFollowsWords(shape)) return handles;
+  return handles.filter((handle) => handle.id !== "n" && handle.id !== "s");
+}
+
 function buildHandles(layer, viewport, record, put = (node) => layer.appendChild(node)) {
   const toPoint = viewportMapper(viewport);
   const s = normalizeShape(record.shape);
@@ -585,7 +600,8 @@ function buildHandles(layer, viewport, record, put = (node) => layer.appendChild
     stem.style.transform = `rotate(${Math.atan2(by - ay, bx - ax)}rad)`;
     put(stem);
   }
-  handles.forEach((handle) => {
+  const pressable = new Set(pressableShapeHandles(record.shape, viewport).map((handle) => handle.id));
+  handles.filter((handle) => pressable.has(handle.id)).forEach((handle) => {
     const [x, y] = toPoint([handle.x, handle.y]);
     const node = document.createElement("div");
     node.className = `pdf-shape-handle${handle.id === "rot" ? " is-rotate" : ""}`;
@@ -656,8 +672,16 @@ export function paintDocumentShapes(pageNumber, { preview = null } = {}) {
 // shows four characters narrower, a heading or a formula a different height. So
 // once a box's markdown has rendered, its size is measured and, if it disagrees
 // with the record by more than a point, written back — typewriter text to its
-// exact size (top-left fixed, as the reader tapped it), a sized box only ever
-// downwards, never cropping what the reader chose.
+// exact size (top-left fixed, as the reader tapped it), a box that wraps to the
+// height of its words at the width the reader gave it, its top edge fixed.
+//
+// Both ways, not only down. It used to be grow-only, with the stored height as
+// the live box's floor, and that was a ratchet: the box was committed at the
+// height of its markdown SOURCE in the editor, or caught mid-way through a
+// diagram laying itself out, and never came back up — a frame twice the height
+// of its words, and a selection, hit-test and export to match. Nothing on the
+// live box depends on the stored height any more (styleShapeTextBox), so a
+// two-way write cannot feed back into its own next measurement.
 //
 // Not an undo step: this is the record agreeing with its own words, not a
 // change the reader made (the same rule as queueFit in pdf-blocks.js). Batched
@@ -733,10 +757,10 @@ function fitShapeTextBoxes(pageNumber) {
     const record = documentHighlightById(id);
     const shape = normalizeShape(record?.shape);
     if (!shape || (shape.type !== "text" && shape.type !== "callout")) return;
-    // Plain words in a box that WRAPS are measured too: such a box only ever
-    // grows down to its lines (shapeFittedToBox), and words spilling out of
-    // the bottom of a border are plainly wrong.
-    const plainOk = state === "plain" && (shapeTextRefitIds.has(id) || (shape.type === "text" && !shape.fit));
+    // Plain words in a box that WRAPS (a callout always does) are measured
+    // too: such a box is as tall as its lines (shapeFittedToBox), and a border
+    // that ends short of them, or far below them, is plainly wrong.
+    const plainOk = state === "plain" && (shapeTextRefitIds.has(id) || !shape.fit);
     if (state !== "rendered" && state !== "failed" && !plainOk) return;
     shapeTextRefitIds.delete(id);
     const next = shapeFittedToBox(shape, untransformedClientRect(box, pageEl), pageBox, viewport);
@@ -762,8 +786,20 @@ function shapeFittedToBox(shape, measured, pageBox, viewport) {
     return { ...shape, p: [[fitted[0], fitted[1]], [fitted[2], fitted[3]], ...shape.p.slice(2)] };
   }
   const needed = measured.height / (viewport.scale || 1);
-  if (needed <= (y1 - y0) + SHAPE_TEXT_FIT_SLACK) return null;
-  // Down, never up: the box's top edge is where the reader put it.
+  if (Math.abs(needed - (y1 - y0)) <= SHAPE_TEXT_FIT_SLACK) return null;
+  // The top edge is where the reader put it; the bottom follows the words. Done
+  // as a drag of the bottom handle to where the words end, so a TURNED box keeps
+  // its top edge where it is on the page: moving the unturned bottom point alone
+  // shifts the box's middle, which is what it turns about, and the whole box —
+  // its top-left corner included — drifts each time its height changes.
+  const handles = shapeHandles(shape);
+  const n = handles.find((handle) => handle.id === "n");
+  const s = handles.find((handle) => handle.id === "s");
+  const stored = n && s ? Math.hypot(s.x - n.x, s.y - n.y) : 0;
+  if (stored > 0) {
+    const k = needed / stored;
+    return moveShapeHandle(shape, "s", n.x + (s.x - n.x) * k, n.y + (s.y - n.y) * k);
+  }
   const p = shape.p.map((point) => point.slice());
   const lowIndex = p[0][1] <= p[1][1] ? 0 : 1;
   p[lowIndex][1] = y1 - needed;
@@ -820,7 +856,7 @@ function handleAt(record, pageEl, clientX, clientY) {
   const box = pageEl.getBoundingClientRect();
   const toPoint = viewportMapper(viewport);
   let best = null;
-  selectedShapeHandles(record.shape, viewport).forEach((handle) => {
+  pressableShapeHandles(record.shape, viewport).forEach((handle) => {
     const [sx, sy] = toPoint([handle.x, handle.y]);
     const d = Math.hypot(box.left + sx - clientX, box.top + sy - clientY);
     if (d <= SHAPE_HANDLE_REACH && (!best || d < best.d)) best = { id: handle.id, d };
