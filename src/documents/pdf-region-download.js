@@ -28,6 +28,7 @@ import { ensurePdfLib } from "../core/lib-loader.js?v=__BUILD__";
 import { decodeInkStrokes } from "../format/ink-strokes.js?v=__BUILD__";
 import { markGeometry, markStyleOf, normalizeMarkHex } from "../format/mark-styles.js?v=__BUILD__";
 import { drawShapesWithPdfLib } from "./pdf-lib-shapes.js?v=__BUILD__";
+import { createInvisibleTextLayer } from "./pdf-text-layer.js?v=__BUILD__";
 import { shapeTextRotationMatrix } from "../render/annot-shapes.js?v=__BUILD__";
 import { slugifyFileName } from "../export/markdown.js?v=__BUILD__";
 import { inkPathRecorder } from "../format/ink-svg.js?v=__BUILD__";
@@ -211,35 +212,57 @@ function drawInk(page, marks) {
 // back into user space through the page's own viewport, and the image is drawn
 // with the matrix those three points make. On an unrotated page that is just
 // its x, y, w, h; on a page with /Rotate it is what keeps the words upright.
-async function drawBlocks(out, page, pdfPage, rasters) {
+//
+// Shared with the "With annotations" export (src/documents/pdf-annot-export.js),
+// which draws blocks into the page the same way. Resolves the matrices it drew
+// with — `place` (the unit square onto the box) and `turn` (a turned text box,
+// about its middle, or null) — so the words can be laid over the picture by the
+// very same placement (src/documents/pdf-text-layer.js); null when the picture
+// could not be encoded.
+export async function drawRasterOnPage(out, page, pdfPage, { block, canvas }) {
   const { pushGraphicsState, popGraphicsState, concatTransformationMatrix, drawObject } = window.PDFLib;
   const viewport = pdfPage.getViewport({ scale: 1 });
-  for (const { block, canvas } of rasters) {
+  const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+  if (!blob) return null;
+  const image = await out.embedPng(new Uint8Array(await blob.arrayBuffer()));
+  const [vx0, vy0, vx1, vy1] = viewport.convertToViewportRectangle(blockPdfRect(block));
+  const left = Math.min(vx0, vx1);
+  const right = Math.max(vx0, vx1);
+  const top = Math.min(vy0, vy1);
+  const bottom = Math.max(vy0, vy1);
+  const [p00x, p00y] = viewport.convertToPdfPoint(left, bottom);
+  const [p10x, p10y] = viewport.convertToPdfPoint(right, bottom);
+  const [p01x, p01y] = viewport.convertToPdfPoint(left, top);
+  const place = [p10x - p00x, p10y - p00y, p01x - p00x, p01y - p00y, p00x, p00y];
+  const name = page.node.newXObject("Image", image.ref);
+  // A turned text box's words: turned about the middle of their box.
+  const [bx0, by0, bx1, by1] = blockPdfRect(block);
+  const turn = block.rot ? shapeTextRotationMatrix({ rot: block.rot, centre: [(bx0 + bx1) / 2, (by0 + by1) / 2] }) : null;
+  page.pushOperators(
+    pushGraphicsState(),
+    ...(turn ? [concatTransformationMatrix(...turn)] : []),
+    concatTransformationMatrix(...place),
+    drawObject(name),
+    popGraphicsState()
+  );
+  return { place, turn };
+}
+
+// Every raster's picture, and its words laid over it as selectable text when
+// the raster carries them (rasteriseRegionBlocks with `words: true`).
+export async function drawRastersWithWords(out, page, pdfPage, rasters, textLayer = null) {
+  let drawn = 0;
+  for (const raster of rasters) {
     // eslint-disable-next-line no-await-in-loop
-    const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
-    if (!blob) continue;
-    // eslint-disable-next-line no-await-in-loop
-    const image = await out.embedPng(new Uint8Array(await blob.arrayBuffer()));
-    const [vx0, vy0, vx1, vy1] = viewport.convertToViewportRectangle(blockPdfRect(block));
-    const left = Math.min(vx0, vx1);
-    const right = Math.max(vx0, vx1);
-    const top = Math.min(vy0, vy1);
-    const bottom = Math.max(vy0, vy1);
-    const [p00x, p00y] = viewport.convertToPdfPoint(left, bottom);
-    const [p10x, p10y] = viewport.convertToPdfPoint(right, bottom);
-    const [p01x, p01y] = viewport.convertToPdfPoint(left, top);
-    const name = page.node.newXObject("Image", image.ref);
-    // A turned text box's words: turned about the middle of their box.
-    const [bx0, by0, bx1, by1] = blockPdfRect(block);
-    const turn = block.rot ? shapeTextRotationMatrix({ rot: block.rot, centre: [(bx0 + bx1) / 2, (by0 + by1) / 2] }) : null;
-    page.pushOperators(
-      pushGraphicsState(),
-      ...(turn ? [concatTransformationMatrix(...turn)] : []),
-      concatTransformationMatrix(p10x - p00x, p10y - p00y, p01x - p00x, p01y - p00y, p00x, p00y),
-      drawObject(name),
-      popGraphicsState()
-    );
+    const placed = await drawRasterOnPage(out, page, pdfPage, raster);
+    if (!placed) continue;
+    drawn += 1;
+    if (textLayer && raster.words?.length) {
+      // eslint-disable-next-line no-await-in-loop
+      await textLayer.writeWords(page, raster.words, { ...placed, size: { w: raster.block.w, h: raster.block.h } });
+    }
   }
+  return drawn;
 }
 
 // ── The file's own annotations ──────────────────────────────────────────────
@@ -317,7 +340,12 @@ export async function cropPdfToRegion(paperBytes, pageNumber, rect, { marks = nu
     // rasters below rendered (src/documents/pdf-region-marks.js).
     await drawShapesWithPdfLib(out, page, marks.shapes, { skipTextIds: shapeTextRasterIds(rasters) });
   }
-  if (rasters.length && pdfPage) await drawBlocks(out, page, pdfPage, rasters);
+  if (rasters.length && pdfPage) {
+    // The blocks' words, selectable over their pictures.
+    const textLayer = createInvisibleTextLayer(out);
+    await textLayer.prepare(rasters.flatMap((raster) => raster.words || []));
+    await drawRastersWithWords(out, page, pdfPage, rasters, textLayer);
+  }
   out.setTitle(`Page ${pageNumber} region`);
   out.setProducer("Recall");
   return out.save();
@@ -335,7 +363,7 @@ export async function regionPdfBytes(record) {
   const pdfPage = await regionPdfPage(source, pageNumber);
   const marks = regionMarksOnPage(source, pageNumber, { excludeId: record.id });
   const { rasters, failed } = pdfPage
-    ? await rasteriseRegionBlocks(pdfPage, source, pageNumber, rect, IMAGE_DPI / 72)
+    ? await rasteriseRegionBlocks(pdfPage, source, pageNumber, rect, IMAGE_DPI / 72, { words: true })
     : { rasters: [], failed: 0 };
   const bytes = await cropPdfToRegion(new Uint8Array(await blob.arrayBuffer()), pageNumber, rect, { marks, rasters, pdfPage });
   return { bytes, failed };

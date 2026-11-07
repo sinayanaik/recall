@@ -7,7 +7,8 @@
 // tools/annotations-check.mjs): a highlight and a typed box written before the
 // margins are where they were after; the page on screen is wider; a typed box
 // can be put in the margin and stays there; the file saved with annotations
-// has the wider pages and the typed box as a Stamp; "None" puts the page back;
+// has the wider pages and the typed boxes drawn into them, their words
+// selectable text in the page; "None" puts the page back;
 // and the original file, re-attached, gets its margins put back on it.
 
 import { spawn } from "node:child_process";
@@ -312,22 +313,43 @@ try {
   check("a typed box dropped in the margin is kept on the wider page, reaching into the margin",
     inMargin.x + inMargin.w <= inMargin.right - 11 && inMargin.x + inMargin.w > before.viewBox[2], JSON.stringify(inMargin));
 
-  // The file saved with annotations: the wider pages, and the typed boxes as Stamps.
+  // The file saved with annotations: the wider pages, and the typed boxes
+  // drawn INTO them — as the page shows them, with their words as selectable
+  // text in the page's own text (src/documents/pdf-text-layer.js). They used
+  // to be Stamps: a picture no viewer selects words in.
   const exported = await page.evaluate(`async () => {
     const { api } = window.__recall;
     const result = await api.annotatedPdfBytes();
     const doc = await window.pdfjsLib.getDocument({ data: result.bytes.slice() }).promise;
     const p = await doc.getPage(1);
     const annots = await p.getAnnotations();
-    const stamps = annots.filter((a) => a.subtype === "Stamp").map((a) => ({ rect: a.rect, contents: a.contentsObj?.str || a.contents || "" }));
-    return { view: p.view, count: result.count, missed: result.missed || 0, stamps };
+    const stamps = annots.filter((a) => a.subtype === "Stamp").length;
+    const items = (await p.getTextContent()).items.filter((item) => item.str.trim());
+    const text = items.map((item) => item.str).join(" ").replace(/\\s+/g, " ");
+    // The block words, not the fixture paper's own: "margin" and "before" as
+    // words of their own, the last of each in reading order.
+    const marginWord = items.filter((item) => /^margin\\b/.test(item.str.trim())).pop();
+    const beforeWord = items.filter((item) => /^before\\b/.test(item.str.trim())).pop();
+    return {
+      view: p.view, count: result.count, drawn: result.drawn || 0, missed: result.missed || 0, stamps, text,
+      marginAt: marginWord ? marginWord.transform.slice(4) : null,
+      beforeAt: beforeWord ? beforeWord.transform.slice(4) : null
+    };
   }`);
   check("the file saved with annotations has the wider page", Math.abs(exported.view[2] - (before.viewBox[2] + 60 * MM)) < 0.1, JSON.stringify(exported.view));
   if (htmlToImage) {
-    const margin = exported.stamps.find((s) => /in the margin/.test(s.contents));
-    check("...and each typed box as a Stamp with its words, the margin one in the margin",
-      exported.stamps.length === 2 && margin && margin.rect[0] >= before.viewBox[2] - 1 && exported.missed === 0,
-      JSON.stringify(exported.stamps));
+    check("...and each typed box drawn into it, not as an annotation",
+      exported.drawn === 2 && exported.stamps === 0 && exported.missed === 0,
+      `${exported.drawn} drawn, ${exported.stamps} Stamp(s), ${exported.missed} missed`);
+    // Rendered words, not markdown: "**before**" is the word "before".
+    check("...with their words as selectable text in the page, rendered rather than as markdown",
+      /A note in the margin/.test(exported.text) && /Written before the margins/.test(exported.text) && !/\*\*/.test(exported.text),
+      exported.text.slice(-400));
+    check("...each word where its box is: the margin one in the margin, the other where it was put",
+      Boolean(exported.marginAt) && exported.marginAt[0] >= before.viewBox[2] - 1
+        && Boolean(exported.beforeAt) && Math.abs(exported.beforeAt[0] - before.block.x) < 80,
+      `margin word at ${JSON.stringify(exported.marginAt)} (the page was ${before.viewBox[2]} wide); `
+        + `"before" at ${JSON.stringify(exported.beforeAt)}, its box at x ${before.block.x}`);
   }
   if (SHOT) {
     const url = await page.evaluate(`async () => {

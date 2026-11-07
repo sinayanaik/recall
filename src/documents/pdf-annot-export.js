@@ -20,8 +20,11 @@
 //   callout                 FreeText /FreeTextCallout (CL, RD)
 //   text                    FreeText
 //   sticky note             Text          (the note icon)
-//   typed box · picture     Stamp         (its rendered picture as the
-//                                          appearance, its words as Contents)
+//   block · picture         drawn INTO the page, as the page shows it, with
+//                           its words laid over it as invisible, selectable
+//                           text (see "Blocks", below)
+//   markdown text box       the same: drawn into the page, frame and all; its
+//   or callout              note, if it has one, a Text comment beside it
 //
 // A note on a mark is its annotation's Contents, with a Popup to show it in —
 // except a callout's or a text box's, whose Contents is the words in the box;
@@ -41,13 +44,15 @@ import { MARK_HIGHLIGHT_DEFAULT, MARK_HIGHLIGHT_HEX } from "../format/highlight-
 import { readHighlightNotes } from "../format/highlight-notes.js?v=__BUILD__";
 import { decodeInkStrokes } from "../format/ink-strokes.js?v=__BUILD__";
 import { markGeometry, markStyleOf, normalizeMarkHex } from "../format/mark-styles.js?v=__BUILD__";
-import { calloutStart, markdownToPlainText, normalizeShape, rectFromPoints, shapeBounds, shapeDashArray, shapeTextRect, shapeTextRotationMatrix } from "../render/annot-shapes.js?v=__BUILD__";
+import { calloutStart, markdownToPlainText, normalizeShape, rectFromPoints, shapeBounds, shapeDashArray, shapeTextNeedsRendering, shapeTextRect, shapeTextRotationMatrix } from "../render/annot-shapes.js?v=__BUILD__";
 import { resolveInkPaint } from "../render/ink-paint.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
-import { AREA_FILL_ALPHA, CUSTOM_HIGHLIGHT_ALPHA, blockPdfRect, highlightAlpha, rasteriseRegionBlocks, regionBlocksInBox } from "./pdf-region-marks.js?v=__BUILD__";
+import { AREA_FILL_ALPHA, CUSTOM_HIGHLIGHT_ALPHA, highlightAlpha, rasteriseRegionBlocks, regionBlocksInBox, regionRichShapeTexts } from "./pdf-region-marks.js?v=__BUILD__";
+import { drawRastersWithWords } from "./pdf-region-download.js?v=__BUILD__";
+import { createInvisibleTextLayer } from "./pdf-text-layer.js?v=__BUILD__";
 import { DOC_SLOT_DOC, activeDocSlot } from "./doc-slot.js?v=__BUILD__";
 import { documentHighlights } from "./pdf-highlights.js?v=__BUILD__";
-import { shapeDrawList, shapeTextLines } from "./pdf-lib-shapes.js?v=__BUILD__";
+import { drawShapesWithPdfLib, shapeDrawList, shapeTextLines } from "./pdf-lib-shapes.js?v=__BUILD__";
 import { activePdfId } from "./pdf-multi.js?v=__BUILD__";
 import { currentDocumentBlob, currentPdfDocument, openDocumentPdfId } from "./pdf-view.js?v=__BUILD__";
 
@@ -288,7 +293,10 @@ async function writeShape(doc, page, record, note) {
   const list = shapeDrawList(s);
   for (const prim of list) {
     if (prim.kind === "poly") app.poly(prim);
-    else if (prim.kind === "text") await app.text(prim); // eslint-disable-line no-await-in-loop
+    // The words as they read, never their markdown: a box that could not be
+    // drawn rendered (see renderedMarksByPage) still must not show "**" and
+    // the source of a diagram. Words with no syntax in them are left as typed.
+    else if (prim.kind === "text") await app.text(shapeTextNeedsRendering(prim.text) ? { ...prim, text: markdownToPlainText(prim.text) } : prim); // eslint-disable-line no-await-in-loop
   }
   const border = { W: s.width, S: s.dash === "solid" ? "S" : "D" };
   if (s.dash !== "solid") border.D = shapeDashArray(s.dash, s.width);
@@ -359,96 +367,78 @@ async function writeShape(doc, page, record, note) {
   return 1;
 }
 
-// ── Typed boxes and pictures ──────────────────────────────────────────────
+// ── Blocks, and markdown text boxes, drawn into the page ───────────────────
 //
 // A block (src/documents/pdf-blocks.js) is markdown — headings, lists, maths,
-// code — or a picture, and no PDF annotation can carry either as such. So each
-// is rendered exactly as the page shows it (rasteriseRegionBlocks, the same
-// picture "Save as PDF" on a region uses) and written as a Stamp: the picture is
-// its appearance, its words are its Contents so a reader can still search and
-// copy them, and it is still an annotation another app can move or delete.
-// This is what makes writing typed into a page's margin
-// (src/documents/pdf-margins.js) come out in the file.
+// code, diagrams — or a picture, and so are the words of a text box or a
+// callout typed as markdown. No PDF annotation can carry any of that as such.
+// They used to go in as annotations anyway: a block as a Stamp whose
+// appearance was a flat picture, and a markdown text box as a FreeText whose
+// appearance was its SOURCE, set in Helvetica — "**", "<br>" and a mermaid
+// diagram's code, with a "?" for every character Helvetica could not encode.
+// And no viewer selects an annotation's appearance as text, so neither one's
+// words could be selected, copied or searched.
+//
+// So they are drawn INTO the page: the picture of each, exactly as the page
+// shows it (rasteriseRegionBlocks — the same picture a region's "Save as PDF"
+// uses), with its words laid over it as invisible text in the places the
+// picture shows them (src/documents/pdf-text-layer.js). The reader sees what
+// they wrote; select, copy and search find its words. What they give up is
+// moving one in another PDF app — a block is part of the page now, as the
+// paper's own figures are. A text box's frame and its callout's leader are
+// drawn in with it (drawShapesWithPdfLib, the region PDF's own drawer), and
+// its note becomes a comment beside it.
+//
+// A text box whose words could not be pictured (no html-to-image offline)
+// stays the FreeText it was, its appearance in plain words (writeShape).
 
 // Everywhere on a page, for the region helpers that take a box.
-const STAMP_WHOLE_PAGE = [-1e7, -1e7, 1e7, 1e7];
+const EVERYWHERE_ON_PAGE = [-1e7, -1e7, 1e7, 1e7];
 
-async function writeBlockStamp(doc, page, pdfPage, block, canvas) {
-  const P = window.PDFLib;
-  const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
-  if (!blob) return 0;
-  const image = await doc.embedPng(new Uint8Array(await blob.arrayBuffer()));
-  // Placed through the page's viewport, as the region PDF's drawBlocks places
-  // it: the picture is upright as the reader saw it, on a turned page too.
-  const viewport = pdfPage.getViewport({ scale: 1 });
-  const [vx0, vy0, vx1, vy1] = viewport.convertToViewportRectangle(blockPdfRect(block));
-  const left = Math.min(vx0, vx1);
-  const right = Math.max(vx0, vx1);
-  const top = Math.min(vy0, vy1);
-  const bottom = Math.max(vy0, vy1);
-  const [p00x, p00y] = viewport.convertToPdfPoint(left, bottom);
-  const [p10x, p10y] = viewport.convertToPdfPoint(right, bottom);
-  const [p01x, p01y] = viewport.convertToPdfPoint(left, top);
-  const place = [p10x - p00x, p10y - p00y, p01x - p00x, p01y - p00y, p00x, p00y];
-  const [bx0, by0, bx1, by1] = blockPdfRect(block);
-  const turn = block.rot ? shapeTextRotationMatrix({ rot: block.rot, centre: [(bx0 + bx1) / 2, (by0 + by1) / 2] }) : null;
-  // The annotation's Rect is the box's corners after both, so a turned box is
-  // not clipped by its own appearance.
-  const apply = ([a, b, c, d, e, f], [x, y]) => [a * x + c * y + e, b * x + d * y + f];
-  const corners = [[0, 0], [1, 0], [0, 1], [1, 1]].map((pt) => {
-    const placed = apply(place, pt);
-    return turn ? apply(turn, placed) : placed;
-  });
-  const rect = padAnnotRect(rectOf(corners), 0.5);
-  const ops = [
-    P.pushGraphicsState(),
-    ...(turn ? [P.concatTransformationMatrix(...turn)] : []),
-    P.concatTransformationMatrix(...place),
-    P.drawObject("Im"),
-    P.popGraphicsState()
-  ];
-  const appearance = doc.context.register(doc.context.formXObject(ops, {
-    BBox: rect,
-    Matrix: [1, 0, 0, 1, 0, 0],
-    Resources: { XObject: { Im: image.ref } }
-  }));
-  const words = block.kind === "image" ? String(block.alt || "") : markdownToPlainText(String(block.md || ""));
-  const dict = baseAnnot(doc, block, "Stamp", rect, "#000000", words.trim() || null);
-  delete dict.C;
-  dict.Name = "Recall";
-  addAnnot(doc, page, dict, appearance);
-  return 1;
-}
+// Three pixels to the point (216 dpi): sharp printed, at a size a page of
+// blocks can carry.
+const FLATTEN_PIXEL_RATIO = 3;
 
-// Every block on the open PDF, as Stamps. Resolves { count, missed } — missed
-// being the ones that could not be pictured (no html-to-image offline, a
-// picture that would not draw), which the toast owns up to.
-async function writeBlockStamps(doc, pages) {
+// The pictures for every page that has a block or a markdown text box on it.
+// Resolves { pages: Map n → { pdfPage, rasters }, shapeIds, missed }, where
+// shapeIds are the text boxes that were pictured and so are drawn into the
+// page rather than written as FreeText.
+async function renderedMarksByPage(pageCount) {
   const pdfDoc = currentPdfDocument();
-  if (!pdfDoc) return { count: 0, missed: 0 };
+  const out = { pages: new Map(), shapeIds: new Set(), missed: 0 };
+  if (!pdfDoc) return out;
   const slot = activeDocSlot();
   const source = { slot, pdfId: slot === DOC_SLOT_DOC ? (openDocumentPdfId() || activePdfId(state.meta)) : null };
-  let count = 0;
-  let missed = 0;
-  for (let n = 1; n <= pages.length; n += 1) {
-    if (!regionBlocksInBox(source, n, STAMP_WHOLE_PAGE).length) continue;
+  for (let n = 1; n <= pageCount; n += 1) {
+    if (!regionBlocksInBox(source, n, EVERYWHERE_ON_PAGE).length && !regionRichShapeTexts(source, n).length) continue;
     try {
       const pdfPage = await pdfDoc.getPage(n); // eslint-disable-line no-await-in-loop
       // Light paper, as every export is: the words are dark on the page they
       // are printed on, whatever theme the app happens to be in.
-      const { rasters, failed } = await rasteriseRegionBlocks(pdfPage, source, n, STAMP_WHOLE_PAGE, 2, { paper: "light" }); // eslint-disable-line no-await-in-loop
-      missed += failed;
-      for (const { block, canvas, kind } of rasters) {
-        // A text box's or a callout's words are already in its FreeText.
-        if (kind === "shape-text") continue;
-        count += await writeBlockStamp(doc, pages[n - 1], pdfPage, block, canvas); // eslint-disable-line no-await-in-loop
-      }
+      // eslint-disable-next-line no-await-in-loop
+      const { rasters, failed } = await rasteriseRegionBlocks(pdfPage, source, n, EVERYWHERE_ON_PAGE, FLATTEN_PIXEL_RATIO, { paper: "light", words: true });
+      out.missed += failed;
+      // A text box drawn plain (its picture could not be made) stays a
+      // FreeText annotation, which already carries its words.
+      const drawn = rasters.filter((raster) => !raster.plain);
+      drawn.filter((raster) => raster.kind === "shape-text").forEach((raster) => out.shapeIds.add(raster.block.id));
+      if (drawn.length) out.pages.set(n, { pdfPage, rasters: drawn });
     } catch (error) {
-      console.warn("Could not write the typed boxes on page", n, error);
-      missed += 1;
+      console.warn("Could not picture the blocks on page", n, error);
+      out.missed += 1;
     }
   }
-  return { count, missed };
+  return out;
+}
+
+// A text box drawn into the page keeps its note as a comment at its corner.
+function writeNoteComment(doc, page, record, note) {
+  const s = normalizeShape(record.shape);
+  const [, , x1, y1] = s ? shapeBounds(s) : [0, 0, 20, 20];
+  const dict = baseAnnot(doc, { ...record, id: `${record.id}-note` }, "Text", [x1 - 20, y1 - 20, x1, y1], s?.stroke || "#16181d", note);
+  dict.Name = "Comment";
+  dict.Open = false;
+  addAnnot(doc, page, dict, null);
 }
 
 // ── The file ──────────────────────────────────────────────────────────────
@@ -464,7 +454,18 @@ export async function annotatedPdfBytes() {
   const doc = await PDFDocument.load(await source.blob.arrayBuffer(), { ignoreEncryption: true, updateMetadata: false });
   const notes = readHighlightNotes(state.notes || "");
   const pages = doc.getPages();
+  // Pictured first, so the marks below know which text boxes go into the page.
+  const rendered = await renderedMarksByPage(pages.length);
+  // The page's own content is wrapped in q … Q before anything is drawn after
+  // it (pdf-lib's normalize), so a page that leaves its graphics state changed
+  // cannot move what is drawn over it — once per page, before the first draw.
+  const normalized = new Set();
+  const intoPage = (page) => {
+    if (!normalized.has(page)) { page.node.normalize(); normalized.add(page); }
+    return page;
+  };
   let count = 0;
+  let drawn = 0;
   for (const record of documentHighlights()) {
     // The file's own annotations are already in it.
     if (record?.imported) continue;
@@ -473,7 +474,11 @@ export async function annotatedPdfBytes() {
     if (!page) continue;
     const note = notes.get(record.id) || null;
     try {
-      if (record.kind === "shape") count += await writeShape(doc, page, record, note); // eslint-disable-line no-await-in-loop
+      if (record.kind === "shape" && rendered.shapeIds.has(record.id)) {
+        // Its frame and leader now; its words with the pictures, below.
+        await drawShapesWithPdfLib(doc, intoPage(page), [record], { skipTextIds: rendered.shapeIds }); // eslint-disable-line no-await-in-loop
+        if (note) { writeNoteComment(doc, page, record, note); count += 1; }
+      } else if (record.kind === "shape") count += await writeShape(doc, page, record, note); // eslint-disable-line no-await-in-loop
       else if (record.kind === "ink") count += writeInk(doc, page, record, note);
       else if (record.kind === "area") count += writeRegion(doc, page, record, note);
       else count += await writeTextMark(doc, page, record, note, pageNumber); // eslint-disable-line no-await-in-loop
@@ -482,12 +487,24 @@ export async function annotatedPdfBytes() {
       console.warn("Could not write an annotation", record?.id, error);
     }
   }
-  const blocks = await writeBlockStamps(doc, pages);
-  count += blocks.count;
+  if (rendered.pages.size) {
+    const textLayer = createInvisibleTextLayer(doc);
+    await textLayer.prepare([...rendered.pages.values()].flatMap(({ rasters }) => rasters.flatMap((raster) => raster.words || [])));
+    for (const [n, { pdfPage, rasters }] of rendered.pages) {
+      const page = pages[n - 1];
+      if (!page) continue;
+      try {
+        drawn += await drawRastersWithWords(doc, intoPage(page), pdfPage, rasters, textLayer); // eslint-disable-line no-await-in-loop
+      } catch (error) {
+        console.warn("Could not draw the blocks into page", n, error);
+        rendered.missed += rasters.length;
+      }
+    }
+  }
   doc.setProducer("Recall");
   const bytes = await doc.save();
   const base = String(source.name || state.deckTitle || "document").replace(/\.pdf$/i, "");
-  return { bytes, count, missed: blocks.missed, name: `${base} (annotated).pdf` };
+  return { bytes, count, drawn, missed: rendered.missed, name: `${base} (annotated).pdf` };
 }
 
 // The menu row: build it and hand it over as a download.
@@ -514,7 +531,10 @@ export async function saveAnnotatedPdf() {
   link.click();
   link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 10000);
-  const missed = result.missed ? ` — ${result.missed} typed box${result.missed === 1 ? "" : "es"} could not be drawn` : "";
-  showToast(result.count ? `Saved with ${result.count} annotation${result.count === 1 ? "" : "s"}${missed}` : `Saved — there were no marks to add${missed}`, missed ? "info" : undefined);
+  const missed = result.missed ? ` — ${result.missed} block${result.missed === 1 ? "" : "s"} could not be drawn` : "";
+  const parts = [];
+  if (result.count) parts.push(`${result.count} annotation${result.count === 1 ? "" : "s"}`);
+  if (result.drawn) parts.push(`${result.drawn} block${result.drawn === 1 ? "" : "s"} drawn in`);
+  showToast(parts.length ? `Saved with ${parts.join(" and ")}${missed}` : `Saved — there were no marks to add${missed}`, missed ? "info" : undefined);
   return true;
 }

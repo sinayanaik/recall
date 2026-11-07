@@ -1160,13 +1160,20 @@ async function renderBlockBody(body, md, node = null, block = null) {
 // Resolves once the words are rendered and any picture in it has decoded, so a
 // caller turning it into pixels gets the finished block and not its first
 // frame.
-export async function buildStaticBlock(block, viewport) {
+//
+// `mountIn` attaches the node there BEFORE its words are rendered. A diagram
+// is laid out by measuring itself (mermaid asks the browser for its text's
+// size), and a node outside the document has no size to give — the drawing
+// came out empty, a blank gap in every picture and export of a block holding
+// one. A caller that is about to attach the node anyway passes where.
+export async function buildStaticBlock(block, viewport, { mountIn = null } = {}) {
   const node = buildBlock(block);
   node.classList.add("is-static");
   node.querySelectorAll("[data-pdf-block-action]").forEach((handle) => handle.remove());
   node.style.pointerEvents = "none";
   placeBlock(node, viewport, block);
   paintBlockStyle(node, block);
+  if (mountIn) mountIn.appendChild(node);
   const body = node.querySelector(".pdf-block-body");
   if (block.kind === PDF_BLOCK_IMAGE) {
     const img = document.createElement("img");

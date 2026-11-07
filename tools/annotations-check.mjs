@@ -1792,6 +1792,11 @@ sections.push(async () => {
     // A turned rectangle and turned, bordered text.
     const turnedRect = api.addDocumentShape(4, { type: "rect", p: [[300, 300], [380, 340]], rot: 30, stroke: "#2563eb", width: 2 }, { undo: false });
     const turnedText = api.addDocumentShape(4, { type: "text", p: [[300, 200], [400, 230]], rot: -45, border: true, width: 1, stroke: "#16181d", text: "turned words", font: { size: 11, color: "#16181d" } }, { undo: false });
+    // A text box typed as markdown, with a note: drawn INTO the page rendered,
+    // its words selectable page text, its note a comment beside it — not a
+    // FreeText showing its markdown source in Helvetica.
+    const mdText = api.addDocumentShape(4, { type: "text", p: [[90, 120], [330, 170]], border: true, width: 1, stroke: "#16181d", text: "**Flattened** words with *emphasis*", font: { size: 11, color: "#16181d" } }, { undo: false });
+    api.setDocumentHighlightNote(mdText.id, "A note on the rendered box");
     const result = await api.annotatedPdfBytes();
     if (!result) return { error: "no bytes" };
     const size = result.bytes.length;
@@ -1827,9 +1832,14 @@ sections.push(async () => {
     for (let i = 1; i <= pdfDoc.numPages; i += 1) {
       (await (await pdfDoc.getPage(i)).getAnnotations()).forEach((a) => seen.push(a.subtype));
     }
+    const page4Text = (await (await pdfDoc.getPage(4)).getTextContent()).items.map((item) => item.str).join(" ").replace(/\\s+/g, " ");
     api.removeDocumentHighlight(turnedRect.id, { undo: false });
     api.removeDocumentHighlight(turnedText.id, { undo: false });
-    return { size, count: result.count, name: result.name, found, seen, underlineId: underline.id, turnedRectId: turnedRect.id, turnedTextId: turnedText.id };
+    api.removeDocumentHighlight(mdText.id, { undo: false });
+    return {
+      size, count: result.count, drawn: result.drawn || 0, missed: result.missed || 0, name: result.name, found, seen,
+      underlineId: underline.id, turnedRectId: turnedRect.id, turnedTextId: turnedText.id, mdTextId: mdText.id, page4Text
+    };
   }`);
   if (written.error) { check("the annotated file is written", false, written.error); return; }
   const subtypes = new Set(written.found.map((a) => a.subtype));
@@ -1856,6 +1866,18 @@ sections.push(async () => {
   check("a sticky note is a Text annotation with its note", Boolean(sticky), JSON.stringify(written.found.filter((a) => a.subtype === "/Text")));
   const ink = written.found.find((a) => a.nm === "hn-inktest");
   check("ink is an Ink annotation, one path per stroke", ink?.subtype === "/Ink" && ink.inkList === 2 && ink.ap, JSON.stringify(ink));
+  if (htmlToImage) {
+    const mdAnnot = written.found.find((a) => a.nm === written.mdTextId);
+    const mdNote = written.found.find((a) => a.nm === `${written.mdTextId}-note`);
+    check("a markdown text box is drawn into the page rendered, not written as its source",
+      !mdAnnot && written.drawn >= 1 && written.missed === 0,
+      `annotation for it: ${JSON.stringify(mdAnnot || null)}; ${written.drawn} drawn, ${written.missed} missed`);
+    check("...its words selectable in the page's own text, with no markdown syntax left",
+      /Flattened words with emphasis/.test(written.page4Text) && !/\*\*/.test(written.page4Text),
+      written.page4Text.slice(-300));
+    check("...and its note a comment beside it", mdNote?.subtype === "/Text" && mdNote.contents === "A note on the rendered box",
+      JSON.stringify(mdNote || null));
+  }
   const seen = new Set(written.seen);
   check("pdf.js reads them back as the same kinds", ["Highlight", "Underline", "StrikeOut", "Squiggly", "Line", "FreeText", "Text", "Ink"].every((t) => seen.has(t)), [...seen].join(" "));
 

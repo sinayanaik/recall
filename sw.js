@@ -486,6 +486,7 @@ const APP_SHELL = [
   `./src/documents/pdf-outline-drag.js?v=${STAMP}`,
   `./src/documents/pdf-page-notes.js?v=${STAMP}`,
   `./src/documents/pdf-region-download.js?v=${STAMP}`,
+  `./src/documents/pdf-text-layer.js?v=${STAMP}`,
   `./src/documents/pdf-region-embed.js?v=${STAMP}`,
   `./src/documents/pdf-region-marks.js?v=${STAMP}`,
   `./src/documents/pdf-shapes.js?v=${STAMP}`,
