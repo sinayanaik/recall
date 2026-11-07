@@ -568,9 +568,10 @@ function buildBlock(block) {
   const grip = document.createElement("span");
   grip.className = "pdf-block-grip";
   grip.dataset.pdfBlockAction = "resize";
-  grip.title = "Drag to resize";
+  grip.dataset.edge = "se";
+  grip.title = "Drag to resize · double-click to fit the contents";
 
-  node.append(body, grip);
+  node.append(body, grip, ...resizeEdges(isImage));
   // ── Nothing of the browser's own between a press and a drag ─────────────
   //
   // A long press on a picture opens the system's image menu on a phone, and a
@@ -585,6 +586,31 @@ function buildBlock(block) {
     if (!node.classList.contains("is-editing") && !node.classList.contains("is-static")) event.preventDefault();
   });
   return node;
+}
+
+// ── More than one corner to hold ─────────────────────────────────────────
+//
+// A 16px corner was the only way to resize a block, and on a block several
+// hundred pixels across it is a target you hunt for. The other edges are
+// handles too now: invisible strips along the inside of the frame (the block
+// clips its overflow, so they reach inwards) that show their cursor on hover.
+// A picture keeps to its corners — any one of them is the whole size, locked to
+// the picture's shape — and a block whose height follows its contents has no
+// bottom edge to drag (styles/53-handwriting.css hides it), because the words
+// set that edge, not the finger.
+const RESIZE_EDGES = ["e", "w", "s", "sw"];
+
+function resizeEdges(isImage) {
+  return RESIZE_EDGES
+    .filter((edge) => !isImage || edge === "sw")
+    .map((edge) => {
+      const handle = document.createElement("span");
+      handle.className = `pdf-block-edge pdf-block-edge-${edge}`;
+      handle.dataset.pdfBlockAction = "resize";
+      handle.dataset.edge = edge;
+      handle.title = "Drag to resize · double-click to fit the contents";
+      return handle;
+    });
 }
 
 // Everything a reader chose about how this block looks, onto the node — as data
@@ -733,6 +759,7 @@ function paintBlock(node, block) {
   // exactly what one added and not yet typed into would otherwise be.
   if (!block.md.trim()) {
     renderedMarkdown.delete(body);
+    unobserveBlockContent(body);
     body.innerHTML = '<p class="pdf-block-empty">Empty — select it and press Edit to write</p>';
     return;
   }
@@ -784,23 +811,91 @@ function paintBlock(node, block) {
 function fitBlockHeight(node, block) {
   if (gestureLive || block.kind === PDF_BLOCK_IMAGE || !blockStyle(block).fit) return false;
   const viewport = pdfPageViewport(block.page);
+  if (!viewport) return false;
+  const wanted = contentHeightPoints(node, viewport.scale || 1);
+  if (wanted === null) return false;
+  // A point of slack, because the round trip through points and back is not
+  // exact and a block that rewrote itself by a pixel on every paint would be an
+  // autosave and a sync push per repaint — on the tall side only (heightSuits).
+  if (heightSuits(block.h, wanted)) return false;
+  queueFit(block.id, wanted);
+  return true;
+}
+
+// The height in POINTS this block's frame needs for what is in it now, at the
+// width it has now — the measurement fitBlockHeight writes back, and the one a
+// live resize applies frame by frame (beginGesture), so the two can never
+// disagree about where the bottom edge belongs. Null when there is no body.
+function contentHeightPoints(node, scale) {
   const body = node.querySelector(".pdf-block-body");
-  if (!viewport || !body) return false;
-  const scale = viewport.scale || 1;
-  // The bar, the borders — everything of the block that is not the body.
+  if (!body) return null;
+  // The borders — everything of the block that is not the body.
   const chrome = node.offsetHeight - body.clientHeight;
   body.style.flex = "none";
   body.style.height = "auto";
   const content = body.scrollHeight;
   body.style.flex = "";
   body.style.height = "";
-  const wanted = Math.max(PDF_BLOCK_MIN_HEIGHT, Math.round((chrome + content) / scale));
-  // A point of slack, because the round trip through points and back is not
-  // exact and a block that rewrote itself by a pixel on every paint would be an
-  // autosave and a sync push per repaint.
-  if (Math.abs(wanted - block.h) <= 1) return false;
-  queueFit(block.id, wanted);
-  return true;
+  // Up, never to the nearest: a frame a fraction of a point short of its
+  // contents is a body that scrolls — a scrollbar down the side of the block at
+  // a zoom where that fraction is a whole pixel.
+  return Math.max(PDF_BLOCK_MIN_HEIGHT, Math.ceil((chrome + content) / scale - 0.01));
+}
+
+// Whether a frame `have` points tall already suits contents that need `want`.
+// The slack is only ever on the TALL side: a point of room under the words is
+// invisible, and saves a write per repaint from the round trip through points;
+// a point short of them is a scrollbar.
+function heightSuits(have, want) {
+  return have >= want && have - want <= 1;
+}
+
+// ── Content that settles after the paint ───────────────────────────────────
+//
+// fitBlockHeight used to run only from a paint, and a block's contents keep
+// changing size after the paint that rendered them: a mermaid diagram lays
+// itself out, a picture decodes, KaTeX's fonts and the block's own webfont
+// arrive, a table is refitted. None of those repaints the page, so the frame
+// kept the height of the FIRST measurement — a box far taller or shorter than
+// what ended up in it, until something unrelated happened to repaint. One
+// observer for every live block, watching the body's children (the body itself
+// is stretched to the frame and so never changes size on its own), refits the
+// block the moment any of them does. queueFit batches, and the gesture guard
+// in fitBlockHeight keeps it out of a finger's way.
+const contentObserver = typeof ResizeObserver === "function"
+  ? new ResizeObserver((entries) => {
+    const nodes = new Set();
+    entries.forEach((entry) => {
+      const node = entry.target.closest?.(`.${PDF_BLOCK_CLASS}`);
+      if (node?.isConnected && !node.classList.contains("is-static")) nodes.add(node);
+    });
+    if (!nodes.size) return;
+    const blocks = documentBlocks();
+    nodes.forEach((node) => {
+      const block = blocks.find((entry) => entry.id === node.dataset.pdfBlock);
+      if (block) fitBlockHeight(node, block);
+    });
+  })
+  : null;
+
+// What each body's observer is currently watching, so a re-render can let go of
+// the children it is about to throw away.
+const observedChildren = new WeakMap();
+
+function observeBlockContent(body) {
+  if (!contentObserver) return;
+  (observedChildren.get(body) || []).forEach((child) => contentObserver.unobserve(child));
+  const children = [...body.children];
+  // The border box: a child's margins and padding are as much its height
+  // in the block as its content is.
+  children.forEach((child) => contentObserver.observe(child, { box: "border-box" }));
+  observedChildren.set(body, children);
+}
+
+function unobserveBlockContent(body) {
+  if (!contentObserver) return;
+  (observedChildren.get(body) || []).forEach((child) => contentObserver.unobserve(child));
+  observedChildren.delete(body);
 }
 
 // ── ...and why the write is a frame away ───────────────────────────────────
@@ -826,7 +921,7 @@ function queueFit(id, height) {
     let touched = false;
     const next = blocks.map((entry) => {
       const h = wanted.get(entry.id);
-      if (!h || Math.abs(h - entry.h) <= 1) return entry;
+      if (!h || heightSuits(entry.h, h)) return entry;
       touched = true;
       // The TOP edge is what stays still, which in a coordinate space whose y
       // runs up the page means moving the origin — the same arithmetic the
@@ -910,27 +1005,37 @@ function fitImageBlockFrame(node, img) {
 // defaults to 240pt — sitting in a box sized for a paragraph is exactly the
 // "predefined size" the height fix above does not reach.
 //
-// So this runs once: the first time a block goes from no text to some, and
-// only while its width is still the untouched default. It measures how wide
-// the words actually want to be and shrinks to that, clamped so it can never
-// make a block WIDER than the default it started at — a real paragraph, whose
-// unwrapped width would exceed 240pt, always clamps straight back to
-// unchanged, so this never fights the common case and only ever helps the
-// short one. A block a reader has dragged the corner of no longer has the
-// default width and this never runs on it again.
+// So this runs after an edit: it measures how wide the words actually want to
+// be and shrinks the frame to that, clamped so it can never make a block WIDER
+// than it already is — a real paragraph, whose unwrapped width exceeds the
+// frame, always clamps straight back to unchanged, so this never fights the
+// common case and only ever helps the short one.
+//
+// It used to run once, on a block's first words at the default width. But a
+// block whose words were cut from three lines to one kept the width the three
+// needed — empty frame to the right of the one line left. Tightening to the
+// content's max-content width can never change how anything wraps (the
+// content already fits inside it unwrapped), so it only ever takes away empty
+// frame. Skipped for a block that does not follow its contents (the reader
+// turned that off) and for a body holding a diagram, a picture or a table:
+// those are drawn to the block's width and have no width of their own to read.
 function shouldShrinkBlockWidth(block) {
-  return block.kind !== PDF_BLOCK_IMAGE && block.w === PDF_BLOCK_DEFAULT_WIDTH;
+  return block.kind !== PDF_BLOCK_IMAGE && blockStyle(block).fit;
 }
 
-// One-shot per block, consumed the first time its render finishes — not a
-// style the block carries, so it lives here rather than on the record.
+function bodyHasWidthlessContent(body) {
+  return Boolean(body.querySelector("img, svg, table, .mermaid, .nomnoml-diagram, .diagram-shell"));
+}
+
+// Armed per edit, consumed when that edit's render finishes — not a style the
+// block carries, so it lives here rather than on the record.
 const awaitingWidthShrink = new Set();
 
 function shrinkBlockWidthToContent(node, block) {
   if (gestureLive || !shouldShrinkBlockWidth(block)) return false;
   const viewport = pdfPageViewport(block.page);
   const body = node.querySelector(".pdf-block-body");
-  if (!viewport || !body) return false;
+  if (!viewport || !body || bodyHasWidthlessContent(body)) return false;
   const scale = viewport.scale || 1;
   // The bar, the borders, the padding — everything of the block that is not
   // the body's own content box — measured the same way fitBlockHeight measures
@@ -947,19 +1052,38 @@ function shrinkBlockWidthToContent(node, block) {
   const content = body.scrollWidth;
   body.style.flex = "";
   body.style.width = "";
+  // One point of slack on the way in, so the round trip through points never
+  // lands a hair short of the line and wraps its last word.
   const wanted = Math.min(
-    PDF_BLOCK_DEFAULT_WIDTH,
-    Math.max(PDF_BLOCK_MIN_WIDTH, Math.round((chrome + content) / scale))
+    block.w,
+    Math.max(PDF_BLOCK_MIN_WIDTH, Math.ceil((chrome + content) / scale) + 1)
   );
-  // Nothing shorter than the default was found — the common case for any real
+  // Nothing narrower than the frame was found — the common case for any real
   // paragraph — so there is nothing to shrink and nothing to write.
-  if (wanted >= PDF_BLOCK_DEFAULT_WIDTH) return false;
+  if (wanted >= block.w - 1) return false;
   // Not undoable, for the same reason queueFit's height write is not: this is
   // the block agreeing with its own first words, not a step the reader took.
   writeBlocks(documentBlocks().map((entry) => (
     entry.id === block.id ? { ...entry, w: wanted, at: Date.now() } : entry
   )), { undoable: false });
   return true;
+}
+
+// ── A diagram at its own size, never wider than the block ─────────────────
+//
+// mermaid and nomnoml draw at a natural width (the SVG's viewBox), and the app
+// stretches every diagram to a share of its column. In a block that was either
+// half the frame (the Notes column's 50%) or, at 100%, a tall narrow flowchart
+// blown up to fill a wide block. Each diagram's own width is handed to the CSS
+// here, which draws it at that width times the page's zoom — the same scaling
+// the block's type gets — and shrinks it only when the block is narrower.
+function sizeBlockDiagrams(body) {
+  body.querySelectorAll(".mermaid svg, .nomnoml-diagram svg").forEach((svg) => {
+    const width = svg.viewBox?.baseVal?.width
+      || parseFloat(svg.style.maxWidth)
+      || parseFloat(svg.getAttribute("width"));
+    if (width > 0) svg.style.setProperty("--diagram-natural-w", String(Math.round(width)));
+  });
 }
 
 // What each block body was last rendered FROM. A WeakMap rather than a dataset
@@ -982,6 +1106,7 @@ async function renderBlockBody(body, md, node = null, block = null) {
     if (renderedMarkdown.get(body) !== md || !body.isConnected) return;
     await enhanceRenderedMarkdown(body);
     if (renderedMarkdown.get(body) !== md || !body.isConnected) return;
+    sizeBlockDiagrams(body);
     // The words are on the page now, so this is the first moment a block that
     // follows its text can be measured. Before the images below, which is a
     // compromise: a picture that has not decoded yet has no height to include,
@@ -1009,6 +1134,13 @@ async function renderBlockBody(body, md, node = null, block = null) {
     // A picture inside the words is part of a block that is dragged by any
     // press on it — see buildBlock on why a native image drag must not start.
     body.querySelectorAll("img").forEach((img) => { img.draggable = false; });
+    // From here on the block follows its contents as they settle — a diagram
+    // laying itself out, a picture decoding, a font arriving — rather than
+    // only at the next paint (see contentObserver).
+    if (node && block && !node.classList.contains("is-static")) {
+      observeBlockContent(body);
+      fitBlockHeight(node, documentBlocks().find((entry) => entry.id === block.id) || block);
+    }
   } catch (error) {
     console.warn("Could not render a block", error);
   }
@@ -1031,7 +1163,7 @@ async function renderBlockBody(body, md, node = null, block = null) {
 export async function buildStaticBlock(block, viewport) {
   const node = buildBlock(block);
   node.classList.add("is-static");
-  node.querySelector(".pdf-block-grip")?.remove();
+  node.querySelectorAll("[data-pdf-block-action]").forEach((handle) => handle.remove());
   node.style.pointerEvents = "none";
   placeBlock(node, viewport, block);
   paintBlockStyle(node, block);
@@ -1046,6 +1178,7 @@ export async function buildStaticBlock(block, viewport) {
     try {
       await renderMarkdown(body, block.md);
       await enhanceRenderedMarkdown(body);
+      sizeBlockDiagrams(body);
     } catch (error) {
       console.warn("Could not render a block for a region picture", error);
     }
@@ -1332,11 +1465,11 @@ function writeBlockText(id, text) {
   const block = blocks.find((entry) => entry.id === id);
   const field = block?.kind === PDF_BLOCK_IMAGE ? "alt" : "md";
   if (block && block[field] !== text) {
-    // The one width-shrink pass this block ever gets is armed here, off the
-    // OLD value: going from nothing typed to something is what "a block's
-    // first words" means, and it is the one transition renderBlockBody can
-    // tell apart from every later edit of the same block.
-    if (field === "md" && !block.md.trim() && text.trim()) awaitingWidthShrink.add(id);
+    // The width-tightening pass is armed here, by an EDIT — never by a paint
+    // or a reload, so a block nobody touched is never rewritten on open (see
+    // shouldShrinkBlockWidth). renderBlockBody consumes it once the new words
+    // are on the page and can be measured.
+    if (field === "md" && text.trim()) awaitingWidthShrink.add(id);
     writeBlocks(blocks.map((entry) => (entry.id === id ? { ...entry, [field]: text, at: Date.now() } : entry)));
   }
   repaintDocumentBlocks();
@@ -1366,7 +1499,7 @@ export function commitBlockEdit() {
 
 // ── Dragging and resizing ──────────────────────────────────────────────────
 
-function beginGesture(event, node, mode) {
+function beginGesture(event, node, mode, edge = "se") {
   const id = node.dataset.pdfBlock;
   const block = documentBlocks().find((entry) => entry.id === id);
   if (!block) return;
@@ -1394,8 +1527,30 @@ function beginGesture(event, node, mode) {
   let live = { ...block };
   let frame = 0;
   gestureLive = true;
+  // The page's own edges, in points, for the resize clamp below.
+  const [pageX0, , pageX1] = viewport.viewBox;
+  const scale = viewport.scale || 1;
 
-  const apply = () => { frame = 0; placeBlock(node, viewport, live); };
+  const apply = () => {
+    frame = 0;
+    placeBlock(node, viewport, live);
+    // ── The height follows the width WHILE the width is being dragged ────
+    //
+    // A block that follows its contents used to keep its old height for the
+    // whole drag (fitting is off while a finger is on the block, so it does
+    // not fight one) — narrow it and the words ran out of the bottom of the
+    // frame, widen it and the frame hung empty under them, and both snapped
+    // right only a frame after letting go. The new width is on the node now,
+    // so the contents have already reflowed to it: measure them, and carry
+    // that height in `live` so the drop writes the finished shape in one step.
+    if (widthOnly && !isImage) {
+      const h = contentHeightPoints(node, scale);
+      if (h !== null && h !== live.h) {
+        live = { ...live, h, y: Math.round(block.y + block.h - h) };
+        placeBlock(node, viewport, live);
+      }
+    }
+  };
 
   // ── Whose pointer this gesture is ───────────────────────────────────────
   //
@@ -1459,8 +1614,19 @@ function beginGesture(event, node, mode) {
     if (mode === "drag") {
       live = { ...block, ...clampBlockToPage(viewport, block, block.x + dx, block.y + dy) };
     } else {
-      // The grip is the bottom-right on screen, which is the bottom-right in
-      // points too — so it grows the width and moves the origin DOWN.
+      // Which edges this handle moves. The bottom of the frame on screen is
+      // the bottom in points too — so growing it moves the origin DOWN — and
+      // the left edge moves the origin across as the width changes, so the
+      // right edge stays exactly where it was.
+      const fromLeft = edge === "w" || edge === "sw";
+      const movesX = edge !== "s";
+      const movesY = edge === "s" || edge === "se" || edge === "sw";
+      // Dragging the left edge to the right makes the block narrower.
+      const growX = movesX ? (fromLeft ? -dx : dx) : 0;
+      const growY = movesY ? -dy : 0;
+      // The furthest the moving side can go: the page's own edge. A block
+      // resized off the paper has a handle nobody can reach to bring it back.
+      const roomX = fromLeft ? block.x + block.w - pageX0 : pageX1 - block.x;
       let w;
       let h;
       if (isImage) {
@@ -1468,16 +1634,26 @@ function beginGesture(event, node, mode) {
         // the grip follows a mostly-sideways drag and a mostly-downward one
         // equally, and the other side follows the picture's shape. The height's
         // change is put in width terms (× ratio) so the two are comparable.
-        const growW = dx;
-        const growH = -dy * ratio;
-        w = block.w + (Math.abs(growW) >= Math.abs(growH) ? growW : growH);
+        const growH = growY * ratio;
+        w = block.w + (Math.abs(growX) >= Math.abs(growH) ? growX : growH);
+        w = Math.min(Math.max(roomX, PDF_BLOCK_IMAGE_MIN_SIDE), w);
         w = Math.max(PDF_BLOCK_IMAGE_MIN_SIDE, PDF_BLOCK_IMAGE_MIN_SIDE * ratio, w);
         h = w / ratio;
       } else {
-        w = Math.max(PDF_BLOCK_MIN_WIDTH, block.w + dx);
-        h = widthOnly ? block.h : Math.max(PDF_BLOCK_MIN_HEIGHT, block.h - dy);
+        w = movesX
+          ? Math.max(PDF_BLOCK_MIN_WIDTH, Math.min(Math.max(roomX, PDF_BLOCK_MIN_WIDTH), block.w + growX))
+          : block.w;
+        h = widthOnly || !movesY ? block.h : Math.max(PDF_BLOCK_MIN_HEIGHT, block.h + growY);
       }
-      live = { ...block, w: Math.round(w), h: Math.round(h), y: Math.round(block.y + (block.h - Math.round(h))) };
+      w = Math.round(w);
+      h = Math.round(h);
+      live = {
+        ...block,
+        w,
+        h,
+        x: fromLeft ? Math.round(block.x + block.w - w) : block.x,
+        y: Math.round(block.y + (block.h - h))
+      };
     }
     if (!frame) frame = requestAnimationFrame(apply);
   };
@@ -1504,7 +1680,10 @@ function beginGesture(event, node, mode) {
     // re-place.
     if (captured) {
       try { node.releasePointerCapture(pointerId); } catch (_) { /* already gone */ }
-      placeBlock(node, viewport, live);
+      // apply() rather than a bare placeBlock: a resize let go of before its
+      // last frame ran still has to measure the height that width needs, or the
+      // drop writes the height the block had before the drag.
+      apply();
     }
     // The gesture is over, however it resolved — a tap that never crossed the
     // slop (the popover was never closed for it), a drag that settled the
@@ -1581,7 +1760,8 @@ export function handleBlockPointerDown(event) {
   // IS the shape of the box being changed, in the box being changed — every
   // other action lives in #inkRailBlock now (src/ui/ink-rail.js), reached once
   // the block below has been picked up.
-  const resizing = event.target.closest("[data-pdf-block-action]")?.dataset.pdfBlockAction === "resize";
+  const handle = event.target.closest("[data-pdf-block-action]");
+  const resizing = handle?.dataset.pdfBlockAction === "resize";
   // The text of a block being edited is in the sheet over the page, not in the
   // block — so a press on the block itself while its editor is open is a press
   // on the page, and it commits like any other.
@@ -1612,7 +1792,53 @@ export function handleBlockPointerDown(event) {
   // where that block WAS.
   closeBlockStylePopover();
   commitBlockEdit();
-  beginGesture(event, node, resizing ? "resize" : "drag");
+  // A second press on a handle soon after the first, in about the same place,
+  // is "fit this to what is in it" — the one-gesture way back from a frame
+  // dragged too big or too small. Read off the presses themselves rather than
+  // a dblclick event: the first press's pointer capture and a touch screen's
+  // own double-tap handling each swallow that event on some engines.
+  if (resizing && isHandleDoubleTap(event, id)) {
+    fitBlockToContents(id);
+    return true;
+  }
+  beginGesture(event, node, resizing ? "resize" : "drag", handle?.dataset.edge || "se");
+  return true;
+}
+
+const HANDLE_DOUBLE_TAP_MS = 350;
+const HANDLE_DOUBLE_TAP_PX = 12;
+let lastHandlePress = null;
+
+function isHandleDoubleTap(event, id) {
+  const now = Date.now();
+  const last = lastHandlePress;
+  const twice = Boolean(last) && last.id === id && now - last.at <= HANDLE_DOUBLE_TAP_MS
+    && Math.hypot(event.clientX - last.x, event.clientY - last.y) <= HANDLE_DOUBLE_TAP_PX;
+  // A double-tap consumes both presses, so a third does not fit it again.
+  lastHandlePress = twice ? null : { id, at: now, x: event.clientX, y: event.clientY };
+  return twice;
+}
+
+// ── Fit to the contents, on request ────────────────────────────────────────
+//
+// Height follows the contents again (the `fit` a deliberate resize may have
+// turned off in the Style panel) and the width comes in to the widest line, if
+// that is narrower than the frame — never out. A picture is brought back to its
+// own shape. One undo step for the whole thing.
+export function fitBlockToContents(id = selectedId) {
+  const block = documentBlocks().find((entry) => entry.id === id);
+  const node = block && document.querySelector(`[data-pdf-block="${id}"]`);
+  if (!block || !node) return false;
+  if (block.kind === PDF_BLOCK_IMAGE) {
+    const img = node.querySelector("img.pdf-block-img");
+    if (img) fitImageBlockFrame(node, img);
+    return true;
+  }
+  if (!blockStyle(block).fit) writeBlockStyle(id, { fit: true });
+  const current = documentBlocks().find((entry) => entry.id === id) || block;
+  shrinkBlockWidthToContent(node, current);
+  const after = documentBlocks().find((entry) => entry.id === id) || current;
+  fitBlockHeight(node, after);
   return true;
 }
 

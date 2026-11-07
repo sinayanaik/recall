@@ -604,6 +604,45 @@
   margin: 0 !important;
 }
 
+/* ── A diagram in a block is its own size, at the page's zoom ───────────────
+
+   `.diagram-shell .mermaid svg` draws a diagram at --visual-max-width, the
+   Notes reading column's setting — 50% on a desktop — so inside a block it
+   took half the frame's width whatever the drawing was, and a tall flowchart
+   left empty frame beside and under it. Here it is drawn at its own natural
+   width (--diagram-natural-w, set by sizeBlockDiagrams in
+   src/documents/pdf-blocks.js) times the page's scale, like the block's type,
+   and shrinks with the block when the block is narrower. The height follows
+   (fitBlockHeight), so the frame hugs it either way. The mermaid container's
+   own vertical padding goes for the same reason. */
+.pdf-block-body .diagram-shell .mermaid svg,
+.pdf-block-body .diagram-shell .nomnoml-diagram svg {
+  width: min(100%, calc(var(--diagram-natural-w, 100000) * 1px * var(--pdf-block-scale, 1))) !important;
+  max-width: 100% !important;
+}
+
+.pdf-block-body .mermaid,
+.pdf-block-body .nomnoml-diagram {
+  padding: 0;
+}
+
+/* The Zoom pill floats after the drawing, and a shell that scrolls contains its
+   floats — a whole line of height under every diagram, for a button. Over the
+   drawing's corner instead, and only when the block is being pointed at. */
+.pdf-block-body .diagram-shell .diagram-zoom {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  float: none;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.pdf-block:hover .diagram-zoom,
+.pdf-block.is-selected .diagram-zoom {
+  opacity: 1;
+}
+
 /* ── The editor over the page ──────────────────────────────────────────────
 
    A block was edited in a bare <textarea> the size of the block, and .pdf-block-edit
@@ -739,8 +778,74 @@
   }
 }
 
+/* ── The other edges ──────────────────────────────────────────────────────
+
+   Invisible strips along the inside of the frame (it clips its overflow) that
+   resize from that side: right and left set the width, the bottom the height,
+   the bottom-left corner both — see resizeEdges in src/documents/pdf-blocks.js.
+   Under the grip in the stacking order, so the drawn corner always wins its own
+   square. A block that follows its contents has no bottom edge to drag: the
+   contents set that edge. */
+.pdf-block-edge {
+  position: absolute;
+  z-index: 1;
+  touch-action: none;
+}
+
+.pdf-block-edge-e,
+.pdf-block-edge-w {
+  top: 0;
+  bottom: 16px;
+  width: 6px;
+  cursor: ew-resize;
+}
+
+.pdf-block-edge-e { right: 0; }
+.pdf-block-edge-w { left: 0; }
+
+.pdf-block-edge-s {
+  left: 16px;
+  right: 16px;
+  bottom: 0;
+  height: 6px;
+  cursor: ns-resize;
+}
+
+.pdf-block-edge-sw {
+  left: 0;
+  bottom: 0;
+  width: 16px;
+  height: 16px;
+  cursor: nesw-resize;
+}
+
+.pdf-block.is-fit .pdf-block-edge-s {
+  display: none;
+}
+
+/* A hint of the edge while it is under the pointer — a strip you cannot see is
+   one you only find by accident. */
+.pdf-block-edge:hover {
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+/* A fit block's corners only set the width (the contents set the height), so
+   they say so. */
+.pdf-block.is-fit:not([data-pdf-block-kind="image"]) .pdf-block-grip,
+.pdf-block.is-fit:not([data-pdf-block-kind="image"]) .pdf-block-edge-sw {
+  cursor: ew-resize;
+}
+
+@media (pointer: coarse) {
+  .pdf-block-edge-e,
+  .pdf-block-edge-w { width: 14px; bottom: 22px; }
+  .pdf-block-edge-s { height: 14px; left: 22px; right: 22px; }
+  .pdf-block-edge-sw { width: 22px; height: 22px; }
+}
+
 .pdf-block-grip {
   position: absolute;
+  z-index: 2;
   right: 0;
   bottom: 0;
   width: 16px;

@@ -1592,6 +1592,178 @@ try {
   check("...and Ctrl+Y puts the stroke back, rather than redoing a card",
     styling.afterRedoY === 1, `${styling.afterRedoY} stroke(s) on the page after Ctrl+Y`);
 
+  // ── 5a. A block's frame hugs what is in it, and every edge resizes it ────
+  //
+  // "The size should dynamically fit the contents, and the drag to resize
+  // should be more robust and dynamic." Four things are asserted: the height
+  // follows the width WHILE the width is dragged (it used to hold still for the
+  // whole drag and snap a frame after letting go); the left and right edges are
+  // handles, not only the bottom-right corner; a resize stops at the page's own
+  // edge; and content that changes size after the paint — a diagram laying
+  // itself out, a picture decoding — refits the frame without a repaint.
+  const hugging = await page.evaluate(`async () => {
+    const { api, settle, raf } = window.__recall;
+    const pageNumber = api.currentDocumentPage();
+    const pageEl = document.querySelector('.pdf-page[data-page-number="' + pageNumber + '"]');
+    const box = pageEl.getBoundingClientRect();
+    const record = (id) => ({ ...(api.state.meta.pdfBlocks || []).find((b) => b.id === id) });
+    const top = Math.max(box.top, 0);
+    const bottom = Math.min(box.bottom, window.innerHeight);
+    let spot = null;
+    for (const fx of [0.1, 0.2, 0.3]) {
+      for (const fy of [0.15, 0.3, 0.5]) {
+        const at = { x: Math.round(box.left + (box.width * fx)), y: Math.round(top + ((bottom - top) * fy)) };
+        if (!document.elementFromPoint(at.x, at.y)?.closest(".pdf-block")) { spot = at; break; }
+      }
+      if (spot) break;
+    }
+    const made = api.addDocumentBlock(pageNumber, api.pdfPointAt(spot.x, spot.y));
+    await settle(400);
+    const write = async (text) => {
+      const area = document.querySelector("#pdfBlockEditor [data-note-edit-value]");
+      area.value = text;
+      area.dispatchEvent(new Event("input", { bubbles: true }));
+      document.querySelector(".pdf-block-editor-done")?.click();
+      await settle(600);
+    };
+    await write("A short label");
+    const node = () => document.querySelector('[data-pdf-block="' + made.id + '"]');
+    const labelled = record(made.id);
+
+    // Several lines of words, so a narrower frame means a taller one.
+    api.editBlock(made.id);
+    await settle(300);
+    await write("Sailing angles are measured from the wind. " .repeat(6));
+    const wordy = record(made.id);
+    // What the contents need, in points, at the frame's current width — read
+    // the same way the block reads it, with the body's stretch taken off.
+    const needs = () => {
+      const n = node();
+      const body = n.querySelector(".pdf-block-body");
+      const chrome = n.offsetHeight - body.clientHeight;
+      body.style.flex = "none";
+      body.style.height = "auto";
+      const h = body.scrollHeight;
+      body.style.flex = "";
+      body.style.height = "";
+      return (chrome + h) / (api.pdfPageViewport(pageNumber).scale || 1);
+    };
+
+    const press = (target, type, at, id = 9) => (type === "pointerdown" ? target : document).dispatchEvent(
+      new PointerEvent(type, { bubbles: true, pointerId: id, pointerType: "mouse", isPrimary: true, clientX: at.x, clientY: at.y, buttons: type === "pointerup" ? 0 : 1 })
+    );
+    const handle = (edge) => node().querySelector('[data-edge="' + edge + '"]');
+    const middleOf = (el) => { const r = el.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; };
+
+    // Widened first: the first words brought it in to a short label's width,
+    // and narrowing THAT would only find the minimum width.
+    const opening = middleOf(handle("e"));
+    press(handle("e"), "pointerdown", opening);
+    press(document, "pointermove", { x: opening.x + 260, y: opening.y });
+    press(document, "pointerup", { x: opening.x + 260, y: opening.y });
+    await settle(300);
+    const widened = record(made.id);
+
+    // ── The right edge, narrower: the height follows DURING the drag ──────
+    const east = middleOf(handle("e"));
+    const pxBefore = node().getBoundingClientRect().height;
+    press(handle("e"), "pointerdown", east);
+    press(document, "pointermove", { x: east.x - 100, y: east.y });
+    await raf(); await raf();
+    const pxDuring = node().getBoundingClientRect().height;
+    press(document, "pointerup", { x: east.x - 100, y: east.y });
+    // Read straight after the drop — no frame for a late fit to land in.
+    const narrowed = record(made.id);
+    const gapAtDrop = Math.abs(narrowed.h - needs());
+    await settle(300);
+
+    // ── The left edge: the right edge stays where it was ─────────────────
+    const west = middleOf(handle("w"));
+    press(handle("w"), "pointerdown", west);
+    press(document, "pointermove", { x: west.x + 30, y: west.y });
+    press(document, "pointerup", { x: west.x + 30, y: west.y });
+    await settle(300);
+    const fromLeft = record(made.id);
+
+    // ── ...and no further than the paper ─────────────────────────────────
+    const east2 = middleOf(handle("e"));
+    press(handle("e"), "pointerdown", east2);
+    press(document, "pointermove", { x: east2.x + 6000, y: east2.y });
+    press(document, "pointerup", { x: east2.x + 6000, y: east2.y });
+    await settle(300);
+    const wide = record(made.id);
+    const pageRight = api.pdfPageViewport(pageNumber).viewBox[2];
+
+    // ── A fixed height, dragged by its bottom edge, then fitted back ─────
+    api.writeBlockStyle(made.id, { fit: false });
+    await settle(300);
+    const fixedBefore = record(made.id);
+    const south = middleOf(handle("s"));
+    press(handle("s"), "pointerdown", south);
+    press(document, "pointermove", { x: south.x, y: south.y + 80 });
+    press(document, "pointerup", { x: south.x, y: south.y + 80 });
+    await settle(300);
+    const tall = record(made.id);
+    // Two quick presses on the corner grip: fit the frame to its contents.
+    const corner = middleOf(node().querySelector(".pdf-block-grip"));
+    for (let i = 0; i < 2; i += 1) {
+      press(node().querySelector(".pdf-block-grip"), "pointerdown", corner);
+      press(document, "pointerup", corner);
+    }
+    await settle(500);
+    const refitted = record(made.id);
+
+    // ── Contents that grow after the paint, with nothing repainting ──────
+    // The observer watches the children a render left there; this stands in
+    // for a diagram finishing its layout inside one of them.
+    const watched = node().querySelector(".pdf-block-body > :first-child");
+    await settle(200);
+    const beforeGrow = record(made.id);
+    watched.style.minHeight = (watched.offsetHeight + 120) + "px";
+    await settle(500);
+    const grown = record(made.id);
+    watched.style.minHeight = "";
+    await settle(500);
+    const shrunk = record(made.id);
+
+    api.selectBlock(null);
+    return {
+      labelled, wordy, widened, pxBefore, pxDuring, narrowed, gapAtDrop, fromLeft, wide, pageRight,
+      fixedBefore, tall, refitted, refittedNeeds: needs(), beforeGrow, grown, shrunk,
+      edges: [...node().querySelectorAll("[data-edge]")].map((h) => h.dataset.edge).sort().join(","),
+      errs: window.__errs.slice(0, 4)
+    };
+  }`);
+  check("a block's first words bring its width in to them",
+    hugging.labelled.w < 240, `${hugging.labelled.w}pt wide for "A short label", against the 240pt default`);
+  check("every side of a block is a handle, not only one corner",
+    hugging.edges === "e,s,se,sw,w", `handles: ${hugging.edges}`);
+  check("...and dragging an edge narrower makes the frame taller WHILE dragging",
+    hugging.pxDuring > hugging.pxBefore + 4,
+    `${hugging.pxBefore.toFixed(1)}px tall before, ${hugging.pxDuring.toFixed(1)}px mid-drag`);
+  check("...landing on the height its words need, in the same write as the width",
+    hugging.narrowed.w < hugging.widened.w && hugging.gapAtDrop <= 2,
+    `${hugging.widened.w}x${hugging.widened.h} → ${hugging.narrowed.w}x${hugging.narrowed.h}; `
+      + `${hugging.gapAtDrop.toFixed(1)}pt from what the words need at the moment of the drop`);
+  check("the left edge resizes from the left, holding the right edge still",
+    hugging.fromLeft.w < hugging.narrowed.w
+      && Math.abs((hugging.fromLeft.x + hugging.fromLeft.w) - (hugging.narrowed.x + hugging.narrowed.w)) <= 1,
+    `right edge ${hugging.narrowed.x + hugging.narrowed.w} → ${hugging.fromLeft.x + hugging.fromLeft.w}, `
+      + `width ${hugging.narrowed.w} → ${hugging.fromLeft.w}`);
+  check("a resize stops at the edge of the paper",
+    hugging.wide.x + hugging.wide.w <= hugging.pageRight + 1 && hugging.wide.w > hugging.fromLeft.w,
+    `right edge at ${hugging.wide.x + hugging.wide.w}pt on a page ${hugging.pageRight}pt wide`);
+  check("a fixed-height block is taller for a drag down its bottom edge",
+    hugging.tall.h > hugging.fixedBefore.h + 20,
+    `${hugging.fixedBefore.h} → ${hugging.tall.h} points`);
+  check("...and a double press on its corner fits it to its contents again",
+    hugging.refitted.style?.fit !== false && Math.abs(hugging.refitted.h - hugging.refittedNeeds) <= 2,
+    `fit=${hugging.refitted.style?.fit ?? "default"}, ${hugging.tall.h} → ${hugging.refitted.h} points `
+      + `against ${hugging.refittedNeeds.toFixed(1)} needed${hugging.errs.length ? ` — ${hugging.errs.join(" | ")}` : ""}`);
+  check("contents that change size after the paint refit the frame, both ways",
+    hugging.grown.h > hugging.beforeGrow.h + 40 && Math.abs(hugging.shrunk.h - hugging.beforeGrow.h) <= 2,
+    `${hugging.beforeGrow.h} → ${hugging.grown.h} as the contents grew, → ${hugging.shrunk.h} as they shrank back`);
+
   // ── 5b. The panel itself: typed values, and only the controls that mean ──
   //     something for the block it is open on
   //
