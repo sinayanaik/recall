@@ -367,6 +367,7 @@ export const BACKED_UP_SETTINGS_KEYS = {
   "recall:renderHighlightDefault": "The default highlight colour.",
   "recall:renderColorDefault": "The default text colour.",
   "recall:exportTheme": "The look an export is made in (Plain, Minimal or Fancy).",
+  "recall-md-pdf-options": "How a PDF made from markdown is laid out — the page shape, size, margins, text and pictures last chosen.",
   "recall:allCardsFilter": "The All Cards panel's filter.",
   "recall:allCardsCompact": "The All Cards panel's density.",
   recall_autosync_minutes: "How often the library syncs by itself.",

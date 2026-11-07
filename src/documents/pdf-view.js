@@ -549,7 +549,7 @@ export function tearDownDocumentView({ park = false } = {}) {
 // `onFile` builds the picker; `onPress` builds a plain button instead, for the
 // one of the four that is not asking for a file at all — a deck with no notebook
 // yet has nothing to pick, it just has not been given its first page.
-function renderDocumentPickPrompt({ heading, body, pick = "Choose the PDF…", note = "", onFile = null, onPress = null }) {
+function renderDocumentPickPrompt({ heading, body, pick = "Choose the PDF…", note = "", onFile = null, onPress = null, secondary = null }) {
   const view = el.documentView;
   if (!view) return;
   view.innerHTML = "";
@@ -584,6 +584,16 @@ function renderDocumentPickPrompt({ heading, body, pick = "Choose the PDF…", n
     control = label;
   }
   panel.append(head, text, control);
+  // A second way in, as a quieter button under the first (the attach prompt's
+  // "Make one from Markdown…").
+  if (secondary?.label && secondary.onPress) {
+    const other = document.createElement("button");
+    other.type = "button";
+    other.className = "pdf-missing-pick is-secondary";
+    other.textContent = secondary.label;
+    other.addEventListener("click", () => { secondary.onPress(); });
+    panel.appendChild(other);
+  }
   if (note) {
     const footnote = document.createElement("p");
     footnote.className = "pdf-missing-note";
@@ -666,8 +676,17 @@ function renderAttachDocumentPrompt() {
     body: "This file has no document yet. Pick a PDF and it becomes this file's PDF tab — read it, highlight it and make cards from it, with any highlights already in the file imported along with it.",
     pick: "Choose a PDF…",
     note: "Your cards, notes and title are left exactly as they are — this adds a document to the file, it does not import over it.",
-    onFile: (file) => onAttachDocument(file)
+    onFile: (file) => onAttachDocument(file),
+    secondary: onMarkdownPdf ? { label: "Make one from Markdown…", onPress: () => onMarkdownPdf() } : null
   });
+}
+
+// "Make one from Markdown…" (src/documents/md-pdf/dialog.js). REGISTERED, like
+// the notebook's start handler below, because that module imports this one.
+let onMarkdownPdf = null;
+
+export function setMarkdownPdfStartHandler(fn) {
+  onMarkdownPdf = typeof fn === "function" ? fn : null;
 }
 
 // ── ...and the deck with no notebook yet ────────────────────────────────────

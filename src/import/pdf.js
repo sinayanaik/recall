@@ -383,7 +383,11 @@ export async function importPdfFile(file, folderPath = null) {
 // cannot happen. What it does NOT do is touch the deck's title, category, cards
 // or notes body — this is an addition to a deck the reader already has, not an
 // import that happens to land on top of one.
-export async function attachPdfToOpenDeck(file) {
+//
+// `entry` is merged into the new PDF's record: a PDF made from markdown
+// (src/documents/md-pdf/save.js) carries its tab name and the fact that it can
+// be edited again.
+export async function attachPdfToOpenDeck(file, { entry: extraEntry = null } = {}) {
   if (!file) return false;
   if (!state.deckTitle && !state.masterCards.length && !String(state.notes || "").trim()) {
     showToast("Open or create a file first, then attach its PDF", "error");
@@ -438,6 +442,7 @@ export async function attachPdfToOpenDeck(file) {
       sha256: hash,
       path: null,
       importedAt: new Date().toISOString(),
+      ...(extraEntry && typeof extraEntry === "object" ? extraEntry : {}),
       at: Date.now()
     };
     state.meta = {

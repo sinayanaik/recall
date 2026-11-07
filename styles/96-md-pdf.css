@@ -1,0 +1,487 @@
+/* Markdown → PDF (#mdPdfModal, built by src/documents/md-pdf/dialog.js).
+ * A full sheet: the markdown and its options beside a live preview of the PDF
+ * with its page breaks on it. Under the confirm modal (z-index 230), which the
+ * "take these pages out" question opens over it. The chips are the margins
+ * dialog's (.pdf-margins-chip, 93-pdf-margins.css). */
+.md-pdf-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 225;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  padding: 18px;
+  background: rgba(0, 0, 0, 0.5);
+}
+
+.md-pdf-modal[hidden] {
+  display: none;
+}
+
+.md-pdf-sheet {
+  display: flex;
+  flex-direction: column;
+  width: min(1180px, 100%);
+  min-height: 0;
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: var(--modal-radius);
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.3);
+  overflow: hidden;
+}
+
+.md-pdf-head,
+.md-pdf-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  flex-wrap: wrap;
+}
+
+.md-pdf-head {
+  border-bottom: 1px solid var(--line);
+}
+
+.md-pdf-head .prompt-modal-title {
+  margin: 0;
+  flex: 1 1 auto;
+}
+
+.md-pdf-foot {
+  border-top: 1px solid var(--line);
+}
+
+.md-pdf-foot-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.md-pdf-close {
+  min-width: 36px;
+  min-height: 36px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 1rem;
+  cursor: pointer;
+}
+
+.md-pdf-tabs {
+  display: none;
+  gap: 4px;
+}
+
+.md-pdf-tabs button {
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--card);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+.md-pdf-tabs button[aria-selected="true"] {
+  border-color: var(--accent);
+  color: var(--accent-strong, var(--accent));
+}
+
+.md-pdf-body {
+  display: grid;
+  grid-template-columns: minmax(300px, 0.9fr) minmax(320px, 1.1fr);
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.md-pdf-source {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 16px;
+  min-height: 0;
+  overflow: auto;
+  border-right: 1px solid var(--line);
+}
+
+.md-pdf-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.md-pdf-row .file-pick {
+  display: inline-flex;
+  align-items: center;
+}
+
+.md-pdf-text {
+  min-height: 220px;
+  flex: 1 0 220px;
+  resize: vertical;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.85rem;
+  line-height: 1.45;
+}
+
+.md-pdf-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.md-pdf-field {
+  display: grid;
+  grid-template-columns: 112px 1fr;
+  align-items: center;
+  gap: 8px;
+}
+
+.md-pdf-field[hidden] {
+  display: none;
+}
+
+.md-pdf-label {
+  font-size: 0.78rem;
+  font-weight: 800;
+  color: var(--muted);
+}
+
+.md-pdf-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.md-pdf-chips .pdf-margins-chip {
+  min-height: 32px;
+  padding: 0 11px;
+  font-size: 0.82rem;
+}
+
+.md-pdf-chips .pdf-margins-chip[hidden] {
+  display: none;
+}
+
+.md-pdf-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+.md-pdf-inline[hidden] {
+  display: none;
+}
+
+.md-pdf-inline .prompt-modal-input {
+  width: 5.5em;
+  min-height: 32px;
+}
+
+.md-pdf-inline [data-md-name] {
+  width: min(16em, 46vw);
+}
+
+.md-pdf-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  font-size: 0.85rem;
+}
+
+.md-pdf-checks label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.md-pdf-checks input[type="checkbox"] {
+  width: 17px;
+  height: 17px;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  flex: 0 0 auto;
+  accent-color: var(--accent);
+}
+
+.md-pdf-hint {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.md-pdf-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 16px;
+  min-height: 0;
+  background: var(--panel-2);
+}
+
+.md-pdf-preview-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.md-pdf-status {
+  flex: 1 1 auto;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.md-pdf-status[data-kind="error"] {
+  color: var(--danger, #b3261e);
+}
+
+.md-pdf-bar-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.md-pdf-bar-actions .pdf-margins-chip {
+  min-height: 30px;
+  padding: 0 10px;
+  font-size: 0.8rem;
+}
+
+.md-pdf-bar-actions .pdf-margins-chip:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.md-pdf-preview-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--text) 10%, var(--panel-2));
+}
+
+.md-pdf-preview-scroll:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.md-pdf-pages {
+  position: relative;
+  /* The page numbers' gutter: PREVIEW_GUTTER in md-pdf/dialog.js. */
+  padding-left: 40px;
+}
+
+/* The preview is the PDF as printed: white paper, whatever the theme. One box
+ * per page (6px apart: the gap md-pdf/dialog.js's previewY counts), holding
+ * the bands it is drawn in as they scroll near. */
+.md-pdf-page {
+  position: relative;
+  margin: 0 0 6px;
+  background: #ffffff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+}
+
+.md-pdf-canvas {
+  position: absolute;
+  left: 0;
+  display: block;
+}
+
+.md-pdf-overlay {
+  position: absolute;
+  inset: 0;
+  cursor: copy;
+}
+
+.md-pdf-band {
+  position: absolute;
+  left: 0;
+  right: 0;
+  font-size: 0.7rem;
+  font-weight: 800;
+  color: #29513f;
+  background: rgba(22, 121, 108, 0.06);
+  border-left: 3px solid rgba(22, 121, 108, 0.55);
+  pointer-events: none;
+}
+
+/* In the gutter, left of the page: its number and how full it is. */
+.md-pdf-band-label {
+  position: absolute;
+  left: 2px;
+  top: 2px;
+  width: 32px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 2px 0;
+  border-radius: 5px;
+  background: var(--panel);
+  color: var(--text);
+  line-height: 1.1;
+}
+
+.md-pdf-band-label b {
+  font-size: 0.78rem;
+}
+
+.md-pdf-band-label small {
+  font-size: 0.62rem;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.md-pdf-band.is-over .md-pdf-band-label small {
+  color: #b86e00;
+}
+
+.md-pdf-band.is-odd {
+  background: rgba(22, 121, 108, 0.11);
+}
+
+.md-pdf-band.is-over {
+  color: #7a4a00;
+  background: rgba(230, 150, 20, 0.14);
+  border-left-color: #d58a00;
+}
+
+
+.md-pdf-cut {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 0;
+  border-top: 2px dashed #1f6feb;
+  cursor: ns-resize;
+  touch-action: none;
+}
+
+.md-pdf-cut::before {
+  /* A grab area much taller than the line, for a finger. */
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -12px;
+  height: 24px;
+}
+
+.md-pdf-cut.is-selected,
+.md-pdf-cut.is-dragging {
+  border-top-color: #d1242f;
+}
+
+.md-pdf-cut-grip {
+  position: absolute;
+  left: 50%;
+  top: -7px;
+  width: 34px;
+  height: 12px;
+  margin-left: -17px;
+  border-radius: 6px;
+  background: #1f6feb;
+  pointer-events: none;
+}
+
+.md-pdf-cut.is-selected .md-pdf-cut-grip,
+.md-pdf-cut.is-dragging .md-pdf-cut-grip {
+  background: #d1242f;
+}
+
+.md-pdf-cut-remove {
+  position: absolute;
+  right: 4px;
+  top: -13px;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 999px;
+  background: #1f6feb;
+  color: #ffffff;
+  font-size: 0.75rem;
+  line-height: 24px;
+  cursor: pointer;
+}
+
+.md-pdf-meter {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+/* A phone: one pane at a time, switched by the Markdown / Preview tabs. */
+@media (max-width: 760px) {
+  .md-pdf-modal {
+    padding: 0;
+  }
+
+  .md-pdf-sheet {
+    border-radius: 0;
+    border: 0;
+  }
+
+  .md-pdf-tabs {
+    display: flex;
+  }
+
+  .md-pdf-body {
+    grid-template-columns: 1fr;
+  }
+
+  .md-pdf-source {
+    border-right: 0;
+  }
+
+  .md-pdf-body[data-md-show="source"] .md-pdf-preview,
+  .md-pdf-body[data-md-show="preview"] .md-pdf-source {
+    display: none;
+  }
+
+  .md-pdf-field {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+
+  .md-pdf-foot-actions {
+    width: 100%;
+  }
+
+  .md-pdf-foot-actions .sync-modal-btn {
+    flex: 1 1 auto;
+  }
+}
+
+/* PDF ⋯ → "Edit markdown…" is hidden on a PDF with none kept in it; the menu
+ * rows are display:flex, which would win over the hidden attribute. */
+#documentMoreMenu .md-menu-item[hidden] {
+  display: none;
+}
+
+/* The empty PDFs tab's second way in: "Make one from Markdown…". */
+.pdf-missing-pick.is-secondary {
+  margin: 8px 0 0 8px;
+  background: transparent;
+  color: var(--accent-strong, var(--accent));
+  border: 1px solid var(--line);
+}
+
+/* The Notes selection pill's "Make a PDF from the selection" — the quiet
+ * secondary treatment its neighbour, the extract button, has
+ * (.selection-float-btn.is-extract in 12-notes.css). */
+.selection-float-btn.is-md-pdf {
+  background: color-mix(in srgb, var(--panel-2) 82%, transparent);
+  color: var(--accent-strong);
+}

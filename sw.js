@@ -385,6 +385,7 @@ const APP_SHELL = [
   `./styles/93-pdf-margins.css?v=${STAMP}`,
   `./styles/94-paper-tones.css?v=${STAMP}`,
   `./styles/95-library-search.css?v=${STAMP}`,
+  `./styles/96-md-pdf.css?v=${STAMP}`,
   // The module entry point. Everything it imports is stamped with the same
   // ?v=, so those URLs change with every release too — which is what lets the
   // cache-first handler below serve them without revalidating and still never
@@ -459,6 +460,19 @@ const APP_SHELL = [
   `./src/documents/paper-menu.js?v=${STAMP}`,
   `./src/format/paper-tones.js?v=${STAMP}`,
   `./src/documents/pdf-margins-core.js?v=${STAMP}`,
+  `./src/documents/pdf-replace.js?v=${STAMP}`,
+  `./src/documents/md-pdf/anchors.js?v=${STAMP}`,
+  `./src/documents/md-pdf/assets.js?v=${STAMP}`,
+  `./src/documents/md-pdf/breaks.js?v=${STAMP}`,
+  `./src/documents/md-pdf/build.js?v=${STAMP}`,
+  `./src/documents/md-pdf/dialog.js?v=${STAMP}`,
+  `./src/documents/md-pdf/fonts-core.js?v=${STAMP}`,
+  `./src/documents/md-pdf/fonts.js?v=${STAMP}`,
+  `./src/documents/md-pdf/layout.js?v=${STAMP}`,
+  `./src/documents/md-pdf/parts.js?v=${STAMP}`,
+  `./src/documents/md-pdf/save.js?v=${STAMP}`,
+  `./src/documents/md-pdf/woff.js?v=${STAMP}`,
+  `./src/documents/md-pdf/writer.js?v=${STAMP}`,
   `./src/documents/pdf-switcher.js?v=${STAMP}`,
   `./src/documents/pdf-timing.js?v=${STAMP}`,
   `./src/documents/pdf-render-worker.js?v=${STAMP}`,
@@ -885,6 +899,16 @@ const CDN_ASSETS = [
   // html-to-image, for the blocks inside a region drawn as pixels. Must stay
   // byte-identical to LIB_URLS.htmlToImage.
   `${CDN}html-to-image@1.11.11/dist/html-to-image.js`,
+  // fontkit, for a PDF made from markdown (src/documents/md-pdf/). Must stay
+  // byte-identical to LIB_URLS.fontkit. With it, the four font files a page
+  // of English is set in (MD_PDF_OFFLINE_FACES in md-pdf/fonts.js), so that
+  // works offline the first time too; every other script and symbol subset is
+  // fetched when a document first needs it and cached from then on.
+  `${CDN}@pdf-lib/fontkit@1.1.1/dist/fontkit.umd.min.js`,
+  `${CDN}@fontsource/noto-sans@5.3.0/files/noto-sans-latin-400-normal.woff`,
+  `${CDN}@fontsource/noto-sans@5.3.0/files/noto-sans-latin-700-normal.woff`,
+  `${CDN}@fontsource/noto-sans@5.3.0/files/noto-sans-latin-400-italic.woff`,
+  `${CDN}@fontsource/jetbrains-mono@5.3.0/files/jetbrains-mono-latin-400-normal.woff`,
   ...KATEX_FONTS,
   ...PRISM_LANGS
 ];

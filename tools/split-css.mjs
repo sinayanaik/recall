@@ -65,6 +65,10 @@ const SECTIONS = [
 // Anything appearing in styles/ that is neither a slice nor listed here is
 // still a failure.
 const POST_SPLIT = {
+  "96-md-pdf.css":
+    "Markdown → PDF (src/documents/md-pdf/dialog.js): the sheet with the markdown, " +
+    "its options and the live preview with its page breaks, the PDF ⋯ rows' hidden " +
+    "state, the empty PDFs tab's second button and the selection bar's PDF button.",
   "95-library-search.css":
     "Library search results (src/library/my-decks-render.js): the \"Searching " +
     "all folders\" note, the highlighted letters a search matched, and the " +

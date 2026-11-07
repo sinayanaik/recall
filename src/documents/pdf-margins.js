@@ -29,14 +29,12 @@ import {
   hasMargins,
   normalizeMargins
 } from "./pdf-margins-core.js?v=__BUILD__";
-import { activePdfId, deckPdfById, deckPdfs, pdfStoreKey, recordsForSurface, withDeckPdfs } from "./pdf-multi.js?v=__BUILD__";
-import { getDocument, putDocument, sha256, uploadDocument } from "./pdf-store.js?v=__BUILD__";
-import { openDocumentPdfId, openDocumentView } from "./pdf-view.js?v=__BUILD__";
+import { activePdfId, deckPdfById, pdfStoreKey, recordsForSurface } from "./pdf-multi.js?v=__BUILD__";
+import { replacePdfBytes } from "./pdf-replace.js?v=__BUILD__";
+import { getDocument } from "./pdf-store.js?v=__BUILD__";
+import { openDocumentPdfId } from "./pdf-view.js?v=__BUILD__";
 import { ensurePdfLib } from "../core/lib-loader.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
-import { storageFolderSlug } from "../images/upload.js?v=__BUILD__";
-import { saveDeckToLibrary } from "../library/local-library.js?v=__BUILD__";
-import { deleteDocumentCopies } from "../storage/document-migration.js?v=__BUILD__";
 import { showConfirmModal, showToast } from "../ui/feedback.js?v=__BUILD__";
 import { lockPageScroll, unlockPageScroll } from "../ui/overlays.js?v=__BUILD__";
 
@@ -147,77 +145,21 @@ export async function setCurrentPdfMargins(spec, pdfId = currentPdfId(), { sourc
     }
     const off = source ? 0 : marksOffPage(pdfId, result.boxes || []);
     if (off && !(await confirmOffPage(off))) return false;
-    // The record as it is NOW: the question above can sit open while the PDF is
-    // renamed, or synced from another device. Bytes that changed meanwhile mean
-    // these margins were worked out on a file that is no longer this PDF.
-    const latest = deckPdfById(state.meta, pdfId);
-    if (!latest || latest.sha256 !== entry.sha256) {
+    // replacePdfBytes checks the record as it is NOW: the question above can
+    // sit open while the PDF is renamed, or synced from another device.
+    const outcome = await replacePdfBytes(pdfId, entry, result.bytes, {
+      patch: { margins: hasMargins(wanted) ? wanted : null }
+    });
+    if (outcome === "changed") {
       showToast("This PDF changed while the margins were being added — try again.", "error");
       return false;
     }
-    const name = entry.name || `${state.deckTitle || "document"}.pdf`;
-    const file = new File([result.bytes], name, { type: "application/pdf" });
-    const hash = await sha256(file);
-    // Where the PREVIOUS bytes live, captured before the record naming them is
-    // overwritten — see writeNotebookPdf, which learned this the hard way.
-    const previous = { driveId: entry.driveId || "", path: entry.path || "", s3Key: entry.s3Key || "" };
-    const nextEntry = {
-      ...latest,
-      size: file.size,
-      sha256: hash,
-      // The file as it was first attached: kept once, never replaced, so the
-      // reader's own copy of the original can still be re-attached.
-      baseSha256: entry.baseSha256 || entry.sha256 || null,
-      margins: hasMargins(wanted) ? wanted : null,
-      // No locator is carried: each names bytes that are no longer this PDF.
-      s3Key: null,
-      path: null,
-      driveId: null,
-      retiredLocators: null,
-      at: Date.now()
-    };
-    state.meta = withDeckPdfs(state.meta, deckPdfs(state.meta).map((item) => (item.id === pdfId ? nextEntry : item)));
-    if (!(await saveDeckToLibrary({ silent: true })) || !state.localDeckId) {
-      showToast("Could not save this file on your device", "error");
-      return false;
-    }
-    // The device copy before the upload: it is the one about to be drawn on,
-    // and the one that survives being offline.
-    await putDocument({ deckLocalId: pdfStoreKey(state.localDeckId, pdfId), blob: file, sha256: hash, name: file.name, at: Date.now() });
-    // A PDF the reader took out of the cloud stays out of it.
-    if (!entry.offloaded) uploadReplacement(file, hash, pdfId, previous);
-    await openDocumentView({ force: true, slot: DOC_SLOT_DOC, pdfId });
+    if (outcome !== "ok") return false;
     if (source) showToast("PDF re-attached, with its margins");
     else showToast(hasMargins(wanted) ? "Margins added — write in them with the pen or add a text box" : "Margins taken off");
     return true;
   } finally {
     marginsBusy = false;
-  }
-}
-
-// In the background: the pages are already on screen and on this device, and
-// an upload that fails is picked up by the next sync's backfill
-// (scheduleDocumentBackfill in src/storage/document-migration.js).
-async function uploadReplacement(file, hash, pdfId, previous) {
-  try {
-    const locator = await uploadDocument(file, {
-      name: storageFolderSlug(file.name.replace(/\.pdf$/i, ""), "document"),
-      pdfId,
-      sha256: hash
-    });
-    // Only if the record still names these bytes: a second change made while
-    // this was uploading has its own upload, and its own locator.
-    const now = deckPdfById(state.meta, pdfId);
-    if (now?.sha256 !== hash) return;
-    state.meta = withDeckPdfs(state.meta, deckPdfs(state.meta).map((item) => (item.id === pdfId ? { ...item, ...locator } : item)));
-    await saveDeckToLibrary({ silent: true });
-    const stale = { ...previous, s3Key: previous.s3Key && previous.s3Key !== locator?.s3Key ? previous.s3Key : "" };
-    if (stale.driveId || stale.path || stale.s3Key) {
-      deleteDocumentCopies(stale, { deckLocalId: state.localDeckId, slot: DOC_SLOT_DOC, pdfId }).catch(() => {});
-    }
-  } catch (error) {
-    console.warn("Could not upload the PDF with its margins", error);
-    showToast("Pages saved here — they upload at the next sync", "info");
   }
 }
 
