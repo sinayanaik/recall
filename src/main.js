@@ -80,7 +80,7 @@ import { initNotesResizeHold, noteSettledNotesPosition, scheduleSettledNotesCapt
 import { findRawOffsetForRenderedPoint } from "./notes/raw-offset.js?v=__BUILD__";
 import { flushReadingPositionSave } from "./notes/reading-position.js?v=__BUILD__";
 import { rawOffsetForCurrentNotesScroll, scheduleReadingAnchorCapture, setReadingAnchorCapturedHook } from "./notes/scroll-anchor.js?v=__BUILD__";
-import { beginSelectionGesture, currentNotesSelectionMarkdown, currentSelectionPlainText, endSelectionGesture, hideNotesSelectionButton, noteSelectionChanged, pillSelectionCapture, scheduleNotesSelectionCheck, selectionGestureIsLive, setDocumentPillCaptureHook, setSelectionBarExpanded, suspendSelectionBarForScroll } from "./notes/selection.js?v=__BUILD__";
+import { beginSelectionGesture, currentNotesSelectionMarkdown, currentSelectionPlainText, endSelectionGesture, ensurePillSelectionCapture, hideNotesSelectionButton, noteSelectionChanged, pillSelectionCapture, scheduleNotesSelectionCheck, selectionGestureIsLive, setDocumentPillCaptureHook, setSelectionBarExpanded, suspendSelectionBarForScroll } from "./notes/selection.js?v=__BUILD__";
 import { clearTouchSelection, initTouchSelection } from "./notes/touch-selection.js?v=__BUILD__";
 import { recordNotesTyping, redoNotes, undoNotes } from "./notes/notes-history.js?v=__BUILD__";
 import { closeMarkMenu, initMarkMenu, setMarkMenuActions } from "./notes/mark-menu.js?v=__BUILD__";
@@ -147,9 +147,10 @@ import { initDocumentBookmarks } from "./documents/pdf-bookmarks.js?v=__BUILD__"
 import { initDocumentOutlineDrag } from "./documents/pdf-outline-drag.js?v=__BUILD__";
 import { activePdfId, deckPdfById, deckPdfs, PDF_PRIMARY_ID, withDeckPdfs } from "./documents/pdf-multi.js?v=__BUILD__";
 import { openPdfMarginsDialog } from "./documents/pdf-margins.js?v=__BUILD__";
+import { openMarkdownPdfDialog } from "./documents/md-pdf/dialog.js?v=__BUILD__";
 import { removePdfFromDeck, renamePdf } from "./documents/pdf-multi-actions.js?v=__BUILD__";
 import { closePdfPanel, initPdfSwitcher } from "./documents/pdf-switcher.js?v=__BUILD__";
-import { currentPdfDocument, currentPdfPageCount, documentFittedWidth, refreshBakedDocumentPages, fitDocumentToWidth, initDocumentCanvasRecovery, initDocumentPinchZoom, isDocumentFitWidth, openDocumentIsCurrent, openDocumentPdfId, noteSettledDocumentPosition, openDocumentView, reattachDocument, relayoutDocumentHoldingReader, repaintOpenDocumentPages, scheduleDocumentPositionSave, scrollToDocumentPage, refreshDocumentPaperForTheme, setDocumentAttachHandler, setDocumentCanvasRecoveredHook, setDocumentOpenedHook, setDocumentPagePaintedHook, setNotebookStartHandler, setPageIndicatorUpdatedHook, setPaperChangedHook, switchToPdf, updatePageIndicator, zoomDocument, retryMissingDocumentOpen } from "./documents/pdf-view.js?v=__BUILD__";
+import { currentPdfDocument, currentPdfPageCount, documentFittedWidth, refreshBakedDocumentPages, fitDocumentToWidth, initDocumentCanvasRecovery, initDocumentPinchZoom, isDocumentFitWidth, openDocumentIsCurrent, openDocumentPdfId, noteSettledDocumentPosition, openDocumentView, reattachDocument, relayoutDocumentHoldingReader, repaintOpenDocumentPages, scheduleDocumentPositionSave, scrollToDocumentPage, refreshDocumentPaperForTheme, setDocumentAttachHandler, setDocumentCanvasRecoveredHook, setDocumentOpenedHook, setDocumentPagePaintedHook, setMarkdownPdfStartHandler, setNotebookStartHandler, setPageIndicatorUpdatedHook, setPaperChangedHook, switchToPdf, updatePageIndicator, zoomDocument, retryMissingDocumentOpen } from "./documents/pdf-view.js?v=__BUILD__";
 import { adoptDocumentInk, canRedoInk, canUndoInk, copyInkSelection, cutInkSelection, duplicateInkSelection, hasInkClipboard, initDocumentInk, inkMarkImageMarkdown, inkMarkIsHighlight, inkSelectionCount, isInkMarkId, nudgeInkSelection, paintDocumentInk, pasteInkSelection, redoInk, repaintDocumentInk, setInkChangedHandler, undoInk } from "./documents/pdf-ink.js?v=__BUILD__";
 import { addHandwritingImages, enterHandwritingView, initHandwritingRail, refreshHandwritingBoard, runHandwritingMenuAction, startHandwritingNotebook } from "./handwriting/board.js?v=__BUILD__";
 import { closeBlockStylePopover, isBlockStylePopoverOpen } from "./documents/block-style-bar.js?v=__BUILD__";
@@ -1007,6 +1008,21 @@ el.extractNoteFromSelectionBtn?.addEventListener("pointerdown", (event) => {
   event.preventDefault();
   event.stopPropagation();
   extractSelectionToNote();
+});
+
+// The selected passage of Notes, as markdown, into Markdown → PDF
+// (src/documents/md-pdf/dialog.js) — the markdown the pill already captured
+// for "Make a card", so a heading, a list or a formula arrives as written.
+el.pdfFromSelectionBtn?.addEventListener("pointerdown", (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  const markdown = String(ensurePillSelectionCapture()?.markdown || "").trim();
+  if (!markdown) {
+    showToast("Select some of your Notes first");
+    return;
+  }
+  hideNotesSelectionButton();
+  openMarkdownPdfDialog({ mode: "new", source: markdown, title: state.deckTitle || "" });
 });
 
 // ── The three that replace the platform's own selection bar ────────────────
@@ -2452,6 +2468,7 @@ setThemeRepaintHook(() => {
 });
 setBlockEditFlushHook(() => commitBlockEdit());
 setNotebookStartHandler(() => { startHandwritingNotebook(); });
+setMarkdownPdfStartHandler(() => { openMarkdownPdfDialog({ mode: "new" }); });
 // The + Add → Picture… picker. The paste and drop paths land on the same
 // function, so a picture arrives on the page the same way — compressed, and as
 // a block — however it was offered. Several can be picked at once.
@@ -4301,7 +4318,17 @@ el.documentMoreBtn?.addEventListener("click", () => {
   // pressing a toggle on an unannotated paper and seeing nothing change is the
   // same puzzle the notes ⋯ menu's own rows were rewritten to remove.
   if (open) paintPdfPageNotesButton();
+  if (open) paintMarkdownPdfRows();
 });
+
+// "Edit markdown…" only on a PDF that keeps some (src/documents/md-pdf/): one
+// made from markdown, or one with markdown pages put into it.
+function paintMarkdownPdfRows() {
+  const row = el.documentMoreMenu?.querySelector("[data-document-action=\"md-edit\"]");
+  if (!row) return;
+  const entry = deckPdfById(state.meta, openDocumentPdfId() || activePdfId(state.meta));
+  row.hidden = !(entry?.md?.parts > 0);
+}
 
 // The button and the menu are direct children of #viewModeRow now (they were
 // lifted out of the deleted .document-toolbar at boot), so the wrapper this used
@@ -4347,6 +4374,9 @@ el.documentMoreMenu?.addEventListener("click", async (event) => {
   if (runHandwritingMenuAction(action)) return;
   if (action === "offload") await offloadCurrentDocument();
   if (action === "margins") openPdfMarginsDialog();
+  if (action === "md-new") openMarkdownPdfDialog({ mode: "new" });
+  if (action === "md-insert") openMarkdownPdfDialog({ mode: "insert" });
+  if (action === "md-edit") openMarkdownPdfDialog({ mode: "edit" });
   if (action === "rename-pdf") renameCurrentPdf();
   if (action === "remove-pdf") removeCurrentPdf();
 });

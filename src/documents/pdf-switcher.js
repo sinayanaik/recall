@@ -34,6 +34,7 @@ import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { deckPdfs, withPdfOrder } from "./pdf-multi.js?v=__BUILD__";
 import { removePdfFromDeck, renamePdf } from "./pdf-multi-actions.js?v=__BUILD__";
+import { openMarkdownPdfDialog } from "./md-pdf/dialog.js?v=__BUILD__";
 import { renderDocumentPdfSwitcher, setPdfSwitcherPaintedHook, switchToPdf } from "./pdf-view.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { showConfirmModal } from "../ui/feedback.js?v=__BUILD__";
@@ -152,6 +153,9 @@ function buildPanel() {
     <button type="button" class="pdf-panel-add" data-pdf-add>
       <span aria-hidden="true">+</span><span>Add another PDF…</span>
     </button>
+    <button type="button" class="pdf-panel-add" data-pdf-add-md>
+      <span aria-hidden="true">+</span><span>New PDF from Markdown…</span>
+    </button>
   `;
   pdfPanelList = node.querySelector("[data-pdf-list]");
 
@@ -174,6 +178,11 @@ function buildPanel() {
     // The ⋯ menu's own picker, so an attach from here takes exactly the path
     // (and the error handling) an attach from there does.
     el.documentAddPdfInput?.click();
+  });
+  // Markdown → PDF (src/documents/md-pdf/dialog.js).
+  node.querySelector("[data-pdf-add-md]").addEventListener("click", () => {
+    closePdfPanel();
+    openMarkdownPdfDialog({ mode: "new" });
   });
   return node;
 }

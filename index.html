@@ -156,6 +156,7 @@
     <link rel="stylesheet" href="styles/93-pdf-margins.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/94-paper-tones.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/95-library-search.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/96-md-pdf.css?v=__BUILD__">
 
     <!-- ── Module preloads ────────────────────────────────────────────────
          The app is ~130 ES modules and the browser discovers them by PARSING
@@ -229,6 +230,19 @@
     <link rel="modulepreload" href="src/documents/paper-menu.js?v=__BUILD__">
     <link rel="modulepreload" href="src/format/paper-tones.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/pdf-margins-core.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/documents/md-pdf/anchors.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/documents/md-pdf/assets.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/documents/md-pdf/breaks.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/documents/md-pdf/build.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/documents/md-pdf/dialog.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/documents/md-pdf/fonts-core.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/documents/md-pdf/fonts.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/documents/md-pdf/layout.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/documents/md-pdf/parts.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/documents/md-pdf/save.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/documents/md-pdf/woff.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/documents/md-pdf/writer.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/documents/pdf-replace.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/pdf-switcher.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/pdf-timing.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/pdf-render-worker.js?v=__BUILD__">
@@ -1302,6 +1316,14 @@
                   <input id="documentAddPdfInput" type="file" accept=".pdf,application/pdf" hidden>
                   <span>Add another PDF…</span>
                 </label>
+                <!-- ⋯ → Markdown → PDF (src/documents/md-pdf/): a PDF of its own
+                     made from markdown, pages of it put into this PDF, and the
+                     markdown of either edited again. "Edit markdown…" is shown
+                     only on a PDF that has some kept in it (paintMarkdownPdfRows
+                     in src/main.js). -->
+                <button class="md-menu-item" type="button" data-slot="doc" data-document-action="md-new" title="Paste or write markdown and make a compact PDF of it — real text you can select and highlight"><span>New PDF from Markdown…<span class="nhm-hint">Paste markdown, get a small PDF</span></span></button>
+                <button class="md-menu-item" type="button" data-slot="doc" data-document-action="md-insert" title="Put pages made from markdown into this PDF, before any page"><span>Insert Markdown pages…<span class="nhm-hint">Add pages of your own to this PDF</span></span></button>
+                <button class="md-menu-item" type="button" data-slot="doc" data-document-action="md-edit" hidden title="Change the markdown this PDF, or pages in it, were made from, and make those pages again"><span>Edit markdown…<span class="nhm-hint">Change it and remake the pages</span></span></button>
                 <button class="md-menu-item" type="button" data-slot="doc" data-document-action="offload" title="Delete the cloud copy to free space — highlights, notes and cards all stay"><span>Remove from cloud</span></button>
                 <label class="md-menu-item file-pick" data-slot="doc" data-document-action="reattach" title="Point this file back at the PDF on this device">
                   <input id="documentReattachInput" type="file" accept=".pdf,application/pdf" hidden>
@@ -1618,6 +1640,10 @@
                    from where you are, but this one keeps it, somewhere better,
                    and putting it beside a delete button said otherwise. -->
               <button class="selection-float-btn is-extract" id="extractNoteFromSelectionBtn" type="button" title="Move the selection into its own note" aria-label="Move the selection into its own note">&#8618;</button>
+              <!-- The selection as a PDF of its own (src/documents/md-pdf/):
+                   opens Markdown → PDF with the passage in it. Shown where the
+                   extract button is — in Notes, not on a card or a PDF. -->
+              <button class="selection-float-btn is-md-pdf" id="pdfFromSelectionBtn" type="button" title="Make a PDF from the selection" aria-label="Make a PDF from the selection"><svg class="cz-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3.5H6.5v17h11V7z"/><path d="M14 3.5V7h3.5"/><path d="M9 13h6M9 16.5h4"/></svg></button>
             </span>
             <!-- Inline formatting — bulletify, plus B I U S </>, the fonts and
                  the text colours behind one "Aa" — filled by initRenderToolbars.
@@ -2393,6 +2419,7 @@
             <h3 class="help-section-title">PDFs 📄 — read the paper, not a translation of it</h3>
             <p>Pick a <code>.pdf</code> in <strong>My Files → Import</strong> and you get one file per paper, opening on its <strong>PDFs</strong> tab, beside Cards and Notes. The page is the PDF itself, laid out exactly as its author left it — two columns, display maths, figures and all. Nothing is extracted and nothing is re-rendered to images, so nothing is lost on the way in.</p>
             <p><strong>Already have the file, and the paper turned up later?</strong> Open it and press its <strong>📄 PDFs</strong> tab. Every file has one; on a file with no PDF it opens to <strong>Attach a PDF to read it here</strong>, and the PDF you pick becomes that file's PDF — with any highlights already in it imported, exactly as an import would — while the file's title, cards and notes are left as they are. (The side menu used to carry <strong>📄 Attach a PDF…</strong> as well; it did the identical thing, and the tab is the place you are already standing when you want it.) A file that already <em>has</em> a PDF uses <strong>PDF ⋯ → Re-attach the PDF…</strong> instead, which checks it really is the same PDF first, because a highlight is a position in one exact PDF.</p>
+            <p><strong>Make a PDF from markdown.</strong> <strong>PDF ⋯ → New PDF from Markdown…</strong> (or <strong>+ New PDF from Markdown…</strong> at the foot of the PDFs list, or <strong>Make one from Markdown…</strong> on a file with no PDF yet) opens a sheet: paste or type markdown, press <strong>Use this file's Notes</strong>, or <strong>Open a .md file…</strong> from your device — or select a passage of your Notes and press the page button on the selection bar. Headings, lists, tables, code (in colour), maths, mermaid diagrams and pictures all come out, and the words are real text: small files, and you can select, search and highlight them like any PDF. <strong>Smart pages</strong> (the default) cuts the text into pages of about the length you choose — before a heading or between paragraphs, never through a picture, table or code block — and trims each page to where its content ends, so no page ends in a band of white. <strong>Paper pages</strong> are full A4, Letter, Legal or A5 sheets for printing; <strong>One long page</strong> is everything on one tall page. Add <strong>Two columns</strong>, a <strong>new page before</strong> every H1, H2 or H3, page numbers and bookmarks from the headings as you like. The preview on the right shows each page and every page break as a dashed line: <strong>drag</strong> a break to move it (hold <strong>Alt</strong> to put it anywhere), <strong>click</strong> the page to add one, <strong>✕</strong> to remove one, and <strong>Undo</strong>, <strong>Redo</strong> or <strong>Auto</strong> to plan them again. <strong>PDF ⋯ → Insert Markdown pages…</strong> puts pages made the same way into the PDF you are reading, before any page you choose — your highlights and writing on the pages after them move with their pages. The markdown is kept inside the PDF, so <strong>PDF ⋯ → Edit markdown…</strong> opens it again to change it and remake those pages; highlights on them are found again by their words, or <strong>Take these pages out</strong>. Fonts are fetched the first time; a page of English works offline from then on.</p>
             <p><strong>More than one PDF in a file?</strong> <strong>PDF ⋯ → Add another PDF…</strong> puts a second one beside the first, and a dropdown next to ⋯ switches between them. They are listed in the order they were added until you choose otherwise: <strong>⇅ Arrange PDFs…</strong> at the bottom of that dropdown (or in the ⋯ menu) opens a list you drag into your own order by each paper's <strong>⠿</strong> grip — with a finger on a phone, or the mouse — or move with its ↑ ↓ arrows. <strong>Done</strong> keeps the order, and it syncs to your other devices.</p>
             <p><strong>Where the file itself is kept.</strong> On this device first — which is what makes a paper readable with no connection — and in <strong>an S3-compatible bucket you supply</strong>, so the same paper opens on a phone that has never seen it. A bucket rather than your Supabase project, because one paper can outweigh a hundred figures and a handful of them would spend the free tier's whole gigabyte; Cloudflare R2 gives 10&nbsp;GB free with no charge for downloads. Set it up once under <strong>☰ → Storage &amp; Data → PDF storage</strong> — four values pasted once on any device, and every device you sign in on picks them up at its next sync. Until you do, papers still import and still open; they stay on the device you imported them on, and go up by themselves at the first sync after the bucket is added. Papers uploaded before this changed — to Google Drive, or to Supabase before that — are still where they were and still open, and the same panel moves them across when you want the space back.</p>
             <ul class="help-list">

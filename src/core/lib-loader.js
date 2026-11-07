@@ -71,7 +71,11 @@ export const LIB_URLS = {
   // html-to-image turns a typed or picture block on a page into pixels, for a
   // region pictured on a canvas or saved as an image or PDF
   // (src/documents/pdf-region-marks.js). UMD, like the rest of this list.
-  htmlToImage: `${CDN_BASE}html-to-image@1.11.11/dist/html-to-image.js`
+  htmlToImage: `${CDN_BASE}html-to-image@1.11.11/dist/html-to-image.js`,
+  // fontkit, which pdf-lib needs to embed a font of its own — the fonts a PDF
+  // made from markdown is set in (src/documents/md-pdf/), subsetted to the
+  // glyphs it uses. The UMD build, like the rest of this list.
+  fontkit: `${CDN_BASE}@pdf-lib/fontkit@1.1.1/dist/fontkit.umd.min.js`
 };
 
 // ── Webfonts (Style → Basics/Notes → Font) ──────────────────────────────────
@@ -222,6 +226,11 @@ export async function ensureJsZip() {
 export async function ensurePdfLib() {
   if (window.PDFLib) return true;
   return (await loadScriptOnce(LIB_URLS.pdfLib)) && Boolean(window.PDFLib);
+}
+
+export async function ensureFontkit() {
+  if (window.fontkit) return true;
+  return (await loadScriptOnce(LIB_URLS.fontkit)) && Boolean(window.fontkit);
 }
 
 export async function ensureHtmlToImage() {

@@ -1753,6 +1753,7 @@ export function positionNotesSelectionButton() {
     if (el.selectionFloatFormat) el.selectionFloatFormat.hidden = true;
     if (el.eraseNotesSelectionBtn) el.eraseNotesSelectionBtn.hidden = true;
     if (el.extractNoteFromSelectionBtn) el.extractNoteFromSelectionBtn.hidden = true;
+    if (el.pdfFromSelectionBtn) el.pdfFromSelectionBtn.hidden = true;
     if (el.highlightSelectionBtn) el.highlightSelectionBtn.hidden = false;
     // A paper's highlight carries a note exactly as a note's <mark> does — same
     // editor, same fenced tail, a different handler set (DOCUMENT_NOTE_HANDLERS).
@@ -1816,6 +1817,7 @@ export function positionNotesSelectionButton() {
     // face would end up with a link on it that you cannot follow while
     // studying, so the button is simply not offered there.
     if (el.extractNoteFromSelectionBtn) el.extractNoteFromSelectionBtn.hidden = editingTarget.name !== "notes";
+    if (el.pdfFromSelectionBtn) el.pdfFromSelectionBtn.hidden = editingTarget.name !== "notes";
     // A cloze written in a note ABOUT a highlight would be listed by the Cloze
     // panel as one of the note's own (collectDeckClozes reads state.notes
     // whole, fence and all), and studied as a blank in a sentence the reader
@@ -1923,6 +1925,7 @@ export function positionNotesSelectionButton() {
     el.highlightAnnotateSelectionBtn.hidden = renderedTarget.name === NOTE_EDITOR_TARGET;
   }
   if (el.extractNoteFromSelectionBtn) el.extractNoteFromSelectionBtn.hidden = renderedTarget.name !== "notes";
+  if (el.pdfFromSelectionBtn) el.pdfFromSelectionBtn.hidden = renderedTarget.name !== "notes";
   // ...and the same on the rendered half — see the editing branch above.
   if (el.makeClozeFromSelectionBtn && renderedTarget.name === NOTE_EDITOR_TARGET) {
     el.makeClozeFromSelectionBtn.hidden = true;

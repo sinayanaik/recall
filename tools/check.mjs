@@ -370,6 +370,13 @@ const checks = [
   // gets its margin on the side the reader sees; and the Canvas's own paper is
   // byte-for-byte unchanged. pdf-lib from disk, no browser.
   ["pdf-margins   ", ["node", ["tools/pdf-margins-check.mjs"], ROOT]],
+  // Markdown → PDF (src/documents/md-pdf/): every word is real text in the
+  // PDF, in order; bookmarks and links; the page-break planner (smart, paper,
+  // one long page, two columns, a new page per heading, breaks placed by hand);
+  // the markdown kept in the file; pages spliced into somebody's PDF at the
+  // start, middle and end; and a highlight's words found again on remade
+  // pages. pdf-lib, fontkit, the fonts and pdf.js from disk, no browser.
+  ["md-pdf        ", ["node", ["tools/md-pdf-check.mjs"], ROOT]],
   // The fixes made to pdf.js's own source as the app loads it
   // (src/core/pdfjs-patches.js): each applies once to the pinned build, and the
   // patched code does what it says. pdf.js from disk, no browser.
@@ -656,6 +663,11 @@ const checks = [
     // wider, a typed box goes in the margin, the file saved with annotations
     // carries the margin and the typed boxes, None and a re-attach both hold.
     ["pdf-margins-ui", ["node", ["tools/pdf-margins-browser-check.mjs"], ROOT]],
+    // Markdown → PDF in the app: the sheet, its live preview and page breaks
+    // (a click adds one, Undo takes it away), Make PDF, Insert Markdown pages…
+    // into the fixture with its highlight moving with its page, Edit markdown…
+    // remaking those pages, and the sheet on a phone.
+    ["md-pdf-ui     ", ["node", ["tools/md-pdf-browser-check.mjs"], ROOT]],
     // What an export actually puts in the file: every picture inlined (the
     // PDFs never did, and an image added offline resolved nowhere), the look
     // asked for at export time, Word keeping a resized picture's width and a

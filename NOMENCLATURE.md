@@ -49,6 +49,13 @@ the words a person reads changed.
 | **PDFs** | `meta.pdf` (the first), `meta.pdfs` (the others), `meta.pdfHighlights`, `meta.pdfBlocks`; `documents/` folder in an archive | view mode `document`; slot `doc`; `#documentStage`; `src/documents/pdf-*.js` |
 | **Canvas** | `meta.notebook` (a generated blank PDF); its ink is in `meta.pdfHighlights` with `doc: "notebook"` | view mode `handwriting`; slot `notebook`; `data-slot="notebook"`; `src/handwriting/`, `src/documents/notebook*.js` |
 
+A PDF made from markdown (PDF ⋯ → New PDF from Markdown…), and markdown
+pages put into a PDF (Insert Markdown pages…), are still **PDFs**. The
+markdown is kept inside the PDF's own bytes — each such page names its part
+in `/RecallMd`, the catalog's `/RecallMdParts` holds the source — and the
+`meta.pdfs` entry only counts the parts (`md.parts`); the code is
+`src/documents/md-pdf/`.
+
 So a bug report that says "the Canvas loses a page after sync" points at
 `meta.notebook` and `src/documents/notebook.js`; "a file's PDFs tab shows the
 wrong PDF" points at `meta.pdfs`, `pdfActiveId` and `src/documents/pdf-switcher.js`.
