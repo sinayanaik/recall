@@ -65,6 +65,10 @@ const SECTIONS = [
 // Anything appearing in styles/ that is neither a slice nor listed here is
 // still a failure.
 const POST_SPLIT = {
+  "95-library-search.css":
+    "Library search results (src/library/my-decks-render.js): the \"Searching " +
+    "all folders\" note, the highlighted letters a search matched, and the " +
+    "files / folders group headings.",
   "94-paper-tones.css":
     "The paper menu (White, Sepia, Dim, Black, Match theme — src/format/paper-" +
     "tones.js), and the page's own tokens: what a block, its border and " +

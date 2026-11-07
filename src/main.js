@@ -52,11 +52,11 @@ import { closeAllDeckTileMenus, createFolder, setAllFoldersExpanded } from "./li
 import { normalizeDeckCategory, setKnownFoldersChangedHook } from "./library/folders.js?v=__BUILD__";
 import { flushIndexBatch, readLocalDeckIndex, reconcileOpenDeckWithStore, setDeckContentSavedHook, setDeckOpenedHook, setDeckReloadedInPlaceHook } from "./library/local-library.js?v=__BUILD__";
 import { checkDeckFreshness, startRealtimeSync, stopRealtimeSync } from "./sync/live-sync.js?v=__BUILD__";
-import { categorizeSelectedMyDecks, deleteSelectedMyDecks, loadSelectedMyDecks } from "./library/my-decks-actions.js?v=__BUILD__";
+import { categorizeSelectedMyDecks, deleteSelectedMyDecks, loadDeckEntry, loadSelectedMyDecks } from "./library/my-decks-actions.js?v=__BUILD__";
 import { hydrateMyDecksIcons } from "./library/my-decks-icons.js?v=__BUILD__";
 import { closeMyDecksMoreMenu, currentMyDecksFolder, myDecksSearchTimer, setMyDecksSearchTimer, toggleMyDecksMoreMenu } from "./library/my-decks-menu.js?v=__BUILD__";
 import { setMyDecksDisplay, setMyDecksSort, setMyDecksView } from "./library/my-decks-prefs.js?v=__BUILD__";
-import { renderMyDecksList, repaintMyDecks } from "./library/my-decks-render.js?v=__BUILD__";
+import { myDecksSearchTop, renderMyDecksList, repaintMyDecks } from "./library/my-decks-render.js?v=__BUILD__";
 import { FOLDERS_SYNCED_EVENT, pushFoldersSoon } from "./cloud/folder-sync.js?v=__BUILD__";
 import { selectedMyDecks, selectedMyFolders, updateMyDecksBulkBar } from "./library/my-decks-selection.js?v=__BUILD__";
 import { captureNotesAnchor, captureSourceAnchor, jumpToNoteForCurrentCard, scheduleNoteJump } from "./notes/anchors.js?v=__BUILD__";
@@ -2191,6 +2191,30 @@ el.myDecksSearch?.addEventListener("input", (e) => {
   const value = e.target.value;
   clearTimeout(myDecksSearchTimer);
   setMyDecksSearchTimer(setTimeout(() => { state.myDecksSearch = value; repaintMyDecks(); }, 160));
+});
+// Enter opens the best match — the results are ranked, so the top one is
+// usually the file you were typing the name of. Typed faster than the
+// debounce, the results are brought up to date first so Enter never opens
+// what matched three letters ago. Escape with something typed clears the
+// search and puts the library back the way it was.
+el.myDecksSearch?.addEventListener("keydown", (event) => {
+  if (event.isComposing) return;
+  if (event.key === "Enter") {
+    event.preventDefault();
+    if (state.myDecksSearch !== el.myDecksSearch.value) {
+      clearTimeout(myDecksSearchTimer);
+      state.myDecksSearch = el.myDecksSearch.value;
+      repaintMyDecks();
+    }
+    if (myDecksSearchTop) loadDeckEntry(myDecksSearchTop.deck, myDecksSearchTop.kind);
+    return;
+  }
+  if (event.key !== "Escape" || !el.myDecksSearch.value) return;
+  event.stopPropagation();
+  clearTimeout(myDecksSearchTimer);
+  el.myDecksSearch.value = "";
+  state.myDecksSearch = "";
+  repaintMyDecks();
 });
 
 // Close any open deck-tile overflow menu on an outside click or Escape.

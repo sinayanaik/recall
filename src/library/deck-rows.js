@@ -145,17 +145,40 @@ export function deckPagesMarker(pages) {
 // The Title cell: a page icon, then the name. The icon is what tells a file
 // from a folder down a long list — folder rows wear a folder in the accent
 // colour — and it adds no text, so the cell's textContent is still the title.
-function deckTitleCell(deck) {
+function deckTitleCell(deck, ranges = null) {
   const td = document.createElement("td");
   td.dataset.label = "Title";
   const icon = document.createElement("span");
   icon.className = "deck-file-icon";
   icon.innerHTML = mdIcon("file");
-  td.append(icon, document.createTextNode(deck.title || "Untitled file"));
+  td.append(icon);
+  appendMarkedTitle(td, deck.title, ranges);
   return td;
 }
 
-export function buildLocalDeckRow(deck, cloudById = null, categories = webDeckCategories) {
+// A file's title as text nodes, with the letters a search matched wrapped in
+// <mark>. `ranges` are [start, end) offsets into the title (library-search.js);
+// none, or no title, is just the plain name. Built from nodes, not HTML, so a
+// title is never parsed as markup — and the element's textContent is still
+// exactly the title, which the checks and the phone layout both read.
+export function appendMarkedTitle(parent, title, ranges = null) {
+  const text = String(title || "");
+  if (!text) { parent.append(document.createTextNode("Untitled file")); return; }
+  let at = 0;
+  for (const [start, end] of ranges || []) {
+    if (start < at || end <= start || end > text.length) continue;
+    if (start > at) parent.append(document.createTextNode(text.slice(at, start)));
+    const mark = document.createElement("mark");
+    mark.className = "my-decks-match";
+    mark.textContent = text.slice(start, end);
+    parent.append(mark);
+    at = end;
+  }
+  if (at < text.length) parent.append(document.createTextNode(text.slice(at)));
+}
+
+// `ranges`: where a search matched the title, to highlight (search results only).
+export function buildLocalDeckRow(deck, cloudById = null, categories = webDeckCategories, { ranges = null } = {}) {
   const tr = document.createElement("tr");
   // Tagged here rather than in decorateDeckRow, which only the Tree renderer
   // calls — Grid and Folder view go through renderDeckRowInto and were leaving
@@ -166,7 +189,7 @@ export function buildLocalDeckRow(deck, cloudById = null, categories = webDeckCa
   const sel = deckSelOf(deck, "local");
   const { count, hasNotes } = deckCardInfo(deck, "local");
 
-  const tdTitle = deckTitleCell(deck);
+  const tdTitle = deckTitleCell(deck, ranges);
 
   const tdCategory = document.createElement("td");
   tdCategory.dataset.label = "Category";
@@ -202,13 +225,13 @@ export function buildLocalDeckRow(deck, cloudById = null, categories = webDeckCa
 }
 
 // One row for a deck that only exists in the cloud (not yet on this device).
-export function buildCloudDeckRow(deck, categories = webDeckCategories) {
+export function buildCloudDeckRow(deck, categories = webDeckCategories, { ranges = null } = {}) {
   const tr = document.createElement("tr");
   tr.classList.add("my-deck-row", "is-cloud-only-deck");
   const sel = deckSelOf(deck, "cloud");
   const { count, hasNotes } = deckCardInfo(deck, "cloud");
 
-  const tdTitle = deckTitleCell(deck);
+  const tdTitle = deckTitleCell(deck, ranges);
 
   const tdCategory = document.createElement("td");
   tdCategory.dataset.label = "Category";

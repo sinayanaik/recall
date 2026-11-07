@@ -10,6 +10,7 @@ import { escapeHtml } from "../core/text.js?v=__BUILD__";
 import { categoriesFromDecks, setKnownWebDeckCategories, webDeckCategories } from "./categories.js?v=__BUILD__";
 import { decksUnderFolder } from "./folder-tree.js?v=__BUILD__";
 import { normalizeDeckCategory } from "./folders.js?v=__BUILD__";
+import { libraryDeckMatches } from "./library-search.js?v=__BUILD__";
 import { readLocalDeckIndex, writeLocalDeckIndex } from "./local-library.js?v=__BUILD__";
 import { renderMyDecksList } from "./my-decks-render.js?v=__BUILD__";
 import { renameDeckInLibrary } from "./tombstones.js?v=__BUILD__";
@@ -104,10 +105,11 @@ export function myDecksSearchTerm() {
   return (state.myDecksSearch || "").trim().toLowerCase();
 }
 
+// Title words in any order, the folder path, typos — see library-search.js.
 export function myDeckMatchesSearch(deck) {
   const search = myDecksSearchTerm();
   if (!search) return true;
-  return String(deck.title || "").toLowerCase().includes(search);
+  return libraryDeckMatches(deck, search) !== null;
 }
 
 // Checking a folder is equivalent to checking every deck inside it (recursively,
