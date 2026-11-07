@@ -239,8 +239,11 @@ async function renderShapeMarkdown(body, source, stale = () => false) {
 // The same box and the same rendered words, with nothing that makes the live
 // one a thing you can pick up, sized EXACTLY to the stored rectangle. Resolves
 // once the words are rendered and any picture in them has decoded, so a caller
-// turning it into pixels gets the finished box.
-export async function buildStaticShapeText(record, viewport) {
+// turning it into pixels gets the finished box. `mountIn` attaches it there
+// before the words are rendered, for the reason buildStaticBlock
+// (src/documents/pdf-blocks.js) gives: a diagram measures itself as it is
+// drawn, and a box outside the document has no size to measure.
+export async function buildStaticShapeText(record, viewport, { mountIn = null } = {}) {
   const prim = shapeTextPrimitive(record?.shape);
   if (!prim) return null;
   const box = document.createElement("div");
@@ -248,6 +251,7 @@ export async function buildStaticShapeText(record, viewport) {
   box.style.position = "absolute";
   box.style.pointerEvents = "none";
   styleShapeTextBox(box, prim, viewport, { exact: true });
+  if (mountIn) mountIn.appendChild(box);
   if (!shapeTextNeedsRendering(prim.text)) {
     box.appendChild(plainBody(prim.text));
     return box;

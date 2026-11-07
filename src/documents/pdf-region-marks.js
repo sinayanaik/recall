@@ -28,7 +28,8 @@
 // shows that paper's marks while the reader has the first one open.
 
 import { state } from "../core/state.js?v=__BUILD__";
-import { ensureHtmlToImage } from "../core/lib-loader.js?v=__BUILD__";
+import { ensureHtmlToImage, ensureMermaid } from "../core/lib-loader.js?v=__BUILD__";
+import { configureMermaid, currentThemeId } from "../ui/theme.js?v=__BUILD__";
 import { MARK_HIGHLIGHT_DEFAULT, MARK_HIGHLIGHT_HEX } from "../format/highlight-colors.js?v=__BUILD__";
 import { decodeInkStrokes } from "../format/ink-strokes.js?v=__BUILD__";
 import { markGeometry, markStyleOf, normalizeMarkHex, paintMarkGeometry } from "../format/mark-styles.js?v=__BUILD__";
@@ -253,10 +254,10 @@ export function shapeTextRasterIds(rasters) {
 }
 
 // A text box as a pseudo-block: the rectangle drawRegionBlocks and the region
-// PDF's drawBlocks place a raster into, by the same blockPdfRect as a block.
+// PDF's drawRasterOnPage place a raster into, by the same blockPdfRect as a block.
 // A turned box carries its turn: the raster is made upright, and turned about
 // the middle of its rectangle where it is drawn (drawRegionBlocks, and the
-// region PDF's drawBlocks).
+// region PDF's drawRasterOnPage).
 function shapeTextBlock({ record, rect }) {
   const rot = normalizeShape(record.shape)?.rot || 0;
   return { id: record.id, x: rect[0], y: rect[1], w: rect[2] - rect[0], h: rect[3] - rect[1], z: Infinity, ...(rot ? { rot } : {}) };
@@ -332,6 +333,84 @@ export async function mountRegionBlockLayer(pageGroup, viewport, source, pageNum
   return layer;
 }
 
+// ── Where the words are ─────────────────────────────────────────────────────
+//
+// A block's picture is pixels, and pixels cannot be selected, copied or
+// searched. So while the node a picture is made from is still laid out, every
+// word in it is measured — its text and its box, in the node's own space (CSS
+// pixels, which on a node built at scale 1 are PDF points) — and a PDF writer
+// lays those words over the picture as invisible text, the way a scanned page
+// is made searchable (src/documents/pdf-text-layer.js). Copying a block from
+// the PDF then gives its words, in the order they are read.
+//
+// Left out: the controls that are not part of what was written (a diagram's
+// Zoom pill, the "Empty" placeholder), and KaTeX's own layers — a formula is
+// one run of its TeX source over the formula's box, which is what copying it
+// should give back. A diagram's labels are SVG text and are kept.
+const TEXT_RUN_SKIP = "script, style, button, .diagram-zoom, .pdf-block-empty, .katex, .notes-img-resize-handle";
+
+export function collectTextRuns(node) {
+  const origin = node.getBoundingClientRect();
+  const runs = [];
+  const inside = (rect) => rect.width > 0 && rect.height > 0
+    && rect.right > origin.left && rect.left < origin.right
+    && rect.bottom > origin.top && rect.top < origin.bottom;
+  // Each run says whether a space FOLLOWS it — so copying "(**bold**)" gives
+  // "(bold)" and not "( bold )". Inside one text node that is the character
+  // after the word; at the end of one it is only known when the next run
+  // arrives: whitespace at the start of the next text node, or a new line.
+  const push = (text, rect, space) => {
+    if (!text || !inside(rect)) return;
+    const run = {
+      text,
+      x: rect.left - origin.left,
+      y: rect.top - origin.top,
+      w: rect.width,
+      h: rect.height,
+      space
+    };
+    const before = runs[runs.length - 1];
+    if (before && !before.space && run.y > before.y + before.h * 0.5) before.space = true;
+    runs.push(run);
+  };
+  // Formulas and text in one pass, in document order, so a sentence with a
+  // formula in the middle of it copies as one sentence.
+  const walker = document.createTreeWalker(node, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
+    acceptNode(current) {
+      if (current.nodeType === Node.ELEMENT_NODE) {
+        if (current.matches(".katex")) return NodeFilter.FILTER_ACCEPT;
+        return current.matches(TEXT_RUN_SKIP) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_SKIP;
+      }
+      return current.nodeValue.trim() ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
+    }
+  });
+  const range = document.createRange();
+  for (let current = walker.nextNode(); current; current = walker.nextNode()) {
+    if (current.nodeType === Node.ELEMENT_NODE) {
+      // A rejected element's children are skipped by the walker. A .katex is
+      // accepted and still walked into, so its own text nodes are passed over
+      // below — its TeX stands for all of them.
+      const tex = current.querySelector('annotation[encoding="application/x-tex"]')?.textContent?.trim();
+      if (tex) push(tex, current.getBoundingClientRect(), false);
+      continue;
+    }
+    if (current.parentElement?.closest(".katex")) continue;
+    const value = current.nodeValue;
+    if (/^\s/.test(value) && runs.length) runs[runs.length - 1].space = true;
+    for (const match of value.matchAll(/\S+/g)) {
+      range.setStart(current, match.index);
+      range.setEnd(current, match.index + match[0].length);
+      const rects = [...range.getClientRects()].filter((rect) => rect.width > 0 && rect.height > 0);
+      if (!rects.length) continue;
+      // A word broken across two lines (a hyphenated or very long one) is
+      // laid over the first piece; the text is still whole.
+      push(match[0], rects[0], match.index + match[0].length < value.length);
+    }
+  }
+  range.detach?.();
+  return runs;
+}
+
 // ── Blocks as pixels ────────────────────────────────────────────────────────
 //
 // A canvas (the zoom, a list picture, a saved image) and a PDF page have no DOM
@@ -354,7 +433,11 @@ export async function mountRegionBlockLayer(pageGroup, viewport, source, pageNum
 // caller hands shapeTextRasterIds(rasters) to paintRegionMarks so the canvas
 // does not also print the words plain. One that cannot be rendered comes back
 // as a plain-text raster rather than as nothing.
-export async function rasteriseRegionBlocks(page, source, pageNumber, rect, pixelRatio, { paper = "theme" } = {}) {
+//
+// `words: true` also measures every word on each node before it is taken away
+// (collectTextRuns) and hands them back on the raster, as `words`, for a PDF
+// writer to lay over the picture as selectable text.
+export async function rasteriseRegionBlocks(page, source, pageNumber, rect, pixelRatio, { paper = "theme", words = false } = {}) {
   const blocks = regionBlocksInBox(source, pageNumber, rect);
   const texts = regionRichShapeTexts(source, pageNumber, rect);
   if (!blocks.length && !texts.length) return { rasters: [], failed: 0 };
@@ -380,12 +463,21 @@ export async function rasteriseRegionBlocks(page, source, pageNumber, rect, pixe
   const rasters = [];
   let failed = 0;
   let fontEmbedCSS;
+  // A diagram on paper that is printed white is drawn in the print palette —
+  // dark lines and words on white — as the Markdown → PDF writer draws its
+  // own (src/documents/md-pdf/assets.js). In the app's theme a dark theme's
+  // diagram came out as white boxes with white words on the white page.
+  // Loaded first, because loading it configures it for the app's theme.
+  const printDiagrams = paper === "light" && [...blocks.map((block) => block.md || ""), ...texts.map((item) => item.record.shape?.text || "")]
+    .some((md) => /mermaid/i.test(md)) && await ensureMermaid();
+  if (printDiagrams) configureMermaid("print");
   try {
     for (const block of blocks) {
       // Sequential: each is a full clone-and-serialise of a subtree, and a page
       // of them at once is a spike nobody asked for.
       // eslint-disable-next-line no-await-in-loop
-      const node = await blockSource.buildStaticBlock(block, viewport).catch(() => null);
+      // Attached while it renders, so a diagram in it can measure itself.
+      const node = await blockSource.buildStaticBlock(block, viewport, { mountIn: host }).catch(() => null);
       if (!node) { failed += 1; continue; }
       // Drawn at its own origin: html-to-image clones the node with its
       // computed position, so one left where it sits on the page is drawn that
@@ -413,7 +505,7 @@ export async function rasteriseRegionBlocks(page, source, pageNumber, rect, pixe
         // picture it is drawn into unreadable — no saved image, no zoom. Asked
         // here, per block, so that costs only this block.
         canvas.getContext("2d").getImageData(0, 0, 1, 1);
-        rasters.push({ block, canvas });
+        rasters.push({ block, canvas, ...(words && block.kind !== "image" ? { words: collectTextRuns(node) } : {}) });
       } catch (error) {
         console.warn("Could not draw a block inside a region", error);
         failed += 1;
@@ -422,7 +514,7 @@ export async function rasteriseRegionBlocks(page, source, pageNumber, rect, pixe
     }
     for (const item of texts) {
       // eslint-disable-next-line no-await-in-loop
-      const node = await blockSource.buildStaticShapeText(item.record, viewport).catch((error) => {
+      const node = await blockSource.buildStaticShapeText(item.record, viewport, { mountIn: host }).catch((error) => {
         console.warn("Could not render a text box's words for a picture", error);
         return null;
       });
@@ -445,7 +537,7 @@ export async function rasteriseRegionBlocks(page, source, pageNumber, rect, pixe
           imagePlaceholder: "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw=="
         });
         canvas.getContext("2d").getImageData(0, 0, 1, 1);
-        rasters.push({ block, canvas, kind: "shape-text" });
+        rasters.push({ block, canvas, kind: "shape-text", ...(words ? { words: collectTextRuns(node) } : {}) });
       } catch (error) {
         console.warn("Could not picture a text box's words; drawing them plain", error);
         rasters.push(plainShapeTextRaster(item, pixelRatio));
@@ -453,6 +545,7 @@ export async function rasteriseRegionBlocks(page, source, pageNumber, rect, pixe
       node.remove();
     }
   } finally {
+    if (printDiagrams) configureMermaid(currentThemeId());
     host.remove();
   }
   return { rasters, failed };
