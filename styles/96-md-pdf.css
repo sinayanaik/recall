@@ -95,7 +95,10 @@
 
 .md-pdf-body {
   display: grid;
-  grid-template-columns: minmax(300px, 0.9fr) minmax(320px, 1.1fr);
+  /* minmax(0, …): a column is never widened by what it holds — a preview
+   * page drawn wider than the pane scrolls inside it instead of pushing the
+   * sheet past the screen. */
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
   flex: 1 1 auto;
   min-height: 0;
 }
@@ -106,6 +109,7 @@
   gap: 10px;
   padding: 12px 16px;
   min-height: 0;
+  min-width: 0;
   overflow: auto;
   border-right: 1px solid var(--line);
 }
@@ -227,6 +231,7 @@
   gap: 6px;
   padding: 12px 16px;
   min-height: 0;
+  min-width: 0;
   background: var(--panel-2);
 }
 
@@ -321,7 +326,8 @@
 .md-pdf-band-label {
   position: absolute;
   left: 2px;
-  top: 2px;
+  /* Below the handle of the break that starts this page (.md-pdf-cut-grip). */
+  top: 18px;
   width: 32px;
   display: flex;
   flex-direction: column;
@@ -370,13 +376,14 @@
 }
 
 .md-pdf-cut::before {
-  /* A grab area much taller than the line, for a finger. */
+  /* A grab area taller than the line, for a finger. Kept to the line's own
+   * neighbourhood so a swipe that starts on the words still scrolls. */
   content: "";
   position: absolute;
   left: 0;
   right: 0;
-  top: -12px;
-  height: 24px;
+  top: -14px;
+  height: 28px;
 }
 
 .md-pdf-cut.is-selected,
@@ -384,17 +391,35 @@
   border-top-color: #d1242f;
 }
 
+/* The handle sits in the page-number gutter (PREVIEW_GUTTER in
+ * md-pdf/dialog.js), beside the page, never over its words: a finger-sized
+ * target, 36 × 28. */
 .md-pdf-cut-grip {
   position: absolute;
-  left: 50%;
-  top: -7px;
+  left: 2px;
+  top: -14px;
   width: 34px;
-  height: 12px;
-  margin-left: -17px;
-  border-radius: 6px;
+  height: 28px;
+  border-radius: 8px;
   background: #1f6feb;
-  pointer-events: none;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+  touch-action: none;
 }
+
+.md-pdf-cut-grip::before,
+.md-pdf-cut-grip::after {
+  /* Two ridges: something to hold. */
+  content: "";
+  position: absolute;
+  left: 9px;
+  right: 9px;
+  height: 2px;
+  border-radius: 1px;
+  background: rgba(255, 255, 255, 0.85);
+}
+
+.md-pdf-cut-grip::before { top: 10px; }
+.md-pdf-cut-grip::after { top: 16px; }
 
 .md-pdf-cut.is-selected .md-pdf-cut-grip,
 .md-pdf-cut.is-dragging .md-pdf-cut-grip {
@@ -403,17 +428,18 @@
 
 .md-pdf-cut-remove {
   position: absolute;
-  right: 4px;
-  top: -13px;
-  width: 24px;
-  height: 24px;
+  right: 2px;
+  top: -15px;
+  width: 30px;
+  height: 30px;
   border: 0;
   border-radius: 999px;
   background: #1f6feb;
   color: #ffffff;
-  font-size: 0.75rem;
-  line-height: 24px;
+  font-size: 0.8rem;
+  line-height: 30px;
   cursor: pointer;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
 }
 
 .md-pdf-meter {
@@ -438,7 +464,7 @@
   }
 
   .md-pdf-body {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .md-pdf-source {

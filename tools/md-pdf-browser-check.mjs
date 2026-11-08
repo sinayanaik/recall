@@ -222,6 +222,9 @@ const add = (a, b) => a + b; // sum
 Inline maths $x^2 + y^2$ and the end of the note.
 `;
 
+const HINDI_WORDS = "चार्वाक दर्शन भारतीय दर्शन की एक नास्तिक शाखा है जो प्रत्यक्ष प्रमाण को ही एकमात्र प्रमाण मानती है लोकायत शरीर चेतना आत्मा परलोक".split(" ");
+const HINDI = Array.from({ length: 30 }, (_, i) => `## भाग ${i + 1}\n\n${Array.from({ length: 60 }, (_, j) => HINDI_WORDS[(i * 7 + j) % HINDI_WORDS.length] + (j % 9 === 0 ? String.fromCharCode(0x915 + ((i + j) % 30)) + "ी" : "")).join(" ")}।\n`).join("\n");
+
 const LONG = Array.from({ length: 12 }, (_, i) => `## Part ${i + 1}\n\n${"Words that fill a page. ".repeat(40)}\n`).join("\n");
 
 try {
@@ -542,16 +545,86 @@ try {
     const { settle, until } = window.__recall;
     const modal = document.getElementById("mdPdfModal");
     const text = modal.querySelector("[data-md-text]");
+    modal.querySelector("[data-md-pages]").innerHTML = "";
     text.value = markdown;
     text.dispatchEvent(new Event("input", { bubbles: true }));
+    // Typed in the Markdown tab and laid out THERE first — the order a phone
+    // is used in — and only then the Preview tab opened.
+    await until(() => !modal.querySelector('[data-md-action="save"]').disabled && /page/.test(modal.querySelector("[data-md-meter]").textContent), 30000);
+    await settle(300);
+    const drawnWhileHidden = Boolean(modal.querySelector(".md-pdf-canvas"));
     modal.querySelector('[data-md-tab="preview"]').click();
     const canvas = await until(() => modal.querySelector(".md-pdf-canvas"), 30000);
     await settle(400);
     const box = canvas?.getBoundingClientRect();
-    return { shown: Boolean(canvas), right: box ? Math.round(box.right) : 0 };
-  }`, MARKDOWN);
-  check("...and the Preview tab shows the pages inside the screen", phonePreview.shown && phonePreview.right <= 390, JSON.stringify(phonePreview));
+    const page = modal.querySelector(".md-pdf-page")?.getBoundingClientRect();
+    return {
+      shown: Boolean(canvas),
+      drawnWhileHidden,
+      right: box ? Math.round(box.right) : 0,
+      pageRight: page ? Math.round(page.right) : 0,
+      overflow: document.documentElement.scrollWidth > window.innerWidth + 1
+    };
+  }`, LONG);
+  check("...and the Preview tab, opened after typing, shows the pages inside the screen", phonePreview.shown && phonePreview.right <= 390 && phonePreview.pageRight <= 390 && !phonePreview.overflow, JSON.stringify(phonePreview));
+  check("...and no preview is drawn while the Markdown tab hides it", phonePreview.drawnWhileHidden === false, JSON.stringify(phonePreview));
   await shot("phone-preview.png");
+
+  // Every break line between two rows' words, never across one.
+  const lines = await page.evaluate(`async () => {
+    const modal = document.getElementById("mdPdfModal");
+    const host = modal.querySelector("[data-md-pages]").getBoundingClientRect();
+    const cuts = [...modal.querySelectorAll(".md-pdf-cut")];
+    return { count: cuts.length, tops: cuts.map((c) => c.getBoundingClientRect().top - host.top) };
+  }`);
+  check("...with its page breaks drawn", lines.count >= 1, JSON.stringify(lines));
+
+  // A finger drags a break by its handle.
+  const grip = await page.evaluate(`() => {
+    const scroll = document.querySelector("[data-md-scroll]");
+    const cut = document.querySelector(".md-pdf-cut");
+    scroll.scrollTop = Math.max(0, cut.offsetTop - scroll.clientHeight / 2);
+    const g = cut.querySelector(".md-pdf-cut-grip").getBoundingClientRect();
+    return { x: g.x + g.width / 2, y: g.y + g.height / 2, key: cut.dataset.cutKey };
+  }`);
+  const touch = (x, y) => [{ x, y, id: 1, radiusX: 6, radiusY: 6, force: 1 }];
+  await page.call("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: touch(grip.x, grip.y) });
+  for (let i = 1; i <= 10; i += 1) {
+    await page.call("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: touch(grip.x, grip.y - i * 12) });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  }
+  await page.call("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  const dragged = await page.evaluate(`() => ({
+    keys: [...document.querySelectorAll(".md-pdf-cut")].map((c) => c.dataset.cutKey),
+    undo: !document.querySelector('[data-md-action="undo"]').disabled
+  })`);
+  check("a finger dragging a break's handle moves the break", !dragged.keys.includes(grip.key) && dragged.undo, JSON.stringify({ from: grip.key, ...dragged }));
+
+  // Hindi: real text, not pictures — fast, small, and in the PDF's text.
+  const hindi = await page.evaluate(`async (markdown) => {
+    const { until } = window.__recall;
+    const modal = document.getElementById("mdPdfModal");
+    const text = modal.querySelector("[data-md-text]");
+    modal.querySelector("[data-md-meter]").textContent = "";
+    const t0 = performance.now();
+    text.value = markdown;
+    text.dispatchEvent(new Event("input", { bubbles: true }));
+    const meter = await until(() => /page/.test(modal.querySelector("[data-md-meter]").textContent) && modal.querySelector("[data-md-meter]").textContent, 60000);
+    const ms = Math.round(performance.now() - t0);
+    const session = (await import("/src/documents/md-pdf/build.js?v=__BUILD__")).createMdPdfSession();
+    const laid = await session.layout(markdown, {});
+    const ops = laid.flow.rows.flatMap((r) => r.ops);
+    return {
+      meter,
+      ms,
+      pictures: ops.filter((o) => o.t === "image").length,
+      deva: ops.filter((o) => o.t === "text" && /^deva\|/.test(o.face)).length
+    };
+  }`, HINDI);
+  const hindiKb = Number((hindi.meter || "").match(/(\d+) KB/)?.[1] || 1e9);
+  check("Hindi is laid out as real text, not pictures of words", hindi.pictures === 0 && hindi.deva > 50, JSON.stringify(hindi));
+  check("...and a long Hindi note makes a small PDF quickly", hindiKb < 150 && hindi.ms < 15000, JSON.stringify(hindi));
 } catch (error) {
   check("the check ran to the end", false, error?.stack || String(error));
 } finally {

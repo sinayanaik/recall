@@ -11,15 +11,24 @@
 // asks for the same faces again and again.
 
 import { FONT_CDN_BASE, ensureFontkit } from "../../core/lib-loader.js?v=__BUILD__";
-import { facePath } from "./fonts-core.js?v=__BUILD__";
+import { facePath, installRegeneratorShim } from "./fonts-core.js?v=__BUILD__";
 import { woffToSfnt } from "./woff.js?v=__BUILD__";
 
+// The faces a page of English needs, precached by sw.js. Devanagari's
+// (noto-sans-devanagari-*.woff, ~59KB each) are cached the first time a
+// document uses them, like every other subset.
 export const MD_PDF_OFFLINE_FACES = [
   "sans|latin|400|normal",
   "sans|latin|700|normal",
   "sans|latin|400|italic",
   "mono|latin|400|normal"
 ];
+
+// How long one font file may take. The service worker bounds a CDN fetch it
+// answers, but a page it does not control yet (the first visit) fetches
+// directly — and a connection that accepts and then says nothing would leave
+// the dialog on "Loading the fonts…" for ever.
+const FETCH_TIMEOUT_MS = 20000;
 
 const bytesCache = new Map(); // face → Promise<Uint8Array | null>
 const fontCache = new Map();  // face → fontkit font
@@ -35,8 +44,10 @@ function fetchFace(face) {
   pending = (async () => {
     const path = facePath(face);
     if (!path) return null;
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(), FETCH_TIMEOUT_MS);
     try {
-      const response = await fetch(`${FONT_CDN_BASE}${path}`, { mode: "cors" });
+      const response = await fetch(`${FONT_CDN_BASE}${path}`, { mode: "cors", signal: abort.signal });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       return await woffToSfnt(new Uint8Array(await response.arrayBuffer()), inflateWoffTable);
     } catch (error) {
@@ -44,6 +55,8 @@ function fetchFace(face) {
       // Not cached as a failure: back online, the next build asks again.
       bytesCache.delete(face);
       return null;
+    } finally {
+      clearTimeout(timer);
     }
   })();
   bytesCache.set(face, pending);
@@ -59,6 +72,8 @@ export async function loadFaces(faces) {
     error.code = "fontkit";
     throw error;
   }
+  // Before the first layout: fontkit's Indic shaper cannot run without it.
+  installRegeneratorShim(window);
   const bytes = new Map();
   const fonts = new Map();
   const missing = [];

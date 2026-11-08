@@ -39,6 +39,17 @@ const MIN_TAIL = 40;
 // early for one that is not.
 const WINDOW = 0.7;
 const FILL_WEIGHT = 3;
+// How full a page must be before a clean cut above the window is taken over
+// a tidy cut in the middle of a long block.
+const HALF_FULL = 0.5;
+
+// A cut inside a block (between two lines of a paragraph, list item or code
+// block) that leaves a single line of it on one side: alone at the foot of the
+// page before, or alone at the top of the page after.
+function leavesLoneLine(row) {
+  if (!row.lines || row.lines < 2) return false;
+  return row.line === 1 || row.lines - row.line === 1;
+}
 
 function rowBottom(row) {
   return row.y + row.h;
@@ -61,6 +72,7 @@ export function chooseBreaks(rows, a, b, room) {
     let bestValue = -Infinity;
     let lastClean = null;
     let lastAny = null;
+    let lastTidy = null;
     for (let i = startIdx + 1; i < b; i += 1) {
       const row = rows[i];
       const used = rowBottom(rows[i - 1]) - start;
@@ -74,11 +86,17 @@ export function chooseBreaks(rows, a, b, room) {
         }
       }
       if (row.y - start > MIN_TAIL || lastAny === null) lastAny = i;
+      if (row.y - start > MIN_TAIL && !leavesLoneLine(row)) lastTidy = i;
     }
     // Nothing clean in the window: the last clean cut there is at all, then
-    // any cut (the middle of a long paragraph or code block), then — one row
-    // taller than the page — straight after it.
-    let pick = best ?? lastClean ?? lastAny;
+    // a cut in the middle of a long paragraph or code block that leaves at
+    // least two of its lines on each page, then any cut, then — one row taller
+    // than the page — straight after it.
+    // A clean cut that would end the page before it is half full loses to a
+    // tidy cut lower down: half a page of white is a worse page than a
+    // paragraph carried over.
+    const cleanEnough = lastClean !== null && rows[lastClean].y - start >= roomNow * HALF_FULL;
+    let pick = best ?? (cleanEnough ? lastClean : null) ?? lastTidy ?? lastClean ?? lastAny;
     if (pick === null || pick === undefined) {
       uncut = true;
       pick = startIdx + 1;

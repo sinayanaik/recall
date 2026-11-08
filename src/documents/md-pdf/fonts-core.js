@@ -37,6 +37,7 @@ const MD_VIETNAMESE = "U+0102-0103,U+0110-0111,U+0128-0129,U+0168-0169,U+01A0-01
 // files (200-290KB), fetched only by a document that uses one of their
 // characters, and only the glyphs used are embedded.
 const MD_MATH = "U+0302-0303,U+0305,U+0307-0308,U+0330,U+0391-03A1,U+03A3-03A9,U+03B1-03C9,U+03D1,U+03D5-03D6,U+03F0-03F1,U+03F4-03F5,U+2034-2037,U+2057,U+20D0-20DC,U+20E1,U+20E5-20EF,U+2102,U+210A-210E,U+2110-2112,U+2115,U+2119-211D,U+2124,U+2128,U+212C-212D,U+212F-2131,U+2133-2138,U+213C-2140,U+2145-2149,U+2190,U+2192,U+2194-21AE,U+21B0-21E5,U+21F1-21F2,U+21F4-2211,U+2213-2214,U+2216-22FF,U+2308-230B,U+2310,U+2319,U+231C-2321,U+2336-237A,U+237C,U+2395,U+239B-23B6,U+23D0,U+23DC-23E1,U+2474-2475,U+25AF,U+25B3,U+25B7,U+25BD,U+25C1,U+25CA,U+25CC,U+25FB,U+266D-266F,U+27C0-27FF,U+2900-2AFF,U+2B0E-2B11,U+2B30-2B4C,U+2BFE,U+FF5B,U+FF5D,U+1D400-1D7FF,U+1EE00-1EEFF";
+const MD_DEVANAGARI = "U+0900-097F,U+1CD0-1CF9,U+200C-200D,U+20A8,U+20B9,U+20F0,U+25CC,U+A830-A839,U+A8E0-A8FF,U+11B00-11B09";
 const MD_SYMBOLS = "U+20DD-20E0,U+20E2-20E4,U+2150-218F,U+2190,U+2192,U+2194-2199,U+21AF,U+21E6-21F0,U+21F3,U+2218-2219,U+2299,U+22C4-22C6,U+2300-243F,U+2440-244A,U+2460-24FF,U+25A0-27BF,U+2800-28FF,U+2921-2922,U+2981,U+29BF,U+29EB,U+2B00-2BFF,U+4DC0-4DFF,U+FFF9-FFFB,U+10140-1018E,U+10190-1019C,U+101A0,U+101D0-101FD,U+102E0-102FB,U+10E60-10E7E,U+1D2C0-1D2D3,U+1D2E0-1D37F,U+1F000-1F0FF,U+1F100-1F1AD,U+1F1E6-1F1FF,U+1F30D-1F30F,U+1F315,U+1F31C,U+1F31E,U+1F320-1F32C,U+1F336,U+1F378,U+1F37D,U+1F382,U+1F393-1F39F,U+1F3A7-1F3A8,U+1F3AC-1F3AF,U+1F3C2,U+1F3C4-1F3C6,U+1F3CA-1F3CE,U+1F3D4-1F3E0,U+1F3ED,U+1F3F1-1F3F3,U+1F3F5-1F3F7,U+1F408,U+1F415,U+1F41F,U+1F426,U+1F43F,U+1F441-1F442,U+1F444,U+1F446-1F449,U+1F44C-1F44E,U+1F453,U+1F46A,U+1F47D,U+1F4A3,U+1F4B0,U+1F4B3,U+1F4B9,U+1F4BB,U+1F4BF,U+1F4C8-1F4CB,U+1F4D6,U+1F4DA,U+1F4DF,U+1F4E3-1F4E6,U+1F4EA-1F4ED,U+1F4F7,U+1F4F9-1F4FB,U+1F4FD-1F4FE,U+1F503,U+1F507-1F50B,U+1F50D,U+1F512-1F513,U+1F53E-1F54A,U+1F54F-1F5FA,U+1F610,U+1F650-1F67F,U+1F687,U+1F68D,U+1F691,U+1F694,U+1F698,U+1F6AD,U+1F6B2,U+1F6B9-1F6BA,U+1F6BC,U+1F6C6-1F6CF,U+1F6D3-1F6D7,U+1F6E0-1F6EA,U+1F6F0-1F6F3,U+1F6F7-1F6FC,U+1F700-1F7FF,U+1F800-1F80B,U+1F810-1F847,U+1F850-1F859,U+1F860-1F887,U+1F890-1F8AD,U+1F8B0-1F8BB,U+1F8C0-1F8C1,U+1F900-1F90B,U+1F93B,U+1F946,U+1F984,U+1F996,U+1F9E9,U+1FA00-1FA6F,U+1FA70-1FA7C,U+1FA80-1FA89,U+1FA8F-1FAC6,U+1FACE-1FADC,U+1FADF-1FAE9,U+1FAF0-1FAF8,U+1FB00-1FBFF";
 
 function parseRanges(text) {
@@ -55,25 +56,32 @@ const MD_FONT_RANGES = {
   cyrillic: parseRanges(MD_CYRILLIC),
   "cyrillic-ext": parseRanges(MD_CYRILLIC_EXT),
   vietnamese: parseRanges(MD_VIETNAMESE),
+  devanagari: parseRanges(MD_DEVANAGARI),
   math: parseRanges(MD_MATH),
   symbols: parseRanges(MD_SYMBOLS)
 };
 
-// Subsets in the order they are tried. Devanagari (Noto Sans has it) is left
-// out on purpose: it needs shaping — conjuncts, reordered vowel signs — which
-// pdf-lib does not do, so its words are drawn as pictures instead
-// (unsupported characters, below), which a canvas DOES shape.
+// Subsets in the order they are tried. Devanagari is not one of them: it is
+// a fallback of its own (`deva`, below), reached from every family — Noto
+// Serif and JetBrains Mono have no Devanagari, and a Hindi word in a code span
+// or a serif note should still be drawn, in Noto Sans's. Its words are SHAPED
+// by fontkit's Indic shaper (conjuncts, reph, the ि that is typed after its
+// consonant and drawn before it), and pdf-lib embeds the glyphs the shaper
+// chose, so Hindi is real text — selectable, highlightable, a few KB — like
+// English. The shaper needs installRegeneratorShim (below) to run at all.
 export const MD_FONT_FAMILIES = {
   sans: { pkg: "noto-sans", version: MD_FONT_VERSION, subsets: ["latin", "latin-ext", "greek", "cyrillic", "vietnamese", "greek-ext", "cyrillic-ext"] },
   serif: { pkg: "noto-serif", version: MD_FONT_VERSION, subsets: ["latin", "latin-ext", "greek", "cyrillic", "vietnamese", "greek-ext", "cyrillic-ext"] },
   mono: { pkg: "jetbrains-mono", version: MD_FONT_VERSION, subsets: ["latin", "latin-ext", "greek", "cyrillic", "vietnamese", "cyrillic-ext"] },
+  // Noto Sans's own Devanagari files, in every weight and style it has.
+  deva: { pkg: "noto-sans", version: MD_FONT_VERSION, subsets: ["devanagari"] },
   // One weight and style each: bold or italic text falls back to the regular.
   math: { pkg: "noto-sans-math", version: "5.1.0", subsets: ["math"], regularOnly: true },
   symbols: { pkg: "noto-sans-symbols-2", version: MD_FONT_VERSION, subsets: ["symbols"], regularOnly: true }
 };
 
 // The fallbacks, in the order they are tried after a family's own subsets.
-const MD_FONT_FALLBACKS = ["math", "symbols"];
+const MD_FONT_FALLBACKS = ["deva", "math", "symbols"];
 
 // OpenType features for every face, in measuring AND in embedding (the two
 // must agree, or a line measured to fit is drawn wider). Ligatures off:
@@ -114,15 +122,16 @@ export function facePath(key) {
 // The faces worth trying for one character, best first: the family's own
 // subsets whose range claims it, then the symbol fallbacks.
 export function candidateFaces(cp, family, bold, italic) {
-  const famName = MD_FONT_FAMILIES[family] && !MD_FONT_FAMILIES[family].regularOnly ? family : "sans";
+  const famName = MD_FONT_FAMILIES[family] && !MD_FONT_FAMILIES[family].regularOnly && !MD_FONT_FALLBACKS.includes(family) ? family : "sans";
   const fam = MD_FONT_FAMILIES[famName];
   const out = [];
   for (const subset of fam.subsets) {
     if (inRanges(cp, MD_FONT_RANGES[subset])) out.push(faceKey(famName, subset, bold, italic));
   }
   for (const name of MD_FONT_FALLBACKS) {
+    const regular = MD_FONT_FAMILIES[name].regularOnly;
     for (const subset of MD_FONT_FAMILIES[name].subsets) {
-      if (inRanges(cp, MD_FONT_RANGES[subset])) out.push(faceKey(name, subset, false, false));
+      if (inRanges(cp, MD_FONT_RANGES[subset])) out.push(faceKey(name, subset, regular ? false : bold, regular ? false : italic));
     }
   }
   return out;
@@ -130,6 +139,13 @@ export function candidateFaces(cp, family, bold, italic) {
 
 // Characters that are never drawn as glyphs: controls, and the invisible
 // format characters a paste carries (zero-width space, BOM, joiners).
+// ZWNJ and ZWJ (U+200C, U+200D) change how a Devanagari word is shaped (a half
+// form instead of a conjunct), so they are kept inside a run whose face has
+// them (splitByFace) and dropped anywhere else.
+export function isJoiner(cp) {
+  return cp === 0x200c || cp === 0x200d;
+}
+
 export function isInvisible(cp) {
   return cp < 0x20 || (cp >= 0x7f && cp < 0xa0) || cp === 0xfeff || (cp >= 0x200b && cp <= 0x200f) || (cp >= 0x2060 && cp <= 0x2064);
 }
@@ -154,6 +170,43 @@ export function facesNeeded(text, family, bold, italic, into = new Set()) {
     });
   }
   return into;
+}
+
+// @pdf-lib/fontkit 1.1.1's UMD build was compiled with Babel's regenerator
+// transform but ships without its runtime: the one generator in it — the
+// syllable state machine the Indic shaper (and the Universal shaper) walks,
+// StateMachine.match — calls a global `regeneratorRuntime` that nothing
+// defines, so shaping a single Devanagari word throws "regeneratorRuntime is
+// not defined". This is just enough runtime for that compiled generator:
+// `mark` hands the function back, and `wrap` drives its switch-based body
+// (ctx.prev / ctx.next, `return ctx.next = N, value` to yield, ctx.stop() to
+// finish) as an iterator. Installed only when no real runtime is there.
+export function installRegeneratorShim(g) {
+  if (!g || g.regeneratorRuntime) return;
+  g.regeneratorRuntime = {
+    mark: (fn) => fn,
+    wrap(inner) {
+      const ctx = {
+        prev: 0,
+        next: 0,
+        done: false,
+        stop() { this.done = true; }
+      };
+      const it = {
+        next() {
+          if (ctx.done) return { value: undefined, done: true };
+          const value = inner(ctx);
+          return ctx.done ? { value: undefined, done: true } : { value, done: false };
+        },
+        return(value) {
+          ctx.done = true;
+          return { value, done: true };
+        },
+        [Symbol.iterator]() { return it; }
+      };
+      return it;
+    }
+  };
 }
 
 // The loaded fonts, as the layout and the writer use them.
@@ -196,8 +249,14 @@ export function createFontSet(fonts) {
     if (units === undefined) {
       const font = fonts.get(face);
       if (!font) return 0;
-      const run = font.layout(text, mdFontFeatures());
-      units = run.advanceWidth / font.unitsPerEm;
+      // The sum of the glyphs' own advances — what pdf-lib's
+      // widthOfTextAtSize adds up, and what the PDF's widths array draws with
+      // — not the run's GPOS-adjusted advance, which pdf-lib never applies
+      // (a Devanagari half form is ~60 units narrower adjusted than drawn).
+      const { glyphs } = font.layout(text, mdFontFeatures());
+      let sum = 0;
+      for (const glyph of glyphs) sum += glyph.advanceWidth;
+      units = sum / font.unitsPerEm;
       if (widthCache.size > 20000) widthCache.clear();
       widthCache.set(key, units);
     }
@@ -218,6 +277,11 @@ export function createFontSet(fonts) {
     let current = null;
     for (const ch of String(text || "")) {
       const cp = ch.codePointAt(0);
+      if (isJoiner(cp)) {
+        // Kept when it sits inside a run whose face knows it (Devanagari).
+        if (current?.face && hasGlyph(current.face, cp)) current.text += ch;
+        continue;
+      }
       if (isInvisible(cp)) continue;
       const face = faceFor(cp, family, bold, italic);
       if (current && current.face === face) current.text += ch;

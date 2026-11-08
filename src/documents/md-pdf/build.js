@@ -37,7 +37,9 @@ export function createMdPdfSession() {
   const cache = createAssetCache();
 
   // Markdown and options → a laid-out column, ready to plan and write.
-  async function layout(markdown, options, { match = null, onProgress = () => {} } = {}) {
+  // `isCurrent` says whether this build is still wanted; a slow step (words
+  // pictured one by one) stops early when it is not.
+  async function layout(markdown, options, { match = null, onProgress = () => {}, isCurrent = () => true } = {}) {
     if (typeof window.marked?.lexer !== "function") throw new MdPdfError("marked", "The markdown reader did not load");
     const o = normalizeMdPdfOptions(options);
     const geometry = pageGeometry(o, match);
@@ -57,7 +59,9 @@ export function createMdPdfSession() {
       throw new MdPdfError("fonts", "The PDF fonts need a connection the first time");
     }
     const fontSet = createFontSet(loaded.fonts);
-    const { assets, images } = await prepareAssets({ needs, options: o, geometry, fontSet, cache, onProgress });
+    onProgress("Laying out the pages…");
+    const { assets, images } = await prepareAssets({ needs, options: o, geometry, fontSet, cache, onProgress, isCurrent });
+    if (!isCurrent()) throw new MdPdfError("superseded", "A newer edit is being laid out");
     const flow = layoutMarkdown({ blocks, fontSet, options: o, geometry, assets });
     return { flow, fontSet, fontBytes: loaded.bytes, images, options: o, missingFaces: loaded.missing };
   }
