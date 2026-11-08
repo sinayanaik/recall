@@ -87,7 +87,7 @@ import {
 import { isInkArmed } from "./pdf-ink.js?v=__BUILD__";
 import { isRegionSelectArmed } from "./pdf-region.js?v=__BUILD__";
 import { buildPathFromBoxes, buildPathFromInk } from "./pdf-reading-path.js?v=__BUILD__";
-import { keptTextItem, textItemBox, textItemShadows } from "./pdf-selection.js?v=__BUILD__";
+import { keptTextItem, readPageTextContent, textItemBox, textItemShadows } from "./pdf-selection.js?v=__BUILD__";
 import {
   PDF_MAX_SCALE, currentDocumentAcross, currentDocumentPage, currentDocumentResidual, documentPinchEngaged, documentSurfaceHidden,
   fitWidthScale, openDocumentSlot, openPdf, pageOffsetLeft, pageOffsetTop, pdfPageTextItems, scrollToDocumentPage,
@@ -254,7 +254,7 @@ async function inkPicture(page, viewport) {
 async function buildTextPath(pdf, pageNumber, columns) {
   const page = await pdf.doc.getPage(pageNumber);
   const viewport = page.getViewport({ scale: 1 });
-  const items = pdfPageTextItems(pageNumber) || (await page.getTextContent()).items || [];
+  const items = pdfPageTextItems(pageNumber) || (await readPageTextContent(page, pdf.doc)).items || [];
   return { page, viewport, path: buildPathFromBoxes(textBoxes(items, viewport), viewport.width, viewport.height, { columns }) };
 }
 

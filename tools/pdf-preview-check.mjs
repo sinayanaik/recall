@@ -768,6 +768,7 @@ try {
         repairedBottom: after.quads[0].rect[1],
         originalBottom: before.quads[0].rect[1],
         qv: after.qv,
+        version: api.QUAD_GEOMETRY_VERSION,
         atHeld: after.at === staleAt,
         settledSame: JSON.stringify(settled.quads) === JSON.stringify(after.quads),
         areaMoved: JSON.stringify(area.quads[0].rect) !== JSON.stringify(areaRect),
@@ -785,12 +786,12 @@ try {
       repaired.ran && Math.abs(repaired.repairedBottom - repaired.originalBottom) < 1.5,
       `${tenth(repaired.staleBottom)} → ${tenth(repaired.repairedBottom)} (captured at ${tenth(repaired.originalBottom)}, lifted by ${tenth(repaired.lift)})`);
     check("...and stamped, so the next paint of the page leaves it alone",
-      repaired.qv === 2 && repaired.again === false && repaired.settledSame,
+      repaired.qv === repaired.version && repaired.again === false && repaired.settledSame,
       `qv=${repaired.qv} secondRun=${repaired.again} unchanged=${repaired.settledSame}`);
     check("...without moving `at`, which would out-rank a real edit made elsewhere",
       repaired.atHeld, String(repaired.atHeld));
     check("...and a region is stamped but never moved",
-      repaired.areaStamped === 2 && !repaired.areaMoved,
+      repaired.areaStamped === repaired.version && !repaired.areaMoved,
       `qv=${repaired.areaStamped} moved=${repaired.areaMoved}`);
     check("...with the page's marks repainted against the corrected quads",
       repaired.painted > 0, `${repaired.painted} mark div(s)`);

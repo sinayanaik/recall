@@ -18,10 +18,12 @@
 //     for the page renderer's worker.
 
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { PDFJS_VERSION, pdfjsSources } from "./pdfjs-source.mjs";
-import { patchPdfjsSource, PDFJS_PATCHES } from "../src/core/pdfjs-patches.js";
+import { PDFJS_VERSION, patchedPdfjsWorkerPath, pdfjsSources } from "./pdfjs-source.mjs";
+import { buildFixturePdf } from "./pdf-fixture.mjs";
+import { patchPdfjsSource, patchPdfjsWorkerSource, PDFJS_PATCHES, PDFJS_WORKER_PATCHES } from "../src/core/pdfjs-patches.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const results = [];
@@ -36,6 +38,8 @@ check("LIB_URLS.pdfjs is the version the patches were written for",
 check("ensurePdfJs loads the patched copy", /patchPdfjsSource\(await response\.text\(\)\)/.test(loader)
   && /loadScriptOnce\(patched\)/.test(loader));
 check("the page renderer is handed the same patched copy", /pdfjsWorkerSources\(\)[\s\S]{0,200}patchedPdfjsBlobUrl\(\)/.test(loader));
+check("ensurePdfJs runs the patched worker", /patchPdfjsWorkerSource\(await response\.text\(\)\)/.test(loader)
+  && /new Blob\(\[text\], \{ type: "text\/javascript" \}\)/.test(loader));
 
 const sw = readFileSync(path.join(ROOT, "sw.js"), "utf8");
 check("the service worker precaches the patch module", sw.includes("./src/core/pdfjs-patches.js?v=${STAMP}"));
@@ -87,6 +91,51 @@ if (raw) {
     const legacy = size(23065, 874, 0.528);
     check("called without a bbox: as before", legacy.size === 3000 && legacy.scale === 0.528);
   }
+}
+
+// ── The worker: glyphs with marks have width; items say where their characters are
+let rawWorker = null;
+try {
+  rawWorker = pdfjsSources().rawWorker;
+} catch (_) { /* reported above */ }
+if (rawWorker) {
+  const once = patchPdfjsWorkerSource(rawWorker);
+  check("every worker patch applies to the pinned build",
+    once.missing.length === 0 && once.applied.length === PDFJS_WORKER_PATCHES.length,
+    `applied ${once.applied.join(", ") || "none"}${once.missing.length ? `; missing ${once.missing.join(", ")}` : ""}`);
+  const twice = patchPdfjsWorkerSource(once.text);
+  check("patching the worker twice changes nothing", twice.text === once.text && twice.applied.length === PDFJS_WORKER_PATCHES.length);
+  check("text that is not the worker is left alone", patchPdfjsWorkerSource("nope").text === "nope");
+
+  // The fixed category test, lifted out: a glyph that is only marks is an
+  // accent; one that carries a letter AND a mark (a half form, a conjunct) is
+  // not.
+  const regex = (once.text.match(/new RegExp\("(\^\(\\\\s\)[^"]*)","u"\)/) || [])[1];
+  if (regex) {
+    const re = new RegExp(regex.replace(/\\\\/g, "\\"), "u");
+    const zeroWidth = (s) => Boolean(s.match(re)?.[2]);
+    check("a lone combining mark is still zero-width", zeroWidth("\u0947") && zeroWidth("\u0947\u0902"));
+    check("a half form or conjunct is not", !zeroWidth("\u0915\u094D") && !zeroWidth("\u091C\u094D\u091E") && !zeroWidth("e\u0301"));
+  } else {
+    check("the patched category test is in the worker", false);
+  }
+
+  // ...and run: every item of an ordinary text PDF says where its characters
+  // start, ending at its width.
+  const require = createRequire(import.meta.url);
+  const pdfjs = require("/tmp/recall-pdfjs/package/legacy/build/pdf.min.js");
+  pdfjs.GlobalWorkerOptions.workerSrc = patchedPdfjsWorkerPath();
+  const fixture = buildFixturePdf({ pages: 1, annotate: false, outline: false });
+  const doc = await pdfjs.getDocument({ data: new Uint8Array(fixture.bytes), isEvalSupported: false, verbosity: 0 }).promise;
+  const content = await (await doc.getPage(1)).getTextContent();
+  const texty = content.items.filter((item) => item.str && item.str.trim());
+  const withX = texty.filter((item) => Array.isArray(item.charX) && item.charX.length === item.str.length + 1);
+  check("every text item carries charX, one entry per character and one for the end", texty.length > 0 && withX.length === texty.length,
+    `${withX.length} of ${texty.length}`);
+  const ends = withX.every((item) => Math.abs(item.charX[item.charX.length - 1] - item.width) < 0.01 && item.charX[0] >= 0);
+  const rising = withX.every((item) => item.charX.every((x, i) => i === 0 || x >= item.charX[i - 1] - 0.01));
+  check("...starting at the item's origin, rising, and ending at its width", ends && rising);
+  await doc.destroy();
 }
 
 const failed = results.filter((ok) => !ok).length;

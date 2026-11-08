@@ -339,6 +339,225 @@ export function textItemGap(previous, next) {
   return "";
 }
 
+// ── Where each character of an item is ──────────────────────────────────────
+//
+// pdf.js reports an item as one origin and one width. The worker the app runs
+// is patched (src/core/pdfjs-patches.js, text-item-char-x) to say more: an
+// item's `charX` is where each UTF-16 unit of its str starts along the run,
+// from the item's origin, in the units of `width` — plus one more entry, the
+// end. Null when it is missing or does not describe this str (an item from an
+// unpatched worker, a vertical or right-to-left run, or one rewritten since).
+export function textItemCharX(item) {
+  const charX = item?.charX;
+  const str = item?.str;
+  if (!Array.isArray(charX) || typeof str !== "string" || charX.length !== str.length + 1) return null;
+  for (let i = 0; i < charX.length; i += 1) if (!Number.isFinite(charX[i])) return null;
+  return charX;
+}
+
+// How far, in ems, a word of the text layer may sit from the word painted under
+// it before an item is laid out word by word. Below this a Latin-script line
+// set in the browser's substitute font is close enough, and stays one span —
+// which is most items of most papers, and keeps the layer as small as it was.
+export const TEXT_PIECE_DRIFT_EM = 0.15;
+
+// An item's words, each with the spaces after it: [{ from, to }] over its str.
+// Leading spaces join the first word, so the pieces cover str end to end.
+export function textItemWords(str) {
+  const pieces = [];
+  const text = String(str || "");
+  let from = 0;
+  let i = 0;
+  while (i < text.length && /\s/.test(text[i])) i += 1;
+  while (i < text.length) {
+    while (i < text.length && !/\s/.test(text[i])) i += 1;
+    while (i < text.length && /\s/.test(text[i])) i += 1;
+    pieces.push({ from, to: i });
+    from = i;
+  }
+  if (!pieces.length && text) pieces.push({ from: 0, to: text.length });
+  return pieces;
+}
+
+// Whether an item has to be laid out word by word, and if so its words.
+//
+// The text layer sets an item's str in the browser's font and stretches it to
+// the item's width. That gets the two ends right and every letter in between
+// wherever the BROWSER's font would put it — which for a line of Hindi is a
+// whole word away from where the PDF's font painted it (the report: a
+// double-click on संस्कार selecting a box over "स्कार"). Where the item knows
+// its real character positions, each word's start under that stretch is
+// compared with where it really is, and an item with any word out by more than
+// TEXT_PIECE_DRIFT_EM gets one span per word instead, each placed at its own
+// start. `measure(text)` is the width the browser's font gives `text` at the
+// item's size, in the same pixels as `scale` makes of the item's own units.
+// Null: keep the item as one span.
+export function textItemPieces(item, scale, fontSize, measure) {
+  const charX = textItemCharX(item);
+  if (!charX || !(scale > 0) || !(fontSize > 0)) return null;
+  const width = Number(item.width) || 0;
+  if (!(width > 0)) return null;
+  const pieces = textItemWords(item.str);
+  if (pieces.length < 2) return null;
+  const naturals = pieces.map((piece) => measure(item.str.slice(piece.from, piece.to)));
+  const natural = naturals.reduce((sum, w) => sum + w, 0);
+  if (!(natural > 0)) return null;
+  const stretch = (width * scale) / natural;
+  const tolerance = fontSize * TEXT_PIECE_DRIFT_EM;
+  let predicted = 0;
+  let drifts = false;
+  for (let k = 0; k < pieces.length; k += 1) {
+    if (Math.abs(predicted - charX[pieces[k].from] * scale) > tolerance) { drifts = true; break; }
+    predicted += naturals[k] * stretch;
+  }
+  if (!drifts) return null;
+  return pieces.map((piece, k) => ({ ...piece, natural: naturals[k] }));
+}
+
+// ── Hindi read back out of a Recall export ─────────────────────────────────
+//
+// The Markdown → PDF writer (src/documents/md-pdf/writer.js) draws Devanagari
+// as SHAPED glyphs, through pdf-lib and fontkit, and pdf-lib names each glyph's
+// characters (its ToUnicode map) from what fontkit says the glyph is. A reader
+// that reads the glyphs back gets them in the order they are DRAWN, which in
+// Devanagari is not the order they are typed:
+//
+//   • the vowel sign ि is drawn BEFORE the consonant cluster it follows:
+//     "किया" comes back "िकया", "क्रिकेट" "िक्रकेट";
+//   • a reph — र् before a consonant, drawn as a hook above it — is drawn
+//     AFTER the whole syllable it starts, vowel signs and all: "दर्शन" comes
+//     back "दशर्न", "विद्यार्थी" "िवद्याथीर्";
+//   • a glyph the font shares between two letters is named once, for whichever
+//     came first in the file: ऐ is drawn as ए plus the े stroke ("एे"), ो after
+//     some consonants as ा plus that stroke ("ाे"), and ई as इ plus a hook that
+//     is also the reph ("इर्").
+//
+// All mechanical, so this puts them back, for files whose producer says the
+// writer made them (and only those: in a PDF from anywhere else the same
+// letters are typed text and must not be moved). Some of it is lost for good:
+// a glyph named once for two jobs — the anusvara over ि that is also a reph
+// form, the ो stroke merged into a reph above it — reads as whichever job it
+// was named for, and nothing in the text says which. Those words stay as read.
+//
+// `charX` (see textItemCharX) is kept in step: the positions are SLOTS along
+// the run and stay where they are while the letters move between them inside
+// one syllable, so a word still starts where its first glyph is drawn; a letter
+// folded into another takes its slot with it.
+export const RECALL_EXPORT_PRODUCER = "Recall (markdown)";
+
+const DEVA = /[\u0900-\u097F]/;
+const VIRAMA = "\u094D";
+const NUKTA = "\u093C";
+const SIGN_I = "\u093F";
+const RA = "\u0930";
+
+function isDevaConsonant(ch) {
+  if (!ch) return false;
+  const c = ch.charCodeAt(0);
+  return (c >= 0x0915 && c <= 0x0939) || (c >= 0x0958 && c <= 0x095F) || (c >= 0x0978 && c <= 0x097F);
+}
+
+// A vowel sign or a mark that ends a syllable (not the virama, which joins).
+function isDevaSyllableTail(ch) {
+  if (!ch) return false;
+  const c = ch.charCodeAt(0);
+  return (c >= 0x0900 && c <= 0x0903) || c === 0x093A || c === 0x093B || c === 0x093C
+    || (c >= 0x093E && c <= 0x094C) || (c >= 0x094E && c <= 0x094F)
+    || (c >= 0x0951 && c <= 0x0957) || c === 0x0962 || c === 0x0963;
+}
+
+// Letters the font draws as two glyphs, back to one letter.
+const DEVA_FOLDS = [
+  ["\u090F\u0947", "\u0910"], // ए + े → ऐ
+  ["\u093E\u0947", "\u094B"], // ा + े → ो
+  ["\u093E\u0948", "\u094C"], // ा + ै → ौ
+  ["\u0907\u0930\u094D", "\u0908"] // इ + र् → ई
+];
+
+export function devanagariLogicalOrder(str, charX = null) {
+  const text = String(str ?? "");
+  if (!DEVA.test(text)) return { str: text, charX };
+  const chars = text.split("");
+  const slots = Array.isArray(charX) && charX.length === chars.length + 1 ? charX.slice() : null;
+  // 1. Folds. A folded letter gives its later slots up.
+  for (let i = 0; i < chars.length; i += 1) {
+    for (const [from, to] of DEVA_FOLDS) {
+      if (chars.slice(i, i + from.length).join("") !== from) continue;
+      chars.splice(i, from.length, to);
+      if (slots) slots.splice(i + 1, from.length - 1);
+      break;
+    }
+  }
+  // 2. ि after its cluster: consonant, nukta, then any number of virama +
+  //    consonant (+ nukta).
+  for (let i = 0; i < chars.length; i += 1) {
+    if (chars[i] !== SIGN_I || !isDevaConsonant(chars[i + 1])) continue;
+    let j = i + 2;
+    if (chars[j] === NUKTA) j += 1;
+    while (chars[j] === VIRAMA && isDevaConsonant(chars[j + 1])) {
+      j += 2;
+      if (chars[j] === NUKTA) j += 1;
+    }
+    chars.splice(i, 1);
+    chars.splice(j - 1, 0, SIGN_I);
+    i = j - 1;
+  }
+  // 3. A reph to the front of the syllable it was drawn after: back over that
+  //    syllable's vowel signs and marks to its consonant, and back over every
+  //    virama-joined consonant before that.
+  for (let i = 1; i < chars.length - 1; i += 1) {
+    if (chars[i] !== RA || chars[i + 1] !== VIRAMA || chars[i - 1] === VIRAMA) continue;
+    let k = i - 1;
+    while (k >= 0 && isDevaSyllableTail(chars[k])) k -= 1;
+    if (k < 0 || !isDevaConsonant(chars[k])) continue;
+    while (k >= 2 && chars[k - 1] === VIRAMA && isDevaConsonant(chars[k - 2])) k -= 2;
+    if (k >= 3 && chars[k - 1] === VIRAMA && chars[k - 2] === NUKTA && isDevaConsonant(chars[k - 3])) k -= 3;
+    chars.splice(i, 2);
+    chars.splice(k, 0, RA, VIRAMA);
+    i += 1;
+  }
+  return { str: chars.join(""), charX: slots };
+}
+
+// Whether `doc` (a pdf.js document) was written by the Markdown → PDF writer,
+// asked once per document: its producer is in the file's Info dictionary.
+const recallExportByDoc = new WeakMap();
+
+export function isRecallExport(doc) {
+  if (!doc || typeof doc.getMetadata !== "function") return Promise.resolve(false);
+  if (!recallExportByDoc.has(doc)) {
+    recallExportByDoc.set(doc, doc.getMetadata()
+      .then((meta) => String(meta?.info?.Producer || "").startsWith(RECALL_EXPORT_PRODUCER))
+      .catch(() => false));
+  }
+  return recallExportByDoc.get(doc);
+}
+
+// A page's getTextContent() with its Hindi put back in typed order — for a file
+// the writer made; any other file's text is handed back exactly as read. One
+// item out for every item in, in the same order: an item's INDEX is half of
+// every stored anchor.
+export function logicalTextContent(content) {
+  if (!content?.items) return content;
+  const items = content.items.map((item) => {
+    if (typeof item?.str !== "string" || !DEVA.test(item.str)) return item;
+    const { str, charX } = devanagariLogicalOrder(item.str, textItemCharX(item));
+    if (str === item.str) return item;
+    const out = { ...item, str };
+    if (charX) out.charX = charX;
+    else delete out.charX;
+    return out;
+  });
+  return { ...content, items };
+}
+
+// The one way to read a page's words: getTextContent(), put right for the
+// file it came from. `doc` is the document the page belongs to.
+export async function readPageTextContent(page, doc = null) {
+  const [content, fromRecall] = await Promise.all([page.getTextContent(), isRecallExport(doc)]);
+  return fromRecall ? logicalTextContent(content) : content;
+}
+
 // ── Text drawn more than once in the same place ─────────────────────────────
 //
 // "inininininin ducducducduc tivetivetive biasbiasbias in a model" — copied off
@@ -422,6 +641,15 @@ function characterEdges(g, model) {
   if (g.edges[model]) return g.edges[model];
   const n = g.str.length;
   const edges = new Float64Array(n + 1);
+  // ...unless it does. The patched worker reports where each character really
+  // starts (textItemCharX), and then there is nothing to model: both models
+  // are the truth.
+  if (g.charX) {
+    for (let j = 0; j <= n; j += 1) edges[j] = g.t[4] + g.charX[j];
+    g.edges[EVEN] = edges;
+    g.edges[PROPORTIONAL] = edges;
+    return edges;
+  }
   if (model === EVEN) {
     for (let j = 0; j <= n; j += 1) edges[j] = g.t[4] + (g.width * j) / n;
   } else {
@@ -447,7 +675,7 @@ function shadowGeometry(item) {
   // Character positions are only worked out along an upright, left-to-right
   // run; anything else can still be a whole-item stamp of another.
   const flat = t[0] > 0 && Math.abs(t[1]) < 1e-6 && Math.abs(t[2]) < 1e-6 && item.dir !== "rtl" && width > 0;
-  return { t, str, size, width, flat, blank: !/\S/.test(str), edges: [null, null] };
+  return { t, str, size, width, flat, blank: !/\S/.test(str), edges: [null, null], charX: flat ? textItemCharX(item) : null };
 }
 
 // A single letter at the seam between two items — the last kept letter of
@@ -727,7 +955,12 @@ export function keptTextItem(items, index, shadows = textItemShadows(items)) {
   const x0 = edges ? edges[from] : t[4];
   const x1 = edges ? edges[to] : t[4];
   t[4] = x0;
-  return { ...item, str: item.str.slice(from, to), transform: t, width: x1 - x0, keptFrom: from };
+  const kept = { ...item, str: item.str.slice(from, to), transform: t, width: x1 - x0, keptFrom: from };
+  // The slice's own character positions, from its own origin.
+  const charX = textItemCharX(item);
+  if (charX) kept.charX = charX.slice(from, to + 1).map((x) => x - charX[from]);
+  else delete kept.charX;
+  return kept;
 }
 
 // An anchor that sits on a stamp, read as the character it stamps; one in the

@@ -293,10 +293,17 @@ function smartHlBoundary(anchor) {
   // read on the span of what it stamps (see textItemShadows).
   const items = pdfPageTextItems(anchor.page);
   const point = items ? settleTextAnchor(items, { item: Number(anchor.item) || 0, ch: Number(anchor.ch) || 0 }) : anchor;
-  const span = pdfPageElement(anchor.page)?.querySelector(`[${TEXT_ITEM_ATTR}="${Number(point.item) || 0}"]`);
+  // An item laid out word by word (pdf-view.js, appendTextItem) has a span per
+  // word, all with its index: the one holding this character is the last that
+  // starts at or before it.
+  const ch = Number(point.ch) || 0;
+  let span = null;
+  pdfPageElement(anchor.page)?.querySelectorAll(`[${TEXT_ITEM_ATTR}="${Number(point.item) || 0}"]`).forEach((candidate) => {
+    if (!span || spanCharStart(candidate) <= ch) span = candidate;
+  });
   const node = span?.firstChild;
   if (!node || node.nodeType !== Node.TEXT_NODE) return null;
-  const offset = (Number(point.ch) || 0) - spanCharStart(span);
+  const offset = ch - spanCharStart(span);
   return { node, offset: Math.max(0, Math.min(offset, node.nodeValue.length)) };
 }
 

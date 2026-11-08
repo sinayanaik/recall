@@ -17,9 +17,9 @@
 // The version here must match LIB_URLS.pdfjs in src/core/lib-loader.js.
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { patchPdfjsSource } from "../src/core/pdfjs-patches.js";
+import { patchPdfjsSource, patchPdfjsWorkerSource } from "../src/core/pdfjs-patches.js";
 
 export const PDFJS_VERSION = "3.11.174";
 const CACHE_DIR = "/tmp/recall-pdfjs";
@@ -44,8 +44,12 @@ export function pdfjsSources() {
   // applied, as ensurePdfJs does — so a check that injects it draws pages the
   // way the app does. `raw` is what the CDN SERVES, which is what
   // servePdfjsFromDisk answers the app's own fetch with.
+  // The worker the same way: `worker` is what the app runs (ensurePdfJs patches
+  // it, src/core/pdfjs-patches.js PDFJS_WORKER_PATCHES), `rawWorker` what the
+  // CDN serves.
   const raw = readFileSync(main, "utf8");
-  return { main: patchPdfjsSource(raw).text, raw, worker: readFileSync(worker, "utf8") };
+  const rawWorker = readFileSync(worker, "utf8");
+  return { main: patchPdfjsSource(raw).text, raw, worker: patchPdfjsWorkerSource(rawWorker).text, rawWorker };
 }
 
 // ...and the same files, ANSWERED for the CDN URLs the app asks for them by.
@@ -60,7 +64,7 @@ export function pdfjsSources() {
 export async function servePdfjsFromDisk(client, page, sources = pdfjsSources()) {
   const body = {
     main: Buffer.from(sources.raw ?? sources.main, "utf8").toString("base64"),
-    worker: Buffer.from(sources.worker, "utf8").toString("base64")
+    worker: Buffer.from(sources.rawWorker ?? sources.worker, "utf8").toString("base64")
   };
   client.on((message) => {
     if (message.method !== "Fetch.requestPaused" || message.sessionId !== page.sessionId) return;
@@ -77,4 +81,14 @@ export async function servePdfjsFromDisk(client, page, sources = pdfjsSources())
     }).catch(() => {});
   });
   await page.call("Fetch.enable", { patterns: [{ urlPattern: `*pdfjs-dist@${PDFJS_VERSION}*` }] });
+}
+
+// The patched worker as a FILE, for a check that runs pdf.js in Node and has to
+// name its worker by path (GlobalWorkerOptions.workerSrc) — so what it reads
+// back from a PDF is what the app's text layer is given.
+export function patchedPdfjsWorkerPath() {
+  const target = path.join(CACHE_DIR, "pdf.worker.patched.min.js");
+  const text = pdfjsSources().worker;
+  if (!existsSync(target) || readFileSync(target, "utf8") !== text) writeFileSync(target, text);
+  return target;
 }

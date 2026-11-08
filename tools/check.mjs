@@ -640,6 +640,11 @@ const checks = [
     // heading" was.
     ["toc-binding   ", ["node", ["tools/toc-binding-check.mjs"], ROOT]],
     ["pdf-document  ", ["node", ["tools/pdf-preview-check.mjs"], ROOT]],
+    // A line of Hindi from a Recall export: every word of the text layer where
+    // the page paints it, the words in typed order, a double-click selecting
+    // the word under it, and a highlight made over the old, drifting layer
+    // moved back onto its words (src/core/pdfjs-patches.js, pdf-view.js).
+    ["pdf-text-place", ["node", ["tools/pdf-text-place-check.mjs"], ROOT]],
     // A web page saved as ONE very tall PDF page: what is on screen must stay
     // sharp WHILE the reader scrolls (bands for tall pages), not a beat after
     // they stop — at 1x, on a 2x screen, and on a phone with its CPU slowed.
