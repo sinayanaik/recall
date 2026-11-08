@@ -23,7 +23,7 @@ import { stripInvalidUnicode } from "../core/text.js?v=__BUILD__";
 import { DOC_SLOT_DOC } from "../documents/doc-slot.js?v=__BUILD__";
 import { QUAD_GEOMETRY_VERSION, annotationQuads, nearestHighlightColor } from "../documents/pdf-highlights.js?v=__BUILD__";
 import { deckPdfs, mintPdfId, PDF_PRIMARY_ID, pdfStoreKey, stampRecordPdfIdAll, withDeckPdfs } from "../documents/pdf-multi.js?v=__BUILD__";
-import { textForQuads } from "../documents/pdf-selection.js?v=__BUILD__";
+import { readPageTextContent, textForQuads } from "../documents/pdf-selection.js?v=__BUILD__";
 import { MAX_DOCUMENT_BYTES, putDocument, sha256, uploadDocument } from "../documents/pdf-store.js?v=__BUILD__";
 import { MARK_HIGHLIGHT_DEFAULT } from "../format/highlight-colors.js?v=__BUILD__";
 import { setHighlightNoteInSource } from "../format/highlight-notes.js?v=__BUILD__";
@@ -126,7 +126,7 @@ export async function readExistingHighlights(doc, progress) {
     // expensive call, and most pages have none.
     let items = [];
     try {
-      items = (await page.getTextContent()).items || [];
+      items = (await readPageTextContent(page, doc)).items || [];
     } catch (_) { /* an image-only page: the quads still paint, there is just no text */ }
 
     highlights.forEach((annotation, index) => {

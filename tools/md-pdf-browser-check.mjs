@@ -170,7 +170,7 @@ async function shot(name) {
 async function serveFromDisk() {
   const pdfjsBody = {
     main: Buffer.from(sources.raw ?? sources.main, "utf8").toString("base64"),
-    worker: Buffer.from(sources.worker, "utf8").toString("base64")
+    worker: Buffer.from(sources.rawWorker ?? sources.worker, "utf8").toString("base64")
   };
   client.on((message) => {
     if (message.method !== "Fetch.requestPaused" || message.sessionId !== page.sessionId) return;

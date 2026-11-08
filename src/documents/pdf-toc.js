@@ -45,7 +45,7 @@ import { state } from "../core/state.js?v=__BUILD__";
 import { stripInvalidUnicode } from "../core/text.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { PDF_PRIMARY_ID } from "./pdf-multi.js?v=__BUILD__";
-import { cleanPdfItemText, keptTextItem, textItemGap, textItemShadows } from "./pdf-selection.js?v=__BUILD__";
+import { cleanPdfItemText, keptTextItem, readPageTextContent, textItemGap, textItemShadows } from "./pdf-selection.js?v=__BUILD__";
 
 // Bumped when the rules below change enough that an old cached list would be
 // worse than a fresh scan. A cache from a different version is ignored and
@@ -474,7 +474,7 @@ export async function derivePdfContents(doc, { alive = () => true, onProgress = 
   for (let pageNumber = 1; pageNumber <= sampleTo; pageNumber += 1) {
     if (!alive()) return [];
     const page = await doc.getPage(pageNumber);
-    const lines = pdfTocLinesFrom((await page.getTextContent()).items, pageNumber);
+    const lines = pdfTocLinesFrom((await readPageTextContent(page, doc)).items, pageNumber);
     sampled.set(pageNumber, { lines, box: pageBoxOf(page) });
     lines.forEach((line) => sample.push(line));
     if (pageNumber % PDF_TOC_YIELD_PAGES === 0) await pdfTocBreathe();
@@ -496,7 +496,7 @@ export async function derivePdfContents(doc, { alive = () => true, onProgress = 
     } else {
       const page = await doc.getPage(pageNumber);
       box = pageBoxOf(page);
-      lines = pdfTocLinesFrom((await page.getTextContent()).items, pageNumber);
+      lines = pdfTocLinesFrom((await readPageTextContent(page, doc)).items, pageNumber);
     }
     pdfTocCandidatesFrom(lines, bodySize, box).forEach((candidate) => candidates.push(candidate));
     if (pageNumber % PDF_TOC_YIELD_PAGES === 0) {

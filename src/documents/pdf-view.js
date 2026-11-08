@@ -40,7 +40,7 @@ import { imageKeepKit } from "./pdf-image-keep.js?v=__BUILD__";
 import { dropPicture, getPictureBlob, holdPictureUrl, loadPaperPictures, pagesWithPictures, widestStoredPicture, pdfPicturesTurnedOff, pictureKey, putPicture, releasePictureUrl, setPdfPicturesTurnedOff, storedPicture, touchPicture } from "./pdf-pictures.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { paintDocumentHighlights } from "./pdf-highlights.js?v=__BUILD__";
-import { TEXT_CH_START_ATTR, keptTextItem, textItemGap, textItemShadows } from "./pdf-selection.js?v=__BUILD__";
+import { TEXT_CH_START_ATTR, keptTextItem, readPageTextContent, textItemGap, textItemPieces, textItemShadows } from "./pdf-selection.js?v=__BUILD__";
 import { expectPdfPagePaint, firstPdfPagePainted, notePdfAnimationFrame, notePdfAnimationFramesObserved, notePdfCanvasSetup, notePdfInteractionFrame, notePdfInteractionLongTask, notePdfWastedRenders, onPdfDiagnosticsChange, pdfDiagnosticsOn, pendingPdfPagePaint, recordPdfTimingAfterPaint, samplePdfTiming, setPdfReaderTest } from "./pdf-timing.js?v=__BUILD__";
 import { buildDocumentOutline, clearDocumentOutline, setDocumentOutlinePage } from "./pdf-outline.js?v=__BUILD__";
 import { documentAutoScrolling, inkPenIsDown, setDocumentTextWake, touchGestureHoldsSurface } from "../core/gesture.js?v=__BUILD__";
@@ -2587,7 +2587,7 @@ async function renderPage(pageNumber) {
     // no queue to wait behind and the words are asked for at once.
     const textContent = textLayerNeedsRebuild(entry, scale)
       ? (drawn.where !== "main" ? Promise.resolve() : whenRenderQueueIdle(entry, stale))
-        .then(() => (stale() ? null : page.getTextContent()))
+        .then(() => (stale() ? null : readPageTextContent(page, openPdf?.doc)))
       : null;
     textContent?.catch(() => {});
 
@@ -4345,7 +4345,7 @@ function relayerPage(pageNumber) {
     if (stale()) return;
     const page = await openPdf.doc.getPage(pageNumber);
     if (stale()) return;
-    const textContent = textLayerNeedsRebuild(entry, scale) ? page.getTextContent() : null;
+    const textContent = textLayerNeedsRebuild(entry, scale) ? readPageTextContent(page, openPdf.doc) : null;
     textContent?.catch(() => {});
     await buildPageLayers(pageNumber, entry, page, viewport, stale, textContent);
   })
@@ -5290,7 +5290,7 @@ async function buildPageLayers(pageNumber, entry, page, viewport, stale, textCon
     annotatePage(pageNumber);
     return;
   }
-  const content = await (textContent || page.getTextContent());
+  const content = await (textContent || readPageTextContent(page, openPdf?.doc));
   if (stale()) return;
   entry.textItems = content.items;
   annotatePage(pageNumber);
@@ -5828,9 +5828,11 @@ export function fontAscentRatio(style) {
 // afterwards.
 // `content` is the page's getTextContent() when the caller has already asked
 // for it (renderPage does, so the worker answers while the canvas is drawn).
-export async function buildTextLayer(page, viewport, content = null) {
+// `doc` is the document the page is from, which decides how its words are read
+// (readPageTextContent).
+export async function buildTextLayer(page, viewport, content = null, doc = null) {
   const layer = createTextLayerBox(viewport);
-  content = await (content || page.getTextContent());
+  content = await (content || readPageTextContent(page, doc));
   const frag = document.createDocumentFragment();
   const run = { previous: null, measureLater: false, shadows: textItemShadows(content.items) };
   content.items.forEach((item, index) => appendTextItem(frag, item, index, viewport, content.styles, run, content.items));
@@ -5891,12 +5893,6 @@ function appendTextItem(frag, source, index, viewport, styles, run, items) {
     if (gap) frag.appendChild(document.createTextNode(gap));
   }
   run.previous = item;
-  const span = document.createElement("span");
-  span.dataset.itemIndex = String(index);
-  // Where the span's text starts in its item's str, when that is not 0: an
-  // anchor's ch counts in the item's characters, not the span's.
-  if (item.keptFrom) span.setAttribute(TEXT_CH_START_ATTR, String(item.keptFrom));
-  span.textContent = item.str;
   // pdf.js's own transform maths, kept verbatim in spirit: the item transform
   // composed with the viewport transform gives the glyph run's baseline
   // origin and its scale, and the span is placed and stretched to match so a
@@ -5941,19 +5937,82 @@ function appendTextItem(frag, source, index, viewport, styles, run, items) {
   // pdf.js names a generic family here; anything that could end the
   // declaration is taken out, because the whole style is written in one go.
   const family = String(style?.fontFamily || "sans-serif").replace(/[;{}]/g, "");
+  const chStart = item.keptFrom || 0;
+  // ── One span per WORD, where one per item would drift ───────────────────
+  //
+  // A span stretched to its item's width gets the item's two ends right and
+  // every letter between them wherever the browser's substitute font puts it.
+  // On a line of Hindi that is a word or more away from the painted glyphs, so
+  // what you selected and highlighted was not what you aimed at. Where the
+  // worker reported the item's real character positions (charX, see
+  // src/core/pdfjs-patches.js) and the stretch would put a word more than a
+  // fraction of an em out, each word gets a span of its own at its own start,
+  // stretched to its own width. The spaces stay INSIDE the spans, so the
+  // layer's text — the clipboard, range.toString(), every { item, ch } anchor —
+  // is exactly what it was; nothing between two words is a gap a drag can fall
+  // into; and a double-click finds the whole word, now where it is painted.
+  const pieces = fontHeight > 0
+    ? textItemPieces(item, viewport.scale, fontHeight, (text) => measureSpanText(text, fontHeight, family))
+    : null;
+  if (pieces) {
+    const charX = item.charX;
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    for (const piece of pieces) {
+      const along = charX[piece.from] * viewport.scale;
+      const wide = (charX[piece.to] - charX[piece.from]) * viewport.scale;
+      appendTextSpan(frag, run, {
+        index,
+        chStart: chStart + piece.from,
+        text: item.str.slice(piece.from, piece.to),
+        left: left + along * cos,
+        top: top + along * sin,
+        fontHeight,
+        family,
+        angle,
+        expected: wide,
+        natural: piece.natural
+      });
+    }
+    return;
+  }
+  appendTextSpan(frag, run, {
+    index,
+    chStart,
+    text: item.str,
+    left,
+    top,
+    fontHeight,
+    family,
+    angle,
+    expected: item.width * viewport.scale,
+    natural: null
+  });
+}
+
+// One span of the text layer: `text`, from character `chStart` of item
+// `index`, its box's top-left corner at left/top, stretched to `expected`
+// pixels along its run. `natural` is its width in the browser's font when the
+// caller has already measured it.
+function appendTextSpan(frag, run, { index, chStart, text, left, top, fontHeight, family, angle, expected, natural }) {
+  const span = document.createElement("span");
+  span.dataset.itemIndex = String(index);
+  // Where the span's text starts in its item's str, when that is not 0: an
+  // anchor's ch counts in the item's characters, not the span's.
+  if (chStart) span.setAttribute(TEXT_CH_START_ATTR, String(chStart));
+  span.textContent = text;
   let css = `left:${left}px;top:${top}px;font-size:${fontHeight}px;font-family:${family};`;
   // Horizontal scale, so the invisible text is exactly as wide as the visible
   // glyphs. Without it a selection highlight drifts further from the words the
   // further along the line it goes — which is the difference between "this
   // works" and "this nearly works".
-  const expected = item.width * viewport.scale;
   const transforms = [];
   if (angle) transforms.push(`rotate(${angle}rad)`);
   if (expected > 0 && fontHeight > 0) {
-    const natural = measureSpanText(item.str, fontHeight, family);
+    const measured = natural ?? measureSpanText(text, fontHeight, family);
     // The number itself rather than a custom property: a var() is resolved
     // per element, on thousands of them, every time the layer is styled.
-    if (natural > 0) transforms.push(`scaleX(${expected / natural})`);
+    if (measured > 0) transforms.push(`scaleX(${expected / measured})`);
     else {
       span.dataset.expectedWidth = String(expected);
       run.measureLater = true;

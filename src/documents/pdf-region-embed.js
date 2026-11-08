@@ -827,7 +827,7 @@ export async function mountPdfRegionEmbed(img, { resizable = false } = {}) {
     // surface itself renders every page's text layer with. Nothing here is
     // re-measured or re-derived: the whole page's spans are correct as they
     // are, and clipping a correctly-positioned thing to a window is free.
-    const { layer: textLayer } = await buildTextLayer(page, viewport);
+    const { layer: textLayer } = await buildTextLayer(page, viewport, null, doc);
 
     const pageGroup = document.createElement("div");
     pageGroup.className = "pdf-region-embed-page";

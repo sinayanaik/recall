@@ -70,6 +70,80 @@ export const PDFJS_PATCHES = [
   }
 ];
 
+// ── The worker: where each character of a text item really is ─────────────
+//
+// The report: on a Hindi PDF exported from Recall, a double-click on संस्कार
+// selected a box over "स्कार", and a highlight over अध्यात्मवादी stopped at
+// "…वा" while one over इसलिए sat a word to the left. The page was fine. The
+// text layer was not where the page is.
+//
+// Two faults in pdf.js's text extraction (pdf.worker.min.js, the worker that
+// answers page.getTextContent()), both fixed here.
+//
+// 1. A glyph that stands for SEVERAL characters, one of them a combining mark,
+//    was given no width. SpecialCharRegExp reads `^(\s)|(\p{Mn})|(\p{Cf})$`:
+//    the anchors bind only the first and last alternatives, so the middle one
+//    matches a mark ANYWHERE in the glyph's text. Shaped Devanagari is full of
+//    such glyphs — every half form (ध्, त्, क्), every conjunct (ज्ञ, क्ष) — and
+//    each was taken for a zero-width accent: no advance, no position check.
+//    Every one of them made the item narrower than the line it was drawn as
+//    (a tenth narrower on a line of the report's text), so every letter after
+//    it was placed early, and the gap it left came back as a space in the
+//    middle of a word ("क् याें"). The fix makes the mark alternative
+//    whole-string: only a glyph that is nothing BUT marks is an accent.
+//
+// 2. pdf.js knows where every glyph of an item is drawn and keeps only the
+//    item's start and total width. The text layer (src/documents/pdf-view.js)
+//    then had to spread the item's characters along that width in the
+//    BROWSER's font, which places them where its own letters would go — close
+//    enough in a Latin font, a whole word out along a line of Hindi. So the
+//    worker now also reports `charX` on each item: where each UTF-16 unit of
+//    `str` starts along the run, from the item's origin, in the same units as
+//    `width`, with one more entry at the end that is the width itself. Only
+//    for upright left-to-right runs whose text normalisation and bidi left
+//    alone (anything else could not be matched character for character), and
+//    absent otherwise — the text layer then does what it always did.
+const ZERO_WIDTH_FROM = 'new RegExp("^(\\\\s)|(\\\\p{Mn})|(\\\\p{Cf})$","u")';
+const ZERO_WIDTH_TO = 'new RegExp("^(\\\\s)|^(\\\\p{Mn}+)$|(\\\\p{Cf})$","u")';
+// Every piece pushed into an item's str gets the advance it starts at, in a
+// parallel array: a glyph (its advance already added, hence `- h`), the space
+// saveLastChar puts before it, and the space addFakeSpaces puts in a gap.
+const CHAR_X_GLYPH_FROM = 'const d=s.unicode;saveLastChar(d)&&u.str.push(" ");u.str.push(d);';
+const CHAR_X_GLYPH_TO = 'const d=s.unicode,recallAt=r.vertical?NaN:u.totalWidth+(u.width-h)*u.textAdvanceScale,recallX=u.recallX||(u.recallX=[]);'
+  + 'saveLastChar(d)&&(u.str.push(" "),recallX.push(recallAt));u.str.push(d);recallX.push(recallAt);';
+const CHAR_X_SPACE_FROM = 'if(p.initialized){resetLastChars();p.str.push(" ")}return!1}';
+const CHAR_X_SPACE_TO = 'if(p.initialized){resetLastChars();p.str.push(" ");(p.recallX||(p.recallX=[])).push(p.vertical?NaN:p.totalWidth+p.width*p.textAdvanceScale)}return!1}';
+const CHAR_X_RESET_FROM = "p.initialized=!1;p.str.length=0";
+const CHAR_X_RESET_TO = "p.initialized=!1;p.str.length=0;p.recallX&&(p.recallX.length=0)";
+const CHAR_X_ITEM_FROM = 'function runBidiTransform(e){let t=e.str.join("");d||(t=(0,r.normalizeUnicode)(t));const a=(0,b.bidi)(t,-1,e.vertical);'
+  + "return{str:a.str,dir:a.dir,width:Math.abs(e.totalWidth),height:Math.abs(e.totalHeight),transform:e.transform,fontName:e.fontName,hasEOL:e.hasEOL}}";
+const CHAR_X_ITEM_TO = 'function runBidiTransform(e){let t=e.str.join("");const recallRaw=t;d||(t=(0,r.normalizeUnicode)(t));const a=(0,b.bidi)(t,-1,e.vertical);'
+  + "const recallItem={str:a.str,dir:a.dir,width:Math.abs(e.totalWidth),height:Math.abs(e.totalHeight),transform:e.transform,fontName:e.fontName,hasEOL:e.hasEOL};"
+  + "const recallX=e.recallX;"
+  + 'if(recallX&&!e.vertical&&e.totalWidth>0&&recallX.length===e.str.length&&a.str===recallRaw&&a.dir!=="rtl"){'
+  + "const recallCx=[];let recallOk=!0;"
+  + "for(let recallI=0;recallI<e.str.length;recallI++){const recallAt=recallX[recallI];if(!isFinite(recallAt)){recallOk=!1;break}"
+  + "for(let recallJ=0;recallJ<e.str[recallI].length;recallJ++)recallCx.push(Math.round(recallAt*1e3)/1e3)}"
+  + "recallCx.push(Math.round(e.totalWidth*1e3)/1e3);"
+  + "recallOk&&recallCx.length===a.str.length+1&&(recallItem.charX=recallCx)}"
+  + "return recallItem}";
+
+export const PDFJS_WORKER_PATCHES = [
+  {
+    name: "glyph-with-mark-has-width",
+    edits: [[ZERO_WIDTH_FROM, ZERO_WIDTH_TO]]
+  },
+  {
+    name: "text-item-char-x",
+    edits: [
+      [CHAR_X_GLYPH_FROM, CHAR_X_GLYPH_TO],
+      [CHAR_X_SPACE_FROM, CHAR_X_SPACE_TO],
+      [CHAR_X_RESET_FROM, CHAR_X_RESET_TO],
+      [CHAR_X_ITEM_FROM, CHAR_X_ITEM_TO]
+    ]
+  }
+];
+
 function occurrences(text, needle) {
   let count = 0;
   for (let at = text.indexOf(needle); at !== -1; at = text.indexOf(needle, at + needle.length)) count += 1;
@@ -80,10 +154,19 @@ function occurrences(text, needle) {
 // was found exactly once applied, the names of the patches now in it (applied
 // here, or already there), and the names that could not be applied.
 export function patchPdfjsSource(source) {
+  return applyPatches(source, PDFJS_PATCHES);
+}
+
+// The same, for pdf.worker.min.js — PDFJS_WORKER_PATCHES above.
+export function patchPdfjsWorkerSource(source) {
+  return applyPatches(source, PDFJS_WORKER_PATCHES);
+}
+
+function applyPatches(source, patches) {
   let text = String(source ?? "");
   const applied = [];
   const missing = [];
-  for (const patch of PDFJS_PATCHES) {
+  for (const patch of patches) {
     if (patch.edits.every(([, to]) => occurrences(text, to) === 1)) {
       applied.push(patch.name);
       continue;

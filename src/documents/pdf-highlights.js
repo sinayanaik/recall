@@ -26,7 +26,7 @@ import { el } from "../core/dom.js?v=__BUILD__";
 import { lastInkContactWasPen, msSinceLastInkStroke } from "../core/gesture.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { stripInvalidUnicode } from "../core/text.js?v=__BUILD__";
-import { quadToPageBox, textForAnchorRange, textItemBox } from "./pdf-selection.js?v=__BUILD__";
+import { devanagariLogicalOrder, quadToPageBox, textForAnchorRange, textItemBox, textItemCharX, textItemWords } from "./pdf-selection.js?v=__BUILD__";
 import { pdfAreaLayer, pdfMarkLayer, pdfPageTextItems, pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
 import { MARK_HIGHLIGHT_DEFAULT, MARK_HIGHLIGHT_HEX } from "../format/highlight-colors.js?v=__BUILD__";
 import { inkFilingColor } from "../format/ink-colors.js?v=__BUILD__";
@@ -496,7 +496,10 @@ export function repairDocumentHighlightText(pageNumber) {
 // is what makes this safe to run over data whose provenance is not knowable: a
 // quad that is already right lands on the same band and is left alone, and a
 // quad with no text under it at all (a region, a scanned page) is declined.
-export const QUAD_GEOMETRY_VERSION = 2;
+//
+// Version 3 is the same idea about where a highlight sits ALONG its line: see
+// "Highlights made over a drifting text layer" below.
+export const QUAD_GEOMETRY_VERSION = 3;
 
 // How much of an item's own height has to fall inside the quad before that item
 // is taken as "the line this highlight is on". Generous, because the whole
@@ -552,6 +555,10 @@ export function repairDocumentHighlightQuads(pageNumber) {
   const records = documentHighlights();
   if (!records.length) return false;
   let changed = false;
+  let words = null;
+  let notes = null;
+  let noteTextById = null;
+  let renamed = false;
   const next = records.map((record) => {
     if (record.qv >= QUAD_GEOMETRY_VERSION) return record;
     const quads = record.quads || [];
@@ -571,7 +578,8 @@ export function repairDocumentHighlightQuads(pageNumber) {
       return { ...record, qv: QUAD_GEOMETRY_VERSION };
     }
     let moved = false;
-    const snapped = quads.map((quad) => {
+    // Version 2's band is already right on a record stamped with it.
+    const snapped = (record.qv >= 2) ? quads : quads.map((quad) => {
       const band = lineBandForQuad(items, quad);
       if (!band) return quad;
       if (Math.abs(band.y0 - quad.rect[1]) < QUAD_SNAP_EPSILON
@@ -579,6 +587,33 @@ export function repairDocumentHighlightQuads(pageNumber) {
       moved = true;
       return { ...quad, rect: [quad.rect[0], band.y0, quad.rect[2], band.y1] };
     });
+    // Version 3: along the line, for the scripts the old text layer drifted on.
+    if (DRIFTED_SCRIPT.test(String(record.text || ""))) {
+      if (!words) words = textLayerWords(items);
+      // A page whose items carry no positions (pdf.js loaded unpatched) cannot
+      // say where the words are: the record waits for one that can, with the
+      // band it already has stamped — and is not rewritten on every paint
+      // while it waits.
+      if (!words.length) {
+        if (record.qv === 2 && !moved) return record;
+        changed = true;
+        return { ...record, quads: moved ? snapped : quads, qv: 2 };
+      }
+      changed = true;
+      const onWords = highlightOnWords(items, words, record, moved ? snapped : quads);
+      if (onWords) {
+        if (onWords.text !== record.text) {
+          if (notes === null) {
+            notes = state.notes || "";
+            noteTextById = readHighlightNotes(notes);
+          }
+          const note = noteTextById.get(record.id) || "";
+          if (note) notes = setHighlightNoteInSource(notes, record.id, note, documentExcerptLabel(onWords.text));
+          renamed = true;
+        }
+        return { ...record, ...onWords, qv: QUAD_GEOMETRY_VERSION };
+      }
+    }
     changed = true;
     // Stamped whether or not anything moved: the question "has this record been
     // through the repair?" has to be answerable without re-deriving it, or a
@@ -592,7 +627,10 @@ export function repairDocumentHighlightQuads(pageNumber) {
     return { ...record, quads: moved ? snapped : quads, qv: QUAD_GEOMETRY_VERSION };
   });
   if (!changed) return false;
+  if (notes !== null && notes !== state.notes) state.notes = notes;
   commitDocumentHighlights(next, { notify: false });
+  // A highlight whose words were re-read is named differently in the pane.
+  if (renamed) scheduleRepairNotify();
   // Repainted here rather than left to the caller. buildPageLayers paints the
   // marks BEFORE it calls the page-painted hook this repair runs from, so the
   // bands already on screen are the ones just corrected — without this the page
@@ -604,6 +642,108 @@ export function repairDocumentHighlightQuads(pageNumber) {
   // about, and this runs once per page as a document is read through.
   paintDocumentHighlights(pageNumber);
   return true;
+}
+
+// ── Highlights made over a drifting text layer ──────────────────────────────
+//
+// Until the text layer placed its words where the page paints them (pdf-view.js,
+// appendTextItem, from the real character positions the patched pdf.js worker
+// reports), it set each line in the browser's own font and stretched it to the
+// line's width. On a Latin line that is close; on a line of Hindi the words sat
+// up to a word away from the painted ones, and a highlight was captured off
+// THOSE boxes: "अध्यात्मवादी" stored with a box that stopped at "…वा", "इसलिए"
+// with one a word to the left, and from a Recall export (whose Hindi pdf.js
+// read back in drawing order) words like "वेचन ि".
+//
+// What the reader saw and accepted was the box. So a highlight in one of those
+// scripts, made before this version, is moved onto the WORDS its box mostly
+// covers — every word whose middle is inside one of its quads, on that quad's
+// line — and then, if the words it says it holds are a run of those, onto just
+// that run. Its anchors and its text are re-read from the words it lands on.
+// Latin-script highlights are left where they are: the drift there was a
+// fraction of a letter, and a deliberate part-word highlight must not grow.
+const DRIFTED_SCRIPT = /[\u0900-\u0DFF\u0E00-\u0EFF\u1000-\u109F\u1780-\u17FF]/;
+
+// Every word on the page with its box in PDF user space, in reading order —
+// from items that carry real character positions, upright ones only.
+function textLayerWords(items) {
+  const words = [];
+  items.forEach((item, index) => {
+    const charX = textItemCharX(item);
+    const t = item?.transform;
+    if (!charX || !Array.isArray(t) || !(t[0] > 0) || Math.abs(t[1]) > 1e-6 || Math.abs(t[2]) > 1e-6) return;
+    const box = textItemBox(item);
+    textItemWords(item.str).forEach(({ from, to }) => {
+      let end = to;
+      while (end > from && /\s/.test(item.str[end - 1])) end -= 1;
+      let start = from;
+      while (start < end && /\s/.test(item.str[start])) start += 1;
+      if (end <= start) return;
+      words.push({
+        item: index,
+        from: start,
+        to: end,
+        text: item.str.slice(start, end),
+        x0: t[4] + charX[start],
+        x1: t[4] + charX[end],
+        y0: box.y0,
+        y1: box.y1
+      });
+    });
+  });
+  return words;
+}
+
+// { quads, anchor, focus, text } for `record` moved onto the words under its
+// quads, or null when there are none.
+function highlightOnWords(items, words, record, quads) {
+  const covered = [];
+  words.forEach((word) => {
+    const middle = (word.x0 + word.x1) / 2;
+    const height = word.y1 - word.y0;
+    const under = quads.some((quad) => {
+      const [x0, y0, x1, y1] = quad.rect;
+      const overlap = Math.min(word.y1, y1) - Math.max(word.y0, y0);
+      return middle >= x0 && middle <= x1 && height > 0 && overlap >= height * QUAD_SNAP_MIN_OVERLAP;
+    });
+    if (under) covered.push(word);
+  });
+  if (!covered.length) return null;
+  // The run of them that IS what the highlight says it holds, when there is one.
+  const wanted = devanagariLogicalOrder(String(record.text || "")).str.replace(/\s+/g, " ").trim();
+  let run = covered;
+  if (wanted) {
+    for (let i = 0; i < covered.length && run === covered; i += 1) {
+      let joined = "";
+      for (let j = i; j < covered.length; j += 1) {
+        joined = joined ? `${joined} ${covered[j].text}` : covered[j].text;
+        if (joined === wanted) { run = covered.slice(i, j + 1); break; }
+        if (joined.length >= wanted.length) break;
+      }
+    }
+  }
+  // One quad per line, each the line's band.
+  const lines = [];
+  run.forEach((word) => {
+    const line = lines.find((entry) => Math.abs((entry.y0 + entry.y1) / 2 - (word.y0 + word.y1) / 2) < (word.y1 - word.y0) / 2);
+    if (line) {
+      line.x0 = Math.min(line.x0, word.x0);
+      line.x1 = Math.max(line.x1, word.x1);
+    } else {
+      lines.push({ x0: word.x0, x1: word.x1, y0: word.y0, y1: word.y1 });
+    }
+  });
+  const page = quads[0]?.page ?? record.page;
+  const nextQuads = lines.map((line) => {
+    const band = lineBandForQuad(items, { rect: [line.x0, line.y0, line.x1, line.y1] }) || line;
+    return { page, rect: [line.x0, band.y0, line.x1, band.y1] };
+  });
+  const first = run[0];
+  const last = run[run.length - 1];
+  const anchor = { ...(record.anchor || {}), page, item: first.item, ch: first.from };
+  const focus = { ...(record.focus || {}), page, item: last.item, ch: last.to };
+  const text = stripInvalidUnicode(textForAnchorRange(items, anchor, focus) || run.map((word) => word.text).join(" "));
+  return { quads: nextQuads, anchor, focus, text };
 }
 
 // ── Create / recolour / remove ──────────────────────────────────────────────

@@ -27,7 +27,7 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { pdfjsSources } from "./pdfjs-source.mjs";
+import { patchedPdfjsWorkerPath, pdfjsSources } from "./pdfjs-source.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
@@ -55,12 +55,16 @@ async function appTextRules() {
 pdfjsSources(); // makes sure the npm copy is unpacked
 const require = createRequire(import.meta.url);
 const pdfjs = require("/tmp/recall-pdfjs/package/legacy/build/pdf.min.js");
-pdfjs.GlobalWorkerOptions.workerSrc = "/tmp/recall-pdfjs/package/legacy/build/pdf.worker.min.js";
+// The worker the app runs, patched (src/core/pdfjs-patches.js), so the items
+// are the ones its text layer is given.
+pdfjs.GlobalWorkerOptions.workerSrc = patchedPdfjsWorkerPath();
 
-const { keptTextItem, textItemGap, textItemShadows } = await appTextRules();
+const { isRecallExport, keptTextItem, readPageTextContent, textItemGap, textItemShadows } = await appTextRules();
 const doc = await pdfjs.getDocument({ data: new Uint8Array(readFileSync(file)), isEvalSupported: false, verbosity: 0 }).promise;
 const page = await doc.getPage(pageNumber);
-const { items, styles } = await page.getTextContent();
+// Read as the app reads it: a Recall export's Hindi put back in typed order.
+const { items, styles } = await readPageTextContent(page, doc);
+if (await isRecallExport(doc)) console.log("(a Recall export: its Devanagari is read back in typed order, as the app reads it)");
 
 let joined = "";
 let previous = null;

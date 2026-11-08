@@ -16,7 +16,7 @@ import zlib from "node:zlib";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { pdflibSource } from "./pdflib-source.mjs";
 import { fontkitSource, fontFile } from "./fontkit-source.mjs";
-import { pdfjsSources } from "./pdfjs-source.mjs";
+import { patchedPdfjsWorkerPath, pdfjsSources } from "./pdfjs-source.mjs";
 import { buildFixturePdf } from "./pdf-fixture.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -50,7 +50,16 @@ const require = createRequire(import.meta.url);
 // (pdf.js warns at load that it cannot draw without node-canvas: this check
 // only reads text, bookmarks and links, so that is expected.)
 const pdfjs = require("/tmp/recall-pdfjs/package/legacy/build/pdf.min.js");
-pdfjs.GlobalWorkerOptions.workerSrc = "/tmp/recall-pdfjs/package/legacy/build/pdf.worker.min.js";
+// The worker as the app runs it (src/core/pdfjs-patches.js): a half form or a
+// conjunct has its width, and every item says where its characters are.
+pdfjs.GlobalWorkerOptions.workerSrc = patchedPdfjsWorkerPath();
+// How the reader puts a Recall export's Hindi back in typed order
+// (src/documents/pdf-selection.js), loaded with its browser-only imports
+// stubbed — as tools/pdf-text-probe.mjs loads it.
+const readingRules = await import(`data:text/javascript;base64,${Buffer.from(
+  readFileSync(path.join(ROOT, "src/documents/pdf-selection.js"), "utf8").replace(/^import .*$/gm, "")
+  + "\nfunction stripInvalidUnicode(value) { return value; }\nfunction pdfPageElement() { return null; }\nfunction pdfPageViewport() { return null; }\n"
+).toString("base64")}`);
 
 const results = [];
 async function must(name, fn) {
@@ -92,12 +101,12 @@ async function build(markdown, options = {}, { cuts = null, part = null, defer =
   return { flow, plan, out, fontSet };
 }
 
-async function pdfText(bytes) {
+async function pdfText(bytes, { logical = false } = {}) {
   const doc = await pdfjs.getDocument({ data: new Uint8Array(bytes), isEvalSupported: false, verbosity: 0 }).promise;
   const pages = [];
   for (let i = 1; i <= doc.numPages; i += 1) {
     const page = await doc.getPage(i);
-    const content = await page.getTextContent();
+    const content = logical ? await readingRules.readPageTextContent(page, doc) : await page.getTextContent();
     pages.push(content.items.map((item) => item.str + (item.hasEOL ? "\n" : "")).join(""));
   }
   const outline = await doc.getOutline();
@@ -338,9 +347,9 @@ await must("...bold and italic Hindi use the bold and italic Devanagari faces", 
   return (faces.has("deva|devanagari|700|normal") && faces.has("deva|devanagari|400|italic")) || JSON.stringify([...faces]);
 });
 // pdf.js reads shaped Devanagari back in drawing order (a ि or a reph comes
-// out where it is drawn, not where it was typed) and puts spaces around some
-// vowel signs, as it does for any Hindi PDF — so the words checked here are
-// ones without a reordered sign, and spaces are ignored.
+// out where it is drawn, not where it was typed) — so the words checked here
+// are ones without a reordered sign, and spaces are ignored. The reader puts
+// the order back; that is checked further down, against the whole text.
 const hindiSolid = hindiText.replace(/\s+/g, "");
 await must("...its letters can be read back out of the PDF", () => (
   ["भारतीय", "शाखा", "प्रत्यक्ष", "mixedwithEnglish"].every((word) => hindiSolid.includes(word)) || hindiText
@@ -349,6 +358,57 @@ await must("...Hindi inside code is drawn, not dropped", () => (
   hindiSolid.includes('tattva=["पृथ्वी","जल"]') || hindiText
 ));
 await must("...and the PDF stays small (under 60KB)", () => hindi.out.bytes.length < 60000 || `${hindi.out.bytes.length} bytes`);
+
+// ── ...and read back the way the reader reads it ────────────────────────────
+//
+// The report: on a Hindi export, a double-click selected part of a word and a
+// highlight sat a word away from the one it named. pdf.js gave every half form
+// and conjunct no width and read the glyphs in DRAWING order; the worker the
+// app runs is patched for the first (src/core/pdfjs-patches.js), and the reader
+// undoes the second for files this writer made (devanagariLogicalOrder).
+const REPORT = "कि भारतीय दर्शन में कि एक दर्शन ऐसा है जो लोगों के लिए बड़ा विवाद का विषय रहा है उसका कारण भी है आज के भारत के लोग जो हैं वह अध्यात्मवादी हैं भारत के संस्कार ही ऐसे बने हैं वेद ने भारत को क्यों रास्ता दिखाया है उपनिषद में भी ब्रह्म ज्ञान का और अध्यात्म का आत्मा का सारा विवेचन किया गया है इसलिए भारतीय लोग जो कोई ऐसी चीज हो चार्वाक के प्रति एक दृष्टिकोण कर्म स्त्रियाँ पूर्णिमा शिक्षा आर्थिक क़िला प्रत्यक्ष क्षत्रिय ऐतिहासिक सिद्धार्थ विद्यार्थी दक्षिण पश्चिम निर्णय परिणाम कार्यक्रम स्थिति प्रक्रिया व्यक्ति शक्ति सिद्धि बुद्धि ऋषि दृष्टि सृष्टि फ़िल्म दिल्ली चिट्ठी किताबें बच्चियाँ लड़कियों तीर्थ सूर्य वर्ष पर्याप्त धार्मिक मार्ग स्वर्ग दुर्गा निर्मल शर्मा गर्मी वर्णन चर्चा अर्जुन क्रिकेट प्रिय त्रिकोण श्रीमती";
+const report = await build(`${REPORT}\n`);
+const reportLogical = flat((await pdfText(report.out.bytes, { logical: true })).pages.join(" ")).trim();
+const reportRaw = flat((await pdfText(report.out.bytes)).pages.join(" ")).trim();
+await must("the export's producer is the one the reader recognises", async () => {
+  const doc = await pdfjs.getDocument({ data: new Uint8Array(report.out.bytes), isEvalSupported: false, verbosity: 0 }).promise;
+  const ok = await readingRules.isRecallExport(doc);
+  await doc.destroy();
+  return ok === true || "isRecallExport said no";
+});
+await must("Hindi from an export reads back in typed order, word for word", () => {
+  const want = REPORT.split(" ");
+  const got = reportLogical.split(" ");
+  const wrong = want.map((word, i) => (word === got[i] ? null : `${word} ← ${got[i]}`)).filter(Boolean);
+  return (!wrong.length && got.length === want.length) || `${wrong.length} word(s) wrong of ${want.length}: ${wrong.slice(0, 8).join(", ")}`;
+});
+await must("...where pdf.js alone reads it in drawing order", () => (
+  (reportRaw.includes("िक") && reportRaw.includes("दशर्न")) || reportRaw.slice(0, 80)
+));
+await must("a line's item is as wide as the line the writer drew, and says where each word starts", async () => {
+  const doc = await pdfjs.getDocument({ data: new Uint8Array(report.out.bytes), isEvalSupported: false, verbosity: 0 }).promise;
+  const content = await readingRules.readPageTextContent(await doc.getPage(1), doc);
+  await doc.destroy();
+  const runs = report.out.textRuns[0];
+  const items = content.items.filter((item) => item.str);
+  if (items.length !== runs.length) return `${items.length} items for ${runs.length} lines`;
+  for (let i = 0; i < runs.length; i += 1) {
+    const run = runs[i];
+    const item = items[i];
+    const drawn = report.fontSet.measure(run.text, run.face, run.size);
+    if (Math.abs(item.width - drawn) > 0.05) return `line ${i + 1}: item ${item.width.toFixed(2)} wide, drawn ${drawn.toFixed(2)}`;
+    if (item.str !== run.text) return `line ${i + 1} reads “${item.str.slice(0, 40)}…”`;
+    let prefix = "";
+    for (const word of run.text.split(" ")) {
+      const at = item.charX[prefix.length];
+      const want = report.fontSet.measure(prefix, run.face, run.size);
+      if (Math.abs(at - want) > 0.05) return `“${word}” starts at ${at.toFixed(2)}, drawn at ${want.toFixed(2)}`;
+      prefix += `${word} `;
+    }
+  }
+  return true;
+});
+
 await must("a measured line is the line drawn: widths are the glyphs' own advances", () => {
   const font = hindi.fontSet.fonts.get("deva|devanagari|400|normal");
   const word = "प्रत्यक्ष";

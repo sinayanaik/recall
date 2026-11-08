@@ -7,7 +7,7 @@
 // be deferred without giving up offline support.
 
 import { configureMermaid, currentThemeId } from "../ui/theme.js?v=__BUILD__";
-import { patchPdfjsSource } from "./pdfjs-patches.js?v=__BUILD__";
+import { patchPdfjsSource, patchPdfjsWorkerSource } from "./pdfjs-patches.js?v=__BUILD__";
 
 // ── Deferred third-party libraries ──────────────────────────────────────────
 //
@@ -275,7 +275,13 @@ let pdfjsPatches = { applied: [], missing: [], loaded: "" };
 // unpatched, "external" when something else put pdf.js on the page first), for
 // App Info and the checks.
 export function pdfjsPatchStatus() {
-  return { ...pdfjsPatches, applied: [...pdfjsPatches.applied], missing: [...pdfjsPatches.missing] };
+  const worker = pdfjsPatches.worker || { applied: [], missing: [] };
+  return {
+    ...pdfjsPatches,
+    applied: [...pdfjsPatches.applied],
+    missing: [...pdfjsPatches.missing],
+    worker: { applied: [...worker.applied], missing: [...worker.missing] }
+  };
 }
 
 function patchedPdfjsBlobUrl() {
@@ -320,8 +326,14 @@ export async function ensurePdfJs() {
   try {
     const response = await fetch(LIB_URLS.pdfjsWorker);
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const source = await response.blob();
-    pdfWorkerBlobUrl = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
+    // Patched as the library is (src/core/pdfjs-patches.js, PDFJS_WORKER_
+    // PATCHES): where each character of a text item really is, which the text
+    // layer places its words by. A patch that does not apply leaves that part
+    // as published, and the text layer falls back to spreading the words.
+    const { text, applied, missing } = patchPdfjsWorkerSource(await response.text());
+    if (missing.length) console.warn(`pdf.js worker: could not apply ${missing.join(", ")} — that part runs as published`);
+    pdfjsPatches = { ...pdfjsPatches, worker: { applied, missing } };
+    pdfWorkerBlobUrl = URL.createObjectURL(new Blob([text], { type: "text/javascript" }));
     window.pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerBlobUrl;
   } catch (error) {
     console.warn("pdf.js worker unavailable — naming the CDN copy instead", error);
