@@ -142,6 +142,9 @@ export function pageGeometry(options, match = null) {
 export const MD_PDF_COLOURS = {
   text: "#1b1d21",
   heading: "#0f1115",
+  // The Notes view's accent, dark enough to print: H1 and H3 are set in it,
+  // and every heading's rule is drawn in it (.rendered h1::after…).
+  accent: "#0f766e",
   muted: "#5b616b",
   link: "#1a56b0",
   rule: "#c9ced6",
@@ -417,15 +420,29 @@ export function collectNeeds(blocks) {
 
 export const mathKey = (tex, display) => `${display ? "D" : "I"}:${tex}`;
 export const diagramKey = (block) => `${block.kind}:${block.width || 0}:${block.source}`;
+const graphemeSegmenter = typeof Intl !== "undefined" && Intl.Segmenter ? new Intl.Segmenter(undefined, { granularity: "grapheme" }) : null;
+
+// The user-perceived characters of `text` (code points where Intl.Segmenter
+// is missing).
+export function graphemes(text) {
+  if (!graphemeSegmenter) return Array.from(String(text));
+  return Array.from(graphemeSegmenter.segment(String(text)), (part) => part.segment);
+}
+
 export const glyphKey = (word, family, bold, italic) => `${family}|${bold ? 1 : 0}|${italic ? 1 : 0}|${word}`;
 
 // ── Layout ─────────────────────────────────────────────────────────────────
 
 const HEADING_SIZE = [1.55, 1.3, 1.15, 1.04, 1, 0.95];
 const HEADING_SCORE = [5, 4, 3, 2, 2, 2];
+// The rule under a heading, as in Notes: how much of the column it spans and
+// how thick it is (H5 and H6 have none).
+const HEADING_RULE = [[1, 1.4], [0.6, 1.4], [0.4, 1], [0.28, 0.8]];
 const LINE = 1.32;
 const CODE_SCALE = 0.88;
-const TABLE_SCALE = 0.92;
+// Tables as the Notes view sets them (.rendered table): the column's whole
+// width, the body text's size near enough, cells with room around their words.
+const TABLE_SCALE = 0.95;
 
 // assets: {
 //   math(key) → { key, w, h, depth } (points, at the text size given in options) | null
@@ -517,8 +534,9 @@ export function layoutMarkdown({ blocks, fontSet, options, geometry, assets = {}
       if (runs.some((run) => !run.face)) {
         // A word with a character no embedded face has: drawn as a picture of
         // the whole word, which the browser's text engine shapes properly
-        // (Devanagari, Arabic, emoji). Without a picture for it, the
-        // characters that cannot be drawn are left out rather than tofu'd.
+        // (Bengali, Arabic, CJK, emoji — Devanagari has a face of its own).
+        // Without a picture for it, the characters that cannot be drawn are
+        // left out rather than tofu'd.
         const glyph = assets.glyph ? assets.glyph(glyphKey(part, fam, bold, italic)) : null;
         if (glyph) {
           boxes.push({
@@ -545,12 +563,14 @@ export function layoutMarkdown({ blocks, fontSet, options, geometry, assets = {}
     return { kind: "word", w: measured.reduce((sum, run) => sum + run.w, 0), runs: measured, style, size: pieceSize, colour };
   }
 
-  // Split a word wider than the line into pieces that fit (by character).
+  // Split a word wider than the line into pieces that fit — by grapheme
+  // cluster, so a Devanagari conjunct or a letter and its vowel sign is never
+  // cut in two (it would be shaped as two broken halves).
   function splitWord(box, width) {
     const out = [];
     let current = { ...box, runs: [], w: 0 };
     for (const run of box.runs) {
-      for (const ch of run.text) {
+      for (const ch of graphemes(run.text)) {
         const w = fontSet.measure(ch, run.face, box.size);
         if (current.w + w > width && current.w > 0) {
           out.push(current);
@@ -771,9 +791,16 @@ export function layoutMarkdown({ blocks, fontSet, options, geometry, assets = {}
         const count = usedSlugs.get(slug) || 0;
         usedSlugs.set(slug, count + 1);
         if (count) slug = `${slug}-${count}`;
-        const made = inlineRows(block.inline, ctx, baseStyle({ size: hs, lh: 1.22, colour: MD_PDF_COLOURS.heading, bold: true }));
+        const colour = level === 1 || level === 3 ? MD_PDF_COLOURS.accent : MD_PDF_COLOURS.heading;
+        const made = inlineRows(block.inline, ctx, baseStyle({ size: hs, lh: 1.22, colour, bold: true }));
         if (made.length) {
           const first = made[0];
+          const rule = HEADING_RULE[level - 1];
+          if (rule) {
+            const last = made[made.length - 1];
+            const w = Math.min(ctx.width * rule[0], level === 2 ? hs * 20 : level === 3 ? hs * 14 : level === 4 ? hs * 10 : ctx.width);
+            last.ops.push({ t: "line", x1: ctx.x, x2: ctx.x + w, y: last.h + rule[1] / 2 + 1, lw: rule[1], colour: MD_PDF_COLOURS.accent });
+          }
           first.heading = { level, text, slug };
           headings.push({ level, text, slug, row: rows.indexOf(first) });
           anchors.set(slug, rows.indexOf(first));
@@ -782,7 +809,7 @@ export function layoutMarkdown({ blocks, fontSet, options, geometry, assets = {}
           made.forEach((row, i) => { if (i > 0) row.cut = { score: 0, clean: false }; });
           previousWasHeading = true;
         }
-        addGap(hs * 0.28);
+        addGap(hs * 0.28 + 3);
         return;
       }
       case "paragraph": {
@@ -838,7 +865,7 @@ export function layoutMarkdown({ blocks, fontSet, options, geometry, assets = {}
         block.items.forEach((item, index) => {
           // Between items the list's own spacing, not the paragraph gap the
           // item's last paragraph asked for: a tight list is tight.
-          if (index > 0) pendingGap = block.loose ? size * 0.45 : size * 0.14;
+          if (index > 0) pendingGap = block.loose ? size * 0.45 : size * 0.3;
           const inner = { ...ctx, top: false, x: ctx.x + markerW, width: ctx.width - markerW, itemScore: ctx.top ? 0.5 : 0, itemClean: Boolean(ctx.top && !ctx.quote) };
           const startRow = rows.length;
           const itemBlocks = item.blocks.length ? item.blocks : [{ type: "paragraph", inline: [{ t: "text", text: " ", s: {} }] }];
@@ -974,10 +1001,10 @@ export function layoutMarkdown({ blocks, fontSet, options, geometry, assets = {}
   function layoutTable(block, ctx) {
     const cols = Math.max(block.header.length, ...block.rows.map((r) => r.length), 1);
     const tSize = size * TABLE_SCALE;
-    const padX = 3.5;
-    const padY = 2.2;
-    const headBase = baseStyle({ size: tSize, lh: 1.25, bold: true, colour: MD_PDF_COLOURS.heading });
-    const cellBase = baseStyle({ size: tSize, lh: 1.25 });
+    const padX = 6;
+    const padY = 3.5;
+    const headBase = baseStyle({ size: tSize, lh: 1.35, bold: true, colour: MD_PDF_COLOURS.heading });
+    const cellBase = baseStyle({ size: tSize, lh: 1.35 });
     const all = [block.header, ...block.rows];
     // Natural (one line) and minimum (longest word) width of each column.
     const natural = new Array(cols).fill(0);
@@ -998,8 +1025,13 @@ export function layoutMarkdown({ blocks, fontSet, options, geometry, assets = {}
     });
     let widths;
     const sumNatural = natural.reduce((a, b) => a + b, 0);
-    if (sumNatural <= ctx.width) widths = natural.map((w) => Math.max(w, 18));
-    else {
+    if (sumNatural <= ctx.width) {
+      // Room to spare: the table spans the column, as in Notes, each column
+      // given a share of the spare in proportion to what it holds.
+      const base = natural.map((w) => Math.max(w, 18));
+      const sumBase = base.reduce((a, b) => a + b, 0) || 1;
+      widths = base.map((w) => w + ((ctx.width - sumBase) * w) / sumBase);
+    } else {
       const sumMin = minimum.reduce((a, b) => a + b, 0);
       if (sumMin >= ctx.width) widths = minimum.map((w) => (w * ctx.width) / sumMin);
       else {
@@ -1019,7 +1051,7 @@ export function layoutMarkdown({ blocks, fontSet, options, geometry, assets = {}
       const laid = [];
       for (let c = 0; c < cols; c += 1) laid.push(breakLines(boxesFor(cells[c] || [], base), Math.max(4, widths[c] - 2 * padX), base));
       const heights = laid.map((lines) => lines.reduce((sum, l) => sum + l.above + l.below, 0));
-      const h = Math.max(tSize * 1.25, ...heights) + 2 * padY;
+      const h = Math.max(tSize * 1.35, ...heights) + 2 * padY;
       const ops = [];
       if (r === 0) ops.push({ t: "rect", x: ctx.x, y: 0, w: tableW, h, fill: MD_PDF_COLOURS.tableHeadBg });
       laid.forEach((lines, c) => {
@@ -1045,6 +1077,19 @@ export function layoutMarkdown({ blocks, fontSet, options, geometry, assets = {}
   }
 
   layoutBlocks(blocks, { x: 0, width: g.columnWidth, top: true, decos: [] }, 0);
+  // Each row's place in its block (`line` of `lines`), so the planner can
+  // tell a cut that leaves a paragraph's last line alone at the top of a page
+  // (or its first alone at the foot of one) from a better one.
+  const perBlock = new Map();
+  for (const row of rows) {
+    const block = row.key.slice(0, row.key.lastIndexOf(":"));
+    perBlock.set(block, (perBlock.get(block) || 0) + 1);
+  }
+  for (const row of rows) {
+    const block = row.key.slice(0, row.key.lastIndexOf(":"));
+    row.line = Number(row.key.slice(row.key.lastIndexOf(":") + 1));
+    row.lines = perBlock.get(block);
+  }
   const height = rows.length ? rows[rows.length - 1].y + rows[rows.length - 1].h : 0;
   return { rows, headings, anchors, height, width: g.columnWidth, geometry: g, options: o };
 }

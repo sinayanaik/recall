@@ -251,11 +251,22 @@ async function relayoutMdPdf() {
   }
   mdStatus("Laying out the pages…");
   try {
-    const laid = await mdSession.layout(markdown, mdState.options, { match: mdState.match, onProgress: (text) => { if (seq === buildSeq) mdStatus(text); } });
+    const laid = await mdSession.layout(markdown, mdState.options, {
+      match: mdState.match,
+      onProgress: (text) => { if (seq === buildSeq) mdStatus(text); },
+      isCurrent: () => seq === buildSeq
+    });
     if (seq !== buildSeq) return;
     mdState.laid = laid;
+    mdState.previewStale = true;
     replan();
-    await renderMdPdfPreview(seq);
+    // The preview is a whole PDF written and parsed again: only worth it when
+    // it can be seen. On a phone the Markdown tab hides it, and every
+    // keystroke there would otherwise pay for a preview nobody looks at (and
+    // draw it at a guessed width, wider than the screen). The Preview tab
+    // draws it when it is opened.
+    if (previewVisible()) await renderMdPdfPreview(seq);
+    else mdStatus("");
   } catch (error) {
     if (seq !== buildSeq) return;
     mdState.laid = null;
@@ -265,6 +276,24 @@ async function relayoutMdPdf() {
       ? "The PDF fonts need a connection the first time. Connect once and try again."
       : `Could not lay out the PDF — ${error?.message || "unexpected error"}`, "error");
     paintSaveButton();
+  }
+}
+
+function previewVisible() {
+  const scroll = mdq("[data-md-scroll]");
+  return Boolean(scroll && scroll.offsetParent && scroll.clientWidth > 0);
+}
+
+// The preview, drawn now if the layout has changed since it was last drawn.
+async function showPreviewIfStale() {
+  if (!mdState?.laid || !mdState.previewStale || !previewVisible()) return;
+  const seq = buildSeq;
+  try {
+    await renderMdPdfPreview(seq);
+  } catch (error) {
+    if (seq !== buildSeq) return;
+    console.warn("Markdown → PDF preview failed", error);
+    mdStatus(`Could not draw the preview — ${error?.message || "unexpected error"}`, "error");
   }
 }
 
@@ -288,7 +317,7 @@ function scheduleMeter() {
     } catch (error) {
       mdq("[data-md-meter]").textContent = "";
     }
-  }, 250);
+  }, 700);
 }
 
 // The continuous strip, drawn by pdf.js — in TILES, and only the ones near the
@@ -336,7 +365,9 @@ async function drawTile(tile) {
 async function renderMdPdfPreview(seq) {
   const host = mdq("[data-md-pages]");
   const scroll = mdq("[data-md-scroll]");
-  const out = await mdSession.write(mdState.laid, null, { preview: true });
+  const laid = mdState.laid;
+  mdStatus("Drawing the preview…");
+  const out = await mdSession.write(laid, null, { preview: true });
   if (seq !== buildSeq) return;
   if (!(await ensurePdfJs())) {
     mdStatus("The PDF reader did not load — reconnect once and try again.", "error");
@@ -347,13 +378,21 @@ async function renderMdPdfPreview(seq) {
     doc.destroy();
     return;
   }
+  if (!previewVisible()) {
+    // Hidden while it was being written (the Markdown tab chosen again):
+    // drawn when the Preview tab is opened, at the width it has then.
+    doc.destroy();
+    mdStatus("");
+    return;
+  }
   releasePreview();
   previewDoc = doc;
-  // Less the gutter the page numbers sit in (.md-pdf-pages padding), so a
-  // label never covers the words it is about.
-  const width = Math.max(220, (scroll.clientWidth || 480) - 16 - PREVIEW_GUTTER);
+  mdState.previewStale = false;
+  // Less the scroll box's padding and the gutter the page numbers sit in
+  // (.md-pdf-pages padding), so a label never covers the words it is about.
+  const width = Math.max(160, scroll.clientWidth - 16 - PREVIEW_GUTTER);
   const ratio = Math.min(2, window.devicePixelRatio || 1);
-  const pagesMeta = previewPlan(mdState.laid.flow).pages;
+  const pagesMeta = previewPlan(laid.flow).pages;
   const scale = width / (pagesMeta[0]?.width || 1);
   const frag = document.createDocumentFragment();
   const tiles = [];
@@ -383,7 +422,10 @@ async function renderMdPdfPreview(seq) {
   overlayEl.className = "md-pdf-overlay";
   overlayEl.dataset.mdOverlay = "";
   host.appendChild(overlayEl);
-  mdState.preview = { scale, pages: pagesMeta };
+  // Where each page box really is: the overlay is placed from these, never
+  // from a sum of rounded heights and margins that drifts down a long strip.
+  const pageTops = [...host.querySelectorAll(".md-pdf-page")].map((box) => box.offsetTop);
+  mdState.preview = { scale, pages: pagesMeta, pageTops };
   scroll.scrollTop = keep;
   previewObserver = new IntersectionObserver((entries) => {
     for (const entry of entries) {
@@ -407,45 +449,45 @@ async function renderMdPdfPreview(seq) {
 // Preview pixels of a point `y` (points, down the column) in row `i`'s slice.
 function previewY(rowIndex, offset = 0) {
   const { flow } = mdState.laid;
-  const { scale, pages } = mdState.preview;
+  const { scale, pageTops } = mdState.preview;
   const plan = previewPlan(flow);
-  let top = 0;
   for (let p = 0; p < plan.pages.length; p += 1) {
     const slice = plan.slices[plan.pages[p].slices[0]];
     if (rowIndex >= slice.from && rowIndex < slice.to) {
       const first = flow.rows[slice.from];
       const repeat = slice.from > 0 && first.repeat ? first.repeat.h : 0;
-      return top + (flow.geometry.marginTop + repeat + flow.rows[rowIndex].y - first.y + offset) * scale;
+      return (pageTops[p] || 0) + (flow.geometry.marginTop + repeat + flow.rows[rowIndex].y - first.y + offset) * scale;
     }
-    top += pages[p].height * scale + 6;
   }
-  return top;
+  return pageTops[pageTops.length - 1] || 0;
 }
 
 // The column y (points) under a preview pixel y.
 function columnY(px) {
   const { flow } = mdState.laid;
-  const { scale } = mdState.preview;
+  const { scale, pageTops } = mdState.preview;
   const plan = previewPlan(flow);
-  let top = 0;
   for (let p = 0; p < plan.pages.length; p += 1) {
-    const page = plan.pages[p];
-    const slice = plan.slices[page.slices[0]];
-    const h = page.height * scale + 6;
-    if (px < top + h || p === plan.pages.length - 1) {
+    const next = pageTops[p + 1];
+    if (next === undefined || px < next || p === plan.pages.length - 1) {
+      const slice = plan.slices[plan.pages[p].slices[0]];
       const first = flow.rows[slice.from];
-      return first.y + (px - top) / scale - flow.geometry.marginTop;
+      const repeat = slice.from > 0 && first.repeat ? first.repeat.h : 0;
+      return first.y + (px - (pageTops[p] || 0)) / scale - flow.geometry.marginTop - repeat;
     }
-    top += h;
   }
   return 0;
 }
 
+// A break's line: halfway down the gap between the last row of one page and
+// the first of the next — clear of both, where the gap is a heading's or a
+// paragraph's space. (Its handle sits in the gutter, .md-pdf-cut-grip, so
+// nothing but the thin line itself is drawn over the page.)
 function lineYFor(rowIndex) {
   const { rows } = mdState.laid.flow;
   const prev = rows[rowIndex - 1];
   const gapMid = prev ? (prev.y + prev.h + rows[rowIndex].y) / 2 - rows[rowIndex].y : 0;
-  return previewY(rowIndex, gapMid);
+  return Math.max(0, previewY(rowIndex, gapMid) - 1);
 }
 
 function paintOverlay() {
@@ -525,6 +567,19 @@ let mdDrag = null;
 // that follows lands on the page — and would add a break. Swallowed.
 let hushClickUntil = 0;
 
+// The line being dragged is the SAME element the finger came down on: it is
+// marked selected and dragging by class, never repainted, because swapping
+// the element out from under a touch is how a phone loses the gesture to the
+// scroll box. The host captures the pointer, so the moves keep coming however
+// far the finger strays.
+function markCut(key, { selected = false, dragging = false } = {}) {
+  mdDialog.querySelectorAll(".md-pdf-cut").forEach((el) => {
+    const mine = el.dataset.cutKey === key;
+    el.classList.toggle("is-selected", mine && selected);
+    el.classList.toggle("is-dragging", mine && dragging);
+  });
+}
+
 function onOverlayPointerDown(event) {
   if (!mdState?.laid || !mdState.preview) return;
   if (event.target.closest("[data-cut-remove]")) return;
@@ -532,11 +587,35 @@ function onOverlayPointerDown(event) {
   if (line) {
     event.preventDefault();
     mdState.selectedKey = line.dataset.cutKey;
-    mdDrag = { from: line.dataset.cutKey, pointerId: event.pointerId, moved: false, to: null };
+    mdDrag = { from: line.dataset.cutKey, pointerId: event.pointerId, moved: false, to: null, clientY: event.clientY };
     hushClickUntil = Date.now() + 10000;
-    paintOverlay();
-    return;
+    try { mdq("[data-md-pages]").setPointerCapture(event.pointerId); } catch { /* an old browser: the window listeners still follow */ }
+    markCut(mdDrag.from, { selected: true, dragging: true });
+    startDragScroll();
   }
+}
+
+// Near the top or bottom of the preview while dragging a break, the preview
+// scrolls, so a break can be taken to a place that is not on screen.
+let dragScrollFrame = 0;
+function startDragScroll() {
+  cancelAnimationFrame(dragScrollFrame);
+  const step = () => {
+    if (!mdDrag || !mdState) return;
+    const scroll = mdq("[data-md-scroll]");
+    const box = scroll.getBoundingClientRect();
+    const edge = Math.min(56, box.height / 4);
+    let delta = 0;
+    if (mdDrag.clientY < box.top + edge) delta = -Math.ceil((box.top + edge - mdDrag.clientY) / 4);
+    else if (mdDrag.clientY > box.bottom - edge) delta = Math.ceil((mdDrag.clientY - (box.bottom - edge)) / 4);
+    if (delta) {
+      const before = scroll.scrollTop;
+      scroll.scrollTop += delta;
+      if (scroll.scrollTop !== before) moveDragTo(mdDrag.clientY, mdDrag.altKey);
+    }
+    dragScrollFrame = requestAnimationFrame(step);
+  };
+  dragScrollFrame = requestAnimationFrame(step);
 }
 
 // A click — not a pointerdown, which a finger starting to scroll the preview
@@ -563,12 +642,10 @@ function onOverlayClick(event) {
   changeCuts([...keysNow(), key]);
 }
 
-function onPointerMove(event) {
-  if (!mdDrag || event.pointerId !== mdDrag.pointerId) return;
-  mdDrag.moved = true;
-  const y = pointerColumnY(event);
+function moveDragTo(clientY, altKey) {
+  const y = pointerColumnY({ clientY });
   const others = new Set(keysNow().filter((k) => k !== mdDrag.from).map(indexOfKey));
-  const c = nearestCandidate(mdCutCandidates(event.altKey), y, others);
+  const c = nearestCandidate(mdCutCandidates(altKey), y, others);
   if (!c) return;
   mdDrag.to = mdState.laid.flow.rows[c.i].key;
   const line = mdq(`[data-cut-key="${CSS.escape(mdDrag.from)}"]`);
@@ -578,10 +655,20 @@ function onPointerMove(event) {
   }
 }
 
+function onPointerMove(event) {
+  if (!mdDrag || event.pointerId !== mdDrag.pointerId) return;
+  event.preventDefault();
+  mdDrag.moved = true;
+  mdDrag.clientY = event.clientY;
+  mdDrag.altKey = event.altKey;
+  moveDragTo(event.clientY, event.altKey);
+}
+
 function onPointerUp(event) {
   if (!mdDrag || event.pointerId !== mdDrag.pointerId) return;
   const { from, to } = mdDrag;
   mdDrag = null;
+  cancelAnimationFrame(dragScrollFrame);
   hushClickUntil = Date.now() + 350;
   if (to && to !== from) {
     mdState.selectedKey = to;
@@ -732,7 +819,12 @@ function wireMdPdfDialog() {
     if (tab) {
       mdq(".md-pdf-body").dataset.mdShow = tab.dataset.mdTab;
       mdDialog.querySelectorAll("[data-md-tab]").forEach((t) => t.setAttribute("aria-selected", String(t === tab)));
-      if (tab.dataset.mdTab === "preview") scheduleRelayout(0);
+      // Opening the preview draws what the edits since have laid out; a
+      // layout still to come draws it when it lands.
+      if (tab.dataset.mdTab === "preview") {
+        if (!mdState.laid) scheduleRelayout(0);
+        else showPreviewIfStale();
+      }
       return;
     }
     const action = event.target.closest("[data-md-action]")?.dataset.mdAction;
@@ -788,7 +880,12 @@ function wireMdPdfDialog() {
   overlayHost.addEventListener("click", onOverlayClick);
   window.addEventListener("pointermove", (event) => { if (mdDrag) onPointerMove(event); });
   window.addEventListener("pointerup", (event) => { if (mdDrag) onPointerUp(event); });
-  window.addEventListener("pointercancel", () => { mdDrag = null; if (mdState) paintOverlay(); });
+  window.addEventListener("pointercancel", () => {
+    if (!mdDrag) return;
+    mdDrag = null;
+    cancelAnimationFrame(dragScrollFrame);
+    if (mdState) paintOverlay();
+  });
   mdq("[data-md-scroll]").addEventListener("keydown", onPreviewKey);
   mdDialog.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
@@ -796,7 +893,17 @@ function wireMdPdfDialog() {
       closeMdPdfDialog();
     }
   });
-  window.addEventListener("resize", () => { if (mdState && !mdDialog.hidden && mdState.laid) scheduleRelayout(200); });
+  // A new width only changes the preview's scale: drawn again, not laid out.
+  let resizeTimer = 0;
+  window.addEventListener("resize", () => {
+    if (!mdState || mdDialog.hidden || !mdState.laid) return;
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      if (!mdState?.laid) return;
+      mdState.previewStale = true;
+      showPreviewIfStale();
+    }, 200);
+  });
 }
 
 // Open the dialog.
@@ -826,6 +933,7 @@ export async function openMarkdownPdfDialog({ mode = "new", source = "", title =
     laid: null,
     plan: null,
     preview: null,
+    previewStale: false,
     match: null,
     selectedKey: null,
     parts: [],

@@ -42,6 +42,8 @@ const W = await mod("src/documents/md-pdf/writer.js");
 const P = await mod("src/documents/md-pdf/parts.js");
 const A = await mod("src/documents/md-pdf/anchors.js");
 const { woffToSfnt } = await mod("src/documents/md-pdf/woff.js");
+// As md-pdf/fonts.js does in the browser: fontkit's Indic shaper needs it.
+fc.installRegeneratorShim(globalThis);
 
 pdfjsSources();
 const require = createRequire(import.meta.url);
@@ -303,6 +305,69 @@ await must("a character no font has is left out, not drawn as a box", async () =
   const r = await build("Emoji 😀 here");
   const t = await pdfText(r.out.bytes);
   return flat(t.pages[0]).includes("Emoji here") || JSON.stringify(t.pages[0]);
+});
+
+// ── Devanagari: real, shaped text ──────────────────────────────────────────
+const HINDI = `# चार्वाक दर्शन
+
+चार्वाक दर्शन भारतीय दर्शन की एक **नास्तिक** शाखा है। *प्रत्यक्ष* ही प्रमाण है — mixed with English words.
+
+- श्री क्षत्रिय हिंदी
+
+\`\`\`js
+const tattva = ["पृथ्वी", "जल"];
+\`\`\`
+`;
+const hindi = await build(HINDI);
+const hindiText = flat((await pdfText(hindi.out.bytes)).pages.join(" "));
+const hindiOps = hindi.flow.rows.flatMap((row) => row.ops);
+
+await must("Devanagari is text in the PDF, not pictures of words", () => {
+  const atoms = hindiOps.filter((op) => op.t === "image");
+  const deva = hindiOps.filter((op) => op.t === "text" && String(op.face).startsWith("deva|devanagari|"));
+  return (!atoms.length && deva.length > 5) || JSON.stringify({ atoms: atoms.length, deva: deva.length });
+});
+await must("...shaped: a conjunct is one glyph, not a halant between two letters", () => {
+  const font = hindi.fontSet.fonts.get("deva|devanagari|400|normal");
+  if (!font) return "no Devanagari face was loaded";
+  const glyphs = font.layout("क्ष", fc.mdFontFeatures()).glyphs;
+  return glyphs.length === 1 || `${glyphs.length} glyphs`;
+});
+await must("...bold and italic Hindi use the bold and italic Devanagari faces", () => {
+  const faces = new Set(hindiOps.filter((op) => op.t === "text").map((op) => op.face));
+  return (faces.has("deva|devanagari|700|normal") && faces.has("deva|devanagari|400|italic")) || JSON.stringify([...faces]);
+});
+// pdf.js reads shaped Devanagari back in drawing order (a ि or a reph comes
+// out where it is drawn, not where it was typed) and puts spaces around some
+// vowel signs, as it does for any Hindi PDF — so the words checked here are
+// ones without a reordered sign, and spaces are ignored.
+const hindiSolid = hindiText.replace(/\s+/g, "");
+await must("...its letters can be read back out of the PDF", () => (
+  ["भारतीय", "शाखा", "प्रत्यक्ष", "mixedwithEnglish"].every((word) => hindiSolid.includes(word)) || hindiText
+));
+await must("...Hindi inside code is drawn, not dropped", () => (
+  hindiSolid.includes('tattva=["पृथ्वी","जल"]') || hindiText
+));
+await must("...and the PDF stays small (under 60KB)", () => hindi.out.bytes.length < 60000 || `${hindi.out.bytes.length} bytes`);
+await must("a measured line is the line drawn: widths are the glyphs' own advances", () => {
+  const font = hindi.fontSet.fonts.get("deva|devanagari|400|normal");
+  const word = "प्रत्यक्ष";
+  const drawn = font.layout(word, fc.mdFontFeatures()).glyphs.reduce((sum, g) => sum + g.advanceWidth, 0) / font.unitsPerEm * 10;
+  const measured = hindi.fontSet.measure(word, "deva|devanagari|400|normal", 10);
+  return Math.abs(drawn - measured) < 1e-6 || `${measured} vs ${drawn}`;
+});
+
+// ── page breaks inside long paragraphs ─────────────────────────────────────
+const PARAS = Array.from({ length: 14 }, (_, i) => `${i % 4 === 0 ? `## Part ${i}\n\n` : ""}${`Sentence ${i} of a long paragraph that runs on for many lines. `.repeat(i % 2 ? 100 + i * 3 : 4)}`).join("\n\n");
+await must("a cut inside a paragraph never leaves one of its lines alone on a page", async () => {
+  const r = await build(PARAS);
+  const bad = r.plan.cuts.map((i) => r.flow.rows[i]).filter((row) => row.lines > 1 && row.line > 0 && (row.line === 1 || row.lines - row.line === 1));
+  return (r.plan.cuts.length > 1 && !bad.length) || JSON.stringify({ cuts: r.plan.cuts.length, bad: bad.map((row) => `${row.line}/${row.lines}`) });
+});
+await must("...and no page but the last is left less than half full", async () => {
+  const r = await build(PARAS);
+  const thin = r.plan.slices.slice(0, -1).filter((slice) => slice.h < r.plan.room * 0.5);
+  return !thin.length || JSON.stringify(thin.map((slice) => Math.round((slice.h / r.plan.room) * 100)));
 });
 
 let failed = 0;

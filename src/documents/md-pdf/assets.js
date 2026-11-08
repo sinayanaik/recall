@@ -292,9 +292,23 @@ function glyphWords(needs, fontSet, body) {
   return words;
 }
 
-async function drawGlyphs(words, cache) {
-  for (const [key, { word, family, bold, italic }] of words) {
-    if (cache.glyph.has(key)) continue;
+// One picture per word, so a document in a script with no embedded face
+// (Bengali, Tamil, CJK…) can mean thousands of them: the count is shown, the
+// page gets a turn between batches, and a build an edit has replaced stops
+// (the words already pictured stay in the cache for the next one).
+const GLYPH_BATCH = 40;
+
+async function drawGlyphs(words, cache, { onProgress = () => {}, isCurrent = () => true } = {}) {
+  const todo = [...words].filter(([key]) => !cache.glyph.has(key));
+  let done = 0;
+  for (const [key, { word, family, bold, italic }] of todo) {
+    if (done % GLYPH_BATCH === 0) {
+      if (!isCurrent()) return;
+      if (todo.length > GLYPH_BATCH) onProgress(`Drawing words no font has… ${done} / ${todo.length}`);
+      // eslint-disable-next-line no-await-in-loop
+      if (done) await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    done += 1;
     try {
       const font = `${italic ? "italic " : ""}${bold ? 700 : 400} ${GLYPH_PX}px ${CSS_FAMILY[family] || CSS_FAMILY.sans}, ${EMOJI}`;
       const probe = document.createElement("canvas").getContext("2d");
@@ -360,7 +374,7 @@ function prismHighlightForPdf(code, lang) {
 
 // Make every picture the layout will ask for. Returns the `assets` lookups the
 // layout takes and the `images` map the writer embeds from.
-export async function prepareAssets({ needs, options, geometry, fontSet, cache, onProgress = () => {} }) {
+export async function prepareAssets({ needs, options, geometry, fontSet, cache, onProgress = () => {}, isCurrent = () => true }) {
   const level = PICTURE_QUALITY[options.pictures];
   // Formulas and diagrams are line art: never below 150dpi, whatever the
   // photo setting, or a fraction's bar blurs.
@@ -381,7 +395,7 @@ export async function prepareAssets({ needs, options, geometry, fontSet, cache, 
     await drawPictures(needs, cache, { quality: options.pictures, columnWidth: geometry.columnWidth });
   }
   const words = glyphWords(needs, fontSet, options.font === "serif" ? "serif" : "sans");
-  if (words.size) await drawGlyphs(words, cache);
+  if (words.size) await drawGlyphs(words, cache, { onProgress, isCurrent });
 
   const tag = `${options.pictures}@${Math.round(geometry.columnWidth)}`;
   const used = new Map();
