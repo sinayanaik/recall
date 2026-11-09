@@ -820,13 +820,15 @@ try {
 
   const MEDIA = `http://127.0.0.1:${port}/recall-clipper/tools/fixtures/media.html`;
   const GIF = `http://127.0.0.1:${port}/recall-clipper/tools/fixtures/moving.gif`;
+  const THIRDS = `http://127.0.0.1:${port}/recall-clipper/tools/fixtures/thirds.webm`;
   const mediaPage = await openPage(client);
   await mediaPage.call("Emulation.setDeviceMetricsOverride", { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
   await mediaPage.goto(MEDIA);
   await mediaPage.waitFor(() => {
     const v = document.getElementById("vid");
+    const t = document.getElementById("thirds");
     const g = document.getElementById("moving");
-    return v && v.readyState >= 2 && g.complete && g.naturalWidth > 0;
+    return v && v.readyState >= 2 && t && t.readyState >= 1 && g.complete && g.naturalWidth > 0;
   }, { label: "media fixture", timeout: 20000 });
   const mediaPristine = await mediaPage.evaluate(() => document.documentElement.outerHTML.replace(/<recall-clipper-toast[^>]*><\/recall-clipper-toast>/g, "").length);
   const mediaTab = await tabIdOf(MEDIA);
@@ -854,13 +856,54 @@ try {
     }, bytes.toString("base64"));
   }
 
+  // The colour a picture in the PDF shows: the largest link to `url` is the
+  // picture itself; sampled a fifth of the way in from its left, clear of the
+  // ▶ in its middle. "red" | "green" | "blue" | the RGB when it is none.
+  async function colourOf(file, url) {
+    const bytes = readFileSync(file);
+    return reader.evaluate(async (b64, url) => {
+      const data = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+      const doc = await pdfjsLib.getDocument({ data, isEvalSupported: false }).promise;
+      let best = null;
+      for (let i = 1; i <= doc.numPages; i += 1) {
+        const page = await doc.getPage(i);
+        for (const a of await page.getAnnotations()) {
+          if (a.subtype !== "Link" || (a.url || a.unsafeUrl) !== url) continue;
+          const area = Math.abs((a.rect[2] - a.rect[0]) * (a.rect[3] - a.rect[1]));
+          if (!best || area > best.area) best = { page, rect: a.rect, area };
+        }
+      }
+      if (!best) return "no link";
+      const vp = best.page.getViewport({ scale: 1 });
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.ceil(vp.width);
+      canvas.height = Math.ceil(vp.height);
+      const ctx = canvas.getContext("2d", { willReadFrequently: true });
+      // "print": a display render waits on animation frames, which a tab in
+      // the background never gets.
+      await best.page.render({ canvasContext: ctx, viewport: vp, intent: "print" }).promise;
+      const [x1, y1, x2, y2] = vp.convertToViewportRectangle(best.rect);
+      const x = Math.round(Math.min(x1, x2) + Math.abs(x2 - x1) * 0.2);
+      const y = Math.round((y1 + y2) / 2);
+      const [r, g, b] = ctx.getImageData(x, y, 1, 1).data;
+      if (r > 180 && g < 80 && b < 80) return "red";
+      if (g > 120 && r < 80 && b < 80) return "green";
+      if (b > 180 && r < 80 && g < 80) return "blue";
+      return `rgb(${r}, ${g}, ${b})`;
+    }, bytes.toString("base64"), url);
+  }
+
   const media = await job({ layout: "smart", pageLength: "a4", adjustBreaks: false, clean: "off", banner: false, filename: "{title} - media" }, "media page", mediaTab);
   if (media) {
     const f = pdfFacts(media);
     const { links, text } = await readLinks(media);
     const linkTo = (url) => links.filter((l) => l.url === url);
     console.log(`     media page: ${lastJob.frames} pictures of videos and embeds, ${lastJob.moving} moving picture(s), ${links.length} links`);
-    check("media: the video, the embed and the canvas each became a picture", lastJob.frames >= 3, `${lastJob.frames}`);
+    check("media: the videos, the embed and the canvas each became a picture", lastJob.frames === 4, `${lastJob.frames}`);
+    const thirds = await colourOf(media, THIRDS);
+    check("media: a video's picture is its middle frame (green), not its first (red)", thirds === "green", thirds);
+    const gif = await colourOf(media, GIF);
+    check("media: a moving picture's still is its middle frame (green), not its first (red)", gif === "green", gif);
     check("media: the video's picture is a JPEG in the PDF", f.images.some((i) => i.filter === "DCTDecode" && i.width >= 400), f.images.map((i) => `${i.width}x${i.height}:${i.filter}`).join(", "));
     // The picture itself is the link (as big as the 480×270 video at print
     // scale), and so is the caption under it.
@@ -868,7 +911,7 @@ try {
     check("media: no grey link box for a video that played", !/Video:/.test(text), text.slice(0, 300));
     check("media: the caption names the video", /Sunsetoverthebay/.test(text));
     // youtube.com is out of reach here: Chrome shows its error page in the frame.
-    check("media: an embed that could not load is the link box, not Chrome's error page", /Embeddedcontent:AYouTubevideo/.test(text) && lastJob.frames === 3, `${lastJob.frames} pictures`);
+    check("media: an embed that could not load is the link box, not Chrome's error page", /Embeddedcontent:AYouTubevideo/.test(text) && lastJob.frames === 4, `${lastJob.frames} pictures`);
     check("media: a YouTube embed links to the video's own page", linkTo("https://www.youtube.com/watch?v=abc123XYZ00&t=30s").length > 0, JSON.stringify(links.map((l) => l.url)));
     check("media: a moving picture links to its moving original", linkTo(GIF).length > 0 && lastJob.moving >= 1, JSON.stringify(links.map((l) => l.url)));
     check("media: the page's own words are all there", /Textafterthevideo/.test(text) && /Theend/.test(text));
@@ -876,11 +919,16 @@ try {
   const mediaAfter = await mediaPage.evaluate(() => ({
     len: document.documentElement.outerHTML.replace(/<recall-clipper-toast[^>]*><\/recall-clipper-toast>/g, "").length,
     video: Boolean(document.querySelector("a > video#vid")) && Boolean(document.getElementById("vid").srcObject),
+    // Taking it out of the page to put its picture in paused it.
+    playing: !document.getElementById("vid").paused,
+    // Moved to its middle and its controls put away for the picture; both back.
+    thirds: (() => { const t = document.getElementById("thirds"); return t && t.currentTime === 0 && t.hasAttribute("controls") && t.paused; })(),
     canvas: Boolean(document.querySelector("canvas#gl")),
     frames: document.querySelectorAll("[data-recall-pdf-media], [data-recall-pdf-frame], [data-recall-pdf-moving]").length,
     blobs: [...document.images].filter((i) => i.src.startsWith("blob:")).length
   }));
-  check("media: the page is put back (video, canvas, picture, no marks)", Math.abs(mediaAfter.len - mediaPristine) < 80 && mediaAfter.video && mediaAfter.canvas
+  check("media: the page is put back (videos playing or not, where they were, canvas, picture, no marks)", Math.abs(mediaAfter.len - mediaPristine) < 80
+    && mediaAfter.video && mediaAfter.playing && mediaAfter.thirds && mediaAfter.canvas
     && mediaAfter.frames === 0 && mediaAfter.blobs === 0, JSON.stringify({ ...mediaAfter, pristine: mediaPristine }));
 
   // "Replace with a link" is still there for whoever wants it.
@@ -888,6 +936,13 @@ try {
   if (mediaLinks) {
     const { text } = await readLinks(mediaLinks);
     check("media: Replace with a link prints the link box, no pictures of videos", /Video:/.test(text) && lastJob.frames === 0, `${lastJob.frames} pictures`);
+  }
+
+  // "The frame the page shows": the video file, at its start, stays red.
+  const mediaShown = await job({ layout: "smart", pageLength: "a4", adjustBreaks: false, clean: "off", banner: false, mediaFrame: "shown", filename: "{title} - media as shown" }, "media page, frames as shown", mediaTab);
+  if (mediaShown) {
+    const thirds = await colourOf(mediaShown, THIRDS);
+    check("media: \"The frame the page shows\" keeps a video near its start (red)", thirds === "red", thirds);
   }
   await client.send("Target.closeTarget", { targetId: mediaPage.targetId });
 

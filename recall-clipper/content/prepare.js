@@ -451,35 +451,58 @@
   const frameWait = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
 
   // A video that has not drawn a frame yet (preload="none", or not scrolled
-  // to) is asked for one; a video still at its first frame with no poster is
-  // moved a little in, since that frame is so often black. It is never played.
-  async function readyVideoFrame(v) {
-    const wait = (type, ms) => new Promise((r) => {
-      const t = setTimeout(r, ms);
-      v.addEventListener(type, () => { clearTimeout(t); r(); }, { once: true });
+  // to) is asked for one. Then, for "middle", it is paused at the middle of
+  // its length — its first frame is so often black, a title card or a
+  // fade-in — with its controls bar put away so it is not in the picture.
+  // restore() puts back its time, its controls and its playing. A stream (a
+  // live video, a camera) has no middle and keeps the frame it shows; "shown"
+  // only moves a video still at its very start with no poster, a little in.
+  async function readyVideoFrame(v, moment) {
+    const wait = (types, ms) => new Promise((r) => {
+      const done = () => { clearTimeout(t); types.forEach((type) => v.removeEventListener(type, done)); r(); };
+      const t = setTimeout(done, ms);
+      types.forEach((type) => v.addEventListener(type, done, { once: true }));
+    });
+    // First on the journal, so last undone: after swapMedia has put the video
+    // back in the page (taking it out paused it), it plays again if it was
+    // playing, from where it was.
+    const was = { time: v.currentTime, paused: v.paused };
+    let moved = false;
+    undo(() => {
+      try {
+        if (moved) v.currentTime = was.time;
+        if (!was.paused) v.play().catch(() => {});
+      } catch { /* gone */ }
     });
     if (v.readyState < 2) {
       if ((v.getAttribute("preload") || "") !== "auto") setAttr(v, "preload", "auto");
-      await wait("loadeddata", 1500);
+      await wait(["loadeddata"], 1500);
     }
-    if (v.readyState >= 2 && v.paused && v.currentTime === 0 && !v.getAttribute("poster")) {
-      const to = Math.min(1, (Number.isFinite(v.duration) ? v.duration : 0) / 10);
-      if (to > 0) {
-        try {
-          v.currentTime = to;
-          undo(() => { try { v.currentTime = 0; } catch { /* gone */ } });
-          await wait("seeked", 1500);
-        } catch { /* not seekable */ }
+    const duration = v.duration;
+    const finite = Number.isFinite(duration) && duration > 0;
+    let to = null;
+    if (moment === "middle" && finite) to = duration / 2;
+    else if (v.readyState >= 2 && v.paused && v.currentTime === 0 && !v.getAttribute("poster") && finite) to = Math.min(1, duration / 10);
+    if (to == null) return;
+    try {
+      if (!v.paused) v.pause();
+      if (v.hasAttribute("controls")) setAttr(v, "controls", null);
+      if (Math.abs(v.currentTime - to) > 0.05) {
+        moved = true;
+        v.currentTime = to;
+        await wait(["seeked"], 3000);
       }
-    }
+      // Seeked, but the frame there may still be on its way.
+      if (v.readyState < 2) await wait(["loadeddata", "canplay"], 1500);
+    } catch { /* not seekable: the frame it shows */ }
   }
 
   /** Scrolls a marked video, embed or canvas into view; its box, in document CSS px. */
-  async function focusMedia(id) {
+  async function focusMedia(id, moment = "middle") {
     const el = document.querySelector(`[data-recall-pdf-media="${id}"]`);
     if (!el || !el.isConnected) return null;
     el.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" });
-    if (el.tagName === "VIDEO") await readyVideoFrame(el);
+    if (el.tagName === "VIDEO") await readyVideoFrame(el, moment);
     await frameWait();
     const r = el.getBoundingClientRect();
     if (r.width < 1 || r.height < 1) return null;
