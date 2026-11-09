@@ -967,9 +967,9 @@ try {
     const heights = up.map((p) => Math.round(p.height));
     const last = up[up.length - 1];
     console.log(`     uneven page: ${up.length} pages, heights ${heights.join(", ")} pt`);
-    check("uneven: Chrome split the block too tall for any page", up.length >= 3, `${up.length} pages`);
+    check("uneven: Chrome split the block too tall for any page (more pages than planned)", up.length >= 4, `${up.length} pages`);
     check("uneven: the last page, one short paragraph, is short — not the tallest page's height", /closingparagraph/.test(last.flat) && last.height < 400, `${Math.round(last.height)} pt`);
-    check("uneven: the first page, a heading and a line, is short too", up[0].height < 400, `${Math.round(up[0].height)} pt`);
+    check("uneven: the first page, a heading and a line, is short too", /openingparagraph/.test(up[0].flat) && !/Thetallpart/.test(up[0].flat) && up[0].height < 400, `${Math.round(up[0].height)} pt`);
     check("uneven: no page is taller than the tallest paper", up.every((p) => p.height <= 200 * 72 + 1), heights.join(", "));
   }
   await client.send("Target.closeTarget", { targetId: unevenPage.targetId });
