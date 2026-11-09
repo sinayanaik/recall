@@ -37,6 +37,7 @@ body {
   padding: 10px 12px; border-bottom: 1px solid var(--line);
 }
 .top h1 { font-size: 14px; margin: 0; flex: 1; }
+.top .version { font-size: 11px; opacity: 0.6; }
 main { overflow-y: auto; flex: 1; padding: 10px 12px 8px; }
 .actions { display: flex; flex-direction: column; gap: 6px; }
 button.action {
