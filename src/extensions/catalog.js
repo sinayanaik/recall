@@ -18,17 +18,17 @@ export const EXTENSIONS = [
     "shortcut": "Alt+Shift+C clean · Alt+Shift+M copy as Markdown · Alt+Shift+P save as PDF · Alt+Shift+O open",
     "permissions": "Runs only on the tab you use it on, and uploads nothing. Saving a PDF uses Chrome's own print engine through its debugging interface, so Chrome shows a “debugging this browser” bar while it works.",
     "name": "Recall Web Clipper",
-    "version": "2.1.0",
+    "version": "2.2.0",
     "description": "Bring any web page into Recall: clean it up, copy any part as Markdown for a file's Notes, or save it as a PDF with smart page breaks.",
-    "bytes": 4491965,
+    "bytes": 4541805,
     "files": [
       {
         "path": "README.md",
-        "size": 26380
+        "size": 29133
       },
       {
         "path": "background.js",
-        "size": 7733
+        "size": 8338
       },
       {
         "path": "content/cleaner-core.js",
@@ -56,7 +56,7 @@ export const EXTENSIONS = [
       },
       {
         "path": "content/prepare.js",
-        "size": 57858
+        "size": 64176
       },
       {
         "path": "content/recall-math.js",
@@ -108,23 +108,31 @@ export const EXTENSIONS = [
       },
       {
         "path": "manifest.json",
-        "size": 1582
+        "size": 1634
+      },
+      {
+        "path": "offscreen.html",
+        "size": 171
+      },
+      {
+        "path": "offscreen.js",
+        "size": 1530
       },
       {
         "path": "pdf-job.js",
-        "size": 28708
+        "size": 62717
       },
       {
         "path": "popup.css",
-        "size": 4188
+        "size": 4597
       },
       {
         "path": "popup.html",
-        "size": 17709
+        "size": 18015
       },
       {
         "path": "popup.js",
-        "size": 11146
+        "size": 14833
       },
       {
         "path": "vendor/katex/auto-render.min.js",

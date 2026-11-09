@@ -56,6 +56,136 @@
   }
   const style = (el) => { try { return getComputedStyle(el); } catch { return null; } };
 
+  // ---------------------------------------------------------------- on-page UI
+  //
+  // "Pick a block" and the break editor wait for the reader. They do not hold
+  // a call open while they wait: each shows its UI and returns at once, and
+  // pdf-job.js asks uiState() a few times a second until the reader is done.
+  // A call that stayed open for minutes could get the extension's service
+  // worker stopped by Chrome, and the job lost with it.
+  //
+  // Everything the UI adds (hosts, capture listeners, timers) is registered
+  // here, so closeUi() — from Esc, Cancel, the popup, restore() or the
+  // watchdog below — always takes all of it away and leaves the page usable.
+  //
+  // The watchdog: the background polls while the UI is open. If no poll
+  // arrives for STALE_MS, the extension has stopped (Chrome ended its worker,
+  // or the debugger was detached). The UI then closes itself and the page is
+  // put back, so nothing is left blocking the page.
+
+  const STALE_MS = 15000;
+  let ui = null; // { kind, state: "open"|"done"|"cancelled", hosts, listeners, timers, lastPoll, finish(), info }
+
+  function openUi(kind, staleMs = STALE_MS) {
+    closeUi("cancelled");
+    clearTheWay();
+    ui = { kind, state: "open", hosts: [], listeners: [], timers: [], lastPoll: Date.now(), finish: null, info: {} };
+    const u = ui;
+    u.timers.push(setInterval(() => {
+      if (u !== ui || u.state !== "open") return;
+      if (Date.now() - u.lastPoll > staleMs) {
+        closeUi("cancelled");
+        try { restore(); } catch { /* best effort */ }
+        toast("Recall Web Clipper stopped before the PDF was made. The page is back as it was. Open the clipper to try again.");
+      }
+    }, 2000));
+    return u;
+  }
+
+  // A modal dialog makes everything outside it inert — our bar included — and
+  // a full-screen element hides the rest of the page. Both are put aside while
+  // the reader works on the page, and back (by restore) afterwards.
+  function clearTheWay() {
+    for (const d of document.querySelectorAll("dialog[open]")) {
+      try {
+        if (!d.matches(":modal")) continue;
+        d.close();
+        undo(() => { try { if (d.isConnected && !d.open) d.showModal(); } catch { /* the page moved on */ } });
+      } catch { /* :modal unsupported */ }
+    }
+    try { if (document.fullscreenElement) document.exitFullscreen().catch(() => {}); } catch { /* not allowed */ }
+  }
+
+  function listen(type, fn, capture = true) {
+    addEventListener(type, fn, capture);
+    if (ui) ui.listeners.push([type, fn, capture]);
+  }
+
+  function addHost(host) {
+    document.documentElement.append(host);
+    if (ui) ui.hosts.push(host);
+    return host;
+  }
+
+  // Puts `el` (inside a shadow root of a connected host) in the top layer, so
+  // nothing on the page can cover it or move it: not a dialog, not a
+  // full-screen element, not a transform or filter on <html> (which would make
+  // position: fixed follow the document instead of the window).
+  function toTopLayer(el) {
+    try {
+      if (typeof el.showPopover === "function") {
+        el.setAttribute("popover", "manual");
+        el.showPopover();
+        return true;
+      }
+    } catch { /* not supported: it stays position: fixed */ }
+    return false;
+  }
+
+  /** Ends the open UI: "done" (the reader confirmed) or "cancelled". */
+  function closeUi(state = "cancelled") {
+    const u = ui;
+    if (!u) return;
+    if (u.state === "open") u.state = state;
+    for (const [type, fn, capture] of u.listeners) removeEventListener(type, fn, capture);
+    u.listeners = [];
+    u.timers.forEach((t) => clearInterval(t));
+    u.timers = [];
+    u.hosts.forEach((h) => h.remove());
+    u.hosts = [];
+  }
+
+  /** What the background polls. Each call also tells the watchdog it is still there. */
+  function uiState() {
+    if (!ui) return { state: "none" };
+    ui.lastPoll = Date.now();
+    return { kind: ui.kind, state: ui.state, ...ui.info };
+  }
+
+  /** The popup's "Save PDF now" (or the shortcut): as if Save PDF was pressed on the page. */
+  function finishUi() {
+    if (!ui || ui.state !== "open") return false;
+    if (ui.finish) ui.finish(); else closeUi("done");
+    return true;
+  }
+
+  function cancelUi() {
+    if (!ui) return false;
+    closeUi("cancelled");
+    return true;
+  }
+
+  // A short message in the corner of the page, above everything, never printed.
+  function toast(text) {
+    try {
+      const host = document.createElement("recall-clipper-toast");
+      host.setAttribute("data-recall-pdf-ui", "");
+      const root = host.attachShadow({ mode: "open" });
+      root.innerHTML = `<style>
+        .t { position: fixed; inset: auto; right: 16px; top: 16px; margin: 0; max-width: min(420px, calc(100vw - 32px));
+          box-sizing: border-box; background: #1f2430; color: #fff; border: 0; border-radius: 10px; padding: 10px 14px;
+          font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; box-shadow: 0 10px 28px rgba(0,0,0,.3); cursor: pointer; z-index: 2147483647; }
+        @media print { .t { display: none !important; } }
+      </style><div class="t" role="status"></div>`;
+      const t = root.querySelector(".t");
+      t.textContent = text;
+      t.addEventListener("click", () => host.remove());
+      document.documentElement.append(host);
+      toTopLayer(t);
+      setTimeout(() => host.remove(), 10000);
+    } catch { /* a nicety */ }
+  }
+
   // ---------------------------------------------------------------- isolation
 
   // Hide everything that is not on the path from <body> to `keep`, and stop
@@ -534,45 +664,53 @@
 
   // ---------------------------------------------------------------- pick
 
-  function pickElement() {
-    return new Promise((resolve, reject) => {
-      const host = document.createElement("div");
-      host.setAttribute("data-recall-pdf-ui", "");
-      host.style.cssText = "position:fixed;inset:0;pointer-events:none;z-index:2147483647;";
-      const root = host.attachShadow({ mode: "open" });
-      root.innerHTML = `<style>
-        .box{position:fixed;border:2px solid #4f5bd5;background:rgba(79,91,213,.12);pointer-events:none;border-radius:3px;display:none}
-        .tip{position:fixed;left:50%;top:14px;transform:translateX(-50%);background:#1f2430;color:#fff;font:13px/1.4 system-ui,sans-serif;padding:8px 12px;border-radius:8px;box-shadow:0 6px 20px rgba(0,0,0,.25)}
-        kbd{font:11px ui-monospace,monospace;border:1px solid #6b7488;border-radius:4px;padding:0 4px}
-      </style><div class="box"></div><div class="tip">Click the block to save as a PDF · <kbd>↑</kbd> wider · <kbd>↓</kbd> narrower · <kbd>Esc</kbd> cancel</div>`;
-      const box = root.querySelector(".box");
-      document.documentElement.append(host);
-      let stack = [];
-      const show = () => {
-        const el = stack[stack.length - 1];
-        if (!el) { box.style.display = "none"; return; }
-        const r = el.getBoundingClientRect();
-        Object.assign(box.style, { display: "block", left: `${r.left}px`, top: `${r.top}px`, width: `${r.width}px`, height: `${r.height}px` });
-      };
-      const done = (err) => {
-        ["mousemove", "click", "mousedown", "keydown", "scroll"].forEach((ev) => removeEventListener(ev, handlers[ev], true));
-        host.remove();
-        if (err) reject(err); else { picked = stack[stack.length - 1]; resolve(true); }
-      };
-      const handlers = {
-        mousemove: (e) => { if (e.target instanceof Element && stack[0] !== e.target) { stack = [e.target]; show(); } },
-        mousedown: (e) => { e.preventDefault(); e.stopPropagation(); },
-        click: (e) => { e.preventDefault(); e.stopPropagation(); if (!stack.length && e.target instanceof Element) stack = [e.target]; done(); },
-        scroll: () => show(),
-        keydown: (e) => {
-          if (e.key === "Escape") { e.preventDefault(); done(new Error("cancelled")); }
-          else if (e.key === "ArrowUp" && stack.length) { const p = stack[stack.length - 1].parentElement; if (p && p !== document.documentElement) stack.push(p); show(); e.preventDefault(); }
-          else if (e.key === "ArrowDown" && stack.length > 1) { stack.pop(); show(); e.preventDefault(); }
-          else if (e.key === "Enter" && stack.length) { e.preventDefault(); done(); }
-        }
-      };
-      ["mousemove", "click", "mousedown", "keydown", "scroll"].forEach((ev) => addEventListener(ev, handlers[ev], true));
+  /**
+   * Shows the block picker and returns at once; uiState() says when the
+   * reader has clicked a block ("done", in `picked`) or pressed Esc.
+   */
+  function pickElement(staleMs) {
+    const u = openUi("pick", Number(staleMs) > 0 ? Number(staleMs) : STALE_MS);
+    const host = addHost(document.createElement("div"));
+    host.setAttribute("data-recall-pdf-ui", "");
+    host.style.cssText = "position:fixed;inset:0;pointer-events:none;z-index:2147483647;";
+    const root = host.attachShadow({ mode: "open" });
+    root.innerHTML = `<style>
+      .box{position:fixed;inset:auto;margin:0;padding:0;border:2px solid #4f5bd5;background:rgba(79,91,213,.12);pointer-events:none;border-radius:3px;box-sizing:border-box;overflow:visible}
+      .box.off{display:none}
+      .tip{position:fixed;inset:auto;margin:0;left:50%;top:14px;transform:translateX(-50%);border:0;background:#1f2430;color:#fff;font:13px/1.4 system-ui,sans-serif;padding:8px 12px;border-radius:8px;box-shadow:0 6px 20px rgba(0,0,0,.25);max-width:calc(100vw - 24px);box-sizing:border-box}
+      kbd{font:11px ui-monospace,monospace;border:1px solid #6b7488;border-radius:4px;padding:0 4px}
+    </style><div class="box off"></div><div class="tip">Click the block to save as a PDF · <kbd>↑</kbd> wider · <kbd>↓</kbd> narrower · <kbd>Esc</kbd> cancel</div>`;
+    const box = root.querySelector(".box");
+    toTopLayer(root.querySelector(".tip"));
+    toTopLayer(box);
+    let stack = [];
+    const show = () => {
+      const el = stack[stack.length - 1];
+      if (!el) { box.classList.add("off"); return; }
+      const r = el.getBoundingClientRect();
+      box.classList.remove("off");
+      Object.assign(box.style, { left: `${r.left}px`, top: `${r.top}px`, width: `${r.width}px`, height: `${r.height}px` });
+    };
+    const done = (ok) => {
+      if (ok) {
+        picked = stack[stack.length - 1] || null;
+        if (!picked) return; // nothing under the pointer yet: keep waiting
+      }
+      closeUi(ok ? "done" : "cancelled");
+    };
+    u.finish = () => done(true);
+    const page = (e) => e.target instanceof Element && !isUi(e.target);
+    listen("mousemove", (e) => { if (page(e) && stack[0] !== e.target) { stack = [e.target]; show(); } });
+    listen("mousedown", (e) => { e.preventDefault(); e.stopPropagation(); });
+    listen("click", (e) => { e.preventDefault(); e.stopPropagation(); if (!stack.length && page(e)) stack = [e.target]; done(true); });
+    listen("scroll", () => show());
+    listen("keydown", (e) => {
+      if (e.key === "Escape") { e.preventDefault(); done(false); }
+      else if (e.key === "ArrowUp" && stack.length) { const p = stack[stack.length - 1].parentElement; if (p && p !== document.documentElement) stack.push(p); show(); e.preventDefault(); }
+      else if (e.key === "ArrowDown" && stack.length > 1) { stack.pop(); show(); e.preventDefault(); }
+      else if (e.key === "Enter" && stack.length) { e.preventDefault(); done(true); }
     });
+    return true;
   }
 
   // ---------------------------------------------------------------- smart page breaks
@@ -843,11 +981,17 @@
    * Shows the planned cuts on the page, to change before saving. Drag a cut to
    * move it (it snaps to the nearest clean place; hold Alt for any block);
    * click the page to add one; ✕ removes one. Undo/Redo, Auto (plan again),
-   * and a page length. Resolves with the final plan, or rejects "cancelled" (Esc).
+   * and a page length. Returns at once; uiState() says when the reader has
+   * pressed Save PDF ("done": applyBreaks() takes it from there) or Cancel/Esc.
+   *
+   * `view` is the size of the window the reader actually sees, measured
+   * before the page was laid out at its print width: the bar is kept inside
+   * it even when the print width is wider than the window.
    */
-  function editBreaks() {
+  function editBreaks(view = {}) {
     if (!plan) throw new Error("no page breaks planned");
-    return new Promise((resolve, reject) => {
+    const u = openUi("breaks", Number(view.staleMs) > 0 ? Number(view.staleMs) : STALE_MS);
+    {
       const host = document.createElement("div");
       host.setAttribute("data-recall-pdf-ui", "");
       host.style.cssText = `position:absolute;left:0;top:0;width:100%;height:${plan.height}px;z-index:2147483647;pointer-events:none;`;
@@ -875,9 +1019,10 @@
         .ghost span { color: #fff; background: rgba(79,91,213,.8); }
         .limit { border-top: 1px solid #dc2626; }
         .limit span { left: auto; right: 8px; color: #b91c1c; background: #fff; border: 1px solid #fca5a5; }
-        .bar { position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%); pointer-events: auto;
+        .bar { position: fixed; inset: auto; margin: 0; border: 0; overflow: visible;
+          left: var(--mid, 50vw); top: 12px; transform: translateX(-50%); pointer-events: auto; z-index: 2147483647;
           display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: center;
-          max-width: calc(100vw - 24px); box-sizing: border-box;
+          width: max-content; max-width: var(--max, calc(100vw - 24px)); box-sizing: border-box;
           background: #1f2430; color: #fff; font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
           padding: 8px 10px; border-radius: 12px; box-shadow: 0 10px 28px rgba(0,0,0,.3); }
         .bar b { font-weight: 700; }
@@ -918,7 +1063,13 @@
         lengthSelect.append(opt);
       }
       if (!lengthSelect.options.length) lengthSelect.remove();
-      document.documentElement.append(host);
+      addHost(host);
+      // Centred in what the reader sees, not in the (possibly wider) layout.
+      const seen = Math.min(innerWidth, Number(view.w) > 0 ? Number(view.w) : innerWidth);
+      const bar = $(".bar");
+      bar.style.setProperty("--mid", `${Math.round(seen / 2)}px`);
+      bar.style.setProperty("--max", `${Math.max(240, seen - 24)}px`);
+      toTopLayer(bar);
 
       const history = [];
       const future = [];
@@ -1036,19 +1187,16 @@
           limit.style.top = `${edges[i] + plan.target}px`;
         } else limit.style.display = "none";
         count.textContent = `${heights.length} page${heights.length === 1 ? "" : "s"}${long ? ` · ${long} longer than the page length` : ""}`;
+        u.info.pages = heights.length;
         $(".undo").disabled = !history.length;
         $(".redo").disabled = !future.length;
       }
 
       const finish = (err) => {
         drag = null;
-        removeEventListener("click", onClick, true);
-        for (const t of ["mousedown", "pointerdown", "mouseup", "pointerup", "touchstart", "dblclick", "contextmenu"]) removeEventListener(t, swallow, true);
-        removeEventListener("mousemove", onMove, true);
-        removeEventListener("keydown", onKey, true);
-        host.remove();
-        if (err) reject(err); else resolve(planReport());
+        closeUi(err ? "cancelled" : "done");
       };
+      u.finish = () => finish();
       const fromUi = (e) => e.composedPath().includes(host);
       const swallow = (e) => { if (!fromUi(e)) { e.preventDefault(); e.stopPropagation(); } };
       const addAt = (y, any) => nearest(any ? plan.candidates : plan.clean, y, new Set(plan.breaks));
@@ -1124,15 +1272,16 @@
         selected = null;
         change(breaks);
       });
-      addEventListener("click", onClick, true);
-      for (const t of ["mousedown", "pointerdown", "mouseup", "pointerup", "touchstart", "dblclick", "contextmenu"]) addEventListener(t, swallow, true);
-      addEventListener("mousemove", onMove, true);
-      addEventListener("keydown", onKey, true);
+      listen("click", onClick);
+      for (const t of ["mousedown", "pointerdown", "mouseup", "pointerup", "touchstart", "dblclick", "contextmenu"]) listen(t, swallow);
+      listen("mousemove", onMove);
+      listen("keydown", onKey);
       plan.breaks = sorted(plan.breaks);
       paint();
       // Start where the first cut is, so the reader sees what this is about.
       if (plan.breaks.length) scrollTo(0, Math.max(0, yOf(plan.breaks[0]) - innerHeight * 0.6));
-    });
+    }
+    return planReport();
   }
 
   /**
@@ -1177,7 +1326,8 @@
   // ---------------------------------------------------------------- entry points
 
   async function prepare(o) {
-    journal = [];
+    // The journal is kept, not emptied: "Pick a block" may already have put a
+    // modal dialog aside (clearTheWay), and restore() must bring it back.
     startScroll = [scrollX, scrollY];
     const facts = core ? core.pageFacts() : { title: document.title, url: location.href, site: location.hostname };
     const report = { facts, cleaned: 0, images: [], resized: 0, fonts: 0, headings: [] };
@@ -1222,6 +1372,7 @@
   }
 
   function restore() {
+    closeUi("cancelled");
     for (let i = journal.length - 1; i >= 0; i -= 1) {
       try { journal[i](); } catch { /* the page moved on; keep restoring the rest */ }
     }
@@ -1238,6 +1389,7 @@
 
   globalThis.__recallPdf = {
     prepare, measure, restore, pickElement, swapImages, replaceFonts, planBreaks, editBreaks, applyBreaks,
+    uiState, finishUi, cancelUi, toast,
     facts: () => core && core.pageFacts()
   };
 })();

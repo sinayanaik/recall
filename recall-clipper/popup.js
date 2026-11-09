@@ -13,6 +13,12 @@
 // deleted. Saving hands the job to the background (pdf-job.js), so closing
 // the popup — or clicking the page to pick a block or move a page break —
 // does not stop it.
+//
+// The footer follows the job, never the long-running start message: while the
+// page waits for the reader it offers "Save PDF now" and Cancel; while the
+// PDF is made, Cancel; after a failed save, "Save again". Every call to the
+// background has a time limit, and if the background does not answer the
+// footer falls back to a working "Save as PDF" — it is never left disabled.
 
 import { DEFAULTS, BUILTIN_PRESETS, normalize, geometry, imageSettings, pageLengthIn } from "./lib/options.js";
 
@@ -21,6 +27,9 @@ const presetSelect = document.getElementById("preset");
 const statusEl = document.getElementById("status");
 const summaryEl = document.getElementById("summary");
 const goBtn = document.getElementById("go");
+const finishBtn = document.getElementById("finish");
+const againBtn = document.getElementById("again");
+const cancelBtn = document.getElementById("cancel");
 const linkMargins = document.getElementById("linkMargins");
 const pdfButton = document.getElementById("actPdf");
 const pdfFooter = document.getElementById("pdfFooter");
@@ -191,34 +200,114 @@ form.addEventListener("input", (e) => {
 });
 form.addEventListener("change", (e) => { if (notAnOption(e.target)) return; refresh(); saveLast(); });
 
-function showStatus(text, error = false) {
+function showStatus(text, error = false, waiting = false) {
   statusEl.hidden = !text;
   statusEl.textContent = text || "";
   statusEl.classList.toggle("error", error);
+  statusEl.classList.toggle("waiting", waiting && !error);
 }
 
+// A message to the background that cannot hang the popup.
+function ask(msg, ms = 4000) {
+  return Promise.race([
+    chrome.runtime.sendMessage(msg).catch((err) => ({ ok: false, error: String((err && err.message) || err) })),
+    new Promise((r) => setTimeout(() => r(undefined), ms))
+  ]);
+}
+
+let current = null; // the job as last painted
+let starting = false;
+let misses = 0;     // status asks in a row that got no answer
+
 function paintJob(job) {
-  if (!job) return;
-  showStatus(job.step || "", Boolean(job.error));
-  const running = !job.done && !job.error;
-  goBtn.disabled = running;
-  goBtn.textContent = running ? "Working…" : "Save as PDF";
+  current = job || null;
+  const running = Boolean(job && job.running);
+  const phase = running ? job.phase : null;
+  const waitingBreaks = phase === "waiting-breaks";
+  const waitingPick = phase === "waiting-pick";
+  showStatus(job ? job.step : "", Boolean(job && job.error && !job.cancelled), waitingBreaks || waitingPick);
+  finishBtn.hidden = !waitingBreaks;
+  cancelBtn.hidden = !running;
+  cancelBtn.disabled = false;
+  againBtn.hidden = running || !(job && job.canSaveAgain);
+  againBtn.disabled = Boolean(job && job.phase === "saving");
+  goBtn.hidden = waitingBreaks;
+  goBtn.disabled = running || starting;
+  goBtn.textContent = running ? (waitingPick ? "Waiting for your click…" : "Working…") : "Save as PDF";
+  // After a failed save, Save again is the main action; making it again is second.
+  const offerAgain = !againBtn.hidden;
+  if (offerAgain) goBtn.textContent = "Make it again";
+  goBtn.classList.toggle("primary", !offerAgain);
+  goBtn.classList.toggle("secondary", offerAgain);
+}
+
+async function refreshStatus() {
+  if (tabId == null) return;
+  const job = await ask({ type: "rwc-get-status", tabId }, 2500);
+  if (job === undefined) {
+    // No answer: never leave a dead button behind.
+    misses += 1;
+    if (misses >= 2) {
+      paintJob(current && current.running ? { ...current, step: "The clipper is not answering. Cancel stops it and puts the page back." } : null);
+      goBtn.disabled = false;
+    }
+    return;
+  }
+  misses = 0;
+  paintJob(job);
 }
 
 chrome.runtime.onMessage.addListener((msg) => {
-  if (msg && msg.type === "rwc-status" && msg.tabId === tabId) paintJob(msg.job);
+  if (msg && msg.type === "rwc-status" && msg.tabId === tabId) { misses = 0; paintJob(msg.job); }
 });
+
+// While a job runs, keep asking too: a missed status message must not leave
+// the popup showing a step that has long passed.
+setInterval(() => { if (current && (current.running || current.phase === "saving")) refreshStatus(); }, 1500);
 
 goBtn.addEventListener("click", async () => {
   const options = readForm();
   await saveLast();
-  if (options.capture === "element") showStatus("Click the block you want on the page…");
-  else if (options.layout === "smart" && options.adjustBreaks) showStatus("The page breaks appear on the page: drag, add or remove them there, then press Save PDF.");
-  goBtn.disabled = true;
-  const res = await chrome.runtime.sendMessage({ type: "rwc-start-pdf", tabId, options }).catch((err) => ({ ok: false, error: String(err) }));
-  if (res && !res.ok) paintJob({ step: res.error || "Something went wrong.", error: true });
-  goBtn.disabled = false;
-  goBtn.textContent = "Save as PDF";
+  starting = true;
+  paintJob({ running: true, phase: "attaching", step: "Starting…" });
+  // The answer comes when the PDF is saved (or not); the footer follows the
+  // status messages meanwhile, so the popup may close at any time.
+  const started = chrome.runtime.sendMessage({ type: "rwc-start-pdf", tabId, options })
+    .catch((err) => ({ ok: false, error: String((err && err.message) || err) }));
+  setTimeout(() => { starting = false; refreshStatus(); }, 600);
+  const res = await started;
+  starting = false;
+  if (res && !res.ok) {
+    const job = await ask({ type: "rwc-get-status", tabId }, 2500);
+    if (job && (job.running || job.error)) paintJob(job);
+    else paintJob({ step: res.error || "Something went wrong.", error: true });
+  } else refreshStatus();
+});
+
+finishBtn.addEventListener("click", async () => {
+  finishBtn.disabled = true;
+  const res = await ask({ type: "rwc-finish-pdf", tabId });
+  finishBtn.disabled = false;
+  if (res && !res.ok && res.error) showStatus(res.error, true);
+  refreshStatus();
+});
+
+cancelBtn.addEventListener("click", async () => {
+  cancelBtn.disabled = true;
+  showStatus("Cancelling…");
+  await ask({ type: "rwc-cancel-pdf", tabId }, 30000);
+  cancelBtn.disabled = false;
+  await refreshStatus();
+  if (!current || current.running) paintJob({ step: "Cancelled.", cancelled: true, error: "Cancelled." });
+});
+
+againBtn.addEventListener("click", async () => {
+  againBtn.disabled = true;
+  showStatus("Saving again…");
+  const res = await ask({ type: "rwc-save-again", tabId }, 20 * 60000);
+  againBtn.disabled = false;
+  if (res && !res.ok && res.error) showStatus(res.error, true);
+  refreshStatus();
 });
 
 // ---------------------------------------------------------------- the three actions
@@ -260,14 +349,14 @@ document.getElementById("actCopy").addEventListener("click", () => startTool("rw
   try { ({ pdfOpen = false } = await chrome.storage.local.get("pdfOpen")); } catch { /* closed */ }
   const url = (tab && tab.url) || "";
   if (!tab || RESTRICTED.test(url) || STORE.test(url) || /^file:/i.test(url)) {
-    document.querySelectorAll("button.action, #go").forEach((b) => { b.disabled = true; });
+    document.querySelectorAll("button.action, #go, #again").forEach((b) => { b.disabled = true; });
     blockedEl.hidden = false;
     blockedEl.textContent = "Chrome does not let extensions work on this kind of page. Open a web page and try again.";
     return;
   }
-  const job = await chrome.runtime.sendMessage({ type: "rwc-get-status", tabId }).catch(() => null);
-  // A PDF in progress (or just finished) for this tab: show it.
-  showPdfPanel(Boolean(pdfOpen || (job && !job.done && !job.error)));
+  const job = (await ask({ type: "rwc-get-status", tabId }, 2500)) || null;
+  // A PDF in progress, or one waiting to be saved again: show it.
+  showPdfPanel(Boolean(pdfOpen || (job && (job.running || job.canSaveAgain || job.phase === "saving"))));
   paintJob(job);
 })();
 

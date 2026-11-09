@@ -91,6 +91,12 @@ The popup shows the few settings most people change:
     - **Undo / Redo** (Ctrl+Z, Ctrl+Shift+Z), **Auto** to plan the cuts again,
       or another page length;
     - then **Save PDF** (or Enter; Esc cancels).
+
+    The bar with **Save PDF** sits at the top of the window, above anything
+    the page shows (it is in the browser's top layer, so no page bar, dialog
+    or transform can cover it or push it away). The popup offers the same
+    while the breaks are shown — **Save PDF now** and **Cancel** — and
+    Alt+Shift+P is Save PDF too.
   - **One long page**: as tall as the content (split into a few pages past
     200 in). Very tall pages are slow to scroll in any PDF reader.
   - **Paper pages**: A4, Letter, Legal, A3, A5, Tabloid or custom.
@@ -106,6 +112,26 @@ and orientation, margin sizes, scale or layout width, text size, print or
 screen styles, colour scheme, shadows and effects, fonts, picture details,
 fixed bars, collapsed sections, breaks before headings, embeds, header and
 footer, source box, bookmarks, tagged PDF, file name and folder.
+
+### When something goes wrong
+
+A PDF job never leaves the page or the button stuck:
+
+- **Cancel** is in the popup for as long as a PDF is being made; it stops the
+  job and puts the page back as it was.
+- A page that stops responding (frozen, or reloaded halfway) ends the job by
+  itself with a message saying so, and the next Save as PDF works at once.
+  If the clipper itself is stopped by Chrome, the break editor takes itself
+  off the page within seconds, and the popup says what happened.
+- **Saved** is only shown once Chrome reports the file written. A save that
+  fails says why (disk full, folder not allowed, cancelled…) and the popup
+  offers **Save again**, which saves the same PDF without making it again.
+- With the popup closed, a short note on the page says when the PDF is saved,
+  or why not.
+- DevTools open on the tab, or a frame another extension (a password manager,
+  say) put into the page, used to fail with a bare error. A frame from
+  another extension is now taken out of the page while the PDF is made and
+  put back afterwards; for DevTools the message says to close it.
 
 ### A PDF that opens fast
 
@@ -297,6 +323,7 @@ Two more things happen on the way out:
   | `activeTab`, `scripting` | Inject the picker or the cleaner into the tab you used it on, and nowhere else. |
   | `debugger` | Save as PDF prints with Chrome's own PDF engine (`Page.printToPDF`) and lays the page out at the print width. This is the "debugging this browser" bar. |
   | `downloads` | Saves the PDF. |
+  | `offscreen` | A small hidden page (`offscreen.html`) that hands the finished PDF to downloads as a `blob:` address — a service worker cannot make one. |
   | `storage` | Your PDF options and presets, the cleaner's mode and level, and the per-site cleaning rules you chose to remember. |
 
   Pictures and fonts from other sites are read through the same debugger
@@ -309,7 +336,16 @@ Two more things happen on the way out:
 - `pdf-job.js` runs one PDF job per tab: attach, prepare, check the fonts,
   re-encode the pictures, find the page breaks, print, restore, trim the
   pages, add the bookmarks, stamp the metadata, download. Because it runs in
-  the service worker, closing the popup does not stop it.
+  the service worker, closing the popup does not stop it. It is built not to
+  get stuck: every DevTools call has a time limit and stops the moment the
+  job is cancelled; the reader's steps (picking a block, the break editor)
+  are polled with short calls rather than held open for minutes; a watchdog
+  stops a job that makes no progress; one cleanup puts the page back and
+  detaches whatever ended the job, before the tab is free again; and the job's
+  state is mirrored in `chrome.storage.session`, so a restarted worker can
+  tell the popup and clean up. The PDF is printed as a stream, kept in Cache
+  Storage until Chrome confirms the download, and downloaded by `blob:`
+  address (`offscreen.html`), with a `data:` address as the fallback.
 - `content/prepare.js` applies the PDF options to the page in an isolated world,
   plans the smart page breaks and shows them for editing, then puts every
   change back.
@@ -403,7 +439,13 @@ is how the preview's fidelity to a deck is checked.
 cleaner and Save as PDF: what Auto marks, Apply and Undo, smart page breaks and
 their editor (drag, add, ✕, undo), page sizes, the trimmed heights, the
 bookmarks, the pictures and fonts in the heavy page's PDF against the old
-defaults, the metadata, and that the page is restored afterwards.
+defaults, the metadata, and that the page is restored afterwards. They also
+check that nothing gets stuck: the editor's Save PDF is in view and uncovered
+on a page that tries to hide it (a transform on `<html>`, a bar at the highest
+z-index, a modal dialog) and a real mouse click on it saves; Save PDF now and
+Cancel from the popup; Esc leaves no listener behind; a page frozen mid-job
+ends the job on its own and frees the tab; a failed download is reported and
+Save again saves it; PDFs go to downloads by `blob:` address.
 
 `tools/generate-icons.js` regenerates the PNG icons.
 Nothing in this extension imports from or writes to the Recall app.

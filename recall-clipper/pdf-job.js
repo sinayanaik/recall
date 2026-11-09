@@ -21,6 +21,25 @@
 // — or clicking the page to pick a block or move a page break — never kills a
 // job.
 //
+// A job never gets stuck:
+// - every DevTools call has a time limit and gives up at once when the job is
+//   cancelled (send);
+// - the reader's steps ("Pick a block", the break editor) are polled with
+//   short calls (waitForUser) instead of one call left open for minutes, which
+//   Chrome could answer by stopping the service worker;
+// - a watchdog stops a job that has made no progress for a while, and any job
+//   that has run far too long;
+// - whatever ends a job — done, error, Cancel, timeout, the tab closed, the
+//   debugging bar's Cancel — one cleanup puts the page back and detaches, each
+//   step of it time-limited, and only then is the tab free for the next job;
+// - the job's state is mirrored in chrome.storage.session, so if Chrome does
+//   stop the worker the popup can still say so, and the next start cleans up.
+//
+// Saving tells the truth: the PDF goes to chrome.downloads as a blob: address
+// (from offscreen.html; a data: address only as a fallback), and "Saved" is
+// only said once Chrome reports the file complete. If it fails, the PDF is
+// kept so "Save again" needs no second print.
+//
 // While attached, Chrome shows its "started debugging this browser" bar on the
 // tab; it goes away when the job detaches.
 
@@ -37,23 +56,201 @@ import {
 const RESTRICTED = /^(chrome|edge|brave|about|chrome-extension|devtools|view-source|file):/i;
 const STORE = /^https:\/\/(chromewebstore\.google\.com|chrome\.google\.com\/webstore)/;
 
-const jobs = new Map(); // tabId → { step, error, done }
+// Time limits, in ms. One object, so the browser check can shorten them.
+export const LIMITS = {
+  call: 60000,              // one DevTools call
+  print: 300000,            // one Page.printToPDF
+  poll: 5000,               // one look at the on-page UI
+  pollEvery: 300,
+  missedPolls: 3,           // in a row, then the page is taken to be frozen
+  stall: 180000,            // no progress at all
+  stallPrinting: 360000,    // … while Chrome prints
+  total: 60 * 60000,        // a whole job, editing included
+  watchdogEvery: 5000,
+  cleanupStep: 5000,        // each step of putting the page back
+  pageStale: 15000,         // the on-page UI closes itself after this long without a poll
+  downloadWait: 120000,     // for Chrome to say a download is complete
+  downloadWaitSaveAs: 15 * 60000,
+  failDownloads: 0          // checks only: make the next N downloads fail
+};
+globalThis.__rwcLimits = LIMITS;
+
+const OUT_CACHE = "rwc-out";
+const OUT_BASE = "https://recall-clipper.invalid/out/";
+
+class JobError extends Error {
+  constructor(message, kind = "error") {
+    super(message);
+    this.kind = kind; // "error" | "cancelled" | "timeout" | "busy"
+  }
+}
+
+const RUNNING_PHASES = new Set(["attaching", "preparing", "waiting-pick", "waiting-breaks", "printing"]);
+const WAITING_PHASES = new Set(["waiting-pick", "waiting-breaks"]);
+const PHASE_WORDS = {
+  attaching: "attaching to the page",
+  preparing: "preparing the page",
+  "waiting-pick": "waiting for you to pick a block",
+  "waiting-breaks": "showing the page breaks",
+  printing: "printing",
+  saving: "saving"
+};
+
+const jobs = new Map(); // tabId → job record (newJob)
+let nextId = 1;
+
+function newJob(tabId) {
+  let resolveFinished;
+  const finished = new Promise((r) => { resolveFinished = r; });
+  return {
+    id: `${Date.now().toString(36)}-${nextId++}`,
+    tabId,
+    phase: "attaching",
+    step: "",
+    error: null,
+    cancelled: false,
+    done: false,
+    running: false,
+    pages: 0,
+    startedAt: Date.now(),
+    lastProgressAt: Date.now(),
+    controller: new AbortController(),
+    finished,
+    resolveFinished,
+    evaluate: null, // set once the page side is loaded
+    ctx: null,
+    saved: null,    // { key, filename, name, saveAs, showAfter, size, pages, cached, retry }
+    downloadId: null
+  };
+}
+
+function publicJob(job) {
+  return {
+    id: job.id,
+    phase: job.phase,
+    step: job.step || "",
+    error: job.error || null,
+    cancelled: Boolean(job.cancelled),
+    done: Boolean(job.done),
+    running: Boolean(job.running),
+    pages: job.pages || 0,
+    canSaveAgain: Boolean(job.saved && job.saved.retry)
+  };
+}
 
 // ---------------------------------------------------------------- status
 
-function status(tabId, patch) {
-  const job = { ...(jobs.get(tabId) || {}), ...patch };
-  jobs.set(tabId, job);
-  chrome.runtime.sendMessage({ type: "rwc-status", tabId, job }).catch(() => {});
-  const text = job.error ? "!" : job.done ? "✓" : "…";
-  chrome.action.setBadgeBackgroundColor({ tabId, color: job.error ? "#c62828" : "#4f5bd5" }).catch(() => {});
+function status(job, patch) {
+  Object.assign(job, patch);
+  job.lastProgressAt = Date.now();
+  // A newer job on the same tab owns what the popup and badge show.
+  if (jobs.get(job.tabId) !== job) return;
+  const tabId = job.tabId;
+  const pub = publicJob(job);
+  chrome.runtime.sendMessage({ type: "rwc-status", tabId, job: pub }).catch(() => {});
+  const record = { ...pub, saved: job.saved ? { ...job.saved } : null, downloadId: job.downloadId, at: Date.now() };
+  chrome.storage.session.set({ [`job:${tabId}`]: record }).catch(() => {});
+  const failed = job.error && !job.cancelled;
+  const text = failed ? "!" : job.done ? "✓" : job.running || job.phase === "saving" ? "…" : "";
+  chrome.action.setBadgeBackgroundColor({ tabId, color: failed ? "#c62828" : "#4f5bd5" }).catch(() => {});
   chrome.action.setBadgeText({ tabId, text }).catch(() => {});
-  if (job.done || job.error) setTimeout(() => chrome.action.setBadgeText({ tabId, text: "" }).catch(() => {}), 8000);
+  if (!job.running && job.phase !== "saving") {
+    setTimeout(() => { if (jobs.get(tabId) === job && !job.running) chrome.action.setBadgeText({ tabId, text: "" }).catch(() => {}); }, 8000);
+  }
+}
+
+// ---------------------------------------------------------------- time limits & cancelling
+
+// `promise`, unless `ms` pass first (then onTimeout()'s error) or `signal`
+// aborts first (then its reason).
+function limit(promise, ms, onTimeout, signal = null) {
+  return new Promise((resolve, reject) => {
+    let over = false;
+    let timer = null;
+    const onAbort = () => end(reject, signal.reason);
+    function end(fn, value) {
+      if (over) return;
+      over = true;
+      clearTimeout(timer);
+      if (signal) signal.removeEventListener("abort", onAbort);
+      fn(value);
+    }
+    timer = setTimeout(() => end(reject, onTimeout()), ms);
+    if (signal) {
+      if (signal.aborted) { onAbort(); return; }
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+    Promise.resolve(promise).then((v) => end(resolve, v), (e) => end(reject, e));
+  });
+}
+
+const sleep = (ms, signal = null) => limit(new Promise(() => {}), ms, () => null, signal).catch((e) => { if (e) throw e; });
+
+function runningJob(tabId) {
+  const job = jobs.get(tabId);
+  return job && job.running ? job : null;
+}
+
+function isAbort(target, err) {
+  const job = jobs.get(target.tabId);
+  return Boolean(job && job.controller.signal.aborted) || (err instanceof JobError && err.kind === "cancelled");
+}
+
+/** A DevTools call made by a job: time-limited, and given up the moment the job is cancelled. */
+function send(target, method, params = {}, ms = LIMITS.call) {
+  const job = runningJob(target.tabId);
+  const call = chrome.debugger.sendCommand(target, method, params);
+  return limit(call, ms, () => new JobError(`The page did not answer in time (${method}).`, "timeout"), job ? job.controller.signal : null)
+    .then((r) => { if (job) job.lastProgressAt = Date.now(); return r; });
+}
+
+/** A DevTools call made while cleaning up: never cancelled, still time-limited. */
+function rawSend(target, method, params = {}, ms = LIMITS.cleanupStep) {
+  return limit(chrome.debugger.sendCommand(target, method, params), ms, () => new Error(`${method} timed out`));
+}
+
+function abortJob(job, err) {
+  if (!job.running || job.controller.signal.aborted) return;
+  job.controller.abort(err);
+}
+
+// Keeps the service worker awake while a job or a save is under way: each
+// extension API call counts as activity.
+let keepers = 0;
+let keepTimer = null;
+function hold() {
+  keepers += 1;
+  if (!keepTimer) keepTimer = setInterval(() => { chrome.runtime.getPlatformInfo().catch(() => {}); }, 20000);
+}
+function release() {
+  keepers = Math.max(0, keepers - 1);
+  if (!keepers && keepTimer) { clearInterval(keepTimer); keepTimer = null; }
+}
+
+// Stops any job that has made no progress for too long, or run too long.
+// Polls of the on-page UI count as progress, so a reader taking their time is
+// never cut off — a frozen or vanished page is.
+let watchdog = null;
+function startWatchdog() {
+  if (watchdog) return;
+  watchdog = setInterval(() => {
+    const now = Date.now();
+    let any = false;
+    for (const job of jobs.values()) {
+      if (!job.running) continue;
+      any = true;
+      const stall = job.phase === "printing" ? LIMITS.stallPrinting : LIMITS.stall;
+      if (now - job.lastProgressAt > stall) {
+        abortJob(job, new JobError(`Stopped: the page stopped responding while ${PHASE_WORDS[job.phase] || "working"}. Reload the page and try again.`, "timeout"));
+      } else if (now - job.startedAt > LIMITS.total) {
+        abortJob(job, new JobError("Stopped: making this PDF took far too long. Try again, perhaps with Images: Medium.", "timeout"));
+      }
+    }
+    if (!any) { clearInterval(watchdog); watchdog = null; }
+  }, LIMITS.watchdogEvery);
 }
 
 // ---------------------------------------------------------------- helpers
-
-const send = (target, method, params = {}) => chrome.debugger.sendCommand(target, method, params);
 
 function b64ToBytes(b64) {
   const bin = atob(b64);
@@ -105,31 +302,42 @@ async function resourceBytes(target, frameId, url, { network = true } = {}) {
     if (r && r.content != null) return r.base64Encoded ? b64ToBytes(r.content) : new TextEncoder().encode(r.content);
   } catch { /* not in the page's cache */ }
   if (!network) return null;
-  let handle = null;
   try {
     const { resource } = await send(target, "Network.loadNetworkResource", {
       frameId, url, options: { disableCache: false, includeCredentials: true }
     });
     if (!resource || !resource.success || !resource.stream) return null;
-    handle = resource.stream;
-    const parts = [];
-    let total = 0;
-    for (let i = 0; i < 4096; i += 1) {
-      const chunk = await send(target, "IO.read", { handle, size: 1 << 20 });
-      const bytes = chunk.base64Encoded ? b64ToBytes(chunk.data) : new TextEncoder().encode(chunk.data);
+    return await readStream(target, resource.stream, 64 * 1048576);
+  } catch (err) {
+    if (isAbort(target, err)) throw err;
+    return null;
+  }
+}
+
+// A DevTools stream (a fetched resource, or a printed PDF), read to its end in
+// chunks — never one huge message — and always closed.
+async function readStream(target, handle, maxBytes = Infinity) {
+  const parts = [];
+  let total = 0;
+  let empty = 0;
+  try {
+    for (;;) {
+      const chunk = await send(target, "IO.read", { handle, size: 4 << 20 });
+      const bytes = chunk.base64Encoded ? b64ToBytes(chunk.data || "") : new TextEncoder().encode(chunk.data || "");
       parts.push(bytes);
       total += bytes.length;
-      if (chunk.eof || total > 64 * 1048576) break;
+      if (chunk.eof || total > maxBytes) break;
+      // A stream that keeps answering with nothing has ended in all but name.
+      empty = bytes.length ? 0 : empty + 1;
+      if (empty > 5) break;
     }
-    const out = new Uint8Array(total);
-    let at = 0;
-    for (const p of parts) { out.set(p, at); at += p.length; }
-    return out;
-  } catch {
-    return null;
   } finally {
-    if (handle) send(target, "IO.close", { handle }).catch(() => {});
+    rawSend(target, "IO.close", { handle }).catch(() => {});
   }
+  const out = new Uint8Array(total);
+  let at = 0;
+  for (const p of parts) { out.set(p, at); at += p.length; }
+  return out;
 }
 
 function sniffImage(b) {
@@ -231,7 +439,7 @@ async function shrinkImages(target, frameId, items, settings, geo, grayscale) {
         if (!shrink && (kind === "jpeg" || kind === "png") && out.size >= bytes.length) continue;
         results.push({ ids: uses.map((u) => u.id), type: out.type, b64: bytesToB64(new Uint8Array(await out.arrayBuffer())) });
         if (shrink) shrunk += uses.length;
-      } catch { /* this one prints as served */ }
+      } catch (err) { if (isAbort(target, err)) throw err; /* this one prints as served */ }
     }
   };
   await Promise.all(Array.from({ length: Math.min(4, queue.length) }, worker));
@@ -325,24 +533,87 @@ function headerFooter(o) {
   return { header, footer };
 }
 
+
 // ---------------------------------------------------------------- the job
 
+/**
+ * Makes and saves the PDF for one tab. Resolves with what was saved, or
+ * rejects with a JobError whose message is ready to show. Either way the page
+ * is put back and the tab is free again before it settles.
+ */
 export async function runJob(tabId, rawOptions) {
-  if (jobs.get(tabId) && !jobs.get(tabId).done && !jobs.get(tabId).error) throw new Error("A PDF is already being made for this tab.");
+  await recovered;
+  // Checked and claimed without waiting in between, so two quick clicks can
+  // never start two jobs on one tab.
+  const prev = jobs.get(tabId);
+  if (prev && prev.running) {
+    const stale = Date.now() - prev.lastProgressAt > LIMITS.stall;
+    if (!stale) {
+      throw new JobError(WAITING_PHASES.has(prev.phase)
+        ? "A PDF is waiting for you on the page: press Save PDF there (or here), or Cancel."
+        : "A PDF is already being made for this tab. Wait for it, or press Cancel.", "busy");
+    }
+    abortJob(prev, new JobError("Stopped: it had stopped responding.", "timeout"));
+    await limit(prev.finished, LIMITS.cleanupStep * 4, () => null).catch(() => {});
+    if (runningJob(tabId)) throw new JobError("A PDF is already being made for this tab. Wait for it, or press Cancel.", "busy");
+  }
+  if (prev && prev.saved) dropSaved(prev.saved);
+
+  const job = newJob(tabId);
+  job.running = true;
+  jobs.set(tabId, job);
+  hold();
+  startWatchdog();
+  const ctx = { target: { tabId }, attachTried: false, attached: false, ready: false, world: null, hiddenFrames: false, restored: true };
+  job.ctx = ctx;
+  let made = null;
+  let failure = null;
+  try {
+    status(job, { phase: "attaching", step: "Attaching to the page…" });
+    made = await makePdf(job, ctx, rawOptions);
+  } catch (err) {
+    failure = err;
+  }
+  await cleanup(job, ctx);
+  job.running = false;
+  job.evaluate = null;
+  job.resolveFinished();
+  try {
+    if (failure) {
+      const kind = errorKind(failure, job);
+      let message = explain(failure, job);
+      if (!ctx.restored) message += " If the page looks wrong, reload it.";
+      status(job, { phase: "error", step: message, error: message, cancelled: kind === "cancelled", done: false });
+      if (kind !== "cancelled") notify(job, message, true);
+      throw new JobError(message, kind);
+    }
+    try {
+      return await saveMade(job, made);
+    } catch (err) {
+      if (err instanceof JobError) throw err;
+      const message = `Could not save the PDF: ${errText(err)}. Try again.`;
+      status(job, { phase: "error", step: message, error: message, done: false });
+      notify(job, message, true);
+      throw new JobError(message);
+    }
+  } finally {
+    release();
+  }
+}
+
+async function makePdf(job, ctx, rawOptions) {
+  const { target, tabId } = { target: ctx.target, tabId: job.tabId };
+  const signal = job.controller.signal;
   const o = normalize(rawOptions);
   const geo = geometry(o);
   const settings = imageSettings(o);
 
-  const tab = await chrome.tabs.get(tabId);
-  if (RESTRICTED.test(tab.url || "") || STORE.test(tab.url || "")) throw new Error("Chrome does not let extensions read this page.");
+  const tab = await limit(chrome.tabs.get(tabId), LIMITS.call, () => new JobError("Chrome did not answer."), signal);
+  if (RESTRICTED.test(tab.url || "") || STORE.test(tab.url || "")) throw new JobError("Chrome does not let extensions read this page.");
 
-  status(tabId, { step: "Attaching to the page…", error: null, done: false });
-  const target = { tabId };
-  await chrome.debugger.attach(target, "1.3");
-  let prepared = false;
-  let world = null;
-  const evaluate = async (expression) => {
-    const r = await send(target, "Runtime.evaluate", { expression, contextId: world, awaitPromise: true, returnByValue: true, userGesture: true });
+  await attach(job, ctx);
+  const evaluate = async (expression, ms = LIMITS.call) => {
+    const r = await send(target, "Runtime.evaluate", { expression, contextId: ctx.world, awaitPromise: true, returnByValue: true, userGesture: true }, ms);
     if (r.exceptionDetails) {
       const d = r.exceptionDetails;
       throw new Error((d.exception && (d.exception.description || d.exception.value)) || d.text || "page script failed");
@@ -350,123 +621,201 @@ export async function runJob(tabId, rawOptions) {
     return r.result ? r.result.value : undefined;
   };
 
+  await send(target, "Page.enable");
+  const { frameTree } = await send(target, "Page.getFrameTree");
+  const frameId = frameTree.frame.id;
+  ({ executionContextId: ctx.world } = await send(target, "Page.createIsolatedWorld", {
+    frameId, worldName: "Recall Web Clipper"
+  }));
+  const [coreSrc, prepSrc] = await limit(Promise.all([sourceOf("content/cleaner-core.js"), sourceOf("content/prepare.js")]),
+    LIMITS.call, () => new JobError("Could not load the clipper's own files."), signal);
+  await evaluate(`${coreSrc}\n;\n${prepSrc}\n;true`);
+  ctx.ready = true;
+  ctx.restored = false; // from here on the page may hold our changes
+  job.evaluate = evaluate;
+
+  if (o.capture === "element") {
+    await evaluate(`__recallPdf.pickElement(${LIMITS.pageStale})`);
+    status(job, { phase: "waiting-pick", step: "Click the block you want on the page (Esc cancels)…" });
+    await waitForUser(job, evaluate);
+  }
+
+  // Colour scheme and media type apply to the measuring pass as well as the print.
+  status(job, { phase: "preparing", step: "Preparing the page…" });
+  await send(target, "Emulation.setEmulatedMedia", { media: o.media === "screen" ? "screen" : "", features: mediaFeatures(o) });
+  const report = await evaluate(`__recallPdf.prepare(${JSON.stringify(o)})`,
+    LIMITS.call + (o.lazyLoad ? Number(o.lazyWaitMs || 0) + 120000 : 0));
+  const facts = report.facts;
+
+  if (o.fonts === "auto" && o.capture !== "visible") {
+    status(job, { step: "Checking the fonts…" });
+    const families = await variableFamilies(target, frameId, facts.url || tab.url);
+    if (families.length) report.fonts = await evaluate(`__recallPdf.replaceFonts(${JSON.stringify(families)})`);
+  }
+
+  report.resized = 0;
+  if (report.images.length && settings && o.capture !== "visible") {
+    status(job, { step: `Sizing ${report.images.length} picture${report.images.length === 1 ? "" : "s"} for print…` });
+    const { results, shrunk } = await shrinkImages(target, frameId, report.images, settings, geo, o.grayscale);
+    report.resized = shrunk;
+    // In batches of about 4 MB, so no single message gets huge.
+    for (let i = 0; i < results.length;) {
+      const batch = [];
+      let size = 0;
+      while (i < results.length && (size < 4 * 1048576 || !batch.length)) { size += results[i].b64.length; batch.push(results[i]); i += 1; }
+      await evaluate(`__recallPdf.swapImages(${JSON.stringify(batch)})`);
+    }
+  }
+
+  let bytes;
+  let pages = 1;
+  let markedPages = 0;
+  if (o.capture === "visible") {
+    status(job, { phase: "printing", step: "Capturing the visible area…" });
+    const shot = await send(target, "Page.captureScreenshot", { format: "jpeg", quality: settings ? settings.jpeg : 92 });
+    const jpeg = b64ToBytes(shot.data);
+    const size = jpegSize(jpeg) || { width: 1280, height: 800 };
+    bytes = imagesToPdf([{ jpeg, ...size }], { pageWidthPt: geo.paperWidthIn * 72 });
+  } else {
+    const printed = await print(target, o, geo, evaluate, job);
+    bytes = printed.bytes;
+    pages = countPages(bytes);
+    // Smart pages: each page as tall as its own content (see lib/pdf-pages.js),
+    // where the PDF says that content ends, else as measured on screen.
+    if (printed.trim) {
+      const { measured, bottomPt } = printed.trim;
+      const marked = pageHeightsFromMarkers(bytes, measured.length, { bottomPt });
+      markedPages = marked.filter((h) => h != null).length;
+      bytes = trimPageHeights(bytes, measured.map((h, i) => marked[i] ?? h));
+    }
+    if (o.outline && !o.tagged && report.headings.length) bytes = addOutline(bytes, report.headings);
+  }
+  if (!bytes || bytes.length < 8) throw new JobError("Chrome printed an empty PDF. Try again.");
+  return { bytes, pages, markedPages, report, facts, o };
+}
+
+// Attaches the debugger. Two refusals are common and both are handled here:
+// a session of our own left over from before Chrome restarted the worker
+// (detached, then tried once more), and a frame another extension put into
+// the page, which Chrome does not let a debugger near (taken out of the page
+// for the length of the job, then put back, by cleanup).
+async function attach(job, ctx) {
+  const signal = job.controller.signal;
+  const once = () => {
+    ctx.attachTried = true;
+    return limit(chrome.debugger.attach(ctx.target, "1.3"), LIMITS.call,
+      () => new JobError("Chrome did not let the clipper connect to this page in time. Reload the page and try again.", "timeout"), signal);
+  };
   try {
-    await send(target, "Page.enable");
-    const { frameTree } = await send(target, "Page.getFrameTree");
-    const frameId = frameTree.frame.id;
-    ({ executionContextId: world } = await send(target, "Page.createIsolatedWorld", {
-      frameId, worldName: "Recall Web Clipper"
-    }));
-    const [coreSrc, prepSrc] = await Promise.all([sourceOf("content/cleaner-core.js"), sourceOf("content/prepare.js")]);
-    await evaluate(`${coreSrc}\n;\n${prepSrc}\n;true`);
-
-    if (o.capture === "element") {
-      status(tabId, { step: "Click the block you want…" });
-      await evaluate("__recallPdf.pickElement()");
-    }
-
-    // Colour scheme and media type apply to the measuring pass as well as the print.
-    await send(target, "Emulation.setEmulatedMedia", { media: o.media === "screen" ? "screen" : "", features: mediaFeatures(o) });
-
-    status(tabId, { step: "Preparing the page…" });
-    prepared = true;
-    const report = await evaluate(`__recallPdf.prepare(${JSON.stringify(o)})`);
-    const facts = report.facts;
-
-    if (o.fonts === "auto" && o.capture !== "visible") {
-      status(tabId, { step: "Checking the fonts…" });
-      const families = await variableFamilies(target, frameId, facts.url || tab.url);
-      if (families.length) report.fonts = await evaluate(`__recallPdf.replaceFonts(${JSON.stringify(families)})`);
-    }
-
-    report.resized = 0;
-    if (report.images.length && settings && o.capture !== "visible") {
-      status(tabId, { step: `Sizing ${report.images.length} picture${report.images.length === 1 ? "" : "s"} for print…` });
-      const { results, shrunk } = await shrinkImages(target, frameId, report.images, settings, geo, o.grayscale);
-      report.resized = shrunk;
-      // In batches of about 4 MB, so no single message gets huge.
-      for (let i = 0; i < results.length;) {
-        const batch = [];
-        let size = 0;
-        while (i < results.length && (size < 4 * 1048576 || !batch.length)) { size += results[i].b64.length; batch.push(results[i]); i += 1; }
-        await evaluate(`__recallPdf.swapImages(${JSON.stringify(batch)})`);
-      }
-    }
-
-    let bytes;
-    let pages = 1;
-    let markedPages = 0;
-    if (o.capture === "visible") {
-      status(tabId, { step: "Capturing the visible area…" });
-      const shot = await send(target, "Page.captureScreenshot", { format: "jpeg", quality: settings ? settings.jpeg : 92 });
-      const jpeg = b64ToBytes(shot.data);
-      const size = jpegSize(jpeg) || { width: 1280, height: 800 };
-      bytes = imagesToPdf([{ jpeg, ...size }], { pageWidthPt: geo.paperWidthIn * 72 });
-    } else {
-      const printed = await print(target, o, geo, evaluate, tabId);
-      bytes = printed.bytes;
-      pages = countPages(bytes);
-      // Smart pages: each page as tall as its own content (see lib/pdf-pages.js),
-      // where the PDF says that content ends, else as measured on screen.
-      if (printed.trim) {
-        const { measured, bottomPt } = printed.trim;
-        const marked = pageHeightsFromMarkers(bytes, measured.length, { bottomPt });
-        markedPages = marked.filter((h) => h != null).length;
-        bytes = trimPageHeights(bytes, measured.map((h, i) => marked[i] ?? h));
-      }
-      if (o.outline && !o.tagged && report.headings.length) bytes = addOutline(bytes, report.headings);
-    }
-
-    await evaluate("__recallPdf.restore()").catch(() => {});
-    prepared = false;
-    await send(target, "Emulation.setEmulatedMedia", { media: "", features: [] }).catch(() => {});
-    await chrome.debugger.detach(target).catch(() => {});
-
-    status(tabId, { step: "Saving…" });
-    const capturedAt = new Date();
-    const host = (() => { try { return new URL(facts.url).hostname.replace(/^www\./, ""); } catch { return ""; } })();
-    bytes = setPdfInfo(bytes, {
-      Title: facts.title,
-      Author: facts.author,
-      Subject: facts.url,
-      Keywords: [facts.site, facts.keywords].filter(Boolean).join(", ").slice(0, 500),
-      Creator: "Recall Web Clipper",
-      Producer: "Chrome (Skia/PDF) via Recall Web Clipper",
-      CreationDate: capturedAt,
-      custom: {
-        RecallSourceURL: facts.url,
-        RecallSiteName: facts.site || host,
-        RecallCapturedAt: capturedAt.toISOString(),
-        RecallPublished: facts.published ? String(facts.published) : "",
-        RecallDescription: (facts.description || "").slice(0, 500)
-      }
-    });
-
-    const folder = folderFor(o.subfolder);
-    const name = `${fileNameFor(o.filename, facts, capturedAt)}.pdf`;
-    const id = await chrome.downloads.download({
-      url: `data:application/pdf;base64,${bytesToB64(bytes)}`,
-      filename: folder ? `${folder}/${name}` : name,
-      saveAs: o.saveAs,
-      conflictAction: "uniquify"
-    });
-    if (o.showAfter && id != null) whenComplete(id, () => chrome.downloads.show(id));
-    status(tabId, { step: `Saved ${name} (${(bytes.length / 1048576).toFixed(1)} MB, ${pages} page${pages === 1 ? "" : "s"})`, done: true });
-    return {
-      ok: true, name, bytes: bytes.length, pages, cleaned: report.cleaned, resized: report.resized,
-      fonts: report.fonts || 0, bookmarks: report.headings.length, markedPages
-    };
+    await once();
   } catch (err) {
-    if (prepared) await evaluate("__recallPdf.restore()").catch(() => {});
-    await send(target, "Emulation.clearDeviceMetricsOverride").catch(() => {});
-    await chrome.debugger.detach(target).catch(() => {});
-    const message = /cancelled/.test(String(err && err.message)) ? "Cancelled." : String((err && err.message) || err);
-    status(tabId, { step: message, error: message });
-    throw err;
+    const m = errText(err);
+    if (/already attached/i.test(m)) {
+      // Ours, from before a restart? Then this frees it; someone else's stays.
+      await chrome.debugger.detach(ctx.target).catch(() => {});
+      await once();
+    } else if (OTHER_EXTENSION.test(m)) {
+      const n = await hideOtherFrames(job.tabId);
+      if (!n) throw err;
+      ctx.hiddenFrames = true;
+      await once();
+    } else throw err;
+  }
+  ctx.attached = true;
+}
+
+/** Waits for the reader to finish on the page, by asking a few times a second. */
+async function waitForUser(job, evaluate) {
+  let missed = 0;
+  for (;;) {
+    let s;
+    try {
+      s = await evaluate("__recallPdf.uiState()", LIMITS.poll);
+      missed = 0;
+    } catch (err) {
+      if (job.controller.signal.aborted || pageGone(err)) throw err;
+      missed += 1;
+      if (missed >= LIMITS.missedPolls) throw new JobError("The page stopped responding while it waited for you. Reload it and try again.", "timeout");
+      continue;
+    }
+    if (!s || s.state === "none") throw new JobError("The page changed while it waited for you. Try again.");
+    if (s.state === "done") return s;
+    if (s.state === "cancelled") throw new JobError("Cancelled.", "cancelled");
+    if (s.pages && s.pages !== job.pages) status(job, { pages: s.pages, step: breaksStep(s.pages) });
+    await sleep(LIMITS.pollEvery, job.controller.signal);
   }
 }
 
-async function print(target, o, geo, evaluate, tabId) {
+const breaksStep = (pages) => `Check the ${pages} page${pages === 1 ? "" : "s"} on the page (drag, add or remove breaks there), then press Save PDF on the page or here.`;
+
+// Puts everything back, whatever happened. Each step has its own time limit
+// and none can stop the next, so this always ends.
+async function cleanup(job, ctx) {
+  const { target } = ctx;
+  const step = (fn) => limit(Promise.resolve().then(fn), LIMITS.cleanupStep, () => new Error("cleanup step timed out"));
+  if (ctx.attachTried) {
+    if (ctx.ready) {
+      try {
+        const r = await step(() => rawSend(target, "Runtime.evaluate", { expression: "__recallPdf.restore()", contextId: ctx.world, returnByValue: true }));
+        if (r && !r.exceptionDetails) ctx.restored = true;
+      } catch { /* the page is gone or frozen; see below */ }
+    }
+    await step(() => rawSend(target, "Emulation.clearDeviceMetricsOverride")).catch(() => {});
+    await step(() => rawSend(target, "Emulation.setEmulatedMedia", { media: "", features: [] })).catch(() => {});
+    job.detaching = true;
+    await step(() => chrome.debugger.detach(target)).catch(() => {});
+    ctx.attached = false;
+  }
+  // The page side could not put itself back (frozen, or gone): at least take
+  // our overlays off, so nothing is left blocking the page.
+  if (!ctx.restored) await step(() => removeLeftovers(job.tabId)).catch(() => {});
+  if (ctx.hiddenFrames) await step(() => restoreOtherFrames(job.tabId)).catch(() => {});
+}
+
+// ---------------------------------------------------------------- errors
+
+const OTHER_EXTENSION = /chrome-extension:\/\/|Cannot attach to this target|Cannot access contents of url/i;
+
+const errText = (err) => String((err && err.message) || err || "");
+
+function pageGone(err) {
+  return /Cannot find (default )?(execution )?context|Execution context was destroyed|Inspected target navigated|Debugger is not attached|Detached while handling|No tab with|Target closed/i.test(errText(err));
+}
+
+function errorKind(err, job) {
+  const e = (job && job.controller.signal.aborted && job.controller.signal.reason) || err;
+  if (e instanceof JobError) return e.kind;
+  return /cancelled/i.test(errText(e)) ? "cancelled" : "error";
+}
+
+/** A sentence the reader can act on, for any error a job can end with. */
+function explain(err, job) {
+  const e = (job && job.controller.signal.aborted && job.controller.signal.reason) || err;
+  if (e instanceof JobError) return e.message;
+  const m = errText(e);
+  if (/cancelled/i.test(m)) return "Cancelled.";
+  if (/already attached/i.test(m)) return "DevTools (or another debugger) is open on this tab. Close it and try again.";
+  if (OTHER_EXTENSION.test(m)) return "Another extension has put a frame into this page, and Chrome does not allow saving the page while it is there. Turn that extension off for this site, reload the page and try again.";
+  if (/No tab with|Target closed/i.test(m)) return "Stopped: the tab was closed.";
+  if (/Cannot find (default )?(execution )?context|Execution context was destroyed|Inspected target navigated/i.test(m)) {
+    return "The page reloaded or went to another address while the PDF was being made. Try again.";
+  }
+  if (/Debugger is not attached|Detached while handling/i.test(m)) return "Stopped: the clipper was disconnected from the page. Try again.";
+  if (/printToPDF|Printing failed/i.test(m)) return `Chrome could not print this page (${m}). Try again with Images: Medium, or fewer pages.`;
+  return `Something went wrong: ${m || "unknown error"}. Reload the page and try again.`;
+}
+
+// ---------------------------------------------------------------- printing
+
+// Page.printToPDF, read back as a stream in chunks: a long page can make a PDF
+// far bigger than one DevTools message should carry.
+async function printPdf(target, params) {
+  const r = await send(target, "Page.printToPDF", { ...params, transferMode: "ReturnAsStream" }, LIMITS.print);
+  if (r && r.stream) return readStream(target, r.stream);
+  return b64ToBytes((r && r.data) || "");
+}
+
+async function print(target, o, geo, evaluate, job) {
   const { header, footer } = headerFooter(o);
   const base = {
     landscape: false, // orientation is already applied to the paper size
@@ -484,24 +833,27 @@ async function print(target, o, geo, evaluate, tabId) {
     generateTaggedPDF: o.tagged,
     // Chrome writes its own outline only into a tagged PDF; otherwise
     // lib/pdf-outline.js adds one afterwards.
-    generateDocumentOutline: o.outline && o.tagged,
-    transferMode: "ReturnAsBase64"
+    generateDocumentOutline: o.outline && o.tagged
   };
 
   if (o.layout === "paged") {
-    status(tabId, { step: "Printing…" });
-    return { bytes: b64ToBytes((await send(target, "Page.printToPDF", { ...base, paperHeight: geo.paperHeightIn })).data) };
+    status(job, { phase: "printing", step: "Printing…" });
+    return { bytes: await printPdf(target, { ...base, paperHeight: geo.paperHeightIn }) };
   }
 
-  if (o.layout === "smart") return printSmart(target, o, geo, evaluate, tabId, base);
+  if (o.layout === "smart") return printSmart(target, o, geo, evaluate, job, base);
 
   // Continuous: lay the page out at the print width, measure it, and make the
   // paper that tall. Past MAX_PAGE_IN it becomes a few equally tall pages, and
   // the injected break-inside rules keep each cut between blocks.
-  status(tabId, { step: "Measuring the page…" });
-  await layOutForPrint(target, o, geo, evaluate);
-  const size = await evaluate("__recallPdf.measure()");
-  await layOutForScreen(target, o);
+  status(job, { phase: "printing", step: "Measuring the page…" });
+  let size;
+  try {
+    await layOutForPrint(target, o, geo);
+    size = await evaluate("__recallPdf.measure()");
+  } finally {
+    await layOutForScreen(target, o).catch(() => {});
+  }
 
   const marginsIn = geo.margin.top + geo.margin.bottom;
   const contentIn = (size.height * geo.scale) / CSS_PX_PER_IN;
@@ -509,8 +861,8 @@ async function print(target, o, geo, evaluate, tabId) {
   let height = Math.min(MAX_PAGE_IN, contentIn / pages + marginsIn + 0.3);
   let bytes = null;
   for (let attempt = 0; attempt < 4; attempt += 1) {
-    status(tabId, { step: attempt ? "Fitting the page…" : "Printing…" });
-    bytes = b64ToBytes((await send(target, "Page.printToPDF", { ...base, paperHeight: height })).data);
+    status(job, { step: attempt ? "Fitting the page…" : "Printing…" });
+    bytes = await printPdf(target, { ...base, paperHeight: height });
     const got = countPages(bytes);
     if (got <= pages || height >= MAX_PAGE_IN) break;
     // Print layout came out taller than the measurement: grow and retry.
@@ -521,19 +873,21 @@ async function print(target, o, geo, evaluate, tabId) {
 
 // Lays the page out at its print width under the media the print will use —
 // the colour scheme rides along, since each call replaces the emulated
-// features as a whole — so what is measured is what prints.
-async function layOutForPrint(target, o, geo, evaluate) {
-  const viewport = await evaluate("({ h: innerHeight })");
+// features as a whole — so what is measured is what prints. Only the width is
+// overridden (height 0 keeps the window's own): an emulated window taller
+// than the real one would put the bottom of the page, and anything fixed
+// there, out of sight.
+async function layOutForPrint(target, o, geo) {
   await send(target, "Emulation.setDeviceMetricsOverride", {
-    width: geo.layoutWidthPx, height: Math.max(600, viewport.h), deviceScaleFactor: 1, mobile: false
+    width: geo.layoutWidthPx, height: 0, deviceScaleFactor: 1, mobile: false
   });
   if (o.media !== "screen") await send(target, "Emulation.setEmulatedMedia", { media: "print", features: mediaFeatures(o) });
-  await new Promise((r) => setTimeout(r, 250));
+  await sleep(250);
 }
 
 async function layOutForScreen(target, o) {
-  await send(target, "Emulation.clearDeviceMetricsOverride");
-  if (o.media !== "screen") await send(target, "Emulation.setEmulatedMedia", { media: "", features: mediaFeatures(o) });
+  await rawSend(target, "Emulation.clearDeviceMetricsOverride");
+  if (o.media !== "screen") await rawSend(target, "Emulation.setEmulatedMedia", { media: "", features: mediaFeatures(o) });
 }
 
 // Smart pages: the page is cut into pages of about the chosen length, at the
@@ -541,19 +895,24 @@ async function layOutForScreen(target, o) {
 // the cuts are shown on the page to move first (editBreaks). Chrome prints
 // every page on one paper size, as tall as the tallest page; then each page is
 // given its own height, so none ends in a band of white.
-async function printSmart(target, o, geo, evaluate, tabId, base) {
-  status(tabId, { step: "Finding page breaks…" });
-  await layOutForPrint(target, o, geo, evaluate);
+async function printSmart(target, o, geo, evaluate, job, base) {
+  status(job, { phase: "printing", step: "Finding page breaks…" });
+  // What the reader sees, before the layout width changes: the break editor's
+  // bar is kept inside it.
+  const view = await evaluate("({ w: innerWidth, h: innerHeight })");
   const lengths = {};
   for (const key of ["screen", "a4", "2a4"]) lengths[key] = pageContentPx(o, geo, key);
   if (o.pageLength === "custom") lengths.custom = pageContentPx(o, geo, "custom");
   const targetPx = pageContentPx(o, geo);
   let plan;
   try {
+    await layOutForPrint(target, o, geo);
     plan = await evaluate(`__recallPdf.planBreaks(${targetPx}, ${JSON.stringify(lengths)})`);
     if (o.adjustBreaks) {
-      status(tabId, { step: `Check the ${plan.pages} page break${plan.pages === 2 ? "" : "s"} on the page, then press Save PDF there…` });
-      plan = await evaluate("__recallPdf.editBreaks()");
+      const shown = await evaluate(`__recallPdf.editBreaks(${JSON.stringify({ ...view, staleMs: LIMITS.pageStale })})`);
+      status(job, { phase: "waiting-breaks", pages: shown.pages, step: breaksStep(shown.pages) });
+      await waitForUser(job, evaluate);
+      status(job, { phase: "printing", step: "Applying your page breaks…" });
     }
     plan = await evaluate("__recallPdf.applyBreaks()");
   } finally {
@@ -569,8 +928,8 @@ async function printSmart(target, o, geo, evaluate, tabId, base) {
   let bytes = null;
   let got = 0;
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    status(tabId, { step: attempt ? "Fitting the pages…" : `Printing ${plan.pages} page${plan.pages === 1 ? "" : "s"}…` });
-    bytes = b64ToBytes((await send(target, "Page.printToPDF", { ...base, paperHeight: height })).data);
+    status(job, { step: attempt ? "Fitting the pages…" : `Printing ${plan.pages} page${plan.pages === 1 ? "" : "s"}…` });
+    bytes = await printPdf(target, { ...base, paperHeight: height });
     got = countPages(bytes);
     if (got <= plan.pages || height >= MAX_PAGE_IN) break;
     // A page printed taller than measured spilled onto a page of its own.
@@ -589,13 +948,387 @@ async function printSmart(target, o, geo, evaluate, tabId, base) {
   return { bytes, trim };
 }
 
-function whenComplete(id, fn) {
-  const listener = (delta) => {
-    if (delta.id !== id || !delta.state) return;
-    if (delta.state.current === "complete") fn();
-    if (delta.state.current !== "in_progress") chrome.downloads.onChanged.removeListener(listener);
+// ---------------------------------------------------------------- saving
+
+async function saveMade(job, made) {
+  const { facts, o, pages } = made;
+  status(job, { phase: "saving", step: "Saving…", pages });
+  const capturedAt = new Date();
+  const host = (() => { try { return new URL(facts.url).hostname.replace(/^www\./, ""); } catch { return ""; } })();
+  const bytes = setPdfInfo(made.bytes, {
+    Title: facts.title,
+    Author: facts.author,
+    Subject: facts.url,
+    Keywords: [facts.site, facts.keywords].filter(Boolean).join(", ").slice(0, 500),
+    Creator: "Recall Web Clipper",
+    Producer: "Chrome (Skia/PDF) via Recall Web Clipper",
+    CreationDate: capturedAt,
+    custom: {
+      RecallSourceURL: facts.url,
+      RecallSiteName: facts.site || host,
+      RecallCapturedAt: capturedAt.toISOString(),
+      RecallPublished: facts.published ? String(facts.published) : "",
+      RecallDescription: (facts.description || "").slice(0, 500)
+    }
+  });
+
+  const folder = folderFor(o.subfolder);
+  const name = `${fileNameFor(o.filename, facts, capturedAt)}.pdf`;
+  const saved = {
+    key: `${OUT_BASE}${job.id}.pdf`, filename: folder ? `${folder}/${name}` : name, name,
+    saveAs: Boolean(o.saveAs), showAfter: Boolean(o.showAfter), size: bytes.length, pages, cached: false, retry: false
   };
-  chrome.downloads.onChanged.addListener(listener);
+  // Kept until it is saved, so "Save again" never needs a second print.
+  try {
+    const cache = await caches.open(OUT_CACHE);
+    await cache.put(saved.key, new Response(new Blob([bytes], { type: "application/pdf" })));
+    saved.cached = true;
+  } catch { /* then only the data: address below */ }
+  job.saved = saved;
+  const extra = {
+    bytes: bytes.length, pages, cleaned: made.report.cleaned, resized: made.report.resized,
+    fonts: made.report.fonts || 0, bookmarks: made.report.headings.length, markedPages: made.markedPages
+  };
+  hold();
+  try {
+    const outcome = await download(job, saved, bytes);
+    return finishSave(job, saved, outcome, extra);
+  } finally {
+    release();
+  }
+}
+
+/** "Save again" after a failed save: the same PDF, kept from last time. */
+export async function saveAgain(tabId) {
+  let job = jobs.get(tabId);
+  if (job && job.running) throw new JobError("A PDF is being made for this tab right now.", "busy");
+  let saved = job && job.saved;
+  if (!saved) {
+    const rec = await storedRecord(tabId);
+    if (rec && rec.saved) {
+      job = newJob(tabId);
+      jobs.set(tabId, job);
+      saved = rec.saved;
+    }
+  }
+  if (!saved) throw new JobError("There is no PDF kept to save again. Press Save as PDF to make it again.");
+  job.saved = saved;
+  status(job, { phase: "saving", step: "Saving again…", error: null, cancelled: false, done: false });
+  hold();
+  try {
+    const outcome = await download(job, saved, null);
+    return finishSave(job, saved, outcome, { bytes: saved.size, pages: saved.pages });
+  } finally {
+    release();
+  }
+}
+
+function finishSave(job, saved, outcome, extra) {
+  if (outcome.state === "complete" || outcome.state === "pending") {
+    if (outcome.state === "complete" && saved.showAfter && outcome.id != null) {
+      try { chrome.downloads.show(outcome.id); } catch { /* a nicety */ }
+    }
+    dropSaved(saved);
+    job.saved = null;
+    const pages = saved.pages || extra.pages || 1;
+    const step = outcome.state === "complete"
+      ? `Saved ${saved.name} (${(saved.size / 1048576).toFixed(1)} MB, ${pages} page${pages === 1 ? "" : "s"})`
+      : `Sent ${saved.name} to your downloads`;
+    status(job, { phase: "done", step, done: true, error: null, cancelled: false });
+    notify(job, step, false);
+    return { ok: true, name: saved.name, ...extra };
+  }
+  const cancelled = outcome.error === "USER_CANCELED";
+  const why = cancelled
+    ? `Not saved: the save was cancelled.`
+    : `Could not save ${saved.name}: ${downloadWords(outcome.error)}.`;
+  saved.retry = true;
+  const step = `${why} Press Save again to try once more.`;
+  status(job, { phase: "error", step, error: why, cancelled, done: false });
+  if (!cancelled) notify(job, `${why} Open the clipper to save it again.`, true);
+  return { ok: false, error: why, name: saved.name };
+}
+
+function downloadWords(code) {
+  const c = String(code || "FAILED");
+  if (/NO_SPACE/.test(c)) return "the disk is full";
+  if (/ACCESS_DENIED/.test(c)) return "Chrome may not write to that folder";
+  if (/NAME_TOO_LONG/.test(c)) return "the file name is too long (shorten it under More options)";
+  if (/TOO_LARGE/.test(c)) return "the file is too large for that drive";
+  if (/BLOCKED|SECURITY|VIRUS/.test(c)) return "a security check blocked it";
+  if (/TRANSIENT|FILE_FAILED/.test(c)) return "the file could not be written";
+  if (/^NETWORK/.test(c)) return "Chrome could not read the PDF it was given";
+  if (/Invalid filename/i.test(c)) return "the file name or folder is not allowed (change it under More options)";
+  return c.toLowerCase().replace(/_/g, " ");
+}
+
+// Hands the PDF to chrome.downloads and waits for Chrome's verdict. A blob:
+// address from the offscreen document first; if that cannot be made or read,
+// a data: address.
+async function download(job, saved, bytes) {
+  if (LIMITS.failDownloads > 0) {
+    LIMITS.failDownloads -= 1;
+    return { state: "interrupted", error: "FILE_FAILED" };
+  }
+  let source = await sourceFor(saved, bytes, true);
+  for (let attempt = 0; ; attempt += 1) {
+    let outcome;
+    try {
+      const id = await limit(chrome.downloads.download({
+        url: source.url, filename: saved.filename, saveAs: saved.saveAs, conflictAction: "uniquify"
+      }), saved.saveAs ? LIMITS.downloadWaitSaveAs : LIMITS.downloadWait, () => new Error("TRANSIENT"));
+      if (id == null) throw new Error(chrome.runtime.lastError ? chrome.runtime.lastError.message : "FAILED");
+      job.downloadId = id;
+      status(job, {});
+      outcome = await downloadOutcome(id, saved.saveAs);
+    } catch (err) {
+      outcome = { state: "interrupted", error: errText(err) };
+    }
+    if (source.blob) revokeBlob(saved.key);
+    const retryable = source.blob && attempt === 0 && outcome.state === "interrupted"
+      && outcome.error !== "USER_CANCELED" && !/filename/i.test(outcome.error || "");
+    if (!retryable) return outcome;
+    try { source = await sourceFor(saved, bytes, false); } catch { return outcome; }
+  }
+}
+
+async function sourceFor(saved, bytes, blobFirst) {
+  if (blobFirst && saved.cached) {
+    try {
+      const url = await blobUrl(saved.key);
+      if (url) return { url, blob: true };
+    } catch { /* fall through to data: */ }
+  }
+  const data = bytes || await cachedBytes(saved.key);
+  if (!data) throw new JobError("The PDF is no longer kept. Press Save as PDF to make it again.");
+  return { url: `data:application/pdf;base64,${bytesToB64(data)}`, blob: false };
+}
+
+function downloadOutcome(id, saveAs) {
+  return new Promise((resolve) => {
+    let timer = null;
+    let over = false;
+    const end = (o) => {
+      if (over) return;
+      over = true;
+      chrome.downloads.onChanged.removeListener(onChanged);
+      clearTimeout(timer);
+      resolve(o);
+    };
+    const from = (d) => {
+      if (!d) return;
+      if (d.state === "complete") end({ state: "complete", id });
+      else if (d.state === "interrupted") end({ state: "interrupted", id, error: d.error || "FAILED" });
+    };
+    const onChanged = (delta) => {
+      if (delta.id !== id || !delta.state) return;
+      if (delta.state.current === "complete") end({ state: "complete", id });
+      else if (delta.state.current === "interrupted") {
+        chrome.downloads.search({ id }).then(([d]) => end({ state: "interrupted", id, error: (d && d.error) || "FAILED" }))
+          .catch(() => end({ state: "interrupted", id, error: "FAILED" }));
+      }
+    };
+    chrome.downloads.onChanged.addListener(onChanged);
+    // It may have finished before the listener was added.
+    chrome.downloads.search({ id }).then(([d]) => from(d)).catch(() => {});
+    // Still going after this long: a Save As dialog left open, or a slow disk.
+    timer = setTimeout(() => end({ state: "pending", id }), saveAs ? LIMITS.downloadWaitSaveAs : LIMITS.downloadWait);
+  });
+}
+
+async function cachedBytes(key) {
+  try {
+    const cache = await caches.open(OUT_CACHE);
+    const r = await cache.match(key);
+    return r ? new Uint8Array(await r.arrayBuffer()) : null;
+  } catch { return null; }
+}
+
+function dropSaved(saved) {
+  if (!saved || !saved.key) return;
+  caches.open(OUT_CACHE).then((c) => c.delete(saved.key)).catch(() => {});
+}
+
+// The offscreen document turns a cached PDF into a blob: address — a service
+// worker cannot make one — and lets it go once the download is over.
+let offscreenReady = null;
+let blobsOut = 0;
+
+function ensureOffscreen() {
+  if (!chrome.offscreen) return Promise.reject(new Error("no offscreen documents"));
+  if (!offscreenReady) {
+    offscreenReady = (async () => {
+      const have = chrome.runtime.getContexts
+        ? await chrome.runtime.getContexts({ contextTypes: ["OFFSCREEN_DOCUMENT"] })
+        : [];
+      if (!have.length) {
+        await chrome.offscreen.createDocument({
+          url: "offscreen.html",
+          reasons: ["BLOBS"],
+          justification: "Hands a finished PDF to Chrome's downloads as a blob: address."
+        }).catch((err) => { if (!/single offscreen|already/i.test(errText(err))) throw err; });
+      }
+    })().catch((err) => { offscreenReady = null; throw err; });
+  }
+  return offscreenReady;
+}
+
+async function blobUrl(key) {
+  blobsOut += 1;
+  try {
+    await limit(ensureOffscreen(), 10000, () => new Error("offscreen document did not start"));
+    const r = await limit(chrome.runtime.sendMessage({ type: "rwc-offscreen-url", key }), 20000, () => new Error("offscreen document did not answer"));
+    if (!r || !r.ok || !r.url) throw new Error((r && r.error) || "no blob");
+    return r.url;
+  } catch (err) {
+    blobsOut = Math.max(0, blobsOut - 1);
+    throw err;
+  }
+}
+
+function revokeBlob(key) {
+  blobsOut = Math.max(0, blobsOut - 1);
+  chrome.runtime.sendMessage({ type: "rwc-offscreen-revoke", key })
+    .then((r) => {
+      if (blobsOut === 0 && r && r.left === 0 && chrome.offscreen) {
+        offscreenReady = null;
+        chrome.offscreen.closeDocument().catch(() => {});
+      }
+    })
+    .catch(() => {});
+}
+
+// ---------------------------------------------------------------- the page around the job
+
+// A note on the page itself, for when the popup is closed: the badge alone is
+// easy to miss.
+async function notify(job, text, error) {
+  try {
+    if (chrome.runtime.getContexts) {
+      const popups = await chrome.runtime.getContexts({ contextTypes: ["POPUP"] });
+      if (popups.length) return;
+    }
+    await limit(chrome.scripting.executeScript({ target: { tabId: job.tabId }, func: pageToast, args: [text, Boolean(error)] }),
+      LIMITS.cleanupStep, () => null);
+  } catch { /* the page went away, or does not let us in: the badge says it */ }
+}
+
+// Runs in the page (chrome.scripting): self-contained.
+function pageToast(text, error) {
+  document.querySelectorAll("recall-clipper-toast").forEach((t) => t.remove());
+  const host = document.createElement("recall-clipper-toast");
+  host.setAttribute("data-recall-pdf-ui", "");
+  const root = host.attachShadow({ mode: "open" });
+  root.innerHTML = `<style>
+    .t { position: fixed; inset: auto; right: 16px; top: 16px; margin: 0; max-width: min(420px, calc(100vw - 32px));
+      box-sizing: border-box; color: #fff; border: 0; border-radius: 10px; padding: 10px 14px; cursor: pointer; z-index: 2147483647;
+      font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; box-shadow: 0 10px 28px rgba(0,0,0,.3); }
+    @media print { .t { display: none !important; } }
+  </style><div class="t" role="status"></div>`;
+  const t = root.querySelector(".t");
+  t.style.background = error ? "#b3261e" : "#1f2430";
+  t.textContent = `Recall Web Clipper: ${text}`;
+  t.addEventListener("click", () => host.remove());
+  document.documentElement.append(host);
+  try { t.setAttribute("popover", "manual"); t.showPopover(); } catch { /* stays position: fixed */ }
+  setTimeout(() => host.remove(), error ? 12000 : 6000);
+}
+
+// Runs in the page: our overlays and styles, when the page side could not
+// take them away itself.
+function removeLeftovers(tabId) {
+  return chrome.scripting.executeScript({
+    target: { tabId },
+    func: () => {
+      let n = 0;
+      document.querySelectorAll("[data-recall-pdf-ui]:not(recall-clipper-toast)").forEach((el) => {
+        // Placeholders stand in for videos and embeds: those stay, the rest go.
+        if (el.tagName === "DIV" && el.style.position !== "absolute" && el.style.position !== "fixed" && !el.shadowRoot) return;
+        el.remove();
+        n += 1;
+      });
+      return n;
+    }
+  });
+}
+
+async function hideOtherFrames(tabId) {
+  try {
+    const [r] = await chrome.scripting.executeScript({
+      target: { tabId },
+      args: [chrome.runtime.id],
+      func: (ownId) => {
+        const found = [];
+        const walk = (root, depth) => {
+          for (const f of root.querySelectorAll("iframe, frame, embed, object")) {
+            const src = f.getAttribute("src") || f.getAttribute("data") || "";
+            if (/^chrome-extension:\/\//i.test(src) && !src.includes(ownId)) found.push(f);
+          }
+          if (depth < 6) for (const el of root.querySelectorAll("*")) if (el.shadowRoot) walk(el.shadowRoot, depth + 1);
+        };
+        walk(document, 0);
+        const kept = globalThis.__rwcHiddenFrames || (globalThis.__rwcHiddenFrames = []);
+        for (const f of found) {
+          kept.push({ f, parent: f.parentNode, next: f.nextSibling });
+          f.remove();
+        }
+        return found.length;
+      }
+    });
+    return (r && r.result) || 0;
+  } catch { return 0; }
+}
+
+function restoreOtherFrames(tabId) {
+  return chrome.scripting.executeScript({
+    target: { tabId },
+    func: () => {
+      const kept = globalThis.__rwcHiddenFrames || [];
+      for (const { f, parent, next } of kept.reverse()) {
+        try { parent.insertBefore(f, next && next.parentNode === parent ? next : null); } catch { /* the page moved on */ }
+      }
+      globalThis.__rwcHiddenFrames = [];
+    }
+  });
+}
+
+// ---------------------------------------------------------------- controls (popup, shortcut)
+
+/** The popup's "Save PDF now", or the shortcut while the page waits for the reader. */
+export async function finishWaiting(tabId) {
+  const job = runningJob(tabId);
+  if (!job || !job.evaluate || !WAITING_PHASES.has(job.phase)) return { ok: false, error: "Nothing is waiting on the page." };
+  try {
+    const ok = await job.evaluate("__recallPdf.finishUi()", LIMITS.poll);
+    if (ok) status(job, { step: job.phase === "waiting-breaks" ? "Applying your page breaks…" : "Preparing the page…" });
+    return { ok: Boolean(ok), error: ok ? undefined : "Nothing is waiting on the page." };
+  } catch (err) {
+    return { ok: false, error: explain(err, job) };
+  }
+}
+
+/**
+ * The popup's Cancel. Stops the job and waits until the page is put back. With
+ * no job known here (Chrome restarted the worker meanwhile), it still makes
+ * sure nothing of ours is left on the tab.
+ */
+export async function cancelJob(tabId) {
+  const job = runningJob(tabId);
+  if (job) {
+    abortJob(job, new JobError("Cancelled.", "cancelled"));
+    await limit(job.finished, LIMITS.cleanupStep * 5, () => null).catch(() => {});
+    return { ok: true };
+  }
+  await chrome.debugger.detach({ tabId }).catch(() => {});
+  await limit(removeLeftovers(tabId), LIMITS.cleanupStep, () => null).catch(() => {});
+  const rec = await storedRecord(tabId);
+  if (rec && (rec.running || rec.phase === "saving")) {
+    const stopped = { ...rec, running: false, phase: "error", step: "Cancelled.", error: "Cancelled.", cancelled: true, at: Date.now() };
+    await chrome.storage.session.set({ [`job:${tabId}`]: stopped }).catch(() => {});
+    chrome.runtime.sendMessage({ type: "rwc-status", tabId, job: stopped }).catch(() => {});
+  }
+  chrome.action.setBadgeText({ tabId, text: "" }).catch(() => {});
+  return { ok: true };
 }
 
 export async function lastOptions() {
@@ -605,13 +1338,77 @@ export async function lastOptions() {
   } catch { return {}; }
 }
 
-export function jobFor(tabId) {
-  return jobs.get(tabId) || null;
+async function storedRecord(tabId) {
+  try {
+    const key = `job:${tabId}`;
+    return (await chrome.storage.session.get(key))[key] || null;
+  } catch { return null; }
 }
 
+/** What the popup shows for a tab: the live job, else what was last stored. */
+export async function jobFor(tabId) {
+  await recovered;
+  const job = jobs.get(tabId);
+  if (job) return publicJob(job);
+  const rec = await storedRecord(tabId);
+  if (!rec) return null;
+  return { ...rec, canSaveAgain: Boolean(rec.saved && rec.saved.retry) };
+}
+
+export function isWaiting(tabId) {
+  const job = runningJob(tabId);
+  return Boolean(job && WAITING_PHASES.has(job.phase));
+}
+
+// ---------------------------------------------------------------- outside events
+
 chrome.debugger.onDetach.addListener((source, reason) => {
-  if (source.tabId != null && reason === "canceled_by_user") {
-    const job = jobs.get(source.tabId);
-    if (job && !job.done && !job.error) status(source.tabId, { step: "Stopped: the debugging bar was closed.", error: "stopped" });
-  }
+  const job = source.tabId != null ? runningJob(source.tabId) : null;
+  if (!job || job.detaching) return;
+  if (job.ctx) job.ctx.attached = false;
+  const message = reason === "canceled_by_user"
+    ? "Stopped: the debugging bar's Cancel was pressed."
+    : "Stopped: the page was closed, or went somewhere Chrome does not let extensions work.";
+  abortJob(job, new JobError(message, reason === "canceled_by_user" ? "cancelled" : "error"));
 });
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  const job = jobs.get(tabId);
+  if (job && job.running) abortJob(job, new JobError("Stopped: the tab was closed."));
+  else if (job) { if (job.saved) dropSaved(job.saved); jobs.delete(tabId); }
+  chrome.storage.session.remove(`job:${tabId}`).catch(() => {});
+});
+
+// A new worker: any job the last one left unfinished is over. Say so, free
+// the tab, and take our overlays off it.
+async function recover() {
+  let all = {};
+  try { all = await chrome.storage.session.get(null); } catch { return; }
+  for (const [key, rec] of Object.entries(all || {})) {
+    if (!key.startsWith("job:") || !rec) continue;
+    const tabId = Number(key.slice(4));
+    if (!Number.isFinite(tabId) || jobs.has(tabId)) continue;
+    let next = null;
+    if (rec.running) {
+      chrome.debugger.detach({ tabId }).catch(() => {});
+      limit(removeLeftovers(tabId), LIMITS.cleanupStep, () => null).catch(() => {});
+      const step = "Interrupted: Chrome stopped the clipper while it was working. Reload the page, then try again.";
+      next = { ...rec, running: false, phase: "error", step, error: step, cancelled: false };
+    } else if (rec.phase === "saving") {
+      let d = null;
+      if (rec.downloadId != null) { try { [d] = await chrome.downloads.search({ id: rec.downloadId }); } catch { /* unknown */ } }
+      if (d && d.state === "complete") {
+        next = { ...rec, phase: "done", done: true, step: `Saved ${rec.saved ? rec.saved.name : "the PDF"}`, error: null, saved: null };
+        if (rec.saved) dropSaved(rec.saved);
+      } else if (d && d.state === "in_progress") {
+        continue;
+      } else {
+        const why = "The save was interrupted.";
+        const saved = rec.saved ? { ...rec.saved, retry: true } : null;
+        next = { ...rec, phase: "error", step: saved ? `${why} Press Save again to try once more.` : `${why} Try again.`, error: why, saved };
+      }
+    }
+    if (next) await chrome.storage.session.set({ [key]: { ...next, at: Date.now() } }).catch(() => {});
+  }
+}
+const recovered = recover().catch(() => {});
