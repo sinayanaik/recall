@@ -386,7 +386,7 @@ function drawnWidth(item, nw, nh, maxCss) {
  * re-encoded, even at "Original" size: Chrome would store their raw pixels.
  * One result per distinct picture, for every element that shows it.
  */
-async function shrinkImages(target, frameId, items, settings, geo, grayscale) {
+async function shrinkImages(target, frameId, items, settings, geo, grayscale, moment = "middle") {
   const groups = new Map();
   for (const item of items) {
     if (!groups.has(item.src)) groups.set(item.src, []);
@@ -406,13 +406,18 @@ async function shrinkImages(target, frameId, items, settings, geo, grayscale) {
         if (kind === "svg" || kind === "other") continue;
         // A moving picture prints as one still, whatever happens below; it is
         // made a link to its original (linkAnimated in content/prepare.js).
+        // Its middle frame then stands in for it: the first is so often blank,
+        // a fade-in or a title. (Without one, the still is whichever frame
+        // Chrome or the re-encode below lands on — the first, as a rule.)
+        let frame = null;
         if (kind !== "jpeg" && isAnimatedImage(bytes)) {
           const ids = uses.filter((u) => u.kind === "img").map((u) => u.id);
           if (ids.length) animated.push({ ids, src });
+          if (moment === "middle") frame = await middleFrame(bytes, kind);
         }
         // Original size: only what Chrome would store as raw pixels changes.
-        if (!settings.dpi && kind !== "webp" && kind !== "avif" && !grayscale) continue;
-        const bitmap = await createImageBitmap(new Blob([bytes]));
+        if (!frame && !settings.dpi && kind !== "webp" && kind !== "avif" && !grayscale) continue;
+        const bitmap = await createImageBitmap(new Blob([frame || bytes]));
         const nw = bitmap.width;
         const nh = bitmap.height;
         const cssW = Math.max(...uses.map((u) => drawnWidth(u, nw, nh, geo.layoutWidthPx)));
@@ -422,7 +427,7 @@ async function shrinkImages(target, frameId, items, settings, geo, grayscale) {
         const h = Math.max(1, Math.round((w * nh) / nw));
         if (!shrink && kind === "jpeg" && !grayscale) { bitmap.close(); continue; }
         // Big enough to matter: a small icon is cheap whatever it is.
-        if (!shrink && w * h < 120 * 120 && kind !== "webp" && kind !== "avif") { bitmap.close(); continue; }
+        if (!frame && !shrink && w * h < 120 * 120 && kind !== "webp" && kind !== "avif") { bitmap.close(); continue; }
         const canvas = new OffscreenCanvas(w, h);
         const ctx = canvas.getContext("2d", { willReadFrequently: true });
         ctx.imageSmoothingQuality = "high";
@@ -430,7 +435,7 @@ async function shrinkImages(target, frameId, items, settings, geo, grayscale) {
         ctx.drawImage(bitmap, 0, 0, w, h);
         const { alpha, few } = inspectPixels(ctx, w, h);
         // A PNG or GIF kept at its size and kept lossless gains nothing.
-        if (!shrink && (kind === "png" || kind === "gif") && (alpha || few) && !grayscale) { bitmap.close(); continue; }
+        if (!frame && !shrink && (kind === "png" || kind === "gif") && (alpha || few) && !grayscale) { bitmap.close(); continue; }
         let out;
         if (alpha || few) out = await canvas.convertToBlob({ type: "image/png" });
         else {
@@ -445,7 +450,7 @@ async function shrinkImages(target, frameId, items, settings, geo, grayscale) {
         }
         bitmap.close();
         // Re-encoding a same-size JPEG or PNG that came out bigger: keep the original.
-        if (!shrink && (kind === "jpeg" || kind === "png") && out.size >= bytes.length) continue;
+        if (!frame && !shrink && (kind === "jpeg" || kind === "png") && out.size >= bytes.length) continue;
         results.push({ ids: uses.map((u) => u.id), type: out.type, b64: bytesToB64(new Uint8Array(await out.arrayBuffer())) });
         if (shrink) shrunk += uses.length;
       } catch (err) { if (isAbort(target, err)) throw err; /* this one prints as served */ }
@@ -484,23 +489,64 @@ async function isBlank(blob) {
   }
 }
 
-// A poster or thumbnail, as a JPEG `width` pixels wide (never wider than it is).
-async function pictureAsJpeg(bytes, width, quality, grayscale) {
+// The rows of black bars above and below a picture (a 16:9 video in a 4:3
+// thumbnail): { top, height } of what is between them, in the picture's pixels.
+function withoutBars(bitmap) {
+  const w = Math.min(64, bitmap.width);
+  const h = Math.min(256, bitmap.height);
+  const ctx = new OffscreenCanvas(w, h).getContext("2d", { willReadFrequently: true });
+  ctx.drawImage(bitmap, 0, 0, w, h);
+  const data = ctx.getImageData(0, 0, w, h).data;
+  const dark = (row) => {
+    for (let x = 0; x < w; x += 1) {
+      const i = (row * w + x) * 4;
+      if (Math.max(data[i], data[i + 1], data[i + 2]) > 24) return false;
+    }
+    return true;
+  };
+  let top = 0;
+  while (top < h && dark(top)) top += 1;
+  let bottom = h;
+  while (bottom > top && dark(bottom - 1)) bottom -= 1;
+  // All dark, or bars that would leave a sliver: keep the picture whole.
+  if (bottom - top < h * 0.4) return { top: 0, height: bitmap.height };
+  const k = bitmap.height / h;
+  return { top: Math.round(top * k), height: Math.max(1, Math.round((bottom - top) * k)) };
+}
+
+// A poster or thumbnail, as a JPEG `width` pixels wide (never wider than it
+// is). `trim` takes off black bars above and below; a picture narrower than
+// `minWidth` (YouTube's stand-in for a thumbnail it has not got) is null.
+async function pictureAsJpeg(bytes, width, quality, grayscale, { trim = false, minWidth = 0 } = {}) {
   const bitmap = await createImageBitmap(new Blob([bytes]));
   try {
+    if (bitmap.width < minWidth) return null;
+    const crop = trim ? withoutBars(bitmap) : { top: 0, height: bitmap.height };
     const w = Math.max(16, Math.min(bitmap.width, Math.round(width)));
-    const h = Math.max(1, Math.round((w * bitmap.height) / bitmap.width));
+    const h = Math.max(1, Math.round((w * crop.height) / bitmap.width));
     const canvas = new OffscreenCanvas(w, h);
     const ctx = canvas.getContext("2d");
     ctx.fillStyle = "#fff";
     ctx.fillRect(0, 0, w, h);
     ctx.imageSmoothingQuality = "high";
     if (grayscale) ctx.filter = "grayscale(1)";
-    ctx.drawImage(bitmap, 0, 0, w, h);
+    ctx.drawImage(bitmap, 0, crop.top, bitmap.width, crop.height, 0, 0, w, h);
     return await canvas.convertToBlob({ type: "image/jpeg", quality: quality / 100 });
   } finally {
     bitmap.close();
   }
+}
+
+// YouTube keeps a picture of every video's middle (…/2.jpg; 1 and 3 are its
+// quarters), in up to three sizes. The largest it has, without its bars.
+async function youtubeMiddle(target, frameId, videoId, width, settings, grayscale) {
+  for (const size of ["maxres2", "sd2", "hq2"]) {
+    const raw = await resourceBytes(target, frameId, `https://i.ytimg.com/vi/${videoId}/${size}.jpg`);
+    if (!raw || raw.length < 64 || sniffImage(raw) !== "jpeg") continue;
+    const blob = await pictureAsJpeg(raw, width, settings.jpeg, grayscale, { trim: true, minWidth: 200 });
+    if (blob && !(await isBlank(blob))) return blob;
+  }
+  return null;
 }
 
 /**
@@ -551,7 +597,7 @@ async function unreachableFrames(target) {
  * thumbnail. Each goes back to the page (swapMedia) in the element's place,
  * linked to the real video; one with no picture becomes the link box.
  */
-async function captureFrames(target, frameId, evaluate, items, settings, geo, grayscale) {
+async function captureFrames(target, frameId, evaluate, items, settings, geo, grayscale, moment = "middle") {
   const results = [];
   const pxPerCss = settings.dpi ? (settings.dpi / CSS_PX_PER_IN) * geo.scale : 2;
   const unreachable = items.some((i) => i.kind === "embed") ? await unreachableFrames(target) : new Set();
@@ -562,12 +608,20 @@ async function captureFrames(target, frameId, evaluate, items, settings, geo, gr
     let result = { id: item.id, failed: true };
     if (Date.now() > deadline) { results.push(result); continue; }
     try {
-      const box = await evaluate(`__recallPdf.focusMedia(${JSON.stringify(item.id)})`, LIMITS.call);
+      const box = await evaluate(`__recallPdf.focusMedia(${JSON.stringify(item.id)}, ${JSON.stringify(moment)})`, LIMITS.call);
       if (box && box.width >= 1 && box.height >= 1) {
         const failedToLoad = item.kind === "embed" && item.src && unreachable.has(item.src);
         // Never a huge bitmap: at most about 16 million pixels a picture.
         const area = box.width * box.height;
         const scale = Math.max(0.5, Math.min(2, pxPerCss, Math.sqrt(16e6 / Math.max(1, area))));
+        // A YouTube player cannot be moved from another site, but YouTube
+        // has a picture of the video's middle.
+        const middle = moment === "middle" && item.youtubeId
+          ? await youtubeMiddle(target, frameId, item.youtubeId, box.width * scale, settings, grayscale) : null;
+        if (middle) {
+          results.push({ id: item.id, type: middle.type, b64: bytesToB64(new Uint8Array(await middle.arrayBuffer())) });
+          continue;
+        }
         const shot = failedToLoad ? null : await send(target, "Page.captureScreenshot", {
           format: "jpeg",
           quality: settings.jpeg,
@@ -826,7 +880,7 @@ async function makePdf(job, ctx, rawOptions) {
   if (report.media && report.media.length && settings && o.capture !== "visible") {
     const n = report.media.length;
     status(job, { step: `Taking a picture of ${n} video${n === 1 ? "" : "s"} and embed${n === 1 ? "" : "s"}…` });
-    const frames = await captureFrames(target, frameId, evaluate, report.media, settings, geo, o.grayscale);
+    const frames = await captureFrames(target, frameId, evaluate, report.media, settings, geo, o.grayscale, o.mediaFrame);
     const items = JSON.stringify(report.media);
     await inBatches(frames, async (batch) => {
       report.frames += Number(await evaluate(`__recallPdf.swapMedia(${JSON.stringify(batch)}, ${items})`)) || 0;
@@ -839,7 +893,7 @@ async function makePdf(job, ctx, rawOptions) {
   report.moving = 0;
   if (report.images.length && settings && o.capture !== "visible") {
     status(job, { step: `Sizing ${report.images.length} picture${report.images.length === 1 ? "" : "s"} for print…` });
-    const { results, shrunk, animated } = await shrinkImages(target, frameId, report.images, settings, geo, o.grayscale);
+    const { results, shrunk, animated } = await shrinkImages(target, frameId, report.images, settings, geo, o.grayscale, o.mediaFrame);
     report.resized = shrunk;
     await inBatches(results, (batch) => evaluate(`__recallPdf.swapImages(${JSON.stringify(batch)})`));
     if (animated.length) report.moving = Number(await evaluate(`__recallPdf.linkAnimated(${JSON.stringify(animated)})`)) || 0;
@@ -1340,6 +1394,44 @@ function dropSaved(saved) {
 // worker cannot make one — and lets it go once the download is over.
 let offscreenReady = null;
 let blobsOut = 0;
+let decodesOut = 0;
+
+const ANIMATED_MIME = { gif: "image/gif", webp: "image/webp", png: "image/png", avif: "image/avif" };
+// Larger than any moving picture worth decoding twice; past it, the still
+// is the first frame.
+const MIDDLE_FRAME_MAX_BYTES = 32 * 1048576;
+
+/**
+ * The middle frame of a moving picture, as PNG bytes, decoded in the
+ * offscreen document (ImageDecoder is not there in a service worker). Null
+ * when it cannot be had: the caller then keeps the first frame.
+ */
+async function middleFrame(bytes, kind) {
+  const mime = ANIMATED_MIME[kind];
+  if (!mime || bytes.length > MIDDLE_FRAME_MAX_BYTES) return null;
+  decodesOut += 1;
+  try {
+    await limit(ensureOffscreen(), 10000, () => new Error("offscreen document did not start"));
+    const r = await limit(chrome.runtime.sendMessage({ type: "rwc-offscreen-middle-frame", b64: bytesToB64(bytes), mime }),
+      30000, () => new Error("offscreen document did not answer"));
+    return r && r.ok && r.b64 ? b64ToBytes(r.b64) : null;
+  } catch {
+    return null;
+  } finally {
+    decodesOut -= 1;
+    closeOffscreenIfIdle(0, true);
+  }
+}
+
+// After a decode, only a document this worker started is closed: one left
+// from before a restart may still be handing a PDF to the downloads.
+function closeOffscreenIfIdle(left = 0, ownOnly = false) {
+  if (ownOnly && !offscreenReady) return;
+  if (blobsOut === 0 && decodesOut === 0 && left === 0 && chrome.offscreen) {
+    offscreenReady = null;
+    chrome.offscreen.closeDocument().catch(() => {});
+  }
+}
 
 function ensureOffscreen() {
   if (!chrome.offscreen) return Promise.reject(new Error("no offscreen documents"));
@@ -1376,12 +1468,7 @@ async function blobUrl(key) {
 function revokeBlob(key) {
   blobsOut = Math.max(0, blobsOut - 1);
   chrome.runtime.sendMessage({ type: "rwc-offscreen-revoke", key })
-    .then((r) => {
-      if (blobsOut === 0 && r && r.left === 0 && chrome.offscreen) {
-        offscreenReady = null;
-        chrome.offscreen.closeDocument().catch(() => {});
-      }
-    })
+    .then((r) => { if (r) closeOffscreenIfIdle(r.left); })
     .catch(() => {});
 }
 

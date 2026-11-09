@@ -74,6 +74,9 @@ export const DEFAULTS = Object.freeze({
   // frame: each video, embed and large canvas prints as a picture of what it
   // showed, linked to the real video; link: the older grey box with a link.
   embeds: "frame",              // frame | link | keep | hide
+  // Which moment a video's or a moving picture's picture shows: its middle,
+  // or whatever the page was showing.
+  mediaFrame: "middle",         // middle | shown
   // Extras
   header: "none",               // none | title | url | title-url | custom
   headerCustom: "{title}",
@@ -133,6 +136,7 @@ const ENUMS = {
   imageQuality: ["original", "high", "medium", "low", "custom", "none"],
   breakBefore: ["none", "h1", "h2"],
   embeds: ["frame", "link", "keep", "hide"],
+  mediaFrame: ["middle", "shown"],
   header: ["none", "title", "url", "title-url", "custom"],
   footer: ["none", "page", "date-page", "url-page", "custom"]
 };

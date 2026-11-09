@@ -16,6 +16,11 @@
   <a href="https://example.org/post/42"><video id="vid" width="480" height="270" muted playsinline title="Sunset over the bay"></video></a>
   <p>Text after the video.</p>
 
+  <!-- A video file, three seconds long: red, then green, then blue. Its
+       middle is green; its first frame red. It has a controls bar, which
+       must not be in the picture. -->
+  <video id="thirds" src="thirds.webm" width="320" height="180" controls preload="metadata" title="Three colours"></video>
+
   <!-- An embed from this site, drawn by its own document. -->
   <iframe id="frame" width="480" height="200" title="Local embed"
     srcdoc="<body style='margin:0;background:linear-gradient(90deg,#0a7,#fc0)'><h2 style='font:24px sans-serif;margin:20px'>Inside the embed</h2></body>"></iframe>
@@ -27,7 +32,7 @@
   <!-- A canvas drawn with WebGL (2-D where WebGL is missing). -->
   <canvas id="gl" width="400" height="200"></canvas>
 
-  <!-- A moving picture. -->
+  <!-- A moving picture: red, green, blue. Its middle frame is green. -->
   <img id="moving" src="moving.gif" alt="A blinking square">
   <p id="outro">The end.</p>
 </article>
