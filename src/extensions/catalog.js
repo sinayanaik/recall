@@ -20,11 +20,11 @@ export const EXTENSIONS = [
     "name": "Recall Web Clipper",
     "version": "2.2.0",
     "description": "Bring any web page into Recall: clean it up, copy any part as Markdown for a file's Notes, or save it as a PDF with smart page breaks.",
-    "bytes": 4541805,
+    "bytes": 4570361,
     "files": [
       {
         "path": "README.md",
-        "size": 29133
+        "size": 30783
       },
       {
         "path": "background.js",
@@ -56,7 +56,7 @@ export const EXTENSIONS = [
       },
       {
         "path": "content/prepare.js",
-        "size": 64176
+        "size": 77784
       },
       {
         "path": "content/recall-math.js",
@@ -79,6 +79,10 @@ export const EXTENSIONS = [
         "size": 200
       },
       {
+        "path": "lib/animated.js",
+        "size": 4279
+      },
+      {
         "path": "lib/font-check.js",
         "size": 4113
       },
@@ -88,7 +92,7 @@ export const EXTENSIONS = [
       },
       {
         "path": "lib/options.js",
-        "size": 10825
+        "size": 11263
       },
       {
         "path": "lib/pdf-info.js",
@@ -120,7 +124,7 @@ export const EXTENSIONS = [
       },
       {
         "path": "pdf-job.js",
-        "size": 62717
+        "size": 71228
       },
       {
         "path": "popup.css",
@@ -128,7 +132,7 @@ export const EXTENSIONS = [
       },
       {
         "path": "popup.html",
-        "size": 18015
+        "size": 18085
       },
       {
         "path": "popup.js",

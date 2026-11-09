@@ -107,6 +107,28 @@ The popup shows the few settings most people change:
   size but still turns WebP and AVIF into JPEG.
 - **Margins**: none, left and right, top and bottom, all sides, or custom.
 
+**Videos, embeds and moving pictures.** A PDF cannot play anything, so each
+one prints as a picture of what it showed on the page, linked to the real
+thing. Tap it in Recall's PDFs tab, or click it in any PDF reader, to open it.
+
+- **A video or embed** (YouTube, Vimeo, a tweet, CodePen…) prints at its own
+  size and place, as the frame the page was showing, with a ▶ on it and a
+  line under it naming the video and its address. A video that has not loaded
+  a frame yet is asked for one, but never played. If the picture comes out
+  one flat colour (the embed never drew, or the video is protected), the
+  video's poster is used, or YouTube's own thumbnail. An embed that could not
+  load at all, and one with no picture to be had, gets a box with its link.
+  The link goes to the video's own page: `youtube.com/watch?v=…` rather than
+  the embed address, the post a video sits in, or the video file itself.
+- **A canvas** drawn with WebGL (a map, a 3-D chart) would print blank, so it
+  prints as a picture of what it showed.
+- **A moving picture** (an animated GIF, WebP, PNG or AVIF) prints as one still
+  frame, linked to the moving original, with "▶ Moving picture" under it where
+  that does not disturb the layout.
+
+**More options → Videos and embeds** can make each one a box with its link
+instead (as before), keep them as Chrome prints them, or hide them.
+
 **More options** holds the rest: presets, the visible-area capture, paper size
 and orientation, margin sizes, scale or layout width, text size, print or
 screen styles, colour scheme, shadows and effects, fonts, picture details,
@@ -428,6 +450,7 @@ Fixtures live in `tools/fixtures/`:
 | `clutter.html` | the page `tools/extensions-browser-check.mjs` in the Recall repository cleans and saves as a PDF |
 | `long.html` | smart pages, bookmarks and the break editor in the same check |
 | `heavy.html` + `variable-font.woff2` | what makes a PDF slow to open — shadows, large WebP/PNG photos from another origin, a variable font (DejaVu Sans, Bitstream Vera licence, cut down to ASCII, with an `fvar` table), a long list and table — in the same check |
+| `media.html` + `moving.gif` | videos, embeds and moving pictures in Save as PDF — a playing video (a canvas's stream, inside a link to a post), an embed from the same site, a YouTube embed that cannot load, a WebGL canvas and a two-frame GIF — in the same check |
 
 Two assertions are worth more than the rest: every math span in the output is
 **parsed with the KaTeX a deck actually ships** (capturing the wrong TeX is not a
