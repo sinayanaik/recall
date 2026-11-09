@@ -1,0 +1,20 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>An Uneven Page</title>
+<style>
+  body { font: 16px/1.5 Georgia, serif; max-width: 760px; margin: 24px auto; padding: 0 16px; }
+  /* One block that cannot be cut, taller than the tallest page Chrome prints
+     (200 in): Chrome splits it, so the PDF has more pages than were planned. */
+  #tall { margin: 0; height: 40000px; background: repeating-linear-gradient(#e8eef8 0 200px, #c9d6ee 200px 400px); }
+</style>
+<body>
+<article>
+  <h1>An uneven page</h1>
+  <p id="intro">A short opening paragraph, alone on the first page.</p>
+  <!-- The headings are where the page is cut: before the tall part and after it. -->
+  <h2>The tall part</h2>
+  <figure id="tall"></figure>
+  <h2>After it</h2>
+  <p id="closing">A short closing paragraph, alone on the last page.</p>
+</article>
+</body>

@@ -914,11 +914,15 @@ async function makePdf(job, ctx, rawOptions) {
     pages = countPages(bytes);
     // Smart pages: each page as tall as its own content (see lib/pdf-pages.js),
     // where the PDF says that content ends, else as measured on screen.
+    // Every page is trimmed, also when Chrome printed more or fewer pages
+    // than planned (uneven cuts): markers count for the page they landed on,
+    // and the measured height only where page i is still planned page i. A
+    // page with neither (a full page that spilled) is left as it is.
     if (printed.trim) {
-      const { measured, bottomPt } = printed.trim;
-      const marked = pageHeightsFromMarkers(bytes, measured.length, { bottomPt });
+      const { measured, planned, bottomPt } = printed.trim;
+      const marked = pageHeightsFromMarkers(bytes, pages, { bottomPt });
       markedPages = marked.filter((h) => h != null).length;
-      bytes = trimPageHeights(bytes, measured.map((h, i) => marked[i] ?? h));
+      bytes = trimPageHeights(bytes, marked.map((h, i) => h ?? (pages === planned ? measured[i] : 0)));
     }
     if (o.outline && !o.tagged && report.headings.length) bytes = addOutline(bytes, report.headings);
   }
@@ -1167,13 +1171,13 @@ async function printSmart(target, o, geo, evaluate, job, base) {
     // A page printed taller than measured spilled onto a page of its own.
     height = Math.min(MAX_PAGE_IN, height * 1.15 + 0.5);
   }
-  // Each page cut to its own content — only when the print came out exactly as
-  // planned, and never under a footer, which sits at the bottom of the paper.
-  // The measured heights are the fallback for a page without an end marker.
-  const fits = got === plan.pages && o.footer === "none";
-  const trim = fits
+  // Each page cut to its own content — never under a footer, which sits at
+  // the bottom of the paper. The measured heights are the fallback for a page
+  // without an end marker, while the print has the pages planned.
+  const trim = o.footer === "none"
     ? {
       measured: contentIn.map((h) => Math.min(height, h + slackIn(h) + marginsIn) * 72),
+      planned: plan.pages,
       bottomPt: geo.margin.bottom * 72
     }
     : null;

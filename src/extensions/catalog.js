@@ -18,13 +18,13 @@ export const EXTENSIONS = [
     "shortcut": "Alt+Shift+C clean · Alt+Shift+M copy as Markdown · Alt+Shift+P save as PDF · Alt+Shift+O open",
     "permissions": "Runs only on the tab you use it on, and uploads nothing. Saving a PDF uses Chrome's own print engine through its debugging interface, so Chrome shows a “debugging this browser” bar while it works.",
     "name": "Recall Web Clipper",
-    "version": "2.4.0",
+    "version": "2.4.1",
     "description": "Bring any web page into Recall: clean it up, copy any part as Markdown for a file's Notes, or save it as a PDF with smart page breaks.",
-    "bytes": 4579516,
+    "bytes": 4580689,
     "files": [
       {
         "path": "README.md",
-        "size": 31189
+        "size": 31665
       },
       {
         "path": "background.js",
@@ -108,7 +108,7 @@ export const EXTENSIONS = [
       },
       {
         "path": "lib/pdf-pages.js",
-        "size": 3659
+        "size": 4062
       },
       {
         "path": "manifest.json",
@@ -124,7 +124,7 @@ export const EXTENSIONS = [
       },
       {
         "path": "pdf-job.js",
-        "size": 75928
+        "size": 76222
       },
       {
         "path": "popup.css",

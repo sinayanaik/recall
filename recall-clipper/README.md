@@ -77,7 +77,10 @@ The popup shows the few settings most people change:
     length: before a heading if there is one, between paragraphs otherwise, and
     never through a picture, table, code block, formula or list item. Each page
     is then trimmed to exactly where its own content ends, so no page ends in
-    a band of white. A list or a table longer than a page is cut between its
+    a band of white — also when the cuts are uneven: a very long page next to
+    short ones, a cut Chrome could not make, or a block too tall for any page
+    that Chrome splits. (With a footer the pages keep the paper's height,
+    since the footer sits at its bottom.) A list or a table longer than a page is cut between its
     items or rows (a table's header row repeats on the next page).
     With **Show the page breaks on the page first** (on by default) the page is
     laid out as it will print, each page shaded with its number and how full
@@ -455,7 +458,8 @@ Fixtures live in `tools/fixtures/`:
 | `clutter.html` | the page `tools/extensions-browser-check.mjs` in the Recall repository cleans and saves as a PDF |
 | `long.html` | smart pages, bookmarks and the break editor in the same check |
 | `heavy.html` + `variable-font.woff2` | what makes a PDF slow to open — shadows, large WebP/PNG photos from another origin, a variable font (DejaVu Sans, Bitstream Vera licence, cut down to ASCII, with an `fvar` table), a long list and table — in the same check |
-| `media.html` + `moving.gif` | videos, embeds and moving pictures in Save as PDF — a playing video (a canvas's stream, inside a link to a post), an embed from the same site, a YouTube embed that cannot load, a WebGL canvas and a two-frame GIF — in the same check |
+| `media.html` + `moving.gif` + `thirds.webm` | videos, embeds and moving pictures in Save as PDF — a playing video (a canvas's stream, inside a link to a post), a red/green/blue video file and GIF whose middle frame is green, an embed from the same site, a YouTube embed that cannot load and a WebGL canvas — in the same check |
+| `uneven.html` | smart pages when Chrome prints more pages than planned: one block taller than any page, between two short paragraphs — in the same check |
 
 Two assertions are worth more than the rest: every math span in the output is
 **parsed with the KaTeX a deck actually ships** (capturing the wrong TeX is not a

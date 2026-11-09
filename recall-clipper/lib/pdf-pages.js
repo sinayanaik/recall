@@ -33,23 +33,28 @@ export function readDests(bytes) {
 const num = (n) => String(Math.round(n * 1000) / 1000);
 
 /**
- * Each page's height in points, read from the end-of-content markers: page i
- * ends at the destination named `${prefix}${i}`, plus the bottom margin and
- * `padPt`. Null for a page whose marker is missing or printed on another page.
+ * Each PRINTED page's height in points, read from the end-of-content markers
+ * (`${prefix}N`), plus the bottom margin and `padPt` — one entry per page of
+ * the PDF, null for a page with no marker on it.
+ *
+ * A marker counts for the page Chrome actually printed it on, which is not
+ * always the page planned: a cut Chrome ignored (one made with Alt before a
+ * flex item, say) puts two pages' ends on one page, and a page too tall for
+ * the paper spills onto one more. A page with two ends ends at the lower one.
+ * `count` is no longer needed and is ignored.
  */
 export function pageHeightsFromMarkers(bytes, count, { prefix = "recall-end-", bottomPt = 0, padPt = 4 } = {}) {
   const doc = readDoc(bytes);
-  const out = new Array(count).fill(null);
-  if (!doc) return out;
+  if (!doc) return new Array(count || 0).fill(null);
   const pages = readPagesOf(doc);
-  if (!pages) return out;
-  const dests = readDestsOf(doc, pages);
-  for (let i = 0; i < count && i < pages.length; i += 1) {
-    const d = dests.get(`${prefix}${i}`);
-    if (!d || d.page !== i || d.y == null) continue;
-    const [, y0, , y1] = pages[i].mediaBox;
+  if (!pages) return new Array(count || 0).fill(null);
+  const out = new Array(pages.length).fill(null);
+  for (const [name, d] of readDestsOf(doc, pages)) {
+    if (!name.startsWith(prefix) || d.y == null || !pages[d.page]) continue;
+    const [, y0, , y1] = pages[d.page].mediaBox;
     if (d.y < y0 || d.y > y1) continue;
-    out[i] = (y1 - d.y) + bottomPt + padPt;
+    const h = (y1 - d.y) + bottomPt + padPt;
+    if (out[d.page] == null || h > out[d.page]) out[d.page] = h;
   }
   return out;
 }

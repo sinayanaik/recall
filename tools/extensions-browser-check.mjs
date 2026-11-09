@@ -946,6 +946,44 @@ try {
   }
   await client.send("Target.closeTarget", { targetId: mediaPage.targetId });
 
+  // ------------------------------------------------------------ uneven pages
+  //
+  // Smart pages print every page on paper as tall as the tallest, then cut
+  // each to its own content. That cut used to be skipped altogether whenever
+  // Chrome printed more or fewer pages than planned — a cut it ignored, or a
+  // page too tall for the paper — leaving every page the tallest one's height.
+  // Here one block is taller than the tallest page Chrome prints, so Chrome
+  // splits it: the short pages around it must still come out short.
+
+  const UNEVEN = `http://127.0.0.1:${port}/recall-clipper/tools/fixtures/uneven.html`;
+  const unevenPage = await openPage(client);
+  await unevenPage.call("Emulation.setDeviceMetricsOverride", { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
+  await unevenPage.goto(UNEVEN);
+  await unevenPage.waitFor(() => Boolean(document.getElementById("closing")), { label: "uneven fixture" });
+  const unevenTab = await tabIdOf(UNEVEN);
+  const uneven = await job({ layout: "smart", pageLength: "a4", adjustBreaks: false, clean: "off", banner: false, filename: "{title} - uneven" }, "uneven page", unevenTab);
+  if (uneven) {
+    const up = await readPages(uneven);
+    const heights = up.map((p) => Math.round(p.height));
+    const last = up[up.length - 1];
+    console.log(`     uneven page: ${up.length} pages, heights ${heights.join(", ")} pt`);
+    check("uneven: Chrome split the block too tall for any page (more pages than planned)", up.length >= 4, `${up.length} pages`);
+    // The last page holds the end of the tall block and the closing lines: it
+    // must end just under them, not 200 in down.
+    const gap = await reader.evaluate(async (b64) => {
+      const data = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+      const doc = await pdfjsLib.getDocument({ data, isEvalSupported: false }).promise;
+      const page = await doc.getPage(doc.numPages);
+      const vp = page.getViewport({ scale: 1 });
+      const ys = (await page.getTextContent()).items.filter((t) => t.str.trim()).map((t) => vp.convertToViewportPoint(t.transform[4], t.transform[5])[1]);
+      return Math.round(vp.height - Math.max(...ys));
+    }, readFileSync(uneven).toString("base64"));
+    check("uneven: the last page ends just under its last line — no band of white", /closingparagraph/.test(last.flat) && last.height < 200 * 72 - 1 && gap < 100, `${Math.round(last.height)} pt tall, ${gap} pt under the last line`);
+    check("uneven: the first page, a heading and a line, is short too", /openingparagraph/.test(up[0].flat) && !/Thetallpart/.test(up[0].flat) && up[0].height < 400, `${Math.round(up[0].height)} pt`);
+    check("uneven: no page is taller than the tallest paper", up.every((p) => p.height <= 200 * 72 + 1), heights.join(", "));
+  }
+  await client.send("Target.closeTarget", { targetId: unevenPage.targetId });
+
 } catch (err) {
   check("ran to the end", false, err && err.stack || String(err));
 }

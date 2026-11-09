@@ -124,7 +124,8 @@ const { pageHeightsFromMarkers, readDests } = await import(pathToFileURL(path.jo
 const { addOutline } = await import(pathToFileURL(path.join(ROOT, "recall-clipper/lib/pdf-outline.js")).href);
 
 // `base` again, with the named destinations Chrome writes for in-page link
-// targets: page 1 ends at y = 300 (its MediaBox top is top0), page 2 has none.
+// targets: page 1 holds two pages' ends, at y = 300 and y = 5 (a cut Chrome
+// ignored put both on it; its MediaBox top is top0), page 2 has none.
 const baseDoc = readDoc(base);
 const [p1, p2] = readPages(base);
 const withDests = appendObjects(base, baseDoc, [{
@@ -134,8 +135,10 @@ const withDests = appendObjects(base, baseDoc, [{
 const dests = readDests(withDests);
 check("dests: read from the catalog, with their page and position", dests.size === 5 && dests.get("recall-h-2").page === 1 && dests.get("recall-end-0").y === 300, JSON.stringify([...dests.keys()]));
 const marked = pageHeightsFromMarkers(withDests, 2, { bottomPt: 10, padPt: 4 });
-check("markers: page 1 ends where its marker is, plus the bottom margin", close2(marked[0], top0 - 300 + 14), String(marked[0]));
-check("markers: a marker printed on another page counts for nothing", marked[1] === null, String(marked[1]));
+check("markers: one height per printed page", marked.length === 2, String(marked.length));
+check("markers: a page holding two ends (a cut Chrome ignored) ends at the lower one, plus the bottom margin", close2(marked[0], top0 - 5 + 14), String(marked[0]));
+check("markers: a page with no end on it → null", marked[1] === null, String(marked[1]));
+check("markers: the page count asked for does not matter — the PDF's own count does", pageHeightsFromMarkers(withDests, 7, { bottomPt: 10, padPt: 4 }).length === 2);
 check("markers: none at all → nulls", pageHeightsFromMarkers(base, 2).every((h) => h === null));
 
 const outlined = addOutline(withDests, [
