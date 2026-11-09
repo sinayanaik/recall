@@ -946,6 +946,34 @@ try {
   }
   await client.send("Target.closeTarget", { targetId: mediaPage.targetId });
 
+  // ------------------------------------------------------------ uneven pages
+  //
+  // Smart pages print every page on paper as tall as the tallest, then cut
+  // each to its own content. That cut used to be skipped altogether whenever
+  // Chrome printed more or fewer pages than planned — a cut it ignored, or a
+  // page too tall for the paper — leaving every page the tallest one's height.
+  // Here one block is taller than the tallest page Chrome prints, so Chrome
+  // splits it: the short pages around it must still come out short.
+
+  const UNEVEN = `http://127.0.0.1:${port}/recall-clipper/tools/fixtures/uneven.html`;
+  const unevenPage = await openPage(client);
+  await unevenPage.call("Emulation.setDeviceMetricsOverride", { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
+  await unevenPage.goto(UNEVEN);
+  await unevenPage.waitFor(() => Boolean(document.getElementById("closing")), { label: "uneven fixture" });
+  const unevenTab = await tabIdOf(UNEVEN);
+  const uneven = await job({ layout: "smart", pageLength: "a4", adjustBreaks: false, clean: "off", banner: false, filename: "{title} - uneven" }, "uneven page", unevenTab);
+  if (uneven) {
+    const up = await readPages(uneven);
+    const heights = up.map((p) => Math.round(p.height));
+    const last = up[up.length - 1];
+    console.log(`     uneven page: ${up.length} pages, heights ${heights.join(", ")} pt`);
+    check("uneven: Chrome split the block too tall for any page", up.length >= 3, `${up.length} pages`);
+    check("uneven: the last page, one short paragraph, is short — not the tallest page's height", /closingparagraph/.test(last.flat) && last.height < 400, `${Math.round(last.height)} pt`);
+    check("uneven: the first page, a heading and a line, is short too", up[0].height < 400, `${Math.round(up[0].height)} pt`);
+    check("uneven: no page is taller than the tallest paper", up.every((p) => p.height <= 200 * 72 + 1), heights.join(", "));
+  }
+  await client.send("Target.closeTarget", { targetId: unevenPage.targetId });
+
 } catch (err) {
   check("ran to the end", false, err && err.stack || String(err));
 }
