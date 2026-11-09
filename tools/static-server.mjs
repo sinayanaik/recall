@@ -15,7 +15,8 @@ const port = Number(process.argv[3] || 0);
 const TYPES = {
   ".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript",
   ".css": "text/css", ".json": "application/json", ".png": "image/png",
-  ".svg": "image/svg+xml", ".webmanifest": "application/manifest+json"
+  ".svg": "image/svg+xml", ".webmanifest": "application/manifest+json",
+  ".gif": "image/gif", ".webm": "video/webm", ".mp4": "video/mp4"
 };
 
 http.createServer(async (req, res) => {
@@ -24,10 +25,26 @@ http.createServer(async (req, res) => {
   if (!file.startsWith(root)) { res.writeHead(403); res.end(); return; }
   try {
     const body = await readFile(file);
-    res.writeHead(200, {
+    const headers = {
       "content-type": TYPES[path.extname(file)] || "application/octet-stream",
-      "cache-control": "no-store"
-    });
+      "cache-control": "no-store",
+      "accept-ranges": "bytes"
+    };
+    // One byte range, as a browser asks for a video it means to seek in.
+    const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range || "");
+    if (range && (range[1] || range[2])) {
+      let start = range[1] ? Number(range[1]) : Math.max(0, body.length - Number(range[2]));
+      let end = range[1] && range[2] ? Math.min(Number(range[2]), body.length - 1) : body.length - 1;
+      if (start >= body.length || start > end) {
+        res.writeHead(416, { "content-range": `bytes */${body.length}` });
+        res.end();
+        return;
+      }
+      res.writeHead(206, { ...headers, "content-range": `bytes ${start}-${end}/${body.length}`, "content-length": end - start + 1 });
+      res.end(body.subarray(start, end + 1));
+      return;
+    }
+    res.writeHead(200, headers);
     res.end(body);
   } catch {
     res.writeHead(404);

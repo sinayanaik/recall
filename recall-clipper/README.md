@@ -112,9 +112,13 @@ one prints as a picture of what it showed on the page, linked to the real
 thing. Tap it in Recall's PDFs tab, or click it in any PDF reader, to open it.
 
 - **A video or embed** (YouTube, Vimeo, a tweet, CodePen…) prints at its own
-  size and place, as the frame the page was showing, with a ▶ on it and a
-  line under it naming the video and its address. A video that has not loaded
-  a frame yet is asked for one, but never played. If the picture comes out
+  size and place, with a ▶ on it and a line under it naming the video and its
+  address. The picture is the video's **middle frame**: the first is so often
+  black, a title card or a fade-in. The video is paused at the middle of its
+  length with its controls bar put away, and put back afterwards where it
+  was, playing if it was playing. A YouTube embed uses YouTube's own picture
+  of the video's middle. A live stream, and a player from another site that
+  cannot be moved (Vimeo, say), print the frame they show. If the picture comes out
   one flat colour (the embed never drew, or the video is protected), the
   video's poster is used, or YouTube's own thumbnail. An embed that could not
   load at all, and one with no picture to be had, gets a box with its link.
@@ -122,12 +126,13 @@ thing. Tap it in Recall's PDFs tab, or click it in any PDF reader, to open it.
   the embed address, the post a video sits in, or the video file itself.
 - **A canvas** drawn with WebGL (a map, a 3-D chart) would print blank, so it
   prints as a picture of what it showed.
-- **A moving picture** (an animated GIF, WebP, PNG or AVIF) prints as one still
-  frame, linked to the moving original, with "▶ Moving picture" under it where
-  that does not disturb the layout.
+- **A moving picture** (an animated GIF, WebP, PNG or AVIF) prints as its
+  middle frame, linked to the moving original, with "▶ Moving picture" under
+  it where that does not disturb the layout.
 
 **More options → Videos and embeds** can make each one a box with its link
-instead (as before), keep them as Chrome prints them, or hide them.
+instead (as before), keep them as Chrome prints them, or hide them; **Picture
+of a video or GIF** chooses *Its middle frame* or *The frame the page shows*.
 
 **More options** holds the rest: presets, the visible-area capture, paper size
 and orientation, margin sizes, scale or layout width, text size, print or

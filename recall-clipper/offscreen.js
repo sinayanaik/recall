@@ -52,6 +52,8 @@ async function middleFrame(b64, mime) {
   for (let i = 0; i < bin.length; i += 1) data[i] = bin.charCodeAt(i);
   const decoder = new ImageDecoder({ data, type: mime });
   try {
+    // The track says how many frames there are once all the data is read.
+    await decoder.tracks.ready;
     await decoder.completed;
     const track = decoder.tracks.selectedTrack;
     const frames = track ? track.frameCount : 1;
