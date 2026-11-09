@@ -12,7 +12,7 @@
 // The cleaner's "Save as PDF" and "Copy as Markdown" buttons come back here as
 // messages, so a cleaned page goes straight on to either.
 
-import { runJob, lastOptions, jobFor } from "./pdf-job.js";
+import { runJob, lastOptions, jobFor, finishWaiting, cancelJob, saveAgain, isWaiting } from "./pdf-job.js";
 
 const RESTRICTED = /^(chrome|edge|brave|about|chrome-extension|devtools|view-source):/i;
 const STORE = /^https:\/\/(chromewebstore\.google\.com|chrome\.google\.com\/webstore)/;
@@ -146,7 +146,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   // From the popup, which is not in a tab: it names the tab.
   if (msg.type === "rwc-start-pdf") return reply(runJob(msg.tabId, msg.options), sendResponse);
-  if (msg.type === "rwc-get-status") { sendResponse(jobFor(msg.tabId)); return false; }
+  if (msg.type === "rwc-get-status") {
+    jobFor(msg.tabId).then(sendResponse, () => sendResponse(null));
+    return true;
+  }
+  // While the page waits for the reader: "Save PDF now" and Cancel, from the popup.
+  if (msg.type === "rwc-finish-pdf") return reply(finishWaiting(msg.tabId), sendResponse);
+  if (msg.type === "rwc-cancel-pdf") return reply(cancelJob(msg.tabId), sendResponse);
+  if (msg.type === "rwc-save-again") return reply(saveAgain(msg.tabId), sendResponse);
   if (msg.type === "rwc-clean" || msg.type === "rwc-copy") {
     const start = msg.type === "rwc-clean" ? startCleaner : startClipper;
     return reply(chrome.tabs.get(msg.tabId).then(start), sendResponse);
@@ -160,6 +167,8 @@ chrome.commands.onCommand.addListener(async (command) => {
   if (command === "toggle-clipper") startClipper(tab);
   else if (command === "toggle-cleaner") startCleaner(tab);
   else if (command === "save-pdf") {
+    // While the break editor (or the block picker) waits, the shortcut is its Save PDF.
+    if (isWaiting(tab.id)) { finishWaiting(tab.id).catch(() => {}); return; }
     const opts = await lastOptions();
     runJob(tab.id, { ...opts, capture: opts.capture === "element" || opts.capture === "selection" ? opts.capture : "page" }).catch(() => {});
   }

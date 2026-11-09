@@ -1,13 +1,15 @@
 {
   "manifest_version": 3,
   "name": "Recall Web Clipper",
-  "version": "2.1.0",
+  "version": "2.2.0",
+  "minimum_chrome_version": "118",
   "description": "Bring any web page into Recall: clean it up, copy any part as Markdown for a file's Notes, or save it as a PDF with smart page breaks.",
   "permissions": [
     "activeTab",
     "scripting",
     "debugger",
     "downloads",
+    "offscreen",
     "storage"
   ],
   "action": {

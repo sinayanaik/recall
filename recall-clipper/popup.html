@@ -307,8 +307,13 @@
 
   <footer class="bottom" id="pdfFooter" hidden>
     <p id="summary" class="summary"></p>
-    <p id="status" class="status" role="status" hidden></p>
-    <button type="button" id="go" class="primary">Save as PDF</button>
+    <p id="status" class="status" role="status" aria-live="polite" hidden></p>
+    <div class="buttons">
+      <button type="button" id="go" class="primary">Save as PDF</button>
+      <button type="button" id="finish" class="primary" hidden>Save PDF now</button>
+      <button type="button" id="again" class="primary" hidden>Save again</button>
+      <button type="button" id="cancel" class="secondary" hidden>Cancel</button>
+    </div>
   </footer>
 
   <script type="module" src="popup.js"></script>
