@@ -33,6 +33,8 @@
 // …). The tokens are the vendored marked's lexer. Pure: no DOM; pictures and
 // glyph pictures are measured beforehand (md-pdf/assets.js) and handed in.
 
+import { codeLanguageAliases, inferCodeLanguage } from "../../render/code-language.js?v=__BUILD__";
+
 // ── Options ────────────────────────────────────────────────────────────────
 
 export const MD_PDF_PAPERS = {
@@ -148,8 +150,12 @@ export const MD_PDF_COLOURS = {
   muted: "#5b616b",
   link: "#1a56b0",
   rule: "#c9ced6",
-  codeBg: "#f4f5f7",
-  codeSpanBg: "#eceef2",
+  codeBg: "#f6f8fa",
+  codeBorder: "#dfe3e8",
+  codeWrap: "#9aa1ab",
+  codeSpanBg: "#f0f2f5",
+  codeSpanBorder: "#dde1e7",
+  codeText: "#b4234a",
   quoteBar: "#c3c8d0",
   tableBorder: "#c9ced6",
   tableHeadBg: "#f1f3f6",
@@ -290,15 +296,77 @@ function cleanStyle(s) {
   return out;
 }
 
-// Turn the top-level tokens into blocks: { type, … , src } where src is the
-// block's own markdown (what its page breaks are remembered by).
-export function blocksFromTokens(tokens) {
+// Turn the top-level tokens into blocks: { type, … , src, at } where src is
+// the block's own markdown (what its page breaks are remembered by) and `at`
+// where it starts in the markdown the lexer read (the prepared text) — what a
+// double-click on the preview finds the markdown by (md-pdf/dialog.js).
+//
+// Top-level tokens' `raw`s, joined, are the lexer's input exactly, so their
+// offsets are a running sum. A nested token's raw has its parent's markers and
+// indent taken off ("> ", "  "), so it is found by its first line inside its
+// parent's own raw (`scope`: { text, base }).
+export function blocksFromTokens(tokens, scope = null) {
   const blocks = [];
+  let cursor = 0;
   for (const token of tokens || []) {
-    const block = blockFromToken(token);
-    if (block) blocks.push(block);
+    const raw = String(token.raw || "");
+    let at;
+    let end = null;
+    if (!scope) {
+      at = cursor;
+      cursor += raw.length;
+    } else {
+      // Found by its first line, and ended by its last, in the parent's own
+      // markdown (where the lines still have their "> " and indent).
+      const lines = raw.split("\n").map((line) => line.trim()).filter(Boolean);
+      const firstLine = lines[0] || "";
+      const lastLine = lines[lines.length - 1] || "";
+      const found = firstLine ? scope.text.indexOf(firstLine, cursor) : -1;
+      at = scope.base + (found === -1 ? cursor : found);
+      if (found !== -1) {
+        const last = lastLine ? scope.text.indexOf(lastLine, found) : -1;
+        if (last !== -1) end = scope.base + last + lastLine.length;
+        cursor = found + firstLine.length;
+      }
+    }
+    const block = blockFromToken(token, at);
+    if (!block) continue;
+    if (end !== null) block.end = end;
+    // A language's name alone on the line above a bare fence — how code
+    // copied out of an AI chat arrives ("yaml", then the code) — names the
+    // block's language; it is not a paragraph of the document.
+    if (block.type === "code" && !block.declared) {
+      const previous = blocks[blocks.length - 1];
+      const name = previous && previous.type === "paragraph" ? languageNameLine(previous.src) : "";
+      if (name) {
+        blocks.pop();
+        block.lang = name;
+        block.declared = true;
+      }
+    }
+    if (block.type === "code" && !block.lang) block.lang = inferCodeLanguage(block.text);
+    blocks.push(block);
   }
   return blocks;
+}
+
+// Languages a lone line above a fence may name. Prism's names and the
+// aliases the Notes view knows, and the names people write.
+const LANGUAGE_NAMES = new Set([
+  ...Object.keys(codeLanguageAliases),
+  ...Object.values(codeLanguageAliases),
+  "bash", "c", "cpp", "csharp", "css", "dart", "diff", "docker", "dockerfile", "elixir", "go", "golang",
+  "graphql", "groovy", "haskell", "ini", "java", "javascript", "json", "json5", "jsonc", "julia", "kotlin",
+  "latex", "less", "lua", "makefile", "markdown", "matlab", "nginx", "objectivec", "ocaml", "perl", "php",
+  "powershell", "properties", "protobuf", "python", "r", "ruby", "rust", "scala", "scss", "sql", "swift",
+  "toml", "typescript", "vb", "xml", "yaml", "zsh", "console", "plaintext", "cmake", "terraform", "hcl"
+]);
+
+function languageNameLine(src) {
+  const text = String(src || "").trim();
+  if (!text || /\s/.test(text) || text.length > 16) return "";
+  const name = text.toLowerCase();
+  return LANGUAGE_NAMES.has(name) ? name : "";
 }
 
 function htmlBlock(token) {
@@ -323,55 +391,103 @@ function htmlBlock(token) {
   return { type: "paragraph", inline: [{ t: "text", text: plain, s: {} }] };
 }
 
-function blockFromToken(token) {
+function blockFromToken(token, at = 0) {
   const src = token.raw || "";
   switch (token.type) {
     case "heading":
-      return { type: "heading", level: token.depth, inline: inlinePieces(token.tokens), src };
+      return { type: "heading", level: token.depth, inline: inlinePieces(token.tokens), src, at };
     case "paragraph":
     case "text":
-      return { type: "paragraph", inline: inlinePieces(token.tokens || [{ type: "text", text: token.text }]), src };
+      return { type: "paragraph", inline: inlinePieces(token.tokens || [{ type: "text", text: token.text }]), src, at };
     case "code": {
       const lang = String(token.lang || "").trim().split(/\s+/)[0].toLowerCase();
-      return { type: "code", lang, text: String(token.text || "").replace(/\t/g, "    "), src };
+      // Where the code's first line starts in the markdown: under a fence's
+      // opening line, or (indented code) at once.
+      const fenced = /^\s*(```|~~~)/.test(src);
+      const firstLine = fenced ? src.indexOf("\n") + 1 : 0;
+      return {
+        type: "code",
+        lang,
+        declared: Boolean(lang),
+        text: String(token.text || "").replace(/\t/g, "    "),
+        src,
+        at,
+        lineAt: rawLineStarts(src, firstLine).map((offset) => at + offset)
+      };
     }
     case "blockquote":
-      return { type: "quote", blocks: blocksFromTokens(token.tokens), src };
-    case "list":
+      return { type: "quote", blocks: blocksFromTokens(token.tokens, { text: src, base: at }), src, at };
+    case "list": {
+      let cursor = 0;
       return {
         type: "list",
         ordered: Boolean(token.ordered),
         start: Number(token.start) || 1,
         loose: Boolean(token.loose),
-        items: (token.items || []).map((item) => ({
-          task: Boolean(item.task),
-          checked: Boolean(item.checked),
-          blocks: blocksFromTokens(item.tokens),
-          src: item.raw || ""
-        })),
-        src
+        items: (token.items || []).map((item) => {
+          const itemRaw = String(item.raw || "");
+          const found = itemRaw ? src.indexOf(itemRaw, cursor) : -1;
+          const itemAt = at + (found === -1 ? cursor : found);
+          if (found !== -1) cursor = found + itemRaw.length;
+          return {
+            task: Boolean(item.task),
+            checked: Boolean(item.checked),
+            blocks: blocksFromTokens(item.tokens, { text: itemRaw, base: itemAt }),
+            src: itemRaw,
+            at: itemAt
+          };
+        }),
+        src,
+        at
       };
-    case "table":
+    }
+    case "table": {
+      // The header is the table's first line; the body rows follow the
+      // delimiter row, one line each.
+      const starts = rawLineStarts(src, 0).map((offset) => at + offset);
       return {
         type: "table",
         align: token.align || [],
         header: (token.header || []).map((cell) => inlinePieces(cell.tokens)),
         rows: (token.rows || []).map((row) => row.map((cell) => inlinePieces(cell.tokens))),
-        src
+        rowAt: [starts[0] ?? at, ...(token.rows || []).map((row, r) => starts[r + 2] ?? starts[starts.length - 1] ?? at)],
+        rowEnd: [rawLineEnd(src, starts[0] - at) + at, ...(token.rows || []).map((row, r) => rawLineEnd(src, (starts[r + 2] ?? at) - at) + at)],
+        src,
+        at
       };
+    }
     case "hr":
-      return { type: "hr", src };
+      return { type: "hr", src, at };
     case "html": {
       const block = htmlBlock(token);
-      return block ? { ...block, src } : null;
+      return block ? { ...block, src, at } : null;
     }
     case "space":
     case "def":
       return null;
     default:
-      if (token.tokens) return { type: "paragraph", inline: inlinePieces(token.tokens), src };
+      if (token.tokens) return { type: "paragraph", inline: inlinePieces(token.tokens), src, at };
       return null;
   }
+}
+
+// Where the line holding `from` ends in `text` (before its newline).
+function rawLineEnd(text, from) {
+  const nl = text.indexOf("\n", Math.max(0, from));
+  return nl === -1 ? text.length : nl;
+}
+
+// Offsets of the starts of `text`'s lines, from `from` on.
+function rawLineStarts(text, from) {
+  const starts = [];
+  let at = Math.max(0, from);
+  while (at <= text.length) {
+    starts.push(at);
+    const nl = text.indexOf("\n", at);
+    if (nl === -1) break;
+    at = nl + 1;
+  }
+  return starts;
 }
 
 // Everything the assets stage has to prepare before layout: fonts' text, by
@@ -433,11 +549,27 @@ export const glyphKey = (word, family, bold, italic) => `${family}|${bold ? 1 : 
 
 // ── Layout ─────────────────────────────────────────────────────────────────
 
-const HEADING_SIZE = [1.55, 1.3, 1.15, 1.04, 1, 0.95];
+const HEADING_SIZE = [1.8, 1.45, 1.22, 1.08, 1, 0.92];
 const HEADING_SCORE = [5, 4, 3, 2, 2, 2];
-// The rule under a heading, as in Notes: how much of the column it spans and
-// how thick it is (H5 and H6 have none).
-const HEADING_RULE = [[1, 1.4], [0.6, 1.4], [0.4, 1], [0.28, 0.8]];
+// The rule under a heading, as in Notes (.rendered h1::after …): how much of
+// the column it spans, at most how many heading-sizes long, how thick, its
+// dash (none: solid) and its colour. Solid for H1–H3, dashed for H4, dotted
+// for H5 and H6.
+const HEADING_RULE = [
+  { share: 1, ems: Infinity, lw: 1.6, dash: null, colour: "accent" },
+  { share: 0.6, ems: 20, lw: 1.4, dash: null, colour: "accent" },
+  { share: 0.4, ems: 14, lw: 1, dash: null, colour: "accent" },
+  { share: 0.28, ems: 10, lw: 0.9, dash: [3, 2], colour: "heading" },
+  { share: 0.2, ems: 7, lw: 0.9, dash: [0.9, 1.6], colour: "muted" },
+  { share: 0.14, ems: 5, lw: 0.8, dash: [0.8, 1.8], colour: "rule" }
+];
+// H1 and H3 in the accent, H2 and H4 in the heading ink, H5 and H6 muted.
+const HEADING_COLOUR = ["accent", "heading", "accent", "heading", "muted", "muted"];
+// The room a code span's background leaves around its words, each side.
+const CODE_SPAN_PAD = 2.5;
+// A code block's padding: above and below, and either side.
+const CODE_PAD_Y = 7;
+const CODE_PAD_X = 9;
 const LINE = 1.32;
 const CODE_SCALE = 0.88;
 // Tables as the Notes view sets them (.rendered table): the column's whole
@@ -472,6 +604,17 @@ export function layoutMarkdown({ blocks, fontSet, options, geometry, assets = {}
   let rowInBlock = 0;
   let firstCut = null;
   let previousWasHeading = false;
+  // Where the markdown of whatever is being laid out starts (in the prepared
+  // text the lexer read): every row is stamped with it, so a double-click on
+  // the preview can find the markdown it came from.
+  let srcAt = 0;
+  let srcEnd = 0;
+  const setSrc = (at, end) => {
+    srcAt = at;
+    srcEnd = Math.max(at, Number.isFinite(end) ? end : at);
+  };
+  // A block's markdown ends where its raw does, less the blank lines after it.
+  const blockEnd = (block) => (Number.isFinite(block.end) ? block.end : block.at + String(block.src || "").replace(/\s+$/, "").length);
   // Body text colour: grey inside a quote.
   let textColour = MD_PDF_COLOURS.text;
 
@@ -501,7 +644,25 @@ export function layoutMarkdown({ blocks, fontSet, options, geometry, assets = {}
         else if (o.pictures !== "none" && piece.alt) pushText(boxes, `[${piece.alt}]`, { i: true }, base, MD_PDF_COLOURS.muted);
         continue;
       }
-      pushText(boxes, piece.text, piece.s || {}, base);
+      const s = piece.s || {};
+      if ((s.code || s.kbd) && !base.pre) {
+        // Room inside the span's background, so the code stands clear of the
+        // words beside it: its first word starts in a little, its last ends
+        // a little after its letters.
+        const from = boxes.length;
+        pushText(boxes, piece.text, s, base);
+        const made = boxes.slice(from).filter((box) => box.kind === "word" || box.kind === "atom");
+        if (made.length) {
+          const first = made[0];
+          const last = made[made.length - 1];
+          first.padL = CODE_SPAN_PAD;
+          first.w += CODE_SPAN_PAD;
+          last.padR = CODE_SPAN_PAD;
+          last.w += CODE_SPAN_PAD;
+        }
+        continue;
+      }
+      pushText(boxes, piece.text, s, base);
     }
     return boxes;
   }
@@ -513,7 +674,9 @@ export function layoutMarkdown({ blocks, fontSet, options, geometry, assets = {}
     const italic = Boolean(style.i || base.italic);
     let pieceSize = base.size * (style.code && !base.forceFamily ? CODE_SCALE : 1);
     if (style.sub || style.sup) pieceSize *= 0.72;
-    const colour = colourOverride || (style.link !== undefined && style.link !== "" ? MD_PDF_COLOURS.link : base.colour);
+    const colour = colourOverride
+      || (style.link !== undefined && style.link !== "" ? MD_PDF_COLOURS.link
+        : (style.code || style.kbd) && !base.forceFamily && !base.pre ? MD_PDF_COLOURS.codeText : base.colour);
     const parts = String(text).replace(/\r/g, "").split(base.pre ? /( )/ : /(\s+)/);
     for (const part of parts) {
       if (!part) continue;
@@ -527,7 +690,7 @@ export function layoutMarkdown({ blocks, fontSet, options, geometry, assets = {}
       }
       if (base.pre && part === " ") {
         const face = fontSet.faceFor(32, fam, bold, italic);
-        boxes.push({ kind: "word", w: face ? fontSet.measure(" ", face, pieceSize) : pieceSize * 0.6, runs: face ? [{ text: " ", face }] : [], style, size: pieceSize, colour, fam, bold, italic });
+        boxes.push({ kind: "word", w: face ? fontSet.measure(" ", face, pieceSize) : pieceSize * 0.6, runs: face ? [{ text: " ", face }] : [], style, size: pieceSize, colour, fam, bold, italic, preSpace: true });
         continue;
       }
       const runs = fontSet.splitByFace(part, fam, bold, italic);
@@ -565,30 +728,58 @@ export function layoutMarkdown({ blocks, fontSet, options, geometry, assets = {}
 
   // Split a word wider than the line into pieces that fit — by grapheme
   // cluster, so a Devanagari conjunct or a letter and its vowel sign is never
-  // cut in two (it would be shaped as two broken halves).
-  function splitWord(box, width) {
-    const out = [];
-    let current = { ...box, runs: [], w: 0 };
+  // cut in two (it would be shaped as two broken halves). In code (`pre`) a
+  // piece ends after a / . - _ , : where one is in reach, as an editor's soft
+  // wrap does, so a path breaks between its parts. `firstWidth` is the room
+  // left on the line the word starts on.
+  function splitWord(box, width, { pre = false, firstWidth = width } = {}) {
+    const chars = [];
     for (const run of box.runs) {
-      for (const ch of graphemes(run.text)) {
-        const w = fontSet.measure(ch, run.face, box.size);
-        if (current.w + w > width && current.w > 0) {
-          out.push(current);
-          current = { ...box, runs: [], w: 0 };
-        }
-        const last = current.runs[current.runs.length - 1];
-        if (last && last.face === run.face) { last.text += ch; last.w += w; } else current.runs.push({ text: ch, face: run.face, w });
-        current.w += w;
-      }
+      for (const ch of graphemes(run.text)) chars.push({ ch, face: run.face, w: fontSet.measure(ch, run.face, box.size) });
     }
-    if (current.runs.length) out.push(current);
+    const out = [];
+    let start = 0;
+    while (start < chars.length) {
+      const room = out.length ? width : firstWidth;
+      let used = out.length ? 0 : (box.padL || 0);
+      let end = start;
+      while (end < chars.length && (used + chars[end].w <= room || end === start)) {
+        used += chars[end].w;
+        end += 1;
+      }
+      if (end < chars.length && pre) {
+        // Back to just after the last soft-break character in this piece.
+        for (let k = end - 1; k > start; k -= 1) {
+          if (/[/.\-_,:;=&?]/.test(chars[k].ch)) { end = k + 1; break; }
+        }
+      }
+      const piece = { ...box, runs: [], w: out.length ? 0 : (box.padL || 0), padL: out.length ? 0 : box.padL, padR: 0 };
+      for (let k = start; k < end; k += 1) {
+        const c = chars[k];
+        const last = piece.runs[piece.runs.length - 1];
+        if (last && last.face === c.face) { last.text += c.ch; last.w += c.w; } else piece.runs.push({ text: c.ch, face: c.face, w: c.w });
+        piece.w += c.w;
+      }
+      out.push(piece);
+      start = end;
+    }
+    if (out.length && box.padR) {
+      out[out.length - 1].padR = box.padR;
+      out[out.length - 1].w += box.padR;
+    }
     return out;
   }
 
-  // Lines from boxes, greedy. Returns [{ items: [{box, x}], w, above, below }].
-  function breakLines(boxes, width, base) {
+  // Lines from boxes, greedy. Returns [{ items: [{box, x}], w, above, below,
+  // indent }]. `hang`: how far in every line after the first starts (a
+  // wrapped line of code, under its own indent), and so how much less room
+  // it has.
+  function breakLines(boxes, width, base, { hang = 0 } = {}) {
     const lines = [];
-    let line = { items: [], w: 0 };
+    const contWidth = Math.max(width * 0.4, width - hang);
+    const indentNow = () => (lines.length ? width - contWidth : 0);
+    const room = () => (lines.length ? contWidth : width);
+    let line = { items: [], w: 0, indent: 0 };
     const flush = (force = false) => {
       // Trailing spaces never count toward a line's width.
       while (line.items.length && line.items[line.items.length - 1].box.kind === "space") {
@@ -596,24 +787,30 @@ export function layoutMarkdown({ blocks, fontSet, options, geometry, assets = {}
         line.w -= sp.box.w;
       }
       if (line.items.length || force) lines.push(line);
-      line = { items: [], w: 0 };
+      line = { items: [], w: 0, indent: indentNow() };
     };
     for (let box of boxes) {
       if (box.kind === "br") { flush(true); continue; }
+      // A wrapped line of code starts at its next word, not the space it
+      // wrapped at.
+      if (box.preSpace && lines.length && !line.items.length) continue;
       if (box.kind === "space") {
         if (!line.items.length) continue;
         line.items.push({ box, x: line.w });
         line.w += box.w;
         continue;
       }
-      if (box.kind === "atom" && box.w > width) {
+      if (box.kind === "atom" && box.w > room()) {
         // A picture or formula wider than the column is scaled to it.
-        const k = width / box.w;
-        box = { ...box, w: width, h: box.h * k, depth: box.depth * k };
+        const k = room() / box.w;
+        box = { ...box, w: room(), h: box.h * k, depth: box.depth * k };
       }
-      if (line.w + box.w > width + 0.01 && line.items.length) flush();
-      if (box.kind === "word" && box.w > width) {
-        const pieces = splitWord(box, width);
+      if (box.kind === "word" && box.w > room()) {
+        // Wider than a whole line: cut. Code fills the rest of the line it
+        // is on first, when a fair share of it is left.
+        const left = room() - line.w;
+        if (line.items.length && !(base.pre && left > room() * 0.25)) flush();
+        const pieces = splitWord(box, contWidth, { pre: Boolean(base.pre), firstWidth: room() - line.w });
         pieces.forEach((piece, index) => {
           if (index > 0) flush();
           line.items.push({ box: piece, x: line.w });
@@ -621,6 +818,7 @@ export function layoutMarkdown({ blocks, fontSet, options, geometry, assets = {}
         });
         continue;
       }
+      if (line.w + box.w > room() + 0.01 && line.items.length) flush();
       line.items.push({ box, x: line.w });
       line.w += box.w;
     }
@@ -648,6 +846,8 @@ export function layoutMarkdown({ blocks, fontSet, options, geometry, assets = {}
   // Drawing ops for one line, its top at 0, its left at x0.
   function lineOps(l, x0, width, align, base) {
     const ops = [];
+    x0 += l.indent || 0;
+    width -= l.indent || 0;
     const shift = align === "center" ? (width - l.w) / 2 : align === "right" ? width - l.w : 0;
     const baseline = l.above;
     let textOp = null;
@@ -658,12 +858,12 @@ export function layoutMarkdown({ blocks, fontSet, options, geometry, assets = {}
       const style = box.style || {};
       if (box.kind === "atom") {
         textOp = null;
-        ops.push({ t: "image", key: box.image, x: left, y: baseline - (box.h - box.depth), w: box.w, h: box.h });
+        ops.push({ t: "image", key: box.image, x: left + (box.padL || 0), y: baseline - (box.h - box.depth), w: box.w - (box.padL || 0) - (box.padR || 0), h: box.h });
       } else if (box.kind === "word") {
         let yOffset = 0;
         if (style.sup) yOffset = -base.size * 0.33;
         if (style.sub) yOffset = base.size * 0.18;
-        let runX = left;
+        let runX = left + (box.padL || 0);
         for (const run of box.runs) {
           if (textOp && textOp.face === run.face && textOp.size === box.size && textOp.colour === box.colour
             && textOp.yOffset === yOffset && Math.abs(textOp.x + textOp.w - runX) < 0.01 && !box.colourRuns) {
@@ -689,7 +889,7 @@ export function layoutMarkdown({ blocks, fontSet, options, geometry, assets = {}
       // Backgrounds and lines along the box.
       const w = box.w;
       if (box.kind !== "space" || (style.link !== undefined || style.u || style.del || style.mark || style.cloze || style.code)) {
-        if (style.code || style.kbd) decorate.push({ t: "rect", x: left - 1, y: baseline - box.size * 0.82, w: w + 2, h: box.size * 1.08, fill: MD_PDF_COLOURS.codeSpanBg, group: "code" });
+        if ((style.code || style.kbd) && !base.pre) decorate.push({ t: "rect", x: left, y: baseline - base.size * 0.84, w, h: base.size * 1.12, fill: MD_PDF_COLOURS.codeSpanBg, stroke: MD_PDF_COLOURS.codeSpanBorder, lw: 0.5, radius: 2, group: "code" });
         if (style.mark) decorate.push({ t: "rect", x: left, y: baseline - base.size * 0.85, w, h: base.size * 1.1, fill: MD_PDF_COLOURS.mark, group: "mark" });
         if (style.cloze) decorate.push({ t: "rect", x: left, y: baseline - base.size * 0.85, w, h: base.size * 1.1, fill: MD_PDF_COLOURS.cloze, group: "cloze" });
         if (style.u || (style.link !== undefined && style.link !== "")) decorate.push({ t: "line", x1: left, x2: left + w, y: baseline + base.size * 0.12, colour: style.link ? MD_PDF_COLOURS.link : box.colour || base.colour, lw: 0.5, group: style.link ? "link-u" : "u" });
@@ -732,7 +932,7 @@ export function layoutMarkdown({ blocks, fontSet, options, geometry, assets = {}
       if (cut && rowInBlock === 0) rowCut = cut;
       if (previousWasHeading) rowCut = { ...rowCut, clean: false, score: Math.min(rowCut.score, 0) };
     }
-    const row = { y, h, ops, cut: rowCut, key, decos };
+    const row = { y, h, ops, cut: rowCut, key, decos, at: srcAt, atEnd: srcEnd };
     if (extra) Object.assign(row, extra);
     rows.push(row);
     y += h;
@@ -779,28 +979,32 @@ export function layoutMarkdown({ blocks, fontSet, options, geometry, assets = {}
   }
 
   function layoutBlock(block, ctx, depth, isFirstInContainer) {
+    if (Number.isFinite(block.at)) setSrc(block.at, blockEnd(block));
     const nestedCut = ctx.top ? null : { score: ctx.itemScore || 0, clean: Boolean(ctx.itemClean && isFirstInContainer) };
     switch (block.type) {
       case "heading": {
         const level = Math.min(6, Math.max(1, block.level || 1));
         const hs = size * HEADING_SIZE[level - 1];
         startBlock(block, ctx, { score: HEADING_SCORE[level - 1], clean: true, heading: level });
-        addGap(hs * (level <= 2 ? 0.75 : 0.6));
+        addGap(hs * (level <= 2 ? 1 : 0.8));
         const text = block.inline.filter((p) => p.t === "text").map((p) => p.text).join("").trim();
         let slug = slugify(text);
         const count = usedSlugs.get(slug) || 0;
         usedSlugs.set(slug, count + 1);
         if (count) slug = `${slug}-${count}`;
-        const colour = level === 1 || level === 3 ? MD_PDF_COLOURS.accent : MD_PDF_COLOURS.heading;
+        const colour = MD_PDF_COLOURS[HEADING_COLOUR[level - 1]];
+        const rule = HEADING_RULE[level - 1];
         const made = inlineRows(block.inline, ctx, baseStyle({ size: hs, lh: 1.22, colour, bold: true }));
         if (made.length) {
           const first = made[0];
-          const rule = HEADING_RULE[level - 1];
-          if (rule) {
-            const last = made[made.length - 1];
-            const w = Math.min(ctx.width * rule[0], level === 2 ? hs * 20 : level === 3 ? hs * 14 : level === 4 ? hs * 10 : ctx.width);
-            last.ops.push({ t: "line", x1: ctx.x, x2: ctx.x + w, y: last.h + rule[1] / 2 + 1, lw: rule[1], colour: MD_PDF_COLOURS.accent });
-          }
+          const last = made[made.length - 1];
+          const w = Math.min(ctx.width * rule.share, hs * rule.ems);
+          // The rule in the heading's last row, which grows to hold it.
+          const ruleY = last.h + 1.5 + rule.lw / 2;
+          last.ops.push({ t: "line", x1: ctx.x, x2: ctx.x + w, y: ruleY, lw: rule.lw, colour: MD_PDF_COLOURS[rule.colour], ...(rule.dash ? { dash: rule.dash } : {}) });
+          const grow = ruleY + rule.lw / 2 - last.h;
+          last.h += grow;
+          y += grow;
           first.heading = { level, text, slug };
           headings.push({ level, text, slug, row: rows.indexOf(first) });
           anchors.set(slug, rows.indexOf(first));
@@ -809,7 +1013,7 @@ export function layoutMarkdown({ blocks, fontSet, options, geometry, assets = {}
           made.forEach((row, i) => { if (i > 0) row.cut = { score: 0, clean: false }; });
           previousWasHeading = true;
         }
-        addGap(hs * 0.28 + 3);
+        addGap(hs * 0.4 + 2);
         return;
       }
       case "paragraph": {
@@ -827,22 +1031,41 @@ export function layoutMarkdown({ blocks, fontSet, options, geometry, assets = {}
         startBlock(block, ctx, nestedCut);
         addGap(size * 0.35);
         const codeSize = size * CODE_SCALE;
-        const pad = 4;
         const id = `code${decoSeq += 1}`;
-        const deco = { id, kind: "bg", x: ctx.x, w: ctx.width, colour: MD_PDF_COLOURS.codeBg };
+        const deco = { id, kind: "bg", x: ctx.x, w: ctx.width, colour: MD_PDF_COLOURS.codeBg, stroke: MD_PDF_COLOURS.codeBorder, lw: 0.6, radius: 3 };
         const tokens = o.codeColours && assets.highlight ? assets.highlight(block.text, block.lang) : null;
         const lines = splitCodeLines(block.text, tokens);
-        const inner = { x: ctx.x + pad + 2, width: ctx.width - 2 * pad - 4, decos: [...(ctx.decos || []), deco] };
+        const inner = { x: ctx.x + CODE_PAD_X, width: ctx.width - 2 * CODE_PAD_X, decos: [...(ctx.decos || []), deco] };
+        const base = baseStyle({ size: codeSize, lh: 1.32, forceFamily: "mono", pre: true, style: {} });
+        const monoFace = fontSet.faceFor(32, "mono", false, false);
+        const spaceW = monoFace ? fontSet.measure(" ", monoFace, codeSize) : codeSize * 0.6;
         lines.forEach((pieces, index) => {
-          const base = baseStyle({ size: codeSize, lh: 1.28, forceFamily: "mono", pre: true, style: {} });
+          if (Array.isArray(block.lineAt) && Number.isFinite(block.lineAt[index])) {
+            const next = block.lineAt[index + 1];
+            setSrc(block.lineAt[index], Number.isFinite(next) ? next - 1 : blockEnd(block));
+          }
           const boxes = [];
           for (const piece of pieces) pushText(boxes, piece.text, {}, base, piece.colour || textColour);
-          const wrapped = breakLines(boxes, inner.width, base);
-          if (!wrapped.length) wrapped.push({ items: [], w: 0, above: codeSize * 1.28 * 0.78, below: codeSize * 1.28 * 0.22 });
+          // A line too long for the block wraps under its own indent, two
+          // characters further in, as an editor's soft wrap does.
+          const lead = (pieces.map((p) => p.text).join("").match(/^ */) || [""])[0].length;
+          const hang = Math.min(inner.width * 0.5, (lead + 2) * spaceW);
+          const wrapped = breakLines(boxes, inner.width, base, { hang });
+          if (!wrapped.length) wrapped.push({ items: [], w: 0, indent: 0, above: codeSize * 1.32 * 0.78, below: codeSize * 1.32 * 0.22 });
           wrapped.forEach((l, k) => {
-            const top = index === 0 && k === 0 ? pad : 0;
-            const bottom = index === lines.length - 1 && k === wrapped.length - 1 ? pad : 0;
+            const top = index === 0 && k === 0 ? CODE_PAD_Y : 0;
+            const bottom = index === lines.length - 1 && k === wrapped.length - 1 ? CODE_PAD_Y : 0;
             const ops = lineOps(l, inner.x, inner.width, "left", base).map((op) => shiftOp(op, top));
+            if (k > 0) {
+              // A small hook where a wrapped line goes on, in the gutter
+              // left of it: this is the line above, not a new one.
+              const hx = inner.x + l.indent - codeSize * 0.95;
+              const hy = top + l.above - codeSize * 0.32;
+              const hw = codeSize * 0.55;
+              const hook = { t: "line", colour: MD_PDF_COLOURS.codeWrap, lw: 0.6 };
+              ops.push({ ...hook, t: "vline", x: hx, y1: hy - codeSize * 0.42, y2: hy });
+              ops.push({ ...hook, x1: hx, x2: hx + hw, y: hy });
+            }
             pushRow(l.above + l.below + top + bottom, ops, { decos: inner.decos, cut: { score: 0, clean: false } });
           });
         });
@@ -868,6 +1091,7 @@ export function layoutMarkdown({ blocks, fontSet, options, geometry, assets = {}
           if (index > 0) pendingGap = block.loose ? size * 0.45 : size * 0.3;
           const inner = { ...ctx, top: false, x: ctx.x + markerW, width: ctx.width - markerW, itemScore: ctx.top ? 0.5 : 0, itemClean: Boolean(ctx.top && !ctx.quote) };
           const startRow = rows.length;
+          if (Number.isFinite(item.at)) setSrc(item.at, blockEnd(item));
           const itemBlocks = item.blocks.length ? item.blocks : [{ type: "paragraph", inline: [{ t: "text", text: " ", s: {} }] }];
           layoutBlocks(itemBlocks, inner, depth + 1);
           const first = rows[startRow];
@@ -1047,6 +1271,7 @@ export function layoutMarkdown({ blocks, fontSet, options, geometry, assets = {}
     const align = (c) => (block.align[c] === "center" ? "center" : block.align[c] === "right" ? "right" : "left");
     let headerRow = null;
     all.forEach((cells, r) => {
+      if (Array.isArray(block.rowAt) && Number.isFinite(block.rowAt[r])) setSrc(block.rowAt[r], block.rowEnd?.[r]);
       const base = r === 0 ? headBase : cellBase;
       const laid = [];
       for (let c = 0; c < cols; c += 1) laid.push(breakLines(boxesFor(cells[c] || [], base), Math.max(4, widths[c] - 2 * padX), base));

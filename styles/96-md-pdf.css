@@ -286,6 +286,21 @@
   position: relative;
   /* The page numbers' gutter: PREVIEW_GUTTER in md-pdf/dialog.js. */
   padding-left: 40px;
+  /* A double-tap finds the markdown (showMarkdownAt), not a zoom. */
+  touch-action: manipulation;
+}
+
+/* A copy of the markdown box's text, laid out off screen to measure where a
+ * line is (scrollMarkdownTo in md-pdf/dialog.js). */
+.md-pdf-text-mirror {
+  position: absolute;
+  top: 0;
+  left: -10000px;
+  visibility: hidden;
+  pointer-events: none;
+  box-sizing: content-box;
+  padding-bottom: 0;
+  border: 0;
 }
 
 /* The preview is the PDF as printed: white paper, whatever the theme. One box

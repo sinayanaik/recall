@@ -43,7 +43,9 @@ export function createMdPdfSession() {
     if (typeof window.marked?.lexer !== "function") throw new MdPdfError("marked", "The markdown reader did not load");
     const o = normalizeMdPdfOptions(options);
     const geometry = pageGeometry(o, match);
-    const blocks = blocksFromTokens(window.marked.lexer(preprocessSpecialBlocks(markdown || "")));
+    // The markdown as the lexer reads it: every row's `at` is an offset in it.
+    const prepared = preprocessSpecialBlocks(markdown || "");
+    const blocks = blocksFromTokens(window.marked.lexer(prepared));
     const needs = collectNeeds(blocks);
     const body = o.font === "serif" ? "serif" : "sans";
     const faces = new Set(MD_PDF_OFFLINE_FACES.filter((face) => face.startsWith(`${body}|`) || face.startsWith("mono|")));
@@ -63,7 +65,7 @@ export function createMdPdfSession() {
     const { assets, images } = await prepareAssets({ needs, options: o, geometry, fontSet, cache, onProgress, isCurrent });
     if (!isCurrent()) throw new MdPdfError("superseded", "A newer edit is being laid out");
     const flow = layoutMarkdown({ blocks, fontSet, options: o, geometry, assets });
-    return { flow, fontSet, fontBytes: loaded.bytes, images, options: o, missingFaces: loaded.missing };
+    return { flow, fontSet, fontBytes: loaded.bytes, images, options: o, missingFaces: loaded.missing, prepared };
   }
 
   function plan(laid, cuts = null) {
