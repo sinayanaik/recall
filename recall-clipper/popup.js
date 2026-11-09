@@ -26,6 +26,8 @@ const form = document.getElementById("form");
 const presetSelect = document.getElementById("preset");
 const statusEl = document.getElementById("status");
 const summaryEl = document.getElementById("summary");
+// Which build is loaded: an unpacked copy is only replaced by hand.
+try { document.getElementById("version").textContent = `v${chrome.runtime.getManifest().version}`; } catch { /* a nicety */ }
 const goBtn = document.getElementById("go");
 const finishBtn = document.getElementById("finish");
 const againBtn = document.getElementById("again");
