@@ -968,7 +968,17 @@ try {
     const last = up[up.length - 1];
     console.log(`     uneven page: ${up.length} pages, heights ${heights.join(", ")} pt`);
     check("uneven: Chrome split the block too tall for any page (more pages than planned)", up.length >= 4, `${up.length} pages`);
-    check("uneven: the last page, one short paragraph, is short — not the tallest page's height", /closingparagraph/.test(last.flat) && last.height < 400, `${Math.round(last.height)} pt`);
+    // The last page holds the end of the tall block and the closing lines: it
+    // must end just under them, not 200 in down.
+    const gap = await reader.evaluate(async (b64) => {
+      const data = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+      const doc = await pdfjsLib.getDocument({ data, isEvalSupported: false }).promise;
+      const page = await doc.getPage(doc.numPages);
+      const vp = page.getViewport({ scale: 1 });
+      const ys = (await page.getTextContent()).items.filter((t) => t.str.trim()).map((t) => vp.convertToViewportPoint(t.transform[4], t.transform[5])[1]);
+      return Math.round(vp.height - Math.max(...ys));
+    }, readFileSync(uneven).toString("base64"));
+    check("uneven: the last page ends just under its last line — no band of white", /closingparagraph/.test(last.flat) && last.height < 200 * 72 - 1 && gap < 100, `${Math.round(last.height)} pt tall, ${gap} pt under the last line`);
     check("uneven: the first page, a heading and a line, is short too", /openingparagraph/.test(up[0].flat) && !/Thetallpart/.test(up[0].flat) && up[0].height < 400, `${Math.round(up[0].height)} pt`);
     check("uneven: no page is taller than the tallest paper", up.every((p) => p.height <= 200 * 72 + 1), heights.join(", "));
   }
