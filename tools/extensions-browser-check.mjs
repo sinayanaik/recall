@@ -879,7 +879,9 @@ try {
       canvas.width = Math.ceil(vp.width);
       canvas.height = Math.ceil(vp.height);
       const ctx = canvas.getContext("2d", { willReadFrequently: true });
-      await best.page.render({ canvasContext: ctx, viewport: vp }).promise;
+      // "print": a display render waits on animation frames, which a tab in
+      // the background never gets.
+      await best.page.render({ canvasContext: ctx, viewport: vp, intent: "print" }).promise;
       const [x1, y1, x2, y2] = vp.convertToViewportRectangle(best.rect);
       const x = Math.round(Math.min(x1, x2) + Math.abs(x2 - x1) * 0.2);
       const y = Math.round((y1 + y2) / 2);
