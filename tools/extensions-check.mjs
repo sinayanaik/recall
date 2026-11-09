@@ -9,6 +9,7 @@
 //  - lib/pdf-outline.js adds bookmarks that point at named destinations;
 //  - lib/font-check.js finds the variable fonts (TTF, WOFF, WOFF2) and the
 //    @font-face rules;
+//  - lib/animated.js is word for word the app's moving-picture test;
 //  - lib/options.js turns options into the right page geometry, smart page
 //    lengths and file names.
 //
@@ -220,6 +221,31 @@ const name = fileNameFor("{title} - {site} {date}", { title: 'A/B: "C"?', site: 
 check("file names lose characters a file system refuses", name === "A B C - Site 2026-11-05", name);
 check("an empty template still names the file", fileNameFor("", { title: "", url: "https://x.org" }) === "web page");
 check("the folder keeps its levels and drops dot-dot", folderFor("Recall/../web\\clips") === "Recall/web/clips", folderFor("Recall/../web\\clips"));
+
+// ---------------------------------------------------------------- videos and moving pictures
+
+check("videos and embeds: a picture of each, linked, is the default", DEFAULTS.embeds === "frame" && normalize({}).embeds === "frame");
+check("videos and embeds: a remembered \"placeholder\" (the old default) becomes a picture", normalize({ embeds: "placeholder" }).embeds === "frame");
+check("videos and embeds: link, keep and hide are kept", ["link", "keep", "hide"].every((v) => normalize({ embeds: v }).embeds === v));
+
+// lib/animated.js is a port of src/images/compress.js: the same functions,
+// word for word, so "a moving picture" means the same on both sides.
+{
+  const { topLevelDecls } = await import(pathToFileURL(path.join(ROOT, "tools/js-scan.mjs")).href);
+  const declsOf = (rel) => new Map(topLevelDecls(read(rel)).map((d) => [d.name, d.text.replace(/^export\s+/, "")]));
+  const app = declsOf("src/images/compress.js");
+  const port = declsOf("recall-clipper/lib/animated.js");
+  const names = ["gifFrameCount", "ascii", "sniffImageType", "webpIsAnimated", "pngIsAnimated", "avifBrands", "avifIsAnimated", "isAnimatedImage"];
+  const drift = names.filter((n) => !app.has(n) || !port.has(n) || port.get(n) !== app.get(n));
+  check("lib/animated.js matches src/images/compress.js", drift.length === 0, drift.join(", "));
+  const { isAnimatedImage } = await import(pathToFileURL(path.join(ROOT, "recall-clipper/lib/animated.js")).href);
+  // The smallest GIF there is, with one frame and then with two.
+  const head = [0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 1, 0, 1, 0, 0x80, 0, 0, 0, 0, 0, 255, 255, 255];
+  const frame = [0x2c, 0, 0, 0, 0, 1, 0, 1, 0, 0, 2, 2, 0x44, 0x01, 0];
+  const still = new Uint8Array([...head, ...frame, 0x3b]);
+  const moving = new Uint8Array([...head, ...frame, ...frame, 0x3b]);
+  check("a one-frame GIF is still, a two-frame GIF moves", !isAnimatedImage(still) && isAnimatedImage(moving));
+}
 
 const failed = results.filter((ok) => !ok).length;
 console.log(`\n${results.length} checks · ${failed} failed`);

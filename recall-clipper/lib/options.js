@@ -71,7 +71,9 @@ export const DEFAULTS = Object.freeze({
   expand: true,
   avoidBreaks: true,
   breakBefore: "none",          // none | h1 | h2
-  embeds: "placeholder",        // placeholder | keep | hide
+  // frame: each video, embed and large canvas prints as a picture of what it
+  // showed, linked to the real video; link: the older grey box with a link.
+  embeds: "frame",              // frame | link | keep | hide
   // Extras
   header: "none",               // none | title | url | title-url | custom
   headerCustom: "{title}",
@@ -130,7 +132,7 @@ const ENUMS = {
   fonts: ["auto", "page", "standard"],
   imageQuality: ["original", "high", "medium", "low", "custom", "none"],
   breakBefore: ["none", "h1", "h2"],
-  embeds: ["placeholder", "keep", "hide"],
+  embeds: ["frame", "link", "keep", "hide"],
   header: ["none", "title", "url", "title-url", "custom"],
   footer: ["none", "page", "date-page", "url-page", "custom"]
 };
@@ -149,6 +151,10 @@ const clamp = (n, [lo, hi], fallback) => {
 /** Fills gaps with defaults and clamps everything into range. */
 export function normalize(raw = {}) {
   const o = { ...DEFAULTS, ...raw };
+  // Before "frame" existed, the default was "placeholder" (a link box), and the
+  // popup remembers its whole form, so every saved choice says so: it means
+  // the default, which is now a picture of the video and its link.
+  if (o.embeds === "placeholder") o.embeds = "frame";
   for (const [k, allowed] of Object.entries(ENUMS)) if (!allowed.includes(String(o[k]))) o[k] = DEFAULTS[k];
   for (const [k, range] of Object.entries(RANGES)) o[k] = clamp(o[k], range, DEFAULTS[k]);
   const m = { ...DEFAULTS.margins, ...(raw.margins || {}) };

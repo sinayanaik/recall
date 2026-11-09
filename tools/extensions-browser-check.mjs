@@ -13,6 +13,11 @@
 //   pdf.js, as the app reads it), and Recall imports it. A paged A4 job prints
 //   several A4 pages. Every job leaves the page as it was.
 //
+//   Videos and embeds — a playing video, an embed and a WebGL canvas print as
+//   pictures of what they showed, each linked to the real thing; a YouTube
+//   embed that cannot load is a link box to its watch page, never Chrome's
+//   error page; a moving GIF links to its original.
+//
 //   Never stuck — the editor's Save PDF stays in view and clickable on a page
 //   that tries to hide it; the popup's Save PDF now and Cancel work; Esc
 //   leaves no listener behind; a page frozen mid-job ends the job on its own
@@ -804,6 +809,87 @@ try {
   }
   assets.close();
   await client.send("Target.closeTarget", { targetId: heavyPage.targetId });
+
+  // ------------------------------------------------------------ videos, embeds and moving pictures
+  //
+  // A video, an embed, a WebGL canvas and a moving GIF: each must reach the
+  // PDF as a picture of what the page showed — not a grey box with a link —
+  // and a tap on it must lead to the real thing (a link annotation, which
+  // Recall's PDFs tab follows). The YouTube embed cannot load here, so it
+  // falls back to the link box, but its link is the video's own page.
+
+  const MEDIA = `http://127.0.0.1:${port}/recall-clipper/tools/fixtures/media.html`;
+  const GIF = `http://127.0.0.1:${port}/recall-clipper/tools/fixtures/moving.gif`;
+  const mediaPage = await openPage(client);
+  await mediaPage.call("Emulation.setDeviceMetricsOverride", { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
+  await mediaPage.goto(MEDIA);
+  await mediaPage.waitFor(() => {
+    const v = document.getElementById("vid");
+    const g = document.getElementById("moving");
+    return v && v.readyState >= 2 && g.complete && g.naturalWidth > 0;
+  }, { label: "media fixture", timeout: 20000 });
+  const mediaPristine = await mediaPage.evaluate(() => document.documentElement.outerHTML.replace(/<recall-clipper-toast[^>]*><\/recall-clipper-toast>/g, "").length);
+  const mediaTab = await tabIdOf(MEDIA);
+
+  // Every link a reader could tap, and every page's text.
+  async function readLinks(file) {
+    const bytes = readFileSync(file);
+    return reader.evaluate(async (b64) => {
+      const data = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+      const doc = await pdfjsLib.getDocument({ data, isEvalSupported: false }).promise;
+      const links = [];
+      let text = "";
+      for (let i = 1; i <= doc.numPages; i += 1) {
+        const page = await doc.getPage(i);
+        for (const a of await page.getAnnotations()) {
+          if (a.subtype === "Link" && (a.url || a.unsafeUrl)) {
+            links.push({ url: a.url || a.unsafeUrl, w: Math.round(a.rect[2] - a.rect[0]), h: Math.round(a.rect[3] - a.rect[1]) });
+          }
+        }
+        text += (await page.getTextContent()).items.map((t) => t.str).join(" ");
+      }
+      // pdf.js hands some runs back a few letters at a time ("S uns e t"):
+      // words are compared with the spaces taken out.
+      return { links, text: text.replace(/\s+/g, "") };
+    }, bytes.toString("base64"));
+  }
+
+  const media = await job({ layout: "smart", pageLength: "a4", adjustBreaks: false, clean: "off", banner: false, filename: "{title} - media" }, "media page", mediaTab);
+  if (media) {
+    const f = pdfFacts(media);
+    const { links, text } = await readLinks(media);
+    const linkTo = (url) => links.filter((l) => l.url === url);
+    console.log(`     media page: ${lastJob.frames} pictures of videos and embeds, ${lastJob.moving} moving picture(s), ${links.length} links`);
+    check("media: the video, the embed and the canvas each became a picture", lastJob.frames >= 3, `${lastJob.frames}`);
+    check("media: the video's picture is a JPEG in the PDF", f.images.some((i) => i.filter === "DCTDecode" && i.width >= 400), f.images.map((i) => `${i.width}x${i.height}:${i.filter}`).join(", "));
+    // The picture itself is the link (as big as the 480×270 video at print
+    // scale), and so is the caption under it.
+    check("media: tapping the video's picture opens the post it was in", linkTo("https://example.org/post/42").some((l) => l.w > 150 && l.h > 80), JSON.stringify(linkTo("https://example.org/post/42")));
+    check("media: no grey link box for a video that played", !/Video:/.test(text), text.slice(0, 300));
+    check("media: the caption names the video", /Sunsetoverthebay/.test(text));
+    // youtube.com is out of reach here: Chrome shows its error page in the frame.
+    check("media: an embed that could not load is the link box, not Chrome's error page", /Embeddedcontent:AYouTubevideo/.test(text) && lastJob.frames === 3, `${lastJob.frames} pictures`);
+    check("media: a YouTube embed links to the video's own page", linkTo("https://www.youtube.com/watch?v=abc123XYZ00&t=30s").length > 0, JSON.stringify(links.map((l) => l.url)));
+    check("media: a moving picture links to its moving original", linkTo(GIF).length > 0 && lastJob.moving >= 1, JSON.stringify(links.map((l) => l.url)));
+    check("media: the page's own words are all there", /Textafterthevideo/.test(text) && /Theend/.test(text));
+  }
+  const mediaAfter = await mediaPage.evaluate(() => ({
+    len: document.documentElement.outerHTML.replace(/<recall-clipper-toast[^>]*><\/recall-clipper-toast>/g, "").length,
+    video: Boolean(document.querySelector("a > video#vid")) && Boolean(document.getElementById("vid").srcObject),
+    canvas: Boolean(document.querySelector("canvas#gl")),
+    frames: document.querySelectorAll("[data-recall-pdf-media], [data-recall-pdf-frame], [data-recall-pdf-moving]").length,
+    blobs: [...document.images].filter((i) => i.src.startsWith("blob:")).length
+  }));
+  check("media: the page is put back (video, canvas, picture, no marks)", Math.abs(mediaAfter.len - mediaPristine) < 80 && mediaAfter.video && mediaAfter.canvas
+    && mediaAfter.frames === 0 && mediaAfter.blobs === 0, JSON.stringify({ ...mediaAfter, pristine: mediaPristine }));
+
+  // "Replace with a link" is still there for whoever wants it.
+  const mediaLinks = await job({ layout: "smart", pageLength: "a4", adjustBreaks: false, clean: "off", banner: false, embeds: "link", filename: "{title} - media links" }, "media page, links only", mediaTab);
+  if (mediaLinks) {
+    const { text } = await readLinks(mediaLinks);
+    check("media: Replace with a link prints the link box, no pictures of videos", /Video:/.test(text) && lastJob.frames === 0, `${lastJob.frames} pictures`);
+  }
+  await client.send("Target.closeTarget", { targetId: mediaPage.targetId });
 
 } catch (err) {
   check("ran to the end", false, err && err.stack || String(err));

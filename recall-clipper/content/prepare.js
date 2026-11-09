@@ -260,6 +260,7 @@
     document.querySelectorAll("source[data-srcset]").forEach((s) => {
       if (!s.getAttribute("srcset")) setAttr(s, "srcset", s.getAttribute("data-srcset"));
     });
+    loadLazyMedia(LAZY);
     const step = Math.max(200, Math.round(innerHeight * 0.85));
     const started = Date.now();
     for (let y = 0; y < document.documentElement.scrollHeight && Date.now() - started < 15000; y += step) {
@@ -270,6 +271,47 @@
     await sleep(waitMs);
     scrollTo(startScroll[0], startScroll[1]);
     await waitForImages(6000);
+  }
+
+  // What loadLazy's picture rules miss: frames and videos waiting to be
+  // scrolled to, posters and backgrounds kept in data- attributes, and a lazy
+  // picture whose real address is only in the <noscript> fallback beside it.
+  function loadLazyMedia(lazyAttrs) {
+    const realUrl = (v) => v && !/^\s*(javascript|data:text)/i.test(v);
+    document.querySelectorAll("iframe, video, audio, source").forEach((el) => {
+      if (isUi(el)) return;
+      if (el.tagName === "IFRAME" && el.getAttribute("loading") === "lazy") setAttr(el, "loading", "eager");
+      const lazy = el.getAttribute("data-src") || el.getAttribute("data-lazy-src");
+      const src = el.getAttribute("src") || "";
+      if (realUrl(lazy) && (!src || src === "about:blank")) setAttr(el, "src", lazy);
+    });
+    document.querySelectorAll("video[data-poster]").forEach((v) => {
+      if (!v.getAttribute("poster") && !isUi(v)) setAttr(v, "poster", v.getAttribute("data-poster"));
+    });
+    document.querySelectorAll("[data-bg], [data-background], [data-bg-src], [data-background-image]").forEach((el) => {
+      if (isUi(el)) return;
+      const raw = el.getAttribute("data-bg") || el.getAttribute("data-background") || el.getAttribute("data-bg-src") || el.getAttribute("data-background-image");
+      const s = style(el);
+      if (!raw || !s || (s.backgroundImage && s.backgroundImage !== "none")) return;
+      // Some sites keep a colour or a theme name there, not a picture.
+      if (!/^\s*url\(|^\s*(https?:)?\/\/|^\s*\/|\.(jpe?g|png|webp|avif|gif)(\?|#|$)/i.test(raw)) return;
+      const url = /^\s*url\(/i.test(raw) ? raw : `url("${raw.replace(/["\\\n]/g, "")}")`;
+      setStyle(el, "background-image", url);
+    });
+    const parser = new DOMParser();
+    document.querySelectorAll("noscript").forEach((ns) => {
+      const img = ns.previousElementSibling && ns.previousElementSibling.tagName === "IMG" ? ns.previousElementSibling
+        : ns.parentElement && ns.parentElement.querySelector(":scope > img");
+      if (!img || isUi(img)) return;
+      const src = img.getAttribute("src") || "";
+      const hasLazy = lazyAttrs.some((a) => img.getAttribute(a));
+      if (hasLazy || (src && !src.startsWith("data:") && !/placeholder|blank|spacer|lazy/i.test(src))) return;
+      const fallback = parser.parseFromString(ns.textContent || "", "text/html").querySelector("img[src]");
+      if (!fallback) return;
+      setAttr(img, "src", fallback.getAttribute("src"));
+      const set = fallback.getAttribute("srcset");
+      if (set && !img.getAttribute("srcset")) setAttr(img, "srcset", set);
+    });
   }
 
   function waitForImages(timeout) {
@@ -293,8 +335,8 @@
     }
   }
 
-  function placeholderFor(el, kind) {
-    const src = el.getAttribute("src") || (el.querySelector && el.querySelector("source") && el.querySelector("source").getAttribute("src")) || "";
+  function placeholderFor(el, kind, link = "") {
+    const src = link || el.getAttribute("src") || (el.querySelector && el.querySelector("source") && el.querySelector("source").getAttribute("src")) || "";
     let url = "";
     try { url = src ? new URL(src, location.href).href : ""; } catch { url = src; }
     const label = el.getAttribute("title") || el.getAttribute("aria-label") || (url ? new URL(url, location.href).hostname : kind);
@@ -314,16 +356,265 @@
     return box;
   }
 
+  /**
+   * Videos and embeds. "frame" only marks them here and returns the list:
+   * pdf-job.js then takes a picture of each as the page shows it and hands it
+   * to swapMedia, which puts the picture — linked to the real video — in its
+   * place. "link" is the grey box with a link; "hide" and "keep" say it.
+   */
   function handleEmbeds(mode) {
-    if (mode === "keep") return;
+    if (mode === "keep") return [];
+    const media = [];
     const els = [...document.querySelectorAll("iframe, video, embed, object")].filter((el) => !isUi(el));
     for (const el of els) {
       if (!el.isConnected) continue;
       const r = el.getBoundingClientRect();
       if (r.width < 40 || r.height < 30) { setStyle(el, "display", "none"); continue; }
       if (mode === "hide") setStyle(el, "display", "none");
+      else if (mode === "frame") media.push(markMedia(el, el.tagName === "VIDEO" ? "video" : "embed"));
       else replace(el, placeholderFor(el, el.tagName === "VIDEO" ? "Video" : "Embedded content"));
     }
+    if (mode === "frame") {
+      // A WebGL canvas (a map, a 3-D chart) usually prints blank: its drawing
+      // is not kept for the print. A picture of it is what the reader saw.
+      for (const c of document.querySelectorAll("canvas")) {
+        if (isUi(c) || !c.isConnected || c.closest("[data-recall-pdf-media]")) continue;
+        const r = c.getBoundingClientRect();
+        const s = style(c);
+        if (r.width < 160 || r.height < 100 || !s || s.visibility === "hidden" || Number(s.opacity) === 0) continue;
+        media.push(markMedia(c, "canvas"));
+      }
+    }
+    return media;
+  }
+
+  let mediaSeq = 0;
+
+  function markMedia(el, kind) {
+    const id = `m${mediaSeq += 1}`;
+    setAttr(el, "data-recall-pdf-media", id);
+    const link = kind === "canvas" ? "" : mediaLink(el);
+    const src = mediaSrc(el);
+    return {
+      id, kind, link, src: kind === "canvas" ? "" : src,
+      label: kind === "canvas" ? "" : mediaLabel(el, link),
+      poster: kind === "video" ? absoluteUrl(el.getAttribute("poster")) : "",
+      youtubeId: youtubeId(src)
+    };
+  }
+
+  function absoluteUrl(value) {
+    if (!value) return "";
+    try { return new URL(value, document.baseURI).href; } catch { return ""; }
+  }
+  const httpUrl = (url) => (/^https?:\/\//i.test(url || "") ? url : "");
+
+  function mediaSrc(el) {
+    const own = el.getAttribute("src") || el.getAttribute("data") || "";
+    const source = !own && el.querySelector ? el.querySelector("source[src]") : null;
+    return absoluteUrl(own || (source && source.getAttribute("src")) || "");
+  }
+
+  function youtubeId(url) {
+    const m = /^https?:\/\/(?:www\.|m\.)?(?:youtube(?:-nocookie)?\.com\/(?:embed|shorts|v)\/|youtu\.be\/)([\w-]{6,20})/i.exec(url || "");
+    return m ? m[1] : "";
+  }
+
+  /** Where the reader should go to watch it: the video's own page, else the file, else this page. */
+  function mediaLink(el) {
+    const src = mediaSrc(el);
+    const yt = youtubeId(src);
+    if (yt) {
+      let start = "";
+      try { start = new URL(src).searchParams.get("start") || ""; } catch { /* none */ }
+      return `https://www.youtube.com/watch?v=${yt}${/^\d+$/.test(start) ? `&t=${start}s` : ""}`;
+    }
+    const vimeo = /^https?:\/\/player\.vimeo\.com\/video\/(\d+)/i.exec(src);
+    if (vimeo) return `https://vimeo.com/${vimeo[1]}`;
+    if (el.tagName !== "VIDEO") return httpUrl(src) || httpUrl(location.href);
+    // A video in a post usually sits inside a link to that post.
+    const a = el.closest("a[href]");
+    const around = a ? absoluteUrl(a.getAttribute("href")) : "";
+    return httpUrl(around) || httpUrl(src) || httpUrl(location.href);
+  }
+
+  function mediaLabel(el, link) {
+    const fig = el.closest("figure");
+    const cap = fig && fig.querySelector("figcaption");
+    const text = el.getAttribute("title") || el.getAttribute("aria-label")
+      || (cap && (cap.innerText || cap.textContent)) || "";
+    let host = "";
+    try { host = new URL(link).hostname.replace(/^www\./, ""); } catch { /* none */ }
+    return { text: text.replace(/\s+/g, " ").trim().slice(0, 120), host };
+  }
+
+  const frameWait = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+  // A video that has not drawn a frame yet (preload="none", or not scrolled
+  // to) is asked for one; a video still at its first frame with no poster is
+  // moved a little in, since that frame is so often black. It is never played.
+  async function readyVideoFrame(v) {
+    const wait = (type, ms) => new Promise((r) => {
+      const t = setTimeout(r, ms);
+      v.addEventListener(type, () => { clearTimeout(t); r(); }, { once: true });
+    });
+    if (v.readyState < 2) {
+      if ((v.getAttribute("preload") || "") !== "auto") setAttr(v, "preload", "auto");
+      await wait("loadeddata", 1500);
+    }
+    if (v.readyState >= 2 && v.paused && v.currentTime === 0 && !v.getAttribute("poster")) {
+      const to = Math.min(1, (Number.isFinite(v.duration) ? v.duration : 0) / 10);
+      if (to > 0) {
+        try {
+          v.currentTime = to;
+          undo(() => { try { v.currentTime = 0; } catch { /* gone */ } });
+          await wait("seeked", 1500);
+        } catch { /* not seekable */ }
+      }
+    }
+  }
+
+  /** Scrolls a marked video, embed or canvas into view; its box, in document CSS px. */
+  async function focusMedia(id) {
+    const el = document.querySelector(`[data-recall-pdf-media="${id}"]`);
+    if (!el || !el.isConnected) return null;
+    el.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" });
+    if (el.tagName === "VIDEO") await readyVideoFrame(el);
+    await frameWait();
+    const r = el.getBoundingClientRect();
+    if (r.width < 1 || r.height < 1) return null;
+    return {
+      x: r.left + scrollX, y: r.top + scrollY, width: r.width, height: r.height,
+      viewportWidth: innerWidth, viewportHeight: innerHeight
+    };
+  }
+
+  function bytesUrl(b64, type) {
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
+    const url = URL.createObjectURL(new Blob([bytes], { type }));
+    blobUrls.push(url);
+    return url;
+  }
+
+  const CAPTION_CSS = "display:block;margin:4px 0 0;font:12px/1.4 system-ui,sans-serif;color:#555;"
+    + "overflow-wrap:anywhere;text-align:left;";
+
+  function captionFor(kind, label, link) {
+    const cap = document.createElement("span");
+    cap.style.cssText = CAPTION_CSS;
+    const what = kind === "video" ? "Video" : kind === "animated" ? "Moving picture" : "Embedded content";
+    const bits = [what, label && label.text, label && label.host].filter(Boolean);
+    cap.append(`▶ ${bits.join(" · ")}`);
+    if (link) {
+      cap.append(" — ");
+      const a = document.createElement("a");
+      a.href = link;
+      a.textContent = link.length > 120 ? `${link.slice(0, 117)}…` : link;
+      a.style.cssText = "color:#1a56c4;";
+      cap.append(a);
+    }
+    return cap;
+  }
+
+  // A play button drawn with borders, so the PDF gains no stray text.
+  function playBadge() {
+    const badge = document.createElement("span");
+    badge.style.cssText = "position:absolute;left:50%;top:50%;width:52px;height:52px;margin:-26px 0 0 -26px;"
+      + "border-radius:50%;background:rgba(0,0,0,.6);box-shadow:none;display:block;";
+    const tri = document.createElement("span");
+    tri.style.cssText = "position:absolute;left:20px;top:15px;width:0;height:0;border-style:solid;"
+      + "border-width:11px 0 11px 18px;border-color:transparent transparent transparent #fff;display:block;";
+    badge.append(tri);
+    return badge;
+  }
+
+  function frameFor(el, item, url) {
+    const r = el.getBoundingClientRect();
+    const w = Math.max(1, Math.round(r.width));
+    const h = Math.max(1, Math.round(r.height));
+    const img = document.createElement("img");
+    img.src = url;
+    img.alt = item.kind === "canvas" ? "" : (item.label && item.label.text) || "Video";
+    img.setAttribute("data-recall-pdf-frame", item.id);
+    if (item.kind === "canvas") {
+      // In the canvas's own place and size, nothing more.
+      const s = style(el);
+      img.style.cssText = `display:${s && s.display === "inline" ? "inline-block" : (s && s.display) || "block"};`
+        + `width:${w}px;height:${h}px;max-width:100%;object-fit:fill;margin:${s ? s.margin : "0"};`;
+      return img;
+    }
+    img.style.cssText = `display:block;width:100%;height:auto;aspect-ratio:${w} / ${h};object-fit:cover;margin:0;border:0;`;
+    const box = document.createElement("div");
+    box.setAttribute("data-recall-pdf-ui", "");
+    box.style.cssText = `display:block;width:${w}px;max-width:100%;margin:10px 0;padding:0;break-inside:avoid;`
+      + "page-break-inside:avoid;position:static;float:none;";
+    const frame = document.createElement(item.link ? "a" : "span");
+    if (item.link) frame.href = item.link;
+    frame.style.cssText = "display:block;position:relative;line-height:0;text-decoration:none;";
+    frame.append(img, playBadge());
+    box.append(frame, captionFor(item.kind, item.label, item.link));
+    return box;
+  }
+
+  /**
+   * results: [{ id, type, b64 }] with a picture of each marked element, or
+   * [{ id, failed: true }] where none could be had (the grey box with a link).
+   */
+  function swapMedia(results, items) {
+    const byId = new Map((items || []).map((i) => [i.id, i]));
+    let n = 0;
+    for (const res of results) {
+      const el = document.querySelector(`[data-recall-pdf-media="${res.id}"]`);
+      const item = byId.get(res.id);
+      if (!el || !item) continue;
+      if (res.failed || !res.b64) {
+        if (item.kind !== "canvas") replace(el, placeholderFor(el, item.kind === "video" ? "Video" : "Embedded content", item.link));
+        continue;
+      }
+      replace(el, frameFor(el, item, bytesUrl(res.b64, res.type)));
+      n += 1;
+    }
+    return waitForImages(4000).then(() => n);
+  }
+
+  /**
+   * Moving pictures print as one still: each is made a link to its moving
+   * original, so a tap on it (in Recall's PDFs tab too) opens the real thing.
+   * list: [{ ids, src }].
+   */
+  function linkAnimated(list) {
+    let n = 0;
+    for (const { ids, src } of list) {
+      const link = httpUrl(src);
+      if (!link) continue;
+      for (const id of ids) {
+        const img = document.querySelector(`img[data-recall-pdf-img="${id}"]`);
+        if (!img || img.closest("a[href]")) continue;
+        const parent = img.parentElement && img.parentElement.tagName === "PICTURE" ? img.parentElement : img;
+        const host = parent.parentElement;
+        const hs = host && style(host);
+        if (!host || !hs || /flex|grid/.test(hs.display)) continue;
+        const a = document.createElement("a");
+        a.href = link;
+        a.setAttribute("data-recall-pdf-moving", "");
+        a.style.cssText = "color:inherit;text-decoration:none;";
+        const s = style(parent);
+        const block = s && /^(block|flow-root|table)$/.test(s.display);
+        if (block) a.style.display = "block";
+        replace(parent, a);
+        a.append(parent);
+        if (block) {
+          const cap = captionFor("animated", null, "");
+          cap.textContent = "▶ Moving picture — tap to open the original";
+          cap.setAttribute("data-recall-pdf-ui", "");
+          a.append(cap);
+        }
+        n += 1;
+      }
+    }
+    return n;
   }
 
   function handleImagesVisibility(o) {
@@ -1330,7 +1621,7 @@
     // modal dialog aside (clearTheWay), and restore() must bring it back.
     startScroll = [scrollX, scrollY];
     const facts = core ? core.pageFacts() : { title: document.title, url: location.href, site: location.hostname };
-    const report = { facts, cleaned: 0, images: [], resized: 0, fonts: 0, headings: [] };
+    const report = { facts, cleaned: 0, images: [], media: [], resized: 0, frames: 0, fonts: 0, headings: [] };
 
     if (o.capture === "element") {
       if (!picked || !picked.isConnected) throw new Error("No block was picked.");
@@ -1343,7 +1634,12 @@
     if (o.expand) expandCollapsed();
     if (o.lazyLoad && o.capture !== "visible" && o.imageQuality !== "none") await loadLazy(o.lazyWaitMs);
     if (o.hideFixed && o.capture !== "visible") unfix();
-    handleEmbeds(o.embeds);
+    // A picture of each video needs pictures, and a screenshot of the visible
+    // area already shows them as they are.
+    let embeds = o.embeds;
+    if (embeds === "frame" && o.capture === "visible") embeds = "keep";
+    else if (embeds === "frame" && o.imageQuality === "none") embeds = "link";
+    report.media = handleEmbeds(embeds);
     handleImagesVisibility(o);
     if (o.forceLight) forceLight();
     extraCss(o);
@@ -1388,7 +1684,8 @@
   }
 
   globalThis.__recallPdf = {
-    prepare, measure, restore, pickElement, swapImages, replaceFonts, planBreaks, editBreaks, applyBreaks,
+    prepare, measure, restore, pickElement, swapImages, focusMedia, swapMedia, linkAnimated,
+    replaceFonts, planBreaks, editBreaks, applyBreaks,
     uiState, finishUi, cancelUi, toast,
     facts: () => core && core.pageFacts()
   };

@@ -48,6 +48,7 @@ import { trimPageHeights, pageHeightsFromMarkers } from "./lib/pdf-pages.js";
 import { addOutline } from "./lib/pdf-outline.js";
 import { isVariableFont, fontFaces } from "./lib/font-check.js";
 import { imagesToPdf } from "./lib/image-pdf.js";
+import { isAnimatedImage } from "./lib/animated.js";
 import {
   normalize, geometry, imageSettings, fileNameFor, folderFor, pageContentPx,
   MAX_PAGE_IN, CSS_PX_PER_IN, SMART_SLACK_IN
@@ -69,6 +70,7 @@ export const LIMITS = {
   watchdogEvery: 5000,
   cleanupStep: 5000,        // each step of putting the page back
   pageStale: 15000,         // the on-page UI closes itself after this long without a poll
+  mediaFrames: 90000,       // taking pictures of all the videos and embeds on a page
   downloadWait: 120000,     // for Chrome to say a download is complete
   downloadWaitSaveAs: 15 * 60000,
   failDownloads: 0          // checks only: make the next N downloads fail
@@ -392,6 +394,7 @@ async function shrinkImages(target, frameId, items, settings, geo, grayscale) {
   }
   const queue = [...groups.entries()];
   const results = [];
+  const animated = [];
   let shrunk = 0;
   const worker = async () => {
     while (queue.length) {
@@ -401,6 +404,12 @@ async function shrinkImages(target, frameId, items, settings, geo, grayscale) {
         if (!bytes || bytes.length < 64) continue;
         const kind = sniffImage(bytes);
         if (kind === "svg" || kind === "other") continue;
+        // A moving picture prints as one still, whatever happens below; it is
+        // made a link to its original (linkAnimated in content/prepare.js).
+        if (kind !== "jpeg" && isAnimatedImage(bytes)) {
+          const ids = uses.filter((u) => u.kind === "img").map((u) => u.id);
+          if (ids.length) animated.push({ ids, src });
+        }
         // Original size: only what Chrome would store as raw pixels changes.
         if (!settings.dpi && kind !== "webp" && kind !== "avif" && !grayscale) continue;
         const bitmap = await createImageBitmap(new Blob([bytes]));
@@ -443,7 +452,157 @@ async function shrinkImages(target, frameId, items, settings, geo, grayscale) {
     }
   };
   await Promise.all(Array.from({ length: Math.min(4, queue.length) }, worker));
-  return { results, shrunk };
+  return { results, shrunk, animated };
+}
+
+// ---------------------------------------------------------------- videos and embeds
+
+// Whether a picture is one flat colour: a frame that never painted (a lazy
+// embed), a protected video drawn black, a video not loaded yet.
+async function isBlank(blob) {
+  let bitmap;
+  try {
+    bitmap = await createImageBitmap(blob);
+    const w = Math.min(64, bitmap.width);
+    const h = Math.max(1, Math.round((w * bitmap.height) / bitmap.width));
+    const ctx = new OffscreenCanvas(w, h).getContext("2d", { willReadFrequently: true });
+    ctx.drawImage(bitmap, 0, 0, w, h);
+    const data = ctx.getImageData(0, 0, w, h).data;
+    const lo = [255, 255, 255];
+    const hi = [0, 0, 0];
+    for (let i = 0; i < data.length; i += 4) {
+      for (let c = 0; c < 3; c += 1) {
+        if (data[i + c] < lo[c]) lo[c] = data[i + c];
+        if (data[i + c] > hi[c]) hi[c] = data[i + c];
+      }
+    }
+    return hi.every((v, c) => v - lo[c] <= 12);
+  } catch {
+    return true;
+  } finally {
+    if (bitmap) bitmap.close();
+  }
+}
+
+// A poster or thumbnail, as a JPEG `width` pixels wide (never wider than it is).
+async function pictureAsJpeg(bytes, width, quality, grayscale) {
+  const bitmap = await createImageBitmap(new Blob([bytes]));
+  try {
+    const w = Math.max(16, Math.min(bitmap.width, Math.round(width)));
+    const h = Math.max(1, Math.round((w * bitmap.height) / bitmap.width));
+    const canvas = new OffscreenCanvas(w, h);
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, w, h);
+    ctx.imageSmoothingQuality = "high";
+    if (grayscale) ctx.filter = "grayscale(1)";
+    ctx.drawImage(bitmap, 0, 0, w, h);
+    return await canvas.convertToBlob({ type: "image/jpeg", quality: quality / 100 });
+  } finally {
+    bitmap.close();
+  }
+}
+
+/**
+ * The addresses of the page's frames that could not load. Such a frame shows
+ * Chrome's own error page, which is not blank but is no picture of the video
+ * either. A frame from another site runs in a target of its own, out of the
+ * tab's frame tree, so those are attached to for a moment and asked too
+ * (a child session: Chrome 125 and later; before that, only the tab's own
+ * frames are known).
+ */
+async function unreachableFrames(target) {
+  const urls = new Set();
+  const walk = (node) => {
+    if (node.frame && node.frame.unreachableUrl) urls.add(node.frame.unreachableUrl);
+    (node.childFrames || []).forEach(walk);
+  };
+  try {
+    walk((await send(target, "Page.getFrameTree")).frameTree);
+  } catch (err) { if (isAbort(target, err)) throw err; }
+  const sessions = [];
+  const onEvent = (source, method, params) => {
+    if (source.tabId === target.tabId && !source.sessionId && method === "Target.attachedToTarget"
+      && params && params.targetInfo && params.targetInfo.type === "iframe") sessions.push(params.sessionId);
+  };
+  chrome.debugger.onEvent.addListener(onEvent);
+  try {
+    await send(target, "Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: false, flatten: true });
+    await new Promise((r) => setTimeout(r, 150));
+    for (const sessionId of sessions) {
+      try { walk((await send({ ...target, sessionId }, "Page.getFrameTree")).frameTree); }
+      catch (err) { if (isAbort(target, err)) throw err; }
+    }
+  } catch (err) {
+    if (isAbort(target, err)) throw err;
+  } finally {
+    chrome.debugger.onEvent.removeListener(onEvent);
+    await rawSend(target, "Target.setAutoAttach", { autoAttach: false, waitForDebuggerOnStart: false, flatten: true }).catch(() => {});
+    for (const sessionId of sessions) await rawSend(target, "Target.detachFromTarget", { sessionId }).catch(() => {});
+  }
+  return urls;
+}
+
+/**
+ * A picture of every video, embed and large canvas content/prepare.js marked
+ * (handleEmbeds, "frame"): a screenshot of the element as the page shows it —
+ * which reaches into frames from other sites and playing videos alike — or,
+ * when that comes out one flat colour, the video's poster or YouTube's own
+ * thumbnail. Each goes back to the page (swapMedia) in the element's place,
+ * linked to the real video; one with no picture becomes the link box.
+ */
+async function captureFrames(target, frameId, evaluate, items, settings, geo, grayscale) {
+  const results = [];
+  const pxPerCss = settings.dpi ? (settings.dpi / CSS_PX_PER_IN) * geo.scale : 2;
+  const unreachable = items.some((i) => i.kind === "embed") ? await unreachableFrames(target) : new Set();
+  // A page of fifty videos that never load would otherwise wait on each;
+  // past this, the rest keep their link box.
+  const deadline = Date.now() + LIMITS.mediaFrames;
+  for (const item of items) {
+    let result = { id: item.id, failed: true };
+    if (Date.now() > deadline) { results.push(result); continue; }
+    try {
+      const box = await evaluate(`__recallPdf.focusMedia(${JSON.stringify(item.id)})`, LIMITS.call);
+      if (box && box.width >= 1 && box.height >= 1) {
+        const failedToLoad = item.kind === "embed" && item.src && unreachable.has(item.src);
+        // Never a huge bitmap: at most about 16 million pixels a picture.
+        const area = box.width * box.height;
+        const scale = Math.max(0.5, Math.min(2, pxPerCss, Math.sqrt(16e6 / Math.max(1, area))));
+        const shot = failedToLoad ? null : await send(target, "Page.captureScreenshot", {
+          format: "jpeg",
+          quality: settings.jpeg,
+          clip: { x: box.x, y: box.y, width: box.width, height: box.height, scale },
+          captureBeyondViewport: box.height > box.viewportHeight || box.width > box.viewportWidth,
+          fromSurface: true
+        });
+        let bytes = shot && shot.data ? b64ToBytes(shot.data) : null;
+        let type = "image/jpeg";
+        if (bytes && grayscale) {
+          const blob = await pictureAsJpeg(bytes, box.width * scale, settings.jpeg, true);
+          bytes = new Uint8Array(await blob.arrayBuffer());
+        }
+        if (!bytes || await isBlank(new Blob([bytes]))) {
+          bytes = null;
+          const fallbacks = [item.poster, item.youtubeId ? `https://i.ytimg.com/vi/${item.youtubeId}/hqdefault.jpg` : ""].filter(Boolean);
+          for (const url of fallbacks) {
+            const raw = await resourceBytes(target, frameId, url);
+            if (!raw || raw.length < 64 || ["svg", "other"].includes(sniffImage(raw))) continue;
+            const blob = await pictureAsJpeg(raw, box.width * scale, settings.jpeg, grayscale);
+            if (await isBlank(blob)) continue;
+            bytes = new Uint8Array(await blob.arrayBuffer());
+            type = blob.type;
+            break;
+          }
+        }
+        if (bytes) result = { id: item.id, type, b64: bytesToB64(bytes) };
+      }
+    } catch (err) {
+      if (isAbort(target, err)) throw err;
+      /* this one becomes the link box */
+    }
+    results.push(result);
+  }
+  return results;
 }
 
 /**
@@ -653,18 +812,37 @@ async function makePdf(job, ctx, rawOptions) {
     if (families.length) report.fonts = await evaluate(`__recallPdf.replaceFonts(${JSON.stringify(families)})`);
   }
 
-  report.resized = 0;
-  if (report.images.length && settings && o.capture !== "visible") {
-    status(job, { step: `Sizing ${report.images.length} picture${report.images.length === 1 ? "" : "s"} for print…` });
-    const { results, shrunk } = await shrinkImages(target, frameId, report.images, settings, geo, o.grayscale);
-    report.resized = shrunk;
-    // In batches of about 4 MB, so no single message gets huge.
+  // In batches of about 4 MB, so no single message gets huge.
+  const inBatches = async (results, call) => {
     for (let i = 0; i < results.length;) {
       const batch = [];
       let size = 0;
-      while (i < results.length && (size < 4 * 1048576 || !batch.length)) { size += results[i].b64.length; batch.push(results[i]); i += 1; }
-      await evaluate(`__recallPdf.swapImages(${JSON.stringify(batch)})`);
+      while (i < results.length && (size < 4 * 1048576 || !batch.length)) { size += (results[i].b64 || "").length; batch.push(results[i]); i += 1; }
+      await call(batch);
     }
+  };
+
+  report.frames = 0;
+  if (report.media && report.media.length && settings && o.capture !== "visible") {
+    const n = report.media.length;
+    status(job, { step: `Taking a picture of ${n} video${n === 1 ? "" : "s"} and embed${n === 1 ? "" : "s"}…` });
+    const frames = await captureFrames(target, frameId, evaluate, report.media, settings, geo, o.grayscale);
+    const items = JSON.stringify(report.media);
+    await inBatches(frames, async (batch) => {
+      report.frames += Number(await evaluate(`__recallPdf.swapMedia(${JSON.stringify(batch)}, ${items})`)) || 0;
+    });
+    // The print and its measuring start from the top.
+    await evaluate("scrollTo(0, 0), true");
+  }
+
+  report.resized = 0;
+  report.moving = 0;
+  if (report.images.length && settings && o.capture !== "visible") {
+    status(job, { step: `Sizing ${report.images.length} picture${report.images.length === 1 ? "" : "s"} for print…` });
+    const { results, shrunk, animated } = await shrinkImages(target, frameId, report.images, settings, geo, o.grayscale);
+    report.resized = shrunk;
+    await inBatches(results, (batch) => evaluate(`__recallPdf.swapImages(${JSON.stringify(batch)})`));
+    if (animated.length) report.moving = Number(await evaluate(`__recallPdf.linkAnimated(${JSON.stringify(animated)})`)) || 0;
   }
 
   let bytes;
@@ -987,7 +1165,8 @@ async function saveMade(job, made) {
   job.saved = saved;
   const extra = {
     bytes: bytes.length, pages, cleaned: made.report.cleaned, resized: made.report.resized,
-    fonts: made.report.fonts || 0, bookmarks: made.report.headings.length, markedPages: made.markedPages
+    fonts: made.report.fonts || 0, bookmarks: made.report.headings.length, markedPages: made.markedPages,
+    frames: made.report.frames || 0, moving: made.report.moving || 0
   };
   hold();
   try {
@@ -1023,6 +1202,14 @@ export async function saveAgain(tabId) {
   }
 }
 
+// "; 2 videos and embeds as pictures, 1 moving picture linked" — or nothing.
+function mediaWords(extra) {
+  const bits = [];
+  if (extra.frames) bits.push(extra.frames === 1 ? "1 video or embed as a picture" : `${extra.frames} videos and embeds as pictures`);
+  if (extra.moving) bits.push(`${extra.moving} moving picture${extra.moving === 1 ? "" : "s"} linked`);
+  return bits.length ? `; ${bits.join(", ")}` : "";
+}
+
 function finishSave(job, saved, outcome, extra) {
   if (outcome.state === "complete" || outcome.state === "pending") {
     if (outcome.state === "complete" && saved.showAfter && outcome.id != null) {
@@ -1032,7 +1219,7 @@ function finishSave(job, saved, outcome, extra) {
     job.saved = null;
     const pages = saved.pages || extra.pages || 1;
     const step = outcome.state === "complete"
-      ? `Saved ${saved.name} (${(saved.size / 1048576).toFixed(1)} MB, ${pages} page${pages === 1 ? "" : "s"})`
+      ? `Saved ${saved.name} (${(saved.size / 1048576).toFixed(1)} MB, ${pages} page${pages === 1 ? "" : "s"}${mediaWords(extra)})`
       : `Sent ${saved.name} to your downloads`;
     status(job, { phase: "done", step, done: true, error: null, cancelled: false });
     notify(job, step, false);

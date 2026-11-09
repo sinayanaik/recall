@@ -1,0 +1,66 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Videos and moving pictures</title>
+<style>
+  body { font: 16px/1.5 Georgia, serif; max-width: 760px; margin: 24px auto; padding: 0 16px; }
+  video, iframe, canvas { display: block; margin: 16px 0; border: 0; }
+  #moving { display: block; width: 160px; height: 160px; image-rendering: pixelated; }
+</style>
+<body>
+<article>
+  <h1>Videos and moving pictures</h1>
+  <p id="intro">Every video, embed and moving picture below should reach the PDF as a picture of what it showed, linked to the real thing.</p>
+
+  <!-- A real playing video with no file behind it: a canvas's stream. A video
+       in a post sits inside a link to that post. -->
+  <a href="https://example.org/post/42"><video id="vid" width="480" height="270" muted playsinline title="Sunset over the bay"></video></a>
+  <p>Text after the video.</p>
+
+  <!-- An embed from this site, drawn by its own document. -->
+  <iframe id="frame" width="480" height="200" title="Local embed"
+    srcdoc="<body style='margin:0;background:linear-gradient(90deg,#0a7,#fc0)'><h2 style='font:24px sans-serif;margin:20px'>Inside the embed</h2></body>"></iframe>
+
+  <!-- YouTube: the network is out of reach here, so this one has no picture;
+       its link must still be the video's own page. -->
+  <iframe id="yt" width="480" height="270" src="https://www.youtube.com/embed/abc123XYZ00?start=30" title="A YouTube video"></iframe>
+
+  <!-- A canvas drawn with WebGL (2-D where WebGL is missing). -->
+  <canvas id="gl" width="400" height="200"></canvas>
+
+  <!-- A moving picture. -->
+  <img id="moving" src="moving.gif" alt="A blinking square">
+  <p id="outro">The end.</p>
+</article>
+
+<script>
+  // The video: a canvas painted every frame, streamed into the <video>.
+  const src = document.createElement("canvas");
+  src.width = 480; src.height = 270;
+  const sctx = src.getContext("2d");
+  let t = 0;
+  (function paint() {
+    const g = sctx.createLinearGradient(0, 0, 480, 270);
+    g.addColorStop(0, "#f60"); g.addColorStop(1, "#306");
+    sctx.fillStyle = g; sctx.fillRect(0, 0, 480, 270);
+    sctx.fillStyle = "#fff"; sctx.fillRect(40 + (t % 300), 100, 80, 80);
+    t += 4;
+    requestAnimationFrame(paint);
+  })();
+  const vid = document.getElementById("vid");
+  vid.srcObject = src.captureStream(30);
+  vid.play().catch(() => {});
+
+  // The canvas: WebGL without a kept drawing buffer, which prints blank.
+  const c = document.getElementById("gl");
+  const gl = c.getContext("webgl", { preserveDrawingBuffer: false });
+  if (gl) {
+    gl.enable(gl.SCISSOR_TEST);
+    gl.scissor(0, 0, 200, 200); gl.clearColor(0.1, 0.4, 0.9, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.scissor(200, 0, 200, 200); gl.clearColor(0.9, 0.8, 0.1, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+  } else {
+    const x = c.getContext("2d");
+    x.fillStyle = "#1a66e6"; x.fillRect(0, 0, 200, 200);
+    x.fillStyle = "#e6cc1a"; x.fillRect(200, 0, 200, 200);
+  }
+</script>
+</body>
