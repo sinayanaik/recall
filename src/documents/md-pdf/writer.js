@@ -96,6 +96,23 @@ export async function writeMarkdownPdf({ PDFLib, fontkit, flow, plan, fontBytes,
     return image;
   }
 
+  // A box, filled and/or outlined, square or with rounded corners. `top` is
+  // its top edge in PDF space (y up).
+  function drawBox(page, { x, top, w, h, fill = null, stroke = null, lw = 0.5, radius = 0 }) {
+    if (!(w > 0) || !(h > 0)) return;
+    const opts = {};
+    if (fill) opts.color = mdPdfColour(PDFLib, fill);
+    if (stroke) { opts.borderColor = mdPdfColour(PDFLib, stroke); opts.borderWidth = lw || 0.5; }
+    const r = Math.min(radius || 0, w / 2, h / 2);
+    if (!(r > 0)) {
+      page.drawRectangle({ x, y: top - h, width: w, height: h, ...opts });
+      return;
+    }
+    // drawSvgPath's y runs DOWN from (x, y), as in SVG.
+    const path = `M ${r} 0 H ${w - r} Q ${w} 0 ${w} ${r} V ${h - r} Q ${w} ${h} ${w - r} ${h} H ${r} Q 0 ${h} 0 ${h - r} V ${r} Q 0 0 ${r} 0 Z`;
+    page.drawSvgPath(path, { x, y: top, ...opts });
+  }
+
   const places = placeRows(flow, plan);
   const pages = plan.pages.map((page) => doc.addPage([page.width, page.height]));
   const textRuns = pages.map(() => []);
@@ -113,16 +130,15 @@ export async function writeMarkdownPdf({ PDFLib, fontkit, flow, plan, fontBytes,
           textRuns[p].push({ text: op.text, x, y, size: op.size, face: op.face });
           break;
         }
-        case "rect": {
-          const opts = { x: x0 + op.x, y: top - op.y - op.h, width: op.w, height: op.h };
-          if (op.fill) opts.color = mdPdfColour(PDFLib, op.fill);
-          if (op.stroke) { opts.borderColor = mdPdfColour(PDFLib, op.stroke); opts.borderWidth = op.lw || 0.5; }
-          page.drawRectangle(opts);
+        case "rect":
+          drawBox(page, { x: x0 + op.x, top: top - op.y, w: op.w, h: op.h, fill: op.fill, stroke: op.stroke, lw: op.lw, radius: op.radius });
+          break;
+        case "line": {
+          const line = { start: { x: x0 + op.x1, y: top - op.y }, end: { x: x0 + op.x2, y: top - op.y }, thickness: op.lw || 0.5, color: mdPdfColour(PDFLib, op.colour) };
+          if (Array.isArray(op.dash)) line.dashArray = op.dash;
+          page.drawLine(line);
           break;
         }
-        case "line":
-          page.drawLine({ start: { x: x0 + op.x1, y: top - op.y }, end: { x: x0 + op.x2, y: top - op.y }, thickness: op.lw || 0.5, color: mdPdfColour(PDFLib, op.colour) });
-          break;
         case "vline":
           page.drawLine({ start: { x: x0 + op.x, y: top - op.y1 }, end: { x: x0 + op.x, y: top - op.y2 }, thickness: op.lw || 0.5, color: mdPdfColour(PDFLib, op.colour) });
           break;
@@ -176,7 +192,7 @@ export async function writeMarkdownPdf({ PDFLib, fontkit, flow, plan, fontBytes,
         }
       }
       for (const { deco, top, bottom } of spans.values()) {
-        page.drawRectangle({ x: colX + deco.x, y: bottom, width: deco.w, height: top - bottom, color: mdPdfColour(PDFLib, deco.colour) });
+        drawBox(page, { x: colX + deco.x, top, w: deco.w, h: top - bottom, fill: deco.colour, stroke: deco.stroke, lw: deco.lw, radius: deco.radius });
       }
       if (repeat) await drawOps(page, p, repeat.ops, colX, sliceTop);
       for (let i = slice.from; i < slice.to; i += 1) {

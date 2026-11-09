@@ -316,15 +316,25 @@ try {
     // Halfway down the first page.
     const y = box.top + (first - box.top) / 2;
     overlay.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: box.left + 60, clientY: y }));
-    await settle(300);
+    // A single click waits a moment, in case a second makes it a double.
+    await settle(600);
     const added = modal.querySelectorAll(".md-pdf-cut").length;
     modal.querySelector('[data-md-action="undo"]').click();
     await settle(300);
     const undone = modal.querySelectorAll(".md-pdf-cut").length;
-    return { before, added, undone };
+    // A double-click finds the markdown under it, and adds no break.
+    text.setSelectionRange(0, 0);
+    text.scrollTop = 0;
+    for (let k = 1; k <= 2; k += 1) overlay.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: k, clientX: box.left + 60, clientY: y }));
+    await settle(600);
+    const picked = text.value.slice(text.selectionStart, text.selectionEnd);
+    const afterDouble = modal.querySelectorAll(".md-pdf-cut").length;
+    return { before, added, undone, picked: picked.slice(0, 40), pickedLength: picked.length, afterDouble, focused: document.activeElement === text, scrolled: text.scrollTop };
   }`, LONG);
   check("a long note is planned into several pages", breaks.before >= 2, JSON.stringify(breaks));
   check("clicking the page adds a page break; Undo takes it away", breaks.added === breaks.before + 1 && breaks.undone === breaks.before, JSON.stringify(breaks));
+  check("double-clicking the page selects its paragraph's markdown, and adds no break",
+    breaks.picked.startsWith("Words that fill a page.") && breaks.pickedLength > 500 && breaks.focused && breaks.afterDouble === breaks.before, JSON.stringify(breaks));
   await shot("breaks.png");
 
   // Make PDF: a new PDF in the file, with real text.

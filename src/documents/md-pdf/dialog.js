@@ -17,6 +17,12 @@
 //   • click the page to add a break at the nearest clean place;
 //   • ✕ on a line removes it; ↑ / ↓ move the last one touched, Delete removes it;
 //   • Undo / Redo (Ctrl+Z, Ctrl+Shift+Z), and Auto to plan them again.
+// A double-click (or double-tap) on the page finds its markdown instead, as
+// Overleaf's does: the block or line of code under it is selected in the
+// markdown box and scrolled to — every row knows where its markdown is
+// (`at`, `atEnd`: md-pdf/layout.js), and the Notes view's line alignment
+// (lineOffsetMapper) carries that from the text the lexer read back to what
+// was typed. A single click waits a moment, in case it is the first of two.
 // The breaks are remembered by the paragraph under them, so the markdown can
 // still be edited after they are placed, and they are kept with the PDF so
 // "Edit markdown…" opens on them again.
@@ -168,7 +174,7 @@ function buildMdPdfDialog() {
               <button type="button" class="pdf-margins-chip" data-md-action="auto" title="Plan the page breaks again">Auto</button>
             </span>
           </div>
-          <p class="md-pdf-hint">Drag a page break to move it (Alt: anywhere), click the page to add one, ✕ to remove it.</p>
+          <p class="md-pdf-hint">Drag a page break to move it (Alt: anywhere), click the page to add one, ✕ to remove it. Double-click the page to find its markdown.</p>
           <div class="md-pdf-preview-scroll" data-md-scroll tabindex="0" aria-label="Preview of the PDF; page breaks can be moved">
             <div class="md-pdf-pages" data-md-pages></div>
           </div>
@@ -258,8 +264,11 @@ async function relayoutMdPdf() {
     });
     if (seq !== buildSeq) return;
     mdState.laid = laid;
+    mdState.laidSource = markdown;
+    mdState.toSource = null;
     mdState.previewStale = true;
     replan();
+    revealOpeningPage();
     // The preview is a whole PDF written and parsed again: only worth it when
     // it can be seen. On a phone the Markdown tab hides it, and every
     // keystroke there would otherwise pay for a preview nobody looks at (and
@@ -427,6 +436,10 @@ async function renderMdPdfPreview(seq) {
   const pageTops = [...host.querySelectorAll(".md-pdf-page")].map((box) => box.offsetTop);
   mdState.preview = { scale, pages: pagesMeta, pageTops };
   scroll.scrollTop = keep;
+  if (Number.isFinite(mdState.revealRow)) {
+    scroll.scrollTop = Math.max(0, previewY(mdState.revealRow) - 24);
+    mdState.revealRow = null;
+  }
   previewObserver = new IntersectionObserver((entries) => {
     for (const entry of entries) {
       const tile = entry.target;
@@ -620,7 +633,14 @@ function startDragScroll() {
 
 // A click — not a pointerdown, which a finger starting to scroll the preview
 // also is — on the page adds a break at the nearest clean place; on ✕, takes
-// one away.
+// one away. Two clicks close together in time and place find the markdown
+// instead (counted here, not from event.detail, which a double-tap on a phone
+// does not always raise).
+const DOUBLE_CLICK_MS = 320;
+const DOUBLE_CLICK_PX = 24;
+let pendingAddTimer = 0;
+let lastPageClick = null;
+
 function onOverlayClick(event) {
   if (!mdState?.laid || !mdState.preview) return;
   if (Date.now() < hushClickUntil) return;
@@ -633,13 +653,144 @@ function onOverlayClick(event) {
     return;
   }
   if (event.target.closest("[data-cut-key]") || !event.target.closest("[data-md-overlay]")) return;
+  const now = Date.now();
+  const previous = lastPageClick;
+  if (previous && now - previous.time < DOUBLE_CLICK_MS
+    && Math.hypot(event.clientX - previous.x, event.clientY - previous.y) < DOUBLE_CLICK_PX) {
+    clearTimeout(pendingAddTimer);
+    pendingAddTimer = 0;
+    lastPageClick = null;
+    event.preventDefault();
+    showMarkdownAt(previous.y);
+    return;
+  }
+  lastPageClick = { time: now, x: event.clientX, y: event.clientY };
   const y = pointerColumnY(event);
-  const taken = new Set(keysNow().map(indexOfKey));
-  const c = nearestCandidate(mdCutCandidates(event.altKey), y, taken);
-  if (!c) return;
-  const key = mdState.laid.flow.rows[c.i].key;
-  mdState.selectedKey = key;
-  changeCuts([...keysNow(), key]);
+  const altKey = event.altKey;
+  const laid = mdState.laid;
+  clearTimeout(pendingAddTimer);
+  pendingAddTimer = setTimeout(() => {
+    pendingAddTimer = 0;
+    if (!mdState || mdState.laid !== laid) return;
+    const taken = new Set(keysNow().map(indexOfKey));
+    const c = nearestCandidate(mdCutCandidates(altKey), y, taken);
+    if (!c) return;
+    const key = mdState.laid.flow.rows[c.i].key;
+    mdState.selectedKey = key;
+    changeCuts([...keysNow(), key]);
+  }, DOUBLE_CLICK_MS);
+}
+
+// ── From the page to its markdown ──────────────────────────────────────────
+
+// The row at column y (points): the last one starting at or above it.
+function rowAtColumnY(y) {
+  const { rows } = mdState.laid.flow;
+  let lo = 0;
+  let hi = rows.length - 1;
+  let best = 0;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (rows[mid].y <= y) { best = mid; lo = mid + 1; } else hi = mid - 1;
+  }
+  return best;
+}
+
+// The Notes view's prepared-text → markdown line alignment. Imported when
+// first wanted, not with this module: a static import would pull the Notes
+// modules into main.js's boot graph here, ahead of where they load now, and
+// change the order the app's modules start in.
+let lineOffsetMapperFn = null;
+async function loadLineOffsetMapper() {
+  if (!lineOffsetMapperFn) ({ lineOffsetMapper: lineOffsetMapperFn } = await import("../../format/source-blocks.js?v=__BUILD__"));
+  return lineOffsetMapperFn;
+}
+
+// A row's markdown, as offsets in the markdown box: [start, end].
+async function sourceRangeOf(row) {
+  const laid = mdState.laid;
+  const mapper = await loadLineOffsetMapper();
+  if (!mdState || mdState.laid !== laid) return null;
+  if (!mdState.toSource) {
+    const prepared = typeof laid.prepared === "string" ? laid.prepared : mdState.laidSource || "";
+    mdState.toSource = mapper(prepared, mdState.laidSource || "");
+  }
+  const length = mdq("[data-md-text]").value.length;
+  const at = Number.isFinite(row.at) ? row.at : 0;
+  const end = Number.isFinite(row.atEnd) ? row.atEnd : at;
+  const start = Math.min(length, mdState.toSource(at, "start"));
+  return [start, Math.max(start, Math.min(length, mdState.toSource(end, "end")))];
+}
+
+// Double-clicked at preview client y: select that markdown and show it.
+async function showMarkdownAt(clientY) {
+  if (!mdState?.laid?.flow.rows.length || !mdState.preview) return;
+  const row = mdState.laid.flow.rows[rowAtColumnY(pointerColumnY({ clientY }))];
+  if (!row) return;
+  const range = await sourceRangeOf(row);
+  if (!range) return;
+  const [start, end] = range;
+  // A phone shows the markdown and the preview as two tabs: to the markdown.
+  if (!sourceVisible()) showMdTab("source");
+  const text = mdq("[data-md-text]");
+  text.focus({ preventScroll: true });
+  text.setSelectionRange(start, end);
+  scrollMarkdownTo(start);
+}
+
+function sourceVisible() {
+  const text = mdq("[data-md-text]");
+  return Boolean(text && text.offsetParent && text.clientWidth > 0);
+}
+
+function showMdTab(name) {
+  mdq(".md-pdf-body").dataset.mdShow = name;
+  mdDialog.querySelectorAll("[data-md-tab]").forEach((t) => t.setAttribute("aria-selected", String(t.dataset.mdTab === name)));
+}
+
+// Scroll the markdown box so `offset` sits a third of the way down. A wrapped
+// line is several lines tall, so the caret's height is measured, on a copy of
+// the box's text laid out exactly as the box lays it out.
+function scrollMarkdownTo(offset) {
+  const text = mdq("[data-md-text]");
+  const style = getComputedStyle(text);
+  const mirror = document.createElement("div");
+  mirror.className = "md-pdf-text-mirror";
+  for (const prop of ["fontFamily", "fontSize", "fontWeight", "fontStyle", "fontVariantLigatures", "letterSpacing", "wordSpacing",
+    "lineHeight", "tabSize", "textTransform", "textIndent", "whiteSpace", "overflowWrap", "wordBreak",
+    "paddingTop", "paddingLeft", "paddingRight"]) {
+    mirror.style[prop] = style[prop];
+  }
+  const padX = parseFloat(style.paddingLeft) + parseFloat(style.paddingRight);
+  mirror.style.width = `${Math.max(1, text.clientWidth - padX)}px`;
+  mirror.textContent = text.value.slice(0, offset);
+  const mark = document.createElement("span");
+  mark.textContent = "\u200b";
+  mirror.appendChild(mark);
+  document.body.appendChild(mirror);
+  const top = mark.offsetTop;
+  mirror.remove();
+  text.scrollTop = Math.max(0, top - text.clientHeight / 3);
+}
+
+// "Edit markdown…" opens on the page being read: once the pages are planned,
+// the markdown box shows that page's first words, and the preview that page.
+async function revealOpeningPage() {
+  const page = mdState?.openAtPage;
+  if (page === null || page === undefined || !mdState.plan?.pages.length) return;
+  mdState.openAtPage = null;
+  const plan = mdState.plan;
+  const p = Math.min(plan.pages.length - 1, Math.max(0, page));
+  const rowIndex = plan.slices[plan.pages[p].slices[0]]?.from ?? 0;
+  const row = mdState.laid.flow.rows[rowIndex];
+  if (!row) return;
+  // The preview, drawn next, opens on the page too.
+  mdState.revealRow = rowIndex;
+  const range = await sourceRangeOf(row);
+  if (!range) return;
+  const text = mdq("[data-md-text]");
+  text.setSelectionRange(range[0], range[0]);
+  scrollMarkdownTo(range[0]);
 }
 
 function moveDragTo(clientY, altKey) {
@@ -817,8 +968,7 @@ function wireMdPdfDialog() {
     }
     const tab = event.target.closest("[data-md-tab]");
     if (tab) {
-      mdq(".md-pdf-body").dataset.mdShow = tab.dataset.mdTab;
-      mdDialog.querySelectorAll("[data-md-tab]").forEach((t) => t.setAttribute("aria-selected", String(t === tab)));
+      showMdTab(tab.dataset.mdTab);
       // Opening the preview draws what the edits since have laid out; a
       // layout still to come draws it when it lands.
       if (tab.dataset.mdTab === "preview") {
@@ -943,7 +1093,11 @@ export async function openMarkdownPdfDialog({ mode = "new", source = "", title =
     pageCount: 0,
     at: 1,
     baseBytes: null,
-    saving: false
+    saving: false,
+    laidSource: "",
+    toSource: null,
+    openAtPage: null,
+    revealRow: null
   };
   // "Match this PDF" is about a PDF the pages go into; a new PDF has none.
   if (mode === "new" && mdState.options.paper === "match") mdState.options = normalizeMdPdfOptions({ ...mdState.options, paper: "A4" });
@@ -989,6 +1143,9 @@ export async function openMarkdownPdfDialog({ mode = "new", source = "", title =
     const part = mdState.parts.find((p) => p.pages.includes(here)) || mdState.parts[0];
     select.value = part.id;
     loadPart(part);
+    // Which of the part's pages is being read: the markdown opens there.
+    const within = part.pages.indexOf(here);
+    mdState.openAtPage = within > 0 ? within : null;
   }
   paintMdPdfOptions();
   paintMode();

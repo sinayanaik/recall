@@ -430,6 +430,94 @@ await must("...and no page but the last is left less than half full", async () =
   return !thin.length || JSON.stringify(thin.map((slice) => Math.round((slice.h / r.plan.room) * 100)));
 });
 
+// ── Styling: headings, code, and where each row's markdown is ──────────────
+
+const STYLED = `# One
+
+## Two
+
+### Three
+
+#### Four
+
+##### Five
+
+###### Six
+
+Words with \`a code span\` in them.
+
+yaml
+\`\`\`
+build:
+  dockerfile: .devcontainer/dockerfiles/amd/mujoco_amd.Dockerfile/and/a/much/longer/path/that/must/wrap/around/the/line/end.Dockerfile
+\`\`\`
+
+- one
+- two
+
+| a | b |
+|---|---|
+| 1 | 2 |
+`;
+const headingRules = (flow) => flow.rows.filter((row) => row.heading).map((row) => {
+  const block = flow.rows.filter((r) => r.key.split(":")[0] === row.key.split(":")[0]);
+  return block.flatMap((r) => r.ops).find((op) => op.t === "line");
+});
+
+await must("every heading level has its rule; H4 dashed, H5 and H6 dotted, H1–H3 solid", async () => {
+  const { flow } = await build(STYLED);
+  const rules = headingRules(flow);
+  const ok = rules.length === 6 && rules.every(Boolean)
+    && rules.slice(0, 3).every((op) => !op.dash) && rules.slice(3).every((op) => Array.isArray(op.dash));
+  return ok || JSON.stringify(rules.map((op) => op && (op.dash || "solid")));
+});
+await must("headings get smaller level by level, and H1 is well above the body size", async () => {
+  const { flow } = await build(STYLED);
+  const sizes = flow.rows.filter((row) => row.heading).map((row) => row.ops.find((op) => op.t === "text").size);
+  const falling = sizes.every((size, i) => i === 0 || size <= sizes[i - 1]);
+  return (falling && sizes[0] >= 10.5 * 1.7) || JSON.stringify(sizes);
+});
+await must("a code span has room in its background, outlined, in the code colour", async () => {
+  const { flow } = await build(STYLED);
+  const row = flow.rows.find((r) => r.ops.some((op) => op.t === "text" && op.text.includes("a code span")));
+  const rect = row?.ops.find((op) => op.t === "rect" && op.radius);
+  const text = row?.ops.find((op) => op.t === "text" && op.text.includes("a code span"));
+  const ok = rect && text && text.x - rect.x >= 2 && rect.stroke && text.colour === L.MD_PDF_COLOURS.codeText;
+  return Boolean(ok) || JSON.stringify({ rect, text });
+});
+await must("a lone language name above a bare fence is the block's language, not a paragraph", async () => {
+  const blocks = L.blocksFromTokens(marked.lexer(pre.preprocessSpecialBlocks(STYLED)));
+  const code = blocks.find((b) => b.type === "code");
+  const stray = blocks.some((b) => b.type === "paragraph" && b.src.trim() === "yaml");
+  const r = await build(STYLED);
+  const text = (await pdfText(r.out.bytes)).pages.join(" ");
+  return (code?.lang === "yaml" && !stray && !/\byaml\b/.test(text)) || JSON.stringify({ lang: code?.lang, stray });
+});
+await must("a wrapped line of code goes on under its own indent, with a hook, never at the margin", async () => {
+  const { flow } = await build(STYLED);
+  const textX = (row) => Math.min(...row.ops.filter((op) => op.t === "text" && op.text.trim()).map((op) => op.x));
+  const first = flow.rows.find((r) => r.ops.some((op) => op.t === "text" && op.text.includes("dockerfile:")));
+  const next = flow.rows[flow.rows.indexOf(first) + 1];
+  const build_ = flow.rows.find((r) => r.ops.some((op) => op.t === "text" && op.text.startsWith("build:")));
+  const indentX = textX(first);
+  const ok = next && textX(next) > indentX && textX(build_) < indentX && next.ops.some((op) => op.t === "vline");
+  return Boolean(ok) || JSON.stringify({ first: indentX, next: next && textX(next), margin: textX(build_) });
+});
+await must("a path in code wraps after a slash, not in the middle of a name", async () => {
+  const { flow } = await build(STYLED);
+  const first = flow.rows.find((r) => r.ops.some((op) => op.t === "text" && op.text.includes("dockerfile:")));
+  const line = first.ops.filter((op) => op.t === "text").map((op) => op.text).join("");
+  return /\/\s*$/.test(line) || JSON.stringify(line);
+});
+await must("every row knows its markdown: a heading, a list item, a table row, a line of code", async () => {
+  const { flow } = await build(STYLED);
+  const prepared = pre.preprocessSpecialBlocks(STYLED);
+  const said = flow.rows.map((row) => prepared.slice(row.at, row.atEnd));
+  const want = ["## Two", "two", "| 1 | 2 |", "build:"];
+  const missing = want.filter((w) => !said.includes(w));
+  return (!missing.length && flow.rows.every((row) => Number.isFinite(row.at) && row.atEnd >= row.at)) || JSON.stringify({ missing, said });
+});
+
 let failed = 0;
 for (const [ok, name, detail] of results) {
   if (!ok) failed += 1;
