@@ -1909,20 +1909,6 @@
           </div>
         </div>
       </div>
-      <!-- The four tabs, kept on screen in focus mode. Focus mode folds the row
-           they live in away with the header, and going to another part of the
-           file then meant opening the edge rail's tray first — two presses for
-           the one thing a reader does most. A compact strip at the top instead,
-           shown only while the chrome is folded (styles/38-reading-rail.css).
-           New nodes, like the rail's: setViewMode paints which one is lit, and
-           refreshDocumentTab / refreshHandwritingTab hide the two that a file
-           may not offer, in the same lines that hide the tabs. -->
-      <nav class="focus-tabs" id="focusTabs" aria-label="Parts of this file">
-        <button type="button" data-view-mode="cards" title="Cards" aria-label="Cards"><span class="ft-ico" aria-hidden="true">&#9634;</span><span class="ft-label">Cards</span></button>
-        <button type="button" data-view-mode="notes" title="Notes" aria-label="Notes"><span class="ft-ico" aria-hidden="true">&#128221;</span><span class="ft-label">Notes</span></button>
-        <button type="button" data-view-mode="document" hidden title="PDFs" aria-label="PDFs"><span class="ft-ico" aria-hidden="true">&#128196;</span><span class="ft-label">PDFs</span></button>
-        <button type="button" data-view-mode="handwriting" hidden title="Canvas" aria-label="Canvas"><span class="ft-ico" aria-hidden="true">&#9998;</span><span class="ft-label">Canvas</span></button>
-      </nav>
     </main>
 
     <!-- Import is one linear flow: pick a source, then review what Recall found

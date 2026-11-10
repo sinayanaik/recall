@@ -195,10 +195,7 @@ export function setViewMode(mode, options = {}) {
   // NOT a document.querySelectorAll: an attribute selector cannot be answered
   // from an index, so on a book-sized note that would be a full tree walk on
   // every tab press.
-  //
-  // ...and the strip of tabs focus mode keeps on screen (#focusTabs), for the
-  // same reason and by the same rule.
-  [el.viewModeToggle, el.readingRailTray, el.focusTabs].forEach((container) => {
+  [el.viewModeToggle, el.readingRailTray].forEach((container) => {
     container?.querySelectorAll("[data-view-mode]").forEach((button) => {
       button.classList.toggle("is-active", button.dataset.viewMode === next);
     });
@@ -364,23 +361,12 @@ export function setViewMode(mode, options = {}) {
 }
 
 // ── Reading room: collapsing the chrome ─────────────────────────────
-// On a phone the appbar (deck title, category, score, sync) plus the
-// Cards/Notes toggle ate 103px of a 757px viewport before a single word of
-// the note. Both fold away together via `body.chrome-collapsed`, driven two
-// ways that share one piece of state so they can never disagree:
-//
-//   • pinned — the ⤢ button in the notes header keeps them hidden, so a long
-//     note isn't interrupted by chrome reappearing every time you scroll up
-//     to re-read a paragraph. Works at EVERY width: a laptop gives up the same
-//     ~130px to chrome nobody is reading, and Esc / Ctrl+. exit it there.
-//   • auto — scrolling down through the notes or a card face hides them; a
-//     nudge back up (or reaching the top) brings them back, like a mobile
-//     browser's URL bar. Costs the user nothing, but it stays PHONE-ONLY: a
-//     mouse wheel flicking the header in and out on a large screen reads as a
-//     bug rather than a feature, and desktop has the room to spare.
-//
-// Only the auto layer listens to scrolling; pinning short-circuits it, which
-// is what makes "pinned" mean pinned.
+// On a phone the appbar (file title, category, score, sync) ate a large slice
+// of the viewport before a single word of the note. Focus mode folds it away
+// via `body.chrome-collapsed` — the title bar ONLY: the tab row below it, with
+// the tabs and the file's tools, stays on screen (styles/67-focus-fold.css).
+// It is pinned by the reader (⤢ in the ⋯ menu, Ctrl+., the rail) and works at
+// every width; nothing folds it on scroll any more (see src/ui/chrome.js).
 export const FOCUS_MODE_KEY = "recall:focusMode";
 
 // Bumped on every deferred switch so a superseded paint (two fast taps on the

@@ -23,8 +23,8 @@
  *      popover, so the header fits on one row again and bar 4 goes away.
  *   b. The appbar's second row drops the two card counters while you are
  *      reading, where they mean nothing, and the sync pill drops its countdown.
- *   c. body.chrome-collapsed now folds the notes header away with the appbar
- *      and the view toggle, so scrolling down gives the note the whole screen.
+ *   c. The notes header is gone from read mode: its controls live in the tab
+ *      row now. (Focus mode, body.chrome-collapsed, folds the appbar only.)
  */
 
 /* ── (c) The notes header is gone from read mode ──────────────────────────
@@ -315,27 +315,19 @@
   width: min(440px, 100%);
 }
 
-/* ── Focus mode folds the whole row ────────────────────────────────────────
-   styles/12-notes.css:1262 folds `.quiz-panel .view-mode-toggle`, which is now
-   only part of the row: the table of contents, the edit pill and the ⋯ menu sat
-   beside it and stayed on screen with the chrome supposedly hidden. That is
-   what "the focus toggle does nothing" was.
+/* ── Focus mode leaves the row alone ───────────────────────────────────────
+   Focus mode used to fold this whole row away with the title bar — the tabs,
+   the table of contents, the edit pill, ⋯ and the PDF tools — and then had to
+   hand the tabs back in a floating strip of their own. "The focus mode is
+   hiding too much like the tabs and tools, it should hide only the titlebar."
+   So it folds the title bar and nothing else; the row stays where it is. The
+   frozen rule that still folds the toggle inside it (styles/12-notes.css:1262)
+   is overridden in styles/67-focus-fold.css.
 
-   Same variable as the appbar, so the two bars fold as one panel;
-   --view-toggle-h is measured from the ROW now (see readChromeHeights). The fold
-   itself no longer animates the row's height: it folds in one step, because a
-   height tween re-lays out the note on every frame. See
-   styles/67-focus-fold.css. */
+   --view-toggle-h is still measured from the ROW (see readChromeHeights) and
+   still clamps it — a max-height that is too large merely fails to clip. */
 .view-mode-row {
   max-height: var(--view-toggle-h, 300px);
-}
-
-body.chrome-collapsed:not(:is(.cs-menu-open, #cs-specificity).cs-menu-open) .view-mode-row {
-  max-height: 0;
-  margin-bottom: 0;
-  opacity: 0;
-  overflow: hidden;
-  pointer-events: none;
 }
 
 /* The toggle keeps its own sizing; it just no longer owns the row's margin. */
