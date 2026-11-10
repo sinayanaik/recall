@@ -46,3 +46,44 @@ body.chrome-ready .quiz-panel .view-mode-toggle:not([hidden]),
 body.chrome-ready .app-shell {
   transition: none;
 }
+
+/* ── ...and it folds the title bar ONLY ────────────────────────────────────
+ *
+ * "The focus mode is hiding too much like the tabs and tools, it should hide
+ * only the titlebar." The tab row (the tabs, the table of contents, the edit
+ * pill, ⋯ and the PDF tools) now stays on screen in focus mode; its own fold
+ * rule in styles/16-mobile-reading.css is gone.
+ *
+ * The frozen 12-notes.css still folds the toggle INSIDE that row
+ * (`body.chrome-collapsed:not(:has(#mainToolbar.mobile-open)) .quiz-panel
+ * .view-mode-toggle:not([hidden])`, specificity 1,5,1), so it is undone here
+ * at the same specificity, later in the load order. Every property it zeroes
+ * is put back to what the toggle has when focus mode is off — the padding has
+ * three values depending on width and view (11-chrome.css, 12-notes.css's
+ * 720px block, 33-reading-chrome.css in Notes view), so it is restored three
+ * times. Its margin-bottom: 0 needs nothing: the toggle has margin: 0 inside
+ * the row anyway (16-mobile-reading.css). tools/handwriting-check.mjs compares
+ * the toggle's box with focus mode off and on, so a drift here fails a check
+ * rather than a reader's eye. */
+body:is(.chrome-collapsed, #cs-specificity).chrome-collapsed .quiz-panel .view-mode-row > .view-mode-toggle:not([hidden]) {
+  max-height: var(--view-toggle-h, 300px);
+  padding-top: 3px;
+  padding-bottom: 3px;
+  border-top-width: 1px;
+  border-bottom-width: 1px;
+  opacity: 1;
+  overflow: visible;
+  pointer-events: auto;
+}
+
+@media (max-width: 720px) {
+  body:is(.chrome-collapsed, #cs-specificity).chrome-collapsed .quiz-panel .view-mode-row > .view-mode-toggle:not([hidden]) {
+    padding-top: 2px;
+    padding-bottom: 2px;
+  }
+}
+
+body:is(.chrome-collapsed, #cs-specificity).chrome-collapsed.cs-notes-mode .quiz-panel .view-mode-row > .view-mode-toggle:not([hidden]) {
+  padding-top: 1px;
+  padding-bottom: 1px;
+}

@@ -219,9 +219,10 @@ function onInkPanelToggle(open) {
 // more tabs. Everywhere else it stays where it is written in the stage.
 //
 // It goes back to the stage when the row cannot hold it: a narrower window, a
-// touch screen, focus mode (which folds the whole row away, and the pen must not
-// go with it), or a row that turns out too full — tabs squeezed to "CAR…" —
+// touch screen, or a row that turns out too full — tabs squeezed to "CAR…" —
 // which is measured once per shape of the bar and remembered for that width.
+// Focus mode is not one of them any more: it folds only the title bar, and the
+// row (and the pen in it) stays on screen.
 const INLINE_RAIL_QUERY = "(min-width: 1100px) and (hover: hover) and (pointer: fine)";
 let inlineRailMedia = null;
 let railHomeMarker = null;
@@ -234,7 +235,6 @@ function railShape(rail) {
 
 function wantsInlineRail(rail) {
   if (!inlineRailMedia?.matches || !railHomeMarker) return false;
-  if (document.body.classList.contains("chrome-collapsed")) return false;
   const refused = inlineRailRefusedAt[railShape(rail)];
   return !refused || window.innerWidth > refused;
 }
@@ -304,8 +304,9 @@ function initInlineRail() {
     if (resizeFrame) return;
     resizeFrame = requestAnimationFrame(() => { resizeFrame = 0; placeInkRail(); });
   });
-  // Focus mode (body.chrome-collapsed) and the stage's own state: both change
-  // through class and attribute writes that do not pass through here.
+  // <body>'s classes (the drawer, the view, edit mode) and the stage's own
+  // state: both change through class and attribute writes that do not pass
+  // through here.
   const observer = new MutationObserver(() => placeInkRail());
   observer.observe(document.body, { attributes: true, attributeFilter: ["class"] });
   if (el.documentStage) observer.observe(el.documentStage, { attributes: true, attributeFilter: ["class", "data-doc-slot"] });

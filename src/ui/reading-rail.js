@@ -1,17 +1,16 @@
 // The rail focus mode gives back.
 //
-// `body.chrome-collapsed` folds the appbar and the whole view-mode row away
-// (styles/12-notes.css:1255, styles/16-mobile-reading.css:338). That is the
-// point of focus mode — src/ui/chrome.js opens with the measurement: ~130px of
-// deck title, category, card score and sync countdown that nobody reading a
-// paper is reading. It is also its one real cost, because the table of contents,
-// the four view tabs and the way back to My Decks all live in those two bars.
-// Reading a paper and then wanting its contents meant leaving focus mode,
-// pressing the thing, and entering focus mode again — which is not a mode, it is
-// a chore, and it is why people stop using focus mode.
+// `body.chrome-collapsed` folds the appbar — the title bar — away
+// (styles/12-notes.css:1255): file title, category, card score and sync
+// countdown that nobody reading a paper is reading. It used to fold the whole
+// view-mode row with it, and this rail was written as the way back to the table
+// of contents, the tabs and the library, all of which lived in those two bars.
+// The row stays on screen in focus mode now (styles/67-focus-fold.css), so the
+// tabs and tools are where they always are; the rail keeps the way back to the
+// library — which only the title bar had — and its quick copies of the rest.
 //
 // So this is what stays behind: a small ☰ on the right edge that expands into
-// the seven controls focus mode took away, and puts itself away afterwards.
+// those controls, and puts itself away afterwards.
 //
 // It was a nine-pixel grip, on the argument that an icon at that size is a guess
 // and a grip says "there is something here" without naming it. In use nobody
@@ -469,20 +468,9 @@ export function initReadingRail() {
     // and a trapdoor.
     if (action !== "focus" && action !== "immersive" && action !== "rotate") setReadingRailExpanded(false);
     // The modes among these say which way they are set, and the functions that
-    // own that state paint their ORIGINAL buttons — which are in the folded row,
-    // not here. So the rail reads the answer back off them.
+    // own that state paint their ORIGINAL buttons — which are in the row's ⋯
+    // menu, not here. So the rail reads the answer back off them.
     refreshReadingRailModes();
-  });
-
-  // The strip of tabs focus mode keeps at the top (#focusTabs). Its own
-  // listener, because it is not inside the rail — and the same call the rail's
-  // view rows make, so a tab pressed here is the same switch as one pressed
-  // anywhere else. Focus mode stays on: that is the point of the strip.
-  el.focusTabs?.addEventListener("click", (event) => {
-    const view = event.target.closest("[data-view-mode]");
-    if (!view || view.hidden) return;
-    setViewMode(view.dataset.viewMode, { deferRender: true });
-    setReadingRailExpanded(false);
   });
 
   // A press anywhere else folds it back up — the rail overlays the page, and one

@@ -327,7 +327,6 @@ export const el = {
   readingRail: document.querySelector("#readingRail"),
   readingRailGrip: document.querySelector("#readingRailGrip"),
   readingRailTray: document.querySelector("#readingRailTray"),
-  focusTabs: document.querySelector("#focusTabs"),
   readingRailCloseBtn: document.querySelector("#readingRailCloseBtn"),
   readingRailViewName: document.querySelector("#readingRailViewName"),
   // No attachPdfBtn / attachPdfInput. They were the drawer's "Attach a PDF"

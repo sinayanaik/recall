@@ -262,8 +262,8 @@ const POST_SPLIT = {
     "The phone reading surface. Four chrome bars stacked above the first line " +
     "of a note; this folds the render toolbar back into the notes header (six " +
     "buttons move behind a ⋯ popover), drops the card counters and the sync " +
-    "countdown from the appbar while reading, lets body.chrome-collapsed fold " +
-    "the notes header too, and dims the per-image controls on touch screens.",
+    "countdown from the appbar while reading, hides the emptied notes header " +
+    "in read mode, and dims the per-image controls on touch screens.",
   "17-toc-fold.css":
     "Foldable table-of-contents sections, folded by default. The list is flat " +
     "(the tree is drawn by rail spans, not by nesting), so there is no child " +
@@ -439,9 +439,8 @@ const POST_SPLIT = {
     "See src/documents/pdf-region.js and src/documents/pdf-page-notes.js.",
   "38-reading-rail.css":
     "The rail focus mode gives back. body.chrome-collapsed folds the appbar " +
-    "and the view-mode row away, which is the point of it and also takes the " +
-    "contents, the four views and the way back to My Decks with them \u2014 so " +
-    "changing tab meant leaving focus mode and re-entering it. A nine-pixel " +
+    "(the title bar) away, which takes the way back to My Decks with it; the " +
+    "tab row used to fold too and no longer does. A nine-pixel " +
     "grip on the right edge (the left is the back gesture's, and the text is " +
     "the selection handles') expands into seven icon buttons and puts itself " +
     "away again. display:none outside focus mode, because every one of those " +
@@ -630,7 +629,8 @@ const POST_SPLIT = {
     "phone with a long note the 220ms fold ran at 10-20fps. It now changes " +
     "height once, with no transition (a compositor slide was measured and was " +
     "slower). The transitions it switches off are in the frozen 12-notes.css " +
-    "slice, hence a file of its own.",
+    "slice, hence a file of its own. It also undoes that slice's fold of the " +
+    "tab toggle, so focus mode folds the title bar only.",
   "53-handwriting.css":
     "Pages you can write on: the scrolling stack, the three papers (grid, ruled, " +
     "blank) and the notebook's own chrome. Separate from 52-ink.css because that " +

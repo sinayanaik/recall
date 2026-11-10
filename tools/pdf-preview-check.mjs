@@ -5096,7 +5096,11 @@ try {
     await settle(450);
     const inFocus = shown();
     const loudAlpha = gripAlpha();
-    const rowFolded = document.getElementById("viewModeRow").getBoundingClientRect().height < 2;
+    // Focus mode folds the title bar and NOTHING ELSE: the tab row, with the
+    // tabs and the file's tools, stays on screen. "The focus mode is hiding too
+    // much like the tabs and tools, it should hide only the titlebar."
+    const appbarFolded = document.querySelector(".appbar").getBoundingClientRect().height < 2;
+    const rowShown = document.getElementById("viewModeRow").getBoundingClientRect().height > 10;
     // The grip itself, before it is pressed. "I am not seeing anything in focus
     // mode" was a report about a control that WAS on screen and rendering — a
     // 9px, 26%-alpha stripe sitting on top of the scrollbar. So a display test
@@ -5146,8 +5150,8 @@ try {
     const offers = (action) => visible().some((b) => b.dataset.railAction === action);
     // What the rail owes a reader in EVERY view. "focus" was "leave-focus", a
     // one-way button: the rail could turn focus mode off and had no way to say
-    // it was on, while the real toggle sits inside the row focus mode folds
-    // away. Both modes are toggles here now, which is what the two assertions
+    // it was on, while the real toggle sat inside the row focus mode used to
+    // fold away. Both modes are toggles here now, which is what the two assertions
     // below are about.
     const railOffers = ["decks", "contents", "style", "sync", "immersive", "focus"]
       .filter((action) => !offers(action));
@@ -5230,15 +5234,18 @@ try {
     const afterFocus = shown();
     api.setViewMode("document");
     await settle(200);
-    return { beforeFocus, inFocus, rowFolded, expanded, buttons, labelled, groups, modesStick, modesInView, quietAlpha, loudAlpha, gripBox, gripIsHit, modesAnnounce, modesPaint, documentIconShown, activeMatches, switched, collapsedAfterUse, afterFocus, railOffers, documentRowsInDocument, documentRowsOutside, bookmarkSetGone, goBeforeInDocument, goBeforeInNotes, goAfterInNotes, goAfterInDocument };
+    return { beforeFocus, inFocus, appbarFolded, rowShown, expanded, buttons, labelled, groups, modesStick, modesInView, quietAlpha, loudAlpha, gripBox, gripIsHit, modesAnnounce, modesPaint, documentIconShown, activeMatches, switched, collapsedAfterUse, afterFocus, railOffers, documentRowsInDocument, documentRowsOutside, bookmarkSetGone, goBeforeInDocument, goBeforeInNotes, goAfterInNotes, goAfterInDocument };
   }`);
 
   check("the rail is on screen whether or not focus mode is on",
     rail.beforeFocus === true && rail.inFocus === true && rail.afterFocus === true,
     `before=${rail.beforeFocus} in=${rail.inFocus} after=${rail.afterFocus}`);
-  check("...quiet while the chrome is up, full strength once it folds",
-    rail.quietAlpha < rail.loudAlpha && rail.quietAlpha > 0 && rail.rowFolded,
-    `opacity ${rail.quietAlpha} → ${rail.loudAlpha}, rowFolded=${rail.rowFolded}`);
+  check("...quiet while the chrome is up, full strength once the title bar folds",
+    rail.quietAlpha < rail.loudAlpha && rail.quietAlpha > 0 && rail.appbarFolded,
+    `opacity ${rail.quietAlpha} → ${rail.loudAlpha}, appbarFolded=${rail.appbarFolded}`);
+  check("focus mode folds the title bar only: the tab row stays on screen",
+    rail.appbarFolded && rail.rowShown,
+    `appbarFolded=${rail.appbarFolded}, rowShown=${rail.rowShown}`);
   check("...as a hamburger big enough to find, and hittable",
     rail.gripBox.w >= 24 && rail.gripBox.h >= 24 && rail.gripIsHit,
     `${rail.gripBox.w}×${rail.gripBox.h}px · hit=${rail.gripIsHit}`);

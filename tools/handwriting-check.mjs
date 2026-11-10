@@ -137,7 +137,7 @@ const API_SRC = `async () => {
     "/src/documents/doc-slot.js?v=__BUILD__",
     "/src/storage/deck-tab.js?v=__BUILD__",
     "/src/ui/reading-rail.js?v=__BUILD__",
-    // Focus mode itself, for the strip of tabs it keeps at the top.
+    // Focus mode itself, for the tab row it leaves on screen.
     "/src/ui/chrome.js?v=__BUILD__",
     // The paper tones and the shapes whose colours follow them (case 11b).
     "/src/documents/pdf-shapes.js?v=__BUILD__",
@@ -5188,57 +5188,91 @@ try {
 
   // ── The tabs, in focus mode ──────────────────────────────────────────────
   //
-  // "In the focus mode the tab switching option should also be there." Focus
-  // mode folds the tab row away with the header; a compact strip of the four
-  // stays at the top instead, clear of the Canvas's pen bar, and pressing one
-  // switches part without leaving focus mode.
-  const focusTabs = await page.evaluate(`async () => {
+  // "The focus mode is hiding too much like the tabs and tools, it should hide
+  // only the titlebar." Focus mode folds the title bar and nothing else: the
+  // real tab row — the four tabs and the file's tools beside them — stays where
+  // it is, and pressing a tab switches part without leaving focus mode. (It
+  // used to fold the row too and float a strip of four tabs in its place.)
+  //
+  // ...and the row must not even shift. The frozen 12-notes.css still zeroes
+  // the toggle's padding and borders in focus mode and styles/67-focus-fold.css
+  // puts them back by value, so the toggle's box is compared with focus mode
+  // off and on, in every part, at a width either side of the 720px breakpoint
+  // where the padding changes.
+  const focusTabsSrc = `async () => {
     const { api, settle } = window.__recall;
     const errs = [];
     window.addEventListener("error", (e) => errs.push(String(e.message)));
-    const strip = document.getElementById("focusTabs");
-    const shown = () => Boolean(strip) && getComputedStyle(strip).display !== "none";
-    const lit = () => strip?.querySelector("button.is-active")?.dataset.viewMode || "";
-    api.setViewMode("handwriting");
-    await settle(500);
-    const before = shown();
-    api.setFocusMode(true);
-    await settle(300);
-    const on = shown();
-    const litOn = lit();
-    const visible = [...(strip?.querySelectorAll("button") || [])].filter((b) => !b.hidden).map((b) => b.dataset.viewMode);
-    const stripBox = strip.getBoundingClientRect();
+    const toggle = document.getElementById("viewModeToggle");
+    const row = document.getElementById("viewModeRow");
+    const height = (node) => node ? node.getBoundingClientRect().height : 0;
+    const lit = () => toggle.querySelector("button.is-active")?.dataset.viewMode || "";
+    const boxOf = () => {
+      const cs = getComputedStyle(toggle);
+      const r = toggle.getBoundingClientRect();
+      return [Math.round(r.height), cs.paddingTop, cs.paddingBottom, cs.borderTopWidth, cs.borderBottomWidth, cs.opacity, cs.pointerEvents].join(" ");
+    };
+    const drift = [];
+    for (const view of ["cards", "notes", "handwriting"]) {
+      api.setFocusMode(false);
+      api.setViewMode(view);
+      await settle(400);
+      const off = boxOf();
+      api.setFocusMode(true);
+      await settle(300);
+      const on = boxOf();
+      if (off !== on) drift.push(view + ": " + off + " → " + on);
+    }
+    // In focus mode, on the Canvas (the loop ends there).
+    const appbarFolded = height(document.querySelector(".appbar")) < 2;
+    const rowShown = height(row) > 10 && getComputedStyle(row).opacity === "1";
+    const visible = [...toggle.querySelectorAll("button")].filter((b) => !b.hidden).map((b) => b.dataset.viewMode);
+    const notesTab = toggle.querySelector('[data-view-mode="notes"]');
+    const tabBox = notesTab.getBoundingClientRect();
+    const hit = document.elementFromPoint(tabBox.left + tabBox.width / 2, tabBox.top + tabBox.height / 2);
+    const tabIsHit = Boolean(hit) && (hit === notesTab || notesTab.contains(hit));
+    const rowBox = row.getBoundingClientRect();
     const bar = document.getElementById("documentInkRail");
-    const barBox = bar && !bar.hidden ? bar.getBoundingClientRect() : null;
-    strip.querySelector('[data-view-mode="notes"]').click();
+    const barBox = bar && !bar.hidden && !row.contains(bar) ? bar.getBoundingClientRect() : null;
+    notesTab.click();
     await settle(500);
     const afterPress = { view: api.state.viewMode, focus: document.body.classList.contains("chrome-collapsed"), lit: lit() };
-    strip.querySelector('[data-view-mode="handwriting"]').click();
+    toggle.querySelector('[data-view-mode="handwriting"]').click();
     await settle(600);
     const back = api.state.viewMode;
     api.setFocusMode(false);
     await settle(300);
     return {
-      before, on, litOn, visible,
-      stripBottom: stripBox.bottom, stripTop: stripBox.top,
-      barTop: barBox ? barBox.top : null,
-      afterPress, back, off: shown(), errs
+      drift, appbarFolded, rowShown, visible, tabIsHit,
+      rowBottom: rowBox.bottom, barTop: barBox && barBox.height > 0 ? barBox.top : null,
+      afterPress, back, strip: Boolean(document.getElementById("focusTabs")), errs
     };
-  }`);
+  }`;
+  const focusTabs = await page.evaluate(focusTabsSrc);
 
-  check("focus mode keeps a strip of the four tabs at the top, and only focus mode",
-    !focusTabs.before && focusTabs.on && focusTabs.stripTop < 40 && !focusTabs.off,
-    `before=${focusTabs.before}, in focus mode=${focusTabs.on} at top ${Math.round(focusTabs.stripTop)}px, after=${focusTabs.off}`);
-  check("...with the part being looked at lit, and every part this file has",
-    focusTabs.litOn === "handwriting" && ["cards", "notes", "document", "handwriting"].every((v) => focusTabs.visible.includes(v)),
-    `lit "${focusTabs.litOn}", showing ${focusTabs.visible.join(", ")}`);
-  check("...clear of the Canvas's pen bar rather than over it",
-    focusTabs.barTop === null || focusTabs.barTop >= focusTabs.stripBottom - 1,
-    `strip ends at ${Math.round(focusTabs.stripBottom)}px, the pen bar starts at ${focusTabs.barTop === null ? "—" : Math.round(focusTabs.barTop)}px`);
+  check("focus mode folds the title bar and leaves the tab row on screen",
+    focusTabs.appbarFolded && focusTabs.rowShown && focusTabs.tabIsHit && !focusTabs.strip,
+    `title bar folded=${focusTabs.appbarFolded}, row shown=${focusTabs.rowShown}, tab pressable=${focusTabs.tabIsHit}, old strip present=${focusTabs.strip}`);
+  check("...with every part this file has",
+    ["cards", "notes", "document", "handwriting"].every((v) => focusTabs.visible.includes(v)),
+    `showing ${focusTabs.visible.join(", ")}`);
+  check("...the tabs exactly the same box with focus mode off and on",
+    focusTabs.drift.length === 0, focusTabs.drift.join(" | "));
+  check("...the Canvas's pen bar below the row rather than under it",
+    focusTabs.barTop === null || focusTabs.barTop >= focusTabs.rowBottom - 1,
+    `row ends at ${Math.round(focusTabs.rowBottom)}px, the pen bar starts at ${focusTabs.barTop === null ? "—" : Math.round(focusTabs.barTop)}px`);
   check("...and a press switches part without leaving focus mode",
     focusTabs.afterPress.view === "notes" && focusTabs.afterPress.focus && focusTabs.afterPress.lit === "notes" && focusTabs.back === "handwriting",
     `view ${focusTabs.afterPress.view}, focus=${focusTabs.afterPress.focus}, lit ${focusTabs.afterPress.lit}, back to ${focusTabs.back}`);
   check("...with nothing thrown", focusTabs.errs.length === 0, focusTabs.errs.join(" | "));
+
+  // The same box comparison on a phone, below the 720px breakpoint.
+  await emulatePhone(page, { width: 390, height: 844 });
+  await new Promise((r) => setTimeout(r, 400));
+  const focusTabsPhone = await page.evaluate(focusTabsSrc);
+  check("on a phone too: the title bar folds, the tab row stays, and does not shift",
+    focusTabsPhone.appbarFolded && focusTabsPhone.rowShown && focusTabsPhone.tabIsHit && focusTabsPhone.drift.length === 0,
+    `title bar folded=${focusTabsPhone.appbarFolded}, row shown=${focusTabsPhone.rowShown}, tab pressable=${focusTabsPhone.tabIsHit}, drift: ${focusTabsPhone.drift.join(" | ") || "none"}`);
 
   check("nothing threw anywhere in this run",
     sheet.errs.length === 0 && picture.errs.length === 0,
