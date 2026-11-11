@@ -31,6 +31,15 @@ export function onHomeShown(fn) {
   if (typeof fn === "function") shownHooks.push(fn);
 }
 
+// Things that want to know each time home comes or goes — the tab's title and
+// favicon (src/ui/tab-identity.js) read "Recall" on home and the file's name
+// otherwise.
+const chromeHooks = [];
+
+export function onHomeChromeChange(fn) {
+  if (typeof fn === "function") chromeHooks.push(fn);
+}
+
 function syncHomeChrome() {
   document.documentElement.classList.toggle("is-home", homeVisible);
   for (const id of ["appHomeBtn", "homeBtn"]) {
@@ -38,6 +47,9 @@ function syncHomeChrome() {
     if (!button) continue;
     if (homeVisible) button.setAttribute("aria-current", "page");
     else button.removeAttribute("aria-current");
+  }
+  for (const fn of chromeHooks) {
+    try { fn(); } catch (error) { console.warn("Home chrome hook failed", error); }
   }
 }
 

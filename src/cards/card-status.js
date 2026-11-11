@@ -7,6 +7,7 @@ import { state } from "../core/state.js?v=__BUILD__";
 import { normalizeCardStatus } from "../export/markdown.js?v=__BUILD__";
 import { normalizeDeckCategory } from "../library/folders.js?v=__BUILD__";
 import { setSyncIndicator } from "../sync/indicator.js?v=__BUILD__";
+import { syncTabIdentity } from "../ui/tab-identity.js?v=__BUILD__";
 import { setViewMode } from "../ui/view-mode.js?v=__BUILD__";
 
 export function cardStatusLabel(status) {
@@ -43,6 +44,7 @@ export function updateMeta() {
   updateActiveCardStatusBadges();
   el.deckTitle.textContent = state.deckTitle;
   el.deckTitle.title = state.deckTitle;
+  syncTabIdentity();
   el.deckTitleWrap.hidden = !hasDeck;
   if (el.deckMeta2Row) el.deckMeta2Row.hidden = !hasDeck;
   if (!hasDeck) setSyncIndicator("idle");
