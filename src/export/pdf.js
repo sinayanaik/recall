@@ -10,6 +10,7 @@ import { el } from "../core/dom.js?v=__BUILD__";
 import { notesForExport } from "./notes-body.js?v=__BUILD__";
 import { ensureMermaid } from "../core/lib-loader.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
+import { syncTabIdentity } from "../ui/tab-identity.js?v=__BUILD__";
 import { escapeHtml } from "../core/text.js?v=__BUILD__";
 import { exportThemeClass, loadExportTheme } from "./themes.js?v=__BUILD__";
 import { prepareExportImages } from "./images.js?v=__BUILD__";
@@ -110,6 +111,9 @@ export function closePrintPreview() {
   document.querySelector(`#${pdfPrintStyleId}`)?.remove();
   if (printTitleBeforeExport) document.title = printTitleBeforeExport;
   setPrintTitleBeforeExport("");
+  // A rename or close during the preview could not reach the tab title while
+  // the export held it.
+  syncTabIdentity();
   unlockPageScroll();
 }
 

@@ -718,6 +718,7 @@ const APP_SHELL = [
   `./src/ui/style-popover.js?v=${STAMP}`,
   `./src/ui/style-settings.js?v=${STAMP}`,
   `./src/ui/style-tokens.js?v=${STAMP}`,
+  `./src/ui/tab-identity.js?v=${STAMP}`,
   `./src/ui/theme-catalog.js?v=${STAMP}`,
   `./src/ui/theme.js?v=${STAMP}`,
   `./src/ui/view-mode.js?v=${STAMP}`,
