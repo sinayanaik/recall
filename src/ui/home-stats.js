@@ -94,7 +94,7 @@ export function homeTileProgress(combined, deck) {
 }
 
 // Opens a file on the part the row is about — its Notes, or that one PDF.
-async function openFileAtPart(deck, partKey) {
+export async function openFileAtPart(deck, partKey) {
   hideHome();
   if (!(hasActiveDeck() && state.localDeckId === deck.id)) await loadDeckEntry(deck, "local");
   if (!hasActiveDeck()) {

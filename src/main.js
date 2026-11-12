@@ -99,7 +99,7 @@ import { appInfoBtn, appInfoCheckBtn, appInfoCloseBtn, appInfoHealthBtn, appInfo
 import { initDiagnosticsPanel } from "./pwa/diagnostics-panel.js?v=__BUILD__";
 import { initExtensionStore } from "./extensions/extension-store.js?v=__BUILD__";
 import { FOREGROUND_SYNC_IDLE_MS, lastHiddenAt, onlineReconcileTimer, setLastHiddenAt, setOnlineReconcileTimer, updateOnlineIndicator } from "./pwa/online.js?v=__BUILD__";
-import { installIncomingFiles } from "./pwa/incoming-files.js?v=__BUILD__";
+import { installIncomingFiles, whenAppShellShown } from "./pwa/incoming-files.js?v=__BUILD__";
 import { applyUpdate, installManifestLink, registerServiceWorker } from "./pwa/service-worker-client.js?v=__BUILD__";
 import { addQuickNoteCategory, assignQuickNoteCategory, closeQnCatMenu, closeQnCatModal, closeQuickNotesBoard, copyQuickNote, deleteQuickNoteCategory, jumpToQuickNoteSource, layoutQuickNotesGrid, openQnCatMenu, openQnCatModal, openQnRecolorMenu, openQuickNotesBoard, qnBoard, qnNewColor, renameQuickNoteCategory, renderQnColorPicker, renderQuickNotesBoard, saveQuickNote, setQnNewColor } from "./quick-notes/board.js?v=__BUILD__";
 import { closeDiagramModal, zoomDiagramBy } from "./render/diagram-zoom.js?v=__BUILD__";
@@ -125,6 +125,7 @@ import { setAllCardsRefreshHook } from "./storage/deck-snapshot.js?v=__BUILD__";
 import { setStatus, showConfirmModal, showPromptModal, showToast } from "./ui/feedback.js?v=__BUILD__";
 import { closeHelpModal, helpBtn, helpModal, helpModalCloseBtn, helpModalCloseFootBtn, openHelpModal } from "./ui/help.js?v=__BUILD__";
 import { initHome } from "./ui/home.js?v=__BUILD__";
+import { openFileAtPart } from "./ui/home-stats.js?v=__BUILD__";
 import { initShutdown } from "./ui/shutdown.js?v=__BUILD__";
 import { goNavBack, recordNavHistory, refreshNavBack } from "./ui/nav-history.js?v=__BUILD__";
 import { anyModalOpen, lockPageScroll, unlockPageScroll } from "./ui/overlays.js?v=__BUILD__";
@@ -3311,6 +3312,33 @@ initBackGesture();
 // another app's share sheet. After initBackGesture: the share-target flag is
 // taken off the URL with a replaceState, which must stamp over OUR base entry.
 installIncomingFiles();
+openLinkedFile();
+
+// A tab opened by ⋯ → Open in new tab: ?open=<local deck id>&part=notes.
+// The flags come off the URL at once (a reload should land on Home as usual),
+// and the deck opens once the app shell is up, i.e. after sign-in and storage.
+function openLinkedFile() {
+  let id = "";
+  try {
+    const url = new URL(location.href);
+    id = url.searchParams.get("open") || "";
+    if (!id) return;
+    url.searchParams.delete("open");
+    url.searchParams.delete("part");
+    history.replaceState(history.state, "", url.pathname + (url.search || "") + url.hash);
+  } catch (error) {
+    console.warn("Could not read a linked file from the URL", error);
+    return;
+  }
+  whenAppShellShown(() => {
+    const deck = readLocalDeckIndex().find((entry) => String(entry.id) === id);
+    if (!deck) {
+      showToast("That file isn't on this device", "error");
+      return;
+    }
+    openFileAtPart(deck, "notes").catch((error) => console.warn("Could not open a linked file", id, error));
+  });
+}
 
 // The service worker is registered above regardless, and deliberately: if a
 // library really is missing, the single most useful thing this load can do is
@@ -3810,6 +3838,23 @@ el.clozeToggleBtn?.addEventListener("click", () => toggleClozes(el.card, el.cloz
 el.clozeToggleNotesBtn?.addEventListener("click", () => toggleClozes(el.notesStage, el.clozeToggleNotesBtn));
 
 el.notesFoldAllBtn?.addEventListener("click", () => toggleAllNotesHeadings());
+
+// ⋯ → Open in new tab. The new tab boots like any other and openLinkedFile
+// (below) opens this deck on its notes. window.open runs synchronously inside
+// the click so a popup blocker lets it through; the flush starts the save
+// first, and anything that commits after the new tab has read the deck reaches
+// it through the cross-tab deck-store channel like any other tab's edit.
+document.getElementById("notesNewTabBtn")?.addEventListener("click", () => {
+  if (!state.localDeckId) {
+    showToast("Only a file saved in your library can open in a new tab", "error");
+    return;
+  }
+  flushWorkingDeck();
+  const url = new URL(location.pathname, location.href);
+  url.searchParams.set("open", String(state.localDeckId));
+  url.searchParams.set("part", "notes");
+  window.open(url.href, "_blank", "noopener");
+});
 
 // Keyboard activation for clozes (they carry role="button").
 document.addEventListener("keydown", (e) => {
