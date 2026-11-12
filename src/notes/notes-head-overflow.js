@@ -113,6 +113,7 @@ const OVERFLOW_SELECTORS = [
   ".notes-head > .cloze-make-icon",
   ".notes-head > #clozeToggleNotesBtn",
   ".notes-head > #clozeReviewBtn",
+  ".notes-head > #notesNewTabBtn",
 ];
 
 let notesHeadMoreBtn = null;
