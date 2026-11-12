@@ -27,6 +27,9 @@ const PALETTE = [
 let iconLink = null;
 let defaultIconHref = "";
 const iconCache = new Map();
+// No Image outside a browser: the Node checks import this module too.
+const logo = typeof Image === "function" ? new Image() : null;
+let logoReady = false;
 
 function faviconLink() {
   if (iconLink && iconLink.isConnected) return iconLink;
@@ -101,19 +104,46 @@ function drawIcon(glyph, color) {
   if (ctx.roundRect) ctx.roundRect(0, 0, ICON_SIZE, ICON_SIZE, r);
   else ctx.rect(0, 0, ICON_SIZE, ICON_SIZE);
   ctx.fill();
+  const badge = logoReady;
   const isEmoji = /\p{Extended_Pictographic}/u.test(glyph);
   const letters = isEmoji ? 1 : tabGraphemes(glyph).length;
-  const size = isEmoji ? 44 : letters > 1 ? 34 : 46;
+  // With the Recall badge in the bottom-right corner, the initials move up and
+  // left and get a little smaller so the two never overlap.
+  const size = badge
+    ? (isEmoji ? 36 : letters > 1 ? 30 : 40)
+    : (isEmoji ? 44 : letters > 1 ? 34 : 46);
+  const center = badge ? 27 : ICON_SIZE / 2;
+  const max = badge ? 44 : ICON_SIZE * 0.86;
   ctx.fillStyle = "#ffffff";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.font = `700 ${size}px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`;
-  // Fit two wide letters (WM) inside the square rather than clipping them.
+  // Fit two wide letters (WM) inside the space rather than clipping them.
   const width = ctx.measureText(glyph).width;
-  const max = ICON_SIZE * 0.86;
   if (width > max) ctx.font = `700 ${Math.floor(size * max / width)}px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`;
-  ctx.fillText(glyph, ICON_SIZE / 2, ICON_SIZE / 2 + size * 0.06);
+  ctx.fillText(glyph, center, center + size * 0.06);
+  if (badge) drawRecallBadge(ctx);
   return canvas.toDataURL("image/png");
+}
+
+// Recall's own icon, small, in the bottom-right corner — the app's signature on
+// every file's tab. A transparent ring is cut around it first so it stands
+// apart from the coloured square on any tab strip.
+function drawRecallBadge(ctx) {
+  const r = 13;
+  const c = ICON_SIZE - r - 1;
+  ctx.save();
+  ctx.globalCompositeOperation = "destination-out";
+  ctx.beginPath();
+  ctx.arc(c, c, r + 3, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(c, c, r, 0, Math.PI * 2);
+  ctx.clip();
+  ctx.drawImage(logo, c - r, c - r, r * 2, r * 2);
+  ctx.restore();
 }
 
 function iconFor(name) {
@@ -122,7 +152,7 @@ function iconFor(name) {
   // Keyed on the file's id where it has one, so renaming a file keeps its colour.
   const key = String(state.localDeckId || state.deckId || name);
   const color = PALETTE[hashKey(key) % PALETTE.length];
-  const iconKey = `${color}|${glyph}`;
+  const iconKey = `${color}|${glyph}|${logoReady}`;
   if (!iconCache.has(iconKey)) iconCache.set(iconKey, drawIcon(glyph, color));
   return iconCache.get(iconKey);
 }
@@ -145,3 +175,16 @@ export function syncTabIdentity() {
 }
 
 onHomeChromeChange(syncTabIdentity);
+
+// The app icon, loaded once for the corner badge. Same-origin and precached by
+// the service worker, so it draws offline and does not taint the canvas. Until
+// it arrives, icons are drawn without the badge and redrawn when it lands.
+logo?.addEventListener("load", () => {
+  logoReady = true;
+  iconCache.clear();
+  syncTabIdentity();
+}, { once: true });
+if (logo) {
+  const logoHref = faviconLink()?.getAttribute("href");
+  if (logoHref) logo.src = logoHref;
+}
