@@ -160,6 +160,7 @@ import { closeBlockActionsPopover, isBlockActionsPopoverOpen } from "./documents
 import { blocksForPaper, buildStaticBlock, canRedoBlocks, setDiagramShapeIO, canUndoBlocks, commitBlockEdit, deleteBlock, duplicateBlock, editBlock, handleBlockPointerDown, nudgeBlock, paintDocumentBlocks, pdfPointAt, redoBlocks, repaintDocumentBlocks, restackBlock, selectBlock, selectedBlockId, setBlocksChangedHandler, undoBlocks } from "./documents/pdf-blocks.js?v=__BUILD__";
 import { applyInkRailPreference, closeInkRailPopups, finishTypewriterBox, initInkRail, refreshInkRail, setDocumentUndoHandlers } from "./ui/ink-rail.js?v=__BUILD__";
 import { initDocumentShapes, repaintDocumentShapes, setShapeCreatedHandler } from "./documents/pdf-shapes.js?v=__BUILD__";
+import { deleteWithConnectors, initConnectors, scheduleConnectorRelink } from "./documents/pdf-connectors.js?v=__BUILD__";
 import { openPaperMenu } from "./documents/paper-menu.js?v=__BUILD__";
 import { openShapeTextEditor, setShapeTextCommittedHandler } from "./documents/pdf-shape-text.js?v=__BUILD__";
 import { initShapeStylePopover } from "./documents/pdf-shape-style-popover.js?v=__BUILD__";
@@ -1607,6 +1608,10 @@ onDomReady(() => {
   // listeners on the same scroller, which the ink layer stands down for while
   // it is armed — and the painter every repaint of a page's marks calls.
   initDocumentShapes();
+  // Connectors (src/documents/pdf-connectors.js): lines and arrows tied to the
+  // blocks and boxes they join, the arrows a picked-up box wears to make one,
+  // and the overlay over each page they are drawn in.
+  initConnectors();
   // What a new callout, text box or sticky note opens straight away: the box
   // to type in, or — a sticky note being its note — the note editor.
   setShapeCreatedHandler((record) => {
@@ -1654,6 +1659,9 @@ onDomReady(() => {
     // ↶ ↷ answer for both rings now (setDocumentUndoHandlers), so a block step
     // is a reason to repaint whether they can be pressed.
     refreshInkRail();
+    // A block moved, resized, reshaped or gone: the lines tied to it are
+    // brought up to date, a frame from now.
+    scheduleConnectorRelink();
   });
   // A diagram edit — blocks and shapes together — is one step on the blocks'
   // ring, and the shapes half is read and written through here
@@ -1740,6 +1748,10 @@ onDomReady(() => setHighlightsChangedHandler(() => {
   // box for nobody is the cost this guard exists to refuse.
   if (isHighlightSplitOpen()) refreshHighlightCycle();
   repaintPdfPageNotes();
+  // A box shape moved, or a sync brought a block's lines in from elsewhere:
+  // their stored ends are brought to where they are tied (a no-op when they
+  // are there already, which is what stops this answering itself).
+  scheduleConnectorRelink();
   // ...and the pages whose kept pictures carry the marks that just changed
   // (src/documents/pdf-view.js, "The reader's marks, in the picture").
   refreshBakedDocumentPages();
@@ -3114,6 +3126,13 @@ document.addEventListener("keydown", (event) => {
     }
     if (selectedBlockId()) {
       const bare = !event.ctrlKey && !event.metaKey && !event.altKey;
+      // Ctrl+Delete: the block AND the lines tied to it, one step — draw.io's
+      // "Delete All". A plain Delete leaves them, still tied, for an undo.
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && (event.key === "Delete" || event.key === "Backspace")) {
+        event.preventDefault();
+        deleteWithConnectors(selectedBlockId());
+        return;
+      }
       if (bare && (event.key === "Delete" || event.key === "Backspace")) {
         event.preventDefault();
         deleteBlock();

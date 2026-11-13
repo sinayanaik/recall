@@ -48,7 +48,7 @@ import { DOCUMENT_MARK_HANDLERS, DOCUMENT_NOTE_HANDLERS, documentHighlightNote, 
 import { SHAPE_BAR_ICONS, buildShapePanel, refreshShapePanel, setShapeTray, shapeTray } from "./pdf-shape-panel.js?v=__BUILD__";
 import { commitShapeTextEditor, isEditingShapeText, openShapeTextEditor } from "./pdf-shape-text.js?v=__BUILD__";
 import { SHAPE_ROTATABLE } from "../render/annot-shapes.js?v=__BUILD__";
-import { SHAPE_ROTATE_HANDLE_GAP, deleteShape, editingShapeTextId, selectShape, shapeScreenRect, targetShapeRecord } from "./pdf-shapes.js?v=__BUILD__";
+import { SHAPE_ROTATE_HANDLE_GAP, deleteShape, editConnectorLabel, editingShapeTextId, selectShape, shapeScreenRect, targetShapeRecord } from "./pdf-shapes.js?v=__BUILD__";
 
 export const SHAPE_STYLE_POPOVER_CLASS = "shape-style-popover";
 
@@ -160,7 +160,8 @@ function pressShapeStyle(action) {
   }
   if (action === "edit-text") {
     setShapeTray(shapeStylePop.section, null);
-    openShapeTextEditor(id);
+    // A line's words are its label, typed in an editor of their own.
+    if (!openShapeTextEditor(id)) editConnectorLabel(id);
   } else if (action === "note") {
     const rect = shapeScreenRect(record);
     if (isEditingShapeText()) commitShapeTextEditor();

@@ -19,6 +19,12 @@
 //      style bar's Shape row, To front / To back, one undo step for an edit that
 //      is blocks and shapes together (and the bar's ↶ taking it), and the
 //      outline in the static copy every export is drawn from.
+//   B. Connectors: the four arrows a picked-up block wears, one dragged to
+//      another block making a line tied to both, the line following a block
+//      WHILE it is dragged and in its record after, a press making a connected
+//      copy as one undo step, square corners, words on a line, Delete leaving
+//      the lines tied and Ctrl+Delete taking them, and the Shapes tool's arrow
+//      tying itself to the block it is drawn onto.
 
 import { spawn } from "node:child_process";
 import path from "node:path";
@@ -53,6 +59,8 @@ const API_SRC = `async () => {
     "/src/documents/block-style.js?v=__BUILD__",
     "/src/documents/pdf-block-editor.js?v=__BUILD__",
     "/src/documents/pdf-shapes.js?v=__BUILD__",
+    "/src/documents/pdf-connectors.js?v=__BUILD__",
+    "/src/render/annot-shapes.js?v=__BUILD__",
     "/src/documents/pdf-highlights.js?v=__BUILD__",
     "/src/documents/pdf-view.js?v=__BUILD__",
     "/src/documents/pdf-ink.js?v=__BUILD__",
@@ -296,6 +304,165 @@ try {
     JSON.stringify(boxes.compoundRedone));
   check("A7. the static copy an export draws carries the outline", boxes.staticOutline);
   check("A. no page errors", !boxes.errors.length, boxes.errors.join(" | "));
+
+  // ── B. Connectors ───────────────────────────────────────────────────────
+  const links = await page.evaluate(`async () => {
+    const { api, settle, raf, drag, press, mouse } = window.__recall;
+    const out = {};
+    const view = document.getElementById("documentView");
+    const blockNode = (id) => document.querySelector('[data-pdf-block="' + id + '"]');
+    const find = (id) => api.documentBlocks().find((b) => b.id === id);
+    const record = (id) => api.documentHighlightById(id);
+    const centre = (node) => { const r = node.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; };
+    // A clean page: two boxes, side by side, low on the page.
+    api.selectBlock(null);
+    api.selectShape(null);
+    const a = api.addDocumentBlock(1, { x: 140, y: 200 }, { style: { fit: false }, w: 100, h: 50, edit: false });
+    const b = api.addDocumentBlock(1, { x: 420, y: 200 }, { style: { fit: false }, w: 100, h: 50, edit: false });
+    api.selectBlock(a.id);
+    await settle(80);
+    const arrows = [...document.querySelectorAll(".pdf-diagram-layer .pdf-connect-arrow")];
+    out.arrows = arrows.map((n) => n.dataset.side).sort().join(",");
+    const east = arrows.find((n) => n.dataset.side === "e");
+    const shapesBefore = api.documentShapes().length;
+    // B1. Drag the east arrow onto B.
+    await drag(east, centre(east), centre(blockNode(b.id)));
+    await settle(80);
+    const made = api.documentShapes().filter((r) => r.shape?.ends).at(-1);
+    out.connector = made ? { ends: made.shape.ends, p: made.shape.p } : null;
+    out.shapesAdded = api.documentShapes().length - shapesBefore;
+    out.bWest = b.x;
+    out.aEast = a.x + a.w;
+    // B2. Drag B down the page: the line follows WHILE dragging, and after.
+    const pathOf = () => document.querySelector('.pdf-shape[data-highlight-id="' + made.id + '"] path')?.getAttribute("d") || "";
+    const before = pathOf();
+    const bNode = blockNode(b.id);
+    const from = centre(bNode);
+    const scale = api.pdfPageViewport(1).scale || 1;
+    const pid = 77;
+    mouse(bNode, "pointerdown", from[0], from[1], { pointerId: pid });
+    for (let i = 1; i <= 5; i += 1) { mouse(document, "pointermove", from[0], from[1] + i * 12 * scale, { pointerId: pid }); await raf(); }
+    await raf();
+    out.midDrag = pathOf() !== before;
+    mouse(document, "pointerup", from[0], from[1] + 60 * scale, { pointerId: pid });
+    await settle(120);
+    const moved = find(b.id);
+    const after = record(made.id).shape;
+    out.follows = { bY: moved.y, endY: after.p[1][1], bTop: moved.y + moved.h, bBottom: moved.y };
+    // B3. A press on A's south arrow: a connected copy, opened to type in.
+    api.selectBlock(a.id);
+    await settle(60);
+    const south = document.querySelector(".pdf-diagram-layer .pdf-connect-arrow[data-side='s']");
+    const blocksBefore = api.documentBlocks().length;
+    const tiedBefore = api.documentShapes().filter((r) => r.shape?.ends).length;
+    const sc = centre(south);
+    mouse(south, "pointerdown", sc[0], sc[1], { pointerId: 81 });
+    mouse(document, "pointerup", sc[0], sc[1], { pointerId: 81 });
+    await settle(150);
+    out.editorOpen = Boolean(document.getElementById("pdfBlockEditor") && !document.getElementById("pdfBlockEditor").hidden);
+    api.commitBlockEdit();
+    await settle(60);
+    const copy = api.documentBlocks().at(-1);
+    out.copy = { added: api.documentBlocks().length - blocksBefore, below: copy.y + copy.h < a.y, sameSize: copy.w === a.w && copy.h === a.h,
+      tied: api.documentShapes().filter((r) => r.shape?.ends).length - tiedBefore };
+    press(document.querySelector("#documentInkRail [data-ink-action='undo']"));
+    await settle(100);
+    out.copyUndone = { blocks: api.documentBlocks().length - blocksBefore, tied: api.documentShapes().filter((r) => r.shape?.ends).length - tiedBefore };
+    // B4. Square corners.
+    api.selectBlock(null);
+    api.selectShape(made.id);
+    await settle(30);
+    api.setShapeSettings({ route: "elbow" });
+    await settle(120);
+    const routed = record(made.id).shape;
+    const path = api.connectorPath(routed);
+    out.elbow = { route: routed.route, exits: routed.exits, points: path.length,
+      square: path.every((p, i) => i === 0 || Math.abs(p[0] - path[i - 1][0]) < 0.01 || Math.abs(p[1] - path[i - 1][1]) < 0.01) };
+    out.bendHandle = Boolean(document.querySelector('.pdf-shape-handle[data-handle="bend"]'));
+    api.setShapeSettings({ route: "straight" });
+    // B5. Words on the line.
+    api.selectShape(null);
+    out.labelOpened = api.openConnectorLabelEditor(made.id);
+    await raf();
+    const editor = document.querySelector(".pdf-connector-label-editor");
+    editor.value = "yes";
+    editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await settle(120);
+    out.label = record(made.id).shape.text;
+    out.labelDrawn = Boolean(document.querySelector('.pdf-shape-text[data-highlight-id="' + made.id + '"]'));
+    // B6. Delete B: the line stays, tied; undo brings B back onto it.
+    api.deleteBlock(b.id);
+    await settle(80);
+    out.afterDelete = { line: Boolean(record(made.id)), stillTied: record(made.id)?.shape?.ends?.[1]?.id === b.id };
+    api.undoBlocks();
+    await settle(80);
+    out.bBack = Boolean(find(b.id));
+    // ...and Ctrl+Delete takes B with its line, as one step.
+    api.selectBlock(b.id);
+    await settle(30);
+    document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Delete", ctrlKey: true, bubbles: true, cancelable: true }));
+    await settle(100);
+    out.afterDeleteAll = { block: Boolean(find(b.id)), line: Boolean(record(made.id)) };
+    press(document.querySelector("#documentInkRail [data-ink-action='undo']"));
+    await settle(100);
+    out.afterUndoAll = { block: Boolean(find(b.id)), line: Boolean(record(made.id)) };
+    // B7. The Shapes tool's arrow, drawn onto A, ties itself to A.
+    api.selectBlock(null);
+    api.toggleInkRail?.(true);
+    api.chooseInkTool("shape");
+    api.setShapeType("arrow");
+    await settle(50);
+    const aBox = blockNode(a.id).getBoundingClientRect();
+    const pen = (type, x, y) => view.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, pointerId: 91, pointerType: "pen", isPrimary: true, clientX: x, clientY: y, buttons: type === "pointerup" ? 0 : 1, pressure: 0.5 }));
+    const start = [aBox.left + aBox.width / 2, aBox.top - 80];
+    pen("pointerdown", start[0], start[1]);
+    for (let i = 1; i <= 6; i += 1) { pen("pointermove", start[0], start[1] + (i * 80 + 25) / 6); await raf(); }
+    pen("pointerup", start[0], start[1] + 105);
+    await settle(120);
+    const drawn = api.documentShapes().at(-1);
+    out.drawnTied = drawn?.shape?.ends?.[1]?.id === a.id && !drawn?.shape?.ends?.[0];
+    out.drawnEndOnTop = drawn ? Math.abs(drawn.shape.p[1][1] - (a.y + a.h + 2)) < 1 : false;
+    api.chooseInkTool("pen");
+    // B8. Settled: a page with tied lines on it writes nothing while it sits
+    // still — the stored ends agree with their ties, so bringing them up to date
+    // changes nothing and does not ask again.
+    await settle(300);
+    const marks = api.state.meta.pdfHighlights;
+    const blocksArray = api.state.meta.pdfBlocks;
+    api.scheduleConnectorRelink();
+    await settle(600);
+    out.settled = api.state.meta.pdfHighlights === marks && api.state.meta.pdfBlocks === blocksArray;
+    out.errors = window.__errs.slice();
+    return out;
+  }`);
+
+  check("B1. a picked-up block wears four connect arrows", links.arrows === "e,n,s,w", links.arrows);
+  check("B1. dragging one onto another block makes ONE connector tied to both",
+    links.shapesAdded === 1 && links.connector?.ends?.[0]?.side === "e" && links.connector?.ends?.[1] && !links.connector.ends[1].side.match(/^[nsw]$/),
+    JSON.stringify(links.connector?.ends));
+  check("...its ends on the two blocks' facing edges",
+    links.connector && Math.abs(links.connector.p[0][0] - (links.aEast + 2)) < 1 && Math.abs(links.connector.p[1][0] - (links.bWest - 2)) < 1,
+    JSON.stringify(links.connector?.p));
+  check("B2. the line follows a block WHILE it is dragged", links.midDrag);
+  check("...and its record follows it after", links.follows.endY < links.follows.bTop && links.follows.endY > links.follows.bBottom,
+    JSON.stringify(links.follows));
+  check("B3. a press on an arrow makes a connected copy beside the block, open to type in",
+    links.editorOpen && links.copy.added === 1 && links.copy.below && links.copy.sameSize && links.copy.tied === 1, JSON.stringify(links.copy));
+  check("...and ONE press of ↶ takes the copy and its line back", links.copyUndone.blocks === 0 && links.copyUndone.tied === 0,
+    JSON.stringify(links.copyUndone));
+  check("B4. a connector routed with square corners runs only across and down, with a middle to hold",
+    links.elbow.route === "elbow" && links.elbow.square && links.elbow.points >= 2 && links.bendHandle, JSON.stringify(links.elbow));
+  check("B5. words typed on a line are kept and drawn", links.labelOpened && links.label === "yes" && links.labelDrawn,
+    `(${links.label})`);
+  check("B6. Delete leaves a block's lines, still tied — and undo puts the block back onto them",
+    links.afterDelete.line && links.afterDelete.stillTied && links.bBack, JSON.stringify(links.afterDelete));
+  check("...Ctrl+Delete takes the block AND its lines, and one ↶ brings both back",
+    !links.afterDeleteAll.block && !links.afterDeleteAll.line && links.afterUndoAll.block && links.afterUndoAll.line,
+    JSON.stringify([links.afterDeleteAll, links.afterUndoAll]));
+  check("B7. an arrow drawn with the Shapes tool onto a block ties itself to it, its tip on the block's edge",
+    links.drawnTied && links.drawnEndOnTop);
+  check("B8. a page of tied lines, left alone, writes nothing", links.settled);
+  check("B. no page errors", !links.errors.length, links.errors.join(" | "));
 } catch (error) {
   check("the check itself ran", false, String(error?.stack || error));
 } finally {

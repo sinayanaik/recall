@@ -44,7 +44,7 @@ import { MARK_HIGHLIGHT_DEFAULT, MARK_HIGHLIGHT_HEX } from "../format/highlight-
 import { readHighlightNotes } from "../format/highlight-notes.js?v=__BUILD__";
 import { decodeInkStrokes } from "../format/ink-strokes.js?v=__BUILD__";
 import { markGeometry, markStyleOf, normalizeMarkHex } from "../format/mark-styles.js?v=__BUILD__";
-import { calloutStart, markdownToPlainText, normalizeShape, rectFromPoints, shapeBounds, shapeDashArray, shapeTextNeedsRendering, shapeTextRect, shapeTextRotationMatrix } from "../render/annot-shapes.js?v=__BUILD__";
+import { calloutStart, connectorPath, markdownToPlainText, normalizeShape, rectFromPoints, shapeBounds, shapeDashArray, shapeTextNeedsRendering, shapeTextRect, shapeTextRotationMatrix } from "../render/annot-shapes.js?v=__BUILD__";
 import { resolveInkPaint } from "../render/ink-paint.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
 import { AREA_FILL_ALPHA, CUSTOM_HIGHLIGHT_ALPHA, highlightAlpha, rasteriseRegionBlocks, regionBlocksInBox, regionRichShapeTexts } from "./pdf-region-marks.js?v=__BUILD__";
@@ -303,7 +303,16 @@ async function writeShape(doc, page, record, note) {
   let dict;
   let popup = Boolean(note);
   let reply = null;
-  if (s.type === "line" || s.type === "arrow") {
+  if ((s.type === "line" || s.type === "arrow") && s.route) {
+    // A connector routed with corners or a curve: a Line annotation has two
+    // points and no more, so it is the PolyLine it is drawn as — the same
+    // points the appearance above is drawn through.
+    dict = baseAnnot(doc, record, "PolyLine", bounds, s.stroke, note);
+    dict.Vertices = connectorPath(s).flat().map((n) => Math.round(n * 100) / 100);
+    dict.LE = s.heads.map((h) => LINE_ENDINGS[h] || "None");
+    dict.BS = border;
+    dict.CA = s.opacity;
+  } else if (s.type === "line" || s.type === "arrow") {
     dict = baseAnnot(doc, record, "Line", bounds, s.stroke, note);
     dict.L = [...s.p[0], ...s.p[1]];
     dict.LE = s.heads.map((h) => LINE_ENDINGS[h] || "None");

@@ -1410,7 +1410,7 @@ export function paintDocumentBlocks(pageNumber) {
   // A page with no blocks and no layer is left alone, exactly as a page with no
   // ink is: a div per page of a three-hundred-page paper is a real cost for
   // nothing.
-  if (!blocks.length && !pageEl.querySelector(`.${PDF_BLOCK_LAYER_CLASS}`)) return;
+  if (!blocks.length && !pageEl.querySelector(`.${PDF_BLOCK_LAYER_CLASS}`)) { blocksPaintedHook(Number(pageNumber)); return; }
   const layer = blockLayer(pageNumber);
   if (!layer) return;
   const wanted = new Set(blocks.map((block) => block.id));
@@ -1432,6 +1432,16 @@ export function paintDocumentBlocks(pageNumber) {
   // before, and showed only when the service worker happened to have cached
   // the picture.
   resolveStorageImages(layer).catch((error) => console.warn("Could not resolve the block images", error));
+  blocksPaintedHook(Number(pageNumber));
+}
+
+// Told after every paint of a page's blocks — which is every selection, edit,
+// move and zoom — so what is drawn ABOUT a block (its connect arrows,
+// src/documents/pdf-connectors.js) follows it. Registered by src/main.js.
+let blocksPaintedHook = () => {};
+
+export function setBlocksPaintedHook(fn) {
+  blocksPaintedHook = typeof fn === "function" ? fn : () => {};
 }
 
 export function repaintDocumentBlocks() {

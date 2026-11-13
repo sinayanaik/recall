@@ -404,6 +404,90 @@ try {
     return buried.length === 0 ? true : "a deleted shape came back";
   });
 
+  // ── Connectors: a line or an arrow tied to what it joins ────────────────
+  must("a line drawn before connectors normalises to exactly what it was", () => {
+    const plain = S.normalizeShape({ type: "arrow", p: [[0, 0], [100, 0]] });
+    const keys = Object.keys(plain).sort().join(",");
+    if (["ends", "route", "exits"].some((key) => key in plain)) return `grew ${keys}`;
+    return JSON.stringify(S.normalizeShape(plain)) === JSON.stringify(plain) || "not stable";
+  });
+  must("ties, a route, exits and a bend are kept; nonsense in them is not", () => {
+    const s = S.normalizeShape({
+      type: "arrow", p: [[0, 0], [100, 50], [40, 25]], route: "elbow", exits: ["e", "up"],
+      ends: [{ id: "bk-abc", side: "e" }, { id: "", side: "n" }]
+    });
+    if (s.route !== "elbow" || s.p.length !== 3) return JSON.stringify(s);
+    if (JSON.stringify(s.ends) !== JSON.stringify([{ id: "bk-abc", side: "e" }, null])) return `ends ${JSON.stringify(s.ends)}`;
+    if (JSON.stringify(s.exits) !== JSON.stringify(["e", null])) return `exits ${JSON.stringify(s.exits)}`;
+    const odd = S.normalizeShape({ type: "line", p: [[0, 0], [1, 1], [2, 2]], route: "zigzag", ends: [{ id: "x", side: "up" }, null] });
+    if (odd.route || odd.p.length !== 2) return `a bend kept with no route: ${JSON.stringify(odd)}`;
+    if (odd.ends[0].side !== "auto") return "an unknown side was kept";
+    const box = S.normalizeShape({ type: "rect", p: [[0, 0], [1, 1]], ends: [{ id: "x" }, null], route: "elbow" });
+    return (!box.ends && !box.route) || "a box took a connector's fields";
+  });
+  must("a straight line's path is its two ends", () => {
+    const path = S.connectorPath({ type: "line", p: [[0, 0], [10, 5]] });
+    return JSON.stringify(path) === "[[0,0],[10,5]]" || JSON.stringify(path);
+  });
+  must("an elbow between two facing sides runs out, across at halfway, and in", () => {
+    const path = S.connectorPath({ type: "arrow", p: [[0, 0], [200, 100]], route: "elbow", exits: ["e", "w"] });
+    const want = [[0, 0], [100, 0], [100, 100], [200, 100]];
+    if (path.length !== want.length || !path.every((p, i) => near(p[0], want[i][0]) && near(p[1], want[i][1]))) return JSON.stringify(path);
+    return true;
+  });
+  must("...its middle run moves to the bend, and every stretch is square", () => {
+    const path = S.connectorPath({ type: "arrow", p: [[0, 0], [200, 100], [60, 999]], route: "elbow", exits: ["e", "w"] });
+    if (!near(path[1][0], 60) || !near(path[2][0], 60)) return JSON.stringify(path);
+    return path.every((p, i) => i === 0 || near(p[0], path[i - 1][0]) || near(p[1], path[i - 1][1])) || "a slanted stretch";
+  });
+  must("an elbow from a side to a top turns once; one whose ends line up is a straight line", () => {
+    const corner = S.connectorPath({ type: "line", p: [[0, 0], [100, -100]], route: "elbow", exits: ["e", "n"] });
+    const corners = corner.length - 2;
+    if (corners !== 1 || !near(corner[1][0], 100) || !near(corner[1][1], 0)) return JSON.stringify(corner);
+    const level = S.connectorPath({ type: "line", p: [[0, 0], [100, 0]], route: "elbow", exits: ["e", "w"] });
+    return level.length === 2 || JSON.stringify(level);
+  });
+  must("two ends leaving the same way go round the far side rather than back through a box", () => {
+    const path = S.connectorPath({ type: "line", p: [[0, 0], [50, 100]], route: "elbow", exits: ["e", "e"] });
+    return path.every(([x]) => x >= 0) && Math.max(...path.map(([x]) => x)) >= 50 + S.CONNECTOR_STUB - 0.01 || JSON.stringify(path);
+  });
+  must("a curve leaves each end the way it is told and passes through its bend", () => {
+    const path = S.connectorPath({ type: "line", p: [[0, 0], [200, 0], [100, 60]], route: "curve", exits: ["n", "n"] });
+    if (path.length < 10 || !near(path[0][0], 0) || !near(path.at(-1)[0], 200)) return `${path.length} points`;
+    if (!(path[1][1] > path[0][1])) return "it does not leave upward";
+    const middle = path[Math.floor(path.length / 2)];
+    return (near(middle[0], 100, 0.5) && near(middle[1], 60, 0.5)) || `middle ${middle}`;
+  });
+  must("a routed arrow's head points along its LAST stretch", () => {
+    const prims = S.shapePrimitives({ type: "arrow", p: [[0, 0], [200, 100]], route: "elbow", exits: ["e", "w"], heads: ["none", "filled"] });
+    const head = prims.find((prim) => prim.closed && prim.fill);
+    // The last stretch runs from (100, 100) to (200, 100): the tip is the end,
+    // and the two wings are behind it, level with each other about y = 100.
+    if (!head) return "no head";
+    const [left, tip, right] = head.pts;
+    if (!near(tip[0], 200) || !near(tip[1], 100)) return `tip ${tip}`;
+    return (near(left[0], right[0]) && left[0] < 200 && near((left[1] + right[1]) / 2, 100)) || JSON.stringify(head.pts);
+  });
+  must("a routed line's bounds cover its corners, and its middle is a handle", () => {
+    const shape = { type: "line", p: [[0, 0], [100, 0]], route: "elbow", exits: ["n", "n"] };
+    const bounds = S.shapeBounds(shape);
+    if (!(bounds[3] >= S.CONNECTOR_STUB)) return `bounds ${bounds}`;
+    const handles = S.shapeHandles(shape).map((h) => h.id).join(",");
+    if (handles !== "p0,p1,bend") return handles;
+    const moved = S.moveShapeHandle(shape, "bend", 50, 40);
+    return (moved.p.length === 3 && near(moved.p[2][1], 40)) || JSON.stringify(moved.p);
+  });
+  must("words on a line sit beside its middle, and a press on them is a press on the line", () => {
+    const level = { type: "line", p: [[0, 0], [100, 0]], text: "yes" };
+    const rect = S.connectorLabelRect(level);
+    if (!rect || !(rect[1] > 0) || !near((rect[0] + rect[2]) / 2, 50)) return `level ${rect}`;
+    const upright = S.connectorLabelRect({ type: "line", p: [[0, 0], [0, 100]], text: "no" });
+    if (!upright || !(upright[0] > 0) || !near((upright[1] + upright[3]) / 2, 50)) return `upright ${upright}`;
+    const text = S.shapePrimitives(level).find((prim) => prim.kind === "text");
+    if (!text || text.text !== "yes") return "no words drawn";
+    return S.shapeHitsPoint(level, (rect[0] + rect[2]) / 2, (rect[1] + rect[3]) / 2) || "the words are not the line";
+  });
+
   console.log("── annotation geometry ──");
   for (const [ok, name, detail] of results) {
     console.log(`  ${ok ? "ok  " : "FAIL"}  ${name}${ok ? "" : " — " + detail}`);
