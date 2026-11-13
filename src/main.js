@@ -39,7 +39,7 @@ import { askExportTheme, chosenExportTheme, paintExportThemeOptions } from "./ex
 import { saveExportTheme } from "./export/themes.js?v=__BUILD__";
 import { eraseNotesSelection, makeClozeFromSelection } from "./format/cloze.js?v=__BUILD__";
 import { closeAllRenderMenus, handleRenderToolbarAction, initRenderToolbars, renderFormatDefaults, renderTargetConfig, setRenderDefault } from "./format/render-toolbar.js?v=__BUILD__";
-import { applyPillHighlight, applyPillMarkHex, applyPillMarkStyle, buildPillHighlightMenu, refreshPillHighlightMenu, clozeTextareaSelection, eraseTextareaSelection, extractSelectionToNote, hideNotesSelectionButtonUnlessPinned, pillActionTarget } from "./format/selection-tools.js?v=__BUILD__";
+import { applyPillHighlight, applyPillMarkHex, applyPillMarkStyle, buildPillHighlightMenu, refreshPillHighlightMenu, refreshPillHighlightSwatch, clozeTextareaSelection, eraseTextareaSelection, extractSelectionToNote, hideNotesSelectionButtonUnlessPinned, pillActionTarget } from "./format/selection-tools.js?v=__BUILD__";
 import { markBrokenImages } from "./images/broken.js?v=__BUILD__";
 import { revokeLocalImageUrls } from "./images/outbox.js?v=__BUILD__";
 import { allImageFiles, dragContainsImage, animatedSourceUrlFromTransfer, insertTransferImages } from "./images/paste.js?v=__BUILD__";
@@ -80,7 +80,7 @@ import { initNotesResizeHold, noteSettledNotesPosition, scheduleSettledNotesCapt
 import { findRawOffsetForRenderedPoint } from "./notes/raw-offset.js?v=__BUILD__";
 import { flushReadingPositionSave } from "./notes/reading-position.js?v=__BUILD__";
 import { rawOffsetForCurrentNotesScroll, scheduleReadingAnchorCapture, setReadingAnchorCapturedHook } from "./notes/scroll-anchor.js?v=__BUILD__";
-import { beginSelectionGesture, currentNotesSelectionMarkdown, currentSelectionPlainText, endSelectionGesture, ensurePillSelectionCapture, hideNotesSelectionButton, noteSelectionChanged, pillSelectionCapture, scheduleNotesSelectionCheck, selectionGestureIsLive, setDocumentPillCaptureHook, setSelectionBarExpanded, suspendSelectionBarForScroll } from "./notes/selection.js?v=__BUILD__";
+import { beginSelectionGesture, currentNotesSelectionMarkdown, currentSelectionPlainText, endSelectionGesture, ensurePillSelectionCapture, hideNotesSelectionButton, noteSelectionChanged, pillSelectionCapture, scheduleNotesSelectionCheck, selectionGestureIsLive, setDocumentPillCaptureHook, setPillSwatchPaintHook, setSelectionBarExpanded, suspendSelectionBarForScroll } from "./notes/selection.js?v=__BUILD__";
 import { clearTouchSelection, initTouchSelection } from "./notes/touch-selection.js?v=__BUILD__";
 import { recordNotesTyping, redoNotes, undoNotes } from "./notes/notes-history.js?v=__BUILD__";
 import { closeMarkMenu, initMarkMenu, setMarkMenuActions } from "./notes/mark-menu.js?v=__BUILD__";
@@ -942,6 +942,7 @@ el.highlightSelectionMenuBtn?.addEventListener("pointerdown", (event) => {
   event.stopPropagation();
   buildPillHighlightMenu();
   refreshPillHighlightMenu();
+  refreshPillHighlightSwatch();
   const willOpen = el.highlightSelectionMenu.hidden;
   el.highlightSelectionMenu.hidden = !willOpen;
   el.highlightSelectionMenuBtn.setAttribute("aria-expanded", String(willOpen));
@@ -1310,6 +1311,7 @@ onDomReady(() => {
 // that makes one without closing an import cycle it documents at length. Same
 // registration idiom as the two hooks above.
 onDomReady(() => setDocumentPillCaptureHook(captureDocumentSelection));
+onDomReady(() => setPillSwatchPaintHook(refreshPillHighlightSwatch));
 // Pressing the number on an annotated highlight opens that note.
 //
 // Registered rather than imported for the reason setHighlightBadgeHandler's own

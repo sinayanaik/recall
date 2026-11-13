@@ -381,6 +381,61 @@ sections.push(async () => {
   check("on a PDF the bar's colour menu shows the style and colour rows", bar.rows.join() === "colours:shown,styles:shown,more:shown", bar.rows.join());
   check("...and a style pressed there marks the selection and is remembered", bar.made.join() === "strike" && bar.remembered === "strike", JSON.stringify(bar));
 
+  // The bar's swatch says what a press will apply: the pen colour and the style
+  // on a PDF, and the colour of the tab the selection is on — not the colour it
+  // was last painted with on another tab ("it shows blue, and makes yellow").
+  await page.evaluate(SELECT_SRC, 1, 9);
+  const swatch = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const read = () => {
+      const button = document.getElementById("highlightSelectionBtn");
+      const chip = button.querySelector(".pill-swatch");
+      return { colour: chip.dataset.markColor, style: chip.dataset.markStyle, glyph: chip.classList.contains("is-glyph"), background: chip.style.background, title: button.title };
+    };
+    api.writeInkPreferences({ markStyle: "underline", markHex: "#dc2626" });
+    // The presses above were synthetic pointerdowns with no pointerup, which
+    // leaves a selection gesture open; a real press always ends one.
+    api.endSelectionGesture();
+    await settle(80);
+    api.positionNotesSelectionButton();
+    await settle(60);
+    const onPaper = read();
+    const menuBtn = document.getElementById("highlightSelectionMenuBtn");
+    menuBtn.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true }));
+    await settle(60);
+    const menu = document.getElementById("highlightSelectionMenu");
+    const lit = Array.from(menu.querySelectorAll(".pill-swatch-btn.is-current")).map((b) => b.dataset.pillHex || b.dataset.pillHighlight);
+    menuBtn.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true }));
+    const before = new Set((api.state.meta.pdfHighlights || []).map((r) => r.id));
+    document.getElementById("highlightSelectionBtn").dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true }));
+    await settle(250);
+    const made = (api.state.meta.pdfHighlights || []).filter((r) => !before.has(r.id)).map((r) => (r.style || "highlight") + ":" + (r.hex || r.color));
+    api.writeInkPreferences({ markStyle: "highlight", markHex: null });
+
+    // Per tab: blue on the PDF, yellow on Notes. The swatch follows the tab.
+    api.setRenderDefault("highlight", "blue");
+    api.refreshPillHighlightSwatch();
+    const pdfTab = read();
+    const mode = api.state.viewMode;
+    api.state.viewMode = "notes";
+    const notesBefore = api.renderFormatDefaults.highlight;
+    api.setRenderDefault("highlight", "yellow");
+    api.state.viewMode = mode;
+    api.refreshPillHighlightSwatch();
+    const stillBlue = read();
+    api.state.viewMode = "notes";
+    api.refreshPillHighlightSwatch();
+    const notesTab = read();
+    api.setRenderDefault("highlight", notesBefore);
+    api.state.viewMode = mode;
+    api.refreshPillHighlightSwatch();
+    return { onPaper, lit, made, pdfTab, stillBlue, notesTab };
+  }`);
+  check("on a PDF the bar's swatch shows the pen colour and the style a press will use", swatch.onPaper.colour === "#dc2626" && swatch.onPaper.style === "underline" && swatch.onPaper.glyph && /^Underline/.test(swatch.onPaper.title) && /red/i.test(swatch.onPaper.title), JSON.stringify(swatch.onPaper));
+  check("...its colour menu lights that colour, and only that one", swatch.lit.join() === "#dc2626", swatch.lit.join());
+  check("...and a press makes exactly what it showed", swatch.made.join() === "underline:#dc2626", swatch.made.join());
+  check("the swatch shows each tab's own highlight colour, not the last one painted", swatch.pdfTab.colour === "blue" && swatch.stillBlue.colour === "blue" && swatch.notesTab.colour === "yellow" && !swatch.notesTab.glyph && /^Highlight/.test(swatch.notesTab.title), JSON.stringify([swatch.pdfTab, swatch.stillBlue, swatch.notesTab]));
+
   // ...and every one of them survives a save and a reload.
   const reloaded = await page.evaluate(`async () => {
     const { api, settle } = window.__recall;

@@ -1616,12 +1616,16 @@
                    a colour-font glyph whose colour no stylesheet can change — so
                    the one affordance for highlighting always said "red" no matter
                    which of the six colours was actually about to be applied.
-                   data-render-swatch="highlight" opts it into refreshRenderSwatches(),
-                   which repaints every such element from renderFormatDefaults.
+                   It is painted by refreshPillHighlightSwatch()
+                   (src/format/selection-tools.js) every time the bar is shown, so
+                   it says what a press on THIS tab will apply — the colour is kept
+                   per tab, and on a PDF the pen colour and the mark style count too.
+                   It is deliberately NOT a data-render-swatch: refreshRenderSwatches()
+                   knows only the colour token and would paint over that.
                    The ▾ opens the colour menu on the pill itself, so choosing a
                    colour never costs you the selection you are standing on. -->
               <span class="selection-float-highlight">
-                <button class="selection-float-btn is-highlight" id="highlightSelectionBtn" type="button" title="Highlight the selection" aria-label="Highlight the selection"><span class="pill-swatch" data-render-swatch="highlight" aria-hidden="true"></span></button>
+                <button class="selection-float-btn is-highlight" id="highlightSelectionBtn" type="button" title="Highlight the selection" aria-label="Highlight the selection"><span class="pill-swatch" aria-hidden="true"></span></button>
                 <button class="selection-float-btn is-highlight-menu" id="highlightSelectionMenuBtn" type="button" title="Choose highlight colour" aria-label="Choose highlight colour" aria-haspopup="true" aria-expanded="false"><span aria-hidden="true">&#9662;</span></button>
                 <div class="selection-float-menu" id="highlightSelectionMenu" hidden></div>
               </span>
