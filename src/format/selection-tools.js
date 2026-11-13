@@ -7,7 +7,7 @@ import { addDocumentHighlight, documentHighlightsCovering, documentHighlightsUnd
 import { captureDocumentSelection } from "../documents/pdf-selection.js?v=__BUILD__";
 import { isDocumentViewActive } from "../documents/pdf-view.js?v=__BUILD__";
 import { toggleWrapPair } from "../editor/text-transforms.js?v=__BUILD__";
-import { MARK_HIGHLIGHT_COLORS } from "./highlight-colors.js?v=__BUILD__";
+import { MARK_HIGHLIGHT_COLORS, MARK_HIGHLIGHT_DEFAULT, MARK_HIGHLIGHT_HEX } from "./highlight-colors.js?v=__BUILD__";
 import { INK_PEN_COLORS } from "./ink-colors.js?v=__BUILD__";
 import { MARK_STYLES, MARK_STYLE_LABELS, markStyleOf, normalizeMarkHex, normalizeMarkStyle } from "./mark-styles.js?v=__BUILD__";
 import { inkPreferences, rememberInkRecentColor, writeInkPreferences } from "../storage/ink-prefs.js?v=__BUILD__";
@@ -209,6 +209,61 @@ function selectionRects(target) {
   return target?.rects || [];
 }
 
+// ── What one press of the swatch will do, said once ────────────────────────
+//
+// The swatch on the bar is a promise: "press me and you get THIS". It used to be
+// painted from renderFormatDefaults.highlight only when that setting changed —
+// but the setting is kept per tab, so a blue chosen on a PDF stayed on the
+// swatch after the reader moved to Notes, whose own default was still yellow,
+// and the press made yellow. On a PDF it also never showed the two other things
+// a press applies there: a colour from the pen's palette (markHex) and how the
+// words are marked (markStyle).
+//
+// So the swatch and applyPillHighlight now read the same answer from here, and
+// the swatch is repainted every time the bar is shown (setPillSwatchPaintHook in
+// src/notes/selection.js).
+export function pillMarkPreview() {
+  const color = MARK_HIGHLIGHT_HEX[renderFormatDefaults.highlight] ? renderFormatDefaults.highlight : MARK_HIGHLIGHT_DEFAULT;
+  const onPaper = isDocumentViewActive() && !noteEditorHoldsSelection();
+  if (!onPaper) return { color, hex: MARK_HIGHLIGHT_HEX[color], markHex: null, style: "highlight", onPaper };
+  const prefs = inkPreferences();
+  const markHex = normalizeMarkHex(prefs.markHex);
+  return { color, hex: markHex || MARK_HIGHLIGHT_HEX[color], markHex, style: normalizeMarkStyle(prefs.markStyle), onPaper };
+}
+
+// A colour's name for a tooltip: one of the four, one of the pen's, or its hex.
+function pillColourName(preview) {
+  if (preview.markHex) {
+    const pen = INK_PEN_COLORS.find((c) => normalizeMarkHex(c.swatch) === preview.markHex);
+    return pen ? pen.name.toLowerCase() : preview.markHex;
+  }
+  return preview.color;
+}
+
+export function refreshPillHighlightSwatch() {
+  const button = el.highlightSelectionBtn;
+  const swatch = button?.querySelector(".pill-swatch");
+  if (!swatch) return;
+  const preview = pillMarkPreview();
+  const glyph = preview.style !== "highlight";
+  swatch.style.setProperty("--sw", preview.hex);
+  swatch.style.background = glyph ? "" : preview.hex;
+  swatch.classList.toggle("is-glyph", glyph);
+  swatch.dataset.markStyle = preview.style;
+  swatch.dataset.markColor = preview.markHex || preview.color;
+  swatch.innerHTML = glyph ? `<span class="mark-style-glyph is-${preview.style}">A</span>` : "";
+  const verb = MARK_STYLE_LABELS[preview.style] || "Highlight";
+  const label = `${verb} the selection — ${pillColourName(preview)}`;
+  button.title = label;
+  button.setAttribute("aria-label", label);
+  const annotate = el.highlightAnnotateSelectionBtn;
+  if (annotate) {
+    const note = `${label}, and add a note`;
+    annotate.title = note;
+    annotate.setAttribute("aria-label", note);
+  }
+}
+
 // ── The pill's own colour menu ─────────────────────────────────────────────
 //
 // Why it exists rather than sending you to the render toolbar: reaching the
@@ -243,9 +298,9 @@ export function applyPillHighlight(color, { keepExisting = false, style, hex } =
   let made = null;
   const target = pillActionTarget();
   if (target?.kind === "document") {
-    const prefs = inkPreferences();
-    const markStyle = normalizeMarkStyle(style === undefined ? prefs.markStyle : style);
-    const markHex = hex === undefined ? prefs.markHex : normalizeMarkHex(hex);
+    const preview = pillMarkPreview();
+    const markStyle = normalizeMarkStyle(style === undefined ? preview.style : style);
+    const markHex = hex === undefined ? preview.markHex : normalizeMarkHex(hex);
     // "clear" on the document surface means "un-highlight what I have
     // selected", the same as it does in a note — resolved against the
     // selection's own geometry rather than by stripping tags, since there are
@@ -367,15 +422,24 @@ export function buildPillHighlightMenu() {
 export function refreshPillHighlightMenu() {
   const menu = el.highlightSelectionMenu;
   if (!menu) return;
-  const onPaper = isDocumentViewActive() && !noteEditorHoldsSelection();
+  const preview = pillMarkPreview();
+  const onPaper = preview.onPaper;
   menu.classList.toggle("has-mark-rows", onPaper);
   menu.querySelectorAll('[data-pill-row="styles"], [data-pill-row="more"]').forEach((row) => { row.hidden = !onPaper; });
-  if (!onPaper) return;
-  const prefs = inkPreferences();
-  menu.querySelectorAll("[data-pill-style]").forEach((button) => {
-    const current = button.dataset.pillStyle === prefs.markStyle;
+  // Which one a press uses now — exactly one swatch, the one the bar's own
+  // swatch is showing. A pen colour in force on a PDF outranks the four.
+  const mark = (button, current) => {
     button.classList.toggle("is-current", current);
     button.setAttribute("aria-pressed", String(current));
+  };
+  menu.querySelectorAll("[data-pill-highlight]").forEach((button) => {
+    mark(button, !preview.markHex && button.dataset.pillHighlight === preview.color);
+  });
+  menu.querySelectorAll("[data-pill-hex]").forEach((button) => {
+    mark(button, Boolean(preview.markHex) && normalizeMarkHex(button.dataset.pillHex) === preview.markHex);
+  });
+  menu.querySelectorAll("[data-pill-style]").forEach((button) => {
+    mark(button, onPaper && button.dataset.pillStyle === preview.style);
   });
 }
 

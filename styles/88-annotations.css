@@ -122,6 +122,29 @@
 .mark-style-glyph.is-squiggly  { text-decoration: underline wavy; text-decoration-thickness: 1.5px; }
 .mark-style-glyph.is-box       { outline: 1.5px solid currentColor; outline-offset: 1px; padding: 0 2px; }
 
+/* The selection bar's swatch when a press on a PDF makes a line rather than a
+   tint (refreshPillHighlightSwatch): an "A" marked that way, in the colour it
+   will use, so the swatch says what lands — not just which hue. */
+.pill-swatch.is-glyph {
+  display: grid;
+  place-items: center;
+  background: transparent;
+  box-shadow: none;
+  color: var(--text);
+  font-size: 0.82rem;
+  line-height: 1;
+}
+
+.pill-swatch.is-glyph .mark-style-glyph {
+  text-decoration-color: var(--sw);
+  outline-color: var(--sw);
+}
+
+/* The colour a press uses now, in the bar's colour menu. */
+.pill-swatch-btn.is-current {
+  box-shadow: 0 0 0 2px var(--panel), 0 0 0 4px var(--accent);
+}
+
 .pill-swatch-btn.is-small,
 .mark-menu-swatch.is-small {
   width: 18px;

@@ -157,6 +157,21 @@ export function setDocumentPillCaptureHook(fn) {
   captureDocumentPillSelection = typeof fn === "function" ? fn : () => null;
 }
 
+// ── ...and the swatch's painter, registered the same way ───────────────────
+//
+// The highlight swatch on the bar shows what a press will apply, and that
+// depends on which tab the selection is on (the default colour is kept per tab)
+// and, on a PDF, on the pen colour and mark style. Painting it only when a
+// setting changed left it showing another tab's colour. So it is repainted
+// every time the bar is shown — by refreshPillHighlightSwatch in
+// src/format/selection-tools.js, which this module must not import for the
+// reason given above; src/main.js registers it.
+let paintPillSwatch = () => {};
+
+export function setPillSwatchPaintHook(fn) {
+  paintPillSwatch = typeof fn === "function" ? fn : () => {};
+}
+
 export function hideNotesSelectionButton() {
   // Called from every scroll event on the notes view and the raw editor, where
   // "already fully hidden" is the overwhelmingly common case — make that a few
@@ -1698,6 +1713,9 @@ export function positionNotesSelectionButton() {
   }
   const mobile = Boolean(styleMobileMedia?.matches);
   if (!mobile) button.classList.remove("is-pinned-bottom", "is-touch-bar", "is-offscreen", "is-scrolling", "is-expanded");
+  // Before any branch shows the bar: the swatch must say what a press on THIS
+  // surface will apply, not what it said on the last one. A few DOM writes.
+  try { paintPillSwatch(); } catch (_) { /* a stale swatch, never a missing bar */ }
 
   // ── The Document surface ─────────────────────────────────────────────────
   //
