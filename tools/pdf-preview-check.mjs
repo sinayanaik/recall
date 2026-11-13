@@ -510,7 +510,8 @@ try {
       const box = node?.getBoundingClientRect();
       return Boolean(box && box.width > 0 && box.height > 0);
     };
-    // The four adders (Text, Block, Picture, Page at the end)
+    // The four adders (Text, Block, Picture, Page at the end) and the nine
+    // shaped blocks of its palette (src/handwriting/board.js, buildShapePalette)
     // are rows of the bar's + menu, so the + is pressed
     // first — the same press a reader makes — and the rows are asked for a box
     // with the menu open. The + itself has to have one before that.
@@ -520,6 +521,7 @@ try {
     await settle(150);
     const pageGroup = [...document.querySelectorAll("#documentInkRail [data-hw-action], #documentInkRail #handwritingImageBtn")];
     const pageGroupBoxedNow = pageGroup.filter(boxed).length;
+    const shapeRows = pageGroup.filter((node) => node.dataset.hwAction === "add-shape").length;
     addButton?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true }));
     await settle(100);
     document.getElementById("documentMoreBtn")?.click();
@@ -531,6 +533,7 @@ try {
       railOpen: boxed(document.getElementById("documentInkRail")),
       pageGroup: pageGroup.length,
       pageGroupBoxed: pageGroupBoxedNow,
+      shapeRows,
       addBoxed,
       // The notebook's rows are the ones on offer; the document's are not.
       menuRows: menuRows.length,
@@ -554,8 +557,8 @@ try {
   check("the pen's rail is up on arriving at the Write tab",
     writeControls.railOpen, `rail has a box=${writeControls.railOpen}`);
   check("...with the page group on it — a + whose menu's every row is pressable",
-    writeControls.addBoxed && writeControls.pageGroup === 4 && writeControls.pageGroupBoxed === 4,
-    `+ has a box=${writeControls.addBoxed}; ${writeControls.pageGroupBoxed} of ${writeControls.pageGroup} rows with a box once it is open`);
+    writeControls.addBoxed && writeControls.pageGroup === 13 && writeControls.shapeRows === 9 && writeControls.pageGroupBoxed === 13,
+    `+ has a box=${writeControls.addBoxed}; ${writeControls.pageGroupBoxed} of ${writeControls.pageGroup} rows with a box once it is open (${writeControls.shapeRows} of them shapes)`);
   // Five: a heading of its own plus three papers and the tear-out.
   check("the ⋯ menu offers the notebook's rows and not the document's",
     writeControls.menuRows === 5 && writeControls.menuRowsBoxed === 5 && writeControls.docRowsBoxed === 0,
