@@ -913,6 +913,50 @@ export function removeDocumentHighlight(id, { undo = true } = {}) {
   repaintDocumentHighlights();
 }
 
+// ── Several records at once, for a diagram edit ────────────────────────────
+//
+// A diagram's edits touch several shapes together — a group of boxes moved,
+// connectors re-pointed, a paste of five things — and its undo puts several
+// back at once (runDiagramEdit, src/documents/pdf-blocks.js). One record at a
+// time would be one autosave and one repaint each, and a sync between two of
+// them would carry half the edit. So: every record in `put` written (replacing
+// the one with its id, or added), every id in `remove` buried with its
+// tombstone, in one commit. Each written record is stamped now — an undo that
+// put back a record's OLD stamp would lose the next merge to the very copy it
+// had just undone.
+export function applyDocumentRecordChanges({ put = [], remove = [] } = {}) {
+  const puts = (put || []).filter((record) => record?.id);
+  const gone = new Set((remove || []).filter(Boolean));
+  if (!puts.length && !gone.size) return false;
+  const byId = new Map(puts.map((record) => [record.id, record]));
+  const now = Date.now();
+  const fresh = (record) => ({ ...record, qv: QUAD_GEOMETRY_VERSION, at: now });
+  const next = [];
+  documentHighlights().forEach((record) => {
+    if (gone.has(record.id)) return;
+    if (byId.has(record.id)) {
+      next.push(fresh(byId.get(record.id)));
+      byId.delete(record.id);
+      return;
+    }
+    next.push(record);
+  });
+  byId.forEach((record) => next.push(fresh(record)));
+  state.meta = { ...(state.meta && typeof state.meta === "object" ? state.meta : {}) };
+  let tombstones = state.meta.deletedHighlightIds;
+  gone.forEach((id) => {
+    if (!documentHighlightById(id)) return;
+    tombstones = recordDeletedHighlightId({ ...state.meta, deletedHighlightIds: tombstones }, id);
+  });
+  if (tombstones) state.meta.deletedHighlightIds = tombstones;
+  state.meta.pdfHighlights = wholeHighlightArray(next);
+  const pruned = gone.size ? pruneOrphanHighlightNotes(state.notes || "") : state.notes;
+  if (pruned !== state.notes) state.notes = pruned;
+  commitDocumentHighlights(next);
+  repaintDocumentHighlights();
+  return true;
+}
+
 // A highlight put back exactly as it was — same id, colour, anchors and quads —
 // by a redo of the highlighter's own undo (src/documents/pdf-smart-highlight.js).
 // The same id matters: its note, its card and its number on the page all hang

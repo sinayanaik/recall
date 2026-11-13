@@ -59,6 +59,19 @@ const MENUS = [
   { button: "inkRailAddBtn", menu: "inkRailAddMenu" }
 ];
 
+// ── ↶ and ↷ mean what Ctrl+Z and Ctrl+Y mean ────────────────────────────────
+//
+// The bar's pair called the pen's ring and nothing else, so a block moved, a
+// box shaped or a connector drawn between two boxes could be taken back from
+// the keyboard and not from the bar — on a tablet, not at all. src/main.js owns
+// the order the surface's two rings are taken back in (lastDocumentEdit) and
+// hands the same four functions here.
+let documentUndo = null;
+
+export function setDocumentUndoHandlers(handlers) {
+  documentUndo = handlers && typeof handlers.undo === "function" ? handlers : null;
+}
+
 function closeInkRailMenus(except = null) {
   MENUS.forEach(({ button, menu }) => {
     if (menu === except) return;
@@ -352,8 +365,8 @@ function paintInkRail() {
   // question before it clears anything.
   const page = inkPageInViewCheap();
   const hasStrokes = page ? inkPageHasStrokes(page) : null;
-  const undoable = canUndoInk();
-  const redoable = canRedoInk();
+  const undoable = documentUndo ? documentUndo.canUndo() : canUndoInk();
+  const redoable = documentUndo ? documentUndo.canRedo() : canRedoInk();
   const count = inkSelectionCount();
   const pasteable = hasInkClipboard();
   const tool = inkTool();
@@ -675,8 +688,8 @@ function pressRail(button) {
   } else if (action === "rail-more") { toggleInkRailMenu("inkRailMoreMenu"); return; }
   else if (action === "selection-more") { toggleInkRailMenu("inkRailSelectionMenu"); return; }
   else if (action === "add-menu") { toggleInkRailMenu("inkRailAddMenu"); return; }
-  else if (action === "undo") undoInk();
-  else if (action === "redo") redoInk();
+  else if (action === "undo") (documentUndo ? documentUndo.undo() : undoInk());
+  else if (action === "redo") (documentUndo ? documentUndo.redo() : redoInk());
   else if (action === "clear") { closeInkRailMenus(); askToClearPage(); }
   else if (action === "join") joinInkSelection();
   else if (action === "split") splitInkSelection();
@@ -749,7 +762,7 @@ export function initInkRail() {
 
   // A row of a menu, chosen: the menu goes once the row has done its work.
   rail.addEventListener("click", (event) => {
-    if (!event.target.closest?.(".ink-rail-menu-item")) return;
+    if (!event.target.closest?.(".ink-rail-menu-item, .ink-rail-add-shape")) return;
     setTimeout(() => closeInkRailMenus(), 0);
   });
   // ...and a press anywhere else shuts any of them. Capture, so the page's own

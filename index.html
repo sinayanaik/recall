@@ -157,6 +157,7 @@
     <link rel="stylesheet" href="styles/94-paper-tones.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/95-library-search.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/96-md-pdf.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/97-diagram.css?v=__BUILD__">
 
     <!-- ── Module preloads ────────────────────────────────────────────────
          The app is ~130 ES modules and the browser discovers them by PARSING
@@ -297,6 +298,7 @@
     <link rel="modulepreload" href="src/format/ink-colors.js?v=__BUILD__">
     <link rel="modulepreload" href="src/format/mark-styles.js?v=__BUILD__">
     <link rel="modulepreload" href="src/render/annot-shapes.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/render/node-outlines.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/pdf-shapes.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/pdf-shape-panel.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/pdf-shape-text.js?v=__BUILD__">
@@ -1456,6 +1458,10 @@
                          notes stay in the Shapes menu, not here. -->
                     <button class="ink-rail-menu-item" type="button" role="menuitem" data-hw-action="add-text" title="Type text straight onto the page you are looking at" aria-label="Add text">Text</button>
                     <button class="ink-rail-menu-item" type="button" role="menuitem" data-hw-action="add-block" title="Add a block — markdown text, maths, code or pictures — to the page you are looking at" aria-label="Add a block">Block</button>
+                    <!-- A block in a diagram's shape: a diamond, a pill, a
+                         cylinder… one press each. Filled in from the style
+                         bar's own icons by src/handwriting/board.js. -->
+                    <div class="ink-rail-add-shapes" id="inkRailAddShapes" role="group" aria-label="Add a block shaped as"></div>
                     <!-- A picture is a block too (kind "image"): dragged and
                          resized like any other, stored in the page's own points
                          beside it. Picked, pasted (Ctrl+V) or dropped, it goes

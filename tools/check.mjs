@@ -488,6 +488,10 @@ const checks = [
   // way a text mark is drawn (src/format/mark-styles.js). Both are leaves, so
   // pure Node, like the ink format above.
   ["annot-shapes  ", ["node", ["tools/annot-shapes-check.mjs"], ROOT]],
+  // ...and of a diagram: a block's outline and where a connector stops on it
+  // (src/render/node-outlines.js), and what a drag snaps to
+  // (src/render/snap-guides.js). Leaves too, so pure Node.
+  ["diagram-geom  ", ["node", ["tools/diagram-geometry-check.mjs"], ROOT]],
   // The paper tones (src/format/paper-tones.js): every tone under every theme,
   // the picture keys White and Black must keep, a dark page never pure black,
   // and the rule that keeps a reader's own colour readable on whatever paper is
@@ -664,6 +668,12 @@ const checks = [
     // the Shapes tool's lines, arrows, boxes, callouts, text and sticky notes,
     // and the file saved with them as real PDF annotations.
     ["annotations   ", ["node", ["tools/annotations-check.mjs"], ROOT]],
+    // A Canvas drawn like draw.io: blocks in a diagram's shapes, the top edge
+    // and Shift-corners, To front / To back, one ↶ for an edit that made a
+    // block and a line together, connectors that follow what they join,
+    // several things picked up and lined up at once, and the guides a drag
+    // snaps to.
+    ["diagram       ", ["node", ["tools/diagram-check.mjs"], ROOT]],
     // ⋯ → Page margins… in the app: what was written stays put, the page is
     // wider, a typed box goes in the margin, the file saved with annotations
     // carries the margin and the typed boxes, None and a re-attach both hold.

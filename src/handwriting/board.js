@@ -49,6 +49,8 @@ import { addNotebookPage, deleteNotebookPage, ensureNotebookDocument, hasNoteboo
 import { BLANK_PAPERS } from "../documents/blank-pdf.js?v=__BUILD__";
 import { notebookPaperPreference, writeNotebookPaperPreference } from "../storage/ink-prefs.js?v=__BUILD__";
 import { addDocumentBlock, addDocumentImageBlock } from "../documents/pdf-blocks.js?v=__BUILD__";
+import { BLOCK_SHAPES, BLOCK_SHAPE_LABEL, blockShapePatch, normalizeBlockShape } from "../documents/block-style.js?v=__BUILD__";
+import { blockShapeIconSvg } from "../documents/block-style-bar.js?v=__BUILD__";
 import { DOC_SLOT_NOTEBOOK, activeDocSlot, deckHasHandwrittenPages } from "../documents/doc-slot.js?v=__BUILD__";
 import { currentDocumentPage, openDocumentView, pdfPageViewport, scrollToDocumentPage } from "../documents/pdf-view.js?v=__BUILD__";
 import { bindInkRailActivation } from "./rail.js?v=__BUILD__";
@@ -205,10 +207,12 @@ function wire() {
   // (bindInkRailActivation, src/handwriting/rail.js). These are rows of the
   // bar's + menu now, and a menu that can be reached with Tab and not used with
   // Enter is a menu half built.
+  buildShapePalette();
   bindInkRailActivation(el.documentInkRail, (button) => {
     const action = button.dataset.hwAction;
     if (action === "add-page") addPage();
     else if (action === "add-block") addBlock();
+    else if (action === "add-shape") addShapeBlock(button.dataset.blockShape);
     // Text arms the typewriter rather than dropping a box in the middle: the
     // reader says where, with one tap, and types there.
     else if (action === "add-text") {
@@ -259,6 +263,41 @@ function addBlock() {
   if (!pdfPageViewport(page)) return;
   addDocumentBlock(page, handwritingDropPoint(page));
   paintHandwritingControls();
+}
+
+// ── A diagram's box, from the + Add menu's palette ──────────────────────────
+//
+// The same Block as the row above it, in a shape and at a size a box in a
+// flowchart is: its words in the middle, its height its own (blockShapePatch),
+// and a diamond a little taller so the words inside it have room. The editor
+// opens, as it does for a Block, because a box with nothing in it is the one
+// thing a diagram never wants.
+export const SHAPE_BLOCK_SIZE = Object.freeze({ w: 132, h: 64 });
+
+export function shapeBlockSize(shape) {
+  const kind = normalizeBlockShape(shape);
+  if (kind === "diamond") return { w: 140, h: 92 };
+  if (kind === "ellipse") return { w: 132, h: 76 };
+  if (kind === "cylinder") return { w: 100, h: 84 };
+  return { ...SHAPE_BLOCK_SIZE };
+}
+
+function addShapeBlock(shape) {
+  const page = currentDocumentPage();
+  if (!pdfPageViewport(page)) return;
+  const kind = normalizeBlockShape(shape);
+  const size = shapeBlockSize(kind);
+  addDocumentBlock(page, handwritingDropPoint(page), { style: { ...blockShapePatch(kind), frame: "outline" }, ...size });
+  paintHandwritingControls();
+}
+
+function buildShapePalette() {
+  const group = document.getElementById("inkRailAddShapes");
+  if (!group || group.childElementCount) return;
+  group.innerHTML = BLOCK_SHAPES.map((shape) => {
+    const label = `Add a ${BLOCK_SHAPE_LABEL[shape].toLowerCase()} block`;
+    return `<button class="ink-rail-add-shape" type="button" role="menuitem" data-hw-action="add-shape" data-block-shape="${shape}" title="${label}" aria-label="${label}">${blockShapeIconSvg(shape, "ink-rail-add-shape-glyph")}</button>`;
+  }).join("");
 }
 
 // The + Add → Picture… picker, and the paste/drop path in src/main.js, all land

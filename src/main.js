@@ -136,7 +136,7 @@ import { openSectionStyle, openSectionStyleFromPanel, setOpenAppStyleHandler, se
 import { styleCoarsePointerMedia, styleMobileMedia } from "./ui/style-tokens.js?v=__BUILD__";
 import { setTheme, setThemeMenuOpen, setThemeRepaintHook } from "./ui/theme.js?v=__BUILD__";
 import { FOCUS_MODE_KEY, closeViewExportMenu, currentViewStyleScope, paintViewExportMenu, paintViewStyleButton, setBlockEditFlushHook, setHandwritingViewHook, setSplitViewHook, setViewMode, setViewSwitchHook, switchToPreviousView } from "./ui/view-mode.js?v=__BUILD__";
-import { DOCUMENT_NOTE_HANDLERS, documentHighlightById, documentHighlightNote, flashDocumentRegion, initDocumentMarkMenu, repairDocumentHighlightQuads, repairDocumentHighlightText, setDocumentHighlightAdjust, setDocumentShapeTextEditor } from "./documents/pdf-highlights.js?v=__BUILD__";
+import { DOCUMENT_NOTE_HANDLERS, applyDocumentRecordChanges, documentHighlightById, documentHighlightNote, documentHighlights, flashDocumentRegion, initDocumentMarkMenu, repairDocumentHighlightQuads, repairDocumentHighlightText, setDocumentHighlightAdjust, setDocumentShapeTextEditor } from "./documents/pdf-highlights.js?v=__BUILD__";
 import { canAdjustDocumentHighlight, startDocumentHighlightAdjust } from "./documents/pdf-highlight-adjust.js?v=__BUILD__";
 import { pdfRegionRefForRecord, pdfRegionRefMarkdown } from "./documents/pdf-region-embed.js?v=__BUILD__";
 import { setRegionResizeNotesSurface } from "./documents/pdf-region-resize.js?v=__BUILD__";
@@ -157,8 +157,8 @@ import { adoptDocumentInk, canRedoInk, canUndoInk, copyInkSelection, cutInkSelec
 import { addHandwritingImages, enterHandwritingView, initHandwritingRail, refreshHandwritingBoard, runHandwritingMenuAction, startHandwritingNotebook } from "./handwriting/board.js?v=__BUILD__";
 import { closeBlockStylePopover, isBlockStylePopoverOpen } from "./documents/block-style-bar.js?v=__BUILD__";
 import { closeBlockActionsPopover, isBlockActionsPopoverOpen } from "./documents/block-actions-popover.js?v=__BUILD__";
-import { blocksForPaper, buildStaticBlock, canRedoBlocks, canUndoBlocks, commitBlockEdit, deleteBlock, duplicateBlock, editBlock, handleBlockPointerDown, nudgeBlock, paintDocumentBlocks, pdfPointAt, redoBlocks, repaintDocumentBlocks, restackBlock, selectBlock, selectedBlockId, setBlocksChangedHandler, undoBlocks } from "./documents/pdf-blocks.js?v=__BUILD__";
-import { applyInkRailPreference, closeInkRailPopups, finishTypewriterBox, initInkRail, refreshInkRail } from "./ui/ink-rail.js?v=__BUILD__";
+import { blocksForPaper, buildStaticBlock, canRedoBlocks, setDiagramShapeIO, canUndoBlocks, commitBlockEdit, deleteBlock, duplicateBlock, editBlock, handleBlockPointerDown, nudgeBlock, paintDocumentBlocks, pdfPointAt, redoBlocks, repaintDocumentBlocks, restackBlock, selectBlock, selectedBlockId, setBlocksChangedHandler, undoBlocks } from "./documents/pdf-blocks.js?v=__BUILD__";
+import { applyInkRailPreference, closeInkRailPopups, finishTypewriterBox, initInkRail, refreshInkRail, setDocumentUndoHandlers } from "./ui/ink-rail.js?v=__BUILD__";
 import { initDocumentShapes, repaintDocumentShapes, setShapeCreatedHandler } from "./documents/pdf-shapes.js?v=__BUILD__";
 import { openPaperMenu } from "./documents/paper-menu.js?v=__BUILD__";
 import { openShapeTextEditor, setShapeTextCommittedHandler } from "./documents/pdf-shape-text.js?v=__BUILD__";
@@ -181,6 +181,28 @@ import { INK_NUDGE_STEP, INK_NUDGE_STEP_COARSE } from "./render/ink-engine.js?v=
 // then the note and card stacks — rather than being swallowed by whichever moved
 // last.
 let lastDocumentEdit = "ink";
+
+// Ctrl+Z (or ↶) on the surface: the blocks' ring when it moved last — or when
+// the pen's has nothing to give — and the pen's otherwise. One function, so the
+// bar's ↶ ↷ (setDocumentUndoHandlers, src/ui/ink-rail.js) and the keys can
+// never disagree about which ring a press takes back. True when it did.
+function undoDocumentSurface(wantRedo = false) {
+  const blocksCan = wantRedo ? canRedoBlocks() : canUndoBlocks();
+  const inkCan = wantRedo ? canRedoInk() : canUndoInk();
+  if (blocksCan && (lastDocumentEdit === "blocks" || !inkCan)) {
+    if (wantRedo) redoBlocks();
+    else undoBlocks();
+    return true;
+  }
+  if (!inkCan) return false;
+  if (wantRedo) redoInk();
+  else undoInk();
+  return true;
+}
+
+function canUndoDocumentSurface(wantRedo = false) {
+  return wantRedo ? (canRedoBlocks() || canRedoInk()) : (canUndoBlocks() || canUndoInk());
+}
 
 // Which way each arrow moves a lassoed selection, in model units before the step
 // is applied. A table rather than four branches in the keydown handler, which is
@@ -1601,6 +1623,12 @@ onDomReady(() => {
   // A shape's Style row, and the popover at a selected shape.
   initShapeStylePopover();
   initInkRail();
+  setDocumentUndoHandlers({
+    undo: () => undoDocumentSurface(false),
+    redo: () => undoDocumentSurface(true),
+    canUndo: () => canUndoDocumentSurface(false),
+    canRedo: () => canUndoDocumentSurface(true)
+  });
   // A press on a markdown block belongs to the block. Capture, on the same
   // element pdf-ink.js listens on — stopPropagation does not silence a sibling
   // listener on the same node, which is why pdf-ink.js ALSO stands down for
@@ -1623,6 +1651,16 @@ onDomReady(() => {
     lastDocumentEdit = "blocks";
     repaintDocumentBlocks();
     refreshHandwritingBoard();
+    // ↶ ↷ answer for both rings now (setDocumentUndoHandlers), so a block step
+    // is a reason to repaint whether they can be pressed.
+    refreshInkRail();
+  });
+  // A diagram edit — blocks and shapes together — is one step on the blocks'
+  // ring, and the shapes half is read and written through here
+  // (runDiagramEdit, src/documents/pdf-blocks.js).
+  setDiagramShapeIO({
+    read: () => documentHighlights().filter((record) => record?.kind === "shape"),
+    write: (changes) => applyDocumentRecordChanges(changes)
   });
   // The rail's own state — which tool is on, whether undo has anything to undo,
   // whether a lasso selection exists — answers to ink changing, and pdf-ink.js
@@ -3046,20 +3084,10 @@ document.addEventListener("keydown", (event) => {
   // Before the pen's, and only when the blocks are what moved last (or when the
   // pen has nothing left to take back). See lastDocumentEdit for why the two are
   // ordered at all rather than each grabbing the key.
-  if (inkChord && onDocumentSurface() && !event.target.matches("input, textarea")) {
-    const wantRedo = inkWantsRedo;
-    const blocksCan = wantRedo ? canRedoBlocks() : canUndoBlocks();
-    const inkCan = wantRedo ? canRedoInk() : canUndoInk();
-    if (blocksCan && (lastDocumentEdit === "blocks" || !inkCan)) {
-      event.preventDefault();
-      wantRedo ? redoBlocks() : undoBlocks();
-      return;
-    }
-  }
   if (inkChord && onDocumentSurface() && !event.target.matches("input, textarea")
-      && (inkWantsRedo ? canRedoInk() : canUndoInk())) {
+      && canUndoDocumentSurface(inkWantsRedo)) {
     event.preventDefault();
-    inkWantsRedo ? redoInk() : undoInk();
+    undoDocumentSurface(inkWantsRedo);
     return;
   }
   // ── The block the reader picked up ───────────────────────────────────────
@@ -3099,6 +3127,14 @@ document.addEventListener("keydown", (event) => {
       if (bare && (event.key === "[" || event.key === "]")) {
         event.preventDefault();
         restackBlock(event.key === "]" ? 1 : -1);
+        return;
+      }
+      // ...and all the way, with Ctrl+Shift — read off the key's place, not its
+      // character, which Shift turns into { and } on most layouts.
+      if ((event.ctrlKey || event.metaKey) && event.shiftKey && !event.altKey
+          && (event.code === "BracketLeft" || event.code === "BracketRight")) {
+        event.preventDefault();
+        restackBlock(event.code === "BracketRight" ? Infinity : -Infinity);
         return;
       }
       if (bare && INK_NUDGE_KEYS[event.key]) {

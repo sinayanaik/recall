@@ -386,6 +386,7 @@ const APP_SHELL = [
   `./styles/94-paper-tones.css?v=${STAMP}`,
   `./styles/95-library-search.css?v=${STAMP}`,
   `./styles/96-md-pdf.css?v=${STAMP}`,
+  `./styles/97-diagram.css?v=${STAMP}`,
   // The module entry point. Everything it imports is stamped with the same
   // ?v=, so those URLs change with every release too — which is what lets the
   // cache-first handler below serve them without revalidating and still never
@@ -658,6 +659,7 @@ const APP_SHELL = [
   `./src/render/ink-predict.js?v=${STAMP}`,
   `./src/render/ink-shapes.js?v=${STAMP}`,
   `./src/render/annot-shapes.js?v=${STAMP}`,
+  `./src/render/node-outlines.js?v=${STAMP}`,
   `./src/render/inline.js?v=${STAMP}`,
   `./src/render/math-dom.js?v=${STAMP}`,
   `./src/render/math.js?v=${STAMP}`,

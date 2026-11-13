@@ -41,6 +41,7 @@
 
 import { INK_PEN_TOKENS, inkPenVar, normalizeInkPen } from "../format/ink-colors.js?v=__BUILD__";
 import { fontFamilyChoices } from "../ui/theme-catalog.js?v=__BUILD__";
+import { NODE_OUTLINES, NODE_OUTLINE_DEFAULT, NODE_OUTLINE_LABELS, normalizeNodeOutline } from "../render/node-outlines.js?v=__BUILD__";
 
 // ── Fill ───────────────────────────────────────────────────────────────────
 //
@@ -192,6 +193,75 @@ export function normalizeBlockFrame(token) {
   return BLOCK_FRAMES.includes(String(token || "")) ? String(token) : BLOCK_FRAME_DEFAULT;
 }
 
+// ── Shape ──────────────────────────────────────────────────────────────────
+//
+// What a block is in a diagram: a box, a decision, a start or an end, a store.
+// The outlines themselves are geometry, in src/render/node-outlines.js, where a
+// connector reads them too. `rect` is the card every block has always been.
+export const BLOCK_SHAPE_DEFAULT = NODE_OUTLINE_DEFAULT;
+
+export const BLOCK_SHAPES = NODE_OUTLINES;
+
+export const BLOCK_SHAPE_LABEL = NODE_OUTLINE_LABELS;
+
+export function normalizeBlockShape(token) {
+  return normalizeNodeOutline(token);
+}
+
+// What picking a shape from the palette sets besides the outline: a diagram's
+// box holds its words in the middle and keeps the size it was drawn at — a
+// diamond whose height chased its text would stop being a diamond. Back to a
+// plain box, only the outline changes; the rest is the reader's to put back.
+export function blockShapePatch(shape) {
+  const next = normalizeBlockShape(shape);
+  if (next === BLOCK_SHAPE_DEFAULT) return { shape: next };
+  return { shape: next, fit: false, align: "center", valign: "middle" };
+}
+
+// ── The edge: its colour, its width and its dash ───────────────────────────
+//
+// The frame above says whether there IS an edge; these say what it looks like,
+// which a diagram needs and a card never did — a red box round the step that
+// failed, a dashed one round the step that is optional. The colour is a pen
+// token for the reason the fill is a token: it has to read on every theme and
+// both papers. `default` is the edge every block has always had.
+export const BLOCK_LINE_DEFAULT = "default";
+
+export const BLOCK_LINES = [BLOCK_LINE_DEFAULT, ...INK_PEN_TOKENS];
+
+export function normalizeBlockLine(token) {
+  const value = String(token || "");
+  if (value === BLOCK_LINE_DEFAULT) return BLOCK_LINE_DEFAULT;
+  return INK_PEN_TOKENS.includes(value) ? normalizeInkPen(value) : BLOCK_LINE_DEFAULT;
+}
+
+export function blockLineVar(token) {
+  const value = normalizeBlockLine(token);
+  return value === BLOCK_LINE_DEFAULT ? null : inkPenVar(value);
+}
+
+export const BLOCK_LINE_DASH_DEFAULT = "solid";
+
+export const BLOCK_LINE_DASHES = ["solid", "dash", "dot"];
+
+export const BLOCK_LINE_DASH_LABEL = { solid: "Solid", dash: "Dashed", dot: "Dotted" };
+
+export function normalizeBlockLineDash(token) {
+  return BLOCK_LINE_DASHES.includes(String(token || "")) ? String(token) : BLOCK_LINE_DASH_DEFAULT;
+}
+
+// ── Where the words sit, top to bottom ─────────────────────────────────────
+//
+// A block has always started its words at the top, which is right for a card
+// that grows with them and wrong for a diamond that does not.
+export const BLOCK_VALIGN_DEFAULT = "top";
+
+export const BLOCK_VALIGNS = ["top", "middle", "bottom"];
+
+export function normalizeBlockValign(token) {
+  return BLOCK_VALIGNS.includes(String(token || "")) ? String(token) : BLOCK_VALIGN_DEFAULT;
+}
+
 // ── The bag ────────────────────────────────────────────────────────────────
 //
 // One object on the record rather than nine keys beside `md`. The merge carries
@@ -226,7 +296,12 @@ export const BLOCK_STYLE_DEFAULT = {
   fit: true,
   codeSize: null,
   codeWrap: false,
-  imageWidth: null
+  imageWidth: null,
+  shape: BLOCK_SHAPE_DEFAULT,
+  line: BLOCK_LINE_DEFAULT,
+  lineWidth: null,
+  lineDash: BLOCK_LINE_DASH_DEFAULT,
+  valign: BLOCK_VALIGN_DEFAULT
 };
 
 // `fit` and `codeWrap` are the only two boolean fields in the bag, and unlike
@@ -260,7 +335,14 @@ export function normalizeBlockStyle(style) {
     codeSize: normalizeBlockSize(from.codeSize),
     codeWrap: normalizeBlockFlag(from.codeWrap, BLOCK_STYLE_DEFAULT.codeWrap),
     // A percent of the block's width, so its ceiling is not the type ceiling.
-    imageWidth: normalizeBlockNumber(from.imageWidth, 100)
+    imageWidth: normalizeBlockNumber(from.imageWidth, 100),
+    shape: normalizeBlockShape(from.shape),
+    line: normalizeBlockLine(from.line),
+    // Points, uncapped, like the type size: the edge of a box is as thick as the
+    // reader types. Absent is the hairline a block has always had.
+    lineWidth: normalizeBlockNumber(from.lineWidth),
+    lineDash: normalizeBlockLineDash(from.lineDash),
+    valign: normalizeBlockValign(from.valign)
   };
 }
 

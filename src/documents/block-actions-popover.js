@@ -80,7 +80,13 @@ export function openBlockActionsPopover({
   onDuplicate = () => {},
   onRestackForward = () => {},
   onRestackBack = () => {},
-  onDelete = () => {}
+  onToFront = () => {},
+  onToBack = () => {},
+  onDelete = () => {},
+  // How far from the block it floats, in CSS pixels. Further than the style
+  // popover's 8, because the block's own connect arrows (src/documents/
+  // pdf-connectors.js) sit just outside each side and must stay pressable.
+  gap = 8
 } = {}) {
   closeBlockActionsPopover();
   if (!anchor) return null;
@@ -100,8 +106,12 @@ export function openBlockActionsPopover({
   const duplicate = actionButton({ action: "duplicate", label: "Duplicate" });
   const back = actionButton({ action: "restack-back", label: "Send back" });
   const forward = actionButton({ action: "restack-forward", label: "Bring forward" });
+  // All the way, as well as a step — see restackBlock. Short words, because
+  // the strip is already six buttons wide.
+  const toBack = actionButton({ action: "to-back", label: "To back" });
+  const toFront = actionButton({ action: "to-front", label: "To front" });
   const del = actionButton({ action: "delete", label: "Delete", danger: true });
-  root.append(style, edit, duplicate, back, forward, del);
+  root.append(style, edit, duplicate, back, forward, toBack, toFront, del);
   document.body.appendChild(root);
 
   // ── Placing it — the exact shape openBlockStylePopover already uses ───────
@@ -114,9 +124,10 @@ export function openBlockActionsPopover({
     const box = anchor.getBoundingClientRect();
     const size = root.getBoundingClientRect();
     const margin = 8;
-    const below = box.bottom + margin;
+    const away = Math.max(margin, Number(gap) || 0);
+    const below = box.bottom + away;
     const top = below + size.height > window.innerHeight - margin
-      ? Math.max(margin, box.top - size.height - margin)
+      ? Math.max(margin, box.top - size.height - away)
       : below;
     const left = Math.min(
       Math.max(margin, box.left),
@@ -148,6 +159,8 @@ export function openBlockActionsPopover({
     else if (action === "duplicate") onDuplicate();
     else if (action === "restack-forward") onRestackForward();
     else if (action === "restack-back") onRestackBack();
+    else if (action === "to-front") onToFront();
+    else if (action === "to-back") onToBack();
     else if (action === "delete") onDelete();
   });
 
