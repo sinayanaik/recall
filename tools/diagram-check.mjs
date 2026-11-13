@@ -30,6 +30,10 @@
 //      line between them follows, Shift-click adds one, Ctrl+C / Ctrl+V copies
 //      them with the line re-tied to the copies, a group is picked whole, and
 //      with the Select tool a press on a box shape moves it.
+//   D. Guides and the grid: a block dragged near another's edge settles onto
+//      it with a guide drawn while it is held, Alt skips that, a block near
+//      nothing settles onto the squares of grid paper, ⋯ → Snap turns it all
+//      off, and a group moved together snaps as one box.
 
 import { spawn } from "node:child_process";
 import path from "node:path";
@@ -60,12 +64,14 @@ const API_SRC = `async () => {
   const paths = [
     "/src/handwriting/board.js?v=__BUILD__",
     "/src/documents/notebook.js?v=__BUILD__",
+    "/src/documents/blank-pdf.js?v=__BUILD__",
     "/src/documents/pdf-blocks.js?v=__BUILD__",
     "/src/documents/block-style.js?v=__BUILD__",
     "/src/documents/pdf-block-editor.js?v=__BUILD__",
     "/src/documents/pdf-shapes.js?v=__BUILD__",
     "/src/documents/pdf-connectors.js?v=__BUILD__",
     "/src/documents/canvas-selection.js?v=__BUILD__",
+    "/src/documents/pdf-guides.js?v=__BUILD__",
     "/src/render/annot-shapes.js?v=__BUILD__",
     "/src/documents/pdf-highlights.js?v=__BUILD__",
     "/src/documents/pdf-view.js?v=__BUILD__",
@@ -190,6 +196,8 @@ try {
     const pageEl = () => document.querySelector("#documentStage .pdf-page[data-page-number='1']");
     const blockNode = (id) => document.querySelector('[data-pdf-block="' + id + '"]');
     const find = (id) => api.documentBlocks().find((b) => b.id === id);
+    // Exact distances are what A to C measure: the guides and the grid are D's.
+    api.writeDiagramSnapPreference(false);
 
     // A1. + Add → the diamond in the palette.
     const palette = [...document.querySelectorAll("#inkRailAddShapes [data-hw-action='add-shape']")];
@@ -605,6 +613,100 @@ try {
   check("C9. with the Select tool, a press on a box shape picks it up and drags it", many.boxMoved === 25 && many.boxSelected,
     `(moved ${many.boxMoved} · selected ${many.boxSelected})`);
   check("C. no page errors", !many.errors.length, many.errors.join(" | "));
+
+  // ── D. Guides and the grid ─────────────────────────────────────────────
+  const guides = await page.evaluate(`async () => {
+    const { api, settle, raf, drag, press, mouse } = window.__recall;
+    const out = {};
+    const key = (k, extra = {}) => document.body.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true, ...extra }));
+    const blockNode = (id) => document.querySelector('[data-pdf-block="' + id + '"]');
+    const find = (id) => api.documentBlocks().find((b) => b.id === id);
+    // A clean page, and the guides and the grid back on.
+    api.writeDiagramSnapPreference(true);
+    api.chooseInkTool("pen");
+    api.clearPick();
+    key("a", { ctrlKey: true });
+    key("Delete");
+    await settle(100);
+    out.cleared = api.documentBlocks(1).length + api.documentShapes(1).length;
+    out.paper = api.notebookPaper();
+    const scale = api.pdfPageViewport(1).scale || 1;
+    const y = api.addDocumentBlock(1, { x: 340, y: 520 }, { style: { fit: false }, w: 80, h: 40, edit: false });
+    const x = api.addDocumentBlock(1, { x: 140, y: 300 }, { style: { fit: false }, w: 80, h: 40, edit: false });
+    api.selectBlock(null);
+    await settle(60);
+    const centre = (id) => { const r = blockNode(id).getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; };
+    // Dragged so its left edge lands 3pt short of the other's: held there, a
+    // guide; let go, the edges are one.
+    const startX = find(x.id).x;
+    const want = find(y.id).x - 3 - startX;
+    const c = centre(x.id);
+    const pid = 120;
+    mouse(blockNode(x.id), "pointerdown", c[0], c[1], { pointerId: pid });
+    for (let i = 1; i <= 6; i += 1) { mouse(document, "pointermove", c[0] + (want * scale * i) / 6, c[1], { pointerId: pid }); await raf(); }
+    await raf();
+    out.guideWhileHeld = Boolean(document.querySelector(".pdf-diagram-layer .pdf-guide"));
+    mouse(document, "pointerup", c[0] + want * scale, c[1], { pointerId: pid });
+    await settle(80);
+    out.snappedX = find(x.id).x;
+    out.targetX = find(y.id).x;
+    out.guideAfter = Boolean(document.querySelector(".pdf-diagram-layer .pdf-guide"));
+    // ...with Alt held, it goes exactly where it was put.
+    api.undoBlocks();
+    await settle(60);
+    const c2 = centre(x.id);
+    await drag(blockNode(x.id), c2, [c2[0] + want * scale, c2[1]], { altKey: true });
+    out.altX = find(x.id).x - startX;
+    out.want = want;
+    // Near nothing, on grid paper: onto the squares.
+    api.undoBlocks();
+    await settle(60);
+    const c3 = centre(x.id);
+    await drag(blockNode(x.id), c3, [c3[0] + 37 * scale, c3[1] - 53 * scale]);
+    const g = find(x.id);
+    out.grid = [g.x % 16, g.y % 16];
+    // ⋯ → Snap to guides and grid, off: nothing settles.
+    const toggle = document.querySelector("#documentInkRail [data-ink-action='diagram-snap']");
+    press(toggle);
+    await settle(40);
+    out.toggleOff = toggle.getAttribute("aria-checked");
+    const before = find(x.id);
+    const c4 = centre(x.id);
+    // 12pt: past the four pixels a block takes for a tap at this zoom, and not
+    // on a square of the grid from where it starts.
+    await drag(blockNode(x.id), c4, [c4[0] + 12 * scale, c4[1]]);
+    out.freeMove = find(x.id).x - before.x;
+    press(toggle);
+    await settle(40);
+    out.toggleOn = toggle.getAttribute("aria-checked");
+    // A group moved together snaps as one box: two blocks picked, dragged so
+    // the pair's left edge comes 2pt short of the other block's.
+    const z = api.addDocumentBlock(1, { x: 140, y: 200 }, { style: { fit: false }, w: 60, h: 30, edit: false });
+    api.selectBlock(null);
+    await settle(40);
+    api.pickIds(1, [x.id, z.id]);
+    await settle(40);
+    const left = Math.min(find(x.id).x, find(z.id).x);
+    const shift = find(y.id).x - 2 - left;
+    const c5 = centre(z.id);
+    await drag(blockNode(z.id), c5, [c5[0] + shift * scale, c5[1]]);
+    out.groupLeft = Math.min(find(x.id).x, find(z.id).x);
+    api.clearPick();
+    out.errors = window.__errs.slice();
+    return out;
+  }`);
+
+  check("D. the page was cleared for it", guides.cleared === 0 && guides.paper === "grid", `(${guides.cleared} left · ${guides.paper})`);
+  check("D1. a block dragged near another's edge shows a guide while held", guides.guideWhileHeld);
+  check("...and settles onto that edge when let go, the guide gone",
+    Math.abs(guides.snappedX - guides.targetX) < 0.01 && !guides.guideAfter, `(${guides.snappedX} vs ${guides.targetX})`);
+  check("D2. with Alt held it goes exactly where it was put", Math.abs(guides.altX - guides.want) < 0.6, `(${guides.altX} vs ${guides.want})`);
+  check("D3. near nothing, on grid paper, it settles onto the squares", guides.grid.every((n) => Math.abs(n) < 0.01 || Math.abs(n - 16) < 0.01),
+    JSON.stringify(guides.grid));
+  check("D4. ⋯ → Snap to guides and grid turns it off, and back on",
+    guides.toggleOff === "false" && Math.abs(guides.freeMove - 12) < 0.6 && guides.toggleOn === "true", JSON.stringify([guides.toggleOff, guides.freeMove, guides.toggleOn]));
+  check("D5. several moved together snap as one box", Math.abs(guides.groupLeft - guides.targetX) < 0.01, `(${guides.groupLeft} vs ${guides.targetX})`);
+  check("D. no page errors", !guides.errors.length, guides.errors.join(" | "));
 } catch (error) {
   check("the check itself ran", false, String(error?.stack || error));
 } finally {

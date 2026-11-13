@@ -51,6 +51,7 @@ try {
   cpSync(path.join(ROOT, "src"), path.join(stage, "src"), { recursive: true });
   destamp(path.join(stage, "src"));
   const O = await import(path.join(stage, "src/render/node-outlines.js"));
+  const G = await import(path.join(stage, "src/render/snap-guides.js"));
 
   // ── Outlines ──────────────────────────────────────────────────────────
   must("there are nine outlines, a plain box first, and anything else is a plain box", () => {
@@ -168,6 +169,45 @@ try {
   must("opposite sides, and the four vectors point the way they say on a page", () => {
     if (O.oppositeSide("n") !== "s" || O.oppositeSide("w") !== "e" || O.oppositeSide("x") !== null) return "opposites";
     return (O.SIDE_VECTORS.n[1] === 1 && O.SIDE_VECTORS.s[1] === -1 && O.SIDE_VECTORS.e[0] === 1) || "vectors";
+  });
+
+  // ── Snapping ──────────────────────────────────────────────────────────
+  must("a box dragged near another's left edge settles onto it, and a guide says so", () => {
+    const r = G.snapMove([103, 0, 143, 20], [[100, 100, 160, 140]], { threshold: 4 });
+    if (!near(r.dx, -3) || r.dy !== 0) return JSON.stringify(r);
+    const guide = r.guides.find((g) => g.axis === "x");
+    return (guide && near(guide.at, 100) && near(guide.from, 0) && near(guide.to, 140)) || JSON.stringify(r.guides);
+  });
+  must("...onto a middle as readily as an edge, and the nearest of several wins", () => {
+    // Mine: 52, 56, 60. Theirs: 40, 55, 70 — middle to middle is 1 away, and
+    // the second box's edge at 62 is 2 away from my top: the middle wins.
+    const r = G.snapMove([0, 52, 20, 60], [[100, 40, 120, 70], [200, 62, 220, 90]], { threshold: 4 });
+    if (!near(r.dy, -1)) return JSON.stringify(r);
+    const guide = r.guides.find((g) => g.axis === "y");
+    return (guide && near(guide.at, 55)) || JSON.stringify(r.guides);
+  });
+  must("beyond the threshold nothing snaps — unless there is squared paper", () => {
+    const loose = G.snapMove([10, 10, 30, 30], [[100, 100, 120, 120]], { threshold: 4 });
+    if (loose.dx || loose.dy || loose.guides.length) return JSON.stringify(loose);
+    const gridded = G.snapMove([10, 10, 30, 30], [], { threshold: 4, grid: { pitch: 16 } });
+    return (near(gridded.dx, 6) && near(gridded.dy, 6) && !gridded.guides.length) || JSON.stringify(gridded);
+  });
+  must("a box beats the grid: a neighbour's edge in reach wins over the squares", () => {
+    const r = G.snapMove([30, 0, 50, 10], [[33, 100, 60, 120]], { threshold: 4, grid: { pitch: 16 } });
+    return near(r.dx, 3) || JSON.stringify(r);
+  });
+  must("a resize snaps only the edges it moves", () => {
+    const r = G.snapEdges([0, 0, 97, 50], [2, null], [[100, 200, 150, 250]], { threshold: 4 });
+    if (!near(r.rect[2], 100) || r.rect[0] !== 0 || r.rect[3] !== 50) return JSON.stringify(r.rect);
+    return (r.guides.length === 1 && r.guides[0].axis === "x" && near(r.guides[0].at, 100)) || JSON.stringify(r.guides);
+  });
+  must("...an edge never snaps past the opposite one", () => {
+    const r = G.snapEdges([0, 0, 2, 50], [0, null], [[3, 100, 9, 120]], { threshold: 4 });
+    return r.rect[0] < r.rect[2] || JSON.stringify(r.rect);
+  });
+  must("a handle's name says which edges it moves, north being the high edge", () => {
+    const want = { n: [null, 2], se: [2, 0], w: [0, null], nw: [0, 2] };
+    return Object.entries(want).every(([h, e]) => JSON.stringify(G.edgesForHandle(h)) === JSON.stringify(e)) || "handles";
   });
 } catch (error) {
   results.push([false, "the check itself ran", String(error?.stack || error)]);

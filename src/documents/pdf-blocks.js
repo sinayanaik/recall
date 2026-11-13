@@ -1917,7 +1917,12 @@ function beginGesture(event, node, mode, edge = "se") {
     }
     // Snapped to its neighbours and to the grid (src/documents/pdf-guides.js),
     // unless Alt is held — registered, as everything this gesture tells.
-    live = gestureAdjuster({ page: block.page, id, mode, edge, before: block, live, event: moveEvent, viewport }) || live;
+    live = gestureAdjuster({
+      page: block.page, id, mode, edge, before: block, live, event: moveEvent, viewport,
+      // A picture keeps its shape and a block that follows its words keeps
+      // their height: neither has an edge free to snap on its own.
+      keepRatio: mode === "resize" && (isImage || moveEvent.shiftKey), widthOnly
+    }) || live;
     if (!frame) frame = requestAnimationFrame(apply);
   };
 
@@ -1952,6 +1957,7 @@ function beginGesture(event, node, mode, edge = "se") {
     // more. Told BEFORE the write, so the repaint the write causes paints from
     // the record alone.
     liveGesture = null;
+    gestureAdjuster(null);
     gestureFrameHook(block.page, null);
     // The gesture is over, however it resolved — a tap that never crossed the
     // slop (the popover was never closed for it), a drag that settled the

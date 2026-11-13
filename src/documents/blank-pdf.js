@@ -67,6 +67,10 @@ export const BLANK_PAPER_DEFAULT = "grid";
 // drawn at 63% because it is drawn to.
 const RULE_PITCH = 24;
 const GRID_PITCH = 16;
+
+// The squares a Canvas's grid paper is ruled in, from its corner — what a box
+// dragged on it settles onto (src/documents/pdf-guides.js).
+export const CANVAS_GRID_PITCH = GRID_PITCH;
 const GRID_MAJOR_EVERY = 4;
 const MARGIN_X = 56;
 

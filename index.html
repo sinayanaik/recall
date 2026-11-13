@@ -303,6 +303,8 @@
     <link rel="modulepreload" href="src/documents/pdf-connectors.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/pdf-diagram-layer.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/canvas-selection.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/documents/pdf-guides.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/render/snap-guides.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/pdf-shape-panel.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/pdf-shape-text.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/pdf-shape-text-format.js?v=__BUILD__">
@@ -1485,6 +1487,10 @@
                        a stroke cannot put right — and it still goes on the undo
                        stack. Disabled on a page with no ink on it. -->
                   <button class="ink-rail-menu-item is-danger" type="button" role="menuitem" data-ink-action="clear" title="Clear the page — remove every mark from the page you are looking at" aria-label="Clear the page">Clear this page&#8230;</button>
+                  <!-- A box dragged settles onto its neighbours' edges and the
+                       grid's squares (src/documents/pdf-guides.js). On until
+                       turned off here; Alt held skips it for one drag. -->
+                  <button class="ink-rail-menu-item" type="button" role="menuitemcheckbox" aria-checked="true" data-ink-action="diagram-snap" title="Snap to guides and grid — a block or a shape dragged settles onto the edges and middles of what is near it, and onto the squares of grid paper. Hold Alt to drag freely.">Snap to guides and grid</button>
                 </div>
               </div>
               <!-- The panel under the chip: size, colour, opacity and the

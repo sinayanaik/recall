@@ -367,3 +367,11 @@
   opacity: 0.35;
   cursor: default;
 }
+
+/* ── What a drag lined up with (src/documents/pdf-guides.js) ──────────────── */
+.pdf-guide {
+  stroke: #e11d74;
+  stroke-width: 1;
+  stroke-dasharray: 3 2;
+  vector-effect: non-scaling-stroke;
+}

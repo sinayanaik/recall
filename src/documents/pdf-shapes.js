@@ -941,6 +941,15 @@ export function setShapeOverlayHook(fn) {
   shapeOverlayHook = typeof fn === "function" ? fn : () => {};
 }
 
+// A box moved or resized settles onto its neighbours and the grid
+// (src/documents/pdf-guides.js): handed the shape as the drag has it, it hands
+// back the shape snapped, or null for no change; null in, the drag is over.
+let shapeMoveAdjuster = () => null;
+
+export function setShapeMoveAdjuster(fn) {
+  shapeMoveAdjuster = typeof fn === "function" ? fn : () => null;
+}
+
 // The words on a line — a connector's label — are typed in an editor of their
 // own (src/documents/pdf-connectors.js): the callout's and the text box's is a
 // box, and a label is not one.
@@ -1298,7 +1307,8 @@ function pressShape(drag, event) {
   }
   if (drag.mode === "move") {
     const [dx, dy] = clampShapeMove(drag.target.shape, drag.page, point[0] - drag.from[0], point[1] - drag.from[1]);
-    return translateShape(drag.target.shape, dx, dy);
+    const moved = translateShape(drag.target.shape, dx, dy);
+    return shapeMoveAdjuster({ page: drag.page, id: drag.target.id, mode: "move", shape: moved, event }) || moved;
   }
   // A line's end, with Shift, swings round its other end in 15° steps — from
   // where that end is drawn, which for a tied end is on what it is tied to.
@@ -1314,7 +1324,7 @@ function pressShape(drag, event) {
     const index = Number(drag.handle[1]);
     return bindShapeEnds(drag, moved, event, [index], index);
   }
-  return moved;
+  return shapeMoveAdjuster({ page: drag.page, id: drag.target.id, mode: "handle", handle: drag.handle, shape: moved, event }) || moved;
 }
 
 // ── Never off the page ─────────────────────────────────────────────────────
@@ -1366,6 +1376,7 @@ function onShapePointerUp(event) {
   event.stopPropagation();
   endShapePress();
   shapeBinding.clear();
+  shapeMoveAdjuster(null);
   if (drag.mode !== "create") notePdfGesture("shape", drag.moved ? `${drag.mode === "move" ? "moved" : "reshaped"}` : "tapped", { id: drag.target?.id, pointer: drag.pointerType });
   if (drag.mode === "create") {
     // A tap makes a text box or a sticky note where it lands; for anything
@@ -1432,6 +1443,7 @@ function onShapePointerCancel(event) {
   if (!drag || event.pointerId !== drag.pointerId) return;
   endShapePress();
   shapeBinding.clear();
+  shapeMoveAdjuster(null);
   notePdfGesture("shape", "cancelled", { id: drag.target?.id, mode: drag.mode, pointer: drag.pointerType, cause: event.type, moved: drag.moved ? "yes" : "no" });
   if (drag.mode !== "create" && drag.moved && drag.preview) {
     suppressShapeClickUntil = Date.now() + 400;

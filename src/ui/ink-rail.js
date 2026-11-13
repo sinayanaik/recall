@@ -30,7 +30,7 @@ import { deleteBlock, editBlock, openSelectedBlockStyle, selectedBlockKind, setB
 import { INK_TOOL_DEFAULT } from "../format/ink-colors.js?v=__BUILD__";
 import { bindInkRailActivation, paintInkRailPressed } from "../handwriting/rail.js?v=__BUILD__";
 import { buildInkPanel, createInkPanel, paintInkChip } from "../handwriting/ink-popover.js?v=__BUILD__";
-import { inkPreferences, inkRailOpen, rememberInkRecentColor, writeInkPreferences, writeInkRailOpen } from "../storage/ink-prefs.js?v=__BUILD__";
+import { diagramSnapPreference, inkPreferences, inkRailOpen, rememberInkRecentColor, writeDiagramSnapPreference, writeInkPreferences, writeInkRailOpen } from "../storage/ink-prefs.js?v=__BUILD__";
 import { DOC_SLOT_NOTEBOOK, activeDocSlot } from "../documents/doc-slot.js?v=__BUILD__";
 import { isRegionSelectArmed, setRegionSelect } from "../documents/pdf-region.js?v=__BUILD__";
 import { displayedShapeSettings, setShapeChangedHandler, setShapeType, shapeButtonType, shapeType } from "../documents/pdf-shapes.js?v=__BUILD__";
@@ -426,6 +426,7 @@ function paintInkRail() {
   }
   rail.querySelector('[data-ink-action="undo"]')?.toggleAttribute("disabled", !undoable);
   rail.querySelector('[data-ink-action="redo"]')?.toggleAttribute("disabled", !redoable);
+  rail.querySelector('[data-ink-action="diagram-snap"]')?.setAttribute("aria-checked", String(diagramSnapPreference()));
   // ── On a Canvas, "Select text" selects THINGS ───────────────────────────
   //
   // A Canvas's paper has no words to pick out, so the same tool picks up its
@@ -712,6 +713,7 @@ function pressRail(button) {
   else if (action === "undo") (documentUndo ? documentUndo.undo() : undoInk());
   else if (action === "redo") (documentUndo ? documentUndo.redo() : redoInk());
   else if (action === "clear") { closeInkRailMenus(); askToClearPage(); }
+  else if (action === "diagram-snap") writeDiagramSnapPreference(!diagramSnapPreference());
   else if (action === "join") joinInkSelection();
   else if (action === "split") splitInkSelection();
   else if (action === "duplicate") duplicateInkSelection();

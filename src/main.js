@@ -162,6 +162,7 @@ import { applyInkRailPreference, closeInkRailPopups, finishTypewriterBox, initIn
 import { initDocumentShapes, repaintDocumentShapes, setShapeCreatedHandler } from "./documents/pdf-shapes.js?v=__BUILD__";
 import { deleteWithConnectors, initConnectors, scheduleConnectorRelink } from "./documents/pdf-connectors.js?v=__BUILD__";
 import { initCanvasSelection } from "./documents/canvas-selection.js?v=__BUILD__";
+import { initGuides } from "./documents/pdf-guides.js?v=__BUILD__";
 import { openPaperMenu } from "./documents/paper-menu.js?v=__BUILD__";
 import { openShapeTextEditor, setShapeTextCommittedHandler } from "./documents/pdf-shape-text.js?v=__BUILD__";
 import { initShapeStylePopover } from "./documents/pdf-shape-style-popover.js?v=__BUILD__";
@@ -1616,6 +1617,8 @@ onDomReady(() => {
   // Several things picked up at once, and the bar that arranges them
   // (src/documents/canvas-selection.js).
   initCanvasSelection();
+  // ...and the guides and grid a drag settles onto (src/documents/pdf-guides.js).
+  initGuides();
   // What a new callout, text box or sticky note opens straight away: the box
   // to type in, or — a sticky note being its note — the note editor.
   setShapeCreatedHandler((record) => {
