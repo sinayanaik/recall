@@ -33,6 +33,14 @@
   color: color-mix(in srgb, currentColor 72%, transparent);
 }
 
+/* A number already TYPED into a heading ("3.1 Methods", pasted from a PDF) —
+   kept in the text, hidden while the drawn number takes its place, so a heading
+   never reads "1.2 3.1 Methods". Turning numbering off shows it again
+   (markTypedHeadingNumber, fillHeadingTitle in src/notes/heading-numbers.js). */
+:root.heading-numbers .heading-typed-number {
+  display: none;
+}
+
 /* The number an export writes as text (writeHeadingNumbersAsText) — the same
    quieter shade, for the print root and the standalone HTML. */
 .heading-number {

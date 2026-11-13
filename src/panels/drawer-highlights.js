@@ -43,6 +43,7 @@
 // list — and for the same reason: the drawer is closed almost all of the time.
 
 import { el } from "../core/dom.js?v=__BUILD__";
+import { fillHeadingTitle } from "../notes/heading-numbers.js?v=__BUILD__";
 import { scheduleNoteJump } from "../notes/anchors.js?v=__BUILD__";
 import { documentHighlightEntries, noteHighlightEntries } from "./highlight-index.js?v=__BUILD__";
 import { mountRegionPreview } from "../documents/pdf-region-embed.js?v=__BUILD__";
@@ -357,7 +358,7 @@ function drawerRowFor(drawer, entry) {
         const label = document.createElement("span");
         label.className = "heading-number-label";
         label.dataset.headingNumber = entry.whereNumber;
-        label.textContent = entry.where;
+        fillHeadingTitle(label, entry.where, entry.whereTypedNumber);
         where.appendChild(label);
       } else {
         where.textContent = entry.where;

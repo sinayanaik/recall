@@ -105,6 +105,8 @@ export function noteHighlightEntries() {
       // Its section number, drawn before `where` by the stylesheet; and the
       // section itself, which the drawer's section picker filters on.
       whereNumber: heading?.number || "",
+      // ...and a number typed into the heading, hidden while that one shows.
+      whereTypedNumber: heading?.typedNumber || "",
       section: heading?.key || SECTION_BEFORE_KEY,
       anchor: trimNoteAnchor({
         offset: group.offset,

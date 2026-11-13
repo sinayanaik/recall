@@ -14,6 +14,7 @@
 // offers the page as it was, should a rule have caught something real.
 
 import { ensureTurndown } from "../core/lib-loader.js?v=__BUILD__";
+import { headingNumbersOn, stripTypedHeadingNumbersFromMarkdown } from "../notes/heading-numbers.js?v=__BUILD__";
 import { htmlToMarkdown } from "./html-to-markdown.js?v=__BUILD__";
 import {
   bytesToLatin1,
@@ -407,7 +408,10 @@ export async function webPageToMarkdown({ html, baseUrl = "", title = "" }) {
   const address = isHttpUrl(baseUrl) ? baseUrl : pageAddress(probe);
   const heading = cleanPageTitle(title) || pageTitle(probe);
 
-  const convert = (root) => tidyPageMarkdown(htmlToMarkdown(withTitle(root, heading)));
+  // A page's own section numbers ("2.3 Methods") are left out while the note
+  // draws its own (src/notes/heading-numbers.js).
+  const unnumbered = (markdown) => (headingNumbersOn() ? stripTypedHeadingNumbersFromMarkdown(markdown) : markdown);
+  const convert = (root) => unnumbered(tidyPageMarkdown(htmlToMarkdown(withTitle(root, heading))));
 
   const fullDoc = parse();
   removeInvisible(fullDoc.body);

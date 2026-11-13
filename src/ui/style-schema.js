@@ -484,7 +484,7 @@ export const styleControlGroups = [
       {
         key: "headingNumbers", label: "Number headings", type: "select", options: ["on", "off"],
         optionLabels: { on: "On — 1, 1.1, 1.2…", off: "Off" },
-        hint: "Numbers each heading by its place in the note, like 1, 1.1, 1.2. The numbers are only drawn: your text is not changed."
+        hint: "Numbers each heading by its place in the note, like 1, 1.1, 1.2, and hides any number already typed at the start of a heading. The numbers are only drawn: your text is not changed, except that headings you paste or import arrive without their old numbers."
       },
       ...headingFields("notesHeadingH", "in notes, the Highlights pane, Quick Notes and blocks on PDFs and Canvas")
     ]

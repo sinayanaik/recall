@@ -17,7 +17,7 @@ import { activeChapterIndex, firstVisibleNotesBlock, isNotesPaged, notesCurrentP
 import { NOTES_BLOCK_SELECTOR } from "./raw-offset.js?v=__BUILD__";
 import { notesReadingLineOffset } from "./scroll-anchor.js?v=__BUILD__";
 import { MARK_BADGE_CLASS } from "./highlight-badges.js?v=__BUILD__";
-import { headingNumbersForLevels, numberRenderedHeadings, setHeadingNumberMark } from "./heading-numbers.js?v=__BUILD__";
+import { headingNumbersForLevels, numberRenderedHeadings, setHeadingNumberMark, typedHeadingNumbers } from "./heading-numbers.js?v=__BUILD__";
 import { NOTES_CHUNK_CLASS, NOTES_CHUNK_PENDING_CLASS, NOTES_TOP_LEVEL_SELECTOR, ensureNotesLazyOffsetBuilt, notesHeadingScan, notesLazyPlan, notesLazyTopAtOffset, renderedBlockCache, scanPreparedHeadings, withChunkRendered } from "../render/block-cache.js?v=__BUILD__";
 import { NOTE_LINK_PATTERN, noteLinkEntryMatchesId } from "../render/note-links.js?v=__BUILD__";
 import { forEachDeckSnapshot } from "../storage/deck-store.js?v=__BUILD__";
@@ -202,12 +202,15 @@ export function notesHeadingsForPrepared(prepared) {
   // note is not in the DOM, and a heading has to know it is 14.3 before the
   // thirteen chapters above it have ever been built.
   const numbers = headingNumbersForLevels(scan.map((entry) => entry.level));
+  // ...and the number already typed into each, which the drawn one replaces.
+  const typed = typedHeadingNumbers(scan.map((entry) => entry.text));
   notesHeadingList = scan.map((entry, i) => ({
     level: entry.level,
     text: entry.text,
     offset: entry.offset,
     id: slugifyHeading(entry.text, used),
     number: numbers[i],
+    typedNumber: typed[i],
     el: null
   }));
   notesHeadingSource = prepared;
@@ -330,7 +333,7 @@ export function bindNotesHeadingElements(container, from = null, to = null, root
     }
     headings[target].el = node;
     node.id = headings[target].id;
-    setHeadingNumberMark(node, headings[target].number);
+    setHeadingNumberMark(node, headings[target].number, headings[target].typedNumber || "");
     at = target + 1;
   }
 }
@@ -579,12 +582,14 @@ export function rawNotesHeadings() {
   const used = new Set();
   const scan = scanPreparedHeadings(value);
   const numbers = headingNumbersForLevels(scan.map((entry) => entry.level));
+  const typed = typedHeadingNumbers(scan.map((entry) => entry.text));
   rawTocHeadings = scan.map((entry, i) => ({
     level: entry.level,
     text: entry.text,
     offset: entry.offset,
     id: slugifyHeading(entry.text, used),
     number: numbers[i],
+    typedNumber: typed[i],
     el: null
   }));
   rawTocSource = value;
@@ -656,7 +661,8 @@ function buildNotesTocRows(plan, deadline = null) {
       text: heading.text,
       href: `#${heading.id}`,
       branch: branches[index],
-      number: heading.number
+      number: heading.number,
+      typedNumber: heading.typedNumber || ""
     });
     plan.rows.appendChild(li);
     plan.links.push(link);
