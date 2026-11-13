@@ -34,12 +34,16 @@
 //      it with a guide drawn while it is held, Alt skips that, a block near
 //      nothing settles onto the squares of grid paper, ⋯ → Snap turns it all
 //      off, and a group moved together snaps as one box.
+//   E. The file saved with its annotations: a connector with square corners
+//      is a PolyLine through its corners, with its heads and its words.
 
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { findChrome, launchChrome, connect, openPage } from "./cdp.mjs";
 import { pdfjsSources, servePdfjsFromDisk } from "./pdfjs-source.mjs";
+import { pdflibSource } from "./pdflib-source.mjs";
+import { htmlToImageSource } from "./htmltoimage-source.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const WATCHDOG_MS = 180000;
@@ -72,6 +76,7 @@ const API_SRC = `async () => {
     "/src/documents/pdf-connectors.js?v=__BUILD__",
     "/src/documents/canvas-selection.js?v=__BUILD__",
     "/src/documents/pdf-guides.js?v=__BUILD__",
+    "/src/documents/pdf-annot-export.js?v=__BUILD__",
     "/src/render/annot-shapes.js?v=__BUILD__",
     "/src/documents/pdf-highlights.js?v=__BUILD__",
     "/src/documents/pdf-view.js?v=__BUILD__",
@@ -183,6 +188,11 @@ try {
   await page.call("Page.addScriptToEvaluateOnNewDocument", {
     source: `try { localStorage.setItem("recall:pdfPictures", "0"); } catch (e) {}`
   });
+  // pdf-lib and html-to-image, from disk rather than the CDN, as
+  // tools/annotations-check.mjs has them: E saves the file with its
+  // annotations, which needs both.
+  await page.call("Page.addScriptToEvaluateOnNewDocument", { source: pdflibSource() });
+  await page.call("Page.addScriptToEvaluateOnNewDocument", { source: htmlToImageSource() });
   await page.goto(`${server.base}/index.html`);
   const pdfjs = pdfjsSources();
   const opened = await page.evaluate(SETUP_SRC, API_SRC, pdfjs.main, pdfjs.worker);
@@ -707,6 +717,42 @@ try {
     guides.toggleOff === "false" && Math.abs(guides.freeMove - 12) < 0.6 && guides.toggleOn === "true", JSON.stringify([guides.toggleOff, guides.freeMove, guides.toggleOn]));
   check("D5. several moved together snap as one box", Math.abs(guides.groupLeft - guides.targetX) < 0.01, `(${guides.groupLeft} vs ${guides.targetX})`);
   check("D. no page errors", !guides.errors.length, guides.errors.join(" | "));
+
+  // ── E. Saved with its annotations ──────────────────────────────────────
+  const saved = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const a = api.addDocumentBlock(1, { x: 120, y: 120 }, { style: { fit: false }, w: 80, h: 40, edit: false });
+    const b = api.addDocumentBlock(1, { x: 420, y: 220 }, { style: { fit: false }, w: 80, h: 40, edit: false });
+    api.selectBlock(null);
+    const made = api.createConnector(1, api.resolveConnector({ ...api.newConnectorBase(), type: "arrow", route: "elbow", text: "next",
+      p: [[0, 0], [1, 1]], ends: [{ id: a.id, side: "e" }, { id: b.id, side: "w" }] }, api.diagramNodes(1)));
+    api.selectShape(null);
+    await settle(100);
+    const result = await api.annotatedPdfBytes();
+    if (!result) return { error: "no bytes" };
+    const { PDFDocument, PDFName, PDFDict, PDFArray } = window.PDFLib;
+    const doc = await PDFDocument.load(result.bytes.slice());
+    let found = null;
+    doc.getPages().forEach((p) => {
+      const annots = p.node.Annots();
+      if (!annots) return;
+      for (let k = 0; k < annots.size(); k += 1) {
+        const dict = doc.context.lookup(annots.get(k), PDFDict);
+        if (dict.get(PDFName.of("NM"))?.decodeText?.() !== made.id) continue;
+        found = {
+          subtype: dict.get(PDFName.of("Subtype"))?.toString(),
+          vertices: dict.get(PDFName.of("Vertices")) ? dict.lookup(PDFName.of("Vertices"), PDFArray).size() : 0,
+          le: dict.get(PDFName.of("LE"))?.toString() || "",
+          ap: Boolean(dict.get(PDFName.of("AP")))
+        };
+      }
+    });
+    return { found, errors: window.__errs.slice() };
+  }`);
+  check("E. a connector with square corners is saved as a PolyLine through its corners, with its heads",
+    saved.found?.subtype === "/PolyLine" && saved.found.vertices >= 8 && /OpenArrow|ClosedArrow/.test(saved.found.le) && saved.found.ap,
+    JSON.stringify(saved.found || saved.error));
+  check("E. no page errors", !(saved.errors || []).length, (saved.errors || []).join(" | "));
 } catch (error) {
   check("the check itself ran", false, String(error?.stack || error));
 } finally {

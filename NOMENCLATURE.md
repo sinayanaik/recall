@@ -28,9 +28,17 @@ What the pen bar's **+ Add** menu puts on a PDF's or a Canvas's page:
 | **Text** | Words typed straight onto the page: press **T** (or + Add → Text) and tap where | a shape with `type: "text"` in `meta.pdfHighlights` | `src/documents/pdf-shapes.js`, `pdf-shape-text.js` |
 | **Block** | A box of markdown — words, maths, code, tables and pictures — rendered like a note, dragged and resized on the page. Not "text block": it holds more than text | a record in `meta.pdfBlocks`; `kind` `"text"` (or none) is markdown | `src/documents/pdf-blocks.js` (`PDF_BLOCK_MARKDOWN`), `pdf-block-editor.js` |
 | **Picture** | A block that is a picture alone, from + Add → Picture…, or pasted (Ctrl+V) or dropped onto the page; compressed first, as a note's picture is | a `meta.pdfBlocks` record with `kind: "image"` and a `src` | `PDF_BLOCK_IMAGE`; `addHandwritingImages` in `src/handwriting/board.js` |
+| **Block shape** | A Block's outline in a diagram — rectangle, rounded, pill, ellipse, diamond, hexagon, parallelogram, cylinder or document — from + Add's palette or Style → Shape. Still a **Block**: say "a diamond block", not "a shape", which is the Shapes tool's | `style.shape` (with `line`, `lineWidth`, `lineDash`, `valign`) on a `meta.pdfBlocks` record | `src/render/node-outlines.js`; `paintBlockOutline` in `pdf-blocks.js` |
+| **Connector** | A line or an arrow whose ends are tied to the Blocks (or Shapes-tool boxes) it joins, so it follows them: made from a picked-up Block's four arrows, or by drawing or dragging a line's end onto one | a line/arrow shape in `meta.pdfHighlights` with `ends` (and `route`, `exits`, a bend in `p[2]`, words in `text`) | `src/documents/pdf-connectors.js`; `connectorPath` in `src/render/annot-shapes.js` |
 
 A **sticky note** is one of the Shapes tool's shapes (with lines, arrows, boxes,
 ellipses and callouts), not a row of + Add.
+
+Several Blocks and shapes **picked up** together (Shift-click, a box drawn on a
+Canvas with the Select tool, Ctrl+A) are moved, lined up, copied and **grouped**
+as one; a group is a `group` id on each record (`src/documents/canvas-selection.js`).
+The thin lines a drag snaps to are **guides**, and grid paper's squares are the
+**grid** (`src/documents/pdf-guides.js`, `src/render/snap-guides.js`).
 
 ## Where each name lives
 

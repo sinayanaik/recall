@@ -70,6 +70,14 @@
   outline-offset: 2px;
 }
 
+/* A shaped block's corner grip sits at the corner of its BOX, which on a
+   diamond or an ellipse is off in the paper beside it — so it shows only on
+   the block being pointed at or picked up, where it is a handle rather than a
+   stray mark on the diagram. */
+.pdf-block[data-block-shape]:not(.is-selected):not(:hover) .pdf-block-grip {
+  opacity: 0;
+}
+
 /* ── A plain block's edge, coloured, sized and dashed ──────────────────────── */
 .pdf-block:not([data-block-shape]):not([data-block-frame="none"]) {
   border-color: var(--pdf-block-line, color-mix(in srgb, var(--accent) 45%, var(--line)));
