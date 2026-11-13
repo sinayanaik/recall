@@ -493,6 +493,7 @@ const APP_SHELL = [
   `./src/documents/pdf-shapes.js?v=${STAMP}`,
   `./src/documents/pdf-connectors.js?v=${STAMP}`,
   `./src/documents/pdf-diagram-layer.js?v=${STAMP}`,
+  `./src/documents/canvas-selection.js?v=${STAMP}`,
   `./src/documents/pdf-shape-panel.js?v=${STAMP}`,
   `./src/documents/pdf-shape-text.js?v=${STAMP}`,
   `./src/documents/pdf-shape-text-format.js?v=${STAMP}`,

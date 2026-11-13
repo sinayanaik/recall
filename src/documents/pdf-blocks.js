@@ -1444,6 +1444,18 @@ export function setBlocksPaintedHook(fn) {
   blocksPaintedHook = typeof fn === "function" ? fn : () => {};
 }
 
+// Several blocks drawn where a drag has them, without writing anything — a
+// group of things being moved together (src/documents/canvas-selection.js).
+// `blocks` is a Map of id → the block as the drag has it; the drop writes.
+export function previewBlockGeometry(pageNumber, blocks) {
+  const viewport = pdfPageViewport(pageNumber);
+  if (!viewport || !blocks?.size) return;
+  blocks.forEach((block, id) => {
+    const node = document.querySelector(`[data-pdf-block="${CSS.escape(id)}"]`);
+    if (node) placeBlock(node, viewport, block);
+  });
+}
+
 export function repaintDocumentBlocks() {
   const view = el.documentView;
   if (!view) return;

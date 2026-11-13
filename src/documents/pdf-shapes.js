@@ -701,7 +701,10 @@ function buildHandles(layer, viewport, record, put = (node) => layer.appendChild
 // Every shape on one page, rebuilt. Called as the page paints (through
 // paintDocumentHighlights, which every CRUD on the records already repaints)
 // and as the selection or a drag changes.
-export function paintDocumentShapes(pageNumber, { preview = null } = {}) {
+//
+// `previews` is several shapes drawn where a drag has them (a group being
+// moved, src/documents/canvas-selection.js): a Map of id → shape.
+export function paintDocumentShapes(pageNumber, { preview = null, previews = null } = {}) {
   const viewport = pdfPageViewport(pageNumber);
   if (!viewport) return;
   const shapes = documentShapes(pageNumber);
@@ -727,9 +730,13 @@ export function paintDocumentShapes(pageNumber, { preview = null } = {}) {
   svg.setAttribute("aria-hidden", "true");
   put(svg);
   const boxes = [];
+  const previewOf = (record) => {
+    if (preview && preview.id === record.id) return preview.shape;
+    return previews?.get(record.id) || null;
+  };
   shapes.forEach((record) => {
     // The shape being dragged is drawn where the drag has it, not where it is.
-    const shape = resolve(record, preview && preview.id === record.id ? preview.shape : normalizeShape(record.shape));
+    const shape = resolve(record, normalizeShape(previewOf(record) || record.shape));
     const built = buildShapeNodes(record, shape, viewport);
     svg.appendChild(built.group);
     boxes.push(...built.boxes);
@@ -742,7 +749,7 @@ export function paintDocumentShapes(pageNumber, { preview = null } = {}) {
   boxes.forEach((box) => put(box));
   const selected = selectedShapeRecord();
   if (selected && Number(selected.page) === Number(pageNumber) && !editingShapeId) {
-    const shape = resolve(selected, normalizeShape(preview && preview.id === selected.id ? preview.shape : selected.shape));
+    const shape = resolve(selected, normalizeShape(previewOf(selected) || selected.shape));
     buildHandles(layer, viewport, { ...selected, shape }, put);
   }
   shapePaintedHook(pageNumber, layer);
@@ -1033,6 +1040,15 @@ function handleAt(record, pageEl, clientX, clientY) {
     if (d <= SHAPE_HANDLE_REACH && (!best || d < best.d)) best = { id: handle.id, d };
   });
   return best?.id || null;
+}
+
+// Which handle of the selected shape a press at (clientX, clientY) is on, or
+// null — for src/documents/canvas-selection.js, which must leave a press on a
+// handle to this module.
+export function selectedShapeHandleAt(clientX, clientY) {
+  const record = selectedShapeRecord();
+  const pageEl = record ? pdfPageElement(Number(record.page)) : null;
+  return pageEl ? handleAt(record, pageEl, clientX, clientY) : null;
 }
 
 // ── The gesture ───────────────────────────────────────────────────────────

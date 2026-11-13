@@ -161,6 +161,7 @@ import { blocksForPaper, buildStaticBlock, canRedoBlocks, setDiagramShapeIO, can
 import { applyInkRailPreference, closeInkRailPopups, finishTypewriterBox, initInkRail, refreshInkRail, setDocumentUndoHandlers } from "./ui/ink-rail.js?v=__BUILD__";
 import { initDocumentShapes, repaintDocumentShapes, setShapeCreatedHandler } from "./documents/pdf-shapes.js?v=__BUILD__";
 import { deleteWithConnectors, initConnectors, scheduleConnectorRelink } from "./documents/pdf-connectors.js?v=__BUILD__";
+import { initCanvasSelection } from "./documents/canvas-selection.js?v=__BUILD__";
 import { openPaperMenu } from "./documents/paper-menu.js?v=__BUILD__";
 import { openShapeTextEditor, setShapeTextCommittedHandler } from "./documents/pdf-shape-text.js?v=__BUILD__";
 import { initShapeStylePopover } from "./documents/pdf-shape-style-popover.js?v=__BUILD__";
@@ -1612,6 +1613,9 @@ onDomReady(() => {
   // blocks and boxes they join, the arrows a picked-up box wears to make one,
   // and the overlay over each page they are drawn in.
   initConnectors();
+  // Several things picked up at once, and the bar that arranges them
+  // (src/documents/canvas-selection.js).
+  initCanvasSelection();
   // What a new callout, text box or sticky note opens straight away: the box
   // to type in, or — a sticky note being its note — the note editor.
   setShapeCreatedHandler((record) => {

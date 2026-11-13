@@ -25,6 +25,11 @@
 //      copy as one undo step, square corners, words on a line, Delete leaving
 //      the lines tied and Ctrl+Delete taking them, and the Shapes tool's arrow
 //      tying itself to the block it is drawn onto.
+//   C. Several at once: a box drawn round three things picks them, the bar
+//      lines them up as one undo step, a drag on one moves them all and the
+//      line between them follows, Shift-click adds one, Ctrl+C / Ctrl+V copies
+//      them with the line re-tied to the copies, a group is picked whole, and
+//      with the Select tool a press on a box shape moves it.
 
 import { spawn } from "node:child_process";
 import path from "node:path";
@@ -60,6 +65,7 @@ const API_SRC = `async () => {
     "/src/documents/pdf-block-editor.js?v=__BUILD__",
     "/src/documents/pdf-shapes.js?v=__BUILD__",
     "/src/documents/pdf-connectors.js?v=__BUILD__",
+    "/src/documents/canvas-selection.js?v=__BUILD__",
     "/src/render/annot-shapes.js?v=__BUILD__",
     "/src/documents/pdf-highlights.js?v=__BUILD__",
     "/src/documents/pdf-view.js?v=__BUILD__",
@@ -463,6 +469,142 @@ try {
     links.drawnTied && links.drawnEndOnTop);
   check("B8. a page of tied lines, left alone, writes nothing", links.settled);
   check("B. no page errors", !links.errors.length, links.errors.join(" | "));
+
+  // ── C. Several at once ─────────────────────────────────────────────────
+  const many = await page.evaluate(`async () => {
+    const { api, settle, raf, drag, press, mouse } = window.__recall;
+    const out = {};
+    const key = (k, extra = {}) => document.body.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true, ...extra }));
+    const blockNode = (id) => document.querySelector('[data-pdf-block="' + id + '"]');
+    const find = (id) => api.documentBlocks().find((b) => b.id === id);
+    const viewport = api.pdfPageViewport(1);
+    const pageEl = document.querySelector("#documentStage .pdf-page[data-page-number='1']");
+    const toClient = (x, y) => { const [sx, sy] = viewport.convertToViewportPoint(x, y); const box = pageEl.getBoundingClientRect(); return [box.left + sx, box.top + sy]; };
+    api.selectBlock(null);
+    api.selectShape(null);
+    // Three boxes high on the page, out of the way of everything above, and a
+    // line from the first to the second.
+    const p = api.addDocumentBlock(1, { x: 120, y: 720 }, { style: { fit: false }, w: 80, h: 40, edit: false });
+    const q = api.addDocumentBlock(1, { x: 260, y: 690 }, { style: { fit: false }, w: 80, h: 40, edit: false });
+    const r = api.addDocumentBlock(1, { x: 420, y: 740 }, { style: { fit: false }, w: 80, h: 40, edit: false });
+    api.selectBlock(null);
+    const line = api.createConnector(1, api.resolveConnector({ ...api.newConnectorBase(), type: "arrow", p: [[0, 0], [1, 1]],
+      ends: [{ id: p.id, side: "auto" }, { id: q.id, side: "auto" }] }, api.diagramNodes(1)));
+    api.selectShape(null);
+    await settle(80);
+    // C1. With the Select tool, a box drawn on bare paper round all four.
+    api.chooseInkTool("text");
+    await settle(30);
+    const from = toClient(60, 800);
+    const to = toClient(500, 630);
+    const target = document.elementFromPoint(from[0], from[1]);
+    await drag(target, from, to);
+    await settle(80);
+    out.picked = api.pickedIds().slice().sort();
+    out.wanted = [p.id, q.id, r.id, line.id].sort();
+    out.frame = Boolean(document.querySelector(".pdf-diagram-layer .pdf-picked-all"));
+    out.bar = api.isArrangeBarOpen();
+    // C2. Line up their left edges: one press, one step.
+    press(document.querySelector(".diagram-arrange-bar [data-arrange='left']"));
+    await settle(80);
+    out.lefts = [p, q, r].map((b) => find(b.id).x);
+    api.undoBlocks();
+    await settle(80);
+    out.leftsBack = [p, q, r].map((b) => find(b.id).x);
+    // C3. A drag on one moves them all; the line between two of them follows.
+    const lineBefore = api.documentHighlightById(line.id).shape.p.map((pt) => pt.slice());
+    const qc = blockNode(q.id).getBoundingClientRect();
+    const scale = viewport.scale || 1;
+    await drag(blockNode(q.id), [qc.left + qc.width / 2, qc.top + qc.height / 2], [qc.left + qc.width / 2 + 30 * scale, qc.top + qc.height / 2 + 20 * scale]);
+    await settle(150);
+    out.moved = [p, q, r].map((b) => [find(b.id).x - b.x, find(b.id).y - b.y]);
+    const lineAfter = api.documentHighlightById(line.id).shape.p;
+    out.lineMoved = [lineAfter[0][0] - lineBefore[0][0], lineAfter[0][1] - lineBefore[0][1]];
+    out.stillPicked = api.pickedIds().length;
+    // C4. Shift-click a fourth block in.
+    const s4 = api.addDocumentBlock(1, { x: 120, y: 560 }, { style: { fit: false }, w: 60, h: 30, edit: false });
+    api.pickIds(1, [p.id, q.id, r.id, line.id]);
+    await settle(30);
+    const sc = blockNode(s4.id).getBoundingClientRect();
+    mouse(blockNode(s4.id), "pointerdown", sc.left + 5, sc.top + 5, { shiftKey: true, pointerId: 5 });
+    mouse(document, "pointerup", sc.left + 5, sc.top + 5, { shiftKey: true, pointerId: 5 });
+    await settle(60);
+    out.afterShift = api.pickedIds().length;
+    // C5. Copy and paste: three blocks and the line, the line tied to the copies.
+    api.pickIds(1, [p.id, q.id, line.id]);
+    const blocksBefore = api.documentBlocks().length;
+    const shapesBefore = api.documentShapes().length;
+    key("c", { ctrlKey: true });
+    key("v", { ctrlKey: true });
+    await settle(120);
+    const pastedIds = api.pickedIds();
+    const pastedLine = pastedIds.map((id) => api.documentHighlightById(id)).find((rec) => rec?.shape?.ends);
+    out.pasted = { blocks: api.documentBlocks().length - blocksBefore, shapes: api.documentShapes().length - shapesBefore,
+      tiedToCopies: Boolean(pastedLine) && pastedLine.shape.ends.every((end) => end && pastedIds.includes(end.id)) };
+    // C6. Group them; a press on one picks all three; ungroup.
+    api.pickIds(1, [p.id, q.id, line.id]);
+    key("g", { ctrlKey: true });
+    await settle(60);
+    out.grouped = Boolean(find(p.id).group) && find(p.id).group === find(q.id).group && api.documentHighlightById(line.id).group === find(p.id).group;
+    api.clearPick();
+    api.selectBlock(null);
+    const pc = blockNode(p.id).getBoundingClientRect();
+    mouse(blockNode(p.id), "pointerdown", pc.left + 5, pc.top + 5, { pointerId: 6 });
+    mouse(document, "pointerup", pc.left + 5, pc.top + 5, { pointerId: 6 });
+    await settle(60);
+    out.groupPicked = api.pickedIds().length;
+    key("G", { ctrlKey: true, shiftKey: true });
+    await settle(60);
+    out.ungrouped = !find(p.id).group && !find(q.id).group;
+    // C7. Delete the pick, and one undo brings it all back.
+    api.pickIds(1, [r.id, s4.id]);
+    key("Delete");
+    await settle(60);
+    out.deleted = !find(r.id) && !find(s4.id);
+    api.undoBlocks();
+    await settle(60);
+    out.undeleted = Boolean(find(r.id)) && Boolean(find(s4.id));
+    // C8. Ctrl+A picks everything on the page.
+    api.clearPick();
+    key("a", { ctrlKey: true });
+    await settle(60);
+    out.all = api.pickedIds().length === api.documentBlocks(1).length + api.documentShapes(1).length;
+    key("Escape");
+    // C9. With the Select tool, a press on a box shape picks it up and moves it.
+    const box = api.addDocumentShape(1, { type: "rect", p: [[300, 560], [360, 600]] });
+    api.selectShape(null);
+    await settle(60);
+    const [bx, by] = toClient(300, 580);
+    const under = document.elementFromPoint(bx, by);
+    await drag(under, [bx, by], [bx + 25 * scale, by]);
+    await settle(80);
+    const movedBox = api.documentHighlightById(box.id).shape.p;
+    out.boxMoved = Math.round(movedBox[0][0] - 300);
+    out.boxSelected = api.selectedShapeRecord()?.id === box.id;
+    api.chooseInkTool("pen");
+    out.errors = window.__errs.slice();
+    return out;
+  }`);
+
+  check("C1. a box drawn on bare paper picks the three blocks and the line inside it",
+    JSON.stringify(many.picked) === JSON.stringify(many.wanted) && many.frame, `${many.picked.length} picked`);
+  check("...and the bar to arrange them comes up", many.bar);
+  check("C2. Line up left edges puts them at one x, and one undo puts them back",
+    new Set(many.lefts).size === 1 && new Set(many.leftsBack).size === 3, JSON.stringify([many.lefts, many.leftsBack]));
+  check("C3. a drag on one of them moves them all by the same amount",
+    many.moved.every(([dx, dy]) => Math.abs(dx - 30) < 1.5 && Math.abs(dy + 20) < 1.5), JSON.stringify(many.moved));
+  check("...the line between them goes with them, and they stay picked",
+    Math.abs(many.lineMoved[0] - 30) < 1.5 && Math.abs(many.lineMoved[1] + 20) < 1.5 && many.stillPicked === 4, JSON.stringify(many.lineMoved));
+  check("C4. Shift-click adds a block to the pick", many.afterShift === 5, `(${many.afterShift})`);
+  check("C5. Ctrl+C, Ctrl+V copies two blocks and the line, the line tied to the copies",
+    many.pasted.blocks === 2 && many.pasted.shapes === 1 && many.pasted.tiedToCopies, JSON.stringify(many.pasted));
+  check("C6. Ctrl+G groups them; a press on one picks the whole group; Ctrl+Shift+G ungroups",
+    many.grouped && many.groupPicked === 3 && many.ungrouped, `(${many.grouped} · ${many.groupPicked} · ${many.ungrouped})`);
+  check("C7. Delete takes the pick, and one undo brings it all back", many.deleted && many.undeleted);
+  check("C8. Ctrl+A picks everything on the page", many.all);
+  check("C9. with the Select tool, a press on a box shape picks it up and drags it", many.boxMoved === 25 && many.boxSelected,
+    `(moved ${many.boxMoved} · selected ${many.boxSelected})`);
+  check("C. no page errors", !many.errors.length, many.errors.join(" | "));
 } catch (error) {
   check("the check itself ran", false, String(error?.stack || error));
 } finally {

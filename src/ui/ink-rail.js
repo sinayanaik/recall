@@ -68,6 +68,11 @@ const MENUS = [
 // hands the same four functions here.
 let documentUndo = null;
 
+// The Select tool's two names — see paintInkRail. The PDF's is the markup's
+// own, read once.
+const CANVAS_SELECT_TITLE = "Select — press a block or a shape to pick it up and move it, drag on bare paper to draw a box round several, Shift-click to add one";
+let PDF_SELECT_TITLE = "";
+
 export function setDocumentUndoHandlers(handlers) {
   documentUndo = handlers && typeof handlers.undo === "function" ? handlers : null;
 }
@@ -421,6 +426,22 @@ function paintInkRail() {
   }
   rail.querySelector('[data-ink-action="undo"]')?.toggleAttribute("disabled", !undoable);
   rail.querySelector('[data-ink-action="redo"]')?.toggleAttribute("disabled", !redoable);
+  // ── On a Canvas, "Select text" selects THINGS ───────────────────────────
+  //
+  // A Canvas's paper has no words to pick out, so the same tool picks up its
+  // blocks and shapes instead — a press moves one, a drag on bare paper draws
+  // a box round several (src/documents/canvas-selection.js). Its name says so
+  // there, and says what it always said on a PDF.
+  const selectTool = rail.querySelector('[data-ink-tool="text"]');
+  if (selectTool) {
+    if (!PDF_SELECT_TITLE) PDF_SELECT_TITLE = selectTool.title;
+    const canvas = activeDocSlot() === DOC_SLOT_NOTEBOOK;
+    const title = canvas ? CANVAS_SELECT_TITLE : PDF_SELECT_TITLE;
+    if (selectTool.title !== title) {
+      selectTool.title = title;
+      selectTool.setAttribute("aria-label", canvas ? "Select" : "Select text");
+    }
+  }
   // Refused rather than hidden, for the reason join is below: a control that
   // comes and goes moves the ones beside it under the reader's thumb. Left
   // exactly as it is when the page in view is not already known — see above.
