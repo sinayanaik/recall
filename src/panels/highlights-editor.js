@@ -42,6 +42,7 @@ import { notifyHighlightsChanged } from "../format/highlight-edit.js?v=__BUILD__
 import { highlightNoteTextAt, setHighlightNoteAt } from "../format/highlight-notes.js?v=__BUILD__";
 import { enhanceSurfaceDiagramControls, enhanceSurfaceImageControls } from "../images/surface-controls.js?v=__BUILD__";
 import { scheduleNoteJump } from "../notes/anchors.js?v=__BUILD__";
+import { fillHeadingTitle } from "../notes/heading-numbers.js?v=__BUILD__";
 import { scrollTextareaToOffset } from "../notes/caret.js?v=__BUILD__";
 import { findRawOffsetForRenderedPoint } from "../notes/raw-offset.js?v=__BUILD__";
 import { NOTE_EDITOR_TARGET, setNoteEditorSelectionTarget } from "../notes/selection.js?v=__BUILD__";
@@ -812,11 +813,12 @@ function noteCaretFromPoint(body, entry, event) {
 
 // `number` is the section's heading number, drawn by the stylesheet ahead of
 // the label (styles/86-heading-numbers.css), so the Number headings setting
-// reaches it without a rebuild.
-function groupHead(label, number = "") {
+// reaches it without a rebuild. `typedNumber`, a number typed into the
+// heading itself, is kept in the label but hidden while that one shows.
+function groupHead(label, number = "", typedNumber = "") {
   const head = document.createElement("h3");
   head.className = "hl-notes-group-head";
-  head.textContent = label;
+  fillHeadingTitle(head, label, number ? typedNumber : "");
   if (number) head.dataset.headingNumber = number;
   return head;
 }
@@ -984,7 +986,7 @@ function appendGroupedEntries(container, entries, before = null) {
       section.className = "hl-notes-group";
       if (continued) section.classList.add("is-continued");
       if (label) {
-        const head = groupHead(label, entry.groupNumber);
+        const head = groupHead(label, entry.groupNumber, entry.groupTypedNumber);
         // Said once to a screen reader, where the group starts.
         if (continued) head.setAttribute("aria-hidden", "true");
         section.appendChild(head);

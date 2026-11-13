@@ -25,7 +25,7 @@ import { setMyDecksCwd, setMyDecksView } from "../library/my-decks-prefs.js?v=__
 import { renderMyDecksList } from "../library/my-decks-render.js?v=__BUILD__";
 import { enhanceRenderedMarkdown } from "../render/enhance.js?v=__BUILD__";
 import { markdownToSafeHtml } from "../render/preprocess.js?v=__BUILD__";
-import { numberRenderedHeadings } from "../notes/heading-numbers.js?v=__BUILD__";
+import { headingNumbersOn, numberRenderedHeadings, stripTypedHeadingNumbersFromMarkdown } from "../notes/heading-numbers.js?v=__BUILD__";
 import { lastSaveErrorWasQuota, persistWorkingDeck } from "../storage/quota.js?v=__BUILD__";
 import { openMyDecksPanel } from "../ui/deck-header.js?v=__BUILD__";
 import { setStatus, showToast } from "../ui/feedback.js?v=__BUILD__";
@@ -636,7 +636,10 @@ export function epubContainerToMarkdown(container, doc, chapterPath, imageUrlMap
 
   // epubMode keeps citation/footnote <sup> markers (and <sub>) instead of
   // stripping them the way the web-paste path does — see htmlToMarkdown.
-  return htmlToMarkdown(container.innerHTML, { epubMode: true }).trim();
+  const markdown = htmlToMarkdown(container.innerHTML, { epubMode: true }).trim();
+  // A book's own section numbers ("2.3 Methods") would sit beside the ones the
+  // note draws; while those are on, the book's are left out.
+  return headingNumbersOn() ? stripTypedHeadingNumbersFromMarkdown(markdown) : markdown;
 }
 
 // Maps every id in one parsed chapter document to its element, for resolving

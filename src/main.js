@@ -46,6 +46,7 @@ import { allImageFiles, dragContainsImage, animatedSourceUrlFromTransfer, insert
 import { imagePickerActive } from "./images/upload.js?v=__BUILD__";
 import { loadFiles, loadSample, showImportSourceDrawer, stagePastedMarkdown } from "./import/files.js?v=__BUILD__";
 import { htmlToMarkdown } from "./import/html-to-markdown.js?v=__BUILD__";
+import { headingNumbersOn, stripTypedHeadingNumbersFromMarkdown } from "./notes/heading-numbers.js?v=__BUILD__";
 import { clearImportStaging, commitStagedImport, importAimFolder, importDestinationFolder, importStaging, renderImportReview, toggleWebPageClutter } from "./import/staging.js?v=__BUILD__";
 import { fetchUrl } from "./import/url.js?v=__BUILD__";
 import { closeAllDeckTileMenus, createFolder, setAllFoldersExpanded } from "./library/folder-tree.js?v=__BUILD__";
@@ -3772,6 +3773,9 @@ document.addEventListener("paste", (event) => {
   // clipboard entirely and the paste simply never happened.
   if (!markdown.trim()) markdown = plainText;
   if (!markdown) return;
+  // Headings copied from a PDF or a web page bring their own numbers; while
+  // the note draws its own, those are left behind (src/notes/heading-numbers.js).
+  if (headingNumbersOn()) markdown = stripTypedHeadingNumbersFromMarkdown(markdown);
 
   // Prevent default paste behavior
   event.preventDefault();

@@ -22,6 +22,8 @@
 // styles/17-toc-fold.css is the other half and is written against exactly these
 // class names, which is why they are constants rather than strings typed twice.
 
+import { fillHeadingTitle } from "./heading-numbers.js?v=__BUILD__";
+
 export const TOC_ROW_CLASS = "notes-toc-item";
 
 export const TOC_LINK_CLASS = "notes-toc-link";
@@ -161,7 +163,9 @@ export function tocRailNode(depths, index, depth) {
 // `number` is the heading's section number (src/notes/heading-numbers.js), put
 // on the text as an attribute for the stylesheet to draw — so it is not part of
 // the row's text, and the row still says only what the heading says.
-export function tocRowFor({ index, depth, depths, level, text, href, branch, tail, number }) {
+// `typedNumber` is a number the heading had typed into it ("3.1 " of
+// "3.1 Methods"), kept in the text but hidden while the drawn one shows.
+export function tocRowFor({ index, depth, depths, level, text, href, branch, tail, number, typedNumber = "" }) {
   const li = document.createElement("li");
   li.className = TOC_ROW_CLASS;
   // The twisty is positioned against the row, at this row's own indent, so the
@@ -179,7 +183,7 @@ export function tocRowFor({ index, depth, depths, level, text, href, branch, tai
   if (rail) link.appendChild(rail);
   link.appendChild(tocSpan("notes-toc-dot", "data-level", String(level)));
   const label = tocSpan("notes-toc-text");
-  label.textContent = text;
+  fillHeadingTitle(label, text, number ? typedNumber : "");
   if (number) label.dataset.headingNumber = number;
   link.appendChild(label);
   if (tail) link.appendChild(tail);

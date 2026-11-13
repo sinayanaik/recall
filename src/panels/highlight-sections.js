@@ -36,7 +36,7 @@
 import { state } from "../core/state.js?v=__BUILD__";
 import { readerNotesBody } from "../format/notes-fence.js?v=__BUILD__";
 import { sectionHeadingIndexFor, sectionIndexForOffset } from "../notes/chapters.js?v=__BUILD__";
-import { headingParentsForLevels } from "../notes/heading-numbers.js?v=__BUILD__";
+import { headingParentsForLevels, headingTitleNodes } from "../notes/heading-numbers.js?v=__BUILD__";
 import { documentOutlineEntries } from "../documents/pdf-outline.js?v=__BUILD__";
 import { DOC_SLOT_NOTEBOOK, activeDocSlot } from "../documents/doc-slot.js?v=__BUILD__";
 import { activePdfId } from "../documents/pdf-multi.js?v=__BUILD__";
@@ -69,6 +69,7 @@ export function noteSectionModel(source = readerNotesBody(state.notes || "")) {
     key: heading.key,
     title: heading.title,
     number: heading.number,
+    typedNumber: heading.typedNumber || "",
     parentIndex: heading.parent,
     parentKey: heading.parent >= 0 ? headings[heading.parent].key : ""
   })));
@@ -276,8 +277,9 @@ export const SECTION_PICKER_CLASS = "section-picker";
 
 function sectionRowLabel(section) {
   // The number is drawn by the stylesheet (.hl-section-number), so the label
-  // follows the Number headings setting without being rebuilt.
-  return section.title;
+  // follows the Number headings setting without being rebuilt — and so does
+  // the number typed into the heading, which it hides while that one shows.
+  return headingTitleNodes(document, section.title, section.number ? section.typedNumber : "");
 }
 
 function sectionSummaryFor(model, keys) {
@@ -303,7 +305,7 @@ function paintSectionSummary(button, model, keys) {
       number.dataset.headingNumber = summary.number;
       label.appendChild(number);
     }
-    label.append(sectionRowLabel(summary));
+    label.append(...sectionRowLabel(summary));
   }
   button.classList.toggle("is-filtered", Boolean(keys));
   button.title = keys ? "Showing the highlights in the sections you picked" : "Pick the sections whose highlights are shown";
@@ -402,7 +404,7 @@ function sectionRowFor({ label, number = "", count, depth, key }) {
     n.dataset.headingNumber = number;
     text.appendChild(n);
   }
-  text.append(label);
+  text.append(...(Array.isArray(label) ? label : [label]));
   li.append(input, text);
   if (count != null) {
     const badge = document.createElement("span");

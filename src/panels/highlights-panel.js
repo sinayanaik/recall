@@ -536,6 +536,7 @@ export function collectHighlightEntries() {
       // stylesheet so it follows the Number headings setting; and the section
       // itself, for the section picker.
       groupNumber: heading?.number || "",
+      groupTypedNumber: heading?.typedNumber || "",
       section: heading?.key || SECTION_BEFORE_KEY,
       // No `n`: a notes-view highlight wears an unnumbered fold, so its card
       // carries no number either (see the head in highlights-editor.js).

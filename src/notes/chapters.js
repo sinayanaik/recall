@@ -14,7 +14,7 @@
 
 import { preprocessSpecialBlocks } from "../render/preprocess.js?v=__BUILD__";
 import { scanPreparedHeadings, splitPreparedBlocks } from "../render/block-cache.js?v=__BUILD__";
-import { headingNumbersForLevels, headingParentsForLevels } from "./heading-numbers.js?v=__BUILD__";
+import { headingNumbersForLevels, headingParentsForLevels, typedHeadingNumbers } from "./heading-numbers.js?v=__BUILD__";
 
 // A heading line in prepared markdown: "## Title". Fences are skipped by the
 // walk below, so a "#" inside a code block cannot open a chapter.
@@ -106,6 +106,8 @@ export function headingForOffset(headings, offset) {
 // is and to narrow itself to a few sections (src/panels/highlight-sections.js):
 //
 //   number   "1.2", the same number the note view draws on the heading
+//   typedNumber  a number typed at the start of the title ("3.1 " of "3.1
+//            Methods"), which the drawn one hides (typedHeadingNumbers)
 //   parent   index of the section it is inside, or -1
 //   key      a name for the section that survives an edit above it — level and
 //            title, with #2, #3 for a repeat — so a picked section stays
@@ -129,6 +131,7 @@ export function sectionHeadingIndexFor(source) {
   const levels = scan.map((entry) => entry.level);
   const numbers = headingNumbersForLevels(levels);
   const parents = headingParentsForLevels(levels);
+  const typed = typedHeadingNumbers(scan.map((entry) => entry.text));
   const seen = new Map();
   cachedSectionIndex = scan.map((entry, i) => {
     const base = `${entry.level}:${entry.text}`;
@@ -139,6 +142,7 @@ export function sectionHeadingIndexFor(source) {
       level: entry.level,
       title: entry.text,
       number: numbers[i],
+      typedNumber: typed[i],
       parent: parents[i],
       key: n === 1 ? base : `${base}#${n}`
     };
