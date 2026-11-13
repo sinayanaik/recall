@@ -65,6 +65,12 @@ const SECTIONS = [
 // Anything appearing in styles/ that is neither a slice nor listed here is
 // still a failure.
 const POST_SPLIT = {
+  "97-diagram.css":
+    "Diagrams on a page: a block's outline when it is a diamond, a pill or a " +
+    "cylinder, its edge and where its words sit (src/documents/pdf-blocks.js), " +
+    "the connectors and the arrows that make them (src/documents/pdf-connectors.js), " +
+    "several things picked up at once (src/documents/canvas-selection.js) and the " +
+    "guides a drag snaps to (src/documents/pdf-guides.js).",
   "96-md-pdf.css":
     "Markdown → PDF (src/documents/md-pdf/dialog.js): the sheet with the markdown, " +
     "its options and the live preview with its page breaks, the PDF ⋯ rows' hidden " +

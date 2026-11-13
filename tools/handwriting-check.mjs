@@ -1736,8 +1736,11 @@ try {
   }`);
   check("a block's first words bring its width in to them",
     hugging.labelled.w < 240, `${hugging.labelled.w}pt wide for "A short label", against the 240pt default`);
+  // The top edge and its corners joined them for diagrams (src/documents/
+  // pdf-blocks.js, RESIZE_EDGES): a box in a flowchart is sized from whichever
+  // side the next box is on.
   check("every side of a block is a handle, not only one corner",
-    hugging.edges === "e,s,se,sw,w", `handles: ${hugging.edges}`);
+    hugging.edges === "e,n,ne,nw,s,se,sw,w", `handles: ${hugging.edges}`);
   check("...and dragging an edge narrower makes the frame taller WHILE dragging",
     hugging.pxDuring > hugging.pxBefore + 4,
     `${hugging.pxBefore.toFixed(1)}px tall before, ${hugging.pxDuring.toFixed(1)}px mid-drag`);

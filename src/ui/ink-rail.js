@@ -30,7 +30,7 @@ import { deleteBlock, editBlock, openSelectedBlockStyle, selectedBlockKind, setB
 import { INK_TOOL_DEFAULT } from "../format/ink-colors.js?v=__BUILD__";
 import { bindInkRailActivation, paintInkRailPressed } from "../handwriting/rail.js?v=__BUILD__";
 import { buildInkPanel, createInkPanel, paintInkChip } from "../handwriting/ink-popover.js?v=__BUILD__";
-import { inkPreferences, inkRailOpen, rememberInkRecentColor, writeInkPreferences, writeInkRailOpen } from "../storage/ink-prefs.js?v=__BUILD__";
+import { diagramSnapPreference, inkPreferences, inkRailOpen, rememberInkRecentColor, writeDiagramSnapPreference, writeInkPreferences, writeInkRailOpen } from "../storage/ink-prefs.js?v=__BUILD__";
 import { DOC_SLOT_NOTEBOOK, activeDocSlot } from "../documents/doc-slot.js?v=__BUILD__";
 import { isRegionSelectArmed, setRegionSelect } from "../documents/pdf-region.js?v=__BUILD__";
 import { displayedShapeSettings, setShapeChangedHandler, setShapeType, shapeButtonType, shapeType } from "../documents/pdf-shapes.js?v=__BUILD__";
@@ -58,6 +58,24 @@ const MENUS = [
   { button: "inkRailSelectionMoreBtn", menu: "inkRailSelectionMenu" },
   { button: "inkRailAddBtn", menu: "inkRailAddMenu" }
 ];
+
+// ── ↶ and ↷ mean what Ctrl+Z and Ctrl+Y mean ────────────────────────────────
+//
+// The bar's pair called the pen's ring and nothing else, so a block moved, a
+// box shaped or a connector drawn between two boxes could be taken back from
+// the keyboard and not from the bar — on a tablet, not at all. src/main.js owns
+// the order the surface's two rings are taken back in (lastDocumentEdit) and
+// hands the same four functions here.
+let documentUndo = null;
+
+// The Select tool's two names — see paintInkRail. The PDF's is the markup's
+// own, read once.
+const CANVAS_SELECT_TITLE = "Select — press a block or a shape to pick it up and move it, drag on bare paper to draw a box round several, Shift-click to add one";
+let PDF_SELECT_TITLE = "";
+
+export function setDocumentUndoHandlers(handlers) {
+  documentUndo = handlers && typeof handlers.undo === "function" ? handlers : null;
+}
 
 function closeInkRailMenus(except = null) {
   MENUS.forEach(({ button, menu }) => {
@@ -352,8 +370,8 @@ function paintInkRail() {
   // question before it clears anything.
   const page = inkPageInViewCheap();
   const hasStrokes = page ? inkPageHasStrokes(page) : null;
-  const undoable = canUndoInk();
-  const redoable = canRedoInk();
+  const undoable = documentUndo ? documentUndo.canUndo() : canUndoInk();
+  const redoable = documentUndo ? documentUndo.canRedo() : canRedoInk();
   const count = inkSelectionCount();
   const pasteable = hasInkClipboard();
   const tool = inkTool();
@@ -408,6 +426,23 @@ function paintInkRail() {
   }
   rail.querySelector('[data-ink-action="undo"]')?.toggleAttribute("disabled", !undoable);
   rail.querySelector('[data-ink-action="redo"]')?.toggleAttribute("disabled", !redoable);
+  rail.querySelector('[data-ink-action="diagram-snap"]')?.setAttribute("aria-checked", String(diagramSnapPreference()));
+  // ── On a Canvas, "Select text" selects THINGS ───────────────────────────
+  //
+  // A Canvas's paper has no words to pick out, so the same tool picks up its
+  // blocks and shapes instead — a press moves one, a drag on bare paper draws
+  // a box round several (src/documents/canvas-selection.js). Its name says so
+  // there, and says what it always said on a PDF.
+  const selectTool = rail.querySelector('[data-ink-tool="text"]');
+  if (selectTool) {
+    if (!PDF_SELECT_TITLE) PDF_SELECT_TITLE = selectTool.title;
+    const canvas = activeDocSlot() === DOC_SLOT_NOTEBOOK;
+    const title = canvas ? CANVAS_SELECT_TITLE : PDF_SELECT_TITLE;
+    if (selectTool.title !== title) {
+      selectTool.title = title;
+      selectTool.setAttribute("aria-label", canvas ? "Select" : "Select text");
+    }
+  }
   // Refused rather than hidden, for the reason join is below: a control that
   // comes and goes moves the ones beside it under the reader's thumb. Left
   // exactly as it is when the page in view is not already known — see above.
@@ -675,9 +710,10 @@ function pressRail(button) {
   } else if (action === "rail-more") { toggleInkRailMenu("inkRailMoreMenu"); return; }
   else if (action === "selection-more") { toggleInkRailMenu("inkRailSelectionMenu"); return; }
   else if (action === "add-menu") { toggleInkRailMenu("inkRailAddMenu"); return; }
-  else if (action === "undo") undoInk();
-  else if (action === "redo") redoInk();
+  else if (action === "undo") (documentUndo ? documentUndo.undo() : undoInk());
+  else if (action === "redo") (documentUndo ? documentUndo.redo() : redoInk());
   else if (action === "clear") { closeInkRailMenus(); askToClearPage(); }
+  else if (action === "diagram-snap") writeDiagramSnapPreference(!diagramSnapPreference());
   else if (action === "join") joinInkSelection();
   else if (action === "split") splitInkSelection();
   else if (action === "duplicate") duplicateInkSelection();
@@ -749,7 +785,7 @@ export function initInkRail() {
 
   // A row of a menu, chosen: the menu goes once the row has done its work.
   rail.addEventListener("click", (event) => {
-    if (!event.target.closest?.(".ink-rail-menu-item")) return;
+    if (!event.target.closest?.(".ink-rail-menu-item, .ink-rail-add-shape")) return;
     setTimeout(() => closeInkRailMenus(), 0);
   });
   // ...and a press anywhere else shuts any of them. Capture, so the page's own

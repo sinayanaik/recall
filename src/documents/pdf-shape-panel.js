@@ -68,6 +68,14 @@ export function refreshShapeMenu(menu, button) {
 
 const HEAD_LABELS = { none: "None", open: "Open", filled: "Filled", dot: "Dot", bar: "Bar" };
 const DASH_LABELS = { solid: "Solid", dash: "Dashed", dot: "Dotted" };
+const ROUTE_LABELS = { straight: "Straight", elbow: "Square corners", curve: "Curved" };
+
+// How a line runs between its ends — the three a diagram tool offers. Drawn
+// end to end, as the line itself would be.
+function routeIcon(route) {
+  const d = { straight: "M3 12L19 4", elbow: "M3 12h8V4h8", curve: "M3 12C11 12 11 4 19 4" }[route];
+  return `<svg viewBox="0 0 22 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${d}"/></svg>`;
+}
 
 function headIcon(style, end) {
   // Drawn pointing right for the end, left for the start.
@@ -168,6 +176,7 @@ const OPACITY_INNER = `
       <input class="shape-pop-slider" type="range" min="10" max="100" step="1" data-shape-opacity aria-label="Opacity">
       <output class="shape-pop-value" data-shape-opacity-value></output>`;
 const DASH_INNER = ["solid", "dash", "dot"].map((d) => `<button type="button" class="shape-pop-seg" data-shape-dash="${d}" title="${DASH_LABELS[d]}" aria-label="${DASH_LABELS[d]}" aria-pressed="false">${dashIcon(d)}</button>`).join("");
+const ROUTE_INNER = ["straight", "elbow", "curve"].map((r) => `<button type="button" class="shape-pop-seg" data-shape-route="${r}" title="${ROUTE_LABELS[r]}" aria-label="${ROUTE_LABELS[r]}" aria-pressed="false">${routeIcon(r)}</button>`).join("");
 const HEAD_START_INNER = SHAPE_HEADS.map((h) => `<button type="button" class="shape-pop-seg" data-shape-head-start="${h}" title="Start: ${HEAD_LABELS[h]}" aria-label="Start: ${HEAD_LABELS[h]}" aria-pressed="false">${headIcon(h, "start")}</button>`).join("");
 const HEAD_END_INNER = SHAPE_HEADS.map((h) => `<button type="button" class="shape-pop-seg" data-shape-head-end="${h}" title="End: ${HEAD_LABELS[h]}" aria-label="End: ${HEAD_LABELS[h]}" aria-pressed="false">${headIcon(h, "end")}</button>`).join("");
 const SIZE_INNER = `
@@ -193,6 +202,7 @@ function railPanelHtml() {
     ${panelRow("width", "Width", WIDTH_INNER)}
     ${panelRow("", "Opacity", OPACITY_INNER)}
     ${panelRow("dash", "Line", DASH_INNER, "Line style")}
+    ${panelRow("route", "Route", ROUTE_INNER, "Route")}
     ${panelRow("heads", "Start", HEAD_START_INNER, "Start")}
     ${panelRow("heads", "End", HEAD_END_INNER, "End")}
     ${panelRow("fill", "Fill", shapeSwatchRow("fill", { none: true }), "Fill")}
@@ -221,12 +231,13 @@ export const SHAPE_TRAYS = {
   fill: ["fill"],
   line: ["width", "dash"],
   heads: ["heads"],
+  route: ["route"],
   rotate: ["rotate"],
   more: ["actions"]
 };
 
 // A press in one of these trays is the whole choice: it shuts behind it.
-const ONE_TAP_TRAYS = new Set(["colour", "align", "fill"]);
+const ONE_TAP_TRAYS = new Set(["colour", "align", "fill", "route"]);
 
 const BAR_ICON = 'viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"';
 const ALIGN_ICON_PATHS = {
@@ -243,6 +254,7 @@ export const SHAPE_BAR_ICONS = {
   box: `<svg ${BAR_ICON}><rect x="3.5" y="5" width="17" height="14" rx="2"/><path d="M8 10h8M8 14h5"/></svg>`,
   line: `<svg ${BAR_ICON}><path d="M4 6h16" stroke-width="1.2"/><path d="M4 12h16" stroke-width="2.4"/><path d="M4 18h16" stroke-width="2.4" stroke-dasharray="3 3"/></svg>`,
   heads: `<svg ${BAR_ICON}>${SHAPE_ICONS.arrow}</svg>`,
+  route: `<svg ${BAR_ICON}><path d="M4 18h7V6h9"/><circle cx="4" cy="18" r="1.6" fill="currentColor"/><circle cx="20" cy="6" r="1.6" fill="currentColor"/></svg>`,
   rotate: `<svg ${BAR_ICON}><path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3"/><path d="M19.5 4.5v4.5H15"/></svg>`,
   trash: `<svg ${BAR_ICON}><path d="M5 7h14M10 7V5h4v2M7 7l1 12h8l1-12"/></svg>`,
   done: `<svg ${BAR_ICON}><path d="M5 12.5l4.5 4.5L19 7"/></svg>`
@@ -263,6 +275,7 @@ function floatingPanelHtml() {
       ${barTrigger("fill", "Fill", '<span class="shape-bar-fill" data-shape-fill-face></span>')}
       ${barTrigger("line", "Line — width and style", SHAPE_BAR_ICONS.line)}
       ${barTrigger("heads", "Arrow heads", SHAPE_BAR_ICONS.heads)}
+      ${barTrigger("route", "Route — straight, square corners or curved", SHAPE_BAR_ICONS.route)}
       ${barTrigger("rotate", "Rotate", SHAPE_BAR_ICONS.rotate)}
       <span class="shape-bar-end" data-shape-bar-end></span>
     </div>
@@ -278,6 +291,7 @@ function floatingPanelHtml() {
       ${panelRow("dash", "Line", DASH_INNER, "Line style")}
       ${panelRow("heads", "Start", HEAD_START_INNER, "Start")}
       ${panelRow("heads", "End", HEAD_END_INNER, "End")}
+      ${panelRow("route", "Route", ROUTE_INNER, "Route")}
       ${panelRow("rotate", "Rotate", ROTATE_INNER, "Rotate")}
     </div>`;
 }
@@ -308,7 +322,7 @@ function pressInPanel(section, event) {
   }
   pressShapePanel(button);
   const tray = shapeTray(section);
-  const oneTap = button.dataset.shapeStroke || button.dataset.shapeAlign || (tray === "fill" && button.dataset.shapeFill);
+  const oneTap = button.dataset.shapeStroke || button.dataset.shapeAlign || button.dataset.shapeRoute || (tray === "fill" && button.dataset.shapeFill);
   if (tray && ONE_TAP_TRAYS.has(tray) && oneTap) delete section.dataset.shapeTray;
   refreshShapePanel(section);
 }
@@ -399,6 +413,7 @@ function pressShapePanel(button) {
   if (data.shapeStroke) setShapeSettings({ [colourKey]: data.shapeStroke });
   else if (data.shapeFill) setShapeSettings({ fill: data.shapeFill === "none" ? null : data.shapeFill });
   else if (data.shapeDash) setShapeSettings({ dash: data.shapeDash });
+  else if (data.shapeRoute) setShapeSettings({ route: data.shapeRoute });
   else if (data.shapeHeadStart || data.shapeHeadEnd) {
     const headsType = s.heads[type] ? type : "arrow";
     const pair = [...s.heads[headsType]];
@@ -427,6 +442,7 @@ export function refreshShapePanel(section) {
   markPressed("[data-shape-stroke]", (n) => n.dataset.shapeStroke === colour);
   markPressed("[data-shape-fill]", (n) => (n.dataset.shapeFill === "none" ? !s.fill : n.dataset.shapeFill === s.fill));
   markPressed("[data-shape-dash]", (n) => n.dataset.shapeDash === s.dash);
+  markPressed("[data-shape-route]", (n) => n.dataset.shapeRoute === s.route);
   const heads = s.heads[type] || s.heads.arrow;
   markPressed("[data-shape-head-start]", (n) => n.dataset.shapeHeadStart === heads[0]);
   markPressed("[data-shape-head-end]", (n) => n.dataset.shapeHeadEnd === heads[1]);
@@ -467,6 +483,7 @@ export function refreshShapePanel(section) {
     edge: type === "text" && s.textBorder,
     rotate: rotation !== null,
     heads: type === "line" || type === "arrow" || type === "callout",
+    route: type === "line" || type === "arrow",
     fill: type === "rect" || type === "ellipse" || type === "callout" || type === "text",
     font,
     size: font,
@@ -489,6 +506,7 @@ export function refreshShapePanel(section) {
     fill: rows.fill && type !== "text",
     line: rows.width && type !== "text",
     heads: rows.heads,
+    route: rows.route,
     rotate: rows.rotate
   };
   let tray = shapeTray(section);

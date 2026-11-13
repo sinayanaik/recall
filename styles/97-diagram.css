@@ -1,0 +1,385 @@
+/* ── Diagrams on a page ─────────────────────────────────────────────────────
+ *
+ * Blocks as the boxes of a diagram — shaped, edged, their words where a box
+ * keeps them (src/documents/pdf-blocks.js, src/render/node-outlines.js) — the
+ * connectors between them and the arrows that make one
+ * (src/documents/pdf-connectors.js), several things picked up at once
+ * (src/documents/canvas-selection.js), and the guides a drag snaps to
+ * (src/documents/pdf-guides.js). Written since the split, so a file of its own.
+ */
+
+/* ── A shaped block ──────────────────────────────────────────────────────────
+ *
+ * The node's own card is a rounded rectangle and nothing else, so a block that
+ * is a diamond or a cylinder turns it off and its SVG outline (paintBlockOutline)
+ * draws the fill and the edge in its place. The words keep off the outline by
+ * the insets the outline itself works out. */
+.pdf-block[data-block-shape] {
+  background: transparent;
+  border-color: transparent;
+  border-width: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.pdf-block-outline {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.pdf-block-outline-edge {
+  fill: var(--pdf-block-fill, var(--block-fill-paper));
+  stroke: var(--pdf-block-line, color-mix(in srgb, var(--accent) 45%, var(--line)));
+  stroke-linejoin: round;
+}
+
+.pdf-block-outline-marks {
+  fill: none;
+  stroke: var(--pdf-block-line, color-mix(in srgb, var(--accent) 45%, var(--line)));
+}
+
+.pdf-block[data-block-frame="card"] .pdf-block-outline {
+  filter: drop-shadow(0 1px 3px rgb(0 0 0 / 0.16));
+}
+
+.pdf-block[data-block-frame="none"] .pdf-block-outline path {
+  stroke: none;
+}
+
+.pdf-block[data-block-shape] .pdf-block-body {
+  position: relative;
+  z-index: 1;
+  padding:
+    calc((var(--pdf-block-inset-top, 0) * 1px + 4px) * var(--pdf-block-scale, 1))
+    calc((var(--pdf-block-inset-right, 0) * 1px + 5px) * var(--pdf-block-scale, 1))
+    calc((var(--pdf-block-inset-bottom, 0) * 1px + 4px) * var(--pdf-block-scale, 1))
+    calc((var(--pdf-block-inset-left, 0) * 1px + 5px) * var(--pdf-block-scale, 1));
+}
+
+/* A shaped block is picked up as a box, the way draw.io frames a shape: a
+   dashed ring round what it covers rather than a glow that follows a card. */
+.pdf-block[data-block-shape].is-selected,
+.pdf-block[data-block-shape].is-selected[data-block-frame="card"] {
+  box-shadow: none;
+  outline: 1.5px dashed color-mix(in srgb, var(--accent) 80%, transparent);
+  outline-offset: 2px;
+}
+
+/* A shaped block's corner grip sits at the corner of its BOX, which on a
+   diamond or an ellipse is off in the paper beside it — so it shows only on
+   the block being pointed at or picked up, where it is a handle rather than a
+   stray mark on the diagram. */
+.pdf-block[data-block-shape]:not(.is-selected):not(:hover) .pdf-block-grip {
+  opacity: 0;
+}
+
+/* ── A plain block's edge, coloured, sized and dashed ──────────────────────── */
+.pdf-block:not([data-block-shape]):not([data-block-frame="none"]) {
+  border-color: var(--pdf-block-line, color-mix(in srgb, var(--accent) 45%, var(--line)));
+}
+
+.pdf-block[data-block-line-width]:not([data-block-shape]):not([data-block-frame="none"]) {
+  border-width: calc(var(--pdf-block-line-width) * 1px * var(--pdf-block-scale, 1));
+}
+
+.pdf-block[data-block-line-dash="dash"]:not([data-block-shape]) { border-style: dashed; }
+.pdf-block[data-block-line-dash="dot"]:not([data-block-shape]) { border-style: dotted; }
+
+/* ── Where the words sit, top to bottom ─────────────────────────────────────
+ *
+ * Auto margins in a column rather than justify-content: centre, which pushes
+ * the top of anything taller than the box out of reach above it. These centre
+ * what fits and leave what does not to scroll from its first line. */
+.pdf-block[data-block-valign] .pdf-block-body {
+  display: flex;
+  flex-direction: column;
+}
+
+.pdf-block[data-block-valign="middle"] .pdf-block-body > :first-child { margin-top: auto; }
+.pdf-block[data-block-valign="middle"] .pdf-block-body > :last-child { margin-bottom: auto; }
+.pdf-block[data-block-valign="bottom"] .pdf-block-body > :first-child { margin-top: auto; }
+
+/* ── The top edge and its corners ─────────────────────────────────────────── */
+.pdf-block-edge-n {
+  left: 16px;
+  right: 16px;
+  top: 0;
+  height: 6px;
+  cursor: ns-resize;
+}
+
+.pdf-block-edge-ne,
+.pdf-block-edge-nw {
+  top: 0;
+  width: 16px;
+  height: 16px;
+}
+
+.pdf-block-edge-ne { right: 0; cursor: nesw-resize; }
+.pdf-block-edge-nw { left: 0; cursor: nwse-resize; }
+
+.pdf-block.is-fit .pdf-block-edge-n {
+  display: none;
+}
+
+.pdf-block.is-fit:not([data-pdf-block-kind="image"]) .pdf-block-edge-ne,
+.pdf-block.is-fit:not([data-pdf-block-kind="image"]) .pdf-block-edge-nw {
+  cursor: ew-resize;
+}
+
+@media (pointer: coarse) {
+  .pdf-block-edge-n { height: 14px; left: 22px; right: 22px; }
+  .pdf-block-edge-ne,
+  .pdf-block-edge-nw { width: 22px; height: 22px; }
+}
+
+/* ── The style bar's shapes ────────────────────────────────────────────────── */
+.bstyle-shapes .bstyle-group {
+  gap: 3px;
+}
+
+.bstyle-shape {
+  width: 26px;
+}
+
+.bstyle-shape .md-ico {
+  width: 17px;
+  height: 17px;
+}
+
+/* ── + Add → a shaped block ────────────────────────────────────────────────── */
+.ink-rail-add-shapes {
+  display: grid;
+  grid-template-columns: repeat(3, 40px);
+  gap: 4px;
+  padding: 2px 12px 8px;
+}
+
+.ink-rail-add-shape {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.ink-rail-add-shape:hover,
+.ink-rail-add-shape:focus-visible {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, var(--panel-2));
+  outline: none;
+}
+
+.ink-rail-add-shape-glyph {
+  width: 22px;
+  height: 22px;
+}
+
+/* ── The layer over a page for what a diagram draws about itself ─────────────
+ *
+ * Above the blocks (4) — the arrows, the lit box and the frames are about
+ * blocks as often as anything — and taking no pointer events but its own
+ * controls' (src/documents/pdf-diagram-layer.js). */
+.pdf-diagram-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+}
+
+.pdf-diagram-layer > svg {
+  position: absolute;
+  inset: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+
+/* ── A picked-up box's connect arrows ─────────────────────────────────────── */
+.pdf-connect-arrow {
+  position: absolute;
+  width: 22px;
+  height: 22px;
+  margin: -11px 0 0 -11px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--accent) 70%, transparent);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--accent) 16%, var(--paper-bg, var(--card, #fff)));
+  color: var(--accent);
+  cursor: crosshair;
+  pointer-events: auto;
+  touch-action: none;
+  opacity: 0.85;
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+
+.pdf-connect-arrow:hover,
+.pdf-connect-arrow:focus-visible {
+  opacity: 1;
+  transform: scale(1.15);
+  outline: none;
+}
+
+.pdf-connect-arrow svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.pdf-diagram-layer.is-connecting .pdf-connect-arrow {
+  opacity: 0.25;
+  pointer-events: none;
+}
+
+@media (pointer: coarse) {
+  .pdf-connect-arrow {
+    width: 30px;
+    height: 30px;
+    margin: -15px 0 0 -15px;
+  }
+}
+
+/* ── The box a dragged end is about to be tied to ─────────────────────────── */
+.pdf-connect-target-outline {
+  fill: color-mix(in srgb, var(--accent) 10%, transparent);
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+
+.pdf-connect-target-dot {
+  fill: var(--paper-bg, var(--card, #fff));
+  stroke: var(--accent);
+  stroke-width: 1.5;
+}
+
+.pdf-connect-target-dot.is-chosen {
+  fill: var(--accent);
+}
+
+/* ── A connector's words, being typed ─────────────────────────────────────── */
+.pdf-connector-label-editor {
+  position: absolute;
+  min-width: 4em;
+  max-width: 24em;
+  padding: 2px 4px;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: var(--paper-bg, var(--card, #fff));
+  color: var(--paper-text, var(--text));
+  font: inherit;
+  line-height: 1.3;
+  resize: none;
+  pointer-events: auto;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 0.18);
+}
+
+/* ── Several picked up at once (src/documents/canvas-selection.js) ────────── */
+.pdf-picked-item {
+  fill: none;
+  stroke: color-mix(in srgb, var(--accent) 75%, transparent);
+  stroke-width: 1.25;
+  stroke-dasharray: 4 3;
+}
+
+.pdf-picked-all {
+  fill: color-mix(in srgb, var(--accent) 5%, transparent);
+  stroke: color-mix(in srgb, var(--accent) 45%, transparent);
+  stroke-width: 1;
+}
+
+.pdf-marquee-box {
+  fill: color-mix(in srgb, var(--accent) 9%, transparent);
+  stroke: var(--accent);
+  stroke-width: 1;
+  stroke-dasharray: 5 3;
+}
+
+.diagram-arrange-bar {
+  position: fixed;
+  /* The same tier as the block and shape popovers (styles/54-stacking.css):
+     only one of the three is ever up, since several picked is no one thing. */
+  z-index: 610;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 5px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 0.22);
+}
+
+.diagram-arrange-bar[hidden] {
+  display: none;
+}
+
+.diagram-arrange-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+
+.diagram-arrange-btn {
+  display: inline-grid;
+  place-items: center;
+  min-width: 28px;
+  height: 28px;
+  padding: 0 4px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 0.76rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.diagram-arrange-btn svg {
+  width: 18px;
+  height: 18px;
+}
+
+.diagram-arrange-btn.is-word {
+  padding: 0 8px;
+  border-color: var(--line);
+  background: var(--panel-2);
+}
+
+.diagram-arrange-btn:hover:not([disabled]) {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, var(--panel-2));
+}
+
+.diagram-arrange-btn.is-danger {
+  color: var(--ink-pen-red, #dc2626);
+}
+
+.diagram-arrange-btn[disabled] {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* ── What a drag lined up with (src/documents/pdf-guides.js) ──────────────── */
+.pdf-guide {
+  stroke: #e11d74;
+  stroke-width: 1;
+  stroke-dasharray: 3 2;
+  vector-effect: non-scaling-stroke;
+}

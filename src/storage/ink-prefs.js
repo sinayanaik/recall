@@ -305,6 +305,31 @@ export function writeNotebookPaperPreference(kind) {
 // values go through theirs: a bag written by a build whose defaults have moved
 // becomes one of THIS build's, rather than a set of values no control is ever
 // shown as holding.
+// ── Snapping on a page ─────────────────────────────────────────────────────
+//
+// Whether a box dragged on a page settles onto its neighbours' edges and the
+// grid's squares (src/documents/pdf-guides.js). On unless the reader turned it
+// off — ⋯ → Snap to guides and grid — and Alt held skips it for one drag.
+export function diagramSnapPreference() {
+  try {
+    const raw = localStorage.getItem(inkPreferencesKey);
+    const parsed = raw ? JSON.parse(raw) : null;
+    return parsed?.diagramSnap !== false;
+  } catch (_) {
+    return true;
+  }
+}
+
+export function writeDiagramSnapPreference(on) {
+  try {
+    const raw = localStorage.getItem(inkPreferencesKey);
+    const parsed = (raw ? JSON.parse(raw) : null) || {};
+    localStorage.setItem(inkPreferencesKey, JSON.stringify({ ...parsed, diagramSnap: Boolean(on) }));
+  } catch (error) {
+    console.warn("Could not remember snapping", error);
+  }
+}
+
 export function blockStylePreference(kind) {
   const slot = kind === "image" ? "image" : "text";
   try {

@@ -54,7 +54,8 @@ import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { closeBlockActionsPopover, openBlockActionsPopover } from "./block-actions-popover.js?v=__BUILD__";
 import { closeBlockStylePopover, openBlockStylePopover } from "./block-style-bar.js?v=__BUILD__";
-import { blockFillVar, blockInkVar, isDefaultBlockStyle, normalizeBlockStyle } from "./block-style.js?v=__BUILD__";
+import { BLOCK_SHAPE_DEFAULT, blockFillVar, blockInkVar, blockLineVar, isDefaultBlockStyle, normalizeBlockStyle } from "./block-style.js?v=__BUILD__";
+import { outlineInsets, outlineSvgPaths } from "../render/node-outlines.js?v=__BUILD__";
 import { activeDocSlot, DOC_SLOT_DOC, stampDocSlotAll } from "./doc-slot.js?v=__BUILD__";
 import { activePdfId, recordsForSurface, recordsOutsideSurface, stampRecordPdfIdAll } from "./pdf-multi.js?v=__BUILD__";
 import { closeBlockEditor, openBlockEditor } from "./pdf-block-editor.js?v=__BUILD__";
@@ -171,9 +172,15 @@ function syncBlockActionsPopover() {
     onDuplicate: () => duplicateBlock(selectedId),
     onRestackForward: () => restackBlock(1, selectedId),
     onRestackBack: () => restackBlock(-1, selectedId),
-    onDelete: () => deleteBlock(selectedId)
+    onToFront: () => restackBlock(Infinity, selectedId),
+    onToBack: () => restackBlock(-Infinity, selectedId),
+    onDelete: () => deleteBlock(selectedId),
+    gap: BLOCK_ACTIONS_GAP
   });
 }
+
+// Clear of the connect arrows a selected block wears outside each side.
+const BLOCK_ACTIONS_GAP = 30;
 
 // A deck can carry its own paper AND a notebook, and both keep their blocks in
 // this one array with a `doc` field saying which (src/documents/doc-slot.js).
@@ -222,7 +229,11 @@ function normalizeBlocks(list) {
       // blockStyle() below is what the painter asks. writeBlockStyle is the only
       // thing that ever creates the key, and it removes it again the moment the
       // reader puts every control back where it started.
-      ...(block.style && typeof block.style === "object" ? { style: { ...block.style } } : {})
+      ...(block.style && typeof block.style === "object" ? { style: { ...block.style } } : {}),
+      // A group (src/documents/canvas-selection.js): blocks and shapes that are
+      // picked up and moved as one. Carried only when there is one, for the
+      // reason `style` is — this array is written back on every move.
+      ...(typeof block.group === "string" && block.group ? { group: block.group } : {})
     }));
 }
 
@@ -252,7 +263,8 @@ function writeBlocks(next, { removed = null, revive = null, undoable = true, coa
   const pdfId = slot === DOC_SLOT_DOC ? activePdfId(state.meta) : null;
   // Before anything is written, and only for the changes a reader MADE — see the
   // ring below for why a page renumber and a late upload are not among them.
-  if (undoable) pushBlockUndo(documentBlocks(), coalesce);
+  // Inside runDiagramEdit the whole edit is one step, pushed when it ends.
+  if (undoable && !diagramEditDepth) pushBlockUndo(documentBlocks(), coalesce);
   const stamped = stampRecordPdfIdAll(stampDocSlotAll(next, slot), pdfId);
   const whole = recordsOutsideSurface(state.meta?.pdfBlocks, slot, pdfId).concat(stamped);
   state.meta = { ...(state.meta && typeof state.meta === "object" ? state.meta : {}), pdfBlocks: whole };
@@ -333,7 +345,89 @@ const BLOCK_UNDO_COALESCE_MS = 1200;
 
 let lastUndoCoalesce = { key: "", at: 0 };
 
+// ── One step for an edit that is blocks AND shapes ──────────────────────────
+//
+// A diagram's edits do not stay on one side of the line between this ring and
+// the pen's. "Connect a new box to this one" makes a block and an arrow; moving
+// three boxes and the lines between them moves blocks and shapes; deleting a
+// box with its connectors deletes both. Two rings would make each of those two
+// steps — Ctrl+Z taking the arrow back and leaving the box, or the box back and
+// leaving an arrow pointing at nothing.
+//
+// So an entry on THIS ring may also carry the shape records the edit touched,
+// as they were before it: `{ blocks, shapes }`, where `shapes` maps an id to its
+// record (or to null for a shape the edit created). Restoring puts both back.
+// The block half stays a whole-surface snapshot, so it orders against every
+// other block step exactly as it always has; the shape half is only the ids the
+// edit touched, so it never takes back a shape edit made on the pen's ring.
+//
+// The shapes are reached through `diagramShapeIO`, registered by src/main.js —
+// pdf-highlights.js is a module this one must not import (it is far larger, and
+// the shapes painter is registered INTO it).
+let diagramShapeIO = { read: () => [], write: () => {} };
+
+export function setDiagramShapeIO({ read, write } = {}) {
+  diagramShapeIO = {
+    read: typeof read === "function" ? read : () => [],
+    write: typeof write === "function" ? write : () => {}
+  };
+}
+
+// While above zero, block writes push no step of their own: the edit running
+// inside runDiagramEdit is one step, pushed when it ends.
+let diagramEditDepth = 0;
+
+// Run `fn` — which writes blocks (writeDocumentBlocks) and shapes (with their
+// own undo off) as it likes — and make everything it changed ONE undo step on
+// this ring. Nested calls fold into the outermost. Returns what `fn` returned.
+export function runDiagramEdit(fn, { coalesce = "" } = {}) {
+  if (diagramEditDepth > 0) return fn();
+  const beforeBlocks = documentBlocks();
+  const beforeShapes = new Map(diagramShapeIO.read().map((record) => [record.id, record]));
+  diagramEditDepth += 1;
+  let result;
+  try {
+    result = fn();
+  } finally {
+    diagramEditDepth -= 1;
+  }
+  const afterShapes = new Map(diagramShapeIO.read().map((record) => [record.id, record]));
+  const touched = {};
+  new Set([...beforeShapes.keys(), ...afterShapes.keys()]).forEach((id) => {
+    const was = beforeShapes.get(id) || null;
+    const now = afterShapes.get(id) || null;
+    if (JSON.stringify(was) !== JSON.stringify(now)) touched[id] = was;
+  });
+  const shapesChanged = Object.keys(touched).length > 0;
+  const blocksChanged = JSON.stringify(beforeBlocks) !== JSON.stringify(documentBlocks());
+  if (!shapesChanged && !blocksChanged) return result;
+  pushBlockUndo({ blocks: beforeBlocks, shapes: shapesChanged ? touched : null }, coalesce);
+  // Told even when no block moved: this is what makes src/main.js say the last
+  // edit on the surface was this ring's, so Ctrl+Z takes THIS step back first.
+  onBlocksChanged();
+  return result;
+}
+
+export function isInDiagramEdit() {
+  return diagramEditDepth > 0;
+}
+
+// The blocks of the open surface replaced, for a diagram edit in another module
+// (src/documents/pdf-connectors.js, canvas-selection.js). Pushes no undo step of
+// its own: call it inside runDiagramEdit, which pushes one for the whole edit.
+export function writeDocumentBlocks(next, { removed = null, revive = null } = {}) {
+  writeBlocks(normalizeBlocks(next), { removed, revive, undoable: false });
+}
+
+// An id no block in the deck has.
+export function freshDocumentBlockId() {
+  return freshBlockId(new Set(allDocumentBlocks().map((block) => block?.id)));
+}
+
 function pushBlockUndo(before, coalesce = "") {
+  // An entry is { blocks, shapes }. A bare list is the blocks alone — every
+  // caller from before diagram edits existed.
+  const entry = Array.isArray(before) ? { blocks: before, shapes: null } : before;
   const key = currentHistoryKey();
   if (key !== blockHistoryKey) {
     blockUndoRing.length = 0;
@@ -349,7 +443,7 @@ function pushBlockUndo(before, coalesce = "") {
   // one key every second is still one step rather than five.
   lastUndoCoalesce = { key: coalesce, at: now };
   if (continuing) return;
-  blockUndoRing.push(before);
+  blockUndoRing.push(entry);
   if (blockUndoRing.length > BLOCK_UNDO_DEPTH) blockUndoRing.shift();
   // A new change is a new future, the rule every undo stack in this app follows.
   blockRedoRing.length = 0;
@@ -359,16 +453,33 @@ function pushBlockUndo(before, coalesce = "") {
 // opposite ring gets. The two id sets are compared rather than assumed, because a
 // step can have added AND removed (an undo of a duplicate, a redo of a delete),
 // and each direction owes the tombstones the other one wrote.
-function restoreBlocks(list) {
+function restoreBlocks(entry) {
+  const list = entry.blocks;
   const before = documentBlocks();
   const beforeIds = new Set(before.map((block) => block.id));
   const afterIds = new Set(list.map((block) => block.id));
+  // The shapes first, so whatever repaints when the blocks are written below
+  // finds the shapes already where they belong (a connector bound to a block
+  // is drawn from both).
+  let shapesNow = null;
+  if (entry.shapes) {
+    const current = new Map(diagramShapeIO.read().map((record) => [record.id, record]));
+    shapesNow = {};
+    const put = [];
+    const remove = [];
+    Object.entries(entry.shapes).forEach(([id, record]) => {
+      shapesNow[id] = current.get(id) || null;
+      if (record) put.push(record);
+      else if (current.has(id)) remove.push(id);
+    });
+    diagramShapeIO.write({ put, remove });
+  }
   writeBlocks(list, {
     undoable: false,
     removed: before.filter((block) => !afterIds.has(block.id)).map((block) => block.id),
     revive: list.filter((block) => !beforeIds.has(block.id)).map((block) => block.id)
   });
-  return before;
+  return { blocks: before, shapes: shapesNow };
 }
 
 export function canUndoBlocks() {
@@ -507,6 +618,9 @@ function placeBlock(node, viewport, block) {
   // at the next. `scale` is the viewport's own, so this follows a pinch exactly.
   node.style.setProperty("--pdf-block-scale", String(viewport.scale || 1));
   node.style.zIndex = String(1 + (Number(block.z) || 0));
+  // A shaped block's outline is drawn in its own points, so a new size is a
+  // new outline — including every frame of a resize, which only re-places.
+  if (node.dataset.blockShape) paintBlockOutline(node, block);
 }
 
 // ── No header any more ──────────────────────────────────────────────────
@@ -598,11 +712,19 @@ function buildBlock(block) {
 // the picture's shape — and a block whose height follows its contents has no
 // bottom edge to drag (styles/53-handwriting.css hides it), because the words
 // set that edge, not the finger.
-const RESIZE_EDGES = ["e", "w", "s", "sw"];
+//
+// The top edge and its two corners joined them for diagrams: a box in a
+// flowchart is sized from whichever side the next box is on, and a box that
+// could only grow downwards and rightwards had to be dragged away and back to
+// grow up or left. A block whose height follows its words has no top edge
+// either, for the reason it has no bottom one.
+const RESIZE_EDGES = ["e", "w", "s", "sw", "n", "ne", "nw"];
+
+const IMAGE_RESIZE_EDGES = new Set(["sw", "ne", "nw"]);
 
 function resizeEdges(isImage) {
   return RESIZE_EDGES
-    .filter((edge) => !isImage || edge === "sw")
+    .filter((edge) => !isImage || IMAGE_RESIZE_EDGES.has(edge))
     .map((edge) => {
       const handle = document.createElement("span");
       handle.className = `pdf-block-edge pdf-block-edge-${edge}`;
@@ -653,6 +775,23 @@ function paintBlockStyle(node, block) {
   if (style.codeWrap) node.dataset.blockCodeWrap = "";
   else delete node.dataset.blockCodeWrap;
 
+  // ── A diagram's box: its outline, its edge and where its words sit ───────
+  //
+  // The same rule as everything above: an attribute that is there only when it
+  // says something, so a block nobody has shaped matches exactly the rules it
+  // always did.
+  if (style.shape !== BLOCK_SHAPE_DEFAULT) node.dataset.blockShape = style.shape;
+  else delete node.dataset.blockShape;
+  if (style.valign !== "top") node.dataset.blockValign = style.valign;
+  else delete node.dataset.blockValign;
+  const line = blockLineVar(style.line);
+  if (line) node.style.setProperty("--pdf-block-line", `var(${line})`);
+  else node.style.removeProperty("--pdf-block-line");
+  setBlockNumber(node, "blockLineWidth", "--pdf-block-line-width", style.lineWidth);
+  if (style.lineDash !== "solid") node.dataset.blockLineDash = style.lineDash;
+  else delete node.dataset.blockLineDash;
+  paintBlockOutline(node, block, style);
+
   // ── The face ─────────────────────────────────────────────────────────────
   //
   // resolveFontFamily (src/ui/fonts.js) both fetches the webfont and returns the
@@ -682,6 +821,74 @@ function setBlockNumber(node, attribute, property, value) {
   }
   node.dataset[attribute] = String(value);
   node.style.setProperty(property, String(value));
+}
+
+const BLOCK_SVG_NS = "http://www.w3.org/2000/svg";
+
+// The dash of a block's edge, in points — the Shapes tool's own proportions
+// (shapeDashArray in src/render/annot-shapes.js), so a dashed box and a dashed
+// arrow beside it are dashed alike.
+function blockDashArray(dash, width) {
+  const w = Math.max(width, 0.5);
+  if (dash === "dash") return `${(w * 4).toFixed(2)} ${(w * 2.6).toFixed(2)}`;
+  if (dash === "dot") return `0.01 ${(w * 2.2).toFixed(2)}`;
+  return "";
+}
+
+// ── The outline of a shaped block ─────────────────────────────────────────
+//
+// A box that is not a box — a diamond, a pill, a cylinder — is drawn as an SVG
+// behind the words rather than as the node's own border, which can only ever
+// be a rounded rectangle. The node itself turns its card off (data-block-shape,
+// styles/97-diagram.css) and the SVG paints the fill and the edge in its place,
+// in the block's own points (the viewBox), so the edge's width in points scales
+// with the page exactly as the words do.
+//
+// The words are kept off the outline by padding the body with outlineInsets —
+// the largest box that fits inside the shape — so a diamond's text stays inside
+// the diamond.
+//
+// Rebuilt only when what it is drawn from changes: this runs on every paint and
+// on every frame of a resize.
+function paintBlockOutline(node, block, style = blockStyle(block)) {
+  let svg = node.querySelector(":scope > svg.pdf-block-outline");
+  if (style.shape === BLOCK_SHAPE_DEFAULT) {
+    if (svg) svg.remove();
+    ["top", "right", "bottom", "left"].forEach((side) => node.style.removeProperty(`--pdf-block-inset-${side}`));
+    return;
+  }
+  const width = style.frame === "none" ? 0 : (style.lineWidth ?? 1);
+  const key = `${style.shape}|${block.w}|${block.h}|${width}|${style.lineDash}`;
+  if (svg && svg.dataset.key === key) return;
+  if (!svg) {
+    svg = document.createElementNS(BLOCK_SVG_NS, "svg");
+    svg.setAttribute("class", "pdf-block-outline");
+    svg.setAttribute("aria-hidden", "true");
+    svg.setAttribute("focusable", "false");
+    svg.setAttribute("preserveAspectRatio", "none");
+    const edge = document.createElementNS(BLOCK_SVG_NS, "path");
+    edge.setAttribute("class", "pdf-block-outline-edge");
+    const marks = document.createElementNS(BLOCK_SVG_NS, "path");
+    marks.setAttribute("class", "pdf-block-outline-marks");
+    svg.append(edge, marks);
+    node.prepend(svg);
+  }
+  svg.dataset.key = key;
+  svg.setAttribute("viewBox", `0 0 ${block.w} ${block.h}`);
+  const paths = outlineSvgPaths(style.shape, block.w, block.h, width / 2);
+  const dash = blockDashArray(style.lineDash, width || 1);
+  [["edge", paths.edge], ["marks", paths.marks]].forEach(([part, d]) => {
+    const path = svg.querySelector(`.pdf-block-outline-${part}`);
+    path.setAttribute("d", d || "");
+    path.setAttribute("stroke-width", String(width));
+    if (dash) path.setAttribute("stroke-dasharray", dash);
+    else path.removeAttribute("stroke-dasharray");
+    path.setAttribute("stroke-linecap", style.lineDash === "dot" ? "round" : "butt");
+  });
+  const inset = outlineInsets(style.shape, block.w, block.h);
+  ["top", "right", "bottom", "left"].forEach((side) => {
+    node.style.setProperty(`--pdf-block-inset-${side}`, (inset[side] || 0).toFixed(2));
+  });
 }
 
 // ── What a block HOLDS, for the controls that are about its contents ───────
@@ -1203,7 +1410,7 @@ export function paintDocumentBlocks(pageNumber) {
   // A page with no blocks and no layer is left alone, exactly as a page with no
   // ink is: a div per page of a three-hundred-page paper is a real cost for
   // nothing.
-  if (!blocks.length && !pageEl.querySelector(`.${PDF_BLOCK_LAYER_CLASS}`)) return;
+  if (!blocks.length && !pageEl.querySelector(`.${PDF_BLOCK_LAYER_CLASS}`)) { blocksPaintedHook(Number(pageNumber)); return; }
   const layer = blockLayer(pageNumber);
   if (!layer) return;
   const wanted = new Set(blocks.map((block) => block.id));
@@ -1225,6 +1432,28 @@ export function paintDocumentBlocks(pageNumber) {
   // before, and showed only when the service worker happened to have cached
   // the picture.
   resolveStorageImages(layer).catch((error) => console.warn("Could not resolve the block images", error));
+  blocksPaintedHook(Number(pageNumber));
+}
+
+// Told after every paint of a page's blocks — which is every selection, edit,
+// move and zoom — so what is drawn ABOUT a block (its connect arrows,
+// src/documents/pdf-connectors.js) follows it. Registered by src/main.js.
+let blocksPaintedHook = () => {};
+
+export function setBlocksPaintedHook(fn) {
+  blocksPaintedHook = typeof fn === "function" ? fn : () => {};
+}
+
+// Several blocks drawn where a drag has them, without writing anything — a
+// group of things being moved together (src/documents/canvas-selection.js).
+// `blocks` is a Map of id → the block as the drag has it; the drop writes.
+export function previewBlockGeometry(pageNumber, blocks) {
+  const viewport = pdfPageViewport(pageNumber);
+  if (!viewport || !blocks?.size) return;
+  blocks.forEach((block, id) => {
+    const node = document.querySelector(`[data-pdf-block="${CSS.escape(id)}"]`);
+    if (node) placeBlock(node, viewport, block);
+  });
 }
 
 export function repaintDocumentBlocks() {
@@ -1240,7 +1469,11 @@ export function repaintDocumentBlocks() {
 
 // Placed at a point on a page, clamped so a block added while scrolled to the
 // foot of one is not created off it.
-export function addDocumentBlock(pageNumber, at = null) {
+//
+// `style`, `w` and `h` are for a diagram's box (+ Add → Shape, and a box made
+// by connecting from another): a given style replaces the remembered one, and
+// a given size the default. `edit: false` leaves the editor shut.
+export function addDocumentBlock(pageNumber, at = null, { style = null, w = null, h = null, edit = true } = {}) {
   const viewport = pdfPageViewport(pageNumber);
   if (!viewport) return null;
   // The page box, which need not start at 0,0: a PDF with margins added on the
@@ -1249,18 +1482,21 @@ export function addDocumentBlock(pageNumber, at = null) {
   const [vx0, vy0, vx1, vy1] = viewport.viewBox;
   const blocks = documentBlocks();
   const wanted = at || { x: (vx0 + vx1) / 2, y: (vy0 + vy1) / 2 };
-  const inherited = freshBlockStyle(PDF_BLOCK_MARKDOWN);
+  const given = style ? normalizeBlockStyle(style) : null;
+  const inherited = given ? (isDefaultBlockStyle(given) ? null : given) : freshBlockStyle(PDF_BLOCK_MARKDOWN);
+  const width = Math.max(PDF_BLOCK_MIN_WIDTH, Number(w) || PDF_BLOCK_DEFAULT_WIDTH);
+  const height = Math.max(PDF_BLOCK_MIN_HEIGHT, Number(h) || PDF_BLOCK_DEFAULT_HEIGHT);
   const block = {
     // Unique across the DECK, not the surface: a block id is a sync key, and a
     // notebook minting the same one as a block over the paper beside it would
     // make the two records one record on the next merge.
     id: freshBlockId(new Set(allDocumentBlocks().map((b) => b?.id))),
     page: Number(pageNumber),
-    x: Math.round(Math.max(vx0 + 12, Math.min(vx1 - PDF_BLOCK_DEFAULT_WIDTH - 12, wanted.x - (PDF_BLOCK_DEFAULT_WIDTH / 2)))),
-    y: Math.round(Math.max(vy0 + 12, Math.min(vy1 - PDF_BLOCK_DEFAULT_HEIGHT - 12, wanted.y - (PDF_BLOCK_DEFAULT_HEIGHT / 2)))),
-    w: PDF_BLOCK_DEFAULT_WIDTH,
-    h: PDF_BLOCK_DEFAULT_HEIGHT,
-    z: blocks.length,
+    x: Math.round(Math.max(vx0 + 12, Math.min(vx1 - width - 12, wanted.x - (width / 2)))),
+    y: Math.round(Math.max(vy0 + 12, Math.min(vy1 - height - 12, wanted.y - (height / 2)))),
+    w: Math.round(width),
+    h: Math.round(height),
+    z: nextBlockZ(blocks),
     kind: PDF_BLOCK_MARKDOWN,
     md: "",
     at: Date.now(),
@@ -1269,8 +1505,16 @@ export function addDocumentBlock(pageNumber, at = null) {
   writeBlocks([...blocks, block]);
   setSelectedId(block.id);
   paintDocumentBlocks(pageNumber);
-  beginBlockEdit(block.id);
+  if (edit) beginBlockEdit(block.id);
+  else syncBlockActionsPopover();
   return block;
+}
+
+// On top of everything already on the surface. The length of the list was the
+// old answer, and after a delete or a restack to the front it can be a number
+// another block already has.
+export function nextBlockZ(blocks = documentBlocks()) {
+  return blocks.reduce((top, block) => Math.max(top, (Number(block.z) || 0) + 1), 0);
 }
 
 // ── ...and adding a picture ────────────────────────────────────────────────
@@ -1322,7 +1566,7 @@ export async function addDocumentImageBlock(pageNumber, file, at = null) {
     y: Math.round(Math.max(vy0 + 12, Math.min(vy1 - h - 12, wanted.y - (h / 2)))),
     w: Math.round(w),
     h: Math.round(h),
-    z: blocks.length,
+    z: nextBlockZ(blocks),
     kind: PDF_BLOCK_IMAGE,
     md: "",
     src: stored.url,
@@ -1441,7 +1685,11 @@ export function writeBlockStyle(id, patch) {
   // blockStylePreference. Written from the whole bag rather than from the patch:
   // what a reader means by "like the last one" is how the last one ended up, not
   // the one control they touched most recently.
-  writeBlockStylePreference(block.kind, next);
+  //
+  // Not for a diagram's box, though: a diamond styled red is not a reason for
+  // the next Block from + Add to be a red diamond. A box's look is copied from
+  // the box it is connected from instead (src/documents/pdf-connectors.js).
+  if (next.shape === BLOCK_SHAPE_DEFAULT) writeBlockStylePreference(block.kind, next);
   repaintDocumentBlocks();
   return next;
 }
@@ -1528,12 +1776,14 @@ function beginGesture(event, node, mode, edge = "se") {
   let frame = 0;
   gestureLive = true;
   // The page's own edges, in points, for the resize clamp below.
-  const [pageX0, , pageX1] = viewport.viewBox;
+  const [pageX0, pageY0, pageX1, pageY1] = viewport.viewBox;
   const scale = viewport.scale || 1;
 
   const apply = () => {
     frame = 0;
     placeBlock(node, viewport, live);
+    liveGesture = { id, page: block.page, block: live };
+    gestureFrameHook(block.page, liveGesture);
     // ── The height follows the width WHILE the width is being dragged ────
     //
     // A block that follows its contents used to keep its old height for the
@@ -1617,33 +1867,43 @@ function beginGesture(event, node, mode, edge = "se") {
       // Which edges this handle moves. The bottom of the frame on screen is
       // the bottom in points too — so growing it moves the origin DOWN — and
       // the left edge moves the origin across as the width changes, so the
-      // right edge stays exactly where it was.
-      const fromLeft = edge === "w" || edge === "sw";
-      const movesX = edge !== "s";
-      const movesY = edge === "s" || edge === "se" || edge === "sw";
+      // right edge stays exactly where it was. The top edge is the other way
+      // round: it grows UP, so the origin — the bottom — stays put.
+      const fromLeft = edge.includes("w");
+      const movesX = edge.includes("e") || fromLeft;
+      const fromTop = edge.includes("n");
+      const movesY = edge.includes("s") || fromTop;
       // Dragging the left edge to the right makes the block narrower.
       const growX = movesX ? (fromLeft ? -dx : dx) : 0;
-      const growY = movesY ? -dy : 0;
+      const growY = movesY ? (fromTop ? dy : -dy) : 0;
       // The furthest the moving side can go: the page's own edge. A block
       // resized off the paper has a handle nobody can reach to bring it back.
       const roomX = fromLeft ? block.x + block.w - pageX0 : pageX1 - block.x;
+      const roomY = fromTop ? pageY1 - block.y : block.y + block.h - pageY0;
+      // Shift on a corner keeps the box's shape, as it does in every drawing
+      // program — what a picture's corner always does.
+      const keepRatio = isImage || (moveEvent.shiftKey && movesX && movesY && !widthOnly);
+      const shapeRatio = isImage ? ratio : block.w / block.h;
       let w;
       let h;
-      if (isImage) {
+      if (keepRatio) {
         // Whichever axis the finger moved further along decides the size, so
         // the grip follows a mostly-sideways drag and a mostly-downward one
-        // equally, and the other side follows the picture's shape. The height's
-        // change is put in width terms (× ratio) so the two are comparable.
-        const growH = growY * ratio;
+        // equally, and the other side follows the shape. The height's change is
+        // put in width terms (× ratio) so the two are comparable.
+        const growH = growY * shapeRatio;
+        const minSide = isImage ? PDF_BLOCK_IMAGE_MIN_SIDE : PDF_BLOCK_MIN_WIDTH;
         w = block.w + (Math.abs(growX) >= Math.abs(growH) ? growX : growH);
-        w = Math.min(Math.max(roomX, PDF_BLOCK_IMAGE_MIN_SIDE), w);
-        w = Math.max(PDF_BLOCK_IMAGE_MIN_SIDE, PDF_BLOCK_IMAGE_MIN_SIDE * ratio, w);
-        h = w / ratio;
+        w = Math.min(Math.max(roomX, minSide), Math.max(roomY, minSide) * shapeRatio, w);
+        w = Math.max(minSide, minSide * shapeRatio, w);
+        h = w / shapeRatio;
       } else {
         w = movesX
           ? Math.max(PDF_BLOCK_MIN_WIDTH, Math.min(Math.max(roomX, PDF_BLOCK_MIN_WIDTH), block.w + growX))
           : block.w;
-        h = widthOnly || !movesY ? block.h : Math.max(PDF_BLOCK_MIN_HEIGHT, block.h + growY);
+        h = widthOnly || !movesY
+          ? block.h
+          : Math.max(PDF_BLOCK_MIN_HEIGHT, Math.min(Math.max(roomY, PDF_BLOCK_MIN_HEIGHT), block.h + growY));
       }
       w = Math.round(w);
       h = Math.round(h);
@@ -1652,9 +1912,17 @@ function beginGesture(event, node, mode, edge = "se") {
         w,
         h,
         x: fromLeft ? Math.round(block.x + block.w - w) : block.x,
-        y: Math.round(block.y + (block.h - h))
+        y: fromTop ? block.y : Math.round(block.y + (block.h - h))
       };
     }
+    // Snapped to its neighbours and to the grid (src/documents/pdf-guides.js),
+    // unless Alt is held — registered, as everything this gesture tells.
+    live = gestureAdjuster({
+      page: block.page, id, mode, edge, before: block, live, event: moveEvent, viewport,
+      // A picture keeps its shape and a block that follows its words keeps
+      // their height: neither has an edge free to snap on its own.
+      keepRatio: mode === "resize" && (isImage || moveEvent.shiftKey), widthOnly
+    }) || live;
     if (!frame) frame = requestAnimationFrame(apply);
   };
 
@@ -1685,6 +1953,12 @@ function beginGesture(event, node, mode, edge = "se") {
       // drop writes the height the block had before the drag.
       apply();
     }
+    // The gesture is over: nothing is being drawn where it is not stored any
+    // more. Told BEFORE the write, so the repaint the write causes paints from
+    // the record alone.
+    liveGesture = null;
+    gestureAdjuster(null);
+    gestureFrameHook(block.page, null);
     // The gesture is over, however it resolved — a tap that never crossed the
     // slop (the popover was never closed for it), a drag that settled the
     // block somewhere new, or a resize — and in every one of those the block
@@ -1719,6 +1993,33 @@ function beginGesture(event, node, mode, edge = "se") {
   // fit on the page. Ending the gesture here is the backstop.
   node.addEventListener("lostpointercapture", onLostCapture);
   notePdfGesture("block", mode === "resize" ? "resize start" : "press", { id, kind: block.kind, pointer: event.pointerType });
+}
+
+// ── What a gesture tells the rest of the page ──────────────────────────────
+//
+// A connector bound to a block has to follow it WHILE it is dragged, not jump
+// after the drop — and the block is only re-placed during a drag, never
+// written. So the gesture says where it has the block on every frame (and null
+// when it lets go), and src/documents/pdf-connectors.js repaints the lines on
+// that page against it. The adjuster is the other direction: it may move the
+// live box — snapped to a neighbour's edge or to the grid — before it is drawn.
+// Both registered by src/main.js, so this module imports neither.
+let liveGesture = null;
+let gestureFrameHook = () => {};
+let gestureAdjuster = () => null;
+
+export function setBlockGestureFrameHook(fn) {
+  gestureFrameHook = typeof fn === "function" ? fn : () => {};
+}
+
+export function setBlockGestureAdjuster(fn) {
+  gestureAdjuster = typeof fn === "function" ? fn : () => null;
+}
+
+// Where the block being dragged or resized is right now — { id, page, block } —
+// or null when no gesture is live.
+export function liveBlockGesture() {
+  return liveGesture;
 }
 
 // ── Never off the page ─────────────────────────────────────────────────────
@@ -1901,7 +2202,7 @@ export function duplicateBlock(id = selectedId) {
     id: freshBlockId(new Set(allDocumentBlocks().map((entry) => entry?.id))),
     x: block.x + BLOCK_DUPLICATE_OFFSET,
     y: block.y - BLOCK_DUPLICATE_OFFSET,
-    z: blocks.length,
+    z: nextBlockZ(blocks),
     at: Date.now()
   };
   writeBlocks([...blocks, copy]);
@@ -1943,14 +2244,26 @@ export function nudgeBlock(dx, dy, { coarse = false, id = selectedId } = {}) {
 // otherwise. This is that way: the pressed block swaps places with its nearest
 // neighbour in the stack, which is what "bring it forward" means and is stable
 // in a way that "z += 1" is not.
+//
+// `direction` is a step (±1), or ±Infinity for all the way: draw.io's "To Front"
+// and "To Back", which a diagram reaches for far more often than a step — a box
+// dropped over a line wants to be on top of it, not one place higher.
 export function restackBlock(direction, id = selectedId) {
   if (!id) return false;
   const blocks = documentBlocks();
   const order = [...blocks].sort((a, b) => (a.z - b.z) || (a.at - b.at));
   const index = order.findIndex((block) => block.id === id);
-  const swap = index + (direction > 0 ? 1 : -1);
-  if (index < 0 || swap < 0 || swap >= order.length) return false;
-  [order[index], order[swap]] = [order[swap], order[index]];
+  if (index < 0) return false;
+  if (Math.abs(direction) === Infinity) {
+    const [moved] = order.splice(index, 1);
+    if (direction > 0) order.push(moved);
+    else order.unshift(moved);
+    if (order.findIndex((block) => block.id === id) === index) return false;
+  } else {
+    const swap = index + (direction > 0 ? 1 : -1);
+    if (swap < 0 || swap >= order.length) return false;
+    [order[index], order[swap]] = [order[swap], order[index]];
+  }
   const z = new Map(order.map((block, index) => [block.id, index]));
   writeBlocks(blocks.map((entry) => (entry.z === z.get(entry.id)
     ? entry

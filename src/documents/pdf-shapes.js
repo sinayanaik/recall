@@ -57,7 +57,7 @@ import { PDF_SHAPE_TEXT_CLASS } from "../core/constants.js?v=__BUILD__";
 import { mountShapeTextBody, setShapeTextRenderedHandler, shapeTextBodyState, styleShapeTextBox } from "./pdf-shape-markdown.js?v=__BUILD__";
 import { notePdfGesture } from "./pdf-timing.js?v=__BUILD__";
 import {
-  QUAD_GEOMETRY_VERSION, documentHighlightById, documentHighlights, freshDocumentHighlightId, reinstateDocumentHighlight,
+  QUAD_GEOMETRY_VERSION, applyDocumentRecordChanges, documentHighlightById, documentHighlights, freshDocumentHighlightId, reinstateDocumentHighlight,
   removeDocumentHighlight, setDocumentShapePainter, updateDocumentHighlight
 } from "./pdf-highlights.js?v=__BUILD__";
 import { inkEraseTarget, inkPaperBg, inkTool, isInkArmed, pushInkHistoryAction } from "./pdf-ink.js?v=__BUILD__";
@@ -116,9 +116,20 @@ function defaultShapeSettings() {
     textBorderWidth: 1,
     // The last shape that is not typed text — what the Shapes button wears and
     // goes back to while the Text button has the typewriter armed.
-    lastShape: "arrow"
+    lastShape: "arrow",
+    // How a line or an arrow drawn with the tool runs: straight, or routed
+    // round corners or in a curve (src/render/annot-shapes.js, connectorPath).
+    route: "straight",
+    // ...and a connector made from a block's own arrows
+    // (src/documents/pdf-connectors.js): square corners and the ink's colour,
+    // as a diagram's lines are, rather than the red of a mark on a paper.
+    // Both follow the last connector the reader restyled.
+    connectRoute: "elbow",
+    connectStroke: "#16181d"
   };
 }
+
+const SHAPE_ROUTES = ["straight", "elbow", "curve"];
 
 export function normalizeShapeSettings(raw) {
   const base = defaultShapeSettings();
@@ -152,7 +163,10 @@ export function normalizeShapeSettings(raw) {
     textBorder: raw.textBorder === true,
     textBorderColor: normalizeShapeHex(raw.textBorderColor) || base.textBorderColor,
     textBorderWidth: positiveNumber(raw.textBorderWidth, base.textBorderWidth),
-    lastShape: SHAPE_SETTING_TYPES.includes(raw.lastShape) && raw.lastShape !== "text" ? raw.lastShape : base.lastShape
+    lastShape: SHAPE_SETTING_TYPES.includes(raw.lastShape) && raw.lastShape !== "text" ? raw.lastShape : base.lastShape,
+    route: SHAPE_ROUTES.includes(raw.route) ? raw.route : base.route,
+    connectRoute: SHAPE_ROUTES.includes(raw.connectRoute) ? raw.connectRoute : base.connectRoute,
+    connectStroke: normalizeShapeHex(raw.connectStroke) || base.connectStroke
   };
 }
 
@@ -194,6 +208,24 @@ export function setShapeSettings(patch = {}) {
     ["stroke", "width", "opacity", "dash", "fill", "fillOpacity"].forEach((key) => {
       if (key in patch) restyle[key] = shapeSettings[key];
     });
+    const isLine = selected.shape.type === "line" || selected.shape.type === "arrow";
+    if ("route" in patch && isLine) {
+      restyle.route = shapeSettings.route === "straight" ? undefined : shapeSettings.route;
+      // A new route starts from its own middle, not the last route's bend.
+      restyle.p = selected.shape.p.slice(0, 2);
+    }
+    // A connector restyled is how the reader says what the next one made from
+    // a block's arrows should look like.
+    if (isLine && Array.isArray(selected.shape.ends)) {
+      const remember = {};
+      if ("route" in patch) remember.connectRoute = shapeSettings.route;
+      if ("stroke" in patch) remember.connectStroke = shapeSettings.stroke;
+      if (Object.keys(remember).length) {
+        const kept = normalizeShapeSettings({ ...shapeSettings, ...remember });
+        shapeSettingsBySurface.set(shapeSurface(), kept);
+        writeInkPreferences({ shape: kept }, shapeSurface());
+      }
+    }
     if (patch.heads?.[selected.shape.type]) restyle.heads = shapeSettings.heads[selected.shape.type];
     const font = {};
     if ("fontSize" in patch) font.size = shapeSettings.fontSize;
@@ -203,7 +235,11 @@ export function setShapeSettings(patch = {}) {
     if ("stickyColor" in patch && selected.shape.type === "sticky") restyle.stroke = shapeSettings.stickyColor;
     if (selected.shape.type === "text") Object.assign(restyle, textRestyle(selected, patch, shapeSettings, font));
     if (Object.keys(font).length) restyle.font = { ...selected.shape.font, ...font };
-    if (Object.keys(restyle).length) updateShape(selected.id, { ...selected.shape, ...restyle });
+    if (Object.keys(restyle).length) {
+      const next = { ...selected.shape, ...restyle };
+      if (next.route === undefined) delete next.route;
+      updateShape(selected.id, next);
+    }
   }
   shapeChangedHandler();
 }
@@ -278,6 +314,7 @@ function newShapeBase(type) {
     font: { size: s.fontSize, bold: s.bold, align: s.align, color: null }
   };
   if (s.heads[type]) base.heads = s.heads[type];
+  if ((type === "line" || type === "arrow") && s.route !== "straight") base.route = s.route;
   // A fill is the reader's for a box; a callout keeps its pale paper unless the
   // reader has chosen one, so its words stay readable over the page.
   if (type === "rect" || type === "ellipse" || type === "text" || s.fill) {
@@ -312,7 +349,9 @@ export function documentShapes(pageNumber = null) {
 function shapeRecordFields(pageNumber, shape) {
   const s = normalizeShape(shape);
   const box = shapeBounds(s);
-  const words = (s.type === "callout" || s.type === "text") ? s.text.trim() : "";
+  // A connector's label is its words too ("yes", "calls"), for the pane and a
+  // search.
+  const words = (s.type === "callout" || s.type === "text" || s.type === "line" || s.type === "arrow") ? s.text.trim() : "";
   return {
     page: pageNumber,
     color: inkFilingColor(`x${s.stroke.slice(1)}`),
@@ -381,6 +420,51 @@ export function duplicateShape(id = selectedShapeId) {
   const made = addDocumentShape(Number(record.page), translateShape(record.shape, 12, -12));
   if (made) selectShape(made.id);
   return made;
+}
+
+// Several shapes rewritten at once, with no undo step and in one write — what
+// keeps a connector's stored ends where the things it joins have gone
+// (src/documents/pdf-connectors.js), and a diagram edit that moves several
+// shapes inside runDiagramEdit (whose own step is the undo). `changes` is
+// [{ id, shape }]; a shape that is not a shape, or unchanged, is skipped.
+export function updateShapesQuietly(changes) {
+  const put = [];
+  (changes || []).forEach(({ id, shape }) => {
+    const record = documentHighlightById(id);
+    const s = normalizeShape(shape);
+    if (!record || record.kind !== "shape" || !s) return;
+    if (JSON.stringify(normalizeShape(record.shape)) === JSON.stringify(s)) return;
+    put.push({ ...record, ...shapeRecordFields(Number(record.page), s) });
+  });
+  if (!put.length) return 0;
+  applyDocumentRecordChanges({ put });
+  return put.length;
+}
+
+// A shape record as it would be with `shape`, for a caller that writes several
+// at once (applyDocumentRecordChanges) — a paste, a group moved.
+export function shapeRecordWith(record, shape, pageNumber = Number(record?.page)) {
+  const s = normalizeShape(shape);
+  if (!record || !s) return null;
+  return { ...record, ...shapeRecordFields(Number(pageNumber), s) };
+}
+
+// A brand-new shape record, not yet written — for the same callers.
+export function newShapeRecord(pageNumber, shape, id = freshDocumentHighlightId()) {
+  const s = normalizeShape(shape);
+  if (!s) return null;
+  return { id, anchor: null, focus: null, ...shapeRecordFields(Number(pageNumber), s), qv: QUAD_GEOMETRY_VERSION, at: Date.now() };
+}
+
+// The look a connector made from a block's own arrows starts with
+// (src/documents/pdf-connectors.js): the arrow tool's, in the connector's own
+// colour and route.
+export function newConnectorBase() {
+  const s = currentShapeSettings();
+  const base = { ...newShapeBase("arrow"), stroke: s.connectStroke };
+  if (s.connectRoute === "straight") delete base.route;
+  else base.route = s.connectRoute;
+  return base;
 }
 
 export function nudgeShape(dx, dy, id = selectedShapeId) {
@@ -457,7 +541,8 @@ export function displayedShapeSettings() {
     wrap: s.type === "text" ? !s.fit : tool.wrap,
     textBorder: s.type === "text" ? s.border === true : tool.textBorder,
     textBorderColor: s.type === "text" && s.border ? s.stroke : tool.textBorderColor,
-    textBorderWidth: s.type === "text" && s.border ? s.width : tool.textBorderWidth
+    textBorderWidth: s.type === "text" && s.border ? s.width : tool.textBorderWidth,
+    route: (s.type === "line" || s.type === "arrow") ? (s.route || "straight") : tool.route
   });
 }
 
@@ -616,12 +701,19 @@ function buildHandles(layer, viewport, record, put = (node) => layer.appendChild
 // Every shape on one page, rebuilt. Called as the page paints (through
 // paintDocumentHighlights, which every CRUD on the records already repaints)
 // and as the selection or a drag changes.
-export function paintDocumentShapes(pageNumber, { preview = null } = {}) {
+//
+// `previews` is several shapes drawn where a drag has them (a group being
+// moved, src/documents/canvas-selection.js): a Map of id → shape.
+export function paintDocumentShapes(pageNumber, { preview = null, previews = null } = {}) {
   const viewport = pdfPageViewport(pageNumber);
   if (!viewport) return;
   const shapes = documentShapes(pageNumber);
   const existing = shapeLayer(pageNumber, false);
-  if (!shapes.length && !preview && !existing) return;
+  if (!shapes.length && !preview && !existing) { shapeOverlayHook(Number(pageNumber)); return; }
+  // A connector is drawn where the things it joins ARE — including a block
+  // being dragged this very frame, or a box shape that is the preview — not
+  // where its record last saw them (src/documents/pdf-connectors.js).
+  const resolve = (record, shape) => shapeResolver(record, shape, Number(pageNumber), { preview }) || shape;
   const layer = existing || shapeLayer(pageNumber);
   if (!layer) return;
   // Everything but an open text editor, which must not lose its focus (and with
@@ -638,25 +730,30 @@ export function paintDocumentShapes(pageNumber, { preview = null } = {}) {
   svg.setAttribute("aria-hidden", "true");
   put(svg);
   const boxes = [];
+  const previewOf = (record) => {
+    if (preview && preview.id === record.id) return preview.shape;
+    return previews?.get(record.id) || null;
+  };
   shapes.forEach((record) => {
     // The shape being dragged is drawn where the drag has it, not where it is.
-    const shape = preview && preview.id === record.id ? preview.shape : normalizeShape(record.shape);
+    const shape = resolve(record, normalizeShape(previewOf(record) || record.shape));
     const built = buildShapeNodes(record, shape, viewport);
     svg.appendChild(built.group);
     boxes.push(...built.boxes);
   });
   if (preview && !preview.id) {
-    const built = buildShapeNodes(null, preview.shape, viewport, { preview: true });
+    const built = buildShapeNodes(null, resolve(null, preview.shape), viewport, { preview: true });
     svg.appendChild(built.group);
     boxes.push(...built.boxes);
   }
   boxes.forEach((box) => put(box));
   const selected = selectedShapeRecord();
   if (selected && Number(selected.page) === Number(pageNumber) && !editingShapeId) {
-    const shape = preview && preview.id === selected.id ? preview.shape : selected.shape;
+    const shape = resolve(selected, normalizeShape(previewOf(selected) || selected.shape));
     buildHandles(layer, viewport, { ...selected, shape }, put);
   }
   shapePaintedHook(pageNumber, layer);
+  shapeOverlayHook(Number(pageNumber));
   // Never mid-drag: the box being dragged is a preview, and measuring every
   // frame is a forced layout per frame for an answer the drop will repeat.
   if (!shapePress) scheduleShapeTextFit(pageNumber);
@@ -814,6 +911,95 @@ export function setShapePaintedHook(fn) {
   shapePaintedHook = typeof fn === "function" ? fn : () => {};
 }
 
+// ── Connectors: what this module asks src/documents/pdf-connectors.js ──────
+//
+// That module knows what a block is and where one is being dragged; this one
+// must not import it (it imports this). So it registers three things:
+//
+//   the resolver   a line or an arrow with tied ends, as it should be drawn
+//                  NOW — its ends on the outlines of what they are tied to
+//   the binder     what an end dragged to a point would be tied to, if
+//                  anything — and a highlight on it while the drag is on
+//   the overlay    told after every repaint of a page's shapes, so a selected
+//                  box's connect arrows follow it
+let shapeResolver = (record, shape) => shape;
+let shapeBinding = { bindAt: () => null, clear: () => {} };
+let shapeOverlayHook = () => {};
+
+export function setShapeResolver(fn) {
+  shapeResolver = typeof fn === "function" ? fn : (record, shape) => shape;
+}
+
+export function setShapeBindingHooks({ bindAt, clear } = {}) {
+  shapeBinding = {
+    bindAt: typeof bindAt === "function" ? bindAt : () => null,
+    clear: typeof clear === "function" ? clear : () => {}
+  };
+}
+
+export function setShapeOverlayHook(fn) {
+  shapeOverlayHook = typeof fn === "function" ? fn : () => {};
+}
+
+// A box moved or resized settles onto its neighbours and the grid
+// (src/documents/pdf-guides.js): handed the shape as the drag has it, it hands
+// back the shape snapped, or null for no change; null in, the drag is over.
+let shapeMoveAdjuster = () => null;
+
+export function setShapeMoveAdjuster(fn) {
+  shapeMoveAdjuster = typeof fn === "function" ? fn : () => null;
+}
+
+// The words on a line — a connector's label — are typed in an editor of their
+// own (src/documents/pdf-connectors.js): the callout's and the text box's is a
+// box, and a label is not one.
+let connectorLabelEditor = () => false;
+
+export function setConnectorLabelEditor(fn) {
+  connectorLabelEditor = typeof fn === "function" ? fn : () => false;
+}
+
+let shapeDeleteAllHandler = (id) => deleteShape(id);
+
+export function setShapeDeleteAllHandler(fn) {
+  shapeDeleteAllHandler = typeof fn === "function" ? fn : (id) => deleteShape(id);
+}
+
+export function editConnectorLabel(recordOrId) {
+  const record = typeof recordOrId === "string" ? documentHighlightById(recordOrId) : recordOrId;
+  const type = record?.shape?.type;
+  if (type !== "line" && type !== "arrow") return false;
+  return connectorLabelEditor(record) !== false;
+}
+
+// A shape as it is drawn now: a connector with its ends where the things it
+// joins are. Anything else comes back as it is stored.
+export function resolvedShape(record, shape = record?.shape) {
+  const s = normalizeShape(shape);
+  if (!s) return null;
+  return shapeResolver(record, s, Number(record?.page)) || s;
+}
+
+// The ends of a line being drawn or reshaped, tied to whatever each one is
+// over — `moving` is the end under the pointer, the one whose target is lit.
+// Both ends tied to the same thing is a line drawn INSIDE it, which ties to
+// nothing.
+function bindShapeEnds(drag, shape, event, indices, moving) {
+  if (!shape || (shape.type !== "line" && shape.type !== "arrow")) return shape;
+  const ends = [0, 1].map((i) => shape.ends?.[i] || null);
+  indices.forEach((i) => {
+    const hit = shapeBinding.bindAt({ page: drag.page, index: i, point: shape.p[i], event, exclude: drag.target?.id || null, show: i === moving });
+    ends[i] = hit ? { id: hit.id, side: hit.side } : null;
+  });
+  if (ends[0] && ends[1] && ends[0].id === ends[1].id) {
+    ends[0] = null;
+    ends[1] = null;
+  }
+  const next = { ...shape, ends };
+  if (!ends.some(Boolean)) delete next.ends;
+  return next;
+}
+
 export function repaintDocumentShapes() {
   document.querySelectorAll(`.pdf-page[data-page-number]`).forEach((pageEl) => {
     const pageNumber = Number(pageEl.dataset.pageNumber);
@@ -856,12 +1042,22 @@ function handleAt(record, pageEl, clientX, clientY) {
   const box = pageEl.getBoundingClientRect();
   const toPoint = viewportMapper(viewport);
   let best = null;
-  pressableShapeHandles(record.shape, viewport).forEach((handle) => {
+  // Where the handles are DRAWN: a connector's ends on what they join.
+  pressableShapeHandles(resolvedShape(record) || record.shape, viewport).forEach((handle) => {
     const [sx, sy] = toPoint([handle.x, handle.y]);
     const d = Math.hypot(box.left + sx - clientX, box.top + sy - clientY);
     if (d <= SHAPE_HANDLE_REACH && (!best || d < best.d)) best = { id: handle.id, d };
   });
   return best?.id || null;
+}
+
+// Which handle of the selected shape a press at (clientX, clientY) is on, or
+// null — for src/documents/canvas-selection.js, which must leave a press on a
+// handle to this module.
+export function selectedShapeHandleAt(clientX, clientY) {
+  const record = selectedShapeRecord();
+  const pageEl = record ? pdfPageElement(Number(record.page)) : null;
+  return pageEl ? handleAt(record, pageEl, clientX, clientY) : null;
 }
 
 // ── The gesture ───────────────────────────────────────────────────────────
@@ -1105,20 +1301,30 @@ function pressShape(drag, event) {
   if (!point) return null;
   const snap = currentShapeSettings().snap || event.shiftKey;
   if (drag.mode === "create") {
-    return shapeFromDrag(drag.type, drag.from, point, { snap, base: newShapeBase(drag.type) });
+    const made = shapeFromDrag(drag.type, drag.from, point, { snap, base: newShapeBase(drag.type) });
+    // A line drawn from a box or onto one is tied to it (Alt: never).
+    return bindShapeEnds(drag, made, event, [0, 1], 1);
   }
   if (drag.mode === "move") {
     const [dx, dy] = clampShapeMove(drag.target.shape, drag.page, point[0] - drag.from[0], point[1] - drag.from[1]);
-    return translateShape(drag.target.shape, dx, dy);
+    const moved = translateShape(drag.target.shape, dx, dy);
+    return shapeMoveAdjuster({ page: drag.page, id: drag.target.id, mode: "move", shape: moved, event }) || moved;
   }
-  // A line's end, with Shift, swings round its other end in 15° steps.
-  const shape = drag.target.shape;
+  // A line's end, with Shift, swings round its other end in 15° steps — from
+  // where that end is drawn, which for a tied end is on what it is tied to.
+  const shape = resolvedShape(drag.target) || drag.target.shape;
   let to = point;
-  if (snap && /^p\d$/.test(drag.handle) && shape.p.length === 2) {
+  if (snap && /^p[01]$/.test(drag.handle)) {
     const other = shape.p[drag.handle === "p0" ? 1 : 0];
     to = snapShapeAngle(other, point);
   }
-  return moveShapeHandle(shape, drag.handle, to[0], to[1], { snap });
+  const moved = moveShapeHandle(shape, drag.handle, to[0], to[1], { snap });
+  // An end dragged onto a box is tied to it; dragged off, it is free.
+  if (/^p[01]$/.test(drag.handle)) {
+    const index = Number(drag.handle[1]);
+    return bindShapeEnds(drag, moved, event, [index], index);
+  }
+  return shapeMoveAdjuster({ page: drag.page, id: drag.target.id, mode: "handle", handle: drag.handle, shape: moved, event }) || moved;
 }
 
 // ── Never off the page ─────────────────────────────────────────────────────
@@ -1169,14 +1375,18 @@ function onShapePointerUp(event) {
   event.preventDefault();
   event.stopPropagation();
   endShapePress();
+  shapeBinding.clear();
+  shapeMoveAdjuster(null);
   if (drag.mode !== "create") notePdfGesture("shape", drag.moved ? `${drag.mode === "move" ? "moved" : "reshaped"}` : "tapped", { id: drag.target?.id, pointer: drag.pointerType });
   if (drag.mode === "create") {
     // A tap makes a text box or a sticky note where it lands; for anything
     // else a tap makes nothing (and puts a selection down, above).
     suppressShapeClickUntil = Date.now() + 400;
     if (!drag.moved && drag.deselected) return;
-    const shape = drag.moved ? (drag.preview || pressShape(drag, event)) : shapeFromDrag(drag.type, drag.from, drag.from, { base: newShapeBase(drag.type) });
-    if (!shape) { paintDocumentShapes(drag.page); return; }
+    const drawn = drag.moved ? (drag.preview || pressShape(drag, event)) : shapeFromDrag(drag.type, drag.from, drag.from, { base: newShapeBase(drag.type) });
+    if (!drawn) { paintDocumentShapes(drag.page); return; }
+    // Written with its tied ends already on what they are tied to.
+    const shape = shapeResolver(null, normalizeShape(drawn), drag.page) || drawn;
     const record = addDocumentShape(drag.page, shape);
     if (!record) return;
     if (record.shape.type === "callout" || record.shape.type === "text" || record.shape.type === "sticky") {
@@ -1197,6 +1407,12 @@ function onShapePointerUp(event) {
       shapeTextEditHandler(drag.target);
       return;
     }
+    // A second tap on a line already picked up: its words, as a box's are.
+    if (drag.wasSelected && (type === "line" || type === "arrow")) {
+      suppressShapeClickUntil = Date.now() + 400;
+      editConnectorLabel(drag.target);
+      return;
+    }
     // A tap on a shape: it is selected (above), and its style popover is up
     // at it (src/documents/pdf-shape-style-popover.js) — colour, size, line —
     // with its note, Delete and ⋯ for the rest of its menu. The click that
@@ -1207,7 +1423,8 @@ function onShapePointerUp(event) {
     return;
   }
   suppressShapeClickUntil = Date.now() + 400;
-  const shape = drag.preview || pressShape(drag, event);
+  const dropped = drag.preview || pressShape(drag, event);
+  const shape = dropped ? (shapeResolver(drag.target, normalizeShape(dropped), drag.page) || dropped) : null;
   // Typed text given a new width wraps differently: its height is measured
   // again, plain words or not.
   if (shape && drag.mode === "handle" && shape.type === "text" && drag.handle !== "rot") shapeTextRefitIds.add(drag.target.id);
@@ -1225,6 +1442,8 @@ function onShapePointerCancel(event) {
   const drag = shapePress;
   if (!drag || event.pointerId !== drag.pointerId) return;
   endShapePress();
+  shapeBinding.clear();
+  shapeMoveAdjuster(null);
   notePdfGesture("shape", "cancelled", { id: drag.target?.id, mode: drag.mode, pointer: drag.pointerType, cause: event.type, moved: drag.moved ? "yes" : "no" });
   if (drag.mode !== "create" && drag.moved && drag.preview) {
     suppressShapeClickUntil = Date.now() + 400;
@@ -1256,7 +1475,11 @@ function onShapeKeyDown(event) {
   const key = event.key;
   const step = event.shiftKey ? 10 : 1;
   let handled = true;
-  if (key === "Delete" || key === "Backspace") deleteShape();
+  // With Ctrl, a box goes with the lines tied to it (src/documents/
+  // pdf-connectors.js, deleteWithConnectors) — registered, as everything that
+  // module answers here.
+  if ((event.ctrlKey || event.metaKey) && (key === "Delete" || key === "Backspace")) shapeDeleteAllHandler(selectedShapeId);
+  else if (key === "Delete" || key === "Backspace") deleteShape();
   else if (key === "Escape") selectShape(null);
   else if (key === "ArrowLeft") nudgeShape(-step, 0);
   else if (key === "ArrowRight") nudgeShape(step, 0);

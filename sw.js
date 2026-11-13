@@ -386,6 +386,7 @@ const APP_SHELL = [
   `./styles/94-paper-tones.css?v=${STAMP}`,
   `./styles/95-library-search.css?v=${STAMP}`,
   `./styles/96-md-pdf.css?v=${STAMP}`,
+  `./styles/97-diagram.css?v=${STAMP}`,
   // The module entry point. Everything it imports is stamped with the same
   // ?v=, so those URLs change with every release too — which is what lets the
   // cache-first handler below serve them without revalidating and still never
@@ -490,6 +491,11 @@ const APP_SHELL = [
   `./src/documents/pdf-region-embed.js?v=${STAMP}`,
   `./src/documents/pdf-region-marks.js?v=${STAMP}`,
   `./src/documents/pdf-shapes.js?v=${STAMP}`,
+  `./src/documents/pdf-connectors.js?v=${STAMP}`,
+  `./src/documents/pdf-diagram-layer.js?v=${STAMP}`,
+  `./src/documents/canvas-selection.js?v=${STAMP}`,
+  `./src/documents/pdf-guides.js?v=${STAMP}`,
+  `./src/render/snap-guides.js?v=${STAMP}`,
   `./src/documents/pdf-shape-panel.js?v=${STAMP}`,
   `./src/documents/pdf-shape-text.js?v=${STAMP}`,
   `./src/documents/pdf-shape-text-format.js?v=${STAMP}`,
@@ -658,6 +664,7 @@ const APP_SHELL = [
   `./src/render/ink-predict.js?v=${STAMP}`,
   `./src/render/ink-shapes.js?v=${STAMP}`,
   `./src/render/annot-shapes.js?v=${STAMP}`,
+  `./src/render/node-outlines.js?v=${STAMP}`,
   `./src/render/inline.js?v=${STAMP}`,
   `./src/render/math-dom.js?v=${STAMP}`,
   `./src/render/math.js?v=${STAMP}`,

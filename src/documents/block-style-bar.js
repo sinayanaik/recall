@@ -43,7 +43,8 @@
 
 import {
   BLOCK_ALIGNS, BLOCK_FILLS, BLOCK_FILL_HEX, BLOCK_FILL_LABEL, BLOCK_FRAMES, BLOCK_FRAME_LABEL,
-  BLOCK_INKS, blockFillVar, blockInkVar, normalizeBlockStyle
+  BLOCK_INKS, BLOCK_LINES, BLOCK_LINE_DASHES, BLOCK_LINE_DASH_LABEL, BLOCK_SHAPES, BLOCK_SHAPE_LABEL, BLOCK_VALIGNS,
+  blockFillVar, blockInkVar, blockLineVar, blockShapePatch, normalizeBlockStyle
 } from "./block-style.js?v=__BUILD__";
 import { MD_SVG_ATTRS } from "../library/my-decks-icons.js?v=__BUILD__";
 import { blockPanelPreference, writeBlockPanelPreference } from "../storage/ink-prefs.js?v=__BUILD__";
@@ -65,6 +66,39 @@ const ALIGN_ICONS = {
 };
 
 const ALIGN_LABEL = { left: "Align left", center: "Align centre", right: "Align right" };
+
+// Top, middle and bottom: the same three bars, laid the other way.
+const VALIGN_ICONS = {
+  top: `<path d="M4 4h16M8 9h8M8 13h8"/>`,
+  middle: `<path d="M4 4h16M4 20h16M8 10h8M8 14h8"/>`,
+  bottom: `<path d="M4 20h16M8 15h8M8 11h8"/>`
+};
+
+const VALIGN_LABEL = { top: "Words at the top", middle: "Words in the middle", bottom: "Words at the bottom" };
+
+// ── The shapes a block can be ─────────────────────────────────────────────
+//
+// Drawn on the app's 24x24 grid like the alignment icons, and shared with the
+// + Add menu's palette (src/handwriting/board.js) so the two agree on what a
+// "Cylinder" looks like.
+export const BLOCK_SHAPE_ICONS = {
+  rect: `<rect x="3.5" y="6" width="17" height="12"/>`,
+  rounded: `<rect x="3.5" y="6" width="17" height="12" rx="4"/>`,
+  pill: `<rect x="3" y="7" width="18" height="10" rx="5"/>`,
+  ellipse: `<ellipse cx="12" cy="12" rx="8.5" ry="6"/>`,
+  diamond: `<path d="M12 4l8.5 8-8.5 8-8.5-8z"/>`,
+  hexagon: `<path d="M7.5 5.5h9l4 6.5-4 6.5h-9l-4-6.5z"/>`,
+  parallelogram: `<path d="M8 6h13l-5 12H3z"/>`,
+  cylinder: `<ellipse cx="12" cy="6.5" rx="7" ry="2.5"/><path d="M5 6.5v11c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5v-11"/>`,
+  document: `<path d="M4.5 4.5h15v12.5c-2.5-1.8-5 1.8-7.5 0s-5-1.8-7.5 0z"/>`
+};
+
+export function blockShapeIconSvg(shape, className = "md-ico") {
+  const icon = BLOCK_SHAPE_ICONS[shape] || BLOCK_SHAPE_ICONS.rect;
+  return `<svg class="${className}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${icon}</svg>`;
+}
+
+const LINE_LABEL = { default: "Theme edge" };
 
 function labelFor(map, token) {
   return map[token] || (token[0].toUpperCase() + token.slice(1));
@@ -251,6 +285,20 @@ export function createBlockStyleBar({ style = null, kind = "text", has = null, o
     root.appendChild(line);
   }
 
+  // ── The shape, for a block that is a box in a diagram ─────────────────────
+  //
+  // One row of small icons, not a select, so the choice is seen rather than
+  // read. First thing in the fold rather than a fourth row of the visible tier,
+  // which is held at three on purpose (see the header) — + Add's own palette is
+  // the one-press way to a shaped block, and the fold remembers being open.
+  const shapes = styleRow("Shape", { className: "bstyle-shapes", aria: "Shape" });
+  BLOCK_SHAPES.forEach((token) => {
+    const button = styleChoice("shape", token, { title: labelFor(BLOCK_SHAPE_LABEL, token) });
+    button.className = "bstyle-icon bstyle-shape";
+    button.innerHTML = blockShapeIconSvg(token);
+    shapes.group.appendChild(button);
+  });
+
   // ── ...and everything else, folded ───────────────────────────────────────
   const more = document.createElement("details");
   more.className = "bstyle-more";
@@ -282,10 +330,36 @@ export function createBlockStyleBar({ style = null, kind = "text", has = null, o
   codeWrap.group.appendChild(switchButton("codeWrap", "Wrap long lines"));
   const imageWidth = styleNumber("imageWidth", { label: "Picture", unit: "%", placeholder: "100" });
 
+  // ── The edge: its colour, its width and its dash ─────────────────────────
+  const edgeColours = styleRow("Edge", { className: "bstyle-edge", aria: "Edge colour" });
+  BLOCK_LINES.forEach((token) => {
+    const property = blockLineVar(token);
+    edgeColours.group.appendChild(styleChoice("line", token, {
+      swatch: property ? `var(${property})` : "color-mix(in srgb, var(--accent) 45%, var(--line))",
+      title: labelFor(LINE_LABEL, token)
+    }));
+  });
+  const edgeWidth = styleNumber("lineWidth", { label: "Width", unit: "pt", placeholder: "1" });
+  const edgeDash = styleRow("", { className: "bstyle-dashes", aria: "Edge dash" });
+  BLOCK_LINE_DASHES.forEach((token) => {
+    edgeDash.group.appendChild(styleChoice("lineDash", token, { label: labelFor(BLOCK_LINE_DASH_LABEL, token) }));
+  });
+  const edgeLine = document.createElement("div");
+  edgeLine.className = "bstyle-line";
+  edgeLine.append(edgeWidth.wrap, edgeDash.wrap);
+
+  const valign = styleRow("Words", { className: "bstyle-valigns", aria: "Where the words sit" });
+  BLOCK_VALIGNS.forEach((token) => {
+    valign.group.appendChild(styleChoice("valign", token, {
+      icon: VALIGN_ICONS[token],
+      title: labelFor(VALIGN_LABEL, token)
+    }));
+  });
+
   if (isImage) {
     more.appendChild(frame.wrap);
   } else {
-    more.append(face.wrap, frame.wrap, fit.wrap);
+    more.append(shapes.wrap, face.wrap, frame.wrap, edgeColours.wrap, edgeLine, valign.wrap, fit.wrap);
     if (holds.code) {
       // The two code controls share a line, the way the size and the alignment
       // do above: neither fills one, and a switch on a row of its own under a
@@ -351,6 +425,11 @@ export function createBlockStyleBar({ style = null, kind = "text", has = null, o
     event.preventDefault();
     event.stopPropagation();
     const key = button.dataset.bstyleKey;
+    if (key === "shape") {
+      // A shape is more than its outline: see blockShapePatch.
+      change(blockShapePatch(button.dataset.bstyleValue));
+      return;
+    }
     change((key === "fit" || key === "codeWrap")
       ? { [key]: !value[key] }
       : { [key]: button.dataset.bstyleValue });

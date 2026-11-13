@@ -142,10 +142,68 @@ function shapePoint(point) {
   return Number.isFinite(x) && Number.isFinite(y) ? [Math.round(x * 100) / 100, Math.round(y * 100) / 100] : null;
 }
 
-// How many points each type carries, at least and at most.
+// How many points each type carries, at least and at most. A line or an arrow
+// may carry a third: the bend of a connector routed in an elbow or a curve.
 const SHAPE_POINT_COUNTS = {
-  line: [2, 2], arrow: [2, 2], rect: [2, 2], ellipse: [2, 2], text: [2, 2], callout: [3, 4], sticky: [1, 1]
+  line: [2, 3], arrow: [2, 3], rect: [2, 2], ellipse: [2, 2], text: [2, 2], callout: [3, 4], sticky: [1, 1]
 };
+
+// ── A line or an arrow that joins two things ─────────────────────────────
+//
+// A CONNECTOR is a line or an arrow with one or both ends tied to something on
+// the page — a block, or another shape's box — so it follows that thing when it
+// moves (src/documents/pdf-connectors.js). What is stored is:
+//
+//   ends    [start, end], each null (a free end) or { id, side }, where `side`
+//           is "auto" (whichever side faces the other end) or n | e | s | w
+//   route   "elbow" (square corners) or "curve"; absent is a straight line
+//   exits   [start, end], each null or n | e | s | w: which way each end LEAVES
+//           what it is tied to, as last worked out — so an elbow or a curve can
+//           be drawn from the record alone, by every renderer and every export,
+//           with no idea what a block is
+//   p[2]    the bend: where an elbow's middle run sits, or a point a curve is
+//           pulled through. Absent is halfway.
+//
+// `p[0]` and `p[1]` stay the ends, as they always were — kept where the things
+// they join last were, so a build that has never heard of any of this still
+// draws the arrow in the right place.
+//
+// Each field is absent unless it says something, so every line drawn before
+// connectors existed normalises to exactly what it was.
+export const CONNECTOR_ROUTES = ["straight", "elbow", "curve"];
+export const CONNECTOR_SIDES = ["auto", "n", "e", "s", "w"];
+const CONNECTOR_DIRS = ["n", "e", "s", "w"];
+const DIR_VECTORS = { n: [0, 1], e: [1, 0], s: [0, -1], w: [-1, 0] };
+
+// How far an elbow runs straight out of what it leaves before it turns, in
+// points — so the corner is never on the box's own edge.
+export const CONNECTOR_STUB = 14;
+
+const CURVE_SAMPLES = 32;
+
+function normalizeConnectorEnd(end) {
+  if (!end || typeof end !== "object") return null;
+  const id = typeof end.id === "string" ? end.id.trim().slice(0, 64) : "";
+  if (!id) return null;
+  return { id, side: CONNECTOR_SIDES.includes(end.side) ? end.side : "auto" };
+}
+
+// The connector fields of a line or an arrow, normalised — only the ones that
+// say something, so `{ ...out, ...connectorFields(shape) }` adds nothing to a
+// plain line.
+function connectorFields(shape) {
+  const out = {};
+  if (Array.isArray(shape.ends)) {
+    const ends = [0, 1].map((i) => normalizeConnectorEnd(shape.ends[i]));
+    if (ends.some(Boolean)) out.ends = ends;
+  }
+  if (shape.route === "elbow" || shape.route === "curve") out.route = shape.route;
+  if (Array.isArray(shape.exits)) {
+    const exits = [0, 1].map((i) => (CONNECTOR_DIRS.includes(shape.exits[i]) ? shape.exits[i] : null));
+    if (exits.some(Boolean)) out.exits = exits;
+  }
+  return out;
+}
 
 // A shape as this build can draw it, or null for one it cannot. Every field is
 // clamped to what the controls can set, so a record from a newer build or a
@@ -187,7 +245,170 @@ export function normalizeShape(shape) {
   if (type === "text" && shape.border === true) out.border = true;
   const rot = SHAPE_ROTATABLE.includes(type) ? normalizeShapeRotation(shape.rot) : 0;
   if (rot) out.rot = rot;
+  if (type === "line" || type === "arrow") {
+    Object.assign(out, connectorFields(shape));
+    // A bend means something only on a route that bends.
+    if (out.p.length > 2 && !out.route) out.p = out.p.slice(0, 2);
+  }
   return out;
+}
+
+// ── The path a line takes ─────────────────────────────────────────────────
+//
+// The points a line or an arrow is drawn through, in PDF space, end to end:
+// two for a straight line, the corners of an elbow, a curve sampled. Every
+// renderer draws THIS — the live page, a picture, the print, the annotated
+// file — so a connector looks the same in all of them.
+export function connectorPath(shape) {
+  const s = normalizeShape(shape);
+  if (!s || (s.type !== "line" && s.type !== "arrow")) return s ? s.p.slice() : [];
+  return routedPath(s);
+}
+
+// Which way a free end leaves: along whichever axis the line mostly runs, and
+// toward the other end — an elbow between two loose points turns once.
+function freeExits(a, b) {
+  const dx = b[0] - a[0];
+  const dy = b[1] - a[1];
+  if (Math.abs(dx) >= Math.abs(dy)) return dx >= 0 ? ["e", "w"] : ["w", "e"];
+  return dy >= 0 ? ["n", "s"] : ["s", "n"];
+}
+
+function routedPath(s) {
+  const [a, b] = s.p;
+  if (!s.route) return [a, b];
+  const guess = freeExits(a, b);
+  const da = s.exits?.[0] || guess[0];
+  const db = s.exits?.[1] || guess[1];
+  const bend = s.p[2] || null;
+  return s.route === "curve" ? curvePath(a, da, b, db, bend) : elbowPath(a, da, b, db, bend);
+}
+
+// Square corners: straight out of each end for CONNECTOR_STUB, then across.
+// Two ends leaving the same axis meet with a middle run between them (at the
+// bend, or halfway); ends leaving different axes meet at one corner.
+export function elbowPath(a, da, b, db, bend = null) {
+  const va = DIR_VECTORS[da] || [1, 0];
+  const vb = DIR_VECTORS[db] || [-1, 0];
+  const a1 = [a[0] + va[0] * CONNECTOR_STUB, a[1] + va[1] * CONNECTOR_STUB];
+  const b1 = [b[0] + vb[0] * CONNECTOR_STUB, b[1] + vb[1] * CONNECTOR_STUB];
+  const aAcross = va[0] !== 0;
+  const bAcross = vb[0] !== 0;
+  let middle;
+  if (aAcross && bAcross) {
+    // Both ends leave sideways. Facing the same way, the run goes round the
+    // far side of both rather than doubling back through one.
+    let x = (a1[0] + b1[0]) / 2;
+    if (va[0] === vb[0]) x = va[0] > 0 ? Math.max(a1[0], b1[0]) : Math.min(a1[0], b1[0]);
+    if (bend) x = bend[0];
+    middle = [[x, a1[1]], [x, b1[1]]];
+  } else if (!aAcross && !bAcross) {
+    let y = (a1[1] + b1[1]) / 2;
+    if (va[1] === vb[1]) y = va[1] > 0 ? Math.max(a1[1], b1[1]) : Math.min(a1[1], b1[1]);
+    if (bend) y = bend[1];
+    middle = [[a1[0], y], [b1[0], y]];
+  } else if (aAcross) {
+    middle = [[b1[0], a1[1]]];
+  } else {
+    middle = [[a1[0], b1[1]]];
+  }
+  return simplifyPath([a, a1, ...middle, b1, b]);
+}
+
+function cubicAt(p0, p1, p2, p3, t) {
+  const u = 1 - t;
+  return [0, 1].map((k) => u * u * u * p0[k] + 3 * u * u * t * p1[k] + 3 * u * t * t * p2[k] + t * t * t * p3[k]);
+}
+
+// A curve that leaves each end the way an elbow would and bows between them.
+// With a bend, both handles are shifted together so the curve passes THROUGH
+// it at its middle: P(½) = (a + 3c₁ + 3c₂ + b) / 8, so a shift δ of both
+// handles moves the middle by ¾δ.
+export function curvePath(a, da, b, db, bend = null) {
+  const va = DIR_VECTORS[da] || [1, 0];
+  const vb = DIR_VECTORS[db] || [-1, 0];
+  const reach = Math.max(24, Math.hypot(b[0] - a[0], b[1] - a[1]) * 0.4);
+  let c1 = [a[0] + va[0] * reach, a[1] + va[1] * reach];
+  let c2 = [b[0] + vb[0] * reach, b[1] + vb[1] * reach];
+  if (bend) {
+    const mid = cubicAt(a, c1, c2, b, 0.5);
+    const shift = [(bend[0] - mid[0]) * (4 / 3), (bend[1] - mid[1]) * (4 / 3)];
+    c1 = [c1[0] + shift[0], c1[1] + shift[1]];
+    c2 = [c2[0] + shift[0], c2[1] + shift[1]];
+  }
+  const out = [];
+  for (let i = 0; i <= CURVE_SAMPLES; i += 1) out.push(cubicAt(a, c1, c2, b, i / CURVE_SAMPLES));
+  return out;
+}
+
+// No point twice in a row, and no point in the middle of a straight run — an
+// elbow whose ends line up is a straight line, and should be drawn as one.
+function simplifyPath(points) {
+  const out = [];
+  points.forEach((point) => {
+    const last = out[out.length - 1];
+    if (last && Math.hypot(point[0] - last[0], point[1] - last[1]) < 0.01) return;
+    out.push(point);
+  });
+  for (let i = out.length - 2; i >= 1; i -= 1) {
+    const [p, q, r] = [out[i - 1], out[i], out[i + 1]];
+    const cross = (q[0] - p[0]) * (r[1] - q[1]) - (q[1] - p[1]) * (r[0] - q[0]);
+    const forward = (q[0] - p[0]) * (r[0] - q[0]) + (q[1] - p[1]) * (r[1] - q[1]);
+    if (Math.abs(cross) < 1e-6 && forward >= 0) out.splice(i, 1);
+  }
+  return out;
+}
+
+// The point half way along a path, by length, and the direction it runs there.
+export function pathMidpoint(points) {
+  if (!points?.length) return { point: [0, 0], along: [1, 0] };
+  if (points.length === 1) return { point: points[0].slice(), along: [1, 0] };
+  const lengths = [];
+  let total = 0;
+  for (let i = 1; i < points.length; i += 1) {
+    const len = Math.hypot(points[i][0] - points[i - 1][0], points[i][1] - points[i - 1][1]);
+    lengths.push(len);
+    total += len;
+  }
+  let left = total / 2;
+  for (let i = 1; i < points.length; i += 1) {
+    const len = lengths[i - 1];
+    if (left <= len || i === points.length - 1) {
+      const t = len ? Math.min(1, left / len) : 0;
+      const [p, q] = [points[i - 1], points[i]];
+      const along = len ? [(q[0] - p[0]) / len, (q[1] - p[1]) / len] : [1, 0];
+      return { point: [p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t], along };
+    }
+    left -= len;
+  }
+  return { point: points[points.length - 1].slice(), along: [1, 0] };
+}
+
+// ── A connector's label ───────────────────────────────────────────────────
+//
+// Words on a line — "yes", "no", "calls", "1..*" — sit BESIDE its middle, not
+// on it: above a run that is mostly level, to the right of one that is mostly
+// upright. Beside rather than over is what lets them read without a box of the
+// paper's colour behind them, which no renderer here could agree on — a canvas
+// export, a PDF annotation and the live page each have a different idea of
+// what colour the paper is.
+//
+// The box is sized from the words, at their size: it is where the words go in
+// a picture or an export, and what a press on the label hits.
+export const CONNECTOR_LABEL_GAP = 3;
+
+export function connectorLabelRect(shape) {
+  const s = normalizeShape(shape);
+  if (!s || (s.type !== "line" && s.type !== "arrow") || !s.text.trim()) return null;
+  const lines = markdownToPlainText(s.text).split("\n");
+  const size = s.font.size;
+  const width = Math.max(size, ...lines.map((line) => line.length * size * 0.56)) + SHAPE_TEXT_PAD * 2;
+  const height = lines.length * size * 1.3 + SHAPE_TEXT_PAD * 2;
+  const { point: [mx, my], along } = pathMidpoint(routedPath(s));
+  const level = Math.abs(along[0]) >= Math.abs(along[1]);
+  const gap = CONNECTOR_LABEL_GAP + s.width / 2;
+  if (level) return [mx - width / 2, my + gap, mx + width / 2, my + gap + height];
+  return [mx + gap, my - height / 2, mx + gap + width, my + height / 2];
 }
 
 // The defaults a NEW shape of this type starts from, before the reader's own
@@ -258,6 +479,12 @@ export function shapeBounds(shape) {
     // A turned box covers its turned corners, not the points it is stored by.
     shapeBoxCorners(s).forEach(([x, y]) => { xs.push(x); ys.push(y); });
     s.p.slice(2).forEach(([x, y]) => { xs.push(x); ys.push(y); });
+  } else if (s.type === "line" || s.type === "arrow") {
+    // Everywhere the route goes — an elbow's corners stand out past its ends —
+    // and its words.
+    routedPath(s).forEach(([x, y]) => { xs.push(x); ys.push(y); });
+    const label = connectorLabelRect(s);
+    if (label) { xs.push(label[0], label[2]); ys.push(label[1], label[3]); }
   } else {
     s.p.forEach(([x, y]) => { xs.push(x); ys.push(y); });
   }
@@ -420,12 +647,24 @@ function baseShapePrimitives(shape) {
   const line = { stroke: s.stroke, width: s.width, opacity: s.opacity, dash: s.dash };
   const out = [];
   if (s.type === "line" || s.type === "arrow") {
-    const [a, b] = s.p;
-    const start = shaftEnd(a, b, s.heads[0], s.width);
-    const end = shaftEnd(b, a, s.heads[1], s.width);
-    out.push({ kind: "poly", ...line, pts: [start, end], closed: false, fill: null, fillOpacity: 1 });
-    out.push(...arrowHeadPrimitives(a, b, s.heads[0], line));
-    out.push(...arrowHeadPrimitives(b, a, s.heads[1], line));
+    // Along its route — two points for a straight line, as it always was. The
+    // heads point along the FIRST and LAST stretch, which on an elbow is the
+    // stub straight out of what the end is tied to.
+    const path = routedPath(s);
+    const n = path.length;
+    const start = shaftEnd(path[0], path[1], s.heads[0], s.width);
+    const end = shaftEnd(path[n - 1], path[n - 2], s.heads[1], s.width);
+    out.push({ kind: "poly", ...line, pts: [start, ...path.slice(1, -1), end], closed: false, fill: null, fillOpacity: 1 });
+    out.push(...arrowHeadPrimitives(path[0], path[1], s.heads[0], line));
+    out.push(...arrowHeadPrimitives(path[n - 1], path[n - 2], s.heads[1], line));
+    const label = connectorLabelRect(s);
+    if (label) {
+      out.push({
+        kind: "text", rect: label, text: s.text, size: s.font.size, bold: s.font.bold, align: "center", fit: true,
+        color: s.font.color || "#16181d", rot: 0,
+        centre: [(label[0] + label[2]) / 2, (label[1] + label[3]) / 2]
+      });
+    }
     return out;
   }
   if (s.type === "rect" || s.type === "ellipse") {
@@ -532,6 +771,10 @@ export function shapeHitsPoint(shape, px, py, slack = 4) {
   if (s.type === "callout") {
     if (insideRect(local[0], local[1], padRect(shapeTextRect(s), slack))) return true;
   }
+  // A connector's words are part of it: a press on "yes" beside a line is a
+  // press on that line.
+  const label = (s.type === "line" || s.type === "arrow") ? connectorLabelRect(s) : null;
+  if (label && insideRect(px, py, padRect(label, slack))) return true;
   return shapePrimitives(s).some((prim) => {
     if (prim.kind !== "poly") return false;
     if (prim.closed && prim.fill && pointInPolygon(px, py, prim.pts)) return true;
@@ -576,7 +819,14 @@ export function shapeCrossesSegment(shape, a, b, slack = 2) {
 export function shapeHandles(shape, { rotateReach = 0 } = {}) {
   const s = normalizeShape(shape);
   if (!s) return [];
-  if (s.type === "line" || s.type === "arrow") return s.p.map(([x, y], i) => ({ id: `p${i}`, x, y }));
+  if (s.type === "line" || s.type === "arrow") {
+    const ends = s.p.slice(0, 2).map(([x, y], i) => ({ id: `p${i}`, x, y }));
+    if (!s.route) return ends;
+    // A routed line also has its middle to hold: dragged, an elbow's middle
+    // run slides and a curve bows through the point.
+    const { point } = pathMidpoint(routedPath(s));
+    return [...ends, { id: "bend", x: point[0], y: point[1] }];
+  }
   if (s.type === "sticky") return [];
   const [x0, y0, x1, y1] = shapeTextRect(s);
   const mx = (x0 + x1) / 2;
@@ -627,6 +877,11 @@ export function moveShapeHandle(shape, handleId, x, y, { snap = false } = {}) {
   if (/^p\d$/.test(handleId)) {
     const i = Number(handleId.slice(1));
     if (p[i]) p[i] = [x, y];
+    return { ...s, p };
+  }
+  if (handleId === "bend" && (s.type === "line" || s.type === "arrow")) {
+    if (!s.route) return s;
+    p[2] = [x, y];
     return { ...s, p };
   }
   if (handleId === "target" && s.type === "callout") { p[2] = [x, y]; return { ...s, p }; }
@@ -965,5 +1220,7 @@ export function shapeLabel(shape) {
   const s = normalizeShape(shape);
   if (!s) return "Shape";
   if ((s.type === "callout" || s.type === "text") && s.text.trim()) return s.text.trim();
+  // A connector is named by its words ("yes", "calls") when it has some.
+  if ((s.type === "line" || s.type === "arrow") && s.text.trim()) return `${SHAPE_LABELS[s.type]}: ${markdownToPlainText(s.text).trim()}`;
   return SHAPE_LABELS[s.type];
 }
