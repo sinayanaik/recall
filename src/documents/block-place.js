@@ -140,7 +140,7 @@ function onPlaceClick(event) {
   event.preventDefault();
 }
 
-function onPlaceKey(event) {
+function onPlacementKey(event) {
   if (!placeArmed || event.key !== "Escape") return;
   event.preventDefault();
   event.stopPropagation();
@@ -157,5 +157,5 @@ export function initBlockPlacement() {
   window.addEventListener("pointerup", onPlacePressUp, true);
   window.addEventListener("pointercancel", onPlacePressCancel, true);
   window.addEventListener("click", onPlaceClick, true);
-  window.addEventListener("keydown", onPlaceKey, true);
+  window.addEventListener("keydown", onPlacementKey, true);
 }

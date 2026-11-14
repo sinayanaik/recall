@@ -1167,6 +1167,23 @@ function onShapeFingerUp(event) {
   if (record) shapeOpenedHandler(record);
 }
 
+// ── Text where the mouse is ─────────────────────────────────────────────────
+//
+// The T key (src/documents/page-pointer.js): the same box a tap with Text armed
+// makes, at a point the caller already has — so the reader types at once,
+// without the tap. On typed text already there, it opens that instead, as a
+// tap with Text armed does. `at` is { x, y } in the page's own points.
+export function placeTextAt(page, at) {
+  if (!at || !pdfPageViewport(page)) return null;
+  const point = [at.x, at.y];
+  const hit = shapeAtPoint(page, point[0], point[1]);
+  if (hit?.shape?.type === "text") { shapeTextEditHandler(hit); return hit; }
+  const shape = shapeFromDrag("text", point, point, { base: newShapeBase("text") });
+  const record = shape && addDocumentShape(page, shape);
+  if (record) shapeOpenedHandler(record);
+  return record || null;
+}
+
 // ── Picked up with no tool armed ────────────────────────────────────────────
 //
 // "The text elements written on top of PDFs are too difficult to move once
