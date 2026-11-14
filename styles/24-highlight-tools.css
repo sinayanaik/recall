@@ -229,7 +229,7 @@ body.is-adjust-dragging * {
 
 /* With the grips up a click on the words moves the nearer end there. */
 body.is-adjusting-highlight #notesView,
-body.is-adjusting-highlight #documentView {
+body.is-adjusting-highlight :is(#documentView, #documentViewAlt) {
   cursor: text;
 }
 

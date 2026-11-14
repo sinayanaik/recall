@@ -455,6 +455,7 @@ const APP_SHELL = [
   `./src/documents/pdf-block-inline.js?v=${STAMP}`,
   `./src/documents/block-place.js?v=${STAMP}`,
   `./src/documents/pdf-blocks.js?v=${STAMP}`,
+  `./src/documents/doc-scrollers.js?v=${STAMP}`,
   `./src/documents/doc-slot.js?v=${STAMP}`,
   `./src/documents/notebook.js?v=${STAMP}`,
   `./src/documents/notebook-migrate.js?v=${STAMP}`,

@@ -66,11 +66,13 @@ const API_SRC = `async () => {
     "/src/documents/pdf-highlights.js?v=__BUILD__",
     "/src/documents/doc-slot.js?v=__BUILD__",
     "/src/handwriting/board.js?v=__BUILD__",
+    "/src/documents/notebook.js?v=__BUILD__",
     "/src/panels/highlight-cycle.js?v=__BUILD__",
     "/src/notes/notes-view.js?v=__BUILD__",
     "/src/cards/card-view.js?v=__BUILD__",
     "/src/cards/new-deck.js?v=__BUILD__",
     "/src/library/local-library.js?v=__BUILD__",
+    "/src/ui/deck-header.js?v=__BUILD__",
     "/src/ui/boot-screens.js?v=__BUILD__",
     "/src/cloud/supabase-client.js?v=__BUILD__",
     "/src/import/pdf.js?v=__BUILD__",
@@ -132,6 +134,11 @@ const SETUP_SRC = `async (apiSrc, pdfjsSrc, workerSrc, bytes) => {
   await api.attachPdfToOpenDeck(file);
   await settle(300);
   api.setViewMode("handwriting");
+  await settle(200);
+  // A Canvas with pages, not the offer of one.
+  await api.startHandwritingNotebook();
+  await settle(300);
+  if (api.addNotebookPage) { await api.addNotebookPage(); await api.addNotebookPage(); }
   for (let i = 0; i < 80 && !document.querySelector("#documentStage .pdf-page[data-page-number='1'] canvas.pdf-canvas"); i += 1) await settle(100);
   api.setViewMode("notes");
   await settle(400);
@@ -224,11 +231,24 @@ const OPEN_SRC = `async (focus, beside) => {
     const wantDocs = ["document", "handwriting"].filter((m) => m === focus || m === beside).length;
     if (pages.length >= wantDocs) break;
   }
+  // Two papers: the focus goes back to the one the reader was on once the new
+  // one has drawn (src/documents/pdf-view.js, openDocumentBeside).
+  for (let i = 0; i < 40; i += 1) {
+    const v = api.documentViewersForCheck();
+    if (!v.dual || v.live === v.focus) break;
+    await settle(100);
+  }
   await settle(250);
   return { ok: true };
 }`;
 
 const LABEL = { cards: "Cards", notes: "Notes", document: "PDFs", handwriting: "Canvas" };
+
+// A stylus, as tools/handwriting-check.mjs drives one: the events the pen takes.
+const PEN_SRC = `(target, type, x, y, buttons) => target.dispatchEvent(new PointerEvent(type, {
+  bubbles: true, cancelable: true, pointerId: 7, pointerType: "pen", isPrimary: true,
+  clientX: x, clientY: y, buttons, pressure: buttons ? 0.55 : 0
+}))`;
 
 try {
   await page.call("Emulation.setDeviceMetricsOverride", { width: 1400, height: 900, deviceScaleFactor: 1, mobile: false });
@@ -270,6 +290,111 @@ try {
     await shot(`split-${focus}-${beside}.png`);
   }
 
+  // ── 4. Two papers: the PDFs and the Canvas, both live ────────────────────
+  if (dual) {
+    await page.evaluate(OPEN_SRC, "document", "handwriting");
+    const papers = await page.evaluate(`async (penSrc) => {
+      const { api, settle } = window.__recall;
+      const pen = (0, eval)(penSrc);
+      const stageOf = (slot) => document.querySelector(".quiz-panel > .document-stage[data-doc-slot='" + slot + "']:not([hidden])");
+      const pdfStage = stageOf("doc");
+      const canvasStage = stageOf("notebook");
+      if (!pdfStage || !canvasStage || pdfStage === canvasStage) return { error: "two stages were not up: " + Boolean(pdfStage) + "/" + Boolean(canvasStage) };
+      const pdfPage1 = pdfStage.querySelector(".pdf-page[data-page-number='1']");
+      const canvasPage1 = canvasStage.querySelector(".pdf-page[data-page-number='1']");
+      const ink = () => (api.state.meta.pdfHighlights || []).filter((r) => r.kind === "ink");
+      const before = { notebook: ink().filter((r) => r.doc === "notebook").length, paper: ink().filter((r) => !r.doc).length };
+      const out = { before };
+      out.start = { viewMode: api.state.viewMode, live: api.openDocumentSlot(), pagerIn: document.getElementById("documentPager").closest(".document-stage") === pdfStage };
+      const scribble = async (stage) => {
+        for (let i = 0; i < 40 && document.querySelector(".toast"); i += 1) await settle(100);
+        const view = stage.querySelector(".document-scroll");
+        const box = stage.querySelector(".pdf-page[data-page-number='1']").getBoundingClientRect();
+        pen(view, "pointerdown", box.left + 60, box.top + 120, 1);
+        for (let i = 1; i <= 12; i += 1) pen(view, "pointermove", box.left + 60 + i * 7, box.top + 120 + i * 3, 1);
+        await settle(120);
+        pen(view, "pointerup", box.left + 144, box.top + 156, 0);
+        await settle(300);
+      };
+      // The Canvas, reached for with the pen: it becomes the live paper and
+      // takes the ink.
+      await scribble(canvasStage);
+      out.onCanvas = {
+        viewMode: api.state.viewMode,
+        live: api.openDocumentSlot(),
+        pagerIn: document.getElementById("documentPager").closest(".document-stage") === canvasStage,
+        notebook: ink().filter((r) => r.doc === "notebook").length,
+        paper: ink().filter((r) => !r.doc).length,
+        pages: api.currentPdfPageCount()
+      };
+      // ...and the PDF, the same way: its ink is the paper's.
+      await scribble(pdfStage);
+      out.onPaper = {
+        viewMode: api.state.viewMode,
+        live: api.openDocumentSlot(),
+        notebook: ink().filter((r) => r.doc === "notebook").length,
+        paper: ink().filter((r) => !r.doc).length
+      };
+      out.samePages = pdfStage.querySelector(".pdf-page[data-page-number='1']") === pdfPage1
+        && canvasStage.querySelector(".pdf-page[data-page-number='1']") === canvasPage1;
+      out.canvasStillPainted = Boolean(canvasStage.querySelector(".pdf-page[data-page-number='1'] canvas.pdf-canvas"));
+      // Scrolled far down the PDF and straight over to the Canvas, before the
+      // PDF has drawn where it went: it catches up once the hands are still.
+      const pdfView = pdfStage.querySelector(".document-scroll");
+      const canvasView = canvasStage.querySelector(".document-scroll");
+      const canvasTop = canvasView.scrollTop;
+      pdfView.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: 3000 }));
+      pdfView.scrollTop = pdfView.scrollHeight;
+      await new Promise((r) => requestAnimationFrame(() => r()));
+      const canvasBox = canvasView.getBoundingClientRect();
+      canvasView.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerType: "mouse", clientX: canvasBox.left + 30, clientY: canvasBox.top + 30, buttons: 1 }));
+      canvasView.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, pointerType: "mouse", clientX: canvasBox.left + 30, clientY: canvasBox.top + 30 }));
+      const lastPage = api.state.meta?.pdf?.pages || 4;
+      out.leftUndrawn = !pdfStage.querySelector(".pdf-page[data-page-number='" + lastPage + "'] canvas.pdf-canvas");
+      await settle(3000);
+      out.caughtUp = Boolean(pdfStage.querySelector(".pdf-page[data-page-number='" + lastPage + "'] canvas.pdf-canvas"));
+      out.afterCatchUp = { viewMode: api.state.viewMode, live: api.openDocumentSlot(), pagerIn: document.getElementById("documentPager").closest(".document-stage") === canvasStage, canvasTop: canvasView.scrollTop === canvasTop };
+      // Two papers to one, from the menu: the Canvas stays, the PDF is parked
+      // — so its tab, pressed afterwards, brings back the very same pages.
+      const parkedPage = pdfStage.querySelector(".pdf-page[data-page-number='1']");
+      document.getElementById("splitPartsBtn").click();
+      await settle(50);
+      document.querySelector('#splitPartsMenu [data-split-action="close"]')?.click();
+      await settle(300);
+      out.closed = { parts: api.state.splitPart, live: api.openDocumentSlot(), stages: document.querySelectorAll(".quiz-panel > .document-stage:not([hidden])").length };
+      document.querySelector('#viewModeToggle [data-view-mode="document"]').click();
+      for (let i = 0; i < 40 && api.openDocumentSlot() !== "doc"; i += 1) await settle(100);
+      await settle(200);
+      out.backToPaper = { live: api.openDocumentSlot(), samePage: document.querySelector(".quiz-panel > .document-stage:not([hidden]) .pdf-page[data-page-number='1']") === parkedPage };
+      return out;
+    }`, PEN_SRC);
+    if (papers.error) {
+      check("PDFs + Canvas: both papers are up", false, papers.error);
+    } else {
+      check("PDFs + Canvas: the PDF in focus is the live paper, with the pager in its stage",
+        papers.start.viewMode === "document" && papers.start.live === "doc" && papers.start.pagerIn, JSON.stringify(papers.start));
+      check("...the pen on the Canvas makes it the live paper, and its ink is the Canvas's",
+        papers.onCanvas.viewMode === "handwriting" && papers.onCanvas.live === "notebook" && papers.onCanvas.pagerIn
+          && papers.onCanvas.notebook === papers.before.notebook + 1 && papers.onCanvas.paper === papers.before.paper,
+        JSON.stringify({ before: papers.before, after: papers.onCanvas }));
+      check("...and the pen on the PDF, the PDF's",
+        papers.onPaper.viewMode === "document" && papers.onPaper.live === "doc"
+          && papers.onPaper.paper === papers.before.paper + 1 && papers.onPaper.notebook === papers.before.notebook + 1,
+        JSON.stringify(papers.onPaper));
+      check("...with neither paper's pages rebuilt by the swaps, and the Canvas still painted",
+        papers.samePages && papers.canvasStillPainted, `same pages=${papers.samePages}, canvas painted=${papers.canvasStillPainted}`);
+      check("a PDF left mid-scroll catches up beside the Canvas, without taking the focus or moving the Canvas",
+        papers.caughtUp && papers.afterCatchUp.viewMode === "handwriting" && papers.afterCatchUp.live === "notebook"
+          && papers.afterCatchUp.pagerIn && papers.afterCatchUp.canvasTop,
+        JSON.stringify({ leftUndrawn: papers.leftUndrawn, caughtUp: papers.caughtUp, ...papers.afterCatchUp }));
+      check("closing leaves the Canvas alone on the stage",
+        papers.closed.parts === null && papers.closed.live === "notebook" && papers.closed.stages === 1, JSON.stringify(papers.closed));
+      check("...and the PDF's tab brings back the same pages, parked rather than reopened",
+        papers.backToPaper.live === "doc" && papers.backToPaper.samePage, JSON.stringify(papers.backToPaper));
+    }
+    await shot("split-papers-after.png");
+  }
+
   // ── 2. Focus follows the hand, and costs no render ───────────────────────
   await page.evaluate(OPEN_SRC, "notes", "document");
   const focusSwap = await page.evaluate(`async () => {
@@ -280,7 +405,7 @@ try {
     const before = view.innerHTML.length;
     const observer = new MutationObserver((list) => { notesRenders += list.length; });
     observer.observe(view, { childList: true });
-    const stage = document.querySelector(".quiz-panel > .document-stage[data-doc-slot='doc']");
+    const stage = document.querySelector(".quiz-panel > .document-stage[data-doc-slot='doc']:not([hidden])");
     const pages = stage.querySelector(".pdf-pages");
     const page1 = stage.querySelector(".pdf-page[data-page-number='1']");
     const box = page1.getBoundingClientRect();
@@ -317,7 +442,7 @@ try {
   const scrolling = await page.evaluate(`async () => {
     const { settle } = window.__recall;
     const notes = document.getElementById("notesView");
-    const docView = document.querySelector(".quiz-panel > .document-stage[data-doc-slot='doc'] .document-scroll");
+    const docView = document.querySelector(".quiz-panel > .document-stage[data-doc-slot='doc']:not([hidden]) .document-scroll");
     notes.scrollTop = 0;
     docView.scrollTop = 0;
     await settle(100);
@@ -445,6 +570,45 @@ try {
     return { opened, after: api.state.splitPart, split: document.querySelector(".quiz-panel").classList.contains("is-parts-split") };
   }`);
   check("opening another file closes the split", otherFile.opened === "cards" && otherFile.after === null && !otherFile.split, JSON.stringify(otherFile));
+
+  // ...and with both papers up, which is two parsed documents of the file being
+  // left: neither may be kept under the new file's name.
+  if (dual) {
+    await page.evaluate(`async () => {
+      const { api, settle } = window.__recall;
+      api.closeMyDecksPanel?.();
+    }`);
+    const backTo = await page.evaluate(`async () => {
+      const { api, settle } = window.__recall;
+      const entry = api.readLocalDeckIndex().find((e) => e.title === "Side by side fixture");
+      if (!entry) return { error: "the fixture file is not in the library" };
+      await api.loadDeckFromLibrary(entry.id);
+      await settle(600);
+      return { title: api.state.deckTitle };
+    }`);
+    if (backTo.error) {
+      check("back on the fixture file for the two-papers case", false, backTo.error);
+    } else {
+      await page.evaluate(OPEN_SRC, "document", "handwriting");
+      const papersThenFile = await page.evaluate(`async () => {
+        const { api, settle } = window.__recall;
+        const opened = api.documentViewersForCheck().dual;
+        api.createNewDeck({ title: "A third file", notesMode: true });
+        await settle(200);
+        document.getElementById("confirmModalOkBtn")?.click();
+        await settle(600);
+        return {
+          opened,
+          after: api.documentViewersForCheck(),
+          parts: api.state.splitPart,
+          stages: document.querySelectorAll(".quiz-panel > .document-stage:not([hidden])").length
+        };
+      }`);
+      check("opening another file with both papers up lets both go",
+        papersThenFile.opened && !papersThenFile.after.dual && papersThenFile.parts === null && papersThenFile.stages <= 1,
+        JSON.stringify(papersThenFile));
+    }
+  }
 
   const final = await snapshot();
   check("nothing threw anywhere in this run", final.errs.length === 0, final.errs.join(" | "));

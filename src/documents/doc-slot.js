@@ -127,7 +127,19 @@ export function hasDocSlot(slot, meta = state.meta) {
 // Canvas beside them, the Canvas is still the paper the stage's tools act on
 // (src/ui/split-parts.js).
 export function activeDocSlot() {
+  if (dualDocumentContext) return dualDocumentContext;
   return documentPartInFocus() === "handwriting" ? DOC_SLOT_NOTEBOOK : DOC_SLOT_DOC;
+}
+
+// ...and with BOTH papers side by side, the live one — the paper
+// src/documents/pdf-view.js has open, which is the one the reader is working on
+// except for the moment a suspended paper is given a turn to finish drawing.
+// Every record filtered by slot (the highlights, the ink, the blocks) has to be
+// the live paper's, whatever the focus says. Set and cleared by pdf-view.js.
+let dualDocumentContext = null;
+
+export function setDualDocumentContext(slot) {
+  dualDocumentContext = slot ? normalizeDocSlot(slot) : null;
 }
 
 // Is the reader on the document surface at all? Two tabs land on it, so every

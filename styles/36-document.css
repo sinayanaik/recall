@@ -92,7 +92,7 @@
   grid-column: 1;
 }
 
-.quiz-panel.notes-mode > #documentStage[hidden][data-kept] {
+.quiz-panel.notes-mode > :is(#documentStage, #documentStageAlt)[hidden][data-kept] {
   display: flex !important;
   align-self: start;
   height: 0;

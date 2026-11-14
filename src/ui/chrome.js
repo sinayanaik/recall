@@ -140,7 +140,7 @@ function naturalHeight(node) {
 //
 // The selectors that read these keep the specificity their :has() had — see
 // the note on #cs-specificity in styles/33-reading-chrome.css.
-const CHROME_STATE_SOURCES = ["#mainToolbar", ".quiz-panel", "#viewModeToggle", "#notesEdit", "#documentStage"];
+const CHROME_STATE_SOURCES = ["#mainToolbar", ".quiz-panel", "#viewModeToggle", "#notesEdit", "#documentStage", "#documentStageAlt"];
 
 export function syncChromeState() {
   const body = document.body;
@@ -151,7 +151,14 @@ export function syncChromeState() {
   // is not guaranteed to have been evaluated by then.
   const toggle = document.getElementById("viewModeToggle");
   const notesEdit = document.getElementById("notesEdit");
-  const stage = document.getElementById("documentStage");
+  // The stage holding the document's tools: #documentStage until a file's PDFs
+  // and Canvas have been side by side, and from then on whichever of the two
+  // stages holds the paper in focus (src/documents/pdf-view.js marks it
+  // data-doc-chrome, moveDocumentChrome).
+  // Two id lookups, never an attribute query: .quiz-panel holds the note, and
+  // a selector like that cannot be answered without walking it.
+  const altStage = document.getElementById("documentStageAlt");
+  const stage = altStage?.hasAttribute("data-doc-chrome") ? altStage : document.getElementById("documentStage");
   const slot = stage?.dataset.docSlot || "";
   // Side by side, the tab row's tools are the FOCUSED part's (src/ui/split-parts.js):
   // a PDF beside the notes being typed in is on screen, but its pen and ⋯ are
@@ -194,7 +201,7 @@ function initChromeStateMirror() {
   const observer = new MutationObserver(syncChromeState);
   CHROME_STATE_SOURCES.forEach((selector) => {
     const node = document.querySelector(selector);
-    if (node) observer.observe(node, { attributes: true, attributeFilter: ["class", "hidden", "data-doc-slot", "data-focus-part"] });
+    if (node) observer.observe(node, { attributes: true, attributeFilter: ["class", "hidden", "data-doc-slot", "data-focus-part", "data-doc-chrome"] });
   });
   const printRoot = document.getElementById("printRoot");
   if (printRoot) observer.observe(printRoot, { childList: true });

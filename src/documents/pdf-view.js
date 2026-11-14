@@ -44,7 +44,8 @@ import { TEXT_CH_START_ATTR, keptTextItem, readPageTextContent, textItemGap, tex
 import { expectPdfPagePaint, firstPdfPagePainted, notePdfAnimationFrame, notePdfAnimationFramesObserved, notePdfCanvasSetup, notePdfInteractionFrame, notePdfInteractionLongTask, notePdfWastedRenders, onPdfDiagnosticsChange, pdfDiagnosticsOn, pendingPdfPagePaint, recordPdfTimingAfterPaint, samplePdfTiming, setPdfReaderTest } from "./pdf-timing.js?v=__BUILD__";
 import { buildDocumentOutline, clearDocumentOutline, setDocumentOutlinePage } from "./pdf-outline.js?v=__BUILD__";
 import { documentAutoScrolling, inkPenIsDown, setDocumentTextWake, touchGestureHoldsSurface } from "../core/gesture.js?v=__BUILD__";
-import { DOC_SLOT_DOC, DOC_SLOT_NOTEBOOK, activeDocSlot, docSlotMeta, docSlotReadingPositionKey, documentStoreKey, normalizeDocSlot, onDocumentSurface } from "./doc-slot.js?v=__BUILD__";
+import { DOC_SLOT_DOC, DOC_SLOT_NOTEBOOK, activeDocSlot, docSlotMeta, docSlotReadingPositionKey, documentStoreKey, normalizeDocSlot, onDocumentSurface, setDualDocumentContext } from "./doc-slot.js?v=__BUILD__";
+import { alternateDocumentStage, forEachDocumentScroller, liveDocumentHandler, primaryDocumentStage, scrollerOfStage } from "./doc-scrollers.js?v=__BUILD__";
 import { activePdfId, deckPdfById, deckPdfs, PDF_PRIMARY_ID, pdfStoreKey } from "./pdf-multi.js?v=__BUILD__";
 import { PAPER_TONE_THEME, normalizePaperToneId, paperKey, paperKeyParts, resolvePaperTone } from "../format/paper-tones.js?v=__BUILD__";
 import { getDocument, putDocument, sha256 } from "./pdf-store.js?v=__BUILD__";
@@ -329,8 +330,13 @@ export function pdfPageTextItems(pageNumber) {
 // divider drag) ask "every document the reader can see", which is a different
 // question from "the document being worked on", and this is where the answer
 // lives.
+//
+// Side by side with the file's other paper, that one is suspended (see "Two
+// papers side by side" below): what it is asked to do is done when it is next
+// live, so it is marked to catch up rather than woken now.
 export function forEachDocumentViewer(fn) {
   if (openPdf && !documentSurfaceHidden()) fn(openPdf);
+  noteBesideDocumentStale();
 }
 
 // Whether the Document surface is the one a selection or a jump should act on.
@@ -545,6 +551,443 @@ export function tearDownDocumentView({ park = false } = {}) {
   releasePagePicturesIn(el.documentView);
   if (el.documentView) el.documentView.innerHTML = "";
   if (el.documentPageIndicator) el.documentPageIndicator.textContent = "";
+}
+
+// ── Two papers side by side ─────────────────────────────────────────────────
+//
+// A file has two papers — its PDFs and its Canvas — and side by side
+// (src/ui/split-parts.js) both are on screen at once: one in #documentStage,
+// the other in #documentStageAlt (src/documents/doc-scrollers.js). This module,
+// and every module round it, is written around ONE open document: `openPdf`,
+// `el.documentView`, the render queue, the ink engine, the selection. So rather
+// than two of everything there is one LIVE paper and one SUSPENDED one.
+//
+// Suspending is the park above with the pages left where they are: the parsed
+// document, the page entries and what was rendered are kept, the observers and
+// the renders in flight are stopped, and the pages stay in their stage, painted,
+// with the reader's scroll position untouched. Resuming is the park's way back,
+// with nothing to re-attach and nowhere to land. Both are what a press on the
+// PDFs tab and then the Canvas tab has always cost — the swap the reader has
+// been making by hand, made when they reach for the other pane.
+//
+// Two things follow the paper IN FOCUS rather than the live one: the shared
+// chrome (the pager, the pen's rail, the contents drawer, which are one set and
+// move into the stage holding the focused paper), and which paper the tab row's
+// tools say they are for. The two differ only during a CATCH-UP: a paper left
+// with pages still drawing — the reader scrolled it and reached straight for the
+// other — is made live again for a moment once their hands are still, finishes,
+// and is suspended again. Any input ends a catch-up on the spot.
+
+// The paper side by side with the live one, suspended: a park record plus its
+// stage and scroller. `empty` for a stage showing an offer (attach a PDF, start
+// a Canvas) rather than a paper.
+let besideViewer = null;
+
+// Both of the file's papers are on screen.
+let dualDocuments = false;
+
+// The slot of the live paper while dualDocuments — the one openPdf is, or the
+// one whose stage shows an offer when there is no paper in it.
+let liveDocumentSlot = null;
+
+// The slot of the paper in focus while dualDocuments: where the chrome is.
+let chromeDocumentSlot = null;
+
+// How long the reader's hands must be still before a suspended paper is given
+// its turn, and the longest that turn may take.
+export const PDF_CATCH_UP_IDLE_MS = 350;
+
+export const PDF_CATCH_UP_MAX_MS = 1500;
+
+let catchUpTimer = 0;
+
+// The live paper is the one beside, made live QUIETLY for a catch-up turn.
+let catchUpRunning = false;
+
+// Bumped to end whatever is waiting on the paper beside — a catch-up turn, or
+// a paper just opened beside drawing its first pages.
+let besideTurn = 0;
+
+let lastDocumentInputAt = 0;
+let catchUpInputWatched = false;
+
+export function isDualDocumentOpen() {
+  return dualDocuments;
+}
+
+// For tools/split-parts-check.mjs: which paper is where.
+export function documentViewersForCheck() {
+  return {
+    dual: dualDocuments,
+    live: liveDocumentSlot,
+    focus: chromeDocumentSlot,
+    beside: besideViewer ? { slot: besideViewer.slot, empty: Boolean(besideViewer.empty), unsettled: Boolean(besideViewer.unsettled) } : null,
+    catchUp: catchUpRunning,
+    open: openPdf?.slot || null
+  };
+}
+
+function pointDocumentSurfaceAt(stage) {
+  el.documentStage = stage;
+  el.documentView = scrollerOfStage(stage);
+}
+
+function otherDocumentStage(stage) {
+  const primary = primaryDocumentStage();
+  return stage === primary ? alternateDocumentStage() : primary;
+}
+
+// Every page actually in view drawn, its layers included, with nothing in
+// flight for it. In view, not near it: the pages in the lead above and below
+// are drawn on the render window's own schedule, and a suspended paper that
+// waited for them would hold its turn for no page anyone can see.
+function documentPagesSettled() {
+  const view = el.documentView;
+  if (!openPdf || !view) return true;
+  const top = view.scrollTop;
+  const bottom = top + Math.max(view.clientHeight, 1);
+  for (const [pageNumber, entry] of openPdf.pages) {
+    const pageTop = pageOffsetTop(entry.el);
+    if (pageTop >= bottom || pageTop + entry.el.offsetHeight <= top) continue;
+    if (!openPdf.rendered.has(pageNumber) || entry.task || entry.layerTask) return false;
+  }
+  return true;
+}
+
+// The park, minus taking anything off the stage. Same order and the same stops
+// as tearDownDocumentView, which is the teardown every park has always gone
+// through — a render in flight is dropped against the bumped token rather than
+// drawn into a paper that is no longer the one this module is working on.
+function suspendOpenDocument() {
+  if (!openPdf?.doc) return null;
+  const record = {
+    slot: openPdf.slot,
+    deckKey: openPdf.deckKey,
+    pdfId: openPdf.pdfId,
+    sha256: openPdf.sha256,
+    doc: openPdf.doc,
+    renderDoc: openPdf.renderDoc,
+    renderBlob: openPdf.renderBlob,
+    pictureSha: openPdf.pictureSha,
+    keptPictures: openPdf.keptPictures,
+    pageCount: openPdf.pageCount,
+    baseWidth: openPdf.baseWidth,
+    baseHeight: openPdf.baseHeight,
+    scale: openPdf.scale,
+    fitWidth: openPdf.fitWidth,
+    fitScale: openPdf.fitScale,
+    pages: openPdf.pages,
+    rendered: openPdf.rendered,
+    fittedWidth,
+    tone: stageTone,
+    stage: el.documentStage,
+    view: el.documentView,
+    // Pages it was still drawing: it gets a catch-up turn.
+    unsettled: !documentPagesSettled()
+  };
+  pdfOpenToken += 1;
+  if (openPdf.observer) openPdf.observer.disconnect();
+  if (openPdf.resizeObserver) openPdf.resizeObserver.disconnect();
+  clearTimeout(openPdf.watchdog);
+  openPdf.pages.forEach((entry) => {
+    clearTimeout(entry.deadline);
+    cancelPageRender(entry);
+  });
+  resetRenderQueue();
+  cancelPrerender();
+  clearTimeout(detailTimer);
+  detailTimer = 0;
+  detailPages.clear();
+  parsedPages.clear();
+  openPdf = null;
+  awakeTextPages.clear();
+  forgetDocumentPageGuess();
+  return record;
+}
+
+// The park's way back, in place. `quiet` is a catch-up turn, or the return from
+// one: the chrome belongs to the paper in focus and is left alone.
+function resumeDocumentViewer(record, { quiet = false } = {}) {
+  pointDocumentSurfaceAt(record.stage);
+  liveDocumentSlot = record.slot;
+  setDualDocumentContext(record.slot);
+  // An offer rather than a paper — "Start a Canvas", "Attach a PDF" — is
+  // already on its stage and wired; repainting it here, under the press that is
+  // making it live, would replace the very button being pressed.
+  if (record.empty) return;
+  openPdf = {
+    deckKey: record.deckKey,
+    slot: record.slot,
+    pdfId: record.pdfId,
+    sha256: record.sha256,
+    doc: record.doc,
+    renderDoc: record.renderDoc,
+    renderBlob: record.renderBlob,
+    pictureSha: record.pictureSha,
+    keptPictures: record.keptPictures,
+    pageCount: record.pageCount,
+    baseWidth: record.baseWidth,
+    baseHeight: record.baseHeight,
+    scale: record.scale,
+    fitWidth: record.fitWidth,
+    fitScale: record.fitScale,
+    pages: record.pages,
+    rendered: record.rendered,
+    observer: null,
+    resizeObserver: null,
+    watchdog: 0,
+    settled: null
+  };
+  fittedWidth = record.fittedWidth || 0;
+  if (record.tone) stageTone = record.tone;
+  bumpDocumentLayout();
+  // The divider may have moved, or the window changed, while it was suspended.
+  const wasScale = openPdf.scale;
+  if (openPdf.fitWidth) openPdf.scale = fitWidthScale();
+  finishDocumentOpen(record.view, pdfOpenToken, record.slot, null,
+    { restored: true, refit: openPdf.scale !== wasScale, inPlace: true, quiet });
+}
+
+// The pager, the pen's rail, the contents drawer and the link back: one set,
+// in whichever stage holds the paper in focus. Moved, never cloned — each is
+// wired by id (index.html says so where they are declared).
+// The pen's rail is the fourth, and moves itself: on a wide screen it lives in
+// the tab row and only its home in the stage moves (rehomeInkRail,
+// src/ui/ink-rail.js — handed in from src/main.js, as the other hooks here are).
+const DOCUMENT_CHROME_IDS = ["documentPager", "documentOutlineDrawer"];
+
+let documentChromeMovedHook = () => {};
+
+export function setDocumentChromeMovedHook(fn) {
+  documentChromeMovedHook = typeof fn === "function" ? fn : () => {};
+}
+
+function moveDocumentChrome(stage) {
+  if (!stage) return;
+  DOCUMENT_CHROME_IDS.forEach((id) => {
+    const node = document.getElementById(id);
+    if (node && node.parentElement !== stage) stage.appendChild(node);
+  });
+  documentChromeMovedHook(stage);
+  // For src/ui/chrome.js, which publishes the tab row's facts from this stage.
+  [primaryDocumentStage(), alternateDocumentStage()].forEach((candidate) => {
+    if (!candidate) return;
+    const holds = candidate === stage;
+    if (candidate.hasAttribute("data-doc-chrome") !== holds) candidate.toggleAttribute("data-doc-chrome", holds);
+  });
+}
+
+// Makes `slot` the live paper. False when it is not one of the two on screen.
+function activateDocumentViewer(slot, { quiet = false } = {}) {
+  const wanted = normalizeDocSlot(slot);
+  if (!dualDocuments) return false;
+  if (liveDocumentSlot === wanted) return true;
+  if (!besideViewer || besideViewer.slot !== wanted) return false;
+  const incoming = besideViewer;
+  const outgoing = suspendOpenDocument()
+    || { slot: liveDocumentSlot, stage: el.documentStage, view: el.documentView, empty: true };
+  besideViewer = outgoing;
+  resumeDocumentViewer(incoming, { quiet });
+  if (outgoing.unsettled) scheduleDocumentCatchUp();
+  return true;
+}
+
+// The reader reached for the paper in `slot` — a press, a wheel, a tab.
+export function focusDocumentViewer(slot) {
+  if (!dualDocuments) return false;
+  // Whatever was live for a moment goes back first, so the paper reached for
+  // is made live the ordinary, loud way — its outline, its switcher, its rail.
+  endDocumentCatchUp();
+  const wanted = normalizeDocSlot(slot);
+  if (!activateDocumentViewer(wanted)) return false;
+  chromeDocumentSlot = wanted;
+  moveDocumentChrome(el.documentStage);
+  updatePageIndicator();
+  return true;
+}
+
+// The one invariant: the live paper is the paper in focus. It is broken on
+// purpose for a catch-up turn and while a paper just opened beside draws, and
+// this mends it — quietly after a catch-up, whose turn touched no chrome, and
+// in full after an opening, which painted the new paper's.
+function restoreFocusedPaper() {
+  if (!dualDocuments || !chromeDocumentSlot || liveDocumentSlot === chromeDocumentSlot) return;
+  besideTurn += 1;
+  const quiet = catchUpRunning;
+  catchUpRunning = false;
+  activateDocumentViewer(chromeDocumentSlot, { quiet });
+  if (!quiet) {
+    moveDocumentChrome(el.documentStage);
+    updatePageIndicator();
+  }
+}
+
+// Opens the file's other paper beside the one on the stage. `paint` opens it,
+// exactly as its tab would (openDocumentView, or the Canvas's own paint step),
+// and does so into the free stage. `focusNew` leaves the new paper in focus;
+// otherwise focus goes back to the paper that was there once the new one has
+// drawn what is on screen.
+export async function openDocumentBeside(slot, paint, { focusNew = false } = {}) {
+  const wanted = normalizeDocSlot(slot);
+  const fromStage = el.documentStage;
+  const toStage = otherDocumentStage(fromStage);
+  if (!fromStage || !toStage || dualDocuments) return false;
+  const keptSlot = wanted === DOC_SLOT_NOTEBOOK ? DOC_SLOT_DOC : DOC_SLOT_NOTEBOOK;
+  besideViewer = suspendOpenDocument()
+    || { slot: keptSlot, stage: fromStage, view: el.documentView, empty: true };
+  dualDocuments = true;
+  watchDocumentCatchUpInput();
+  fromStage.dataset.docSlot = keptSlot;
+  toStage.dataset.docSlot = wanted;
+  delete toStage.dataset.kept;
+  toStage.hidden = false;
+  pointDocumentSurfaceAt(toStage);
+  liveDocumentSlot = wanted;
+  chromeDocumentSlot = focusNew ? wanted : keptSlot;
+  setDualDocumentContext(wanted);
+  if (focusNew) moveDocumentChrome(toStage);
+  try {
+    await paint();
+  } catch (error) {
+    console.warn("Could not open the other paper beside this one", error);
+  }
+  if (!dualDocuments || focusNew) return dualDocuments;
+  // Back to the paper in focus once the new one has drawn what is on screen —
+  // or at once, if the reader has already reached for something (their input
+  // bumps the turn and restores it on the spot).
+  const turn = ++besideTurn;
+  const until = performance.now() + PDF_CATCH_UP_MAX_MS;
+  while (dualDocuments && turn === besideTurn && liveDocumentSlot === wanted
+      && performance.now() < until && !documentPagesSettled()) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  if (turn === besideTurn) restoreFocusedPaper();
+  return true;
+}
+
+// The two papers go back to one: `keepSlot` stays, the other is parked as a
+// tab switch would park it — so pressing its tab later is still free.
+export function closeDocumentBeside(keepSlot) {
+  if (!dualDocuments) return;
+  const keep = normalizeDocSlot(keepSlot);
+  endDocumentCatchUp();
+  // Not when the paper to keep belongs to a file that is no longer open — the
+  // split closing because another is: making it live would repaint the NEW
+  // file's marks onto the old file's pages a moment before both go.
+  const besideIsOurs = Boolean(besideViewer?.deckKey) && String(besideViewer.deckKey).startsWith(`${currentDeckKey()}|`);
+  if (liveDocumentSlot !== keep && (besideIsOurs || besideViewer?.empty)) activateDocumentViewer(keep);
+  const leaving = besideViewer;
+  besideViewer = null;
+  dualDocuments = false;
+  liveDocumentSlot = null;
+  chromeDocumentSlot = null;
+  setDualDocumentContext(null);
+  // Marked, and left marked: the paper that stays may be the one in the second
+  // stage, and the tab row's facts are read from whichever stage this is.
+  moveDocumentChrome(el.documentStage);
+  if (!leaving) return;
+  // Parked only while it is still this file's paper: a split closed because
+  // another file is opening finds the new file's key already in force, and a
+  // paper of the old one must be let go, not kept warm under the new one's name.
+  const ours = Boolean(leaving.deckKey) && String(leaving.deckKey).startsWith(`${currentDeckKey()}|`);
+  if (!leaving.empty && leaving.doc && !ours) {
+    leaving.doc.destroy().catch(() => {});
+    leaving.renderDoc?.then((id) => closeRenderDocument(id));
+    releasePagePicturesIn(leaving.view);
+  } else if (!leaving.empty && leaving.doc) {
+    const host = leaving.view?.querySelector(":scope > .pdf-pages") || null;
+    host?.remove();
+    const parkKey = documentParkKey(leaving.slot);
+    releaseParked(parkKey);
+    parkedDocuments.set(parkKey, {
+      sha: (leaving.slot === DOC_SLOT_DOC ? deckPdfById(state.meta, leaving.pdfId) : docSlotMeta(leaving.slot))?.sha256 || "",
+      doc: leaving.doc,
+      renderDoc: leaving.renderDoc,
+      renderBlob: leaving.renderBlob,
+      pictureSha: leaving.pictureSha,
+      host,
+      pages: leaving.pages,
+      rendered: leaving.rendered,
+      pageCount: leaving.pageCount,
+      baseWidth: leaving.baseWidth,
+      baseHeight: leaving.baseHeight,
+      scale: leaving.scale,
+      fitWidth: leaving.fitWidth,
+      fitScale: leaving.fitScale,
+      // No position: it comes back where its own reading position says, which
+      // every scroll of it wrote while it was live.
+      page: NaN,
+      ratio: 0,
+      across: undefined
+    });
+  }
+  if (leaving.view) leaving.view.innerHTML = "";
+  if (leaving.stage) {
+    leaving.stage.hidden = true;
+    delete leaving.stage.dataset.kept;
+  }
+}
+
+// ── Catch-up turns ──────────────────────────────────────────────────────────
+
+// Something the suspended paper shows has moved on: a highlight changed, a sync
+// landed, its pane changed width. It catches up when the reader is still.
+export function noteBesideDocumentStale() {
+  if (!dualDocuments || !besideViewer || besideViewer.empty) return;
+  besideViewer.unsettled = true;
+  scheduleDocumentCatchUp();
+}
+
+function scheduleDocumentCatchUp() {
+  if (!dualDocuments || catchUpTimer || catchUpRunning) return;
+  catchUpTimer = setTimeout(runDocumentCatchUp, PDF_CATCH_UP_IDLE_MS);
+}
+
+async function runDocumentCatchUp() {
+  catchUpTimer = 0;
+  if (!dualDocuments || !besideViewer || besideViewer.empty || !besideViewer.unsettled) return;
+  const quietFor = performance.now() - lastDocumentInputAt;
+  // Not while the paper in focus is not the live one (a paper still opening
+  // beside it), and not while anything is being done to it.
+  if (liveDocumentSlot !== chromeDocumentSlot || quietFor < PDF_CATCH_UP_IDLE_MS
+      || inkPenIsDown() || documentOpensInFlight || document.hidden) {
+    scheduleDocumentCatchUp();
+    return;
+  }
+  const turn = ++besideTurn;
+  catchUpRunning = true;
+  activateDocumentViewer(besideViewer.slot, { quiet: true });
+  const until = performance.now() + PDF_CATCH_UP_MAX_MS;
+  while (turn === besideTurn && performance.now() < until && !documentPagesSettled()) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  if (turn === besideTurn) restoreFocusedPaper();
+}
+
+// Puts the paper in focus back live at once, ending a catch-up turn or the
+// wait of a paper just opened beside. Ahead of every input, so the reader's
+// press always lands on the paper it was aimed at.
+export function endDocumentCatchUp() {
+  clearTimeout(catchUpTimer);
+  catchUpTimer = 0;
+  restoreFocusedPaper();
+  // What it did not finish, it finishes next time.
+  if (besideViewer?.unsettled && !besideViewer.empty) scheduleDocumentCatchUp();
+}
+
+function watchDocumentCatchUpInput() {
+  if (catchUpInputWatched || typeof window === "undefined") return;
+  catchUpInputWatched = true;
+  const onInput = () => {
+    lastDocumentInputAt = performance.now();
+    if (dualDocuments && liveDocumentSlot !== chromeDocumentSlot) endDocumentCatchUp();
+  };
+  ["pointerdown", "keydown", "wheel", "touchstart"].forEach((type) => {
+    window.addEventListener(type, onInput, { capture: true, passive: true });
+  });
+  // The window changing size changes both panes' widths; the live paper's own
+  // observer re-fits it, and the suspended one re-fits on its next turn.
+  window.addEventListener("resize", () => noteBesideDocumentStale(), { passive: true });
 }
 
 // ── One panel, three things to say ──────────────────────────────────────────
@@ -1455,14 +1898,18 @@ async function openDocumentViewBody({ force = false, slot = null, pdfId = null, 
 //
 // `refit` says the window changed size while they were away, so the pages are
 // laid out at a scale that no longer fits.
-function finishDocumentOpen(view, token, openSlot, at, { restored = false, refit = false } = {}) {
+function finishDocumentOpen(view, token, openSlot, at, { restored = false, refit = false, inPlace = false, quiet = false } = {}) {
   noteCanvasSetup();
   schedulePrerender();
   if (!restored) buildPagePlaceholders();
   observePages();
   watchDocumentViewSize();
-  applyPaperTone(paperToneForSlot(openSlot), { remember: false });
-  updatePageIndicator();
+  // A paper resumed in place (side by side — see "Two papers side by side")
+  // still has its stage painted in its own tone; only the module's note of
+  // which tone is in force had to come back, and resumeDocumentViewer did that.
+  if (!inPlace) applyPaperTone(paperToneForSlot(openSlot), { remember: false });
+  else if (!quiet) paintPaperChrome(stageTone);
+  if (!quiet) updatePageIndicator();
   // The pages exist now, so the printed notes have something to be inserted
   // after. Before the outline, which is deliberately off the critical path.
   //
@@ -1487,14 +1934,18 @@ function finishDocumentOpen(view, token, openSlot, at, { restored = false, refit
     // corrects it and no frame is painted in between. It is the sharpest reason
     // an omitted `across` must leave scrollLeft alone: a note growing above the
     // reader moves them DOWN the page and must not move them across it.
-    onDocumentOpened({ key: openPdf.deckKey, slot: openSlot, restored });
+    onDocumentOpened({ key: openPdf.deckKey, slot: openSlot, restored, quiet });
   } catch (error) {
     console.warn("Could not build the document's page notes", error);
   }
   // Off the critical path: the pages are already on screen and readable, and
   // an outline can need a fetch per entry on a long book.
-  buildDocumentOutline(openPdf.doc, openPdf.pdfId || PDF_PRIMARY_ID).catch((error) => console.warn("Could not read the PDF outline", error));
-  renderDocumentPdfSwitcher();
+  // Not for a catch-up turn: the drawer and the switcher are the focused
+  // paper's, and this one is only live for a moment.
+  if (!quiet) {
+    buildDocumentOutline(openPdf.doc, openPdf.pdfId || PDF_PRIMARY_ID).catch((error) => console.warn("Could not read the PDF outline", error));
+    renderDocumentPdfSwitcher();
+  }
 
   // ── Where to land, and when it is safe to say so ─────────────────────────
   //
@@ -1538,7 +1989,8 @@ function finishDocumentOpen(view, token, openSlot, at, { restored = false, refit
       }
     }
   };
-  if (!refit) landOnReadingPosition();
+  // In place, the pages never left and the reader is exactly where they were.
+  if (!refit && !inPlace) landOnReadingPosition();
   // ── What a restored page still has to be told ────────────────────────────
   //
   // The canvas is the same picture of the same page and needs nothing. What sits
@@ -1567,7 +2019,8 @@ function finishDocumentOpen(view, token, openSlot, at, { restored = false, refit
   // their new heights by then, and the second pass decides which of them to
   // render from the scroll offsets this sets — so the reader lands on their page
   // AND that page is the one rasterised, rather than the one they were leaving.
-  if (refit) relayoutDocument({ refit: true, afterLayout: landOnReadingPosition });
+  if (refit && inPlace) relayoutDocumentHoldingReader({ refit: true });
+  else if (refit) relayoutDocument({ refit: true, afterLayout: landOnReadingPosition });
   // Ask for the pages outright rather than waiting to be told about them. The
   // IntersectionObserver above will usually get there first and this will find
   // every page already asked for — but "usually" is what this whole bug was:
@@ -3148,9 +3601,15 @@ function noteWastedRender(kind) {
   notePdfWastedRenders({ ...wastedRenders });
 }
 
+// Once per scroller: side by side the file's other paper has a scroller of its
+// own (src/documents/doc-scrollers.js), and its listeners keep to it while it
+// is the live one.
+const interactionWatchedViews = new WeakSet();
+
 function watchDocumentInteraction() {
   const view = el.documentView;
-  if (interactionWatching || !view) return;
+  if (!view || interactionWatchedViews.has(view)) return;
+  interactionWatchedViews.add(view);
   interactionWatching = true;
   watchLongTasks();
   // Passive, all of them: knowing a finger is down must not itself be one
@@ -3161,7 +3620,7 @@ function watchDocumentInteraction() {
     if (touchesDown) watchTouchFrames();
   };
   const onTouchActivity = () => { lastTouchActivity = performance.now(); };
-  view.addEventListener("touchstart", (event) => {
+  view.addEventListener("touchstart", liveDocumentHandler(view, (event) => {
     onTouches(event);
     // The end of this touch, heard on the element it started on — see
     // PDF_TOUCH_STALE_MS for why the view alone is not enough.
@@ -3171,12 +3630,12 @@ function watchDocumentInteraction() {
       target.addEventListener("touchend", onTouches, { passive: true, once: true });
       target.addEventListener("touchcancel", onTouches, { passive: true, once: true });
     });
-  }, { passive: true });
-  view.addEventListener("touchmove", onTouchActivity, { passive: true });
-  view.addEventListener("touchend", onTouches, { passive: true });
-  view.addEventListener("touchcancel", onTouches, { passive: true });
-  view.addEventListener("wheel", () => noteDocumentInteraction(), { passive: true });
-  view.addEventListener("scroll", () => {
+  }), { passive: true });
+  view.addEventListener("touchmove", liveDocumentHandler(view, onTouchActivity), { passive: true });
+  view.addEventListener("touchend", liveDocumentHandler(view, onTouches), { passive: true });
+  view.addEventListener("touchcancel", liveDocumentHandler(view, onTouches), { passive: true });
+  view.addEventListener("wheel", liveDocumentHandler(view, () => noteDocumentInteraction()), { passive: true });
+  view.addEventListener("scroll", liveDocumentHandler(view, () => {
     // The PDF teleprompter's own frames are not the reader moving: holding
     // renders back until it stopped would leave the pages it is scrolling
     // towards undrawn for as long as it plays.
@@ -3206,7 +3665,7 @@ function watchDocumentInteraction() {
     if (!documentAutoScrolling()) cancelDetailRenders();
     // ...but a tall page's bands follow the reader (see "Bands for tall pages").
     scheduleBandUpdate();
-  }, { passive: true });
+  }), { passive: true });
 }
 
 // Frame times while a finger is on the paper, for App Info: one rAF loop for
@@ -6568,6 +7027,8 @@ export function scrollToDocumentPage(pageNumber, ratio = 0, { smooth = true, ali
 
 export function updatePageIndicator() {
   if (!openPdf) return;
+  // The pager is the focused paper's; a catch-up turn is the other one.
+  if (catchUpRunning) return;
   const page = currentDocumentPage();
   // Only when it actually changed. Assigning textContent replaces the text node
   // whether or not the string differs, which dirties the control row's layout —
@@ -6850,17 +7311,23 @@ export function applyPaperTone(tone, { remember = true, slot = openPdf?.slot ?? 
     // The pages' own pixels are the old paper now; see bakePagePaper.
     repaperPages();
   }
-  // The button says which way the paper is without being pressed — the same
-  // rule every other toggle in this app's chrome follows: a mode nobody can see
-  // the state of reads as a mode that is not there.
-  el.documentDarkBtn?.setAttribute("aria-pressed", next.dark ? "true" : "false");
-  el.documentDarkBtn?.setAttribute("data-paper", next.id);
-  paperShownHook(next);
+  paintPaperChrome(next);
   if (!remember) return;
   try {
     localStorage.setItem(paperStorageKeyFor(slot), next.id);
     if (normalizeDocSlot(slot) !== DOC_SLOT_NOTEBOOK) localStorage.setItem(PDF_DARK_KEY, next.dark ? "1" : "0");
   } catch (_) { /* private mode — the preference just doesn't persist */ }
+}
+
+// The button says which way the paper is without being pressed — the same
+// rule every other toggle in this app's chrome follows: a mode nobody can see
+// the state of reads as a mode that is not there. On its own for a paper made
+// live again side by side, whose stage is already painted in its tone and only
+// the tab row has to be told which paper it is now about.
+function paintPaperChrome(tone) {
+  el.documentDarkBtn?.setAttribute("aria-pressed", tone.dark ? "true" : "false");
+  el.documentDarkBtn?.setAttribute("data-paper", tone.id);
+  paperShownHook(tone);
 }
 
 // The reader picked a tone from the paper menu (src/documents/paper-menu.js).
@@ -7090,157 +7557,159 @@ export function documentPinchEngaged() {
 }
 
 export function initDocumentPinchZoom() {
-  const view = el.documentView;
-  if (!view) return;
+  // Once per scroller: side by side, the file's other paper has its own
+  // (src/documents/doc-scrollers.js), and each copy keeps to the live one.
+  forEachDocumentScroller((view) => {
 
-  view.addEventListener("touchstart", (event) => {
-    if (event.touches.length !== 2 || !openPdf) return;
-    // ── Not while the pen is writing ─────────────────────────────────────────
+    view.addEventListener("touchstart", liveDocumentHandler(view, (event) => {
+      if (event.touches.length !== 2 || !openPdf) return;
+      // ── Not while the pen is writing ─────────────────────────────────────────
+      //
+      // A stylus on Android raises compatibility touch events of its own, so a
+      // palm resting on the glass while the pen writes is "two touches" to this
+      // listener — and a pinch that began there scaled the page under the nib and,
+      // on the relayout that ends it, tore the live stroke down with the page's ink
+      // layer. The ink side meant to give way to a second contact
+      // (src/documents/pdf-ink.js) and never could: its pointer handlers only ever
+      // see the pen's own pointer. So the decision is made here, where the second
+      // contact actually arrives — a pen in contact owns the page, and the palm is
+      // a palm.
+      if (inkPenIsDown()) return;
+      const host = pagesHost();
+      if (!host) return;
+      const focal = touchMidpoint(event.touches);
+      const hostRect = host.getBoundingClientRect();
+      pinch = {
+        startDistance: touchDistance(event.touches),
+        startScale: openPdf.scale,
+        // Fixed at the midpoint the gesture STARTED from, and not re-read as the
+        // fingers move: transform-origin is in pre-transform coordinates, so a
+        // moving origin would compound with the scale already applied. It is also
+        // the point the commit anchors on, so the two halves agree by
+        // construction.
+        focal,
+        origin: { x: focal.x - hostRect.left, y: focal.y - hostRect.top },
+        ratio: 1
+      };
+      attachPinchMove();
+    }), { passive: true });
+
+    const onPinchMove = (event) => {
+      // A gesture that stops being two fingers is over, and it has to be ENDED
+      // rather than merely ignored: returning here left the transform painted and
+      // the pinch object live, so the next touchend committed a scale from a
+      // gesture the reader had already abandoned — or, if no touchend arrived at
+      // all, left the page transformed for good.
+      if (pinch && event.touches.length !== 2) { endPinch(); return; }
+      // ...and a pinch already under way when the nib lands is over: the pen is
+      // what the reader reached for, and a page still scaling under it would carry
+      // the stroke off with it.
+      if (pinch && inkPenIsDown()) { endPinch(); return; }
+      if (!pinch || event.touches.length !== 2 || !openPdf) return;
+      const distance = touchDistance(event.touches);
+      if (!pinch.startDistance) return;
+      const ratio = distance / pinch.startDistance;
+      if (Math.abs(ratio - 1) < PINCH_MIN_RATIO && pinch.ratio === 1) return;
+      // preventDefault only once this really is a pinch, so a two-finger scroll
+      // still scrolls. The listener is therefore NOT passive — which is the whole
+      // reason this one differs from the two around it.
+      event.preventDefault();
+      // Clamped against the same limits the commit will apply, so the page does
+      // not stretch to a size it is about to snap back from.
+      pinch.ratio = clampScale(pinch.startScale * ratio) / pinch.startScale;
+      paintPinch(pinch.origin, pinch.ratio);
+    };
+
+    // ── ...and it is only BOUND while there are two fingers on the glass ──────
     //
-    // A stylus on Android raises compatibility touch events of its own, so a
-    // palm resting on the glass while the pen writes is "two touches" to this
-    // listener — and a pinch that began there scaled the page under the nib and,
-    // on the relayout that ends it, tore the live stroke down with the page's ink
-    // layer. The ink side meant to give way to a second contact
-    // (src/documents/pdf-ink.js) and never could: its pointer handlers only ever
-    // see the pen's own pointer. So the decision is made here, where the second
-    // contact actually arrives — a pen in contact owns the page, and the palm is
-    // a palm.
-    if (inkPenIsDown()) return;
-    const host = pagesHost();
-    if (!host) return;
-    const focal = touchMidpoint(event.touches);
-    const hostRect = host.getBoundingClientRect();
-    pinch = {
-      startDistance: touchDistance(event.touches),
-      startScale: openPdf.scale,
-      // Fixed at the midpoint the gesture STARTED from, and not re-read as the
-      // fingers move: transform-origin is in pre-transform coordinates, so a
-      // moving origin would compound with the scale already applied. It is also
-      // the point the commit anchors on, so the two halves agree by
-      // construction.
-      focal,
-      origin: { x: focal.x - hostRect.left, y: focal.y - hostRect.top },
-      ratio: 1
+    // A non-passive touchmove is a promise to the browser that the main thread
+    // might cancel this gesture, so a touch scroll cannot begin on the compositor
+    // until the main thread has answered. Bound permanently, that tax was paid by
+    // every one-finger scroll of every paper — for a handler whose first line is
+    // `event.touches.length !== 2`, which is to say for nothing at all, and worst
+    // exactly when the main thread is busy and scrolling already feels bad.
+    //
+    // touchstart precedes the touchmoves of its own sequence, so binding from
+    // there gives the pinch everything it had; and a pinch is not a scroll, so the
+    // round trip it does cost is one nobody is waiting on.
+    let pinchMoveOn = false;
+    function attachPinchMove() {
+      if (pinchMoveOn) return;
+      view.addEventListener("touchmove", onPinchMove, { passive: false });
+      pinchMoveOn = true;
+    }
+    function detachPinchMove() {
+      if (!pinchMoveOn) return;
+      view.removeEventListener("touchmove", onPinchMove, { passive: false });
+      pinchMoveOn = false;
+    }
+
+    // One commit, when the fingers lift. `touchend` fires per finger, so this
+    // runs on the first of the two leaving — which is right: the gesture is over
+    // as soon as it stops being two fingers.
+    const endPinch = () => {
+      const gesture = pinch;
+      pinch = null;
+      detachPinchMove();
+      if (!gesture || !openPdf) { clearPinchPaint(); return; }
+      // Paint dropped FIRST: pageAnchorAt measures with getBoundingClientRect,
+      // and a box that is still scaled reports where the transform put it rather
+      // than where the layout has it. Dropping the transform cannot move the
+      // scroll offsets — nothing scrolls during a pinch, so they were never past
+      // the untransformed maximum.
+      clearPinchPaint();
+      if (gesture.ratio === 1) return;
+      const anchor = pageAnchorAt(gesture.focal);
+      setDocumentScale(gesture.startScale * gesture.ratio, {
+        afterLayout: anchor ? () => restorePageAnchor(anchor, gesture.focal) : null
+      });
     };
-    attachPinchMove();
-  }, { passive: true });
+    view.addEventListener("touchend", liveDocumentHandler(view, endPinch), { passive: true });
+    view.addEventListener("touchcancel", liveDocumentHandler(view, endPinch), { passive: true });
 
-  const onPinchMove = (event) => {
-    // A gesture that stops being two fingers is over, and it has to be ENDED
-    // rather than merely ignored: returning here left the transform painted and
-    // the pinch object live, so the next touchend committed a scale from a
-    // gesture the reader had already abandoned — or, if no touchend arrived at
-    // all, left the page transformed for good.
-    if (pinch && event.touches.length !== 2) { endPinch(); return; }
-    // ...and a pinch already under way when the nib lands is over: the pen is
-    // what the reader reached for, and a page still scaling under it would carry
-    // the stroke off with it.
-    if (pinch && inkPenIsDown()) { endPinch(); return; }
-    if (!pinch || event.touches.length !== 2 || !openPdf) return;
-    const distance = touchDistance(event.touches);
-    if (!pinch.startDistance) return;
-    const ratio = distance / pinch.startDistance;
-    if (Math.abs(ratio - 1) < PINCH_MIN_RATIO && pinch.ratio === 1) return;
-    // preventDefault only once this really is a pinch, so a two-finger scroll
-    // still scrolls. The listener is therefore NOT passive — which is the whole
-    // reason this one differs from the two around it.
-    event.preventDefault();
-    // Clamped against the same limits the commit will apply, so the page does
-    // not stretch to a size it is about to snap back from.
-    pinch.ratio = clampScale(pinch.startScale * ratio) / pinch.startScale;
-    paintPinch(pinch.origin, pinch.ratio);
-  };
+    // ── iOS, which does not always let the touch path finish ─────────────────
+    //
+    // Safari on iOS raises its own gesturestart/gesturechange/gestureend for a
+    // two-finger pinch, and it can take the gesture over from the touch events
+    // part way through — at which point the touchend this file is waiting for
+    // never comes and the transform painted above stays on the page for the rest
+    // of the session. That is the "zoomed in, will not pan, will not zoom out"
+    // shape exactly, and it is why relayoutDocument now clears the paint
+    // unconditionally as well.
+    //
+    // These three are the belt to that braces. gesturechange carries an absolute
+    // `scale` relative to the start of the gesture, which is the same number the
+    // touch path derives from the finger distance, so the two agree by
+    // construction and either can drive the same commit.
+    view.addEventListener("gesturestart", liveDocumentHandler(view, (event) => {
+      if (!openPdf) return;
+      event.preventDefault();
+      const host = pagesHost();
+      if (!host) return;
+      const focal = { x: event.clientX, y: event.clientY };
+      const hostRect = host.getBoundingClientRect();
+      pinch = {
+        startDistance: 0,
+        startScale: openPdf.scale,
+        focal,
+        origin: { x: focal.x - hostRect.left, y: focal.y - hostRect.top },
+        ratio: 1
+      };
+    }));
 
-  // ── ...and it is only BOUND while there are two fingers on the glass ──────
-  //
-  // A non-passive touchmove is a promise to the browser that the main thread
-  // might cancel this gesture, so a touch scroll cannot begin on the compositor
-  // until the main thread has answered. Bound permanently, that tax was paid by
-  // every one-finger scroll of every paper — for a handler whose first line is
-  // `event.touches.length !== 2`, which is to say for nothing at all, and worst
-  // exactly when the main thread is busy and scrolling already feels bad.
-  //
-  // touchstart precedes the touchmoves of its own sequence, so binding from
-  // there gives the pinch everything it had; and a pinch is not a scroll, so the
-  // round trip it does cost is one nobody is waiting on.
-  let pinchMoveOn = false;
-  function attachPinchMove() {
-    if (pinchMoveOn) return;
-    view.addEventListener("touchmove", onPinchMove, { passive: false });
-    pinchMoveOn = true;
-  }
-  function detachPinchMove() {
-    if (!pinchMoveOn) return;
-    view.removeEventListener("touchmove", onPinchMove, { passive: false });
-    pinchMoveOn = false;
-  }
+    view.addEventListener("gesturechange", liveDocumentHandler(view, (event) => {
+      if (!pinch || !openPdf) return;
+      event.preventDefault();
+      const wanted = Number(event.scale);
+      if (!Number.isFinite(wanted) || wanted <= 0) return;
+      pinch.ratio = clampScale(pinch.startScale * wanted) / pinch.startScale;
+      paintPinch(pinch.origin, pinch.ratio);
+    }));
 
-  // One commit, when the fingers lift. `touchend` fires per finger, so this
-  // runs on the first of the two leaving — which is right: the gesture is over
-  // as soon as it stops being two fingers.
-  const endPinch = () => {
-    const gesture = pinch;
-    pinch = null;
-    detachPinchMove();
-    if (!gesture || !openPdf) { clearPinchPaint(); return; }
-    // Paint dropped FIRST: pageAnchorAt measures with getBoundingClientRect,
-    // and a box that is still scaled reports where the transform put it rather
-    // than where the layout has it. Dropping the transform cannot move the
-    // scroll offsets — nothing scrolls during a pinch, so they were never past
-    // the untransformed maximum.
-    clearPinchPaint();
-    if (gesture.ratio === 1) return;
-    const anchor = pageAnchorAt(gesture.focal);
-    setDocumentScale(gesture.startScale * gesture.ratio, {
-      afterLayout: anchor ? () => restorePageAnchor(anchor, gesture.focal) : null
-    });
-  };
-  view.addEventListener("touchend", endPinch, { passive: true });
-  view.addEventListener("touchcancel", endPinch, { passive: true });
-
-  // ── iOS, which does not always let the touch path finish ─────────────────
-  //
-  // Safari on iOS raises its own gesturestart/gesturechange/gestureend for a
-  // two-finger pinch, and it can take the gesture over from the touch events
-  // part way through — at which point the touchend this file is waiting for
-  // never comes and the transform painted above stays on the page for the rest
-  // of the session. That is the "zoomed in, will not pan, will not zoom out"
-  // shape exactly, and it is why relayoutDocument now clears the paint
-  // unconditionally as well.
-  //
-  // These three are the belt to that braces. gesturechange carries an absolute
-  // `scale` relative to the start of the gesture, which is the same number the
-  // touch path derives from the finger distance, so the two agree by
-  // construction and either can drive the same commit.
-  view.addEventListener("gesturestart", (event) => {
-    if (!openPdf) return;
-    event.preventDefault();
-    const host = pagesHost();
-    if (!host) return;
-    const focal = { x: event.clientX, y: event.clientY };
-    const hostRect = host.getBoundingClientRect();
-    pinch = {
-      startDistance: 0,
-      startScale: openPdf.scale,
-      focal,
-      origin: { x: focal.x - hostRect.left, y: focal.y - hostRect.top },
-      ratio: 1
-    };
-  });
-
-  view.addEventListener("gesturechange", (event) => {
-    if (!pinch || !openPdf) return;
-    event.preventDefault();
-    const wanted = Number(event.scale);
-    if (!Number.isFinite(wanted) || wanted <= 0) return;
-    pinch.ratio = clampScale(pinch.startScale * wanted) / pinch.startScale;
-    paintPinch(pinch.origin, pinch.ratio);
-  });
-
-  view.addEventListener("gestureend", (event) => {
-    if (pinch) event.preventDefault();
-    endPinch();
+    view.addEventListener("gestureend", liveDocumentHandler(view, (event) => {
+      if (pinch) event.preventDefault();
+      endPinch();
+    }));
   });
 }
 

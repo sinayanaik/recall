@@ -331,7 +331,7 @@
   display: none;
 }
 
-#documentStage[data-doc-slot="notebook"]:not(.has-no-notebook) .document-pager {
+:is(#documentStage, #documentStageAlt)[data-doc-slot="notebook"]:not(.has-no-notebook) .document-pager {
   display: flex;
 }
 
@@ -339,7 +339,7 @@
    deck that HAS a paper but no notebook yet shows the offer of one on this tab,
    and a page number and a zoom over an offer is a control for pages that do not
    exist. */
-#documentStage.has-no-notebook[data-doc-slot="notebook"] .document-pager {
+:is(#documentStage, #documentStageAlt).has-no-notebook[data-doc-slot="notebook"] .document-pager {
   display: none;
 }
 
@@ -347,7 +347,7 @@
    only document is a notebook — see the rule it answers in styles/52-ink.css.
    Over the OFFER of a notebook there is still nothing to draw on, so the rail
    stands down there, asked of `.has-no-notebook` rather than of meta.pdf. */
-#documentStage.has-no-notebook[data-doc-slot="notebook"] .document-ink-rail,
+:is(#documentStage, #documentStageAlt).has-no-notebook[data-doc-slot="notebook"] .document-ink-rail,
 .document-ink-rail.is-inline.on-no-notebook[data-doc-slot="notebook"] {
   display: none;
 }
@@ -384,7 +384,7 @@
   display: none;
 }
 
-#documentStage[data-doc-slot="notebook"] .ink-rail-page,
+:is(#documentStage, #documentStageAlt)[data-doc-slot="notebook"] .ink-rail-page,
 .document-ink-rail.is-inline[data-doc-slot="notebook"] .ink-rail-page {
   display: flex;
 }

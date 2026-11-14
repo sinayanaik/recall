@@ -40,6 +40,7 @@
 //     on each side: let go on a dot and that end keeps to that side.
 //   • Alt held never ties anything.
 
+import { el } from "../core/dom.js?v=__BUILD__";
 import { clearDiagramPart, diagramLayer, diagramPathData, diagramSvg, diagramSvgNode, setDiagramPart } from "./pdf-diagram-layer.js?v=__BUILD__";
 import {
   blockStyle, documentBlocks, editBlock, freshDocumentBlockId, isEditingBlock, isInDiagramEdit, liveBlockGesture, nextBlockZ,
@@ -344,7 +345,7 @@ export function paintDiagramOverlay(page) {
 }
 
 export function repaintDiagramOverlay() {
-  document.querySelectorAll(".pdf-page[data-page-number]").forEach((pageEl) => {
+  (el.documentView || document).querySelectorAll(".pdf-page[data-page-number]").forEach((pageEl) => {
     const page = Number(pageEl.dataset.pageNumber);
     if (page) paintDiagramOverlay(page);
   });

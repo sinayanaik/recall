@@ -559,15 +559,15 @@
   opacity: 0;
 }
 
-#documentStage.is-teleprompter .document-pager {
+:is(#documentStage, #documentStageAlt).is-teleprompter .document-pager {
   display: none;
 }
 
-#documentStage.has-reading-progress > .tp-bar {
+:is(#documentStage, #documentStageAlt).has-reading-progress > .tp-bar {
   bottom: calc(max(12px, var(--safe-bottom)) + 18px);
 }
 
-#documentStage.has-reading-progress > .tp-sheet {
+:is(#documentStage, #documentStageAlt).has-reading-progress > .tp-sheet {
   bottom: calc(max(12px, var(--safe-bottom)) + 80px);
 }
 
@@ -575,18 +575,18 @@
    start in the band and the last line of the last page can reach it. On the
    pages' box, not the scroller, so nothing that measures a page from the
    scroller's padding is moved. */
-#documentView.is-teleprompter > .pdf-pages::before,
-#documentView.is-teleprompter > .pdf-pages::after {
+:is(#documentView, #documentViewAlt).is-teleprompter > .pdf-pages::before,
+:is(#documentView, #documentViewAlt).is-teleprompter > .pdf-pages::after {
   content: "";
   flex: none;
   pointer-events: none;
 }
 
-#documentView.is-teleprompter > .pdf-pages::before {
+:is(#documentView, #documentViewAlt).is-teleprompter > .pdf-pages::before {
   height: var(--tp-lead, 0px);
 }
 
-#documentView.is-teleprompter > .pdf-pages::after {
+:is(#documentView, #documentViewAlt).is-teleprompter > .pdf-pages::after {
   height: var(--tp-runout, 0px);
 }
 

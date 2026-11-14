@@ -82,7 +82,7 @@
 }
 
 /* The PDF's floating page control sits just above the row while it is shown. */
-#documentStage.has-reading-progress .document-pager {
+:is(#documentStage, #documentStageAlt).has-reading-progress .document-pager {
   bottom: 32px;
 }
 

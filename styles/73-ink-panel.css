@@ -86,8 +86,8 @@
   border-left: 1px solid var(--line);
 }
 
-#documentStage .document-ink-rail.is-selecting .ink-rail-page,
-#documentStage .document-ink-rail.has-clipboard .ink-rail-page,
+:is(#documentStage, #documentStageAlt) .document-ink-rail.is-selecting .ink-rail-page,
+:is(#documentStage, #documentStageAlt) .document-ink-rail.has-clipboard .ink-rail-page,
 .view-mode-row > .document-ink-rail.is-selecting .ink-rail-page,
 .view-mode-row > .document-ink-rail.has-clipboard .ink-rail-page {
   display: none;

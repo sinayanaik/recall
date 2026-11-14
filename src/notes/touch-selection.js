@@ -113,6 +113,7 @@ import { isProgrammaticNotesScroll, markProgrammaticNotesScroll } from "./notes-
 import { NOTES_BLOCK_SELECTOR, caretFromPoint } from "./raw-offset.js?v=__BUILD__";
 import { NOTES_CHUNK_CLASS, isTopLevelBlockParent } from "../render/block-cache.js?v=__BUILD__";
 import { isEraserEvent } from "../render/ink-engine.js?v=__BUILD__";
+import { documentScrollers } from "../documents/doc-scrollers.js?v=__BUILD__";
 
 // A hoisted `function` declaration, read only inside a call — the same discipline
 // every other crossing binding in this neighbourhood follows.
@@ -2755,6 +2756,10 @@ function arm() {
   setTouchSelectionArmed(true);
   document.body.classList.add("has-touch-select");
   touchSelectionRoots().forEach(bindRoot);
+  // ...and the second document scroller, for the file's other paper side by
+  // side (src/documents/doc-scrollers.js). A press there makes it the live one
+  // before any of these hear it, so they need no guard of their own.
+  documentScrollers().forEach(bindRoot);
   buildOverlay();
 }
 
@@ -2801,7 +2806,7 @@ export function initTouchSelection() {
   // nothing there takes its pointer first — the Document surface is the one
   // place the ink layer claims every pen contact and leaves the text
   // unreachable, which is the one condition that widens the mode there.
-  if (el.documentView) bindPenRoot(el.documentView);
+  documentScrollers().forEach(bindPenRoot);
 
   // Anything that drops the document selection drops ours with it. Every pill
   // action ends in removeAllRanges(), so this is the one listener that keeps the

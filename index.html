@@ -322,6 +322,7 @@
     <link rel="modulepreload" href="src/documents/block-actions-popover.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/block-style.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/block-style-bar.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/documents/doc-scrollers.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/doc-slot.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/notebook.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/notebook-migrate.js?v=__BUILD__">
@@ -1551,6 +1552,14 @@
                 <p class="notes-toc-empty" id="documentOutlineEmpty" hidden>No contents in this PDF, and no headings we could find in its pages.</p>
               </div>
             </nav>
+          </div>
+          <!-- The second document stage: the file's other paper, when its PDFs
+               and its Canvas are side by side (src/ui/split-parts.js). Only the
+               scroller: the pager, the pen's rail and the contents drawer are
+               one set, moved into whichever stage holds the paper in focus
+               (src/documents/pdf-view.js, moveDocumentChrome). -->
+          <div class="document-stage" id="documentStageAlt" hidden>
+            <div class="document-scroll" id="documentViewAlt"></div>
           </div>
           <!-- ── Side by side: the page, and what you wrote on it ─────────
                A reader working through what they marked had two places to be

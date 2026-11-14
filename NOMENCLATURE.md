@@ -19,6 +19,17 @@ The library holds **files**. Each file has up to four **parts**, one per tab:
 "Folder" (a file's category path), "Quick Notes", "Highlights" and "Clozes" keep
 their names.
 
+Any two parts of one file can be on screen at once, **side by side** (the split
+button beside the tabs, or the reading rail's row): the part **in focus**, whose
+tab is lit and whose tools are in the tab row, and the part **beside** it. Say
+"Notes beside the PDFs", not "a second tab" or "a split view". In the code the
+part in focus is `state.viewMode` and the part beside is `state.splitPart`
+(`src/ui/split-parts.js`); the PDFs and the Canvas side by side are two
+document stages, `#documentStage` and `#documentStageAlt`
+(`src/documents/doc-scrollers.js`). The Highlights pane is still called
+"Side by side" in the contents drawer — it is the other thing that takes the
+same column, and the two never share it.
+
 ## On a page
 
 What goes on a PDF's or a Canvas's page. The **Block** button beside ✎ (it was

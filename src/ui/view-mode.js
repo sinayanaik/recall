@@ -15,7 +15,7 @@ import { state } from "../core/state.js?v=__BUILD__";
 import { deckTabKey, rememberDeckTab } from "../storage/deck-tab.js?v=__BUILD__";
 import { closeHighlightsEditor } from "../panels/highlights-editor.js?v=__BUILD__";
 import { currentInkSurface } from "../storage/ink-prefs.js?v=__BUILD__";
-import { openDocumentView } from "../documents/pdf-view.js?v=__BUILD__";
+import { closeDocumentBeside, focusDocumentViewer, isDualDocumentOpen, openDocumentBeside, openDocumentView } from "../documents/pdf-view.js?v=__BUILD__";
 import { refreshHighlightBackdrop } from "../editor/highlight-mirror.js?v=__BUILD__";
 import { readerNotesBody } from "../format/notes-fence.js?v=__BUILD__";
 import { enterNotesEditing, isNotesEditing, markProgrammaticNotesScroll, notesScrolledSource, quizPanel, renderNotesView, resetNotesEditingUI } from "../notes/notes-view.js?v=__BUILD__";
@@ -28,7 +28,8 @@ import { scheduleNoteJump } from "../notes/anchors.js?v=__BUILD__";
 import { currentDeckKey, takeDeferredNotesResume } from "../notes/scroll-anchor.js?v=__BUILD__";
 import { hideNotesSelectionButton } from "../notes/selection.js?v=__BUILD__";
 import { measureChromeHeights } from "./chrome.js?v=__BUILD__";
-import { DOC_SLOT_DOC } from "../documents/doc-slot.js?v=__BUILD__";
+import { DOC_SLOT_DOC, DOC_SLOT_NOTEBOOK } from "../documents/doc-slot.js?v=__BUILD__";
+import { documentStages } from "../documents/doc-scrollers.js?v=__BUILD__";
 import { SPLIT_PART_MODES, documentPartInFocus, isDocumentPartMode, isNotesShown } from "./split-parts.js?v=__BUILD__";
 import { SPLIT_STACK_QUERY, applySplitRatio, readSplitRatio, releaseSplitLayout, scheduleSplitRelayout, setSplitLayoutOwner, splitStacked } from "./split-layout.js?v=__BUILD__";
 
@@ -185,6 +186,17 @@ export function setViewMode(mode, options = {}) {
   // as the note popup flushes in closeHighlightNoteEditor: leaving a view is not
   // a reason to lose a sentence. A no-op when nothing is open.
   closeHighlightsEditor();
+  // ── The two papers side by side ─────────────────────────────────────────
+  //
+  // The focused paper replaced by a part that is not one leaves the other
+  // paper alone on the stage; a paper pressed beside the other one brings the
+  // two side by side (src/documents/pdf-view.js, "Two papers side by side").
+  const switchingPart = next !== state.viewMode;
+  if (switchingPart && isDualDocumentOpen() && !isDocumentPartMode(next)) {
+    closeDocumentBeside(paperSlotOf(state.splitPart));
+  }
+  const becomesTwoPapers = switchingPart && !isDualDocumentOpen()
+    && isDocumentPartMode(next) && isDocumentPartMode(state.splitPart);
   const changed = state.viewMode !== next;
   // Read before it is overwritten. The deferred paint at the foot of this
   // function needs to know whether the reader is arriving at the document stage
@@ -239,7 +251,9 @@ export function setViewMode(mode, options = {}) {
   if (notesActive) prepareNotesArrival(options, changed);
 
   const token = ++viewModePaintToken;
-  const paint = () => paintPart(next, options, changed);
+  const paint = becomesTwoPapers
+    ? () => openDocumentBeside(paperSlotOf(next), () => paintPart(next, options, changed), { focusNew: true })
+    : () => paintPart(next, options, changed);
 
   // ── ...except between the two papers, where the frame is pure cost ────────
   //
@@ -296,8 +310,10 @@ function applyPartStages() {
   if (el.documentStage) el.documentStage.hidden = !documentShown;
   // Which of the deck's two documents is on the stage, published for CSS: the
   // notebook's controls come up on one and the paper's on the other, and both
-  // sets live in the same row.
-  el.documentStage?.setAttribute("data-doc-slot", documentPart === "handwriting" ? "notebook" : "doc");
+  // sets live in the same row. With both papers up each stage says which it
+  // holds itself (src/documents/pdf-view.js), and this must not relabel one.
+  const twoPapers = isDocumentPartMode(state.viewMode) && isDocumentPartMode(state.splitPart);
+  if (!twoPapers) el.documentStage?.setAttribute("data-doc-slot", documentPart === "handwriting" ? "notebook" : "doc");
   applyPartsLayout();
 }
 
@@ -411,11 +427,19 @@ function paintPart(mode, options = {}, changed = true) {
     // ...except on a sync's in-place reload (`keepDocument`), where the
     // document is the one thing this must not touch — see loadDeckSnapshot.
     if (options.keepDocument) return;
-    if (mode === "handwriting") handwritingViewHook?.();
-    else openDocumentView({ slot: DOC_SLOT_DOC });
+    // Returned, for openDocumentBeside, which waits for the paper it opens.
+    if (mode === "handwriting") return handwritingViewHook?.();
+    return openDocumentView({ slot: DOC_SLOT_DOC });
   } else if (changed) {
     showCard();
   }
+  return undefined;
+}
+
+// The view mode of a paper, as the slot its document is filed under
+// (src/documents/doc-slot.js).
+function paperSlotOf(mode) {
+  return mode === "handwriting" ? DOC_SLOT_NOTEBOOK : DOC_SLOT_DOC;
 }
 
 // The document part on screen, painted as its tab would paint it — what a sync
@@ -442,32 +466,14 @@ let splitLeftPart = null;
 // parts of THIS file.
 let partsSplitDeckKey = "";
 
-// Whether the deck's two documents can be side by side — the PDFs beside the
-// Canvas. They share one document surface unless src/documents/pdf-view.js says
-// it can show two (registered from src/main.js, for the reason the hooks at the
-// top of this file are).
-let dualDocumentSplitHook = () => false;
-
-export function setDualDocumentSplitHook(fn) {
-  dualDocumentSplitHook = typeof fn === "function" ? fn : () => false;
-}
-
-// Told when the focus moves from one document part to the other, so the shared
-// document tools can follow it (src/documents/pdf-view.js).
-let documentFocusHook = null;
-
-export function setDocumentFocusHook(fn) {
-  documentFocusHook = typeof fn === "function" ? fn : null;
-}
-
 function currentSplitDeckKey() {
   return hasActiveDeck() ? deckTabKey(state.deckId, state.localDeckId) : "";
 }
 
+// Any two different parts — the PDFs and the Canvas too, which are two live
+// papers side by side (src/documents/pdf-view.js).
 function splitPairAllowed(a, b) {
-  if (a === b) return false;
-  if (isDocumentPartMode(a) && isDocumentPartMode(b)) return Boolean(dualDocumentSplitHook());
-  return true;
+  return a !== b;
 }
 
 // For tools/split-parts-check.mjs, which asks whether the PDFs and the Canvas
@@ -489,7 +495,16 @@ export function splitPartChoices() {
 function splitPaneElement(mode) {
   if (mode === "notes") return el.notesStage;
   if (mode === "cards") return el.deck;
-  return el.documentStage;
+  return documentStageShowing(mode);
+}
+
+// The stage showing a paper: the one stage, or with both papers up, the one
+// that says it holds this one.
+function documentStageShowing(mode) {
+  const slot = paperSlotOf(mode);
+  // The two stages by reference, not an attribute query on the panel: the
+  // panel holds the note, and this runs on every press while split.
+  return documentStages().find((stage) => !stage.hidden && stage.dataset.docSlot === slot) || el.documentStage;
 }
 
 const partsSplitLayout = {
@@ -537,6 +552,9 @@ export function openSplitPart(mode) {
   // would: a block being typed in on a page, a note in the highlights editor.
   if (replacing) {
     if (isDocumentPartMode(replacing)) blockEditFlushHook?.();
+    // The file's other paper was beside this one: it goes, and the paper in
+    // focus stays alone on its stage before anything takes the column.
+    if (isDualDocumentOpen()) closeDocumentBeside(paperSlotOf(state.viewMode));
     flushReadingPositionSave();
   } else {
     splitLeftPart = state.viewMode;
@@ -553,7 +571,13 @@ export function openSplitPart(mode) {
   paintViewTabs();
   measureChromeHeights();
   if (mode === "notes") prepareNotesArrival({}, true);
-  paintPart(mode, {}, true);
+  // A paper beside the other paper opens into the second stage, and the focus
+  // comes back to the one the reader was on once it has drawn.
+  if (isDocumentPartMode(mode) && isDocumentPartMode(state.viewMode)) {
+    openDocumentBeside(paperSlotOf(mode), () => paintPart(mode, {}, true));
+  } else {
+    paintPart(mode, {}, true);
+  }
   scheduleSplitRelayout();
   return true;
 }
@@ -563,6 +587,8 @@ export function closeSplitPart() {
   if (!leaving) return;
   if (isDocumentPartMode(leaving)) blockEditFlushHook?.();
   if (leaving === "notes") hideNotesSelectionButton();
+  // Two papers to one: the paper in focus stays live, the other is parked.
+  if (isDualDocumentOpen()) closeDocumentBeside(paperSlotOf(state.viewMode));
   flushReadingPositionSave();
   state.splitPart = null;
   splitLeftPart = null;
@@ -571,8 +597,6 @@ export function closeSplitPart() {
   if (el.splitDivider) el.splitDivider.hidden = true;
   applyPartStages();
   paintViewTabs();
-  // The focused document is the one on the stage again, whichever it is.
-  if (isDocumentPartMode(state.viewMode) && isDocumentPartMode(leaving)) documentFocusHook?.(state.viewMode);
   measureChromeHeights();
   scheduleSplitRelayout();
 }
@@ -589,11 +613,14 @@ export function focusPart(mode) {
   state.splitPart = previous;
   state.viewMode = mode;
   splitViewHook?.(mode);
-  if (isDocumentPartMode(mode) && isDocumentPartMode(previous)) documentFocusHook?.(mode);
+  // From one paper to the other: the one reached for becomes the live paper,
+  // and the pager, the rail and the drawer move into its stage. A block being
+  // written on the paper left behind is committed first, as a tab press would.
+  if (isDocumentPartMode(mode) && isDocumentPartMode(previous)) {
+    blockEditFlushHook?.();
+    focusDocumentViewer(paperSlotOf(mode));
+  }
   applyPartsLayout();
-  // The same attribute the tab row's document tools are swapped on, for the
-  // paper now in focus — only different when both papers are up.
-  el.documentStage?.setAttribute("data-doc-slot", documentPartInFocus() === "handwriting" ? "notebook" : "doc");
   paintViewTabs();
   paintViewExportMenu();
   paintViewStyleButton();
@@ -610,7 +637,7 @@ function splitPartAt(target) {
       if (target.closest(".deck, .controls, .deck-utility-actions, .replay-actions, .progress-track")) return mode;
     } else if (mode === "notes") {
       if (el.notesStage?.contains(target)) return mode;
-    } else if (el.documentStage?.contains(target)) {
+    } else if (documentStageShowing(mode)?.contains(target)) {
       return mode;
     }
   }

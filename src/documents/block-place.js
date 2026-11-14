@@ -65,7 +65,7 @@ export function viewDropPoint(page) {
   const viewport = pdfPageViewport(page);
   if (!viewport) return null;
   const view = el.documentView?.getBoundingClientRect();
-  const pageEl = document.querySelector(`.pdf-page[data-page-number="${page}"]`);
+  const pageEl = (el.documentView || document).querySelector(`.pdf-page[data-page-number="${page}"]`);
   const box = pageEl?.getBoundingClientRect();
   if (!view || !box) return null;
   const cx = Math.min(Math.max(view.left + (view.width / 2), box.left), box.right) - box.left;

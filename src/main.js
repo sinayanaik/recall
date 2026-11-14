@@ -120,6 +120,7 @@ import { showAuthenticatedUI, showLibraryFailedScreen, showLoginScreen, showSetu
 import { applyChromeCollapse, hasStudyTextSelection, initImmersiveMode, isFocusModeActive, measureChromeHeights, setChromeCollapseHandler, setChromeFocusPinned, setChromeModesHandler, setFocusMode, toggleImmersiveMode } from "./ui/chrome.js?v=__BUILD__";
 import { DOC_SLOT_DOC, DOC_SLOT_NOTEBOOK, activeDocSlot, deckHasPdf, documentSurfaceShown, onDocumentSurface } from "./documents/doc-slot.js?v=__BUILD__";
 import { isNotesShown } from "./ui/split-parts.js?v=__BUILD__";
+import { onDocumentScrollers } from "./documents/doc-scrollers.js?v=__BUILD__";
 import { captureDocumentSelection } from "./documents/pdf-selection.js?v=__BUILD__";
 import { closeImportPanel, closeMyDecksPanel, editCurrentDeckCategory, editCurrentDeckTitle, openImportPanel, openMyDecksPanel } from "./ui/deck-header.js?v=__BUILD__";
 import { addBlankCardAtCursor, cardEditActive, flushWorkingDeck, toggleEditMode } from "./ui/edit-mode.js?v=__BUILD__";
@@ -153,13 +154,13 @@ import { openPdfMarginsDialog } from "./documents/pdf-margins.js?v=__BUILD__";
 import { openMarkdownPdfDialog } from "./documents/md-pdf/dialog.js?v=__BUILD__";
 import { removePdfFromDeck, renamePdf } from "./documents/pdf-multi-actions.js?v=__BUILD__";
 import { closePdfPanel, initPdfSwitcher } from "./documents/pdf-switcher.js?v=__BUILD__";
-import { currentPdfDocument, currentPdfPageCount, documentFittedWidth, refreshBakedDocumentPages, fitDocumentToWidth, initDocumentCanvasRecovery, initDocumentPinchZoom, isDocumentFitWidth, openDocumentIsCurrent, openDocumentPdfId, noteSettledDocumentPosition, openDocumentView, reattachDocument, relayoutDocumentHoldingReader, repaintOpenDocumentPages, scheduleDocumentPositionSave, scrollToDocumentPage, refreshDocumentPaperForTheme, setDocumentAttachHandler, setDocumentCanvasRecoveredHook, setDocumentOpenedHook, setDocumentPagePaintedHook, setMarkdownPdfStartHandler, setNotebookStartHandler, setPageIndicatorUpdatedHook, setPaperChangedHook, switchToPdf, updatePageIndicator, zoomDocument, retryMissingDocumentOpen } from "./documents/pdf-view.js?v=__BUILD__";
+import { currentPdfDocument, currentPdfPageCount, documentFittedWidth, refreshBakedDocumentPages, fitDocumentToWidth, initDocumentCanvasRecovery, initDocumentPinchZoom, isDocumentFitWidth, openDocumentIsCurrent, openDocumentPdfId, noteSettledDocumentPosition, openDocumentView, reattachDocument, relayoutDocumentHoldingReader, repaintOpenDocumentPages, scheduleDocumentPositionSave, scrollToDocumentPage, refreshDocumentPaperForTheme, setDocumentAttachHandler, setDocumentCanvasRecoveredHook, setDocumentChromeMovedHook, setDocumentOpenedHook, noteBesideDocumentStale, setDocumentPagePaintedHook, setMarkdownPdfStartHandler, setNotebookStartHandler, setPageIndicatorUpdatedHook, setPaperChangedHook, switchToPdf, updatePageIndicator, zoomDocument, retryMissingDocumentOpen } from "./documents/pdf-view.js?v=__BUILD__";
 import { adoptDocumentInk, canRedoInk, canUndoInk, copyInkSelection, cutInkSelection, duplicateInkSelection, hasInkClipboard, initDocumentInk, inkMarkImageMarkdown, inkMarkIsHighlight, inkSelectionCount, isInkMarkId, nudgeInkSelection, paintDocumentInk, pasteInkSelection, redoInk, repaintDocumentInk, setInkChangedHandler, undoInk } from "./documents/pdf-ink.js?v=__BUILD__";
 import { addHandwritingBlock, addHandwritingImages, addHandwritingTextBlock, enterHandwritingView, initHandwritingRail, refreshHandwritingBoard, runHandwritingMenuAction, startHandwritingNotebook } from "./handwriting/board.js?v=__BUILD__";
 import { closeBlockStylePopover, isBlockStylePopoverOpen } from "./documents/block-style-bar.js?v=__BUILD__";
 import { closeBlockActionsPopover, isBlockActionsPopoverOpen } from "./documents/block-actions-popover.js?v=__BUILD__";
 import { blocksForPaper, buildStaticBlock, canRedoBlocks, setDiagramShapeIO, canUndoBlocks, commitBlockEdit, deleteBlock, duplicateBlock, editBlock, handleBlockPointerDown, nudgeBlock, paintDocumentBlocks, pdfPointAt, redoBlocks, repaintDocumentBlocks, restackBlock, selectBlock, selectedBlockId, setBlocksChangedHandler, undoBlocks } from "./documents/pdf-blocks.js?v=__BUILD__";
-import { applyInkRailPreference, closeInkRailPopups, initInkRail, refreshInkRail, setDocumentUndoHandlers } from "./ui/ink-rail.js?v=__BUILD__";
+import { applyInkRailPreference, closeInkRailPopups, initInkRail, refreshInkRail, rehomeInkRail, setDocumentUndoHandlers } from "./ui/ink-rail.js?v=__BUILD__";
 import { initDocumentShapes, repaintDocumentShapes, setShapeCreatedHandler } from "./documents/pdf-shapes.js?v=__BUILD__";
 import { deleteWithConnectors, initConnectors, scheduleConnectorRelink } from "./documents/pdf-connectors.js?v=__BUILD__";
 import { initCanvasSelection } from "./documents/canvas-selection.js?v=__BUILD__";
@@ -1245,7 +1246,7 @@ initTouchSelection();
 // so it steps aside while the pages scroll and comes back beside the passage.
 // Only the phone bar — suspendSelectionBarForScroll is a no-op for the desktop
 // pill, which this surface has never hidden on scroll.
-el.documentView?.addEventListener("scroll", suspendSelectionBarForScroll, { passive: true });
+onDocumentScrollers("scroll", suspendSelectionBarForScroll, { passive: true });
 
 // The persistent "make a card" control (the floating pill only exists while a
 // selection is live) used to be a ➕ in each face header, beside the mode
@@ -1581,6 +1582,16 @@ onDomReady(() => {
     repaintHighlightLink();
   });
   setDocumentOpenedHook((opened) => {
+    // A paper given a moment to finish drawing beside the one in focus (side by
+    // side — "catch-up turns" in src/documents/pdf-view.js), or put back after
+    // one. Its ink engine is adopted like any paper's and its printed notes are
+    // brought up to date; the chrome — the back chip, ▣, the rail — is the
+    // focused paper's and is left exactly as it is.
+    if (opened.quiet) {
+      adoptDocumentInk(opened);
+      refreshPdfPageNotes();
+      return;
+    }
     // A "back" chip left by a link in the last document points into that one.
     resetDocumentLinks();
     // The engine holds decoded strokes for every page it has painted, keyed by
@@ -1648,7 +1659,7 @@ onDomReady(() => {
   // anything inside a block by class. Two guards, because the cost of getting
   // this wrong is a pen that moves a block and draws a line across the page in
   // the same gesture.
-  el.documentView?.addEventListener("pointerdown", (event) => { handleBlockPointerDown(event); }, true);
+  onDocumentScrollers("pointerdown", (event) => { handleBlockPointerDown(event); }, true);
   // ── A double-click makes a Block on bare paper — with a mouse only ──────
   //
   // Writing with a pen is a great many quick, close-together taps (dotting an
@@ -1717,6 +1728,8 @@ onDomReady(() => {
     // rewritten under the reader. The note first: the document's branch below
     // returns early on its own paths.
     if (isNotesShown()) renderNotesViewPinned();
+    // ...and with both papers up, the suspended one repaints on its next turn.
+    noteBesideDocumentStale();
     if (documentSurfaceShown()) {
       // No paper on the stage at all — the offer to attach one, a notebook not
       // started yet, an open that failed. loadDeckSnapshot no longer paints the
@@ -1763,7 +1776,11 @@ onDomReady(() => {
 // rather than imported into src/documents/pdf-highlights.js, which
 // pdf-page-notes.js already imports — this file is the one that knows both ends
 // (the same reason setDocumentPagePaintedHook exists below).
+onDomReady(() => setDocumentChromeMovedHook(rehomeInkRail));
 onDomReady(() => setHighlightsChangedHandler(() => {
+  // The file's other paper, side by side and suspended, shows marks of its own
+  // that this may have changed; it repaints them on its next turn.
+  noteBesideDocumentStale();
   // Only when the pane is actually on screen. It is the one container the cards
   // are ever built into now, and building several hundred of them into a hidden
   // box for nobody is the cost this guard exists to refuse.
@@ -2517,7 +2534,7 @@ el.quickNotesBoardBtn?.addEventListener("click", () => openQuickNotesBoard());
 // own attach handler is registered here: this file is the one that knows both
 // ends, and src/handwriting/board.js must not be pulled into view-mode.js or
 // pdf-view.js — both of which it reaches.
-setHandwritingViewHook(() => { enterHandwritingView(); });
+setHandwritingViewHook(() => enterHandwritingView());
 // ── What a theme change has to redraw ────────────────────────────────────
 //
 // Everything else the theme touches is CSS or markdown that can be rebuilt. Ink
@@ -3812,7 +3829,7 @@ function pagePasteTarget(target) {
   // unseen, on the page behind it.
   if (anyModalOpen() || document.querySelector(".image-compress-modal, .pdf-block-editor:not([hidden])")) return false;
   if (el.documentView?.contains(target) || target === document.body) return true;
-  if (target.closest?.("#documentStage, #documentInkRail, #viewModeRow")) return true;
+  if (target.closest?.("#documentStage, #documentStageAlt, #documentInkRail, #viewModeRow")) return true;
   return Boolean(pagePointAtPointer());
 }
 
@@ -4336,7 +4353,7 @@ async function goToPdfRegion({ page, rect, pdfId }) {
 // forces at most one recompute instead of three.
 let documentScrollFrame = 0;
 
-el.documentView?.addEventListener("scroll", () => {
+onDocumentScrollers("scroll", () => {
   if (documentScrollFrame) return;
   documentScrollFrame = requestAnimationFrame(() => {
     documentScrollFrame = 0;

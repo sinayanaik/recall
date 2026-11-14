@@ -20,6 +20,7 @@
 // moves only the editor; the size it leaves is written with the words, in the
 // same undo step.
 
+import { el } from "../core/dom.js?v=__BUILD__";
 import { SHAPE_TEXT_PAD, TEXT_BOX_DEFAULT, moveShapeHandle, normalizeShape, shapeHandles, shapeTextNeedsRendering } from "../render/annot-shapes.js?v=__BUILD__";
 import { documentHighlightById } from "./pdf-highlights.js?v=__BUILD__";
 import { applyShapeTextTurn } from "./pdf-shape-markdown.js?v=__BUILD__";
@@ -230,7 +231,7 @@ export function openShapeTextEditor(recordOrId) {
   setEditingShapeId(record.id);
   selectShape(null);
   paintDocumentShapes(page);
-  const layer = document.querySelector(`.pdf-page[data-page-number="${page}"] > .pdf-shape-layer`);
+  const layer = (el.documentView || document).querySelector(`.pdf-page[data-page-number="${page}"] > .pdf-shape-layer`);
   if (!layer) { setEditingShapeId(null); return false; }
   const node = document.createElement("div");
   node.className = PDF_SHAPE_EDITOR_CLASS;

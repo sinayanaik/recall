@@ -63,6 +63,7 @@ import {
 import { inkEraseTarget, inkPaperBg, inkTool, isInkArmed, pushInkHistoryAction, setInkStandDownHook } from "./pdf-ink.js?v=__BUILD__";
 import { paperRecolor } from "../format/paper-tones.js?v=__BUILD__";
 import { pdfPageElement, pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
+import { forEachDocumentScroller, liveDocumentHandler } from "./doc-scrollers.js?v=__BUILD__";
 
 export const PDF_SHAPE_LAYER_CLASS = "pdf-shape-layer";
 export const PDF_SHAPE_CLASS = "pdf-shape";
@@ -1001,7 +1002,7 @@ function bindShapeEnds(drag, shape, event, indices, moving) {
 }
 
 export function repaintDocumentShapes() {
-  document.querySelectorAll(`.pdf-page[data-page-number]`).forEach((pageEl) => {
+  (el.documentView || document).querySelectorAll(`.pdf-page[data-page-number]`).forEach((pageEl) => {
     const pageNumber = Number(pageEl.dataset.pageNumber);
     if (pageNumber) paintDocumentShapes(pageNumber);
   });
@@ -1570,29 +1571,31 @@ export function initDocumentShapes() {
   // A press on a picked-up shape's handle, or on words typed on the page, is
   // the shape's — whichever of this module's listener and the pen's runs first.
   setInkStandDownHook((event) => Boolean(pickupAt(event)));
-  const view = el.documentView;
-  if (!view) return;
-  view.addEventListener("pointerdown", onShapePointerDown, true);
-  // Passive, and not capture-stopped: the ink layer owns the eraser's press,
-  // and this only watches where it goes.
-  view.addEventListener("pointerdown", onShapeEraserDown, { capture: true, passive: true });
-  view.addEventListener("pointermove", onShapeEraserMove, { capture: true, passive: true });
   window.addEventListener("pointerup", onShapeEraserUp, { passive: true });
   window.addEventListener("pointercancel", onShapeEraserUp, { passive: true });
-  view.addEventListener("pointermove", onShapePointerMove, true);
-  view.addEventListener("pointerup", onShapePointerUp, true);
-  view.addEventListener("pointercancel", onShapePointerCancel, true);
-  view.addEventListener("click", onShapeClick, true);
-  view.addEventListener("pointerdown", onShapeFingerDown, { capture: true, passive: true });
-  view.addEventListener("pointermove", onShapeFingerMove, { capture: true, passive: true });
-  view.addEventListener("pointerup", onShapeFingerUp, { capture: true, passive: true });
-  view.addEventListener("pointercancel", () => { shapeFingerTap = null; }, { capture: true, passive: true });
-  // The scroller's OWN capture, lost — not one bubbling up from inside it: a
-  // finger's press is captured implicitly by what it landed on (a text box),
-  // and taking the capture to the scroller is heard there as a lost capture.
-  view.addEventListener("lostpointercapture", (event) => {
-    if (event.target !== view) return;
-    if (shapePress && event.pointerId === shapePress.pointerId) onShapePointerCancel(event);
+  // Once per scroller: side by side, the file's other paper has its own
+  // (src/documents/doc-scrollers.js), and each copy keeps to the live one.
+  forEachDocumentScroller((view) => {
+    view.addEventListener("pointerdown", liveDocumentHandler(view, onShapePointerDown), true);
+    // Passive, and not capture-stopped: the ink layer owns the eraser's press,
+    // and this only watches where it goes.
+    view.addEventListener("pointerdown", liveDocumentHandler(view, onShapeEraserDown), { capture: true, passive: true });
+    view.addEventListener("pointermove", liveDocumentHandler(view, onShapeEraserMove), { capture: true, passive: true });
+    view.addEventListener("pointermove", liveDocumentHandler(view, onShapePointerMove), true);
+    view.addEventListener("pointerup", liveDocumentHandler(view, onShapePointerUp), true);
+    view.addEventListener("pointercancel", liveDocumentHandler(view, onShapePointerCancel), true);
+    view.addEventListener("click", liveDocumentHandler(view, onShapeClick), true);
+    view.addEventListener("pointerdown", liveDocumentHandler(view, onShapeFingerDown), { capture: true, passive: true });
+    view.addEventListener("pointermove", liveDocumentHandler(view, onShapeFingerMove), { capture: true, passive: true });
+    view.addEventListener("pointerup", liveDocumentHandler(view, onShapeFingerUp), { capture: true, passive: true });
+    view.addEventListener("pointercancel", liveDocumentHandler(view, () => { shapeFingerTap = null; }), { capture: true, passive: true });
+    // The scroller's OWN capture, lost — not one bubbling up from inside it: a
+    // finger's press is captured implicitly by what it landed on (a text box),
+    // and taking the capture to the scroller is heard there as a lost capture.
+    view.addEventListener("lostpointercapture", liveDocumentHandler(view, (event) => {
+      if (event.target !== view) return;
+      if (shapePress && event.pointerId === shapePress.pointerId) onShapePointerCancel(event);
+    }));
   });
   document.addEventListener("keydown", onShapeKeyDown, true);
 }

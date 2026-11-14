@@ -217,7 +217,7 @@
 :is(.cs-doc-empty, #cs-specificity).cs-doc-empty .quiz-panel.notes-mode .view-mode-row > .document-more-btn,
 :is(.cs-doc-empty, #cs-specificity).cs-doc-empty .quiz-panel.notes-mode .view-mode-row > #documentTocBtn,
 :is(.cs-doc-empty, #cs-specificity).cs-doc-empty .quiz-panel.notes-mode .view-mode-row > .view-mode-row-break,
-#documentStage.has-no-document .document-pager {
+:is(#documentStage, #documentStageAlt).has-no-document .document-pager {
   display: none;
 }
 

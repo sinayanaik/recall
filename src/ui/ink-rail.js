@@ -268,9 +268,27 @@ function initInlineRail() {
   // <body>'s classes (the drawer, the view, edit mode) and the stage's own
   // state: both change through class and attribute writes that do not pass
   // through here.
-  const observer = new MutationObserver(() => placeInkRail());
-  observer.observe(document.body, { attributes: true, attributeFilter: ["class"] });
-  if (el.documentStage) observer.observe(el.documentStage, { attributes: true, attributeFilter: ["class", "data-doc-slot"] });
+  railStageObserver = new MutationObserver(() => placeInkRail());
+  railStageObserver.observe(document.body, { attributes: true, attributeFilter: ["class"] });
+  if (el.documentStage) railStageObserver.observe(el.documentStage, { attributes: true, attributeFilter: ["class", "data-doc-slot"] });
+  placeInkRail();
+}
+
+let railStageObserver = null;
+
+// The rail's home moves with the paper in focus. With a file's PDFs and Canvas
+// side by side there are two document stages (src/documents/doc-scrollers.js),
+// and the pager, the drawer and this rail are one set that sits in whichever
+// holds the focused paper (moveDocumentChrome, src/documents/pdf-view.js). On a
+// wide screen the rail itself is in the tab row and only its home moves; at
+// home, it moves with it.
+export function rehomeInkRail(stage) {
+  const rail = el.documentInkRail;
+  if (!stage || !rail || !railHomeMarker || railHomeMarker.parentNode === stage) return;
+  const atHome = rail.parentNode === railHomeMarker.parentNode;
+  stage.appendChild(railHomeMarker);
+  if (atHome) stage.insertBefore(rail, railHomeMarker.nextSibling);
+  railStageObserver?.observe(stage, { attributes: true, attributeFilter: ["class", "data-doc-slot"] });
   placeInkRail();
 }
 

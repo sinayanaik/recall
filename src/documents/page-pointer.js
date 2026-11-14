@@ -31,6 +31,7 @@ import { editingShapeTextId, isShapeToolArmed, shapeAtPoint } from "./pdf-shapes
 import { inkTool, isInkArmed } from "./pdf-ink.js?v=__BUILD__";
 import { isRegionSelectArmed } from "./pdf-region.js?v=__BUILD__";
 import { anyModalOpen } from "../ui/overlays.js?v=__BUILD__";
+import { onDocumentScrollers } from "./doc-scrollers.js?v=__BUILD__";
 
 let pagePointer = null;
 let pagePressType = "";
@@ -128,5 +129,5 @@ export function initPagePointer({ textAtPointer, blockAtPointer } = {}) {
   // The mouse left the window: there is no "where" any more.
   document.addEventListener("pointerout", (event) => { if (!event.relatedTarget && event.pointerType !== "touch") pagePointer = null; });
   document.addEventListener("keydown", onPlaceKey, true);
-  el.documentView?.addEventListener("dblclick", onPageDoubleClick);
+  onDocumentScrollers("dblclick", onPageDoubleClick);
 }
