@@ -211,8 +211,9 @@ function wire() {
   bindInkRailActivation(el.documentInkRail, (button) => {
     const action = button.dataset.hwAction;
     if (action === "add-page") addPage();
-    else if (action === "add-block") addBlock();
+    else if (action === "add-block") addHandwritingBlock();
     else if (action === "add-shape") addShapeBlock(button.dataset.blockShape);
+    else if (action === "paste-picture") pastePictureFromClipboard();
     // Text arms the typewriter rather than dropping a box in the middle: the
     // reader says where, with one tap, and types there.
     else if (action === "add-text") {
@@ -258,11 +259,44 @@ export function handwritingDropPoint(page) {
   return { x, y };
 }
 
-function addBlock() {
-  const page = currentDocumentPage();
-  if (!pdfPageViewport(page)) return;
-  addDocumentBlock(page, handwritingDropPoint(page));
+// + Add → Block puts it in the middle of the page in view. The B key and a
+// mouse double-click (src/documents/page-pointer.js) have a point — { page, x,
+// y } — and the Block's top-left corner goes there.
+export function addHandwritingBlock(at = null) {
+  const page = Number(at?.page) || currentDocumentPage();
+  if (!pdfPageViewport(page)) return null;
+  const block = at
+    ? addDocumentBlock(page, at, { anchor: "corner" })
+    : addDocumentBlock(page, handwritingDropPoint(page));
   paintHandwritingControls();
+  return block;
+}
+
+// ── Words pasted onto a page ──────────────────────────────────────────────
+//
+// Ctrl+V of words with nothing to type into (src/main.js): a Block holding them
+// as markdown, its top-left corner at the mouse when there is one, as a pasted
+// picture's is. A Block rather than Text because what is copied is as often a
+// paragraph, a list or a table as a word, and a Block keeps all of those. It
+// fits its height to the words (block style `fit`); its width follows the
+// longest line, between a Block's usual width and most of the page's.
+const PASTED_BLOCK_MIN_WIDTH = 240;
+const PASTED_POINTS_PER_CHAR = 5.6;
+
+export function addHandwritingTextBlock(markdown, at = null) {
+  const md = String(markdown || "").replace(/\r\n?/g, "\n").trim();
+  if (!md) return null;
+  const page = Number(at?.page) || currentDocumentPage();
+  const viewport = pdfPageViewport(page);
+  if (!viewport) return null;
+  const [vx0, , vx1] = viewport.viewBox;
+  const longest = md.split("\n").reduce((most, line) => Math.max(most, line.length), 0);
+  const w = Math.round(Math.min((vx1 - vx0) * 0.62, Math.max(PASTED_BLOCK_MIN_WIDTH, longest * PASTED_POINTS_PER_CHAR)));
+  const block = at
+    ? addDocumentBlock(page, at, { anchor: "corner", md, w, edit: false })
+    : addDocumentBlock(page, handwritingDropPoint(page), { md, w, edit: false });
+  paintHandwritingControls();
+  return block;
 }
 
 // ── A diagram's box, from the + Add menu's palette ──────────────────────────
@@ -318,6 +352,11 @@ function buildShapePalette() {
 // In order and one at a time, each a step further down and to the right, because
 // four photographs dropped together land on one point and the pile looks like a
 // single picture until it is dragged apart.
+//
+// A point that came from the pointer is where the picture's top-left corner goes
+// (`anchor: "corner"`, addDocumentImageBlock): "paste it where my mouse is"
+// means it starts there, not that it is centred on it and half of it hangs back
+// over whatever the reader was pointing past.
 export async function addHandwritingImages(files, at = null) {
   const list = Array.from(files || []).filter((file) => file && String(file.type || "").startsWith("image/"));
   if (!list.length) return [];
@@ -326,10 +365,11 @@ export async function addHandwritingImages(files, at = null) {
   const chosen = await chooseImageCompression(list);
   if (!chosen?.items?.length) return [];
   const start = at || handwritingDropPoint(page);
+  const anchor = at ? "corner" : "center";
   const added = [];
   for (const [index, item] of chosen.items.entries()) {
     const point = start ? { x: start.x + (index * IMAGE_DROP_CASCADE), y: start.y - (index * IMAGE_DROP_CASCADE) } : null;
-    const block = await addDocumentImageBlock(page, item.upload, point);
+    const block = await addDocumentImageBlock(page, item.upload, point, { anchor });
     if (block) added.push(block);
   }
   if (added.length) paintHandwritingControls();
@@ -338,4 +378,40 @@ export async function addHandwritingImages(files, at = null) {
 
 // In PDF points, and the same offset a duplicated block takes.
 const IMAGE_DROP_CASCADE = 14;
+
+// ── + Add → Paste picture ─────────────────────────────────────────────────
+//
+// A tablet or a phone with no keyboard has no Ctrl+V, so a screenshot or a
+// picture copied out of another app had no way onto a page. This row reads the
+// clipboard itself (the browser asks first, the first time) and hands what it
+// finds to addHandwritingImages, in the middle of the page in view, like the
+// Picture… row beside it.
+async function pastePictureFromClipboard() {
+  if (!navigator.clipboard?.read) {
+    showToast("This browser cannot read pictures from the clipboard — press Ctrl+V on the page instead", "info");
+    return;
+  }
+  let items;
+  try {
+    items = await navigator.clipboard.read();
+  } catch (_) {
+    showToast("Allow Recall to read the clipboard, then try again", "info");
+    return;
+  }
+  const files = [];
+  for (const item of items || []) {
+    const type = (item.types || []).find((t) => String(t).startsWith("image/"));
+    if (!type) continue;
+    try {
+      const blob = await item.getType(type);
+      const ext = type.split("/")[1]?.split("+")[0] || "png";
+      files.push(new File([blob], `pasted-${Date.now()}-${files.length + 1}.${ext}`, { type }));
+    } catch (_) { /* one unreadable item does not lose the rest */ }
+  }
+  if (!files.length) {
+    showToast("No picture on the clipboard", "info");
+    return;
+  }
+  addHandwritingImages(files);
+}
 
