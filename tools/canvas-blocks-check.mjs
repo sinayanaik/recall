@@ -542,4 +542,5 @@ try {
 }
 
 console.log(`\ncanvas-blocks-check: ${ran - failures}/${ran} passed`);
+console.log(`CHECK: ${ran} checks · ${failures} failed`);
 process.exit(failures ? 1 : 0);
