@@ -38,6 +38,7 @@ import {
   selectedShapeRecord, shapeAtPoint, updateShapesQuietly
 } from "./pdf-shapes.js?v=__BUILD__";
 import { applyDocumentRecordChanges, documentHighlightById, freshDocumentHighlightId } from "./pdf-highlights.js?v=__BUILD__";
+import { claimPagePaste, noteInAppCopy } from "./page-clipboard.js?v=__BUILD__";
 import { currentDocumentPage, pdfPageElement, pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
 import { normalizeShape, rectFromPoints, shapeBounds, translateShape } from "../render/annot-shapes.js?v=__BUILD__";
 import {
@@ -579,35 +580,23 @@ function pickSnapshot(ids) {
 // next paste is ours only if the system clipboard still holds that token — so
 // a picture or words copied since, here or in another app, paste as they
 // always did. Where the system clipboard cannot be written (no permission),
-// the last copy made HERE decides instead.
+// the last copy made HERE decides instead — unless the reader has been in
+// another window since and comes back with a picture to paste.
 export function copyPicked({ cut = false } = {}) {
   const ids = currentIds();
   const copied = pickSnapshot(ids);
   if (!copied) return false;
-  copied.token = `recall-diagram:${Math.random().toString(36).slice(2, 12)}`;
-  copied.onSystem = false;
   clipboard = copied;
   lastCopy = "objects";
-  try {
-    navigator.clipboard?.writeText?.(copied.token)
-      .then(() => { if (clipboard === copied) copied.onSystem = true; })
-      .catch(() => {});
-  } catch (_) { /* no clipboard to write: the last copy here decides */ }
+  // The token, and which of the two clipboards a later Ctrl+V means, are
+  // src/documents/page-clipboard.js's.
+  noteInAppCopy("objects");
   if (cut) deletePicked();
   return true;
 }
 
 export function hasObjectClipboard() {
   return Boolean(clipboard) && lastCopy === "objects";
-}
-
-// A paste whose words are the token of the last copy here is that copy.
-function onPaste(event) {
-  if (!clipboard?.onSystem || pickTypingTarget(event.target) || el.documentStage?.hidden) return;
-  if (event.clipboardData?.getData("text/plain") !== clipboard.token) return;
-  event.preventDefault();
-  event.stopPropagation();
-  pastePicked();
 }
 
 // Fresh ids for everything in `data`, ties between the copies moved onto the
@@ -876,10 +865,12 @@ function onKey(event) {
     return;
   }
   if (ctrl && !event.shiftKey && key === "v" && hasObjectClipboard()) {
-    // On the system clipboard: the paste event says whether it is still ours
-    // (onPaste) — let it come, but no other key handler may take this press.
-    if (clipboard.onSystem) { event.stopPropagation(); return; }
-    if (pastePicked()) done();
+    // Claimed, not taken: the paste event says whether the system clipboard
+    // holds something newer — a picture — which then pastes instead
+    // (src/documents/page-clipboard.js). No other key handler may take this
+    // press, and nothing may preventDefault it, or no paste event comes.
+    claimPagePaste(() => pastePicked());
+    event.stopPropagation();
     return;
   }
   if (ctrl && event.shiftKey && key === "g") { if (groupPicked(false)) done(); return; }
@@ -910,7 +901,6 @@ export function initCanvasSelection() {
   document.addEventListener("pointerdown", onPickPress, true);
   document.addEventListener("click", onClick, true);
   document.addEventListener("keydown", onKey, true);
-  document.addEventListener("paste", onPaste, true);
   // Words copied here since are what the next Ctrl+V means, not the things
   // copied before them.
   document.addEventListener("copy", () => { if (lastCopy === "objects") lastCopy = "other"; });

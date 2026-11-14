@@ -1473,7 +1473,13 @@ export function repaintDocumentBlocks() {
 // `style`, `w` and `h` are for a diagram's box (+ Add → Shape, and a box made
 // by connecting from another): a given style replaces the remembered one, and
 // a given size the default. `edit: false` leaves the editor shut.
-export function addDocumentBlock(pageNumber, at = null, { style = null, w = null, h = null, edit = true } = {}) {
+// `anchor: "corner"` puts the block's top-left corner at `at` rather than its
+// middle: a Block made where the mouse is (the B key, a double-click) starts
+// at the pointer, as typed Text does.
+//
+// `md` is what it holds from the start — words pasted onto the page (Ctrl+V,
+// src/main.js) — and such a block is put down rather than opened to type in.
+export function addDocumentBlock(pageNumber, at = null, { style = null, w = null, h = null, edit = true, anchor = "center", md = "" } = {}) {
   const viewport = pdfPageViewport(pageNumber);
   if (!viewport) return null;
   // The page box, which need not start at 0,0: a PDF with margins added on the
@@ -1486,19 +1492,20 @@ export function addDocumentBlock(pageNumber, at = null, { style = null, w = null
   const inherited = given ? (isDefaultBlockStyle(given) ? null : given) : freshBlockStyle(PDF_BLOCK_MARKDOWN);
   const width = Math.max(PDF_BLOCK_MIN_WIDTH, Number(w) || PDF_BLOCK_DEFAULT_WIDTH);
   const height = Math.max(PDF_BLOCK_MIN_HEIGHT, Number(h) || PDF_BLOCK_DEFAULT_HEIGHT);
+  const corner = Boolean(at) && anchor === "corner";
   const block = {
     // Unique across the DECK, not the surface: a block id is a sync key, and a
     // notebook minting the same one as a block over the paper beside it would
     // make the two records one record on the next merge.
     id: freshBlockId(new Set(allDocumentBlocks().map((b) => b?.id))),
     page: Number(pageNumber),
-    x: Math.round(Math.max(vx0 + 12, Math.min(vx1 - width - 12, wanted.x - (width / 2)))),
-    y: Math.round(Math.max(vy0 + 12, Math.min(vy1 - height - 12, wanted.y - (height / 2)))),
+    x: Math.round(Math.max(vx0 + 12, Math.min(vx1 - width - 12, corner ? wanted.x : wanted.x - (width / 2)))),
+    y: Math.round(Math.max(vy0 + 12, Math.min(vy1 - height - 12, corner ? wanted.y - height : wanted.y - (height / 2)))),
     w: Math.round(width),
     h: Math.round(height),
     z: nextBlockZ(blocks),
     kind: PDF_BLOCK_MARKDOWN,
-    md: "",
+    md: String(md || ""),
     at: Date.now(),
     ...(inherited ? { style: inherited } : {})
   };
@@ -1530,7 +1537,13 @@ export function nextBlockZ(blocks = documentBlocks()) {
 // with a margin — an 8-megapixel photograph placed at a markdown block's default
 // 240x90 would be an unreadable letterbox that the reader then has to drag out
 // to something sensible before they can see what it is.
-export async function addDocumentImageBlock(pageNumber, file, at = null) {
+//
+// `anchor` says what `at` is: the picture's middle (the + Add picker, which has
+// only the middle of the view to go on), or its top-left corner ("corner") — a
+// picture pasted where the mouse is, or dropped where the pointer let go,
+// starts exactly there and hangs down and to the right of it, the way a
+// picture pasted into any canvas does.
+export async function addDocumentImageBlock(pageNumber, file, at = null, { anchor = "center" } = {}) {
   const viewport = pdfPageViewport(pageNumber);
   if (!viewport) return null;
   if (!file || !String(file.type || "").startsWith("image/")) {
@@ -1558,12 +1571,15 @@ export async function addDocumentImageBlock(pageNumber, file, at = null) {
 
   const blocks = documentBlocks();
   const wanted = at || { x: (vx0 + vx1) / 2, y: (vy0 + vy1) / 2 };
+  const corner = Boolean(at) && anchor === "corner";
   const inherited = freshBlockStyle(PDF_BLOCK_IMAGE);
   const block = {
     id: freshBlockId(new Set(allDocumentBlocks().map((b) => b?.id))),
     page: Number(pageNumber),
-    x: Math.round(Math.max(vx0 + 12, Math.min(vx1 - w - 12, wanted.x - (w / 2)))),
-    y: Math.round(Math.max(vy0 + 12, Math.min(vy1 - h - 12, wanted.y - (h / 2)))),
+    // A block's y is its foot (PDF points run upward), so a corner at the
+    // pointer puts the foot one height below it.
+    x: Math.round(Math.max(vx0 + 12, Math.min(vx1 - w - 12, corner ? wanted.x : wanted.x - (w / 2)))),
+    y: Math.round(Math.max(vy0 + 12, Math.min(vy1 - h - 12, corner ? wanted.y - h : wanted.y - (h / 2)))),
     w: Math.round(w),
     h: Math.round(h),
     z: nextBlockZ(blocks),

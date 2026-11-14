@@ -103,6 +103,7 @@
 // than by dispatch order. The flag and the guard's own `press?.live` test are
 // unchanged and still carry everything else.
 
+import { noteInAppCopy } from "./page-clipboard.js?v=__BUILD__";
 import { PDF_INK_HL_LAYER_CLASS, PDF_INK_LAYER_CLASS, PDF_PICKUP_SELECTOR, PDF_SHAPE_TEXT_CLASS } from "../core/constants.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { inkPenIsDown, noteInkContact, noteInkStrokeCommitted, setInkPenDown, setPenTextMode } from "../core/gesture.js?v=__BUILD__";
@@ -1275,10 +1276,15 @@ export function inkSelectionKinds() {
 // a clipboard that refused across the two would be a rule nobody asked for.
 let inkClipboard = null;
 
+//
+// Each copy also tells src/documents/page-clipboard.js, which puts a token of it
+// on the system clipboard: a picture copied after it, anywhere, is then what the
+// next Ctrl+V pastes, rather than these strokes yet again.
 export function copyInkSelection() {
   const clip = ensureEngine().copySelection();
   if (!clip) return false;
   inkClipboard = clip;
+  noteInAppCopy("ink");
   return true;
 }
 
@@ -1287,6 +1293,7 @@ export function cutInkSelection() {
   const clip = ensureEngine().cutSelection();
   if (!clip) return false;
   inkClipboard = clip;
+  noteInAppCopy("ink");
   return true;
 }
 

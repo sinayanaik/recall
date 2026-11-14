@@ -674,6 +674,10 @@ const checks = [
     // several things picked up and lined up at once, and the guides a drag
     // snaps to.
     ["diagram       ", ["node", ["tools/diagram-check.mjs"], ROOT]],
+    // Things put on a page where the mouse is: a pasted picture or pasted
+    // words, Text with T, a Block with B or a mouse double-click (never a
+    // pen's), and a picture copied after ink or Blocks still pasting as one.
+    ["page-place    ", ["node", ["tools/page-place-check.mjs"], ROOT]],
     // ⋯ → Page margins… in the app: what was written stays put, the page is
     // wider, a typed box goes in the margin, the file saved with annotations
     // carries the margin and the typed boxes, None and a re-attach both hold.

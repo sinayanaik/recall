@@ -154,14 +154,16 @@ import { removePdfFromDeck, renamePdf } from "./documents/pdf-multi-actions.js?v
 import { closePdfPanel, initPdfSwitcher } from "./documents/pdf-switcher.js?v=__BUILD__";
 import { currentPdfDocument, currentPdfPageCount, documentFittedWidth, refreshBakedDocumentPages, fitDocumentToWidth, initDocumentCanvasRecovery, initDocumentPinchZoom, isDocumentFitWidth, openDocumentIsCurrent, openDocumentPdfId, noteSettledDocumentPosition, openDocumentView, reattachDocument, relayoutDocumentHoldingReader, repaintOpenDocumentPages, scheduleDocumentPositionSave, scrollToDocumentPage, refreshDocumentPaperForTheme, setDocumentAttachHandler, setDocumentCanvasRecoveredHook, setDocumentOpenedHook, setDocumentPagePaintedHook, setMarkdownPdfStartHandler, setNotebookStartHandler, setPageIndicatorUpdatedHook, setPaperChangedHook, switchToPdf, updatePageIndicator, zoomDocument, retryMissingDocumentOpen } from "./documents/pdf-view.js?v=__BUILD__";
 import { adoptDocumentInk, canRedoInk, canUndoInk, copyInkSelection, cutInkSelection, duplicateInkSelection, hasInkClipboard, initDocumentInk, inkMarkImageMarkdown, inkMarkIsHighlight, inkSelectionCount, isInkMarkId, nudgeInkSelection, paintDocumentInk, pasteInkSelection, redoInk, repaintDocumentInk, setInkChangedHandler, undoInk } from "./documents/pdf-ink.js?v=__BUILD__";
-import { addHandwritingImages, enterHandwritingView, initHandwritingRail, refreshHandwritingBoard, runHandwritingMenuAction, startHandwritingNotebook } from "./handwriting/board.js?v=__BUILD__";
+import { addHandwritingBlock, addHandwritingImages, addHandwritingTextBlock, enterHandwritingView, initHandwritingRail, refreshHandwritingBoard, runHandwritingMenuAction, startHandwritingNotebook } from "./handwriting/board.js?v=__BUILD__";
 import { closeBlockStylePopover, isBlockStylePopoverOpen } from "./documents/block-style-bar.js?v=__BUILD__";
 import { closeBlockActionsPopover, isBlockActionsPopoverOpen } from "./documents/block-actions-popover.js?v=__BUILD__";
 import { blocksForPaper, buildStaticBlock, canRedoBlocks, setDiagramShapeIO, canUndoBlocks, commitBlockEdit, deleteBlock, duplicateBlock, editBlock, handleBlockPointerDown, nudgeBlock, paintDocumentBlocks, pdfPointAt, redoBlocks, repaintDocumentBlocks, restackBlock, selectBlock, selectedBlockId, setBlocksChangedHandler, undoBlocks } from "./documents/pdf-blocks.js?v=__BUILD__";
-import { applyInkRailPreference, closeInkRailPopups, finishTypewriterBox, initInkRail, refreshInkRail, setDocumentUndoHandlers } from "./ui/ink-rail.js?v=__BUILD__";
-import { initDocumentShapes, repaintDocumentShapes, setShapeCreatedHandler } from "./documents/pdf-shapes.js?v=__BUILD__";
+import { applyInkRailPreference, closeInkRailPopups, finishTypewriterBox, initInkRail, refreshInkRail, setDocumentUndoHandlers, toggleTypewriter } from "./ui/ink-rail.js?v=__BUILD__";
+import { initDocumentShapes, placeTextAt, repaintDocumentShapes, setShapeCreatedHandler } from "./documents/pdf-shapes.js?v=__BUILD__";
 import { deleteWithConnectors, initConnectors, scheduleConnectorRelink } from "./documents/pdf-connectors.js?v=__BUILD__";
 import { initCanvasSelection } from "./documents/canvas-selection.js?v=__BUILD__";
+import { claimPagePaste, initPageClipboard } from "./documents/page-clipboard.js?v=__BUILD__";
+import { initPagePointer, pagePointAtPointer } from "./documents/page-pointer.js?v=__BUILD__";
 import { initGuides } from "./documents/pdf-guides.js?v=__BUILD__";
 import { openPaperMenu } from "./documents/paper-menu.js?v=__BUILD__";
 import { openShapeTextEditor, setShapeTextCommittedHandler } from "./documents/pdf-shape-text.js?v=__BUILD__";
@@ -1648,14 +1650,27 @@ onDomReady(() => {
   // this wrong is a pen that moves a block and draws a line across the page in
   // the same gesture.
   el.documentView?.addEventListener("pointerdown", (event) => { handleBlockPointerDown(event); }, true);
-  // ── A double-click used to make a block on bare paper — and does not ────
+  // ── A double-click makes a Block on bare paper — with a mouse only ──────
   //
   // Writing with a pen is a great many quick, close-together taps (dotting an
   // "i", crossing a "t"), and the browser's own dblclick synthesis does not
-  // know the difference between two of those and two deliberate clicks. It fired
-  // mid-stroke and popped the block editor open under the nib, which is a far
-  // worse cost than the one press this saved. + Text in the rail is the door
-  // again — see addDocumentBlock, called from there.
+  // know the difference between two of those and two deliberate clicks. For any
+  // pointer it fired mid-stroke and popped the block editor open under the nib,
+  // so it was taken out. It is back for a MOUSE only, which never writes dots,
+  // along with the T and B keys: Text or a Block where the mouse is
+  // (src/documents/page-pointer.js). + Add in the rail is still the door for a
+  // pen and a finger.
+  initPagePointer({
+    textAtPointer: (at) => {
+      toggleTypewriter(true);
+      if (at) placeTextAt(at.page, at);
+      else showToast("Tap where you want to type");
+    },
+    blockAtPointer: (at) => { addHandwritingBlock(at); }
+  });
+  // Which clipboard a Ctrl+V on a page means — this app's ink and Blocks, or a
+  // picture on the system's (src/documents/page-clipboard.js).
+  initPageClipboard();
 
   // A block moved, typed into or deleted: repaint the pages it is on, and let
   // the Write tab's controls re-read what there is to act on.
@@ -3193,10 +3208,11 @@ document.addEventListener("keydown", (event) => {
       refreshInkRail();
       return;
     }
+    // Claimed rather than taken, so a picture copied since still pastes as a
+    // picture (src/documents/page-clipboard.js): no preventDefault here, or the
+    // browser fires no paste event to decide with.
     if (key === "v" && hasInkClipboard()) {
-      event.preventDefault();
-      pasteInkSelection();
-      refreshInkRail();
+      claimPagePaste(() => { pasteInkSelection(); refreshInkRail(); });
       return;
     }
     if (key === "d" && inkSelectionCount() > 0) {
@@ -3757,27 +3773,70 @@ if (appInfoModal) {
 // field's own handler. A paste with nothing focused arrives on <body>, which is
 // what a press on a page leaves focused — the page is not focusable — so that
 // counts as a paste onto the page in view.
-function pageImageTarget(target) {
+//
+// So does a paste while focus sits on a control of the page's own chrome: the
+// pen's bar, the Text button, the Canvas tab just pressed. Pressing any of those
+// and then Ctrl+V used to paste nothing at all, because the paste arrived on
+// that button rather than on <body> — the most common way "paste a screenshot
+// onto the Canvas" silently did nothing. And so does any paste at all while the
+// mouse is over a page, wherever focus was left: that is where the reader is
+// pasting.
+function pagePasteTarget(target) {
   if (!target || target.matches?.("input, textarea, select") || target.isContentEditable) return false;
-  if (el.documentView?.contains(target)) return true;
-  // ...unless a dialog or panel is open over the page: a picture pasted then
-  // would land, unseen, on the page behind it.
-  return target === document.body && document.activeElement === document.body
-    && !anyModalOpen() && !document.querySelector(".image-compress-modal, .pdf-block-editor:not([hidden])");
+  // A dialog or panel open over the page: a picture pasted then would land,
+  // unseen, on the page behind it.
+  if (anyModalOpen() || document.querySelector(".image-compress-modal, .pdf-block-editor:not([hidden])")) return false;
+  if (el.documentView?.contains(target) || target === document.body) return true;
+  if (target.closest?.("#documentStage, #documentInkRail, #viewModeRow")) return true;
+  return Boolean(pagePointAtPointer());
 }
 
 function handwritingImageDrop(event, files) {
   if (!onDocumentSurface()) return false;
-  if (!pageImageTarget(event.target)) return false;
+  if (!pagePasteTarget(event.target)) return false;
   const list = Array.from(files || []);
   if (!list.length) return false;
   event.preventDefault();
-  // Where the pointer was, in the page's own points. A paste has no coordinates
-  // of its own, so it falls back to the middle of the page in view.
+  // Where the pointer is, in the page's own points: where a drop let go, or —
+  // a paste has no coordinates of its own — where the mouse is over a page
+  // now. Read before anything awaits (the compression dialog), and the
+  // picture's top-left corner goes there (addHandwritingImages). Only with no
+  // pointer over a page does it fall back to the middle of the page in view.
   const at = Number.isFinite(event.clientX) && Number.isFinite(event.clientY)
     ? pdfPointAt(event.clientX, event.clientY)
-    : null;
+    : pagePointAtPointer();
   addHandwritingImages(list, at);
+  return true;
+}
+
+// ── Words pasted onto a page ──────────────────────────────────────────────
+//
+// The same rule for words as for a picture: Ctrl+V with no field to type into,
+// on a PDF or a Canvas, puts what was copied on the page — a Block holding it as
+// markdown (converted from the copied page's HTML when there is some, as a
+// note's paste is), its top-left corner at the mouse (addHandwritingTextBlock).
+// A token this app put on the clipboard for its own copy of ink or Blocks is
+// not words to paste: src/documents/page-clipboard.js answers those, and one
+// it left alone is a stale copy that means nothing here.
+const IN_APP_CLIPBOARD_TOKEN = /^recall-[a-z]+:[a-z0-9]+$/;
+
+function handwritingTextPaste(event) {
+  if (!onDocumentSurface() || !pagePasteTarget(event.target)) return false;
+  const data = event.clipboardData || window.clipboardData;
+  if (!data) return false;
+  const plain = data.getData("text/plain") || "";
+  if (IN_APP_CLIPBOARD_TOKEN.test(plain.trim())) return false;
+  const html = Array.from(data.types || []).includes("text/html") ? data.getData("text/html") : "";
+  let markdown = "";
+  // See htmlToMarkdown: nothing here can await, so an unloaded converter means
+  // the plain words, and the converter is fetched for next time.
+  if (html && typeof TurndownService !== "undefined") markdown = htmlToMarkdown(html);
+  else if (html) ensureTurndown();
+  if (!markdown.trim()) markdown = plain;
+  if (!markdown.trim()) return false;
+  if (headingNumbersOn()) markdown = stripTypedHeadingNumbersFromMarkdown(markdown);
+  event.preventDefault();
+  addHandwritingTextBlock(markdown, pagePointAtPointer());
   return true;
 }
 
@@ -3790,6 +3849,7 @@ document.addEventListener("paste", (event) => {
   const target = event.target;
   const pastedImages = allImageFiles(event.clipboardData || window.clipboardData);
   if (handwritingImageDrop(event, pastedImages)) return;
+  if (!pastedImages.length && handwritingTextPaste(event)) return;
   if (target.tagName !== "TEXTAREA") return;
 
   const clipboardData = event.clipboardData || window.clipboardData;
