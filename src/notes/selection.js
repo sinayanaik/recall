@@ -1845,8 +1845,16 @@ export function positionNotesSelectionButton() {
       el.makeClozeFromSelectionBtn.hidden = true;
     }
     button.hidden = false;
+    // A Block being typed in on a page (src/documents/pdf-block-inline.js) is
+    // a textarea a line or two tall. Kept inside it, as a Notes pane's bar is,
+    // the bar sat squarely on the Block and hid the very words it was styling.
+    // There the bar goes beside the whole Block and its strip instead.
+    const blockAvoid = () => inlineBlockAvoidRect(editingTarget.edit);
     if (mobile) {
       const edit = editingTarget.edit;
+      if (blockAvoid()) {
+        return placeTouchSelectionBar(button, () => [blockAvoid()].filter(Boolean), el.documentView || null);
+      }
       return placeTouchSelectionBar(button, () => [textareaSelectionRect(edit)], edit);
     }
     // Track the actual selection (same approach as the rendered-view branch
@@ -1856,6 +1864,19 @@ export function positionNotesSelectionButton() {
     const editRect = editingTarget.edit.getBoundingClientRect();
     const btnRect = button.getBoundingClientRect();
     const margin = 8;
+    const avoid = blockAvoid();
+    if (avoid) {
+      let top = avoid.top - btnRect.height - INLINE_BLOCK_BAR_GAP;
+      if (top < margin) top = avoid.bottom + INLINE_BLOCK_BAR_GAP;
+      top = Math.max(margin, Math.min(top, window.innerHeight - btnRect.height - margin));
+      const left = Math.min(
+        Math.max(margin, selRect.left + (selRect.right - selRect.left) / 2 - btnRect.width / 2),
+        window.innerWidth - btnRect.width - margin
+      );
+      button.style.top = `${Math.round(top)}px`;
+      button.style.left = `${Math.round(Math.max(margin, left))}px`;
+      return;
+    }
     // Above by preference, same as the rendered branch (see
     // placeSelectionPillNearRange) — a bar under the selection covers the lines
     // being written toward.
@@ -1986,4 +2007,28 @@ export function placeSelectionPillNearRange(button, range) {
   );
   button.style.top = `${top}px`;
   button.style.left = `${left}px`;
+}
+
+// ── Beside a Block being typed in, never on it ──────────────────────────────
+//
+// The box the selection bar must stay clear of while words are picked inside a
+// Block on a page: the Block itself (its words are what is being styled) and
+// its Style / Full editor / Done strip under it (.pdf-block-actions-pop, from
+// src/documents/block-actions-popover.js), as one rect. Null for any other
+// editor — Notes, a card face, a highlight's note — which keep their own
+// placement. Found through the DOM rather than an import: see the notes on
+// import cycles at the top of this file.
+const INLINE_BLOCK_BAR_GAP = 30; // clear of the connect arrows, as BLOCK_ACTIONS_GAP is
+
+export function inlineBlockAvoidRect(edit) {
+  const block = edit?.closest?.(".pdf-block.is-inline-editing");
+  if (!block || !block.isConnected) return null;
+  const rects = [block.getBoundingClientRect()];
+  const strip = document.querySelector(".pdf-block-actions-pop");
+  if (strip) rects.push(strip.getBoundingClientRect());
+  const left = Math.min(...rects.map((r) => r.left));
+  const top = Math.min(...rects.map((r) => r.top));
+  const right = Math.max(...rects.map((r) => r.right));
+  const bottom = Math.max(...rects.map((r) => r.bottom));
+  return { left, top, right, bottom, width: right - left, height: bottom - top };
 }
