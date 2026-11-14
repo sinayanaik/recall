@@ -158,15 +158,15 @@ import { addHandwritingBlock, addHandwritingImages, addHandwritingTextBlock, ent
 import { closeBlockStylePopover, isBlockStylePopoverOpen } from "./documents/block-style-bar.js?v=__BUILD__";
 import { closeBlockActionsPopover, isBlockActionsPopoverOpen } from "./documents/block-actions-popover.js?v=__BUILD__";
 import { blocksForPaper, buildStaticBlock, canRedoBlocks, setDiagramShapeIO, canUndoBlocks, commitBlockEdit, deleteBlock, duplicateBlock, editBlock, handleBlockPointerDown, nudgeBlock, paintDocumentBlocks, pdfPointAt, redoBlocks, repaintDocumentBlocks, restackBlock, selectBlock, selectedBlockId, setBlocksChangedHandler, undoBlocks } from "./documents/pdf-blocks.js?v=__BUILD__";
-import { applyInkRailPreference, closeInkRailPopups, finishTypewriterBox, initInkRail, refreshInkRail, setDocumentUndoHandlers, toggleTypewriter } from "./ui/ink-rail.js?v=__BUILD__";
-import { initDocumentShapes, placeTextAt, repaintDocumentShapes, setShapeCreatedHandler } from "./documents/pdf-shapes.js?v=__BUILD__";
+import { applyInkRailPreference, closeInkRailPopups, initInkRail, refreshInkRail, setDocumentUndoHandlers } from "./ui/ink-rail.js?v=__BUILD__";
+import { initDocumentShapes, repaintDocumentShapes, setShapeCreatedHandler } from "./documents/pdf-shapes.js?v=__BUILD__";
 import { deleteWithConnectors, initConnectors, scheduleConnectorRelink } from "./documents/pdf-connectors.js?v=__BUILD__";
 import { initCanvasSelection } from "./documents/canvas-selection.js?v=__BUILD__";
 import { claimPagePaste, initPageClipboard } from "./documents/page-clipboard.js?v=__BUILD__";
 import { initPagePointer, pagePointAtPointer } from "./documents/page-pointer.js?v=__BUILD__";
 import { initGuides } from "./documents/pdf-guides.js?v=__BUILD__";
 import { openPaperMenu } from "./documents/paper-menu.js?v=__BUILD__";
-import { openShapeTextEditor, setShapeTextCommittedHandler } from "./documents/pdf-shape-text.js?v=__BUILD__";
+import { openShapeTextEditor } from "./documents/pdf-shape-text.js?v=__BUILD__";
 import { initShapeStylePopover } from "./documents/pdf-shape-style-popover.js?v=__BUILD__";
 import { buildStaticShapeText } from "./documents/pdf-shape-markdown.js?v=__BUILD__";
 import { INK_NUDGE_STEP, INK_NUDGE_STEP_COARSE } from "./render/ink-engine.js?v=__BUILD__";
@@ -1632,8 +1632,6 @@ onDomReady(() => {
     openShapeTextEditor(record);
   });
   setDocumentShapeTextEditor((id) => openShapeTextEditor(id));
-  // One press of T, one box: putting the words down puts the Text tool away.
-  setShapeTextCommittedHandler(finishTypewriterBox);
   // A shape's Style row, and the popover at a selected shape.
   initShapeStylePopover();
   initInkRail();
@@ -1661,11 +1659,9 @@ onDomReady(() => {
   // (src/documents/page-pointer.js). + Add in the rail is still the door for a
   // pen and a finger.
   initPagePointer({
-    textAtPointer: (at) => {
-      toggleTypewriter(true);
-      if (at) placeTextAt(at.page, at);
-      else showToast("Tap where you want to type");
-    },
+    // T was Text where the mouse is; there is one thing to put on a page now,
+    // a Block, so T and B both put one there, open to type in.
+    textAtPointer: (at) => { addHandwritingBlock(at); },
     blockAtPointer: (at) => { addHandwritingBlock(at); }
   });
   // Which clipboard a Ctrl+V on a page means — this app's ink and Blocks, or a

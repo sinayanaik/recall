@@ -1,0 +1,103 @@
+/* ── A block written in where it is ───────────────────────────────────────
+
+   src/documents/pdf-block-inline.js puts the Notes editor's own kit INSIDE the
+   block while its words are being typed: the rendered body steps aside and the
+   markdown takes its place, at the body's own padding, size, face, colour and
+   alignment, so the words do not jump when they are put down and rendered.
+   The kit's Write/Preview row and its toolbar strip are hidden: the selection
+   bar, the keys and the undo ring are what typing a few lines on a page needs,
+   and the window ("Full editor") still has the rest. */
+
+.pdf-block.is-inline-editing {
+  cursor: text;
+  overflow: visible;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.pdf-block.is-inline-editing,
+.pdf-block.is-inline-editing * {
+  touch-action: manipulation;
+}
+
+.pdf-block.is-inline-editing > .pdf-block-body {
+  display: none;
+}
+
+/* Dashed while it is open, so a block being typed in reads differently from one
+   that is only picked up. */
+.pdf-block.is-inline-editing {
+  border-style: dashed;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.pdf-block-inline {
+  flex: 1 1 auto;
+  gap: 0;
+  min-width: 0;
+  min-height: 0;
+}
+
+.pdf-block-inline > .note-editor-modes,
+.pdf-block-inline > .note-editor-toolbar-wrap,
+.pdf-block-inline > .note-editor-rendered {
+  display: none !important;
+}
+
+.pdf-block-inline .highlight-textarea-wrapper {
+  flex: none;
+  min-height: 0;
+}
+
+/* The metrics the rendered body has (styles/53-handwriting.css and
+   styles/58-block-style.css), given to both halves of the mirror at once —
+   they must agree on every one of them or the caret slides off the words. */
+.pdf-block-inline .highlight-textarea-backdrop,
+.pdf-block-inline .edit-textarea {
+  font-family: var(--pdf-block-font, var(--app-font-family)) !important;
+  font-size: calc(0.82rem * var(--pdf-block-scale, 1)) !important;
+  line-height: 1.4 !important;
+  padding: calc(6px * var(--pdf-block-scale, 1)) !important;
+  min-height: calc(1.4em + 12px * var(--pdf-block-scale, 1)) !important;
+  text-align: var(--pdf-block-align, left);
+  border: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  overflow: hidden !important;
+}
+
+.pdf-block[data-block-size] .pdf-block-inline .highlight-textarea-backdrop,
+.pdf-block[data-block-size] .pdf-block-inline .edit-textarea {
+  font-size: calc(var(--pdf-block-size) * 1px * var(--pdf-block-scale, 1)) !important;
+}
+
+.pdf-block-inline .highlight-textarea-backdrop {
+  color: var(--pdf-block-ink, var(--text)) !important;
+  background: transparent !important;
+}
+
+.pdf-block-inline .edit-textarea {
+  caret-color: var(--pdf-block-ink, var(--text)) !important;
+}
+
+.pdf-block-inline .highlight-textarea-wrapper:focus-within .highlight-textarea-backdrop {
+  border: 0 !important;
+  box-shadow: none !important;
+}
+
+.pdf-block-inline .edit-textarea::placeholder {
+  color: color-mix(in srgb, var(--pdf-block-ink, var(--text)) 45%, transparent);
+}
+
+/* The three-button strip under a block being typed in. */
+.pdf-block-actions-pop.is-editing .block-actions-btn[data-block-popover-action="done"] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-contrast, #fff);
+}
+
+/* The Block button, armed: the page says where a tap will put one. */
+.document-stage.is-placing-block .pdf-page {
+  cursor: crosshair;
+}

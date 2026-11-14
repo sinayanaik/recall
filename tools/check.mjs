@@ -674,8 +674,14 @@ const checks = [
     // several things picked up and lined up at once, and the guides a drag
     // snaps to.
     ["diagram       ", ["node", ["tools/diagram-check.mjs"], ROOT]],
+    // The Canvas as a place you put blocks on: a pen press on anything already
+    // on the page draws nothing; typed words read on a dark page while typed;
+    // the Block button and a tap place a block, open in place; a tap on a
+    // picked-up block opens it, words select and the Notes bar styles them;
+    // its width stays and its height follows the words.
+    ["canvas-blocks ", ["node", ["tools/canvas-blocks-check.mjs"], ROOT]],
     // Things put on a page where the mouse is: a pasted picture or pasted
-    // words, Text with T, a Block with B or a mouse double-click (never a
+    // words, a Block with T or B or a mouse double-click (never a
     // pen's), and a picture copied after ink or Blocks still pasting as one.
     ["page-place    ", ["node", ["tools/page-place-check.mjs"], ROOT]],
     // ⋯ → Page margins… in the app: what was written stays put, the page is

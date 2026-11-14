@@ -42,6 +42,11 @@ export function isBlockActionsPopoverOpen() {
   return Boolean(actionsPopover);
 }
 
+// Put back beside its block — for a block that has just grown under it.
+export function placeBlockActionsPopover() {
+  actionsPopover?.place();
+}
+
 export function closeBlockActionsPopover() {
   if (!actionsPopover) return false;
   window.removeEventListener("resize", actionsPopover.place);
@@ -83,6 +88,11 @@ export function openBlockActionsPopover({
   onToFront = () => {},
   onToBack = () => {},
   onDelete = () => {},
+  // While the block's words are being typed in place: Style, Full editor and
+  // Done, and nothing else — the rest is about a block sitting still.
+  editing = false,
+  onFullEditor = () => {},
+  onDone = () => {},
   // How far from the block it floats, in CSS pixels. Further than the style
   // popover's 8, because the block's own connect arrows (src/documents/
   // pdf-connectors.js) sit just outside each side and must stay pressable.
@@ -111,7 +121,16 @@ export function openBlockActionsPopover({
   const toBack = actionButton({ action: "to-back", label: "To back" });
   const toFront = actionButton({ action: "to-front", label: "To front" });
   const del = actionButton({ action: "delete", label: "Delete", danger: true });
-  root.append(style, edit, duplicate, back, forward, toBack, toFront, del);
+  if (editing) {
+    root.classList.add("is-editing");
+    root.append(
+      style,
+      actionButton({ action: "full-editor", label: "Full editor" }),
+      actionButton({ action: "done", label: "Done" })
+    );
+  } else {
+    root.append(style, edit, duplicate, back, forward, toBack, toFront, del);
+  }
   document.body.appendChild(root);
 
   // ── Placing it — the exact shape openBlockStylePopover already uses ───────
@@ -136,6 +155,9 @@ export function openBlockActionsPopover({
     root.style.top = `${Math.round(top)}px`;
     root.style.left = `${Math.round(left)}px`;
   };
+
+  // A press here must not take the focus from the words being typed.
+  root.addEventListener("mousedown", (event) => event.preventDefault());
 
   root.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") return;
@@ -162,6 +184,8 @@ export function openBlockActionsPopover({
     else if (action === "to-front") onToFront();
     else if (action === "to-back") onToBack();
     else if (action === "delete") onDelete();
+    else if (action === "full-editor") onFullEditor();
+    else if (action === "done") onDone();
   });
 
   // Coalesced into one rAF per frame, the same fix (and the same reason)

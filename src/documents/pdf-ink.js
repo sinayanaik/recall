@@ -546,6 +546,15 @@ function sameEncoding(a, b) {
 
 // ── Pointer plumbing ───────────────────────────────────────────────────────
 
+// Whether something on the page — a shape's handle, a block's control — has
+// this press. Registered by src/documents/pdf-shapes.js, which this file must
+// not import (it imports this one).
+let inkStandDown = () => false;
+
+export function setInkStandDownHook(fn) {
+  inkStandDown = typeof fn === "function" ? fn : () => false;
+}
+
 function inkTakesPointer(event) {
   // ── The "text" tool, which is the ink layer standing down ────────────────
   //
@@ -633,6 +642,15 @@ function beginInkPress(event) {
   const pickup = event.target?.closest?.(PDF_PICKUP_SELECTOR);
   const erasing = isEraserEvent(event) || inkTool() === "eraser";
   if (pickup && !(erasing && pickup.classList.contains(PDF_SHAPE_TEXT_CLASS))) return false;
+  // ...and a press the things on the page claim by WHERE it is rather than by
+  // what it landed on: a selected shape's handles are found by distance
+  // (handleAt, src/documents/pdf-shapes.js), within a fingertip of a point
+  // drawn on a canvas, so the element under the nib is the paper. The pen's
+  // listener and the shapes' are both capture listeners on #documentView, and
+  // which ran first decided whether a drag on the edge of typed words resized
+  // them, or resized them and drew a line across the page. Asked here, so the
+  // answer no longer hangs on the order two modules happened to be wired in.
+  if (!erasing && inkStandDown(event)) return false;
   const pageEl = inkPageAtPoint(event.clientX, event.clientY);
   if (!pageEl) return false;
   const page = Number(pageEl.dataset.pageNumber);

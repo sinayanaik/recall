@@ -554,7 +554,9 @@ try {
   check("the pen's rail is up on arriving at the Write tab",
     writeControls.railOpen, `rail has a box=${writeControls.railOpen}`);
   check("...with the page group on it — a + whose menu's every row is pressable",
-    writeControls.addBoxed && writeControls.pageGroup === 4 && writeControls.pageGroupBoxed === 4,
+    // Block, the nine block shapes, Picture, Paste picture and a page at the
+    // end — Text went when the Block button took its place.
+    writeControls.addBoxed && writeControls.pageGroup === 13 && writeControls.pageGroupBoxed === 13,
     `+ has a box=${writeControls.addBoxed}; ${writeControls.pageGroupBoxed} of ${writeControls.pageGroup} rows with a box once it is open`);
   // Five: a heading of its own plus three papers and the tear-out.
   check("the ⋯ menu offers the notebook's rows and not the document's",

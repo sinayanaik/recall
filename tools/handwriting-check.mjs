@@ -1026,9 +1026,9 @@ try {
     // every block below the gap stayed one page too far down. One block on the
     // page about to go and one on the page that has to move, so the case can
     // tell a renumber from a bury.
-    api.addDocumentBlock(2, { x: 120, y: 200 });
+    api.addDocumentBlock(2, { x: 120, y: 200 }, { edit: false });
     api.commitBlockEdit();
-    api.addDocumentBlock(1, { x: 120, y: 300 });
+    api.addDocumentBlock(1, { x: 120, y: 300 }, { edit: false });
     api.commitBlockEdit();
     await settle(200);
     const blockOnPage = (n) => api.documentBlocks().filter((b) => Number(b.page) === n).length;
@@ -1123,8 +1123,13 @@ try {
     // while nothing else had ever put a block on this deck, and the tear-out
     // case above now deliberately leaves a survivor behind.
     const had = new Set((api.state.meta.pdfBlocks || []).map((b) => b.id));
-    board.querySelector('[data-hw-action="add-block"]')
-      .dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 32, cancelable: true }));
+    // + Add → Block now waits for a tap to say where (src/documents/block-place.js,
+    // canvas-blocks-check has that); this case is about the block and its
+    // window, so it is made in the middle of the view and opened in the window.
+    void board;
+    const startPage = api.currentDocumentPage();
+    const madeHere = api.addDocumentBlock(startPage, api.handwritingDropPoint(startPage), { edit: false });
+    api.editBlock(madeHere.id, { inWindow: true });
     await settle(400);
     const record = (id) => ({ ...(api.state.meta.pdfBlocks || []).find((b) => b.id === id) });
     const id = (api.state.meta.pdfBlocks || []).map((b) => b.id).find((b) => !had.has(b));
@@ -1196,8 +1201,9 @@ try {
     // Through the rail's own Edit — #inkRailBlock, which is where a block's
     // actions live now that it has no header of its own — which also confirms
     // the block dragged a moment ago is still the one selected.
-    document.querySelector('#inkRailBlock [data-block-rail-action="edit"]')
-      .dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 51, cancelable: true }));
+    // The rail's Edit opens the block in place now; the window is its Full
+    // editor, which is what this case is about.
+    api.openBlockInFullEditor(api.selectedBlockId());
     await settle(500);
     const topAt = (x, y) => {
       const at = document.elementFromPoint(x, y);
@@ -1370,7 +1376,8 @@ try {
     // pen is a great many quick, close-together taps, and the browser's own
     // dblclick synthesis cannot tell two of those from two deliberate clicks. It
     // fired mid-stroke and popped this very editor open under the nib.
-    const made = api.addDocumentBlock(pageNumber, api.pdfPointAt(spot.x, spot.y));
+    const made = api.addDocumentBlock(pageNumber, api.pdfPointAt(spot.x, spot.y), { edit: false });
+    api.editBlock(made.id, { inWindow: true });
     await settle(500);
     const sheet = document.getElementById("pdfBlockEditor");
     const openedOnIt = Boolean(sheet && !sheet.hidden);
@@ -1441,11 +1448,12 @@ try {
     // turned on) is the one actually being exercised rather than a no-op.
     api.writeBlockStyle(made.id, { fit: false });
     await settle(200);
-    // Typed through the rail's own Edit rather than written into the record, so
-    // this exercises the path a reader takes: the sheet, Done, the re-render,
-    // and the measurement that follows it.
-    document.querySelector('#inkRailBlock [data-block-rail-action="edit"]')
-      .dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 41, cancelable: true }));
+    const setBox = record(made.id);
+    // Typed through the window rather than written into the record, so this
+    // exercises the path a reader takes: the editor, Done, the re-render, and
+    // the measurement that follows it.
+    api.selectBlock(made.id);
+    api.openBlockInFullEditor(made.id);
     await settle(400);
     const area = document.querySelector("#pdfBlockEditor [data-note-edit-value]");
     area.value = "One line, and then a great many more of them. " .repeat(12);
@@ -1523,7 +1531,7 @@ try {
       spotFound: Boolean(spot), made: Boolean(made), openedOnIt, rowInSheet,
       madeBox: made ? { w: made.w, h: made.h } : null,
       plain, painted, styledRecord: styledRecord.style || null, storedStyle, untouched, bare,
-      overflowing, beforeFit: { h: beforeFit.h, y: beforeFit.y }, afterFit: { h: afterFit.h, y: afterFit.y },
+      overflowing, setBox: { h: setBox.h, y: setBox.y }, beforeFit: { h: beforeFit.h, y: beforeFit.y }, afterFit: { h: afterFit.h, y: afterFit.y },
       ring, gone, buried, backAgain: Boolean(backAgain), stillBuried,
       nudgedBy: nudged.x - (backAgain ? backAgain.x : 0), copies, copyOffset: copy ? copy.x - nudged.x : null,
       zWas, zNow, inkDrawn, blocksBeforeUndo, afterUndo, afterRedoY,
@@ -1565,13 +1573,15 @@ try {
   check("...while a block nobody styled carries no style at all",
     styling.untouched >= 1 && styling.bare,
     `${styling.untouched} unstyled record(s) with no key; putting every control back removed it again=${styling.bare}`);
-  check("a block can be told to take its height from its text",
-    styling.overflowing && styling.afterFit.h > styling.beforeFit.h,
-    `${styling.beforeFit.h} → ${styling.afterFit.h} points, from text that overflowed=${styling.overflowing}`);
+  // A height set by hand is the least the block can be, never a box its words
+  // are cut off in: it grows to hold them all the same.
+  check("a block whose height was set by hand still grows to hold its words",
+    !styling.overflowing && styling.beforeFit.h > styling.setBox.h && styling.afterFit.h >= styling.beforeFit.h - 1,
+    `${styling.setBox.h} → ${styling.beforeFit.h} → ${styling.afterFit.h} points, overflowing=${styling.overflowing}`);
   check("...growing downward, with its top edge held still",
-    styling.afterFit.y === styling.beforeFit.y - (styling.afterFit.h - styling.beforeFit.h),
-    `y ${styling.beforeFit.y} → ${styling.afterFit.y} as the height went `
-      + `${styling.beforeFit.h} → ${styling.afterFit.h}`);
+    styling.beforeFit.y === styling.setBox.y - (styling.beforeFit.h - styling.setBox.h),
+    `y ${styling.setBox.y} → ${styling.beforeFit.y} as the height went `
+      + `${styling.setBox.h} → ${styling.beforeFit.h}`);
   check("a selected block is deleted by the keyboard",
     styling.ring && styling.gone && styling.buried,
     `ring=${styling.ring}, gone=${styling.gone}, tombstoned=${styling.buried}`);
@@ -1617,7 +1627,8 @@ try {
       }
       if (spot) break;
     }
-    const made = api.addDocumentBlock(pageNumber, api.pdfPointAt(spot.x, spot.y));
+    const made = api.addDocumentBlock(pageNumber, api.pdfPointAt(spot.x, spot.y), { edit: false });
+    api.editBlock(made.id, { inWindow: true });
     await settle(400);
     const write = async (text) => {
       const area = document.querySelector("#pdfBlockEditor [data-note-edit-value]");
@@ -1631,7 +1642,7 @@ try {
     const labelled = record(made.id);
 
     // Several lines of words, so a narrower frame means a taller one.
-    api.editBlock(made.id);
+    api.editBlock(made.id, { inWindow: true });
     await settle(300);
     await write("Sailing angles are measured from the wind. " .repeat(6));
     const wordy = record(made.id);
@@ -1734,8 +1745,10 @@ try {
       errs: window.__errs.slice(0, 4)
     };
   }`);
-  check("a block's first words bring its width in to them",
-    hugging.labelled.w < 240, `${hugging.labelled.w}pt wide for "A short label", against the 240pt default`);
+  // The width is the reader's: it used to be pulled in to the first words,
+  // and a block then had to be dragged wide again for the next sentence.
+  check("a block keeps the width it was given, whatever its first words",
+    hugging.labelled.w === 240, `${hugging.labelled.w}pt wide for "A short label", against the 240pt default`);
   // The top edge and its corners joined them for diagrams (src/documents/
   // pdf-blocks.js, RESIZE_EDGES): a box in a flowchart is sized from whichever
   // side the next box is on.
@@ -1783,9 +1796,9 @@ try {
 
     // A block with a fenced listing in it, and one with nothing but prose, so
     // the contextual rows have something to be right about in both directions.
-    const plainBlock = api.addDocumentBlock(pageNumber, { x: 90, y: 640 });
+    const plainBlock = api.addDocumentBlock(pageNumber, { x: 90, y: 640 }, { edit: false });
     api.commitBlockEdit();
-    const codeBlock = api.addDocumentBlock(pageNumber, { x: 90, y: 420 });
+    const codeBlock = api.addDocumentBlock(pageNumber, { x: 90, y: 420 }, { edit: false });
     api.commitBlockEdit();
     // A press on the block selects it — there is no header of its own any
     // more to press instead — and its actions then live on the rail
@@ -1801,8 +1814,7 @@ try {
     const openEditor = (id, pointerId) => {
       const node = document.querySelector('[data-pdf-block="' + id + '"]');
       selectBlockNode(node, pointerId);
-      document.querySelector('#inkRailBlock [data-block-rail-action="edit"]')
-        .dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: pointerId + 1, cancelable: true }));
+      api.openBlockInFullEditor(id);
     };
     openEditor(codeBlock.id, 60);
     await settle(400);
@@ -1892,7 +1904,7 @@ try {
     // The last thing styled was the code block, so a block added now should
     // arrive wearing it — that is the whole of "remember the last used setting".
     const remembered = api.blockStylePreference("text");
-    const next = api.addDocumentBlock(pageNumber, { x: 300, y: 240 });
+    const next = api.addDocumentBlock(pageNumber, { x: 300, y: 240 }, { edit: false });
     api.commitBlockEdit();
     await settle(300);
     const nextStyle = record(next.id).style || null;
@@ -3690,7 +3702,7 @@ try {
       return out;
     }) : [];
     // What is laid over it.
-    const block = api.addDocumentBlock(1, { x: 160, y: 260 });
+    const block = api.addDocumentBlock(1, { x: 160, y: 260 }, { edit: false });
     const shape = api.addDocumentShape(1, { type: "text", p: [[80, 420], [260, 446]], stroke: "#000000", border: true, text: "Boxed", width: 1.2 });
     api.closeBlockEditor?.();
     api.selectBlock?.(null);

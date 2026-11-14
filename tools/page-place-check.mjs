@@ -1,5 +1,5 @@
-// Putting things on a page where the mouse is — a pasted picture, Text, a
-// Block — on a Canvas.
+// Putting things on a page where the mouse is — a pasted picture, pasted words,
+// a Block — on a Canvas.
 //
 //   node tools/page-place-check.mjs
 //
@@ -13,10 +13,10 @@
 //   2. After Blocks were copied on the page, a picture pasted later still
 //      pastes as a picture once the reader has been to another window — and a
 //      Ctrl+V the browser fires no paste event for still pastes the Blocks.
-//   3. T with the mouse over a page opens Text there, typed into at once, and
-//      putting the words down puts the Text tool away.
+//   3. T with the mouse over a page opens a Block there, typed into at once
+//      (it was Text; the Block button took Text's place).
 //   4. B opens a Block there, its top-left corner at the pointer; a "t" typed
-//      into its editor is a letter, not a new piece of Text.
+//      into its editor is a letter, not a new Block.
 //   5. A mouse double-click on bare paper makes a Block there and leaves no
 //      ink; a pen's double tap makes no Block.
 //   6. + Add has a Paste picture row.
@@ -293,33 +293,32 @@ try {
 
   await page.evaluate(`() => window.__recall.clearBlocks()`);
 
-  // ── 3. T: Text at the mouse ─────────────────────────────────────────────
+  // ── 3. T: a Block at the mouse (it was Text; there is one thing to add now) ─
   await page.evaluate(`async () => { document.activeElement?.blur?.(); window.__recall.api.clearPick?.(); await window.__recall.settle(50); }`);
   const [tx, ty] = await screenOf(120, 700);
   await mouseMove(tx, ty);
   await pause(60);
-  const shapesBefore = await page.evaluate(`() => window.__recall.api.documentShapes(1).length`);
+  const tBefore = await page.evaluate(`() => ({ blocks: window.__recall.api.documentBlocks().length, shapes: window.__recall.api.documentShapes(1).length })`);
   await key("t");
   await pause(250);
   const typing = await page.evaluate(`() => {
     const { api } = window.__recall;
-    const id = api.editingShapeTextId();
-    const record = id ? api.documentShapes(1).find((r) => r.id === id) : null;
-    return { id, armed: api.isTypewriterArmed(), count: api.documentShapes(1).length, shape: record?.shape || null, focused: document.activeElement?.isContentEditable || /TEXTAREA|INPUT/.test(document.activeElement?.tagName || "") };
+    const made = api.documentBlocks().slice(-1)[0];
+    return { id: made?.id, count: api.documentBlocks().length, shapes: api.documentShapes(1).length, x: made?.x, top: made ? made.y + made.h : null, editing: api.isEditingBlock(), focused: document.activeElement?.tagName === "TEXTAREA" };
   }`);
-  check("T over a page opens Text there, ready to type", Boolean(typing.id) && typing.armed && typing.count === shapesBefore + 1 && typing.focused, JSON.stringify(typing));
+  check("T over a page opens a Block there, ready to type", typing.count === tBefore.blocks + 1 && typing.shapes === tBefore.shapes && typing.editing && typing.focused, JSON.stringify(typing));
   await page.call("Input.insertText", { text: "hello" });
   await pause(100);
   await key("Escape");
   await pause(300);
   const typed = await page.evaluate(`(id) => {
     const { api } = window.__recall;
-    const record = api.documentShapes(1).find((r) => r.id === id);
-    return { text: record?.shape?.text || "", armed: api.isTypewriterArmed(), editing: api.editingShapeTextId() };
+    const block = api.documentBlocks().find((b) => b.id === id);
+    return { md: block?.md || "", editing: api.isEditingBlock() };
   }`, typing.id);
-  check("...the words are kept and the Text tool puts itself away", typed.text.includes("hello") && !typed.armed && !typed.editing, JSON.stringify(typed));
-  const firstPoint = typing.shape?.p?.[0] || typing.shape?.points?.[0] || null;
-  check("...where the mouse was", !firstPoint || (Math.abs(firstPoint[0] - 120) < 8 && Math.abs(firstPoint[1] - 700) < 16), JSON.stringify(typing.shape));
+  check("...the words are kept and the editor shuts", typed.md.includes("hello") && !typed.editing, JSON.stringify(typed));
+  check("...where the mouse was", Math.abs(typing.x - 120) <= 2 && Math.abs(typing.top - 700) <= 2, JSON.stringify(typing));
+  await page.evaluate(`() => window.__recall.clearBlocks()`);
 
   // ── 4. B: a Block at the mouse ──────────────────────────────────────────
   const [bx, by] = await screenOf(300, 700);
@@ -342,9 +341,9 @@ try {
     const { api } = window.__recall;
     const field = document.querySelector(".pdf-block-editor:not([hidden]) textarea") || document.activeElement;
     const value = field?.value || "";
-    return { value, shapes: api.documentShapes(1).length, editing: api.isEditingBlock() };
+    return { value, shapes: api.documentShapes(1).length, blocks: api.documentBlocks().length, editing: api.isEditingBlock() };
   }`);
-  check("a t typed into the Block's editor is a letter, not new Text", letter.value.includes("t") && letter.shapes === shapesBeforeLetter && letter.editing, JSON.stringify(letter));
+  check("a t typed into the Block's editor is a letter, not a new Block", letter.value.includes("t") && letter.shapes === shapesBeforeLetter && letter.editing && letter.blocks === bBlock.count, JSON.stringify(letter));
   await page.evaluate(`() => window.__recall.clearBlocks()`);
 
   // ── 5. Double-click ─────────────────────────────────────────────────────
@@ -412,7 +411,8 @@ try {
     // Words pasted into a Block's editor are the editor's.
     const host = api.addDocumentBlock(1, { x: 300, y: 300 });
     await settle(200);
-    const field = document.querySelector(".pdf-block-editor:not([hidden]) textarea");
+    // In the block itself now (src/documents/pdf-block-inline.js).
+    const field = document.querySelector('[data-pdf-block="' + host.id + '"] .pdf-block-inline textarea');
     const before3 = api.documentBlocks().length;
     if (field) { field.focus(); pasteText(field, "inside"); }
     await settle(150);

@@ -81,7 +81,7 @@ import { openSectionStyle } from "./style-popover.js?v=__BUILD__";
 import { reconcileAllDecks } from "../sync/reconcile.js?v=__BUILD__";
 import { fitDocumentToWidth } from "../documents/pdf-view.js?v=__BUILD__";
 import { openPaperMenu } from "../documents/paper-menu.js?v=__BUILD__";
-import { chooseInkTool, toggleInkRail, toggleTypewriter } from "./ink-rail.js?v=__BUILD__";
+import { chooseInkTool, toggleBlockButton, toggleInkRail } from "./ink-rail.js?v=__BUILD__";
 import { toggleRegionSelect } from "../documents/pdf-region.js?v=__BUILD__";
 import { inkTool } from "../documents/pdf-ink.js?v=__BUILD__";
 import { deckHasPdf, onDocumentSurface } from "../documents/doc-slot.js?v=__BUILD__";
@@ -442,8 +442,8 @@ export function initReadingRail() {
     // "select", and coming back to the eraser because that is where they had
     // been an hour ago is a surprise nobody asked for.
     else if (action === "pen-text") chooseInkTool(inkTool() === "text" ? "pen" : "text");
-    // Text, as the top row's own Text button does it.
-    else if (action === "typewriter") toggleTypewriter();
+    // A Block, as the top row's own Block button does it: tap where it goes.
+    else if (action === "typewriter") toggleBlockButton();
     // The pill's own click, not a copy of what it does. Everything else in this
     // tray calls an exported function; the edit toggle's behaviour lives in an
     // anonymous listener in src/main.js and has no name to import, and giving it

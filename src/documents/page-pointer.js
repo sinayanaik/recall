@@ -8,7 +8,7 @@
 //
 //   Ctrl+V   a picture pastes with its top-left corner at the mouse, on the page
 //            under it (pagePointAtPointer, read by src/main.js's paste path)
-//   T        Text at the mouse — type at once, no tap (textAtPointer)
+//   T        a Block at the mouse, as B — it was Text (textAtPointer)
 //   B        a Block at the mouse, its editor open (blockAtPointer)
 //   double-click on bare paper, with a MOUSE: a Block there
 //

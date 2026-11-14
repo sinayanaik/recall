@@ -59,7 +59,8 @@ import { state } from "../core/state.js?v=__BUILD__";
 import { hasActiveDeck, refreshHandwritingTab } from "../cards/card-status.js?v=__BUILD__";
 import { showConfirmModal, showToast } from "../ui/feedback.js?v=__BUILD__";
 import { chooseImageCompression } from "../images/compress-dialog.js?v=__BUILD__";
-import { toggleTypewriter } from "../ui/ink-rail.js?v=__BUILD__";
+import { armBlockPlacement, placeBlockInView, viewDropPoint } from "../documents/block-place.js?v=__BUILD__";
+import { closeInkRailPopups } from "../ui/ink-rail.js?v=__BUILD__";
 
 let wired = false;
 
@@ -208,18 +209,17 @@ function wire() {
   // bar's + menu now, and a menu that can be reached with Tab and not used with
   // Enter is a menu half built.
   buildShapePalette();
-  bindInkRailActivation(el.documentInkRail, (button) => {
+  // A Block and a shaped block are put where the reader taps next, as Text used
+  // to be: one tap says where, and the block opens to type in. The keyboard's
+  // press (a click with no pointer, `detail` 0) has nothing to tap with, so it
+  // puts the block in the middle of the view at once.
+  bindInkRailActivation(el.documentInkRail, (button, event) => {
     const action = button.dataset.hwAction;
+    const keyboard = event?.type === "click" && event.detail === 0;
     if (action === "add-page") addPage();
-    else if (action === "add-block") addHandwritingBlock();
-    else if (action === "add-shape") addShapeBlock(button.dataset.blockShape);
+    else if (action === "add-block") addBlock({ keyboard });
+    else if (action === "add-shape") addShapeBlock(button.dataset.blockShape, { keyboard });
     else if (action === "paste-picture") pastePictureFromClipboard();
-    // Text arms the typewriter rather than dropping a box in the middle: the
-    // reader says where, with one tap, and types there.
-    else if (action === "add-text") {
-      toggleTypewriter(true);
-      showToast("Tap where you want to type");
-    }
   }, "[data-hw-action]");
 }
 
@@ -247,27 +247,33 @@ function tearOutPage() {
 // converted from the scroller's centre rather than assumed, so a block lands
 // where they are rather than in the middle of a page they have scrolled past.
 export function handwritingDropPoint(page) {
-  const viewport = pdfPageViewport(page);
-  if (!viewport) return null;
-  const view = el.documentView?.getBoundingClientRect();
-  const pageEl = document.querySelector(`.pdf-page[data-page-number="${page}"]`);
-  const box = pageEl?.getBoundingClientRect();
-  if (!view || !box) return null;
-  const cx = Math.min(Math.max(view.left + (view.width / 2), box.left), box.right) - box.left;
-  const cy = Math.min(Math.max(view.top + (view.height / 2), box.top), box.bottom) - box.top;
-  const [x, y] = viewport.convertToPdfPoint(cx, cy);
-  return { x, y };
+  return viewDropPoint(page);
 }
 
-// + Add → Block puts it in the middle of the page in view. The B key and a
-// mouse double-click (src/documents/page-pointer.js) have a point — { page, x,
-// y } — and the Block's top-left corner goes there.
+// + Add → Block: the next tap on the page says where (src/documents/
+// block-place.js). The keyboard's press has nothing to tap with, so it puts
+// the Block in the middle of the view at once.
+function addBlock({ keyboard = false } = {}) {
+  // The menu goes at once, not on the click that follows: it would otherwise
+  // sit over the very page the next tap is meant for.
+  closeInkRailPopups();
+  if (keyboard) placeBlockInView();
+  else armBlockPlacement(true);
+  paintHandwritingControls();
+}
+
+// The T and B keys and a mouse double-click (src/documents/page-pointer.js)
+// have a point — { page, x, y } — and the Block's top-left corner goes there,
+// open to type in. With no point, the middle of the view.
 export function addHandwritingBlock(at = null) {
-  const page = Number(at?.page) || currentDocumentPage();
+  if (!at) {
+    const placed = placeBlockInView();
+    paintHandwritingControls();
+    return placed;
+  }
+  const page = Number(at.page) || currentDocumentPage();
   if (!pdfPageViewport(page)) return null;
-  const block = at
-    ? addDocumentBlock(page, at, { anchor: "corner" })
-    : addDocumentBlock(page, handwritingDropPoint(page));
+  const block = addDocumentBlock(page, at, { anchor: "corner", discardIfEmpty: true });
   paintHandwritingControls();
   return block;
 }
@@ -316,12 +322,13 @@ export function shapeBlockSize(shape) {
   return { ...SHAPE_BLOCK_SIZE };
 }
 
-function addShapeBlock(shape) {
-  const page = currentDocumentPage();
-  if (!pdfPageViewport(page)) return;
+function addShapeBlock(shape, { keyboard = false } = {}) {
   const kind = normalizeBlockShape(shape);
-  const size = shapeBlockSize(kind);
-  addDocumentBlock(page, handwritingDropPoint(page), { style: { ...blockShapePatch(kind), frame: "outline" }, ...size });
+  const options = { style: { ...blockShapePatch(kind), frame: "outline" }, ...shapeBlockSize(kind) };
+  closeInkRailPopups();
+  // A diagram's box lands centred on the tap: it is a shape, placed by its middle.
+  if (keyboard) placeBlockInView({ options });
+  else armBlockPlacement(true, { options, anchor: "center" });
   paintHandwritingControls();
 }
 

@@ -27,6 +27,7 @@
 import { el } from "../core/dom.js?v=__BUILD__";
 import { canRedoInk, canUndoInk, clearInkPage, copyInkSelection, cutInkSelection, deleteInkSelection, duplicateInkSelection, hasInkClipboard, inkEraseMode, inkEraseTarget, inkEraserSize, inkHighlighter, inkPageHasStrokes, inkPageInView, inkPageInViewCheap, inkPaper, inkPaperBg, inkPen, inkPenOpacity, inkPreviewScale, inkSelectionCount, inkSelectionKinds, inkSnapShapes, inkTapDots, inkTool, inkWidth, isInkArmed, joinInkSelection, pasteInkSelection, redoInk, setInkArmed, setInkEraseMode, setInkEraseTarget, setInkEraserSize, setInkHighlighter, setInkOpacity, setInkPen, setInkSnapShapes, setInkTapDots, setInkTool, setInkWidth, splitInkSelection, suppressInkTap, undoInk } from "../documents/pdf-ink.js?v=__BUILD__";
 import { deleteBlock, editBlock, openSelectedBlockStyle, selectedBlockKind, setBlockSelectionChangedHandler } from "../documents/pdf-blocks.js?v=__BUILD__";
+import { armBlockPlacement, initBlockPlacement, isBlockPlacementArmed, placeBlockInView, setBlockPlacementChangedHandler, toggleBlockPlacement } from "../documents/block-place.js?v=__BUILD__";
 import { INK_TOOL_DEFAULT } from "../format/ink-colors.js?v=__BUILD__";
 import { bindInkRailActivation, paintInkRailPressed } from "../handwriting/rail.js?v=__BUILD__";
 import { buildInkPanel, createInkPanel, paintInkChip } from "../handwriting/ink-popover.js?v=__BUILD__";
@@ -142,88 +143,30 @@ function refreshBlockRail() {
   }
 }
 
-// ── Text, a button of its own ──────────────────────────────────────────────
+// ── The Block button ───────────────────────────────────────────────────────
 //
-// The typewriter is the Shapes tool on Text, underneath — but it was reached by
-// pressing ✎ and then finding Text among the pen's tools, and "text should have
-// a separate button instead of a hierarchy inside the pen". So it has its own
-// button in the top row (#documentTextBtn), and while it is armed the pen's bar
-// becomes the TEXT bar (`.is-typing`, styles/88-annotations.css): the pen's
-// tools step aside and what is left is the style chip, undo and redo, and Done.
+// It was Text: the Shapes tool on "text", a tap and a cursor, typed words that
+// were not a block and could not hold what a block holds. "I could not really
+// understand the difference between insert text and insert block — I want
+// every insert as a block." So the button beside ✎ in the top row
+// (#documentTextBtn — the id is old, nothing stores it) arms a Block: the next
+// tap on the page puts one there, open to type in (src/documents/block-place.js).
+// Pressed again, or Escape, and it is put away unplaced. The pen's bar is left
+// as it was: placing a block is not a mode of the pen.
 //
-// Typing is read off the engine — the tool and the shape — never kept as a flag
-// of its own, so nothing can come to disagree with what a tap actually does.
-export function isTypewriterArmed() {
-  return inkTool() === "shape" && shapeType() === "text";
-}
-
-// What Text was pressed from, so pressing it again (or Done) puts that back:
-// the tool, and whether the bar was open before Text opened it. Per slot, and
-// dropped when a document opens (applyInkRailPreference).
-let typewriterReturn = null;
-
-export function toggleTypewriter(force = null) {
-  const typing = isTypewriterArmed();
-  const on = force === null ? !typing : Boolean(force);
+// Words typed with the old Text tool are still on their pages, and still open
+// to type in with a tap on them once picked up (src/documents/pdf-shapes.js).
+export function toggleBlockButton() {
   if (isRegionSelectArmed()) setRegionSelect(false);
   closeInkRailMenus();
-  if (on) {
-    if (!typing) {
-      typewriterReturn = { slot: activeDocSlot(), tool: inkTool(), railWasOpen: isInkArmed() };
-      typewriterDoneWhenPanelCloses = false;
-      // A mouse types only while the bar is armed (shapeTakesPointer,
-      // src/documents/pdf-shapes.js), as it draws only then. NOT written to
-      // ink-prefs: Text opening the bar is not the reader opening the pen's.
-      if (!isInkArmed()) setInkArmed(true);
-      setShapeType("text");
-      setInkTool("shape");
-      inkPanel?.close();
-    }
-  } else if (typing) {
-    const back = typewriterReturn?.slot === activeDocSlot()
-      ? typewriterReturn
-      : { tool: INK_TOOL_DEFAULT, railWasOpen: inkRailOpen(activeDocSlot()) };
-    typewriterReturn = null;
-    inkPanel?.close();
-    if (back.tool === "shape") {
-      setShapeType(shapeButtonType());
-      setInkTool("shape");
-    } else {
-      setInkTool(back.tool && back.tool !== "shape" ? back.tool : INK_TOOL_DEFAULT);
-    }
-    if (!back.railWasOpen) setInkArmed(false);
-  }
-  rememberInkPreferences();
-  refreshInkRail();
+  toggleBlockPlacement();
 }
 
-// ── Text is one box per press ───────────────────────────────────────────────
-//
-// It used to stay armed after the words were put down, so every line ended
-// with a trip to Done before the reader could do anything else on the page.
-// Now putting the words down (a press elsewhere, Escape, Ctrl+Enter, the ✓)
-// puts the Text tool away too, and what was in hand before T comes back.
-//
-// The one exception is focus moving onto the pen's own bar: that is the
-// reader opening the style panel to colour or resize what they just typed,
-// and putting the tool away would shut the panel under them. Then the tool
-// goes when that panel does.
-let typewriterDoneWhenPanelCloses = false;
-
-export function finishTypewriterBox({ to = null } = {}) {
-  if (!isTypewriterArmed()) return;
-  if (to?.closest?.(".document-ink-rail")) {
-    typewriterDoneWhenPanelCloses = true;
-    return;
-  }
-  typewriterDoneWhenPanelCloses = false;
-  toggleTypewriter(false);
-}
-
-function onInkPanelToggle(open) {
-  if (open || !typewriterDoneWhenPanelCloses) return;
-  typewriterDoneWhenPanelCloses = false;
-  if (isTypewriterArmed()) queueMicrotask(() => { if (isTypewriterArmed()) toggleTypewriter(false); });
+// A Shapes setting left on "text" by the old Text button — saved in a pen's
+// preferences before this changed — would have the Shapes tool type rather
+// than draw. Put back on the shape the button wears.
+function retireTextShapeType() {
+  if (shapeType() === "text") setShapeType(shapeButtonType() || "rect");
 }
 
 // ── On a wide screen, the bar sits in the tab row ───────────────────────────
@@ -244,11 +187,11 @@ function onInkPanelToggle(open) {
 const INLINE_RAIL_QUERY = "(min-width: 1100px) and (hover: hover) and (pointer: fine)";
 let inlineRailMedia = null;
 let railHomeMarker = null;
-const inlineRailRefusedAt = { typing: 0, full: 0 };
+const inlineRailRefusedAt = { full: 0 };
 let inlineFitSignature = "";
 
-function railShape(rail) {
-  return rail.classList.contains("is-typing") ? "typing" : "full";
+function railShape() {
+  return "full";
 }
 
 function wantsInlineRail(rail) {
@@ -340,10 +283,9 @@ function paintInkRail() {
   const rail = el.documentInkRail;
   if (!rail) return;
   const open = isInkArmed();
-  const typingNow = isTypewriterArmed();
-  pressed(el.documentTextBtn, typingNow);
-  rail.classList.toggle("is-typing", typingNow);
-  rail.setAttribute("aria-label", typingNow ? "Text" : "Pen");
+  const placing = isBlockPlacementArmed();
+  pressed(el.documentTextBtn, placing);
+  el.documentStage?.classList.toggle("is-placing-block", placing);
   if (!open) {
     rail.hidden = true;
     pressed(el.documentInkBtn, open);
@@ -381,7 +323,7 @@ function paintInkRail() {
 
   rail.hidden = false;
   // While Text has the bar, it is Text that is lit, not the pen.
-  pressed(el.documentInkBtn, open && !typingNow);
+  pressed(el.documentInkBtn, open);
   paintInkRailPressed(rail, {
     pen: inkPen(),
     width: inkWidth(),
@@ -402,9 +344,6 @@ function paintInkRail() {
     shape: displayedShapeSettings()
   });
   refreshShapeMenu(document.getElementById("inkRailShapeMenu"), document.getElementById("inkRailShapeBtn"));
-  // The typewriter is the Shapes tool on Text, but its own button (in the top
-  // row): Shapes is lit for every other shape, not for that.
-  if (typingNow) pressed(document.getElementById("inkRailShapeBtn"), false);
   refreshShapePanel(shapePanel);
   // Text takes the pen's colours and nibs down, and the panel with them.
   // Nothing is being drawn, so there is no nib and no ink colour to choose; and
@@ -602,10 +541,9 @@ export function applyInkRailPreference() {
   // draws — or selects — whether the rail is up or not, so the tool cannot be a
   // property of the rail's visibility.
   setInkTool(slotTools[slot] || INK_TOOL_DEFAULT);
-  // ...and a tab left typing comes back typing, with its Text bar up — a tap
-  // that makes text needs the bar that says so, and a mouse needs it armed.
-  typewriterReturn = null;
-  if (isTypewriterArmed() && !isInkArmed()) setInkArmed(true);
+  retireTextShapeType();
+  // A block waiting for a tap on the other document is not waiting here.
+  if (isBlockPlacementArmed()) armBlockPlacement(false, { toast: false });
   // ...and that repaint takes a shape picked up on the other document's style
   // popover away with it (syncShapeStylePopover).
   refreshInkRail();
@@ -652,11 +590,6 @@ function pressRail(button) {
     inkPen: nextPen, inkWidth: nextWidth, inkEraserSize: nextEraser, inkTool: nextTool, inkAction: action,
     shapeType: nextShape
   } = button.dataset;
-  // Done, on the Text bar: typing put down, and what was armed before is back.
-  if (action === "typewriter-done") {
-    toggleTypewriter(false);
-    return;
-  }
   // A row of the Shapes flyout: that shape, armed.
   if (nextShape) {
     if (isRegionSelectArmed()) setRegionSelect(false);
@@ -669,16 +602,6 @@ function pressRail(button) {
   }
   // The Shapes button pressed while armed opens its flyout, not the panel —
   // which shape is the question its button is asked; how it looks is the chip's.
-  // ...unless the typewriter has it: then the Shapes button means the shapes
-  // again, the last one drawn.
-  if (nextTool === "shape" && shapeType() === "text") {
-    if (isRegionSelectArmed()) setRegionSelect(false);
-    setShapeType(shapeButtonType());
-    setInkTool("shape");
-    rememberInkPreferences();
-    refreshInkRail();
-    return;
-  }
   if (nextTool === "shape" && inkTool() === "shape") {
     toggleInkRailMenu("inkRailShapeMenu");
     return;
@@ -748,7 +671,7 @@ export function initInkRail() {
     refreshInkRail();
   });
   inkPanel = el.inkRailPopover
-    ? createInkPanel({ rail, popover: el.inkRailPopover, chip: el.inkRailStyleChip, adapter: panelAdapter, onToggle: onInkPanelToggle })
+    ? createInkPanel({ rail, popover: el.inkRailPopover, chip: el.inkRailStyleChip, adapter: panelAdapter })
     : null;
 
   // The pen, the nib and the tool are remembered per device rather than per
@@ -760,20 +683,16 @@ export function initInkRail() {
   slotTools.doc = inkPreferences("doc").tool;
   slotTools.notebook = inkPreferences("notebook").tool;
 
-  el.documentInkBtn?.addEventListener("click", () => {
-    // ✎ while Text has the bar: the pen, with its whole bar — not the bar shut.
-    if (isTypewriterArmed() && isInkArmed()) {
-      typewriterReturn = null;
-      inkPanel?.close();
-      setInkTool(INK_TOOL_DEFAULT);
-      writeInkRailOpen(activeDocSlot(), true);
-      rememberInkPreferences();
-      refreshInkRail();
-      return;
-    }
-    toggleInkRail();
+  el.documentInkBtn?.addEventListener("click", () => toggleInkRail());
+  // A pointer arms "tap where it goes"; the keyboard, which has nothing to tap
+  // with, puts the block in the middle of the view at once.
+  el.documentTextBtn?.addEventListener("click", (event) => {
+    if (event.detail === 0) { placeBlockInView(); return; }
+    toggleBlockButton();
   });
-  el.documentTextBtn?.addEventListener("click", () => toggleTypewriter());
+  setBlockPlacementChangedHandler(() => refreshInkRail());
+  initBlockPlacement();
+  retireTextShapeType();
   initInlineRail();
 
   // pointerdown, not click, and preventDefault with it: a press on the rail
