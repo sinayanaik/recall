@@ -1,0 +1,179 @@
+/* Side by side parts: two parts of one file on screen at once
+ *
+ * See src/ui/split-parts.js for the model and src/ui/view-mode.js
+ * (openSplitPart) for the switching. The divider and the ratio are the ones the
+ * Highlights pane uses (src/ui/split-layout.js, styles/46-highlight-cycle.css),
+ * and the two never share the panel: opening one closes the other.
+ *
+ * ── The layout, in one sentence ────────────────────────────────────────────
+ *
+ * .quiz-panel is already a grid with every part as a sibling; `is-parts-split`
+ * gives it three columns — left part, divider, right part — and
+ * data-split-left / data-split-right say which part sits in which. Nothing is
+ * reparented, so a .pdf-page's offsetParent is still its .document-stage.
+ *
+ * ── The rows ───────────────────────────────────────────────────────────────
+ *
+ * Six, which is the Cards view's own shape: the tabs row, then the progress
+ * track, the deck, the card actions, the file actions and the replay row. A
+ * reading part (Notes, PDFs, Canvas) spans rows 2 to the end of its column;
+ * the cards take them one each in theirs. With no cards in the split the four
+ * auto rows hold nothing and are zero tall.
+ *
+ * Desktop and tablet only: below 720px there is not room for two parts, and the
+ * ⫿ button that opens this is not shown (src/ui/view-mode.js closes an open
+ * split when the window narrows past it).
+ */
+
+/* The whole `.quiz-panel.notes-mode` prefix and its `.cs-view-toggle` twin, for
+   the reason 46-highlight-cycle.css gives: the rule this displaces in
+   11-chrome.css carries a :has() whose specificity out-ranks three classes. */
+.quiz-panel.notes-mode.is-parts-split,
+.cs-view-toggle.cs-view-toggle .quiz-panel.notes-mode.is-parts-split {
+  grid-template-columns: minmax(0, var(--split-a, 60fr)) auto minmax(0, var(--split-b, 40fr));
+  grid-template-rows: auto auto minmax(0, 1fr) auto auto auto;
+}
+
+.quiz-panel.notes-mode.is-parts-split > .view-mode-row {
+  grid-row: 1;
+  grid-column: 1 / -1;
+}
+
+.quiz-panel.notes-mode.is-parts-split > .split-divider {
+  grid-row: 2 / -1;
+  grid-column: 2;
+}
+
+/* ── The reading parts ─────────────────────────────────────────────────────
+   One full-height cell each. A document part is the stage holding THAT paper —
+   data-doc-slot is "doc" for the PDFs and "notebook" for the Canvas — so the
+   PDFs and the Canvas side by side are each placed by their own stage. */
+.quiz-panel.notes-mode.is-parts-split[data-split-left="notes"] > .notes-stage,
+.quiz-panel.notes-mode.is-parts-split[data-split-left="document"] > .document-stage[data-doc-slot="doc"],
+.quiz-panel.notes-mode.is-parts-split[data-split-left="handwriting"] > .document-stage[data-doc-slot="notebook"] {
+  grid-row: 2 / -1;
+  grid-column: 1;
+}
+
+.quiz-panel.notes-mode.is-parts-split[data-split-right="notes"] > .notes-stage,
+.quiz-panel.notes-mode.is-parts-split[data-split-right="document"] > .document-stage[data-doc-slot="doc"],
+.quiz-panel.notes-mode.is-parts-split[data-split-right="handwriting"] > .document-stage[data-doc-slot="notebook"] {
+  grid-row: 2 / -1;
+  grid-column: 3;
+}
+
+/* ── The cards ─────────────────────────────────────────────────────────────
+   .notes-mode hides the deck and its button rows (11-chrome.css), which is
+   right when a reading part has the whole panel and wrong when the cards are
+   one of the two. Given back here, with the display each one has outside
+   notes mode (05-study.css, 03-toolbar.css, 06-rendered.css). [hidden] still
+   wins: it is display:none !important (01-tokens.css). */
+.quiz-panel.notes-mode.is-parts-split:is([data-split-left="cards"], [data-split-right="cards"]) > .progress-track {
+  display: flex;
+  grid-row: 2;
+  margin-bottom: 6px;
+}
+
+.quiz-panel.notes-mode.is-parts-split:is([data-split-left="cards"], [data-split-right="cards"]) > .deck {
+  display: grid;
+  grid-row: 3;
+}
+
+.quiz-panel.notes-mode.is-parts-split:is([data-split-left="cards"], [data-split-right="cards"]) > .controls {
+  display: flex;
+  grid-row: 4;
+}
+
+.quiz-panel.notes-mode.is-parts-split:is([data-split-left="cards"], [data-split-right="cards"]) > .deck-utility-actions {
+  display: flex;
+  grid-row: 5;
+}
+
+.quiz-panel.notes-mode.is-parts-split:is([data-split-left="cards"], [data-split-right="cards"]) > .replay-actions {
+  display: flex;
+  grid-row: 6;
+}
+
+.quiz-panel.notes-mode.is-parts-split[data-split-left="cards"] > :is(.progress-track, .deck, .controls, .deck-utility-actions, .replay-actions) {
+  grid-column: 1;
+}
+
+.quiz-panel.notes-mode.is-parts-split[data-split-right="cards"] > :is(.progress-track, .deck, .controls, .deck-utility-actions, .replay-actions) {
+  grid-column: 3;
+}
+
+/* The buttons under a card wrap in a narrow column rather than pushing it
+   wider than its track. */
+.quiz-panel.notes-mode.is-parts-split > :is(.controls, .deck-utility-actions, .replay-actions) {
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+/* ── Which pane is in focus ────────────────────────────────────────────────
+   The tab row's tools, ⇓, ◐ and the keyboard follow the focused part, so the
+   reader has to be able to see which one that is. A hairline in the accent,
+   inside the pane's own edge so it moves nothing. */
+.quiz-panel.is-parts-split[data-focus-part="notes"] > .notes-stage,
+.quiz-panel.is-parts-split[data-focus-part="cards"] > .deck,
+.quiz-panel.is-parts-split[data-focus-part="document"] > .document-stage[data-doc-slot="doc"],
+.quiz-panel.is-parts-split[data-focus-part="handwriting"] > .document-stage[data-doc-slot="notebook"] {
+  outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  outline-offset: -2px;
+}
+
+.quiz-panel.is-parts-split[data-focus-part="cards"] > .deck {
+  border-radius: var(--card-radius, 14px);
+}
+
+/* ── The tab that is beside ────────────────────────────────────────────────
+   Both shown parts carry a pill: the focused one its usual `is-active`, the
+   one beside it an outline of the same shape, so the row reads "these two,
+   and this one is in focus". */
+.view-mode-toggle button.is-beside,
+.reading-rail-btn.is-beside {
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--line));
+  color: var(--text);
+}
+
+/* ── The ⫿ button and its menu ─────────────────────────────────────────────
+   Dressed by .view-export-btn / .view-export-menu (37-document-chrome.css), as
+   the ⇓ beside it is. Only what differs is here. */
+.split-ico {
+  width: 16px;
+  height: 16px;
+}
+
+.quiz-panel.is-parts-split .view-mode-row > .split-parts-btn {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+  color: var(--accent);
+}
+
+.view-mode-row > .split-parts-menu .md-menu-item[aria-pressed="true"] {
+  color: var(--accent);
+  font-weight: 800;
+}
+
+.split-parts-empty {
+  margin: 4px 9px 6px;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+/* Not offered where two parts do not fit. */
+@media (max-width: 720px) {
+  .view-mode-row > .split-parts-btn,
+  .view-mode-row > .split-parts-menu,
+  .reading-rail-btn[data-rail-action="side-by-side"] {
+    display: none;
+  }
+}
+
+/* ── The notes' tools follow the focus too ─────────────────────────────────
+   .notes-mode is on whenever a reading part is up, which is what puts the
+   notes' ☰, ✎|👁 and ⋯ in the tab row. With the cards focused and the notes
+   beside them, those are not the tools in reach — the cards' are — so they
+   step out, as they do on the Cards tab. (The document's tools already follow
+   the focus: src/ui/chrome.js publishes cs-doc-shown for the focused part.) */
+.quiz-panel.notes-mode.is-parts-split[data-focus-part="cards"] .view-mode-row > :is(.notes-toc-toggle, .edit-toggle-pill, .notes-head-more-btn, .notes-head-more-menu) {
+  display: none;
+}

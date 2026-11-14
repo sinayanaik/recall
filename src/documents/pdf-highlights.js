@@ -41,6 +41,7 @@ import { isAdjustHandlesOpen } from "../ui/adjust-handles.js?v=__BUILD__";
 import { pushNotesUndo } from "../notes/notes-history.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { dropHighlightTombstonesForLiveIds, recordDeletedHighlightId } from "../sync/document-sync.js?v=__BUILD__";
+import { forEachDocumentScroller, liveDocumentHandler } from "./doc-scrollers.js?v=__BUILD__";
 
 export const PDF_MARK_CLASS = "pdf-mark";
 
@@ -1171,7 +1172,7 @@ export function paintDocumentHighlights(pageNumber) {
 // Every page currently carrying a mark layer. Called after any CRUD, because a
 // highlight can span a page break and a recolour has to reach both halves.
 export function repaintDocumentHighlights() {
-  document.querySelectorAll(".pdf-page[data-page-number]").forEach((page) => {
+  (el.documentView || document).querySelectorAll(".pdf-page[data-page-number]").forEach((page) => {
     const pageNumber = Number(page.dataset.pageNumber);
     if (pageNumber && page.querySelector(".pdf-mark-layer")) paintDocumentHighlights(pageNumber);
   });
@@ -1185,7 +1186,7 @@ export function repaintDocumentHighlights() {
 export function documentHighlightMarks(id) {
   if (!id) return [];
   const key = CSS.escape(id);
-  return [...document.querySelectorAll(`.${PDF_MARK_CLASS}[data-highlight-id="${key}"], .${PDF_MARK_ENVELOPE_CLASS}[data-highlight-id="${key}"]`)];
+  return [...(el.documentView || document).querySelectorAll(`.${PDF_MARK_CLASS}[data-highlight-id="${key}"], .${PDF_MARK_ENVELOPE_CLASS}[data-highlight-id="${key}"]`)];
 }
 
 // ── The envelope round a shape or an ink mark ──────────────────────────────
@@ -1453,7 +1454,7 @@ export function documentHighlightsUnderRects(rects, { textOnly = false } = {}) {
   // badge, the mark menu or an open panel can be over it too. Asking the page
   // boxes directly cannot be wrong about z-order because it never consults it.
   const pages = [];
-  document.querySelectorAll(".pdf-page[data-page-number]").forEach((pageEl) => {
+  (el.documentView || document).querySelectorAll(".pdf-page[data-page-number]").forEach((pageEl) => {
     const pageNumber = Number(pageEl.dataset.pageNumber);
     if (pageNumber) pages.push({ pageNumber, box: pageEl.getBoundingClientRect() });
   });
@@ -1517,7 +1518,7 @@ export function documentHighlightsCovering(rects, { textOnly = false } = {}) {
     });
   });
   const pages = new Map();
-  document.querySelectorAll(".pdf-page[data-page-number]").forEach((pageEl) => {
+  (el.documentView || document).querySelectorAll(".pdf-page[data-page-number]").forEach((pageEl) => {
     const pageNumber = Number(pageEl.dataset.pageNumber);
     if (pageNumber) pages.set(pageNumber, pageEl.getBoundingClientRect());
   });
@@ -1751,100 +1752,102 @@ export function documentMarkAnchor(view, id, fallback = null) {
 }
 
 export function initDocumentMarkMenu() {
-  const view = el.documentView;
-  if (!view) return;
-  view.addEventListener("click", (event) => {
-    // A click inside a text box being typed in is the reader placing the
-    // caret or picking words, not asking about the box: its style bar is
-    // already up, and the words have their own format bar
-    // (src/documents/pdf-shape-text-format.js). The editor stops its clicks
-    // itself; this is the backstop.
-    if (event.target?.closest?.(".pdf-shape-editor, .pdf-shape-editor-grip")) {
-      closeMarkMenu();
-      return;
-    }
-    // While a highlight's grips are up a tap moves one of its ends
-    // (src/ui/adjust-handles.js), it does not open a menu.
-    if (isAdjustHandlesOpen()) return;
-    // A live text selection means the reader is selecting, not tapping a
-    // highlight — the floating pill is the right surface for that. Read
-    // through the RANGE rather than Selection.toString(), for the reason
-    // src/notes/mark-menu.js gives at the same test: an armed touch controller
-    // makes toString() answer "" over unselectable content while every Range
-    // operation stays correct.
-    const selection = window.getSelection();
-    if (selection && !selection.isCollapsed && selection.rangeCount
-        && selection.getRangeAt(0).toString().trim()) return;
-    const record = documentHighlightAtPoint(event.clientX, event.clientY);
-    if (!record) {
-      closeMarkMenu();
-      return;
-    }
-    // A double or triple click inside a region is the reader selecting a word
-    // or a line of the text under it, not asking about the box — and the menu
-    // opened by the first click of it would sit over the very words being
-    // picked up. The single click still opens the region's menu.
-    if (record.kind === "area" && event.detail > 1) {
-      closeMarkMenu();
-      return;
-    }
-    // ── ...and not from under a writing hand ──────────────────────────────
-    //
-    // src/documents/pdf-ink.js calls a press shorter than INK_TAP_MS and stiller
-    // than INK_TAP_SLOP a TAP: it commits no ink and deliberately does not
-    // preventDefault, so the browser's click happens and a pen can press a note
-    // badge or a button. Writing is made of those. An i-dot, a comma, a tick, an
-    // accent, a retouch — each one is a tap by that measure, each one lands
-    // within INK_TAP_SLACK of ink already on the page, and each one opened this
-    // menu. "The more menu keeps popping up while I am writing", once per dotted i.
-    //
-    // Two refusals, both for the pen alone:
-    //
-    //   • an INK mark never opens from a pen at all. There is no moment while
-    //     holding a stylus when tapping your own handwriting means "recolour
-    //     this", and the menu stays one finger tap away — touch never draws, so
-    //     a finger is always free to mean exactly that — or a mouse click, or
-    //     the lasso, or the Highlights pane.
-    //   • anything else — a text run, a dragged region — is refused only while
-    //     the writing is still going on, because writing beside a highlighted
-    //     paragraph is inside its quads. Past the window it opens as it always did.
-    //
-    // A finger and a mouse are untouched in both cases: nothing here removes a
-    // route to a mark, it only stops a nib taking one by accident.
-    //
-    // closeMarkMenu rather than a bare return, so a stroke that begins over a
-    // menu somebody left open still dismisses it.
-    if (lastInkContactWasPen()
-        && (record.kind === "ink" || msSinceLastInkStroke() < INK_WRITING_QUIET_MS)) {
-      closeMarkMenu();
-      return;
-    }
-    event.preventDefault();
-    // A sticky note IS its note: a tap opens it, rather than a menu with
-    // "Add a note" on it. Its menu is still the press-and-hold away that every
-    // other route to a mark is — the Highlights pane.
-    if (record.kind === "shape" && record.shape?.type === "sticky") {
-      const icon = view.querySelector(`.pdf-shape[data-highlight-id="${CSS.escape(record.id)}"]`);
-      closeMarkMenu();
-      openHighlightNoteEditor(record.id, icon?.getBoundingClientRect() || null, documentHighlightNote(record.id), DOCUMENT_NOTE_HANDLERS);
-      return;
-    }
-    // Anchored to the highlight's own first painted quad, so the menu appears
-    // over the words it acts on rather than wherever the finger landed.
-    // The box being typed in is the reader's, not the menu's.
-    if (view.querySelector(`.pdf-shape-editor[data-highlight-id="${CSS.escape(record.id)}"]`)) {
-      closeMarkMenu();
-      return;
-    }
-    const anchor = documentMarkAnchor(view, record.id, event.target);
-    openMarkMenuWith(anchor, record.id, DOCUMENT_MARK_HANDLERS, record.color || MARK_HIGHLIGHT_DEFAULT);
-  });
+  // Once per scroller: side by side, the file's other paper has its own
+  // (src/documents/doc-scrollers.js), and each copy keeps to the live one.
+  forEachDocumentScroller((view) => {
+    view.addEventListener("click", liveDocumentHandler(view, (event) => {
+      // A click inside a text box being typed in is the reader placing the
+      // caret or picking words, not asking about the box: its style bar is
+      // already up, and the words have their own format bar
+      // (src/documents/pdf-shape-text-format.js). The editor stops its clicks
+      // itself; this is the backstop.
+      if (event.target?.closest?.(".pdf-shape-editor, .pdf-shape-editor-grip")) {
+        closeMarkMenu();
+        return;
+      }
+      // While a highlight's grips are up a tap moves one of its ends
+      // (src/ui/adjust-handles.js), it does not open a menu.
+      if (isAdjustHandlesOpen()) return;
+      // A live text selection means the reader is selecting, not tapping a
+      // highlight — the floating pill is the right surface for that. Read
+      // through the RANGE rather than Selection.toString(), for the reason
+      // src/notes/mark-menu.js gives at the same test: an armed touch controller
+      // makes toString() answer "" over unselectable content while every Range
+      // operation stays correct.
+      const selection = window.getSelection();
+      if (selection && !selection.isCollapsed && selection.rangeCount
+          && selection.getRangeAt(0).toString().trim()) return;
+      const record = documentHighlightAtPoint(event.clientX, event.clientY);
+      if (!record) {
+        closeMarkMenu();
+        return;
+      }
+      // A double or triple click inside a region is the reader selecting a word
+      // or a line of the text under it, not asking about the box — and the menu
+      // opened by the first click of it would sit over the very words being
+      // picked up. The single click still opens the region's menu.
+      if (record.kind === "area" && event.detail > 1) {
+        closeMarkMenu();
+        return;
+      }
+      // ── ...and not from under a writing hand ──────────────────────────────
+      //
+      // src/documents/pdf-ink.js calls a press shorter than INK_TAP_MS and stiller
+      // than INK_TAP_SLOP a TAP: it commits no ink and deliberately does not
+      // preventDefault, so the browser's click happens and a pen can press a note
+      // badge or a button. Writing is made of those. An i-dot, a comma, a tick, an
+      // accent, a retouch — each one is a tap by that measure, each one lands
+      // within INK_TAP_SLACK of ink already on the page, and each one opened this
+      // menu. "The more menu keeps popping up while I am writing", once per dotted i.
+      //
+      // Two refusals, both for the pen alone:
+      //
+      //   • an INK mark never opens from a pen at all. There is no moment while
+      //     holding a stylus when tapping your own handwriting means "recolour
+      //     this", and the menu stays one finger tap away — touch never draws, so
+      //     a finger is always free to mean exactly that — or a mouse click, or
+      //     the lasso, or the Highlights pane.
+      //   • anything else — a text run, a dragged region — is refused only while
+      //     the writing is still going on, because writing beside a highlighted
+      //     paragraph is inside its quads. Past the window it opens as it always did.
+      //
+      // A finger and a mouse are untouched in both cases: nothing here removes a
+      // route to a mark, it only stops a nib taking one by accident.
+      //
+      // closeMarkMenu rather than a bare return, so a stroke that begins over a
+      // menu somebody left open still dismisses it.
+      if (lastInkContactWasPen()
+          && (record.kind === "ink" || msSinceLastInkStroke() < INK_WRITING_QUIET_MS)) {
+        closeMarkMenu();
+        return;
+      }
+      event.preventDefault();
+      // A sticky note IS its note: a tap opens it, rather than a menu with
+      // "Add a note" on it. Its menu is still the press-and-hold away that every
+      // other route to a mark is — the Highlights pane.
+      if (record.kind === "shape" && record.shape?.type === "sticky") {
+        const icon = view.querySelector(`.pdf-shape[data-highlight-id="${CSS.escape(record.id)}"]`);
+        closeMarkMenu();
+        openHighlightNoteEditor(record.id, icon?.getBoundingClientRect() || null, documentHighlightNote(record.id), DOCUMENT_NOTE_HANDLERS);
+        return;
+      }
+      // Anchored to the highlight's own first painted quad, so the menu appears
+      // over the words it acts on rather than wherever the finger landed.
+      // The box being typed in is the reader's, not the menu's.
+      if (view.querySelector(`.pdf-shape-editor[data-highlight-id="${CSS.escape(record.id)}"]`)) {
+        closeMarkMenu();
+        return;
+      }
+      const anchor = documentMarkAnchor(view, record.id, event.target);
+      openMarkMenuWith(anchor, record.id, DOCUMENT_MARK_HANDLERS, record.color || MARK_HIGHLIGHT_DEFAULT);
+    }));
 
-  // The menu is positioned against a rect that scrolling invalidates.
-  // Guarded (see closeMarkMenuOnScroll) rather than a bare closeMarkMenu —
-  // opening the menu right after a fresh capture repaints this page's own
-  // mark layer, and that layout churn can trigger a native scroll adjustment
-  // with nothing to do with the reader scrolling — which, ungated, closed a
-  // region's menu before there was ever a chance to press "Make a flashcard".
-  view.addEventListener("scroll", closeMarkMenuOnScroll, { passive: true });
+    // The menu is positioned against a rect that scrolling invalidates.
+    // Guarded (see closeMarkMenuOnScroll) rather than a bare closeMarkMenu —
+    // opening the menu right after a fresh capture repaints this page's own
+    // mark layer, and that layout churn can trigger a native scroll adjustment
+    // with nothing to do with the reader scrolling — which, ungated, closed a
+    // region's menu before there was ever a chance to press "Make a flashcard".
+    view.addEventListener("scroll", liveDocumentHandler(view, closeMarkMenuOnScroll), { passive: true });
+  });
 }

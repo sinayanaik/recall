@@ -11,6 +11,7 @@ import { trimNoteAnchor } from "../quick-notes/anchors.js?v=__BUILD__";
 import { renderedAnchorText } from "./anchor-text.js?v=__BUILD__";
 import { scheduleReadingPositionSave } from "./reading-position.js?v=__BUILD__";
 import { NOTES_CHUNK_CLASS, notesTopLevelBlocks } from "../render/block-cache.js?v=__BUILD__";
+import { isNotesShown } from "../ui/split-parts.js?v=__BUILD__";
 
 // A representative raw-markdown offset for whatever's currently at the top of
 // the visible #notesView. Unlike the triple-click path, the "Edit notes"
@@ -324,7 +325,7 @@ export function setReadingAnchorCapturedHook(fn) {
 export function captureCurrentReadingAnchor(expectedKey = null) {
   // Off screen — raw mode, another tab, or Home over the open file — there is
   // nothing to read the place off, and a reading taken anyway is the top.
-  if (!isDisplayed(el.notesView) || state.viewMode !== "notes") return;
+  if (!isDisplayed(el.notesView) || !isNotesShown()) return;
   if (resumeLanding || reflowHolding) return;
   // The scroll that armed this capture happened in a deck that is no longer the
   // open one — a deck swap landed inside the debounce. Measuring the NEW deck's

@@ -49,6 +49,7 @@ import { SHAPE_BAR_ICONS, buildShapePanel, refreshShapePanel, setShapeTray, shap
 import { commitShapeTextEditor, isEditingShapeText, openShapeTextEditor } from "./pdf-shape-text.js?v=__BUILD__";
 import { SHAPE_ROTATABLE } from "../render/annot-shapes.js?v=__BUILD__";
 import { SHAPE_ROTATE_HANDLE_GAP, deleteShape, editConnectorLabel, editingShapeTextId, selectShape, shapeScreenRect, targetShapeRecord } from "./pdf-shapes.js?v=__BUILD__";
+import { documentStages } from "./doc-scrollers.js?v=__BUILD__";
 
 export const SHAPE_STYLE_POPOVER_CLASS = "shape-style-popover";
 
@@ -143,7 +144,9 @@ function buildShapeStylePopover() {
   // Leaving the PDFs or Canvas tab hides the stage, not the selection: the
   // popover goes with the stage, and comes back with it.
   if (el.documentStage && typeof MutationObserver === "function") {
-    new MutationObserver(() => syncShapeStylePopover()).observe(el.documentStage, { attributes: true, attributeFilter: ["hidden"] });
+    const stageObserver = new MutationObserver(() => syncShapeStylePopover());
+    // Both stages: side by side, the file's other paper has one of its own.
+    documentStages().forEach((stage) => stageObserver.observe(stage, { attributes: true, attributeFilter: ["hidden"] }));
   }
   shapeStylePop = { root, section, bar, trayBox, id: null, trayFor: null, side: "above", sideFor: null, clear: 0 };
   return shapeStylePop;

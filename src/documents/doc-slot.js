@@ -48,6 +48,7 @@ import { state } from "../core/state.js?v=__BUILD__";
 // A leaf that imports nothing, for the reason stated above: this module is read
 // from a top-level initialiser and must not take part in a cycle.
 import { rememberedDeckTab } from "../storage/deck-tab.js?v=__BUILD__";
+import { documentPartInFocus, isDocumentPartShown } from "../ui/split-parts.js?v=__BUILD__";
 
 export const DOC_SLOT_DOC = "doc";
 
@@ -120,8 +121,25 @@ export function hasDocSlot(slot, meta = state.meta) {
 // is a second piece of state that can disagree with the first one. The Document
 // tab and the Write tab are the same #documentStage showing different files, and
 // exactly one of them is ever the view.
+//
+// Side by side, "the view" is the document part in focus — the focused part if
+// that is a document, else the one beside it: with the Notes focused and the
+// Canvas beside them, the Canvas is still the paper the stage's tools act on
+// (src/ui/split-parts.js).
 export function activeDocSlot() {
-  return state.viewMode === "handwriting" ? DOC_SLOT_NOTEBOOK : DOC_SLOT_DOC;
+  if (dualDocumentContext) return dualDocumentContext;
+  return documentPartInFocus() === "handwriting" ? DOC_SLOT_NOTEBOOK : DOC_SLOT_DOC;
+}
+
+// ...and with BOTH papers side by side, the live one — the paper
+// src/documents/pdf-view.js has open, which is the one the reader is working on
+// except for the moment a suspended paper is given a turn to finish drawing.
+// Every record filtered by slot (the highlights, the ink, the blocks) has to be
+// the live paper's, whatever the focus says. Set and cleared by pdf-view.js.
+let dualDocumentContext = null;
+
+export function setDualDocumentContext(slot) {
+  dualDocumentContext = slot ? normalizeDocSlot(slot) : null;
 }
 
 // Is the reader on the document surface at all? Two tabs land on it, so every
@@ -129,8 +147,18 @@ export function activeDocSlot() {
 // state.viewMode with one string — which is what several of them did, and what
 // would have left the pager, the page-up key, the touch-selection controller and
 // the bookmark all inert on the Write tab.
+//
+// This asks whether a document is the FOCUSED part — what a keyboard shortcut
+// or the reading rail wants. Whether one is on screen at all, side by side with
+// something else focused, is documentSurfaceShown.
 export function onDocumentSurface() {
   return state.viewMode === "document" || state.viewMode === "handwriting";
+}
+
+// A document is on screen, focused or beside another part: what a scroll
+// listener, a resize, a position save or a repaint after a sync asks.
+export function documentSurfaceShown() {
+  return isDocumentPartShown();
 }
 
 // Which surface an opening deck should land on. Here, in the leaf, because two

@@ -27,6 +27,7 @@
 // surface that happens to be open, so a card made from the second PDF of a deck
 // shows that paper's marks while the reader has the first one open.
 
+import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { ensureHtmlToImage, ensureMermaid } from "../core/lib-loader.js?v=__BUILD__";
 import { configureMermaid, currentThemeId } from "../ui/theme.js?v=__BUILD__";
@@ -453,7 +454,7 @@ export async function rasteriseRegionBlocks(page, source, pageNumber, rect, pixe
     // As the reader sees it: a block on the page takes its colours from the
     // paper it is on (styles/94-paper-tones.css), not from the theme, so the
     // copy drawn here is told the same paper.
-    const stage = document.getElementById("documentStage");
+    const stage = el.documentStage;
     const dark = Boolean(stage?.classList.contains("is-pdf-inverted"));
     host.className = dark ? "paper-tokens is-dark-paper" : "paper-tokens";
     host.style.setProperty("--paper-bg", stage?.dataset.paperBg || (dark ? "#030303" : "#ffffff"));

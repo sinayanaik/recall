@@ -39,6 +39,7 @@
 // file imports pdf-region.js, which imports this — so pdf-ink hands its
 // pushInkHistoryAction in at start-up (setSmartHlUndoSink).
 
+import { el } from "../core/dom.js?v=__BUILD__";
 import { wordSpanAtChar } from "../core/word-bounds.js?v=__BUILD__";
 import { inkFilingColor } from "../format/ink-colors.js?v=__BUILD__";
 import { closeMarkMenu } from "../notes/mark-menu.js?v=__BUILD__";
@@ -368,7 +369,7 @@ export function smartHlPaintPreview(range, color, pages) {
 }
 
 export function smartHlClearPreview() {
-  document.querySelectorAll(`.${SMART_HL_PREVIEW_CLASS}`).forEach((band) => band.remove());
+  (el.documentView || document).querySelectorAll(`.${SMART_HL_PREVIEW_CLASS}`).forEach((band) => band.remove());
 }
 
 // ── Making the highlight ──────────────────────────────────────────────────

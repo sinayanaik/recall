@@ -58,6 +58,7 @@ import { state } from "../core/state.js?v=__BUILD__";
 import { isProgrammaticNotesScroll, markProgrammaticNotesScroll } from "./notes-view.js?v=__BUILD__";
 import { notesTopLevelBlocks, reshapeRenderedChunks } from "../render/block-cache.js?v=__BUILD__";
 import { chapterIndexFor, refinePagedSpanStart, resetPagedSpanSeams } from "./chapters.js?v=__BUILD__";
+import { isNotesShown } from "../ui/split-parts.js?v=__BUILD__";
 
 // How close to a page boundary counts as "on that page". Sub-pixel column
 // widths mean scrollLeft is almost never an exact multiple of clientWidth.
@@ -1070,7 +1071,7 @@ export function initPagedNotes() {
   // acting on the pill) is the moment that becomes safe, and it fires exactly
   // one selectionchange.
   document.addEventListener("selectionchange", () => {
-    if (!isNotesPaged() || state.viewMode !== "notes") return;
+    if (!isNotesPaged() || !isNotesShown()) return;
     if (notesSelectionIsLive()) return;
     scheduleNotesPageSettle();
   });
@@ -1079,7 +1080,7 @@ export function initPagedNotes() {
   // swipe is let go, so that is when it snaps. A fling's momentum keeps firing
   // scroll events after this, which simply re-arms the same settle.
   onReaderTouchRelease(() => {
-    if (!isNotesPaged() || state.viewMode !== "notes") return;
+    if (!isNotesPaged() || !isNotesShown()) return;
     scheduleNotesPageSettle();
   });
 

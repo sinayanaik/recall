@@ -32,7 +32,6 @@
 //     moment.
 
 import { el } from "../core/dom.js?v=__BUILD__";
-import { state } from "../core/state.js?v=__BUILD__";
 import { withChunkRendered } from "../render/block-cache.js?v=__BUILD__";
 import { convergeNotesScroll } from "./anchors.js?v=__BUILD__";
 import { isNotesEditing } from "./notes-view.js?v=__BUILD__";
@@ -44,6 +43,7 @@ import {
   scheduleReadingAnchorCapture,
   setReflowHolding
 } from "./scroll-anchor.js?v=__BUILD__";
+import { isNotesShown } from "../ui/split-parts.js?v=__BUILD__";
 
 // How long after scrolling stops the position is taken. Shorter than the
 // reading-anchor capture (150ms), so the one in memory when a turn begins is
@@ -65,7 +65,7 @@ let captureTimer = 0;
 let hold = null;
 
 function notesViewMeasurable(view) {
-  return Boolean(view && !view.hidden && view.clientWidth && state.viewMode === "notes" && !isNotesEditing());
+  return Boolean(view && !view.hidden && view.clientWidth && isNotesShown() && !isNotesEditing());
 }
 
 // The view is a different size from the one the remembered position was taken

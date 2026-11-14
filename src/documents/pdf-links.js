@@ -26,6 +26,7 @@
 import { el } from "../core/dom.js?v=__BUILD__";
 import { DOC_SLOT_DOC } from "./doc-slot.js?v=__BUILD__";
 import { resolvePdfDestination } from "./pdf-dest.js?v=__BUILD__";
+import { onDocumentScrollers, onDocumentStages } from "./doc-scrollers.js?v=__BUILD__";
 import {
   currentDocumentPage,
   currentDocumentResidual,
@@ -283,9 +284,11 @@ function linkKeyInField(target) {
 }
 
 export function initDocumentLinks() {
-  el.documentStage?.addEventListener("click", onStageClick);
-  el.documentView?.addEventListener("pointermove", onViewPointerMove, { passive: true });
-  el.documentView?.addEventListener("pointerleave", onViewPointerLeave);
+  // Both stages and both scrollers, each keeping to the live one (side by
+  // side — src/documents/doc-scrollers.js).
+  onDocumentStages("click", onStageClick);
+  onDocumentScrollers("pointermove", onViewPointerMove, { passive: true });
+  onDocumentScrollers("pointerleave", onViewPointerLeave);
   document.getElementById("documentLinkBackBtn")?.addEventListener("click", (event) => {
     event.preventDefault();
     goBackFromLink();

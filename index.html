@@ -159,6 +159,7 @@
     <link rel="stylesheet" href="styles/96-md-pdf.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/97-diagram.css?v=__BUILD__">
     <link rel="stylesheet" href="styles/98-block-inline.css?v=__BUILD__">
+    <link rel="stylesheet" href="styles/99-split-parts.css?v=__BUILD__">
 
     <!-- ── Module preloads ────────────────────────────────────────────────
          The app is ~130 ES modules and the browser discovers them by PARSING
@@ -321,6 +322,7 @@
     <link rel="modulepreload" href="src/documents/block-actions-popover.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/block-style.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/block-style-bar.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/documents/doc-scrollers.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/doc-slot.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/notebook.js?v=__BUILD__">
     <link rel="modulepreload" href="src/documents/notebook-migrate.js?v=__BUILD__">
@@ -504,6 +506,8 @@
     <link rel="modulepreload" href="src/ui/pickers.js?v=__BUILD__">
     <link rel="modulepreload" href="src/ui/reading-rail.js?v=__BUILD__">
     <link rel="modulepreload" href="src/ui/shutdown.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/ui/split-layout.js?v=__BUILD__">
+    <link rel="modulepreload" href="src/ui/split-parts.js?v=__BUILD__">
     <link rel="modulepreload" href="src/ui/style-schema.js?v=__BUILD__">
     <link rel="modulepreload" href="src/ui/style-settings.js?v=__BUILD__">
     <link rel="modulepreload" href="src/ui/style-icon.js?v=__BUILD__">
@@ -954,6 +958,14 @@
                    drawer's Highlights half, which is the one list in the app
                    that already knows which surface you are reading. -->
             </div>
+            <!-- ▯▯ Side by side: another part of this file beside the one in
+                 focus — Cards, Notes, PDFs or Canvas, any two. Its menu is
+                 rebuilt from the file each time it opens (paintSplitPartsMenu,
+                 src/ui/view-mode.js) and lists only the parts this file has.
+                 Dressed as the ⇓ beside it, because it is the same kind of
+                 control. Hidden below 720px, where two parts do not fit. -->
+            <button class="tool-button view-export-btn split-parts-btn" id="splitPartsBtn" type="button" aria-haspopup="true" aria-expanded="false" aria-label="Side by side" title="Side by side — open another part of this file beside this one"><svg class="split-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3.5" y="5" width="17" height="14" rx="2.5"/><path d="M12 5v14"/></svg></button>
+            <div class="view-export-menu split-parts-menu" id="splitPartsMenu" role="menu" hidden></div>
             <!-- ── Export what you are looking at ──────────────────────────
                  Export used to live only in the ☰ drawer, three rows deep and
                  nowhere near the thing being exported: "Export Cards" while you
@@ -1541,6 +1553,14 @@
               </div>
             </nav>
           </div>
+          <!-- The second document stage: the file's other paper, when its PDFs
+               and its Canvas are side by side (src/ui/split-parts.js). Only the
+               scroller: the pager, the pen's rail and the contents drawer are
+               one set, moved into whichever stage holds the paper in focus
+               (src/documents/pdf-view.js, moveDocumentChrome). -->
+          <div class="document-stage" id="documentStageAlt" hidden>
+            <div class="document-scroll" id="documentViewAlt"></div>
+          </div>
           <!-- ── Side by side: the page, and what you wrote on it ─────────
                A reader working through what they marked had two places to be
                and could only be in one: the paper (or the note) on one tab, and
@@ -1863,6 +1883,7 @@
           <button class="reading-rail-btn" type="button" data-rail-group="Views" data-view-mode="notes" title="Notes" aria-label="Notes"><span class="rr-ico" aria-hidden="true">&#128221;</span><span class="rr-label">Notes</span></button>
           <button class="reading-rail-btn" type="button" data-rail-group="Views" data-view-mode="document" hidden title="PDF" aria-label="PDF"><span class="rr-ico" aria-hidden="true">&#128196;</span><span class="rr-label">PDF</span></button>
           <button class="reading-rail-btn" type="button" data-rail-group="Views" data-view-mode="handwriting" hidden title="Canvas" aria-label="Canvas"><span class="rr-ico" aria-hidden="true">&#9998;</span><span class="rr-label">Canvas</span></button>
+          <button class="reading-rail-btn" type="button" data-rail-group="Views" data-rail-action="side-by-side" id="readingRailSplitBtn" title="Side by side" aria-label="Side by side"><span class="rr-ico" aria-hidden="true"><svg class="split-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3.5" y="5" width="17" height="14" rx="2.5"/><path d="M12 5v14"/></svg></span><span class="rr-label">Side by side</span></button>
           <!-- ── What you can do to what is on screen ───────────────────-->
           <button class="reading-rail-btn" type="button" data-rail-group="This page" data-rail-action="contents" title="Contents" aria-label="Contents"><span class="rr-ico" aria-hidden="true">&#9776;</span><span class="rr-label">Contents</span></button>
           <!-- The ✎|👁 pill is in the row focus mode folds away, so the one thing

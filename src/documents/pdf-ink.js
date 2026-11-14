@@ -118,6 +118,7 @@ import { inkSvgFile } from "../format/ink-svg.js?v=__BUILD__";
 import { storeImageOrQueue } from "../images/outbox.js?v=__BUILD__";
 import { createInkEngine, isEraserEvent } from "../render/ink-engine.js?v=__BUILD__";
 import { setToastPenPassThrough } from "../ui/feedback.js?v=__BUILD__";
+import { forEachDocumentScroller, liveDocumentHandler } from "./doc-scrollers.js?v=__BUILD__";
 
 // A press shorter and stiller than both of these was a tap, not a stroke.
 // 150ms is under the 240ms the touch controller waits for a press, so the two
@@ -1033,63 +1034,65 @@ export function initDocumentInk() {
     && under.closest(".pdf-page")
     && !el.documentStage?.hidden
     && inkTakesPointer(event)));
-  const view = el.documentView;
-  if (!view) return;
-  // Capture, so the decision about who owns this pointer is made before any of
-  // the handlers that would otherwise act on it.
-  view.addEventListener("pointerdown", onInkPointerDown, true);
-  view.addEventListener("pointermove", onInkPointerMove, true);
-  view.addEventListener("pointerup", onInkPointerUp, true);
-  view.addEventListener("pointercancel", onInkPointerCancel, true);
-  view.addEventListener("click", onInkClick, true);
-  // The scroll guard is bound per press — see attachInkScrollGuard.
-  view.addEventListener("scroll", scheduleInkWindows, { passive: true });
+  // Once per scroller: side by side, the file's other paper has its own
+  // (src/documents/doc-scrollers.js), and each copy keeps to the live one.
+  forEachDocumentScroller((view) => {
+    // Capture, so the decision about who owns this pointer is made before any of
+    // the handlers that would otherwise act on it.
+    view.addEventListener("pointerdown", liveDocumentHandler(view, onInkPointerDown), true);
+    view.addEventListener("pointermove", liveDocumentHandler(view, onInkPointerMove), true);
+    view.addEventListener("pointerup", liveDocumentHandler(view, onInkPointerUp), true);
+    view.addEventListener("pointercancel", liveDocumentHandler(view, onInkPointerCancel), true);
+    view.addEventListener("click", liveDocumentHandler(view, onInkClick), true);
+    // The scroll guard is bound per press — see attachInkScrollGuard.
+    view.addEventListener("scroll", liveDocumentHandler(view, scheduleInkWindows), { passive: true });
 
-  // ── The OS menu, over the one surface it must never open on ───────────────
-  //
-  // src/notes/touch-selection.js already refuses `contextmenu`, and refuses it
-  // for the right reason — a long press over a link or a picture would otherwise
-  // put Chrome's menu on top of a selection it just made. But it refuses only
-  // under canTouchSelect(), which is `(pointer: coarse) and (hover: none)`: false
-  // on precisely the machines this matters most on. A Surface, an iPad with a
-  // trackpad, an Android tablet with a mouse, a desktop with a Wacom — every one
-  // of them reports hover, so nothing suppressed the menu over the paper.
-  //
-  // And on those machines a barrel-button press is not a right-click at all:
-  // isEraserEvent (src/render/ink-engine.js) reads `buttons & 2` as ERASE, which
-  // is what makes the button on the side of the stylus rub out. So the reader
-  // holds the button, rubs out a word, and the operating system opens a menu
-  // over the gap they just made.
-  //
-  // Gated on the flag rather than on event.pointerType, which is not portable
-  // here: `contextmenu` is a PointerEvent in Chromium and a MouseEvent
-  // elsewhere, and a MouseEvent has no pointerType to read. The flag is exact,
-  // and it is false for a mouse with no pen anywhere near — so a right-click to
-  // copy a line of the paper still gets the browser's own menu.
-  view.addEventListener("contextmenu", (event) => {
-    if (inkPenIsDown()) event.preventDefault();
-  });
+    // ── The OS menu, over the one surface it must never open on ───────────────
+    //
+    // src/notes/touch-selection.js already refuses `contextmenu`, and refuses it
+    // for the right reason — a long press over a link or a picture would otherwise
+    // put Chrome's menu on top of a selection it just made. But it refuses only
+    // under canTouchSelect(), which is `(pointer: coarse) and (hover: none)`: false
+    // on precisely the machines this matters most on. A Surface, an iPad with a
+    // trackpad, an Android tablet with a mouse, a desktop with a Wacom — every one
+    // of them reports hover, so nothing suppressed the menu over the paper.
+    //
+    // And on those machines a barrel-button press is not a right-click at all:
+    // isEraserEvent (src/render/ink-engine.js) reads `buttons & 2` as ERASE, which
+    // is what makes the button on the side of the stylus rub out. So the reader
+    // holds the button, rubs out a word, and the operating system opens a menu
+    // over the gap they just made.
+    //
+    // Gated on the flag rather than on event.pointerType, which is not portable
+    // here: `contextmenu` is a PointerEvent in Chromium and a MouseEvent
+    // elsewhere, and a MouseEvent has no pointerType to read. The flag is exact,
+    // and it is false for a mouse with no pen anywhere near — so a right-click to
+    // copy a line of the paper still gets the browser's own menu.
+    view.addEventListener("contextmenu", liveDocumentHandler(view, (event) => {
+      if (inkPenIsDown()) event.preventDefault();
+    }));
 
-  // ── The nets under the four listeners above ────────────────────────────────
-  //
-  // All four are bound on the scroller and keyed on the pointer id, so they only
-  // ever hear about a gesture that stays on the scroller. The three ways one does
-  // not are the three ways the pen used to die (see releaseInkPress):
-  //
-  //   • the capture is taken away — the page torn down under the nib, the tab
-  //     switched, the surface relaid out. lostpointercapture is the browser
-  //     saying so, and it is the only event that arrives for it.
-  //   • the contact ends off the scroller, so the pointerup is dispatched
-  //     somewhere the capture-phase listeners on this element never run.
-  //   • the tab goes away mid-stroke and nothing ends the gesture at all.
-  //
-  // Each costs one property read when there is no press of ours, which there
-  // almost always is not. A stroke in flight is cancelled rather than committed:
-  // none of these is a pen being lifted, and half a stroke that the reader did
-  // not finish is not ink they asked to keep.
-  view.addEventListener("lostpointercapture", (event) => {
-    if (!press || event.pointerId !== press.pointerId) return;
-    cancelInkPress();
+    // ── The nets under the four listeners above ────────────────────────────────
+    //
+    // All four are bound on the scroller and keyed on the pointer id, so they only
+    // ever hear about a gesture that stays on the scroller. The three ways one does
+    // not are the three ways the pen used to die (see releaseInkPress):
+    //
+    //   • the capture is taken away — the page torn down under the nib, the tab
+    //     switched, the surface relaid out. lostpointercapture is the browser
+    //     saying so, and it is the only event that arrives for it.
+    //   • the contact ends off the scroller, so the pointerup is dispatched
+    //     somewhere the capture-phase listeners on this element never run.
+    //   • the tab goes away mid-stroke and nothing ends the gesture at all.
+    //
+    // Each costs one property read when there is no press of ours, which there
+    // almost always is not. A stroke in flight is cancelled rather than committed:
+    // none of these is a pen being lifted, and half a stroke that the reader did
+    // not finish is not ink they asked to keep.
+    view.addEventListener("lostpointercapture", liveDocumentHandler(view, (event) => {
+      if (!press || event.pointerId !== press.pointerId) return;
+      cancelInkPress();
+    }));
   });
   const endStray = (event) => {
     if (!press || event.pointerId !== press.pointerId) return;

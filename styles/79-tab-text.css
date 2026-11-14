@@ -23,7 +23,7 @@
   --raw-markdown-font-size: var(--notes-raw-font-size);
 }
 
-#documentStage {
+:is(#documentStage, #documentStageAlt) {
   --code-font-size: var(--doc-code-font-size);
 }
 
@@ -42,7 +42,7 @@
 #notesStage,
 .highlight-cycle,
 #quickNotesBoard,
-#documentStage {
+:is(#documentStage, #documentStageAlt) {
   --heading-h1-scale: var(--notes-heading-h1-scale, 1.2);
   --heading-h2-scale: var(--notes-heading-h2-scale, 1.12);
   --heading-h3-scale: var(--notes-heading-h3-scale, 1.06);
@@ -83,7 +83,7 @@
    data-doc-slot is set on the stage by setViewMode (src/ui/view-mode.js), and
    the rules below this one read these three variables, so redeclaring them on
    the stage is all it takes. */
-#documentStage[data-doc-slot="notebook"] {
+:is(#documentStage, #documentStageAlt)[data-doc-slot="notebook"] {
   --doc-block-font-size: var(--canvas-block-font-size, 0.82rem);
   --doc-block-line-height: var(--canvas-block-line-height, 1.4);
   --doc-code-font-size: var(--canvas-code-font-size, 1em);

@@ -107,7 +107,9 @@ export function updateMeta() {
   // carries the cards, the notes and the document, so greying it out for an
   // empty NOTE would take the other two with it. The empty case is answered
   // where it always was, by exportNotesFlat's "No notes to export."
-  if (!hasDeck && state.viewMode !== "cards") setViewMode("cards");
+  // ...or beside them: a file closed with two parts side by side closes the
+  // split with it (setViewMode, finding no file open).
+  if (!hasDeck && (state.viewMode !== "cards" || state.splitPart)) setViewMode("cards");
 }
 
 // The PDF tab, on every deck that is open.

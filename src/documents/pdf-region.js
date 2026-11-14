@@ -67,6 +67,7 @@ import {
 } from "./pdf-smart-highlight.js?v=__BUILD__";
 import { documentPinchEngaged } from "./pdf-view.js?v=__BUILD__";
 import { closeMarkMenu, openMarkMenuWith } from "../notes/mark-menu.js?v=__BUILD__";
+import { forEachDocumentScroller, liveDocumentHandler } from "./doc-scrollers.js?v=__BUILD__";
 
 export const REGION_CLASS = "is-region-select";
 
@@ -498,94 +499,96 @@ function endRegionPan() {
 }
 
 export function initDocumentRegionSelect() {
-  const view = el.documentView;
-  if (!view) return;
-
-  view.addEventListener("pointerdown", (event) => {
-    if (!regionArmed || regionDrag) return;
-    // Two fingers are a pinch or a pan, and the touch listeners below own those.
-    // A secondary mouse button is a context menu.
-    if (event.pointerType === "touch" && event.isPrimary === false) return;
-    if (event.button !== undefined && event.button !== 0) return;
-    // A press on a markdown block belongs to the block — picked up, dragged,
-    // edited — exactly as it is with the mode off.
-    // ...and so does the text typed with the Text button (PDF_PICKUP_SELECTOR).
-    if (event.target?.closest?.(PDF_PICKUP_SELECTOR)) return;
-    // The menu of the last region closes before anything is measured: it sits
-    // over the highlight it belongs to, which is where a reader is likely to
-    // drag next.
-    closeMarkMenu();
-    if (!beginRegionDrag(event)) return;
-    event.preventDefault();
-  });
-
-  view.addEventListener("pointermove", (event) => {
-    if (!regionDrag) {
-      if (regionArmed && !event.buttons && event.pointerType !== "touch") paintRegionHover(event);
-      return;
-    }
-    if (regionDrag.pointerId !== undefined && event.pointerId !== regionDrag.pointerId) return;
-    event.preventDefault();
-    const drag = regionDrag;
-    drag.last = { x: event.clientX, y: event.clientY };
-    drag.to = drag.last;
-    const moved = Math.hypot(drag.last.x - (drag.pageEl.getBoundingClientRect().left + drag.from.x),
-      drag.last.y - (drag.pageEl.getBoundingClientRect().top + drag.from.y));
-    drag.travel = Math.max(drag.travel, moved);
-    if (drag.holdTimer && drag.travel >= REGION_TEXT_MIN_DRAG) {
-      clearTimeout(drag.holdTimer);
-      drag.holdTimer = 0;
-    }
-    scheduleRegionFrame();
-    if (!drag.edgeFrame) drag.edgeFrame = requestAnimationFrame(regionEdgeStep);
-  });
-
-  view.addEventListener("pointerup", (event) => {
-    if (!regionDrag) return;
-    if (regionDrag.pointerId !== undefined && event.pointerId !== regionDrag.pointerId) return;
-    finishRegionDrag(event);
-  });
-  view.addEventListener("pointercancel", (event) => {
-    if (!regionDrag) return;
-    if (regionDrag.pointerId !== undefined && event.pointerId !== regionDrag.pointerId) return;
-    cancelRegionDrag();
-  });
-  view.addEventListener("lostpointercapture", (event) => {
-    if (!regionDrag || event.pointerId !== regionDrag.pointerId) return;
-    // A capture lost mid-drag (the page torn down under it by a relayout) is a
-    // drag that cannot finish; the release that normally follows a capture's
-    // end has already been handled by pointerup above.
-    cancelRegionDrag();
-  });
   window.addEventListener("blur", () => { if (regionDrag) cancelRegionDrag(); });
+  // Once per scroller: side by side, the file's other paper has its own
+  // (src/documents/doc-scrollers.js), and each copy keeps to the live one.
+  forEachDocumentScroller((view) => {
 
-  // The click a drag leaves behind — see REGION_SWALLOW_CLICK_MS. Capture, and
-  // immediate, so neither the highlight menu's own click listener on this
-  // element nor anything under it sees it.
-  view.addEventListener("click", (event) => {
-    if (Date.now() >= regionSwallowClickUntil) return;
-    regionSwallowClickUntil = 0;
-    event.preventDefault();
-    event.stopImmediatePropagation();
-  }, true);
+    view.addEventListener("pointerdown", liveDocumentHandler(view, (event) => {
+      if (!regionArmed || regionDrag) return;
+      // Two fingers are a pinch or a pan, and the touch listeners below own those.
+      // A secondary mouse button is a context menu.
+      if (event.pointerType === "touch" && event.isPrimary === false) return;
+      if (event.button !== undefined && event.button !== 0) return;
+      // A press on a markdown block belongs to the block — picked up, dragged,
+      // edited — exactly as it is with the mode off.
+      // ...and so does the text typed with the Text button (PDF_PICKUP_SELECTOR).
+      if (event.target?.closest?.(PDF_PICKUP_SELECTOR)) return;
+      // The menu of the last region closes before anything is measured: it sits
+      // over the highlight it belongs to, which is where a reader is likely to
+      // drag next.
+      closeMarkMenu();
+      if (!beginRegionDrag(event)) return;
+      event.preventDefault();
+    }));
 
-  view.addEventListener("touchstart", (event) => {
-    if (!regionArmed || event.touches.length !== 2 || inkPenIsDown()) return;
-    // The first finger had started a drag; the second says it was a scroll.
-    cancelRegionDrag();
-    regionPan = {
-      mid: regionTouchMidpoint(event.touches),
-      scrollTop: view.scrollTop,
-      scrollLeft: view.scrollLeft
+    view.addEventListener("pointermove", liveDocumentHandler(view, (event) => {
+      if (!regionDrag) {
+        if (regionArmed && !event.buttons && event.pointerType !== "touch") paintRegionHover(event);
+        return;
+      }
+      if (regionDrag.pointerId !== undefined && event.pointerId !== regionDrag.pointerId) return;
+      event.preventDefault();
+      const drag = regionDrag;
+      drag.last = { x: event.clientX, y: event.clientY };
+      drag.to = drag.last;
+      const moved = Math.hypot(drag.last.x - (drag.pageEl.getBoundingClientRect().left + drag.from.x),
+        drag.last.y - (drag.pageEl.getBoundingClientRect().top + drag.from.y));
+      drag.travel = Math.max(drag.travel, moved);
+      if (drag.holdTimer && drag.travel >= REGION_TEXT_MIN_DRAG) {
+        clearTimeout(drag.holdTimer);
+        drag.holdTimer = 0;
+      }
+      scheduleRegionFrame();
+      if (!drag.edgeFrame) drag.edgeFrame = requestAnimationFrame(regionEdgeStep);
+    }));
+
+    view.addEventListener("pointerup", liveDocumentHandler(view, (event) => {
+      if (!regionDrag) return;
+      if (regionDrag.pointerId !== undefined && event.pointerId !== regionDrag.pointerId) return;
+      finishRegionDrag(event);
+    }));
+    view.addEventListener("pointercancel", liveDocumentHandler(view, (event) => {
+      if (!regionDrag) return;
+      if (regionDrag.pointerId !== undefined && event.pointerId !== regionDrag.pointerId) return;
+      cancelRegionDrag();
+    }));
+    view.addEventListener("lostpointercapture", liveDocumentHandler(view, (event) => {
+      if (!regionDrag || event.pointerId !== regionDrag.pointerId) return;
+      // A capture lost mid-drag (the page torn down under it by a relayout) is a
+      // drag that cannot finish; the release that normally follows a capture's
+      // end has already been handled by pointerup above.
+      cancelRegionDrag();
+    }));
+
+    // The click a drag leaves behind — see REGION_SWALLOW_CLICK_MS. Capture, and
+    // immediate, so neither the highlight menu's own click listener on this
+    // element nor anything under it sees it.
+    view.addEventListener("click", liveDocumentHandler(view, (event) => {
+      if (Date.now() >= regionSwallowClickUntil) return;
+      regionSwallowClickUntil = 0;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }), true);
+
+    view.addEventListener("touchstart", liveDocumentHandler(view, (event) => {
+      if (!regionArmed || event.touches.length !== 2 || inkPenIsDown()) return;
+      // The first finger had started a drag; the second says it was a scroll.
+      cancelRegionDrag();
+      regionPan = {
+        mid: regionTouchMidpoint(event.touches),
+        scrollTop: view.scrollTop,
+        scrollLeft: view.scrollLeft
+      };
+      view.addEventListener("touchmove", onRegionPanMove, { passive: true });
+    }), { passive: true });
+    const onRegionTouchEnd = (event) => {
+      if (regionPan && event.touches.length < 2) endRegionPan();
     };
-    view.addEventListener("touchmove", onRegionPanMove, { passive: true });
-  }, { passive: true });
-  const onRegionTouchEnd = (event) => {
-    if (regionPan && event.touches.length < 2) endRegionPan();
-  };
-  view.addEventListener("touchend", onRegionTouchEnd, { passive: true });
-  view.addEventListener("touchcancel", onRegionTouchEnd, { passive: true });
+    view.addEventListener("touchend", liveDocumentHandler(view, onRegionTouchEnd), { passive: true });
+    view.addEventListener("touchcancel", liveDocumentHandler(view, onRegionTouchEnd), { passive: true });
 
+  });
   // Escape gets out, whether or not a drag is half-made. Registered on the
   // document rather than the view because the view is not focusable, so it
   // never has the key.

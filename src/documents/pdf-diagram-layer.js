@@ -12,6 +12,7 @@
 // without touching the others' — the guides of a drag do not wipe the connect
 // arrows of the box being dragged.
 
+import { el } from "../core/dom.js?v=__BUILD__";
 import { pdfPageElement } from "./pdf-view.js?v=__BUILD__";
 
 export const PDF_DIAGRAM_LAYER_CLASS = "pdf-diagram-layer";
@@ -42,7 +43,7 @@ export function setDiagramPart(pageNumber, part, nodes = []) {
 
 // ...on every page.
 export function clearDiagramPart(part) {
-  document.querySelectorAll(`.${PDF_DIAGRAM_LAYER_CLASS} > [data-diagram-part="${part}"]`).forEach((node) => node.remove());
+  (el.documentView || document).querySelectorAll(`.${PDF_DIAGRAM_LAYER_CLASS} > [data-diagram-part="${part}"]`).forEach((node) => node.remove());
 }
 
 const DIAGRAM_SVG_NS = "http://www.w3.org/2000/svg";

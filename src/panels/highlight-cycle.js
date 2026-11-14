@@ -39,11 +39,11 @@
 
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
-import { currentDocumentPage, isDocumentFitWidth, relayoutDocumentHoldingReader } from "../documents/pdf-view.js?v=__BUILD__";
+import { currentDocumentPage } from "../documents/pdf-view.js?v=__BUILD__";
 import { documentHighlightMarks } from "../documents/pdf-highlights.js?v=__BUILD__";
 import { noteMarkNode, scheduleNoteJump, sourceMarkIndexFor } from "../notes/anchors.js?v=__BUILD__";
 import { quizPanel } from "../notes/notes-view.js?v=__BUILD__";
-import { applyNotesPagedLayout, isNotesPaged } from "../notes/paged-view.js?v=__BUILD__";
+import { applySplitRatio, currentSplitRatio, installSplitDivider, readSplitRatio, scheduleSplitRelayout, releaseSplitLayout, setSplitLayoutOwner, splitStacked } from "../ui/split-layout.js?v=__BUILD__";
 import {
   HL_NOTE_CLASS,
   closeHighlightsEditor,
@@ -57,30 +57,9 @@ import {
 } from "./highlights-editor.js?v=__BUILD__";
 import { collectHighlightEntries } from "./highlights-panel.js?v=__BUILD__";
 import { filterBySections, isSectionFilterActive, mountSectionPicker, onSectionsChanged, resetSelectedSections } from "./highlight-sections.js?v=__BUILD__";
-import { onDocumentSurface } from "../documents/doc-slot.js?v=__BUILD__";
 
-// 3:2, which is what was asked for, and which is also about the narrowest a
-// fit-width PDF page stays readable at on a laptop.
-export const SPLIT_DEFAULT_RATIO = 0.6;
-
-// Neither half is allowed to become a sliver. Below a quarter a PDF page is a
-// thumbnail and a note card is one word per line; above four fifths the other
-// half is not worth the split.
-export const SPLIT_MIN_RATIO = 0.25;
-
-export const SPLIT_MAX_RATIO = 0.8;
-
-// Remembered, like focus mode is (FOCUS_MODE_KEY in src/ui/view-mode.js): a
-// reader who widened the notes half meant it, and re-dragging it on every deck
-// is the kind of small tax that makes a feature not worth turning on.
-export const SPLIT_RATIO_KEY = "recall:splitRatio";
-
-// The one width at which the split turns from two columns into two rows. The
-// same 720px boundary the rest of the reading chrome uses — and the value is
-// repeated here rather than imported for the reason drawer-highlights.js gives
-// about TOC_PUSH_MIN_WIDTH: this module must not pull in the notes subtree to
-// ask one media query.
-export const SPLIT_STACK_QUERY = "(max-width: 720px)";
+// The ratio, the divider and the 720px boundary are shared with side by side
+// parts (src/ui/split-parts.js), and live in src/ui/split-layout.js.
 
 // Which reading surface the split is beside, or null when it is closed. This is
 // the whole of "is the split open" — there is no second flag to disagree with
@@ -127,8 +106,6 @@ let splitDeckId = "";
 
 let cycleScrollFrame = 0;
 
-let splitResizeTimer = 0;
-
 export function isHighlightSplitOpen() {
   return Boolean(splitSurface);
 }
@@ -147,49 +124,6 @@ export function isHighlightsOnly() {
 
 function stageFor(surface) {
   return surface === "document" ? el.documentStage : el.notesStage;
-}
-
-function splitStacked() {
-  return window.matchMedia(SPLIT_STACK_QUERY).matches;
-}
-
-// ── The size of the two halves ──────────────────────────────────────────────
-
-function readSplitRatio() {
-  try {
-    const stored = Number(localStorage.getItem(SPLIT_RATIO_KEY));
-    if (Number.isFinite(stored) && stored >= SPLIT_MIN_RATIO && stored <= SPLIT_MAX_RATIO) return stored;
-  } catch (_) { /* private mode, or storage disabled */ }
-  return SPLIT_DEFAULT_RATIO;
-}
-
-function writeSplitRatio(ratio) {
-  try {
-    localStorage.setItem(SPLIT_RATIO_KEY, String(ratio));
-  } catch (_) { /* nothing to do about it, and nothing depends on it */ }
-}
-
-// ── Why the two halves are sized in `fr` and not in per cent ───────────────
-//
-// A percentage track resolves against the whole grid, and the split does not
-// own the whole grid: the tabs row is above it, and stacked on a phone the
-// divider is a track of its own between the two halves. So "60%" would be 60%
-// of a box that includes ~54px this split has no say over — the two halves came
-// out at 65:35 rather than 3:2, and worse, a drag computed against the halves
-// then disagreed with a track computed against the panel, so the divider
-// drifted away from the finger holding it.
-//
-// `fr` distributes the FREE space — what is left after the tabs row and the
-// divider have taken theirs — which is exactly the quantity being divided.
-// 60fr/40fr is 3:2 of the split and nothing else, in either orientation.
-function applySplitRatio(ratio) {
-  if (!quizPanel) return;
-  const clamped = Math.min(SPLIT_MAX_RATIO, Math.max(SPLIT_MIN_RATIO, ratio));
-  quizPanel.style.setProperty("--split-a", `${(clamped * 100).toFixed(2)}fr`);
-  quizPanel.style.setProperty("--split-b", `${((1 - clamped) * 100).toFixed(2)}fr`);
-  // The same number again, unitless, for the stacked case — see applyStackedSpace.
-  quizPanel.style.setProperty("--split-n", clamped.toFixed(4));
-  el.splitDivider?.setAttribute("aria-valuenow", String(Math.round(clamped * 100)));
 }
 
 // ── Why the stacked case cannot use `fr` ───────────────────────────────────
@@ -273,25 +207,13 @@ function splitBox() {
     : { start: a.left, end: b.right };
 }
 
-// Told to the two things that measure themselves against the width they were
-// given. Debounced: a drag fires pointermove continuously, and re-fitting a PDF
-// means re-rasterising every page in the render window — which is the same
-// reason src/main.js debounces the window resize that does this.
-export const SPLIT_RELAYOUT_MS = 160;
-
-function notePaneResized() {
-  clearTimeout(splitResizeTimer);
-  splitResizeTimer = setTimeout(() => {
-    splitResizeTimer = 0;
-    if (onDocumentSurface()) {
-      if (isDocumentFitWidth()) relayoutDocumentHoldingReader({ refit: true });
-    } else if (isNotesPaged()) {
-      // Paged notes are laid out in columns measured against the stage's width,
-      // so a narrower stage is a different number of pages.
-      applyNotesPagedLayout();
-    }
-  }, SPLIT_RELAYOUT_MS);
-}
+// What this pane hands src/ui/split-layout.js while it is open: the box the
+// divider divides, and how to step aside when side by side parts take the
+// column — the two share it, so opening one closes the other.
+const highlightSplitLayout = {
+  box: () => splitBox(),
+  release: () => closeHighlightSplit()
+};
 
 // ── Opening and closing ─────────────────────────────────────────────────────
 
@@ -302,6 +224,7 @@ export function openHighlightSplit(surface, { mode = "side" } = {}) {
   // and "only" is still beside one, just not showing it: a jump out of the pane
   // has to land somewhere, and that somewhere is this surface.
   if (state.viewMode !== next) return;
+  setSplitLayoutOwner(highlightSplitLayout);
   splitSurface = next;
   splitMode = mode === "only" ? "only" : "side";
   splitDeckId = state.deckId || "";
@@ -312,7 +235,7 @@ export function openHighlightSplit(surface, { mode = "side" } = {}) {
   applyStackedSpace();
   refreshHighlightCycle();
   goToCycleIndex(nearestCycleIndex(), { jump: false });
-  notePaneResized();
+  scheduleSplitRelayout();
 }
 
 // The one place the mode reaches the DOM. The divider is HIDDEN rather than
@@ -345,7 +268,7 @@ export function setHighlightSplitMode(mode) {
   applySplitMode();
   applySplitRatio(readSplitRatio());
   applyStackedSpace();
-  notePaneResized();
+  scheduleSplitRelayout();
   return true;
 }
 
@@ -361,6 +284,7 @@ export function closeHighlightSplit() {
   // Nothing on the reading surface should stay tinted for a pane that is gone.
   paintLink(null);
   splitSurface = null;
+  releaseSplitLayout(highlightSplitLayout);
   splitMode = "side";
   cycleEntries = [];
   cycleIndex = -1;
@@ -383,7 +307,7 @@ export function closeHighlightSplit() {
   // goes with the pane — the drawer's list, which shares it, goes back to all
   // of them too.
   resetSelectedSections();
-  notePaneResized();
+  scheduleSplitRelayout();
 }
 
 export function toggleHighlightSplit(surface) {
@@ -428,7 +352,7 @@ export function splitFollowsViewMode(next) {
   applyStackedSpace();
   refreshHighlightCycle();
   goToCycleIndex(nearestCycleIndex(), { jump: false });
-  notePaneResized();
+  scheduleSplitRelayout();
 }
 
 // ── What the pane lists ─────────────────────────────────────────────────────
@@ -740,94 +664,8 @@ function cycleScrollSpy() {
   paintLink(cycleEntries[at]);
 }
 
-// ── The divider ─────────────────────────────────────────────────────────────
-
-// How much one arrow key moves it. Small enough to aim with, large enough that
-// holding the key is not a minute's work.
-export const SPLIT_KEY_STEP = 0.02;
-
-function installDivider() {
-  const divider = el.splitDivider;
-  if (!divider) return;
-  divider.setAttribute("aria-valuemin", String(Math.round(SPLIT_MIN_RATIO * 100)));
-  divider.setAttribute("aria-valuemax", String(Math.round(SPLIT_MAX_RATIO * 100)));
-
-  let dragging = false;
-  const move = (event) => {
-    if (!dragging) return;
-    const box = splitBox();
-    if (!box) return;
-    const stacked = splitStacked();
-    const grip = divider.getBoundingClientRect();
-    // The divider's own thickness is an `auto` track and takes no part in the
-    // fr split, so it comes off the total before the ratio is taken — otherwise
-    // the handle sits a few pixels off the pointer and the error grows toward
-    // the ends of the travel.
-    const total = (box.end - box.start) - (stacked ? grip.height : grip.width);
-    if (total <= 0) return;
-    const at = stacked ? event.clientY : event.clientX;
-    applySplitRatio((at - box.start) / total);
-  };
-
-  divider.addEventListener("pointerdown", (event) => {
-    if (!splitSurface) return;
-    dragging = true;
-    divider.classList.add("is-dragging");
-    // Captured, so a fast drag that outruns the handle keeps sending
-    // pointermove here instead of to whatever it passed over. In a try:
-    // a synthetic PointerEvent carries a pointerId the browser has no active
-    // pointer for and throws, which would take the whole drag down — and a
-    // synthetic drag is exactly what tools/pdf-preview-check.mjs makes.
-    try {
-      divider.setPointerCapture(event.pointerId);
-    } catch (_) { /* not a real pointer; the listeners below still work */ }
-    event.preventDefault();
-  });
-  divider.addEventListener("pointermove", move);
-  const end = (event) => {
-    if (!dragging) return;
-    dragging = false;
-    divider.classList.remove("is-dragging");
-    try {
-      if (divider.hasPointerCapture?.(event.pointerId)) divider.releasePointerCapture(event.pointerId);
-    } catch (_) { /* see the capture above */ }
-    writeSplitRatio(currentRatio());
-    notePaneResized();
-  };
-  divider.addEventListener("pointerup", end);
-  divider.addEventListener("pointercancel", end);
-
-  // Back to 3:2 — the way out of a drag that went somewhere silly, without
-  // having to find the exact pixel again.
-  divider.addEventListener("dblclick", () => {
-    applySplitRatio(SPLIT_DEFAULT_RATIO);
-    writeSplitRatio(SPLIT_DEFAULT_RATIO);
-    notePaneResized();
-  });
-
-  divider.addEventListener("keydown", (event) => {
-    const stacked = splitStacked();
-    const less = stacked ? "ArrowUp" : "ArrowLeft";
-    const more = stacked ? "ArrowDown" : "ArrowRight";
-    let step = 0;
-    if (event.key === less) step = -SPLIT_KEY_STEP;
-    else if (event.key === more) step = SPLIT_KEY_STEP;
-    else if (event.key === "Home") step = SPLIT_DEFAULT_RATIO - currentRatio();
-    else return;
-    event.preventDefault();
-    applySplitRatio(currentRatio() + step);
-    writeSplitRatio(currentRatio());
-    notePaneResized();
-  });
-}
-
-function currentRatio() {
-  const raw = quizPanel ? parseFloat(quizPanel.style.getPropertyValue("--split-a")) : NaN;
-  return Number.isFinite(raw) ? raw / 100 : SPLIT_DEFAULT_RATIO;
-}
-
 export function currentSplitRatioForCheck() {
-  return currentRatio();
+  return currentSplitRatio();
 }
 
 // ── Wiring ──────────────────────────────────────────────────────────────────
@@ -837,7 +675,7 @@ export function initHighlightCycle() {
   // The pane is a second container for the Highlights tab's editor, so it needs
   // that editor's delegated open-the-note listener on it too.
   initHighlightsEditor(el.highlightCycleBody);
-  installDivider();
+  installSplitDivider();
 
   // A card's own "Go to →" is built in highlights-editor.js and knows nothing
   // about the pane it is rendered into, so the pane says here what has to happen
@@ -947,7 +785,7 @@ export function initHighlightCycle() {
     // Turning the phone sideways changes both which axis the split runs in and
     // how much room is below the chrome, so the measured length is retaken.
     applyStackedSpace();
-    notePaneResized();
+    scheduleSplitRelayout();
   });
 
   // ...and the URL bar sliding away, which is not a window resize. The visual

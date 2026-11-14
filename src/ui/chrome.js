@@ -28,10 +28,10 @@
 import { adjustCornellRows } from "../cards/all-cards.js?v=__BUILD__";
 import { scheduleLiveQuestionFit } from "../cards/question-fit.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
-import { state } from "../core/state.js?v=__BUILD__";
 import { isNotesStreamBusy } from "../render/block-cache.js?v=__BUILD__";
 import { scheduleMarkdownTableFit } from "../render/tables.js?v=__BUILD__";
 import { FOCUS_MODE_KEY } from "./view-mode.js?v=__BUILD__";
+import { isCardsShown } from "./split-parts.js?v=__BUILD__";
 
 export const CHROME_SETTLE_MS = 260;
 
@@ -140,7 +140,7 @@ function naturalHeight(node) {
 //
 // The selectors that read these keep the specificity their :has() had — see
 // the note on #cs-specificity in styles/33-reading-chrome.css.
-const CHROME_STATE_SOURCES = ["#mainToolbar", ".quiz-panel", "#viewModeToggle", "#notesEdit", "#documentStage"];
+const CHROME_STATE_SOURCES = ["#mainToolbar", ".quiz-panel", "#viewModeToggle", "#notesEdit", "#documentStage", "#documentStageAlt"];
 
 export function syncChromeState() {
   const body = document.body;
@@ -151,19 +151,32 @@ export function syncChromeState() {
   // is not guaranteed to have been evaluated by then.
   const toggle = document.getElementById("viewModeToggle");
   const notesEdit = document.getElementById("notesEdit");
-  const stage = document.getElementById("documentStage");
+  // The stage holding the document's tools: #documentStage until a file's PDFs
+  // and Canvas have been side by side, and from then on whichever of the two
+  // stages holds the paper in focus (src/documents/pdf-view.js marks it
+  // data-doc-chrome, moveDocumentChrome).
+  // Two id lookups, never an attribute query: .quiz-panel holds the note, and
+  // a selector like that cannot be answered without walking it.
+  const altStage = document.getElementById("documentStageAlt");
+  const stage = altStage?.hasAttribute("data-doc-chrome") ? altStage : document.getElementById("documentStage");
   const slot = stage?.dataset.docSlot || "";
+  // Side by side, the tab row's tools are the FOCUSED part's (src/ui/split-parts.js):
+  // a PDF beside the notes being typed in is on screen, but its pen and ⋯ are
+  // not the tools in reach. So "the document is shown" means, for this row,
+  // "the document is shown and in focus".
+  const focusPart = panel?.classList.contains("is-parts-split") ? (panel.dataset.focusPart || "") : "";
+  const docInFocus = Boolean(stage && !stage.hidden) && (!focusPart || focusPart === "document" || focusPart === "handwriting");
   const facts = {
     "cs-menu-open": Boolean(toolbar?.classList.contains("mobile-open")),
     "cs-notes-mode": Boolean(panel?.classList.contains("notes-mode")),
     "cs-view-toggle": Boolean(toggle && !toggle.hidden),
     "cs-view-toggle-hidden": Boolean(toggle?.hidden),
     "cs-notes-editing": Boolean(notesEdit && !notesEdit.hidden),
-    "cs-doc-shown": Boolean(stage && !stage.hidden),
+    "cs-doc-shown": docInFocus,
     "cs-doc-empty": Boolean(stage?.classList.contains("has-no-document")),
     "cs-slot-doc": slot === "doc",
     "cs-slot-notebook": slot === "notebook",
-    "cs-notebook-shown": Boolean(stage && !stage.hidden && slot === "notebook"),
+    "cs-notebook-shown": docInFocus && slot === "notebook",
     "cs-notebook-open": Boolean(stage && slot === "notebook" && !stage.classList.contains("has-no-notebook"))
   };
   for (const [name, on] of Object.entries(facts)) {
@@ -188,7 +201,7 @@ function initChromeStateMirror() {
   const observer = new MutationObserver(syncChromeState);
   CHROME_STATE_SOURCES.forEach((selector) => {
     const node = document.querySelector(selector);
-    if (node) observer.observe(node, { attributes: true, attributeFilter: ["class", "hidden", "data-doc-slot"] });
+    if (node) observer.observe(node, { attributes: true, attributeFilter: ["class", "hidden", "data-doc-slot", "data-focus-part", "data-doc-chrome"] });
   });
   const printRoot = document.getElementById("printRoot");
   if (printRoot) observer.observe(printRoot, { childList: true });
@@ -280,7 +293,7 @@ export function scheduleChromeRefit() {
     // this is the one moment we know the chrome is expanded AND still, so
     // measureChromeHeights' now-stale timing guard must not veto it.
     if (!document.body.classList.contains("chrome-collapsed")) readChromeHeights();
-    if (state.viewMode === "cards") scheduleLiveQuestionFit();
+    if (isCardsShown()) scheduleLiveQuestionFit();
     adjustCornellRows();
     scheduleMarkdownTableFit();
   }, CHROME_SETTLE_MS + 40);

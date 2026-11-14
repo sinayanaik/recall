@@ -590,12 +590,12 @@
    much as on a Canvas, so the group shows on both, and
    only "Page at the end" — there is nowhere to add a page to somebody else's
    document — stays a Canvas's. */
-#documentStage .ink-rail-page,
+:is(#documentStage, #documentStageAlt) .ink-rail-page,
 .view-mode-row > .document-ink-rail .ink-rail-page {
   display: flex;
 }
 
-#documentStage:not([data-doc-slot="notebook"]) .ink-rail-notebook-only,
+:is(#documentStage, #documentStageAlt):not([data-doc-slot="notebook"]) .ink-rail-notebook-only,
 .view-mode-row > .document-ink-rail:not([data-doc-slot="notebook"]) .ink-rail-notebook-only {
   display: none;
 }

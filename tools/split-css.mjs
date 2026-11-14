@@ -65,6 +65,10 @@ const SECTIONS = [
 // Anything appearing in styles/ that is neither a slice nor listed here is
 // still a failure.
 const POST_SPLIT = {
+  "99-split-parts.css":
+    "Side by side parts (src/ui/split-parts.js, src/ui/view-mode.js): two parts " +
+    "of one file — Cards, Notes, PDFs, Canvas — in the panel's grid at once, the " +
+    "focused one outlined, and the ⫿ button and menu that open it.",
   "98-block-inline.css":
     "A block written in where it is (src/documents/pdf-block-inline.js): its words " +
     "typed into the block at its own size, face and colour, the height following " +

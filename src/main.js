@@ -118,7 +118,9 @@ import { reconcileAllDecks, syncAllDecksAndWait } from "./sync/reconcile.js?v=__
 import { closeTopmostOverlay, initBackGesture } from "./ui/back-gesture.js?v=__BUILD__";
 import { showAuthenticatedUI, showLibraryFailedScreen, showLoginScreen, showSetupScreen } from "./ui/boot-screens.js?v=__BUILD__";
 import { applyChromeCollapse, hasStudyTextSelection, initImmersiveMode, isFocusModeActive, measureChromeHeights, setChromeCollapseHandler, setChromeFocusPinned, setChromeModesHandler, setFocusMode, toggleImmersiveMode } from "./ui/chrome.js?v=__BUILD__";
-import { DOC_SLOT_DOC, DOC_SLOT_NOTEBOOK, activeDocSlot, deckHasPdf, onDocumentSurface } from "./documents/doc-slot.js?v=__BUILD__";
+import { DOC_SLOT_DOC, DOC_SLOT_NOTEBOOK, activeDocSlot, deckHasPdf, documentSurfaceShown, onDocumentSurface } from "./documents/doc-slot.js?v=__BUILD__";
+import { isNotesShown } from "./ui/split-parts.js?v=__BUILD__";
+import { onDocumentScrollers } from "./documents/doc-scrollers.js?v=__BUILD__";
 import { captureDocumentSelection } from "./documents/pdf-selection.js?v=__BUILD__";
 import { closeImportPanel, closeMyDecksPanel, editCurrentDeckCategory, editCurrentDeckTitle, openImportPanel, openMyDecksPanel } from "./ui/deck-header.js?v=__BUILD__";
 import { addBlankCardAtCursor, cardEditActive, flushWorkingDeck, toggleEditMode } from "./ui/edit-mode.js?v=__BUILD__";
@@ -135,7 +137,7 @@ import { detectStyleProfile, resetStyleProfile, trackKeyboardInset, wireStyleHos
 import { openSectionStyle, openSectionStyleFromPanel, setOpenAppStyleHandler, setSectionStyleSiblings, toggleSectionStyle } from "./ui/style-popover.js?v=__BUILD__";
 import { styleCoarsePointerMedia, styleMobileMedia } from "./ui/style-tokens.js?v=__BUILD__";
 import { setTheme, setThemeMenuOpen, setThemeRepaintHook } from "./ui/theme.js?v=__BUILD__";
-import { FOCUS_MODE_KEY, closeViewExportMenu, currentViewStyleScope, paintViewExportMenu, paintViewStyleButton, setBlockEditFlushHook, setHandwritingViewHook, setSplitViewHook, setViewMode, setViewSwitchHook, switchToPreviousView } from "./ui/view-mode.js?v=__BUILD__";
+import { FOCUS_MODE_KEY, closeSplitPartsMenu, closeViewExportMenu, currentViewStyleScope, initSplitPartsFocus, paintViewExportMenu, paintViewStyleButton, runSplitPartsAction, setBlockEditFlushHook, setHandwritingViewHook, setSplitViewHook, repaintDocumentPart, setViewMode, setViewSwitchHook, switchToPreviousView, toggleSplitPartsMenu } from "./ui/view-mode.js?v=__BUILD__";
 import { DOCUMENT_NOTE_HANDLERS, applyDocumentRecordChanges, documentHighlightById, documentHighlightNote, documentHighlights, flashDocumentRegion, initDocumentMarkMenu, repairDocumentHighlightQuads, repairDocumentHighlightText, setDocumentHighlightAdjust, setDocumentShapeTextEditor } from "./documents/pdf-highlights.js?v=__BUILD__";
 import { canAdjustDocumentHighlight, startDocumentHighlightAdjust } from "./documents/pdf-highlight-adjust.js?v=__BUILD__";
 import { pdfRegionRefForRecord, pdfRegionRefMarkdown } from "./documents/pdf-region-embed.js?v=__BUILD__";
@@ -152,13 +154,13 @@ import { openPdfMarginsDialog } from "./documents/pdf-margins.js?v=__BUILD__";
 import { openMarkdownPdfDialog } from "./documents/md-pdf/dialog.js?v=__BUILD__";
 import { removePdfFromDeck, renamePdf } from "./documents/pdf-multi-actions.js?v=__BUILD__";
 import { closePdfPanel, initPdfSwitcher } from "./documents/pdf-switcher.js?v=__BUILD__";
-import { currentPdfDocument, currentPdfPageCount, documentFittedWidth, refreshBakedDocumentPages, fitDocumentToWidth, initDocumentCanvasRecovery, initDocumentPinchZoom, isDocumentFitWidth, openDocumentIsCurrent, openDocumentPdfId, noteSettledDocumentPosition, openDocumentView, reattachDocument, relayoutDocumentHoldingReader, repaintOpenDocumentPages, scheduleDocumentPositionSave, scrollToDocumentPage, refreshDocumentPaperForTheme, setDocumentAttachHandler, setDocumentCanvasRecoveredHook, setDocumentOpenedHook, setDocumentPagePaintedHook, setMarkdownPdfStartHandler, setNotebookStartHandler, setPageIndicatorUpdatedHook, setPaperChangedHook, switchToPdf, updatePageIndicator, zoomDocument, retryMissingDocumentOpen } from "./documents/pdf-view.js?v=__BUILD__";
+import { currentPdfDocument, currentPdfPageCount, documentFittedWidth, refreshBakedDocumentPages, fitDocumentToWidth, initDocumentCanvasRecovery, initDocumentPinchZoom, isDocumentFitWidth, openDocumentIsCurrent, openDocumentPdfId, noteSettledDocumentPosition, openDocumentView, reattachDocument, relayoutDocumentHoldingReader, repaintOpenDocumentPages, scheduleDocumentPositionSave, scrollToDocumentPage, refreshDocumentPaperForTheme, setDocumentAttachHandler, setDocumentCanvasRecoveredHook, setDocumentChromeMovedHook, setDocumentOpenedHook, noteBesideDocumentStale, setDocumentPagePaintedHook, setMarkdownPdfStartHandler, setNotebookStartHandler, setPageIndicatorUpdatedHook, setPaperChangedHook, switchToPdf, updatePageIndicator, zoomDocument, retryMissingDocumentOpen } from "./documents/pdf-view.js?v=__BUILD__";
 import { adoptDocumentInk, canRedoInk, canUndoInk, copyInkSelection, cutInkSelection, duplicateInkSelection, hasInkClipboard, initDocumentInk, inkMarkImageMarkdown, inkMarkIsHighlight, inkSelectionCount, isInkMarkId, nudgeInkSelection, paintDocumentInk, pasteInkSelection, redoInk, repaintDocumentInk, setInkChangedHandler, undoInk } from "./documents/pdf-ink.js?v=__BUILD__";
 import { addHandwritingBlock, addHandwritingImages, addHandwritingTextBlock, enterHandwritingView, initHandwritingRail, refreshHandwritingBoard, runHandwritingMenuAction, startHandwritingNotebook } from "./handwriting/board.js?v=__BUILD__";
 import { closeBlockStylePopover, isBlockStylePopoverOpen } from "./documents/block-style-bar.js?v=__BUILD__";
 import { closeBlockActionsPopover, isBlockActionsPopoverOpen } from "./documents/block-actions-popover.js?v=__BUILD__";
 import { blocksForPaper, buildStaticBlock, canRedoBlocks, setDiagramShapeIO, canUndoBlocks, commitBlockEdit, deleteBlock, duplicateBlock, editBlock, handleBlockPointerDown, nudgeBlock, paintDocumentBlocks, pdfPointAt, redoBlocks, repaintDocumentBlocks, restackBlock, selectBlock, selectedBlockId, setBlocksChangedHandler, undoBlocks } from "./documents/pdf-blocks.js?v=__BUILD__";
-import { applyInkRailPreference, closeInkRailPopups, initInkRail, refreshInkRail, setDocumentUndoHandlers } from "./ui/ink-rail.js?v=__BUILD__";
+import { applyInkRailPreference, closeInkRailPopups, initInkRail, refreshInkRail, rehomeInkRail, setDocumentUndoHandlers } from "./ui/ink-rail.js?v=__BUILD__";
 import { initDocumentShapes, repaintDocumentShapes, setShapeCreatedHandler } from "./documents/pdf-shapes.js?v=__BUILD__";
 import { deleteWithConnectors, initConnectors, scheduleConnectorRelink } from "./documents/pdf-connectors.js?v=__BUILD__";
 import { initCanvasSelection } from "./documents/canvas-selection.js?v=__BUILD__";
@@ -1244,7 +1246,7 @@ initTouchSelection();
 // so it steps aside while the pages scroll and comes back beside the passage.
 // Only the phone bar — suspendSelectionBarForScroll is a no-op for the desktop
 // pill, which this surface has never hidden on scroll.
-el.documentView?.addEventListener("scroll", suspendSelectionBarForScroll, { passive: true });
+onDocumentScrollers("scroll", suspendSelectionBarForScroll, { passive: true });
 
 // The persistent "make a card" control (the floating pill only exists while a
 // selection is live) used to be a ➕ in each face header, beside the mode
@@ -1330,7 +1332,7 @@ onDomReady(() => {
   // surfaces before the screen turns, so the holds that follow the re-flow put
   // them back there (src/notes/resize-hold.js, relayoutDocumentHoldingReader).
   setBeforeOrientationChangeHandler(() => {
-    if (onDocumentSurface()) noteSettledDocumentPosition();
+    if (documentSurfaceShown()) noteSettledDocumentPosition();
     noteSettledNotesPosition();
   });
 });
@@ -1580,6 +1582,16 @@ onDomReady(() => {
     repaintHighlightLink();
   });
   setDocumentOpenedHook((opened) => {
+    // A paper given a moment to finish drawing beside the one in focus (side by
+    // side — "catch-up turns" in src/documents/pdf-view.js), or put back after
+    // one. Its ink engine is adopted like any paper's and its printed notes are
+    // brought up to date; the chrome — the back chip, ▣, the rail — is the
+    // focused paper's and is left exactly as it is.
+    if (opened.quiet) {
+      adoptDocumentInk(opened);
+      refreshPdfPageNotes();
+      return;
+    }
     // A "back" chip left by a link in the last document points into that one.
     resetDocumentLinks();
     // The engine holds decoded strokes for every page it has painted, keyed by
@@ -1647,7 +1659,7 @@ onDomReady(() => {
   // anything inside a block by class. Two guards, because the cost of getting
   // this wrong is a pen that moves a block and draws a line across the page in
   // the same gesture.
-  el.documentView?.addEventListener("pointerdown", (event) => { handleBlockPointerDown(event); }, true);
+  onDocumentScrollers("pointerdown", (event) => { handleBlockPointerDown(event); }, true);
   // ── A double-click makes a Block on bare paper — with a mouse only ──────
   //
   // Writing with a pen is a great many quick, close-together taps (dotting an
@@ -1712,13 +1724,19 @@ onDomReady(() => {
   // so that module must not import back into documents/, and this file is the
   // one that knows both ends.
   setDeckReloadedInPlaceHook(() => {
-    if (onDocumentSurface()) {
+    // Side by side, the note and a paper can both be on screen, and both were
+    // rewritten under the reader. The note first: the document's branch below
+    // returns early on its own paths.
+    if (isNotesShown()) renderNotesViewPinned();
+    // ...and with both papers up, the suspended one repaints on its next turn.
+    noteBesideDocumentStale();
+    if (documentSurfaceShown()) {
       // No paper on the stage at all — the offer to attach one, a notebook not
       // started yet, an open that failed. loadDeckSnapshot no longer paints the
       // surface on an in-place reload (it tore a perfectly good document down
       // every time it did), so this is where a paper the sync has just brought
       // in gets opened: the ordinary paint of the tab the reader is already on.
-      if (!currentPdfDocument()) { setViewMode(state.viewMode); return; }
+      if (!currentPdfDocument()) { repaintDocumentPart(); return; }
       // The bytes moved — pages added or torn out on another device, or a paper
       // attached there. openDocumentView takes the full path on its own for
       // that, because documentOpenKey carries the sha256 and the park's own
@@ -1746,9 +1764,7 @@ onDomReady(() => {
       // reader's actual current page over it now is what stops that staleness
       // from surviving to the next device's pull or this device's next reopen.
       scheduleDocumentPositionSave();
-      return;
     }
-    if (state.viewMode === "notes") renderNotesViewPinned();
     // Cards need nothing — loadDeckSnapshot ends in showCard() either way.
   });
 });
@@ -1760,7 +1776,11 @@ onDomReady(() => {
 // rather than imported into src/documents/pdf-highlights.js, which
 // pdf-page-notes.js already imports — this file is the one that knows both ends
 // (the same reason setDocumentPagePaintedHook exists below).
+onDomReady(() => setDocumentChromeMovedHook(rehomeInkRail));
 onDomReady(() => setHighlightsChangedHandler(() => {
+  // The file's other paper, side by side and suspended, shows marks of its own
+  // that this may have changed; it repaints them on its next turn.
+  noteBesideDocumentStale();
   // Only when the pane is actually on screen. It is the one container the cards
   // are ever built into now, and building several hundred of them into a hidden
   // box for nobody is the cost this guard exists to refuse.
@@ -2428,6 +2448,7 @@ setOpenAppStyleHandler(openStylePanel);
 setSectionStyleSiblings([
   closeStylePanel,
   closeViewExportMenu,
+  closeSplitPartsMenu,
   closeMyDecksMoreMenu,
   closeMarkMenu,
   closeBlockStylePopover,
@@ -2513,7 +2534,7 @@ el.quickNotesBoardBtn?.addEventListener("click", () => openQuickNotesBoard());
 // own attach handler is registered here: this file is the one that knows both
 // ends, and src/handwriting/board.js must not be pulled into view-mode.js or
 // pdf-view.js — both of which it reaches.
-setHandwritingViewHook(() => { enterHandwritingView(); });
+setHandwritingViewHook(() => enterHandwritingView());
 // ── What a theme change has to redraw ────────────────────────────────────
 //
 // Everything else the theme touches is CSS or markdown that can be rebuilt. Ink
@@ -2796,6 +2817,31 @@ document.addEventListener("pointerdown", (event) => {
   if (event.target.closest("#viewExportMenu, #viewExportBtn")) return;
   closeViewExportMenu();
 }, { capture: true, passive: true });
+
+// ── Side by side: the ⫿ beside the tabs ────────────────────────────────────
+//
+// Opens another part of this file beside the one in focus (src/ui/view-mode.js,
+// openSplitPart). The same menu is what the reading rail's "Side by side" row
+// opens, so there is one list of choices and one place that acts on it.
+el.splitPartsBtn?.addEventListener("click", (event) => {
+  event.stopPropagation();
+  toggleSplitPartsMenu();
+});
+
+document.addEventListener("pointerdown", (event) => {
+  if (!el.splitPartsMenu || el.splitPartsMenu.hidden) return;
+  if (event.target.closest("#splitPartsMenu, #splitPartsBtn, #readingRailSplitBtn")) return;
+  closeSplitPartsMenu();
+}, { capture: true, passive: true });
+
+el.splitPartsMenu?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-split-action]");
+  if (!button) return;
+  closeSplitPartsMenu();
+  runSplitPartsAction(button.dataset.splitAction);
+});
+
+onDomReady(initSplitPartsFocus);
 
 el.viewExportMenu?.addEventListener("click", (event) => {
   const button = event.target.closest("[data-view-export]");
@@ -3783,7 +3829,7 @@ function pagePasteTarget(target) {
   // unseen, on the page behind it.
   if (anyModalOpen() || document.querySelector(".image-compress-modal, .pdf-block-editor:not([hidden])")) return false;
   if (el.documentView?.contains(target) || target === document.body) return true;
-  if (target.closest?.("#documentStage, #documentInkRail, #viewModeRow")) return true;
+  if (target.closest?.("#documentStage, #documentStageAlt, #documentInkRail, #viewModeRow")) return true;
   return Boolean(pagePointAtPointer());
 }
 
@@ -3915,7 +3961,7 @@ document.addEventListener("dragover", (event) => {
     return;
   }
   // Without this the browser refuses the drop and navigates to the file instead.
-  if (onDocumentSurface() && el.documentView?.contains(event.target)
+  if (documentSurfaceShown() && el.documentView?.contains(event.target)
       && dragContainsImage(event.dataTransfer)) {
     event.preventDefault();
   }
@@ -4307,7 +4353,7 @@ async function goToPdfRegion({ page, rect, pdfId }) {
 // forces at most one recompute instead of three.
 let documentScrollFrame = 0;
 
-el.documentView?.addEventListener("scroll", () => {
+onDocumentScrollers("scroll", () => {
   if (documentScrollFrame) return;
   documentScrollFrame = requestAnimationFrame(() => {
     documentScrollFrame = 0;
@@ -4316,7 +4362,7 @@ el.documentView?.addEventListener("scroll", () => {
     // already declines on a torn-down document, so this is not a crash being
     // caught; it is one test in place of three, and a place to say why the frame
     // outlives its document at all.
-    if (!onDocumentSurface()) return;
+    if (!documentSurfaceShown()) return;
     // READS first, together, off one geometry table.
     noteSettledDocumentPosition();
     scheduleDocumentPositionSave();
@@ -4384,7 +4430,7 @@ const DOCUMENT_PAGER_WAKE_MS = 1200;
 let documentRefitTimer = 0;
 
 window.addEventListener("resize", () => {
-  if (!onDocumentSurface()) return;
+  if (!documentSurfaceShown()) return;
   const width = el.documentView?.clientWidth || 0;
   if (!width || width === documentFittedWidth()) return;
   if (!isDocumentFitWidth()) return;
