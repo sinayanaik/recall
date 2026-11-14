@@ -26,7 +26,7 @@
 // lose it.
 
 import { createNoteEditorKit } from "../notes/note-editor-kit.js?v=__BUILD__";
-import { hideNotesSelectionButton } from "../notes/selection.js?v=__BUILD__";
+import { hideNotesSelectionButton, scheduleNotesSelectionCheck } from "../notes/selection.js?v=__BUILD__";
 
 export const PDF_BLOCK_INLINE_CLASS = "pdf-block-inline";
 
@@ -64,6 +64,9 @@ function growToFit() {
   textarea.style.setProperty("height", "auto", "important");
   textarea.style.setProperty("height", `${Math.ceil(textarea.scrollHeight)}px`, "important");
   inlineSession.onGrow?.();
+  // Words still picked (a press of the selection bar's B wraps them and can
+  // add a line): the bar goes back above the Block's new edge, not over it.
+  if (textarea.selectionEnd > textarea.selectionStart) scheduleNotesSelectionCheck();
 }
 
 export function isInlineBlockEditorOpen() {

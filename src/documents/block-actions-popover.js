@@ -34,6 +34,9 @@
 
 let actionsPopover = null;
 
+// The height Arrange's four rows need below the strip before it opens upward.
+const ARRANGE_MENU_ROOM = 150;
+
 // The scroll listener's rAF handle — see scrollHandler in
 // openBlockActionsPopover for why this exists at all.
 let actionsScrollFrame = 0;
@@ -61,6 +64,7 @@ export function closeBlockActionsPopover() {
     cancelAnimationFrame(actionsScrollFrame);
     actionsScrollFrame = 0;
   }
+  actionsPopover.resizeObserver?.disconnect();
   actionsPopover.root.remove();
   actionsPopover = null;
   return true;
@@ -129,7 +133,25 @@ export function openBlockActionsPopover({
       actionButton({ action: "done", label: "Done" })
     );
   } else {
-    root.append(style, edit, duplicate, back, forward, toBack, toFront, del);
+    // One slim row: the four restack verbs fold into Arrange, the way a
+    // picked-up Block's strip took two or three rows over the paper under it
+    // when all eight were words side by side.
+    const arrange = document.createElement("span");
+    arrange.className = "block-actions-arrange";
+    const arrangeBtn = actionButton({ action: "arrange", label: "Arrange" });
+    arrangeBtn.textContent = "Arrange \u25BE";
+    arrangeBtn.setAttribute("aria-haspopup", "true");
+    arrangeBtn.setAttribute("aria-expanded", "false");
+    const menu = document.createElement("div");
+    menu.className = "block-actions-menu";
+    menu.setAttribute("role", "menu");
+    menu.hidden = true;
+    [forward, back, toFront, toBack].forEach((item) => {
+      item.setAttribute("role", "menuitem");
+      menu.appendChild(item);
+    });
+    arrange.append(arrangeBtn, menu);
+    root.append(style, edit, duplicate, arrange, del);
   }
   document.body.appendChild(root);
 
@@ -148,6 +170,12 @@ export function openBlockActionsPopover({
     const top = below + size.height > window.innerHeight - margin
       ? Math.max(margin, box.top - size.height - away)
       : below;
+    // Arrange's menu opens away from the block — down from a strip under it,
+    // up from one over it — unless that side has no room for it.
+    const stripAbove = top < box.top;
+    const roomBelow = window.innerHeight - margin - (top + size.height) >= ARRANGE_MENU_ROOM;
+    const roomAbove = top - margin >= ARRANGE_MENU_ROOM;
+    root.classList.toggle("menus-up", stripAbove ? roomAbove : !roomBelow);
     const left = Math.min(
       Math.max(margin, box.left),
       Math.max(margin, window.innerWidth - size.width - margin)
@@ -159,11 +187,20 @@ export function openBlockActionsPopover({
   // A press here must not take the focus from the words being typed.
   root.addEventListener("mousedown", (event) => event.preventDefault());
 
+  const arrangeMenu = root.querySelector(".block-actions-menu");
+  const setArrangeOpen = (open) => {
+    if (!arrangeMenu) return;
+    arrangeMenu.hidden = !open;
+    root.querySelector('[data-block-popover-action="arrange"]')?.setAttribute("aria-expanded", open ? "true" : "false");
+  };
+
   root.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") return;
     event.preventDefault();
     event.stopPropagation();
-    closeBlockActionsPopover();
+    // The open menu first, then the strip.
+    if (arrangeMenu && !arrangeMenu.hidden) setArrangeOpen(false);
+    else closeBlockActionsPopover();
   });
 
   // pointerdown, not click, and preventDefault — the same reason every other
@@ -176,6 +213,8 @@ export function openBlockActionsPopover({
     event.preventDefault();
     event.stopPropagation();
     const action = button.dataset.blockPopoverAction;
+    if (action === "arrange") { setArrangeOpen(Boolean(arrangeMenu?.hidden)); return; }
+    setArrangeOpen(false);
     if (action === "style") onStyle();
     else if (action === "edit") onEdit();
     else if (action === "duplicate") onDuplicate();
@@ -202,7 +241,14 @@ export function openBlockActionsPopover({
     });
   };
 
-  actionsPopover = { root, place, scrollHandler };
+  // ...and when the block itself changes size: a block picked up the moment
+  // it was put down is still growing (maths and pictures render after it is
+  // painted), and a strip placed under its first, shorter self ended up
+  // across the middle of its words.
+  const resizeObserver = typeof ResizeObserver === "function" ? new ResizeObserver(scrollHandler) : null;
+  resizeObserver?.observe(anchor);
+
+  actionsPopover = { root, place, scrollHandler, resizeObserver };
   place();
   window.addEventListener("resize", place);
   document.addEventListener("scroll", scrollHandler, true);

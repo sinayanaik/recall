@@ -367,6 +367,12 @@ try {
     await settle(400);
     const pill = document.getElementById("selectionFloat");
     out.pill = pill && !pill.hidden;
+    // ...beside the Block and its strip, never over either.
+    const meets = (a, b) => Boolean(a && b) && a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+    const pillBox = pill?.getBoundingClientRect();
+    out.pillShown = out.pill && !pill.classList.contains("is-offscreen") && pillBox.width > 0;
+    out.pillOnBlock = meets(pillBox, node().getBoundingClientRect());
+    out.pillOnStrip = meets(pillBox, document.querySelector(".pdf-block-actions-pop")?.getBoundingClientRect());
     const bold = pill?.querySelector('[data-render-action="bold"]');
     if (bold) {
       bold.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerType: "mouse" }));
@@ -414,14 +420,27 @@ try {
     await settle(150);
     const moved = api.documentBlocks().find((b) => b.id === block.id);
     out.dragMoves = moved.x !== was.x && !api.isInlineBlockEditorOpen();
+    // A picked-up block's strip: one slim row, the restack verbs behind Arrange.
+    const strip = document.querySelector(".pdf-block-actions-pop");
+    out.stripHeight = strip ? Math.round(strip.getBoundingClientRect().height) : -1;
+    out.stripRow = [...(strip?.querySelectorAll(":scope > [data-block-popover-action], :scope > .block-actions-arrange > [data-block-popover-action]") || [])].map((b) => b.dataset.blockPopoverAction).join(",");
+    const menu = strip?.querySelector(".block-actions-menu");
+    out.menuShut = Boolean(menu?.hidden);
+    strip?.querySelector('[data-block-popover-action="arrange"]')?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerType: "mouse" }));
+    document.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, pointerType: "mouse" }));
+    out.menuOpen = Boolean(menu) && !menu.hidden;
+    out.menuItems = [...(menu?.querySelectorAll("[data-block-popover-action]") || [])].map((b) => b.dataset.blockPopoverAction).join(",");
     return out;
   }`);
   check("selecting words in a block being typed raises the Notes selection bar", edit.pill, JSON.stringify(edit));
+  check("...clear of the block and of its Style / Full editor / Done strip", edit.pillShown && !edit.pillOnBlock && !edit.pillOnStrip, JSON.stringify(edit));
   check("...whose B makes them bold", edit.typed === "hello **world**", JSON.stringify(edit));
   check("Ctrl+Enter puts the words down, written and rendered", edit.closed && edit.md === "hello **world**" && edit.strong === "world", JSON.stringify(edit));
   check("a first tap picks a block up, a second opens it in place", edit.firstTapSelects && edit.secondTapOpens, JSON.stringify(edit));
   check("dragging across the words being typed selects them, not the block", edit.selectingDoesNotMove, JSON.stringify(edit));
   check("a press on the paper puts the words down; a drag on a picked-up block moves it", edit.paperCommits && edit.dragMoves, JSON.stringify(edit));
+  check("a picked-up block's strip is one slim row: Style, Edit, Duplicate, Arrange, Delete", edit.stripHeight > 0 && edit.stripHeight < 48 && edit.stripRow === "style,edit,duplicate,arrange,delete", JSON.stringify(edit));
+  check("...and Arrange opens the four restack verbs", edit.menuShut && edit.menuOpen && edit.menuItems === "restack-forward,restack-back,to-front,to-back", JSON.stringify(edit));
 
   // ── 5. The width stays; the height follows the words ───────────────────
   const size = await page.evaluate(`async () => {
@@ -527,6 +546,33 @@ try {
       await settle(300);
     }`);
     await snap("3-put-down-and-picked-up.png");
+    // Its strip's Arrange, open.
+    await page.evaluate(`async () => {
+      document.querySelector('.pdf-block-actions-pop [data-block-popover-action="arrange"]')
+        ?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerType: "mouse" }));
+      document.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, pointerType: "mouse" }));
+      await window.__recall.settle(150);
+    }`);
+    await snap("4-picked-up-arrange-open.png");
+    // A one-word hexagon block, its word selected: the bar above it, the strip below.
+    await page.evaluate(`async () => {
+      const { api, settle } = window.__recall;
+      api.selectBlock(null);
+      await settle(150);
+      const block = api.addDocumentBlock(1, { x: 260, y: 640 }, { anchor: "top-left" });
+      await settle(200);
+      api.writeBlockStyle(block.id, { shape: "hexagon" });
+      await settle(200);
+      const ta = document.querySelector(".pdf-block-inline textarea");
+      ta.focus();
+      ta.value = "Inheritance";
+      ta.dispatchEvent(new Event("input", { bubbles: true }));
+      ta.setSelectionRange(0, 11);
+      ta.dispatchEvent(new Event("select", { bubbles: true }));
+      ta.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+      await settle(500);
+    }`);
+    await snap("5-hexagon-word-selected.png");
   }
 
   const errs = await page.evaluate("() => window.__errs");

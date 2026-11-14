@@ -16,15 +16,18 @@
      (src/documents/pdf-blocks.js closes one before opening the other) and
      never contend for the same space. */
   z-index: 610;
+  /* One slim row, not a box: the restack verbs live behind Arrange (below), so
+     the strip no longer wraps onto the paper under the block. */
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  max-width: min(280px, calc(100vw - 16px));
-  padding: 8px;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 4px;
+  max-width: calc(100vw - 16px);
+  padding: 4px;
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 12px;
-  box-shadow: 0 12px 32px rgb(0 0 0 / 0.32);
+  border-radius: 999px;
+  box-shadow: 0 6px 18px rgb(0 0 0 / 0.28);
 }
 
 .block-actions-btn {
@@ -34,6 +37,41 @@
   font-weight: 600;
   line-height: 1;
   padding: 6px 10px;
+  white-space: nowrap;
+}
+
+/* Arrange ▾ and the four restack verbs it holds. */
+.block-actions-arrange {
+  position: relative;
+  display: inline-flex;
+}
+
+.block-actions-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: 0 6px 18px rgb(0 0 0 / 0.28);
+}
+
+.block-actions-menu[hidden] {
+  display: none;
+}
+
+.pdf-block-actions-pop.menus-up .block-actions-menu {
+  top: auto;
+  bottom: calc(100% + 6px);
+}
+
+.block-actions-menu .block-actions-btn {
+  justify-content: flex-start;
+  text-align: left;
 }
 
 /* Delete is the one destructive verb here — the same red-on-hover treatment
