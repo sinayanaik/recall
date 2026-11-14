@@ -52,13 +52,14 @@
 import { PDF_BLOCK_CLASS, PDF_BLOCK_LAYER_CLASS } from "../core/constants.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
-import { closeBlockActionsPopover, openBlockActionsPopover } from "./block-actions-popover.js?v=__BUILD__";
+import { closeBlockActionsPopover, openBlockActionsPopover, placeBlockActionsPopover } from "./block-actions-popover.js?v=__BUILD__";
 import { closeBlockStylePopover, openBlockStylePopover } from "./block-style-bar.js?v=__BUILD__";
 import { BLOCK_SHAPE_DEFAULT, blockFillVar, blockInkVar, blockLineVar, isDefaultBlockStyle, normalizeBlockStyle } from "./block-style.js?v=__BUILD__";
 import { outlineInsets, outlineSvgPaths } from "../render/node-outlines.js?v=__BUILD__";
 import { activeDocSlot, DOC_SLOT_DOC, stampDocSlotAll } from "./doc-slot.js?v=__BUILD__";
 import { activePdfId, recordsForSurface, recordsOutsideSurface, stampRecordPdfIdAll } from "./pdf-multi.js?v=__BUILD__";
 import { closeBlockEditor, openBlockEditor } from "./pdf-block-editor.js?v=__BUILD__";
+import { closeInlineBlockEditor, inlineBlockEditorHolds, inlineBlockEditorId, inlineBlockEditorValue, mountInlineBlockEditor, openInlineBlockEditor } from "./pdf-block-inline.js?v=__BUILD__";
 import { pdfPageElement, pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
 import { resolveStorageImages } from "../cloud/storage-urls.js?v=__BUILD__";
 import { hydrateLocalImages, storeImageOrQueue } from "../images/outbox.js?v=__BUILD__";
@@ -108,8 +109,14 @@ const PDF_BLOCK_DEFAULT_HEIGHT = 90;
 // press as what it still visibly is: a tap. The resize grip is exempt — a
 // press on the grip is unambiguously always a resize, never a tap.
 const PDF_BLOCK_DRAG_SLOP_PX = 4;
+// How far up and left of a tap a block placed there starts, in points: the
+// frame's padding, so the caret lands about where the tap was.
+const PLACE_INSET = 8;
 
 let editingId = null;
+// Blocks just placed with the Block button and not yet written in: put down
+// empty, they go again (see addDocumentBlock's `discardIfEmpty`).
+const freshBlockIds = new Set();
 // Which block the keyboard is talking about. A separate thing from `editingId`:
 // a block being TYPED into is in the sheet, and a block that is merely selected
 // is one the reader has picked up so that Delete, the arrows or Ctrl+D mean it.
@@ -157,10 +164,26 @@ function setSelectedId(id) {
 // beginGesture's finish() — which is also exactly the set of moments a
 // gesture is not still live and the node's current position is settled.
 function syncBlockActionsPopover() {
-  if (!selectedId || editingId || gestureLive) { closeBlockActionsPopover(); return; }
-  const node = document.querySelector(`[data-pdf-block="${selectedId}"]`);
-  const block = node && documentBlocks().find((entry) => entry.id === selectedId);
+  const inline = Boolean(editingId) && inlineBlockEditorId() === editingId;
+  if ((!selectedId && !inline) || (editingId && !inline) || gestureLive) { closeBlockActionsPopover(); return; }
+  const id = inline ? editingId : selectedId;
+  const node = document.querySelector(`[data-pdf-block="${id}"]`);
+  const block = node && documentBlocks().find((entry) => entry.id === id);
   if (!node || !block) { closeBlockActionsPopover(); return; }
+  // While its words are being typed, the strip is three: the block's look, the
+  // window for a long one, and Done — not the eight a block sitting still has.
+  if (inline) {
+    openBlockActionsPopover({
+      anchor: node,
+      kind: block.kind,
+      editing: true,
+      onStyle: () => openSelectedBlockStyle(id),
+      onFullEditor: () => openBlockInFullEditor(id),
+      onDone: () => commitBlockEdit(),
+      gap: BLOCK_ACTIONS_GAP
+    });
+    return;
+  }
   openBlockActionsPopover({
     anchor: node,
     kind: block.kind,
@@ -181,6 +204,16 @@ function syncBlockActionsPopover() {
 
 // Clear of the connect arrows a selected block wears outside each side.
 const BLOCK_ACTIONS_GAP = 30;
+
+// The strip follows an editor that grows, a frame at a time.
+let actionsPlaceFrame = 0;
+function actionsPlaceSoon() {
+  if (actionsPlaceFrame) return;
+  actionsPlaceFrame = requestAnimationFrame(() => {
+    actionsPlaceFrame = 0;
+    placeBlockActionsPopover();
+  });
+}
 
 // A deck can carry its own paper AND a notebook, and both keep their blocks in
 // this one array with a `doc` field saying which (src/documents/doc-slot.js).
@@ -613,7 +646,17 @@ function placeBlock(node, viewport, block) {
   node.style.left = `${box.left}px`;
   node.style.top = `${box.top}px`;
   node.style.width = `${box.width}px`;
-  node.style.height = `${box.height}px`;
+  // While its words are being typed in place the block is as tall as they are,
+  // line by line (src/documents/pdf-block-inline.js) — the record catches up
+  // when they are put down. A box that keeps a height of its own (a diamond, a
+  // block whose height was set by hand) keeps it as the least it can be.
+  if (node.classList.contains("is-inline-editing")) {
+    node.style.height = "auto";
+    node.style.minHeight = blockStyle(block).fit ? "" : `${box.height}px`;
+  } else {
+    node.style.height = `${box.height}px`;
+    node.style.minHeight = "";
+  }
   // The type scales with the page, or a block that fitted at one zoom overflows
   // at the next. `scale` is the viewport's own, so this follows a pinch exactly.
   node.style.setProperty("--pdf-block-scale", String(viewport.scale || 1));
@@ -924,6 +967,10 @@ function paintBlock(node, block) {
   // page — it is what the reader is looking at the editor ABOUT — and a hidden
   // body would collapse the frame to its bar.
   node.classList.toggle("is-editing", editingId === block.id);
+  if (editingId === block.id && inlineBlockEditorId() === block.id) {
+    mountInlineBlockEditor(node);
+    return;
+  }
   if (block.kind === PDF_BLOCK_IMAGE) {
     // Rebuilt only when the source actually changed. This runs as every page
     // paints and on every drag frame's repaint, and re-assigning an <img>'s src
@@ -967,7 +1014,7 @@ function paintBlock(node, block) {
   if (!block.md.trim()) {
     renderedMarkdown.delete(body);
     unobserveBlockContent(body);
-    body.innerHTML = '<p class="pdf-block-empty">Empty — select it and press Edit to write</p>';
+    body.innerHTML = '<p class="pdf-block-empty">Empty — tap it to write</p>';
     return;
   }
   // ── The same renderer the Notes panel uses, and why it was not ──────────
@@ -1016,11 +1063,21 @@ function paintBlock(node, block) {
 // synchronous measurement and put straight back — two forced layouts, on the few
 // blocks that asked for this, and never during a gesture.
 function fitBlockHeight(node, block) {
-  if (gestureLive || block.kind === PDF_BLOCK_IMAGE || !blockStyle(block).fit) return false;
+  if (gestureLive || block.kind === PDF_BLOCK_IMAGE) return false;
+  if (node.classList.contains("is-inline-editing")) return false;
   const viewport = pdfPageViewport(block.page);
   if (!viewport) return false;
   const wanted = contentHeightPoints(node, viewport.scale || 1);
   if (wanted === null) return false;
+  // A block that keeps a height of its own — a diagram's diamond, a block
+  // whose height was set by hand — keeps it as the LEAST it can be, and still
+  // grows when its words need more: words cut off at the bottom of a box on a
+  // page nobody scrolls inside are words lost.
+  if (!blockStyle(block).fit) {
+    if (wanted <= block.h) return false;
+    queueFit(block.id, wanted);
+    return true;
+  }
   // A point of slack, because the round trip through points and back is not
   // exact and a block that rewrote itself by a pixel on every paint would be an
   // autosave and a sync push per repaint — on the tall side only (heightSuits).
@@ -1473,7 +1530,13 @@ export function repaintDocumentBlocks() {
 // `style`, `w` and `h` are for a diagram's box (+ Add → Shape, and a box made
 // by connecting from another): a given style replaces the remembered one, and
 // a given size the default. `edit: false` leaves the editor shut.
-export function addDocumentBlock(pageNumber, at = null, { style = null, w = null, h = null, edit = true } = {}) {
+//
+// `anchor` says which point of the block lands on `at`: its middle (what a
+// drop in the middle of the view wants), or its top-left corner, a little
+// above and to the left of the point — what a tap that says "write here" wants,
+// so the first line starts where the tap was. `discardIfEmpty` is for a block
+// placed with the Block button: put down without a word in it, it goes again.
+export function addDocumentBlock(pageNumber, at = null, { style = null, w = null, h = null, edit = true, anchor = "center", discardIfEmpty = false } = {}) {
   const viewport = pdfPageViewport(pageNumber);
   if (!viewport) return null;
   // The page box, which need not start at 0,0: a PDF with margins added on the
@@ -1486,14 +1549,15 @@ export function addDocumentBlock(pageNumber, at = null, { style = null, w = null
   const inherited = given ? (isDefaultBlockStyle(given) ? null : given) : freshBlockStyle(PDF_BLOCK_MARKDOWN);
   const width = Math.max(PDF_BLOCK_MIN_WIDTH, Number(w) || PDF_BLOCK_DEFAULT_WIDTH);
   const height = Math.max(PDF_BLOCK_MIN_HEIGHT, Number(h) || PDF_BLOCK_DEFAULT_HEIGHT);
+  const topLeft = anchor === "top-left" && Boolean(at);
   const block = {
     // Unique across the DECK, not the surface: a block id is a sync key, and a
     // notebook minting the same one as a block over the paper beside it would
     // make the two records one record on the next merge.
     id: freshBlockId(new Set(allDocumentBlocks().map((b) => b?.id))),
     page: Number(pageNumber),
-    x: Math.round(Math.max(vx0 + 12, Math.min(vx1 - width - 12, wanted.x - (width / 2)))),
-    y: Math.round(Math.max(vy0 + 12, Math.min(vy1 - height - 12, wanted.y - (height / 2)))),
+    x: Math.round(Math.max(vx0 + 12, Math.min(vx1 - width - 12, wanted.x - (topLeft ? PLACE_INSET : width / 2)))),
+    y: Math.round(Math.max(vy0 + 12, Math.min(vy1 - height - 12, wanted.y - (topLeft ? height - PLACE_INSET : height / 2)))),
     w: Math.round(width),
     h: Math.round(height),
     z: nextBlockZ(blocks),
@@ -1505,6 +1569,7 @@ export function addDocumentBlock(pageNumber, at = null, { style = null, w = null
   writeBlocks([...blocks, block]);
   setSelectedId(block.id);
   paintDocumentBlocks(pageNumber);
+  if (edit && discardIfEmpty) freshBlockIds.add(block.id);
   if (edit) beginBlockEdit(block.id);
   else syncBlockActionsPopover();
   return block;
@@ -1615,11 +1680,38 @@ export function isEditingBlock() {
 // An IMAGE block's editor holds its description and not markdown, which is the
 // distinction its ✎ has always made (see buildBlock). It is the same sheet with
 // a different question at the top of it.
-function beginBlockEdit(id) {
+function beginBlockEdit(id, { inWindow = false, value = null } = {}) {
   commitBlockEdit();
   const block = documentBlocks().find((entry) => entry.id === id);
   if (!block) return;
   const isImage = block.kind === PDF_BLOCK_IMAGE;
+  // In place, unless the window is asked for or the block is a picture, whose
+  // words are a description of it and have nowhere on the block to be typed.
+  if (!inWindow && !isImage) {
+    const node = document.querySelector(`[data-pdf-block="${CSS.escape(id)}"]`);
+    if (node) {
+      editingId = id;
+      closeBlockStylePopover();
+      node.classList.add("is-editing");
+      openInlineBlockEditor({
+        id,
+        node,
+        value: value ?? block.md,
+        onGrow: () => {
+          const viewport = pdfPageViewport(block.page);
+          const live = documentBlocks().find((entry) => entry.id === id);
+          if (viewport && live) placeBlock(node, viewport, live);
+          blocksPaintedHook(Number(block.page));
+          actionsPlaceSoon();
+        },
+        onDone: (text) => writeBlockText(id, text)
+      });
+      const viewport = pdfPageViewport(block.page);
+      if (viewport) placeBlock(node, viewport, block);
+      syncBlockActionsPopover();
+      return;
+    }
+  }
   editingId = id;
   // The quick-actions popover is about a block sitting on the page; the text
   // is about to leave it for the sheet, and a strip of action buttons under a
@@ -1630,7 +1722,7 @@ function beginBlockEdit(id) {
   closeBlockActionsPopover();
   repaintDocumentBlocks();
   openBlockEditor({
-    value: isImage ? block.alt : block.md,
+    value: value ?? (isImage ? block.alt : block.md),
     title: isImage ? "Describe this image" : "Edit this block",
     placeholder: isImage
       ? "What is in the picture — read out when it cannot be shown"
@@ -1708,16 +1800,26 @@ function freshBlockStyle(kind) {
 // nothing at all.
 function writeBlockText(id, text) {
   editingId = null;
+  const fresh = freshBlockIds.delete(id);
   if (text === null) { repaintDocumentBlocks(); syncBlockActionsPopover(); return; }
   const blocks = documentBlocks();
   const block = blocks.find((entry) => entry.id === id);
   const field = block?.kind === PDF_BLOCK_IMAGE ? "alt" : "md";
+  // A block placed and left without a word in it was a tap the reader did not
+  // follow through — gone again, as text typed nowhere always was. Only a plain
+  // one: an empty diamond in a diagram is still a diamond.
+  if (fresh && block && field === "md" && !String(text).trim() && !String(block.md || "").trim()
+      && blockStyle(block).shape === BLOCK_SHAPE_DEFAULT) {
+    if (selectedId === id) { setSelectedId(null); closeBlockActionsPopover(); }
+    writeBlocks(blocks.filter((entry) => entry.id !== id), { removed: id, undoable: false });
+    repaintDocumentBlocks();
+    return;
+  }
+  // The width is the reader's: what the block was placed at, or dragged to.
+  // It used to be pulled in to the longest line after every edit, so a block
+  // narrowed itself under words being written and then had to be dragged wide
+  // again for the next sentence. Only the height follows the words now.
   if (block && block[field] !== text) {
-    // The width-tightening pass is armed here, by an EDIT — never by a paint
-    // or a reload, so a block nobody touched is never rewritten on open (see
-    // shouldShrinkBlockWidth). renderBlockBody consumes it once the new words
-    // are on the page and can be measured.
-    if (field === "md" && text.trim()) awaitingWidthShrink.add(id);
     writeBlocks(blocks.map((entry) => (entry.id === id ? { ...entry, [field]: text, at: Date.now() } : entry)));
   }
   repaintDocumentBlocks();
@@ -1736,6 +1838,7 @@ function writeBlockText(id, text) {
 // about what "the current text" was.
 export function commitBlockEdit() {
   if (!editingId) return false;
+  if (closeInlineBlockEditor(true)) return true;
   if (!closeBlockEditor(true)) {
     // The sheet is not up — an edit that was begun and then lost its window.
     // Nothing to read, so the only thing owed is putting the block back.
@@ -1747,7 +1850,7 @@ export function commitBlockEdit() {
 
 // ── Dragging and resizing ──────────────────────────────────────────────────
 
-function beginGesture(event, node, mode, edge = "se") {
+function beginGesture(event, node, mode, edge = "se", { openOnTap = false } = {}) {
   const id = node.dataset.pdfBlock;
   const block = documentBlocks().find((entry) => entry.id === id);
   if (!block) return;
@@ -1965,8 +2068,18 @@ function beginGesture(event, node, mode, edge = "se") {
     // is still selected. Its quick actions belong back at it, anchored to
     // wherever it now sits.
     syncBlockActionsPopover();
+    // A tap on a block that was already picked up: its words, to type in.
+    if (openOnTap && !captured && mode === "drag" && upEvent?.type === "pointerup" && block.kind !== PDF_BLOCK_IMAGE) {
+      beginBlockEdit(id);
+      return;
+    }
     // A press that ended where it started must not cost an autosave and a push.
-    if (live.x === block.x && live.y === block.y && live.w === block.w && live.h === block.h) return;
+    if (live.x === block.x && live.y === block.y && live.w === block.w && live.h === block.h) {
+      // ...but a resize of the block being typed in has changed how its lines
+      // wrap, and so how tall the editor is.
+      if (editingId === id) mountInlineBlockEditor(node);
+      return;
+    }
     writeBlocks(documentBlocks().map((entry) => (entry.id === id ? { ...entry, ...live, at: Date.now() } : entry)));
   };
 
@@ -2061,6 +2174,14 @@ export function handleBlockPointerDown(event) {
   // IS the shape of the box being changed, in the box being changed — every
   // other action lives in #inkRailBlock now (src/ui/ink-rail.js), reached once
   // the block below has been picked up.
+  // A press inside the words being typed in place is the editor's: the caret
+  // goes where it was put and a drag selects words. Stopped here so the pen,
+  // the lasso and the pen's text tool stand down for it, as for any press on a
+  // block — but not claimed, so the textarea's own selection is untouched.
+  if (inlineBlockEditorHolds(event.target)) {
+    event.stopPropagation();
+    return true;
+  }
   const handle = event.target.closest("[data-pdf-block-action]");
   const resizing = handle?.dataset.pdfBlockAction === "resize";
   // The text of a block being edited is in the sheet over the page, not in the
@@ -2084,6 +2205,9 @@ export function handleBlockPointerDown(event) {
   event.stopPropagation();
   if (resizing) event.preventDefault();
   const id = node.dataset.pdfBlock;
+  // Already picked up before this press? Then a tap on it (not a drag) opens
+  // its words to type in, here on the page — see beginGesture's finish.
+  const wasSelected = selectedId === id;
   // Picked up by any press on it, whatever else that press goes on to do. This
   // is what the keyboard verbs and the rail's own actions are for, and it costs
   // nothing to be wrong about — a selection is a ring around a box, not a mode.
@@ -2092,7 +2216,10 @@ export function handleBlockPointerDown(event) {
   // not the popover's own block any more, and it floats OVER the page pinned to
   // where that block WAS.
   closeBlockStylePopover();
-  commitBlockEdit();
+  // The block being typed in can be dragged by its frame, or made wider, and
+  // go on being typed in; a press on any other block puts its words down.
+  const editingThis = editingId === id && inlineBlockEditorId() === id;
+  if (!editingThis) commitBlockEdit();
   // A second press on a handle soon after the first, in about the same place,
   // is "fit this to what is in it" — the one-gesture way back from a frame
   // dragged too big or too small. Read off the presses themselves rather than
@@ -2102,7 +2229,7 @@ export function handleBlockPointerDown(event) {
     fitBlockToContents(id);
     return true;
   }
-  beginGesture(event, node, resizing ? "resize" : "drag", handle?.dataset.edge || "se");
+  beginGesture(event, node, resizing ? "resize" : "drag", handle?.dataset.edge || "se", { openOnTap: wasSelected && !editingThis });
   return true;
 }
 
@@ -2272,9 +2399,23 @@ export function restackBlock(direction, id = selectedId) {
   return true;
 }
 
-export function editBlock(id = selectedId) {
+export function editBlock(id = selectedId, { inWindow = false } = {}) {
   if (!id) return false;
-  beginBlockEdit(id);
+  beginBlockEdit(id, { inWindow });
+  return true;
+}
+
+// The words being typed in place, carried on into the window — for a block
+// long enough to want the whole formatting strip and Write/Preview.
+export function openBlockInFullEditor(id = editingId || selectedId) {
+  if (!id) return false;
+  const value = inlineBlockEditorId() === id ? inlineBlockEditorValue() : null;
+  if (value !== null) {
+    // Put down quietly first (the words are written), then reopened in the
+    // window with them, so nothing typed is lost on the way across.
+    commitBlockEdit();
+  }
+  beginBlockEdit(id, { inWindow: true });
   return true;
 }
 
@@ -2305,7 +2446,8 @@ function openStyleFor(id, node) {
   // of Done/Escape leaving the block selected. That would land AFTER a close
   // called any earlier in this function, so the close belongs here, once
   // everything above it that could reopen it has already run.
-  commitBlockEdit();
+  // Not the block being typed in: its look can change under the caret.
+  if (inlineBlockEditorId() !== id) commitBlockEdit();
   closeBlockActionsPopover();
   openBlockStylePopover({
     anchor: node,
@@ -2319,11 +2461,11 @@ function openStyleFor(id, node) {
 // What #inkRailBlock's Style button calls (src/ui/ink-rail.js) — the rail knows
 // only that SOMETHING is selected, not which DOM node it is, so this is the one
 // place that looks the node up before handing off to the toggle above.
-export function openSelectedBlockStyle() {
-  if (!selectedId) return false;
-  const node = document.querySelector(`[data-pdf-block="${selectedId}"]`);
+export function openSelectedBlockStyle(id = selectedId) {
+  if (!id) return false;
+  const node = document.querySelector(`[data-pdf-block="${id}"]`);
   if (!node) return false;
-  openStyleFor(selectedId, node);
+  openStyleFor(id, node);
   return true;
 }
 

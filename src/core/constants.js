@@ -81,4 +81,7 @@ export const PDF_SHAPE_TEXT_CLASS = "pdf-shape-text";
 // controller (src/notes/touch-selection.js) and region select
 // (src/documents/pdf-region.js) — so a new kind of placed thing is one edit
 // here and not a hunt through four files for the ones that forgot it.
-export const PDF_PICKUP_SELECTOR = `.${PDF_BLOCK_CLASS}, .${PDF_SHAPE_TEXT_CLASS}`;
+// The selection frame and handles of a picked-up shape, and the arrows beside a
+// picked-up box, are drawn as elements of their own over the paper; a press on
+// one is the thing's, never the pen's.
+export const PDF_PICKUP_SELECTOR = `.${PDF_BLOCK_CLASS}, .${PDF_SHAPE_TEXT_CLASS}, .pdf-shape-handle, .pdf-connect-arrow`;

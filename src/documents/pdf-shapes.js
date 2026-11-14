@@ -60,7 +60,7 @@ import {
   QUAD_GEOMETRY_VERSION, applyDocumentRecordChanges, documentHighlightById, documentHighlights, freshDocumentHighlightId, reinstateDocumentHighlight,
   removeDocumentHighlight, setDocumentShapePainter, updateDocumentHighlight
 } from "./pdf-highlights.js?v=__BUILD__";
-import { inkEraseTarget, inkPaperBg, inkTool, isInkArmed, pushInkHistoryAction } from "./pdf-ink.js?v=__BUILD__";
+import { inkEraseTarget, inkPaperBg, inkTool, isInkArmed, pushInkHistoryAction, setInkStandDownHook } from "./pdf-ink.js?v=__BUILD__";
 import { paperRecolor } from "../format/paper-tones.js?v=__BUILD__";
 import { pdfPageElement, pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
 
@@ -1550,6 +1550,9 @@ export function shapeClaimsPointer(event) {
 
 export function initDocumentShapes() {
   setDocumentShapePainter(paintDocumentShapes);
+  // A press on a picked-up shape's handle, or on words typed on the page, is
+  // the shape's — whichever of this module's listener and the pen's runs first.
+  setInkStandDownHook((event) => Boolean(pickupAt(event)));
   const view = el.documentView;
   if (!view) return;
   view.addEventListener("pointerdown", onShapePointerDown, true);

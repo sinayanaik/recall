@@ -674,6 +674,12 @@ const checks = [
     // several things picked up and lined up at once, and the guides a drag
     // snaps to.
     ["diagram       ", ["node", ["tools/diagram-check.mjs"], ROOT]],
+    // The Canvas as a place you put blocks on: a pen press on anything already
+    // on the page draws nothing; typed words read on a dark page while typed;
+    // the Block button and a tap place a block, open in place; a tap on a
+    // picked-up block opens it, words select and the Notes bar styles them;
+    // its width stays and its height follows the words.
+    ["canvas-blocks ", ["node", ["tools/canvas-blocks-check.mjs"], ROOT]],
     // ⋯ → Page margins… in the app: what was written stays put, the page is
     // wider, a typed box goes in the margin, the file saved with annotations
     // carries the margin and the typed boxes, None and a re-attach both hold.

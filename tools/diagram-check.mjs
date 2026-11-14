@@ -72,6 +72,8 @@ const API_SRC = `async () => {
     "/src/documents/pdf-blocks.js?v=__BUILD__",
     "/src/documents/block-style.js?v=__BUILD__",
     "/src/documents/pdf-block-editor.js?v=__BUILD__",
+    "/src/documents/pdf-block-inline.js?v=__BUILD__",
+    "/src/documents/block-place.js?v=__BUILD__",
     "/src/documents/pdf-shapes.js?v=__BUILD__",
     "/src/documents/pdf-connectors.js?v=__BUILD__",
     "/src/documents/canvas-selection.js?v=__BUILD__",
@@ -214,6 +216,22 @@ try {
     out.paletteCount = palette.length;
     const diamondButton = palette.find((b) => b.dataset.blockShape === "diamond");
     press(diamondButton);
+    await settle(80);
+    // ...which arms it: the next tap on the page says where it goes.
+    out.paletteArms = api.isBlockPlacementArmed();
+    {
+      // Where + Add used to drop it — the middle of the view — so the cases
+      // below find the page as they always have.
+      const vb = view.getBoundingClientRect();
+      const tx = vb.left + vb.width / 2;
+      const ty = vb.top + vb.height / 2;
+      // A toast left by the press ("Tap where the block goes") would take it.
+      document.querySelectorAll(".toast, #toastHost > *").forEach((n) => n.remove());
+      const under = document.elementFromPoint(tx, ty);
+      const opts = { bubbles: true, cancelable: true, pointerId: 91, pointerType: "mouse", isPrimary: true, clientX: tx, clientY: ty };
+      under.dispatchEvent(new PointerEvent("pointerdown", { ...opts, buttons: 1 }));
+      under.dispatchEvent(new PointerEvent("pointerup", { ...opts, buttons: 0 }));
+    }
     await settle(150);
     api.commitBlockEdit();
     await settle(100);
@@ -302,7 +320,7 @@ try {
     return out;
   }`);
 
-  check("A1. + Add carries a palette of nine block shapes", boxes.paletteCount === 9, `(${boxes.paletteCount})`);
+  check("A1. + Add carries a palette of nine block shapes, and one arms a tap to place it", boxes.paletteCount === 9 && boxes.paletteArms, `(${boxes.paletteCount}, armed=${boxes.paletteArms})`);
   check("A1. the diamond is a block of its own size, holding its words in the middle",
     boxes.diamond && boxes.diamond.w === 140 && boxes.diamond.h === 92 && boxes.diamond.fit === false && boxes.diamond.valign === "middle",
     JSON.stringify(boxes.diamond));
@@ -383,7 +401,8 @@ try {
     mouse(south, "pointerdown", sc[0], sc[1], { pointerId: 81 });
     mouse(document, "pointerup", sc[0], sc[1], { pointerId: 81 });
     await settle(150);
-    out.editorOpen = Boolean(document.getElementById("pdfBlockEditor") && !document.getElementById("pdfBlockEditor").hidden);
+    // Opened in place, as every block is now (src/documents/pdf-block-inline.js).
+    out.editorOpen = api.isInlineBlockEditorOpen();
     api.commitBlockEdit();
     await settle(60);
     const copy = api.documentBlocks().at(-1);

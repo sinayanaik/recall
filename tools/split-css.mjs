@@ -65,6 +65,11 @@ const SECTIONS = [
 // Anything appearing in styles/ that is neither a slice nor listed here is
 // still a failure.
 const POST_SPLIT = {
+  "98-block-inline.css":
+    "A block written in where it is (src/documents/pdf-block-inline.js): its words " +
+    "typed into the block at its own size, face and colour, the height following " +
+    "the lines, and the Block button armed to tap where one goes " +
+    "(src/documents/block-place.js).",
   "97-diagram.css":
     "Diagrams on a page: a block's outline when it is a diamond, a pill or a " +
     "cylinder, its edge and where its words sit (src/documents/pdf-blocks.js), " +

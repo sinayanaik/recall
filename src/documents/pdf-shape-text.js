@@ -25,6 +25,8 @@ import { documentHighlightById } from "./pdf-highlights.js?v=__BUILD__";
 import { applyShapeTextTurn } from "./pdf-shape-markdown.js?v=__BUILD__";
 import { deleteShape, paintDocumentShapes, selectShape, setEditingShapeId, setShapePaintedHook, setShapeTextEditHandler, untransformedClientRect, updateShape } from "./pdf-shapes.js?v=__BUILD__";
 import { pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
+import { inkPaperBg } from "./pdf-ink.js?v=__BUILD__";
+import { paperRecolor } from "../format/paper-tones.js?v=__BUILD__";
 import { attachShapeTextFormatBar, detachShapeTextFormatBar, SHAPE_TEXT_FORMAT_BAR_CLASS } from "./pdf-shape-text-format.js?v=__BUILD__";
 import { closeMarkMenu } from "../notes/mark-menu.js?v=__BUILD__";
 
@@ -71,7 +73,12 @@ function placeShapeEditor(node, viewport, shape) {
   node.style.fontSize = `${shape.font.size * scale}px`;
   node.style.fontWeight = shape.font.bold ? "700" : "400";
   node.style.textAlign = shape.font.align;
-  node.style.color = shape.font.color || (shape.type === "text" ? shape.stroke : "#16181d");
+  // Recoloured for the paper exactly as the painted words are (pdf-shapes.js
+  // paints through paperRecolor too). Black chosen on a black page was drawn
+  // light once put down and typed in black — invisible — while open.
+  const colour = shape.font.color || (shape.type === "text" ? shape.stroke : "#16181d");
+  const recolor = paperRecolor(inkPaperBg());
+  node.style.color = recolor ? recolor(colour) : colour;
   // Typed in turned, as it will be shown.
   applyShapeTextTurn(node, shape.rot || 0);
 }

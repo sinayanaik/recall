@@ -387,6 +387,7 @@ const APP_SHELL = [
   `./styles/95-library-search.css?v=${STAMP}`,
   `./styles/96-md-pdf.css?v=${STAMP}`,
   `./styles/97-diagram.css?v=${STAMP}`,
+  `./styles/98-block-inline.css?v=${STAMP}`,
   // The module entry point. Everything it imports is stamped with the same
   // ?v=, so those URLs change with every release too — which is what lets the
   // cache-first handler below serve them without revalidating and still never
@@ -450,6 +451,8 @@ const APP_SHELL = [
   `./src/documents/block-style-bar.js?v=${STAMP}`,
   `./src/documents/pdf-export.js?v=${STAMP}`,
   `./src/documents/pdf-block-editor.js?v=${STAMP}`,
+  `./src/documents/pdf-block-inline.js?v=${STAMP}`,
+  `./src/documents/block-place.js?v=${STAMP}`,
   `./src/documents/pdf-blocks.js?v=${STAMP}`,
   `./src/documents/doc-slot.js?v=${STAMP}`,
   `./src/documents/notebook.js?v=${STAMP}`,
