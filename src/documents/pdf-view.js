@@ -324,6 +324,15 @@ export function pdfPageTextItems(pageNumber) {
   return openPdf?.pages?.get(pageNumber)?.textItems || null;
 }
 
+// Runs `fn` once for each document on screen — today the one on the stage, if
+// the stage is showing. The callers (src/ui/split-layout.js re-fitting after a
+// divider drag) ask "every document the reader can see", which is a different
+// question from "the document being worked on", and this is where the answer
+// lives.
+export function forEachDocumentViewer(fn) {
+  if (openPdf && !documentSurfaceHidden()) fn(openPdf);
+}
+
 // Whether the Document surface is the one a selection or a jump should act on.
 // Either tab that lands on it — the Write tab is this same surface with the
 // deck's other paper in it, and a selection there is a selection.

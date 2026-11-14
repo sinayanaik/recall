@@ -388,6 +388,7 @@ const APP_SHELL = [
   `./styles/96-md-pdf.css?v=${STAMP}`,
   `./styles/97-diagram.css?v=${STAMP}`,
   `./styles/98-block-inline.css?v=${STAMP}`,
+  `./styles/99-split-parts.css?v=${STAMP}`,
   // The module entry point. Everything it imports is stamped with the same
   // ?v=, so those URLs change with every release too — which is what lets the
   // cache-first handler below serve them without revalidating and still never
@@ -725,6 +726,8 @@ const APP_SHELL = [
   `./src/ui/pickers.js?v=${STAMP}`,
   `./src/ui/reading-rail.js?v=${STAMP}`,
   `./src/ui/shutdown.js?v=${STAMP}`,
+  `./src/ui/split-layout.js?v=${STAMP}`,
+  `./src/ui/split-parts.js?v=${STAMP}`,
   `./src/ui/style-schema.js?v=${STAMP}`,
   `./src/ui/style-icon.js?v=${STAMP}`,
   `./src/ui/style-popover.js?v=${STAMP}`,

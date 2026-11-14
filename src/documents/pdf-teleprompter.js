@@ -88,6 +88,7 @@ import { isInkArmed } from "./pdf-ink.js?v=__BUILD__";
 import { isRegionSelectArmed } from "./pdf-region.js?v=__BUILD__";
 import { buildPathFromBoxes, buildPathFromInk } from "./pdf-reading-path.js?v=__BUILD__";
 import { keptTextItem, readPageTextContent, textItemBox, textItemShadows } from "./pdf-selection.js?v=__BUILD__";
+import { isPartShown } from "../ui/split-parts.js?v=__BUILD__";
 import {
   PDF_MAX_SCALE, currentDocumentAcross, currentDocumentPage, currentDocumentResidual, documentPinchEngaged, documentSurfaceHidden,
   fitWidthScale, openDocumentSlot, openPdf, pageOffsetLeft, pageOffsetTop, pdfPageTextItems, scrollToDocumentPage,
@@ -433,7 +434,7 @@ function pdfTpReducedMotion() {
 }
 
 function surfaceShowsSession() {
-  return state.viewMode === "document" && openDocumentSlot() === "doc" && !documentSurfaceHidden() && isDisplayed(el.documentView);
+  return isPartShown("document") && openDocumentSlot() === "doc" && !documentSurfaceHidden() && isDisplayed(el.documentView);
 }
 
 function sessionStillOpen() {

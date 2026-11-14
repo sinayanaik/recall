@@ -33,14 +33,15 @@ import { clearProgrammaticNotesSelection, isProgrammaticNotesSelection } from ".
 import { codeLanguageOrGeneric, inferCodeLanguage, normalizeCodeLanguage } from "../render/code-language.js?v=__BUILD__";
 import { styleMobileMedia } from "../ui/style-tokens.js?v=__BUILD__";
 import { onDocumentSurface } from "../documents/doc-slot.js?v=__BUILD__";
+import { isCardsShown, isNotesShown } from "../ui/split-parts.js?v=__BUILD__";
 
-// The three faces that support "select text → make a flashcard". Only one is
-// ever active at a time: notes while state.viewMode === "notes", question/
-// answer while state.viewMode === "cards".
+// The three faces that support "select text → make a flashcard". Active while
+// their part is on screen — focused or, side by side, beside another part
+// (src/ui/split-parts.js), when the notes and a card can both be up.
 export const SELECTION_TARGETS = [
-  { name: "notes", view: el.notesView, edit: el.notesEdit, isActive: () => state.viewMode === "notes" },
-  { name: "question", view: el.questionView, edit: el.questionEdit, isActive: () => state.viewMode === "cards" },
-  { name: "answer", view: el.answerView, edit: el.answerEdit, isActive: () => state.viewMode === "cards" },
+  { name: "notes", view: el.notesView, edit: el.notesEdit, isActive: () => isNotesShown() },
+  { name: "question", view: el.questionView, edit: el.questionEdit, isActive: () => isCardsShown() },
+  { name: "answer", view: el.answerView, edit: el.answerEdit, isActive: () => isCardsShown() },
 ];
 
 // ── ...and a fourth that comes and goes ───────────────────────────────────

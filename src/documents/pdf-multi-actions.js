@@ -20,6 +20,7 @@ import { recordDeletedMetaId } from "../sync/document-sync.js?v=__BUILD__";
 import { scheduleDeckAutosave } from "../storage/deck-store.js?v=__BUILD__";
 import { deleteDocumentCopies } from "../storage/document-migration.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
+import { isPartShown } from "../ui/split-parts.js?v=__BUILD__";
 
 // Fully remove one PDF: the entry, its highlights and typed blocks (each with
 // its own tombstone, so the removal sticks across a sync rather than being
@@ -93,7 +94,7 @@ export async function removePdfFromDeck(pdfId) {
     // Nothing left to switch to: the tab and the stage are told the deck has no
     // document, and the stage reopens onto the attach panel.
     updateMeta();
-    if (state.viewMode === "document") await openDocumentView({ force: true, slot: DOC_SLOT_DOC });
+    if (isPartShown("document")) await openDocumentView({ force: true, slot: DOC_SLOT_DOC });
   }
   renderDocumentPdfSwitcher();
   showToast(`Removed "${entry.name || "PDF"}" from this file`);

@@ -76,7 +76,6 @@
 
 import { el, isDisplayed } from "../core/dom.js?v=__BUILD__";
 import { notesAutoScrolling, readerTouchDown, setNotesAutoScrolling, touchGestureHoldsSurface } from "../core/gesture.js?v=__BUILD__";
-import { state } from "../core/state.js?v=__BUILD__";
 import { NOTES_CHUNK_CLASS, NOTES_CHUNK_PENDING_CLASS, withChunkRendered } from "../render/block-cache.js?v=__BUILD__";
 import { formatDuration } from "../stats/combine.js?v=__BUILD__";
 import { lastExactNotesReading, liveNotesWordsLeft, readingTimeLeft } from "../stats/reading-progress.js?v=__BUILD__";
@@ -109,6 +108,7 @@ import {
   FRAME_COUNT_MAX_S, FRAME_MOVE_MAX_S, measuredClockWpm, newWordClock, paceFactor, rebaseWordClock, wordsDone, wordsDueFor
 } from "./teleprompter-pace.js?v=__BUILD__";
 import { touchSelectionRange } from "./touch-selection.js?v=__BUILD__";
+import { isNotesShown } from "../ui/split-parts.js?v=__BUILD__";
 
 // ── Settings ────────────────────────────────────────────────────────────────
 //
@@ -244,7 +244,7 @@ export function teleprompterActive() {
 // paused, so the reader comes back to their line and ▶ — and Escape or Back
 // pressed over Cards must not be spent leaving something nobody can see.
 export function teleprompterOnScreen() {
-  return Boolean(teleprompterSession) && state.viewMode === "notes" && isDisplayed(el.notesView);
+  return Boolean(teleprompterSession) && isNotesShown() && isDisplayed(el.notesView);
 }
 
 // For tools/teleprompter-check.mjs, and for nothing that changes behaviour.
@@ -292,7 +292,7 @@ function reducedMotion() {
 const PLAY_CAPTURE_MS = 5000;
 
 function saveTeleprompterPlace({ flush = false } = {}) {
-  if (!teleprompterSession || state.viewMode !== "notes" || !isDisplayed(el.notesView)) return;
+  if (!teleprompterSession || !isNotesShown() || !isDisplayed(el.notesView)) return;
   if (currentDeckKey() !== teleprompterSession.deckKey) return;
   captureCurrentReadingAnchor(teleprompterSession.deckKey);
   teleprompterSession.capturedAt = performance.now();
@@ -763,7 +763,7 @@ function lastSpanPending(view) {
 }
 
 function surfaceStillHere() {
-  return state.viewMode === "notes" && !isNotesEditing() && isDisplayed(el.notesView)
+  return isNotesShown() && !isNotesEditing() && isDisplayed(el.notesView)
     && !document.hidden && currentDeckKey() === teleprompterSession.deckKey;
 }
 
@@ -1066,7 +1066,7 @@ export function startTeleprompter() {
   const view = el.notesView;
   const stage = el.notesStage;
   if (teleprompterSession || !view || !stage) return false;
-  if (state.viewMode !== "notes" || isNotesEditing() || !isDisplayed(view)) return false;
+  if (!isNotesShown() || isNotesEditing() || !isDisplayed(view)) return false;
   const settings = readTeleprompterSettings();
   const notesFontPx = parseFloat(getComputedStyle(view).fontSize) || 16;
   // Where the reader is, before anything moves: the line they are reading, or
@@ -1409,12 +1409,12 @@ function watchTeleprompter() {
     exitTeleprompter({ land: false });
     return;
   }
-  if (state.viewMode !== "notes" || !isDisplayed(el.notesView) || document.hidden) {
+  if (!isNotesShown() || !isDisplayed(el.notesView) || document.hidden) {
     if (teleprompterSession.phase === "manual") {
       if (!teleprompterSession.wasAway) letScreenSleep();
       teleprompterSession.wasAway = true;
     } else {
-      pauseTeleprompter(document.hidden && isDisplayed(el.notesView) && state.viewMode === "notes" ? "hidden" : "away");
+      pauseTeleprompter(document.hidden && isDisplayed(el.notesView) && isNotesShown() ? "hidden" : "away");
     }
     return;
   }

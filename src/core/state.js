@@ -41,6 +41,9 @@ export const state = {
   deckCategory: "Uncategorized",
   notes: "",
   viewMode: "cards",
+  // The part shown beside viewMode when two are side by side, or null. See
+  // src/ui/split-parts.js for which of the two a module should be asking about.
+  splitPart: null,
   // My Decks library UI preferences (persisted per device).
   myDecksView: (() => { try { const v = localStorage.getItem("flashcards_mydecks_view_v1"); return ["grid", "folder", "tree"].includes(v) ? v : "folder"; } catch (_) { return "folder"; } })(),
   myDecksDisplay: (() => { try { const v = localStorage.getItem("flashcards_mydecks_display_v1"); return ["tiles", "list"].includes(v) ? v : "list"; } catch (_) { return "list"; } })(),

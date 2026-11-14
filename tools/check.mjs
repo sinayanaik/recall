@@ -139,6 +139,10 @@
 //                   name? Walks the [[ picker's folder tree and asks a
 //                   half-remembered query of it, then checks that neither route
 //                   changed the id form the link is written in
+//   split-parts     are two parts of a file both usable side by side? Every
+//                   pair, the focus following a press with nothing re-rendered,
+//                   a card flipped and a note typed beside each other, and the
+//                   split closing for another file or a narrow window
 //   note-editor     can you format a highlight's note with the keyboard — and
 //                   does Ctrl+E flip the popup rather than the view behind it?
 //                   Nothing drove .highlight-note-editor at all before it, which
@@ -634,6 +638,11 @@ const checks = [
     // torn out and read back from IndexedDB, and a text box dragged, resized and
     // still where it was put.
     ["handwriting   ", ["node", ["tools/handwriting-check.mjs"], ROOT]],
+    // Two parts of one file side by side — any pair of Cards, Notes, PDFs and
+    // Canvas: both up, each still doing its own job, the focus following the
+    // hand without a re-render, and the split giving way to the Highlights
+    // pane, another file and a window too narrow for two.
+    ["split-parts   ", ["node", ["tools/split-parts-check.mjs"], ROOT]],
     ["paged         ", ["node", ["tools/paged-check.mjs"], ROOT]],
     ["ribbon        ", ["node", ["tools/ribbon-check.mjs"], ROOT]],
     // The JOIN nothing used to ask about: a contents row is a descriptor scanned

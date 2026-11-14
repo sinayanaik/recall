@@ -41,7 +41,7 @@ import { closeInkRailPopups, isInkRailPopupOpen } from "./ink-rail.js?v=__BUILD_
 // replaced: closeViewExportMenu also resets the button's aria-expanded, and a
 // second copy of that pair is a second thing to keep in step. Checked for a
 // cycle — nothing view-mode.js reaches imports this module back.
-import { closeViewExportMenu } from "./view-mode.js?v=__BUILD__";
+import { closeSplitPartsMenu, closeViewExportMenu, isSplitPartsMenuOpen } from "./view-mode.js?v=__BUILD__";
 import { goNavBack } from "./nav-history.js?v=__BUILD__";
 import { unlockPageScroll } from "./overlays.js?v=__BUILD__";
 
@@ -84,6 +84,8 @@ export const OVERLAY_LAYERS = [
   // no entry here loses the hardware Back key to goNavBack(), which would have
   // loaded another deck out from under it.
   { isOpen: () => Boolean(el.viewExportMenu && !el.viewExportMenu.hidden), close: () => closeViewExportMenu() },
+  // ...and the ⫿ beside it, for the same reason.
+  { isOpen: () => isSplitPartsMenuOpen(), close: () => closeSplitPartsMenu() },
   // The notes header's phone-only ⋯ menu. A popover like the rest of this
   // group, and it has to be in the list for the same reason they are: on a
   // phone the Back gesture is the primary dismiss, and without an entry here a

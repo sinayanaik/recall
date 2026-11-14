@@ -118,7 +118,8 @@ import { reconcileAllDecks, syncAllDecksAndWait } from "./sync/reconcile.js?v=__
 import { closeTopmostOverlay, initBackGesture } from "./ui/back-gesture.js?v=__BUILD__";
 import { showAuthenticatedUI, showLibraryFailedScreen, showLoginScreen, showSetupScreen } from "./ui/boot-screens.js?v=__BUILD__";
 import { applyChromeCollapse, hasStudyTextSelection, initImmersiveMode, isFocusModeActive, measureChromeHeights, setChromeCollapseHandler, setChromeFocusPinned, setChromeModesHandler, setFocusMode, toggleImmersiveMode } from "./ui/chrome.js?v=__BUILD__";
-import { DOC_SLOT_DOC, DOC_SLOT_NOTEBOOK, activeDocSlot, deckHasPdf, onDocumentSurface } from "./documents/doc-slot.js?v=__BUILD__";
+import { DOC_SLOT_DOC, DOC_SLOT_NOTEBOOK, activeDocSlot, deckHasPdf, documentSurfaceShown, onDocumentSurface } from "./documents/doc-slot.js?v=__BUILD__";
+import { isNotesShown } from "./ui/split-parts.js?v=__BUILD__";
 import { captureDocumentSelection } from "./documents/pdf-selection.js?v=__BUILD__";
 import { closeImportPanel, closeMyDecksPanel, editCurrentDeckCategory, editCurrentDeckTitle, openImportPanel, openMyDecksPanel } from "./ui/deck-header.js?v=__BUILD__";
 import { addBlankCardAtCursor, cardEditActive, flushWorkingDeck, toggleEditMode } from "./ui/edit-mode.js?v=__BUILD__";
@@ -135,7 +136,7 @@ import { detectStyleProfile, resetStyleProfile, trackKeyboardInset, wireStyleHos
 import { openSectionStyle, openSectionStyleFromPanel, setOpenAppStyleHandler, setSectionStyleSiblings, toggleSectionStyle } from "./ui/style-popover.js?v=__BUILD__";
 import { styleCoarsePointerMedia, styleMobileMedia } from "./ui/style-tokens.js?v=__BUILD__";
 import { setTheme, setThemeMenuOpen, setThemeRepaintHook } from "./ui/theme.js?v=__BUILD__";
-import { FOCUS_MODE_KEY, closeViewExportMenu, currentViewStyleScope, paintViewExportMenu, paintViewStyleButton, setBlockEditFlushHook, setHandwritingViewHook, setSplitViewHook, setViewMode, setViewSwitchHook, switchToPreviousView } from "./ui/view-mode.js?v=__BUILD__";
+import { FOCUS_MODE_KEY, closeSplitPartsMenu, closeViewExportMenu, currentViewStyleScope, initSplitPartsFocus, paintViewExportMenu, paintViewStyleButton, runSplitPartsAction, setBlockEditFlushHook, setHandwritingViewHook, setSplitViewHook, repaintDocumentPart, setViewMode, setViewSwitchHook, switchToPreviousView, toggleSplitPartsMenu } from "./ui/view-mode.js?v=__BUILD__";
 import { DOCUMENT_NOTE_HANDLERS, applyDocumentRecordChanges, documentHighlightById, documentHighlightNote, documentHighlights, flashDocumentRegion, initDocumentMarkMenu, repairDocumentHighlightQuads, repairDocumentHighlightText, setDocumentHighlightAdjust, setDocumentShapeTextEditor } from "./documents/pdf-highlights.js?v=__BUILD__";
 import { canAdjustDocumentHighlight, startDocumentHighlightAdjust } from "./documents/pdf-highlight-adjust.js?v=__BUILD__";
 import { pdfRegionRefForRecord, pdfRegionRefMarkdown } from "./documents/pdf-region-embed.js?v=__BUILD__";
@@ -1330,7 +1331,7 @@ onDomReady(() => {
   // surfaces before the screen turns, so the holds that follow the re-flow put
   // them back there (src/notes/resize-hold.js, relayoutDocumentHoldingReader).
   setBeforeOrientationChangeHandler(() => {
-    if (onDocumentSurface()) noteSettledDocumentPosition();
+    if (documentSurfaceShown()) noteSettledDocumentPosition();
     noteSettledNotesPosition();
   });
 });
@@ -1712,13 +1713,17 @@ onDomReady(() => {
   // so that module must not import back into documents/, and this file is the
   // one that knows both ends.
   setDeckReloadedInPlaceHook(() => {
-    if (onDocumentSurface()) {
+    // Side by side, the note and a paper can both be on screen, and both were
+    // rewritten under the reader. The note first: the document's branch below
+    // returns early on its own paths.
+    if (isNotesShown()) renderNotesViewPinned();
+    if (documentSurfaceShown()) {
       // No paper on the stage at all — the offer to attach one, a notebook not
       // started yet, an open that failed. loadDeckSnapshot no longer paints the
       // surface on an in-place reload (it tore a perfectly good document down
       // every time it did), so this is where a paper the sync has just brought
       // in gets opened: the ordinary paint of the tab the reader is already on.
-      if (!currentPdfDocument()) { setViewMode(state.viewMode); return; }
+      if (!currentPdfDocument()) { repaintDocumentPart(); return; }
       // The bytes moved — pages added or torn out on another device, or a paper
       // attached there. openDocumentView takes the full path on its own for
       // that, because documentOpenKey carries the sha256 and the park's own
@@ -1746,9 +1751,7 @@ onDomReady(() => {
       // reader's actual current page over it now is what stops that staleness
       // from surviving to the next device's pull or this device's next reopen.
       scheduleDocumentPositionSave();
-      return;
     }
-    if (state.viewMode === "notes") renderNotesViewPinned();
     // Cards need nothing — loadDeckSnapshot ends in showCard() either way.
   });
 });
@@ -2428,6 +2431,7 @@ setOpenAppStyleHandler(openStylePanel);
 setSectionStyleSiblings([
   closeStylePanel,
   closeViewExportMenu,
+  closeSplitPartsMenu,
   closeMyDecksMoreMenu,
   closeMarkMenu,
   closeBlockStylePopover,
@@ -2796,6 +2800,31 @@ document.addEventListener("pointerdown", (event) => {
   if (event.target.closest("#viewExportMenu, #viewExportBtn")) return;
   closeViewExportMenu();
 }, { capture: true, passive: true });
+
+// ── Side by side: the ⫿ beside the tabs ────────────────────────────────────
+//
+// Opens another part of this file beside the one in focus (src/ui/view-mode.js,
+// openSplitPart). The same menu is what the reading rail's "Side by side" row
+// opens, so there is one list of choices and one place that acts on it.
+el.splitPartsBtn?.addEventListener("click", (event) => {
+  event.stopPropagation();
+  toggleSplitPartsMenu();
+});
+
+document.addEventListener("pointerdown", (event) => {
+  if (!el.splitPartsMenu || el.splitPartsMenu.hidden) return;
+  if (event.target.closest("#splitPartsMenu, #splitPartsBtn, #readingRailSplitBtn")) return;
+  closeSplitPartsMenu();
+}, { capture: true, passive: true });
+
+el.splitPartsMenu?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-split-action]");
+  if (!button) return;
+  closeSplitPartsMenu();
+  runSplitPartsAction(button.dataset.splitAction);
+});
+
+onDomReady(initSplitPartsFocus);
 
 el.viewExportMenu?.addEventListener("click", (event) => {
   const button = event.target.closest("[data-view-export]");
@@ -3915,7 +3944,7 @@ document.addEventListener("dragover", (event) => {
     return;
   }
   // Without this the browser refuses the drop and navigates to the file instead.
-  if (onDocumentSurface() && el.documentView?.contains(event.target)
+  if (documentSurfaceShown() && el.documentView?.contains(event.target)
       && dragContainsImage(event.dataTransfer)) {
     event.preventDefault();
   }
@@ -4316,7 +4345,7 @@ el.documentView?.addEventListener("scroll", () => {
     // already declines on a torn-down document, so this is not a crash being
     // caught; it is one test in place of three, and a place to say why the frame
     // outlives its document at all.
-    if (!onDocumentSurface()) return;
+    if (!documentSurfaceShown()) return;
     // READS first, together, off one geometry table.
     noteSettledDocumentPosition();
     scheduleDocumentPositionSave();
@@ -4384,7 +4413,7 @@ const DOCUMENT_PAGER_WAKE_MS = 1200;
 let documentRefitTimer = 0;
 
 window.addEventListener("resize", () => {
-  if (!onDocumentSurface()) return;
+  if (!documentSurfaceShown()) return;
   const width = el.documentView?.clientWidth || 0;
   if (!width || width === documentFittedWidth()) return;
   if (!isDocumentFitWidth()) return;

@@ -71,7 +71,7 @@ import { openHome } from "./home.js?v=__BUILD__";
 import { shutDownApp } from "./shutdown.js?v=__BUILD__";
 import { isFocusModeActive, setFocusMode, toggleImmersiveMode } from "./chrome.js?v=__BUILD__";
 import { toggleLandscape } from "./orientation.js?v=__BUILD__";
-import { currentViewStyleScope, setViewMode } from "./view-mode.js?v=__BUILD__";
+import { currentViewStyleScope, setViewMode, toggleSplitPartsMenu } from "./view-mode.js?v=__BUILD__";
 import { toggleNotesToc } from "../notes/toc.js?v=__BUILD__";
 import { goToBookmark } from "../notes/bookmark.js?v=__BUILD__";
 import { toggleTeleprompter } from "../notes/teleprompter.js?v=__BUILD__";
@@ -416,6 +416,13 @@ export function initReadingRail() {
     const button = event.target.closest("[data-rail-action]");
     if (!button) return;
     const action = button.dataset.railAction;
+    // The ⫿ menu beside the tabs, which stay on screen in focus mode: one list
+    // of parts to put side by side, opened from either place.
+    if (action === "side-by-side") {
+      setReadingRailExpanded(false);
+      toggleSplitPartsMenu(true);
+      return;
+    }
     if (action === "home") openHome();
     else if (action === "decks") openMyDecksPanel();
     else if (action === "contents") toggleContents();
