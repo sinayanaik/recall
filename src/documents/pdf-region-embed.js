@@ -16,7 +16,7 @@ import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { ensurePdfJs, openPdfDocument } from "../core/lib-loader.js?v=__BUILD__";
 import { centerDiagramContent, openDiagramModal } from "../render/diagram-zoom.js?v=__BUILD__";
-import { DOC_SLOT_DOC, docSlotMeta, documentStoreKey, recordDocSlot } from "./doc-slot.js?v=__BUILD__";
+import { DOC_SLOT_DOC, DOC_SLOT_NOTEBOOK, docSlotMeta, documentStoreKey, recordDocSlot } from "./doc-slot.js?v=__BUILD__";
 import { deckPdfById, PDF_PRIMARY_ID, pdfStoreKey, recordPdfId } from "./pdf-multi.js?v=__BUILD__";
 import { drawRegionBlocks, mountRegionBlockLayer, paintRegionMarks, rasteriseRegionBlocks, regionAnnotationStamp, regionBlocksInBox, regionMarksOnPage, regionRichShapeTexts, shapeTextRasterIds } from "./pdf-region-marks.js?v=__BUILD__";
 import { getDocument } from "./pdf-store.js?v=__BUILD__";
@@ -27,6 +27,72 @@ import { attachRegionResizeHandle } from "./pdf-region-resize.js?v=__BUILD__";
 import { SHAPE_LABELS } from "../render/annot-shapes.js?v=__BUILD__";
 
 export const PDFREF_SCHEME = "pdfref:";
+
+// ── A ref to the Canvas ─────────────────────────────────────────────────────
+//
+// The Canvas is a PDF underneath too (src/documents/notebook.js), with ink,
+// shapes and blocks over its pages exactly as a paper has — so a box on one of
+// its pages is pictured by the same live crop. It is named by this reserved
+// value in the ref's pdfId slot: `pdfref:3:x0,y0,x1,y1:canvas`. A paper's id is
+// "primary" or generated (pdf-multi.js), never this. A client that predates it
+// finds no PDF by that id and shows the ref's "Region · page N" fallback, which
+// is honest rather than a picture of the wrong page.
+export const CANVAS_REF_ID = "canvas";
+
+export function isCanvasRef(parsed) {
+  return parsed?.pdfId === CANVAS_REF_ID;
+}
+
+// The paper a ref (or a ref-shaped record) is cut from, in the shape
+// regionSource gives a record: the Canvas for a Canvas ref, otherwise one of
+// the file's PDFs.
+export function refSource(pdfId) {
+  if (pdfId === CANVAS_REF_ID) {
+    return {
+      slot: DOC_SLOT_NOTEBOOK,
+      pdfId: null,
+      storeKey: documentStoreKey(state.localDeckId, DOC_SLOT_NOTEBOOK),
+      pdfMeta: docSlotMeta(DOC_SLOT_NOTEBOOK)
+    };
+  }
+  const id = pdfId || PDF_PRIMARY_ID;
+  return { slot: DOC_SLOT_DOC, pdfId: id, storeKey: pdfStoreKey(state.localDeckId, id), pdfMeta: deckPdfById(state.meta, id) };
+}
+
+// What a ref is called where its picture cannot be shown.
+export function refPlaceLabel(parsed) {
+  const page = parsed?.page;
+  const what = isCanvasRef(parsed) ? "Canvas" : "Region";
+  return page ? `${what} \u00b7 page ${page}` : what;
+}
+
+// ── Canvas pages renumbered ─────────────────────────────────────────────────
+//
+// A Canvas's pages are added after, duplicated, moved and torn out
+// (src/documents/notebook.js), and every record on them is renumbered with the
+// page. A Canvas ref in a card or the notes names a page by number too, so it is
+// renumbered by the same rule — `move(record)` gets `{ page }` and answers the
+// page it is on now, or null for a page torn out. A ref to a torn-out page
+// becomes words saying so: left as it was it would show whichever page took
+// its number. Returns the text unchanged (the same string) when nothing in it
+// moved.
+const PDFREF_IMAGE_RE = /!\[([^\]]*)\]\((pdfref:[^)\s]+)\)/g;
+
+export function remapCanvasRefs(text, move) {
+  const source = String(text ?? "");
+  if (!source.includes(`:${CANVAS_REF_ID}`) || typeof move !== "function") return text;
+  let changed = false;
+  const next = source.replace(PDFREF_IMAGE_RE, (whole, _alt, src) => {
+    const parsed = parsePdfRef(src);
+    if (!isCanvasRef(parsed)) return whole;
+    const to = move({ page: parsed.page });
+    if (to === parsed.page) return whole;
+    changed = true;
+    if (!(Number.isInteger(to) && to >= 1)) return `*Canvas \u00b7 page ${parsed.page} (torn out)*`;
+    return pdfRegionRefMarkdown(to, parsed.rect, parsed.pdfId, parsed.width);
+  });
+  return changed ? next : text;
+}
 
 // Wide enough to read a figure's fine print on a card face; not so wide that
 // it overflows a phone-width answer column before a reader resizes it. A ref
@@ -67,7 +133,9 @@ export function pdfRegionRefForRecord(record) {
   if (!quads.length) return null;
   const page = Number(record.page || quads[0].page);
   if (!Number.isInteger(page) || page < 1) return null;
-  if (record.kind === "area") return pdfRegionRefMarkdown(page, quads[0].rect, record.pdfId);
+  // A record on the Canvas is named by the Canvas, whatever pdfId it carries.
+  const pdfId = recordDocSlot(record) === DOC_SLOT_NOTEBOOK ? CANVAS_REF_ID : record.pdfId;
+  if (record.kind === "area") return pdfRegionRefMarkdown(page, quads[0].rect, pdfId);
   const onPage = quads.filter((quad) => !quad.page || Number(quad.page) === page);
   const boxes = (onPage.length ? onPage : quads).map((quad) => quad.rect.map(Number));
   const round = (n) => Math.round(n * 100) / 100;
@@ -77,7 +145,7 @@ export function pdfRegionRefForRecord(record) {
     Math.max(...boxes.map((r) => Math.max(r[0], r[2]))) + LOCATION_PAD,
     Math.max(...boxes.map((r) => Math.max(r[1], r[3]))) + LOCATION_PAD
   ].map(round);
-  return pdfRegionRefMarkdown(page, rect, record.pdfId);
+  return pdfRegionRefMarkdown(page, rect, pdfId);
 }
 
 export function parsePdfRef(src) {
@@ -114,7 +182,10 @@ export function parsePdfRef(src) {
 const embedDocs = new Map();
 
 function openEmbedDoc(storeKey, pdfMeta) {
-  const key = storeKey || "";
+  // ...and by the bytes' hash: a Canvas is stored under one key whose bytes
+  // change when a page is added or torn out (src/documents/notebook.js), and the
+  // copy opened before that has the old number of pages.
+  const key = `${storeKey || ""}:${pdfMeta?.sha256 || ""}`;
   const cached = embedDocs.get(key);
   if (cached) return cached;
   const promise = (async () => {
@@ -639,8 +710,7 @@ export async function renderRegionCrop(page, rect, scale, source, { excludeId = 
 }
 
 async function openRegionZoom(parsed) {
-  const pdfId = parsed.pdfId || PDF_PRIMARY_ID;
-  const source = { slot: DOC_SLOT_DOC, pdfId, storeKey: pdfStoreKey(state.localDeckId, pdfId), pdfMeta: deckPdfById(state.meta, pdfId) };
+  const source = refSource(parsed.pdfId);
   const page = await regionPdfPage(source, parsed.page);
   if (!page) return;
   const quadWidth = Math.max(1, Math.abs(parsed.rect[2] - parsed.rect[0]));
@@ -652,7 +722,7 @@ async function openRegionZoom(parsed) {
   if (zoomObjectUrl) URL.revokeObjectURL(zoomObjectUrl);
   zoomObjectUrl = URL.createObjectURL(blob);
   const img = new Image();
-  img.alt = `Region · page ${parsed.page}`;
+  img.alt = refPlaceLabel(parsed);
   img.src = zoomObjectUrl;
   try { await img.decode(); } catch (_) { /* still shown; the modal re-centres on load */ }
   openDiagramModal(img);
@@ -683,7 +753,8 @@ function attachRegionTools(wrapper, parsed, { zoom = true } = {}) {
   if (wrapper.closest("#printRoot, .print-root")) return;
   const tools = document.createElement("div");
   tools.className = "pdf-region-embed-tools";
-  tools.appendChild(regionButton(`p. ${parsed.page} \u2197`, `Open page ${parsed.page} of the PDF at this spot`, () => {
+  const paper = isCanvasRef(parsed) ? "Canvas" : "PDF";
+  tools.appendChild(regionButton(`p. ${parsed.page} \u2197`, `Open page ${parsed.page} of the ${paper} at this spot`, () => {
     if (goToRegion) goToRegion({ page: parsed.page, rect: parsed.rect, pdfId: parsed.pdfId || null });
   }));
   if (zoom) {
@@ -701,7 +772,7 @@ function showFallback(wrapper, parsed) {
   wrapper.replaceChildren();
   const note = document.createElement("div");
   note.className = "pdf-region-embed-fallback";
-  note.textContent = page ? `Region · page ${page}` : "Region";
+  note.textContent = refPlaceLabel(parsed);
   wrapper.appendChild(note);
   // Nothing to zoom into, but the page is still somewhere the PDF can be
   // opened at — once it is on this device, the Document tab says so itself.
@@ -732,20 +803,21 @@ export async function mountPdfRegionPicture(img) {
     id: `ref:${img.getAttribute("src")}`,
     kind: "area",
     page: parsed.page,
-    pdfId: parsed.pdfId || null,
+    pdfId: isCanvasRef(parsed) ? null : (parsed.pdfId || null),
+    ...(isCanvasRef(parsed) ? { doc: DOC_SLOT_NOTEBOOK } : {}),
     quads: [{ page: parsed.page, rect: parsed.rect }]
   };
   const url = await renderRegionImage(record, { width: shownWidth * 2 }).catch(() => null);
   if (!url) {
     const label = document.createElement("span");
     label.className = "export-image-fallback";
-    label.textContent = `PDF region · page ${parsed.page}`;
+    label.textContent = isCanvasRef(parsed) ? refPlaceLabel(parsed) : `PDF region · page ${parsed.page}`;
     img.replaceWith(label);
     return;
   }
   const picture = document.createElement("img");
   picture.className = "pdf-region-picture has-custom-size";
-  picture.alt = img.getAttribute("alt") || `PDF region · page ${parsed.page}`;
+  picture.alt = img.getAttribute("alt") || (isCanvasRef(parsed) ? refPlaceLabel(parsed) : `PDF region · page ${parsed.page}`);
   picture.setAttribute("src", url);
   picture.setAttribute("style", `--notes-img-w:${shownWidth}px; width:${shownWidth}px`);
   img.replaceWith(picture);
@@ -759,10 +831,9 @@ export async function mountPdfRegionEmbed(img, { resizable = false } = {}) {
   img.replaceWith(wrapper);
 
   try {
-    const pdfId = parsed.pdfId || PDF_PRIMARY_ID;
-    const pdfMeta = deckPdfById(state.meta, pdfId);
-    const storeKey = pdfStoreKey(state.localDeckId, pdfId);
-    const doc = await openEmbedDoc(storeKey, pdfMeta);
+    // The paper the ref names: one of the file's PDFs, or its Canvas.
+    const source = refSource(parsed.pdfId);
+    const doc = await openEmbedDoc(source.storeKey, source.pdfMeta);
     if (!doc || parsed.page > doc.numPages) return showFallback(wrapper, parsed);
     const page = await doc.getPage(parsed.page);
     const [x0, y0, x1, y1] = parsed.rect;
@@ -815,7 +886,6 @@ export async function mountPdfRegionEmbed(img, { resizable = false } = {}) {
     // What the reader put on the page inside the box — highlights and ink —
     // composited onto the same canvas the PDF itself just rendered to, less the
     // frame of the region this embed was made from (see pdf-region-marks.js).
-    const source = { slot: DOC_SLOT_DOC, pdfId, storeKey, pdfMeta };
     // A text box whose words are markdown is shown as live DOM over the page
     // by mountRegionBlockLayer below, like a block — so the canvas draws its
     // box and fill but not a plain copy of its words.

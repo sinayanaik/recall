@@ -286,24 +286,21 @@
 
 /* ── ...and the document's own controls, on a notebook ─────────────────────
 
-   Three of the five still mean something here: the contents drawer lists the
-   marks on the pages, ✎ is the pen and its rail, and ⋯ now carries rows of the
-   notebook's own (the paper, and tearing a page out).
+   All of them mean something here: the contents drawer lists the marks on the
+   pages, ✎ is the pen and its rail, ⋯ carries rows of the notebook's own (the
+   paper, and tearing a page out), and ▣ draws a box round a diagram you drew —
+   whose menu makes a card of it, a live picture of that spot of the Canvas
+   (src/documents/pdf-region-embed.js, CANVAS_REF_ID). It was hidden here once,
+   on the grounds that there are no figures on blank paper; that also took away
+   the one way to make a card of a drawing.
 
-   Two do not, and one of those was asked for. **Select a region** drags a box
-   round a figure in somebody's paper, and there are no figures on paper you have
-   not drawn on yet — the pen's own lasso is what selects handwriting.
-
-   The paper button (#documentDarkBtn) used to be the other. It was a dark page
+   The paper button (#documentDarkBtn) was hidden here too, once. It was a dark page
    on/off, and the pen resolved per THEME, so an inverted light page or an
    uninverted dark one was white ink on white paper — the page had one correct
    state and the button could only break it. It is a tone picker now, and the
    pens resolve per PAPER (resolveInkPaint), so every tone is a correct state and
    the button is back: a Canvas starts on the theme's own colour and the reader
    can choose another (src/format/paper-tones.js). */
-:is(.cs-notebook-shown, #cs-specificity).cs-notebook-shown.cs-notebook-shown .quiz-panel.notes-mode .view-mode-row > #documentRegionBtn {
-  display: none;
-}
 
 /* The document's remaining controls answer to `.has-no-document`, which is about
    meta.pdf and says nothing about a notebook — so on the Write tab of a deck
@@ -325,10 +322,6 @@
   width: 26px;
   height: 26px;
   min-height: 26px;
-}
-
-:is(.cs-notebook-open, #cs-specificity).cs-notebook-open.cs-notebook-open .quiz-panel.notes-mode .view-mode-row > #documentRegionBtn {
-  display: none;
 }
 
 :is(#documentStage, #documentStageAlt)[data-doc-slot="notebook"]:not(.has-no-notebook) .document-pager {

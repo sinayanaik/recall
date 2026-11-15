@@ -92,6 +92,9 @@ export function openBlockActionsPopover({
   onToFront = () => {},
   onToBack = () => {},
   onDelete = () => {},
+  // A card whose answer is a live picture of the block where it is on its page
+  // (src/documents/region-card.js). Offered only when one is passed.
+  onCard = null,
   // A quarter turn, and back to upright for one that is turned (`turned`).
   onTurn = () => {},
   onStraighten = () => {},
@@ -159,7 +162,12 @@ export function openBlockActionsPopover({
       menu.appendChild(item);
     });
     arrange.append(arrangeBtn, menu);
-    root.append(style, edit, duplicate, arrange, del);
+    const card = typeof onCard === "function" ? actionButton({ action: "card", label: "Card" }) : null;
+    if (card) {
+      card.title = "Make a card — a live picture of this block on its page";
+      card.setAttribute("aria-label", "Make a card");
+    }
+    root.append(style, edit, duplicate, ...(card ? [card] : []), arrange, del);
   }
   document.body.appendChild(root);
 
@@ -231,6 +239,7 @@ export function openBlockActionsPopover({
     else if (action === "to-front") onToFront();
     else if (action === "to-back") onToBack();
     else if (action === "delete") onDelete();
+    else if (action === "card") onCard?.();
     else if (action === "turn") onTurn();
     else if (action === "straighten") onStraighten();
     else if (action === "full-editor") onFullEditor();

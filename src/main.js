@@ -119,7 +119,7 @@ import { closeTopmostOverlay, initBackGesture } from "./ui/back-gesture.js?v=__B
 import { showAuthenticatedUI, showLibraryFailedScreen, showLoginScreen, showSetupScreen } from "./ui/boot-screens.js?v=__BUILD__";
 import { applyChromeCollapse, hasStudyTextSelection, initImmersiveMode, isFocusModeActive, measureChromeHeights, setChromeCollapseHandler, setChromeFocusPinned, setChromeModesHandler, setFocusMode, toggleImmersiveMode } from "./ui/chrome.js?v=__BUILD__";
 import { DOC_SLOT_DOC, DOC_SLOT_NOTEBOOK, activeDocSlot, deckHasPdf, documentSurfaceShown, onDocumentSurface } from "./documents/doc-slot.js?v=__BUILD__";
-import { isNotesShown } from "./ui/split-parts.js?v=__BUILD__";
+import { isCardsShown, isNotesShown } from "./ui/split-parts.js?v=__BUILD__";
 import { onDocumentScrollers } from "./documents/doc-scrollers.js?v=__BUILD__";
 import { captureDocumentSelection } from "./documents/pdf-selection.js?v=__BUILD__";
 import { closeImportPanel, closeMyDecksPanel, editCurrentDeckCategory, editCurrentDeckTitle, openImportPanel, openMyDecksPanel } from "./ui/deck-header.js?v=__BUILD__";
@@ -140,7 +140,9 @@ import { setTheme, setThemeMenuOpen, setThemeRepaintHook } from "./ui/theme.js?v
 import { FOCUS_MODE_KEY, closeSplitPartsMenu, closeViewExportMenu, currentViewStyleScope, initSplitPartsFocus, paintViewExportMenu, paintViewStyleButton, runSplitPartsAction, setBlockEditFlushHook, setHandwritingViewHook, setSplitViewHook, repaintDocumentPart, setViewMode, setViewSwitchHook, switchToPreviousView, toggleSplitPartsMenu } from "./ui/view-mode.js?v=__BUILD__";
 import { DOCUMENT_NOTE_HANDLERS, applyDocumentRecordChanges, documentHighlightById, documentHighlightNote, documentHighlights, flashDocumentRegion, initDocumentMarkMenu, repairDocumentHighlightQuads, repairDocumentHighlightText, setDocumentHighlightAdjust, setDocumentShapeTextEditor } from "./documents/pdf-highlights.js?v=__BUILD__";
 import { canAdjustDocumentHighlight, startDocumentHighlightAdjust } from "./documents/pdf-highlight-adjust.js?v=__BUILD__";
-import { pdfRegionRefForRecord, pdfRegionRefMarkdown } from "./documents/pdf-region-embed.js?v=__BUILD__";
+import { CANVAS_REF_ID, pdfRegionRefForRecord, pdfRegionRefMarkdown, remapCanvasRefs } from "./documents/pdf-region-embed.js?v=__BUILD__";
+import { setCanvasPagesRemappedHook } from "./documents/notebook.js?v=__BUILD__";
+import { setPageAreaCardMaker } from "./documents/region-card.js?v=__BUILD__";
 import { setRegionResizeNotesSurface } from "./documents/pdf-region-resize.js?v=__BUILD__";
 import { setPdfRegionGoToHandler } from "./documents/pdf-region-embed.js?v=__BUILD__";
 import { setRegionBlockSource } from "./documents/pdf-region-marks.js?v=__BUILD__";
@@ -154,7 +156,7 @@ import { openPdfMarginsDialog } from "./documents/pdf-margins.js?v=__BUILD__";
 import { openMarkdownPdfDialog } from "./documents/md-pdf/dialog.js?v=__BUILD__";
 import { removePdfFromDeck, renamePdf } from "./documents/pdf-multi-actions.js?v=__BUILD__";
 import { closePdfPanel, initPdfSwitcher } from "./documents/pdf-switcher.js?v=__BUILD__";
-import { currentPdfDocument, currentPdfPageCount, documentFittedWidth, refreshBakedDocumentPages, fitDocumentToWidth, initDocumentCanvasRecovery, initDocumentPinchZoom, isDocumentFitWidth, openDocumentIsCurrent, openDocumentPdfId, noteSettledDocumentPosition, openDocumentView, reattachDocument, relayoutDocumentHoldingReader, repaintOpenDocumentPages, scheduleDocumentPositionSave, scrollToDocumentPage, refreshDocumentPaperForTheme, setDocumentAttachHandler, setDocumentCanvasRecoveredHook, setDocumentChromeMovedHook, setDocumentOpenedHook, noteBesideDocumentStale, setDocumentPagePaintedHook, setMarkdownPdfStartHandler, setNotebookStartHandler, setPageIndicatorUpdatedHook, setPaperChangedHook, switchToPdf, updatePageIndicator, zoomDocument, retryMissingDocumentOpen } from "./documents/pdf-view.js?v=__BUILD__";
+import { currentPdfDocument, currentPdfPageCount, openDocumentSlot, documentFittedWidth, refreshBakedDocumentPages, fitDocumentToWidth, initDocumentCanvasRecovery, initDocumentPinchZoom, isDocumentFitWidth, openDocumentIsCurrent, openDocumentPdfId, noteSettledDocumentPosition, openDocumentView, reattachDocument, relayoutDocumentHoldingReader, repaintOpenDocumentPages, scheduleDocumentPositionSave, scrollToDocumentPage, refreshDocumentPaperForTheme, setDocumentAttachHandler, setDocumentCanvasRecoveredHook, setDocumentChromeMovedHook, setDocumentOpenedHook, noteBesideDocumentStale, setDocumentPagePaintedHook, setMarkdownPdfStartHandler, setNotebookStartHandler, setPageIndicatorUpdatedHook, setPaperChangedHook, switchToPdf, updatePageIndicator, zoomDocument, retryMissingDocumentOpen } from "./documents/pdf-view.js?v=__BUILD__";
 import { adoptDocumentInk, canRedoInk, canUndoInk, copyInkSelection, cutInkSelection, duplicateInkSelection, hasInkClipboard, initDocumentInk, inkMarkImageMarkdown, inkMarkIsHighlight, inkSelectionCount, isInkMarkId, nudgeInkSelection, paintDocumentInk, pasteInkSelection, redoInk, repaintDocumentInk, setInkChangedHandler, undoInk } from "./documents/pdf-ink.js?v=__BUILD__";
 import { addHandwritingBlock, addHandwritingImages, addHandwritingTextBlock, enterHandwritingView, initHandwritingRail, refreshHandwritingBoard, runHandwritingMenuAction, startHandwritingNotebook } from "./handwriting/board.js?v=__BUILD__";
 import { closeBlockStylePopover, isBlockStylePopoverOpen } from "./documents/block-style-bar.js?v=__BUILD__";
@@ -1398,10 +1400,11 @@ onDomReady(() => {
   // Leaving for Cards or the Highlights tab closes the split; moving between
   // Notes and Document moves it.
   setSplitViewHook((next) => {
-    // ▣ is a mode of the paper, and stays on only while the reader is on it —
-    // see src/documents/pdf-region.js. Leaving for the cards, the notes or the
-    // notebook leaves it behind.
-    if (next !== "document") setRegionSelect(false);
+    // ▣ is a mode of the page, and stays on only while the reader is on one —
+    // a PDF or the Canvas (see src/documents/pdf-region.js). Leaving for the
+    // cards or the notes leaves it behind; moving between the PDFs and the
+    // Canvas is a new document opened, which noteRegionDocumentOpened answers.
+    if (next !== "document" && next !== "handwriting") setRegionSelect(false);
     splitFollowsViewMode(next);
   });
 
@@ -1409,6 +1412,31 @@ onDomReady(() => {
   // face does, written back through the notes surface — see
   // setRegionResizeNotesSurface for why it is registered from here.
   setRegionResizeNotesSurface(() => renderTargetConfig("notes"));
+  // A Canvas page added before others, duplicated, moved or torn out: the
+  // pictures of Canvas spots in the cards and the notes keep showing the page
+  // they were made of (remapCanvasRefs), written back the way a resized
+  // region is (src/documents/pdf-region-resize.js).
+  setCanvasPagesRemappedHook((move) => {
+    let cardsChanged = false;
+    const seen = new Set();
+    [...state.masterCards, ...state.cards].forEach((card) => {
+      if (!card || seen.has(card)) return;
+      seen.add(card);
+      ["question", "answer"].forEach((side) => {
+        const next = remapCanvasRefs(card[side], move);
+        if (next !== card[side]) { card[side] = next; cardsChanged = true; }
+      });
+    });
+    const notes = state.notes;
+    const nextNotes = remapCanvasRefs(notes, move);
+    if (nextNotes !== notes) {
+      const surface = renderTargetConfig("notes");
+      surface.setSource(nextNotes);
+      if (isNotesShown()) surface.rerender();
+    }
+    if (cardsChanged && isCardsShown()) showCard();
+    if (cardsChanged || nextNotes !== notes) scheduleDeckAutosave();
+  });
   // ...and every region embed's "p. N ↗", wherever it is shown. Registered for
   // the same reason: it closes panels, changes views and switches PDFs, and
   // every module that does those reaches pdf-region-embed.js back through
@@ -1432,6 +1460,9 @@ onDomReady(() => {
   // FROM src/documents/pdf-highlights.js, which src/panels/highlight-index.js
   // imports through highlights-panel.js, so an import back would close a cycle
   // straight through the document surface. This file already imports both ends.
+  // The Card buttons on the lasso bar, a picked-up Block and several picked
+  // (src/documents/region-card.js) open the same panel the mark menu does.
+  setPageAreaCardMaker((markdown, anchor) => createCardFromNotesSelection(markdown, anchor));
   setMarkMenuActions({
     // "Style highlights": how every highlight in the text is drawn, opened on
     // the highlight that was tapped (src/ui/style-popover.js).
@@ -1470,9 +1501,19 @@ onDomReady(() => {
       // something on the page — usually a line of a scan — and gets the page
       // itself, cropped to the band, the way a region does below.
       //
-      // Only on a paper: a region reference names a PDF of the deck's, and the
-      // notebook is not one of them — a band on handwritten paper gets the
-      // drawing, like any other ink.
+      // On the Canvas, every mark — a region, a shape, a band, a line of
+      // handwriting — is a live picture of its spot on the Canvas page, the
+      // way a region is on a paper: the ink, the blocks and the shapes round
+      // it come with it, and it follows later changes to that page.
+      const onCanvas = id ? documentHighlightById(id) : null;
+      if (onCanvas?.doc === "notebook") {
+        const ref = pdfRegionRefForRecord(onCanvas);
+        if (ref) {
+          const words = onCanvas.kind === "shape" ? String(onCanvas.text || "").trim() : "";
+          createCardFromNotesSelection(words ? `${ref}\n\n${words}` : ref, anchor);
+          return;
+        }
+      }
       if (id && isInkMarkId(id) && inkMarkIsHighlight(id)) {
         const band = documentHighlightById(id);
         if (band?.doc !== "notebook" && band?.quads?.[0]?.rect) {
@@ -4276,9 +4317,40 @@ el.documentPageInput?.addEventListener("change", () => {
 // knows how to put a page-space box in the middle of the screen, so all that is
 // left here is getting OUT of whatever the embed was shown in, onto the right
 // one of the deck's PDFs, and showing the reader which box on the page it was.
+// The same jump for a ref to the Canvas (CANVAS_REF_ID): its page, on the
+// Canvas part, once the Canvas is on the stage.
+async function goToCanvasRegion({ page, rect, pressedAt }) {
+  if (!(state.meta?.notebook || state.meta?.pdf?.notebook)) {
+    setStatus("This file has no Canvas to open that spot in.", "error");
+    return;
+  }
+  recordNavHistory();
+  if (isHighlightNoteEditorOpen()) closeHighlightNoteEditor();
+  if (el.diagramModal && !el.diagramModal.hidden) closeDiagramModal();
+  if (el.allCardsPanel && !el.allCardsPanel.hidden) closeAllCardsPanel();
+  if (el.quickNotesBoard && !el.quickNotesBoard.hidden) closeQuickNotesBoard();
+  if (state.viewMode !== "handwriting") setViewMode("handwriting");
+  const until = performance.now() + 8000;
+  while (performance.now() < until
+    && !(openDocumentSlot() === DOC_SLOT_NOTEBOOK && currentPdfPageCount() >= page)) {
+    await new Promise((resolve) => setTimeout(resolve, 80));
+  }
+  if (state.viewMode !== "handwriting") return;
+  if (readerActedSince(pressedAt)) { refreshNavBack(); return; }
+  scheduleNoteJump({ pdf: { page }, page, quads: [{ page, rect }], doc: DOC_SLOT_NOTEBOOK }, {
+    patient: true,
+    flash: false,
+    onSettled: () => {
+      if (!flashDocumentRegion(page, rect)) setTimeout(() => flashDocumentRegion(page, rect), 300);
+      refreshNavBack();
+    }
+  });
+}
+
 async function goToPdfRegion({ page, rect, pdfId }) {
   // Inside the press that asked for this, so the press itself is not "since".
   const pressedAt = performance.now();
+  if (pdfId === CANVAS_REF_ID) { await goToCanvasRegion({ page, rect, pressedAt }); return; }
   if (!deckHasPdf(state.meta)) {
     setStatus("This file has no PDF attached to open that region in.", "error");
     return;

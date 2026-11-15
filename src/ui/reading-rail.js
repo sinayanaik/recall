@@ -207,12 +207,13 @@ export function refreshReadingRailRows() {
   const hasDocument = Boolean(state.viewMode === "handwriting"
     ? (state.meta?.notebook || state.meta?.pdf?.notebook)
     : deckHasPdf(state.meta));
-  // Two of the document's rows mean nothing on a notebook, and the rail must not
-  // be the back door to a control the view itself has taken away: there are no
-  // figures on blank paper to draw a region round, and nothing to teleprompt.
-  // The paper row stays — a Canvas has a tone of its own to pick.
+  // One of the document's rows means nothing on a notebook, and the rail must
+  // not be the back door to a control the view itself has taken away: there is
+  // nothing to teleprompt. The paper row stays — a Canvas has a tone of its own
+  // to pick — and so does ▣, which boxes a diagram drawn there to make a card
+  // of it.
   const onNotebook = state.viewMode === "handwriting";
-  const NOT_ON_NOTEBOOK = new Set(["region", "pdf-teleprompter"]);
+  const NOT_ON_NOTEBOOK = new Set(["pdf-teleprompter"]);
   tray.querySelectorAll("[data-rail-scope]").forEach((node) => {
     const scope = node.dataset.railScope;
     const inScope = scope === "document" ? documentSurfaceUp : scope === state.viewMode;

@@ -160,6 +160,8 @@ export function documentHighlightEntries() {
       pdf: record.anchor || { page: record.page, item: 0, ch: 0 },
       quads: record.quads,
       page: record.page,
+      // A mark on the Canvas is gone to on the Canvas (src/notes/anchors.js).
+      ...(record.doc === "notebook" ? { doc: "notebook" } : {}),
       text: documentHighlightLabel(record),
       deckId: state.deckId,
       deckTitle: state.deckTitle

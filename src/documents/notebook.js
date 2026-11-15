@@ -351,9 +351,25 @@ function roomForAnotherPage() {
 
 // Every record on the pages that `move` renumbers, both kinds at once — the
 // rule deleteNotebookPage states below, for a page coming in rather than going.
+//
+// ...and every card and note that shows a spot of the Canvas (a `pdfref:` to
+// the Canvas, src/documents/pdf-region-embed.js) names a page by number too, so
+// it is told the same rule. Handed in by src/main.js, which reaches the cards
+// and the notes surface; this module does not.
+let canvasPagesRemapped = null;
+
+export function setCanvasPagesRemappedHook(fn) {
+  canvasPagesRemapped = typeof fn === "function" ? fn : null;
+}
+
 function remapNotebookPages(move) {
   remapDocumentHighlightPages(move);
   remapDocumentBlockPages(move);
+  try {
+    canvasPagesRemapped?.(move);
+  } catch (error) {
+    console.warn("Could not move the Canvas pictures in the cards and notes with their pages", error);
+  }
 }
 
 // A blank page at the end, or straight after page `after` — everything below

@@ -139,12 +139,13 @@ export function toggleRegionSelect() {
 }
 
 // Told by src/main.js each time a document is opened on the stage. Another
-// document, or the Write tab's notebook, is somewhere the reader went — the
-// mode stays behind. The same document opened again (a sync re-reading the
-// file, a refit) is not, and keeps it.
+// document — another PDF, or the Canvas after a PDF — is somewhere the reader
+// went, and the mode stays behind. The same document opened again (a sync
+// re-reading the file, a refit) is not, and keeps it.
 export function noteRegionDocumentOpened({ key = "", slot = "doc" } = {}) {
-  if (regionArmed && (slot !== "doc" || key !== regionDocKey)) setRegionSelect(false);
-  regionDocKey = slot === "doc" ? key : "";
+  const opened = `${slot}:${key}`;
+  if (regionArmed && opened !== regionDocKey) setRegionSelect(false);
+  regionDocKey = opened;
 }
 
 // ── Where things are ────────────────────────────────────────────────────────
