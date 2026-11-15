@@ -38,7 +38,7 @@
 //
 // Pure: no DOM, no state. tools/diagram-geometry-check.mjs asserts it in Node.
 
-import { CONNECTOR_STUB, elbowPath, freeExits, normalizeShape, simplifyPath } from "./annot-shapes.js?v=__BUILD__";
+import { CONNECTOR_STUB, ROUTE_TURN_COST, elbowPath, freeExits, normalizeShape, pathLength, pathTurns, simplifyPath } from "./annot-shapes.js?v=__BUILD__";
 import { NODE_SIDES, SIDE_VECTORS, polygonCentre, polygonPerimeterPoint, polygonRayExit } from "./node-outlines.js?v=__BUILD__";
 
 // How far short of the outline a tied end stops, so its head is never under
@@ -50,7 +50,7 @@ export const ROUTE_CLEARANCE = 10;
 
 // What a corner costs, in points of length: enough that a route takes a few
 // points' detour rather than an extra turn.
-const TURN_COST = 24;
+const TURN_COST = ROUTE_TURN_COST;
 // What crossing a box costs a route being scored for its sides.
 const CROSS_COST = 600;
 // How much better another side has to be before an end leaves the side it
@@ -65,22 +65,6 @@ const SIDE_ORDER = NODE_SIDES;
 
 const round2 = (n) => Math.round(n * 100) / 100;
 const roundPoint = (p) => [round2(p[0]), round2(p[1])];
-
-function pathLength(points) {
-  let length = 0;
-  for (let i = 1; i < points.length; i += 1) length += Math.hypot(points[i][0] - points[i - 1][0], points[i][1] - points[i - 1][1]);
-  return length;
-}
-
-function pathTurns(points) {
-  let turns = 0;
-  for (let i = 1; i < points.length - 1; i += 1) {
-    const [p, q, r] = [points[i - 1], points[i], points[i + 1]];
-    const cross = (q[0] - p[0]) * (r[1] - q[1]) - (q[1] - p[1]) * (r[0] - q[0]);
-    if (Math.abs(cross) > 1e-6) turns += 1;
-  }
-  return turns;
-}
 
 function inflateRect(rect, by) {
   return [rect[0] - by, rect[1] - by, rect[2] + by, rect[3] + by];
@@ -112,14 +96,20 @@ export function segmentCrossesRect(a, b, rect) {
 
 // The part of a route between its two stubs' ends: [a1, …, b1]. The stubs
 // themselves run out of the boxes the route joins, so they cross those boxes'
-// clearance by design. A path simplified to a straight line still runs
-// through both stub ends, so they are put back in.
-function betweenStubs(points, va, vb) {
-  const a = points[0];
-  const b = points[points.length - 1];
-  const a1 = [a[0] + va[0] * CONNECTOR_STUB, a[1] + va[1] * CONNECTOR_STUB];
-  const b1 = [b[0] + vb[0] * CONNECTOR_STUB, b[1] + vb[1] * CONNECTOR_STUB];
-  return [a1, ...points.slice(1, -1), b1];
+// clearance by design. Each end's first stretch is cut back by a stub — or by
+// all of it when it is shorter, as it is between two boxes too close for whole
+// stubs (src/render/annot-shapes.js, elbowPath): there the middle run is
+// squeezed into the gap, and is not going THROUGH either box.
+function betweenStubs(points) {
+  if (points.length < 2) return points.slice();
+  const cut = (p, q) => {
+    const len = Math.hypot(q[0] - p[0], q[1] - p[1]);
+    if (len < 1e-9) return p.slice();
+    const t = Math.min(CONNECTOR_STUB, len) / len;
+    return [p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t];
+  };
+  const n = points.length;
+  return [cut(points[0], points[1]), ...points.slice(1, -1), cut(points[n - 1], points[n - 2])];
 }
 
 function pathCrossings(points, rects) {
@@ -163,6 +153,12 @@ function sideSpan(node, side) {
 // plain elbow (elbowPath) crosses nothing — the common case, which keeps a
 // simple diagram exactly as it was drawn before — or when no way round is
 // found.
+//
+// `rects` carry ROUTE_CLEARANCE round each box (layoutConnectors). The plain
+// elbow is held to that clearance for every box but the two it joins: for
+// those it only has to stay out of the box itself. Two boxes closer than
+// twice the clearance leave no room to keep it from either, and the plain
+// elbow squeezed into the gap between them beats a loop all the way round.
 const routeMemo = new Map();
 const ROUTE_MEMO_MAX = 300;
 
@@ -174,7 +170,8 @@ export function orthogonalRoute(a, da, b, db, rects) {
   // A box the route has to start or finish inside is not one it can avoid.
   const blocks = rects.filter((rect) => !insideOpen(rect, a1) && !insideOpen(rect, b1));
   const plain = elbowPath(a, da, b, db);
-  if (!pathCrossings(betweenStubs(plain, va, vb), blocks)) return null;
+  const held = blocks.map((rect) => (insideOpen(rect, a) || insideOpen(rect, b) ? inflateRect(rect, -ROUTE_CLEARANCE) : rect));
+  if (!pathCrossings(betweenStubs(plain), held)) return null;
   const key = [a, b, da, db].flat().join(",") + "|" + blocks.map((r) => r.map(round2).join(",")).join(";");
   if (routeMemo.has(key)) return routeMemo.get(key);
   const found = searchRoute(a, a1, va, b, b1, vb, blocks);
@@ -263,7 +260,10 @@ function searchRoute(a, a1, va, b, b1, vb, blocks) {
     const i = cell % W;
     const j = (cell - i) / W;
     if (i === goal[0] && j === goal[1]) {
-      const total = cost + (d === wantArrive ? 0 : TURN_COST * (d === (wantArrive + 2) % 4 ? 2 : 1));
+      // Arriving head-on to the way in would run back along the last stretch
+      // into the head: not an arrival.
+      if (d === (wantArrive + 2) % 4) continue;
+      const total = cost + (d === wantArrive ? 0 : TURN_COST);
       if (total < bestCost) { bestCost = total; best = state; }
       continue;
     }
@@ -296,10 +296,10 @@ function searchRoute(a, a1, va, b, b1, vb, blocks) {
 }
 
 // ── Scoring a pair of sides ───────────────────────────────────────────────
-function scoreRoute(points, va, vb, obstacles, own) {
+function scoreRoute(points, obstacles, own) {
   // A route back through one of its own boxes (out of the right side to a
   // box on the left) crosses that box, which is what makes it lose.
-  const inner = betweenStubs(points, va, vb);
+  const inner = betweenStubs(points);
   return pathLength(points) + TURN_COST * pathTurns(points)
     + CROSS_COST * pathCrossings(inner, obstacles)
     + CROSS_COST * pathCrossings(inner, own);
@@ -349,7 +349,7 @@ export function layoutConnectors(entries, nodes) {
         const da = sa || guess[0];
         const db = sb || guess[1];
         const path = elbowPath(a, da, b, db);
-        let cost = scoreRoute(path, DIRS[da], DIRS[db], obstacles, own);
+        let cost = scoreRoute(path, obstacles, own);
         // The sides it left by last time, kept unless another is clearly
         // better — see the header.
         if (s.exits && (s.exits[0] || null) === sa && (s.exits[1] || null) === sb) cost *= KEEP_SIDE;

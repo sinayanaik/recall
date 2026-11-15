@@ -298,35 +298,155 @@ function routedPath(s) {
   return s.route === "curve" ? curvePath(a, da, b, db, bend) : elbowPath(a, da, b, db, bend);
 }
 
+// What a corner costs a route, in points of length: enough that a route takes
+// a few points' detour rather than an extra turn.
+export const ROUTE_TURN_COST = 24;
+
+export function pathLength(points) {
+  let length = 0;
+  for (let i = 1; i < points.length; i += 1) length += Math.hypot(points[i][0] - points[i - 1][0], points[i][1] - points[i - 1][1]);
+  return length;
+}
+
+export function pathTurns(points) {
+  let turns = 0;
+  for (let i = 1; i < points.length - 1; i += 1) {
+    const [p, q, r] = [points[i - 1], points[i], points[i + 1]];
+    const cross = (q[0] - p[0]) * (r[1] - q[1]) - (q[1] - p[1]) * (r[0] - q[0]);
+    if (Math.abs(cross) > 1e-6) turns += 1;
+  }
+  return turns;
+}
+
+// Does a path anywhere run straight back along the stretch before it? Drawn,
+// that is a line over itself — a "T" where there should be a corner.
+export function pathDoublesBack(points) {
+  for (let i = 1; i < points.length - 1; i += 1) {
+    const [p, q, r] = [points[i - 1], points[i], points[i + 1]];
+    const u = [q[0] - p[0], q[1] - p[1]];
+    const v = [r[0] - q[0], r[1] - q[1]];
+    const scale = Math.hypot(u[0], u[1]) * Math.hypot(v[0], v[1]);
+    if (scale < 1e-12) continue;
+    const cross = u[0] * v[1] - u[1] * v[0];
+    const dot = u[0] * v[0] + u[1] * v[1];
+    if (Math.abs(cross) <= 1e-6 * scale && dot < 0) return true;
+  }
+  return false;
+}
+
+// Does p→q run along the unit vector v?
+function runsAlong(p, q, v) {
+  const dx = q[0] - p[0];
+  const dy = q[1] - p[1];
+  const len = Math.hypot(dx, dy);
+  return len > 1e-6 && Math.abs(dx / len - v[0]) < 1e-6 && Math.abs(dy / len - v[1]) < 1e-6;
+}
+
+// An elbow that does what it says: it leaves `a` along va, arrives at `b`
+// against vb (its head points into what it joins), and never runs back over
+// itself on the way.
+function elbowHolds(points, va, vb) {
+  if (points.length < 2 || pathDoublesBack(points)) return false;
+  return runsAlong(points[0], points[1], va) && runsAlong(points[points.length - 2], points[points.length - 1], [-vb[0], -vb[1]]);
+}
+
 // Square corners: straight out of each end for CONNECTOR_STUB, then across.
 // Two ends leaving the same axis meet with a middle run between them (at the
 // bend, or halfway); ends leaving different axes meet at one corner.
+//
+// "If the space is not enough then it is behaving incorrectly." Every end used
+// to run a whole stub out before it turned, whatever was in front of it. Two
+// boxes closer than two stubs apart crossed their stubs over: the line ran out
+// past the middle run and back, then past the far stub and back into the head
+// — two T's where the corners should be. A corner less than a stub ahead did
+// the same, and so did an end that had to go AWAY from what it joins.
+//
+// So: the common shapes, with stubs that give way when there is no room for
+// them (plainElbow); and when even that cannot leave and arrive the way it is
+// told without doubling back, the best of a few ways round (elbowDetour).
 export function elbowPath(a, da, b, db, bend = null) {
   const va = DIR_VECTORS[da] || [1, 0];
   const vb = DIR_VECTORS[db] || [-1, 0];
-  const a1 = [a[0] + va[0] * CONNECTOR_STUB, a[1] + va[1] * CONNECTOR_STUB];
-  const b1 = [b[0] + vb[0] * CONNECTOR_STUB, b[1] + vb[1] * CONNECTOR_STUB];
+  const plain = plainElbow(a, va, b, vb, bend);
+  if (elbowHolds(plain, va, vb)) return plain;
+  return elbowDetour(a, va, b, vb) || plain;
+}
+
+function plainElbow(a, va, b, vb, bend) {
+  const S = CONNECTOR_STUB;
+  const a1 = [a[0] + va[0] * S, a[1] + va[1] * S];
+  const b1 = [b[0] + vb[0] * S, b[1] + vb[1] * S];
   const aAcross = va[0] !== 0;
   const bAcross = vb[0] !== 0;
-  let middle;
-  if (aAcross && bAcross) {
-    // Both ends leave sideways. Facing the same way, the run goes round the
-    // far side of both rather than doubling back through one.
-    let x = (a1[0] + b1[0]) / 2;
-    if (va[0] === vb[0]) x = va[0] > 0 ? Math.max(a1[0], b1[0]) : Math.min(a1[0], b1[0]);
-    if (bend) x = bend[0];
-    middle = [[x, a1[1]], [x, b1[1]]];
-  } else if (!aAcross && !bAcross) {
-    let y = (a1[1] + b1[1]) / 2;
-    if (va[1] === vb[1]) y = va[1] > 0 ? Math.max(a1[1], b1[1]) : Math.min(a1[1], b1[1]);
-    if (bend) y = bend[1];
-    middle = [[a1[0], y], [b1[0], y]];
-  } else if (aAcross) {
-    middle = [[b1[0], a1[1]]];
-  } else {
-    middle = [[a1[0], b1[1]]];
+  if (aAcross !== bAcross) {
+    // One corner, where the line out of a meets the line out of b. (The stubs
+    // run along those same lines, so they add nothing — and a corner nearer
+    // than a stub is simply a short first stretch, not one that overshoots.)
+    return simplifyPath([a, aAcross ? [b[0], a[1]] : [a[0], b[1]], b]);
   }
-  return simplifyPath([a, a1, ...middle, b1, b]);
+  // Both ends leave along the same axis, k; the middle run crosses it.
+  const k = aAcross ? 0 : 1;
+  const at = (value, from) => (k === 0 ? [value, from[1]] : [from[0], value]);
+  if (va[k] === vb[k]) {
+    // Facing the same way: the run goes round the far side of both rather
+    // than doubling back through one — and a bend can push it further out,
+    // never back in.
+    let run = va[k] > 0 ? Math.max(a1[k], b1[k]) : Math.min(a1[k], b1[k]);
+    if (bend) run = va[k] > 0 ? Math.max(run, bend[k]) : Math.min(run, bend[k]);
+    return simplifyPath([a, a1, at(run, a1), at(run, b1), b1, b]);
+  }
+  // Facing each other. With room for both stubs the run sits halfway between
+  // their tips; closer than that the stubs give way and it sits halfway
+  // between the ends. A bend slides it, but only as far as either stub.
+  const gap = (b[k] - a[k]) * va[k];
+  const room = gap >= 2 * S;
+  const from = room ? a1[k] : a[k];
+  const to = room ? b1[k] : b[k];
+  let run = (from + to) / 2;
+  if (bend && gap > 0) {
+    const inset = room ? 0 : Math.min(2, Math.abs(to - from) / 4);
+    const lo = Math.min(from, to) + inset;
+    const hi = Math.max(from, to) - inset;
+    run = Math.min(hi, Math.max(lo, bend[k]));
+  }
+  return simplifyPath(room ? [a, a1, at(run, a1), at(run, b1), b1, b] : [a, at(run, a), at(run, b), b]);
+}
+
+// The ways round, for two ends that cannot meet in the plain shape — one that
+// has to leave AWAY from the other, or a corner on the wrong side of an end.
+// A fixed list, tried in order; the shortest with the fewest turns that
+// leaves and arrives the way it is told, ties to the first. Stubs whole, or
+// none at all where there is no room for them (which costs a little, so a
+// route with them wins when it can). Null when nothing fits — two ends in the
+// same place.
+function elbowDetour(a, va, b, vb) {
+  const S = CONNECTOR_STUB;
+  const lines = (p, q) => {
+    const lo = Math.min(p, q);
+    const hi = Math.max(p, q);
+    return [(p + q) / 2, hi, lo, hi + S, lo - S];
+  };
+  let best = null;
+  [S, 0].forEach((stub) => {
+    const a1 = [a[0] + va[0] * stub, a[1] + va[1] * stub];
+    const b1 = [b[0] + vb[0] * stub, b[1] + vb[1] * stub];
+    const corners = [
+      [[b1[0], a1[1]]],
+      [[a1[0], b1[1]]],
+      ...lines(a1[0], b1[0]).map((x) => [[x, a1[1]], [x, b1[1]]]),
+      ...lines(a1[1], b1[1]).map((y) => [[a1[0], y], [b1[0], y]])
+    ];
+    corners.forEach((middle) => {
+      const path = simplifyPath([a, a1, ...middle, b1, b]);
+      if (!elbowHolds(path, va, vb)) return;
+      const first = Math.hypot(path[1][0] - path[0][0], path[1][1] - path[0][1]);
+      const last = Math.hypot(path[path.length - 1][0] - path[path.length - 2][0], path[path.length - 1][1] - path[path.length - 2][1]);
+      const short = (first < S - 1e-6 ? 1 : 0) + (last < S - 1e-6 ? 1 : 0);
+      const cost = pathLength(path) + ROUTE_TURN_COST * pathTurns(path) + (ROUTE_TURN_COST / 2) * short;
+      if (!best || cost < best.cost - 1e-9) best = { cost, path };
+    });
+  });
+  return best ? best.path : null;
 }
 
 function cubicAt(p0, p1, p2, p3, t) {

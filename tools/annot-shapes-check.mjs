@@ -451,6 +451,56 @@ try {
     const path = S.connectorPath({ type: "line", p: [[0, 0], [50, 100]], route: "elbow", exits: ["e", "e"] });
     return path.every(([x]) => x >= 0) && Math.max(...path.map(([x]) => x)) >= 50 + S.CONNECTOR_STUB - 0.01 || JSON.stringify(path);
   });
+  // "If the space is not enough then it is behaving incorrectly": two boxes
+  // closer than two stubs crossed their stubs, and the line ran out and back
+  // into a T at each corner.
+  const runsAlong = (p, q, v) => {
+    const d = Math.hypot(q[0] - p[0], q[1] - p[1]);
+    return d > 1e-6 && near(((q[0] - p[0]) / d), v[0], 1e-6) && near(((q[1] - p[1]) / d), v[1], 1e-6);
+  };
+  const DIR = { n: [0, 1], e: [1, 0], s: [0, -1], w: [-1, 0] };
+  const elbowFault = (path, da, db) => {
+    if (!path.every((p, i) => i === 0 || near(p[0], path[i - 1][0], 1e-6) || near(p[1], path[i - 1][1], 1e-6))) return "a slanted stretch";
+    if (S.pathDoublesBack(path)) return "it runs back over itself";
+    if (!runsAlong(path[0], path[1], DIR[da])) return `it does not leave ${da}`;
+    if (!runsAlong(path.at(-2), path.at(-1), DIR[db].map((c) => -c))) return `it does not arrive against ${db}`;
+    return "";
+  };
+  must("two facing ends closer than two stubs meet halfway, never back over themselves", () => {
+    const path = S.connectorPath({ type: "arrow", p: [[0, 0], [12, 40]], route: "elbow", exits: ["e", "w"] });
+    const want = [[0, 0], [6, 0], [6, 40], [12, 40]];
+    if (path.length !== want.length || !path.every((p, i) => near(p[0], want[i][0]) && near(p[1], want[i][1]))) return JSON.stringify(path);
+    const level = S.connectorPath({ type: "arrow", p: [[0, 0], [10, 0]], route: "elbow", exits: ["e", "w"] });
+    return level.length === 2 || JSON.stringify(level);
+  });
+  must("an end that has to leave away from the other goes round, and arrives the way it is told", () => {
+    const path = S.connectorPath({ type: "arrow", p: [[0, 0], [-100, 60]], route: "elbow", exits: ["e", "w"] });
+    return elbowFault(path, "e", "w") || true;
+  });
+  must("a corner nearer than a stub is a short first stretch, not an overshoot", () => {
+    const path = S.connectorPath({ type: "line", p: [[0, 0], [5, -100]], route: "elbow", exits: ["e", "n"] });
+    if (path.length !== 3 || !near(path[1][0], 5) || !near(path[1][1], 0)) return JSON.stringify(path);
+    return true;
+  });
+  must("a bend dragged past an end stops at the stub", () => {
+    const path = S.connectorPath({ type: "arrow", p: [[0, 0], [200, 100], [500, 50]], route: "elbow", exits: ["e", "w"] });
+    if (!near(path[1][0], 200 - S.CONNECTOR_STUB)) return JSON.stringify(path);
+    return elbowFault(path, "e", "w") || true;
+  });
+  must("every elbow, at every spacing and every pair of sides, leaves and arrives square without doubling back", () => {
+    const offsets = [0, 5, -5, 20, -20, 200, -200];
+    for (const dx of offsets) for (const dy of offsets) {
+      if (!dx && !dy) continue;
+      for (const da of "nesw") for (const db of "nesw") for (const bend of [null, [dx / 2, dy / 2], [dx / 2 + 300, dy / 2 - 300]]) {
+        const p = [[0, 0], [dx, dy]];
+        if (bend) p.push(bend);
+        const path = S.connectorPath({ type: "line", p, route: "elbow", exits: [da, db] });
+        const fault = elbowFault(path, da, db);
+        if (fault) return `${da}→${db} to ${dx},${dy}${bend ? ` bent at ${bend}` : ""}: ${fault} ${JSON.stringify(path)}`;
+      }
+    }
+    return true;
+  });
   must("a curve leaves each end the way it is told and passes through its bend", () => {
     const path = S.connectorPath({ type: "line", p: [[0, 0], [200, 0], [100, 60]], route: "curve", exits: ["n", "n"] });
     if (path.length < 10 || !near(path[0][0], 0) || !near(path.at(-1)[0], 200)) return `${path.length} points`;
