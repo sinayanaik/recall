@@ -510,17 +510,17 @@ try {
       const box = node?.getBoundingClientRect();
       return Boolean(box && box.width > 0 && box.height > 0);
     };
-    // The four adders (Text, Block, Picture, Page at the end)
-    // are rows of the bar's + menu, so the + is pressed
-    // first — the same press a reader makes — and the rows are asked for a box
-    // with the menu open. The + itself has to have one before that.
-    const addButton = document.getElementById("inkRailAddBtn");
+    // The adders (Block, the block shapes, Picture, Paste picture) are rows
+    // of the top row's Insert menu, so Insert is pressed first — the same
+    // press a reader makes — and the rows are asked for a box with the menu
+    // open. Insert itself has to have one before that.
+    const addButton = document.getElementById("documentInsertBtn");
     const addBoxed = boxed(addButton);
-    addButton?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true }));
+    addButton?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 }));
     await settle(150);
-    const pageGroup = [...document.querySelectorAll("#documentInkRail [data-hw-action], #documentInkRail #handwritingImageBtn")];
+    const pageGroup = [...document.querySelectorAll("#documentInsertMenu [data-hw-action], #documentInsertMenu #handwritingImageBtn")];
     const pageGroupBoxedNow = pageGroup.filter(boxed).length;
-    addButton?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true }));
+    addButton?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 }));
     await settle(100);
     document.getElementById("documentMoreBtn")?.click();
     await settle(200);
@@ -553,14 +553,14 @@ try {
 
   check("the pen's rail is up on arriving at the Write tab",
     writeControls.railOpen, `rail has a box=${writeControls.railOpen}`);
-  check("...with the page group on it — a + whose menu's every row is pressable",
-    // Block, the nine block shapes, Picture, Paste picture and a page at the
-    // end — Text went when the Block button took its place.
-    writeControls.addBoxed && writeControls.pageGroup === 13 && writeControls.pageGroupBoxed === 13,
-    `+ has a box=${writeControls.addBoxed}; ${writeControls.pageGroupBoxed} of ${writeControls.pageGroup} rows with a box once it is open`);
-  // Five: a heading of its own plus three papers and the tear-out.
+  check("...and beside it Insert — a menu whose every row is pressable",
+    // Block, the nine block shapes, Picture and Paste picture. Pages are ⋯'s.
+    writeControls.addBoxed && writeControls.pageGroup === 12 && writeControls.pageGroupBoxed === 12,
+    `Insert has a box=${writeControls.addBoxed}; ${writeControls.pageGroupBoxed} of ${writeControls.pageGroup} rows with a box once it is open`);
+  // Ten: a heading of its own, five page rows (after this one, at the end,
+  // duplicate, up, down), three papers and the tear-out.
   check("the ⋯ menu offers the notebook's rows and not the document's",
-    writeControls.menuRows === 5 && writeControls.menuRowsBoxed === 5 && writeControls.docRowsBoxed === 0,
+    writeControls.menuRows === 10 && writeControls.menuRowsBoxed === 10 && writeControls.docRowsBoxed === 0,
     `${writeControls.menuRowsBoxed}/${writeControls.menuRows} notebook row(s), ${writeControls.docRowsBoxed} document row(s)`);
   // The paper button is the one that came BACK: it was a dark page on/off,
   // hidden here because the pen followed the theme; it is a tone picker now

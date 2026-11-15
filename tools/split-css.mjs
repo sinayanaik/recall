@@ -65,6 +65,10 @@ const SECTIONS = [
 // Anything appearing in styles/ that is neither a slice nor listed here is
 // still a failure.
 const POST_SPLIT = {
+  "a0-canvas-tools.css":
+    "What goes on a page, beside the pen rather than inside it: the top row's " +
+    "Shapes and Insert buttons and their menus (src/ui/ink-rail.js), and the " +
+    "Canvas pager's add-a-page button (src/handwriting/board.js).",
   "99-split-parts.css":
     "Side by side parts (src/ui/split-parts.js, src/ui/view-mode.js): two parts " +
     "of one file — Cards, Notes, PDFs, Canvas — in the panel's grid at once, the " +

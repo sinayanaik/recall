@@ -293,14 +293,26 @@ try {
     const { api, settle } = window.__recall;
     const { tap, inkStrokes, pageEl } = window.__h;
     const out = {};
-    const addMenu = document.getElementById("inkRailAddMenu");
+    const addMenu = document.getElementById("documentInsertMenu");
     out.addRows = [...addMenu.querySelectorAll("[data-hw-action]")].map((b) => b.dataset.hwAction);
     out.textRow = Boolean(addMenu.querySelector('[data-hw-action="add-text"]'));
-    const button = document.getElementById("documentTextBtn");
+    // Insert, beside the pen in the top row, and its Block row.
+    const button = document.getElementById("documentInsertBtn");
+    const blockRow = addMenu.querySelector('[data-hw-action="add-block"]');
+    // A press is a pointerdown AND its pointerup: one left without the other
+    // reads, to the Notes selection code, as a drag still going on.
+    const pressRow = () => {
+      blockRow.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerType: "mouse" }));
+      blockRow.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, cancelable: true, pointerType: "mouse" }));
+    };
     out.buttonLabel = button.getAttribute("aria-label");
+    out.inPenBar = Boolean(document.getElementById("documentInkRail").querySelector("[data-hw-action]"));
     const before = api.documentBlocks().length;
     const strokes = inkStrokes();
     button.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 }));
+    await settle(80);
+    out.menuOpen = !addMenu.hidden;
+    pressRow();
     await settle(80);
     out.armed = api.isBlockPlacementArmed();
     out.lit = button.getAttribute("aria-pressed") === "true";
@@ -327,13 +339,13 @@ try {
     document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     await settle(200);
     out.emptyGone = api.documentBlocks().length === before;
-    // Pressed twice: armed, then put away, nothing placed.
-    button.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 }));
+    // Armed, then Insert pressed again: put away, nothing placed.
+    pressRow();
     button.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 }));
     out.toggledOff = !api.isBlockPlacementArmed() && api.documentBlocks().length === before;
     // The keyboard's press (a click with no pointer, detail 0) has nothing to
     // tap with: the block goes in the middle of the view, open, at once.
-    button.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 0 }));
+    blockRow.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 0 }));
     await settle(150);
     out.keyboardPlaced = api.documentBlocks().length === before + 1 && api.isInlineBlockEditorOpen() && !api.isBlockPlacementArmed();
     api.commitBlockEdit();
@@ -341,13 +353,13 @@ try {
     out.keyboardEmptyGone = api.documentBlocks().length === before;
     return out;
   }`);
-  check("+ Add has no Text row — Block, the shapes, Picture and a page", !place.textRow && place.addRows.includes("add-block"), JSON.stringify(place.addRows));
-  check("the Block button arms a block, lit", place.armed && place.lit && place.buttonLabel === "Add a block", JSON.stringify(place));
+  check("Insert, in the top row and not the pen's bar, has Block, the shapes and Picture — no Text row", !place.textRow && place.addRows.includes("add-block") && !place.inPenBar, JSON.stringify(place.addRows));
+  check("Insert → Block arms a block, Insert lit", place.menuOpen && place.armed && place.lit && place.buttonLabel === "Insert", JSON.stringify(place));
   check("a tap puts one block at the tap, with no ink, and the button goes out", place.made === 1 && place.inked === 0 && place.nearCorner && place.disarmed, JSON.stringify(place));
   check("...open in place to type in, no window over the page", place.open && place.inBlock && place.focused && place.noSheet, JSON.stringify(place));
   check("...with a three-button strip: Style, Full editor, Done", place.strip === "style,full-editor,done", place.strip);
-  check("a block put down empty goes again; the button pressed twice places nothing", place.emptyGone && place.toggledOff, JSON.stringify(place));
-  check("from the keyboard, the button puts a block in the middle of the view at once", place.keyboardPlaced && place.keyboardEmptyGone, JSON.stringify(place));
+  check("a block put down empty goes again; Insert pressed while armed places nothing", place.emptyGone && place.toggledOff, JSON.stringify(place));
+  check("from the keyboard, Block puts a block in the middle of the view at once", place.keyboardPlaced && place.keyboardEmptyGone, JSON.stringify(place));
 
   // ── 4. Typing, styling words, and the taps that open and move a block ───
   const edit = await page.evaluate(`async () => {
@@ -440,7 +452,7 @@ try {
   check("dragging across the words being typed selects them, not the block", edit.selectingDoesNotMove, JSON.stringify(edit));
   check("a press on the paper puts the words down; a drag on a picked-up block moves it", edit.paperCommits && edit.dragMoves, JSON.stringify(edit));
   check("a picked-up block's strip is one slim row: Style, Edit, Duplicate, Arrange, Delete", edit.stripHeight > 0 && edit.stripHeight < 48 && edit.stripRow === "style,edit,duplicate,arrange,delete", JSON.stringify(edit));
-  check("...and Arrange opens the four restack verbs", edit.menuShut && edit.menuOpen && edit.menuItems === "restack-forward,restack-back,to-front,to-back", JSON.stringify(edit));
+  check("...and Arrange opens the four restack verbs and a quarter turn", edit.menuShut && edit.menuOpen && edit.menuItems === "restack-forward,restack-back,to-front,to-back,turn", JSON.stringify(edit));
 
   // ── 5. The width stays; the height follows the words ───────────────────
   const size = await page.evaluate(`async () => {
@@ -492,6 +504,130 @@ try {
   }`);
   check("a diamond keeps its width and its height as the least, and grows to hold its words", shaped.grown.w === shaped.set.w && shaped.grown.h > shaped.set.h && shaped.overflow <= 1, JSON.stringify(shaped));
 
+  // ── 6. What goes on the page is beside the pen, not inside it ─────────
+  const tools = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    api.selectBlock(null);
+    api.toggleInkRail(false);
+    await settle(100);
+    const boxed = (node) => { const r = node?.getBoundingClientRect(); return Boolean(r && r.width > 0 && r.height > 0); };
+    const out = {
+      shapes: boxed(document.getElementById("documentShapesBtn")),
+      insert: boxed(document.getElementById("documentInsertBtn")),
+      penBarShapes: Boolean(document.querySelector('#documentInkRail [data-ink-tool="shape"]')),
+      penBarAdd: Boolean(document.querySelector("#documentInkRail [data-hw-action]")),
+      addPage: boxed(document.getElementById("documentAddPageBtn"))
+    };
+    // Shapes, with the pen's bar shut: the Shapes tool, and its menu.
+    document.getElementById("documentShapesBtn").dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 }));
+    await settle(150);
+    out.armed = api.isInkArmed() && api.inkTool() === "shape";
+    out.menu = !document.getElementById("documentShapesMenu").hidden;
+    out.lit = document.getElementById("documentShapesBtn").getAttribute("aria-pressed") === "true";
+    const ellipse = document.querySelector('#documentShapesMenu [data-shape-type="ellipse"]');
+    ellipse.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerType: "mouse" }));
+    ellipse.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, cancelable: true, pointerType: "mouse" }));
+    ellipse.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 }));
+    await settle(150);
+    out.picked = api.shapeType() === "ellipse" && document.getElementById("documentShapesMenu").hidden;
+    api.chooseInkTool?.("pen");
+    api.setInkTool("pen");
+    api.toggleInkRail(false);
+    await settle(100);
+    return out;
+  }`);
+  check("Shapes and Insert are in the top row; the pen's bar has neither", tools.shapes && tools.insert && !tools.penBarShapes && !tools.penBarAdd, JSON.stringify(tools));
+  check("Shapes arms the Shapes tool and opens its menu; a row picks the shape", tools.armed && tools.menu && tools.lit && tools.picked, JSON.stringify(tools));
+  check("the Canvas's pager has a + for a page", tools.addPage, JSON.stringify(tools));
+
+  // ── 7. A block turns, and resizes in both directions ─────────────────────
+  const turn = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const { drag } = window.__h;
+    api.commitBlockEdit?.();
+    const keep = api.documentBlocks().filter((b) => b.page !== 1);
+    api.writeDocumentBlocks([...keep,
+      { id: "turnme", page: 1, x: 120, y: 560, w: 150, h: 60, md: "Turn me" },
+      { id: "tallme", page: 1, x: 120, y: 400, w: 150, h: 60, md: "Make me taller" }
+    ]);
+    await settle(300);
+    document.querySelector('[data-pdf-block="turnme"]').scrollIntoView({ block: "center" });
+    await settle(300);
+    const read = (id) => api.documentBlocks().find((b) => b.id === id);
+    const out = {};
+    api.selectBlock("turnme");
+    await settle(200);
+    const knob = document.querySelector(".pdf-block-turn");
+    out.knob = Boolean(knob);
+    if (!knob) return out;
+    const k = knob.getBoundingClientRect();
+    const b = document.querySelector('[data-pdf-block="turnme"]').getBoundingClientRect();
+    // Dragged round to the right of the middle: a quarter turn clockwise.
+    await drag(k.left + k.width / 2, k.top + k.height / 2, b.left + b.width / 2 + 120, b.top + b.height / 2 + 2, { pointerType: "mouse" });
+    await settle(250);
+    out.rot = read("turnme").rot;
+    out.drawnTurned = document.querySelector('[data-pdf-block="turnme"]').style.transform;
+    api.undoBlocks();
+    await settle(200);
+    out.undone = !read("turnme").rot;
+    // The quarter turn from Arrange, and Straighten.
+    api.rotateBlockBy("turnme", 90);
+    out.quarter = read("turnme").rot;
+    api.setBlockRotation("turnme", 0);
+    out.straight = !("rot" in read("turnme"));
+    // The top edge of a block whose height follows its words: drag it up.
+    api.selectBlock("tallme");
+    await settle(200);
+    const before = read("tallme");
+    out.fitBefore = !before.style || before.style.fit !== false;
+    const n = document.querySelector('[data-pdf-block="tallme"] .pdf-block-edge-n').getBoundingClientRect();
+    out.nShown = n.width > 0 && n.height > 0;
+    await drag(n.left + n.width / 2, n.top + 2, n.left + n.width / 2, n.top - 50, { pointerType: "mouse" });
+    await settle(400);
+    const after = read("tallme");
+    out.tall = [before.h, after.h, before.y, after.y];
+    out.fitAfter = after.style?.fit;
+    api.selectBlock(null);
+    return out;
+  }`);
+  check("a picked-up block wears a turning handle, and dragging it round turns the block", turn.knob && turn.rot === -90 && /rotate\(90deg\)/.test(turn.drawnTurned), JSON.stringify(turn));
+  check("...one undo step; a quarter turn and Straighten from its actions", turn.undone && turn.quarter === 90 && turn.straight, JSON.stringify(turn));
+  check("a block whose height follows its words has a top edge, and dragging it makes it taller, its bottom kept", turn.fitBefore && turn.nShown && turn.tall[1] > turn.tall[0] + 15 && turn.tall[3] === turn.tall[2], JSON.stringify(turn));
+  check("...and the height is the reader's from then on", turn.fitAfter === false, JSON.stringify(turn));
+
+  // ── 8. A Canvas's pages: duplicated with what is on them, and moved ──────
+  const pages = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const wait = async () => { for (let i = 0; i < 30; i += 1) await settle(100); };
+    const out = { start: api.notebookPageCount() };
+    api.writeDocumentBlocks([...api.documentBlocks().filter((b) => b.page !== 1),
+      { id: "p1a", page: 1, x: 60, y: 600, w: 120, h: 50, md: "A" },
+      { id: "p1b", page: 1, x: 300, y: 600, w: 120, h: 50, md: "B" }
+    ]);
+    api.addDocumentShape(1, { type: "arrow", p: [[0, 0], [1, 1]], stroke: "#000000", width: 1.5, ends: [{ id: "p1a", side: "auto" }, { id: "p1b", side: "auto" }] });
+    await settle(200);
+    api.scrollToDocumentPage(1, 0, { smooth: false });
+    await settle(300);
+    api.runHandwritingMenuAction("hw-page-duplicate");
+    await wait();
+    out.pages = api.notebookPageCount();
+    const copies = api.documentBlocks().filter((b) => b.page === 2).map((b) => b.id);
+    out.copies = copies.length;
+    // The copy of the one connector made above (earlier sections left other
+    // lines on page 1, tied to blocks no longer there).
+    const line = api.documentHighlights().find((r) => r.kind === "shape" && r.page === 2 && r.shape.ends?.some((e) => e && copies.includes(e.id)));
+    out.tied = Boolean(line) && line.shape.ends.every((e) => e && copies.includes(e.id));
+    api.scrollToDocumentPage(1, 0, { smooth: false });
+    await settle(300);
+    api.runHandwritingMenuAction("hw-page-down");
+    await wait();
+    out.moved = api.documentBlocks().find((b) => b.id === "p1a")?.page;
+    out.copiesUp = api.documentBlocks().filter((b) => copies.includes(b.id)).every((b) => b.page === 1);
+    return out;
+  }`);
+  check("Duplicate this page puts a copy after it, its connector tied to the copies", pages.pages === pages.start + 1 && pages.copies === 2 && pages.tied, JSON.stringify(pages));
+  check("Move this page down swaps it with the next, everything on both with it", pages.moved === 2 && pages.copiesUp, JSON.stringify(pages));
+
   // ── Pictures of it, on request: CANVAS_SHOTS=<dir> ──────────────────────
   const SHOTS = process.env.CANVAS_SHOTS || "";
   if (SHOTS) {
@@ -516,7 +652,7 @@ try {
       await settle(300);
     }`);
     // The Block button armed.
-    await page.evaluate(`async () => { document.getElementById("documentTextBtn").dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 })); await window.__recall.settle(150); document.querySelectorAll(".toast, #toastHost > *").forEach((n) => n.remove()); }`);
+    await page.evaluate(`async () => { window.__recall.api.armBlockPlacement(true); await window.__recall.settle(150); document.querySelectorAll(".toast, #toastHost > *").forEach((n) => n.remove()); }`);
     await snap("1-block-button-armed.png");
     // A tap, and words typed in place, some of them selected: the Notes bar.
     await page.evaluate(`async () => {

@@ -883,12 +883,12 @@ sections.push(async () => {
     api.toggleInkRail(true);
     api.chooseInkTool("pen");
     await settle(100);
-    const group = document.querySelector("#documentInkRail .ink-rail-page");
-    const shown = group && getComputedStyle(group).display !== "none";
-    const btn = document.getElementById("inkRailAddBtn");
-    btn.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerType: "mouse" }));
+    // Insert, in the top row beside the pen — not inside the pen's bar.
+    const btn = document.getElementById("documentInsertBtn");
+    const shown = Boolean(btn) && getComputedStyle(btn).display !== "none" && !document.querySelector("#documentInkRail [data-hw-action]");
+    btn.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 }));
     await settle(100);
-    const menu = document.getElementById("inkRailAddMenu");
+    const menu = document.getElementById("documentInsertMenu");
     const rows = Array.from(menu.querySelectorAll(".ink-rail-menu-item")).filter((n) => getComputedStyle(n).display !== "none").map((n) => n.textContent.trim());
     const before = api.documentBlocks().length;
     const block = menu.querySelector('[data-hw-action="add-block"]');
@@ -896,7 +896,7 @@ sections.push(async () => {
     block.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerType: "touch" }));
     await settle(150);
     const armed = api.isBlockPlacementArmed();
-    const lit = document.getElementById("documentTextBtn")?.getAttribute("aria-pressed") === "true";
+    const lit = btn.getAttribute("aria-pressed") === "true";
     // ...and the tap that says where — a finger's, which places as well as a pen's.
     await window.__drag("text", [window.__at(4, 0.3, 0.1)], { pointerType: "touch", id: 80 });
     await settle(250);
@@ -905,10 +905,10 @@ sections.push(async () => {
     if (area) { area.value = "typed with a finger"; area.dispatchEvent(new Event("input", { bubbles: true })); }
     api.commitBlockEdit();
     await settle(250);
-    return { label: btn.textContent.trim(), shown, rows, enabled, armed, lit, made: api.documentBlocks().length - before, page: made?.page, opened: Boolean(area), text: api.documentBlocks().find((b) => b.id === made?.id)?.md };
+    return { label: btn.getAttribute("aria-label"), shown, rows, enabled, armed, lit, made: api.documentBlocks().length - before, page: made?.page, opened: Boolean(area), text: api.documentBlocks().find((b) => b.id === made?.id)?.md };
   }`);
-  check("on a PDF the pen bar's + is there, with Block and Picture, no Text, no Sticky note and no Page row", plus.shown && !plus.rows.includes("Text") && !plus.rows.includes("Sticky note") && plus.label === "+ Add" && plus.rows.includes("Block") && plus.rows.some((r) => /^Picture/.test(r)) && !plus.rows.some((r) => /Page at the end/.test(r)) && plus.enabled, JSON.stringify(plus));
-  check("+ → Block arms a block (the Block button lit), and a finger's tap puts it there, open to type in", plus.armed && plus.lit && plus.made === 1 && plus.page === 4 && plus.opened && plus.text === "typed with a finger", JSON.stringify(plus));
+  check("on a PDF the top row's Insert is there, with Block and Picture, no Text, no Sticky note and no Page row", plus.shown && !plus.rows.includes("Text") && !plus.rows.includes("Sticky note") && plus.label === "Insert" && plus.rows.includes("Block") && plus.rows.some((r) => /^Picture/.test(r)) && !plus.rows.some((r) => /Page at the end/.test(r)) && plus.enabled, JSON.stringify(plus));
+  check("Insert → Block arms a block (Insert lit), and a finger's tap puts it there, open to type in", plus.armed && plus.lit && plus.made === 1 && plus.page === 4 && plus.opened && plus.text === "typed with a finger", JSON.stringify(plus));
 
   const finger = await page.evaluate(`async () => {
     const { api, settle } = window.__recall;
@@ -949,13 +949,20 @@ sections.push(async () => {
     api.chooseInkTool("pen");
     api.toggleInkRail(false);
     await settle(80);
-    const button = document.getElementById("documentTextBtn");
+    const button = document.getElementById("documentInsertBtn");
     const box = button?.getBoundingClientRect();
     const visible = Boolean(box && box.width > 0 && box.height > 0) && Boolean(button.closest("#viewModeRow"));
-    const flyoutText = Boolean(document.querySelector('#inkRailShapeMenu [data-shape-type="text"]'));
-    // A pointer's click (\`detail\` 1): a keyboard's press of the button, which
-    // has nothing to tap with, puts a block in the middle of the view at once.
-    button.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 }));
+    const flyoutText = Boolean(document.querySelector('#documentShapesMenu [data-shape-type="text"]'));
+    // Insert, then its Block row — a pointer's press (a keyboard's, which has
+    // nothing to tap with, puts a block in the middle of the view at once).
+    const blockRow = document.querySelector('#documentInsertMenu [data-hw-action="add-block"]');
+    const arm = async () => {
+      button.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 }));
+      await settle(60);
+      blockRow.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerType: "mouse" }));
+      blockRow.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, cancelable: true, pointerType: "mouse" }));
+    };
+    await arm();
     await settle(100);
     const armed = api.isBlockPlacementArmed();
     const lit = button.getAttribute("aria-pressed") === "true";
@@ -980,8 +987,8 @@ sections.push(async () => {
     await settle(300);
     const putAway = !api.isInlineBlockEditorOpen() && !api.isBlockPlacementArmed() && button.getAttribute("aria-pressed") === "false";
     const md = api.documentBlocks().find((b) => b.id === made.id)?.md;
-    // Pressed and pressed again, with no tap: nothing placed, the pen as it was.
-    button.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 }));
+    // Armed and Insert pressed again, with no tap: nothing placed, the pen as it was.
+    await arm();
     await settle(60);
     button.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 }));
     await settle(60);
@@ -989,10 +996,10 @@ sections.push(async () => {
     api.selectBlock(null);
     return { visible, flyoutText, armed, lit, penKept, made: api.documentBlocks().length - before, focused, grew: tall > short + 10, sameWidth, putAway, md, offAgain };
   }`);
-  check("the Block button is in the top row, where Text was; the Shapes list has no Text", placed.visible && !placed.flyoutText, JSON.stringify(placed));
+  check("Insert is in the top row, where Text was; the Shapes list has no Text", placed.visible && !placed.flyoutText, JSON.stringify(placed));
   check("one press arms a block, lit, and leaves the pen as it was", placed.armed && placed.lit && placed.penKept, JSON.stringify(placed));
   check("a tap (a mouse's too) puts it there, open in place, and it grows taller, not wider, as lines are typed", placed.made === 1 && placed.focused && placed.grew && placed.sameWidth, JSON.stringify(placed));
-  check("putting the words down keeps them and the button goes out; pressed twice it places nothing", placed.putAway && placed.md === "a first line\nand a second\nand a third" && placed.offAgain, JSON.stringify(placed));
+  check("putting the words down keeps them and Insert goes out; armed and pressed again it places nothing", placed.putAway && placed.md === "a first line\nand a second\nand a third" && placed.offAgain, JSON.stringify(placed));
 
   // Words typed with the old Text tool: still there, still typed in. Made by
   // the Shapes engine on "text", which nothing in the app arms any more.
@@ -2073,11 +2080,18 @@ sections.push(async () => {
     const at = window.__at(2, 0.15, 0.12);
     const away = window.__at(2, 0.6, 0.4);
     const free = [at, away].every(([x, y]) => y > 0 && y < innerHeight && document.elementFromPoint(x, y)?.closest('.pdf-page[data-page-number="2"]') && !document.elementFromPoint(x, y)?.closest(".pdf-shape, .pdf-shape-text, .pdf-block"));
-    const b = document.getElementById("documentTextBtn").getBoundingClientRect();
+    const b = document.getElementById("documentInsertBtn").getBoundingClientRect();
     return { before: api.documentBlocks().length, at, away, free, button: [b.left + b.width / 2, b.top + b.height / 2] };
   }`);
   check("(the clicks below land on page 2, on nothing already there)", armed.free, JSON.stringify(armed));
+  // Insert, then its Block row.
   await click(armed.button);
+  await pause(200);
+  const row = await page.evaluate(`() => {
+    const r = document.querySelector('#documentInsertMenu [data-hw-action="add-block"]').getBoundingClientRect();
+    return [r.left + r.width / 2, r.top + r.height / 2];
+  }`);
+  await click(row);
   await pause(200);
   await click(armed.at);
   await pause(300);
@@ -2092,7 +2106,7 @@ sections.push(async () => {
       texts: made.map((b) => b.md),
       page: made[0]?.page,
       editorOpen: api.isInlineBlockEditorOpen(),
-      lit: document.getElementById("documentTextBtn").getAttribute("aria-pressed") === "true"
+      lit: document.getElementById("documentInsertBtn").getAttribute("aria-pressed") === "true"
     };
     await api.flushPendingDeckAutosave();
     await settle(300);
@@ -2191,13 +2205,13 @@ try {
       api.chooseInkTool("shape");
       api.setShapeType("arrow");
       await settle(100);
-      document.getElementById("inkRailShapeBtn").dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerType: "mouse" }));
+      document.getElementById("documentShapesBtn").dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 }));
       await settle(200);
     }`);
     await snap("shapes-flyout.png");
     await page.evaluate(`async () => {
       const { api, settle } = window.__recall;
-      document.getElementById("inkRailShapeMenu").hidden = true;
+      document.getElementById("documentShapesMenu").hidden = true;
       const arrow = api.documentShapes(2).find((r) => r.shape.type === "arrow");
       api.selectShape(arrow.id);
       document.getElementById("inkRailStyleChip").dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerType: "mouse" }));
@@ -2210,7 +2224,7 @@ try {
       api.closeInkRailPopups?.();
       api.chooseInkTool("pen");
       await settle(100);
-      document.getElementById("inkRailAddBtn").dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerType: "mouse" }));
+      document.getElementById("documentInsertBtn").dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 }));
       await settle(200);
     }`);
     await snap("add-menu.png");
@@ -2218,7 +2232,7 @@ try {
     await page.evaluate(POINTER_SRC);
     await page.evaluate(`async () => {
       const { api, settle } = window.__recall;
-      document.getElementById("inkRailAddMenu").hidden = true;
+      document.getElementById("documentInsertMenu").hidden = true;
       api.closeInkRailPopups?.();
       api.toggleInkRail(false);
       // Words typed with the old Text tool, which nothing arms any more.

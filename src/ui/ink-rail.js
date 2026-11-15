@@ -27,7 +27,7 @@
 import { el } from "../core/dom.js?v=__BUILD__";
 import { canRedoInk, canUndoInk, clearInkPage, copyInkSelection, cutInkSelection, deleteInkSelection, duplicateInkSelection, hasInkClipboard, inkEraseMode, inkEraseTarget, inkEraserSize, inkHighlighter, inkPageHasStrokes, inkPageInView, inkPageInViewCheap, inkPaper, inkPaperBg, inkPen, inkPenOpacity, inkPreviewScale, inkSelectionCount, inkSelectionKinds, inkSnapShapes, inkTapDots, inkTool, inkWidth, isInkArmed, joinInkSelection, pasteInkSelection, redoInk, setInkArmed, setInkEraseMode, setInkEraseTarget, setInkEraserSize, setInkHighlighter, setInkOpacity, setInkPen, setInkSnapShapes, setInkTapDots, setInkTool, setInkWidth, splitInkSelection, suppressInkTap, undoInk } from "../documents/pdf-ink.js?v=__BUILD__";
 import { deleteBlock, editBlock, openSelectedBlockStyle, selectedBlockKind, setBlockSelectionChangedHandler } from "../documents/pdf-blocks.js?v=__BUILD__";
-import { armBlockPlacement, initBlockPlacement, isBlockPlacementArmed, placeBlockInView, setBlockPlacementChangedHandler, toggleBlockPlacement } from "../documents/block-place.js?v=__BUILD__";
+import { armBlockPlacement, initBlockPlacement, isBlockPlacementArmed, setBlockPlacementChangedHandler, toggleBlockPlacement } from "../documents/block-place.js?v=__BUILD__";
 import { INK_TOOL_DEFAULT } from "../format/ink-colors.js?v=__BUILD__";
 import { bindInkRailActivation, paintInkRailPressed } from "../handwriting/rail.js?v=__BUILD__";
 import { buildInkPanel, createInkPanel, paintInkChip } from "../handwriting/ink-popover.js?v=__BUILD__";
@@ -53,12 +53,36 @@ let inkPanel = null;
 // each: one open at a time, any press outside shuts it, and choosing a row
 // shuts it — on CLICK, not on the press, because one of the rows is a <label>
 // round a file input and a label hidden under the press never fires its click.
+//
+// Shapes and Insert are the top row's now (#documentShapesBtn,
+// #documentInsertBtn), beside ✎ rather than inside its bar: what goes ON the
+// page is not a setting of the pen, and a reader looking for "add a diamond"
+// or "add a picture" never thought to open the pen first. Same three rules.
 const MENUS = [
-  { button: "inkRailShapeBtn", menu: "inkRailShapeMenu" },
+  { button: "documentShapesBtn", menu: "documentShapesMenu" },
+  { button: "documentInsertBtn", menu: "documentInsertMenu" },
   { button: "inkRailMoreBtn", menu: "inkRailMoreMenu" },
-  { button: "inkRailSelectionMoreBtn", menu: "inkRailSelectionMenu" },
-  { button: "inkRailAddBtn", menu: "inkRailAddMenu" }
+  { button: "inkRailSelectionMoreBtn", menu: "inkRailSelectionMenu" }
 ];
+const MENU_OPENERS = "#documentShapesBtn, #documentInsertBtn, #inkRailMoreBtn, #inkRailSelectionMoreBtn";
+
+// A top-row menu hangs under its own button, not at the row's far end: the row
+// is the menu's positioned ancestor, so the button's offset is where it goes,
+// pulled back in from the edge it would overhang.
+function placeTopRowMenu(node, button) {
+  if (!node.classList.contains("document-tool-menu") || !button) return;
+  const host = node.offsetParent;
+  if (!host) return;
+  const room = host.clientWidth;
+  const width = node.offsetWidth;
+  const left = Math.max(4, Math.min(button.offsetLeft, room - width - 4));
+  node.style.left = `${left}px`;
+  node.style.right = "auto";
+  // ...and under the button, not under the row: on a phone the row's tools
+  // wrap onto a second line below the row's own box, and a menu hung from
+  // the row's foot would cover the very button that opened it.
+  node.style.top = `${button.offsetTop + button.offsetHeight + 4}px`;
+}
 
 // ── ↶ and ↷ mean what Ctrl+Z and Ctrl+Y mean ────────────────────────────────
 //
@@ -95,7 +119,14 @@ function toggleInkRailMenu(menuId) {
   closeInkRailMenus(menuId);
   inkPanel?.close();
   node.hidden = !node.hidden;
-  document.getElementById(entry.button)?.setAttribute("aria-expanded", node.hidden ? "false" : "true");
+  const button = document.getElementById(entry.button);
+  button?.setAttribute("aria-expanded", node.hidden ? "false" : "true");
+  if (!node.hidden) placeTopRowMenu(node, button);
+}
+
+function openInkRailMenu(menuId) {
+  const node = document.getElementById(menuId);
+  if (node?.hidden) toggleInkRailMenu(menuId);
 }
 
 // Whether anything the bar opened is open — the hardware Back key's question
@@ -148,11 +179,11 @@ function refreshBlockRail() {
 // It was Text: the Shapes tool on "text", a tap and a cursor, typed words that
 // were not a block and could not hold what a block holds. "I could not really
 // understand the difference between insert text and insert block — I want
-// every insert as a block." So the button beside ✎ in the top row
-// (#documentTextBtn — the id is old, nothing stores it) arms a Block: the next
+// every insert as a block." So Insert → Block, beside ✎ in the top row
+// (#documentInsertBtn, which was the Block button), arms a Block: the next
 // tap on the page puts one there, open to type in (src/documents/block-place.js).
-// Pressed again, or Escape, and it is put away unplaced. The pen's bar is left
-// as it was: placing a block is not a mode of the pen.
+// Insert pressed again, or Escape, and it is put away unplaced. The pen's bar
+// is left as it was: placing a block is not a mode of the pen.
 //
 // Words typed with the old Text tool are still on their pages, and still open
 // to type in with a tap on them once picked up (src/documents/pdf-shapes.js).
@@ -223,7 +254,7 @@ export function placeInkRail() {
     if (inline) {
       // Right after the button that opened it (✎ and T sit together), so the
       // settings are beside what they set; the PDF switcher and ⋯ follow.
-      const after = el.documentTextBtn?.parentElement === row ? el.documentTextBtn
+      const after = el.documentInsertMenu?.parentElement === row ? el.documentInsertMenu
         : el.documentInkBtn?.parentElement === row ? el.documentInkBtn
           : row.querySelector(":scope > .view-mode-row-break");
       row.insertBefore(rail, after ? after.nextSibling : null);
@@ -302,8 +333,12 @@ function paintInkRail() {
   if (!rail) return;
   const open = isInkArmed();
   const placing = isBlockPlacementArmed();
-  pressed(el.documentTextBtn, placing);
+  pressed(el.documentInsertBtn, placing);
   el.documentStage?.classList.toggle("is-placing-block", placing);
+  // Lit while the Shapes tool is what the pen draws with — it is the top row's
+  // button now, so the pen bar has no Shapes button of its own to light.
+  pressed(el.documentShapesBtn, open && inkTool() === "shape");
+  refreshShapeMenu(el.documentShapesMenu, el.documentShapesBtn);
   if (!open) {
     rail.hidden = true;
     pressed(el.documentInkBtn, open);
@@ -361,7 +396,6 @@ function paintInkRail() {
     selecting: count > 0,
     shape: displayedShapeSettings()
   });
-  refreshShapeMenu(document.getElementById("inkRailShapeMenu"), document.getElementById("inkRailShapeBtn"));
   refreshShapePanel(shapePanel);
   // Text takes the pen's colours and nibs down, and the panel with them.
   // Nothing is being drawn, so there is no nib and no ink colour to choose; and
@@ -612,16 +646,11 @@ function pressRail(button) {
   if (nextShape) {
     if (isRegionSelectArmed()) setRegionSelect(false);
     setShapeType(nextShape);
+    if (!isInkArmed()) { setInkArmed(true); writeInkRailOpen(activeDocSlot(), true); }
     if (inkTool() !== "shape") setInkTool("shape");
     rememberInkPreferences();
     closeInkRailMenus();
     refreshInkRail();
-    return;
-  }
-  // The Shapes button pressed while armed opens its flyout, not the panel —
-  // which shape is the question its button is asked; how it looks is the chip's.
-  if (nextTool === "shape" && inkTool() === "shape") {
-    toggleInkRailMenu("inkRailShapeMenu");
     return;
   }
   // A row of a menu shuts the menu it is in — on click, see MENUS.
@@ -650,7 +679,6 @@ function pressRail(button) {
     return;
   } else if (action === "rail-more") { toggleInkRailMenu("inkRailMoreMenu"); return; }
   else if (action === "selection-more") { toggleInkRailMenu("inkRailSelectionMenu"); return; }
-  else if (action === "add-menu") { toggleInkRailMenu("inkRailAddMenu"); return; }
   else if (action === "undo") (documentUndo ? documentUndo.undo() : undoInk());
   else if (action === "redo") (documentUndo ? documentUndo.redo() : redoInk());
   else if (action === "clear") { closeInkRailMenus(); askToClearPage(); }
@@ -674,6 +702,30 @@ function pressRail(button) {
   refreshInkRail();
 }
 
+// ── The top row's Shapes button ────────────────────────────────────────────
+//
+// The Shapes tool is still one of the pen's tools — the pen and a mouse draw
+// a shape, a finger scrolls — so arming it opens the pen's bar too (its chip
+// sets the shape's colour and line, its undo takes one back). The first press
+// arms it and shows which shape; pressed while armed it is the menu that picks
+// another. Back to writing is ✎'s pen, as ever.
+function pressShapesButton() {
+  if (isRegionSelectArmed()) setRegionSelect(false);
+  if (isBlockPlacementArmed()) armBlockPlacement(false, { toast: false });
+  if (isInkArmed() && inkTool() === "shape") {
+    toggleInkRailMenu("documentShapesMenu");
+    return;
+  }
+  if (!isInkArmed()) {
+    setInkArmed(true);
+    writeInkRailOpen(activeDocSlot(), true);
+  }
+  setInkTool("shape");
+  rememberInkPreferences();
+  refreshInkRail();
+  openInkRailMenu("documentShapesMenu");
+}
+
 export function initInkRail() {
   const rail = el.documentInkRail;
   if (!rail) return;
@@ -682,7 +734,7 @@ export function initInkRail() {
     tapDots: true
   });
   shapePanel = buildShapePanel(el.inkRailPopover);
-  buildShapeMenu(document.getElementById("inkRailShapeMenu"));
+  buildShapeMenu(el.documentShapesMenu);
   setShapeChangedHandler(() => {
     // A shape selected with no Shapes panel up still repaints the chip, and
     // its style popover comes up at it, or goes with it (refreshInkRail).
@@ -704,10 +756,16 @@ export function initInkRail() {
   el.documentInkBtn?.addEventListener("click", () => toggleInkRail());
   // A pointer arms "tap where it goes"; the keyboard, which has nothing to tap
   // with, puts the block in the middle of the view at once.
-  el.documentTextBtn?.addEventListener("click", (event) => {
-    if (event.detail === 0) { placeBlockInView(); return; }
-    toggleBlockButton();
+  // Insert opens its menu; pressed while a Block is waiting for its tap, it
+  // puts that Block away instead, as the Block button did.
+  el.documentInsertBtn?.addEventListener("click", () => {
+    if (isBlockPlacementArmed()) { toggleBlockButton(); return; }
+    toggleInkRailMenu("documentInsertMenu");
   });
+  el.documentShapesBtn?.addEventListener("click", () => pressShapesButton());
+  // The Shapes menu's rows are the rail's own [data-shape-type] presses, made
+  // from outside the rail.
+  if (el.documentShapesMenu) bindInkRailActivation(el.documentShapesMenu, pressRail, "[data-shape-type]");
   setBlockPlacementChangedHandler(() => refreshInkRail());
   initBlockPlacement();
   retireTextShapeType();
@@ -721,24 +779,24 @@ export function initInkRail() {
   bindInkRailActivation(rail, pressRail, "[data-ink-pen], [data-ink-width], [data-ink-eraser-size], [data-ink-tool], [data-ink-action], [data-shape-type]");
 
   // A row of a menu, chosen: the menu goes once the row has done its work.
-  rail.addEventListener("click", (event) => {
+  [rail, el.documentShapesMenu, el.documentInsertMenu].forEach((host) => host?.addEventListener("click", (event) => {
     if (!event.target.closest?.(".ink-rail-menu-item, .ink-rail-add-shape")) return;
     setTimeout(() => closeInkRailMenus(), 0);
-  });
+  }));
   // ...and a press anywhere else shuts any of them. Capture, so the page's own
   // handlers see a press that has already put the menu away.
   document.addEventListener("pointerdown", (event) => {
     if (!MENUS.some(({ menu }) => document.getElementById(menu)?.hidden === false)) return;
-    if (event.target.closest?.(".ink-rail-menu, #inkRailMoreBtn, #inkRailSelectionMoreBtn, #inkRailAddBtn, #inkRailShapeBtn")) return;
+    if (event.target.closest?.(`.ink-rail-menu, ${MENU_OPENERS}`)) return;
     closeInkRailMenus();
   }, true);
-  rail.addEventListener("keydown", (event) => {
+  [rail, el.documentShapesMenu, el.documentInsertMenu, el.documentShapesBtn, el.documentInsertBtn].forEach((host) => host?.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") return;
     if (!MENUS.some(({ menu }) => document.getElementById(menu)?.hidden === false)) return;
     event.preventDefault();
     event.stopPropagation();
     closeInkRailMenus();
-  });
+  }));
 
   // A second delegated listener on the same rail, over a different attribute
   // namespace — the pattern src/handwriting/board.js already uses for the

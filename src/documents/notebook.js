@@ -40,8 +40,8 @@
 import { BLANK_PAPERS, BLANK_PAGE_HEIGHT, BLANK_PAGE_WIDTH, BLANK_PAPER_VERSION, blankPdfFile, normalizeBlankPaper } from "./blank-pdf.js?v=__BUILD__";
 import { DOC_SLOT_NOTEBOOK, docSlotMeta, documentStoreKey } from "./doc-slot.js?v=__BUILD__";
 import { hasLegacyNotebook, hasNotebookInPdfSlot, migratedNotebookMeta, movedNotebookSlotMeta, planLegacyNotebookMigration } from "./notebook-migrate.js?v=__BUILD__";
-import { remapDocumentBlockPages } from "./pdf-blocks.js?v=__BUILD__";
-import { freshDocumentHighlightId, remapDocumentHighlightPages } from "./pdf-highlights.js?v=__BUILD__";
+import { documentBlocks, freshDocumentBlockId, remapDocumentBlockPages, writeDocumentBlocks } from "./pdf-blocks.js?v=__BUILD__";
+import { applyDocumentRecordChanges, documentHighlights, freshDocumentHighlightId, remapDocumentHighlightPages } from "./pdf-highlights.js?v=__BUILD__";
 import { deleteLocalDocument, documentEntryMatches, putDocument, readDocument, sha256, uploadDocument } from "./pdf-store.js?v=__BUILD__";
 import { openDocumentView } from "./pdf-view.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
@@ -343,14 +343,120 @@ export async function migrateNotebookSlot() {
   return true;
 }
 
-export async function addNotebookPage() {
-  if (!hasNotebook()) return false;
+function roomForAnotherPage() {
+  if (notebookPageCount() < NOTEBOOK_MAX_PAGES) return true;
+  showToast(`A canvas stops at ${NOTEBOOK_MAX_PAGES} pages — start another one`, "info");
+  return false;
+}
+
+// Every record on the pages that `move` renumbers, both kinds at once — the
+// rule deleteNotebookPage states below, for a page coming in rather than going.
+function remapNotebookPages(move) {
+  remapDocumentHighlightPages(move);
+  remapDocumentBlockPages(move);
+}
+
+// A blank page at the end, or straight after page `after` — everything below
+// it moves down one to make the room, in the same write as the new page.
+export async function addNotebookPage({ after = null } = {}) {
+  if (!hasNotebook() || !roomForAnotherPage()) return false;
   const pages = notebookPageCount();
-  if (pages >= NOTEBOOK_MAX_PAGES) {
-    showToast(`A canvas stops at ${NOTEBOOK_MAX_PAGES} pages — start another one`, "info");
-    return false;
+  const at = after === null ? pages : Math.max(0, Math.min(pages, Math.round(Number(after) || 0)));
+  if (at < pages) {
+    remapNotebookPages((record) => {
+      const on = Number(record?.page) || 0;
+      return on > at ? on + 1 : on;
+    });
   }
   return writeNotebookPdf({ pages: pages + 1, paper: notebookPaper() });
+}
+
+// A record copied onto another page, under a new id. The quads carry their
+// own page (see remapDocumentHighlightPages), so they move with it.
+function recordOnPage(record, page, id) {
+  return {
+    ...record,
+    id,
+    page,
+    quads: Array.isArray(record.quads)
+      ? record.quads.map((quad) => (quad && typeof quad === "object" ? { ...quad, page } : quad))
+      : record.quads,
+    at: Date.now()
+  };
+}
+
+// Page `n` again, straight after it: its ink, its shapes and its blocks, each
+// under a new id. A connector on the copy is tied to the COPIES of what it
+// joined, and a group on the copy is a group of its own — the two pages are
+// not one diagram.
+export async function duplicateNotebookPage(pageNumber) {
+  if (!hasNotebook() || !roomForAnotherPage()) return false;
+  const pages = notebookPageCount();
+  const n = Number(pageNumber);
+  if (!(n >= 1 && n <= pages)) return false;
+  const marks = documentHighlights().filter((record) => Number(record?.page) === n);
+  const blocks = documentBlocks().filter((block) => Number(block?.page) === n);
+  remapNotebookPages((record) => {
+    const on = Number(record?.page) || 0;
+    return on > n ? on + 1 : on;
+  });
+  const ids = new Map();
+  const groups = new Map();
+  const copyGroupId = (group) => {
+    if (!group) return group;
+    if (!groups.has(group)) groups.set(group, `${group}-${Math.random().toString(36).slice(2, 6)}`);
+    return groups.get(group);
+  };
+  const blockCopies = [];
+  const used = new Set();
+  blocks.forEach((block) => {
+    // freshDocumentBlockId asks the deck's blocks, and the copies are not in
+    // it yet: a second block on the page must not be handed the same id.
+    let id = freshDocumentBlockId();
+    while (used.has(id)) id = freshDocumentBlockId();
+    used.add(id);
+    ids.set(block.id, id);
+    const copy = { ...block, id, page: n + 1, at: Date.now() };
+    if (block.group) copy.group = copyGroupId(block.group);
+    blockCopies.push(copy);
+  });
+  if (blockCopies.length) writeDocumentBlocks([...documentBlocks(), ...blockCopies]);
+  marks.forEach((record) => {
+    let id = freshDocumentHighlightId();
+    while (used.has(id)) id = freshDocumentHighlightId();
+    used.add(id);
+    ids.set(record.id, id);
+  });
+  const markCopies = marks.map((record) => {
+    const copy = recordOnPage(record, n + 1, ids.get(record.id));
+    if (record.group) copy.group = copyGroupId(record.group);
+    else delete copy.group;
+    const ends = record.shape?.ends;
+    if (Array.isArray(ends)) {
+      copy.shape = { ...record.shape, ends: ends.map((end) => (end && ids.has(end.id) ? { ...end, id: ids.get(end.id) } : (end ? null : end))) };
+    }
+    return copy;
+  });
+  if (markCopies.length) applyDocumentRecordChanges({ put: markCopies });
+  return writeNotebookPdf({ pages: pages + 1, paper: notebookPaper() });
+}
+
+// Page `n` swapped with the one `delta` away (one up is -1). Every page of a
+// Canvas is the same sheet, so no bytes change — only which records are on
+// which page.
+export function moveNotebookPage(pageNumber, delta) {
+  if (!hasNotebook()) return false;
+  const pages = notebookPageCount();
+  const n = Number(pageNumber);
+  const to = n + Math.sign(Number(delta) || 0);
+  if (!(n >= 1 && n <= pages) || !(to >= 1 && to <= pages) || to === n) return false;
+  remapNotebookPages((record) => {
+    const on = Number(record?.page) || 0;
+    if (on === n) return to;
+    if (on === to) return n;
+    return on;
+  });
+  return true;
 }
 
 // Tear out one page.
@@ -385,8 +491,7 @@ export async function deleteNotebookPage(pageNumber) {
     if (on === n) return null;
     return on > n ? on - 1 : on;
   };
-  remapDocumentHighlightPages(afterTearOut);
-  remapDocumentBlockPages(afterTearOut);
+  remapNotebookPages(afterTearOut);
   return writeNotebookPdf({ pages: pages - 1, paper: notebookPaper() });
 }
 

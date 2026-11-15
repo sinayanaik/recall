@@ -1,0 +1,111 @@
+/* ── Shapes and Insert, in the top row ─────────────────────────────────────
+   What goes ON the page sits beside ✎ instead of inside the pen's bar
+   (src/ui/ink-rail.js): #documentShapesBtn arms the Shapes tool and its menu
+   picks which shape, and #documentInsertBtn's menu puts down a Block, a shaped
+   Block or a picture. Both menus are the bar's own .ink-rail-menu look, hung
+   under their button (placeTopRowMenu sets `left`) from whichever row holds
+   them, and drawn above the page and the pen's bar. */
+.document-tool-menu {
+  top: calc(100% + 4px);
+  z-index: 62;
+}
+
+.view-mode-row > .document-tool-menu {
+  position: absolute;
+}
+
+.document-shapes-btn .ink-rail-shape-glyph,
+.document-shapes-btn svg {
+  width: 18px;
+  height: 18px;
+}
+
+/* Insert's block-shape palette is a grid in a menu that is no wider than its
+   rows of words. */
+.document-tool-menu .ink-rail-add-shapes {
+  max-width: 15rem;
+}
+
+/* ── A page, from the pager ────────────────────────────────────────────────
+   "+□" beside the page number adds a page after the one in view. A Canvas's
+   alone: there is nowhere to add a page to somebody else's PDF. */
+.document-pager .document-add-page {
+  display: none;
+}
+
+:is(#documentStage, #documentStageAlt)[data-doc-slot="notebook"] .document-pager .document-add-page {
+  display: inline-flex;
+  font-size: 0.82rem;
+  letter-spacing: -0.04em;
+}
+
+/* ── Every edge of a Block resizes ─────────────────────────────────────────
+   A block whose height follows its words used to hide its top and bottom
+   edges, so it could only be made wider or narrower. Its height is draggable
+   now (src/documents/pdf-blocks.js makes it the reader's on the drop), so the
+   edges are there and the corners say they move both ways. */
+.pdf-block.is-fit .pdf-block-edge-s,
+.pdf-block.is-fit .pdf-block-edge-n {
+  display: block;
+}
+
+.pdf-block.is-fit:not([data-pdf-block-kind="image"]) .pdf-block-grip {
+  cursor: nwse-resize;
+}
+
+.pdf-block.is-fit:not([data-pdf-block-kind="image"]) .pdf-block-edge-sw,
+.pdf-block.is-fit:not([data-pdf-block-kind="image"]) .pdf-block-edge-ne {
+  cursor: nesw-resize;
+}
+
+.pdf-block.is-fit:not([data-pdf-block-kind="image"]) .pdf-block-edge-nw {
+  cursor: nwse-resize;
+}
+
+/* A turned Block turns about its own middle; the arrows on its edges no longer
+   point where they would drag, so they say "resize" plainly. */
+.pdf-block {
+  transform-origin: 50% 50%;
+}
+
+.pdf-block.is-turned .pdf-block-edge,
+.pdf-block.is-turned .pdf-block-grip {
+  cursor: crosshair;
+}
+
+/* ── The handle that turns a Block ─────────────────────────────────────────
+   Over the middle of its top, on a stem, as a turned Shapes-tool box wears
+   one (styles/88-annotations.css) — drawn in the diagram layer over the page
+   (src/documents/pdf-connectors.js), because a block clips its own insides. */
+.pdf-block-turn {
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  margin: -8px 0 0 -8px;
+  padding: 0;
+  box-sizing: border-box;
+  border: 1.5px solid var(--accent);
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.3);
+  cursor: grab;
+  pointer-events: auto;
+  touch-action: none;
+}
+
+.pdf-block-turn:active {
+  cursor: grabbing;
+}
+
+.pdf-block-turn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (pointer: coarse) {
+  .pdf-block-turn {
+    width: 24px;
+    height: 24px;
+    margin: -12px 0 0 -12px;
+  }
+}

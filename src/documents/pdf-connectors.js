@@ -44,7 +44,8 @@ import { el } from "../core/dom.js?v=__BUILD__";
 import { clearDiagramPart, diagramLayer, diagramPathData, diagramSvg, diagramSvgNode, setDiagramPart } from "./pdf-diagram-layer.js?v=__BUILD__";
 import {
   blockStyle, documentBlocks, editBlock, freshDocumentBlockId, isEditingBlock, isInDiagramEdit, liveBlockGesture, nextBlockZ,
-  runDiagramEdit, selectBlock, selectedBlockId, setBlockGestureFrameHook, setBlocksPaintedHook, writeDocumentBlocks
+  previewBlockRotation, rotateBlockBy, runDiagramEdit, selectBlock, selectedBlockId, setBlockGestureFrameHook, setBlockRotation, setBlocksPaintedHook,
+  writeDocumentBlocks
 } from "./pdf-blocks.js?v=__BUILD__";
 import {
   SHAPE_ROTATE_HANDLE_GAP, documentShapes, editingShapeTextId, newConnectorBase, newShapeRecord, paintDocumentShapes, selectShape, selectedShapeRecord,
@@ -52,11 +53,14 @@ import {
 } from "./pdf-shapes.js?v=__BUILD__";
 import { applyDocumentRecordChanges, documentHighlightById } from "./pdf-highlights.js?v=__BUILD__";
 import { pdfPageElement, pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
-import { connectorLabelRect, normalizeShape, pathMidpoint, connectorPath, shapeBoxCorners, shapePrimitives, translateShape } from "../render/annot-shapes.js?v=__BUILD__";
 import {
-  NODE_SIDES, SIDE_VECTORS, distanceToOutline, oppositeSide, outlinePolygon, pointInOutline, polygonCentre, polygonPerimeterPoint,
-  polygonSidePoint, sideFacing
+  SHAPE_ROTATE_MAGNET, connectorLabelRect, normalizeShape, normalizeShapeRotation, pathMidpoint, connectorPath, rotatePoint, shapeBoxCorners,
+  shapePrimitives, translateShape
+} from "../render/annot-shapes.js?v=__BUILD__";
+import {
+  NODE_SIDES, SIDE_VECTORS, distanceToOutline, oppositeSide, outlinePolygon, pointInOutline, polygonSidePoint
 } from "../render/node-outlines.js?v=__BUILD__";
+import { CONNECTOR_END_GAP, layoutConnectors } from "../render/connector-route.js?v=__BUILD__";
 
 // ── What a connector can be tied to ───────────────────────────────────────
 //
@@ -76,7 +80,16 @@ function nodeRectOf(points) {
 
 export function blockNode(block) {
   const rect = [block.x, block.y, block.x + block.w, block.y + block.h];
-  return { id: block.id, kind: "block", rect, poly: outlinePolygon(blockStyle(block).shape, rect), z: 1e6 + (Number(block.z) || 0) };
+  let poly = outlinePolygon(blockStyle(block).shape, rect);
+  // A turned block's outline turned with it, so a connector lands on the edge
+  // that is drawn, and its box is the box round that.
+  const rot = normalizeShapeRotation(block.rot);
+  if (rot) {
+    const centre = [block.x + block.w / 2, block.y + block.h / 2];
+    poly = poly.map((point) => rotatePoint(point, centre, rot));
+    return { id: block.id, kind: "block", rect: nodeRectOf(poly), poly, z: 1e6 + (Number(block.z) || 0), rot };
+  }
+  return { id: block.id, kind: "block", rect, poly, z: 1e6 + (Number(block.z) || 0) };
 }
 
 export function shapeNode(id, shape, z = 0) {
@@ -127,51 +140,57 @@ function cachedNodes(page) {
 
 // ── Where a tied end goes ─────────────────────────────────────────────────
 //
-// A straight connector tied to no side in particular leaves along the line
-// between the two middles, from the outline — the "floating" end draw.io
-// draws by default. One routed round corners or in a curve leaves by a SIDE:
-// the one it was told, or the one facing the other end. Either way it stops
+// Worked out for a whole page at once (src/render/connector-route.js): which
+// side each end leaves by, where on that side when several share it, and the
+// way round anything in between. A straight connector tied to no side in
+// particular still leaves along the line between the two middles — the
+// "floating" end draw.io draws by default. Either way an end stops
 // CONNECTOR_END_GAP short of the outline, so its head is never under the block
 // it points at (a block is drawn above every shape).
-export const CONNECTOR_END_GAP = 2;
+export { CONNECTOR_END_GAP };
 
+// One connector on its own — one being drawn, or made beside a copy. With no
+// page round it, it shares no side with anything.
 export function resolveConnector(shape, nodes) {
   const s = normalizeShape(shape);
   if (!s || (s.type !== "line" && s.type !== "arrow") || !s.ends) return s;
-  const found = s.ends.map((end) => (end ? nodes.get(end.id) || null : null));
-  if (!found.some(Boolean)) return s;
-  const towards = (i) => (found[i] ? polygonCentre(found[i].poly) : s.p[i]);
-  const p = s.p.map((point) => point.slice());
-  const exits = [null, null];
-  [0, 1].forEach((i) => {
-    const node = found[i];
-    if (!node) return;
-    const other = towards(1 - i);
-    let side = s.ends[i].side;
-    if (side === "auto" && !s.route) {
-      const centre = polygonCentre(node.poly);
-      const edge = polygonPerimeterPoint(node.poly, other);
-      const len = Math.hypot(edge[0] - centre[0], edge[1] - centre[1]) || 1;
-      p[i] = [edge[0] + ((edge[0] - centre[0]) / len) * CONNECTOR_END_GAP, edge[1] + ((edge[1] - centre[1]) / len) * CONNECTOR_END_GAP];
-      return;
-    }
-    if (side === "auto") side = sideFacing(node.rect, other);
-    const at = polygonSidePoint(node.poly, side);
-    const v = SIDE_VECTORS[side];
-    p[i] = [at[0] + v[0] * CONNECTOR_END_GAP, at[1] + v[1] * CONNECTOR_END_GAP];
-    exits[i] = side;
-  });
-  const out = { ...s, p };
-  delete out.exits;
-  if (s.route && exits.some(Boolean)) out.exits = exits;
-  return normalizeShape(out);
+  return layoutConnectors([{ id: "\u0000one", shape: s }], nodes).get("\u0000one") || s;
+}
+
+// Every tied connector on `page`, laid out together against `nodes`.
+function pageLayout(page, nodes) {
+  const entries = documentShapes(page)
+    .filter((record) => normalizeShape(record.shape)?.ends)
+    .map((record) => ({ id: record.id, shape: record.shape }));
+  return layoutConnectors(entries, nodes);
+}
+
+// One layout per page per paint, as cachedNodes is one look at the nodes: a
+// paint asks for every connector in turn, synchronously, and the answer cannot
+// change inside it. A paint with a box being dragged (`preview`) has its own.
+let layoutCache = null;
+
+function cachedLayout(page, nodes, preview) {
+  if (layoutCache && layoutCache.page === page && layoutCache.preview === preview) return layoutCache.layout;
+  layoutCache = { page, preview, layout: pageLayout(page, nodes) };
+  queueMicrotask(() => { layoutCache = null; });
+  return layoutCache.layout;
 }
 
 function resolveForPaint(record, shape, page, { preview = null } = {}) {
   const s = normalizeShape(shape);
   if (!s?.ends) return s;
-  const nodes = preview?.id ? diagramNodes(Number(page), { preview }) : cachedNodes(Number(page));
-  return resolveConnector(s, nodes);
+  const n = Number(page);
+  const nodes = preview?.id ? diagramNodes(n, { preview }) : cachedNodes(n);
+  // The connector being drawn or dragged itself, in its place among the rest.
+  if (!record?.id || shape !== record.shape) {
+    const entries = documentShapes(n)
+      .filter((other) => other.id !== record?.id && normalizeShape(other.shape)?.ends)
+      .map((other) => ({ id: other.id, shape: other.shape }));
+    entries.push({ id: record?.id || "\u0000live", shape: s });
+    return layoutConnectors(entries, nodes).get(record?.id || "\u0000live") || s;
+  }
+  return cachedLayout(n, nodes, preview?.id ? preview : null).get(record.id) || resolveConnector(s, nodes);
 }
 
 // ── Keeping the stored ends where the things they join are ────────────────
@@ -196,9 +215,9 @@ export function relinkConnectors() {
     const s = normalizeShape(record.shape);
     if (!s?.ends) return;
     const page = Number(record.page);
-    if (!pages.has(page)) pages.set(page, diagramNodes(page));
-    const next = resolveConnector(s, pages.get(page));
-    if (JSON.stringify(next) !== JSON.stringify(s)) changes.push({ id: record.id, shape: next });
+    if (!pages.has(page)) pages.set(page, pageLayout(page, diagramNodes(page)));
+    const next = pages.get(page).get(record.id);
+    if (next && JSON.stringify(next) !== JSON.stringify(s)) changes.push({ id: record.id, shape: next });
   });
   return changes.length ? updateShapesQuietly(changes) : 0;
 }
@@ -306,7 +325,7 @@ function paintConnectArrows(page) {
   const middles = { n: [cx, y1], e: [x1, cy], s: [cx, y0], w: [x0, cy] };
   const buttons = NODE_SIDES.map((side) => {
     const v = SIDE_VECTORS[side];
-    const gap = source.kind === "shape" && side === "n" ? CONNECT_ARROW_PAST_TURN_PX : CONNECT_ARROW_GAP_PX;
+    const gap = side === "n" ? CONNECT_ARROW_PAST_TURN_PX : CONNECT_ARROW_GAP_PX;
     const reach = gap / (viewport.scale || 1);
     const at = [middles[side][0] + v[0] * reach, middles[side][1] + v[1] * reach];
     const [sx, sy] = viewport.convertToViewportPoint(at[0], at[1]);
@@ -327,7 +346,104 @@ function paintConnectArrows(page) {
     button.innerHTML = `<svg viewBox="0 0 20 20" aria-hidden="true" focusable="false" style="transform: rotate(${angle.toFixed(3)}rad)"><path d="M7 4.5l6 5.5-6 5.5"/></svg>`;
     return button;
   });
+  if (source.kind === "block") buttons.push(...blockTurnHandle(source.id, page, viewport));
   setDiagramPart(page, "connect", buttons);
+}
+
+// ── The handle that turns a block ─────────────────────────────────────────
+//
+// Round, on a stem over the middle of the block's top — where a Shapes-tool
+// box wears its own (src/documents/pdf-shapes.js) — and turned with the block.
+// Drawn here, over the page, because a block clips everything inside it.
+const BLOCK_TURN_GAP_PX = SHAPE_ROTATE_HANDLE_GAP;
+
+function blockTurnGeometry(block, scale) {
+  const rot = normalizeShapeRotation(block.rot);
+  const centre = [block.x + block.w / 2, block.y + block.h / 2];
+  const top = rotatePoint([centre[0], block.y + block.h], centre, rot);
+  const knob = rotatePoint([centre[0], block.y + block.h + BLOCK_TURN_GAP_PX / (scale || 1)], centre, rot);
+  return { centre, top, knob, rot };
+}
+
+function blockTurnHandle(id, page, viewport) {
+  const block = documentBlocks().find((entry) => entry.id === id);
+  if (!block) return [];
+  const { top, knob } = blockTurnGeometry(block, viewport.scale);
+  const [ax, ay] = viewport.convertToViewportPoint(top[0], top[1]);
+  const [bx, by] = viewport.convertToViewportPoint(knob[0], knob[1]);
+  const stem = document.createElement("span");
+  stem.className = "pdf-shape-rotate-stem pdf-block-turn-stem";
+  stem.style.left = `${ax.toFixed(1)}px`;
+  stem.style.top = `${ay.toFixed(1)}px`;
+  stem.style.width = `${Math.hypot(bx - ax, by - ay).toFixed(1)}px`;
+  stem.style.transform = `rotate(${Math.atan2(by - ay, bx - ax)}rad)`;
+  const knobNode = document.createElement("button");
+  knobNode.type = "button";
+  knobNode.className = "pdf-block-turn";
+  knobNode.dataset.source = id;
+  knobNode.dataset.page = String(page);
+  const label = "Turn — drag round; Shift for 15° steps";
+  knobNode.title = label;
+  knobNode.setAttribute("aria-label", "Turn this block");
+  knobNode.style.left = `${bx.toFixed(1)}px`;
+  knobNode.style.top = `${by.toFixed(1)}px`;
+  return [stem, knobNode];
+}
+
+// The turn the handle, dragged to `point`, gives the block: the handle sits
+// straight over the middle at no turn, so the angle is measured from there —
+// in 15° steps with Shift, and pulled onto a quarter turn within a few degrees
+// otherwise (rotationFromHandle's rule for a Shapes-tool box).
+function blockTurnAt(block, point, snap) {
+  const centre = [block.x + block.w / 2, block.y + block.h / 2];
+  if (Math.hypot(point[0] - centre[0], point[1] - centre[1]) < 1e-6) return normalizeShapeRotation(block.rot);
+  let deg = (Math.atan2(point[1] - centre[1], point[0] - centre[0]) * 180) / Math.PI - 90;
+  if (snap) deg = Math.round(deg / 15) * 15;
+  else {
+    const quarter = Math.round(deg / 90) * 90;
+    if (Math.abs(deg - quarter) <= SHAPE_ROTATE_MAGNET) deg = quarter;
+  }
+  return normalizeShapeRotation(deg);
+}
+
+let turnDrag = null;
+
+function onTurnDown(event, knob) {
+  if (event.button !== undefined && event.button > 0) return;
+  event.preventDefault();
+  event.stopPropagation();
+  if (turnDrag) return;
+  const block = documentBlocks().find((entry) => entry.id === knob.dataset.source);
+  if (!block) return;
+  turnDrag = { pointerId: event.pointerId, page: Number(knob.dataset.page), block, rot: normalizeShapeRotation(block.rot) };
+  document.addEventListener("pointermove", onTurnMove, true);
+  document.addEventListener("pointerup", onTurnUp, true);
+  document.addEventListener("pointercancel", onTurnUp, true);
+}
+
+function onTurnMove(event) {
+  const drag = turnDrag;
+  if (!drag || event.pointerId !== drag.pointerId) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const point = pdfPointOnPage(drag.page, event.clientX, event.clientY);
+  if (!point) return;
+  drag.rot = blockTurnAt(drag.block, point, event.shiftKey);
+  previewBlockRotation(drag.block.id, drag.rot);
+}
+
+function onTurnUp(event) {
+  const drag = turnDrag;
+  if (!drag || event.pointerId !== drag.pointerId) return;
+  event.preventDefault();
+  event.stopPropagation();
+  turnDrag = null;
+  document.removeEventListener("pointermove", onTurnMove, true);
+  document.removeEventListener("pointerup", onTurnUp, true);
+  document.removeEventListener("pointercancel", onTurnUp, true);
+  previewBlockRotation(drag.block.id, null);
+  if (event.type === "pointerup") setBlockRotation(drag.block.id, drag.rot);
+  repaintDiagramOverlay();
 }
 
 // Everything drawn over a page about what is on it, repainted together. Other
@@ -389,6 +505,8 @@ function onDiagramControlDown(event) {
   // A press in a connector's label editor is the editor's: the page's own
   // handlers (the pen, the shapes, a block put down) must not hear it.
   if (target?.closest?.(".pdf-connector-label-editor")) { event.stopPropagation(); return; }
+  const knob = target?.closest?.(".pdf-block-turn");
+  if (knob) { onTurnDown(event, knob); return; }
   const arrow = target?.closest?.(".pdf-connect-arrow");
   if (!arrow) return;
   if (event.button !== undefined && event.button > 0) return;
@@ -462,6 +580,14 @@ function onConnectCancel(event) {
 let suppressControlClickUntil = 0;
 
 function onDiagramControlClick(event) {
+  const knob = event.target?.closest?.(".pdf-block-turn");
+  if (knob) {
+    event.preventDefault();
+    event.stopPropagation();
+    // The keyboard's press (Enter, Space): a quarter turn.
+    if (event.detail === 0) rotateBlockBy(knob.dataset.source, 90);
+    return;
+  }
   const arrow = event.target?.closest?.(".pdf-connect-arrow");
   if (!arrow) return;
   event.preventDefault();

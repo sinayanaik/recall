@@ -294,7 +294,7 @@ export function refreshReadingRailModes() {
   // so this row needs nothing of its own to stay in step.
   mirrorMode("ink", el.documentInkBtn);
   mirrorMode("region", el.documentRegionBtn);
-  mirrorMode("typewriter", el.documentTextBtn);
+  mirrorMode("typewriter", el.documentInsertBtn);
   // Not mirrorMode: the tool is not a button's aria-pressed anywhere, it is the
   // engine's own state, and refreshInkRail paints the rail's four tool buttons
   // FROM it. Reading it directly is the same discipline — one statement of what

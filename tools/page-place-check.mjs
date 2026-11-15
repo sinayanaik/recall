@@ -237,7 +237,7 @@ try {
   const pasted = await page.evaluate(`async () => {
     const { api, settle, pastePicture, confirmCompression, images } = window.__recall;
     const before = images().map((b) => b.id);
-    const button = document.getElementById("inkRailAddBtn");
+    const button = document.getElementById("inkRailMoreBtn");
     button.focus();
     const focused = document.activeElement === button;
     const taken = pastePicture(button);
@@ -426,8 +426,8 @@ try {
   check("...but not this app's own clipboard token, and not a paste into a Block's editor", words.tokenIgnored && words.editorKeeps, JSON.stringify(words));
 
   // ── 6. The row for a keyboard-less device ───────────────────────────────
-  const row = await page.evaluate(`() => Boolean(document.querySelector("#inkRailAddMenu [data-hw-action='paste-picture']"))`);
-  check("+ Add has a Paste picture row", row);
+  const row = await page.evaluate(`() => Boolean(document.querySelector("#documentInsertMenu [data-hw-action='paste-picture']"))`);
+  check("Insert has a Paste picture row", row);
 
   const errs = await page.evaluate(`() => window.__errs`);
   check("no page errors", !errs.length, errs.join(" | "));

@@ -163,6 +163,10 @@ const SHAPE_POINT_COUNTS = {
 //           with no idea what a block is
 //   p[2]    the bend: where an elbow's middle run sits, or a point a curve is
 //           pulled through. Absent is halfway.
+//   via     an elbow's corners between its ends, as last worked out, when it
+//           has to go ROUND something on the page (src/render/connector-route.js).
+//           Absent for an elbow the plain way round suits, and for one with a
+//           bend the reader set — the bend is theirs, the corners follow it.
 //
 // `p[0]` and `p[1]` stay the ends, as they always were — kept where the things
 // they join last were, so a build that has never heard of any of this still
@@ -202,8 +206,15 @@ function connectorFields(shape) {
     const exits = [0, 1].map((i) => (CONNECTOR_DIRS.includes(shape.exits[i]) ? shape.exits[i] : null));
     if (exits.some(Boolean)) out.exits = exits;
   }
+  if (out.route === "elbow" && Array.isArray(shape.via) && shape.via.length) {
+    const via = shape.via.slice(0, CONNECTOR_VIA_MAX).map(shapePoint);
+    if (via.every(Boolean)) out.via = via;
+  }
   return out;
 }
+
+// The most corners an elbow keeps between its ends.
+export const CONNECTOR_VIA_MAX = 24;
 
 // A shape as this build can draw it, or null for one it cannot. Every field is
 // clamped to what the controls can set, so a record from a newer build or a
@@ -249,6 +260,8 @@ export function normalizeShape(shape) {
     Object.assign(out, connectorFields(shape));
     // A bend means something only on a route that bends.
     if (out.p.length > 2 && !out.route) out.p = out.p.slice(0, 2);
+    // ...and a bend set by hand is the route: no worked-out corners besides.
+    if (out.p.length > 2) delete out.via;
   }
   return out;
 }
@@ -267,7 +280,7 @@ export function connectorPath(shape) {
 
 // Which way a free end leaves: along whichever axis the line mostly runs, and
 // toward the other end — an elbow between two loose points turns once.
-function freeExits(a, b) {
+export function freeExits(a, b) {
   const dx = b[0] - a[0];
   const dy = b[1] - a[1];
   if (Math.abs(dx) >= Math.abs(dy)) return dx >= 0 ? ["e", "w"] : ["w", "e"];
@@ -281,6 +294,7 @@ function routedPath(s) {
   const da = s.exits?.[0] || guess[0];
   const db = s.exits?.[1] || guess[1];
   const bend = s.p[2] || null;
+  if (s.route === "elbow" && !bend && s.via?.length) return simplifyPath([a, ...s.via, b]);
   return s.route === "curve" ? curvePath(a, da, b, db, bend) : elbowPath(a, da, b, db, bend);
 }
 
@@ -343,7 +357,7 @@ export function curvePath(a, da, b, db, bend = null) {
 
 // No point twice in a row, and no point in the middle of a straight run — an
 // elbow whose ends line up is a straight line, and should be drawn as one.
-function simplifyPath(points) {
+export function simplifyPath(points) {
   const out = [];
   points.forEach((point) => {
     const last = out[out.length - 1];
@@ -877,7 +891,10 @@ export function moveShapeHandle(shape, handleId, x, y, { snap = false } = {}) {
   if (/^p\d$/.test(handleId)) {
     const i = Number(handleId.slice(1));
     if (p[i]) p[i] = [x, y];
-    return { ...s, p };
+    // An end moved by hand: the corners worked out for where it was are not
+    // the way from where it is. The connector works them out again.
+    const { via: _via, ...rest } = s;
+    return { ...rest, p };
   }
   if (handleId === "bend" && (s.type === "line" || s.type === "arrow")) {
     if (!s.route) return s;
@@ -919,7 +936,9 @@ export function moveShapeHandle(shape, handleId, x, y, { snap = false } = {}) {
 export function translateShape(shape, dx, dy) {
   const s = normalizeShape(shape);
   if (!s) return shape;
-  return { ...s, p: s.p.map(([x, y]) => [x + dx, y + dy]) };
+  const out = { ...s, p: s.p.map(([x, y]) => [x + dx, y + dy]) };
+  if (s.via) out.via = s.via.map(([x, y]) => [x + dx, y + dy]);
+  return out;
 }
 
 // ── Drawing aids ──────────────────────────────────────────────────────────

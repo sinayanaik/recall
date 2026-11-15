@@ -485,6 +485,8 @@ export async function rasteriseRegionBlocks(page, source, pageNumber, rect, pixe
       // far outside its own canvas. This node is ours and off-screen anyway.
       node.style.left = "0px";
       node.style.top = "0px";
+      // Pictured upright; turned where the picture is drawn (drawRegionBlocks).
+      node.style.transform = "";
       host.appendChild(node);
       const width = parseFloat(node.style.width) || 1;
       const height = parseFloat(node.style.height) || 1;

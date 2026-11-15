@@ -56,6 +56,7 @@ import { closeBlockActionsPopover, openBlockActionsPopover, placeBlockActionsPop
 import { closeBlockStylePopover, openBlockStylePopover } from "./block-style-bar.js?v=__BUILD__";
 import { BLOCK_SHAPE_DEFAULT, blockFillVar, blockInkVar, blockLineVar, isDefaultBlockStyle, normalizeBlockStyle } from "./block-style.js?v=__BUILD__";
 import { outlineInsets, outlineSvgPaths } from "../render/node-outlines.js?v=__BUILD__";
+import { normalizeShapeRotation, rotatePoint } from "../render/annot-shapes.js?v=__BUILD__";
 import { activeDocSlot, DOC_SLOT_DOC, stampDocSlotAll } from "./doc-slot.js?v=__BUILD__";
 import { activePdfId, recordsForSurface, recordsOutsideSurface, stampRecordPdfIdAll } from "./pdf-multi.js?v=__BUILD__";
 import { closeBlockEditor, openBlockEditor } from "./pdf-block-editor.js?v=__BUILD__";
@@ -198,6 +199,9 @@ function syncBlockActionsPopover() {
     onToFront: () => restackBlock(Infinity, selectedId),
     onToBack: () => restackBlock(-Infinity, selectedId),
     onDelete: () => deleteBlock(selectedId),
+    onTurn: () => rotateBlockBy(selectedId, 90),
+    onStraighten: () => setBlockRotation(selectedId, 0),
+    turned: Boolean(normalizeShapeRotation(block.rot)),
     gap: BLOCK_ACTIONS_GAP
   });
 }
@@ -266,7 +270,10 @@ function normalizeBlocks(list) {
       // A group (src/documents/canvas-selection.js): blocks and shapes that are
       // picked up and moved as one. Carried only when there is one, for the
       // reason `style` is — this array is written back on every move.
-      ...(typeof block.group === "string" && block.group ? { group: block.group } : {})
+      ...(typeof block.group === "string" && block.group ? { group: block.group } : {}),
+      // A turn, in degrees counter-clockwise on the page, as a Shapes-tool
+      // box's `rot` is (src/render/annot-shapes.js). Only when there is one.
+      ...(normalizeShapeRotation(block.rot) ? { rot: normalizeShapeRotation(block.rot) } : {})
     }));
 }
 
@@ -661,6 +668,11 @@ function placeBlock(node, viewport, block) {
   // at the next. `scale` is the viewport's own, so this follows a pinch exactly.
   node.style.setProperty("--pdf-block-scale", String(viewport.scale || 1));
   node.style.zIndex = String(1 + (Number(block.z) || 0));
+  // Turned about its middle. Counter-clockwise on the page is a negative turn
+  // on the screen, whose y runs down — as a turned Shapes-tool box is drawn.
+  const rot = normalizeShapeRotation(block.rot);
+  node.style.transform = rot ? `rotate(${-rot}deg)` : "";
+  node.classList.toggle("is-turned", Boolean(rot));
   // A shaped block's outline is drawn in its own points, so a new size is a
   // new outline — including every frame of a resize, which only re-places.
   if (node.dataset.blockShape) paintBlockOutline(node, block);
@@ -728,7 +740,7 @@ function buildBlock(block) {
   grip.dataset.edge = "se";
   grip.title = "Drag to resize · double-click to fit the contents";
 
-  node.append(body, grip, ...resizeEdges(isImage));
+  node.append(body, grip, ...resizeEdges());
   // ── Nothing of the browser's own between a press and a drag ─────────────
   //
   // A long press on a picture opens the system's image menu on a phone, and a
@@ -761,13 +773,17 @@ function buildBlock(block) {
 // could only grow downwards and rightwards had to be dragged away and back to
 // grow up or left. A block whose height follows its words has no top edge
 // either, for the reason it has no bottom one.
+//
+// Every edge, on every block, now. A block whose height follows its words
+// used to have no top or bottom edge, and so could only be made wider or
+// narrower — "proper resizing, not only width-wise". Dragging its height now
+// makes the height the reader's (beginGesture writes `fit: false`), and the
+// words still push it taller if they need more. A picture's edges keep its
+// shape, as its corners do.
 const RESIZE_EDGES = ["e", "w", "s", "sw", "n", "ne", "nw"];
 
-const IMAGE_RESIZE_EDGES = new Set(["sw", "ne", "nw"]);
-
-function resizeEdges(isImage) {
+function resizeEdges() {
   return RESIZE_EDGES
-    .filter((edge) => !isImage || IMAGE_RESIZE_EDGES.has(edge))
     .map((edge) => {
       const handle = document.createElement("span");
       handle.className = `pdf-block-edge pdf-block-edge-${edge}`;
@@ -1094,10 +1110,23 @@ function contentHeightPoints(node, scale) {
   const body = node.querySelector(".pdf-block-body");
   if (!body) return null;
   // The borders — everything of the block that is not the body.
-  const chrome = node.offsetHeight - body.clientHeight;
+  let chrome = node.offsetHeight - body.clientHeight;
+  // ── To the fraction of a pixel, where it can be ─────────────────────────
+  //
+  // offsetHeight and scrollHeight are whole pixels, and a whole pixel is two
+  // points at half size: the same words measured a point or two taller at one
+  // zoom than another, so a block's height — and every connector tied to it
+  // — moved each time the page was opened at a new zoom. A box's own
+  // rectangle is fractional. It is also turned by any transform, so it is
+  // read through the ratio of the node's drawn height to its laid-out one
+  // (a pinch in progress), and a block that is itself turned keeps the whole
+  // pixels, whose box is not its height.
+  const drawn = node.classList.contains("is-turned") ? 0 : node.getBoundingClientRect().height;
+  const ratio = drawn > 0 && node.offsetHeight > 0 ? drawn / node.offsetHeight : 0;
+  if (ratio > 0) chrome = (drawn - body.getBoundingClientRect().height) / ratio;
   body.style.flex = "none";
   body.style.height = "auto";
-  const content = body.scrollHeight;
+  const content = ratio > 0 ? Math.max(body.getBoundingClientRect().height / ratio, body.scrollHeight - 1) : body.scrollHeight;
   body.style.flex = "";
   body.style.height = "";
   // Up, never to the nearest: a frame a fraction of a point short of its
@@ -1110,8 +1139,17 @@ function contentHeightPoints(node, scale) {
 // The slack is only ever on the TALL side: a point of room under the words is
 // invisible, and saves a write per repaint from the round trip through points;
 // a point short of them is a scrollbar.
+//
+// Three points of it, not one. The same words measure a point or two apart
+// at different zooms and on different devices (the round trip through pixels
+// rounds up), and a slack of one let each opening at another zoom write the
+// height back the other way — moving every connector tied to the block, and
+// sending a sync for nothing. With three, a block settles at the tallest of
+// its measurements and stays there.
+const HEIGHT_SLACK = 3;
+
 function heightSuits(have, want) {
-  return have >= want && have - want <= 1;
+  return have >= want && have - want <= HEIGHT_SLACK;
 }
 
 // ── Content that settles after the paint ───────────────────────────────────
@@ -1880,13 +1918,24 @@ function beginGesture(event, node, mode, edge = "se", { openOnTap = false } = {}
   // still sets the width, and the words still set the height. A grip that
   // dragged the height to a number the very next paint overwrote would be a
   // control that visibly does not work.
-  const widthOnly = mode === "resize" && blockStyle(block).fit;
+  //
+  // ...unless the handle moves the height too: then the reader is saying how
+  // tall it is, and the drop makes the height theirs (`fit: false`, below) —
+  // the words still push it taller when they need more (fitBlockHeight).
   // A picture is resized as a picture: one size, its own shape. A free corner
   // left the frame one shape and the picture (object-fit: contain) another, and
   // the difference was empty frame — see fitImageBlockFrame. The picture's own
   // ratio when it has decoded; the frame's when it has not, which after
   // fitImageBlockFrame is the same thing.
   const isImage = block.kind === PDF_BLOCK_IMAGE;
+  const fitsWords = mode === "resize" && !isImage && blockStyle(block).fit;
+  const movesHeight = mode === "resize" && /[ns]/.test(edge);
+  const widthOnly = fitsWords && !movesHeight;
+  // A turned block is resized in its own frame — the finger's travel turned
+  // back by the block's turn — and then shifted so the side or corner across
+  // from the handle stays where it is on the page, as a turned Shapes-tool box
+  // is (moveShapeHandle, src/render/annot-shapes.js).
+  const rot = normalizeShapeRotation(block.rot);
   const pictureEl = isImage ? node.querySelector("img.pdf-block-img") : null;
   const ratio = pictureEl?.naturalWidth && pictureEl?.naturalHeight
     ? pictureEl.naturalWidth / pictureEl.naturalHeight
@@ -1912,7 +1961,7 @@ function beginGesture(event, node, mode, edge = "se", { openOnTap = false } = {}
     // right only a frame after letting go. The new width is on the node now,
     // so the contents have already reflowed to it: measure them, and carry
     // that height in `live` so the drop writes the finished shape in one step.
-    if (widthOnly && !isImage) {
+    if (widthOnly && !isImage && !rot) {
       const h = contentHeightPoints(node, scale);
       if (h !== null && h !== live.h) {
         live = { ...live, h, y: Math.round(block.y + block.h - h) };
@@ -1975,11 +2024,12 @@ function beginGesture(event, node, mode, edge = "se", { openOnTap = false } = {}
       // first move.
       closeBlockActionsPopover();
     }
-    const dx = (moveEvent.clientX - start.x) * perPixel;
+    let dx = (moveEvent.clientX - start.x) * perPixel;
     // PDF y runs UP the page and the screen's runs down, so a downward drag is a
     // decreasing y. Getting this backwards is the classic way a box drifts the
     // wrong way under a finger.
-    const dy = -(moveEvent.clientY - start.y) * perPixel;
+    let dy = -(moveEvent.clientY - start.y) * perPixel;
+    if (mode !== "drag" && rot) [dx, dy] = rotatePoint([dx, dy], [0, 0], -rot);
     if (mode === "drag") {
       live = { ...block, ...clampBlockToPage(viewport, block, block.x + dx, block.y + dy) };
     } else {
@@ -2001,7 +2051,9 @@ function beginGesture(event, node, mode, edge = "se", { openOnTap = false } = {}
       const roomY = fromTop ? pageY1 - block.y : block.y + block.h - pageY0;
       // Shift on a corner keeps the box's shape, as it does in every drawing
       // program — what a picture's corner always does.
-      const keepRatio = isImage || (moveEvent.shiftKey && movesX && movesY && !widthOnly);
+      // Alt frees a picture's corner to stretch it, for the one time that is
+      // what is wanted.
+      const keepRatio = (isImage && !moveEvent.altKey) || (moveEvent.shiftKey && movesX && movesY && !widthOnly);
       const shapeRatio = isImage ? ratio : block.w / block.h;
       let w;
       let h;
@@ -2033,15 +2085,19 @@ function beginGesture(event, node, mode, edge = "se", { openOnTap = false } = {}
         x: fromLeft ? Math.round(block.x + block.w - w) : block.x,
         y: fromTop ? block.y : Math.round(block.y + (block.h - h))
       };
+      if (rot) live = keepTurnedAnchor(block, live, rot, { fromLeft, fromTop });
     }
     // Snapped to its neighbours and to the grid (src/documents/pdf-guides.js),
     // unless Alt is held — registered, as everything this gesture tells.
-    live = gestureAdjuster({
-      page: block.page, id, mode, edge, before: block, live, event: moveEvent, viewport,
-      // A picture keeps its shape and a block that follows its words keeps
-      // their height: neither has an edge free to snap on its own.
-      keepRatio: mode === "resize" && (isImage || moveEvent.shiftKey), widthOnly
-    }) || live;
+    // A turned block's edges run along no guide, so it does not snap.
+    if (!rot) {
+      live = gestureAdjuster({
+        page: block.page, id, mode, edge, before: block, live, event: moveEvent, viewport,
+        // A picture keeps its shape and a block that follows its words keeps
+        // their height: neither has an edge free to snap on its own.
+        keepRatio: mode === "resize" && ((isImage && !moveEvent.altKey) || moveEvent.shiftKey), widthOnly
+      }) || live;
+    }
     if (!frame) frame = requestAnimationFrame(apply);
   };
 
@@ -2096,6 +2152,8 @@ function beginGesture(event, node, mode, edge = "se", { openOnTap = false } = {}
       if (editingId === id) mountInlineBlockEditor(node);
       return;
     }
+    // The height was dragged: it is the reader's now, not the words'.
+    if (fitsWords && movesHeight && live.h !== block.h) live = { ...live, style: { ...(block.style || {}), fit: false } };
     writeBlocks(documentBlocks().map((entry) => (entry.id === id ? { ...entry, ...live, at: Date.now() } : entry)));
   };
 
@@ -2166,6 +2224,73 @@ function clampBlockToPage(viewport, block, x, y) {
     x: Math.round(clamp(x, vx0 + keep - block.w, vx1 - keep)),
     y: Math.round(clamp(y, vy0 + keep - block.h, vy1 - keep))
   };
+}
+
+// A turned block resized to `next` (worked out as if it were upright) moved so
+// the corner, or the side, across from the handle stays where it is on the
+// page. The upright arithmetic already keeps that corner's place in the
+// block's own frame; turning about a different middle moves it, so the block
+// is shifted back by however far it went.
+function keepTurnedAnchor(before, next, rot, { fromLeft, fromTop }) {
+  const anchorOf = (b) => [fromLeft ? b.x + b.w : b.x, fromTop ? b.y : b.y + b.h];
+  const centreOf = (b) => [b.x + b.w / 2, b.y + b.h / 2];
+  const was = rotatePoint(anchorOf(before), centreOf(before), rot);
+  const now = rotatePoint(anchorOf(next), centreOf(next), rot);
+  return { ...next, x: Math.round(next.x + was[0] - now[0]), y: Math.round(next.y + was[1] - now[1]) };
+}
+
+// ── Turning a block ───────────────────────────────────────────────────────
+//
+// A block turns about its own middle, by the handle over its top
+// (src/documents/pdf-connectors.js draws it and runs the drag) or by a
+// quarter turn from its actions. While the handle is held the turn is shown
+// and carried as the live gesture — so its connectors follow, frame by frame —
+// and written once, on the drop, as one undo step.
+export function setBlockRotation(id, deg) {
+  const block = documentBlocks().find((entry) => entry.id === id);
+  if (!block) return false;
+  const rot = normalizeShapeRotation(deg);
+  if (rot === normalizeShapeRotation(block.rot)) return false;
+  writeBlocks(documentBlocks().map((entry) => {
+    if (entry.id !== id) return entry;
+    const next = { ...entry, at: Date.now() };
+    if (rot) next.rot = rot;
+    else delete next.rot;
+    return next;
+  }));
+  return true;
+}
+
+export function rotateBlockBy(id, delta) {
+  const block = documentBlocks().find((entry) => entry.id === id);
+  return block ? setBlockRotation(id, normalizeShapeRotation(block.rot) + Number(delta || 0)) : false;
+}
+
+// The turn shown while the handle is held, or null to put the block back as
+// its record has it. Nothing is written.
+export function previewBlockRotation(id, deg) {
+  const block = documentBlocks().find((entry) => entry.id === id);
+  const node = block && document.querySelector(`.${PDF_BLOCK_CLASS}[data-pdf-block="${id}"]:not(.is-static)`);
+  const viewport = block && pdfPageViewport(block.page);
+  if (!block || !node || !viewport) return false;
+  if (deg === null) {
+    gestureLive = false;
+    liveGesture = null;
+    placeBlock(node, viewport, block);
+    gestureFrameHook(block.page, null);
+    syncBlockActionsPopover();
+    return true;
+  }
+  gestureLive = true;
+  closeBlockActionsPopover();
+  const rot = normalizeShapeRotation(deg);
+  const live = { ...block };
+  if (rot) live.rot = rot;
+  else delete live.rot;
+  placeBlock(node, viewport, live);
+  liveGesture = { id, page: block.page, block: live };
+  gestureFrameHook(block.page, liveGesture);
+  return true;
 }
 
 // One delegated listener, bound by src/main.js on the scroller. Returns true
