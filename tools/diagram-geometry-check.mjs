@@ -306,6 +306,74 @@ try {
     const out = S.normalizeShape(old);
     return (!("via" in out) && !("route" in out) && !("exits" in out)) || JSON.stringify(out);
   });
+
+  // ── An end pinned anywhere on the outline ─────────────────────────────────
+  must("an end's spot (`at`) is kept with a side, clamped, and dropped on auto", () => {
+    const end = (e) => S.normalizeShape({ type: "arrow", p: [[0, 0], [1, 1]], ends: [e, null] }).ends[0];
+    if (end({ id: "A", side: "n", at: 0.3 }).at !== 0.3) return "lost";
+    if (end({ id: "A", side: "n", at: 2 }).at !== 1) return "not clamped high";
+    if (end({ id: "A", side: "e", at: -1 }).at !== 0) return "not clamped low";
+    if (end({ id: "A", side: "n", at: 0.123456 }).at !== 0.1235) return "not rounded";
+    if ("at" in end({ id: "A", side: "auto", at: 0.3 })) return "kept on auto";
+    if ("at" in end({ id: "A", side: "n", at: "x" })) return "kept junk";
+    if ("at" in end({ id: "A", side: "n" })) return "made one up";
+    return true;
+  });
+
+  must("a point on an outline comes back as a side and a spot that land on it again", () => {
+    const shapes = ["rect", "diamond", "ellipse", "hexagon", "pill"];
+    for (const kind of shapes) {
+      const rect = [0, 0, 120, 60];
+      const n = { id: "A", kind: "block", rect, poly: O.outlinePolygon(kind, rect), z: 0 };
+      for (const probe of [[30, 80], [130, 45], [100, -20], [-10, 10], [60, 100], [119, 59]]) {
+        const q = O.nearestOutlinePoint(n.poly, probe[0], probe[1]);
+        const anchor = R.outlineAnchorAt(n, q);
+        const back = R.outlineAnchorPoint(n, anchor.side, anchor.at);
+        if (!nearPoint(back, q, 0.05)) return `${kind}: ${q} → ${JSON.stringify(anchor)} → ${back}`;
+      }
+    }
+    return true;
+  });
+
+  must("twelve fixed points round a box, a quarter, half and three quarters along each side", () => {
+    const n = node("A", 0, 0, 100, 40);
+    const pts = O.CONNECT_POINTS.flatMap((at) => O.NODE_SIDES.map((side) => R.outlineAnchorPoint(n, side, at)));
+    if (pts.length !== 12) return `${pts.length}`;
+    return (nearPoint(R.outlineAnchorPoint(n, "n", 0.25), [25, 40]) && nearPoint(R.outlineAnchorPoint(n, "e", 0.75), [100, 30])
+      && nearPoint(R.outlineAnchorPoint(n, "s", 0.5), [50, 0])) || JSON.stringify(pts);
+  });
+
+  must("a pinned end is drawn at its spot, and the side's other ends share out the rest", () => {
+    const nodes = nodesOf(node("A", 0, 0, 100, 40), node("B", 0, 200, 100, 40), node("C", 200, 200, 100, 40));
+    const entries = [
+      { id: "x", shape: { ...arrow("A", "B"), ends: [{ id: "A", side: "n", at: 0.25 }, { id: "B", side: "auto" }] } },
+      { id: "y", shape: { ...arrow("A", "C"), ends: [{ id: "A", side: "n" }, { id: "C", side: "auto" }] } }
+    ];
+    const out = R.layoutConnectors(entries, nodes);
+    const x = out.get("x").p[0];
+    const y = out.get("y").p[0];
+    if (!nearPoint(x, [25, 40 + R.CONNECTOR_END_GAP])) return `pinned end at ${x}`;
+    // y is alone among the side's shared ends: the middle.
+    return nearPoint(y, [50, 40 + R.CONNECTOR_END_GAP]) || `shared end at ${y}`;
+  });
+
+  must("a pinned end keeps its fraction of the side when the box is moved and resized", () => {
+    const shape = { ...arrow("A", "B"), ends: [{ id: "A", side: "e", at: 0.8 }, { id: "B", side: "auto" }] };
+    const first = R.layoutConnectors([{ id: "x", shape }], nodesOf(node("A", 0, 0, 100, 40), node("B", 300, 0, 100, 40))).get("x").p[0];
+    const later = R.layoutConnectors([{ id: "x", shape }], nodesOf(node("A", 50, 100, 200, 100), node("B", 400, 0, 100, 40))).get("x").p[0];
+    return (nearPoint(first, [100 + R.CONNECTOR_END_GAP, 32]) && nearPoint(later, [250 + R.CONNECTOR_END_GAP, 180])) || `${first} / ${later}`;
+  });
+
+  must("an elbow from a pinned end leaves square to its side and still goes round a box in the way", () => {
+    const nodes = nodesOf(node("A", 0, 0, 100, 40), node("B", 400, 0, 100, 40), node("C", 200, -60, 80, 160));
+    const shape = { ...arrow("A", "B", { route: "elbow" }), ends: [{ id: "A", side: "e", at: 0.2 }, { id: "B", side: "auto" }] };
+    const out = R.layoutConnectors([{ id: "x", shape }], nodes).get("x");
+    if (out.exits?.[0] !== "e") return `exits ${JSON.stringify(out.exits)}`;
+    if (!nearPoint(out.p[0], [100 + R.CONNECTOR_END_GAP, 8])) return `end at ${out.p[0]}`;
+    const path = S.connectorPath(out);
+    if (crosses(path, [200, -60, 280, 100])) return `crosses C: ${JSON.stringify(path)}`;
+    return near(path[1][1], path[0][1]) || `first stretch not square: ${JSON.stringify(path.slice(0, 2))}`;
+  });
 } catch (error) {
   results.push([false, "the check itself ran", String(error?.stack || error)]);
   failures += 1;

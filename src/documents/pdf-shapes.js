@@ -990,7 +990,7 @@ function bindShapeEnds(drag, shape, event, indices, moving) {
   const ends = [0, 1].map((i) => shape.ends?.[i] || null);
   indices.forEach((i) => {
     const hit = shapeBinding.bindAt({ page: drag.page, index: i, point: shape.p[i], event, exclude: drag.target?.id || null, show: i === moving });
-    ends[i] = hit ? { id: hit.id, side: hit.side } : null;
+    ends[i] = hit ? { id: hit.id, side: hit.side, ...(Number.isFinite(hit.at) ? { at: hit.at } : {}) } : null;
   });
   if (ends[0] && ends[1] && ends[0].id === ends[1].id) {
     ends[0] = null;

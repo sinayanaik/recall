@@ -154,8 +154,12 @@ const SHAPE_POINT_COUNTS = {
 // the page — a block, or another shape's box — so it follows that thing when it
 // moves (src/documents/pdf-connectors.js). What is stored is:
 //
-//   ends    [start, end], each null (a free end) or { id, side }, where `side`
-//           is "auto" (whichever side faces the other end) or n | e | s | w
+//   ends    [start, end], each null (a free end) or { id, side, at? }, where
+//           `side` is "auto" (whichever side faces the other end) or n | e | s | w,
+//           and `at`, with a side, pins the end to one spot on it: 0 is the
+//           side's left (n, s) or bottom (e, w) end, 1 the other, ½ the middle.
+//           Absent, the end takes the middle — or its share of the side when
+//           several ends leave by it (src/render/connector-route.js).
 //   route   "elbow" (square corners) or "curve"; absent is a straight line
 //   exits   [start, end], each null or n | e | s | w: which way each end LEAVES
 //           what it is tied to, as last worked out — so an elbow or a curve can
@@ -189,7 +193,10 @@ function normalizeConnectorEnd(end) {
   if (!end || typeof end !== "object") return null;
   const id = typeof end.id === "string" ? end.id.trim().slice(0, 64) : "";
   if (!id) return null;
-  return { id, side: CONNECTOR_SIDES.includes(end.side) ? end.side : "auto" };
+  const side = CONNECTOR_SIDES.includes(end.side) ? end.side : "auto";
+  const at = Number(end.at);
+  if (side === "auto" || end.at === null || end.at === undefined || end.at === "" || !Number.isFinite(at)) return { id, side };
+  return { id, side, at: Math.round(Math.min(1, Math.max(0, at)) * 10000) / 10000 };
 }
 
 // The connector fields of a line or an arrow, normalised — only the ones that

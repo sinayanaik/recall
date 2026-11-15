@@ -241,9 +241,37 @@
   stroke-linejoin: round;
 }
 
-.pdf-diagram-layer.is-connecting .pdf-connect-arrow {
+.pdf-diagram-layer.is-connecting .pdf-connect-arrow,
+.pdf-diagram-layer.is-connecting .pdf-connect-point {
   opacity: 0.25;
   pointer-events: none;
+}
+
+/* The dots round a picked-up box that a connector is drawn from, a spot at a
+ * time (src/documents/pdf-connectors.js, connectPointDots): small, hollow, and
+ * just outside the outline so the edge itself is still the edge's. */
+.pdf-connect-point {
+  position: absolute;
+  width: 9px;
+  height: 9px;
+  margin: -4.5px 0 0 -4.5px;
+  padding: 0;
+  border: 1.5px solid var(--accent);
+  border-radius: 50%;
+  background: var(--paper-bg, var(--card, #fff));
+  cursor: crosshair;
+  pointer-events: auto;
+  touch-action: none;
+  opacity: 0.7;
+  transition: opacity 120ms ease, transform 120ms ease, background-color 120ms ease;
+}
+
+.pdf-connect-point:hover,
+.pdf-connect-point:focus-visible {
+  opacity: 1;
+  transform: scale(1.35);
+  background: var(--accent);
+  outline: none;
 }
 
 @media (pointer: coarse) {
@@ -252,6 +280,12 @@
     height: 30px;
     margin: -15px 0 0 -15px;
   }
+
+  .pdf-connect-point {
+    width: 14px;
+    height: 14px;
+    margin: -7px 0 0 -7px;
+  }
 }
 
 /* ── The box a dragged end is about to be tied to ─────────────────────────── */
@@ -259,6 +293,12 @@
   fill: color-mix(in srgb, var(--accent) 10%, transparent);
   stroke: var(--accent);
   stroke-width: 2;
+}
+
+/* A floating end is tied to the box, not to a spot on it: the whole box lit. */
+.pdf-connect-target-outline.is-floating {
+  fill: color-mix(in srgb, var(--accent) 18%, transparent);
+  stroke-width: 3;
 }
 
 .pdf-connect-target-dot {

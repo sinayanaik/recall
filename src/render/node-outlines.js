@@ -291,9 +291,10 @@ export function pointInOutline(points, px, py) {
   return inside;
 }
 
-// The shortest distance from a point to a polygon's outline.
-export function distanceToOutline(points, px, py) {
-  let best = Infinity;
+// The point on a polygon's outline nearest to (px, py).
+export function nearestOutlinePoint(points, px, py) {
+  let best = null;
+  let bestD = Infinity;
   for (let i = 0; i < points.length; i += 1) {
     const a = points[i];
     const b = points[(i + 1) % points.length];
@@ -302,7 +303,20 @@ export function distanceToOutline(points, px, py) {
     const len2 = dx * dx + dy * dy;
     let t = len2 ? ((px - a[0]) * dx + (py - a[1]) * dy) / len2 : 0;
     t = Math.max(0, Math.min(1, t));
-    best = Math.min(best, Math.hypot(px - (a[0] + t * dx), py - (a[1] + t * dy)));
+    const q = [a[0] + t * dx, a[1] + t * dy];
+    const d = Math.hypot(px - q[0], py - q[1]);
+    if (d < bestD) { bestD = d; best = q; }
   }
   return best;
 }
+
+// The shortest distance from a point to a polygon's outline.
+export function distanceToOutline(points, px, py) {
+  const q = nearestOutlinePoint(points, px, py);
+  return q ? Math.hypot(px - q[0], py - q[1]) : Infinity;
+}
+
+// The fixed points an end snaps to on each side, as draw.io's: a quarter, the
+// middle and three quarters of the way along it (src/documents/pdf-connectors.js).
+// Between them an end can still be let go anywhere on the outline.
+export const CONNECT_POINTS = Object.freeze([0.25, 0.5, 0.75]);

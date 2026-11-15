@@ -34,10 +34,20 @@
 //     ones). Dragged, an arrow draws a connector from that side to wherever it
 //     is let go — tied to a box let go on, loose on bare paper. Tapped, it makes
 //     a COPY of the box beside it, joined to it, and opens it to type in.
+//   • A box picked up also wears small dots on its outline, a quarter of the
+//     way in from each corner. Dragged, one draws a connector from that very
+//     spot.
 //   • The Shapes tool's line or arrow, drawn onto a box, ties to it; an end of
 //     one already drawn, dragged onto a box, ties to it, and dragged off, comes
-//     free. The box an end would tie to is lit while it is over it, with a dot
-//     on each side: let go on a dot and that end keeps to that side.
+//     free. Where on the box it ties is where it is let go, as in draw.io:
+//       – on one of the dots round the lit outline (a quarter, half and three
+//         quarters along each side), that spot;
+//       – anywhere else on or near the outline, that spot — an end can be
+//         pinned anywhere round a box, not only to the middle of a side;
+//       – well inside the box, nowhere in particular: the end FLOATS, leaving
+//         by whichever side faces the other end (the whole outline is lit).
+//     A pinned end keeps its place as a fraction of its side when the box is
+//     moved or resized (src/render/connector-route.js).
 //   • Alt held never ties anything.
 
 import { el } from "../core/dom.js?v=__BUILD__";
@@ -58,9 +68,9 @@ import {
   shapePrimitives, translateShape
 } from "../render/annot-shapes.js?v=__BUILD__";
 import {
-  NODE_SIDES, SIDE_VECTORS, distanceToOutline, oppositeSide, outlinePolygon, pointInOutline, polygonSidePoint
+  CONNECT_POINTS, NODE_SIDES, SIDE_VECTORS, nearestOutlinePoint, oppositeSide, outlinePolygon, pointInOutline
 } from "../render/node-outlines.js?v=__BUILD__";
-import { CONNECTOR_END_GAP, layoutConnectors } from "../render/connector-route.js?v=__BUILD__";
+import { CONNECTOR_END_GAP, outlineAnchorPoint, layoutConnectors, outlineAnchorAt } from "../render/connector-route.js?v=__BUILD__";
 
 // ── What a connector can be tied to ───────────────────────────────────────
 //
@@ -229,10 +239,29 @@ export function connectorsTiedTo(id) {
 
 // ── What an end let go of HERE would be tied to ───────────────────────────
 //
-// The topmost box whose outline the point is inside, or within a fingertip of
-// — and, near enough to one of its four side dots, that side.
+// The topmost box whose outline the point is inside, or within a fingertip of;
+// and where on it:
+//   • near one of its fixed points (CONNECT_POINTS on every side), that point.
+//     The middle of a side is that side and no spot on it, so it is shared out
+//     with the side's other ends, as it always was;
+//   • otherwise near the outline, inside or out, the nearest spot on it;
+//   • otherwise — well inside — nowhere in particular ("auto", a floating end).
 const BIND_REACH_PX = 10;
-const SIDE_REACH_PX = 12;
+const POINT_REACH_PX = 12;
+const EDGE_REACH_PX = 10;
+const MIDDLE = 0.5;
+
+// Ends a hair either side of the middle of a side are the middle.
+const sameAt = (a, b) => Math.abs(a - b) < 0.005;
+
+// Every fixed point round a node: [{ side, at, point }] in PDF space.
+export function connectPoints(node) {
+  const out = [];
+  NODE_SIDES.forEach((side) => {
+    CONNECT_POINTS.forEach((at) => out.push({ side, at, point: outlineAnchorPoint(node, side, at) }));
+  });
+  return out;
+}
 
 export function connectorTargetAt(page, point, { exclude = null, altKey = false } = {}) {
   if (altKey || !point) return null;
@@ -241,46 +270,86 @@ export function connectorTargetAt(page, point, { exclude = null, altKey = false 
   const scale = viewport.scale || 1;
   const reach = BIND_REACH_PX / scale;
   let best = null;
+  let bestEdge = null;
   diagramNodes(page).forEach((node) => {
     if (node.id === exclude) return;
     const inside = pointInOutline(node.poly, point[0], point[1]);
-    if (!inside && distanceToOutline(node.poly, point[0], point[1]) > reach) return;
-    if (!best || node.z > best.z) best = node;
+    const edge = nearestOutlinePoint(node.poly, point[0], point[1]);
+    const d = edge ? Math.hypot(edge[0] - point[0], edge[1] - point[1]) : Infinity;
+    if (!inside && d > reach) return;
+    if (!best || node.z > best.z) { best = node; bestEdge = { inside, edge, d }; }
   });
   if (!best) return null;
-  let side = "auto";
-  let nearest = SIDE_REACH_PX / scale;
-  NODE_SIDES.forEach((candidate) => {
-    const at = polygonSidePoint(best.poly, candidate);
-    const d = Math.hypot(at[0] - point[0], at[1] - point[1]);
-    if (d <= nearest) { nearest = d; side = candidate; }
+  const hit = { id: best.id, side: "auto", node: best };
+  // 1. A fixed point.
+  let nearest = POINT_REACH_PX / scale;
+  connectPoints(best).forEach((candidate) => {
+    const d = Math.hypot(candidate.point[0] - point[0], candidate.point[1] - point[1]);
+    if (d <= nearest) {
+      nearest = d;
+      hit.side = candidate.side;
+      hit.at = candidate.at;
+      hit.point = candidate.point;
+    }
   });
-  return { id: best.id, side, node: best };
+  if (hit.side === "auto" && bestEdge.edge) {
+    // 2. Anywhere on the outline. Inside a small box the band round its edge
+    // is narrower, so there is still a middle to let go in and float.
+    const [x0, y0, x1, y1] = best.rect;
+    const band = bestEdge.inside ? Math.min(EDGE_REACH_PX / scale, Math.min(x1 - x0, y1 - y0) / 4) : reach;
+    if (bestEdge.d <= band) {
+      const anchor = outlineAnchorAt(best, bestEdge.edge);
+      if (anchor) {
+        hit.side = anchor.side;
+        hit.at = anchor.at;
+        hit.point = outlineAnchorPoint(best, anchor.side, anchor.at);
+      }
+    }
+  }
+  // 3. Otherwise it floats: side "auto", no spot.
+  if (hit.at !== undefined && sameAt(hit.at, MIDDLE)) delete hit.at;
+  return hit;
 }
 
-// The box lit while an end is over it: its outline, and a dot on each side,
-// the one it would keep to drawn larger.
+// The end a hit makes: { id, side } and, pinned to a spot, its `at`.
+export function connectorEndOf(hit) {
+  if (!hit) return null;
+  return Number.isFinite(hit.at) ? { id: hit.id, side: hit.side, at: hit.at } : { id: hit.id, side: hit.side };
+}
+
+// The box lit while an end is over it: its outline, a dot at each fixed point,
+// and the spot the end would keep to drawn larger. A floating end lights the
+// whole box instead — it is tied to the box, not to a spot on it.
 function showConnectTarget(page, hit) {
   clearDiagramPart("target");
   const viewport = pdfPageViewport(page);
   if (!hit || !viewport) return;
   const svg = diagramSvg(viewport, "pdf-connect-target");
-  svg.appendChild(diagramSvgNode("path", { d: diagramPathData(hit.node.poly, viewport, true), class: "pdf-connect-target-outline" }));
-  NODE_SIDES.forEach((side) => {
-    const at = polygonSidePoint(hit.node.poly, side);
+  const floating = hit.side === "auto";
+  svg.appendChild(diagramSvgNode("path", {
+    d: diagramPathData(hit.node.poly, viewport, true),
+    class: `pdf-connect-target-outline${floating ? " is-floating" : ""}`
+  }));
+  const chosen = floating ? null : (hit.point || outlineAnchorPoint(hit.node, hit.side, Number.isFinite(hit.at) ? hit.at : MIDDLE));
+  const dot = (at, big) => {
     const [x, y] = viewport.convertToViewportPoint(at[0], at[1]);
     svg.appendChild(diagramSvgNode("circle", {
-      cx: x.toFixed(1), cy: y.toFixed(1), r: side === hit.side ? 5 : 3.5,
-      class: `pdf-connect-target-dot${side === hit.side ? " is-chosen" : ""}`
+      cx: x.toFixed(1), cy: y.toFixed(1), r: big ? 5 : 3,
+      class: `pdf-connect-target-dot${big ? " is-chosen" : ""}`
     }));
+  };
+  connectPoints(hit.node).forEach((candidate) => {
+    if (chosen && Math.hypot(candidate.point[0] - chosen[0], candidate.point[1] - chosen[1]) < 1e-6) return;
+    dot(candidate.point, false);
   });
+  if (chosen) dot(chosen, true);
   setDiagramPart(page, "target", [svg]);
 }
 
 function bindConnectorEnd({ page, point, event, exclude, show }) {
   const hit = connectorTargetAt(page, point, { exclude, altKey: Boolean(event?.altKey) });
   if (show) showConnectTarget(page, hit);
-  return hit ? { id: hit.id, side: hit.side } : null;
+  return connectorEndOf(hit);
 }
 
 // ── The arrows a picked-up box wears ──────────────────────────────────────
@@ -346,8 +415,39 @@ function paintConnectArrows(page) {
     button.innerHTML = `<svg viewBox="0 0 20 20" aria-hidden="true" focusable="false" style="transform: rotate(${angle.toFixed(3)}rad)"><path d="M7 4.5l6 5.5-6 5.5"/></svg>`;
     return button;
   });
+  buttons.push(...connectPointDots(source, node, page, viewport));
   if (source.kind === "block") buttons.push(...blockTurnHandle(source.id, page, viewport));
   setDiagramPart(page, "connect", buttons);
+}
+
+// The dots round a picked-up box that a connector can be drawn from: its fixed
+// points but the middles, where the arrow already is (and a resize handle may
+// be). Each sits just outside the outline, so a press on the edge itself is
+// still the edge's — a block's edges are its resize handles.
+const CONNECT_POINT_OUT_PX = 4;
+
+function connectPointDots(source, node, page, viewport) {
+  const scale = viewport.scale || 1;
+  return connectPoints(node)
+    .filter((candidate) => !sameAt(candidate.at, MIDDLE))
+    .map(({ side, at, point }) => {
+      const v = SIDE_VECTORS[side];
+      const out = CONNECT_POINT_OUT_PX / scale;
+      const [x, y] = viewport.convertToViewportPoint(point[0] + v[0] * out, point[1] + v[1] * out);
+      const dot = document.createElement("button");
+      dot.type = "button";
+      dot.className = "pdf-connect-point";
+      dot.dataset.side = side;
+      dot.dataset.at = String(at);
+      dot.dataset.source = source.id;
+      dot.dataset.page = String(page);
+      const label = "Connect from here — drag to another box";
+      dot.title = label;
+      dot.setAttribute("aria-label", `Connect from the ${SIDE_WORDS[side]}, ${Math.round(at * 100)}% along`);
+      dot.style.left = `${x.toFixed(1)}px`;
+      dot.style.top = `${y.toFixed(1)}px`;
+      return dot;
+    });
 }
 
 // ── The handle that turns a block ─────────────────────────────────────────
@@ -493,7 +593,10 @@ function connectorFrom(drag, point, event) {
     ...newConnectorBase(),
     type: "arrow",
     p: [point, point],
-    ends: [{ id: drag.source, side: drag.side }, target ? { id: target.id, side: target.side } : null]
+    ends: [
+      { id: drag.source, side: drag.side, ...(Number.isFinite(drag.at) ? { at: drag.at } : {}) },
+      connectorEndOf(target)
+    ]
   };
   return resolveConnector(raw, diagramNodes(drag.page));
 }
@@ -507,7 +610,7 @@ function onDiagramControlDown(event) {
   if (target?.closest?.(".pdf-connector-label-editor")) { event.stopPropagation(); return; }
   const knob = target?.closest?.(".pdf-block-turn");
   if (knob) { onTurnDown(event, knob); return; }
-  const arrow = target?.closest?.(".pdf-connect-arrow");
+  const arrow = target?.closest?.(".pdf-connect-arrow, .pdf-connect-point");
   if (!arrow) return;
   if (event.button !== undefined && event.button > 0) return;
   event.preventDefault();
@@ -517,6 +620,8 @@ function onDiagramControlDown(event) {
     pointerId: event.pointerId,
     page: Number(arrow.dataset.page),
     side: arrow.dataset.side,
+    // A dot is a spot on its side; an arrow is the side's middle.
+    at: arrow.dataset.at !== undefined ? Number(arrow.dataset.at) : undefined,
     source: arrow.dataset.source,
     x: event.clientX,
     y: event.clientY,
@@ -559,7 +664,12 @@ function onConnectUp(event) {
   event.stopPropagation();
   const drag = endConnectDrag();
   suppressControlClickUntil = Date.now() + 400;
-  if (!drag.moved) { connectCopy(drag.source, drag.side, drag.page); return; }
+  if (!drag.moved) {
+    // A press on an arrow is a connected copy; on a dot, nothing.
+    if (!Number.isFinite(drag.at)) connectCopy(drag.source, drag.side, drag.page);
+    else paintDiagramOverlay(drag.page);
+    return;
+  }
   const point = pdfPointOnPage(drag.page, event.clientX, event.clientY);
   const shape = point ? connectorFrom(drag, point, event) : drag.shape;
   clearDiagramPart("target");
@@ -586,6 +696,11 @@ function onDiagramControlClick(event) {
     event.stopPropagation();
     // The keyboard's press (Enter, Space): a quarter turn.
     if (event.detail === 0) rotateBlockBy(knob.dataset.source, 90);
+    return;
+  }
+  if (event.target?.closest?.(".pdf-connect-point")) {
+    event.preventDefault();
+    event.stopPropagation();
     return;
   }
   const arrow = event.target?.closest?.(".pdf-connect-arrow");
