@@ -26,8 +26,12 @@
 //      one whose route is shortest, turns least and crosses nothing; the side
 //      it took last time (the record's `exits`) is kept unless another is
 //      clearly better, so a point either way does not flip it.
-//   2. Ports. Ends that leave one side of one box share that side out between
-//      them, in the order of where they are going, so they do not cross.
+//   2. Ports. An end pinned to a spot on its side (its `at`, set by letting it
+//      go there — anywhere on the outline, as draw.io's) stays on that spot,
+//      as the same fraction of the side however the box is moved or sized.
+//      The other ends that leave one side of one box share that side out
+//      between them, in the order of where they are going, so they do not
+//      cross.
 //   3. Routes. An elbow whose plain route crosses a box on the page goes round
 //      it: the shortest path with the fewest turns over a sparse grid of the
 //      boxes' edges (orthogonalRoute). Its corners are stored as `via`, so
@@ -39,7 +43,7 @@
 // Pure: no DOM, no state. tools/diagram-geometry-check.mjs asserts it in Node.
 
 import { CONNECTOR_STUB, ROUTE_TURN_COST, elbowPath, freeExits, normalizeShape, pathLength, pathTurns, simplifyPath } from "./annot-shapes.js?v=__BUILD__";
-import { NODE_SIDES, SIDE_VECTORS, polygonCentre, polygonPerimeterPoint, polygonRayExit } from "./node-outlines.js?v=__BUILD__";
+import { NODE_SIDES, SIDE_VECTORS, polygonCentre, polygonPerimeterPoint, polygonRayExit, sideFacing } from "./node-outlines.js?v=__BUILD__";
 
 // How far short of the outline a tied end stops, so its head is never under
 // the box it points at (a block is drawn over every shape).
@@ -126,14 +130,62 @@ function pathCrossings(points, rects) {
 //
 // `offset` is along the side, from its middle, in points. Straight out from
 // that point on the box's middle line, to the outline — on a box, a point on
-// the edge; on a diamond, on its slope.
-export function sidePort(node, side, offset = 0) {
+// the edge; on a diamond, on its slope. A turned box's sides are the page's
+// (up, right, down, left), measured on the box round its turned outline, as
+// everywhere here.
+function sideOutlinePoint(node, side, offset = 0) {
   const v = SIDE_VECTORS[side];
   const centre = polygonCentre(node.poly);
   const along = v[0] === 0 ? [1, 0] : [0, 1];
   const from = [centre[0] + along[0] * offset, centre[1] + along[1] * offset];
-  const hit = polygonRayExit(node.poly, from, [from[0] + v[0], from[1] + v[1]]) || polygonRayExit(node.poly, centre, [centre[0] + v[0], centre[1] + v[1]]) || centre;
+  return polygonRayExit(node.poly, from, [from[0] + v[0], from[1] + v[1]]) || polygonRayExit(node.poly, centre, [centre[0] + v[0], centre[1] + v[1]]) || centre;
+}
+
+export function sidePort(node, side, offset = 0) {
+  const v = SIDE_VECTORS[side];
+  const hit = sideOutlinePoint(node, side, offset);
   return [hit[0] + v[0] * CONNECTOR_END_GAP, hit[1] + v[1] * CONNECTOR_END_GAP];
+}
+
+// How long a side is: the width of the box round the outline for its top and
+// bottom, its height for its left and right. An end's `at` is a fraction of it.
+export function sideLength(node, side) {
+  const [x0, y0, x1, y1] = node.rect;
+  return side === "n" || side === "s" ? x1 - x0 : y1 - y0;
+}
+
+// The offset from the side's middle that an `at` (0…1 along it) stands for.
+export function atOffset(node, side, at) {
+  return (at - 0.5) * sideLength(node, side);
+}
+
+// The point on the outline an end pinned at `at` along `side` touches — the
+// spot shown while it is being let go (the port itself stands a hair off it).
+export function outlineAnchorPoint(node, side, at = 0.5) {
+  return sideOutlinePoint(node, side, atOffset(node, side, at));
+}
+
+// A point on the outline as a side and a fraction along it: the inverse of
+// outlineAnchorPoint, so an end let go there is drawn exactly there. The side facing
+// the point is tried first; on an outline where that side's straight-out line
+// meets the edge somewhere else (a turned thin box near a corner), the side
+// that comes back nearest to the point wins.
+export function outlineAnchorAt(node, q) {
+  const [x0, y0, x1, y1] = node.rect;
+  const facing = sideFacing(node.rect, q);
+  const order = [facing, ...NODE_SIDES.filter((side) => side !== facing)];
+  let best = null;
+  for (const side of order) {
+    const length = sideLength(node, side);
+    if (length <= 1e-9) continue;
+    const raw = side === "n" || side === "s" ? (q[0] - x0) / (x1 - x0) : (q[1] - y0) / (y1 - y0);
+    const at = Math.min(1, Math.max(0, raw));
+    const back = outlineAnchorPoint(node, side, at);
+    const miss = Math.hypot(back[0] - q[0], back[1] - q[1]);
+    if (!best || miss < best.miss - 1e-9) best = { side, at, miss };
+    if (miss < 0.5) break;
+  }
+  return best ? { side: best.side, at: Math.round(best.at * 10000) / 10000 } : null;
 }
 
 // How far apart the ports on one side may spread: the side's length, less a
@@ -366,6 +418,8 @@ export function layoutConnectors(entries, nodes) {
     [0, 1].forEach((i) => {
       const side = item.sides[i];
       if (!item.found[i] || !SIDE_VECTORS[side]) return;
+      // Pinned to its spot: not one of the ends the side is shared out between.
+      if (Number.isFinite(item.s.ends[i]?.at)) return;
       const key = `${item.found[i].id}|${side}`;
       if (!bySide.has(key)) bySide.set(key, []);
       bySide.get(key).push({ item, i, side, node: item.found[i] });
@@ -402,7 +456,8 @@ export function layoutConnectors(entries, nodes) {
         p[i] = [edge[0] + ((edge[0] - centre[0]) / len) * CONNECTOR_END_GAP, edge[1] + ((edge[1] - centre[1]) / len) * CONNECTOR_END_GAP];
         return;
       }
-      p[i] = sidePort(node, sides[i], offsets[i]);
+      const at = s.ends[i]?.at;
+      p[i] = sidePort(node, sides[i], Number.isFinite(at) ? atOffset(node, sides[i], at) : offsets[i]);
       exits[i] = sides[i];
     });
     p[0] = roundPoint(p[0]);

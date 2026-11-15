@@ -507,6 +507,83 @@ try {
   check("B8. a page of tied lines, left alone, writes nothing", links.settled);
   check("B. no page errors", !links.errors.length, links.errors.join(" | "));
 
+  // ── B9–B12. An end tied anywhere on the outline, as draw.io's ─────────────
+  const spots = await page.evaluate(`async () => {
+    const { api, settle, raf, drag } = window.__recall;
+    const out = {};
+    const view = document.getElementById("documentView");
+    const find = (id) => api.documentBlocks().find((b) => b.id === id);
+    const record = (id) => api.documentHighlightById(id);
+    const centre = (node) => { const r = node.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; };
+    const pageBox = () => document.querySelector('.pdf-page[data-page-number="1"]').getBoundingClientRect();
+    const toClient = (x, y) => { const [vx, vy] = api.pdfPageViewport(1).convertToViewportPoint(x, y); const box = pageBox(); return [box.left + vx, box.top + vy]; };
+    api.selectBlock(null);
+    api.selectShape(null);
+    const p = api.addDocumentBlock(1, { x: 100, y: 470 }, { style: { fit: false }, w: 120, h: 60, edit: false });
+    const q = api.addDocumentBlock(1, { x: 340, y: 470 }, { style: { fit: false }, w: 200, h: 60, edit: false });
+    await settle(60);
+    // B9. A picked-up block wears dots between its arrows; one dragged onto Q
+    // draws a connector from that very spot.
+    api.selectBlock(p.id);
+    await settle(80);
+    const dots = [...document.querySelectorAll(".pdf-diagram-layer .pdf-connect-point")];
+    out.dots = dots.length;
+    const dot = dots.find((n) => n.dataset.side === "e" && n.dataset.at === "0.25");
+    const before = api.documentShapes().length;
+    if (dot) await drag(dot, centre(dot), toClient(q.x + q.w / 2, q.y + q.h / 2));
+    await settle(80);
+    const fromDot = api.documentShapes().length > before ? api.documentShapes().at(-1) : null;
+    out.fromDot = fromDot ? { ends: fromDot.shape.ends, p0: fromDot.shape.p[0], want: [p.x + p.w + 2, p.y + 0.25 * p.h] } : null;
+    // B10. The Shapes tool's arrow let go on Q's top edge between two dots:
+    // tied to that spot, drawn there.
+    api.selectBlock(null);
+    api.selectShape(null);
+    api.toggleInkRail?.(true);
+    api.chooseInkTool("shape");
+    api.setShapeType("arrow");
+    await settle(50);
+    const pen = (type, x, y) => view.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, pointerId: 93, pointerType: "pen", isPrimary: true, clientX: x, clientY: y, buttons: type === "pointerup" ? 0 : 1, pressure: 0.5 }));
+    const drawTo = async (end) => {
+      const start = toClient(end[0], end[1] + 90);
+      const stop = toClient(end[0], end[1]);
+      pen("pointerdown", start[0], start[1]);
+      for (let i = 1; i <= 6; i += 1) { pen("pointermove", start[0] + ((stop[0] - start[0]) * i) / 6, start[1] + ((stop[1] - start[1]) * i) / 6); await raf(); }
+      const lit = { dots: document.querySelectorAll(".pdf-connect-target-dot").length, chosen: document.querySelectorAll(".pdf-connect-target-dot.is-chosen").length,
+        floating: Boolean(document.querySelector(".pdf-connect-target-outline.is-floating")) };
+      pen("pointerup", stop[0], stop[1]);
+      await settle(120);
+      return { record: api.documentShapes().at(-1), lit };
+    };
+    const onEdge = await drawTo([q.x + 0.375 * q.w, q.y + q.h]);
+    out.onEdge = { ends: onEdge.record?.shape?.ends, p1: onEdge.record?.shape?.p?.[1], want: [q.x + 0.375 * q.w, q.y + q.h + 2], lit: onEdge.lit };
+    // B11. Q moved and widened: the end keeps its place as a fraction of the side.
+    const moved = { ...find(q.id), x: q.x + 30, w: 300 };
+    api.writeDocumentBlocks(api.documentBlocks().map((b) => (b.id === q.id ? moved : b)));
+    await settle(60);
+    api.relinkConnectors();
+    await settle(60);
+    const after = record(onEdge.record.id)?.shape;
+    out.afterMove = { p1: after?.p?.[1], want: [moved.x + 0.375 * moved.w, moved.y + moved.h + 2] };
+    // B12. Let go well inside: the end floats.
+    const inside = await drawTo([moved.x + moved.w * 0.6, moved.y + moved.h / 2]);
+    out.inside = { ends: inside.record?.shape?.ends, lit: inside.lit };
+    api.chooseInkTool("pen");
+    out.errors = window.__errs.slice();
+    return out;
+  }`);
+  const nearPt = (a, b) => Boolean(a && b) && Math.abs(a[0] - b[0]) < 1 && Math.abs(a[1] - b[1]) < 1;
+  check("B9. a picked-up block wears eight connection dots between its arrows", spots.dots === 8, String(spots.dots));
+  check("B9. ...one dragged onto another block draws a connector from that very spot",
+    spots.fromDot?.ends?.[0]?.side === "e" && spots.fromDot.ends[0].at === 0.25 && nearPt(spots.fromDot.p0, spots.fromDot.want), JSON.stringify(spots.fromDot));
+  check("B10. an end let go on an edge between the dots is tied to that spot, and drawn there",
+    spots.onEdge.ends?.[1]?.side === "n" && Math.abs(spots.onEdge.ends[1].at - 0.375) < 0.01 && nearPt(spots.onEdge.p1, spots.onEdge.want), JSON.stringify(spots.onEdge));
+  check("B10. ...while it is held the box shows its twelve points, that spot lit",
+    spots.onEdge.lit.dots === 13 && spots.onEdge.lit.chosen === 1 && !spots.onEdge.lit.floating, JSON.stringify(spots.onEdge.lit));
+  check("B11. the box moved and widened, the end keeps its fraction of the side", nearPt(spots.afterMove.p1, spots.afterMove.want), JSON.stringify(spots.afterMove));
+  check("B12. an end let go well inside a box floats, the whole box lit",
+    spots.inside.ends?.[1]?.side === "auto" && !("at" in spots.inside.ends[1]) && spots.inside.lit.floating && spots.inside.lit.chosen === 0, JSON.stringify(spots.inside));
+  check("B9–B12. no page errors", !spots.errors.length, spots.errors.join(" | "));
+
   // ── C. Several at once ─────────────────────────────────────────────────
   const many = await page.evaluate(`async () => {
     const { api, settle, raf, drag, press, mouse } = window.__recall;
