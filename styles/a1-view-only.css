@@ -1,0 +1,120 @@
+/* ── View only: ✎ | 👁 on the PDFs and the Canvas ───────────────────────────
+   src/documents/view-only.js keeps the switch, one per part, and puts
+   .view-only-doc / .view-only-notebook on <body>. Every tool already stands
+   down in its own code; this file takes away what would only be refused, and
+   lets a finger on a Block scroll the page.
+
+   Two kinds of rule, keyed two ways:
+     • the tab row's tools belong to the part IN FOCUS, which src/ui/chrome.js
+       publishes as .cs-slot-doc / .cs-slot-notebook;
+     • what is ON a page belongs to the stage holding it — side by side, the
+       PDFs and the Canvas are two stages, each with its own data-doc-slot —
+       so those rules ask the stage. */
+
+/* ── The pill, in the tab row ──────────────────────────────────────────────
+   Hidden until a document is on screen, like the rest of the document's
+   controls (styles/37-document-chrome.css), and sized to the row's 26px
+   rather than to the card header's 30px Notes' pill is drawn at. */
+.view-mode-row > #documentEditBtn {
+  display: none;
+}
+
+:is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > #documentEditBtn {
+  display: inline-flex;
+  flex: 0 0 auto;
+  width: 46px;
+  height: 26px;
+  min-height: 26px;
+  padding: 2px;
+  font-size: 0.78rem;
+}
+
+:is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > #documentEditBtn::before {
+  top: 2px;
+  bottom: 2px;
+}
+
+:is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > #documentEditBtn.is-editing::before {
+  left: 2px;
+}
+
+:is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > #documentEditBtn:not(.is-editing)::before {
+  left: 50%;
+  width: calc(50% - 2px);
+}
+
+/* A stage showing only an offer — attach a PDF, start a Canvas — has nothing to
+   view or edit. `.cs-doc-empty` is about meta.pdf alone (it is on over a
+   perfectly good Canvas in a file with no PDF, see styles/53-handwriting.css),
+   so each part is asked about its own. */
+:is(.cs-doc-empty, #cs-specificity).cs-doc-empty.cs-slot-doc .quiz-panel.notes-mode .view-mode-row > #documentEditBtn,
+:is(.cs-slot-notebook, #cs-specificity).cs-slot-notebook:not(.cs-notebook-open) .quiz-panel.notes-mode .view-mode-row > #documentEditBtn {
+  display: none;
+}
+
+@media (max-width: 720px) {
+  :is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > #documentEditBtn {
+    width: 42px;
+    height: 24px;
+    min-height: 24px;
+    font-size: 0.72rem;
+  }
+}
+
+/* ── What View only takes off the row ──────────────────────────────────────
+   The pen, Shapes and Insert, and their menus: each could only be refused.
+   ▣, the paper and ⋯ stay — highlighting and making cards are reading, as in
+   Notes' 👁, and ⋯ is two presses deep and never an accident. */
+:is(.view-only-doc, #cs-specificity).view-only-doc.cs-slot-doc .quiz-panel.notes-mode .view-mode-row > :is(#documentInkBtn, #documentShapesBtn, #documentShapesMenu, #documentInsertBtn, #documentInsertMenu),
+:is(.view-only-notebook, #cs-specificity).view-only-notebook.cs-slot-notebook .quiz-panel.notes-mode .view-mode-row > :is(#documentInkBtn, #documentShapesBtn, #documentShapesMenu, #documentInsertBtn, #documentInsertMenu) {
+  display: none;
+}
+
+/* ...and the pen's bar, wherever it has been moved to. */
+:is(.view-only-doc, #cs-specificity).view-only-doc .document-ink-rail[data-doc-slot="doc"],
+:is(.view-only-notebook, #cs-specificity).view-only-notebook .document-ink-rail[data-doc-slot="notebook"] {
+  display: none;
+}
+
+/* The reading rail's copies of the same two, for focus mode. */
+:is(.view-only-doc.cs-slot-doc, .view-only-notebook.cs-slot-notebook) .reading-rail-btn:is([data-rail-action="ink"], [data-rail-action="typewriter"]) {
+  display: none;
+}
+
+/* The Canvas's own: "+□" beside the page number, and the ⋯ rows that add,
+   copy, move and tear out pages or change the paper under the writing. */
+:is(.view-only-notebook, #cs-specificity).view-only-notebook :is(#documentStage, #documentStageAlt)[data-doc-slot="notebook"] .document-pager .document-add-page,
+:is(.view-only-notebook, #cs-specificity).view-only-notebook.cs-slot-notebook #documentMoreMenu :is([data-document-action^="hw-"], .md-menu-head[data-slot="notebook"]) {
+  display: none;
+}
+
+/* ── On the page ───────────────────────────────────────────────────────────
+   A Block and typed words take every press in edit mode — `touch-action: none`
+   on them and on everything inside them (styles/53-handwriting.css,
+   styles/88-annotations.css) is what lets a finger drag them. Here nothing is
+   dragged, so a finger on one scrolls the page like a finger anywhere else,
+   and two fingers still reach the page's own pinch (initDocumentPinchZoom,
+   src/documents/pdf-view.js), which is not a browser gesture to begin with. */
+:is(.view-only-doc, #cs-specificity).view-only-doc :is(#documentStage, #documentStageAlt)[data-doc-slot="doc"] :is(.pdf-block, .pdf-block *, .pdf-shape-text),
+:is(.view-only-notebook, #cs-specificity).view-only-notebook :is(#documentStage, #documentStageAlt)[data-doc-slot="notebook"] :is(.pdf-block, .pdf-block *, .pdf-shape-text) {
+  touch-action: pan-x pan-y;
+  cursor: auto;
+}
+
+/* A link in a Block's words still opens. */
+:is(.view-only-doc, #cs-specificity).view-only-doc :is(#documentStage, #documentStageAlt)[data-doc-slot="doc"] .pdf-block a[href],
+:is(.view-only-notebook, #cs-specificity).view-only-notebook :is(#documentStage, #documentStageAlt)[data-doc-slot="notebook"] .pdf-block a[href] {
+  cursor: pointer;
+}
+
+/* "Empty — tap it to write" is a promise a tap cannot keep here. */
+:is(.view-only-doc, #cs-specificity).view-only-doc :is(#documentStage, #documentStageAlt)[data-doc-slot="doc"] .pdf-block-empty,
+:is(.view-only-notebook, #cs-specificity).view-only-notebook :is(#documentStage, #documentStageAlt)[data-doc-slot="notebook"] .pdf-block-empty {
+  visibility: hidden;
+}
+
+/* The handles that resize, turn and join: nothing to grip. */
+:is(.view-only-doc, #cs-specificity).view-only-doc :is(#documentStage, #documentStageAlt)[data-doc-slot="doc"] :is(.pdf-block-grip, .pdf-block-edge, .pdf-block-turn, .pdf-connect-arrow),
+:is(.view-only-notebook, #cs-specificity).view-only-notebook :is(#documentStage, #documentStageAlt)[data-doc-slot="notebook"] :is(.pdf-block-grip, .pdf-block-edge, .pdf-block-turn, .pdf-connect-arrow) {
+  display: none;
+}

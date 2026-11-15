@@ -59,6 +59,15 @@ typed on the page", never a kind of thing to add.
 A **sticky note** is one of the Shapes tool's shapes (with lines, arrows, boxes,
 ellipses and callouts), not a row of Insert.
 
+**View only** is the 👁 half of the ✎ | 👁 pill beside the tabs on the PDFs
+and the Canvas — the same pill Notes has. On it the page is read, scrolled,
+zoomed, selected, highlighted and made into cards, and nothing on it is drawn,
+moved, resized, added, pasted or undone. Each part has its own, kept on this
+device and never synced: `recall:view-only-v1` in localStorage,
+`src/documents/view-only.js` (`documentViewOnly`), the body classes
+`view-only-doc` / `view-only-notebook`, and `styles/a1-view-only.css`. Say
+"View only", not "read-only" or "locked".
+
 Several Blocks and shapes **picked up** together (Shift-click, a box drawn on a
 Canvas with the Select tool, Ctrl+A) are moved, lined up, copied and **grouped**
 as one; a group is a `group` id on each record (`src/documents/canvas-selection.js`).

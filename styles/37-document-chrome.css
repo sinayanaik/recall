@@ -72,9 +72,10 @@
    The missing sibling of the Highlights rule at
    styles/16-mobile-reading.css:417. Same reasoning, one view along: there is no
    note to list the headings of and nothing to edit, so a control that would
-   pretend otherwise stands down. */
+   pretend otherwise stands down. The document's own ✎ | 👁 (#documentEditBtn,
+   styles/a1-view-only.css) wears the same pill and is not the notes' one. */
 :is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > .notes-toc-toggle,
-:is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > .edit-toggle-pill,
+:is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > .edit-toggle-pill:not(.document-edit-pill),
 :is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > .notes-head-more-btn,
 :is(.cs-doc-shown, #cs-specificity).cs-doc-shown .quiz-panel.notes-mode .view-mode-row > .notes-head-more-menu {
   display: none;

@@ -65,6 +65,10 @@ const SECTIONS = [
 // Anything appearing in styles/ that is neither a slice nor listed here is
 // still a failure.
 const POST_SPLIT = {
+  "a1-view-only.css":
+    "View only on the PDFs and the Canvas (src/documents/view-only.js): the tab " +
+    "row's ✎ | 👁 pill, the tools it takes away while a part is only read, and " +
+    "Blocks and typed words a finger scrolls the page over instead of dragging.",
   "a0-canvas-tools.css":
     "What goes on a page, beside the pen rather than inside it: the top row's " +
     "Shapes and Insert buttons and their menus (src/ui/ink-rail.js), and the " +

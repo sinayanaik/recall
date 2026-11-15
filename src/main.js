@@ -117,7 +117,7 @@ import { showNotesConflictModal } from "./sync/notes-conflict.js?v=__BUILD__";
 import { reconcileAllDecks, syncAllDecksAndWait } from "./sync/reconcile.js?v=__BUILD__";
 import { closeTopmostOverlay, initBackGesture } from "./ui/back-gesture.js?v=__BUILD__";
 import { showAuthenticatedUI, showLibraryFailedScreen, showLoginScreen, showSetupScreen } from "./ui/boot-screens.js?v=__BUILD__";
-import { applyChromeCollapse, hasStudyTextSelection, initImmersiveMode, isFocusModeActive, measureChromeHeights, setChromeCollapseHandler, setChromeFocusPinned, setChromeModesHandler, setFocusMode, toggleImmersiveMode } from "./ui/chrome.js?v=__BUILD__";
+import { applyChromeCollapse, hasStudyTextSelection, initImmersiveMode, isFocusModeActive, measureChromeHeights, setChromeCollapseHandler, setChromeFocusPinned, setChromeModesHandler, setFocusMode, syncChromeState, toggleImmersiveMode } from "./ui/chrome.js?v=__BUILD__";
 import { DOC_SLOT_DOC, DOC_SLOT_NOTEBOOK, activeDocSlot, deckHasPdf, documentSurfaceShown, onDocumentSurface } from "./documents/doc-slot.js?v=__BUILD__";
 import { isCardsShown, isNotesShown } from "./ui/split-parts.js?v=__BUILD__";
 import { onDocumentScrollers } from "./documents/doc-scrollers.js?v=__BUILD__";
@@ -157,15 +157,17 @@ import { openMarkdownPdfDialog } from "./documents/md-pdf/dialog.js?v=__BUILD__"
 import { removePdfFromDeck, renamePdf } from "./documents/pdf-multi-actions.js?v=__BUILD__";
 import { closePdfPanel, initPdfSwitcher } from "./documents/pdf-switcher.js?v=__BUILD__";
 import { currentPdfDocument, currentPdfPageCount, openDocumentSlot, documentFittedWidth, refreshBakedDocumentPages, fitDocumentToWidth, initDocumentCanvasRecovery, initDocumentPinchZoom, isDocumentFitWidth, openDocumentIsCurrent, openDocumentPdfId, noteSettledDocumentPosition, openDocumentView, reattachDocument, relayoutDocumentHoldingReader, repaintOpenDocumentPages, scheduleDocumentPositionSave, scrollToDocumentPage, refreshDocumentPaperForTheme, setDocumentAttachHandler, setDocumentCanvasRecoveredHook, setDocumentChromeMovedHook, setDocumentOpenedHook, noteBesideDocumentStale, setDocumentPagePaintedHook, setMarkdownPdfStartHandler, setNotebookStartHandler, setPageIndicatorUpdatedHook, setPaperChangedHook, switchToPdf, updatePageIndicator, zoomDocument, retryMissingDocumentOpen } from "./documents/pdf-view.js?v=__BUILD__";
-import { adoptDocumentInk, canRedoInk, canUndoInk, copyInkSelection, cutInkSelection, duplicateInkSelection, hasInkClipboard, initDocumentInk, inkMarkImageMarkdown, inkMarkIsHighlight, inkSelectionCount, isInkMarkId, nudgeInkSelection, paintDocumentInk, pasteInkSelection, redoInk, repaintDocumentInk, setInkChangedHandler, undoInk } from "./documents/pdf-ink.js?v=__BUILD__";
+import { adoptDocumentInk, canRedoInk, canUndoInk, copyInkSelection, cutInkSelection, duplicateInkSelection, hasInkClipboard, initDocumentInk, inkMarkImageMarkdown, inkMarkIsHighlight, inkSelectionCount, isInkMarkId, nudgeInkSelection, paintDocumentInk, pasteInkSelection, redoInk, repaintDocumentInk, setInkArmed, setInkChangedHandler, undoInk } from "./documents/pdf-ink.js?v=__BUILD__";
 import { addHandwritingBlock, addHandwritingImages, addHandwritingTextBlock, enterHandwritingView, initHandwritingRail, refreshHandwritingBoard, runHandwritingMenuAction, startHandwritingNotebook } from "./handwriting/board.js?v=__BUILD__";
 import { closeBlockStylePopover, isBlockStylePopoverOpen } from "./documents/block-style-bar.js?v=__BUILD__";
 import { closeBlockActionsPopover, isBlockActionsPopoverOpen } from "./documents/block-actions-popover.js?v=__BUILD__";
 import { blocksForPaper, buildStaticBlock, canRedoBlocks, setDiagramShapeIO, canUndoBlocks, commitBlockEdit, deleteBlock, duplicateBlock, editBlock, handleBlockPointerDown, nudgeBlock, paintDocumentBlocks, pdfPointAt, redoBlocks, repaintDocumentBlocks, restackBlock, selectBlock, selectedBlockId, setBlocksChangedHandler, undoBlocks } from "./documents/pdf-blocks.js?v=__BUILD__";
 import { applyInkRailPreference, closeInkRailPopups, initInkRail, refreshInkRail, rehomeInkRail, setDocumentUndoHandlers } from "./ui/ink-rail.js?v=__BUILD__";
-import { initDocumentShapes, repaintDocumentShapes, setShapeCreatedHandler } from "./documents/pdf-shapes.js?v=__BUILD__";
+import { initDocumentShapes, repaintDocumentShapes, selectShape, setShapeCreatedHandler } from "./documents/pdf-shapes.js?v=__BUILD__";
 import { deleteWithConnectors, initConnectors, scheduleConnectorRelink } from "./documents/pdf-connectors.js?v=__BUILD__";
-import { initCanvasSelection } from "./documents/canvas-selection.js?v=__BUILD__";
+import { clearPick, initCanvasSelection } from "./documents/canvas-selection.js?v=__BUILD__";
+import { armBlockPlacement } from "./documents/block-place.js?v=__BUILD__";
+import { applyViewOnlyClasses, documentViewOnly, setViewOnlyChangedHook } from "./documents/view-only.js?v=__BUILD__";
 import { claimPagePaste, initPageClipboard } from "./documents/page-clipboard.js?v=__BUILD__";
 import { initPagePointer, pagePointAtPointer } from "./documents/page-pointer.js?v=__BUILD__";
 import { initGuides } from "./documents/pdf-guides.js?v=__BUILD__";
@@ -1688,6 +1690,38 @@ onDomReady(() => {
   // A shape's Style row, and the popover at a selected shape.
   initShapeStylePopover();
   initInkRail();
+  // ── ✎ | 👁: View only, on the PDFs and on the Canvas ──────────────────────
+  //
+  // src/documents/view-only.js keeps the switch and every tool asks it; this is
+  // what the switch does at the moment it is pressed. Going to 👁 puts down
+  // everything the reader had picked up or armed — a Block being typed in is
+  // kept, a selection and a waiting Insert are let go, the pen's bar shuts — so
+  // nothing is left half-held on a page that can no longer be changed. Back on
+  // ✎, the bar comes back as this part last left it.
+  applyViewOnlyClasses();
+  setViewOnlyChangedHook((slot, on) => {
+    if (slot === activeDocSlot()) {
+      if (on) {
+        commitBlockEdit();
+        selectBlock(null);
+        selectShape(null);
+        clearPick();
+        armBlockPlacement(false, { toast: false });
+        closeInkRailPopups();
+        closeBlockStylePopover();
+        closeBlockActionsPopover();
+        // Shuts the bar, puts the tool back to the pen and lets a lassoed
+        // selection go — without writing the bar's remembered state, which
+        // applyInkRailPreference reads back on the way out.
+        setInkArmed(false);
+      } else {
+        applyInkRailPreference();
+      }
+    }
+    refreshInkRail();
+    refreshReadingRailModes();
+    syncChromeState();
+  });
   setDocumentUndoHandlers({
     undo: () => undoDocumentSurface(false),
     redo: () => undoDocumentSurface(true),
@@ -3196,6 +3230,17 @@ document.addEventListener("keydown", (event) => {
     inkWantsRedo ? redoInkSheet() : undoInkSheet();
     return;
   }
+  // ── View only: the page's own undo is not a key that does anything ──────
+  //
+  // Nothing on the page can change (src/documents/view-only.js), so neither
+  // may Ctrl+Z take a change back. Swallowed rather than let through: below,
+  // it would fall to the card stack and undo a CARD action from a page the
+  // reader is only looking at.
+  if (inkChord && onDocumentSurface() && documentViewOnly() && !event.target.matches("input, textarea")) {
+    event.preventDefault();
+    if (canUndoDocumentSurface(inkWantsRedo)) showToast("View only — press ✎ to undo on the page", "info");
+    return;
+  }
   // ── ...and the other ring on the same surface ────────────────────────────
   //
   // Before the pen's, and only when the blocks are what moved last (or when the
@@ -3294,7 +3339,7 @@ document.addEventListener("keydown", (event) => {
     // Claimed rather than taken, so a picture copied since still pastes as a
     // picture (src/documents/page-clipboard.js): no preventDefault here, or the
     // browser fires no paste event to decide with.
-    if (key === "v" && hasInkClipboard()) {
+    if (key === "v" && hasInkClipboard() && !documentViewOnly()) {
       claimPagePaste(() => { pasteInkSelection(); refreshInkRail(); });
       return;
     }
@@ -3874,11 +3919,23 @@ function pagePasteTarget(target) {
   return Boolean(pagePointAtPointer());
 }
 
+// View only (src/documents/view-only.js): a picture or words pasted or dropped
+// onto the page are refused, and said so once, since nothing visibly happens.
+// The event is still taken: a dropped file the page lets go of is one the
+// browser opens in place of the app.
+function refusedByViewOnly(event) {
+  if (!documentViewOnly()) return false;
+  event.preventDefault();
+  showToast("View only — press ✎ to add to the page", "info");
+  return true;
+}
+
 function handwritingImageDrop(event, files) {
   if (!onDocumentSurface()) return false;
   if (!pagePasteTarget(event.target)) return false;
   const list = Array.from(files || []);
   if (!list.length) return false;
+  if (refusedByViewOnly(event)) return true;
   event.preventDefault();
   // Where the pointer is, in the page's own points: where a drop let go, or —
   // a paste has no coordinates of its own — where the mouse is over a page
@@ -3918,6 +3975,7 @@ function handwritingTextPaste(event) {
   if (!markdown.trim()) markdown = plain;
   if (!markdown.trim()) return false;
   if (headingNumbersOn()) markdown = stripTypedHeadingNumbersFromMarkdown(markdown);
+  if (refusedByViewOnly(event)) return true;
   event.preventDefault();
   addHandwritingTextBlock(markdown, pagePointAtPointer());
   return true;

@@ -24,6 +24,7 @@ import { el } from "../core/dom.js?v=__BUILD__";
 import { addDocumentBlock, pdfPointAt } from "./pdf-blocks.js?v=__BUILD__";
 import { currentDocumentPage, pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
+import { documentViewOnly } from "./view-only.js?v=__BUILD__";
 
 // How far a press may travel and still be a tap, in CSS pixels.
 const PLACE_TAP_SLOP_PX = 10;
@@ -45,6 +46,10 @@ export function isBlockPlacementArmed() {
 }
 
 export function armBlockPlacement(on = true, { options = null, anchor = "top-left", toast = true } = {}) {
+  // View only (src/documents/view-only.js): nothing is put on the page, so
+  // there is no tap to wait for. Insert is hidden then; this is the backstop
+  // for every other way in (the reading rail, a key).
+  if (on && documentViewOnly()) on = false;
   const next = on ? { options: options || {}, anchor } : null;
   const was = Boolean(placeArmed);
   placeArmed = next;
