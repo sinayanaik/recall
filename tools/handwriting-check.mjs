@@ -999,7 +999,9 @@ try {
 
     const before = { meta: api.state.meta.notebook.pages, doc: api.currentPdfPageCount(), inkPage1: inkOn(1) };
 
-    press('[data-hw-action="add-page"]');
+    // ＋□ beside the page number (it left the rail for the pager): a page
+    // after the one in view, which on a one-page Canvas is the end.
+    document.getElementById("documentAddPageBtn").click();
     for (let i = 0; i < 60 && api.currentPdfPageCount() < before.doc + 1; i += 1) await settle(100);
     const added = { meta: api.state.meta.notebook.pages, doc: api.currentPdfPageCount(), inkPage1: inkOn(1) };
 
