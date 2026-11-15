@@ -536,8 +536,8 @@ try {
       menuRows: menuRows.length,
       menuRowsBoxed: menuRows.filter(boxed).length,
       docRowsBoxed: docRows.filter(boxed).length,
-      // Dark page and select-a-region mean nothing on generated paper; the pen,
-      // the contents drawer and ⋯ do.
+      // The paper picker, ▣ (a box round a drawing, to make a card of it), the
+      // pen, the contents drawer and ⋯ all mean something on a Canvas.
       darkShown: boxed(document.getElementById("documentDarkBtn")),
       regionShown: boxed(document.getElementById("documentRegionBtn")),
       moreShown: boxed(document.getElementById("documentMoreBtn")),
@@ -562,11 +562,12 @@ try {
   check("the ⋯ menu offers the notebook's rows and not the document's",
     writeControls.menuRows === 10 && writeControls.menuRowsBoxed === 10 && writeControls.docRowsBoxed === 0,
     `${writeControls.menuRowsBoxed}/${writeControls.menuRows} notebook row(s), ${writeControls.docRowsBoxed} document row(s)`);
-  // The paper button is the one that came BACK: it was a dark page on/off,
-  // hidden here because the pen followed the theme; it is a tone picker now
-  // (src/documents/paper-menu.js) and the pen follows the paper.
-  check("...while the control that means nothing on generated paper stands down, and the paper picker stays",
-    writeControls.darkShown && !writeControls.regionShown
+  // The paper button came BACK: it was a dark page on/off, hidden here because
+  // the pen followed the theme; it is a tone picker now (src/documents/
+  // paper-menu.js) and the pen follows the paper. ▣ came back too: a box round
+  // a drawing is how a card is made of it (tools/canvas-cards-check.mjs).
+  check("...and the paper picker and ▣ are on the Canvas with the pen, the contents and ⋯",
+    writeControls.darkShown && writeControls.regionShown
       && writeControls.inkShown && writeControls.tocShown && writeControls.moreShown,
     `paper=${writeControls.darkShown} region=${writeControls.regionShown} `
     + `pen=${writeControls.inkShown} contents=${writeControls.tocShown} more=${writeControls.moreShown}`);

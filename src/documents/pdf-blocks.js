@@ -71,6 +71,7 @@ import { blockStylePreference, writeBlockStylePreference } from "../storage/ink-
 import { dropMetaTombstonesForLiveIds, recordDeletedMetaId } from "../sync/document-sync.js?v=__BUILD__";
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
 import { notePdfGesture } from "./pdf-timing.js?v=__BUILD__";
+import { makeCardFromPageArea } from "./region-card.js?v=__BUILD__";
 import { resolveFontFamily } from "../ui/fonts.js?v=__BUILD__";
 
 // A block with no `kind` is markdown — see the header. Named constants rather
@@ -199,11 +200,34 @@ function syncBlockActionsPopover() {
     onToFront: () => restackBlock(Infinity, selectedId),
     onToBack: () => restackBlock(-Infinity, selectedId),
     onDelete: () => deleteBlock(selectedId),
+    onCard: () => makeCardOfBlock(selectedId),
     onTurn: () => rotateBlockBy(selectedId, 90),
     onStraighten: () => setBlockRotation(selectedId, 0),
     turned: Boolean(normalizeShapeRotation(block.rot)),
     gap: BLOCK_ACTIONS_GAP
   });
+}
+
+// The page box a block covers — upright, or the upright box round it once it
+// is turned — in the page's own units.
+export function blockPageBounds(block) {
+  const rect = [block.x, block.y, block.x + block.w, block.y + block.h];
+  const rot = normalizeShapeRotation(block.rot);
+  if (!rot) return rect;
+  const centre = [block.x + block.w / 2, block.y + block.h / 2];
+  const corners = [[rect[0], rect[1]], [rect[2], rect[1]], [rect[2], rect[3]], [rect[0], rect[3]]].map((p) => rotatePoint(p, centre, rot));
+  const xs = corners.map((p) => p[0]);
+  const ys = corners.map((p) => p[1]);
+  return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+}
+
+// The strip's Card: a card whose answer is a live picture of the block where it
+// sits — on a Canvas, a ref to that spot of the Canvas page, the way a region
+// on a PDF is a ref to its spot (src/documents/region-card.js).
+function makeCardOfBlock(id) {
+  const block = documentBlocks().find((entry) => entry.id === id);
+  if (!block) return;
+  makeCardFromPageArea({ page: block.page, rect: blockPageBounds(block) });
 }
 
 // Clear of the connect arrows a selected block wears outside each side.

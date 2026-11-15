@@ -1668,13 +1668,10 @@ export const DOCUMENT_MARK_HANDLERS = {
   // drawer already shows for it.
   //
   // "Copy location" is a `pdfref:` (src/documents/pdf-region-embed.js), which
-  // resolves against the deck's PDFs and nothing else — so it is offered on the
-  // paper and not on the Write tab's notebook, where it would paste a picture
-  // that can never render. A getter because the slot is only known on open.
+  // names a spot on one of the file's PDFs or on its Canvas (CANVAS_REF_ID) —
+  // so it is offered on both.
   get actions() {
-    return activeDocSlot() === DOC_SLOT_DOC
-      ? ["card", "highlights", "copy", "location", "share", "search"]
-      : ["card", "highlights", "copy", "share", "search"];
+    return ["card", "highlights", "copy", "location", "share", "search"];
   },
   // ...and a region adds "Save as image" and "Save as PDF" — on the paper and
   // on the notebook alike, since both carry the ink and blocks drawn over the

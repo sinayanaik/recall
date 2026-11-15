@@ -25,7 +25,7 @@
 // follow: a control is a button with an attribute, not a binding.
 
 import { el } from "../core/dom.js?v=__BUILD__";
-import { canRedoInk, canUndoInk, clearInkPage, copyInkSelection, cutInkSelection, deleteInkSelection, duplicateInkSelection, hasInkClipboard, inkEraseMode, inkEraseTarget, inkEraserSize, inkHighlighter, inkPageHasStrokes, inkPageInView, inkPageInViewCheap, inkPaper, inkPaperBg, inkPen, inkPenOpacity, inkPreviewScale, inkSelectionCount, inkSelectionKinds, inkSnapShapes, inkTapDots, inkTool, inkWidth, isInkArmed, joinInkSelection, pasteInkSelection, redoInk, setInkArmed, setInkEraseMode, setInkEraseTarget, setInkEraserSize, setInkHighlighter, setInkOpacity, setInkPen, setInkSnapShapes, setInkTapDots, setInkTool, setInkWidth, splitInkSelection, suppressInkTap, undoInk } from "../documents/pdf-ink.js?v=__BUILD__";
+import { canRedoInk, canUndoInk, clearInkPage, copyInkSelection, cutInkSelection, deleteInkSelection, duplicateInkSelection, hasInkClipboard, inkEraseMode, inkEraseTarget, inkEraserSize, inkHighlighter, inkPageHasStrokes, inkPageInView, inkPageInViewCheap, inkPaper, inkPaperBg, inkPen, inkPenOpacity, inkPreviewScale, inkSelectionArea, inkSelectionCount, inkSelectionKinds, inkSnapShapes, inkTapDots, inkTool, inkWidth, isInkArmed, joinInkSelection, pasteInkSelection, redoInk, setInkArmed, setInkEraseMode, setInkEraseTarget, setInkEraserSize, setInkHighlighter, setInkOpacity, setInkPen, setInkSnapShapes, setInkTapDots, setInkTool, setInkWidth, splitInkSelection, suppressInkTap, undoInk } from "../documents/pdf-ink.js?v=__BUILD__";
 import { deleteBlock, editBlock, openSelectedBlockStyle, selectedBlockKind, setBlockSelectionChangedHandler } from "../documents/pdf-blocks.js?v=__BUILD__";
 import { armBlockPlacement, initBlockPlacement, isBlockPlacementArmed, setBlockPlacementChangedHandler, toggleBlockPlacement } from "../documents/block-place.js?v=__BUILD__";
 import { INK_TOOL_DEFAULT } from "../format/ink-colors.js?v=__BUILD__";
@@ -38,6 +38,7 @@ import { displayedShapeSettings, setShapeChangedHandler, setShapeType, shapeButt
 import { buildShapeMenu, buildShapePanel, refreshShapeMenu, refreshShapePanel } from "../documents/pdf-shape-panel.js?v=__BUILD__";
 import { syncShapeStylePopover } from "../documents/pdf-shape-style-popover.js?v=__BUILD__";
 import { showConfirmModal } from "./feedback.js?v=__BUILD__";
+import { makeCardFromPageArea } from "../documents/region-card.js?v=__BUILD__";
 
 function pressed(node, on) {
   if (node) node.setAttribute("aria-pressed", on ? "true" : "false");
@@ -456,7 +457,7 @@ function paintInkRail() {
   // under the reader's thumb between one selection and the next. Join needs two
   // strokes to join; the rest need one; paste needs only a clipboard.
   rail.querySelector('[data-ink-action="join"]')?.toggleAttribute("disabled", count < 2);
-  ["split", "duplicate", "copy", "cut", "delete"].forEach((action) => {
+  ["split", "duplicate", "copy", "card", "cut", "delete"].forEach((action) => {
     rail.querySelector(`[data-ink-action="${action}"]`)?.toggleAttribute("disabled", count < 1);
   });
   rail.querySelectorAll('[data-ink-action="paste"]').forEach((node) => node.toggleAttribute("disabled", !pasteable));
@@ -687,6 +688,9 @@ function pressRail(button) {
   else if (action === "split") splitInkSelection();
   else if (action === "duplicate") duplicateInkSelection();
   else if (action === "copy") copyInkSelection();
+  // A card whose answer is a live picture of the circled spot — the strokes and
+  // whatever else is on the page round them (src/documents/region-card.js).
+  else if (action === "card") { closeInkRailMenus(); makeCardFromPageArea(inkSelectionArea() || {}); }
   else if (action === "cut") cutInkSelection();
   else if (action === "paste") pasteInkSelection();
   else if (action === "delete") deleteInkSelection();

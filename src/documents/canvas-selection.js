@@ -30,7 +30,7 @@ import { DOC_SLOT_NOTEBOOK, activeDocSlot } from "./doc-slot.js?v=__BUILD__";
 import { inkSelectionCount, inkTool, isInkArmed } from "./pdf-ink.js?v=__BUILD__";
 import { isEraserEvent } from "../render/ink-engine.js?v=__BUILD__";
 import {
-  documentBlocks, freshDocumentBlockId, isEditingBlock, nextBlockZ, previewBlockGeometry, repaintDocumentBlocks,
+  blockPageBounds, documentBlocks, freshDocumentBlockId, isEditingBlock, nextBlockZ, previewBlockGeometry, repaintDocumentBlocks,
   restackBlock, runDiagramEdit, selectBlock, selectedBlockId, writeDocumentBlocks
 } from "./pdf-blocks.js?v=__BUILD__";
 import {
@@ -40,12 +40,14 @@ import {
 import { applyDocumentRecordChanges, documentHighlightById, freshDocumentHighlightId } from "./pdf-highlights.js?v=__BUILD__";
 import { claimPagePaste, noteInAppCopy } from "./page-clipboard.js?v=__BUILD__";
 import { currentDocumentPage, pdfPageElement, pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
-import { normalizeShape, normalizeShapeRotation, rectFromPoints, rotatePoint, shapeBounds, translateShape } from "../render/annot-shapes.js?v=__BUILD__";
+import { normalizeShape, rectFromPoints, shapeBounds, translateShape } from "../render/annot-shapes.js?v=__BUILD__";
 import {
   addDiagramOverlayPainter, connectorsTiedTo, paintDiagramOverlay, repaintDiagramOverlay, setConnectArrowsSuppressed,
   setDiagramNodeOverrides
 } from "./pdf-connectors.js?v=__BUILD__";
 import { clearDiagramPart, diagramSvg, diagramSvgNode, setDiagramPart } from "./pdf-diagram-layer.js?v=__BUILD__";
+import { makeCardFromPageArea } from "./region-card.js?v=__BUILD__";
+import { REGION_CLASS } from "./pdf-region.js?v=__BUILD__";
 
 // ── What is picked ─────────────────────────────────────────────────────────
 const pickState = { page: null, ids: new Set() };
@@ -63,14 +65,7 @@ const BOX_TYPES = new Set(["rect", "ellipse", "text", "callout"]);
 // A block's frame, or — turned — the upright box round it, which is what a
 // box drawn round several has to reach and what lining up goes by.
 function blockFrameRect(block) {
-  const rect = [block.x, block.y, block.x + block.w, block.y + block.h];
-  const rot = normalizeShapeRotation(block.rot);
-  if (!rot) return rect;
-  const centre = [block.x + block.w / 2, block.y + block.h / 2];
-  const corners = [[rect[0], rect[1]], [rect[2], rect[1]], [rect[2], rect[3]], [rect[0], rect[3]]].map((p) => rotatePoint(p, centre, rot));
-  const xs = corners.map((p) => p[0]);
-  const ys = corners.map((p) => p[1]);
-  return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+  return blockPageBounds(block);
 }
 
 // One thing on the page, as this module handles it: its id, what it is, and
@@ -288,8 +283,9 @@ function onPickPress(event) {
     beginMove(event, page, [hitId]);
     return;
   }
-  // ...and bare paper is where a box is drawn round several.
-  if (canvasSelect && !hitId && !blockEl) {
+  // ...and bare paper is where a box is drawn round several — unless ▣ is
+  // armed, whose own box (src/documents/pdf-region.js) is the one being drawn.
+  if (canvasSelect && !hitId && !blockEl && !el.documentStage?.classList.contains(REGION_CLASS)) {
     claim(event);
     selectBlock(null);
     selectShape(null);
@@ -756,6 +752,15 @@ export function pickAll() {
   return true;
 }
 
+// A card of everything picked: a live picture of the box round them all
+// (src/documents/region-card.js) — lines tied to them, ink and anything else
+// inside it come too, as they are on the page.
+export function cardOfPicked() {
+  const items = pickedItems();
+  if (!items.length || pickState.page == null) return false;
+  return makeCardFromPageArea({ page: pickState.page, rect: unionRect(items.map((item) => item.rect)) });
+}
+
 // ── The bar over several picked ───────────────────────────────────────────
 let arrangeBar = null;
 
@@ -786,6 +791,7 @@ function buildArrangeBar() {
     word("group", "Group", "Group — pick them up as one from now on (Ctrl+G)"),
     word("ungroup", "Ungroup", "Ungroup (Ctrl+Shift+G)"),
     word("duplicate", "Duplicate", "Duplicate (Ctrl+D)"),
+    word("card", "Card", "Make a card — a live picture of everything picked, where it is on the page"),
     word("front", "To front", "Blocks to the front"),
     word("back", "To back", "Blocks to the back"),
     word("delete", "Delete", "Delete (Delete) — Ctrl+Delete takes their lines too", " is-danger")
@@ -800,6 +806,7 @@ function buildArrangeBar() {
     else if (action === "group") groupPicked(true);
     else if (action === "ungroup") groupPicked(false);
     else if (action === "duplicate") duplicatePicked();
+    else if (action === "card") cardOfPicked();
     else if (action === "front") restackPicked(Infinity);
     else if (action === "back") restackPicked(-Infinity);
     else if (action === "delete") deletePicked();

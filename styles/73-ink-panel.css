@@ -94,6 +94,7 @@
 }
 
 .document-ink-rail:not(.is-selecting) #inkRailSelection > [data-ink-action="copy"],
+.document-ink-rail:not(.is-selecting) #inkRailSelection > [data-ink-action="card"],
 .document-ink-rail:not(.is-selecting) #inkRailSelection > [data-ink-action="delete"],
 .document-ink-rail:not(.is-selecting) #inkRailSelection > [data-ink-action="selection-more"],
 .document-ink-rail.is-selecting .ink-rail-paste-solo {

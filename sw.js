@@ -500,6 +500,7 @@ const APP_SHELL = [
   `./src/documents/pdf-connectors.js?v=${STAMP}`,
   `./src/documents/pdf-diagram-layer.js?v=${STAMP}`,
   `./src/documents/canvas-selection.js?v=${STAMP}`,
+  `./src/documents/region-card.js?v=${STAMP}`,
   `./src/documents/page-clipboard.js?v=${STAMP}`,
   `./src/documents/page-pointer.js?v=${STAMP}`,
   `./src/documents/pdf-guides.js?v=${STAMP}`,

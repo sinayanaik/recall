@@ -1452,6 +1452,19 @@ export function splitInkSelection() {
   return true;
 }
 
+// Where the lasso's strokes are: their page and the box round them, in the
+// page's own units (the ones a mark's quads are in) — for the bar's Card, which
+// makes a card of that spot (src/documents/region-card.js). null with nothing
+// circled.
+export function inkSelectionArea() {
+  if (!engine) return null;
+  const key = engine.selectionKey();
+  const box = inkStrokesBounds(engine.selectedStrokes());
+  const page = Number(key);
+  if (!box || !Number.isInteger(page) || page < 1) return null;
+  return { page, rect: [box.minX, box.minY, box.maxX, box.maxY] };
+}
+
 // An ink mark as something a flashcard can hold.
 //
 // Every other mark on a paper makes a card out of its own words. Ink has none —

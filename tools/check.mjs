@@ -689,6 +689,11 @@ const checks = [
     // picked-up block opens it, words select and the Notes bar styles them;
     // its width stays and its height follows the words.
     ["canvas-blocks ", ["node", ["tools/canvas-blocks-check.mjs"], ROOT]],
+    // Cards from the Canvas: Card on the lasso's bar, a picked-up Block's
+    // strip and the bar over several picked, and ▣'s box, each a live picture
+    // of that spot of the Canvas (`pdfref:…:canvas`) that shows, opens the
+    // Canvas, and follows its page when pages are torn out.
+    ["canvas-cards  ", ["node", ["tools/canvas-cards-check.mjs"], ROOT]],
     // Things put on a page where the mouse is: a pasted picture or pasted
     // words, a Block with T or B or a mouse double-click (never a
     // pen's), and a picture copied after ink or Blocks still pasting as one.
