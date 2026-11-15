@@ -92,6 +92,10 @@ export function openBlockActionsPopover({
   onToFront = () => {},
   onToBack = () => {},
   onDelete = () => {},
+  // A quarter turn, and back to upright for one that is turned (`turned`).
+  onTurn = () => {},
+  onStraighten = () => {},
+  turned = false,
   // While the block's words are being typed in place: Style, Full editor and
   // Done, and nothing else — the rest is about a block sitting still.
   editing = false,
@@ -146,7 +150,11 @@ export function openBlockActionsPopover({
     menu.className = "block-actions-menu";
     menu.setAttribute("role", "menu");
     menu.hidden = true;
-    [forward, back, toFront, toBack].forEach((item) => {
+    // Turning is arranging too: a quarter turn, and back to upright once
+    // turned. The handle over the block turns it freely.
+    const turnItems = [actionButton({ action: "turn", label: "Turn 90°" })];
+    if (turned) turnItems.push(actionButton({ action: "straighten", label: "Straighten" }));
+    [forward, back, toFront, toBack, ...turnItems].forEach((item) => {
       item.setAttribute("role", "menuitem");
       menu.appendChild(item);
     });
@@ -223,6 +231,8 @@ export function openBlockActionsPopover({
     else if (action === "to-front") onToFront();
     else if (action === "to-back") onToBack();
     else if (action === "delete") onDelete();
+    else if (action === "turn") onTurn();
+    else if (action === "straighten") onStraighten();
     else if (action === "full-editor") onFullEditor();
     else if (action === "done") onDone();
   });

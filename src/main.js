@@ -4534,6 +4534,9 @@ el.documentMoreBtn?.addEventListener("click", () => {
   // same puzzle the notes ⋯ menu's own rows were rewritten to remove.
   if (open) paintPdfPageNotesButton();
   if (open) paintMarkdownPdfRows();
+  // The Canvas's page rows say which of them can act on the page in view now
+  // (Move up on page 1 cannot).
+  if (open) refreshHandwritingBoard();
 });
 
 // "Edit markdown…" only on a PDF that keeps some (src/documents/md-pdf/): one

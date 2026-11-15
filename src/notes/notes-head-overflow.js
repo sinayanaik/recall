@@ -71,7 +71,10 @@ const ROW_TRAIL_SELECTORS = [
   // button.
   ".document-head > #documentInkBtn",
   // Text, beside the pen and not inside it (src/ui/ink-rail.js, toggleTypewriter).
-  ".document-head > #documentTextBtn",
+  ".document-head > #documentShapesBtn",
+  ".document-head > #documentShapesMenu",
+  ".document-head > #documentInsertBtn",
+  ".document-head > #documentInsertMenu",
   ".document-head > #documentPdfSwitcher",
   ".document-head > #documentMoreBtn",
   ".document-head > #documentMoreMenu",

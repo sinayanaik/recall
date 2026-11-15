@@ -45,7 +45,7 @@
 // Neither needed lifting — both are already inside #documentStage. What is left
 // in this file is what a press MEANS.
 
-import { addNotebookPage, deleteNotebookPage, ensureNotebookDocument, hasNotebook, notebookPageCount, notebookPaper, setNotebookPaper } from "../documents/notebook.js?v=__BUILD__";
+import { addNotebookPage, deleteNotebookPage, duplicateNotebookPage, ensureNotebookDocument, hasNotebook, moveNotebookPage, notebookPageCount, notebookPaper, setNotebookPaper } from "../documents/notebook.js?v=__BUILD__";
 import { BLANK_PAPERS } from "../documents/blank-pdf.js?v=__BUILD__";
 import { notebookPaperPreference, writeNotebookPaperPreference } from "../storage/ink-prefs.js?v=__BUILD__";
 import { addDocumentBlock, addDocumentImageBlock } from "../documents/pdf-blocks.js?v=__BUILD__";
@@ -86,7 +86,7 @@ export function paintHandwritingControls() {
   // picture go on anybody's paper), where there is always a
   // page to put them on — so it stands down only on a Canvas not yet started.
   const standDown = !ready && activeDocSlot() === DOC_SLOT_NOTEBOOK;
-  el.documentInkRail?.querySelectorAll("[data-hw-action]").forEach((node) => {
+  el.documentInsertMenu?.querySelectorAll("[data-hw-action]").forEach((node) => {
     node.toggleAttribute("disabled", standDown);
   });
   // A <label> carries no `disabled`, so the picker inside it is what is turned
@@ -105,6 +105,16 @@ export function paintHandwritingControls() {
     node.setAttribute("aria-pressed", ready && kind === paper ? "true" : "false");
     node.toggleAttribute("disabled", !ready);
   });
+  // The page rows: each refused where it cannot act, never hidden (see below).
+  const total = notebookPageCount();
+  const here = currentDocumentPage() || 1;
+  const pageRow = (action) => el.documentMoreMenu?.querySelector(`[data-document-action="${action}"]`);
+  pageRow("hw-page-after")?.toggleAttribute("disabled", !ready);
+  pageRow("hw-page-end")?.toggleAttribute("disabled", !ready);
+  pageRow("hw-page-duplicate")?.toggleAttribute("disabled", !ready);
+  pageRow("hw-page-up")?.toggleAttribute("disabled", !ready || here <= 1);
+  pageRow("hw-page-down")?.toggleAttribute("disabled", !ready || here >= total);
+  el.documentAddPageBtn?.toggleAttribute("disabled", !ready);
   const tearOut = el.documentMoreMenu?.querySelector('[data-document-action="hw-tear-out"]');
   // Refused rather than hidden on a one-page notebook, for the reason the rail
   // refuses join rather than hiding it: a row that comes and goes moves the ones
@@ -174,6 +184,11 @@ export function startHandwritingNotebook() {
 // second place for the close-the-menu rules to be got wrong.
 export function runHandwritingMenuAction(action) {
   if (action === "hw-tear-out") { tearOutPage(); return true; }
+  if (action === "hw-page-after") { addPage({ after: currentDocumentPage() || notebookPageCount() }); return true; }
+  if (action === "hw-page-end") { addPage(); return true; }
+  if (action === "hw-page-duplicate") { duplicatePage(); return true; }
+  if (action === "hw-page-up") { movePage(-1); return true; }
+  if (action === "hw-page-down") { movePage(1); return true; }
   if (action.startsWith("hw-paper-")) {
     const kind = action.slice("hw-paper-".length);
     if (!BLANK_PAPERS.includes(kind)) return false;
@@ -213,7 +228,10 @@ function wire() {
   // to be: one tap says where, and the block opens to type in. The keyboard's
   // press (a click with no pointer, `detail` 0) has nothing to tap with, so it
   // puts the block in the middle of the view at once.
-  bindInkRailActivation(el.documentInkRail, (button, event) => {
+  //
+  // The rows are the top row's Insert menu now (#documentInsertMenu), not the
+  // pen bar's + menu; what they do is unchanged.
+  bindInkRailActivation(el.documentInsertMenu, (button, event) => {
     const action = button.dataset.hwAction;
     const keyboard = event?.type === "click" && event.detail === 0;
     if (action === "add-page") addPage();
@@ -221,15 +239,37 @@ function wire() {
     else if (action === "add-shape") addShapeBlock(button.dataset.blockShape, { keyboard });
     else if (action === "paste-picture") pastePictureFromClipboard();
   }, "[data-hw-action]");
+
+  // The pager's own +: a page straight after the one in view.
+  el.documentAddPageBtn?.addEventListener("click", () => {
+    addPage({ after: currentDocumentPage() || notebookPageCount() });
+  });
 }
 
-async function addPage() {
-  if (!(await addNotebookPage())) return;
+// A page at the end, or after page `after`. Scrolled to, because a page added
+// off the bottom of a scroller that nothing moved is a press that appears to
+// have done nothing.
+async function addPage({ after = null } = {}) {
+  if (!(await addNotebookPage({ after }))) return;
   paintHandwritingControls();
-  // Scrolled to, because a page added off the bottom of a scroller that nothing
-  // moved is a press that appears to have done nothing.
-  const last = notebookPageCount();
-  setTimeout(() => scrollToDocumentPage(last, 0, { smooth: true }), 60);
+  const target = after === null ? notebookPageCount() : Number(after) + 1;
+  setTimeout(() => scrollToDocumentPage(target, 0, { smooth: true }), 60);
+}
+
+async function duplicatePage() {
+  const page = currentDocumentPage() || 1;
+  if (!(await duplicateNotebookPage(page))) return;
+  paintHandwritingControls();
+  setTimeout(() => scrollToDocumentPage(page + 1, 0, { smooth: true }), 60);
+}
+
+function movePage(delta) {
+  const page = currentDocumentPage() || 1;
+  if (!moveNotebookPage(page, delta)) return;
+  paintHandwritingControls();
+  // The page goes where it was moved, and so does the reader: they moved it
+  // to keep working on it, not to lose sight of it.
+  setTimeout(() => scrollToDocumentPage(page + Math.sign(delta), 0, { smooth: true }), 30);
 }
 
 function tearOutPage() {

@@ -40,7 +40,7 @@ import {
 import { applyDocumentRecordChanges, documentHighlightById, freshDocumentHighlightId } from "./pdf-highlights.js?v=__BUILD__";
 import { claimPagePaste, noteInAppCopy } from "./page-clipboard.js?v=__BUILD__";
 import { currentDocumentPage, pdfPageElement, pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
-import { normalizeShape, rectFromPoints, shapeBounds, translateShape } from "../render/annot-shapes.js?v=__BUILD__";
+import { normalizeShape, normalizeShapeRotation, rectFromPoints, rotatePoint, shapeBounds, translateShape } from "../render/annot-shapes.js?v=__BUILD__";
 import {
   addDiagramOverlayPainter, connectorsTiedTo, paintDiagramOverlay, repaintDiagramOverlay, setConnectArrowsSuppressed,
   setDiagramNodeOverrides
@@ -60,13 +60,26 @@ export function isMultiPicked() {
 
 const BOX_TYPES = new Set(["rect", "ellipse", "text", "callout"]);
 
+// A block's frame, or — turned — the upright box round it, which is what a
+// box drawn round several has to reach and what lining up goes by.
+function blockFrameRect(block) {
+  const rect = [block.x, block.y, block.x + block.w, block.y + block.h];
+  const rot = normalizeShapeRotation(block.rot);
+  if (!rot) return rect;
+  const centre = [block.x + block.w / 2, block.y + block.h / 2];
+  const corners = [[rect[0], rect[1]], [rect[2], rect[1]], [rect[2], rect[3]], [rect[0], rect[3]]].map((p) => rotatePoint(p, centre, rot));
+  const xs = corners.map((p) => p[0]);
+  const ys = corners.map((p) => p[1]);
+  return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+}
+
 // One thing on the page, as this module handles it: its id, what it is, and
 // the rectangle it is lined up by — a block's frame, a box's box, anything
 // else's bounds — in PDF space.
 function itemOf(id) {
   const block = documentBlocks().find((entry) => entry.id === id);
   if (block) {
-    return { id, kind: "block", page: Number(block.page), block, rect: [block.x, block.y, block.x + block.w, block.y + block.h] };
+    return { id, kind: "block", page: Number(block.page), block, rect: blockFrameRect(block) };
   }
   const record = documentHighlightById(id);
   const shape = record?.kind === "shape" ? normalizeShape(record.shape) : null;

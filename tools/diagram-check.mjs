@@ -772,6 +772,90 @@ try {
     saved.found?.subtype === "/PolyLine" && saved.found.vertices >= 8 && /OpenArrow|ClosedArrow/.test(saved.found.le) && saved.found.ap,
     JSON.stringify(saved.found || saved.error));
   check("E. no page errors", !(saved.errors || []).length, (saved.errors || []).join(" | "));
+
+  // ── F. The same diagram every time it is opened ────────────────────────
+  //
+  // "The arrows look different each time I open." A page of blocks — maths,
+  // a list, code, a box in the way — joined by straight, square-cornered and
+  // curved connectors, reopened three times and zoomed out and in: the blocks'
+  // heights, and every connector's ends, sides and corners, come back the same.
+  const stable = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    api.selectBlock?.(null);
+    api.selectShape?.(null);
+    // A page of its own, clear of what the sections above drew on page 1.
+    if (api.notebookPageCount() < 2) { await api.addNotebookPage(); await settle(800); }
+    api.scrollToDocumentPage(2, 0, { smooth: false });
+    await settle(400);
+    const others = api.documentBlocks().filter((b) => b.page !== 2);
+    api.writeDocumentBlocks([...others,
+      { id: "sA", page: 2, x: 60, y: 600, w: 120, h: 50, md: "**A** with $x^2$" },
+      { id: "sB", page: 2, x: 420, y: 600, w: 120, h: 50, md: "**B**\\n\\n- one\\n- two" },
+      { id: "sC", page: 2, x: 250, y: 560, w: 90, h: 130, md: "in the way", style: { fit: false } },
+      { id: "sD", page: 2, x: 60, y: 420, w: 120, h: 50, md: "D \\u0060code\\u0060" },
+      { id: "sE", page: 2, x: 260, y: 420, w: 120, h: 50, md: "E" },
+      { id: "sF", page: 2, x: 460, y: 330, w: 120, h: 50, md: "F" }
+    ]);
+    const arrow = (a, b, route, sa = "auto") => api.addDocumentShape(2, { type: "arrow", p: [[0, 0], [1, 1]], ends: [{ id: a, side: sa }, { id: b, side: "auto" }], ...(route ? { route } : {}) });
+    arrow("sA", "sB", "elbow"); arrow("sD", "sE", "elbow", "e"); arrow("sD", "sF", "elbow", "e"); arrow("sE", "sF", null); arrow("sA", "sD", "curve");
+    const mine = new Set(["sA", "sB", "sC", "sD", "sE", "sF"]);
+    const snap = () => JSON.stringify({
+      blocks: api.documentBlocks().filter((b) => mine.has(b.id)).map((b) => [b.id, b.x, b.y, b.w, b.h]),
+      lines: api.documentShapes(2).filter((r) => r.shape.ends?.some((e) => e && mine.has(e.id))).map((r) => [r.shape.p, r.shape.exits, r.shape.via])
+    });
+    const rest = async () => { for (let i = 0; i < 10; i += 1) await settle(100); api.relinkConnectors(); await settle(300); };
+    await rest();
+    const first = snap();
+    const out = { reopened: [], zoomed: [], routedRound: false, errors: [] };
+    for (let i = 0; i < 3; i += 1) {
+      await api.openDocumentView({ force: true, slot: "notebook" });
+      await rest();
+      out.reopened.push(snap() === first);
+    }
+    // Zoomed out and in, twice over. The same words can lay out a point
+    // taller at one zoom than another; a block's height only ever grows to
+    // hold them (and never shrinks by a point or two), so after the first
+    // round everything has settled and the second round changes nothing.
+    // Through all of it no connector changes the sides it leaves by.
+    const sides = () => JSON.stringify(api.documentShapes(2).filter((r) => r.shape.ends?.some((e) => e && mine.has(e.id))).map((r) => r.shape.exits || null));
+    const firstSides = sides();
+    out.sidesKept = true;
+    const round = async () => {
+      for (const id of ["documentZoomOutBtn", "documentZoomInBtn", "documentZoomInBtn", "documentZoomOutBtn"]) {
+        document.getElementById(id)?.click();
+        await rest();
+        if (sides() !== firstSides) out.sidesKept = false;
+      }
+      return snap();
+    };
+    const once = await round();
+    const twice = await round();
+    out.zoomed = [once === twice];
+    if (once !== twice) out.zoomDiff = [once, twice];
+    // A to B, square-cornered, with "in the way" between them: whichever
+    // sides it takes, its line never passes through that box.
+    const ab = api.documentShapes(2).find((r) => r.shape.ends?.[0]?.id === "sA" && r.shape.ends?.[1]?.id === "sB");
+    const c = api.documentBlocks().find((b) => b.id === "sC");
+    const path = ab ? api.connectorPath(ab.shape) : [];
+    const inside = ([x, y]) => x > c.x + 0.5 && x < c.x + c.w - 0.5 && y > c.y + 0.5 && y < c.y + c.h - 0.5;
+    let crosses = false;
+    for (let i = 1; i < path.length; i += 1) {
+      for (let t = 0; t <= 1; t += 0.02) {
+        if (inside([path[i - 1][0] + (path[i][0] - path[i - 1][0]) * t, path[i - 1][1] + (path[i][1] - path[i - 1][1]) * t])) crosses = true;
+      }
+    }
+    out.routedRound = path.length > 1 && !crosses;
+    out.first = first;
+    out.errors = window.__errs.slice();
+    return out;
+  }`);
+  check("F. a diagram reopened three times draws the same: block heights, connector ends, sides and corners",
+    stable.reopened.length === 3 && stable.reopened.every(Boolean), JSON.stringify(stable));
+  check("F. ...zoomed out and in, it settles after one round and the next changes nothing; no connector changes sides",
+    stable.zoomed.length === 1 && stable.zoomed[0] && stable.sidesKept, JSON.stringify(stable));
+  check("F. a square-cornered connector with a box between its ends never passes through it",
+    stable.routedRound, stable.first);
+  check("F. no page errors", !stable.errors.length, stable.errors.join(" | "));
 } catch (error) {
   check("the check itself ran", false, String(error?.stack || error));
 } finally {

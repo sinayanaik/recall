@@ -209,6 +209,94 @@ try {
     const want = { n: [null, 2], se: [2, 0], w: [0, null], nw: [0, 2] };
     return Object.entries(want).every(([h, e]) => JSON.stringify(G.edgesForHandle(h)) === JSON.stringify(e)) || "handles";
   });
+
+  // ── Connectors laid out together (src/render/connector-route.js) ────────
+  const R = await import(path.join(stage, "src/render/connector-route.js"));
+  const S = await import(path.join(stage, "src/render/annot-shapes.js"));
+  const node = (id, x, y, w, h) => ({ id, kind: "block", rect: [x, y, x + w, y + h], poly: O.outlinePolygon("rect", [x, y, x + w, y + h]), z: 0 });
+  const nodesOf = (...list) => new Map(list.map((n) => [n.id, n]));
+  const arrow = (a, b, extra = {}) => ({ type: "arrow", p: [[0, 0], [1, 1]], ends: [{ id: a, side: "auto" }, { id: b, side: "auto" }], ...extra });
+  const crosses = (points, rect) => points.some((p, i) => i > 0 && R.segmentCrossesRect(points[i - 1], p, rect));
+
+  must("an elbow with a box in its way goes round it, and its corners are stored as via", () => {
+    const nodes = nodesOf(node("A", 0, 0, 100, 40), node("B", 400, 0, 100, 40), node("C", 200, -60, 80, 160));
+    const out = R.layoutConnectors([{ id: "x", shape: arrow("A", "B", { route: "elbow" }) }], nodes).get("x");
+    if (!out.via?.length) return `no via: ${JSON.stringify(out)}`;
+    const path = S.connectorPath(out);
+    if (crosses(path, [200, -60, 280, 100])) return `still crosses C: ${JSON.stringify(path)}`;
+    return S.normalizeShape(out).via.length === out.via.length || "via did not survive normalising";
+  });
+
+  must("...and with nothing in the way there are no stored corners — the plain elbow, as before", () => {
+    const nodes = nodesOf(node("A", 0, 0, 100, 40), node("B", 400, 100, 100, 40));
+    const out = R.layoutConnectors([{ id: "x", shape: arrow("A", "B", { route: "elbow" }) }], nodes).get("x");
+    return !out.via || `via ${JSON.stringify(out.via)}`;
+  });
+
+  must("three connectors leaving one side share it out, in the order of where they go", () => {
+    const nodes = nodesOf(node("D", 0, 0, 100, 60), node("E", 300, 100, 80, 30), node("F", 300, 0, 80, 30), node("G", 300, -100, 80, 30));
+    const entries = ["E", "F", "G"].map((to) => ({ id: `to${to}`, shape: { ...arrow("D", to, { route: "elbow" }), ends: [{ id: "D", side: "e" }, { id: to, side: "auto" }] } }));
+    const out = R.layoutConnectors(entries, nodes);
+    const ys = ["toE", "toF", "toG"].map((id) => out.get(id).p[0][1]);
+    if (new Set(ys).size !== 3) return `ports ${ys}`;
+    // E is highest on the page (y up), G lowest: their ports in that order.
+    return (ys[0] > ys[1] && ys[1] > ys[2]) || `order ${ys}`;
+  });
+
+  must("a lone connector on a side still leaves from its middle", () => {
+    const nodes = nodesOf(node("A", 0, 0, 100, 40), node("B", 300, 0, 100, 40));
+    const out = R.layoutConnectors([{ id: "x", shape: { ...arrow("A", "B"), ends: [{ id: "A", side: "e" }, { id: "B", side: "w" }] } }], nodes).get("x");
+    return (near(out.p[0][1], 20) && near(out.p[1][1], 20)) || JSON.stringify(out.p);
+  });
+
+  must("an auto elbow picks facing sides, and keeps the sides it had unless another is clearly better", () => {
+    const nodes = nodesOf(node("A", 0, 0, 100, 40), node("B", 300, 0, 100, 40));
+    const out = R.layoutConnectors([{ id: "x", shape: arrow("A", "B", { route: "elbow" }) }], nodes).get("x");
+    if (String(out.exits) !== "e,w") return `exits ${out.exits}`;
+    // B straight below-right at a near-diagonal: n/s and e/w nearly tie.
+    const diag = nodesOf(node("A", 0, 0, 100, 40), node("B", 160, -140, 100, 40));
+    const kept = R.layoutConnectors([{ id: "x", shape: arrow("A", "B", { route: "elbow", exits: ["s", "n"] }) }], diag).get("x");
+    return String(kept.exits) === "s,n" || `exits ${kept.exits}`;
+  });
+
+  must("the same page lays out the same, whatever order its connectors come in", () => {
+    const nodes = nodesOf(node("A", 0, 0, 100, 40), node("B", 400, 0, 100, 40), node("C", 200, -60, 80, 160), node("D", 0, 200, 100, 40));
+    const entries = [
+      { id: "a", shape: arrow("A", "B", { route: "elbow" }) },
+      { id: "b", shape: { ...arrow("A", "D", { route: "elbow" }), ends: [{ id: "A", side: "n" }, { id: "D", side: "auto" }] } },
+      { id: "c", shape: { ...arrow("A", "C", { route: "curve" }), ends: [{ id: "A", side: "n" }, { id: "C", side: "auto" }] } }
+    ];
+    const one = JSON.stringify([...R.layoutConnectors(entries, nodes)].sort());
+    const two = JSON.stringify([...R.layoutConnectors(entries.slice().reverse(), nodes)].sort());
+    return one === two || "a different answer for a different order";
+  });
+
+  must("a bend the reader set moves with the ends it sits between", () => {
+    const nodes = nodesOf(node("A", 0, 0, 100, 40), node("B", 300, 0, 100, 40));
+    const first = R.layoutConnectors([{ id: "x", shape: arrow("A", "B", { route: "elbow" }) }], nodes).get("x");
+    const bent = { ...first, p: [...first.p, [200, 80]] };
+    const moved = nodesOf(node("A", 0, 50, 100, 40), node("B", 300, 50, 100, 40));
+    const out = R.layoutConnectors([{ id: "x", shape: bent }], moved).get("x");
+    return (near(out.p[2][0], 200) && near(out.p[2][1], 130) && !out.via) || JSON.stringify(out.p);
+  });
+
+  must("via is kept only on an elbow with no bend, and moves with the line", () => {
+    const base = { type: "arrow", p: [[0, 0], [100, 50]], route: "elbow", via: [[20, 0], [20, 50]] };
+    if (!S.normalizeShape(base).via) return "dropped on an elbow";
+    if (S.normalizeShape({ ...base, route: "curve" }).via) return "kept on a curve";
+    if (S.normalizeShape({ ...base, p: [...base.p, [50, 25]] }).via) return "kept beside a bend";
+    if (S.normalizeShape({ ...base, route: undefined }).via) return "kept on a straight line";
+    const moved = S.translateShape(base, 10, 5);
+    if (String(moved.via[0]) !== "30,5") return `translated to ${moved.via[0]}`;
+    const dragged = S.moveShapeHandle(base, "p1", 200, 50);
+    return !dragged.via || "an end dragged by hand kept the old corners";
+  });
+
+  must("an old line normalises exactly as it was", () => {
+    const old = { type: "arrow", p: [[0, 0], [100, 50]], stroke: "#000000", width: 2 };
+    const out = S.normalizeShape(old);
+    return (!("via" in out) && !("route" in out) && !("exits" in out)) || JSON.stringify(out);
+  });
 } catch (error) {
   results.push([false, "the check itself ran", String(error?.stack || error)]);
   failures += 1;
