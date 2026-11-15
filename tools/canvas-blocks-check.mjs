@@ -451,7 +451,7 @@ try {
   check("a first tap picks a block up, a second opens it in place", edit.firstTapSelects && edit.secondTapOpens, JSON.stringify(edit));
   check("dragging across the words being typed selects them, not the block", edit.selectingDoesNotMove, JSON.stringify(edit));
   check("a press on the paper puts the words down; a drag on a picked-up block moves it", edit.paperCommits && edit.dragMoves, JSON.stringify(edit));
-  check("a picked-up block's strip is one slim row: Style, Edit, Duplicate, Arrange, Delete", edit.stripHeight > 0 && edit.stripHeight < 48 && edit.stripRow === "style,edit,duplicate,arrange,delete", JSON.stringify(edit));
+  check("a picked-up block's strip is one slim row: Style, Edit, Duplicate, Card, Arrange, Delete", edit.stripHeight > 0 && edit.stripHeight < 48 && edit.stripRow === "style,edit,duplicate,card,arrange,delete", JSON.stringify(edit));
   check("...and Arrange opens the four restack verbs and a quarter turn", edit.menuShut && edit.menuOpen && edit.menuItems === "restack-forward,restack-back,to-front,to-back,turn", JSON.stringify(edit));
 
   // ── 5. The width stays; the height follows the words ───────────────────
