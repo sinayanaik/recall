@@ -119,6 +119,7 @@ import { storeImageOrQueue } from "../images/outbox.js?v=__BUILD__";
 import { createInkEngine, isEraserEvent } from "../render/ink-engine.js?v=__BUILD__";
 import { setToastPenPassThrough } from "../ui/feedback.js?v=__BUILD__";
 import { forEachDocumentScroller, liveDocumentHandler } from "./doc-scrollers.js?v=__BUILD__";
+import { documentViewOnly } from "./view-only.js?v=__BUILD__";
 
 // A press shorter and stiller than both of these was a tap, not a stroke.
 // 150ms is under the 240ms the touch controller waits for a press, so the two
@@ -557,6 +558,12 @@ export function setInkStandDownHook(fn) {
 }
 
 function inkTakesPointer(event) {
+  // ── View only, which is the ink layer standing down altogether ──────────
+  //
+  // Nothing is drawn, highlighted, rubbed out or lassoed: the page is being
+  // read (src/documents/view-only.js). A stylus then scrolls the paper the way
+  // a finger does, since nothing here claims its press.
+  if (documentViewOnly()) return false;
   // ── The "text" tool, which is the ink layer standing down ────────────────
   //
   // With it armed the pen is not marking the page at all: it drives the

@@ -32,6 +32,7 @@ import { inkTool, isInkArmed } from "./pdf-ink.js?v=__BUILD__";
 import { isRegionSelectArmed } from "./pdf-region.js?v=__BUILD__";
 import { anyModalOpen } from "../ui/overlays.js?v=__BUILD__";
 import { onDocumentScrollers } from "./doc-scrollers.js?v=__BUILD__";
+import { documentViewOnly } from "./view-only.js?v=__BUILD__";
 
 let pagePointer = null;
 let pagePressType = "";
@@ -72,6 +73,9 @@ const PLACE_TYPING_FIELD = "input, textarea, select, [contenteditable='true'], [
 
 function pageIsFreeToPlace() {
   if (!onDocumentSurface() || el.documentStage?.hidden) return false;
+  // View only (src/documents/view-only.js): T, B and a double-click are
+  // letters and a click again, not a Block.
+  if (documentViewOnly()) return false;
   if (isEditingBlock() || editingShapeTextId()) return false;
   if (anyModalOpen() || document.querySelector(".image-compress-modal, .pdf-block-editor:not([hidden])")) return false;
   return true;

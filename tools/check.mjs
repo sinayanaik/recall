@@ -694,6 +694,12 @@ const checks = [
     // of that spot of the Canvas (`pdfref:…:canvas`) that shows, opens the
     // Canvas, and follows its page when pages are torn out.
     ["canvas-cards  ", ["node", ["tools/canvas-cards-check.mjs"], ROOT]],
+    // View only (✎ | 👁) on the PDFs and the Canvas, and a pinch that never
+    // moves a Block: a second finger calls a finger's drag off and puts the
+    // Block or the typed words back; on 👁 nothing is drawn, moved, added,
+    // pasted or undone, the pen, Shapes and Insert leave the row, and the row
+    // still fits at 360px; a real two-finger pinch on a Block zooms the page.
+    ["view-only     ", ["node", ["tools/view-only-check.mjs"], ROOT]],
     // Things put on a page where the mouse is: a pasted picture or pasted
     // words, a Block with T or B or a mouse double-click (never a
     // pen's), and a picture copied after ink or Blocks still pasting as one.

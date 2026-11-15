@@ -27,6 +27,7 @@
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { DOC_SLOT_NOTEBOOK, activeDocSlot } from "./doc-slot.js?v=__BUILD__";
+import { documentViewOnly } from "./view-only.js?v=__BUILD__";
 import { inkSelectionCount, inkTool, isInkArmed } from "./pdf-ink.js?v=__BUILD__";
 import { isEraserEvent } from "../render/ink-engine.js?v=__BUILD__";
 import {
@@ -234,7 +235,18 @@ const NOT_OURS = "button, a[href], input, textarea, select, label, [contentedita
   + ".pdf-note-badge, .pdf-shape-editor, .pdf-shape-editor-grip, .pdf-connector-label-editor, .pdf-diagram-layer button, .document-ink-rail";
 
 function onPickPress(event) {
-  if (pickPress || (event.button !== undefined && event.button > 0)) return;
+  if (pickPress) {
+    // A second finger while a finger carries the picked things is a pinch:
+    // they go back where they were, nothing is written (abortPickMove).
+    if (pickPress.kind === "move" && pickPress.pointerType === "touch"
+        && event.pointerType === "touch" && event.pointerId !== pickPress.pointerId) {
+      abortPickMove();
+    }
+    return;
+  }
+  if (event.button !== undefined && event.button > 0) return;
+  // View only (src/documents/view-only.js): nothing is picked up or moved.
+  if (documentViewOnly()) return;
   const target = event.target;
   if (!el.documentView?.contains(target) || target.closest?.(NOT_OURS)) return;
   if (isEraserEvent(event) || isEditingBlock() || editingShapeTextId()) return;
@@ -337,7 +349,7 @@ function beginMove(event, page, ids, { narrowTo = null } = {}) {
   const viewport = pdfPageViewport(page);
   if (!items.length || !viewport) return;
   pickPress = {
-    kind: "move", pointerId: event.pointerId, page, items, narrowTo,
+    kind: "move", pointerId: event.pointerId, pointerType: event.pointerType || "", page, items, narrowTo,
     start: [event.clientX, event.clientY], perPixel: 1 / (viewport.scale || 1),
     box: unionRect(items.map((item) => item.rect)), moved: false, dx: 0, dy: 0
   };
@@ -418,6 +430,27 @@ function onMoveUp(event) {
     }
     if (shapes.size) updateShapesQuietly([...shapes].map(([id, shape]) => ({ id, shape })));
   });
+  setDiagramNodeOverrides(new Map());
+  repaintDocumentBlocks();
+  paintDocumentShapes(drag.page);
+  repaintDiagramOverlay();
+  syncArrangeBar();
+}
+
+// ── ...called off by a second finger ──────────────────────────────────────
+//
+// A finger carrying a group when a second one lands is the start of a pinch,
+// and the page is about to zoom under it (initDocumentPinchZoom,
+// src/documents/pdf-view.js). What the first finger did on the way was not a
+// move the reader meant: every picked thing is drawn back where it is stored,
+// and nothing is written.
+function abortPickMove() {
+  const drag = pickPress;
+  if (!drag || drag.kind !== "move") return;
+  pickPress = null;
+  drag.stop();
+  dragView = null;
+  moveAdjuster(null);
   setDiagramNodeOverrides(new Map());
   repaintDocumentBlocks();
   paintDocumentShapes(drag.page);
@@ -869,6 +902,8 @@ function pickTypingTarget(target) {
 const NUDGE = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, 1], ArrowDown: [0, -1] };
 
 function onKey(event) {
+  // View only: nothing is picked, pasted, grouped, nudged or deleted.
+  if (documentViewOnly()) return;
   if (pickTypingTarget(event.target) || el.documentStage?.hidden || !el.documentView?.querySelector(".pdf-page")) return;
   if (isEditingBlock() || editingShapeTextId()) return;
   const ctrl = event.ctrlKey || event.metaKey;

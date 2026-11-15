@@ -33,6 +33,7 @@ import { bindInkRailActivation, paintInkRailPressed } from "../handwriting/rail.
 import { buildInkPanel, createInkPanel, paintInkChip } from "../handwriting/ink-popover.js?v=__BUILD__";
 import { diagramSnapPreference, inkPreferences, inkRailOpen, rememberInkRecentColor, writeDiagramSnapPreference, writeInkPreferences, writeInkRailOpen } from "../storage/ink-prefs.js?v=__BUILD__";
 import { DOC_SLOT_NOTEBOOK, activeDocSlot } from "../documents/doc-slot.js?v=__BUILD__";
+import { documentViewOnly, toggleDocumentViewOnly } from "../documents/view-only.js?v=__BUILD__";
 import { isRegionSelectArmed, setRegionSelect } from "../documents/pdf-region.js?v=__BUILD__";
 import { displayedShapeSettings, setShapeChangedHandler, setShapeType, shapeButtonType, shapeType } from "../documents/pdf-shapes.js?v=__BUILD__";
 import { buildShapeMenu, buildShapePanel, refreshShapeMenu, refreshShapePanel } from "../documents/pdf-shape-panel.js?v=__BUILD__";
@@ -325,8 +326,29 @@ export function rehomeInkRail(stage) {
 }
 
 export function refreshInkRail() {
+  paintViewOnlyPill();
   paintInkRail();
   placeInkRail();
+}
+
+// ── ✎ | 👁 ──────────────────────────────────────────────────────────────────
+//
+// The PDFs' and the Canvas's View only (src/documents/view-only.js), shaped as
+// Notes' own pill (#editNotesBtn): ✎ lit while the page can be written on, 👁
+// while it is only read. Painted with the rest of the row's tools, because it
+// says which of them are there at all, and per part — the PDFs and the Canvas
+// each keep their own. Compared before written: this runs on every pen lift.
+function paintViewOnlyPill() {
+  const pill = el.documentEditBtn;
+  if (!pill) return;
+  const viewOnly = documentViewOnly();
+  if (pill.classList.contains("is-editing") === viewOnly) pill.classList.toggle("is-editing", !viewOnly);
+  const pressedValue = viewOnly ? "true" : "false";
+  if (pill.getAttribute("aria-pressed") !== pressedValue) pill.setAttribute("aria-pressed", pressedValue);
+  const title = viewOnly
+    ? "View only — press for ✎, to write, draw and move things on the page again"
+    : "View only — read, scroll and zoom; nothing on the page can be moved or changed";
+  if (pill.title !== title) pill.title = title;
 }
 
 function paintInkRail() {
@@ -568,6 +590,9 @@ function askToClearPage() {
 }
 
 export function toggleInkRail(force = null) {
+  // View only: there is no pen to open (the reading rail's Pen row is hidden
+  // then too; this is the backstop).
+  if (documentViewOnly() && force !== false) return;
   setInkArmed(force === null ? !isInkArmed() : Boolean(force));
   // Remembered per surface. A reader who shuts the rail on a notebook has said
   // something, and re-opening it on their next visit would be worse than never
@@ -588,7 +613,9 @@ export function applyInkRailPreference() {
   const slot = activeDocSlot();
   // This tab's own pen — a PDF's and a Canvas's are set apart.
   applyRailInkSettings(inkPreferences(inkRailSurface()));
-  setInkArmed(inkRailOpen(slot));
+  // Shut while the page is View only, whatever was remembered — and the
+  // remembered answer is left as it is, for when ✎ is pressed again.
+  setInkArmed(inkRailOpen(slot) && !documentViewOnly(slot));
   // AFTER setInkArmed, which resets the tool when it shuts the rail: this slot's
   // tool is the last word on what the pen does here, open rail or shut. A stylus
   // draws — or selects — whether the rail is up or not, so the tool cannot be a
@@ -714,6 +741,7 @@ function pressRail(button) {
 // arms it and shows which shape; pressed while armed it is the menu that picks
 // another. Back to writing is ✎'s pen, as ever.
 function pressShapesButton() {
+  if (documentViewOnly()) return;
   if (isRegionSelectArmed()) setRegionSelect(false);
   if (isBlockPlacementArmed()) armBlockPlacement(false, { toast: false });
   if (isInkArmed() && inkTool() === "shape") {
@@ -758,6 +786,10 @@ export function initInkRail() {
   slotTools.notebook = inkPreferences("notebook").tool;
 
   el.documentInkBtn?.addEventListener("click", () => toggleInkRail());
+  // ✎ | 👁: what the switch puts down and brings back is src/main.js's
+  // (setViewOnlyChangedHook), which reaches the blocks, the shapes and the
+  // picks this module does not.
+  el.documentEditBtn?.addEventListener("click", () => toggleDocumentViewOnly());
   // A pointer arms "tap where it goes"; the keyboard, which has nothing to tap
   // with, puts the block in the middle of the view at once.
   // Insert opens its menu; pressed while a Block is waiting for its tap, it

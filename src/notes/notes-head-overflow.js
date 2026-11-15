@@ -55,6 +55,9 @@ const ROW_TRAIL_SELECTORS = [
   ".notes-head > #notesHeadMoreBtn",
   ".notes-head > #notesHeadMoreMenu",
   ".document-head > #documentDarkBtn",
+  // ✎ | 👁, View only (src/documents/view-only.js): before ▣ and the tools it
+  // hides, the way Notes' pill sits ahead of its ⋯.
+  ".document-head > #documentEditBtn",
   ".document-head > #documentRegionBtn",
   // The pen. Missing from this list until now, and .document-head is
   // `display: none` precisely because this function empties it — so the ✎ was

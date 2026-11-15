@@ -294,6 +294,7 @@ export function refreshReadingRailModes() {
   // refreshInkRail already writes aria-pressed on that button on every change,
   // so this row needs nothing of its own to stay in step.
   mirrorMode("ink", el.documentInkBtn);
+  mirrorMode("view-only", el.documentEditBtn);
   mirrorMode("region", el.documentRegionBtn);
   mirrorMode("typewriter", el.documentInsertBtn);
   // Not mirrorMode: the tool is not a button's aria-pressed anywhere, it is the
@@ -460,6 +461,8 @@ export function initReadingRail() {
     // pointer-events:none while the chrome is folded — click() dispatches at the
     // element, it does not hit-test.
     else if (action === "edit-notes") el.editNotesBtn?.click();
+    // ✎ | 👁 on the page, by the same route: the pill's own click.
+    else if (action === "view-only") el.documentEditBtn?.click();
     // A toggle, not the one-way "Leave focus" this replaced — and now genuinely
     // two-way, because the rail is on screen whether or not focus mode is on. It
     // says which way it is set, which is the whole reason it changed: a control
@@ -474,7 +477,7 @@ export function initReadingRail() {
     // For the two rows this whole redesign is about — "some dedicated reliable
     // button for full / focus screen" — that is the difference between a switch
     // and a trapdoor.
-    if (action !== "focus" && action !== "immersive" && action !== "rotate") setReadingRailExpanded(false);
+    if (action !== "focus" && action !== "immersive" && action !== "rotate" && action !== "view-only") setReadingRailExpanded(false);
     // The modes among these say which way they are set, and the functions that
     // own that state paint their ORIGINAL buttons — which are in the row's ⋯
     // menu, not here. So the rail reads the answer back off them.

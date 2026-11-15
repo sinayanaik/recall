@@ -357,6 +357,7 @@ export const BACKED_UP_SETTINGS_KEYS = {
   "recall:pdfInvert": "Whether papers are shown inverted for dark reading.",
   "recall:pdfPaper": "The paper tone PDFs are shown on (White, Sepia, Dim, Black or the theme's).",
   "recall:canvasPaper": "The paper tone the Canvas is shown on.",
+  "recall:view-only-v1": "Whether the PDFs and the Canvas are View only on this device — read and zoomed, nothing on the page moved.",
   "recall:readingProgressShown": "Whether the reading-progress row is shown at the foot of Notes and PDFs.",
   "recall:teleprompter-v1": "The teleprompter's speed, type, reading band and behaviour.",
   "recall:pdf-teleprompter-v1": "The PDF teleprompter's speed, layout, reading band and behaviour.",

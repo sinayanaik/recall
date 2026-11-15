@@ -53,6 +53,7 @@ import {
 } from "./pdf-shapes.js?v=__BUILD__";
 import { applyDocumentRecordChanges, documentHighlightById } from "./pdf-highlights.js?v=__BUILD__";
 import { pdfPageElement, pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
+import { documentViewOnly } from "./view-only.js?v=__BUILD__";
 import {
   SHAPE_ROTATE_MAGNET, connectorLabelRect, normalizeShape, normalizeShapeRotation, pathMidpoint, connectorPath, rotatePoint, shapeBoxCorners,
   shapePrimitives, translateShape
@@ -505,6 +506,8 @@ function onDiagramControlDown(event) {
   // A press in a connector's label editor is the editor's: the page's own
   // handlers (the pen, the shapes, a block put down) must not hear it.
   if (target?.closest?.(".pdf-connector-label-editor")) { event.stopPropagation(); return; }
+  // View only (src/documents/view-only.js): nothing is turned or joined.
+  if (documentViewOnly()) return;
   const knob = target?.closest?.(".pdf-block-turn");
   if (knob) { onTurnDown(event, knob); return; }
   const arrow = target?.closest?.(".pdf-connect-arrow");

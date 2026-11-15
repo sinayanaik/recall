@@ -72,6 +72,7 @@ import { dropMetaTombstonesForLiveIds, recordDeletedMetaId } from "../sync/docum
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
 import { notePdfGesture } from "./pdf-timing.js?v=__BUILD__";
 import { makeCardFromPageArea } from "./region-card.js?v=__BUILD__";
+import { documentViewOnly } from "./view-only.js?v=__BUILD__";
 import { resolveFontFamily } from "../ui/fonts.js?v=__BUILD__";
 
 // A block with no `kind` is markdown — see the header. Named constants rather
@@ -2129,10 +2130,7 @@ function beginGesture(event, node, mode, edge = "se", { openOnTap = false } = {}
     if (upEvent && upEvent.pointerId !== pointerId) return;
     gestureLive = false;
     if (frame) { cancelAnimationFrame(frame); frame = 0; }
-    document.removeEventListener("pointermove", move);
-    document.removeEventListener("pointerup", finish);
-    document.removeEventListener("pointercancel", finish);
-    node.removeEventListener("lostpointercapture", onLostCapture);
+    removeGestureListeners();
     // What ended it, for ☰ → Diagnostics: a pointerup is the reader letting
     // go; a pointercancel or a lost capture is the BROWSER taking the pointer
     // back (a pan, a system gesture, a native drag), which is the one ending a
@@ -2195,9 +2193,54 @@ function beginGesture(event, node, mode, edge = "se", { openOnTap = false } = {}
     finish(lostEvent);
   };
 
+  // ── A second finger is a pinch, not part of this drag ───────────────────
+  //
+  // "When I zoom in or out the blocks get displaced." A pinch that began with
+  // one finger on a block started THIS gesture on that finger, and the zoom the
+  // second finger made (initDocumentPinchZoom, src/documents/pdf-view.js) ran
+  // beside it — so the block followed the first finger across the page while
+  // the page scaled under it, and the drop wrote wherever that left it. A
+  // second touch now calls the drag off: the block goes back to where it was,
+  // nothing is written, and the pinch has both fingers. Pointer events reach
+  // here before the touchstart the pinch listens for. Only a FINGER's drag is
+  // called off this way — a palm beside a stylus is the ink layer's question.
+  const fingerDrag = event.pointerType === "touch";
+  const onSecondFinger = (downEvent) => {
+    if (downEvent.pointerType !== "touch" || downEvent.pointerId === pointerId) return;
+    abort();
+  };
+  const abort = () => {
+    gestureLive = false;
+    if (frame) { cancelAnimationFrame(frame); frame = 0; }
+    // Off BEFORE the capture is let go, so the lostpointercapture that follows
+    // is not taken for the end of a drag and written.
+    removeGestureListeners();
+    if (captured) {
+      try { node.releasePointerCapture(pointerId); } catch (_) { /* already gone */ }
+    }
+    notePdfGesture("block", "cancelled", {
+      id, kind: block.kind, mode, pointer: event.pointerType, cause: "second finger",
+      dx: live.x - block.x, dy: live.y - block.y
+    });
+    placeBlock(node, viewport, block);
+    liveGesture = null;
+    gestureAdjuster(null);
+    gestureFrameHook(block.page, null);
+    syncBlockActionsPopover();
+  };
+
+  function removeGestureListeners() {
+    document.removeEventListener("pointermove", move);
+    document.removeEventListener("pointerup", finish);
+    document.removeEventListener("pointercancel", finish);
+    node.removeEventListener("lostpointercapture", onLostCapture);
+    if (fingerDrag) document.removeEventListener("pointerdown", onSecondFinger, true);
+  }
+
   document.addEventListener("pointermove", move);
   document.addEventListener("pointerup", finish);
   document.addEventListener("pointercancel", finish);
+  if (fingerDrag) document.addEventListener("pointerdown", onSecondFinger, true);
   // The capture can be lost without a pointercancel (the node re-parented, a
   // second capture elsewhere) — and then neither listener above ever hears the
   // end of the gesture, and `gestureLive` stays true, freezing every height
@@ -2321,6 +2364,14 @@ export function previewBlockRotation(id, deg) {
 // when the press belonged to a block, so the caller knows the paper did not get
 // it — which is what stops a pen press meant to move a block from also drawing.
 export function handleBlockPointerDown(event) {
+  // The second finger of a pinch is the pinch's, wherever it lands: on another
+  // block it would start a drag of its own and carry that block off while the
+  // page zooms (see onSecondFinger in beginGesture).
+  if (event.pointerType === "touch" && event.isPrimary === false) return false;
+  // View only (src/documents/view-only.js): a block is read, not picked up.
+  // Not claimed either — no stopPropagation — so a link in its words still
+  // opens and a finger on it scrolls the page like a finger anywhere else.
+  if (documentViewOnly()) return false;
   const node = event.target.closest?.(`.${PDF_BLOCK_CLASS}`);
   if (!node) {
     // A press anywhere else finishes an edit in progress, which is how every

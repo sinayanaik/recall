@@ -298,6 +298,7 @@ export const el = {
   documentDarkBtn: document.querySelector("#documentDarkBtn"),
   documentRegionBtn: document.querySelector("#documentRegionBtn"),
   documentInkBtn: document.querySelector("#documentInkBtn"),
+  documentEditBtn: document.querySelector("#documentEditBtn"),
   documentInsertBtn: document.querySelector("#documentInsertBtn"),
   documentInsertMenu: document.querySelector("#documentInsertMenu"),
   documentShapesBtn: document.querySelector("#documentShapesBtn"),

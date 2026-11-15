@@ -64,6 +64,7 @@ import { inkEraseTarget, inkPaperBg, inkTool, isInkArmed, pushInkHistoryAction, 
 import { paperRecolor } from "../format/paper-tones.js?v=__BUILD__";
 import { pdfPageElement, pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
 import { forEachDocumentScroller, liveDocumentHandler } from "./doc-scrollers.js?v=__BUILD__";
+import { documentViewOnly } from "./view-only.js?v=__BUILD__";
 
 export const PDF_SHAPE_LAYER_CLASS = "pdf-shape-layer";
 export const PDF_SHAPE_CLASS = "pdf-shape";
@@ -1131,6 +1132,7 @@ function fingerPlacesShape(event) {
 
 function onShapeFingerDown(event) {
   shapeFingerTap = null;
+  if (documentViewOnly()) return;
   // A press that picked a text box up (onShapePointerDown, which runs first)
   // is that gesture's — its tap is answered by onShapePointerUp, and answering
   // it here too would open the editor twice.
@@ -1224,7 +1226,21 @@ function pickupAt(event) {
 }
 
 function onShapePointerDown(event) {
-  if (shapePress) return;
+  if (shapePress) {
+    // A second finger while a finger is carrying a shape is a pinch: the
+    // carry is called off (abortShapePress) — and with it the pen-down that
+    // made the pinch read the second finger as a palm and refuse to zoom.
+    if (shapePress.pointerType === "touch" && event.pointerType === "touch" && event.pointerId !== shapePress.pointerId) {
+      abortShapePress();
+    }
+    return;
+  }
+  // View only (src/documents/view-only.js): no shape is drawn, picked up,
+  // moved or reshaped. A press elsewhere still puts a selected one down.
+  if (documentViewOnly()) {
+    if (selectedShapeId) selectShape(null);
+    return;
+  }
   const pickup = shapeTakesPointer(event) ? null : pickupAt(event);
   if (pickup) {
     beginShapePress(event, pickup);
@@ -1448,6 +1464,22 @@ function onShapePointerUp(event) {
   if (shape && drag.mode === "handle" && shape.type === "text" && drag.handle !== "rot") shapeTextRefitIds.add(drag.target.id);
   if (shape) updateShape(drag.target.id, shape);
   else paintDocumentShapes(drag.page);
+}
+
+// ── A second finger: put back, nothing written ─────────────────────────────
+//
+// Unlike a cancel (below), which keeps a move where the reader left it, this is
+// the reader reaching for a pinch with a finger already on the shape. What the
+// first finger did on the way was not meant, so the shape goes back to where
+// it was and is not written. A shape being drawn is dropped, as on a cancel.
+function abortShapePress() {
+  const drag = shapePress;
+  if (!drag) return;
+  endShapePress();
+  shapeBinding.clear();
+  shapeMoveAdjuster(null);
+  notePdfGesture("shape", "cancelled", { id: drag.target?.id, mode: drag.mode, pointer: drag.pointerType, cause: "second finger", moved: drag.moved ? "yes" : "no" });
+  paintDocumentShapes(drag.page);
 }
 
 // The browser took the pointer back — a pan won, a system gesture, the capture
