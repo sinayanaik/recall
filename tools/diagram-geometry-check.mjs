@@ -227,6 +227,15 @@ try {
     return S.normalizeShape(out).via.length === out.via.length || "via did not survive normalising";
   });
 
+  must("two blocks closer than two stubs: a plain elbow squeezed into the gap, never back over itself", () => {
+    const nodes = nodesOf(node("A", 0, 0, 100, 40), node("B", 110, 50, 100, 40));
+    const out = R.layoutConnectors([{ id: "x", shape: { ...arrow("A", "B", { route: "elbow" }), ends: [{ id: "A", side: "e" }, { id: "B", side: "w" }] } }], nodes).get("x");
+    if (out.via) return `via ${JSON.stringify(out.via)}`;
+    const path = S.connectorPath(out);
+    if (S.pathDoublesBack(path)) return `runs back over itself: ${JSON.stringify(path)}`;
+    return path.every((p, i) => i === 0 || p[0] >= path[i - 1][0] - 1e-6) || JSON.stringify(path);
+  });
+
   must("...and with nothing in the way there are no stored corners — the plain elbow, as before", () => {
     const nodes = nodesOf(node("A", 0, 0, 100, 40), node("B", 400, 100, 100, 40));
     const out = R.layoutConnectors([{ id: "x", shape: arrow("A", "B", { route: "elbow" }) }], nodes).get("x");
