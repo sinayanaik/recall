@@ -481,7 +481,9 @@ try {
     return { w0, short: { w: short.w, h: short.h }, long: { w: long.w, h: long.h, liveH: long.liveH, overflow: long.overflow }, back: { w: back.w, h: back.h } };
   }`);
   check("a block keeps its width whatever is written in it", size.short.w === size.w0 && size.long.w === size.w0 && size.back.w === size.w0, JSON.stringify(size));
-  check("...and its height follows the words, while typed and once put down, with nothing cut off", size.long.h > size.short.h * 2 && size.long.liveH > 60 && size.long.overflow <= 1 && size.back.h === size.short.h, JSON.stringify(size));
+  // Back to within the height's slack (HEIGHT_SLACK, src/documents/pdf-blocks.js):
+  // a point either way is the same words measured a fraction apart.
+  check("...and its height follows the words, while typed and once put down, with nothing cut off", size.long.h > size.short.h * 2 && size.long.liveH > 60 && size.long.overflow <= 1 && Math.abs(size.back.h - size.short.h) <= 3, JSON.stringify(size));
 
   // ...and a box that keeps a height of its own (a diagram's diamond) keeps it
   // as the least it can be, and still grows to hold its words.

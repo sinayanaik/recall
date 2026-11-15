@@ -999,7 +999,8 @@ try {
 
     const before = { meta: api.state.meta.notebook.pages, doc: api.currentPdfPageCount(), inkPage1: inkOn(1) };
 
-    press('[data-hw-action="add-page"]');
+    // A page at the end is a row of ⋯ → Canvas pages now, not the pen's bar.
+    document.querySelector('#documentMoreMenu [data-document-action="hw-page-end"]').click();
     for (let i = 0; i < 60 && api.currentPdfPageCount() < before.doc + 1; i += 1) await settle(100);
     const added = { meta: api.state.meta.notebook.pages, doc: api.currentPdfPageCount(), inkPage1: inkOn(1) };
 
