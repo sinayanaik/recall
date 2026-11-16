@@ -867,3 +867,102 @@
     height: 32px;
   }
 }
+
+/* ── A Canvas's pages: the gap between them, ＋ Page in it, and "k / n" ─────
+
+   The gap is wider on a Canvas than on a PDF so the ＋ Page pill under each
+   page (appendPageInsertButton, src/documents/pdf-view.js) has room to sit
+   between two pages without touching either. Nothing in pdf-view assumes the
+   gap's size: it measures the pages. */
+:is(#documentStage, #documentStageAlt)[data-doc-slot="notebook"] .pdf-pages {
+  gap: 36px;
+}
+
+.canvas-page-insert {
+  position: absolute;
+  top: calc(100% + 18px);
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 26px;
+  padding: 2px 12px;
+  border: 1px dashed color-mix(in srgb, var(--text, #444) 35%, transparent);
+  border-radius: 999px;
+  background: var(--card, #fff);
+  color: var(--muted, #6b7280);
+  font-family: inherit;
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  opacity: 0.55;
+  touch-action: manipulation;
+  transition: opacity 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.canvas-page-insert > span {
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.canvas-page-insert:hover,
+.canvas-page-insert:focus-visible {
+  opacity: 1;
+  color: var(--accent, #2563eb);
+  border-color: currentColor;
+  border-style: solid;
+}
+
+/* No hover on a finger: the pill is plainly there all the time. */
+@media (pointer: coarse) {
+  .canvas-page-insert { opacity: 0.85; }
+}
+
+@media (max-width: 560px) {
+  :is(#documentStage, #documentStageAlt)[data-doc-slot="notebook"] .pdf-pages { gap: 32px; }
+  .canvas-page-insert { top: calc(100% + 16px); }
+}
+
+/* Only on a Canvas there is to add to, and not in View only. */
+:is(#documentStage, #documentStageAlt):not([data-doc-slot="notebook"]) .canvas-page-insert,
+:is(#documentStage, #documentStageAlt).has-no-notebook .canvas-page-insert,
+.view-only-notebook :is(#documentStage, #documentStageAlt)[data-doc-slot="notebook"] .canvas-page-insert {
+  display: none;
+}
+
+/* "k / n" at the foot of every Canvas page. The size and the baseline are the
+   export's CANVAS_NUMBER_SIZE (9pt) and CANVAS_NUMBER_BASELINE (16pt above the
+   bottom edge), src/documents/pdf-export.js, scaled from points to the page's
+   width on screen (a Canvas page is 595pt wide) — so the exported page has its
+   number exactly where the reader saw it. A pseudo-element, so it outlives
+   every rebuild of the page's children. n is the pages the view was built
+   with (--canvas-page-total, buildPagePlaceholders). ⋯ → Canvas pages → Page
+   numbers turns it off (body.canvas-page-numbers-off). */
+:is(#documentStage, #documentStageAlt)[data-doc-slot="notebook"]:not(.has-no-notebook) .pdf-page::after {
+  content: attr(data-page-number) " / " var(--canvas-page-total, "");
+  position: absolute;
+  left: 0;
+  right: 0;
+  /* The box's bottom is the baseline less Helvetica's descent (~0.21em). */
+  bottom: calc(var(--pdf-page-w, 595px) * (16 - 9 * 0.21) / 595);
+  font-family: Helvetica, Arial, sans-serif;
+  font-size: calc(var(--pdf-page-w, 595px) * 9 / 595);
+  line-height: 1;
+  text-align: center;
+  color: rgb(115 115 115);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  user-select: none;
+}
+
+.document-stage.is-pdf-inverted[data-doc-slot="notebook"] .pdf-page::after {
+  color: rgb(255 255 255 / 0.5);
+}
+
+body.canvas-page-numbers-off :is(#documentStage, #documentStageAlt)[data-doc-slot="notebook"] .pdf-page::after {
+  content: none;
+}

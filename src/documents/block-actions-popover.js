@@ -87,6 +87,10 @@ export function openBlockActionsPopover({
   onStyle = () => {},
   onEdit = () => {},
   onDuplicate = () => {},
+  // Copy, and Cut: onto the clipboard canvas-selection.js keeps, to paste on
+  // any page (Insert → Paste blocks, or Ctrl+V). Offered only when passed.
+  onCopy = null,
+  onCut = null,
   onRestackForward = () => {},
   onRestackBack = () => {},
   onToFront = () => {},
@@ -157,7 +161,12 @@ export function openBlockActionsPopover({
     // turned. The handle over the block turns it freely.
     const turnItems = [actionButton({ action: "turn", label: "Turn 90°" })];
     if (turned) turnItems.push(actionButton({ action: "straighten", label: "Straighten" }));
-    [forward, back, toFront, toBack, ...turnItems].forEach((item) => {
+    const cutItems = typeof onCut === "function" ? [actionButton({ action: "cut", label: "Cut" })] : [];
+    cutItems.forEach((item) => {
+      item.title = "Cut — take it off this page, to paste on another (Ctrl+X)";
+      item.setAttribute("aria-label", "Cut");
+    });
+    [forward, back, toFront, toBack, ...turnItems, ...cutItems].forEach((item) => {
       item.setAttribute("role", "menuitem");
       menu.appendChild(item);
     });
@@ -167,7 +176,12 @@ export function openBlockActionsPopover({
       card.title = "Make a card — a live picture of this block on its page";
       card.setAttribute("aria-label", "Make a card");
     }
-    root.append(style, edit, duplicate, ...(card ? [card] : []), arrange, del);
+    const copy = typeof onCopy === "function" ? actionButton({ action: "copy", label: "Copy" }) : null;
+    if (copy) {
+      copy.title = "Copy — then paste it on any page with Insert → Paste blocks (or Ctrl+V)";
+      copy.setAttribute("aria-label", "Copy");
+    }
+    root.append(style, edit, duplicate, ...(copy ? [copy] : []), ...(card ? [card] : []), arrange, del);
   }
   document.body.appendChild(root);
 
@@ -234,6 +248,8 @@ export function openBlockActionsPopover({
     if (action === "style") onStyle();
     else if (action === "edit") onEdit();
     else if (action === "duplicate") onDuplicate();
+    else if (action === "copy") onCopy?.();
+    else if (action === "cut") onCut?.();
     else if (action === "restack-forward") onRestackForward();
     else if (action === "restack-back") onRestackBack();
     else if (action === "to-front") onToFront();

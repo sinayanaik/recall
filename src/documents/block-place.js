@@ -94,7 +94,7 @@ export function placeBlockInView({ options = null, anchor = "center" } = {}) {
 // keep working while a block is waiting to be placed — the reader may be
 // choosing the pen's colour first, or pressing the button again to cancel.
 const NOT_THE_PAGE = ".document-ink-rail, .document-head, .ink-rail-popover, .shape-style-popover, "
-  + ".pdf-block-actions-pop, .pdf-block-style-pop, .selection-bar, [role=dialog], [role=menu]";
+  + ".pdf-block-actions-pop, .pdf-block-style-pop, .selection-bar, [role=dialog], [role=menu], [data-page-chrome]";
 
 function onPlacePressDown(event) {
   if (!placeArmed) return;

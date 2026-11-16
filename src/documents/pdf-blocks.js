@@ -166,6 +166,16 @@ function setSelectedId(id) {
 // selectBlock, duplicateBlock, writeBlockText, openStyleFor's toggle-off, and
 // beginGesture's finish() — which is also exactly the set of moments a
 // gesture is not still live and the node's current position is settled.
+// Copy and Cut on a picked-up Block's strip. The clipboard is
+// src/documents/canvas-selection.js's — it already copies several things with
+// their ties and pastes them on any page — and that module imports this one,
+// so it hands the two verbs in rather than being imported back.
+let blockClipboard = null;
+
+export function setBlockClipboardHooks(hooks) {
+  blockClipboard = hooks && typeof hooks.copy === "function" && typeof hooks.cut === "function" ? hooks : null;
+}
+
 function syncBlockActionsPopover() {
   const inline = Boolean(editingId) && inlineBlockEditorId() === editingId;
   if ((!selectedId && !inline) || (editingId && !inline) || gestureLive) { closeBlockActionsPopover(); return; }
@@ -196,6 +206,8 @@ function syncBlockActionsPopover() {
     onStyle: () => openSelectedBlockStyle(),
     onEdit: () => editBlock(selectedId),
     onDuplicate: () => duplicateBlock(selectedId),
+    onCopy: blockClipboard ? () => blockClipboard.copy() : null,
+    onCut: blockClipboard ? () => blockClipboard.cut() : null,
     onRestackForward: () => restackBlock(1, selectedId),
     onRestackBack: () => restackBlock(-1, selectedId),
     onToFront: () => restackBlock(Infinity, selectedId),

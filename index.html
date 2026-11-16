@@ -1338,6 +1338,10 @@
                      no Ctrl+V (pastePictureFromClipboard,
                      src/handwriting/board.js). -->
                 <button class="ink-rail-menu-item" type="button" role="menuitem" data-hw-action="paste-picture" title="Paste the picture you copied (a screenshot, or one copied from another app) onto the page you are looking at" aria-label="Paste a picture">Paste picture</button>
+                <!-- Blocks copied with Copy (a picked-up Block's strip, the
+                     bar over several, or Ctrl+C), onto the page in view: the
+                     way to carry them to another page with no Ctrl+V. -->
+                <button class="ink-rail-menu-item" type="button" role="menuitem" data-hw-action="paste-blocks" title="Paste the Blocks you copied onto the page you are looking at — copy them on one page, scroll to another, paste here" aria-label="Paste blocks" disabled>Paste blocks</button>
               </div>
               <!-- Which of the deck's PDFs is on screen, when it has more than
                    one — hidden outright otherwise (renderDocumentPdfSwitcher,
@@ -1373,7 +1377,7 @@
                      rebuild would quietly break both. -->
                 <div class="md-menu-head" data-slot="doc"><span>PDF</span></div>
                 <div class="md-menu-head" data-slot="notebook"><span>Canvas pages</span></div>
-                <button class="md-menu-item" type="button" data-slot="notebook" data-document-action="hw-page-after" title="Add a page after this one"><span>Add a page after this one<span class="nhm-hint">A blank page right after the one you are on</span></span></button>
+                <button class="md-menu-item" type="button" data-slot="notebook" data-document-action="hw-page-after" title="Add a page after this one"><span>Add a page after this one<span class="nhm-hint">Or press + Page in the gap between any two pages</span></span></button>
                 <button class="md-menu-item" type="button" data-slot="notebook" data-document-action="hw-page-end" title="Add a page at the end"><span>Add a page at the end</span></button>
                 <button class="md-menu-item" type="button" data-slot="notebook" data-document-action="hw-page-duplicate" title="Duplicate this page"><span>Duplicate this page<span class="nhm-hint">A copy of everything on it, right after it</span></span></button>
                 <button class="md-menu-item" type="button" data-slot="notebook" data-document-action="hw-page-up" title="Move this page up"><span>Move this page up</span></button>
@@ -1381,6 +1385,7 @@
                 <button class="md-menu-item" type="button" data-slot="notebook" data-document-action="hw-paper-grid" title="Squared paper — 5mm, with a heavier line every 2cm"><span>Grid paper</span><span class="nhm-state" aria-hidden="true"><span class="nhm-switch"></span></span></button>
                 <button class="md-menu-item" type="button" data-slot="notebook" data-document-action="hw-paper-ruled" title="Ruled paper, with a margin"><span>Ruled paper</span><span class="nhm-state" aria-hidden="true"><span class="nhm-switch"></span></span></button>
                 <button class="md-menu-item" type="button" data-slot="notebook" data-document-action="hw-paper-blank" title="Plain paper, nothing printed on it"><span>Blank paper</span><span class="nhm-state" aria-hidden="true"><span class="nhm-switch"></span></span></button>
+                <button class="md-menu-item" type="button" data-slot="notebook" data-document-action="hw-page-numbers" aria-pressed="true" title="Show &quot;1 / 5&quot; at the foot of every page — on screen and in the exported PDF"><span>Page numbers<span class="nhm-hint">1 / n at the foot of each page, exported too</span></span><span class="nhm-state" aria-hidden="true"><span class="nhm-switch"></span></span></button>
                 <button class="md-menu-item is-danger" type="button" data-slot="notebook" data-document-action="hw-tear-out" title="Tear out the page you are looking at — everything written on it goes with it"><span>Tear out this page<span class="nhm-hint">Everything written on it goes too</span></span></button>
                 <button class="md-menu-item" type="button" data-document-action="page-notes" title="Print every highlight's note under the page it is on — the PDFs tab's answer to the notes view's own inline notes"><span>Notes on the page<span class="nhm-hint">Print each highlight's note under its page</span></span><span class="nhm-state" aria-hidden="true"><span class="nhm-switch"></span></span></button>
                 <!-- ⋯ → Teleprompter: the PDF scrolls by itself, column by column,

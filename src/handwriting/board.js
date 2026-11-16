@@ -45,14 +45,16 @@
 // Neither needed lifting — both are already inside #documentStage. What is left
 // in this file is what a press MEANS.
 
-import { addNotebookPage, deleteNotebookPage, duplicateNotebookPage, ensureNotebookDocument, hasNotebook, moveNotebookPage, notebookPageCount, notebookPaper, setNotebookPaper } from "../documents/notebook.js?v=__BUILD__";
+import { addNotebookPage, deleteNotebookPage, duplicateNotebookPage, ensureNotebookDocument, hasNotebook, moveNotebookPage, notebookPageCount, notebookPageNumbers, notebookPaper, setNotebookPageNumbers, setNotebookPaper } from "../documents/notebook.js?v=__BUILD__";
 import { BLANK_PAPERS } from "../documents/blank-pdf.js?v=__BUILD__";
 import { notebookPaperPreference, writeNotebookPaperPreference } from "../storage/ink-prefs.js?v=__BUILD__";
 import { addDocumentBlock, addDocumentImageBlock } from "../documents/pdf-blocks.js?v=__BUILD__";
 import { BLOCK_SHAPES, BLOCK_SHAPE_LABEL, blockShapePatch, normalizeBlockShape } from "../documents/block-style.js?v=__BUILD__";
 import { blockShapeIconSvg } from "../documents/block-style-bar.js?v=__BUILD__";
 import { DOC_SLOT_NOTEBOOK, activeDocSlot, deckHasHandwrittenPages } from "../documents/doc-slot.js?v=__BUILD__";
-import { currentDocumentPage, openDocumentView, pdfPageViewport, scrollToDocumentPage } from "../documents/pdf-view.js?v=__BUILD__";
+import { currentDocumentPage, openDocumentView, pdfPageViewport, scrollToDocumentPage, setCanvasPageInsertHandler } from "../documents/pdf-view.js?v=__BUILD__";
+import { hasObjectClipboard, pastePicked } from "../documents/canvas-selection.js?v=__BUILD__";
+import { documentViewOnly } from "../documents/view-only.js?v=__BUILD__";
 import { bindInkRailActivation } from "./rail.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
@@ -115,6 +117,13 @@ export function paintHandwritingControls() {
   pageRow("hw-page-up")?.toggleAttribute("disabled", !ready || here <= 1);
   pageRow("hw-page-down")?.toggleAttribute("disabled", !ready || here >= total);
   el.documentAddPageBtn?.toggleAttribute("disabled", !ready);
+  // Page numbers: a switch, as the paper rows are, and the class the "k / n"
+  // at each page's foot is shown from (styles/53-handwriting.css).
+  const numbers = notebookPageNumbers();
+  pageRow("hw-page-numbers")?.setAttribute("aria-pressed", ready && numbers ? "true" : "false");
+  pageRow("hw-page-numbers")?.toggleAttribute("disabled", !ready);
+  document.body.classList.toggle("canvas-page-numbers-off", !numbers);
+  paintPasteBlocksRow();
   const tearOut = el.documentMoreMenu?.querySelector('[data-document-action="hw-tear-out"]');
   // Refused rather than hidden on a one-page notebook, for the reason the rail
   // refuses join rather than hiding it: a row that comes and goes moves the ones
@@ -189,6 +198,10 @@ export function runHandwritingMenuAction(action) {
   if (action === "hw-page-duplicate") { duplicatePage(); return true; }
   if (action === "hw-page-up") { movePage(-1); return true; }
   if (action === "hw-page-down") { movePage(1); return true; }
+  if (action === "hw-page-numbers") {
+    setNotebookPageNumbers(!notebookPageNumbers()).then(() => paintHandwritingControls());
+    return true;
+  }
   if (action.startsWith("hw-paper-")) {
     const kind = action.slice("hw-paper-".length);
     if (!BLANK_PAPERS.includes(kind)) return false;
@@ -238,7 +251,19 @@ function wire() {
     else if (action === "add-block") addBlock({ keyboard });
     else if (action === "add-shape") addShapeBlock(button.dataset.blockShape, { keyboard });
     else if (action === "paste-picture") pastePictureFromClipboard();
+    else if (action === "paste-blocks") pasteBlocks();
   }, "[data-hw-action]");
+  // Whether there is anything to paste is asked as the menu opens, so a Copy
+  // made a moment ago is offered without anything else repainting first.
+  el.documentInsertBtn?.addEventListener("pointerdown", paintPasteBlocksRow, true);
+  el.documentInsertBtn?.addEventListener("click", paintPasteBlocksRow, true);
+
+  // ＋ Page in the gap under a Canvas page (src/documents/pdf-view.js): a page
+  // between that one and the next.
+  setCanvasPageInsertHandler((after) => {
+    if (documentViewOnly()) return;
+    addPage({ after });
+  });
 
   // The pager's own +: a page straight after the one in view.
   el.documentAddPageBtn?.addEventListener("click", () => {
@@ -254,6 +279,19 @@ async function addPage({ after = null } = {}) {
   paintHandwritingControls();
   const target = after === null ? notebookPageCount() : Number(after) + 1;
   setTimeout(() => scrollToDocumentPage(target, 0, { smooth: true }), 60);
+}
+
+// Insert → Paste blocks: what was copied with Copy (a picked-up Block's strip,
+// the bar over several, or Ctrl+C) onto the page in view — the way to carry
+// Blocks to another page on a tablet or a phone, which has no Ctrl+V.
+function pasteBlocks() {
+  closeInkRailPopups();
+  if (!pastePicked()) showToast("Nothing copied to paste — pick up a Block and press Copy first", "info");
+}
+
+function paintPasteBlocksRow() {
+  const row = el.documentInsertMenu?.querySelector('[data-hw-action="paste-blocks"]');
+  if (row) row.toggleAttribute("disabled", !hasObjectClipboard());
 }
 
 async function duplicatePage() {
