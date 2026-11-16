@@ -15,6 +15,10 @@
 //      beside it is not, and nothing written on either moves;
 //   3. a page added after it, duplicated, moved or torn out takes its setup
 //      with it; every page set up at once clears the pages' own;
+//      ＋ Page pressed twice in a row adds ONE page and moves everything once
+//      (a second change is refused while the first runs); the new pages are
+//      on screen before the upload, and an upload a later change overtook
+//      never names the record (its object is deleted instead);
 //   4. a smaller page asks before it hides what is written past its edge;
 //   5. the squares a dragged box snaps to follow the page; the "k / n" is the
 //      export's 9pt at every size; the Canvas PDF keeps each page's size;
@@ -62,6 +66,7 @@ const API_SRC = `async () => {
     "/src/documents/canvas-setup-dialog.js?v=__BUILD__",
     "/src/documents/blank-pdf.js?v=__BUILD__",
     "/src/documents/pdf-store.js?v=__BUILD__",
+    "/src/cloud/s3-files.js?v=__BUILD__",
     "/src/storage/ink-prefs.js?v=__BUILD__",
     "/src/core/lib-loader.js?v=__BUILD__",
     "/src/ui/boot-screens.js?v=__BUILD__",
@@ -320,6 +325,114 @@ try {
   check("a page duplicated before them moves their setups down", JSON.stringify(moves.afterDuplicate) === JSON.stringify(["3", "4"]), JSON.stringify(moves.afterDuplicate));
   check("moving a dot-grid page up swaps its setup and redraws the file", JSON.stringify(moves.afterMove) === JSON.stringify(["2", "4"]) && moves.moveRewrote, JSON.stringify(moves));
   check("a page torn out takes its setup with it", JSON.stringify(moves.afterTearOut) === JSON.stringify(["3"]) && moves.pages === 3, JSON.stringify(moves));
+
+  // ── 3b. ＋ Page pressed twice in a row ───────────────────────────────
+  //
+  // Reported as "adding a page distorts the whole Canvas": a second page
+  // change started while the first was still writing read a half-renumbered
+  // record and renumbered every Block, mark and page setup again — Blocks two
+  // pages down, a landscape page's setup copied onto the portrait page under a
+  // Block, all of it saved. The second is refused now (runCanvasPageChange).
+  const twice = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const { painted, ownSetups, pageEl } = window.__h;
+    api.scrollToDocumentPage(1, 0, { smooth: false });
+    await settle(400);
+    const pages0 = api.notebookPageCount();
+    const own0 = Object.keys(ownSetups() || {}).map(Number);
+    const blocks0 = api.documentBlocks().map((b) => [b.id, b.page]);
+    const sha = api.state.meta.notebook.sha256;
+    const pill = pageEl(1).querySelector(".canvas-page-insert");
+    const out = { blocks: blocks0.length };
+    pill.click();
+    out.busy = api.notebookPagesBusy() && document.body.classList.contains("canvas-pages-busy");
+    out.pillInert = getComputedStyle(pill).pointerEvents === "none";
+    // The second press, as the pill's own handler would make it.
+    out.second = await api.addNotebookPage({ after: 1 });
+    await painted(sha);
+    for (let i = 0; i < 100 && api.notebookPagesBusy(); i += 1) await settle(50);
+    out.added = api.notebookPageCount() - pages0;
+    out.own = Object.keys(ownSetups() || {}).sort();
+    out.ownWanted = own0.map((n) => String(n > 1 ? n + 1 : n)).sort();
+    const now = new Map(api.documentBlocks().map((b) => [b.id, b.page]));
+    out.misplaced = blocks0.filter(([id, p]) => now.get(id) !== (p > 1 ? p + 1 : p));
+    out.shown = document.querySelectorAll("#documentStage .pdf-page").length === api.notebookPageCount();
+    out.idle = !api.notebookPagesBusy() && !document.body.classList.contains("canvas-pages-busy");
+    return out;
+  }`);
+  check("＋ Page marks the Canvas busy and its pills inert while the page goes in", twice.busy && twice.pillInert, JSON.stringify(twice));
+  check("...so a second press is refused rather than run into the first", twice.second === false, JSON.stringify(twice));
+  check("two presses add one page, shown", twice.added === 1 && twice.shown && twice.idle, JSON.stringify(twice));
+  check("...every Block moved once, to the page one insert puts it on", twice.blocks > 0 && twice.misplaced.length === 0, JSON.stringify(twice));
+  check("...and each page's own setup moved once with its page", JSON.stringify(twice.own) === JSON.stringify(twice.ownWanted), JSON.stringify(twice));
+
+  // ── 3c. A slow bucket ─────────────────────────────────────────────────
+  //
+  // The view used to reopen only once the whole file was in the bucket, so on
+  // a real connection the old pages sat on screen under the new numbering for
+  // seconds; and an upload that finished after the NEXT page change stamped
+  // its key onto that change's record. A bucket that takes 2.5s per PUT:
+  const slow = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const log = { puts: [], landed: 0, deletes: [] };
+    api.setS3Transport(async (url, init) => {
+      const method = String(init?.method || "GET").toUpperCase();
+      if (method === "PUT") {
+        log.puts.push(String(url));
+        await new Promise((r) => setTimeout(r, 2500));
+        log.landed += 1;
+        return new Response("", { status: 200 });
+      }
+      if (method === "DELETE") { log.deletes.push(String(url)); return new Response("", { status: 204 }); }
+      return new Response("", { status: 404 });
+    });
+    localStorage.setItem("recall:s3Config", JSON.stringify({ endpoint: "https://bucket.invalid", bucket: "canvas-check", region: "auto", accessKeyId: "k", secretAccessKey: "s" }));
+    const out = {};
+    try {
+      const pages0 = api.notebookPageCount();
+      const t0 = performance.now();
+      out.first = await api.addNotebookPage();
+      out.firstMs = Math.round(performance.now() - t0);
+      // Back, and drawn, with the bucket still holding the upload: nothing has
+      // landed, yet the view already has the new page.
+      out.landedOnReturn = log.landed;
+      out.pagesOnReturn = document.querySelectorAll("#documentStage .pdf-page").length - pages0;
+      out.shownBeforeUpload = log.landed === 0 && out.pagesOnReturn === 1;
+      const hash1 = api.state.meta.notebook.sha256;
+      out.second = await api.addNotebookPage();
+      const hash2 = api.state.meta.notebook.sha256;
+      for (let i = 0; i < 120 && log.landed < log.puts.length; i += 1) await settle(100);
+      await settle(400);
+      const key = String(api.state.meta.notebook.s3Key || "");
+      out.key = key;
+      out.keyIsLatest = key.includes(hash2) && !key.includes(hash1);
+      out.overtakenDeleted = log.deletes.some((url) => url.includes(hash1));
+      out.latestKept = !log.deletes.some((url) => url.includes(hash2));
+      out.pages = api.notebookPageCount() - pages0;
+      out.puts = log.puts.length;
+    } finally {
+      localStorage.removeItem("recall:s3Config");
+      api.resetS3Transport();
+    }
+    return out;
+  }`);
+  check("with a slow bucket the new page is on screen before its upload lands", slow.first === true && slow.shownBeforeUpload, JSON.stringify(slow));
+  check("an upload overtaken by the next page change never names the record", slow.second === true && slow.pages === 2 && slow.keyIsLatest, JSON.stringify(slow));
+  check("...its object is deleted, and the latest one kept", slow.overtakenDeleted && slow.latestKept, JSON.stringify(slow));
+
+  // The Canvas back as section 3 left it — the blank page 3b put in at 2 and
+  // the two 3c put at the end torn out — for the sections below, which count
+  // pages and find Blocks by where section 1 put them.
+  await page.evaluate(`async () => {
+    const { api } = window.__recall;
+    const { painted } = window.__h;
+    for (const n of [api.notebookPageCount(), api.notebookPageCount() - 1, 2]) {
+      const sha = api.state.meta.notebook.sha256;
+      await api.deleteNotebookPage(n);
+      await painted(sha);
+    }
+    return api.notebookPageCount();
+  }`);
 
   // ── 4. A smaller page asks first ──────────────────────────────────────
   const shrink = await page.evaluate(`async (b1) => {

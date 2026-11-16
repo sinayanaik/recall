@@ -53,6 +53,40 @@ import { showToast } from "../ui/feedback.js?v=__BUILD__";
 
 export const NOTEBOOK_MAX_PAGES = 300;
 
+// ── One page change at a time ──────────────────────────────────────────────
+//
+// Every change here renumbers records and rewrites the file: the Blocks, the
+// marks and the page setups are moved to the new numbering at once, and the
+// file is drawn again from it. A second change started before the first has
+// put its file on screen reads a record that is half the old Canvas and half
+// the new one, and renumbers everything a second time — which is what "＋ Page
+// pressed twice" used to do: Blocks two pages down, a landscape page's setup
+// copied onto the portrait page under a Block, and all of it saved and synced.
+// The second press's page number also came from the pages about to be
+// replaced. So a change asked for while one is running is refused, not
+// queued; the ＋ Page pills and the Canvas's pages take no presses meanwhile
+// (body.canvas-pages-busy, styles/53-handwriting.css).
+let pageChangeRunning = false;
+
+export function notebookPagesBusy() {
+  return pageChangeRunning;
+}
+
+async function runCanvasPageChange(change) {
+  if (pageChangeRunning) {
+    showToast("Still making the last page change — one moment", "info");
+    return false;
+  }
+  pageChangeRunning = true;
+  document.body?.classList.add("canvas-pages-busy");
+  try {
+    return await change();
+  } finally {
+    pageChangeRunning = false;
+    document.body?.classList.remove("canvas-pages-busy");
+  }
+}
+
 export function hasNotebook(meta = state.meta) {
   return Boolean(meta?.notebook);
 }
@@ -154,7 +188,12 @@ function notebookDrawnPages(record) {
 // grid is the very file it was; a page's own setup that matches the Canvas's
 // is dropped rather than kept as a copy. Resolves false when nothing would
 // look different.
-export async function setNotebookPageSetup(setup, { page = null, all = false } = {}) {
+export async function setNotebookPageSetup(setup, options = {}) {
+  if (!hasNotebook()) return false;
+  return runCanvasPageChange(() => applyNotebookPageSetup(setup, options));
+}
+
+async function applyNotebookPageSetup(setup, { page = null, all = false } = {}) {
   if (!hasNotebook()) return false;
   const pageSheet = normalizeSheetSetup(setup);
   const pages = notebookPageCount();
@@ -230,7 +269,10 @@ async function writeNotebookPdf({ pages, paper, setup = undefined, pageSetups = 
   const previous = {
     driveId: state.meta?.notebook?.driveId || "",
     path: state.meta?.notebook?.path || "",
-    s3Key: state.meta?.notebook?.s3Key || ""
+    s3Key: state.meta?.notebook?.s3Key || "",
+    // Which bytes those are, so a cleanup that runs late never deletes the
+    // copy of bytes the record has come back round to naming.
+    sha256: state.meta?.notebook?.sha256 || ""
   };
   state.meta = {
     ...(state.meta && typeof state.meta === "object" ? state.meta : {}),
@@ -269,33 +311,85 @@ async function writeNotebookPdf({ pages, paper, setup = undefined, pageSetups = 
   // to draw on and the one that survives being offline.
   await putDocument({ deckLocalId: notebookStoreKey(), blob: file, sha256: hash, name: file.name, at: Date.now() });
 
+  // ── The new pages on screen BEFORE the upload, not after it ──────────────
+  //
+  // The records were renumbered above, in the same write as the new page
+  // count. Until the view reopens on the new file, the OLD pages are on screen
+  // under the NEW numbering: every Block and stroke after the change shown a
+  // page away from where it is, on pages laid out from the new record's sizes.
+  // Reopening only once the whole file had gone up to the bucket made that a
+  // window of seconds on a real connection — long enough to look broken, and
+  // long enough for the reader to press ＋ Page again into it. The device copy
+  // is already what the record names, so the reopen reads it from here.
+  if (reopen) await openDocumentView({ force: true, slot: DOC_SLOT_NOTEBOOK });
+  uploadNotebookBytes({ file, hash, previous, deckLocalId: state.localDeckId });
+  return true;
+}
+
+// The upload, behind the reader rather than in front of them. Nothing waits
+// for it: the pages are on this device, drawable, and get to the bucket here or
+// at the next sync that can reach it (the backfill in
+// src/storage/document-migration.js).
+//
+// ── ...and it lands only on the record it was made for ───────────────────
+//
+// A Canvas is rewritten whole by every page change, so by the time an upload
+// finishes the record may name other bytes — a page added during it — or
+// another file may be open. Its locator stamped onto that record paired the new
+// hash with the OLD file's key, and a device that pulled the record downloaded
+// the old pages and kept them under the new hash: the wrong page count and the
+// wrong sizes under every Block, for good. So a superseded upload writes
+// nothing. Its object is deleted instead, since nothing will ever name it — the
+// change that superseded it captured `previous` before this upload had set a
+// locator. Keys are content-addressed (s3DocumentKey), so a key equal to the
+// record's own is these very bytes, and is left alone.
+async function uploadNotebookBytes({ file, hash, previous, deckLocalId }) {
+  const stillCurrent = () => Boolean(deckLocalId)
+    && state.localDeckId === deckLocalId
+    && state.meta?.notebook?.sha256 === hash;
   try {
     const locator = await uploadDocument(file, {
       name: storageFolderSlug(file.name.replace(/\.pdf$/i, ""), "notebook"),
       pdfId: DOC_SLOT_NOTEBOOK,
       sha256: hash
     });
+    if (!stillCurrent()) {
+      // Another file opened meanwhile: this Canvas's saved record still names
+      // these bytes, so its object stays for the backfill to find; nothing is
+      // written onto the file that is open now.
+      if (state.localDeckId !== deckLocalId) return false;
+      const current = state.meta?.notebook || null;
+      const named = (key, sha) => Boolean(current) && ((key && key === current.s3Key) || (sha && sha === current.sha256));
+      const where = { deckLocalId, slot: DOC_SLOT_NOTEBOOK, pdfId: DOC_SLOT_NOTEBOOK };
+      if (locator?.s3Key && !named(locator.s3Key, hash)) {
+        deleteDocumentCopies({ s3Key: locator.s3Key }, where).catch(() => {});
+      }
+      // ...and the copy this upload was replacing, which it would have deleted
+      // on landing and which the newer change never knew about.
+      if ((previous.driveId || previous.path || previous.s3Key) && !named(previous.s3Key, previous.sha256)) {
+        deleteDocumentCopies({ driveId: previous.driveId, path: previous.path, s3Key: previous.s3Key }, where).catch(() => {});
+      }
+      return false;
+    }
     state.meta = { ...state.meta, notebook: { ...state.meta.notebook, ...locator } };
     await saveDeckToLibrary({ silent: true });
     // Only once the replacement is safely up. Deleting first would open a
     // window where a device that has neither copy has no pages at all. An
     // unchanged key (the same pages written again) is the object just
     // uploaded, and is left alone.
-    const stale = { ...previous, s3Key: previous.s3Key && previous.s3Key !== locator?.s3Key ? previous.s3Key : "" };
+    const stale = { driveId: previous.driveId, path: previous.path, s3Key: previous.s3Key && previous.s3Key !== locator?.s3Key ? previous.s3Key : "" };
     if (stale.driveId || stale.path || stale.s3Key) {
-      deleteDocumentCopies(stale, { deckLocalId: state.localDeckId, slot: DOC_SLOT_NOTEBOOK, pdfId: DOC_SLOT_NOTEBOOK }).catch(() => {});
+      deleteDocumentCopies(stale, { deckLocalId, slot: DOC_SLOT_NOTEBOOK, pdfId: DOC_SLOT_NOTEBOOK }).catch(() => {});
     }
+    return true;
   } catch (error) {
-    // Not fatal and not silent. The pages are on this device and drawable; what
-    // is not true yet is that they are anywhere else — and they get there by
-    // themselves, at the next sync that can reach the bucket (the backfill in
-    // src/storage/document-migration.js).
-    console.warn("Could not upload the notebook", error);
-    showToast("Pages saved here — they upload at the next sync", "info");
+    // Not fatal and not silent — while these are still the pages. The pages
+    // are on this device and drawable; what is not true yet is that they are
+    // anywhere else, and they get there by themselves at the next sync.
+    console.warn("Could not upload the Canvas", error);
+    if (stillCurrent()) showToast("Pages saved here — they upload at the next sync", "info");
+    return false;
   }
-
-  if (reopen) await openDocumentView({ force: true, slot: DOC_SLOT_NOTEBOOK });
-  return true;
 }
 
 // The deck's first page. Called when the Handwritten Notes surface opens on a
@@ -518,7 +612,7 @@ function remapNotebookPages(move) {
 
 // A blank page at the end, or straight after page `after` — everything below
 // it moves down one to make the room, in the same write as the new page.
-export async function addNotebookPage({ after = null } = {}) {
+async function insertNotebookPage({ after = null } = {}) {
   if (!hasNotebook() || !roomForAnotherPage()) return false;
   const pages = notebookPageCount();
   const at = after === null ? pages : Math.max(0, Math.min(pages, Math.round(Number(after) || 0)));
@@ -560,7 +654,7 @@ function recordOnPage(record, page, id) {
 // under a new id. A connector on the copy is tied to the COPIES of what it
 // joined, and a group on the copy is a group of its own — the two pages are
 // not one diagram.
-export async function duplicateNotebookPage(pageNumber) {
+async function copyNotebookPage(pageNumber) {
   if (!hasNotebook() || !roomForAnotherPage()) return false;
   const pages = notebookPageCount();
   const n = Number(pageNumber);
@@ -617,7 +711,7 @@ export async function duplicateNotebookPage(pageNumber) {
 // alike are the same sheet, so no bytes change — only which records are on
 // which page. Two set up differently swap their setups with them, and that is
 // new bytes: the page that moved keeps its own size and paper.
-export async function moveNotebookPage(pageNumber, delta) {
+async function swapNotebookPage(pageNumber, delta) {
   if (!hasNotebook()) return false;
   const pages = notebookPageCount();
   const n = Number(pageNumber);
@@ -654,7 +748,7 @@ export async function moveNotebookPage(pageNumber, delta) {
 // page inherited its number, and the blocks below the gap stayed one page too
 // far down. Both arrays are remapped by the same rule, stated once here and
 // applied twice, so the two can never answer the tear-out differently.
-export async function deleteNotebookPage(pageNumber) {
+async function tearOutNotebookPage(pageNumber) {
   if (!hasNotebook()) return false;
   const pages = notebookPageCount();
   const n = Number(pageNumber);
@@ -672,7 +766,7 @@ export async function deleteNotebookPage(pageNumber) {
   return writeNotebookPdf({ pages: pages - 1, paper: notebookPaper() });
 }
 
-export async function setNotebookPaper(kind) {
+async function applyNotebookPaper(kind) {
   if (!hasNotebook()) return false;
   const paper = normalizeBlankPaper(kind);
   const sheets = notebookSheetState();
@@ -700,6 +794,28 @@ export async function setNotebookPaper(kind) {
   const after = { ...state.meta.notebook, paper, setup, pageSetups };
   if (notebookDrawnPages(after) === notebookDrawnPages(state.meta.notebook)) return false;
   return writeNotebookPdf({ pages: notebookPageCount(), paper, setup, pageSetups });
+}
+
+// What the rest of the app calls: each one a page change of its own, refused
+// while another is running (runCanvasPageChange, at the top of this file).
+export function addNotebookPage(options = {}) {
+  return runCanvasPageChange(() => insertNotebookPage(options));
+}
+
+export function duplicateNotebookPage(pageNumber) {
+  return runCanvasPageChange(() => copyNotebookPage(pageNumber));
+}
+
+export function moveNotebookPage(pageNumber, delta) {
+  return runCanvasPageChange(() => swapNotebookPage(pageNumber, delta));
+}
+
+export function deleteNotebookPage(pageNumber) {
+  return runCanvasPageChange(() => tearOutNotebookPage(pageNumber));
+}
+
+export function setNotebookPaper(kind) {
+  return runCanvasPageChange(() => applyNotebookPaper(kind));
 }
 
 export { BLANK_PAPERS, BLANK_PAGE_WIDTH, BLANK_PAGE_HEIGHT };
