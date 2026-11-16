@@ -428,6 +428,7 @@ export const CANVAS_NUMBER_BASELINE = 16;
 // The rendered width of a Canvas page in the file, in pixels: a sheet of A4 at
 // ~300dpi, which keeps a thin pen line and a Block's small print sharp.
 export const CANVAS_EXPORT_WIDTH = 2480;
+const CANVAS_EXPORT_A4_WIDTH = 595;
 // A touch higher than the printed export's: these pages are the whole file.
 export const CANVAS_PAGE_QUALITY = 0.92;
 
@@ -454,7 +455,11 @@ async function renderCanvasPageExact(pageNumber) {
   const page = await doc.getPage(pageNumber);
   if (token !== pdfOpenToken) return null;
   const unit = page.getViewport({ scale: 1 });
-  const viewport = page.getViewport({ scale: CANVAS_EXPORT_WIDTH / unit.width });
+  // A Canvas page can be any size now (src/documents/canvas-setup.js): drawn at
+  // the same ~300dpi as an A4 sheet, and no wider than twice that, so an A3
+  // page is as sharp as an A4 one and a poster does not take the tab's memory.
+  const exportWidth = Math.min(CANVAS_EXPORT_WIDTH * 2, CANVAS_EXPORT_WIDTH * (unit.width / CANVAS_EXPORT_A4_WIDTH));
+  const viewport = page.getViewport({ scale: exportWidth / unit.width });
   const canvas = document.createElement("canvas");
   canvas.width = Math.ceil(viewport.width);
   canvas.height = Math.ceil(viewport.height);
@@ -554,16 +559,22 @@ export async function buildCanvasPdfBytes() {
     /* eslint-disable no-await-in-loop */
     const pdfPage = await source.getPage(pageNumber);
     if (token !== pdfOpenToken) return null;
-    // The page's own size in points, turned as it is shown.
+    // The page's own size in points, turned as it is shown — and where its box
+    // sits in its own user space. A Canvas page that is not A4 keeps its top-left
+    // corner at (0, 842), so its box does not start at the origin; the page
+    // written here is given the same box, so the Block words laid over it
+    // (rasterPlacement, in the source page's user space) land on their pictures.
     const { width, height } = pdfPage.getViewport({ scale: 1 });
+    const [boxX = 0, boxY = 0] = Array.isArray(pdfPage.view) ? pdfPage.view : [];
     const drawn = await renderCanvasPageExact(pageNumber);
     if (!drawn || token !== pdfOpenToken) return null;
     const image = await out.embedJpg(await canvasJpegBytes(drawn.canvas));
     /* eslint-enable no-await-in-loop */
     drawn.canvas.width = 0; // let the pixels go before the next page renders
     const page = out.addPage([width, height]);
-    page.drawImage(image, { x: 0, y: 0, width, height });
-    drawnPages.push({ page, pdfPage, pageNumber, width, dark: Boolean(drawn.tone?.dark) });
+    if (boxX || boxY) page.setMediaBox(boxX, boxY, width, height);
+    page.drawImage(image, { x: boxX, y: boxY, width, height });
+    drawnPages.push({ page, pdfPage, pageNumber, width, boxX, boxY, dark: Boolean(drawn.tone?.dark) });
     if (drawn.words.length) wordsByPage.push({ page, pdfPage, words: drawn.words });
   }
   await writeCanvasWords(out, wordsByPage);
@@ -571,15 +582,15 @@ export async function buildCanvasPdfBytes() {
   // The numbers after the words, so copying a page gives what is written on
   // it first and its number last, the order it is read in.
   if (numbered) {
-    drawnPages.forEach(({ page, pageNumber, width, dark }) => {
+    drawnPages.forEach(({ page, pageNumber, width, boxX, boxY, dark }) => {
       // Of every page in the Canvas: "3 / 12", as it is on screen. In the
       // screen's colours for it (styles/53-handwriting.css): grey 115 on a
       // light paper, white at half strength on a dark one.
       const label = `${pageNumber} / ${total}`;
       const labelWidth = font.widthOfTextAtSize(label, CANVAS_NUMBER_SIZE);
       page.drawText(label, {
-        x: (width - labelWidth) / 2,
-        y: CANVAS_NUMBER_BASELINE,
+        x: boxX + ((width - labelWidth) / 2),
+        y: boxY + CANVAS_NUMBER_BASELINE,
         size: CANVAS_NUMBER_SIZE,
         font,
         color: dark ? rgb(1, 1, 1) : rgb(115 / 255, 115 / 255, 115 / 255),

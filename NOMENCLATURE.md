@@ -47,7 +47,22 @@ keeps the page's tools off it). Each Canvas page shows its **page number**,
 "k / n", at its foot, and the Canvas PDF export prints it in the same place;
 ⋯ → Canvas pages → Page numbers turns it off (`meta.notebook.pageNumbers:
 false`; `CANVAS_NUMBER_SIZE` / `CANVAS_NUMBER_BASELINE` in
-`src/documents/pdf-export.js`). Picked-up Blocks are **copied** (or cut) from
+`src/documents/pdf-export.js`). **Page setup** (⋯ → Canvas pages → Page setup…, or **Page setup…** on the
+empty Canvas tab before the first page) sets a Canvas page's size and
+orientation, its **paper** (Blank, Ruled, Grid, Dot grid or Cornell, and the
+paper's colour), its **lines** (spacing, colour, strength, thickness, style,
+the heavier grid line, dot size, the margin line, the Cornell columns) and the
+**margins** the pattern is drawn inside — for **this page** or **all pages**. A
+page added after a page copies its setup. Say "page setup" or "paper", not
+"template" or "page style". Data: `meta.notebook.setup` (every page without its
+own) and `meta.notebook.pageSetups` (`{ "<page>": setup }`), lengths in PDF
+points; both absent is a Canvas never set up, drawn from `meta.notebook.paper`
+exactly as before. A page of any size keeps its top-left corner at user point
+(0, 842) and its lines on a lattice from (0, 0), so nothing written on a page
+moves when it is resized. Code: `src/documents/canvas-setup.js` (the numbers,
+pure), `src/documents/canvas-setup-dialog.js` (the dialog),
+`setNotebookPageSetup` in `src/documents/notebook.js`, `buildBlankPdf` in
+`src/documents/blank-pdf.js`. Picked-up Blocks are **copied** (or cut) from
 their strip or the bar over several, and pasted onto any page of the same part
 with Insert → **Paste blocks** or Ctrl+V (`copyPickedByButton`, `pastePicked` in
 `src/documents/canvas-selection.js`).
@@ -81,8 +96,9 @@ device and never synced: `recall:view-only-v1` in localStorage,
 Several Blocks and shapes **picked up** together (Shift-click, a box drawn on a
 Canvas with the Select tool, Ctrl+A) are moved, lined up, copied and **grouped**
 as one; a group is a `group` id on each record (`src/documents/canvas-selection.js`).
-The thin lines a drag snaps to are **guides**, and grid paper's squares are the
-**grid** (`src/documents/pdf-guides.js`, `src/render/snap-guides.js`).
+The thin lines a drag snaps to are **guides**, and grid paper's squares (and a
+dot grid's dots) are the **grid**, at each page's own spacing
+(`src/documents/pdf-guides.js`, `src/render/snap-guides.js`).
 
 ## Where each name lives
 

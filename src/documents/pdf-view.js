@@ -45,6 +45,7 @@ import { expectPdfPagePaint, firstPdfPagePainted, notePdfAnimationFrame, notePdf
 import { buildDocumentOutline, clearDocumentOutline, setDocumentOutlinePage } from "./pdf-outline.js?v=__BUILD__";
 import { documentAutoScrolling, inkPenIsDown, setDocumentTextWake, touchGestureHoldsSurface } from "../core/gesture.js?v=__BUILD__";
 import { DOC_SLOT_DOC, DOC_SLOT_NOTEBOOK, activeDocSlot, docSlotMeta, docSlotReadingPositionKey, documentStoreKey, normalizeDocSlot, onDocumentSurface, setDualDocumentContext } from "./doc-slot.js?v=__BUILD__";
+import { canvasPageBoxes } from "./canvas-setup.js?v=__BUILD__";
 import { alternateDocumentStage, forEachDocumentScroller, liveDocumentHandler, primaryDocumentStage, scrollerOfStage } from "./doc-scrollers.js?v=__BUILD__";
 import { activePdfId, deckPdfById, deckPdfs, PDF_PRIMARY_ID, pdfStoreKey } from "./pdf-multi.js?v=__BUILD__";
 import { PAPER_DARK_FILTER, PAPER_TONE_THEME, normalizePaperToneId, paintPaperTone, paperKey, paperKeyParts, resolvePaperTone } from "../format/paper-tones.js?v=__BUILD__";
@@ -1213,8 +1214,11 @@ function renderStartNotebookPrompt() {
     heading: "Start a Canvas",
     body: "Blank pages of your own, beside this file's cards, notes and any PDF it already has. Write on them with a stylus, drop in blocks and pictures, and add as many pages as you need.",
     pick: "Start a Canvas",
-    note: "Grid, ruled or blank — you can change the paper at any time, and what you have written stays where it is.",
-    onPress: () => { onStartNotebook?.(); }
+    note: "Any page size, ruled, grid, dot grid, Cornell or blank — change it at any time, page by page, and what you have written stays where it is.",
+    onPress: () => { onStartNotebook?.(); },
+    // The size, the paper and the lines chosen first (src/documents/
+    // canvas-setup-dialog.js), and the Canvas started on them.
+    secondary: { label: "Page setup…", onPress: () => { onStartNotebook?.({ chooseSetup: true }); } }
   });
 }
 
@@ -2244,6 +2248,38 @@ export function documentFittedWidth() {
   return fittedWidth;
 }
 
+// ── A Canvas's pages, each at its own size ─────────────────────────────────
+//
+// A paper's pages are assumed to be page 1's size until each renders and says
+// its own (see baseWidth). A Canvas page can be any size and any way round
+// (src/documents/canvas-setup.js), but its size is not a guess: the record the
+// bytes were drawn from says it. So a Canvas lays every page out at its real
+// size before it renders, and fits the widest page across — a landscape page
+// among portrait ones is then on screen whole, with the others centred.
+let canvasBoxCache = { record: null, boxes: [] };
+
+function canvasBoxes() {
+  const record = state.meta?.notebook || null;
+  if (canvasBoxCache.record !== record) canvasBoxCache = { record, boxes: record ? canvasPageBoxes(record) : [] };
+  return canvasBoxCache.boxes;
+}
+
+function pageBaseSize(pageNumber, open = openPdf) {
+  if (open?.slot === DOC_SLOT_NOTEBOOK) {
+    const box = canvasBoxes()[pageNumber - 1];
+    if (box) return { width: box[2] - box[0], height: box[3] - box[1] };
+  }
+  return { width: open?.baseWidth || 0, height: open?.baseHeight || 0 };
+}
+
+function widestBaseWidth(open = openPdf) {
+  if (open?.slot === DOC_SLOT_NOTEBOOK) {
+    const boxes = canvasBoxes().slice(0, open.pageCount || undefined);
+    if (boxes.length) return Math.max(...boxes.map((box) => box[2] - box[0]));
+  }
+  return open?.baseWidth || 0;
+}
+
 export function fitWidthScale() {
   const view = el.documentView;
   if (!view || !openPdf?.baseWidth) return 1;
@@ -2259,7 +2295,7 @@ export function fitWidthScale() {
   // Never floored at PDF_MIN_SCALE. Whatever it takes to fit the page IS the
   // fit — see the note on that constant for what flooring it cost.
   const available = Math.max(1, width - fitPaddingFor(width) * 2);
-  const scale = clampScale(available / openPdf.baseWidth, PDF_ABS_MIN_SCALE);
+  const scale = clampScale(available / (widestBaseWidth() || openPdf.baseWidth), PDF_ABS_MIN_SCALE);
   openPdf.fitScale = scale;
   return scale;
 }
@@ -2357,10 +2393,11 @@ function buildPagePlaceholders() {
     const page = document.createElement("div");
     page.className = "pdf-page";
     page.dataset.pageNumber = String(pageNumber);
-    page.style.width = `${Math.round(openPdf.baseWidth * openPdf.scale)}px`;
-    page.style.height = `${Math.round(openPdf.baseHeight * openPdf.scale)}px`;
+    const base = pageBaseSize(pageNumber);
+    page.style.width = `${Math.round(base.width * openPdf.scale)}px`;
+    page.style.height = `${Math.round(base.height * openPdf.scale)}px`;
     bumpDocumentLayout();
-    if (pageNumber === 1) publishPageWidth(openPdf.baseWidth * openPdf.scale);
+    if (pageNumber === 1) publishPageWidth(base.width * openPdf.scale);
     // A page number that is visible even before the page paints, so scrubbing
     // through a long document never looks like a blank screen.
     const label = document.createElement("span");
@@ -2380,7 +2417,7 @@ function buildPagePlaceholders() {
       // middle of a render — on a document where every page is about to ask the
       // same question. It is written by the three places that size a box and
       // read by no one else.
-      boxHeight: Math.round(openPdf.baseHeight * openPdf.scale)
+      boxHeight: Math.round(base.height * openPdf.scale)
     });
     frag.appendChild(page);
   }
@@ -2478,6 +2515,11 @@ function observePages() {
 // the same width and the first one is as good an answer as any.
 function publishPageWidth(width) {
   el.documentView?.style.setProperty("--pdf-page-w", `${Math.round(width)}px`);
+  // ...and one point of the page, on screen. What is drawn over a page in its
+  // own units (a Canvas page's "k / n", styles/53-handwriting.css) is sized from
+  // this rather than from the width, because a Canvas page is not always 595pt
+  // wide (src/documents/canvas-setup.js).
+  if (openPdf?.scale) el.documentView?.style.setProperty("--pdf-pt", `${Number(openPdf.scale.toFixed(5))}px`);
 }
 
 // Re-lay everything out at the current scale. A page's canvas is never simply
@@ -2508,8 +2550,9 @@ export function relayoutDocument({ refit = false, afterLayout = null } = {}) {
   const near = new Set();
   let resized = false;
   openPdf.pages.forEach((entry, pageNumber) => {
-    const width = (entry.viewport ? entry.viewport.width / (entry.viewport.scale || 1) : openPdf.baseWidth) * openPdf.scale;
-    const height = (entry.viewport ? entry.viewport.height / (entry.viewport.scale || 1) : openPdf.baseHeight) * openPdf.scale;
+    const base = entry.viewport ? null : pageBaseSize(pageNumber);
+    const width = (entry.viewport ? entry.viewport.width / (entry.viewport.scale || 1) : base.width) * openPdf.scale;
+    const height = (entry.viewport ? entry.viewport.height / (entry.viewport.scale || 1) : base.height) * openPdf.scale;
     const boxWidth = `${Math.round(width)}px`;
     const boxHeight = `${Math.round(height)}px`;
     if (entry.el.style.width !== boxWidth || entry.el.style.height !== boxHeight) {

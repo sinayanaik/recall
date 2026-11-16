@@ -1,0 +1,459 @@
+/* ⋯ → Canvas pages → Page setup… (#canvasSetupModal, built by
+ * src/documents/canvas-setup-dialog.js). The .confirm-modal chrome the other
+ * small dialogs use, grown into a two-column sheet: a live picture of the page
+ * on the left and the settings on the right, stacked on a phone. The head and
+ * the buttons stay put while the settings scroll between them. */
+.canvas-setup-content {
+  max-width: 760px;
+  max-height: calc(100dvh - 36px);
+  padding: 0;
+  gap: 0;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  overflow: hidden;
+}
+
+.canvas-setup-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+  padding: 18px 22px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.canvas-setup-body {
+  display: grid;
+  grid-template-columns: 210px minmax(0, 1fr);
+  gap: 20px;
+  padding: 16px 22px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.canvas-setup-actions {
+  padding: 12px 22px 16px;
+  border-top: 1px solid var(--line);
+  align-items: center;
+}
+
+.canvas-setup-spacer {
+  flex: 1 1 auto;
+}
+
+/* ── The picture of the page ──────────────────────────────────────────────
+   Sticky, so the page stays in view while the settings beside it scroll. */
+.canvas-setup-preview {
+  position: sticky;
+  top: 0;
+  align-self: start;
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+}
+
+.canvas-setup-page-frame {
+  display: grid;
+  place-items: center;
+  width: 170px;
+  height: 212px;
+  border-radius: 10px;
+  background: var(--surface-2, color-mix(in srgb, var(--text) 6%, var(--panel)));
+}
+
+.canvas-setup-page,
+.canvas-setup-zoom {
+  background: #fff;
+  box-shadow: 0 1px 6px rgb(0 0 0 / 0.28);
+  overflow: hidden;
+}
+
+.canvas-setup-page svg,
+.canvas-setup-zoom svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.canvas-setup-zoom-frame {
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.canvas-setup-zoom {
+  max-width: 100%;
+  border-radius: 0 0 6px 0;
+}
+
+.canvas-setup-size-note {
+  margin: 0;
+  font-size: 0.76rem;
+  font-weight: 700;
+  color: var(--muted);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── The settings ─────────────────────────────────────────────────────────── */
+.canvas-setup-fields {
+  display: grid;
+  gap: 14px;
+  align-content: start;
+  min-width: 0;
+}
+
+.canvas-setup-group {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 12px 14px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  min-width: 0;
+}
+
+.canvas-setup-group legend {
+  padding: 0 6px;
+  font-size: 0.8rem;
+  font-weight: 900;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.canvas-setup-label,
+.canvas-setup-field > span:first-child {
+  font-size: 0.78rem;
+  font-weight: 800;
+  color: var(--muted);
+}
+
+.canvas-setup-field {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.canvas-setup-field output {
+  margin-left: 4px;
+  font-weight: 700;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.canvas-setup-input-unit {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.canvas-setup-input-unit .prompt-modal-input {
+  min-height: 36px;
+  min-width: 0;
+}
+
+.canvas-setup-unit {
+  flex: 0 0 auto;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.canvas-setup-field select.prompt-modal-input {
+  min-height: 38px;
+}
+
+.canvas-setup-hint {
+  margin: 0;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.canvas-setup-dims {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: end;
+  gap: 8px;
+}
+
+.canvas-setup-dims > .canvas-setup-seg {
+  grid-column: 1 / -1;
+  justify-self: start;
+}
+
+.canvas-setup-times {
+  padding-bottom: 9px;
+  font-weight: 800;
+  color: var(--muted);
+}
+
+.canvas-setup-pair,
+.canvas-setup-margins {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 12px;
+}
+
+/* ── Segments, chips and swatches ─────────────────────────────────────────── */
+.canvas-setup-seg {
+  display: inline-flex;
+  padding: 3px;
+  gap: 2px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--card);
+  justify-self: start;
+}
+
+.canvas-setup-seg > button {
+  min-height: 32px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.86rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.canvas-setup-seg.is-small > button {
+  min-height: 26px;
+  padding: 0 10px;
+  font-size: 0.78rem;
+}
+
+.canvas-setup-seg > button[aria-checked="true"] {
+  background: var(--accent);
+  color: var(--accent-contrast, #fff);
+}
+
+.canvas-setup-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.canvas-setup-chip {
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--card);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.84rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.canvas-setup-chip[aria-pressed="true"],
+.canvas-setup-pattern[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, var(--card));
+  color: var(--accent-strong, var(--accent));
+}
+
+.canvas-setup-patterns {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(76px, 1fr));
+  gap: 8px;
+}
+
+.canvas-setup-pattern {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  padding: 8px 4px 7px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--card);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.canvas-setup-pattern-icon {
+  display: block;
+  width: 29px;
+  height: 40px;
+  border-radius: 2px;
+  overflow: hidden;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--text) 18%, transparent);
+}
+
+.canvas-setup-pattern-icon svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.canvas-setup-swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.canvas-setup-swatch {
+  position: relative;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--text) 25%, transparent);
+  border-radius: 50%;
+  background: var(--cs-swatch, #fff);
+  cursor: pointer;
+}
+
+.canvas-setup-swatch[aria-pressed="true"],
+.canvas-setup-swatch.is-custom.is-on {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* "Another colour": a rainbow ring round whatever was picked, with the native
+   picker laid invisibly over it so a tap opens it. */
+.canvas-setup-swatch.is-custom {
+  display: inline-block;
+  background:
+    radial-gradient(circle, var(--cs-swatch, #fff) 0 52%, transparent 54%),
+    conic-gradient(#e53935, #fdd835, #43a047, #1e88e5, #8e24aa, #e53935);
+}
+
+.canvas-setup-swatch.is-custom input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+
+.canvas-setup-switch {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  min-height: 40px;
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.canvas-setup-switch-text {
+  display: grid;
+  gap: 1px;
+  font-size: 0.9rem;
+  font-weight: 800;
+}
+
+.canvas-setup-switch-text small {
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.canvas-setup-switch[aria-checked="true"] .nhm-switch {
+  background: var(--accent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 70%, var(--line));
+}
+
+.canvas-setup-switch[aria-checked="true"] .nhm-switch::after {
+  transform: translateX(13px);
+}
+
+.canvas-setup-range input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+.canvas-setup-own {
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 12%, var(--card));
+  font-size: 0.84rem;
+  font-weight: 700;
+}
+
+.canvas-setup-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent-strong, var(--accent));
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.canvas-setup-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.canvas-setup-modal :is(button, input, select):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ── A phone: the picture above the settings, smaller, still in view ───────── */
+@media (max-width: 640px) {
+  .canvas-setup-modal {
+    padding: 8px;
+  }
+
+  .canvas-setup-content {
+    max-height: calc(100dvh - 16px);
+  }
+
+  .canvas-setup-head,
+  .canvas-setup-body,
+  .canvas-setup-actions {
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+
+  .canvas-setup-body {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 14px;
+  }
+
+  .canvas-setup-preview {
+    position: static;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    justify-content: center;
+  }
+
+  .canvas-setup-page-frame {
+    width: 120px;
+    height: 150px;
+  }
+
+  .canvas-setup-size-note {
+    grid-column: 1 / -1;
+  }
+
+  .canvas-setup-actions .sync-modal-btn {
+    min-width: 0;
+  }
+}

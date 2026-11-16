@@ -2635,7 +2635,7 @@ setThemeRepaintHook(() => {
   repaintInkSheet();
 });
 setBlockEditFlushHook(() => commitBlockEdit());
-setNotebookStartHandler(() => { startHandwritingNotebook(); });
+setNotebookStartHandler((options) => { startHandwritingNotebook(options); });
 setMarkdownPdfStartHandler(() => { openMarkdownPdfDialog({ mode: "new" }); });
 // The + Add → Picture… picker. The paste and drop paths land on the same
 // function, so a picture arrives on the page the same way — compressed, and as
@@ -4700,9 +4700,7 @@ el.documentMoreMenu?.addEventListener("click", async (event) => {
   if (action === "reattach" || action === "add-pdf") return;
   // A mode row stays put: flipping it and watching the switch move is the
   // feedback, and a menu that closed underneath the press would take that away.
-  // The paper rows are the same kind of thing — three rows of one choice, and
-  // seeing the mark move to the one you pressed is what says it worked.
-  const staysOpen = action === "page-notes" || action === "reading-progress" || action.startsWith("hw-paper-");
+  const staysOpen = action === "page-notes" || action === "reading-progress";
   if (!staysOpen) {
     el.documentMoreMenu.hidden = true;
     el.documentMoreBtn?.setAttribute("aria-expanded", "false");

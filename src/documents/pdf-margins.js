@@ -70,7 +70,11 @@ export function currentPdfMargins(pdfId = currentPdfId()) {
 // page with these boxes — what narrower margins do to writing that was in the
 // margin they take away. Nothing is deleted: the records stay, and wider
 // margins bring them back into view.
-export function marksOffPage(pdfId, boxes) {
+//
+// `slot` is the Canvas's too: a Canvas page made smaller (⋯ → Canvas pages →
+// Page setup…, src/documents/canvas-setup-dialog.js) asks the same question of
+// its own records.
+export function marksOffPage(pdfId, boxes, slot = DOC_SLOT_DOC) {
   const outside = (page, rect) => {
     const box = boxes[Number(page) - 1];
     if (!box || !Array.isArray(rect) || rect.length !== 4) return false;
@@ -78,10 +82,10 @@ export function marksOffPage(pdfId, boxes) {
     // A point of slack: a stroke drawn to the very edge is not "past" it.
     return x0 < box[0] - 1 || y0 < box[1] - 1 || x1 > box[2] + 1 || y1 > box[3] + 1;
   };
-  const marks = recordsForSurface(state.meta?.pdfHighlights, DOC_SLOT_DOC, pdfId)
+  const marks = recordsForSurface(state.meta?.pdfHighlights, slot, pdfId)
     .filter((record) => !record?.imported)
     .filter((record) => outside(record.page || record.quads?.[0]?.page, record.quads?.[0]?.rect));
-  const blocks = recordsForSurface(state.meta?.pdfBlocks, DOC_SLOT_DOC, pdfId)
+  const blocks = recordsForSurface(state.meta?.pdfBlocks, slot, pdfId)
     .filter((block) => outside(block.page, [block.x, block.y, block.x + block.w, block.y + block.h]));
   return marks.length + blocks.length;
 }

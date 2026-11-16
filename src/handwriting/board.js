@@ -45,9 +45,10 @@
 // Neither needed lifting — both are already inside #documentStage. What is left
 // in this file is what a press MEANS.
 
-import { addNotebookPage, deleteNotebookPage, duplicateNotebookPage, ensureNotebookDocument, hasNotebook, moveNotebookPage, notebookPageCount, notebookPageNumbers, notebookPaper, setNotebookPageNumbers, setNotebookPaper } from "../documents/notebook.js?v=__BUILD__";
-import { BLANK_PAPERS } from "../documents/blank-pdf.js?v=__BUILD__";
-import { notebookPaperPreference, writeNotebookPaperPreference } from "../storage/ink-prefs.js?v=__BUILD__";
+import { addNotebookPage, deleteNotebookPage, duplicateNotebookPage, ensureNotebookDocument, hasNotebook, moveNotebookPage, notebookPageCount, notebookPageHasOwnSetup, notebookPageNumbers, notebookPageSetup, setNotebookPageNumbers } from "../documents/notebook.js?v=__BUILD__";
+import { sheetSetupSummary } from "../documents/canvas-setup.js?v=__BUILD__";
+import { openCanvasSetupDialog } from "../documents/canvas-setup-dialog.js?v=__BUILD__";
+import { notebookPaperPreference, notebookSetupPreference } from "../storage/ink-prefs.js?v=__BUILD__";
 import { addDocumentBlock, addDocumentImageBlock } from "../documents/pdf-blocks.js?v=__BUILD__";
 import { BLOCK_SHAPES, BLOCK_SHAPE_LABEL, blockShapePatch, normalizeBlockShape } from "../documents/block-style.js?v=__BUILD__";
 import { blockShapeIconSvg } from "../documents/block-style-bar.js?v=__BUILD__";
@@ -82,7 +83,6 @@ export function paintHandwritingControls() {
   // just made, until some unrelated deck change happened to repaint the header.
   refreshHandwritingTab();
   const ready = hasNotebook();
-  const paper = notebookPaper();
 
   // The rail's page group. Shown on a PDF as well now (text, a block and a
   // picture go on anybody's paper), where there is always a
@@ -96,21 +96,22 @@ export function paintHandwritingControls() {
   el.handwritingImageBtn?.classList.toggle("is-disabled", standDown);
   if (el.handwritingImageInput) el.handwritingImageInput.disabled = standDown;
 
-  // The ⋯ menu's notebook rows. The paper rows are a choice, so they carry the
-  // same switch the page-notes row does and one of them is always on — a picker
-  // that shows nothing selected is a picker that does not say what the paper is.
-  el.documentMoreMenu?.querySelectorAll('[data-document-action^="hw-paper-"]').forEach((node) => {
-    const kind = node.dataset.documentAction.slice("hw-paper-".length);
-    // aria-pressed is what draws the switch — styles/37-document-chrome.css:344
-    // already lights it for any .md-menu-item in this menu, so these rows say
-    // which paper is on with the same control the page-notes row uses.
-    node.setAttribute("aria-pressed", ready && kind === paper ? "true" : "false");
-    node.toggleAttribute("disabled", !ready);
-  });
   // The page rows: each refused where it cannot act, never hidden (see below).
   const total = notebookPageCount();
   const here = currentDocumentPage() || 1;
   const pageRow = (action) => el.documentMoreMenu?.querySelector(`[data-document-action="${action}"]`);
+  // Page setup… says what the page in view is set up as, so the menu answers
+  // "what paper is this?" without opening anything.
+  const setupRow = pageRow("hw-page-setup");
+  if (setupRow) {
+    setupRow.toggleAttribute("disabled", !ready);
+    const hint = setupRow.querySelector("[data-hw-setup-hint]");
+    if (hint) {
+      hint.textContent = ready
+        ? `${sheetSetupSummary(notebookPageSetup(Math.min(here, total) || 1))}${total > 1 && notebookPageHasOwnSetup(here) ? " · this page" : ""}`
+        : "Size, paper and lines";
+    }
+  }
   pageRow("hw-page-after")?.toggleAttribute("disabled", !ready);
   pageRow("hw-page-end")?.toggleAttribute("disabled", !ready);
   pageRow("hw-page-duplicate")?.toggleAttribute("disabled", !ready);
@@ -153,7 +154,7 @@ export function refreshHandwritingBoard() {
 // does nothing at all. The reopen is FORCED only when it says the bytes are new
 // — everything else is left to openDocumentView's own idempotence, which is what
 // makes switching into this tab and back cost nothing.
-export async function enterHandwritingView({ create = false } = {}) {
+export async function enterHandwritingView({ create = false, setup = null } = {}) {
   if (!hasActiveDeck()) return false;
   wire();
   // deckHasHandwrittenPages, not hasNotebook: a deck whose pages are still in the
@@ -171,7 +172,11 @@ export async function enterHandwritingView({ create = false } = {}) {
   // notebookPaperPreference. Only ever read on the branch that MAKES a notebook:
   // ensureNotebookDocument ignores it for one that already exists, whose own
   // paper is recorded on the deck and syncs.
-  const paperState = await ensureNotebookDocument({ paper: notebookPaperPreference() });
+  //
+  // ...and the whole page setup it last chose, when it chose one (⋯ → Canvas
+  // pages → Page setup… with "Use for new Canvases"), or the one chosen just
+  // now from the Canvas tab's own "Page setup…" before the first page.
+  const paperState = await ensureNotebookDocument({ paper: notebookPaperPreference(), setup: setup || notebookSetupPreference() });
   // It said no — the device store refused the save, and it has already said so.
   // The surface still has to show something honest: the offer, not whatever
   // document happened to be on the stage before this tab was pressed.
@@ -181,9 +186,17 @@ export async function enterHandwritingView({ create = false } = {}) {
 }
 
 // The "Start a notebook" press on the empty surface. Registered with pdf-view
-// through setNotebookStartHandler, which is why it takes no arguments and why
-// pdf-view does not import this module: it is the one that gets imported.
-export function startHandwritingNotebook() {
+// through setNotebookStartHandler, which is why pdf-view does not import this
+// module: it is the one that gets imported. Its "Page setup…" asks for the
+// size, paper and lines first (`chooseSetup`), and starts the Canvas on them.
+export function startHandwritingNotebook({ chooseSetup = false } = {}) {
+  if (chooseSetup) {
+    openCanvasSetupDialog({
+      create: true,
+      onStart: (setup) => enterHandwritingView({ create: true, setup })
+    });
+    return Promise.resolve(true);
+  }
   return enterHandwritingView({ create: true });
 }
 
@@ -202,15 +215,11 @@ export function runHandwritingMenuAction(action) {
     setNotebookPageNumbers(!notebookPageNumbers()).then(() => paintHandwritingControls());
     return true;
   }
-  if (action.startsWith("hw-paper-")) {
-    const kind = action.slice("hw-paper-".length);
-    if (!BLANK_PAPERS.includes(kind)) return false;
-    // Remembered before the regeneration and regardless of it: choosing ruled on
-    // the notebook in front of you is the plainest statement anybody can make
-    // about which paper they want, and setNotebookPaper returns false for the
-    // paper that is already on — which is still the reader saying it.
-    writeNotebookPaperPreference(kind);
-    setNotebookPaper(kind).then(() => paintHandwritingControls());
+  // The page in view's size, paper and lines — or every page's
+  // (src/documents/canvas-setup-dialog.js). The grid / ruled / blank rows it
+  // replaced changed every page at once and nothing else.
+  if (action === "hw-page-setup") {
+    openCanvasSetupDialog({ page: currentDocumentPage() || 1, onApplied: paintHandwritingControls });
     return true;
   }
   return false;
@@ -257,6 +266,11 @@ function wire() {
   // made a moment ago is offered without anything else repainting first.
   el.documentInsertBtn?.addEventListener("pointerdown", paintPasteBlocksRow, true);
   el.documentInsertBtn?.addEventListener("click", paintPasteBlocksRow, true);
+  // ...and ⋯'s Canvas rows as it opens, so Page setup… names the page in view
+  // rather than the one in view when something last repainted them.
+  const paintCanvasRows = () => { if (activeDocSlot() === DOC_SLOT_NOTEBOOK && hasNotebook()) paintHandwritingControls(); };
+  el.documentMoreBtn?.addEventListener("pointerdown", paintCanvasRows, true);
+  el.documentMoreBtn?.addEventListener("click", paintCanvasRows, true);
 
   // ＋ Page in the gap under a Canvas page (src/documents/pdf-view.js): a page
   // between that one and the next.
@@ -301,9 +315,9 @@ async function duplicatePage() {
   setTimeout(() => scrollToDocumentPage(page + 1, 0, { smooth: true }), 60);
 }
 
-function movePage(delta) {
+async function movePage(delta) {
   const page = currentDocumentPage() || 1;
-  if (!moveNotebookPage(page, delta)) return;
+  if (!(await moveNotebookPage(page, delta))) return;
   paintHandwritingControls();
   // The page goes where it was moved, and so does the reader: they moved it
   // to keep working on it, not to lose sight of it.

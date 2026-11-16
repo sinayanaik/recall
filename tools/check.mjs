@@ -374,6 +374,13 @@ const checks = [
   // gets its margin on the side the reader sees; and the Canvas's own paper is
   // byte-for-byte unchanged. pdf-lib from disk, no browser.
   ["pdf-margins   ", ["node", ["tools/pdf-margins-check.mjs"], ROOT]],
+  // A Canvas page's setup (src/documents/canvas-setup.js): a Canvas never set
+  // up keeps its exact bytes; the default grid and ruled papers draw every line
+  // where the first ones did; every page keeps its top-left at (0, 842) and its
+  // lines on one lattice, so resizing moves nothing written; pages drawn alike
+  // share a stream; a page's setup follows it through add, move and tear-out.
+  // pdf-lib from disk, no browser.
+  ["canvas-setup  ", ["node", ["tools/canvas-setup-check.mjs"], ROOT]],
   // Markdown → PDF (src/documents/md-pdf/): every word is real text in the
   // PDF, in order; bookmarks and links; the page-break planner (smart, paper,
   // one long page, two columns, a new page per heading, breaks placed by hand);
@@ -700,6 +707,13 @@ const checks = [
     // pasted or undone, the pen, Shapes and Insert leave the row, and the row
     // still fits at 360px; a real two-finger pinch on a Block zooms the page.
     ["view-only     ", ["node", ["tools/view-only-check.mjs"], ROOT]],
+    // ⋯ → Canvas pages → Page setup… in the app: one page set to A5
+    // landscape dot grid is laid out at that size while the next is A4, nothing
+    // written moves, the setup follows its page through add, duplicate, move
+    // and tear-out, a smaller page asks first, every page at once clears the
+    // pages' own, the Canvas PDF keeps each size, plain grid again is the very
+    // same file, View only hides the row, and a Canvas can start from it.
+    ["canvas-setup-ui", ["node", ["tools/canvas-setup-browser-check.mjs"], ROOT]],
     // Things put on a page where the mouse is: a pasted picture or pasted
     // words, a Block with T or B or a mouse double-click (never a
     // pen's), and a picture copied after ink or Blocks still pasting as one.

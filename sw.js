@@ -391,6 +391,7 @@ const APP_SHELL = [
   `./styles/99-split-parts.css?v=${STAMP}`,
   `./styles/a0-canvas-tools.css?v=${STAMP}`,
   `./styles/a1-view-only.css?v=${STAMP}`,
+  `./styles/a2-canvas-setup.css?v=${STAMP}`,
   // The module entry point. Everything it imports is stamped with the same
   // ?v=, so those URLs change with every release too — which is what lets the
   // cache-first handler below serve them without revalidating and still never
@@ -505,6 +506,8 @@ const APP_SHELL = [
   `./src/documents/page-clipboard.js?v=${STAMP}`,
   `./src/documents/page-pointer.js?v=${STAMP}`,
   `./src/documents/view-only.js?v=${STAMP}`,
+  `./src/documents/canvas-setup.js?v=${STAMP}`,
+  `./src/documents/canvas-setup-dialog.js?v=${STAMP}`,
   `./src/documents/pdf-guides.js?v=${STAMP}`,
   `./src/render/snap-guides.js?v=${STAMP}`,
   `./src/documents/pdf-shape-panel.js?v=${STAMP}`,

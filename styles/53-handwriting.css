@@ -936,9 +936,10 @@
 
 /* "k / n" at the foot of every Canvas page. The size and the baseline are the
    export's CANVAS_NUMBER_SIZE (9pt) and CANVAS_NUMBER_BASELINE (16pt above the
-   bottom edge), src/documents/pdf-export.js, scaled from points to the page's
-   width on screen (a Canvas page is 595pt wide) — so the exported page has its
-   number exactly where the reader saw it. A pseudo-element, so it outlives
+   bottom edge), src/documents/pdf-export.js, scaled from points to the page on
+   screen by --pdf-pt (one point of the page, publishPageWidth) — a Canvas page
+   can be any size, so its width says nothing about its scale — and the exported
+   page has its number exactly where the reader saw it. A pseudo-element, so it outlives
    every rebuild of the page's children. n is the pages the view was built
    with (--canvas-page-total, buildPagePlaceholders). ⋯ → Canvas pages → Page
    numbers turns it off (body.canvas-page-numbers-off). */
@@ -948,9 +949,9 @@
   left: 0;
   right: 0;
   /* The box's bottom is the baseline less Helvetica's descent (~0.21em). */
-  bottom: calc(var(--pdf-page-w, 595px) * (16 - 9 * 0.21) / 595);
+  bottom: calc(var(--pdf-pt, calc(var(--pdf-page-w, 595px) / 595)) * (16 - 9 * 0.21));
   font-family: Helvetica, Arial, sans-serif;
-  font-size: calc(var(--pdf-page-w, 595px) * 9 / 595);
+  font-size: calc(var(--pdf-pt, calc(var(--pdf-page-w, 595px) / 595)) * 9);
   line-height: 1;
   text-align: center;
   color: rgb(115 115 115);
