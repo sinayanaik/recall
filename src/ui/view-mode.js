@@ -836,8 +836,8 @@ const VIEW_EXPORT_MENUS = {
   handwriting: {
     head: "Export Canvas pages",
     rows: [
-      ["doc:annotated-pdf", "Pages you wrote on", "Only the pages that have something on them"],
-      ["doc:pages-pdf", "The whole canvas", "Every page, with your handwriting on it"],
+      ["doc:annotated-pdf", "Pages you wrote on", "Only the pages with something on them, exactly as they are"],
+      ["doc:pages-pdf", "The whole canvas", "Every page, exactly as it is, numbered"],
       ["doc:notes-pdf", "The notes on their own", "Every note, grouped by page"],
       ["doc:original", "The blank paper", "The pages with nothing on them"],
       ["doc:native", "With annotations", "Your marks as real PDF annotations, editable in other PDF apps"],
