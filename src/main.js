@@ -2954,6 +2954,8 @@ function exportThemeTitle(surface, format) {
   if ((surface === "cards" || surface === "notes") && FORMAT_WORDS[format]) {
     return `Export ${surface === "cards" ? "cards" : "notes"} as ${FORMAT_WORDS[format]}`;
   }
+  // A Canvas is exported exactly as it is, so it has no look to ask about.
+  if (surface === "doc" && activeDocSlot() === DOC_SLOT_NOTEBOOK) return "";
   if (surface === "doc" && /-pdf$/.test(format)) return "Export as PDF";
   return "";
 }

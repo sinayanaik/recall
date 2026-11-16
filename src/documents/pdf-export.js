@@ -82,6 +82,13 @@ export const PRINT_PROGRESS_FROM = 4;
 // built. An overlay in the print document would have to re-derive it from
 // whatever width the printer chose to lay the image out at.
 async function renderPageForPrint(pageNumber, records) {
+  const canvas = await renderPageCanvas(pageNumber, records);
+  return canvas ? canvas.toDataURL("image/jpeg", PRINT_PAGE_QUALITY) : null;
+}
+
+// The same page as a canvas, for the Canvas export, which writes its own PDF
+// rather than printing a picture of one (buildCanvasPdfBytes, below).
+async function renderPageCanvas(pageNumber, records) {
   const doc = currentPdfDocument();
   if (!doc) return null;
   const token = pdfOpenToken;
@@ -184,7 +191,7 @@ async function renderPageForPrint(pageNumber, records) {
     });
   });
   drawRegionBlocks(context, viewport, rasters, { only: "shape-text" });
-  return canvas.toDataURL("image/jpeg", PRINT_PAGE_QUALITY);
+  return canvas;
 }
 
 // How much of the highlighted passage is printed beside its note. Long enough to
@@ -261,7 +268,7 @@ function stagePaperSource() {
   return { slot, pdfId: slot === DOC_SLOT_DOC ? activePdfId(state.meta) : null };
 }
 
-function onCanvasSlot() {
+export function onCanvasSlot() {
   return activeDocSlot() === DOC_SLOT_NOTEBOOK;
 }
 
@@ -303,8 +310,35 @@ export function documentExportEmptyMessage({ annotatedOnly = false } = {}) {
 }
 
 // The whole document, or with `annotatedOnly` just annotatedPages().
+// Marks are painted on every printed page whether or not it carries a note —
+// a page in the export that is missing the highlight the facing note refers
+// to is worse than no export at all. The surface's own marks only: a deck can
+// have two documents and the pages being printed are one of them, so the whole
+// array would paint a notebook's strokes onto page 3 of somebody's preprint.
+function marksByPageNumber() {
+  const marksByPage = new Map();
+  documentHighlights().forEach((record) => {
+    (record.quads || []).forEach((quad) => {
+      if (!quad?.page) return;
+      if (!marksByPage.has(quad.page)) marksByPage.set(quad.page, new Set());
+      marksByPage.get(quad.page).add(record);
+    });
+  });
+  return marksByPage;
+}
+
+// The page numbers an export prints, in order.
+function pagesToPrint({ annotatedOnly = false } = {}) {
+  const keep = annotatedOnly ? annotatedPages() : null;
+  const wanted = [];
+  for (let pageNumber = 1; pageNumber <= currentPdfPageCount(); pageNumber++) {
+    if (keep && !keep.has(pageNumber)) continue;
+    wanted.push(pageNumber);
+  }
+  return wanted;
+}
+
 export async function buildDocumentPrintDocument(title, { annotatedOnly = false, theme } = {}) {
-  const pageCount = currentPdfPageCount();
   const annotated = annotatedDocumentHighlights();
   const notesByPage = new Map();
   annotated.forEach((entry) => {
@@ -313,27 +347,8 @@ export async function buildDocumentPrintDocument(title, { annotatedOnly = false,
     if (!notesByPage.has(page)) notesByPage.set(page, []);
     notesByPage.get(page).push(entry);
   });
-  // Marks are painted on every printed page whether or not it carries a note —
-  // a page in the export that is missing the highlight the facing note refers
-  // to is worse than no export at all.
-  const marksByPage = new Map();
-  // The surface's own marks. A deck can have two documents and the pages being
-  // printed are one of them, so the whole array would paint a notebook's strokes
-  // onto page 3 of somebody's preprint.
-  documentHighlights().forEach((record) => {
-    (record.quads || []).forEach((quad) => {
-      if (!quad?.page) return;
-      if (!marksByPage.has(quad.page)) marksByPage.set(quad.page, new Set());
-      marksByPage.get(quad.page).add(record);
-    });
-  });
-
-  const keep = annotatedOnly ? annotatedPages() : null;
-  const wanted = [];
-  for (let pageNumber = 1; pageNumber <= pageCount; pageNumber++) {
-    if (keep && !keep.has(pageNumber)) continue;
-    wanted.push(pageNumber);
-  }
+  const marksByPage = marksByPageNumber();
+  const wanted = pagesToPrint({ annotatedOnly });
 
   const sheets = [];
   for (let i = 0; i < wanted.length; i++) {
@@ -376,6 +391,75 @@ export async function buildDocumentPrintDocument(title, { annotatedOnly = false,
       ${sheets.join("")}
     </div>
   `;
+}
+
+// ── The Canvas, exactly as it is ───────────────────────────────────────────
+//
+// A Canvas page is not an A4 sheet, and printing it as one, with a cover, a
+// 14mm margin, a caption under it and a look to wear, squeezed the pages and
+// spilled them onto extra sheets. So the Canvas writes its own PDF: one PDF page
+// per Canvas page, the same size as the Canvas page, with the page drawn edge
+// to edge and nothing added but its number, in a thin strip of its own BELOW
+// the page so it can never sit on top of anything written there.
+
+// The strip under each page that holds its number, in PDF points (~6mm).
+export const CANVAS_NUMBER_STRIP = 18;
+export const CANVAS_NUMBER_SIZE = 8;
+// A touch higher than the printed export's: these pages are the whole file.
+export const CANVAS_PAGE_QUALITY = 0.92;
+
+function canvasJpegBytes(canvas) {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (!blob) { reject(new Error("The page could not be encoded")); return; }
+      blob.arrayBuffer().then((buffer) => resolve(new Uint8Array(buffer)), reject);
+    }, "image/jpeg", CANVAS_PAGE_QUALITY);
+  });
+}
+
+// Resolves to { bytes, name, pages }, or null when the deck was closed while
+// its pages were rendering. Needs window.PDFLib (ensurePdfLib) loaded first.
+export async function buildCanvasPdfBytes({ annotatedOnly = false } = {}) {
+  const { PDFDocument, StandardFonts, rgb } = window.PDFLib;
+  const source = currentPdfDocument();
+  if (!source) return null;
+  const token = pdfOpenToken;
+  const marksByPage = marksByPageNumber();
+  const wanted = pagesToPrint({ annotatedOnly });
+  const out = await PDFDocument.create();
+  const font = await out.embedFont(StandardFonts.Helvetica);
+  for (let i = 0; i < wanted.length; i++) {
+    const pageNumber = wanted[i];
+    if (wanted.length >= PRINT_PROGRESS_FROM) {
+      setStatus(`Preparing the Canvas PDF — page ${i + 1} of ${wanted.length}…`);
+    }
+    // Sequential on purpose, as buildDocumentPrintDocument is.
+    /* eslint-disable no-await-in-loop */
+    const pdfPage = await source.getPage(pageNumber);
+    if (token !== pdfOpenToken) return null;
+    // The page's own size in points, turned as it is shown.
+    const { width, height } = pdfPage.getViewport({ scale: 1 });
+    const canvas = await renderPageCanvas(pageNumber, [...(marksByPage.get(pageNumber) || [])]);
+    if (!canvas || token !== pdfOpenToken) return null;
+    const image = await out.embedJpg(await canvasJpegBytes(canvas));
+    /* eslint-enable no-await-in-loop */
+    canvas.width = 0; // let the pixels go before the next page renders
+    const page = out.addPage([width, height + CANVAS_NUMBER_STRIP]);
+    page.drawImage(image, { x: 0, y: CANVAS_NUMBER_STRIP, width, height });
+    const label = String(pageNumber);
+    const labelWidth = font.widthOfTextAtSize(label, CANVAS_NUMBER_SIZE);
+    page.drawText(label, {
+      x: (width - labelWidth) / 2,
+      y: (CANVAS_NUMBER_STRIP - CANVAS_NUMBER_SIZE * 0.7) / 2,
+      size: CANVAS_NUMBER_SIZE,
+      font,
+      color: rgb(0.45, 0.45, 0.45)
+    });
+  }
+  out.setTitle(state.deckTitle || state.sourceTitle || "Canvas");
+  out.setProducer("Recall");
+  const bytes = await out.save();
+  return { bytes, name: `${documentExportBaseName()}.pdf`, pages: wanted.length };
 }
 
 export function documentExportBaseName() {

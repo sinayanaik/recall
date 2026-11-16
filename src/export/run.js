@@ -10,10 +10,10 @@ import { afterPaint } from "../cards/question-fit.js?v=__BUILD__";
 import { downloadTextFile } from "../cloud/web-decks.js?v=__BUILD__";
 import { el } from "../core/dom.js?v=__BUILD__";
 import { notesForExport } from "./notes-body.js?v=__BUILD__";
-import { buildDocumentPrintDocument, documentExportBaseName, documentExportEmptyMessage, documentExportNoun, documentExportUnavailableReason, documentPrintPageCount } from "../documents/pdf-export.js?v=__BUILD__";
+import { buildCanvasPdfBytes, buildDocumentPrintDocument, documentExportBaseName, documentExportEmptyMessage, documentExportNoun, documentExportUnavailableReason, documentPrintPageCount, onCanvasSlot } from "../documents/pdf-export.js?v=__BUILD__";
 import { saveDocumentCopy } from "../documents/pdf-view.js?v=__BUILD__";
 import { saveAnnotatedPdf } from "../documents/pdf-annot-export.js?v=__BUILD__";
-import { ensureMermaid } from "../core/lib-loader.js?v=__BUILD__";
+import { ensureMermaid, ensurePdfLib } from "../core/lib-loader.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { escapeHtml } from "../core/text.js?v=__BUILD__";
 import { buildDocxBytes } from "./docx.js?v=__BUILD__";
@@ -815,6 +815,48 @@ export async function exportDocumentPdf({ annotatedOnly = false, theme = loadExp
   }
 }
 
+// The Canvas's pages, exactly as they are: no look to choose, no cover, no
+// margins — each Canvas page becomes a PDF page of its own size, numbered in a
+// strip beneath it (buildCanvasPdfBytes, src/documents/pdf-export.js). Written
+// with pdf-lib and downloaded, so no print dialog gets to scale or split it.
+export async function exportCanvasPdf({ annotatedOnly = false } = {}) {
+  const blocked = documentExportUnavailableReason();
+  if (blocked) {
+    setStatus(blocked, "error");
+    return;
+  }
+  if (!documentPrintPageCount({ annotatedOnly })) {
+    setStatus(documentExportEmptyMessage({ annotatedOnly }), "error");
+    return;
+  }
+  setStatus("Preparing the Canvas PDF…");
+  setExportBusy(true);
+  try {
+    if (!(await ensurePdfLib())) {
+      setStatus(navigator.onLine === false
+        ? "Exporting the Canvas needs to be online once, to fetch the PDF writer."
+        : "Could not load the PDF writer.", "error");
+      return;
+    }
+    const result = await buildCanvasPdfBytes({ annotatedOnly });
+    if (!result) return; // the file was closed while its pages rendered
+    const url = URL.createObjectURL(new Blob([result.bytes], { type: "application/pdf" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = result.name;
+    (el.app || document.body).appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 10000);
+    setStatus(`Exported ${result.pages} Canvas page${result.pages === 1 ? "" : "s"} as PDF.`);
+  } catch (error) {
+    console.error("Canvas PDF export failed", error);
+    setStatus("Could not export the Canvas as PDF.", "error");
+  } finally {
+    setExportBusy(false);
+  }
+}
+
 // The notes with no pages under them: every annotated highlight, grouped by the
 // page it is on. Straight through the highlights pipeline with annotatedOnly
 // and groupByPage — one call site, one option object, so the menu row cannot
@@ -848,6 +890,10 @@ export function handleExportDocumentAction(action, { theme } = {}) {
   }
   // "pages-pdf" (everything) and "annotated-pdf" (only the pages with notes).
   const annotatedOnly = action === "annotated-pdf";
+  if (onCanvasSlot()) {
+    exportCanvasPdf({ annotatedOnly });
+    return;
+  }
   setStatus("Opening the document PDF export…");
   window.setTimeout(() => exportDocumentPdf({ annotatedOnly, theme }), 0);
 }
