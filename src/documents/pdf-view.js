@@ -1158,6 +1158,50 @@ export function setNotebookStartHandler(fn) {
   onStartNotebook = typeof fn === "function" ? fn : null;
 }
 
+// ── ＋ Page, in the gap under every Canvas page ────────────────────────────
+//
+// A Canvas page is added where it is wanted: the pill under page k puts a
+// blank page between k and k+1. It is a child of the page (top: 100%, so it
+// sits in the gap below it) because the page is what every layout pass here
+// already places, and a child needs no positioning of its own. Added wherever
+// the page's number label is, since those are the two places a page's
+// children are built from nothing; a render drops only the label.
+//
+// `data-page-chrome` is what keeps the pen, the Shapes tool and every other
+// page handler off it (liveDocumentHandler, src/documents/doc-scrollers.js):
+// in the DOM it is inside the page, and a press on it is not a press on paper.
+//
+// The handler is registered, as the start handler above is, so this module
+// does not import src/handwriting/board.js.
+let onInsertCanvasPage = null;
+
+export function setCanvasPageInsertHandler(fn) {
+  onInsertCanvasPage = typeof fn === "function" ? fn : null;
+}
+
+function appendPageInsertButton(pageEl, pageNumber) {
+  if (!pageEl || openPdf?.slot !== DOC_SLOT_NOTEBOOK) return;
+  if (pageEl.querySelector(":scope > .canvas-page-insert")) return;
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "canvas-page-insert";
+  button.dataset.pageChrome = "";
+  button.dataset.insertAfter = String(pageNumber);
+  const label = pageNumber >= (openPdf?.pageCount || 0)
+    ? "Add a page at the end"
+    : `Insert a page between ${pageNumber} and ${pageNumber + 1}`;
+  button.title = label;
+  button.setAttribute("aria-label", label);
+  button.innerHTML = '<span aria-hidden="true">+</span> Page';
+  button.addEventListener("pointerdown", (event) => { event.stopPropagation(); });
+  button.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    onInsertCanvasPage?.(Number(button.dataset.insertAfter) || pageNumber);
+  });
+  pageEl.appendChild(button);
+}
+
 function renderStartNotebookPrompt() {
   renderDocumentPickPrompt({
     heading: "Start a Canvas",
@@ -2297,6 +2341,11 @@ export function pagesHost() {
 function buildPagePlaceholders() {
   const view = pagesHost();
   if (!view) return;
+  // The "n" of a Canvas page's "k / n" (styles/53-handwriting.css): the pages
+  // this view was built with, so it is never a page behind what is on screen —
+  // a page added or torn out reopens the Canvas, and that rebuilds these.
+  if (openPdf.slot === DOC_SLOT_NOTEBOOK) view.style.setProperty("--canvas-page-total", `"${openPdf.pageCount}"`);
+  else view.style.removeProperty("--canvas-page-total");
   const frag = document.createDocumentFragment();
   for (let pageNumber = 1; pageNumber <= openPdf.pageCount; pageNumber++) {
     const page = document.createElement("div");
@@ -2312,6 +2361,7 @@ function buildPagePlaceholders() {
     label.className = "pdf-page-label";
     label.textContent = String(pageNumber);
     page.appendChild(label);
+    appendPageInsertButton(page, pageNumber);
     openPdf.pages.set(pageNumber, {
       el: page,
       viewport: null,
@@ -6123,6 +6173,7 @@ function unrenderPage(pageNumber) {
   label.className = "pdf-page-label";
   label.textContent = String(pageNumber);
   entry.el.appendChild(label);
+  appendPageInsertButton(entry.el, pageNumber);
 }
 
 // Stop a render that is still painting. pdf.js rejects its promise with a

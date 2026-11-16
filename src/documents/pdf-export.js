@@ -398,13 +398,16 @@ export async function buildDocumentPrintDocument(title, { annotatedOnly = false,
 // A Canvas page is not an A4 sheet, and printing it as one, with a cover, a
 // 14mm margin, a caption under it and a look to wear, squeezed the pages and
 // spilled them onto extra sheets. So the Canvas writes its own PDF: one PDF page
-// per Canvas page, the same size as the Canvas page, with the page drawn edge
-// to edge and nothing added but its number, in a thin strip of its own BELOW
-// the page so it can never sit on top of anything written there.
+// per Canvas page, the same size as the Canvas page, drawn edge to edge, with
+// nothing added but its number — "k / n" at the foot of the page, in the very
+// place and size the Canvas shows it on screen (styles/53-handwriting.css,
+// .pdf-page::after), so the exported page is the page as it was seen. Turned
+// off with ⋯ → Canvas pages → Page numbers, it is off in both.
 
-// The strip under each page that holds its number, in PDF points (~6mm).
-export const CANVAS_NUMBER_STRIP = 18;
-export const CANVAS_NUMBER_SIZE = 8;
+// In PDF points on the Canvas page: the number's size, and its baseline's
+// height above the page's bottom edge. The CSS states the same two numbers.
+export const CANVAS_NUMBER_SIZE = 9;
+export const CANVAS_NUMBER_BASELINE = 16;
 // A touch higher than the printed export's: these pages are the whole file.
 export const CANVAS_PAGE_QUALITY = 0.92;
 
@@ -428,6 +431,11 @@ export async function buildCanvasPdfBytes({ annotatedOnly = false } = {}) {
   const wanted = pagesToPrint({ annotatedOnly });
   const out = await PDFDocument.create();
   const font = await out.embedFont(StandardFonts.Helvetica);
+  // Read off the record as src/documents/notebook.js does (notebookPageNumbers,
+  // notebookPageCount) — not imported, since that module reaches the whole
+  // page surface and this one is reached from the renderers.
+  const numbered = state.meta?.notebook?.pageNumbers !== false;
+  const total = Number(state.meta?.notebook?.pages) || source.numPages || wanted.length;
   for (let i = 0; i < wanted.length; i++) {
     const pageNumber = wanted[i];
     if (wanted.length >= PRINT_PROGRESS_FROM) {
@@ -444,17 +452,21 @@ export async function buildCanvasPdfBytes({ annotatedOnly = false } = {}) {
     const image = await out.embedJpg(await canvasJpegBytes(canvas));
     /* eslint-enable no-await-in-loop */
     canvas.width = 0; // let the pixels go before the next page renders
-    const page = out.addPage([width, height + CANVAS_NUMBER_STRIP]);
-    page.drawImage(image, { x: 0, y: CANVAS_NUMBER_STRIP, width, height });
-    const label = String(pageNumber);
-    const labelWidth = font.widthOfTextAtSize(label, CANVAS_NUMBER_SIZE);
-    page.drawText(label, {
-      x: (width - labelWidth) / 2,
-      y: (CANVAS_NUMBER_STRIP - CANVAS_NUMBER_SIZE * 0.7) / 2,
-      size: CANVAS_NUMBER_SIZE,
-      font,
-      color: rgb(0.45, 0.45, 0.45)
-    });
+    const page = out.addPage([width, height]);
+    page.drawImage(image, { x: 0, y: 0, width, height });
+    if (numbered) {
+      // Of every page in the Canvas, not of the pages exported: page 3 of 12 is
+      // "3 / 12" in an export of only the pages written on, as it is on screen.
+      const label = `${pageNumber} / ${total}`;
+      const labelWidth = font.widthOfTextAtSize(label, CANVAS_NUMBER_SIZE);
+      page.drawText(label, {
+        x: (width - labelWidth) / 2,
+        y: CANVAS_NUMBER_BASELINE,
+        size: CANVAS_NUMBER_SIZE,
+        font,
+        color: rgb(0.45, 0.45, 0.45)
+      });
+    }
   }
   out.setTitle(state.deckTitle || state.sourceTitle || "Canvas");
   out.setProducer("Recall");

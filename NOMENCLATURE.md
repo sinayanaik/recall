@@ -40,7 +40,17 @@ tool and picks which one (`src/ui/ink-rail.js`). A Block opens to type in, in
 place (`src/documents/pdf-block-inline.js`), and a tap on a picked-up Block
 opens it again. A Canvas's pages are added, duplicated, moved and torn out from
 ⋯ → Canvas pages, and ＋□ beside the page number adds one after the page in view
-(`src/documents/notebook.js`).
+(`src/documents/notebook.js`). **＋ Page**, the pill in the gap under every
+Canvas page, inserts a blank page right there, between that page and the next
+(`appendPageInsertButton` in `src/documents/pdf-view.js`; `data-page-chrome`
+keeps the page's tools off it). Each Canvas page shows its **page number**,
+"k / n", at its foot, and the Canvas PDF export prints it in the same place;
+⋯ → Canvas pages → Page numbers turns it off (`meta.notebook.pageNumbers:
+false`; `CANVAS_NUMBER_SIZE` / `CANVAS_NUMBER_BASELINE` in
+`src/documents/pdf-export.js`). Picked-up Blocks are **copied** (or cut) from
+their strip or the bar over several, and pasted onto any page of the same part
+with Insert → **Paste blocks** or Ctrl+V (`copyPickedByButton`, `pastePicked` in
+`src/documents/canvas-selection.js`).
 
 | Say | Meaning | Data | Code |
 |---|---|---|---|

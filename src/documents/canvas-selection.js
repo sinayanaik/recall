@@ -32,8 +32,9 @@ import { inkSelectionCount, inkTool, isInkArmed } from "./pdf-ink.js?v=__BUILD__
 import { isEraserEvent } from "../render/ink-engine.js?v=__BUILD__";
 import {
   blockPageBounds, documentBlocks, freshDocumentBlockId, isEditingBlock, nextBlockZ, previewBlockGeometry, repaintDocumentBlocks,
-  restackBlock, runDiagramEdit, selectBlock, selectedBlockId, writeDocumentBlocks
+  restackBlock, runDiagramEdit, selectBlock, selectedBlockId, setBlockClipboardHooks, writeDocumentBlocks
 } from "./pdf-blocks.js?v=__BUILD__";
+import { showToast } from "../ui/feedback.js?v=__BUILD__";
 import {
   documentShapes, editingShapeTextId, isShapeToolArmed, newShapeRecord, paintDocumentShapes, selectShape, selectedShapeHandleAt,
   selectedShapeRecord, shapeAtPoint, updateShapesQuietly
@@ -637,6 +638,17 @@ export function copyPicked({ cut = false } = {}) {
   return true;
 }
 
+// Copy and Cut pressed rather than typed (a Block's strip, the bar over
+// several): the same copy as Ctrl+C, and a word on where it can go, since a
+// press on a tablet has no Ctrl+V to reach for.
+export function copyPickedByButton({ cut = false } = {}) {
+  const count = currentIds().length;
+  if (!copyPicked({ cut })) return false;
+  const what = count > 1 ? `${count} things` : "it";
+  showToast(`${cut ? "Cut" : "Copied"} — paste ${what} on any page with Insert → Paste blocks (or Ctrl+V)`, "info");
+  return true;
+}
+
 export function hasObjectClipboard() {
   return Boolean(clipboard) && lastCopy === "objects";
 }
@@ -824,6 +836,8 @@ function buildArrangeBar() {
     word("group", "Group", "Group — pick them up as one from now on (Ctrl+G)"),
     word("ungroup", "Ungroup", "Ungroup (Ctrl+Shift+G)"),
     word("duplicate", "Duplicate", "Duplicate (Ctrl+D)"),
+    word("copy", "Copy", "Copy (Ctrl+C) — then paste them on any page with Insert → Paste blocks"),
+    word("cut", "Cut", "Cut (Ctrl+X) — take them off this page, to paste on another"),
     word("card", "Card", "Make a card — a live picture of everything picked, where it is on the page"),
     word("front", "To front", "Blocks to the front"),
     word("back", "To back", "Blocks to the back"),
@@ -839,6 +853,8 @@ function buildArrangeBar() {
     else if (action === "group") groupPicked(true);
     else if (action === "ungroup") groupPicked(false);
     else if (action === "duplicate") duplicatePicked();
+    else if (action === "copy") copyPickedByButton();
+    else if (action === "cut") copyPickedByButton({ cut: true });
     else if (action === "card") cardOfPicked();
     else if (action === "front") restackPicked(Infinity);
     else if (action === "back") restackPicked(-Infinity);
@@ -949,6 +965,10 @@ function onKey(event) {
 // ── Wiring ────────────────────────────────────────────────────────────────
 export function initCanvasSelection() {
   addDiagramOverlayPainter(paintPicked);
+  setBlockClipboardHooks({
+    copy: () => copyPickedByButton(),
+    cut: () => copyPickedByButton({ cut: true })
+  });
   setConnectArrowsSuppressed(() => isMultiPicked());
   // Capture on the document: ahead of the page's own listeners on
   // #documentView (the pen, the shapes, a block's own drag), which a press

@@ -62,10 +62,21 @@ export function isLiveDocumentScroller(view) {
   return Boolean(view) && view === el.documentView;
 }
 
+// A press on a control that sits on the page (`data-page-chrome` — the ＋ Page
+// pill under a Canvas page, src/documents/pdf-view.js) is the control's, not
+// the paper's: no stroke, no Shapes drag, no box drawn, no Block put there.
+// Scrolling and the wheel are left alone, so the page still scrolls under it.
+const PAGE_CHROME_EVENT = /^(pointer|mouse|touch|click|dblclick|contextmenu)/;
+
+function onPageChrome(event) {
+  return PAGE_CHROME_EVENT.test(event?.type || "") && Boolean(event.target?.closest?.("[data-page-chrome]"));
+}
+
 // `handler`, wrapped to run only while `node` is the live scroller (or stage).
 export function liveDocumentHandler(node, handler) {
   return function liveOnly(event) {
     if (node !== el.documentView && node !== el.documentStage) return undefined;
+    if (onPageChrome(event)) return undefined;
     return handler.call(this, event);
   };
 }

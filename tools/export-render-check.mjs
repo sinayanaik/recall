@@ -510,6 +510,12 @@ try {
     // The page with no blocks...
     const without = await readBack(await api.buildCanvasPdfBytes({ annotatedOnly: false }));
     const writtenOnly = await readBack(await api.buildCanvasPdfBytes({ annotatedOnly: true }));
+    // ...and with ⋯ → Canvas pages → Page numbers turned off.
+    const numbersWere = api.state.meta.notebook.pageNumbers;
+    api.state.meta.notebook.pageNumbers = false;
+    const unnumbered = await readBack(await api.buildCanvasPdfBytes({ annotatedOnly: false }));
+    if (numbersWere === undefined) delete api.state.meta.notebook.pageNumbers;
+    else api.state.meta.notebook.pageNumbers = numbersWere;
     // ...and with a typed block on it.
     const made = api.addDocumentBlock(1, { x: 80, y: 120 });
     api.commitBlockEdit();
@@ -525,8 +531,8 @@ try {
     }
     // Inside the block, on the exported page: paper colours (a light fill with
     // dark words), not the dark theme's black box with white text. The image
-    // sits at the top of the PDF page, the number strip under it, so page
-    // coordinates map straight across at the render scale.
+    // fills the PDF page edge to edge, so page coordinates map straight across
+    // at the render scale.
     const pdfPage = await api.currentPdfDocument().getPage(1);
     const [, , pageW, pageH] = pdfPage.view;
     const k = withBlock.width / pageW;
@@ -563,7 +569,7 @@ try {
       writtenPages,
       notebookPages,
       pageSize: [Math.round(pageW), Math.round(pageH)],
-      strip: api.CANVAS_NUMBER_STRIP,
+      unnumberedText: unnumbered.text,
       allPages: without.pages,
       allSizes: without.sizes,
       writtenOnlyPages: writtenOnly.pages,
@@ -593,11 +599,13 @@ try {
         canvas.allPages === canvas.notebookPages, `${canvas.allPages} PDF page(s) for ${canvas.notebookPages} Canvas page(s)`);
       check("...\"Pages you wrote on\" gives exactly those pages",
         canvas.writtenOnlyPages === canvas.writtenPages, `${canvas.writtenOnlyPages} of ${canvas.writtenPages}`);
-      check("...each page the Canvas page's own size, plus only the strip for its number",
-        canvas.allSizes.every(([w, h]) => w === canvas.pageSize[0] && h === canvas.pageSize[1] + canvas.strip),
-        `${JSON.stringify(canvas.allSizes[0])} for a ${canvas.pageSize.join("×")} page + ${canvas.strip}`);
-      check("...numbered, and with no title or caption printed on it",
-        canvas.firstText.trim() === "1", JSON.stringify(canvas.firstText));
+      check("...each page exactly the Canvas page's own size — nothing added round it",
+        canvas.allSizes.every(([w, h]) => w === canvas.pageSize[0] && h === canvas.pageSize[1]),
+        `${JSON.stringify(canvas.allSizes[0])} for a ${canvas.pageSize.join("×")} page`);
+      check("...numbered \"k / n\" on the page, as the Canvas shows it, with no title or caption printed on it",
+        canvas.firstText.replace(/\s+/g, " ").trim() === `1 / ${canvas.notebookPages}`, JSON.stringify(canvas.firstText));
+      check("...and with Page numbers off, no number at all",
+        canvas.unnumberedText.trim() === "", JSON.stringify(canvas.unnumberedText));
       check("...the handwriting is on the page where it was written", canvas.inkDark > 40, `${canvas.inkDark} dark pixel(s)`);
       check("...downloaded as a .pdf named for the Canvas", / - canvas\.pdf$/.test(canvas.pdfName), canvas.pdfName);
       if (htmlToImage && canvas.blockMade) {

@@ -64,6 +64,27 @@ export function notebookPageCount(meta = state.meta) {
   return Number(meta?.notebook?.pages) || 0;
 }
 
+// Whether each Canvas page shows "k / n" at its foot — on screen and in the
+// export, which draws it in the same place. On unless turned off: a missing
+// value is on, so every Canvas already made has its numbers without a write.
+// Kept on the record rather than in the paper, so turning it off or on makes no
+// new bytes (a Canvas's bytes are its identity — see writeNotebookPdf).
+export function notebookPageNumbers(meta = state.meta) {
+  return meta?.notebook?.pageNumbers !== false;
+}
+
+export async function setNotebookPageNumbers(on) {
+  if (!hasNotebook()) return false;
+  const want = Boolean(on);
+  if (notebookPageNumbers() === want) return false;
+  const notebook = { ...state.meta.notebook };
+  if (want) delete notebook.pageNumbers;
+  else notebook.pageNumbers = false;
+  state.meta = { ...state.meta, notebook };
+  await saveDeckToLibrary({ silent: true });
+  return true;
+}
+
 // Where this deck's notebook bytes are filed on the device. One row per
 // document, so a deck with a paper AND a notebook has two.
 function notebookStoreKey() {
