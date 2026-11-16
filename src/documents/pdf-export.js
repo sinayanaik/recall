@@ -57,6 +57,8 @@ import { annotatedDocumentHighlights, documentHighlightLabel, documentHighlights
 import { currentPaperTone, currentPdfDocument, currentPdfPageCount, currentPdfScale, pdfOpenToken, pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
 import { resolvedShape } from "./pdf-shapes.js?v=__BUILD__";
 import { regionImageRect, renderRegionImage } from "./pdf-region-embed.js?v=__BUILD__";
+import { rasterPlacement, rasterWordSize } from "./pdf-region-download.js?v=__BUILD__";
+import { createInvisibleTextLayer } from "./pdf-text-layer.js?v=__BUILD__";
 import { drawRegionBlocks, highlightHex, paintRegionMarks, rasteriseRegionBlocks, regionBlocksInBox, regionMarksOnPage, shapeTextRasterIds } from "./pdf-region-marks.js?v=__BUILD__";
 
 // The rendered width of a page in the print document, in device pixels. A4 at
@@ -468,10 +470,13 @@ async function renderCanvasPageExact(pageNumber) {
 
   const source = stagePaperSource();
   // Rasterised before any marks go down, so the shape-text ids are known; laid
-  // out at the page's on-screen zoom and drawn at this viewport's scale.
+  // out at the page's on-screen zoom and drawn at this viewport's scale. Every
+  // word on each is measured as it goes (`words`), for the text layer the
+  // file lays over the page.
   const { rasters } = await rasteriseRegionBlocks(page, source, pageNumber, page.view, viewport.scale, {
     paper: "theme",
-    layoutScale: seenScale(pageNumber)
+    layoutScale: seenScale(pageNumber),
+    words: true
   }).catch((error) => {
     console.warn("Could not draw a page's blocks for the export", error);
     return { rasters: [] };
@@ -486,7 +491,39 @@ async function renderCanvasPageExact(pageNumber) {
   });
   drawRegionBlocks(context, viewport, rasters, { only: "block" });
   drawRegionBlocks(context, viewport, rasters, { only: "shape-text" });
-  return { canvas, tone };
+  // The words without the pixels: all the text layer needs, and small enough
+  // to keep until every page is drawn.
+  const words = rasters
+    .filter((raster) => raster.words?.length)
+    .map((raster) => ({ block: raster.block, words: raster.words, wordScale: raster.wordScale }));
+  return { canvas, tone, words };
+}
+
+// ── The words, selectable ───────────────────────────────────────────────────
+//
+// A page of the file is one picture, so a Block's words were pixels: nothing to
+// select, copy or search. Each Block's words are laid over its pixels as
+// INVISIBLE text (src/documents/pdf-text-layer.js), the way a scanned page is
+// made searchable and the way "With annotations" and a region's PDF already
+// carry theirs: nothing drawn, so the page looks exactly as it did, and every
+// viewer selects, copies and finds them where the picture shows them. Placed
+// by the same matrices the region PDF draws a block's picture with
+// (rasterPlacement), turned blocks included. A formula copies as its TeX.
+async function writeCanvasWords(out, wordsByPage) {
+  if (!wordsByPage.length) return;
+  try {
+    const layer = createInvisibleTextLayer(out);
+    await layer.prepare(wordsByPage.flatMap(({ words }) => words.flatMap((entry) => entry.words)));
+    for (const { page, pdfPage, words } of wordsByPage) {
+      for (const entry of words) {
+        // eslint-disable-next-line no-await-in-loop
+        await layer.writeWords(page, entry.words, { ...rasterPlacement(pdfPage, entry.block), size: rasterWordSize(entry) });
+      }
+    }
+  } catch (error) {
+    // The pages are still the pages; only the words would not select.
+    console.warn("Could not lay the Canvas's words over its pages", error);
+  }
 }
 
 // Resolves to { bytes, name, pages }, or null when the deck was closed while
@@ -504,6 +541,10 @@ export async function buildCanvasPdfBytes() {
   // page surface and this one is reached from the renderers.
   const numbered = state.meta?.notebook?.pageNumbers !== false;
   const total = Number(state.meta?.notebook?.pages) || source.numPages || wanted.length;
+  // Each page's Block words, laid over it once every page is drawn — so the
+  // text layer loads its fonts once, for every word in the file.
+  const wordsByPage = [];
+  const drawnPages = [];
   for (let i = 0; i < wanted.length; i++) {
     const pageNumber = wanted[i];
     if (wanted.length >= PRINT_PROGRESS_FROM) {
@@ -522,13 +563,20 @@ export async function buildCanvasPdfBytes() {
     drawn.canvas.width = 0; // let the pixels go before the next page renders
     const page = out.addPage([width, height]);
     page.drawImage(image, { x: 0, y: 0, width, height });
-    if (numbered) {
+    drawnPages.push({ page, pdfPage, pageNumber, width, dark: Boolean(drawn.tone?.dark) });
+    if (drawn.words.length) wordsByPage.push({ page, pdfPage, words: drawn.words });
+  }
+  await writeCanvasWords(out, wordsByPage);
+  if (token !== pdfOpenToken) return null;
+  // The numbers after the words, so copying a page gives what is written on
+  // it first and its number last, the order it is read in.
+  if (numbered) {
+    drawnPages.forEach(({ page, pageNumber, width, dark }) => {
       // Of every page in the Canvas: "3 / 12", as it is on screen. In the
       // screen's colours for it (styles/53-handwriting.css): grey 115 on a
       // light paper, white at half strength on a dark one.
       const label = `${pageNumber} / ${total}`;
       const labelWidth = font.widthOfTextAtSize(label, CANVAS_NUMBER_SIZE);
-      const dark = Boolean(drawn.tone?.dark);
       page.drawText(label, {
         x: (width - labelWidth) / 2,
         y: CANVAS_NUMBER_BASELINE,
@@ -537,7 +585,7 @@ export async function buildCanvasPdfBytes() {
         color: dark ? rgb(1, 1, 1) : rgb(115 / 255, 115 / 255, 115 / 255),
         opacity: dark ? 0.5 : 1
       });
-    }
+    });
   }
   out.setTitle(state.deckTitle || state.sourceTitle || "Canvas");
   out.setProducer("Recall");

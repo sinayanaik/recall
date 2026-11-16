@@ -221,10 +221,28 @@ function drawInk(page, marks) {
 // could not be encoded.
 export async function drawRasterOnPage(out, page, pdfPage, { block, canvas }) {
   const { pushGraphicsState, popGraphicsState, concatTransformationMatrix, drawObject } = window.PDFLib;
-  const viewport = pdfPage.getViewport({ scale: 1 });
   const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
   if (!blob) return null;
   const image = await out.embedPng(new Uint8Array(await blob.arrayBuffer()));
+  const { place, turn } = rasterPlacement(pdfPage, block);
+  const name = page.node.newXObject("Image", image.ref);
+  page.pushOperators(
+    pushGraphicsState(),
+    ...(turn ? [concatTransformationMatrix(...turn)] : []),
+    concatTransformationMatrix(...place),
+    drawObject(name),
+    popGraphicsState()
+  );
+  return { place, turn };
+}
+
+// Where a raster goes on its page, as the two matrices drawRasterOnPage draws
+// with: `place`, the unit square onto the block's box in PDF space, and `turn`,
+// a turned block's turn about its middle (or null). The Canvas PDF export
+// (src/documents/pdf-export.js), whose blocks are already in the page's picture,
+// asks for these alone, to lay each block's words over its pixels.
+export function rasterPlacement(pdfPage, block) {
+  const viewport = pdfPage.getViewport({ scale: 1 });
   const [vx0, vy0, vx1, vy1] = viewport.convertToViewportRectangle(blockPdfRect(block));
   const left = Math.min(vx0, vx1);
   const right = Math.max(vx0, vx1);
@@ -234,18 +252,18 @@ export async function drawRasterOnPage(out, page, pdfPage, { block, canvas }) {
   const [p10x, p10y] = viewport.convertToPdfPoint(right, bottom);
   const [p01x, p01y] = viewport.convertToPdfPoint(left, top);
   const place = [p10x - p00x, p10y - p00y, p01x - p00x, p01y - p00y, p00x, p00y];
-  const name = page.node.newXObject("Image", image.ref);
   // A turned text box's words: turned about the middle of their box.
   const [bx0, by0, bx1, by1] = blockPdfRect(block);
   const turn = block.rot ? shapeTextRotationMatrix({ rot: block.rot, centre: [(bx0 + bx1) / 2, (by0 + by1) / 2] }) : null;
-  page.pushOperators(
-    pushGraphicsState(),
-    ...(turn ? [concatTransformationMatrix(...turn)] : []),
-    concatTransformationMatrix(...place),
-    drawObject(name),
-    popGraphicsState()
-  );
   return { place, turn };
+}
+
+// A raster's box in its words' own space: the CSS pixels its node was laid out
+// in, which are points times the scale it was laid out at
+// (rasteriseRegionBlocks' `wordScale`, 1 unless the caller chose another).
+export function rasterWordSize(raster) {
+  const scale = raster.wordScale || 1;
+  return { w: raster.block.w * scale, h: raster.block.h * scale };
 }
 
 // Every raster's picture, and its words laid over it as selectable text when
@@ -259,7 +277,7 @@ export async function drawRastersWithWords(out, page, pdfPage, rasters, textLaye
     drawn += 1;
     if (textLayer && raster.words?.length) {
       // eslint-disable-next-line no-await-in-loop
-      await textLayer.writeWords(page, raster.words, { ...placed, size: { w: raster.block.w, h: raster.block.h } });
+      await textLayer.writeWords(page, raster.words, { ...placed, size: rasterWordSize(raster) });
     }
   }
   return drawn;
