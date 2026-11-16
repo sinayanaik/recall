@@ -815,18 +815,19 @@ export async function exportDocumentPdf({ annotatedOnly = false, theme = loadExp
   }
 }
 
-// The Canvas's pages, exactly as they are: no look to choose, no cover, no
-// margins — each Canvas page becomes a PDF page of its own size, numbered in a
-// strip beneath it (buildCanvasPdfBytes, src/documents/pdf-export.js). Written
-// with pdf-lib and downloaded, so no print dialog gets to scale or split it.
-export async function exportCanvasPdf({ annotatedOnly = false } = {}) {
+// The Canvas's pages, exactly as they are on screen: no look to choose, no
+// cover, no margins — each Canvas page becomes a PDF page of its own size, drawn
+// as the screen draws it (buildCanvasPdfBytes, src/documents/pdf-export.js).
+// Written with pdf-lib and downloaded, so no print dialog gets to scale or
+// split it. The only Canvas export there is.
+export async function exportCanvasPdf() {
   const blocked = documentExportUnavailableReason();
   if (blocked) {
     setStatus(blocked, "error");
     return;
   }
-  if (!documentPrintPageCount({ annotatedOnly })) {
-    setStatus(documentExportEmptyMessage({ annotatedOnly }), "error");
+  if (!documentPrintPageCount()) {
+    setStatus(documentExportEmptyMessage(), "error");
     return;
   }
   setStatus("Preparing the Canvas PDF…");
@@ -838,7 +839,7 @@ export async function exportCanvasPdf({ annotatedOnly = false } = {}) {
         : "Could not load the PDF writer.", "error");
       return;
     }
-    const result = await buildCanvasPdfBytes({ annotatedOnly });
+    const result = await buildCanvasPdfBytes();
     if (!result) return; // the file was closed while its pages rendered
     const url = URL.createObjectURL(new Blob([result.bytes], { type: "application/pdf" }));
     const link = document.createElement("a");
@@ -874,6 +875,11 @@ export function exportDocumentNotesPdf({ theme } = {}) {
 
 export function handleExportDocumentAction(action, { theme } = {}) {
   if (el.viewExportMenu) el.viewExportMenu.hidden = true;
+  // The Canvas has one export, whichever row reached here.
+  if (onCanvasSlot()) {
+    exportCanvasPdf();
+    return;
+  }
   if (action === "original") {
     saveDocumentCopy();
     return;
@@ -890,10 +896,6 @@ export function handleExportDocumentAction(action, { theme } = {}) {
   }
   // "pages-pdf" (everything) and "annotated-pdf" (only the pages with notes).
   const annotatedOnly = action === "annotated-pdf";
-  if (onCanvasSlot()) {
-    exportCanvasPdf({ annotatedOnly });
-    return;
-  }
   setStatus("Opening the document PDF export…");
   window.setTimeout(() => exportDocumentPdf({ annotatedOnly, theme }), 0);
 }

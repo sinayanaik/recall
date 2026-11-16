@@ -261,3 +261,33 @@ export function paperKeyBg(key) {
   const parts = paperKeyParts(key);
   return parts.tint || (parts.dark ? PAPER_DARK_FLOOR : PAPER_WHITE);
 }
+
+// ── The paper, put into a page's pixels ────────────────────────────────────
+//
+// A page is rendered white; this turns those pixels into the tone's paper, in
+// place. A dark tone inverts the page (keeping its hues) and lifts its black to
+// the paper's floor; a light tint multiplies the white into the paper colour.
+// The page on screen (bakePagePaper, src/documents/pdf-view.js) and the Canvas
+// PDF export (src/documents/pdf-export.js) both go through here, so the export
+// is the paper as it is seen. The page renderer's worker has its own copy of
+// the same steps, since it cannot import.
+export const PAPER_DARK_FILTER = "invert(1) hue-rotate(180deg)";
+
+export function paintPaperTone(ctx, canvas, { dark = false, tint = null } = {}) {
+  if (!dark && !tint) return;
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  if (dark) {
+    ctx.filter = PAPER_DARK_FILTER;
+    ctx.globalCompositeOperation = "copy";
+    ctx.drawImage(canvas, 0, 0);
+    ctx.filter = "none";
+    ctx.globalCompositeOperation = "lighten";
+    ctx.fillStyle = tint || PAPER_DARK_FLOOR;
+  } else {
+    ctx.globalCompositeOperation = "multiply";
+    ctx.fillStyle = tint;
+  }
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.restore();
+}

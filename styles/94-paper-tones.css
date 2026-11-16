@@ -47,6 +47,10 @@
  * whatever --card says inside the page. */
 .document-stage .pdf-page,
 .paper-tokens {
+  /* The words themselves, too. Rebinding --text alone left every block whose
+     ink is "default" inheriting the THEME's colour from <body> — pale words
+     on White paper under a dark theme, on the page and in the Canvas PDF. */
+  color: var(--paper-text);
   --card: var(--paper-bg);
   --panel: var(--paper-bg);
   --card-answer: var(--paper-bg);

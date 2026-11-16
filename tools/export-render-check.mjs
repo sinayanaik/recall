@@ -479,13 +479,11 @@ try {
     }
     await settle(500);
     const inkMarks = (api.state.meta.pdfHighlights || []).filter((r) => r.kind === "ink" && r.doc === "notebook").length;
-    // "Pages you wrote on": a page of handwriting with no note on it is one.
-    const writtenPages = api.documentPrintPageCount({ annotatedOnly: true });
 
     const items = api.collectDeckHighlightsForExport({});
     const fileName = api.documentExportBaseName();
     const notebookPages = api.currentPdfPageCount();
-    if (!window.PDFLib) return { inkMarks, writtenPages, fileName, inkItems: items.length, noPdfLib: true };
+    if (!window.PDFLib) return { inkMarks, fileName, inkItems: items.length, noPdfLib: true };
 
     // The exported PDF, read back with pdf.js: its pages, their sizes, and the
     // first page drawn to pixels.
@@ -504,37 +502,72 @@ try {
       const ctx = c.getContext("2d");
       await first.render({ canvasContext: ctx, viewport }).promise;
       const text = (await first.getTextContent()).items.map((it) => it.str).join(" ");
-      return { pages: doc.numPages, sizes, width: c.width, height: c.height, data: ctx.getImageData(0, 0, c.width, c.height).data, text, name: result.name };
+      return { pages: doc.numPages, sizes, width: c.width, height: c.height, data: ctx.getImageData(0, 0, c.width, c.height).data, text, name: result.name, png: () => c.toDataURL("image/png").split(",")[1] };
     };
 
+    // ⇓ on the Canvas: one row, and it is the PDF.
+    api.paintViewExportMenu();
+    const menuRows = [...document.querySelectorAll("#viewExportMenu [data-view-export]")].map((b) => b.dataset.viewExport);
+
+    // On White paper, for the colour checks below; the paper is put back after.
+    const toneWas = api.currentPaperTone().id;
+    api.setPaperTone("white");
+    await settle(300);
     // The page with no blocks...
-    const without = await readBack(await api.buildCanvasPdfBytes({ annotatedOnly: false }));
-    const writtenOnly = await readBack(await api.buildCanvasPdfBytes({ annotatedOnly: true }));
+    const without = await readBack(await api.buildCanvasPdfBytes());
     // ...and with ⋯ → Canvas pages → Page numbers turned off.
     const numbersWere = api.state.meta.notebook.pageNumbers;
     api.state.meta.notebook.pageNumbers = false;
-    const unnumbered = await readBack(await api.buildCanvasPdfBytes({ annotatedOnly: false }));
+    const unnumbered = await readBack(await api.buildCanvasPdfBytes());
     if (numbersWere === undefined) delete api.state.meta.notebook.pageNumbers;
     else api.state.meta.notebook.pageNumbers = numbersWere;
-    // ...and with a typed block on it.
+    const pdfPage = await api.currentPdfDocument().getPage(1);
+    const [, , pageW, pageH] = pdfPage.view;
+    const cssToPdf = pageW / box.width;
+    // ...and with a typed block on it...
     const made = api.addDocumentBlock(1, { x: 80, y: 120 });
     api.commitBlockEdit();
     await settle(200);
     const record = (api.state.meta.pdfBlocks || []).find((b) => b.id === made?.id);
-    if (record) { record.md = "# TYPED ON THE CANVAS\\n\\nA block of words, **bold** and plain, that the page export has to draw."; record.w = 300; record.h = 160; }
-    const withBlock = await readBack(await api.buildCanvasPdfBytes({ annotatedOnly: false }));
+    // In the part of the page the screen comparison below can see.
+    if (record) {
+      record.md = "# TYPED ON THE CANVAS\\n\\nA block of words, **bold** and plain, that the page export has to draw.";
+      record.x = 300;
+      record.w = 250;
+      record.h = 160;
+      record.y = pageH - 300 * cssToPdf - record.h;
+      record.style = { ...(record.style || {}), fit: false };
+    }
+    // ...and a second, laid over the handwriting (page px 40–240 × 280–410),
+    // with nothing visible in it. On screen a Block is over the ink (z 4 to
+    // 2), so its fill hides the strokes; the export has to stack them the same.
+    const cover = api.addDocumentBlock(1, { x: 140 * cssToPdf, y: pageH - 345 * cssToPdf });
+    api.commitBlockEdit();
+    await settle(200);
+    const coverRecord = (api.state.meta.pdfBlocks || []).find((b) => b.id === cover?.id);
+    if (coverRecord) {
+      coverRecord.md = "&nbsp;";
+      coverRecord.x = 40 * cssToPdf;
+      coverRecord.w = 200 * cssToPdf;
+      coverRecord.y = pageH - 410 * cssToPdf;
+      coverRecord.h = 130 * cssToPdf;
+      // Its height is the reader's, as after a resize — or it would shrink to
+      // the one empty line in it.
+      coverRecord.style = { ...(coverRecord.style || {}), fit: false };
+    }
+    api.selectBlock(null);
+    api.repaintDocumentBlocks();
+    await settle(400);
+    const withBlock = await readBack(await api.buildCanvasPdfBytes());
     const a = without.data;
     const b = withBlock.data;
     let changed = 0;
     for (let i = 0; i < Math.min(a.length, b.length); i += 4) {
       if (Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1]) + Math.abs(a[i + 2] - b[i + 2]) > 90) changed += 1;
     }
-    // Inside the block, on the exported page: paper colours (a light fill with
-    // dark words), not the dark theme's black box with white text. The image
-    // fills the PDF page edge to edge, so page coordinates map straight across
-    // at the render scale.
-    const pdfPage = await api.currentPdfDocument().getPage(1);
-    const [, , pageW, pageH] = pdfPage.view;
+    // Inside the block, on the exported page: a light fill with dark words on
+    // White paper, whatever the app's theme. The image fills the PDF page edge
+    // to edge, so page coordinates map straight across at the render scale.
     const k = withBlock.width / pageW;
     const bx0 = Math.round((record?.x || 0) * k) + 6;
     const by0 = Math.round((pageH - (record?.y || 0) - (record?.h || 0)) * k) + 6;
@@ -553,41 +586,62 @@ try {
       }
     }
     // The handwriting itself, where it was written: dark pixels in the band
-    // the three strokes were drawn across (page px 60–180 × 300–386).
-    const cssToPdf = pageW / box.width;
-    let inkDark = 0;
-    for (let y = Math.round(300 * cssToPdf * k); y < Math.round(390 * cssToPdf * k); y += 1) {
-      for (let x = Math.round(60 * cssToPdf * k); x < Math.round(190 * cssToPdf * k); x += 1) {
-        const i = (y * without.width + x) * 4;
-        if (0.299 * a[i] + 0.587 * a[i + 1] + 0.114 * a[i + 2] < 160) inkDark += 1;
+    // the three strokes were drawn across (page px 60–180 × 300–386) — on the
+    // page without blocks, and under the covering block on the one with them.
+    const darkIn = (data, width) => {
+      let n = 0;
+      for (let y = Math.round(300 * cssToPdf * k); y < Math.round(390 * cssToPdf * k); y += 1) {
+        for (let x = Math.round(60 * cssToPdf * k); x < Math.round(190 * cssToPdf * k); x += 1) {
+          const i = (y * width + x) * 4;
+          if (0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2] < 160) n += 1;
+        }
       }
-    }
+      return n;
+    };
+    const inkDark = darkIn(a, without.width);
+    const inkUnderBlock = darkIn(b, withBlock.width);
+
+    // On Black paper: the page is the paper, not white.
+    api.setPaperTone("black");
+    await settle(400);
+    const onBlack = await readBack(await api.buildCanvasPdfBytes());
+    const px = (r, x, y) => { const i = (y * r.width + x) * 4; return [r.data[i], r.data[i + 1], r.data[i + 2]]; };
+    const blackCorner = px(onBlack, 10, 10);
+    const blackBlock = px(onBlack, Math.round(((record?.x || 0) + (record?.w || 0) - 10) * k), Math.round((pageH - (record?.y || 0) - 10) * k));
+    const blackPaperBg = document.getElementById("documentStage").dataset.paperBg;
+    api.setPaperTone(toneWas);
+    await settle(400);
     return {
       inkMarks,
-      blockMade: Boolean(record),
+      menuRows,
+      blockMade: Boolean(record && coverRecord),
       changed,
-      writtenPages,
       notebookPages,
       pageSize: [Math.round(pageW), Math.round(pageH)],
       unnumberedText: unnumbered.text,
       allPages: without.pages,
       allSizes: without.sizes,
-      writtenOnlyPages: writtenOnly.pages,
       firstText: without.text,
       inkDark,
+      inkUnderBlock,
       blockLuminance: count ? Math.round(sum / count) : 0,
       blockDark: dark,
+      blackCorner,
+      blackBlock,
+      blackPaperBg,
       pdfName: without.name,
+      whitePng: withBlock.png(),
       fileName,
       inkItems: items.filter((item) => item.region && item.region.kind === "ink").length
     };
   }`);
+  if (SHOT_DIR && canvas.whitePng) writeFileSync(path.join(SHOT_DIR, "canvas-export-white.png"), Buffer.from(canvas.whitePng, "base64"));
   if (canvas.error) {
     check("the Canvas opened", false, canvas.error);
   } else {
     check("the Canvas fixture has handwriting on it", canvas.inkMarks >= 1, `${canvas.inkMarks} ink mark(s)`);
-    check("Canvas PDF: \"Pages you wrote on\" counts a page of handwriting that has no note",
-      canvas.writtenPages >= 1, `${canvas.writtenPages} page(s)`);
+    check("Canvas ⇓: one export, the PDF",
+      canvas.menuRows.length === 1 && canvas.menuRows[0] === "doc:pages-pdf", JSON.stringify(canvas.menuRows));
     check("Canvas PDF: it is called a Canvas in the file name",
       / - canvas$/.test(canvas.fileName), canvas.fileName);
     check("Canvas highlights: handwriting with no note on it is not exported as dozens of pictures",
@@ -597,8 +651,6 @@ try {
     } else {
       check("Canvas PDF: one PDF page per Canvas page — no cover, no pages spilled over",
         canvas.allPages === canvas.notebookPages, `${canvas.allPages} PDF page(s) for ${canvas.notebookPages} Canvas page(s)`);
-      check("...\"Pages you wrote on\" gives exactly those pages",
-        canvas.writtenOnlyPages === canvas.writtenPages, `${canvas.writtenOnlyPages} of ${canvas.writtenPages}`);
       check("...each page exactly the Canvas page's own size — nothing added round it",
         canvas.allSizes.every(([w, h]) => w === canvas.pageSize[0] && h === canvas.pageSize[1]),
         `${JSON.stringify(canvas.allSizes[0])} for a ${canvas.pageSize.join("×")} page`);
@@ -608,14 +660,175 @@ try {
         canvas.unnumberedText.trim() === "", JSON.stringify(canvas.unnumberedText));
       check("...the handwriting is on the page where it was written", canvas.inkDark > 40, `${canvas.inkDark} dark pixel(s)`);
       check("...downloaded as a .pdf named for the Canvas", / - canvas\.pdf$/.test(canvas.pdfName), canvas.pdfName);
+      const near = (rgb, hex, tol) => {
+        const want = [1, 3, 5].map((i) => parseInt(String(hex || "#000000").slice(i, i + 2), 16));
+        return rgb.every((v, i) => Math.abs(v - want[i]) <= tol);
+      };
+      check("Canvas PDF: on Black paper the page is the paper, as on screen — not white",
+        near(canvas.blackCorner, canvas.blackPaperBg, 12), `${JSON.stringify(canvas.blackCorner)} for ${canvas.blackPaperBg}`);
       if (htmlToImage && canvas.blockMade) {
         check("Canvas PDF: a typed block on the page is drawn onto the exported page",
           canvas.changed > 400, `${canvas.changed} pixel(s) differ with the block`);
-        check("Canvas PDF: the block prints in paper colours — a light fill with dark words — under a dark app theme",
+        check("Canvas PDF: on White paper the block is a light fill with dark words, under a dark app theme",
           canvas.blockLuminance > 200 && canvas.blockDark > 30, `mean luminance ${canvas.blockLuminance}, ${canvas.blockDark} dark sample(s)`);
+        check("Canvas PDF: a block is drawn OVER the handwriting under it, as the page stacks them",
+          canvas.inkUnderBlock < canvas.inkDark / 10, `${canvas.inkUnderBlock} dark pixel(s) under the block, ${canvas.inkDark} without it`);
+        check("Canvas PDF: on Black paper the block takes the paper's colours too",
+          canvas.blackBlock.every((v) => v < 90), JSON.stringify(canvas.blackBlock));
       } else {
         console.log(`  skip  Canvas blocks on the exported page — ${htmlToImage ? "no block was made" : "html-to-image not available"}`);
       }
+    }
+
+    // ── The Canvas, screen against file ─────────────────────────────────────
+    // The page as the browser shows it, and the same page out of the exported
+    // PDF drawn back at the same size: they have to be the same picture.
+    if (!canvas.noPdfLib && htmlToImage && canvas.blockMade) {
+      const rect = await page.evaluate(`async () => {
+        const { api, settle } = window.__recall;
+        api.selectBlock(null);
+        document.activeElement?.blur?.();
+        document.body.classList.add("export-shot");
+        const style = document.createElement("style");
+        style.id = "exportShotStyle";
+        // The app's chrome, which is not on the page: the pill under it, the
+        // placeholder number, the pager floating over it, a block's grips and
+        // connect arrows, the caret.
+        style.textContent = ".pdf-page-insert, .pdf-page-label, .pdf-page-badges, .document-pager, .pdf-block-grip, .pdf-block-edge, .pdf-block-turn, .pdf-connect-arrow { visibility: hidden !important; } * { caret-color: transparent !important; }";
+        document.head.appendChild(style);
+        const pageEl = document.querySelector("#documentStage .pdf-page[data-page-number='1']");
+        pageEl.scrollIntoView({ block: "start" });
+        await settle(800);
+        const r = pageEl.getBoundingClientRect();
+        const v = document.getElementById("documentView").getBoundingClientRect();
+        const bottom = Math.min(r.bottom, v.bottom, window.innerHeight);
+        return { x: r.left, y: r.top, width: r.width, height: Math.floor(bottom - r.top) };
+      }`);
+      const shot = await page.call("Page.captureScreenshot", {
+        format: "png",
+        clip: { x: rect.x, y: rect.y, width: rect.width, height: rect.height, scale: 1 }
+      });
+      const compare = await page.evaluate(`async (png) => {
+        const { api, settle } = window.__recall;
+        const img = new Image();
+        img.src = "data:image/png;base64," + png;
+        await img.decode();
+        const w = img.naturalWidth;
+        const h = img.naturalHeight;
+        const screen = document.createElement("canvas");
+        screen.width = w; screen.height = h;
+        const sctx = screen.getContext("2d");
+        sctx.drawImage(img, 0, 0);
+        // Both pictures softened by a 3×3 box before they are compared: the
+        // screen draws the paper's one-pixel lines at this size and the export
+        // draws them at its own and is scaled down, so a line is the same ink
+        // spread over one pixel or two. What the box cannot even out — words,
+        // fills, edges or strokes somewhere else — still differs.
+        const soften = (data) => {
+          const out = new Float32Array(w * h * 3);
+          for (let y = 0; y < h; y += 1) {
+            for (let x = 0; x < w; x += 1) {
+              for (let c = 0; c < 3; c += 1) {
+                let sum = 0;
+                for (let dy = -1; dy <= 1; dy += 1) {
+                  for (let dx = -1; dx <= 1; dx += 1) {
+                    const xx = Math.min(w - 1, Math.max(0, x + dx));
+                    const yy = Math.min(h - 1, Math.max(0, y + dy));
+                    sum += data[(yy * w + xx) * 4 + c];
+                  }
+                }
+                out[(y * w + x) * 3 + c] = sum / 9;
+              }
+            }
+          }
+          return out;
+        };
+        const raw = sctx.getImageData(0, 0, w, h).data;
+        const s = soften(raw);
+        // Where the ink is, as well as how the pixels compare: every pixel well
+        // off the paper (words, a block's edge, a stroke — not the faint grid)
+        // has to have ink within a pixel of it in the other picture. Anti-
+        // aliasing changes how dark a word's edge is, never where the word is.
+        const lum = (d, i) => 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+        const counts = new Map();
+        for (let i = 0; i < w * h * 4; i += 64) { const l = Math.round(lum(raw, i)); counts.set(l, (counts.get(l) || 0) + 1); }
+        const paper = [...counts.entries()].sort((x, y) => y[1] - x[1])[0][0];
+        const inkMask = (d) => {
+          const m = new Uint8Array(w * h);
+          for (let i = 0; i < w * h; i += 1) m[i] = Math.abs(lum(d, i * 4) - paper) > 120 ? 1 : 0;
+          return m;
+        };
+        const covered = (m, other) => {
+          let ink = 0;
+          let hit = 0;
+          for (let y = 0; y < h; y += 1) {
+            for (let x = 0; x < w; x += 1) {
+              if (!m[y * w + x]) continue;
+              ink += 1;
+              let found = false;
+              for (let dy = -1; dy <= 1 && !found; dy += 1) {
+                for (let dx = -1; dx <= 1 && !found; dx += 1) {
+                  const xx = x + dx;
+                  const yy = y + dy;
+                  if (xx >= 0 && yy >= 0 && xx < w && yy < h && other[yy * w + xx]) found = true;
+                }
+              }
+              if (found) hit += 1;
+            }
+          }
+          return ink ? hit / ink : 1;
+        };
+        const screenInk = inkMask(raw);
+        const exported = async () => {
+          const result = await api.buildCanvasPdfBytes();
+          const doc = await window.pdfjsLib.getDocument({ data: result.bytes.slice() }).promise;
+          const first = await doc.getPage(1);
+          const unit = first.getViewport({ scale: 1 });
+          const viewport = first.getViewport({ scale: w / unit.width });
+          const out = document.createElement("canvas");
+          out.width = w; out.height = Math.ceil(viewport.height);
+          const octx = out.getContext("2d");
+          await first.render({ canvasContext: octx, viewport }).promise;
+          const eRaw = octx.getImageData(0, 0, w, h).data;
+          const e = soften(eRaw);
+          let same = 0;
+          for (let i = 0; i < w * h; i += 1) {
+            const j = i * 3;
+            if (Math.abs(s[j] - e[j]) + Math.abs(s[j + 1] - e[j + 1]) + Math.abs(s[j + 2] - e[j + 2]) <= 36) same += 1;
+          }
+          const exportInk = inkMask(eRaw);
+          const ink = Math.min(covered(screenInk, exportInk), covered(exportInk, screenInk));
+          return { share: same / (w * h), ink, png: out.toDataURL("image/png").split(",")[1] };
+        };
+        const exact = await exported();
+        // The check can tell: the same export with one block moved by 8pt,
+        // the screen left as it was, must not pass.
+        const moved = (api.state.meta.pdfBlocks || []).find((b) => /TYPED ON THE CANVAS/.test(b.md || ""));
+        let shifted = null;
+        if (moved) {
+          moved.x += 8;
+          shifted = await exported();
+          moved.x -= 8;
+        }
+        document.getElementById("exportShotStyle")?.remove();
+        return { share: exact.share, ink: exact.ink, shifted: shifted && { share: shifted.share, ink: shifted.ink }, w, h, exported: exact.png };
+      }`, shot.data);
+      if (SHOT_DIR) {
+        writeFileSync(path.join(SHOT_DIR, "canvas-screen.png"), Buffer.from(shot.data, "base64"));
+        writeFileSync(path.join(SHOT_DIR, "canvas-export.png"), Buffer.from(compare.exported, "base64"));
+      }
+      const pct = (v) => `${(v * 100).toFixed(2)}%`;
+      // The pictures cannot be the same pixel for pixel — the screen draws its
+      // words at one pixel per pixel and the file at ~300dpi — so the page is
+      // held to both: nearly every pixel the same once each is softened, and
+      // every word, edge and stroke where the screen has it.
+      check("Canvas PDF: the exported page is the page on screen — every word, edge and stroke in its place",
+        compare.ink >= 0.99, `${pct(compare.ink)} of the ink lines up`);
+      check("...and pixel for pixel, but for anti-aliasing",
+        compare.share >= 0.98, `${pct(compare.share)} of ${compare.w}×${compare.h} pixels match`);
+      check("...and the comparison can tell: a block moved 8pt in the file alone does not pass",
+        compare.shifted !== null && compare.shifted.ink < 0.9,
+        compare.shifted === null ? "no block to move" : `${pct(compare.shifted.ink)} of the ink lines up, ${pct(compare.shifted.share)} of pixels`);
     }
   }
 } catch (error) {

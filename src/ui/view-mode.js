@@ -828,20 +828,15 @@ const VIEW_EXPORT_MENUS = {
       ["hl:open", "Highlights…", "Every line you marked, with its note"]
     ]
   },
-  // The same rows, because it is the same machinery pointed at the deck's other
-  // document — every one of these already exports "the pages on the stage", and
-  // the stage is the notebook here. Only the words change, and only where "the
-  // original PDF" would have been a lie: nobody handed us this file, this app
-  // wrote it.
+  // One row. The Canvas is exported one way: every page, exactly as it looks
+  // on screen — its paper, its ink, its shapes and its Blocks where they are —
+  // as a PDF of its own pages (exportCanvasPdf, src/export/run.js). It used to
+  // carry the PDFs' six rows, and "the blank paper", "the notes on their own"
+  // and "with annotations" are not things a page you wrote on is asked for.
   handwriting: {
-    head: "Export Canvas pages",
+    head: "Export Canvas",
     rows: [
-      ["doc:annotated-pdf", "Pages you wrote on", "Only the pages with something on them, exactly as they are"],
-      ["doc:pages-pdf", "The whole canvas", "Every page, exactly as it is, numbered"],
-      ["doc:notes-pdf", "The notes on their own", "Every note, grouped by page"],
-      ["doc:original", "The blank paper", "The pages with nothing on them"],
-      ["doc:native", "With annotations", "Your marks as real PDF annotations, editable in other PDF apps"],
-      ["hl:open", "Highlights…", "Every mark, with its note"]
+      ["doc:pages-pdf", "PDF", "Every page, exactly as it looks"]
     ]
   }
   // Still no `highlights` entry keyed by view: there is no Highlights VIEW, and
