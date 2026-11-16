@@ -65,6 +65,10 @@ const SECTIONS = [
 // Anything appearing in styles/ that is neither a slice nor listed here is
 // still a failure.
 const POST_SPLIT = {
+  "a2-canvas-setup.css":
+    "⋯ → Canvas pages → Page setup… (src/documents/canvas-setup-dialog.js): a " +
+    "Canvas page's size, paper and lines, this page or every page, with a live " +
+    "picture of the page beside the settings.",
   "a1-view-only.css":
     "View only on the PDFs and the Canvas (src/documents/view-only.js): the tab " +
     "row's ✎ | 👁 pill, the tools it takes away while a part is only read, and " +

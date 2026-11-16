@@ -13,6 +13,7 @@
 // rather than a fifth pen nothing in the rail is ever shown as selected for.
 
 import { BLANK_PAPER_DEFAULT, normalizeBlankPaper } from "../documents/blank-pdf.js?v=__BUILD__";
+import { nearestLegacyPaper, normalizeSheetSetup } from "../documents/canvas-setup.js?v=__BUILD__";
 import { normalizeBlockStyle } from "../documents/block-style.js?v=__BUILD__";
 import { INK_ERASER_SIZE_DEFAULT, INK_ERASE_MODE_DEFAULT, INK_ERASE_TARGET_DEFAULT, INK_HL_TOKEN_DEFAULT, INK_HL_WIDTH_DEFAULT, INK_PEN_DEFAULT, INK_TOOL_DEFAULT, INK_WIDTH_DEFAULT, normalizeInkEraseMode, normalizeInkEraseTarget, normalizeInkEraserSize, normalizeInkHex, normalizeInkHlWidth, normalizeInkToken, normalizeInkTool, normalizeInkWidth } from "../format/ink-colors.js?v=__BUILD__";
 import { MARK_STYLE_DEFAULT, normalizeMarkHex, normalizeMarkStyle } from "../format/mark-styles.js?v=__BUILD__";
@@ -286,6 +287,43 @@ export function writeNotebookPaperPreference(kind) {
     }));
   } catch (error) {
     console.warn("Could not remember the paper", error);
+  }
+}
+
+// ── ...and the whole page setup, for a new Canvas ─────────────────────────
+//
+// The same fact one step further: the size, the paper colour and the lines a
+// reader sets up (src/documents/canvas-setup-dialog.js, with "Use for new
+// Canvases" on) are what their next Canvas starts on. Null when they never set
+// one up, and a new Canvas then starts on notebookPaperPreference above, as it
+// always did. `notebookPaper` is written beside it, to the nearest first paper,
+// so a build that knows nothing of setups still starts on the right kind.
+export function notebookSetupPreference() {
+  try {
+    const raw = localStorage.getItem(inkPreferencesKey);
+    const parsed = raw ? JSON.parse(raw) : null;
+    const stored = parsed?.notebookSetup;
+    return stored && typeof stored === "object" ? normalizeSheetSetup(stored) : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+export function writeNotebookSetupPreference(setup) {
+  try {
+    const raw = localStorage.getItem(inkPreferencesKey);
+    const parsed = (raw ? JSON.parse(raw) : null) || {};
+    const next = { ...parsed };
+    if (setup) {
+      const chosenSheet = normalizeSheetSetup(setup);
+      next.notebookSetup = chosenSheet;
+      next.notebookPaper = normalizeBlankPaper(nearestLegacyPaper(chosenSheet.pattern));
+    } else {
+      delete next.notebookSetup;
+    }
+    localStorage.setItem(inkPreferencesKey, JSON.stringify(next));
+  } catch (error) {
+    console.warn("Could not remember the page setup", error);
   }
 }
 

@@ -18,8 +18,7 @@ import { setShapeMoveAdjuster } from "./pdf-shapes.js?v=__BUILD__";
 import { setPickedMoveAdjuster } from "./canvas-selection.js?v=__BUILD__";
 import { diagramNodes } from "./pdf-connectors.js?v=__BUILD__";
 import { DOC_SLOT_NOTEBOOK, activeDocSlot } from "./doc-slot.js?v=__BUILD__";
-import { notebookPaper } from "./notebook.js?v=__BUILD__";
-import { CANVAS_GRID_PITCH } from "./blank-pdf.js?v=__BUILD__";
+import { canvasSnapGrid } from "./notebook.js?v=__BUILD__";
 import { pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
 import { clearDiagramPart, diagramSvg, diagramSvgNode, setDiagramPart } from "./pdf-diagram-layer.js?v=__BUILD__";
 import { diagramSnapPreference } from "../storage/ink-prefs.js?v=__BUILD__";
@@ -35,10 +34,12 @@ function snapping(event) {
   return diagramSnapPreference() && !event?.altKey;
 }
 
-// The squares, on a Canvas ruled in them; nothing on a PDF or other paper.
-function gridForPage() {
-  if (activeDocSlot() !== DOC_SLOT_NOTEBOOK || notebookPaper() !== "grid") return null;
-  return { pitch: CANVAS_GRID_PITCH, origin: [0, 0] };
+// The squares, on a Canvas page ruled in them; nothing on a PDF or other
+// paper. Each Canvas page has its own setup, so its own spacing
+// (src/documents/canvas-setup.js); dot grid snaps to its dots.
+function gridForPage(page) {
+  if (activeDocSlot() !== DOC_SLOT_NOTEBOOK) return null;
+  return canvasSnapGrid(page);
 }
 
 // Every box on the page but the ones being moved, as rects.
@@ -71,7 +72,7 @@ function adjustBlock(info) {
   if (!snapping(event) || keepRatio) { clearDiagramPart("guides"); return null; }
   const rect = [live.x, live.y, live.x + live.w, live.y + live.h];
   const others = othersOn(page, new Set([id]));
-  const options = { threshold: reachOn(viewport), grid: gridForPage() };
+  const options = { threshold: reachOn(viewport), grid: gridForPage(page) };
   if (mode === "drag") {
     const snapped = snapMove(rect, others, options);
     drawGuides(page, snapped.guides, viewport);
@@ -94,7 +95,7 @@ function adjustShape(info) {
   const viewport = pdfPageViewport(page);
   if (!s || !viewport || !snapping(event)) { clearDiagramPart("guides"); return null; }
   const box = GUIDE_BOX_TYPES.has(s.type) && !s.rot;
-  const options = { threshold: reachOn(viewport), grid: gridForPage() };
+  const options = { threshold: reachOn(viewport), grid: gridForPage(page) };
   const others = othersOn(page, new Set([id]));
   if (mode === "move") {
     const rect = box ? rectFromPoints(s.p[0], s.p[1]) : shapeBounds(s);
@@ -119,7 +120,7 @@ function adjustPicked(info) {
   const { page, ids, box, dx, dy, event, viewport } = info;
   if (!snapping(event)) { clearDiagramPart("guides"); return null; }
   const rect = [box[0] + dx, box[1] + dy, box[2] + dx, box[3] + dy];
-  const snapped = snapMove(rect, othersOn(page, new Set(ids)), { threshold: reachOn(viewport), grid: gridForPage() });
+  const snapped = snapMove(rect, othersOn(page, new Set(ids)), { threshold: reachOn(viewport), grid: gridForPage(page) });
   drawGuides(page, snapped.guides, viewport);
   return { dx: dx + snapped.dx, dy: dy + snapped.dy };
 }

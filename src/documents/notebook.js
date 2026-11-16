@@ -38,6 +38,7 @@
 // it is a renumbering: see remapDocumentHighlightPages.
 
 import { BLANK_PAPERS, BLANK_PAGE_HEIGHT, BLANK_PAGE_WIDTH, BLANK_PAPER_VERSION, blankPdfFile, normalizeBlankPaper } from "./blank-pdf.js?v=__BUILD__";
+import { canvasPageBoxes, canvasSnapGridFor, canvasWideSheetSetup, nearestLegacyPaper, normalizeSheetSetup, remapPageSetups, sameSheet, sheetDrawKey, sheetLegacyKind, sheetPatternDefaults, sheetSetupForPage } from "./canvas-setup.js?v=__BUILD__";
 import { DOC_SLOT_NOTEBOOK, docSlotMeta, documentStoreKey } from "./doc-slot.js?v=__BUILD__";
 import { hasLegacyNotebook, hasNotebookInPdfSlot, migratedNotebookMeta, movedNotebookSlotMeta, planLegacyNotebookMigration } from "./notebook-migrate.js?v=__BUILD__";
 import { documentBlocks, freshDocumentBlockId, remapDocumentBlockPages, writeDocumentBlocks } from "./pdf-blocks.js?v=__BUILD__";
@@ -85,6 +86,109 @@ export async function setNotebookPageNumbers(on) {
   return true;
 }
 
+// ── Page setup ─────────────────────────────────────────────────────────────
+//
+// Each page's size, paper and lines (src/documents/canvas-setup.js). Kept on
+// the record beside `paper` and `pages`, because the bytes are drawn from it:
+// `setup` for every page without its own, `pageSetups` for the ones set up on
+// their own. Both absent is a Canvas that was never set up, drawn exactly as it
+// always was.
+function notebookSheetState(meta = state.meta) {
+  const notebook = meta?.notebook;
+  const setup = notebook?.setup && typeof notebook.setup === "object" ? notebook.setup : null;
+  const pageSetups = notebook?.pageSetups && typeof notebook.pageSetups === "object" && Object.keys(notebook.pageSetups).length
+    ? notebook.pageSetups
+    : null;
+  return { setup, pageSetups };
+}
+
+// The setup page `n` is drawn with, complete — its own, the Canvas's, or the
+// paper the Canvas was made on.
+export function notebookPageSetup(n, meta = state.meta) {
+  return sheetSetupForPage(meta?.notebook, n);
+}
+
+// The setup every page without its own is drawn with.
+export function notebookCanvasSetup(meta = state.meta) {
+  return canvasWideSheetSetup(meta?.notebook);
+}
+
+// Whether page `n` is set up on its own rather than following the Canvas.
+export function notebookPageHasOwnSetup(n, meta = state.meta) {
+  return Boolean(notebookSheetState(meta).pageSetups?.[String(n)]);
+}
+
+export function notebookPageBoxes(meta = state.meta) {
+  return canvasPageBoxes(meta?.notebook);
+}
+
+// The squares a box dragged on page `page` settles onto, or null.
+export function canvasSnapGrid(page, meta = state.meta) {
+  if (!hasNotebook(meta)) return null;
+  return canvasSnapGridFor(notebookPageSetup(Number(page) || 1, meta));
+}
+
+// The page setups straight onto the record, with no new bytes — for the
+// changes that move a setup between pages without changing what any page
+// looks like.
+function writeNotebookSheetState(setup, pageSetups) {
+  const notebook = { ...state.meta.notebook };
+  if (setup) notebook.setup = setup;
+  else delete notebook.setup;
+  if (pageSetups && Object.keys(pageSetups).length) notebook.pageSetups = pageSetups;
+  else delete notebook.pageSetups;
+  state.meta = { ...state.meta, notebook };
+}
+
+// What every page looks like, in order — two records with the same answer
+// draw the same file.
+function notebookDrawnPages(record) {
+  const count = Number(record?.pages) || 0;
+  const keys = [];
+  for (let n = 1; n <= count; n += 1) keys.push(sheetDrawKey(sheetSetupForPage(record, n)));
+  return keys.join("|");
+}
+
+// Set up page `page`, or every page (`all`). A setup that draws exactly as one
+// of the first papers is stored as that paper, so a Canvas set back to plain
+// grid is the very file it was; a page's own setup that matches the Canvas's
+// is dropped rather than kept as a copy. Resolves false when nothing would
+// look different.
+export async function setNotebookPageSetup(setup, { page = null, all = false } = {}) {
+  if (!hasNotebook()) return false;
+  const pageSheet = normalizeSheetSetup(setup);
+  const pages = notebookPageCount();
+  const current = notebookSheetState();
+  let paper = notebookPaper();
+  let nextSetup = current.setup;
+  let nextPageSetups = current.pageSetups ? { ...current.pageSetups } : null;
+  const n = Math.round(Number(page) || 0);
+  if (all || pages < 2 || !(n >= 1 && n <= pages)) {
+    const legacy = sheetLegacyKind(pageSheet);
+    paper = legacy || nearestLegacyPaper(pageSheet.pattern);
+    nextSetup = legacy ? null : pageSheet;
+    nextPageSetups = null;
+  } else {
+    const base = canvasWideSheetSetup(state.meta.notebook);
+    nextPageSetups = nextPageSetups || {};
+    if (sameSheet(pageSheet, base)) delete nextPageSetups[String(n)];
+    else nextPageSetups[String(n)] = pageSheet;
+    if (!Object.keys(nextPageSetups).length) nextPageSetups = null;
+  }
+  const after = { ...state.meta.notebook, paper, setup: nextSetup, pageSetups: nextPageSetups };
+  if (notebookDrawnPages(after) === notebookDrawnPages(state.meta.notebook)) {
+    // Nothing on screen changes. The record may still be tidier — a page's own
+    // setup that now matches the Canvas — and that is saved without new bytes.
+    const before = notebookSheetState();
+    if (JSON.stringify([before.setup, before.pageSetups]) !== JSON.stringify([nextSetup, nextPageSetups]) && paper === notebookPaper()) {
+      writeNotebookSheetState(nextSetup, nextPageSetups);
+      await saveDeckToLibrary({ silent: true });
+    }
+    return false;
+  }
+  return writeNotebookPdf({ pages, paper, setup: nextSetup, pageSetups: nextPageSetups });
+}
+
 // Where this deck's notebook bytes are filed on the device. One row per
 // document, so a deck with a paper AND a notebook has two.
 function notebookStoreKey() {
@@ -97,8 +201,13 @@ function notebookStoreKey() {
 // device copy is written BEFORE the upload, because it is the copy the reader is
 // about to draw on and the one that survives being offline. An upload that fails
 // leaves a perfectly usable notebook that syncs later.
-async function writeNotebookPdf({ pages, paper, reopen = true }) {
-  const file = blankPdfFile({ pages, paper, name: state.deckTitle || "handwritten-notes" });
+async function writeNotebookPdf({ pages, paper, setup = undefined, pageSetups = undefined, reopen = true }) {
+  // The page setups the record holds now, unless the caller is changing them —
+  // so adding, duplicating or tearing out a page keeps every page's own setup.
+  const held = notebookSheetState();
+  const sheetSetup = setup === undefined ? held.setup : (setup || null);
+  const sheetPageSetups = pageSetups === undefined ? held.pageSetups : (pageSetups && Object.keys(pageSetups).length ? pageSetups : null);
+  const file = blankPdfFile({ pages, paper, setup: sheetSetup, pageSetups: sheetPageSetups, name: state.deckTitle || "handwritten-notes" });
   const hash = await sha256(file);
   // ── meta first, then the save, then the bytes ────────────────────────────
   //
@@ -149,6 +258,9 @@ async function writeNotebookPdf({ pages, paper, reopen = true }) {
       importedAt: state.meta?.notebook?.importedAt || new Date().toISOString()
     }
   };
+  // The setups the bytes were drawn from, in the same write as the bytes' hash:
+  // a device that has the record and not the file draws it again from these.
+  writeNotebookSheetState(sheetSetup, sheetPageSetups);
   if (!(await saveDeckToLibrary({ silent: true })) || !state.localDeckId) {
     showToast("Could not save this file on your device", "error");
     return false;
@@ -198,7 +310,7 @@ async function writeNotebookPdf({ pages, paper, reopen = true }) {
 // deck and the reader is left looking at the previous file: the page that was
 // just re-made, or the pages that were just converted, are not on the screen and
 // nothing says why. So "wrote" is the caller's instruction to force the reopen.
-export async function ensureNotebookDocument({ paper = null } = {}) {
+export async function ensureNotebookDocument({ paper = null, setup = null } = {}) {
   // Decks whose notebook is still in the document slot are moved first, so every
   // branch below is asking about the same key on every deck. Idempotent, and a
   // no-op for every deck that has never had a notebook.
@@ -230,7 +342,14 @@ export async function ensureNotebookDocument({ paper = null } = {}) {
   // somebody's preprint can have blank pages of its own beside it, which is what
   // anybody pressing this on such a deck meant in the first place.
   if (hasLegacyNotebook(state.meta)) return (await migrateLegacyNotebook()) && "wrote";
-  return (await writeNotebookPdf({ pages: 1, paper: normalizeBlankPaper(paper), reopen: false })) && "wrote";
+  // A new Canvas on the page setup this device last chose, when it chose one
+  // that is not simply one of the first papers.
+  const pageSheet = setup ? normalizeSheetSetup(setup) : null;
+  const legacy = pageSheet ? sheetLegacyKind(pageSheet) : null;
+  if (pageSheet && !legacy) {
+    return (await writeNotebookPdf({ pages: 1, paper: nearestLegacyPaper(pageSheet.pattern), setup: pageSheet, pageSetups: null, reopen: false })) && "wrote";
+  }
+  return (await writeNotebookPdf({ pages: 1, paper: normalizeBlankPaper(legacy || paper), setup: null, pageSetups: null, reopen: false })) && "wrote";
 }
 
 // Are the notebook's bytes on this device, AND are they the bytes the record
@@ -386,6 +505,10 @@ export function setCanvasPagesRemappedHook(fn) {
 function remapNotebookPages(move) {
   remapDocumentHighlightPages(move);
   remapDocumentBlockPages(move);
+  // ...and the pages' own setups, by the same rule: a page set up on its own
+  // keeps its setup wherever it goes, and a page torn out takes it with it.
+  const sheets = notebookSheetState();
+  if (sheets.pageSetups) writeNotebookSheetState(sheets.setup, remapPageSetups(sheets.pageSetups, move));
   try {
     canvasPagesRemapped?.(move);
   } catch (error) {
@@ -405,7 +528,18 @@ export async function addNotebookPage({ after = null } = {}) {
       return on > at ? on + 1 : on;
     });
   }
+  // The new page is set up as the page before it is — a landscape page of dots
+  // in a ruled Canvas gets another like it — or, put before page 1, as page 1.
+  copyNotebookPageSetup(at >= 1 ? at : 2, at + 1);
   return writeNotebookPdf({ pages: pages + 1, paper: notebookPaper() });
+}
+
+// Page `to` set up as page `from` is, after the renumbering that made room.
+function copyNotebookPageSetup(from, to) {
+  const sheets = notebookSheetState();
+  const own = sheets.pageSetups?.[String(from)];
+  if (!own) return;
+  writeNotebookSheetState(sheets.setup, { ...sheets.pageSetups, [String(to)]: own });
 }
 
 // A record copied onto another page, under a new id. The quads carry their
@@ -437,6 +571,7 @@ export async function duplicateNotebookPage(pageNumber) {
     const on = Number(record?.page) || 0;
     return on > n ? on + 1 : on;
   });
+  copyNotebookPageSetup(n, n + 1);
   const ids = new Map();
   const groups = new Map();
   const copyGroupId = (group) => {
@@ -478,21 +613,26 @@ export async function duplicateNotebookPage(pageNumber) {
   return writeNotebookPdf({ pages: pages + 1, paper: notebookPaper() });
 }
 
-// Page `n` swapped with the one `delta` away (one up is -1). Every page of a
-// Canvas is the same sheet, so no bytes change — only which records are on
-// which page.
-export function moveNotebookPage(pageNumber, delta) {
+// Page `n` swapped with the one `delta` away (one up is -1). Two pages set up
+// alike are the same sheet, so no bytes change — only which records are on
+// which page. Two set up differently swap their setups with them, and that is
+// new bytes: the page that moved keeps its own size and paper.
+export async function moveNotebookPage(pageNumber, delta) {
   if (!hasNotebook()) return false;
   const pages = notebookPageCount();
   const n = Number(pageNumber);
   const to = n + Math.sign(Number(delta) || 0);
   if (!(n >= 1 && n <= pages) || !(to >= 1 && to <= pages) || to === n) return false;
+  const differ = !sameSheet(notebookPageSetup(n), notebookPageSetup(to));
+  const before = JSON.stringify(notebookSheetState().pageSetups || null);
   remapNotebookPages((record) => {
     const on = Number(record?.page) || 0;
     if (on === n) return to;
     if (on === to) return n;
     return on;
   });
+  if (differ) return writeNotebookPdf({ pages, paper: notebookPaper() });
+  if (JSON.stringify(notebookSheetState().pageSetups || null) !== before) await saveDeckToLibrary({ silent: true });
   return true;
 }
 
@@ -535,11 +675,31 @@ export async function deleteNotebookPage(pageNumber) {
 export async function setNotebookPaper(kind) {
   if (!hasNotebook()) return false;
   const paper = normalizeBlankPaper(kind);
-  if (paper === notebookPaper()) return false;
-  // Only the paper under the ink changes. The page box is identical, so nothing
-  // already written moves — which is why this is a regeneration and not a
-  // migration.
-  return writeNotebookPdf({ pages: notebookPageCount(), paper });
+  const sheets = notebookSheetState();
+  if (!sheets.setup && !sheets.pageSetups) {
+    if (paper === notebookPaper()) return false;
+    // Only the paper under the ink changes. The page box is identical, so nothing
+    // already written moves — which is why this is a regeneration and not a
+    // migration.
+    return writeNotebookPdf({ pages: notebookPageCount(), paper });
+  }
+  // A Canvas with page setups: every page to this paper at its own size and
+  // paper colour, with the paper's own lines.
+  const onto = (raw) => {
+    const was = normalizeSheetSetup(raw);
+    const next = normalizeSheetSetup({ ...sheetPatternDefaults(paper), w: was.w, h: was.h, paper: was.paper });
+    return sheetLegacyKind(next) ? null : next;
+  };
+  const setup = onto(canvasWideSheetSetup(state.meta.notebook));
+  let pageSetups = null;
+  Object.entries(sheets.pageSetups || {}).forEach(([key, raw]) => {
+    const next = onto(raw) || normalizeSheetSetup(sheetPatternDefaults(paper));
+    if (sameSheet(next, setup || sheetPatternDefaults(paper))) return;
+    pageSetups = { ...(pageSetups || {}), [key]: next };
+  });
+  const after = { ...state.meta.notebook, paper, setup, pageSetups };
+  if (notebookDrawnPages(after) === notebookDrawnPages(state.meta.notebook)) return false;
+  return writeNotebookPdf({ pages: notebookPageCount(), paper, setup, pageSetups });
 }
 
 export { BLANK_PAPERS, BLANK_PAGE_WIDTH, BLANK_PAGE_HEIGHT };

@@ -25,6 +25,8 @@
 // text, and the fixture's job is to be a stand-in for somebody else's document
 // while this one's is to be ours.
 
+import { normalizeSheetSetup, sheetBox, sheetDrawKey, sheetLegacyKind, sheetPdfStream } from "./canvas-setup.js?v=__BUILD__";
+
 // A4 in PDF points (72 per inch), which is the paper this app's print pipeline
 // already lays out for (installPdfPrintStyle), so a notebook page exported or
 // printed is 1:1 rather than rescaled.
@@ -165,9 +167,27 @@ function pdfNumber(value) {
   return String(Number(Number(value).toFixed(2)));
 }
 
-// `pages` blank pages of `paper`. Returns the bytes as a Uint8Array, ready for
-// a Blob or a File.
-export function buildBlankPdf({ pages = 1, paper = BLANK_PAPER_DEFAULT, title = "Canvas" } = {}) {
+
+// What page `n` is drawn with: one of the first papers, through paperStream
+// exactly as it always was, or a setup of its own (src/documents/canvas-setup.js).
+// A setup that draws exactly as a first paper IS that paper here, so a Canvas
+// whose pages are all first papers is byte-for-byte the file it always was —
+// its hash is its identity on every device.
+function blankPageSheet(n, { kind, setup, pageSetups }) {
+  const own = pageSetups && typeof pageSetups === "object" ? pageSetups[String(n)] : null;
+  const raw = own || (setup && typeof setup === "object" ? setup : null);
+  if (!raw) return { key: `paper:${kind}`, legacy: kind };
+  const drawn = normalizeSheetSetup(raw);
+  const legacy = sheetLegacyKind(drawn);
+  if (legacy) return { key: `paper:${legacy}`, legacy };
+  return { key: sheetDrawKey(drawn), sheet: drawn };
+}
+
+// `pages` blank pages of `paper` — or, page by page, of the setup each one has:
+// `setup` for every page, `pageSetups` ({ "<page>": setup }) for the ones set
+// up on their own. Returns the bytes as a Uint8Array, ready for a Blob or a
+// File.
+export function buildBlankPdf({ pages = 1, paper = BLANK_PAPER_DEFAULT, title = "Canvas", setup = null, pageSetups = null } = {}) {
   const count = Math.max(1, Math.min(500, Math.round(pages)));
   const kind = normalizeBlankPaper(paper);
   const objects = [];
@@ -178,19 +198,34 @@ export function buildBlankPdf({ pages = 1, paper = BLANK_PAPER_DEFAULT, title = 
   const catalogId = push("");
   const pagesId = push("");
 
-  // ONE content stream, shared by every page. A notebook is the case where every
-  // page is identical, and a hundred copies of the same grid is a hundred
-  // kilobytes of it — the file has to be re-uploaded on every page added.
-  const stream = paperStream(kind);
-  const contentId = push(`<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`);
+  // ONE content stream per distinct page, shared by every page drawn the same.
+  // A Canvas is the case where nearly every page is identical, and a hundred
+  // copies of the same grid is a hundred kilobytes of it — the file has to be
+  // re-uploaded on every page added. In order of first use, so a Canvas of one
+  // paper writes its objects in exactly the order it always did.
+  const sheets = [];
+  const streams = new Map();
+  for (let n = 1; n <= count; n += 1) {
+    const pageSheet = blankPageSheet(n, { kind, setup, pageSetups });
+    if (!streams.has(pageSheet.key)) {
+      const stream = pageSheet.legacy ? paperStream(pageSheet.legacy) : sheetPdfStream(pageSheet.sheet);
+      streams.set(pageSheet.key, push(`<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`));
+    }
+    sheets.push(pageSheet);
+  }
 
   const pageIds = [];
-  for (let n = 0; n < count; n += 1) {
+  sheets.forEach((pageSheet) => {
+    // A first paper is A4 at the origin, written as it always was; a setup's
+    // page keeps its top-left corner at (0, 842) whatever its size.
+    const box = pageSheet.legacy
+      ? `0 0 ${BLANK_PAGE_WIDTH} ${BLANK_PAGE_HEIGHT} `
+      : `${sheetBox(pageSheet.sheet).map(pdfNumber).join(" ")} `;
     pageIds.push(push(
-      `<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 ${BLANK_PAGE_WIDTH} ${BLANK_PAGE_HEIGHT} ] `
-      + `/Resources << >> /Contents ${contentId} 0 R >>`
+      `<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [${box}] `
+      + `/Resources << >> /Contents ${streams.get(pageSheet.key)} 0 R >>`
     ));
-  }
+  });
 
   const infoId = push(`<< /Title (${pdfString(title)}) /Producer (Recall) >>`);
 
