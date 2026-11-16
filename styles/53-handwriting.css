@@ -934,6 +934,25 @@
   display: none;
 }
 
+/* While a page is being added, moved, torn out or set up, until the Canvas has
+   reopened on its new file (runCanvasPageChange, src/documents/notebook.js):
+   the pages on screen are the old ones under the new numbering, so nothing
+   may be pressed, drawn or dragged on them, and ＋ Page cannot be pressed
+   into the change a second time. */
+body.canvas-pages-busy .canvas-page-insert,
+body.canvas-pages-busy #documentAddPageBtn {
+  pointer-events: none;
+  opacity: 0.35;
+}
+
+body.canvas-pages-busy :is(#documentStage, #documentStageAlt)[data-doc-slot="notebook"] .pdf-pages {
+  pointer-events: none;
+}
+
+body.canvas-pages-busy :is(#documentStage, #documentStageAlt)[data-doc-slot="notebook"] {
+  cursor: progress;
+}
+
 /* "k / n" at the foot of every Canvas page. The size and the baseline are the
    export's CANVAS_NUMBER_SIZE (9pt) and CANVAS_NUMBER_BASELINE (16pt above the
    bottom edge), src/documents/pdf-export.js, scaled from points to the page on
