@@ -437,7 +437,9 @@ export function collectTextRuns(node) {
 //
 // `words: true` also measures every word on each node before it is taken away
 // (collectTextRuns) and hands them back on the raster, as `words`, for a PDF
-// writer to lay over the picture as selectable text.
+// writer to lay over the picture as selectable text — in the node's CSS pixels,
+// so with `wordScale`, the scale the node was laid out at (rasterWordSize,
+// src/documents/pdf-region-download.js, turns the box into the same units).
 //
 // `layoutScale` is the scale each node is LAID OUT at — 1 (one CSS pixel per
 // point) unless the caller says otherwise. Words wrap a little differently at
@@ -518,7 +520,7 @@ export async function rasteriseRegionBlocks(page, source, pageNumber, rect, pixe
         // picture it is drawn into unreadable — no saved image, no zoom. Asked
         // here, per block, so that costs only this block.
         canvas.getContext("2d").getImageData(0, 0, 1, 1);
-        rasters.push({ block, canvas, ...(words && block.kind !== "image" ? { words: collectTextRuns(node) } : {}) });
+        rasters.push({ block, canvas, ...(words && block.kind !== "image" ? { words: collectTextRuns(node), wordScale: layout } : {}) });
       } catch (error) {
         console.warn("Could not draw a block inside a region", error);
         failed += 1;
@@ -550,7 +552,7 @@ export async function rasteriseRegionBlocks(page, source, pageNumber, rect, pixe
           imagePlaceholder: "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw=="
         });
         canvas.getContext("2d").getImageData(0, 0, 1, 1);
-        rasters.push({ block, canvas, kind: "shape-text", ...(words ? { words: collectTextRuns(node) } : {}) });
+        rasters.push({ block, canvas, kind: "shape-text", ...(words ? { words: collectTextRuns(node), wordScale: layout } : {}) });
       } catch (error) {
         console.warn("Could not picture a text box's words; drawing them plain", error);
         rasters.push(plainShapeTextRaster(item, pixelRatio));

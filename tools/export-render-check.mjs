@@ -501,8 +501,11 @@ try {
       c.width = Math.ceil(viewport.width); c.height = Math.ceil(viewport.height);
       const ctx = c.getContext("2d");
       await first.render({ canvasContext: ctx, viewport }).promise;
-      const text = (await first.getTextContent()).items.map((it) => it.str).join(" ");
-      return { pages: doc.numPages, sizes, width: c.width, height: c.height, data: ctx.getImageData(0, 0, c.width, c.height).data, text, name: result.name, png: () => c.toDataURL("image/png").split(",")[1] };
+      const content = (await first.getTextContent()).items;
+      const text = content.map((it) => it.str).join(" ");
+      // Each piece of text and where it starts, in PDF points.
+      const items = content.filter((it) => it.str.trim()).map((it) => ({ str: it.str, x: it.transform[4], y: it.transform[5] }));
+      return { pages: doc.numPages, sizes, width: c.width, height: c.height, data: ctx.getImageData(0, 0, c.width, c.height).data, text, items, name: result.name, png: () => c.toDataURL("image/png").split(",")[1] };
     };
 
     // ⇓ on the Canvas: one row, and it is the PDF.
@@ -600,6 +603,14 @@ try {
     };
     const inkDark = darkIn(a, without.width);
     const inkUnderBlock = darkIn(b, withBlock.width);
+    // The block's words, as text in the file: what copying the page gives, and
+    // whether each word starts inside the block's box on the page.
+    const flat = (t) => t.replace(/\\s+/g, " ").trim();
+    const blockText = flat(withBlock.text);
+    const typedItems = withBlock.items.filter((it) => !/^\\d+ \\/ \\d+$/.test(it.str.trim()));
+    const insideBlock = typedItems.filter((it) => record
+      && it.x >= record.x - 1 && it.x <= record.x + record.w + 1
+      && it.y >= record.y - 1 && it.y <= record.y + record.h + 1).length;
 
     // On Black paper: the page is the paper, not white.
     api.setPaperTone("black");
@@ -624,6 +635,9 @@ try {
       firstText: without.text,
       inkDark,
       inkUnderBlock,
+      blockText,
+      typedWords: typedItems.length,
+      insideBlock,
       blockLuminance: count ? Math.round(sum / count) : 0,
       blockDark: dark,
       blackCorner,
@@ -673,6 +687,13 @@ try {
           canvas.blockLuminance > 200 && canvas.blockDark > 30, `mean luminance ${canvas.blockLuminance}, ${canvas.blockDark} dark sample(s)`);
         check("Canvas PDF: a block is drawn OVER the handwriting under it, as the page stacks them",
           canvas.inkUnderBlock < canvas.inkDark / 10, `${canvas.inkUnderBlock} dark pixel(s) under the block, ${canvas.inkDark} without it`);
+        check("Canvas PDF: a block's words are text in the file — selectable, copyable, searchable — in the order they are read",
+          canvas.blockText.startsWith("TYPED ON THE CANVAS A block of words, bold and plain, that the page export has to draw.")
+            && canvas.blockText.endsWith("1 / 1"),
+          JSON.stringify(canvas.blockText));
+        check("...each laid over the block where the page shows it",
+          canvas.typedWords > 0 && canvas.insideBlock === canvas.typedWords,
+          `${canvas.insideBlock} of ${canvas.typedWords} word(s) inside the block's box`);
         check("Canvas PDF: on Black paper the block takes the paper's colours too",
           canvas.blackBlock.every((v) => v < 90), JSON.stringify(canvas.blackBlock));
       } else {
