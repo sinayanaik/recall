@@ -438,14 +438,24 @@ export function collectTextRuns(node) {
 // `words: true` also measures every word on each node before it is taken away
 // (collectTextRuns) and hands them back on the raster, as `words`, for a PDF
 // writer to lay over the picture as selectable text.
-export async function rasteriseRegionBlocks(page, source, pageNumber, rect, pixelRatio, { paper = "theme", words = false } = {}) {
+//
+// `layoutScale` is the scale each node is LAID OUT at — 1 (one CSS pixel per
+// point) unless the caller says otherwise. Words wrap a little differently at
+// every size, so a block that fits its box at the zoom the reader sees it at
+// can overflow at 1. The Canvas PDF export, which promises the page as it is
+// seen, lays the blocks out at the page's on-screen scale and only then draws
+// them at `pixelRatio` (always per POINT, whatever the layout scale).
+export async function rasteriseRegionBlocks(page, source, pageNumber, rect, pixelRatio, { paper = "theme", words = false, layoutScale = 1 } = {}) {
   const blocks = regionBlocksInBox(source, pageNumber, rect);
   const texts = regionRichShapeTexts(source, pageNumber, rect);
   if (!blocks.length && !texts.length) return { rasters: [], failed: 0 };
   if (!(await ensureHtmlToImage())) {
     return { rasters: texts.map((item) => plainShapeTextRaster(item, pixelRatio)), failed: blocks.length };
   }
-  const viewport = page.getViewport({ scale: 1 });
+  const layout = Number(layoutScale) > 0 ? Number(layoutScale) : 1;
+  const viewport = page.getViewport({ scale: layout });
+  // Per CSS pixel of the node, so the raster is `pixelRatio` per point.
+  const nodeRatio = pixelRatio / layout;
   const host = document.createElement("div");
   host.setAttribute("aria-hidden", "true");
   host.style.cssText = `position:fixed;left:-100000px;top:0;width:${Math.ceil(viewport.width)}px;height:${Math.ceil(viewport.height)}px;pointer-events:none;`;
@@ -495,8 +505,8 @@ export async function rasteriseRegionBlocks(page, source, pageNumber, rect, pixe
         // eslint-disable-next-line no-await-in-loop
         if (fontEmbedCSS === undefined) fontEmbedCSS = await window.htmlToImage.getFontEmbedCSS(node).catch(() => "");
         // eslint-disable-next-line no-await-in-loop
-        const canvas = await window.htmlToImage.toCanvas(node, {
-          pixelRatio,
+        const canvas = await nodeToCanvas(node, {
+          pixelRatio: nodeRatio,
           width,
           height,
           fontEmbedCSS,
@@ -532,10 +542,10 @@ export async function rasteriseRegionBlocks(page, source, pageNumber, rect, pixe
         // eslint-disable-next-line no-await-in-loop
         if (fontEmbedCSS === undefined) fontEmbedCSS = await window.htmlToImage.getFontEmbedCSS(node).catch(() => "");
         // eslint-disable-next-line no-await-in-loop
-        const canvas = await window.htmlToImage.toCanvas(node, {
-          pixelRatio,
-          width: Math.max(1, block.w),
-          height: Math.max(1, block.h),
+        const canvas = await nodeToCanvas(node, {
+          pixelRatio: nodeRatio,
+          width: Math.max(1, block.w * layout),
+          height: Math.max(1, block.h * layout),
           fontEmbedCSS,
           imagePlaceholder: "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw=="
         });
@@ -552,6 +562,48 @@ export async function rasteriseRegionBlocks(page, source, pageNumber, rect, pixe
     host.remove();
   }
   return { rasters, failed };
+}
+
+// ── A node as pixels, at the size its words really are ───────────────────────
+//
+// html-to-image copies every computed style onto its clone, and rewrites one of
+// them on the way: each font size becomes Math.floor(size) - 0.1px (a wrapping
+// workaround of its own, in cloneCSSStyle). A block's words at 26.55px were
+// drawn at 25.9px, 13.12px at 12.9px — narrower than the same words on the
+// page, so a picture of a block was never the block, and a line that filled
+// its width on screen could wrap differently. So the clone is serialised with
+// html-to-image (toSvg — every style, picture and font inlined), each element's
+// real size, noted on it beforehand, is put back, and the SVG is drawn here.
+const TRUE_FONT_SIZE = "data-recall-font-size";
+
+async function nodeToCanvas(node, { pixelRatio, width, height, fontEmbedCSS, imagePlaceholder }) {
+  const marked = [node, ...node.querySelectorAll("*")];
+  marked.forEach((element) => {
+    const size = getComputedStyle(element).fontSize;
+    if (size) element.setAttribute(TRUE_FONT_SIZE, size);
+  });
+  let url;
+  try {
+    url = await window.htmlToImage.toSvg(node, { width, height, fontEmbedCSS, imagePlaceholder });
+  } finally {
+    marked.forEach((element) => element.removeAttribute(TRUE_FONT_SIZE));
+  }
+  const svg = new DOMParser().parseFromString(decodeURIComponent(url.slice(url.indexOf(",") + 1)), "image/svg+xml");
+  svg.querySelectorAll(`[${TRUE_FONT_SIZE}]`).forEach((element) => {
+    // Appended, so it is the last word on the size — after the `font`
+    // shorthand the clone's styles were folded into.
+    const style = element.getAttribute("style") || "";
+    element.setAttribute("style", `${style}${style.trim().endsWith(";") || !style.trim() ? "" : ";"} font-size: ${element.getAttribute(TRUE_FONT_SIZE)};`);
+    element.removeAttribute(TRUE_FONT_SIZE);
+  });
+  const image = new Image();
+  image.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(new XMLSerializer().serializeToString(svg.documentElement))}`;
+  await image.decode();
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(width * pixelRatio));
+  canvas.height = Math.max(1, Math.round(height * pixelRatio));
+  canvas.getContext("2d").drawImage(image, 0, 0, canvas.width, canvas.height);
+  return canvas;
 }
 
 // The rasterised blocks onto a canvas whose drawing space is `viewport`.

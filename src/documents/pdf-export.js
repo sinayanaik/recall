@@ -41,7 +41,7 @@ import { decodeInkStrokes } from "../format/ink-strokes.js?v=__BUILD__";
 import { markGeometry, markStyleOf, normalizeMarkHex, paintMarkGeometry } from "../format/mark-styles.js?v=__BUILD__";
 import { paintInkLayers } from "../render/ink-paint.js?v=__BUILD__";
 import { paintShapeOnCanvas } from "../render/annot-shapes.js?v=__BUILD__";
-import { PAPER_WHITE, paperRecolor } from "../format/paper-tones.js?v=__BUILD__";
+import { PAPER_WHITE, paintPaperTone, paperRecolor } from "../format/paper-tones.js?v=__BUILD__";
 
 // Printed white, whatever paper the reader wrote on: a colour they picked on
 // a dark tone (a pale custom pen, a white text box) would be the colour of the
@@ -54,9 +54,10 @@ import { DOC_SLOT_DOC, DOC_SLOT_NOTEBOOK, activeDocSlot, docSlotMeta } from "./d
 import { activePdfId } from "./pdf-multi.js?v=__BUILD__";
 import { exportThemeClass } from "../export/themes.js?v=__BUILD__";
 import { annotatedDocumentHighlights, documentHighlightLabel, documentHighlights } from "./pdf-highlights.js?v=__BUILD__";
-import { currentPdfDocument, currentPdfPageCount, pdfOpenToken } from "./pdf-view.js?v=__BUILD__";
+import { currentPaperTone, currentPdfDocument, currentPdfPageCount, currentPdfScale, pdfOpenToken, pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
+import { resolvedShape } from "./pdf-shapes.js?v=__BUILD__";
 import { regionImageRect, renderRegionImage } from "./pdf-region-embed.js?v=__BUILD__";
-import { drawRegionBlocks, highlightHex, rasteriseRegionBlocks, regionBlocksInBox, shapeTextRasterIds } from "./pdf-region-marks.js?v=__BUILD__";
+import { drawRegionBlocks, highlightHex, paintRegionMarks, rasteriseRegionBlocks, regionBlocksInBox, regionMarksOnPage, shapeTextRasterIds } from "./pdf-region-marks.js?v=__BUILD__";
 
 // The rendered width of a page in the print document, in device pixels. A4 at
 // 14mm margins (installPdfPrintStyle) is ~182mm of content, and the page is
@@ -86,8 +87,8 @@ async function renderPageForPrint(pageNumber, records) {
   return canvas ? canvas.toDataURL("image/jpeg", PRINT_PAGE_QUALITY) : null;
 }
 
-// The same page as a canvas, for the Canvas export, which writes its own PDF
-// rather than printing a picture of one (buildCanvasPdfBytes, below).
+// The same page as a canvas. The Canvas export draws its pages its own way
+// (renderCanvasPageExact, below).
 async function renderPageCanvas(pageNumber, records) {
   const doc = currentPdfDocument();
   if (!doc) return null;
@@ -403,11 +404,28 @@ export async function buildDocumentPrintDocument(title, { annotatedOnly = false,
 // place and size the Canvas shows it on screen (styles/53-handwriting.css,
 // .pdf-page::after), so the exported page is the page as it was seen. Turned
 // off with ⋯ → Canvas pages → Page numbers, it is off in both.
+//
+// "As it was seen" is the whole promise, and it is kept by drawing each page
+// the way the screen stacks it, not the way the PDFs' printed export does:
+//
+//   - the paper in its tone (paintPaperTone, the screen's own step), not
+//     always white, and every colour on it as it is on that paper;
+//   - highlights, then ink, then shapes and connectors, then Blocks ON TOP —
+//     the z-order of the page's layers (styles/52-ink.css, 88-annotations.css,
+//     53-handwriting.css). Blocks drawn first came out scribbled over;
+//   - every connector routed as the screen routes it (resolvedShape), not as
+//     its stored ends happen to lie;
+//   - every Block laid out at the zoom the reader sees it at, so its words
+//     wrap where they wrap on screen, then drawn at the export's resolution.
+//     Laid out at one point per pixel they wrapped elsewhere and overflowed.
 
 // In PDF points on the Canvas page: the number's size, and its baseline's
 // height above the page's bottom edge. The CSS states the same two numbers.
 export const CANVAS_NUMBER_SIZE = 9;
 export const CANVAS_NUMBER_BASELINE = 16;
+// The rendered width of a Canvas page in the file, in pixels: a sheet of A4 at
+// ~300dpi, which keeps a thin pen line and a Block's small print sharp.
+export const CANVAS_EXPORT_WIDTH = 2480;
 // A touch higher than the printed export's: these pages are the whole file.
 export const CANVAS_PAGE_QUALITY = 0.92;
 
@@ -420,15 +438,65 @@ function canvasJpegBytes(canvas) {
   });
 }
 
+// The zoom a page is seen at: its own viewport when it has been laid out,
+// otherwise the zoom every page is drawn at.
+function seenScale(pageNumber) {
+  return pdfPageViewport(pageNumber)?.scale || currentPdfScale() || 1;
+}
+
+// One Canvas page as the screen shows it, at CANVAS_EXPORT_WIDTH.
+async function renderCanvasPageExact(pageNumber) {
+  const doc = currentPdfDocument();
+  if (!doc) return null;
+  const token = pdfOpenToken;
+  const page = await doc.getPage(pageNumber);
+  if (token !== pdfOpenToken) return null;
+  const unit = page.getViewport({ scale: 1 });
+  const viewport = page.getViewport({ scale: CANVAS_EXPORT_WIDTH / unit.width });
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.ceil(viewport.width);
+  canvas.height = Math.ceil(viewport.height);
+  const context = canvas.getContext("2d", { alpha: false });
+  // White first: `alpha: false` starts a canvas black, and the page paints
+  // only its own lines. The tone goes on after, as it does on screen.
+  context.fillStyle = PAPER_WHITE;
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  await page.render({ canvasContext: context, viewport }).promise;
+  if (token !== pdfOpenToken) return null;
+  const tone = currentPaperTone();
+  paintPaperTone(context, canvas, { dark: Boolean(tone?.dark), tint: tone?.tint || null });
+
+  const source = stagePaperSource();
+  // Rasterised before any marks go down, so the shape-text ids are known; laid
+  // out at the page's on-screen zoom and drawn at this viewport's scale.
+  const { rasters } = await rasteriseRegionBlocks(page, source, pageNumber, page.view, viewport.scale, {
+    paper: "theme",
+    layoutScale: seenScale(pageNumber)
+  }).catch((error) => {
+    console.warn("Could not draw a page's blocks for the export", error);
+    return { rasters: [] };
+  });
+  if (token !== pdfOpenToken) return null;
+
+  const marks = regionMarksOnPage(source, pageNumber);
+  marks.shapes = marks.shapes.map((record) => ({ ...record, shape: resolvedShape(record) || record.shape }));
+  paintRegionMarks(context, viewport, marks, {
+    paper: tone?.key || "light",
+    skipTextIds: shapeTextRasterIds(rasters)
+  });
+  drawRegionBlocks(context, viewport, rasters, { only: "block" });
+  drawRegionBlocks(context, viewport, rasters, { only: "shape-text" });
+  return { canvas, tone };
+}
+
 // Resolves to { bytes, name, pages }, or null when the deck was closed while
 // its pages were rendering. Needs window.PDFLib (ensurePdfLib) loaded first.
-export async function buildCanvasPdfBytes({ annotatedOnly = false } = {}) {
+export async function buildCanvasPdfBytes() {
   const { PDFDocument, StandardFonts, rgb } = window.PDFLib;
   const source = currentPdfDocument();
   if (!source) return null;
   const token = pdfOpenToken;
-  const marksByPage = marksByPageNumber();
-  const wanted = pagesToPrint({ annotatedOnly });
+  const wanted = pagesToPrint();
   const out = await PDFDocument.create();
   const font = await out.embedFont(StandardFonts.Helvetica);
   // Read off the record as src/documents/notebook.js does (notebookPageNumbers,
@@ -447,24 +515,27 @@ export async function buildCanvasPdfBytes({ annotatedOnly = false } = {}) {
     if (token !== pdfOpenToken) return null;
     // The page's own size in points, turned as it is shown.
     const { width, height } = pdfPage.getViewport({ scale: 1 });
-    const canvas = await renderPageCanvas(pageNumber, [...(marksByPage.get(pageNumber) || [])]);
-    if (!canvas || token !== pdfOpenToken) return null;
-    const image = await out.embedJpg(await canvasJpegBytes(canvas));
+    const drawn = await renderCanvasPageExact(pageNumber);
+    if (!drawn || token !== pdfOpenToken) return null;
+    const image = await out.embedJpg(await canvasJpegBytes(drawn.canvas));
     /* eslint-enable no-await-in-loop */
-    canvas.width = 0; // let the pixels go before the next page renders
+    drawn.canvas.width = 0; // let the pixels go before the next page renders
     const page = out.addPage([width, height]);
     page.drawImage(image, { x: 0, y: 0, width, height });
     if (numbered) {
-      // Of every page in the Canvas, not of the pages exported: page 3 of 12 is
-      // "3 / 12" in an export of only the pages written on, as it is on screen.
+      // Of every page in the Canvas: "3 / 12", as it is on screen. In the
+      // screen's colours for it (styles/53-handwriting.css): grey 115 on a
+      // light paper, white at half strength on a dark one.
       const label = `${pageNumber} / ${total}`;
       const labelWidth = font.widthOfTextAtSize(label, CANVAS_NUMBER_SIZE);
+      const dark = Boolean(drawn.tone?.dark);
       page.drawText(label, {
         x: (width - labelWidth) / 2,
         y: CANVAS_NUMBER_BASELINE,
         size: CANVAS_NUMBER_SIZE,
         font,
-        color: rgb(0.45, 0.45, 0.45)
+        color: dark ? rgb(1, 1, 1) : rgb(115 / 255, 115 / 255, 115 / 255),
+        opacity: dark ? 0.5 : 1
       });
     }
   }

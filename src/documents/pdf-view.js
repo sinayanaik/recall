@@ -47,7 +47,7 @@ import { documentAutoScrolling, inkPenIsDown, setDocumentTextWake, touchGestureH
 import { DOC_SLOT_DOC, DOC_SLOT_NOTEBOOK, activeDocSlot, docSlotMeta, docSlotReadingPositionKey, documentStoreKey, normalizeDocSlot, onDocumentSurface, setDualDocumentContext } from "./doc-slot.js?v=__BUILD__";
 import { alternateDocumentStage, forEachDocumentScroller, liveDocumentHandler, primaryDocumentStage, scrollerOfStage } from "./doc-scrollers.js?v=__BUILD__";
 import { activePdfId, deckPdfById, deckPdfs, PDF_PRIMARY_ID, pdfStoreKey } from "./pdf-multi.js?v=__BUILD__";
-import { PAPER_TONE_THEME, normalizePaperToneId, paperKey, paperKeyParts, resolvePaperTone } from "../format/paper-tones.js?v=__BUILD__";
+import { PAPER_DARK_FILTER, PAPER_TONE_THEME, normalizePaperToneId, paintPaperTone, paperKey, paperKeyParts, resolvePaperTone } from "../format/paper-tones.js?v=__BUILD__";
 import { getDocument, putDocument, sha256 } from "./pdf-store.js?v=__BUILD__";
 import { betterReadingPosition, scheduleReadingPositionSave } from "../notes/reading-position.js?v=__BUILD__";
 import { currentDeckKey } from "../notes/scroll-anchor.js?v=__BUILD__";
@@ -285,6 +285,12 @@ export let pdfOpenToken = 0;
 
 export function currentPdfDocument() {
   return openPdf?.doc || null;
+}
+
+// The zoom the pages are shown at — what a page not yet laid out will be drawn
+// at. The Canvas PDF export lays its blocks out at this scale.
+export function currentPdfScale() {
+  return openPdf?.scale || 0;
 }
 
 export function currentPdfPageCount() {
@@ -5295,7 +5301,7 @@ function createPageCanvas(viewport, outputScale) {
 // and keeps the CSS filter, exactly as before.
 export const PDF_DARK_PIXELS_CLASS = "is-dark-pixels";
 
-const PDF_DARK_FILTER = "invert(1) hue-rotate(180deg)";
+const PDF_DARK_FILTER = PAPER_DARK_FILTER;
 
 let darkBakeSupport = null;
 
@@ -5445,23 +5451,9 @@ function bakePagePaper(canvas, kept = null, map = null) {
   try {
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
-    imageKeep.bake(ctx, kept, map, () => {
-      ctx.save();
-      ctx.setTransform(1, 0, 0, 1, 0, 0);
-      if (dark) {
-        ctx.filter = PDF_DARK_FILTER;
-        ctx.globalCompositeOperation = "copy";
-        ctx.drawImage(canvas, 0, 0);
-        ctx.filter = "none";
-        ctx.globalCompositeOperation = "lighten";
-        ctx.fillStyle = tint || "#030303";
-      } else {
-        ctx.globalCompositeOperation = "multiply";
-        ctx.fillStyle = tint;
-      }
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.restore();
-    }, { floor: dark });
+    // The colour step is shared with the Canvas PDF export (paintPaperTone,
+    // src/format/paper-tones.js), so the exported page is this paper.
+    imageKeep.bake(ctx, kept, map, () => paintPaperTone(ctx, canvas, { dark, tint }), { floor: dark });
     markPixelsPaper(canvas, dark, tint);
     noteDarkBakeTime(performance.now() - started);
   } catch (error) {
