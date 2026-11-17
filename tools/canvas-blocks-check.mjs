@@ -15,10 +15,13 @@
 //      one now: the Block button (and T) arms "tap where it goes", and the
 //      block opens to type in, in place.
 //   4. Once a block was made, selecting some of its words to style them was
-//      impossible: every press on it was a drag. A tap on a selected block (or
-//      a double-tap) opens it in place, where words select and the Notes
-//      selection bar styles them.
-//   5. A block keeps the width it was given; its height follows the words.
+//      impossible: every press on it was a drag. A double-tap (or Enter)
+//      opens it in place, where words select and the Notes selection bar
+//      styles them. A single tap never does: "I am just clicking on a block
+//      and the text cursor starts blinking, but I haven't started writing."
+//   5. A block is typed at the width it was given and drawn in to its longest
+//      line once put down; its height follows the words. It is typed from the
+//      left, whatever its alignment.
 
 import { spawn } from "node:child_process";
 import path from "node:path";
@@ -408,12 +411,27 @@ try {
     let r = node().getBoundingClientRect();
     await tap(r.left + 20, r.top + r.height / 2, { pointerType: "mouse" });
     out.firstTapSelects = api.selectedBlockId() === block.id && !api.isInlineBlockEditorOpen();
-    // ...a second opens it in place. (Measured again: picking a block up puts
-    // its actions on the pen's bar, which can push the page down a row.)
+    // ...and a second tap, a moment later, still only picks it up: no caret.
+    // (Measured again: picking a block up puts its actions on the pen's bar,
+    // which can push the page down a row.)
+    await settle(450);
     r = node().getBoundingClientRect();
     await tap(r.left + 20, r.top + r.height / 2, { pointerType: "mouse" });
     await settle(100);
-    out.secondTapOpens = api.isInlineBlockEditorOpen() && api.inlineBlockEditorId() === block.id;
+    out.secondTapStays = api.selectedBlockId() === block.id && !api.isInlineBlockEditorOpen()
+      && !node().querySelector(".pdf-block-inline textarea");
+    // Enter on a picked-up block opens it; Escape puts it down again.
+    document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await settle(100);
+    out.enterOpens = api.isInlineBlockEditorOpen() && api.inlineBlockEditorId() === block.id;
+    api.commitBlockEdit();
+    await settle(450);
+    // A double-tap opens it in place.
+    r = node().getBoundingClientRect();
+    await tap(r.left + 20, r.top + r.height / 2, { pointerType: "mouse" });
+    await tap(r.left + 20, r.top + r.height / 2, { pointerType: "mouse" });
+    await settle(100);
+    out.doubleTapOpens = api.isInlineBlockEditorOpen() && api.inlineBlockEditorId() === block.id;
     // A press inside the words being typed does not move the block.
     const before = api.documentBlocks().find((b) => b.id === block.id);
     const t = node().querySelector(".pdf-block-inline textarea").getBoundingClientRect();
@@ -450,13 +468,14 @@ try {
   check("...clear of the block and of its Style / Full editor / Done strip", edit.pillShown && !edit.pillOnBlock && !edit.pillOnStrip, JSON.stringify(edit));
   check("...whose B makes them bold", edit.typed === "hello **world**", JSON.stringify(edit));
   check("Ctrl+Enter puts the words down, written and rendered", edit.closed && edit.md === "hello **world**" && edit.strong === "world", JSON.stringify(edit));
-  check("a first tap picks a block up, a second opens it in place", edit.firstTapSelects && edit.secondTapOpens, JSON.stringify(edit));
+  check("a tap picks a block up, and a second tap later does not open it to type in", edit.firstTapSelects && edit.secondTapStays, JSON.stringify(edit));
+  check("...a double-tap, or Enter, opens it in place", edit.doubleTapOpens && edit.enterOpens, JSON.stringify(edit));
   check("dragging across the words being typed selects them, not the block", edit.selectingDoesNotMove, JSON.stringify(edit));
   check("a press on the paper puts the words down; a drag on a picked-up block moves it", edit.paperCommits && edit.dragMoves, JSON.stringify(edit));
   check("a picked-up block's strip is one slim row: Style, Edit, Duplicate, Copy, Card, Arrange, Delete", edit.stripHeight > 0 && edit.stripHeight < 48 && edit.stripRow === "style,edit,duplicate,copy,card,arrange,delete", JSON.stringify(edit));
   check("...and Arrange opens the four restack verbs, a quarter turn and Cut", edit.menuShut && edit.menuOpen && edit.menuItems === "restack-forward,restack-back,to-front,to-back,turn,cut", JSON.stringify(edit));
 
-  // ── 5. The width stays; the height follows the words ───────────────────
+  // ── 5. The width hugs the words once down; the height follows them ─────
   const size = await page.evaluate(`async () => {
     const { api, settle } = window.__recall;
     const block = api.addDocumentBlock(1, { x: 120, y: 300 }, { edit: false });
@@ -466,6 +485,8 @@ try {
       api.editBlock(block.id);
       await settle(50);
       const ta = document.querySelector('[data-pdf-block="' + block.id + '"] .pdf-block-inline textarea');
+      const scale = api.pdfPageViewport(block.page)?.scale || 1;
+      const liveW0 = document.querySelector('[data-pdf-block="' + block.id + '"]').getBoundingClientRect().width / scale;
       ta.value = md;
       ta.dispatchEvent(new Event("input", { bubbles: true }));
       await settle(50);
@@ -474,16 +495,22 @@ try {
       for (let i = 0; i < 20; i += 1) await settle(60);
       const node = document.querySelector('[data-pdf-block="' + block.id + '"]');
       const body = node.querySelector(".pdf-block-body");
-      return { ...read(), liveH, overflow: body.scrollHeight - body.clientHeight };
+      return { ...read(), liveH, liveW0, overflow: body.scrollHeight - body.clientHeight, overflowX: body.scrollWidth - body.clientWidth };
     };
     const w0 = read().w;
     const short = await write("one");
     const long = await write("A first paragraph that runs on for a while, long enough to wrap over more than one line of the block.\\n\\nA second paragraph, also of some length, so that the block has to grow.\\n\\nAnd a third.");
     const back = await write("one");
-    return { w0, short: { w: short.w, h: short.h }, long: { w: long.w, h: long.h, liveH: long.liveH, overflow: long.overflow }, back: { w: back.w, h: back.h } };
+    return {
+      w0,
+      short: { w: short.w, h: short.h, wSet: short.wSet, overflowX: short.overflowX },
+      long: { w: long.w, h: long.h, liveH: long.liveH, liveW0: long.liveW0, overflow: long.overflow, wSet: long.wSet },
+      back: { w: back.w, h: back.h }
+    };
   }`);
-  check("a block keeps its width whatever is written in it", size.short.w === size.w0 && size.long.w === size.w0 && size.back.w === size.w0, JSON.stringify(size));
-  check("...and its height follows the words, while typed and once put down, with nothing cut off", size.long.h > size.short.h * 2 && size.long.liveH > 60 && size.long.overflow <= 1 && size.back.h === size.short.h, JSON.stringify(size));
+  check("a block is drawn in to a short word once it is put down, and nothing is cut off", size.short.w < size.w0 / 2 && size.short.wSet === size.w0 && size.short.overflowX <= 1, JSON.stringify(size));
+  check("...opens out to the width it was given to be typed in again, and keeps it for a paragraph", Math.abs(size.long.liveW0 - size.w0) <= 2 && size.long.w === size.w0 && !size.long.wSet && size.back.w === size.short.w, JSON.stringify(size));
+  check("...and its height follows the words, while typed and once put down, with nothing cut off", size.long.h > size.short.h * 2 && size.long.liveH > 60 && size.long.overflow <= 1 && Math.abs(size.back.h - size.short.h) <= 3, JSON.stringify(size));
 
   // ...and a box that keeps a height of its own (a diagram's diamond) keeps it
   // as the least it can be, and still grows to hold its words.
@@ -505,6 +532,59 @@ try {
     return { set, grown, overflow: body.scrollHeight - body.clientHeight };
   }`);
   check("a diamond keeps its width and its height as the least, and grows to hold its words", shaped.grown.w === shaped.set.w && shaped.grown.h > shaped.set.h && shaped.overflow <= 1, JSON.stringify(shaped));
+
+  // ...a width dragged by hand is the reader's from then on: what the block
+  // opens out to the next time it is typed in, not the one it was drawn in from.
+  const dragged = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const { fire } = window.__h;
+    const block = api.addDocumentBlock(1, { x: 120, y: 560 }, { edit: false });
+    await settle(200);
+    const read = () => api.documentBlocks().find((b) => b.id === block.id);
+    const node = () => document.querySelector('[data-pdf-block="' + block.id + '"]');
+    api.editBlock(block.id);
+    await settle(50);
+    const ta = node().querySelector(".pdf-block-inline textarea");
+    ta.value = "label";
+    ta.dispatchEvent(new Event("input", { bubbles: true }));
+    api.commitBlockEdit();
+    for (let i = 0; i < 20; i += 1) await settle(60);
+    const drawnIn = { w: read().w, wSet: read().wSet };
+    api.selectBlock(block.id);
+    await settle(100);
+    const grip = node().querySelector('.pdf-block-grip[data-edge="se"]');
+    const g = grip.getBoundingClientRect();
+    const x0 = g.left + g.width / 2;
+    const y0 = g.top + g.height / 2;
+    fire(grip, "pointerdown", x0, y0, { pointerType: "mouse" });
+    for (let i = 1; i <= 6; i += 1) { fire(grip, "pointermove", x0 + i * 10, y0, { pointerType: "mouse" }); await settle(16); }
+    fire(grip, "pointerup", x0 + 60, y0, { pointerType: "mouse", buttons: 0 });
+    await settle(200);
+    const after = { w: read().w, wSet: read().wSet };
+    return { drawnIn, after };
+  }`);
+  check("a width dragged by hand drops the width the block was drawn in from", dragged.drawnIn.wSet > dragged.drawnIn.w && dragged.after.w > dragged.drawnIn.w && dragged.after.wSet === undefined, JSON.stringify(dragged));
+
+  // A block set to the centre is typed from the left, and centred once down.
+  const aligned = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const block = api.addDocumentBlock(1, { x: 300, y: 650 }, { style: { align: "center" }, edit: false });
+    await settle(200);
+    const node = () => document.querySelector('[data-pdf-block="' + block.id + '"]');
+    api.editBlock(block.id);
+    await settle(50);
+    const ta = node().querySelector(".pdf-block-inline textarea");
+    ta.value = "A centred line, typed from the left";
+    ta.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle(50);
+    const typing = getComputedStyle(ta).textAlign;
+    const mirror = getComputedStyle(node().querySelector(".pdf-block-inline .highlight-textarea-backdrop")).textAlign;
+    api.commitBlockEdit();
+    for (let i = 0; i < 10; i += 1) await settle(60);
+    const down = getComputedStyle(node().querySelector(".pdf-block-body")).textAlign;
+    return { typing, mirror, down };
+  }`);
+  check("a centred block is typed left-aligned, and shows centred once put down", aligned.typing === "left" && aligned.mirror === "left" && aligned.down === "center", JSON.stringify(aligned));
 
   // ── 6. What goes on the page is beside the pen, not inside it ─────────
   const tools = await page.evaluate(`async () => {

@@ -311,8 +311,22 @@ function normalizeBlocks(list) {
       ...(typeof block.group === "string" && block.group ? { group: block.group } : {}),
       // A turn, in degrees counter-clockwise on the page, as a Shapes-tool
       // box's `rot` is (src/render/annot-shapes.js). Only when there is one.
-      ...(normalizeShapeRotation(block.rot) ? { rot: normalizeShapeRotation(block.rot) } : {})
+      ...(normalizeShapeRotation(block.rot) ? { rot: normalizeShapeRotation(block.rot) } : {}),
+      // The width the reader chose, when the block has been drawn in to its
+      // words since (shrinkBlockWidthToContent) — what it opens out to again
+      // to be typed in. Only when it is wider than the block is now.
+      ...(Number(block.wSet) > (Number(block.w) || 0) ? { wSet: Math.round(Number(block.wSet)) } : {})
     }));
+}
+
+// The width the reader placed the block at or dragged it to: its own, or the
+// wider one it was drawn in from — never past the page's right edge, which the
+// block may have been moved towards since, and never narrower than it is.
+function readerWidth(block, viewport = pdfPageViewport(block.page)) {
+  const w = Number(block.w) || 0;
+  const wide = Math.max(w, Number(block.wSet) || 0);
+  if (wide === w || !viewport) return w;
+  return Math.max(w, Math.min(wide, Math.floor(viewport.viewBox[2] - block.x)));
 }
 
 // A block's style, filled in. The one door between the record's optional bag and
@@ -688,14 +702,21 @@ function blockBox(viewport, block) {
 
 function placeBlock(node, viewport, block) {
   const box = blockBox(viewport, block);
+  const typing = node.classList.contains("is-inline-editing");
   node.style.left = `${box.left}px`;
   node.style.top = `${box.top}px`;
-  node.style.width = `${box.width}px`;
+  // While it is typed in, a block drawn in to a short label opens out to the
+  // width the reader chose, so the next sentence wraps there and not at the
+  // label's — never past the page's right edge. Drawn in again when it is put
+  // down (writeBlockText).
+  let width = box.width;
+  if (typing && Number(block.wSet) > block.w) width = box.width * (readerWidth(block, viewport) / block.w);
+  node.style.width = `${width}px`;
   // While its words are being typed in place the block is as tall as they are,
   // line by line (src/documents/pdf-block-inline.js) — the record catches up
   // when they are put down. A box that keeps a height of its own (a diamond, a
   // block whose height was set by hand) keeps it as the least it can be.
-  if (node.classList.contains("is-inline-editing")) {
+  if (typing) {
     node.style.height = "auto";
     node.style.minHeight = blockStyle(block).fit ? "" : `${box.height}px`;
   } else {
@@ -1103,7 +1124,7 @@ function paintBlock(node, block) {
   if (!block.md.trim()) {
     renderedMarkdown.delete(body);
     unobserveBlockContent(body);
-    body.innerHTML = '<p class="pdf-block-empty">Empty — tap it to write</p>';
+    body.innerHTML = '<p class="pdf-block-empty">Empty — double-tap it to write</p>';
     return;
   }
   // ── The same renderer the Notes panel uses, and why it was not ──────────
@@ -1437,9 +1458,10 @@ function shrinkBlockWidthToContent(node, block) {
   // paragraph — so there is nothing to shrink and nothing to write.
   if (wanted >= block.w - 1) return false;
   // Not undoable, for the same reason queueFit's height write is not: this is
-  // the block agreeing with its own first words, not a step the reader took.
+  // the block agreeing with its own words, not a step the reader took. The
+  // width it was drawn in from is kept (`wSet`), to be typed in at next time.
   writeBlocks(documentBlocks().map((entry) => (
-    entry.id === block.id ? { ...entry, w: wanted, at: Date.now() } : entry
+    entry.id === block.id ? { ...entry, w: wanted, wSet: Math.max(readerWidth(entry), block.w), at: Date.now() } : entry
   )), { undoable: false });
   return true;
 }
@@ -1867,6 +1889,9 @@ function beginBlockEdit(id, { inWindow = false, value = null } = {}) {
       });
       const viewport = pdfPageViewport(block.page);
       if (viewport) placeBlock(node, viewport, block);
+      // Measured again at the width it is typed at, which placeBlock may just
+      // have opened out (readerWidth).
+      mountInlineBlockEditor(node);
       syncBlockActionsPopover();
       return;
     }
@@ -1974,12 +1999,29 @@ function writeBlockText(id, text) {
     repaintDocumentBlocks();
     return;
   }
-  // The width is the reader's: what the block was placed at, or dragged to.
-  // It used to be pulled in to the longest line after every edit, so a block
-  // narrowed itself under words being written and then had to be dragged wide
-  // again for the next sentence. Only the height follows the words now.
+  // ── The width: the reader's, drawn in to the words once they are down ────
+  //
+  // A label of one word sat in a 240pt frame of empty paper. The width used to
+  // be pulled in to the longest line after every edit, and was then dropped,
+  // because a block narrowed under one word had to be dragged wide again for
+  // the next sentence. Both now: the record keeps the width the reader chose
+  // (`wSet`), the block is typed in at that width (placeBlock), and when the
+  // words are put down it goes back to it and is drawn in to the longest line
+  // once they have rendered (shrinkBlockWidthToContent, through
+  // awaitingWidthShrink). One undo step for the words and the width together.
   if (block && block[field] !== text) {
-    writeBlocks(blocks.map((entry) => (entry.id === id ? { ...entry, [field]: text, at: Date.now() } : entry)));
+    const tighten = field === "md" && shouldShrinkBlockWidth(block);
+    // Armed before the write, whose repaint starts the render that consumes it.
+    if (tighten) awaitingWidthShrink.add(id);
+    writeBlocks(blocks.map((entry) => {
+      if (entry.id !== id) return entry;
+      const next = { ...entry, [field]: text, at: Date.now() };
+      if (tighten) {
+        const { wSet: _was, ...rest } = next;
+        return { ...rest, w: readerWidth(entry) };
+      }
+      return next;
+    }));
   }
   repaintDocumentBlocks();
   // The block was still selected going into the sheet — editing does not
@@ -2242,7 +2284,7 @@ function beginGesture(event, node, mode, edge = "se", { openOnTap = false } = {}
     // is still selected. Its quick actions belong back at it, anchored to
     // wherever it now sits.
     syncBlockActionsPopover();
-    // A tap on a block that was already picked up: its words, to type in.
+    // The second tap of a double-tap: its words, to type in.
     if (openOnTap && !captured && mode === "drag" && upEvent?.type === "pointerup" && block.kind !== PDF_BLOCK_IMAGE) {
       beginBlockEdit(id);
       return;
@@ -2256,7 +2298,15 @@ function beginGesture(event, node, mode, edge = "se", { openOnTap = false } = {}
     }
     // The height was dragged: it is the reader's now, not the words'.
     if (fitsWords && movesHeight && live.h !== block.h) live = { ...live, style: { ...(block.style || {}), fit: false } };
-    writeBlocks(documentBlocks().map((entry) => (entry.id === id ? { ...entry, ...live, at: Date.now() } : entry)));
+    // The width was dragged: that is the reader's width now, not the one the
+    // block was once drawn in from.
+    const widthDragged = live.w !== block.w;
+    writeBlocks(documentBlocks().map((entry) => {
+      if (entry.id !== id) return entry;
+      const next = { ...entry, ...live, at: Date.now() };
+      if (widthDragged) delete next.wSet;
+      return next;
+    }));
   };
 
   // ── Only the BLOCK's own capture ────────────────────────────────────────
@@ -2501,9 +2551,14 @@ export function handleBlockPointerDown(event) {
   event.stopPropagation();
   if (resizing) event.preventDefault();
   const id = node.dataset.pdfBlock;
-  // Already picked up before this press? Then a tap on it (not a drag) opens
-  // its words to type in, here on the page — see beginGesture's finish.
-  const wasSelected = selectedId === id;
+  // A second press soon after the first, in about the same place — a double-
+  // click or a double-tap — opens its words to type in, here on the page, if it
+  // ends as a tap (see beginGesture's finish). A single press never does: "I am
+  // just clicking on a block and the text cursor starts blinking, but I haven't
+  // started writing." A click picks a block up to drag it or act on it, and a
+  // caret there says it is being typed into when it is not. Enter and the
+  // strip's Edit open it too. Read here, before anything below can repaint.
+  const doubled = !resizing && isDoubleTap(event, id, "body");
   // Picked up by any press on it, whatever else that press goes on to do. This
   // is what the keyboard verbs and the rail's own actions are for, and it costs
   // nothing to be wrong about — a selection is a ring around a box, not a mode.
@@ -2521,25 +2576,27 @@ export function handleBlockPointerDown(event) {
   // dragged too big or too small. Read off the presses themselves rather than
   // a dblclick event: the first press's pointer capture and a touch screen's
   // own double-tap handling each swallow that event on some engines.
-  if (resizing && isHandleDoubleTap(event, id)) {
+  if (resizing && isDoubleTap(event, id, "handle")) {
     fitBlockToContents(id);
     return true;
   }
-  beginGesture(event, node, resizing ? "resize" : "drag", handle?.dataset.edge || "se", { openOnTap: wasSelected && !editingThis });
+  beginGesture(event, node, resizing ? "resize" : "drag", handle?.dataset.edge || "se", { openOnTap: doubled && !editingThis });
   return true;
 }
 
-const HANDLE_DOUBLE_TAP_MS = 350;
-const HANDLE_DOUBLE_TAP_PX = 12;
-let lastHandlePress = null;
+const DOUBLE_TAP_MS = 350;
+const DOUBLE_TAP_PX = 12;
+// The last press on a handle and on a block's body, kept apart so a press on
+// the grip and one on the words are never read as one double-tap.
+const lastBlockPress = { handle: null, body: null };
 
-function isHandleDoubleTap(event, id) {
+function isDoubleTap(event, id, slot) {
   const now = Date.now();
-  const last = lastHandlePress;
-  const twice = Boolean(last) && last.id === id && now - last.at <= HANDLE_DOUBLE_TAP_MS
-    && Math.hypot(event.clientX - last.x, event.clientY - last.y) <= HANDLE_DOUBLE_TAP_PX;
-  // A double-tap consumes both presses, so a third does not fit it again.
-  lastHandlePress = twice ? null : { id, at: now, x: event.clientX, y: event.clientY };
+  const last = lastBlockPress[slot];
+  const twice = Boolean(last) && last.id === id && now - last.at <= DOUBLE_TAP_MS
+    && Math.hypot(event.clientX - last.x, event.clientY - last.y) <= DOUBLE_TAP_PX;
+  // A double-tap consumes both presses, so a third does not count again.
+  lastBlockPress[slot] = twice ? null : { id, at: now, x: event.clientX, y: event.clientY };
   return twice;
 }
 

@@ -2,8 +2,9 @@
 
    src/documents/pdf-block-inline.js puts the Notes editor's own kit INSIDE the
    block while its words are being typed: the rendered body steps aside and the
-   markdown takes its place, at the body's own padding, size, face, colour and
-   alignment, so the words do not jump when they are put down and rendered.
+   markdown takes its place, at the body's own padding, size, face and colour,
+   so the words do not jump when they are put down and rendered. It is always
+   typed from the left; the Block's alignment applies to the rendered words.
    The kit's Write/Preview row and its toolbar strip are hidden: the selection
    bar, the keys and the undo ring are what typing a few lines on a page needs,
    and the window ("Full editor") still has the rest. */
@@ -67,7 +68,11 @@
   line-height: var(--pdf-block-line-height, var(--doc-block-line-height, 1.4)) !important;
   padding: calc(6px * var(--pdf-block-scale, 1)) !important;
   min-height: calc(1em * var(--pdf-block-line-height, var(--doc-block-line-height, 1.4)) + 12px * var(--pdf-block-scale, 1)) !important;
-  text-align: var(--pdf-block-align, left);
+  /* Typed from the left whatever the Block's own alignment: markdown source
+     centred or set to the right is hard to write and to read. The alignment
+     is the rendered body's (styles/58-block-style.css), seen once the words
+     are put down. */
+  text-align: left !important;
   border: 0 !important;
   border-radius: 0 !important;
   box-shadow: none !important;
