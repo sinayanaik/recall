@@ -100,6 +100,21 @@ The thin lines a drag snaps to are **guides**, and grid paper's squares (and a
 dot grid's dots) are the **grid**, at each page's own spacing
 (`src/documents/pdf-guides.js`, `src/render/snap-guides.js`).
 
+**The Canvas's type** is ◐ on the Canvas: **Blocks**, **Headings**, **Code** and
+**Labels** — the last being every other word on a Canvas page: Shapes text
+boxes and callouts, a connector's words and the page numbers. Say "labels", not
+"annotations" or "captions". Data: the `canvas*` keys of the style profiles
+(`src/ui/style-schema.js`, scope `handwriting`), applied as `--canvas-*` and
+mapped onto the stage's `--doc-*` names in `styles/79-tab-text.css`; the rules
+are `styles/a3-canvas-type.css`. A Block's own **Style → More** wins over them:
+Heading face, Code face, Weight, Lines and Letters, and the **Headings** chip
+tab beside Fill and Text — `headFont`, `codeFont`, `weight`, `lineHeight`,
+`letterSpacing` and `headInk` in its `style`, which is stored as only what was
+set (`compactBlockStyle`, `src/documents/block-style.js`). The theme's colours
+on a page are its **accents made readable on the paper** — the same hue, lighter
+or darker (`src/format/paper-palette.js`); say "the theme's colour", not "the
+accent".
+
 ## Where each name lives
 
 **The code still says `deck`, `notebook` and `handwriting`, on purpose.** Those

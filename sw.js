@@ -392,6 +392,7 @@ const APP_SHELL = [
   `./styles/a0-canvas-tools.css?v=${STAMP}`,
   `./styles/a1-view-only.css?v=${STAMP}`,
   `./styles/a2-canvas-setup.css?v=${STAMP}`,
+  `./styles/a3-canvas-type.css?v=${STAMP}`,
   // The module entry point. Everything it imports is stamped with the same
   // ?v=, so those URLs change with every release too — which is what lets the
   // cache-first handler below serve them without revalidating and still never
@@ -468,6 +469,7 @@ const APP_SHELL = [
   `./src/documents/pdf-margins.js?v=${STAMP}`,
   `./src/documents/paper-menu.js?v=${STAMP}`,
   `./src/format/paper-tones.js?v=${STAMP}`,
+  `./src/format/paper-palette.js?v=${STAMP}`,
   `./src/documents/pdf-margins-core.js?v=${STAMP}`,
   `./src/documents/pdf-replace.js?v=${STAMP}`,
   `./src/documents/md-pdf/anchors.js?v=${STAMP}`,

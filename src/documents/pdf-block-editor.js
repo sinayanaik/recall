@@ -29,6 +29,7 @@
 // attached to a highlight sitting in a line of text.
 
 import { createBlockStyleBar } from "./block-style-bar.js?v=__BUILD__";
+import { el } from "../core/dom.js?v=__BUILD__";
 import { createNoteEditorKit } from "../notes/note-editor-kit.js?v=__BUILD__";
 import { lockPageScroll, unlockPageScroll } from "../ui/overlays.js?v=__BUILD__";
 
@@ -152,6 +153,7 @@ export function openBlockEditor({
   placeholder = "",
   kind = "text",
   style = null,
+  has = null,
   onStyle = null,
   onDone = () => {}
 } = {}) {
@@ -177,7 +179,9 @@ export function openBlockEditor({
   built.styleToggle.hidden = !onStyle;
   setBlockSheetStyleOpen(false);
   if (onStyle) {
-    built.styleHost.appendChild(createBlockStyleBar({ style, kind, onChange: onStyle }).root);
+    // The page's own paper, so the colour chips show what the Block will be on
+    // it rather than on the theme behind this window.
+    built.styleHost.appendChild(createBlockStyleBar({ style, kind, has, paperFrom: el.documentStage, onChange: onStyle }).root);
   }
   built.root.hidden = false;
   built.kit.attach();

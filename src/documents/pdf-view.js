@@ -49,6 +49,7 @@ import { canvasPageBoxes } from "./canvas-setup.js?v=__BUILD__";
 import { alternateDocumentStage, forEachDocumentScroller, liveDocumentHandler, primaryDocumentStage, scrollerOfStage } from "./doc-scrollers.js?v=__BUILD__";
 import { activePdfId, deckPdfById, deckPdfs, PDF_PRIMARY_ID, pdfStoreKey } from "./pdf-multi.js?v=__BUILD__";
 import { PAPER_DARK_FILTER, PAPER_TONE_THEME, normalizePaperToneId, paintPaperTone, paperKey, paperKeyParts, resolvePaperTone } from "../format/paper-tones.js?v=__BUILD__";
+import { applyPaperPalette } from "../format/paper-palette.js?v=__BUILD__";
 import { getDocument, putDocument, sha256 } from "./pdf-store.js?v=__BUILD__";
 import { betterReadingPosition, scheduleReadingPositionSave } from "../notes/reading-position.js?v=__BUILD__";
 import { currentDeckKey } from "../notes/scroll-anchor.js?v=__BUILD__";
@@ -753,6 +754,14 @@ function resumeDocumentViewer(record, { quiet = false } = {}) {
   if (openPdf.fitWidth) openPdf.scale = fitWidthScale();
   finishDocumentOpen(record.view, pdfOpenToken, record.slot, null,
     { restored: true, refit: openPdf.scale !== wasScale, inPlace: true, quiet });
+  // The theme changed while it was beside, and its paper with it ("Match
+  // theme"): now that it is live its pages can be drawn again, so the new paper
+  // goes on properly — the pixels, the ink and the shapes, not just the tokens
+  // refreshDocumentPaperForTheme could paint on a suspended stage.
+  if (record.paperStale) {
+    record.paperStale = false;
+    applyPaperTone(paperToneForSlot(record.slot), { remember: false, slot: record.slot, chrome: !quiet });
+  }
 }
 
 // The pager, the pen's rail, the contents drawer and the link back: one set,
@@ -7348,12 +7357,35 @@ export function readPdfInvertPreference() {
 }
 
 // Re-assert the paper for whatever is on the surface now. Called on a theme
-// change: a no-op unless the paper is "Match theme", which now has a different
-// colour (and maybe a different polarity) to match.
+// change. The paper itself only moves on "Match theme", which now has a
+// different colour (and maybe a different polarity) to match — but the
+// PALETTE moves on every paper: the theme's accents are what a Block's
+// headings, links and borders are drawn in, made readable on the paper
+// (src/format/paper-palette.js), and a new theme is new accents.
+//
+// Both papers side by side. The one beside is suspended, and its pages' pixels
+// can only be drawn again while it is live, so its accents are painted now —
+// against the paper it is still showing — and, if its paper itself has moved,
+// it is marked and handed a catch-up turn (noteBesideDocumentStale), in which
+// resumeDocumentViewer puts the new paper on it properly.
 export function refreshDocumentPaperForTheme() {
-  if (!openPdf) return;
-  const tone = paperToneForSlot(openPdf.slot);
-  if (tone.key !== stageTone.key || tone.id !== stageTone.id || tone.bg !== stageTone.bg) applyPaperTone(tone, { remember: false });
+  if (openPdf) {
+    const tone = paperToneForSlot(openPdf.slot);
+    if (tone.key !== stageTone.key || tone.id !== stageTone.id || tone.bg !== stageTone.bg || tone.text !== stageTone.text) {
+      applyPaperTone(tone, { remember: false });
+    } else {
+      applyPaperPalette(el.documentStage, stageTone);
+    }
+  }
+  if (dualDocuments && besideViewer && !besideViewer.empty && besideViewer.stage) {
+    const was = besideViewer.tone || stageTone;
+    const tone = paperToneForSlot(besideViewer.slot);
+    applyPaperPalette(besideViewer.stage, was);
+    if (tone.key !== was.key || tone.id !== was.id || tone.bg !== was.bg || tone.text !== was.text) {
+      besideViewer.paperStale = true;
+      noteBesideDocumentStale();
+    }
+  }
 }
 
 // Told when the paper changes. The pen's colours are chosen for the paper they
@@ -7378,31 +7410,41 @@ export function setPaperShownHook(fn) {
 // slot that is open; without it, it is the paper following something else (a
 // slot being opened, the theme changing) and must not be written down — a
 // Canvas following a dark theme would otherwise hand "Black" to the next PDF.
-export function applyPaperTone(tone, { remember = true, slot = openPdf?.slot ?? activeDocSlot() } = {}) {
+export function applyPaperTone(tone, { remember = true, slot = openPdf?.slot ?? activeDocSlot(), chrome = true } = {}) {
   const next = tone && typeof tone === "object" ? tone : resolvePaperTone(tone);
   const stage = el.documentStage;
   const was = stageTone;
   const wasDark = Boolean(stage?.classList.contains(PDF_DARK_CLASS));
   stageTone = next;
-  if (stage) {
-    stage.classList.toggle(PDF_DARK_CLASS, next.dark);
-    stage.dataset.paper = next.id;
-    stage.dataset.paperBg = next.bg;
-    stage.style.setProperty("--paper-bg", next.bg);
-    if (next.tint) stage.dataset.paperTint = next.tint;
-    else delete stage.dataset.paperTint;
-  }
+  paintStagePaper(stage, next);
   if (wasDark !== next.dark || was.key !== next.key || was.bg !== next.bg) {
     paperChangedHook();
     // The pages' own pixels are the old paper now; see bakePagePaper.
     repaperPages();
   }
-  paintPaperChrome(next);
+  // Not during a catch-up turn of the paper beside (resumeDocumentViewer): the
+  // tab row's paper button belongs to the paper in focus.
+  if (chrome) paintPaperChrome(next);
   if (!remember) return;
   try {
     localStorage.setItem(paperStorageKeyFor(slot), next.id);
     if (normalizeDocSlot(slot) !== DOC_SLOT_NOTEBOOK) localStorage.setItem(PDF_DARK_KEY, next.dark ? "1" : "0");
   } catch (_) { /* private mode — the preference just doesn't persist */ }
+}
+
+// The paper on a stage, as everything laid over its pages reads it: the
+// polarity class, the tone and its colour as attributes, --paper-bg, and the
+// palette — the paper's words and the theme's accents made readable on it
+// (src/format/paper-palette.js, rebound by styles/94-paper-tones.css).
+function paintStagePaper(stage, tone) {
+  if (!stage) return;
+  stage.classList.toggle(PDF_DARK_CLASS, tone.dark);
+  stage.dataset.paper = tone.id;
+  stage.dataset.paperBg = tone.bg;
+  stage.style.setProperty("--paper-bg", tone.bg);
+  if (tone.tint) stage.dataset.paperTint = tone.tint;
+  else delete stage.dataset.paperTint;
+  applyPaperPalette(stage, tone);
 }
 
 // The button says which way the paper is without being pressed — the same

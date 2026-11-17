@@ -67,7 +67,9 @@ const API_SRC = `async () => {
     "/src/notes/selection.js?v=__BUILD__",
     "/src/documents/pdf-block-inline.js?v=__BUILD__",
     "/src/documents/block-place.js?v=__BUILD__",
-    "/src/format/ink-strokes.js?v=__BUILD__"
+    "/src/format/ink-strokes.js?v=__BUILD__",
+    "/src/ui/theme.js?v=__BUILD__",
+    "/src/ui/style-settings.js?v=__BUILD__"
   ];
   const mods = await Promise.all(paths.map((p) => import(p)));
   const api = {};
@@ -628,6 +630,134 @@ try {
   check("Duplicate this page puts a copy after it, its connector tied to the copies", pages.pages === pages.start + 1 && pages.copies === 2 && pages.tied, JSON.stringify(pages));
   check("Move this page down swaps it with the next, everything on both with it", pages.moved === 2 && pages.copiesUp, JSON.stringify(pages));
 
+  // ── 9. What is written on the page looks like the page it is on ────────
+  //
+  // "The canvas only half-follows the theme": a Block's card and words followed
+  // the paper while its headings, links and quote bar kept the theme's accent —
+  // AMOLED's pale cyan h1 on White paper — and its code was a dark panel on
+  // every paper. And "a font change only reaches the plain words": headings,
+  // code, tables and the page numbers had no face of their own to be given.
+  // Read off computed styles, on two papers under two themes.
+  const look = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    // A computed colour in any of the three forms a browser hands back: #hex
+    // (a custom property), rgb() and color(srgb …) (a color-mix()).
+    const rgbOf = (css) => {
+      const text = String(css).trim();
+      const hex = /^#([0-9a-f]{6})$/i.exec(text);
+      if (hex) return [0, 2, 4].map((i) => parseInt(hex[1].slice(i, i + 2), 16));
+      const srgb = /^color\\(srgb\\s+([\\d.]+)\\s+([\\d.]+)\\s+([\\d.]+)/i.exec(text);
+      if (srgb) return [srgb[1], srgb[2], srgb[3]].map((v) => Number(v) * 255);
+      const m = text.match(/\\d+(\\.\\d+)?/g);
+      return m ? m.slice(0, 3).map(Number) : [0, 0, 0];
+    };
+    const lum = (css) => {
+      const c = rgbOf(css).map((v) => { const x = v / 255; return x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4; });
+      return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+    };
+    const contrast = (a, b) => { const x = lum(a); const y = lum(b); return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05); };
+    const stage = document.getElementById("documentStage");
+    const paperBg = () => getComputedStyle(stage).getPropertyValue("--paper-bg").trim();
+    api.selectBlock(null);
+    api.setTheme("dark-amoled");
+    api.setPaperTone("white");
+    await settle(600);
+    const md = "# Heading one\\n\\n### Heading three\\n\\nWords with a [link](https://example.com) and \`inline\`.\\n\\n> A quote\\n\\n\`\`\`js\\nconst x = 1; // note\\n\`\`\`\\n\\n| A | B |\\n|---|---|\\n| 1 | 2 |";
+    const block = api.addDocumentBlock(1, { x: 60, y: 780 }, { anchor: "top-left", edit: false, w: 300, md });
+    window.__h.pageEl(1).scrollIntoView({ block: "start" });
+    await settle(1200);
+    const node = () => document.querySelector('[data-pdf-block="' + block.id + '"]');
+    const body = () => node().querySelector(".pdf-block-body");
+    const css = (sel, prop, pseudo) => { const n = sel ? body().querySelector(sel) : body(); return n ? getComputedStyle(n, pseudo)[prop] : ""; };
+    const out = { id: block.id };
+    out.white = { bg: paperBg(), h1: css("h1", "color"), h3: css("h3", "color"), a: css("a", "color"), pre: css("pre", "backgroundColor"), p: css("p", "color") };
+    out.white.h1Contrast = contrast(out.white.h1, out.white.bg);
+    out.white.h3Contrast = contrast(out.white.h3, out.white.bg);
+    out.white.linkContrast = contrast(out.white.a, out.white.bg);
+    out.white.preLum = lum(out.white.pre);
+    api.setPaperTone("black");
+    await settle(600);
+    out.black = { bg: paperBg(), h1: css("h1", "color"), pre: css("pre", "backgroundColor"), code: css("pre code", "color") };
+    out.black.h1Contrast = contrast(out.black.h1, out.black.bg);
+    out.black.preLum = lum(out.black.pre);
+    out.black.codeContrast = contrast(out.black.code, out.black.pre);
+    // A theme change reaches the headings without the Block being touched.
+    api.setPaperTone("white");
+    await settle(400);
+    const h1Amoled = css("h1", "color");
+    api.setTheme("light-snow");
+    await settle(600);
+    out.themed = { before: h1Amoled, after: css("h1", "color"), bg: paperBg() };
+    out.themed.contrast = contrast(out.themed.after, out.themed.bg);
+    // ...and nothing outside a page changes: a code panel in a note is the dark one.
+    const note = document.createElement("div");
+    note.className = "rendered";
+    note.innerHTML = "<pre><code>x</code></pre>";
+    document.body.appendChild(note);
+    out.noteCode = getComputedStyle(note.querySelector("pre")).backgroundColor;
+    note.remove();
+
+    // ◐ Canvas: the faces, the table size and the heading colour.
+    const before = { ...api.state.styleSettings };
+    api.applyStyleSettings({ ...before, canvasBlockFontFamily: "serif", canvasHeadingFontFamily: "mono", canvasCodeFontFamily: "rounded", canvasLabelFontFamily: "serif", canvasTableFontScale: "0.5", canvasHeadingColor: "text", canvasCodeLook: "dark" });
+    await settle(500);
+    out.type = {
+      p: css("p", "fontFamily"), h1: css("h1", "fontFamily"), code: css("pre code", "fontFamily"), inline: css("p code", "fontFamily"),
+      table: parseFloat(css("table", "fontSize")), words: parseFloat(css("p", "fontSize")),
+      h1Colour: css("h1", "color"), pColour: css("p", "color"), pre: css("pre", "backgroundColor"),
+      number: getComputedStyle(window.__h.pageEl(1), "::after").fontFamily,
+      numberColour: getComputedStyle(window.__h.pageEl(1), "::after").color
+    };
+    out.type.preLum = lum(out.type.pre);
+
+    // A Block's own Style wins over ◐ Canvas.
+    api.writeBlockStyle(block.id, { headFont: "rounded", headInk: "red", codeFont: "serif", weight: 600, lineHeight: 2, letterSpacing: 1 });
+    await settle(500);
+    out.own = {
+      h1: css("h1", "fontFamily"), h1Colour: css("h1", "color"), code: css("pre code", "fontFamily"),
+      weight: css(null, "fontWeight"), lh: parseFloat(css(null, "lineHeight")) / parseFloat(css(null, "fontSize")),
+      spacing: parseFloat(css(null, "letterSpacing")),
+      stored: Object.keys(api.documentBlocks().find((b) => b.id === block.id)?.style || {}).sort().join(",")
+    };
+    // The words being typed in place are set exactly as they are put down.
+    const bodyMetrics = { size: css(null, "fontSize"), lh: css(null, "lineHeight"), face: css(null, "fontFamily"), weight: css(null, "fontWeight") };
+    api.editBlock(block.id);
+    await settle(400);
+    const ta = node().querySelector(".pdf-block-inline textarea");
+    const tas = ta ? getComputedStyle(ta) : null;
+    out.inline = { body: bodyMetrics, ta: tas ? { size: tas.fontSize, lh: tas.lineHeight, face: tas.fontFamily, weight: tas.fontWeight } : null };
+    api.commitBlockEdit();
+    await settle(300);
+
+    api.applyStyleSettings(before);
+    api.setTheme("dark-amoled");
+    api.writeDocumentBlocks(api.documentBlocks().filter((b) => b.id !== block.id));
+    await settle(400);
+    return out;
+  }`);
+  check("on White paper under a dark theme, a Block's h1, h3 and links read (≥ 4.5:1) in the theme's accent",
+    look.white.h1Contrast >= 4.5 && look.white.h3Contrast >= 4.5 && look.white.linkContrast >= 4.5, JSON.stringify(look.white));
+  check("...its code panel is a light one on White paper and a dark one on Black",
+    look.white.preLum > 0.8 && look.black.preLum < 0.02 && look.black.codeContrast >= 4.5, JSON.stringify({ white: look.white.pre, black: look.black }));
+  check("...the h1 reads on Black paper too", look.black.h1Contrast >= 4.5, JSON.stringify(look.black));
+  check("a theme change reaches a Block's headings without the Block being touched",
+    look.themed.before !== look.themed.after && look.themed.contrast >= 4.5, JSON.stringify(look.themed));
+  check("...and a code panel in a note is the dark one it always was", /rgb\(11, 17, 16\)/.test(look.noteCode), look.noteCode);
+  check("◐ Canvas sets the face of a Block's words, headings, code and the page numbers",
+    /Georgia/.test(look.type.p) && /Consolas|SFMono/.test(look.type.h1) && /ui-rounded/.test(look.type.code)
+      && /ui-rounded/.test(look.type.inline) && /Georgia/.test(look.type.number), JSON.stringify(look.type));
+  check("...a table's size as a share of the words around it",
+    look.type.table > 0 && Math.abs(look.type.table / look.type.words - 0.5) < 0.06, JSON.stringify(look.type));
+  check("...headings in the words' colour, and code always dark",
+    look.type.h1Colour === look.type.pColour && look.type.preLum < 0.05, JSON.stringify(look.type));
+  check("a Block's own heading face, heading colour, code face, weight, lines and letters win over ◐ Canvas",
+    /ui-rounded/.test(look.own.h1) && /rgb\(220, 38, 38\)/.test(look.own.h1Colour) && /Georgia/.test(look.own.code)
+      && look.own.weight === "600" && Math.abs(look.own.lh - 2) < 0.02 && look.own.spacing > 0, JSON.stringify(look.own));
+  check("...stored as only what was set", !/(^|,)(fill|ink|frame|fit|shape)(,|$)/.test(look.own.stored) && /headFont/.test(look.own.stored), look.own.stored);
+  check("the words typed in place are set in the face, size, spacing and weight they are put down in",
+    look.inline.ta && look.inline.ta.size === look.inline.body.size && look.inline.ta.lh === look.inline.body.lh
+      && look.inline.ta.face === look.inline.body.face && look.inline.ta.weight === look.inline.body.weight, JSON.stringify(look.inline));
+
   // ── Pictures of it, on request: CANVAS_SHOTS=<dir> ──────────────────────
   const SHOTS = process.env.CANVAS_SHOTS || "";
   if (SHOTS) {
@@ -709,6 +839,37 @@ try {
       await settle(500);
     }`);
     await snap("5-hexagon-word-selected.png");
+    // A Block of every kind of markdown, under three themes and three papers,
+    // then in ◐ Canvas's own type — the theme reaching the WHOLE Block.
+    await page.evaluate(`async () => {
+      const { api, settle } = window.__recall;
+      api.selectBlock(null);
+      api.writeDocumentBlocks([]);
+      const md = "# Heading one\\n\\n## Heading two\\n\\n### Heading three\\n\\nWords with **bold**, a [link](https://example.com) and \\\`inline code\\\`.\\n\\n> A quote, with its bar.\\n\\n\\\`\\\`\\\`js\\nfunction add(a, b) {\\n  return a + b; // sum\\n}\\n\\\`\\\`\\\`\\n\\n| Term | Meaning |\\n|---|---|\\n| key | value |";
+      // A plain Block, whatever the cases above left remembered for the next one.
+      api.addDocumentBlock(1, { x: 40, y: 800 }, { anchor: "top-left", edit: false, w: 330, md, style: { fill: "paper" } });
+      api.state.meta.pdfHighlights = (api.state.meta.pdfHighlights || []).filter((r) => r.kind !== "shape");
+      api.repaintDocumentShapes?.();
+      await settle(900);
+      window.__h.pageEl(1).scrollIntoView({ block: "start" });
+      await settle(300);
+    }`);
+    for (const [theme, paper] of [["dark-amoled", "white"], ["dark-amoled", "theme"], ["light-snow", "black"], ["dark-navy", "theme"], ["dark-bronze", "sepia"]]) {
+      await page.evaluate(`async () => {
+        const { api, settle } = window.__recall;
+        api.setTheme(${JSON.stringify(theme)});
+        api.setPaperTone(${JSON.stringify(paper)});
+        await settle(900);
+        document.querySelectorAll(".toast, #toastHost > *").forEach((n) => n.remove());
+      }`);
+      await snap(`6-theme-${theme}-on-${paper}.png`);
+    }
+    await page.evaluate(`async () => {
+      const { api, settle } = window.__recall;
+      api.applyStyleSettings({ ...api.state.styleSettings, canvasBlockFontFamily: "serif", canvasHeadingFontFamily: "rounded", canvasCodeFontFamily: "mono", canvasLabelFontFamily: "serif", canvasHeadingColor: "accent" });
+      await settle(800);
+    }`);
+    await snap("7-canvas-type-serif-rounded-mono.png");
   }
 
   const errs = await page.evaluate("() => window.__errs");

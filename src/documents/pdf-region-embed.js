@@ -18,7 +18,7 @@ import { ensurePdfJs, openPdfDocument } from "../core/lib-loader.js?v=__BUILD__"
 import { centerDiagramContent, openDiagramModal } from "../render/diagram-zoom.js?v=__BUILD__";
 import { DOC_SLOT_DOC, DOC_SLOT_NOTEBOOK, docSlotMeta, documentStoreKey, recordDocSlot } from "./doc-slot.js?v=__BUILD__";
 import { deckPdfById, PDF_PRIMARY_ID, pdfStoreKey, recordPdfId } from "./pdf-multi.js?v=__BUILD__";
-import { drawRegionBlocks, mountRegionBlockLayer, paintRegionMarks, rasteriseRegionBlocks, regionAnnotationStamp, regionBlocksInBox, regionMarksOnPage, regionRichShapeTexts, shapeTextRasterIds } from "./pdf-region-marks.js?v=__BUILD__";
+import { drawRegionBlocks, mountRegionBlockLayer, paintRegionMarks, rasteriseRegionBlocks, regionAnnotationStamp, regionBlocksInBox, regionLookStamp, regionMarksOnPage, regionRichShapeTexts, shapeTextRasterIds } from "./pdf-region-marks.js?v=__BUILD__";
 import { getDocument } from "./pdf-store.js?v=__BUILD__";
 import { buildTextLayer, canvasOutputScale, clampScale, currentPdfDocument, keptPagePictureFor, openRenderDocumentFor, PDF_MAX_SCALE, whenPageDrawsIdle } from "./pdf-view.js?v=__BUILD__";
 import { composePagePicture, renderPageBitmap } from "./pdf-render-worker.js?v=__BUILD__";
@@ -240,8 +240,10 @@ function regionImageKey(record, width) {
   const source = regionSource(record);
   const page = record.quads?.[0]?.page || record.page;
   // The page's annotations are in the picture too (pdf-region-marks.js), so a
-  // highlight or block added on that page has to make it a different picture.
-  return `${source.storeKey}:${source.pdfMeta?.sha256 || ""}:${record.id}:${record.at || 0}:${regionAnnotationStamp(source, page)}:${width}`;
+  // highlight or block added on that page has to make it a different picture —
+  // and so are the theme, the paper and the Canvas's type its Blocks are drawn
+  // in (regionLookStamp).
+  return `${source.storeKey}:${source.pdfMeta?.sha256 || ""}:${record.id}:${record.at || 0}:${regionAnnotationStamp(source, page)}:${regionLookStamp(source)}:${width}`;
 }
 
 export function cachedRegionImage(record, { width = REGION_IMAGE_WIDTH } = {}) {

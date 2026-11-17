@@ -50,16 +50,23 @@
   min-height: 0;
 }
 
-/* The metrics the rendered body has (styles/53-handwriting.css and
-   styles/58-block-style.css), given to both halves of the mirror at once —
-   they must agree on every one of them or the caret slides off the words. */
+/* The metrics the rendered body has (styles/79-tab-text.css,
+   styles/58-block-style.css and styles/a3-canvas-type.css), given to both
+   halves of the mirror at once — they must agree on every one of them or the
+   caret slides off the words. They used to be written out here as 0.82rem and
+   1.4, which is the body before ◐ PDFs/Canvas could size it: a Canvas set to
+   16px words was typed in at 13px and jumped when it was put down. Each one
+   now reads the Block's own value, then the part's setting, then the old
+   number. */
 .pdf-block-inline .highlight-textarea-backdrop,
 .pdf-block-inline .edit-textarea {
-  font-family: var(--pdf-block-font, var(--app-font-family)) !important;
-  font-size: calc(0.82rem * var(--pdf-block-scale, 1)) !important;
-  line-height: 1.4 !important;
+  font-family: var(--pdf-block-font, var(--doc-block-font, var(--app-font-family))) !important;
+  font-size: calc(var(--doc-block-font-size, 0.82rem) * var(--pdf-block-scale, 1)) !important;
+  font-weight: var(--pdf-block-weight, var(--doc-block-weight, 400)) !important;
+  letter-spacing: var(--doc-block-letter-spacing, normal) !important;
+  line-height: var(--pdf-block-line-height, var(--doc-block-line-height, 1.4)) !important;
   padding: calc(6px * var(--pdf-block-scale, 1)) !important;
-  min-height: calc(1.4em + 12px * var(--pdf-block-scale, 1)) !important;
+  min-height: calc(1em * var(--pdf-block-line-height, var(--doc-block-line-height, 1.4)) + 12px * var(--pdf-block-scale, 1)) !important;
   text-align: var(--pdf-block-align, left);
   border: 0 !important;
   border-radius: 0 !important;
@@ -70,6 +77,12 @@
 .pdf-block[data-block-size] .pdf-block-inline .highlight-textarea-backdrop,
 .pdf-block[data-block-size] .pdf-block-inline .edit-textarea {
   font-size: calc(var(--pdf-block-size) * 1px * var(--pdf-block-scale, 1)) !important;
+}
+
+/* A Block's own letter spacing is in points, like its size. */
+.pdf-block[data-block-letter-spacing] .pdf-block-inline .highlight-textarea-backdrop,
+.pdf-block[data-block-letter-spacing] .pdf-block-inline .edit-textarea {
+  letter-spacing: calc(var(--pdf-block-letter-spacing) * 1px * var(--pdf-block-scale, 1)) !important;
 }
 
 .pdf-block-inline .highlight-textarea-backdrop {

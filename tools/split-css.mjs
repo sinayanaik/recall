@@ -65,6 +65,11 @@ const SECTIONS = [
 // Anything appearing in styles/ that is neither a slice nor listed here is
 // still a failure.
 const POST_SPLIT = {
+  "a3-canvas-type.css":
+    "What is written on a page looks like the page it is on: code panels that " +
+    "follow the paper, and the Canvas's type — ◐ Canvas → Blocks, Headings, " +
+    "Code and Labels (src/ui/style-schema.js) — for Blocks, Shapes text, " +
+    "connector words and tables.",
   "a2-canvas-setup.css":
     "⋯ → Canvas pages → Page setup… (src/documents/canvas-setup-dialog.js): a " +
     "Canvas page's size, paper and lines, this page or every page, with a live " +

@@ -84,7 +84,28 @@ const sharedDefaults = {
   myFilesTileWidth: "auto",
   myFilesPadding: "12px",
   // App — dialogs
-  dialogCornerRadius: "14px"
+  dialogCornerRadius: "14px",
+  // Canvas — the type of everything on a Canvas page. Every one of these is a
+  // "follow" state by default (inherit / auto / the theme's ladder / the
+  // paper), which writes nothing, so a Canvas nobody has styled reads exactly
+  // as it did before the controls existed.
+  canvasBlockFontFamily: "inherit",
+  canvasBlockFontWeight: "auto",
+  canvasBlockLetterSpacing: "auto",
+  canvasTableFontScale: "auto",
+  canvasHeadingFontFamily: "inherit",
+  canvasHeadingWeight: "auto",
+  canvasHeadingColor: "ladder",
+  canvasHeadingH1Scale: "inherit",
+  canvasHeadingH2Scale: "inherit",
+  canvasHeadingH3Scale: "inherit",
+  canvasHeadingH4Scale: "inherit",
+  canvasHeadingH5Scale: "inherit",
+  canvasHeadingH6Scale: "inherit",
+  canvasCodeFontFamily: "inherit",
+  canvasCodeLineHeight: "inherit",
+  canvasCodeLook: "paper",
+  canvasLabelFontFamily: "inherit"
 };
 
 // One entry per control in styleControlGroups, per profile — nothing more.
@@ -486,7 +507,7 @@ export const styleControlGroups = [
         optionLabels: { on: "On — 1, 1.1, 1.2…", off: "Off" },
         hint: "Numbers each heading by its place in the note, like 1, 1.1, 1.2, and hides any number already typed at the start of a heading. The numbers are only drawn: your text is not changed, except that headings you paste or import arrive without their old numbers."
       },
-      ...headingFields("notesHeadingH", "in notes, the Highlights pane, Quick Notes and blocks on PDFs and Canvas")
+      ...headingFields("notesHeadingH", "in notes, the Highlights pane, Quick Notes and Blocks on PDFs — and on a Canvas, unless ◐ Canvas → Headings sets its own")
     ]
   },
   {
@@ -592,13 +613,87 @@ export const styleControlGroups = [
   },
 
   // ── Canvas ───────────────────────────────────────────────────────────────
+  //
+  // Everything written on a Canvas page, in four groups: the words of a Block,
+  // its headings, its code, and the labels — the words the Shapes tool, a
+  // connector and the page numbers put on the page, which were the one text on
+  // a Canvas no font control reached. A Block's own Style (Face, Heading face,
+  // Code face, Weight, Lines, Letters) still wins over all of these. Colours
+  // are not here: the theme and the paper decide them (src/format/paper-
+  // palette.js), and a Block's Style picks its own.
   {
     title: "Blocks",
     scope: "handwriting",
     fields: [
-      pxField("canvasBlockFontSize", "Block text size", "Blocks on Canvas pages. A block given its own size keeps it."),
-      lineField("canvasBlockLineHeight", "Line spacing", "Line spacing inside blocks."),
-      pxField("canvasCodeFontSize", "Code size", "Code inside blocks. 1em is the size of the words around it."),
+      {
+        key: "canvasBlockFontFamily", label: "Font", type: "select",
+        options: ["inherit", ...fontFamilyOptions],
+        groups: [{ label: "Canvas", options: ["inherit"] }, ...fontFamilyOptionGroups],
+        optionLabels: { inherit: "Same as Global font" },
+        hint: "Typeface for the words in every Block on a Canvas. A Block given its own Face keeps it."
+      },
+      pxField("canvasBlockFontSize", "Block text size", "Blocks on Canvas pages. A Block given its own size keeps it."),
+      lineField("canvasBlockLineHeight", "Line spacing", "Line spacing inside Blocks."),
+      { key: "canvasBlockFontWeight", label: "Weight", type: "text", probe: "font-weight", auto: "400", hint: "Text thickness in Blocks: 1 to 1000, or normal/bold. Headings keep their own." },
+      { key: "canvasBlockLetterSpacing", label: "Letter spacing", type: "text", unit: "em", probe: "letter-spacing", auto: "0", hint: "Space between letters, in em of the text: 0.02 is a touch wider, -0.01 a touch tighter." },
+      { key: "canvasTableFontScale", label: "Table text size", type: "text", probe: "number", auto: "1", hint: "Tables in Blocks, as a multiple of the words around them — 1 is the same size, 0.85 a little smaller." }
+    ]
+  },
+  {
+    title: "Headings",
+    scope: "handwriting",
+    fields: [
+      {
+        key: "canvasHeadingFontFamily", label: "Font", type: "select",
+        options: ["inherit", ...fontFamilyOptions],
+        groups: [{ label: "Canvas", options: ["inherit"] }, ...fontFamilyOptionGroups],
+        optionLabels: { inherit: "Same as the Block's words" },
+        hint: "Typeface for H1–H6 inside Blocks and Shapes text boxes on a Canvas."
+      },
+      { key: "canvasHeadingWeight", label: "Weight", type: "text", probe: "font-weight", auto: "800–600", hint: "Heading thickness: 1 to 1000, or normal/bold. Empty keeps the usual steps, heavier for H1 and H2, lighter for H5 and H6." },
+      {
+        key: "canvasHeadingColor", label: "Colour", type: "select", options: ["ladder", "accent", "text"],
+        optionLabels: { ladder: "Theme (accent and text by level)", accent: "Theme accent", text: "Same as the words" },
+        hint: "What colour headings take. The theme's accent is always made readable on the paper under it."
+      },
+      ...headingFields("canvasHeadingH", "in Blocks on a Canvas").map((field) => ({
+        ...field,
+        hint: `${field.hint} Leave empty to follow Notes.`,
+        inherits: followsNotes(field.key.replace(/^canvasHeading/, "notesHeading"))
+      }))
+    ]
+  },
+  {
+    title: "Code",
+    scope: "handwriting",
+    fields: [
+      {
+        key: "canvasCodeFontFamily", label: "Font", type: "select",
+        options: ["inherit", ...fontFamilyOptions],
+        groups: [{ label: "Canvas", options: ["inherit"] }, ...fontFamilyOptionGroups],
+        optionLabels: { inherit: "Monospace (as before)" },
+        hint: "Typeface for code in Blocks — fenced listings and `inline code`."
+      },
+      pxField("canvasCodeFontSize", "Code size", "Code inside Blocks. 1em is the size of the words around it."),
+      lineField("canvasCodeLineHeight", "Code line spacing", "Line spacing inside code listings in Blocks. Leave empty to follow Cards.", { inherits: { label: "Cards", key: "codeLineHeight" } }),
+      {
+        key: "canvasCodeLook", label: "Look", type: "select", options: ["paper", "dark", "light"],
+        optionLabels: { paper: "Follow the paper", dark: "Always dark", light: "Always light" },
+        hint: "Code listings in Blocks: a light panel on light paper and a dark one on dark paper, or one look on every paper."
+      }
+    ]
+  },
+  {
+    title: "Labels",
+    scope: "handwriting",
+    fields: [
+      {
+        key: "canvasLabelFontFamily", label: "Font", type: "select",
+        options: ["inherit", ...fontFamilyOptions],
+        groups: [{ label: "Canvas", options: ["inherit"] }, ...fontFamilyOptionGroups],
+        optionLabels: { inherit: "System (as before)" },
+        hint: "Typeface for the other words on a Canvas page: Shapes text boxes and callouts, a connector's words, and the page numbers."
+      }
     ]
   },
 
@@ -741,6 +836,22 @@ export const styleCssVariables = {
   canvasBlockFontSize: "--canvas-block-font-size",
   canvasBlockLineHeight: "--canvas-block-line-height",
   canvasCodeFontSize: "--canvas-code-font-size",
+  // The rest of the Canvas's type. The four faces (canvas*FontFamily) are KEYS
+  // into fontFamilyChoices and are written by hand in applyStyleSettings, like
+  // notesFontFamily; canvasHeadingColor and canvasCodeLook are attributes on
+  // <html>, not values. Each empty one is removed, and every rule that reads
+  // them carries the fallback that is the Canvas as it always was.
+  canvasBlockFontWeight: "--canvas-block-font-weight",
+  canvasBlockLetterSpacing: "--canvas-block-letter-spacing",
+  canvasTableFontScale: "--canvas-table-scale",
+  canvasHeadingWeight: "--canvas-heading-weight",
+  canvasHeadingH1Scale: "--canvas-heading-h1-scale",
+  canvasHeadingH2Scale: "--canvas-heading-h2-scale",
+  canvasHeadingH3Scale: "--canvas-heading-h3-scale",
+  canvasHeadingH4Scale: "--canvas-heading-h4-scale",
+  canvasHeadingH5Scale: "--canvas-heading-h5-scale",
+  canvasHeadingH6Scale: "--canvas-heading-h6-scale",
+  canvasCodeLineHeight: "--canvas-code-line-height",
   // The highlights pane. The three type fields default to "inherit", which
   // applyStyleSettings expresses by removing the property so the stylesheet's
   // --notes-* fallback applies. hlQuoteInkPercent is not here: it stores a bare
