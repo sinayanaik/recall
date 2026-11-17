@@ -1174,7 +1174,12 @@ export function wrapShapeText(text, maxWidth, measure) {
 // lays the rendered words over the box itself; without it, this draws the
 // words with their syntax taken off (markdownToPlainText), which is never worse
 // than the plain text every box held before markdown.
-export function paintShapeOnCanvas(ctx, shape, toPoint, scale = 1, { skipText = false, recolor = null } = {}) {
+// The face a canvas-drawn shape's words are in when the caller names none: the
+// stack styles/88-annotations.css has always drawn them in. A caller drawing a
+// Canvas page passes ◐ Canvas → Labels instead (src/documents/pdf-export.js).
+export const SHAPE_TEXT_FONT = "system-ui, -apple-system, \"Segoe UI\", Roboto, Arial, sans-serif";
+
+export function paintShapeOnCanvas(ctx, shape, toPoint, scale = 1, { skipText = false, recolor = null, fontFamily = SHAPE_TEXT_FONT } = {}) {
   const prims = shapePrimitives(shape, { recolor });
   const polys = [];
   prims.forEach((prim) => {
@@ -1182,7 +1187,7 @@ export function paintShapeOnCanvas(ctx, shape, toPoint, scale = 1, { skipText = 
     else polys.push(prim);
   });
   polys.forEach((prim) => {
-    if (prim.kind === "text") { if (!skipText) paintShapeText(ctx, prim, toPoint, scale); return; }
+    if (prim.kind === "text") { if (!skipText) paintShapeText(ctx, prim, toPoint, scale, fontFamily); return; }
     const pts = prim.pts.map(toPoint);
     if (!pts.length) return;
     ctx.save();
@@ -1211,9 +1216,9 @@ export function paintShapeOnCanvas(ctx, shape, toPoint, scale = 1, { skipText = 
 // draws when the rendered markdown could not be made
 // (src/documents/pdf-region-marks.js, plainShapeTextRaster). `ignoreRotation`
 // draws them unturned, for a picture that is turned where it is placed.
-export function paintShapeTextOnCanvas(ctx, shape, toPoint, scale = 1, { ignoreRotation = false, recolor = null } = {}) {
+export function paintShapeTextOnCanvas(ctx, shape, toPoint, scale = 1, { ignoreRotation = false, recolor = null, fontFamily = SHAPE_TEXT_FONT } = {}) {
   shapePrimitives(shape, { recolor }).forEach((prim) => {
-    if (prim.kind === "text") paintShapeText(ctx, ignoreRotation ? { ...prim, rot: 0 } : prim, toPoint, scale);
+    if (prim.kind === "text") paintShapeText(ctx, ignoreRotation ? { ...prim, rot: 0 } : prim, toPoint, scale, fontFamily);
   });
 }
 
@@ -1229,7 +1234,7 @@ export function shapeTextRotationMatrix(prim) {
   return [cos, sin, -sin, cos, cx - cos * cx + sin * cy, cy - sin * cx - cos * cy];
 }
 
-function paintShapeText(ctx, prim, toPoint, scale) {
+function paintShapeText(ctx, prim, toPoint, scale, fontFamily = SHAPE_TEXT_FONT) {
   if (!prim.text || typeof ctx.fillText !== "function") return;
   const words = markdownToPlainText(prim.text);
   const a = toPoint([prim.rect[0], prim.rect[3]]);
@@ -1248,7 +1253,7 @@ function paintShapeText(ctx, prim, toPoint, scale) {
     ctx.translate(-cx, -cy);
   }
   ctx.fillStyle = prim.color;
-  ctx.font = `${prim.bold ? "700" : "400"} ${size}px system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif`;
+  ctx.font = `${prim.bold ? "700" : "400"} ${size}px ${fontFamily || SHAPE_TEXT_FONT}`;
   ctx.textBaseline = "top";
   const lines = prim.fit ? words.split("\n")
     : wrapShapeText(words, Math.max(1, width - pad * 2), (t) => ctx.measureText(t).width);

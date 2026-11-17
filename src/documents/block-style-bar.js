@@ -43,14 +43,16 @@
 
 import {
   BLOCK_ALIGNS, BLOCK_FILLS, BLOCK_FILL_HEX, BLOCK_FILL_LABEL, BLOCK_FRAMES, BLOCK_FRAME_LABEL,
-  BLOCK_INKS, BLOCK_LINES, BLOCK_LINE_DASHES, BLOCK_LINE_DASH_LABEL, BLOCK_SHAPES, BLOCK_SHAPE_LABEL, BLOCK_VALIGNS,
-  blockFillVar, blockInkVar, blockLineVar, blockShapePatch, normalizeBlockStyle
+  BLOCK_HEAD_INKS, BLOCK_INKS, BLOCK_LINES, BLOCK_LINE_DASHES, BLOCK_LINE_DASH_LABEL, BLOCK_SHAPES, BLOCK_SHAPE_LABEL, BLOCK_VALIGNS,
+  blockFillVar, blockHeadInkVar, blockInkVar, blockLineVar, blockShapePatch, normalizeBlockStyle
 } from "./block-style.js?v=__BUILD__";
+import { copyPaperPalette } from "../format/paper-palette.js?v=__BUILD__";
 import { MD_SVG_ATTRS } from "../library/my-decks-icons.js?v=__BUILD__";
 import { blockPanelPreference, writeBlockPanelPreference } from "../storage/ink-prefs.js?v=__BUILD__";
 import { fontFamilyOptionGroups } from "../ui/theme-catalog.js?v=__BUILD__";
 
 const INK_LABEL = { default: "Theme colour" };
+const HEAD_INK_LABEL = { default: "Theme headings — or the Text colour, when the Block has one" };
 
 // Three icons on the app's own 24x24 grid, drawn rather than typed. The rule
 // README states for the pen's rail is that a control which is genuinely iconic
@@ -208,14 +210,29 @@ function switchButton(key, label) {
 // are about the markdown's contents appear only when there are contents for them
 // to be about. A control acting on nothing is the clutter this pass is about,
 // and it is also a control that looks broken.
-export function createBlockStyleBar({ style = null, kind = "text", has = null, onChange = () => {} } = {}) {
+// `paperFrom` is the stage the Block is on. The panel floats over <body>, where
+// every colour token is the THEME's; the page under the Block is the paper's
+// (styles/94-paper-tones.css), and a chip that showed the theme's yellow while
+// the Block went the paper's was a picker offering colours it does not paint.
+// So the chip rows wear the page's palette (copyPaperPalette) and sit on a
+// little of its paper.
+export function createBlockStyleBar({ style = null, kind = "text", has = null, paperFrom = null, onChange = () => {} } = {}) {
   const isImage = kind === "image";
-  const holds = { code: false, image: false, ...(has || {}) };
+  const holds = { code: false, inlineCode: false, image: false, heading: false, ...(has || {}) };
   const panel = blockPanelPreference();
   let value = normalizeBlockStyle(style);
   // Which palette the one chip row is showing. Meaningless on a picture, which
-  // has no words to colour, so its row is the fill and there is no switch.
-  let swatchKey = (!isImage && panel.swatch === "ink") ? "ink" : "fill";
+  // has no words to colour, so its row is the fill and there is no switch. The
+  // third, the headings', only on a Block that has a heading to colour.
+  let swatchKey = "fill";
+  if (!isImage && panel.swatch === "ink") swatchKey = "ink";
+  if (!isImage && panel.swatch === "head" && holds.heading) swatchKey = "head";
+  const paperStage = paperFrom?.classList?.contains("document-stage") ? paperFrom : null;
+  const onPaper = (node) => {
+    if (!paperStage) return;
+    node.classList.add("bstyle-paper");
+    copyPaperPalette(paperStage, node);
+  };
 
   const root = document.createElement("div");
   root.className = "bstyle";
@@ -235,30 +252,40 @@ export function createBlockStyleBar({ style = null, kind = "text", has = null, o
     return button;
   };
   tabs.append(tabFor("fill", "Fill"), tabFor("ink", "Text"));
+  if (holds.heading) tabs.appendChild(tabFor("head", "Headings"));
   if (!isImage) root.appendChild(tabs);
 
   const swatches = document.createElement("div");
   swatches.className = "bstyle-swatches";
   swatches.setAttribute("role", "group");
+  onPaper(swatches);
   root.appendChild(swatches);
 
   function paintSwatches() {
     swatches.replaceChildren();
-    swatches.setAttribute("aria-label", swatchKey === "ink" ? "Text colour" : "Fill");
-    const tokens = swatchKey === "ink" ? BLOCK_INKS : BLOCK_FILLS;
+    swatches.setAttribute("aria-label", swatchKey === "ink" ? "Text colour" : (swatchKey === "head" ? "Heading colour" : "Fill"));
+    const tokens = swatchKey === "ink" ? BLOCK_INKS : (swatchKey === "head" ? BLOCK_HEAD_INKS : BLOCK_FILLS);
     tokens.forEach((token) => {
-      const property = swatchKey === "ink" ? blockInkVar(token) : blockFillVar(token);
-      swatches.appendChild(styleChoice(swatchKey, token, {
-        // The chip is the token's own custom property, so the picker shows the
-        // colour the block will actually be on THIS theme rather than the
-        // light-theme hex the table happens to list. The fallbacks are for the
-        // one case a property cannot cover: a chip rendered before the
-        // stylesheet defining it has loaded.
-        swatch: swatchKey === "ink"
-          ? (property ? `var(${property})` : "var(--text)")
-          : `var(${property}, ${BLOCK_FILL_HEX[token]})`,
-        title: swatchKey === "ink" ? labelFor(INK_LABEL, token) : labelFor(BLOCK_FILL_LABEL, token)
-      }));
+      let swatch;
+      let title;
+      // The chip is the token's own custom property, so the picker shows the
+      // colour the block will actually be on THIS paper rather than the
+      // light-theme hex the table happens to list. The fallbacks are for the
+      // one case a property cannot cover: a chip rendered before the
+      // stylesheet defining it has loaded.
+      if (swatchKey === "ink") {
+        const property = blockInkVar(token);
+        swatch = property ? `var(${property})` : "var(--text)";
+        title = labelFor(INK_LABEL, token);
+      } else if (swatchKey === "head") {
+        const property = blockHeadInkVar(token);
+        swatch = property ? `var(${property})` : "var(--accent-strong)";
+        title = labelFor(HEAD_INK_LABEL, token);
+      } else {
+        swatch = `var(${blockFillVar(token)}, ${BLOCK_FILL_HEX[token]})`;
+        title = labelFor(BLOCK_FILL_LABEL, token);
+      }
+      swatches.appendChild(styleChoice(swatchKey === "head" ? "headInk" : swatchKey, token, { swatch, title }));
     });
   }
 
@@ -307,14 +334,37 @@ export function createBlockStyleBar({ style = null, kind = "text", has = null, o
   summary.textContent = "More";
   more.appendChild(summary);
 
+  const fontGroups = fontFamilyOptionGroups.map((group) => ({
+    label: group.label,
+    options: group.options.map((option) => [option, option])
+  }));
+  // "As set for the page" rather than "App font": with no face of its own a
+  // Block takes the one ◐ Canvas sets for its words, headings or code (on a
+  // Canvas), which is the app's own unless that says otherwise.
   const face = styleSelect("font", {
     label: "Face",
-    extra: { value: "inherit", label: "App font" },
-    groups: fontFamilyOptionGroups.map((group) => ({
-      label: group.label,
-      options: group.options.map((option) => [option, option])
-    }))
+    extra: { value: "inherit", label: "As set for the page" },
+    groups: fontGroups
   });
+  const headFace = styleSelect("headFont", {
+    label: "Headings",
+    extra: { value: "inherit", label: "As set for the page" },
+    groups: fontGroups
+  });
+  const codeFace = styleSelect("codeFont", {
+    label: "Code",
+    extra: { value: "inherit", label: "As set for the page" },
+    groups: fontGroups
+  });
+  // The rest of the type, typed like the size: a weight (1–1000), a line height
+  // (a multiple of the size) and a letter spacing (points, and negative is
+  // tighter). One line, because none of the three fills one.
+  const weight = styleNumber("weight", { label: "Weight", unit: "", placeholder: "as is" });
+  const lineHeight = styleNumber("lineHeight", { label: "Lines", unit: "×", placeholder: "as is" });
+  const letterSpacing = styleNumber("letterSpacing", { label: "Letters", unit: "pt", placeholder: "0" });
+  const typeLine = document.createElement("div");
+  typeLine.className = "bstyle-line bstyle-type";
+  typeLine.append(weight.wrap, lineHeight.wrap, letterSpacing.wrap);
   const frame = styleSelect("frame", {
     label: "Frame",
     groups: [{ label: "Frame", options: BLOCK_FRAMES.map((token) => [token, labelFor(BLOCK_FRAME_LABEL, token)]) }]
@@ -332,6 +382,7 @@ export function createBlockStyleBar({ style = null, kind = "text", has = null, o
 
   // ── The edge: its colour, its width and its dash ─────────────────────────
   const edgeColours = styleRow("Edge", { className: "bstyle-edge", aria: "Edge colour" });
+  onPaper(edgeColours.group);
   BLOCK_LINES.forEach((token) => {
     const property = blockLineVar(token);
     edgeColours.group.appendChild(styleChoice("line", token, {
@@ -359,7 +410,10 @@ export function createBlockStyleBar({ style = null, kind = "text", has = null, o
   if (isImage) {
     more.appendChild(frame.wrap);
   } else {
-    more.append(shapes.wrap, face.wrap, frame.wrap, edgeColours.wrap, edgeLine, valign.wrap, fit.wrap);
+    more.append(shapes.wrap, face.wrap);
+    if (holds.heading) more.appendChild(headFace.wrap);
+    if (holds.code || holds.inlineCode) more.appendChild(codeFace.wrap);
+    more.append(typeLine, frame.wrap, edgeColours.wrap, edgeLine, valign.wrap, fit.wrap);
     if (holds.code) {
       // The two code controls share a line, the way the size and the alignment
       // do above: neither fills one, and a switch on a row of its own under a
@@ -414,7 +468,7 @@ export function createBlockStyleBar({ style = null, kind = "text", has = null, o
     if (tab) {
       event.preventDefault();
       event.stopPropagation();
-      swatchKey = tab.dataset.bstyleTab === "ink" ? "ink" : "fill";
+      swatchKey = ["ink", "head"].includes(tab.dataset.bstyleTab) ? tab.dataset.bstyleTab : "fill";
       writeBlockPanelPreference({ swatch: swatchKey });
       paintSwatches();
       paint();
@@ -499,7 +553,7 @@ export function closeBlockStylePopover() {
 export function openBlockStylePopover({ anchor, kind = "text", style = null, has = null, onChange = () => {} } = {}) {
   closeBlockStylePopover();
   if (!anchor) return null;
-  const bar = createBlockStyleBar({ style, kind, has, onChange });
+  const bar = createBlockStyleBar({ style, kind, has, paperFrom: anchor.closest(".document-stage"), onChange });
 
   const root = document.createElement("div");
   root.className = "pdf-block-style-pop";

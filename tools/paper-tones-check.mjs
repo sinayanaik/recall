@@ -239,6 +239,99 @@ try {
     return papers.every((bg) => S.shapePrimitives(shapes[4], { recolor: P.paperRecolor(bg) })[0].color === "#e0b400") || "the sticky's yellow moved";
   });
 
+  // ── The palette: the theme's accents, readable on the paper ────────────
+  //
+  // "Only certain parts of a Block change with the theme": its headings, links,
+  // quote bar and inline code were drawn in the THEME's accents on whatever
+  // paper was under them — AMOLED's pale cyan h1 on White. Every theme against
+  // every paper, with the tokens as styles/01-tokens.css really defines them.
+  const L = await import(path.join(stage, "src/format/paper-palette.js"));
+  const tokensCss = readFileSync(path.join(ROOT, "styles/01-tokens.css"), "utf8");
+  const blockOf = (selector) => {
+    const at = tokensCss.indexOf(selector);
+    if (at < 0) return "";
+    return tokensCss.slice(tokensCss.indexOf("{", at) + 1, tokensCss.indexOf("}", at));
+  };
+  const readTokens = (body) => Object.fromEntries([...body.matchAll(/(--[a-z-]+):\s*(#[0-9a-fA-F]{3,6})\s*;/g)].map((m) => [m[1], m[2]]));
+  const rootTokens = readTokens(blockOf(":root {"));
+  const themeTokens = (id) => ({ ...rootTokens, ...readTokens(blockOf(`:root[data-theme="${id}"]`)) });
+
+  must("every theme's accents, on every paper, read: words at 4.5:1, lines at 3:1", () => {
+    const bad = [];
+    themeCatalog.forEach((theme) => {
+      const tokens = themeTokens(theme.id);
+      P.PAPER_TONE_IDS.forEach((id) => {
+        const tone = P.resolvePaperTone(id, theme.id);
+        const palette = L.paperPalette(tone, tokens);
+        L.PAPER_PALETTE_TOKENS.forEach(([token, property, min]) => {
+          const value = palette[property];
+          if (!value) { bad.push(`${theme.id}/${id}: no ${property}`); return; }
+          const ratio = P.contrastRatio(value, tone.bg);
+          if (ratio < min - 0.01) bad.push(`${theme.id}/${id}: ${token} ${tokens[token]} → ${value} at ${ratio.toFixed(2)}`);
+        });
+        if (P.contrastRatio(palette["--paper-text"], tone.bg) < 4.5) bad.push(`${theme.id}/${id}: words ${palette["--paper-text"]}`);
+      });
+    });
+    return bad.length ? bad.slice(0, 6).join("; ") : true;
+  });
+
+  must("...keeping the theme's own hue (a cyan heading stays a cyan heading)", () => {
+    const hue = (hex) => {
+      const [r, g, b] = P.parseHex(hex).map((v) => v / 255);
+      const max = Math.max(r, g, b); const min = Math.min(r, g, b); const d = max - min;
+      if (!d) return null;
+      let h = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+      return (h * 60 + 360) % 360;
+    };
+    const bad = [];
+    themeCatalog.forEach((theme) => {
+      const tokens = themeTokens(theme.id);
+      ["white", "black"].forEach((id) => {
+        const palette = L.paperPalette(P.resolvePaperTone(id, theme.id), tokens);
+        const was = hue(tokens["--accent-strong"]);
+        const now = hue(palette["--paper-accent-strong"]);
+        if (was === null || now === null) return;
+        const gap = Math.min(Math.abs(was - now), 360 - Math.abs(was - now));
+        if (gap > 12) bad.push(`${theme.id}/${id}: hue ${was.toFixed(0)}° became ${now.toFixed(0)}°`);
+      });
+    });
+    return bad.length ? bad.join("; ") : true;
+  });
+
+  must("on Match theme the page IS the theme: its accents and its words, exactly", () => {
+    const bad = [];
+    themeCatalog.forEach((theme) => {
+      const tokens = themeTokens(theme.id);
+      const tone = P.resolvePaperTone("theme", theme.id);
+      const palette = L.paperPalette(tone, tokens);
+      if (palette["--paper-accent"] !== L.colourToHex(tokens["--accent"])) bad.push(`${theme.id}: accent ${tokens["--accent"]} → ${palette["--paper-accent"]}`);
+      if (palette["--paper-accent-strong"] !== L.colourToHex(tokens["--accent-strong"])) bad.push(`${theme.id}: accent-strong ${tokens["--accent-strong"]} → ${palette["--paper-accent-strong"]}`);
+      if (tone.text !== L.colourToHex(theme.colors.text)) bad.push(`${theme.id}: words ${tone.text}, not the theme's ${theme.colors.text}`);
+    });
+    return bad.length ? bad.slice(0, 6).join("; ") : true;
+  });
+
+  must("on every other paper the words are the paper's own neutral", () => {
+    const bad = [];
+    ["white", "sepia", "dim", "black"].forEach((id) => {
+      const tone = P.resolvePaperTone(id, "dark-navy");
+      const want = tone.dark ? P.PAPER_TEXT.dark : P.PAPER_TEXT.light;
+      if (tone.text !== want) bad.push(`${id}: ${tone.text}`);
+    });
+    return bad.length ? bad.join(", ") : true;
+  });
+
+  must("the page number is the grey it has always been on White, and the paper's own words at 60% elsewhere", () => {
+    const white = P.parseHex(L.paperNumberColor(P.resolvePaperTone("white")));
+    if (white.some((v) => Math.abs(v - 116) > 4)) return `White: ${white}`;
+    const black = L.paperNumberColor(P.resolvePaperTone("black"));
+    return P.contrastRatio(black, P.PAPER_DARK_FLOOR) >= 4 || `Black: ${black}`;
+  });
+
+  must("a diagram on a page gets no palette off one (a note keeps the theme's)", () => {
+    return L.diagramPaletteFor({ closest: () => null }) === null || "a node off a page got a palette";
+  });
+
   console.log("── paper tones ──");
   for (const [ok, name, detail] of results) {
     console.log(`  ${ok ? "ok  " : "FAIL"}  ${name}${ok ? "" : " — " + detail}`);

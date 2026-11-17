@@ -14,6 +14,15 @@
  * bake it in; the rules at the bottom are for where it cannot.
  */
 
+:root {
+  --app-accent: var(--accent);
+  --app-accent-strong: var(--accent-strong);
+  --app-accent-contrast: var(--accent-contrast);
+  --app-review: var(--review);
+  --app-known: var(--known);
+  --app-danger: var(--danger);
+}
+
 .document-stage {
   --paper-bg: #ffffff;
   --paper-text: #16181d;
@@ -34,8 +43,19 @@
  * So inside a page, the theme's own tokens are rebound to the paper's, and a
  * block, its border, its empty-state hint and its ink colour (--pdf-block-ink is
  * an --ink-pen-* token) all follow the page through every tone and every change
- * of it. The accent stays the theme's: it is the app's own colour, used for
- * selection and focus, and it is mixed into the paper's --line for a border.
+ * of it.
+ *
+ * The ACCENTS are rebound too. They used to stay the theme's — and they are
+ * what a Block's h1 and h3, its links, its quote bar, its table headers, its
+ * inline code and its border are drawn in, so AMOLED's pale cyan heading sat on
+ * White paper unreadable while the card and the words around it had followed
+ * the page: a theme that reached half a Block. Each accent is now the theme's
+ * own hue moved until it reads on this paper (src/format/paper-palette.js,
+ * written onto the stage as --paper-accent and friends by paintStagePaper in
+ * src/documents/pdf-view.js). On "Match theme" every one already reads and is
+ * the theme's exactly. The --app-* aliases are the theme's own values, named
+ * on :root, because `--accent: var(--paper-accent, var(--accent))` would be a
+ * property defined in terms of itself.
  *
  * `.paper-tokens` is the same rebinding for a block drawn off the page — the
  * copy src/documents/pdf-region-marks.js rasterises for a region's picture —
@@ -46,7 +66,16 @@
  * is resolved where it is DEFINED, so the :root copy is the theme's card
  * whatever --card says inside the page. */
 .document-stage .pdf-page,
-.paper-tokens {
+.paper-tokens,
+.bstyle-paper {
+  /* The theme's accents, readable on this paper (see above). */
+  --accent: var(--paper-accent, var(--app-accent));
+  --accent-strong: var(--paper-accent-strong, var(--app-accent-strong));
+  --accent-contrast: var(--paper-accent-contrast, var(--app-accent-contrast));
+  --review: var(--paper-review, var(--app-review));
+  --known: var(--paper-known, var(--app-known));
+  --danger: var(--paper-danger, var(--app-danger));
+
   /* The words themselves, too. Rebinding --text alone left every block whose
      ink is "default" inheriting the THEME's colour from <body> — pale words
      on White paper under a dark theme, on the page and in the Canvas PDF. */
@@ -83,7 +112,8 @@
 
 /* ...and on dark paper — INK_PEN_HEX_DARK. */
 .document-stage.is-pdf-inverted .pdf-page,
-.paper-tokens.is-dark-paper {
+.paper-tokens.is-dark-paper,
+.bstyle-paper.is-dark-paper {
   --ink-pen-ink: #e8eaed;
   --ink-pen-red: #f87171;
   --ink-pen-blue: #7aa7ff;

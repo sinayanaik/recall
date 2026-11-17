@@ -103,7 +103,9 @@ function buildPopover(scope) {
   if (scope === "document" || scope === "handwriting") {
     const note = document.createElement("p");
     note.className = "style-pop-note";
-    note.textContent = "The pen, highlighter, Text tool and sticky notes are styled from the chip on the pen's bar.";
+    note.textContent = scope === "handwriting"
+      ? "The pen, highlighter, Text tool and sticky notes are styled from the chip on the pen's bar; their words take the Labels font below. Colours follow the theme and the paper."
+      : "The pen, highlighter, Text tool and sticky notes are styled from the chip on the pen's bar.";
     body.appendChild(note);
   }
   body.appendChild(buildStyleScope(scope));

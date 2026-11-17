@@ -262,6 +262,58 @@ export function normalizeBlockValign(token) {
   return BLOCK_VALIGNS.includes(String(token || "")) ? String(token) : BLOCK_VALIGN_DEFAULT;
 }
 
+// ── The rest of a Block's type ─────────────────────────────────────────────
+//
+// "A font change only reaches the plain words": a Block had ONE face, one size
+// and one colour, and its headings and its code took none of them. These are
+// the rest, each a statement about this one Block that wins over what ◐ Canvas
+// says for every Block (styles/58-block-style.css), and each absent — following
+// the Canvas — until somebody sets it.
+//
+// The two faces are keys, like `font`. The heading colour is "default" (the
+// headings follow the theme's ladder, or the Block's Text colour when that is
+// set) or a pen token, like `ink`. The three numbers follow the size's rule —
+// typed, unclamped beyond what a value can mean — with their own domains: a
+// weight is a whole number 1 to 1000, which is what CSS accepts; a line height
+// is a multiple of the size; letter spacing is in points like the size, and may
+// be negative (tighter), but not zero, which is no spacing at all and so the
+// default.
+export const BLOCK_HEAD_INK_DEFAULT = "default";
+
+export const BLOCK_HEAD_INKS = [BLOCK_HEAD_INK_DEFAULT, ...INK_PEN_TOKENS];
+
+export function normalizeBlockHeadInk(token) {
+  const value = String(token || "");
+  if (value === BLOCK_HEAD_INK_DEFAULT) return BLOCK_HEAD_INK_DEFAULT;
+  return INK_PEN_TOKENS.includes(value) ? normalizeInkPen(value) : BLOCK_HEAD_INK_DEFAULT;
+}
+
+export function blockHeadInkVar(token) {
+  const value = normalizeBlockHeadInk(token);
+  return value === BLOCK_HEAD_INK_DEFAULT ? null : inkPenVar(value);
+}
+
+export function normalizeBlockWeight(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Math.round(Number(value));
+  return Number.isFinite(number) && number >= 1 && number <= 1000 ? number : null;
+}
+
+export function normalizeBlockLineHeight(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) return null;
+  return Math.round(number * 100) / 100;
+}
+
+export function normalizeBlockLetterSpacing(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  if (!Number.isFinite(number)) return null;
+  const rounded = Math.round(number * 10) / 10;
+  return rounded === 0 ? null : rounded;
+}
+
 // ── The bag ────────────────────────────────────────────────────────────────
 //
 // One object on the record rather than nine keys beside `md`. The merge carries
@@ -301,7 +353,13 @@ export const BLOCK_STYLE_DEFAULT = {
   line: BLOCK_LINE_DEFAULT,
   lineWidth: null,
   lineDash: BLOCK_LINE_DASH_DEFAULT,
-  valign: BLOCK_VALIGN_DEFAULT
+  valign: BLOCK_VALIGN_DEFAULT,
+  headFont: BLOCK_FONT_DEFAULT,
+  codeFont: BLOCK_FONT_DEFAULT,
+  headInk: BLOCK_HEAD_INK_DEFAULT,
+  weight: null,
+  lineHeight: null,
+  letterSpacing: null
 };
 
 // `fit` and `codeWrap` are the only two boolean fields in the bag, and unlike
@@ -342,8 +400,29 @@ export function normalizeBlockStyle(style) {
     // reader types. Absent is the hairline a block has always had.
     lineWidth: normalizeBlockNumber(from.lineWidth),
     lineDash: normalizeBlockLineDash(from.lineDash),
-    valign: normalizeBlockValign(from.valign)
+    valign: normalizeBlockValign(from.valign),
+    headFont: normalizeBlockFont(from.headFont),
+    codeFont: normalizeBlockFont(from.codeFont),
+    headInk: normalizeBlockHeadInk(from.headInk),
+    weight: normalizeBlockWeight(from.weight),
+    lineHeight: normalizeBlockLineHeight(from.lineHeight),
+    letterSpacing: normalizeBlockLetterSpacing(from.letterSpacing)
   };
+}
+
+// The bag as it is STORED: only what differs from the default. Every block in
+// a file is in one `meta.pdfBlocks` array that is re-sent whole on every push,
+// and a Block given a yellow fill used to carry all of the other fields' defaults
+// beside it; with six more fields that would be six more on every styled Block
+// for ever. Reading is unchanged — normalizeBlockStyle fills in whatever is
+// absent, here and in every older copy of the app.
+export function compactBlockStyle(style) {
+  const it = normalizeBlockStyle(style);
+  const out = {};
+  Object.keys(BLOCK_STYLE_DEFAULT).forEach((key) => {
+    if (it[key] !== BLOCK_STYLE_DEFAULT[key]) out[key] = it[key];
+  });
+  return out;
 }
 
 // Whether a normalised style says anything at all.

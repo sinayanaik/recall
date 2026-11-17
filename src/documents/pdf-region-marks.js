@@ -36,6 +36,8 @@ import { decodeInkStrokes } from "../format/ink-strokes.js?v=__BUILD__";
 import { markGeometry, markStyleOf, normalizeMarkHex, paintMarkGeometry } from "../format/mark-styles.js?v=__BUILD__";
 import { paintInkLayers } from "../render/ink-paint.js?v=__BUILD__";
 import { paperKeyBg, paperKeyParts, paperRecolor } from "../format/paper-tones.js?v=__BUILD__";
+import { copyPaperPalette } from "../format/paper-palette.js?v=__BUILD__";
+import { documentStages } from "./doc-scrollers.js?v=__BUILD__";
 import { normalizeShape, paintShapeOnCanvas, paintShapeTextOnCanvas, shapeTextNeedsRendering, shapeTextRect } from "../render/annot-shapes.js?v=__BUILD__";
 import { recordsForSurface } from "./pdf-multi.js?v=__BUILD__";
 
@@ -125,7 +127,7 @@ export function regionMarksOnPage(source, pageNumber, { excludeId = null, exclud
 // — for a page shown on a tinted tone: the polarity decides the blend and the
 // pen set, and the paper's colour is what a reader's own colours (a custom pen,
 // a shape) are kept readable against.
-export function paintRegionMarks(ctx, viewport, marks, { paper = "light", areas = true, skipTextIds = null } = {}) {
+export function paintRegionMarks(ctx, viewport, marks, { paper = "light", areas = true, skipTextIds = null, fontFamily = undefined } = {}) {
   const dark = paperKeyParts(paper).dark;
   const paperBg = paperKeyBg(paper);
   const recolor = paperRecolor(paperBg);
@@ -191,7 +193,8 @@ export function paintRegionMarks(ctx, viewport, marks, { paper = "light", areas 
     if (!areas || !marks.shapes?.length) return;
     marks.shapes.forEach((record) => paintShapeOnCanvas(ctx, record.shape, ([x, y]) => viewport.convertToViewportPoint(x, y), viewport.scale, {
       skipText: Boolean(skipTextIds?.has?.(record.id)),
-      recolor
+      recolor,
+      fontFamily
     }));
   };
   if (!marks.ink.length) { paintShapes(); return; }
@@ -262,6 +265,28 @@ export function shapeTextRasterIds(rasters) {
 function shapeTextBlock({ record, rect }) {
   const rot = normalizeShape(record.shape)?.rot || 0;
   return { id: record.id, x: rect[0], y: rect[1], w: rect[2] - rect[0], h: rect[3] - rect[1], z: Infinity, ...(rot ? { rot } : {}) };
+}
+
+// What a picture of a region looks like besides what is on the page: the theme
+// (its accents, made readable on the paper), the paper itself, and the Canvas's
+// type (◐ Canvas, state.canvasTypeStamp). A memoised picture is filed under
+// this too (regionImageKey, src/documents/pdf-region-embed.js), so a theme
+// switched or a face changed draws the picture again rather than showing the
+// one made before.
+export function regionLookStamp(source) {
+  const stage = regionStageFor(source);
+  const theme = typeof document !== "undefined" ? (document.documentElement?.dataset?.theme || "") : "";
+  return `${theme}|${stage?.dataset?.paper || ""}|${stage?.dataset?.paperBg || ""}|${state.canvasTypeStamp || ""}`;
+}
+
+// The stage showing the paper this region is on — the one whose palette and
+// type a picture of it must wear. The other stage, side by side, can be the
+// live one.
+function regionStageFor(source) {
+  const stages = documentStages();
+  return stages.find((stage) => !stage.hidden && stage.dataset.docSlot === source?.slot)
+    || stages.find((stage) => stage.dataset.docSlot === source?.slot)
+    || el.documentStage;
 }
 
 // The words drawn as PLAIN text onto a canvas of their own — the fallback when
@@ -461,21 +486,44 @@ export async function rasteriseRegionBlocks(page, source, pageNumber, rect, pixe
   const host = document.createElement("div");
   host.setAttribute("aria-hidden", "true");
   host.style.cssText = `position:fixed;left:-100000px;top:0;width:${Math.ceil(viewport.width)}px;height:${Math.ceil(viewport.height)}px;pointer-events:none;`;
-  if (paper === "light") host.className = "print-tokens";
-  else {
+  // Which part this is a copy of: a Canvas page's Blocks are set in ◐ Canvas's
+  // type (styles/79-tab-text.css and a3-canvas-type.css match
+  // `.region-block-host[data-doc-slot]`), and drawn here they used to come out
+  // in the PDFs' sizes and the Cards' headings.
+  host.dataset.docSlot = source.slot;
+  const stage = regionStageFor(source);
+  let shapeRecolor = null;
+  if (paper === "light") {
+    host.className = "region-block-host print-tokens";
+    shapeRecolor = paperRecolor("#ffffff");
+  } else {
     // As the reader sees it: a block on the page takes its colours from the
     // paper it is on (styles/94-paper-tones.css), not from the theme, so the
-    // copy drawn here is told the same paper.
-    const stage = el.documentStage;
+    // copy drawn here is told the same paper — its colour, its words, and the
+    // theme's accents made readable on it — by the stage it is on.
     const dark = Boolean(stage?.classList.contains("is-pdf-inverted"));
-    host.className = dark ? "paper-tokens is-dark-paper" : "paper-tokens";
-    host.style.setProperty("--paper-bg", stage?.dataset.paperBg || (dark ? "#030303" : "#ffffff"));
-    host.style.setProperty("--paper-text", dark ? "#e8eaed" : "#16181d");
+    host.className = "region-block-host paper-tokens";
+    copyPaperPalette(stage, host);
+    if (!host.style.getPropertyValue("--paper-bg")) host.style.setProperty("--paper-bg", stage?.dataset.paperBg || (dark ? "#030303" : "#ffffff"));
+    if (!host.style.getPropertyValue("--paper-text")) host.style.setProperty("--paper-text", dark ? "#e8eaed" : "#16181d");
+    host.classList.toggle("is-dark-paper", dark);
+    shapeRecolor = paperRecolor(host.style.getPropertyValue("--paper-bg").trim());
   }
   document.body.appendChild(host);
   const rasters = [];
   let failed = 0;
-  let fontEmbedCSS;
+  // The webfonts each picture needs, worked out once per SET of faces: it used
+  // to be worked out from the first Block alone and handed to every one after
+  // it, so a second Block in another face (its own, or the Canvas's heading or
+  // code face) was drawn in a fallback.
+  const fontEmbeds = new Map();
+  const fontEmbedFor = async (node) => {
+    const faces = new Set();
+    [node, ...node.querySelectorAll("*")].forEach((element) => faces.add(getComputedStyle(element).fontFamily));
+    const key = [...faces].sort().join("|");
+    if (!fontEmbeds.has(key)) fontEmbeds.set(key, await window.htmlToImage.getFontEmbedCSS(node).catch(() => ""));
+    return fontEmbeds.get(key);
+  };
   // A diagram on paper that is printed white is drawn in the print palette —
   // dark lines and words on white — as the Markdown → PDF writer draws its
   // own (src/documents/md-pdf/assets.js). In the app's theme a dark theme's
@@ -503,9 +551,8 @@ export async function rasteriseRegionBlocks(page, source, pageNumber, rect, pixe
       const width = parseFloat(node.style.width) || 1;
       const height = parseFloat(node.style.height) || 1;
       try {
-        // The fonts are worked out once and handed to every block after.
         // eslint-disable-next-line no-await-in-loop
-        if (fontEmbedCSS === undefined) fontEmbedCSS = await window.htmlToImage.getFontEmbedCSS(node).catch(() => "");
+        const fontEmbedCSS = await fontEmbedFor(node);
         // eslint-disable-next-line no-await-in-loop
         const canvas = await nodeToCanvas(node, {
           pixelRatio: nodeRatio,
@@ -529,7 +576,7 @@ export async function rasteriseRegionBlocks(page, source, pageNumber, rect, pixe
     }
     for (const item of texts) {
       // eslint-disable-next-line no-await-in-loop
-      const node = await blockSource.buildStaticShapeText(item.record, viewport, { mountIn: host }).catch((error) => {
+      const node = await blockSource.buildStaticShapeText(item.record, viewport, { mountIn: host, recolor: shapeRecolor }).catch((error) => {
         console.warn("Could not render a text box's words for a picture", error);
         return null;
       });
@@ -542,7 +589,7 @@ export async function rasteriseRegionBlocks(page, source, pageNumber, rect, pixe
       const block = shapeTextBlock(item);
       try {
         // eslint-disable-next-line no-await-in-loop
-        if (fontEmbedCSS === undefined) fontEmbedCSS = await window.htmlToImage.getFontEmbedCSS(node).catch(() => "");
+        const fontEmbedCSS = await fontEmbedFor(node);
         // eslint-disable-next-line no-await-in-loop
         const canvas = await nodeToCanvas(node, {
           pixelRatio: nodeRatio,

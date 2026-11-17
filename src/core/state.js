@@ -87,6 +87,9 @@ export const state = {
   styleEditProfile: "desktop",
   styleEditProfileFollowsDevice: true,
   styleTouched: false,
+  // The Canvas's type settings as one string (noteCanvasTypeChange,
+  // src/ui/style-settings.js) — null until the first apply.
+  canvasTypeStamp: null,
   stylePanelScrollY: 0,
   stylePanelTouchY: 0
 };

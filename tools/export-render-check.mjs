@@ -76,7 +76,8 @@ const API_SRC = `async () => {
     "/src/cards/new-deck.js?v=__BUILD__",
     "/src/boot.js?v=__BUILD__",
     "/src/core/state.js?v=__BUILD__",
-    "/src/core/dom.js?v=__BUILD__"
+    "/src/core/dom.js?v=__BUILD__",
+    "/src/ui/style-settings.js?v=__BUILD__"
   ];
   const mods = await Promise.all(paths.map((p) => import(p)));
   const api = {};
@@ -620,6 +621,34 @@ try {
     const blackCorner = px(onBlack, 10, 10);
     const blackBlock = px(onBlack, Math.round(((record?.x || 0) + (record?.w || 0) - 10) * k), Math.round((pageH - (record?.y || 0) - 10) * k));
     const blackPaperBg = document.getElementById("documentStage").dataset.paperBg;
+    // The page number on Black, read off the file's own pixels where "1 / 1"
+    // is drawn: the paper's own words at 60%, a light grey, as on screen.
+    const numberBand = (r) => {
+      const kk = r.width / pageW;
+      let sum = 0; let n = 0; let light = 0; let dark = 0;
+      for (let y = Math.round((pageH - 22) * kk); y < Math.round((pageH - 12) * kk); y += 1) {
+        for (let x = Math.round((pageW / 2 - 14) * kk); x < Math.round((pageW / 2 + 14) * kk); x += 1) {
+          const i = (y * r.width + x) * 4;
+          const l = 0.299 * r.data[i] + 0.587 * r.data[i + 1] + 0.114 * r.data[i + 2];
+          sum += l; n += 1;
+          if (l > 100) light += 1;
+          if (l < 160) dark += 1;
+        }
+      }
+      return { mean: n ? sum / n : 0, light, dark };
+    };
+    const blackNumber = numberBand(onBlack);
+    // ◐ Canvas → Labels in a face pdf-lib has no file for: the number is drawn
+    // into the page's picture in that face, not written as Helvetica text.
+    api.setPaperTone("white");
+    await settle(300);
+    const settingsWere = { ...api.state.styleSettings };
+    api.applyStyleSettings({ ...settingsWere, canvasLabelFontFamily: "serif" });
+    await settle(200);
+    const labelled = await readBack(await api.buildCanvasPdfBytes());
+    api.applyStyleSettings(settingsWere);
+    await settle(200);
+    const labelledNumber = numberBand(labelled);
     api.setPaperTone(toneWas);
     await settle(400);
     return {
@@ -643,6 +672,9 @@ try {
       blackCorner,
       blackBlock,
       blackPaperBg,
+      blackNumber,
+      labelledText: labelled.text,
+      labelledNumber,
       pdfName: without.name,
       whitePng: withBlock.png(),
       fileName,
@@ -680,6 +712,11 @@ try {
       };
       check("Canvas PDF: on Black paper the page is the paper, as on screen — not white",
         near(canvas.blackCorner, canvas.blackPaperBg, 12), `${JSON.stringify(canvas.blackCorner)} for ${canvas.blackPaperBg}`);
+      check("...and its page number is the paper's own words, a light grey, drawn on it",
+        canvas.blackNumber.light > 10, JSON.stringify(canvas.blackNumber));
+      check("Canvas PDF: with ◐ Canvas → Labels set, the page number is drawn in that face into the page, not written in Helvetica",
+        !/\d+ \/ \d+/.test(canvas.labelledText) && canvas.labelledNumber.dark > 10,
+        `${JSON.stringify(canvas.labelledText)} · ${JSON.stringify(canvas.labelledNumber)}`);
       if (htmlToImage && canvas.blockMade) {
         check("Canvas PDF: a typed block on the page is drawn onto the exported page",
           canvas.changed > 400, `${canvas.changed} pixel(s) differ with the block`);

@@ -54,10 +54,11 @@ import { el } from "../core/dom.js?v=__BUILD__";
 import { state } from "../core/state.js?v=__BUILD__";
 import { closeBlockActionsPopover, openBlockActionsPopover, placeBlockActionsPopover } from "./block-actions-popover.js?v=__BUILD__";
 import { closeBlockStylePopover, openBlockStylePopover } from "./block-style-bar.js?v=__BUILD__";
-import { BLOCK_SHAPE_DEFAULT, blockFillVar, blockInkVar, blockLineVar, isDefaultBlockStyle, normalizeBlockStyle } from "./block-style.js?v=__BUILD__";
+import { BLOCK_SHAPE_DEFAULT, blockFillVar, blockHeadInkVar, blockInkVar, blockLineVar, compactBlockStyle, isDefaultBlockStyle, normalizeBlockStyle } from "./block-style.js?v=__BUILD__";
 import { outlineInsets, outlineSvgPaths } from "../render/node-outlines.js?v=__BUILD__";
 import { normalizeShapeRotation, rotatePoint } from "../render/annot-shapes.js?v=__BUILD__";
 import { activeDocSlot, DOC_SLOT_DOC, stampDocSlotAll } from "./doc-slot.js?v=__BUILD__";
+import { documentStages } from "./doc-scrollers.js?v=__BUILD__";
 import { activePdfId, recordsForSurface, recordsOutsideSurface, stampRecordPdfIdAll } from "./pdf-multi.js?v=__BUILD__";
 import { closeBlockEditor, openBlockEditor } from "./pdf-block-editor.js?v=__BUILD__";
 import { closeInlineBlockEditor, inlineBlockEditorHolds, inlineBlockEditorId, inlineBlockEditorValue, mountInlineBlockEditor, openInlineBlockEditor } from "./pdf-block-inline.js?v=__BUILD__";
@@ -847,9 +848,24 @@ function paintBlockStyle(node, block) {
   const ink = blockInkVar(style.ink);
   // Removed rather than set to a fallback: with no property the body inherits
   // the theme's own text colour, which is what "default" means and what a block
-  // has always done.
-  if (ink) node.style.setProperty("--pdf-block-ink", `var(${ink})`);
-  else node.style.removeProperty("--pdf-block-ink");
+  // has always done. The attribute is what lets the colour reach the Block's
+  // headings, links and quotes too (styles/58-block-style.css), which are
+  // drawn in the page's accents rather than in its words' colour.
+  if (ink) {
+    node.style.setProperty("--pdf-block-ink", `var(${ink})`);
+    node.dataset.blockInk = style.ink;
+  } else {
+    node.style.removeProperty("--pdf-block-ink");
+    delete node.dataset.blockInk;
+  }
+  const headInk = blockHeadInkVar(style.headInk);
+  if (headInk) {
+    node.style.setProperty("--pdf-block-head-ink", `var(${headInk})`);
+    node.dataset.blockHeadInk = style.headInk;
+  } else {
+    node.style.removeProperty("--pdf-block-head-ink");
+    delete node.dataset.blockHeadInk;
+  }
 
   // ── Every optional value is an ATTRIBUTE that is there or is not ─────────
   //
@@ -870,6 +886,11 @@ function paintBlockStyle(node, block) {
   setBlockNumber(node, "blockImageWidth", "--pdf-block-image-width", block.kind === PDF_BLOCK_IMAGE ? null : style.imageWidth);
   if (style.codeWrap) node.dataset.blockCodeWrap = "";
   else delete node.dataset.blockCodeWrap;
+  // The rest of the type: a weight, a line height (a multiple of the size) and
+  // a letter spacing in points — each over whatever ◐ Canvas says.
+  setBlockNumber(node, "blockWeight", "--pdf-block-weight", style.weight);
+  setBlockNumber(node, "blockLineHeight", "--pdf-block-line-height", style.lineHeight);
+  setBlockNumber(node, "blockLetterSpacing", "--pdf-block-letter-spacing", style.letterSpacing);
 
   // ── A diagram's box: its outline, its edge and where its words sit ───────
   //
@@ -896,15 +917,24 @@ function paintBlockStyle(node, block) {
   // every block on a page at every repaint, and while the call is cheap and
   // idempotent, asking for a font a hundred times a second is not a thing to
   // write down and leave for somebody to find.
-  if (node.dataset.blockFont !== style.font) {
-    if (style.font === "inherit") {
-      delete node.dataset.blockFont;
-      node.style.removeProperty("--pdf-block-font");
-    } else {
-      node.dataset.blockFont = style.font;
-      node.style.setProperty("--pdf-block-font", resolveFontFamily(style.font));
-    }
+  setBlockFace(node, "blockFont", "--pdf-block-font", style.font);
+  // ...and the faces of its headings and its code, the same way.
+  setBlockFace(node, "blockHeadFont", "--pdf-block-head-font", style.headFont);
+  setBlockFace(node, "blockCodeFont", "--pdf-block-code-font", style.codeFont);
+}
+
+// A face, as the attribute the CSS switches on plus the stack it paints with.
+// Only when the choice has CHANGED, for the reason written above it.
+function setBlockFace(node, attribute, property, key) {
+  const want = key && key !== "inherit" ? key : undefined;
+  if (node.dataset[attribute] === want) return;
+  if (!want) {
+    delete node.dataset[attribute];
+    node.style.removeProperty(property);
+    return;
   }
+  node.dataset[attribute] = want;
+  node.style.setProperty(property, resolveFontFamily(want));
 }
 
 // An optional number, as the attribute the CSS switches on plus the value it
@@ -1004,7 +1034,13 @@ function blockHolds(block) {
     // A fence, or a line indented into a code block. Both are what Prism will
     // end up drawing a <pre> for.
     code: /(^|\n) {0,3}(```|~~~)/.test(md) || /(^|\n)(?: {4}|\t)\S/.test(md),
-    image: /!\[[^\]]*\]\(/.test(md) || /<img\b/i.test(md)
+    // `inline code` — which the Code face reaches and the code size and wrap,
+    // being about listings, do not.
+    inlineCode: /`[^`\n]+`/.test(md),
+    image: /!\[[^\]]*\]\(/.test(md) || /<img\b/i.test(md),
+    // An ATX heading, or a <h1>…<h6> somebody typed. What the Headings colour
+    // and face are for.
+    heading: /(^|\n) {0,3}#{1,6}\s+\S/.test(md) || /<h[1-6]\b/i.test(md)
   };
 }
 
@@ -1478,6 +1514,38 @@ async function renderBlockBody(body, md, node = null, block = null) {
   }
 }
 
+// ── Diagrams, drawn again in the page's colours ────────────────────────────
+//
+// A Block re-renders only when its words change (paintBlock), which is right
+// for everything CSS draws: a theme, a paper or a Canvas font reaches the words,
+// the headings and the code on its own. A diagram is the exception — mermaid and
+// nomnoml bake their colours and their face into the SVG when they draw it
+// (src/render/enhance.js reads the page's palette at that moment) — so one drawn
+// under the last theme kept the last theme's boxes. This draws every Block that
+// holds one again, on both papers side by side; the paper beside is suspended,
+// and its Blocks are drawn without being refitted, which is what its next turn
+// live is for. Coalesced, so a theme picked and a paper repainted in one breath
+// is one pass.
+let paperDiagramTimer = 0;
+
+export function rerenderPaperDiagrams() {
+  clearTimeout(paperDiagramTimer);
+  paperDiagramTimer = setTimeout(() => {
+    paperDiagramTimer = 0;
+    const live = new Map(documentBlocks().map((block) => [block.id, block]));
+    documentStages().forEach((stage) => {
+      stage.querySelectorAll(".pdf-block-body.rendered").forEach((body) => {
+        if (!body.querySelector(".mermaid, .nomnoml-diagram")) return;
+        const md = renderedMarkdown.get(body);
+        if (typeof md !== "string") return;
+        const node = body.closest(".pdf-block");
+        const block = live.get(node?.dataset.pdfBlock) || null;
+        renderBlockBody(body, md, block ? node : null, block);
+      });
+    });
+  }, 60);
+}
+
 // ── A block that is only looked at ──────────────────────────────────────────
 //
 // A region pictured somewhere other than the page — an embed in the notes or on
@@ -1646,7 +1714,7 @@ export function addDocumentBlock(pageNumber, at = null, { style = null, w = null
     kind: PDF_BLOCK_MARKDOWN,
     md: String(md || ""),
     at: Date.now(),
-    ...(inherited ? { style: inherited } : {})
+    ...(inherited ? { style: compactBlockStyle(inherited) } : {})
   };
   writeBlocks([...blocks, block]);
   setSelectedId(block.id);
@@ -1728,7 +1796,7 @@ export async function addDocumentImageBlock(pageNumber, file, at = null, { ancho
     src: stored.url,
     alt: "",
     at: Date.now(),
-    ...(inherited ? { style: inherited } : {})
+    ...(inherited ? { style: compactBlockStyle(inherited) } : {})
   };
   writeBlocks([...blocks, block]);
   setSelectedId(block.id);
@@ -1862,7 +1930,7 @@ export function writeBlockStyle(id, patch) {
   writeBlocks(blocks.map((entry) => {
     if (entry.id !== id) return entry;
     const { style: _drop, ...rest } = entry;
-    return bare ? { ...rest, at: Date.now() } : { ...rest, style: next, at: Date.now() };
+    return bare ? { ...rest, at: Date.now() } : { ...rest, style: compactBlockStyle(next), at: Date.now() };
   }), { coalesce });
   // Remembered on this device, so the NEXT block starts here — see
   // blockStylePreference. Written from the whole bag rather than from the patch:

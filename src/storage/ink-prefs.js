@@ -406,7 +406,7 @@ export function blockPanelPreference() {
     const parsed = raw ? JSON.parse(raw) : null;
     const stored = parsed?.blockPanel;
     return {
-      swatch: stored?.swatch === "ink" ? "ink" : BLOCK_PANEL_DEFAULT.swatch,
+      swatch: ["ink", "head"].includes(stored?.swatch) ? stored.swatch : BLOCK_PANEL_DEFAULT.swatch,
       more: typeof stored?.more === "boolean" ? stored.more : BLOCK_PANEL_DEFAULT.more
     };
   } catch (_) {

@@ -23,7 +23,7 @@
   --raw-markdown-font-size: var(--notes-raw-font-size);
 }
 
-:is(#documentStage, #documentStageAlt) {
+:is(#documentStage, #documentStageAlt, .region-block-host) {
   --code-font-size: var(--doc-code-font-size);
 }
 
@@ -42,7 +42,7 @@
 #notesStage,
 .highlight-cycle,
 #quickNotesBoard,
-:is(#documentStage, #documentStageAlt) {
+:is(#documentStage, #documentStageAlt, .region-block-host) {
   --heading-h1-scale: var(--notes-heading-h1-scale, 1.2);
   --heading-h2-scale: var(--notes-heading-h2-scale, 1.12);
   --heading-h3-scale: var(--notes-heading-h3-scale, 1.06);
@@ -79,14 +79,37 @@
   --content-line-height: var(--hl-note-line-height, var(--notes-line-height, 1.58));
 }
 
-/* A Canvas's blocks: its own three sizes, where they were the PDF's.
-   data-doc-slot is set on the stage by setViewMode (src/ui/view-mode.js), and
-   the rules below this one read these three variables, so redeclaring them on
-   the stage is all it takes. */
-:is(#documentStage, #documentStageAlt)[data-doc-slot="notebook"] {
+/* A Canvas's blocks: its own sizes, where they were the PDF's — and the rest of
+   its type (◐ Canvas → Blocks, Headings, Code, Labels). data-doc-slot is set on
+   the stage by setViewMode (src/ui/view-mode.js), and the rules below this one
+   and in styles/a3-canvas-type.css read the --doc-* names, so redeclaring them
+   on the stage is all it takes. `.region-block-host` is the off-screen copy of
+   a page a picture or the Canvas PDF is drawn from
+   (src/documents/pdf-region-marks.js), told which part it is a copy of — it
+   used to be drawn in the PDFs' sizes and the Cards' headings.
+
+   The faces, weights and spacings name no fallback here: an unset one leaves
+   its --doc-* name unset too, and the consumer's own fallback (which is the
+   Canvas as it always was) applies. */
+:is(#documentStage, #documentStageAlt, .region-block-host)[data-doc-slot="notebook"] {
   --doc-block-font-size: var(--canvas-block-font-size, 0.82rem);
   --doc-block-line-height: var(--canvas-block-line-height, 1.4);
   --doc-code-font-size: var(--canvas-code-font-size, 1em);
+  --doc-block-font: var(--canvas-block-font);
+  --doc-block-weight: var(--canvas-block-font-weight);
+  --doc-block-letter-spacing: var(--canvas-block-letter-spacing);
+  --doc-table-scale: var(--canvas-table-scale);
+  --doc-head-font: var(--canvas-heading-font);
+  --doc-head-weight: var(--canvas-heading-weight);
+  --doc-code-font: var(--canvas-code-font);
+  --doc-code-line-height: var(--canvas-code-line-height);
+  --doc-label-font: var(--canvas-label-font);
+  --heading-h1-scale: var(--canvas-heading-h1-scale, var(--notes-heading-h1-scale, 1.2));
+  --heading-h2-scale: var(--canvas-heading-h2-scale, var(--notes-heading-h2-scale, 1.12));
+  --heading-h3-scale: var(--canvas-heading-h3-scale, var(--notes-heading-h3-scale, 1.06));
+  --heading-h4-scale: var(--canvas-heading-h4-scale, var(--notes-heading-h4-scale, 1));
+  --heading-h5-scale: var(--canvas-heading-h5-scale, var(--notes-heading-h5-scale, 1));
+  --heading-h6-scale: var(--canvas-heading-h6-scale, var(--notes-heading-h6-scale, 1));
 }
 
 /* Blocks on PDF and handwriting pages. Same specificity as the rules in

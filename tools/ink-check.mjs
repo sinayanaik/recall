@@ -981,7 +981,9 @@ try {
       if (at < 0) return "";
       return paperCss.slice(paperCss.indexOf("{", at) + 1, paperCss.indexOf("}", at));
     };
-    const pageLight = paperBlock(".document-stage .pdf-page,\n.paper-tokens {");
+    // The selector list also names .bstyle-paper (a Block style panel's chips,
+    // shown on the page's paper), so only its start is matched.
+    const pageLight = paperBlock(".document-stage .pdf-page,\n.paper-tokens,");
     const pageDark = paperBlock(".document-stage.is-pdf-inverted .pdf-page,");
     for (const token of Object.keys(INK_PEN_HEX)) {
       if (read(pageLight, token) !== INK_PEN_HEX[token]) return `page, light ${token}: css ${read(pageLight, token)}, js ${INK_PEN_HEX[token]}`;

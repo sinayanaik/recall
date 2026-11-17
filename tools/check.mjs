@@ -507,8 +507,15 @@ const checks = [
   // the picture keys White and Black must keep, a dark page never pure black,
   // and the rule that keeps a reader's own colour readable on whatever paper is
   // under it — a colour that reads is never touched. Pure Node, like the two
-  // above.
+  // above. And the palette over it: every theme's accents, on every paper,
+  // readable and in the theme's own hue (src/format/paper-palette.js).
   ["paper-tones   ", ["node", ["tools/paper-tones-check.mjs"], ROOT]],
+  // The Canvas's type: ◐ Canvas → Blocks / Headings / Code / Labels, whether
+  // every variable they write is read by a stylesheet, a Block's own type stored
+  // as only what was set, and a diagram on a page told its page's colours.
+  // Pure Node; the browser half — does each face reach its heading, code, table
+  // and page number — is canvas-blocks below.
+  ["canvas-type   ", ["node", ["tools/canvas-type-check.mjs"], ROOT]],
   // Dark page keeping a page's photographs (src/documents/pdf-image-keep.js):
   // where an operator list paints pictures, which are paper and which are not,
   // and the real pdf.js's list for a fixture page. Node only here; the browser

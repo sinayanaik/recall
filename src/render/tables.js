@@ -114,6 +114,10 @@ export function markdownTableFits(table, wrapper) {
 export function fitMarkdownTableFont(table) {
   const wrapper = table.parentElement;
   if (!wrapper?.classList.contains("markdown-table-wrap") || !wrapper.clientWidth) return;
+  if (table.closest(ON_A_PAGE)) {
+    fitPageTable(table, wrapper);
+    return;
+  }
 
   if (!table.dataset.baseFontSize) {
     table.dataset.baseFontSize = String(parseFloat(getComputedStyle(table).fontSize) || 16);
@@ -143,6 +147,39 @@ export function fitMarkdownTableFont(table) {
   }
 
   table.style.fontSize = `${Math.max(minimumFontSize, best - 0.25)}px`;
+}
+
+// A table in a Block or a Shapes text box on a page — or in the off-screen copy
+// of a page a picture is drawn from. Its size is the words around it times
+// ◐ Canvas → Table text size (styles/a3-canvas-type.css), and both of those
+// move with a zoom, a Block's own size and the setting. The size the fit above
+// remembers is in px, measured once: on a page it was the size at whatever zoom
+// the table was first drawn, and an inline px size then held it there through
+// every later zoom. So here the fit is a RATIO, written as --table-fit, and the
+// size it starts from is measured fresh each time.
+const ON_A_PAGE = ".document-stage .pdf-page, .paper-tokens, .region-block-host";
+
+function fitPageTable(table, wrapper) {
+  table.style.removeProperty("font-size");
+  table.style.removeProperty("--table-fit");
+  delete table.dataset.baseFontSize;
+  if (styleMobileMedia?.matches || markdownTableFits(table, wrapper)) return;
+  const base = parseFloat(getComputedStyle(table).fontSize) || 16;
+  const minimum = Math.min(1, 7 / base);
+  let low = minimum;
+  let high = 1;
+  let best = low;
+  for (let index = 0; index < 10; index += 1) {
+    const mid = (low + high) / 2;
+    table.style.setProperty("--table-fit", String(mid));
+    if (markdownTableFits(table, wrapper)) {
+      best = mid;
+      low = mid;
+    } else {
+      high = mid;
+    }
+  }
+  table.style.setProperty("--table-fit", String(Math.max(minimum, best - (0.25 / base)).toFixed(4)));
 }
 
 export function fitMarkdownTableBatch(tables) {

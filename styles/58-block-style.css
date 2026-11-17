@@ -98,6 +98,56 @@
   font-family: var(--pdf-block-font);
 }
 
+/* ── The rest of a Block's own type ─────────────────────────────────────────
+ *
+ * Each of these is a statement about one Block, so each wins over what
+ * ◐ Canvas says for every Block (styles/a3-canvas-type.css, whose Canvas half
+ * is in :where() for exactly this reason). The numbers follow the size's
+ * device — present only when set — and the letter spacing is in points like
+ * the size, so it is multiplied by the page's scale. */
+.pdf-block[data-block-weight] .pdf-block-body {
+  font-weight: var(--pdf-block-weight);
+}
+
+.pdf-block[data-block-line-height] .pdf-block-body {
+  line-height: var(--pdf-block-line-height);
+}
+
+.pdf-block[data-block-letter-spacing] .pdf-block-body {
+  letter-spacing: calc(var(--pdf-block-letter-spacing) * 1px * var(--pdf-block-scale, 1));
+}
+
+.pdf-block[data-block-head-font] .pdf-block-body :is(h1, h2, h3, h4, h5, h6) {
+  font-family: var(--pdf-block-head-font);
+}
+
+.pdf-block[data-block-code-font] .pdf-block-body :is(pre, code, samp),
+.pdf-block[data-block-code-font] .pdf-block-body :is(pre, code)[class*="language-"] {
+  font-family: var(--pdf-block-code-font);
+}
+
+/* A Block's Text colour reaches the whole Block. It used to stop at the plain
+   words: the headings, the links, the quote bar, a table's header and inline
+   code are drawn in the page's accents rather than in its words' colour, so a
+   red Block had red paragraphs under cyan headings. Inside a coloured Block
+   those tokens ARE its colour. Code listings keep their own panel. */
+.pdf-block[data-block-ink] .pdf-block-body {
+  --accent: var(--pdf-block-ink);
+  --accent-strong: var(--pdf-block-ink);
+  --text: var(--pdf-block-ink);
+  --review: var(--pdf-block-ink);
+  --muted: color-mix(in srgb, var(--pdf-block-ink) 72%, transparent);
+}
+
+/* ...and a colour for its headings alone, over that. */
+.pdf-block[data-block-head-ink] .pdf-block-body :is(h1, h2, h3, h4, h5, h6) {
+  --accent: var(--pdf-block-head-ink);
+  --accent-strong: var(--pdf-block-head-ink);
+  --text: var(--pdf-block-head-ink);
+  --muted: var(--pdf-block-head-ink);
+  color: var(--pdf-block-head-ink);
+}
+
 /* ── ...and the two things INSIDE a block that can be told something ───────
  *
  * A fenced listing and a picture. Both are drawn by rules the app already has,
@@ -187,6 +237,16 @@
   align-items: center;
   gap: 5px;
   min-width: 0;
+}
+
+/* A row of colour chips wearing the page's palette (createBlockStyleBar's
+   `paperFrom`, styles/94-paper-tones.css): on a little of the paper, so a
+   chip is seen against what the Block will be seen against. */
+.bstyle-swatches.bstyle-paper,
+.bstyle-group.bstyle-paper {
+  border-radius: 8px;
+  background: var(--paper-bg);
+  padding: 4px;
 }
 
 /* The size box and the alignment icons share a line: neither fills one, and two
@@ -393,6 +453,21 @@
    column of ragged left edges is what makes six controls read as sixteen. */
 .bstyle-more .bstyle-label {
   width: 54px;
+}
+
+/* ...except on the one line that holds three short boxes — weight, lines,
+   letters — where a 54px label each would push the third off a phone. */
+.bstyle-more .bstyle-type {
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+
+.bstyle-more .bstyle-type .bstyle-label {
+  width: auto;
+}
+
+.bstyle-more .bstyle-type .bstyle-input {
+  width: 3.6em;
 }
 
 /* ── ...where they float over the page ─────────────────────────────────────

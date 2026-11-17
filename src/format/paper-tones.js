@@ -117,7 +117,7 @@ function hslToRgb([h, s, l]) {
   return [hue(h + (1 / 3)) * 255, hue(h) * 255, hue(h - (1 / 3)) * 255];
 }
 
-function mixHex(a, b, amountOfB) {
+export function mixHex(a, b, amountOfB) {
   const x = parseHex(a);
   const y = parseHex(b);
   if (!x || !y) return a;
@@ -211,11 +211,15 @@ function nearly(hex, base) {
   return Boolean(a && b) && a.every((v, i) => Math.abs(v - b[i]) <= UNTINTED_SLACK);
 }
 
-// { id, dark, bg, tint, key } for a tone id under a theme.
+// { id, dark, bg, tint, key, text } for a tone id under a theme.
 //
 //   dark   which polarity: the pen set, the highlighter's blend, whether the
 //          page's pixels are inverted
 //   bg     the paper's colour, as the eye sees it
+//   text   the words on it: the theme's own text colour on "Match theme" —
+//          the page IS the theme there, so a Block on it reads exactly as a
+//          note does — and the neutral of the paper's polarity on every other
+//          tone (PAPER_TEXT)
 //   tint   null for plain white and plain black — the two looks there have
 //          always been — else the colour baked into the pixels (multiplied
 //          into a light page, the floor a dark one is lifted to)
@@ -226,11 +230,13 @@ export function resolvePaperTone(id, themeId = activeThemeId()) {
   const toneId = normalizePaperToneId(id);
   let dark;
   let bg;
+  let text = null;
   if (toneId === PAPER_TONE_THEME) {
     const theme = themeFor(themeId);
     // No theme attribute yet is the app's own default, a dark one.
     dark = theme ? theme.mode === "dark" : true;
     bg = theme?.colors?.panel || (dark ? PAPER_DARK_FLOOR : PAPER_WHITE);
+    text = parseHex(theme?.colors?.text) ? rgbToHex(parseHex(theme.colors.text)) : null;
   } else {
     const tone = PAPER_TONES.find((entry) => entry.id === toneId);
     dark = tone.dark;
@@ -240,7 +246,11 @@ export function resolvePaperTone(id, themeId = activeThemeId()) {
   const plain = dark ? PAPER_DARK_FLOOR : PAPER_WHITE;
   const tint = nearly(bg, plain) ? null : bg;
   if (!tint) bg = plain;
-  return { id: toneId, dark, bg, tint, key: paperKey(dark, tint) };
+  // A theme text that does not read on its own page (a theme whose text and
+  // panel are too close) is no promise worth keeping: the neutral then.
+  const neutral = dark ? PAPER_TEXT.dark : PAPER_TEXT.light;
+  if (!text || contrastRatio(text, bg) < 4.5) text = neutral;
+  return { id: toneId, dark, bg, tint, key: paperKey(dark, tint), text };
 }
 
 // The key for pixels that are `dark` (inverted) and carry `tint` (or none).

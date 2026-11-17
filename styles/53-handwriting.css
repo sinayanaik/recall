@@ -969,18 +969,19 @@ body.canvas-pages-busy :is(#documentStage, #documentStageAlt)[data-doc-slot="not
   right: 0;
   /* The box's bottom is the baseline less Helvetica's descent (~0.21em). */
   bottom: calc(var(--pdf-pt, calc(var(--pdf-page-w, 595px) / 595)) * (16 - 9 * 0.21));
-  font-family: Helvetica, Arial, sans-serif;
+  /* ◐ Canvas → Labels; Helvetica, which the export draws it in, when none. */
+  font-family: var(--doc-label-font, Helvetica, Arial, sans-serif);
   font-size: calc(var(--pdf-pt, calc(var(--pdf-page-w, 595px) / 595)) * 9);
   line-height: 1;
   text-align: center;
-  color: rgb(115 115 115);
+  /* The paper's own words at 60% on the paper: rgb(115 116 119) on White, the
+     grey it has always been, and the same strength of a tinted or dark paper's
+     own words rather than a grey chosen for white (paperNumberColor,
+     src/format/paper-palette.js, which the export draws it in). */
+  color: color-mix(in srgb, var(--paper-text, #16181d) 60%, var(--paper-bg, #ffffff));
   font-variant-numeric: tabular-nums;
   pointer-events: none;
   user-select: none;
-}
-
-.document-stage.is-pdf-inverted[data-doc-slot="notebook"] .pdf-page::after {
-  color: rgb(255 255 255 / 0.5);
 }
 
 body.canvas-page-numbers-off :is(#documentStage, #documentStageAlt)[data-doc-slot="notebook"] .pdf-page::after {

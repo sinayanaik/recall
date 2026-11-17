@@ -50,10 +50,13 @@ export const SHAPE_TEXT_BODY_CLASS = "pdf-shape-text-body";
 // The one text primitive of a callout or a text box, or null for every other
 // shape. Read off shapePrimitives so the box here and the box every other
 // renderer draws are the same rectangle by construction.
-export function shapeTextPrimitive(shape) {
+// `recolor` is the paper's (paperRecolor, src/format/paper-tones.js): the live
+// box is drawn through it, so a picture of the box must be too, or black words
+// typed on a dark page came out black in its picture and its export.
+export function shapeTextPrimitive(shape, { recolor = null } = {}) {
   const s = normalizeShape(shape);
   if (!s || (s.type !== "text" && s.type !== "callout")) return null;
-  return shapePrimitives(s).find((prim) => prim.kind === "text") || null;
+  return shapePrimitives(s, { recolor }).find((prim) => prim.kind === "text") || null;
 }
 
 // ── The box ─────────────────────────────────────────────────────────────────
@@ -171,6 +174,22 @@ export function mountShapeTextBody(box, id, text) {
   return entry;
 }
 
+// A diagram's colours and face are baked when it renders, so a box holding one
+// is out of date the moment the theme, the paper or the Canvas's type changes —
+// unlike everything else in a box, which is CSS and follows on its own. Its
+// cached body is dropped, and the next paint of the shapes (the caller repaints
+// them) renders it again.
+export function forgetShapeTextDiagrams() {
+  let forgot = 0;
+  [...bodies.entries()].forEach(([id, entry]) => {
+    if (!entry.body.querySelector(".mermaid, .nomnoml-diagram")) return;
+    if (shapeTextSizeObserver) shapeTextSizeObserver.unobserve(entry.body);
+    bodies.delete(id);
+    forgot += 1;
+  });
+  return forgot;
+}
+
 function plainBody(text) {
   const body = document.createElement("div");
   body.className = `${SHAPE_TEXT_BODY_CLASS} is-plain`;
@@ -255,8 +274,8 @@ async function renderShapeMarkdown(body, source, stale = () => false) {
 // before the words are rendered, for the reason buildStaticBlock
 // (src/documents/pdf-blocks.js) gives: a diagram measures itself as it is
 // drawn, and a box outside the document has no size to measure.
-export async function buildStaticShapeText(record, viewport, { mountIn = null } = {}) {
-  const prim = shapeTextPrimitive(record?.shape);
+export async function buildStaticShapeText(record, viewport, { mountIn = null, recolor = null } = {}) {
+  const prim = shapeTextPrimitive(record?.shape, { recolor });
   if (!prim) return null;
   const box = document.createElement("div");
   box.className = `${PDF_SHAPE_TEXT_CLASS} is-static`;

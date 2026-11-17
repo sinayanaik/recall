@@ -133,7 +133,7 @@ import { initShutdown } from "./ui/shutdown.js?v=__BUILD__";
 import { goNavBack, recordNavHistory, refreshNavBack } from "./ui/nav-history.js?v=__BUILD__";
 import { anyModalOpen, lockPageScroll, unlockPageScroll } from "./ui/overlays.js?v=__BUILD__";
 import { chooseDeckCategory } from "./ui/pickers.js?v=__BUILD__";
-import { detectStyleProfile, resetStyleProfile, trackKeyboardInset, wireStyleHost } from "./ui/style-settings.js?v=__BUILD__";
+import { detectStyleProfile, resetStyleProfile, setCanvasTypeChangedHook, trackKeyboardInset, wireStyleHost } from "./ui/style-settings.js?v=__BUILD__";
 import { openSectionStyle, openSectionStyleFromPanel, setOpenAppStyleHandler, setSectionStyleSiblings, toggleSectionStyle } from "./ui/style-popover.js?v=__BUILD__";
 import { styleCoarsePointerMedia, styleMobileMedia } from "./ui/style-tokens.js?v=__BUILD__";
 import { setTheme, setThemeMenuOpen, setThemeRepaintHook } from "./ui/theme.js?v=__BUILD__";
@@ -161,7 +161,7 @@ import { adoptDocumentInk, canRedoInk, canUndoInk, copyInkSelection, cutInkSelec
 import { addHandwritingBlock, addHandwritingImages, addHandwritingTextBlock, enterHandwritingView, initHandwritingRail, refreshHandwritingBoard, runHandwritingMenuAction, startHandwritingNotebook } from "./handwriting/board.js?v=__BUILD__";
 import { closeBlockStylePopover, isBlockStylePopoverOpen } from "./documents/block-style-bar.js?v=__BUILD__";
 import { closeBlockActionsPopover, isBlockActionsPopoverOpen } from "./documents/block-actions-popover.js?v=__BUILD__";
-import { blocksForPaper, buildStaticBlock, canRedoBlocks, setDiagramShapeIO, canUndoBlocks, commitBlockEdit, deleteBlock, duplicateBlock, editBlock, handleBlockPointerDown, nudgeBlock, paintDocumentBlocks, pdfPointAt, redoBlocks, repaintDocumentBlocks, restackBlock, selectBlock, selectedBlockId, setBlocksChangedHandler, undoBlocks } from "./documents/pdf-blocks.js?v=__BUILD__";
+import { blocksForPaper, buildStaticBlock, canRedoBlocks, setDiagramShapeIO, canUndoBlocks, commitBlockEdit, deleteBlock, duplicateBlock, editBlock, handleBlockPointerDown, nudgeBlock, paintDocumentBlocks, pdfPointAt, redoBlocks, repaintDocumentBlocks, rerenderPaperDiagrams, restackBlock, selectBlock, selectedBlockId, setBlocksChangedHandler, undoBlocks } from "./documents/pdf-blocks.js?v=__BUILD__";
 import { applyInkRailPreference, closeInkRailPopups, initInkRail, refreshInkRail, rehomeInkRail, setDocumentUndoHandlers } from "./ui/ink-rail.js?v=__BUILD__";
 import { initDocumentShapes, repaintDocumentShapes, selectShape, setShapeCreatedHandler } from "./documents/pdf-shapes.js?v=__BUILD__";
 import { deleteWithConnectors, initConnectors, scheduleConnectorRelink } from "./documents/pdf-connectors.js?v=__BUILD__";
@@ -174,7 +174,7 @@ import { initGuides } from "./documents/pdf-guides.js?v=__BUILD__";
 import { openPaperMenu } from "./documents/paper-menu.js?v=__BUILD__";
 import { openShapeTextEditor } from "./documents/pdf-shape-text.js?v=__BUILD__";
 import { initShapeStylePopover } from "./documents/pdf-shape-style-popover.js?v=__BUILD__";
-import { buildStaticShapeText } from "./documents/pdf-shape-markdown.js?v=__BUILD__";
+import { buildStaticShapeText, forgetShapeTextDiagrams } from "./documents/pdf-shape-markdown.js?v=__BUILD__";
 import { INK_NUDGE_STEP, INK_NUDGE_STEP_COARSE } from "./render/ink-engine.js?v=__BUILD__";
 
 // ── Which of the two undo rings on this surface Ctrl+Z means ───────────────
@@ -2624,15 +2624,33 @@ setHandwritingViewHook(() => enterHandwritingView());
 // The shapes too: a colour the reader picked is drawn readable on the paper
 // under it (paperRecolor in src/format/paper-tones.js), so a new paper is a new
 // answer for a black text box and its border.
+// And the diagrams in Blocks and text boxes: the one thing on a page whose
+// colours are baked when it is drawn rather than read from CSS each paint
+// (rerenderPaperDiagrams, src/documents/pdf-blocks.js). A theme change reaches
+// them even where the paper did not move, because the paper's palette — the
+// theme's accents made readable on it — did.
+function redrawPaperDiagrams() {
+  rerenderPaperDiagrams();
+  if (forgetShapeTextDiagrams()) repaintDocumentShapes();
+}
 setPaperChangedHook(() => {
   repaintDocumentInk();
   repaintDocumentShapes();
   refreshInkRail();
+  redrawPaperDiagrams();
 });
 setThemeRepaintHook(() => {
   refreshDocumentPaperForTheme();
   repaintDocumentInk();
   repaintInkSheet();
+  redrawPaperDiagrams();
+});
+// ◐ Canvas changed a face or a size: CSS has already moved the words, and the
+// Shapes text boxes, which are fitted to their words, and the diagrams, which
+// bake their face, are drawn again.
+setCanvasTypeChangedHook(() => {
+  repaintDocumentShapes();
+  redrawPaperDiagrams();
 });
 setBlockEditFlushHook(() => commitBlockEdit());
 setNotebookStartHandler((options) => { startHandwritingNotebook(options); });

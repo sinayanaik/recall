@@ -705,6 +705,15 @@ export function wireStyleHost(root, { onOpenScope = null, onResetScope = null } 
   });
 }
 
+// The Canvas's four faces (◐ Canvas): the setting, and the variable it writes
+// once resolved. styles/79-tab-text.css points the Canvas stage at them.
+const CANVAS_FONT_VARIABLES = [
+  ["canvasBlockFontFamily", "--canvas-block-font"],
+  ["canvasHeadingFontFamily", "--canvas-heading-font"],
+  ["canvasCodeFontFamily", "--canvas-code-font"],
+  ["canvasLabelFontFamily", "--canvas-label-font"]
+];
+
 export function applyStyleSettings(rawSettings, options = {}) {
   const settings = normalizeStyleSettings(rawSettings);
   const activeProfile = state.activeStyleProfile || detectStyleProfile();
@@ -751,6 +760,19 @@ export function applyStyleSettings(rawSettings, options = {}) {
   } else {
     root.style.removeProperty("--notes-font-family");
   }
+  // The Canvas's four faces, the same device as notesFontFamily: a key into
+  // fontFamilyChoices, resolved (and its webfont fetched) here, and "inherit"
+  // writes nothing so the rule's own fallback — the Canvas as it always was —
+  // applies. The two choices that are not values are attributes on <html>,
+  // there only when they say something (styles/a3-canvas-type.css).
+  CANVAS_FONT_VARIABLES.forEach(([key, property]) => {
+    if (settings[key] && settings[key] !== "inherit") root.style.setProperty(property, resolveFontFamily(settings[key]));
+    else root.style.removeProperty(property);
+  });
+  if (settings.canvasHeadingColor && settings.canvasHeadingColor !== "ladder") root.dataset.canvasHeadingInk = settings.canvasHeadingColor;
+  else delete root.dataset.canvasHeadingInk;
+  if (settings.canvasCodeLook && settings.canvasCodeLook !== "paper") root.dataset.canvasCodeLook = settings.canvasCodeLook;
+  else delete root.dataset.canvasCodeLook;
   root.style.setProperty("--question-justify-items", questionJustifyItems(settings.questionAlign));
   // The generic writes. An `inherits` or `auto` field in its empty state is not
   // a value to write, it is an instruction NOT to: same device as
@@ -819,8 +841,29 @@ export function applyStyleSettings(rawSettings, options = {}) {
   }
   scheduleLiveQuestionFit();
   if (options.force) forceStyleRefresh();
+  noteCanvasTypeChange(settings);
 
   return settings;
+}
+
+// The Canvas's type, as one string: what a picture of a Canvas spot is filed
+// under (regionImageKey, src/documents/pdf-region-embed.js) and what tells the
+// Document surface that what is on its pages has to be drawn again — the
+// diagrams in Blocks, which bake their font when they render, and the Shapes
+// text boxes, whose sizes are fitted to their words. CSS reaches everything
+// else on its own.
+let canvasTypeChangedHook = () => {};
+
+export function setCanvasTypeChangedHook(fn) {
+  canvasTypeChangedHook = typeof fn === "function" ? fn : () => {};
+}
+
+function noteCanvasTypeChange(settings) {
+  const stamp = styleScopeKeys("handwriting").map((key) => settings[key] ?? "").join("|");
+  if (stamp === state.canvasTypeStamp) return;
+  const first = state.canvasTypeStamp === undefined || state.canvasTypeStamp === null;
+  state.canvasTypeStamp = stamp;
+  if (!first) canvasTypeChangedHook();
 }
 
 export function applyActiveStyleSettings(options = {}) {

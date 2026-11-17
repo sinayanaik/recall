@@ -1,0 +1,279 @@
+/* What is written on a page looks like the page it is on
+ *
+ * Two reports, one cause. "The Canvas only half-follows the theme": a Block's
+ * card and words followed the paper, but its code was a fixed dark panel on
+ * every paper and every theme. "A font change only reaches the plain words in a
+ * Block": headings had no face of their own, code was whatever monospace the
+ * browser or Prism picked, a table was sized in the Cards' text size, and the
+ * words the Shapes tool, a connector and the page numbers put on a page were
+ * fixed system fonts nothing could change.
+ *
+ * So, here:
+ *   1. a code panel that follows the PAPER — light on a light page, dark on a
+ *      dark one — or one look on every paper (◐ Canvas → Code → Look);
+ *   2. the Canvas's type (◐ Canvas → Blocks, Headings, Code, Labels): every
+ *      rule reads a --doc-* name that styles/79-tab-text.css points at the
+ *      --canvas-* setting on the Canvas stage only;
+ *   3. a table sized from the words around it, not from the Cards.
+ * The accents a page is drawn in (headings, links, quote bars, borders) are
+ * the other half, and are rebound in styles/94-paper-tones.css.
+ *
+ * ── Where these rules reach, and where they must not ──────────────────────
+ *
+ * Every selector starts at a PAGE: `.document-stage .pdf-page`, or the
+ * off-screen host a picture of a page is drawn in (`.paper-tokens`,
+ * `.region-block-host` — src/documents/pdf-region-marks.js). Never at a bare
+ * `.pdf-block-body`: a Canvas Block is also mounted inside a note and a card,
+ * in a "card of a spot" (mountRegionBlockLayer), and Notes and Cards are not
+ * changed by any of this.
+ *
+ * The Canvas half of each selector is in :where(), so it adds nothing to the
+ * specificity: a Block's own Style (`.pdf-block[data-…] .pdf-block-body …`,
+ * styles/58-block-style.css) always wins over the Canvas's setting.
+ *
+ * An empty setting writes nothing (applyStyleSettings), so its --doc-* name is
+ * unset and a `var()` with no fallback computes to `unset` — which for a face,
+ * a weight and a spacing means "inherit": the Block as it always was. Where a
+ * rule elsewhere sets the property (the heading weights, Prism's code face and
+ * line height), the fallback here repeats that rule's own value instead.
+ *
+ * A new file rather than lines in 06-rendered.css for the reason
+ * tools/split-css.mjs gives: the thirteen slices are compared byte for byte.
+ */
+
+/* ── 1. The code panel's colours ───────────────────────────────────────────
+ *
+ * Two sets: the light-editor colours on a light page, and on a dark one the
+ * colours 06-rendered.css has always painted. Following the paper, the panel
+ * itself is a shade OF the paper — a little lighter and greyer than a light
+ * one, a little darker than a dark one — so a listing on Sepia is a warm card
+ * and on Navy a navy one, rather than one grey-white or green-black slab on
+ * every paper. The two fixed looks (◐ Canvas → Code → Look) below keep fixed
+ * panels, since they are asked for exactly so as not to follow. */
+.document-stage:not(.is-pdf-inverted) .pdf-page,
+.paper-tokens:not(.is-dark-paper) {
+  --code-bg: color-mix(in srgb, var(--paper-text, #16181d) 4%, color-mix(in srgb, #ffffff 50%, var(--paper-bg, #ffffff)));
+  --code-fg: #1f2328;
+  --code-shadow: inset 0 1px 0 rgb(0 0 0 / 0.03);
+  --code-tok-comment: #6e7781;
+  --code-tok-keyword: #cf222e;
+  --code-tok-function: #6639ba;
+  --code-tok-builtin: #953800;
+  --code-tok-string: #0a3069;
+  --code-tok-number: #0550ae;
+  --code-tok-operator: #0e6a73;
+  --code-tok-punctuation: #57606a;
+  --code-tok-property: #116329;
+  --code-tok-variable: #9a4a00;
+  --code-copy-border: rgb(0 0 0 / 0.1);
+  --code-copy-bg: rgb(0 0 0 / 0.04);
+  --code-copy-fg: #57606a;
+  --code-copy-hover-bg: rgb(0 0 0 / 0.08);
+  --code-copy-hover-fg: #1f2328;
+  --code-copy-done: #1a7f37;
+  /* A highlight over code is stronger on a light panel, as in the light themes
+     (styles/66-code-marks.css). */
+  --code-mark-wash: 24%;
+  --code-mark-edge: 44%;
+}
+
+.document-stage.is-pdf-inverted .pdf-page,
+.paper-tokens.is-dark-paper {
+  --code-bg: color-mix(in srgb, var(--paper-text, #e8eaed) 4%, color-mix(in srgb, #000000 45%, var(--paper-bg, #030303)));
+  --code-fg: #dbe7e4;
+  --code-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  --code-tok-comment: #7b8f88;
+  --code-tok-keyword: #ff79a8;
+  --code-tok-function: #7dd3fc;
+  --code-tok-builtin: #fbbf24;
+  --code-tok-string: #a7f3a0;
+  --code-tok-number: #c084fc;
+  --code-tok-operator: #5eead4;
+  --code-tok-punctuation: #93a9a2;
+  --code-tok-property: #fca5a5;
+  --code-tok-variable: #fdba74;
+  --code-copy-border: rgba(255, 255, 255, 0.08);
+  --code-copy-bg: rgba(255, 255, 255, 0.06);
+  --code-copy-fg: #9fb3ae;
+  --code-copy-hover-bg: rgba(255, 255, 255, 0.13);
+  --code-copy-hover-fg: #dbe7e4;
+  --code-copy-done: #4ade80;
+  --code-mark-wash: 22%;
+  --code-mark-edge: 40%;
+}
+
+/* ◐ Canvas → Code → Look: one look on every paper, on the Canvas only. The
+   same two sets, restated rather than shared, because a custom property cannot
+   be told to take its value from another rule. */
+:root[data-canvas-code-look="light"] .document-stage[data-doc-slot="notebook"] .pdf-page,
+:root[data-canvas-code-look="light"] .paper-tokens[data-doc-slot="notebook"] {
+  --code-bg: #f6f8fa;
+  --code-fg: #1f2328;
+  --code-shadow: inset 0 1px 0 rgb(0 0 0 / 0.03);
+  --code-tok-comment: #6e7781;
+  --code-tok-keyword: #cf222e;
+  --code-tok-function: #6639ba;
+  --code-tok-builtin: #953800;
+  --code-tok-string: #0a3069;
+  --code-tok-number: #0550ae;
+  --code-tok-operator: #0e6a73;
+  --code-tok-punctuation: #57606a;
+  --code-tok-property: #116329;
+  --code-tok-variable: #9a4a00;
+  --code-copy-border: rgb(0 0 0 / 0.1);
+  --code-copy-bg: rgb(0 0 0 / 0.04);
+  --code-copy-fg: #57606a;
+  --code-copy-hover-bg: rgb(0 0 0 / 0.08);
+  --code-copy-hover-fg: #1f2328;
+  --code-copy-done: #1a7f37;
+  --code-mark-wash: 24%;
+  --code-mark-edge: 44%;
+}
+
+:root[data-canvas-code-look="dark"] .document-stage[data-doc-slot="notebook"] .pdf-page,
+:root[data-canvas-code-look="dark"] .paper-tokens[data-doc-slot="notebook"] {
+  --code-bg: #0b1110;
+  --code-fg: #dbe7e4;
+  --code-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  --code-tok-comment: #7b8f88;
+  --code-tok-keyword: #ff79a8;
+  --code-tok-function: #7dd3fc;
+  --code-tok-builtin: #fbbf24;
+  --code-tok-string: #a7f3a0;
+  --code-tok-number: #c084fc;
+  --code-tok-operator: #5eead4;
+  --code-tok-punctuation: #93a9a2;
+  --code-tok-property: #fca5a5;
+  --code-tok-variable: #fdba74;
+  --code-copy-border: rgba(255, 255, 255, 0.08);
+  --code-copy-bg: rgba(255, 255, 255, 0.06);
+  --code-copy-fg: #9fb3ae;
+  --code-copy-hover-bg: rgba(255, 255, 255, 0.13);
+  --code-copy-hover-fg: #dbe7e4;
+  --code-copy-done: #4ade80;
+  --code-mark-wash: 22%;
+  --code-mark-edge: 40%;
+}
+
+/* ...and where they are painted. The :is() is what makes these beat
+   06-rendered.css (`.rendered pre[class*="language-"]`) and Prism's own theme
+   (`code[class*=language-] { color: #ccc }`). The panel's border is left as
+   06 draws it — a tint of the accent, which is already the paper's. */
+:is(.document-stage .pdf-page, .paper-tokens) .rendered pre,
+:is(.document-stage .pdf-page, .paper-tokens) .rendered pre[class*="language-"] {
+  background: var(--code-bg);
+  color: var(--code-fg);
+  box-shadow: var(--code-shadow);
+}
+
+:is(.document-stage .pdf-page, .paper-tokens) .rendered pre code,
+:is(.document-stage .pdf-page, .paper-tokens) .rendered pre code[class*="language-"] {
+  color: var(--code-fg);
+}
+
+:is(.document-stage .pdf-page, .paper-tokens) .rendered :is(.token.comment, .token.prolog, .token.doctype, .token.cdata) { color: var(--code-tok-comment); }
+:is(.document-stage .pdf-page, .paper-tokens) .rendered :is(.token.keyword, .token.atrule) { color: var(--code-tok-keyword); }
+:is(.document-stage .pdf-page, .paper-tokens) .rendered :is(.token.function, .token.method) { color: var(--code-tok-function); }
+:is(.document-stage .pdf-page, .paper-tokens) .rendered :is(.token.builtin, .token.class-name) { color: var(--code-tok-builtin); }
+:is(.document-stage .pdf-page, .paper-tokens) .rendered :is(.token.string, .token.char, .token.attr-value) { color: var(--code-tok-string); }
+:is(.document-stage .pdf-page, .paper-tokens) .rendered :is(.token.number, .token.boolean, .token.constant, .token.uppercase-constant) { color: var(--code-tok-number); }
+:is(.document-stage .pdf-page, .paper-tokens) .rendered :is(.token.operator, .token.entity, .token.url) { color: var(--code-tok-operator); }
+:is(.document-stage .pdf-page, .paper-tokens) .rendered .token.punctuation { color: var(--code-tok-punctuation); }
+:is(.document-stage .pdf-page, .paper-tokens) .rendered :is(.token.property, .token.attr-name, .token.selector, .token.tag) { color: var(--code-tok-property); }
+:is(.document-stage .pdf-page, .paper-tokens) .rendered :is(.token.regex, .token.important, .token.variable) { color: var(--code-tok-variable); }
+
+:is(.document-stage .pdf-page, .paper-tokens) .rendered pre .code-copy-btn {
+  border-color: var(--code-copy-border);
+  background: var(--code-copy-bg);
+  color: var(--code-copy-fg);
+}
+
+:is(.document-stage .pdf-page, .paper-tokens) .rendered pre .code-copy-btn:hover {
+  background: var(--code-copy-hover-bg);
+  color: var(--code-copy-hover-fg);
+}
+
+:is(.document-stage .pdf-page, .paper-tokens) .rendered pre .code-copy-btn.is-copied {
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
+  color: var(--code-copy-done);
+  border-color: color-mix(in srgb, var(--code-copy-done) 22%, transparent);
+}
+
+/* ── 2. The Canvas's type ──────────────────────────────────────────────────
+ *
+ * The words of a Block: face, weight and spacing. */
+:where(.document-stage, .region-block-host) .pdf-block-body {
+  font-family: var(--doc-block-font);
+  font-weight: var(--doc-block-weight);
+  letter-spacing: var(--doc-block-letter-spacing);
+}
+
+/* Headings, in a Block and in a Shapes text box. With no face of their own they
+   inherit the words', which is what they always did. The weights are the
+   ladder 06-rendered.css draws (800, 800, 700, 700, 600, 600) unless one weight
+   is set for all six. */
+:where(.document-stage, .region-block-host) :is(.pdf-block-body, .pdf-shape-text-body) :is(h1, h2, h3, h4, h5, h6) {
+  font-family: var(--doc-head-font);
+}
+
+:where(.document-stage, .region-block-host) :is(.pdf-block-body, .pdf-shape-text-body) :is(h1, h2) { font-weight: var(--doc-head-weight, 800); }
+:where(.document-stage, .region-block-host) :is(.pdf-block-body, .pdf-shape-text-body) :is(h3, h4) { font-weight: var(--doc-head-weight, 700); }
+:where(.document-stage, .region-block-host) :is(.pdf-block-body, .pdf-shape-text-body) :is(h5, h6) { font-weight: var(--doc-head-weight, 600); }
+
+/* ◐ Canvas → Headings → Colour. The ladder (accent and text by level) is the
+   default and needs no rule. Both others are drawn in the page's own tokens,
+   so the accent is the theme's made readable on the paper, and a Block whose
+   Text colour is set carries it (styles/58-block-style.css rebinds the tokens
+   inside such a Block). Not a Shapes text box: its headings are the colour of
+   its words, which the reader picked on the pen's bar. */
+:where(:root[data-canvas-heading-ink="accent"] :is(.document-stage, .region-block-host)[data-doc-slot="notebook"]) .pdf-block-body :is(h1, h2, h3, h4, h5, h6) {
+  color: var(--accent-strong);
+}
+
+:where(:root[data-canvas-heading-ink="text"] :is(.document-stage, .region-block-host)[data-doc-slot="notebook"]) .pdf-block-body :is(h1, h2, h3, h4, h5, h6) {
+  color: var(--text);
+}
+
+:where(:root[data-canvas-heading-ink="text"] :is(.document-stage, .region-block-host)[data-doc-slot="notebook"]) .pdf-block-body :is(h1, h2)::after {
+  border-top-color: currentColor;
+}
+
+/* Code: its face and its line spacing. Prism's theme sets both on any element
+   with a language class (Consolas…, 1.5), so a listing with a language falls
+   back to exactly that and one without to the browser's monospace — what each
+   has always been. (Not <kbd>: the app draws a key in the words' own face,
+   styles/11-chrome.css.) */
+:where(.document-stage, .region-block-host) .pdf-block-body :is(pre, code, samp) {
+  font-family: var(--doc-code-font, monospace);
+}
+
+:where(.document-stage, .region-block-host) .pdf-block-body :is(pre, code)[class*="language-"] {
+  font-family: var(--doc-code-font, Consolas, Monaco, "Andale Mono", "Ubuntu Mono", monospace);
+}
+
+:where(.document-stage, .region-block-host) .pdf-block-body pre {
+  line-height: var(--doc-code-line-height, var(--code-line-height));
+}
+
+:where(.document-stage, .region-block-host) .pdf-block-body pre code[class*="language-"] {
+  line-height: var(--doc-code-line-height, 1.5);
+}
+
+/* The labels: a Shapes text box or callout, the box it is typed in, a
+   connector's words while they are typed, and (styles/53-handwriting.css) the
+   page numbers. The fallback is the system stack 88-annotations.css has always
+   used. */
+:where(.document-stage, .region-block-host) :is(.pdf-shape-text, .pdf-shape-editor, .pdf-connector-label-editor) {
+  font-family: var(--doc-label-font, system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif);
+}
+
+/* ── 3. A table in a Block ─────────────────────────────────────────────────
+ *
+ * `.rendered table` is sized in --content-font-size, which is the CARDS' text
+ * size, in px: a table in a 24pt Block was set in 18px and did not grow with a
+ * zoom. On a page it is the Block's own words times ◐ Canvas → Table text size,
+ * times --table-fit — the fraction the table fitter shrinks a too-wide table
+ * by (src/render/tables.js), kept as a ratio so it holds at every zoom. */
+:is(.document-stage .pdf-page, .paper-tokens) :is(.pdf-block-body, .pdf-shape-text-body) table {
+  font-size: calc(1em * var(--doc-table-scale, 1) * var(--table-fit, 1));
+}

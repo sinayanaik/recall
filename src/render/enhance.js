@@ -11,7 +11,8 @@ import { codeLanguageLabel, codeLanguageOrGeneric, configurePrismLanguages, decl
 import { codeCleanText, extractCodeMarks, installCodeMarkHooks, paintCodeMarks } from "./code-marks.js?v=__BUILD__";
 import { EAGER_IMAGE_COUNT, deferrableRenderRoot, runNearViewportAndDefer, scopedQueryAll } from "./deferred-work.js?v=__BUILD__";
 import { addDiagramZoomControl } from "./diagram-zoom.js?v=__BUILD__";
-import { sourceWithNomnomlTheme } from "./diagrams.js?v=__BUILD__";
+import { sourceWithMermaidPalette, sourceWithNomnomlTheme } from "./diagrams.js?v=__BUILD__";
+import { diagramPaletteFor } from "../format/paper-palette.js?v=__BUILD__";
 import { noteLinkEntryMatchesId } from "./note-links.js?v=__BUILD__";
 import { normalizeImageUrl } from "./preprocess.js?v=__BUILD__";
 import { fitMarkdownTables } from "./tables.js?v=__BUILD__";
@@ -369,10 +370,20 @@ export async function renderDiagramNodes(nodes) {
   const mermaidNodes = nodes.filter((node) => node.classList.contains("mermaid"));
   const nomnomlNodes = nodes.filter((node) => node.classList.contains("nomnoml-diagram"));
 
+  // On a PDF or Canvas page, the page's colours rather than the theme's — see
+  // sourceWithMermaidPalette. Read once per node, here, before anything is drawn.
+  const palettes = new Map();
   nodes.forEach((node) => {
     if (node.dataset.diagram) node.textContent = decodeURIComponent(node.dataset.diagram);
     node.removeAttribute("data-processed");
     node.classList.remove("is-diagram-pending");
+    const palette = node.closest(".print-root") ? null : diagramPaletteFor(node);
+    if (!palette) return;
+    palettes.set(node, palette);
+    if (node.classList.contains("mermaid")) {
+      const font = getComputedStyle(node).fontFamily || "";
+      node.textContent = sourceWithMermaidPalette(node.textContent, palette, font);
+    }
   });
 
   if (mermaidNodes.length && await ensureMermaid()) {
@@ -398,7 +409,7 @@ export async function renderDiagramNodes(nodes) {
     nomnomlNodes.forEach((node) => {
       try {
         const printTheme = Boolean(node.closest(".print-root"));
-        const svg = nomnoml.renderSvg(sourceWithNomnomlTheme(node.textContent, printTheme));
+        const svg = nomnoml.renderSvg(sourceWithNomnomlTheme(node.textContent, printTheme, palettes.get(node) || null));
         node.classList.add("nomnoml-light-theme");
         node.innerHTML = svg;
         node.querySelector("svg")?.classList.add("nomnoml-light-svg");

@@ -62,9 +62,9 @@
    lines; it is near-black there now, and the swatch has to say so or the rail
    would be offering a colour the pen no longer draws.
 
-   Scoped to the rail and nothing else. Blocks on a page read the same custom
-   properties for their text, over fills tinted for the theme
-   (styles/58-block-style.css), and they must go on following the theme. */
+   Scoped to the rail and nothing else. Blocks on a page take their pens, their
+   fills and their accents from the page's paper instead, through
+   styles/94-paper-tones.css, which rebinds all three inside every page. */
 .document-stage:not(.is-pdf-inverted) .document-ink-rail,
 .document-ink-rail.is-inline:not(.on-dark-page) {
   --ink-pen-ink: #16181d;

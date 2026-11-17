@@ -41,7 +41,8 @@ import { decodeInkStrokes } from "../format/ink-strokes.js?v=__BUILD__";
 import { markGeometry, markStyleOf, normalizeMarkHex, paintMarkGeometry } from "../format/mark-styles.js?v=__BUILD__";
 import { paintInkLayers } from "../render/ink-paint.js?v=__BUILD__";
 import { paintShapeOnCanvas } from "../render/annot-shapes.js?v=__BUILD__";
-import { PAPER_WHITE, paintPaperTone, paperRecolor } from "../format/paper-tones.js?v=__BUILD__";
+import { PAPER_WHITE, paintPaperTone, paperRecolor, parseHex } from "../format/paper-tones.js?v=__BUILD__";
+import { paperNumberColor } from "../format/paper-palette.js?v=__BUILD__";
 
 // Printed white, whatever paper the reader wrote on: a colour they picked on
 // a dark tone (a pale custom pen, a white text box) would be the colour of the
@@ -447,8 +448,38 @@ function seenScale(pageNumber) {
   return pdfPageViewport(pageNumber)?.scale || currentPdfScale() || 1;
 }
 
-// One Canvas page as the screen shows it, at CANVAS_EXPORT_WIDTH.
-async function renderCanvasPageExact(pageNumber) {
+// ◐ Canvas → Labels, as the stage resolves it: the face a Shapes text box's
+// plain words and the page numbers are drawn in. Empty when it is not set, which
+// is the system stack for the words and Helvetica for the numbers — exactly as
+// the screen draws them (styles/a3-canvas-type.css, 53-handwriting.css).
+function canvasLabelFont() {
+  const stage = el.documentStage;
+  if (!stage || typeof getComputedStyle !== "function") return "";
+  return getComputedStyle(stage).getPropertyValue("--doc-label-font").trim();
+}
+
+// A page number in a face of the reader's own, drawn into the page's picture.
+// pdf-lib can only write vector text in a font it is handed the file of, and the
+// faces the app offers are web fonts it has no file for (src/documents/md-pdf/
+// carries Noto and JetBrains Mono, and nothing else), so a number in Caveat is
+// pixels: the one trade-off is that it is not selectable. In Helvetica — the
+// default — it is still vector text, written by buildCanvasPdfBytes.
+function paintPageNumber(context, viewport, label, colour, fontFamily) {
+  const scale = viewport.scale || 1;
+  const height = viewport.height;
+  context.save();
+  context.fillStyle = colour;
+  context.font = `${CANVAS_NUMBER_SIZE * scale}px ${fontFamily}`;
+  context.textAlign = "center";
+  context.textBaseline = "alphabetic";
+  context.fillText(label, viewport.width / 2, height - (CANVAS_NUMBER_BASELINE * scale));
+  context.restore();
+}
+
+// One Canvas page as the screen shows it, at CANVAS_EXPORT_WIDTH. `number` is
+// the "k / n" to draw into the picture when the labels face is one pdf-lib
+// cannot write (paintPageNumber); null otherwise.
+async function renderCanvasPageExact(pageNumber, { number = null } = {}) {
   const doc = currentPdfDocument();
   if (!doc) return null;
   const token = pdfOpenToken;
@@ -490,12 +521,19 @@ async function renderCanvasPageExact(pageNumber) {
 
   const marks = regionMarksOnPage(source, pageNumber);
   marks.shapes = marks.shapes.map((record) => ({ ...record, shape: resolvedShape(record) || record.shape }));
+  const labelFont = canvasLabelFont();
+  if (labelFont && document.fonts?.load) {
+    await Promise.all([document.fonts.load(`${12}px ${labelFont}`), document.fonts.load(`700 ${12}px ${labelFont}`)]).catch(() => {});
+    if (token !== pdfOpenToken) return null;
+  }
   paintRegionMarks(context, viewport, marks, {
     paper: tone?.key || "light",
-    skipTextIds: shapeTextRasterIds(rasters)
+    skipTextIds: shapeTextRasterIds(rasters),
+    fontFamily: labelFont || undefined
   });
   drawRegionBlocks(context, viewport, rasters, { only: "block" });
   drawRegionBlocks(context, viewport, rasters, { only: "shape-text" });
+  if (number && labelFont) paintPageNumber(context, viewport, number, paperNumberColor(tone || {}), labelFont);
   // The words without the pixels: all the text layer needs, and small enough
   // to keep until every page is drawn.
   const words = rasters
@@ -546,6 +584,9 @@ export async function buildCanvasPdfBytes() {
   // page surface and this one is reached from the renderers.
   const numbered = state.meta?.notebook?.pageNumbers !== false;
   const total = Number(state.meta?.notebook?.pages) || source.numPages || wanted.length;
+  // A labels face of the reader's own: the numbers go into the pictures
+  // (paintPageNumber); Helvetica, the default, stays selectable vector text.
+  const numbersInPicture = numbered && Boolean(canvasLabelFont());
   // Each page's Block words, laid over it once every page is drawn — so the
   // text layer loads its fonts once, for every word in the file.
   const wordsByPage = [];
@@ -566,7 +607,7 @@ export async function buildCanvasPdfBytes() {
     // (rasterPlacement, in the source page's user space) land on their pictures.
     const { width, height } = pdfPage.getViewport({ scale: 1 });
     const [boxX = 0, boxY = 0] = Array.isArray(pdfPage.view) ? pdfPage.view : [];
-    const drawn = await renderCanvasPageExact(pageNumber);
+    const drawn = await renderCanvasPageExact(pageNumber, { number: numbersInPicture ? `${pageNumber} / ${total}` : null });
     if (!drawn || token !== pdfOpenToken) return null;
     const image = await out.embedJpg(await canvasJpegBytes(drawn.canvas));
     /* eslint-enable no-await-in-loop */
@@ -574,27 +615,27 @@ export async function buildCanvasPdfBytes() {
     const page = out.addPage([width, height]);
     if (boxX || boxY) page.setMediaBox(boxX, boxY, width, height);
     page.drawImage(image, { x: boxX, y: boxY, width, height });
-    drawnPages.push({ page, pdfPage, pageNumber, width, boxX, boxY, dark: Boolean(drawn.tone?.dark) });
+    drawnPages.push({ page, pdfPage, pageNumber, width, boxX, boxY, tone: drawn.tone });
     if (drawn.words.length) wordsByPage.push({ page, pdfPage, words: drawn.words });
   }
   await writeCanvasWords(out, wordsByPage);
   if (token !== pdfOpenToken) return null;
   // The numbers after the words, so copying a page gives what is written on
   // it first and its number last, the order it is read in.
-  if (numbered) {
-    drawnPages.forEach(({ page, pageNumber, width, boxX, boxY, dark }) => {
+  if (numbered && !numbersInPicture) {
+    drawnPages.forEach(({ page, pageNumber, width, boxX, boxY, tone }) => {
       // Of every page in the Canvas: "3 / 12", as it is on screen. In the
-      // screen's colours for it (styles/53-handwriting.css): grey 115 on a
-      // light paper, white at half strength on a dark one.
+      // screen's colour for it (styles/53-handwriting.css): the paper's own
+      // words at 60% on the paper — the grey it has always been on White.
       const label = `${pageNumber} / ${total}`;
       const labelWidth = font.widthOfTextAtSize(label, CANVAS_NUMBER_SIZE);
+      const [r, g, b] = parseHex(paperNumberColor(tone || {})) || [115, 115, 115];
       page.drawText(label, {
         x: boxX + ((width - labelWidth) / 2),
         y: boxY + CANVAS_NUMBER_BASELINE,
         size: CANVAS_NUMBER_SIZE,
         font,
-        color: dark ? rgb(1, 1, 1) : rgb(115 / 255, 115 / 255, 115 / 255),
-        opacity: dark ? 0.5 : 1
+        color: rgb(r / 255, g / 255, b / 255)
       });
     });
   }
