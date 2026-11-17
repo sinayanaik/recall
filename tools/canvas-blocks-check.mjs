@@ -72,7 +72,8 @@ const API_SRC = `async () => {
     "/src/documents/block-place.js?v=__BUILD__",
     "/src/format/ink-strokes.js?v=__BUILD__",
     "/src/ui/theme.js?v=__BUILD__",
-    "/src/ui/style-settings.js?v=__BUILD__"
+    "/src/ui/style-settings.js?v=__BUILD__",
+    "/src/storage/ink-prefs.js?v=__BUILD__"
   ];
   const mods = await Promise.all(paths.map((p) => import(p)));
   const api = {};
@@ -473,7 +474,7 @@ try {
   check("dragging across the words being typed selects them, not the block", edit.selectingDoesNotMove, JSON.stringify(edit));
   check("a press on the paper puts the words down; a drag on a picked-up block moves it", edit.paperCommits && edit.dragMoves, JSON.stringify(edit));
   check("a picked-up block's strip is one slim row: Style, Edit, Duplicate, Copy, Card, Arrange, Delete", edit.stripHeight > 0 && edit.stripHeight < 48 && edit.stripRow === "style,edit,duplicate,copy,card,arrange,delete", JSON.stringify(edit));
-  check("...and Arrange opens the four restack verbs, a quarter turn and Cut", edit.menuShut && edit.menuOpen && edit.menuItems === "restack-forward,restack-back,to-front,to-back,turn,cut", JSON.stringify(edit));
+  check("...and Arrange opens the four restack verbs, a quarter turn, Fit to words and Cut", edit.menuShut && edit.menuOpen && edit.menuItems === "restack-forward,restack-back,to-front,to-back,turn,fit,cut", JSON.stringify(edit));
 
   // ── 5. The width hugs the words once down; the height follows them ─────
   const size = await page.evaluate(`async () => {
@@ -564,6 +565,105 @@ try {
     return { drawnIn, after };
   }`);
   check("a width dragged by hand drops the width the block was drawn in from", dragged.drawnIn.wSet > dragged.drawnIn.w && dragged.after.w > dragged.drawnIn.w && dragged.after.wSet === undefined, JSON.stringify(dragged));
+
+  // ── 5b. Compact unless the reader sized it ─────────────────────────────
+  //
+  // "I am seeing some blocks with excessively empty spaces but it requires less
+  // space; unless resized manually these blocks should be compact." Three ways
+  // a Block was left loose without anybody sizing it.
+  const compact = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const { fire } = window.__h;
+    const read = (id) => api.documentBlocks().find((b) => b.id === id);
+    const node = (id) => document.querySelector('[data-pdf-block="' + id + '"]');
+    const settleLong = async () => { for (let i = 0; i < 20; i += 1) await settle(60); };
+    const out = {};
+    // (a) Words pasted onto the page are never typed in, and were never drawn in.
+    const pasted = api.addHandwritingTextBlock("select a plane/face", { page: 1, x: 100, y: 200 });
+    await settleLong();
+    const p = read(pasted.id);
+    const pb = node(pasted.id).querySelector(".pdf-block-body");
+    out.pasted = { w0: pasted.w, w: p.w, wSet: p.wSet, overflowX: pb.scrollWidth - pb.clientWidth, overflowY: pb.scrollHeight - pb.clientHeight };
+    // (b) A style remembered from a block whose height had been dragged
+    // (fit: false) made every new Block loose. The look carries; the size not.
+    let saved = null;
+    try { saved = localStorage.getItem("recall:ink-prefs-v1"); } catch (_) {}
+    api.writeBlockStylePreference("text", { align: "center", fit: false });
+    const pref = api.blockStylePreference("text");
+    const fresh = api.addDocumentBlock(1, { x: 300, y: 420 }, { edit: false });
+    await settle(150);
+    const freshStyle = api.blockStyle(read(fresh.id));
+    out.pref = { prefFit: pref.fit, prefAlign: pref.align, fit: freshStyle.fit, align: freshStyle.align };
+    api.writeBlockStylePreference("text", {});
+    // (c) The corner, dragged mostly sideways, is a width — the height still
+    // follows the words. Dragged mostly down, it is a height.
+    const corner = api.addDocumentBlock(1, { x: 80, y: 120 }, { md: "A few words to sit in a block", edit: false });
+    await settleLong();
+    const before = { ...read(corner.id) };
+    api.selectBlock(corner.id);
+    await settle(100);
+    const press = async (id, dxPx, dyPx) => {
+      const grip = node(id).querySelector('.pdf-block-grip[data-edge="se"]');
+      const g = grip.getBoundingClientRect();
+      const x0 = g.left + g.width / 2;
+      const y0 = g.top + g.height / 2;
+      fire(grip, "pointerdown", x0, y0, { pointerType: "mouse" });
+      for (let i = 1; i <= 8; i += 1) { fire(grip, "pointermove", x0 + (dxPx * i) / 8, y0 + (dyPx * i) / 8, { pointerType: "mouse" }); await settle(16); }
+      fire(grip, "pointerup", x0 + dxPx, y0 + dyPx, { pointerType: "mouse", buttons: 0 });
+      await settleLong();
+    };
+    // Narrower first, so the words wrap and a later widening has room to show.
+    await press(corner.id, -60, 25);
+    const sideways = { ...read(corner.id) };
+    const sb = node(corner.id).querySelector(".pdf-block-body");
+    out.sideways = { w0: before.w, w: sideways.w, h0: before.h, h: sideways.h, fit: api.blockStyle(sideways).fit, wHand: sideways.wHand, overflowY: sb.scrollHeight - sb.clientHeight };
+    await press(corner.id, 5, 90);
+    const down = { ...read(corner.id) };
+    out.down = { h0: sideways.h, h: down.h, fit: api.blockStyle(down).fit };
+    // (d) Arrange → Fit to words brings back one left loose: following its
+    // words again, as tall as they are and no wider than its longest line.
+    api.selectBlock(corner.id);
+    await settle(100);
+    const strip = document.querySelector(".pdf-block-actions-pop");
+    // The strip answers a press, not a click (block-actions-popover.js).
+    const pressItem = (action) => {
+      const button = strip?.querySelector('[data-block-popover-action="' + action + '"]');
+      const r = button?.getBoundingClientRect();
+      if (button) fire(button, "pointerdown", r.left + 2, r.top + 2, { pointerType: "mouse" });
+      return Boolean(button);
+    };
+    out.fitOffered = pressItem("arrange");
+    await settle(50);
+    out.fitOffered = pressItem("fit") && out.fitOffered;
+    await settleLong();
+    const fitted = read(corner.id);
+    const fb = node(corner.id).querySelector(".pdf-block-body");
+    out.fitted = { h: fitted.h, w: fitted.w, fit: api.blockStyle(fitted).fit, overflowY: fb.scrollHeight - fb.clientHeight, overflowX: fb.scrollWidth - fb.clientWidth };
+    // (e) A width dragged by hand stays the reader's when the words render
+    // again (a reload, a sync) — only typing in it again draws it in.
+    const kept = api.addDocumentBlock(1, { x: 300, y: 560 }, { md: "short", edit: false });
+    await settleLong();
+    api.selectBlock(kept.id);
+    await settle(100);
+    await press(kept.id, 120, 0);
+    const widened = read(kept.id).w;
+    // A fresh node is what a reload paints: drop the page's block layer.
+    node(kept.id).remove();
+    api.paintDocumentBlocks(1);
+    await settleLong();
+    out.kept = { widened, after: read(kept.id).w, wHand: read(kept.id).wHand };
+    try { if (saved === null) localStorage.removeItem("recall:ink-prefs-v1"); else localStorage.setItem("recall:ink-prefs-v1", saved); } catch (_) {}
+    [pasted, fresh, corner, kept].forEach((b) => api.deleteBlock?.(b.id));
+    api.selectBlock(null);
+    await settle(100);
+    return out;
+  }`);
+  check("words pasted onto the page are drawn in to their line, nothing cut off", compact.pasted.w < compact.pasted.w0 && compact.pasted.wSet === compact.pasted.w0 && compact.pasted.overflowX <= 1 && compact.pasted.overflowY <= 1, JSON.stringify(compact.pasted));
+  check("a new Block takes the last look but never a height that was dragged", compact.pref.prefFit === true && compact.pref.fit === true && compact.pref.align === "center", JSON.stringify(compact.pref));
+  check("the corner dragged mostly sideways sets the width; the height still follows the words", compact.sideways.w < compact.sideways.w0 && compact.sideways.h > compact.sideways.h0 && compact.sideways.fit === true && compact.sideways.wHand === true && compact.sideways.overflowY <= 1, JSON.stringify(compact.sideways));
+  check("...dragged mostly down, it sets the height", compact.down.fit === false && compact.down.h > compact.down.h0 + 20, JSON.stringify(compact.down));
+  check("Arrange → Fit to words brings a loose Block back to its words", compact.fitOffered && compact.fitted.fit === true && compact.fitted.h < compact.down.h && compact.fitted.overflowY <= 1 && compact.fitted.overflowX <= 1, JSON.stringify(compact.fitted));
+  check("a width dragged by hand is not drawn in again when the words render", compact.kept.after === compact.kept.widened && compact.kept.wHand === true, JSON.stringify(compact.kept));
 
   // A block set to the centre is typed from the left, and centred once down.
   const aligned = await page.evaluate(`async () => {

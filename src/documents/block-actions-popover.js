@@ -103,6 +103,10 @@ export function openBlockActionsPopover({
   onTurn = () => {},
   onStraighten = () => {},
   turned = false,
+  // Draw the Block in to its words — height following them again, width in to
+  // the longest line (fitBlockToContents). Offered only when one is passed: a
+  // picture has its own shape and nothing to fit.
+  onFit = null,
   // While the block's words are being typed in place: Style, Full editor and
   // Done, and nothing else — the rest is about a block sitting still.
   editing = false,
@@ -161,12 +165,16 @@ export function openBlockActionsPopover({
     // turned. The handle over the block turns it freely.
     const turnItems = [actionButton({ action: "turn", label: "Turn 90°" })];
     if (turned) turnItems.push(actionButton({ action: "straighten", label: "Straighten" }));
+    const fitItems = typeof onFit === "function" ? [actionButton({ action: "fit", label: "Fit to words" })] : [];
+    fitItems.forEach((item) => {
+      item.title = "Fit to words — as tall as its words and no wider than its longest line";
+    });
     const cutItems = typeof onCut === "function" ? [actionButton({ action: "cut", label: "Cut" })] : [];
     cutItems.forEach((item) => {
       item.title = "Cut — take it off this page, to paste on another (Ctrl+X)";
       item.setAttribute("aria-label", "Cut");
     });
-    [forward, back, toFront, toBack, ...turnItems, ...cutItems].forEach((item) => {
+    [forward, back, toFront, toBack, ...turnItems, ...fitItems, ...cutItems].forEach((item) => {
       item.setAttribute("role", "menuitem");
       menu.appendChild(item);
     });
@@ -258,6 +266,7 @@ export function openBlockActionsPopover({
     else if (action === "card") onCard?.();
     else if (action === "turn") onTurn();
     else if (action === "straighten") onStraighten();
+    else if (action === "fit") onFit?.();
     else if (action === "full-editor") onFullEditor();
     else if (action === "done") onDone();
   });

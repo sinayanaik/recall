@@ -217,6 +217,9 @@ function syncBlockActionsPopover() {
     onCard: () => makeCardOfBlock(selectedId),
     onTurn: () => rotateBlockBy(selectedId, 90),
     onStraighten: () => setBlockRotation(selectedId, 0),
+    // The one-press way back from a frame left bigger than its words — what a
+    // double-click on a resize handle has always done.
+    onFit: block.kind === PDF_BLOCK_IMAGE ? null : () => fitBlockToContents(selectedId),
     turned: Boolean(normalizeShapeRotation(block.rot)),
     gap: BLOCK_ACTIONS_GAP
   });
@@ -315,7 +318,11 @@ function normalizeBlocks(list) {
       // The width the reader chose, when the block has been drawn in to its
       // words since (shrinkBlockWidthToContent) — what it opens out to again
       // to be typed in. Only when it is wider than the block is now.
-      ...(Number(block.wSet) > (Number(block.w) || 0) ? { wSet: Math.round(Number(block.wSet)) } : {})
+      ...(Number(block.wSet) > (Number(block.w) || 0) ? { wSet: Math.round(Number(block.wSet)) } : {}),
+      // The width was dragged by hand since the words were last put down: it
+      // is the reader's, and a render does not draw it in (renderBlockBody).
+      // Typing in it again, or Arrange → Fit to words, does. Only when set.
+      ...(block.wHand === true ? { wHand: true } : {})
     }));
 }
 
@@ -1391,7 +1398,7 @@ function fitImageBlockFrame(node, img) {
   });
 }
 
-// ── The width, once, on the way in ─────────────────────────────────────────
+// ── The width, drawn in to the words ───────────────────────────────────────
 //
 // Height follows the text continuously (fitBlockHeight, above) — width does
 // not, and cannot: markdown reflows at whatever width it is given, so there is
@@ -1401,11 +1408,11 @@ function fitImageBlockFrame(node, img) {
 // defaults to 240pt — sitting in a box sized for a paragraph is exactly the
 // "predefined size" the height fix above does not reach.
 //
-// So this runs after an edit: it measures how wide the words actually want to
-// be and shrinks the frame to that, clamped so it can never make a block WIDER
-// than it already is — a real paragraph, whose unwrapped width exceeds the
-// frame, always clamps straight back to unchanged, so this never fights the
-// common case and only ever helps the short one.
+// So this runs whenever the words render (renderBlockBody): it measures how
+// wide the words actually want to be and shrinks the frame to that, clamped so
+// it can never make a block WIDER than it already is — a real paragraph, whose
+// unwrapped width exceeds the frame, always clamps straight back to unchanged,
+// so this never fights the common case and only ever helps the short one.
 //
 // It used to run once, on a block's first words at the default width. But a
 // block whose words were cut from three lines to one kept the width the three
@@ -1422,10 +1429,6 @@ function shouldShrinkBlockWidth(block) {
 function bodyHasWidthlessContent(body) {
   return Boolean(body.querySelector("img, svg, table, .mermaid, .nomnoml-diagram, .diagram-shell"));
 }
-
-// Armed per edit, consumed when that edit's render finishes — not a style the
-// block carries, so it lives here rather than on the record.
-const awaitingWidthShrink = new Set();
 
 function shrinkBlockWidthToContent(node, block) {
   if (gestureLive || !shouldShrinkBlockWidth(block)) return false;
@@ -1460,9 +1463,11 @@ function shrinkBlockWidthToContent(node, block) {
   // Not undoable, for the same reason queueFit's height write is not: this is
   // the block agreeing with its own words, not a step the reader took. The
   // width it was drawn in from is kept (`wSet`), to be typed in at next time.
-  writeBlocks(documentBlocks().map((entry) => (
-    entry.id === block.id ? { ...entry, w: wanted, wSet: Math.max(readerWidth(entry), block.w), at: Date.now() } : entry
-  )), { undoable: false });
+  writeBlocks(documentBlocks().map((entry) => {
+    if (entry.id !== block.id) return entry;
+    const { wHand: _hand, ...rest } = entry;
+    return { ...rest, w: wanted, wSet: Math.max(readerWidth(entry), block.w), at: Date.now() };
+  }), { undoable: false });
   return true;
 }
 
@@ -1504,14 +1509,21 @@ async function renderBlockBody(body, md, node = null, block = null) {
     // catches it, and the alternative is a load listener per image on a path
     // that repaints on every drag frame.
     if (node && block) fitBlockHeight(node, block);
-    // The one-shot width measurement rides the same first render: the words
-    // have to be on the page to ask how wide they want to be, and this is the
-    // only place that is ever true for a block whose text just went from
-    // nothing to something. Consumed here whether or not it actually shrinks
-    // anything, so a paragraph that clamped back to unchanged is not measured
-    // again on its next edit.
-    if (node && block && awaitingWidthShrink.delete(block.id)) {
-      shrinkBlockWidthToContent(node, block);
+    // The width rides the same render: the words have to be on the page to ask
+    // how wide they want to be. Every render of a block that follows its words,
+    // not only one after it was typed in — unless its width was dragged by hand
+    // (`wHand`) since. Words pasted onto the page, a block synced in from
+    // another device and one made before this all came in at a width guessed
+    // before anything was measured, and kept it: a one-line label in a 240pt
+    // frame of empty paper. Drawing in to the max-content width never
+    // rewraps anything, and `wSet` keeps the wider width to type in at again.
+    // Not on a Block drawn for a picture of the page (`is-static`), and not
+    // while the file is open View only, which is for reading, not changing.
+    if (node && block) {
+      const current = documentBlocks().find((entry) => entry.id === block.id) || block;
+      if (!current.wHand && !node.classList.contains("is-static") && !documentViewOnly()) {
+        shrinkBlockWidthToContent(node, current);
+      }
     }
     // The block's own images, which reach here as recall-img: tokens when they
     // were added offline — the same hydrate paintDocumentBlocks does for the
@@ -2007,17 +2019,15 @@ function writeBlockText(id, text) {
   // the next sentence. Both now: the record keeps the width the reader chose
   // (`wSet`), the block is typed in at that width (placeBlock), and when the
   // words are put down it goes back to it and is drawn in to the longest line
-  // once they have rendered (shrinkBlockWidthToContent, through
-  // awaitingWidthShrink). One undo step for the words and the width together.
+  // once they have rendered (shrinkBlockWidthToContent, from
+  // renderBlockBody). One undo step for the words and the width together.
   if (block && block[field] !== text) {
     const tighten = field === "md" && shouldShrinkBlockWidth(block);
-    // Armed before the write, whose repaint starts the render that consumes it.
-    if (tighten) awaitingWidthShrink.add(id);
     writeBlocks(blocks.map((entry) => {
       if (entry.id !== id) return entry;
       const next = { ...entry, [field]: text, at: Date.now() };
       if (tighten) {
-        const { wSet: _was, ...rest } = next;
+        const { wSet: _was, wHand: _hand, ...rest } = next;
         return { ...rest, w: readerWidth(entry) };
       }
       return next;
@@ -2077,7 +2087,19 @@ function beginGesture(event, node, mode, edge = "se", { openOnTap = false } = {}
   const isImage = block.kind === PDF_BLOCK_IMAGE;
   const fitsWords = mode === "resize" && !isImage && blockStyle(block).fit;
   const movesHeight = mode === "resize" && /[ns]/.test(edge);
-  const widthOnly = fitsWords && !movesHeight;
+  // ── A corner dragged mostly sideways is a WIDTH ────────────────────────
+  //
+  // The ◢ corner is the one handle anybody sees, and it is what is reached for
+  // to make a Block wider; a finger dragging it right drifts down as well, and
+  // that drift used to make the height the reader's (`fit: false`) — a Block
+  // frozen at whatever height the drift left, empty under its words, for good.
+  // So on a Block whose height follows its words, a corner drag whose sideways
+  // travel is the larger is a width change: its height follows the words live,
+  // as the side edges' does. Only a corner dragged mostly up or down (or with
+  // Shift, to keep the shape) sets a height. Decided afresh on every move, from
+  // the whole travel so far, so the reader sees which it is before letting go.
+  const cornerOfWords = fitsWords && movesHeight && /[ew]/.test(edge);
+  let widthOnly = fitsWords && !movesHeight;
   // A turned block is resized in its own frame — the finger's travel turned
   // back by the block's turn — and then shifted so the side or corner across
   // from the handle stays where it is on the page, as a turned Shapes-tool box
@@ -2177,6 +2199,7 @@ function beginGesture(event, node, mode, edge = "se", { openOnTap = false } = {}
     // wrong way under a finger.
     let dy = -(moveEvent.clientY - start.y) * perPixel;
     if (mode !== "drag" && rot) [dx, dy] = rotatePoint([dx, dy], [0, 0], -rot);
+    if (cornerOfWords) widthOnly = !moveEvent.shiftKey && Math.abs(dx) >= Math.abs(dy);
     if (mode === "drag") {
       live = { ...block, ...clampBlockToPage(viewport, block, block.x + dx, block.y + dy) };
     } else {
@@ -2296,15 +2319,29 @@ function beginGesture(event, node, mode, edge = "se", { openOnTap = false } = {}
       if (editingId === id) mountInlineBlockEditor(node);
       return;
     }
-    // The height was dragged: it is the reader's now, not the words'.
-    if (fitsWords && movesHeight && live.h !== block.h) live = { ...live, style: { ...(block.style || {}), fit: false } };
+    // The height was dragged: it is the reader's now, not the words' — when it
+    // was dragged to more room than the words need. Dragged to within a hair of
+    // them, or shorter (the words would only push it back), it still follows
+    // them, at their own height now, its top edge where it was.
+    if (fitsWords && movesHeight && !widthOnly && live.h !== block.h) {
+      const words = rot ? null : contentHeightPoints(node, scale);
+      if (words === null || live.h - words > HEIGHT_SLACK) {
+        live = { ...live, style: { ...(block.style || {}), fit: false } };
+      } else {
+        live = { ...live, h: words, y: Math.round(live.y + live.h - words) };
+      }
+    }
     // The width was dragged: that is the reader's width now, not the one the
     // block was once drawn in from.
     const widthDragged = live.w !== block.w;
     writeBlocks(documentBlocks().map((entry) => {
       if (entry.id !== id) return entry;
       const next = { ...entry, ...live, at: Date.now() };
-      if (widthDragged) delete next.wSet;
+      if (widthDragged) {
+        delete next.wSet;
+        // ...and not to be drawn in again by the next render (renderBlockBody).
+        if (!isImage) next.wHand = true;
+      }
       return next;
     }));
   };
