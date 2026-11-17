@@ -989,17 +989,16 @@ try {
   // disagreeing is exactly the failure — meta says three pages, the file has two.
   const pages = await page.evaluate(`async () => {
     const { api, settle } = window.__recall;
-    // The page group is on the pen's RAIL now, not in the tab row: that row is a
-    // nowrap line and five more controls in it clipped the tab labels mid-word.
-    // Pressed with pointerdown, which is what the rail listens for.
-    const board = document.getElementById("documentInkRail");
-    const press = (sel) => board.querySelector(sel).dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 31, cancelable: true }));
+    // A page is added from ⋯ → Canvas pages now (or ＋ Page between pages, or
+    // the pager's +□): the pen rail's own + Page row went when Insert moved to
+    // the top row (f179cd2). The row is pressed as the tear-out below presses
+    // its own — the menu's one delegated handler in src/main.js.
     const inkOn = (n) => (api.state.meta.pdfHighlights || [])
       .filter((r) => r.kind === "ink" && Number(r.page) === n).length;
 
     const before = { meta: api.state.meta.notebook.pages, doc: api.currentPdfPageCount(), inkPage1: inkOn(1) };
 
-    press('[data-hw-action="add-page"]');
+    document.querySelector('#documentMoreMenu [data-document-action="hw-page-end"]').click();
     for (let i = 0; i < 60 && api.currentPdfPageCount() < before.doc + 1; i += 1) await settle(100);
     const added = { meta: api.state.meta.notebook.pages, doc: api.currentPdfPageCount(), inkPage1: inkOn(1) };
 

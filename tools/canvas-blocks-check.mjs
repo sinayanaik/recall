@@ -481,7 +481,13 @@ try {
     return { w0, short: { w: short.w, h: short.h }, long: { w: long.w, h: long.h, liveH: long.liveH, overflow: long.overflow }, back: { w: back.w, h: back.h } };
   }`);
   check("a block keeps its width whatever is written in it", size.short.w === size.w0 && size.long.w === size.w0 && size.back.w === size.w0, JSON.stringify(size));
-  check("...and its height follows the words, while typed and once put down, with nothing cut off", size.long.h > size.short.h * 2 && size.long.liveH > 60 && size.long.overflow <= 1 && size.back.h === size.short.h, JSON.stringify(size));
+  // "Back" is the same height as "short" to within the slack, not to the point.
+  // A height within HEIGHT_SLACK (3pt, src/documents/pdf-blocks.js) above what
+  // the words measure is kept rather than rewritten, so a Block settles at the
+  // first of its measurements that fits: "one" is 32.98pt of words, kept at 34
+  // on the way down from the default 90 and at 33 on the way down from 170.
+  // Either is the words' own height with nothing cut off; overflow says that.
+  check("...and its height follows the words, while typed and once put down, with nothing cut off", size.long.h > size.short.h * 2 && size.long.liveH > 60 && size.long.overflow <= 1 && Math.abs(size.back.h - size.short.h) <= 3, JSON.stringify(size));
 
   // ...and a box that keeps a height of its own (a diagram's diamond) keeps it
   // as the least it can be, and still grows to hold its words.
