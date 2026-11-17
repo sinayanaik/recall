@@ -14,7 +14,7 @@
 
 import { BLANK_PAPER_DEFAULT, normalizeBlankPaper } from "../documents/blank-pdf.js?v=__BUILD__";
 import { nearestLegacyPaper, normalizeSheetSetup } from "../documents/canvas-setup.js?v=__BUILD__";
-import { normalizeBlockStyle } from "../documents/block-style.js?v=__BUILD__";
+import { BLOCK_STYLE_DEFAULT, normalizeBlockStyle } from "../documents/block-style.js?v=__BUILD__";
 import { INK_ERASER_SIZE_DEFAULT, INK_ERASE_MODE_DEFAULT, INK_ERASE_TARGET_DEFAULT, INK_HL_TOKEN_DEFAULT, INK_HL_WIDTH_DEFAULT, INK_PEN_DEFAULT, INK_TOOL_DEFAULT, INK_WIDTH_DEFAULT, normalizeInkEraseMode, normalizeInkEraseTarget, normalizeInkEraserSize, normalizeInkHex, normalizeInkHlWidth, normalizeInkToken, normalizeInkTool, normalizeInkWidth } from "../format/ink-colors.js?v=__BUILD__";
 import { MARK_STYLE_DEFAULT, normalizeMarkHex, normalizeMarkStyle } from "../format/mark-styles.js?v=__BUILD__";
 
@@ -368,14 +368,25 @@ export function writeDiagramSnapPreference(on) {
   }
 }
 
+//
+// Everything but `fit`. Whether a Block's height follows its words is a fact
+// about that one Block's SIZE — it goes off when the reader drags its height —
+// not about how it looks, and remembering it made every Block after one that
+// had been resized and then restyled start loose: as tall as it was placed,
+// never drawn in to its words. Dropped on the way in and on the way out, so a
+// bag saved before this heals on the next Block.
+function withoutBlockSize(style) {
+  return { ...normalizeBlockStyle(style), fit: BLOCK_STYLE_DEFAULT.fit };
+}
+
 export function blockStylePreference(kind) {
   const slot = kind === "image" ? "image" : "text";
   try {
     const raw = localStorage.getItem(inkPreferencesKey);
     const parsed = raw ? JSON.parse(raw) : null;
-    return normalizeBlockStyle(parsed?.blockStyle?.[slot]);
+    return withoutBlockSize(parsed?.blockStyle?.[slot]);
   } catch (_) {
-    return normalizeBlockStyle(null);
+    return withoutBlockSize(null);
   }
 }
 
@@ -385,7 +396,7 @@ export function writeBlockStylePreference(kind, style) {
     const raw = localStorage.getItem(inkPreferencesKey);
     const parsed = (raw ? JSON.parse(raw) : null) || {};
     const blockStyle = (parsed.blockStyle && typeof parsed.blockStyle === "object") ? parsed.blockStyle : {};
-    blockStyle[slot] = normalizeBlockStyle(style);
+    blockStyle[slot] = withoutBlockSize(style);
     localStorage.setItem(inkPreferencesKey, JSON.stringify({ ...parsed, blockStyle }));
   } catch (error) {
     console.warn("Could not remember the block style", error);
