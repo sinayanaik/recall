@@ -1439,7 +1439,17 @@ function shrinkBlockWidthToContent(node, block) {
   // The bar, the borders, the padding — everything of the block that is not
   // the body's own content box — measured the same way fitBlockHeight measures
   // its chrome, one axis over.
-  const chrome = node.offsetWidth - body.clientWidth;
+  //
+  // ...less a scrollbar down the body's side. A block whose words have just
+  // rendered taller than its frame scrolls until its height fit lands a frame
+  // later (queueFit), and clientWidth leaves the scrollbar out — so it was
+  // counted as frame, and the block drawn in 15px too wide on its first
+  // render and then again, narrower, on the next: a list Block that changed
+  // width every time its page was reopened.
+  const bodyStyle = getComputedStyle(body);
+  const bodyBorders = (parseFloat(bodyStyle.borderLeftWidth) || 0) + (parseFloat(bodyStyle.borderRightWidth) || 0);
+  const scrollbar = Math.max(0, body.offsetWidth - body.clientWidth - bodyBorders);
+  const chrome = node.offsetWidth - body.clientWidth - scrollbar;
   // The exact same escape fitBlockHeight uses, one axis over: the body is a
   // flex child stretched to the block's own width, so `scrollWidth` as-is just
   // answers with the block's width back. `flex: none` takes the stretch off
