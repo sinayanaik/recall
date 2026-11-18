@@ -63,6 +63,7 @@ import {
 import { inkEraseTarget, inkPaperBg, inkTool, isInkArmed, pushInkHistoryAction, setInkStandDownHook } from "./pdf-ink.js?v=__BUILD__";
 import { paperRecolor } from "../format/paper-tones.js?v=__BUILD__";
 import { pdfPageElement, pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
+import { edgeScroller, mapPointBetweenPages, pageUnderPointer, pointOnPage } from "./page-handoff.js?v=__BUILD__";
 import { forEachDocumentScroller, liveDocumentHandler } from "./doc-scrollers.js?v=__BUILD__";
 import { documentViewOnly } from "./view-only.js?v=__BUILD__";
 
@@ -386,22 +387,31 @@ export function addDocumentShape(pageNumber, shape, { undo = true } = {}) {
   return made;
 }
 
-// The shape of a record replaced, as one undo step unless told otherwise.
-export function updateShape(id, shape, { undo = true } = {}) {
+// The shape of a record replaced, as one undo step unless told otherwise —
+// and, given `page`, moved onto that page.
+export function updateShape(id, shape, { undo = true, page = null } = {}) {
   const record = documentHighlightById(id);
   const s = normalizeShape(shape);
   if (!record || record.kind !== "shape" || !s) return false;
   const before = record.shape;
-  if (JSON.stringify(before) === JSON.stringify(s)) return false;
-  const page = Number(record.page);
-  updateDocumentHighlight(id, shapeRecordFields(page, s));
+  const wasPage = Number(record.page);
+  const toPage = Number(page) || wasPage;
+  if (toPage === wasPage && JSON.stringify(before) === JSON.stringify(s)) return false;
+  updateDocumentHighlight(id, shapeRecordFields(toPage, s));
   if (undo) {
     pushInkHistoryAction({
-      undo: () => updateDocumentHighlight(id, shapeRecordFields(page, before)),
-      redo: () => updateDocumentHighlight(id, shapeRecordFields(page, s))
+      undo: () => updateDocumentHighlight(id, shapeRecordFields(wasPage, before)),
+      redo: () => updateDocumentHighlight(id, shapeRecordFields(toPage, s))
     });
   }
   return true;
+}
+
+// A shape record as it would be on `page` with `shape` — for a diagram edit
+// that moves shapes from one page to another inside runDiagramEdit
+// (src/documents/canvas-selection.js, pdf-connectors.js).
+export function shapeRecordOnPage(record, page, shape = record?.shape) {
+  return { ...record, ...shapeRecordFields(Number(page), shape) };
 }
 
 export function deleteShape(id = selectedShapeId) {
@@ -706,12 +716,16 @@ function buildHandles(layer, viewport, record, put = (node) => layer.appendChild
 //
 // `previews` is several shapes drawn where a drag has them (a group being
 // moved, src/documents/canvas-selection.js): a Map of id → shape.
-export function paintDocumentShapes(pageNumber, { preview = null, previews = null } = {}) {
+//
+// `ghosts` is shapes from ANOTHER page being carried over this one
+// (src/documents/page-handoff.js), in this page's points: drawn as previews,
+// untied, until they are let go and written here.
+export function paintDocumentShapes(pageNumber, { preview = null, previews = null, ghosts = null } = {}) {
   const viewport = pdfPageViewport(pageNumber);
   if (!viewport) return;
   const shapes = documentShapes(pageNumber);
   const existing = shapeLayer(pageNumber, false);
-  if (!shapes.length && !preview && !existing) { shapeOverlayHook(Number(pageNumber)); return; }
+  if (!shapes.length && !preview && !ghosts?.length && !existing) { shapeOverlayHook(Number(pageNumber)); return; }
   // A connector is drawn where the things it joins ARE — including a block
   // being dragged this very frame, or a box shape that is the preview — not
   // where its record last saw them (src/documents/pdf-connectors.js).
@@ -748,6 +762,13 @@ export function paintDocumentShapes(pageNumber, { preview = null, previews = nul
     svg.appendChild(built.group);
     boxes.push(...built.boxes);
   }
+  (ghosts || []).forEach((ghost) => {
+    const shape = untiedShape(ghost);
+    if (!shape) return;
+    const built = buildShapeNodes(null, shape, viewport, { preview: true });
+    svg.appendChild(built.group);
+    boxes.push(...built.boxes);
+  });
   boxes.forEach((box) => put(box));
   const selected = selectedShapeRecord();
   if (selected && Number(selected.page) === Number(pageNumber) && !editingShapeId) {
@@ -947,6 +968,14 @@ export function setShapeOverlayHook(fn) {
 // (src/documents/pdf-guides.js): handed the shape as the drag has it, it hands
 // back the shape snapped, or null for no change; null in, the drag is over.
 let shapeMoveAdjuster = () => null;
+let shapePageMoveHandler = () => false;
+
+// A shape let go of over another page: `(record, shape, page, { dx, dy })`
+// writes it there as one step and returns true (src/documents/
+// pdf-connectors.js, which also lets go of the lines tied to it).
+export function setShapePageMoveHandler(fn) {
+  shapePageMoveHandler = typeof fn === "function" ? fn : () => false;
+}
 
 export function setShapeMoveAdjuster(fn) {
   shapeMoveAdjuster = typeof fn === "function" ? fn : () => null;
@@ -1314,6 +1343,11 @@ function beginShapePress(event, { mode, target = null, handle = null, page, page
     moved: false,
     type: shapeType(),
     preview: null,
+    // The page a move is over (src/documents/page-handoff.js), and the page a
+    // carried shape was last drawn over.
+    targetPage: page,
+    ghostPage: null,
+    edgeScroll: mode === "move" ? edgeScroller(page, (last) => onShapePointerMove(last)) : null,
     // A press on bare paper while a shape was selected puts it down and
     // makes nothing — a tap to deselect is not a request for a text box.
     deselected: mode === "create" && Boolean(selectedShapeId) && shapeType() !== "text"
@@ -1340,9 +1374,13 @@ function pressShape(drag, event) {
     return bindShapeEnds(drag, made, event, [0, 1], 1);
   }
   if (drag.mode === "move") {
-    const [dx, dy] = clampShapeMove(drag.target.shape, drag.page, point[0] - drag.from[0], point[1] - drag.from[1]);
+    // Over another page, it goes to that page (src/documents/page-handoff.js):
+    // the shape returned is in the points of `drag.targetPage`.
+    drag.targetPage = pageUnderPointer(drag.page, event.clientX, event.clientY, drag.targetPage || drag.page);
+    const here = pointOnPage(drag.targetPage, event.clientX, event.clientY) || point;
+    const [dx, dy] = clampShapeMove(drag.target.shape, drag.targetPage, here[0] - drag.from[0], here[1] - drag.from[1]);
     const moved = translateShape(drag.target.shape, dx, dy);
-    return shapeMoveAdjuster({ page: drag.page, id: drag.target.id, mode: "move", shape: moved, event }) || moved;
+    return shapeMoveAdjuster({ page: drag.targetPage, id: drag.target.id, mode: "move", shape: moved, event }) || moved;
   }
   // A line's end, with Shift, swings round its other end in 15° steps — from
   // where that end is drawn, which for a tied end is on what it is tied to.
@@ -1390,13 +1428,75 @@ function onShapePointerMove(event) {
   drag.moved = true;
   const shape = pressShape(drag, event);
   drag.preview = shape;
-  if (!shape) { paintDocumentShapes(drag.page); return; }
+  if (drag.mode === "move") drag.edgeScroll?.update(event);
+  if (!shape) { paintDocumentShapes(drag.page); paintCarriedGhost(drag, null); return; }
+  if (drag.mode === "move" && carriedAway(drag)) {
+    // Drawn on both pages, each clipped to its own paper, so a shape across
+    // the gap shows on either side of it.
+    paintDocumentShapes(drag.page, { preview: { id: drag.target.id, shape: shapeOnPage(shape, drag.targetPage, drag.page) } });
+    paintCarriedGhost(drag, shape);
+    return;
+  }
+  paintCarriedGhost(drag, null);
   paintDocumentShapes(drag.page, { preview: { id: drag.mode === "create" ? null : drag.target.id, shape } });
+}
+
+// ── A shape carried onto another page ─────────────────────────────────────
+function carriedAway(drag) {
+  return Boolean(drag?.targetPage) && Number(drag.targetPage) !== Number(drag.page);
+}
+
+// A shape in one page's points, moved into another's.
+function shapeOnPage(shape, from, to) {
+  const [ox, oy] = mapPointBetweenPages(from, to, [0, 0]);
+  return translateShape(shape, ox, oy);
+}
+
+// Without its ties: they are to things on the page it came from.
+function untiedShape(shape) {
+  const s = normalizeShape(shape);
+  if (!s?.ends) return s;
+  const { ends: _ends, ...rest } = s;
+  return rest;
+}
+
+// The carried shape drawn over the page it is over — and taken off the page it
+// was over a move ago.
+function paintCarriedGhost(drag, shape) {
+  const page = shape && carriedAway(drag) ? Number(drag.targetPage) : null;
+  if (drag.ghostPage && drag.ghostPage !== page) paintDocumentShapes(drag.ghostPage);
+  drag.ghostPage = page;
+  if (page) paintDocumentShapes(page, { ghosts: [shape] });
+}
+
+// A move let go of: on its own page, the shape rewritten; over another, moved
+// onto it — through the connectors module when it is there
+// (shapePageMoveHandler), which also lets go of the lines tied to it.
+function dropShapeMove(drag, dropped) {
+  if (!carriedAway(drag)) {
+    const shape = shapeResolver(drag.target, normalizeShape(dropped), drag.page) || dropped;
+    return updateShape(drag.target.id, shape);
+  }
+  const ghostPage = drag.ghostPage;
+  drag.ghostPage = null;
+  const shape = untiedShape(dropped);
+  const before = shapeBounds(normalizeShape(drag.target.shape));
+  const after = shapeBounds(shape);
+  const dx = before && after ? after[0] - before[0] : 0;
+  const dy = before && after ? after[1] - before[1] : 0;
+  const done = shapePageMoveHandler(drag.target, shape, Number(drag.targetPage), { dx, dy })
+    || updateShape(drag.target.id, shape, { page: drag.targetPage });
+  notePdfGesture("shape", "moved to page", { id: drag.target.id, from: drag.page, to: drag.targetPage });
+  if (ghostPage) paintDocumentShapes(ghostPage);
+  paintDocumentShapes(drag.page);
+  if (done) selectShape(drag.target.id);
+  return done;
 }
 
 function endShapePress() {
   const drag = shapePress;
   shapePress = null;
+  drag?.edgeScroll?.stop();
   setInkPenDown(false);
   el.documentView?.removeEventListener("touchmove", onShapeTouchMove, { passive: false });
   try { el.documentView?.releasePointerCapture?.(drag?.pointerId); } catch (_) { /* gone */ }
@@ -1458,6 +1558,10 @@ function onShapePointerUp(event) {
   }
   suppressShapeClickUntil = Date.now() + 400;
   const dropped = drag.preview || pressShape(drag, event);
+  if (drag.mode === "move") {
+    if (!dropped || !dropShapeMove(drag, dropped)) { paintCarriedGhost(drag, null); paintDocumentShapes(drag.page); }
+    return;
+  }
   const shape = dropped ? (shapeResolver(drag.target, normalizeShape(dropped), drag.page) || dropped) : null;
   // Typed text given a new width wraps differently: its height is measured
   // again, plain words or not.
@@ -1479,6 +1583,7 @@ function abortShapePress() {
   shapeBinding.clear();
   shapeMoveAdjuster(null);
   notePdfGesture("shape", "cancelled", { id: drag.target?.id, mode: drag.mode, pointer: drag.pointerType, cause: "second finger", moved: drag.moved ? "yes" : "no" });
+  paintCarriedGhost(drag, null);
   paintDocumentShapes(drag.page);
 }
 
@@ -1497,8 +1602,9 @@ function onShapePointerCancel(event) {
   notePdfGesture("shape", "cancelled", { id: drag.target?.id, mode: drag.mode, pointer: drag.pointerType, cause: event.type, moved: drag.moved ? "yes" : "no" });
   if (drag.mode !== "create" && drag.moved && drag.preview) {
     suppressShapeClickUntil = Date.now() + 400;
-    if (updateShape(drag.target.id, drag.preview)) return;
+    if (drag.mode === "move" ? dropShapeMove(drag, drag.preview) : updateShape(drag.target.id, drag.preview)) return;
   }
+  paintCarriedGhost(drag, null);
   paintDocumentShapes(drag.page);
 }
 

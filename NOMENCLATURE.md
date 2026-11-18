@@ -97,6 +97,12 @@ device and never synced: `recall:view-only-v1` in localStorage,
 Several Blocks and shapes **picked up** together (Shift-click, a box drawn on a
 Canvas with the Select tool, Ctrl+A) are moved, lined up, copied and **grouped**
 as one; a group is a `group` id on each record (`src/documents/canvas-selection.js`).
+A Block, a Picture, a shape or several picked up together are **dragged onto
+another page** of the same part by letting go of them over it — the record's
+`page` changes, one undo step; a connector on the page they left lets go of an
+end tied to something that moved, and goes with them when both its ends did
+(`src/documents/page-handoff.js`; `connectorChangesForPageMove` in
+`src/documents/pdf-connectors.js`). Lassoed handwriting still stays on its page.
 The thin lines a drag snaps to are **guides**, and grid paper's squares (and a
 dot grid's dots) are the **grid**, at each page's own spacing
 (`src/documents/pdf-guides.js`, `src/render/snap-guides.js`).

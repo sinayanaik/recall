@@ -63,6 +63,7 @@ import { activePdfId, recordsForSurface, recordsOutsideSurface, stampRecordPdfId
 import { closeBlockEditor, openBlockEditor } from "./pdf-block-editor.js?v=__BUILD__";
 import { closeInlineBlockEditor, inlineBlockEditorHolds, inlineBlockEditorId, inlineBlockEditorValue, mountInlineBlockEditor, openInlineBlockEditor } from "./pdf-block-inline.js?v=__BUILD__";
 import { pdfPageElement, pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
+import { edgeScroller, mapPointBetweenPages, pageUnderPointer, pointOnPage, setCarrying } from "./page-handoff.js?v=__BUILD__";
 import { resolveStorageImages } from "../cloud/storage-urls.js?v=__BUILD__";
 import { hydrateLocalImages, storeImageOrQueue } from "../images/outbox.js?v=__BUILD__";
 import { renderMarkdown } from "../render/block-cache.js?v=__BUILD__";
@@ -2125,11 +2126,32 @@ function beginGesture(event, node, mode, edge = "se", { openOnTap = false } = {}
   // The page's own edges, in points, for the resize clamp below.
   const [pageX0, pageY0, pageX1, pageY1] = viewport.viewBox;
   const scale = viewport.scale || 1;
+  // ── Onto another page ───────────────────────────────────────────────────
+  //
+  // A drag (not a resize) goes to whichever page the pointer is over
+  // (src/documents/page-handoff.js). `live` is always in the points of
+  // `targetPage`, where it will be written; until it is let go the block is
+  // still drawn by the page it came from, at the same place on the screen
+  // (`shownAt`), past that page's edge if need be. Where it is pressed is
+  // where it stays under the pointer, worked out from the pages as they are
+  // now, so the view can scroll under a still finger — by itself, near the
+  // view's top or bottom edge (edgeScroll), or by a wheel.
+  const sourcePage = Number(block.page);
+  const grabPoint = mode === "drag" ? pointOnPage(sourcePage, start.x, start.y) : null;
+  let targetPage = sourcePage;
+  let targetViewport = viewport;
+  const shownAt = (box) => {
+    if (targetPage === sourcePage) return box;
+    const [x, y] = mapPointBetweenPages(targetPage, sourcePage, [box.x, box.y]);
+    return { ...box, x, y };
+  };
 
   const apply = () => {
     frame = 0;
-    placeBlock(node, viewport, live);
-    liveGesture = { id, page: block.page, block: live };
+    const shown = shownAt(live);
+    placeBlock(node, viewport, shown);
+    setCarrying(sourcePage, targetPage !== sourcePage);
+    liveGesture = { id, page: block.page, block: shown };
     gestureFrameHook(block.page, liveGesture);
     // ── The height follows the width WHILE the width is being dragged ────
     //
@@ -2211,7 +2233,13 @@ function beginGesture(event, node, mode, edge = "se", { openOnTap = false } = {}
     if (mode !== "drag" && rot) [dx, dy] = rotatePoint([dx, dy], [0, 0], -rot);
     if (cornerOfWords) widthOnly = !moveEvent.shiftKey && Math.abs(dx) >= Math.abs(dy);
     if (mode === "drag") {
-      live = { ...block, ...clampBlockToPage(viewport, block, block.x + dx, block.y + dy) };
+      targetPage = pageUnderPointer(sourcePage, moveEvent.clientX, moveEvent.clientY, targetPage);
+      targetViewport = pdfPageViewport(targetPage) || viewport;
+      const here = grabPoint ? pointOnPage(targetPage, moveEvent.clientX, moveEvent.clientY) : null;
+      const x = here ? block.x + here[0] - grabPoint[0] : block.x + dx;
+      const y = here ? block.y + here[1] - grabPoint[1] : block.y + dy;
+      live = { ...block, ...clampBlockToPage(targetViewport, block, x, y) };
+      edgeScroll?.update(moveEvent);
     } else {
       // Which edges this handle moves. The bottom of the frame on screen is
       // the bottom in points too — so growing it moves the origin DOWN — and
@@ -2272,7 +2300,7 @@ function beginGesture(event, node, mode, edge = "se", { openOnTap = false } = {}
     // A turned block's edges run along no guide, so it does not snap.
     if (!rot) {
       live = gestureAdjuster({
-        page: block.page, id, mode, edge, before: block, live, event: moveEvent, viewport,
+        page: targetPage, id, mode, edge, before: block, live, event: moveEvent, viewport: targetViewport,
         // A picture keeps its shape and a block that follows its words keeps
         // their height: neither has an edge free to snap on its own.
         keepRatio: mode === "resize" && ((isImage && !moveEvent.altKey) || moveEvent.shiftKey), widthOnly
@@ -2280,6 +2308,9 @@ function beginGesture(event, node, mode, edge = "se", { openOnTap = false } = {}
     }
     if (!frame) frame = requestAnimationFrame(apply);
   };
+  // Near the top or bottom of the view, the view scrolls, and the move is run
+  // again with the pointer where it was so the block keeps up.
+  const edgeScroll = mode === "drag" ? edgeScroller(sourcePage, (last) => move(last)) : null;
 
   const finish = (upEvent) => {
     if (upEvent && upEvent.pointerId !== pointerId) return;
@@ -2317,9 +2348,25 @@ function beginGesture(event, node, mode, edge = "se", { openOnTap = false } = {}
     // is still selected. Its quick actions belong back at it, anchored to
     // wherever it now sits.
     syncBlockActionsPopover();
+    setCarrying(sourcePage, false);
     // The second tap of a double-tap: its words, to type in.
     if (openOnTap && !captured && mode === "drag" && upEvent?.type === "pointerup" && block.kind !== PDF_BLOCK_IMAGE) {
       beginBlockEdit(id);
+      return;
+    }
+    // Let go of over another page: it is that page's now, on top of what is
+    // there — and the lines tied to it on the page it left let go of it
+    // (src/documents/pdf-connectors.js, registered as pageMoveHook). One step.
+    if (captured && mode === "drag" && targetPage !== sourcePage) {
+      const now = Date.now();
+      const placed = { ...live, page: targetPage, z: nextBlockZ(), at: now };
+      runDiagramEdit(() => {
+        writeDocumentBlocks(documentBlocks().map((entry) => (entry.id === id ? { ...entry, ...placed } : entry)));
+        pageMoveHook({ ids: [id], from: sourcePage, to: targetPage, dx: placed.x - block.x, dy: placed.y - block.y });
+      });
+      notePdfGesture("block", "moved to page", { id, from: sourcePage, to: targetPage });
+      repaintDocumentBlocks();
+      syncBlockActionsPopover();
       return;
     }
     // A press that ended where it started must not cost an autosave and a push.
@@ -2389,6 +2436,7 @@ function beginGesture(event, node, mode, edge = "se", { openOnTap = false } = {}
   const abort = () => {
     gestureLive = false;
     if (frame) { cancelAnimationFrame(frame); frame = 0; }
+    setCarrying(sourcePage, false);
     // Off BEFORE the capture is let go, so the lostpointercapture that follows
     // is not taken for the end of a drag and written.
     removeGestureListeners();
@@ -2407,6 +2455,7 @@ function beginGesture(event, node, mode, edge = "se", { openOnTap = false } = {}
   };
 
   function removeGestureListeners() {
+    edgeScroll?.stop();
     document.removeEventListener("pointermove", move);
     document.removeEventListener("pointerup", finish);
     document.removeEventListener("pointercancel", finish);
@@ -2438,6 +2487,15 @@ function beginGesture(event, node, mode, edge = "se", { openOnTap = false } = {}
 let liveGesture = null;
 let gestureFrameHook = () => {};
 let gestureAdjuster = () => null;
+let pageMoveHook = () => {};
+
+// Told, inside the drop's runDiagramEdit, that blocks went from one page to
+// another — `{ ids, from, to, dx, dy }`, the move in the new page's points — so
+// the connectors on the page they left can let go of them, or go with them
+// (src/documents/pdf-connectors.js).
+export function setBlockPageMoveHook(fn) {
+  pageMoveHook = typeof fn === "function" ? fn : () => {};
+}
 
 export function setBlockGestureFrameHook(fn) {
   gestureFrameHook = typeof fn === "function" ? fn : () => {};
@@ -2457,7 +2515,10 @@ export function liveBlockGesture() {
 //
 // A block dragged past the edge of the page is gone — nothing is drawn outside
 // the page, so there is nothing left to press to bring it back. The drag is
-// held so at least this many points of the block stay on the paper.
+// held so at least this many points of the block stay on the paper — on the
+// page it is over: dragged onto the page above or below, it goes to that page
+// (src/documents/page-handoff.js), and only past a page's left or right edge,
+// or the first page's top and the last page's foot, is it held.
 export const PDF_BLOCK_KEEP_ON_PAGE = 16;
 
 function clampBlockToPage(viewport, block, x, y) {

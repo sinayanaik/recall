@@ -403,6 +403,15 @@
   pointer-events: none;
 }
 
+/* A Block carried past its page's edge, on its way to another page
+   (src/documents/page-handoff.js), is still drawn by the page it came from
+   until it is let go. The pages after that one come later in the list and
+   would paint their paper over it: the page it came from is lifted above
+   them for the length of the drag. */
+.pdf-page.is-carrying {
+  z-index: 6;
+}
+
 /* No header any more (see the CSS this replaces, below) — every press on the
    block, other than the resize grip, is now a drag: cursor and touch-action
    say so on the whole box rather than on a bar drawn across the top of it.
