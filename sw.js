@@ -508,6 +508,7 @@ const APP_SHELL = [
   `./src/documents/page-handoff.js?v=${STAMP}`,
   `./src/documents/region-card.js?v=${STAMP}`,
   `./src/documents/page-clipboard.js?v=${STAMP}`,
+  `./src/documents/middle-pan.js?v=${STAMP}`,
   `./src/documents/page-pointer.js?v=${STAMP}`,
   `./src/documents/view-only.js?v=${STAMP}`,
   `./src/documents/canvas-setup.js?v=${STAMP}`,

@@ -22,6 +22,8 @@
 //   6. + Add has a Paste picture row.
 //   7. Ctrl+V of words onto the page makes a Block of them at the mouse — not
 //      for this app's own clipboard token, and not into a Block's editor.
+//   8. A middle-button drag moves the page with the mouse, and the paste a
+//      middle click fires (Linux's selection paste) puts nothing on the page.
 
 import { spawn } from "node:child_process";
 import path from "node:path";
@@ -63,6 +65,7 @@ const API_SRC = `async () => {
     "/src/documents/canvas-selection.js?v=__BUILD__",
     "/src/documents/page-pointer.js?v=__BUILD__",
     "/src/documents/page-clipboard.js?v=__BUILD__",
+    "/src/documents/middle-pan.js?v=__BUILD__",
     "/src/documents/pdf-guides.js?v=__BUILD__",
     "/src/documents/pdf-annot-export.js?v=__BUILD__",
     "/src/render/annot-shapes.js?v=__BUILD__",
@@ -424,6 +427,52 @@ try {
   check("Ctrl+V of words onto the page makes a Block holding them", words.taken && words.count === 1 && words.md.includes("First line") && words.md.includes("second") && words.shown && !words.editing, JSON.stringify(words));
   check("...with its top-left corner where the mouse is, wider for a long line", Math.abs(words.x - 100) <= 2 && Math.abs(words.top - 600) <= 2 && words.w > 240, JSON.stringify(words));
   check("...but not this app's own clipboard token, and not a paste into a Block's editor", words.tokenIgnored && words.editorKeeps, JSON.stringify(words));
+
+  // ── 8. The middle button grabs the page and moves it ────────────────────
+  await page.evaluate(`async () => {
+    const { settle } = window.__recall;
+    await window.__recall.clearBlocks();
+    // Room to scroll either way: the view part-way down the paper.
+    const view = document.getElementById("documentView");
+    view.scrollTop = Math.max(0, (view.scrollHeight - view.clientHeight) / 2);
+    await settle(150);
+  }`);
+  const [mx, my] = await screenOf(200, 500);
+  await mouseMove(mx, my);
+  const beforePan = await page.evaluate(`() => ({ top: document.getElementById("documentView").scrollTop, room: document.getElementById("documentView").scrollHeight - document.getElementById("documentView").clientHeight, blocks: window.__recall.api.documentBlocks().length })`);
+  await page.call("Input.dispatchMouseEvent", { type: "mousePressed", x: mx, y: my, button: "middle", buttons: 4, clickCount: 1, pointerType: "mouse" });
+  for (let i = 1; i <= 6; i += 1) {
+    await page.call("Input.dispatchMouseEvent", { type: "mouseMoved", x: mx, y: my + (90 * i) / 6, button: "middle", buttons: 4, pointerType: "mouse" });
+    await pause(16);
+  }
+  const midPan = await page.evaluate(`() => ({ panning: window.__recall.api.isMiddlePanning?.(), cursor: document.getElementById("documentView").style.cursor })`);
+  await page.call("Input.dispatchMouseEvent", { type: "mouseReleased", x: mx, y: my + 90, button: "middle", buttons: 0, clickCount: 1, pointerType: "mouse" });
+  const afterPan = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const view = document.getElementById("documentView");
+    const pasteText = (text) => {
+      const data = new DataTransfer();
+      data.setData("text/plain", text);
+      const event = new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true });
+      document.body.dispatchEvent(event);
+    };
+    const top = view.scrollTop;
+    // The paste a middle click brings with it on Linux: swallowed.
+    pasteText("words from the primary selection");
+    await settle(100);
+    const afterMiddlePaste = api.documentBlocks().length;
+    // A Ctrl+V a moment later is a paste onto the page again.
+    await settle(450);
+    pasteText("a real paste");
+    await settle(300);
+    return { top, afterMiddlePaste, afterRealPaste: api.documentBlocks().length, panning: api.isMiddlePanning?.(), cursor: view.style.cursor };
+  }`);
+  check("a middle-button drag moves the page with the mouse",
+    beforePan.room > 120 && Math.abs((beforePan.top - afterPan.top) - 90) <= 2 && midPan.panning && midPan.cursor === "grabbing",
+    JSON.stringify({ beforePan, midPan, afterPan }));
+  check("...and lets go when the button comes up", !afterPan.panning && afterPan.cursor === "", JSON.stringify(afterPan));
+  check("...the paste a middle click fires puts nothing on the page, and Ctrl+V after it still does",
+    afterPan.afterMiddlePaste === beforePan.blocks && afterPan.afterRealPaste === beforePan.blocks + 1, JSON.stringify({ beforePan, afterPan }));
 
   // ── 6. The row for a keyboard-less device ───────────────────────────────
   const row = await page.evaluate(`() => Boolean(document.querySelector("#documentInsertMenu [data-hw-action='paste-picture']"))`);
