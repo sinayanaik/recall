@@ -37,16 +37,17 @@ import {
 import { showToast } from "../ui/feedback.js?v=__BUILD__";
 import {
   documentShapes, editingShapeTextId, isShapeToolArmed, newShapeRecord, paintDocumentShapes, selectShape, selectedShapeHandleAt,
-  selectedShapeRecord, shapeAtPoint, updateShapesQuietly
+  selectedShapeRecord, shapeAtPoint, shapeRecordOnPage, updateShapesQuietly
 } from "./pdf-shapes.js?v=__BUILD__";
 import { applyDocumentRecordChanges, documentHighlightById, freshDocumentHighlightId } from "./pdf-highlights.js?v=__BUILD__";
 import { claimPagePaste, noteInAppCopy } from "./page-clipboard.js?v=__BUILD__";
 import { currentDocumentPage, pdfPageElement, pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
 import { normalizeShape, rectFromPoints, shapeBounds, translateShape } from "../render/annot-shapes.js?v=__BUILD__";
 import {
-  addDiagramOverlayPainter, connectorsTiedTo, paintDiagramOverlay, repaintDiagramOverlay, setConnectArrowsSuppressed,
-  setDiagramNodeOverrides
+  addDiagramOverlayPainter, connectorChangesForPageMove, connectorsTiedTo, keepTiesWithin, paintDiagramOverlay, repaintDiagramOverlay,
+  setConnectArrowsSuppressed, setDiagramNodeOverrides
 } from "./pdf-connectors.js?v=__BUILD__";
+import { edgeScroller, mapPointBetweenPages, pointOnPage, pageUnderPointer, setCarrying } from "./page-handoff.js?v=__BUILD__";
 import { clearDiagramPart, diagramSvg, diagramSvgNode, setDiagramPart } from "./pdf-diagram-layer.js?v=__BUILD__";
 import { makeCardFromPageArea } from "./region-card.js?v=__BUILD__";
 import { REGION_CLASS } from "./pdf-region.js?v=__BUILD__";
@@ -187,7 +188,10 @@ function prunePick() {
 
 function paintPicked(page) {
   prunePick();
-  if (!isMultiPicked() || pickState.page !== Number(page)) { setDiagramPart(page, "picked", []); return; }
+  // While carried over another page, the frames are drawn on that page — the
+  // move (dragView) is in its points.
+  const drawnOn = dragView?.page ?? pickState.page;
+  if (!isMultiPicked() || drawnOn !== Number(page)) { setDiagramPart(page, "picked", []); return; }
   const viewport = pdfPageViewport(page);
   const items = pickedItems();
   if (!viewport || !items.length) { setDiagramPart(page, "picked", []); return; }
@@ -222,13 +226,7 @@ function selectMode(event) {
   return event.pointerType === "mouse" && !isInkArmed();
 }
 
-function pickPointOn(page, clientX, clientY) {
-  const pageEl = pdfPageElement(page);
-  const viewport = pdfPageViewport(page);
-  if (!pageEl || !viewport) return null;
-  const box = pageEl.getBoundingClientRect();
-  return viewport.convertToPdfPoint(clientX - box.left, clientY - box.top);
-}
+const pickPointOn = pointOnPage;
 
 // Presses this module must never take: the page's own controls and editors,
 // and anything floating over it.
@@ -345,6 +343,11 @@ export function setPickedMoveAdjuster(fn) {
   moveAdjuster = typeof fn === "function" ? fn : () => null;
 }
 
+// Over another page, they go to that page (src/documents/page-handoff.js):
+// `target` is the page the pointer is over, and `dx`, `dy` are the move in its
+// points. Until they are let go they are still drawn by the page they came
+// from (blocks past its edge, shapes clipped to it) and, the shapes, over the
+// page they are carried to as well.
 function beginMove(event, page, ids, { narrowTo = null } = {}) {
   const items = ids.map(itemOf).filter((item) => item && item.page === page);
   const viewport = pdfPageViewport(page);
@@ -352,10 +355,49 @@ function beginMove(event, page, ids, { narrowTo = null } = {}) {
   pickPress = {
     kind: "move", pointerId: event.pointerId, pointerType: event.pointerType || "", page, items, narrowTo,
     start: [event.clientX, event.clientY], perPixel: 1 / (viewport.scale || 1),
+    startPoint: pointOnPage(page, event.clientX, event.clientY), target: page, ghostPage: null,
     box: unionRect(items.map((item) => item.rect)), moved: false, dx: 0, dy: 0
   };
+  const scroll = edgeScroller(page, (last) => onMoveMove(last));
+  pickPress.edgeScroll = scroll;
   const stop = listen(onMoveMove, onMoveUp);
-  pickPress.stop = stop;
+  pickPress.stop = () => { scroll.stop(); stop(); };
+}
+
+// The preview moved from the target page's points into the source page's,
+// for drawing it where it still is.
+function shownOnSource(drag, preview) {
+  if (drag.target === drag.page) return preview;
+  const [ox, oy] = mapPointBetweenPages(drag.target, drag.page, [0, 0]);
+  const blocks = new Map();
+  const shapes = new Map();
+  const overrides = new Map();
+  preview.blocks.forEach((block, id) => {
+    const shown = { ...block, x: block.x + ox, y: block.y + oy };
+    blocks.set(id, shown);
+    overrides.set(id, { block: shown });
+  });
+  preview.shapes.forEach((shape, id) => {
+    const shown = translateShape(shape, ox, oy);
+    shapes.set(id, shown);
+    overrides.set(id, { shape: shown });
+  });
+  return { blocks, shapes, overrides };
+}
+
+// The carried shapes drawn over the page they are over, and taken off the one
+// they were over a move ago.
+function paintCarriedGhosts(drag, shapes) {
+  const page = shapes && drag.target !== drag.page ? drag.target : null;
+  if (drag.ghostPage && drag.ghostPage !== page) {
+    paintDocumentShapes(drag.ghostPage);
+    paintDiagramOverlay(drag.ghostPage);
+  }
+  drag.ghostPage = page;
+  if (page) {
+    paintDocumentShapes(page, { ghosts: [...shapes.values()] });
+    paintDiagramOverlay(page);
+  }
 }
 
 function movePreview(drag) {
@@ -383,10 +425,14 @@ function onMoveMove(event) {
   event.stopPropagation();
   if (!drag.moved && Math.hypot(event.clientX - drag.start[0], event.clientY - drag.start[1]) < TAP_SLOP) return;
   drag.moved = true;
-  let dx = (event.clientX - drag.start[0]) * drag.perPixel;
-  let dy = -(event.clientY - drag.start[1]) * drag.perPixel;
-  const viewport = pdfPageViewport(drag.page);
-  const snapped = moveAdjuster({ page: drag.page, ids: drag.items.map((item) => item.id), box: drag.box, dx, dy, event, viewport });
+  drag.target = pageUnderPointer(drag.page, event.clientX, event.clientY, drag.target);
+  const here = drag.startPoint ? pointOnPage(drag.target, event.clientX, event.clientY) : null;
+  if (!here) drag.target = drag.page;
+  let dx = here ? here[0] - drag.startPoint[0] : (event.clientX - drag.start[0]) * drag.perPixel;
+  let dy = here ? here[1] - drag.startPoint[1] : -(event.clientY - drag.start[1]) * drag.perPixel;
+  drag.edgeScroll?.update(event);
+  const viewport = pdfPageViewport(drag.target);
+  const snapped = moveAdjuster({ page: drag.target, ids: drag.items.map((item) => item.id), box: drag.box, dx, dy, event, viewport });
   if (snapped) ({ dx, dy } = snapped);
   // Never off the page: the group's box keeps KEEP_ON_PAGE points on it.
   if (viewport) {
@@ -397,12 +443,15 @@ function onMoveMove(event) {
   }
   drag.dx = dx;
   drag.dy = dy;
-  const { blocks, shapes, overrides } = movePreview(drag);
+  const preview = movePreview(drag);
+  const { blocks, shapes, overrides } = shownOnSource(drag, preview);
   setDiagramNodeOverrides(overrides);
-  dragView = { dx, dy };
+  dragView = { dx, dy, page: drag.target };
   closeArrangeBar();
+  setCarrying(drag.page, drag.target !== drag.page);
   previewBlockGeometry(drag.page, blocks);
   paintDocumentShapes(drag.page, { previews: shapes });
+  paintCarriedGhosts(drag, preview.shapes);
   paintDiagramOverlay(drag.page);
 }
 
@@ -415,6 +464,8 @@ function onMoveUp(event) {
   drag.stop();
   dragView = null;
   moveAdjuster(null);
+  setCarrying(drag.page, false);
+  if (drag.moved && drag.target !== drag.page) { dropOnPage(drag); return; }
   if (!drag.moved) {
     // A tap on one of several picked: that one, alone.
     if (drag.narrowTo && event.type === "pointerup") pickIds(drag.page, [drag.narrowTo]);
@@ -438,6 +489,45 @@ function onMoveUp(event) {
   syncArrangeBar();
 }
 
+// ── ...let go of over another page ────────────────────────────────────────
+//
+// Everything carried is that page's now, in one step: the blocks on top of
+// what is there in the order they were in, the shapes with their ties to one
+// another kept and their ties to anything left behind let go of, and the lines
+// on the page they left following them or letting go
+// (connectorChangesForPageMove, src/documents/pdf-connectors.js).
+function dropOnPage(drag) {
+  const { blocks, shapes } = movePreview(drag);
+  const ids = drag.items.map((item) => item.id);
+  const moving = new Set(ids);
+  const to = drag.target;
+  const now = Date.now();
+  let z = nextBlockZ();
+  const raised = new Map([...blocks.keys()]
+    .sort((a, b) => (Number(itemOf(a)?.block?.z) || 0) - (Number(itemOf(b)?.block?.z) || 0))
+    .map((id) => [id, z++]));
+  runDiagramEdit(() => {
+    if (blocks.size) {
+      writeDocumentBlocks(documentBlocks().map((block) => (blocks.has(block.id)
+        ? {
+          ...block, page: to, z: raised.get(block.id),
+          x: Math.round(blocks.get(block.id).x * 100) / 100, y: Math.round(blocks.get(block.id).y * 100) / 100, at: now
+        }
+        : block)));
+    }
+    const put = drag.items.filter((item) => item.kind === "shape")
+      .map((item) => shapeRecordOnPage(item.record, to, keepTiesWithin(shapes.get(item.id), moving)));
+    put.push(...connectorChangesForPageMove({ ids, from: drag.page, to, dx: drag.dx, dy: drag.dy }));
+    if (put.length) applyDocumentRecordChanges({ put });
+  });
+  if (drag.ghostPage) paintDocumentShapes(drag.ghostPage);
+  setDiagramNodeOverrides(new Map());
+  repaintDocumentBlocks();
+  paintDocumentShapes(drag.page);
+  paintDocumentShapes(to);
+  pickIds(to, ids);
+}
+
 // ── ...called off by a second finger ──────────────────────────────────────
 //
 // A finger carrying a group when a second one lands is the start of a pinch,
@@ -452,6 +542,8 @@ function abortPickMove() {
   drag.stop();
   dragView = null;
   moveAdjuster(null);
+  setCarrying(drag.page, false);
+  if (drag.ghostPage) paintDocumentShapes(drag.ghostPage);
   setDiagramNodeOverrides(new Map());
   repaintDocumentBlocks();
   paintDocumentShapes(drag.page);

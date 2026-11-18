@@ -73,7 +73,10 @@ const API_SRC = `async () => {
     "/src/format/ink-strokes.js?v=__BUILD__",
     "/src/ui/theme.js?v=__BUILD__",
     "/src/ui/style-settings.js?v=__BUILD__",
-    "/src/storage/ink-prefs.js?v=__BUILD__"
+    "/src/storage/ink-prefs.js?v=__BUILD__",
+    "/src/documents/page-handoff.js?v=__BUILD__",
+    "/src/documents/pdf-timing.js?v=__BUILD__",
+    "/src/documents/canvas-selection.js?v=__BUILD__"
   ];
   const mods = await Promise.all(paths.map((p) => import(p)));
   const api = {};
@@ -810,6 +813,136 @@ try {
   check("Duplicate this page puts a copy after it, its connector tied to the copies", pages.pages === pages.start + 1 && pages.copies === 2 && pages.tied, JSON.stringify(pages));
   check("Move this page down swaps it with the next, everything on both with it", pages.moved === 2 && pages.copiesUp, JSON.stringify(pages));
 
+  // ── 8b. Dragged from one page onto the next ────────────────────────────
+  //
+  // "Make sure the elements are draggable interpage, not limited to just one
+  // page." A Block, a shape and several picked up together were held to the
+  // page they were pressed on; dragged over the next page they now drop on it
+  // (src/documents/page-handoff.js), where the pointer has them, as one undo.
+  const across = await page.evaluate(`async () => {
+    const { api, settle } = window.__recall;
+    const { pageEl, view } = window.__h;
+    const out = {};
+    // Alt: no guides or grid, so where it lands is exactly where it was carried.
+    const fire = (type, x, y, { pointerType = "mouse", buttons = 1, pointerId = 7 } = {}) => {
+      const target = document.elementFromPoint(x, y) || view;
+      target.dispatchEvent(new PointerEvent(type, {
+        bubbles: true, cancelable: true, composed: true, pointerId, pointerType, isPrimary: true, altKey: true,
+        clientX: x, clientY: y, buttons, button: type === "pointermove" ? -1 : 0, pressure: buttons ? 0.5 : 0
+      }));
+    };
+    const carry = async (x0, y0, x1, y1, opts = {}) => {
+      fire("pointerdown", x0, y0, opts);
+      for (let i = 1; i <= 12; i += 1) {
+        fire("pointermove", x0 + ((x1 - x0) * i) / 12, y0 + ((y1 - y0) * i) / 12, opts);
+        await settle(16);
+      }
+      // What the page under the drop says the drop point is, before letting go.
+      const at = { p1: api.pointOnPage?.(1, x1, y1), p2: api.pointOnPage?.(2, x1, y1) };
+      fire("pointerup", x1, y1, { ...opts, buttons: 0 });
+      await settle(200);
+      return at;
+    };
+    const screenOf = (page, x, y) => {
+      const box = pageEl(page).getBoundingClientRect();
+      const [sx, sy] = api.pdfPageViewport(page).convertToViewportPoint(x, y);
+      return [box.left + sx, box.top + sy];
+    };
+    const middleOf = (id) => {
+      const r = document.querySelector('[data-pdf-block="' + id + '"]').getBoundingClientRect();
+      return [r.left + r.width / 2, r.top + r.height / 2];
+    };
+    // The join between pages 1 and 2 in the middle of the view.
+    const showJoin = async () => {
+      const top2 = pageEl(2).getBoundingClientRect().top;
+      const mid = view.getBoundingClientRect().top + view.clientHeight / 2;
+      view.scrollTop += top2 - mid;
+      await settle(400);
+    };
+    api.setInkArmed(false);
+    api.selectBlock(null);
+    api.selectShape(null);
+    api.writeDocumentBlocks(api.documentBlocks().filter((b) => b.page !== 1 && b.page !== 2));
+    api.state.meta.pdfHighlights = (api.state.meta.pdfHighlights || []).filter((r) => r.kind !== "shape" || (r.page !== 1 && r.page !== 2));
+    api.writeDocumentBlocks([...api.documentBlocks(),
+      { id: "x1", page: 1, x: 100, y: 70, w: 120, h: 40, md: "carried onto the next page" },
+      { id: "c1", page: 1, x: 300, y: 150, w: 90, h: 40, md: "the first of two connected boxes" },
+      { id: "c2", page: 1, x: 300, y: 260, w: 90, h: 40, md: "the second of two connected boxes" }
+    ]);
+    api.addDocumentShape(1, { type: "arrow", p: [[0, 0], [1, 1]], stroke: "#000000", width: 1.5, ends: [{ id: "c1", side: "auto" }, { id: "c2", side: "auto" }] });
+    api.repaintDocumentBlocks();
+    await settle(400);
+    await showJoin();
+
+    // A Block, by a mouse, from page 1's foot to page 2.
+    // Its top-left corner, which stays where it is when its height follows
+    // its words.
+    let x1 = api.documentBlocks().find((b) => b.id === "x1");
+    const was = { x: x1.x, top: x1.y + x1.h };
+    let [sx, sy] = middleOf("x1");
+    const grab = api.pointOnPage(1, sx, sy);
+    const at = await carry(sx, sy, sx + 40, sy + 160);
+    x1 = api.documentBlocks().find((b) => b.id === "x1");
+    out.block = { page: x1.page, x: x1.x, top: x1.y + x1.h, wantX: was.x + at.p2[0] - grab[0], wantTop: was.top + at.p2[1] - grab[1] };
+    out.blockOnPage2 = Boolean(pageEl(2).querySelector('[data-pdf-block="x1"]')) && !pageEl(1).querySelector('[data-pdf-block="x1"]');
+    out.carryingCleared = !document.querySelector(".pdf-page.is-carrying");
+    api.undoBlocks();
+    await settle(300);
+    x1 = api.documentBlocks().find((b) => b.id === "x1");
+    out.undone = { page: x1.page, x: x1.x, top: x1.y + x1.h, was };
+
+    // One of two connected Blocks: its line stays on page 1 and lets go of it.
+    await showJoin();
+    [sx, sy] = middleOf("c1");
+    await carry(sx, sy, sx, sy + pageEl(2).getBoundingClientRect().top - sy + 150);
+    const line = api.documentHighlights().find((r) => r.kind === "shape" && r.shape.type === "arrow" && r.page === 1);
+    out.loose = { c1: api.documentBlocks().find((b) => b.id === "c1")?.page, linePage: line?.page, ends: JSON.stringify(line?.shape?.ends || null) };
+    api.undoBlocks();
+    await settle(300);
+
+    // Both, and the line between them, picked up together and carried.
+    await showJoin();
+    const arrowId = api.documentHighlights().find((r) => r.kind === "shape" && r.shape.type === "arrow" && r.page === 1)?.id;
+    api.pickIds(1, ["c1", "c2", arrowId]);
+    await settle(200);
+    [sx, sy] = middleOf("c1");
+    await carry(sx, sy, sx + 20, sy + pageEl(2).getBoundingClientRect().top - sy + 200);
+    const moved = api.documentHighlights().find((r) => r.id === arrowId);
+    out.group = {
+      c1: api.documentBlocks().find((b) => b.id === "c1")?.page, c2: api.documentBlocks().find((b) => b.id === "c2")?.page,
+      line: moved?.page, tied: (moved?.shape?.ends || []).filter(Boolean).map((e) => e.id).sort().join(","),
+      picked: api.pickedIds().length
+    };
+    api.clearPick();
+
+    // A Shapes-tool box, with the Shapes tool in hand.
+    const box = api.addDocumentShape(1, { type: "rect", p: [[420, 140], [520, 80]], stroke: "#000000", width: 2 });
+    await settle(200);
+    await showJoin();
+    api.setInkArmed(true);
+    api.setInkTool("shape");
+    await settle(100);
+    [sx, sy] = screenOf(1, 420, 110);
+    await carry(sx, sy, sx + 30, sy + pageEl(2).getBoundingClientRect().top - sy + 120, { pointerType: "pen", pointerId: 9 });
+    const shape = api.documentHighlightById(box.id);
+    out.shape = { page: shape?.page, quadPage: shape?.quads?.[0]?.page, ghostsLeft: pageEl(1).querySelectorAll(".pdf-shape.is-preview").length };
+    api.setInkTool("pen");
+    api.setInkArmed(false);
+    api.selectShape(null);
+    await settle(200);
+    return out;
+  }`);
+  check("a Block dragged from page 1 over page 2 drops on page 2, where the pointer has it",
+    across.block.page === 2 && Math.abs(across.block.x - across.block.wantX) < 1.5 && Math.abs(across.block.top - across.block.wantTop) < 1.5
+      && across.blockOnPage2 && across.carryingCleared, JSON.stringify(across.block));
+  check("...and one undo puts it back on page 1, where it was", across.undone.page === 1 && across.undone.x === across.undone.was.x && Math.abs(across.undone.top - across.undone.was.top) < 0.5, JSON.stringify(across.undone));
+  check("one of two connected Blocks carried to page 2: the line stays on page 1 and lets go of it",
+    across.loose.c1 === 2 && across.loose.linePage === 1 && !/"c1"/.test(across.loose.ends) && /"c2"/.test(across.loose.ends), JSON.stringify(across.loose));
+  check("two Blocks and the line between them, picked up together, go to page 2 still tied and still picked",
+    across.group.c1 === 2 && across.group.c2 === 2 && across.group.line === 2 && across.group.tied === "c1,c2" && across.group.picked === 3, JSON.stringify(across.group));
+  check("a Shapes-tool box carried with the Shapes tool goes to page 2, nothing left drawn over page 1",
+    across.shape.page === 2 && across.shape.quadPage === 2 && across.shape.ghostsLeft === 0, JSON.stringify(across.shape));
+
   // ── 9. What is written on the page looks like the page it is on ────────
   //
   // "The canvas only half-follows the theme": a Block's card and words followed
@@ -959,6 +1092,45 @@ try {
       await settle(700);
       window.__h.pageEl(1).scrollIntoView({ block: "start" });
       document.querySelectorAll(".toast, #toastHost > *").forEach((n) => n.remove());
+      await settle(300);
+    }`);
+    // A Block and a box carried from page 1 across the gap onto page 2, mid-drag, then let go.
+    await page.evaluate(`async () => {
+      const { api, settle } = window.__recall;
+      const { pageEl, view } = window.__h;
+      api.writeDocumentBlocks([{ id: "shot-carry", page: 1, x: 120, y: 90, w: 200, h: 60, md: "**Carried** onto the next page" }]);
+      api.repaintDocumentBlocks();
+      await settle(500);
+      view.scrollTop += pageEl(2).getBoundingClientRect().top - (view.getBoundingClientRect().top + view.clientHeight / 2);
+      await settle(400);
+      const r = document.querySelector('[data-pdf-block="shot-carry"]').getBoundingClientRect();
+      const fire = (type, x, y, buttons = 1) => (document.elementFromPoint(x, y) || view).dispatchEvent(new PointerEvent(type, {
+        bubbles: true, cancelable: true, pointerId: 11, pointerType: "mouse", isPrimary: true, altKey: true, clientX: x, clientY: y, buttons, button: type === "pointermove" ? -1 : 0
+      }));
+      const x0 = r.left + r.width / 2;
+      const y0 = r.top + r.height / 2;
+      // The pointer just over page 2's top edge: the Block straddles the gap.
+      const y1 = pageEl(2).getBoundingClientRect().top + 12;
+      fire("pointerdown", x0, y0);
+      for (let i = 1; i <= 10; i += 1) { fire("pointermove", x0 + 6 * i, y0 + ((y1 - y0) * i) / 10); await settle(20); }
+      window.__carryEnd = [x0 + 60, y1];
+      await settle(300);
+    }`);
+    await snap("0a-block-carried-across-the-page-gap.png");
+    await page.evaluate(`async () => {
+      const [x, y] = window.__carryEnd;
+      (document.elementFromPoint(x, y) || window.__h.view).dispatchEvent(new PointerEvent("pointerup", {
+        bubbles: true, cancelable: true, pointerId: 11, pointerType: "mouse", isPrimary: true, clientX: x, clientY: y, buttons: 0, button: 0
+      }));
+      await window.__recall.settle(500);
+    }`);
+    await snap("0b-block-dropped-on-page-2.png");
+    await page.evaluate(`async () => {
+      const { api, settle } = window.__recall;
+      api.state.meta.pdfBlocks = [];
+      api.repaintDocumentBlocks();
+      api.selectBlock(null);
+      window.__h.pageEl(1).scrollIntoView({ block: "start" });
       await settle(300);
     }`);
     // The Block button armed.

@@ -44,12 +44,13 @@ import { el } from "../core/dom.js?v=__BUILD__";
 import { clearDiagramPart, diagramLayer, diagramPathData, diagramSvg, diagramSvgNode, setDiagramPart } from "./pdf-diagram-layer.js?v=__BUILD__";
 import {
   blockStyle, documentBlocks, editBlock, freshDocumentBlockId, isEditingBlock, isInDiagramEdit, liveBlockGesture, nextBlockZ,
-  previewBlockRotation, rotateBlockBy, runDiagramEdit, selectBlock, selectedBlockId, setBlockGestureFrameHook, setBlockRotation, setBlocksPaintedHook,
-  writeDocumentBlocks
+  previewBlockRotation, rotateBlockBy, runDiagramEdit, selectBlock, selectedBlockId, setBlockGestureFrameHook, setBlockPageMoveHook, setBlockRotation,
+  setBlocksPaintedHook, writeDocumentBlocks
 } from "./pdf-blocks.js?v=__BUILD__";
 import {
   SHAPE_ROTATE_HANDLE_GAP, documentShapes, editingShapeTextId, newConnectorBase, newShapeRecord, paintDocumentShapes, selectShape, selectedShapeRecord,
-  setConnectorLabelEditor, setShapeBindingHooks, setShapeDeleteAllHandler, setShapeOverlayHook, setShapeResolver, updateShape, updateShapesQuietly
+  setConnectorLabelEditor, setShapeBindingHooks, setShapeDeleteAllHandler, setShapeOverlayHook, setShapePageMoveHandler, setShapeResolver,
+  shapeRecordOnPage, updateShape, updateShapesQuietly
 } from "./pdf-shapes.js?v=__BUILD__";
 import { applyDocumentRecordChanges, documentHighlightById } from "./pdf-highlights.js?v=__BUILD__";
 import { pdfPageElement, pdfPageViewport } from "./pdf-view.js?v=__BUILD__";
@@ -707,6 +708,62 @@ export function connectCopy(sourceId, side, page) {
   return made;
 }
 
+// ── Things carried onto another page ──────────────────────────────────────
+//
+// A connector is drawn on one page, between things on that page. When some of
+// them are dragged onto another page (src/documents/page-handoff.js):
+//   • a line on the page they left, not moving, tied at both ends to things
+//     that are moving, goes with them — the same move;
+//   • a line tied at one end to something that is moving lets go of that end,
+//     and stays where it is drawn;
+//   • a line that IS moving lets go of any end tied to something staying
+//     (keepTiesWithin, for the caller that moves it).
+// Called inside the move's runDiagramEdit, so it is the same undo step.
+export function keepTiesWithin(shape, ids) {
+  const s = normalizeShape(shape);
+  if (!s?.ends) return s;
+  const keep = ids instanceof Set ? ids : new Set(ids);
+  const ends = s.ends.map((end) => (end && keep.has(end.id) ? end : null));
+  const { ends: _was, ...rest } = s;
+  return ends.some(Boolean) ? { ...rest, ends } : rest;
+}
+
+export function connectorChangesForPageMove({ ids, from, to, dx = 0, dy = 0 }) {
+  const moving = new Set(ids);
+  const put = [];
+  documentShapes(Number(from)).forEach((record) => {
+    if (moving.has(record.id)) return;
+    const s = normalizeShape(record.shape);
+    if (!s?.ends) return;
+    const tied = s.ends.filter(Boolean);
+    const toMoving = tied.filter((end) => moving.has(end.id));
+    if (!toMoving.length) return;
+    if (toMoving.length === tied.length && tied.length === s.ends.length) {
+      put.push(shapeRecordOnPage(record, to, translateShape(s, dx, dy)));
+    } else {
+      // The stored ends are where the line was last laid out — where it is
+      // drawn — so the end let go of stays put.
+      put.push(shapeRecordOnPage(record, from, keepTiesWithin(s, new Set(tied.filter((end) => !moving.has(end.id)).map((end) => end.id)))));
+    }
+  });
+  return put;
+}
+
+function applyConnectorPageMove(move) {
+  const put = connectorChangesForPageMove(move);
+  if (put.length) applyDocumentRecordChanges({ put });
+}
+
+// One shape dragged onto another page (src/documents/pdf-shapes.js).
+function moveShapeToPage(record, shape, page, { dx = 0, dy = 0 } = {}) {
+  if (!record?.id) return false;
+  runDiagramEdit(() => {
+    applyDocumentRecordChanges({ put: [shapeRecordOnPage(record, page, keepTiesWithin(shape, [record.id]))] });
+    applyConnectorPageMove({ ids: [record.id], from: Number(record.page), to: page, dx, dy });
+  });
+  return true;
+}
+
 // ── Deleting a box with its lines ──────────────────────────────────────────
 //
 // Delete leaves a box's connectors where they were, still tied, so an undo
@@ -801,6 +858,8 @@ export function initConnectors() {
   setBlockGestureFrameHook(onBlockGestureFrame);
   setConnectorLabelEditor(openConnectorLabelEditor);
   setShapeDeleteAllHandler(deleteWithConnectors);
+  setBlockPageMoveHook(applyConnectorPageMove);
+  setShapePageMoveHandler(moveShapeToPage);
   // Capture on the DOCUMENT, so a press on a connect arrow is the arrow's
   // before the page's own capture listeners (the pen, the shapes, the blocks
   // — all on #documentView, under this) ever hear it.
